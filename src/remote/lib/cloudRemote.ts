@@ -42,7 +42,7 @@ import {
   type PtyResizeListener,
   type ThemeListener,
   type ThemeSnapshot,
-} from './wsRemote';
+} from '@ridge/remote';
 
 /** Backend `list_workspaces` row (subset we use). */
 interface BackendWorkspace {
@@ -60,6 +60,25 @@ interface ThemeEntryLite {
 /** Default PTY grid for a freshly-activated pane until the canvas claims its real size. */
 const DEFAULT_ROWS = 24;
 const DEFAULT_COLS = 80;
+
+/**
+ * §history-pull（2026-07-02）: 首屏拉取的 scrollback 上限（约 1.5 屏）。host 不再推
+ * `RIS + 256KiB` 全量回放；controller 订阅时自己拉这么多作首屏（RIS + tail），再挂 live，
+ * 用户向上滚动时才经 `get_pane_scrollback_before` 分批拉更旧历史。16KiB 足够填满移动端
+ * 视口 1.5 屏、又小到不会卡死解析器。
+ */
+const REMOTE_INITIAL_SCROLLBACK_BYTES = 16 * 1024;
+
+/** 滚顶懒加载每批拉取的 scrollback 上限。 */
+const REMOTE_OLDER_SCROLLBACK_BYTES = 64 * 1024;
+
+/** One page of scrollback bytes returned by `get_pane_scrollback_tail` / `_before`. */
+interface ScrollbackChunk {
+  bytes: string;
+  start_seq: number;
+  at_oldest: boolean;
+  head_seq: number;
+}
 
 /** Flatten a host pane-tree to the mobile's flat leaf list (server.rs's downgrade). */
 function flattenLeaves(node: PaneNode | null | undefined): PaneInfo[] {
@@ -93,6 +112,11 @@ export class CloudRemoteConnection implements RemoteLink {
   private ptyUnlisten = new Map<string, UnlistenFn>();
   // Panes whose subscribe is in flight (so concurrent subscribe calls stay idempotent).
   private subscribing = new Set<string>();
+  // §history-pull: per-pane seq cursor for lazy "scroll up to load older". Seeded
+  // from the initial tail read; advanced by each get_pane_scrollback_before page.
+  private scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
+  // Panes whose older-history fetch is in flight (dedup overlapping scroll-up loads).
+  private fetchingOlder = new Set<string>();
   // pane-tree-changed unlisten (host-side layout changes → re-list panes).
   private treeUnlisten: UnlistenFn | null = null;
   // Per-pane decoders are unnecessary: the bridge already decodes bytes→string with a
@@ -186,6 +210,19 @@ export class CloudRemoteConnection implements RemoteLink {
     this.setState('error');
   }
 
+  /** Drop all per-pane subscription state — live `pty-output` listeners, in-flight
+   *  subscribe flags, and the lazy-scrollback seq cursors. Shared by disconnect()
+   *  and the reconnect path so a fresh transport re-subscribes from a clean slate. */
+  private _teardownSubscriptions(): void {
+    for (const [, unlisten] of this.ptyUnlisten) {
+      try { unlisten(); } catch { /* handle points at a dead transport — ignore */ }
+    }
+    this.ptyUnlisten.clear();
+    this.subscribing.clear();
+    this.scrollbackCursor.clear();
+    this.fetchingOlder.clear();
+  }
+
   private async _handleReconnect(): Promise<void> {
     if (this._reconnecting) return;
     this._reconnecting = true;
@@ -197,6 +234,10 @@ export class CloudRemoteConnection implements RemoteLink {
       let ok = true;
       if (this._verifiedCode) {
         ok = await this.handle.verifyTotp(this._verifiedCode).catch(() => false);
+      } else {
+        // §7.4：本会话经信任授权进入（无缓存 TOTP 码）。full re-handshake 会重置 host 的
+        // §4 门，故重连后重跑静默信任握手重新开门；旧 host 无 challenge → 超时 false。
+        ok = await this.handle.tryTrustGrant().catch(() => false);
       }
       if (!ok) {
         // 重连后 re-auth 失败：多为长时间断网导致缓存 TOTP 码过期，刷新拿新码即可恢复
@@ -205,6 +246,14 @@ export class CloudRemoteConnection implements RemoteLink {
         this.setState('error');
         return;
       }
+      // §reconnect-resub（修复「重连接上 scrollback 但没接上实时渲染」）：重连后的
+      // 传输是一个**全新的 host 会话**，不持有任何 pane 订阅；但我们本地的
+      // ptyUnlisten/subscribing 条目仍是断连前的旧值。subscribePane() 在
+      // ptyUnlisten.has(paneId) 时会**提前返回**，导致 MainApp.onReconnect →
+      // subscribePane 被吞掉：pane 既不会重挂 live `pty-output` 监听，也不会重新
+      // register_pane_delta_channel → scrollback 从缓存重绘、但实时渲染不恢复。
+      // 先清掉旧订阅状态，后续 subscribePane 才会在新传输上真正重跑 _subscribe。
+      this._teardownSubscriptions();
       this.reconnectListeners.forEach((fn) => {
         try { fn(); } catch { /* listener owns its errors */ }
       });
@@ -244,9 +293,10 @@ export class CloudRemoteConnection implements RemoteLink {
     return () => this.stateListeners.delete(fn);
   }
   onReconnect(fn: () => void): () => void {
-    // The WebRTC adapter + bridge re-subscribe panes internally on a transport
-    // blip; we don't surface an explicit reconnect in v1 (no resync storm). Kept
-    // for interface parity so MainApp's listener registers harmlessly.
+    // Fired by _handleReconnect on a connected-after-down edge (after re-auth +
+    // _teardownSubscriptions). MainApp's listener wipes the kernel, repaints from
+    // cache, and re-subscribes the active pane so live rendering resumes on the
+    // fresh transport.
     this.reconnectListeners.add(fn);
     return () => this.reconnectListeners.delete(fn);
   }
@@ -307,8 +357,69 @@ export class CloudRemoteConnection implements RemoteLink {
     void this._subscribe(paneId);
   }
 
+  /**
+   * §history-pull lazy paging: fetch the next older batch of this pane's scrollback
+   * (bytes with `seq < cursor`), advancing the seq cursor. Returns the raw bytes to
+   * PREPEND above the current scrollback (the caller feeds them through the kernel's
+   * prepend path), or `null` when there's nothing to load (already at oldest, no
+   * cursor yet, a fetch is already in flight, or the host rejected the command).
+   * Idempotent-safe under rapid scroll-up (fetchingOlder dedup + atOldest stop).
+   */
+  async fetchOlderScrollback(paneId: string): Promise<Uint8Array | null> {
+    const cursor = this.scrollbackCursor.get(paneId);
+    if (!cursor || cursor.atOldest || this.fetchingOlder.has(paneId)) return null;
+    this.fetchingOlder.add(paneId);
+    try {
+      const chunk = await invoke<ScrollbackChunk>('get_pane_scrollback_before', {
+        paneId,
+        beforeSeq: cursor.oldestSeq,
+        maxBytes: REMOTE_OLDER_SCROLLBACK_BYTES,
+      });
+      this.scrollbackCursor.set(paneId, {
+        oldestSeq: chunk.start_seq,
+        atOldest: chunk.at_oldest,
+      });
+      return chunk.bytes ? this.encoder.encode(chunk.bytes) : null;
+    } catch {
+      // Older host / rejected: stop paging so we don't spam on every scroll.
+      this.scrollbackCursor.set(paneId, { oldestSeq: cursor.oldestSeq, atOldest: true });
+      return null;
+    } finally {
+      this.fetchingOlder.delete(paneId);
+    }
+  }
+
   private async _subscribe(paneId: string): Promise<void> {
     try {
+      // §history-pull（2026-07-02）: the host no longer pushes an on-subscribe
+      // `RIS + 256KiB` replay. Pull our own ~1.5-screen tail FIRST and hand it to
+      // MainApp as the reconcile "replay" first-frame (RIS + tail, byte-for-byte
+      // like the old host replay), THEN wire the live listener. Tail-first (not
+      // concurrent) guarantees history is the first chunk MainApp sees
+      // (expectReplayPane) and that an idle pane still paints its last screen; the
+      // only cost is a tiny gap if the pane is spewing output at the subscribe
+      // instant (self-heals on the next redraw). Seed the seq cursor for lazy
+      // "scroll up to load older" paging (get_pane_scrollback_before).
+      try {
+        const chunk = await invoke<ScrollbackChunk>('get_pane_scrollback_tail', {
+          paneId,
+          maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
+        });
+        if (!this.subscribing.has(paneId)) return; // torn down during the fetch
+        this.scrollbackCursor.set(paneId, {
+          oldestSeq: chunk.start_seq,
+          atOldest: chunk.at_oldest,
+        });
+        // RIS (\x1bc) + history: identical shape to the host's old replay, so
+        // MainApp's reconcileReplay repaint path (resetForSwitch + feed) is unchanged.
+        const payload = this.encoder.encode('\x1bc' + (chunk.bytes ?? ''));
+        this.rawByteListeners.forEach((fn) => fn(paneId, payload));
+      } catch {
+        // Older host / command rejected: no seeded history — degrade to "first live
+        // frame acts as the replay" (MainApp's expectReplayPane still reconciles it).
+      }
+      if (!this.subscribing.has(paneId)) return;
+
       // Per-pane `pty-output-{ws}-{pane}` event. The bridge keys its dispatch on the
       // trailing pane UUID only, so the ws segment is cosmetic — but we use the real
       // active ws for fidelity. Payload arrives as decoded `{data}`; re-encode to bytes.
@@ -499,6 +610,7 @@ export class CloudRemoteConnection implements RemoteLink {
     for (const [paneId, unlisten] of [...this.ptyUnlisten]) {
       if (!liveIds.has(paneId)) {
         this.ptyUnlisten.delete(paneId);
+        this.scrollbackCursor.delete(paneId); // release the pane's seq cursor too
         try { unlisten(); } catch { /* already gone */ }
       }
     }
@@ -510,11 +622,7 @@ export class CloudRemoteConnection implements RemoteLink {
   disconnect(): void {
     this._failure = null; // 主动断开，清掉失败分级
     this.setState('disconnected');
-    for (const [, unlisten] of this.ptyUnlisten) {
-      try { unlisten(); } catch { /* already gone */ }
-    }
-    this.ptyUnlisten.clear();
-    this.subscribing.clear();
+    this._teardownSubscriptions();
     if (this.treeUnlisten) {
       try { this.treeUnlisten(); } catch { /* already gone */ }
       this.treeUnlisten = null;

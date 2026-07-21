@@ -271,6 +271,18 @@ impl Terminal {
             }
             GridDelta::Resize { rows, cols } => {
                 self.resize(*rows as usize, *cols as usize);
+                // §delta-mirror-resize (2026-06-27) — `resize()` above ran this
+                // mirror's OWN reflow (which keeps scroll-up history rewrapped),
+                // but that reflow diverges from the producer's authoritative one
+                // (the delta stream carries neither row `wrapped` flags nor the
+                // inline-TUI frame state the reflow keys off). The producer reset
+                // its cell-diff baseline to blank on resize and re-sends only the
+                // non-blank spans, so it never overwrites the divergent leftovers
+                // — they would stay on screen as resize residue (the "reflow 残留"
+                // in both shell and inline-TUI modes). Blank the visible grid so
+                // the col-range `Cells` deltas that follow are the sole source of
+                // visible content. Scrollback is left intact.
+                self.grid.blank_visible();
             }
             GridDelta::Title(t) => {
                 self.pending_events
@@ -642,6 +654,11 @@ impl Terminal {
     pub fn is_alt_screen(&self) -> bool {
         self.grid.is_alt_screen()
     }
+    /// §wsl-resize-silence — 本 pane 是否发过 shell-integration 的 prompt OSC
+    /// （133/633;A）。false ⇒ 无早释放 resize-silence 的手段（WSL/cmd/explicit-launch）。
+    pub fn has_shell_integration(&self) -> bool {
+        self.grid.has_seen_prompt_osc()
+    }
     /// §1.35 — force-leave alt screen without going through CSI dispatch.
     /// Used when the PTY process exits while the kernel is still in alt
     /// screen mode (e.g. TUI crash or pane kill). Without this the new
@@ -764,6 +781,60 @@ mod tests {
         let newest = t.grid().scrollback.get(t.scrollback_len() - 1).unwrap();
         let newest_text: String = newest.cells.iter().map(|c| c.ch).collect();
         assert_eq!(newest_text, "BETA ");
+    }
+
+    #[test]
+    fn apply_delta_resize_blanks_visible_so_following_cells_are_authoritative() {
+        // §delta-mirror-resize (2026-06-27) — the producer (PaneParser) resets
+        // its cell-diff baseline to blank on resize and then re-sends only the
+        // NON-BLANK spans of the new grid. The mirror runs its own reflow on
+        // the Resize delta, but that reflow diverges from the producer's (the
+        // delta stream carries neither row `wrapped` flags nor the inline-TUI
+        // frame state the reflow keys off), so leftover cells the producer now
+        // treats as blank are never re-sent. A bare Resize delta must therefore
+        // leave the visible grid fully blank, so the col-range Cells that
+        // follow it are the sole source of visible content — no resize residue.
+        use crate::term::delta::GridDelta;
+        let mut t = Terminal::new(4, 20, 100);
+        // Fill the visible grid with content at the OLD width.
+        t.feed(b"alpha beta gamma\r\ndelta epsilon\r\nzeta eta theta");
+        assert!(
+            t.dump_visible_text().iter().any(|line| !line.is_empty()),
+            "precondition: visible grid has content before the resize",
+        );
+
+        // A bare Resize delta. In production the producer follows it with the
+        // authoritative col-range Cells; we omit those here to isolate the
+        // blank-the-canvas invariant this fix establishes.
+        t.apply_delta(&GridDelta::Resize { rows: 4, cols: 10 });
+
+        for (r, line) in t.dump_visible_text().iter().enumerate() {
+            assert_eq!(
+                line, "",
+                "visible row {r} must be blank after a Resize delta (residue otherwise)",
+            );
+        }
+    }
+
+    #[test]
+    fn apply_delta_resize_blanks_visible_but_keeps_scrollback() {
+        // The blank must NOT eat scrollback — scroll-up history survives a
+        // resize (the mirror's reflow above rewrapped it; blank_visible only
+        // touches the visible grid).
+        use crate::term::delta::GridDelta;
+        let mut t = Terminal::new(2, 6, 100);
+        // Push several lines so some land in scrollback.
+        t.feed(b"one\r\ntwo\r\nthree\r\nfour");
+        let sb_before = t.scrollback_len();
+        assert!(sb_before > 0, "precondition: expected non-zero scrollback");
+
+        t.apply_delta(&GridDelta::Resize { rows: 2, cols: 6 });
+
+        assert!(
+            t.scrollback_len() >= sb_before,
+            "resize must not drop scrollback rows (had {sb_before}, now {})",
+            t.scrollback_len(),
+        );
     }
 
     #[test]
@@ -1073,20 +1144,40 @@ mod tests {
     }
 
     #[test]
-    fn ed_2_does_not_touch_scrollback() {
-        // §B.2 — sanity: ED 2 (clear screen) must leave scrollback
-        // intact. Only ED 3 reaches the saved lines.
+    fn ed_2_drops_scrollback_on_primary_for_clear_parity() {
+        // §clear-scrollback-parity (2026-07-16) — 覆盖旧的 §B.2 "仅 ED 3 清 scrollback"
+        // 不变量：主屏且非 inline-TUI 的 ED 2 现在**连带清 scrollback**，让 shell 的
+        // `clear`/`cls`/`Clear-Host` 与右键"清理"一致（PowerShell 5.1 的 Clear-Host 只发
+        // \x1b[2J，不发 \x1b[3J，靠 ED 3 那条路清不掉）。inline-TUI 重绘的保留分支见
+        // grid.rs::ed_all_preserves_scrollback_when_inline_tui_sticky。
         let mut t = Terminal::new(2, 5, 100);
-        t.feed(b"a\r\nb\r\nc\r\nd");
-        let sb_before = t.scrollback_len();
+        t.feed(b"a\r\nb\r\nc\r\nd"); // 'a'/'b' 溢入 scrollback
+        assert!(t.scrollback_len() >= 2);
 
         t.feed(b"\x1b[2J");
 
         assert_eq!(
             t.scrollback_len(),
-            sb_before,
-            "ED 2 must NOT touch scrollback"
+            0,
+            "主屏 ED 2 应连带清 scrollback（clear 一致性）"
         );
+    }
+
+    // §wsl-resize-silence — prompt OSC 133;A 应把 pane 标记为"有 shell-integration"。
+    // 无此标记的 pane（WSL/cmd）在 resize 时跳过 silence 窗口以免吞掉 SIGWINCH 重绘。
+    #[test]
+    fn shell_integration_flag_tracks_prompt_osc() {
+        let mut t = Terminal::new(2, 5, 100);
+        assert!(!t.has_shell_integration(), "默认：无集成");
+        t.feed(b"\x1b]633;A\x07"); // VS Code 633;A（非 prompt-start 也可，A 即 prompt start）
+        assert!(t.has_shell_integration(), "prompt OSC 633;A 后应标记有集成");
+    }
+
+    #[test]
+    fn shell_integration_flag_stays_false_without_prompt_osc() {
+        let mut t = Terminal::new(2, 5, 100);
+        t.feed(b"hello\r\nworld\r\n"); // 纯输出，无 prompt OSC（模拟 WSL/cmd）
+        assert!(!t.has_shell_integration(), "无 prompt OSC 的 pane 应恒判无集成");
     }
 
     #[test]

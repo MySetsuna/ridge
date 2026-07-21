@@ -106,6 +106,28 @@ fn function_key(n: u8) -> Option<Vec<u8>> {
     Some(seq)
 }
 
+/// 检测按键是否为控制快捷键（不应发往 PTY，应由 pager 拦截处理）。
+pub fn is_control_shortcut(ev: &KeyEvent) -> bool {
+    let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+
+    if !ctrl {
+        return false;
+    }
+
+    let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
+
+    // Ctrl+Shift+方向键 → pane 切换
+    if shift {
+        return matches!(
+            ev.code,
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+        );
+    }
+
+    // Ctrl+F1..F12 → 工作区切换
+    matches!(ev.code, KeyCode::F(_))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +173,49 @@ mod tests {
     fn utf8_char() {
         // 中文字符按 UTF-8 多字节透传。
         assert_eq!(encode_key(&key(KeyCode::Char('好'), KeyModifiers::NONE)), Some("好".as_bytes().to_vec()));
+    }
+
+    #[test]
+    fn ctrl_shift_arrows_are_shortcuts() {
+        for dir in &[KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
+            let ev = key(*dir, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+            assert!(is_control_shortcut(&ev), "Ctrl+Shift+{dir:?} should be shortcut");
+        }
+    }
+
+    #[test]
+    fn plain_arrows_not_shortcuts() {
+        let ev = key(KeyCode::Left, KeyModifiers::NONE);
+        assert!(!is_control_shortcut(&ev));
+        let ev = key(KeyCode::Right, KeyModifiers::SHIFT);
+        assert!(!is_control_shortcut(&ev));
+        let ev = key(KeyCode::Up, KeyModifiers::CONTROL);
+        assert!(!is_control_shortcut(&ev), "Ctrl+Up alone should NOT be shortcut");
+    }
+
+    #[test]
+    fn ctrl_f_keys_are_shortcuts() {
+        for n in 1..=12 {
+            let ev = key(KeyCode::F(n), KeyModifiers::CONTROL);
+            assert!(is_control_shortcut(&ev), "Ctrl+F{n} should be shortcut");
+        }
+    }
+
+    #[test]
+    fn plain_f_keys_not_shortcuts() {
+        let ev = key(KeyCode::F(1), KeyModifiers::NONE);
+        assert!(!is_control_shortcut(&ev));
+        let ev = key(KeyCode::F(3), KeyModifiers::SHIFT);
+        assert!(!is_control_shortcut(&ev));
+    }
+
+    #[test]
+    fn other_ctrl_keys_not_shortcuts() {
+        let ev = key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(!is_control_shortcut(&ev), "Ctrl+C should NOT be shortcut");
+        let ev = key(KeyCode::Char(']'), KeyModifiers::CONTROL);
+        assert!(!is_control_shortcut(&ev), "Ctrl+] should NOT be shortcut");
+        let ev = key(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert!(!is_control_shortcut(&ev));
     }
 }

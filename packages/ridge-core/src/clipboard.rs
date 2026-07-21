@@ -23,6 +23,18 @@ pub fn pick_image_file(files: Vec<String>) -> Option<String> {
         .find(|f| is_image_ext(f) && Path::new(f).is_file())
 }
 
+/// 规整宿主从 CF_HDROP 读到 / 准备写入的通用文件列表：去首尾空白、丢空串、保序去重。
+/// 用于「系统资源管理器 ↔ 文件树」双向文件剪贴板互通的纯逻辑部分。
+pub fn sanitize_file_list(files: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    files
+        .into_iter()
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .filter(|f| seen.insert(f.clone()))
+        .collect()
+}
+
 /// 把「复制为路径 / Copy as path」得到的文本（可能带引号）解析成一个真实存在的图片
 /// 文件绝对路径。仅当文本是单一、带图片扩展名、且文件存在的路径时返回 `Some`（宿主据此
 /// 粘**裸**路径，CLI 才会识别为图片）；否则 `None` → 走普通文本粘贴，绝不误伤普通文本。
@@ -73,6 +85,23 @@ mod tests {
         std::fs::write(&txt, b"x").unwrap();
         assert_eq!(resolve_pasted_image_path(&txt.to_string_lossy()), None);
         let _ = std::fs::remove_file(&txt);
+    }
+
+    #[test]
+    fn sanitize_file_list_trims_drops_empty_and_dedupes() {
+        let input = vec![
+            "  C:/a.txt  ".to_string(),
+            "".to_string(),
+            "   ".to_string(),
+            "C:/a.txt".to_string(), // 去重（与第一条 trim 后相同）
+            "C:/b.txt".to_string(),
+        ];
+        assert_eq!(
+            sanitize_file_list(input),
+            vec!["C:/a.txt".to_string(), "C:/b.txt".to_string()]
+        );
+        assert!(sanitize_file_list(vec![]).is_empty());
+        assert!(sanitize_file_list(vec!["  ".to_string()]).is_empty());
     }
 
     #[test]

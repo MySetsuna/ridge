@@ -3,8 +3,13 @@ mod db;
 mod deep_root;
 mod engine;
 mod fs;
+mod hosts;
 mod lsp;
-pub mod remote;
+/// 桌面进程与共享远控层之间的 Tauri 胶水层（`forward_event` + `ridge-core` 桥
+/// + `spawn_remote_server` 启动壳）——归并自已删除的 `remote/{mod,core_bridge,server}.rs`。
+mod remote_bridge;
+/// 桌面 `RemoteHost` 实现（`DesktopHost` 包装 `AppState`）。
+mod remote_host_impl;
 mod state;
 mod teammate;
 mod tray;
@@ -17,8 +22,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::commands::{
-    clipboard_image, fs_watch, git, pane, process, project, ridge_file, settings, terminal, theme,
-    watch, workspace,
+    clipboard_files, clipboard_image, fs_watch, git, pane, process, project, ridge_file, settings,
+    terminal, theme, watch, workspace,
 };
 use crate::db::ProjectStore;
 use crate::state::AppState;
@@ -166,13 +171,23 @@ pub fn run() {
                 tracing::info!(target: "ridge::init", phase = 2, "setup: registering web-remote event listeners");
                 {
                     use tauri::Listener;
-                    for name in ["teammate-layout-changed", "teammate-active-pane-changed"] {
+                    // §IDE LSP P4：`lsp://diagnostics` 也镜像给桌面浏览器远控——host 跑
+                    // 语言服务器、把 publishDiagnostics 经此 event 推前端（lsp/mod.rs），
+                    // 远端 controller 的 `onLspDiagnostics`（lspClient.ts）订阅同名 event，
+                    // 故加入白名单即让 web-remote 编辑器也显示红/黄波浪线。payload = LSP
+                    // 诊断参数对象，随 `{type:'event'}` 帧转发，controller `listen()` shim 按
+                    // 名分发（bridge.ts）。无反馈环：转发只发广播总线，不回 `emit`。
+                    for name in [
+                        "teammate-layout-changed",
+                        "teammate-active-pane-changed",
+                        "lsp://diagnostics",
+                    ] {
                         let fwd = handle.clone();
                         app.listen_any(name, move |event| {
                             let payload: serde_json::Value =
                                 serde_json::from_str(event.payload())
                                     .unwrap_or(serde_json::Value::Null);
-                            crate::remote::forward_event(&fwd, name, payload);
+                            crate::remote_bridge::forward_event(&fwd, name, payload);
                         });
                     }
                 }
@@ -192,7 +207,10 @@ pub fn run() {
                     .title("ridge")
                     .inner_size(800.0, 600.0)
                     .decorations(false)
-                    .transparent(false)
+                    // 不调 `.transparent(false)`：该方法在 macOS 上被 cfg 门控在
+                    // `macos-private-api` feature 之后（Win/Linux 无门控），而我们传的就是
+                    // 默认值 false（窗口本就不透明）。删掉这个 no-op 调用即可让 macOS 编译通过，
+                    // 三平台行为不变（仍是不透明窗口）。
                     .visible(false)
                     .devtools(true)
                     .initialization_script(&splash_init_script)
@@ -690,6 +708,9 @@ pub fn run() {
             clipboard_image::read_clipboard_image_to_temp,
             clipboard_image::save_clipboard_image_to_temp,
             clipboard_image::resolve_pasted_image_path,
+            clipboard_files::read_clipboard_file_paths,
+            clipboard_files::write_clipboard_file_paths,
+            clipboard_files::read_clipboard_sequence,
             terminal::resize_pane,
             terminal::set_pane_delta_mode,
             terminal::register_pane_delta_channel,
@@ -698,6 +719,13 @@ pub fn run() {
             terminal::get_pane_scrollback_before,
             terminal::list_native_sessions,
             terminal::summon_native_session,
+            terminal::new_headless_session,
+            terminal::terminate_native_session,
+            // 「主机 / Hosts」远端主机登记（P3/P4 基础层，桌面本地命令，不入远程白名单）。
+            hosts::host_list_snapshot,
+            hosts::connect_host,
+            hosts::disconnect_host,
+            hosts::forget_host,
             workspace::create_workspace,
             workspace::get_active_workspace_id,
             workspace::list_workspaces,
@@ -777,10 +805,11 @@ pub fn run() {
             commands::remote::verify_remote_totp_bind,
             commands::remote::remote_reset_totp,
             commands::remote::remote_set_totp_identity,
+            commands::remote::totp_trust_check,
+            commands::remote::totp_trust_record,
+            commands::remote::totp_trust_revoke_all,
             commands::remote::set_remote_enabled,
             commands::remote::get_remote_enabled,
-            commands::remote::set_remote_fs_readonly,
-            commands::remote::get_remote_fs_readonly,
             commands::remote::list_remote_sessions,
             commands::remote::disconnect_session,
             commands::remote::add_to_blacklist,
@@ -790,8 +819,20 @@ pub fn run() {
             commands::cloud_pane::subscribe_pane_raw,
             commands::cloud_pane::unsubscribe_pane_raw,
             commands::cloud_pane::resync_pane_raw,
+            commands::cloud_pane::replay_pane_scrollback_raw,
             // 桌面 cloud HTTP 代理（绕过 WebView 跨域 CORS，见 cloud_http.rs）
             commands::cloud_http::cloud_http,
+            // Domain Zero 端侧多智能体协同（teammate）：D1 拓扑快照 + D2 HITL 网关/风险分级
+            commands::teammate::get_teammate_topology,
+            commands::teammate::resolve_hitl_request,
+            commands::teammate::set_hitl_enabled,
+            commands::teammate::classify_command_risk,
+            // 仅桌面本机 IPC：返回 MCP 端点 + token，刻意不入 REMOTE_ALLOWLIST（D6）。
+            commands::teammate::get_teammate_connection_info,
+            // Domain D3 文件并发写锁（前端冲突仲裁视图用）
+            teammate::locks::acquire_write_lock,
+            teammate::locks::release_write_lock,
+            teammate::locks::write_lock_holder,
             // Deep Root Mode（§8.1）
             deep_root::enter_deep_root_mode,
             deep_root::restore_from_deep_root,

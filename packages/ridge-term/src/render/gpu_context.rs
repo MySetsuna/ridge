@@ -120,6 +120,17 @@ pub const CANVAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 /// keeps the two backends visually identical.
 pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
+/// std140 size of `WallpaperUniform`: vec2(8) + vec2(8) + vec3-padded-to-vec4(16) = 32 bytes.
+pub const WALLPAPER_UNIFORM_SIZE: u64 = 32;
+
+/// Uploaded wallpaper image GPU resources (texture + view + original pixel dimensions).
+pub struct WallpaperTex {
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub img_w: u32,
+    pub img_h: u32,
+}
+
 /// Per-process shared GPU resources. One instance for all panes.
 pub struct GpuContext {
     pub instance: wgpu::Instance,
@@ -131,6 +142,22 @@ pub struct GpuContext {
     pub cell_bind_group_layout: wgpu::BindGroupLayout,
     pub cell_pipeline: wgpu::RenderPipeline,
     pub sampler: wgpu::Sampler,
+
+    // ── 壁纸资源 ─────────────────────────────────────────────────────
+    /// 当前壁纸纹理（含原始像素尺寸）。`None` = 无壁纸。
+    pub wallpaper: Option<WallpaperTex>,
+    /// 壁纸不透明度 [0.0, 1.0]，由 `set_wallpaper` 写入，
+    /// `begin_frame` 读取后填入 uniform 并更新 GPU buffer。
+    pub wallpaper_opacity: f32,
+    /// 全屏 quad 渲染管线（TriangleStrip，无顶点 buffer）。
+    /// Task 3 (`surface_host.rs::begin_frame`) 从另一模块直接访问，故 `pub`。
+    pub wallpaper_pipeline: wgpu::RenderPipeline,
+    wallpaper_sampler: wgpu::Sampler,
+    /// 壁纸 uniform buffer（WALLPAPER_UNIFORM_SIZE 字节）。
+    pub wallpaper_uniform: wgpu::Buffer,
+    wallpaper_bgl: wgpu::BindGroupLayout,
+    /// 壁纸 bind group（含 uniform/texture/sampler）。上传图片后重建。
+    pub wallpaper_bind_group: Option<wgpu::BindGroup>,
 
     pub atlas: GlyphAtlas,
     pub atlas_texture: wgpu::Texture,
@@ -164,6 +191,58 @@ pub struct GpuContext {
     /// will sample the wrong data when the encoder is submitted.
     pub frame_written: Vec<bool>,
 
+    /// §atlas-race detector (2026-06-22): per-layer "a pane already RECORDED
+    /// a draw citing this layer THIS frame" mask, same length as
+    /// `atlas_layers`. Unlike `frame_written` (set eagerly when a layer is
+    /// admitted/cited), this is set AFTER a pane hands its draw to the host
+    /// encoder (`end_frame` / `record_cached_only`), from the layers its
+    /// instance buffer actually references. It is the GROUND TRUTH of "this
+    /// slot's pixels are now load-bearing for an unsubmitted draw". If
+    /// `rasterize_and_admit` overwrites a layer whose `frame_committed` is
+    /// set, that recorded draw samples the new glyph at submit time — the
+    /// exact cross-pane switch-workspace garble. `frame_written` SHOULD make
+    /// this impossible; a hit pinpoints a citing path that skipped it.
+    pub frame_committed: Vec<bool>,
+    /// §atlas-race detector: running count of overwrite-after-cite events.
+    /// Surfaced to JS via `atlas_overwrite_after_cite_count` /
+    /// `atlasOverwriteAfterCiteCount` for CDP/release forensics.
+    pub atlas_overwrite_after_cite: u64,
+    /// §atlas-race detector: remaining console-log budget. The counter is
+    /// unbounded but logging stops after this many detections so a churn
+    /// storm can't flood devtools.
+    pub atlas_cite_log_budget: u32,
+
+    /// §stale-replay detector (2026-06-22, round 2): per-layer monotonic
+    /// write counter, same length as `atlas_layers`. Bumped every time
+    /// `rasterize_and_admit` writes a layer's pixels (fresh OR eviction).
+    /// A pane snapshots the epochs of the layers its instance buffer cites
+    /// at `end_frame`; `record_cached_only` re-checks them before replaying.
+    /// If any cited layer's epoch advanced since the snapshot, the layer was
+    /// repurposed for a different glyph in a LATER frame (while this pane was
+    /// idle/hidden) — the cached buffer is stale and replaying it paints the
+    /// wrong glyph. This catches the CROSS-frame staleness the per-frame
+    /// `frame_committed` mask cannot see, and is independent of the coarse
+    /// `atlas_eviction_count` / `atlas_generation` guards (which the
+    /// switch-workspace garble apparently slips past).
+    pub layer_write_epoch: Vec<u64>,
+    /// §stale-replay detector: running count of cached replays aborted
+    /// because a cited layer was repurposed since caching. Surfaced to JS.
+    pub stale_replay_count: u64,
+    /// §stale-replay detector: remaining console-log budget.
+    pub stale_replay_log_budget: u32,
+
+    /// §switch-garble fix (2026-06-24): `invalidate_atlas` is called from
+    /// `Renderer::invalidate_all` on EVERY resize/reflow — often mid-host-frame
+    /// (one pane reflows while siblings have already recorded draws against the
+    /// shared atlas). Clearing the map + resetting `next_free_layer` right then,
+    /// on the REUSED texture, either clobbers those siblings' cited layers (the
+    /// switch garble) or — if we skip written slots — exhausts the fresh-layer
+    /// pointer under density (random missing glyphs that flicker). So
+    /// `invalidate_atlas` only RAISES this flag; the actual clear is applied at
+    /// the next `reset_frame_written` (host frame boundary), where no pane has
+    /// cited anything yet and resetting `next_free_layer` is always safe.
+    pub pending_invalidate: bool,
+
     pub font_family: String,
     pub font_size_px: f32,
 }
@@ -174,6 +253,30 @@ thread_local! {
     /// Failure is *not* cached — each call re-attempts so a transient
     /// adapter miss doesn't permanently lock the session into Canvas2D.
     static SHARED_GPU: RefCell<Option<Rc<RefCell<GpuContext>>>> = const { RefCell::new(None) };
+}
+
+/// §atlas-race detector: read the process-wide overwrite-after-cite count
+/// from the shared GPU context. Returns 0 before the context inits (Canvas2D
+/// path, or pre-first-frame). Surfaced to JS via `lib.rs::atlasOverwriteAfterCiteCount`.
+pub fn atlas_overwrite_after_cite_count() -> u64 {
+    SHARED_GPU.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|rc| rc.borrow().atlas_overwrite_after_cite)
+            .unwrap_or(0)
+    })
+}
+
+/// §stale-replay detector: read the process-wide count of cached replays
+/// aborted because a cited atlas layer was repurposed since caching (the
+/// cross-frame switch-workspace garble). 0 before the GPU context inits.
+pub fn stale_replay_count() -> u64 {
+    SHARED_GPU.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|rc| rc.borrow().stale_replay_count)
+            .unwrap_or(0)
+    })
 }
 
 impl GpuContext {
@@ -418,6 +521,99 @@ impl GpuContext {
             ..Default::default()
         });
 
+        // ── 壁纸管线（全屏 quad）──────────────────────────────────
+        let wallpaper_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ridge-wallpaper-shader"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "shaders/wallpaper.wgsl"
+            ))),
+        });
+        let wallpaper_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ridge-wallpaper-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let wallpaper_pl_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ridge-wallpaper-pipeline-layout"),
+            bind_group_layouts: &[&wallpaper_bgl],
+            push_constant_ranges: &[],
+        });
+        let wallpaper_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ridge-wallpaper-pipeline"),
+            layout: Some(&wallpaper_pl_layout),
+            vertex: wgpu::VertexState {
+                module: &wallpaper_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[], // 全屏 quad 由 vertex_index 生成，无顶点 buffer
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &wallpaper_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: SURFACE_FORMAT,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+        let wallpaper_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ridge-wallpaper-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let wallpaper_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ridge-wallpaper-uniform"),
+            size: WALLPAPER_UNIFORM_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // Initial atlas dimensions = slot floors. First per-pane
         // `begin_frame` will grow if real metrics demand it.
         let slot_w = ATLAS_SLOT_W_FLOOR;
@@ -471,6 +667,13 @@ impl GpuContext {
             cell_bind_group_layout,
             cell_pipeline,
             sampler,
+            wallpaper: None,
+            wallpaper_opacity: 1.0,
+            wallpaper_pipeline,
+            wallpaper_sampler,
+            wallpaper_uniform,
+            wallpaper_bgl,
+            wallpaper_bind_group: None,
             atlas: GlyphAtlas::new(atlas_capacity),
             atlas_texture,
             atlas_view,
@@ -482,6 +685,13 @@ impl GpuContext {
             atlas_generation: 0,
             atlas_eviction_count: 0,
             frame_written: vec![false; atlas_layers as usize],
+            frame_committed: vec![false; atlas_layers as usize],
+            atlas_overwrite_after_cite: 0,
+            atlas_cite_log_budget: 64,
+            layer_write_epoch: vec![0; atlas_layers as usize],
+            stale_replay_count: 0,
+            stale_replay_log_budget: 64,
+            pending_invalidate: false,
             font_family: String::from("monospace"),
             font_size_px: 15.0,
         })
@@ -532,12 +742,98 @@ impl GpuContext {
     /// layer indices are about to become stale). Bumps
     /// `atlas_generation` so per-pane backends know to rebuild their
     /// bind groups against the new `atlas_view`.
+    // ── 壁纸 API ─────────────────────────────────────────────────────────
+
+    /// 上传一张 RGBA 图像作为当前 workspace 壁纸。
+    /// 若 `w == 0 || h == 0` 则等同 `clear_wallpaper`。
+    /// `opacity` 被 clamp 到 [0, 1]。
+    pub fn set_wallpaper(&mut self, rgba: &[u8], w: u32, h: u32, opacity: f32) {
+        if w == 0 || h == 0 {
+            self.clear_wallpaper();
+            return;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ridge-wallpaper-tex"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let (packed, bytes_per_row) = super::wallpaper::pack_rows_to_alignment(rgba, w, h);
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &packed,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ridge-wallpaper-bg"),
+            layout: &self.wallpaper_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.wallpaper_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.wallpaper_sampler),
+                },
+            ],
+        });
+        self.wallpaper = Some(WallpaperTex { texture, view, img_w: w, img_h: h });
+        self.wallpaper_opacity = opacity.clamp(0.0, 1.0);
+        self.wallpaper_bind_group = Some(bind_group);
+    }
+
+    /// 清除壁纸，回退到纯色 clear pass。
+    pub fn clear_wallpaper(&mut self) {
+        self.wallpaper = None;
+        self.wallpaper_bind_group = None;
+    }
+
+    /// 当前是否有有效壁纸纹理 + bind group。
+    pub fn has_wallpaper(&self) -> bool {
+        self.wallpaper.is_some() && self.wallpaper_bind_group.is_some()
+    }
+
     /// Reset the per-frame written mask. Called at the start of every
     /// frame from `SurfaceHost::begin_frame` so each frame starts with
     /// all layers available for writing.
     pub fn reset_frame_written(&mut self) {
         for w in &mut self.frame_written {
             *w = false;
+        }
+        // §atlas-race detector: the committed-citation mask is per-frame too.
+        for c in &mut self.frame_committed {
+            *c = false;
+        }
+    }
+
+    /// §atlas-race detector: mark `layer` as cited by a draw that has already
+    /// been RECORDED into the host encoder this frame. Called from the
+    /// per-pane `end_frame` / `record_cached_only` right after `record_pane`.
+    /// See [`Self::frame_committed`].
+    pub fn mark_committed(&mut self, layer: u16) {
+        let idx = layer as usize;
+        if idx < self.frame_committed.len() {
+            self.frame_committed[idx] = true;
         }
     }
 
@@ -587,8 +883,40 @@ impl GpuContext {
     /// drawing instances with stale `atlas_layer` indices that now
     /// point into reused-but-not-yet-uploaded slots.
     pub fn invalidate_atlas(&mut self) {
+        // DEFER, don't clear. `Renderer::invalidate_all` calls this on every
+        // resize/reflow, frequently MID-host-frame (one pane reflows while
+        // sibling panes have already admitted glyphs + recorded draws against
+        // the shared, REUSED atlas texture). Clearing the map and resetting
+        // `next_free_layer` right here would re-hand-out the siblings' cited
+        // layers and `write_texture` would clobber the pixels their recorded
+        // draws sample at submit — the switch-workspace garble; skipping
+        // written slots instead starves the fresh-layer pointer and drops
+        // glyphs (the flicker). Both are avoided by applying the clear at the
+        // next frame boundary (`apply_pending_invalidate`), where
+        // `reset_frame_written` has just cleared every cited mark. See
+        // `pending_invalidate`. We do NOT bump `atlas_generation` here — that
+        // happens at apply time so panes see it on the same frame the atlas is
+        // actually cleared.
+        self.pending_invalidate = true;
+    }
+
+    /// Apply a deferred [`Self::invalidate_atlas`] at the host frame boundary.
+    /// Called from `SurfaceHost::begin_frame` immediately after
+    /// [`Self::reset_frame_written`], so the per-frame cited mask is empty and
+    /// resetting `next_free_layer` cannot clobber any pane's recorded draw.
+    pub fn apply_pending_invalidate(&mut self) {
+        if !self.pending_invalidate {
+            return;
+        }
+        self.pending_invalidate = false;
         self.atlas.clear();
         self.next_free_layer = ATLAS_RESERVED_LAYERS;
+        // Bump generation HERE (not in `invalidate_atlas`) so panes observe the
+        // change on the SAME frame the map is actually cleared: each pane's
+        // `begin_frame` rebuilds its bind group + drops `cached_n_cells`,
+        // forcing a full re-admit into the cleared atlas. Bumping earlier would
+        // let panes consume the generation before the clear, then replay cached
+        // buffers citing now-reused layers.
         self.atlas_generation = self.atlas_generation.wrapping_add(1);
     }
 
@@ -685,6 +1013,48 @@ impl GpuContext {
                 }
             }
         };
+
+        // §atlas-race detector (2026-06-22): we are about to overwrite
+        // `layer`'s pixels. If any pane already RECORDED a draw citing this
+        // layer this frame (`frame_committed`), that draw will sample the new
+        // glyph at submit time → the cross-pane switch-workspace garble. This
+        // is supposed to be impossible: `pick_evictable_layer` skips
+        // `frame_written`, and the fresh `next_free_layer` path never reuses a
+        // live layer. A hit therefore localises the residual hole — log the
+        // glyph + whether `frame_written` was (wrongly) clear for this layer.
+        if self
+            .frame_committed
+            .get(layer as usize)
+            .copied()
+            .unwrap_or(false)
+        {
+            self.atlas_overwrite_after_cite = self.atlas_overwrite_after_cite.wrapping_add(1);
+            if self.atlas_cite_log_budget > 0 {
+                self.atlas_cite_log_budget -= 1;
+                let was_written =
+                    self.frame_written.get(layer as usize).copied().unwrap_or(false);
+                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "[ridge-term][atlas-race] OVERWRITE-AFTER-CITE layer={} new_glyph={:?} \
+                     glyph_id=0x{:08x} frame_written={} evict_count={} total={} \
+                     (a recorded draw will sample the wrong glyph this frame)",
+                    layer,
+                    glyph_text,
+                    key.glyph_id,
+                    was_written,
+                    self.atlas_eviction_count,
+                    self.atlas_overwrite_after_cite,
+                )));
+            }
+        }
+
+        // §stale-replay detector: bump this layer's write epoch BEFORE the
+        // texture write. Any pane holding a cached buffer that cited this
+        // layer at an older epoch will detect the mismatch in
+        // `record_cached_only` and re-render instead of replaying stale UVs.
+        if (layer as usize) < self.layer_write_epoch.len() {
+            self.layer_write_epoch[layer as usize] =
+                self.layer_write_epoch[layer as usize].wrapping_add(1);
+        }
 
         self.queue.write_texture(
             wgpu::ImageCopyTexture {

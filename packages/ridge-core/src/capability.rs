@@ -35,11 +35,6 @@ use crate::sandbox::RootScope;
 pub struct CapabilitySet {
     allowed: HashSet<String>,
     roots: RootScope,
-    /// When `true`, `dispatch` refuses any [`is_mutating`] method with
-    /// [`CoreError::ReadOnly`](crate::error::CoreError::ReadOnly). Defaults to
-    /// `false` (writable), so existing hosts are unaffected until they opt in —
-    /// the same backward-compatible no-op posture as the empty-roots sandbox.
-    readonly: bool,
 }
 
 impl CapabilitySet {
@@ -54,7 +49,6 @@ impl CapabilitySet {
         Self {
             allowed: methods.into_iter().map(Into::into).collect(),
             roots: RootScope::unrestricted(),
-            readonly: false,
         }
     }
 
@@ -66,7 +60,6 @@ impl CapabilitySet {
         Self {
             allowed: HashSet::new(),
             roots: RootScope::unrestricted(),
-            readonly: false,
         }
         .with_allow_all()
     }
@@ -98,23 +91,6 @@ impl CapabilitySet {
     /// The filesystem sandbox scope. Empty ⇒ unrestricted (backward compatible).
     pub fn root_scope(&self) -> &RootScope {
         &self.roots
-    }
-
-    /// Mark this capability set **read-only**: `dispatch` will reject any
-    /// [`is_mutating`] method with `CoreError::ReadOnly`. Consuming-builder so it
-    /// composes with the presets, e.g.
-    /// `CapabilitySet::remote_default().with_readonly(true)`. The desktop wires
-    /// this from `AppState::remote_fs_readonly`; the headless host can expose a
-    /// `--read-only` operator switch. `false` (the default) is the unchanged,
-    /// writable posture.
-    pub fn with_readonly(mut self, readonly: bool) -> Self {
-        self.readonly = readonly;
-        self
-    }
-
-    /// True if this set forbids mutating methods (the read-only session gate).
-    pub fn is_readonly(&self) -> bool {
-        self.readonly
     }
 
     /// True if `method` is permitted under this set.
@@ -186,18 +162,32 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "resize_pane",
     "detect_available_shells",
     "get_shell_history",
+    // Paged scrollback (seq-cursor) — read-only. Lets a cloud controller seed a
+    // pane with ~1.5 screens on subscribe and lazily page older history on
+    // scroll-up (get_pane_scrollback_before), instead of the host dumping the
+    // whole buffer at once. Same primitive the desktop RidgePane already uses.
+    "get_pane_scrollback_tail",
+    "get_pane_scrollback_before",
     // native (headless) tmux session discovery (desktop hosts). `list` is
     // read-only; `summon` is a structural pane op (adopts a session into the
     // caller's viewed workspace) — not a mutating fs/git method, so it is allowed
     // even in a read-only session, consistent with split/create/close pane.
     "list_native_sessions",
     "summon_native_session",
+    // `new_headless_session` 起一个新无头会话；`terminate_native_session` 真正终止
+    // 一个会话（杀子进程）。与 close_pane/summon 同属结构性 pane 操作（非 fs/git
+    // 写），故允许只读会话调用，不列入 MUTATING_METHODS。真关闭的危险确认在前端。
+    "new_headless_session",
+    "terminate_native_session",
     // ── Workspace (live) ──
     // 只读：远程控制器（桌面 SPA）连上后枚举 host 工作区列表（refreshWorkspaces →
     // list_workspaces）。漏了它会导致 controller 取不到工作区 → 兜底逻辑每次连接新建一个
     // 工作区（连带 bug），故与同组读/写命令一并放行。
     "list_workspaces",
     "get_active_workspace_id",
+    // 只读工作区快照（R0 内核化样板 B）：pane 树 + git 仓库根 + pane 标题。rdg 无头 host
+    // 经此拿到快照（此前 MethodNotFound）；由 ridge-core dispatch 直接服务。
+    "get_workspace_snapshot",
     "switch_workspace",
     "create_workspace",
     "close_workspace",
@@ -243,6 +233,10 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "git_diff_summary",
     "git_get_file_versions",
     "git_op_in_progress",
+    // 行级 blame / 本文件历史 / 单文件 diff（IDE 只读能力，#23：远程也放行）。
+    "git_blame",
+    "git_file_log",
+    "git_diff_file",
     "git_fetch",
     // ── Git (mutating) ──
     "git_stage",
@@ -260,14 +254,11 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "git_clean_untracked",
 ];
 
-/// Methods that MUTATE host state — the read-only session gate (D-GM-9 / S1
-/// ledger §3.1) rejects these when [`CapabilitySet::is_readonly`] is set.
-///
-/// **Byte-for-byte mirror of `server.rs::is_mutating_invoke`** (which is
-/// `is_mutating_method` ∪ {`replace_in_files`, `apply_file_edits`}). Kept as a
-/// data constant in one place so the desktop pre-check and the `dispatch` gate
-/// cannot drift. When new mutating commands migrate into `dispatch`, add them
-/// here in lockstep.
+/// Methods that MUTATE host state. Consumed by the teammate risk classifier
+/// ([`crate::teammate::risk::classify_method`]) to grade a dispatch method as a
+/// workspace write (vs. read-only). This is a risk-classification predicate, NOT
+/// an access gate — remote sessions are always read-write (there is no read-only
+/// session mode).
 pub const MUTATING_METHODS: &[&str] = &[
     // ── Filesystem writes ──
     "write_file",
@@ -293,6 +284,20 @@ pub const MUTATING_METHODS: &[&str] = &[
     "git_create_tag",
     "git_discard",
     "git_clean_untracked",
+    // ── Workspace / pane writes（#19 迁入 core；phase-2 前置：只读会话不得执行）──
+    // 破坏性尤须（close_workspace 杀 PTY、delete_workspace_file 删档），故列 MUTATING 让
+    // dispatch 只读门（D-GM-9）在只读远端会话下拒之。非只读会话不受影响。
+    "switch_workspace",
+    "reorder_workspaces",
+    "rename_workspace",
+    "create_workspace",
+    "close_workspace",
+    "save_workspace",
+    "save_workspace_to_file",
+    "delete_workspace_file",
+    "resize_pane",
+    "create_pane",
+    "split_pane",
 ];
 
 /// True if `method` mutates host state (see [`MUTATING_METHODS`]). The read-only
@@ -367,21 +372,6 @@ mod tests {
         // A host can call with_roots unconditionally; zero roots = no sandbox.
         let caps = CapabilitySet::remote_default().with_roots(Vec::<String>::new());
         assert!(caps.root_scope().is_unrestricted());
-    }
-
-    #[test]
-    fn readonly_is_off_by_default_and_opt_in() {
-        // Backward-compatible: presets start writable.
-        assert!(!CapabilitySet::remote_default().is_readonly());
-        assert!(!CapabilitySet::allow_all().is_readonly());
-        assert!(!CapabilitySet::default().is_readonly());
-        // Opt in, and it composes with the other builders / admission is untouched.
-        let caps = CapabilitySet::remote_default()
-            .with_roots(["/work"])
-            .with_readonly(true);
-        assert!(caps.is_readonly());
-        assert!(caps.is_allowed("write_file"));
-        assert!(!caps.root_scope().is_unrestricted());
     }
 
     #[test]

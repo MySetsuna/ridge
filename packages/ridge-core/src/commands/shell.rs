@@ -17,6 +17,11 @@ pub struct ShellInfo {
     pub id: String,
     pub label: String,
     pub program: String,
+    /// Launch args (e.g. WSL distro `["-d","Ubuntu"]`, VS `["/k","...VsDevCmd.bat"]`).
+    /// Empty means launch `program` directly. `#[serde(default)]` keeps backward
+    /// compatibility with old deserialization paths.
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 /// Look up a command in `PATH`; also accepts an absolute path directly. No
@@ -73,6 +78,7 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
                     id: id.to_string(),
                     label: label.to_string(),
                     program: prog,
+                    args: vec![],
                 });
                 return;
             }
@@ -104,7 +110,29 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
                 "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
             ],
         );
-        try_add(&mut found, "wsl", "WSL (Ubuntu)", &["wsl.exe", "wsl"]);
+        // WSL: enumerate each installed distro (each becomes `wsl -d <distro>`).
+        // Fall back to a single bare wsl entry if enumeration returns nothing.
+        if let Some(wsl) = lookup_program("wsl.exe").or_else(|| lookup_program("wsl")) {
+            let prog = wsl.to_string_lossy().to_string();
+            let distros = list_wsl_distros();
+            if distros.is_empty() {
+                found.push(ShellInfo {
+                    id: "wsl".to_string(),
+                    label: "WSL".to_string(),
+                    program: prog,
+                    args: vec![],
+                });
+            } else {
+                for d in distros {
+                    found.push(ShellInfo {
+                        id: format!("wsl-{d}"),
+                        label: format!("WSL: {d}"),
+                        program: prog.clone(),
+                        args: vec!["-d".to_string(), d],
+                    });
+                }
+            }
+        }
         try_add(&mut found, "nu", "Nushell", &["nu.exe", "nu"]);
         try_add(
             &mut found,
@@ -112,6 +140,7 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
             "Clink (CMD 增强)",
             &["clink.exe", "clink", "cmder.exe", "Cmder.exe"],
         );
+        found.extend(detect_vs_dev_shells());
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -141,10 +170,172 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
     found
 }
 
+/// Parse the stdout of `wsl.exe -l -q` (UTF-16LE encoded) into a list of
+/// distro names, stripping empty lines, CR characters and NUL padding.
+/// This is a pure function (no I/O) so it can be unit-tested cross-platform.
+pub fn parse_wsl_list(stdout: &[u8]) -> Vec<String> {
+    let u16s: Vec<u16> = stdout
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    String::from_utf16_lossy(&u16s)
+        .lines()
+        .map(|l| l.trim().trim_matches('\0').trim())
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect()
+}
+
+/// Run `wsl.exe -l -q` and return the list of installed distro names.
+#[cfg(target_os = "windows")]
+fn list_wsl_distros() -> Vec<String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    match Command::new("wsl.exe")
+        .args(["-l", "-q"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(o) if o.status.success() => parse_wsl_list(&o.stdout),
+        _ => Vec::new(),
+    }
+}
+
+/// Detect Visual Studio developer shells via vswhere. Returns entries for
+/// "Developer Command Prompt for VS" (cmd /k VsDevCmd.bat) and
+/// "Developer PowerShell for VS" (powershell -NoExit -Command ...) when the
+/// VS installation is found.
+#[cfg(target_os = "windows")]
+fn detect_vs_dev_shells() -> Vec<ShellInfo> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let mut out = Vec::new();
+    let pf86 = match std::env::var("ProgramFiles(x86)") {
+        Ok(p) if !p.is_empty() => p,
+        _ => return out,
+    };
+    let vswhere = PathBuf::from(&pf86)
+        .join("Microsoft Visual Studio")
+        .join("Installer")
+        .join("vswhere.exe");
+    if !vswhere.is_file() {
+        return out;
+    }
+    let install_path = match Command::new(&vswhere)
+        .args(["-latest", "-property", "installationPath"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => return out,
+    };
+    if install_path.is_empty() {
+        return out;
+    }
+    let install = PathBuf::from(&install_path);
+
+    // Developer Command Prompt: cmd /k VsDevCmd.bat
+    let vsdevcmd = install.join("Common7").join("Tools").join("VsDevCmd.bat");
+    if vsdevcmd.is_file() {
+        if let Some(cmd) = lookup_program("cmd.exe") {
+            out.push(ShellInfo {
+                id: "vs-devcmd".to_string(),
+                label: "Developer Command Prompt for VS".to_string(),
+                program: cmd.to_string_lossy().to_string(),
+                args: vec!["/k".to_string(), vsdevcmd.to_string_lossy().to_string()],
+            });
+        }
+    }
+
+    // Developer PowerShell: powershell -NoExit -Command "Import-Module DevShell.dll; Enter-VsDevShell ..."
+    let devshell = install
+        .join("Common7")
+        .join("Tools")
+        .join("Microsoft.VisualStudio.DevShell.dll");
+    if devshell.is_file() {
+        if let Some(ps) = lookup_program("powershell.exe") {
+            let script = format!(
+                "Import-Module '{}'; Enter-VsDevShell -VsInstallPath '{}' -SkipAutomaticLocation",
+                devshell.to_string_lossy(),
+                install.to_string_lossy()
+            );
+            out.push(ShellInfo {
+                id: "vs-pwsh".to_string(),
+                label: "Developer PowerShell for VS".to_string(),
+                program: ps.to_string_lossy().to_string(),
+                args: vec!["-NoExit".to_string(), "-Command".to_string(), script],
+            });
+        }
+    }
+    out
+}
+
 /// Read recent shell history (PowerShell PSReadLine, bash, zsh), deduped
 /// newest-first and capped at 1000 lines. Verbatim port of
 /// `terminal.rs::get_shell_history` (the legacy `shell_kind` arg was unused and
 /// is dropped here; the desktop wrapper still accepts + ignores it).
+/// Parse a single line from a shell history file.
+/// Returns `None` for blank / skip-worthy lines; otherwise returns the
+/// command text.
+fn parse_history_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Bash timestamp lines: "#1234567890"
+    if trimmed.starts_with('#')
+        && trimmed.len() > 1
+        && trimmed[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    // Zsh extended history: ": <timestamp>:<duration>;<command>"
+    if trimmed.starts_with(": ") {
+        if let Some(semi) = trimmed.find(';') {
+            let cmd = trimmed[semi + 1..].trim();
+            if cmd.is_empty() {
+                return None;
+            }
+            return Some(cmd.to_string());
+        }
+        // ":" prefix without "; " — treat as a regular command.
+        // (Corner case: a command that starts with ": " followed by
+        // non-metadata content. Fall through to return trimmed.)
+    }
+    Some(trimmed.to_string())
+}
+
+/// Read a shell history file and return its commands in **newest-first**
+/// order, deduped within this file (case-sensitive, keeping each command's
+/// most recent occurrence). Returns an empty vec when the file does not
+/// exist or cannot be read.
+fn read_history_file_newest_first(path: &std::path::Path) -> Vec<String> {
+    if !path.exists() {
+        return Vec::new();
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+    for raw in content.lines() {
+        if let Some(cmd) = parse_history_line(raw) {
+            lines.push(cmd);
+        }
+    }
+
+    // Reverse to newest-first (history files append new entries at the
+    // end), then dedup keeping the first occurrence (= newest).
+    lines.reverse();
+    let mut seen = std::collections::HashSet::new();
+    lines.retain(|line| seen.insert(line.clone()));
+    lines
+}
+
 pub fn get_shell_history() -> Result<Vec<String>, String> {
     let home_dir = dirs::home_dir().ok_or("无法获取 home 目录")?;
     let app_data = dirs::data_dir().ok_or("无法获取 AppData 目录")?;
@@ -164,36 +355,52 @@ pub fn get_shell_history() -> Result<Vec<String>, String> {
         home_dir.join(".zsh_history"),
     ];
 
+    // Read each file independently (newest-first, file-internal dedup)
+    // and concatenate in file order. The file order gives priority to
+    // the primary Windows shell (PSReadLine) over bash/zsh for the
+    // global dedup pass below.
     let mut all_lines: Vec<String> = Vec::new();
     for file in &history_files {
-        if !file.exists() {
-            continue;
-        }
-        let content = match std::fs::read_to_string(file) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Skip bash timestamp lines.
-            if trimmed.starts_with('#')
-                && trimmed.len() > 1
-                && trimmed[1..].chars().all(|c| c.is_ascii_digit())
-            {
-                continue;
-            }
-            all_lines.push(trimmed.to_string());
-        }
+        let file_lines = read_history_file_newest_first(file);
+        all_lines.extend(file_lines);
     }
 
-    // Dedup by appearance order, keeping the latest (= most recently used).
-    all_lines.reverse();
+    // Global dedup over the merged list, keeping the FIRST occurrence
+    // of each command. Since each file segment is already newest-first,
+    // and PSReadLine entries appear first, the most recently used shell's
+    // command supersedes older duplicates from other shells.
     let mut seen = std::collections::HashSet::new();
     all_lines.retain(|line| seen.insert(line.clone()));
 
     all_lines.truncate(1000);
     Ok(all_lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn utf16le(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn parse_wsl_list_decodes_utf16le_and_trims() {
+        // `wsl -l -q` 输出 UTF-16LE，每行一个发行版，可能带 CR / 尾随空行。
+        let bytes = utf16le("Ubuntu\r\nDebian\r\n\r\n");
+        assert_eq!(parse_wsl_list(&bytes), vec!["Ubuntu".to_string(), "Debian".to_string()]);
+    }
+
+    #[test]
+    fn parse_wsl_list_empty_is_empty() {
+        assert_eq!(parse_wsl_list(&utf16le("")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn parse_wsl_list_strips_nul_padding() {
+        // 某些环境会夹带 NUL；不应产生空条目。
+        let mut bytes = utf16le("Ubuntu");
+        bytes.extend_from_slice(&[0, 0]); // trailing NUL u16
+        assert_eq!(parse_wsl_list(&bytes), vec!["Ubuntu".to_string()]);
+    }
 }

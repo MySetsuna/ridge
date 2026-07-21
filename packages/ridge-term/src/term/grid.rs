@@ -278,6 +278,12 @@ pub struct Grid {
     /// / iTerm2 / VTE standard behaviour. Parser keeps this in sync
     /// via `set_pen` after every SGR / DECSTR / RIS.
     pen: Attrs,
+    /// §wsl-resize-silence (2026-07-16) — 第一次见到 shell-integration 的 prompt OSC
+    /// （133;A / 633;A prompt-start）即置 true。从不发 prompt OSC 的 pane（WSL 带 args
+    /// 启动 / cmd.exe / explicit-launch）没有 prompt 标记去**早释放** resize-silence
+    /// 窗口，那 80ms 窗口就会吞掉它 SIGWINCH 重绘的字节（实测 ~25ms，落在窗口内）→
+    /// 画面冻在旧内容。`resize_pane_inner` 据此对无集成的 pane 跳过 silence 窗口。
+    seen_prompt_osc: bool,
 }
 
 impl Grid {
@@ -301,6 +307,7 @@ impl Grid {
             inline_tui_sticky: false,
             frame_top_row: 0,
             pen: Attrs::DEFAULT,
+            seen_prompt_osc: false,
         }
     }
 
@@ -389,10 +396,47 @@ impl Grid {
         self.inline_tui_sticky
     }
 
+    /// §wsl-resize-silence — 记录见过 shell-integration 的 prompt OSC（133/633;A）。
+    /// 从 parser 处理 prompt-start 时调用（与 `clear_inline_tui_sticky` 同点）。
+    pub fn mark_prompt_osc_seen(&mut self) {
+        self.seen_prompt_osc = true;
+    }
+
+    /// §wsl-resize-silence — 该 pane 是否发过 prompt OSC（= 有 shell-integration）。
+    /// false ⇒ 无早释放 silence 的手段，resize 时应跳过 silence 窗口。
+    pub fn has_seen_prompt_osc(&self) -> bool {
+        self.seen_prompt_osc
+    }
+
     /// §sticky-inline-tui — the current render burst's top row (see
     /// `frame_top_row` field). 0 when no abs-CSI has been observed.
     pub fn frame_top_row(&self) -> usize {
         self.frame_top_row as usize
+    }
+
+    /// §delta-mirror-resize (2026-06-27) — blank every cell of the active
+    /// visible screen (also resetting each row's `wrapped` flag), leaving
+    /// scrollback, the cursor, the dimensions and the scroll region untouched.
+    ///
+    /// Used by the delta-mirror (`Terminal::apply_delta` on
+    /// `GridDelta::Resize`) AFTER it has run the authoritative reflow against
+    /// its own scrollback. The producer (`PaneParser`) resets its cell-diff
+    /// baseline to blank on resize and then re-sends only the NON-BLANK spans
+    /// of the new grid, so any cell it now considers blank is never re-sent.
+    /// The mirror's own reflow diverges from the producer's — the delta stream
+    /// carries neither row `wrapped` flags nor the inline-TUI frame state the
+    /// reflow keys off — so without this blank the divergent leftovers stay on
+    /// screen as resize residue. Blanking the visible grid here makes the
+    /// producer's col-range `Cells` deltas land on a clean canvas: every
+    /// visible cell then comes straight from the producer. `Cell::EMPTY`
+    /// (default attrs, space) matches the producer's `DeltaCell::blank()`
+    /// baseline, so a cell the producer treats as a *coloured* blank still
+    /// differs from the baseline and is re-sent.
+    pub fn blank_visible(&mut self) {
+        let screen = self.screen_mut();
+        for r in &mut screen.rows {
+            r.fill_blank(Cell::EMPTY);
+        }
     }
 
     /// §A.4 (2026-05-08) — record an EL/ED/CUU/CUD dispatch. Only the
@@ -1841,6 +1885,19 @@ impl Grid {
                 for r in &mut self.screen_mut().rows {
                     r.fill_blank(bce);
                 }
+                // §clear-scrollback-parity (2026-07-16) — 让 shell 的 `clear`/`cls`/
+                // `Clear-Host` 与右键"清理"行为一致：整屏擦除(ED 2)在**主屏且非
+                // inline-TUI** 时连带丢弃 scrollback（等价于额外收到一个 `\x1b[3J`）。
+                // 缘由：右键"清理"恒物理丢 scrollback，而 PowerShell 5.1 的 Clear-Host
+                // 只发 `\x1b[2J`(不发 `\x1b[3J`)，靠 SavedLines 分支清 scrollback 那条路
+                // 走不通 → 两者不一致。此处把主屏全屏擦除统一成"连 scrollback 一起清"。
+                // 门控 `!is_alt && !inline_tui_sticky`：alt 屏无 scrollback；inline-TUI
+                // 程序(sticky latch)用 2J 只是重画自己的画布，用户历史须保留，不误伤。
+                // ponytail: 门槛=不发 alt 且未被 latch 为 inline-TUI 的"裸主屏全屏重绘"
+                //   程序(罕见)会连带清 scrollback；若真命中再收窄(要求紧跟 CUP-home 等)。
+                if !self.is_alt && !self.inline_tui_sticky {
+                    self.scrollback.clear();
+                }
             }
             EraseMode::SavedLines => {
                 // §B.2 (2026-05-08) — xterm `CSI 3 J` extension. Drops
@@ -2540,6 +2597,53 @@ mod tests {
         assert_eq!(g.scrollback.get(0).unwrap().cells[0].ch, '1');
     }
 
+    // §clear-scrollback-parity — 主屏 ED 2 连带清 scrollback，使 PowerShell 5.1 的
+    // `Clear-Host`(只发 \x1b[2J，不发 \x1b[3J) 与右键"清理"一致。
+    #[test]
+    fn ed_all_on_primary_drops_scrollback_for_clear_parity() {
+        let mut g = Grid::new(2, 5, 10);
+        for _ in 0..4 {
+            g.print('x', Attrs::DEFAULT);
+            g.linefeed();
+            g.carriage_return();
+        }
+        assert!(g.scrollback.len() > 0, "precondition: scrollback 已填充");
+        g.erase_in_display(EraseMode::All);
+        assert_eq!(g.scrollback.len(), 0, "主屏 ED 2 必须连带丢弃 scrollback");
+    }
+
+    // inline-TUI 程序用 2J 重画自己画布，用户 scrollback 须保留（sticky latch 门控）。
+    #[test]
+    fn ed_all_preserves_scrollback_when_inline_tui_sticky() {
+        let mut g = Grid::new(2, 5, 10);
+        for _ in 0..4 {
+            g.print('x', Attrs::DEFAULT);
+            g.linefeed();
+            g.carriage_return();
+        }
+        let before = g.scrollback.len();
+        assert!(before > 0);
+        g.mark_inline_tui_sticky();
+        g.erase_in_display(EraseMode::All);
+        assert_eq!(g.scrollback.len(), before, "inline-TUI 的 2J 不得清 scrollback");
+    }
+
+    // alt 屏的 ED 2 不得动主屏 scrollback（alt 本无 scrollback，且返回主屏须完好）。
+    #[test]
+    fn ed_all_on_alt_screen_keeps_primary_scrollback() {
+        let mut g = Grid::new(2, 5, 10);
+        for _ in 0..4 {
+            g.print('x', Attrs::DEFAULT);
+            g.linefeed();
+            g.carriage_return();
+        }
+        let before = g.scrollback.len();
+        assert!(before > 0);
+        g.enter_alt_screen(true);
+        g.erase_in_display(EraseMode::All);
+        assert_eq!(g.scrollback.len(), before, "alt 屏 2J 不得清主屏 scrollback");
+    }
+
     #[test]
     fn resize_grow_extends_default_scroll_region() {
         // Repro of the "stuck on bottom row" bug: kernel created at 24 rows
@@ -2744,6 +2848,54 @@ mod tests {
             s.pop();
         }
         s
+    }
+
+    #[test]
+    fn blank_visible_clears_active_screen_resets_wrapped_keeps_scrollback() {
+        // §delta-mirror-resize — blank_visible must wipe every visible cell
+        // (and reset `wrapped`) on the ACTIVE screen while leaving scrollback
+        // untouched. This is the primitive the delta-mirror uses after a
+        // Resize delta so the producer's col-range Cells land on a clean grid.
+        let mut g = Grid::new(2, 6, 100);
+        // Print enough to wrap a row AND push older rows into scrollback.
+        for ch in "AAAAAABBBBBBCCCCCC".chars() {
+            g.print(ch, Attrs::DEFAULT);
+        }
+        let sb_before = g.scrollback.len();
+        assert!(sb_before > 0, "precondition: some content reached scrollback");
+        // At least one visible row carries content before the blank.
+        assert!(
+            (0..g.rows()).any(|r| !row_text(&g, r).is_empty()),
+            "precondition: visible grid has content",
+        );
+
+        g.blank_visible();
+
+        for r in 0..g.rows() {
+            assert_eq!(row_text(&g, r), "", "row {r} blanked");
+            assert!(!g.row(r).unwrap().wrapped, "row {r} wrapped flag reset");
+        }
+        assert_eq!(
+            g.scrollback.len(),
+            sb_before,
+            "blank_visible must not touch scrollback",
+        );
+    }
+
+    #[test]
+    fn blank_visible_only_touches_active_screen() {
+        // On the alt screen, blank_visible must clear ALT and leave the
+        // primary buffer's content intact (so leaving alt restores it).
+        let mut g = Grid::new(2, 6, 100);
+        g.print('P', Attrs::DEFAULT); // primary content
+        g.enter_alt_screen(false);
+        g.print('A', Attrs::DEFAULT); // alt content
+
+        g.blank_visible(); // active = alt
+
+        assert_eq!(row_text(&g, 0), "", "alt screen blanked");
+        g.leave_alt_screen();
+        assert_eq!(row_text(&g, 0), "P", "primary content survived alt blank");
     }
 
     #[test]

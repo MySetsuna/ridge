@@ -100,11 +100,11 @@ vi.mock('@ridge/term-wasm', () => {
 vi.mock('@ridge/term-wasm/ridge_term_bg.wasm?url', () => ({ default: '/fake.wasm' }));
 
 // ── mock $lib imports ──────────────────────────────────────────────────────────
-vi.mock('$lib/terminal/fontStack', () => ({
+vi.mock('@ridge/remote/shared/terminal/fontStack', () => ({
   REMOTE_TERM_FONT: 'monospace',
   withEmojiFallback: (f: string) => f || 'monospace',
 }));
-vi.mock('$lib/terminal/flagEmojiSupport', () => ({
+vi.mock('@ridge/remote/shared/terminal/flagEmojiSupport', () => ({
   ensureFlagFont: () => false,
 }));
 
@@ -180,24 +180,19 @@ afterEach(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('Selection coordinate fix — anchor must use the same absolute basis as end', () => {
   /**
-   * 核心回归测试：
-   * - 模拟终端已滚动：scrollbackLen()>0, scrollOffset()=5
+   * 核心回归测试（修正后的绝对行公式，与桌面 manager.ts vpToAbsRow 对齐）：
+   * - 模拟终端已滚动：scrollbackLen()=100, scrollOffset()=5
    * - 用户在视口第 2 行（viewport-relative row=2）按下选区起点
    * - 再把选区拖到视口第 4 行（viewport-relative row=4）
    *
-   * 修复后：
-   *   anchorAbsRow = 2 + 5 = 7
-   *   endAbsRow    = 4 + 5 = 9
-   *   setSelectionAbs(7, col, 9, col) ← 两端都是绝对行
+   * 正确公式：absRow = scrollbackLen − scrollOffset + vpRow = 95 + vpRow
+   *   anchorAbsRow = 95 + 2 = 97
+   *   endAbsRow    = 95 + 4 = 99
    *
-   * 修复前（bug）：
-   *   anchorAbsRow = 2          ← 未加 scrollOffset
-   *   endAbsRow    = 4 + 5 = 9
-   *   setSelectionAbs(2, col, 9, col) ← 坐标系不一致
-   *
-   * 该测试在 bug 代码下必然失败（anchor 为 2 而非 7）。
+   * 旧 bug：用 `vpRow + scrollOffset`（反向且缺 scrollbackLen 基底）→ anchor=7、end=9，
+   * 滚动后落到别处（手指在 A 区、选中 B 区）。该测试在 bug 代码下必然失败。
    */
-  it('adds scrollOffset to anchor row when terminal is scrolled (regression for bug)', async () => {
+  it('maps viewport rows to absolute rows using scrollbackLen − scrollOffset (regression for bug)', async () => {
     const ctrl = await makeController();
 
     // Simulate a scrolled terminal: scrollback exists and viewport is offset
@@ -207,7 +202,7 @@ describe('Selection coordinate fix — anchor must use the same absolute basis a
     const VIEWPORT_ANCHOR_ROW = 2;
     const VIEWPORT_END_ROW = 4;
     const COL = 10;
-    const SCROLL_OFFSET = 5;
+    const ROWS_ABOVE = 100 - 5; // rowsAboveViewport() = scrollbackLen − scrollOffset
 
     ctrl.startSelection(VIEWPORT_ANCHOR_ROW, COL);
     ctrl.extendSelection(VIEWPORT_END_ROW, COL);
@@ -215,17 +210,18 @@ describe('Selection coordinate fix — anchor must use the same absolute basis a
     expect(mockKernelInstance.setSelectionAbs).toHaveBeenCalledTimes(1);
     const [anchorRow, anchorCol, endRow, endCol] = mockKernelInstance.setSelectionAbs.mock.calls[0];
 
-    // Both rows must be absolute (viewport-relative + scrollOffset)
-    expect(anchorRow).toBe(VIEWPORT_ANCHOR_ROW + SCROLL_OFFSET); // 7, NOT 2
-    expect(endRow).toBe(VIEWPORT_END_ROW + SCROLL_OFFSET);       // 9
+    // Both rows are absolute: rowsAboveViewport() + viewport-relative row
+    expect(anchorRow).toBe(ROWS_ABOVE + VIEWPORT_ANCHOR_ROW); // 97
+    expect(endRow).toBe(ROWS_ABOVE + VIEWPORT_END_ROW);       // 99
     expect(anchorCol).toBe(COL);
     expect(endCol).toBe(COL);
   });
 
   /**
-   * 未滚动状态（scrollOffset=0）：anchor 和 end 都保持视口行号，行为不变。
+   * 未滚动状态（scrollOffset=0）：live grid 行的绝对行 = scrollbackLen + vpRow
+   * （见 ridge-term lib.rs 的 set_selection_abs 测试："abs row = scrollback_len() + 0"）。
    */
-  it('does not add scrollOffset when terminal is at bottom (scrollOffset=0)', async () => {
+  it('offsets by scrollbackLen for live-grid rows when at bottom (scrollOffset=0)', async () => {
     const ctrl = await makeController();
 
     mockKernelInstance.scrollbackLen.mockReturnValue(100);
@@ -235,8 +231,8 @@ describe('Selection coordinate fix — anchor must use the same absolute basis a
     ctrl.extendSelection(6, 8);
 
     const [anchorRow, , endRow] = mockKernelInstance.setSelectionAbs.mock.calls[0];
-    expect(anchorRow).toBe(3); // no scrollOffset added
-    expect(endRow).toBe(6);
+    expect(anchorRow).toBe(103); // 100 + 3
+    expect(endRow).toBe(106);    // 100 + 6
   });
 
   /**
@@ -265,7 +261,7 @@ describe('Selection coordinate fix — anchor must use the same absolute basis a
     mockKernelInstance.scrollbackLen.mockReturnValue(50);
     mockKernelInstance.scrollOffset.mockReturnValue(10);
 
-    ctrl.startSelection(2, 0); // absAnchor = 2 + 10 = 12
+    ctrl.startSelection(2, 0); // absAnchor = (50 − 10) + 2 = 42
 
     ctrl.extendSelection(3, 5);
     ctrl.extendSelection(5, 5);
@@ -273,7 +269,7 @@ describe('Selection coordinate fix — anchor must use the same absolute basis a
 
     expect(mockKernelInstance.setSelectionAbs).toHaveBeenCalledTimes(3);
     for (const call of mockKernelInstance.setSelectionAbs.mock.calls) {
-      expect(call[0]).toBe(12); // anchor always 12
+      expect(call[0]).toBe(42); // anchor always 42
     }
   });
 
@@ -298,7 +294,7 @@ describe('Selection coordinate fix — anchor must use the same absolute basis a
     ctrl.extendSelection(5, 12);
 
     const [anchorRow] = mockKernelInstance.setSelectionAbs.mock.calls[0];
-    expect(anchorRow).toBe(3 + 8); // 11 = viewport row 3 + scrollOffset 8
+    expect(anchorRow).toBe((200 - 8) + 3); // 195 = rowsAboveViewport(192) + viewport row 3
   });
 });
 
@@ -442,5 +438,77 @@ describe('fitPane / requestResize — cols/rows computed from container pixels +
     mockRenderInstance.configure.mockReturnValue([8, 16]);
     await makeController(1, 1);
     expect(mockKernelInstance.resize).toHaveBeenCalledWith(1, 1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GROUP 3: feedChunked / flushDeferred 分片与预算
+// ─────────────────────────────────────────────────────────────────────────────
+describe('feedChunked / flushDeferred — chunked feeding with time budget', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('feedChunked splits 48 KiB into three 16 KiB chunks', async () => {
+    const ctrl = await makeController();
+    const data = new Uint8Array(48 * 1024).fill(65); // 'A', no escape → skip coalesce
+
+    (ctrl as any).feedChunked(data);
+
+    expect(mockKernelInstance.feed).toHaveBeenCalledTimes(3);
+    expect(mockKernelInstance.feed.mock.calls[0][0].length).toBe(16 * 1024);
+    expect(mockKernelInstance.feed.mock.calls[1][0].length).toBe(16 * 1024);
+    expect(mockKernelInstance.feed.mock.calls[2][0].length).toBe(16 * 1024);
+    // takePendingResponse called after all chunks processed
+    expect(mockKernelInstance.takePendingResponse).toHaveBeenCalledTimes(1);
+    // No deferred data left
+    expect((ctrl as any).feedDeferred.length).toBe(0);
+  });
+
+  it('feedChunked defers remainder when time budget is exceeded', async () => {
+    const perfNow = vi.spyOn(performance, 'now');
+    let callIdx = 0;
+    perfNow.mockImplementation(() => {
+      callIdx++;
+      return callIdx === 1 ? 0 : 5; // start=0ms → first check at 5ms → >4 → defer
+    });
+
+    const ctrl = await makeController();
+    const data = new Uint8Array(48 * 1024).fill(65);
+
+    (ctrl as any).feedChunked(data);
+
+    // Only first 16 KiB chunk processed (budget exceeded at chunk 2)
+    expect(mockKernelInstance.feed).toHaveBeenCalledTimes(1);
+    expect(mockKernelInstance.feed.mock.calls[0][0].length).toBe(16 * 1024);
+    // Remaining 32 KiB deferred as one entry
+    expect((ctrl as any).feedDeferred.length).toBe(1);
+    expect((ctrl as any).feedDeferred[0].length).toBe(32 * 1024);
+    // takePendingResponse NOT called — data not fully processed
+    expect(mockKernelInstance.takePendingResponse).not.toHaveBeenCalled();
+  });
+
+  it('flushDeferred delegates to feedChunked for each deferred entry', async () => {
+    const ctrl = await makeController();
+    const chunk = new Uint8Array(16 * 1024).fill(65);
+    (ctrl as any).feedDeferred.push(chunk);
+
+    const feedChunkedSpy = vi.spyOn(TerminalController.prototype as any, 'feedChunked');
+    (ctrl as any).flushDeferred();
+
+    // feedChunked was called with the deferred entry, NOT drained directly via kernel.feed
+    expect(feedChunkedSpy).toHaveBeenCalledTimes(1);
+    expect(feedChunkedSpy).toHaveBeenCalledWith(chunk);
+    // Deferred entry was consumed
+    expect((ctrl as any).feedDeferred.length).toBe(0);
+  });
+
+  it('flushDeferred is no-op when feedDeferred is empty', async () => {
+    const ctrl = await makeController();
+    const feedChunkedSpy = vi.spyOn(TerminalController.prototype as any, 'feedChunked');
+
+    (ctrl as any).flushDeferred();
+
+    expect(feedChunkedSpy).not.toHaveBeenCalled();
   });
 });

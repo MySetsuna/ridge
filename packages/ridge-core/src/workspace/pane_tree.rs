@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum SplitDirection {
     Horizontal,
     Vertical,
@@ -33,6 +33,24 @@ pub enum DockRegion {
     Top,
     Bottom,
     Center,
+}
+
+/// 物理方向导航（用于键盘快捷键跳转到相邻 pane）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl Direction {
+    pub fn split_direction(self) -> SplitDirection {
+        match self {
+            Direction::Left | Direction::Right => SplitDirection::Horizontal,
+            Direction::Up | Direction::Down => SplitDirection::Vertical,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -593,6 +611,143 @@ impl PaneTree {
         }
     }
 
+    /// 从指定 pane 向物理方向 navigation 查找相邻 pane。
+    /// 返回相邻 pane 的 id，若无则 `None`。
+    pub fn neighbor(&self, pane_id: Uuid, dir: Direction) -> Option<Uuid> {
+        let mut path: Vec<usize> = Vec::new();
+        let mut dirs: Vec<SplitDirection> = Vec::new();
+
+        // 构建路径：各级 child index + 父 Split 的 direction
+        fn build_path(
+            node: &PaneNode,
+            pane_id: Uuid,
+            path: &mut Vec<usize>,
+            dirs: &mut Vec<SplitDirection>,
+        ) -> bool {
+            match node {
+                PaneNode::Leaf(id) if *id == pane_id => true,
+                PaneNode::Split {
+                    direction,
+                    children,
+                    ..
+                } => {
+                    for (i, child) in children.iter().enumerate() {
+                        path.push(i);
+                        dirs.push(direction.clone());
+                        if build_path(child, pane_id, path, dirs) {
+                            return true;
+                        }
+                        path.pop();
+                        dirs.pop();
+                    }
+                    false
+                }
+                _ => false,
+            }
+        }
+
+        if !build_path(&self.root, pane_id, &mut path, &mut dirs) {
+            return None;
+        }
+
+        let split_dir = dir.split_direction();
+
+        // 从叶向上遍历，找到方向匹配的第一个 ancestor Split
+        for depth in (0..path.len()).rev() {
+            if dirs[depth] != split_dir {
+                continue;
+            }
+
+            let child_idx = path[depth];
+
+            // 走到该 Split 节点
+            let mut node = &self.root;
+            for &idx in &path[..depth] {
+                if let PaneNode::Split { children, .. } = node {
+                    node = &children[idx];
+                } else {
+                    return None;
+                }
+            }
+
+            if let PaneNode::Split { children, .. } = node {
+                let neighbor_idx = match dir {
+                    Direction::Left | Direction::Up => {
+                        if child_idx == 0 {
+                            continue; // 已在最边缘
+                        }
+                        child_idx - 1
+                    }
+                    Direction::Right | Direction::Down => {
+                        if child_idx + 1 >= children.len() {
+                            continue;
+                        }
+                        child_idx + 1
+                    }
+                };
+
+                // 收集源窗格在垂直（Left/Right）或水平（Up/Down）方向上的对齐索引
+                let perp_dir = match dir {
+                    Direction::Left | Direction::Right => SplitDirection::Vertical,
+                    Direction::Up | Direction::Down => SplitDirection::Horizontal,
+                };
+                let mut align_indices: Vec<usize> = Vec::new();
+                for d in (depth + 1)..path.len() {
+                    if dirs[d] == perp_dir {
+                        align_indices.push(path[d]);
+                    }
+                }
+
+                let neighbor_node = &children[neighbor_idx];
+                let mut pos = 0;
+                return Some(Self::aligned_descend(neighbor_node, dir, &align_indices, &mut pos));
+            }
+        }
+
+        None
+    }
+
+    /// 子树的最左/最上 Leaf。
+    fn first_leaf(node: &PaneNode) -> Uuid {
+        match node {
+            PaneNode::Leaf(id) => *id,
+            PaneNode::Split { children, .. } => Self::first_leaf(&children[0]),
+        }
+    }
+
+    /// 子树的最右/最下 Leaf。
+    fn last_leaf(node: &PaneNode) -> Uuid {
+        match node {
+            PaneNode::Leaf(id) => *id,
+            PaneNode::Split { children, .. } => Self::last_leaf(children.last().unwrap()),
+        }
+    }
+
+    /// 导航至目标子树，保持与源的垂直/水平对齐。
+    /// `dir` 是导航方向；`align_indices` 是从源收集的垂直（Left/Right）或水平（Up/Down）对齐索引。
+    fn aligned_descend(node: &PaneNode, dir: Direction, align_indices: &[usize], pos: &mut usize) -> Uuid {
+        match node {
+            PaneNode::Leaf(id) => *id,
+            PaneNode::Split { direction, children, .. } => {
+                let is_perp = match dir {
+                    Direction::Left | Direction::Right => *direction == SplitDirection::Vertical,
+                    Direction::Up | Direction::Down => *direction == SplitDirection::Horizontal,
+                };
+                if is_perp && *pos < align_indices.len() {
+                    let idx = align_indices[*pos].min(children.len() - 1);
+                    *pos += 1;
+                    Self::aligned_descend(&children[idx], dir, align_indices, pos)
+                } else {
+                    let idx = match dir {
+                        Direction::Left | Direction::Up => children.len() - 1,
+                        Direction::Right | Direction::Down => 0,
+                    };
+                    Self::aligned_descend(&children[idx], dir, align_indices, pos)
+                }
+            }
+        }
+    }
+
     /// 获取所有 Leaf（用于前端批量创建 xterm 实例）
     pub fn get_all_leaves(&self) -> Vec<Uuid> {
         let mut leaves = Vec::new();
@@ -784,4 +939,90 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, CoreError::InvalidArgs(_)));
     }
+
+    // ── 物理方向导航 neighbor() ──
+
+    #[test]
+    fn neighbor_none_on_single_leaf() {
+        let tree = PaneTree::new();
+        let id = tree.get_all_leaves()[0];
+        for dir in &[Direction::Left, Direction::Right, Direction::Up, Direction::Down] {
+            assert_eq!(tree.neighbor(id, *dir), None);
+        }
+    }
+
+    #[test]
+    fn neighbor_horizontal_split() {
+        let mut tree = PaneTree::new();
+        let a = tree.get_all_leaves()[0];
+        let b = tree.split(a, SplitDirection::Horizontal).unwrap();
+        // A | B
+        assert_eq!(tree.neighbor(a, Direction::Right), Some(b));
+        assert_eq!(tree.neighbor(a, Direction::Left), None);
+        assert_eq!(tree.neighbor(a, Direction::Up), None);
+        assert_eq!(tree.neighbor(a, Direction::Down), None);
+
+        assert_eq!(tree.neighbor(b, Direction::Left), Some(a));
+        assert_eq!(tree.neighbor(b, Direction::Right), None);
+        assert_eq!(tree.neighbor(b, Direction::Up), None);
+        assert_eq!(tree.neighbor(b, Direction::Down), None);
+    }
+
+    #[test]
+    fn neighbor_vertical_split() {
+        let mut tree = PaneTree::new();
+        let a = tree.get_all_leaves()[0];
+        let b = tree.split(a, SplitDirection::Vertical).unwrap();
+        // A / B (A top, B bottom)
+        assert_eq!(tree.neighbor(a, Direction::Down), Some(b));
+        assert_eq!(tree.neighbor(a, Direction::Up), None);
+        assert_eq!(tree.neighbor(b, Direction::Up), Some(a));
+        assert_eq!(tree.neighbor(b, Direction::Down), None);
+    }
+
+    #[test]
+    fn neighbor_2x2_grid() {
+        let mut tree = PaneTree::new();
+        let leaves = tree.get_all_leaves();
+        assert_eq!(leaves.len(), 1);
+        let a_id = leaves[0];
+        let b_id = tree.split(a_id, SplitDirection::Horizontal).unwrap();
+        let c_id = tree.split(a_id, SplitDirection::Vertical).unwrap();
+        let d_id = tree.split(b_id, SplitDirection::Vertical).unwrap();
+
+        let all = tree.get_all_leaves();
+        assert!(all.contains(&a_id));
+        assert!(all.contains(&b_id));
+        assert!(all.contains(&c_id));
+        assert!(all.contains(&d_id));
+
+        // Tree: Split(H)[ Split(V)[A, C], Split(V)[B, D] ]
+        // ... A | B ...
+        // ... C | D ...
+
+        // From A (top-left):
+        assert_eq!(tree.neighbor(a_id, Direction::Right), Some(b_id));
+        assert_eq!(tree.neighbor(a_id, Direction::Down), Some(c_id));
+        assert_eq!(tree.neighbor(a_id, Direction::Up), None);
+        assert_eq!(tree.neighbor(a_id, Direction::Left), None);
+
+        // From B (top-right):
+        assert_eq!(tree.neighbor(b_id, Direction::Left), Some(a_id));
+        assert_eq!(tree.neighbor(b_id, Direction::Down), Some(d_id));
+        assert_eq!(tree.neighbor(b_id, Direction::Up), None);
+        assert_eq!(tree.neighbor(b_id, Direction::Right), None);
+
+        // From C (bottom-left):
+        assert_eq!(tree.neighbor(c_id, Direction::Up), Some(a_id));
+        assert_eq!(tree.neighbor(c_id, Direction::Right), Some(d_id));
+        assert_eq!(tree.neighbor(c_id, Direction::Down), None);
+        assert_eq!(tree.neighbor(c_id, Direction::Left), None);
+
+        // From D (bottom-right):
+        assert_eq!(tree.neighbor(d_id, Direction::Up), Some(b_id));
+        assert_eq!(tree.neighbor(d_id, Direction::Left), Some(c_id));
+        assert_eq!(tree.neighbor(d_id, Direction::Down), None);
+        assert_eq!(tree.neighbor(d_id, Direction::Right), None);
+    }
 }
+

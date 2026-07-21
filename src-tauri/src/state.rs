@@ -15,7 +15,7 @@ use crate::commands::watch::GitWatcher;
 use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
-use crate::remote::auth::{RemoteAuth, SessionStore, VerifyThrottle};
+use ridge_remote::auth::{RemoteAuth, SessionStore, VerifyThrottle};
 use crate::types::{GlobalEvent, RemotePtyEvent};
 use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
 
@@ -173,15 +173,23 @@ pub struct ScrollbackChunk {
     /// older data is available from the store (may still exist in xterm's
     /// own buffer if it's still mounted).
     pub at_oldest: bool,
+    /// Seq one past the newest retained byte at query time (the live/history
+    /// boundary). A remote controller seeds its grid from a tail read and then
+    /// streams live bytes; anything the store already has (`seq < head_seq`) is
+    /// pulled as history, so the seam is exact. Serialized as `head_seq`.
+    pub head_seq: u64,
 }
 
 /// Block size for completed scrollback pages (bytes). Chosen so a single
 /// tail read pulls ~128 KiB (2 blocks) without getting too chunky on the
 /// wire to the renderer.
 pub const SCROLLBACK_BLOCK_SIZE: usize = 64 * 1024;
-/// Hard retention cap per pane. 4 MiB covers ~30k lines of 120-char output,
-/// which comfortably outlives a typical `cat log.txt`.
-pub const SCROLLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// Hard retention cap per pane. 8 MiB covers ~60k lines of 120-char output,
+/// enough to retain a full long build log or vim session. Doubled from the
+/// original 4 MiB to match the raised cloud replay cap (256 KiB) — no point
+/// replaying more than what we've retained. Memory cost: at most 8 MiB *
+/// number of active panes (typically ≤ 10), so ≤ ~80 MiB worst case.
+pub const SCROLLBACK_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 impl PaneScrollback {
     pub fn new() -> Self {
@@ -201,6 +209,14 @@ impl PaneScrollback {
         } else {
             self.current_start_seq
         }
+    }
+
+    /// Seq of the NEXT byte that will be written (one past the newest retained
+    /// byte). A remote controller uses this as the live/history boundary: bytes
+    /// with `seq < head_seq` are history (fetch via `_before`), bytes streamed
+    /// after subscribe are live — so the two never overlap or leave a gap.
+    pub fn head_seq(&self) -> u64 {
+        self.current_start_seq + self.current.len() as u64
     }
 
     /// Return the seq-sorted flat view of every retained byte. Used by the
@@ -524,14 +540,9 @@ pub struct AppState {
     /// Persistent blacklist of devices/IPs barred from connecting. Loaded from
     /// `<app_data_dir>/remote-blacklist.json` at startup.
     pub remote_blacklist: Arc<RemoteBlacklist>,
-    /// When `true`, the remote `data-request` dispatcher rejects every mutating
-    /// filesystem/git method (write/delete/rename/create/copy/move + git
-    /// commit/push/pull/reset/checkout/clean/…). Reads stay allowed. Defaults to
-    /// `false` (writable) to preserve the existing remote file-editor behaviour;
-    /// the desktop "Remote Control" panel can flip it via `set_remote_fs_readonly`
-    /// for view-only sessions. NOTE: an authenticated remote already has shell
-    /// stdin, so this is defence-in-depth, not an isolation boundary.
-    pub remote_fs_readonly: Arc<AtomicBool>,
+    /// 「主机 / Hosts」外部主机注册表（远端 ridge / rdg）。P3/P4 基础层：登记 +
+    /// 状态管理；live PTY 流传输为下一里程（见 crate::hosts）。
+    pub hosts: Arc<crate::hosts::HostRegistry>,
     /// Broadcast channel for structural changes (pane/workspace add/close/rename)
     /// that remote WS clients subscribe to. Late joiners skip stale events —
     /// they pull current state on connect or on demand.
@@ -553,7 +564,10 @@ pub struct AppState {
     /// B2（D-GM-11）：cloud pane 裸字节订阅表 `pane_id → (workspace_id, sub_id)`。
     /// `subscribe_pane_raw` 登记一条 `RemotePaneSub`（把该 pane 的 RawBytes 经 Tauri
     /// event `pane-raw-{pane}` 转给本 WebView），`unsubscribe_pane_raw` 据此注销。
-    pub cloud_pane_raw_subs: Arc<Mutex<HashMap<Uuid, (Uuid, u64)>>>,
+    /// value = `(ws, sub_id, refcount)`：同一 WebView 内多个 controller 桥订阅同一 pane 时
+    /// 共用一条 live fan-out（广播到所有订阅了该 pane 的桥），refcount 记订阅者数——
+    /// 只有降到 0 才真正注销，避免一个 controller 退订就把仍在看的其它 controller 断流。
+    pub cloud_pane_raw_subs: Arc<Mutex<HashMap<Uuid, (Uuid, u64, u32)>>>,
 }
 
 impl AppState {
@@ -621,7 +635,7 @@ impl AppState {
             remote_mdns: Arc::new(Mutex::new(None)),
             remote_client_registry: Arc::new(RemoteClientRegistry::default()),
             remote_blacklist: Arc::new(RemoteBlacklist::default()),
-            remote_fs_readonly: Arc::new(AtomicBool::new(false)),
+            hosts: Arc::new(crate::hosts::HostRegistry::default()),
             remote_structural_tx: {
                 let (tx, _) = tokio::sync::broadcast::channel(64);
                 tx
@@ -709,10 +723,12 @@ impl AppState {
                 bytes: String::new(),
                 start_seq: 0,
                 at_oldest: true,
+                head_seq: 0,
             };
         };
         let snapshot = entry.snapshot_blocks();
         let oldest_seq = entry.oldest_seq();
+        let head_seq = entry.head_seq();
         drop(map);
 
         if snapshot.is_empty() || max_bytes == 0 {
@@ -720,6 +736,7 @@ impl AppState {
                 bytes: String::new(),
                 start_seq: oldest_seq,
                 at_oldest: true,
+                head_seq,
             };
         }
 
@@ -764,6 +781,7 @@ impl AppState {
             bytes,
             start_seq,
             at_oldest: at_oldest && start_seq == oldest_seq,
+            head_seq,
         }
     }
 
@@ -782,10 +800,12 @@ impl AppState {
                 bytes: String::new(),
                 start_seq: 0,
                 at_oldest: true,
+                head_seq: 0,
             };
         };
         let snapshot = entry.snapshot_blocks();
         let oldest_seq = entry.oldest_seq();
+        let head_seq = entry.head_seq();
         drop(map);
 
         if snapshot.is_empty() || max_bytes == 0 {
@@ -793,6 +813,7 @@ impl AppState {
                 bytes: String::new(),
                 start_seq: before_seq,
                 at_oldest: before_seq <= oldest_seq,
+                head_seq,
             };
         }
 
@@ -840,6 +861,7 @@ impl AppState {
             bytes,
             start_seq,
             at_oldest: start_seq <= oldest_seq,
+            head_seq,
         }
     }
 

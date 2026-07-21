@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@ridge/term-wasm": ["../ridge-term/pkg"],
+      "@ridge/remote": ["./src"],
+      "@ridge/remote/*": ["./src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.svelte"]
+}

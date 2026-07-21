@@ -22,8 +22,9 @@ export const terminalHistoryStore = {
 	},
 	add: (command: string) => {
 		if (!command.trim()) return;
+		const lower = command.toLowerCase();
 		_store.update(history => {
-			const newHistory = [command, ...history.filter(h => h !== command)];
+			const newHistory = [command, ...history.filter(h => h.toLowerCase() !== lower)];
 			return newHistory.slice(0, 1000);
 		});
 	}

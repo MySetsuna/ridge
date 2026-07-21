@@ -1,3 +1,24 @@
+<script lang="ts" module>
+  // Monaco Editor Worker 配置 - 必须在使用 monaco 之前配置
+  // 放在 FileEditor.svelte 的 module script 中，随编辑器首次加载时初始化，
+  // 不与 +page.svelte 首屏 chunk 捆绑，避免未使用编辑器时加载 ~500KB worker 代码。
+  import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
+  import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
+  import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker';
+  import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
+  import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
+
+  self.MonacoEnvironment = {
+    getWorker(_: unknown, label: string) {
+      if (label === 'json') return new jsonWorker();
+      if (label === 'css' || label === 'scss' || label === 'less') return new cssWorker();
+      if (label === 'html' || label === 'handlebars' || label === 'razor') return new htmlWorker();
+      if (label === 'typescript' || label === 'javascript') return new tsWorker();
+      return new editorWorker();
+    },
+  };
+</script>
+
 <script lang="ts">
   import { onMount, onDestroy, tick, untrack } from 'svelte';
   import * as monaco from 'monaco-editor';
@@ -30,6 +51,7 @@
   } from '$lib/stores/fileEditor';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import MarkdownPreview from './MarkdownPreview.svelte';
+  import ImagePreviewOverlay from './ImagePreviewOverlay.svelte';
   import { isMarkdownPath } from '$lib/utils/markdown';
   // §IDE Ctrl/Cmd+Click 路径跳转：复用 linkResolver（解析相对/绝对路径 + 工程内
   // 判定）+ pathToken（提取光标下路径 token 与 :line:col 后缀）。
@@ -109,6 +131,17 @@
   }
   let blameVisible = $state(false);
   let blameDecorations: monaco.editor.IEditorDecorationsCollection | null = null;
+  // §IDE 本文件 Git 历史（#23）：Alt+H / 右键「本文件 Git 历史」拉 git_file_log，浮层列出
+  // 触碰该文件的提交（sha / 作者 / 相对时间 / 摘要）。切文件时在模型切换处（下方）关闭浮层，
+  // 避免显示陈旧历史。
+  interface FileCommit {
+    sha: string;
+    author: string;
+    timestamp: number;
+    summary: string;
+  }
+  let fileHistoryOpen = $state(false);
+  let fileHistory = $state<FileCommit[]>([]);
   // §IDE LSP 文档同步状态：已 didOpen 的路径集 + 单调递增的 didChange 版本号。
   const lspOpenedPaths = new Set<string>();
   let lspVersion = 1;
@@ -180,6 +213,10 @@
   let inPreviewMode = $derived(!!current && isMarkdownFile && current.viewMode === 'preview');
   let isImageFile = $derived(!!current && current.isImage);
   let isDiffTab = $derived(!!current?.diffArgs);
+
+  // 全窗口图片/流程图预览层的状态（null = 不显示）。图片文件、markdown 嵌入图、
+  // mermaid 流程图点击后写入。
+  let previewImage = $state<{ src: string; alt: string } | null>(null);
 
   // ─── Monaco lifecycle ──────────────────────────────────────────────────────
   // Monaco is intentionally used without web workers here (same as Pane.svelte's
@@ -362,6 +399,9 @@
       if (!ed) return;
       // 切走当前 path 前先存 view state。
       if (diffCurrentPath && diffCurrentPath !== tabPath) saveDiffViewState();
+      // 显式 detach 再 attach 旧 model 对，防止 Monaco 内部在 model 不变时跳过
+      // 重渲染导致新旧内容叠加（#残留）。
+      ed.setModel(null);
       ed.setModel({ original: cached.original, modified: cached.modified });
       diffCurrentPath = tabPath;
       applyDiffEditable(ed, args);
@@ -375,6 +415,10 @@
     diffError = '';
     // 切走当前正在显示的 path 之前先存 view state，避免被新加载覆盖。
     if (diffCurrentPath && diffCurrentPath !== tabPath) saveDiffViewState();
+    // 显式 detach 确保 mount 点干净，避免残留覆盖
+    if (diffEditor && diffEditor.getModel()) {
+      diffEditor.setModel(null);
+    }
     try {
       if (!isTauri()) throw new Error(tr('editor.requiresTauri'));
       const v =
@@ -586,6 +630,17 @@
         blameVisible = !blameVisible; // 同步由下方 $effect(refreshBlame) 处理
       },
     });
+    // §IDE 本文件 Git 历史（#23）：Alt+H + 右键「本文件 Git 历史」→ git_file_log 浮层。
+    editor.addAction({
+      id: 'rg.fileHistory',
+      label: '本文件 Git 历史',
+      keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyH],
+      contextMenuGroupId: 'navigation',
+      contextMenuOrder: 1.6,
+      run: () => {
+        void openFileHistory();
+      },
+    });
     // §IDE LSP P2 — F12 / 右键「转到定义」（与 Ctrl+Click 同走 gotoDefinitionAt）。
     editor.addAction({
       id: 'rg.gotoDefinition',
@@ -697,6 +752,26 @@
     if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天前`;
     const d = new Date(unixSec * 1000);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  /** 拉当前文件的 Git 提交历史（git_file_log）并打开浮层。#23。 */
+  async function openFileHistory(): Promise<void> {
+    const repoRoot = get(projectStore).currentPath;
+    if (!repoRoot || !currentModelPath) return;
+    const reqPath = currentModelPath;
+    fileHistory = [];
+    fileHistoryOpen = true;
+    try {
+      const commits = await invoke<FileCommit[]>('git_file_log', {
+        repoRoot,
+        path: reqPath,
+        limit: 50,
+      });
+      // stale guard：await 期间可能切了文件 / 关了浮层。
+      if (fileHistoryOpen && currentModelPath === reqPath) fileHistory = commits;
+    } catch (err) {
+      console.warn('[file-history] git_file_log failed', reqPath, err);
+    }
   }
 
   /** 清除 blame 行注释（切文件 / 关闭时）。 */
@@ -871,6 +946,7 @@
 
       // —— 2) 切模型 + 还原 view state。
       currentModelPath = c.path;
+      fileHistoryOpen = false; // 切文件即关本文件历史浮层（避免显示陈旧文件的历史，#23）。
       editor.setModel(model);
       const vs = viewStateCache.get(c.path);
       if (vs) editor.restoreViewState(vs);
@@ -954,10 +1030,11 @@
   // ─── Diff editor lifecycle ────────────────────────────────────────────────
   // Keep-alive：切走 diff tab 仅保存 view state；切回 / 切换到不同 diff path
   // 走 loadDiff（命中缓存即跳 IPC）。diffReqId 防止快速切换时 stale 异步覆盖。
+  // 在切离 diff 时先 detach model + dispose view state，避免 display:none 后
+  // 的残留在新 tab 被 GC dispose 时导致 Monaco 内部断言或视觉残留。
   $effect(() => {
     const c = current;
     if (!c?.diffArgs) {
-      // Switched away from diff tab — keep instance alive; just save scroll/cursor.
       if (diffCurrentPath !== null) {
         saveDiffViewState();
         diffCurrentPath = null;
@@ -966,7 +1043,14 @@
       return;
     }
     if (!diffMountPoint) return;
-    if (c.path === diffCurrentPath) return; // same diff already shown
+    // 已在显示同一个 diff tab：不做任何事（保持 keep-alive 现有 model）。
+    if (c.path === diffCurrentPath) return;
+    // 切到不同的 diff tab：先 detach 当前 model，再 load 新的。
+    // detach 在前、load 在后确保中间态没有残留 model 被 display 切换暴露。
+    if (diffEditor && diffEditor.getModel()) {
+      saveDiffViewState();
+      diffEditor.setModel(null);
+    }
     void loadDiff(c.diffArgs, c.path);
   });
 
@@ -1004,9 +1088,9 @@
   // widget（表面上选项已改但视觉仍是旧模式）。setModel(null) → setModel(real)
   // 的 null-cycle 强制 Monaco 彻底销毁并重建内部 sub-editor，确保立即以新模式渲染。
   // 重建后再 restoreViewState 防止 toggle 时 scroll/折叠位置丢失。
+  // diffMountPoint 用 display:none 互斥后，切换模式时还需经过 tick() 确保
+  // display 已变为 block 再操作 Monaco。
   $effect(() => {
-    // 先无条件读取 $state，使其恒为本 effect 的依赖；切勿放到 `!diffEditor` 早退之后，
-    // 否则 effect 首跑（diffEditor 尚为 null）时不会登记 diffRenderSideBySide 依赖。
     const sideBySide = diffRenderSideBySide;
     if (!diffEditor) return;
     diffEditor.updateOptions({ renderSideBySide: sideBySide });
@@ -1017,20 +1101,20 @@
       diffEditor.setModel({ original: cur.original, modified: cur.modified });
       if (vs) diffEditor.restoreViewState(vs);
     }
-    diffEditor.layout();
+    void tick().then(() => diffEditor?.layout());
   });
 
-  // When switching back to a diff tab, visibility changes from hidden→visible.
-  // Because visibility:hidden doesn't affect element size, automaticLayout
-  // doesn't detect the change. Force layout after the DOM settles.
+  // When switching to a diff tab, the diff mount point transitions from
+  // display:none to display:block. Monaco's automaticLayout handles ResizeObserver,
+  // but there can be a one-frame gap. Force layout after the DOM settles.
   $effect(() => {
     if (isDiffTab && !diffError && diffEditor) {
       void tick().then(() => diffEditor?.layout());
     }
   });
 
-  // When switching back to a regular editor from a diff tab or preview, 
-  // visibility changes from hidden→visible. Force layout similarly.
+  // When switching back to a regular editor from a diff tab or preview,
+  // the mount point transitions from display:none to display:block.
   $effect(() => {
     const hidden = inPreviewMode || isDiffTab;
     if (!hidden && editor) {
@@ -1868,25 +1952,23 @@
 
   <!-- ═══ Monaco host ═══ -->
   <div class="flex-1 min-h-0 relative">
-    <!-- Regular editor。进入 diff 时隐藏；进入 preview 时也隐藏（preview 是
-         mountPoint 的兄弟，独立 visibility，不会有继承问题）。 -->
-    <!-- 隐藏态除 visibility:hidden 外必须叠加 pointer-events:none：diffMountPoint 是
-         最后一个兄弟（画在常规 mountPoint 之上）且为 keep-alive 的全尺寸 Monaco 实例，
-         visibility:hidden 的子元素可被 Monaco 内部重新置回 visible 而继续参与命中测试，
-         吞掉本应落到下方常规编辑器的点击 → 编辑器「点不进/无法聚焦」。pointer-events:none
-         对整棵隐藏子树禁用命中测试（子元素无法 opt-in），且不影响 automaticLayout（它只观察
-         盒子尺寸，故仍用 visibility:hidden 而非 display:none 保留尺寸）。 -->
+    <!-- Regular editor。使用 display:none 实现严格互斥：两个 mount 点都是 absolute
+         inset-0，用 visibility:hidden 时二者同时处在渲染树中，Monaco 内部可能把
+         visibility:hidden 子元素重新置为 visible，导致点击被隐藏元素吞掉（"点不进
+         编辑器"）。display:none 完全移除渲染层，无此问题；automaticLayout 在切换
+         回 display:block 后由 ResizeObserver 自动恢复，下方 layout() effect 加倍
+         保障。 -->
     <div
       bind:this={mountPoint}
       class="absolute inset-0 rg-monaco-host"
-      style={inPreviewMode || isDiffTab ? 'visibility: hidden; pointer-events: none;' : ''}
+      style={inPreviewMode || isDiffTab ? 'display: none;' : ''}
     ></div>
 
     <!-- Diff editor mount point — always in DOM so bind:this is stable -->
     <div
       bind:this={diffMountPoint}
       class="absolute inset-0 rg-monaco-host"
-      style={!isDiffTab || !!diffError ? 'visibility: hidden; pointer-events: none;' : ''}
+      style={!isDiffTab || !!diffError ? 'display: none;' : ''}
     ></div>
 
     <!-- Diff loading / error overlays -->
@@ -1899,6 +1981,49 @@
       <div class="absolute inset-0 flex items-center justify-center p-6">
         <div class="max-w-[420px] text-center text-[12px] text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded p-3 font-mono whitespace-pre-wrap">
           {diffError}
+        </div>
+      </div>
+    {/if}
+
+    <!-- §IDE 本文件 Git 历史浮层（#23）：Alt+H / 右键触发；git_file_log 提交列表。
+         切文件时在模型切换处置 fileHistoryOpen=false → 不显示陈旧历史。 -->
+    {#if fileHistoryOpen}
+      <div
+        class="absolute top-2 right-2 z-[9990] flex max-h-[70%] w-72 flex-col rounded-lg border border-[var(--rg-border)] bg-[var(--rg-surface-2)] text-[12px] shadow-xl"
+        role="dialog"
+        aria-label="本文件 Git 历史"
+      >
+        <div class="flex items-center gap-2 border-b border-[var(--rg-border)] px-2 py-1">
+          <span class="min-w-0 flex-1 truncate font-medium text-[var(--rg-fg)]">本文件 Git 历史</span>
+          <span class="shrink-0 font-mono text-[10px] text-[var(--rg-fg-muted)]">{fileHistory.length}</span>
+          <button
+            type="button"
+            class="rg-no-drag flex h-5 w-5 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)] hover:text-[var(--rg-fg)]"
+            title="关闭"
+            aria-label="关闭历史"
+            onclick={() => (fileHistoryOpen = false)}
+          >
+            ✕
+          </button>
+        </div>
+        <div class="min-h-0 flex-1 overflow-y-auto rg-scroll py-1">
+          {#if fileHistory.length === 0}
+            <p class="px-2 py-2 text-[11px] text-[var(--rg-fg-muted)]">暂无提交历史（新文件 / 非 Git 仓库 / 加载中）</p>
+          {:else}
+            {#each fileHistory as c (c.sha)}
+              <div class="flex flex-col gap-0.5 px-2 py-1 hover:bg-[var(--rg-surface)]">
+                <div class="flex items-center gap-1.5">
+                  <span class="shrink-0 font-mono text-[10px] text-[var(--rg-accent)]">{c.sha.slice(0, 8)}</span>
+                  <span class="min-w-0 flex-1 truncate text-[var(--rg-fg)]" title={c.summary}>{c.summary}</span>
+                </div>
+                <div class="flex items-center gap-1.5 text-[10px] text-[var(--rg-fg-muted)]">
+                  <span class="min-w-0 truncate">{c.author}</span>
+                  <span class="shrink-0">·</span>
+                  <span class="shrink-0">{relTime(c.timestamp)}</span>
+                </div>
+              </div>
+            {/each}
+          {/if}
         </div>
       </div>
     {/if}
@@ -1925,6 +2050,7 @@
             editor.revealLineInCenter(targetLine);
             editor.setPosition({ lineNumber: targetLine, column: 1 });
           }}
+          onImagePreview={(src, alt) => (previewImage = { src, alt })}
         />
       </div>
     {/if}
@@ -1935,13 +2061,32 @@
   <img
     src={current.imageUrl}
     alt={current.name}
-    class="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+    class="max-w-full max-h-full object-contain rounded-lg shadow-lg cursor-zoom-in"
+    role="button"
+    tabindex="0"
+    title="点击全窗口预览（缩放/旋转）"
+    onclick={() => { if (current?.imageUrl) previewImage = { src: current.imageUrl, alt: current.name }; }}
+    onkeydown={(e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && current?.imageUrl) {
+        e.preventDefault();
+        previewImage = { src: current.imageUrl, alt: current.name };
+      }
+    }}
     onerror={(e) => {
       const img = e.currentTarget as HTMLImageElement;
       console.warn('[FileEditor] image failed to load', current!.path, img.src);
     }}
   />
 </div>
+{/if}
+
+<!-- 全窗口图片/流程图预览层（缩放/旋转/平移）。self-portal 到 body。 -->
+{#if previewImage}
+  <ImagePreviewOverlay
+    src={previewImage.src}
+    alt={previewImage.alt}
+    onClose={() => (previewImage = null)}
+  />
 {/if}
 
     <!-- Preview ↔ Source 切换按钮：右上角浮动 pill，半透明玻璃态。

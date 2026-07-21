@@ -1,46 +1,39 @@
 <script lang="ts">
-  import { invoke, isTauri } from '@tauri-apps/api/core';
   import { t, tr } from '$lib/i18n';
   import { ChevronDown, Terminal } from 'lucide-svelte';
-  import { settingsStore, setSetting } from '$lib/stores/settings';
-  import { activeWorkspaceId } from '$lib/stores/paneTree';
-  import { get } from 'svelte/store';
   import { portal } from '$lib/actions/portal';
-  import { TerminalManager } from '$lib/terminal/manager';
-
-  interface ShellInfo {
-    id: string;
-    label: string;
-    program: string;
-  }
+  import {
+    getShells,
+    changePaneShell,
+    paneShellSelection,
+    type ShellInfo,
+  } from '@ridge/remote/shared/terminal/paneShell';
 
   interface Props {
     paneId: string;
+    currentShell?: string;
   }
+  let { paneId, currentShell }: Props = $props();
 
-  let { paneId }: Props = $props();
-
+  // §I-2: 选中的 ShellInfo.id 改从共享 store 派生（不再用组件本地 $state），故
+  // 经 pane 右键菜单切换时此 header 也同步更新、且跨重挂载保留。优先于 layout
+  // 回传的 currentShell(program)——WSL 多发行版同 program 时仅 id 能区分。
+  let selectedId = $derived($paneShellSelection[paneId] ?? null);
   let open = $state(false);
   let shells = $state<ShellInfo[]>([]);
-  let shellsLoaded = $state(false);
   let changing = $state(false);
   let btnEl: HTMLButtonElement | undefined = $state();
   let popupStyle = $state('');
 
-  async function loadShells(): Promise<void> {
-    if (!isTauri() || shellsLoaded) return;
-    try {
-      shells = await invoke<ShellInfo[]>('detect_available_shells');
-    } catch (e) {
-      console.warn('detect_available_shells failed', e);
-      shells = [];
-    } finally {
-      shellsLoaded = true;
-    }
-  }
+  // 挂载即预加载（共享缓存）。修复旧 bug：旧实现仅在点击 toggle 时加载 shells，
+  // 而按钮 {#if shells.length>0} 才渲染 → 按钮永不出现、永不可点。
+  $effect(() => {
+    void getShells().then((s) => {
+      shells = s;
+    });
+  });
 
-  async function toggle() {
-    if (!shellsLoaded) await loadShells();
+  function toggle() {
     if (btnEl) {
       const r = btnEl.getBoundingClientRect();
       popupStyle = `top:${r.bottom + 4}px;left:${r.left}px`;
@@ -49,33 +42,31 @@
   }
 
   function getCurrentLabel(): string {
-    const defaultShell = $settingsStore.defaultShell;
-    if (defaultShell) {
-      const found = shells.find((s) => s.program === defaultShell);
-      if (found) return found.label;
+    if (selectedId) {
+      const byId = shells.find((s) => s.id === selectedId);
+      if (byId) return byId.label;
+    }
+    if (currentShell) {
+      const byProg = shells.find((s) => s.program === currentShell);
+      if (byProg) return byProg.label;
     }
     if (shells.length > 0) return shells[0].label;
     return tr('workspace.shellFallback');
   }
 
+  // 菜单内"当前项"判定：优先 selectedId，否则匹配 program。
+  function isCurrent(s: ShellInfo): boolean {
+    if (selectedId) return s.id === selectedId;
+    return !!currentShell && s.program === currentShell;
+  }
+
   async function selectShell(shell: ShellInfo) {
-    if (!isTauri()) return;
     open = false;
-    if (shell.program === $settingsStore.defaultShell) return;
+    if (isCurrent(shell)) return;
     changing = true;
     try {
-      const wsId = $activeWorkspaceId;
-      if (!wsId) return;
-      const manager = TerminalManager.instance();
-      manager.clearScrollback(paneId);
-      await invoke('change_pane_shell', { paneId, shell: shell.program });
-      await invoke('activate_pane_pty', {
-        workspaceId: wsId,
-        paneId,
-        rows: manager.rows(paneId),
-        cols: manager.cols(paneId),
-      });
-      manager.forceFullRedraw(paneId);
+      // §I-2: selectedId 由 changePaneShell 写共享 store，这里不再本地赋值。
+      await changePaneShell(paneId, shell);
     } catch (e) {
       console.warn('change_pane_shell failed', e);
     } finally {
@@ -118,17 +109,17 @@
       onmousedown={(e) => e.stopPropagation()}
     >
       <div class="max-h-[200px] overflow-y-auto">
-        {#each shells as s (s.program)}
+        {#each shells as s (s.id)}
           <button
             type="button"
             class="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors
-              {s.program === $settingsStore.defaultShell
+              {isCurrent(s)
                 ? 'bg-[var(--rg-accent)]/12 text-[var(--rg-accent)]'
                 : 'text-[var(--rg-fg)] hover:bg-[var(--rg-surface)]'}"
             onclick={() => void selectShell(s)}
           >
             <span class="flex-1 truncate">{s.label}</span>
-            {#if s.program === $settingsStore.defaultShell}
+            {#if isCurrent(s)}
               <span class="text-[9px] text-[var(--rg-accent)]/70 uppercase tracking-wider">{$t('workspace.shellCurrent')}</span>
             {/if}
           </button>

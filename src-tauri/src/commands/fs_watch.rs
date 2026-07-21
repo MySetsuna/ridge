@@ -149,7 +149,7 @@ impl FsWatcher {
                 };
                 // §web-remote: also relay to desktop-browser clients (file tree /
                 // editor live refresh). Forward before the move into app.emit.
-                crate::remote::forward_event(&app, "fs-changed", &payload);
+                crate::remote_bridge::forward_event(&app, "fs-changed", &payload);
                 let _ = app.emit("fs-changed", payload);
             },
         )?;

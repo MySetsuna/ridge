@@ -32,16 +32,10 @@
 //!    during the migration window the host bridge keeps serving those from the
 //!    legacy dispatcher (see `s1-migration-ledger.md`), so this never regresses
 //!    desktop behaviour.
-//!
-//! The read-only gate (mutating-invoke rejection) is host-policy that depends
-//! on host state; it is applied by the host before/around `dispatch` for now
-//! (the desktop wrapper preserves its existing `is_mutating_invoke` check) and
-//! is a candidate to fold into the capability layer in a later slice — noted in
-//! the ledger.
 
 use serde_json::Value;
 
-use crate::commands::{settings, shell, theme};
+use crate::commands::{git, settings, shell, theme, workspace};
 use crate::ctx::Ctx;
 use crate::error::{CoreError, CoreResult};
 use crate::fs::commands as fs_commands;
@@ -149,17 +143,6 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
         return Err(CoreError::CapabilityDenied(method.to_string()));
     }
 
-    // 1.5 Read-only session gate (D-GM-9 / S1 ledger §3.1). A read-only
-    // capability set refuses any mutating method up front, mirroring the legacy
-    // `server.rs::is_mutating_invoke` + `remote_fs_readonly` pre-check — but now
-    // enforced inside `dispatch`, so the headless host (which bypasses
-    // `server.rs`) is covered too. No-op when the set is writable (the default),
-    // so existing hosts are unaffected.
-    if ctx.capabilities().is_readonly() && crate::capability::is_mutating(method) {
-        tracing::warn!(target: "ridge::core::dispatch", method, "rejected mutating method: read-only");
-        return Err(CoreError::ReadOnly);
-    }
-
     // 2. Path-traversal guard.
     traversal_guard(&args)?;
 
@@ -182,6 +165,79 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
         "set_user_default_cwd" => {
             settings::set_user_default_cwd(ctx, opt_s(&args, "path"))?;
             Ok(Value::Null)
+        }
+
+        // ── Workspace 快照（R0 内核化样板 B，2026-07-11）──
+        // 只读：经聚合 HostStateAccessor 的 WorkspaceReader 取宿主 pane 树 + git 仓库根。
+        // rdg 无头 host 借此拿到工作区快照（此前 MethodNotFound）。
+        "get_workspace_snapshot" => {
+            workspace::get_workspace_snapshot(ctx, &s(&args, "workspaceId"))
+        }
+        "get_active_workspace_id" => workspace::get_active_workspace_id(ctx),
+        "list_workspaces" => workspace::list_workspaces(ctx),
+        // pane 只读布局：远端 SPA boot 预取每个工作区布局（§4a keep-alive）。此前无 arm →
+        // 远端 MethodNotFound。纯读、不触 PTY。
+        "get_pane_layout" => workspace::get_pane_layout(ctx),
+        "get_pane_layout_for" => workspace::get_pane_layout_for(ctx, &s(&args, "workspaceId")),
+        "get_pane_scrollback_tail" => {
+            let max = args.get("maxBytes").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            workspace::get_pane_scrollback_tail(ctx, &s(&args, "paneId"), max)
+        }
+        "get_pane_scrollback_before" => {
+            let before = args.get("beforeSeq").and_then(|v| v.as_u64()).unwrap_or(0);
+            let max = args.get("maxBytes").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            workspace::get_pane_scrollback_before(ctx, &s(&args, "paneId"), before, max)
+        }
+        "list_native_sessions" => workspace::list_native_sessions(ctx),
+        // pane 写：resize 既有 pane 的 PTY（非 spawn/kill）。此前无 arm → 远端 resize
+        // 收 MethodNotFound（SPA 改不了远端 pane 尺寸）。逻辑复用桌面 resize_pane_inner。
+        "resize_pane" => {
+            let rows = args.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
+            let cols = args.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
+            let is_alt = args.get("isAlt").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_inline_tui = args.get("isInlineTui").and_then(|v| v.as_bool()).unwrap_or(false);
+            workspace::resize_pane(
+                ctx,
+                &s(&args, "workspaceId"),
+                &s(&args, "paneId"),
+                rows,
+                cols,
+                is_alt,
+                is_inline_tui,
+            )
+        }
+        // pane 写：为既有 pane 起 shell PTY（spawn 子进程，逻辑复用桌面 create_pane_inner）。
+        "create_pane" => {
+            workspace::create_pane(ctx, &s(&args, "paneId"), args.get("shell").and_then(|v| v.as_str()))
+        }
+        "split_pane" => workspace::split_pane(ctx, &s(&args, "paneId"), &s(&args, "direction")),
+        // 写：切换活动工作区（元数据写，不触 PTY）。经聚合 accessor 的 WorkspaceWriter
+        // 端口。此前 allowlist 已放行但无 arm → 远端 controller 收 MethodNotFound；本 arm
+        // 补齐远端工作区切换。
+        "switch_workspace" => workspace::switch_workspace(ctx, &s(&args, "workspaceId")),
+        "reorder_workspaces" => {
+            let from = args.get("fromIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let to = args.get("toIndex").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            workspace::reorder_workspaces(ctx, from, to)
+        }
+        "rename_workspace" => {
+            workspace::rename_workspace(ctx, &s(&args, "workspaceId"), &s(&args, "name"))
+        }
+        "create_workspace" => {
+            workspace::create_workspace(ctx, args.get("name").and_then(|v| v.as_str()))
+        }
+        "close_workspace" => workspace::close_workspace(ctx, &s(&args, "workspaceId")),
+        "save_workspace" => {
+            workspace::save_workspace(ctx, args.get("name").and_then(|v| v.as_str()))
+        }
+        "save_workspace_to_file" => workspace::save_workspace_to_file(
+            ctx,
+            &s(&args, "workspaceId"),
+            &s(&args, "name"),
+            args.get("path").and_then(|v| v.as_str()),
+        ),
+        "delete_workspace_file" => {
+            workspace::delete_workspace_file(ctx, &s(&args, "workspaceId"))
         }
 
         // ── Read-only filesystem (S5) ──
@@ -256,6 +312,86 @@ pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
             let listing =
                 fs_commands::browse_directory(opt_s(&args, "path")).map_err(CoreError::internal)?;
             serde_json::to_value(listing).map_err(CoreError::internal)
+        }
+
+        // ── Git 只读（R0 内核化样板 A，2026-07-11）──
+        // 复用 ridge-core `commands::git` 已有的**同步**纯函数，方法名/arg 对齐 legacy
+        // dispatcher。`dispatch` 是同步的，故本刀只接同步 git 读；`get_git_info_with_cwd`
+        // 走同步 `git_info_for_path`（避开 async `get_git_info_with_cwd` 包装，等价结果）。
+        // async 的 get_scm_status / git_diff_summary / git_list_branches 等留下一刀
+        // （需 dispatch 走 async 或宿主 spawn_blocking 包装），此前继续经宿主桥回退。
+        "find_git_repo_root" => Ok(match git::find_git_repo_root(s(&args, "path")) {
+            Some(root) => Value::String(root),
+            None => Value::Null,
+        }),
+        "git_op_in_progress" => {
+            let st = git::git_op_in_progress(s(&args, "repoRoot"));
+            serde_json::to_value(st).map_err(CoreError::internal)
+        }
+        "get_git_info_with_cwd" => {
+            let info = git::git_info_for_path(std::path::Path::new(&s(&args, "cwd")));
+            serde_json::to_value(info).map_err(CoreError::internal)
+        }
+        // 这几个桌面侧是 async(spawn_git_blocking)，但都薄包一个同步内核；dispatch 是同步的，
+        // 故直接调其**同步内核**（git.rs:9 明许「直接跑同款逻辑」，与 fs 只读同为阻塞式路由）。
+        "get_scm_status" => {
+            let st = git::get_scm_status_sync(s(&args, "repoRoot")).map_err(CoreError::internal)?;
+            serde_json::to_value(st).map_err(CoreError::internal)
+        }
+        "git_list_branches" => {
+            let branches =
+                git::git_list_branches_sync(s(&args, "repoRoot")).map_err(CoreError::internal)?;
+            serde_json::to_value(branches).map_err(CoreError::internal)
+        }
+        "find_git_repos_below" => {
+            let repos =
+                git::find_git_repos_below_sync(s(&args, "path"), opt_usize(&args, "maxDepth"));
+            serde_json::to_value(repos).map_err(CoreError::internal)
+        }
+        // 行级 blame / 本文件历史 / 单文件 diff（IDE 能力，只读；同走同步内核）。远程(#23)：
+        // 已加进 capability + 前端白名单，web-remote/cloud 也能用行注释与行历史。
+        "git_blame" => {
+            let lines = git::git_blame_sync(s(&args, "repoRoot"), s(&args, "path"))
+                .map_err(CoreError::internal)?;
+            serde_json::to_value(lines).map_err(CoreError::internal)
+        }
+        "git_file_log" => {
+            let commits = git::git_file_log_sync(
+                s(&args, "repoRoot"),
+                s(&args, "path"),
+                opt_usize(&args, "limit").map(|n| n as u32),
+            )
+            .map_err(CoreError::internal)?;
+            serde_json::to_value(commits).map_err(CoreError::internal)
+        }
+        "git_diff_file" => {
+            let diff = git::git_diff_file_sync(
+                s(&args, "repoRoot"),
+                s(&args, "path"),
+                opt_bool(&args, "cached"),
+            )
+            .map_err(CoreError::internal)?;
+            Ok(Value::String(diff))
+        }
+        "git_diff_summary" => {
+            let sum = git::git_diff_summary_sync(s(&args, "repoRoot")).map_err(CoreError::internal)?;
+            serde_json::to_value(sum).map_err(CoreError::internal)
+        }
+        "git_get_file_versions" => {
+            let versions = git::git_get_file_versions_sync(
+                s(&args, "repoRoot"),
+                s(&args, "path"),
+                opt_bool(&args, "cached"),
+            )
+            .map_err(CoreError::internal)?;
+            serde_json::to_value(versions).map_err(CoreError::internal)
+        }
+        "get_git_commits_paginated" => {
+            let repo = s(&args, "repoRoot");
+            let offset = opt_usize(&args, "offset").unwrap_or(0);
+            let limit = opt_usize(&args, "limit").unwrap_or(100);
+            let commits = git::get_git_log_with_skip(std::path::Path::new(&repo), offset, limit);
+            serde_json::to_value(commits).map_err(CoreError::internal)
         }
 
         // ── Filesystem writes (S1 ledger §2.1) ──
@@ -370,6 +506,84 @@ mod tests {
             *self.last.lock().unwrap() = Some(path);
         }
     }
+    // 聚合 HostState 要求同时实现 WorkspaceReader；本测试只走 cwd 端口 → 返回 None。
+    impl crate::commands::workspace::WorkspaceReader for FakeStore {
+        fn workspace_raw(&self, _id: &str) -> Option<crate::commands::workspace::WorkspaceRaw> {
+            None
+        }
+        fn active_workspace(&self) -> String {
+            "ws-x".to_string()
+        }
+        fn workspaces_list(&self) -> Vec<crate::commands::workspace::WorkspaceEntry> {
+            vec![]
+        }
+        fn pane_layout(&self, _id: &str) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
+        fn pane_scrollback_tail(&self, _pane: &str, _max: usize) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
+        fn pane_scrollback_before(
+            &self,
+            _pane: &str,
+            _before: u64,
+            _max: usize,
+        ) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
+        fn native_sessions(&self) -> serde_json::Value {
+            serde_json::Value::Array(vec![])
+        }
+    }
+    // 聚合 HostState 也要求 WorkspaceWriter；本测试只走 cwd 端口 → 记录切换目标。
+    impl crate::commands::workspace::WorkspaceWriter for FakeStore {
+        fn set_active_workspace(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn reorder_workspaces(&self, _from: usize, _to: usize) -> Result<(), String> {
+            Ok(())
+        }
+        fn rename_workspace(&self, _id: &str, _name: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn create_workspace(&self, _name: Option<&str>) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn close_workspace(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn save_workspace(&self, _name: Option<&str>) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn save_workspace_to_file(
+            &self,
+            _id: &str,
+            _name: &str,
+            _path: Option<&str>,
+        ) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn delete_workspace_file(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn resize_pane(
+            &self,
+            _ws: &str,
+            _pane: &str,
+            _rows: u16,
+            _cols: u16,
+            _alt: bool,
+            _inline: bool,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn create_pane(&self, _pane: &str, _shell: Option<&str>) -> Result<(), String> {
+            Ok(())
+        }
+        fn split_pane(&self, _pane: &str, _direction: &str) -> Result<serde_json::Value, String> {
+            Ok(serde_json::Value::Null)
+        }
+    }
 
     #[test]
     fn set_user_default_cwd_routes_through_state() {
@@ -392,11 +606,11 @@ mod tests {
     #[test]
     fn allowed_but_unmigrated_method_is_method_not_found() {
         let (ctx, _sink) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
-        // `split_pane` is in the remote allow-list but not yet migrated — the
-        // pane / terminal / workspace domain commands still live in `src-tauri`
-        // (the fs read+write, search, theme/settings slices are migrated). A
+        // `close_pane` is in the remote allow-list but not yet migrated — the
+        // PTY-lifecycle **kill** pane writes still live in `src-tauri` (reads +
+        // workspace writes + resize/create/split pane writes are migrated). A
         // method that is allowed but absent from the table is MethodNotFound.
-        let err = dispatch("split_pane", serde_json::json!({"paneId": "x"}), &ctx).unwrap_err();
+        let err = dispatch("close_pane", serde_json::json!({"paneId": "x"}), &ctx).unwrap_err();
         assert_eq!(err.kind_tag(), "method_not_found");
     }
 
@@ -412,6 +626,158 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, serde_json::Value::Bool(false));
+    }
+
+    // ── Git 只读收口（R0 样板 A）──
+
+    fn tmp_nonrepo(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let d = std::env::temp_dir().join(format!("ridge_dispatch_git_{tag}_{nanos}"));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn git_op_in_progress_migrated_false_on_non_repo() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let d = tmp_nonrepo("op");
+        let out = dispatch(
+            "git_op_in_progress",
+            serde_json::json!({ "repoRoot": d.to_string_lossy() }),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(out["merge"], Value::Bool(false));
+        assert_eq!(out["rebase"], Value::Bool(false));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn find_git_repo_root_null_for_non_repo() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let d = tmp_nonrepo("root");
+        let out = dispatch(
+            "find_git_repo_root",
+            serde_json::json!({ "path": d.to_string_lossy() }),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(out, Value::Null);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn get_git_info_with_cwd_migrated_non_repo() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let d = tmp_nonrepo("info");
+        let out = dispatch(
+            "get_git_info_with_cwd",
+            serde_json::json!({ "cwd": d.to_string_lossy() }),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(out["is_git_repo"], Value::Bool(false));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn git_read_denied_when_not_in_caps() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::from_methods(["read_file"]));
+        let err = dispatch("git_op_in_progress", serde_json::json!({ "repoRoot": "." }), &ctx)
+            .unwrap_err();
+        assert_eq!(err.kind_tag(), "capability_denied");
+    }
+
+    #[test]
+    fn find_git_repos_below_routed_returns_array() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let d = tmp_nonrepo("below");
+        let out = dispatch(
+            "find_git_repos_below",
+            serde_json::json!({ "path": d.to_string_lossy(), "maxDepth": 1 }),
+            &ctx,
+        )
+        .unwrap();
+        assert!(out.is_array());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn scm_status_and_list_branches_are_routed_not_method_not_found() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let d = tmp_nonrepo("scm");
+        // 非 git 目录：底层 git 可能 Ok(空) 或 Err(git 失败)；关键是**不是 MethodNotFound**（证明已路由）。
+        for m in ["get_scm_status", "git_list_branches"] {
+            if let Err(e) = dispatch(m, serde_json::json!({ "repoRoot": d.to_string_lossy() }), &ctx)
+            {
+                assert_ne!(e.kind_tag(), "method_not_found", "{m} 应已路由");
+            }
+        }
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn blame_file_log_diff_are_routed_and_allowed() {
+        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::remote_default());
+        let d = tmp_nonrepo("blame");
+        for (m, args) in [
+            (
+                "git_blame",
+                serde_json::json!({ "repoRoot": d.to_string_lossy(), "path": "x" }),
+            ),
+            (
+                "git_file_log",
+                serde_json::json!({ "repoRoot": d.to_string_lossy(), "path": "x" }),
+            ),
+            (
+                "git_diff_file",
+                serde_json::json!({ "repoRoot": d.to_string_lossy(), "path": "x" }),
+            ),
+        ] {
+            // 非 git 目录：底层 git 失败 → Internal；关键是既非 MethodNotFound 亦非 CapabilityDenied。
+            if let Err(e) = dispatch(m, args, &ctx) {
+                assert_ne!(e.kind_tag(), "method_not_found", "{m} 应已路由");
+                assert_ne!(e.kind_tag(), "capability_denied", "{m} 应在远程能力集内");
+            }
+        }
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn workspace_reads_routed_via_aggregate_accessor() {
+        let (ctx, _s) = ctx_with_state(
+            Arc::new(HostStateAccessor(Arc::new(FakeStore::default()))),
+            CapabilitySet::remote_default(),
+        );
+        assert_eq!(
+            dispatch("get_active_workspace_id", Value::Null, &ctx).unwrap(),
+            Value::String("ws-x".to_string())
+        );
+        assert_eq!(
+            dispatch("list_workspaces", Value::Null, &ctx).unwrap(),
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn get_workspace_snapshot_routed_via_aggregate_accessor() {
+        // FakeStore（聚合 HostStateAccessor）的 workspace_raw 返回 None → InvalidArgs，
+        // 证明 get_workspace_snapshot 已接进 dispatch 表、在远程能力集内、且经聚合 accessor
+        // 取到 WorkspaceReader（R0 样板 B 接线）。
+        let (ctx, _s) = ctx_with_state(
+            Arc::new(HostStateAccessor(Arc::new(FakeStore::default()))),
+            CapabilitySet::remote_default(),
+        );
+        let err = dispatch(
+            "get_workspace_snapshot",
+            serde_json::json!({ "workspaceId": "x" }),
+            &ctx,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind_tag(), "invalid_args");
     }
 
     // ── Sandbox / root-scoping at the dispatch boundary (D8 / §5.6, R10) ──
@@ -529,41 +895,6 @@ mod tests {
         }
     }
 
-    // ── Read-only session gate (D-GM-9 / S1 ledger §3.1) ──
-
-    #[test]
-    fn readonly_session_rejects_mutating_method() {
-        let (ctx, _sink) = ctx_with_state(
-            Arc::new(EmptyState),
-            CapabilitySet::remote_default().with_readonly(true),
-        );
-        let err = dispatch(
-            "write_file",
-            serde_json::json!({ "path": "x.txt", "content": "y" }),
-            &ctx,
-        )
-        .unwrap_err();
-        assert_eq!(err.kind_tag(), "read_only");
-        // Same message the legacy desktop read-only gate returned.
-        assert_eq!(err.to_command_string(), "remote filesystem is read-only");
-    }
-
-    #[test]
-    fn readonly_session_still_allows_reads() {
-        let (ctx, _sink) = ctx_with_state(
-            Arc::new(EmptyState),
-            CapabilitySet::remote_default().with_readonly(true),
-        );
-        // A non-mutating read is NOT gated: it reaches the handler (missing file
-        // ⇒ internal), proving read-only only blocks mutations.
-        let err = dispatch(
-            "read_file",
-            serde_json::json!({ "path": "definitely/nope/xyz.txt" }),
-            &ctx,
-        )
-        .unwrap_err();
-        assert_eq!(err.kind_tag(), "internal");
-    }
 
     #[test]
     fn writable_session_runs_write_file_and_round_trips() {

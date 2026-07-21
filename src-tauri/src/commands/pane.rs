@@ -24,6 +24,30 @@ pub struct SplitPaneResult {
 /// `agent_state` 与 `agent_id` 在 Claude Code teammate 通过
 /// `/api/v1/register-agent` 记下某个 pane 为 Busy 时出现；前端据此在标题栏
 /// 画一个"运行中"指示，让 orchestrator 能一眼看出哪些 pane 有 sub-agent。
+/// 外部来源标识：pane 的底层 PTY 不归本地工作区持有时回传给前端（领养的
+/// 本地无头会话 / 远端 ridge / rdg）。与前端 `PaneOrigin`（`src/lib/types.ts`）
+/// 对齐 —— `kind` 作 serde tag，字段保持 snake_case。`None`（缺省）= 本地终端。
+/// P0 仅实现 `Headless`（由 `PtyHandle.native_ref` 派生）；远端/rdg 在 P3/P4 接入。
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PaneOriginDto {
+    Headless {
+        host_id: String,
+        host_label: String,
+        session_id: String,
+    },
+    Remote {
+        host_id: String,
+        host_label: String,
+        session_id: String,
+    },
+    Rdg {
+        host_id: String,
+        host_label: String,
+        session_id: String,
+    },
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum LayoutNode {
@@ -33,12 +57,18 @@ pub enum LayoutNode {
         title: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+        /// 本 pane 当前 shell 的 program（用于 per-pane 切换器标签）。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        shell_kind: Option<String>,
         /// "idle" | "busy" | "starting"；`None` 表示从未被 teammate 接触过。
         #[serde(skip_serializing_if = "Option::is_none")]
         agent_state: Option<String>,
         /// 若 pane 当前有注册的 agent，回传其 `agent_id`。
         #[serde(skip_serializing_if = "Option::is_none")]
         agent_id: Option<String>,
+        /// 外部来源标识（无头/远端/rdg）；`None` = 本地持有的终端。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        origin: Option<PaneOriginDto>,
     },
     Split {
         id: String,
@@ -86,13 +116,45 @@ fn engine_node_to_layout(
                         .then(|| "pending...".to_string())
                 })
                 .or_else(|| Some("terminal".to_string()));
+            // 外部来源：领养的本地无头会话由 `PtyHandle.native_ref = (socket,
+            // global_id)` 派生；远端/rdg 由 `remote_ref` 派生（P3/P4 基础层，当前恒
+            // None）。关闭=detach 路径见 terminal.rs::kill_pty_if_present。
+            let origin = terminals.get(id).and_then(|h| {
+                if let Some((socket, gid)) = h.native_ref.as_ref() {
+                    Some(PaneOriginDto::Headless {
+                        host_id: "headless".to_string(),
+                        host_label: socket.clone(),
+                        session_id: format!("{socket}:{gid}"),
+                    })
+                } else {
+                    h.remote_ref.as_ref().map(|rr| {
+                        let host_id = rr.host_id.clone();
+                        let host_label = rr.host_label.clone();
+                        let session_id = rr.remote_pane_id.clone();
+                        match rr.kind {
+                            crate::hosts::HostKind::Remote => PaneOriginDto::Remote {
+                                host_id,
+                                host_label,
+                                session_id,
+                            },
+                            crate::hosts::HostKind::Rdg => PaneOriginDto::Rdg {
+                                host_id,
+                                host_label,
+                                session_id,
+                            },
+                        }
+                    })
+                }
+            });
             LayoutNode::Leaf {
                 id: id.to_string(),
                 title,
                 cwd: pane
                     .and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned())),
+                shell_kind: panes.get(id).and_then(|p| p.shell_kind.clone()),
                 agent_state,
                 agent_id: agent_by_pane.get(id).cloned(),
+                origin,
             }
         }
         EnginePaneNode::Split {
@@ -147,8 +209,11 @@ pub fn get_pane_layout_for(
     get_pane_layout_for_inner(&state, &workspace_id)
 }
 
-fn get_pane_layout_for_inner(
-    state: &State<'_, AppState>,
+/// pane 布局读取核心（不带 Tauri `State` 包装）：供桌面命令与 ridge-core `WorkspaceReader`
+/// 端口（远端经 dispatch 取布局）共用。纯读（不触 PTY）。`&AppState` 便于端口直接调用；
+/// `State` 调用方经 Deref 强转。
+pub fn get_pane_layout_for_inner(
+    state: &AppState,
     workspace_id: &str,
 ) -> Result<LayoutNode, String> {
     let wid =
@@ -180,7 +245,7 @@ pub async fn split_pane(
     pane_id: String,
     direction: String,
 ) -> Result<SplitPaneResult, String> {
-    split_pane_inner(state, pane_id, direction).map_err(|e| e.to_string())
+    split_pane_inner(&state, pane_id, direction).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -349,8 +414,11 @@ pub async fn dock_pane(
     Ok(())
 }
 
-fn split_pane_inner(
-    state: State<'_, AppState>,
+/// split_pane 的核心（不带 Tauri wrapper）：分裂既有 pane（改 pane 树 + 继承 cwd + 起新 PTY）。
+/// `&AppState` 便于 ridge-core `WorkspaceWriter` 端口直调（远端分屏经 dispatch）。逻辑一字未改。
+/// **含 spawn 子进程**：端到端须真机验收。非 teammate route_split（无楔死路径）。
+pub fn split_pane_inner(
+    state: &AppState,
     pane_id: String,
     direction: String,
 ) -> Result<SplitPaneResult, AppError> {
@@ -420,6 +488,19 @@ pub(crate) fn teammate_pane_uuid_at_index(
         .get(pane_index)
         .copied()
         .ok_or_else(|| AppError::InvalidPaneId(format!("pane index {pane_index}")))
+}
+
+/// 校验 `pane_uuid` 是否为该工作区当前的一个**叶子** pane。
+///
+/// 与数字索引寻址 ([`teammate_pane_uuid_at_index`]) 同源（都基于
+/// `pane_tree.get_all_leaves()`），保证 MCP `target_pane_id` 经 Uuid 直投与经索引
+/// 投递落到同一组目标。用于缺口1 寻址自洽：花名册回传的 `paneId`(Uuid) 必须先
+/// 校验仍属当前工作区再注入，杜绝跨工作区 / 陈旧 Uuid 误投。
+pub(crate) fn teammate_pane_is_leaf(app: &AppState, workspace_id: Uuid, pane_uuid: Uuid) -> bool {
+    let map = app.workspaces.read();
+    map.get(&workspace_id)
+        .map(|ws| ws.pane_tree.get_all_leaves().contains(&pane_uuid))
+        .unwrap_or(false)
 }
 
 /// Frontend-accessible registration of a running teammate agent against a
@@ -572,7 +653,17 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
         // Drop any not-yet-activated PendingSpawn so a recycled pane_id
         // can't accidentally resurrect a dead PTY pair on next activate.
         ws.pending_spawns.remove(&pane_id);
-        ws.pane_tree.close(pane_id).map_err(|e| e.to_string())?;
+        // For a native/foreign (headless / remote / rdg) pane, closing == detach:
+        // `terminal::kill_pty_if_present` above already removed the leaf from the
+        // tree (native branch), so the second `close` here legitimately finds it
+        // gone. Treat `PaneNotFound` as success — the leaf is already removed —
+        // while still propagating any other error. Local panes keep this as the
+        // single authoritative removal.
+        match ws.pane_tree.close(pane_id) {
+            Ok(()) => {}
+            Err(ridge_core::CoreError::PaneNotFound(_)) => {}
+            Err(e) => return Err(e.to_string()),
+        }
     }
     crate::commands::ridge_file::schedule_auto_save(&*state, wid);
     // Broadcast pane tree change to remote clients and desktop frontend.

@@ -5,10 +5,15 @@ export default defineConfig({
   resolve: {
     alias: {
       '$lib': resolve(__dirname, 'src/lib'),
+      '@ridge/remote': resolve(__dirname, 'packages/remote/src'),
     },
   },
   test: {
-    include: ['src/**/*.{test,spec}.{ts,js}'],
+    include: [
+      'src/**/*.{test,spec}.{ts,js}',
+      'packages/remote/**/*.{test,spec}.{ts,js}',
+      'scripts/**/*.{test,spec}.{ts,js,mjs}',
+    ],
     environment: 'node',
     globals: true,
     coverage: {

@@ -12,18 +12,18 @@ export type {
   JsonRpcResponse,
   JsonRpcError,
   RpcRequestOptions,
-} from './remote/types';
+} from '@ridge/remote';
 export {
   RpcReconnectError,
   RpcTimeoutError,
   RpcCancelledError,
   RpcRemoteError,
-} from './remote/types';
-export { RpcClient } from './remote/rpcClient';
-export { LanWsAdapter, createLanWsTransport } from './remote/lanWsAdapter';
+} from '@ridge/remote';
+export { RpcClient } from '@ridge/remote';
+export { LanWsAdapter, createLanWsTransport } from '@ridge/remote';
 export {
   CloudWebrtcAdapter,
   createCloudWebrtcTransport,
   createCloudWebrtcTransportWith,
-} from './remote/cloudWebrtcAdapter';
-export { CHANNEL, encodeJsonFrame, encodePaneFrame, demuxFrame } from './remote/cloudMux';
+} from '@ridge/remote';
+export { CHANNEL, encodeJsonFrame, encodePaneFrame, demuxFrame } from '@ridge/remote';

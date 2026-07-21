@@ -89,12 +89,14 @@ if [[ -f \"$USER_ZDOTDIR/.zshrc\" ]]; then
 \tfi
 fi
 
-# Emit OSC 7 (cwd) before each prompt so the backend tracks interactive `cd`.
-# $PWD is emitted verbatim (not percent-encoded); Ridge's OSC 7 parser accepts
-# literal paths, so spaces/non-ASCII work despite deviating from RFC 3986 (a
-# conforming encoder would require an external tool).
+# Emit OSC 7 (cwd) + OSC 133;A (prompt start) before each prompt. OSC 7 lets the
+# backend track interactive `cd`; OSC 133;A drives the `pane-prompt` event the
+# frontend uses to bracket the shell-history \"command running\" window. $PWD is
+# emitted verbatim (not percent-encoded); Ridge's OSC 7 parser accepts literal
+# paths, so spaces/non-ASCII work despite deviating from RFC 3986 (a conforming
+# encoder would require an external tool).
 __ridge_emit_cwd() {
-\tprintf '\\033]7;file://%s\\a' \"$PWD\"
+\tprintf '\\033]7;file://%s\\a\\033]133;A\\a' \"$PWD\"
 }
 autoload -Uz add-zsh-hook 2>/dev/null
 if (( ${+functions[add-zsh-hook]} )); then
@@ -158,7 +160,7 @@ pub async fn create_pane(
     pane_id: String,
     shell: Option<String>,
 ) -> Result<(), String> {
-    create_pane_inner(state, pane_id, shell).map_err(|e| e.to_string())
+    create_pane_inner(&state, pane_id, shell).map_err(|e| e.to_string())
 }
 
 /// T14：检索系统可用 shell。返回 `(id, label, program)` 三元组列表。
@@ -183,6 +185,7 @@ pub async fn change_pane_shell(
     state: State<'_, AppState>,
     pane_id: String,
     shell: String,
+    args: Vec<String>,
 ) -> Result<(), String> {
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
     let workspace_id = state.active_workspace_id();
@@ -196,14 +199,39 @@ pub async fn change_pane_shell(
     teardown_pane_pty_if_present(&state, workspace_id, pane_id);
     state.clear_pty_scrollback(workspace_id, pane_id);
 
+    // 持久化本 pane 的 shell（program）——对齐 create_pane_inner，使标题/恢复一致。
+    {
+        let mut map = state.workspaces.write();
+        if let Some(ws) = map.get_mut(&workspace_id) {
+            if let Some(pane) = ws.pane_tree.panes.get_mut(&pane_id) {
+                pane.shell_kind = Some(shell.clone());
+            }
+        }
+    }
+
+    // 带参（WSL 发行版 / VS 开发者环境）走 structured_command；它使
+    // has_explicit_launch=true，自动跳过 OSC7 注入（避免与 VS 的 -Command 冲突）。
+    let (shell_opt, sc) = if args.is_empty() {
+        (Some(shell), None)
+    } else {
+        (
+            None,
+            Some(StructuredPtyCommand {
+                program: shell,
+                args,
+                env: std::collections::HashMap::new(),
+            }),
+        )
+    };
+
     ensure_pane_pty_workspace(
         &*state,
         workspace_id,
         pane_id,
-        Some(shell),
+        shell_opt,
         cwd.as_deref(),
         None,
-        None,
+        sc,
         None,
         None,
         None,
@@ -211,8 +239,11 @@ pub async fn change_pane_shell(
     .map_err(|e| e.to_string())
 }
 
-fn create_pane_inner(
-    state: State<'_, AppState>,
+/// create_pane 的核心（不带 Tauri wrapper）：为既有 pane 起 shell PTY。`&AppState` 便于
+/// ridge-core `WorkspaceWriter` 端口直调（远端建 pane 经 dispatch）。逻辑一字未改——仅签名
+/// 机械改（State→&），spawn 行为保持。**spawn 子进程**：端到端（含输出订阅）须真机验收。
+pub fn create_pane_inner(
+    state: &AppState,
     pane_id: String,
     shell: Option<String>,
 ) -> Result<(), AppError> {
@@ -559,8 +590,12 @@ pub fn ensure_pane_pty_workspace(
     if !has_explicit_launch {
         match shell_kind {
             ShellKind::PowerShell => {
-                // PowerShell shell integration：在每次 prompt 渲染后打一条 OSC 7，让后端
-                // 实时拿到 cwd 变化（PowerShell 的 `cd` 不更新 PEB，`sysinfo` 那条路走不通）。
+                // PowerShell shell integration：在每次 prompt 渲染后打一条 OSC 7（让后端
+                // 实时拿到 cwd 变化，PowerShell 的 `cd` 不更新 PEB，`sysinfo` 那条路走不通），
+                // 外加一条 OSC 133;A（prompt start）。后者触发后端 find_prompt_osc →
+                // `pane-prompt-{ws}-{pane}` 事件，前端据此括出「命令运行中」窗口，把
+                // shell-history 门控扩展到进程内 cmdlet（Start-Sleep 等不 fork 子进程的命令）。
+                // 不覆写 PSReadLine 按键，只多发一条不可见 OSC。
                 //
                 // 用 `-EncodedCommand`（base64 UTF-16LE）传递脚本，彻底绕开
                 // portable-pty / CreateProcess 对 `$`、`&`、`{` 这类字符的引号处理 ——
@@ -571,6 +606,7 @@ pub fn ensure_pane_pty_workspace(
 					  $r = & $Global:__wind_origPrompt; \
 					  try { $c = $PWD.ProviderPath } catch { $c = (Get-Location).Path }; \
 					  try { [Console]::Write(([string][char]27) + ']7;file:///' + $c + ([string][char]7)) } catch {}; \
+					  try { [Console]::Write(([string][char]27) + ']133;A' + ([string][char]7)) } catch {}; \
 					  $r \
 					}";
                 let encoded = encode_powershell_utf16le_base64(PS_INIT);
@@ -580,12 +616,14 @@ pub fn ensure_pane_pty_workspace(
             }
             ShellKind::Bash => {
                 // Bash 在交互模式下每次显示 $PS1 前执行 PROMPT_COMMAND，所以 OSC 7 会跟上 cd。
-                // 用 printf 直接写 stdout，不改 IFS / set -e 行为。
+                // 同时发 OSC 133;A（prompt start）驱动 `pane-prompt` 事件，供前端 shell-history
+                // 门控括出命令运行窗口。用 printf 直接写 stdout，不改 IFS / set -e 行为。
                 let existing = std::env::var("PROMPT_COMMAND").unwrap_or_default();
+                let osc = r#"printf '\033]7;file://%s\a\033]133;A\a' "$PWD""#;
                 let pc = if existing.trim().is_empty() {
-                    r#"printf '\033]7;file://%s\a' "$PWD""#.to_string()
+                    osc.to_string()
                 } else {
-                    format!(r#"{existing}; printf '\033]7;file://%s\a' "$PWD""#)
+                    format!("{existing}; {osc}")
                 };
                 cmd.env("PROMPT_COMMAND", pc);
             }
@@ -658,7 +696,17 @@ pub fn ensure_pane_pty_workspace(
             cmd.env("Ridge_TERMINAL", "1");
             // Claude Code `teammateMode: auto` 依赖「已在 tmux 中」；非空 TMUX 即视为 multiplexer 会话。
             let pane_slot = tmux_pane_index.unwrap_or(0);
-            cmd.env("TMUX", tmux_env_value(pane_slot, cwd, state));
+            let tmux_val = tmux_env_value(pane_slot, cwd, state);
+            // 端点重发现：按本 PTY 的 socket 路径（`$TMUX` 第一段）写 sidecar，记录当前端点，
+            // 供 server 重启换端口后被 `refresh_all` 刷新、垫片连接失败时回退读取。
+            if let Some(sock) = tmux_val.split(',').next() {
+                crate::teammate::endpoint::write_sidecar(
+                    sock,
+                    bind.base_url.as_str(),
+                    bind.token.as_str(),
+                );
+            }
+            cmd.env("TMUX", tmux_val);
             // Numeric only: see comment on cmd/batch `%0` expansion when forwarding env.
             cmd.env("TMUX_PANE", format!("{pane_slot}"));
             // 发起方工作区身份：shim 继承后回传 `X-Ridge-Workspace`，让后端把 split/
@@ -910,6 +958,7 @@ pub(crate) fn activate_pane_pty_state(
         _child: Some(child),
         native_ref: None,
         native_cancel: None,
+        remote_ref: None,
         resize_silence_deadline: Arc::new(AtomicI64::new(0)),
         parser,
         delta_mode: Arc::new(AtomicBool::new(false)),
@@ -1033,8 +1082,8 @@ pub async fn resize_pane(
     #[allow(non_snake_case)] isInlineTui: Option<bool>,
 ) -> Result<(), String> {
     resize_pane_inner(
-        state,
-        app,
+        &state,
+        &app,
         workspace_id,
         pane_id,
         rows,
@@ -1045,9 +1094,12 @@ pub async fn resize_pane(
     .map_err(|e| e.to_string())
 }
 
-fn resize_pane_inner(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
+/// resize_pane 的核心（不带 Tauri wrapper）：resize **既有** PTY（非 spawn/kill）+ 解析器
+/// wipe/delta。`&AppState`/`&AppHandle` 便于 ridge-core `WorkspaceWriter` 端口直调（远端 resize
+/// 经 dispatch）。逻辑与原样一字未改——仅签名改（State→&，机械），行为保持。
+pub fn resize_pane_inner(
+    state: &AppState,
+    app: &tauri::AppHandle,
     workspace_id: String,
     pane_id: String,
     rows: u16,
@@ -1102,16 +1154,25 @@ fn resize_pane_inner(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    let (parser_is_alt, parser_is_inline_tui) = {
+    // §wsl-resize-silence — `parser_has_integration` = 本 pane 发过 prompt OSC 133/633;A
+    // （PowerShell/bash 等有 shell-integration）。无集成的 pane（WSL 带 args / cmd /
+    // explicit-launch）没有 prompt 标记去早释放 silence 窗口，那 80ms 窗口会吞掉它
+    // SIGWINCH 重绘的字节（实测 ~25ms 落在窗口内）→ 画面冻在旧内容 + reflow 错位。
+    // 默认 true：拿不到 parser（pending/legacy）时按"有集成"处理，保持既有 silence 行为。
+    let (parser_is_alt, parser_is_inline_tui, parser_has_integration) = {
         let map = state.workspaces.read();
         map.get(&wid)
             .and_then(|ws| ws.terminals.get(&pane_id))
             .filter(|h| h.delta_mode.load(Ordering::Acquire))
             .map(|h| {
                 let p = h.parser.lock();
-                (p.is_alt_screen(), p.is_inline_tui_resize_at(flag_now_ms))
+                (
+                    p.is_alt_screen(),
+                    p.is_inline_tui_resize_at(flag_now_ms),
+                    p.has_shell_integration(),
+                )
             })
-            .unwrap_or((false, false))
+            .unwrap_or((false, false, true))
     };
     let is_alt = is_alt || parser_is_alt;
     let is_inline_tui = is_inline_tui || parser_is_inline_tui;
@@ -1166,7 +1227,11 @@ fn resize_pane_inner(
             // redraw bytes the same way it dropped lazygit's. The kernel's
             // §A.3 primary-visible wipe ran first (above), so the canvas is
             // blank when Ink's redraw lands.
-            let skip_silence = is_alt || is_inline_tui;
+            // §wsl-resize-silence — 无 shell-integration 的 pane（WSL/cmd/explicit-launch）
+            // 也跳过 silence：它们的 SIGWINCH 重绘无 prompt OSC 早释放，会被窗口整段吞掉。
+            // 代价=ConPTY viewport replay 会漏进来（与 alt/inline-TUI 跳过 silence 同款权衡），
+            // 但重绘落在其后覆盖掉，远优于"冻在旧尺寸"。
+            let skip_silence = is_alt || is_inline_tui || !parser_has_integration;
             if res.is_ok() && !skip_silence {
                 let deadline = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -1700,5 +1765,48 @@ pub async fn summon_native_session(
         .and_then(|s| uuid::Uuid::parse_str(s.trim()).ok())
         .unwrap_or_else(|| state.active_workspace_id());
     crate::teammate::server::summon_into_workspace(&state, &app_handle, &socket, &target, wid)
+        .map_err(|e| e.message())
+}
+
+/// 新建一个本机**无头**会话，置于专用 `headless` socket（与 teammate/GUI 默认 socket
+/// 隔离，互不干扰列举/终止）。仅创建、不自动接入；返回会话名供前端随后
+/// `summon_native_session` 接入工作区（右键「接入终端」走 dock 区域选择落点）。
+#[tauri::command]
+pub fn new_headless_session(name: Option<String>, cwd: Option<String>) -> Result<String, String> {
+    let name = name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            let ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            format!("term-{ms}")
+        });
+    let req = native::NewSessionReq {
+        // 专用无头 socket（非 "default"，与 teammate/GUI 折叠互不干扰）。
+        socket: "headless".to_string(),
+        name: Some(name.clone()),
+        window_name: None,
+        cwd,
+        width: 80,
+        height: 24,
+        // Windows 无 `$SHELL` → None，spawn_pane 回退平台默认 shell。
+        shell: std::env::var("SHELL").ok(),
+        command: None,
+        attach_or_create: false,
+        print: None,
+    };
+    native::new_session(req, &[]).map(|_| name).map_err(|e| e.message())
+}
+
+/// **真正终止**一个本机无头会话（杀其子进程）——「主机」面板里会话的唯一真关闭入口。
+/// 若该会话当前被某工作区领养，子进程死亡触发 reader-EOF，领养视图经既有 native
+/// 清理路径自动从布局树摘除（见 `engine/pty.rs` 的 `native_ref` EOF 分支）。
+/// `gui` 传空切片：GUI 工作区会话不参与解析，故无法借此误杀真实 GUI pane。
+#[tauri::command]
+pub fn terminate_native_session(socket: String, target: String) -> Result<(), String> {
+    native::kill_session(&socket, &target, &[])
+        .map(|_| ())
         .map_err(|e| e.message())
 }

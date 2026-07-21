@@ -52,6 +52,42 @@ pub fn _init() {
     console_error_panic_hook::set_once();
 }
 
+/// §present-fast (2026-06-22): let JS opt the WebGPU renderer into the
+/// dirty-row fast path (vs. the always-full-frame correctness default) on a
+/// release WebView2 whose swap chain reliably preserves prior pixels under
+/// LoadOp::Load. `manager.ts` gates this on `localStorage.RIDGE_PRESENT_FAST`.
+/// Compiled only with the WebGPU backend; absent on Canvas2D-only builds (the
+/// JS caller guards with `typeof`). See `render/webgpu.rs::requires_full_frame`.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen(js_name = setPresentFast)]
+pub fn set_present_fast(on: bool) {
+    crate::render::webgpu::set_present_fast(on);
+}
+
+/// §atlas-race detector (2026-06-22): read the process-wide count of
+/// "a glyph-atlas layer was overwritten after a recorded draw already cited
+/// it this frame" events — the exact cross-pane switch-workspace garble.
+/// Returned as `f64` (counts never approach 2^53). 0 on Canvas2D-only builds
+/// (JS guards with `typeof`). Poll from CDP/console for release forensics;
+/// any non-zero value localises a residual `frame_written` hole (details are
+/// logged to the devtools console at detection time).
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen(js_name = atlasOverwriteAfterCiteCount)]
+pub fn atlas_overwrite_after_cite_count() -> f64 {
+    crate::render::gpu_context::atlas_overwrite_after_cite_count() as f64
+}
+
+/// §stale-replay detector (2026-06-22 round 2): read the process-wide count of
+/// cached replays aborted because a cited atlas layer was repurposed since
+/// caching — the CROSS-frame switch-workspace garble the per-frame detector
+/// misses. Non-zero with the fix in place means "the bug WAS happening and is
+/// now caught + re-rendered." 0 on Canvas2D-only builds.
+#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
+#[wasm_bindgen(js_name = staleReplayCount)]
+pub fn stale_replay_count() -> f64 {
+    crate::render::gpu_context::stale_replay_count() as f64
+}
+
 #[wasm_bindgen(js_name = TerminalKernel)]
 pub struct JsTerminal {
     inner: Terminal,
@@ -1600,6 +1636,35 @@ mod renderer_js {
         #[wasm_bindgen(js_name = endFrame)]
         pub fn end_frame(&self) {
             self.host.borrow_mut().end_frame();
+        }
+
+        /// Upload a wallpaper image to the GPU and enable the wallpaper
+        /// pass. `rgba` must be a packed RGBA byte slice
+        /// (`width * height * 4` bytes). `opacity` is in `[0.0, 1.0]`;
+        /// 0 = full theme background colour, 1 = fully opaque image.
+        ///
+        /// Forwards to `SurfaceHost::set_wallpaper`, which in turn
+        /// delegates to `GpuContext::set_wallpaper` (texture upload +
+        /// bind-group rebuild) and calls `invalidate()` so the change
+        /// takes effect on the next `beginFrame`.
+        ///
+        /// Only available under `#[cfg(feature = "webgpu")]` — the JS
+        /// side must guard accordingly.
+        #[wasm_bindgen(js_name = setWallpaper)]
+        pub fn set_wallpaper(&self, rgba: &[u8], w: u32, h: u32, opacity: f32) {
+            self.host.borrow_mut().set_wallpaper(rgba, w, h, opacity);
+        }
+
+        /// Remove the wallpaper and revert to plain theme-colour clear
+        /// on the next `beginFrame`. Idempotent — safe to call even
+        /// when no wallpaper is currently loaded.
+        ///
+        /// Forwards to `SurfaceHost::clear_wallpaper` → `GpuContext::
+        /// clear_wallpaper` (drops texture + bind group) and calls
+        /// `invalidate()`.
+        #[wasm_bindgen(js_name = clearWallpaper)]
+        pub fn clear_wallpaper(&self) {
+            self.host.borrow_mut().clear_wallpaper();
         }
     }
 }

@@ -474,6 +474,11 @@ impl RemoteSession {
 
     /// 把本会话的 6 位 TOTP + otpauth URI 打到 stderr（引导用户在浏览器 controller 输入）。
     fn print_totp_prompt(totp: &RemoteTotp) {
+        // TUI 活跃时（仪表盘内起 daemon）跳过 stderr banner 避免糊屏——仪表盘 Status
+        // 区已展示同源 TOTP 码；headless daemon（rdg remote --daemon）下正常打印。
+        if crate::TUI_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         const CYAN: &str = "\x1b[36m";
         const YELLOW: &str = "\x1b[33m";
         const BOLD: &str = "\x1b[1m";
@@ -898,7 +903,7 @@ mod tests {
         impl HostPeer for MockPeer {
             async fn answer(
                 &self,
-                _ice: Vec<String>,
+                _ice: Vec<crate::ice::IceServerConfig>,
                 mut inbound: mpsc::Receiver<PeerInbound>,
                 outbound: mpsc::Sender<PeerOutbound>,
             ) -> anyhow::Result<crate::rtc::DataChannelIo> {

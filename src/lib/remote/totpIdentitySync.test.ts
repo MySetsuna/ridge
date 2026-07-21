@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { writable } from 'svelte/store';
 import { startTotpIdentitySync } from './totpIdentitySync';
-import type { CloudAuthState } from './cloud/auth';
+import type { CloudAuthState } from '@ridge/remote/shared/cloud/auth';
 
 function state(username: string | null): CloudAuthState {
   return {

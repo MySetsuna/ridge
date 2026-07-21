@@ -16,9 +16,10 @@
   // FileViewer (read-only file / git-diff overlay) loaded on first open.
   const FileViewer = import('./lib/FileViewer.svelte');
   import BottomTabBar from './BottomTabBar.svelte';
-  import { type RemoteLink, type PaneInfo, type ConnectionState, type WorkspaceInfo, type ConnectionFailure } from './lib/wsRemote';
+  import { type RemoteLink, type PaneInfo, type ConnectionState, type WorkspaceInfo, type ConnectionFailure } from '@ridge/remote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
+  import { PaneScrollbackCache, PANE_BUF_CAP } from './lib/paneScrollbackCache';
 
   let { ws }: { ws: RemoteLink } = $props();
   let panes = $state<PaneInfo[]>([]);
@@ -55,9 +56,20 @@
     viewer = { kind: 'diff', path };
     sidebarTab = null;
   }
+  // §close-to-terminal: closing the file/diff viewer must land on the TERMINAL,
+  // not the sidebar file listing it was opened from. The terminal renders only
+  // when BOTH overlays are null, so clear both — otherwise a surviving sidebarTab
+  // re-reveals the directory (the reported "关闭文件回到文件目录" bug).
+  function closeViewer() {
+    viewer = null;
+    sidebarTab = null;
+  }
   // §remote 新建终端：空状态下让远程端自行创建终端，不再依赖桌面端先开一个。
   let creatingPane = $state(false);
   let createError = $state('');
+
+  // §B-debounce: 防快速切 pane 打爆 DataChannel 的补偿定时器（见 §replay-backpressure）。
+  let _paneSubDebounce: ReturnType<typeof setTimeout> | null = null;
 
   let canvasRef: ReturnType<typeof TerminalCanvasComponent> | undefined = $state();
   let showKeyboard = $state(true);          // virtual keyboard visible in header
@@ -146,6 +158,18 @@
     } catch { /* clipboard blocked: no permission / insecure context */ }
   }
 
+  // §history-pull（2026-07-02）: the host no longer dumps full scrollback on
+  // subscribe — it seeds ~1.5 screens and we lazily page older history as the user
+  // scrolls up. TerminalCanvas fires onNearTop when the viewport nears the buffer
+  // top; fetch the next older batch (cloud link only) and prepend it. Guard against
+  // a pane switch mid-fetch so we never prepend one pane's history onto another.
+  async function loadOlderScrollback() {
+    const pid = activePaneId;
+    if (!pid || !canvasRef || !ws.fetchOlderScrollback) return;
+    const older = await ws.fetchOlderScrollback(pid);
+    if (older && older.length > 0 && activePaneId === pid) canvasRef.prependScrollback(older);
+  }
+
   // §terminal-isolation + scrollback-cache: the local kernel is a single shared
   // instance, so switching panes MUST wipe it (resetForSwitch) — otherwise the
   // previous pane's scrollback bleeds into the new one (上滚串台). We also keep
@@ -153,9 +177,12 @@
   // mirror the active pane to sessionStorage so a reload restores instantly
   // before the host reconnects. The host re-sends ≤64KB scrollback on
   // (re)subscribe; we tail-match it against the cache to avoid double-painting.
-  const PANE_BUF_CAP = 256 * 1024;
+  // §scrollback-cache: per-pane raw byte buffers + the prune (GC) and
+  // replay-reconcile DECISIONS live in the pure PaneScrollbackCache module
+  // (unit-tested without a host/DOM). This shell only drives its sessionStorage
+  // mirroring by the id sets the prune methods return.
   const SS_CAP = 48 * 1024;
-  const paneBuffers = new Map<string, Uint8Array>();
+  const paneCache = new PaneScrollbackCache(PANE_BUF_CAP);
   let subscribedPaneId: string | null = null;
   let expectReplayPane: string | null = null;
   let ssMirrorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -173,21 +200,6 @@
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
     return out;
   }
-  function bytesEndsWith(hay: Uint8Array, tail: Uint8Array): boolean {
-    if (tail.length === 0) return true;
-    if (tail.length > hay.length) return false;
-    const off = hay.length - tail.length;
-    for (let i = 0; i < tail.length; i++) if (hay[off + i] !== tail[i]) return false;
-    return true;
-  }
-  function appendPaneBuffer(id: string, data: Uint8Array): void {
-    const prev = paneBuffers.get(id);
-    let next: Uint8Array;
-    if (!prev) { next = data.slice(); }
-    else { next = new Uint8Array(prev.length + data.length); next.set(prev); next.set(data, prev.length); }
-    if (next.length > PANE_BUF_CAP) next = next.slice(next.length - PANE_BUF_CAP);
-    paneBuffers.set(id, next);
-  }
   function loadPaneFromSession(id: string): Uint8Array | null {
     try { const s = sessionStorage.getItem(ssKey(id)); return s ? b64ToBytes(s) : null; }
     catch { return null; }
@@ -196,7 +208,7 @@
     if (ssMirrorTimer) return;
     ssMirrorTimer = setTimeout(() => {
       ssMirrorTimer = null;
-      const buf = paneBuffers.get(id);
+      const buf = paneCache.get(id);
       if (!buf) return;
       try {
         const tail = buf.length > SS_CAP ? buf.subarray(buf.length - SS_CAP) : buf;
@@ -204,32 +216,54 @@
       } catch { /* quota exceeded / disabled — ignore */ }
     }, 600);
   }
+  function removeSessionMirror(id: string) {
+    try { sessionStorage.removeItem(ssKey(id)); } catch { /* disabled — ignore */ }
+  }
 
   // §cache-gc: a closed pane MUST release its caches. The PWA tab can live for
   // days (长期运行/长时间后台), so without this every terminal ever opened leaks
   // its scrollback into both the in-memory buffer map (≤256KB each) AND
   // sessionStorage (≤48KB each), plus the WS text buffer — eventually blowing the
   // mobile tab's memory budget / sessionStorage quota, so the page fails to
-  // (re)open until the user clears site data. Prune everything outside the host's
-  // authoritative live-pane set whenever a fresh `panes` list arrives (the host
-  // re-broadcasts it on every pane add/close/rename). Over-pruning is harmless:
-  // the host replays a pane's scrollback on (re)subscribe.
-  function pruneDeadPanes(liveIds: string[]) {
-    const live = new Set(liveIds);
-    for (const id of [...paneBuffers.keys()]) {
-      if (!live.has(id)) paneBuffers.delete(id);
-    }
+  // (re)open until the user clears site data.
+  //
+  // §cross-ws-prune（方案1，子方案 B）: the host's `list-panes` only returns the
+  // ACTIVE workspace's panes, so the old "delete everything not in this list"
+  // wrongly GC'd OTHER workspaces' caches the moment you switched workspace →
+  // switching back lost scrollback. We now release ONLY panes that vanished from
+  // their OWN workspace's list (truly closed — mobile can only close panes in the
+  // active workspace), keeping cross-workspace caches alive. The host re-broadcasts
+  // the list on every pane add/close/rename. `survivingIds` spans all workspaces so
+  // ws.pruneOutputs (same "not in set → delete" semantics) doesn't over-prune either.
+  function pruneDeadPanes(activeWsId: string, liveIds: string[]) {
+    const { survivingIds } = paneCache.pruneCurrentWorkspace(activeWsId, liveIds);
+    // Mirror the in-memory GC to sessionStorage: drop any mirror whose pane is no
+    // longer cached (survivingIds is the authoritative kept set across all ws).
+    const survive = new Set(survivingIds);
     try {
       const stale: string[] = [];
       for (let i = 0; i < sessionStorage.length; i++) {
         const k = sessionStorage.key(i);
-        if (k && k.startsWith(SB_KEY_PREFIX) && !live.has(k.slice(SB_KEY_PREFIX.length))) {
+        if (k && k.startsWith(SB_KEY_PREFIX) && !survive.has(k.slice(SB_KEY_PREFIX.length))) {
           stale.push(k);
         }
       }
       for (const k of stale) sessionStorage.removeItem(k);
     } catch { /* sessionStorage disabled — nothing to prune */ }
-    ws.pruneOutputs(live);
+    ws.pruneOutputs(survive);
+  }
+
+  // §cross-ws-prune fallback（方案1）: when a whole workspace is closed (its id
+  // drops from list-workspaces), its panes can never reappear, so release their
+  // caches here — the per-list prune above never sees those panes again. Clears
+  // both the in-memory buffer and its sessionStorage mirror, and keeps the WS
+  // text buffers (pruneOutputs) in step with the surviving cached set.
+  function pruneCachesForClosedWorkspaces(liveWorkspaceIds: string[]) {
+    const removed = paneCache.pruneClosedWorkspaces(liveWorkspaceIds);
+    if (removed.length > 0) {
+      for (const id of removed) removeSessionMirror(id);
+      ws.pruneOutputs(new Set(paneCache.liveIds()));
+    }
   }
 
   // Defensive: the host's pane/workspace lists can briefly contain DUPLICATE ids
@@ -295,6 +329,8 @@
     try {
       const data = await ws.listWorkspaces();
       workspaces = dedupeById(data.workspaces || []);
+      // §cross-ws-prune fallback: drop caches of any workspace that's gone.
+      pruneCachesForClosedWorkspaces(workspaces.map(w => w.id));
       const hostActive = workspaces.find(w => w.active);
       // §persist-state: on the first list after (re)connect, if the user's last
       // viewed workspace still exists but the host is on a different one, switch
@@ -337,6 +373,15 @@
     try { ws.disconnect(); } catch { /* already torn down */ }
     try { localStorage.removeItem('ridge_remote_token'); } catch { /* ignore */ }
     location.reload();
+  }
+
+  // Compact a cwd for the header sub-line: keep the last two path segments so the
+  // meaningful tail (repo/dir) is visible on a narrow phone header; the full path
+  // is on the title attribute for a long-press tooltip.
+  function compactCwd(cwd: string): string {
+    const parts = cwd.split(/[/\\]+/).filter(Boolean);
+    if (parts.length <= 2) return cwd;
+    return '…/' + parts.slice(-2).join('/');
   }
 
   function handleSidebarToggle(tab: 'files' | 'git' | 'search') {
@@ -385,8 +430,11 @@
       if (msg.type === 'panes') {
         panes = dedupeById(msg.panes);
         const paneIds = panes.map(p => p.id);
-        // Release caches for panes the host no longer reports (memory/quota leak).
-        pruneDeadPanes(paneIds);
+        // Release caches for panes truly closed in THIS workspace (memory/quota
+        // leak); other workspaces' caches survive (§cross-ws-prune). The list
+        // belongs to the active workspace; skip pruning until we know which one
+        // (an empty id would mis-tag every pane).
+        if (activeWorkspaceId) pruneDeadPanes(activeWorkspaceId, paneIds);
         // §persist-state pane restore: keep a still-valid current selection
         // (no "莫名奇妙切换工作区"); otherwise prefer the remembered pane for the
         // current workspace (seeded from localStorage on boot), else the first
@@ -410,6 +458,10 @@
       }
       if (msg.type === 'workspaces') {
         workspaces = dedupeById(msg.workspaces);
+        // §cross-ws-prune fallback: a closed workspace's panes can never come
+        // back — release their caches so they don't leak (per-list prune never
+        // sees them again).
+        pruneCachesForClosedWorkspaces(workspaces.map(w => w.id));
         const active = workspaces.find(w => w.active);
         // Once the boot restore has run, follow the host's active workspace.
         // Before that, refreshWorkspaces() owns the restore decision, so a
@@ -436,20 +488,21 @@
       if (paneId !== activePaneId) return;
       if (expectReplayPane === paneId) {
         // First chunk after (re)subscribe = the host's on-subscribe scrollback
-        // replay. If our cache already ends with it we pre-painted it on switch
-        // → drop the redundant replay. Otherwise the pane changed while we were
-        // away (or the cache was empty/short) → wipe + repaint authoritatively.
+        // replay (≤64KB tail). §no-shrink（方案2）: reconcile it against the local
+        // cache. 'keep' = our cache tail-matches OR is LONGER than the replay →
+        // we already pre-painted it; drop the replay so the host's 64KB tail can't
+        // overwrite/shrink our ≤256KB history. 'repaint' = no cache, or the pane
+        // changed (cache shorter & no tail-match) → wipe + repaint authoritatively.
         expectReplayPane = null;
-        const cached = paneBuffers.get(paneId);
-        if (cached && bytesEndsWith(cached, data)) return;
+        const r = paneCache.reconcileReplay(paneId, data, activeWorkspaceId || undefined);
+        if (r.action === 'keep') return;
         canvasRef?.resetForSwitch();
-        canvasRef?.feedUtf8(data);
-        paneBuffers.set(paneId, data.length > PANE_BUF_CAP ? data.slice(data.length - PANE_BUF_CAP) : data.slice());
+        canvasRef?.feedUtf8(r.buffer);
         scheduleSessionMirror(paneId);
         return;
       }
       // Live output.
-      appendPaneBuffer(paneId, data);
+      paneCache.append(paneId, data, activeWorkspaceId || undefined);
       canvasRef?.feedUtf8(data);
       scheduleSessionMirror(paneId);
     });
@@ -508,7 +561,7 @@
       canvasRef?.resetForSwitch();
       const pid = activePaneId;
       if (pid) {
-        const cached = paneBuffers.get(pid);
+        const cached = paneCache.get(pid);
         if (cached && cached.length > 0) canvasRef?.feedUtf8(cached);
         expectReplayPane = pid;
         ws.subscribePane(pid);
@@ -556,16 +609,23 @@
       // §isolation: wipe the kernel so the previous pane can't bleed into this one.
       canvasRef?.resetForSwitch();
       // Instant pre-paint from cache (in-memory; else sessionStorage on reload).
-      let cached = paneBuffers.get(pid);
+      let cached = paneCache.get(pid);
       if (!cached) {
         const restored = loadPaneFromSession(pid);
-        if (restored) { paneBuffers.set(pid, restored); cached = restored; }
+        if (restored) { paneCache.set(pid, restored, activeWorkspaceId || undefined); cached = restored; }
       }
       if (cached && cached.length > 0) canvasRef?.feedUtf8(cached);
       // The host replays this pane's scrollback on subscribe — reconcile it
       // against the cache in onRawBytes to avoid double-painting.
+      // §B-debounce: 防快速切换 pane 连发多次未截流的 replay_pane_scrollback_raw（256 KiB）
+      // 打爆 DataChannel 缓冲区（8 MiB BUFFERED_HIGH_WATERMARK）→ 断连。
+      // 只对"最终落脚"的 pane 发 subscribePane：150ms 内若 activePaneId 已变则取消。
+      if (_paneSubDebounce !== null) clearTimeout(_paneSubDebounce);
       expectReplayPane = pid;
-      ws.subscribePane(pid);
+      _paneSubDebounce = setTimeout(() => {
+        _paneSubDebounce = null;
+        if (activePaneId === pid) ws.subscribePane(pid);
+      }, 150);
     });
   });
 
@@ -590,6 +650,27 @@
   $effect(() => {
     const p = panes.find((pp) => pp.id === activePaneId);
     if (p?.cwd) activeCwd = p.cwd;
+  });
+
+  // §header-pin（虚拟键盘顶吸）: keep the header (which holds the virtual keyboard)
+  // glued to the VISIBLE viewport top so the soft IME can't push it off-screen /
+  // let it cover content. When a mobile browser scrolls the layout up to reveal the
+  // focused input above the IME, `visualViewport.offsetTop` grows by that scroll
+  // amount; translating the header DOWN by the same amount re-pins it to the visible
+  // top. When the browser keeps `position:fixed` still (offsetTop stays 0) this is a
+  // no-op, so it's safe on every viewport model. Bounded by the scroll distance.
+  let headerShift = $state(0);
+  $effect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => { headerShift = Math.max(0, Math.round(vv.offsetTop)); };
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    update();
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+    };
   });
 </script>
 
@@ -630,7 +711,7 @@
       {#if createError}<p class="create-error">{createError}</p>{/if}
     </div>
   {:else if activePaneId}
-    <header class="mobile-header">
+    <header class="mobile-header" style="transform: translateY({headerShift}px)">
       <div class="header-row">
         <div class="header-nav">
           <button class="hdr-btn" class:active={sidebarTab === 'files'} onclick={() => handleSidebarToggle('files')} title={$t('mobile.filesTitle')} tabindex="-1">
@@ -645,8 +726,13 @@
         </div>
         <div class="header-breadcrumb">
           {#if activePaneId}
-            <span class="breadcrumb-text">{activePane?.title || $t('mobile.terminalDefault')}</span>
-            <span class="status-dot" class:connected={wsState === 'connected'} class:connecting={wsState === 'connecting'}></span>
+            <div class="breadcrumb-line">
+              <span class="breadcrumb-text">{activePane?.title || $t('mobile.terminalDefault')}</span>
+              <span class="status-dot" class:connected={wsState === 'connected'} class:connecting={wsState === 'connecting'}></span>
+            </div>
+            {#if activeCwd}
+              <span class="breadcrumb-cwd" title={activeCwd}>{compactCwd(activeCwd)}</span>
+            {/if}
           {/if}
         </div>
         <div class="header-actions">
@@ -676,6 +762,7 @@
         {onStdin}
         {onResize}
         onHostClipboard={(text) => ws.setHostClipboard(text)}
+        onNearTop={loadOlderScrollback}
         bind:selectionMode
       />
     {/await}
@@ -705,7 +792,7 @@
         kind={v.kind}
         path={v.path}
         line={v.line}
-        onClose={() => viewer = null}
+        onClose={closeViewer}
       />
     {/await}
   {/if}
@@ -741,8 +828,10 @@
   .mobile-header{position:sticky;top:0;display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 0 0;background:var(--rg-bg);border-bottom:1px solid color-mix(in srgb,var(--rg-fg) 12%,transparent);z-index:30;min-height:calc(44px + env(safe-area-inset-top))}
   .header-row{display:flex;align-items:center;height:44px;padding:0 8px;gap:4px}
   .header-nav{display:flex;gap:2px}
-  .header-breadcrumb{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;overflow:hidden}
+  .header-breadcrumb{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;min-width:0;overflow:hidden}
+  .breadcrumb-line{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;max-width:100%}
   .breadcrumb-text{font-size:13px;color:var(--rg-fg-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .breadcrumb-cwd{max-width:100%;font-size:10px;line-height:1.2;color:var(--rg-fg-muted);opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   .header-actions{display:flex;gap:2px}
   .hdr-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;border:none;border-radius:8px;background:transparent;color:var(--rg-fg-muted);cursor:pointer;transition:all .15s}
   .hdr-btn:active{background:color-mix(in srgb,var(--rg-fg) 10%,transparent);color:var(--rg-fg)}

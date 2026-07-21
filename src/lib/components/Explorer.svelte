@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { ChevronRight, RefreshCw, FolderOpen, Save, Trash2, Terminal } from 'lucide-svelte';
+	import { ChevronRight, RefreshCw, FolderOpen, Save, Trash2, Terminal, File, Folder } from 'lucide-svelte';
 	import { alertDialog, confirmDialog } from './RidgeDialog.svelte';
 	import {
 		fileExplorerStore,
@@ -13,6 +13,7 @@
 		flattenVisiblePaths,
 		explorerClipboard,
 		setExplorerClipboard,
+		resolveActiveClipboard,
 		uniqueChildName,
 		refreshColumnsCovering,
 	} from '$lib/stores/fileExplorer';
@@ -33,10 +34,12 @@
 	import { tick } from 'svelte';
 	import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 	import FileTree from './FileTree.svelte';
+	import { explorerBodyHeights, setExplorerBodyHeight, persistExplorerBodyHeights } from '$lib/stores/explorerLayout';
 	import SaveWorkspaceDialog from './SaveWorkspaceDialog.svelte';
 	import SidebarPluginRegion from './SidebarPluginRegion.svelte';
-	import { overlayScroll } from '$lib/actions/overlayScroll';
+
 	import { t, tr } from '$lib/i18n';
+	import { showContextMenu } from '$lib/stores/contextMenu';
 
 	interface Props {
 		workspaceId: string;
@@ -290,6 +293,100 @@
 		}
 	}
 
+	// ─── 列级（cwd 顶层）内联新建 ───────────────────────────────────────────
+	// FileTree 的内联新建只作用在某个文件夹「节点」上；cwd 根自身不作为节点渲染，
+	// 故「在 cwd 顶层 / 空白区新建」需要这一层列级状态：在 .explorer-body 顶部插一行
+	// 输入框，提交时对 col.cwd 调 create_file/create_directory。语义对齐 FileTree
+	// 的内联输入（Enter 提交 / Esc 取消 / blur 提交）。
+	let creatingColumnId = $state<string | null>(null);
+	let creatingKind = $state<'file' | 'folder'>('file');
+	let creatingValue = $state('');
+	let creatingCwd = $state('');
+	let createInput = $state<HTMLInputElement | undefined>();
+	let pendingColumnCreate = $state(false);
+
+	function joinChild(baseDir: string, child: string): string {
+		const sep = baseDir.includes('\\') && !baseDir.includes('/') ? '\\' : '/';
+		const cleanBase = baseDir.replace(/[\\/]+$/, '');
+		return `${cleanBase}${sep}${child}`;
+	}
+
+	function cancelColumnCreate(): void {
+		creatingColumnId = null;
+		creatingValue = '';
+	}
+
+	async function beginColumnCreate(columnId: string, cwd: string, kind: 'file' | 'folder'): Promise<void> {
+		// 折叠态先展开，否则 body（含输入框）不渲染。
+		if (get(collapsedColumns).has(columnId)) toggleColumnCollapsed(columnId);
+		creatingColumnId = columnId;
+		creatingCwd = cwd;
+		creatingKind = kind;
+		creatingValue = '';
+		await tick();
+		createInput?.focus();
+	}
+
+	async function commitColumnCreate(): Promise<void> {
+		if (!creatingColumnId || pendingColumnCreate) return;
+		const val = creatingValue.trim();
+		if (!val) { cancelColumnCreate(); return; }
+		if (!isTauri()) { cancelColumnCreate(); return; }
+		const columnId = creatingColumnId;
+		const isFile = creatingKind === 'file';
+		const target = joinChild(creatingCwd, val);
+		pendingColumnCreate = true;
+		try {
+			await invoke(isFile ? 'create_file' : 'create_directory', { path: target });
+			await fileExplorerStore.loadTree(columnId);
+			if (isFile) await fileEditorStore.openFile(target);
+			cancelColumnCreate();
+		} catch (e) {
+			await alertDialog({
+				title: tr('explorer.createFailed'),
+				message: isFile
+					? tr('explorer.createFileFailedMessage', { error: String(e) })
+					: tr('explorer.createDirFailedMessage', { error: String(e) }),
+				danger: true,
+			});
+		} finally {
+			pendingColumnCreate = false;
+		}
+	}
+
+	function onColumnCreateKeydown(e: KeyboardEvent): void {
+		if (e.isComposing) return;
+		if (e.key === 'Enter') { e.preventDefault(); void commitColumnCreate(); }
+		else if (e.key === 'Escape') { e.preventDefault(); cancelColumnCreate(); }
+	}
+
+	function onColumnCreateBlur(): void {
+		if (creatingColumnId && !pendingColumnCreate) void commitColumnCreate();
+	}
+
+	async function revealCwd(cwd: string): Promise<void> {
+		if (!isTauri()) return;
+		try {
+			await invoke('reveal_in_file_manager', { path: cwd });
+		} catch (e) {
+			await alertDialog({ title: tr('explorer.revealFailed'), message: tr('explorer.revealFailedMessage', { error: String(e) }), danger: true });
+		}
+	}
+
+	// cwd 头 / 文件树空白区右键：弹「新建文件 / 新建文件夹 / 刷新 / 在文件管理器显示」。
+	function showCwdContextMenu(e: MouseEvent, col: { id: string; cwd: string }): void {
+		e.preventDefault();
+		e.stopPropagation();
+		showContextMenu(e.clientX, e.clientY, [
+			{ id: 'new-file', label: tr('explorer.ctxNewFile'), action: () => void beginColumnCreate(col.id, col.cwd, 'file') },
+			{ id: 'new-folder', label: tr('explorer.ctxNewFolder'), action: () => void beginColumnCreate(col.id, col.cwd, 'folder') },
+			{ id: 'paste', label: tr('explorer.ctxPaste'), action: () => void pasteClipboard({ columnId: col.id }) },
+			{ id: 'div1', divider: true },
+			{ id: 'refresh', label: tr('explorer.ctxRefresh'), action: () => void handleRefresh(col.id) },
+			{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealCwd(col.cwd) },
+		]);
+	}
+
 	/**
 	 * Click on a file-tree node. `_columnId` intentionally ignored — we derive
 	 * the column from the node's path so multi-select stays scoped to one column
@@ -354,20 +451,34 @@
 	// cross FileTree node boundaries; per-node keys (Enter/F2/Delete/Arrow Left/Right)
 	// stay on the node button in FileTree.svelte. See `handleRootKeydown` below.
 
-	/** Paste clipboard into the target dir (selected dir, or parent of selected file). */
-	async function pasteClipboard(): Promise<void> {
-		if (!isTauri()) return;
-		const clip = get(explorerClipboard);
+	let pasting = false; // #6 pasteClipboard in-flight 护栏：避免并发重复粘贴
+	/** Paste clipboard into the target dir（右键传 target；Ctrl+V 不传，用当前选中）。 */
+	async function pasteClipboard(target?: { columnId?: string; targetPath?: string }): Promise<void> {
+		if (!isTauri() || pasting) return;
+		pasting = true;
+		try {
+		// 读当前系统序列号 + 系统文件列表（并发），交给纯函数判定该用内部还是系统剪贴板。
+		const [curSeq, sysFiles] = await Promise.all([
+			invoke<number>('read_clipboard_sequence').catch(() => 0),
+			invoke<string[]>('read_clipboard_file_paths').catch((err) => {
+				console.warn('[explorer] read system clipboard files failed', err);
+				return [] as string[];
+			}),
+		]);
+		const clip = resolveActiveClipboard(get(explorerClipboard), curSeq, sysFiles);
 		if (!clip || clip.paths.length === 0) return;
 
 		const state = get(fileExplorerStore);
-		// Find the active column & target dir.
-		let col = state.columns.find((c) => c.selectedPath);
+		// Find the active column & target dir（右键 target 优先，否则用当前选中/首个有树的列）。
+		let col = target?.columnId ? state.columns.find((c) => c.id === target.columnId) : undefined;
+		if (!col) col = state.columns.find((c) => c.selectedPath);
 		if (!col) col = state.columns.find((c) => c.tree);
 		if (!col) return;
 
 		let targetDir: string | null = null;
-		const primary = col.selectedPath;
+		// #2 右键 target 存在但无 targetPath（cwd 头/空白区右键）→ 粘到 cwd 根，不回退到 selectedPath；
+		// 仅 Ctrl+V（无 target）才用当前选中项相对粘贴。
+		const primary = target ? target.targetPath : col.selectedPath;
 		if (primary) {
 			// If primary is a dir, paste into it; if a file, paste into its parent.
 			// We detect dir by walking the cached tree — no extra IPC.
@@ -435,6 +546,9 @@
 		if (errors.length > 0) {
 			await alertDialog({ title: tr('explorer.pasteFailed'), message: tr('explorer.pasteFailedMessage', { count: errors.length, details: errors.join('\n') }), danger: true });
 		}
+		} finally {
+			pasting = false;
+		}
 	}
 
 	function handleRootKeydown(e: KeyboardEvent): void {
@@ -454,22 +568,28 @@
 				const paths = Array.from(col.selectedPaths);
 				if (paths.length === 0) return;
 				const mode: 'copy' | 'cut' = e.key.toLowerCase() === 'c' ? 'copy' : 'cut';
-				setExplorerClipboard({ paths, mode });
-				// Mirror to OS clipboard so Ctrl+V into a terminal / file manager
-				// pastes a usable list of paths. Only on copy (cut leaves OS
-				// clipboard alone because "cut" semantics don't map to shell
-				// clipboards and we don't want to accidentally move on external
-				// paste).
-				if (mode === 'copy' && isTauri()) {
-					void (async () => {
-						try {
-							await writeText(paths.join('\n'));
-						} catch (err) {
-							console.warn('[explorer] clipboard writeText failed', err);
-						}
-					})();
-				}
 				e.preventDefault();
+				// #1 先同步置内部剪贴板（cut 灰化即时显示 + 极快 Ctrl+V 可命中），随后异步补真实 seq。
+				setExplorerClipboard({ paths, mode, seq: 0 });
+				void (async () => {
+					if (mode === 'copy' && isTauri()) {
+						try {
+							// 一次写 CF_HDROP + 文本镜像；返回 true 表示已连带写文本。
+							const wroteText = await invoke<boolean>('write_clipboard_file_paths', { paths });
+							if (!wroteText) await writeText(paths.join('\n'));
+						} catch (err) {
+							try { await writeText(paths.join('\n')); }
+							catch (e2) { console.warn('[explorer] clipboard writeText failed', e2); }
+						}
+					}
+					// 记录"设置此剪贴板时"的系统序列号：copy 在写完后读（含我们这次写入），
+					// cut 直接读当前值（cut 不写系统剪贴板）。
+					let seq = 0;
+					if (isTauri()) {
+						try { seq = await invoke<number>('read_clipboard_sequence'); } catch { /* 退化为 0 */ }
+					}
+					setExplorerClipboard({ paths, mode, seq });
+				})();
 				return;
 			}
 			if (e.key === 'v' || e.key === 'V') {
@@ -557,6 +677,47 @@
 		});
 	}
 
+	// ─── cwd 文件区拖拽 resize（分隔条在每个 body 底部；像素高度，跨会话持久化）─────────────
+	// 默认 flex:1 1 0 填满；拖过的用 flex:0 1 Hpx —— 可缩小留空，shrink:1 在窗口变小/拖太大时
+	// 仍收缩，绝不溢出、所有工作区/cwd 头始终可见。
+	const MIN_BODY_H = 40;
+	let bodyResize: { cwd: string; startY: number; startH: number } | null = null;
+
+	function onBodyResizeMove(e: PointerEvent): void {
+		if (!bodyResize) return;
+		const h = Math.max(MIN_BODY_H, bodyResize.startH + (e.clientY - bodyResize.startY));
+		setExplorerBodyHeight(bodyResize.cwd, h);
+	}
+	function onBodyResizeUp(): void {
+		bodyResize = null;
+		window.removeEventListener('pointermove', onBodyResizeMove);
+		window.removeEventListener('pointerup', onBodyResizeUp);
+		window.removeEventListener('pointercancel', onBodyResizeUp);
+		document.body.classList.remove('rg-os-dragging');
+		persistExplorerBodyHeights();
+	}
+	/** 分隔条 pointerdown：取上方 body（分隔条容器的前一个兄弟）当前高度作基准开始拖。 */
+	function startBodyResize(e: PointerEvent, cwd: string): void {
+		e.preventDefault();
+		e.stopPropagation();
+		const handle = e.currentTarget as HTMLElement;
+		const bodyEl = handle.previousElementSibling as HTMLElement | null;
+		if (!bodyEl) return;
+		bodyResize = { cwd, startY: e.clientY, startH: bodyEl.getBoundingClientRect().height };
+		document.body.classList.add('rg-os-dragging');
+		window.addEventListener('pointermove', onBodyResizeMove);
+		window.addEventListener('pointerup', onBodyResizeUp);
+		window.addEventListener('pointercancel', onBodyResizeUp); // #3 Alt+Tab/系统弹窗取消也清理
+	}
+
+	onDestroy(() => {
+		// #3 卸载时清理可能残留的 resize 监听（拖拽中切工作区/关闭面板会导致 pointerup 不触发）。
+		window.removeEventListener('pointermove', onBodyResizeMove);
+		window.removeEventListener('pointerup', onBodyResizeUp);
+		window.removeEventListener('pointercancel', onBodyResizeUp);
+		if (bodyResize) document.body.classList.remove('rg-os-dragging');
+	});
+
 	function getPaneLabel(paneId: string, paneTitles: Record<string, string>): string {
 		return paneTitles[paneId] || $terminalTitles[paneId] || tr('explorer.terminalFallback');
 	}
@@ -613,18 +774,17 @@
 />
 
 <!--
-  overlay 滚动条：host 不做 overflow，交给 overlayscrollbars；content 自然堆叠。
-  之前 `rg-scroll-overlay` + `overflow-y-auto` 会借助 `scrollbar-gutter: stable`
-  常驻 10px gutter —— 改用 overlayscrollbars 后滚动条绝对定位浮在上方，
-  "显示 / 隐藏" 不再改变内容宽度；hover/滚动时显形，空闲时淡出。
+  布局方案：.explorer 为 flex 列容器，自身做 overflow-y-auto（rg-scroll 原生滚动条）。
+  各工作区头（sticky top-0）和 cwd 头（sticky top-8）常驻视口顶部；
+  各 cwd body（.explorer-body）设 overflow-y-auto rg-scroll 实现内部独立滚动。
+  工作区与 cwd 的包裹层均为 display:contents，不产生额外盒子。
 -->
 <!-- tabindex=0 + onkeydown 让 Explorer 根节点可以接 ArrowUp/Down/Home/End —— 每个
      FileNode 按钮自己能聚焦，但跨节点导航需要一层 coordinator；这里承担这个角色。 -->
 <div
-	class="explorer flex h-full flex-col"
+	class="explorer flex h-full min-h-0 flex-col overflow-hidden"
 	data-testid="file-tree"
 	tabindex="-1"
-	use:overlayScroll
 	onkeydown={handleRootKeydown}
 	role="tree"
 >
@@ -639,14 +799,13 @@
 			</div>
 		</div>
 	{:else}
-		{#each $explorerWorkspaceGroups as group (group.workspaceId)}
+		{#each $explorerWorkspaceGroups as group, gi (group.workspaceId)}
 			{@const info = $workspaceSaveInfoStore[group.workspaceId]}
 			<!-- ══ Workspace header row ══ -->
-			<div
-				class="explorer-workspace border-b border-[var(--rg-border)] last:border-b-0"
-			>
+			<div class="explorer-workspace" style="display:contents">
 				<div
-					class="group/ws sticky top-0 z-20 flex items-center h-8 px-2 gap-1.5 cursor-pointer select-none backdrop-blur-md
+					class="group/ws sticky top-0 z-20 flex shrink-0 items-center h-8 px-2 gap-1.5 cursor-pointer select-none backdrop-blur-md
+						{gi > 0 ? 'border-t border-[var(--rg-border)]' : ''}
 						{group.workspaceId === $activeWorkspaceId
 							? 'bg-[var(--rg-accent)]/20 text-[var(--rg-fg)]'
 							: 'bg-[var(--rg-surface-2)]/92 text-[var(--rg-fg-muted)] hover:bg-[var(--rg-surface)]'}"
@@ -718,17 +877,18 @@
 						{@const cwdLeaf = cwdSegments[cwdSegments.length - 1] ?? col.cwd}
 						{@const cwdParent = cwdSegments.slice(0, -1).join('/')}
 						<!-- T18：终端节点（cwd 卡片）— 工作区下的中间层，可折叠隐藏文件树 -->
-						<div class="explorer-section group/col border-t border-[var(--rg-border)]/50">
+						<div class="explorer-section" style="display:contents">
 							<!-- ── CWD 头：chevron + 路径 + pane 数 + 刷新 ── -->
 							<div
-								class="flex items-center gap-1 h-7 px-2 cursor-pointer select-none transition-colors {isColCollapsed
-									? 'bg-[var(--rg-surface-2)]/60 hover:bg-[var(--rg-surface-2)]/80'
-									: 'bg-[var(--rg-surface)]/40 hover:bg-[var(--rg-surface)]/70'}"
+								class="sticky top-8 z-10 backdrop-blur-md group/col border-t border-[var(--rg-border)]/50 flex shrink-0 items-center gap-1 h-7 px-2 cursor-pointer select-none transition-colors {isColCollapsed
+									? 'bg-[var(--rg-surface-2)]/80 hover:bg-[var(--rg-surface-2)]/90'
+									: 'bg-[var(--rg-surface)]/70 hover:bg-[var(--rg-surface)]/90'}"
 								role="button"
 								tabindex="0"
 								title={col.cwd}
 								onclick={() => toggleColumnCollapsed(col.id)}
 								onkeydown={(e) => e.key === 'Enter' && toggleColumnCollapsed(col.id)}
+								oncontextmenu={(e) => showCwdContextMenu(e, col)}
 							>
 								<ChevronRight
 									class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)] transition-transform duration-150 {isColCollapsed ? '' : 'rotate-90'}"
@@ -761,7 +921,7 @@
 
 							<!-- ── pane 标签条：折叠时也显示，点击切 active pane ── -->
 							{#if col.paneIds.length > 0}
-								<div class="flex flex-wrap items-center gap-1 px-2 py-1 bg-[var(--rg-surface)]/20 border-t border-[var(--rg-border)]/30">
+								<div class="flex shrink-0 flex-wrap items-center gap-1 px-2 py-1 bg-[var(--rg-surface)]/20 border-t border-[var(--rg-border)]/30">
 									{#each col.paneIds as pid (pid)}
 										{@const isActive = $activePaneId === pid}
 										<button
@@ -782,11 +942,34 @@
 							{#if !isColCollapsed}
 								<!-- 慢加载提示：>500ms 未完成且无缓存树时才出现；数据到立刻撤掉。 -->
 								{#if slowLoading.has(col.id)}
-									<div class="explorer-progress" role="progressbar" aria-busy="true" aria-label={$t('explorer.loading')}></div>
+									<div class="explorer-progress shrink-0" role="progressbar" aria-busy="true" aria-label={$t('explorer.loading')}></div>
 								{/if}
 
 								<!-- File tree body: cwd 下文件平铺。 -->
-								<div class="relative explorer-body py-0.5 {group.workspaceId !== $activeWorkspaceId ? "max-h-[32vh] overflow-y-auto rg-scroll" : ""}">
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+									<div
+										class="relative explorer-body py-0.5 min-h-0 overflow-y-auto rg-scroll"
+										style={$explorerBodyHeights[col.cwd] != null ? `flex: 0 1 ${$explorerBodyHeights[col.cwd]}px` : 'flex: 1 1 0'}
+										oncontextmenu={(e) => showCwdContextMenu(e, col)}
+									>
+										{#if creatingColumnId === col.id}
+											<!-- 列级（cwd 顶层）内联新建输入行 -->
+											<div class="flex w-full items-center gap-1.5 px-2 py-1 text-[13px] bg-[var(--rg-accent)]/10">
+												<span class="w-4 h-4 shrink-0"></span>
+												<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--rg-accent)]">
+													{#if creatingKind === 'file'}<File size={16} />{:else}<Folder size={16} />{/if}
+												</span>
+												<input
+													type="text"
+													bind:this={createInput}
+													bind:value={creatingValue}
+													placeholder={creatingKind === 'file' ? $t('explorer.newFileName') : $t('explorer.newFolderName')}
+													class="flex-1 min-w-0 bg-[var(--rg-bg)] border border-[var(--rg-accent)]/60 outline-none rounded px-1 text-[13px] text-[var(--rg-fg)]"
+													onkeydown={onColumnCreateKeydown}
+													onblur={onColumnCreateBlur}
+												/>
+											</div>
+										{/if}
 									{#if col.tree}
 										{#if (col.tree.children ?? []).length > 0}
 											{#each col.tree.children ?? [] as child (child.path)}
@@ -803,6 +986,7 @@
 														: undefined}
 													onSelect={(path, isDir, mods) =>
 														handleFileSelect(path, col.id, isDir, mods)}
+													onPaste={(path) => void pasteClipboard({ columnId: col.id, targetPath: path })}
 												/>
 											{/each}
 										{:else}
@@ -811,7 +995,16 @@
 									{/if}
 								</div>
 
-								<!-- Plugin region: one instance per paneId for correct state scoping. -->
+								<!-- resize 分隔条：拖动调整本 cwd 文件区高度（= 下方 header 上边缘那条线），跨会话持久化。 -->
+									<!-- svelte-ignore a11y_no_static_element_interactions -->
+									<div
+										class="shrink-0 h-[3px] cursor-row-resize bg-[var(--rg-border)]/30 hover:bg-[var(--rg-accent)]/50 transition-colors"
+										role="separator"
+										aria-orientation="horizontal"
+										onpointerdown={(e) => startBodyResize(e, col.cwd)}
+									></div>
+
+									<!-- Plugin region: one instance per paneId for correct state scoping. -->
 								{#each col.paneIds as pid (pid)}
 									<SidebarPluginRegion scope="pane" workspaceId={col.workspaceId} paneId={pid} cwd={col.cwd} />
 								{/each}

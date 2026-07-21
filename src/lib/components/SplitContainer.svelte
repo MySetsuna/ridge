@@ -9,15 +9,18 @@
   // 不再被库内部 sz 状态覆盖。Class 名 `splitpanes__pane`/`splitpanes__splitter`
   // 通过 class prop forward，沿用 findSameAxisRefs 等查询逻辑。
   import { t, tr } from '$lib/i18n';
+  import { Bot } from 'lucide-svelte';
   import { RgSplit, RgPane, RgSplitter } from '@ridge/split';
-  import { isTauri } from '@tauri-apps/api/core';
-  import { TerminalManager } from '$lib/terminal/manager';
+  import { isTauri, invoke } from '@tauri-apps/api/core';
+  import { settingsStore } from '$lib/stores/settings';
+  import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
   import { alertDialog } from './RidgeDialog.svelte';
   import { trackPaneGitStatus } from '$lib/stores/paneGitStatus';
   import PaneGitPill from './PaneGitPill.svelte';
   import PaneDiffPill from './PaneDiffPill.svelte';
   import PaneRepoSwitcher from './PaneRepoSwitcher.svelte';
   import PaneShellSwitcher from './PaneShellSwitcher.svelte';
+  import { paneOriginBadge } from '@ridge/remote/shared/terminal/paneOrigin';
   import type { PaneNode } from '$lib/types';
   import type {
     DockRegion,
@@ -33,7 +36,7 @@ import {
     closePane as closePaneApi,
     activePaneId,
     paneDragSourceId,
-    dockPane,
+    paneDockHover,
     activeWorkspaceId,
     paneCwdStore,
     terminalTitles,
@@ -53,6 +56,7 @@ import {
     findSameAxisRefs,
     collapseCwd,
   } from '$lib/stores/paneTree';
+  import { paneDockDrag } from '$lib/actions/paneDockDrag';
 
 
   interface Props {
@@ -76,6 +80,28 @@ import {
   let dragUpUnlisten: (() => void) | undefined;
   const ORTHOGONAL_TRIGGER_PX = 8;
 
+  // 手动把一个分屏标记为/取消智能体（Domain Zero「手动注册」入口）。已注册
+  // (agent_state==='busy') → 调 release_teammate_agent；否则 register_teammate_agent，
+  // agentId 取终端标题/前台进程名（缺省 'agent'）。后端会 emit teammate-layout-changed
+  // → 重渲染徽章；指挥部 Tab 轮询 get_teammate_topology 即收入花名册。
+  async function toggleTeammateAgent(leafId: string, isAgent: boolean): Promise<void> {
+    try {
+      if (isAgent) {
+        await invoke('release_teammate_agent', { workspaceId, paneId: leafId });
+      } else {
+        const agentId =
+          get(terminalTitles)[leafId] || get(paneForegroundProcessStore)[leafId] || 'agent';
+        await invoke('register_teammate_agent', { workspaceId, paneId: leafId, agentId });
+      }
+    } catch (e) {
+      await alertDialog({
+        title: tr('workspace.opFailed'),
+        message: e instanceof Error ? e.message : String(e),
+        danger: true,
+      });
+    }
+  }
+
   // §4a workspace keep-alive: count from THIS workspace's tree, not the
   // global active one. Falls back to paneTreeStore on first paint before
   // workspacePaneTrees is populated.
@@ -86,28 +112,6 @@ import {
   const splitAxis = $derived(
     node.type === 'split' ? (node.direction === 'horizontal' ? 'x' : 'y') : ''
   );
-
-  /** 当前叶节点上的停靠预览（仅拖拽他格悬停时）。 */
-  let dockHover: DockRegion | null = $state(null);
-
-  function getDockRegion(e: DragEvent): DockRegion | null {
-    const el = e.currentTarget as HTMLElement;
-    const rect = el.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    const w = rect.width;
-    const h = rect.height;
-
-    const threshold = 0.25;
-
-    if (x < w * threshold) return 'left';
-    if (x > w * (1 - threshold)) return 'right';
-    if (y < h * threshold) return 'top';
-    if (y > h * (1 - threshold)) return 'bottom';
-    if (x > w * 0.3 && x < w * 0.7 && y > h * 0.3 && y < h * 0.7) return 'center';
-    
-    return null;
-  }
 
   /**
    * svelte-splitpanes: horizontal=true → flex 纵向 → 上下分屏（横条分割）；
@@ -125,29 +129,14 @@ import {
     }
   }
 
-  function regionAtPoint(
-    clientX: number,
-    clientY: number,
-    el: HTMLElement
-  ): DockRegion {
-    const r = el.getBoundingClientRect();
-    const x = (clientX - r.left) / Math.max(r.width, 1);
-    const y = (clientY - r.top) / Math.max(r.height, 1);
-    const m = 0.18;
-    if (x < m) return 'left';
-    if (x > 1 - m) return 'right';
-    if (y < m) return 'top';
-    if (y > 1 - m) return 'bottom';
-    return 'center';
-  }
-
-  function dockHintClass(h: DockRegion | null): string {
+  // 返回方向半区预览块的定位 class：明确显示拖拽 pane 将落入的区域。
+  function dockRegionClass(h: DockRegion | null): string {
     if (!h) return '';
-    if (h === 'left') return 'shadow-[inset_5px_0_0_0_var(--rg-accent)]';
-    if (h === 'right') return 'shadow-[inset_-5px_0_0_0_var(--rg-accent)]';
-    if (h === 'top') return 'shadow-[inset_0_5px_0_0_var(--rg-accent)]';
-    if (h === 'bottom') return 'shadow-[inset_0_-5px_0_0_var(--rg-accent)]';
-    return 'ring-2 ring-[var(--rg-accent)] ring-inset';
+    if (h === 'left') return 'inset-y-0 left-0 w-1/2';
+    if (h === 'right') return 'inset-y-0 right-0 w-1/2';
+    if (h === 'top') return 'inset-x-0 top-0 h-1/2';
+    if (h === 'bottom') return 'inset-x-0 bottom-0 h-1/2';
+    return 'inset-[20%]';
   }
 
   // T20：原 onSplitResized 监听 svelte-splitpanes 的 'resized' event 落盘。
@@ -498,21 +487,7 @@ import {
       splitHost?.removeEventListener('mousedown', handler, { capture: true });
   });
 
-  async function onDockDrop(e: DragEvent, targetId: string) {
-    e.preventDefault();
-    const src = get(paneDragSourceId);
-    dockHover = null;
-    if (!src || src === targetId) return;
-    const t = e.currentTarget;
-    if (!(t instanceof HTMLElement)) return;
-    const region = regionAtPoint(e.clientX, e.clientY, t);
-    try {
-      await dockPane(src, targetId, region);
-    } catch (err) {
-      console.error(err);
-      await alertDialog({ title: tr('workspace.opFailed'), message: err instanceof Error ? err.message : String(err), danger: true });
-    }
-  }
+
 </script>
 
 <div
@@ -545,56 +520,32 @@ import {
              child canvas so it doesn't need the wrapper tint either.
              Card outline stays via the box-shadow. -->
         <div
+          data-pane-id={node.id}
           class="relative flex flex-col h-full min-h-0 min-w-0 overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.35)]"
         >
           {#if $paneDragSourceId && $paneDragSourceId !== node.id}
+            {@const hover = $paneDockHover && $paneDockHover.paneId === node.id ? $paneDockHover.region : null}
             <div
-              class="absolute inset-0 z-30 rounded-lg bg-black/25 transition-shadow {dockHintClass(
-                dockHover
-              )}"
+              class="absolute inset-0 z-30 rounded-lg bg-black/15 pointer-events-none"
               role="region"
               aria-label={$t('workspace.dockHereLabel')}
-              ondragover={(e) => {
-                e.preventDefault();
-                if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-                const t = e.currentTarget;
-                if (t instanceof HTMLElement) {
-                  dockHover = regionAtPoint(e.clientX, e.clientY, t);
-                }
-              }}
-              ondragleave={(e) => {
-                const rel = e.relatedTarget;
-                const cur = e.currentTarget;
-                if (
-                  cur instanceof HTMLElement &&
-                  rel instanceof Node &&
-                  !cur.contains(rel)
-                ) {
-                  dockHover = null;
-                }
-              }}
-              ondrop={(e) => onDockDrop(e, node.id)}
-            ></div>
+            >
+              {#if hover}
+                <div
+                  class="absolute bg-[var(--rg-accent)]/25 border-2 border-[var(--rg-accent)] rounded transition-all duration-100 {dockRegionClass(hover)}"
+                ></div>
+              {/if}
+            </div>
           {/if}
           <header
-            class="rg-pane-header flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--rg-border)] bg-[var(--rg-glass)] backdrop-blur-md z-10"
+            class="rg-pane-header opacity-90 flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-[var(--rg-border)] bg-[var(--rg-glass)] backdrop-blur-md z-10"
           >
             <div
               class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 select-none"
-              draggable="true"
               title={$t('workspace.paneDragTitle')}
-              onclick={() => activePaneId.set(node.id)}
               onkeydown={(e) => e.key === 'Enter' && activePaneId.set(node.id)}
               role="presentation"
-              ondragstart={(e) => {
-                e.dataTransfer?.setData('text/plain', node.id);
-                if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-                paneDragSourceId.set(node.id);
-              }}
-              ondragend={() => {
-                paneDragSourceId.set(null);
-                dockHover = null;
-              }}
+              use:paneDockDrag={{ paneId: node.id }}
             >
               {#if node.id !== undefined}
                 <!-- Title source: same as Explorer's pane tag. terminalTitles is
@@ -609,6 +560,7 @@ import {
                 {@const displayCwd = rawCwd ? collapseCwd(rawCwd) : ''}
                 {@const agentState = node.type === 'leaf' ? node.agent_state : undefined}
                 {@const agentId = node.type === 'leaf' ? node.agent_id : undefined}
+                {@const origin = node.type === 'leaf' ? node.origin : undefined}
                 <span
                   class="flex items-center gap-1.5 text-[11px] font-mono tracking-wide truncate"
                 >
@@ -637,6 +589,17 @@ import {
                       STARTING
                     </span>
                   {/if}
+                  {#if origin}
+                    <!-- 外部来源徽标：HEADLESS / LAN / rdg。紧跟 AGENT/STARTING 之后、
+                         proc·cwd 之前，让用户一眼分辨这个 pane 不归本地工作区持有。 -->
+                    {@const ob = paneOriginBadge(origin)}
+                    <span
+                      class="flex items-center shrink-0 rounded-full border px-1.5 h-4 text-[9px] font-semibold uppercase tracking-wider {ob.pillClass}"
+                      title={ob.title}
+                    >
+                      {ob.label}
+                    </span>
+                  {/if}
                   {#if proc}
                     <span class="text-[var(--rg-title-proc)] font-semibold truncate">{proc}</span>
                   {/if}
@@ -656,7 +619,7 @@ import {
               {/if}
             </div>
             {#if node.type === 'leaf'}
-              <PaneShellSwitcher paneId={node.id} />
+              <PaneShellSwitcher paneId={node.id} currentShell={node.shell_kind} />
               <!-- Repo switcher (renders only when cwd hosts >1 git repo);
                    then Branch pill (picker + ahead/behind + upstream warn);
                    then Diff pill (working-tree changed-file count + +N -N).
@@ -667,10 +630,27 @@ import {
               <PaneRepoSwitcher paneId={node.id} />
               <PaneGitPill paneId={node.id} />
               <PaneDiffPill paneId={node.id} />
+              {#if $settingsStore.teammateEnabled}
+                {@const isAgent = node.agent_state === 'busy'}
+                <button
+                  type="button"
+                  title={isAgent ? '取消标记智能体' : '把此分屏标记为智能体（纳入指挥部花名册）'}
+                  class="flex h-7 w-7 items-center justify-center rounded-lg transition-colors {isAgent
+                    ? 'text-emerald-400 hover:bg-emerald-500/10'
+                    : 'text-[var(--rg-fg-muted)] hover:bg-white/[0.06] hover:text-[var(--rg-fg)]'}"
+                  onclick={() => toggleTeammateAgent(node.id, isAgent)}
+                >
+                  <Bot class="h-4 w-4" />
+                </button>
+              {/if}
             {/if}
             <button
               type="button"
-              title={leafCount <= 1 ? $t('workspace.keepOnePane') : $t('workspace.closeThisPane')}
+              title={leafCount <= 1
+                ? $t('workspace.keepOnePane')
+                : node.type === 'leaf' && node.origin
+                  ? '断开此 pane（会话仍在「主机」面板运行，不会被终止）'
+                  : $t('workspace.closeThisPane')}
               disabled={leafCount <= 1}
               class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] text-base leading-none transition-colors hover:bg-white/[0.06] hover:text-[var(--rg-fg)] disabled:opacity-25 disabled:pointer-events-none"
               onclick={() => onClosePane(node.id)}
@@ -693,26 +673,8 @@ import {
         <div
           class="rg-pane splitpanes__pane relative"
           role="region"
-          ondragover={(e) => {
-            e.preventDefault();
-            dockHover = getDockRegion(e);
-          }}
-          ondragleave={() => (dockHover = null)}
-          ondrop={async (e) => {
-            e.preventDefault();
-            const sourceId = e.dataTransfer?.getData('text/plain');
-            if (sourceId && child.id && sourceId !== child.id && dockHover) {
-              await dockPane(sourceId, child.id, dockHover);
-            }
-            dockHover = null;
-          }}
           style="{dim}: {ratio}%; flex-grow: 0; flex-shrink: 0; min-width: 0; min-height: 0; overflow: hidden;"
         >
-          {#if dockHover}
-            <div
-              class="absolute inset-0 z-50 bg-[var(--rg-accent)]/20 border-2 border-[var(--rg-accent)] pointer-events-none"
-            ></div>
-          {/if}
           <SplitLayout
             node={child}
             {workspaceId}

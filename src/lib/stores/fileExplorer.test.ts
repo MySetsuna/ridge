@@ -248,8 +248,8 @@ describe('fileExplorerStore.expandMany', () => {
 
 describe('explorerClipboard store', () => {
   it('round-trips set/clear', () => {
-    setExplorerClipboard({ paths: ['/x', '/y'], mode: 'cut' });
-    expect(get(explorerClipboard)).toEqual({ paths: ['/x', '/y'], mode: 'cut' });
+    setExplorerClipboard({ paths: ['/x', '/y'], mode: 'cut', seq: 0 });
+    expect(get(explorerClipboard)).toEqual({ paths: ['/x', '/y'], mode: 'cut', seq: 0 });
     setExplorerClipboard(null);
     expect(get(explorerClipboard)).toBeNull();
   });

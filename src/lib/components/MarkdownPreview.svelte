@@ -50,6 +50,11 @@
      * we use Alt-click because the click area is the preview body itself.
      */
     onRevealSource?: (line: number) => void;
+    /**
+     * 点击预览里的图片（嵌入 `![]()`）或 mermaid 流程图 → 请求父级打开全窗口预览。
+     * 参数为图片 src（mermaid 传序列化后的 SVG data URL）与 alt 文本。
+     */
+    onImagePreview?: (src: string, alt: string) => void;
   }
 
   let {
@@ -59,7 +64,18 @@
     onChange,
     onRequestEdit,
     onRevealSource,
+    onImagePreview,
   }: Props = $props();
+
+  /** 把内联的 mermaid `<svg>` 序列化成可被 `<img>` 加载的 data URL。 */
+  function svgToDataUrl(svg: SVGElement): string {
+    const clone = svg.cloneNode(true) as SVGElement;
+    if (!clone.getAttribute('xmlns')) {
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    }
+    const s = new XMLSerializer().serializeToString(clone);
+    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
+  }
 
   let container: HTMLDivElement | undefined = $state();
   let html = $derived(renderMarkdown(content));
@@ -276,6 +292,26 @@
       return;
     }
 
+    // 图片 / mermaid 流程图 → 全窗口预览（缩放/旋转）。放在 anchor 之后：被链接
+    // 包裹的图仍走导航；独立的嵌入图与流程图点开预览。Alt-click 保留给下面的
+    // reveal-source，故此处不吃 Alt。
+    if (onImagePreview && !e.altKey) {
+      if (target instanceof HTMLImageElement) {
+        e.preventDefault();
+        onImagePreview(target.src, target.alt ?? '');
+        return;
+      }
+      const mermaid = target.closest<HTMLElement>('.rg-md-mermaid-rendered');
+      if (mermaid) {
+        const svg = mermaid.querySelector('svg');
+        if (svg) {
+          e.preventDefault();
+          onImagePreview(svgToDataUrl(svg), 'mermaid diagram');
+          return;
+        }
+      }
+    }
+
     // Alt/Option-click inside a block → reveal that source line in Monaco,
     // staying in preview mode. Lets users "jump-to-source" without losing
     // the rendered view (VS Code uses a gutter icon in the preview for this;
@@ -450,6 +486,7 @@
   .rg-md-preview :global(div.rg-md-mermaid-rendered svg) {
     max-width: 100%;
     height: auto;
+    cursor: zoom-in;
   }
   .rg-md-preview :global(div.rg-md-mermaid-rendered .rg-md-mermaid-fallback) {
     display: none;
@@ -495,5 +532,6 @@
   .rg-md-preview :global(img) {
     max-width: 100%;
     border-radius: 6px;
+    cursor: zoom-in;
   }
 </style>

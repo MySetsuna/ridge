@@ -1,0 +1,162 @@
+//! Domain Zero 端侧多智能体协同 —— 桌面 Tauri 命令面.
+//!
+//! 把 `ridge_core::teammate` 纯核心与运行态侧表桥接成前端可 `invoke` 的命令：
+//! - [`get_teammate_topology`] —— D1 Agent Center 侧栏的花名册快照（只读）。
+//! - [`resolve_hitl_request`] / [`set_hitl_enabled`] —— D2 HITL 网关裁决与开关。
+//! - [`classify_command_risk`] —— 暴露 D2 风险分级器供 UI/调试查询。
+//!
+//! 拓扑快照从现有 `Workspace` 侧表（`teammate_agent_pane_map` / `_pane_states` /
+//! `_pane_titles`）映射，pane 用真实 Uuid 字符串（非 core 内部的 u32）。这条回退路径
+//! （无 typed 画像时）按 agent 名/标题**被动识别**能力档并跑极简组长竞选
+//! （[`ridge_core::elect_leader`]），产出真实 `leaderId` + Leader 角色。
+
+use serde_json::{json, Value};
+use tauri::State;
+use uuid::Uuid;
+
+use crate::state::{AppState, PaneState, Workspace};
+use crate::teammate::hitl;
+
+/// 把一个工作区的 teammate 侧表映射为前端 `TopologySnapshot` JSON。
+/// `pub(crate)` 以便 teammate HTTP 路由 (`server.rs::route_get_team_profile`) 复用。
+pub(crate) fn topology_json(ws: &Workspace) -> Value {
+    // 叶子顺序 = MCP 数字索引寻址 (`teammate_pane_uuid_at_index`) 的同源序列。
+    // 据此为每个成员补出数字 `paneIndex`，让 agent 读 `active-panes` 后既能回传
+    // `paneId`(Uuid) 也能回传 `paneIndex`(数字)，两者都可寻址（缺口1 自洽）。
+    let leaves = ws.pane_tree.get_all_leaves();
+
+    // 能力档识别只认**稳定标识 agent_id**：pane 标题受 shell 控制、可随终端标题转义序列
+    // 变动，若据它竞选组长会让 Leader 在轮询间跳变，也与 profiles 主路径（按注册身份定档）
+    // 口径不一致（评审 #4）。这里改用 agent_id 定档——与 profiles 同源、稳定、不可被标题
+    // 伪造；展示名 `name` 仍用 pane 标题。cap 每 agent 只识别一次，供竞选与 roster 复用。
+    let cap_of = |agent_id: &str| ridge_core::recognize_capability(agent_id, None);
+    let name_of = |agent_id: &str, pane: &Uuid| -> String {
+        ws.teammate_pane_titles
+            .get(pane)
+            .cloned()
+            .unwrap_or_else(|| agent_id.to_string())
+    };
+    let teammates: Vec<ridge_core::Teammate> = ws
+        .teammate_agent_pane_map
+        .iter()
+        .map(|(agent_id, pane)| {
+            let name = name_of(agent_id, pane);
+            ridge_core::Teammate::new(agent_id.clone(), name, 0).with_capability(cap_of(agent_id))
+        })
+        .collect();
+    let leader_id = ridge_core::elect_leader(&teammates).map(|s| s.to_string());
+
+    let roster: Vec<Value> = ws
+        .teammate_agent_pane_map
+        .iter()
+        .map(|(agent_id, pane)| {
+            let status = match ws.teammate_pane_states.get(pane) {
+                Some(PaneState::Busy) => "Working",
+                _ => "Idle",
+            };
+            let name = name_of(agent_id, pane);
+            let cap = cap_of(agent_id);
+            let pane_index = leaves
+                .iter()
+                .position(|p| p == pane)
+                .map(|i| json!(i))
+                .unwrap_or(Value::Null);
+            let role = if leader_id.as_deref() == Some(agent_id.as_str()) {
+                "Leader"
+            } else {
+                "Worker"
+            };
+            json!({
+                "id": agent_id,
+                "name": name,
+                "paneId": pane.to_string(),
+                "paneIndex": pane_index,
+                "role": role,
+                "status": status,
+                "capability": serde_json::to_value(cap).unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    json!({
+        "roster": roster,
+        "leaderId": leader_id.map(Value::from).unwrap_or(Value::Null),
+        "edges": [],
+    })
+}
+
+/// D1 —— 返回某工作区（缺省=活动工作区）的团队拓扑快照。只读。
+#[tauri::command]
+pub async fn get_teammate_topology(
+    workspace_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let wid = match workspace_id {
+        Some(s) => Uuid::parse_str(&s).map_err(|e| e.to_string())?,
+        None => *state.active_workspace.read(),
+    };
+    // 有 typed 画像 → 跑 Leader 竞选（真实角色/leader）；否则回退侧表映射。
+    // 两路都补 `paneIndex`：典型画像路径需把工作区当前叶子顺序传入 topology_for。
+    if crate::teammate::profiles::has(wid) {
+        let leaves = {
+            let workspaces = state.workspaces.read();
+            workspaces
+                .get(&wid)
+                .map(|ws| ws.pane_tree.get_all_leaves())
+                .unwrap_or_default()
+        };
+        return Ok(crate::teammate::profiles::topology_for(wid, &leaves));
+    }
+    let workspaces = state.workspaces.read();
+    let ws = workspaces
+        .get(&wid)
+        .ok_or_else(|| format!("workspace {wid} not found"))?;
+    Ok(topology_json(ws))
+}
+
+/// D2 —— 人类对一个挂起的高危动作的裁决回传。
+/// `verdict` ∈ {"approve","reject","modify"}；modify 时 `replacement` 为新指令。
+#[tauri::command]
+pub fn resolve_hitl_request(
+    id: String,
+    verdict: String,
+    replacement: Option<String>,
+) -> Result<bool, String> {
+    Ok(hitl::resolve(&id, &verdict, replacement))
+}
+
+/// D2 —— 开/关 HITL 审批网关（默认关，保持 send-keys 行为零变化）。
+#[tauri::command]
+pub fn set_hitl_enabled(enabled: bool) -> Result<(), String> {
+    hitl::set_enabled(enabled);
+    Ok(())
+}
+
+/// D2 —— 暴露风险分级器：把一条裸命令行分级为 {level, reason}。
+#[tauri::command]
+pub fn classify_command_risk(command: String) -> Result<Value, String> {
+    serde_json::to_value(ridge_core::classify_shell_command(&command)).map_err(|e| e.to_string())
+}
+
+/// 功能2 —— 返回当前 teammate MCP 端点 + Bearer token，供指挥部「复制连接信息」按钮用。
+/// 先惰性拉起 teammate server（与首个 PTY 注入同一路径），再读运行态 `teammate_binding`。
+/// binding 为 None（服务尚未启动）时返回明确错误，前端据此提示「先打开一个终端分屏」。
+///
+/// **安全（设计文档 D6 硬约束）**：本命令返回**鉴权 token**，**仅限桌面本机 IPC 调用**——
+/// 绝不加入 `REMOTE_ALLOWLIST`（`packages/ridge-core/src/capability.rs`），不暴露给
+/// web-remote / LAN host / 云端控制面。否则任一远端控制器即可窃取本机 MCP 令牌、冒充队友。
+/// token 只在运行时动态返回，绝不写入任何静态文档或仓库文件。
+#[tauri::command]
+pub fn get_teammate_connection_info(state: State<'_, AppState>) -> Result<Value, String> {
+    crate::teammate::ensure_teammate_started(&state);
+    let binding = state
+        .teammate_binding
+        .read()
+        .clone()
+        .ok_or_else(|| "teammate 服务未启动：请先打开一个终端分屏".to_string())?;
+    // base_url 形如 http://127.0.0.1:<port>；只替换 scheme 前缀（replacen 限 1 次）。
+    let ws_endpoint = format!(
+        "{}/api/v1/mcp/ws",
+        binding.base_url.replacen("http", "ws", 1)
+    );
+    Ok(json!({ "wsEndpoint": ws_endpoint, "token": binding.token }))
+}

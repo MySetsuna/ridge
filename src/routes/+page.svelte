@@ -1,32 +1,7 @@
 <!-- src/routes/+page.svelte -->
 <script lang="ts">
-
-// Monaco Editor Worker 配置 - 必须在使用 monaco 之前配置
-import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
-import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
-import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker';
-import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
-import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
-
-self.MonacoEnvironment = {
-  getWorker(_: unknown, label: string) {
-    if (label === 'json') {
-      return new jsonWorker();
-    }
-    if (label === 'css' || label === 'scss' || label === 'less') {
-      return new cssWorker();
-    }
-    if (label === 'html' || label === 'handlebars' || label === 'razor') {
-      return new htmlWorker();
-    }
-    if (label === 'typescript' || label === 'javascript') {
-      return new tsWorker();
-    }
-    return new editorWorker();
-  }
-};
   import { t, tr } from '$lib/i18n';
-  import { focusActiveTerminal, ownsTabKey } from '$lib/terminal/terminalFocus';
+  import { focusActiveTerminal, ownsTabKey } from '@ridge/remote/shared/terminal/terminalFocus';
   import SplitContainer from '$lib/components/SplitContainer.svelte';
   import SourceControl from '$lib/components/SourceControl.svelte';
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
@@ -39,19 +14,24 @@ self.MonacoEnvironment = {
   import { settingsStore, initSettingsBoot } from '$lib/stores/settings';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import RemotePanel from '$lib/remote/RemotePanel.svelte';
-  import { Smartphone } from 'lucide-svelte';
+  import AgentCenterPanel from '$lib/teammate/AgentCenterPanel.svelte';
+  import HostsPanel from '$lib/components/hosts/HostsPanel.svelte';
+  import DockRegionPicker from '$lib/components/hosts/DockRegionPicker.svelte';
+  import { initTeammateBoot } from '$lib/teammate/teammateSettings';
+  import { Smartphone, Server } from 'lucide-svelte';
   // 云端登录态：侧栏头像 + 账户气泡。
-  import { cloudAuth, logout as cloudLogout } from '$lib/remote/cloud/auth';
+  import { cloudAuth, logout as cloudLogout } from '@ridge/remote/shared/cloud/auth';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
+  import SaveWorkspaceDialog from '$lib/components/SaveWorkspaceDialog.svelte';
   import QuickOpen from '$lib/components/QuickOpen.svelte';
   import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
   import { portal } from '$lib/actions/portal';
   // Side-effect import: each built-in plugin auto-registers via its module
   // script. Must land once, at app chrome level.
   import '$lib/plugins';
-  import { initThemeSystem } from '$lib/stores/themes';
+  import { initThemeSystem, activeWallpaperGpu } from '$lib/stores/themes';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
-  import { setupTerminalThemeBridge } from '$lib/terminal/themeBridge';
+  import { setupTerminalThemeBridge } from '@ridge/remote/shared/terminal/themeBridge';
   import {
     Terminal,
     FolderOpen,
@@ -83,6 +63,7 @@ self.MonacoEnvironment = {
     PanelRightOpen,
     RefreshCw,
     LogOut,
+    Bot,
   } from 'lucide-svelte';
 // 删除相关的最近工作区定义和函数
   import {
@@ -103,13 +84,14 @@ self.MonacoEnvironment = {
     reorderWorkspaces,
     renameWorkspace,
     saveCurrentWorkspace,
+    saveWorkspaceToFile,
     loadSavedWorkspaces,
     getStartupContext,
     getRestoreSet,
     openWorkspaceFromFile,
     listSavedWorkspaceFiles,
     refreshWorkspaceSaveInfo,
-    deleteWorkspaceFile, // 添加此导入
+    deleteWorkspaceFile,
     closePane,
     paneCwdStore,
     scheduleForceFitActivePanes,
@@ -206,8 +188,15 @@ self.MonacoEnvironment = {
   // being served to a remote browser: the "remote control" sidebar entry (you
   // ARE the remote) and the native window controls (no OS window to drive).
   const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
-  import { TerminalManager } from '$lib/terminal/manager';
-  import { isTuiActive, snapshotLiveSignals } from '$lib/terminal/tuiGate';
+  import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
+  import { isTuiActive, snapshotLiveSignals } from '@ridge/remote/shared/terminal/tuiGate';
+  import { formatDroppedPathsForPaste } from '@ridge/remote/shared/terminal/dropPaste';
+  import { makeHostPorts } from '$lib/terminal/hostPorts';
+
+  // §P2：app 启动即注入 manager 的 HostPorts（settings/cwd/链接路由）。置于模块顶层，
+  // 早于任何 RidgePane 子组件 onMount 的 pane attach（读 scrollback 设置）与全局 canvas
+  // action，确保首个 pane 即能读到用户设置、点击链接可路由。缺注入时 manager 优雅降级。
+  TerminalManager.setHostPorts(makeHostPorts());
 
   let rootNode = $derived($paneTreeStore);
   let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
@@ -239,9 +228,21 @@ self.MonacoEnvironment = {
     // letterboxes instead of leaving a dead zone. Host (Tauri) build keeps the
     // normal container-driven auto-fit.
     if (webRemote) manager.setSharedRemoteMode(true);
-    void manager.attachHost(node).catch((err) => {
-      console.warn('[ridge] attachHost failed for global canvas', err);
+    // §wallpaper-gpu: 订阅 activeWallpaperGpu store，每次 emission 立刻上传纹理。
+    // attachHost 是 async；store 可能在 host 就绪前就 emit（no-op）。
+    // host 就绪后用 get() 补 replay 当前值，确保首帧壁纸不丢失。
+    let unsubWallpaper: (() => void) | undefined;
+    unsubWallpaper = activeWallpaperGpu.subscribe((gpu) => {
+      manager.applyWallpaperGpu(gpu);
     });
+    void manager.attachHost(node)
+      .then(() => {
+        // host 就绪后补 replay——订阅回调在 host 未就绪时 no-op。
+        manager.applyWallpaperGpu(get(activeWallpaperGpu));
+      })
+      .catch((err) => {
+        console.warn('[ridge] attachHost failed for global canvas', err);
+      });
     const parent = node.parentElement;
     let observer: ResizeObserver | undefined;
     if (parent) {
@@ -264,6 +265,7 @@ self.MonacoEnvironment = {
     }
     return {
       destroy() {
+        unsubWallpaper?.();
         observer?.disconnect();
         manager.detachHost();
       },
@@ -300,8 +302,14 @@ self.MonacoEnvironment = {
     });
   });
 
-  type SidebarTab = 'git' | 'files' | 'search' | 'claude' | 'remote';
+  type SidebarTab = 'git' | 'files' | 'search' | 'claude' | 'remote' | 'agents' | 'hosts';
   let sidebarTab = $state<SidebarTab>('files');
+  // 智能体协同总开关（设置面板「智能体」分区）：关闭时隐藏指挥部 Tab 入口。
+  const teammateEnabled = $derived($settingsStore.teammateEnabled);
+  // 守卫：总开关被关掉时若正停在指挥部 Tab，回退到文件 Tab（避免空白侧栏）。
+  $effect(() => {
+    if (!teammateEnabled && sidebarTab === 'agents') sidebarTab = 'files';
+  });
 
 
 
@@ -448,7 +456,17 @@ function expandSidebar() {
 
   // 键盘快捷键处理
   function handleGlobalKeydown(e: KeyboardEvent) {
-    // 全局禁止页面刷新（F5 / Ctrl+R / Ctrl+Shift+R / Cmd+R）
+    // Ctrl+Shift+R: 重置当前终端输入模式——清掉 TUI 崩溃残留的鼠标/焦点/bracketed/
+    // alt-screen 私有模式（滚轮 "[<…M" 乱码的标准 reset 救援）。必须放在下面「禁刷新」
+    // 块之前，否则会被它的 preventDefault+return 吞掉。走 host 全局快捷键，故卡死态下
+    // （pane 右键/快捷键被 TUI gate 压制时）仍可达。
+    if (e.ctrlKey && e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+      e.preventDefault();
+      const pid = get(activePaneId);
+      if (pid) TerminalManager.tryInstance()?.resetInputModes(pid);
+      return;
+    }
+    // 全局禁止页面刷新（F5 / Ctrl+R / Cmd+R）
     if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'))) {
       e.preventDefault();
       return;
@@ -704,6 +722,36 @@ function expandSidebar() {
       await renameWorkspace(wid, newName.trim());
     } catch (e) {
       await alertDialog({ title: tr('main.dlgRenameFailTitle'), message: String(e), danger: true });
+    }
+  }
+
+  // ─── 工作区 Tab 右键菜单"保存/删除保存记录" ───
+  let tabSaveDialogOpen = $state(false);
+  let tabSaveTargetWsId = $state<string>('');
+  let tabSaveDefaultName = $state('');
+
+  function handleTabSave(wsId: string, currentName: string | undefined) {
+    tabSaveTargetWsId = wsId;
+    tabSaveDefaultName = currentName?.trim() || '';
+    tabSaveDialogOpen = true;
+  }
+  async function handleTabSaveConfirm(name: string, path: string | null) {
+    const target = tabSaveTargetWsId;
+    if (!target) return;
+    await saveWorkspaceToFile(target, name, path ?? undefined);
+  }
+  async function handleTabDeleteSave(wsId: string) {
+    const ok = await confirmDialog({
+      title: tr('main.dlgDeleteSaveTitle'),
+      message: tr('main.dlgDeleteSaveMessage'),
+      okLabel: tr('main.dlgDeleteSaveOk'),
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await deleteWorkspaceFile(wsId);
+    } catch (e) {
+      await alertDialog({ title: tr('main.dlgDeleteSaveFail'), message: String(e), danger: true });
     }
   }
 
@@ -1052,10 +1100,11 @@ function expandSidebar() {
     }
   }
 
-  // §file-drop (desktop only): insert dropped absolute path(s) into the terminal
-  // under the drop point (else the active pane), quoting any path with whitespace
-  // and adding a trailing space — the classic "drag a file onto the terminal to get
-  // its path". Tauri intercepts native OS drops and hands us the absolute paths.
+  // §file-drop (desktop only): paste dropped absolute path(s) into the terminal
+  // under the drop point (else the active pane) via the bracketed-paste pipeline
+  // (TerminalManager.paste) — raw paths, space-joined, no quoting, no trailing space,
+  // so an image path is recognised as an attachment by TUIs like Claude Code.
+  // Tauri intercepts native OS drops and hands us the absolute paths.
   function insertDroppedPaths(paths: string[], position: { x: number; y: number }): void {
     if (!paths.length) return;
     const dpr = window.devicePixelRatio || 1;
@@ -1063,12 +1112,11 @@ function expandSidebar() {
     const paneEl = el?.closest('[data-rg-pane-id]') as HTMLElement | null;
     const pid = paneEl?.getAttribute('data-rg-pane-id') || get(activePaneId);
     if (!pid) return;
-    const quote = (s: string) => (/\s/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s);
-    const text = paths.map(quote).join(' ') + ' ';
+    const text = formatDroppedPathsForPaste(paths);
+    if (!text) return;
     activePaneId.set(pid);
-    void invoke('write_to_pty', { paneId: pid, data: text }).catch((err) => {
-      console.error('write_to_pty (file-drop) failed', err);
-    });
+    // 走 bracketed-paste（而非 write_to_pty 原样写）：TUI 据此把图片路径识别为附件。
+    TerminalManager.instance().paste(pid, text);
   }
 
   onMount(() => {
@@ -1113,6 +1161,9 @@ function expandSidebar() {
       await initThemeSystem();
       // 主题数据就绪后，把当前主题写到 CSS 变量
       initSettingsBoot();
+      // 智能体协同：把持久化的 HITL/TML 偏好镜像到后端网关（否则重启后 UI 显示
+      // 开、后端实为关）。容错，旧二进制无对应命令时静默降级。
+      initTeammateBoot();
       // CSS 变量就绪后再设置终端主题桥，确保 readRidgeTheme 读到正确值
       // 避免竞态：若 themeBridge 订阅先于 CSS 变量设置触发，
       // push() 会读到空 CSS 变量 → 终端底色展示缓存／错误颜色
@@ -1416,6 +1467,26 @@ function expandSidebar() {
     >
       <GitBranch class="h-5 w-5" />
     </button>
+    <!-- 智能体指挥部（Domain Zero）独立 Tab。总开关关闭时不渲染入口。 -->
+    {#if teammateEnabled}
+    <button
+      type="button"
+      class="{actBtn}{sidebarTab === 'agents' ? actBtnOn : ''}"
+      title="智能体"
+      onclick={() => { sidebarTab = 'agents'; expandSidebar(); }}
+    >
+      <Bot class="h-5 w-5" />
+    </button>
+    {/if}
+    <!-- 主机 / Hosts：外部终端来源（本机无头 + 远端 ridge/rdg）。会话真正关闭的唯一入口。 -->
+    <button
+      type="button"
+      class="{actBtn}{sidebarTab === 'hosts' ? actBtnOn : ''}"
+      title="主机"
+      onclick={() => { sidebarTab = 'hosts'; expandSidebar(); }}
+    >
+      <Server class="h-5 w-5" />
+    </button>
     <!-- Bottom-anchored extension manager — uses mt-auto so it stays at the
          rail's bottom regardless of how many tabs sit above. Click toggles
          the Claude Code extension. The icon flips between dim/Bot when off
@@ -1500,6 +1571,18 @@ function expandSidebar() {
           <RemotePanel />
         </div>
         {/if}
+
+        <!-- Agents tab（智能体指挥部）：总开关开启时才挂载 -->
+        {#if teammateEnabled}
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'agents' ? '' : 'hidden'}">
+          <AgentCenterPanel workspaceId={$activeWorkspaceId} />
+        </div>
+        {/if}
+
+        <!-- Hosts tab（主机）：本机无头会话 + 远端 ridge/rdg。始终挂载（桌面 + web-remote）。 -->
+        <div class="absolute inset-0 flex flex-col {sidebarTab === 'hosts' ? '' : 'hidden'}">
+          <HostsPanel />
+        </div>
 
         <!-- Files tab (default) -->
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'files' ? '' : 'hidden'}">
@@ -1605,6 +1688,8 @@ function expandSidebar() {
           onClose={closeWorkspace}
           onReorder={reorderWorkspaces}
           onRename={renameWorkspace}
+          onSave={handleTabSave}
+          onDeleteSave={handleTabDeleteSave}
         >
           {#snippet actions()}
             <button
@@ -1687,7 +1772,7 @@ function expandSidebar() {
           {#snippet trailingActions()}
             <button
               type="button"
-              class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
+              class="shrink-0 ml-2 flex h-8 w-8 items-center justify-center rounded-lg border border-dashed border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:border-[var(--rg-accent)]/40 hover:text-[var(--rg-accent)] hover:bg-[var(--rg-accent)]/8 transition-colors"
               title={$t('main.newWorkspaceBtn')}
               onclick={() => createWorkspace()}
             >
@@ -1927,12 +2012,22 @@ function expandSidebar() {
   </div>
 {/if}
 
+<!-- 工作区 Tab 右键"保存"对话框 -->
+<SaveWorkspaceDialog
+  bind:open={tabSaveDialogOpen}
+  defaultName={tabSaveDefaultName}
+  onConfirm={handleTabSaveConfirm}
+  onCancel={() => (tabSaveDialogOpen = false)}
+/>
+
 <!-- alert / confirm / prompt 替代浏览器原生 dialog -->
 <WindDialog />
 <!-- 轻量 toast 通知 (z-10000，位于所有 modal 之上) -->
 <WindToast />
 <!-- 全局右键菜单 -->
 <ContextMenu />
+<!-- 「接入终端」落点方向选择浮层（单例） -->
+<DockRegionPicker />
 
 <!-- §IDE 文件搜索 palette（Ctrl+P / Ctrl+Shift+P，VS Code 对齐）。openFile → 内置编辑器。 -->
 {#if quickOpenVisible}

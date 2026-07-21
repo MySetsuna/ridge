@@ -819,6 +819,10 @@ impl<'a> Perform for Performer<'a> {
                     .unwrap_or(false);
                 if prompt_start {
                     self.grid.clear_inline_tui_sticky();
+                    // §wsl-resize-silence — 记录本 pane 有 shell-integration；resize 时据此
+                    // 保留 silence 窗口（prompt OSC 会早释放它）。无此标记的 pane（WSL/cmd）
+                    // 则跳过 silence，以免吞掉 SIGWINCH 重绘。
+                    self.grid.mark_prompt_osc_seen();
                 }
             }
             _ => {}

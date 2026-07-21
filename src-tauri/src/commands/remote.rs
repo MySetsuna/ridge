@@ -1,15 +1,16 @@
 use std::sync::atomic::Ordering;
+use base64::Engine as _;
 use sysinfo::System;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::remote::mdns;
+use ridge_remote::mdns;
 use crate::state::AppState;
 
 #[tauri::command]
 pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, String> {
     let port = *state.remote_port.read();
-    let lan_ip = crate::remote::detect_lan_ip();
-    let lan_ips = crate::remote::detect_lan_ips();
+    let lan_ip = ridge_remote::net::detect_lan_ip();
+    let lan_ips = ridge_remote::net::detect_lan_ips();
     let machine_name = System::host_name().unwrap_or_else(|| "unknown".to_string());
     let (totp_code, otpauth_uri) = state.remote_auth.code_and_uri(&machine_name);
     let enabled = state.remote_enabled.load(Ordering::Relaxed);
@@ -139,6 +140,45 @@ pub fn remote_set_totp_identity(
     Ok(())
 }
 
+// ── TOTP 信任授权（grant_store，§totp-trust）──────────────────────────────────
+
+/// §totp-trust-check：查询 `(当前身份, ctrl_pub_b64)` 是否持有 24h 内的信任授权。
+///
+/// `ctrl_pub_b64`：controller Ed25519 公钥的 base64 标准编码（32 字节）。
+/// 返回 `true` → 跳过 TOTP 二次验证；`false` → 仍须手动 TOTP。
+/// 解码失败视为「无授权」，返回 `false`（降级，不阻断远控）。
+#[tauri::command]
+pub fn totp_trust_check(state: State<AppState>, ctrl_pub_b64: &str) -> bool {
+    let Ok(ctrl_pub) = base64::engine::general_purpose::STANDARD.decode(ctrl_pub_b64) else {
+        tracing::warn!(target: "ridge::remote", "totp_trust_check: 解码 ctrl_pub_b64 失败，视为无授权");
+        return false;
+    };
+    let identity = state.remote_auth.current_identity();
+    ridge_core::grant_store::check(&identity, &ctrl_pub)
+}
+
+/// §totp-trust-record：记录/刷新 `(当前身份, ctrl_pub_b64)` 的信任时间戳为「当前时刻」。
+///
+/// 在手动 TOTP 验证通过后立即调用（前端决策）。幂等；写失败仅 warn。
+#[tauri::command]
+pub fn totp_trust_record(state: State<AppState>, ctrl_pub_b64: &str) -> Result<(), String> {
+    let ctrl_pub = base64::engine::general_purpose::STANDARD
+        .decode(ctrl_pub_b64)
+        .map_err(|e| format!("ctrl_pub_b64 解码失败: {e}"))?;
+    let identity = state.remote_auth.current_identity();
+    ridge_core::grant_store::record(&identity, &ctrl_pub);
+    Ok(())
+}
+
+/// §totp-trust-revoke-all：撤销当前身份的全部信任授权（删除对应 grants 文件）。
+///
+/// 用于：用户切换账号、主动「忘记所有受信控制端」、安全重置等场景。
+#[tauri::command]
+pub fn totp_trust_revoke_all(state: State<AppState>) {
+    let identity = state.remote_auth.current_identity();
+    ridge_core::grant_store::revoke_all(&identity);
+}
+
 #[tauri::command]
 pub fn set_remote_enabled(state: State<AppState>, enabled: bool) -> Result<(), String> {
     let prev = state.remote_enabled.swap(enabled, Ordering::Relaxed);
@@ -161,21 +201,6 @@ pub fn get_remote_enabled(state: State<AppState>) -> Result<bool, String> {
     Ok(state.remote_enabled.load(Ordering::Relaxed))
 }
 
-/// §read-only: when enabled, remote `data-request` mutations (file writes,
-/// deletes, git commit/push/…) are refused server-side. Reads stay allowed.
-/// Defence-in-depth for view-only sessions — an authenticated remote already
-/// has shell stdin, so this is a convenience guard, not an isolation boundary.
-#[tauri::command]
-pub fn set_remote_fs_readonly(state: State<AppState>, readonly: bool) -> Result<(), String> {
-    state.remote_fs_readonly.store(readonly, Ordering::Relaxed);
-    tracing::info!(target: "ridge::remote", readonly, "Remote filesystem read-only toggle changed");
-    Ok(())
-}
-
-#[tauri::command]
-pub fn get_remote_fs_readonly(state: State<AppState>) -> Result<bool, String> {
-    Ok(state.remote_fs_readonly.load(Ordering::Relaxed))
-}
 
 /// §sessions: list the currently-connected remote control sessions for the
 /// desktop RemotePanel (IP + device id + connected duration).
@@ -277,7 +302,7 @@ fn start_remote_server(state: &AppState) -> Result<(), String> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
     let auth = state.remote_auth.clone();
-    let handle = crate::remote::spawn_remote_server(state.clone(), auth, shutdown_rx)
+    let handle = crate::remote_bridge::spawn_remote_server(state.clone(), auth, shutdown_rx)
         .ok_or_else(|| "Failed to bind remote server port".to_string())?;
 
     // Start mDNS broadcast so mobile clients can discover the server.

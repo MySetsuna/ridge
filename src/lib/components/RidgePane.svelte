@@ -15,19 +15,20 @@
 <script lang="ts">
 import { onMount, onDestroy } from 'svelte';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
-import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '$lib/terminal/clipboardImage';
+import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '@ridge/remote/shared/terminal/clipboardImage';
 import { t, tr } from '$lib/i18n';
 import { activePaneId, activeWorkspaceId, setPaneCwd, paneOscTitleStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
-import type { KernelEvent } from '$lib/terminal/manager';
-import { ensurePtyBridge, enableDeltaModeThenFit } from '$lib/terminal/ptyBridge';
-import { pushTerminalThemeNow } from '$lib/terminal/themeBridge';
+import type { KernelEvent } from '@ridge/remote/shared/terminal/manager';
+import { ensurePtyBridge, enableDeltaModeThenFit } from '@ridge/remote/shared/terminal/ptyBridge';
+import { pushTerminalThemeNow } from '@ridge/remote/shared/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
-import { TerminalManager } from '$lib/terminal/manager';
-import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '$lib/terminal/tuiGate';
+import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
+import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '@ridge/remote/shared/terminal/tuiGate';
 import {
 	deriveBufferEvent,
 	updateInputBuffer,
@@ -36,7 +37,11 @@ import {
 	type InputBufferState,
 } from './inputBufferTracker';
 import { terminalHistoryStore, dedupKeepFirst, filterByPrefix, nextHistorySelection } from '$lib/stores/terminalHistory';
-import { activeBgImage } from '$lib/stores/themes';
+import { getShells, changePaneShell, type ShellInfo } from '@ridge/remote/shared/terminal/paneShell';
+import { hostsStore, refreshHosts, newHeadlessSession, attachSessionAt } from '$lib/stores/hosts';
+import { pickDockRegion } from '$lib/stores/dockRegionPicker';
+import type { ContextMenuItem } from '$lib/stores/contextMenu';
+import { Terminal, PlugZap } from 'lucide-svelte';
 
 interface Props {
 	paneId: string;
@@ -54,6 +59,15 @@ let alive = true;
 // after a split until the next activePaneId change.
 let attached = $state(false);
 
+// 右键菜单"切换终端类型"子菜单需要 shell 列表；挂载预加载（共享缓存），
+// 使 onContextMenu 能同步构建子菜单项。
+let shells = $state<ShellInfo[]>([]);
+$effect(() => {
+	void getShells().then((s) => {
+		shells = s;
+	});
+});
+
 // P4.4 (2026-05-21) — removed the parserBackend live-switch state.
 // The Rust path is now unconditional; `set_pane_delta_mode(true)` is
 // still called on attach (see onMount IIFE below) so the backend
@@ -62,7 +76,7 @@ let attached = $state(false);
 // to switch to.
 
 // PTY listener subscriptions used to live here as ptyUnlisten /
-// ptyClosedUnlisten. Both moved to `$lib/terminal/ptyBridge` (TASKS §5.1)
+// ptyClosedUnlisten. Both moved to `@ridge/remote/shared/terminal/ptyBridge` (TASKS §5.1)
 // so listener lifetime tracks the wasm kernel lifetime (manager.attach →
 // manager.detach) rather than this Svelte component's mount cycle —
 // otherwise PTY bytes emitted during the unmount window of a split /
@@ -77,6 +91,14 @@ const manager = TerminalManager.instance();
 // the host-side `remoteRunning` store is false on the controller. See
 // tauriShim/core.ts — browser-only surfaces gate on this flag, not isTauri().
 const WEB_REMOTE = import.meta.env.RIDGE_WEB_REMOTE === true;
+
+// §history-pull（2026-07-02）: a browser controller pulls scrollback over the
+// LAN-WS / cloud-WebRTC shim, so seed only ~1.5 screens on mount (fast first
+// paint, no multi-KiB parse stall) and page older history in smaller batches on
+// scroll-up. The local desktop keeps the larger local-invoke budgets. See
+// docs/superpowers/specs/2026-07-02-public-remote-smooth-scrollback-multi-controller-design.md
+const SCROLLBACK_TAIL_BYTES = WEB_REMOTE ? 32 * 1024 : 256 * 1024;
+const SCROLLBACK_OLDER_BYTES = WEB_REMOTE ? 64 * 1024 : 128 * 1024;
 
 // §1.32 (2026-05-20) Wave C: state is now `{ text, cursorCol }` so
 // ArrowLeft / Home / Delete / mid-line edits preserve the buffer
@@ -107,6 +129,70 @@ const HISTORY_OVERLAY_MAX_WINDOW = 16;
 // Cap the in-memory candidate list so a huge shell history doesn't bloat each
 // push; 500 recent matches is far more than anyone scrolls through.
 const HISTORY_OVERLAY_MAX_ITEMS = 500;
+
+// §process-gate (2026-06-27) — suppress the shell-history overlay while a
+// foreground process is actually RUNNING in this pane's shell (e.g. `sleep`,
+// `npm run dev`, a build) instead of the shell idling at a command prompt.
+// The kernel TUI gate (`shouldAllowShellHistory`) already blocks vim / claude /
+// less etc. via their VT modes, but a plain non-TUI command sets no mode — so
+// without this, ArrowUp pops the history popup in the middle of a running
+// command. The backend `get_pane_foreground_process` returns the shell's
+// foreground child name (`Some`) while a command runs and `null` at an idle
+// prompt; we cache that as a boolean and refresh it on a light cadence while
+// this pane is the active one (the only pane where ArrowUp can open history).
+// Fail-open on error so a transient IPC failure never wedges history shut.
+const FG_POLL_INTERVAL_MS = 1000;
+let foregroundProcessRunning = false;
+let foregroundPollTimer: ReturnType<typeof setInterval> | null = null;
+
+async function refreshForegroundRunning(): Promise<void> {
+	if (!alive || !isTauri()) return;
+	try {
+		const name = await invoke<string | null>('get_pane_foreground_process', {
+			workspaceId,
+			paneId,
+		});
+		// Polling may have been stopped (pane deactivated / destroyed) during
+		// the await — don't resurrect a stale value onto a now-idle pane.
+		if (foregroundPollTimer === null || !alive) return;
+		foregroundProcessRunning = name != null;
+	} catch {
+		foregroundProcessRunning = false;
+	}
+}
+
+function startForegroundPoll(): void {
+	if (foregroundPollTimer !== null || !isTauri()) return;
+	void refreshForegroundRunning();
+	foregroundPollTimer = setInterval(() => void refreshForegroundRunning(), FG_POLL_INTERVAL_MS);
+}
+
+function stopForegroundPoll(): void {
+	if (foregroundPollTimer !== null) {
+		clearInterval(foregroundPollTimer);
+		foregroundPollTimer = null;
+	}
+	foregroundProcessRunning = false;
+}
+
+// §process-gate (2026-06-30) — extend the gate to IN-PROCESS commands (e.g.
+// PowerShell `Start-Sleep`, a pure-PS loop) that fork no OS child, so the
+// foreground-process poll above can't see them. The shell integration emits
+// OSC 133;A on every prompt → the backend fires a `pane-prompt-{ws}-{pane}`
+// event; we treat "Enter submitted at the shell" as command-start and the next
+// prompt event as command-end. `commandRunning` is only ARMED once we've
+// actually observed a prompt event (`hasShellIntegration`), so a shell that
+// never emits the marker (cmd.exe, or integration that failed) can never wedge
+// the gate closed — it just falls back to the foreground-process poll.
+let commandRunning = false;
+let hasShellIntegration = false;
+let promptUnlisten: UnlistenFn | null = null;
+
+/** Mark a command as submitted at the shell prompt (plain Enter, or executing a
+ *  history pick). No-op until shell integration is confirmed. */
+function markCommandSubmitted(): void {
+	if (hasShellIntegration) commandRunning = true;
+}
 
 function snapshotHistoryItems(query: string): string[] {
 	const all = dedupKeepFirst(get(terminalHistoryStore));
@@ -188,6 +274,8 @@ function commitHistorySelection(execute: boolean): void {
 	const replay = computeReplaySequence(snapshot ?? currentInputBuffer);
 	if (replay) manager.write(paneId, replay);
 	manager.write(paneId, execute ? cmd + '\r' : cmd);
+	// §process-gate — executing a picked history command starts a run too.
+	if (execute) markCommandSubmitted();
 	currentInputBuffer = EMPTY_INPUT_BUFFER;
 	closeHistoryOverlay();
 	imeHelper?.focus();
@@ -300,6 +388,12 @@ function touchTuiSticky(): void {
 function dispatchBufferEvent(e: KeyboardEvent): void {
 	const ev = deriveBufferEvent(e);
 	if (!ev) return;
+	// §shell-history (2026-06-24): snapshot the keystroke mirror BEFORE
+	// the state machine clears it, so we can record the executed command
+	// into `terminalHistoryStore`. Must happen before `updateInputBuffer`
+	// because `clear` returns `EMPTY_INPUT_BUFFER`.
+	const preText = currentInputBuffer.text;
+	const preDirty = currentInputBuffer.dirty === true;
 	// §1.32 Wave F: keep the keystroke mirror updated for the popup's
 	// live filter, AND drive the snapshot's input-start lifecycle so
 	// `readShellInputSnapshot` can read the actual shell line at
@@ -314,6 +408,20 @@ function dispatchBufferEvent(e: KeyboardEvent): void {
 			manager.markInputStart(paneId);
 			break;
 		case 'clear':
+			// §process-gate (2026-06-30): plain Enter submits the line — a
+			// command is now running until the next prompt marker resets it.
+			// No-op until shell integration is confirmed. Not in 'killLine'
+			// (Ctrl+U just clears the line, runs nothing).
+			markCommandSubmitted();
+			// §shell-history (2026-06-24): record the executed command
+			// into the in-memory store so commands typed this session
+			// appear in the history popup. Skip dirty buffers (Tab
+			// completion echoed text the mirror can't see) to avoid
+			// recording partial prefixes as if they were the full command.
+			if (preText.trim() && !preDirty) {
+				terminalHistoryStore.add(preText);
+			}
+			// fall through
 		case 'killLine':
 			// Enter / Ctrl+U: shell line ends or fully clears; the
 			// next input is a fresh start.
@@ -570,7 +678,7 @@ async function fetchOlderScrollback(): Promise<void> {
 		}>('get_pane_scrollback_before', {
 			paneId,
 			beforeSeq: oldestSeq,
-			maxBytes: 128 * 1024,
+			maxBytes: SCROLLBACK_OLDER_BYTES,
 		});
 		if (!alive) return;
 		if (chunk.bytes) {
@@ -972,6 +1080,19 @@ onMount(() => {
 		return;
 	}
 
+	// §process-gate — subscribe to the backend's prompt marker (OSC 133;A,
+	// emitted by the shell integration on every prompt) BEFORE the
+	// attach/unpark branch so it's wired exactly once per mount. Each prompt
+	// means the shell is idle at its input line → clear `commandRunning` and
+	// confirm integration is live.
+	void listen(`pane-prompt-${workspaceId}-${paneId}`, () => {
+		hasShellIntegration = true;
+		commandRunning = false;
+	}).then((un) => {
+		if (alive) promptUnlisten = un;
+		else un();
+	});
+
 	void (async () => {
 		await manager.ready();
 		if (!alive) return;
@@ -1074,7 +1195,7 @@ onMount(() => {
 				bytes: string;
 				start_seq: number;
 				at_oldest: boolean;
-			}>('get_pane_scrollback_tail', { paneId, maxBytes: 256 * 1024 });
+			}>('get_pane_scrollback_tail', { paneId, maxBytes: SCROLLBACK_TAIL_BYTES });
 			if (alive && chunk.bytes) {
 				manager.feed(paneId, chunk.bytes);
 			}
@@ -1176,6 +1297,10 @@ $effect(() => {
 
 onDestroy(() => {
 	alive = false;
+	// §process-gate — tear down the foreground-process poll + prompt listener.
+	stopForegroundPoll();
+	promptUnlisten?.();
+	promptUnlisten = null;
 	// Lift this pane's active scrollbar-drag text-selection guard so a pane that
 	// unmounts mid-drag can't leave the whole app stuck at user-select:none.
 	if (scrollbarDragGuardActive) endScrollbarDrag();
@@ -1227,6 +1352,10 @@ $effect(() => {
 	// into another pane. Keystrokes already can't reach it (its container
 	// isn't focused), but the visual residue confuses.
 	if (!isActive && historyOverlayOpen) closeHistoryOverlay();
+	// §process-gate — only the active pane can open the history overlay, so
+	// only it runs the (slightly costly) foreground-process poll.
+	if (isActive) startForegroundPoll();
+	else stopForegroundPoll();
 });
 
 // Apply the user's preferred terminal padding. The setter is clamped + a
@@ -1335,6 +1464,14 @@ $effect(() => {
 			!historyOverlayOpen
 			&& (e.key === 'ArrowUp' || e.key === 'ArrowDown')
 			&& !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
+			// §process-gate — no history popup while a command is actually
+			// running in the shell. `foregroundProcessRunning` catches external
+			// processes (any shell); `commandRunning` catches in-process
+			// commands (e.g. PowerShell Start-Sleep) via the OSC 133;A prompt
+			// bracket. Non-TUI processes set no VT mode, so the kernel gate
+			// alone wouldn't catch them.
+			&& !foregroundProcessRunning
+			&& !commandRunning
 			&& manager.shouldAllowShellHistory(paneId)
 		) {
 			if (openHistoryOverlay()) {
@@ -1405,7 +1542,15 @@ $effect(() => {
 		// 且字节真的发出去时才 preventDefault。否则（如 claude code 这
 		// 类启用了 cursor hidden 让 sticky=true 但不接管鼠标的 inline-TUI）
 		// 落到下方的 scrollback 分支，用户仍能向上翻页 host 历史。
-		if (isTuiSticky() && manager.handleWheel(paneId, e)) {
+		// 自愈：仅在「活跃 TUI 渲染上下文」（alt-screen / inline-active / 光标隐藏 之一）
+		// 才把滚轮转成 SGR 鼠标上报。TUI 崩溃后回到 shell 提示符（光标可见、无渲染信号）
+		// 即便鼠标模式 ?1000.. 卡在非零，也不再吐 "[<65;…M" 乱码，改走下方滚历史分支。
+		// 只收紧滚轮路径，不动 tuiGate 的键盘门控（避免回归 claude code 的 ArrowUp 泄漏）。
+		const liveTuiCtx =
+			manager.isAltScreen(paneId) ||
+			manager.isInlineTuiActive(paneId) ||
+			!manager.isCursorVisible(paneId);
+		if (liveTuiCtx && isTuiSticky() && manager.handleWheel(paneId, e)) {
 			e.preventDefault();
 			// §TUI: keep the TUI gate alive after a wheel event so the
 			// sticky window doesn't decay during scroll-heavy interaction.
@@ -1442,10 +1587,68 @@ $effect(() => {
 	}
 
 
+// §接入终端 (hosts P2)：右键菜单「接入终端 ▸」把外部终端引入工作区。落点经
+// pickDockRegion 弹方向选择浮层 → attachSessionAt(summon + dock_pane)。会话数据
+// 取自 hostsStore（构建菜单时同步读，并 fire-and-forget 刷新供下次打开使用）。
+async function onAttachNewHeadless(targetPaneId: string): Promise<void> {
+	const region = await pickDockRegion(targetPaneId);
+	if (!region) return;
+	try {
+		const name = await newHeadlessSession();
+		await attachSessionAt('headless', name, targetPaneId, region);
+	} catch {
+		/* 失败静默：用户可在「主机」面板重试/排查 */
+	}
+}
+
+async function onAttachExisting(socket: string, name: string, targetPaneId: string): Promise<void> {
+	const region = await pickDockRegion(targetPaneId);
+	if (!region) return;
+	try {
+		await attachSessionAt(socket, name, targetPaneId, region);
+	} catch {
+		/* ignore */
+	}
+}
+
+function openHostsTab(): void {
+	window.dispatchEvent(new CustomEvent('ridge:open-sidebar-tab', { detail: 'hosts' }));
+}
+
+/** 构建「接入终端」子菜单项：新建无头 + 各主机会话（按主机分二级子菜单）+ 管理入口。 */
+function attachSubmenuChildren(targetPaneId: string): ContextMenuItem[] {
+	const items: ContextMenuItem[] = [
+		{
+			id: 'attach-new-headless',
+			label: '新建无头终端',
+			action: () => void onAttachNewHeadless(targetPaneId),
+		},
+	];
+	for (const host of get(hostsStore)) {
+		const sessions = host.sessions ?? [];
+		if (sessions.length === 0) continue;
+		items.push({
+			id: `attach-host-${host.id}`,
+			label: host.label,
+			children: sessions.map((s) => ({
+				id: `attach-${host.id}-${s.socket}-${s.name}`,
+				label: s.attached ? `${s.name}（已接入）` : s.name,
+				disabled: s.attached,
+				action: () => void onAttachExisting(s.socket, s.name, targetPaneId),
+			})),
+		});
+	}
+	items.push({ id: 'attach-manage-sep', divider: true });
+	items.push({ id: 'attach-open-hosts', label: '管理主机…', action: () => openHostsTab() });
+	return items;
+}
+
 function onContextMenu(e: MouseEvent) {
 	if (!alive || !attached) return;
 	// TUI 鼠标上报模式下，右键由 TUI 处理，不显示 RidgePane 右键菜单
 	if (manager.isMouseReporting(paneId)) return;
+	// 异步刷新主机/会话快照（不阻塞本次菜单构建；供下次打开时已是最新）。
+	void refreshHosts();
 	// §TUI: refresh sticky timestamp BEFORE showing the context menu.
 	// While the menu is open no keyboard/wheel events reach the pane,
 	// so the inline-TUI heuristic (2 s decay) can expire during menu
@@ -1498,6 +1701,22 @@ function onContextMenu(e: MouseEvent) {
 		{ id: 'term-split-down', label: tr('workspace.ctxSplitDown'), action: () => {
 			void splitPane(paneId, 'vertical');
 		}},
+		// §接入终端 (hosts P2)：引入外部终端（本机无头 / 远端 ridge·rdg）。选中后弹
+		// 方向选择浮层确定落点。保持上面的 Split 简单不变，富功能收进此子菜单。
+		{ id: 'term-attach', label: '接入终端', icon: PlugZap, children: attachSubmenuChildren(paneId) },
+		...(shells.length > 0 ? [
+			{ id: 'term-sep-shell', divider: true },
+			{
+				id: 'term-shell',
+				label: tr('workspace.ctxSwitchShell'),
+				icon: Terminal,
+				children: shells.map((s) => ({
+					id: `term-shell-${s.id}`,
+					label: s.label,
+					action: () => { void changePaneShell(paneId, s); },
+				})),
+			},
+		] : []),
 		{ id: 'term-sep3', divider: true },
 		{ id: 'term-close', label: tr('workspace.ctxClosePanel'), action: () => {
 			void closePane(paneId);
@@ -1760,17 +1979,6 @@ function captureBackspace(node: HTMLElement) {
 	onkeydown={onContainerKeyDown}
 	use:captureBackspace
 >
-	<!-- 终端背景图层：absolute z-index:0，必须是容器的首个子节点，
-	     才能稳定排在 wasm canvas（由 manager 后续 append）的 DOM 顺序之前、
-	     渲染在其下方。勿在它前面插入其它元素，否则层叠会错乱。 -->
-	{#if $activeBgImage.url}
-		<div
-			class="rg-pane-bgimg"
-			style="background-image: url('{$activeBgImage.url}'); opacity: {$activeBgImage.opacity};"
-			aria-hidden="true"
-		></div>
-	{/if}
-
 	<!-- IME helper textarea. Gated on Settings.terminalImeMode === 'ime'
 	     so users who only type ASCII can flip to 'direct' mode and the
 	     textarea never enters the DOM — OS IME has no focusable input
@@ -2156,14 +2364,5 @@ function captureBackspace(node: HTMLElement) {
 	.rg-search-btn.active {
 		background: var(--rg-accent, #4a8cff);
 		color: #fff;
-	}
-	.rg-pane-bgimg {
-		position: absolute;
-		inset: 0;
-		background-size: cover;
-		background-position: center;
-		background-repeat: no-repeat;
-		pointer-events: none;
-		z-index: 0;
 	}
 </style>

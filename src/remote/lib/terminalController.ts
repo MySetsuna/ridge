@@ -1,7 +1,7 @@
 import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
-import { REMOTE_TERM_FONT, withEmojiFallback } from '$lib/terminal/fontStack';
-import { ensureFlagFont } from '$lib/terminal/flagEmojiSupport';
+import { REMOTE_TERM_FONT, withEmojiFallback } from '@ridge/remote/shared/terminal/fontStack';
+import { ensureFlagFont } from '@ridge/remote/shared/terminal/flagEmojiSupport';
 
 export interface TermOpts {
   fontSize?: number;
@@ -267,12 +267,14 @@ export class TerminalController {
 
   private flushDeferred() {
     const deferred = this.feedDeferred.splice(0);
-    for (const d of deferred) {
-      this.kernel.feed(d);
-    }
-    const resp = this.kernel.takePendingResponse();
-    if (resp.length > 0 && this.onStdin) {
-      this.onStdin(new TextDecoder().decode(resp));
+    if (deferred.length === 0) return;
+    const frameStart = performance.now();
+    for (let i = 0; i < deferred.length; i++) {
+      if (performance.now() - frameStart > FEED_PER_CALL_BUDGET_MS) {
+        for (let r = i; r < deferred.length; r++) this.feedDeferred.push(deferred[r]);
+        break;
+      }
+      this.feedChunked(deferred[i]);
     }
   }
 
@@ -473,11 +475,12 @@ export class TerminalController {
   startSelection(row: number, col: number) {
     if (this.destroyed) return;
     this.isSelecting = true;
-    // 与 extendSelection 保持一致：anchor 也须换算为绝对行（scrollback 相对），
-    // 否则 setSelectionAbs 的 anchor/end 坐标系不同，scrolled 状态下选区永远偏移。
-    const absRow = this.kernel.scrollbackLen() > 0
-      ? row + (this.kernel.scrollOffset() > 0 ? this.kernel.scrollOffset() : 0)
-      : row;
+    // 绝对行 = viewport-relative row + 视口上方的 scrollback 行数
+    // （= scrollbackLen − scrollOffset）。与桌面 manager.ts 的 vpToAbsRow 完全一致。
+    // 旧实现用 `row + scrollOffset` 是**反向且缺 scrollbackLen 基底**的错公式（只有
+    // scrollbackLen=0 时凑巧对），一旦终端有历史并向上滚动，anchor/end 就落到别处——
+    // 手指在 A 区，却选中了 B 区。rowsAboveViewport() 已做 max(0,…) 兜底，避免下溢。
+    const absRow = this.rowsAboveViewport() + row;
     this.selAnchorRow = absRow;
     this.selAnchorCol = col;
     this.kernel.clearSelection();
@@ -486,9 +489,8 @@ export class TerminalController {
 
   extendSelection(row: number, col: number) {
     if (this.destroyed || !this.isSelecting) return;
-    const absRow = this.kernel.scrollbackLen() > 0
-      ? row + (this.kernel.scrollOffset() > 0 ? this.kernel.scrollOffset() : 0)
-      : row;
+    // 见 startSelection：绝对行 = rowsAboveViewport() + row（与桌面 vpToAbsRow 一致）。
+    const absRow = this.rowsAboveViewport() + row;
     this.kernel.setSelectionAbs(this.selAnchorRow, this.selAnchorCol, absRow, col);
     this.markDirty();
   }
@@ -544,6 +546,31 @@ export class TerminalController {
   scrollToBottom() { if (this.destroyed) return; this.kernel.scrollToBottom(); this.markDirty(); }
   scrollOffset(): number { return this.destroyed ? 0 : this.kernel.scrollOffset(); }
   scrollbackLen(): number { return this.destroyed ? 0 : this.kernel.scrollbackLen(); }
+
+  /**
+   * §history-pull lazy loading: prepend older PTY history bytes at the OLDEST end
+   * of the scrollback ring (the bytes fetched from the host via
+   * get_pane_scrollback_before). Goes through the kernel's sandbox prepend path so
+   * the live grid / cursor / viewport position (measured from the bottom) stay put
+   * — the user keeps looking at the same content with more history now above them.
+   */
+  prependScrollback(bytes: Uint8Array) {
+    if (this.destroyed || bytes.length === 0) return;
+    this.kernel.prependScrollback(bytes);
+    this.markDirty();
+  }
+
+  /**
+   * How many scrollback rows sit ABOVE the current viewport top (rows the user
+   * hasn't scrolled up to yet). `scrollOffset` is measured from the live grid
+   * (bottom); when the user scrolls all the way up it approaches `scrollbackLen`,
+   * so the remaining gap to the very top shrinks to 0. Used to trigger a lazy
+   * older-history fetch when the viewport nears the top of the in-kernel buffer.
+   */
+  rowsAboveViewport(): number {
+    if (this.destroyed) return 0;
+    return Math.max(0, this.kernel.scrollbackLen() - this.kernel.scrollOffset());
+  }
 
   // ── Coordinate mapping ──
 
