@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ridge.local/schemas/remote-smoke-evidence.schema.json",
+  "title": "Ridge Cloud Remote physical smoke evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "recordedAt",
+    "gitCommit",
+    "remoteBuildId",
+    "cloudDeploymentId",
+    "platform",
+    "device",
+    "scenarios",
+    "attachments",
+    "overallResult"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "recordedAt": { "type": "string", "format": "date-time" },
+    "gitCommit": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+    "remoteBuildId": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "cloudDeploymentId": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "platform": { "enum": ["ios-safari", "android-chrome"] },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "osVersion", "browserVersion"],
+      "properties": {
+        "model": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "osVersion": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "browserVersion": { "type": "string", "minLength": 1, "maxLength": 80 }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "startedAt", "endedAt", "recoveryMs", "status", "observations"],
+        "properties": {
+          "kind": {
+            "enum": ["baseline", "wifi_to_cellular", "cellular_to_wifi", "background_token_window"]
+          },
+          "startedAt": { "type": "string", "format": "date-time" },
+          "endedAt": { "type": "string", "format": "date-time" },
+          "recoveryMs": { "type": "integer", "minimum": 0 },
+          "backgroundDurationSeconds": { "type": "integer", "minimum": 900 },
+          "status": { "enum": ["pass", "fail", "blocked"] },
+          "observations": { "type": "string", "maxLength": 2000 }
+        }
+      }
+    },
+    "attachments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "path"],
+        "properties": {
+          "kind": { "enum": ["screenshot", "screen-recording", "log"] },
+          "path": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    },
+    "overallResult": { "enum": ["pass", "fail", "blocked"] }
+  }
+}
