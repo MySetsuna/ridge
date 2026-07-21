@@ -36,3 +36,6 @@ NotebookLM 基于 `PRODUCT_VISION.md`、`GAP_PORTFOLIO.md`、`PROJECT_STATUS.md`
 
 Iteration 2 只建立“跨入口 Remote 能力合同门禁”：同一份可执行合同覆盖能力宣告、安全放行、实际 handler 与 Controller UI 降级。其余建议进入后续候选，不并入本轮。
 
+## 后续授权与处置
+
+用户随后明确授权跨仓修改。`C:\code\ridge-cloud` 的干净 `develop` 执行 `git pull --ff-only` 后确认已是最新；权威协议无需改内容。wind 的陈旧协议全文已替换为指向 ridge-cloud canonical 的短入口，并加入 Vitest 守卫，防止本仓再次维护第二份协议正文。该独立治理项已完成，不并入 iteration 2 的能力合同范围。
