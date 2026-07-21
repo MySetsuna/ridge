@@ -63,8 +63,11 @@ function restoreToMain(payload?: HandoffPayload): void {
 /**
  * 把整个编辑器弹出为独立 OS 窗口。非 Tauri / web-remote 回退到 floating 模式。
  * 已弹出时聚焦既有窗口。仅应在主窗口调用（独立窗口内菜单项不显示）。
+ *
+ * @param attempt 重试次数（内部使用，外部调用不传）。Tauri 的 WebviewWindow label
+ *   'editor' 在 destroy() 后可能被异步保留导致第二次创建失败，重试一次可恢复。
  */
-export async function popOutEditor(): Promise<void> {
+export async function popOutEditor(attempt = 1): Promise<void> {
   // 浏览器 / 远程：没有 OS 窗口，退化为现有的悬浮模式（行为一致不报错）。
   if (!isTauri() || WEB_REMOTE) {
     fileEditorStore.setDisplayMode('floating');
@@ -105,9 +108,15 @@ export async function popOutEditor(): Promise<void> {
     fileEditorStore.clearForHandoff();
   });
   win.once('tauri://error', (e) => {
-    console.error('[editorWindow] 创建独立窗口失败', e?.payload);
+    console.warn('[editorWindow] 创建独立窗口失败', e?.payload);
     // 回滚：主窗口保持原状，不清空。
     editorPoppedOut.set(false);
+    fileEditorStore.setOpenInterceptor(null);
+    // Tauri 在 destroy() 后 label 未完全释放时，getByLabel 返回 null 但
+    // new WebviewWindow 仍会失败。300ms 后重试一次。
+    if (attempt < 2) {
+      setTimeout(() => void popOutEditor(2), 300);
+    }
   });
 }
 

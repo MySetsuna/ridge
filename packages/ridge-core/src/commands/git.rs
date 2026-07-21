@@ -393,7 +393,7 @@ pub async fn find_git_repos_below(path: String, max_depth: Option<usize>) -> Vec
         .unwrap_or_default()
 }
 
-fn find_git_repos_below_sync(path: String, max_depth: Option<usize>) -> Vec<String> {
+pub fn find_git_repos_below_sync(path: String, max_depth: Option<usize>) -> Vec<String> {
     // Directories we never descend into. Grouped roughly by ecosystem so future
     // additions land in the right bucket. Keep this list tight — each entry
     // short-circuits a potentially huge subtree scan. If a project does
@@ -671,7 +671,7 @@ pub async fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> 
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
+pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
     let path = Path::new(&repo_root);
     let repo_path = path
         .ancestors()
@@ -914,7 +914,7 @@ pub async fn git_list_branches(repo_root: String) -> Result<Vec<BranchInfo>, Str
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn git_list_branches_sync(repo_root: String) -> Result<Vec<BranchInfo>, String> {
+pub fn git_list_branches_sync(repo_root: String) -> Result<Vec<BranchInfo>, String> {
     let path = Path::new(&repo_root);
     let out = git_cmd()
         .args([
@@ -1439,7 +1439,7 @@ pub async fn git_diff_summary(repo_root: String) -> Result<GitDiffSummary, Strin
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn git_diff_summary_sync(repo_root: String) -> Result<GitDiffSummary, String> {
+pub fn git_diff_summary_sync(repo_root: String) -> Result<GitDiffSummary, String> {
     let repo = Path::new(&repo_root);
     let out = git_cmd()
         .args(["--no-pager", "diff", "--numstat", "HEAD", "--"])
@@ -1751,7 +1751,7 @@ fn git_reset_sync(repo_root: String, hash: String, mode: String) -> Result<(), S
     Ok(())
 }
 
-fn git_get_file_versions_sync(
+pub fn git_get_file_versions_sync(
     repo_root: String,
     path: String,
     cached: Option<bool>,
@@ -1827,7 +1827,7 @@ pub async fn git_diff_file(
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn git_diff_file_sync(
+pub fn git_diff_file_sync(
     repo_root: String,
     path: String,
     cached: Option<bool>,
@@ -1915,7 +1915,7 @@ pub async fn git_blame(repo_root: String, path: String) -> Result<Vec<BlameLine>
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
-fn git_blame_sync(repo_root: String, path: String) -> Result<Vec<BlameLine>, String> {
+pub fn git_blame_sync(repo_root: String, path: String) -> Result<Vec<BlameLine>, String> {
     let repo = Path::new(&repo_root);
     let out = git_cmd()
         // `-w` 忽略空白改动归因；`--line-porcelain` 每行重复完整头便于解析。
@@ -1951,7 +1951,7 @@ pub struct FileCommit {
     pub summary: String,
 }
 
-fn git_file_log_sync(
+pub fn git_file_log_sync(
     repo_root: String,
     path: String,
     limit: Option<u32>,
@@ -2055,7 +2055,7 @@ pub async fn get_git_commits_paginated(
 }
 
 /// `get_git_log` 的分页变种 —— 多一个 `--skip` 参数。其它格式 / 解析与原函数完全一致。
-fn get_git_log_with_skip(repo_path: &Path, offset: usize, limit: usize) -> Vec<CommitNode> {
+pub fn get_git_log_with_skip(repo_path: &Path, offset: usize, limit: usize) -> Vec<CommitNode> {
     let pretty = format!(
         "--pretty=format:%H{0}%P{0}%an{0}%at{0}%D{0}%s{1}",
         FIELD_SEP, RECORD_SEP

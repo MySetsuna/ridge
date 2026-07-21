@@ -143,6 +143,18 @@ export interface ActiveBgImage {
 const bgImageStore = writable<ActiveBgImage>({ url: null, opacity: 1 });
 export const activeBgImage = { subscribe: bgImageStore.subscribe };
 
+// ── GPU 壁纸 RGBA 信号（WebGPU 渲染路径专用）────────────────────────
+export interface ActiveWallpaperGpu {
+  rgba: Uint8Array;
+  width: number;
+  height: number;
+  opacity: number;
+}
+const wallpaperGpuStore = writable<ActiveWallpaperGpu | null>(null);
+export const activeWallpaperGpu: { subscribe: typeof wallpaperGpuStore.subscribe } = {
+  subscribe: wallpaperGpuStore.subscribe,
+};
+
 // 三态：undefined = 未尝试，null = 已失败（永久跳过），string = 已缓存
 let _assetsDir: string | null | undefined = undefined;
 async function assetsDir(): Promise<string | null> {
@@ -169,10 +181,56 @@ export async function resolveThemeBgUrl(t: ThemeEntry | undefined): Promise<stri
   return convertFileSrc(`${cleanDir}${sep}${t.bgImage}`);
 }
 
+/**
+ * 把一个主题的背景图解码为 RGBA 像素数组（用于 WebGPU 上传）。
+ * 无背景图 / 解码失败时返回 null（调用方降级纯色）。
+ */
+async function decodeThemeBgRgba(t: ThemeEntry | undefined): Promise<ActiveWallpaperGpu | null> {
+  if (!t || !t.bgImage) return null;
+  const url = await resolveThemeBgUrl(t);
+  if (!url) return null;
+  try {
+    // §wallpaper-fix: 用 <img> 元素加载（走 CSP img-src——asset.localhost 在白名单，
+    // 旧 .rg-pane-bgimg 的 CSS background-image 即如此），而非 fetch（走 connect-src，
+    // asset.localhost 不在白名单 → "Failed to fetch" 被 CSP 拦）。crossOrigin='anonymous'
+    // 让 Tauri asset 协议（返回 ACAO:*）下 drawImage 不污染 canvas，getImageData 可读。
+    // 已 CDP 实测：带 crossOrigin 可读像素；不带则 canvas tainted → SecurityError。
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const im = new Image();
+      im.crossOrigin = 'anonymous';
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error(`image load failed: ${url}`));
+      im.src = url;
+    });
+    const width = img.naturalWidth;
+    const height = img.naturalHeight;
+    if (!width || !height) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx2d = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx2d) return null;
+    ctx2d.drawImage(img, 0, 0);
+    const imageData = ctx2d.getImageData(0, 0, width, height);
+    return {
+      rgba: new Uint8Array(imageData.data.buffer),
+      width,
+      height,
+      opacity: t.bgImageOpacity ?? 1,
+    };
+  } catch (e) {
+    console.warn('decodeThemeBgRgba: 解码失败，降级纯色', e);
+    return null;
+  }
+}
+
 /** 解析某主题的背景图为可加载 URL，更新 activeBgImage 信号。fire-and-forget。 */
 export async function setActiveBgImage(themeId: string): Promise<void> {
   const t = getTheme(themeId);
   const opacity = t?.bgImageOpacity ?? 1;
   const url = await resolveThemeBgUrl(t);
   bgImageStore.set({ url, opacity });
+  // GPU 路径：并发解码 RGBA 并更新 GPU 壁纸信号。
+  const gpu = await decodeThemeBgRgba(t);
+  wallpaperGpuStore.set(gpu);
 }

@@ -51,7 +51,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: createMockListen(),
 }));
 
-// ─── Mock $lib/terminal/manager ──────────────────────────────────────────────
+// ─── Mock @ridge/remote/shared/terminal/manager ──────────────────────────────────────────────
 // Captured spies for the post-split forced-fit invariant. Tests reset
 // them via `mockReset()` in their own `beforeEach` block — the module
 // singleton is reused across tests because vi.mock hoists once per file.
@@ -60,17 +60,17 @@ const __mockManagerSpies = {
   detach: vi.fn(),
   forceFullRedrawFor: vi.fn(),
 };
-vi.mock('$lib/terminal/manager', () => ({
+vi.mock('@ridge/remote/shared/terminal/manager', () => ({
   TerminalManager: {
     instance: () => __mockManagerSpies,
   },
 }));
 
-// ─── Mock $lib/terminal/ptyBridge ────────────────────────────────────────────
+// ─── Mock @ridge/remote/shared/terminal/ptyBridge ────────────────────────────────────────────
 // Only `teardownPtyBridge` is imported by paneTree.ts; stubbing it keeps
 // closePane / detach from reaching into the real Tauri-only PTY bridge
 // during tests that exercise pane-mutation code paths.
-vi.mock('$lib/terminal/ptyBridge', () => ({
+vi.mock('@ridge/remote/shared/terminal/ptyBridge', () => ({
   teardownPtyBridge: vi.fn(),
 }));
 
@@ -1085,6 +1085,15 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
     expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('host-pane');
     expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('teammate-1');
     expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('teammate-2');
+    // §white-screen (2026-07-01): after fitting, force a full redraw across the
+    // whole active tree so a backend-created pane that attached at the already-
+    // correct size (fitPaneNow no-op → never wakes the render loop) still
+    // repaints its first frame instead of stranding blank (white).
+    expect(__mockManagerSpies.forceFullRedrawFor).toHaveBeenCalledWith([
+      'host-pane',
+      'teammate-1',
+      'teammate-2',
+    ]);
   });
 
   it('splitPane() end-to-end: backend split_pane → layout sync → deferred fit', async () => {
@@ -1127,5 +1136,51 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
     expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledTimes(2);
     expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('source-pane-uuid');
     expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('new-pane-uuid');
+  });
+
+  // Regression: 父子节点交换停靠后，header / 滚动条 / 容器随 keyed-move 正确
+  // 落到新槽，但终端画面画在「全局共享 canvas」上、位置由每个 pane 的缓存
+  // scissor 决定。中心区换位是**等尺寸换槽**：不触发 ResizeObserver、也不
+  // remount RidgePane，故 scissor 不会重算 → 终端像素停在旧槽（看起来「终端
+  // 没交换」，在 Pane1 滚轮却滚动 Pane2 的画面）。修复：dockPane 在 layout
+  // sync 后强制重 fit 当前工作区**全部** pane，让每个 pane 的 scissor 跟随
+  // 移动后的容器（host 模式下 fitPane 必经 `_recomputeViewport`，等尺寸亦会
+  // 更新 scissor 原点）。
+  it('dockPane() end-to-end: backend dock_pane → layout sync → force-fits ALL active panes', async () => {
+    const tauri = await import('@tauri-apps/api/core');
+    const mockInvoke = vi.mocked(tauri.invoke);
+    mockInvoke.mockReset();
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'dock_pane') return undefined;
+      if (cmd === 'get_pane_layout') {
+        // Post-swap tree: pane-a and pane-b traded slots (center-dock swap).
+        return {
+          type: 'split',
+          id: 'split-1',
+          direction: 'horizontal',
+          children: [
+            { type: 'leaf', id: 'pane-b' },
+            { type: 'leaf', id: 'pane-a' },
+          ],
+          ratios: [50, 50],
+        };
+      }
+      return null;
+    });
+
+    await paneTreeModule.dockPane('pane-a', 'pane-b', 'center');
+
+    // Like splitPane, the refit is deferred until the layout settles — the
+    // RAFs are still queued when dockPane resolves.
+    expect(__mockManagerSpies.fitPaneNow).not.toHaveBeenCalled();
+
+    flushOneFrame();
+    flushOneFrame();
+
+    // Every pane in the swapped tree gets re-fitted so its scissor follows
+    // the moved container (no stale-slot terminal render).
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledTimes(2);
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('pane-a');
+    expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('pane-b');
   });
 });

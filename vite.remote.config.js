@@ -37,6 +37,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@ridge/term-wasm': path.resolve(__dirname, 'packages/ridge-term/pkg'),
+      '@ridge/remote': path.resolve(__dirname, 'packages/remote/src'),
       '$lib': path.resolve(__dirname, 'src/lib'),
       // Tauri API → browser shims (cloud-controller path). Mirror of the
       // web-remote alias set in vite.config.js; keep the two in sync.

@@ -1,6 +1,6 @@
 {
   "name": "ridge",
-  "version": "0.0.7",
+  "version": "0.0.16",
   "description": "",
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "build:desktop-web": "node scripts/build-desktop-web.mjs",
     "build:flag-font": "node scripts/build-flag-font.mjs",
     "sync:cloud-controller": "node scripts/sync-cloud-desktop-app.mjs",
+    "publish:remote-cloud": "node scripts/publish-remote-cloud.mjs",
     "sync:signaling": "node scripts/sync-signaling.mjs",
     "dev:remote": "node scripts/start-remote-dev.mjs",
     "build:remote-server": "cargo build --release --bin remote-server --manifest-path src-tauri/Cargo.toml",
@@ -20,7 +21,7 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri",
-    "tauri:build": "pnpm tauri build && node scripts/post-build-rename.mjs",
+    "tauri:build": "node scripts/tauri-build.mjs",
     "tauri:build:debug": "node scripts/tauri-build-debug.mjs",
     "tauri:dev:cdp": "node scripts/tauri-dev-cdp.mjs",
     "tauri:dev:with-cloud": "node scripts/tauri-dev-with-cloud.mjs",
@@ -49,6 +50,7 @@
     "@noble/ciphers": "^2.2.0",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
+    "@ridge/remote": "workspace:*",
     "@ridge/split": "workspace:*",
     "@ridge/term-wasm": "link:packages/ridge-term/pkg",
     "@tailwindcss/vite": "^4.2.2",

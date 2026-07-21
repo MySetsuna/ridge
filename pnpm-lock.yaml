@@ -20,6 +20,9 @@ importers:
       '@noble/hashes':
         specifier: ^2.2.0
         version: 2.2.0
+      '@ridge/remote':
+        specifier: workspace:*
+        version: link:packages/remote
       '@ridge/split':
         specifier: workspace:*
         version: link:packages/rg-split
@@ -141,6 +144,8 @@ importers:
       workbox-window:
         specifier: ^7.4.1
         version: 7.4.1
+
+  packages/remote: {}
 
   packages/rg-split:
     dependencies:

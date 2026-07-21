@@ -2,11 +2,11 @@
 
 > 日期:2026-06-18 ｜ 仓库:`C:\code\wind`(ridge 桌面 host + controller TS)
 > 关联:`ridge-signaling`(SSOT,rev `7f958215`)、`.agent-team/findings-align.md` P1-1
-> 状态:设计已审批并提交推送(commit `18c2493`,origin/develop);**实现未开工(TODO,见下)**。
+> 状态(2026-07-11 更正):**✅ 已实现**(commit `f659888`)。`src/lib/remote/cloud/signaling/`(generated/fixtures/index.ts/conformance.test.ts/drift.test.ts/SOURCE_REV)齐全,两 provider(`ridgeCloudProvider.ts`/`controllerCloudProvider.ts`)均 `import { parseSignal } from './signaling'` 且用 `SignalIn`/`Role`。下方 TODO 清单已全部落地,仅作历史留存。
 
-## 实现 TODO(未开工)
+## 实现 TODO(✅ 已完成,历史留存)
 
-恢复入口:用 `writing-plans` 把本 spec 拆成实现计划,勿重新 brainstorm。纯类型来源切换,不改 provider 运行时安全逻辑、不碰 Rust 侧 / 线协议字节。
+（以下为 2026-06-18 立项时的 TODO,均已由 commit `f659888` 落地。）恢复入口:用 `writing-plans` 把本 spec 拆成实现计划,勿重新 brainstorm。纯类型来源切换,不改 provider 运行时安全逻辑、不碰 Rust 侧 / 线协议字节。
 
 - [ ] **vendor**:`bindings/{SignalMsg,Role,serde_json/JsonValue}.ts` + `fixtures/signaling/*.json`(16 个)→ `src/lib/remote/cloud/signaling/{generated,fixtures}/`,写 `SOURCE_REV`(初始 `7f958215`)。
 - [ ] **sync 脚本**:`scripts/sync-signaling.mjs` + `package.json` 加 `"sync:signaling"`(仿 `sync:cloud-controller`)。

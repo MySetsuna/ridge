@@ -4,14 +4,15 @@
   import { browser, dev } from '$app/environment';
   import DevIssueDialog from '$lib/components/DevIssueDialog.svelte';
   import EditorWindow from '$lib/components/EditorWindow.svelte';
+  import HitlApprovalModal from '$lib/teammate/HitlApprovalModal.svelte';
   import { setTransport } from '$lib/transport';
   import { TauriDataProvider } from '$lib/transport/tauri';
   import { onMount } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import { invoke } from '@tauri-apps/api/core';
   import { startTotpIdentitySync } from '$lib/remote/totpIdentitySync';
-  import { cloudAuth as cloudAuthStore } from '$lib/remote/cloud/auth';
-  import { BASE_DOMAIN, cloudHttpScheme } from '$lib/remote/cloud/apiClient';
+  import { cloudAuth as cloudAuthStore } from '@ridge/remote/shared/cloud/auth';
+  import { BASE_DOMAIN, cloudHttpScheme } from '@ridge/remote/shared/cloud/apiClient';
 
   // §web-remote: when the desktop SPA is served to a plain browser by the LAN
   // remote server, `@tauri-apps/api/*` is aliased to the shims in
@@ -65,6 +66,12 @@
       const stopTotpSync = startTotpIdentitySync(invoke, cloudAuthStore);
       return () => stopTotpSync();
     }
+    // §sw-early-register：进 web-remote 页即注册 service-worker，与鉴权解耦（对齐移动端
+    // main.ts 的 immediate 注册）。静态壳（_app/immutable，含 Monaco）的预缓存 +
+    // version-gate 自更新不依赖是否连上 host——未连上 / host 离线 / 卡登录时 `ready` 永不为
+    // true，此处若不提前注册则 SW 永不安装，缓存与自更新全失效。注册幂等，下游接线成功路径
+    // 不再重复调用。务必只在此 WEB_REMOTE 路径注册（Tauri 分支已早 return，不应有 SW）。
+    registerServiceWorker();
     // §cloud: 两种方式进入 cloud-controller 模式（优先级从高到低）：
 //   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定）
   //   2. 租户域名: `{device}-{username}.9527127.xyz`（自动从 hostname 解析）
@@ -87,9 +94,28 @@
     // 父域 cookie bootstrap（设计 2026-06-12-cloud-domain-sso）：用父域 `ridge_sso` cookie
     // 换短 access token、seed 登录态（替代旧 `#token` 跨子域握手）。失败仅返回 false，由下方
     // boot 失败回退（租户子域回主域登录 / 主域回退 LAN）统一处理。
-    const { bootstrapFromCookie } = await import('$lib/remote/cloud/auth');
+    const { bootstrapFromCookie } = await import('@ridge/remote/shared/cloud/auth');
     // 返回值 = 父域 ridge_sso cookie 是否有效（成功换出 access token）。失败 = cookie 缺失/失效。
     const hadSession = await bootstrapFromCookie();
+    // §fast-fail-A: 租户子域 + 无有效会话 → 立即跳登录，不等 WebRTC 超时（避免用户看到长时间
+    // "连接中"后才报错）。走相同 bounce-guard 逻辑防止 apex⇄子域死循环。
+    if (!hadSession && parseCloudControllerHostname(location.hostname)) {
+      let bounced = 0;
+      try { bounced = parseInt(sessionStorage.getItem(TENANT_BOUNCE_KEY) || '0', 10) || 0; } catch { /* ignore */ }
+      if (bounced >= 1) {
+        // 已回跳过且仍无会话 → 停在子域显式报错，不再循环。
+        try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
+        phase = 'error';
+        errorMsg = tr('main.remoteGateErrTenantLoginStuck');
+        return;
+      }
+      phase = 'error';
+      errorMsg = tr('main.remoteGateErrNotLoggedIn');
+      try { sessionStorage.setItem(TENANT_BOUNCE_KEY, String(bounced + 1)); } catch { /* ignore */ }
+      const scheme = cloudHttpScheme(BASE_DOMAIN);
+      window.location.replace(`${scheme}://${BASE_DOMAIN}/?redirect=${encodeURIComponent(location.href)}`);
+      return;
+    }
     phase = 'connecting';
     const handle = bootCloudControllerFromUrl(location.search, {
       onState: (s) => {
@@ -99,35 +125,60 @@
           try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
           errorMsg = '';
           loading = false;
-          // §totp-cache: 先试 sessionStorage 中的已验证 code（页面刷新后自动重提，
-          // 免用户再次输入）。验证失败/过期则清缓存、显示门控输入框。
-          let cached: string | null = null;
-          try { cached = sessionStorage.getItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
-          if (cached && handle) {
-            handle.verifyTotp(cached).then((ok) => {
-              if (ok) {
-                ready = true;
-                registerServiceWorker();
-              } else {
+          // §7.4 信任授权优先：若 host 已记录本机控制器公钥（受信设备），静默握手通过即
+          // 跳过 TOTP（host 端经握手已打开 §4 verified 门）。优先级：信任授权 → 缓存码 → 手输。
+          // 旧 host 不识别 totp-trust-hello → 永不回 challenge → 10s 超时 resolve(false)，
+          // 无缝退化到下面的缓存码/手输流程（不会卡死）。
+          const fallbackToTotp = () => {
+            // §totp-cache: 先试 sessionStorage 中的已验证 code（页面刷新后自动重提，
+            // 免用户再次输入）。验证失败/过期则清缓存、显示门控输入框。
+            let cached: string | null = null;
+            try { cached = sessionStorage.getItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
+            if (cached && handle) {
+              handle.verifyTotp(cached).then((ok) => {
+                if (ok) {
+                  ready = true;
+                } else {
+                  try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
+                  ready = false;
+                  phase = 'need-totp';
+                }
+              }).catch(() => {
                 try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
                 ready = false;
                 phase = 'need-totp';
-              }
-            }).catch(() => {
-              try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
+              });
+            } else {
               ready = false;
               phase = 'need-totp';
-            });
+            }
+          };
+          if (handle) {
+            handle.tryTrustGrant().then((trusted) => {
+              if (trusted) {
+                ready = true;
+              } else {
+                fallbackToTotp();
+              }
+            }).catch(() => fallbackToTotp());
           } else {
-            ready = false;
-            phase = 'need-totp';
+            fallbackToTotp();
           }
         } else if (s === 'error') {
           phase = 'error';
           errorMsg = errorMsg || tr('main.remoteGateErrCloud');
         }
       },
-      onError: (msg) => { phase = 'error'; errorMsg = msg; },
+      onError: (msg, code) => {
+        // §fast-fail-B: 信令 WS relay 上报稳定 error code（§5）→ 用户可读提示。
+        // 未知 code / 无 code 时降级到服务端的 msg（已脱敏），最终兜底显示通用云错误。
+        phase = 'error';
+        if (code === 'USERNAME_MISMATCH') errorMsg = tr('main.remoteGateErrUsernameMismatch');
+        else if (code === 'DEVICE_NOT_OWNED') errorMsg = tr('main.remoteGateErrDeviceNotOwned');
+        else if (code === 'DEVICE_PARKED') errorMsg = tr('main.remoteGateErrDeviceParked');
+        else if (code === 'NOT_PREMIUM') errorMsg = tr('main.remoteGateErrNotPremium');
+        else errorMsg = msg || tr('main.remoteGateErrCloud');
+      },
     }, location.hostname);
     cloudHandle = handle;
     if (!handle) {
@@ -158,9 +209,9 @@
   }
 
   async function startWebRemoteBoot() {
-    const { RemoteConnection } = await import('../remote/lib/wsRemote');
+    const { RemoteConnection } = await import('@ridge/remote');
     const { bridge } = await import('$lib/transport/tauriShim/bridge');
-    const { createLanWsTransport } = await import('$lib/transport/remote/lanWsAdapter');
+    const { createLanWsTransport } = await import('@ridge/remote');
     const TOKEN_KEY = 'ridge_remote_token';
     const conn = new RemoteConnection();
 
@@ -175,7 +226,6 @@
       // DataProvider consumers (FS/git/search) ride the same shimmed invoke.
       setTransport(new TauriDataProvider());
       ready = true;
-      registerServiceWorker();
     };
 
     const connectWith = (token: string) => {
@@ -267,7 +317,6 @@
           code = '';
           ready = true;
           try { sessionStorage.setItem(TOTP_CACHE_KEY, numeric); } catch { /* ignore */ }
-          registerServiceWorker();
         } else {
           code = '';
           try { sessionStorage.removeItem(TOTP_CACHE_KEY); } catch { /* ignore */ }
@@ -349,6 +398,11 @@
 
 {#if dev && browser && !WEB_REMOTE}
   <DevIssueDialog />
+{/if}
+
+<!-- Domain Zero / D2：HITL 人类中间审批模态（全局高优先级覆盖层）。无待审批时不渲染。 -->
+{#if browser && !WEB_REMOTE && !editorWindow}
+  <HitlApprovalModal />
 {/if}
 
 <style>

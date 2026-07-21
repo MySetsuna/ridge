@@ -1,37 +1,46 @@
 <script lang="ts">
   // §2 修复：Ctrl/Alt/Shift 改用 modState 的共享 sticky 修饰键，使其能与**设备
   // 软键盘打出的普通字符**组成快捷键（旧实现的本地 mods 只作用于本栏命名键，
-  // 软键盘字符走 TerminalCanvas.handleInput 读不到 → 组合键失效）。一次性语义：
-  // 武装后下一个键（命名键或软键盘字符）消费即释放（见 modState consumeMods）。
-  import { stickyMods, toggleMod, peekMods, clearMods } from './modState.svelte';
+  // 软键盘字符走 TerminalCanvas.handleInput 读不到 → 组合键失效）。
+  // §one-shot-vs-lock：单击 = 一次性武装（下一个键消费即释放），再击 = 锁定
+  // （caps-lock，跨键保持），第三击 = 释放。命名键/箭头/翻页/符号键统一走
+  // consumeMods（清一次性、保留锁定），修复「ctrl 一直保存选中状态」。
+  import { stickyMods, lockedMods, cycleMod, peekMods, consumeMods, type ModKey } from './modState.svelte';
 
   let { onKey, onArm }: {
     onKey: (key: string, ctrl: boolean, alt: boolean, shift: boolean) => void;
     onArm?: () => void;
   } = $props();
 
-  function tapMod(m: 'ctrl' | 'alt' | 'shift') {
-    const wasOn = stickyMods[m];
-    toggleMod(m);
-    if (!wasOn) onArm?.();
+  function tapMod(m: ModKey) {
+    // off → armed → locked → off；仅在首次武装(armed)时唤起软键盘以便打组合键字符。
+    if (cycleMod(m) === 'armed') onArm?.();
   }
 
   function sendNamedKey(key: string) {
     const m = peekMods();
     onKey(key, m.ctrl, m.alt, m.shift);
-    clearMods();
+    consumeMods();
   }
 
   function sendArrow(dir: string) {
     const m = peekMods();
     onKey('Arrow' + dir, m.ctrl, m.alt, m.shift);
-    clearMods();
+    consumeMods();
   }
 
   function sendPage(dir: 'Up' | 'Down') {
     const m = peekMods();
     onKey('Page' + dir, m.ctrl, m.alt, m.shift);
-    clearMods();
+    consumeMods();
+  }
+
+  // §sym: 直接字符键（/ 与 @），复用 handleVirtualKey 的 encodeKey 路径（单字符
+  // 返回其 UTF-8 字节）。同样携带并消费当前修饰键（保留锁定）。
+  function sendChar(ch: string) {
+    const m = peekMods();
+    onKey(ch, m.ctrl, m.alt, m.shift);
+    consumeMods();
   }
 </script>
 
@@ -54,18 +63,21 @@
       <button class="vk-key" onclick={() => sendNamedKey('Tab')}>Tab</button>
     </div>
     <div class="vk-grp-row">
-      <button class="vk-key mod" class:active={stickyMods.ctrl} onclick={() => tapMod('ctrl')}>Ctrl</button>
-      <button class="vk-key mod" class:active={stickyMods.alt} onclick={() => tapMod('alt')}>Alt</button>
-      <button class="vk-key mod" class:active={stickyMods.shift} onclick={() => tapMod('shift')}>⇧</button>
+      <button class="vk-key mod" class:active={stickyMods.ctrl} class:locked={lockedMods.ctrl} onclick={() => tapMod('ctrl')}>Ctrl</button>
+      <button class="vk-key mod" class:active={stickyMods.alt} class:locked={lockedMods.alt} onclick={() => tapMod('alt')}>Alt</button>
+      <button class="vk-key mod" class:active={stickyMods.shift} class:locked={lockedMods.shift} onclick={() => tapMod('shift')}>⇧</button>
     </div>
   </div>
 
-  <!-- 中：方向键正-T（第一排 ←↑→，第二排仅 ↓，↑/↓ 同列对齐） -->
+  <!-- 中：第一排 /  ↑  @；第二排 ← ↓ →（左右箭头下移到第二行，箭头组成倒-T，
+       原本 ←/→ 的首排位置换成 / 和 @ 两个符号键）。 -->
   <div class="vk-group vk-arrows">
-    <button class="vk-key arrow a-left" onclick={() => sendArrow('Left')} aria-label="Left">←</button>
+    <button class="vk-key sym s-slash" onclick={() => sendChar('/')} aria-label="Slash">/</button>
     <button class="vk-key arrow a-up" onclick={() => sendArrow('Up')} aria-label="Up">↑</button>
-    <button class="vk-key arrow a-right" onclick={() => sendArrow('Right')} aria-label="Right">→</button>
+    <button class="vk-key sym s-at" onclick={() => sendChar('@')} aria-label="At">@</button>
+    <button class="vk-key arrow a-left" onclick={() => sendArrow('Left')} aria-label="Left">←</button>
     <button class="vk-key arrow a-down" onclick={() => sendArrow('Down')} aria-label="Down">↓</button>
+    <button class="vk-key arrow a-right" onclick={() => sendArrow('Right')} aria-label="Right">→</button>
   </div>
 
   <!-- 右中：导航块 Home/PgUp（上）/ End/PgDn（下） -->
@@ -117,17 +129,26 @@
     min-width: 0;
   }
   .vk-grp-row .vk-key { flex: 1 1 0; }
-  /* 方向键正-T：3 列 × 2 行网格。←↑→ 在第 1 排，↓ 在第 2 排第 2 列 → ↑/↓ 同列对齐。 */
+  /* 3 列 × 2 行网格：第 1 排 / ↑ @，第 2 排 ← ↓ →（箭头组成倒-T：↑ 居中在上，
+     ←↓→ 在下排；/ @ 占据上排两角）。 */
   .vk-arrows {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     grid-template-rows: repeat(2, 1fr);
     gap: 2px;
   }
-  .vk-arrows .a-left  { grid-column: 1; grid-row: 1; }
+  .vk-arrows .s-slash { grid-column: 1; grid-row: 1; }
   .vk-arrows .a-up    { grid-column: 2; grid-row: 1; }
-  .vk-arrows .a-right { grid-column: 3; grid-row: 1; }
+  .vk-arrows .s-at    { grid-column: 3; grid-row: 1; }
+  .vk-arrows .a-left  { grid-column: 1; grid-row: 2; }
   .vk-arrows .a-down  { grid-column: 2; grid-row: 2; }
+  .vk-arrows .a-right { grid-column: 3; grid-row: 2; }
+  /* 符号键：等宽字体、稍大字号，视觉上与箭头区分。 */
+  .vk-key.sym {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 15px;
+    font-weight: 600;
+  }
   /* 导航块：2×2，Home/PgUp 上，End/PgDn 下。 */
   .vk-nav {
     display: grid;
@@ -161,10 +182,17 @@
   .vk-key.mod {
     flex: 1 1 0;
   }
+  /* armed（一次性）：淡填充 + 强调边框。 */
   .vk-key.mod.active {
     background: color-mix(in srgb, var(--rg-accent) 25%, transparent);
     border-color: var(--rg-accent);
     color: var(--rg-accent);
+  }
+  /* locked（caps-lock）：实心强调填充，明显区别于一次性武装，提示会跨键保持。 */
+  .vk-key.mod.locked {
+    background: var(--rg-accent);
+    border-color: var(--rg-accent);
+    color: var(--rg-bg);
   }
   .vk-key.arrow {
     font-size: 15px;

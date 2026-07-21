@@ -30,6 +30,11 @@ const config = {
       "@components": "src/lib/components",
       "@stores": "src/lib/stores",
       "@types": "src/lib/types",
+      // 统一远控包：裸导入 @ridge/remote 走桶(传输层公共面);深子路径
+      // @ridge/remote/shared/cloud/* 直取模块(cloud 各模块导出名重叠、且有命名
+      // 空间导入,不并入 flat 桶——见设计 R3.2)。SvelteKit 由此 alias 生成
+      // @ridge/remote 与 @ridge/remote/* 两条 tsconfig paths(svelte-check 用)。
+      "@ridge/remote": "packages/remote/src",
       // Transport-agnostic UI shared with the plain-Svelte remote app
       // (see vite.mobile.config.js for the mirror alias).
       "@shared": "src/shared",

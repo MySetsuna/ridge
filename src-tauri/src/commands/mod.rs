@@ -1,3 +1,4 @@
+pub mod clipboard_files;
 pub mod clipboard_image;
 pub mod cloud_http;
 pub mod cloud_pane;
@@ -9,6 +10,7 @@ pub mod project;
 pub mod remote;
 pub mod ridge_file;
 pub mod settings;
+pub mod teammate;
 pub mod terminal;
 pub mod theme;
 pub mod watch;

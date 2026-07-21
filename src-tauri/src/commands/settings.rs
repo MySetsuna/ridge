@@ -20,7 +20,7 @@ pub fn set_user_default_cwd(
     state: State<'_, AppState>,
     path: Option<String>,
 ) -> Result<(), String> {
-    let ctx = crate::remote::core_bridge::desktop_ctx(&app, &state);
+    let ctx = crate::remote_bridge::desktop_ctx(&app, &state);
     ridge_core::commands::settings::set_user_default_cwd(&ctx, path)
         .map_err(|e| e.to_command_string())
 }

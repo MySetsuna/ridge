@@ -19,6 +19,7 @@ use crate::config;
 use crate::daemon_ctl;
 use crate::login_flow;
 use crate::totp::RemoteTotp;
+use ridge_core::workspace::pane_tree::SplitDirection;
 use super::qr_display;
 use super::workspace::{new_shared, SharedWorkspace};
 
@@ -70,6 +71,30 @@ enum Action {
     StopLanRemote,
 }
 
+/// 仪表盘登录方式：邮箱密码（默认，无浏览器环境）或浏览器授权（WSL / 远端友好）。
+enum LoginMethod {
+    Email,
+    Browser,
+}
+
+/// 在（已退出 alternate screen / raw mode 的）普通终端里询问登录方式。
+/// 回车或非 `2` 输入默认走邮箱密码登录，保留无浏览器环境下的登录能力。
+fn prompt_login_method() -> LoginMethod {
+    use std::io::Write;
+    println!();
+    println!("  选择登录方式：");
+    println!("    1) 邮箱 + 密码登录（默认）");
+    println!("    2) 浏览器授权登录（WSL / 远端终端友好）");
+    print!("  输入 1 或 2（回车默认 1）: ");
+    let _ = stdout().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_ok() && line.trim() == "2" {
+        LoginMethod::Browser
+    } else {
+        LoginMethod::Email
+    }
+}
+
 pub struct App {
     view: View,
     selected: usize,
@@ -98,7 +123,7 @@ impl App {
         let workspace = new_shared();
         {
             let mut w = workspace.lock().unwrap();
-            let _ = w.create_session(None, None);
+            let _ = w.create_session(None, None, None, SplitDirection::Horizontal);
         }
         Self {
             view: View::Main,
@@ -137,6 +162,7 @@ impl App {
 }
 
 pub async fn run() -> Result<()> {
+    crate::TUI_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout());
@@ -163,8 +189,14 @@ pub async fn run() -> Result<()> {
                     disable_raw_mode()?;
 
                     let client = reqwest::Client::builder().build().ok();
+                    // 让用户选择登录方式：邮箱密码登录（默认，无浏览器环境）或浏览器授权
+                    // 登录（纯轮询，WSL / 远端终端下登录结果也能带回本端）。仪表盘运行在
+                    // 真 TTY 上，stdin 可用，故邮箱密码登录在此始终可行——保留该入口。
                     let result = if let Some(client) = client {
-                        login_flow::run_login(&client).await
+                        match prompt_login_method() {
+                            LoginMethod::Email => login_flow::run_login(&client).await,
+                            LoginMethod::Browser => login_flow::run_browser_login(&client).await,
+                        }
                     } else {
                         Err(anyhow::anyhow!("无法创建 HTTP client"))
                     };
@@ -250,6 +282,7 @@ pub async fn run() -> Result<()> {
     drop(terminal);
     stdout().execute(LeaveAlternateScreen)?;
     disable_raw_mode()?;
+    crate::TUI_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -291,7 +324,8 @@ fn handle_main_key(app: &mut App, code: KeyCode) {
                                 let root: Option<String> = None;
                                 tokio::spawn(async move {
                                     if let Err(e) = crate::daemon::run(shell, cwd, root).await {
-                                        eprintln!("Daemon exited with error: {e}");
+                                        // 不能 eprintln!（会糊 TUI）——落 tracing（TUI 模式写文件）。
+                                        tracing::error!(target: "ridge_cli::dashboard", error = %e, "daemon exited");
                                     }
                                 });
                                 app.log("Daemon task spawned".into());

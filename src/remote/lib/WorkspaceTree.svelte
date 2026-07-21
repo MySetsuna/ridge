@@ -2,7 +2,8 @@
   import { untrack } from 'svelte';
   import { ListTree, Plus, X, FolderOpen, ChevronRight } from 'lucide-svelte';
   import { t, tr } from '$lib/i18n';
-  import type { PaneInfo, WorkspaceInfo, RemoteLink } from './wsRemote';
+  import type { PaneInfo, WorkspaceInfo, RemoteLink } from '@ridge/remote';
+  import { treeState, toggleWsExpanded, seedActiveWorkspace, pruneExpanded } from './treeState.svelte';
 
   // §item1（移动端导航重构）：把「工作区 + 终端」整合为一个树形级联控件，
   // 放在底部导航条最右边——原本渲染类型标签(engine-badge)的位置。
@@ -33,13 +34,14 @@
   let open = $state(false);
   let busy = $state(false);
   let err = $state('');
-  // §peek-expand: which workspaces have their terminal list EXPANDED. The front
-  // chevron is a dedicated expand toggle (stopPropagation keeps it off the row's
-  // switch handler). The active workspace renders the live `panes` prop; a NON-
-  // active workspace, on expand, fetches its panes via list-workspace-panes into
-  // `peekedPanes` so you can browse another workspace's terminals WITHOUT
-  // switching to it.
-  let expandedWs = $state(new Set<string>());
+  // §peek-expand: which workspaces have their terminal list EXPANDED is now kept
+  // in the shared, localStorage-persisted `treeState` store (survives refresh /
+  // reconnect — see treeState.svelte.ts) instead of resetting on every mount. The
+  // front chevron is a dedicated expand toggle (stopPropagation keeps it off the
+  // row's switch handler). The active workspace renders the live `panes` prop; a
+  // NON-active workspace, on expand, fetches its panes via list-workspace-panes
+  // into `peekedPanes` (kept transient/live — never persisted) so you can browse
+  // another workspace's terminals WITHOUT switching to it.
   let peekedPanes = $state(new Map<string, PaneInfo[]>());
 
   const activePane = $derived(panes.find((p) => p.id === activePaneId));
@@ -50,7 +52,7 @@
     return wsId === activeWorkspaceId ? panes : (peekedPanes.get(wsId) ?? []);
   }
   function isExpanded(wsId: string): boolean {
-    return expandedWs.has(wsId);
+    return treeState.expanded.has(wsId);
   }
 
   function toggle() {
@@ -61,22 +63,22 @@
     open = false;
   }
 
-  // §auto-expand-active: expand a workspace the first time it becomes active so
-  // its terminals show by default — but only ONCE per id, so a manual collapse of
-  // the active workspace sticks (don't fight the user). `untrack` keeps the
-  // effect depending on activeWorkspaceId alone, not on expandedWs.
-  let lastSeededWs = '';
+  // §auto-expand-active: expand a workspace the first time it's EVER seen active so
+  // its terminals show by default — but only once per id (tracked in the persisted
+  // `seen` set), so a later manual collapse survives a refresh (don't fight the
+  // user). `untrack` keeps the effect depending on activeWorkspaceId alone.
   $effect(() => {
     const id = activeWorkspaceId;
-    if (!id || id === lastSeededWs) return;
-    lastSeededWs = id;
-    untrack(() => {
-      if (!expandedWs.has(id)) {
-        const next = new Set(expandedWs);
-        next.add(id);
-        expandedWs = next;
-      }
-    });
+    if (!id) return;
+    untrack(() => seedActiveWorkspace(id));
+  });
+
+  // §tree-persist prune: when the workspace list changes, drop persisted
+  // expanded/seen ids for workspaces that no longer exist (bounds the store, and
+  // stops a reopened id from resurrecting stale state).
+  $effect(() => {
+    const live = new Set(workspaces.map((w) => w.id));
+    untrack(() => pruneExpanded(live));
   });
 
   // Serialize ALL list-workspace-panes round-trips. wsRemote._sendAndWait keys
@@ -106,14 +108,8 @@
   // it. Expanding a non-active workspace fetches its panes to peek at.
   function toggleExpand(e: Event, id: string) {
     e.stopPropagation();
-    const next = new Set(expandedWs);
-    if (next.has(id)) {
-      next.delete(id);
-    } else {
-      next.add(id);
-      if (id !== activeWorkspaceId) void fetchPeek(id);
-    }
-    expandedWs = next;
+    const nowExpanded = toggleWsExpanded(id);
+    if (nowExpanded && id !== activeWorkspaceId) void fetchPeek(id);
     err = '';
   }
 
@@ -129,7 +125,7 @@
       // and guards against a future write here turning into a re-render loop.
       untrack(() => {
         ws.listPanes();
-        for (const id of expandedWs) {
+        for (const id of treeState.expanded) {
           if (id !== activeWorkspaceId) void fetchPeek(id);
         }
       });

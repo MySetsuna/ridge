@@ -121,25 +121,50 @@ fn main() {
     let sub = args[sub_idx].as_str();
     let rest = &args[sub_idx + 1..];
     log_to_file(&format!("socket={} sub={sub}", socket()));
-    let r = match sub {
+    // 按子命令设 HTTP 总超时：控制命令短超时，后端楔死时秒级失败而非干等满 60s。
+    let _ = CLIENT_TIMEOUT.set(command_timeout(sub));
+    let mut r = dispatch(sub, rest, &url, &token);
+    // 端点重发现：首次以 env 端点失败且确实是**连接错误**（请求从未送达 → 重跑无重复副作用）
+    // → 后端可能 panic 自重启换了 ephemeral 端口。从 `$TMUX` socket 旁的 sidecar 读当前端点，
+    // 拿到**不同**的 url 就用它重跑一次该命令。无连接错误则此分支零开销、零探测。
+    if r.is_err() && LAST_CONNECT_ERR.load(std::sync::atomic::Ordering::Relaxed) {
+        if let Some((u2, t2)) = current_tmux_socket().and_then(|s| read_endpoint_sidecar(&s)) {
+            if u2 != url {
+                log_to_file(&format!(
+                    "rediscover: env {url} unreachable, retry via sidecar endpoint {u2}"
+                ));
+                r = dispatch(sub, rest, &u2, &t2);
+            }
+        }
+    }
+    log_to_file(&format!(
+        "exit subcommand={sub} status={}",
+        if r.is_ok() { "ok" } else { "err" }
+    ));
+    process::exit(if r.is_ok() { 0 } else { 1 });
+}
+
+/// 把子命令分发到各 `cmd_*`。抽成独立函数，便于端点重发现时用**不同** url/token 重跑一次。
+fn dispatch(sub: &str, rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    match sub {
         // ========== Pane Management ==========
-        "split-window" | "splitw" => cmd_split(rest, &url, &token),
-        "select-pane" | "selectp" => cmd_select_pane(rest, &url, &token),
-        "kill-pane" | "killp" => cmd_kill_pane(rest, &url, &token),
-        "resize-pane" | "resizep" => cmd_resize_pane(rest, &url, &token),
-        "last-pane" | "lastp" => cmd_last_pane(rest, &url, &token),
-        "swap-pane" | "swapp" => cmd_swap_pane(rest, &url, &token),
-        "break-pane" | "breakp" => cmd_break_pane(rest, &url, &token),
-        "join-pane" | "joinp" => cmd_join_pane(rest, &url, &token),
-        "respawn-pane" | "respawnp" => cmd_respawn_pane(rest, &url, &token),
+        "split-window" | "splitw" => cmd_split(rest, url, token),
+        "select-pane" | "selectp" => cmd_select_pane(rest, url, token),
+        "kill-pane" | "killp" => cmd_kill_pane(rest, url, token),
+        "resize-pane" | "resizep" => cmd_resize_pane(rest, url, token),
+        "last-pane" | "lastp" => cmd_last_pane(rest, url, token),
+        "swap-pane" | "swapp" => cmd_swap_pane(rest, url, token),
+        "break-pane" | "breakp" => cmd_break_pane(rest, url, token),
+        "join-pane" | "joinp" => cmd_join_pane(rest, url, token),
+        "respawn-pane" | "respawnp" => cmd_respawn_pane(rest, url, token),
         "pipe-pane" => cmd_pipe_pane(rest),
         "display-panes" | "displayp" => cmd_display_panes(rest),
 
         // ========== Window Management ==========
-        "new-window" | "neww" => cmd_new_window(rest, &url, &token),
-        "select-window" | "selectw" => cmd_select_window(rest, &url, &token),
-        "kill-window" | "killw" => cmd_kill_window(rest, &url, &token),
-        "rename-window" => cmd_rename_window(rest, &url, &token),
+        "new-window" | "neww" => cmd_new_window(rest, url, token),
+        "select-window" | "selectw" => cmd_select_window(rest, url, token),
+        "kill-window" | "killw" => cmd_kill_window(rest, url, token),
+        "rename-window" => cmd_rename_window(rest, url, token),
         "move-window" | "movew" => cmd_move_window(rest),
         "rotate-window" | "rotw" => cmd_rotate_window(rest),
         "select-layout" | "selel" => cmd_select_layout(rest),
@@ -149,29 +174,29 @@ fn main() {
         "last-window" | "lastw" => cmd_last_window(rest),
 
         // ========== Session Management ==========
-        "new-session" | "new" => cmd_new_session(rest, &url, &token),
-        "has-session" | "has" => cmd_has_session(rest, &url, &token),
-        "list-sessions" | "ls" => cmd_list_sessions(rest, &url, &token),
-        "attach-session" | "attach" => cmd_attach_session(rest, &url, &token),
+        "new-session" | "new" => cmd_new_session(rest, url, token),
+        "has-session" | "has" => cmd_has_session(rest, url, token),
+        "list-sessions" | "ls" => cmd_list_sessions(rest, url, token),
+        "attach-session" | "attach" => cmd_attach_session(rest, url, token),
         "detach-client" | "detach" => cmd_detach_client(rest),
-        "kill-session" => cmd_kill_session(rest, &url, &token),
-        "kill-server" => cmd_kill_server(&url, &token),
+        "kill-session" => cmd_kill_session(rest, url, token),
+        "kill-server" => cmd_kill_server(url, token),
         "switch-client" | "switchc" => cmd_switch_client(rest),
         "rename-session" => cmd_rename_session(rest),
         "lock-server" | "lock" => cmd_lock_server(),
         "start-server" | "start" => cmd_start_server(),
 
         // ========== List Commands ==========
-        "list-panes" | "lsp" => cmd_list_panes(rest, &url, &token),
-        "list-windows" | "lsw" => cmd_list_windows(rest, &url, &token),
+        "list-panes" | "lsp" => cmd_list_panes(rest, url, token),
+        "list-windows" | "lsw" => cmd_list_windows(rest, url, token),
         "list-clients" | "lsc" => cmd_list_clients(rest),
         "list-keys" | "lsk" => cmd_list_keys(rest),
         "list-commands" | "lscm" => cmd_list_commands(rest),
         "list-buffers" | "lsb" => cmd_list_buffers(),
 
         // ========== I/O Commands ==========
-        "send-keys" | "send" => cmd_send_keys(rest, &url, &token),
-        "capture-pane" | "capturep" => cmd_capture(rest, &url, &token),
+        "send-keys" | "send" => cmd_send_keys(rest, url, token),
+        "capture-pane" | "capturep" => cmd_capture(rest, url, token),
 
         // ========== Buffer Commands ==========
         "save-buffer" | "saveb" => cmd_save_buffer(rest),
@@ -181,7 +206,7 @@ fn main() {
         "show-buffer" | "showb" => cmd_show_buffer(rest),
 
         // ========== Other Commands ==========
-        "display-message" | "display" => cmd_display_message(rest, &url, &token),
+        "display-message" | "display" => cmd_display_message(rest, url, token),
         "display-menu" => cmd_display_menu(rest),
         "confirm-before" | "confirm" => cmd_confirm_before(rest),
         "command-prompt" | "prompt" => cmd_command_prompt(rest),
@@ -209,27 +234,161 @@ fn main() {
             // Still return success for unknown commands to avoid breaking tools
             Ok(())
         }
-    };
-    log_to_file(&format!(
-        "exit subcommand={sub} status={}",
-        if r.is_ok() { "ok" } else { "err" }
-    ));
-    process::exit(if r.is_ok() { 0 } else { 1 });
+    }
 }
 
+/// 本次调用的 HTTP 总超时（main 据 `command_timeout(sub)` 设入；OnceLock 沿用 `SOCKET` 模式）。
+static CLIENT_TIMEOUT: OnceLock<std::time::Duration> = OnceLock::new();
+
 fn client() -> reqwest::blocking::Client {
+    // 总超时按子命令分级：未设时取保守的 10s（绝不再回到一刀切 60s）。
+    // 连接超时单列：真正不可达（无人监听 → 立即 refused / 防火墙丢包）时秒级失败，
+    // 不必等满总超时。注意后端楔死场景下连接其实建得起来，靠的是总超时兜底。
+    let timeout = CLIENT_TIMEOUT
+        .get()
+        .copied()
+        .unwrap_or_else(|| std::time::Duration::from_secs(10));
     reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(timeout)
         .build()
         .expect("client")
 }
 
+/// 把 socket 路径转成安全文件名片段：非 `[A-Za-z0-9]` 一律 `_`。
+/// **必须**与后端 `teammate::endpoint::sanitize_socket` 同实现，两端才能算出同一 sidecar 文件名。
+fn sanitize_socket(socket_path: &str) -> String {
+    socket_path
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+/// sidecar 端点文件路径：`temp_dir()/ridge-teammate-endpoint-<sanitize>.json`。
+/// 写在 temp（用户私有、两端可算）而非 socket 路径旁，避免污染用户 repo 目录。
+fn endpoint_sidecar_path(socket_path: &str) -> PathBuf {
+    env::temp_dir().join(format!(
+        "ridge-teammate-endpoint-{}.json",
+        sanitize_socket(socket_path)
+    ))
+}
+
+/// 读 sidecar → (url, token)；不存在 / 损坏 / 字段缺失返回 None。
+fn read_endpoint_sidecar(socket_path: &str) -> Option<(String, String)> {
+    let text = std::fs::read_to_string(endpoint_sidecar_path(socket_path)).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let url = v.get("url")?.as_str()?.trim().to_string();
+    let token = v.get("token")?.as_str()?.trim().to_string();
+    (!url.is_empty() && !token.is_empty()).then_some((url, token))
+}
+
+/// `$TMUX` 第一段 = teammate socket 逻辑路径（`<pane cwd>/teammate.sock`），用于定位 sidecar。
+fn current_tmux_socket() -> Option<String> {
+    let tmux = env::var("TMUX").ok()?;
+    let first = tmux.split(',').next()?.trim().to_string();
+    (!first.is_empty()).then_some(first)
+}
+
+/// `send_retry` 最终以**连接错误**失败时置位；`main` 据此触发 sidecar 端点重发现。
+static LAST_CONNECT_ERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 连接错误后第 `attempt` 次失败的退避时长（ms）；`None` = 不再重试。
+///
+/// 只对**连接错误**重试：连接没建起来 ⇒ 请求字节从未发出 ⇒ 后端零副作用 ⇒ 重试安全
+/// （绝不会重复 split 出两个 pane）。超时 / HTTP 错误状态一律不重试——请求可能已被处理，
+/// 重试有重复副作用风险。递增退避桥接后端「按需启动 / panic 后自重启」的瞬时不可达窗口，
+/// 3 次封顶（总计 ~1.05s）避免无限重试拖死调用方。
+fn retry_backoff_ms(is_connect_err: bool, attempt: usize) -> Option<u64> {
+    if !is_connect_err {
+        return None;
+    }
+    match attempt {
+        0 => Some(150),
+        1 => Some(300),
+        2 => Some(600),
+        _ => None,
+    }
+}
+
+/// 发送 HTTP 请求，连接错误时按 `retry_backoff_ms` 有界重试——桥接后端「按需启动 /
+/// panic 后自重启」造成的瞬时不可达窗口。body 不可克隆（流式上传）时退化为单发。
+fn send_retry(
+    req: reqwest::blocking::RequestBuilder,
+) -> Result<reqwest::blocking::Response, reqwest::Error> {
+    let mut attempt = 0usize;
+    loop {
+        let Some(this) = req.try_clone() else {
+            // 流式 body 无法克隆重发 → 单次发送，结果如实返回。
+            let r = req.send();
+            if r.as_ref().err().is_some_and(|e| e.is_connect()) {
+                LAST_CONNECT_ERR.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            return r;
+        };
+        match this.send() {
+            Ok(resp) => return Ok(resp),
+            Err(e) => match retry_backoff_ms(e.is_connect(), attempt) {
+                Some(ms) => {
+                    log_to_file(&format!(
+                        "send_retry: connect err (attempt {}), backoff {ms}ms: {e}",
+                        attempt + 1
+                    ));
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    attempt += 1;
+                }
+                None => {
+                    // 终败：连接错误置全局标志，让 main 触发 sidecar 端点重发现。
+                    if e.is_connect() {
+                        LAST_CONNECT_ERR.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    return Err(e);
+                }
+            },
+        }
+    }
+}
+
+/// 按子命令分级的 HTTP 总超时。
+///
+/// 旧实现对**所有**命令一刀切 60s：后端 teammate HTTP server 楔死时，harness 发的每条
+/// tmux 命令都要干等满一分钟才失败（实测 split-window 卡 60.005s → `Failed to create
+/// teammate pane`）。控制类命令后端自身有界（`route_split` 最坏 `timeout(3s, ready_rx)`），
+/// 给 10s（~3× 余量）即可秒级失败。唯独 `send-keys` 可能触发 GUI pane 的人审（HITL），
+/// 审批期间请求合法地久等，保留 60s 避免误杀。
+fn command_timeout(sub: &str) -> std::time::Duration {
+    match sub {
+        "send-keys" | "send" => std::time::Duration::from_secs(60),
+        _ => std::time::Duration::from_secs(10),
+    }
+}
+
+/// 把 reqwest 传输错误翻成给 harness 看的一行人类可读原因。
+///
+/// 关键：超时（后端楔死最常见的表现）与连接失败各自单列，让宿主的
+/// `Failed to create teammate pane:` 后面**不再是空白**——空原因正是本次事故里
+/// 用户看到的样子。`detail` 是 `reqwest::Error` 的 Display 兜底文本。
+fn backend_error_message(is_timeout: bool, is_connect: bool, detail: &str) -> String {
+    if is_timeout {
+        "tmux: Ridge teammate backend unresponsive (request timed out); pane not created".to_string()
+    } else if is_connect {
+        "tmux: cannot reach Ridge teammate backend (connection failed)".to_string()
+    } else {
+        format!("tmux: teammate backend error: {detail}")
+    }
+}
+
 fn auth_headers(token: &str) -> reqwest::header::HeaderMap {
     let mut m = reqwest::header::HeaderMap::new();
-    m.insert(
-        "X-Ridge-Token",
-        reqwest::header::HeaderValue::from_str(token).expect("token header"),
-    );
+    // 健壮性：token 含非法 header 字符也**不 panic 崩溃**（旧 `.expect` 会把 backtrace 喷给
+    // harness）。跳过鉴权头即可——后端会以 401 拒绝，比崩溃友好得多。
+    match reqwest::header::HeaderValue::from_str(token) {
+        Ok(v) => {
+            m.insert("X-Ridge-Token", v);
+        }
+        Err(_) => {
+            log_to_file("auth_headers: RIDGE_TEAMMATE_TOKEN 含非法 header 字符；不带鉴权头发送")
+        }
+    }
     // 发起方工作区身份（由 Ridge PTY 注入 `RIDGE_WORKSPACE_ID`，shim 子进程继承）：
     // 让后端把 GUI-bridge 的 split/复用/接管锁定在「发起 tmux 的会话所在工作区」。
     if let Ok(ws) = env::var("RIDGE_WORKSPACE_ID") {
@@ -349,18 +508,27 @@ fn tmux_api(url: &str, path: &str) -> String {
 
 /// GET，返回 (status, body)；网络失败 None。
 fn http_get(u: String, token: &str) -> Option<(u16, String)> {
-    let res = client().get(u).headers(auth_headers(token)).send().ok()?;
+    let res = send_retry(client().get(u).headers(auth_headers(token)))
+        .map_err(|e| {
+            eprintln!(
+                "{}",
+                backend_error_message(e.is_timeout(), e.is_connect(), &e.to_string())
+            )
+        })
+        .ok()?;
     let status = res.status().as_u16();
     Some((status, res.text().unwrap_or_default()))
 }
 
 /// POST JSON，返回 (status, body)；网络失败 None。
 fn http_post(u: String, token: &str, body: serde_json::Value) -> Option<(u16, String)> {
-    let res = client()
-        .post(u)
-        .headers(auth_headers(token))
-        .json(&body)
-        .send()
+    let res = send_retry(client().post(u).headers(auth_headers(token)).json(&body))
+        .map_err(|e| {
+            eprintln!(
+                "{}",
+                backend_error_message(e.is_timeout(), e.is_connect(), &e.to_string())
+            )
+        })
         .ok()?;
     let status = res.status().as_u16();
     Some((status, res.text().unwrap_or_default()))
@@ -569,7 +737,7 @@ fn render_tmux_format(fmt: &str, pane_index: usize) -> String {
 
 fn find_pane_by_name(url: &str, token: &str, name: &str) -> Option<usize> {
     let u = format!("{}/api/v1/list-panes?json=1", url.trim_end_matches('/'));
-    let res = client().get(u).headers(auth_headers(token)).send().ok()?;
+    let res = send_retry(client().get(u).headers(auth_headers(token))).ok()?;
     let json: serde_json::Value = res.json().ok()?;
     let panes = json.get("panes")?.as_array()?;
     // Prefer the highest index when multiple panes share a name (most recently created).
@@ -675,10 +843,7 @@ fn render_tmux_format_dynamic(fmt: &str, pane_index: usize, url: &str, token: &s
     }
 
     let u = format!("{}/api/v1/list-panes?json=1", url.trim_end_matches('/'));
-    let resp = client()
-        .get(&u)
-        .headers(auth_headers(token))
-        .send()
+    let resp = send_retry(client().get(&u).headers(auth_headers(token)))
         .ok()
         .and_then(|r| {
             if r.status().is_success() {
@@ -979,15 +1144,16 @@ fn post_split(
     log_to_file(&format!("post_split: body={}", body));
     let u = format!("{}/api/v1/split-window", url.trim_end_matches('/'));
     log_to_file(&format!("post_split: posting to {}", u));
-    let res = match client()
-        .post(&u)
-        .headers(auth_headers(token))
-        .json(&body)
-        .send()
-    {
+    let res = match send_retry(client().post(&u).headers(auth_headers(token)).json(&body)) {
         Ok(r) => r,
         Err(e) => {
             log_to_file(&format!("tmux: HTTP error: {e}"));
+            // 明确原因写 stderr：宿主把它接到 "Failed to create teammate pane:" 之后，
+            // 否则用户只看到冒号 + 空白（本次事故现象）。
+            eprintln!(
+                "{}",
+                backend_error_message(e.is_timeout(), e.is_connect(), &e.to_string())
+            );
             return Err(());
         }
     };
@@ -1071,10 +1237,7 @@ fn cmd_capture(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         pane,
         lines
     );
-    let res = client()
-        .get(u)
-        .headers(auth_headers(token))
-        .send()
+    let res = send_retry(client().get(u).headers(auth_headers(token)))
         .map_err(|e| eprintln!("tmux: {e}"))?;
     if !res.status().is_success() {
         eprintln!("tmux: capture-pane {}", res.status());
@@ -1279,14 +1442,13 @@ fn post_spawn_process(
     let body = build_spawn_process_body(target, launch);
     let u = format!("{}/api/v1/spawn-process", url.trim_end_matches('/'));
     log_to_file(&format!("spawn-process: posting to {}", u));
-    let res = client()
-        .post(u)
-        .headers(auth_headers(token))
-        .json(&body)
-        .send()
+    let res = send_retry(client().post(u).headers(auth_headers(token)).json(&body))
         .map_err(|e| {
             log_to_file(&format!("spawn-process: HTTP error: {e}"));
-            eprintln!("tmux: {e}");
+            eprintln!(
+                "{}",
+                backend_error_message(e.is_timeout(), e.is_connect(), &e.to_string())
+            );
         })?;
     if !res.status().is_success() {
         let status = res.status();
@@ -1383,11 +1545,7 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         }),
     };
     let u = format!("{}/api/v1/send-keys", url.trim_end_matches('/'));
-    let res = client()
-        .post(u)
-        .headers(auth_headers(token))
-        .json(&body)
-        .send()
+    let res = send_retry(client().post(u).headers(auth_headers(token)).json(&body))
         .map_err(|e| eprintln!("tmux: {e}"))?;
     if !res.status().is_success() {
         eprintln!("tmux: send-keys {}", res.status());
@@ -1466,10 +1624,7 @@ fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     }
 
     let u = format!("{}/api/v1/list-panes", url.trim_end_matches('/'));
-    let res = client()
-        .get(u)
-        .headers(auth_headers(token))
-        .send()
+    let res = send_retry(client().get(u).headers(auth_headers(token)))
         .map_err(|e| eprintln!("tmux: {e}"))?;
     if !res.status().is_success() {
         eprintln!("tmux: list-panes {}", res.status());
@@ -1603,11 +1758,7 @@ fn cmd_kill_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         Some(idx) => serde_json::json!({ "pane_index": idx }),
         None => serde_json::json!({}),
     };
-    let res = client()
-        .post(&u)
-        .headers(auth_headers(token))
-        .json(&body)
-        .send()
+    let res = send_retry(client().post(&u).headers(auth_headers(token)).json(&body))
         .map_err(|e| {
             log_to_file(&format!("kill-pane HTTP error: {e}"));
         })?;
@@ -2938,5 +3089,71 @@ mod tests {
         assert_eq!(parse_pane_target("%2"), 2);
         assert_eq!(parse_pane_target("sess:1.3"), 3);
         assert_eq!(parse_pane_target("4"), 4);
+    }
+
+    #[test]
+    fn control_commands_fail_fast() {
+        // 控制类命令(split/list/display/capture/...)用短超时:后端楔死时秒级失败,
+        // 而非让 harness 干等满垫片旧的 60s。后端自身最坏 ~3s(route_split 的 ready_rx),
+        // 10s 是 ~3× 余量。
+        let ten = std::time::Duration::from_secs(10);
+        assert_eq!(command_timeout("split-window"), ten);
+        assert_eq!(command_timeout("list-sessions"), ten);
+        assert_eq!(command_timeout("list-panes"), ten);
+        assert_eq!(command_timeout("display-message"), ten);
+        assert_eq!(command_timeout("capture-pane"), ten);
+    }
+
+    #[test]
+    fn send_keys_keeps_long_timeout() {
+        // send-keys 可能触发 GUI pane 的人审(HITL),保留长超时,避免审批期间请求被误杀。
+        let sixty = std::time::Duration::from_secs(60);
+        assert_eq!(command_timeout("send-keys"), sixty);
+        assert_eq!(command_timeout("send"), sixty);
+    }
+
+    #[test]
+    fn timeout_error_message_names_unresponsive_backend() {
+        // 超时(后端楔死最常见表现)给明确原因,让 "Failed to create teammate pane:" 后不再空白。
+        let msg = backend_error_message(true, false, "operation timed out");
+        assert!(msg.contains("unresponsive"), "got: {msg}");
+        assert!(msg.to_lowercase().contains("timed out"), "got: {msg}");
+    }
+
+    #[test]
+    fn connect_error_message_names_unreachable_backend() {
+        let msg = backend_error_message(false, true, "connection refused");
+        assert!(msg.contains("cannot reach"), "got: {msg}");
+    }
+
+    #[test]
+    fn retry_only_on_connect_error() {
+        // 非连接错误(超时 / HTTP 状态):绝不重试——请求可能已被后端处理,重试有重复副作用
+        // 风险(如重复 split 出两个 pane)。
+        assert_eq!(retry_backoff_ms(false, 0), None);
+        assert_eq!(retry_backoff_ms(false, 5), None);
+    }
+
+    #[test]
+    fn sanitize_socket_maps_nonalnum_to_underscore() {
+        // 两端(后端 endpoint.rs 与本垫片)必须算出**同一** sidecar 文件名,否则读写错位。
+        // 规则:非 [A-Za-z0-9] 一律 '_';确定性、与平台无关。
+        assert_eq!(
+            sanitize_socket("C:/code/wind/teammate.sock"),
+            "C__code_wind_teammate_sock"
+        );
+        assert_eq!(sanitize_socket("/ridge/teammate.sock"), "_ridge_teammate_sock");
+        assert_eq!(sanitize_socket("abc123"), "abc123");
+    }
+
+    #[test]
+    fn connect_error_retries_are_bounded_with_backoff() {
+        // 连接错误(请求确定没送达 → 重试安全):有界递增退避,跨越后端按需启动/自重启的
+        // 瞬时不可达窗口;第 3 次之后停,避免无限重试拖死调用。
+        assert_eq!(retry_backoff_ms(true, 0), Some(150));
+        assert_eq!(retry_backoff_ms(true, 1), Some(300));
+        assert_eq!(retry_backoff_ms(true, 2), Some(600));
+        assert_eq!(retry_backoff_ms(true, 3), None);
+        assert_eq!(retry_backoff_ms(true, 99), None);
     }
 }

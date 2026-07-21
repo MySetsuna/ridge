@@ -9,8 +9,8 @@ import type { PaneNode } from '$lib/types';
 export type { PaneNode };
 import { reportDevIssue } from '$lib/devIssue';
 import { fileExplorerStore } from '$lib/stores/fileExplorer';
-import { TerminalManager } from '$lib/terminal/manager';
-import { teardownPtyBridge } from '$lib/terminal/ptyBridge';
+import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
+import { teardownPtyBridge } from '@ridge/remote/shared/terminal/ptyBridge';
 
 function normalizeSplitRatios(sizes: number[]): number[] {
   const s = sizes.reduce((a, b) => a + b, 0);
@@ -111,6 +111,12 @@ export const activePaneId = writable<string>('');
 export const paneDragSourceId = writable<string | null>(null);
 
 export type DockRegion = 'left' | 'right' | 'top' | 'bottom' | 'center';
+
+/** 指针拖拽 pane 时，当前悬停的停靠目标（leaf 据此画方向高亮）。 */
+export const paneDockHover = writable<{ paneId: string; region: DockRegion } | null>(null);
+/** 指针拖拽 pane 时，当前悬停的工作区 tab（tab 据此画 ring，命中 250ms 后切换）。 */
+export const dragHoverWorkspaceId = writable<string | null>(null);
+
 export type SplitterAxis = 'x' | 'y';
 
 export interface SplitterRef {
@@ -1482,9 +1488,23 @@ export function scheduleForceFitActivePanes(): void {
   if (typeof requestAnimationFrame === 'undefined') return;
   const fitAll = () => {
     const mgr = TerminalManager.instance();
-    for (const id of getAllPaneIds(get(paneTreeStore))) {
+    const ids = getAllPaneIds(get(paneTreeStore));
+    for (const id of ids) {
       mgr.fitPaneNow(id);
     }
+    // §white-screen (2026-07-01): a BACKEND-created pane (teammate split /
+    // auto_place) can mount + attach at the already-correct size, so
+    // `fitPaneNow` computes an unchanged rows×cols and short-circuits WITHOUT
+    // waking the render loop. When the pane also loses the attach-time first
+    // paint (rAF race / no further PTY output on an idle shell), it stays
+    // stranded blank — the reported white screen. The GUI `splitPane` path is
+    // driven by a live user gesture (focus/resize) that wakes the loop, which
+    // is why manual splits don't exhibit it. Force a full redraw across the
+    // tree after every backend-driven layout change: `forceFullRedrawFor`
+    // invalidates each pane's render cache and wakes the rAF loop once, is
+    // idempotent for panes already painting, and safely skips panes whose
+    // handle hasn't attached yet (picked up on the retry cadence below).
+    mgr.forceFullRedrawFor(ids);
   };
   requestAnimationFrame(() => {
     requestAnimationFrame(() => fitAll());
@@ -1512,6 +1532,18 @@ export async function dockPane(
   });
   await syncPaneLayoutFromBackend();
   activePaneId.set(sourcePaneId);
+  // §dock-swap-scissor (2026-06-26): 终端画面画在「全局共享 canvas」上，每个
+  // pane 的绘制位置由缓存 scissor 决定，仅在 resize / 切工作区 / attach-unpark
+  // / 容器 ResizeObserver 时由 `_recomputeViewport` 重算。dock 中心区换位（含
+  // 父子节点交换）是**等尺寸换槽**：Svelte keyed-move 把容器（header / 滚动条 /
+  // IME 等 DOM 子节点）正确搬到新槽，但因尺寸不变 → 不触发 ResizeObserver、也
+  // 不 remount RidgePane，scissor 仍指向旧槽 → 终端像素留在旧槽、与 header 错位
+  // （表现为「终端/滚动条没交换」，在 Pane1 滚轮却滚 Pane2 的画面）。split 路径
+  // 由 `scheduleForceFitAfterSplit` 补偿、teammate 路径由本函数补偿，唯独 dock
+  // 此前两者都没调。这里强制重 fit 当前工作区全部 pane：host 模式下 fitPane 必经
+  // `_recomputeViewport`（在 `!sizeChanged` 短路之前），等尺寸换位亦会把每个 pane
+  // 的 scissor 原点同步到移动后的容器。
+  scheduleForceFitActivePanes();
 }
 
 /** 拖拽分割条结束后：更新本地树并写回后端（嵌套横纵各自一�?path）�?*/
@@ -1582,6 +1614,9 @@ export async function closePane(paneId: string) {
     delete c[paneId];
     return c;
   });
+  // §I-2: drop this pane's selected-shell entry on genuine close (dynamic
+  // import avoids a static cycle — paneShell.ts imports from this module).
+  void import('@ridge/remote/shared/terminal/paneShell').then((m) => m.clearPaneShellSelection(paneId));
   await syncPaneLayoutFromBackend();
 }
 
@@ -1778,6 +1813,7 @@ export async function openWorkspaceFromFile(path: string): Promise<string> {
 export async function deleteWorkspaceFile(workspaceId: string): Promise<void> {
   await invoke('delete_workspace_file', { workspaceId });
   await refreshWorkspaceSaveInfo();
+  await refreshWorkspaces();
 }
 
 export async function getDefaultWorkspaceSaveDir(): Promise<string> {

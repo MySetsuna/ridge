@@ -22,8 +22,8 @@
 //                surfaced to L2's notification dispatch via the adapter.
 //   • PTY out ←  binary frame (paneId || raw bytes) → onPaneBytes → pty-output.
 
-import { RpcClient } from '../remote/rpcClient';
-import type { ChannelTransport, ControlFrame, Unsubscribe } from '../remote/types';
+import { RpcClient } from '@ridge/remote';
+import type { ChannelTransport, ControlFrame, Unsubscribe } from '@ridge/remote';
 
 /** Tauri's event payload shape, replicated so listeners are drop-in compatible. */
 export interface TauriEvent<T> {

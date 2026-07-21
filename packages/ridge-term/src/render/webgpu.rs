@@ -59,6 +59,32 @@ use crate::render::backend::{CursorDraw, FrameMetrics, RenderBackend, RowDraw, T
 use crate::term::cell::{scan_line_path, RenderPath};
 use crate::term::attr_table::AttrTable;
 
+thread_local! {
+    /// §present-fast (2026-06-22): process-wide opt-in flag gating
+    /// `requires_full_frame`. Default `false` keeps the always-true
+    /// correctness behaviour (full re-encode + LoadOp::Clear every tick),
+    /// required where the WebView2 swap chain drops prior pixels under
+    /// LoadOp::Load (dev Edge WebView2 148). Set to `true` from JS
+    /// (`setPresentFast`, gated on `localStorage.RIDGE_PRESENT_FAST`) on a
+    /// release WebView2 verified to preserve swap-chain pixels — flips the
+    /// renderer back to the dirty-row fast path, killing the per-frame full
+    /// Clear behind IME-composition / selection flicker AND the per-frame
+    /// glyph re-admission that maxes out the switch-workspace atlas-eviction
+    /// churn (transient garble). Fully reversible: unset → always-full path.
+    static PRESENT_FAST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// §present-fast: set the process-wide present-fast flag. See `PRESENT_FAST`
+/// and `WebGpuPaneBackend::requires_full_frame`.
+pub fn set_present_fast(on: bool) {
+    PRESENT_FAST.with(|c| c.set(on));
+}
+
+#[inline]
+fn present_fast() -> bool {
+    PRESENT_FAST.with(|c| c.get())
+}
+
 /// High bit tag for grapheme-cluster glyph IDs so they cannot collide
 /// with any Unicode codepoint (max 0x10FFFF).
 const CLUSTER_TAG: u32 = 0x8000_0000;
@@ -220,6 +246,16 @@ pub struct WebGpuPaneBackend {
     /// already-recorded draw can't have its atlas slots evicted +
     /// overwritten mid-frame by another pane admitting new glyphs.
     cached_layers: Vec<u16>,
+    /// §stale-replay detector (2026-06-22 round 2): parallel to
+    /// `cached_layers` — the `GpuContext::layer_write_epoch` value of each
+    /// cited layer at the moment this pane's cache was recorded. Re-checked in
+    /// `record_cached_only`: if any layer's epoch has advanced, that slot was
+    /// repurposed for a different glyph since we cached (e.g. while this pane
+    /// was on a hidden workspace), so replaying the buffer would paint the
+    /// wrong glyph — fall back to a full render instead. Catches the
+    /// cross-frame staleness that `frame_committed` (per-frame) and the coarse
+    /// `atlas_eviction_count` / generation guards miss.
+    cached_layer_epochs: Vec<u64>,
 }
 
 impl Drop for WebGpuPaneBackend {
@@ -296,6 +332,7 @@ impl WebGpuPaneBackend {
             cached_n_cells: 0,
             cached_evictions_seen: 0,
             cached_layers: Vec::new(),
+            cached_layer_epochs: Vec::new(),
         })
     }
 
@@ -369,6 +406,19 @@ impl RenderBackend for WebGpuPaneBackend {
         // LoadOp::Load 可靠 → 返回 self.needs_initial_clear(脏行快路径);否则保持
         // true。交接文档 docs/superpowers/specs/2026-06-18-selection-flash-firstline-handoff.md,
         // 追踪 docs/term-rebuild/TASKS.md §1.36。
+        //
+        // §present-fast (2026-06-22): opt-in dirty-row fast path. Default
+        // (flag off) keeps the always-true behaviour above. When
+        // `setPresentFast(true)` is set (release WebView2 verified to preserve
+        // swap-chain pixels), return `needs_initial_clear` so cursor-blink /
+        // IME-preedit / selection / TUI redraws re-encode ONLY changed rows
+        // instead of full-Clearing + full-admitting every tick — kills the
+        // per-frame flash (IME-composition + selection flicker) and the
+        // per-frame glyph re-admission that amplifies the switch-workspace
+        // atlas-eviction garble. Reversible: unset → always-full path.
+        if present_fast() {
+            return self.needs_initial_clear;
+        }
         true
     }
 
@@ -491,6 +541,18 @@ impl RenderBackend for WebGpuPaneBackend {
         // SurfaceHost's LoadOp::Clear.  When `tui_mode` is active the
         // quad uses `theme.tui_bg` instead of `theme.bg`, preventing
         // the theme accent background from polluting TUI apps.
+        //
+        // §wallpaper-fix: 壁纸激活且非 TUI 时，跳过这块不透明 seed。
+        // `SurfaceHost::begin_frame` 本帧已在所有 pane 之下铺满整屏壁纸
+        // quad；这里再压一块不透明 theme.bg 全视口 quad 会把 cell 区域的壁纸
+        // 整个盖掉，只剩 scissor 之外的 pane padding 透出壁纸 —— 正是「底部
+        // 一条壁纸、其余纯色」的现象。普通 shell 模式下默认背景单元已被
+        // `resolve_cell_colors` 解析为透明 [0,0,0,0]，字形与显式着色单元仍
+        // 正常叠加在壁纸之上。TUI 模式保留不透明 tui_bg seed：全屏 TUI 应用
+        // 独占画面、需要纯色背景，不应透出壁纸。
+        if !self.metrics.tui_mode && self.ctx.borrow().has_wallpaper() {
+            return;
+        }
         let bg_color = if self.metrics.tui_mode { self.theme.tui_bg } else { self.theme.bg };
         self.pending_instances.push(CellInstance {
             cell_xy: [0.0, 0.0],
@@ -861,9 +923,26 @@ impl RenderBackend for WebGpuPaneBackend {
             };
             let entry: Option<GlyphEntry> = {
                 let mut ctx = self.ctx.borrow_mut();
-                ctx.atlas.lookup(&key)
+                let hit = ctx.atlas.lookup(&key);
+                // §atlas-race: the inverted-cursor glyph cites an atlas layer
+                // exactly like draw_row_texts does, so it MUST take the same
+                // frame_written guard. Without it a sibling pane that admits
+                // glyphs later in THIS host frame can pick this layer for LRU
+                // eviction (it isn't marked written), overwrite its pixels via
+                // `write_texture`, and our already-recorded cursor draw then
+                // samples a stranger glyph for one frame. Mirrors the hit path
+                // in draw_row_texts (frame_written here, frame_pinned below).
+                if let Some(e) = hit {
+                    if (e.layer as usize) < ctx.frame_written.len() {
+                        ctx.frame_written[e.layer as usize] = true;
+                    }
+                }
+                hit
             };
             if let Some(entry) = entry {
+                if (entry.layer as usize) < self.frame_pinned.len() {
+                    self.frame_pinned[entry.layer as usize] = true;
+                }
                 let cursor_text_color = rgba_u8_to_f32(self.theme.cursor_text_color);
                 let natural_w = (entry.px_w as f32).max(1.0);
                 // §B.9 — natural size at effective column, no aspect-fit.
@@ -1350,6 +1429,7 @@ impl RenderBackend for WebGpuPaneBackend {
             // §4b: with 0 instances we have nothing to cache.
             self.cached_n_cells = 0;
             self.cached_layers.clear();
+            self.cached_layer_epochs.clear();
             return;
         }
 
@@ -1379,6 +1459,7 @@ impl RenderBackend for WebGpuPaneBackend {
         // walking the kernel grid.
         self.cached_n_cells = n_cells;
         self.cached_evictions_seen = ctx.atlas_eviction_count;
+        drop(ctx);
         // §atlas-pin: record the distinct glyph layers this frame's
         // instances cite so `pin_cached_layers` can protect them next time
         // we replay via `record_cached_only`. Reserved layer 0
@@ -1395,6 +1476,23 @@ impl RenderBackend for WebGpuPaneBackend {
             }
         }
         self.cached_layers = layers;
+        // §atlas-race detector: this pane's draw is now RECORDED in the host
+        // encoder, so its glyph slots are load-bearing for the unsubmitted
+        // frame. Mark them committed — a sibling pane's later admission that
+        // overwrites one is then caught in `rasterize_and_admit`.
+        // §stale-replay detector: ALSO snapshot each cited layer's write epoch
+        // so `record_cached_only` can later tell whether the slot was
+        // repurposed since this cache was built.
+        {
+            let mut ctx = self.ctx.borrow_mut();
+            self.cached_layer_epochs.clear();
+            self.cached_layer_epochs.reserve(self.cached_layers.len());
+            for &l in &self.cached_layers {
+                ctx.mark_committed(l);
+                let epoch = ctx.layer_write_epoch.get(l as usize).copied().unwrap_or(0);
+                self.cached_layer_epochs.push(epoch);
+            }
+        }
     }
 }
 
@@ -1440,7 +1538,7 @@ impl WebGpuPaneBackend {
         // UVs. Catch the case where invalidation happened between
         // begin_frame's check and this call (e.g., another pane in the
         // same RAF tick triggered atlas rebuild).
-        let ctx = self.ctx.borrow();
+        let mut ctx = self.ctx.borrow_mut();
         if ctx.atlas_generation != self.atlas_generation_seen {
             self.cached_n_cells = 0;
             return false;
@@ -1453,6 +1551,44 @@ impl WebGpuPaneBackend {
         if ctx.atlas_eviction_count != self.cached_evictions_seen {
             self.cached_n_cells = 0;
             return false;
+        }
+        // §stale-replay detector + ROOT FIX (2026-06-22 round 2): the two
+        // guards above are coarse — `atlas_eviction_count` misses layer
+        // reuse via the fresh `next_free_layer` path after an
+        // `invalidate_atlas` that didn't also bump the generation we
+        // observed, and the generation snapshot can be out of step. Do the
+        // precise per-layer check: if ANY layer this cached buffer cites has
+        // a higher write epoch than when we cached it, that slot now holds a
+        // DIFFERENT glyph and replaying would paint garble. Re-render fully.
+        // This is the structural cause of the switch-workspace "first/idle
+        // pane integral garble" that the per-frame `frame_committed` detector
+        // can't see (the overwrite happened in an EARLIER frame).
+        {
+            let mut stale = false;
+            for (i, &l) in self.cached_layers.iter().enumerate() {
+                let now = ctx.layer_write_epoch.get(l as usize).copied().unwrap_or(0);
+                let then = self.cached_layer_epochs.get(i).copied().unwrap_or(now);
+                if now != then {
+                    stale = true;
+                    break;
+                }
+            }
+            if stale {
+                ctx.stale_replay_count = ctx.stale_replay_count.wrapping_add(1);
+                if ctx.stale_replay_log_budget > 0 {
+                    ctx.stale_replay_log_budget -= 1;
+                    web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                        "[ridge-term][stale-replay] cached replay ABORTED — a cited atlas \
+                         layer was repurposed since caching (cross-frame garble root); \
+                         falling back to full render. cited_layers={} total={}",
+                        self.cached_layers.len(),
+                        ctx.stale_replay_count,
+                    )));
+                }
+                drop(ctx);
+                self.cached_n_cells = 0;
+                return false;
+            }
         }
         drop(ctx);
 
@@ -1477,6 +1613,18 @@ impl WebGpuPaneBackend {
                 pass.set_vertex_buffer(0, instance_buffer.slice(..));
                 pass.draw(0..4, 0..n_cells);
             });
+        drop(ctx);
+        // §atlas-race detector: this cached replay is now RECORDED, so its
+        // cited glyph slots are load-bearing for the unsubmitted frame — mark
+        // them committed (same as the full-render `end_frame` path). If
+        // `pin_cached_layers` failed to protect any of these, a sibling's
+        // later admission overwriting one is caught in `rasterize_and_admit`.
+        {
+            let mut ctx = self.ctx.borrow_mut();
+            for &l in &self.cached_layers {
+                ctx.mark_committed(l);
+            }
+        }
         true
     }
 
