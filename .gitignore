@@ -46,3 +46,6 @@ gc-e2e-*.png
 .env.local
 .mimocode/
 scripts/tmp-*.mjs
+
+# Local physical-device smoke evidence may contain device metadata/screenshots.
+/artifacts/remote-smoke/

@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-07-21T05:00:00.000Z",
+  "gitCommit": "ee9afa3",
+  "remoteBuildId": "remote-example-build",
+  "cloudDeploymentId": "cloud-example-deployment",
+  "platform": "android-chrome",
+  "device": {
+    "model": "example-device",
+    "osVersion": "example-os",
+    "browserVersion": "example-browser"
+  },
+  "scenarios": [
+    {
+      "kind": "baseline",
+      "startedAt": "2026-07-21T04:00:00.000Z",
+      "endedAt": "2026-07-21T04:01:00.000Z",
+      "recoveryMs": 0,
+      "status": "pass",
+      "observations": "Example only: authorization, pane and input echo verified."
+    },
+    {
+      "kind": "wifi_to_cellular",
+      "startedAt": "2026-07-21T04:02:00.000Z",
+      "endedAt": "2026-07-21T04:02:20.000Z",
+      "recoveryMs": 20000,
+      "status": "pass",
+      "observations": "Example only: recovered without refresh."
+    },
+    {
+      "kind": "cellular_to_wifi",
+      "startedAt": "2026-07-21T04:03:00.000Z",
+      "endedAt": "2026-07-21T04:03:18.000Z",
+      "recoveryMs": 18000,
+      "status": "pass",
+      "observations": "Example only: same pane and scrollback retained."
+    },
+    {
+      "kind": "background_token_window",
+      "startedAt": "2026-07-21T04:04:00.000Z",
+      "endedAt": "2026-07-21T04:20:30.000Z",
+      "recoveryMs": 30000,
+      "backgroundDurationSeconds": 960,
+      "status": "pass",
+      "observations": "Example only: foreground wake-up recovered without refresh."
+    }
+  ],
+  "attachments": [
+    {
+      "kind": "log",
+      "path": "cloud-remote-physical-smoke-runbook.md"
+    }
+  ],
+  "overallResult": "pass"
+}
