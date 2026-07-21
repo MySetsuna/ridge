@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.17] — 2026-07-21
+
+### Added
+- **Ridge MCP dispatch agent skill**：新增 `.agents` 版本的 Ridge 内置 MCP 多 agent 调度说明，便于本地 agent 直接读取同一工作区的 teammate 派发协议。
+
+---
+
 ## [0.0.16] — 2026-07-14
 
 命令内核化收官（#19）：桌面与远端的读写命令统一下沉到共享内核 `ridge-core` dispatch，消除双端逻辑分叉。同时完成局域网远控安全加固、远端恒为完全读写，并新增本文件 Git 历史浮层。
