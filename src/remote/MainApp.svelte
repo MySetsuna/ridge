@@ -16,7 +16,15 @@
   // FileViewer (read-only file / git-diff overlay) loaded on first open.
   const FileViewer = import('./lib/FileViewer.svelte');
   import BottomTabBar from './BottomTabBar.svelte';
-  import { type RemoteLink, type PaneInfo, type ConnectionState, type WorkspaceInfo, type ConnectionFailure } from '@ridge/remote';
+  import {
+    getRemotePanelAvailability,
+    type RemoteLink,
+    type RemotePanel,
+    type PaneInfo,
+    type ConnectionState,
+    type WorkspaceInfo,
+    type ConnectionFailure,
+  } from '@ridge/remote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
   import { PaneScrollbackCache, PANE_BUF_CAP } from './lib/paneScrollbackCache';
@@ -39,6 +47,15 @@
   // single-finger drag selects; when off it scrolls (no accidental selection).
   let selectionMode = $state(false);
   let sidebarTab: 'files' | 'git' | 'search' | null = $state(null);
+  // Optimistic until D9 hello completes; onMount immediately replaces these via
+  // refreshCapabilities and subscribes to reconnect renegotiation.
+  let panelAvailability = $state<Readonly<Record<RemotePanel, boolean>>>({
+    files: true,
+    git: true,
+    search: true,
+  });
+  let canManageWorkspaces = $state(true);
+  let canUseTheme = $state(true);
   // Read-only file / git-diff viewer overlay. Opened from the sidebar (tap a
   // file in the tree / a search hit → 'file'; tap a changed file in git → 'diff').
   let viewer = $state<{ kind: 'file' | 'diff'; path: string; line?: number } | null>(null);
@@ -49,10 +66,12 @@
   const sidebarProvider = $derived(createWsSidebarProvider(activeCwd));
 
   function openFileViewer(path: string, line?: number) {
+    if (!panelAvailability.files) return;
     viewer = { kind: 'file', path, line };
     sidebarTab = null; // close the sidebar so the viewer takes the screen
   }
   function openDiffViewer(path: string) {
+    if (!panelAvailability.git) return;
     viewer = { kind: 'diff', path };
     sidebarTab = null;
   }
@@ -140,7 +159,7 @@
   // the user's override id when present so cycling stays continuous after a
   // reconnect (where ws.lastTheme() would be the host's theme, not ours).
   async function handleThemeToggle() {
-    if (!ws) return;
+    if (!canUseTheme) return;
     pendingCycle = true;
     ws.cycleTheme(userTheme?.id ?? ws.lastTheme()?.id ?? '');
   }
@@ -384,7 +403,8 @@
     return '…/' + parts.slice(-2).join('/');
   }
 
-  function handleSidebarToggle(tab: 'files' | 'git' | 'search') {
+  function handleSidebarToggle(tab: RemotePanel) {
+    if (!panelAvailability[tab]) return;
     if (sidebarTab === tab) {
       sidebarTab = null;
     } else {
@@ -392,12 +412,25 @@
     }
   }
 
+  function selectSidebarTab(tab: RemotePanel) {
+    if (panelAvailability[tab]) sidebarTab = tab;
+  }
+
+  function refreshCapabilities() {
+    panelAvailability = getRemotePanelAvailability((capability) => ws.hasCapability(capability));
+    canManageWorkspaces = ws.hasCapability('workspace');
+    canUseTheme = ws.hasCapability('theme');
+    if (sidebarTab && !panelAvailability[sidebarTab]) sidebarTab = null;
+    if (viewer?.kind === 'diff' && !panelAvailability.git) viewer = null;
+    if (viewer?.kind === 'file' && !panelAvailability.files) viewer = null;
+  }
+
   // 远程端自建终端：请求 host 创建 pane，成功后刷新列表并把新 pane 设为活动项
   // （onMessage 的 'panes' 分支会在 listPanes 回包后把 activePaneId 兜底为首个，
   //  这里显式置为新 id 以确保即使有多个 pane 也聚焦到刚建的那个）。失败时把错误
   // 文案显示给用户，绝不静默吞掉。
   async function handleCreatePane() {
-    if (creatingPane) return;
+    if (creatingPane || !canManageWorkspaces) return;
     creatingPane = true;
     createError = '';
     try {
@@ -416,6 +449,8 @@
   }
 
   onMount(() => {
+    const stopCapabilities = ws.onCapabilitiesChanged(refreshCapabilities);
+    refreshCapabilities();
     // §realtime-status（任务 A 问题3）：先装状态监听，再同步一次真实连接态。云端进入
     // MainApp 时传输早已 'connected'，若不同步则 wsState 停在初值 'disconnected'，顶部
     // 误显示「重连中」直到下一次状态事件才纠正。装监听在先、同步在后，保证此刻起的每次
@@ -587,7 +622,10 @@
     if (savedActiveWs) activeWorkspaceId = savedActiveWs;
     ws.listPanes();
     refreshWorkspaces();
-    return () => { ws.disconnect(); };
+    return () => {
+      stopCapabilities();
+      ws.disconnect();
+    };
   });
 
   // Pane switch: isolate the kernel + (re)subscribe. Reacts to activePaneId only;
@@ -705,24 +743,32 @@
   {#if panes.length === 0}
     <div class="empty">
       <p>{$t('mobile.noActiveTerminal')}</p>
-      <button class="create-btn" onclick={handleCreatePane} disabled={creatingPane}>
-        {creatingPane ? $t('mobile.creating') : $t('mobile.newTerminal')}
-      </button>
+      {#if canManageWorkspaces}
+        <button class="create-btn" onclick={handleCreatePane} disabled={creatingPane}>
+          {creatingPane ? $t('mobile.creating') : $t('mobile.newTerminal')}
+        </button>
+      {/if}
       {#if createError}<p class="create-error">{createError}</p>{/if}
     </div>
   {:else if activePaneId}
     <header class="mobile-header" style="transform: translateY({headerShift}px)">
       <div class="header-row">
         <div class="header-nav">
-          <button class="hdr-btn" class:active={sidebarTab === 'files'} onclick={() => handleSidebarToggle('files')} title={$t('mobile.filesTitle')} tabindex="-1">
-            <Folder class="w-4 h-4" />
-          </button>
-          <button class="hdr-btn" class:active={sidebarTab === 'git'} onclick={() => handleSidebarToggle('git')} title="Git" tabindex="-1">
-            <GitBranch class="w-4 h-4" />
-          </button>
-          <button class="hdr-btn" class:active={sidebarTab === 'search'} onclick={() => handleSidebarToggle('search')} title={$t('mobile.searchTitle')} tabindex="-1">
-            <Search class="w-4 h-4" />
-          </button>
+          {#if panelAvailability.files}
+            <button class="hdr-btn" class:active={sidebarTab === 'files'} onclick={() => handleSidebarToggle('files')} title={$t('mobile.filesTitle')} tabindex="-1">
+              <Folder class="w-4 h-4" />
+            </button>
+          {/if}
+          {#if panelAvailability.git}
+            <button class="hdr-btn" class:active={sidebarTab === 'git'} onclick={() => handleSidebarToggle('git')} title="Git" tabindex="-1">
+              <GitBranch class="w-4 h-4" />
+            </button>
+          {/if}
+          {#if panelAvailability.search}
+            <button class="hdr-btn" class:active={sidebarTab === 'search'} onclick={() => handleSidebarToggle('search')} title={$t('mobile.searchTitle')} tabindex="-1">
+              <Search class="w-4 h-4" />
+            </button>
+          {/if}
         </div>
         <div class="header-breadcrumb">
           {#if activePaneId}
@@ -768,16 +814,17 @@
     {/await}
   {/if}
 
-  {#if sidebarTab !== null}
+  {#if sidebarTab !== null && panelAvailability[sidebarTab]}
     <div class="sidebar-overlay" onclick={() => sidebarTab = null} role="presentation"></div>
     {#await RemoteSidebar}
       <div class="sidebar-loading">{$t('mobile.loading')}</div>
     {:then module}
       <module.default
         tab={sidebarTab}
+        available={panelAvailability}
         cwd={activeCwd}
         onClose={() => sidebarTab = null}
-        onTabChange={(t) => sidebarTab = t}
+        onTabChange={selectSidebarTab}
         onOpenFile={openFileViewer}
         onOpenDiff={openDiffViewer}
       />
@@ -803,6 +850,8 @@
     onRefresh={handleRefresh}
     onPaste={handlePaste}
     onThemeToggle={handleThemeToggle}
+    {canUseTheme}
+    {canManageWorkspaces}
     bind:selectionMode
     {panes}
     bind:activePaneId

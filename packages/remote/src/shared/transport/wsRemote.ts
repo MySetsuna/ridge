@@ -209,6 +209,10 @@ export interface RemoteLink {
    */
   lastFailure(): ConnectionFailure | null;
   onStateChange(fn: (s: ConnectionState) => void): () => void;
+  /** Negotiated coarse host capability; LAN legacy hosts expose the full UI set. */
+  hasCapability(capability: string): boolean;
+  /** Fires after capability negotiation changes (initial hello and reconnects). */
+  onCapabilitiesChanged(fn: () => void): () => void;
   onReconnect(fn: () => void): () => void;
   onMessage(fn: Listener): () => void;
   onRawBytes(fn: RawByteListener): () => void;
@@ -307,6 +311,11 @@ export class RemoteConnection implements RemoteLink {
 
   state() { return this._state; }
   lastFailure() { return this._failure; }
+  hasCapability(_capability: string) { return true; }
+  onCapabilitiesChanged(fn: () => void) {
+    fn();
+    return () => {};
+  }
 
   /** 进入 'error' 终态并记录失败分级（供 UI 区分用户问题 / 通道异常 / 设备停用）。 */
   private failWith(failure: ConnectionFailure) {

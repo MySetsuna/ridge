@@ -190,6 +190,8 @@ pub enum Method {
     },
     /// `get_directory_children { path, … }` → 列目录。
     DirectoryChildren { path: String },
+    /// Controller UI 直接使用的现有 ridge-core RPC（非新增协议面）。
+    CoreInvoke { method: String, params: Value },
     /// cli 不服务的方法（IDE 命令等）→ 回 METHOD_NOT_FOUND。
     Unsupported(String),
 }
@@ -245,6 +247,12 @@ pub fn route_method(method: &str, params: &Value) -> Method {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string(),
+        },
+        // 共享 Controller 的 TauriDataProvider 使用这些 canonical 方法名；它们都已在
+        // ridge-core REMOTE_ALLOWLIST + dispatch 中，rdg 仅补齐实际路由，不扩大权限面。
+        "get_file_tree" | "read_file" | "text_search" => Method::CoreInvoke {
+            method: method.to_string(),
+            params: params.clone(),
         },
         other => Method::Unsupported(other.to_string()),
     }
@@ -391,6 +399,20 @@ mod tests {
                 path: "/tmp".into()
             }
         );
+    }
+
+    #[test]
+    fn routes_controller_fs_and_search_methods_to_core() {
+        for method in ["get_file_tree", "read_file", "text_search"] {
+            let params = json!({ "path": "/tmp", "root": "/tmp", "query": "needle" });
+            assert_eq!(
+                route_method(method, &params),
+                Method::CoreInvoke {
+                    method: method.into(),
+                    params: params.clone(),
+                }
+            );
+        }
     }
 
     #[test]
