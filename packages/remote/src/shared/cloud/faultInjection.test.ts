@@ -350,6 +350,71 @@ describe('Cloud Remote provider → adapter → RpcClient recovery', () => {
     rig.adapter.dispose();
   });
 
+  it('lets a sub-15s disconnected pulse self-heal without ICE restart or duplicate recovery', async () => {
+    const rig = await createControllerRig();
+    const subscribe = vi.fn(() => rig.rpc.notify('subscribe-pane', { paneId: 'pane-a' }));
+    rig.rpc.onReconnected(subscribe);
+    const sentBeforePulse = rig.dc.sent.length;
+
+    rig.pc.connectionState = 'disconnected';
+    rig.pc.onconnectionstatechange?.();
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(rig.pc.offers).toHaveLength(0);
+    expect(FaultPeerConnection.instances).toHaveLength(1);
+    expect(FaultWebSocket.instances).toHaveLength(1);
+
+    rig.pc.connectionState = 'connected';
+    rig.pc.onconnectionstatechange?.();
+    expect(rig.adapter.authState()).toBe('authorized');
+    expect(subscribe).not.toHaveBeenCalled();
+    expect(rig.dc.sent).toHaveLength(sentBeforePulse);
+    expect(vi.getTimerCount()).toBe(0);
+
+    rig.rpc.dispose();
+    rig.adapter.close();
+    rig.adapter.dispose();
+  });
+
+  it('escalates watchdog to ICE deadline rebuild and recovers once after fresh auth', async () => {
+    const rig = await createControllerRig();
+    const subscribe = vi.fn(() => rig.rpc.notify('subscribe-pane', { paneId: 'pane-a' }));
+    rig.rpc.onReconnected(subscribe);
+
+    rig.pc.connectionState = 'disconnected';
+    rig.pc.onconnectionstatechange?.();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(rig.adapter.authState()).toBe('pending');
+    expect(rig.pc.offers).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(rig.pc.offers).toEqual([{ iceRestart: true }]);
+    expect(FaultPeerConnection.instances).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(FaultPeerConnection.instances).toHaveLength(2);
+    expect(FaultWebSocket.instances).toHaveLength(2);
+    expect(rig.pc.connectionState).toBe('closed');
+    expect(rig.dc.readyState).toBe('closed');
+
+    const pc2 = FaultPeerConnection.instances[1];
+    const ws2 = FaultWebSocket.instances[1];
+    ws2.fireOpen();
+    const next = completeE2ee(pc2, ws2);
+    expect(rig.adapter.authState()).toBe('pending');
+    expect(subscribe).not.toHaveBeenCalled();
+    expect(next.dc.sent).toHaveLength(1);
+
+    authorize(next.dc, next.hostSession, 0);
+    expect(rig.adapter.authState()).toBe('authorized');
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(next.dc.sent).toHaveLength(3);
+    expect(vi.getTimerCount()).toBe(0);
+
+    rig.rpc.dispose();
+    rig.adapter.close();
+    rig.adapter.dispose();
+  });
+
   it('runs 100 deterministic fail/recover cycles without pending RPCs, duplicate recovery, or timers', async () => {
     const rig = await createControllerRig();
     const subscribe = vi.fn(() => rig.rpc.notify('subscribe-pane', { paneId: 'pane-a' }));
