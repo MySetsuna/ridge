@@ -5,6 +5,7 @@ pub(crate) mod layout_event;
 pub(crate) mod locks;
 pub(crate) mod native;
 pub(crate) mod profiles;
+pub(crate) mod memory;
 pub(crate) mod server;
 pub(crate) mod suspend;
 

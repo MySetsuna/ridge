@@ -1602,7 +1602,20 @@ async fn route_send_keys(
         let submitted = body.text.ends_with('\n') || body.text.ends_with('\r');
         let cmd = body.text.trim_end_matches(|c| c == '\r' || c == '\n');
         if hitl::is_enabled() && submitted && !cmd.is_empty() {
-            match hitl::request_approval(&ctx.handle, &format!("pane#{pane_idx}"), cmd).await {
+            // M2 归因：initiator 优先稳定 agent_id（pane 反查），无注册回落 pane 号。
+            let initiator = ctx
+                .state
+                .workspaces
+                .read()
+                .get(&wid)
+                .and_then(|ws| {
+                    ws.teammate_agent_pane_map
+                        .iter()
+                        .find(|(_, p)| **p == pid)
+                        .map(|(a, _)| a.clone())
+                })
+                .unwrap_or_else(|| format!("pane#{pane_idx}"));
+            match hitl::request_approval(&ctx.handle, wid, &initiator, cmd).await {
                 hitl::HitlResolution::Approve => body.text.clone(),
                 hitl::HitlResolution::Reject => {
                     return (

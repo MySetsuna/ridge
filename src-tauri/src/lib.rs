@@ -159,9 +159,12 @@ pub fn run() {
                 // AppHandle；首个 PTY 创建时由 `ensure_teammate_started` 惰性启动并等其绑定，
                 // 保证 RIDGE_TEAMMATE_* 在 shell 启动前就绪。从不开终端的会话则零成本。
                 let _ = teammate_state.app_handle.set(handle.clone());
-                // M1 切片一：启动载入 workspace-memory sidecar，重挂 agent 暂停态
-                //（fail-open：无目录/损坏文件皆静默跳过，绝不阻断启动）。
-                teammate::suspend::load_all_for(&teammate_state);
+                // M1：注入 workspace-memory 目录（一次），随即载入 sidecar 重挂
+                // agent 暂停态（fail-open：无目录/损坏文件皆静默跳过，绝不阻断启动）。
+                if let Ok(base) = handle.path().app_data_dir() {
+                    teammate::memory::init_dir(base.join("workspace-memory"));
+                }
+                teammate::suspend::load_all_for();
 
                 // §web-remote: mirror teammate layout / active-pane events to
                 // desktop-browser remote clients in ONE place. `listen_any`
@@ -829,6 +832,8 @@ pub fn run() {
             commands::teammate::get_teammate_topology,
             commands::teammate::list_hitl_pending,
             commands::teammate::resolve_hitl_remote,
+            // M1 切片二：裁决审计历史（仅桌面 IPC）
+            commands::teammate::list_hitl_decisions,
             // G1 阶段一软暂停（仅桌面本机 IPC，不入 REMOTE_ALLOWLIST）
             commands::teammate::suspend_agent,
             commands::teammate::resume_agent,

@@ -9,7 +9,9 @@
 //! pane 释放 / agent 注销时由调用方清理（`release_teammate_agent` 路径）。
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 
 use uuid::Uuid;
@@ -53,6 +55,7 @@ pub fn clear_workspace(wid: Uuid) {
 // 选型 B）。**IO 全程 fail-open**：失败只 warn，暂停语义照常、不阻断关闭/启动；
 // 损坏 json 载入不 panic（失忆非致命）。原子写 temp+rename。
 
+#[cfg(test)]
 fn sidecar_path(dir: &Path, wid: Uuid) -> PathBuf {
     dir.join(format!("{wid}.json"))
 }
@@ -68,26 +71,15 @@ pub fn persist_to(dir: &Path, wid: Uuid) {
                 .collect()
         })
         .unwrap_or_default();
-    let path = sidecar_path(dir, wid);
-    if panes.is_empty() {
-        let _ = std::fs::remove_file(&path);
-        return;
-    }
-    let updated_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let body = serde_json::json!({ "suspendedPanes": panes, "updatedAt": updated_at });
-    let write = || -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
-        let tmp = dir.join(format!("{wid}.json.tmp"));
-        std::fs::write(&tmp, body.to_string())?;
-        std::fs::rename(&tmp, &path)?;
-        Ok(())
-    };
-    if let Err(e) = write() {
-        tracing::warn!(target: "ridge::suspend", error = %e, %wid, "sidecar 写入失败（fail-open）");
-    }
+    // iteration 14 起经 memory.rs doc 级 RMW（不覆写 decisions 等他节；
+    // 空集移除本节，doc 空由 memory 删文件）。
+    super::memory::update(dir, wid, |doc| {
+        if panes.is_empty() {
+            doc.remove("suspendedPanes");
+        } else {
+            doc.insert("suspendedPanes".to_string(), serde_json::json!(panes));
+        }
+    });
 }
 
 /// 启动载入：读 `dir` 下全部 sidecar 重挂注册表。损坏/不可读逐文件跳过。
@@ -111,38 +103,33 @@ pub fn load_from(dir: &Path) {
     }
 }
 
-/// 工作区关闭清理：删内存项 + sidecar 文件（best-effort）。
+/// 工作区关闭清理：删内存项 + sidecar 文件（best-effort，整 doc 随区亡）。
 pub fn remove_from(dir: &Path, wid: Uuid) {
     clear_workspace(wid);
-    let _ = std::fs::remove_file(sidecar_path(dir, wid));
+    super::memory::remove(dir, wid);
 }
 
-/// 经 `state.app_handle` 解析 sidecar 目录；app 未就绪（如纯单测）→ None（fail-open）。
-fn memory_dir(state: &crate::state::AppState) -> Option<PathBuf> {
-    use tauri::Manager;
-    let app = state.app_handle.get()?;
-    let base = app.path().app_data_dir().ok()?;
-    Some(base.join("workspace-memory"))
-}
+// iteration 14：dir 解析统一走 memory::dir()（lib.rs setup 注入一次），
+// 删除旧 state.app_handle 双解析路径。未注入（纯单测）→ no-op（fail-open）。
 
 /// 变更后落盘（suspend/resume/clear 的调用方钩这里）。
-pub fn persist_for(state: &crate::state::AppState, wid: Uuid) {
-    if let Some(dir) = memory_dir(state) {
-        persist_to(&dir, wid);
+pub fn persist_for(wid: Uuid) {
+    if let Some(dir) = super::memory::dir() {
+        persist_to(dir, wid);
     }
 }
 
 /// 应用启动恢复入口（lib.rs setup 调一次）。
-pub fn load_all_for(state: &crate::state::AppState) {
-    if let Some(dir) = memory_dir(state) {
-        load_from(&dir);
+pub fn load_all_for() {
+    if let Some(dir) = super::memory::dir() {
+        load_from(dir);
     }
 }
 
 /// 工作区关闭清理入口（`close_workspace_core` 单点调）。
-pub fn remove_for(state: &crate::state::AppState, wid: Uuid) {
-    match memory_dir(state) {
-        Some(dir) => remove_from(&dir, wid),
+pub fn remove_for(wid: Uuid) {
+    match super::memory::dir() {
+        Some(dir) => remove_from(dir, wid),
         None => clear_workspace(wid),
     }
 }
