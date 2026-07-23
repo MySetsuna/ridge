@@ -92,20 +92,8 @@ impl ridge_core::commands::workspace::WorkspaceReader for AppState {
     }
 
     fn workspaces_list(&self) -> Vec<ridge_core::commands::workspace::WorkspaceEntry> {
-        // 与 commands::workspace::list_workspaces 逐字一致（order + names + display_seq）。
-        let order = self.workspace_order.read();
-        let names = self.workspace_names.read();
-        let map = self.workspaces.read();
-        order
-            .iter()
-            .enumerate()
-            .map(|(i, id)| ridge_core::commands::workspace::WorkspaceEntry {
-                id: id.to_string(),
-                index: i,
-                name: names.get(id).cloned(),
-                display_seq: map.get(id).map(|w| w.display_seq).unwrap_or(0),
-            })
-            .collect()
+        // A1 同源化：与桌面 IPC 命令共用 commands::workspace::list_workspaces_entries。
+        crate::commands::workspace::list_workspaces_entries(self)
     }
 
     fn pane_layout(&self, workspace_id: &str) -> Result<Value, String> {

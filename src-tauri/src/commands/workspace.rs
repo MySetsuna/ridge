@@ -7,32 +7,32 @@ use uuid::Uuid;
 use crate::engine::pane_tree::PaneTree;
 use crate::state::{AppState, Workspace};
 
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceInfo {
-    pub id: String,
-    pub index: usize,
-    pub name: Option<String>,
-    /// 创建时分配的稳定展示序号；前端用作未命名工作区的显示标签（"工作区 N"）。
-    /// 与 `index` 不同，`display_seq` 不随排序/关闭变化。
-    pub display_seq: u64,
-}
-
-#[tauri::command]
-pub fn list_workspaces(state: State<'_, AppState>) -> Result<Vec<WorkspaceInfo>, String> {
+/// 工作区列表的唯一实现（A1 同源化）：桌面 IPC 命令与 remote_bridge 的
+/// `HostStateAccessor::workspaces_list` 共用；序列形 = core `WorkspaceEntry`
+///（camelCase id/index/name/displaySeq，替代原逐字重复的 `WorkspaceInfo`）。
+pub fn list_workspaces_entries(
+    state: &AppState,
+) -> Vec<ridge_core::commands::workspace::WorkspaceEntry> {
     let order = state.workspace_order.read();
     let names = state.workspace_names.read();
     let map = state.workspaces.read();
-    Ok(order
+    order
         .iter()
         .enumerate()
-        .map(|(i, id)| WorkspaceInfo {
+        .map(|(i, id)| ridge_core::commands::workspace::WorkspaceEntry {
             id: id.to_string(),
             index: i,
             name: names.get(id).cloned(),
             display_seq: map.get(id).map(|w| w.display_seq).unwrap_or(0),
         })
-        .collect())
+        .collect()
+}
+
+#[tauri::command]
+pub fn list_workspaces(
+    state: State<'_, AppState>,
+) -> Result<Vec<ridge_core::commands::workspace::WorkspaceEntry>, String> {
+    Ok(list_workspaces_entries(&state))
 }
 
 #[tauri::command]
