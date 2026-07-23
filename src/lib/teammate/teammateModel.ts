@@ -19,7 +19,7 @@
 // ── Enums (mirror serde unit-variant strings) ──
 
 export type AgentRole = 'Leader' | 'Worker' | 'Observer';
-export type TeammateStatus = 'Idle' | 'Working' | 'Disappeared';
+export type TeammateStatus = 'Idle' | 'Working' | 'Disappeared' | 'Suspended';
 export type RiskLevel = 'ReadOnly' | 'WorkspaceWrite' | 'Dangerous';
 /** Minimal auto-detected capability tier (mirrors `ridge_core::AgentTier`). */
 export type AgentTier = 'Base' | 'Skilled' | 'Expert';
@@ -103,7 +103,7 @@ function asRecord(v: unknown): Record<string, unknown> | null {
 }
 
 const ROLES: ReadonlySet<string> = new Set(['Leader', 'Worker', 'Observer']);
-const STATUSES: ReadonlySet<string> = new Set(['Idle', 'Working', 'Disappeared']);
+const STATUSES: ReadonlySet<string> = new Set(['Idle', 'Working', 'Disappeared', 'Suspended']);
 const RISKS: ReadonlySet<string> = new Set(['ReadOnly', 'WorkspaceWrite', 'Dangerous']);
 const TIERS: ReadonlySet<string> = new Set(['Base', 'Skilled', 'Expert']);
 

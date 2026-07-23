@@ -15,7 +15,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-  import { Crown, Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy } from 'lucide-svelte';
+  import { Crown, Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Pause, Play } from 'lucide-svelte';
   import { settingsStore } from '$lib/stores/settings';
   import { fileEditorStore } from '$lib/stores/fileEditor';
   import { workspaceSaveInfoStore, refreshWorkspaceSaveInfo } from '$lib/stores/paneTree';
@@ -109,10 +109,26 @@
     switch (t.status) {
       case 'Working':
         return 'bg-emerald-400 animate-pulse';
+      case 'Suspended':
+        return 'bg-amber-400';
       case 'Disappeared':
         return 'bg-[var(--rg-fg-muted)]/40';
       default:
         return 'bg-[var(--rg-fg-muted)]';
+    }
+  }
+
+  // G1 阶段一：软暂停/恢复（agent 写路径门控；人类输入不受限）。
+  async function toggleSuspend(t: TeammateProfile) {
+    if (!workspaceId || !t.paneId) return;
+    try {
+      await invoke(t.status === 'Suspended' ? 'resume_agent' : 'suspend_agent', {
+        workspaceId,
+        paneId: t.paneId,
+      });
+      await refresh();
+    } catch (e) {
+      console.warn('[agent-center] suspend/resume failed', e);
     }
   }
 
@@ -249,16 +265,30 @@
       </h3>
       <ul class="mt-1 space-y-0.5">
         {#if leader}
-          <li class="flex items-center gap-2 rounded px-1.5 py-1 bg-[var(--rg-accent)]/8">
+          <li class="group flex items-center gap-2 rounded px-1.5 py-1 bg-[var(--rg-accent)]/8">
             <Crown class="h-3.5 w-3.5 text-amber-400 shrink-0" />
             <span class="min-w-0 flex-1 truncate text-[12px] font-medium">{leader.name}</span>
-            <span class="h-1.5 w-1.5 rounded-full {statusDot(leader)} shrink-0"></span>
+            <button
+              class="hidden group-hover:block shrink-0 text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
+              title={leader.status === 'Suspended' ? '恢复 agent 输入' : '暂停 agent 输入（人类输入不受限）'}
+              onclick={() => toggleSuspend(leader)}
+            >
+              {#if leader.status === 'Suspended'}<Play class="h-3 w-3" />{:else}<Pause class="h-3 w-3" />{/if}
+            </button>
+            <span class="h-1.5 w-1.5 rounded-full {statusDot(leader)} shrink-0" title={leader.status}></span>
           </li>
         {/if}
         {#each workers as w (w.id)}
-          <li class="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]">
+          <li class="group flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]">
             <span class="h-3.5 w-3.5 shrink-0"></span>
             <span class="min-w-0 flex-1 truncate text-[12px]">{w.name}</span>
+            <button
+              class="hidden group-hover:block shrink-0 text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
+              title={w.status === 'Suspended' ? '恢复 agent 输入' : '暂停 agent 输入（人类输入不受限）'}
+              onclick={() => toggleSuspend(w)}
+            >
+              {#if w.status === 'Suspended'}<Play class="h-3 w-3" />{:else}<Pause class="h-3 w-3" />{/if}
+            </button>
             <span class="h-1.5 w-1.5 rounded-full {statusDot(w)} shrink-0" title={w.status}></span>
           </li>
         {/each}
