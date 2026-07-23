@@ -34,9 +34,9 @@
 | --- | --- | --- | --- |
 | F1 | trust-grant 无 transcript 退化（桥级） | 低-中：仍需 Ed25519 私钥 + 已在 host 信任库；但失去信道绑定，理论可被中继 | host 侧要求 bindTranscript 必在才接受 trust-proof；先加遥测确认无旧端走此路径 |
 | F2 | 身份绑定宽限期 relay-trust（B3，双侧 3s） | 中：DataChannel MITM 无法阻止信令公钥到达（独立 TLS），逃逸需同时控制信令；为旧端兼容而存在 | 统计 0x01/0x02 与 enforced/relay-trust 占比；旧端占比 ~0 后把宽限回落改为拒绝 |
-| F3 | TOFU 指纹变化仅告警 | 中：换机合法场景与 MITM 不可区分，故本期不强拒 | UI 提供「确认新指纹」流程后改为默认拒绝待确认 |
-| F4 | 桌面 host 无身份密钥 → 0x01 | 低：仅影响无 DPAPI 身份的旧安装 | 设备身份密钥迁移完成后 0x01 仅限 LAN；cloud 要求 0x02 |
-| F5 | `keyBindingVerifier` 钩子全生产未接（§5.5） | 低：0x02/B3 已覆盖其目标场景 | 若确认冗余可**删除**该钩子（减法）；或接云端带外校验后启用 |
+| F3 | TOFU 指纹变化仅告警 | 中：换机合法场景与 MITM 不可区分，故本期不强拒。**计数已实施**（iteration 8：controller `bindingCounters.tofuChanged` + 测试钉死） | UI 提供「确认新指纹」流程后改为默认拒绝待确认 |
+| F4 | 桌面 host 无身份密钥 → 0x01 | 低：仅影响无 DPAPI 身份的旧安装。**计数已实施**（iteration 8：host `bindingCounters.fallback0x01`，含签名失败降级路径 + 测试钉死） | 设备身份密钥迁移完成后 0x01 仅限 LAN；cloud 要求 0x02 |
+| F5 | ~~`keyBindingVerifier` 钩子全生产未接（§5.5）~~ | **已退役（删除，iteration 8）**：codegraph+grep 确证生产零接线（唯一构造点 cloudHostStore.ts 未注入、`verifyPeerKey` 无生产调用方）；其目标场景由 0x02 + B3 覆盖。删除物：桥 config/字段/`verifyPeerKey`、`makeKeyBindingVerifier`、对应测试 | 已达成（减法路径） |
 | F6 | 桥「双校验器未注入 = 不门控」默认 | 理论：生产三构造点均注入；仅测试/未来新构造点可能踩中 | 新构造点须过 S1 门禁测试；长期可改为构造时必传其一 |
 
 ## 4. 与合同的对应

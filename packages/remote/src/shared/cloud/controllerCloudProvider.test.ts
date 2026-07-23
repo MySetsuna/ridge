@@ -361,7 +361,42 @@ describe('ControllerCloudProvider', () => {
     expect(provider.getState()).toBe('connected');
     expect(provider.getKeyBindingMode()).toBe('enforced');
     // S1 遥测（F2）：enforced 终态恰好计一次，无宽限回落。
-    expect(provider.bindingCounters).toEqual({ enforced: 1, relayTrust: 0 });
+    expect(provider.bindingCounters).toEqual({ enforced: 1, relayTrust: 0, tofuChanged: 0 });
+  });
+
+  // S1-F3：TOFU 指纹变化本期 warn-only（不强拒），回落面必须可计数（iteration 8 G4）。
+  it('S1-F3：合法 0x02 但 TOFU 指纹已变 → 告警 + tofuChanged 计数 +1，仍 enforced connected', async () => {
+    const { ControllerCloudProvider } = await loadProvider();
+    const { checkOrPinDeviceIdentity } = await import('./deviceTrust');
+    const { buildIdBindContext, ID_BIND_DOMAIN } = await import('./e2ee');
+    const { ed25519 } = await import('@noble/curves/ed25519.js');
+    // 预 pin 一个**不同**的旧指纹（默认 store：node 下为模块级内存回退，跨调用共享）。
+    checkOrPinDeviceIdentity(`${HOST_DEVICE}-${CONFIG.username}`, new Uint8Array(32).fill(0x77));
+
+    const errors: string[] = [];
+    const provider = new ControllerCloudProvider(CONFIG, { onError: (m) => errors.push(m) });
+    await provider.connect(HOST_DEVICE);
+    await flush();
+    const dc = FakePeerConnection.instances[0].channel!;
+    dc.fireOpen();
+    const ctrlPub = decodeHandshakeFrame(dc.lastSent());
+
+    // host：真设备身份密钥对 + 对 ID_BIND_DOMAIN||context 的合法 Ed25519 签名。
+    const idPriv = new Uint8Array(32).fill(9);
+    const idPub = ed25519.getPublicKey(idPriv);
+    const hostEph = generateEphemeralKeyPair();
+    const context = buildIdBindContext(hostEph.publicKey, ctrlPub, HOST_DEVICE, CONFIG.username);
+    const domain = new TextEncoder().encode(ID_BIND_DOMAIN);
+    const msg = new Uint8Array(domain.length + context.length);
+    msg.set(domain, 0);
+    msg.set(context, domain.length);
+    dc.deliver(encodeSignedHandshakeFrame(hostEph.publicKey, idPub, ed25519.sign(msg, idPriv)));
+
+    expect(provider.getState()).toBe('connected'); // warn-only：不断开
+    expect(provider.getKeyBindingMode()).toBe('enforced');
+    expect(provider.bindingCounters.tofuChanged).toBe(1);
+    expect(errors.some((m) => m.includes('指纹变化'))).toBe(true);
+    provider.disconnect();
   });
 
   it('B3：信令公钥 ≠ 握手公钥（relay-MITM 调包）→ 判 MITM 拒绝断开', async () => {

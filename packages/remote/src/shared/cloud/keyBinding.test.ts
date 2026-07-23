@@ -4,7 +4,7 @@
 // (e2ee-bind not negotiated) stays permissive so old controllers don't regress.
 
 import { describe, it, expect } from 'vitest';
-import { constantTimeEqual, makeKeyBindingVerifier, decideKeyBinding } from './keyBinding';
+import { constantTimeEqual, decideKeyBinding } from './keyBinding';
 import { PUBKEY_LEN } from './e2ee';
 
 function pubkey(fill: number): Uint8Array {
@@ -32,36 +32,8 @@ describe('constantTimeEqual', () => {
   });
 });
 
-describe('makeKeyBindingVerifier — D-GM-10 binding enforcement', () => {
-  it('ACCEPTS when the handshake pubkey matches the signaling-relayed pubkey', () => {
-    const verify = makeKeyBindingVerifier({ enabled: true, expectedPeerPublicKey: pubkey(0xab) });
-    expect(verify(pubkey(0xab))).toBe(true);
-  });
-
-  it('REJECTS a swapped/tampered pubkey (the relay-MITM case)', () => {
-    const verify = makeKeyBindingVerifier({ enabled: true, expectedPeerPublicKey: pubkey(0xab) });
-    // The relay handed us the attacker's pubkey over E2EE, but the authenticated
-    // signaling relayed the genuine peer's pubkey → mismatch → MITM detected.
-    expect(verify(pubkey(0xcd))).toBe(false);
-  });
-
-  it('REJECTS (fail-closed) when binding is required but no signaling pubkey is present', () => {
-    const verify = makeKeyBindingVerifier({ enabled: true, expectedPeerPublicKey: null });
-    expect(verify(pubkey(0xab))).toBe(false);
-  });
-
-  it('REJECTS a handshake pubkey of illegal length even if prefix matches', () => {
-    const verify = makeKeyBindingVerifier({ enabled: true, expectedPeerPublicKey: pubkey(0xab) });
-    expect(verify(new Uint8Array(PUBKEY_LEN - 1).fill(0xab))).toBe(false);
-  });
-
-  it('is PERMISSIVE when e2ee-bind is not negotiated (relay-trust v1 compat)', () => {
-    const verify = makeKeyBindingVerifier({ enabled: false, expectedPeerPublicKey: null });
-    // Even a mismatching pubkey is accepted in compat mode (old controller path).
-    expect(verify(pubkey(0xcd))).toBe(true);
-    expect(verify(pubkey(0x00))).toBe(true);
-  });
-});
+// makeKeyBindingVerifier 已随 §5.5 桥钩子退役删除（S1-F5）；其 MITM 比对语义由
+// decideKeyBinding（下）在双 provider 生产路径覆盖。
 
 describe('decideKeyBinding — signaling-presence gate (the live B3 decision)', () => {
   it('ACCEPTS when handshake pubkey matches the signaling pubkey', () => {

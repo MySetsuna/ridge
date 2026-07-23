@@ -116,21 +116,9 @@ export type PaneOutputSource = (
 
 export type Unsubscribe = () => void;
 
-/**
- * E2EE 公钥 ↔ 设备身份绑定校验钩子（契约 §5.5，安全硬项）。
- *
- * 现状（见报告）：§7.1 握手只验"首帧是 0x01||pub32"，**不**校验对端临时公钥与
- * 配对设备/账户身份的绑定 —— 仅凭信令 relay 能把双方撮合到同一 room 即建会话。
- * relay 是可信撮合方时这够用，但若 relay/cloud 后端被攻陷，理论上可 MITM。
- *
- * 本钩子是 host 侧的最小加固挂载点：握手完成后，桥用对端公钥 + 本端已知的设备
- * 身份上下文（deviceToken 内的 device/username/sub）调用它；返回 false 则桥拒绝
- * 该会话（不处理任何业务帧、回 $/bye 并请上层断开）。
- *
- * v1 默认 `undefined` = 不额外绑定（保持 relay-trust 现状，向后兼容）；当 cloud
- * 后端提供"握手公钥需经 deviceJWT 签名/HMAC 绑定"的带外校验通道后接入。
- */
-export type KeyBindingVerifier = (peerPublicKey: Uint8Array) => boolean;
+// §5.5 keyBindingVerifier 钩子已退役删除（iteration 8 G4 / S1-F5）：生产从未接线，
+// 其目标场景（对端公钥 ↔ 设备身份绑定）已由 0x02 设备身份签名帧 + B3 信令公钥比对覆盖
+//（见 docs/security/cloud-fallback-matrix.md F5 行）。若未来需要带外校验通道，按矩阵重新设计。
 
 /**
  * 云端 TOTP 二次验证钩子（契约 §4）。controller 经 CONTROL 通道发来 6 位 code，
@@ -158,11 +146,6 @@ export interface CloudHostBridgeConfig {
   sendFrame: SendFrameFn;
   /** 可选：pane PTY 输出源（pane 流接入点）。未提供时仅登记订阅意图。 */
   paneOutputSource?: PaneOutputSource;
-  /**
-   * 可选：E2EE 公钥↔设备身份绑定校验（§5.5）。提供则桥在 first-frame 路径校验，
-   * 不过即拒会话。未提供保持 relay-trust 现状。
-   */
-  keyBindingVerifier?: KeyBindingVerifier;
   /**
    * 可选：云端 TOTP 二次验证（契约 §4）。提供则桥在验证通过前**门控业务帧**
    * （拒绝 invoke / pane 订阅），仅放行 CONTROL 通道的 totp 握手。未提供则默认
@@ -205,7 +188,6 @@ export class CloudHostBridge {
   private readonly invoke: InvokeFn;
   private readonly sendFrame: SendFrameFn;
   private readonly paneOutputSource?: PaneOutputSource;
-  private readonly keyBindingVerifier?: KeyBindingVerifier;
   private readonly totpVerifier?: TotpVerifier;
   private readonly totpBindVerifier?: TotpBindVerifier;
   /** §7.4 信道绑定 transcript（来自 config）。 */
@@ -220,7 +202,7 @@ export class CloudHostBridge {
   private readonly inflight = new Map<string, InflightInvoke>();
   /** 已订阅 pane（paneId → 取消订阅）。host-global 多 pane：每 pane 登记一次。 */
   private readonly paneSubs = new Map<string, Unsubscribe>();
-  /** 会话是否已被 §5.5 绑定校验拒绝（拒绝后丢弃一切业务帧）。 */
+  /** 会话是否已终止（0x11 bye；置位后丢弃一切业务帧）。 */
   private rejected = false;
   /**
    * §4 云端 TOTP 门控旗标：本连接是否已通过 TOTP 二次验证。
@@ -248,7 +230,6 @@ export class CloudHostBridge {
     this.invoke = config.invoke;
     this.sendFrame = config.sendFrame;
     this.paneOutputSource = config.paneOutputSource;
-    this.keyBindingVerifier = config.keyBindingVerifier;
     this.totpVerifier = config.totpVerifier;
     this.totpBindVerifier = config.totpBindVerifier;
     this.bindTranscript = config.bindTranscript ?? null;
@@ -274,40 +255,13 @@ export class CloudHostBridge {
   }
 
   /**
-   * §5.5 安全钩子：在 provider E2EE 握手完成、业务帧开始前，由上层（CloudPanel）
-   * 用对端临时公钥调用一次。若注入了 `keyBindingVerifier` 且校验不过：标记会话
-   * 拒绝、回 $/bye、返回 false（上层据此 disconnect）。未注入校验器时恒为 true
-   * （保持 relay-trust 现状，向后兼容）。
-   */
-  verifyPeerKey(peerPublicKey: Uint8Array): boolean {
-    if (!this.keyBindingVerifier) return true;
-    let ok = false;
-    try {
-      ok = this.keyBindingVerifier(peerPublicKey);
-    } catch (e) {
-      this.log('error', 'key-binding verifier threw; rejecting session', e);
-      ok = false;
-    }
-    if (!ok) {
-      this.rejected = true;
-      // 明确拒绝（§7.3 风格）：回 $/bye，由上层断开。
-      this.sendControl({
-        jsonrpc: '2.0',
-        method: BYE_METHOD,
-        params: { reason: 'key-binding-failed' },
-      });
-    }
-    return ok;
-  }
-
-  /**
    * provider 解密后的明文帧入口。CloudPanel 把 `provider.onFrame` 接到这里。
    *
    * 永不抛错：结构性坏帧/解析失败一律记日志后丢弃（与 provider 的"拒绝坏帧但不
    * 一定断连"立场一致）。
    */
   handleFrame(plaintext: Uint8Array): void {
-    if (this.rejected) return; // §5.5 绑定校验已拒绝：丢弃一切业务帧
+    if (this.rejected) return; // 会话已终止（0x11 bye）：丢弃一切业务帧
 
     let result;
     try {
@@ -608,7 +562,7 @@ export class CloudHostBridge {
   // ── 概念 6：对端经 0x11 通道发来的 $/bye（如 signature-invalid 验签失败）──────────
   /**
    * 对端（controller）经 **E2EE 0x11 通道**（不经 relay）通知会话终止。标记 `rejected`：
-   * 后续业务帧一律丢弃（与 §5.5 verifyPeerKey reject 同收尾语义）；DataChannel 关闭随后由
+   * 后续业务帧一律丢弃；DataChannel 关闭随后由
    * provider teardown。无 id ⇒ 不回响应。恶意 controller 发 $/bye 只会终止其自身会话
    * （每 cid 独立桥），无跨会话影响——等价于其直接关闭 DataChannel。
    */

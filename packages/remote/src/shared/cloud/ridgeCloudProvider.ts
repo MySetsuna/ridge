@@ -183,7 +183,8 @@ interface ControllerConn {
  */
 export class RidgeCloudHost {
   /** S1 遥测第一阶段（F2）：绑定终态进程内计数（跨 controller 连接累计），人工读数。 */
-  readonly bindingCounters = { enforced: 0, relayTrust: 0 };
+  /** S1 遥测（F2+F4）：B3 绑定路径计数 + 无身份签名回落 0x01 计数（进程内，人工读数）。 */
+  readonly bindingCounters = { enforced: 0, relayTrust: 0, fallback0x01: 0 };
   private readonly config: ResolvedHostConfig;
   private readonly cb: RidgeCloudHostCallbacks;
 
@@ -420,7 +421,8 @@ export class RidgeCloudHost {
   ): void {
     const { signContext, identityPub } = this.config;
     if (!signContext || !identityPub) {
-      // 回落 0x01（旧行为）。
+      // 回落 0x01（旧行为）。S1-F4 计数。
+      this.bindingCounters.fallback0x01 += 1;
       this.rawSend(conn, encodeHandshakeFrame(hostEph.publicKey));
       return;
     }
@@ -440,7 +442,10 @@ export class RidgeCloudHost {
           e instanceof Error ? `设备签名失败，回落明文握手：${e.message}` : '设备签名失败，回落明文握手',
           'INTERNAL',
         );
-        if (this.isConnLive(conn)) this.rawSend(conn, encodeHandshakeFrame(hostEph.publicKey));
+        if (this.isConnLive(conn)) {
+          this.bindingCounters.fallback0x01 += 1; // S1-F4：签名失败降级同计
+          this.rawSend(conn, encodeHandshakeFrame(hostEph.publicKey));
+        }
         return;
       }
       if (!this.isConnLive(conn)) return; // 异步签名期间断连/拆除：丢弃，不在死连接上发帧
