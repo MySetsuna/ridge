@@ -20,24 +20,34 @@ export interface TrustStore {
   remove(key: string): void;
 }
 
-/** localStorage 后端；SSR / 无 localStorage 时退化为进程内存（与 auth.ts 同策略）。 */
+/** 进程内存回退（模块级单例：多次取 store 共享同一 pin 集，否则跨调用即失忆）。 */
+const memFallback = new Map<string, string>();
+
+/** localStorage 后端；SSR / 无 localStorage 或其不可写（Node 的 localStorage 残缺
+ * object 会在 setItem 时抛）时退化为进程内存（与 auth.ts 同策略）。 */
 export function localStorageTrustStore(): TrustStore {
   const ls = typeof localStorage !== 'undefined' ? localStorage : null;
   if (ls) {
-    return {
-      get: (k) => ls.getItem(k),
-      set: (k, v) => ls.setItem(k, v),
-      remove: (k) => ls.removeItem(k),
-    };
+    try {
+      const probe = '__ridge_trust_probe__';
+      ls.setItem(probe, '1');
+      ls.removeItem(probe);
+      return {
+        get: (k) => ls.getItem(k),
+        set: (k, v) => ls.setItem(k, v),
+        remove: (k) => ls.removeItem(k),
+      };
+    } catch {
+      // 不可写（Node 无 --localstorage-file 等）→ 内存回退。
+    }
   }
-  const mem = new Map<string, string>();
   return {
-    get: (k) => mem.get(k) ?? null,
+    get: (k) => memFallback.get(k) ?? null,
     set: (k, v) => {
-      mem.set(k, v);
+      memFallback.set(k, v);
     },
     remove: (k) => {
-      mem.delete(k);
+      memFallback.delete(k);
     },
   };
 }
