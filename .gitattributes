@@ -1,0 +1,5 @@
+# Vendored ridge-signaling 副本与 golden fixtures：字节级 drift 门禁
+# （signaling/drift.test.ts）要求与同级仓逐字节一致，同级仓强制 LF——
+# 此处同样钉死 LF，防 Windows autocrlf 把 checkout 涂成 CRLF 触发误报。
+packages/remote/src/shared/cloud/signaling/generated/** text eol=lf
+packages/remote/src/shared/cloud/signaling/fixtures/** text eol=lf
