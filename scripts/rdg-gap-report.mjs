@@ -19,6 +19,16 @@ const supported = rows.filter((r) => r.rdgHost === 'supported');
 const denied = rows.filter((r) => r.rdgHost === 'denied');
 const other = rows.filter((r) => !['supported', 'denied'].includes(r.rdgHost));
 
+// C1 逐缺口人工判定（iteration 10 G4）：判定数据与报告同源共存于本脚本，重跑即刷新。
+// 「补路由候选」= ridge-core dispatch 已共享实现、待真实需求触发接线；改判需过对抗评审。
+const JUDGMENTS = {
+  teammate: '刻意排除（无头环境无 Agent Center 宿主；重开需 D6 安全评审）',
+  theme: '永久缺口（rdg 无 UI 宿主，无主题渲染面；不宣告即语义完备）',
+  git: '补路由候选（ridge-core dispatch 已共享实现，待真实 rdg 场景需求触发接线）',
+  workspace: '补路由候选（同上；接线时须过 A2 宣告纪律与合同测试）',
+  invoke: '不宣告即语义完备（控制器最小方法集为空，无可路由项）',
+};
+
 const lines = [
   '# rdg 无头 host 语义缺口报告（C1，自动派生）',
   '',
@@ -35,9 +45,7 @@ const lines = [
   ...denied.map(
     (r) =>
       `| ${r.name} | ${r.methods.length} | ${r.methods.join(', ')} | ${
-        r.name === 'teammate'
-          ? '刻意排除（无头环境无 Agent Center 宿主；重开需 D6 安全评审）'
-          : '待人工判定：补路由 or 声明永久缺口'
+        JUDGMENTS[r.name] ?? '待人工判定：补路由 or 声明永久缺口'
       } |`,
   ),
   '',
