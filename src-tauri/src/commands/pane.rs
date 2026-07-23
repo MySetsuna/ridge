@@ -582,6 +582,7 @@ pub(crate) fn release_teammate_agent_in(
         .insert(pane_uuid, crate::state::PaneState::Idle);
     ws.teammate_agent_pane_map.retain(|_, v| *v != pane_uuid);
     crate::teammate::suspend::clear_pane(wid, pane_uuid);
+    crate::teammate::suspend::persist_for(state, wid);
     Ok(())
 }
 
@@ -650,6 +651,7 @@ pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(
         ws.teammate_pane_states.remove(&pane_id);
         ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
         crate::teammate::suspend::clear_pane(wid, pane_id);
+        crate::teammate::suspend::persist_for(&state, wid);
         ws.pane_sizes.remove(&pane_id);
         ws.teammate_owned_panes.remove(&pane_id);
         // Drop any not-yet-activated PendingSpawn so a recycled pane_id
@@ -856,6 +858,7 @@ pub(crate) async fn remote_close_pane(
         ws.teammate_pane_states.remove(&pane_id);
         ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
         crate::teammate::suspend::clear_pane(ws_id, pane_id);
+        crate::teammate::suspend::persist_for(state, ws_id);
         ws.pane_sizes.remove(&pane_id);
         ws.pending_spawns.remove(&pane_id);
         ws.pane_tree.close(pane_id)?;

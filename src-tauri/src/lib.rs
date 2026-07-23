@@ -159,6 +159,9 @@ pub fn run() {
                 // AppHandle；首个 PTY 创建时由 `ensure_teammate_started` 惰性启动并等其绑定，
                 // 保证 RIDGE_TEAMMATE_* 在 shell 启动前就绪。从不开终端的会话则零成本。
                 let _ = teammate_state.app_handle.set(handle.clone());
+                // M1 切片一：启动载入 workspace-memory sidecar，重挂 agent 暂停态
+                //（fail-open：无目录/损坏文件皆静默跳过，绝不阻断启动）。
+                teammate::suspend::load_all_for(&teammate_state);
 
                 // §web-remote: mirror teammate layout / active-pane events to
                 // desktop-browser remote clients in ONE place. `listen_any`

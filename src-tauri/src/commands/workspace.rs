@@ -128,6 +128,8 @@ pub fn close_workspace_core(state: &AppState, id: Uuid) -> Result<(), String> {
     state.workspaces.write().remove(&id);
     // 名称随区清理（旧桌面/端口副本遗留残条——名称表以 id 为键，残条永不再被读）。
     state.workspace_names.write().remove(&id);
+    // M1 切片一：暂停侧表 + sidecar 随区清理（设计定的单点钩；best-effort）。
+    crate::teammate::suspend::remove_for(state, id);
     if *state.active_workspace.read() == id {
         if let Some(&first) = state.workspace_order.read().first() {
             *state.active_workspace.write() = first;
