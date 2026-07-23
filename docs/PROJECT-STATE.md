@@ -52,7 +52,7 @@ Svelte 页面/组件 → Tauri invoke/事件 → src-tauri commands / ridge-core
 
 - `src/routes/+page.svelte` 组装工作区、侧栏、远控与 Agent Center；`SplitContainer.svelte` / `RidgePane.svelte` 管 Pane 布局与交互。
 - `packages/remote/src/shared/terminal/manager.ts::TerminalManager` 统一终端实例生命周期，桌面与 Remote 复用。
-- `packages/ridge-term` 为终端语义 SSOT（parser/grid/scrollback/selection/search/增量渲染/WASM 绑定）；Canvas2D 是生产主路径，WebGPU 属实验、需真机证据。
+- `packages/ridge-term` 为终端语义 SSOT（parser/grid/scrollback/selection/search/增量渲染/WASM 绑定）；渲染为 **WebGPU-first + Canvas2D 自动回退**（`default=["webgpu"]` 生产默认特性，运行时 GPU 探测驱动，2026-05-05 用户反馈钦定「不设 build flag/opt-in」）——非实验代码，**不得删除**；真机收益测量属用户轨（E1）。
 - `packages/ridge-core` 承接 workspace/pane/Git 命令与异步 dispatch；Tauri 保留宿主状态、平台资源与事件桥。
 - `packages/ridge-cli/src/main.rs`：`tui` / `login` / `remote`（公网 host daemon）/ `connect`（LAN controller）/ `tmux`。
 - Teammate/MCP：tmux shim + Ridge MCP server → teammate server / ridge-tmux → 工作区变更 → `AgentCenterPanel.svelte`（拓扑、分组、HITL 审批、熔断）。桌面有 `resolve_hitl_request`；该能力刻意不在 Remote allowlist。
@@ -152,8 +152,8 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | M2 | Agent 归因事件 | P2 | 未做；依赖 stable_id 可靠 |
 | H1 | 远端 host live PTY | P2 | 未做；`hosts.ts::connectHost` 仍仅登记 |
 | C1 | rdg 行为一致性 | P2 | 未做；先用 A2 矩阵暴露缺口 |
-| E1 | WebGPU 收益验证 | P3/实验 | 未做；无显著收益则停做或删除 |
-| E2 | 高级自动编排 | P3/实验 | 未做；需真实多 Agent 瓶颈证据 |
+| E1 | WebGPU 收益测量 | P3/用户轨 | **重定义**（iteration 9 簿记校正）：WebGPU 为生产默认路径非实验（历史措辞误导致 NotebookLM 提删除建议，已驳回留档）；剩余工作 = 真机 GPU 收益测量，属用户轨 |
+| E2 | 高级自动编排 | P3/实验 | **已关闭**（iteration 9）：待真实多 Agent 瓶颈证据重开；不占活跃清单 |
 
 近期组合原则更新（iteration 8 后）：P1 级自动轨可推进项仅剩 **P2 阶段 2（裁决通道，重语义设计）、G1 实现轮（设计已定稿，阶段一=输入门控最小可用）、A1 写路径同源化（高风险，刻意靠后）**；其余为 M1/M2/H1/C1（P2 级）与 E1/E2（P3 实验，需真实证据否则删）。用户轨四件未消化且分支已领先 35 提交——继续扩协议面（P2 阶段 2 即是）会加重审查负担。
 
