@@ -194,51 +194,6 @@ impl PaneParser {
         self.terminal.take_pending_response()
     }
 
-    /// P3.9 (2026-05-20) — clear the diff baseline so the next
-    /// `feed_and_diff` call emits a complete reframe (ScreenSwitch +
-    /// Cursor + every dirty row as Cells). Used by
-    /// `set_pane_delta_mode` when flipping false → true: the front-end
-    /// mirror just enabled rust-parser mode and may have arbitrary
-    /// stale state from an earlier wasm-parser session; sending a full
-    /// reframe immediately bootstraps it to a known-good state without
-    /// requiring the user to scrollback or re-input.
-    ///
-    /// Does NOT touch the underlying `Terminal` state — just the diff
-    /// snapshot. The next visible frame is identical content-wise to
-    /// what was on screen before; only the wire payload is larger.
-    ///
-    /// **§5 — mobile PaneParser bootstrap.** Use this for per-client
-    /// parsers that need both visible grid AND scrollback in one frame.
-    /// While `force_full_reframe` snaps the scrollback baseline to the
-    /// current value (so old rows don't re-emit), this method resets it
-    /// to zero so every scrollback row is included in the emitted frame.
-    pub fn full_reframe_with_scrollback(&mut self) -> DeltaFrame {
-        let cols = self.terminal.cols();
-        let rows = self.terminal.rows();
-        self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
-        self.cursor = None;
-        self.is_alt = None;
-        self.last_modes = None;
-        // Force every scrollback row into the emitted frame by resetting
-        // the diff baseline to zero.
-        self.last_scrollback_len = 0;
-        self.last_scrollback_evictions = 0;
-        let mut frame = self.diff_into_frame();
-        // Prepend an explicit Resize so a fresh subscriber whose kernel is
-        // still at its construction size (24×80) resizes its grid to the
-        // canonical dimensions BEFORE applying the bootstrap cells. Without
-        // this, a remote client rendering the SHARED canonical grid (see
-        // remote/server.rs subscribe-pane) could OOB on the first frame.
-        frame.deltas.insert(
-            0,
-            GridDelta::Resize {
-                rows: rows as u16,
-                cols: cols as u16,
-            },
-        );
-        frame
-    }
-
     pub fn force_full_reframe(&mut self) {
         let rows = self.terminal.rows();
         let cols = self.terminal.cols();

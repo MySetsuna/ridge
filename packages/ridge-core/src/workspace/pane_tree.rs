@@ -707,22 +707,6 @@ impl PaneTree {
         None
     }
 
-    /// 子树的最左/最上 Leaf。
-    fn first_leaf(node: &PaneNode) -> Uuid {
-        match node {
-            PaneNode::Leaf(id) => *id,
-            PaneNode::Split { children, .. } => Self::first_leaf(&children[0]),
-        }
-    }
-
-    /// 子树的最右/最下 Leaf。
-    fn last_leaf(node: &PaneNode) -> Uuid {
-        match node {
-            PaneNode::Leaf(id) => *id,
-            PaneNode::Split { children, .. } => Self::last_leaf(children.last().unwrap()),
-        }
-    }
-
     /// 导航至目标子树，保持与源的垂直/水平对齐。
     /// `dir` 是导航方向；`align_indices` 是从源收集的垂直（Left/Right）或水平（Up/Down）对齐索引。
     fn aligned_descend(node: &PaneNode, dir: Direction, align_indices: &[usize], pos: &mut usize) -> Uuid {
