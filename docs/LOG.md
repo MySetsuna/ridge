@@ -2,6 +2,22 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-23 — iteration 12（收敛轮）
+
+- 完成：30 分钟核验会动线（用户轨一次清偿，覆盖 checklist 全条目 + 历轮顺带核验）；G1 阶段二/M1 余切片/M2 簿记归档（待证据/解冻重开）；维护态定型入 WORKFLOW；PROJECT-STATE 转终态声明。
+- 验证：门禁全绿复验（cargo exit 0 / vitest 559 / svelte-check 0 errors）+ 导读刷新。
+- 熔断：无；本轮零代码。
+- **循环状态：自动轨存量做尽，低频维护态生效。解冻 = 用户轨首份证据（动线文档任一件）；解冻首轮 = P2 阶段 2 实现（设计已备）。**
+- 驳回：NotebookLM「evidence 打包脚本」（YAGNI，各件证据形态已定义）。采纳：转维护态、G1 阶段二同 E1 处置、核验会动线主线。
+
+## 2026-07-23 — iteration 11
+
+- 完成：**M1 切片一关闭**——suspended panes 落 sidecar（原子写/空集删文件/损坏容忍 fail-open）+ 启动载入重挂 + 全写方钩落盘 + `close_workspace_core` 单点清理；暂停态跨重启存活（dir 注入单测 3/3）。**P2 阶段 2 设计定稿**（一次性裁决票据/单次消费/远端 modify 永不开放/首达生效+审计/传输面选 teammate 新方法），实现按红线冻结。
+- 验证：cargo workspace exit 0；vitest 559/1skip；svelte-check 0 errors。
+- 熔断：无停机触发（启动载入无竞态，懒载降级未启用）。
+- 下一步：iteration 12 收敛轮（NotebookLM 裁决：直接转低频维护态）。
+- 驳回：NotebookLM「ridge-core 载 sidecar」层错、「200ms 停机线」不可判定（改 fail-open 韧性条款）、`docs/designs/` 路径。采纳：M1 主线、维护态红线表述、Windows 竞态存照。
+
 ## 2026-07-23 — iteration 10
 
 - 完成：**A1 关闭**——close/rename 三/双副本同源化为 `close_workspace_core`/`rename_workspace_core`，**修实缺陷**（LAN 副本漏发 WorkspacesChanged/WorkspaceListChanged、names 残条泄漏），broadcast 订阅测试钉死，净删 ~80 行。M1 设计定稿（sidecar json、6 字段、三切片序）。**C1 关闭**（五缺口判定入脚本 JUDGMENTS 零残留）。**H1 簿记关闭**（待需求证据重开）。节律固化（闭环必刷导读、积压期不扩协议面）。
