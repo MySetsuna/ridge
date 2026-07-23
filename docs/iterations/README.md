@@ -15,4 +15,5 @@
 | 3 | `CONTRACT-iteration-3.md` | `2026-07-21-iteration-3.md` | `2026-07-21-notebooklm-guidance-3.md` | 完成 |
 | 4 | `CONTRACT-iteration-4.md` | `2026-07-23-iteration-4.md` | `2026-07-23-notebooklm-guidance-4.md` | 自动件完成；真机双平台证据待用户 |
 | 5 | `CONTRACT-iteration-5.md` | `2026-07-23-iteration-5.md` | `2026-07-23-notebooklm-guidance-5.md` | 完成（`-p ridge --lib` 载败如实记录；生产实跑待用户） |
-| 6 | `CONTRACT-iteration-6.md` | 待生成 | （规划见 guidance-5） | 进行中 |
+| 6 | `CONTRACT-iteration-6.md` | `2026-07-23-iteration-6.md` | `2026-07-23-notebooklm-guidance-6.md` | 完成（Team 面板人工核验待用户） |
+| 7 | `CONTRACT-iteration-7.md` | 待生成 | （规划见 guidance-6） | 进行中（证据与固化轮） |
