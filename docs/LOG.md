@@ -2,6 +2,13 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-23 — iteration 4 收口 + 笔记本压缩
+
+- 完成：补跑 iteration 4 自动验收全绿（faultInjection 7/7 含两条新 watchdog 升级时序、Cloud 定向 156/156、增量 svelte-check 0 errors、evidence 校验脚本自测 exit 0）；写收口报告。真机双平台 smoke 证据仍空，保持唯一用户必办件（runbook/schema/校验脚本已备）。
+- 笔记本压缩：三份基线文档 + checker 附录导出归档至 `docs/ridge-baseline-digest/`；骨架合并进新唯一状态文档 `docs/PROJECT-STATE.md`；上传确认后删除全部 7 份旧来源，终态 1 来源（经用户「轻量多余来源」指示授权）。
+- 下一步：iteration 5 可信基线固化——S1 构造点矩阵 + 门禁测试主线；支线 T3 只读 status 端点与汇总脚本、T1 双仓 cargo 绿灯、A2 矩阵机器可读化、A1 收窄审计。
+- 驳回：NotebookLM 的 S1 验收「100% 遥测断点」（不可判定且本轮不实现遥测）；T3「Dokku API + curl 探测 artifact 指针」（grep 证实无 GET 状态端点、health 无 SHA，改为新增只读端点 + 脚本）；A1「删 3–5 个 handler」数字目标（收窄为审计 + 至多一个示范删除）。
+
 ## 2026-07-21 — iteration 3
 
 - 完成：建立 Controller provider→adapter→RpcClient 与 Host 背压的确定性 fault-injection 门禁；100 周期验证无 pending RPC、重复恢复或 timer 泄漏。
