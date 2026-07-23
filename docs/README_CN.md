@@ -109,6 +109,8 @@ Ridge 是基于 Tauri v2 构建的**原生终端工作台**（Rust 后端 + Svel
 - 每设备黑名单、会话管理
 - 远程侧栏复用与桌面端相同的共享 TypeScript 组件（`src/shared/sidebar/`）
 - WebSocket 二进制终端数据流，每客户端独立移动端解析器实例
+- **能力协商**：连接建立时 host/controller 在 hello 交换粗粒度能力集（`pane`/`invoke`/`fs`/`git`/`search`/`workspace`/`theme`/`teammate`），UI 按交集显隐面板；无头 `rdg` host 只暴露缩减集（`pane`/`fs`/`search`），未协商到的能力对应标签自动隐藏
+- **Team 面板**：协商到 `teammate` 能力时，Remote 头部/侧栏出现 Team 标签（Users 图标），roster 展示工作区内 teammate 成员、状态点与 leader 标记，点按成员切换到其 pane；拓扑投影只含 id/名称/pane/角色/状态/能力，不含 token、endpoint、环境变量等敏感字段
 
 ### 主题
 - 三套内置主题，使用 CSS 自定义属性
