@@ -182,6 +182,8 @@ interface ControllerConn {
  * `goOffline()` 幂等清理全部资源。`kick(cid)` / `blacklist(cid)` 管理单个 controller。
  */
 export class RidgeCloudHost {
+  /** S1 遥测第一阶段（F2）：绑定终态进程内计数（跨 controller 连接累计），人工读数。 */
+  readonly bindingCounters = { enforced: 0, relayTrust: 0 };
   private readonly config: ResolvedHostConfig;
   private readonly cb: RidgeCloudHostCallbacks;
 
@@ -529,6 +531,8 @@ export class RidgeCloudHost {
     }
     if (decision === 'accept') {
       conn.bindingMode = conn.peerSigKey ? 'enforced' : 'relay-trust';
+      if (conn.bindingMode === 'enforced') this.bindingCounters.enforced += 1;
+      else this.bindingCounters.relayTrust += 1;
       this.acceptConn(conn, conn.pendingHandshakePub);
     } else {
       // reject：握手公钥 ≠ 信令旁路公钥 → 检测到 MITM。

@@ -360,6 +360,8 @@ describe('ControllerCloudProvider', () => {
     handshakeAsHost(ctrlPub, dc); // 内部已发匹配的 e2ee-pubkey 信令
     expect(provider.getState()).toBe('connected');
     expect(provider.getKeyBindingMode()).toBe('enforced');
+    // S1 遥测（F2）：enforced 终态恰好计一次，无宽限回落。
+    expect(provider.bindingCounters).toEqual({ enforced: 1, relayTrust: 0 });
   });
 
   it('B3：信令公钥 ≠ 握手公钥（relay-MITM 调包）→ 判 MITM 拒绝断开', async () => {

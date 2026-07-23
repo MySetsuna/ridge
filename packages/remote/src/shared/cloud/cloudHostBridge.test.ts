@@ -863,7 +863,7 @@ describe('CloudHostBridge — S1 兼容回落面（构造点矩阵门禁）', ()
     // 要求 transcript 必在后才接受 trust-proof。
     const { secretKey, publicKey } = ed25519.keygen();
     const invoke = vi.fn(async (m: string) => (m === 'totp_trust_check' ? true : null));
-    const { sendControl, sentControl } = makeRig({ invoke, totpVerifier: async () => true });
+    const { bridge, sendControl, sentControl } = makeRig({ invoke, totpVerifier: async () => true });
 
     sendControl({ t: 'totp-trust-hello', pub: bytesToBase64(publicKey) });
     await Promise.resolve();
@@ -877,6 +877,11 @@ describe('CloudHostBridge — S1 兼容回落面（构造点矩阵门禁）', ()
     const result = sentControl().find((f) => f.t === 'totp-trust-result');
     expect(result?.trusted).toBe(true);
     expect(invoke).toHaveBeenCalledWith('totp_trust_check', { ctrlPubB64: bytesToBase64(publicKey) });
+    // S1 遥测（F1）：无 transcript 的 proof 恰好计一次。
+    expect(bridge.fallbackCounters).toEqual({
+      trustProofWithTranscript: 0,
+      trustProofWithoutTranscript: 1,
+    });
   });
 
   it('transcript 不对称即拒：controller 带 transcript 签名而 host 无 → trusted:false', async () => {

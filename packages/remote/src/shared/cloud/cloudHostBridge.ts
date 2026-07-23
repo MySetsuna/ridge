@@ -233,6 +233,8 @@ export class CloudHostBridge {
    * TOTP 通道（防 CONTROL 通道爆破）。`reset()` 清零。
    */
   private totpFailures = 0;
+  /** S1 遥测第一阶段（F1）：trust-proof 中 transcript 在/缺计数（人工读数；reset 不清零）。 */
+  readonly fallbackCounters = { trustProofWithTranscript: 0, trustProofWithoutTranscript: 0 };
 
   // ── DataChannel 背压流控（弱网 P1；未注入则不背压）──
   /** provider 注入的背压接口（bufferedAmount 读取 + drain 订阅）。 */
@@ -393,6 +395,14 @@ export class CloudHostBridge {
         this.log('warn', 'totp-trust-proof: locked out; rejecting');
         this.sendSessionControl({ t: 'totp-trust-result', trusted: false });
         return;
+      }
+
+      // S1 遥测第一阶段（F1）：统计走到签名评估的 proof 里 transcript 的在缺，
+      // 供「无 transcript 退化路径占比 → fail-closed 退役」判定；缺席记一行诊断。
+      if (this.bindTranscript) this.fallbackCounters.trustProofWithTranscript += 1;
+      else {
+        this.fallbackCounters.trustProofWithoutTranscript += 1;
+        this.log('warn', 'totp-trust-proof without bindTranscript (F1 fallback: unbound signature)');
       }
 
       const sigB64 = typeof frame.sig === 'string' ? frame.sig : '';
