@@ -43,6 +43,7 @@ import {
   type PtyResizeListener,
   type ThemeListener,
   type ThemeSnapshot,
+  type TeammateTopology,
 } from '@ridge/remote';
 
 /** Backend `list_workspaces` row (subset we use). */
@@ -539,6 +540,14 @@ export class CloudRemoteConnection implements RemoteLink {
     } catch {
       return { workspaces: [] };
     }
+  }
+
+  // P1 roster：cloud 侧经 tauriShim invoke → bridge.invoke → allowlist 门控。
+  async getTeammateTopology(workspaceId?: string): Promise<TeammateTopology> {
+    return invoke<TeammateTopology>(
+      'get_teammate_topology',
+      workspaceId ? { workspaceId } : {},
+    );
   }
 
   async switchWorkspace(workspaceId: string): Promise<boolean> {

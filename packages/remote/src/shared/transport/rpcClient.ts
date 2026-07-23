@@ -57,6 +57,7 @@ export const CLIENT_CAPABILITIES = [
   'search',
   'workspace',
   'theme',
+  'teammate',
 ] as const;
 
 /** Result of the D9 `$/hello` negotiation, surfaced to the bridge so it can

@@ -2307,6 +2307,17 @@ async fn dispatch_invoke_request(
         "get_startup_context" => val(ridge_file::get_startup_context(handle.state())),
         "browse_directory" => val(ridge_file::browse_directory(opt_s(args, "path"))),
 
+        // ── Teammate（P1 控制台 MVP）──
+        // 只读 roster 快照，与桌面 Agent Center 同一投影（无 MCP endpoint/token）。
+        // HITL 裁决与 Agent 配置写路径刻意不路由（P2 前不入 allowlist）。
+        "get_teammate_topology" => val(
+            crate::commands::teammate::get_teammate_topology(
+                opt_s(args, "workspaceId"),
+                handle.state(),
+            )
+            .await,
+        ),
+
         // ── Theme / settings (S1: migrated into ridge-core) ──
         // These three handlers now live in `ridge_core`; route them through
         // the unified `ridge_core::dispatch` so the LAN host shares the exact
@@ -2462,6 +2473,7 @@ const HOST_CAPABILITIES: &[&str] = &[
     "search",
     "workspace",
     "theme",
+    "teammate",
 ];
 
 /// Methods already migrated into `ridge-core` (mirrors the dedicated arm in

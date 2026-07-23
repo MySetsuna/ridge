@@ -201,6 +201,24 @@ export interface ThemeSnapshot {
  * Typing the UI against this interface (not the concrete class) is what lets the
  * exact same mobile UI ride either transport — see design 2026-06-16-mobile-cloud.
  */
+/** P1 teammate roster 成员（`get_teammate_topology` 投影；无 MCP endpoint/token）。 */
+export interface TeammateRosterMember {
+  id: string;
+  name: string;
+  paneId: string;
+  paneIndex: number | null;
+  role: string;
+  status: string;
+  capability?: unknown;
+}
+
+/** P1 teammate 拓扑快照（roster + leader；edges 预留）。 */
+export interface TeammateTopology {
+  roster: TeammateRosterMember[];
+  leaderId: string | null;
+  edges: unknown[];
+}
+
 export interface RemoteLink {
   state(): ConnectionState;
   /**
@@ -241,6 +259,8 @@ export interface RemoteLink {
   claimPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
   lastRefreshSeq(): number;
   listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }>;
+  /** P1 roster：只读拓扑快照（capability `teammate` 协商后可用；UI 轮询取数）。 */
+  getTeammateTopology(workspaceId?: string): Promise<TeammateTopology>;
   switchWorkspace(workspaceId: string): Promise<boolean>;
   createWorkspace(name?: string): Promise<string | null>;
   createPane(shell?: string): Promise<string | null>;
@@ -825,6 +845,22 @@ export class RemoteConnection implements RemoteLink {
   async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {
     const data = await this._sendAndWait({ type: 'list-workspaces' }, 'workspaces') as Record<string, unknown>;
     return { workspaces: (data as { workspaces: WorkspaceInfo[] }).workspaces || [] };
+  }
+
+  // P1 roster：经 `invoke-request` 走 dispatch_invoke_request 的显式白名单边界
+  //（与 tauriShim 同一信封）；回包 `{type:'invoke-result', _result|_error}`。
+  async getTeammateTopology(workspaceId?: string): Promise<TeammateTopology> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'get_teammate_topology',
+        args: workspaceId ? { workspaceId } : {},
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _result?: TeammateTopology; _error?: unknown };
+    if (data._error) throw new Error(String(data._error));
+    return data._result ?? { roster: [], leaderId: null, edges: [] };
   }
 
   async switchWorkspace(workspaceId: string): Promise<boolean> {
