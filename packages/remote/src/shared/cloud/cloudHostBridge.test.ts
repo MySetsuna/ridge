@@ -158,6 +158,7 @@ describe('CloudHostBridge — $/hello (D9) negotiation', () => {
       'search',
       'workspace',
       'theme',
+      'teammate',
     ]);
   });
 

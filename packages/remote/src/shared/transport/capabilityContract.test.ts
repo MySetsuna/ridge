@@ -71,21 +71,38 @@ describe('cross-entry Remote capability contract', () => {
     expect(rustCapability).toContain('pub const REMOTE_ALLOWLIST');
   });
 
-  it('derives Files/Git/Search visibility from negotiated capabilities', () => {
-    const available = new Set<RemoteCapability>(['pane', 'fs', 'search']);
+  it('derives Files/Git/Search/Team visibility from negotiated capabilities', () => {
+    const available = new Set<RemoteCapability>(['pane', 'fs', 'search', 'teammate']);
     expect(getRemotePanelAvailability((capability) => available.has(capability))).toEqual({
       files: true,
       git: false,
       search: true,
+      team: true,
     });
   });
 
   it('wires negotiated capabilities into the controller shell and sidebar', () => {
     expect(mainApp).toContain('ws.onCapabilitiesChanged(refreshCapabilities)');
-    for (const panel of ['files', 'git', 'search']) {
+    for (const panel of ['files', 'git', 'search', 'team']) {
       expect(mainApp).toContain(`{#if panelAvailability.${panel}}`);
       expect(remoteSidebar).toContain(`{#if available.${panel}}`);
     }
+  });
+
+  it('admits the teammate roster read while HITL adjudication stays host-privileged', () => {
+    expect(REMOTE_ALLOWLIST).toContain('get_teammate_topology');
+    expect(rustStringArray(rustCapability, 'REMOTE_ALLOWLIST')).toContain('get_teammate_topology');
+    expect(rustStringArray(rustCapability, 'MUTATING_METHODS')).not.toContain('get_teammate_topology');
+    // P2 之前 HITL 裁决与 Agent 配置写路径不得远程可达。
+    for (const method of ['resolve_hitl_request', 'set_hitl_enabled']) {
+      expect(REMOTE_ALLOWLIST).not.toContain(method);
+      expect(rustStringArray(rustCapability, 'REMOTE_ALLOWLIST')).not.toContain(method);
+    }
+    // 三个宣告 teammate 的 host 面 + 不宣告的 rdg 无头 host。
+    expect(desktopCapabilities).toContain('teammate');
+    expect(CLOUD_HOST_CAPABILITIES).toContain('teammate');
+    expect(CLIENT_CAPABILITIES).toContain('teammate');
+    expect(cliCapabilities).not.toContain('teammate');
   });
 });
 

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { t, tr } from '$lib/i18n';
-  import { Folder, GitBranch, Search, Keyboard } from 'lucide-svelte';
+  import { Folder, GitBranch, Search, Users, Keyboard } from 'lucide-svelte';
   // Type-only import of the lazily-loaded TerminalCanvas, used solely to type
   // the bind:this instance ref below. Erased at build, so it does NOT defeat
   // the dynamic import / lazy-load on the next line.
@@ -769,6 +769,11 @@
               <Search class="w-4 h-4" />
             </button>
           {/if}
+          {#if panelAvailability.team}
+            <button class="hdr-btn" class:active={sidebarTab === 'team'} onclick={() => handleSidebarToggle('team')} title="Team" tabindex="-1">
+              <Users class="w-4 h-4" />
+            </button>
+          {/if}
         </div>
         <div class="header-breadcrumb">
           {#if activePaneId}
@@ -823,10 +828,12 @@
         tab={sidebarTab}
         available={panelAvailability}
         cwd={activeCwd}
+        {ws}
         onClose={() => sidebarTab = null}
         onTabChange={selectSidebarTab}
         onOpenFile={openFileViewer}
         onOpenDiff={openDiffViewer}
+        onSelectPane={(paneId: string) => { activePaneId = paneId; sidebarTab = null; }}
       />
     {/await}
   {/if}

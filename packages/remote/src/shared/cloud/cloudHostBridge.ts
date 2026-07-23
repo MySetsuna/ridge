@@ -52,6 +52,7 @@ export const HOST_CAPABILITIES: readonly string[] = [
   'search',
   'workspace',
   'theme',
+  'teammate',
 ] as const;
 
 /** D9 握手方法名（契约 §7.3）。 */

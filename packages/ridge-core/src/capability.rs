@@ -215,6 +215,11 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "set_active_theme",
     "get_active_theme_entry",
     "set_user_default_cwd",
+    // ── Teammate（P1 控制台 MVP）──
+    // 只读 roster 快照（id/name/paneId/paneIndex/role/status/capability + leaderId）。
+    // 投影本身不含 MCP endpoint/token/env；HITL 裁决（resolve_hitl_request 等）与
+    // Agent 配置写路径刻意排除在外（P2 前不入 allowlist）。
+    "get_teammate_topology",
     // ── Search ──
     "text_search",
     // `search` is the alias the headless ridge-cli control protocol

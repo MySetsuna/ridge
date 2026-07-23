@@ -102,6 +102,8 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'set_active_theme',
   'get_active_theme_entry',
   'set_user_default_cwd',
+  // ── Teammate（P1 控制台 MVP，只读 roster 快照）──
+  'get_teammate_topology',
   // ── Search ──
   'text_search',
   'search',

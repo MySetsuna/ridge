@@ -100,6 +100,17 @@
         "rdgHost": "denied",
         "rdgController": "not-applicable"
       }
+    },
+    "teammate": {
+      "methods": ["get_teammate_topology"],
+      "cells": {
+        "desktop": "supported",
+        "lan": "supported",
+        "cloudDesktop": "supported",
+        "cloudMobile": "supported",
+        "rdgHost": "denied",
+        "rdgController": "not-applicable"
+      }
     }
   },
   "guards": [

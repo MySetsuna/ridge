@@ -160,3 +160,56 @@ pub fn get_teammate_connection_info(state: State<'_, AppState>) -> Result<Value,
     );
     Ok(json!({ "wsEndpoint": ws_endpoint, "token": binding.token }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{PaneState, TeammateMetrics, Workspace};
+    use std::collections::{HashMap, HashSet};
+    use std::time::SystemTime;
+
+    fn ws_with_agent() -> Workspace {
+        let mut ws = Workspace {
+            pane_tree: crate::engine::pane_tree::PaneTree::new(),
+            terminals: HashMap::new(),
+            teammate_tmux_pane_cursor: 0,
+            teammate_pane_titles: HashMap::new(),
+            pane_sizes: HashMap::new(),
+            last_pane_index: None,
+            created_at: SystemTime::now(),
+            teammate_pane_states: HashMap::new(),
+            teammate_agent_pane_map: HashMap::new(),
+            teammate_owned_panes: HashSet::new(),
+            associated_file_path: None,
+            pending_spawns: HashMap::new(),
+            pty_generation: HashMap::new(),
+            teammate_metrics: TeammateMetrics::default(),
+            display_seq: 1,
+        };
+        let pane = Uuid::new_v4();
+        ws.teammate_agent_pane_map.insert("claude-a".into(), pane);
+        ws.teammate_pane_states.insert(pane, PaneState::Busy);
+        ws.teammate_pane_titles.insert(pane, "编译中".into());
+        ws
+    }
+
+    /// P1/S1 脱敏门禁：远程暴露的拓扑投影不得含敏感字段（get_teammate_topology 自
+    /// iteration 6 起进 REMOTE_ALLOWLIST，此投影即远端可见面）。
+    #[test]
+    fn topology_projection_has_no_sensitive_fields() {
+        let ws = ws_with_agent();
+        let v = topology_json(&ws);
+        let json = v.to_string().to_lowercase();
+        for needle in ["token", "endpoint", "env_", "secret", "seed", "mcp"] {
+            assert!(!json.contains(needle), "topology projection leaks `{needle}`: {json}");
+        }
+        let member = v["roster"][0].as_object().expect("roster member object");
+        for key in member.keys() {
+            assert!(
+                ["id", "name", "paneId", "paneIndex", "role", "status", "capability"]
+                    .contains(&key.as_str()),
+                "unexpected roster field `{key}`"
+            );
+        }
+    }
+}

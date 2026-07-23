@@ -13,15 +13,17 @@ export const REMOTE_CAPABILITY_METHODS = {
   search: ['text_search'],
   workspace: ['list_workspaces', 'get_active_workspace_id', 'get_workspace_snapshot'],
   theme: ['get_theme_data'],
+  teammate: ['get_teammate_topology'],
 } as const;
 
 export type RemoteCapability = keyof typeof REMOTE_CAPABILITY_METHODS;
-export type RemotePanel = 'files' | 'git' | 'search';
+export type RemotePanel = 'files' | 'git' | 'search' | 'team';
 
 export const REMOTE_PANEL_CAPABILITY: Readonly<Record<RemotePanel, RemoteCapability>> = {
   files: 'fs',
   git: 'git',
   search: 'search',
+  team: 'teammate',
 };
 
 export function getRemotePanelAvailability(
@@ -31,5 +33,6 @@ export function getRemotePanelAvailability(
     files: hasCapability(REMOTE_PANEL_CAPABILITY.files),
     git: hasCapability(REMOTE_PANEL_CAPABILITY.git),
     search: hasCapability(REMOTE_PANEL_CAPABILITY.search),
+    team: hasCapability(REMOTE_PANEL_CAPABILITY.team),
   };
 }
