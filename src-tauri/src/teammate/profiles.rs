@@ -110,13 +110,22 @@ pub fn topology_for(wid: Uuid, pane_order: &[Uuid]) -> Value {
                 .get(&t.id)
                 .map(|i| json!(i))
                 .unwrap_or(Value::Null);
+            let pane_id = pane_by_id.get(&t.id).cloned().unwrap_or_default();
+            // G1：暂停覆写运行状态（与 topology_json 回退路径同口径）。
+            let status = if uuid::Uuid::parse_str(&pane_id)
+                .is_ok_and(|p| crate::teammate::suspend::is_suspended(wid, p))
+            {
+                "Suspended"
+            } else {
+                status_str(t.status)
+            };
             json!({
                 "id": t.id,
                 "name": t.name,
-                "paneId": pane_by_id.get(&t.id).cloned().unwrap_or_default(),
+                "paneId": pane_id,
                 "paneIndex": pane_index,
                 "role": role_str(t.role),
-                "status": status_str(t.status),
+                "status": status,
                 "capability": tier_str(t.capability),
             })
         })

@@ -535,7 +535,7 @@ fn team_profile_snapshot(ctx: &TeammateCtx, wid: Uuid) -> serde_json::Value {
     } else {
         let map = ctx.state.workspaces.read();
         map.get(&wid)
-            .map(crate::commands::teammate::topology_json)
+            .map(|ws| crate::commands::teammate::topology_json(ws, wid))
             .unwrap_or_else(|| serde_json::json!({ "roster": [], "leaderId": null, "edges": [] }))
     }
 }
@@ -589,8 +589,9 @@ async fn route_delegate_task(
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
     let prompt = format!("{}\n", body.objective);
-    if let Err(e) = terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, prompt.as_bytes()) {
-        return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+    // G1：delegate 提示注入同属 agent 写路径，走 suspend 收口。
+    if let Err(e) = super::suspend::agent_pty_write(&ctx.state, wid, pid, prompt.as_bytes()) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
     }
     {
         let mut map = ctx.state.workspaces.write();
@@ -770,7 +771,8 @@ async fn mcp_tools_call(
                 Err(e) => return proto::mcp_error(id, proto::INVALID_PARAMS, &e),
             };
             let payload = format!("{text}\n");
-            match terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, payload.as_bytes()) {
+            // G1：MCP 文本注入同属 agent 写路径，走 suspend 收口。
+            match super::suspend::agent_pty_write(&ctx.state, wid, pid, payload.as_bytes()) {
                 Ok(()) => {
                     if name == "ridge_delegate_task" {
                         let mut map = ctx.state.workspaces.write();
@@ -910,7 +912,7 @@ fn mcp_resources_read(
             let map = ctx.state.workspaces.read();
             let snapshot = map
                 .get(&wid)
-                .map(crate::commands::teammate::topology_json)
+                .map(|ws| crate::commands::teammate::topology_json(ws, wid))
                 .unwrap_or_else(|| serde_json::json!({ "roster": [] }));
             proto::mcp_result(
                 id,
@@ -1170,12 +1172,8 @@ async fn route_split(
                     .filter(|s| !s.is_empty())
                 {
                     let data = format!("{cmd}\n");
-                    let _ = terminal::write_pty_bytes_workspace(
-                        &ctx.state,
-                        wid,
-                        pane_id,
-                        data.as_bytes(),
-                    );
+                    // G1：exec 命令注入同属 agent 写路径，走 suspend 收口。
+                    let _ = super::suspend::agent_pty_write(&ctx.state, wid, pane_id, data.as_bytes());
                 }
                 let _ = ctx.handle.emit(
                     TEAMMATE_LAYOUT_CHANGED,
@@ -1619,9 +1617,13 @@ async fn route_send_keys(
             body.text.clone()
         }
     };
-    match terminal::write_pty_bytes_workspace(&ctx.state, wid, pid, text_to_write.as_bytes()) {
+    // G1 阶段一：agent 写路径统一收口（suspended → 403，人类桌面输入不受限）。
+    match super::suspend::agent_pty_write(&ctx.state, wid, pid, text_to_write.as_bytes()) {
         Ok(()) => (StatusCode::OK, "ok").into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) if e.starts_with("agent suspended") => {
+            (StatusCode::FORBIDDEN, e).into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
     }
 }
 

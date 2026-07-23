@@ -96,8 +96,8 @@ describe('cross-entry Remote capability contract', () => {
       expect(rustStringArray(rustCapability, 'REMOTE_ALLOWLIST')).toContain(method);
       expect(rustStringArray(rustCapability, 'MUTATING_METHODS')).not.toContain(method);
     }
-    // P2 之前 HITL 裁决与 Agent 配置写路径不得远程可达。
-    for (const method of ['resolve_hitl_request', 'set_hitl_enabled']) {
+    // P2 阶段 2 之前：HITL 裁决、网关开关与 G1 暂停/恢复（写操作）不得远程可达。
+    for (const method of ['resolve_hitl_request', 'set_hitl_enabled', 'suspend_agent', 'resume_agent']) {
       expect(REMOTE_ALLOWLIST).not.toContain(method);
       expect(rustStringArray(rustCapability, 'REMOTE_ALLOWLIST')).not.toContain(method);
     }

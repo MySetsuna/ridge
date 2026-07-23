@@ -19,7 +19,8 @@ use crate::teammate::hitl;
 
 /// 把一个工作区的 teammate 侧表映射为前端 `TopologySnapshot` JSON。
 /// `pub(crate)` 以便 teammate HTTP 路由 (`server.rs::route_get_team_profile`) 复用。
-pub(crate) fn topology_json(ws: &Workspace) -> Value {
+/// `wid` 供 G1 暂停侧表查询（suspended pane 的 status 投影为 `Suspended`）。
+pub(crate) fn topology_json(ws: &Workspace, wid: Uuid) -> Value {
     // 叶子顺序 = MCP 数字索引寻址 (`teammate_pane_uuid_at_index`) 的同源序列。
     // 据此为每个成员补出数字 `paneIndex`，让 agent 读 `active-panes` 后既能回传
     // `paneId`(Uuid) 也能回传 `paneIndex`(数字)，两者都可寻址（缺口1 自洽）。
@@ -50,9 +51,14 @@ pub(crate) fn topology_json(ws: &Workspace) -> Value {
         .teammate_agent_pane_map
         .iter()
         .map(|(agent_id, pane)| {
-            let status = match ws.teammate_pane_states.get(pane) {
-                Some(PaneState::Busy) => "Working",
-                _ => "Idle",
+            // G1：暂停覆写运行状态（Suspended > Working/Idle），无新字段。
+            let status = if crate::teammate::suspend::is_suspended(wid, *pane) {
+                "Suspended"
+            } else {
+                match ws.teammate_pane_states.get(pane) {
+                    Some(PaneState::Busy) => "Working",
+                    _ => "Idle",
+                }
             };
             let name = name_of(agent_id, pane);
             let cap = cap_of(agent_id);
@@ -110,7 +116,26 @@ pub async fn get_teammate_topology(
     let ws = workspaces
         .get(&wid)
         .ok_or_else(|| format!("workspace {wid} not found"))?;
-    Ok(topology_json(ws))
+    Ok(topology_json(ws, wid))
+}
+
+/// G1 阶段一 —— 暂停某 pane 的 agent 输入（软暂停：agent 写路径被拒，人类输入不受限）。
+/// 幂等；OS 级冻结属阶段二。仅桌面本机 IPC，刻意不入 `REMOTE_ALLOWLIST`。
+#[tauri::command]
+pub fn suspend_agent(workspace_id: String, pane_id: String) -> Result<(), String> {
+    let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    let pane = Uuid::parse_str(&pane_id).map_err(|e| e.to_string())?;
+    crate::teammate::suspend::suspend(wid, pane);
+    Ok(())
+}
+
+/// G1 阶段一 —— 恢复。幂等。
+#[tauri::command]
+pub fn resume_agent(workspace_id: String, pane_id: String) -> Result<(), String> {
+    let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    let pane = Uuid::parse_str(&pane_id).map_err(|e| e.to_string())?;
+    crate::teammate::suspend::resume(wid, pane);
+    Ok(())
 }
 
 /// P2 阶段 1 —— 待裁决高危动作的**脱敏**只读列表（`teammate` 能力下远端可见）。
@@ -206,7 +231,7 @@ mod tests {
     #[test]
     fn topology_projection_has_no_sensitive_fields() {
         let ws = ws_with_agent();
-        let v = topology_json(&ws);
+        let v = topology_json(&ws, Uuid::new_v4());
         let json = v.to_string().to_lowercase();
         for needle in ["token", "endpoint", "env_", "secret", "seed", "mcp"] {
             assert!(!json.contains(needle), "topology projection leaks `{needle}`: {json}");
@@ -219,5 +244,22 @@ mod tests {
                 "unexpected roster field `{key}`"
             );
         }
+    }
+
+    /// G1：暂停覆写 status 投影为 Suspended（无新字段），恢复后回落运行态。
+    #[test]
+    fn topology_status_reflects_suspension() {
+        let ws = ws_with_agent();
+        let wid = Uuid::new_v4();
+        let pane = *ws.teammate_agent_pane_map.values().next().unwrap();
+
+        assert_eq!(topology_json(&ws, wid)["roster"][0]["status"], "Working");
+        crate::teammate::suspend::suspend(wid, pane);
+        let v = topology_json(&ws, wid);
+        assert_eq!(v["roster"][0]["status"], "Suspended");
+        // 字段集不因暂停扩张（脱敏面不变）。
+        assert_eq!(v["roster"][0].as_object().unwrap().len(), 7);
+        crate::teammate::suspend::resume(wid, pane);
+        assert_eq!(topology_json(&ws, wid)["roster"][0]["status"], "Working");
     }
 }
