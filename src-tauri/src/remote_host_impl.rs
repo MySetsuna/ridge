@@ -2303,8 +2303,14 @@ async fn dispatch_invoke_request(
             )
             .await,
         ),
-        // P2 阶段 1：脱敏待审批快照（无 action 全文）；裁决通道仍不路由。
+        // P2 阶段 1：脱敏待审批快照（无 action 全文）。
         "list_hitl_pending" => val(crate::commands::teammate::list_hitl_pending()),
+        // P2 阶段 2：远端裁决（nonce 单次消费；桌面版 resolve_hitl_request 仍不路由）。
+        "resolve_hitl_remote" => val(crate::commands::teammate::resolve_hitl_remote(
+            s(args, "id"),
+            s(args, "nonce"),
+            s(args, "verdict"),
+        )),
 
         // ── Theme / settings (S1: migrated into ridge-core) ──
         // These three handlers now live in `ridge_core`; route them through

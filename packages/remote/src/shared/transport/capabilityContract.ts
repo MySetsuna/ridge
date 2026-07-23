@@ -13,7 +13,7 @@ export const REMOTE_CAPABILITY_METHODS = {
   search: ['text_search'],
   workspace: ['list_workspaces', 'get_active_workspace_id', 'get_workspace_snapshot'],
   theme: ['get_theme_data'],
-  teammate: ['get_teammate_topology', 'list_hitl_pending'],
+  teammate: ['get_teammate_topology', 'list_hitl_pending', 'resolve_hitl_remote'],
 } as const;
 
 export type RemoteCapability = keyof typeof REMOTE_CAPABILITY_METHODS;

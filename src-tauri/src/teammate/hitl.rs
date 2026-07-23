@@ -40,6 +40,9 @@ struct PendingEntry {
     initiator: String,
     reason: String,
     created_at_ms: u64,
+    /// P2 阶段 2：一次性裁决票据（随挂起项生成，uuid v4 不可猜；仅经 E2EE 信道
+    /// 随 `list_pending` 投影下发给已授权 controller，恒时比对 + 取出即毁）。
+    nonce: String,
 }
 
 static PENDING: LazyLock<Mutex<HashMap<String, PendingEntry>>> =
@@ -109,14 +112,20 @@ fn insert_pending(id: String, initiator: &str, reason: &str, tx: oneshot::Sender
     if let Ok(mut g) = PENDING.lock() {
         g.insert(
             id,
-            PendingEntry { tx, initiator: initiator.to_string(), reason: reason.to_string(), created_at_ms },
+            PendingEntry {
+                tx,
+                initiator: initiator.to_string(),
+                reason: reason.to_string(),
+                created_at_ms,
+                nonce: uuid::Uuid::new_v4().simple().to_string(),
+            },
         );
     }
 }
 
-/// P2 阶段 1 —— 待裁决动作的**脱敏**只读快照（远端可见面）。
-/// 仅 `{id, initiator, level, reason, createdAt}`；`level` 恒为 `Dangerous`
-/// （非 L2 动作根本不挂起）。按 createdAt 升序，顺序稳定。
+/// P2 —— 待裁决动作的**脱敏**只读快照（远端可见面）。
+/// 仅 `{id, initiator, level, reason, createdAt, resolutionNonce}`；`level` 恒为
+/// `Dangerous`（非 L2 动作根本不挂起）。按 createdAt 升序，顺序稳定。
 pub fn list_pending() -> Vec<serde_json::Value> {
     let mut items: Vec<(u64, serde_json::Value)> = match PENDING.lock() {
         Ok(g) => g
@@ -130,6 +139,7 @@ pub fn list_pending() -> Vec<serde_json::Value> {
                         "level": "Dangerous",
                         "reason": e.reason,
                         "createdAt": e.created_at_ms,
+                        "resolutionNonce": e.nonce,
                     }),
                 )
             })
@@ -138,6 +148,46 @@ pub fn list_pending() -> Vec<serde_json::Value> {
     };
     items.sort_by_key(|(t, _)| *t);
     items.into_iter().map(|(_, v)| v).collect()
+}
+
+/// 恒时比较（防计时侧信道摸 nonce；长度不同立即 false——长度非秘密）。
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
+}
+
+/// P2 阶段 2 —— 远端裁决结局（可判定字符串，随 RPC 回包）。
+pub const OUTCOME_CONSUMED: &str = "consumed";
+pub const OUTCOME_ALREADY_RESOLVED: &str = "already-resolved";
+pub const OUTCOME_NONCE_MISMATCH: &str = "nonce-mismatch";
+pub const OUTCOME_BAD_VERDICT: &str = "bad-verdict";
+
+/// P2 阶段 2 —— 远端裁决：nonce 恒时比对，一致才取出（同锁内查+取 = 单次消费原子）。
+/// verdict 仅 `approve`/`reject`——**modify 永不开放**（远程任意命令执行面）。
+/// 超时/已裁决后到达 → `already-resolved` 无副作用；错 nonce → 条目存活、拒并告警。
+pub fn resolve_remote(id: &str, nonce: &str, verdict: &str) -> &'static str {
+    let res = match verdict {
+        "approve" => HitlResolution::Approve,
+        "reject" => HitlResolution::Reject,
+        _ => return OUTCOME_BAD_VERDICT,
+    };
+    let Ok(mut g) = PENDING.lock() else { return OUTCOME_ALREADY_RESOLVED };
+    let Some(entry) = g.get(id) else { return OUTCOME_ALREADY_RESOLVED };
+    if !constant_time_eq(&entry.nonce, nonce) {
+        tracing::warn!(target: "ridge::hitl", %id, "远端裁决 nonce 不匹配（拒）");
+        return OUTCOME_NONCE_MISMATCH;
+    }
+    let entry = g.remove(id).expect("checked above under same lock");
+    drop(g);
+    let _ = entry.tx.send(res);
+    OUTCOME_CONSUMED
 }
 
 /// 人类裁决回传：按 id 取出挂起项并发回结果。返回是否命中一个挂起项。
@@ -161,8 +211,8 @@ pub fn resolve(id: &str, verdict: &str, replacement: Option<String>) -> bool {
 mod tests {
     use super::*;
 
-    /// P2 阶段 1 脱敏门禁：`list_pending` 投影绝不含 `action` 命令全文，
-    /// 字段恰为 {id, initiator, level, reason, createdAt}；resolve 后即出列。
+    /// P2 脱敏门禁：`list_pending` 投影绝不含 `action` 命令全文，字段恰为
+    /// {id, initiator, level, reason, createdAt, resolutionNonce}；resolve 后即出列。
     /// （PENDING 为进程全局，测试用独有 id 前缀过滤，避免并行串扰。）
     #[test]
     fn list_pending_projection_is_sanitized_and_cleared_on_resolve() {
@@ -178,16 +228,44 @@ mod tests {
         let item = mine[0].as_object().expect("pending item object");
         for key in item.keys() {
             assert!(
-                ["id", "initiator", "level", "reason", "createdAt"].contains(&key.as_str()),
+                ["id", "initiator", "level", "reason", "createdAt", "resolutionNonce"]
+                    .contains(&key.as_str()),
                 "unexpected pending field `{key}`"
             );
         }
         assert!(item.get("action").is_none(), "projection must never carry action");
         assert_eq!(item["level"], "Dangerous");
         assert_eq!(item["initiator"], "claude-a");
+        assert!(item["resolutionNonce"].as_str().is_some_and(|n| n.len() >= 32));
 
         assert!(resolve(&id, "reject", None));
         assert!(matches!(rx.try_recv(), Ok(HitlResolution::Reject)));
+        assert!(list_pending().iter().all(|v| v["id"] != id.as_str()));
+    }
+
+    /// P2 阶段 2 裁决通道门禁：错 nonce 拒且条目存活；对 nonce 恰消费一次、
+    /// 二次 already-resolved；modify/未知 verdict 拒（远端 modify 永不开放）。
+    #[test]
+    fn resolve_remote_single_consume_nonce_and_verdict_gates() {
+        let id = "hitl_test_remote_0".to_string();
+        let (tx, mut rx) = oneshot::channel();
+        insert_pending(id.clone(), "claude-b", "强制推送", tx);
+        let nonce = list_pending()
+            .into_iter()
+            .find(|v| v["id"] == id.as_str())
+            .and_then(|v| v["resolutionNonce"].as_str().map(String::from))
+            .expect("nonce in projection");
+
+        assert_eq!(resolve_remote(&id, &nonce, "modify"), OUTCOME_BAD_VERDICT);
+        assert_eq!(resolve_remote(&id, "wrong-nonce", "approve"), OUTCOME_NONCE_MISMATCH);
+        assert!(
+            list_pending().iter().any(|v| v["id"] == id.as_str()),
+            "错 nonce 后条目必须存活"
+        );
+
+        assert_eq!(resolve_remote(&id, &nonce, "approve"), OUTCOME_CONSUMED);
+        assert!(matches!(rx.try_recv(), Ok(HitlResolution::Approve)));
+        assert_eq!(resolve_remote(&id, &nonce, "approve"), OUTCOME_ALREADY_RESOLVED);
         assert!(list_pending().iter().all(|v| v["id"] != id.as_str()));
     }
 }

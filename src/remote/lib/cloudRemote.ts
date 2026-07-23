@@ -45,6 +45,7 @@ import {
   type ThemeSnapshot,
   type TeammateTopology,
   type HitlPendingItem,
+  type HitlResolveOutcome,
 } from '@ridge/remote';
 
 /** Backend `list_workspaces` row (subset we use). */
@@ -554,6 +555,20 @@ export class CloudRemoteConnection implements RemoteLink {
   // P2 阶段 1：脱敏待审批快照（无 action 全文），同 allowlist 门控。
   async listHitlPending(): Promise<HitlPendingItem[]> {
     return invoke<HitlPendingItem[]>('list_hitl_pending', {});
+  }
+
+  // P2 阶段 2：远端裁决（nonce 单次消费；仅 approve/reject）。
+  async resolveHitlRemote(
+    id: string,
+    nonce: string,
+    verdict: 'approve' | 'reject',
+  ): Promise<HitlResolveOutcome> {
+    const r = await invoke<{ outcome: HitlResolveOutcome }>('resolve_hitl_remote', {
+      id,
+      nonce,
+      verdict,
+    });
+    return r?.outcome ?? 'already-resolved';
   }
 
   async switchWorkspace(workspaceId: string): Promise<boolean> {
