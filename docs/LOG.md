@@ -2,6 +2,14 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-23 — iteration 7
+
+- 完成：证据与固化轮四目标全落——**T1 完全关闭**（loader 根修：`comctl32!TaskDialogIndirect` 仅 v6 导出、lib 单测宿主无 manifest 绑 WinSxS 5.82 → `/DELAYLOAD` 推迟绑定；`-p ridge --lib` 92/92 本机首次全绿，`cargo test --workspace` 首次整仓 exit 0，附 boot smoke 防回归）；R1 实验室轨关闭（抽 `__faultRig.ts`，weakNetLab 九场景参数化扫描 + metrics.json 校验脚本 exit 0，含非真机 disclaimer）；A1 审计 Teammate 零死字段（驳回删字段建议）；固化（用户必办四件单页、README_CN 能力协商+Team 段、WORKFLOW 双轨制段）。
+- 验证：vitest shared 全伞 567/567（1 skipped，37 文件）、svelte-check 0 errors、weaknet-lab 脚本 exit 0、整仓 cargo exit 0。
+- 熔断：无停机触发；G2 扫描未暴露缺陷；G3 零删除为合同允许结论。
+- 下一步：iteration 8——P2 第一阶段 `list_hitl_pending` 只读端到端（脱敏投影，绝不含 action 全文）+ G1 暂停/恢复设计文档（零代码）+ A1 pane.rs 审计 + S1 F3/F4 计数与 F5 删除审计。
+- 驳回：NotebookLM 臆造 `nonce`/`category` 字段（代码无此，现有 id/level/reason/initiator 即够）；`telemetry.log` 持久面（违锁定的进程内计数设计）；`AgentStatus` 加死枚举变体（违 YAGNI 且其 SSOT 论据张冠李戴）；A1「至少删 2 处」配额（审计前无据）；T3 CI 桩挂钩（本仓无 CI，屡次臆造）；T1 boot smoke 当新目标（已交付）。关键补正：NotebookLM 未见 `PENDING` 注册表只存 sender 不存元数据——`list_hitl_pending` 前提是扩注册表，已入合同。
+
 ## 2026-07-23 — iteration 6
 
 - 完成：P1 控制台 MVP 代码侧关闭——新协商能力 `teammate`（唯一只读方法 `get_teammate_topology`）六处同步宣告 + LAN/cloud 路由 + 共享 controller Team roster 面板（轮询/切 pane/无团队零噪声）；投影脱敏 Rust 测试与 HITL 不可远达负断言。S1 遥测第一阶段（F1/F2 进程内计数 + 测例钉死）。A1 切片：workspace 列表投影同源化（删平行 WorkspaceInfo，net −12）。
