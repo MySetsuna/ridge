@@ -17,3 +17,4 @@
 | 5 | `CONTRACT-iteration-5.md` | `2026-07-23-iteration-5.md` | `2026-07-23-notebooklm-guidance-5.md` | 完成（`-p ridge --lib` 载败如实记录；生产实跑待用户） |
 | 6 | `CONTRACT-iteration-6.md` | `2026-07-23-iteration-6.md` | `2026-07-23-notebooklm-guidance-6.md` | 完成（Team 面板人工核验待用户） |
 | 7 | `CONTRACT-iteration-7.md` | `2026-07-23-iteration-7.md` | `2026-07-23-notebooklm-guidance-7.md` | 完成（T1 完全关闭；用户轨四件见 checklist） |
+| 8 | `CONTRACT-iteration-8.md` | `2026-07-23-iteration-8.md` | `2026-07-23-notebooklm-guidance-8.md` | 完成（P2 阶段 1 只读；F5 退役删除） |

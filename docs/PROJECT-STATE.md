@@ -6,7 +6,7 @@
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
 证据等级：
-- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph（542 文件 / 11,365 节点 / 18,029 边）与当前源码确认。
+- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph（542 文件 / 11,366 节点 / 18,047 边）与当前源码确认。
 - **Git 事实**：由本地分支、HEAD 与提交历史确认。
 - **运行事实**：必须有本轮测试/退出码证据；缺证据时明确写「未验证」。
 - **文档声明**：若与代码冲突，以代码为当前行为、以协议为应修正目标。
@@ -92,7 +92,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 | 项 | wind |
 | --- | --- |
-| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `b5b7da2`+，较 `origin/main` 领先 25+ 提交（Level 2 draft，待人工审查合并） |
+| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `f0a6e55`+，较 `origin/main` 领先 35 提交（Level 2 draft，待人工审查合并；用户轨积压见 §7-Q3） |
 | 应用版本 | 0.0.17 |
 | CodeGraph | 542 文件 / 11,365 节点 / 18,029 边（2026-07-23 sync） |
 | 工具链 | **全链绿**：pnpm + vitest + 增量 svelte-check + 双仓 cargo 均本机 exit 0；`cargo test --workspace` 于 iteration 7 **首次整仓通过**（历史 `-p ridge --lib` loader 载败已根修，见 §5 iteration 7） |
@@ -127,6 +127,12 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
   - A1 审计：`Teammate` 六字段全被消费（role/status/capability 各有 grep 实证），**无死字段**，NotebookLM 删字段建议驳回。
   - 固化：`docs/plans/user-verification-checklist.md` 四件用户必办单页；README_CN 补能力协商 + Team 面板段；WORKFLOW 补双轨制段。
   - 证据：vitest shared 全伞 567 绿 / 1 skipped（37 文件）；svelte-check 0 errors；weaknet-lab 脚本 exit 0。
+- **iteration 8**（2026-07-23，P2 阶段 1 + 支线）：
+  - **P2 阶段 1 关闭（只读可见）**：`hitl.rs` PENDING 注册表加宽存脱敏元数据（原先发事件即弃）；新只读方法 `list_hitl_pending`（`teammate` 能力下，六处宣告同步）投影仅 `{id, initiator, level, reason, createdAt}`——**绝不含 `action` 命令全文**（Rust 测试钉死）；Team 面板只读 Pending approvals 区；裁决通道（`resolve_hitl_request`）保持不可远达。裁决/nonce/单次消费语义属阶段 2，未做。
+  - S1 遥测第二阶段：F3 计数（controller `tofuChanged`，合法 0x02+指纹变化测试）、F4 计数（host `fallback0x01`，含签名失败降级）；**F5 退役删除**（`keyBindingVerifier` 钩子生产零接线双证后整链删除，矩阵行改已退役）；计划外根修 deviceTrust localStorage 探针 + 模块级内存回退（Node 残缺对象地雷）。
+  - A1 切片：pane.rs 全量读写分类审计（报告在迭代文档）；rustc dead_code 扫出并删真死码二处（pane_tree `first_leaf/last_leaf`、parser `full_reframe_with_scrollback`，net −60 行）。
+  - G1 设计文档（零代码）：`docs/superpowers/specs/2026-07-23-agent-suspend-resume-design.md`——三层边界、Windows 无 SIGSTOP 三候选（Job Object 冻结目标态）、顺序不变量、HITL fail-closed 计时不暂停。
+  - 证据：`cargo test --workspace` exit 0；vitest shared 全伞 559 绿 / 1 skipped（删 9 增 1 帐目符）；svelte-check 0 errors；`-p ridge --lib` 93 绿。
 
 ## 6. 差距组合现状（愿景 − 现状，含最新裁决）
 
@@ -135,11 +141,11 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | T1 | 开发门禁可运行性 | P0 | **关闭**（iteration 7：loader 根修后 `cargo test --workspace` 首次整仓 exit 0，全部门禁本机可运行） |
 | T2 | Cloud 协议双 SSOT | P0 | **关闭**（iteration 1 收敛 + 自动守卫；EOL 误报已根治） |
 | T3 | 生产两条版本线状态证据 | P0 | **代码侧关闭**（status 端点 + 一键脚本）；生产实跑与分支合并部署待用户 |
-| S1 | 兼容安全回落可观测退役 | P0/P1 | **审计 + 遥测第一阶段关闭**（F1/F2 计数已实施）；F3–F6 计数与逐面 fail-closed 翻闸待数据窗口 |
+| S1 | 兼容安全回落可观测退役 | P0/P1 | **审计 + 遥测两阶段关闭**（F1–F4 计数已实施；F5 已退役删除；F6 由 S1 门禁测试守构造纪律）；逐面 fail-closed 翻闸待真实数据窗口（用户轨） |
 | P1 | Remote Agent 控制台 MVP | P1 | **代码侧关闭**（iteration 6：capability `teammate` + roster 面板 + 切 pane）；真机 UI 人工核验待用户 |
-| P2 | Remote HITL/接管闭环 | P1 | 未做；需 nonce/单次消费/过期/审计/多 controller 裁决语义，不简单加白名单 |
-| G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | 未做 |
-| A1 | 共享内核减法审计 | P1 | **审计完成 + 两切片落地**（死 pane-output 面、workspace 列表投影）；剩余：pane.rs 分类、写路径同源化（高风险，靠后） |
+| P2 | Remote HITL/接管闭环 | P1 | **阶段 1 关闭**（iteration 8：脱敏待审批远端只读可见）；阶段 2 裁决通道未做（需 nonce/单次消费/过期/审计/多 controller 语义） |
+| G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | **设计定稿**（iteration 8 设计文档：三层边界 + 跨平台选型 + 顺序不变量）；实现未做 |
+| A1 | 共享内核减法审计 | P1 | **审计完成 + 三切片落地**（死 pane-output 面、workspace 列表投影、pane_tree/parser 死码 −60 行 + pane.rs 读写分类）；剩余：写路径同源化（高风险，靠后） |
 | A2 | 跨入口能力矩阵 + conformance | P1 | **关闭**：机器可读矩阵 + 一致性测试互证（新增能力必须声明矩阵） |
 | R1 | 弱网与恢复证据化 | P1 | **实验室轨关闭**（fault 门禁 + iteration 7 九场景参数化扫描 harness）；真机轨待用户执行 runbook |
 | M1 | Workspace Memory | P2 | 未做；先最小 6 字段 discovery |
@@ -149,14 +155,14 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | E1 | WebGPU 收益验证 | P3/实验 | 未做；无显著收益则停做或删除 |
 | E2 | 高级自动编排 | P3/实验 | 未做；需真实多 Agent 瓶颈证据 |
 
-近期组合原则更新（iteration 7 后）：原「可信基线包 → P1 主线 → A2 护栏 → R1 测量」四件的自动轨已全部完成；存量仅剩 **P2（HITL）、G1（暂停/恢复）、A1 余项（pane.rs 分类、写路径同源化）** 三个可自动推进的 P1 项，与 M1/M2/H1/C1（P2 级）、E1/E2（P3 实验，需真实证据否则删）。用户轨四件（见 `docs/plans/user-verification-checklist.md`）未消化前，不宜再扩大 Remote 协议面之外的审查面。
+近期组合原则更新（iteration 8 后）：P1 级自动轨可推进项仅剩 **P2 阶段 2（裁决通道，重语义设计）、G1 实现轮（设计已定稿，阶段一=输入门控最小可用）、A1 写路径同源化（高风险，刻意靠后）**；其余为 M1/M2/H1/C1（P2 级）与 E1/E2（P3 实验，需真实证据否则删）。用户轨四件未消化且分支已领先 35 提交——继续扩协议面（P2 阶段 2 即是）会加重审查负担。
 
 ## 7. 开放问题（请 NotebookLM 定夺）
 
-1. iteration 8 主线候选（按 §6 剩余）：**P2 第一阶段 Remote HITL 只读展示**（新只读方法 `list_hitl_pending` 走既有 A2 宣告纪律，远端只读列出待审批 + 风险原因；裁决通道属第二阶段，需 nonce/单次消费/过期/审计/多 controller 语义）vs **G1 单 Agent 暂停/恢复状态机**（先设计跨平台可暂停边界与恢复语义，落设计文档 + 最小状态机实现）vs **A1 余项**（pane.rs 分类审计、写路径同源化——高风险靠后项，是否该趁全链绿窗口做）。请按价值/风险/解锁力/成本裁决并给合同草案。
-2. P2 若选：待审批快照的载荷边界怎么定才不泄露敏感上下文（命令全文可能含密钥——是否只投影风险分类 + 摘要 + 请求方身份，不投影原始 args）？
-3. 用户必办件积压四件未消化，分支已领先 25+ 提交——是否应设「审查面上限」（如领先提交数阈值）触发强制冻结，直到用户合并？
-4. M1 Workspace Memory 最小 6 字段 discovery 与 M2 归因事件是否值得在 P2/G1 之前提前（论据：为 HITL 审计与暂停/恢复提供状态基座）还是维持靠后？
+1. iteration 9 主线候选：**G1 阶段一实现**（输入门控软暂停 + 运行态侧表 + 桌面 UI，纯本机不扩 Remote 协议面，设计文档已定稿）vs **P2 阶段 2 裁决通道设计**（nonce/单次消费/过期/审计/多 controller 语义——先设计文档不实现，还是设计+实现一轮走完？会扩协议面）vs **M1 Workspace Memory 最小 discovery**（6 字段，为暂停/恢复与 HITL 审计供状态基座）。考虑用户轨积压，倾向不扩协议面的候选是否正确？请裁决并给合同草案。
+2. E1（WebGPU 实验）与 E2（自动编排）在存量清单挂了 8 轮无证据——是否本轮直接按「无显著收益则停做或删除」裁决 E1 删除其实验代码（若仓内存在）、E2 关闭为「待真实多 Agent 瓶颈证据重开」？
+3. 分支领先 35 提交、用户轨四件未动——除继续等待外，是否应产出「审查辅助包」（分主题 diff 导读 + 每提交风险标注）降低用户合并成本？这算不算自动轨可交付物？
+4. H1（远端 host live PTY）与 C1（rdg 行为一致性）长期未动：C1 是否可用既有 A2 矩阵 + conformance 测试半自动收口（列出 rdg 与桌面语义缺口清单）而不写新功能？
 
 ## 8. NotebookLM 评审要求（沿用）
 

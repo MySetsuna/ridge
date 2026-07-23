@@ -2,6 +2,14 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-23 — iteration 8
+
+- 完成：**P2 阶段 1 关闭**——`list_hitl_pending` 脱敏只读端到端（PENDING 注册表加宽存元数据；投影恰五字段绝不含 action 命令全文，Rust 钉死；六处宣告同步；Team 面板 Pending approvals 只读区；裁决通道保持不可远达）。S1 遥测二阶段：F3/F4 进程内计数 + 测试；**F5 `keyBindingVerifier` 钩子退役删除**（生产零接线双证，0x02+B3 覆盖，net −173 行档）。A1：pane.rs 读写分类审计 + 删 rustc 确证死码二处（pane_tree first/last_leaf、parser full_reframe_with_scrollback，−60 行）。G1 设计文档定稿（三层边界/Windows 三候选/顺序不变量/HITL 计时不暂停）。计划外根修 deviceTrust Node localStorage 残缺对象地雷（探针 + 模块级内存回退）。
+- 验证：`cargo test --workspace` exit 0；vitest shared 559/559（1 skipped，删 9 增 1 帐目符）；cloud 236 绿；svelte-check 0 errors；`-p ridge --lib` 93 绿。
+- 熔断：无停机触发；F5 删除未触发回滚条款。
+- 下一步：iteration 9——G1 阶段一实现（send-keys 网关门控软暂停，纯本机零协议面）+ C1 缺口报告 + 分支审查导读包 + E1/E2 簿记 + A1 写路径审计文档。
+- 驳回：NotebookLM「删 WebGPU 实验代码」——**重大驳回**（`default=["webgpu"]` 生产默认 + 2026-05-05 用户反馈钦定运行时探测；错在状态文档陈旧措辞，E1 改簿记校正）；M1 无消费者结构体（死脚手架）；G1 停机条件混淆阶段（Job Object 属阶段三）；`pnpm build`/不存在的 `test:conformance` 作验收；bash+正则审查包（改 node .mjs）。采纳：G1 主线、审查辅助包属自动轨、C1 矩阵派生收口、E2 关闭待证据。
+
 ## 2026-07-23 — iteration 7
 
 - 完成：证据与固化轮四目标全落——**T1 完全关闭**（loader 根修：`comctl32!TaskDialogIndirect` 仅 v6 导出、lib 单测宿主无 manifest 绑 WinSxS 5.82 → `/DELAYLOAD` 推迟绑定；`-p ridge --lib` 92/92 本机首次全绿，`cargo test --workspace` 首次整仓 exit 0，附 boot smoke 防回归）；R1 实验室轨关闭（抽 `__faultRig.ts`，weakNetLab 九场景参数化扫描 + metrics.json 校验脚本 exit 0，含非真机 disclaimer）；A1 审计 Teammate 零死字段（驳回删字段建议）；固化（用户必办四件单页、README_CN 能力协商+Team 段、WORKFLOW 双轨制段）。
