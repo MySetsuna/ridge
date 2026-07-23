@@ -123,29 +123,21 @@ pub async fn get_teammate_topology(
 /// 幂等；OS 级冻结属阶段二。仅桌面本机 IPC，刻意不入 `REMOTE_ALLOWLIST`。
 /// M1 切片一：变更后落 sidecar（fail-open），重启可恢复。
 #[tauri::command]
-pub fn suspend_agent(
-    state: State<'_, AppState>,
-    workspace_id: String,
-    pane_id: String,
-) -> Result<(), String> {
+pub fn suspend_agent(workspace_id: String, pane_id: String) -> Result<(), String> {
     let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
     let pane = Uuid::parse_str(&pane_id).map_err(|e| e.to_string())?;
     crate::teammate::suspend::suspend(wid, pane);
-    crate::teammate::suspend::persist_for(&state, wid);
+    crate::teammate::suspend::persist_for(wid);
     Ok(())
 }
 
 /// G1 阶段一 —— 恢复。幂等。
 #[tauri::command]
-pub fn resume_agent(
-    state: State<'_, AppState>,
-    workspace_id: String,
-    pane_id: String,
-) -> Result<(), String> {
+pub fn resume_agent(workspace_id: String, pane_id: String) -> Result<(), String> {
     let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
     let pane = Uuid::parse_str(&pane_id).map_err(|e| e.to_string())?;
     crate::teammate::suspend::resume(wid, pane);
-    crate::teammate::suspend::persist_for(&state, wid);
+    crate::teammate::suspend::persist_for(wid);
     Ok(())
 }
 
@@ -163,6 +155,18 @@ pub fn list_hitl_pending() -> Result<Value, String> {
 #[tauri::command]
 pub fn resolve_hitl_remote(id: String, nonce: String, verdict: String) -> Result<Value, String> {
     Ok(json!({ "outcome": hitl::resolve_remote(&id, &nonce, &verdict) }))
+}
+
+/// M1 切片二 —— 某工作区的裁决审计历史（环形 ≤50，最旧在前）。**仅桌面本机 IPC**，
+/// 刻意不入 `REMOTE_ALLOWLIST`（远端暴露需宣告纪律，待需求）。条目无命令全文。
+#[tauri::command]
+pub fn list_hitl_decisions(workspace_id: String) -> Result<Value, String> {
+    let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    let decisions = crate::teammate::memory::dir()
+        .and_then(|d| crate::teammate::memory::read(d, wid))
+        .and_then(|doc| doc.get("decisions").cloned())
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    Ok(decisions)
 }
 
 /// D2 —— 人类对一个挂起的高危动作的裁决回传。

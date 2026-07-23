@@ -43,6 +43,29 @@ struct PendingEntry {
     /// P2 阶段 2：一次性裁决票据（随挂起项生成，uuid v4 不可猜；仅经 E2EE 信道
     /// 随 `list_pending` 投影下发给已授权 controller，恒时比对 + 取出即毁）。
     nonce: String,
+    /// M1 切片二：decisions 落盘的归属工作区（None = 测试/无归属，不落盘）。
+    wid: Option<uuid::Uuid>,
+}
+
+/// M1 切片二 —— 裁决审计条目（**绝不含命令全文**；落 workspace-memory `decisions` 节）。
+fn record_decision(entry: &PendingEntry, source: &str, verdict: &str, outcome: &str) {
+    let Some(wid) = entry.wid else { return };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    super::memory::append_decision_global(
+        wid,
+        serde_json::json!({
+            "ts": ts,
+            "source": source,
+            "initiator": entry.initiator,
+            "verdict": verdict,
+            "riskLevel": "Dangerous",
+            "reasonSummary": entry.reason,
+            "outcome": outcome,
+        }),
+    );
 }
 
 static PENDING: LazyLock<Mutex<HashMap<String, PendingEntry>>> =
@@ -66,6 +89,7 @@ pub fn set_enabled(on: bool) {
 /// - 否则 emit 待审批事件并挂起，直到 `resolve` 回信号或超时（超时 → Reject）。
 pub async fn request_approval(
     handle: &tauri::AppHandle,
+    wid: uuid::Uuid,
     initiator: &str,
     action: &str,
 ) -> HitlResolution {
@@ -79,7 +103,7 @@ pub async fn request_approval(
 
     let id = format!("hitl_{}", COUNTER.fetch_add(1, Ordering::Relaxed));
     let (tx, rx) = oneshot::channel();
-    insert_pending(id.clone(), initiator, &assessment.reason, tx);
+    insert_pending(id.clone(), Some(wid), initiator, &assessment.reason, tx);
 
     let _ = handle.emit(
         HITL_EVENT,
@@ -97,14 +121,22 @@ pub async fn request_approval(
         // 超时 / 发送端被丢弃（modal 未挂载等）→ fail-closed 拒绝。
         _ => {
             if let Ok(mut g) = PENDING.lock() {
-                g.remove(&id);
+                if let Some(entry) = g.remove(&id) {
+                    record_decision(&entry, "timeout", "reject", "fail-closed");
+                }
             }
             HitlResolution::Reject
         }
     }
 }
 
-fn insert_pending(id: String, initiator: &str, reason: &str, tx: oneshot::Sender<HitlResolution>) {
+fn insert_pending(
+    id: String,
+    wid: Option<uuid::Uuid>,
+    initiator: &str,
+    reason: &str,
+    tx: oneshot::Sender<HitlResolution>,
+) {
     let created_at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -118,6 +150,7 @@ fn insert_pending(id: String, initiator: &str, reason: &str, tx: oneshot::Sender
                 reason: reason.to_string(),
                 created_at_ms,
                 nonce: uuid::Uuid::new_v4().simple().to_string(),
+                wid,
             },
         );
     }
@@ -182,25 +215,30 @@ pub fn resolve_remote(id: &str, nonce: &str, verdict: &str) -> &'static str {
     let Some(entry) = g.get(id) else { return OUTCOME_ALREADY_RESOLVED };
     if !constant_time_eq(&entry.nonce, nonce) {
         tracing::warn!(target: "ridge::hitl", %id, "远端裁决 nonce 不匹配（拒）");
+        // M1 切片二：败者尝试亦入审计（条目存活，仅记录）。
+        record_decision(entry, "remote", verdict, OUTCOME_NONCE_MISMATCH);
         return OUTCOME_NONCE_MISMATCH;
     }
     let entry = g.remove(id).expect("checked above under same lock");
     drop(g);
+    record_decision(&entry, "remote", verdict, OUTCOME_CONSUMED);
     let _ = entry.tx.send(res);
     OUTCOME_CONSUMED
 }
 
 /// 人类裁决回传：按 id 取出挂起项并发回结果。返回是否命中一个挂起项。
 pub fn resolve(id: &str, verdict: &str, replacement: Option<String>) -> bool {
-    let tx = PENDING.lock().ok().and_then(|mut g| g.remove(id)).map(|e| e.tx);
-    match tx {
-        Some(tx) => {
+    let entry = PENDING.lock().ok().and_then(|mut g| g.remove(id));
+    match entry {
+        Some(entry) => {
             let res = match verdict {
                 "approve" => HitlResolution::Approve,
                 "modify" => HitlResolution::Modify(replacement.unwrap_or_default()),
                 _ => HitlResolution::Reject,
             };
-            let _ = tx.send(res);
+            // M1 切片二：桌面裁决入审计（modify 只记动词，不记替换文本）。
+            record_decision(&entry, "desktop", verdict, "consumed");
+            let _ = entry.tx.send(res);
             true
         }
         None => false,
@@ -218,7 +256,7 @@ mod tests {
     fn list_pending_projection_is_sanitized_and_cleared_on_resolve() {
         let id = "hitl_test_sanitized_0".to_string();
         let (tx, mut rx) = oneshot::channel();
-        insert_pending(id.clone(), "claude-a", "递归删除目录", tx);
+        insert_pending(id.clone(), None, "claude-a", "递归删除目录", tx);
 
         let mine: Vec<_> = list_pending()
             .into_iter()
@@ -249,7 +287,7 @@ mod tests {
     fn resolve_remote_single_consume_nonce_and_verdict_gates() {
         let id = "hitl_test_remote_0".to_string();
         let (tx, mut rx) = oneshot::channel();
-        insert_pending(id.clone(), "claude-b", "强制推送", tx);
+        insert_pending(id.clone(), None, "claude-b", "强制推送", tx);
         let nonce = list_pending()
             .into_iter()
             .find(|v| v["id"] == id.as_str())
@@ -267,5 +305,36 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(HitlResolution::Approve)));
         assert_eq!(resolve_remote(&id, &nonce, "approve"), OUTCOME_ALREADY_RESOLVED);
         assert!(list_pending().iter().all(|v| v["id"] != id.as_str()));
+    }
+
+    /// M1 切片二：远端消费 → decision 落 workspace-memory `decisions` 节，
+    /// 含归因 initiator、来源与结局，**绝不含命令全文**。
+    #[test]
+    fn remote_consume_records_sanitized_decision() {
+        let dir = std::env::temp_dir().join(format!("ridge-hitl-decisions-{}", uuid::Uuid::new_v4()));
+        super::super::memory::init_dir(dir);
+        let dir = super::super::memory::dir().expect("dir injected").to_path_buf();
+        let wid = uuid::Uuid::new_v4();
+
+        let id = "hitl_test_decision_0".to_string();
+        let (tx, _rx) = oneshot::channel();
+        insert_pending(id.clone(), Some(wid), "claude-c", "递归删除目录", tx);
+        let nonce = list_pending()
+            .into_iter()
+            .find(|v| v["id"] == id.as_str())
+            .and_then(|v| v["resolutionNonce"].as_str().map(String::from))
+            .unwrap();
+        assert_eq!(resolve_remote(&id, &nonce, "reject"), OUTCOME_CONSUMED);
+
+        let doc = super::super::memory::read(&dir, wid).expect("decision doc");
+        let list = doc["decisions"].as_array().expect("decisions array");
+        let d = list.last().unwrap().as_object().unwrap();
+        assert_eq!(d["source"], "remote");
+        assert_eq!(d["verdict"], "reject");
+        assert_eq!(d["outcome"], OUTCOME_CONSUMED);
+        assert_eq!(d["initiator"], "claude-c");
+        assert!(d.get("action").is_none() && d.get("command").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

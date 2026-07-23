@@ -62,12 +62,31 @@
     return topology.roster.find((t) => t.paneId === paneId)?.name ?? paneId;
   }
 
+  // M1 切片二：裁决审计历史（环形 ≤50；条目无命令全文）。
+  interface HitlDecisionEntry {
+    ts: number;
+    source: string;
+    initiator: string;
+    verdict: string;
+    reasonSummary: string;
+    outcome: string;
+  }
+  let decisions = $state<HitlDecisionEntry[]>([]);
+
   async function refresh() {
     try {
       const raw = await invoke(TOPOLOGY_CMD, { workspaceId });
       topology = parseTopologySnapshot(raw);
     } catch {
       topology = EMPTY_TOPOLOGY;
+    }
+    try {
+      const list = workspaceId
+        ? await invoke<HitlDecisionEntry[]>('list_hitl_decisions', { workspaceId })
+        : [];
+      decisions = Array.isArray(list) ? list : [];
+    } catch {
+      decisions = [];
     }
   }
 
@@ -297,6 +316,29 @@
         {/if}
       </ul>
     </section>
+
+    <!-- M1 切片二：审批历史（最近在上，最多显示 10；来源=workspace-memory decisions 节） -->
+    {#if decisions.length > 0}
+      <section>
+        <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
+          <ShieldCheck class="h-3 w-3 text-[var(--rg-accent)]/70" /> 审批历史
+          <span class="ml-auto font-mono">{decisions.length}</span>
+        </h3>
+        <ul class="mt-1 space-y-0.5">
+          {#each decisions.slice(-10).reverse() as d (d.ts + d.initiator + d.outcome)}
+            <li class="flex items-center gap-2 rounded px-1.5 py-1 text-[11px]">
+              <span
+                class="shrink-0 font-mono {d.verdict === 'approve' && d.outcome === 'consumed'
+                  ? 'text-emerald-400'
+                  : 'text-red-300'}">{d.verdict}</span>
+              <span class="min-w-0 flex-1 truncate" title={d.reasonSummary}>{d.reasonSummary}</span>
+              <span class="shrink-0 text-[var(--rg-fg-muted)]">{d.initiator}</span>
+              <span class="shrink-0 text-[var(--rg-fg-muted)]/70">{d.source}</span>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
 
     <!-- 编组（手动协作，P3）：勾选成员建组 / 配色 / 改名 / 解散 / 给组派任务（广播） -->
     <TeammateGroups roster={topology.roster} {workspaceId} {filePath} />
