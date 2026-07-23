@@ -6,7 +6,7 @@
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
 证据等级：
-- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph（542 文件 / 11,366 节点 / 18,047 边）与当前源码确认。
+- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph（545 文件 / 11,417 节点 / 18,189 边）与当前源码确认。
 - **Git 事实**：由本地分支、HEAD 与提交历史确认。
 - **运行事实**：必须有本轮测试/退出码证据；缺证据时明确写「未验证」。
 - **文档声明**：若与代码冲突，以代码为当前行为、以协议为应修正目标。
@@ -92,7 +92,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 | 项 | wind |
 | --- | --- |
-| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `f0a6e55`+，较 `origin/main` 领先 35 提交（Level 2 draft，待人工审查合并；用户轨积压见 §7-Q3） |
+| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `60d1cc1`+，较 `origin/main` 领先 39 提交（Level 2 draft；**审查导读已备**：`docs/review/branch-review-guide.md`，`node scripts/generate-review-pack.mjs` 可刷新） |
 | 应用版本 | 0.0.17 |
 | CodeGraph | 542 文件 / 11,365 节点 / 18,029 边（2026-07-23 sync） |
 | 工具链 | **全链绿**：pnpm + vitest + 增量 svelte-check + 双仓 cargo 均本机 exit 0；`cargo test --workspace` 于 iteration 7 **首次整仓通过**（历史 `-p ridge --lib` loader 载败已根修，见 §5 iteration 7） |
@@ -133,6 +133,13 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
   - A1 切片：pane.rs 全量读写分类审计（报告在迭代文档）；rustc dead_code 扫出并删真死码二处（pane_tree `first_leaf/last_leaf`、parser `full_reframe_with_scrollback`，net −60 行）。
   - G1 设计文档（零代码）：`docs/superpowers/specs/2026-07-23-agent-suspend-resume-design.md`——三层边界、Windows 无 SIGSTOP 三候选（Job Object 冻结目标态）、顺序不变量、HITL fail-closed 计时不暂停。
   - 证据：`cargo test --workspace` exit 0；vitest shared 全伞 559 绿 / 1 skipped（删 9 增 1 帐目符）；svelte-check 0 errors；`-p ridge --lib` 93 绿。
+- **iteration 9**（2026-07-23，G1 阶段一 + 审查闭环，零协议面变更）：
+  - **G1 阶段一关闭（软暂停/恢复）**：`teammate/suspend.rs` 进程级注册表；agent 写路径四所归一（send-keys/delegate/MCP/exec → `agent_pty_write` 唯一收口，suspended 明确拒）；人类输入与断路器 Ctrl-C 刻意不门控（接管/刹车语义）；拓扑双路径 status 覆写 `Suspended`（无新字段）；Agent Center Pause/Play；`suspend_agent`/`resume_agent` 仅桌面 IPC + 不可远达负断言。OS 级冻结属阶段二未做。
+  - C1 清单化：`scripts/rdg-gap-report.mjs` 派生缺口报告（3 supported / 5 denied，teammate 刻意排除，余待人工判定补路由或声明永久缺口）。
+  - 审查辅助：`scripts/generate-review-pack.mjs` → `docs/review/branch-review-guide.md`（全提交分组 + 协议面/安全面标注 + 计数自校验）。
+  - A1 审计新发现：**LAN host `close_workspace` 第三副本实分歧**——漏发 `WorkspacesChanged`/`WorkspaceListChanged`（LAN 关区不通知他端）+ 多删 `workspace_names`；同源化候选以 close 为首、升级缺陷修复级（`docs/audits/workspace-write-paths.md`）。
+  - E1/E2 簿记校正见 §6。
+  - 证据：`cargo test --workspace` exit 0；`-p ridge --lib` 96 绿（+3）；vitest 全伞 559 绿 / 1 skipped；svelte-check 0 errors；双脚本 exit 0。
 
 ## 6. 差距组合现状（愿景 − 现状，含最新裁决）
 
@@ -144,25 +151,25 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | S1 | 兼容安全回落可观测退役 | P0/P1 | **审计 + 遥测两阶段关闭**（F1–F4 计数已实施；F5 已退役删除；F6 由 S1 门禁测试守构造纪律）；逐面 fail-closed 翻闸待真实数据窗口（用户轨） |
 | P1 | Remote Agent 控制台 MVP | P1 | **代码侧关闭**（iteration 6：capability `teammate` + roster 面板 + 切 pane）；真机 UI 人工核验待用户 |
 | P2 | Remote HITL/接管闭环 | P1 | **阶段 1 关闭**（iteration 8：脱敏待审批远端只读可见）；阶段 2 裁决通道未做（需 nonce/单次消费/过期/审计/多 controller 语义） |
-| G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | **设计定稿**（iteration 8 设计文档：三层边界 + 跨平台选型 + 顺序不变量）；实现未做 |
-| A1 | 共享内核减法审计 | P1 | **审计完成 + 三切片落地**（死 pane-output 面、workspace 列表投影、pane_tree/parser 死码 −60 行 + pane.rs 读写分类）；剩余：写路径同源化（高风险，靠后） |
+| G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | **阶段一关闭**（iteration 9：软暂停实现 + UI + 投影）；阶段二 OS 冻结、接管/回滚未做 |
+| A1 | 共享内核减法审计 | P1 | **审计完成 + 三切片落地**；写路径审计毕（iteration 9）：**LAN close 第三副本实分歧 = 真缺陷**（漏广播），close/rename 同源化升为高优先候选 |
 | A2 | 跨入口能力矩阵 + conformance | P1 | **关闭**：机器可读矩阵 + 一致性测试互证（新增能力必须声明矩阵） |
 | R1 | 弱网与恢复证据化 | P1 | **实验室轨关闭**（fault 门禁 + iteration 7 九场景参数化扫描 harness）；真机轨待用户执行 runbook |
 | M1 | Workspace Memory | P2 | 未做；先最小 6 字段 discovery |
 | M2 | Agent 归因事件 | P2 | 未做；依赖 stable_id 可靠 |
 | H1 | 远端 host live PTY | P2 | 未做；`hosts.ts::connectHost` 仍仅登记 |
-| C1 | rdg 行为一致性 | P2 | 未做；先用 A2 矩阵暴露缺口 |
+| C1 | rdg 行为一致性 | P2 | **清单化完成**（iteration 9 脚本派生缺口报告）；逐缺口判定（补路由 vs 声明永久缺口）待后续/人工 |
 | E1 | WebGPU 收益测量 | P3/用户轨 | **重定义**（iteration 9 簿记校正）：WebGPU 为生产默认路径非实验（历史措辞误导致 NotebookLM 提删除建议，已驳回留档）；剩余工作 = 真机 GPU 收益测量，属用户轨 |
 | E2 | 高级自动编排 | P3/实验 | **已关闭**（iteration 9）：待真实多 Agent 瓶颈证据重开；不占活跃清单 |
 
-近期组合原则更新（iteration 8 后）：P1 级自动轨可推进项仅剩 **P2 阶段 2（裁决通道，重语义设计）、G1 实现轮（设计已定稿，阶段一=输入门控最小可用）、A1 写路径同源化（高风险，刻意靠后）**；其余为 M1/M2/H1/C1（P2 级）与 E1/E2（P3 实验，需真实证据否则删）。用户轨四件未消化且分支已领先 35 提交——继续扩协议面（P2 阶段 2 即是）会加重审查负担。
+近期组合原则更新（iteration 9 后）：自动轨可推进存量 = **A1 close/rename 同源化（含 LAN 漏广播真缺陷修复）、P2 阶段 2（裁决通道，扩协议面）、G1 阶段二（OS 冻结）、C1 逐缺口判定、M1/M2、H1**。审查导读包已备，但用户轨四件仍未消化、分支领先 39 提交。
 
 ## 7. 开放问题（请 NotebookLM 定夺）
 
-1. iteration 9 主线候选：**G1 阶段一实现**（输入门控软暂停 + 运行态侧表 + 桌面 UI，纯本机不扩 Remote 协议面，设计文档已定稿）vs **P2 阶段 2 裁决通道设计**（nonce/单次消费/过期/审计/多 controller 语义——先设计文档不实现，还是设计+实现一轮走完？会扩协议面）vs **M1 Workspace Memory 最小 discovery**（6 字段，为暂停/恢复与 HITL 审计供状态基座）。考虑用户轨积压，倾向不扩协议面的候选是否正确？请裁决并给合同草案。
-2. E1（WebGPU 实验）与 E2（自动编排）在存量清单挂了 8 轮无证据——是否本轮直接按「无显著收益则停做或删除」裁决 E1 删除其实验代码（若仓内存在）、E2 关闭为「待真实多 Agent 瓶颈证据重开」？
-3. 分支领先 35 提交、用户轨四件未动——除继续等待外，是否应产出「审查辅助包」（分主题 diff 导读 + 每提交风险标注）降低用户合并成本？这算不算自动轨可交付物？
-4. H1（远端 host live PTY）与 C1（rdg 行为一致性）长期未动：C1 是否可用既有 A2 矩阵 + conformance 测试半自动收口（列出 rdg 与桌面语义缺口清单）而不写新功能？
+1. iteration 10 主线候选：**A1 close/rename 同源化 + LAN 漏广播缺陷修复**（三副本收敛为 core fn，修实分歧，零协议面，×2 净删码）vs **P2 阶段 2 裁决通道设计文档**（nonce/单次消费/过期/审计/多 controller 语义，先设计不实现）vs **G1 阶段二 OS 冻结**（Unix SIGSTOP 进程组 + Windows NtSuspendProcess 树遍历过渡）。请按价值/风险/解锁力/成本裁决并给合同草案。
+2. H1（远端 host live PTY，`hosts.ts::connectHost` 仅登记 + HostStatus 死枚举变体）长期 P2 级未动：是否 ①删 `hosts.ts` 死面（A1 减法）②降级为「待用户真实需求证据重开」（类 E2）③维持待办？
+3. 分支领先 39 提交且审查导读已自动化——迭代是否应设「每 N 轮强制产出一次导读刷新 + 提醒用户轨」的节律，而非无限推进？
+4. M1 Workspace Memory：G1 暂停/HITL 审批数据当前皆进程态、重启即失。M1 最小 6 字段 discovery 是否已到「有真实消费者」门槛（暂停状态/审批历史持久化），可入下下轮？
 
 ## 8. NotebookLM 评审要求（沿用）
 

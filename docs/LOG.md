@@ -2,6 +2,14 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-23 — iteration 9
+
+- 完成：**G1 阶段一关闭**——软暂停/恢复（suspend.rs 进程级注册表；agent 写路径四所归一至 `agent_pty_write` 唯一收口；人类输入/断路器刻意不门控；拓扑双路径 Suspended 投影无新字段；Agent Center Pause/Play；暂停命令仅桌面 IPC + 负断言）。C1 清单化（rdg-gap-report 脚本，3 支持/5 缺）。审查导读包自动化（36 提交分组 + 协议/安全面标注 + 计数自校验）。E1/E2 簿记校正（WebGPU 生产默认不得删）。A1 写路径审计**发现实缺陷**：LAN close 第三副本漏双广播 + 多删 names。
+- 验证：cargo workspace exit 0；`-p ridge --lib` 96 绿（+3）；vitest 559/559（1 skipped）；svelte-check 0 errors；双脚本 exit 0。
+- 熔断：无停机触发；G1 确认四写点即 agent 写径全集（spawn 属进程注入面留阶段二边界）。
+- 下一步：iteration 10——A1 close/rename 三副本同源化 + LAN 漏广播修复（主线）+ M1 设计文档 + H1 簿记降级 + C1 判定入脚本 + 审查节律固化。
+- 驳回：NotebookLM「Vitest 验 LAN 广播」（层错——LAN close 乃 Rust，改 cargo 订阅 remote_structural_tx 断言）；M1 struct-only 三度提案（无消费者死脚手架，改设计文档先行；其「暂停态重启即失冲突可续愿景」论据采纳）；H1「移除开发指针」模糊验收（收敛为状态行变更）。采纳：A1 主线、H1 降级类 E2、审查包节律、C1 判定落脚本 JUDGMENTS 保单源。
+
 ## 2026-07-23 — iteration 8
 
 - 完成：**P2 阶段 1 关闭**——`list_hitl_pending` 脱敏只读端到端（PENDING 注册表加宽存元数据；投影恰五字段绝不含 action 命令全文，Rust 钉死；六处宣告同步；Team 面板 Pending approvals 只读区；裁决通道保持不可远达）。S1 遥测二阶段：F3/F4 进程内计数 + 测试；**F5 `keyBindingVerifier` 钩子退役删除**（生产零接线双证，0x02+B3 覆盖，net −173 行档）。A1：pane.rs 读写分类审计 + 删 rustc 确证死码二处（pane_tree first/last_leaf、parser full_reframe_with_scrollback，−60 行）。G1 设计文档定稿（三层边界/Windows 三候选/顺序不变量/HITL 计时不暂停）。计划外根修 deviceTrust Node localStorage 残缺对象地雷（探针 + 模块级内存回退）。
