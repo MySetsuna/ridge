@@ -121,20 +121,31 @@ pub async fn get_teammate_topology(
 
 /// G1 阶段一 —— 暂停某 pane 的 agent 输入（软暂停：agent 写路径被拒，人类输入不受限）。
 /// 幂等；OS 级冻结属阶段二。仅桌面本机 IPC，刻意不入 `REMOTE_ALLOWLIST`。
+/// M1 切片一：变更后落 sidecar（fail-open），重启可恢复。
 #[tauri::command]
-pub fn suspend_agent(workspace_id: String, pane_id: String) -> Result<(), String> {
+pub fn suspend_agent(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    pane_id: String,
+) -> Result<(), String> {
     let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
     let pane = Uuid::parse_str(&pane_id).map_err(|e| e.to_string())?;
     crate::teammate::suspend::suspend(wid, pane);
+    crate::teammate::suspend::persist_for(&state, wid);
     Ok(())
 }
 
 /// G1 阶段一 —— 恢复。幂等。
 #[tauri::command]
-pub fn resume_agent(workspace_id: String, pane_id: String) -> Result<(), String> {
+pub fn resume_agent(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    pane_id: String,
+) -> Result<(), String> {
     let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
     let pane = Uuid::parse_str(&pane_id).map_err(|e| e.to_string())?;
     crate::teammate::suspend::resume(wid, pane);
+    crate::teammate::suspend::persist_for(&state, wid);
     Ok(())
 }
 

@@ -9,6 +9,7 @@
 //! pane 释放 / agent 注销时由调用方清理（`release_teammate_agent` 路径）。
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use uuid::Uuid;
@@ -37,6 +38,113 @@ pub fn is_suspended(wid: Uuid, pane: Uuid) -> bool {
 /// pane 关闭 / agent 注销时清理（与 `resume` 同效，语义命名区分调用意图）。
 pub fn clear_pane(wid: Uuid, pane: Uuid) {
     resume(wid, pane);
+}
+
+/// 工作区关闭时清空其全部暂停项（内存侧；sidecar 文件由 [`remove_for`] 删）。
+pub fn clear_workspace(wid: Uuid) {
+    if let Ok(mut g) = SUSPENDED.lock() {
+        g.retain(|(w, _)| *w != wid);
+    }
+}
+
+// ── M1 切片一（iteration 11）：suspended panes 持久化 ─────────────────────────
+// sidecar：`{app_data}/workspace-memory/{wid}.json`，本切片仅
+// `{"suspendedPanes":[...],"updatedAt":ms}`（设计 2026-07-23-workspace-memory-design.md
+// 选型 B）。**IO 全程 fail-open**：失败只 warn，暂停语义照常、不阻断关闭/启动；
+// 损坏 json 载入不 panic（失忆非致命）。原子写 temp+rename。
+
+fn sidecar_path(dir: &Path, wid: Uuid) -> PathBuf {
+    dir.join(format!("{wid}.json"))
+}
+
+/// 把某工作区的暂停集写入 `dir`（空集 → 删文件）。dir 注入以便单测。
+pub fn persist_to(dir: &Path, wid: Uuid) {
+    let panes: Vec<String> = SUSPENDED
+        .lock()
+        .map(|g| {
+            g.iter()
+                .filter(|(w, _)| *w == wid)
+                .map(|(_, p)| p.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let path = sidecar_path(dir, wid);
+    if panes.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    let updated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let body = serde_json::json!({ "suspendedPanes": panes, "updatedAt": updated_at });
+    let write = || -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        let tmp = dir.join(format!("{wid}.json.tmp"));
+        std::fs::write(&tmp, body.to_string())?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        tracing::warn!(target: "ridge::suspend", error = %e, %wid, "sidecar 写入失败（fail-open）");
+    }
+}
+
+/// 启动载入：读 `dir` 下全部 sidecar 重挂注册表。损坏/不可读逐文件跳过。
+pub fn load_from(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        let Ok(wid) = Uuid::parse_str(stem) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            tracing::warn!(target: "ridge::suspend", %wid, "sidecar 损坏，跳过（失忆非致命）");
+            continue;
+        };
+        let Some(panes) = value.get("suspendedPanes").and_then(|v| v.as_array()) else { continue };
+        for p in panes.iter().filter_map(|v| v.as_str()) {
+            if let Ok(pane) = Uuid::parse_str(p) {
+                suspend(wid, pane);
+            }
+        }
+    }
+}
+
+/// 工作区关闭清理：删内存项 + sidecar 文件（best-effort）。
+pub fn remove_from(dir: &Path, wid: Uuid) {
+    clear_workspace(wid);
+    let _ = std::fs::remove_file(sidecar_path(dir, wid));
+}
+
+/// 经 `state.app_handle` 解析 sidecar 目录；app 未就绪（如纯单测）→ None（fail-open）。
+fn memory_dir(state: &crate::state::AppState) -> Option<PathBuf> {
+    use tauri::Manager;
+    let app = state.app_handle.get()?;
+    let base = app.path().app_data_dir().ok()?;
+    Some(base.join("workspace-memory"))
+}
+
+/// 变更后落盘（suspend/resume/clear 的调用方钩这里）。
+pub fn persist_for(state: &crate::state::AppState, wid: Uuid) {
+    if let Some(dir) = memory_dir(state) {
+        persist_to(&dir, wid);
+    }
+}
+
+/// 应用启动恢复入口（lib.rs setup 调一次）。
+pub fn load_all_for(state: &crate::state::AppState) {
+    if let Some(dir) = memory_dir(state) {
+        load_from(&dir);
+    }
+}
+
+/// 工作区关闭清理入口（`close_workspace_core` 单点调）。
+pub fn remove_for(state: &crate::state::AppState, wid: Uuid) {
+    match memory_dir(state) {
+        Some(dir) => remove_from(&dir, wid),
+        None => clear_workspace(wid),
+    }
 }
 
 /// **Agent 写路径唯一收口**：suspended → 拒绝（明确错误，agent 可读）；否则透传
@@ -75,6 +183,46 @@ mod tests {
         resume(wid, pane);
         let passed = agent_pty_write(&state, wid, pane, b"echo hi\n").unwrap_err();
         assert!(!passed.starts_with("agent suspended"), "still gated: {passed}");
+    }
+
+    /// M1 切片一：持久化↔载入闭环 + 空集删文件 + 损坏容忍 + 关区清理（dir 注入，
+    /// 不依赖真实 app 目录；全程 fail-open 语义）。
+    #[test]
+    fn sidecar_roundtrip_corruption_and_cleanup() {
+        let dir = std::env::temp_dir().join(format!("ridge-suspend-test-{}", Uuid::new_v4()));
+        let (w1, p1) = (Uuid::new_v4(), Uuid::new_v4());
+
+        // 持久化 → 模拟重启（内存清）→ 载入恢复。
+        suspend(w1, p1);
+        persist_to(&dir, w1);
+        assert!(sidecar_path(&dir, w1).exists());
+        resume(w1, p1);
+        assert!(!is_suspended(w1, p1));
+        load_from(&dir);
+        assert!(is_suspended(w1, p1), "重启载入后暂停态必须恢复");
+
+        // resume 后落盘 → 空集删文件 → 再载不复活。
+        resume(w1, p1);
+        persist_to(&dir, w1);
+        assert!(!sidecar_path(&dir, w1).exists());
+        load_from(&dir);
+        assert!(!is_suspended(w1, p1));
+
+        // 损坏 json：载入不 panic、不产生条目。
+        let w2 = Uuid::new_v4();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(sidecar_path(&dir, w2), "not-json{{{").unwrap();
+        load_from(&dir);
+
+        // 关区清理：内存 + 文件同除。
+        let (w3, p3) = (Uuid::new_v4(), Uuid::new_v4());
+        suspend(w3, p3);
+        persist_to(&dir, w3);
+        remove_from(&dir, w3);
+        assert!(!is_suspended(w3, p3));
+        assert!(!sidecar_path(&dir, w3).exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
