@@ -219,6 +219,15 @@ export interface TeammateTopology {
   edges: unknown[];
 }
 
+/** P2 阶段 1：待裁决高危动作的脱敏快照——绝不含 action 命令全文。 */
+export interface HitlPendingItem {
+  id: string;
+  initiator: string;
+  level: string;
+  reason: string;
+  createdAt: number;
+}
+
 export interface RemoteLink {
   state(): ConnectionState;
   /**
@@ -261,6 +270,7 @@ export interface RemoteLink {
   listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }>;
   /** P1 roster：只读拓扑快照（capability `teammate` 协商后可用；UI 轮询取数）。 */
   getTeammateTopology(workspaceId?: string): Promise<TeammateTopology>;
+  listHitlPending(): Promise<HitlPendingItem[]>;
   switchWorkspace(workspaceId: string): Promise<boolean>;
   createWorkspace(name?: string): Promise<string | null>;
   createPane(shell?: string): Promise<string | null>;
@@ -861,6 +871,16 @@ export class RemoteConnection implements RemoteLink {
     )) as { _result?: TeammateTopology; _error?: unknown };
     if (data._error) throw new Error(String(data._error));
     return data._result ?? { roster: [], leaderId: null, edges: [] };
+  }
+
+  // P2 阶段 1：脱敏待审批快照（同 invoke-request 白名单边界；无 action 全文）。
+  async listHitlPending(): Promise<HitlPendingItem[]> {
+    const data = (await this._sendAndWait(
+      { type: 'invoke-request', cmd: 'list_hitl_pending', args: {}, _reqId: ++this._reqCounter },
+      'invoke-result',
+    )) as { _result?: HitlPendingItem[]; _error?: unknown };
+    if (data._error) throw new Error(String(data._error));
+    return data._result ?? [];
   }
 
   async switchWorkspace(workspaceId: string): Promise<boolean> {

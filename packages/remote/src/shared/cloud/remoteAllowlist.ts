@@ -104,6 +104,8 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'set_user_default_cwd',
   // ── Teammate（P1 控制台 MVP，只读 roster 快照）──
   'get_teammate_topology',
+  // P2 阶段 1：脱敏待审批快照（无 action 全文）；裁决通道仍排除。
+  'list_hitl_pending',
   // ── Search ──
   'text_search',
   'search',

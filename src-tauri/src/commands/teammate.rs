@@ -113,6 +113,14 @@ pub async fn get_teammate_topology(
     Ok(topology_json(ws))
 }
 
+/// P2 阶段 1 —— 待裁决高危动作的**脱敏**只读列表（`teammate` 能力下远端可见）。
+/// 投影仅 `{id, initiator, level, reason, createdAt}`——不含 `action` 命令全文
+/// （可含密钥；见 `hitl::list_pending` 的钉死测试）。裁决通道仍不可远达。
+#[tauri::command]
+pub fn list_hitl_pending() -> Result<Value, String> {
+    Ok(Value::Array(hitl::list_pending()))
+}
+
 /// D2 —— 人类对一个挂起的高危动作的裁决回传。
 /// `verdict` ∈ {"approve","reject","modify"}；modify 时 `replacement` 为新指令。
 #[tauri::command]

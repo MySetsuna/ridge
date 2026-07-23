@@ -102,7 +102,7 @@
       }
     },
     "teammate": {
-      "methods": ["get_teammate_topology"],
+      "methods": ["get_teammate_topology", "list_hitl_pending"],
       "cells": {
         "desktop": "supported",
         "lan": "supported",

@@ -44,6 +44,7 @@ import {
   type ThemeListener,
   type ThemeSnapshot,
   type TeammateTopology,
+  type HitlPendingItem,
 } from '@ridge/remote';
 
 /** Backend `list_workspaces` row (subset we use). */
@@ -548,6 +549,11 @@ export class CloudRemoteConnection implements RemoteLink {
       'get_teammate_topology',
       workspaceId ? { workspaceId } : {},
     );
+  }
+
+  // P2 阶段 1：脱敏待审批快照（无 action 全文），同 allowlist 门控。
+  async listHitlPending(): Promise<HitlPendingItem[]> {
+    return invoke<HitlPendingItem[]>('list_hitl_pending', {});
   }
 
   async switchWorkspace(workspaceId: string): Promise<boolean> {

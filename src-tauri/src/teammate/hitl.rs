@@ -32,7 +32,17 @@ pub const HITL_EVENT: &str = "teammate://hitl-approval-required";
 /// 人类未裁决时的挂起上限——超时后 fail-closed 视为拒绝（绝不静默放行高危）。
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 
-static PENDING: LazyLock<Mutex<HashMap<String, oneshot::Sender<HitlResolution>>>> =
+/// 挂起项：裁决信号 + 供远端只读列表的**脱敏**元数据。
+/// P2 阶段 1（iteration 8）：`list_pending` 投影仅暴露此处字段——
+/// **绝不存/不投影 `action` 命令全文**（可含密钥；全文只随桌面事件走本机）。
+struct PendingEntry {
+    tx: oneshot::Sender<HitlResolution>,
+    initiator: String,
+    reason: String,
+    created_at_ms: u64,
+}
+
+static PENDING: LazyLock<Mutex<HashMap<String, PendingEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -66,9 +76,7 @@ pub async fn request_approval(
 
     let id = format!("hitl_{}", COUNTER.fetch_add(1, Ordering::Relaxed));
     let (tx, rx) = oneshot::channel();
-    if let Ok(mut g) = PENDING.lock() {
-        g.insert(id.clone(), tx);
-    }
+    insert_pending(id.clone(), initiator, &assessment.reason, tx);
 
     let _ = handle.emit(
         HITL_EVENT,
@@ -93,9 +101,48 @@ pub async fn request_approval(
     }
 }
 
+fn insert_pending(id: String, initiator: &str, reason: &str, tx: oneshot::Sender<HitlResolution>) {
+    let created_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    if let Ok(mut g) = PENDING.lock() {
+        g.insert(
+            id,
+            PendingEntry { tx, initiator: initiator.to_string(), reason: reason.to_string(), created_at_ms },
+        );
+    }
+}
+
+/// P2 阶段 1 —— 待裁决动作的**脱敏**只读快照（远端可见面）。
+/// 仅 `{id, initiator, level, reason, createdAt}`；`level` 恒为 `Dangerous`
+/// （非 L2 动作根本不挂起）。按 createdAt 升序，顺序稳定。
+pub fn list_pending() -> Vec<serde_json::Value> {
+    let mut items: Vec<(u64, serde_json::Value)> = match PENDING.lock() {
+        Ok(g) => g
+            .iter()
+            .map(|(id, e)| {
+                (
+                    e.created_at_ms,
+                    serde_json::json!({
+                        "id": id,
+                        "initiator": e.initiator,
+                        "level": "Dangerous",
+                        "reason": e.reason,
+                        "createdAt": e.created_at_ms,
+                    }),
+                )
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    items.sort_by_key(|(t, _)| *t);
+    items.into_iter().map(|(_, v)| v).collect()
+}
+
 /// 人类裁决回传：按 id 取出挂起项并发回结果。返回是否命中一个挂起项。
 pub fn resolve(id: &str, verdict: &str, replacement: Option<String>) -> bool {
-    let tx = PENDING.lock().ok().and_then(|mut g| g.remove(id));
+    let tx = PENDING.lock().ok().and_then(|mut g| g.remove(id)).map(|e| e.tx);
     match tx {
         Some(tx) => {
             let res = match verdict {
@@ -107,5 +154,40 @@ pub fn resolve(id: &str, verdict: &str, replacement: Option<String>) -> bool {
             true
         }
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// P2 阶段 1 脱敏门禁：`list_pending` 投影绝不含 `action` 命令全文，
+    /// 字段恰为 {id, initiator, level, reason, createdAt}；resolve 后即出列。
+    /// （PENDING 为进程全局，测试用独有 id 前缀过滤，避免并行串扰。）
+    #[test]
+    fn list_pending_projection_is_sanitized_and_cleared_on_resolve() {
+        let id = "hitl_test_sanitized_0".to_string();
+        let (tx, mut rx) = oneshot::channel();
+        insert_pending(id.clone(), "claude-a", "递归删除目录", tx);
+
+        let mine: Vec<_> = list_pending()
+            .into_iter()
+            .filter(|v| v["id"] == id.as_str())
+            .collect();
+        assert_eq!(mine.len(), 1);
+        let item = mine[0].as_object().expect("pending item object");
+        for key in item.keys() {
+            assert!(
+                ["id", "initiator", "level", "reason", "createdAt"].contains(&key.as_str()),
+                "unexpected pending field `{key}`"
+            );
+        }
+        assert!(item.get("action").is_none(), "projection must never carry action");
+        assert_eq!(item["level"], "Dangerous");
+        assert_eq!(item["initiator"], "claude-a");
+
+        assert!(resolve(&id, "reject", None));
+        assert!(matches!(rx.try_recv(), Ok(HitlResolution::Reject)));
+        assert!(list_pending().iter().all(|v| v["id"] != id.as_str()));
     }
 }

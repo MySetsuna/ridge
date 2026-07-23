@@ -824,6 +824,7 @@ pub fn run() {
             commands::cloud_http::cloud_http,
             // Domain Zero 端侧多智能体协同（teammate）：D1 拓扑快照 + D2 HITL 网关/风险分级
             commands::teammate::get_teammate_topology,
+            commands::teammate::list_hitl_pending,
             commands::teammate::resolve_hitl_request,
             commands::teammate::set_hitl_enabled,
             commands::teammate::classify_command_risk,
