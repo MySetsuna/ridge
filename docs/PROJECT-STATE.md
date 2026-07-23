@@ -6,7 +6,7 @@
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
 证据等级：
-- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph（537 文件 / 11,319 节点 / 18,166 边）与当前源码确认。
+- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph（542 文件 / 11,365 节点 / 18,029 边）与当前源码确认。
 - **Git 事实**：由本地分支、HEAD 与提交历史确认。
 - **运行事实**：必须有本轮测试/退出码证据；缺证据时明确写「未验证」。
 - **文档声明**：若与代码冲突，以代码为当前行为、以协议为应修正目标。
@@ -92,10 +92,10 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 | 项 | wind |
 | --- | --- |
-| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `5eca329`+，较 `origin/main` 领先 20+ 提交（Level 2 draft，待人工审查合并） |
+| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `b5b7da2`+，较 `origin/main` 领先 25+ 提交（Level 2 draft，待人工审查合并） |
 | 应用版本 | 0.0.17 |
-| CodeGraph | 537 文件 / 11,319 节点 / 18,166 边（2026-07-23 sync） |
-| 工具链 | pnpm + vitest + 增量 svelte-check + cargo 均本机可运行（本轮多次 exit 0）；唯 `cargo test -p ridge --lib` 测试宿主 loader 级载败（`STATUS_ENTRYPOINT_NOT_FOUND`，先于本轮存在，开放问题 Q4） |
+| CodeGraph | 542 文件 / 11,365 节点 / 18,029 边（2026-07-23 sync） |
+| 工具链 | **全链绿**：pnpm + vitest + 增量 svelte-check + 双仓 cargo 均本机 exit 0；`cargo test --workspace` 于 iteration 7 **首次整仓通过**（历史 `-p ridge --lib` loader 载败已根修，见 §5 iteration 7） |
 
 `ridge-cloud`：本轮在 `codex/remote-artifacts-status` 分支新增只读 status 端点（cargo 124 全绿，待人工审查合并部署）；生产 Dokku SHA、TURN 可达性、artifact current 指针仍**未实测**（脚本已备，待用户对生产实跑）。
 
@@ -121,12 +121,18 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
   - S1 遥测第一阶段落地：bridge F1（trust-proof transcript 在/缺）与双 provider F2（enforced/relay-trust）进程内计数 + 测试钉死，无新持久面。
   - A1 切片：workspace 列表投影同源化（删平行 `WorkspaceInfo`，net −12 行）；`get_active_workspace_id`/`get_workspace_snapshot` 审计确认本已单源。
   - 证据：vitest shared 全伞 558 绿 / 1 skipped；svelte-check 71 files 0 errors；cargo check + `--lib --no-run` 0 errors；bins 27 绿。
+- **iteration 7**（2026-07-23，证据与固化轮，冻结新功能）：
+  - **T1 完全关闭——loader 载败根修**：根因为依赖树引入 `comctl32!TaskDialogIndirect`（仅 common-controls v6 导出）；cargo lib 单测宿主无 manifest，加载器绑 WinSxS 5.82 → `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)`。修法：`build.rs` 注入 `/DELAYLOAD:comctl32.dll`（绑定推迟到首次真实调用，测试从不弹框故永不绑定；`rustc-link-arg-tests` 不覆盖 lib 单测宿主、`/MANIFEST:EMBED` 与 tauri-build RT_MANIFEST 冲突，均不可用）。结果：`cargo test -p ridge --lib` **92/92 本机首次全绿**（teammate 投影脱敏等安全断言首次真实执行）；`cargo test --workspace` **首次整仓 exit 0**；附 boot smoke 集成测试防回归。
+  - R1 实验室轨关闭：抽共享 `__faultRig.ts`；`weakNetLab.test.ts` 九场景参数化扫描（脉冲 [1s,5s,14s] 自愈零副作用、28s 越 watchdog+deadline 升级链恰一次恢复、fail/recover [10,50] 周期零泄漏、背压 [1,8+ε,12]MiB×3 pane 丢帧后每 pane 恰一次 resync）；`scripts/run-weaknet-lab.mjs` 触发 + metrics.json 结构校验 exit 0；产物含「实验室确定性模型，非真机结论」disclaimer。
+  - A1 审计：`Teammate` 六字段全被消费（role/status/capability 各有 grep 实证），**无死字段**，NotebookLM 删字段建议驳回。
+  - 固化：`docs/plans/user-verification-checklist.md` 四件用户必办单页；README_CN 补能力协商 + Team 面板段；WORKFLOW 补双轨制段。
+  - 证据：vitest shared 全伞 567 绿 / 1 skipped（37 文件）；svelte-check 0 errors；weaknet-lab 脚本 exit 0。
 
 ## 6. 差距组合现状（愿景 − 现状，含最新裁决）
 
 | ID | 差距 | 优先级 | 当前状态 |
 | --- | --- | --- | --- |
-| T1 | 开发门禁可运行性 | P0 | **大部关闭**：pnpm/vitest/svelte-check/双仓 cargo 均有本轮 exit 0 证据；唯 `-p ridge --lib` 宿主载败（环境级，Q4） |
+| T1 | 开发门禁可运行性 | P0 | **关闭**（iteration 7：loader 根修后 `cargo test --workspace` 首次整仓 exit 0，全部门禁本机可运行） |
 | T2 | Cloud 协议双 SSOT | P0 | **关闭**（iteration 1 收敛 + 自动守卫；EOL 误报已根治） |
 | T3 | 生产两条版本线状态证据 | P0 | **代码侧关闭**（status 端点 + 一键脚本）；生产实跑与分支合并部署待用户 |
 | S1 | 兼容安全回落可观测退役 | P0/P1 | **审计 + 遥测第一阶段关闭**（F1/F2 计数已实施）；F3–F6 计数与逐面 fail-closed 翻闸待数据窗口 |
@@ -135,7 +141,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | 未做 |
 | A1 | 共享内核减法审计 | P1 | **审计完成 + 两切片落地**（死 pane-output 面、workspace 列表投影）；剩余：pane.rs 分类、写路径同源化（高风险，靠后） |
 | A2 | 跨入口能力矩阵 + conformance | P1 | **关闭**：机器可读矩阵 + 一致性测试互证（新增能力必须声明矩阵） |
-| R1 | 弱网与恢复证据化 | P1 | 实验室部分**关闭**（确定性 fault 门禁）；真机部分待用户执行 runbook |
+| R1 | 弱网与恢复证据化 | P1 | **实验室轨关闭**（fault 门禁 + iteration 7 九场景参数化扫描 harness）；真机轨待用户执行 runbook |
 | M1 | Workspace Memory | P2 | 未做；先最小 6 字段 discovery |
 | M2 | Agent 归因事件 | P2 | 未做；依赖 stable_id 可靠 |
 | H1 | 远端 host live PTY | P2 | 未做；`hosts.ts::connectHost` 仍仅登记 |
@@ -143,14 +149,14 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | E1 | WebGPU 收益验证 | P3/实验 | 未做；无显著收益则停做或删除 |
 | E2 | 高级自动编排 | P3/实验 | 未做；需真实多 Agent 瓶颈证据 |
 
-近期组合原则（沿用 GAP_PORTFOLIO §7）：可信基线包（T1 余项 + T3 + S1 审计设计）→ 一条产品主线（P1 控制台 MVP）→ 一个工程护栏（A2 矩阵文档化）→ 测量而非开发（R1 真机）。四项完成前不启动 Workspace RAG、WebGPU shared surface、复杂自动编排或新 Remote 桌面功能。
+近期组合原则更新（iteration 7 后）：原「可信基线包 → P1 主线 → A2 护栏 → R1 测量」四件的自动轨已全部完成；存量仅剩 **P2（HITL）、G1（暂停/恢复）、A1 余项（pane.rs 分类、写路径同源化）** 三个可自动推进的 P1 项，与 M1/M2/H1/C1（P2 级）、E1/E2（P3 实验，需真实证据否则删）。用户轨四件（见 `docs/plans/user-verification-checklist.md`）未消化前，不宜再扩大 Remote 协议面之外的审查面。
 
 ## 7. 开放问题（请 NotebookLM 定夺）
 
-1. iteration 7 主线候选（按 §6 剩余 P1）：**P2 Remote HITL 只读展示**（第一阶段：远端只读列出待审批 + 风险原因，不做裁决通道——裁决需 nonce/单次消费/审计语义，属第二阶段）vs **G1 单 Agent 暂停/恢复状态机设计**（先跨平台可暂停边界设计，不动代码）vs **R1 弱网基准测量**（构造 TURN-only/丢包/大 scrollback 场景取指标）。请按价值/风险/解锁力/成本裁决并给合同草案。
-2. P2 若选：待审批快照走哪条面？（候选：扩 `teammate` 拓扑载荷 vs 新只读方法 `list_hitl_pending`；后者需再过 A2 宣告纪律。）
-3. 用户必办件积压（真机 smoke、生产实跑、两分支合并、Team 面板人工核验）尚未消化——自动化迭代继续推进是否会扩大审查面风险？是否应有一轮「冻结新功能、只固化与文档」等待用户核验？
-4. `-p ridge --lib` loader 载败维持挂起是否仍成立（现已影响新增 Rust 单测的可执行性——teammate 投影测试只能编译不能跑）？
+1. iteration 8 主线候选（按 §6 剩余）：**P2 第一阶段 Remote HITL 只读展示**（新只读方法 `list_hitl_pending` 走既有 A2 宣告纪律，远端只读列出待审批 + 风险原因；裁决通道属第二阶段，需 nonce/单次消费/过期/审计/多 controller 语义）vs **G1 单 Agent 暂停/恢复状态机**（先设计跨平台可暂停边界与恢复语义，落设计文档 + 最小状态机实现）vs **A1 余项**（pane.rs 分类审计、写路径同源化——高风险靠后项，是否该趁全链绿窗口做）。请按价值/风险/解锁力/成本裁决并给合同草案。
+2. P2 若选：待审批快照的载荷边界怎么定才不泄露敏感上下文（命令全文可能含密钥——是否只投影风险分类 + 摘要 + 请求方身份，不投影原始 args）？
+3. 用户必办件积压四件未消化，分支已领先 25+ 提交——是否应设「审查面上限」（如领先提交数阈值）触发强制冻结，直到用户合并？
+4. M1 Workspace Memory 最小 6 字段 discovery 与 M2 归因事件是否值得在 P2/G1 之前提前（论据：为 HITL 审计与暂停/恢复提供状态基座）还是维持靠后？
 
 ## 8. NotebookLM 评审要求（沿用）
 
