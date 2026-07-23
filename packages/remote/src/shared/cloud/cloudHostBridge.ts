@@ -177,8 +177,9 @@ export interface CloudHostBridgeConfig {
   totpBindVerifier?: TotpBindVerifier;
   /**
    * 可选：§7.3 信道绑定 transcript（hostEphPub ‖ controllerEphPub）。用于 §7.4
-   * trusted-controller grant 握手的 Ed25519 签名消息构造。未注入则信任握手无法完成
-   * （proof 直接失败）。
+   * trusted-controller grant 握手的 Ed25519 签名消息构造。未注入时 trust-proof **不是**
+   * 直接失败：签名消息退化为 prefix‖nonce（无信道绑定），由 totp_trust_check 裁决
+   * （S1 回落面，有门禁测试钉死；fail-closed 退役后应要求 transcript 必在）。
    */
   bindTranscript?: Uint8Array | null;
   /** 可选：诊断日志回调（默认 console）。 */

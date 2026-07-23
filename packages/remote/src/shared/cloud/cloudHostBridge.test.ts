@@ -830,3 +830,70 @@ describe('CloudHostBridge — §7.4 TOTP trust-grant handshake', () => {
     void pubKey; // suppress unused warning
   });
 });
+
+describe('CloudHostBridge — S1 兼容回落面（构造点矩阵门禁）', () => {
+  it('bind-only 桥：明文 totp-verify 恒失败（无降级路径），门控保持关闭', async () => {
+    const invoke = vi.fn(async () => 'ran');
+    const { sendControl, sendJson, sentControl, sentJson } = makeRig({
+      invoke,
+      totpBindVerifier: async () => true,
+      bindTranscript: new Uint8Array([1, 2, 3, 4]),
+    });
+
+    sendControl({ t: 'totp-verify', code: '123456' });
+    await Promise.resolve();
+
+    const results = sentControl().filter((f) => f.t === 'totp-result');
+    expect(results).toHaveLength(1);
+    expect(results[0].ok).toBe(false);
+
+    // 门控仍关闭：业务 invoke 被拒且不执行。
+    sendJson({ jsonrpc: '2.0', id: 9, method: 'get_pane_layout' });
+    await Promise.resolve();
+    expect(invoke).not.toHaveBeenCalled();
+    const err = sentJson().find((f) => f.id === 9) as { error?: { data?: { kind?: string } } };
+    expect(err?.error?.data?.kind).toBe('totp-required');
+  });
+
+  it('回落面钉死：host 无 bindTranscript 时 trust-proof 非“直接失败”——退化为无信道绑定签名 + 信任库裁决', async () => {
+    // 现状语义（S1 审计发现）：config 原注释称“未注入 transcript 则 proof 直接失败”，
+    // 实际 transcript=null ⇒ 签名消息退化为 prefix‖nonce（无信道绑定），能否通过由
+    // totp_trust_check 决定。本测试钉死该回落面；fail-closed 改造（S1 退役目标）应
+    // 要求 transcript 必在后才接受 trust-proof。
+    const { secretKey, publicKey } = ed25519.keygen();
+    const invoke = vi.fn(async (m: string) => (m === 'totp_trust_check' ? true : null));
+    const { sendControl, sentControl } = makeRig({ invoke, totpVerifier: async () => true });
+
+    sendControl({ t: 'totp-trust-hello', pub: bytesToBase64(publicKey) });
+    await Promise.resolve();
+    const nonceB64 = sentControl().find((f) => f.t === 'totp-trust-challenge')?.nonce as string;
+    const nonce = Uint8Array.from(atob(nonceB64), (c) => c.charCodeAt(0));
+
+    const sig = ed25519.sign(buildTrustMsg(nonce, new Uint8Array(0)), secretKey);
+    sendControl({ t: 'totp-trust-proof', sig: bytesToBase64(sig) });
+    await Promise.resolve();
+
+    const result = sentControl().find((f) => f.t === 'totp-trust-result');
+    expect(result?.trusted).toBe(true);
+    expect(invoke).toHaveBeenCalledWith('totp_trust_check', { ctrlPubB64: bytesToBase64(publicKey) });
+  });
+
+  it('transcript 不对称即拒：controller 带 transcript 签名而 host 无 → trusted:false', async () => {
+    const { secretKey, publicKey } = ed25519.keygen();
+    const invoke = vi.fn(async (m: string) => (m === 'totp_trust_check' ? true : null));
+    const { sendControl, sentControl } = makeRig({ invoke, totpVerifier: async () => true });
+
+    sendControl({ t: 'totp-trust-hello', pub: bytesToBase64(publicKey) });
+    await Promise.resolve();
+    const nonceB64 = sentControl().find((f) => f.t === 'totp-trust-challenge')?.nonce as string;
+    const nonce = Uint8Array.from(atob(nonceB64), (c) => c.charCodeAt(0));
+
+    const sig = ed25519.sign(buildTrustMsg(nonce, new Uint8Array([1, 2, 3, 4])), secretKey);
+    sendControl({ t: 'totp-trust-proof', sig: bytesToBase64(sig) });
+    await Promise.resolve();
+
+    const result = sentControl().find((f) => f.t === 'totp-trust-result');
+    expect(result?.trusted).toBe(false);
+    expect(invoke).not.toHaveBeenCalledWith('totp_trust_check', expect.anything());
+  });
+});
