@@ -92,12 +92,12 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 | 项 | wind |
 | --- | --- |
-| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `6be9173`，较 `origin/main` 领先 13 提交（Level 2 draft，待人工审查合并） |
+| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `292adb3`，较 `origin/main` 领先 19 提交（Level 2 draft，待人工审查合并） |
 | 应用版本 | 0.0.17 |
 | CodeGraph | 537 文件 / 11,319 节点 / 18,166 边（2026-07-23 sync） |
-| 工具链 | pnpm + vitest + svelte-check 本机可运行（本轮多次 exit 0 证据）；`pnpm check` 根脚本非增量、性能不可接受，增量 svelte-check 为可用替代（iteration 2 checker 结论）；cargo 全仓测试本轮未跑 |
+| 工具链 | pnpm + vitest + 增量 svelte-check + cargo 均本机可运行（本轮多次 exit 0）；唯 `cargo test -p ridge --lib` 测试宿主 loader 级载败（`STATUS_ENTRYPOINT_NOT_FOUND`，先于本轮存在，开放问题 Q4） |
 
-`ridge-cloud`：本轮未改动、未重新探测；生产 Dokku SHA、TURN 可达性、artifact current 指针均**未验证**（→ 差距 T3）。
+`ridge-cloud`：本轮在 `codex/remote-artifacts-status` 分支新增只读 status 端点（cargo 124 全绿，待人工审查合并部署）；生产 Dokku SHA、TURN 可达性、artifact current 指针仍**未实测**（脚本已备，待用户对生产实跑）。
 
 ## 5. 迭代闭环成果（iteration 1–4）与确定性证据
 
@@ -108,21 +108,28 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
   - 新增两条 watchdog 升级时序门禁：`disconnected <15s` 自愈零副作用；`watchdog 15s → ICE restart → deadline 12s → rebuild` 后恰好恢复一次。
   - 新建聚焦真机 runbook `docs/plans/cloud-remote-physical-smoke-runbook.md`、evidence JSON Schema + 示例 + 校验脚本 `scripts/validate-remote-smoke-evidence.mjs`；证据目录 `/artifacts/remote-smoke/` 已 gitignore。
   - 自动验收全绿（2026-07-23 运行）：faultInjection 7/7；Cloud 定向回归 5 文件 156/156；增量 svelte-check 70 files / 0 errors / exit 0；evidence 校验脚本对示例 exit 0。
-  - **真机双平台证据仍为空**：iOS Safari 与 Android Chrome 的换网/后台/token 跨窗场景须由人持真机按 runbook 执行并产出 evidence JSON——这是当前唯一用户必办件。停机条件未触发；不以自动测试宣称双平台通过。
+  - **真机双平台证据仍为空**：iOS Safari 与 Android Chrome 的换网/后台/token 跨窗场景须由人持真机按 runbook 执行并产出 evidence JSON。停机条件未触发；不以自动测试宣称双平台通过。
+- **iteration 5**（2026-07-23，可信基线固化）：
+  - S1 审计落地：构造点×校验器矩阵 `docs/security/cloud-fallback-matrix.md`（回落面 F1–F6 + 退役条件）；3 条钉死测试（含审计发现：**无 bindTranscript 时 trust-proof 非「直接失败」而是退化为无信道绑定签名 + 信任库裁决**，源注释已更正）；遥测/退役设计文档（零行为变更）。
+  - T3 代码侧闭合：ridge-cloud `activate()` 写 `current.json` + 新增 token 守卫只读 `GET /api/v1/remote-artifacts/status`（+3 测试，124 全绿，分支待合并）；wind `scripts/check-prod-status.mjs` 一键两线汇总（桩验四径）。生产实跑待用户。
+  - T1 绿灯：wind `cargo test --workspace --exclude ridge` 882 绿 + `-p ridge --bins` 27 绿 + ridge-cloud 124 绿；唯 `-p ridge --lib` 宿主载败（loader 级，先于本轮，Q4）。
+  - A2 闭合：`docs/capability-matrix.json`（7 能力 × 6 入口，rdgHost 列由 `CLI_CAPABILITIES` 推导）+ 6 条一致性测试防矩阵成第二事实源（13/13 绿）。
+  - A1 示范减法：删 state.rs 死 pane-output 通道面（净 −45 行，rustc dead_code + 全仓 grep 双证）；审计报告确认 git 面已薄委托、`commands/workspace.rs` 只读三件套是真双路径（下切片候选）。
+  - 计划外：修复 signaling drift 门禁 Windows 误报（autocrlf 把 vendored 副本涂 CRLF；`.gitattributes` 钉 LF），vitest cloud+transport 全伞 382 绿 / 1 skipped。
 
 ## 6. 差距组合现状（愿景 − 现状，含最新裁决）
 
 | ID | 差距 | 优先级 | 当前状态 |
 | --- | --- | --- | --- |
-| T1 | 开发门禁可运行性 | P0 | **大部关闭**：pnpm/vitest/增量 svelte-check 有本轮 exit 0 证据；cargo 全仓与 ridge-cloud 测试仍无本轮绿灯 |
-| T2 | Cloud 协议双 SSOT | P0 | **关闭**（iteration 1 后收敛 + 自动守卫） |
-| T3 | 生产两条版本线状态证据 | P0 | 未做；需生产只读探测（cloud SHA、health、activated artifact version、持久卷） |
-| S1 | 兼容安全回落可观测退役 | P0/P1 | 未做；先构造点矩阵与遥测设计，不直接翻 fail-closed 总开关 |
+| T1 | 开发门禁可运行性 | P0 | **大部关闭**：pnpm/vitest/svelte-check/双仓 cargo 均有本轮 exit 0 证据；唯 `-p ridge --lib` 宿主载败（环境级，Q4） |
+| T2 | Cloud 协议双 SSOT | P0 | **关闭**（iteration 1 收敛 + 自动守卫；EOL 误报已根治） |
+| T3 | 生产两条版本线状态证据 | P0 | **代码侧关闭**（status 端点 + 一键脚本）；生产实跑与分支合并部署待用户 |
+| S1 | 兼容安全回落可观测退役 | P0/P1 | **审计阶段关闭**（矩阵 F1–F6 + 钉死测试 + 遥测/退役设计）；遥测实施与逐面翻闸待后续迭代按设计推进 |
 | P1 | Remote Agent 控制台 MVP | P1 | 未做；依赖只读 teammate topology 经 Remote 白名单安全暴露 |
 | P2 | Remote HITL/接管闭环 | P1 | 未做；需 nonce/单次消费/过期/审计/多 controller 裁决语义，不简单加白名单 |
 | G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | 未做 |
-| A1 | 共享内核减法审计 | P1 | 部分：workspace/pane/Git 已大量入 core；剩余双路径需按调用图逐项 |
-| A2 | 跨入口能力矩阵 + conformance | P1 | **主体关闭**：合同测试在；机器可读矩阵文档化仍缺 |
+| A1 | 共享内核减法审计 | P1 | **审计完成 + 首个示范删除**；下切片 = `commands/workspace.rs` 只读三件套同源化 |
+| A2 | 跨入口能力矩阵 + conformance | P1 | **关闭**：机器可读矩阵 + 一致性测试互证（新增能力必须声明矩阵） |
 | R1 | 弱网与恢复证据化 | P1 | 实验室部分**关闭**（确定性 fault 门禁）；真机部分待用户执行 runbook |
 | M1 | Workspace Memory | P2 | 未做；先最小 6 字段 discovery |
 | M2 | Agent 归因事件 | P2 | 未做；依赖 stable_id 可靠 |
@@ -135,10 +142,11 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 ## 7. 开放问题（请 NotebookLM 定夺）
 
-1. iteration 5 主线二选一：**S1**（安全回落构造点矩阵 + 遥测/退役设计，先审计不改行为）还是 **P1**（Remote Agent 控制台 MVP，只读 roster + 切 Pane）？请按价值/风险降低/解锁力/成本排序并给不做方案。
-2. 真机 smoke（R1）由用户择机执行期间，自动化侧可并行哪些与其无冲突的目标？
-3. T3 生产探测需生产环境访问权：应做成什么形态的只读 runbook/脚本才能一次命令产出两条版本线证据？
-4. cargo 全仓与 ridge-cloud 测试绿灯（T1 余项）应该在哪个迭代补齐，是否值得单独一轮？
+1. iteration 6 主线：可信基线包已闭（T1 大部/T2/T3 代码侧/S1 审计/A2），按 §6 近期组合顺位应轮到 **P1 Remote Agent 控制台 MVP**（只读 roster + 切 Pane，经 Remote 白名单安全暴露 teammate topology）。是否同意？若同意，请给 MVP 的最小能力宣告面（新 capability 名、方法清单、denied 入口）与验收信号；若不同意，说明更高优先候选及理由。
+2. P1 依赖前提：teammate topology 只读快照如何进 REMOTE_ALLOWLIST 而不暴露本机 MCP endpoint/token？（矩阵 A2 要求新能力先声明。）
+3. S1 遥测实施（F1/F2 计数）应并入 P1 迭代还是单独小轮？
+4. `cargo test -p ridge --lib` 宿主 `STATUS_ENTRYPOINT_NOT_FOUND` 根因定位值得花一轮吗？（其余 7 成员 + bins 全绿，功能面未受阻。）
+5. 用户必办件（真机 smoke、生产 status 实跑、两分支审查合并）完成前，还有哪些自动化侧无冲突目标可排？
 
 ## 8. NotebookLM 评审要求（沿用）
 

@@ -2,6 +2,14 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-23 — iteration 5
+
+- 完成：可信基线固化五目标全落——S1 构造点矩阵 + 3 条回落钉死测试（发现并更正「无 transcript 时 trust-proof 直接失败」的错误注释：实为退化为无信道绑定 + 信任库裁决）+ 遥测/退役设计；T3 ridge-cloud 只读 status 端点（124 绿，独立分支）+ wind 一键两线脚本（桩验四径）；T1 双仓 cargo 绿灯（wind 882+27，cloud 124）；A2 机器可读矩阵 + 6 条一致性测试；A1 审计报告 + 删死 pane-output 面（−45 行）。
+- 计划外：根治 signaling drift 门禁 Windows EOL 误报（.gitattributes 钉 LF）；vitest cloud+transport 全伞 382 绿。
+- 熔断：`cargo test -p ridge --lib` 宿主 `STATUS_ENTRYPOINT_NOT_FOUND` 载败（loader 级、先于本轮、其余全绿）——如实记录不宣称全仓绿，根因挂开放问题。
+- 下一步：iteration 6 主线 P1 Remote Agent 控制台 MVP（capability `teammate`、只读 `get_teammate_topology`、轮询、rdgHost denied）+ S1 计数实施 + A1 只读三件套同源化。
+- 驳回：NotebookLM 的 `agent_roster_view` 命名（改 `teammate` 对齐短名词惯例）、`subscribe_agent_updates` 订阅流（MVP 轮询即可）、rdg-Host Supported（无 roster 数据源，denied）、`telemetry.log` 新持久面（按设计用进程内计数）、T3 挂 CI（无测试 CI，属用户决策）、移除 WebGPU 构建检查（违反 E1「先证伪再删」）。
+
 ## 2026-07-23 — iteration 4 收口 + 笔记本压缩
 
 - 完成：补跑 iteration 4 自动验收全绿（faultInjection 7/7 含两条新 watchdog 升级时序、Cloud 定向 156/156、增量 svelte-check 0 errors、evidence 校验脚本自测 exit 0）；写收口报告。真机双平台 smoke 证据仍空，保持唯一用户必办件（runbook/schema/校验脚本已备）。
