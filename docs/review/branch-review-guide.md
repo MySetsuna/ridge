@@ -1,11 +1,11 @@
 # 分支审查导读 — `codex/remote-git-diff-iteration-1`
 
-生成：`node scripts/generate-review-pack.mjs`（范围 `origin/main..HEAD`，共 **42** 提交；手改无效，重跑刷新）。
+生成：`node scripts/generate-review-pack.mjs`（范围 `origin/main..HEAD`，共 **45** 提交；手改无效，重跑刷新）。
 
 ## 审查优先级建议
 
 1. **协议面提交（5）**：动了 allowlist/能力合同/矩阵——远端可达面变化，逐条核。
-2. **安全面提交（8）**：hitl/e2ee/totp/trust/suspend 路径。
+2. **安全面提交（10）**：hitl/e2ee/totp/trust/suspend 路径。
 3. 其余按类型抽查；docs 类可速览。
 
 ## 协议面提交清单
@@ -16,7 +16,7 @@
 - `72ef6dd` feat(remote): expose read-only teammate roster across entries
 - `2af7dc7` feat(remote): expose sanitized read-only HITL pending list (P2 phase 1)
 
-## feat（10）
+## feat（11）
 
 | SHA | 标题 | 文件数 | 变更量 | 标注 |
 | --- | --- | --- | --- | --- |
@@ -30,6 +30,7 @@
 | `a1a2f40` | **remote** count S1 F3/F4 fallbacks and retire F5 hook | 9 |  9 files changed, 67 insertions(+), 173 deletions(-) | 安全面 |
 | `81a0f59` | **teammate** soft suspend/resume agent input (G1 phase 1) | 10 |  10 files changed, 216 insertions(+), 29 deletions(-) | 安全面 |
 | `f2014ed` | **scripts** rdg gap report and branch review pack generators | 4 |  4 files changed, 254 insertions(+) | — |
+| `2177e3d` | **teammate** persist suspended panes across restarts (M1 slice 1) | 5 |  5 files changed, 169 insertions(+), 2 deletions(-) | 安全面 |
 
 ## fix（6）
 
@@ -57,7 +58,7 @@
 | `d029a65` | **remote** cover watchdog escalation paths | 1 |  1 file changed, 65 insertions(+) | — |
 | `8f66e1c` | **remote** add deterministic weak-net lab sweep | 5 |  5 files changed, 490 insertions(+), 222 deletions(-) | — |
 
-## docs（21）
+## docs（23）
 
 | SHA | 标题 | 文件数 | 变更量 | 标注 |
 | --- | --- | --- | --- | --- |
@@ -82,3 +83,5 @@
 | `60d1cc1` | **audits** workspace write-path audit + E1/E2 ledger correction | 2 |  2 files changed, 32 insertions(+), 3 deletions(-) | — |
 | `96b3612` | **iteration** close iteration 9 loop and contract iteration 10 | 7 |  7 files changed, 158 insertions(+), 14 deletions(-) | — |
 | `bf4dd2e` | workspace memory design + rdg gap judgments + review cadence | 4 |  4 files changed, 60 insertions(+), 7 deletions(-) | — |
+| `139a17b` | **iteration** close iteration 10 loop and contract iteration 11 | 7 |  7 files changed, 143 insertions(+), 14 deletions(-) | — |
+| `d3dc21b` | **specs** remote HITL resolution v2 design (P2 phase 2) | 1 |  1 file changed, 53 insertions(+) | 安全面 |

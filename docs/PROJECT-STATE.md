@@ -6,7 +6,7 @@
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
 证据等级：
-- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph（545 文件 / 11,424 节点 / 18,196 边）与当前源码确认。
+- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph（545 文件 / 11,435 节点 / 18,207 边）与当前源码确认。
 - **Git 事实**：由本地分支、HEAD 与提交历史确认。
 - **运行事实**：必须有本轮测试/退出码证据；缺证据时明确写「未验证」。
 - **文档声明**：若与代码冲突，以代码为当前行为、以协议为应修正目标。
@@ -92,7 +92,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 | 项 | wind |
 | --- | --- |
-| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `bf4dd2e`+，较 `origin/main` 领先 42+ 提交（Level 2 draft；审查导读每轮闭环强制刷新：`docs/review/branch-review-guide.md`） |
+| 分支 / HEAD | `codex/remote-git-diff-iteration-1`，较 `origin/main` 领先 45+ 提交（Level 2 draft；审查导读每轮闭环强制刷新：`docs/review/branch-review-guide.md`） |
 | 应用版本 | 0.0.17 |
 | CodeGraph | 542 文件 / 11,365 节点 / 18,029 边（2026-07-23 sync） |
 | 工具链 | **全链绿**：pnpm + vitest + 增量 svelte-check + 双仓 cargo 均本机 exit 0；`cargo test --workspace` 于 iteration 7 **首次整仓通过**（历史 `-p ridge --lib` loader 载败已根修，见 §5 iteration 7） |
@@ -146,6 +146,11 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
   - C1 判定收口：五 denied 缺口逐项判定入脚本 `JUDGMENTS`（teammate 刻意排除；theme/invoke 语义完备永久缺口；git/workspace 补路由候选待需求），报告零「待人工判定」残留。
   - 节律固化：WORKFLOW 每轮闭环必刷审查导读；积压期不扩协议面。
   - 证据：cargo workspace exit 0；workspace::tests 2 绿；vitest 559/1skip；svelte-check 0 errors；双脚本 exit 0。
+- **iteration 11**（2026-07-23，M1 切片一 + P2 阶段 2 设计，零协议面变更）：
+  - **M1 切片一关闭（暂停态跨重启）**：sidecar `{app_data}/workspace-memory/{wid}.json`（仅 suspendedPanes+updatedAt，原子写、空集删文件）；启动载入重挂；全写方钩落盘；`close_workspace_core` 单点清理；IO 全程 fail-open（损坏 json 跳过不 panic）。dir 注入单测 3/3（重启恢复/不复活/损坏容忍/关区同清）。
+  - **P2 阶段 2 设计定稿**：一次性裁决票据（nonce 随挂起项生成，恒时比对、取出即毁=单次消费防双裁决）；**远端 modify 永不开放**；120s fail-closed 不变不延；多 controller 首达生效+败者入审计（接 M1 decisions，不存命令全文）；传输面选 `teammate` 新方法（弃 CONTROL 混层）。**实现被红线冻结待用户轨**。
+  - 证据：cargo workspace exit 0；suspend 3/3；vitest 559/1skip；svelte-check 0 errors。
+- **iteration 12**（2026-07-23，收敛轮）：30 分钟核验会动线文档（用户轨一次清偿动线，覆盖 checklist 全部条目）；G1 阶段二/M1 余切片/M2 簿记归档（待证据/解冻重开）；维护态定型入 WORKFLOW（验收=门禁绿+导读刷新+零回归；解冻=用户轨首份证据）。**自此自动轨存量做尽，循环转低频维护态。**
 
 ## 6. 差距组合现状（愿景 − 现状，含最新裁决）
 
@@ -156,26 +161,23 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | T3 | 生产两条版本线状态证据 | P0 | **代码侧关闭**（status 端点 + 一键脚本）；生产实跑与分支合并部署待用户 |
 | S1 | 兼容安全回落可观测退役 | P0/P1 | **审计 + 遥测两阶段关闭**（F1–F4 计数已实施；F5 已退役删除；F6 由 S1 门禁测试守构造纪律）；逐面 fail-closed 翻闸待真实数据窗口（用户轨） |
 | P1 | Remote Agent 控制台 MVP | P1 | **代码侧关闭**（iteration 6：capability `teammate` + roster 面板 + 切 pane）；真机 UI 人工核验待用户 |
-| P2 | Remote HITL/接管闭环 | P1 | **阶段 1 关闭**（iteration 8：脱敏待审批远端只读可见）；阶段 2 裁决通道未做（需 nonce/单次消费/过期/审计/多 controller 语义） |
-| G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | **阶段一关闭**（iteration 9：软暂停实现 + UI + 投影）；阶段二 OS 冻结、接管/回滚未做 |
+| P2 | Remote HITL/接管闭环 | P1 | **阶段 1 关闭 + 阶段 2 设计定稿**（iteration 11：票据/单次消费/审计/传输面全裁决）；**实现被红线冻结**——用户轨消化后即可开工 |
+| G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | **阶段一关闭 + 阶段二已关闭待痛点证据重开**（iteration 12 簿记：软暂停覆盖主场景；真冻结场景频率无证据，同 E1 处置）；接管/回滚待 P2 阶段 2 解冻 |
 | A1 | 共享内核减法审计 | P1 | **关闭**（iteration 10：close/rename 同源化落地 + LAN 漏广播缺陷修复；历史切片累计五处、净删 200+ 行；后续减法随日常纪律进行，不再占差距行） |
 | A2 | 跨入口能力矩阵 + conformance | P1 | **关闭**：机器可读矩阵 + 一致性测试互证（新增能力必须声明矩阵） |
 | R1 | 弱网与恢复证据化 | P1 | **实验室轨关闭**（fault 门禁 + iteration 7 九场景参数化扫描 harness）；真机轨待用户执行 runbook |
-| M1 | Workspace Memory | P2 | **设计定稿**（iteration 10：sidecar 落点 + 6 字段 + 三切片序）；切片一（suspended panes 持久化）待实现轮 |
-| M2 | Agent 归因事件 | P2 | 未做；依赖 stable_id 可靠 |
+| M1 | Workspace Memory | P2 | **切片一关闭；余切片已关闭待解冻**（iteration 12 簿记：decisions 写方依赖 P2 阶段 2 实现，与 M2 合并重开） |
+| M2 | Agent 归因事件 | P2 | **已关闭——待 P2 阶段 2 解冻后与 M1 切片二合并重开**（stable_id 依赖已满足，iteration 11 初裁存照） |
 | H1 | 远端 host live PTY | P2 | **已关闭——待用户真实需求证据重开**（iteration 10 簿记，类 E2）；`hosts` 存量登记面与死变体容忍保留 |
 | C1 | rdg 行为一致性 | P2 | **关闭**（iteration 10：五缺口逐项判定零残留；git/workspace 列补路由候选待真实需求触发，触发时按 A2 纪律接线） |
 | E1 | WebGPU 收益测量 | P3/用户轨 | **重定义**（iteration 9 簿记校正）：WebGPU 为生产默认路径非实验（历史措辞误导致 NotebookLM 提删除建议，已驳回留档）；剩余工作 = 真机 GPU 收益测量，属用户轨 |
 | E2 | 高级自动编排 | P3/实验 | **已关闭**（iteration 9）：待真实多 Agent 瓶颈证据重开；不占活跃清单 |
 
-近期组合原则更新（iteration 10 后）：**不扩协议面前沿的自动轨存量趋于收敛**——剩 **M1 切片一**（suspended panes 持久化 + 启动恢复，读写方已在、设计已定）、**G1 阶段二**（OS 冻结，本机高风险面）、**P2 阶段 2 设计文档**（设计不扩协议面，实现才扩）、**M2**（依赖 stable_id）。用户轨四件消化前不做 P2 阶段 2 实现；存量做尽后循环应转入「低频维护 + 待用户」态而非制造工作。
+**终态声明（iteration 12）**：自动轨在「不扩协议面 + 无用户轨证据」约束下的存量已全部完成或裁决归档。当前为**低频维护态**：每轮 = 全门禁绿 + 导读刷新 + 零回归；不制造工作。
 
-## 7. 开放问题（请 NotebookLM 定夺）
+## 7. 开放问题
 
-1. iteration 11 主线候选：**M1 切片一实现**（suspended panes 落 sidecar + 启动恢复——G1 暂停态重启即失的直接补全，纯本机零协议面，设计文档已给验收路径）vs **G1 阶段二 OS 冻结**（Unix SIGSTOP 进程组 + Windows NtSuspendProcess 树遍历；真暂停但 OS 面风险高、Windows 竞态缺口需声明）vs **P2 阶段 2 裁决通道设计文档**（nonce/单次消费/过期/审计/多 controller 语义，零代码）。请裁决并给合同草案。
-2. 自动轨收敛判定：M1 切片一 + G1 阶段二 + P2 阶段 2 设计完成后，不扩协议面的存量即尽。届时循环应 ①转低频维护态（只修缺陷+刷导读，等用户轨）②继续 M1 切片二/三 ③其他？「制造工作」的红线怎么划？
-3. M2（Agent 归因事件）依赖 stable_id 可靠性——当前 `agent_id` 经 profiles 注册（iteration 6 起稳定标识定档）。依赖是否已满足、M2 是否可与 M1 切片二（decisions 持久化）合并为一轮？
-4. G1 阶段二若选：Windows 过渡方案 NtSuspendProcess 树遍历的竞态缺口（挂起间隙新 spawn 漏网）是否可接受为「文档声明的已知边界」，还是必须等 Job Object 预建（阶段三基建）一步到位？
+**当前无待定夺规划问题**（存量已尽）。解冻条件 = 用户轨首份证据到达（真机 evidence JSON / 生产 status 实跑 / 分支合并，动线见 `docs/plans/30-min-verification-session.md`）。解冻后首轮建议：按已定稿设计启动 **P2 阶段 2 实现**（`2026-07-23-hitl-resolution-v2-design.md`），随后 M1 切片二 + M2 合并轮；届时请 NotebookLM 按证据内容复核优先级。
 
 ## 8. NotebookLM 评审要求（沿用）
 
