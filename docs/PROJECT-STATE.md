@@ -6,7 +6,7 @@
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
 证据等级：
-- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph（545 文件 / 11,417 节点 / 18,189 边）与当前源码确认。
+- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph（545 文件 / 11,424 节点 / 18,196 边）与当前源码确认。
 - **Git 事实**：由本地分支、HEAD 与提交历史确认。
 - **运行事实**：必须有本轮测试/退出码证据；缺证据时明确写「未验证」。
 - **文档声明**：若与代码冲突，以代码为当前行为、以协议为应修正目标。
@@ -92,7 +92,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 | 项 | wind |
 | --- | --- |
-| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `60d1cc1`+，较 `origin/main` 领先 39 提交（Level 2 draft；**审查导读已备**：`docs/review/branch-review-guide.md`，`node scripts/generate-review-pack.mjs` 可刷新） |
+| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `bf4dd2e`+，较 `origin/main` 领先 42+ 提交（Level 2 draft；审查导读每轮闭环强制刷新：`docs/review/branch-review-guide.md`） |
 | 应用版本 | 0.0.17 |
 | CodeGraph | 542 文件 / 11,365 节点 / 18,029 边（2026-07-23 sync） |
 | 工具链 | **全链绿**：pnpm + vitest + 增量 svelte-check + 双仓 cargo 均本机 exit 0；`cargo test --workspace` 于 iteration 7 **首次整仓通过**（历史 `-p ridge --lib` loader 载败已根修，见 §5 iteration 7） |
@@ -140,6 +140,12 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
   - A1 审计新发现：**LAN host `close_workspace` 第三副本实分歧**——漏发 `WorkspacesChanged`/`WorkspaceListChanged`（LAN 关区不通知他端）+ 多删 `workspace_names`；同源化候选以 close 为首、升级缺陷修复级（`docs/audits/workspace-write-paths.md`）。
   - E1/E2 簿记校正见 §6。
   - 证据：`cargo test --workspace` exit 0；`-p ridge --lib` 96 绿（+3）；vitest 全伞 559 绿 / 1 skipped；svelte-check 0 errors；双脚本 exit 0。
+- **iteration 10**（2026-07-23，A1 主线 + 簿记清偿，零协议面变更）：
+  - **A1 写路径同源化 + 缺陷修复**：`close_workspace_core`/`rename_workspace_core` 唯一实现，三/双调用方委托；**修实缺陷**——LAN 副本漏发 `WorkspacesChanged`/`WorkspaceListChanged`（关区不通知他端）、names 残条泄漏三方对齐；broadcast 订阅测试钉死；净删 ~80 行副本（提交本身 −4 净行）。
+  - M1 设计定稿（零代码）：sidecar json 落点（与 .ridge 布局解耦；清理挂 `close_workspace_core` 单点）、6 字段与首个读写方、隐私边界（决策只存风险分类+摘要）、三切片序（切片一 = suspended panes 持久化 + 启动恢复）。
+  - C1 判定收口：五 denied 缺口逐项判定入脚本 `JUDGMENTS`（teammate 刻意排除；theme/invoke 语义完备永久缺口；git/workspace 补路由候选待需求），报告零「待人工判定」残留。
+  - 节律固化：WORKFLOW 每轮闭环必刷审查导读；积压期不扩协议面。
+  - 证据：cargo workspace exit 0；workspace::tests 2 绿；vitest 559/1skip；svelte-check 0 errors；双脚本 exit 0。
 
 ## 6. 差距组合现状（愿景 − 现状，含最新裁决）
 
@@ -152,24 +158,24 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | P1 | Remote Agent 控制台 MVP | P1 | **代码侧关闭**（iteration 6：capability `teammate` + roster 面板 + 切 pane）；真机 UI 人工核验待用户 |
 | P2 | Remote HITL/接管闭环 | P1 | **阶段 1 关闭**（iteration 8：脱敏待审批远端只读可见）；阶段 2 裁决通道未做（需 nonce/单次消费/过期/审计/多 controller 语义） |
 | G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | **阶段一关闭**（iteration 9：软暂停实现 + UI + 投影）；阶段二 OS 冻结、接管/回滚未做 |
-| A1 | 共享内核减法审计 | P1 | **审计完成 + 三切片落地**；写路径审计毕（iteration 9）：**LAN close 第三副本实分歧 = 真缺陷**（漏广播），close/rename 同源化升为高优先候选 |
+| A1 | 共享内核减法审计 | P1 | **关闭**（iteration 10：close/rename 同源化落地 + LAN 漏广播缺陷修复；历史切片累计五处、净删 200+ 行；后续减法随日常纪律进行，不再占差距行） |
 | A2 | 跨入口能力矩阵 + conformance | P1 | **关闭**：机器可读矩阵 + 一致性测试互证（新增能力必须声明矩阵） |
 | R1 | 弱网与恢复证据化 | P1 | **实验室轨关闭**（fault 门禁 + iteration 7 九场景参数化扫描 harness）；真机轨待用户执行 runbook |
-| M1 | Workspace Memory | P2 | 未做；先最小 6 字段 discovery |
+| M1 | Workspace Memory | P2 | **设计定稿**（iteration 10：sidecar 落点 + 6 字段 + 三切片序）；切片一（suspended panes 持久化）待实现轮 |
 | M2 | Agent 归因事件 | P2 | 未做；依赖 stable_id 可靠 |
-| H1 | 远端 host live PTY | P2 | 未做；`hosts.ts::connectHost` 仍仅登记 |
-| C1 | rdg 行为一致性 | P2 | **清单化完成**（iteration 9 脚本派生缺口报告）；逐缺口判定（补路由 vs 声明永久缺口）待后续/人工 |
+| H1 | 远端 host live PTY | P2 | **已关闭——待用户真实需求证据重开**（iteration 10 簿记，类 E2）；`hosts` 存量登记面与死变体容忍保留 |
+| C1 | rdg 行为一致性 | P2 | **关闭**（iteration 10：五缺口逐项判定零残留；git/workspace 列补路由候选待真实需求触发，触发时按 A2 纪律接线） |
 | E1 | WebGPU 收益测量 | P3/用户轨 | **重定义**（iteration 9 簿记校正）：WebGPU 为生产默认路径非实验（历史措辞误导致 NotebookLM 提删除建议，已驳回留档）；剩余工作 = 真机 GPU 收益测量，属用户轨 |
 | E2 | 高级自动编排 | P3/实验 | **已关闭**（iteration 9）：待真实多 Agent 瓶颈证据重开；不占活跃清单 |
 
-近期组合原则更新（iteration 9 后）：自动轨可推进存量 = **A1 close/rename 同源化（含 LAN 漏广播真缺陷修复）、P2 阶段 2（裁决通道，扩协议面）、G1 阶段二（OS 冻结）、C1 逐缺口判定、M1/M2、H1**。审查导读包已备，但用户轨四件仍未消化、分支领先 39 提交。
+近期组合原则更新（iteration 10 后）：**不扩协议面前沿的自动轨存量趋于收敛**——剩 **M1 切片一**（suspended panes 持久化 + 启动恢复，读写方已在、设计已定）、**G1 阶段二**（OS 冻结，本机高风险面）、**P2 阶段 2 设计文档**（设计不扩协议面，实现才扩）、**M2**（依赖 stable_id）。用户轨四件消化前不做 P2 阶段 2 实现；存量做尽后循环应转入「低频维护 + 待用户」态而非制造工作。
 
 ## 7. 开放问题（请 NotebookLM 定夺）
 
-1. iteration 10 主线候选：**A1 close/rename 同源化 + LAN 漏广播缺陷修复**（三副本收敛为 core fn，修实分歧，零协议面，×2 净删码）vs **P2 阶段 2 裁决通道设计文档**（nonce/单次消费/过期/审计/多 controller 语义，先设计不实现）vs **G1 阶段二 OS 冻结**（Unix SIGSTOP 进程组 + Windows NtSuspendProcess 树遍历过渡）。请按价值/风险/解锁力/成本裁决并给合同草案。
-2. H1（远端 host live PTY，`hosts.ts::connectHost` 仅登记 + HostStatus 死枚举变体）长期 P2 级未动：是否 ①删 `hosts.ts` 死面（A1 减法）②降级为「待用户真实需求证据重开」（类 E2）③维持待办？
-3. 分支领先 39 提交且审查导读已自动化——迭代是否应设「每 N 轮强制产出一次导读刷新 + 提醒用户轨」的节律，而非无限推进？
-4. M1 Workspace Memory：G1 暂停/HITL 审批数据当前皆进程态、重启即失。M1 最小 6 字段 discovery 是否已到「有真实消费者」门槛（暂停状态/审批历史持久化），可入下下轮？
+1. iteration 11 主线候选：**M1 切片一实现**（suspended panes 落 sidecar + 启动恢复——G1 暂停态重启即失的直接补全，纯本机零协议面，设计文档已给验收路径）vs **G1 阶段二 OS 冻结**（Unix SIGSTOP 进程组 + Windows NtSuspendProcess 树遍历；真暂停但 OS 面风险高、Windows 竞态缺口需声明）vs **P2 阶段 2 裁决通道设计文档**（nonce/单次消费/过期/审计/多 controller 语义，零代码）。请裁决并给合同草案。
+2. 自动轨收敛判定：M1 切片一 + G1 阶段二 + P2 阶段 2 设计完成后，不扩协议面的存量即尽。届时循环应 ①转低频维护态（只修缺陷+刷导读，等用户轨）②继续 M1 切片二/三 ③其他？「制造工作」的红线怎么划？
+3. M2（Agent 归因事件）依赖 stable_id 可靠性——当前 `agent_id` 经 profiles 注册（iteration 6 起稳定标识定档）。依赖是否已满足、M2 是否可与 M1 切片二（decisions 持久化）合并为一轮？
+4. G1 阶段二若选：Windows 过渡方案 NtSuspendProcess 树遍历的竞态缺口（挂起间隙新 spawn 漏网）是否可接受为「文档声明的已知边界」，还是必须等 Job Object 预建（阶段三基建）一步到位？
 
 ## 8. NotebookLM 评审要求（沿用）
 

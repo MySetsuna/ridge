@@ -19,3 +19,4 @@
 | 7 | `CONTRACT-iteration-7.md` | `2026-07-23-iteration-7.md` | `2026-07-23-notebooklm-guidance-7.md` | 完成（T1 完全关闭；用户轨四件见 checklist） |
 | 8 | `CONTRACT-iteration-8.md` | `2026-07-23-iteration-8.md` | `2026-07-23-notebooklm-guidance-8.md` | 完成（P2 阶段 1 只读；F5 退役删除） |
 | 9 | `CONTRACT-iteration-9.md` | `2026-07-23-iteration-9.md` | `2026-07-23-notebooklm-guidance-9.md` | 完成（G1 阶段一软暂停；审计得 LAN close 分歧） |
+| 10 | `CONTRACT-iteration-10.md` | `2026-07-23-iteration-10.md` | `2026-07-23-notebooklm-guidance-10.md` | 完成（A1 同源化修 LAN 漏广播；A1/C1/H1 关闭） |

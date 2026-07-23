@@ -2,6 +2,14 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-23 — iteration 10
+
+- 完成：**A1 关闭**——close/rename 三/双副本同源化为 `close_workspace_core`/`rename_workspace_core`，**修实缺陷**（LAN 副本漏发 WorkspacesChanged/WorkspaceListChanged、names 残条泄漏），broadcast 订阅测试钉死，净删 ~80 行。M1 设计定稿（sidecar json、6 字段、三切片序）。**C1 关闭**（五缺口判定入脚本 JUDGMENTS 零残留）。**H1 簿记关闭**（待需求证据重开）。节律固化（闭环必刷导读、积压期不扩协议面）。
+- 验证：cargo workspace exit 0；workspace::tests 2 绿；vitest 559/1skip；svelte-check 0 errors；双脚本 exit 0。
+- 熔断：无停机触发；同源化未暴露锁序冲突；rename 未触发减法条款。
+- 下一步：iteration 11——M1 切片一（suspended panes 落 sidecar + 启动恢复）主线 + P2 阶段 2 设计文档 + 维护节律。存量趋收敛：其后仅剩 G1 阶段二与 M2/M1 后续切片，做尽即转低频维护态待用户轨。
+- 驳回：NotebookLM「ridge-core 自动加载 sidecar」（层错——suspend 居 src-tauri）；「关区写入 >200ms 停机线」（不可判定，改 IO fail-open 韧性条款）；`docs/designs/` 路径（归 superpowers/specs 惯例）；M2 并轮建议（留待切片一落地后裁决）。采纳：M1 主线、低频维护态与「制造工作」红线、Windows 竞态缺口文档声明存照。
+
 ## 2026-07-23 — iteration 9
 
 - 完成：**G1 阶段一关闭**——软暂停/恢复（suspend.rs 进程级注册表；agent 写路径四所归一至 `agent_pty_write` 唯一收口；人类输入/断路器刻意不门控；拓扑双路径 Suspended 投影无新字段；Agent Center Pause/Play；暂停命令仅桌面 IPC + 负断言）。C1 清单化（rdg-gap-report 脚本，3 支持/5 缺）。审查导读包自动化（36 提交分组 + 协议/安全面标注 + 计数自校验）。E1/E2 簿记校正（WebGPU 生产默认不得删）。A1 写路径审计**发现实缺陷**：LAN close 第三副本漏双广播 + 多删 names。

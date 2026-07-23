@@ -1,6 +1,6 @@
 # 分支审查导读 — `codex/remote-git-diff-iteration-1`
 
-生成：`node scripts/generate-review-pack.mjs`（范围 `origin/main..HEAD`，共 **39** 提交；手改无效，重跑刷新）。
+生成：`node scripts/generate-review-pack.mjs`（范围 `origin/main..HEAD`，共 **42** 提交；手改无效，重跑刷新）。
 
 ## 审查优先级建议
 
@@ -31,7 +31,7 @@
 | `81a0f59` | **teammate** soft suspend/resume agent input (G1 phase 1) | 10 |  10 files changed, 216 insertions(+), 29 deletions(-) | 安全面 |
 | `f2014ed` | **scripts** rdg gap report and branch review pack generators | 4 |  4 files changed, 254 insertions(+) | — |
 
-## fix（5）
+## fix（6）
 
 | SHA | 标题 | 文件数 | 变更量 | 标注 |
 | --- | --- | --- | --- | --- |
@@ -40,6 +40,7 @@
 | `292adb3` | **remote** pin vendored signaling files to LF | 1 |  1 file changed, 5 insertions(+) | — |
 | `ea1f0ae` | **windows** delay-load comctl32 so lib test hosts boot | 2 |  2 files changed, 22 insertions(+) | — |
 | `a6dd1b7` | **remote** probe localStorage writability in deviceTrust store | 1 |  1 file changed, 20 insertions(+), 10 deletions(-) | 安全面 |
+| `f544d8e` | **workspace** converge close/rename to single core, fix LAN broadcast gap | 3 |  3 files changed, 97 insertions(+), 101 deletions(-) | — |
 
 ## refactor（3）
 
@@ -56,7 +57,7 @@
 | `d029a65` | **remote** cover watchdog escalation paths | 1 |  1 file changed, 65 insertions(+) | — |
 | `8f66e1c` | **remote** add deterministic weak-net lab sweep | 5 |  5 files changed, 490 insertions(+), 222 deletions(-) | — |
 
-## docs（19）
+## docs（21）
 
 | SHA | 标题 | 文件数 | 变更量 | 标注 |
 | --- | --- | --- | --- | --- |
@@ -79,3 +80,5 @@
 | `f0a6e55` | **specs** agent suspend/resume cross-platform design (G1) | 1 |  1 file changed, 62 insertions(+) | 安全面 |
 | `aca3044` | **iteration** close iteration 8 loop and contract iteration 9 | 6 |  6 files changed, 161 insertions(+), 11 deletions(-) | — |
 | `60d1cc1` | **audits** workspace write-path audit + E1/E2 ledger correction | 2 |  2 files changed, 32 insertions(+), 3 deletions(-) | — |
+| `96b3612` | **iteration** close iteration 9 loop and contract iteration 10 | 7 |  7 files changed, 158 insertions(+), 14 deletions(-) | — |
+| `bf4dd2e` | workspace memory design + rdg gap judgments + review cadence | 4 |  4 files changed, 60 insertions(+), 7 deletions(-) | — |
