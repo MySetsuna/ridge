@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { HOST_CAPABILITIES as CLOUD_HOST_CAPABILITIES } from '../cloud/cloudHostBridge';
-import { REMOTE_ALLOWLIST } from '../cloud/remoteAllowlist';
+import { MUTATING_METHODS, REMOTE_ALLOWLIST } from '../cloud/remoteAllowlist';
 import {
   REMOTE_CAPABILITY_METHODS,
   getRemotePanelAvailability,
@@ -90,12 +90,17 @@ describe('cross-entry Remote capability contract', () => {
   });
 
   it('admits the teammate roster read while HITL adjudication stays host-privileged', () => {
-    // P2 阶段 1：只读 roster + 脱敏待审批快照两方法；均非 mutating。
+    // P2：只读 roster + 脱敏待审批快照（非 mutating）+ 阶段 2 远端裁决（mutating）。
     for (const method of ['get_teammate_topology', 'list_hitl_pending']) {
       expect(REMOTE_ALLOWLIST).toContain(method);
       expect(rustStringArray(rustCapability, 'REMOTE_ALLOWLIST')).toContain(method);
       expect(rustStringArray(rustCapability, 'MUTATING_METHODS')).not.toContain(method);
     }
+    // 阶段 2：resolve_hitl_remote 远端可达且双侧归类 mutating（只读会话拒）。
+    expect(REMOTE_ALLOWLIST).toContain('resolve_hitl_remote');
+    expect(rustStringArray(rustCapability, 'REMOTE_ALLOWLIST')).toContain('resolve_hitl_remote');
+    expect(MUTATING_METHODS).toContain('resolve_hitl_remote');
+    expect(rustStringArray(rustCapability, 'MUTATING_METHODS')).toContain('resolve_hitl_remote');
     // P2 阶段 2 之前：HITL 裁决、网关开关与 G1 暂停/恢复（写操作）不得远程可达。
     for (const method of ['resolve_hitl_request', 'set_hitl_enabled', 'suspend_agent', 'resume_agent']) {
       expect(REMOTE_ALLOWLIST).not.toContain(method);

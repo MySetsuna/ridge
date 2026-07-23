@@ -157,6 +157,14 @@ pub fn list_hitl_pending() -> Result<Value, String> {
     Ok(Value::Array(hitl::list_pending()))
 }
 
+/// P2 阶段 2 —— 远端裁决（`teammate` 能力下 mutating 方法）：一次性 nonce 票据
+/// 恒时比对 + 单次消费；verdict 仅 approve/reject（modify 永不开放）。返回
+/// `{outcome}` ∈ consumed/already-resolved/nonce-mismatch/bad-verdict。
+#[tauri::command]
+pub fn resolve_hitl_remote(id: String, nonce: String, verdict: String) -> Result<Value, String> {
+    Ok(json!({ "outcome": hitl::resolve_remote(&id, &nonce, &verdict) }))
+}
+
 /// D2 —— 人类对一个挂起的高危动作的裁决回传。
 /// `verdict` ∈ {"approve","reject","modify"}；modify 时 `replacement` 为新指令。
 #[tauri::command]

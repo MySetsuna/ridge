@@ -219,14 +219,23 @@ export interface TeammateTopology {
   edges: unknown[];
 }
 
-/** P2 阶段 1：待裁决高危动作的脱敏快照——绝不含 action 命令全文。 */
+/** P2：待裁决高危动作的脱敏快照——绝不含 action 命令全文。 */
 export interface HitlPendingItem {
   id: string;
   initiator: string;
   level: string;
   reason: string;
   createdAt: number;
+  /** 阶段 2：一次性裁决票据（E2EE 信道内下发；裁决时回传，host 恒时比对+单次消费）。 */
+  resolutionNonce: string;
 }
+
+/** P2 阶段 2：远端裁决结局。 */
+export type HitlResolveOutcome =
+  | 'consumed'
+  | 'already-resolved'
+  | 'nonce-mismatch'
+  | 'bad-verdict';
 
 export interface RemoteLink {
   state(): ConnectionState;
@@ -271,6 +280,11 @@ export interface RemoteLink {
   /** P1 roster：只读拓扑快照（capability `teammate` 协商后可用；UI 轮询取数）。 */
   getTeammateTopology(workspaceId?: string): Promise<TeammateTopology>;
   listHitlPending(): Promise<HitlPendingItem[]>;
+  resolveHitlRemote(
+    id: string,
+    nonce: string,
+    verdict: 'approve' | 'reject',
+  ): Promise<HitlResolveOutcome>;
   switchWorkspace(workspaceId: string): Promise<boolean>;
   createWorkspace(name?: string): Promise<string | null>;
   createPane(shell?: string): Promise<string | null>;
@@ -881,6 +895,25 @@ export class RemoteConnection implements RemoteLink {
     )) as { _result?: HitlPendingItem[]; _error?: unknown };
     if (data._error) throw new Error(String(data._error));
     return data._result ?? [];
+  }
+
+  // P2 阶段 2：远端裁决（nonce 单次消费；仅 approve/reject）。
+  async resolveHitlRemote(
+    id: string,
+    nonce: string,
+    verdict: 'approve' | 'reject',
+  ): Promise<HitlResolveOutcome> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'resolve_hitl_remote',
+        args: { id, nonce, verdict },
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _result?: { outcome: HitlResolveOutcome }; _error?: unknown };
+    if (data._error) throw new Error(String(data._error));
+    return data._result?.outcome ?? 'already-resolved';
   }
 
   async switchWorkspace(workspaceId: string): Promise<boolean> {

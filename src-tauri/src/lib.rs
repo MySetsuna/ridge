@@ -828,6 +828,7 @@ pub fn run() {
             // Domain Zero 端侧多智能体协同（teammate）：D1 拓扑快照 + D2 HITL 网关/风险分级
             commands::teammate::get_teammate_topology,
             commands::teammate::list_hitl_pending,
+            commands::teammate::resolve_hitl_remote,
             // G1 阶段一软暂停（仅桌面本机 IPC，不入 REMOTE_ALLOWLIST）
             commands::teammate::suspend_agent,
             commands::teammate::resume_agent,

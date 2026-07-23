@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Crown, ShieldAlert } from 'lucide-svelte';
+  import { Check, Crown, ShieldAlert, X } from 'lucide-svelte';
   import type { HitlPendingItem, RemoteLink, TeammateTopology } from '@ridge/remote';
 
   let { ws, onSelectPane }: {
@@ -14,6 +14,18 @@
   let topo = $state<TeammateTopology>({ roster: [], leaderId: null, edges: [] });
   let pending = $state<HitlPendingItem[]>([]);
   let failed = $state(false);
+  // P2 阶段 2：最近一次裁决反馈（consumed 之外的结局给一行提示，下轮轮询消隐）。
+  let resolveNote = $state('');
+
+  async function decide(p: HitlPendingItem, verdict: 'approve' | 'reject') {
+    try {
+      const outcome = await ws.resolveHitlRemote(p.id, p.resolutionNonce, verdict);
+      resolveNote = outcome === 'consumed' ? '' : `#${p.id}: ${outcome}`;
+    } catch {
+      resolveNote = `#${p.id}: failed`;
+    }
+    await refresh();
+  }
 
   async function refresh() {
     try {
@@ -34,13 +46,20 @@
 </script>
 
 <div class="roster">
-  {#if pending.length > 0}
+  {#if pending.length > 0 || resolveNote}
     <p class="section">Pending approvals</p>
+    {#if resolveNote}<p class="note">{resolveNote}</p>{/if}
     {#each pending as p (p.id)}
       <div class="approval" title={p.id}>
         <ShieldAlert class="w-3 h-3 risk" />
         <span class="name">{p.reason}</span>
         <span class="role">{p.initiator}</span>
+        <button class="act approve" title="Approve" onclick={() => void decide(p, 'approve')}>
+          <Check class="w-3 h-3" />
+        </button>
+        <button class="act reject" title="Reject" onclick={() => void decide(p, 'reject')}>
+          <X class="w-3 h-3" />
+        </button>
       </div>
     {/each}
   {/if}
@@ -63,6 +82,10 @@
   .section{margin:4px 2px;font-size:11px;color:var(--rg-fg-muted);text-transform:uppercase;letter-spacing:.04em}
   .approval{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:var(--rg-surface-2);font-size:13px}
   .approval :global(.risk){color:var(--rg-accent);flex-shrink:0}
+  .note{margin:0 2px 4px;font-size:11px;color:var(--rg-fg-muted)}
+  .act{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;border-radius:6px;background:var(--rg-surface);color:var(--rg-fg-muted);cursor:pointer;flex-shrink:0}
+  .act.approve:active{color:#34d399}
+  .act.reject:active{color:#f87171}
   .empty{margin:12px;font-size:12px;color:var(--rg-fg-muted);text-align:center}
   .member{display:flex;align-items:center;gap:8px;padding:8px 10px;border:none;border-radius:8px;background:none;color:var(--rg-fg);cursor:pointer;text-align:left;font-size:13px}
   .member:active{background:var(--rg-surface-2)}

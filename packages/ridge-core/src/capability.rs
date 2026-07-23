@@ -220,9 +220,11 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     // 投影本身不含 MCP endpoint/token/env；HITL 裁决（resolve_hitl_request 等）与
     // Agent 配置写路径刻意排除在外（P2 前不入 allowlist）。
     "get_teammate_topology",
-    // P2 阶段 1：待裁决高危动作的脱敏只读快照（{id,initiator,level,reason,createdAt}，
-    // 绝不含 action 命令全文）。裁决通道（resolve_hitl_request）仍刻意排除。
+    // P2 阶段 1：待裁决高危动作的脱敏只读快照（含 resolutionNonce 一次性票据，
+    // 绝不含 action 命令全文）。桌面版裁决（resolve_hitl_request，含 modify）仍刻意排除。
     "list_hitl_pending",
+    // P2 阶段 2：远端裁决——nonce 恒时比对 + 单次消费；仅 approve/reject（无 modify）。
+    "resolve_hitl_remote",
     // ── Search ──
     "text_search",
     // `search` is the alias the headless ridge-cli control protocol
@@ -306,6 +308,9 @@ pub const MUTATING_METHODS: &[&str] = &[
     "resize_pane",
     "create_pane",
     "split_pane",
+    // ── Teammate（P2 阶段 2）──
+    // 远端裁决放行高危命令 = 写操作；只读会话拒。
+    "resolve_hitl_remote",
 ];
 
 /// True if `method` mutates host state (see [`MUTATING_METHODS`]). The read-only

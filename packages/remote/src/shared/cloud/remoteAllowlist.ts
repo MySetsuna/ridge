@@ -104,8 +104,10 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'set_user_default_cwd',
   // ── Teammate（P1 控制台 MVP，只读 roster 快照）──
   'get_teammate_topology',
-  // P2 阶段 1：脱敏待审批快照（无 action 全文）；裁决通道仍排除。
+  // P2 阶段 1：脱敏待审批快照（含 resolutionNonce；无 action 全文）。
   'list_hitl_pending',
+  // P2 阶段 2：远端裁决（nonce 单次消费；仅 approve/reject，无 modify）。
+  'resolve_hitl_remote',
   // ── Search ──
   'text_search',
   'search',
@@ -185,6 +187,8 @@ export const MUTATING_METHODS: readonly string[] = [
   'resize_pane',
   'create_pane',
   'split_pane',
+  // ── Teammate（P2 阶段 2）──
+  'resolve_hitl_remote',
 ];
 
 const ALLOW_SET: ReadonlySet<string> = new Set(REMOTE_ALLOWLIST);
