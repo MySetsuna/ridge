@@ -245,7 +245,6 @@ impl PaneScrollback {
 /// Returning `()` is intentional: send failures are best-effort (the
 /// frontend has gone away if they fail, and the next pane-close cleanup
 /// will drop the sender). Callers log errors inside the closure.
-pub type PaneOutputSender = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 pub type PaneDeltaSender = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 
 pub struct RemotePaneSub {
@@ -261,7 +260,6 @@ pub struct RemotePaneSub {
 
 #[derive(Default)]
 pub struct PaneRegistry {
-    pub output_cb: Option<PaneOutputSender>,
     pub delta_cb: Option<PaneDeltaSender>,
     pub remote_subs: Vec<RemotePaneSub>,
 }
@@ -497,7 +495,6 @@ pub struct AppState {
     pub user_default_cwd: Arc<RwLock<Option<PathBuf>>>,
     /// Unified per-pane registry for desktop callbacks and remote WS subscribers.
     /// Keyed by (workspace_id, pane_id). Each entry can hold:
-    ///   - output_cb: desktop Tauri Channel for coalesced pty-output
     ///   - delta_cb:  desktop Tauri Channel for delta frames (replaces pty_delta_channels)
     ///   - remote_subs: mobile WS client subscribers with per-client mpsc channels
     pub pty_pane_registry: Arc<RwLock<HashMap<(Uuid, Uuid), PaneRegistry>>>,
@@ -904,41 +901,6 @@ impl AppState {
             .and_then(|e| e.delta_cb.clone())
     }
 
-    pub fn register_pane_output_channel(
-        &self,
-        workspace_id: Uuid,
-        pane_id: Uuid,
-        sender: PaneOutputSender,
-    ) {
-        self.pty_pane_registry
-            .write()
-            .entry((workspace_id, pane_id))
-            .or_default()
-            .output_cb = Some(sender);
-    }
-
-    pub fn unregister_pane_output_channel(&self, workspace_id: Uuid, pane_id: Uuid) {
-        let mut reg = self.pty_pane_registry.write();
-        let key = (workspace_id, pane_id);
-        if let Some(entry) = reg.get_mut(&key) {
-            entry.output_cb = None;
-            if entry.is_empty() {
-                reg.remove(&key);
-            }
-        }
-    }
-
-    pub fn get_pane_output_channel(
-        &self,
-        workspace_id: Uuid,
-        pane_id: Uuid,
-    ) -> Option<PaneOutputSender> {
-        self.pty_pane_registry
-            .read()
-            .get(&(workspace_id, pane_id))
-            .and_then(|e| e.output_cb.clone())
-    }
-
     /// Retrieve the most recent PTY scrollback bytes for a pane, up to
     /// `max_bytes`. Used to seed a newly-created mobile `PaneParser` so its
     /// state mirrors the desktop parser before the first delta frame is sent.
@@ -1012,7 +974,7 @@ impl AppState {
 
 impl PaneRegistry {
     fn is_empty(&self) -> bool {
-        self.output_cb.is_none() && self.delta_cb.is_none() && self.remote_subs.is_empty()
+        self.delta_cb.is_none() && self.remote_subs.is_empty()
     }
 }
 
