@@ -13,3 +13,5 @@ NotebookLM 是规划 maker；编译器、测试和独立代码审查是 checker�
 
 验收采用双轨制：**自动轨**（编译/测试/退出码可判定的目标，合同验收对象）与**用户轨**（真机 smoke、生产实跑、人工核验、分支合并等只能由人完成的事项，见 `docs/plans/user-verification-checklist.md`）分列；自动轨不得以实验室模拟数据冒充用户轨结论。
 
+节律（iteration 10 起固化）：每轮闭环提交前必跑 `node scripts/generate-review-pack.mjs` 刷新 `docs/review/branch-review-guide.md`，使审查导读始终覆盖分支全部领先提交；用户轨积压未消化期间，不启动扩协议面的重型变更。
+
