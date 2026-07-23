@@ -88,3 +88,78 @@ describe('cross-entry Remote capability contract', () => {
     }
   });
 });
+
+describe('docs/capability-matrix.json stays a projection of the canonical declarations (A2)', () => {
+  interface MatrixCapability {
+    methods: string[];
+    cells: Record<string, string>;
+  }
+  const matrix = JSON.parse(source('docs/capability-matrix.json')) as {
+    entries: string[];
+    capabilities: Record<string, MatrixCapability>;
+    guards: string[];
+  };
+  const cliCapabilities = rustStringArray(source('packages/ridge-cli/src/rpc.rs'), 'CLI_CAPABILITIES');
+  const lanCapabilities = rustStringArray(
+    source('src-tauri/src/remote_host_impl.rs'),
+    'HOST_CAPABILITIES',
+  );
+
+  it('lists exactly the negotiated capability names', () => {
+    expect(Object.keys(matrix.capabilities).sort()).toEqual([...CLIENT_CAPABILITIES].sort());
+  });
+
+  it('mirrors the controller-minimum methods per capability', () => {
+    for (const [capability, entry] of Object.entries(matrix.capabilities)) {
+      expect(entry.methods, capability).toEqual(
+        REMOTE_CAPABILITY_METHODS[capability as RemoteCapability],
+      );
+    }
+  });
+
+  it('fills every entry cell with a known verdict', () => {
+    const verdicts = new Set(['supported', 'denied', 'degraded', 'not-applicable']);
+    for (const [capability, entry] of Object.entries(matrix.capabilities)) {
+      expect(Object.keys(entry.cells), capability).toEqual(matrix.entries);
+      for (const [column, verdict] of Object.entries(entry.cells)) {
+        expect(verdicts.has(verdict), `${capability}/${column}=${verdict}`).toBe(true);
+      }
+    }
+  });
+
+  it('matches rdgHost cells to CLI_CAPABILITIES (supported iff advertised)', () => {
+    for (const [capability, entry] of Object.entries(matrix.capabilities)) {
+      const expected = cliCapabilities.includes(capability) ? 'supported' : 'denied';
+      expect(entry.cells.rdgHost, capability).toBe(expected);
+    }
+  });
+
+  it('matches lan/cloud cells to the advertised host capability sets', () => {
+    for (const [capability, entry] of Object.entries(matrix.capabilities)) {
+      expect(entry.cells.lan, capability).toBe(lanCapabilities.includes(capability) ? 'supported' : 'denied');
+      expect(entry.cells.cloudDesktop, capability).toBe(
+        CLOUD_HOST_CAPABILITIES.includes(capability) ? 'supported' : 'denied',
+      );
+      // 移动端与桌面共用同一 cloud 协议面；差异只允许出现在呈现层（低于本矩阵粒度）。
+      expect(entry.cells.cloudMobile, capability).toBe(entry.cells.cloudDesktop);
+    }
+  });
+
+  it('keeps every supported remote cell admissible under REMOTE_ALLOWLIST', () => {
+    for (const [capability, entry] of Object.entries(matrix.capabilities)) {
+      const remoteSupported = ['lan', 'cloudDesktop', 'cloudMobile', 'rdgHost'].some(
+        (column) => entry.cells[column] === 'supported',
+      );
+      if (!remoteSupported) continue;
+      for (const method of entry.methods) {
+        expect(REMOTE_ALLOWLIST, `${capability}: ${method}`).toContain(method);
+      }
+    }
+  });
+
+  it('points at guard files that exist', () => {
+    for (const guard of matrix.guards) {
+      expect(() => source(guard), guard).not.toThrow();
+    }
+  });
+});
