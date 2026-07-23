@@ -154,30 +154,9 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
     }
 
     fn rename_workspace(&self, workspace_id: &str, name: &str) -> Result<(), String> {
-        // 与 commands::workspace::rename_workspace 逐字一致：改名 + 落盘 + 广播。
+        // A1 同源化：委托唯一实现（改名 + 落盘 + 三广播）。
         let id = uuid::Uuid::parse_str(workspace_id).map_err(|e| e.to_string())?;
-        self.workspace_names.write().insert(id, name.to_string());
-        // 立刻反映到 .ridge 文件（未保存工作区为 no-op）。
-        crate::commands::ridge_file::schedule_auto_save(self, id);
-        let display_name = self
-            .workspace_names
-            .read()
-            .get(&id)
-            .cloned()
-            .unwrap_or_default();
-        let _ = self.remote_structural_tx.send(
-            crate::types::RemoteStructuralEvent::WorkspaceRenamed {
-                workspace_id: id,
-                name: display_name,
-            },
-        );
-        let _ = self
-            .remote_structural_tx
-            .send(crate::types::RemoteStructuralEvent::WorkspacesChanged);
-        let _ = self
-            .event_tx
-            .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
-        Ok(())
+        crate::commands::workspace::rename_workspace_core(self, id, name.to_string())
     }
 
     fn create_workspace(&self, name: Option<&str>) -> Result<String, String> {
@@ -186,31 +165,9 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
     }
 
     fn close_workspace(&self, workspace_id: &str) -> Result<(), String> {
-        // 与 commands::workspace::close_workspace 语义一致：剩最后一个拒；否则从顺序表/
-        // 映射移除（其 terminals 随 Workspace drop 而清理 PTY），必要时改选活动区，并广播。
+        // A1 同源化：委托唯一实现（terminals 随 Workspace drop 清理 PTY）。
         let id = uuid::Uuid::parse_str(workspace_id).map_err(|e| e.to_string())?;
-        if self.workspace_order.read().len() <= 1 {
-            return Err("无法关闭最后一个工作区".into());
-        }
-        {
-            let mut order = self.workspace_order.write();
-            if let Some(pos) = order.iter().position(|&x| x == id) {
-                order.remove(pos);
-            }
-        }
-        self.workspaces.write().remove(&id);
-        if *self.active_workspace.read() == id {
-            if let Some(&first) = self.workspace_order.read().first() {
-                *self.active_workspace.write() = first;
-            }
-        }
-        let _ = self
-            .remote_structural_tx
-            .send(crate::types::RemoteStructuralEvent::WorkspacesChanged);
-        let _ = self
-            .event_tx
-            .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
-        Ok(())
+        crate::commands::workspace::close_workspace_core(self, id)
     }
 
     fn save_workspace(&self, name: Option<&str>) -> Result<String, String> {

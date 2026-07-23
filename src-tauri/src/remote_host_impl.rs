@@ -228,26 +228,12 @@ impl WorkspaceProvider for DesktopHost {
     }
 
     fn close_workspace(&self, workspace_id: &str) -> Result<serde_json::Value, HostError> {
-        let state = &self.state;
+        // A1 同源化（iteration 10）：此前第三副本**漏发** WorkspacesChanged/
+        // WorkspaceListChanged——LAN 端关区后他端列表不更新。委托唯一实现一并修复。
         let id = Uuid::parse_str(workspace_id)
             .map_err(|_| HostError::BadRequest("invalid workspace id".to_string()))?;
-        {
-            let order = state.workspace_order.read();
-            if order.len() <= 1 {
-                return Err(HostError::BadRequest(
-                    "cannot close last workspace".to_string(),
-                ));
-            }
-        }
-        state.workspaces.write().remove(&id);
-        state.workspace_order.write().retain(|w| *w != id);
-        state.workspace_names.write().remove(&id);
-        if *state.active_workspace.read() == id {
-            let first = state.workspace_order.read().first().cloned();
-            if let Some(first_id) = first {
-                *state.active_workspace.write() = first_id;
-            }
-        }
+        crate::commands::workspace::close_workspace_core(&self.state, id)
+            .map_err(HostError::BadRequest)?;
         Ok(serde_json::json!({ "success": true }))
     }
 

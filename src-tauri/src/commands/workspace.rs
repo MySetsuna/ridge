@@ -112,43 +112,40 @@ pub fn create_workspace(
     Ok(create_workspace_core(&state, name.as_deref()))
 }
 
-#[tauri::command]
-pub fn close_workspace(state: State<'_, AppState>, workspace_id: String) -> Result<(), String> {
-    let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
-    let order = state.workspace_order.read();
-    if order.len() <= 1 {
+/// close 的**唯一**实现（A1 同源化，iteration 10）：桌面命令、`WorkspaceWriter` 端口与
+/// LAN `remote_host_impl` 三方共用——此前三副本中 LAN 版漏发双广播（关区不通知他端）、
+/// `workspace_names` 清理各行其是，收敛于此一次修齐。
+pub fn close_workspace_core(state: &AppState, id: Uuid) -> Result<(), String> {
+    if state.workspace_order.read().len() <= 1 {
         return Err("无法关闭最后一个工作区".into());
     }
-    drop(order);
-
-    // 从工作区顺序中移除
-    let mut order = state.workspace_order.write();
-    if let Some(pos) = order.iter().position(|&x| x == id) {
-        order.remove(pos);
+    {
+        let mut order = state.workspace_order.write();
+        if let Some(pos) = order.iter().position(|&x| x == id) {
+            order.remove(pos);
+        }
     }
-    drop(order);
-
-    // 从工作区map中移除
-    let mut map = state.workspaces.write();
-    map.remove(&id);
-
-    // 如果关闭的是当前活动工作区，切换到第一个
-    let current_active = *state.active_workspace.read();
-    if current_active == id {
+    state.workspaces.write().remove(&id);
+    // 名称随区清理（旧桌面/端口副本遗留残条——名称表以 id 为键，残条永不再被读）。
+    state.workspace_names.write().remove(&id);
+    if *state.active_workspace.read() == id {
         if let Some(&first) = state.workspace_order.read().first() {
             *state.active_workspace.write() = first;
         }
     }
-
-    // Broadcast workspace list change to remote clients and desktop frontend.
     let _ = state
         .remote_structural_tx
         .send(crate::types::RemoteStructuralEvent::WorkspacesChanged);
     let _ = state
         .event_tx
         .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
-
     Ok(())
+}
+
+#[tauri::command]
+pub fn close_workspace(state: State<'_, AppState>, workspace_id: String) -> Result<(), String> {
+    let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    close_workspace_core(&state, id)
 }
 
 #[tauri::command]
@@ -166,21 +163,13 @@ pub fn reorder_workspaces(
     Ok(())
 }
 
-#[tauri::command]
-pub fn rename_workspace(
-    state: State<'_, AppState>,
-    workspace_id: String,
-    name: String,
-) -> Result<(), String> {
-    let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
-    {
-        let mut names = state.workspace_names.write();
-        names.insert(id, name);
-    }
+/// rename 的**唯一**实现（A1 同源化，iteration 10）：桌面命令与 `WorkspaceWriter` 端口
+/// 共用（此前逐字双副本，含三广播链）。
+pub fn rename_workspace_core(state: &AppState, id: Uuid, name: String) -> Result<(), String> {
+    state.workspace_names.write().insert(id, name);
     // 重命名需要立刻反映到 .ridge 文件的 `name` 字段，让磁盘侧与 UI 保持一致；
     // `schedule_auto_save` 仅在工作区已关联文件时才实际落盘，未保存工作区为 no-op。
-    crate::commands::ridge_file::schedule_auto_save(&*state, id);
-    // Broadcast rename to remote clients and desktop frontend.
+    crate::commands::ridge_file::schedule_auto_save(state, id);
     let display_name = state
         .workspace_names
         .read()
@@ -201,6 +190,16 @@ pub fn rename_workspace(
         .event_tx
         .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
     Ok(())
+}
+
+#[tauri::command]
+pub fn rename_workspace(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    name: String,
+) -> Result<(), String> {
+    let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    rename_workspace_core(&state, id, name)
 }
 
 // ============ Workspace History (Persistence) ============
@@ -397,4 +396,58 @@ pub fn rename_saved_workspace(
     name: String,
 ) -> Result<(), String> {
     rename_workspace_history(app_handle, history_id, name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    fn test_state() -> AppState {
+        let (tx, _rx) = mpsc::channel(8);
+        AppState::new(tx)
+    }
+
+    /// A1 同源化门禁（iteration 10）：close 唯一实现必须 ①清 names ②发
+    /// WorkspacesChanged 广播（旧 LAN 第三副本漏发的实缺陷）③守最后一个。
+    #[test]
+    fn close_core_cleans_names_broadcasts_and_guards_last() {
+        let state = test_state();
+        let second = Uuid::parse_str(&create_workspace_core(&state, Some("b"))).unwrap();
+        let mut rx = state.remote_structural_tx.subscribe();
+
+        close_workspace_core(&state, second).unwrap();
+        assert!(!state.workspace_order.read().contains(&second));
+        assert!(!state.workspaces.read().contains_key(&second));
+        assert!(!state.workspace_names.read().contains_key(&second));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::types::RemoteStructuralEvent::WorkspacesChanged)
+        ));
+
+        let last = *state.workspace_order.read().first().unwrap();
+        assert!(close_workspace_core(&state, last).is_err());
+    }
+
+    /// rename 唯一实现：改名 + WorkspaceRenamed/WorkspacesChanged 双广播。
+    #[test]
+    fn rename_core_updates_name_and_broadcasts() {
+        let state = test_state();
+        let wid = state.active_workspace_id();
+        let mut rx = state.remote_structural_tx.subscribe();
+
+        rename_workspace_core(&state, wid, "新名".to_string()).unwrap();
+        assert_eq!(state.workspace_names.read().get(&wid).map(String::as_str), Some("新名"));
+        match rx.try_recv() {
+            Ok(crate::types::RemoteStructuralEvent::WorkspaceRenamed { workspace_id, name }) => {
+                assert_eq!(workspace_id, wid);
+                assert_eq!(name, "新名");
+            }
+            other => panic!("expected WorkspaceRenamed, got {other:?}"),
+        }
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::types::RemoteStructuralEvent::WorkspacesChanged)
+        ));
+    }
 }
