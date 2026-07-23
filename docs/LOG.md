@@ -2,6 +2,19 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-23 — iteration 14（M1 切片二 + M2，存量终轮）
+
+- 完成：`memory.rs` 单源 doc 级 RMW（互斥+原子写+updatedAt 元数据+空删；suspend 持久化改经之，DIR OnceLock 单点注入，删双解析路径）；三消费点裁决审计落盘（桌面/远端含败者尝试/超时 fail-closed；无命令全文、环形 50）；**M2 归因**（initiator → 稳定 agent_id）；读方 `list_hitl_decisions`（仅桌面 IPC）+ Agent Center 审批历史区。
+- 验证：cargo workspace exit 0；teammate:: 25 绿；vitest 559/1skip；svelte-check 0 errors。
+- 熔断：无。收窄注记：already-resolved/bad-verdict 尝试无条目归属不落审计（范围如实记）。
+- **循环状态：可自动化存量全毕（P2/M1s1s2/M2 在内），回归低频维护态。剩余项全需外部输入：G1 阶段二待痛点证据、G1 回滚 + M1 切片三待用户需求定义、C1 补路由待场景、真机/生产/合并属用户轨。**
+
+## 2026-07-23 — iteration 13（P2 阶段 2 实现，用户指令解冻）
+
+- 完成：远端 HITL 裁决通道——一次性票据（nonce 恒时比对+取出即毁=单次消费原子）、verdict 仅 approve/reject（**modify 永不开放**）、四态结局、超时后无副作用；`resolve_hitl_remote` 六处宣告 + MUTATING 双侧归类；负断言维持（桌面版裁决/网关开关/暂停命令仍不可远达）；Team 面板双按钮+结局反馈。**P2 全闭**。
+- 验证：cargo workspace exit 0；hitl 2 绿；合同/parity 23 绿；vitest 559/1skip；svelte-check 0 errors。
+- 熔断：无。解冻授权存照于 CONTRACT-13（用户「按你审理解继续推进」）；Level 2 与导读节律不变。
+
 ## 2026-07-23 — iteration 12（收敛轮）
 
 - 完成：30 分钟核验会动线（用户轨一次清偿，覆盖 checklist 全条目 + 历轮顺带核验）；G1 阶段二/M1 余切片/M2 簿记归档（待证据/解冻重开）；维护态定型入 WORKFLOW；PROJECT-STATE 转终态声明。

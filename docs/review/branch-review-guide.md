@@ -1,11 +1,11 @@
 # 分支审查导读 — `codex/remote-git-diff-iteration-1`
 
-生成：`node scripts/generate-review-pack.mjs`（范围 `origin/main..HEAD`，共 **45** 提交；手改无效，重跑刷新）。
+生成：`node scripts/generate-review-pack.mjs`（范围 `origin/main..HEAD`，共 **48** 提交；手改无效，重跑刷新）。
 
 ## 审查优先级建议
 
-1. **协议面提交（5）**：动了 allowlist/能力合同/矩阵——远端可达面变化，逐条核。
-2. **安全面提交（10）**：hitl/e2ee/totp/trust/suspend 路径。
+1. **协议面提交（6）**：动了 allowlist/能力合同/矩阵——远端可达面变化，逐条核。
+2. **安全面提交（12）**：hitl/e2ee/totp/trust/suspend 路径。
 3. 其余按类型抽查；docs 类可速览。
 
 ## 协议面提交清单
@@ -15,8 +15,9 @@
 - `c8f7ead` feat(remote): make the cross-entry capability matrix machine-readable
 - `72ef6dd` feat(remote): expose read-only teammate roster across entries
 - `2af7dc7` feat(remote): expose sanitized read-only HITL pending list (P2 phase 1)
+- `53785a3` feat(remote): remote HITL resolution channel (P2 phase 2)
 
-## feat（11）
+## feat（13）
 
 | SHA | 标题 | 文件数 | 变更量 | 标注 |
 | --- | --- | --- | --- | --- |
@@ -31,6 +32,8 @@
 | `81a0f59` | **teammate** soft suspend/resume agent input (G1 phase 1) | 10 |  10 files changed, 216 insertions(+), 29 deletions(-) | 安全面 |
 | `f2014ed` | **scripts** rdg gap report and branch review pack generators | 4 |  4 files changed, 254 insertions(+) | — |
 | `2177e3d` | **teammate** persist suspended panes across restarts (M1 slice 1) | 5 |  5 files changed, 169 insertions(+), 2 deletions(-) | 安全面 |
+| `53785a3` | **remote** remote HITL resolution channel (P2 phase 2) | 12 |  12 files changed, 196 insertions(+), 18 deletions(-) | 协议面 安全面 |
+| `a46ae37` | **teammate** persist HITL decisions with agent attribution (M1 s2 + M2) | 10 |  10 files changed, 330 insertions(+), 68 deletions(-) | 安全面 |
 
 ## fix（6）
 
@@ -58,7 +61,7 @@
 | `d029a65` | **remote** cover watchdog escalation paths | 1 |  1 file changed, 65 insertions(+) | — |
 | `8f66e1c` | **remote** add deterministic weak-net lab sweep | 5 |  5 files changed, 490 insertions(+), 222 deletions(-) | — |
 
-## docs（23）
+## docs（24）
 
 | SHA | 标题 | 文件数 | 变更量 | 标注 |
 | --- | --- | --- | --- | --- |
@@ -85,3 +88,4 @@
 | `bf4dd2e` | workspace memory design + rdg gap judgments + review cadence | 4 |  4 files changed, 60 insertions(+), 7 deletions(-) | — |
 | `139a17b` | **iteration** close iteration 10 loop and contract iteration 11 | 7 |  7 files changed, 143 insertions(+), 14 deletions(-) | — |
 | `d3dc21b` | **specs** remote HITL resolution v2 design (P2 phase 2) | 1 |  1 file changed, 53 insertions(+) | 安全面 |
+| `9032a42` | **iteration** close iterations 11-12, enter maintenance mode | 10 |  10 files changed, 208 insertions(+), 16 deletions(-) | — |
