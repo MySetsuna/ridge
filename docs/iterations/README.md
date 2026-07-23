@@ -21,4 +21,6 @@
 | 9 | `CONTRACT-iteration-9.md` | `2026-07-23-iteration-9.md` | `2026-07-23-notebooklm-guidance-9.md` | 完成（G1 阶段一软暂停；审计得 LAN close 分歧） |
 | 10 | `CONTRACT-iteration-10.md` | `2026-07-23-iteration-10.md` | `2026-07-23-notebooklm-guidance-10.md` | 完成（A1 同源化修 LAN 漏广播；A1/C1/H1 关闭） |
 | 11 | `CONTRACT-iteration-11.md` | `2026-07-23-iteration-11.md` | `2026-07-23-notebooklm-guidance-11.md` | 完成（M1 切片一暂停态跨重启；P2 阶段 2 设计定稿） |
-| 12 | `CONTRACT-iteration-12.md` | `2026-07-23-iteration-12.md` | （收敛裁决见 guidance-11） | 完成（收敛轮；**循环转低频维护态待用户轨解冻**） |
+| 12 | `CONTRACT-iteration-12.md` | `2026-07-23-iteration-12.md` | （收敛裁决见 guidance-11） | 完成（收敛轮） |
+| 13 | `CONTRACT-iteration-13.md` | `2026-07-23-iteration-13.md` | （用户指令解冻，合同存照） | 完成（**P2 全闭**：远端裁决通道） |
+| 14 | `CONTRACT-iteration-14.md` | `2026-07-23-iteration-14.md` | （合并轮初裁见 guidance-10/11） | 完成（M1 切片二 + M2；**可自动化存量全毕，回归维护态**） |

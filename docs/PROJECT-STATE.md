@@ -6,7 +6,7 @@
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
 证据等级：
-- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph（545 文件 / 11,435 节点 / 18,207 边）与当前源码确认。
+- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph（546 文件 / 11,469 节点 / 18,219 边）与当前源码确认。
 - **Git 事实**：由本地分支、HEAD 与提交历史确认。
 - **运行事实**：必须有本轮测试/退出码证据；缺证据时明确写「未验证」。
 - **文档声明**：若与代码冲突，以代码为当前行为、以协议为应修正目标。
@@ -92,7 +92,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 | 项 | wind |
 | --- | --- |
-| 分支 / HEAD | `codex/remote-git-diff-iteration-1`，较 `origin/main` 领先 45+ 提交（Level 2 draft；审查导读每轮闭环强制刷新：`docs/review/branch-review-guide.md`） |
+| 分支 / HEAD | `codex/remote-git-diff-iteration-1`，较 `origin/main` 领先 48+ 提交（Level 2 draft；审查导读每轮闭环强制刷新：`docs/review/branch-review-guide.md`） |
 | 应用版本 | 0.0.17 |
 | CodeGraph | 542 文件 / 11,365 节点 / 18,029 边（2026-07-23 sync） |
 | 工具链 | **全链绿**：pnpm + vitest + 增量 svelte-check + 双仓 cargo 均本机 exit 0；`cargo test --workspace` 于 iteration 7 **首次整仓通过**（历史 `-p ridge --lib` loader 载败已根修，见 §5 iteration 7） |
@@ -150,7 +150,10 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
   - **M1 切片一关闭（暂停态跨重启）**：sidecar `{app_data}/workspace-memory/{wid}.json`（仅 suspendedPanes+updatedAt，原子写、空集删文件）；启动载入重挂；全写方钩落盘；`close_workspace_core` 单点清理；IO 全程 fail-open（损坏 json 跳过不 panic）。dir 注入单测 3/3（重启恢复/不复活/损坏容忍/关区同清）。
   - **P2 阶段 2 设计定稿**：一次性裁决票据（nonce 随挂起项生成，恒时比对、取出即毁=单次消费防双裁决）；**远端 modify 永不开放**；120s fail-closed 不变不延；多 controller 首达生效+败者入审计（接 M1 decisions，不存命令全文）；传输面选 `teammate` 新方法（弃 CONTROL 混层）。**实现被红线冻结待用户轨**。
   - 证据：cargo workspace exit 0；suspend 3/3；vitest 559/1skip；svelte-check 0 errors。
-- **iteration 12**（2026-07-23，收敛轮）：30 分钟核验会动线文档（用户轨一次清偿动线，覆盖 checklist 全部条目）；G1 阶段二/M1 余切片/M2 簿记归档（待证据/解冻重开）；维护态定型入 WORKFLOW（验收=门禁绿+导读刷新+零回归；解冻=用户轨首份证据）。**自此自动轨存量做尽，循环转低频维护态。**
+- **iteration 12**（2026-07-23，收敛轮）：30 分钟核验会动线文档（用户轨一次清偿动线，覆盖 checklist 全部条目）；G1 阶段二/M1 余切片/M2 簿记归档（待证据/解冻重开）；维护态定型入 WORKFLOW（验收=门禁绿+导读刷新+零回归；解冻=用户轨首份证据）。
+- **iteration 13**（2026-07-23，用户指令解冻，P2 阶段 2 实现）：一次性裁决票据落地——`PendingEntry`+=nonce（uuid v4 不可猜）、投影六字段（+`resolutionNonce`，仍无 action）、`resolve_remote` 同锁恒时比对+取出即毁（单次消费原子）、verdict 仅 approve/reject（**modify 永不开放**）、四态结局；`resolve_hitl_remote` 六处宣告 + `MUTATING_METHODS` 双侧归类；桌面版裁决/网关开关/暂停命令不可远达负断言维持；Team 面板 Approve/Reject 双按钮 + 结局反馈。**P2 全闭**。
+- **iteration 14**（2026-07-23，M1 切片二 + M2，存量终轮）：`memory.rs` 单源 doc 级 RMW（互斥+原子写+updatedAt 元数据+空删；suspend 持久化改经之，DIR OnceLock 单点注入）；三消费点裁决审计落盘（桌面/远端含 nonce-mismatch 败者尝试/超时 fail-closed；条目 `{ts,source,initiator,verdict,riskLevel,reasonSummary,outcome}` 无命令全文、环形 50）；**M2 归因**：initiator 升级为稳定 agent_id（pane 反查回落）；读方 `list_hitl_decisions`（仅桌面 IPC）+ Agent Center 审批历史区。
+- 证据（13+14）：`cargo test --workspace` exit 0×2；teammate:: 25 绿；vitest 559/1skip×2；svelte-check 0 errors×2。
 
 ## 6. 差距组合现状（愿景 − 现状，含最新裁决）
 
@@ -161,23 +164,23 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | T3 | 生产两条版本线状态证据 | P0 | **代码侧关闭**（status 端点 + 一键脚本）；生产实跑与分支合并部署待用户 |
 | S1 | 兼容安全回落可观测退役 | P0/P1 | **审计 + 遥测两阶段关闭**（F1–F4 计数已实施；F5 已退役删除；F6 由 S1 门禁测试守构造纪律）；逐面 fail-closed 翻闸待真实数据窗口（用户轨） |
 | P1 | Remote Agent 控制台 MVP | P1 | **代码侧关闭**（iteration 6：capability `teammate` + roster 面板 + 切 pane）；真机 UI 人工核验待用户 |
-| P2 | Remote HITL/接管闭环 | P1 | **阶段 1 关闭 + 阶段 2 设计定稿**（iteration 11：票据/单次消费/审计/传输面全裁决）；**实现被红线冻结**——用户轨消化后即可开工 |
-| G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | **阶段一关闭 + 阶段二已关闭待痛点证据重开**（iteration 12 簿记：软暂停覆盖主场景；真冻结场景频率无证据，同 E1 处置）；接管/回滚待 P2 阶段 2 解冻 |
+| P2 | Remote HITL/接管闭环 | P1 | **全闭**（iteration 13：远端裁决通道实现——票据单次消费、modify 永不开放、审计接 M1）；真机核验待用户 |
+| G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | **暂停/恢复/软接管关闭**（软暂停 + 人类输入不受限即接管基线；阶段二真冻结待痛点证据）；**回滚待需求定义**——回滚语义（回滚什么、到哪个基线：git revert？快照？）须用户裁定后方可设计 |
 | A1 | 共享内核减法审计 | P1 | **关闭**（iteration 10：close/rename 同源化落地 + LAN 漏广播缺陷修复；历史切片累计五处、净删 200+ 行；后续减法随日常纪律进行，不再占差距行） |
 | A2 | 跨入口能力矩阵 + conformance | P1 | **关闭**：机器可读矩阵 + 一致性测试互证（新增能力必须声明矩阵） |
 | R1 | 弱网与恢复证据化 | P1 | **实验室轨关闭**（fault 门禁 + iteration 7 九场景参数化扫描 harness）；真机轨待用户执行 runbook |
-| M1 | Workspace Memory | P2 | **切片一关闭；余切片已关闭待解冻**（iteration 12 簿记：decisions 写方依赖 P2 阶段 2 实现，与 M2 合并重开） |
-| M2 | Agent 归因事件 | P2 | **已关闭——待 P2 阶段 2 解冻后与 M1 切片二合并重开**（stable_id 依赖已满足，iteration 11 初裁存照） |
+| M1 | Workspace Memory | P2 | **切片一+二关闭**（iteration 11/14：暂停态跨重启 + 裁决审计持久化）；切片三（goal/constraints/tasks UI）待产品需求定义（用户输入） |
+| M2 | Agent 归因事件 | P2 | **关闭**（iteration 14：审批/裁决审计归因至稳定 agent_id） |
 | H1 | 远端 host live PTY | P2 | **已关闭——待用户真实需求证据重开**（iteration 10 簿记，类 E2）；`hosts` 存量登记面与死变体容忍保留 |
 | C1 | rdg 行为一致性 | P2 | **关闭**（iteration 10：五缺口逐项判定零残留；git/workspace 列补路由候选待真实需求触发，触发时按 A2 纪律接线） |
 | E1 | WebGPU 收益测量 | P3/用户轨 | **重定义**（iteration 9 簿记校正）：WebGPU 为生产默认路径非实验（历史措辞误导致 NotebookLM 提删除建议，已驳回留档）；剩余工作 = 真机 GPU 收益测量，属用户轨 |
 | E2 | 高级自动编排 | P3/实验 | **已关闭**（iteration 9）：待真实多 Agent 瓶颈证据重开；不占活跃清单 |
 
-**终态声明（iteration 12）**：自动轨在「不扩协议面 + 无用户轨证据」约束下的存量已全部完成或裁决归档。当前为**低频维护态**：每轮 = 全门禁绿 + 导读刷新 + 零回归；不制造工作。
+**终态声明（iteration 14 后）**：用户指令解冻后，P2 阶段 2 与 M1 切片二 + M2 亦已实现——**笔记本存量愿景与规划中一切可自动化项皆毕**。剩余项无一可无输入推进：G1 阶段二（待痛点证据）、G1 回滚 + M1 切片三（待用户需求定义）、C1 补路由（待真实场景）、真机/生产/合并（用户轨，动线 `docs/plans/30-min-verification-session.md`）。循环回归**低频维护态**：每轮 = 全门禁绿 + 导读刷新 + 零回归。
 
 ## 7. 开放问题
 
-**当前无待定夺规划问题**（存量已尽）。解冻条件 = 用户轨首份证据到达（真机 evidence JSON / 生产 status 实跑 / 分支合并，动线见 `docs/plans/30-min-verification-session.md`）。解冻后首轮建议：按已定稿设计启动 **P2 阶段 2 实现**（`2026-07-23-hitl-resolution-v2-design.md`），随后 M1 切片二 + M2 合并轮；届时请 NotebookLM 按证据内容复核优先级。
+**当前无待定夺规划问题。** 下一步全在用户侧：①核验会动线任一件（真机/生产/合并）→ 收口对应「代码侧关闭」项；②G1 回滚语义与 M1 切片三产品形态的需求定义 → 触发新设计轮。
 
 ## 8. NotebookLM 评审要求（沿用）
 
