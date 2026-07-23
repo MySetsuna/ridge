@@ -161,6 +161,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private bindingDecided = false;
   private bindingAccepted = false;
   private bindingMode: KeyBindingMode = 'pending';
+  /** S1 遥测第一阶段（F2）：绑定终态进程内计数（enforced vs 宽限回落 relay-trust），人工读数。 */
+  readonly bindingCounters = { enforced: 0, relayTrust: 0 };
   /** 零信任 #1：收到 host 0x02 后存的信道绑定 transcript（供 totp-bind）；旧 host 为 null。 */
   private bindTranscript: Uint8Array | null = null;
 
@@ -388,6 +390,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.bindTranscript = buildBindTranscript(hostEphPub, controllerEphPub);
     this.bindingDecided = true;
     this.bindingMode = 'enforced';
+    this.bindingCounters.enforced += 1;
     this.bindingAccepted = true;
     this.reconnectAttempts = 0; // 全量握手成功：重置退避曲线
     this.setState('connected');
@@ -418,6 +421,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     }
     if (decision === 'accept') {
       this.bindingMode = this.peerSigKey ? 'enforced' : 'relay-trust';
+      if (this.bindingMode === 'enforced') this.bindingCounters.enforced += 1;
+      else this.bindingCounters.relayTrust += 1;
       this.bindingAccepted = true;
       this.reconnectAttempts = 0; // 全量握手成功：重置退避曲线
       this.setState('connected');
