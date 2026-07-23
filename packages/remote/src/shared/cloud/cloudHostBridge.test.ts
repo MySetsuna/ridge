@@ -35,7 +35,6 @@ import { bytesToBase64 } from './e2ee';
 function makeRig(opts: {
   invoke?: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
   paneOutputSource?: ConstructorParameters<typeof CloudHostBridge>[0]['paneOutputSource'];
-  keyBindingVerifier?: (pub: Uint8Array) => boolean;
   totpVerifier?: (code: string) => Promise<boolean>;
   totpBindVerifier?: (tag: Uint8Array) => Promise<boolean>;
   bindTranscript?: Uint8Array | null;
@@ -47,7 +46,6 @@ function makeRig(opts: {
     invoke,
     sendFrame: (b) => sent.push(b),
     paneOutputSource: opts.paneOutputSource,
-    keyBindingVerifier: opts.keyBindingVerifier,
     totpVerifier: opts.totpVerifier,
     totpBindVerifier: opts.totpBindVerifier,
     bindTranscript: opts.bindTranscript,
@@ -297,49 +295,8 @@ describe('CloudHostBridge — inbound demux edge cases', () => {
   });
 });
 
-describe('CloudHostBridge — §5.5 key-binding verifier', () => {
-  it('accepts a verified peer key and processes business frames', async () => {
-    const verifier = vi.fn(() => true);
-    const invoke = vi.fn(async () => 'ok');
-    const rig = makeRig({ keyBindingVerifier: verifier, invoke });
-
-    expect(rig.bridge.verifyPeerKey(new Uint8Array(32))).toBe(true);
-    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'path_exists' });
-    await vi.waitFor(() => expect(rig.sentJson().some((f) => 'result' in f)).toBe(true));
-  });
-
-  it('rejects an unverified peer key: sends $/bye and drops business frames', async () => {
-    const verifier = vi.fn(() => false);
-    const invoke = vi.fn(async () => 'should-not-run');
-    const rig = makeRig({ keyBindingVerifier: verifier, invoke });
-
-    expect(rig.bridge.verifyPeerKey(new Uint8Array(32))).toBe(false);
-    // $/bye was sent.
-    expect(rig.sentJson()).toContainEqual({
-      jsonrpc: '2.0',
-      method: '$/bye',
-      params: { reason: 'key-binding-failed' },
-    });
-    // Subsequent business frames are dropped — invoke never runs.
-    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'path_exists' });
-    await Promise.resolve();
-    expect(invoke).not.toHaveBeenCalled();
-  });
-
-  it('treats a throwing verifier as a rejection', () => {
-    const rig = makeRig({
-      keyBindingVerifier: () => {
-        throw new Error('verifier boom');
-      },
-    });
-    expect(rig.bridge.verifyPeerKey(new Uint8Array(32))).toBe(false);
-  });
-
-  it('with no verifier configured, verifyPeerKey returns true (relay-trust)', () => {
-    const rig = makeRig();
-    expect(rig.bridge.verifyPeerKey(new Uint8Array(32))).toBe(true);
-  });
-
+// §5.5 keyBindingVerifier 钩子已删（S1-F5 退役，生产从未接线）；0x11 bye 拒帧语义保留如下。
+describe('CloudHostBridge — session termination (0x11 bye)', () => {
   // 概念 6：对端经 0x11 通道发来 $/bye（如 controller 验 host 签名失败）→ host 拒后续业务帧。
   it('inbound $/bye (signature-invalid) rejects the session: drops later business frames', async () => {
     const invoke = vi.fn(async () => 'should-not-run');

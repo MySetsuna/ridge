@@ -162,7 +162,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private bindingAccepted = false;
   private bindingMode: KeyBindingMode = 'pending';
   /** S1 遥测第一阶段（F2）：绑定终态进程内计数（enforced vs 宽限回落 relay-trust），人工读数。 */
-  readonly bindingCounters = { enforced: 0, relayTrust: 0 };
+  /** S1 遥测（F2+F3）：B3 绑定路径计数 + TOFU 指纹变化计数（进程内，人工读数）。 */
+  readonly bindingCounters = { enforced: 0, relayTrust: 0, tofuChanged: 0 };
   /** 零信任 #1：收到 host 0x02 后存的信道绑定 transcript（供 totp-bind）；旧 host 为 null。 */
   private bindTranscript: Uint8Array | null = null;
 
@@ -381,6 +382,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     // TOFU 固定（host 标识 = {device}-{username}）。指纹变化本期仅告警（P3 翻闸再强拒）。
     const tofu = checkOrPinDeviceIdentity(this.roomLabel(this.hostDevice), hostIdPub);
     if (tofu.status === 'changed') {
+      this.bindingCounters.tofuChanged += 1; // S1-F3：warn-only 回落面计数
       this.cb.onError?.(
         `host 设备指纹变化（原 ${tofu.pinned} → 现 ${tofu.actual}），疑似 MITM 或换机`,
         'FORBIDDEN',

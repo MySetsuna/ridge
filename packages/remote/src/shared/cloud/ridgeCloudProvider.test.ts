@@ -313,6 +313,8 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     const frame = dc.lastSent();
     expect(frame[0]).toBe(HANDSHAKE_TAG); // 0x01 裸公钥
     expect(frame.length).toBe(33);
+    // S1-F4：无身份签名回落 0x01 恰好计一次（iteration 8 G4 回落面计数）。
+    expect(host.bindingCounters.fallback0x01).toBe(1);
 
     host.goOffline();
   });

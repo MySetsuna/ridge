@@ -11,15 +11,13 @@
 // 不在防护内（既定边界）。
 //
 // 本模块**不**自己取"对端信令公钥"——那来自 ridge-cloud 的信令转发（`e2ee-peer-
-// pubkey`，须先改契约 protocol.md §7，见设计 §3/§5，当前被用户的 protocol.md WIP
-// 阻塞）。本模块只产出 `cloudHostBridge` 既有的 `KeyBindingVerifier` 钩子所需的
-// **纯判定**，由 boot 层在拿到信令公钥后注入 `expectedPeerPublicKey`。
+// pubkey`）。本模块只产出 B3 在线判定所需的**纯函数**（decideKeyBinding），
+// 由双 provider 在握手/信令公钥到达时调用。
 //
 // 兼容（D9 能力协商）：仅当双方都公告 `e2ee-bind` 能力时才启用严格比对
 // （`enabled=true`）；否则回落 relay-trust v1（`enabled=false` → 放行），避免老
 // controller 回归。
 
-import type { KeyBindingVerifier } from './cloudHostBridge';
 import { PUBKEY_LEN } from './e2ee';
 
 /**
@@ -35,39 +33,8 @@ export function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
-/** 构造 {@link makeKeyBindingVerifier} 的入参。 */
-export interface KeyBindingOptions {
-  /**
-   * 是否启用严格绑定校验。仅当 D9 `$/hello` 双方都协商出 `e2ee-bind` 能力时为
-   * true；否则 false（回落 relay-trust v1，放行——向后兼容）。
-   */
-  enabled: boolean;
-  /**
-   * cloud 经**已认证信令**转发回来的对端临时公钥（`e2ee-peer-pubkey`）。启用绑定
-   * 但此值缺失 = 绑定被要求却拿不到旁路确认 → **fail-closed**（拒绝），不静默放行。
-   */
-  expectedPeerPublicKey: Uint8Array | null;
-}
-
-/**
- * 产出一个 `cloudHostBridge` 的 `KeyBindingVerifier`：把 E2EE 握手收到的对端公钥
- * 与信令旁路确认的对端公钥做恒定时间比对。
- *
- * 判定（与设计 §2/§3 一致）：
- *   - `enabled=false`（未协商 e2ee-bind）→ **放行**（relay-trust v1，兼容老端）。
- *   - `enabled=true` 且 `expectedPeerPublicKey` 缺失 → **拒绝**（fail-closed）。
- *   - `enabled=true` 且长度非法的握手公钥 → **拒绝**（防御性）。
- *   - `enabled=true` 且两公钥恒定时间相等 → **放行**；不等 → **拒绝**（MITM）。
- */
-export function makeKeyBindingVerifier(opts: KeyBindingOptions): KeyBindingVerifier {
-  const { enabled, expectedPeerPublicKey } = opts;
-  return (peerPublicKey: Uint8Array): boolean => {
-    if (!enabled) return true; // e2ee-bind 未协商：relay-trust v1
-    if (!expectedPeerPublicKey) return false; // 要求绑定却无旁路确认 → fail-closed
-    if (peerPublicKey.length !== PUBKEY_LEN) return false; // 防御性：非法长度
-    return constantTimeEqual(peerPublicKey, expectedPeerPublicKey);
-  };
-}
+// makeKeyBindingVerifier / KeyBindingOptions 已随 §5.5 桥钩子退役删除（S1-F5，
+// iteration 8 G4）：其目标场景由下方 decideKeyBinding（B3 在线判定）+ 0x02 帧覆盖。
 
 /**
  * 一个连接的 B3 绑定模式（诊断/测试可读）。
