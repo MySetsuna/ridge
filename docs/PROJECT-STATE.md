@@ -92,7 +92,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 | 项 | wind |
 | --- | --- |
-| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `292adb3`，较 `origin/main` 领先 19 提交（Level 2 draft，待人工审查合并） |
+| 分支 / HEAD | `codex/remote-git-diff-iteration-1` / `5eca329`+，较 `origin/main` 领先 20+ 提交（Level 2 draft，待人工审查合并） |
 | 应用版本 | 0.0.17 |
 | CodeGraph | 537 文件 / 11,319 节点 / 18,166 边（2026-07-23 sync） |
 | 工具链 | pnpm + vitest + 增量 svelte-check + cargo 均本机可运行（本轮多次 exit 0）；唯 `cargo test -p ridge --lib` 测试宿主 loader 级载败（`STATUS_ENTRYPOINT_NOT_FOUND`，先于本轮存在，开放问题 Q4） |
@@ -116,6 +116,11 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
   - A2 闭合：`docs/capability-matrix.json`（7 能力 × 6 入口，rdgHost 列由 `CLI_CAPABILITIES` 推导）+ 6 条一致性测试防矩阵成第二事实源（13/13 绿）。
   - A1 示范减法：删 state.rs 死 pane-output 通道面（净 −45 行，rustc dead_code + 全仓 grep 双证）；审计报告确认 git 面已薄委托、`commands/workspace.rs` 只读三件套是真双路径（下切片候选）。
   - 计划外：修复 signaling drift 门禁 Windows 误报（autocrlf 把 vendored 副本涂 CRLF；`.gitattributes` 钉 LF），vitest cloud+transport 全伞 382 绿 / 1 skipped。
+- **iteration 6**（2026-07-23，P1 控制台 MVP）：
+  - 新协商能力 **`teammate`**（唯一方法 `get_teammate_topology`，只读、轮询）六处同步宣告（Rust/TS allowlist、合同、client/LAN/cloud host 能力表、矩阵）；rdg 无头 host 刻意不宣告（denied）。共享 controller 新增 Team roster 面板（状态点/Leader 冠标/点按切 pane），桌面与移动同码。投影脱敏由 Rust 测试钉死（仅 id/name/paneId/paneIndex/role/status/capability）；HITL 裁决保持不可远达。
+  - S1 遥测第一阶段落地：bridge F1（trust-proof transcript 在/缺）与双 provider F2（enforced/relay-trust）进程内计数 + 测试钉死，无新持久面。
+  - A1 切片：workspace 列表投影同源化（删平行 `WorkspaceInfo`，net −12 行）；`get_active_workspace_id`/`get_workspace_snapshot` 审计确认本已单源。
+  - 证据：vitest shared 全伞 558 绿 / 1 skipped；svelte-check 71 files 0 errors；cargo check + `--lib --no-run` 0 errors；bins 27 绿。
 
 ## 6. 差距组合现状（愿景 − 现状，含最新裁决）
 
@@ -124,11 +129,11 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | T1 | 开发门禁可运行性 | P0 | **大部关闭**：pnpm/vitest/svelte-check/双仓 cargo 均有本轮 exit 0 证据；唯 `-p ridge --lib` 宿主载败（环境级，Q4） |
 | T2 | Cloud 协议双 SSOT | P0 | **关闭**（iteration 1 收敛 + 自动守卫；EOL 误报已根治） |
 | T3 | 生产两条版本线状态证据 | P0 | **代码侧关闭**（status 端点 + 一键脚本）；生产实跑与分支合并部署待用户 |
-| S1 | 兼容安全回落可观测退役 | P0/P1 | **审计阶段关闭**（矩阵 F1–F6 + 钉死测试 + 遥测/退役设计）；遥测实施与逐面翻闸待后续迭代按设计推进 |
-| P1 | Remote Agent 控制台 MVP | P1 | 未做；依赖只读 teammate topology 经 Remote 白名单安全暴露 |
+| S1 | 兼容安全回落可观测退役 | P0/P1 | **审计 + 遥测第一阶段关闭**（F1/F2 计数已实施）；F3–F6 计数与逐面 fail-closed 翻闸待数据窗口 |
+| P1 | Remote Agent 控制台 MVP | P1 | **代码侧关闭**（iteration 6：capability `teammate` + roster 面板 + 切 pane）；真机 UI 人工核验待用户 |
 | P2 | Remote HITL/接管闭环 | P1 | 未做；需 nonce/单次消费/过期/审计/多 controller 裁决语义，不简单加白名单 |
 | G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | 未做 |
-| A1 | 共享内核减法审计 | P1 | **审计完成 + 首个示范删除**；下切片 = `commands/workspace.rs` 只读三件套同源化 |
+| A1 | 共享内核减法审计 | P1 | **审计完成 + 两切片落地**（死 pane-output 面、workspace 列表投影）；剩余：pane.rs 分类、写路径同源化（高风险，靠后） |
 | A2 | 跨入口能力矩阵 + conformance | P1 | **关闭**：机器可读矩阵 + 一致性测试互证（新增能力必须声明矩阵） |
 | R1 | 弱网与恢复证据化 | P1 | 实验室部分**关闭**（确定性 fault 门禁）；真机部分待用户执行 runbook |
 | M1 | Workspace Memory | P2 | 未做；先最小 6 字段 discovery |
@@ -142,11 +147,10 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 ## 7. 开放问题（请 NotebookLM 定夺）
 
-1. iteration 6 主线：可信基线包已闭（T1 大部/T2/T3 代码侧/S1 审计/A2），按 §6 近期组合顺位应轮到 **P1 Remote Agent 控制台 MVP**（只读 roster + 切 Pane，经 Remote 白名单安全暴露 teammate topology）。是否同意？若同意，请给 MVP 的最小能力宣告面（新 capability 名、方法清单、denied 入口）与验收信号；若不同意，说明更高优先候选及理由。
-2. P1 依赖前提：teammate topology 只读快照如何进 REMOTE_ALLOWLIST 而不暴露本机 MCP endpoint/token？（矩阵 A2 要求新能力先声明。）
-3. S1 遥测实施（F1/F2 计数）应并入 P1 迭代还是单独小轮？
-4. `cargo test -p ridge --lib` 宿主 `STATUS_ENTRYPOINT_NOT_FOUND` 根因定位值得花一轮吗？（其余 7 成员 + bins 全绿，功能面未受阻。）
-5. 用户必办件（真机 smoke、生产 status 实跑、两分支审查合并）完成前，还有哪些自动化侧无冲突目标可排？
+1. iteration 7 主线候选（按 §6 剩余 P1）：**P2 Remote HITL 只读展示**（第一阶段：远端只读列出待审批 + 风险原因，不做裁决通道——裁决需 nonce/单次消费/审计语义，属第二阶段）vs **G1 单 Agent 暂停/恢复状态机设计**（先跨平台可暂停边界设计，不动代码）vs **R1 弱网基准测量**（构造 TURN-only/丢包/大 scrollback 场景取指标）。请按价值/风险/解锁力/成本裁决并给合同草案。
+2. P2 若选：待审批快照走哪条面？（候选：扩 `teammate` 拓扑载荷 vs 新只读方法 `list_hitl_pending`；后者需再过 A2 宣告纪律。）
+3. 用户必办件积压（真机 smoke、生产实跑、两分支合并、Team 面板人工核验）尚未消化——自动化迭代继续推进是否会扩大审查面风险？是否应有一轮「冻结新功能、只固化与文档」等待用户核验？
+4. `-p ridge --lib` loader 载败维持挂起是否仍成立（现已影响新增 Rust 单测的可执行性——teammate 投影测试只能编译不能跑）？
 
 ## 8. NotebookLM 评审要求（沿用）
 

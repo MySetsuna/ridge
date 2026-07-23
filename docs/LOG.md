@@ -2,6 +2,14 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-23 — iteration 6
+
+- 完成：P1 控制台 MVP 代码侧关闭——新协商能力 `teammate`（唯一只读方法 `get_teammate_topology`）六处同步宣告 + LAN/cloud 路由 + 共享 controller Team roster 面板（轮询/切 pane/无团队零噪声）；投影脱敏 Rust 测试与 HITL 不可远达负断言。S1 遥测第一阶段（F1/F2 进程内计数 + 测例钉死）。A1 切片：workspace 列表投影同源化（删平行 WorkspaceInfo，net −12）。
+- 验证：vitest shared 全伞 558/558（1 skipped）、svelte-check 71 files 0 errors、cargo workspace-excl-ridge 882 绿、ridge bins 27 绿、`--lib --no-run` 可编译。
+- 熔断：无停机触发；cloudHostBridge 硬编码七能力清单按合同更新为八。
+- 下一步：iteration 7 证据与固化轮（冻结新功能）：主线修复 `-p ridge --lib` loader 载败；弱网实验室参数化 harness；Teammate 字段审计；用户必办件清单单页。
+- 驳回：NotebookLM 的「TURN-only/真实丢包自动化验收」（需真实网络工装/凭据，改双轨：自动轨实验室 harness 显式标注，不冒充真机结论）；T3 实跑与真机归档入自动合同（凭据/设备在用户手，列用户轨）；「清理 Teammate 冗余字段」直接删（收窄为审计先行）。采纳：冻结轮、loader 修复升格、`list_hitl_pending` 方案归档待 P2。
+
 ## 2026-07-23 — iteration 5
 
 - 完成：可信基线固化五目标全落——S1 构造点矩阵 + 3 条回落钉死测试（发现并更正「无 transcript 时 trust-proof 直接失败」的错误注释：实为退化为无信道绑定 + 信任库裁决）+ 遥测/退役设计；T3 ridge-cloud 只读 status 端点（124 绿，独立分支）+ wind 一键两线脚本（桩验四径）；T1 双仓 cargo 绿灯（wind 882+27，cloud 124）；A2 机器可读矩阵 + 6 条一致性测试；A1 审计报告 + 删死 pane-output 面（−45 行）。
