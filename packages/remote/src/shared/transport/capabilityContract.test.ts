@@ -90,9 +90,12 @@ describe('cross-entry Remote capability contract', () => {
   });
 
   it('admits the teammate roster read while HITL adjudication stays host-privileged', () => {
-    expect(REMOTE_ALLOWLIST).toContain('get_teammate_topology');
-    expect(rustStringArray(rustCapability, 'REMOTE_ALLOWLIST')).toContain('get_teammate_topology');
-    expect(rustStringArray(rustCapability, 'MUTATING_METHODS')).not.toContain('get_teammate_topology');
+    // P2 阶段 1：只读 roster + 脱敏待审批快照两方法；均非 mutating。
+    for (const method of ['get_teammate_topology', 'list_hitl_pending']) {
+      expect(REMOTE_ALLOWLIST).toContain(method);
+      expect(rustStringArray(rustCapability, 'REMOTE_ALLOWLIST')).toContain(method);
+      expect(rustStringArray(rustCapability, 'MUTATING_METHODS')).not.toContain(method);
+    }
     // P2 之前 HITL 裁决与 Agent 配置写路径不得远程可达。
     for (const method of ['resolve_hitl_request', 'set_hitl_enabled']) {
       expect(REMOTE_ALLOWLIST).not.toContain(method);

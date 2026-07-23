@@ -220,6 +220,9 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     // 投影本身不含 MCP endpoint/token/env；HITL 裁决（resolve_hitl_request 等）与
     // Agent 配置写路径刻意排除在外（P2 前不入 allowlist）。
     "get_teammate_topology",
+    // P2 阶段 1：待裁决高危动作的脱敏只读快照（{id,initiator,level,reason,createdAt}，
+    // 绝不含 action 命令全文）。裁决通道（resolve_hitl_request）仍刻意排除。
+    "list_hitl_pending",
     // ── Search ──
     "text_search",
     // `search` is the alias the headless ridge-cli control protocol

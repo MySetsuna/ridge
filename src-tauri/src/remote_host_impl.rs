@@ -2317,6 +2317,8 @@ async fn dispatch_invoke_request(
             )
             .await,
         ),
+        // P2 阶段 1：脱敏待审批快照（无 action 全文）；裁决通道仍不路由。
+        "list_hitl_pending" => val(crate::commands::teammate::list_hitl_pending()),
 
         // ── Theme / settings (S1: migrated into ridge-core) ──
         // These three handlers now live in `ridge_core`; route them through
