@@ -14,7 +14,7 @@
 | Git tag | `v0.0.18`（已 push） |
 | GitHub Release | https://github.com/MySetsuna/ridge/releases/tag/v0.0.18 |
 | Remote 云 artifact | **未上传**（缺 token） |
-| 桌面 NSIS/MSI 安装包 | **未在本机构建**（可选） |
+| 桌面/跨平台安装包 | **由 `release.yml` 在 tag `v0.0.18` 上构建上传**（Windows exe/msi + Linux deb/AppImage + macOS dmg + rdg）。规则见仓库根 `Agents.md`「Releases」。换机后用 `gh release view v0.0.18` 确认资产齐全；CI 失败则 `gh workflow run release.yml -f tag=v0.0.18` 或本机补传。 |
 
 ### 换机后第一件事
 
