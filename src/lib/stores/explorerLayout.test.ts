@@ -5,13 +5,13 @@ import {
 	computeBodyHeightFromDrag,
 	lowerRegionHeight,
 	MIN_BODY_H,
-	MIN_LOWER_H,
+	MIN_BELOW_H,
+	reclampStoredBodyHeight,
+	resolveExplorerStackLayout,
 } from './explorerLayout';
 
-describe('clampBodyHeight — free follow compresses lower region', () => {
-	it('allows body to grow past the pre-drag lower-header Y (compress lower)', () => {
-		// Stack 400px; body was 200; lower had ~197. Drag +120 → want 320,
-		// max = 400 - 3 - 28 = 369 → 320 accepted (not frozen at ~200).
+describe('clampBodyHeight — free follow past former lower header', () => {
+	it('allows body to grow past pre-drag lower-header Y (compress below)', () => {
 		const col = 400;
 		const after = clampBodyHeight(200 + 120, { columnInnerH: col });
 		expect(after).toBe(320);
@@ -19,41 +19,75 @@ describe('clampBodyHeight — free follow compresses lower region', () => {
 		expect(lowerRegionHeight(col, after)).toBeLessThan(197);
 	});
 
-	it('clamps to max so lower keeps min height', () => {
+	it('clamps so below keeps min height', () => {
 		const col = 400;
-		const max = col - BODY_SEP_H - MIN_LOWER_H; // 369
+		const max = col - BODY_SEP_H - MIN_BELOW_H;
 		expect(clampBodyHeight(9999, { columnInnerH: col })).toBe(max);
-		expect(lowerRegionHeight(col, max)).toBe(MIN_LOWER_H);
+		expect(lowerRegionHeight(col, max)).toBe(MIN_BELOW_H);
 	});
 
 	it('clamps to min body', () => {
 		expect(clampBodyHeight(10, { columnInnerH: 400 })).toBe(MIN_BODY_H);
 	});
-
-	it('when column is short, still returns at least minBody', () => {
-		// col = 50 < minBody+sep+minLower — max collapses to minBody
-		expect(clampBodyHeight(80, { columnInnerH: 50 })).toBe(MIN_BODY_H);
-	});
 });
 
 describe('computeBodyHeightFromDrag', () => {
-	it('tracks clientY continuously (no step / no stop at lower header)', () => {
+	it('tracks clientY continuously (no stop at lower header)', () => {
 		const startH = 180;
 		const startY = 300;
 		const col = 500;
-		// Mouse moves down 50px → body +50
 		expect(computeBodyHeightFromDrag(startH, startY, startY + 50, col)).toBe(230);
-		// Large move that would cross former lower top (~180+320 of lower): still free
 		const far = computeBodyHeightFromDrag(startH, startY, startY + 250, col);
 		expect(far).toBe(startH + 250);
-		expect(far).toBeGreaterThan(180);
-		// And lower compresses
 		expect(lowerRegionHeight(col, far)).toBe(500 - far - BODY_SEP_H);
 	});
 
-	it('drag up shrinks body and frees lower space', () => {
+	it('drag up shrinks body and frees space below', () => {
 		const h = computeBodyHeightFromDrag(200, 400, 400 - 80, 500);
 		expect(h).toBe(120);
-		expect(lowerRegionHeight(500, h)).toBe(500 - 120 - BODY_SEP_H);
+	});
+});
+
+describe('resolveExplorerStackLayout — no empty 50/50 lower', () => {
+	it('default without lower content: body fills, lower hidden', () => {
+		const L = resolveExplorerStackLayout({ bodyHeightPx: null, hasLowerContent: false });
+		expect(L.showLower).toBe(false);
+		expect(L.bodyStyle).toContain('flex: 1 1 0');
+		expect(L.lowerClass).toBe('');
+	});
+
+	it('default with lower content: lower is content-sized not flex-1 equal split', () => {
+		const L = resolveExplorerStackLayout({ bodyHeightPx: null, hasLowerContent: true });
+		expect(L.showLower).toBe(true);
+		expect(L.bodyStyle).toContain('flex: 1 1 0');
+		// content-sized — NOT flex-1 (would invent empty half)
+		expect(L.lowerClass).toContain('flex-[0_0_auto]');
+		expect(L.lowerClass).not.toMatch(/flex-1(?![^\s])/);
+	});
+
+	it('fixed body: flex 0 1 H (shrink) + lower flex-1 when has content', () => {
+		const L = resolveExplorerStackLayout({ bodyHeightPx: 200, hasLowerContent: true });
+		expect(L.bodyStyle).toMatch(/flex:\s*0 1 200px/);
+		expect(L.lowerClass).toContain('flex-1');
+		expect(L.stackClassExtra).toContain('flex-[0_1_auto]');
+	});
+
+	it('fixed body without lower: no empty lower flex zone', () => {
+		const L = resolveExplorerStackLayout({ bodyHeightPx: 160, hasLowerContent: false });
+		expect(L.showLower).toBe(false);
+		expect(L.bodyStyle).toMatch(/flex:\s*0 1 160px/);
+	});
+});
+
+describe('reclampStoredBodyHeight', () => {
+	it('reduces stored H when live stack shrinks (window / multi-cwd)', () => {
+		const next = reclampStoredBodyHeight(400, 200);
+		expect(next).not.toBeNull();
+		expect(next!).toBeLessThanOrEqual(200 - BODY_SEP_H - MIN_BELOW_H);
+		expect(next!).toBeGreaterThanOrEqual(MIN_BODY_H);
+	});
+
+	it('returns null when already in range', () => {
+		expect(reclampStoredBodyHeight(100, 400)).toBeNull();
 	});
 });

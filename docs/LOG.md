@@ -14,8 +14,8 @@
 ## 2026-07-24 — iteration 20a（Explorer free-follow 压缩下方展示域）
 
 - 根因：cwd body 与 plugin 无列栈 flex；lower `min-height:auto` 顶住分隔条。
-- 修：`explorer-col-stack` + `explorer-lower` 实时压缩；`computeBodyHeightFromDrag` 纯函数；拖中 `rg-explorer-resizing` 屏蔽 hit-test。
-- 门禁：`explorerLayout.test.ts` 6 绿；清单 open=0。
+- 修 v1 列栈 + clamp。Skeptic 纠偏：无 pane 插件不挂空 lower；body `flex:0 1 H` + RO reclamp；free-follow 上界=栈顶→explorer 底（挤后续 cwd）。
+- 门禁：`explorerLayout.test.ts` 11 绿；清单 open=0。
 - 并行会话其他愿景未动。
 
 ## 2026-07-24 — iteration 19（Remote / multi-host / agent 监控 / mobile）
