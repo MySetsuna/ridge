@@ -302,12 +302,11 @@ fn retry_backoff_ms(is_connect_err: bool, attempt: usize) -> Option<u64> {
     if !is_connect_err {
         return None;
     }
-    match attempt {
-        0 => Some(150),
-        1 => Some(300),
-        2 => Some(600),
-        _ => None,
+    // R17-RECONN: ship through ridge::reconnect_policy (shared with cloud TS formula).
+    if attempt >= 3 {
+        return None;
     }
+    Some(ridge_lib::reconnect_policy::backoff_ms(attempt as u32, 150, 600))
 }
 
 /// 发送 HTTP 请求，连接错误时按 `retry_backoff_ms` 有界重试——桥接后端「按需启动 /

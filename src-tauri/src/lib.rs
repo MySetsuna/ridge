@@ -4,6 +4,7 @@ mod deep_root;
 mod engine;
 mod fs;
 mod hosts;
+pub mod reconnect_policy;
 mod lsp;
 /// 桌面进程与共享远控层之间的 Tauri 胶水层（`forward_event` + `ridge-core` 桥
 /// + `spawn_remote_server` 启动壳）——归并自已删除的 `remote/{mod,core_bridge,server}.rs`。
@@ -733,6 +734,8 @@ pub fn run() {
             hosts::disconnect_host,
             hosts::forget_host,
             hosts::attach_host_session,
+            hosts::list_host_sessions,
+            hosts::inject_host_output,
             workspace::create_workspace,
             workspace::get_active_workspace_id,
             workspace::list_workspaces,
@@ -838,6 +841,9 @@ pub fn run() {
             // G1 阶段一软暂停 + 可选 OS 冻结（仅桌面本机 IPC，不入 REMOTE_ALLOWLIST）
             commands::teammate::suspend_agent,
             commands::teammate::resume_agent,
+            commands::teammate::get_orchestration_health,
+            commands::teammate::get_pending_hitl_count,
+            commands::teammate::scan_workspace_context_files,
             // M1 切片三 + V-DISC + V-G1-RB
             commands::teammate::get_workspace_memory,
             commands::teammate::set_workspace_memory,

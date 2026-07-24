@@ -48,6 +48,9 @@
 
   let topology = $state<TopologySnapshot>(EMPTY_TOPOLOGY);
   let trips = $state<CircuitTrip[]>([]);
+  /** R17-HITL-BADGE / TEAM-HEALTH */
+  let pendingHitl = $state(0);
+  let suspendedAgents = $state(0);
 
   const hitlOn = $derived($settingsStore.teammateHitlEnabled);
   const leader = $derived(topology.roster.find((t) => t.id === topology.leaderId) ?? null);
@@ -91,6 +94,20 @@
       decisions = Array.isArray(list) ? list : [];
     } catch {
       decisions = [];
+    }
+    try {
+      pendingHitl = await invoke<number>('get_pending_hitl_count');
+    } catch {
+      pendingHitl = 0;
+    }
+    try {
+      const h = await invoke<{ suspendedAgents?: number; pendingHitl?: number }>(
+        'get_orchestration_health'
+      );
+      suspendedAgents = Number(h?.suspendedAgents ?? 0);
+      if (typeof h?.pendingHitl === 'number') pendingHitl = h.pendingHitl;
+    } catch {
+      suspendedAgents = 0;
     }
     if (workspaceId && !memGoalDirty) {
       try {
@@ -268,7 +285,21 @@
           : 'border-[var(--rg-border)] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
       >
         <ShieldCheck class="h-3 w-3" /> 审批 {hitlOn ? '开' : '关'}
+        {#if pendingHitl > 0}
+          <span
+            class="ml-0.5 inline-flex min-w-[1rem] items-center justify-center rounded-full bg-amber-500/90 px-1 text-[9px] font-bold text-black"
+            title="待审批"
+            data-testid="hitl-pending-badge"
+          >{pendingHitl}</span>
+        {/if}
       </button>
+      {#if suspendedAgents > 0}
+        <span
+          class="rounded-full border border-[var(--rg-border)] px-1.5 py-0.5 text-[10px] text-[var(--rg-fg-muted)]"
+          title="已暂停的 agent 数"
+          data-testid="orch-suspended-badge"
+        >暂停 {suspendedAgents}</span>
+      {/if}
     </div>
   </header>
 

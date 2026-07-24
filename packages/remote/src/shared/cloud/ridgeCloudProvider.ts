@@ -44,6 +44,7 @@ import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
 import { MAX_PANE_FRAME_BYTES } from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import type { ChannelBackpressure } from './cloudHostBridge';
+import { backoffMs } from '../reconnectPolicy';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
@@ -51,11 +52,7 @@ const KEY_BIND_GRACE_MS = 3000;
 /** DataChannel 标签与参数（契约 §7）。 */
 const DC_LABEL = 'ridge';
 
-// ── 信令断线自动重连参数（与 LAN wsRemote.ts / controller provider 同名同值）──
-/** 退避基数（ms）。 */
-const RECONNECT_BASE_MS = 1_000;
-/** 退避上限（ms）。 */
-const RECONNECT_MAX_MS = 15_000;
+// ── 信令断线自动重连（R17-RECONN：shared reconnectPolicy）──
 
 /**
  * DataChannel 背压下水位（弱网 P1）：设为每条 conn DataChannel 的 `bufferedAmountLowThreshold`，
@@ -634,7 +631,7 @@ export class RidgeCloudHost {
   private scheduleSignalingReconnect(): void {
     if (this.closed || this.reconnectTimer) return;
     const n = this.reconnectAttempts++;
-    const base = Math.min(RECONNECT_BASE_MS * 2 ** n, RECONNECT_MAX_MS);
+    const base = backoffMs(n); // R17-RECONN shipped path
     const delay = Math.round(base + base * 0.3 * Math.random()); // ±30% 抖动
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
