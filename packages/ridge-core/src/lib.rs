@@ -30,7 +30,9 @@
 //! re-implemented per host.
 
 pub mod capability;
+pub mod capability_matrix_guard;
 pub mod clipboard;
+pub mod protocol_guard;
 pub mod commands;
 pub mod ctx;
 pub mod device_identity;
@@ -38,6 +40,8 @@ pub mod dispatch;
 pub mod error;
 pub mod fs;
 pub mod mcp;
+pub mod process_guard;
+pub mod external_spawn_registry;
 pub mod pty;
 pub mod sandbox;
 mod seed_store;

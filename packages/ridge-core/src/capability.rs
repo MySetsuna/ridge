@@ -223,6 +223,7 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     // P2 阶段 1：待裁决高危动作的脱敏只读快照（含 resolutionNonce 一次性票据，
     // 绝不含 action 命令全文）。桌面版裁决（resolve_hitl_request，含 modify）仍刻意排除。
     "list_hitl_pending",
+    "list_hitl_audit_remote",
     // P2 阶段 2：远端裁决——nonce 恒时比对 + 单次消费；仅 approve/reject（无 modify）。
     "resolve_hitl_remote",
     // R19：只读编排健康（suspended / pending 计数）——与桌面 Agent Center badge 同源。

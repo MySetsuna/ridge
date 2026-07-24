@@ -2296,6 +2296,13 @@ async fn dispatch_invoke_request(
         // ── Teammate（P1 控制台 MVP）──
         // 只读 roster 快照，与桌面 Agent Center 同一投影（无 MCP endpoint/token）。
         // HITL 裁决与 Agent 配置写路径刻意不路由（P2 前不入 allowlist）。
+        // AC4-C10 / C55: admit_remote_method (canonicalize + desktop-privileged deny).
+        cmd if ridge_core::protocol_guard::admit_remote_method(cmd).is_err() => {
+            let err = ridge_core::protocol_guard::admit_remote_method(cmd)
+                .err()
+                .unwrap_or_else(|| format!("remote denied: {cmd}"));
+            val::<()>(Err(err))
+        }
         "get_teammate_topology" => val(
             crate::commands::teammate::get_teammate_topology(
                 opt_s(args, "workspaceId"),
@@ -2305,6 +2312,13 @@ async fn dispatch_invoke_request(
         ),
         // P2 阶段 1：脱敏待审批快照（无 action 全文）。
         "list_hitl_pending" => val(crate::commands::teammate::list_hitl_pending()),
+        "list_hitl_audit_remote" => {
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32);
+            val(Ok(crate::commands::teammate::list_hitl_audit_remote(limit)))
+        }
         // P2 阶段 2：远端裁决（nonce 单次消费；桌面版 resolve_hitl_request 仍不路由）。
         "resolve_hitl_remote" => val(crate::commands::teammate::resolve_hitl_remote(
             s(args, "id"),

@@ -86,4 +86,19 @@ describe('recommendedGitConcurrency', () => {
     expect(n).toBeGreaterThanOrEqual(2);
     expect(n).toBeLessThanOrEqual(12);
   });
+
+  // OP-GIT-BYPASS / iter 26: dual-end cap must share named constants with ridge-core.
+  it('GIT_CONCURRENCY_MIN/MAX match ridge-core git.rs', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const { GIT_CONCURRENCY_MIN, GIT_CONCURRENCY_MAX } = await import('./pLimit');
+    const rust = readFileSync(
+      resolve(import.meta.dirname, '../../../packages/ridge-core/src/commands/git.rs'),
+      'utf8',
+    );
+    const min = rust.match(/pub const GIT_CONCURRENCY_MIN:\s*usize\s*=\s*(\d+)/)?.[1];
+    const max = rust.match(/pub const GIT_CONCURRENCY_MAX:\s*usize\s*=\s*(\d+)/)?.[1];
+    expect(min).toBe(String(GIT_CONCURRENCY_MIN));
+    expect(max).toBe(String(GIT_CONCURRENCY_MAX));
+  });
 });

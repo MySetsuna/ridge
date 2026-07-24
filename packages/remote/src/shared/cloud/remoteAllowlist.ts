@@ -106,6 +106,7 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'get_teammate_topology',
   // P2 阶段 1：脱敏待审批快照（含 resolutionNonce；无 action 全文）。
   'list_hitl_pending',
+  'list_hitl_audit_remote',
   // P2 阶段 2：远端裁决（nonce 单次消费；仅 approve/reject，无 modify）。
   'resolve_hitl_remote',
   // R19：只读编排健康（suspended / pending）——桌面 Agent Center badge 同源。

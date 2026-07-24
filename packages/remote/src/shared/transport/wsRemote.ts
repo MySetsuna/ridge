@@ -299,7 +299,19 @@ export interface RemoteLink {
   closePane(paneId: string): Promise<boolean>;
   closeWorkspace(workspaceId: string): Promise<boolean>;
   listWorkspacePanes(workspaceId: string): Promise<PaneInfo[]>;
+  /** Host `~/ridge-workspaces/*.ridge` inventory (open-only on mobile; no manage). */
+  listSavedWorkspaceFiles(): Promise<SavedWorkspaceFile[]>;
+  /** Open a .ridge path on the host into a live workspace; returns workspace id. */
+  openWorkspaceFromFile(path: string): Promise<string | null>;
   disconnect(): void;
+}
+
+/** Host-disk saved workspace file (list_saved_workspace_files). */
+export interface SavedWorkspaceFile {
+  name: string;
+  path: string;
+  /** Seconds since epoch (host FS mtime). */
+  mtimeSecs: number;
 }
 
 export class RemoteConnection implements RemoteLink {
@@ -949,6 +961,44 @@ export class RemoteConnection implements RemoteLink {
   async createWorkspace(name?: string): Promise<string | null> {
     const data = await this._sendAndWait({ type: 'create-workspace', name: name || '' }, 'create-workspace-result') as Record<string, unknown>;
     return (data.success && data.workspaceId) ? String(data.workspaceId) : null;
+  }
+
+  async listSavedWorkspaceFiles(): Promise<SavedWorkspaceFile[]> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'list_saved_workspace_files',
+        args: {},
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _result?: unknown; _error?: unknown };
+    if (data._error) throw new Error(String(data._error));
+    const raw = data._result;
+    if (!Array.isArray(raw)) return [];
+    return raw.map((row) => {
+      const r = row as Record<string, unknown>;
+      return {
+        name: String(r.name ?? ''),
+        path: String(r.path ?? ''),
+        mtimeSecs: Number(r.mtime_secs ?? r.mtimeSecs ?? 0),
+      };
+    }).filter((e) => e.path.length > 0);
+  }
+
+  async openWorkspaceFromFile(path: string): Promise<string | null> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'open_workspace_from_file',
+        args: { path },
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _result?: unknown; _error?: unknown };
+    if (data._error) throw new Error(String(data._error));
+    const id = data._result;
+    return id != null && String(id).length > 0 ? String(id) : null;
   }
 
   async createPane(shell?: string): Promise<string | null> {

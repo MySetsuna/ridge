@@ -49,11 +49,22 @@ struct PendingEntry {
 
 /// M1 切片二 —— 裁决审计条目（**绝不含命令全文**；落 workspace-memory `decisions` 节）。
 fn record_decision(entry: &PendingEntry, source: &str, verdict: &str, outcome: &str) {
-    let Some(wid) = entry.wid else { return };
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
+    // AC4-C7: process-local redacted ring for remote list_hitl_audit_remote.
+    super::hitl_audit::append_audit(super::hitl_audit::AuditEntry {
+        id: String::new(),
+        ts_ms: ts,
+        source: source.into(),
+        initiator: entry.initiator.clone(),
+        verdict: verdict.into(),
+        risk_level: "Dangerous".into(),
+        reason_summary: entry.reason.clone(),
+        outcome: outcome.into(),
+    });
+    let Some(wid) = entry.wid else { return };
     super::memory::append_decision_global(
         wid,
         serde_json::json!({
@@ -80,7 +91,10 @@ pub fn is_enabled() -> bool {
 
 /// 开/关网关。开启后高危动作才会被挂起审批。
 pub fn set_enabled(on: bool) {
-    ENABLED.store(on, Ordering::Relaxed);
+    let prev = ENABLED.swap(on, Ordering::Relaxed);
+    if prev != on {
+        super::orch_health::bump_health_generation();
+    }
 }
 
 /// 请求对某动作的人类授权。

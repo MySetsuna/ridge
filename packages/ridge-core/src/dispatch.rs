@@ -137,12 +137,25 @@ fn opt_vec_s(args: &Value, key: &str) -> Option<Vec<String>> {
 ///
 /// See module docs for the order of admission / guard / table checks.
 pub fn dispatch(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
-    // 1. Capability admission (D8).
-    if !ctx.capabilities().is_allowed(method) {
-        tracing::warn!(target: "ridge::core::dispatch", method, "capability denied");
-        return Err(CoreError::CapabilityDenied(method.to_string()));
+    // 0. AC4-C10: normalize aliases + reject invalid method names before
+    // capability admission. Desktop-privileged remote denial stays in
+    // protocol_guard::remote_may_invoke (host-facing bridges call it when
+    // they know the controller role); core Ctx has no role bit.
+    match crate::protocol_guard::admit_desktop_method(method) {
+        Ok(owned) => {
+            // 1. Capability admission (D8) on admitted name.
+            if !ctx.capabilities().is_allowed(&owned) {
+                tracing::warn!(target: "ridge::core::dispatch", method = %owned, "capability denied");
+                return Err(CoreError::CapabilityDenied(owned));
+            }
+            dispatch_admitted(&owned, args, ctx)
+        }
+        Err(e) => Err(CoreError::MethodNotFound(e)),
     }
+}
 
+fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> {
+    // Entry after protocol admission (admit_desktop_method) + capability check.
     // 2. Path-traversal guard.
     traversal_guard(&args)?;
 

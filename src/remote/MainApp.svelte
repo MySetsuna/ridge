@@ -46,13 +46,14 @@
   // §selection: explicit selection mode (toggled in BottomTabBar). When on, a
   // single-finger drag selects; when off it scrolls (no accidental selection).
   let selectionMode = $state(false);
-  let sidebarTab: 'files' | 'git' | 'search' | null = $state(null);
+  let sidebarTab: RemotePanel | null = $state(null);
   // Optimistic until D9 hello completes; onMount immediately replaces these via
   // refreshCapabilities and subscribes to reconnect renegotiation.
   let panelAvailability = $state<Readonly<Record<RemotePanel, boolean>>>({
     files: true,
     git: true,
     search: true,
+    team: false,
   });
   let canManageWorkspaces = $state(true);
   let canUseTheme = $state(true);

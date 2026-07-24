@@ -2,8 +2,8 @@
 //!
 //! `register-agent` 携带的 agent 名 + 被动识别出的能力档落此表（进程级 `LazyLock`，
 //! 类比 [`super::hitl`]，**不改 `AppState`**）。`get_teammate_topology` /
-//! `route_get_team_profile` 据此构建 `ridge_core::TopologyGraph`，并跑极简能力竞选
-//! （[`ridge_core::elect_leader`]）产出带真实 `leaderId` + Leader 角色的花名册。
+//! `route_get_team_profile` 据此构建 `ridge_core::TopologyGraph`。组长不再 AI 自动竞选，
+//! 顶层 `leaderId` 恒 null——每个组的组长由用户在前端「编组」里手动指定并持久化。
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -11,7 +11,7 @@ use std::sync::{LazyLock, Mutex};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use ridge_core::{elect_leader, AgentRole, AgentTier, Teammate, TeammateStatus, TopologyGraph};
+use ridge_core::{AgentRole, AgentTier, Teammate, TeammateStatus, TopologyGraph};
 
 struct ProfileEntry {
     teammate: Teammate,
@@ -68,8 +68,8 @@ pub fn agent_id_for_pane(wid: Uuid, pane_uuid: Uuid) -> Option<String> {
         .map(|(agent_id, _)| agent_id.clone())
 }
 
-/// 构建该工作区的花名册快照 JSON（`{roster, leaderId, edges}`）。跑极简能力竞选
-/// （[`elect_leader`]）产出真实 `leaderId`，并把当选者角色标 Leader、余者 Worker。
+/// 构建该工作区的花名册快照 JSON（`{roster, leaderId, edges}`）。组长不自动竞选：
+/// `leaderId` 恒 null、所有成员 role=Worker（每组组长由前端「编组」手动指定）。
 ///
 /// `pane_order` 为该工作区当前叶子序列（`pane_tree.get_all_leaves()`，调用方持
 /// `AppState` 后读出传入）。据此为每个成员补出数字 `paneIndex`，与 MCP 数字索引
@@ -94,13 +94,10 @@ pub fn topology_for(wid: Uuid, pane_order: &[Uuid]) -> Value {
         graph.add_teammate(e.teammate.clone());
     }
 
-    // 极简能力竞选：档最高者当选组长（同档取 id 最小者）。set_leader_static 顺带把
-    // 当选者角色置 Leader、前任降 Worker，故下方 roster 的 role 直接反映竞选结果。
-    let roster_for_vote: Vec<Teammate> = graph.roster().into_iter().cloned().collect();
-    if let Some(winner) = elect_leader(&roster_for_vote).map(|s| s.to_string()) {
-        let _ = graph.set_leader_static(&winner);
-    }
-    let leader_id = graph.leader_id().map(|s| s.to_string());
+    // 组长不再由能力自动竞选：交由用户在「编组」里手动为每个组指定组长（前端 localStorage
+    // 持久化，见 teammateGroups.svelte.ts）。故顶层花名册无全局 Leader，leaderId 恒 null、
+    // 所有成员 role=Worker。
+    let leader_id: Option<String> = None;
 
     let roster: Vec<Value> = graph
         .roster()
@@ -131,10 +128,15 @@ pub fn topology_for(wid: Uuid, pane_order: &[Uuid]) -> Value {
         })
         .collect();
 
+    // 附带该工作区的编组镜像（桌面双写落 workspace-memory），供 remote 只读同步。
+    let groups = crate::teammate::memory::dir()
+        .map(|d| crate::teammate::memory::get_teammate_groups(d, wid))
+        .unwrap_or_else(|| json!([]));
     json!({
         "roster": roster,
         "leaderId": leader_id.map(Value::from).unwrap_or(Value::Null),
         "edges": [],
+        "groups": groups,
     })
 }
 

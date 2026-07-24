@@ -71,6 +71,39 @@ describe('cross-entry Remote capability contract', () => {
     expect(rustCapability).toContain('pub const REMOTE_ALLOWLIST');
   });
 
+  // OP-CAP-PARITY: multi-host outbound + orch health surface boundaries.
+  it('admits orchestration health read but keeps multi-host outbound desktop-local', () => {
+    expect(REMOTE_ALLOWLIST).toContain('get_orchestration_health');
+    expect(REMOTE_CAPABILITY_METHODS.teammate).toContain('get_orchestration_health');
+    // Desktop-only hosts outbound surface must never be remotely admitted.
+    for (const method of [
+      'connect_host',
+      'attach_host_session',
+      'detach_host_session',
+      'inject_host_output',
+      'forget_host',
+      'get_outbound_stats',
+      'host_list_snapshot',
+      'list_host_sessions',
+      'disconnect_host',
+    ]) {
+      expect(REMOTE_ALLOWLIST).not.toContain(method);
+    }
+  });
+
+  it('keeps DESKTOP_ONLY_HOST_METHODS rust list aligned with deny list', () => {
+    const hostsDesktop = source('src-tauri/src/hosts/desktop_surface.rs');
+    for (const method of [
+      'connect_host',
+      'detach_host_session',
+      'get_outbound_stats',
+      'attach_host_session',
+    ]) {
+      expect(hostsDesktop).toContain(`"${method}"`);
+      expect(REMOTE_ALLOWLIST).not.toContain(method);
+    }
+  });
+
   it('derives Files/Git/Search/Team visibility from negotiated capabilities', () => {
     const available = new Set<RemoteCapability>(['pane', 'fs', 'search', 'teammate']);
     expect(getRemotePanelAvailability((capability) => available.has(capability))).toEqual({

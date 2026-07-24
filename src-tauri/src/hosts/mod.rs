@@ -1,18 +1,30 @@
 //! 外部主机注册表（「主机 / Hosts」面板的远端 ridge / rdg host）。
 //!
-//! P3/P4 基础层：本模块承载**已登记的远端主机**及其会话元数据、连接状态，并暴露
-//! `host_list_snapshot` / `connect_host` / `disconnect_host` / `forget_host` 命令面。
-//!
-//! **边界（本里程）**：这里只做主机登记与状态管理；真正的**出站连接 + 远端 PTY 流
-//! 接管**（把远端 pane 当本地 foreign pane，经 `PtyHandle.remote_ref` 路由 I/O）是
-//! 明确的下一里程，需 rebuild + 一台真实远端主机联调验证。见
-//! `docs/superpowers/specs/2026-06-30-multi-host-foreign-terminal-hosts-design.md` §2/§9。
+//! 承载已登记远端主机、会话元数据、连接状态，以及 **LAN 出站 PTY 客户端**
+//!（[`outbound`]：hello/list/subscribe/write/resize/detach/重订；Mock 可测）。
+//! 真机 WebSocket 接线走同一 `OutboundTransport` trait。
+//! 见 `docs/superpowers/specs/2026-06-30-multi-host-foreign-terminal-hosts-design.md` §2/§9。
+
+pub mod desktop_surface;
+pub mod foreign_history;
+pub mod history_commands;
+pub mod lan_transport;
+pub mod live_backpressure;
+pub mod outbound;
+pub mod reconnect_supervisor;
+
+
 
 use parking_lot::RwLock;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::state::AppState;
+use outbound::{
+    append_capped, MockOutboundTransport, OutboundClient, OutboundRegistry, OutboundTransport,
+    RemoteSessionInfo, DEFAULT_LIVE_OUTPUT_CAP,
+};
 use tauri::State;
 
 /// 主机类型：远端 ridge（LAN/cloud）或 rdg（ridge-cli headless host）。
@@ -78,7 +90,6 @@ pub struct ForeignAttachment {
 }
 
 /// 进程内主机注册表（AppState 持有 `Arc<HostRegistry>`）。
-#[derive(Default)]
 pub struct HostRegistry {
     hosts: RwLock<HashMap<String, HostRecord>>,
     /// (host_id, remote_pane_id) → stdin sink toward outbound transport.
@@ -87,9 +98,68 @@ pub struct HostRegistry {
     live_outputs: RwLock<HashMap<(String, String), Vec<u8>>>,
     /// local pane_id → foreign attachment metadata (R17-HOST-PANE).
     foreign_by_pane: RwLock<HashMap<uuid::Uuid, ForeignAttachment>>,
+    /// 每 host 独立出站客户端（OP-WS-PTY / OP-RECONN-HOST）。
+    outbound: OutboundRegistry,
+    /// live 输出缓冲上限（字节/会话）；背压超限丢头部。
+    live_output_cap: RwLock<usize>,
+    /// Accumulated dropped bytes from live inject (AC4-C8).
+    live_dropped_total: std::sync::atomic::AtomicU64,
+    /// AC4-C8: per-session backpressure registry (Hosts aggregate UI).
+    live_bp: live_backpressure::LiveBackpressureRegistry,
+    /// AC4-C5: cancelable outbound reconnect tasks.
+    reconnect: reconnect_supervisor::ReconnectSupervisor,
+    /// AC4-C6: attach-time history tail per remote session.
+    history: foreign_history::ForeignHistoryStore,
+}
+
+impl Default for HostRegistry {
+    fn default() -> Self {
+        Self {
+            hosts: RwLock::new(HashMap::new()),
+            live_sinks: RwLock::new(HashMap::new()),
+            live_outputs: RwLock::new(HashMap::new()),
+            foreign_by_pane: RwLock::new(HashMap::new()),
+            outbound: OutboundRegistry::default(),
+            live_output_cap: RwLock::new(DEFAULT_LIVE_OUTPUT_CAP),
+            live_dropped_total: std::sync::atomic::AtomicU64::new(0),
+            live_bp: live_backpressure::LiveBackpressureRegistry::new(
+                DEFAULT_LIVE_OUTPUT_CAP as u64,
+            ),
+            reconnect: reconnect_supervisor::ReconnectSupervisor::new(),
+            history: foreign_history::ForeignHistoryStore::new(),
+        }
+    }
 }
 
 impl HostRegistry {
+    pub fn reconnect_supervisor(&self) -> &reconnect_supervisor::ReconnectSupervisor {
+        &self.reconnect
+    }
+
+    pub fn history(&self) -> &foreign_history::ForeignHistoryStore {
+        &self.history
+    }
+
+    pub fn live_bp(&self) -> &live_backpressure::LiveBackpressureRegistry {
+        &self.live_bp
+    }
+
+    /// On host disconnect: schedule cancelable resubscribe for attached panes.
+    pub fn on_host_disconnected_schedule_reconnect(&self, host_id: &str) {
+        let panes: Vec<String> = self
+            .foreign_by_pane
+            .read()
+            .values()
+            .filter(|f| f.remote.host_id == host_id)
+            .map(|f| f.remote.remote_pane_id.clone())
+            .collect();
+        if !panes.is_empty() {
+            self.reconnect.schedule(host_id, panes);
+        } else {
+            self.reconnect.cancel(host_id);
+        }
+    }
+
     pub fn snapshot(&self) -> Vec<HostRecord> {
         let mut v: Vec<HostRecord> = self.hosts.read().values().cloned().collect();
         v.sort_by(|a, b| a.label.cmp(&b.label));
@@ -133,14 +203,96 @@ impl HostRegistry {
         }
     }
 
-    /// R17-HOST-OUT: inject PTY output from remote host into local buffer.
-    pub fn inject_live_output(&self, host_id: &str, remote_pane_id: &str, bytes: &[u8]) {
+    /// R17-HOST-OUT: inject PTY output from remote host into local buffer (capped).
+    /// Returns bytes dropped due to backpressure.
+    pub fn inject_live_output(&self, host_id: &str, remote_pane_id: &str, bytes: &[u8]) -> usize {
+        let cap = *self.live_output_cap.read();
         let key = (host_id.to_string(), remote_pane_id.to_string());
+        let mut map = self.live_outputs.write();
+        let buf = map.entry(key).or_default();
+        let dropped = append_capped(buf, bytes, cap);
+        if dropped > 0 {
+            self.live_dropped_total
+                .fetch_add(dropped as u64, std::sync::atomic::Ordering::SeqCst);
+        }
+        // C8 product path: per-session registry for Hosts aggregate badges.
+        self.live_bp.record_inject(
+            host_id,
+            remote_pane_id,
+            buf.len() as u64,
+            dropped as u64,
+        );
+        dropped
+    }
+
+    pub fn live_dropped_total(&self) -> u64 {
+        self.live_dropped_total
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn live_buffer_bytes_for(&self, host_id: &str, remote_pane_id: &str) -> usize {
+        self.live_outputs
+            .read()
+            .get(&(host_id.to_string(), remote_pane_id.to_string()))
+            .map(|v| v.len())
+            .unwrap_or(0)
+    }
+
+    pub fn set_live_output_cap(&self, cap: usize) {
+        let c = cap.max(1);
+        *self.live_output_cap.write() = c;
+        self.live_bp.set_cap(c as u64);
+    }
+
+    pub fn live_output_cap(&self) -> usize {
+        *self.live_output_cap.read()
+    }
+
+    /// Bind a mock or production outbound client for this host.
+    pub fn bind_outbound(&self, client: Arc<OutboundClient>) {
+        self.outbound.insert(client);
+    }
+
+    pub fn outbound_client(&self, host_id: &str) -> Option<Arc<OutboundClient>> {
+        self.outbound.get(host_id)
+    }
+
+    pub fn remove_outbound(&self, host_id: &str) {
+        self.outbound.remove(host_id);
+    }
+
+    /// Detach local foreign view: unsubscribe remote, drop sink/mapping, clear attached flag.
+    /// Does **not** disconnect host or kill remote PTY.
+    pub fn detach_foreign(&self, pane_id: uuid::Uuid) -> Result<RemoteRef, String> {
+        let att = self
+            .foreign_by_pane
+            .write()
+            .remove(&pane_id)
+            .ok_or_else(|| format!("pane {pane_id} is not foreign"))?;
+        let remote = att.remote;
+        self.live_sinks
+            .write()
+            .remove(&(remote.host_id.clone(), remote.remote_pane_id.clone()));
+        // Drop live buffer bytes for this session (keep history tail for re-attach seed).
         self.live_outputs
             .write()
-            .entry(key)
-            .or_default()
-            .extend_from_slice(bytes);
+            .remove(&(remote.host_id.clone(), remote.remote_pane_id.clone()));
+        // C8/C50: clear per-session BP counters on detach (registry API used).
+        self.live_bp
+            .clear_session(&remote.host_id, &remote.remote_pane_id);
+        if let Some(client) = self.outbound.get(&remote.host_id) {
+            let _ = client.unsubscribe(&remote.remote_pane_id);
+        }
+        self.set_session_attached(&remote.host_id, &remote.remote_pane_id, false);
+        self.publish_control_plane();
+        Ok(remote)
+    }
+
+    /// Apply list_panes result onto HostRecord.sessions.
+    pub fn replace_sessions(&self, host_id: &str, sessions: Vec<HostSessionMeta>) {
+        if let Some(h) = self.hosts.write().get_mut(host_id) {
+            h.sessions = sessions;
+        }
     }
 
     /// Pane ids registered as foreign for this remote session.
@@ -170,6 +322,64 @@ impl HostRegistry {
                 remote,
             },
         );
+        self.publish_control_plane();
+    }
+
+    /// foreign attachment count (control-plane publish).
+    pub fn foreign_count(&self) -> usize {
+        self.foreign_by_pane.read().len()
+    }
+
+    pub fn outbound_connected_count(&self) -> usize {
+        self.hosts
+            .read()
+            .values()
+            .filter(|h| h.status == HostStatus::Connected)
+            .count()
+    }
+
+    /// Push multi-host counters into orch_health (OP-AGENT-CP).
+    pub fn publish_control_plane(&self) {
+        crate::teammate::orch_health::publish_hosts_control_plane(
+            self.foreign_count(),
+            self.outbound_connected_count(),
+        );
+    }
+
+    pub fn outbound_stats_snapshot(&self, host_id: &str) -> Option<desktop_surface::OutboundStatsDto> {
+        let client = self.outbound.get(host_id)?;
+        let state = format!("{:?}", client.state());
+        let subscribed: Vec<String> = {
+            // derive from session attached flags + client is_subscribed
+            self.list_sessions(host_id)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| client.is_subscribed(&s.id))
+                .map(|s| s.id)
+                .collect()
+        };
+        use std::sync::atomic::Ordering;
+        let buf_bytes: u64 = subscribed
+            .iter()
+            .map(|sid| self.live_buffer_bytes_for(host_id, sid) as u64)
+            .sum();
+        Some(desktop_surface::OutboundStatsDto {
+            host_id: host_id.to_string(),
+            state,
+            subscribed,
+            hello_ok: client.stats.hello_ok.load(Ordering::SeqCst),
+            list_ok: client.stats.list_ok.load(Ordering::SeqCst),
+            subscribe_ok: client.stats.subscribe_ok.load(Ordering::SeqCst),
+            write_ok: client.stats.write_ok.load(Ordering::SeqCst),
+            resize_ok: client.stats.resize_ok.load(Ordering::SeqCst),
+            fanout_bytes: client.stats.fanout_bytes.load(Ordering::SeqCst),
+            reconnect_attempts: client.stats.reconnect_attempts.load(Ordering::SeqCst),
+            resubscribe_ok: client.stats.resubscribe_ok.load(Ordering::SeqCst),
+            errors: client.stats.errors.load(Ordering::SeqCst),
+            live_buffer_cap: self.live_output_cap() as u64,
+            live_buffer_bytes: buf_bytes,
+            live_dropped_bytes: self.live_dropped_total(),
+        })
     }
 
     pub fn foreign_for_pane(&self, pane_id: uuid::Uuid) -> Option<ForeignAttachment> {
@@ -338,24 +548,72 @@ pub fn ensure_host_connected(state: &AppState, host_id: &str) -> Result<(), Stri
     ensure_host_status_connected(h.status, &h.detail)
 }
 
-/// 断开一台远端主机（置 `Disconnected`；不移除登记）。
+/// 断开一台远端主机（置 `Disconnected`；不移除登记；清 outbound 订阅）。
 #[tauri::command]
 pub fn disconnect_host(state: State<'_, AppState>, host_id: String) -> Result<(), String> {
-    state
-        .hosts
-        .set_status(&host_id, HostStatus::Disconnected, "已断开");
+    disconnect_host_outbound(&state.hosts, &host_id);
     Ok(())
 }
 
-/// 忘记一台远端主机（移除登记）。
+/// 忘记一台远端主机（移除登记 + 出站客户端）。
 #[tauri::command]
 pub fn forget_host(state: State<'_, AppState>, host_id: String) -> Result<(), String> {
+    state.hosts.remove_outbound(&host_id);
     state.hosts.remove(&host_id);
     Ok(())
 }
 
+/// 为已登记 host 绑定 mock/生产出站客户端并 hello+list，填充 sessions（OP-WS-PTY T1）。
+/// 测试与后续真 WS 接线共用；无 transport 时仍可用旧 probe sessions。
+pub fn bind_outbound_and_list(
+    hosts: &HostRegistry,
+    host_id: &str,
+    transport: Arc<dyn OutboundTransport>,
+) -> Result<Vec<HostSessionMeta>, String> {
+    let client = Arc::new(OutboundClient::new(host_id, transport));
+    let list = client.connect_and_list()?;
+    let sessions: Vec<HostSessionMeta> = list
+        .into_iter()
+        .map(|s: RemoteSessionInfo| HostSessionMeta {
+            id: s.id,
+            title: s.title,
+            attached: false,
+        })
+        .collect();
+    hosts.replace_sessions(host_id, sessions.clone());
+    hosts.bind_outbound(client);
+    hosts.set_status(
+        host_id,
+        HostStatus::Connected,
+        format!("outbound listed {} session(s)", sessions.len()),
+    );
+    hosts.publish_control_plane();
+    Ok(sessions)
+}
+
+/// Desktop diagnostics: outbound client counters for a host.
+#[tauri::command]
+pub fn get_outbound_stats(
+    state: State<'_, AppState>,
+    host_id: String,
+) -> Result<desktop_surface::OutboundStatsDto, String> {
+    state
+        .hosts
+        .outbound_stats_snapshot(&host_id)
+        .ok_or_else(|| format!("no outbound client for {host_id}"))
+}
+
+/// AC4-C8: aggregate live backpressure for Hosts panel (desktop-only).
+#[tauri::command]
+pub fn get_live_backpressure(
+    state: State<'_, AppState>,
+    host_id: String,
+) -> live_backpressure::AggregateBp {
+    state.hosts.live_bp().aggregate_for_host(&host_id)
+}
+
 /// V-H1-LIVE / R17-HOST-PANE：把远端会话接入为 foreign 视图（需 Connected）。
-/// 注册 live stdin sink、foreign 元数据；可选挂到工作区首 leaf 的 split 新 pane。
+/// 注册 live stdin sink、foreign 元数据；若有 outbound 客户端则 **subscribe**。
 #[tauri::command]
 pub fn attach_host_session(
     state: State<'_, AppState>,
@@ -406,25 +664,41 @@ pub fn attach_host_session(
         kind,
     };
 
-    let host_id_c = host_id.clone();
-    let session_id_c = session_id.clone();
-    let sink_buf: std::sync::Arc<parking_lot::Mutex<Vec<u8>>> =
-        std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
-    let buf_c = sink_buf.clone();
-    state.hosts.set_live_sink(
-        &host_id,
-        &session_id,
-        std::sync::Arc::new(move |bytes: &[u8]| {
-            buf_c.lock().extend_from_slice(bytes);
-            tracing::trace!(
-                target: "ridge::hosts",
-                host = %host_id_c,
-                pane = %session_id_c,
-                n = bytes.len(),
-                "live stdin"
-            );
-        }),
-    );
+    // Prefer outbound client write path when bound; else buffer sink for tests.
+    if let Some(client) = state.hosts.outbound_client(&host_id) {
+        client.subscribe(&session_id)?;
+        let client_c = client.clone();
+        let session_id_c = session_id.clone();
+        state.hosts.set_live_sink(
+            &host_id,
+            &session_id,
+            Arc::new(move |bytes: &[u8]| {
+                if let Err(e) = client_c.write_pty(&session_id_c, bytes) {
+                    tracing::warn!(target: "ridge::hosts", error = %e, "outbound write_pty");
+                }
+            }),
+        );
+    } else {
+        let host_id_c = host_id.clone();
+        let session_id_c = session_id.clone();
+        let sink_buf: Arc<parking_lot::Mutex<Vec<u8>>> =
+            Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let buf_c = sink_buf.clone();
+        state.hosts.set_live_sink(
+            &host_id,
+            &session_id,
+            Arc::new(move |bytes: &[u8]| {
+                buf_c.lock().extend_from_slice(bytes);
+                tracing::trace!(
+                    target: "ridge::hosts",
+                    host = %host_id_c,
+                    pane = %session_id_c,
+                    n = bytes.len(),
+                    "live stdin"
+                );
+            }),
+        );
+    }
     state.hosts.register_foreign(pane_id, remote.clone());
     state
         .hosts
@@ -460,6 +734,17 @@ pub fn attach_host_session(
                     parser,
                     delta_mode: Arc::new(AtomicBool::new(false)),
                 };
+                // AC4-C6: seed scrollback once via history API (uses seed_parser_feed).
+                // Keep tail after first attach so re-attach can re-seed; reattach
+                // clear is a product option (plan_attach_seed clear_after).
+                let parser_c = handle.parser.clone();
+                let _seeded = state.hosts.history().seed_parser_feed(
+                    &host_id,
+                    &session_id,
+                    |bytes| {
+                        let _ = parser_c.lock().feed_and_diff(bytes);
+                    },
+                );
                 let mut map = state.workspaces.write();
                 if let Some(ws) = map.get_mut(&wid) {
                     ws.terminals.insert(pane_id, handle);
@@ -501,6 +786,7 @@ pub fn inject_host_output(
 
 /// Buffer + feed every attached foreign pane's parser (shipped fan-out path).
 pub fn fanout_live_output(state: &AppState, host_id: &str, session_id: &str, bytes: &[u8]) {
+    state.hosts.history().append(host_id, session_id, bytes);
     state.hosts.inject_live_output(host_id, session_id, bytes);
     let panes = state.hosts.panes_for_remote(host_id, session_id);
     if panes.is_empty() {
@@ -533,6 +819,159 @@ pub fn route_foreign_input(state: &AppState, rr: &RemoteRef, bytes: &[u8]) -> Re
             rr.host_id, rr.remote_pane_id
         ))
     }
+}
+
+/// Route resize for foreign pane through outbound client when bound.
+pub fn route_foreign_resize(
+    state: &AppState,
+    rr: &RemoteRef,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    if let Some(client) = state.hosts.outbound_client(&rr.host_id) {
+        return client.resize_pane(&rr.remote_pane_id, rows, cols);
+    }
+    // No outbound: accept no-op (local foreign parser still resized by caller).
+    Ok(())
+}
+
+/// Detach foreign local pane (OP-WS-LIFE). Removes terminal handle if present.
+#[tauri::command]
+pub fn detach_host_session(
+    state: State<'_, AppState>,
+    pane_id: String,
+    workspace_id: Option<String>,
+) -> Result<(), String> {
+    let pid = uuid::Uuid::parse_str(&pane_id).map_err(|e| e.to_string())?;
+    let remote = state.hosts.detach_foreign(pid)?;
+    let wid = match workspace_id {
+        Some(s) => uuid::Uuid::parse_str(&s).map_err(|e| e.to_string())?,
+        None => state.active_workspace_id(),
+    };
+    {
+        let mut map = state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            ws.terminals.remove(&pid);
+        }
+    }
+    tracing::info!(
+        target: "ridge::hosts",
+        host = %remote.host_id,
+        remote_pane = %remote.remote_pane_id,
+        local_pane = %pane_id,
+        "detached foreign view (remote session continues)"
+    );
+    Ok(())
+}
+
+/// Pump outbound inbound raw → fanout (shipped read-loop body).
+/// Called by [`pump_host_output`] Tauri command (Hosts panel poll / attach follow-up)
+/// and unit tests. Production WS read task injects into transport then invokes this.
+pub fn pump_outbound_to_fanout(state: &AppState, host_id: &str) -> Result<usize, String> {
+    let client = state
+        .hosts
+        .outbound_client(host_id)
+        .ok_or_else(|| format!("no outbound for {host_id}"))?;
+    let frames = client.pump_output();
+    let mut n = 0usize;
+    for (session_id, bytes) in frames {
+        fanout_live_output(state, host_id, &session_id, &bytes);
+        n += bytes.len();
+    }
+    Ok(n)
+}
+
+/// Desktop command: drain outbound inbound buffers into foreign pane parsers.
+/// Hosts UI polls this for each Connected host that has an outbound client.
+#[tauri::command]
+pub fn pump_host_output(
+    state: State<'_, AppState>,
+    host_id: String,
+) -> Result<usize, String> {
+    pump_outbound_to_fanout(&state, &host_id)
+}
+
+/// Bind mock/LAN transport + list, then return sessions (desktop helper for tests/UI).
+#[tauri::command]
+pub fn bind_mock_outbound_and_list(
+    state: State<'_, AppState>,
+    host_id: String,
+    sessions_json: String,
+) -> Result<Vec<HostSessionMeta>, String> {
+    let parsed: Vec<RemoteSessionInfo> = serde_json::from_str(&sessions_json)
+        .map_err(|e| format!("sessions_json: {e}"))?;
+    // Ensure host record exists
+    if state.hosts.get(&host_id).is_none() {
+        return Err(format!("unknown host {host_id}; connect_host first"));
+    }
+    let mock = Arc::new(MockOutboundTransport::new());
+    mock.preset_list(&parsed);
+    bind_outbound_and_list(&state.hosts, &host_id, mock)
+}
+
+/// Host disconnect: mark outbound disconnected + host status (subscriptions cleared).
+pub fn disconnect_host_outbound(hosts: &HostRegistry, host_id: &str) {
+    if let Some(c) = hosts.outbound_client(host_id) {
+        c.mark_disconnected();
+    }
+    // Clear live buffers for this host; keep history tails for re-attach seed.
+    {
+        let mut outs = hosts.live_outputs.write();
+        outs.retain(|(h, _), _| h != host_id);
+    }
+    hosts.live_bp().clear_host(host_id);
+    hosts.set_status(host_id, HostStatus::Disconnected, "已断开");
+    hosts.on_host_disconnected_schedule_reconnect(host_id);
+}
+
+/// Drive one reconnect supervisor step (Hosts poll / tests).
+/// Response includes attempt / cancelled / last_error so UI need not re-query.
+#[tauri::command]
+pub fn step_host_reconnect(
+    state: State<'_, AppState>,
+    host_id: String,
+    host_reachable: bool,
+) -> Result<String, String> {
+    let sup = state.hosts.reconnect_supervisor();
+    // Already terminal + reachable → collapse to Idle (uses SupervisorPhase::Idle).
+    if host_reachable {
+        if matches!(
+            sup.phase(&host_id),
+            Some(reconnect_supervisor::SupervisorPhase::Succeeded)
+        ) {
+            sup.mark_idle(&host_id);
+            return Ok("phase=Idle attempt=0 cancelled=0 terminal".into());
+        }
+    }
+    let client = state
+        .hosts
+        .outbound_client(&host_id)
+        .ok_or_else(|| format!("no outbound for {host_id}"))?;
+    let delay = sup.step_once(&host_id, &client, host_reachable);
+    let phase = sup
+        .phase_str(&host_id)
+        .unwrap_or("None");
+    let attempt = sup.attempt(&host_id).unwrap_or(0);
+    let cancelled = if sup.is_cancelled(&host_id) { 1 } else { 0 };
+    let err = sup
+        .last_error(&host_id)
+        .map(|e| format!(" err={}", e.replace(' ', "_")))
+        .unwrap_or_default();
+    Ok(match delay {
+        Some(d) => format!(
+            "phase={phase} attempt={attempt} cancelled={cancelled} next_delay_ms={}{err}",
+            d.as_millis()
+        ),
+        None => format!("phase={phase} attempt={attempt} cancelled={cancelled} terminal{err}"),
+    })
+}
+
+#[tauri::command]
+pub fn cancel_host_reconnect(
+    state: State<'_, AppState>,
+    host_id: String,
+) -> Result<bool, String> {
+    Ok(state.hosts.reconnect_supervisor().cancel(&host_id))
 }
 
 #[cfg(test)]
@@ -703,5 +1142,166 @@ mod tests {
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].id, "probe");
         assert!(reg.list_sessions("missing").is_none());
+    }
+
+    #[test]
+    fn bind_outbound_lists_and_attach_subscribes_write() {
+        let reg = HostRegistry::default();
+        reg.upsert(HostRecord {
+            id: "lan:h".into(),
+            kind: HostKind::Remote,
+            label: "h".into(),
+            addr: "127.0.0.1:1".into(),
+            status: HostStatus::Connecting,
+            detail: String::new(),
+            sessions: vec![],
+        });
+        let mock = Arc::new(MockOutboundTransport::new());
+        mock.preset_list(&[RemoteSessionInfo {
+            id: "main".into(),
+            title: "shell".into(),
+        }]);
+        let sessions = bind_outbound_and_list(&reg, "lan:h", mock.clone()).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(reg.get("lan:h").unwrap().status, HostStatus::Connected);
+
+        let client = reg.outbound_client("lan:h").unwrap();
+        client.subscribe("main").unwrap();
+        let client_c = client.clone();
+        reg.set_live_sink(
+            "lan:h",
+            "main",
+            Arc::new(move |b: &[u8]| {
+                let _ = client_c.write_pty("main", b);
+            }),
+        );
+        assert!(reg.write_live("lan:h", "main", b"echo\n"));
+        assert_eq!(client.stats.write_ok.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let pane = uuid::Uuid::new_v4();
+        reg.register_foreign(
+            pane,
+            RemoteRef {
+                host_id: "lan:h".into(),
+                host_label: "h".into(),
+                remote_pane_id: "main".into(),
+                kind: HostKind::Remote,
+            },
+        );
+        reg.set_session_attached("lan:h", "main", true);
+        let detached = reg.detach_foreign(pane).unwrap();
+        assert_eq!(detached.remote_pane_id, "main");
+        assert!(reg.foreign_for_pane(pane).is_none());
+        assert!(!client.is_subscribed("main"));
+    }
+
+    #[test]
+    fn live_output_cap_drops_overflow() {
+        let reg = HostRegistry::default();
+        reg.set_live_output_cap(8);
+        let d1 = reg.inject_live_output("h", "p", b"0123456789"); // 10 bytes
+        assert!(d1 >= 2);
+        let snap = reg.live_output_snapshot("h", "p");
+        assert!(snap.len() <= 8);
+        assert!(snap.ends_with(b"89") || snap.len() == 8);
+    }
+
+    #[test]
+    fn pump_outbound_to_fanout_feeds_parser() {
+        use portable_pty::{native_pty_system, PtySize};
+        use std::sync::atomic::{AtomicBool, AtomicI64};
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let state = crate::state::AppState::new(tx);
+        let wid = state.active_workspace_id();
+        let pane = uuid::Uuid::new_v4();
+        let mock = Arc::new(MockOutboundTransport::new());
+        mock.preset_list(&[RemoteSessionInfo {
+            id: "main".into(),
+            title: "t".into(),
+        }]);
+        state.hosts.upsert(HostRecord {
+            id: "lan:h".into(),
+            kind: HostKind::Remote,
+            label: "h".into(),
+            addr: "x".into(),
+            status: HostStatus::Connected,
+            detail: "ok".into(),
+            sessions: vec![],
+        });
+        bind_outbound_and_list(&state.hosts, "lan:h", mock.clone()).unwrap();
+        let client = state.hosts.outbound_client("lan:h").unwrap();
+        client.subscribe("main").unwrap();
+        let remote = RemoteRef {
+            host_id: "lan:h".into(),
+            host_label: "h".into(),
+            remote_pane_id: "main".into(),
+            kind: HostKind::Remote,
+        };
+        state.hosts.register_foreign(pane, remote.clone());
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let portable_pty::PtyPair { master, slave: _ } = pair;
+        let w = master.take_writer().unwrap();
+        let handle = crate::engine::pty::PtyHandle {
+            master: Arc::new(parking_lot::Mutex::new(master)),
+            writer: Arc::new(parking_lot::Mutex::new(w)),
+            _child: None,
+            native_ref: None,
+            native_cancel: None,
+            remote_ref: Some(remote),
+            job: None,
+            child_pid: None,
+            resize_silence_deadline: Arc::new(AtomicI64::new(0)),
+            parser: Arc::new(parking_lot::Mutex::new(
+                crate::engine::parser::PaneParser::new(24, 80, 200),
+            )),
+            delta_mode: Arc::new(AtomicBool::new(false)),
+        };
+        {
+            let mut map = state.workspaces.write();
+            map.get_mut(&wid).unwrap().terminals.insert(pane, handle);
+        }
+        mock.inject_pane_output("main", b"pumped-live");
+        let n = pump_outbound_to_fanout(&state, "lan:h").unwrap();
+        assert!(n >= 11);
+        let map = state.workspaces.read();
+        let h = map.get(&wid).unwrap().terminals.get(&pane).unwrap();
+        let line0 = h.parser.lock().viewport_line0_text();
+        assert!(
+            line0.contains("pumped-live"),
+            "pump must feed foreign parser, got {line0:?}"
+        );
+    }
+
+    #[test]
+    fn disconnect_clears_outbound_subs() {
+        let reg = HostRegistry::default();
+        reg.upsert(HostRecord {
+            id: "lan:h".into(),
+            kind: HostKind::Remote,
+            label: "h".into(),
+            addr: "x".into(),
+            status: HostStatus::Connected,
+            detail: "ok".into(),
+            sessions: vec![],
+        });
+        let mock = Arc::new(MockOutboundTransport::new());
+        mock.preset_list(&[RemoteSessionInfo {
+            id: "main".into(),
+            title: "t".into(),
+        }]);
+        bind_outbound_and_list(&reg, "lan:h", mock).unwrap();
+        let c = reg.outbound_client("lan:h").unwrap();
+        c.subscribe("main").unwrap();
+        disconnect_host_outbound(&reg, "lan:h");
+        assert!(!c.is_subscribed("main"));
+        assert_eq!(reg.get("lan:h").unwrap().status, HostStatus::Disconnected);
     }
 }

@@ -28,8 +28,12 @@ static OS_FROZEN: LazyLock<Mutex<HashMap<(Uuid, Uuid), u32>>> =
 
 /// 暂停某 pane 的 agent 输入。幂等：重复暂停返回 Ok。
 pub fn suspend(wid: Uuid, pane: Uuid) {
+    let mut changed = false;
     if let Ok(mut g) = SUSPENDED.lock() {
-        g.insert((wid, pane));
+        changed = g.insert((wid, pane));
+    }
+    if changed {
+        super::orch_health::bump_health_generation();
     }
 }
 
@@ -86,7 +90,11 @@ pub fn resume_with_job(wid: Uuid, pane: Uuid, job: Option<&super::job_object::Jo
 
 /// 恢复（无 job 句柄）：等价 `resume_with_job(..., None)`。
 pub fn resume(wid: Uuid, pane: Uuid) {
+    let was = is_suspended(wid, pane);
     resume_with_job(wid, pane, None);
+    if was {
+        super::orch_health::bump_health_generation();
+    }
 }
 
 pub fn is_suspended(wid: Uuid, pane: Uuid) -> bool {

@@ -23,10 +23,16 @@
 // `crate::commands::git::{Type|git_info_for_path}` paths resolve through these.
 pub use ridge_core::commands::git::{
     git_info_for_path, BranchInfo, CommitFileEntry, CommitNode, GitDiffStatus, GitDiffSummary,
-    GitFileVersions, GitOpInProgress, GitRepoInfo, ScmFile, ScmRepoStatus,
+    GitFileVersions, GitGuardStats, GitOpInProgress, GitRepoInfo, ScmFile, ScmRepoStatus,
 };
 
 // ── `#[tauri::command]` registration wrappers (delegate to ridge-core) ──
+
+/// OP-GIT-BYPASS: desktop diagnostics for timeout kills / acquire timeouts / caps.
+#[tauri::command]
+pub fn get_git_guard_stats() -> GitGuardStats {
+    ridge_core::commands::git::git_guard_stats()
+}
 
 #[tauri::command]
 pub fn is_git_repo(path: String) -> bool {

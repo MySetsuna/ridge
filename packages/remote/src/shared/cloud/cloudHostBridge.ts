@@ -36,6 +36,7 @@ import {
 import { base64ToBytes, bytesToBase64 } from './e2ee';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { isRemoteAllowed } from './remoteAllowlist';
+import { decideRemoteInvoke } from '../transport/remoteInvokeAdmit';
 
 /** §7.3 D9：本 host 实现的协议版本（与 server.rs `REMOTE_PROTOCOL_VERSION` 对齐）。 */
 export const HOST_PROTOCOL_VERSION = 1;
@@ -600,15 +601,30 @@ export class CloudHostBridge {
     method: string,
     params: unknown,
   ): Promise<void> {
-    // §5.4 D8 能力门控（审计 ①-1）：controller 只能调远程白名单内命令。非白名单
-    // （尤其 host 特权命令如 get_remote_info → 泄露 LAN TOTP 密钥）一律拒，杜绝
-    // 云控制端任意命令 RCE。白名单镜像 ridge_core capability::REMOTE_ALLOWLIST。
-    if (!isRemoteAllowed(method)) {
-      this.log('warn', `rejected non-allowlisted invoke "${method}"`);
+    // AC4-C10: protocol admission (canonicalize + desktop-privileged deny)
+    // before allowlist. Defense in depth vs mis-synced REMOTE_ALLOWLIST.
+    const admitted = decideRemoteInvoke(method);
+    if (!admitted.allow) {
+      this.log('warn', `rejected protocol-denied invoke "${method}" (${admitted.reason})`);
       this.sendControl(
         jsonrpcError(id, {
           code: JSON_RPC_METHOD_NOT_FOUND,
           message: `method not permitted remotely: ${method}`,
+          data: { kind: 'forbidden', reason: admitted.reason },
+        }),
+      );
+      return;
+    }
+    const methodCanon = admitted.method;
+    // §5.4 D8 能力门控（审计 ①-1）：controller 只能调远程白名单内命令。非白名单
+    // （尤其 host 特权命令如 get_remote_info → 泄露 LAN TOTP 密钥）一律拒，杜绝
+    // 云控制端任意命令 RCE。白名单镜像 ridge_core capability::REMOTE_ALLOWLIST。
+    if (!isRemoteAllowed(methodCanon)) {
+      this.log('warn', `rejected non-allowlisted invoke "${methodCanon}"`);
+      this.sendControl(
+        jsonrpcError(id, {
+          code: JSON_RPC_METHOD_NOT_FOUND,
+          message: `method not permitted remotely: ${methodCanon}`,
           data: { kind: 'forbidden' },
         }),
       );
@@ -616,11 +632,11 @@ export class CloudHostBridge {
     }
     const callParams = normalizeParams(params);
     const key = String(id);
-    const token: InflightInvoke = { method, cancelled: false, abort: new AbortController() };
+    const token: InflightInvoke = { method: methodCanon, cancelled: false, abort: new AbortController() };
     this.inflight.set(key, token);
 
     try {
-      const result = await this.invoke(method, callParams);
+      const result = await this.invoke(methodCanon, callParams);
       if (token.cancelled) return; // 已 $/cancel：不回响应（client 已 reject）
       this.sendControl(jsonrpcResult(id, result ?? null));
     } catch (e) {
