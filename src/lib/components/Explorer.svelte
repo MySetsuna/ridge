@@ -39,11 +39,13 @@
 		setExplorerBodyHeight,
 		persistExplorerBodyHeights,
 		computeBodyHeightFromDrag,
-		MIN_BODY_H,
+		reclampStoredBodyHeight,
+		resolveExplorerStackLayout,
 		BODY_SEP_H,
 	} from '$lib/stores/explorerLayout';
 	import SaveWorkspaceDialog from './SaveWorkspaceDialog.svelte';
 	import SidebarPluginRegion from './SidebarPluginRegion.svelte';
+	import { sidebarPluginStore } from '$lib/stores/sidebarPlugins';
 
 	import { t, tr } from '$lib/i18n';
 	import { showContextMenu } from '$lib/stores/contextMenu';
@@ -684,24 +686,40 @@
 		});
 	}
 
-	// ─── cwd 文件区拖拽 resize（分隔条在 body 与下方展示域之间；跨会话持久化）─────────────
-	// free-follow：body 高度 = clamp(startH+ΔY, minBody, stackH−sep−minLower)，
-	// 下方 `.explorer-lower` flex 余量 + min-h-0 + overflow 实时压缩，不被插件内容 min-height 卡住。
-	// 拖中全局 window 监听 + body.rg-explorer-resizing 屏蔽下层 hit-test，鼠标不丢。
+	// ─── cwd 文件区拖拽 resize ───────────────────────────────────────────────
+	// free-follow 上界 = 栈顶→.explorer 底（含后续 cwd 区块），非假 empty lower。
+	// lower 仅在有 pane-scope 插件时挂载；默认 body 吃满，绝不 50/50 空分。
+	// body 固定高：flex 0 1 H（可 shrink）；ResizeObserver 对 live 高度 reclamp。
+	const hasPanePlugins = $derived($sidebarPluginStore.some((p) => p.scope === 'pane'));
+
 	let bodyResize: {
 		cwd: string;
 		startY: number;
 		startH: number;
 		columnInnerH: number;
+		stackEl: HTMLElement;
 	} | null = null;
+	let explorerRootEl: HTMLDivElement | undefined = $state();
+
+	/** 从 stack 顶到 explorer 底的可用高度 —— 后续 cwd 头/栈都在此区间内可被挤。 */
+	function measureFreeFollowSpan(stack: HTMLElement): number {
+		const root = explorerRootEl ?? (stack.closest('.explorer') as HTMLElement | null);
+		if (!root) return stack.getBoundingClientRect().height;
+		const s = stack.getBoundingClientRect();
+		const r = root.getBoundingClientRect();
+		return Math.max(0, r.bottom - s.top);
+	}
 
 	function onBodyResizeMove(e: PointerEvent): void {
 		if (!bodyResize) return;
+		// 拖中重测：窗口/布局变了也跟手，不只用 pointerdown 快照
+		const live = measureFreeFollowSpan(bodyResize.stackEl);
+		const span = live > 0 ? live : bodyResize.columnInnerH;
 		const h = computeBodyHeightFromDrag(
 			bodyResize.startH,
 			bodyResize.startY,
 			e.clientY,
-			bodyResize.columnInnerH,
+			span,
 		);
 		setExplorerBodyHeight(bodyResize.cwd, h);
 	}
@@ -714,7 +732,6 @@
 		document.body.classList.remove('rg-explorer-resizing');
 		persistExplorerBodyHeights();
 	}
-	/** 分隔条 pointerdown：测 col-stack 内高作 free-follow 上界，pointer capture 防丢事件。 */
 	function startBodyResize(e: PointerEvent, cwd: string): void {
 		e.preventDefault();
 		e.stopPropagation();
@@ -722,24 +739,45 @@
 		const stack = handle.closest('.explorer-col-stack') as HTMLElement | null;
 		const bodyEl = stack?.querySelector('.explorer-body') as HTMLElement | null;
 		if (!stack || !bodyEl) return;
-		const columnInnerH = stack.getBoundingClientRect().height;
+		const columnInnerH = measureFreeFollowSpan(stack);
 		bodyResize = {
 			cwd,
 			startY: e.clientY,
 			startH: bodyEl.getBoundingClientRect().height,
 			columnInnerH,
+			stackEl: stack,
 		};
 		document.body.classList.add('rg-os-dragging');
 		document.body.classList.add('rg-explorer-resizing');
 		try {
 			handle.setPointerCapture(e.pointerId);
 		} catch {
-			/* 非主指针 / 已捕获：window 监听兜底 */
+			/* window 监听兜底 */
 		}
 		window.addEventListener('pointermove', onBodyResizeMove);
 		window.addEventListener('pointerup', onBodyResizeUp);
 		window.addEventListener('pointercancel', onBodyResizeUp);
 	}
+
+	/** 窗口变矮 / 多 cwd 抢高：把已存 H 夹回 live free-follow 上界。 */
+	function reclampAllBodies(): void {
+		if (!explorerRootEl || bodyResize) return;
+		const heights = $explorerBodyHeights;
+		const stacks = explorerRootEl.querySelectorAll<HTMLElement>('.explorer-col-stack[data-cwd]');
+		for (const stack of stacks) {
+			const cwd = stack.dataset.cwd;
+			if (!cwd || heights[cwd] == null) continue;
+			const live = measureFreeFollowSpan(stack);
+			const next = reclampStoredBodyHeight(heights[cwd], live);
+			if (next != null) setExplorerBodyHeight(cwd, next);
+		}
+	}
+
+	onMount(() => {
+		const ro = new ResizeObserver(() => reclampAllBodies());
+		if (explorerRootEl) ro.observe(explorerRootEl);
+		return () => ro.disconnect();
+	});
 
 	onDestroy(() => {
 		window.removeEventListener('pointermove', onBodyResizeMove);
@@ -815,6 +853,7 @@
 <!-- tabindex=0 + onkeydown 让 Explorer 根节点可以接 ArrowUp/Down/Home/End —— 每个
      FileNode 按钮自己能聚焦，但跨节点导航需要一层 coordinator；这里承担这个角色。 -->
 <div
+	bind:this={explorerRootEl}
 	class="explorer flex h-full min-h-0 flex-col overflow-hidden"
 	data-testid="file-tree"
 	tabindex="-1"
@@ -978,19 +1017,21 @@
 									<div class="explorer-progress shrink-0" role="progressbar" aria-busy="true" aria-label={$t('explorer.loading')}></div>
 								{/if}
 
-								<!-- body + sep + lower：真 flex 列栈，拖 body 时下方展示域实时压缩（free-follow）。 -->
+								{@const stackLayout = resolveExplorerStackLayout({
+									bodyHeightPx: $explorerBodyHeights[col.cwd],
+									hasLowerContent: hasPanePlugins && col.paneIds.length > 0,
+								})}
+								<!-- body + sep +（可选）lower：free-follow 上界到 explorer 底，挤后续 cwd。 -->
 								<div
-									class="explorer-col-stack flex min-h-0 flex-1 flex-col overflow-hidden"
+									class="explorer-col-stack flex min-h-0 flex-col overflow-hidden {stackLayout.stackClassExtra}"
 									data-testid="explorer-col-stack"
 									data-cwd={col.cwd}
 								>
-									<!-- File tree body: cwd 下文件平铺。flex-basis 由 store 驱动。 -->
+									<!-- File tree body -->
 									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div
 										class="relative explorer-body py-0.5 min-h-0 overflow-y-auto rg-scroll"
-										style={$explorerBodyHeights[col.cwd] != null
-											? `flex: 0 0 ${$explorerBodyHeights[col.cwd]}px; max-height: 100%`
-											: 'flex: 1 1 0'}
+										style={stackLayout.bodyStyle}
 										oncontextmenu={(e) => showCwdContextMenu(e, col)}
 									>
 										{#if creatingColumnId === col.id}
@@ -1046,20 +1087,19 @@
 										onpointerdown={(e) => startBodyResize(e, col.cwd)}
 									></div>
 
-									<!-- 下方展示域：余量 flex + min-h-0，随拖实时变矮。 -->
-									<div
-										class="explorer-lower min-h-0 flex-1 overflow-y-auto rg-scroll"
-										data-testid="explorer-lower"
-									>
-										{#each col.paneIds as pid (pid)}
-											<SidebarPluginRegion
-												scope="pane"
-												workspaceId={col.workspaceId}
-												paneId={pid}
-												cwd={col.cwd}
-											/>
-										{/each}
-									</div>
+									{#if stackLayout.showLower}
+										<!-- 仅有 pane 插件时挂载；默认不 50/50 空分。有固定 body 时 flex-1 被压。 -->
+										<div class={stackLayout.lowerClass} data-testid="explorer-lower">
+											{#each col.paneIds as pid (pid)}
+												<SidebarPluginRegion
+													scope="pane"
+													workspaceId={col.workspaceId}
+													paneId={pid}
+													cwd={col.cwd}
+												/>
+											{/each}
+										</div>
+									{/if}
 								</div>
 							{/if}
 						</div>
