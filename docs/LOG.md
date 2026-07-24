@@ -9,6 +9,11 @@
 - 熔断：无。未做：完整出站 PTY 流、Job Object 预建、生产部署/merge。
 - 驳回：无。
 
+## 2026-07-24 — 换机交接文档
+
+- 完成：`docs/handoffs/2026-07-24-machine-switch-0.0.18.md`（Remote 云发布步骤、可选安装包、门禁、NLM、PR 顺序）。
+- 下一步：换机 pull → `pnpm publish:remote-cloud`。
+
 ## 2026-07-24 — iteration 16（有价值非功能项纳入 + 0.0.18）
 
 - 评估：完整出站 PTY、Job Object **纳入**；真机/生产/merge **不纳入愿景**（运维/Level2）。
