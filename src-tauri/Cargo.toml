@@ -1,6 +1,6 @@
 [package]
 name = "ridge"
-version = "0.0.18"
+version = "0.0.19"
 description = "A Tauri App"
 authors = ["you"]
 license = "MIT"
@@ -163,4 +163,5 @@ clipboard-win = "5"
 [[bin]]
 name = "tmux"
 path = "src/bin/tmux.rs"
+
 

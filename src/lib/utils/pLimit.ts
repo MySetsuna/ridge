@@ -65,6 +65,10 @@ export async function mapLimit<T, R>(
  */
 export const GIT_FANOUT_CONCURRENCY = 4;
 
+/** Must match `GIT_CONCURRENCY_MIN` / `GIT_CONCURRENCY_MAX` in ridge-core git.rs. */
+export const GIT_CONCURRENCY_MIN = 2;
+export const GIT_CONCURRENCY_MAX = 12;
+
 /**
  * Device-adaptive concurrency for the SCM discovery hot path.
  *
@@ -73,12 +77,11 @@ export const GIT_FANOUT_CONCURRENCY = 4;
  * backend's git semaphore. The backend (`git.rs`) clamps real `git.exe`
  * parallelism with the same formula off `available_parallelism`, so the two
  * sides stay roughly aligned without an extra round-trip — keep the bounds in
- * sync when tuning.
+ * sync when tuning (`GIT_CONCURRENCY_MIN`/`MAX` mirror ridge-core).
  */
 export function recommendedGitConcurrency(): number {
   const cores =
     (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
-  // Leave one core for the render thread; floor at 2 so even single-core
-  // devices make progress, ceiling at 12 so we never out-run the backend cap.
-  return Math.max(2, Math.min(cores - 1, 12));
+  // Leave one core for the render thread; floor/ceiling match backend cap.
+  return Math.max(GIT_CONCURRENCY_MIN, Math.min(cores - 1, GIT_CONCURRENCY_MAX));
 }
