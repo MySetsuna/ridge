@@ -732,6 +732,7 @@ pub fn run() {
             hosts::connect_host,
             hosts::disconnect_host,
             hosts::forget_host,
+            hosts::attach_host_session,
             workspace::create_workspace,
             workspace::get_active_workspace_id,
             workspace::list_workspaces,
@@ -834,9 +835,15 @@ pub fn run() {
             commands::teammate::resolve_hitl_remote,
             // M1 切片二：裁决审计历史（仅桌面 IPC）
             commands::teammate::list_hitl_decisions,
-            // G1 阶段一软暂停（仅桌面本机 IPC，不入 REMOTE_ALLOWLIST）
+            // G1 阶段一软暂停 + 可选 OS 冻结（仅桌面本机 IPC，不入 REMOTE_ALLOWLIST）
             commands::teammate::suspend_agent,
             commands::teammate::resume_agent,
+            // M1 切片三 + V-DISC + V-G1-RB
+            commands::teammate::get_workspace_memory,
+            commands::teammate::set_workspace_memory,
+            commands::teammate::discover_cli_agents,
+            commands::teammate::checkpoint_workspace_rollback,
+            commands::teammate::rollback_workspace,
             commands::teammate::resolve_hitl_request,
             commands::teammate::set_hitl_enabled,
             commands::teammate::classify_command_risk,

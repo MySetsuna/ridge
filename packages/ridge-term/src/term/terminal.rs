@@ -733,6 +733,20 @@ mod tests {
     use super::*;
     use crate::term::attrs::{Color, Flags};
 
+    /// V-B6B: PTY/kernel resize must leave grid size equal to the request.
+    #[test]
+    fn resize_updates_grid_to_requested_dimensions() {
+        let mut t = Terminal::new(24, 80, 1000);
+        assert_eq!((t.rows(), t.cols()), (24, 80));
+        t.resize(40, 120);
+        assert_eq!((t.rows(), t.cols()), (40, 120), "grow");
+        t.resize(10, 40);
+        assert_eq!((t.rows(), t.cols()), (10, 40), "shrink");
+        // Content feed after resize must not desync size.
+        t.feed(b"hello\r\nworld");
+        assert_eq!((t.rows(), t.cols()), (10, 40));
+    }
+
     #[test]
     fn apply_delta_scrollback_append_pushes_lines_and_preserves_visible_grid() {
         use crate::term::attrs::{Color, Flags};

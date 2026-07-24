@@ -73,6 +73,10 @@
   }
   let decisions = $state<HitlDecisionEntry[]>([]);
 
+  // V-M1-S3：workspace memory goal（最小编辑区）
+  let memGoal = $state('');
+  let memGoalDirty = $state(false);
+
   async function refresh() {
     try {
       const raw = await invoke(TOPOLOGY_CMD, { workspaceId });
@@ -87,6 +91,25 @@
       decisions = Array.isArray(list) ? list : [];
     } catch {
       decisions = [];
+    }
+    if (workspaceId && !memGoalDirty) {
+      try {
+        const mem = await invoke<{ goal?: string }>('get_workspace_memory', { workspaceId });
+        memGoal = typeof mem?.goal === 'string' ? mem.goal : '';
+      } catch {
+        /* dir not ready */
+      }
+    }
+  }
+
+  async function saveMemGoal() {
+    if (!workspaceId) return;
+    try {
+      await invoke('set_workspace_memory', { workspaceId, goal: memGoal });
+      memGoalDirty = false;
+      showToast('工作区目标已保存', 'info');
+    } catch (e) {
+      console.warn('[agent-center] set_workspace_memory failed', e);
     }
   }
 
@@ -250,6 +273,28 @@
   </header>
 
   <div class="flex-1 overflow-y-auto rg-scroll flex flex-col gap-4 px-3 py-3">
+    <!-- V-M1-S3：工作区目标（goal）最小编辑 -->
+    {#if workspaceId}
+      <section class="rounded-md border border-[var(--rg-border)] px-2 py-1.5">
+        <h3 class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">工作区目标</h3>
+        <textarea
+          class="mt-1 w-full resize-y rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] px-1.5 py-1 text-[11px] text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)]"
+          rows="2"
+          placeholder="本工作区目标（写入 workspace-memory）"
+          bind:value={memGoal}
+          oninput={() => (memGoalDirty = true)}
+        ></textarea>
+        <div class="mt-1 flex justify-end">
+          <button
+            type="button"
+            disabled={!memGoalDirty}
+            onclick={saveMemGoal}
+            class="rounded border border-[var(--rg-border)] px-2 py-0.5 text-[10px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] disabled:opacity-40"
+          >保存</button>
+        </div>
+      </section>
+    {/if}
+
     <!-- 异常（熔断告警）：worker 死循环被熔断时置顶；无事件则零渲染 -->
     {#if trips.length > 0}
       <section class="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5">

@@ -2059,7 +2059,12 @@
 {#if current && isImageFile && current.imageUrl}
 <div class="absolute inset-0 flex items-center justify-center bg-[var(--rg-bg-raised)] overflow-auto p-4">
   <img
-    src={current.imageUrl}
+    src={(() => {
+      const u = current.imageUrl!;
+      const v = current.imageVersion;
+      if (!v) return u;
+      return `${u}${u.includes('?') ? '&' : '?'}v=${v}`;
+    })()}
     alt={current.name}
     class="max-w-full max-h-full object-contain rounded-lg shadow-lg cursor-zoom-in"
     role="button"

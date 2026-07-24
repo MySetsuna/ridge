@@ -935,6 +935,19 @@ pub(crate) fn activate_pane_pty_state(
         }
     };
 
+    // V-G1-JOB：spawn 后预建 Job Object 并挂上子进程（失败 fail-open，不挡 PTY）。
+    let child_pid = child.process_id();
+    let job = child_pid.and_then(|pid| {
+        let j = crate::teammate::job_object::create_job().ok()?;
+        match crate::teammate::job_object::assign_pid(&j, pid) {
+            Ok(()) => Some(j),
+            Err(e) => {
+                tracing::debug!(target: "ridge::job", %pid, error = %e, "job assign skipped");
+                None
+            }
+        }
+    });
+
     // P3.8 — initialize the native VT parser at PtyHandle creation time so
     // the main event loop can take a parser lock the moment it sees the
     // first PtyOutput chunk. Dimensions match the front-end's initial fit
@@ -959,6 +972,8 @@ pub(crate) fn activate_pane_pty_state(
         native_ref: None,
         native_cancel: None,
         remote_ref: None,
+        job,
+        child_pid,
         resize_silence_deadline: Arc::new(AtomicI64::new(0)),
         parser,
         delta_mode: Arc::new(AtomicBool::new(false)),
@@ -1029,6 +1044,10 @@ pub fn write_to_pty_inner(
         .get(&wid)
         .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
     if let Some(handle) = ws.terminals.get(&pane_id) {
+        if let Some(ref rr) = handle.remote_ref {
+            return crate::hosts::route_foreign_input(&state, rr, data.as_bytes())
+                .map_err(AppError::PtyError);
+        }
         let mut w = handle.writer.lock();
         w.write_all(data.as_bytes())?;
         w.flush()?;
@@ -1673,6 +1692,12 @@ pub fn write_pty_bytes_workspace(
     // spawn 后紧接的 `send-keys -t %N Enter` 会与前端激活竞态、返回 400，使宿主
     // （Claude Code teammateMode=tmux）中止 teammate 拉起。
     if let Some(handle) = ws.terminals.get(&pane_id) {
+        // V-H1-LIVE：foreign 视图输入走 host live_sink，不写本地 PTY。
+        if let Some(ref rr) = handle.remote_ref {
+            crate::hosts::route_foreign_input(app, rr, data)
+                .map_err(AppError::PtyError)?;
+            return Ok(());
+        }
         let mut w = handle.writer.lock();
         w.write_all(data)?;
         w.flush()?;

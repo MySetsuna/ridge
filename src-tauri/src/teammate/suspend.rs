@@ -1,14 +1,18 @@
-//! G1 阶段一 —— Agent 软暂停/恢复（设计：`docs/superpowers/specs/2026-07-23-agent-suspend-resume-design.md`）.
+//! G1 阶段一+二 —— Agent 软暂停/恢复 + 可选 OS 冻结
+//! （设计：`docs/superpowers/specs/2026-07-23-agent-suspend-resume-design.md`）.
 //!
 //! **输入门控（L-b）**：suspended pane 的 **agent 写路径**（send-keys / delegate 提示注入 /
 //! MCP 文本注入 / exec 命令注入）统一经 [`agent_pty_write`] 收口拒绝；**桌面人类输入
 //! （`write_to_pty`）不受限**——接管语义。断路器 Ctrl-C（circuit.rs）为安全刹车，
-//! 刻意**不**门控。OS 级真冻结属阶段二，本模块不做。
+//! 刻意**不**门控。
+//!
+//! **OS 冻结（L-c，阶段二）**：[`suspend_with_os`] 在软门控后可选调用
+//! [`super::os_freeze`]；失败 **fail-open**（软门控仍生效）或由调用方要求 fail-closed。
 //!
 //! 注册表进程全局（类比 [`super::hitl`]，不改 `AppState`），键 =（workspace, pane）。
 //! pane 释放 / agent 注销时由调用方清理（`release_teammate_agent` 路径）。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -18,6 +22,9 @@ use uuid::Uuid;
 
 static SUSPENDED: LazyLock<Mutex<HashSet<(Uuid, Uuid)>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
+/// pane → OS 已冻结的 pid（resume 时 thaw）。
+static OS_FROZEN: LazyLock<Mutex<HashMap<(Uuid, Uuid), u32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// 暂停某 pane 的 agent 输入。幂等：重复暂停返回 Ok。
 pub fn suspend(wid: Uuid, pane: Uuid) {
@@ -26,8 +33,39 @@ pub fn suspend(wid: Uuid, pane: Uuid) {
     }
 }
 
-/// 恢复。幂等：未暂停时 no-op。
+/// 软暂停 + 可选 OS 冻结。`pid` 为 PTY 子进程；`require_os=true` 时 OS 失败回滚软门控并 Err。
+/// `require_os=false`（默认产品路径）：OS 失败 **fail-open**，软门控仍成立。
+pub fn suspend_with_os(wid: Uuid, pane: Uuid, pid: Option<u32>, require_os: bool) -> Result<(), String> {
+    suspend(wid, pane);
+    match super::os_freeze::try_freeze(pid) {
+        Ok(Some(p)) => {
+            if let Ok(mut g) = OS_FROZEN.lock() {
+                g.insert((wid, pane), p);
+            }
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(e) => {
+            if require_os {
+                // 回滚软门控（设计：部分失败不留假暂停）
+                resume(wid, pane);
+                Err(e)
+            } else {
+                // fail-open：软暂停仍有效
+                tracing::warn!(target: "ridge::suspend", error = %e, %wid, %pane, "OS freeze failed (soft gate kept)");
+                Ok(())
+            }
+        }
+    }
+}
+
+/// 恢复。幂等：未暂停时 no-op。若曾 OS 冻结则 best-effort thaw。
 pub fn resume(wid: Uuid, pane: Uuid) {
+    if let Ok(mut g) = OS_FROZEN.lock() {
+        if let Some(pid) = g.remove(&(wid, pane)) {
+            let _ = super::os_freeze::try_thaw(Some(pid));
+        }
+    }
     if let Ok(mut g) = SUSPENDED.lock() {
         g.remove(&(wid, pane));
     }

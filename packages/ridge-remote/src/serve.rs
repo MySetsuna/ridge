@@ -22,7 +22,7 @@ use axum::{
     extract::{FromRef, Query, State},
     http::{HeaderMap, StatusCode, Uri},
     middleware::Next,
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -229,6 +229,24 @@ async fn root_handler(
     serve_index(st.cfg.ui_dir(&headers, q.ui.as_deref())).await
 }
 
+/// Structured error token when Remote SPA assets are missing (V-B6A / Bug6a).
+pub const REMOTE_UI_MISSING_CODE: &str = "REMOTE_UI_MISSING";
+
+/// User-facing repair hint + error code for missing `index.html` (unit-testable).
+pub fn remote_ui_missing_message() -> String {
+    format!(
+        "{code}: Remote UI not built yet. Run: pnpm build:remote (or RIDGE_REMOTE_UI_ROOT to a built static/remote).",
+        code = REMOTE_UI_MISSING_CODE
+    )
+}
+
+fn remote_ui_missing_html() -> String {
+    format!(
+        r#"<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ridge Remote</title></head><body style="background:#0d1117;color:#e6edf3;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0"><h1>Ridge Remote</h1><p data-ridge-error="{code}">{code}: Remote UI not built yet.</p><p>Run: <code>pnpm build:remote</code></p><p style="opacity:.7;font-size:12px">Or set RIDGE_REMOTE_UI_ROOT to a built asset dir.</p></body></html>"#,
+        code = REMOTE_UI_MISSING_CODE
+    )
+}
+
 /// Serve `index.html` with `Cache-Control: no-cache` so a freshly deployed
 /// build (new hashed asset names, new service worker) is always picked up on
 /// the next visit instead of being pinned by a stale cached shell.
@@ -241,11 +259,14 @@ pub async fn serve_index(dir: &Path) -> Response {
             .body(axum::body::Body::from(bytes))
             .unwrap(),
         Err(_) => {
-            // Fallback: embed a basic page directing the user to build the remote app
-            Html(
-                r#"<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ridge Remote</title></head><body style="background:#0d1117;color:#e6edf3;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0"><h1>Ridge Remote</h1><p>Remote UI not built yet.</p><p>Run: <code>pnpm build:remote</code></p></body></html>"#,
-            )
-            .into_response()
+            // Fallback: structured error code + repair hint (not silent empty 200 without guidance)
+            axum::response::Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .header(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .header("X-Ridge-Error", REMOTE_UI_MISSING_CODE)
+                .header(axum::http::header::CACHE_CONTROL, "no-store")
+                .body(axum::body::Body::from(remote_ui_missing_html()))
+                .unwrap()
         }
     }
 }
@@ -423,5 +444,25 @@ async fn assets_handler(
             response
         }
         Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_ui_missing_message_carries_code_and_repair_hint() {
+        let m = remote_ui_missing_message();
+        assert!(m.contains(REMOTE_UI_MISSING_CODE), "{m}");
+        assert!(m.contains("pnpm build:remote"), "{m}");
+    }
+
+    #[test]
+    fn remote_ui_missing_html_embeds_code() {
+        let h = remote_ui_missing_html();
+        assert!(h.contains(REMOTE_UI_MISSING_CODE));
+        assert!(h.contains("data-ridge-error"));
+        assert!(h.contains("pnpm build:remote"));
     }
 }

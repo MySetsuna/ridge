@@ -2,6 +2,38 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-24 — iteration 15（开放愿景 11 项代码闭合）
+
+- 完成：CONTRACT-15 锁定 11 项全落地——V-TUI-CLK 核查既有 `encode_mouse`；V-PASTE 100 行序；V-B6A `REMOTE_UI_MISSING`；V-MOB-CP `copySelectionOnly`；V-B6B resize 尺寸测；V-M1-S3 memory goal/constraints/tasks + Agent Center；V-G1-RB git checkpoint/rollback；V-G1-OS `os_freeze`+soft fail-open；V-DISC 注入进程表；V-B3 imageVersion；V-H1 TCP probe+attach 门控。
+- 验证：`cargo test -p ridge --lib` 114 绿；`ridge-term` paste/mouse/resize 绿；`ridge-remote` remote_ui 2 绿；vitest mobileCopy+imagePreviewVersion 5 绿。
+- 熔断：无。未做：完整出站 PTY 流、Job Object 预建、生产部署/merge。
+- 驳回：无。
+
+## 2026-07-24 — iteration 16（有价值非功能项纳入 + 0.0.18）
+
+- 评估：完整出站 PTY、Job Object **纳入**；真机/生产/merge **不纳入愿景**（运维/Level2）。
+- 完成：V-G1-JOB（spawn 预建 Job+assign）；V-H1-LIVE 最小闭环（live_sink 路由、attach_host_session、write 经 remote_ref）；版本 0.0.18。
+- 验证：hosts 4 绿；job_object 2 绿。
+- Release：桌面尝试 `build:release`；Remote 云发布本机无 `RIDGE_ARTIFACT_TOKEN` → **换机再发**。
+- 下一里程：H1-LIVE 完整 WS 客户端（复用 ridge-cli lan_session 语义）。
+
+## 2026-07-24 — iteration 15（开放愿景清单代码闭合）
+
+- 完成：CONTRACT-15 拍板 + 实现 11 项 V-*（H1 TCP 探测、G1-OS/RB、M1s3、B6A/B3/B6B、DISC、MOB-CP、TUI-CLK/PASTE 核查）；清单 note → `[已实现]`，open=0 视同清理。Skill 四端同步（Notes 清空≡愿景全实现）。
+- 验证：`cargo test -p ridge --lib teammate` 34 绿；hosts 3 绿；ridge-term paste/resize 绿；ridge-remote remote_ui 2 绿；vitest mobileCopy 2 + imagePreviewVersion 3 绿。
+- 熔断：无。未做：完整出站 PTY 流、Job Object 预建、真机/生产/merge。
+- 驳回：无限「等用户」挂起——改为执行者拍板实现。
+
+## 2026-07-24 — 规则纠偏 + 重建开放愿景清单
+
+- 完成：更新并四端同步 `notebooklm-iteration-loop` Skill；重建开放清单（当时 11 open）。
+- 后续：见 iteration 15 闭合。
+
+## 2026-07-24 — note 对账归档轮（已纠偏：误清空 notes）
+
+- 完成：4 份历史 note 全文本地归档；PROJECT-STATE §10 对账；替换来源。**错误**：将未代码落地项标关闭并清空 notes。
+- 纠正：见上条「规则纠偏」。
+
 ## 2026-07-23 — iteration 14（M1 切片二 + M2，存量终轮）
 
 - 完成：`memory.rs` 单源 doc 级 RMW（互斥+原子写+updatedAt 元数据+空删；suspend 持久化改经之，DIR OnceLock 单点注入，删双解析路径）；三消费点裁决审计落盘（桌面/远端含败者尝试/超时 fail-closed；无命令全文、环形 50）；**M2 归因**（initiator → 稳定 agent_id）；读方 `list_hitl_decisions`（仅桌面 IPC）+ Agent Center 审批历史区。

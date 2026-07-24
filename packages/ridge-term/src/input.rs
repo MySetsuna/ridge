@@ -549,6 +549,25 @@ fn unknown_key_returns_ignored() {
         assert_eq!(wrap_paste("hi", false), b"hi");
     }
 
+    /// V-PASTE: multi-line paste must preserve source order (numbered lines).
+    #[test]
+    fn paste_multiline_preserves_line_order() {
+        let lines: Vec<String> = (1..=100).map(|i| format!("{i}:line")).collect();
+        let src = lines.join("\n");
+        let bytes = wrap_paste(&src, true);
+        let s = String::from_utf8(bytes).expect("utf8");
+        assert!(s.starts_with("\u{1b}[200~"), "bracketed start");
+        assert!(s.ends_with("\u{1b}[201~"), "bracketed end");
+        let body = s
+            .trim_start_matches("\u{1b}[200~")
+            .trim_end_matches("\u{1b}[201~");
+        assert_eq!(body, src, "paste body must equal source order");
+        for (i, line) in body.lines().enumerate() {
+            assert_eq!(line, format!("{}:line", i + 1));
+        }
+        assert_eq!(body.lines().count(), 100);
+    }
+
     // ---- mouse encoding tests ----------------------------------------
 
     #[test]

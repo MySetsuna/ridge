@@ -102,6 +102,47 @@ pub fn append_decision_global(wid: Uuid, entry: serde_json::Value) {
     }
 }
 
+// ── M1 切片三：goal / constraints / tasks ──────────────────────────────────
+
+/// 设置 goal（空串 → 移除节）。
+pub fn set_goal(dir: &Path, wid: Uuid, goal: impl Into<String>) {
+    let g = goal.into();
+    update(dir, wid, |doc| {
+        if g.trim().is_empty() {
+            doc.remove("goal");
+        } else {
+            doc.insert("goal".into(), serde_json::Value::String(g));
+        }
+    });
+}
+
+/// 设置约束列表（空 → 移除节）。
+pub fn set_constraints(dir: &Path, wid: Uuid, constraints: Vec<String>) {
+    update(dir, wid, |doc| {
+        if constraints.is_empty() {
+            doc.remove("constraints");
+        } else {
+            doc.insert("constraints".into(), serde_json::json!(constraints));
+        }
+    });
+}
+
+/// 设置任务列表（空 → 移除节）。元素形状：`{id, title, status}`。
+pub fn set_tasks(dir: &Path, wid: Uuid, tasks: Vec<serde_json::Value>) {
+    update(dir, wid, |doc| {
+        if tasks.is_empty() {
+            doc.remove("tasks");
+        } else {
+            doc.insert("tasks".into(), serde_json::Value::Array(tasks));
+        }
+    });
+}
+
+/// 读 memory 摘要（goal/constraints/tasks + updatedAt）；无文件 → 空对象。
+pub fn read_summary(dir: &Path, wid: Uuid) -> serde_json::Value {
+    read(dir, wid).unwrap_or_else(|| serde_json::json!({}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +177,29 @@ mod tests {
         assert!(read(&dir, wid).is_none());
         assert!(!path_of(&dir, wid).exists());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn goal_constraints_tasks_rmw() {
+        let dir = std::env::temp_dir().join(format!("ridge-memory-m1s3-{}", Uuid::new_v4()));
+        let wid = Uuid::new_v4();
+        set_goal(&dir, wid, "ship open visions");
+        set_constraints(&dir, wid, vec!["no E2EE rewrite".into()]);
+        set_tasks(
+            &dir,
+            wid,
+            vec![serde_json::json!({"id":"t1","title":"M1s3","status":"open"})],
+        );
+        let doc = read_summary(&dir, wid);
+        assert_eq!(doc["goal"], "ship open visions");
+        assert_eq!(doc["constraints"][0], "no E2EE rewrite");
+        assert_eq!(doc["tasks"][0]["id"], "t1");
+        // clear goal only
+        set_goal(&dir, wid, "  ");
+        let doc = read(&dir, wid).unwrap();
+        assert!(doc.get("goal").is_none());
+        assert_eq!(doc["tasks"][0]["title"], "M1s3");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
