@@ -271,23 +271,14 @@
     touchLastY = t.clientY;
     touchScrollAccum = 0;
     touchStartTime = Date.now();
-    // §select-as-mouse: the select toggle SIMULATES A MOUSE — it just emits mouse
-    // signals and lets the receiving terminal decide what to do (parity with the
-    // desktop mouse path, handleMouseDown). When the app captures the mouse
-    // (mouse-reporting TUI: vim/htop/tmux…) we forward a press and the TUI owns the
-    // gesture/selection. ONLY a plain shell — which doesn't accept mouse reporting
-    // — falls back to LOCAL text selection + copy pill.
+    // §select-copy: the select toggle makes a LOCAL text selection — ALWAYS, even
+    // over a mouse-reporting TUI (vim/htop/claude…). This is the mobile parity of
+    // desktop Shift+drag: it bypasses the app's mouse grab so you can select screen
+    // text and copy it to the phone clipboard via the copy pill. To drive the app's
+    // OWN mouse, leave select mode — a normal tap sends a click-through (handleTouchEnd).
     if (selectionMode) {
       const cell = ctrl.clientToCell(t.clientX, t.clientY);
-      if (cell) {
-        if (ctrl.isMouseReporting()) {
-          const g = decideTouchMouseGesture('press');
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
-          if (bytes.length > 0) onStdin(td.decode(bytes));
-        } else {
-          ctrl.startSelection(cell.row, cell.col);
-        }
-      }
+      if (cell) ctrl.startSelection(cell.row, cell.col);
     }
   }
 
@@ -299,18 +290,10 @@
     e.preventDefault();
     if (selectionMode) {
       selDragging = true;
+      // §select-copy: always extend the LOCAL text selection (bypasses the app's
+      // mouse grab), so drag-to-select + copy works over a TUI too.
       const cell = ctrl.clientToCell(t.clientX, t.clientY);
-      // §select-as-mouse: mouse-reporting TUI → motion report (the TUI extends its
-      // own selection); plain shell → local text selection.
-      if (cell) {
-        if (ctrl.isMouseReporting()) {
-          const g = decideTouchMouseGesture('drag');
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
-          if (bytes.length > 0) onStdin(td.decode(bytes));
-        } else {
-          ctrl.extendSelection(cell.row, cell.col);
-        }
-      }
+      if (cell) ctrl.extendSelection(cell.row, cell.col);
       return;
     }
     touchScrollAccum += touchLastY - t.clientY;
@@ -328,29 +311,19 @@
     if (selectionMode) {
       const wasDragging = selDragging;
       selDragging = false;
-      const cell = touch ? ctrl.clientToCell(touch.clientX, touch.clientY) : null;
-      if (ctrl.isMouseReporting()) {
-        // §select-as-mouse: complete the simulated gesture with a release — a tap
-        // becomes a click, a drag becomes a drag-end. The TUI handles the rest.
-        // Desktop uses btn=3 release (not left-btn); decideTouchMouseGesture SSOT.
-        if (cell) {
-          const g = decideTouchMouseGesture('release');
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
-          if (bytes.length > 0) onStdin(td.decode(bytes));
-        }
-      } else if (wasDragging) {
-        // Plain shell: finish the local text selection + surface the copy pill.
+      // §select-copy: a drag finishes a LOCAL text selection + surfaces the copy
+      // pill (works over a mouse-reporting TUI too — parity with desktop Shift+drag).
+      if (wasDragging) {
         ctrl.endSelection();
         hasSelectionState = !!ctrl.hasSelection();
       } else {
-        // A tap in shell selection mode clears any existing selection.
+        // A tap (not a drag) in select mode clears any selection and — §select-tap-
+        // keyboard — raises the soft keyboard so you can type without leaving select
+        // mode. Drags are the selection gesture, so they don't pop the keyboard.
         ctrl.clearSelection();
         hasSelectionState = false;
+        focusInput();
       }
-      // §select-tap-keyboard: a TAP (not a drag) in selection mode also raises the
-      // soft keyboard so you can type without first leaving select mode. Drags are
-      // the selection gesture itself, so they don't pop the keyboard.
-      if (!wasDragging) focusInput();
       return;
     }
     const elapsed = Date.now() - touchStartTime;
@@ -831,15 +804,19 @@
     onblur={() => ctrl?.setFocused(false)}
   ></textarea>
 
-  <!-- §D Floating copy pill — shown while a Shell-mode selection exists. Stops
-       touch propagation so tapping it copies instead of clearing the selection
-       (the container's tap handler clears). -->
+  <!-- §D Floating copy pill — shown while a text selection exists. Copy fires on
+       touchend directly (with preventDefault) so the tap never falls through to the
+       container's synthesized mousedown → focusInput (which popped the keyboard and
+       swallowed the copy). onclick keeps desktop/mouse working; mouse events are
+       stopped so a pill tap can't reach the container's mouse handlers. -->
   {#if hasSelectionState}
     <button
       class="copy-pill"
       onclick={copyAndClear}
       ontouchstart={(e) => e.stopPropagation()}
-      ontouchend={(e) => e.stopPropagation()}
+      ontouchend={(e) => { e.preventDefault(); e.stopPropagation(); copyAndClear(); }}
+      onmousedown={(e) => e.stopPropagation()}
+      onmouseup={(e) => e.stopPropagation()}
     >{$t('mobile.copy')}</button>
   {/if}
 </div>
