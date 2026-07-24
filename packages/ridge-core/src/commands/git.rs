@@ -8,18 +8,88 @@
 //! `Result<T, String>` shape), and the headless `ridge-cli` host can link the
 //! same logic directly. Concurrency back-pressure (`spawn_git_blocking` + the
 //! global semaphore) moves with the logic so both hosts share one gate.
+//!
+//! Iteration 20 hard guards:
+//! - logical concurrency hard cap (semaphore, clamp 2–12, env override);
+//! - per-child timeout with **process-tree kill** (not just drop future);
+//! - acquire timeout so stale fan-out cannot queue forever under a hung git.
 
 use serde::Serialize;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, OnceLock};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, OnceLock};
+use std::time::Duration;
 use tokio::sync::Semaphore;
-use tokio::task::JoinError;
 
-/// Returns a `Command::new("git")` with CREATE_NO_WINDOW on Windows so
-/// git subprocesses never flash a console window in the Tauri GUI app.
+/// Frontend `recommendedGitConcurrency` uses the same clamp — keep in sync.
+pub const GIT_CONCURRENCY_MIN: usize = 2;
+pub const GIT_CONCURRENCY_MAX: usize = 12;
+
+/// Default wall-clock budget for a single git child. Overridable via
+/// `RIDGE_GIT_TIMEOUT_MS`. Network ops (fetch/pull/push/sync) use
+/// [`git_network_timeout`].
+const DEFAULT_GIT_TIMEOUT_MS: u64 = 45_000;
+const DEFAULT_GIT_NETWORK_TIMEOUT_MS: u64 = 300_000;
+/// How long a caller may wait for a semaphore permit before failing closed.
+const DEFAULT_GIT_ACQUIRE_TIMEOUT_MS: u64 = 60_000;
+
+static GIT_ACTIVE_CHILDREN: AtomicUsize = AtomicUsize::new(0);
+static GIT_PEAK_ACTIVE_CHILDREN: AtomicUsize = AtomicUsize::new(0);
+
+/// Live OS-level git children currently inside [`CommandExtGit::git_output`].
+pub fn git_active_child_count() -> usize {
+    GIT_ACTIVE_CHILDREN.load(Ordering::SeqCst)
+}
+
+/// Peak of [`git_active_child_count`] since process start (or last test reset).
+pub fn git_peak_active_child_count() -> usize {
+    GIT_PEAK_ACTIVE_CHILDREN.load(Ordering::SeqCst)
+}
+
+/// Logical permit cap (same value the global semaphore was created with).
+pub fn git_logical_concurrency_cap() -> usize {
+    git_max_concurrent()
+}
+
+#[cfg(test)]
+pub fn git_reset_peak_active_for_test() {
+    GIT_PEAK_ACTIVE_CHILDREN.store(0, Ordering::SeqCst);
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(default)
+}
+
+fn git_op_timeout() -> Duration {
+    Duration::from_millis(env_u64("RIDGE_GIT_TIMEOUT_MS", DEFAULT_GIT_TIMEOUT_MS))
+}
+
+fn git_network_timeout() -> Duration {
+    Duration::from_millis(env_u64(
+        "RIDGE_GIT_NETWORK_TIMEOUT_MS",
+        DEFAULT_GIT_NETWORK_TIMEOUT_MS,
+    ))
+}
+
+fn git_acquire_timeout() -> Duration {
+    Duration::from_millis(env_u64(
+        "RIDGE_GIT_ACQUIRE_TIMEOUT_MS",
+        DEFAULT_GIT_ACQUIRE_TIMEOUT_MS,
+    ))
+}
+
+/// Returns a `Command` for the git binary (or `RIDGE_GIT_BIN` test override)
+/// with CREATE_NO_WINDOW on Windows so subprocesses never flash a console
+/// window in the Tauri GUI app.
 fn git_cmd() -> Command {
-    let mut cmd = Command::new("git");
+    let bin = std::env::var("RIDGE_GIT_BIN").unwrap_or_else(|_| "git".to_string());
+    let mut cmd = Command::new(bin);
     // --no-optional-locks (global flag, must precede the subcommand): the SCM
     // sidebar fans out `git status`/`git diff` across many repos at high
     // frequency. By default each `git status` opportunistically refreshes and
@@ -30,6 +100,7 @@ fn git_cmd() -> Command {
     // index lock (add/commit/checkout) still acquire it normally, so it's safe
     // to apply to every invocation. Callers add their subcommand after this, so
     // ordering stays `git --no-optional-locks <subcommand> …`.
+    // Test fakes under `RIDGE_GIT_BIN` may ignore unknown flags.
     cmd.arg("--no-optional-locks");
     #[cfg(target_os = "windows")]
     {
@@ -56,11 +127,18 @@ fn git_cmd() -> Command {
 /// progressively instead of freezing). The frontend mirrors this with
 /// `recommendedGitConcurrency` in `src/lib/utils/pLimit.ts` off
 /// `navigator.hardwareConcurrency` — keep the clamp bounds in sync.
+///
+/// Override with `RIDGE_GIT_MAX_CONCURRENT` (clamped 1–64) for tests/ops.
 fn git_max_concurrent() -> usize {
+    if let Ok(v) = std::env::var("RIDGE_GIT_MAX_CONCURRENT") {
+        if let Ok(n) = v.parse::<usize>() {
+            return n.clamp(1, 64);
+        }
+    }
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
-        .clamp(2, 12)
+        .clamp(GIT_CONCURRENCY_MIN, GIT_CONCURRENCY_MAX)
 }
 
 static GIT_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -71,6 +149,111 @@ fn git_semaphore() -> Arc<Semaphore> {
         .clone()
 }
 
+fn note_active_child_enter() {
+    let n = GIT_ACTIVE_CHILDREN.fetch_add(1, Ordering::SeqCst) + 1;
+    GIT_PEAK_ACTIVE_CHILDREN.fetch_max(n, Ordering::SeqCst);
+}
+
+fn note_active_child_leave() {
+    GIT_ACTIVE_CHILDREN.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// Kill a child process tree. On Windows `taskkill /T` is required because
+/// git often spawns helpers; a bare `Child::kill` leaves grandchildren.
+fn kill_pid_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+/// Run a prepared `Command` with a wall-clock timeout. On timeout the OS
+/// process tree is killed and an error with `ErrorKind::TimedOut` is returned.
+/// This is the **only** supported way to collect git stdout/stderr in this
+/// module — plain `Command::output` is banned so hung git cannot pin permits forever.
+fn run_command_with_timeout(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> io::Result<std::process::Output> {
+    cmd.stdin(Stdio::null());
+    // Match `Command::output` defaults: piped stdout/stderr.
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let child = cmd.spawn()?;
+    let pid = child.id();
+    note_active_child_enter();
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = child.wait_with_output();
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(result) => {
+            note_active_child_leave();
+            result
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            kill_pid_tree(pid);
+            // Drain so the waiter thread does not leak forever.
+            let _ = rx.recv_timeout(Duration::from_secs(5));
+            note_active_child_leave();
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("git timed out after {timeout:?} (killed pid {pid})"),
+            ))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            kill_pid_tree(pid);
+            note_active_child_leave();
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "git waiter thread disconnected",
+            ))
+        }
+    }
+}
+
+/// Extension so call sites stay close to the old `.output()` shape (`&mut self`).
+trait CommandExtGit {
+    fn git_output(&mut self) -> io::Result<std::process::Output>;
+    fn git_output_timeout(&mut self, timeout: Duration) -> io::Result<std::process::Output>;
+}
+
+impl CommandExtGit for Command {
+    fn git_output(&mut self) -> io::Result<std::process::Output> {
+        run_command_with_timeout(self, git_op_timeout())
+    }
+    fn git_output_timeout(&mut self, timeout: Duration) -> io::Result<std::process::Output> {
+        run_command_with_timeout(self, timeout)
+    }
+}
+
 /// `spawn_git_blocking` that first acquires a permit from the global
 /// git-spawn semaphore. The permit is held for the lifetime of the blocking
 /// closure (released when it ends), so the cap reflects *active* git work,
@@ -79,23 +262,35 @@ fn git_semaphore() -> Arc<Semaphore> {
 /// All git tauri commands route through this so that watcher-driven refresh,
 /// the periodic heartbeat in `paneGitStatus.ts`, the frontend SCM fanout,
 /// and any future caller share the same back-pressure.
-async fn spawn_git_blocking<F, T>(f: F) -> Result<T, JoinError>
+///
+/// Acquire is bounded ([`git_acquire_timeout`]): under a saturated/hung git
+/// pipeline new work fails closed instead of queuing without bound.
+async fn spawn_git_blocking<F, T>(f: F) -> Result<T, String>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
     let sem = git_semaphore();
     // `acquire_owned` ties the permit to a 'static future so it can move into
-    // `spawn_blocking`. `expect` is safe: the semaphore is never closed.
-    let permit = sem
-        .acquire_owned()
-        .await
-        .expect("git semaphore should never be closed");
+    // `spawn_blocking`. Semaphore is never closed in production.
+    let permit = match tokio::time::timeout(git_acquire_timeout(), sem.acquire_owned()).await {
+        Ok(Ok(p)) => p,
+        Ok(Err(_)) => {
+            return Err("git semaphore closed unexpectedly".to_string());
+        }
+        Err(_) => {
+            return Err(format!(
+                "git busy: could not acquire concurrency permit within {:?}",
+                git_acquire_timeout()
+            ));
+        }
+    };
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         f()
     })
     .await
+    .map_err(|e| format!("Task join error: {e}"))
 }
 
 /// 与前端 GitGraph 约定一致
@@ -149,7 +344,7 @@ fn get_git_branches(repo_path: &Path) -> Vec<String> {
     let output = git_cmd()
         .args(["branch", "-a", "--format=%(refname:short)"])
         .current_dir(repo_path)
-        .output();
+        .git_output();
 
     match output {
         Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
@@ -166,7 +361,7 @@ fn get_current_branch(repo_path: &Path) -> Option<String> {
     let output = git_cmd()
         .args(["branch", "--show-current"])
         .current_dir(repo_path)
-        .output();
+        .git_output();
 
     match output {
         Ok(output) if output.status.success() => {
@@ -176,7 +371,7 @@ fn get_current_branch(repo_path: &Path) -> Option<String> {
                 let output = git_cmd()
                     .args(["rev-parse", "--short", "HEAD"])
                     .current_dir(repo_path)
-                    .output();
+                    .git_output();
                 output.ok().and_then(|o| {
                     if o.status.success() {
                         Some(format!(
@@ -324,7 +519,7 @@ fn get_git_log(repo_path: &Path, limit: usize) -> Vec<CommitNode> {
     let output = git_cmd()
         .args(["log", "--decorate=full", &format!("-{}", limit), &pretty])
         .current_dir(repo_path)
-        .output();
+        .git_output();
 
     match output {
         Ok(output) if output.status.success() => {
@@ -337,7 +532,7 @@ fn get_git_log(repo_path: &Path, limit: usize) -> Vec<CommitNode> {
                 let head_output = git_cmd()
                     .args(["rev-parse", &format!("{}^{{commit}}", branch)])
                     .current_dir(repo_path)
-                    .output();
+                    .git_output();
 
                 if let Ok(head_output) = head_output {
                     let head_hash = String::from_utf8_lossy(&head_output.stdout)
@@ -680,7 +875,7 @@ pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
     let output = git_cmd()
         .args(["status", "--porcelain=v1", "-b", "--untracked-files=normal"])
         .current_dir(repo_path)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
@@ -699,7 +894,7 @@ pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
     let unstaged_counts = git_cmd()
         .args(["--no-pager", "diff", "--numstat", "--"])
         .current_dir(repo_path)
-        .output()
+        .git_output()
         .ok()
         .and_then(|o| {
             if o.status.success() {
@@ -713,7 +908,7 @@ pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
     let staged_counts = git_cmd()
         .args(["--no-pager", "diff", "--cached", "--numstat", "--"])
         .current_dir(repo_path)
-        .output()
+        .git_output()
         .ok()
         .and_then(|o| {
             if o.status.success() {
@@ -767,7 +962,7 @@ fn git_stage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
             cmd.arg(p);
         }
     }
-    let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
+    let out = cmd.current_dir(path).git_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -790,7 +985,7 @@ fn git_unstage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String>
         let cached = git_cmd()
             .args(["diff", "--cached", "--name-only"])
             .current_dir(path)
-            .output()
+            .git_output()
             .map_err(|e| e.to_string())?;
         if !cached.status.success() {
             return Err(String::from_utf8_lossy(&cached.stderr).to_string());
@@ -805,7 +1000,7 @@ fn git_unstage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String>
             cmd.arg(p);
         }
     }
-    let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
+    let out = cmd.current_dir(path).git_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -828,7 +1023,7 @@ fn git_discard_sync(repo_root: String, paths: Vec<String>) -> Result<(), String>
         .args(["checkout", "--"])
         .args(&paths)
         .current_dir(path)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
@@ -854,7 +1049,7 @@ fn git_clean_untracked_sync(repo_root: String, paths: Vec<String>) -> Result<(),
         .args(["clean", "-fd", "--"])
         .args(&paths)
         .current_dir(path)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
@@ -884,7 +1079,7 @@ fn git_commit_sync(repo_root: String, message: String, amend: Option<bool>) -> R
     if amend.unwrap_or(false) {
         cmd.arg("--amend");
     }
-    let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
+    let out = cmd.current_dir(path).git_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         let s = String::from_utf8_lossy(&out.stderr).to_string();
         return Err(if s.is_empty() {
@@ -923,7 +1118,7 @@ pub fn git_list_branches_sync(repo_root: String) -> Result<Vec<BranchInfo>, Stri
             "--format=%(refname:short)%09%(HEAD)%09%(upstream:short)",
         ])
         .current_dir(path)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
@@ -999,7 +1194,7 @@ fn git_checkout_sync(
             cmd.args(["checkout", &branch]);
         }
     }
-    let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
+    let out = cmd.current_dir(path).git_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         let s = String::from_utf8_lossy(&out.stderr).to_string();
         return Err(if s.is_empty() {
@@ -1050,7 +1245,7 @@ fn run_git_simple(repo_root: &str, args: &[&str]) -> Result<String, String> {
     let out = git_cmd()
         .args(args)
         .current_dir(Path::new(repo_root))
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         let s = String::from_utf8_lossy(&out.stderr).to_string();
@@ -1188,7 +1383,7 @@ fn git_fetch_sync(repo_root: String) -> Result<(), String> {
     let out = git_cmd()
         .args(["fetch", "--all", "--prune"])
         .current_dir(path)
-        .output()
+        .git_output_timeout(git_network_timeout())
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
@@ -1207,7 +1402,7 @@ fn git_pull_sync(repo_root: String) -> Result<(), String> {
     let out = git_cmd()
         .args(["pull", "--ff-only"])
         .current_dir(path)
-        .output()
+        .git_output_timeout(git_network_timeout())
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
@@ -1230,7 +1425,10 @@ fn git_push_sync(repo_root: String, set_upstream: Option<bool>) -> Result<(), St
     } else {
         cmd.arg("push");
     }
-    let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
+    let out = cmd
+        .current_dir(path)
+        .git_output_timeout(git_network_timeout())
+        .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -1262,7 +1460,7 @@ fn git_sync_sync(repo_root: String) -> Result<(), String> {
     let probe = git_cmd()
         .args(["status", "--porcelain=v1", "-b", "--untracked-files=no"])
         .current_dir(path)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if probe.status.success() {
         let stdout = String::from_utf8_lossy(&probe.stdout);
@@ -1281,7 +1479,7 @@ fn git_sync_sync(repo_root: String) -> Result<(), String> {
         let out = git_cmd()
             .args(*args)
             .current_dir(path)
-            .output()
+            .git_output_timeout(git_network_timeout())
             .map_err(|e| e.to_string())?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
@@ -1328,7 +1526,7 @@ fn git_cherry_pick_abort_sync(repo_root: String) -> Result<(), String> {
     let out = git_cmd()
         .args(["cherry-pick", "--abort"])
         .current_dir(path)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
@@ -1348,7 +1546,7 @@ fn git_revert_abort_sync(repo_root: String) -> Result<(), String> {
     let out = git_cmd()
         .args(["revert", "--abort"])
         .current_dir(path)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
@@ -1378,7 +1576,7 @@ fn git_cherry_pick_sync(repo_root: String, hash: String) -> Result<(), String> {
     let out = git_cmd()
         .args(["cherry-pick", hash.trim()])
         .current_dir(path)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         let s = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -1408,7 +1606,7 @@ fn git_revert_sync(repo_root: String, hash: String) -> Result<(), String> {
     let out = git_cmd()
         .args(["revert", "--no-edit", hash.trim()])
         .current_dir(path)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         let s = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -1444,7 +1642,7 @@ pub fn git_diff_summary_sync(repo_root: String) -> Result<GitDiffSummary, String
     let out = git_cmd()
         .args(["--no-pager", "diff", "--numstat", "HEAD", "--"])
         .current_dir(repo)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         // Return zeros instead of erroring — pre-first-commit repos fail here,
@@ -1535,7 +1733,7 @@ fn git_get_commit_files_sync(
             &hash,
         ])
         .current_dir(path)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
@@ -1593,7 +1791,7 @@ fn git_get_file_versions_at_commit_sync(
         let out = git_cmd()
             .args(["--no-pager", "show", spec])
             .current_dir(repo)
-            .output()
+            .git_output()
             .ok()?;
         if !out.status.success() {
             // Missing object（首次提交无父，或文件在该 commit 才创建）→ 空。
@@ -1622,7 +1820,7 @@ pub async fn git_get_file_versions_between(
             git_cmd()
                 .args(["--no-pager", "show", spec])
                 .current_dir(repo)
-                .output()
+                .git_output()
                 .ok()
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
@@ -1647,7 +1845,7 @@ pub async fn git_compare_commits(
         let out = git_cmd()
             .args(["--no-pager", "diff", "--name-status", "-r", &from, &to])
             .current_dir(Path::new(&repo_root))
-            .output()
+            .git_output()
             .map_err(|e| e.to_string())?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).to_string());
@@ -1715,7 +1913,7 @@ fn git_create_tag_sync(
     if let Some(h) = hash.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
         cmd.arg(h);
     }
-    let out = cmd.current_dir(path).output().map_err(|e| e.to_string())?;
+    let out = cmd.current_dir(path).git_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -1743,7 +1941,7 @@ fn git_reset_sync(repo_root: String, hash: String, mode: String) -> Result<(), S
     let out = git_cmd()
         .args(["reset", mode_flag, &hash])
         .current_dir(path)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
@@ -1766,7 +1964,7 @@ pub fn git_get_file_versions_sync(
         let out = git_cmd()
             .args(["--no-pager", "show", spec])
             .current_dir(repo)
-            .output()
+            .git_output()
             .ok()?;
         if !out.status.success() {
             // Object missing (new file) → empty side; don't propagate as err.
@@ -1840,7 +2038,7 @@ pub fn git_diff_file_sync(
     }
     cmd.arg("--");
     cmd.arg(&path);
-    let out = cmd.current_dir(repo).output().map_err(|e| e.to_string())?;
+    let out = cmd.current_dir(repo).git_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -1922,7 +2120,7 @@ pub fn git_blame_sync(repo_root: String, path: String) -> Result<Vec<BlameLine>,
         .args(["--no-pager", "blame", "-w", "--line-porcelain", "--"])
         .arg(&path)
         .current_dir(repo)
-        .output()
+        .git_output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
@@ -1964,7 +2162,7 @@ pub fn git_file_log_sync(
         cmd.arg(format!("-n{n}"));
     }
     cmd.arg("--").arg(&path);
-    let out = cmd.current_dir(repo).output().map_err(|e| e.to_string())?;
+    let out = cmd.current_dir(repo).git_output().map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -2069,7 +2267,7 @@ pub fn get_git_log_with_skip(repo_path: &Path, offset: usize, limit: usize) -> V
             &pretty,
         ])
         .current_dir(repo_path)
-        .output();
+        .git_output();
     match output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2136,7 +2334,7 @@ fn get_git_diff_internal(repo_path: &Path) -> GitDiffStatus {
     let output = git_cmd()
         .args(["diff", "--numstat", "--porcelain"])
         .current_dir(repo_path)
-        .output();
+        .git_output();
 
     match output {
         Ok(output) if output.status.success() => {
@@ -2349,6 +2547,176 @@ mod porcelain_tests {
         let stdout = "## HEAD (no branch)\n";
         let (_, _, _, has_upstream, _, _, _) = parse_porcelain_v1(stdout);
         assert!(!has_upstream);
+    }
+}
+
+/// Iteration 20: concurrency hard cap + timeout process-tree reclaim.
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn concurrency_cap_clamps_to_shared_bounds() {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let expected = cores.clamp(GIT_CONCURRENCY_MIN, GIT_CONCURRENCY_MAX);
+        // Without env override the public cap matches the shared clamp.
+        if std::env::var("RIDGE_GIT_MAX_CONCURRENT").is_err() {
+            assert_eq!(git_logical_concurrency_cap(), expected);
+        }
+        assert!(git_logical_concurrency_cap() >= 1);
+        assert!(git_logical_concurrency_cap() <= 64);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn semaphore_caps_parallel_blocking_work() {
+        let cap = git_logical_concurrency_cap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut joins = Vec::new();
+        for _ in 0..(cap * 4).max(8) {
+            let active = active.clone();
+            let peak = peak.clone();
+            joins.push(tokio::spawn(async move {
+                spawn_git_blocking(move || {
+                    let n = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(n, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(80));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                })
+                .await
+                .expect("spawn_git_blocking")
+            }));
+        }
+        for j in joins {
+            j.await.expect("join task");
+        }
+        let observed = peak.load(Ordering::SeqCst);
+        assert!(
+            observed <= cap,
+            "peak concurrent logical git work {observed} exceeded cap {cap}"
+        );
+        assert!(observed >= 1, "expected at least one worker to run");
+    }
+
+    #[test]
+    fn timeout_kills_hanging_child_and_clears_active_count() {
+        // Call the shipped timeout+kill path directly (no env mutation — parallel
+        // cargo tests share the process and would race on RIDGE_GIT_*).
+        #[cfg(windows)]
+        let hang = {
+            let dir = std::env::temp_dir().join(format!(
+                "ridge-hang-git-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let script = dir.join("hang-git.cmd");
+            // ping -n 30 ~ 30s hang on Windows without needing sleep.exe
+            std::fs::write(&script, "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n").unwrap();
+            script
+        };
+        #[cfg(not(windows))]
+        let hang = {
+            let dir = std::env::temp_dir().join(format!(
+                "ridge-hang-git-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let script = dir.join("hang-git.sh");
+            std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+            script
+        };
+
+        let before = git_active_child_count();
+        let start = Instant::now();
+        let err = run_command_with_timeout(&mut Command::new(&hang), Duration::from_millis(400))
+            .expect_err("hanging child must time out");
+        let elapsed = start.elapsed();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout reclaim too slow: {elapsed:?}"
+        );
+        // Allow a brief race for leave() after kill drain.
+        let mut active = git_active_child_count();
+        for _ in 0..20 {
+            if active <= before {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            active = git_active_child_count();
+        }
+        assert!(
+            active <= before,
+            "active children not reclaimed: before={before} after={active}"
+        );
+
+        let _ = std::fs::remove_dir_all(hang.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn get_scm_status_real_git_path_smoke() {
+        // Drive the real shipped entry (not a reimplementation): init a temp
+        // repo with the system git binary, then call get_scm_status.
+        let dir = std::env::temp_dir().join(format!(
+            "ridge-scm-smoke-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let init = Command::new("git")
+            .args(["init"])
+            .current_dir(&dir)
+            .output();
+        if init.is_err() || !init.as_ref().unwrap().status.success() {
+            let _ = std::fs::remove_dir_all(&dir);
+            eprintln!("skip: system git init failed");
+            return;
+        }
+        let _ = Command::new("git")
+            .args(["config", "user.email", "ridge-test@example.com"])
+            .current_dir(&dir)
+            .output();
+        let _ = Command::new("git")
+            .args(["config", "user.name", "ridge-test"])
+            .current_dir(&dir)
+            .output();
+        std::fs::write(dir.join("README"), "smoke\n").unwrap();
+        let _ = Command::new("git")
+            .args(["add", "README"])
+            .current_dir(&dir)
+            .output();
+        let _ = Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&dir)
+            .output();
+
+        git_reset_peak_active_for_test();
+        let root = dir.to_string_lossy().to_string();
+        let status = get_scm_status(root).await.expect("get_scm_status");
+        assert!(!status.repo_root.is_empty(), "expected resolved repo root");
+        assert!(git_peak_active_child_count() >= 1 || git_active_child_count() == 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

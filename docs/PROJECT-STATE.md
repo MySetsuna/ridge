@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-24（iteration 19 Remote/multi-host/agent/mobile 弧）
+状态日期：2026-07-24（iteration 20：Git 进程硬护栏 + 可用 Release）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -93,7 +93,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | 项 | wind |
 | --- | --- |
 | 分支 / HEAD | `codex/remote-git-diff-iteration-1`，较 `origin/main` 领先 48+ 提交（Level 2 draft；审查导读每轮闭环强制刷新：`docs/review/branch-review-guide.md`） |
-| 应用版本 | 0.0.18 |
+| 应用版本 | 0.0.19（iteration 20 bump；见 Cargo/package/tauri 三处同步） |
 | CodeGraph | 542 文件 / 11,365 节点 / 18,029 边（2026-07-23 sync） |
 | 工具链 | **全链绿**：pnpm + vitest + 增量 svelte-check + 双仓 cargo 均本机 exit 0；`cargo test --workspace` 于 iteration 7 **首次整仓通过**（历史 `-p ridge --lib` loader 载败已根修，见 §5 iteration 7） |
 
@@ -187,9 +187,19 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 **iteration 19（2026-07-24 Remote 弧）**：重点 remote dual-end、multi-host team、agent 监控面板、手机触屏/滑屏→TUI。库存见 `docs/iterations/2026-07-24-remote-multihost-agent-inventory.md`。落地：`mobileTouchScroll`（alt-screen 箭头 + mouse wheel + 本地 scroll；release btn=3）；`get_orchestration_health` 入 REMOTE_ALLOWLIST + Remote Team badges；roster Suspended 可见。清单 `…-r19-remote.md` **open=0**。完整出站 WS PTY 仍下一里程。
 
+**iteration 20a（2026-07-24 Explorer free-follow）**：文件树与下方展示域分隔条拖拽 — 连续跟 `clientY`；下方 plugin 区 `min-h-0 flex-1 overflow` 实时压缩。清单 `…-explorer-resize.md` **open=0**。
+
+**iteration 20b（2026-07-24 Git 进程硬护栏）**：本机观测 Ridge 父进程下 `git.exe` 堆积/重生风暴（杀 git 即重生，需提权杀 ridge）。根因：仅有 semaphore+前端 `mapLimit`，**无超时杀子进程**；卡死 `git` 占满/阻塞后外部杀进程 → permit 释放 → 重生。落地（`packages/ridge-core/src/commands/git.rs`）：
+- 统一 `git_output` / `run_command_with_timeout`：墙钟超时 + Windows `taskkill /T` 进程树回收；
+- `spawn_git_blocking` 许可 **acquire 超时**（默认 60s）失败关闭；
+- 活跃子进程计数 + peak；`RIDGE_GIT_TIMEOUT_MS` / `RIDGE_GIT_MAX_CONCURRENT` / `RIDGE_GIT_BIN`；
+- 前端 `GIT_CONCURRENCY_MIN/MAX=2/12` 与后端常量对齐；
+- 确定性：`guard_tests` 4 绿（cap / semaphore 峰值 / 超时杀挂起子进程 / `get_scm_status` 真 git 冒烟）；`ridge-core --lib` 328 绿；vitest pLimit+paneGit 13 绿。
+- 版本 **0.0.19** 带资产 Release（见 LOG）。合同 `CONTRACT-iteration-20.md`。
+
 ## 7. 开放问题
 
-**当前无待定夺规划问题。** 用户轨：真机 smoke、生产 Remote 云上传（换机 token）、分支 merge。
+**当前无待定夺规划问题。** 用户轨：真机 smoke、生产 Remote 云上传（换机 token）、分支 merge。请 NotebookLM：下一迭代是否还有 git 路径未走 `git_output` 的旁路？是否需把 acquire 超时做成可观测计数？
 
 ## 8. NotebookLM 评审要求（沿用）
 
@@ -205,7 +215,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 | 来源 note | 主题 | 落点 | 终态 | 证据摘要 |
 | --- | --- | --- | --- | --- |
-| 终端架构优化… | Bug4 Git 防抖/堆积 | 工程护栏 | **已实现** | git/fs watcher debouncer（`commands/watch.rs`、`fs_watch.rs`） |
+| 终端架构优化… | Bug4 Git 防抖/堆积 | 工程护栏 | **已实现（iteration 20 补硬护栏）** | watcher debouncer + `git_output` 超时杀进程树 + semaphore 许可获取超时 + 前端 `GIT_CONCURRENCY_MIN/MAX` 对齐；证据 `guard_tests` 4 绿 |
 | 终端架构优化… | Bug1 多行粘贴时序 | 终端 I/O | **已实现** | `TerminalManager.paste` + bracketed paste |
 | 终端架构优化… | Bug6a rdg staticassets | T3 | **已关闭—待用户轨** | status/publish 脚本代码侧；产物实跑用户轨 |
 | 终端架构优化… | Bug5 Clear 一致化 | ridge-term SSOT | **已实现** | `clear_scrollback` API + 单测；iteration 1 |

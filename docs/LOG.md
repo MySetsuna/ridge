@@ -2,6 +2,22 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-24 — iteration 20b（Git 进程硬护栏 + 0.0.19 Release）
+
+- 根因：本机 ridge 拉起 git 堆积/重生；仅 semaphore 无超时杀进程树。
+- 修：`git_output` 墙钟超时 + `taskkill /T`；acquire 超时；活跃计数；前端 MIN/MAX 对齐。
+- 门禁：`guard_tests` 4；`ridge-core --lib` 328；vitest pLimit+paneGit 13。
+- NLM：sole PROJECT-STATE 替换；guidance+对抗评审归档；note open=0。
+- 发布：版本 0.0.19 annotated tag + release.yml 资产。
+- 驳回：把 T3/真机 smoke 塞进自动轨；强行新开 A1 差距行做遥测。
+
+## 2026-07-24 — iteration 20a（Explorer free-follow 压缩下方展示域）
+
+- 根因：cwd body 与 plugin 无列栈 flex；lower `min-height:auto` 顶住分隔条。
+- 修：`explorer-col-stack` + `explorer-lower` 实时压缩；`computeBodyHeightFromDrag` 纯函数；拖中 `rg-explorer-resizing` 屏蔽 hit-test。
+- 门禁：`explorerLayout.test.ts` 6 绿；清单 open=0。
+- 并行会话其他愿景未动。
+
 ## 2026-07-24 — iteration 19（Remote / multi-host / agent 监控 / mobile）
 
 - 库存：`2026-07-24-remote-multihost-agent-inventory.md`（dual-end / hosts / panel / touch）。
