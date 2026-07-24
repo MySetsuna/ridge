@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-24
+状态日期：2026-07-24（iteration 17 深研弧闭合）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -179,11 +179,13 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 **终态声明（iteration 14 后）**：用户指令解冻后，P2 阶段 2 与 M1 切片二 + M2 亦已实现——**笔记本存量愿景与规划中一切可自动化项皆毕**。剩余项无一可无输入推进：G1 阶段二（待痛点证据）、G1 回滚 + M1 切片三（待用户需求定义）、C1 补路由（待真实场景）、真机/生产/合并（用户轨，动线 `docs/plans/30-min-verification-session.md`）。循环回归**低频维护态**：每轮 = 全门禁绿 + 导读刷新 + 零回归。
 
-**iteration 15–16（2026-07-24）**：**开放愿景 open=0**（清单 note `[已实现]`）。15：H1 TCP、G1-OS/RB、M1s3、B6A/B3/DISC/MOB-CP、TUI/resize/paste。16：评估后纳入 **V-G1-JOB**（spawn Job）+ **V-H1-LIVE 最小闭环**（live_sink/attach）；**明确不纳入**真机/生产/merge。应用版本 **0.0.18**。H1 完整 WS 出站为下一里程。Remote 云发布缺 token 时换机。
+**iteration 15–16（2026-07-24）**：15：H1 TCP、G1-OS/RB、M1s3、B6A/B3/DISC/MOB-CP、TUI/resize/paste。16：V-G1-JOB + V-H1-LIVE 最小闭环。应用版本 **0.0.18**。
+
+**iteration 17（2026-07-24 深研弧）**：NLM deep research（交互/健壮/协作/多 host/同工作区/容错）→ **只导入报告**（豁免清理至愿景全实现）。对抗评审后落地：R17-CTX 上下文文件扫描、R17-HOST-* foreign attach/list/output、R17-RECONN 退避策略、R17-TEAM-HEALTH/HITL-BADGE。**开放愿景 open=0**；报告源已删，来源恒 1。完整 WS 出站客户端仍为后续里程（非本报告硬门槛）。
 
 ## 7. 开放问题
 
-**当前无待定夺规划问题。** 下一步全在用户侧：①核验会动线任一件（真机/生产/合并）→ 收口对应「代码侧关闭」项；②G1 回滚语义与 M1 切片三产品形态的需求定义 → 触发新设计轮。
+**当前无待定夺规划问题。** 用户轨：真机 smoke、生产 Remote 云上传（换机 token）、分支 merge。
 
 ## 8. NotebookLM 评审要求（沿用）
 

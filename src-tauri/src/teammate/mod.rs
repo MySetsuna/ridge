@@ -1,4 +1,5 @@
 pub(crate) mod circuit;
+pub(crate) mod context_files;
 pub(crate) mod discover;
 pub(crate) mod endpoint;
 pub(crate) mod hitl;
@@ -8,6 +9,7 @@ pub(crate) mod native;
 pub(crate) mod profiles;
 pub(crate) mod memory;
 pub(crate) mod job_object;
+pub(crate) mod orch_health;
 pub(crate) mod os_freeze;
 pub(crate) mod rollback;
 pub(crate) mod server;

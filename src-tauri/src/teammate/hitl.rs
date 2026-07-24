@@ -183,6 +183,11 @@ pub fn list_pending() -> Vec<serde_json::Value> {
     items.into_iter().map(|(_, v)| v).collect()
 }
 
+/// R17-HITL-BADGE: pending approval count for UI badge.
+pub fn pending_count() -> usize {
+    PENDING.lock().map(|g| g.len()).unwrap_or(0)
+}
+
 /// 恒时比较（防计时侧信道摸 nonce；长度不同立即 false——长度非秘密）。
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());

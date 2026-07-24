@@ -9,6 +9,14 @@
 - 熔断：无。未做：完整出站 PTY 流、Job Object 预建、生产部署/merge。
 - 驳回：无。
 
+## 2026-07-24 — iteration 17（深研弧：交互/多 host/协作/容错）
+
+- Skill：深研只导入报告、禁源网站、报告**豁免清理直至衍生愿景全实现**（四端同步）。
+- 调研：deep research；报告归档；**WI 1.1–5.2 全表**对抗（implemented*/rejected）后落地。
+- 补 skeptic 缺口：HOST-OUT **fanout→parser**；RECONN 接 cloud scheduleReconnect + tmux `send_retry`；CTX 在 spawn-process(is_agent) 写 env；AgentCenter **HITL badge + 暂停数**。
+- 门禁：hosts 7（含 fanout）、teammate 39、reconnect rust+vitest 绿。
+- 报告源删除；来源恒 1；清单 open=0。
+
 ## 2026-07-24 — 换机交接文档
 
 - 完成：`docs/handoffs/2026-07-24-machine-switch-0.0.18.md`（Remote 云发布步骤、可选安装包、门禁、NLM、PR 顺序）。

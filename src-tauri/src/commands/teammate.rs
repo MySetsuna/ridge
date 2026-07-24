@@ -144,6 +144,34 @@ pub fn resume_agent(workspace_id: String, pane_id: String) -> Result<(), String>
     Ok(())
 }
 
+/// R17-TEAM-HEALTH —— 编排健康快照（suspended / pending HITL）。
+#[tauri::command]
+pub fn get_orchestration_health() -> Value {
+    crate::teammate::orch_health::orchestration_health()
+}
+
+/// R17-HITL-BADGE —— pending 审批数量。
+#[tauri::command]
+pub fn get_pending_hitl_count() -> usize {
+    crate::teammate::hitl::pending_count()
+}
+
+/// R17-CTX —— 扫描工作区根的 AGENTS.md / CLAUDE.md。
+#[tauri::command]
+pub fn scan_workspace_context_files(workspace_root: String) -> Result<Value, String> {
+    let files =
+        crate::teammate::context_files::scan_context_files(std::path::Path::new(&workspace_root));
+    let block = crate::teammate::context_files::format_context_block(&files);
+    Ok(json!({
+        "files": files.iter().map(|f| json!({
+            "name": f.name,
+            "path": f.path.to_string_lossy(),
+            "bytes": f.content.len(),
+        })).collect::<Vec<_>>(),
+        "promptBlock": block,
+    }))
+}
+
 /// V-G1-RB —— 对 workspace root 做 git worktree 补丁快照，写入 sidecar rollbackPatches。
 #[tauri::command]
 pub fn checkpoint_workspace_rollback(

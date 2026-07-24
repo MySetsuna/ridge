@@ -187,6 +187,15 @@ impl PaneParser {
         self.diff_into_frame()
     }
 
+    /// Visible row 0 as a string (for tests / diagnostics). Trims trailing blanks.
+    pub fn viewport_line0_text(&self) -> String {
+        let Some(row) = self.terminal.row_at_abs(0) else {
+            return String::new();
+        };
+        let s: String = row.cells.iter().map(|c| c.ch).collect();
+        s.trim_end().to_string()
+    }
+
     /// Drain accumulated parser responses (DSR / DA replies) that must
     /// be written BACK to the PTY. The wiring layer should pump these
     /// into the pty writer immediately after each `feed_and_diff`.

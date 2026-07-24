@@ -1718,6 +1718,50 @@ async fn route_spawn_process(
         args: body.args,
         env: body.env,
     };
+    // R17-CTX: when launching an agent, inject workspace AGENTS.md/CLAUDE.md
+    // via env so the process (or wrapper) can prepend conventions.
+    if body.is_agent {
+        let root = cwd
+            .clone()
+            .or_else(|| {
+                ctx.state
+                    .workspaces
+                    .read()
+                    .get(&wid)
+                    .and_then(|ws| {
+                        ws.pane_tree
+                            .panes
+                            .get(&pid)
+                            .and_then(|p| p.cwd.clone())
+                    })
+            })
+            .unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+        let files = crate::teammate::context_files::scan_context_files(&root);
+        if !files.is_empty() {
+            let block = crate::teammate::context_files::format_context_block(&files);
+            // Cap env size (avoid ARG_MAX / huge env); 32 KiB is enough for conventions.
+            let truncated = if block.len() > 32 * 1024 {
+                format!("{}…\n", &block[..32 * 1024])
+            } else {
+                block
+            };
+            command
+                .env
+                .insert("RIDGE_WORKSPACE_CONVENTIONS".into(), truncated);
+            let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+            command
+                .env
+                .insert("RIDGE_CONTEXT_FILES".into(), names.join(","));
+            tracing::info!(
+                target: "ridge::teammate",
+                root = %root.display(),
+                files = ?names,
+                "R17-CTX injected workspace conventions into agent env"
+            );
+        }
+    }
     // On Windows, .js files must be run via node.exe — normalize before spawning.
     #[cfg(windows)]
     {

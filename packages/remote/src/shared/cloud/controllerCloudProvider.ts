@@ -52,6 +52,7 @@ import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
 import { MAX_PANE_FRAME_BYTES, encodeJsonFrame } from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import { getOrCreateCli } from './controllerInstanceId';
+import { backoffMs } from '../reconnectPolicy';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
@@ -59,11 +60,7 @@ const KEY_BIND_GRACE_MS = 3000;
 /** DataChannel 标签（契约 §1.1 / §7：label="ridge"）。 */
 const DC_LABEL = 'ridge';
 
-// ── 断线自动重连参数（与 LAN src/remote/lib/wsRemote.ts 同名同值）──
-/** 退避基数（ms）。 */
-const RECONNECT_BASE_MS = 1_000;
-/** 退避上限（ms）。 */
-const RECONNECT_MAX_MS = 15_000;
+// ── 断线自动重连参数（R17-RECONN：shared reconnectPolicy，parity with Rust）──
 /** 'disconnected'（ICE 抖动）自愈宽限（ms）：超时仍未回 connected 才重连。 */
 const DISCONNECTED_WATCHDOG_MS = 15_000;
 /** ICE restart 后判定未恢复、升级整体重建的期限（ms）。 */
@@ -677,7 +674,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     // connected → disconnected 边沿：L2 据此 reject 在途请求（rpcClient.handleStateChange）。
     this.setState('disconnected');
     const n = this.reconnectAttempts++;
-    const base = Math.min(RECONNECT_BASE_MS * 2 ** n, RECONNECT_MAX_MS);
+    const base = backoffMs(n); // R17-RECONN shipped path
     const delay = Math.round(base + base * 0.3 * Math.random()); // ±30% 抖动
     // §diagnostic: 记录重连调度
     console.log('[cloud-controller] scheduleReconnect', { reason, attempt: n, delayMs: delay });

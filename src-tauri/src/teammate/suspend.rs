@@ -75,6 +75,11 @@ pub fn is_suspended(wid: Uuid, pane: Uuid) -> bool {
     SUSPENDED.lock().map(|g| g.contains(&(wid, pane))).unwrap_or(false)
 }
 
+/// R17-TEAM-HEALTH: number of suspended agent panes.
+pub fn suspended_count() -> usize {
+    SUSPENDED.lock().map(|g| g.len()).unwrap_or(0)
+}
+
 /// pane 关闭 / agent 注销时清理（与 `resume` 同效，语义命名区分调用意图）。
 pub fn clear_pane(wid: Uuid, pane: Uuid) {
     resume(wid, pane);

@@ -70,12 +70,23 @@ pub struct RemoteRef {
 /// tests inject an mpsc/channel-backed sink.
 pub type LiveInputSink = std::sync::Arc<dyn Fn(&[u8]) + Send + Sync>;
 
+/// R17: foreign pane attachment (local pane_id ↔ remote session).
+#[derive(Clone, Debug)]
+pub struct ForeignAttachment {
+    pub pane_id: uuid::Uuid,
+    pub remote: RemoteRef,
+}
+
 /// 进程内主机注册表（AppState 持有 `Arc<HostRegistry>`）。
 #[derive(Default)]
 pub struct HostRegistry {
     hosts: RwLock<HashMap<String, HostRecord>>,
     /// (host_id, remote_pane_id) → stdin sink toward outbound transport.
     live_sinks: RwLock<HashMap<(String, String), LiveInputSink>>,
+    /// (host_id, remote_pane_id) → stdout bytes injected from host (R17-HOST-OUT).
+    live_outputs: RwLock<HashMap<(String, String), Vec<u8>>>,
+    /// local pane_id → foreign attachment metadata (R17-HOST-PANE).
+    foreign_by_pane: RwLock<HashMap<uuid::Uuid, ForeignAttachment>>,
 }
 
 impl HostRegistry {
@@ -122,8 +133,56 @@ impl HostRegistry {
         }
     }
 
+    /// R17-HOST-OUT: inject PTY output from remote host into local buffer.
+    pub fn inject_live_output(&self, host_id: &str, remote_pane_id: &str, bytes: &[u8]) {
+        let key = (host_id.to_string(), remote_pane_id.to_string());
+        self.live_outputs
+            .write()
+            .entry(key)
+            .or_default()
+            .extend_from_slice(bytes);
+    }
+
+    /// Pane ids registered as foreign for this remote session.
+    pub fn panes_for_remote(&self, host_id: &str, remote_pane_id: &str) -> Vec<uuid::Uuid> {
+        self.foreign_by_pane
+            .read()
+            .values()
+            .filter(|f| f.remote.host_id == host_id && f.remote.remote_pane_id == remote_pane_id)
+            .map(|f| f.pane_id)
+            .collect()
+    }
+
+    /// Drain/copy live output buffer (tests + future fan-out).
+    pub fn live_output_snapshot(&self, host_id: &str, remote_pane_id: &str) -> Vec<u8> {
+        self.live_outputs
+            .read()
+            .get(&(host_id.to_string(), remote_pane_id.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn register_foreign(&self, pane_id: uuid::Uuid, remote: RemoteRef) {
+        self.foreign_by_pane.write().insert(
+            pane_id,
+            ForeignAttachment {
+                pane_id,
+                remote,
+            },
+        );
+    }
+
+    pub fn foreign_for_pane(&self, pane_id: uuid::Uuid) -> Option<ForeignAttachment> {
+        self.foreign_by_pane.read().get(&pane_id).cloned()
+    }
+
     pub fn get(&self, id: &str) -> Option<HostRecord> {
         self.hosts.read().get(id).cloned()
+    }
+
+    /// R17-HOST-LIST: sessions for a host (empty if missing).
+    pub fn list_sessions(&self, host_id: &str) -> Option<Vec<HostSessionMeta>> {
+        self.hosts.read().get(host_id).map(|h| h.sessions.clone())
     }
 
     /// Mark a session attached flag.
@@ -295,9 +354,8 @@ pub fn forget_host(state: State<'_, AppState>, host_id: String) -> Result<(), St
     Ok(())
 }
 
-/// V-H1-LIVE：把远端会话接入当前工作区为 foreign 视图（需 Connected）。
-/// 返回本地 pane_id。完整 WS 字节回灌由 live_sink + 后续 reader 任务负责；
-/// 本命令建立 `remote_ref` 与输入路由面。
+/// V-H1-LIVE / R17-HOST-PANE：把远端会话接入为 foreign 视图（需 Connected）。
+/// 注册 live stdin sink、foreign 元数据；可选挂到工作区首 leaf 的 split 新 pane。
 #[tauri::command]
 pub fn attach_host_session(
     state: State<'_, AppState>,
@@ -313,26 +371,41 @@ pub fn attach_host_session(
     if !host.sessions.iter().any(|s| s.id == session_id) {
         return Err(format!("未知会话: {session_id}"));
     }
+    let host_label = host.label.clone();
+    let kind = host.kind;
 
     let wid = match workspace_id {
         Some(s) => uuid::Uuid::parse_str(&s).map_err(|e| e.to_string())?,
         None => state.active_workspace_id(),
     };
-    let pane_id = uuid::Uuid::new_v4();
 
-    // Foreign view: no local child process; I/O via remote_ref + live_sinks.
-    // Reuse a dummy openpty master/writer so existing map types still hold.
-    // Prefer: zero-byte writer sink that routes to live.
-    let (writer_tx, _writer_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-    let _ = writer_tx; // placeholder until full WS client
-    let parser = std::sync::Arc::new(parking_lot::Mutex::new(
-        crate::engine::parser::PaneParser::new(24, 80, 2000),
-    ));
+    // Prefer split of first leaf so layout gains a real pane id; fall back to fresh uuid.
+    let pane_id = {
+        let mut map = state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            let leaves = ws.pane_tree.get_all_leaves();
+            if let Some(target) = leaves.first().copied() {
+                use ridge_core::workspace::pane_tree::SplitDirection;
+                if let Ok(id) = ws.pane_tree.split(target, SplitDirection::Vertical) {
+                    id
+                } else {
+                    uuid::Uuid::new_v4()
+                }
+            } else {
+                uuid::Uuid::new_v4()
+            }
+        } else {
+            uuid::Uuid::new_v4()
+        }
+    };
 
-    // Build a minimal foreign handle by summoning pattern: open real empty PTY is heavy.
-    // Instead mark remote_ref on a synthetic handle using openpty without spawn if possible.
-    // Practical path: create pane leaf + terminal entry via open_pty path is too large.
-    // Store routing only: register live sink that records to host for tests; UI attach later.
+    let remote = RemoteRef {
+        host_id: host_id.clone(),
+        host_label,
+        remote_pane_id: session_id.clone(),
+        kind,
+    };
+
     let host_id_c = host_id.clone();
     let session_id_c = session_id.clone();
     let sink_buf: std::sync::Arc<parking_lot::Mutex<Vec<u8>>> =
@@ -352,13 +425,102 @@ pub fn attach_host_session(
             );
         }),
     );
+    state.hosts.register_foreign(pane_id, remote.clone());
     state
         .hosts
         .set_session_attached(&host_id, &session_id, true);
 
-    // Expose attach token for frontend: pane id is synthetic until full foreign openpty.
-    let _ = (wid, pane_id, parser);
+    // Install foreign terminal handle so write_pty routes via remote_ref.
+    {
+        use portable_pty::{native_pty_system, PtySize};
+        use std::sync::atomic::{AtomicBool, AtomicI64};
+        use std::sync::Arc;
+        let pty_system = native_pty_system();
+        if let Ok(pair) = pty_system.openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        }) {
+            let portable_pty::PtyPair { master, slave: _slave } = pair;
+            if let Ok(w) = master.take_writer() {
+                let parser = Arc::new(parking_lot::Mutex::new(
+                    crate::engine::parser::PaneParser::new(24, 80, 2000),
+                ));
+                let handle = crate::engine::pty::PtyHandle {
+                    master: Arc::new(parking_lot::Mutex::new(master)),
+                    writer: Arc::new(parking_lot::Mutex::new(w)),
+                    _child: None,
+                    native_ref: None,
+                    native_cancel: None,
+                    remote_ref: Some(remote),
+                    job: None,
+                    child_pid: None,
+                    resize_silence_deadline: Arc::new(AtomicI64::new(0)),
+                    parser,
+                    delta_mode: Arc::new(AtomicBool::new(false)),
+                };
+                let mut map = state.workspaces.write();
+                if let Some(ws) = map.get_mut(&wid) {
+                    ws.terminals.insert(pane_id, handle);
+                }
+            }
+        }
+    }
+
     Ok(pane_id.to_string())
+}
+
+/// R17-HOST-LIST：列出主机会话（须已登记）。
+#[tauri::command]
+pub fn list_host_sessions(
+    state: State<'_, AppState>,
+    host_id: String,
+) -> Result<Vec<HostSessionMeta>, String> {
+    state
+        .hosts
+        .list_sessions(&host_id)
+        .ok_or_else(|| format!("未知主机: {host_id}"))
+}
+
+/// R17-HOST-OUT：注入远端输出并 fan-out 到 foreign pane 的 VT parser（可见回灌）。
+#[tauri::command]
+pub fn inject_host_output(
+    state: State<'_, AppState>,
+    host_id: String,
+    session_id: String,
+    data_b64: String,
+) -> Result<(), String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_b64.as_bytes())
+        .map_err(|e| e.to_string())?;
+    fanout_live_output(&state, &host_id, &session_id, &bytes);
+    Ok(())
+}
+
+/// Buffer + feed every attached foreign pane's parser (shipped fan-out path).
+pub fn fanout_live_output(state: &AppState, host_id: &str, session_id: &str, bytes: &[u8]) {
+    state.hosts.inject_live_output(host_id, session_id, bytes);
+    let panes = state.hosts.panes_for_remote(host_id, session_id);
+    if panes.is_empty() {
+        return;
+    }
+    let map = state.workspaces.read();
+    for ws in map.values() {
+        for pid in &panes {
+            if let Some(handle) = ws.terminals.get(pid) {
+                if handle
+                    .remote_ref
+                    .as_ref()
+                    .is_some_and(|rr| rr.host_id == host_id && rr.remote_pane_id == session_id)
+                {
+                    // Feed VT mirror so scrollback/grid reflect remote output.
+                    let _ = handle.parser.lock().feed_and_diff(bytes);
+                }
+            }
+        }
+    }
 }
 
 /// Route stdin for a foreign remote_ref (called from write_pty path).
@@ -436,5 +598,110 @@ mod tests {
         assert!(reg.write_live("lan:h", "p1", b"abc"));
         assert_eq!(n.load(Ordering::SeqCst), 3);
         assert!(!reg.write_live("lan:h", "missing", b"x"));
+    }
+
+    #[test]
+    fn inject_live_output_and_register_foreign() {
+        let reg = HostRegistry::default();
+        reg.inject_live_output("lan:h", "p1", b"hello");
+        reg.inject_live_output("lan:h", "p1", b"!");
+        assert_eq!(reg.live_output_snapshot("lan:h", "p1"), b"hello!");
+        let pane = uuid::Uuid::new_v4();
+        reg.register_foreign(
+            pane,
+            RemoteRef {
+                host_id: "lan:h".into(),
+                host_label: "h".into(),
+                remote_pane_id: "p1".into(),
+                kind: HostKind::Remote,
+            },
+        );
+        let f = reg.foreign_for_pane(pane).expect("foreign");
+        assert_eq!(f.remote.remote_pane_id, "p1");
+        assert_eq!(reg.panes_for_remote("lan:h", "p1"), vec![pane]);
+    }
+
+    #[test]
+    fn fanout_feeds_foreign_pane_parser() {
+        use portable_pty::{native_pty_system, PtySize};
+        use std::sync::atomic::{AtomicBool, AtomicI64};
+        use std::sync::Arc;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let state = crate::state::AppState::new(tx);
+        let wid = state.active_workspace_id();
+        let pane = uuid::Uuid::new_v4();
+        let remote = RemoteRef {
+            host_id: "lan:h".into(),
+            host_label: "h".into(),
+            remote_pane_id: "p1".into(),
+            kind: HostKind::Remote,
+        };
+        state.hosts.register_foreign(pane, remote.clone());
+        // Minimal foreign handle with real parser.
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        let portable_pty::PtyPair { master, slave: _ } = pair;
+        let w = master.take_writer().expect("writer");
+        let handle = crate::engine::pty::PtyHandle {
+            master: Arc::new(parking_lot::Mutex::new(master)),
+            writer: Arc::new(parking_lot::Mutex::new(w)),
+            _child: None,
+            native_ref: None,
+            native_cancel: None,
+            remote_ref: Some(remote),
+            job: None,
+            child_pid: None,
+            resize_silence_deadline: Arc::new(AtomicI64::new(0)),
+            parser: Arc::new(parking_lot::Mutex::new(
+                crate::engine::parser::PaneParser::new(24, 80, 200),
+            )),
+            delta_mode: Arc::new(AtomicBool::new(false)),
+        };
+        {
+            let mut map = state.workspaces.write();
+            map.get_mut(&wid).unwrap().terminals.insert(pane, handle);
+        }
+        fanout_live_output(&state, "lan:h", "p1", b"hello from host");
+        assert_eq!(
+            state.hosts.live_output_snapshot("lan:h", "p1"),
+            b"hello from host"
+        );
+        // Assert parser grid actually contains injected printable text (not just buffer).
+        let map = state.workspaces.read();
+        let h = map.get(&wid).unwrap().terminals.get(&pane).unwrap();
+        let line0 = h.parser.lock().viewport_line0_text();
+        assert!(
+            line0.contains("hello from host"),
+            "expected injected text in parser viewport, got {line0:?}"
+        );
+    }
+
+    #[test]
+    fn list_sessions_on_connected_record() {
+        let reg = HostRegistry::default();
+        reg.upsert(HostRecord {
+            id: "lan:x".into(),
+            kind: HostKind::Remote,
+            label: "x".into(),
+            addr: "x".into(),
+            status: HostStatus::Connected,
+            detail: "ok".into(),
+            sessions: vec![HostSessionMeta {
+                id: "probe".into(),
+                title: "reachability-ok".into(),
+                attached: false,
+            }],
+        });
+        let s = reg.list_sessions("lan:x").unwrap();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].id, "probe");
+        assert!(reg.list_sessions("missing").is_none());
     }
 }
