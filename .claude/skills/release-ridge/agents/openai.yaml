@@ -1,0 +1,4 @@
+interface:
+  display_name: "发布 Ridge"
+  short_description: "同步代码、构建 Windows release、部署 ridge-cloud 并发布 remote 产物"
+  default_prompt: "使用 $release-ridge 完成 Ridge 全链路发布并逐项验收。"
