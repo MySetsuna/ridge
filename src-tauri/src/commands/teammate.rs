@@ -119,19 +119,22 @@ pub async fn get_teammate_topology(
     Ok(topology_json(ws, wid))
 }
 
-/// G1 阶段一 —— 暂停某 pane 的 agent 输入（软暂停：agent 写路径被拒，人类输入不受限）。
-/// 幂等；OS 级冻结属阶段二。仅桌面本机 IPC，刻意不入 `REMOTE_ALLOWLIST`。
-/// M1 切片一：变更后落 sidecar（fail-open），重启可恢复。
+/// G1 —— 暂停（软门控 + 可选 OS 冻结）。`pty_pid` 缺省时仅软门控。
+/// OS 失败 fail-open（软门控仍生效）。仅桌面本机 IPC，不入 `REMOTE_ALLOWLIST`。
 #[tauri::command]
-pub fn suspend_agent(workspace_id: String, pane_id: String) -> Result<(), String> {
+pub fn suspend_agent(
+    workspace_id: String,
+    pane_id: String,
+    pty_pid: Option<u32>,
+) -> Result<(), String> {
     let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
     let pane = Uuid::parse_str(&pane_id).map_err(|e| e.to_string())?;
-    crate::teammate::suspend::suspend(wid, pane);
+    crate::teammate::suspend::suspend_with_os(wid, pane, pty_pid, false)?;
     crate::teammate::suspend::persist_for(wid);
     Ok(())
 }
 
-/// G1 阶段一 —— 恢复。幂等。
+/// G1 —— 恢复（含 OS thaw 若 suspend 时冻结成功）。幂等。
 #[tauri::command]
 pub fn resume_agent(workspace_id: String, pane_id: String) -> Result<(), String> {
     let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
@@ -139,6 +142,149 @@ pub fn resume_agent(workspace_id: String, pane_id: String) -> Result<(), String>
     crate::teammate::suspend::resume(wid, pane);
     crate::teammate::suspend::persist_for(wid);
     Ok(())
+}
+
+/// V-G1-RB —— 对 workspace root 做 git worktree 补丁快照，写入 sidecar rollbackPatches。
+#[tauri::command]
+pub fn checkpoint_workspace_rollback(
+    workspace_id: String,
+    workspace_root: String,
+    label: Option<String>,
+) -> Result<Value, String> {
+    let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    let Some(dir) = crate::teammate::memory::dir() else {
+        return Err("workspace-memory dir not initialized".into());
+    };
+    let patch = crate::teammate::rollback::checkpoint(
+        dir,
+        wid,
+        std::path::Path::new(&workspace_root),
+        label.unwrap_or_else(|| "manual".into()),
+    )?;
+    serde_json::to_value(patch).map_err(|e| e.to_string())
+}
+
+/// V-G1-RB —— 用最新 rollbackPatches 条目恢复工作树。
+#[tauri::command]
+pub fn rollback_workspace(
+    workspace_id: String,
+    workspace_root: String,
+) -> Result<(), String> {
+    let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    let Some(dir) = crate::teammate::memory::dir() else {
+        return Err("workspace-memory dir not initialized".into());
+    };
+    let patch = crate::teammate::rollback::latest_patch(dir, wid)
+        .ok_or_else(|| "no rollbackPatches in workspace memory".to_string())?;
+    crate::teammate::rollback::rollback(std::path::Path::new(&workspace_root), &patch)
+}
+
+/// M1 切片三 —— 读 workspace memory 摘要（goal/constraints/tasks/…）。仅桌面 IPC。
+#[tauri::command]
+pub fn get_workspace_memory(workspace_id: String) -> Result<Value, String> {
+    let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    let Some(dir) = crate::teammate::memory::dir() else {
+        return Ok(json!({}));
+    };
+    Ok(crate::teammate::memory::read_summary(dir, wid))
+}
+
+/// M1 切片三 —— 写 goal / constraints / tasks（任一字段可选）。仅桌面 IPC。
+#[tauri::command]
+pub fn set_workspace_memory(
+    workspace_id: String,
+    goal: Option<String>,
+    constraints: Option<Vec<String>>,
+    tasks: Option<Vec<Value>>,
+) -> Result<(), String> {
+    let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    let Some(dir) = crate::teammate::memory::dir() else {
+        return Err("workspace-memory dir not initialized".into());
+    };
+    if let Some(g) = goal {
+        crate::teammate::memory::set_goal(dir, wid, g);
+    }
+    if let Some(c) = constraints {
+        crate::teammate::memory::set_constraints(dir, wid, c);
+    }
+    if let Some(t) = tasks {
+        crate::teammate::memory::set_tasks(dir, wid, t);
+    }
+    Ok(())
+}
+
+/// V-DISC —— 探测本机常见 agent CLI 进程（`enabled=false` 时恒空）。
+#[tauri::command]
+pub fn discover_cli_agents(enabled: bool) -> Result<Value, String> {
+    if !enabled {
+        return Ok(Value::Array(vec![]));
+    }
+    // Windows: tasklist; Unix: ps — best-effort, empty on failure.
+    let procs = list_process_names();
+    let found = crate::teammate::discover::discover_agents(
+        true,
+        &procs
+            .iter()
+            .map(|(pid, n)| (*pid, n.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    Ok(Value::Array(
+        found
+            .into_iter()
+            .map(|a| json!({ "name": a.name, "pid": a.pid }))
+            .collect(),
+    ))
+}
+
+fn list_process_names() -> Vec<(u32, String)> {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("tasklist")
+            .args(["/FO", "CSV", "/NH"])
+            .output();
+        let Ok(out) = out else { return vec![] };
+        let s = String::from_utf8_lossy(&out.stdout);
+        let mut v = Vec::new();
+        for line in s.lines() {
+            // "name.exe","pid","session","session#","mem"
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let name = parts[0].trim().trim_matches('"').to_string();
+            let pid = parts[1]
+                .trim()
+                .trim_matches('"')
+                .parse::<u32>()
+                .unwrap_or(0);
+            if pid > 0 {
+                v.push((pid, name));
+            }
+        }
+        return v;
+    }
+    #[cfg(unix)]
+    {
+        let out = std::process::Command::new("ps")
+            .args(["-eo", "pid,comm"])
+            .output();
+        let Ok(out) = out else { return vec![] };
+        let s = String::from_utf8_lossy(&out.stdout);
+        let mut v = Vec::new();
+        for line in s.lines().skip(1) {
+            let mut it = line.split_whitespace();
+            let Some(pid_s) = it.next() else { continue };
+            let Some(comm) = it.next() else { continue };
+            if let Ok(pid) = pid_s.parse::<u32>() {
+                v.push((pid, comm.to_string()));
+            }
+        }
+        return v;
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        vec![]
+    }
 }
 
 /// P2 阶段 1 —— 待裁决高危动作的**脱敏**只读列表（`teammate` 能力下远端可见）。

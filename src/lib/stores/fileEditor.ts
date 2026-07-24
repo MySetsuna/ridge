@@ -11,6 +11,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { isMarkdownPath } from '$lib/utils/markdown';
 import { isRecentlyWritten, markRecentlyWritten } from './fsEvents';
+import { nextImageVersion } from './imagePreviewVersion';
 import { alertDialog, choiceDialog, confirmDialog } from '$lib/components/RidgeDialog.svelte';
 
 // §弱网: in the desktop-UI-in-browser build, save by sending only the changed
@@ -79,6 +80,11 @@ export interface OpenFile {
   isImage: boolean;
   /** Image URL (for image files) */
   imageUrl?: string;
+  /**
+   * Bumped when fs-watch reports an external change to an open image so the
+   * `<img>` cache-busts (V-B3). Pure content files use content reload instead.
+   */
+  imageVersion?: number;
   /**
    * If set, this tab is a read-only Monaco diff view.
    *  - `compareBase` + `commit` 都设置时显示两个提交间该文件的范围 diff（GitGraph 的"对比提交"）；
@@ -479,6 +485,7 @@ function createStore() {
         viewMode: isMarkdownPath(path) ? 'preview' : 'source',
         isImage,
         imageUrl,
+        imageVersion: isImage ? 0 : undefined,
       };
       update((s) => {
         // Re-check inside the atomic updater: `openFile` awaited an async
@@ -780,7 +787,8 @@ function createStore() {
      * - `isRecentlyWritten(path)` → silent (Ridge's own save round-tripping back).
      * - File can no longer be read → mark `external: 'deleted'`; user keeps
      *   the tab and can re-save to recreate.
-     * - File is image / diff tab → ignored (no editable content path).
+     * - Image tab → bump `imageVersion` (V-B3 cache-bust); no content reload.
+     * - Diff tab → ignored (no editable content path).
      * - Clean (non-dirty) → silently sync new content into Monaco.
      * - Dirty → ask via `choiceDialog`: reload-discard / keep-editing.
      */
@@ -789,7 +797,19 @@ function createStore() {
       const file = state.openFiles.find((f) => f.path === path);
       if (!file) return;
       if (file.diffArgs) return;
-      if (file.isImage) return;
+      if (file.isImage) {
+        // V-B3: external image rewrite → bump version so preview reloads.
+        if (isRecentlyWritten(path)) return;
+        update((s) => ({
+          ...s,
+          openFiles: s.openFiles.map((f) =>
+            f.path === path
+              ? { ...f, imageVersion: nextImageVersion(f.imageVersion) }
+              : f
+          ),
+        }));
+        return;
+      }
       if (isRecentlyWritten(path)) return;
       if (!isTauri()) return;
 

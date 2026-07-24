@@ -34,9 +34,15 @@ pub struct PtyHandle {
     /// 领养视图的 `BroadcastReader` 取消位：detach 时置位让 reader 线程 EOF 退出。
     pub native_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// `Some(..)` 表示这是一台远端 ridge / rdg 主机上某 pane 的本地 foreign 视图
-    /// （P3/P4 基础层字段）。live 传输里程会据此把前端 I/O 路由到对应 host 连接；
-    /// 当前无代码置位 → 恒 `None`，仅完成数据模型与 origin 徽标派生。
+    /// （P3/P4 基础层字段）。live 传输里程会据此把前端 I/O 路由到对应 host 连接。
     pub remote_ref: Option<crate::hosts::RemoteRef>,
+    /// Windows Job Object holding the PTY child (V-G1-JOB)。非 Windows 恒 None。
+    /// 生命周期随 PtyHandle；用于 OS 冻结时绑定进程树。
+    #[allow(dead_code)] // read by G1 freeze path / future Job freeze-info
+    pub job: Option<crate::teammate::job_object::JobHandle>,
+    /// PTY 子进程 pid（若有），供 OS 冻结 / job 分配。
+    #[allow(dead_code)]
+    pub child_pid: Option<u32>,
     /// Resize-silence deadline in epoch milliseconds. When `> 0` and `now < deadline`,
     /// the PTY reader thread suppresses scrollback writes AND frontend emits to swallow
     /// ConPTY's viewport-replay byte storm. Cleared (set to 0) the moment a prompt OSC

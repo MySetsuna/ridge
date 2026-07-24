@@ -24,3 +24,5 @@
 | 12 | `CONTRACT-iteration-12.md` | `2026-07-23-iteration-12.md` | （收敛裁决见 guidance-11） | 完成（收敛轮） |
 | 13 | `CONTRACT-iteration-13.md` | `2026-07-23-iteration-13.md` | （用户指令解冻，合同存照） | 完成（**P2 全闭**：远端裁决通道） |
 | 14 | `CONTRACT-iteration-14.md` | `2026-07-23-iteration-14.md` | （合并轮初裁见 guidance-10/11） | 完成（M1 切片二 + M2；**可自动化存量全毕，回归维护态**） |
+| — | （无新合同；对账归档轮） | `2026-07-24-notebook-notes-archive/` | — | 误清空 notes，已纠偏 |
+| 15 | `CONTRACT-iteration-15.md` | `2026-07-24-iteration-15.md` | — | 开放愿景 11 项代码闭合；note `[已实现]` open=0 |

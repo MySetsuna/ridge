@@ -5,6 +5,7 @@
   import { anyMod, consumeMods } from './modState.svelte';
   import { keyboardShiftPx } from './keyboardOffset';
   import { writeClipboard } from './clipboard';
+  import { copySelectionOnly } from '@ridge/remote/shared/terminal/mobileCopy';
 
   let { paneId, onStdin, onResize, onHostClipboard, onNearTop, selectionMode = $bindable(false), backendName = $bindable('Canvas2D') }: {
     paneId: string | null;
@@ -209,18 +210,27 @@
   /** Copy the selection to the control device's clipboard, then clear it.
    *  §copy-no-interrupt: copying must NOT send `\x03` to the PTY — the old
    *  unconditional ^C cancelled the shell line / SIGINT'd the foreground process
-   *  every time you copied. Copy is a read-only clipboard action now. */
+   *  every time you copied. Copy is a read-only clipboard action now.
+   *  V-MOB-CP: never focus hidden input / never paste. */
   function copyAndClear() {
     if (!ctrl) return;
+    let text = '';
     try {
-      const text = ctrl.getSelectionText();
-      if (text) {
-        void writeClipboard(text);   // control device (this phone/browser)
-        onHostClipboard?.(text);     // + desktop host, for its native Ctrl+V paste
-      }
+      text = ctrl.getSelectionText() || '';
     } catch { /* kernel may have no selection */ }
-    ctrl.clearSelection();
-    hasSelectionState = false;
+    copySelectionOnly(text, {
+      writeText: (t) => {
+        void writeClipboard(t);
+        onHostClipboard?.(t);
+      },
+      clearSelection: () => {
+        ctrl?.clearSelection();
+        hasSelectionState = false;
+      },
+      // Explicitly pass focus/paste so tests of pure helper prove we never call them.
+      focusInput,
+      paste: (t) => sendPaste(t),
+    });
   }
 
   /** Paste arbitrary text (the control device's clipboard) into the terminal as
@@ -520,14 +530,20 @@
     } catch { /* clipboard blocked: no permission / insecure context */ }
   }
 
-  /** Copy the active selection to the system clipboard (desktop Ctrl/Cmd+C). */
+  /** Copy the active selection to the system clipboard (desktop Ctrl/Cmd+C).
+   *  V-MOB-CP: write + clear only — no focusInput / no paste. */
   async function copySelection() {
     if (!ctrl) return;
-    const text = ctrl.getSelectionText();
-    if (!text) return;
-    await writeClipboard(text);    // control device
-    onHostClipboard?.(text);       // + desktop host (native Ctrl+V paste)
-    ctrl.clearSelection();
+    const text = ctrl.getSelectionText() || '';
+    copySelectionOnly(text, {
+      writeText: (t) => {
+        void writeClipboard(t);
+        onHostClipboard?.(t);
+      },
+      clearSelection: () => ctrl?.clearSelection(),
+      focusInput,
+      paste: (t) => sendPaste(t),
+    });
   }
 
   // Native paste fallback (right-click → paste, middle-click) on the focused

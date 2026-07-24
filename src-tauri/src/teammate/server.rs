@@ -2549,6 +2549,8 @@ pub(crate) fn summon_into_workspace(
             native_ref: Some((socket.to_string(), sp.global_id)),
             native_cancel: Some(cancel.clone()),
             remote_ref: None,
+            job: None,
+            child_pid: None,
             resize_silence_deadline: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             parser,
             delta_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
