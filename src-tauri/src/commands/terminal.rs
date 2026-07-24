@@ -1068,6 +1068,21 @@ async fn write_to_pty_async(
 ) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
     let wid = state.active_workspace_id();
+    // Foreign panes route via outbound live sink (OP-WS-PTY); never write local ConPTY.
+    {
+        let map = state.workspaces.read();
+        let ws = map
+            .get(&wid)
+            .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
+        let handle = ws.terminals.get(&pane_id).ok_or_else(|| {
+            pty_log::pane_not_found("write", wid, pane_id);
+            AppError::PaneNotFound(pane_id)
+        })?;
+        if let Some(ref rr) = handle.remote_ref {
+            return crate::hosts::route_foreign_input(&state, rr, data.as_bytes())
+                .map_err(AppError::PtyError);
+        }
+    }
     let (writer, _data) = {
         let map = state.workspaces.read();
         let ws = map
@@ -1206,6 +1221,12 @@ pub fn resize_pane_inner(
             .get(&wid)
             .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
         if let Some(handle) = ws.terminals.get(&pane_id) {
+            // Foreign / outbound PTY: route resize over live client; still
+            // resize local stub master for consistency with local geometry.
+            if let Some(ref rr) = handle.remote_ref {
+                crate::hosts::route_foreign_resize(state, rr, rows, cols)
+                    .map_err(AppError::PtyError)?;
+            }
             let master = handle.master.lock();
             let res = master
                 .resize(PtySize {
@@ -1502,6 +1523,29 @@ pub async fn kill_pty_if_present(
                 LayoutChange::detached(pane_id.to_string()),
             );
         }
+        return;
+    }
+    // Foreign / multi-host outbound view: close = detach only (unsubscribe +
+    // drop mapping; remote PTY keeps running). Must run BEFORE local kill path.
+    let is_foreign = {
+        let map = state.workspaces.read();
+        map.get(&workspace_id)
+            .and_then(|ws| ws.terminals.get(&pane_id))
+            .and_then(|h| h.remote_ref.as_ref())
+            .is_some()
+    };
+    if is_foreign {
+        let _ = state.hosts.detach_foreign(pane_id);
+        {
+            let mut map = state.workspaces.write();
+            if let Some(ws) = map.get_mut(&workspace_id) {
+                ws.terminals.remove(&pane_id);
+                let _ = ws.pane_tree.close(pane_id);
+                ws.pane_sizes.remove(&pane_id);
+            }
+        }
+        state.clear_pty_scrollback(workspace_id, pane_id);
+        state.unregister_pane_delta_channel(workspace_id, pane_id);
         return;
     }
     // P4.1 — drop the delta sender first so a racing `pty-delta-*` emit

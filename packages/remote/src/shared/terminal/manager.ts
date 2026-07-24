@@ -65,6 +65,14 @@ function quantizeCellSize(raw: number, dpr: number): number {
 // .wasm next to the .js.
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
 import { LinkSpanIndex } from './linkSpans';
+import { decideHoverUnderline, decideLinkClick, underlineRegionsFromSpan } from './linkAffordance';
+import {
+	buildOpenPlanFromHit,
+	encodeUnderlineDataset,
+	planHostOpen,
+	underlineCssTokens,
+	type HostOpenAction,
+} from './linkOpenHost';
 // §1.32 Wave F: PTY-prompt suffix snapshot — reads shell-input from
 // kernel cells instead of mirroring keystrokes. See module docstring.
 
@@ -578,6 +586,45 @@ export class TerminalManager {
 	 *  CWD 内的文件都视为可在 ridge 编辑器打开）。 */
 	static _knownCwds(): string[] {
 		return _hostPorts?.cwd?.all() ?? [];
+	}
+
+	/**
+	 * C51 product path: execute a HostOpenAction from linkOpenHost.
+	 * URL → opener / window.open; path/file → openTextLink host port.
+	 */
+	static _executeOpenPlan(
+		plan: HostOpenAction,
+		entry: PaneEntry,
+		fallbackText: string,
+	): void {
+		if (plan.type === 'noop') {
+			console.warn('[ridge-term] open plan noop', plan.reason, fallbackText);
+			return;
+		}
+		if (plan.type === 'open_url') {
+			const uri = plan.href;
+			if (
+				typeof window !== 'undefined' &&
+				(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+			) {
+				void import('@tauri-apps/plugin-opener')
+					.then(({ openUrl }) => openUrl(uri))
+					.catch((err) => console.warn('[ridge-term] openUrl failed', uri, err));
+			} else if (typeof window !== 'undefined') {
+				window.open(uri, '_blank', 'noopener,noreferrer');
+			}
+			return;
+		}
+		// open_file | reveal_in_tree → host port (editor / explorer)
+		const text =
+			plan.type === 'open_file'
+				? plan.line != null
+					? `${plan.path}:${plan.line}${plan.col != null ? `:${plan.col}` : ''}`
+					: plan.path
+				: plan.path;
+		const cwd = TerminalManager._currentPaneCwd(entry);
+		const known = TerminalManager._knownCwds();
+		_hostPorts?.openTextLink?.(text, { cwd, knownCwds: known });
 	}
 
 	static instance(opts?: ManagerOptions): TerminalManager {
@@ -1397,12 +1444,10 @@ export class TerminalManager {
 				}
 			}
 
-			// Ctrl-hover over an OSC 8 hyperlink → pointer cursor as
-			// affordance. Any other state resets cursor (when ctrl is
-			// released or pointer moves off a link). Round-trips don't
-			// fire on bare key events so the user must wiggle the mouse
-			// once after releasing/pressing Ctrl — minor; round 5 can
-			// add keydown/keyup hooks if needed.
+			// Ctrl/Cmd-hover over OSC 8 or pure-text link → pointer + underline
+			// affordance (OP-TERM-LINK). Bare hover does not underline (TUI-safe).
+			// Perf (iter 50): without modifier skip hyperlinkAt/hitTest entirely —
+			// those walk kernel cells and were the main hover-path cost after C51.
 			const isMacUA2 = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 			const mod2 = pending.ctrlKey || (isMacUA2 && pending.metaKey);
 			if (hoverCell && mod2) {
@@ -1410,9 +1455,40 @@ export class TerminalManager {
 				const span = link
 					? null
 					: ent.linkSpans.hitTest(ent.kernel, hoverCell.row, hoverCell.col);
-				ent.container.style.cursor = link || span ? 'pointer' : '';
-			} else if (ent.container.style.cursor === 'pointer') {
+				const hit = !!(link || span);
+				const spanText = link
+					? (link as { uri?: string }).uri ?? null
+					: span?.text ?? null;
+				const dec = decideHoverUnderline({
+					hasLinkHit: hit,
+					modifierHeld: true,
+					spanText,
+				});
+				ent.container.style.cursor = dec.cursor;
+				const kind = span?.kind ?? (link ? 'osc8' : null);
+				const tokens = underlineCssTokens({ show: dec.showUnderline, kind });
+				if (tokens.length) {
+					ent.container.dataset.linkUnderlineClass = tokens.join(' ');
+				} else {
+					delete ent.container.dataset.linkUnderlineClass;
+				}
+				if (dec.showUnderline && span) {
+					const r = underlineRegionsFromSpan(span);
+					ent.container.dataset.linkUnderline = encodeUnderlineDataset(r.row, r.c0, r.c1);
+				} else if (dec.showUnderline && link) {
+					ent.container.dataset.linkUnderline = encodeUnderlineDataset(hoverCell.row, 'osc8');
+				} else {
+					delete ent.container.dataset.linkUnderline;
+					delete ent.container.dataset.linkUnderlineClass;
+				}
+			} else if (
+				ent.container.style.cursor === 'pointer' ||
+				ent.container.dataset.linkUnderline
+			) {
+				// Clear affordance when modifier released or left the cell.
 				ent.container.style.cursor = '';
+				delete ent.container.dataset.linkUnderline;
+				delete ent.container.dataset.linkUnderlineClass;
 			}
 
 			// Continue with selection drag logic.
@@ -1442,31 +1518,59 @@ export class TerminalManager {
 
 			const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 			const mod = e.ctrlKey || (isMac && e.metaKey);
+			const mouseReportingOn = ent.kernel.mouseReportingModes() !== 0;
+			const oscLink = ent.kernel.hyperlinkAt(cell.row, cell.col) as
+				| { uri: string; id: string | null }
+				| null;
+			const textSpan = oscLink
+				? null
+				: ent.linkSpans.hitTest(ent.kernel, cell.row, cell.col);
+			const hasLinkHit = !!(oscLink?.uri || textSpan);
+			const clickDec = decideLinkClick({
+				mouseReportingOn,
+				modifierHeld: mod,
+				hasLinkHit,
+				primaryButton: e.button === 0,
+			});
 
-			// ★ TUI mouse reporting takes absolute priority: when the
-			// TUI app has enabled DEC mouse mode (?1000/?1002/?1003),
-			// forward ALL button clicks (left, middle, right) to the
-			// application. No modifier-key escape hatch — the user's
-			// stated intent ("以 TUI 设置为准") is that an app which
-			// asked for mouse events keeps them. To use host text
-			// selection inside a TUI, the user disables mouse reporting
-			// in the app (vim: `:set mouse=`, tmux: enter copy mode)
-			// — the standard xterm contract. The Alt modifier is still
-			// encoded into the SGR sequence (input.rs `encode_mouse` |8)
-			// so the TUI can react to Alt+click in its own bindings.
-			if (ent.kernel.mouseReportingModes() !== 0) {
+			// OP-TERM-LINK / C51: Ctrl+click open via linkOpenHost product plan
+			// (safe URL, path:line:col, file-url → host ports). Shipped manager path.
+			if (clickDec.openLink) {
+				const cwd = TerminalManager._currentPaneCwd(ent);
+				const roots = TerminalManager._knownCwds();
+				const workspaceRoot = roots[0] ?? null;
+				if (oscLink?.uri) {
+					const plan = planHostOpen(oscLink.uri, 'osc8', {
+						paneCwd: cwd,
+						workspaceRoot,
+						preferEditor: true,
+					});
+					TerminalManager._executeOpenPlan(plan, ent, oscLink.uri);
+					e.preventDefault();
+					return;
+				}
+				if (textSpan) {
+					const plan = buildOpenPlanFromHit({
+						text: textSpan.text,
+						kind: textSpan.kind,
+						paneCwd: cwd,
+						workspaceRoot,
+					});
+					TerminalManager._executeOpenPlan(plan, ent, textSpan.text);
+					e.preventDefault();
+					return;
+				}
+			}
+
+			// ★ TUI mouse reporting: bare clicks forward to the application.
+			// Host selection inside a TUI requires disabling mouse reporting
+			// in the app (vim: `:set mouse=`) — xterm contract. Alt still
+			// encodes into SGR (input.rs encode_mouse |8).
+			if (clickDec.forwardToProgram && mouseReportingOn) {
 				const btn = e.button; // 0=left, 1=middle, 2=right
 				const bytes = ent.kernel.encodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, mod, e.altKey);
 				if (bytes.length > 0) {
 					ent.dataHandler?.(bytes);
-					// Deliberately do NOT set ent.selecting = true here.
-					// `selecting` is the host drag-select state machine;
-					// the ?1002 motion gate now reads PointerEvent.buttons
-					// instead so this branch stays fully isolated from
-					// host selection state — preventing residue leakage
-					// across mid-press mouse-reporting changes.
-					// Seed dedup baseline so the first motion in this cell is
-					// suppressed (the TUI already knows the button is down here).
 					ent.lastMouseSent = { row: cell.row, col: cell.col, buttons: e.buttons, action: 0 };
 					try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
 					return;
@@ -1476,45 +1580,8 @@ export class TerminalManager {
 			// Only primary button (left) for selection. Right-click /
 			// middle-click handled by context menu in RidgePane.
 			if (e.button !== 0) return;
-
-			// Ctrl/Cmd+click → if cell is inside an OSC 8 hyperlink span,
-			// open it via the Tauri opener (or window.open as fallback).
-			// Goes BEFORE selection branches so links beat selection on
-			// modifier-click, matching iTerm/VSCode behaviour.
-			if (mod) {
-				const link = ent.kernel.hyperlinkAt(cell.row, cell.col) as
-					| { uri: string; id: string | null }
-					| null;
-				if (link && link.uri) {
-					const uri = link.uri;
-					if (typeof window !== 'undefined' && (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
-						void import('@tauri-apps/plugin-opener')
-							.then(({ openUrl }) => openUrl(uri))
-							.catch((err) => console.warn('[ridge-term] openUrl failed', uri, err));
-					} else {
-						window.open(uri, '_blank', 'noopener,noreferrer');
-					}
-					e.preventDefault();
-					return;
-				}
-				// 纯文本路径 / URL 兜底（OSC 8 没标记的情况）：linkSpans
-				// 命中即用统一的 resolveLink → executeAction 路由（CWD 内
-				// 文件 → ridge 编辑器；外链 → 系统浏览器；外部路径/目录
-				// → 系统资源管理器）。
-				const span = ent.linkSpans.hitTest(ent.kernel, cell.row, cell.col);
-				if (span) {
-					const cwd = TerminalManager._currentPaneCwd(ent);
-					const known = TerminalManager._knownCwds();
-					const spanText = span.text;
-						// §P2：链接路由经 HostPorts.openTextLink 注入。app 侧 hostPorts
-						// 保留 §1.32 的 linkResolver 动态 import，使其 monaco 传递依赖不
-						// 进 manager 图；手机端可不实现此能力。
-						_hostPorts?.openTextLink?.(spanText, { cwd, knownCwds: known });
-					e.preventDefault();
-					return;
-				}
-				// Modifier-click without a link → fall through to normal
-				// selection logic (respects Shift below).
+			if (!clickDec.startHostSelection && !e.shiftKey) {
+				// Non-selection host path already handled above.
 			}
 			// Shift-click extends the existing selection from its anchor
 			// (last drag's start) to the clicked cell. If there's no

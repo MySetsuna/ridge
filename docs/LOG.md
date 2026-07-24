@@ -2,6 +2,32 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-24 — iteration 50（未用符号 + 终端/IO 性能）
+
+- **卡顿根因**：Hosts 每拍全量 history base64 + 双 BP IPC + 健康机仍 step 重连；hover 无 Ctrl 仍 hitTest；AgentCenter 3s 全量重 IPC。
+- **性能**：hover 修饰键短路；泵/stats 并行；history 30s+展开；重连条件 step；Agent 轻重分层 + 自适应间隔。
+- **未用接线**：live_bp.clear_session；reconnect attempt/cancelled/err/Idle mark_idle；attach seed_parser_feed。
+- **门禁**：hosts:: 45；vitest 18；无删有业务语义的 API。
+- **合同**：`CONTRACT-iteration-50.md`。
+
+## 2026-07-24 — AC4 诚实账终态 + C8–C10 多模块垂直
+
+- **计数**：**仅 C1–C10 / CONTRACT-40…49**；C50–C59 标签**并入**对应 C，禁止双计约 2 日。
+- **产品路径**：manager `planHostOpen`；hosts 泵 + `get_live_backpressure`；cloudHostBridge `decideRemoteInvoke`；matrixParity；AgentCenter。
+- **C8**：`hosts/live_backpressure.rs`（每会话 drop + 聚合命令 + inject 接线）+ TS liveBackpressure/livePump + hosts 泵。
+- **C9**：matrix_guard + matrixParity + check-capability-matrix.mjs + shipped matrix 测。
+- **C10**：protocol_guard + remoteInvokeAdmit + cloudHostBridge 双门 + dispatch/remote_host_impl admit。
+- **硬证据**：`{SCRATCH}/skill-sync.txt`（四宿主 SHA 一致 RULE5/6）；`ac1-nlm-notes` open=0；`contracts-index` 40–49；C1–C10 gates all ok。
+- **非做**：空 Release；薄单文件充约 2 日；双计。
+
+## 2026-07-24 — AC4 诚实账：C1–C10（CONTRACT-40…49）
+
+- **债务冻结**：原 22–31 拆账不计 10 分；合并为 C1–C4（WS-PTY / TERM-LINK / Git+process_guard / Agent CP）。
+- **新主线 C5–C10**：reconnect_supervisor、foreign_history、hitl_audit+allowlist、liveBackpressure+stats、capability_matrix_guard、protocol_guard+dispatch 规范化。
+- 合同：`CONTRACT-iteration-40`…`49`；ledger `{SCRATCH}/ac4-ledger.md`；门禁 `gates-credit-C1`…`C10` all exit 0。
+- Skill 双硬规矩仍生效；NLm open 规划档案 + 已实现 notes 不变。
+- 非做：把 22–31 再标 10 轮；空 Release。
+
 ## 2026-07-24 — iteration 20b（Git 进程硬护栏 + 0.0.19 Release）
 
 - 根因：本机 ridge 拉起 git 堆积/重生；仅 semaphore 无超时杀进程树。

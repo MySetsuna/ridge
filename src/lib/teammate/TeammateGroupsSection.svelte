@@ -1,24 +1,27 @@
 <script lang="ts">
-  // TeammateGroups —— 指挥部「编组」区（P3）。挂在 AgentCenterPanel 成员区下方。
+  // TeammateGroups —— 指挥部「编组」区（P3）。挂在 AgentCenterPanel 下方，统管全部成员。
   //
-  // 能力：勾选 roster 成员 → 命名 + 配色建组 → 组卡片（改名 / 解散 / 给组派任务）。
-  // 失联成员占位：组成员按 agent_id 与当前 roster 对齐，roster 缺失者标灰保留 +
-  // 手动「移除」。给组派任务：**只派给组内 Leader**（能力识别+竞选产生，见后端
-  // topology.leaderId → profile.role；无 Leader 时回退首名在线成员），由 Leader 统一
-  // 接收再自行分派——不再广播给全体成员。
+  // 结构：
+  //  - 顶部「未分组」默认卡：roster 中尚未加入任何编组的成员。**无组长、不接受任务**，
+  //    仅列成员（状态点 + 暂停/恢复）。成员被拉入某编组后即从此卡消失（groupOfAgent 命中）。
+  //  - 其后每个手动编组一张卡：**每组有自己的组长**（金冠，手动指定/取消）。给组派任务
+  //    = 派给该组组长（无组长或组长离线则提示，绝不静默）。可改名 / 改配色（预设或自定义
+  //    颜色）/ 解散 / 加成员 / 移除失联成员。
   //
   // 编组定义按工作区持久化（localStorage，稳定键=该工作区 .ridge 路径，见 teammateGroups）。
-  // 拖拽编组不在 MVP（D3）。
+  // 组长不再由后端能力竞选自动产生——顶层 leaderId 恒 null，组长纯由用户在此指定。
 
   import { invoke } from '@tauri-apps/api/core';
-  import { Users, Plus, Trash2, Pencil, Send, X, Ghost } from 'lucide-svelte';
+  import { Users, Plus, Trash2, Pencil, Send, X, Ghost, Crown, Play, Pause, Palette } from 'lucide-svelte';
   import { alertDialog, confirmDialog, promptDialog } from '$lib/components/RidgeDialog.svelte';
   import type { TeammateProfile } from './teammateModel';
   import {
     teammateGroupStore,
     resolveMembers,
+    groupOfAgent,
     GROUP_COLORS,
     type TeammateGroup,
+    type ResolvedGroupMember,
   } from './teammateGroups.svelte';
 
   interface Props {
@@ -68,6 +71,14 @@
     store.groups.map((g) => ({ group: g, members: resolveMembers(g.memberAgentIds, roster) }))
   );
 
+  // 未分组：roster 中不属于任何编组的成员（入组后自动从这里消失）。全在线，无组长/不接任务。
+  const ungrouped = $derived(
+    resolveMembers(
+      roster.filter((m) => !groupOfAgent(store.groups, m.id)).map((m) => m.id),
+      roster
+    )
+  );
+
   // ── 组卡片操作 ──
   let taskInput = $state<Record<string, string>>({});
 
@@ -82,6 +93,24 @@
   function addMemberToGroup(g: TeammateGroup, agentId: string) {
     store.addMember(g.id, agentId);
     addingFor = null;
+  }
+
+  /** 指定 / 取消组长（点已是组长者 = 取消）。 */
+  function toggleLeader(g: TeammateGroup, agentId: string) {
+    store.setLeader(g.id, g.leaderAgentId === agentId ? null : agentId);
+  }
+
+  // 软暂停 / 恢复（agent 写路径门控；人类输入不受限）。状态刷新靠父面板轮询（POLL_MS）。
+  async function toggleSuspend(mem: ResolvedGroupMember) {
+    if (!workspaceId || !mem.paneId) return;
+    try {
+      await invoke(mem.profile?.status === 'Suspended' ? 'resume_agent' : 'suspend_agent', {
+        workspaceId,
+        paneId: mem.paneId,
+      });
+    } catch (e) {
+      console.warn('[teammate-groups] suspend/resume failed', e);
+    }
   }
 
   async function renameGroup(g: TeammateGroup) {
@@ -99,22 +128,28 @@
     return p.status === 'Working' ? 'bg-emerald-400 animate-pulse' : 'bg-[var(--rg-fg-muted)]';
   }
 
-  // 给组派任务 —— **只派给 Leader**（不再广播给全体成员）。由 Leader 统一接收任务、
-  // 再自行分派给组内其它智能体（对齐真实团队的「向组长下达」心智）。Leader 由能力
-  // 自动识别 + 竞选产生（topology.leaderId → TeammateProfile.role='Leader'）；能力识别
-  // 尚未指派 Leader 时，回退到第一名在线成员，绝不静默无投递。
+  // 给组派任务 —— **只派给组长**（手动指定）。由组长统一接收、再自行分派给组内其它智能体。
+  // 无组长 / 组长离线一律弹提示，绝不静默无投递。
+  //
+  // 关键：投递以 `\r`（CR，回车键的真实字节）结尾，而非 `\n`（LF）——终端里 Enter 经 xterm
+  // key-encoder 编码为 `\r`，Claude Code 等 TUI 据此提交；发 `\n` 只在输入框插一个换行、不触发
+  // 发送（此前的回车失灵 bug 即源于此）。
   async function dispatchTask(g: TeammateGroup) {
     const text = (taskInput[g.id] ?? '').trim();
     if (!text) return;
-    const online = resolveMembers(g.memberAgentIds, roster).filter((m) => m.present && m.paneId);
-    if (online.length === 0) {
-      void alertDialog({ title: '给组派任务', message: '该组当前没有在线成员可接收任务。' });
+    if (!g.leaderAgentId) {
+      void alertDialog({ title: '给组派任务', message: '请先在该组指定一名组长，再派任务。' });
       return;
     }
-    // 优先选中在线成员里的 Leader；无 Leader 时回退首名在线成员。
-    const leader = online.find((m) => m.profile?.role === 'Leader') ?? online[0];
+    const leader = resolveMembers(g.memberAgentIds, roster).find(
+      (m) => m.agentId === g.leaderAgentId && m.present && m.paneId
+    );
+    if (!leader || !leader.paneId) {
+      void alertDialog({ title: '给组派任务', message: '该组组长当前不在线，无法接收任务。' });
+      return;
+    }
     try {
-      await invoke('write_to_pty', { paneId: leader.paneId, data: `${text}\n` });
+      await invoke('write_to_pty', { paneId: leader.paneId, data: `${text}\r` });
       store.recordTask(g.id, text, [leader.agentId]);
       taskInput = { ...taskInput, [g.id]: '' };
     } catch (e) {
@@ -123,6 +158,66 @@
     }
   }
 </script>
+
+<!-- 单个成员行（未分组 group=null 时不渲染组长/失联移除，仅状态点+名+暂停）。 -->
+{#snippet memberRow(mem: ResolvedGroupMember, group: TeammateGroup | null)}
+  {@const isLeader = !!group && group.leaderAgentId === mem.agentId}
+  <li
+    class="group/mem flex items-center gap-2 rounded px-1 py-0.5 text-[11px] {mem.present
+      ? ''
+      : 'opacity-50'} {isLeader ? 'bg-amber-400/5' : ''}"
+  >
+    {#if mem.present}
+      <span class="h-1.5 w-1.5 rounded-full {statusDot(mem.profile)} shrink-0"></span>
+    {:else}
+      <Ghost class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
+    {/if}
+    <span class="min-w-0 flex-1 truncate" title={mem.present ? mem.name : '失联（已离线）'}>
+      {mem.name}
+    </span>
+
+    {#if group && mem.present}
+      <button
+        type="button"
+        title={isLeader ? '取消组长' : '设为组长'}
+        aria-label={isLeader ? '取消组长' : '设为组长'}
+        onclick={() => toggleLeader(group, mem.agentId)}
+        class="shrink-0 transition {isLeader
+          ? 'text-amber-400'
+          : 'text-[var(--rg-fg-muted)] opacity-0 hover:text-amber-400 group-hover/mem:opacity-100'}"
+      >
+        <Crown class="h-3 w-3" />
+      </button>
+    {/if}
+
+    {#if mem.present && mem.paneId}
+      <button
+        type="button"
+        title={mem.profile?.status === 'Suspended'
+          ? '恢复 agent 输入'
+          : '暂停 agent 输入（人类输入不受限）'}
+        aria-label="暂停或恢复 agent"
+        onclick={() => toggleSuspend(mem)}
+        class="shrink-0 text-[var(--rg-fg-muted)] opacity-0 transition hover:text-[var(--rg-fg)] group-hover/mem:opacity-100"
+      >
+        {#if mem.profile?.status === 'Suspended'}<Play class="h-3 w-3" />{:else}<Pause class="h-3 w-3" />{/if}
+      </button>
+    {/if}
+
+    {#if group && !mem.present}
+      <span class="text-[9px] uppercase tracking-wide text-[var(--rg-fg-muted)]">失联</span>
+      <button
+        type="button"
+        title="从组移除"
+        aria-label="从组移除失联成员"
+        onclick={() => store.removeMember(group.id, mem.agentId)}
+        class="shrink-0 text-[var(--rg-fg-muted)] hover:text-red-400"
+      >
+        <X class="h-3 w-3" />
+      </button>
+    {/if}
+  </li>
+{/snippet}
 
 <section>
   <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
@@ -139,7 +234,7 @@
     </button>
   </h3>
 
-  <!-- 新建编组：勾选成员 + 命名 + 配色 -->
+  <!-- 新建编组：勾选成员 + 命名 + 配色（预设或自定义） -->
   {#if building}
     <div class="mt-1.5 rounded-md border border-[var(--rg-border)] bg-[var(--rg-surface)]/40 p-2 space-y-2">
       {#if roster.length === 0}
@@ -156,7 +251,6 @@
                   class="h-3 w-3 accent-[var(--rg-accent)]"
                 />
                 <span class="min-w-0 flex-1 truncate">{m.name}</span>
-                <span class="h-1.5 w-1.5 rounded-full {statusDot(m)} shrink-0"></span>
               </label>
             </li>
           {/each}
@@ -179,6 +273,23 @@
                 : 'ring-0'}"
             ></button>
           {/each}
+          <!-- 自定义颜色：隐藏的原生取色器覆盖在色块上 -->
+          <label
+            title="自定义颜色"
+            class="relative flex h-4 w-4 cursor-pointer items-center justify-center rounded-full ring-1 ring-[var(--rg-border)] {GROUP_COLORS.includes(
+              newColor
+            )
+              ? ''
+              : 'ring-2 ring-[var(--rg-fg)]'}"
+            style="background-color: {newColor}"
+          >
+            <Palette class="h-2.5 w-2.5 text-white/80 mix-blend-difference" />
+            <input
+              type="color"
+              bind:value={newColor}
+              class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            />
+          </label>
         </div>
         <div class="flex items-center justify-end gap-1.5">
           <button
@@ -201,8 +312,29 @@
     </div>
   {/if}
 
-  <!-- 组卡片 -->
   <ul class="mt-1.5 space-y-2">
+    <!-- 未分组默认卡（虚线边框区分；无组长/派任务/解散） -->
+    {#if ungrouped.length > 0}
+      <li class="overflow-hidden rounded-md border border-dashed border-[var(--rg-border)]">
+        <div class="p-2 space-y-1.5">
+          <div class="flex items-center gap-1.5">
+            <Ghost class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
+            <span class="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--rg-fg-muted)]">未分组</span>
+            <span class="font-mono text-[10px] text-[var(--rg-fg-muted)]">{ungrouped.length}</span>
+          </div>
+          <ul class="space-y-0.5">
+            {#each ungrouped as mem (mem.agentId)}
+              {@render memberRow(mem, null)}
+            {/each}
+          </ul>
+          <p class="text-[10px] leading-snug text-[var(--rg-fg-muted)]/70">
+            未分组成员不接受编组任务；勾选建组或用各组「＋」将其加入编组。
+          </p>
+        </div>
+      </li>
+    {/if}
+
+    <!-- 组卡片 -->
     {#each groupViews as { group, members } (group.id)}
       <li class="overflow-hidden rounded-md border border-[var(--rg-border)]">
         <!-- 配色条 -->
@@ -211,6 +343,19 @@
           <div class="flex items-center gap-1.5">
             <span class="min-w-0 flex-1 truncate text-[12px] font-medium">{group.name}</span>
             <span class="font-mono text-[10px] text-[var(--rg-fg-muted)]">{members.length}</span>
+            <!-- 改配色（预设或自定义）：原生取色器覆盖在图标上 -->
+            <label
+              title="改配色"
+              class="relative flex cursor-pointer items-center justify-center text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
+            >
+              <Palette class="h-3 w-3" />
+              <input
+                type="color"
+                value={group.color}
+                onchange={(e) => store.recolor(group.id, e.currentTarget.value)}
+                class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              />
+            </label>
             <button
               type="button"
               title="加成员"
@@ -242,35 +387,10 @@
             </button>
           </div>
 
-          <!-- 成员（含失联占位） -->
+          <!-- 成员（含失联占位；组长金冠 hover 可指定/取消） -->
           <ul class="space-y-0.5">
             {#each members as mem (mem.agentId)}
-              <li
-                class="flex items-center gap-2 rounded px-1 py-0.5 text-[11px] {mem.present
-                  ? ''
-                  : 'opacity-50'}"
-              >
-                {#if mem.present}
-                  <span class="h-1.5 w-1.5 rounded-full {statusDot(mem.profile)} shrink-0"></span>
-                {:else}
-                  <Ghost class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
-                {/if}
-                <span class="min-w-0 flex-1 truncate" title={mem.present ? mem.name : '失联（已离线）'}>
-                  {mem.name}
-                </span>
-                {#if !mem.present}
-                  <span class="text-[9px] uppercase tracking-wide text-[var(--rg-fg-muted)]">失联</span>
-                  <button
-                    type="button"
-                    title="从组移除"
-                    aria-label="从组移除失联成员"
-                    onclick={() => store.removeMember(group.id, mem.agentId)}
-                    class="text-[var(--rg-fg-muted)] hover:text-red-400"
-                  >
-                    <X class="h-3 w-3" />
-                  </button>
-                {/if}
-              </li>
+              {@render memberRow(mem, group)}
             {/each}
             {#if members.length === 0}
               <li class="px-1 py-0.5 text-[11px] text-[var(--rg-fg-muted)]">空组</li>
@@ -303,30 +423,30 @@
             </div>
           {/if}
 
-          <!-- 给组派任务（只发给组长）。用 textarea 支持多行任务描述：
-               Enter=发送、Shift+Enter=换行、输入法拼字中的 Enter=确认候选词（不发送）。 -->
+          <!-- 给组派任务（只发给组长）。Enter=发送、Shift+Enter=换行、输入法拼字中的 Enter=确认候选词。 -->
           <div class="flex items-end gap-1.5">
             <textarea
               rows="1"
               value={taskInput[group.id] ?? ''}
               oninput={(e) => (taskInput = { ...taskInput, [group.id]: e.currentTarget.value })}
               onkeydown={(e) => {
-                // 输入法拼字（isComposing）时的 Enter 用于确认候选词，绝不当作发送——
-                // 否则中文用户回车选词会提前把半成品任务发出去（或阻断确认）。
                 if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
                   e.preventDefault();
                   void dispatchTask(group);
                 }
               }}
-              placeholder="给组长派任务…（Enter 发送 / Shift+Enter 换行）"
+              placeholder={group.leaderAgentId
+                ? '给组长派任务…（Enter 发送 / Shift+Enter 换行）'
+                : '请先指定组长（成员行金冠）'}
               class="min-w-0 flex-1 resize-none rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] px-2 py-1 text-[11px] leading-snug text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)]"
             ></textarea>
             <button
               type="button"
-              title="把任务派给组长"
+              title={group.leaderAgentId ? '把任务派给组长' : '请先指定组长'}
               aria-label="给组派任务"
+              disabled={!group.leaderAgentId}
               onclick={() => dispatchTask(group)}
-              class="flex items-center justify-center rounded border border-[var(--rg-border)] p-1 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-accent)]"
+              class="flex items-center justify-center rounded border border-[var(--rg-border)] p-1 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-accent)] disabled:opacity-40 disabled:hover:text-[var(--rg-fg-muted)]"
             >
               <Send class="h-3 w-3" />
             </button>
@@ -342,5 +462,9 @@
         </div>
       </li>
     {/each}
+
+    {#if ungrouped.length === 0 && groupViews.length === 0}
+      <li class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">暂无成员</li>
+    {/if}
   </ul>
 </section>

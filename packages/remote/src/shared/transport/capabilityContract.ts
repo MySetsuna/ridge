@@ -16,6 +16,7 @@ export const REMOTE_CAPABILITY_METHODS = {
   teammate: [
     'get_teammate_topology',
     'list_hitl_pending',
+    'list_hitl_audit_remote',
     'resolve_hitl_remote',
     'get_orchestration_health',
   ],

@@ -37,6 +37,10 @@ const DEFAULT_GIT_ACQUIRE_TIMEOUT_MS: u64 = 60_000;
 
 static GIT_ACTIVE_CHILDREN: AtomicUsize = AtomicUsize::new(0);
 static GIT_PEAK_ACTIVE_CHILDREN: AtomicUsize = AtomicUsize::new(0);
+/// Wall-clock timeout kills (process-tree reclaim).
+static GIT_TIMEOUT_KILLS: AtomicUsize = AtomicUsize::new(0);
+/// Semaphore acquire deadline exceeded (fail-closed).
+static GIT_ACQUIRE_TIMEOUTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Live OS-level git children currently inside [`CommandExtGit::git_output`].
 pub fn git_active_child_count() -> usize {
@@ -48,6 +52,41 @@ pub fn git_peak_active_child_count() -> usize {
     GIT_PEAK_ACTIVE_CHILDREN.load(Ordering::SeqCst)
 }
 
+/// How many times a git child was killed for wall-clock timeout (OP-GIT-BYPASS).
+pub fn git_timeout_kill_count() -> usize {
+    GIT_TIMEOUT_KILLS.load(Ordering::SeqCst)
+}
+
+/// How many callers failed waiting for a concurrency permit.
+pub fn git_acquire_timeout_count() -> usize {
+    GIT_ACQUIRE_TIMEOUTS.load(Ordering::SeqCst)
+}
+
+/// Snapshot of git process hard-guard counters (OP-GIT-BYPASS telemetry).
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitGuardStats {
+    pub active_children: usize,
+    pub peak_active_children: usize,
+    pub timeout_kills: usize,
+    pub acquire_timeouts: usize,
+    pub logical_concurrency_cap: usize,
+    pub concurrency_min: usize,
+    pub concurrency_max: usize,
+}
+
+pub fn git_guard_stats() -> GitGuardStats {
+    GitGuardStats {
+        active_children: git_active_child_count(),
+        peak_active_children: git_peak_active_child_count(),
+        timeout_kills: git_timeout_kill_count(),
+        acquire_timeouts: git_acquire_timeout_count(),
+        logical_concurrency_cap: git_logical_concurrency_cap(),
+        concurrency_min: GIT_CONCURRENCY_MIN,
+        concurrency_max: GIT_CONCURRENCY_MAX,
+    }
+}
+
 /// Logical permit cap (same value the global semaphore was created with).
 pub fn git_logical_concurrency_cap() -> usize {
     git_max_concurrent()
@@ -56,6 +95,16 @@ pub fn git_logical_concurrency_cap() -> usize {
 #[cfg(test)]
 pub fn git_reset_peak_active_for_test() {
     GIT_PEAK_ACTIVE_CHILDREN.store(0, Ordering::SeqCst);
+    GIT_TIMEOUT_KILLS.store(0, Ordering::SeqCst);
+    GIT_ACQUIRE_TIMEOUTS.store(0, Ordering::SeqCst);
+}
+
+fn note_timeout_kill() {
+    GIT_TIMEOUT_KILLS.fetch_add(1, Ordering::SeqCst);
+}
+
+fn note_acquire_timeout() {
+    GIT_ACQUIRE_TIMEOUTS.fetch_add(1, Ordering::SeqCst);
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
@@ -158,37 +207,10 @@ fn note_active_child_leave() {
     GIT_ACTIVE_CHILDREN.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// Kill a child process tree. On Windows `taskkill /T` is required because
-/// git often spawns helpers; a bare `Child::kill` leaves grandchildren.
+/// Kill a child process tree via shared [`crate::process_guard`] (iter 31:
+/// single tree-kill implementation for git + future external binaries).
 fn kill_pid_tree(pid: u32) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let _ = Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        std::thread::sleep(Duration::from_millis(50));
-        let _ = Command::new("kill")
-            .args(["-KILL", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
+    crate::process_guard::kill_process_tree(pid);
 }
 
 /// Run a prepared `Command` with a wall-clock timeout. On timeout the OS
@@ -223,6 +245,7 @@ fn run_command_with_timeout(
             // Drain so the waiter thread does not leak forever.
             let _ = rx.recv_timeout(Duration::from_secs(5));
             note_active_child_leave();
+            note_timeout_kill();
             Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!("git timed out after {timeout:?} (killed pid {pid})"),
@@ -279,6 +302,7 @@ where
             return Err("git semaphore closed unexpectedly".to_string());
         }
         Err(_) => {
+            note_acquire_timeout();
             return Err(format!(
                 "git busy: could not acquire concurrency permit within {:?}",
                 git_acquire_timeout()
@@ -2644,12 +2668,17 @@ mod guard_tests {
         };
 
         let before = git_active_child_count();
+        let kills_before = git_timeout_kill_count();
         let start = Instant::now();
         let err = run_command_with_timeout(&mut Command::new(&hang), Duration::from_millis(400))
             .expect_err("hanging child must time out");
         let elapsed = start.elapsed();
 
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            git_timeout_kill_count() > kills_before,
+            "timeout kill counter must advance"
+        );
         assert!(
             elapsed < Duration::from_secs(5),
             "timeout reclaim too slow: {elapsed:?}"
@@ -2669,6 +2698,89 @@ mod guard_tests {
         );
 
         let _ = std::fs::remove_dir_all(hang.parent().unwrap());
+    }
+
+    #[test]
+    fn git_guard_stats_snapshot_fields() {
+        let s = git_guard_stats();
+        assert_eq!(s.concurrency_min, GIT_CONCURRENCY_MIN);
+        assert_eq!(s.concurrency_max, GIT_CONCURRENCY_MAX);
+        assert!(s.logical_concurrency_cap >= GIT_CONCURRENCY_MIN);
+        // counters are non-negative by construction (usize)
+        let _ = s.timeout_kills + s.acquire_timeouts + s.active_children;
+    }
+
+    /// OP-GIT-BYPASS: production body of this file must not spawn git outside
+    /// `git_cmd` / `git_output*` (unique gate). Tests may use `Command::new("git")`.
+    #[test]
+    fn production_git_spawn_only_via_git_cmd() {
+        let src = include_str!("git.rs");
+        // Production = everything before the first top-level `mod …tests` under cfg(test).
+        // Nested unit-test helpers may appear earlier as `#[cfg(test)] fn …` — strip those
+        // with a small state machine, then cut at the first `mod *_tests` / `mod tests`.
+        let mut prod_lines: Vec<&str> = Vec::new();
+        let mut skip_fn = false;
+        let mut fn_brace = 0i32;
+        for line in src.lines() {
+            let t = line.trim();
+            if !skip_fn && t.starts_with("#[cfg(test)]") {
+                // Peek: next non-empty production path may be fn or mod.
+                skip_fn = true;
+                fn_brace = 0;
+                continue;
+            }
+            if skip_fn {
+                if t.starts_with("mod ") {
+                    // Start of a test module — rest of file is tests.
+                    break;
+                }
+                fn_brace += t.matches('{').count() as i32;
+                fn_brace -= t.matches('}').count() as i32;
+                if fn_brace <= 0 && t.contains('}') {
+                    skip_fn = false;
+                }
+                continue;
+            }
+            if t.starts_with("mod ") && (t.contains("tests") || t.contains("guard_tests")) {
+                break;
+            }
+            prod_lines.push(line);
+        }
+        let prod = prod_lines.join("\n");
+        let mut in_git_cmd = false;
+        let mut brace = 0i32;
+        let mut offenders = Vec::new();
+        for (i, line) in prod.lines().enumerate() {
+            let t = line.trim();
+            if t.starts_with("fn git_cmd(") {
+                in_git_cmd = true;
+                brace = 0;
+            }
+            if in_git_cmd {
+                brace += t.matches('{').count() as i32;
+                brace -= t.matches('}').count() as i32;
+                if brace <= 0 && t.contains('}') {
+                    in_git_cmd = false;
+                }
+            }
+            if t.contains("Command::new(") && !in_git_cmd {
+                if t.contains("\"git\"") || t.contains("RIDGE_GIT_BIN") {
+                    offenders.push((i + 1, t.to_string()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "git spawn bypasses unique gate: {offenders:?}"
+        );
+        assert!(
+            prod.contains("fn git_cmd(") && prod.contains("run_command_with_timeout"),
+            "expected git_cmd + timeout path in production section"
+        );
+        assert!(
+            prod.contains("note_timeout_kill") && prod.contains("note_acquire_timeout"),
+            "expected timeout observability hooks"
+        );
     }
 
     #[tokio::test]

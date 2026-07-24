@@ -10,6 +10,7 @@ pub(crate) mod profiles;
 pub(crate) mod memory;
 pub(crate) mod job_object;
 pub(crate) mod orch_health;
+pub(crate) mod hitl_audit;
 pub(crate) mod os_freeze;
 pub(crate) mod rollback;
 pub(crate) mod server;

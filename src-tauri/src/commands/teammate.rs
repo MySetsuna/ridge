@@ -37,15 +37,9 @@ pub(crate) fn topology_json(ws: &Workspace, wid: Uuid) -> Value {
             .cloned()
             .unwrap_or_else(|| agent_id.to_string())
     };
-    let teammates: Vec<ridge_core::Teammate> = ws
-        .teammate_agent_pane_map
-        .iter()
-        .map(|(agent_id, pane)| {
-            let name = name_of(agent_id, pane);
-            ridge_core::Teammate::new(agent_id.clone(), name, 0).with_capability(cap_of(agent_id))
-        })
-        .collect();
-    let leader_id = ridge_core::elect_leader(&teammates).map(|s| s.to_string());
+    // 组长不再由能力自动竞选（改由前端「编组」为每个组手动指定组长）；顶层花名册无全局
+    // Leader，leaderId 恒 null、所有成员 role=Worker。`cap_of`/`name_of` 仍供 roster 用。
+    let leader_id: Option<String> = None;
 
     let roster: Vec<Value> = ws
         .teammate_agent_pane_map
@@ -67,11 +61,7 @@ pub(crate) fn topology_json(ws: &Workspace, wid: Uuid) -> Value {
                 .position(|p| p == pane)
                 .map(|i| json!(i))
                 .unwrap_or(Value::Null);
-            let role = if leader_id.as_deref() == Some(agent_id.as_str()) {
-                "Leader"
-            } else {
-                "Worker"
-            };
+            let role = "Worker";
             json!({
                 "id": agent_id,
                 "name": name,
@@ -83,10 +73,15 @@ pub(crate) fn topology_json(ws: &Workspace, wid: Uuid) -> Value {
             })
         })
         .collect();
+    // 编组镜像（桌面双写落 workspace-memory）随快照下发，供 remote 只读同步。
+    let groups = crate::teammate::memory::dir()
+        .map(|d| crate::teammate::memory::get_teammate_groups(d, wid))
+        .unwrap_or_else(|| json!([]));
     json!({
         "roster": roster,
         "leaderId": leader_id.map(Value::from).unwrap_or(Value::Null),
         "edges": [],
+        "groups": groups,
     })
 }
 
@@ -176,6 +171,12 @@ pub fn get_pending_hitl_count() -> usize {
     crate::teammate::hitl::pending_count()
 }
 
+/// AC4-C7 —— 远端可读脱敏审批历史（无命令全文）。
+#[tauri::command]
+pub fn list_hitl_audit_remote(limit: Option<u32>) -> Value {
+    crate::teammate::hitl_audit::list_audit_remote(limit.unwrap_or(20) as usize)
+}
+
 /// R17-CTX —— 扫描工作区根的 AGENTS.md / CLAUDE.md。
 #[tauri::command]
 pub fn scan_workspace_context_files(workspace_root: String) -> Result<Value, String> {
@@ -238,6 +239,19 @@ pub fn get_workspace_memory(workspace_id: String) -> Result<Value, String> {
 }
 
 /// M1 切片三 —— 写 goal / constraints / tasks（任一字段可选）。仅桌面 IPC。
+/// 桌面「编组」→ 后端镜像：把前端编组定义（`TeammateGroup[]` JSON）写入 workspace-memory，
+/// 供 remote 手机端经 `get_teammate_topology` 的 `groups` 字段只读同步。编组仍以桌面
+/// localStorage 为权威真相；此命令是每次桌面编组变更后的 fire-forget 投影。
+#[tauri::command]
+pub fn set_teammate_groups(workspace_id: String, groups: Value) -> Result<(), String> {
+    let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    let Some(dir) = crate::teammate::memory::dir() else {
+        return Ok(());
+    };
+    crate::teammate::memory::set_teammate_groups(dir, wid, &groups);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn set_workspace_memory(
     workspace_id: String,

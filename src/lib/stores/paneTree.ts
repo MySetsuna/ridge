@@ -1586,20 +1586,52 @@ export async function splitActivePane(direction: 'horizontal' | 'vertical') {
   return splitPane(id, direction);
 }
 
+function findLeafOrigin(
+  node: PaneNode,
+  paneId: string,
+): PaneNode | null {
+  if (node.type === 'leaf') {
+    return node.id === paneId ? node : null;
+  }
+  for (const c of node.children) {
+    const hit = findLeafOrigin(c, paneId);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 export async function closePane(paneId: string) {
   if (!isTauri()) return;
+  // Foreign multi-host view: best-effort detach first (unsubscribe remote;
+  // backend kill_pty_if_present also detaches — double-call is safe).
+  try {
+    const tree = get(paneTreeStore);
+    const leaf = findLeafOrigin(tree, paneId);
+    if (
+      leaf &&
+      leaf.type === 'leaf' &&
+      leaf.origin &&
+      (leaf.origin.kind === 'remote' || leaf.origin.kind === 'rdg')
+    ) {
+      await invoke('detach_host_session', {
+        paneId,
+        workspaceId: get(activeWorkspaceId) || null,
+      });
+    }
+  } catch {
+    /* local pane or already detached */
+  }
   await invoke('close_pane', { paneId });
   // Real-close cleanup (TASKS §5.1). Manager.park stays mounted across
   // split / reparent unmount, so detach must happen here when the pane
   // is genuinely gone from the backend tree.
   //
   // Order matters:
-  //   1. Tear down PTY bridge �?no more pty-output events delivered
+  //   1. Tear down PTY bridge — no more pty-output events delivered
   //      to a kernel we're about to free.
-  //   2. Manager.detach �?frees wasm kernel + render handle.
+  //   2. Manager.detach — frees wasm kernel + render handle.
   //   3. Drop title-store entries so SplitContainer / Explorer don't
   //      keep showing a label for a pane that no longer exists.
-  // 拆除 PTY 连接 �?不再投�?pty-output 事件到即将释放的 kernel
   teardownPtyBridge(paneId);
   TerminalManager.instance().detach(paneId);
   paneOscTitleStore.update((s) => {

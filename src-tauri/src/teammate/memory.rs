@@ -143,6 +143,26 @@ pub fn read_summary(dir: &Path, wid: Uuid) -> serde_json::Value {
     read(dir, wid).unwrap_or_else(|| serde_json::json!({}))
 }
 
+/// 桌面编组投影：写入 `teammateGroups` 节（remote 经 topology.groups 只读）。
+pub fn set_teammate_groups(dir: &Path, wid: Uuid, groups: &serde_json::Value) {
+    update(dir, wid, |doc| {
+        if groups.is_null()
+            || groups.as_array().map(|a| a.is_empty()).unwrap_or(false)
+        {
+            doc.remove("teammateGroups");
+        } else {
+            doc.insert("teammateGroups".into(), groups.clone());
+        }
+    });
+}
+
+/// 读编组投影；无文件/无节 → 空数组。
+pub fn get_teammate_groups(dir: &Path, wid: Uuid) -> serde_json::Value {
+    read(dir, wid)
+        .and_then(|doc| doc.get("teammateGroups").cloned())
+        .unwrap_or_else(|| serde_json::json!([]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

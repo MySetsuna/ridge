@@ -1,8 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { ListTree, Plus, X, FolderOpen, ChevronRight } from 'lucide-svelte';
+  import { ListTree, Plus, X, FolderOpen, ChevronRight, Bookmark } from 'lucide-svelte';
   import { t, tr } from '$lib/i18n';
-  import type { PaneInfo, WorkspaceInfo, RemoteLink } from '@ridge/remote';
+  import type { PaneInfo, WorkspaceInfo, RemoteLink, SavedWorkspaceFile } from '@ridge/remote';
   import { treeState, toggleWsExpanded, seedActiveWorkspace, pruneExpanded } from './treeState.svelte';
 
   // §item1（移动端导航重构）：把「工作区 + 终端」整合为一个树形级联控件，
@@ -36,6 +36,11 @@
   let open = $state(false);
   let busy = $state(false);
   let err = $state('');
+  /** Secondary sheet: host-disk saved .ridge files (open only, no manage). */
+  let savedOpen = $state(false);
+  let savedLoading = $state(false);
+  let savedList = $state<SavedWorkspaceFile[]>([]);
+  let savedErr = $state('');
   // §peek-expand: which workspaces have their terminal list EXPANDED is now kept
   // in the shared, localStorage-persisted `treeState` store (survives refresh /
   // reconnect — see treeState.svelte.ts) instead of resetting on every mount. The
@@ -63,6 +68,51 @@
   }
   function close() {
     open = false;
+    savedOpen = false;
+  }
+
+  function closeSaved() {
+    savedOpen = false;
+    savedErr = '';
+  }
+
+  async function openSavedSheet() {
+    if (!ws || busy || !canManageWorkspaces) return;
+    savedErr = '';
+    savedLoading = true;
+    savedOpen = true;
+    try {
+      savedList = await ws.listSavedWorkspaceFiles();
+    } catch (e) {
+      savedList = [];
+      savedErr = e instanceof Error ? e.message : String(e);
+    } finally {
+      savedLoading = false;
+    }
+  }
+
+  async function openSavedFile(path: string) {
+    if (!ws || busy || !path) return;
+    busy = true;
+    savedErr = '';
+    err = '';
+    try {
+      const id = await ws.openWorkspaceFromFile(path);
+      if (id) {
+        await ws.switchWorkspace(id);
+        activeWorkspaceId = id;
+        activePaneId = null;
+        onWorkspacesChanged?.();
+        ws.listPanes();
+        savedOpen = false;
+      } else {
+        savedErr = tr('mobile.savedOpenFail');
+      }
+    } catch (e) {
+      savedErr = e instanceof Error ? e.message : String(e);
+    } finally {
+      busy = false;
+    }
   }
 
   // §auto-expand-active: expand a workspace the first time it's EVER seen active so
@@ -289,9 +339,21 @@
           {#if busy}<span class="tree-spin" aria-hidden="true"></span>{/if}
         </span>
         {#if canManageWorkspaces}
-          <button class="tree-add" onclick={newWorkspace} title={$t('mobile.treeNewWorkspace')} disabled={busy} tabindex="-1">
-            <Plus class="w-3.5 h-3.5" />
-          </button>
+          <div class="tree-head-actions">
+            <button
+              class="tree-add"
+              onclick={() => void openSavedSheet()}
+              title={$t('mobile.treeOpenSaved')}
+              disabled={busy}
+              tabindex="-1"
+              data-testid="tree-open-saved"
+            >
+              <Bookmark class="w-3.5 h-3.5" />
+            </button>
+            <button class="tree-add" onclick={newWorkspace} title={$t('mobile.treeNewWorkspace')} disabled={busy} tabindex="-1">
+              <Plus class="w-3.5 h-3.5" />
+            </button>
+          </div>
         {/if}
       </div>
 
@@ -386,6 +448,43 @@
       </div>
     </div>
   {/if}
+
+  <!-- 已保存工作区：次级弹层（只打开，无删除/重命名/浏览管理） -->
+  {#if savedOpen}
+    <div class="saved-backdrop" onclick={closeSaved} role="presentation"></div>
+    <div class="saved-popup" role="dialog" aria-label={$t('mobile.savedTitle')}>
+      <div class="tree-head">
+        <span class="tree-head-title">{$t('mobile.savedTitle')}</span>
+        <button class="tree-add" onclick={closeSaved} title={$t('mobile.savedClose')} tabindex="-1">
+          <X class="w-3.5 h-3.5" />
+        </button>
+      </div>
+      {#if savedErr}<div class="tree-err">{savedErr}</div>{/if}
+      <div class="tree-body">
+        {#if savedLoading}
+          <div class="tree-empty">{$t('mobile.loading')}</div>
+        {:else if savedList.length === 0}
+          <div class="tree-empty">{$t('mobile.savedEmpty')}</div>
+        {:else}
+          {#each savedList as s (s.path)}
+            <button
+              type="button"
+              class="saved-row"
+              disabled={busy}
+              title={s.path}
+              onclick={() => void openSavedFile(s.path)}
+            >
+              <span class="ws-ico"><FolderOpen class="w-4 h-4 shrink-0" /></span>
+              <span class="saved-text">
+                <span class="ws-name">{s.name || s.path}</span>
+                <span class="saved-path">{s.path}</span>
+              </span>
+            </button>
+          {/each}
+        {/if}
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -413,6 +512,7 @@
 
   .tree-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--rg-border-bright);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--rg-fg-muted)}
   .tree-head-title{display:inline-flex;align-items:center}
+  .tree-head-actions{display:inline-flex;align-items:center;gap:6px}
   /* §busy-feedback: a small spinner while a workspace/terminal op is in flight,
      so a tap during the (multi-round-trip) busy window reads as "working" rather
      than "nothing happened". */
@@ -421,6 +521,14 @@
   .tree-add{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid var(--rg-border-bright);border-radius:6px;background:var(--rg-bg);color:var(--rg-fg-muted);cursor:pointer}
   .tree-add:active{color:var(--rg-accent);border-color:color-mix(in srgb,var(--rg-accent) 40%,transparent)}
   .tree-add:disabled{opacity:.4}
+
+  .saved-backdrop{position:fixed;inset:0;z-index:47;background:rgba(0,0,0,.25)}
+  .saved-popup{position:fixed;bottom:calc(48px + env(safe-area-inset-bottom,0px) + 8px);right:8px;z-index:48;width:min(82vw,300px);max-height:min(55vh,400px);display:flex;flex-direction:column;background:var(--rg-surface);border:1px solid var(--rg-border-bright);border-radius:12px;box-shadow:0 12px 36px -6px rgba(0,0,0,.5);overflow:hidden;animation:treePop .14s ease-out}
+  .saved-row{display:flex;align-items:flex-start;gap:8px;width:100%;padding:10px 10px;border:none;border-radius:8px;background:none;color:var(--rg-fg);font-size:13px;cursor:pointer;text-align:left}
+  .saved-row:active{background:var(--rg-surface-2)}
+  .saved-row:disabled{opacity:.5}
+  .saved-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  .saved-path{font-size:10px;color:var(--rg-fg-muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
   .tree-err{padding:6px 10px;font-size:11px;color:var(--rg-ansi-red);background:color-mix(in srgb,var(--rg-ansi-red) 10%,transparent)}
 

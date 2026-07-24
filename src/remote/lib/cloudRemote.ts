@@ -601,6 +601,35 @@ export class CloudRemoteConnection implements RemoteLink {
     }
   }
 
+  async listSavedWorkspaceFiles(): Promise<
+    import('@ridge/remote').SavedWorkspaceFile[]
+  > {
+    try {
+      const raw = await invoke<
+        { name?: string; path?: string; mtime_secs?: number; mtimeSecs?: number }[]
+      >('list_saved_workspace_files');
+      if (!Array.isArray(raw)) return [];
+      return raw
+        .map((r) => ({
+          name: String(r?.name ?? ''),
+          path: String(r?.path ?? ''),
+          mtimeSecs: Number(r?.mtime_secs ?? r?.mtimeSecs ?? 0),
+        }))
+        .filter((e) => e.path.length > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  async openWorkspaceFromFile(path: string): Promise<string | null> {
+    try {
+      const id = await invoke<string>('open_workspace_from_file', { path });
+      return id || null;
+    } catch (e) {
+      throw e instanceof Error ? e : new Error(String(e));
+    }
+  }
+
   async closeWorkspace(workspaceId: string): Promise<boolean> {
     try {
       await invoke('close_workspace', { workspaceId });

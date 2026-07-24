@@ -33,10 +33,15 @@ export const zh: Record<string, string> = {
   treeNoWorkspace: '无工作区',
   treeNoTerminal: '该工作区暂无终端',
   treeNewWorkspace: '新建工作区',
+  treeOpenSaved: '打开已保存工作区',
   treeNewTerminal: '新建终端',
   treeToggleTerminals: '展开/折叠终端',
   treeSwitchHint: '点击切换工作区查看其终端',
   renderEngine: '渲染引擎',
+  savedTitle: '已保存工作区',
+  savedEmpty: '主机上暂无已保存的 .ridge 工作区',
+  savedClose: '关闭',
+  savedOpenFail: '打开已保存工作区失败',
 
   // AuthScreen
   authSubtitle: '输入桌面端 Ridge 应用中显示的 6 位动态验证码',
@@ -148,10 +153,15 @@ export const en: Record<string, string> = {
   treeNoWorkspace: 'No workspaces',
   treeNoTerminal: 'No terminals in this workspace',
   treeNewWorkspace: 'New workspace',
+  treeOpenSaved: 'Open saved workspace',
   treeNewTerminal: 'New terminal',
   treeToggleTerminals: 'Expand / collapse terminals',
   treeSwitchHint: 'Tap to switch workspace and view its terminals',
   renderEngine: 'Render engine',
+  savedTitle: 'Saved workspaces',
+  savedEmpty: 'No saved .ridge workspaces on the host',
+  savedClose: 'Close',
+  savedOpenFail: 'Failed to open saved workspace',
 
   // AuthScreen
   authSubtitle: 'Enter the 6-digit one-time code shown in the Ridge desktop app',

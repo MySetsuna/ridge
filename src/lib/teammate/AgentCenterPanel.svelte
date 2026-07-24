@@ -15,7 +15,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-  import { Crown, Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Pause, Play } from 'lucide-svelte';
+  import { Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Pause, Play, Users } from 'lucide-svelte';
   import { settingsStore } from '$lib/stores/settings';
   import { fileEditorStore } from '$lib/stores/fileEditor';
   import { workspaceSaveInfoStore, refreshWorkspaceSaveInfo } from '$lib/stores/paneTree';
@@ -23,7 +23,7 @@
   import { showToast } from '$lib/stores/toast';
   import { setTeammateHitlEnabled } from './teammateSettings';
   import TeammateGroups from './TeammateGroupsSection.svelte';
-  import { teammateGroupStore, parseGroupAddMember } from './teammateGroups.svelte';
+  import { teammateGroupStore, groupOfAgent, parseGroupAddMember } from './teammateGroups.svelte';
   import {
     parseTopologySnapshot,
     parseCircuitTripped,
@@ -32,12 +32,31 @@
     type TeammateProfile,
     type CircuitTrip,
   } from './teammateModel';
+  import {
+    refreshGitGuardStats,
+    gitGuardNeedsAttention,
+    type GitGuardStats,
+  } from '$lib/stores/gitGuardStats';
+  import {
+    auditPanelTitle,
+    buildHitlAuditPanel,
+    shouldShowAuditSection,
+  } from './hitlAuditPanel';
+  import { filterAuditItems, formatAuditTimeline } from './hitlAuditFilter';
+  import { buildOrchControlModel, formatOrchHeader, healthPollMs } from './orchControlPlane';
+  import { pressureFromStats, shouldSurfaceGitGuard } from '$lib/stores/processGuardPolicy';
+  import type { HitlAuditItem } from '../../../packages/remote/src/shared/teammate/hitlAuditRemote';
 
   const TOPOLOGY_CMD = 'get_teammate_topology';
   const CIRCUIT_EVENT = 'teammate://circuit-tripped';
   // 后端 MCP `ridge_join_group` → 前端编组「加成员」事件桥（见 teammate/layout_event.rs）。
   const GROUP_ADD_MEMBER_EVENT = 'teammate://group-add-member';
+  /** Base poll; degraded/watch accelerate via healthPollMs (iter 50). */
   const POLL_MS = 3000;
+  /** Git/audit are heavier — refresh every N topology polls. */
+  const HEAVY_EVERY_N = 3;
+  let pollGeneration = 0;
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
   const TRIP_CAP = 20;
 
   interface Props {
@@ -51,10 +70,35 @@
   /** R17-HITL-BADGE / TEAM-HEALTH */
   let pendingHitl = $state(0);
   let suspendedAgents = $state(0);
+  let orchDegraded = $state(false);
+  let orchLevel = $state('ok');
+  let foreignAttached = $state(0);
+  let outboundHostsConnected = $state(0);
+  let healthGeneration = $state(0);
+  let gitGuard = $state<GitGuardStats | null>(null);
+  let hitlAuditItems = $state<HitlAuditItem[]>([]);
 
   const hitlOn = $derived($settingsStore.teammateHitlEnabled);
-  const leader = $derived(topology.roster.find((t) => t.id === topology.leaderId) ?? null);
-  const workers = $derived(topology.roster.filter((t) => t.id !== topology.leaderId));
+  const orchModel = $derived(
+    buildOrchControlModel({
+      suspendedAgents,
+      pendingHitl,
+      hitlEnabled: hitlOn,
+      degraded: orchDegraded,
+      generation: healthGeneration,
+      foreignAttached,
+      outboundHostsConnected,
+      level: orchLevel,
+    }),
+  );
+  const auditFiltered = $derived(filterAuditItems(hitlAuditItems, { limit: 12 }));
+  const gitPressure = $derived(pressureFromStats(gitGuard));
+  const orchHeader = $derived(formatOrchHeader(orchModel));
+
+  // 顶部「成员聚合 / 编组」两视图 Tab（核心监控：目标 / 异常 / 审批 始终在 Tab 之上，不随切换）。
+  let teamTab = $state<'members' | 'groups'>('members');
+  // 编组 store（单例，与 TeammateGroups 共用）：成员聚合列表据此标注每人组归属。
+  const groupStore = teammateGroupStore();
 
   // 当前工作区的 .ridge 文件路径 → 编组的稳定持久化键（未保存为 null → 编组仅会话级，D1）。
   const filePath = $derived(
@@ -80,7 +124,9 @@
   let memGoal = $state('');
   let memGoalDirty = $state(false);
 
-  async function refresh() {
+  async function refresh(opts?: { heavy?: boolean }) {
+    pollGeneration += 1;
+    const doHeavy = opts?.heavy ?? pollGeneration % HEAVY_EVERY_N === 1;
     try {
       const raw = await invoke(TOPOLOGY_CMD, { workspaceId });
       topology = parseTopologySnapshot(raw);
@@ -88,35 +134,78 @@
       topology = EMPTY_TOPOLOGY;
     }
     try {
-      const list = workspaceId
-        ? await invoke<HitlDecisionEntry[]>('list_hitl_decisions', { workspaceId })
-        : [];
-      decisions = Array.isArray(list) ? list : [];
-    } catch {
-      decisions = [];
-    }
-    try {
-      pendingHitl = await invoke<number>('get_pending_hitl_count');
-    } catch {
-      pendingHitl = 0;
-    }
-    try {
-      const h = await invoke<{ suspendedAgents?: number; pendingHitl?: number }>(
-        'get_orchestration_health'
-      );
+      // OP-AGENT-CP: full control-plane snapshot (degraded/level/foreign/outbound).
+      // Prefer this single call over separate get_pending_hitl_count when healthy.
+      const h = await invoke<{
+        suspendedAgents?: number;
+        pendingHitl?: number;
+        degraded?: boolean;
+        level?: string;
+        foreignAttached?: number;
+        outboundHostsConnected?: number;
+        generation?: number;
+      }>('get_orchestration_health');
       suspendedAgents = Number(h?.suspendedAgents ?? 0);
       if (typeof h?.pendingHitl === 'number') pendingHitl = h.pendingHitl;
+      orchDegraded = !!h?.degraded;
+      orchLevel = typeof h?.level === 'string' ? h.level : 'ok';
+      foreignAttached = Number(h?.foreignAttached ?? 0);
+      outboundHostsConnected = Number(h?.outboundHostsConnected ?? 0);
+      healthGeneration = Number(h?.generation ?? 0);
     } catch {
       suspendedAgents = 0;
-    }
-    if (workspaceId && !memGoalDirty) {
+      orchDegraded = false;
+      orchLevel = 'ok';
+      foreignAttached = 0;
+      outboundHostsConnected = 0;
       try {
-        const mem = await invoke<{ goal?: string }>('get_workspace_memory', { workspaceId });
-        memGoal = typeof mem?.goal === 'string' ? mem.goal : '';
+        pendingHitl = await invoke<number>('get_pending_hitl_count');
       } catch {
-        /* dir not ready */
+        pendingHitl = 0;
       }
     }
+    // Heavy: decisions / memory / git / audit — not every 3s (iter 50 perf).
+    if (doHeavy) {
+      try {
+        const list = workspaceId
+          ? await invoke<HitlDecisionEntry[]>('list_hitl_decisions', { workspaceId })
+          : [];
+        decisions = Array.isArray(list) ? list : [];
+      } catch {
+        decisions = [];
+      }
+      if (workspaceId && !memGoalDirty) {
+        try {
+          const mem = await invoke<{ goal?: string }>('get_workspace_memory', { workspaceId });
+          memGoal = typeof mem?.goal === 'string' ? mem.goal : '';
+        } catch {
+          /* dir not ready */
+        }
+      }
+      try {
+        gitGuard = await refreshGitGuardStats();
+      } catch {
+        gitGuard = null;
+      }
+      try {
+        const aud = await invoke<{ items?: HitlAuditItem[] }>('list_hitl_audit_remote', {
+          limit: 20,
+        });
+        hitlAuditItems = Array.isArray(aud?.items) ? aud.items : [];
+      } catch {
+        hitlAuditItems = [];
+      }
+    }
+    reschedulePoll();
+  }
+
+  let lastPollMs = POLL_MS;
+  function reschedulePoll() {
+    const ms = Math.max(1500, healthPollMs(orchModel) || POLL_MS);
+    if (pollTimer && ms === lastPollMs) return;
+    lastPollMs = ms;
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => void refresh(), ms);
   }
 
   async function saveMemGoal() {
@@ -177,7 +266,7 @@
     }
   }
 
-  // G1 阶段一：软暂停/恢复（agent 写路径门控；人类输入不受限）。
+  // G1：软暂停 / 恢复（agent 写路径门控；人类输入不受限）。
   async function toggleSuspend(t: TeammateProfile) {
     if (!workspaceId || !t.paneId) return;
     try {
@@ -192,10 +281,9 @@
   }
 
   onMount(() => {
-    refresh();
+    void refresh({ heavy: true });
     // 拉取工作区保存信息，让编组的稳定持久化键（.ridge 路径）可解析。
     void refreshWorkspaceSaveInfo();
-    const timer = setInterval(refresh, POLL_MS);
     const unTrip = listen(CIRCUIT_EVENT, (e) => {
       const trip = parseCircuitTripped(e.payload);
       if (trip) trips = [trip, ...trips].slice(0, TRIP_CAP);
@@ -237,7 +325,7 @@
       }
     });
     return () => {
-      clearInterval(timer);
+      if (pollTimer) clearInterval(pollTimer);
       unTrip.then((f) => f()).catch(() => {});
       unJoin.then((f) => f()).catch(() => {});
     };
@@ -293,6 +381,23 @@
           >{pendingHitl}</span>
         {/if}
       </button>
+      {#if orchDegraded || orchLevel !== 'ok'}
+        <span
+          class="text-[10px] px-1.5 py-0.5 rounded {orchDegraded
+            ? 'bg-rose-500/20 text-rose-300'
+            : 'bg-amber-500/20 text-amber-200'}"
+          title="gen {healthGeneration} · foreign {foreignAttached} · outbound hosts {outboundHostsConnected}"
+          >控制面 {orchLevel}{#if foreignAttached > 0}
+            · 远端视图 {foreignAttached}{/if}</span
+        >
+      {/if}
+      {#if gitGuard && gitGuardNeedsAttention(gitGuard)}
+        <span
+          class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-200"
+          title="active {gitGuard.activeChildren}/{gitGuard.logicalConcurrencyCap} · timeout kills {gitGuard.timeoutKills} · acquire timeouts {gitGuard.acquireTimeouts}"
+          >git 护栏 · kill {gitGuard.timeoutKills} · busy {gitGuard.acquireTimeouts}</span
+        >
+      {/if}
       {#if suspendedAgents > 0}
         <span
           class="rounded-full border border-[var(--rg-border)] px-1.5 py-0.5 text-[10px] text-[var(--rg-fg-muted)]"
@@ -304,6 +409,27 @@
   </header>
 
   <div class="flex-1 overflow-y-auto rg-scroll flex flex-col gap-4 px-3 py-3">
+    {#if shouldShowAuditSection(pendingHitl, hitlAuditItems.length)}
+      {@const auditModel = buildHitlAuditPanel(auditFiltered.items)}
+      <section class="rounded-md border border-[var(--rg-border)] px-2 py-1.5" data-testid="hitl-audit-panel">
+        <h3 class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
+          {auditPanelTitle(auditModel)} · {auditFiltered.summary}
+        </h3>
+        <p class="mt-0.5 text-[10px] text-[var(--rg-fg-muted)]" data-testid="orch-header-line">{orchHeader}</p>
+        {#if gitPressure.badge && shouldSurfaceGitGuard(gitGuard)}
+          <p class="mt-0.5 text-[10px] text-amber-500" title={gitPressure.detail}>{gitPressure.badge}</p>
+        {/if}
+        {#if auditModel.empty}
+          <p class="mt-1 text-[10px] text-[var(--rg-fg-muted)]">尚无脱敏审批记录</p>
+        {:else}
+          <ul class="mt-1 space-y-0.5">
+            {#each formatAuditTimeline(auditFiltered.items, 12) as line}
+              <li class="text-[10px] font-mono text-[var(--rg-fg-muted)] truncate" title={line}>{line}</li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+    {/if}
     <!-- V-M1-S3：工作区目标（goal）最小编辑 -->
     {#if workspaceId}
       <section class="rounded-md border border-[var(--rg-border)] px-2 py-1.5">
@@ -352,47 +478,6 @@
       </section>
     {/if}
 
-    <!-- 成员 -->
-    <section>
-      <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-        <Bot class="h-3 w-3 text-[var(--rg-accent)]/70" /> 成员
-        <span class="ml-auto font-mono">{topology.roster.length}</span>
-      </h3>
-      <ul class="mt-1 space-y-0.5">
-        {#if leader}
-          <li class="group flex items-center gap-2 rounded px-1.5 py-1 bg-[var(--rg-accent)]/8">
-            <Crown class="h-3.5 w-3.5 text-amber-400 shrink-0" />
-            <span class="min-w-0 flex-1 truncate text-[12px] font-medium">{leader.name}</span>
-            <button
-              class="hidden group-hover:block shrink-0 text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
-              title={leader.status === 'Suspended' ? '恢复 agent 输入' : '暂停 agent 输入（人类输入不受限）'}
-              onclick={() => toggleSuspend(leader)}
-            >
-              {#if leader.status === 'Suspended'}<Play class="h-3 w-3" />{:else}<Pause class="h-3 w-3" />{/if}
-            </button>
-            <span class="h-1.5 w-1.5 rounded-full {statusDot(leader)} shrink-0" title={leader.status}></span>
-          </li>
-        {/if}
-        {#each workers as w (w.id)}
-          <li class="group flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]">
-            <span class="h-3.5 w-3.5 shrink-0"></span>
-            <span class="min-w-0 flex-1 truncate text-[12px]">{w.name}</span>
-            <button
-              class="hidden group-hover:block shrink-0 text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
-              title={w.status === 'Suspended' ? '恢复 agent 输入' : '暂停 agent 输入（人类输入不受限）'}
-              onclick={() => toggleSuspend(w)}
-            >
-              {#if w.status === 'Suspended'}<Play class="h-3 w-3" />{:else}<Pause class="h-3 w-3" />{/if}
-            </button>
-            <span class="h-1.5 w-1.5 rounded-full {statusDot(w)} shrink-0" title={w.status}></span>
-          </li>
-        {/each}
-        {#if topology.roster.length === 0}
-          <li class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">暂无成员</li>
-        {/if}
-      </ul>
-    </section>
-
     <!-- M1 切片二：审批历史（最近在上，最多显示 10；来源=workspace-memory decisions 节） -->
     {#if decisions.length > 0}
       <section>
@@ -416,7 +501,70 @@
       </section>
     {/if}
 
-    <!-- 编组（手动协作，P3）：勾选成员建组 / 配色 / 改名 / 解散 / 给组派任务（广播） -->
-    <TeammateGroups roster={topology.roster} {workspaceId} {filePath} />
+    <!-- 成员聚合 / 编组：两视图 Tab 切换（监控总览 vs 编组协作） -->
+    <section class="flex flex-col gap-2">
+      <div class="flex items-center gap-1 rounded-md border border-[var(--rg-border)] p-0.5">
+        <button
+          type="button"
+          onclick={() => (teamTab = 'members')}
+          class="flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors {teamTab ===
+          'members'
+            ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)]'
+            : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
+        >
+          <Bot class="h-3.5 w-3.5" /> 成员
+          <span class="font-mono text-[10px] opacity-70">{topology.roster.length}</span>
+        </button>
+        <button
+          type="button"
+          onclick={() => (teamTab = 'groups')}
+          class="flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors {teamTab ===
+          'groups'
+            ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)]'
+            : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
+        >
+          <Users class="h-3.5 w-3.5" /> 编组
+          <span class="font-mono text-[10px] opacity-70">{groupStore.groups.length}</span>
+        </button>
+      </div>
+
+      {#if teamTab === 'members'}
+        <!-- 成员聚合列表：全体 roster（状态 + 组归属 + 暂停/恢复）——监控总览。 -->
+        <ul class="space-y-0.5">
+          {#each topology.roster as m (m.id)}
+            {@const grp = groupOfAgent(groupStore.groups, m.id)}
+            <li class="group flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]">
+              <span class="h-1.5 w-1.5 rounded-full {statusDot(m)} shrink-0" title={m.status}></span>
+              <span class="min-w-0 flex-1 truncate text-[12px]">{m.name}</span>
+              {#if grp}
+                <span
+                  class="flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-medium"
+                  style="color:{grp.color};background:color-mix(in srgb, {grp.color} 16%, transparent)"
+                  title="所属编组：{grp.name}"
+                >
+                  <span class="h-1.5 w-1.5 rounded-full" style="background:{grp.color}"></span>
+                  {grp.name}
+                </span>
+              {:else}
+                <span class="shrink-0 text-[9px] text-[var(--rg-fg-muted)]/60">未分组</span>
+              {/if}
+              <button
+                class="hidden shrink-0 text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] group-hover:block"
+                title={m.status === 'Suspended' ? '恢复 agent 输入' : '暂停 agent 输入（人类输入不受限）'}
+                onclick={() => toggleSuspend(m)}
+              >
+                {#if m.status === 'Suspended'}<Play class="h-3 w-3" />{:else}<Pause class="h-3 w-3" />{/if}
+              </button>
+            </li>
+          {/each}
+          {#if topology.roster.length === 0}
+            <li class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">暂无成员</li>
+          {/if}
+        </ul>
+      {:else}
+        <!-- 编组视图：未分组卡 + 各编组（组长 / 配色 / 派任务）。 -->
+        <TeammateGroups roster={topology.roster} {workspaceId} {filePath} />
+      {/if}
+    </section>
   </div>
 </div>

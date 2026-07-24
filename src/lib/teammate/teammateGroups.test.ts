@@ -15,6 +15,9 @@ import {
   removeGroupIn,
   removeMemberIn,
   addMemberIn,
+  recolorGroupIn,
+  setGroupLeaderIn,
+  groupOfAgent,
   findGroupByName,
   parseGroupAddMember,
   buildTask,
@@ -114,6 +117,48 @@ describe('group mutations are immutable', () => {
     const g = buildGroup('A', GROUP_COLORS[0], ['agent-a']);
     expect(addMemberIn([g], g.id, '   ')[0].memberAgentIds).toEqual(['agent-a']);
     expect(addMemberIn([g], 'no-such-group', 'agent-b')[0].memberAgentIds).toEqual(['agent-a']);
+  });
+});
+
+describe('group leader / recolor / grouping', () => {
+  it('setGroupLeaderIn sets a member leader, ignores non-members, clears on null', () => {
+    const g = buildGroup('A', GROUP_COLORS[0], ['agent-a', 'agent-b']);
+    const led = setGroupLeaderIn([g], g.id, 'agent-a');
+    expect(led[0].leaderAgentId).toBe('agent-a');
+    expect(setGroupLeaderIn([g], g.id, 'ghost')[0].leaderAgentId).toBeUndefined();
+    expect(setGroupLeaderIn(led, g.id, null)[0].leaderAgentId).toBeUndefined();
+  });
+
+  it('removeMemberIn clears the leader when the leader is removed', () => {
+    let groups = [buildGroup('A', GROUP_COLORS[0], ['agent-a', 'agent-b'])];
+    groups = setGroupLeaderIn(groups, groups[0].id, 'agent-a');
+    groups = removeMemberIn(groups, groups[0].id, 'agent-a');
+    expect(groups[0].memberAgentIds).toEqual(['agent-b']);
+    expect(groups[0].leaderAgentId).toBeUndefined();
+  });
+
+  it('recolorGroupIn changes color and ignores blank', () => {
+    const g = buildGroup('A', GROUP_COLORS[0], []);
+    expect(recolorGroupIn([g], g.id, '#123456')[0].color).toBe('#123456');
+    expect(recolorGroupIn([g], g.id, '  ')[0].color).toBe(GROUP_COLORS[0]);
+  });
+
+  it('groupOfAgent finds the first group containing the agent', () => {
+    const g1 = buildGroup('A', GROUP_COLORS[0], ['agent-a']);
+    const g2 = buildGroup('B', GROUP_COLORS[1], ['agent-b']);
+    expect(groupOfAgent([g1, g2], 'agent-b')?.id).toBe(g2.id);
+    expect(groupOfAgent([g1, g2], 'ghost')).toBeUndefined();
+  });
+
+  it('parseGroup keeps a valid leader and drops a dangling one', () => {
+    const g = { ...buildGroup('A', GROUP_COLORS[0], ['agent-a']), leaderAgentId: 'agent-a' };
+    const back = parsePersisted(serializePersisted({ groups: [g], tasks: [] }));
+    expect(back.groups[0].leaderAgentId).toBe('agent-a');
+    const dangling = JSON.stringify({
+      groups: [{ id: 'x', name: 'X', memberAgentIds: ['agent-a'], leaderAgentId: 'ghost' }],
+      tasks: [],
+    });
+    expect(parsePersisted(dangling).groups[0].leaderAgentId).toBeUndefined();
   });
 });
 

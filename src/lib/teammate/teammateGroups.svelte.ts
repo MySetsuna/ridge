@@ -27,9 +27,11 @@ import type { TeammateProfile } from './teammateModel';
 export interface TeammateGroup {
   readonly id: string;
   readonly name: string;
-  /** 组配色标签（取自 {@link GROUP_COLORS} 预设色板）。 */
+  /** 组配色标签（{@link GROUP_COLORS} 预设，或用户自定义的任意 CSS 颜色）。 */
   readonly color: string;
   readonly memberAgentIds: readonly string[];
+  /** 组长的稳定 agent_id（「给组派任务」= 派给组长）；未指定为 undefined（则该组不接任务）。 */
+  readonly leaderAgentId?: string;
   readonly createdAt: number;
 }
 
@@ -136,7 +138,7 @@ export function removeGroupIn(groups: readonly TeammateGroup[], id: string): Tea
   return groups.filter((g) => g.id !== id);
 }
 
-/** 从某组手动移除一个成员（D1 失联占位的「移除」按钮，不可变）。 */
+/** 从某组手动移除一个成员（D1 失联占位的「移除」按钮，不可变）。移除者若是组长则一并清空组长。 */
 export function removeMemberIn(
   groups: readonly TeammateGroup[],
   groupId: string,
@@ -144,9 +146,51 @@ export function removeMemberIn(
 ): TeammateGroup[] {
   return groups.map((g) =>
     g.id === groupId
-      ? { ...g, memberAgentIds: g.memberAgentIds.filter((m) => m !== agentId) }
+      ? {
+          ...g,
+          memberAgentIds: g.memberAgentIds.filter((m) => m !== agentId),
+          leaderAgentId: g.leaderAgentId === agentId ? undefined : g.leaderAgentId,
+        }
       : g
   );
+}
+
+/** 改配色（不可变；空色忽略）。color 可为 {@link GROUP_COLORS} 预设或任意自定义 CSS 颜色串。 */
+export function recolorGroupIn(
+  groups: readonly TeammateGroup[],
+  id: string,
+  color: string
+): TeammateGroup[] {
+  const c = color.trim();
+  if (!c) return [...groups];
+  return groups.map((g) => (g.id === id ? { ...g, color: c } : g));
+}
+
+/**
+ * 指定 / 清除某组组长（不可变）。`agentId===null` 清空；否则须是该组现有成员才生效
+ * （非成员一律忽略，绝不设悬空组长）。
+ */
+export function setGroupLeaderIn(
+  groups: readonly TeammateGroup[],
+  id: string,
+  agentId: string | null
+): TeammateGroup[] {
+  return groups.map((g) => {
+    if (g.id !== id) return g;
+    if (agentId === null) return { ...g, leaderAgentId: undefined };
+    return g.memberAgentIds.includes(agentId) ? { ...g, leaderAgentId: agentId } : g;
+  });
+}
+
+/**
+ * 找某 agent_id 所属的（首个）编组；未入任何组返回 undefined。
+ * 供「未分组」过滤与 pane 机器人按钮染组色共用。
+ */
+export function groupOfAgent(
+  groups: readonly TeammateGroup[],
+  agentId: string
+): TeammateGroup | undefined {
+  return groups.find((g) => g.memberAgentIds.includes(agentId));
 }
 
 /**
@@ -261,11 +305,16 @@ function parseGroup(v: unknown): TeammateGroup | null {
   const members = Array.isArray(rec.memberAgentIds)
     ? rec.memberAgentIds.filter((m): m is string => typeof m === 'string')
     : [];
+  const leaderAgentId =
+    typeof rec.leaderAgentId === 'string' && members.includes(rec.leaderAgentId)
+      ? rec.leaderAgentId
+      : undefined;
   return {
     id,
     name: typeof rec.name === 'string' ? rec.name : id,
     color: typeof rec.color === 'string' ? rec.color : GROUP_COLORS[0],
     memberAgentIds: members,
+    leaderAgentId,
     createdAt: typeof rec.createdAt === 'number' ? rec.createdAt : Date.now(),
   };
 }
@@ -344,6 +393,12 @@ class TeammateGroupStore {
    * （`effect_update_depth_exceeded`，见 MEMORY 主题图鉴教训）。
    */
   private storageKey = '';
+  /**
+   * 当前活动工作区的运行时 UUID（供后端镜像双写；`null` = 未切入或非 tauri 环境）。
+   * **刻意非 `$state`**：仅内部字段，同 {@link storageKey} 避免 `$effect` 自循环。
+   * 与 storageKey 分离：storageKey 走 .ridge 稳定路径，此处走运行时 wid（同路径重启会变）。
+   */
+  private runtimeWorkspaceId: string | null = null;
   /** 当前工作区的编组列表。 */
   groups = $state<TeammateGroup[]>([]);
   /** 当前工作区的组任务历史（最新在前）。 */
@@ -351,16 +406,37 @@ class TeammateGroupStore {
 
   /** 切到某工作区：解析稳定键 → 载入该工作区持久化的编组/任务。键不变则不动。 */
   setWorkspace(workspaceId: string | undefined, filePath: string | null | undefined): void {
+    // runtime wid 总是刷新（供后端镜像双写），即便 storageKey 未变（同 .ridge 路径重启换 wid）。
+    this.runtimeWorkspaceId = workspaceId ?? null;
     const key = groupsStorageKey(stableWorkspaceKey(workspaceId, filePath));
     if (key === this.storageKey) return;
     this.storageKey = key;
     const loaded = loadPersisted(key);
     this.groups = loaded.groups;
     this.tasks = loaded.tasks;
+    // 切入工作区即把本地编组推后端一次，保证镜像与本地一致（供 remote 只读同步）。
+    this.syncBackend();
   }
 
   private persist(): void {
     savePersisted(this.storageKey, { groups: this.groups, tasks: this.tasks });
+    this.syncBackend();
+  }
+
+  /**
+   * 把当前编组推到后端 workspace-memory（供 remote 手机端只读同步）。fire-forget：
+   * 动态 import invoke 以免污染纯逻辑模块的 node 单测；非 tauri 环境 / 后端不可用一律
+   * 忽略（桌面 localStorage 仍是编组的权威真相）。
+   */
+  private syncBackend(): void {
+    const wid = this.runtimeWorkspaceId;
+    if (!wid) return;
+    const groups = this.groups;
+    void import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke('set_teammate_groups', { workspaceId: wid, groups }))
+      .catch(() => {
+        /* 非 tauri / 后端不可用：忽略，不阻断本地编组 */
+      });
   }
 
   /** 建组并落盘，返回新组。 */
@@ -378,6 +454,18 @@ class TeammateGroupStore {
 
   dissolve(id: string): void {
     this.groups = removeGroupIn(this.groups, id);
+    this.persist();
+  }
+
+  /** 改组配色并落盘（预设或自定义颜色）。 */
+  recolor(id: string, color: string): void {
+    this.groups = recolorGroupIn(this.groups, id, color);
+    this.persist();
+  }
+
+  /** 指定 / 清除组长并落盘（`agentId===null` 清空）。 */
+  setLeader(id: string, agentId: string | null): void {
+    this.groups = setGroupLeaderIn(this.groups, id, agentId);
     this.persist();
   }
 

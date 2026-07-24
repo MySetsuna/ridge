@@ -21,6 +21,7 @@
   import PaneRepoSwitcher from './PaneRepoSwitcher.svelte';
   import PaneShellSwitcher from './PaneShellSwitcher.svelte';
   import { paneOriginBadge } from '@ridge/remote/shared/terminal/paneOrigin';
+  import { teammateGroupStore, groupOfAgent } from '$lib/teammate/teammateGroups.svelte';
   import type { PaneNode } from '$lib/types';
   import type {
     DockRegion,
@@ -55,6 +56,7 @@ import {
     findJunctionsNearPosition,
     findSameAxisRefs,
     collapseCwd,
+    workspaceSaveInfoStore,
   } from '$lib/stores/paneTree';
   import { paneDockDrag } from '$lib/actions/paneDockDrag';
 
@@ -66,6 +68,17 @@ import {
     splitPath?: number[];
   }
   let { node, workspaceId, splitPath = [] }: Props = $props();
+
+  // 编组染色数据源：pane 标题栏的机器人大按钮据「该 pane agent 所属编组」着色。与
+  // AgentCenterPanel 共用同一惰性单例 store；setWorkspace 按稳定键幂等（多 leaf 实例
+  // 各自调用同键无副作用）。groups 为 $state，组定义变化即驱动按钮重着色。
+  const teammateGroups = teammateGroupStore();
+  $effect(() => {
+    teammateGroups.setWorkspace(
+      workspaceId,
+      $workspaceSaveInfoStore[workspaceId]?.file_path ?? null
+    );
+  });
 
   // Feed per-pane git status tracking on every cwd change. Runs only when
   // this SplitContainer frame holds a leaf; for `split` frames the children
@@ -558,37 +571,12 @@ import {
                 {@const proc = titleStr || fgProc}
                 {@const rawCwd = $paneCwdStore[`${workspaceId}:${node.id}`]}
                 {@const displayCwd = rawCwd ? collapseCwd(rawCwd) : ''}
-                {@const agentState = node.type === 'leaf' ? node.agent_state : undefined}
-                {@const agentId = node.type === 'leaf' ? node.agent_id : undefined}
                 {@const origin = node.type === 'leaf' ? node.origin : undefined}
+                <!-- pane 标题只显示「进程 · 目录」（agent 状态改由标题栏右侧的机器人大按钮
+                     标识，不再在 pane name 前面加 AGENT/agentId 前缀标题）。 -->
                 <span
                   class="flex items-center gap-1.5 text-[11px] font-mono tracking-wide truncate"
                 >
-                  {#if agentState === 'busy'}
-                    <!-- Running teammate agent — green dot + label + agent_id.
-                         Always the first glyph so orchestrators see it at a glance. -->
-                    <span
-                      class="flex items-center gap-1 shrink-0 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/40 px-1.5 h-4 text-[9px] font-semibold uppercase tracking-wider"
-                      title={agentId ? $t('workspace.agentRunning', { agentId }) : $t('workspace.teammateRunning')}
-                    >
-                      <span class="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                      AGENT
-                    </span>
-                    {#if agentId}
-                      <span class="text-emerald-300/80 truncate max-w-[120px]" title={agentId}>
-                        {agentId}
-                      </span>
-                      <span class="text-[var(--rg-title-sep)] select-none">·</span>
-                    {/if}
-                  {:else if agentState === 'starting'}
-                    <span
-                      class="flex items-center gap-1 shrink-0 rounded-full bg-amber-500/15 text-amber-300 border border-amber-400/40 px-1.5 h-4 text-[9px] font-semibold uppercase tracking-wider"
-                      title={$t('workspace.paneStarting')}
-                    >
-                      <span class="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                      STARTING
-                    </span>
-                  {/if}
                   {#if origin}
                     <!-- 外部来源徽标：HEADLESS / LAN / rdg。紧跟 AGENT/STARTING 之后、
                          proc·cwd 之前，让用户一眼分辨这个 pane 不归本地工作区持有。 -->
@@ -631,16 +619,42 @@ import {
               <PaneGitPill paneId={node.id} />
               <PaneDiffPill paneId={node.id} />
               {#if $settingsStore.teammateEnabled}
-                {@const isAgent = node.agent_state === 'busy'}
+                {@const aState = node.agent_state}
+                {@const isAgent = aState === 'busy'}
+                {@const grp = node.agent_id
+                  ? groupOfAgent(teammateGroups.groups, node.agent_id)
+                  : undefined}
+                <!-- 智能体状态大按钮：未标记=灰「标记」；starting=琥珀「启动中」；busy=翠绿
+                     「运行中」；被编组则整体染该组配色（覆盖状态色）并显示组名。点击=切换标记
+                     （纳入 / 移出指挥部花名册）。 -->
                 <button
                   type="button"
-                  title={isAgent ? '取消标记智能体' : '把此分屏标记为智能体（纳入指挥部花名册）'}
-                  class="flex h-7 w-7 items-center justify-center rounded-lg transition-colors {isAgent
-                    ? 'text-emerald-400 hover:bg-emerald-500/10'
-                    : 'text-[var(--rg-fg-muted)] hover:bg-white/[0.06] hover:text-[var(--rg-fg)]'}"
+                  title={grp
+                    ? `编组「${grp.name}」${isAgent ? ' · 运行中' : ''}（点击取消标记智能体）`
+                    : isAgent
+                      ? '智能体运行中（点击取消标记）'
+                      : aState === 'starting'
+                        ? '智能体启动中'
+                        : '把此分屏标记为智能体（纳入指挥部花名册）'}
+                  style={grp
+                    ? `color:${grp.color};border-color:${grp.color};background:color-mix(in srgb, ${grp.color} 16%, transparent)`
+                    : ''}
+                  class="flex h-7 items-center gap-1.5 rounded-lg border px-2 text-[11px] font-medium transition-colors {grp
+                    ? ''
+                    : isAgent
+                      ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
+                      : aState === 'starting'
+                        ? 'border-amber-400/40 bg-amber-500/15 text-amber-300'
+                        : 'border-transparent text-[var(--rg-fg-muted)] hover:border-[var(--rg-border)] hover:text-[var(--rg-fg)]'}"
                   onclick={() => toggleTeammateAgent(node.id, isAgent)}
                 >
-                  <Bot class="h-4 w-4" />
+                  {#if isAgent}
+                    <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-current animate-pulse"></span>
+                  {/if}
+                  <Bot class="h-4 w-4 shrink-0" />
+                  <span class="truncate max-w-[100px]">
+                    {#if grp}{grp.name}{:else if isAgent}运行中{:else if aState === 'starting'}启动中{:else}标记{/if}
+                  </span>
                 </button>
               {/if}
             {/if}
