@@ -1,0 +1,78 @@
+name: publish-remote
+
+# 从任何地方发布分离式 Remote 产物（desktop-app / mobile-app）到 ridge-cloud 持久卷。
+# 手动触发：Actions → publish-remote → Run workflow。构建 wasm 内核 + 两套 Remote bundle，
+# 经鉴权端点 POST /api/v1/remote-artifacts 上传并原子激活 current 指针（零 ridge-cloud 重部署，
+# 保留最近 3 个 release 供回滚）。这是与桌面安装包（release.yml）并列的独立发布线。
+#
+# 依赖：
+#   secret   RIDGE_ARTIFACT_TOKEN      —— 上传鉴权 token（= Dokku config ridge-cloud RIDGE_ARTIFACT_TOKEN）
+#   variable RIDGE_CLOUD_ARTIFACT_URL  —— https://9527127.xyz/api/v1/remote-artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      no_build:
+        description: '跳过构建，用仓库已提交产物（一般 false）'
+        type: boolean
+        default: false
+      rollback:
+        description: '回滚 current 到上一个 release（勾选则忽略构建/上传）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build wasm terminal kernel
+        if: ${{ inputs.rollback != true && inputs.no_build != true }}
+        run: node packages/ridge-term/build.mjs
+
+      - name: Publish remote artifacts
+        env:
+          CI: 'true'
+          RIDGE_ARTIFACT_TOKEN: ${{ secrets.RIDGE_ARTIFACT_TOKEN }}
+          RIDGE_CLOUD_ARTIFACT_URL: ${{ vars.RIDGE_CLOUD_ARTIFACT_URL }}
+        run: |
+          if [ -z "$RIDGE_ARTIFACT_TOKEN" ]; then echo "✗ 缺 secret RIDGE_ARTIFACT_TOKEN"; exit 1; fi
+          if [ -z "$RIDGE_CLOUD_ARTIFACT_URL" ]; then echo "✗ 缺 variable RIDGE_CLOUD_ARTIFACT_URL"; exit 1; fi
+          if [ "${{ inputs.rollback }}" = "true" ]; then
+            pnpm publish:remote-cloud --rollback
+          elif [ "${{ inputs.no_build }}" = "true" ]; then
+            pnpm publish:remote-cloud --no-build
+          else
+            pnpm publish:remote-cloud
+          fi
