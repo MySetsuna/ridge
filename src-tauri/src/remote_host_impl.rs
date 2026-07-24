@@ -2311,6 +2311,8 @@ async fn dispatch_invoke_request(
             s(args, "nonce"),
             s(args, "verdict"),
         )),
+        // R19：只读编排健康（suspended / pending）——与桌面 Agent Center badge 同源。
+        "get_orchestration_health" => val(Ok(crate::commands::teammate::get_orchestration_health())),
 
         // ── Theme / settings (S1: migrated into ridge-core) ──
         // These three handlers now live in `ridge_core`; route them through

@@ -37,11 +37,9 @@ pub struct PtyHandle {
     /// （P3/P4 基础层字段）。live 传输里程会据此把前端 I/O 路由到对应 host 连接。
     pub remote_ref: Option<crate::hosts::RemoteRef>,
     /// Windows Job Object holding the PTY child (V-G1-JOB)。非 Windows 恒 None。
-    /// 生命周期随 PtyHandle；用于 OS 冻结时绑定进程树。
-    #[allow(dead_code)] // read by G1 freeze path / future Job freeze-info
+    /// 生命周期随 PtyHandle；`suspend_agent` / `resume_agent` 经此冻结/解冻进程树。
     pub job: Option<crate::teammate::job_object::JobHandle>,
     /// PTY 子进程 pid（若有），供 OS 冻结 / job 分配。
-    #[allow(dead_code)]
     pub child_pid: Option<u32>,
     /// Resize-silence deadline in epoch milliseconds. When `> 0` and `now < deadline`,
     /// the PTY reader thread suppresses scrollback writes AND frontend emits to swallow

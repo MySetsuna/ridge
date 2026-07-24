@@ -6,6 +6,10 @@
   import { keyboardShiftPx } from './keyboardOffset';
   import { writeClipboard } from './clipboard';
   import { copySelectionOnly } from '@ridge/remote/shared/terminal/mobileCopy';
+  import {
+    decideTouchMouseGesture,
+    decideTouchScroll,
+  } from '@ridge/remote/shared/terminal/mobileTouchScroll';
 
   let { paneId, onStdin, onResize, onHostClipboard, onNearTop, selectionMode = $bindable(false), backendName = $bindable('Canvas2D') }: {
     paneId: string | null;
@@ -193,17 +197,34 @@
 
   // ── Touch ──
 
-  /** Send a mouse wheel event (or scroll scrollback) matching handleWheel(). */
+  /** Swipe → wheel/mouse/arrows/scrollback — SSOT in decideTouchScroll (desktop parity). */
   function touchWheel(deltaY: number, clientX: number, clientY: number) {
     if (!ctrl) return;
-    if (ctrl.isMouseReporting()) {
+    const decision = decideTouchScroll({
+      deltaY,
+      isMouseReporting: ctrl.isMouseReporting(),
+      isAltScreen: ctrl.isAltScreen(),
+      pixelLike: true,
+    });
+    if (!decision) return;
+    if (decision.kind === 'mouse_wheel') {
       const cell = ctrl.clientToCell(clientX, clientY) ?? { row: 0, col: 0 };
-      const btn = deltaY < 0 ? 64 : 65; // wheel up / down
-      const bytes = ctrl.encodeMouse(cell.row, cell.col, btn, 0, false, false, false);
+      const bytes = ctrl.encodeMouse(cell.row, cell.col, decision.btn, 0, false, false, false);
       if (bytes.length > 0) onStdin(td.decode(bytes));
+      return;
+    }
+    if (decision.kind === 'alt_arrows') {
+      const one = ctrl.encodeKey(decision.key, false, false, false, false);
+      if (one.length === 0) return;
+      for (let i = 0; i < decision.presses; i++) onStdin(td.decode(one));
+      return;
+    }
+    // local_scroll
+    if (decision.lines < 0) {
+      ctrl.scrollUp(-decision.lines);
+      maybeLoadOlder();
     } else {
-      const lines = deltaY > 0 ? 3 : -3;
-      if (lines < 0) { ctrl.scrollUp(-lines); maybeLoadOlder(); } else ctrl.scrollDown(lines);
+      ctrl.scrollDown(decision.lines);
     }
   }
 
@@ -260,7 +281,8 @@
       const cell = ctrl.clientToCell(t.clientX, t.clientY);
       if (cell) {
         if (ctrl.isMouseReporting()) {
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 0, false, false, false); // press
+          const g = decideTouchMouseGesture('press');
+          const bytes = ctrl.encodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
           if (bytes.length > 0) onStdin(td.decode(bytes));
         } else {
           ctrl.startSelection(cell.row, cell.col);
@@ -282,7 +304,8 @@
       // own selection); plain shell → local text selection.
       if (cell) {
         if (ctrl.isMouseReporting()) {
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 2, false, false, false); // drag
+          const g = decideTouchMouseGesture('drag');
+          const bytes = ctrl.encodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
           if (bytes.length > 0) onStdin(td.decode(bytes));
         } else {
           ctrl.extendSelection(cell.row, cell.col);
@@ -309,8 +332,10 @@
       if (ctrl.isMouseReporting()) {
         // §select-as-mouse: complete the simulated gesture with a release — a tap
         // becomes a click, a drag becomes a drag-end. The TUI handles the rest.
+        // Desktop uses btn=3 release (not left-btn); decideTouchMouseGesture SSOT.
         if (cell) {
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, 0, 1, false, false, false); // release
+          const g = decideTouchMouseGesture('release');
+          const bytes = ctrl.encodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
           if (bytes.length > 0) onStdin(td.decode(bytes));
         }
       } else if (wasDragging) {
@@ -341,11 +366,13 @@
     if (touch) {
       const cell = ctrl.clientToCell(touch.clientX, touch.clientY);
       if (cell && ctrl.isMouseReporting()) {
-        const press = ctrl.encodeMouse(cell.row, cell.col, 0, 0, false, false, false);
+        const p = decideTouchMouseGesture('press');
+        const press = ctrl.encodeMouse(cell.row, cell.col, p.button, p.action, false, false, false);
         if (press.length > 0) onStdin(td.decode(press));
         requestAnimationFrame(() => {
           if (ctrl) {
-            const rel = ctrl.encodeMouse(cell.row, cell.col, 3, 1, false, false, false);
+            const r = decideTouchMouseGesture('release');
+            const rel = ctrl.encodeMouse(cell.row, cell.col, r.button, r.action, false, false, false);
             if (rel.length > 0) onStdin(td.decode(rel));
           }
         });

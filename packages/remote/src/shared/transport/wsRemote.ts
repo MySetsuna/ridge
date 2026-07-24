@@ -237,6 +237,12 @@ export type HitlResolveOutcome =
   | 'nonce-mismatch'
   | 'bad-verdict';
 
+/** R19：编排健康只读快照（与桌面 get_orchestration_health 同源）。 */
+export interface OrchestrationHealth {
+  suspendedAgents: number;
+  pendingHitl: number;
+}
+
 export interface RemoteLink {
   state(): ConnectionState;
   /**
@@ -285,6 +291,8 @@ export interface RemoteLink {
     nonce: string,
     verdict: 'approve' | 'reject',
   ): Promise<HitlResolveOutcome>;
+  /** R19：suspended / pending 计数（allowlist 只读）。 */
+  getOrchestrationHealth(): Promise<OrchestrationHealth>;
   switchWorkspace(workspaceId: string): Promise<boolean>;
   createWorkspace(name?: string): Promise<string | null>;
   createPane(shell?: string): Promise<string | null>;
@@ -914,6 +922,23 @@ export class RemoteConnection implements RemoteLink {
     )) as { _result?: { outcome: HitlResolveOutcome }; _error?: unknown };
     if (data._error) throw new Error(String(data._error));
     return data._result?.outcome ?? 'already-resolved';
+  }
+
+  async getOrchestrationHealth(): Promise<OrchestrationHealth> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'get_orchestration_health',
+        args: {},
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _result?: OrchestrationHealth; _error?: unknown };
+    if (data._error) throw new Error(String(data._error));
+    return {
+      suspendedAgents: Number(data._result?.suspendedAgents ?? 0),
+      pendingHitl: Number(data._result?.pendingHitl ?? 0),
+    };
   }
 
   async switchWorkspace(workspaceId: string): Promise<boolean> {

@@ -119,27 +119,47 @@ pub async fn get_teammate_topology(
     Ok(topology_json(ws, wid))
 }
 
-/// G1 —— 暂停（软门控 + 可选 OS 冻结）。`pty_pid` 缺省时仅软门控。
-/// OS 失败 fail-open（软门控仍生效）。仅桌面本机 IPC，不入 `REMOTE_ALLOWLIST`。
+/// G1 —— 暂停（软门控 + 可选 OS 冻结）。
+/// 优先读 `PtyHandle.child_pid` / `PtyHandle.job`（spawn 时挂上的 Job Object）；
+/// `pty_pid` 仅作前端回退。OS 失败 fail-open。仅桌面本机 IPC，不入 `REMOTE_ALLOWLIST`。
 #[tauri::command]
 pub fn suspend_agent(
+    state: State<'_, AppState>,
     workspace_id: String,
     pane_id: String,
     pty_pid: Option<u32>,
 ) -> Result<(), String> {
     let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
     let pane = Uuid::parse_str(&pane_id).map_err(|e| e.to_string())?;
-    crate::teammate::suspend::suspend_with_os(wid, pane, pty_pid, false)?;
+    let workspaces = state.workspaces.read();
+    let handle = workspaces
+        .get(&wid)
+        .and_then(|ws| ws.terminals.get(&pane));
+    let pid = handle.and_then(|h| h.child_pid).or(pty_pid);
+    let job = handle.and_then(|h| h.job.as_ref());
+    crate::teammate::suspend::suspend_with_os(wid, pane, pid, job, false)?;
+    drop(workspaces);
     crate::teammate::suspend::persist_for(wid);
     Ok(())
 }
 
 /// G1 —— 恢复（含 OS thaw 若 suspend 时冻结成功）。幂等。
+/// 若 pane 仍有 `PtyHandle.job`，经 job 入口 thaw；否则按 pid 直调 os_freeze（不 create_job）。
 #[tauri::command]
-pub fn resume_agent(workspace_id: String, pane_id: String) -> Result<(), String> {
+pub fn resume_agent(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    pane_id: String,
+) -> Result<(), String> {
     let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
     let pane = Uuid::parse_str(&pane_id).map_err(|e| e.to_string())?;
-    crate::teammate::suspend::resume(wid, pane);
+    let workspaces = state.workspaces.read();
+    let job = workspaces
+        .get(&wid)
+        .and_then(|ws| ws.terminals.get(&pane))
+        .and_then(|h| h.job.as_ref());
+    crate::teammate::suspend::resume_with_job(wid, pane, job);
+    drop(workspaces);
     crate::teammate::suspend::persist_for(wid);
     Ok(())
 }

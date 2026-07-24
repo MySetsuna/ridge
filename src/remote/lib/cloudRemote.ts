@@ -571,6 +571,17 @@ export class CloudRemoteConnection implements RemoteLink {
     return r?.outcome ?? 'already-resolved';
   }
 
+  async getOrchestrationHealth(): Promise<import('@ridge/remote').OrchestrationHealth> {
+    const h = await invoke<{ suspendedAgents?: number; pendingHitl?: number }>(
+      'get_orchestration_health',
+      {},
+    );
+    return {
+      suspendedAgents: Number(h?.suspendedAgents ?? 0),
+      pendingHitl: Number(h?.pendingHitl ?? 0),
+    };
+  }
+
   async switchWorkspace(workspaceId: string): Promise<boolean> {
     try {
       await invoke('switch_workspace', { workspaceId });
