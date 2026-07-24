@@ -538,6 +538,17 @@ export class TerminalController {
     return this.kernel.isMouseReporting();
   }
 
+  /** DEC alt-screen — used by mobile touch scroll (alt_arrows path). */
+  isAltScreen(): boolean {
+    if (this.destroyed) return false;
+    const k = this.kernel as unknown as { isAltScreen?: () => boolean };
+    try {
+      return k.isAltScreen?.() === true;
+    } catch {
+      return false;
+    }
+  }
+
   // ── Scrolling ──
 
   scrollUp(lines: number) { this.kernel.scrollUp(lines); this.markDirty(); }

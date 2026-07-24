@@ -225,6 +225,8 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "list_hitl_pending",
     // P2 阶段 2：远端裁决——nonce 恒时比对 + 单次消费；仅 approve/reject（无 modify）。
     "resolve_hitl_remote",
+    // R19：只读编排健康（suspended / pending 计数）——与桌面 Agent Center badge 同源。
+    "get_orchestration_health",
     // ── Search ──
     "text_search",
     // `search` is the alias the headless ridge-cli control protocol

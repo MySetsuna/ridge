@@ -2,6 +2,22 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-24 — iteration 19（Remote / multi-host / agent 监控 / mobile）
+
+- 库存：`2026-07-24-remote-multihost-agent-inventory.md`（dual-end / hosts / panel / touch）。
+- 修：mobile `decideTouchScroll`（alt-screen 方向键 + SGR wheel + local scroll）；touch release btn=3 对齐桌面；Remote Team orch health allowlist + badges + Suspended 点。
+- 门禁：mobileTouchScroll + capability/allowlist vitest；hosts/orch_health cargo。
+- NLM：sole PROJECT-STATE；note `[已实现]` open=0。
+- 驳回：完整 WS 出站 PTY；Agent Center 视觉大改。
+
+## 2026-07-24 — iteration 18（双报告愿景闭合）
+
+- 完成：NLM 两份深研（Actionable Brief + Architectural Blueprint）本地归档 + 全表对抗清单 `open-vision-checklist-dual-report.md` open=0。
+- Residual F2：`suspend_agent` 读 `PtyHandle.job`/`child_pid`→`try_freeze_primary`；**None 路径直 `os_freeze`，禁 create_job**（防 create 失败导致永不 thaw）；`resume_agent` 同理。
+- 测：`try_freeze_thaw_none_matches_os_freeze_no_create_job`；`suspend_with_os_real_entry_soft_and_require_os`。
+- 门禁：job_object 6 / suspend 4 / hosts 7 / reconnect 2 绿；来源恒 PROJECT-STATE，note `[已实现]`。
+- 驳回：保持 1.2/2.1/3.2/4.1/4.2、`/effort`、CRDT、cgroup 内存条；完整 WS 出站 PTY 下一里程。
+
 ## 2026-07-24 — iteration 15（开放愿景 11 项代码闭合）
 
 - 完成：CONTRACT-15 锁定 11 项全落地——V-TUI-CLK 核查既有 `encode_mouse`；V-PASTE 100 行序；V-B6A `REMOTE_UI_MISSING`；V-MOB-CP `copySelectionOnly`；V-B6B resize 尺寸测；V-M1-S3 memory goal/constraints/tasks + Agent Center；V-G1-RB git checkpoint/rollback；V-G1-OS `os_freeze`+soft fail-open；V-DISC 注入进程表；V-B3 imageVersion；V-H1 TCP probe+attach 门控。

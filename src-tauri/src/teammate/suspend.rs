@@ -33,11 +33,21 @@ pub fn suspend(wid: Uuid, pane: Uuid) {
     }
 }
 
-/// 软暂停 + 可选 OS 冻结。`pid` 为 PTY 子进程；`require_os=true` 时 OS 失败回滚软门控并 Err。
-/// `require_os=false`（默认产品路径）：OS 失败 **fail-open**，软门控仍成立。
-pub fn suspend_with_os(wid: Uuid, pane: Uuid, pid: Option<u32>, require_os: bool) -> Result<(), String> {
+/// 软暂停 + 可选 OS 冻结。
+///
+/// - `pid`：PTY 子进程（优先 spawn 记录的 `PtyHandle.child_pid`）。
+/// - `job`：spawn 时挂上的 [`super::job_object::JobHandle`]（`Some` 走 job 入口；
+///   `None` 直调 `os_freeze`，**禁止**临时 `create_job`）。
+/// - `require_os=true`：OS 失败回滚软门控并 Err；默认产品路径 fail-open。
+pub fn suspend_with_os(
+    wid: Uuid,
+    pane: Uuid,
+    pid: Option<u32>,
+    job: Option<&super::job_object::JobHandle>,
+    require_os: bool,
+) -> Result<(), String> {
     suspend(wid, pane);
-    match super::os_freeze::try_freeze(pid) {
+    match super::job_object::try_freeze_primary(job, pid) {
         Ok(Some(p)) => {
             if let Ok(mut g) = OS_FROZEN.lock() {
                 g.insert((wid, pane), p);
@@ -60,15 +70,23 @@ pub fn suspend_with_os(wid: Uuid, pane: Uuid, pid: Option<u32>, require_os: bool
 }
 
 /// 恢复。幂等：未暂停时 no-op。若曾 OS 冻结则 best-effort thaw。
-pub fn resume(wid: Uuid, pane: Uuid) {
+///
+/// `job` 应与 suspend 时同源（`PtyHandle.job`）。`None` 时仍按 pid 直调 `os_freeze::thaw_pid`，
+/// 保证 create_job 失败/无 job 时不会永久冻住进程。
+pub fn resume_with_job(wid: Uuid, pane: Uuid, job: Option<&super::job_object::JobHandle>) {
     if let Ok(mut g) = OS_FROZEN.lock() {
         if let Some(pid) = g.remove(&(wid, pane)) {
-            let _ = super::os_freeze::try_thaw(Some(pid));
+            let _ = super::job_object::try_thaw_primary(job, Some(pid));
         }
     }
     if let Ok(mut g) = SUSPENDED.lock() {
         g.remove(&(wid, pane));
     }
+}
+
+/// 恢复（无 job 句柄）：等价 `resume_with_job(..., None)`。
+pub fn resume(wid: Uuid, pane: Uuid) {
+    resume_with_job(wid, pane, None);
 }
 
 pub fn is_suspended(wid: Uuid, pane: Uuid) -> bool {
@@ -271,5 +289,34 @@ mod tests {
         suspend(w2, p2);
         clear_pane(w2, p2);
         assert!(!is_suspended(w2, p2));
+    }
+
+    /// Product entry: suspend_with_os → try_freeze_primary; resume always thaws without create_job.
+    #[test]
+    fn suspend_with_os_real_entry_soft_and_require_os() {
+        let (w1, p1) = (Uuid::new_v4(), Uuid::new_v4());
+        // pid=0 freeze fails; fail-open keeps soft gate
+        suspend_with_os(w1, p1, Some(0), None, false).expect("fail-open soft");
+        assert!(is_suspended(w1, p1));
+        resume(w1, p1);
+        assert!(!is_suspended(w1, p1));
+
+        let (w2, p2) = (Uuid::new_v4(), Uuid::new_v4());
+        // require_os + bad pid → Err and no sticky soft suspend
+        assert!(suspend_with_os(w2, p2, Some(0), None, true).is_err());
+        assert!(!is_suspended(w2, p2));
+
+        let (w3, p3) = (Uuid::new_v4(), Uuid::new_v4());
+        // no pid: soft only, resume clears
+        suspend_with_os(w3, p3, None, None, true).unwrap();
+        assert!(is_suspended(w3, p3));
+        resume_with_job(w3, p3, None);
+        assert!(!is_suspended(w3, p3));
+
+        // with spawn-time job handle (None freeze path not used)
+        let j = super::super::job_object::create_job().unwrap();
+        let (w4, p4) = (Uuid::new_v4(), Uuid::new_v4());
+        assert!(suspend_with_os(w4, p4, Some(0), Some(&j), true).is_err());
+        assert!(!is_suspended(w4, p4));
     }
 }

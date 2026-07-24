@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Check, Crown, ShieldAlert, X } from 'lucide-svelte';
-  import type { HitlPendingItem, RemoteLink, TeammateTopology } from '@ridge/remote';
+  import type {
+    HitlPendingItem,
+    OrchestrationHealth,
+    RemoteLink,
+    TeammateTopology,
+  } from '@ridge/remote';
 
   let { ws, onSelectPane }: {
     ws: RemoteLink;
@@ -13,6 +18,7 @@
   const POLL_MS = 5000;
   let topo = $state<TeammateTopology>({ roster: [], leaderId: null, edges: [] });
   let pending = $state<HitlPendingItem[]>([]);
+  let health = $state<OrchestrationHealth>({ suspendedAgents: 0, pendingHitl: 0 });
   let failed = $state(false);
   // P2 阶段 2：最近一次裁决反馈（consumed 之外的结局给一行提示，下轮轮询消隐）。
   let resolveNote = $state('');
@@ -29,9 +35,14 @@
 
   async function refresh() {
     try {
-      topo = await ws.getTeammateTopology();
-      // P2 阶段 1：只读待审批快照（脱敏，无命令全文）。裁决仍只在桌面。
-      pending = await ws.listHitlPending();
+      const [t, p, h] = await Promise.all([
+        ws.getTeammateTopology(),
+        ws.listHitlPending(),
+        ws.getOrchestrationHealth().catch(() => ({ suspendedAgents: 0, pendingHitl: 0 })),
+      ]);
+      topo = t;
+      pending = p;
+      health = h;
       failed = false;
     } catch {
       failed = true; // 静默保留上次快照；下轮轮询自愈
@@ -46,6 +57,16 @@
 </script>
 
 <div class="roster">
+  {#if health.suspendedAgents > 0 || health.pendingHitl > 0 || pending.length > 0}
+    <div class="badges" data-testid="remote-orch-badges">
+      {#if health.pendingHitl > 0 || pending.length > 0}
+        <span class="badge hitl" title="待审批">审批 {Math.max(health.pendingHitl, pending.length)}</span>
+      {/if}
+      {#if health.suspendedAgents > 0}
+        <span class="badge sus" title="已暂停 agent" data-testid="remote-orch-suspended">暂停 {health.suspendedAgents}</span>
+      {/if}
+    </div>
+  {/if}
   {#if pending.length > 0 || resolveNote}
     <p class="section">Pending approvals</p>
     {#if resolveNote}<p class="note">{resolveNote}</p>{/if}
@@ -68,10 +89,14 @@
   {:else}
     {#each topo.roster as m (m.id)}
       <button class="member" onclick={() => m.paneId && onSelectPane?.(m.paneId)} tabindex="-1">
-        <span class="dot" class:working={m.status === 'Working'}></span>
+        <span
+          class="dot"
+          class:working={m.status === 'Working'}
+          class:suspended={m.status === 'Suspended'}
+        ></span>
         <span class="name" title={m.id}>{m.name}</span>
         {#if topo.leaderId === m.id}<Crown class="w-3 h-3 crown" />{/if}
-        <span class="role">{m.role}</span>
+        <span class="role">{m.status === 'Suspended' ? '暂停' : m.role}</span>
       </button>
     {/each}
   {/if}
@@ -79,7 +104,12 @@
 
 <style>
   .roster{display:flex;flex-direction:column;gap:2px;padding:8px;overflow-y:auto}
+  .badges{display:flex;flex-wrap:wrap;gap:6px;padding:4px 2px 6px}
+  .badge{font-size:10px;font-weight:600;border-radius:999px;padding:2px 8px;border:1px solid var(--rg-border);color:var(--rg-fg-muted)}
+  .badge.hitl{border-color:color-mix(in srgb,var(--rg-accent) 50%,transparent);color:var(--rg-accent)}
+  .badge.sus{opacity:.9}
   .section{margin:4px 2px;font-size:11px;color:var(--rg-fg-muted);text-transform:uppercase;letter-spacing:.04em}
+  .dot.suspended{background:#f59e0b}
   .approval{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:var(--rg-surface-2);font-size:13px}
   .approval :global(.risk){color:var(--rg-accent);flex-shrink:0}
   .note{margin:0 2px 4px;font-size:11px;color:var(--rg-fg-muted)}

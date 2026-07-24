@@ -86,6 +86,36 @@ pub fn thaw_job_primary(job: &JobHandle, primary_pid: u32) -> Result<(), String>
     super::os_freeze::thaw_pid(primary_pid)
 }
 
+/// Product freeze entry used by [`super::suspend::suspend_with_os`].
+///
+/// - `Some(job)` → [`freeze_job_primary`] (spawn-time Job Object membership).
+/// - `None` → **direct** [`super::os_freeze::freeze_pid`] — never `create_job()`.
+///   Creating a throwaway job on this path was a regression: CreateJobObject failure
+///   blocked freezes that OS APIs would accept, and the matching thaw path could
+///   fail to unfreeze if create_job failed on resume.
+pub fn try_freeze_primary(job: Option<&JobHandle>, pid: Option<u32>) -> Result<Option<u32>, String> {
+    let Some(pid) = pid else {
+        return Ok(None);
+    };
+    match job {
+        Some(j) => freeze_job_primary(j, pid)?,
+        None => super::os_freeze::freeze_pid(pid)?,
+    }
+    Ok(Some(pid))
+}
+
+/// Product thaw entry paired with [`try_freeze_primary`].
+/// `None` job → direct [`super::os_freeze::thaw_pid`] (no create_job).
+pub fn try_thaw_primary(job: Option<&JobHandle>, pid: Option<u32>) -> Result<(), String> {
+    let Some(pid) = pid else {
+        return Ok(());
+    };
+    match job {
+        Some(j) => thaw_job_primary(j, pid),
+        None => super::os_freeze::thaw_pid(pid),
+    }
+}
+
 #[cfg(windows)]
 const PROCESS_SET_QUOTA: u32 = 0x0100;
 #[cfg(windows)]
@@ -119,5 +149,42 @@ mod tests {
     fn assign_pid_zero_err() {
         let j = create_job().unwrap();
         assert!(assign_pid(&j, 0).is_err());
+    }
+
+    #[test]
+    fn freeze_job_primary_rejects_pid_zero() {
+        let j = create_job().unwrap();
+        assert!(freeze_job_primary(&j, 0).is_err());
+        assert!(thaw_job_primary(&j, 0).is_err());
+    }
+
+    #[test]
+    fn try_freeze_primary_none_ok_and_zero_err() {
+        assert_eq!(try_freeze_primary(None, None).unwrap(), None);
+        assert!(try_freeze_primary(None, Some(0)).is_err());
+        // unlikely pid: must not panic (OS may Err)
+        let _ = try_freeze_primary(None, Some(1));
+    }
+
+    #[test]
+    fn try_freeze_primary_with_job_handle() {
+        let j = create_job().unwrap();
+        assert!(try_freeze_primary(Some(&j), Some(0)).is_err());
+        let _ = try_freeze_primary(Some(&j), Some(1));
+    }
+
+    /// None path must use os_freeze only — same error as freeze_pid, never CreateJobObject.
+    #[test]
+    fn try_freeze_thaw_none_matches_os_freeze_no_create_job() {
+        let freeze_err = super::super::os_freeze::freeze_pid(0).unwrap_err();
+        let via = try_freeze_primary(None, Some(0)).unwrap_err();
+        assert_eq!(via, freeze_err, "None freeze must be pure os_freeze");
+
+        let thaw_err = super::super::os_freeze::thaw_pid(0).unwrap_err();
+        let via_t = try_thaw_primary(None, Some(0)).unwrap_err();
+        assert_eq!(via_t, thaw_err, "None thaw must be pure os_freeze");
+
+        // thaw must succeed path-wise for None without needing a job object
+        assert!(try_thaw_primary(None, None).is_ok());
     }
 }
