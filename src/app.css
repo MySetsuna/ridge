@@ -140,6 +140,19 @@ body.rg-os-dragging * {
   -webkit-user-select: none !important;
 }
 
+/* Explorer body free-follow resize：拖中屏蔽下层 hit-test，避免被 SCM/插件面板
+ * 属性/iframe 抢 pointer；分隔条与 window 监听仍跟手。 */
+body.rg-explorer-resizing .explorer-lower,
+body.rg-explorer-resizing .explorer-body {
+  pointer-events: none !important;
+}
+body.rg-explorer-resizing .explorer-body-sep {
+  pointer-events: auto !important;
+}
+body.rg-explorer-resizing {
+  cursor: row-resize !important;
+}
+
 /* 确保 overlayscrollbars 的 host 元素不会因初始化强制 overflow:hidden 把子元素裁掉。
  * 我们在 Explorer 根节点、SCM 更改区用 flex 布局，host 自身必须继续允许 flex child 撑开。 */
 .os-host-flexbox {

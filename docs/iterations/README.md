@@ -29,3 +29,4 @@
 | 17 | `CONTRACT-iteration-17.md` | `2026-07-24-iteration-17.md` | `2026-07-24-notebooklm-guidance-17.md` | 深研弧 R17-* 全闭；报告源删除 |
 | 18 | `CONTRACT-iteration-18.md` | `2026-07-24-iteration-18.md` | （双报告对账；清单 dual-report） | 双报告 open=0；F2 freeze 接线；研究源删除 |
 | 19 | `CONTRACT-iteration-19.md` | `2026-07-24-iteration-19.md` | （remote 库存 + r19 checklist） | Remote/touch/orch；open=0 |
+| 20 | `CONTRACT-iteration-20.md` | `2026-07-24-iteration-20.md` | （explorer free-follow） | 文件树压缩下方域；open=0 |

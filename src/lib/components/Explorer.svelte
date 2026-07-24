@@ -34,7 +34,14 @@
 	import { tick } from 'svelte';
 	import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 	import FileTree from './FileTree.svelte';
-	import { explorerBodyHeights, setExplorerBodyHeight, persistExplorerBodyHeights } from '$lib/stores/explorerLayout';
+	import {
+		explorerBodyHeights,
+		setExplorerBodyHeight,
+		persistExplorerBodyHeights,
+		computeBodyHeightFromDrag,
+		MIN_BODY_H,
+		BODY_SEP_H,
+	} from '$lib/stores/explorerLayout';
 	import SaveWorkspaceDialog from './SaveWorkspaceDialog.svelte';
 	import SidebarPluginRegion from './SidebarPluginRegion.svelte';
 
@@ -677,15 +684,25 @@
 		});
 	}
 
-	// ─── cwd 文件区拖拽 resize（分隔条在每个 body 底部；像素高度，跨会话持久化）─────────────
-	// 默认 flex:1 1 0 填满；拖过的用 flex:0 1 Hpx —— 可缩小留空，shrink:1 在窗口变小/拖太大时
-	// 仍收缩，绝不溢出、所有工作区/cwd 头始终可见。
-	const MIN_BODY_H = 40;
-	let bodyResize: { cwd: string; startY: number; startH: number } | null = null;
+	// ─── cwd 文件区拖拽 resize（分隔条在 body 与下方展示域之间；跨会话持久化）─────────────
+	// free-follow：body 高度 = clamp(startH+ΔY, minBody, stackH−sep−minLower)，
+	// 下方 `.explorer-lower` flex 余量 + min-h-0 + overflow 实时压缩，不被插件内容 min-height 卡住。
+	// 拖中全局 window 监听 + body.rg-explorer-resizing 屏蔽下层 hit-test，鼠标不丢。
+	let bodyResize: {
+		cwd: string;
+		startY: number;
+		startH: number;
+		columnInnerH: number;
+	} | null = null;
 
 	function onBodyResizeMove(e: PointerEvent): void {
 		if (!bodyResize) return;
-		const h = Math.max(MIN_BODY_H, bodyResize.startH + (e.clientY - bodyResize.startY));
+		const h = computeBodyHeightFromDrag(
+			bodyResize.startH,
+			bodyResize.startY,
+			e.clientY,
+			bodyResize.columnInnerH,
+		);
 		setExplorerBodyHeight(bodyResize.cwd, h);
 	}
 	function onBodyResizeUp(): void {
@@ -694,28 +711,44 @@
 		window.removeEventListener('pointerup', onBodyResizeUp);
 		window.removeEventListener('pointercancel', onBodyResizeUp);
 		document.body.classList.remove('rg-os-dragging');
+		document.body.classList.remove('rg-explorer-resizing');
 		persistExplorerBodyHeights();
 	}
-	/** 分隔条 pointerdown：取上方 body（分隔条容器的前一个兄弟）当前高度作基准开始拖。 */
+	/** 分隔条 pointerdown：测 col-stack 内高作 free-follow 上界，pointer capture 防丢事件。 */
 	function startBodyResize(e: PointerEvent, cwd: string): void {
 		e.preventDefault();
 		e.stopPropagation();
 		const handle = e.currentTarget as HTMLElement;
-		const bodyEl = handle.previousElementSibling as HTMLElement | null;
-		if (!bodyEl) return;
-		bodyResize = { cwd, startY: e.clientY, startH: bodyEl.getBoundingClientRect().height };
+		const stack = handle.closest('.explorer-col-stack') as HTMLElement | null;
+		const bodyEl = stack?.querySelector('.explorer-body') as HTMLElement | null;
+		if (!stack || !bodyEl) return;
+		const columnInnerH = stack.getBoundingClientRect().height;
+		bodyResize = {
+			cwd,
+			startY: e.clientY,
+			startH: bodyEl.getBoundingClientRect().height,
+			columnInnerH,
+		};
 		document.body.classList.add('rg-os-dragging');
+		document.body.classList.add('rg-explorer-resizing');
+		try {
+			handle.setPointerCapture(e.pointerId);
+		} catch {
+			/* 非主指针 / 已捕获：window 监听兜底 */
+		}
 		window.addEventListener('pointermove', onBodyResizeMove);
 		window.addEventListener('pointerup', onBodyResizeUp);
-		window.addEventListener('pointercancel', onBodyResizeUp); // #3 Alt+Tab/系统弹窗取消也清理
+		window.addEventListener('pointercancel', onBodyResizeUp);
 	}
 
 	onDestroy(() => {
-		// #3 卸载时清理可能残留的 resize 监听（拖拽中切工作区/关闭面板会导致 pointerup 不触发）。
 		window.removeEventListener('pointermove', onBodyResizeMove);
 		window.removeEventListener('pointerup', onBodyResizeUp);
 		window.removeEventListener('pointercancel', onBodyResizeUp);
-		if (bodyResize) document.body.classList.remove('rg-os-dragging');
+		if (bodyResize) {
+			document.body.classList.remove('rg-os-dragging');
+			document.body.classList.remove('rg-explorer-resizing');
+		}
 	});
 
 	function getPaneLabel(paneId: string, paneTitles: Record<string, string>): string {
@@ -945,15 +978,22 @@
 									<div class="explorer-progress shrink-0" role="progressbar" aria-busy="true" aria-label={$t('explorer.loading')}></div>
 								{/if}
 
-								<!-- File tree body: cwd 下文件平铺。 -->
-								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<!-- body + sep + lower：真 flex 列栈，拖 body 时下方展示域实时压缩（free-follow）。 -->
+								<div
+									class="explorer-col-stack flex min-h-0 flex-1 flex-col overflow-hidden"
+									data-testid="explorer-col-stack"
+									data-cwd={col.cwd}
+								>
+									<!-- File tree body: cwd 下文件平铺。flex-basis 由 store 驱动。 -->
+									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div
 										class="relative explorer-body py-0.5 min-h-0 overflow-y-auto rg-scroll"
-										style={$explorerBodyHeights[col.cwd] != null ? `flex: 0 1 ${$explorerBodyHeights[col.cwd]}px` : 'flex: 1 1 0'}
+										style={$explorerBodyHeights[col.cwd] != null
+											? `flex: 0 0 ${$explorerBodyHeights[col.cwd]}px; max-height: 100%`
+											: 'flex: 1 1 0'}
 										oncontextmenu={(e) => showCwdContextMenu(e, col)}
 									>
 										{#if creatingColumnId === col.id}
-											<!-- 列级（cwd 顶层）内联新建输入行 -->
 											<div class="flex w-full items-center gap-1.5 px-2 py-1 text-[13px] bg-[var(--rg-accent)]/10">
 												<span class="w-4 h-4 shrink-0"></span>
 												<span class="w-4 h-4 flex items-center justify-center shrink-0 text-[var(--rg-accent)]">
@@ -970,44 +1010,57 @@
 												/>
 											</div>
 										{/if}
-									{#if col.tree}
-										{#if (col.tree.children ?? []).length > 0}
-											{#each col.tree.children ?? [] as child (child.path)}
-												<FileTree
-													columnId={col.id}
-													node={child}
-													depth={0}
-													expandedPaths={col.expandedPaths}
-													selectedPath={col.selectedPath}
-													selectedPaths={col.selectedPaths}
-													refreshNonce={col.refreshNonce}
-													cutPaths={$explorerClipboard?.mode === 'cut'
-														? new Set($explorerClipboard.paths)
-														: undefined}
-													onSelect={(path, isDir, mods) =>
-														handleFileSelect(path, col.id, isDir, mods)}
-													onPaste={(path) => void pasteClipboard({ columnId: col.id, targetPath: path })}
-												/>
-											{/each}
-										{:else}
-											<div class="px-4 py-2 text-[12px] text-[var(--rg-fg-muted)]">{$t('explorer.emptyDirectory')}</div>
+										{#if col.tree}
+											{#if (col.tree.children ?? []).length > 0}
+												{#each col.tree.children ?? [] as child (child.path)}
+													<FileTree
+														columnId={col.id}
+														node={child}
+														depth={0}
+														expandedPaths={col.expandedPaths}
+														selectedPath={col.selectedPath}
+														selectedPaths={col.selectedPaths}
+														refreshNonce={col.refreshNonce}
+														cutPaths={$explorerClipboard?.mode === 'cut'
+															? new Set($explorerClipboard.paths)
+															: undefined}
+														onSelect={(path, isDir, mods) =>
+															handleFileSelect(path, col.id, isDir, mods)}
+														onPaste={(path) => void pasteClipboard({ columnId: col.id, targetPath: path })}
+													/>
+												{/each}
+											{:else}
+												<div class="px-4 py-2 text-[12px] text-[var(--rg-fg-muted)]">{$t('explorer.emptyDirectory')}</div>
+											{/if}
 										{/if}
-									{/if}
-								</div>
+									</div>
 
-								<!-- resize 分隔条：拖动调整本 cwd 文件区高度（= 下方 header 上边缘那条线），跨会话持久化。 -->
+									<!-- resize 分隔条：free-follow 压缩下方 .explorer-lower。 -->
 									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div
-										class="shrink-0 h-[3px] cursor-row-resize bg-[var(--rg-border)]/30 hover:bg-[var(--rg-accent)]/50 transition-colors"
+										class="explorer-body-sep shrink-0 h-[3px] cursor-row-resize bg-[var(--rg-border)]/30 hover:bg-[var(--rg-accent)]/50 transition-colors"
+										style="height: {BODY_SEP_H}px"
 										role="separator"
 										aria-orientation="horizontal"
+										data-testid="explorer-body-sep"
 										onpointerdown={(e) => startBodyResize(e, col.cwd)}
 									></div>
 
-									<!-- Plugin region: one instance per paneId for correct state scoping. -->
-								{#each col.paneIds as pid (pid)}
-									<SidebarPluginRegion scope="pane" workspaceId={col.workspaceId} paneId={pid} cwd={col.cwd} />
-								{/each}
+									<!-- 下方展示域：余量 flex + min-h-0，随拖实时变矮。 -->
+									<div
+										class="explorer-lower min-h-0 flex-1 overflow-y-auto rg-scroll"
+										data-testid="explorer-lower"
+									>
+										{#each col.paneIds as pid (pid)}
+											<SidebarPluginRegion
+												scope="pane"
+												workspaceId={col.workspaceId}
+												paneId={pid}
+												cwd={col.cwd}
+											/>
+										{/each}
+									</div>
+								</div>
 							{/if}
 						</div>
 					{/each}
