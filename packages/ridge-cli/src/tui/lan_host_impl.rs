@@ -257,6 +257,10 @@ fn handle_text(
 
         "subscribe-pane" => {
             let pane_id = v["paneId"].as_str().and_then(|s| Uuid::parse_str(s).ok())?;
+            // §keep-alive resume（与桌面 remote_host_impl 同语义）：控制端切回一个保活了
+            // 镜像内核的 pane 时带 `resume:true` → 跳过带 RIS 的 resync 回放（否则会把存活
+            // 内核清回尾部）；仅续 live 流，内核保全量历史。首订阅/重载则正常发 resync。
+            let resume = v["resume"].as_bool().unwrap_or(false);
             // 原子取 scrollback backlog + modes 快照 + 实时订阅（同锁，加锁范围极小，
             // 不跨 await）。modes 与 backlog 在写者临界区内同步推进 → 快照一致。
             let sub = {
@@ -267,12 +271,12 @@ fn handle_text(
             if let Some(((backlog, mut rx), (modes, alt))) = sub {
                 let tx = out_tx.clone();
                 tokio::spawn(async move {
-                    // 先回放：RIS + 活动模式前导 + scrollback（共享 SSOT
+                    // 首订阅回放：RIS + 活动模式前导 + scrollback（共享 SSOT
                     // `ridge_remote::pane::pane_resync_frame`，与桌面 LAN/cloud 逐字一份），
                     // 令控制端镜像内核重建鼠标上报/alt 屏等一次性开启态——修「手机控 rdg
-                    // 里 TUI 丢鼠标」。backlog 与 live 接缝由发送侧同锁保证无重无漏
-                    // （见 SessionHandle::subscribe_with_backlog）。
-                    if !backlog.is_empty() {
+                    // 里 TUI 丢鼠标」。resume 时跳过（内核已存活）。backlog 与 live 接缝由
+                    // 发送侧同锁保证无重无漏（见 SessionHandle::subscribe_with_backlog）。
+                    if !resume && !backlog.is_empty() {
                         let frame =
                             ridge_remote::pane::pane_resync_frame(pane_id, &backlog, &modes, alt);
                         if tx.send(Message::Binary(frame)).is_err() {

@@ -783,6 +783,91 @@ impl AppState {
         }
     }
 
+    /// §incremental-replay — forward read from `since_seq` (inclusive) to the
+    /// newest retained byte, capped to `max_bytes` (newest-biased if the gap
+    /// exceeds the cap). Mirrors rdg `ScrollbackRing::since`, and is the SSOT
+    /// for the resync-vs-incremental decision: a controller that kept its mirror
+    /// kernel alive (mobile keep-alive) resubscribes with its last cursor; the
+    /// host replays ONLY the gap **without RIS** so the kernel is not wiped.
+    ///
+    /// `chunk.start_seq == since_seq` ⇒ no gap (contiguous incremental replay is
+    /// safe → send `pane_frame`, no RIS). `chunk.start_seq > since_seq` ⇒ a gap
+    /// (bytes evicted, or the gap exceeded `max_bytes`) → caller must fall back
+    /// to a full `pane_resync_frame` (RIS + scrollback) instead. When
+    /// `since_seq >= head_seq` the controller is already current (empty bytes,
+    /// `start_seq == since_seq`).
+    pub fn get_pty_scrollback_since(
+        &self,
+        ws: Uuid,
+        pane: Uuid,
+        since_seq: u64,
+        max_bytes: usize,
+    ) -> ScrollbackChunk {
+        let map = self.pty_scrollback.read();
+        let Some(entry) = map.get(&(ws, pane)) else {
+            return ScrollbackChunk {
+                bytes: String::new(),
+                start_seq: since_seq,
+                at_oldest: true,
+                head_seq: 0,
+            };
+        };
+        let snapshot = entry.snapshot_blocks();
+        let oldest_seq = entry.oldest_seq();
+        let head_seq = entry.head_seq();
+        drop(map);
+
+        // Caught up (or a stale-future cursor): nothing to replay, no gap.
+        // start_seq == since_seq signals the caller "no gap" (empty incremental).
+        if since_seq >= head_seq {
+            return ScrollbackChunk {
+                bytes: String::new(),
+                start_seq: since_seq,
+                at_oldest: oldest_seq == 0,
+                head_seq,
+            };
+        }
+        // Effective start: never older than what we still retain (that's the gap).
+        // Also honor the cap: if the requested span exceeds max_bytes, bias to the
+        // newest max_bytes → start_seq advances past since_seq → caller sees a gap
+        // and does a full resync (correct: a huge gap deserves a clean reset).
+        let span = head_seq - since_seq;
+        let mut effective_start = since_seq.max(oldest_seq);
+        if (head_seq - effective_start) as usize > max_bytes {
+            effective_start = head_seq - max_bytes as u64;
+        }
+        let _ = span;
+
+        let mut out: Vec<u8> = Vec::new();
+        let mut real_start: Option<u64> = None;
+        for (seq, block) in snapshot.iter() {
+            let block_end = seq + block.len() as u64;
+            if block_end <= effective_start {
+                continue; // entirely before the window
+            }
+            // Byte offset within this block where our window begins.
+            let mut off = effective_start.saturating_sub(*seq) as usize;
+            // Align forward to a UTF-8 boundary so decode stays clean.
+            while off < block.len() && !is_utf8_char_boundary(block, off) {
+                off += 1;
+            }
+            if off >= block.len() {
+                continue;
+            }
+            if real_start.is_none() {
+                real_start = Some(*seq + off as u64);
+            }
+            out.extend_from_slice(&block[off..]);
+        }
+        let start_seq = real_start.unwrap_or(effective_start);
+        ScrollbackChunk {
+            bytes: String::from_utf8_lossy(&out).into_owned(),
+            start_seq,
+            at_oldest: start_seq == oldest_seq,
+            head_seq,
+        }
+    }
+
     /// Return up-to `max_bytes` ending at (exclusive) `before_seq`. Use for
     /// paginating backwards: pass `chunk.start_seq` as the next `before_seq`.
     pub fn get_pty_scrollback_before(
