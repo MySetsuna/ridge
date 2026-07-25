@@ -26,11 +26,21 @@ pub struct RollbackPatch {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .map_err(|e| format!("git spawn failed: {e}"))?;
+    // iter-60 顺手修：原裸 `Command::output()` 绕过外部进程闸（无超时/杀树，
+    // Windows 还闪 cmd 黑窗）。收口到 process_guard 单出口（postmortem 规则 7）。
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(cwd);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = ridge_core::process_guard::run_command_with_timeout(
+        &mut cmd,
+        std::time::Duration::from_secs(45),
+    )
+    .map_err(|e| format!("git spawn failed: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(format!("git {} failed: {err}", args.join(" ")));
