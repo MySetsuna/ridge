@@ -20,7 +20,52 @@ permissions:
   contents: write
 
 jobs:
+  # iter-60 G8（R-TESTGATE）：发布前置测试门禁。vitest + svelte-check + 两个 remote
+  # bundle 的 vite build 冒烟（0.1.1 的 worker.format 事故就是 svelte-check 过了、
+  # 构建期才炸）。红 → build 不跑 → 不出资产。
+  test:
+    name: test gate
+    runs-on: ubuntu-22.04
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Add wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build ridge-term wasm (test prerequisite)
+        run: node packages/ridge-term/build.mjs
+      - name: vitest
+        run: pnpm test
+      - name: svelte-check
+        run: pnpm check
+      - name: ridge-core unit tests (git guard / supersede)
+        run: cargo test -p ridge-core --lib
+      - name: vite build smoke (mobile remote bundle)
+        run: pnpm build:remote
+      - name: vite build smoke (desktop-web bundle)
+        run: pnpm build:desktop-web
+
   build:
+    needs: test
     strategy:
       fail-fast: false
       matrix:
