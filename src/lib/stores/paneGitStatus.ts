@@ -94,17 +94,31 @@ interface GitDiffSummary {
  *  per-pane `availableRepos` when emitted to the store. */
 type RepoSnapshot = Omit<PaneGitInfo, 'availableRepos'>;
 
-async function resolveRepoSnapshot(repoRoot: string): Promise<RepoSnapshot | null> {
-  // Coalesce concurrent calls for the same repoRoot.
+async function resolveRepoSnapshot(
+  repoRoot: string,
+  slotBase?: string,
+): Promise<RepoSnapshot | null> {
+  // Coalesce concurrent calls for the same repoRoot. (The in-flight fetch is
+  // registered under the INITIATING pane's supersede slot — if that pane
+  // switches cwd mid-fetch the shared fetch dies and joiners see a transient
+  // null; the next heartbeat/invalidate refetches. Accepted G1 trade-off.)
   const existing = inflightByRepo.get(repoRoot);
   if (existing) return existing;
   const p = (async () => {
     try {
       // Run status + numstat in parallel — both hit git on the same repo
-      // and the pill needs both to render.
+      // and the pill needs both to render. Distinct supersede slots per
+      // command kind so the pair doesn't kill each other (G1 latest-win is
+      // per (pane, kind); a NEWER refresh of the same pane kills both).
       const [s, diffSummary] = await Promise.all([
-        invoke<ScmRepoStatus>('get_scm_status', { repoRoot }),
-        invoke<GitDiffSummary>('git_diff_summary', { repoRoot }).catch(() => ({
+        invoke<ScmRepoStatus>('get_scm_status', {
+          repoRoot,
+          slot: slotBase ? `${slotBase}:scm` : undefined,
+        }),
+        invoke<GitDiffSummary>('git_diff_summary', {
+          repoRoot,
+          slot: slotBase ? `${slotBase}:diff` : undefined,
+        }).catch(() => ({
           added: 0,
           removed: 0,
         })),
@@ -122,8 +136,10 @@ async function resolveRepoSnapshot(repoRoot: string): Promise<RepoSnapshot | nul
       };
       cacheByRepo.set(repoRoot, snap);
       return snap;
-    } catch {
-      cacheByRepo.set(repoRoot, null);
+    } catch (err) {
+      // G1: a superseded fetch is not "repo has no git data" — don't poison
+      // the cache; the newer same-slot fetch (or next heartbeat) will land.
+      if (!String(err).includes('superseded')) cacheByRepo.set(repoRoot, null);
       return null;
     } finally {
       inflightByRepo.delete(repoRoot);
@@ -159,7 +175,7 @@ async function resolveInfoForPane(paneId: string, cwd: string): Promise<PaneGitI
     selectedRepoByPane.delete(paneId);
   }
 
-  const snap = await resolveRepoSnapshot(repoRoot);
+  const snap = await resolveRepoSnapshot(repoRoot, `pane:${paneId}`);
   if (!snap) return null;
   return { ...snap, availableRepos: repos };
 }
@@ -207,6 +223,9 @@ export function trackPaneGitStatus(paneId: string, cwd: string | null): void {
     setTimeout(async () => {
       debounceTimers.delete(paneId);
       const info = await resolveInfoForPane(paneId, cwd);
+      // G1 stale-overwrite guard: if the pane's cwd moved on while this fetch
+      // was in flight, the newer fetch owns the store slot — drop this result.
+      if (lastCwdByPane.get(paneId) !== cwd) return;
       _store.update((s) => ({ ...s, [paneId]: info }));
     }, 250)
   );
