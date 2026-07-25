@@ -200,6 +200,15 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// 测试串行锁：`GIT_ACTIVE_CHILDREN` 是全局计数，任何「真持挂起子进程」的测试
+/// 并行会互相污染彼此的 before/after 断言（CI 实证：guard 超时测撞上 supersede
+/// 杀树测 → after>before）。所有 spawn 真子进程的测试先拿这把锁。
+#[cfg(test)]
+pub(crate) fn git_child_test_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
         .ok()
@@ -2815,6 +2824,8 @@ mod guard_tests {
             script
         };
 
+        // 串行化：全局活跃计数断言不能与其他真子进程测试并行（见 git_child_test_lock）。
+        let _serial = git_child_test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let before = git_active_child_count();
         let kills_before = git_timeout_kill_count();
         let start = Instant::now();
@@ -3032,6 +3043,7 @@ mod supersede_tests {
 
     #[test]
     fn newer_generation_tree_kills_live_child_and_frees_it_fast() {
+        let _serial = git_child_test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let script = hang_script("kill");
         let slot = "t:kill".to_string();
         let generation = git_slot_begin(&slot);
@@ -3090,6 +3102,7 @@ mod supersede_tests {
     fn stale_registration_kills_child_before_use() {
         // A task that only reaches its spawn AFTER being superseded must not
         // keep its child: registration fails → immediate reclaim.
+        let _serial = git_child_test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let script = hang_script("stale");
         let slot = "t:stale".to_string();
         let generation = git_slot_begin(&slot);
