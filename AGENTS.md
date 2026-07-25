@@ -3,10 +3,10 @@
 ## Communication
 - Think in English, respond in Simplified Chinese. Code comments follow the existing language style of each repo.
 
-## Workflow
-- Use the Superpowers skills for non-trivial work: `brainstorming` → `writing-plans` → `executing-plans` (or `subagent-driven-development`). Process skills (brainstorming/debugging) come before implementation skills.
-- Write design specs and plans under `docs/superpowers/specs/` (filename `YYYY-MM-DD-<topic>-design.md`); commit the design doc before implementing.
-- **If there is even a 1% chance a skill applies to the current task, invoke it.** Don't skip skills because the task seems simple.
+## Workflow（Ponytail 建造精简法，取代 Superpowers 流程）
+- **不再走 Superpowers 流程**（brainstorming → writing-plans → executing-plans / subagent-driven-development）与**强制设计 spec 文档**；重大改动以一句 rationale + 聚焦的提交说明代替。
+- 建造走 **Ponytail**：改前先读懂；沿「先谋删 → YAGNI → 复用本仓 → 标准库 → 平台原生 → 已装依赖 → 一行 → 最小可跑」止于首个成立档；每行自问「不写何害」，删优于增；根因修（grep 全调用方，共有函数一处修好）；`diff>50` 行先一句陈由；非平凡逻辑留最小自检。
+- 不写未请求的抽象，不做多分支/大爆炸式重构；**不省**：信任边界校验、防丢数据错误处理、安全、无障碍、用户明确要求。
 
 ## Collaboration Rules
 - Follow the user's instructions precisely, and within that scope act autonomously: gather the necessary context and complete the requested work end-to-end in this run, asking questions only when essential information is missing or the instructions are critically ambiguous.

@@ -42,5 +42,4 @@
 ## 4. 与合同的对应
 
 - 门禁测试：`cloudHostBridge.test.ts` "S1 兼容回落面" describe（3 例）+ 既有 §4/§5.5/§7.4 套件（56/56 绿，2026-07-23）。
-- 遥测与退役设计：见 `docs/superpowers/specs/2026-07-23-s1-fallback-telemetry-retirement-design.md`。
 - 本轮明确不做：翻 fail-closed 开关、实现产品遥测、改任何回落行为。

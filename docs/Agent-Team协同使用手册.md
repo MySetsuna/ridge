@@ -1,7 +1,6 @@
 # Ridge 多智能体协同 · 用户使用手册
 
 > 适用版本：develop（≥ 2026-06-20「底座化瘦身」之后）。需重新构建/安装才能使用本手册描述的能力。
-> 设计依据见 `docs/superpowers/specs/2026-06-20-team-agent-upgrade-plan-design.md`。
 
 ---
 
@@ -172,4 +171,4 @@ A：不会。HITL 默认关时是**字节级零变化**；状态面板无团队�
 
 ---
 
-*文档版本：2026-06-20 · 对应 Team-Agent 底座化瘦身。设计细节见 `docs/superpowers/specs/2026-06-20-team-agent-upgrade-plan-design.md`。*
+*文档版本：2026-06-20 · 对应 Team-Agent 底座化瘦身。*

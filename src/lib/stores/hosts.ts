@@ -4,7 +4,7 @@
 //   - headless：本机无头会话（复用后端 list/summon/new/terminate native 命令）
 //   - remote / rdg：远端 ridge / rdg 主机（P3/P4 接入，此处先留类型与占位）
 //
-// 生命周期不变量（详见 docs/superpowers/specs/2026-06-30-...-hosts-design.md）：
+// 生命周期不变量：
 //   工作区里关闭 foreign pane = detach（会话保活）；**真正终止**只能在此面板里做。
 import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';

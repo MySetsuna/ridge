@@ -1,5 +1,4 @@
-// @ridge/remote — 统一远控前端包（设计见
-// docs/superpowers/specs/2026-07-16-remote-frontend-unify-and-mobile-keepalive-design.md）
+// @ridge/remote — 统一远控前端包
 //
 // 边界护栏：本包 **不得** import 主 app（`$lib/*` / `$app/*` / `src/*`）。
 // 主 app 特有状态（settings / cwd / wallpaper）一律经端口注入（SettingsPort /

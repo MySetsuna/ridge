@@ -92,7 +92,7 @@ Svelte 页面/组件 → Tauri invoke/事件 → src-tauri commands / ridge-core
 
 ## 4. 开放差距（愿景 − 现状；确定性验收）
 
-> 详版（优先级 + 验收 + 轮序）见 NLM note「[开放规划] post-v0.1.2」与 `docs/superpowers/specs/2026-07-25-next-iteration-requirements-remote.md`。
+> 详版（优先级 + 验收 + 轮序）见 NLM note「[开放规划] post-v0.1.2」。
 
 | ID | 优先级 | 事 | 确定性验收 |
 | --- | --- | --- | --- |
@@ -115,7 +115,7 @@ Svelte 页面/组件 → Tauri invoke/事件 → src-tauri commands / ridge-core
 - **v0.0.20**：multi-host/control-plane、终端链接 kinds、Remote saved WS。
 - **iter 19,22–31**（open=0，见 NLM「[已实现] 闭环索引」）：mobile touch→TUI、multi-host 出站 PTY（`hosts/outbound`）、终端链接 hover 下划线、git 进程硬护栏（`git_output` 超时杀树）、orch health、cap parity、协议守卫、用户轨脚本、Explorer free-follow 压缩。
 - **v0.1.1**：Remote 服务腿收敛（三腿→`ridge_remote::pane` SSOT）+ `ridge_term::ModeTracker` + rdg live modes + P4 手机保活 + resume/增量后端基础。修一处 `worker.format` 构建阻断后重发。
-- **v0.1.2**：R-CLOUD-CONVERGE（cloud 首订阅→host 一份帧）+ 修真 gate bug（前导命令入真能力门 → 公网手机 TUI 鼠标真修复）+ 版本偏斜兜底。双线发布（GitHub 11 资产 + cloud artifact `0.1.2+g2c799ba`）。详见 `docs/superpowers/specs/2026-07-25-R-CLOUD-CONVERGE-change-log.md`。
+- **v0.1.2**：R-CLOUD-CONVERGE（cloud 首订阅→host 一份帧）+ 修真 gate bug（前导命令入真能力门 → 公网手机 TUI 鼠标真修复）+ 版本偏斜兜底。双线发布（GitHub 11 资产 + cloud artifact `0.1.2+g2c799ba`）。变更/风险细节见 commit `2c799ba` 与本文 §2.3/§3。
 - 更早（iter 1–18）历史闭环：见 git log + `docs/iterations/*`（本文不复述）。
 
 ---

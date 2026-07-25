@@ -7,7 +7,6 @@
 //!
 //! 用途（后续 P2 握手帧接线）：E2EE 握手时 host 用本私钥**签名本次临时 X25519 公钥**，
 //! controller 验签 + TOFU 固定指纹 → 被攻陷 relay 无私钥，无法替换公钥做 MITM。
-//! 见 `wind/docs/superpowers/specs/2026-06-11-remote-zero-trust-crypto-design.md` §3。
 //!
 //! 失败一律降级：`load_or_create` 加载异常当"无身份"→ 现生成；保存失败仅 `warn`
 //! （不阻断远控启动）。
