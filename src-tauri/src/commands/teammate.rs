@@ -97,21 +97,41 @@ pub async fn get_teammate_topology(
     };
     // 有 typed 画像 → 跑 Leader 竞选（真实角色/leader）；否则回退侧表映射。
     // 两路都补 `paneIndex`：典型画像路径需把工作区当前叶子顺序传入 topology_for。
-    if crate::teammate::profiles::has(wid) {
-        let leaves = {
-            let workspaces = state.workspaces.read();
-            workspaces
-                .get(&wid)
-                .map(|ws| ws.pane_tree.get_all_leaves())
-                .unwrap_or_default()
-        };
-        return Ok(crate::teammate::profiles::topology_for(wid, &leaves));
-    }
     let workspaces = state.workspaces.read();
     let ws = workspaces
         .get(&wid)
         .ok_or_else(|| format!("workspace {wid} not found"))?;
-    Ok(topology_json(ws, wid))
+    let mut topo = if crate::teammate::profiles::has(wid) {
+        let leaves = ws.pane_tree.get_all_leaves();
+        crate::teammate::profiles::topology_for(wid, &leaves)
+    } else {
+        topology_json(ws, wid)
+    };
+    inject_roster_titles(&mut topo, ws);
+    Ok(topo)
+}
+
+/// iter-60 G7 —— roster 条目并入 pane 标题（`title`，OSC 实时标题）：Commune MCP
+/// （ridge_get_team_profile）与远端 roster 只读感知「队友正在跑什么」的轻量摘要，
+/// 免去 PTY 尾行抓取/额外 LLM。两条拓扑路径（typed profiles / 侧表映射）共用。
+pub fn inject_roster_titles(topology: &mut Value, ws: &crate::state::Workspace) {
+    let Some(roster) = topology.get_mut("roster").and_then(|r| r.as_array_mut()) else {
+        return;
+    };
+    for entry in roster {
+        let Some(pid) = entry
+            .get("paneId")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+        else {
+            continue;
+        };
+        if let Some(t) = ws.teammate_pane_titles.get(&pid) {
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert("title".into(), json!(t));
+            }
+        }
+    }
 }
 
 /// G1 —— 暂停（软门控 + 可选 OS 冻结）。
@@ -275,14 +295,41 @@ pub fn set_workspace_memory(
     Ok(())
 }
 
-/// V-DISC —— 探测本机常见 agent CLI 进程（`enabled=false` 时恒空）。
+/// V-DISC / iter-60 G6 —— 探测本机常见 agent CLI 进程（`enabled=false` 时恒空）。
+///
+/// 实现约束（对话需求「轻量化、性能要好」+ git 风暴 postmortem）：
+/// - **进程内枚举**（sysinfo），不再 spawn `tasklist`/`ps` 子进程（原实现是一处
+///   绕过外部进程闸的裸 spawn）；
+/// - **5s TTL 缓存**：UI 轮询/多调用方共享一次扫描，关面板即零开销；
+/// - 匹配逻辑复用 `teammate::discover::discover_agents` 纯函数（已有单测钉死）。
 #[tauri::command]
 pub fn discover_cli_agents(enabled: bool) -> Result<Value, String> {
     if !enabled {
         return Ok(Value::Array(vec![]));
     }
-    // Windows: tasklist; Unix: ps — best-effort, empty on failure.
-    let procs = list_process_names();
+    Ok(Value::Array(
+        discovered_agents_cached()
+            .into_iter()
+            .map(|a| json!({ "name": a.name, "pid": a.pid }))
+            .collect(),
+    ))
+}
+
+/// 5s TTL 缓存的进程指纹扫描（G6）。
+fn discovered_agents_cached() -> Vec<crate::teammate::discover::DiscoveredAgent> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    type Cache = Option<(Instant, Vec<crate::teammate::discover::DiscoveredAgent>)>;
+    static CACHE: Mutex<Cache> = Mutex::new(None);
+    const TTL: Duration = Duration::from_secs(5);
+
+    let mut guard = CACHE.lock().unwrap();
+    if let Some((at, cached)) = guard.as_ref() {
+        if at.elapsed() < TTL {
+            return cached.clone();
+        }
+    }
+    let procs = list_process_names_sysinfo();
     let found = crate::teammate::discover::discover_agents(
         true,
         &procs
@@ -290,63 +337,21 @@ pub fn discover_cli_agents(enabled: bool) -> Result<Value, String> {
             .map(|(pid, n)| (*pid, n.as_str()))
             .collect::<Vec<_>>(),
     );
-    Ok(Value::Array(
-        found
-            .into_iter()
-            .map(|a| json!({ "name": a.name, "pid": a.pid }))
-            .collect(),
-    ))
+    *guard = Some((Instant::now(), found.clone()));
+    found
 }
 
-fn list_process_names() -> Vec<(u32, String)> {
-    #[cfg(windows)]
-    {
-        let out = std::process::Command::new("tasklist")
-            .args(["/FO", "CSV", "/NH"])
-            .output();
-        let Ok(out) = out else { return vec![] };
-        let s = String::from_utf8_lossy(&out.stdout);
-        let mut v = Vec::new();
-        for line in s.lines() {
-            // "name.exe","pid","session","session#","mem"
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() < 2 {
-                continue;
-            }
-            let name = parts[0].trim().trim_matches('"').to_string();
-            let pid = parts[1]
-                .trim()
-                .trim_matches('"')
-                .parse::<u32>()
-                .unwrap_or(0);
-            if pid > 0 {
-                v.push((pid, name));
-            }
-        }
-        return v;
-    }
-    #[cfg(unix)]
-    {
-        let out = std::process::Command::new("ps")
-            .args(["-eo", "pid,comm"])
-            .output();
-        let Ok(out) = out else { return vec![] };
-        let s = String::from_utf8_lossy(&out.stdout);
-        let mut v = Vec::new();
-        for line in s.lines().skip(1) {
-            let mut it = line.split_whitespace();
-            let Some(pid_s) = it.next() else { continue };
-            let Some(comm) = it.next() else { continue };
-            if let Ok(pid) = pid_s.parse::<u32>() {
-                v.push((pid, comm.to_string()));
-            }
-        }
-        return v;
-    }
-    #[cfg(not(any(windows, unix)))]
-    {
-        vec![]
-    }
+/// 进程内枚举 (pid, image name) —— 仅刷新进程表，不取 CPU/内存等重字段。
+fn list_process_names_sysinfo() -> Vec<(u32, String)> {
+    use sysinfo::{ProcessRefreshKind, RefreshKind, System, UpdateKind};
+    let sys = System::new_with_specifics(
+        RefreshKind::new()
+            .with_processes(ProcessRefreshKind::new().with_exe(UpdateKind::Never)),
+    );
+    sys.processes()
+        .iter()
+        .map(|(pid, p)| (pid.as_u32(), p.name().to_string_lossy().to_string()))
+        .collect()
 }
 
 /// P2 阶段 1 —— 待裁决高危动作的**脱敏**只读列表（`teammate` 能力下远端可见）。

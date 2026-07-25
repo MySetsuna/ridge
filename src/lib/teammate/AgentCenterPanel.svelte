@@ -119,6 +119,10 @@
   }
   let decisions = $state<HitlDecisionEntry[]>([]);
 
+  // iter-60 G6：本机进程指纹发现的 agent CLI（roster 之外的「Discovered」区）。
+  let discovered = $state<{ name: string; pid: number }[]>([]);
+  const discoveryOn = $derived($settingsStore.agentDiscoveryEnabled);
+
   // V-M1-S3：workspace memory goal（最小编辑区）
   let memGoal = $state('');
   let memGoalDirty = $state(false);
@@ -162,6 +166,16 @@
       } catch {
         pendingHitl = 0;
       }
+    }
+    // iter-60 G6：轻量 Agent 自动发现（后端 5s TTL 缓存；关开关即恒空零扫描）。
+    try {
+      discovered = discoveryOn
+        ? ((await invoke<{ name: string; pid: number }[]>('discover_cli_agents', {
+            enabled: true,
+          })) ?? [])
+        : [];
+    } catch {
+      discovered = [];
     }
     // Heavy: decisions / memory / git / audit — not every 3s (iter 50 perf).
     if (doHeavy) {
@@ -337,8 +351,9 @@
     data-tauri-drag-region
     class="flex h-11 shrink-0 items-center justify-between border-b border-[var(--rg-border)] px-3"
   >
+    <!-- iter-60 G5 品牌层改名：内置 MCP/控制面对外名 Agent's Commune（wire 方法名不动） -->
     <span class="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-      <Bot class="h-3.5 w-3.5" /> 智能体
+      <Bot class="h-3.5 w-3.5" /> Agent's Commune
     </span>
     <div class="flex items-center gap-1">
       <!-- MCP 接入引导：内置编辑器只读打开打包文档 -->
@@ -427,6 +442,23 @@
             {/each}
           </ul>
         {/if}
+      </section>
+    {/if}
+    <!-- iter-60 G6：本机自动发现（进程指纹）。只读展示，不入 roster、不建 pane。 -->
+    {#if discoveryOn && discovered.length > 0}
+      <section class="rounded-md border border-[var(--rg-border)] px-2 py-1.5">
+        <h3 class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
+          Discovered <span class="normal-case">（本机 agent 进程）</span>
+        </h3>
+        <ul class="mt-1 space-y-0.5">
+          {#each discovered as d (d.pid)}
+            <li class="flex items-center gap-1.5 text-[10px] font-mono text-[var(--rg-fg-muted)]">
+              <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400/70"></span>
+              <span class="truncate">{d.name}</span>
+              <span class="opacity-60">pid {d.pid}</span>
+            </li>
+          {/each}
+        </ul>
       </section>
     {/if}
     <!-- V-M1-S3：工作区目标（goal）最小编辑 -->

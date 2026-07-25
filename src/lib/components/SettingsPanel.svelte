@@ -475,6 +475,19 @@
               />
             </div>
 
+            <!-- iter-60 G6：Agent 自动发现（进程指纹，后端 5s 缓存；关=零扫描） -->
+            <div class="flex items-start justify-between gap-4 p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50">
+              <div class="min-w-0 flex-1">
+                <div class="text-[12px] text-[var(--rg-fg)]">Agent 自动发现</div>
+                <div class="text-[11px] text-[var(--rg-fg-muted)] mt-1">按进程指纹发现本机运行中的 agent CLI（claude / aider / codex …），在指挥部「Discovered」区只读展示。轻量：进程内枚举 + 5 秒缓存，关闭即完全停止扫描。</div>
+              </div>
+              <Toggle
+                checked={$settingsStore.agentDiscoveryEnabled}
+                ariaLabel="Agent 自动发现"
+                onchange={(next) => setSetting('agentDiscoveryEnabled', next)}
+              />
+            </div>
+
             <!-- 安全审批闸：独立生效，不随总开关置灰（不可整体关） -->
             <div class="space-y-5">
               <!-- 安全审批 HITL -->
