@@ -112,6 +112,12 @@ webrtc = { version = "0.11", optional = true }
 axum = { version = "0.7", features = ["ws"] }
 # Shared remote-control server infrastructure (TLS + HTTP/WS server lifecycle)
 ridge-remote = { path = "../ridge-remote" }
+# §mode-reattach — same terminal kernel the desktop uses, for the headless LAN
+# host's live-modes tracking (ModeTracker). rdg does NOT render; it only needs
+# the current DEC private modes so subscribe/resync frames reattach mouse/alt to
+# the controller's mirror kernel (fixes mobile TUI mouse control over rdg).
+# default-features=false skips the wasm-only webgpu stack — native vte core only.
+ridge-term = { path = "../ridge-term", default-features = false }
 
 # 进程存活探测 / 守护进程停止走 `libc::kill` 系统调用（见 daemon_ctl.rs），而非
 # shell 出 `kill` 命令——后者会把 procps `kill` 的 "No such process" 诊断泄漏到

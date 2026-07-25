@@ -5337,6 +5337,7 @@ dependencies = [
  "ridge-core",
  "ridge-remote",
  "ridge-signaling",
+ "ridge-term",
  "ridge-tmux",
  "rpassword",
  "rustls",
