@@ -2,6 +2,29 @@
 import { mount } from 'svelte';
 import App from './App.svelte';
 import { registerSW } from 'virtual:pwa-register';
+import { REMOTE_TERM_FONT } from '@ridge/remote/shared/terminal/fontStack';
+
+// §P4 host-ports (2026-07-25): the shared TerminalManager reads app capabilities
+// (terminal scrollback lines / font / shell) through injected HostPorts. Mobile
+// has no desktop settings store, so inject a minimal static port BEFORE the
+// terminal mounts (attach happens post-auth, long after this dynamic import
+// resolves). Dynamic import keeps the large manager out of the mobile entry
+// bundle — the lazy TerminalCanvas loads it on first pane attach; this just
+// primes the module-level ports it will read. Only `settings` is meaningful for
+// mobile (scrollback capacity at attach); the rest default gracefully.
+void import('@ridge/remote/shared/terminal/manager').then(({ TerminalManager }) => {
+  const snapshot = {
+    terminalScrollbackLines: 2000,
+    terminalFontFamily: REMOTE_TERM_FONT,
+    defaultShell: '',
+  };
+  TerminalManager.setHostPorts({
+    settings: {
+      get: () => snapshot,
+      subscribe: (cb) => { cb(snapshot); return () => {}; },
+    },
+  });
+});
 
 const app = mount(App, { target: document.getElementById('app')! });
 

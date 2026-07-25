@@ -27,7 +27,6 @@
   } from '@ridge/remote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
-  import { PaneScrollbackCache, PANE_BUF_CAP } from './lib/paneScrollbackCache';
 
   let { ws }: { ws: RemoteLink } = $props();
   let panes = $state<PaneInfo[]>([]);
@@ -190,99 +189,79 @@
     if (older && older.length > 0 && activePaneId === pid) canvasRef.prependScrollback(older);
   }
 
-  // §terminal-isolation + scrollback-cache: the local kernel is a single shared
-  // instance, so switching panes MUST wipe it (resetForSwitch) — otherwise the
-  // previous pane's scrollback bleeds into the new one (上滚串台). We also keep
-  // each pane's raw byte stream so a switch repaints instantly from cache, and
-  // mirror the active pane to sessionStorage so a reload restores instantly
-  // before the host reconnects. The host re-sends ≤64KB scrollback on
-  // (re)subscribe; we tail-match it against the cache to avoid double-painting.
-  // §scrollback-cache: per-pane raw byte buffers + the prune (GC) and
-  // replay-reconcile DECISIONS live in the pure PaneScrollbackCache module
-  // (unit-tested without a host/DOM). This shell only drives its sessionStorage
-  // mirroring by the id sets the prune methods return.
-  const SS_CAP = 48 * 1024;
-  const paneCache = new PaneScrollbackCache(PANE_BUF_CAP);
+  // §keep-alive (P4, 2026-07-25): the per-pane raw-byte cache + sessionStorage
+  // mirror + replay-reconcile are RETIRED. Each pane now has its own keep-alive
+  // kernel in the shared TerminalManager (held by the pane's TerminalCanvas,
+  // parked — not wiped — on switch), so pane history lives in the kernel and
+  // switching back shows it instantly with no wipe / no cache / no reconcile.
+  // We keep only the lightweight "which pane is subscribed" pointer and a
+  // workspace-tagged set of attached panes so we can DETACH (free the kernel)
+  // when the host truly closes a pane / workspace.
   let subscribedPaneId: string | null = null;
-  let expectReplayPane: string | null = null;
-  let ssMirrorTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const SB_KEY_PREFIX = 'rg-remote-sb:';
-  function ssKey(id: string) { return `${SB_KEY_PREFIX}${id}`; }
-  function bytesToB64(b: Uint8Array): string {
-    let s = '';
-    for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
-    return btoa(s);
-  }
-  function b64ToBytes(s: string): Uint8Array {
-    const bin = atob(s);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  }
-  function loadPaneFromSession(id: string): Uint8Array | null {
-    try { const s = sessionStorage.getItem(ssKey(id)); return s ? b64ToBytes(s) : null; }
-    catch { return null; }
-  }
-  function scheduleSessionMirror(id: string) {
-    if (ssMirrorTimer) return;
-    ssMirrorTimer = setTimeout(() => {
-      ssMirrorTimer = null;
-      const buf = paneCache.get(id);
-      if (!buf) return;
-      try {
-        const tail = buf.length > SS_CAP ? buf.subarray(buf.length - SS_CAP) : buf;
-        sessionStorage.setItem(ssKey(id), bytesToB64(tail));
-      } catch { /* quota exceeded / disabled — ignore */ }
-    }, 600);
-  }
-  function removeSessionMirror(id: string) {
-    try { sessionStorage.removeItem(ssKey(id)); } catch { /* disabled — ignore */ }
-  }
+  // Workspace each attached (visited) pane belongs to. Mirrors the retired
+  // paneCache cross-ws prune: release only panes that vanished from THEIR OWN
+  // workspace's list (mobile can only close panes in the active workspace), so a
+  // cross-workspace switch-back keeps the other workspaces' kernels alive.
+  const attachedPaneWs = new Map<string, string>();
 
-  // §cache-gc: a closed pane MUST release its caches. The PWA tab can live for
-  // days (长期运行/长时间后台), so without this every terminal ever opened leaks
-  // its scrollback into both the in-memory buffer map (≤256KB each) AND
-  // sessionStorage (≤48KB each), plus the WS text buffer — eventually blowing the
-  // mobile tab's memory budget / sessionStorage quota, so the page fails to
-  // (re)open until the user clears site data.
-  //
-  // §cross-ws-prune（方案1，子方案 B）: the host's `list-panes` only returns the
-  // ACTIVE workspace's panes, so the old "delete everything not in this list"
-  // wrongly GC'd OTHER workspaces' caches the moment you switched workspace →
-  // switching back lost scrollback. We now release ONLY panes that vanished from
-  // their OWN workspace's list (truly closed — mobile can only close panes in the
-  // active workspace), keeping cross-workspace caches alive. The host re-broadcasts
-  // the list on every pane add/close/rename. `survivingIds` spans all workspaces so
-  // ws.pruneOutputs (same "not in set → delete" semantics) doesn't over-prune either.
-  function pruneDeadPanes(activeWsId: string, liveIds: string[]) {
-    const { survivingIds } = paneCache.pruneCurrentWorkspace(activeWsId, liveIds);
-    // Mirror the in-memory GC to sessionStorage: drop any mirror whose pane is no
-    // longer cached (survivingIds is the authoritative kept set across all ws).
-    const survive = new Set(survivingIds);
+  // §keep-alive resume: panes whose mirror kernel has ALREADY received its full
+  // RIS resync (scrollback + mode reattach) this session and is in-sync. On a
+  // switch-BACK to such a pane we resubscribe with `{ resume: true }` so the host
+  // skips the RIS resync (which would wipe the surviving keep-alive kernel down to
+  // the tail — the RIS-vs-keep-alive conflict). Fresh panes (not in the set) get a
+  // full resync. Cleared on reconnect (a disconnect leaves every mirror gapped →
+  // force a full resync); a truly-closed pane is removed when its kernel is detached.
+  const replayedPanes = new Set<string>();
+
+  // Free the kernels of truly-closed panes. Dynamic import keeps the (large)
+  // manager out of the mobile entry bundle — the lazy TerminalCanvas already
+  // loaded it by the time any pane exists, so this resolves instantly.
+  async function detachPaneKernels(ids: string[]) {
+    if (ids.length === 0) return;
+    // A truly-closed pane can never resume — drop it from the resume set so a later
+    // pane reusing the same id (unlikely, but ids are host-assigned) starts fresh.
+    for (const id of ids) replayedPanes.delete(id);
     try {
-      const stale: string[] = [];
-      for (let i = 0; i < sessionStorage.length; i++) {
-        const k = sessionStorage.key(i);
-        if (k && k.startsWith(SB_KEY_PREFIX) && !survive.has(k.slice(SB_KEY_PREFIX.length))) {
-          stale.push(k);
-        }
-      }
-      for (const k of stale) sessionStorage.removeItem(k);
-    } catch { /* sessionStorage disabled — nothing to prune */ }
-    ws.pruneOutputs(survive);
+      const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
+      const mgr = TerminalManager.tryInstance();
+      if (!mgr) return;
+      for (const id of ids) mgr.detach(id);
+    } catch { /* manager not loaded / already torn down */ }
   }
 
-  // §cross-ws-prune fallback（方案1）: when a whole workspace is closed (its id
-  // drops from list-workspaces), its panes can never reappear, so release their
-  // caches here — the per-list prune above never sees those panes again. Clears
-  // both the in-memory buffer and its sessionStorage mirror, and keeps the WS
-  // text buffers (pruneOutputs) in step with the surviving cached set.
+  // A fresh `panes` list arrived for the CURRENT active workspace. Panes tagged
+  // to `activeWsId` that vanished from it were truly closed → detach their
+  // kernels (and drop the host-side output buffer). Other workspaces' kernels
+  // are untouched (§cross-ws-prune parity).
+  function pruneDeadPanes(activeWsId: string, liveIds: string[]) {
+    const live = new Set(liveIds);
+    const dead: string[] = [];
+    for (const [id, ws2] of attachedPaneWs) {
+      if (ws2 === activeWsId && !live.has(id)) { dead.push(id); attachedPaneWs.delete(id); }
+    }
+    // (Re)tag every live pane of this workspace so GC works even if a pane was
+    // activated before activeWorkspaceId was known. detach() no-ops on panes
+    // whose kernel was never actually attached, so over-tagging is harmless.
+    for (const id of liveIds) attachedPaneWs.set(id, activeWsId);
+    if (dead.length > 0) {
+      void detachPaneKernels(dead);
+      ws.pruneOutputs(new Set([...attachedPaneWs.keys()]));
+    }
+  }
+
+  // A whole workspace closed (its id dropped from list-workspaces): its panes
+  // can never reappear, so free their kernels here (the per-list prune above
+  // never sees those panes again).
   function pruneCachesForClosedWorkspaces(liveWorkspaceIds: string[]) {
-    const removed = paneCache.pruneClosedWorkspaces(liveWorkspaceIds);
-    if (removed.length > 0) {
-      for (const id of removed) removeSessionMirror(id);
-      ws.pruneOutputs(new Set(paneCache.liveIds()));
+    const liveWs = new Set(liveWorkspaceIds);
+    const dead: string[] = [];
+    for (const [id, ws2] of attachedPaneWs) {
+      if (!liveWs.has(ws2)) { dead.push(id); attachedPaneWs.delete(id); }
+    }
+    if (dead.length > 0) {
+      void detachPaneKernels(dead);
+      ws.pruneOutputs(new Set([...attachedPaneWs.keys()]));
     }
   }
 
@@ -520,27 +499,12 @@
       }
     });
     ws.onRawBytes((paneId, data) => {
-      // The host streams only the subscribed (active) pane; ignore stragglers.
-      if (paneId !== activePaneId) return;
-      if (expectReplayPane === paneId) {
-        // First chunk after (re)subscribe = the host's on-subscribe scrollback
-        // replay (≤64KB tail). §no-shrink（方案2）: reconcile it against the local
-        // cache. 'keep' = our cache tail-matches OR is LONGER than the replay →
-        // we already pre-painted it; drop the replay so the host's 64KB tail can't
-        // overwrite/shrink our ≤256KB history. 'repaint' = no cache, or the pane
-        // changed (cache shorter & no tail-match) → wipe + repaint authoritatively.
-        expectReplayPane = null;
-        const r = paneCache.reconcileReplay(paneId, data, activeWorkspaceId || undefined);
-        if (r.action === 'keep') return;
-        canvasRef?.resetForSwitch();
-        canvasRef?.feedUtf8(r.buffer);
-        scheduleSessionMirror(paneId);
-        return;
-      }
-      // Live output.
-      paneCache.append(paneId, data, activeWorkspaceId || undefined);
-      canvasRef?.feedUtf8(data);
-      scheduleSessionMirror(paneId);
+      // §keep-alive (P4): feed the frame into its pane's alive kernel via the
+      // active pane's TerminalCanvas. The host single-subscribes so this is the
+      // active pane; a straggler for a just-unsubscribed pane is dropped (it
+      // isn't the mounted TerminalCanvas). No cache, no reconcile, no wipe — the
+      // host's on-subscribe replay is absorbed by the alive kernel.
+      if (paneId === activePaneId) canvasRef?.feedUtf8(data);
     });
     ws.onMetadata((paneId, title, cwd) => {
       // §realtime-title: reflect the live pane title in the workspace tree (and
@@ -584,23 +548,20 @@
         applyTheme(colors);
       }
     });
-    // Reconnect resync: a reconnect opens a brand-new host socket that holds no
-    // pane subscription, and the local kernel still shows the stale pre-drop
-    // screen. Reset it (RIS) so the host's scrollback replay + full repaint paint
-    // a correct, current view instead of appending under stale content, then
-    // re-establish the subscription, workspace state, and viewport size claim.
+    // Reconnect resync (R7): a reconnect opens a brand-new host socket that
+    // holds no pane subscription. §keep-alive (P4): the local kernel stays ALIVE
+    // (no wipe) — we just re-subscribe the active pane so the host resumes
+    // streaming into it, and re-claim the viewport size so the PTY isn't stuck
+    // at the 80x24 default. The host's replay is absorbed by the alive kernel.
     ws.onReconnect(() => {
-      // Reconnect opens a fresh host socket with no pane subscription; the local
-      // kernel still shows the stale pre-drop screen. Wipe it, pre-paint the
-      // cache for instant feedback, then re-subscribe — the host replays the
-      // pane's scrollback, reconciled in onRawBytes (expectReplayPane).
-      canvasRef?.resetForSwitch();
       const pid = activePaneId;
+      // §keep-alive after reconnect: a disconnect leaves a gap in every mirror kernel,
+      // so force a full RIS resync on the next visit to each pane (clear the replayed
+      // set). The active pane is full-resynced now (subscribePane below, resume=false).
+      replayedPanes.clear();
       if (pid) {
-        const cached = paneCache.get(pid);
-        if (cached && cached.length > 0) canvasRef?.feedUtf8(cached);
-        expectReplayPane = pid;
         ws.subscribePane(pid);
+        replayedPanes.add(pid);
         // The new server socket has no knowledge of our viewport size.
         // Claim it immediately so the PTY is reflowed and the terminal
         // doesn't stay stuck at the 80x24 default.
@@ -644,26 +605,30 @@
         lastActivePanePerWorkspace.set(activeWorkspaceId, pid);
         persistPaneMap();
         persistActiveWs(activeWorkspaceId);
+        // Track for keep-alive GC: this pane's kernel is (being) attached under
+        // the active workspace; released only when the host closes it.
+        attachedPaneWs.set(pid, activeWorkspaceId);
       }
-      // §isolation: wipe the kernel so the previous pane can't bleed into this one.
-      canvasRef?.resetForSwitch();
-      // Instant pre-paint from cache (in-memory; else sessionStorage on reload).
-      let cached = paneCache.get(pid);
-      if (!cached) {
-        const restored = loadPaneFromSession(pid);
-        if (restored) { paneCache.set(pid, restored, activeWorkspaceId || undefined); cached = restored; }
-      }
-      if (cached && cached.length > 0) canvasRef?.feedUtf8(cached);
-      // The host replays this pane's scrollback on subscribe — reconcile it
-      // against the cache in onRawBytes to avoid double-painting.
+      // §keep-alive (P4): NO resetForSwitch / no cache pre-paint. The pane's
+      // kernel stays alive across switches (its TerminalCanvas parks it, not
+      // wiped), so switching back shows content instantly with zero white-screen
+      // and full scrollback. We only (debounced) re-subscribe so the host
+      // resumes streaming THIS pane; the host's on-subscribe replay is absorbed
+      // by the alive kernel.
       // §B-debounce: 防快速切换 pane 连发多次未截流的 replay_pane_scrollback_raw（256 KiB）
       // 打爆 DataChannel 缓冲区（8 MiB BUFFERED_HIGH_WATERMARK）→ 断连。
       // 只对"最终落脚"的 pane 发 subscribePane：150ms 内若 activePaneId 已变则取消。
       if (_paneSubDebounce !== null) clearTimeout(_paneSubDebounce);
-      expectReplayPane = pid;
       _paneSubDebounce = setTimeout(() => {
         _paneSubDebounce = null;
-        if (activePaneId === pid) ws.subscribePane(pid);
+        if (activePaneId === pid) {
+          // §keep-alive resume: a pane we've already resynced this session keeps its
+          // alive kernel → resubscribe as resume (host skips the RIS resync that would
+          // wipe it). First view → full resync, then mark it replayed.
+          const resume = replayedPanes.has(pid);
+          ws.subscribePane(pid, { resume });
+          replayedPanes.add(pid);
+        }
       }, 150);
     });
   });
@@ -807,16 +772,23 @@
     {#await TerminalCanvas}
       <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
     {:then module}
-      <module.default
-        bind:this={canvasRef}
-        bind:backendName
-        paneId={activePaneId ?? null}
-        {onStdin}
-        {onResize}
-        onHostClipboard={(text) => ws.setHostClipboard(text)}
-        onNearTop={loadOlderScrollback}
-        bind:selectionMode
-      />
+      <!-- §keep-alive (P4): key on activePaneId so switching panes REMOUNTS the
+           input surface (onMount attach/unpark, onDestroy park) — mirroring the
+           desktop RidgePane mount/unmount → attach/park lifecycle. The pane's
+           kernel survives the remount (parked), so no wipe / no white-screen. -->
+      {#key activePaneId}
+        <module.default
+          bind:this={canvasRef}
+          bind:backendName
+          paneId={activePaneId}
+          workspaceId={activeWorkspaceId}
+          {onStdin}
+          {onResize}
+          onHostClipboard={(text) => ws.setHostClipboard(text)}
+          onNearTop={loadOlderScrollback}
+          bind:selectionMode
+        />
+      {/key}
     {/await}
   {/if}
 

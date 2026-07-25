@@ -270,7 +270,13 @@ export interface RemoteLink {
   pruneOutputs(liveIds: Set<string>): void;
   send(msg: Record<string, unknown>): void;
   listPanes(): void;
-  subscribePane(paneId: string): void;
+  // §keep-alive resume: pass `{ resume: true }` when the controller kept this
+  // pane's mirror kernel alive (mobile P4 keep-alive) and is re-subscribing after
+  // a switch — the host then skips the RIS-bearing resync that would wipe the live
+  // kernel, and just resumes the live stream. `sinceSeq` (forward-compat) requests
+  // an incremental gap replay from that byte cursor instead. Omit both for a fresh
+  // subscribe (full RIS + scrollback + mode reattach).
+  subscribePane(paneId: string, opts?: { resume?: boolean; sinceSeq?: number }): void;
   /**
    * §history-pull（cloud-only）: fetch the next older batch of a pane's scrollback
    * (seq-cursor paging via get_pane_scrollback_before) to PREPEND above the current
@@ -819,7 +825,12 @@ export class RemoteConnection implements RemoteLink {
   }
 
   listPanes() { this.send({ type: 'list-panes' }); }
-  subscribePane(paneId: string) { this.send({ type: 'subscribe-pane', paneId }); }
+  subscribePane(paneId: string, opts?: { resume?: boolean; sinceSeq?: number }) {
+    const msg: Record<string, unknown> = { type: 'subscribe-pane', paneId };
+    if (opts?.resume) msg.resume = true;
+    if (opts?.sinceSeq !== undefined) msg.sinceSeq = opts.sinceSeq;
+    this.send(msg);
+  }
 
   /**
    * §history-pull（LAN 对齐 cloudRemote）: fetch the next older batch of this

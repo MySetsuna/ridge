@@ -166,8 +166,10 @@ export default defineConfig({
           if (id.includes('mermaid')) return 'mermaid';
           // Split virtual keyboard and touch-specific code
           if (id.includes('/remote/lib/VirtualKeyboard') || id.includes('/remote/lib/modState')) return 'virtual-keyboard';
-          // Split terminal canvas (heavy WASM-dependent)
-          if (id.includes('/remote/lib/TerminalCanvas') || id.includes('/remote/lib/terminalController')) return 'terminal-canvas';
+          // Split terminal canvas (heavy WASM-dependent). P4: TerminalCanvas now
+          // pulls the shared @ridge/remote TerminalManager (multi-kernel) — the
+          // retired single-kernel terminalController is gone.
+          if (id.includes('/remote/lib/TerminalCanvas')) return 'terminal-canvas';
           // Split workspace tree
           if (id.includes('/remote/lib/WorkspaceTree')) return 'workspace-tree';
         },

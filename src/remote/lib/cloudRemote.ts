@@ -363,10 +363,10 @@ export class CloudRemoteConnection implements RemoteLink {
     }
   }
 
-  subscribePane(paneId: string): void {
+  subscribePane(paneId: string, opts?: { resume?: boolean; sinceSeq?: number }): void {
     if (!paneId || this.ptyUnlisten.has(paneId) || this.subscribing.has(paneId)) return;
     this.subscribing.add(paneId);
-    void this._subscribe(paneId);
+    void this._subscribe(paneId, opts?.resume ?? false);
   }
 
   /**
@@ -401,36 +401,55 @@ export class CloudRemoteConnection implements RemoteLink {
     }
   }
 
-  private async _subscribe(paneId: string): Promise<void> {
+  private async _subscribe(paneId: string, resume = false): Promise<void> {
     try {
       // §history-pull（2026-07-02）: the host no longer pushes an on-subscribe
       // `RIS + 256KiB` replay. Pull our own ~1.5-screen tail FIRST and hand it to
-      // MainApp as the reconcile "replay" first-frame (RIS + tail, byte-for-byte
-      // like the old host replay), THEN wire the live listener. Tail-first (not
-      // concurrent) guarantees history is the first chunk MainApp sees
-      // (expectReplayPane) and that an idle pane still paints its last screen; the
-      // only cost is a tiny gap if the pane is spewing output at the subscribe
-      // instant (self-heals on the next redraw). Seed the seq cursor for lazy
-      // "scroll up to load older" paging (get_pane_scrollback_before).
-      try {
-        const chunk = await invoke<ScrollbackChunk>('get_pane_scrollback_tail', {
-          paneId,
-          maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
-        });
-        if (!this.subscribing.has(paneId)) return; // torn down during the fetch
-        this.scrollbackCursor.set(paneId, {
-          oldestSeq: chunk.start_seq,
-          atOldest: chunk.at_oldest,
-        });
-        // RIS (\x1bc) + history: identical shape to the host's old replay, so
-        // MainApp's reconcileReplay repaint path (resetForSwitch + feed) is unchanged.
-        const payload = this.encoder.encode('\x1bc' + (chunk.bytes ?? ''));
-        this.rawByteListeners.forEach((fn) => fn(paneId, payload));
-      } catch {
-        // Older host / command rejected: no seeded history — degrade to "first live
-        // frame acts as the replay" (MainApp's expectReplayPane still reconciles it).
+      // the kernel (RIS + mode-reattach preamble + tail), THEN wire the live
+      // listener. Tail-first (not concurrent) guarantees history is the first chunk
+      // the kernel sees and that an idle pane still paints its last screen; the only
+      // cost is a tiny gap if the pane is spewing output at the subscribe instant
+      // (self-heals on the next redraw). Seed the seq cursor for lazy "scroll up to
+      // load older" paging (get_pane_scrollback_before).
+      //
+      // §keep-alive resume (P4): when the controller kept this pane's mirror kernel
+      // ALIVE across a switch, `resume` is true → SKIP the RIS replay entirely (RIS
+      // would wipe the surviving kernel down to the tail). The alive kernel keeps its
+      // full history and just resumes the live stream below.
+      if (!resume) {
+        try {
+          const chunk = await invoke<ScrollbackChunk>('get_pane_scrollback_tail', {
+            paneId,
+            maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
+          });
+          if (!this.subscribing.has(paneId)) return; // torn down during the fetch
+          this.scrollbackCursor.set(paneId, {
+            oldestSeq: chunk.start_seq,
+            atOldest: chunk.at_oldest,
+          });
+          // §mode-reattach: RIS (\x1bc) + active-mode preamble + history. The preamble
+          // (?1002h/?1049h/?1006h… for the pane's live modes) reasserts a TUI's
+          // one-time mouse/alt enables that scrolled off the tail — else the mirror
+          // kernel comes up mouse-dead (the reported mobile-cloud TUI mouse bug). SSOT
+          // shared with the LAN/host resync frame. Best-effort (older host → empty).
+          let preamble = '';
+          try {
+            // `|| ''` guards an older host that RESOLVES undefined (rather than
+            // rejecting) for an unknown command — otherwise the string 'undefined'
+            // would be injected literally into the terminal stream.
+            preamble = (await invoke<string>('get_pane_resync_preamble', { paneId })) || '';
+          } catch {
+            /* older host without the command: no preamble (degrade gracefully) */
+          }
+          if (!this.subscribing.has(paneId)) return;
+          const payload = this.encoder.encode('\x1bc' + preamble + (chunk.bytes ?? ''));
+          this.rawByteListeners.forEach((fn) => fn(paneId, payload));
+        } catch {
+          // Older host / command rejected: no seeded history — degrade to "first live
+          // frame acts as the replay".
+        }
+        if (!this.subscribing.has(paneId)) return;
       }
-      if (!this.subscribing.has(paneId)) return;
 
       // Per-pane `pty-output-{ws}-{pane}` event. The bridge keys its dispatch on the
       // trailing pane UUID only, so the ws segment is cosmetic — but we use the real

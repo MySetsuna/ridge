@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { t } from '$lib/i18n';
-  import { TerminalController } from './terminalController';
+  import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
   import { anyMod, consumeMods } from './modState.svelte';
   import { keyboardShiftPx } from './keyboardOffset';
   import { writeClipboard } from './clipboard';
@@ -11,8 +11,18 @@
     decideTouchScroll,
   } from '@ridge/remote/shared/terminal/mobileTouchScroll';
 
-  let { paneId, onStdin, onResize, onHostClipboard, onNearTop, selectionMode = $bindable(false), backendName = $bindable('Canvas2D') }: {
-    paneId: string | null;
+  // P4 (2026-07-25): this component no longer owns a single `TerminalController`
+  // + canvas. It is now the MOBILE INPUT-ADAPTATION LAYER over the SHARED
+  // multi-kernel `TerminalManager` (same manager the desktop `RidgePane` uses).
+  // It owns ONE pane (paneId, fixed for the component's lifetime — MainApp keys
+  // the component on activePaneId), attaches that pane's keep-alive kernel into
+  // its container, and PARKS it on unmount (kernel survives → zero white-screen
+  // + scrollback preserved across pane switches). All touch / soft-keyboard /
+  // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
+  // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
+  let { paneId, workspaceId, onStdin, onResize, onHostClipboard, onNearTop, selectionMode = $bindable(false), backendName = $bindable('Canvas2D') }: {
+    paneId: string;
+    workspaceId: string;
     onStdin: (data: string) => void;
     onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
     /** Mirror a copied selection onto the desktop host's clipboard (so the host's
@@ -25,65 +35,52 @@
     backendName?: string;
   } = $props();
 
+  const manager = TerminalManager.instance();
+  const td = new TextDecoder();
+
   /** Scroll-up rows-from-top threshold that triggers a lazy older-history fetch.
    *  ~1.5 screens of headroom so the fetch lands before the user hits the very top. */
   const NEAR_TOP_ROWS = 24;
 
-  /** Fire onNearTop when the viewport is within NEAR_TOP_ROWS of the buffer top.
-   *  Cheap + idempotent-safe: the fetch side (cloudRemote.fetchOlderScrollback)
-   *  dedups in-flight loads and stops at the oldest retained byte. */
+  /** Fire onNearTop when the viewport is within NEAR_TOP_ROWS of the buffer top. */
   function maybeLoadOlder() {
-    if (!ctrl || !onNearTop) return;
-    if (ctrl.rowsAboveViewport() <= NEAR_TOP_ROWS) onNearTop();
+    if (!attached || !onNearTop) return;
+    if (rowsAboveViewport() <= NEAR_TOP_ROWS) onNearTop();
   }
 
-  let canvasEl: HTMLCanvasElement | undefined = $state();
   let containerEl: HTMLDivElement | undefined = $state();
   // Hidden, focusable textarea: the only way to (a) raise the mobile soft
-  // keyboard on tap and (b) receive IME composition events on desktop. The
-  // canvas itself can't be focused, so without this Chinese input never starts.
+  // keyboard on tap and (b) receive IME composition events on desktop.
   let hiddenInput: HTMLTextAreaElement | undefined = $state();
-  let ctrl: TerminalController | null = null;
-  let ready = $state(false);
-  // §theme-cache: hold the most-recent theme so a push that arrived before the
-  // (async) controller existed — or before a pane switch re-creates state — is
-  // re-applied once the kernel is ready, instead of being dropped by the `ctrl?.`
-  // guard in applyTheme(). Mirrors the desktop manager caching opts.theme and
-  // applying it to every pane on attach (the gap that left the mobile terminal
-  // painted in the default palette).
-  let lastTheme: Record<string, string> | null = null;
+  // true once this pane's kernel is attached (or unparked) into the container.
+  let attached = $state(false);
+  // Lifetime flag: false the moment the component starts tearing down, so the
+  // async attach IIFE bails and (if attach already landed) parks the pane.
+  let alive = true;
+  // Local IME composition guard (was `ctrl.isComposing`).
+  let isComposing = false;
 
   // Mouse drag-select state (desktop; only when the app isn't grabbing mouse).
   let mouseSelecting = false;
 
-  const td = new TextDecoder();
+  // ── Local selection state (mobile bypasses the manager's built-in pointer
+  //    selection path — see the capture-phase neutralizer below — and drives
+  //    the kernel selection directly, mirroring the retired TerminalController). ──
+  let selAnchorRow = 0;
+  let selAnchorCol = 0;
+  let isSelectingLocal = false;
 
-  // Keyboard offset (mobile): when the system soft keyboard appears, the canvas
-  // is pushed up by exactly enough to seat the INPUT ROW just above the keyboard
-  // top — computed from the cursor's pixel position, NOT a blind full-keyboard
-  // shift (that over-shifted by the bottom bar's height, lifting the input line
-  // well above the keyboard).
+  // Keyboard offset (mobile): when the system soft keyboard appears, the
+  // container is pushed up by exactly enough to seat the INPUT ROW just above
+  // the keyboard top — computed from the cursor's pixel position (R3).
   let keyboardOffset = $state(0);
-  // §kb-stable (2026-06-15): the vertical gap (CSS px) between the canvas's
-  // BOTTOM edge and the layout-viewport bottom — i.e. the bottom tab bar + safe
-  // area. Measured ONLY while the keyboard is hidden (transform is 0, so the
-  // bounding rect is the canvas's natural position). The keyboard-offset formula
-  // reads this cached value instead of the live, transform-affected
-  // `getBoundingClientRect().top`, which is what made the offset spiral: the soft
-  // keyboard slide-in fires many visualViewport `resize` events, and the previous
-  // `naturalTop = rect.top + keyboardOffset` undid the ANIMATING transition with
-  // the TARGET offset → the mismatch flung the canvas off-screen (blank terminal)
-  // and thrashed the page (apparent freeze). With this gap cached, the formula is
-  // fully transform-independent, so recomputing per resize converges cleanly.
+  // §kb-stable: the vertical gap (CSS px) between the container's BOTTOM edge
+  // and the layout-viewport bottom. Measured ONLY while the keyboard is hidden.
   let gapBelowCanvas = 0;
-  // True while the soft keyboard is up. Tracks the hidden→shown edge so the
-  // one-shot `scrollToBottom()` (snap to the live prompt) fires exactly once per
-  // show — not on every intermediate resize event during the slide-in.
+  // True while the soft keyboard is up (tracks the hidden→shown edge).
   let keyboardVisible = false;
 
-  // Touch state. Single-finger swipe = scroll (simulates mouse wheel).
-  // In TUI mode (mouse reporting), the scroll is forwarded to the app.
-  // Single-finger tap = focus (+ click-through in mouse-reporting apps).
+  // Touch state. Single-finger swipe = scroll; tap = focus (+ click-through).
   let touchStartY = 0;
   let touchStartX = 0;
   let touchScrollAccum = 0;
@@ -95,30 +92,140 @@
   let hasSelectionState = $state(false);    // drives the floating copy pill
   let selDragging = false;                  // selection drag in progress
 
-  onMount(async () => {
-    if (!canvasEl || !containerEl) return;
-    ctrl = await TerminalController.create(canvasEl, containerEl);
-    ctrl.onStdin = (data) => { if (paneId) onStdin(data); };
-    ctrl.onResize = (r, c, pw, ph) => {
-      if (paneId && onResize) onResize(paneId, r, c, pw, ph);
+  // ── kernel-level helpers (retarget of the old TerminalController surface) ──
+
+  /** kernel signature is encodeMouse(row, col, button, action, shift, ctrl, alt)
+   *  — note ctrl BEFORE alt. Call sites keep the old (…, shift, alt, ctrl) order;
+   *  this wrapper forwards in the kernel's order so modifiers aren't swapped. */
+  function kEncodeMouse(row: number, col: number, button: number, action: number, shift: boolean, alt: boolean, ctrlMod: boolean): Uint8Array {
+    return manager.getKernel(paneId)?.encodeMouse(row, col, button, action, shift, ctrlMod, alt) ?? new Uint8Array(0);
+  }
+  function kEncodeKey(key: string, ctrlMod: boolean, alt: boolean, shift: boolean, meta = false): Uint8Array {
+    return manager.getKernel(paneId)?.encodeKey(key, ctrlMod, alt, shift, meta) ?? new Uint8Array(0);
+  }
+  function kEncodePaste(text: string): Uint8Array {
+    return manager.getKernel(paneId)?.encodePaste(text) ?? new Uint8Array(0);
+  }
+  function isMouseReporting(): boolean { return manager.isMouseReporting(paneId); }
+  function isAltScreen(): boolean { return manager.isAltScreen(paneId); }
+  function clientToCell(clientX: number, clientY: number) {
+    return manager.cellFromEvent(paneId, { clientX, clientY });
+  }
+  /** How many scrollback rows sit ABOVE the current viewport top. offset 0 = at
+   *  bottom; rowsAboveViewport = max(0, total - offset). Mirrors the retired
+   *  TerminalController.rowsAboveViewport used for lazy older-history prefetch. */
+  function rowsAboveViewport(): number {
+    const { offset, total } = manager.scrollState(paneId);
+    return Math.max(0, total - offset);
+  }
+  function hasSelection(): boolean { return manager.getKernel(paneId)?.hasSelection() ?? false; }
+
+  function startSelection(row: number, col: number) {
+    // 绝对行 = viewport-relative row + 视口上方的 scrollback 行数（= total - offset）。
+    selAnchorRow = rowsAboveViewport() + row;
+    selAnchorCol = col;
+    isSelectingLocal = true;
+    manager.clearSelection(paneId);
+  }
+  function extendSelection(row: number, col: number) {
+    if (!isSelectingLocal) return;
+    const absRow = rowsAboveViewport() + row;
+    manager.getKernel(paneId)?.setSelectionAbs(selAnchorRow, selAnchorCol, absRow, col);
+    // setSelectionAbs on the raw kernel doesn't wake the manager's rAF loop;
+    // forceFullRedraw invalidates + wakes so the highlight repaints immediately.
+    manager.forceFullRedraw(paneId);
+  }
+  function endSelectionLocal() { isSelectingLocal = false; }
+
+  /** Input-cell pixel (TUI-aware anchor), used to park the hidden IME textarea
+   *  and to anchor the keyboard offset. Mirrors the old ctrl.getCursorPixel. */
+  function getCursorPixel(): { x: number; y: number; h: number } | null {
+    const a = manager.inputAnchorResolved(paneId);
+    return a ? { x: a.x, y: a.y, h: a.cellH } : null;
+  }
+
+  onMount(() => {
+    // `autocorrect` is a non-standard (iOS Safari) attribute missing from
+    // Svelte's textarea typings — set it via the DOM to keep iOS from rewriting
+    // terminal input without tripping svelte-check.
+    hiddenInput?.setAttribute('autocorrect', 'off');
+
+    // §pointer-neutralize (P4): the shared manager attaches its OWN
+    // pointerdown/move/up listeners to the container for DESKTOP mouse selection
+    // + TUI mouse forwarding. On mobile, touch input synthesises pointer events,
+    // so those listeners would DOUBLE every gesture this component already
+    // handles via its touch/mouse handlers (stray selection while scrolling,
+    // duplicate mouse reports in TUIs). Capture-phase listeners fire before the
+    // manager's bubble-phase ones; stopPropagation neutralises the manager's
+    // pointer path without touching this component's touch/mouse handlers
+    // (separate event types).
+    const stopPointer = (e: PointerEvent) => { e.stopPropagation(); };
+    const el = containerEl;
+    if (el) {
+      el.addEventListener('pointerdown', stopPointer, true);
+      el.addEventListener('pointermove', stopPointer, true);
+      el.addEventListener('pointerup', stopPointer, true);
+      el.addEventListener('pointercancel', stopPointer, true);
+    }
+
+    void (async () => {
+      await manager.ready();
+      if (!alive || !containerEl) return;
+      try {
+        if (manager.isParked(paneId)) {
+          await manager.unpark(paneId, containerEl);
+        } else {
+          await manager.attach(paneId, containerEl, workspaceId);
+        }
+      } catch (err) {
+        console.error('[mobile-term] attach/unpark failed', paneId, err);
+        return;
+      }
+      // Component tore down during the async attach → park so a later remount
+      // can unpark the (still-alive) kernel instead of leaking / double-attaching.
+      if (!alive) { manager.park(paneId); return; }
+      attached = true;
+      // Outbound: kernel-generated responses (DSR/DA) from feed + IME
+      // write/paste → PTY via the host WS (onStdin → ws.sendStdin).
+      manager.onData(paneId, (bytes) => onStdin(td.decode(bytes)));
+      // Grid change → claim this viewport's size on the host (auto 自适应全屏).
+      manager.onResize(paneId, (rows, cols) => {
+        if (onResize && containerEl) {
+          onResize(paneId, rows, cols, Math.round(containerEl.clientWidth), Math.round(containerEl.clientHeight));
+        }
+      });
+      manager.setFocused(paneId, true);
+      // Immediate fit (kernel grid + host claim) instead of waiting out the
+      // ResizeObserver's debounce, so first paint is correctly sized.
+      manager.fitPaneNow(paneId);
+      focusInput();
+    })();
+
+    return () => {
+      if (el) {
+        el.removeEventListener('pointerdown', stopPointer, true);
+        el.removeEventListener('pointermove', stopPointer, true);
+        el.removeEventListener('pointerup', stopPointer, true);
+        el.removeEventListener('pointercancel', stopPointer, true);
+      }
     };
-    backendName = ctrl.backendName;
-    // Re-apply a theme that the host pushed before this async create finished —
-    // without this the kernel keeps its compile-time default palette.
-    if (lastTheme) ctrl.applyTheme(lastTheme);
-    ready = true;
-    ctrl.setFocused(true);
-    focusInput();
+  });
+
+  onDestroy(() => {
+    alive = false;
+    if (gapRemeasureTimer) clearTimeout(gapRemeasureTimer);
+    // Keep-alive: PARK (kernel survives, scrollback preserved), never detach.
+    // Real teardown (manager.detach) happens in MainApp only when the host
+    // actually closes the pane.
+    if (attached) manager.park(paneId);
   });
 
   function focusInput() {
     const el = hiddenInput;
     if (!el) return;
     el.focus({ preventScroll: true });
-    // §A iOS sometimes drops focus on the tiny invisible textarea — the soft
-    // keyboard flashes open then closes (needed a second tap). Re-assert focus on
-    // the next frame and give it a caret (setSelectionRange) so the keyboard
-    // reliably stays up even when nothing is selected / the field is empty.
+    // §A iOS sometimes drops focus on the tiny invisible textarea — re-assert
+    // on the next frame and give it a caret so the keyboard reliably stays up.
     requestAnimationFrame(() => {
       if (!el) return;
       if (document.activeElement !== el) el.focus({ preventScroll: true });
@@ -129,63 +236,42 @@
   /** Park the hidden textarea at the cursor so the IME candidate window shows
    *  in place; falls back to the top-left when the cursor position is unknown. */
   function parkInputAtCursor() {
-    if (!hiddenInput || !ctrl) return;
-    const p = ctrl.getCursorPixel();
+    if (!hiddenInput || !attached) return;
+    const p = getCursorPixel();
     if (!p) return;
     hiddenInput.style.left = `${Math.round(p.x)}px`;
     hiddenInput.style.top = `${Math.round(p.y)}px`;
     hiddenInput.style.height = `${Math.round(p.h)}px`;
   }
 
-  onDestroy(() => {
-    if (gapRemeasureTimer) clearTimeout(gapRemeasureTimer);
-    ctrl?.destroy();
-  });
-
-
-
-  let ro: ResizeObserver | undefined;
-  onMount(() => {
-    // `autocorrect` is a non-standard (iOS Safari) attribute missing from
-    // Svelte's textarea typings — set it via the DOM to keep iOS from rewriting
-    // terminal input without tripping svelte-check.
-    hiddenInput?.setAttribute('autocorrect', 'off');
-    ro = new ResizeObserver(() => ctrl?.requestResize());
-    if (containerEl) ro.observe(containerEl);
-    return () => ro?.disconnect();
-  });
-
-  // ── Public API ──
-  export function feed(data: string) {
-    if (ctrl) ctrl.feed(new TextEncoder().encode(data));
+  // ── Public API (called by MainApp via bind:this) ──
+  /** Current grid + pixel size, used by the refresh button / reconnect claim. */
+  export function getDims() {
+    if (!attached) return null;
+    return {
+      rows: manager.rows(paneId),
+      cols: manager.cols(paneId),
+      pixelWidth: Math.round(containerEl?.clientWidth ?? 0),
+      pixelHeight: Math.round(containerEl?.clientHeight ?? 0),
+    };
   }
-  export function feedUtf8(bytes: Uint8Array) { ctrl?.feed(bytes); }
-  /** §history-pull: prepend older PTY history (fetched via get_pane_scrollback_before)
-   *  at the oldest end of the scrollback ring, without disturbing the viewport. */
-  export function prependScrollback(bytes: Uint8Array) { ctrl?.prependScrollback(bytes); }
-  export function applyDelta(bytes: Uint8Array) { ctrl?.applyDelta(bytes); }
+  /** Feed raw PTY bytes into THIS pane's kernel (MainApp routes the active
+   *  pane's stream here; the manager holds each pane's history). */
+  export function feedUtf8(bytes: Uint8Array) { manager.feed(paneId, bytes); }
+  /** §history-pull: prepend older PTY history at the oldest end of the ring. */
+  export function prependScrollback(bytes: Uint8Array) { manager.prependScrollback(paneId, bytes); }
+  /** Theme is GLOBAL on the manager (all panes); fine for mobile (one theme). */
+  export function applyTheme(theme: Record<string, string>) { manager.setTheme(theme); }
+  /** Host told us the PTY resized → resize this pane's kernel grid + repaint. */
   export function resizeKernel(rows: number, cols: number) {
-    if (ctrl) {
-      ctrl.kernelResize(rows, cols);
-    }
+    manager.getKernel(paneId)?.resize(rows, cols);
+    manager.forceFullRedraw(paneId);
   }
-  export function getDims() { return ctrl?.getDims() ?? null; }
-  export function applyTheme(theme: Record<string, string>) { lastTheme = theme; ctrl?.applyTheme(theme); }
-  export function applyDeltaBase64(b64: string) {
-    const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    ctrl?.applyDelta(bytes);
-  }
-  /** Wipe the local kernel (screen + scrollback) so the next pane's content can't
-   *  bleed in. Called by the host on pane switch / reconnect; the new pane's
-   *  scrollback replay repaints a clean, isolated view. */
-  export function resetForSwitch() { ctrl?.resetForSwitch(); }
 
   // ── Virtual Keyboard (called from MainApp header) ──
   export function handleVirtualKey(key: string, ctrlKey: boolean, alt: boolean, shift: boolean) {
-    if (!paneId || !ctrl) return;
-    const bytes = ctrl.encodeKey(key, ctrlKey, alt, shift, false);
+    if (!attached) return;
+    const bytes = kEncodeKey(key, ctrlKey, alt, shift, false);
     if (bytes.length > 0) { onStdin(td.decode(bytes)); return; }
     const map: Record<string, string> = { Tab: '\t', Escape: '\x1b', Enter: '\r', Backspace: '\x7f', Delete: '\x1b[3~', Home: '\x1b[H', End: '\x1b[F', PageUp: '\x1b[5~', PageDown: '\x1b[6~', Insert: '\x1b[2~' };
     if (map[key]) { onStdin(shift && key === 'Tab' ? '\x1b[Z' : map[key]); return; }
@@ -199,45 +285,43 @@
 
   /** Swipe → wheel/mouse/arrows/scrollback — SSOT in decideTouchScroll (desktop parity). */
   function touchWheel(deltaY: number, clientX: number, clientY: number) {
-    if (!ctrl) return;
+    if (!attached) return;
     const decision = decideTouchScroll({
       deltaY,
-      isMouseReporting: ctrl.isMouseReporting(),
-      isAltScreen: ctrl.isAltScreen(),
+      isMouseReporting: isMouseReporting(),
+      isAltScreen: isAltScreen(),
       pixelLike: true,
     });
     if (!decision) return;
     if (decision.kind === 'mouse_wheel') {
-      const cell = ctrl.clientToCell(clientX, clientY) ?? { row: 0, col: 0 };
-      const bytes = ctrl.encodeMouse(cell.row, cell.col, decision.btn, 0, false, false, false);
+      const cell = clientToCell(clientX, clientY) ?? { row: 0, col: 0 };
+      const bytes = kEncodeMouse(cell.row, cell.col, decision.btn, 0, false, false, false);
       if (bytes.length > 0) onStdin(td.decode(bytes));
       return;
     }
     if (decision.kind === 'alt_arrows') {
-      const one = ctrl.encodeKey(decision.key, false, false, false, false);
+      const one = kEncodeKey(decision.key, false, false, false, false);
       if (one.length === 0) return;
       for (let i = 0; i < decision.presses; i++) onStdin(td.decode(one));
       return;
     }
     // local_scroll
     if (decision.lines < 0) {
-      ctrl.scrollUp(-decision.lines);
+      manager.scrollUp(paneId, -decision.lines);
       maybeLoadOlder();
     } else {
-      ctrl.scrollDown(decision.lines);
+      manager.scrollDown(paneId, decision.lines);
     }
   }
 
   /** Copy the selection to the control device's clipboard, then clear it.
-   *  §copy-no-interrupt: copying must NOT send `\x03` to the PTY — the old
-   *  unconditional ^C cancelled the shell line / SIGINT'd the foreground process
-   *  every time you copied. Copy is a read-only clipboard action now.
+   *  §copy-no-interrupt: copying must NOT send `\x03` to the PTY.
    *  V-MOB-CP: never focus hidden input / never paste. */
   function copyAndClear() {
-    if (!ctrl) return;
+    if (!attached) return;
     let text = '';
     try {
-      text = ctrl.getSelectionText() || '';
+      text = manager.getSelectionText(paneId) || '';
     } catch { /* kernel may have no selection */ }
     copySelectionOnly(text, {
       writeText: (t) => {
@@ -245,7 +329,7 @@
         onHostClipboard?.(t);
       },
       clearSelection: () => {
-        ctrl?.clearSelection();
+        manager.clearSelection(paneId);
         hasSelectionState = false;
       },
       // Explicitly pass focus/paste so tests of pure helper prove we never call them.
@@ -255,15 +339,13 @@
   }
 
   /** Paste arbitrary text (the control device's clipboard) into the terminal as
-   *  a bracketed paste. Driven by the bottom-bar paste button in MainApp — that
-   *  onclick is the user gesture the Clipboard API requires, and the LAN/cloud
-   *  link is a secure context, so the read in MainApp is permitted. */
+   *  a bracketed paste. Driven by the bottom-bar paste button in MainApp. */
   export function pasteText(text: string) {
     sendPaste(text);
   }
 
   function handleTouchStart(e: TouchEvent) {
-    if (!ctrl) return;
+    if (!attached) return;
     if (e.touches.length !== 1) return;
     const t = e.touches[0];
     touchStartY = t.clientY;
@@ -271,44 +353,43 @@
     touchLastY = t.clientY;
     touchScrollAccum = 0;
     touchStartTime = Date.now();
-    // §select-as-mouse: the select toggle SIMULATES A MOUSE — it just emits mouse
-    // signals and lets the receiving terminal decide what to do (parity with the
-    // desktop mouse path, handleMouseDown). When the app captures the mouse
-    // (mouse-reporting TUI: vim/htop/tmux/claude…) we forward a press and the TUI
-    // owns the gesture/selection/scroll. ONLY a plain shell — which doesn't accept
-    // mouse reporting — falls back to LOCAL text selection + copy pill.
+    // §select-as-mouse (R5): the select toggle SIMULATES A MOUSE — emit mouse
+    // signals and let the receiving terminal decide (parity with desktop). When
+    // the app captures the mouse (mouse-reporting TUI) we forward a press and the
+    // TUI owns the gesture/selection/scroll. ONLY a plain shell falls back to
+    // LOCAL text selection + copy pill.
     if (selectionMode) {
-      const cell = ctrl.clientToCell(t.clientX, t.clientY);
+      const cell = clientToCell(t.clientX, t.clientY);
       if (cell) {
-        if (ctrl.isMouseReporting()) {
+        if (isMouseReporting()) {
           const g = decideTouchMouseGesture('press');
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
+          const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
           if (bytes.length > 0) onStdin(td.decode(bytes));
         } else {
-          ctrl.startSelection(cell.row, cell.col);
+          startSelection(cell.row, cell.col);
         }
       }
     }
   }
 
   function handleTouchMove(e: TouchEvent) {
-    if (!ctrl || e.touches.length !== 1) return;
+    if (!attached || e.touches.length !== 1) return;
     const t = e.touches[0];
     const moved = Math.abs(t.clientY - touchStartY) + Math.abs(t.clientX - touchStartX);
     if (moved < TOUCH_DRAG_THRESHOLD_PX) return;
     e.preventDefault();
     if (selectionMode) {
       selDragging = true;
-      const cell = ctrl.clientToCell(t.clientX, t.clientY);
-      // §select-as-mouse: mouse-reporting TUI → motion report (the TUI extends its
-      // own selection); plain shell → local text selection.
+      const cell = clientToCell(t.clientX, t.clientY);
+      // §select-as-mouse (R5): mouse-reporting TUI → motion report (the TUI
+      // extends its own selection); plain shell → local text selection.
       if (cell) {
-        if (ctrl.isMouseReporting()) {
+        if (isMouseReporting()) {
           const g = decideTouchMouseGesture('drag');
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
+          const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
           if (bytes.length > 0) onStdin(td.decode(bytes));
         } else {
-          ctrl.extendSelection(cell.row, cell.col);
+          extendSelection(cell.row, cell.col);
         }
       }
       return;
@@ -324,56 +405,54 @@
   function handleTouchEnd(e: TouchEvent) {
     if (e.changedTouches.length !== 1) return;
     const touch = e.changedTouches[0];
-    if (!ctrl) return;
+    if (!attached) return;
     if (selectionMode) {
       const wasDragging = selDragging;
       selDragging = false;
-      const cell = touch ? ctrl.clientToCell(touch.clientX, touch.clientY) : null;
-      if (ctrl.isMouseReporting()) {
-        // §select-as-mouse: complete the simulated gesture with a release — a tap
-        // becomes a click (the TUI focuses its own input), a drag becomes a drag-end.
-        // The TUI handles selection/scroll itself. Desktop uses btn=3 release (not
-        // left-btn); decideTouchMouseGesture SSOT.
+      const cell = touch ? clientToCell(touch.clientX, touch.clientY) : null;
+      if (isMouseReporting()) {
+        // §select-as-mouse (R5): complete the simulated gesture with a release —
+        // a tap becomes a click (the TUI focuses its own input), a drag becomes a
+        // drag-end. decideTouchMouseGesture is the SSOT for button/action.
         if (cell) {
           const g = decideTouchMouseGesture('release');
-          const bytes = ctrl.encodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
+          const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
           if (bytes.length > 0) onStdin(td.decode(bytes));
         }
       } else if (wasDragging) {
         // Plain shell: finish the local text selection + surface the copy pill.
-        ctrl.endSelection();
-        hasSelectionState = !!ctrl.hasSelection();
+        endSelectionLocal();
+        hasSelectionState = hasSelection();
       } else {
         // A tap in shell selection mode clears any existing selection.
-        ctrl.clearSelection();
+        manager.clearSelection(paneId);
         hasSelectionState = false;
       }
-      // §select-tap-keyboard: a TAP (not a drag) in selection mode also raises the
-      // soft keyboard so you can type without first leaving select mode. Drags are
-      // the selection gesture itself, so they don't pop the keyboard.
+      // §select-tap-keyboard: a TAP (not a drag) in selection mode also raises
+      // the soft keyboard so you can type without first leaving select mode.
       if (!wasDragging) focusInput();
       return;
     }
     const elapsed = Date.now() - touchStartTime;
     if (elapsed >= TOUCH_TAP_MAX_MS) return;
     // Light tap clears an existing selection (and re-raises the keyboard).
-    if (hasSelectionState || ctrl.hasSelection()) {
-      ctrl.clearSelection();
+    if (hasSelectionState || hasSelection()) {
+      manager.clearSelection(paneId);
       hasSelectionState = false;
       focusInput();
       return;
     }
     // Otherwise: focus (raise the soft keyboard) + click-through in TUI apps.
     if (touch) {
-      const cell = ctrl.clientToCell(touch.clientX, touch.clientY);
-      if (cell && ctrl.isMouseReporting()) {
+      const cell = clientToCell(touch.clientX, touch.clientY);
+      if (cell && isMouseReporting()) {
         const p = decideTouchMouseGesture('press');
-        const press = ctrl.encodeMouse(cell.row, cell.col, p.button, p.action, false, false, false);
+        const press = kEncodeMouse(cell.row, cell.col, p.button, p.action, false, false, false);
         if (press.length > 0) onStdin(td.decode(press));
         requestAnimationFrame(() => {
-          if (ctrl) {
+          if (attached) {
             const r = decideTouchMouseGesture('release');
-            const rel = ctrl.encodeMouse(cell.row, cell.col, r.button, r.action, false, false, false);
+            const rel = kEncodeMouse(cell.row, cell.col, r.button, r.action, false, false, false);
             if (rel.length > 0) onStdin(td.decode(rel));
           }
         });
@@ -383,94 +462,82 @@
   }
 
   // ── Composition (IME) + plain text input, both via the hidden textarea ──
-  //
-  // Mobile IMEs commit text via BOTH `compositionend` and a trailing `input`
-  // event, and the two can arrive in either order. We send the commit exactly
-  // once with a content-matched, time-windowed dedup that — crucially — only
-  // arms around composition, so genuinely repeated typing (e.g. "aa") is never
-  // dropped.
   const IME_DUP_WINDOW_MS = 200;
   let imeCommitExpect = '';     // commit from compositionend; the matching trailing `input` is a dup
   let imeCommitExpectTime = 0;
   let lastInputText = '';       // text just emitted by `input`; a matching compositionend is a dup
   let lastInputTime = 0;
 
-  // §1 英文「逐字实时发送 + 空格提交再发整词」去重：滚动记录最近经 `input` 实际
-  // 发出的字面文本；compositionend 若发现提交内容正是刚实发文本的尾部，就不再
-  // 重复提交（iOS 英文预测会逐字 input 后在 commit 时把整词再发一次）。
+  // §1 英文「逐字实时发送 + 空格提交再发整词」去重
   const RECENT_SENT_WINDOW_MS = 1200;
   let recentSent = '';
   let recentSentTime = 0;
 
   function handleCompositionStart() {
-    ctrl?.startComposition();
+    // §R4 IME: mark the input-start anchor + capture the preedit anchor cell.
+    isComposing = true;
+    manager.markInputStart(paneId);
     parkInputAtCursor();
   }
   function handleCompositionUpdate(e: CompositionEvent) {
-    ctrl?.updateComposition(e.data);
+    // Renderer-side preedit overlay: painted on top of the cell grid without
+    // touching kernel cells (a TUI redraw can't corrupt it and vice-versa).
+    const a = manager.inputAnchorResolved(paneId);
+    if (a) manager.setPreedit(paneId, e.data ?? '', a.row, a.col);
   }
   function handleCompositionEnd(e: CompositionEvent) {
-    ctrl?.finishComposition();
+    isComposing = false;
+    manager.clearPreedit(paneId);
     const data = e.data ?? '';
     // Clear the textarea so a late `input` can't resend the committed text.
     if (hiddenInput) hiddenInput.value = '';
+    // §1.27: repaint cells under the (now-cleared) preedit overlay.
+    manager.forceFullRedraw(paneId);
     if (!data) return;
-    // §1 If the live `input` stream already emitted these exact characters
-    // (iOS English predictive streams each letter, then fires compositionend
-    // with the whole word on space), committing again duplicates the word.
-    // `trimEnd()` tolerates the space `input` landing before OR after
-    // compositionend; clear the buffer on a hit so the re-commit is skipped.
+    // §1 iOS English predictive streams each letter then fires compositionend
+    // with the whole word on space → committing again duplicates it.
     if (Date.now() - recentSentTime < RECENT_SENT_WINDOW_MS && recentSent.trimEnd().endsWith(data)) {
       recentSent = '';
       return;
     }
-    // If an `input` already emitted this exact commit (some IMEs fire `input`
-    // before `compositionend`), don't send it again.
+    // Some IMEs fire `input` before `compositionend`; don't send twice.
     if (data === lastInputText && Date.now() - lastInputTime < IME_DUP_WINDOW_MS) {
       lastInputText = '';
       return;
     }
-    ctrl?.commitText(data);
+    // Commit: encodePaste + ship to PTY via the registered dataHandler (onStdin).
+    manager.paste(paneId, data);
     // Arm dedup for the trailing `input` event that normally follows.
     imeCommitExpect = data;
     imeCommitExpectTime = Date.now();
   }
 
   // Fires for plain typed / predicted / autocorrected text that isn't an IME
-  // composition. Printable keystrokes deliberately fall through `keydown` to
-  // land here — that's what makes mobile typing and CJK work without double-input.
+  // composition.
   function handleInput(e: Event) {
-    if (!paneId || !ctrl) return;
-    if (ctrl.isComposing || (e as InputEvent).isComposing) return;
+    if (!attached) return;
+    if (isComposing || (e as InputEvent).isComposing) return;
     const ta = e.target as HTMLTextAreaElement;
     const text = ta.value;
     ta.value = '';
     if (!text) return;
     const inputType = (e as InputEvent).inputType || '';
-    // §1 Robust IME-commit dedup: after `compositionend` the browser re-inserts
-    // the committed text as a non-composing `input` whose inputType is
-    // `insertCompositionText`. handleCompositionEnd already sent it via
-    // commitText, so swallow this echo by TYPE — independent of the fragile
-    // content/time window that mis-fires on slow mobile (→ 大量重复语句).
+    // §1 Robust IME-commit dedup: the browser re-inserts committed text as a
+    // non-composing `input` with inputType `insertCompositionText`; already
+    // sent via manager.paste in handleCompositionEnd → swallow by TYPE.
     if (inputType === 'insertCompositionText') return;
     // Fallback content/time window for IMEs that report a plain inputType.
     if (text === imeCommitExpect && Date.now() - imeCommitExpectTime < IME_DUP_WINDOW_MS) {
       imeCommitExpect = '';
       return;
     }
-    // §1 Autocorrect / predictive replacement (iOS fires this on space /
-    // punctuation to swap the typed word for a suggestion). The literal
-    // characters were already streamed live, so applying the replacement
-    // duplicates the word; terminals shouldn't silently rewrite input → drop it
-    // and keep what the user literally typed.
+    // §1 Autocorrect / predictive replacement — drop it and keep the literal.
     if (inputType === 'insertReplacementText') return;
-    // §2 Sticky on-screen modifier armed → form a chord (Ctrl+C …) per character
-    // instead of sending the literal text. One-shot: consumed after this key, so
-    // the floating Ctrl/Alt/Shift finally combine with soft-keyboard characters.
+    // §2 Sticky on-screen modifier armed → form a chord (Ctrl+C …) per character.
     if (anyMod()) {
       const sm = consumeMods();
       for (const ch of text) {
-        const bytes = ctrl.encodeKey(ch, sm.ctrl, sm.alt, sm.shift, false);
+        const bytes = kEncodeKey(ch, sm.ctrl, sm.alt, sm.shift, false);
         onStdin(bytes.length > 0 ? td.decode(bytes) : ch);
       }
       return;
@@ -478,30 +545,24 @@
     onStdin(text);
     lastInputText = text;
     lastInputTime = Date.now();
-    // Track the literal stream so a following compositionend can detect it
-    // already sent these chars (see handleCompositionEnd §1).
     recentSent = (Date.now() - recentSentTime < RECENT_SENT_WINDOW_MS ? recentSent : '') + text;
     recentSentTime = Date.now();
   }
 
   // ── Keyboard ──
   function handleKeydown(e: KeyboardEvent) {
-    if (ctrl?.isComposing || e.isComposing) return;
-    if (!paneId || !ctrl) return;
+    if (isComposing || e.isComposing) return;
+    if (!attached) return;
     // Unmodified printable keys flow into the hidden textarea; its `input` event
     // emits them (keeps IME + mobile prediction working, avoids double-send).
     if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) return;
     // Clipboard: handle paste/copy before the generic ctrl/meta passthrough.
-    // Ctrl/Cmd+V reads the clipboard directly — the hidden input's native paste
-    // only fires when it happens to hold focus, so desktop paste was unreliable.
-    // Ctrl/Cmd+C (incl. Ctrl+Shift+C) copies an active selection; with no
-    // selection it falls through to send ^C (interrupt), as a terminal should.
     if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
       e.preventDefault();
       void pasteFromClipboard();
       return;
     }
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && ctrl.hasSelection()) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && hasSelection()) {
       e.preventDefault();
       void copySelection();
       return;
@@ -512,27 +573,27 @@
     if (specialKeys[e.key]) { e.preventDefault(); onStdin(specialKeys[e.key]); return; }
     if (['Backspace','Delete','Home','End','PageUp','PageDown'].includes(e.key) || e.key.startsWith('F') && e.key.length >= 2) {
       e.preventDefault();
-      const bytes = ctrl.encodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
-      if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+      const bytes = kEncodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+      if (bytes.length > 0) onStdin(td.decode(bytes));
       return;
     }
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
-      const bytes = ctrl.encodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
-      if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+      const bytes = kEncodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+      if (bytes.length > 0) onStdin(td.decode(bytes));
       return;
     }
     if (e.key.length === 1) {
       e.preventDefault();
-      const bytes = ctrl.encodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
-      if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+      const bytes = kEncodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+      if (bytes.length > 0) onStdin(td.decode(bytes));
       else onStdin(e.key);
       return;
     }
     if (e.key.startsWith('Arrow')) {
       e.preventDefault();
-      const bytes = ctrl.encodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
-      if (bytes.length > 0) onStdin(new TextDecoder().decode(bytes));
+      const bytes = kEncodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+      if (bytes.length > 0) onStdin(td.decode(bytes));
       else {
         const arrows: Record<string, string> = { ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D' };
         if (arrows[e.key]) onStdin(arrows[e.key]);
@@ -542,16 +603,14 @@
 
   /** Encode arbitrary text as a bracketed paste and forward it to the host. */
   function sendPaste(text: string) {
-    if (!ctrl || !text) return;
-    const bytes = ctrl.encodePaste(text);
+    if (!attached || !text) return;
+    const bytes = kEncodePaste(text);
     if (bytes.length > 0) onStdin(td.decode(bytes));
   }
 
-  /** Read the system clipboard and paste it. Driven by Ctrl/Cmd+V — the keydown
-   *  is the user gesture the Clipboard API requires, and the LAN serves over TLS
-   *  (secure context), so readText() is permitted. */
+  /** Read the system clipboard and paste it (Ctrl/Cmd+V is the user gesture). */
   async function pasteFromClipboard() {
-    if (!ctrl) return;
+    if (!attached) return;
     try {
       const text = await navigator.clipboard.readText();
       if (text) sendPaste(text);
@@ -561,14 +620,14 @@
   /** Copy the active selection to the system clipboard (desktop Ctrl/Cmd+C).
    *  V-MOB-CP: write + clear only — no focusInput / no paste. */
   async function copySelection() {
-    if (!ctrl) return;
-    const text = ctrl.getSelectionText() || '';
+    if (!attached) return;
+    const text = manager.getSelectionText(paneId) || '';
     copySelectionOnly(text, {
       writeText: (t) => {
         void writeClipboard(t);
         onHostClipboard?.(t);
       },
-      clearSelection: () => ctrl?.clearSelection(),
+      clearSelection: () => manager.clearSelection(paneId),
       focusInput,
       paste: (t) => sendPaste(t),
     });
@@ -577,7 +636,7 @@
   // Native paste fallback (right-click → paste, middle-click) on the focused
   // hidden textarea. Ctrl/Cmd+V is handled in handleKeydown instead.
   function handlePaste(e: ClipboardEvent) {
-    if (!paneId || !ctrl) return;
+    if (!attached) return;
     e.preventDefault();
     const text = e.clipboardData?.getData('text') ?? '';
     sendPaste(text);
@@ -589,85 +648,77 @@
   }
 
   function handleMouseDown(e: MouseEvent) {
-    if (!paneId || !ctrl) return;
+    if (!attached) return;
     focusInput();
-    const cell = ctrl.clientToCell(e.clientX, e.clientY);
+    const cell = clientToCell(e.clientX, e.clientY);
     if (!cell) return;
-    if (ctrl.isMouseReporting()) {
+    if (isMouseReporting()) {
       e.preventDefault();
-      const bytes = ctrl.encodeMouse(cell.row, cell.col, mouseButton(e), 0, e.shiftKey, e.altKey, e.ctrlKey);
+      const bytes = kEncodeMouse(cell.row, cell.col, mouseButton(e), 0, e.shiftKey, e.altKey, e.ctrlKey);
       if (bytes.length > 0) onStdin(td.decode(bytes));
     } else if (e.button === 0) {
       e.preventDefault();
       mouseSelecting = true;
-      ctrl.startSelection(cell.row, cell.col);
+      startSelection(cell.row, cell.col);
     }
   }
 
   function handleMouseMove(e: MouseEvent) {
-    if (!ctrl) return;
+    if (!attached) return;
     if (mouseSelecting) {
-      const cell = ctrl.clientToCell(e.clientX, e.clientY);
-      if (cell) ctrl.extendSelection(cell.row, cell.col);
+      const cell = clientToCell(e.clientX, e.clientY);
+      if (cell) extendSelection(cell.row, cell.col);
       return;
     }
     // Drag with a button held while the app captures the mouse → motion report.
-    if (e.buttons !== 0 && ctrl.isMouseReporting()) {
-      const cell = ctrl.clientToCell(e.clientX, e.clientY);
+    if (e.buttons !== 0 && isMouseReporting()) {
+      const cell = clientToCell(e.clientX, e.clientY);
       if (!cell) return;
       const btn = (e.buttons & 1) ? 0 : (e.buttons & 4) ? 1 : (e.buttons & 2) ? 2 : 0;
-      const bytes = ctrl.encodeMouse(cell.row, cell.col, btn, 2, e.shiftKey, e.altKey, e.ctrlKey);
+      const bytes = kEncodeMouse(cell.row, cell.col, btn, 2, e.shiftKey, e.altKey, e.ctrlKey);
       if (bytes.length > 0) onStdin(td.decode(bytes));
     }
   }
 
   function handleMouseUp(e: MouseEvent) {
-    if (!ctrl) return;
-    if (ctrl.isMouseReporting()) {
-      const cell = ctrl.clientToCell(e.clientX, e.clientY);
+    if (!attached) return;
+    if (isMouseReporting()) {
+      const cell = clientToCell(e.clientX, e.clientY);
       if (!cell) return;
       e.preventDefault();
-      const bytes = ctrl.encodeMouse(cell.row, cell.col, mouseButton(e), 1, e.shiftKey, e.altKey, e.ctrlKey);
+      const bytes = kEncodeMouse(cell.row, cell.col, mouseButton(e), 1, e.shiftKey, e.altKey, e.ctrlKey);
       if (bytes.length > 0) onStdin(td.decode(bytes));
     } else if (mouseSelecting) {
       mouseSelecting = false;
-      ctrl.endSelection();
-      hasSelectionState = !!ctrl.hasSelection();
+      endSelectionLocal();
+      hasSelectionState = hasSelection();
     }
   }
 
   function handleWheel(e: WheelEvent) {
-    if (!ctrl) return;
-    if (ctrl.isMouseReporting()) {
-      const cell = ctrl.clientToCell(e.clientX, e.clientY) ?? { row: 0, col: 0 };
+    if (!attached) return;
+    if (isMouseReporting()) {
+      const cell = clientToCell(e.clientX, e.clientY) ?? { row: 0, col: 0 };
       e.preventDefault();
       const btn = e.deltaY < 0 ? 64 : 65; // wheel up / down
-      const bytes = ctrl.encodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, e.altKey, e.ctrlKey);
+      const bytes = kEncodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, e.altKey, e.ctrlKey);
       if (bytes.length > 0) onStdin(td.decode(bytes));
     } else {
       e.preventDefault();
       const lines = e.deltaY > 0 ? 3 : -3;
-      if (lines < 0) { ctrl.scrollUp(-lines); maybeLoadOlder(); } else ctrl.scrollDown(lines);
+      if (lines < 0) { manager.scrollUp(paneId, -lines); maybeLoadOlder(); } else manager.scrollDown(paneId, lines);
     }
   }
 
   function handleContextMenu(e: MouseEvent) {
     // Hand right-click to mouse-capturing apps; otherwise leave the native menu.
-    if (ctrl?.isMouseReporting()) e.preventDefault();
+    if (isMouseReporting()) e.preventDefault();
   }
 
-  $effect(() => {
-    if (ctrl && paneId) {
-      ctrl.markDirty();
-      ctrl.requestResizeImmediate();
-    }
-  });
-
   // §passive-fix: touchmove (selection drag) and wheel (scroll) call
-  // preventDefault, which Chrome rejects inside its default-passive listeners
-  // ("Unable to preventDefault inside passive event listener invocation" — seen
-  // when selecting in mobile/emulated touch). Svelte's declarative on* attributes
-  // can't set {passive:false}, so attach these two manually on the container.
+  // preventDefault, which Chrome rejects inside its default-passive listeners.
+  // Svelte's declarative on* attributes can't set {passive:false}, so attach
+  // these two manually on the container.
   $effect(() => {
     const el = containerEl;
     if (!el) return;
@@ -679,39 +730,18 @@
     };
   });
 
-  // Track keyboard show/hide via visualViewport AND drive the auto-refit.
-  //
-  // The container ResizeObserver catches box changes, but a real-device /
-  // CDP-emulated viewport change (orientation, browser-chrome collapse, address
-  // bar show/hide) changes the *visible* viewport without always resizing the
-  // flex container synchronously — so without this the canvas can stay clipped
-  // until a manual refresh. requestResize() recomputes dims from the post-layout
-  // rect + current DPR and, when the grid changed, claims the new size on the
-  // host (full reflow). It's debounced + idempotent, so keyboard show/hide that
-  // doesn't change the grid is a cheap no-op.
-  // Small gap so the input line isn't flush against the keyboard's top edge.
+  // ── Cursor-anchored keyboard offset (R3) ──
   const KB_GAP_PX = 8;
 
-  /** Offset (CSS px) to translate the canvas up so the cursor's INPUT ROW sits
-   *  just above the keyboard. Anchors the cursor cell's BOTTOM at (keyboard top −
-   *  gap); falls back to the canvas bottom row when the cursor pixel is
-   *  unavailable. Returns 0 when the keyboard is hidden.
-   *
-   *  §kb-stable: every term here is TRANSFORM-INDEPENDENT, so recomputing on each
-   *  visualViewport `resize` during the keyboard slide-in converges instead of
-   *  spiraling (the earlier `rect.top + keyboardOffset` undid the in-flight CSS
-   *  transition with the target offset → off-screen canvas + page thrash):
-   *   • kh                    keyboard height = innerHeight − visualViewport.height
-   *   • gapBelowCanvas        canvas-bottom → layout-bottom gap, cached while hidden
-   *   • cursorFromCanvasBottom canvas height − cursor cell bottom (intrinsic to the
-   *                            canvas, unaffected by a translateY)
-   *  offset = kh + gap_to_keyboard − gapBelowCanvas − cursorFromCanvasBottom. */
+  /** Offset (CSS px) to translate the container up so the cursor's INPUT ROW
+   *  sits just above the keyboard. §kb-stable: every term is transform-
+   *  independent so recomputing per visualViewport resize converges. */
   function computeKeyboardOffset(): number {
     const vv = window.visualViewport;
-    if (!vv || !canvasEl) return 0;
+    if (!vv || !containerEl) return 0;
     const kh = Math.max(0, window.innerHeight - (vv.height || 0));
-    const canvasH = canvasEl.clientHeight; // layout height — a translateY can't change it
-    const cur = ctrl?.getCursorPixel();
+    const canvasH = containerEl.clientHeight; // layout height — a translateY can't change it
+    const cur = getCursorPixel();
     const cursorBottom = cur ? cur.y + cur.h : canvasH;
     return keyboardShiftPx({
       keyboardHeightPx: kh,
@@ -721,18 +751,14 @@
     });
   }
 
-  /** Re-measure the stable canvas-bottom → layout-bottom gap. Safe only while the
-   *  keyboard is hidden (keyboardOffset === 0): with no transform applied the
-   *  bounding rect reflects the canvas's natural position. */
+  /** Re-measure the stable container-bottom → layout-bottom gap. Safe only while
+   *  the keyboard is hidden (keyboardOffset === 0): no transform applied. */
   function measureGapBelowCanvas(): void {
-    if (!canvasEl || keyboardOffset !== 0) return;
-    const r = canvasEl.getBoundingClientRect();
+    if (!containerEl || keyboardOffset !== 0) return;
+    const r = containerEl.getBoundingClientRect();
     gapBelowCanvas = Math.max(0, Math.round(window.innerHeight - r.bottom));
   }
 
-  /** Re-measure once the un-shift transition (.2s) has settled, so the gap reads
-   *  the canvas's natural box rather than a mid-animation one. Self-heals a
-   *  mount-time transient (canvas not yet laid out) and layout drift. */
   let gapRemeasureTimer: ReturnType<typeof setTimeout> | null = null;
   function scheduleGapRemeasure(): void {
     if (gapRemeasureTimer) clearTimeout(gapRemeasureTimer);
@@ -742,11 +768,6 @@
     }, 260);
   }
 
-  // ── Cursor-anchored keyboard offset ──
-  // When the system keyboard appears, push the canvas up just enough to keep the
-  // input row visible above it. DO NOT call requestResize() here — the transform
-  // moves the canvas without changing the terminal grid; resize only on real
-  // viewport/orientation change.
   $effect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
@@ -754,41 +775,31 @@
       if (!vv) return;
       const kh = Math.max(0, window.innerHeight - (vv.height || 0));
       if (kh <= 0) {
-        // Keyboard hidden: drop the shift. Do NOT re-measure the gap here — the
-        // un-shift transition is still animating, so the bounding rect would read
-        // a mid-animation (still-shifted) box. The gap is static layout, seeded on
-        // mount and refreshed on orientationchange (both transform-free moments).
         keyboardVisible = false;
         keyboardOffset = 0;
         scheduleGapRemeasure(); // refresh once the un-shift settles (guarded)
         return;
       }
-      // First show: snap the terminal to the prompt so the cursor we anchor on is
+      // First show: snap the terminal to the prompt so the anchored cursor is
       // the live input row. Done once per show — not on every slide-in resize.
       if (!keyboardVisible) {
         keyboardVisible = true;
-        ctrl?.scrollToBottom();
+        manager.scrollToBottom(paneId);
       }
       keyboardOffset = computeKeyboardOffset();
     }
     vv.addEventListener('resize', onViewportResize);
-    // Seed the gap measurement, then schedule a settled re-measure (in case the
-    // canvas isn't fully laid out yet), then capture any already-open keyboard.
     measureGapBelowCanvas();
     scheduleGapRemeasure();
     onViewportResize();
     return () => vv.removeEventListener('resize', onViewportResize);
   });
 
-  // orientationchange fires the most disruptive grid change; the visualViewport
-  // 'resize' may lag a frame behind the new layout on some browsers, so refit
-  // explicitly too (idempotent + debounced — at most one extra fitPane).
+  // orientationchange fires the most disruptive grid change; refit explicitly
+  // (idempotent + debounced by the manager — at most one extra fit).
   $effect(() => {
     function onOrientation() {
-      ctrl?.requestResize();
-      // Layout changed → the canvas-bottom gap (bottom bar + safe area) may have
-      // changed too. Re-measure after the rotation settles (guarded so it only
-      // reads a transform-free box).
+      if (attached) manager.viewportChanged(paneId);
       scheduleGapRemeasure();
     }
     window.addEventListener('orientationchange', onOrientation);
@@ -806,10 +817,11 @@
   oncontextmenu={handleContextMenu}
   style="transform: translateY(-{keyboardOffset}px)"
 >
-  {#if !ready}
+  {#if !attached}
     <div class="loading">{$t('mobile.initializingTerminal')}</div>
   {/if}
-  <canvas bind:this={canvasEl} class="term-canvas" class:hidden={!ready}></canvas>
+
+  <!-- The TerminalManager appends this pane's <canvas> here on attach. -->
 
   <!-- Hidden, focusable input sink: raises the mobile keyboard on tap and
        receives IME composition. pointer-events:none so it never steals canvas
@@ -828,15 +840,15 @@
     oncompositionupdate={handleCompositionUpdate}
     oncompositionend={handleCompositionEnd}
     onpaste={handlePaste}
-    onfocus={() => ctrl?.setFocused(true)}
-    onblur={() => ctrl?.setFocused(false)}
+    onfocus={() => manager.setFocused(paneId, true)}
+    onblur={() => manager.setFocused(paneId, false)}
   ></textarea>
 
-  <!-- §D Floating copy pill — shown while a text selection exists. Copy fires on
-       touchend directly (with preventDefault) so the tap never falls through to the
-       container's synthesized mousedown → focusInput (which popped the keyboard and
-       swallowed the copy). onclick keeps desktop/mouse working; mouse events are
-       stopped so a pill tap can't reach the container's mouse handlers. -->
+  <!-- §D Floating copy pill (R8) — shown while a text selection exists. Copy
+       fires on touchend directly (with preventDefault) so the tap never falls
+       through to the container's synthesized mousedown → focusInput (which
+       popped the keyboard and swallowed the copy). Mouse events are stopped so a
+       pill tap can't reach the container's mouse handlers. -->
   {#if hasSelectionState}
     <button
       class="copy-pill"
@@ -851,15 +863,13 @@
 
 <style>
   .container{position:relative;flex:1;overflow:hidden;background:var(--rg-bg);touch-action:manipulation;transition:transform .2s ease}
-  .term-canvas{display:block;width:100%;height:100%;touch-action:none}
-  .term-canvas.hidden{opacity:0}
   /* Near-invisible input sink parked at the cursor. pointer-events:none keeps it
      from stealing canvas clicks. Opacity must be >0 so the IME candidate window
-     (Windows 拼音 / 搜狗 / 微软 IME) anchors to a detectable element. */
+     anchors to a detectable element. */
   .hidden-input{position:absolute;top:0;left:0;width:1px;height:1em;margin:0;padding:0;border:0;
     opacity:0.01;pointer-events:none;resize:none;overflow:hidden;white-space:nowrap;z-index:5;
     background:transparent;color:transparent;caret-color:transparent;outline:none;font:inherit}
-  .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--rg-fg-muted);font-size:14px}
+  .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--rg-fg-muted);font-size:14px;z-index:4}
   .copy-pill{position:absolute;top:8px;right:8px;z-index:6;display:flex;align-items:center;justify-content:center;height:32px;padding:0 16px;border:1px solid var(--rg-accent);border-radius:16px;background:color-mix(in srgb,var(--rg-accent) 22%,var(--rg-surface));color:var(--rg-fg);font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 4px 14px -2px rgba(0,0,0,.5);-webkit-tap-highlight-color:transparent}
   .copy-pill:active{background:color-mix(in srgb,var(--rg-accent) 36%,var(--rg-surface))}
 </style>
