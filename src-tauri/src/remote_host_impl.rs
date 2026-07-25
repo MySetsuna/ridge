@@ -423,7 +423,7 @@ async fn handle_ws(
     // when we actually resync — if throttled, it stays set so a later frame
     // (after the interval) performs the recovery instead of losing the signal.
     let mut last_resync: Option<Instant> = None;
-    const RESYNC_MIN_INTERVAL: Duration = Duration::from_secs(1);
+    const RESYNC_MIN_INTERVAL: Duration = ridge_remote::pane::RESYNC_MIN_INTERVAL;
 
     // §rate-limit: per-connection token bucket for `data-request`. An
     // authenticated remote already has shell access, so this is an anti-abuse
@@ -765,16 +765,22 @@ async fn handle_ws(
                                     // reader's scrollback-append + fan-out under one lock — not
                                     // worth the hot-path cost.
                                     let chunk = state.get_pty_scrollback_tail(
-                                        active_ws_id, pane_id, 65536,
+                                        active_ws_id, pane_id, ridge_remote::pane::RESYNC_SCROLLBACK_LAN,
                                     );
                                     if !chunk.bytes.is_empty() {
-                                        let tail = chunk.bytes.as_bytes();
-                                        let mut payload =
-                                            Vec::with_capacity(16 + tail.len());
-                                        payload.extend_from_slice(pane_id.as_bytes());
-                                        payload.extend_from_slice(tail);
+                                        // §mode-reattach: initial subscribe now ships the resync frame
+                                        // (RIS + active-mode preamble + scrollback, shared SSOT) rather
+                                        // than a bare tail — so a controller attaching to a long-running
+                                        // TUI reasserts the mouse/alt one-time modes that scrolled off the
+                                        // tail (else its mirror comes up mouse-dead). RIS is a no-op on
+                                        // the fresh (empty) mirror kernel. Same frame as the desync/cloud
+                                        // leg via `ridge_remote::pane`.
+                                        let (modes, alt) = state.get_pane_modes(active_ws_id, pane_id);
+                                        let resync = ridge_remote::pane::pane_resync_frame(
+                                            pane_id, chunk.bytes.as_bytes(), &modes, alt,
+                                        );
                                         let _ =
-                                            ws_tx.send(Message::Binary(payload.into())).await;
+                                            ws_tx.send(Message::Binary(resync.into())).await;
                                     }
                                     // Seed the client's lazy "scroll up to load older" cursor at
                                     // the oldest byte we just shipped. Sent even for an empty
@@ -1420,27 +1426,22 @@ async fn handle_ws(
                                             desync.store(false, Ordering::Release);
                                             last_resync = Some(now);
                                             let history = state.get_recent_scrollback_for(
-                                                workspace_id, pane_id, 65536,
+                                                workspace_id, pane_id, ridge_remote::pane::RESYNC_SCROLLBACK_LAN,
                                             );
-                                            // §mode-reattach: uuid 前缀 + (RIS + 活动模式前导 +
-                                            // scrollback)。RIS/前导/history 走共享 SSOT，与 cloud
-                                            // 逐字一致；前导让控制端重建鼠标上报/alt 等一次性态。
+                                            // §mode-reattach: 16B pane-id 前缀 + (RIS + 活动模式前导 +
+                                            // scrollback)，整帧走共享 SSOT `ridge_remote::pane`（与 cloud /
+                                            // rdg 一份），前导让控制端重建鼠标上报/alt 等一次性态。
                                             let (modes, alt) = state.get_pane_modes(workspace_id, pane_id);
-                                            let frame = ridge_term::term::modes::build_resync_frame(
-                                                &history, &modes, alt,
+                                            let resync = ridge_remote::pane::pane_resync_frame(
+                                                pane_id, &history, &modes, alt,
                                             );
-                                            let mut resync = Vec::with_capacity(16 + frame.len());
-                                            resync.extend_from_slice(pane_id.as_bytes());
-                                            resync.extend_from_slice(&frame);
                                             if ws_tx.send(Message::Binary(resync.into())).await.is_err() {
                                                 break;
                                             }
                                         }
                                     }
-                                    let mut payload = Vec::with_capacity(16 + bytes.len());
-                                    payload.extend_from_slice(pane_id.as_bytes());
-                                    payload.extend_from_slice(&bytes);
-                                    if ws_tx.send(Message::Binary(payload.into())).await.is_err() {
+                                    let frame = ridge_remote::pane::pane_frame(pane_id, &bytes);
+                                    if ws_tx.send(Message::Binary(frame.into())).await.is_err() {
                                         break;
                                     }
                                 }
