@@ -100,7 +100,7 @@
   // §独立窗口：主窗口侧监听独立编辑器窗口的关闭（交还标签）。
   import { initEditorWindowHost } from '$lib/stores/editorWindow';
 
-  // §perf 懒挂载 FileEditor（设计文档 docs/superpowers/specs/2026-06-13-…）：
+  // §perf 懒挂载 FileEditor：
   // 编辑器深度耦合 Monaco 核心(~4MB)，原随顶层 import 进入 +page 首屏 eager chunk
   // （web-remote 实测 CiLVb0ke.js 4.2MB 被 modulepreload）。改为首次打开文件时再
   // 动态 import；从未打开文件则永不加载 monaco。加载后保持挂载以保留 FileEditor
@@ -125,7 +125,7 @@
   // 副按钮 = 已保存工作区（Bookmark 图标，列出 ~/ridge-workspaces/*.ridge）。
   // 点击 = openWorkspaceFromFile。
   // §IDE 文件搜索 palette（Ctrl+P / Ctrl+Shift+P）：复用现成 QuickOpen.svelte
-  // （fuzzy filename_search → openFile）。详见 docs/superpowers/specs/2026-06-14-…。
+  // （fuzzy filename_search → openFile）。
   let quickOpenVisible = $state(false);
 
   let savedOpen = $state(false);

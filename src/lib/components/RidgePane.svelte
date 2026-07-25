@@ -95,8 +95,7 @@ const WEB_REMOTE = import.meta.env.RIDGE_WEB_REMOTE === true;
 // §history-pull（2026-07-02）: a browser controller pulls scrollback over the
 // LAN-WS / cloud-WebRTC shim, so seed only ~1.5 screens on mount (fast first
 // paint, no multi-KiB parse stall) and page older history in smaller batches on
-// scroll-up. The local desktop keeps the larger local-invoke budgets. See
-// docs/superpowers/specs/2026-07-02-public-remote-smooth-scrollback-multi-controller-design.md
+// scroll-up. The local desktop keeps the larger local-invoke budgets.
 const SCROLLBACK_TAIL_BYTES = WEB_REMOTE ? 32 * 1024 : 256 * 1024;
 const SCROLLBACK_OLDER_BYTES = WEB_REMOTE ? 64 * 1024 : 128 * 1024;
 

@@ -3,7 +3,6 @@
   //
   // 底座化瘦身后只保留「给人看的」两块：成员（Roster）+ 异常（熔断告警）。
   // 「目标 / 活动（TML 协作审计）」等 AI 自治协同的可视化已退场
-  //（见 docs/superpowers/specs/2026-06-20-team-agent-upgrade-plan-design.md）。
   // 数据来源：
   //   - 轮询 `get_teammate_topology` → roster（成员名册 / 状态）
   //   - 监听 `teammate://circuit-tripped` → 置顶异常告警

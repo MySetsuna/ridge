@@ -3,7 +3,6 @@
 //! 承载已登记远端主机、会话元数据、连接状态，以及 **LAN 出站 PTY 客户端**
 //!（[`outbound`]：hello/list/subscribe/write/resize/detach/重订；Mock 可测）。
 //! 真机 WebSocket 接线走同一 `OutboundTransport` trait。
-//! 见 `docs/superpowers/specs/2026-06-30-multi-host-foreign-terminal-hosts-design.md` §2/§9。
 
 pub mod desktop_surface;
 pub mod foreign_history;

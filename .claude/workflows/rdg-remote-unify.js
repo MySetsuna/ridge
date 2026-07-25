@@ -5,7 +5,7 @@
 //   2. 在 wind 干净工作树上跑（P2/P3/P4 已 commit）。串行、失败即停。
 //   3. 这是大重构，建议开着 /workflows 监督；某阶段编译不绿会停，可编辑本脚本后 resumeFromRunId 续跑。
 //
-// 权威蓝图：docs/superpowers/specs/2026-07-02-rdg-remote-unify-and-fixes-design.md §1-P1（8 阶段，
+// 蓝图 §1-P1（8 阶段，
 // 路线 B：trait 抽象、桌面保留 Tauri 命令腿增量收口）。本脚本把 8 阶段合并成 6 个「可独立编译绿」的单元
 // （trait + server_app + 两端 impl 必须捆绑，否则中间态编译不过）。
 
@@ -30,7 +30,7 @@ const BG = `你在为 Wind 项目（C:/code/wind）执行 P1「remote 统一大�
 用 RemoteHost trait 解耦 AppState；桌面(src-tauri)/rdg(packages/ridge-cli tui/lan_host)/云端(ridge-cloud) 三形态
 + 控制端两形态(手机 static/remote、桌面 web-remote-dist SPA) 共用一份；最后删除 src-tauri/src/remote/。
 
-权威蓝图（务必先读）：docs/superpowers/specs/2026-07-02-rdg-remote-unify-and-fixes-design.md 的 §0 现状 + §1-P1
+蓝图 §0 现状 + §1-P1
 的 8 阶段与决策点（路线 B：trait 抽象、桌面 InvokeDispatcher 保留 Tauri 命令腿增量收口；rdg 用 ridge_core::dispatch
 白名单子集）。既有相关计划：docs/plans/unified-remote-architecture-handoff-final.md、unified-remote-gap-analysis.md(G4)。
 按需读 src-tauri/src/remote/*.rs、packages/ridge-remote/src/*.rs、packages/ridge-cli/src/tui/lan_host.rs。

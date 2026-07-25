@@ -13,7 +13,7 @@ export type AgentState = 'idle' | 'busy' | 'starting';
  * provider」接管：领养的本地无头(native/headless)会话、或远端 ridge / rdg 主机
  * 的 pane。后端 `get_pane_layout` 仅在 pane 为外部来源时回传 `origin`；本地 pane
  * 省略该字段。字段使用 snake_case 以与后端 `LayoutNode` DTO 对齐（与 shell_kind /
- * agent_state 同一约定）。详见 docs/superpowers/specs/2026-06-30-...-hosts-design.md。
+ * agent_state 同一约定）。
  */
 export type PaneOrigin =
   | { kind: 'headless'; host_id: string; host_label: string; session_id: string }

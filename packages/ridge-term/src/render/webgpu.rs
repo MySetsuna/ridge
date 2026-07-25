@@ -404,8 +404,7 @@ impl RenderBackend for WebGpuPaneBackend {
         // PSReadLine 高频重画时每帧整屏 LoadOp::Clear → 选区闪烁 + 首行难选中
         // (首行=活动输入行)。修复需运行时取证后改为「初始化一次性能力探测」版:
         // LoadOp::Load 可靠 → 返回 self.needs_initial_clear(脏行快路径);否则保持
-        // true。交接文档 docs/superpowers/specs/2026-06-18-selection-flash-firstline-handoff.md,
-        // 追踪 docs/term-rebuild/TASKS.md §1.36。
+        // true。追踪 docs/term-rebuild/TASKS.md §1.36。
         //
         // §present-fast (2026-06-22): opt-in dirty-row fast path. Default
         // (flag off) keeps the always-true behaviour above. When

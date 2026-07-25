@@ -206,4 +206,4 @@ ws.addEventListener('open', async () => {
 
 ---
 
-*相关文档：用户手册 `docs/teammate-user-guide.md`；设计细节 `docs/superpowers/specs/2026-06-19-domain-zero-teammate-design.md`。*
+*相关文档：用户手册 `docs/teammate-user-guide.md`。*

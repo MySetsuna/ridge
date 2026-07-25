@@ -90,7 +90,7 @@
   - JS 侧已为 Load 不可靠兜底 → `manager.ts:4740-4755` 注释明确:任一 pane 脏即所有可见 pane 重录(脏的走 `render()`、其余走 `recordCachedOnly()`),正是补偿 WebView2 "邻 pane scissor 区呈 fresh-zero"。
   - 故残留闪烁最可能源于 **WebView2 148 交换链 present 语义在 60fps 全帧 churn 下的表现**(取证级),非可静态定位的逻辑 bug;选区让高对比区更显眼、首行=活动输入行故最明显。早先已证伪:selection.rs 无门控、computeCell max(0) 兜底、RAF 已有 blink 休眠。
 - **运行时取证尝试(2026-06-18, 本轮)——环境受阻**:`pnpm tauri:dev:cdp` 已起、dev 应用正常建 pane,但 **WebView2 148 的远程调试端口未初始化**:进程虽带 `--remote-debugging-port=9222`,9222 无 listener、user-data-dir 下**不生成 `DevToolsActivePort`**(无 Edge 策略封禁)。即当前 WebView2 版本上 CDP forensics 工作流不可用——与当初无法取证同根。(已给 `scripts/tauri-dev-cdp.mjs` 补 `--remote-allow-origins=*`,chrome-devtools-mcp 在 Chromium 111+ 连接必需,但不解决 148 端口未初始化。)
-- **决定(本轮)**:保持 `requires_full_frame()=true`(刻意、正确、零回归)。不盲改:能力探测版需把 surface usage 加 `COPY_SRC` + 初始化期异步 GPU 回读(侵入渲染核心且脆弱),且即使实现,在 dev(Load 不可靠)上会正确回退到现状→**无法在 dev 取得正向验证**,真正收益只在 release exe 体现。修复仍 gated 在「能跑 CDP 的 WebView2 / release exe 取证」上。详见交接文档 `docs/superpowers/specs/2026-06-18-selection-flash-firstline-handoff.md`。
+- **决定(本轮)**:保持 `requires_full_frame()=true`(刻意、正确、零回归)。不盲改:能力探测版需把 surface usage 加 `COPY_SRC` + 初始化期异步 GPU 回读(侵入渲染核心且脆弱),且即使实现,在 dev(Load 不可靠)上会正确回退到现状→**无法在 dev 取得正向验证**,真正收益只在 release exe 体现。修复仍 gated 在「能跑 CDP 的 WebView2 / release exe 取证」上。
 - **验收**：输入/选中首行时不再闪烁;首行可正常选中;非 WebGPU(Canvas2D)路径不变。
 
 ### 1.7 [HIGH] 选中背景色不符合主题 ✅ 2026-05-03

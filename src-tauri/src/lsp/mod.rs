@@ -1,7 +1,7 @@
 //! 轻量 LSP host：为 IDE 的「方法/符号 Ctrl+Click 跳转」(go-to-definition) 起一个
 //! 语言服务器子进程（P1：typescript-language-server，stdio JSON-RPC），桥到前端。
 //!
-//! 架构（设计文档 docs/superpowers/specs/2026-06-14-…）：薄自研客户端，不引
+//! 架构：薄自研客户端，不引
 //! monaco-languageclient 重依赖。Rust 侧管进程 + JSON-RPC 分帧 + 文档同步
 //! (didOpen/didChange)，经 Tauri 命令暴露 lsp_did_open / lsp_did_change /
 //! lsp_definition。前端 Monaco 在 Ctrl+Click 非路径 token 时调 lsp_definition →

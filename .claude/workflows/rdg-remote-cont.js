@@ -22,7 +22,6 @@ DesktopHost(src-tauri/src/remote_host_impl.rs) 实现 RemoteHost、server.rs(134
   serve_websocket 返回 Pin<Box<dyn Future+Send>> 保对象安全）。
 - 桌面实现范例见 src-tauri/src/remote_host_impl.rs（照它的模式实现 rdg 版）。
 - serve 复用见 ridge_remote::serve（UaServeConfig{mobile_dir,desktop_dir:Option} + resolve_ui_dirs + serve_router）。
-权威蓝图：docs/superpowers/specs/2026-07-02-rdg-remote-unify-and-fixes-design.md §1-P1。
 
 纪律：
 - 只做本阶段范围；ridge-remote 必须保持零 Tauri 依赖。

@@ -1,5 +1,4 @@
 //! G1 阶段一+二 —— Agent 软暂停/恢复 + 可选 OS 冻结
-//! （设计：`docs/superpowers/specs/2026-07-23-agent-suspend-resume-design.md`）.
 //!
 //! **输入门控（L-b）**：suspended pane 的 **agent 写路径**（send-keys / delegate 提示注入 /
 //! MCP 文本注入 / exec 命令注入）统一经 [`agent_pty_write`] 收口拒绝；**桌面人类输入
