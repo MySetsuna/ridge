@@ -9,9 +9,10 @@
   - NLM 最近两次对话记录（`docs/iterations/2026-07-24-notebooklm-guidance-31.md`/`-30.md` +
     `2026-07-24-open-planning-note-from-nlm-conversations.md`）：该弧 **open=0 全 implemented**
     （多 host / 出站 PTY / 终端链接 / git 护栏），本轮需求**不重复**这些已闭合项。
-- **NLM live 同步状态**: ⚠️ **受阻**——notebooklm-mcp 认证过期（`refresh_auth`=stale）。上传本轮现状为
-  新来源 + 拿一版对抗评审后的 NLM 计划，须先由用户在终端 `nlm login`（交互式浏览器登录,
-  agent 无法 headless 完成）。登录后可补跑：现状 source 替换 + `notebook_query` 换向评审。
+- **NLM live 同步状态**: ✅ **已完成**（2026-07-25，用户 `nlm login` 后经外部 CDP 抽 cookie 认证）。
+  本文已作为「项目现状」source 上传笔记本 `66919cb9-…`（source `59c7525b`）;并经 `notebook_query`
+  对抗评审（conversation `a47d3199`）—— 评审印证清单，两处修正已并入下方（R-TESTGATE 升 P1、
+  R-VERIFY 复用既有 evidence 脚本、补减法机会 §1b、R-P4-LRU 验收具体化）。
 
 ## 0. 已做（筛除项——下轮**不再做**）
 
@@ -28,7 +29,8 @@
 本轮 P4 + resume **仅代码/类型级信心,运行时无 headless 测**。须在能跑 app 环境（`tauri:dev:cdp`,
 非提权计划任务法见前端设计 R5.3）逐项验 `2026-07-25-P4-mobile-keepalive-change-log.md` R1–R8:
 切 pane 白屏 / scrollback 保真 / 软键盘 offset / IME / 选择即鼠标 / 内存 / 弱网重连 / copy pill。
-- **验收**: R1–R8 各有 CDP 截图/断言通过;发现回归即按台账回退基线 `b9031a0` 或定点修。
+- **验收**: R1–R8 各有 CDP 截图/断言通过;**复用 iteration-4 既有证据基建**——把 R1–R8 真机 CDP 结果落
+  evidence JSON，`node scripts/validate-remote-smoke-evidence.mjs` 对其 exit 0(勿另造校验)。发现回归即按台账回退基线 `b9031a0` 或定点修。
 
 ### P0 — R-INCR: 增量 replay 前端激活（消 resume-live-only 的 gap 丢失）
 现 `resume` 为 live-only:切回不清 kernel,但**离开期间该 pane 的输出不回放**(gap)。后端
@@ -57,18 +59,26 @@ cloud 初次订阅仍是 `cloudRemote._subscribe` **前端自建** `RIS+前导+t
 ### P2 — R-P4-LRU: 手机保活内存 LRU 兜底（设计 §8.2 未落地）
 现所有看过的 pane kernel 常驻(仅 host 关 pane 才 detach),低端机开大量 pane 有 OOM 风险。补 LRU 上限
 (默认 N=8)+ 逐出者轻量冻结(≤64KB 尾)→ 切回 rehydrate。
-- **验收**: 开 N+2 pane,逐出生效(纯逻辑 LRU 测);真机 heap ≤ 预算(app 验)。
+- **验收**: vitest 断言开第 9 个 pane 后自动逐出、`manager` 存活 kernel 数 ≤ 8(纯逻辑 LRU 测);真机 heap ≤ 预算(app 验)。
 
 ### P2 — R-P5P6: 手机壳/面板迁包 + 清理（前端统一收尾）
 `src/remote/*` → `packages/remote/src/mobile/`;`src/lib/remote/RemotePanel` → `panel/`;删死路径。
 承接 2026-07-16 设计 P5/P6。
 - **验收**: `build:remote` + `build:desktop-web` 产物一致;`svelte-check` 绿;grep 无残留旧路径。
 
-### P3 — R-TESTGATE: 测试门禁补强
+### P1 — R-TESTGATE: 测试门禁补强（NLM 评审升 P3→P1）
+> **NLM 裁决(采纳)**: 低频维护态下「保全链绿」的自动化比部分 P2 优化更高杠杆;本轮 `worker.format`
+> 构建挂(svelte-check 过、构建期才炸、耗一轮 CI)正证明现流水线**无法把「代码级信心」转成「发布级信心」**。故升 P1。
+
 本地 node_modules/pnpm-store 不全致 vitest/vite 无法本地跑(仅 svelte-check + cargo 可用);release.yml 只
-跑 build 不跑 test。补:CI 加 vitest job(或 release 前置 test 门禁),避免「构建期才暴露」类问题(本轮 worker.format
-即一例:svelte-check 过、构建挂)。
-- **验收**: CI 有 `vitest run` + `svelte-check` gate;红则阻发布。
+跑 build 不跑 test。补:CI 加 test job(`vitest run` + `svelte-check` + 关键 `vite build` 冒烟),红则阻发布。
+- **验收**: `release.yml`(或前置 CI)含 `vitest run` + `svelte-check` step,失败阻断发布。
+
+## 1b. 减法机会（NLM 评审补充,与加法同权）
+- **删 cloud 前端自建帧**: R-CLOUD-CONVERGE 落地后,立即删 `cloudRemote._subscribe` 手拼 `RIS+前导+tail`
+  的旧逻辑(host 出一份 resync 帧,前端只喂)。验收 = grep 无该拼接 + cloudRemote.test.ts 绿。
+- **T3 脚本合并**: `scripts/check-prod-status.mjs` 若长期桩验、无真机实跑,并入 CI 发布脚本,减独立维护。
+- **E1 遥测清理**: WebGPU 收益测量(E1)若连续 ~10 轮无真机数据录入,删其性能追踪冗余遥测,仅留运行时探测。
 
 ## 2. 边界（不做）
 - 不做云 WebRTC 出站二期以外的新出站形态(NLM 弧已定 LAN WS 首切片,云出站二期)。
@@ -76,14 +86,13 @@ cloud 初次订阅仍是 `cloudRemote._subscribe` **前端自建** `RIS+前导+t
 - 不改已闭合的 multi-host/git-guard/终端链接 SSOT(open-planning-note open=0)。
 
 ## 3. 建议轮次编排
-1. **先 R-VERIFY**(跑 app 验 P4,是本轮盲改的账,最高回归风险,先兜住)。
+0. **R-TESTGATE 先立**(CI test/build 冒烟门禁——便宜、高杠杆,先护住后续每轮「全链绿」,免再出本轮 CI 挂)。
+1. **R-VERIFY**(跑 app 验 P4,本轮盲改的账,最高回归风险,先兜住)。
 2. R-INCR + R-RDG-INCR(增量 replay,真机验)。
 3. R-WSLEG(分步 trait 收口)。
-4. R-CLOUD-CONVERGE + R-P4-LRU + R-P5P6 + R-TESTGATE(收尾)。
+4. R-CLOUD-CONVERGE(+随后删 cloud 自建帧)+ R-P4-LRU + R-P5P6(收尾)。
 
-## 4. NLM 闭环补跑清单（用户 `nlm login` 后）
-1. `refresh_auth` 确认 token 生效。
-2. 建/更 `docs/ARCHITECTURE.md`(本仓无,须先据 codegraph 生成 Remote 现状)→ `source_add(file)` 上传为现状来源。
-3. `notebook_query`(笔记本 `66919cb9-1329-4ddf-955c-f426d15a9fe6`):以本文 §1 为现状差集,请 NLM 对抗评审
-   优先级 + 补漏 + 减法机会(按 skill ④双门)。
-4. 据评审修订本需求稿;`source_delete` 旧现状来源 + 传新(skill ⑦)。
+## 4. NLM 闭环状态
+- ✅ 认证(2026-07-25 外部 CDP)、现状 source 上传(`59c7525b`)、对抗评审(conv `a47d3199`)、据裁决修订(本文)均已完成。
+- **下轮起点**: 建 `docs/ARCHITECTURE.md`(本仓无,据 codegraph 生成 Remote 现状)作规范「现状」来源;之后每轮按
+  skill ⑦ `source_delete` 旧现状 + 传新,替换 `59c7525b`(本需求稿属一次性现状快照,非常设 ARCHITECTURE)。
