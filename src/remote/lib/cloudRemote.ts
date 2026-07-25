@@ -84,6 +84,20 @@ interface ScrollbackChunk {
   head_seq: number;
 }
 
+/**
+ * §R-CLOUD-CONVERGE — `get_pane_resync_frame` response. `frame` is the COMPLETE
+ * host-built reattach frame (RIS + mode-reattach preamble + scrollback tail, via the
+ * shared build_resync_frame SSOT); we feed it verbatim. `start_seq`/`at_oldest` seed
+ * the scroll-up cursor; `head_seq` is the live/history seam (R-INCR). A superset of
+ * ScrollbackChunk — one invoke replaces the old tail+preamble self-assembly.
+ */
+interface PaneResyncFrame {
+  frame: string;
+  start_seq: number;
+  at_oldest: boolean;
+  head_seq: number;
+}
+
 /** Flatten a host pane-tree to the mobile's flat leaf list (server.rs's downgrade). */
 function flattenLeaves(node: PaneNode | null | undefined): PaneInfo[] {
   if (!node) return [];
@@ -417,36 +431,46 @@ export class CloudRemoteConnection implements RemoteLink {
       // would wipe the surviving kernel down to the tail). The alive kernel keeps its
       // full history and just resumes the live stream below.
       if (!resume) {
+        // §R-CLOUD-CONVERGE: the host builds ONE complete resync frame (RIS + active-
+        // mode preamble + scrollback tail) via the shared build_resync_frame SSOT — we
+        // feed it verbatim, NO client-side assembly. The preamble (?1002h/?1049h/?1006h…)
+        // reasserts a TUI's one-time mouse/alt enables that scrolled off the tail, so the
+        // mirror kernel comes up mouse-alive (this now actually reaches the cloud gate —
+        // the prior get_pane_resync_preamble was never in the real allow-list → dead fix).
+        let seeded = false;
         try {
-          const chunk = await invoke<ScrollbackChunk>('get_pane_scrollback_tail', {
+          const rf = await invoke<PaneResyncFrame>('get_pane_resync_frame', {
             paneId,
             maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
           });
           if (!this.subscribing.has(paneId)) return; // torn down during the fetch
-          this.scrollbackCursor.set(paneId, {
-            oldestSeq: chunk.start_seq,
-            atOldest: chunk.at_oldest,
-          });
-          // §mode-reattach: RIS (\x1bc) + active-mode preamble + history. The preamble
-          // (?1002h/?1049h/?1006h… for the pane's live modes) reasserts a TUI's
-          // one-time mouse/alt enables that scrolled off the tail — else the mirror
-          // kernel comes up mouse-dead (the reported mobile-cloud TUI mouse bug). SSOT
-          // shared with the LAN/host resync frame. Best-effort (older host → empty).
-          let preamble = '';
-          try {
-            // `|| ''` guards an older host that RESOLVES undefined (rather than
-            // rejecting) for an unknown command — otherwise the string 'undefined'
-            // would be injected literally into the terminal stream.
-            preamble = (await invoke<string>('get_pane_resync_preamble', { paneId })) || '';
-          } catch {
-            /* older host without the command: no preamble (degrade gracefully) */
-          }
-          if (!this.subscribing.has(paneId)) return;
-          const payload = this.encoder.encode('\x1bc' + preamble + (chunk.bytes ?? ''));
-          this.rawByteListeners.forEach((fn) => fn(paneId, payload));
+          this.scrollbackCursor.set(paneId, { oldestSeq: rf.start_seq, atOldest: rf.at_oldest });
+          this.rawByteListeners.forEach((fn) => fn(paneId, this.encoder.encode(rf.frame)));
+          seeded = true;
         } catch {
-          // Older host / command rejected: no seeded history — degrade to "first live
-          // frame acts as the replay".
+          /* older host (§two-version-line skew: the cloud PWA can ship ahead of the
+             user's desktop host, whose allow-list lacks the new command) — fall back
+             below to a plain RIS + tail seed (no preamble = the prior shipped cloud
+             behavior). Not a regression; the pane still paints its history. */
+        }
+        if (!seeded) {
+          try {
+            const chunk = await invoke<ScrollbackChunk>('get_pane_scrollback_tail', {
+              paneId,
+              maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
+            });
+            if (!this.subscribing.has(paneId)) return;
+            this.scrollbackCursor.set(paneId, {
+              oldestSeq: chunk.start_seq,
+              atOldest: chunk.at_oldest,
+            });
+            this.rawByteListeners.forEach((fn) =>
+              fn(paneId, this.encoder.encode('\x1bc' + (chunk.bytes ?? ''))),
+            );
+          } catch {
+            // Older host / command rejected: no seeded history — degrade to "first live
+            // frame acts as the replay".
+          }
         }
         if (!this.subscribing.has(paneId)) return;
       }

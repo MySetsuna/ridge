@@ -566,6 +566,27 @@ mod tests {
     }
 
     #[test]
+    fn build_resync_frame_is_utf8_lossless_and_ssot_composed() {
+        // §R-CLOUD-CONVERGE — the cloud host command serializes this frame as a String
+        // (JSON-RPC has no binary channel) via `from_utf8_lossy`. That is lossless ONLY
+        // if the whole frame is valid UTF-8: RIS + preamble are ASCII, and scrollback is
+        // sourced from a UTF-8-safe ScrollbackChunk. Pin it so a future change that lets
+        // raw non-UTF-8 bytes into the frame (→ U+FFFD corruption on the mirror) fails.
+        let mut m = Modes::default();
+        m.set(1002, true, true); // button-event mouse
+        m.set(1006, true, true); // SGR encoding
+        let scrollback = "über 终端 🚀 tail".as_bytes(); // multibyte UTF-8 history
+        let frame = build_resync_frame(scrollback, &m, true);
+        // Lossless: the lossy decode reproduces the exact bytes (no replacement char).
+        assert_eq!(String::from_utf8_lossy(&frame).as_bytes(), &frame[..]);
+        // And the frame is exactly RIS + preamble + scrollback (the SSOT composition).
+        let mut expected = b"\x1bc".to_vec();
+        expected.extend_from_slice(&m.to_reattach_preamble(true));
+        expected.extend_from_slice(scrollback);
+        assert_eq!(frame, expected);
+    }
+
+    #[test]
     fn app_cursor_keys_mode_1_toggles() {
         // DECCKM. Affects which key sequences encode/cmd produce for
         // arrow keys.

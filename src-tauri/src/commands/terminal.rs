@@ -1809,22 +1809,45 @@ pub fn get_pane_scrollback_before(
     Ok(state.get_pty_scrollback_before(workspace_id, pane_id, before_seq, max_bytes))
 }
 
-/// §mode-reattach (cloud 首订阅) — 返回该 pane 当前活动 DEC 私有模式的重连前导
-/// （`?1002h`/`?1049h`/`?1006h`… 对应鼠标上报/alt 屏等），供 cloud 控制端在其**前端
-/// 自建**的 `RIS + scrollback` 回放中夹入（`RIS + 本前导 + tail`）——否则 TUI 启动时
-/// 一次性开启、早滑出 tail 的模式在镜像内核丢失（手机公网远控 TUI 鼠标失灵之根）。
-/// 普通 shell 返回空串。复用共享 SSOT `Modes::to_reattach_preamble`，与 LAN/host
-/// resync 帧逐字同源。只读，远程可达（须在 `REMOTE_ALLOWLIST`）。
+/// `get_pane_resync_frame` 的返回：一份 host 构建的**完整**重连帧 + scroll-up 懒加载游标。
+/// `frame` = `RIS + 模式前导 + scrollback tail`，全程经共享 SSOT
+/// [`ridge_term::term::modes::build_resync_frame`] 构建，云控制端**原样喂**、不再前端自拼。
+/// `start_seq`/`at_oldest` 播种滚顶分批游标；`head_seq` 为 live/history 边界（R-INCR 增量
+/// 续传所需）——故本结构是旧 `ScrollbackChunk`（`get_pane_scrollback_tail`）的完整超集。
+#[derive(serde::Serialize)]
+pub struct PaneResyncFrame {
+    /// UTF-8 字符串：RIS(`\x1bc`) 与前导皆 ASCII、scrollback 源自已保证 UTF-8 边界安全的
+    /// `ScrollbackChunk.bytes`，故整帧为合法 UTF-8、`from_utf8_lossy` 在此无损。
+    pub frame: String,
+    pub start_seq: u64,
+    pub at_oldest: bool,
+    pub head_seq: u64,
+}
+
+/// §R-CLOUD-CONVERGE（cloud 首订阅收敛）— host 出**一份完整** resync 帧供云控制端原样喂，
+/// 消除 `cloudRemote._subscribe` 与 host 的两套帧构建（前端曾 `get_pane_scrollback_tail` +
+/// `get_pane_resync_preamble` 手拼 `RIS + 前导 + tail`）。帧体经共享 SSOT `build_resync_frame`
+/// 构建，与 LAN/host resync 帧逐字同源；模式前导（`?1002h`/`?1049h`/`?1006h`…）重挂 TUI
+/// 一次性开启、早滑出 tail 的鼠标/alt 屏态——修公网手机远控 TUI 鼠标失灵（旧
+/// `get_pane_resync_preamble` 从未进真正的能力门 `REMOTE_ALLOWLIST` → 云路径被拒 → 空转）。
+/// 只读，远程可达（须列入 `capability.rs::REMOTE_ALLOWLIST` 及其 TS 镜像 `remoteAllowlist.ts`）。
 #[tauri::command]
-pub fn get_pane_resync_preamble(
+pub fn get_pane_resync_frame(
     state: State<'_, AppState>,
     pane_id: String,
-) -> Result<String, String> {
+    max_bytes: usize,
+) -> Result<PaneResyncFrame, String> {
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
     let workspace_id = state.active_workspace_id();
+    let chunk = state.get_pty_scrollback_tail(workspace_id, pane_id, max_bytes);
     let (modes, alt) = state.get_pane_modes(workspace_id, pane_id);
-    let preamble = modes.to_reattach_preamble(alt);
-    Ok(String::from_utf8_lossy(&preamble).into_owned())
+    let frame = ridge_term::term::modes::build_resync_frame(chunk.bytes.as_bytes(), &modes, alt);
+    Ok(PaneResyncFrame {
+        frame: String::from_utf8_lossy(&frame).into_owned(),
+        start_seq: chunk.start_seq,
+        at_oldest: chunk.at_oldest,
+        head_seq: chunk.head_seq,
+    })
 }
 
 /// 列出所有 native tmux 会话，供「全局状态」面板的后台会话发现入口展示。

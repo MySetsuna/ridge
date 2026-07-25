@@ -71,8 +71,14 @@ beforeEach(() => {
           { id: 'dark1', type: 'dark', colors: { bg: '#000' } },
           { id: 'light1', type: 'light', colors: { bg: '#fff' } },
         ] };
-      // §history-pull: seq-cursor scrollback. tail seeds the first screen; before
-      // pages one batch older then reports at_oldest so paging stops.
+      // §R-CLOUD-CONVERGE: host builds the complete resync frame (RIS + preamble +
+      // tail) — the controller feeds `frame` verbatim. start_seq seeds the scroll-up
+      // cursor; head_seq is the live/history seam.
+      case 'get_pane_resync_frame':
+        return { frame: '\x1bcHIST', start_seq: 100, at_oldest: false, head_seq: 116 };
+      // §history-pull: seq-cursor scrollback. tail seeds the first screen (also the
+      // version-skew fallback when get_pane_resync_frame is absent); before pages one
+      // batch older then reports at_oldest so paging stops.
       case 'get_pane_scrollback_tail':
         return { bytes: 'HIST', start_seq: 100, at_oldest: false, head_seq: 116 };
       case 'get_pane_scrollback_before':
@@ -130,12 +136,13 @@ describe('CloudRemoteConnection panes', () => {
     conn.subscribePane('pane-a');
     await flush();
 
-    // §history-pull: controller pulls its own ~1.5-screen tail first (no host dump)…
+    // §R-CLOUD-CONVERGE: controller pulls ONE host-built resync frame (no client
+    // assembly, no separate preamble invoke)…
     expect(invokeMock).toHaveBeenCalledWith(
-      'get_pane_scrollback_tail',
+      'get_pane_resync_frame',
       expect.objectContaining({ paneId: 'pane-a' }),
     );
-    // …emitted as the RIS'd reconcile first-frame (\x1bc + history).
+    // …and feeds `frame` verbatim as the first frame (RIS + preamble + history).
     expect(got).toHaveLength(1);
     expect(got[0][0]).toBe('pane-a');
     expect(new TextDecoder().decode(got[0][1])).toBe('\x1bcHIST');
@@ -151,6 +158,31 @@ describe('CloudRemoteConnection panes', () => {
     handlers[evt]({ payload: { data: 'hi' } });
     expect(got).toHaveLength(2);
     expect(new TextDecoder().decode(got[1][1])).toBe('hi');
+  });
+
+  it('§R-CLOUD-CONVERGE version-skew: falls back to RIS + tail when the host lacks get_pane_resync_frame', async () => {
+    const conn = await connected();
+    const got: Array<[string, Uint8Array]> = [];
+    conn.onRawBytes((id, bytes) => got.push([id, bytes]));
+
+    // Simulate an OLDER desktop host whose allow-list rejects the new command.
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === 'get_pane_resync_frame') throw new Error('METHOD_NOT_FOUND');
+      if (cmd === 'get_pane_scrollback_tail') return { bytes: 'HIST', start_seq: 100, at_oldest: false, head_seq: 116 };
+      if (cmd === 'register_pane_delta_channel') return undefined;
+      void args;
+      return undefined;
+    });
+
+    conn.subscribePane('pane-a');
+    await flush();
+
+    // The new command was attempted first, then the legacy tail seeded RIS + history
+    // (no preamble — exactly the prior shipped cloud behavior, not a regression).
+    expect(invokeMock).toHaveBeenCalledWith('get_pane_resync_frame', expect.objectContaining({ paneId: 'pane-a' }));
+    expect(invokeMock).toHaveBeenCalledWith('get_pane_scrollback_tail', expect.objectContaining({ paneId: 'pane-a' }));
+    expect(got).toHaveLength(1);
+    expect(new TextDecoder().decode(got[0][1])).toBe('\x1bcHIST');
   });
 
   it('fetchOlderScrollback pages one older batch, advances the cursor, then stops at oldest', async () => {

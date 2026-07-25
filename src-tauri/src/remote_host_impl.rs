@@ -2563,7 +2563,6 @@ const CORE_MIGRATED_METHODS: &[&str] = &[
     "get_pane_layout_for",
     "get_pane_scrollback_tail",
     "get_pane_scrollback_before",
-    "get_pane_resync_preamble",
     "list_native_sessions",
     // git 只读
     "git_op_in_progress",
