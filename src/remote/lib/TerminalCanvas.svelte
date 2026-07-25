@@ -10,6 +10,7 @@
     decideTouchMouseGesture,
     decideTouchScroll,
   } from '@ridge/remote/shared/terminal/mobileTouchScroll';
+  import { imeCommitDelta } from '@ridge/remote/shared/terminal/imeDelta';
 
   // P4 (2026-07-25): this component no longer owns a single `TerminalController`
   // + canvas. It is now the MOBILE INPUT-ADAPTATION LAYER over the SHARED
@@ -185,6 +186,9 @@
       // can unpark the (still-alive) kernel instead of leaking / double-attaching.
       if (!alive) { manager.park(paneId); return; }
       attached = true;
+      // iter-60 G4: report the ACTUAL render backend (P4 refactor lost this
+      // binding — footer showed the 'Canvas2D' default even under WebGPU).
+      backendName = manager.backendName(paneId) ?? 'Canvas2D';
       // Outbound: kernel-generated responses (DSR/DA) from feed + IME
       // write/paste → PTY via the host WS (onStdin → ws.sendStdin).
       manager.onData(paneId, (bytes) => onStdin(td.decode(bytes)));
@@ -505,6 +509,20 @@
       lastInputText = '';
       return;
     }
+    // iter-60 G11：自动补全提交去重——已逐字发送的当前词与 commit 求公共前缀，
+    // 只发「退格×N + 差量」（Spac + Space → 只发 e；Spac + Spice → ␡␡ice）。
+    // 差量含退格须走 raw onStdin（bracketed paste 会把 \x7f 变字面量）。
+    if (Date.now() - recentSentTime < RECENT_SENT_WINDOW_MS) {
+      const delta = imeCommitDelta(recentSent, data);
+      if (delta !== data) {
+        if (delta) onStdin(delta);
+        recentSent = data;
+        recentSentTime = Date.now();
+        imeCommitExpect = data;
+        imeCommitExpectTime = Date.now();
+        return;
+      }
+    }
     // Commit: encodePaste + ship to PTY via the registered dataHandler (onStdin).
     manager.paste(paneId, data);
     // Arm dedup for the trailing `input` event that normally follows.
@@ -531,8 +549,20 @@
       imeCommitExpect = '';
       return;
     }
-    // §1 Autocorrect / predictive replacement — drop it and keep the literal.
-    if (inputType === 'insertReplacementText') return;
+    // §1 Autocorrect / predictive replacement：旧行为是整帧丢弃（保字面），用户
+    // 点的修正词就此丢失。iter-60 G11 改为差量应用：与已发段求公共前缀，退格删
+    // 多余尾巴再补差量——修正生效且不重复。窗口外（无已发上下文）仍丢弃防误发。
+    if (inputType === 'insertReplacementText') {
+      if (Date.now() - recentSentTime < RECENT_SENT_WINDOW_MS) {
+        const delta = imeCommitDelta(recentSent, text);
+        if (delta && delta !== text) {
+          onStdin(delta);
+          recentSent = text;
+          recentSentTime = Date.now();
+        }
+      }
+      return;
+    }
     // §2 Sticky on-screen modifier armed → form a chord (Ctrl+C …) per character.
     if (anyMod()) {
       const sm = consumeMods();
