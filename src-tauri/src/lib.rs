@@ -725,6 +725,7 @@ pub fn run() {
             terminal::kill_pane,
             terminal::get_pane_scrollback_tail,
             terminal::get_pane_scrollback_before,
+            terminal::get_pane_resync_preamble,
             terminal::list_native_sessions,
             terminal::summon_native_session,
             terminal::new_headless_session,

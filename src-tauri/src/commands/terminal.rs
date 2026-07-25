@@ -1809,6 +1809,24 @@ pub fn get_pane_scrollback_before(
     Ok(state.get_pty_scrollback_before(workspace_id, pane_id, before_seq, max_bytes))
 }
 
+/// §mode-reattach (cloud 首订阅) — 返回该 pane 当前活动 DEC 私有模式的重连前导
+/// （`?1002h`/`?1049h`/`?1006h`… 对应鼠标上报/alt 屏等），供 cloud 控制端在其**前端
+/// 自建**的 `RIS + scrollback` 回放中夹入（`RIS + 本前导 + tail`）——否则 TUI 启动时
+/// 一次性开启、早滑出 tail 的模式在镜像内核丢失（手机公网远控 TUI 鼠标失灵之根）。
+/// 普通 shell 返回空串。复用共享 SSOT `Modes::to_reattach_preamble`，与 LAN/host
+/// resync 帧逐字同源。只读，远程可达（须在 `REMOTE_ALLOWLIST`）。
+#[tauri::command]
+pub fn get_pane_resync_preamble(
+    state: State<'_, AppState>,
+    pane_id: String,
+) -> Result<String, String> {
+    let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+    let workspace_id = state.active_workspace_id();
+    let (modes, alt) = state.get_pane_modes(workspace_id, pane_id);
+    let preamble = modes.to_reattach_preamble(alt);
+    Ok(String::from_utf8_lossy(&preamble).into_owned())
+}
+
 /// 列出所有 native tmux 会话，供「全局状态」面板的后台会话发现入口展示。
 /// 远程可达（只读，已列入 `REMOTE_ALLOWLIST`）：远程运维同样能看见后台 agent 会话。
 #[tauri::command]

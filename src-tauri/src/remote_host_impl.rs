@@ -764,36 +764,70 @@ async fn handle_ws(
                                     // for a mirror. True dedup would require coupling the PTY
                                     // reader's scrollback-append + fan-out under one lock — not
                                     // worth the hot-path cost.
-                                    let chunk = state.get_pty_scrollback_tail(
-                                        active_ws_id, pane_id, ridge_remote::pane::RESYNC_SCROLLBACK_LAN,
-                                    );
-                                    if !chunk.bytes.is_empty() {
-                                        // §mode-reattach: initial subscribe now ships the resync frame
-                                        // (RIS + active-mode preamble + scrollback, shared SSOT) rather
-                                        // than a bare tail — so a controller attaching to a long-running
-                                        // TUI reasserts the mouse/alt one-time modes that scrolled off the
-                                        // tail (else its mirror comes up mouse-dead). RIS is a no-op on
-                                        // the fresh (empty) mirror kernel. Same frame as the desync/cloud
-                                        // leg via `ridge_remote::pane`.
+                                    // §keep-alive resume vs full resync (fixes the RIS-vs-keep-alive
+                                    // conflict). A controller that kept its mirror kernel alive across a
+                                    // pane switch (mobile P4 keep-alive) resubscribes with `resume:true`
+                                    // (and optionally `sinceSeq`), so the host must NOT send a
+                                    // RIS-bearing resync — that would wipe the surviving kernel down to
+                                    // the tail. Three cases:
+                                    //   • sinceSeq present  → incremental replay of the gap since the
+                                    //     controller's cursor (NO RIS) when contiguous; a gap/eviction
+                                    //     falls back to a full RIS resync. (frontend activation pending)
+                                    //   • resume, no cursor → live-only: send NO frame; the alive kernel
+                                    //     keeps its full history and just resumes the live stream.
+                                    //   • else (fresh / reload / desktop) → full RIS resync + preamble
+                                    //     + scrollback (reattaches modes, repaints an empty mirror).
+                                    let resume = parsed["resume"].as_bool().unwrap_or(false);
+                                    let since_seq = parsed["sinceSeq"].as_u64();
+                                    let cap = ridge_remote::pane::RESYNC_SCROLLBACK_LAN;
+                                    let (chunk, incremental) = if let Some(cursor) = since_seq {
+                                        let c = state.get_pty_scrollback_since(
+                                            active_ws_id, pane_id, cursor, cap,
+                                        );
+                                        let contiguous = c.start_seq == cursor;
+                                        (c, contiguous)
+                                    } else {
+                                        (state.get_pty_scrollback_tail(active_ws_id, pane_id, cap), false)
+                                    };
+
+                                    if incremental {
+                                        // Resume gap replay: append only the bytes since the cursor,
+                                        // NO RIS. Empty when the controller is already current.
+                                        if !chunk.bytes.is_empty() {
+                                            let frame = ridge_remote::pane::pane_frame(
+                                                pane_id, chunk.bytes.as_bytes(),
+                                            );
+                                            let _ = ws_tx.send(Message::Binary(frame.into())).await;
+                                        }
+                                    } else if resume {
+                                        // Live-only resume: alive kernel keeps its history; send nothing
+                                        // here and let the live stream continue. (No RIS, no scrollback.)
+                                    } else if !chunk.bytes.is_empty() {
+                                        // Fresh / gapped: RIS + active-mode preamble + scrollback.
                                         let (modes, alt) = state.get_pane_modes(active_ws_id, pane_id);
                                         let resync = ridge_remote::pane::pane_resync_frame(
                                             pane_id, chunk.bytes.as_bytes(), &modes, alt,
                                         );
-                                        let _ =
-                                            ws_tx.send(Message::Binary(resync.into())).await;
+                                        let _ = ws_tx.send(Message::Binary(resync.into())).await;
                                     }
-                                    // Seed the client's lazy "scroll up to load older" cursor at
-                                    // the oldest byte we just shipped. Sent even for an empty
-                                    // tail so a fresh pane still learns it's at-oldest.
-                                    let meta = serde_json::json!({
-                                        "type": "scrollback-meta",
-                                        "paneId": pane_id.to_string(),
-                                        "startSeq": chunk.start_seq,
-                                        "atOldest": chunk.at_oldest,
-                                    });
-                                    let _ = ws_tx
-                                        .send(Message::Text(meta.to_string()))
-                                        .await;
+                                    // Seed/refresh the client's paging + resume cursor. `headSeq` is the
+                                    // controller's next resume cursor; `incremental` tells it whether the
+                                    // mirror was reset (repaint + reset paging anchor) or resumed (append,
+                                    // keep anchor). Sent even for an empty tail so a fresh pane learns
+                                    // it's at-oldest. A live-only resume skips it (nothing changed here).
+                                    if !resume || since_seq.is_some() {
+                                        let meta = serde_json::json!({
+                                            "type": "scrollback-meta",
+                                            "paneId": pane_id.to_string(),
+                                            "startSeq": chunk.start_seq,
+                                            "atOldest": chunk.at_oldest,
+                                            "headSeq": chunk.head_seq,
+                                            "incremental": incremental,
+                                        });
+                                        let _ = ws_tx
+                                            .send(Message::Text(meta.to_string()))
+                                            .await;
+                                    }
                                 }
                                 Ok(())
                             }
@@ -2529,6 +2563,7 @@ const CORE_MIGRATED_METHODS: &[&str] = &[
     "get_pane_layout_for",
     "get_pane_scrollback_tail",
     "get_pane_scrollback_before",
+    "get_pane_resync_preamble",
     "list_native_sessions",
     // git 只读
     "git_op_in_progress",
