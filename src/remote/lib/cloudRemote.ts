@@ -137,6 +137,8 @@ export class CloudRemoteConnection implements RemoteLink {
   private fetchingOlder = new Set<string>();
   // pane-tree-changed unlisten (host-side layout changes → re-list panes).
   private treeUnlisten: UnlistenFn | null = null;
+  /** iter-60 G9：pane-meta-changed 退订句柄。 */
+  private metaUnlisten: UnlistenFn | null = null;
   // Per-pane decoders are unnecessary: the bridge already decodes bytes→string with a
   // streaming TextDecoder; we re-encode here to feed the byte-oriented mobile canvas.
   private readonly encoder = new TextEncoder();
@@ -182,6 +184,23 @@ export class CloudRemoteConnection implements RemoteLink {
       });
     } catch {
       /* event subscribe failed — non-fatal, manual refresh still works */
+    }
+    // iter-60 G9: live pane meta (title/cwd) push — host aggregates OSC title/cwd
+    // changes into `pane-meta-changed`, the cloud bridge forwards it as an event
+    // frame. Feeds the same metaListeners the LAN leg's `pty-meta` uses, so the
+    // header title/cwd and the pane-switcher popup refresh in real time instead
+    // of waiting for the next layout poll.
+    try {
+      this.metaUnlisten = await listen<{ paneId?: string; title?: string; cwd?: string }>(
+        'pane-meta-changed',
+        (e) => {
+          const p = e.payload;
+          if (!p || typeof p.paneId !== 'string') return;
+          this.metaListeners.forEach((fn) => fn(p.paneId!, p.title ?? null, p.cwd ?? null));
+        },
+      );
+    } catch {
+      /* non-fatal — layout-poll fallback below still refreshes meta */
     }
     // Read the host's active theme so the mobile chrome + terminal match the desktop
     // (MainApp.onMount reads lastTheme() and applies it). Best-effort: an older host
@@ -748,6 +767,10 @@ export class CloudRemoteConnection implements RemoteLink {
     if (this.treeUnlisten) {
       try { this.treeUnlisten(); } catch { /* already gone */ }
       this.treeUnlisten = null;
+    }
+    if (this.metaUnlisten) {
+      try { this.metaUnlisten(); } catch { /* already gone */ }
+      this.metaUnlisten = null;
     }
     // Tear down the WebRTC / E2EE session (idempotent).
     try { this.handle.disconnect(); } catch { /* already torn down */ }
