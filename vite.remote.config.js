@@ -178,6 +178,17 @@ export default defineConfig({
       },
     },
   },
+  // §P4 — the mobile SPA now imports the shared @ridge/remote TerminalManager,
+  // which pulls in `workerRendererSingleton.ts`. That render worker is created via
+  // `new Worker(url, { type: 'module' })` and itself imports other modules
+  // (renderWorker.ts → deps), so Vite's default `worker.format: 'iife'` fails the
+  // production build with `Invalid value "iife" for option "worker.format" - UMD and
+  // IIFE output formats are not supported for code-splitting builds`. Mirror the main
+  // `vite.config.js` fix: emit the worker chunk as ESM (matches its `type: 'module'`;
+  // the mobile target is esnext and modern browsers support module workers).
+  worker: {
+    format: 'es',
+  },
   optimizeDeps: {
     exclude: ['@ridge/term-wasm'],
   },
