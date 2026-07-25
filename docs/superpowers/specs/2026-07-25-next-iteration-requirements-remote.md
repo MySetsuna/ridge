@@ -22,6 +22,11 @@
 - P4 手机端弃单例 kernel + 旁路缓存,接共享 `manager` 多 kernel park 保活(svelte-check 0-error)。
 - `resume`(无RIS 续订)全链路激活 + `PaneScrollback::since`/`sinceSeq` **后端**增量 replay 基础。
 - v0.1.1 发布(11 资产齐全)。
+- **R-CLOUD-CONVERGE 已闭（v0.1.2，2026-07-25）**: host 新增 `get_pane_resync_frame` 出一份完整 resync 帧
+  （`build_resync_frame` SSOT），cloud 控制端原样喂；删前端自拼帧 + 空转的 `get_pane_resync_preamble`。
+  **顺带修真 bug**：旧前导命令只加进 `CORE_MIGRATED_METHODS`（路由表）而非真能力门
+  `capability.rs::REMOTE_ALLOWLIST`/`remoteAllowlist.ts` → cloud invoke 被拒 → v0.1.1 云路径鼠标修复实为空转；
+  今入真门修复。详见 `2026-07-25-R-CLOUD-CONVERGE-change-log.md`。
 
 ## 1. 待做 / 待修（优先级 + 确定性验收）
 
@@ -51,10 +56,15 @@
 rdg `ScrollbackRing::since(cursor)` 现成但只接了 `resume` live-only。随 R-INCR 一并接 `sinceSeq` 增量。
 - **验收**: rdg host `since` 路径单测 + 与桌面同游标语义。
 
-### P2 — R-CLOUD-CONVERGE: cloud 首订阅 resync 收敛
-cloud 初次订阅仍是 `cloudRemote._subscribe` **前端自建** `RIS+前导+tail`(经两个 invoke 拼),与 host
-`build_resync_frame` 是**两套构建**。收敛为 host 出完整 resync 帧(一份),前端只喂,消分叉。
-- **验收**: cloud 与 LAN resync 帧同源(host 侧一份构建);cloudRemote.test.ts 更新且绿。
+### ~~P2 — R-CLOUD-CONVERGE~~ ✅ 已闭（v0.1.2，见 §0）
+
+### P2 — R-DESKTOP-RESYNC: 桌面 RidgePane 首屏也收敛到完整帧（R-CLOUD-CONVERGE 派生）
+桌面 `RidgePane.svelte` 首屏 mount 仍经 `get_pane_scrollback_tail` 无前导 seed 内核；重挂时若 TUI 一次性
+开启（`?1002h`/`?1049h`…）已滑出 tail → **桌面本地 pane 亦可能鼠标失灵**（与 cloud 同源病，本轮只修了云腿）。
+收敛为 mount 也调 `get_pane_resync_frame`（复用本轮 host 命令），前端只喂;随后评估删
+`get_pane_scrollback_tail`(若无其他调用方)。
+- **验收**: RidgePane 首屏经 `get_pane_resync_frame`;桌面 TUI 重挂鼠标存活(真机验，属桌面主路径高影响，独立提交);相关 vitest/svelte-check 绿。
+- **风险**: 桌面终端是最高频路径，回归影响大 → 分步、门禁绿、勿与其他改动混提。
 
 ### P2 — R-P4-LRU: 手机保活内存 LRU 兜底（设计 §8.2 未落地）
 现所有看过的 pane kernel 常驻(仅 host 关 pane 才 detach),低端机开大量 pane 有 OOM 风险。补 LRU 上限

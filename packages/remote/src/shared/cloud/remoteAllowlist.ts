@@ -60,6 +60,10 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   // whole buffer at once. Same primitive the desktop RidgePane already uses.
   'get_pane_scrollback_tail',
   'get_pane_scrollback_before',
+  // §R-CLOUD-CONVERGE: host emits ONE complete resync frame (RIS + mode-reattach
+  // preamble + tail via the shared build_resync_frame SSOT); the cloud controller
+  // feeds it verbatim instead of self-assembling. Superset of get_pane_scrollback_tail.
+  'get_pane_resync_frame',
   // native (headless) tmux session discovery (desktop hosts); `summon` is a
   // structural pane op (not in MUTATING_METHODS — allowed in read-only sessions).
   'list_native_sessions',

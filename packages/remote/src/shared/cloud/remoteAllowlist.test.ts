@@ -34,6 +34,9 @@ describe('isRemoteAllowed', () => {
       'write_to_pty',
       'get_pane_scrollback_tail',
       'get_pane_scrollback_before',
+      // §R-CLOUD-CONVERGE: the converged full-resync-frame command MUST pass the
+      // cloud gate (the prior get_pane_resync_preamble never did → dead cloud fix).
+      'get_pane_resync_frame',
       'list_workspaces',
       'get_workspace_snapshot',
       'switch_workspace',

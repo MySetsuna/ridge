@@ -168,6 +168,10 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     // whole buffer at once. Same primitive the desktop RidgePane already uses.
     "get_pane_scrollback_tail",
     "get_pane_scrollback_before",
+    // §R-CLOUD-CONVERGE：host 出一份完整 resync 帧（RIS + 模式前导 + tail，共享
+    // build_resync_frame SSOT），云控制端原样喂、不再前端自拼；模式前导重挂 TUI 鼠标/alt
+    // 屏一次性开启态（修公网手机 TUI 鼠标）。只读，是 get_pane_scrollback_tail 的超集。
+    "get_pane_resync_frame",
     // native (headless) tmux session discovery (desktop hosts). `list` is
     // read-only; `summon` is a structural pane op (adopts a session into the
     // caller's viewed workspace) — not a mutating fs/git method, so it is allowed
