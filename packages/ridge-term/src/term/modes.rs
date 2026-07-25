@@ -157,6 +157,64 @@ impl Modes {
         out
     }
 
+    /// Serialize the currently-active input/reporting modes as the escape
+    /// sequences an application would emit to enable them — a "reattach
+    /// preamble". A remote controller that (re)subscribes to a pane gets only
+    /// a recent scrollback tail, which almost never contains the ONE-TIME
+    /// `?1002h` / `?1049h` the running TUI emitted at startup; without this the
+    /// controller's mirror kernel thinks mouse reporting / alt-screen are OFF
+    /// and routes touch/wheel to local shell behaviour instead of the TUI.
+    ///
+    /// Emitted (only when active): app-cursor-keys `?1`, X10 `?9`, mouse
+    /// `?1000/1002/1003`, focus `?1004`, SGR `?1006`, bracketed-paste `?2004`,
+    /// DECPAM app-keypad (`ESC =`), and — when `alt_screen` — `?1049h` FIRST so
+    /// the subsequent scrollback redraw lands on the alt buffer. Autowrap-off
+    /// (`?7l`) and cursor-hidden (`?25l`) are included since they diverge from
+    /// the xterm defaults a fresh mirror starts with. Returns empty when nothing
+    /// but defaults are active (plain shell) — caller can skip the write.
+    pub fn to_reattach_preamble(&self, alt_screen: bool) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        // Alt-screen first: `?1049h` saves cursor + switches + clears, so the
+        // redraw bytes that follow paint the TUI's alt buffer.
+        if alt_screen {
+            out.extend_from_slice(b"\x1b[?1049h");
+        }
+        if self.app_cursor_keys {
+            out.extend_from_slice(b"\x1b[?1h");
+        }
+        if self.mouse_x10 {
+            out.extend_from_slice(b"\x1b[?9h");
+        }
+        if self.mouse_normal {
+            out.extend_from_slice(b"\x1b[?1000h");
+        }
+        if self.mouse_button_event {
+            out.extend_from_slice(b"\x1b[?1002h");
+        }
+        if self.mouse_any_event {
+            out.extend_from_slice(b"\x1b[?1003h");
+        }
+        if self.mouse_focus {
+            out.extend_from_slice(b"\x1b[?1004h");
+        }
+        if self.mouse_sgr {
+            out.extend_from_slice(b"\x1b[?1006h");
+        }
+        if self.bracketed_paste {
+            out.extend_from_slice(b"\x1b[?2004h");
+        }
+        if self.app_keypad {
+            out.extend_from_slice(b"\x1b="); // DECPAM
+        }
+        if !self.autowrap {
+            out.extend_from_slice(b"\x1b[?7l");
+        }
+        if !self.cursor_visible {
+            out.extend_from_slice(b"\x1b[?25l");
+        }
+        out
+    }
+
     /// P3.12 — apply a single mode change. Routes the numeric code
     /// (from `GridDelta::ModeChange`) to the matching `Modes` field.
     /// Unknown codes are silently ignored so a newer producer can ship
@@ -186,6 +244,27 @@ impl Modes {
             _ => {}
         }
     }
+}
+
+/// Single SSOT for the host→controller "reattach / resync" byte frame: the
+/// bytes a host emits when a controller (re)subscribes to a pane so its mirror
+/// kernel reconstructs the pane from scratch. Shared by the desktop app (cloud
+/// `cloud_pane.rs` + LAN `server.rs`) and `rdg` so all three stay byte-identical
+/// and — crucially — all re-establish the pane's ACTIVE input modes, not just
+/// repaint the recent bytes.
+///
+/// Frame = `RIS` (full reset of the mirror) + the active-mode preamble
+/// (`Modes::to_reattach_preamble`) + the scrollback tail. The preamble closes
+/// the historic gap where a running TUI's one-time `?1002h` / `?1049h` had long
+/// scrolled off the tail, leaving the controller mouse-dead (touch/wheel routed
+/// to local shell scroll instead of the TUI).
+pub fn build_resync_frame(scrollback: &[u8], modes: &Modes, alt_screen: bool) -> Vec<u8> {
+    let preamble = modes.to_reattach_preamble(alt_screen);
+    let mut out = Vec::with_capacity(2 + preamble.len() + scrollback.len());
+    out.extend_from_slice(b"\x1bc"); // RIS — full reset so the mirror starts clean
+    out.extend_from_slice(&preamble);
+    out.extend_from_slice(scrollback);
+    out
 }
 
 /// Result of `set_mode(num, value, is_private)`. The terminal facade may
@@ -457,6 +536,33 @@ mod tests {
         assert!(m.mouse_any_event);
         assert!(m.mouse_focus);
         assert!(m.mouse_sgr);
+    }
+
+    #[test]
+    fn reattach_preamble_empty_for_plain_shell() {
+        // Fresh defaults (plain shell) → nothing to re-establish.
+        assert!(Modes::default().to_reattach_preamble(false).is_empty());
+    }
+
+    #[test]
+    fn reattach_preamble_reemits_active_mouse_and_alt() {
+        // The canonical failure: a mouse-reporting TUI on the alt screen.
+        let mut m = Modes::default();
+        m.set(1002, true, true); // button-event mouse
+        m.set(1006, true, true); // SGR encoding
+        let pre = m.to_reattach_preamble(true);
+        let s = String::from_utf8(pre).unwrap();
+        // Alt-screen restored FIRST, then the mouse modes.
+        assert_eq!(s, "\x1b[?1049h\x1b[?1002h\x1b[?1006h");
+    }
+
+    #[test]
+    fn reattach_preamble_reincludes_nondefault_visibility_and_wrap() {
+        let mut m = Modes::default();
+        m.set(25, false, true); // cursor hidden
+        m.set(7, false, true); // autowrap off
+        let s = String::from_utf8(m.to_reattach_preamble(false)).unwrap();
+        assert_eq!(s, "\x1b[?7l\x1b[?25l");
     }
 
     #[test]

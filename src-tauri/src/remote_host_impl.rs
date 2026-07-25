@@ -1422,10 +1422,16 @@ async fn handle_ws(
                                             let history = state.get_recent_scrollback_for(
                                                 workspace_id, pane_id, 65536,
                                             );
-                                            let mut resync = Vec::with_capacity(18 + history.len());
+                                            // §mode-reattach: uuid 前缀 + (RIS + 活动模式前导 +
+                                            // scrollback)。RIS/前导/history 走共享 SSOT，与 cloud
+                                            // 逐字一致；前导让控制端重建鼠标上报/alt 等一次性态。
+                                            let (modes, alt) = state.get_pane_modes(workspace_id, pane_id);
+                                            let frame = ridge_term::term::modes::build_resync_frame(
+                                                &history, &modes, alt,
+                                            );
+                                            let mut resync = Vec::with_capacity(16 + frame.len());
                                             resync.extend_from_slice(pane_id.as_bytes());
-                                            resync.extend_from_slice(b"\x1bc"); // RIS — full reset
-                                            resync.extend_from_slice(&history);
+                                            resync.extend_from_slice(&frame);
                                             if ws_tx.send(Message::Binary(resync.into())).await.is_err() {
                                                 break;
                                             }

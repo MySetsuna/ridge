@@ -15,6 +15,7 @@ use crate::commands::watch::GitWatcher;
 use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
+use ridge_term::term::modes::Modes;
 use ridge_remote::auth::{RemoteAuth, SessionStore, VerifyThrottle};
 use crate::types::{GlobalEvent, RemotePtyEvent};
 use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
@@ -899,6 +900,25 @@ impl AppState {
             .read()
             .get(&(workspace_id, pane_id))
             .and_then(|e| e.delta_cb.clone())
+    }
+
+    /// Snapshot the pane's current terminal modes + alt-screen flag, for
+    /// building a reattach preamble (`ridge_term::term::modes::build_resync_frame`)
+    /// on (re)subscribe. Returns defaults (plain shell, no alt) when the pane has
+    /// no live parser — then the preamble is empty and the frame is the plain
+    /// `RIS + scrollback` (unchanged behaviour). The parser only carries current
+    /// modes while `delta_mode` is on, which the desktop app keeps on for the
+    /// active pane a cloud controller subscribes to.
+    pub fn get_pane_modes(&self, ws: Uuid, pane: Uuid) -> (Modes, bool) {
+        let workspaces = self.workspaces.read();
+        let Some(w) = workspaces.get(&ws) else {
+            return (Modes::default(), false);
+        };
+        let Some(handle) = w.terminals.get(&pane) else {
+            return (Modes::default(), false);
+        };
+        let parser = handle.parser.lock();
+        (parser.modes(), parser.is_alt_screen())
     }
 
     /// Retrieve the most recent PTY scrollback bytes for a pane, up to
