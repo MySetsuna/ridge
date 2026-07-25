@@ -2,6 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use ridge_core::workspace::pane_tree::{Direction, PaneTree, SplitDirection};
+use ridge_term::term::modes::Modes;
+use ridge_term::term::ModeTracker;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -21,6 +23,11 @@ pub struct SessionHandle {
     /// 写者任务与 [`subscribe_with_backlog`](Self::subscribe_with_backlog) 共用此锁，
     /// 令每个输出块恰落 {backlog, live} 之一。
     scrollback: Arc<Mutex<ScrollbackRing>>,
+    /// §mode-reattach — 该 pane 的 live 终端模式追踪（复用 `ridge_term` 解析核，不
+    /// 渲染）。writer task 每 PTY chunk feed；subscribe/resync 时取快照，令控制端镜像
+    /// 内核重建鼠标上报/alt 屏等一次性开启态（早滑出 scrollback 尾）。与 scrollback 同
+    /// 在写者任务的临界区内推进，故 backlog 与 modes 快照一致。
+    modes: Arc<Mutex<ModeTracker>>,
 }
 
 impl SessionHandle {
@@ -36,6 +43,13 @@ impl SessionHandle {
         let backlog = ring.snapshot();
         let rx = self.output_tx.subscribe();
         (backlog, rx)
+    }
+
+    /// §mode-reattach — 当前模式 + alt-screen 快照，供 subscribe/resync 帧经共享
+    /// `ridge_remote::pane::pane_resync_frame` 重建控制端一次性开启态。与桌面
+    /// `PaneParser`/`get_pane_modes` 同经 `ridge_term` 一个原语取值。
+    pub fn modes_snapshot(&self) -> (Modes, bool) {
+        self.modes.lock().unwrap().snapshot()
     }
 
     pub fn send_input(&self, data: &[u8]) -> Result<()> {
@@ -85,16 +99,22 @@ impl Workspace {
 
         let (tx, _) = broadcast::channel(BROADCAST_CAP);
         let scrollback = Arc::new(Mutex::new(ScrollbackRing::new(DEFAULT_SCROLLBACK_CAP)));
+        let modes = Arc::new(Mutex::new(ModeTracker::new()));
         let tx2 = tx.clone();
         let scrollback2 = scrollback.clone();
+        let modes2 = modes.clone();
         tokio::spawn(async move {
             use tokio::sync::mpsc;
             let mut rx: mpsc::Receiver<Vec<u8>> = rx;
             while let Some(bytes) = rx.recv().await {
-                // 同锁 append + 广播 send，与 subscribe_with_backlog 串行化 → 接缝无
-                // 竞态。锁在本轮迭代内即取即放，绝不跨 await（下次 recv 前已释放）。
+                // 同锁 append + feed modes + 广播 send，与 subscribe_with_backlog /
+                // modes_snapshot 串行化 → backlog、modes 与 live 接缝一致无竞态。锁在
+                // 本轮迭代内即取即放，绝不跨 await（下次 recv 前已释放）。modes 锁在
+                // ring 锁内短暂嵌套取用（无 await）；读侧 subscribe/modes_snapshot 顺序
+                // 取用不嵌套，故无死锁。
                 let mut ring = scrollback2.lock().unwrap();
                 ring.append(&bytes);
+                modes2.lock().unwrap().feed(&bytes);
                 let _ = tx2.send(bytes);
             }
         });
@@ -129,6 +149,7 @@ impl Workspace {
             session: Arc::new(session),
             output_tx: tx,
             scrollback,
+            modes,
         });
         Ok(id)
     }
