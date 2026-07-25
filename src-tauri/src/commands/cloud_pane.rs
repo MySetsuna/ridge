@@ -30,19 +30,12 @@ use uuid::Uuid;
 use crate::state::{AppState, RemotePaneSub, RemoteSubId};
 use crate::types::RemotePtyEvent;
 
-/// 转发通道容量（与 server.rs 一致）。满即丢帧（client 端 vte 会因空洞失同步，但
-/// cloud pane 流是尽力而为；与 LAN 同语义，丢帧后经 desync→RIS+scrollback 自愈）。
-const RAW_CHAN_CAP: usize = 512;
-
-/// 重同步限频（与 server.rs `RESYNC_MIN_INTERVAL` 同名同值）：≥1s 一次，防
-/// 「慢消费 → 丢帧 → 重同步 → 更慢」的拥塞放大反馈环。
-const RESYNC_MIN_INTERVAL: Duration = Duration::from_secs(1);
-
-/// 重同步回放的最近 scrollback 上限。
-/// Cloud 路径经 §7.2a 分片层（≤16 KiB/帧），可安全发大块；取 256 KiB
-/// 以覆盖深历史终端（长构建输出、vim 会话等），显著减少初次连接时历史缺失。
-/// LAN 路径（server.rs）保持 64 KiB 不动（无分片层，直接过 WebSocket）。
-const RESYNC_SCROLLBACK_BYTES: usize = 262144;
+// 转发容量 / 限频 / 重同步 scrollback 上限 —— 共享 SSOT `ridge_remote::pane`，与桌面
+// LAN（remote_host_impl.rs）/ rdg 一份，消「同名同值」手抄漂移。cloud 用大块档
+// （分片层 ≤16 KiB/帧，可安全发 256 KiB 覆盖深历史）；LAN 用 64 KiB 档（无分片层）。
+const RAW_CHAN_CAP: usize = ridge_remote::pane::RAW_CHAN_CAP;
+const RESYNC_MIN_INTERVAL: Duration = ridge_remote::pane::RESYNC_MIN_INTERVAL;
+const RESYNC_SCROLLBACK_BYTES: usize = ridge_remote::pane::RESYNC_SCROLLBACK_CLOUD;
 
 /// pane → `(owning sub_id, desync 标志)`（Arc 与 lib.rs fan-out / 转发任务持有的是
 /// **同一个**）。`resync_pane_raw` 据此置位，转发任务读位后补发 RIS+scrollback。
