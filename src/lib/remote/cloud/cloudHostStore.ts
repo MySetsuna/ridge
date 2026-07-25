@@ -94,6 +94,16 @@ function buildHost(): RidgeCloudHost | null {
             : undefined,
           // §7.4 trusted-controller grant：注入信道绑定 transcript 供 Ed25519 proof 验证。
           bindTranscript,
+          // iter-60 G9：把 host 的 pane 元信息/布局事件推给云控制端（此前 cloud 腿
+          // 零事件推送，手机头部标题/CWD 与 Pane 弹层只能靠轮询/重连刷新）。
+          hostEventSource: (emit) => {
+            const names = ['pane-meta-changed', 'pane-tree-changed'] as const;
+            const unsubs: Array<() => void> = [];
+            for (const name of names) {
+              void listen(name, (e) => emit(name, e.payload)).then((un) => unsubs.push(un));
+            }
+            return () => { for (const un of unsubs) un(); };
+          },
         }),
     },
   );

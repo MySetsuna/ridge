@@ -65,23 +65,27 @@
   // builds its own internally). Recreated when the cwd changes.
   const sidebarProvider = $derived(createWsSidebarProvider(activeCwd));
 
+  // iter-60 G10（导航栈语义，取代旧 §close-to-terminal 一刀切）：关闭 viewer 回
+  // 「打开它的那一级」——从侧栏（文件树/git/搜索）打开的，关闭回该侧栏页；从终端
+  // 直接打开的（sidebarTab 本为 null，如终端链接），关闭回终端。两代诉求兼得：
+  // 旧 bug「关文件误回目录」只出现在终端来源场景，栈语义下同样成立。
+  let viewerReturnTab: RemotePanel | null = null;
   function openFileViewer(path: string, line?: number) {
     if (!panelAvailability.files) return;
+    viewerReturnTab = sidebarTab;
     viewer = { kind: 'file', path, line };
     sidebarTab = null; // close the sidebar so the viewer takes the screen
   }
   function openDiffViewer(path: string) {
     if (!panelAvailability.git) return;
+    viewerReturnTab = sidebarTab;
     viewer = { kind: 'diff', path };
     sidebarTab = null;
   }
-  // §close-to-terminal: closing the file/diff viewer must land on the TERMINAL,
-  // not the sidebar file listing it was opened from. The terminal renders only
-  // when BOTH overlays are null, so clear both — otherwise a surviving sidebarTab
-  // re-reveals the directory (the reported "关闭文件回到文件目录" bug).
   function closeViewer() {
     viewer = null;
-    sidebarTab = null;
+    sidebarTab = viewerReturnTab;
+    viewerReturnTab = null;
   }
   // §remote 新建终端：空状态下让远程端自行创建终端，不再依赖桌面端先开一个。
   let creatingPane = $state(false);
@@ -514,6 +518,11 @@
       // the tree's periodic poll.
       if (title != null && title.length > 0) {
         panes = panes.map((p) => (p.id === paneId ? { ...p, title } : p));
+      }
+      // iter-60 G9: mirror cwd into the pane list too, so the pane-switcher
+      // popup shows live per-pane cwd（此前只有 active pane 的侧栏根会更新）.
+      if (cwd != null && cwd.length > 0) {
+        panes = panes.map((p) => (p.id === paneId ? { ...p, cwd } : p));
       }
       if (paneId === activePaneId) {
         // Title drives the document/tab title directly.

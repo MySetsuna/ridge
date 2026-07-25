@@ -169,6 +169,13 @@ export interface CloudHostBridgeConfig {
   bindTranscript?: Uint8Array | null;
   /** 可选：诊断日志回调（默认 console）。 */
   log?: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
+  /**
+   * iter-60 G9：host 侧事件源（注入 Tauri `listen` 聚合）。桥把每个 (name,payload)
+   * 以 `{type:'event', name, payload}` 控制帧推给 controller（bridge.ts 的 listen()
+   * shim 按名分发）——补齐 cloud 腿此前完全没有的事件推送（pane-meta-changed /
+   * pane-tree-changed 等）。verified 前静默丢弃；返回函数在 `reset()` 时调用退订。
+   */
+  hostEventSource?: (emit: (name: string, payload: unknown) => void) => () => void;
 }
 
 /** 一个待执行/已发出请求的取消令牌（$/cancel 尽力中止用）。 */
@@ -219,6 +226,9 @@ export class CloudHostBridge {
   /** S1 遥测第一阶段（F1）：trust-proof 中 transcript 在/缺计数（人工读数；reset 不清零）。 */
   readonly fallbackCounters = { trustProofWithTranscript: 0, trustProofWithoutTranscript: 0 };
 
+  /** iter-60 G9：host 事件 tap 的退订句柄（reset 时调用并置空）。 */
+  private hostEventStop: (() => void) | null = null;
+
   // ── DataChannel 背压流控（弱网 P1；未注入则不背压）──
   /** provider 注入的背压接口（bufferedAmount 读取 + drain 订阅）。 */
   private channel: ChannelBackpressure | null = null;
@@ -234,6 +244,13 @@ export class CloudHostBridge {
     this.totpVerifier = config.totpVerifier;
     this.totpBindVerifier = config.totpBindVerifier;
     this.bindTranscript = config.bindTranscript ?? null;
+    // iter-60 G9：安装 host 事件 tap；verified 门控在转发点（TOTP 前不外泄）。
+    this.hostEventStop =
+      config.hostEventSource?.((name, payload) => {
+        if (this.verified && !this.rejected) {
+          this.sendControl({ type: 'event', name, payload });
+        }
+      }) ?? null;
     // 未注入**任何** TOTP 校验器 ⇒ 不门控（向后兼容既有 cloud 路径）。注入了任一种
     // （明文 totp-verify 或信道绑定 totp-bind）即门控业务帧，直至其一通过。
     this.verified = !config.totpVerifier && !config.totpBindVerifier;
@@ -777,6 +794,9 @@ export class CloudHostBridge {
     for (const [paneId] of this.paneSubs) this.unsubscribePane(paneId);
     this.paneSubs.clear();
     this.backpressuredPanes.clear(); // 弱网 P1：清背压待重同步集
+    // iter-60 G9：断开/重连时退订 host 事件 tap（provider 每连接 createBridge 新桥）。
+    this.hostEventStop?.();
+    this.hostEventStop = null;
     this.rejected = false;
     // §4：重连须重新 TOTP 验证（注入了任一校验器时 re-arm 门控）。
     this.verified = !this.totpVerifier && !this.totpBindVerifier;

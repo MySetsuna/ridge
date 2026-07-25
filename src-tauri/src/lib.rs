@@ -552,6 +552,16 @@ pub fn run() {
                                     },
                                 );
                             }
+                            // iter-60 G9：稳定聚合事件（无动态名），供 cloud 桥一次订阅
+                            // 全量转发 → 手机头部/Pane 弹层实时刷新。
+                            let _ = handle.emit(
+                                "pane-meta-changed",
+                                serde_json::json!({
+                                    "workspaceId": workspace_id.to_string(),
+                                    "paneId": label,
+                                    "cwd": &cwd,
+                                }),
+                            );
                             let _ = handle.emit(
                                 &format!("pane-cwd-changed-{workspace_id}-{label}"),
                                 serde_json::json!({ "cwd": cwd }),
@@ -579,6 +589,15 @@ pub fn run() {
                                     },
                                 );
                             }
+                            // iter-60 G9：稳定聚合事件（同上 cwd 分支）。
+                            let _ = handle.emit(
+                                "pane-meta-changed",
+                                serde_json::json!({
+                                    "workspaceId": workspace_id.to_string(),
+                                    "paneId": label,
+                                    "title": &title,
+                                }),
+                            );
                             let _ = handle.emit(
                                 &format!("pane-title-changed-{workspace_id}-{label}"),
                                 serde_json::json!({ "title": title }),
