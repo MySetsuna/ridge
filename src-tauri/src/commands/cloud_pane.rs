@@ -140,9 +140,13 @@ pub fn subscribe_pane_raw(
                                         pane,
                                         RESYNC_SCROLLBACK_BYTES,
                                     );
-                                    let mut resync = Vec::with_capacity(2 + history.len());
-                                    resync.extend_from_slice(b"\x1bc"); // RIS — 全屏复位
-                                    resync.extend_from_slice(&history);
+                                    // §mode-reattach: RIS + 活动模式前导 + scrollback（共享
+                                    // SSOT，与 LAN server.rs / rdg 逐字一致）。前导让控制端内核
+                                    // 重建鼠标上报/alt 屏等一次性开启态（早滑出 scrollback 尾）。
+                                    let (modes, alt) = app_state.get_pane_modes(ws, pane);
+                                    let resync = ridge_term::term::modes::build_resync_frame(
+                                        &history, &modes, alt,
+                                    );
                                     let b64 = base64::engine::general_purpose::STANDARD
                                         .encode(&resync);
                                     let _ =
@@ -236,9 +240,9 @@ pub fn replay_pane_scrollback_raw(
     }
     let ws = state.active_workspace_id();
     let history = state.get_recent_scrollback_for(ws, pane, RESYNC_SCROLLBACK_BYTES);
-    let mut resync = Vec::with_capacity(2 + history.len());
-    resync.extend_from_slice(b"\x1bc"); // RIS — 全屏复位（与转发任务一致）
-    resync.extend_from_slice(&history);
+    // §mode-reattach: RIS + 活动模式前导 + scrollback（共享 SSOT）。
+    let (modes, alt) = state.get_pane_modes(ws, pane);
+    let resync = ridge_term::term::modes::build_resync_frame(&history, &modes, alt);
     let b64 = base64::engine::general_purpose::STANDARD.encode(&resync);
     let event_name = format!("pane-raw-{pane}");
     let _ = app.emit(&event_name, serde_json::json!({ "b64": b64 }));

@@ -159,6 +159,14 @@ impl PaneParser {
         self.terminal.is_alt_screen()
     }
 
+    /// Snapshot of the pane's current terminal modes. Used to build a reattach
+    /// preamble (`Modes::to_reattach_preamble`) so a remote controller learns
+    /// mouse-reporting / bracketed-paste / app-cursor state that the one-time
+    /// enable sequences (long since off the scrollback tail) would have set.
+    pub fn modes(&self) -> Modes {
+        *self.terminal.modes()
+    }
+
     /// Authoritative inline-TUI heuristic snapshot for the RESIZE decision —
     /// see `is_alt_screen`. Uses the sticky-aware variant so an idle inline TUI
     /// (default Claude at its prompt, all live signals decayed) is still
