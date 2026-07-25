@@ -59,8 +59,10 @@ jobs:
         run: pnpm test
       - name: svelte-check
         run: pnpm check
+      # 聚焦发布护栏家族（git 硬护栏 + supersede + process_guard）。全量 ridge-core
+      # 套件里个别测试有平台耦合（theme 读写等，Windows 开发轨保障），不进发布门。
       - name: ridge-core unit tests (git guard / supersede)
-        run: cargo test -p ridge-core --lib
+        run: cargo test -p ridge-core --lib -- commands::git process_guard
       - name: vite build smoke (mobile remote bundle)
         run: pnpm build:remote
       - name: vite build smoke (desktop-web bundle)
