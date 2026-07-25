@@ -107,6 +107,99 @@ fn note_acquire_timeout() {
     GIT_ACQUIRE_TIMEOUTS.fetch_add(1, Ordering::SeqCst);
 }
 
+// ── iter-60 G1: per-slot latest-win supersede ────────────────────────────────
+// A UI slot (one pane's git pill, keyed e.g. `pane:{id}:scm`) re-issues its
+// retrieval whenever the pane's cwd changes. Fast cwd switching used to stack
+// children behind the semaphore until each hit the wall-clock timeout. Now the
+// NEWEST request per slot wins: `git_slot_begin` bumps the slot's generation,
+// tree-kills the previous generation's live children (their permits free
+// immediately), and still-queued stale tasks abort before ever spawning.
+
+/// Error marker for a superseded request. Callers/frontends treat it as
+/// "drop silently" — it is not a git failure.
+pub const GIT_SUPERSEDED_ERR: &str = "git request superseded by newer request";
+
+static GIT_SUPERSEDE_KILLS: AtomicUsize = AtomicUsize::new(0);
+static GIT_STALE_ABORTS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many live children were tree-killed because a newer same-slot request arrived.
+pub fn git_supersede_kill_count() -> usize {
+    GIT_SUPERSEDE_KILLS.load(Ordering::SeqCst)
+}
+
+/// How many queued/completed tasks were dropped as stale (no kill needed).
+pub fn git_stale_abort_count() -> usize {
+    GIT_STALE_ABORTS.load(Ordering::SeqCst)
+}
+
+struct GitSlot {
+    generation: u64,
+    /// (generation, pid) of currently-running children for this slot.
+    live: Vec<(u64, u32)>,
+}
+
+fn git_slots() -> &'static std::sync::Mutex<std::collections::HashMap<String, GitSlot>> {
+    static SLOTS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, GitSlot>>> =
+        OnceLock::new();
+    SLOTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Begin a new generation for `slot`; kill previous generation's live children.
+fn git_slot_begin(slot: &str) -> u64 {
+    let victims: Vec<u32>;
+    let generation;
+    {
+        let mut map = git_slots().lock().unwrap();
+        let entry = map.entry(slot.to_string()).or_insert(GitSlot {
+            generation: 0,
+            live: Vec::new(),
+        });
+        entry.generation += 1;
+        generation = entry.generation;
+        victims = entry.live.drain(..).map(|(_, pid)| pid).collect();
+    } // release lock before shelling out to taskkill
+    for pid in victims {
+        GIT_SUPERSEDE_KILLS.fetch_add(1, Ordering::SeqCst);
+        crate::process_guard::kill_process_tree(pid);
+    }
+    generation
+}
+
+fn git_slot_is_stale(slot: &str, generation: u64) -> bool {
+    git_slots()
+        .lock()
+        .unwrap()
+        .get(slot)
+        .map(|s| s.generation != generation)
+        .unwrap_or(false)
+}
+
+/// Register a spawned child under (slot, generation). Returns `false` when the
+/// generation is already stale — the caller must kill the child it just spawned.
+fn git_slot_register_pid(slot: &str, generation: u64, pid: u32) -> bool {
+    let mut map = git_slots().lock().unwrap();
+    match map.get_mut(slot) {
+        Some(s) if s.generation == generation => {
+            s.live.push((generation, pid));
+            true
+        }
+        _ => false,
+    }
+}
+
+fn git_slot_unregister_pid(slot: &str, generation: u64, pid: u32) {
+    if let Some(s) = git_slots().lock().unwrap().get_mut(slot) {
+        s.live.retain(|&(g, p)| !(g == generation && p == pid));
+    }
+}
+
+thread_local! {
+    /// Slot context of the CURRENT blocking git task; `run_command_with_timeout`
+    /// consults it to tie the child pid to its slot for supersede kills.
+    static GIT_SLOT_CTX: std::cell::RefCell<Option<(String, u64)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
         .ok()
@@ -235,7 +328,21 @@ fn run_command_with_timeout(
         let _ = tx.send(result);
     });
 
-    match rx.recv_timeout(timeout) {
+    // G1 supersede: tie this child to the task's slot (if any) so a newer
+    // same-slot request can tree-kill it mid-flight.
+    let slot_ctx = GIT_SLOT_CTX.with(|c| c.borrow().clone());
+    if let Some((slot, generation)) = &slot_ctx {
+        if !git_slot_register_pid(slot, *generation, pid) {
+            // Superseded while we were queued/spawning — reclaim immediately.
+            kill_pid_tree(pid);
+            let _ = rx.recv_timeout(Duration::from_secs(5));
+            note_active_child_leave();
+            GIT_STALE_ABORTS.fetch_add(1, Ordering::SeqCst);
+            return Err(io::Error::new(io::ErrorKind::Interrupted, GIT_SUPERSEDED_ERR));
+        }
+    }
+
+    let out = match rx.recv_timeout(timeout) {
         Ok(result) => {
             note_active_child_leave();
             result
@@ -259,7 +366,17 @@ fn run_command_with_timeout(
                 "git waiter thread disconnected",
             ))
         }
+    };
+    if let Some((slot, generation)) = &slot_ctx {
+        git_slot_unregister_pid(slot, *generation, pid);
+        if git_slot_is_stale(slot, *generation) {
+            // A newer request took over (and likely killed us). Surface the
+            // supersede marker instead of a confusing exit-status error.
+            GIT_STALE_ABORTS.fetch_add(1, Ordering::SeqCst);
+            return Err(io::Error::new(io::ErrorKind::Interrupted, GIT_SUPERSEDED_ERR));
+        }
     }
+    out
 }
 
 /// Extension so call sites stay close to the old `.output()` shape (`&mut self`).
@@ -315,6 +432,33 @@ where
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))
+}
+
+/// [`spawn_git_blocking`] plus per-slot latest-win supersede (G1): passing
+/// `Some(slot)` makes this request the slot's newest generation — any older
+/// same-slot request is killed if live, or aborts before spawning if still
+/// queued behind the semaphore. `None` behaves exactly like
+/// [`spawn_git_blocking`].
+async fn spawn_git_blocking_slotted<F, X>(slot: Option<String>, f: F) -> Result<X, String>
+where
+    F: FnOnce() -> Result<X, String> + Send + 'static,
+    X: Send + 'static,
+{
+    let Some(slot) = slot else {
+        return spawn_git_blocking(f).await?;
+    };
+    let generation = git_slot_begin(&slot);
+    spawn_git_blocking(move || {
+        if git_slot_is_stale(&slot, generation) {
+            GIT_STALE_ABORTS.fetch_add(1, Ordering::SeqCst);
+            return Err(GIT_SUPERSEDED_ERR.to_string());
+        }
+        GIT_SLOT_CTX.with(|c| *c.borrow_mut() = Some((slot.clone(), generation)));
+        let out = f();
+        GIT_SLOT_CTX.with(|c| *c.borrow_mut() = None);
+        out
+    })
+    .await?
 }
 
 /// 与前端 GitGraph 约定一致
@@ -884,10 +1028,12 @@ fn parse_numstat(stdout: &str) -> std::collections::HashMap<String, (u32, u32)> 
 }
 
 /// 获取仓库的 VSCode 源代码管理视图（staged / changes / untracked 分组）。
-pub async fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> {
-    spawn_git_blocking(move || get_scm_status_sync(repo_root))
-        .await
-        .map_err(|e| format!("Task join error: {}", e))?
+/// `slot`（G1）：同槽新请求 latest-win，旧进程即时杀树释放许可（pane pill 高频路径用）。
+pub async fn get_scm_status(
+    repo_root: String,
+    slot: Option<String>,
+) -> Result<ScmRepoStatus, String> {
+    spawn_git_blocking_slotted(slot, move || get_scm_status_sync(repo_root)).await
 }
 
 pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
@@ -1655,10 +1801,12 @@ pub struct GitDiffSummary {
     pub removed: u32,
 }
 
-pub async fn git_diff_summary(repo_root: String) -> Result<GitDiffSummary, String> {
-    spawn_git_blocking(move || git_diff_summary_sync(repo_root))
-        .await
-        .map_err(|e| format!("Task join error: {}", e))?
+/// `slot`（G1）：同槽 latest-win，见 [`get_scm_status`]。
+pub async fn git_diff_summary(
+    repo_root: String,
+    slot: Option<String>,
+) -> Result<GitDiffSummary, String> {
+    spawn_git_blocking_slotted(slot, move || git_diff_summary_sync(repo_root)).await
 }
 
 pub fn git_diff_summary_sync(repo_root: String) -> Result<GitDiffSummary, String> {
@@ -2825,10 +2973,165 @@ mod guard_tests {
 
         git_reset_peak_active_for_test();
         let root = dir.to_string_lossy().to_string();
-        let status = get_scm_status(root).await.expect("get_scm_status");
+        let status = get_scm_status(root, None).await.expect("get_scm_status");
         assert!(!status.repo_root.is_empty(), "expected resolved repo root");
         assert!(git_peak_active_child_count() >= 1 || git_active_child_count() == 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod supersede_tests {
+    //! G1 latest-win supersede — deterministic, no env-var mutation (parallel-safe):
+    //! the hanging child is spawned via a direct `Command` on a thread with
+    //! `GIT_SLOT_CTX` set, exactly the shape a slotted blocking task has.
+    use super::*;
+
+    fn hang_script(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ridge-g1-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(windows)]
+        {
+            let script = dir.join("hang.cmd");
+            std::fs::write(&script, "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n").unwrap();
+            script
+        }
+        #[cfg(not(windows))]
+        {
+            let script = dir.join("hang.sh");
+            std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+            script
+        }
+    }
+
+    #[test]
+    fn slot_registry_generation_semantics() {
+        let g1 = git_slot_begin("t:reg");
+        let g2 = git_slot_begin("t:reg");
+        assert!(g2 > g1);
+        assert!(git_slot_is_stale("t:reg", g1));
+        assert!(!git_slot_is_stale("t:reg", g2));
+        // Stale generation cannot register a pid; current one can.
+        assert!(!git_slot_register_pid("t:reg", g1, 11111));
+        assert!(git_slot_register_pid("t:reg", g2, 22222));
+        git_slot_unregister_pid("t:reg", g2, 22222);
+        // Unknown slot is never stale (slotless callers unaffected).
+        assert!(!git_slot_is_stale("t:unknown", 1));
+    }
+
+    #[test]
+    fn newer_generation_tree_kills_live_child_and_frees_it_fast() {
+        let script = hang_script("kill");
+        let slot = "t:kill".to_string();
+        let generation = git_slot_begin(&slot);
+        let before_kills = git_supersede_kill_count();
+
+        let s2 = slot.clone();
+        let sc = script.clone();
+        let worker = std::thread::spawn(move || {
+            GIT_SLOT_CTX.with(|c| *c.borrow_mut() = Some((s2.clone(), generation)));
+            let r = run_command_with_timeout(&mut Command::new(&sc), Duration::from_secs(30));
+            GIT_SLOT_CTX.with(|c| *c.borrow_mut() = None);
+            r
+        });
+
+        // Wait (bounded) until the child is live and registered under the slot.
+        let t0 = std::time::Instant::now();
+        loop {
+            let registered = git_slots()
+                .lock()
+                .unwrap()
+                .get(&slot)
+                .map(|s| !s.live.is_empty())
+                .unwrap_or(false);
+            if registered {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(10), "child never registered");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        // Newer request on the same slot → old child must die well before its 30s budget.
+        let _g2 = git_slot_begin(&slot);
+        let joined = worker.join().unwrap();
+        assert!(
+            t0.elapsed() < Duration::from_secs(15),
+            "superseded child not reclaimed promptly"
+        );
+        let err = joined.expect_err("superseded run must error");
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted, "err: {err}");
+        assert!(err.to_string().contains("superseded"), "err: {err}");
+        assert!(git_supersede_kill_count() > before_kills);
+        // Registry cleaned up: no live pid left for the slot.
+        assert!(git_slots()
+            .lock()
+            .unwrap()
+            .get(&slot)
+            .map(|s| s.live.is_empty())
+            .unwrap_or(true));
+        let _ = std::fs::remove_dir_all(script.parent().unwrap());
+    }
+
+    #[test]
+    fn stale_registration_kills_child_before_use() {
+        // A task that only reaches its spawn AFTER being superseded must not
+        // keep its child: registration fails → immediate reclaim.
+        let script = hang_script("stale");
+        let slot = "t:stale".to_string();
+        let generation = git_slot_begin(&slot);
+        let _newer = git_slot_begin(&slot); // supersede BEFORE the spawn happens
+        let before = git_stale_abort_count();
+
+        GIT_SLOT_CTX.with(|c| *c.borrow_mut() = Some((slot.clone(), generation)));
+        let t0 = std::time::Instant::now();
+        let r = run_command_with_timeout(&mut Command::new(&script), Duration::from_secs(30));
+        GIT_SLOT_CTX.with(|c| *c.borrow_mut() = None);
+
+        let err = r.expect_err("stale spawn must error");
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted, "err: {err}");
+        assert!(t0.elapsed() < Duration::from_secs(15));
+        assert!(git_stale_abort_count() > before);
+        // (No global active-count assert here — parallel tests share the counter.)
+        let _ = std::fs::remove_dir_all(script.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn queued_stale_task_aborts_without_spawning() {
+        // Hold ALL semaphore permits so the slotted task stays queued, then
+        // supersede it; on release it must abort with the marker, no child spawn.
+        let sem = git_semaphore();
+        let cap = git_logical_concurrency_cap() as u32;
+        let hold = sem.acquire_many_owned(cap).await.unwrap();
+
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran2 = ran.clone();
+        let task = tokio::spawn(spawn_git_blocking_slotted::<_, ()>(
+            Some("t:queued".to_string()),
+            move || {
+                ran2.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        ));
+        // Let the task reach the acquire await, then supersede and release.
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let _newer = git_slot_begin("t:queued");
+        drop(hold);
+
+        let out = task.await.unwrap();
+        let err = out.expect_err("queued stale task must abort");
+        assert!(err.contains("superseded"), "err: {err}");
+        assert!(!ran.load(Ordering::SeqCst), "stale closure must not run");
     }
 }
 

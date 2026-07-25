@@ -50,8 +50,11 @@ pub async fn find_git_repos_below(path: String, max_depth: Option<usize>) -> Vec
 }
 
 #[tauri::command]
-pub async fn get_scm_status(repo_root: String) -> Result<ScmRepoStatus, String> {
-    ridge_core::commands::git::get_scm_status(repo_root).await
+pub async fn get_scm_status(
+    repo_root: String,
+    slot: Option<String>,
+) -> Result<ScmRepoStatus, String> {
+    ridge_core::commands::git::get_scm_status(repo_root, slot).await
 }
 
 #[tauri::command]
@@ -235,8 +238,11 @@ pub async fn git_revert(repo_root: String, hash: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn git_diff_summary(repo_root: String) -> Result<GitDiffSummary, String> {
-    ridge_core::commands::git::git_diff_summary(repo_root).await
+pub async fn git_diff_summary(
+    repo_root: String,
+    slot: Option<String>,
+) -> Result<GitDiffSummary, String> {
+    ridge_core::commands::git::git_diff_summary(repo_root, slot).await
 }
 
 #[tauri::command]

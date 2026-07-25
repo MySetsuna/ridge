@@ -1899,7 +1899,7 @@ async fn dispatch_data_request(
 /// `ScmRepoStatus`, so they're pulled separately via `git_info_for_path` on a
 /// blocking thread (it shells out to `git log`).
 async fn git_status_result(repo_root: String) -> serde_json::Value {
-    let scm = match crate::commands::git::get_scm_status(repo_root.clone()).await {
+    let scm = match crate::commands::git::get_scm_status(repo_root.clone(), None).await {
         Ok(status) => status,
         Err(e) => return serde_json::json!({ "_error": e }),
     };
@@ -2409,7 +2409,7 @@ async fn dispatch_invoke_request(
         "find_git_repos_below" => {
             plain(git::find_git_repos_below(s(args, "path"), usize_opt(args, "maxDepth")).await)
         }
-        "get_scm_status" => val(git::get_scm_status(s(args, "repoRoot")).await),
+        "get_scm_status" => val(git::get_scm_status(s(args, "repoRoot"), opt_s(args, "slot")).await),
         "get_git_info_with_cwd" => val(git::get_git_info_with_cwd(s(args, "cwd")).await),
         "get_git_commits_paginated" => val(git::get_git_commits_paginated(
             s(args, "repoRoot"),
@@ -2418,7 +2418,7 @@ async fn dispatch_invoke_request(
         )
         .await),
         "git_list_branches" => val(git::git_list_branches(s(args, "repoRoot")).await),
-        "git_diff_summary" => val(git::git_diff_summary(s(args, "repoRoot")).await),
+        "git_diff_summary" => val(git::git_diff_summary(s(args, "repoRoot"), opt_s(args, "slot")).await),
         "git_get_file_versions" => val(git::git_get_file_versions(
             s(args, "repoRoot"),
             s(args, "path"),
