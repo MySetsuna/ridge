@@ -795,11 +795,21 @@ export class TerminalManager {
 						'function'
 						? (surfaceHost as unknown as { clone: () => SurfaceHostHandle }).clone()
 						: surfaceHost;
-				return await HandleCtor.newWithWebgpuFirst(canvas, hostArg);
+				const handle = await HandleCtor.newWithWebgpuFirst(canvas, hostArg);
+				// iter-60 G4: surface the OUTCOME always (Rust falls back to
+				// Canvas2D internally on adapter miss without throwing — that
+				// silent path is exactly what made "退回 canvas2d" undiagnosable).
+				try {
+					const name = (handle as unknown as { backendName?: () => string }).backendName?.();
+					if (name && name.toLowerCase() !== 'webgpu') {
+						console.warn(
+							`[ridge-term] WebGPU requested but backend is ${name} — adapter/device probe failed (check chrome://gpu, HTTPS/secure context, and browser WebGPU support)`,
+						);
+					}
+				} catch { /* older wasm without backendName */ }
+				return handle;
 			} catch (err) {
-				if (import.meta.env?.DEV) {
-					console.warn('[ridge-term] newWithWebgpuFirst threw; falling back to Canvas2D', err);
-				}
+				console.warn('[ridge-term] newWithWebgpuFirst threw; falling back to Canvas2D', err);
 			}
 		}
 		return new RenderHandle(canvas);
@@ -1855,8 +1865,12 @@ export class TerminalManager {
 		// wait one rAF (so SvelteKit hydration finishes), then fit
 		// directly without debounce so the PTY gets sized before any
 		// shell output arrives.
+		// iter-60 G2: in shared-remote (desktop-in-browser) mode the initial
+		// fit CLAIMS the PTY at this viewer's size — without this the pane
+		// letterboxes the host's grid forever ("shell 渲染区不填满 pane" bug).
+		// Passive fits afterwards still only re-letterbox (multi-viewer safe).
 		requestAnimationFrame(() => {
-			if (this.panes.has(paneId)) void this.fitPane(entry);
+			if (this.panes.has(paneId)) void this.fitPane(entry, this._sharedRemoteMode);
 		});
 		// Expose a debug-dump entry point on `window` so we can inspect
 		// what characters a TUI actually wrote into a row from DevTools
@@ -2406,7 +2420,8 @@ export class TerminalManager {
 
 		requestAnimationFrame(() => {
 			const e = this.panes.get(paneId);
-			if (e && !e.parked) void this.fitPane(e);
+			// iter-60 G2: same initial-claim rule as attach() — see comment there.
+			if (e && !e.parked) void this.fitPane(e, this._sharedRemoteMode);
 		});
 		this.startRafLoop();
 	}
@@ -3365,6 +3380,20 @@ export class TerminalManager {
 	rows(paneId: string): number { return this.panes.get(paneId)?.kernel.rows() ?? 0; }
 	cols(paneId: string): number { return this.panes.get(paneId)?.kernel.cols() ?? 0; }
 
+	/** iter-60 G4: actual render backend of this pane's handle ("WebGPU" /
+	 *  "Canvas2D"), or null when the pane isn't attached. The mobile footer
+	 *  binds this —前 P4 重构后曾恒显默认值。 */
+	backendName(paneId: string): string | null {
+		const h = this.panes.get(paneId)?.handle as unknown as
+			| { backendName?: () => string }
+			| undefined;
+		try {
+			return h && typeof h.backendName === 'function' ? h.backendName() : null;
+		} catch {
+			return null;
+		}
+	}
+
 	/** Whether the pane is currently in alt-screen mode (TUI app active). */
 	isAltScreen(paneId: string): boolean { return this.panes.get(paneId)?.kernel.isAltScreen() ?? false; }
 
@@ -4195,6 +4224,26 @@ export class TerminalManager {
 			entry.pendingFitTimer = null;
 		}
 		void this.fitPane(entry, true);
+		// iter-60 G2 self-heal: a claim is only "done" when the broadcast
+		// Resize delta round-trips into THIS kernel. If after 1s the kernel
+		// grid still disagrees with the last claimed target (delta dropped /
+		// resize_pane failed / another viewer re-claimed), retry ONCE and log
+		// loudly — this was previously a silent no-op ("resize 按钮没反应").
+		setTimeout(() => {
+			const e = this.panes.get(paneId);
+			if (!e || e.parked) return;
+			const rowsOk = e.lastReportedRows < 0 || e.kernel.rows() === e.lastReportedRows;
+			const colsOk = e.lastReportedCols < 0 || e.kernel.cols() === e.lastReportedCols;
+			if (rowsOk && colsOk) return;
+			console.warn(
+				'[ridge-term] claimPaneSize verify failed — kernel',
+				`${e.kernel.cols()}×${e.kernel.rows()}`,
+				'≠ claimed',
+				`${e.lastReportedCols}×${e.lastReportedRows}`,
+				'; retrying once',
+			);
+			void this.fitPane(e, true);
+		}, 1000);
 	}
 
 	/**
