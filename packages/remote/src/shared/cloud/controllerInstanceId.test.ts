@@ -1,6 +1,23 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { getOrCreateCli, _resetCliCacheForTest } from './controllerInstanceId';
 
+// CI 环境差异钉子（iter-60 R-TESTGATE 实证）：Node ≤24 无全局 sessionStorage/
+// Storage（Node 25 默认有 → 本地绿、CI 红）。补最小内存 stub，行为与浏览器
+// sessionStorage 对齐（getItem 缺省 null；Storage.prototype 供 spyOn）。
+if (typeof globalThis.sessionStorage === 'undefined') {
+  class MemStorage {
+    private m = new Map<string, string>();
+    getItem(k: string): string | null { return this.m.has(k) ? this.m.get(k)! : null; }
+    setItem(k: string, v: string): void { this.m.set(k, String(v)); }
+    removeItem(k: string): void { this.m.delete(k); }
+    clear(): void { this.m.clear(); }
+    key(i: number): string | null { return [...this.m.keys()][i] ?? null; }
+    get length(): number { return this.m.size; }
+  }
+  (globalThis as Record<string, unknown>).Storage = MemStorage;
+  (globalThis as Record<string, unknown>).sessionStorage = new MemStorage();
+}
+
 describe('controllerInstanceId', () => {
   beforeEach(() => {
     _resetCliCacheForTest();
