@@ -121,6 +121,18 @@ pub fn process_guard_stats() -> ProcessGuardStats {
     }
 }
 
+/// 测试时限的 CI 感知放宽（iter-60 R-TESTGATE 实证）：共享 2 核 runner 上
+/// taskkill/kill+wait 的墙钟可达本机的数倍——把「回收要快」断言的秒级预算 ×4，
+/// 意图不变（仍远小于 30-45s 的挂起预算）。本机不受影响。
+#[cfg(test)]
+pub(crate) fn test_time_budget(base: Duration) -> Duration {
+    if std::env::var_os("CI").is_some() {
+        base * 4
+    } else {
+        base
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,7 +180,7 @@ mod tests {
         let err = run_command_with_timeout(&mut Command::new(&hang), Duration::from_millis(400))
             .expect_err("must timeout");
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-        assert!(start.elapsed() < Duration::from_secs(5));
+        assert!(start.elapsed() < test_time_budget(Duration::from_secs(5)));
         assert!(process_timeout_count() >= 1);
         assert!(process_tree_kill_count() >= 1);
         let snap = process_guard_stats();

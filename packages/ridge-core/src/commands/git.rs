@@ -2828,7 +2828,7 @@ mod guard_tests {
             "timeout kill counter must advance"
         );
         assert!(
-            elapsed < Duration::from_secs(5),
+            elapsed < crate::process_guard::test_time_budget(Duration::from_secs(5)),
             "timeout reclaim too slow: {elapsed:?}"
         );
         // Allow a brief race for leave() after kill drain.
@@ -3058,7 +3058,10 @@ mod supersede_tests {
             if registered {
                 break;
             }
-            assert!(t0.elapsed() < Duration::from_secs(10), "child never registered");
+            assert!(
+                t0.elapsed() < crate::process_guard::test_time_budget(Duration::from_secs(10)),
+                "child never registered"
+            );
             std::thread::sleep(Duration::from_millis(25));
         }
 
@@ -3066,7 +3069,7 @@ mod supersede_tests {
         let _g2 = git_slot_begin(&slot);
         let joined = worker.join().unwrap();
         assert!(
-            t0.elapsed() < Duration::from_secs(15),
+            t0.elapsed() < crate::process_guard::test_time_budget(Duration::from_secs(15)),
             "superseded child not reclaimed promptly"
         );
         let err = joined.expect_err("superseded run must error");
@@ -3100,7 +3103,7 @@ mod supersede_tests {
 
         let err = r.expect_err("stale spawn must error");
         assert_eq!(err.kind(), io::ErrorKind::Interrupted, "err: {err}");
-        assert!(t0.elapsed() < Duration::from_secs(15));
+        assert!(t0.elapsed() < crate::process_guard::test_time_budget(Duration::from_secs(15)));
         assert!(git_stale_abort_count() > before);
         // (No global active-count assert here — parallel tests share the counter.)
         let _ = std::fs::remove_dir_all(script.parent().unwrap());
