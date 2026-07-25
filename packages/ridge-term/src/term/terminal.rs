@@ -654,6 +654,12 @@ impl Terminal {
     pub fn is_alt_screen(&self) -> bool {
         self.grid.is_alt_screen()
     }
+    /// §mode-reattach — 当前模式 + alt-screen 的一次性快照，供远控订阅/重同步时
+    /// 经 `modes::build_resync_frame` 重建控制端内核的鼠标上报/alt 屏等一次性开启态。
+    /// 桌面 `PaneParser` 与 rdg `ModeTracker` 都经此一个原语取值（modes 追踪一份 SSOT）。
+    pub fn mode_snapshot(&self) -> (Modes, bool) {
+        (self.modes, self.grid.is_alt_screen())
+    }
     /// §wsl-resize-silence — 本 pane 是否发过 shell-integration 的 prompt OSC
     /// （133/633;A）。false ⇒ 无早释放 resize-silence 的手段（WSL/cmd/explicit-launch）。
     pub fn has_shell_integration(&self) -> bool {

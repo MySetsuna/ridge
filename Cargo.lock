@@ -5256,7 +5256,7 @@ dependencies = [
 
 [[package]]
 name = "ridge"
-version = "0.0.19"
+version = "0.0.21"
 dependencies = [
  "axum",
  "axum-server",
@@ -5387,6 +5387,7 @@ dependencies = [
  "parking_lot",
  "rcgen",
  "ridge-core",
+ "ridge-term",
  "rustls",
  "serde",
  "serde_json",
@@ -5394,6 +5395,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

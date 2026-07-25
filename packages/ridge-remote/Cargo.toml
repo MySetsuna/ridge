@@ -29,6 +29,11 @@ tracing = "0.1"
 base64 = "0.22"
 # TOTP auth engine (RemoteTotp) — shared, zero Tauri dependency
 ridge-core = { path = "../ridge-core" }
+# Terminal modes SSOT for the pane resync frame (build_resync_frame + Modes).
+# default-features=false 跳过 webgpu（wasm-only、cfg-gated），原生只取 vte 解析核。
+ridge-term = { path = "../ridge-term", default-features = false }
+# pane-id 二进制帧的 16 字节前缀
+uuid = { version = "1" }
 # Interior mutability for session/throttle/auth state
 parking_lot = "0.12"
 # OS CSPRNG for unguessable session tokens (audit C2)

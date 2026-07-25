@@ -18,6 +18,10 @@ pub mod server_app;
 pub mod mdns;
 /// LAN IPv4 地址探测（`detect_lan_ip` / `detect_lan_ips`）。std-only，供三形态共用。
 pub mod net;
+/// 远控 pane 字节流的帧格式 + 重同步策略 SSOT（`pane_frame`/`pane_resync_frame` +
+/// `RESYNC_MIN_INTERVAL`/`RAW_CHAN_CAP`/scrollback 尺寸）。桌面 LAN/cloud 与 rdg
+/// 三腿共用一份，消手抄漂移。
+pub mod pane;
 pub mod server;
 /// 前端静态资源 serve（UA 分流 + SPA fallback + CA 下载 + 安全头/压缩层）。
 /// 从桌面 `server.rs` 下沉，供 LAN 远控三形态共用，零 Tauri 依赖。
