@@ -524,20 +524,18 @@ async fn route_register_agent(
 /// `paneIndex`（典型画像路径把当前叶子序列传入 `topology_for`），供 MCP 寻址自洽。
 /// 由 `route_get_team_profile`（HTTP）与 `ridge_get_team_profile`（MCP tool）共用。
 fn team_profile_snapshot(ctx: &TeammateCtx, wid: Uuid) -> serde_json::Value {
-    if super::profiles::has(wid) {
-        let leaves = {
-            let map = ctx.state.workspaces.read();
-            map.get(&wid)
-                .map(|ws| ws.pane_tree.get_all_leaves())
-                .unwrap_or_default()
-        };
-        super::profiles::topology_for(wid, &leaves)
+    let map = ctx.state.workspaces.read();
+    let Some(ws) = map.get(&wid) else {
+        return serde_json::json!({ "roster": [], "leaderId": null, "edges": [] });
+    };
+    let mut topo = if super::profiles::has(wid) {
+        super::profiles::topology_for(wid, &ws.pane_tree.get_all_leaves())
     } else {
-        let map = ctx.state.workspaces.read();
-        map.get(&wid)
-            .map(|ws| crate::commands::teammate::topology_json(ws, wid))
-            .unwrap_or_else(|| serde_json::json!({ "roster": [], "leaderId": null, "edges": [] }))
-    }
+        crate::commands::teammate::topology_json(ws, wid)
+    };
+    // iter-60 G7：Commune 工具（ridge_get_team_profile）同样带 pane title 摘要。
+    crate::commands::teammate::inject_roster_titles(&mut topo, ws);
+    topo
 }
 
 /// 花名册快照（只读）：Leader 启动时「查兵马」。复用 D1 拓扑映射。
@@ -706,7 +704,8 @@ async fn handle_mcp_message(
             id,
             serde_json::json!({
                 "protocolVersion": "2024-11-05",
-                "serverInfo": { "name": "ridge-teammate", "version": env!("CARGO_PKG_VERSION") },
+                // iter-60 G5 品牌层改名：MCP 对外名 Agent's Commune（协议方法名不动）。
+                "serverInfo": { "name": "agents-commune", "title": "Agent's Commune", "version": env!("CARGO_PKG_VERSION") },
                 "capabilities": { "tools": {}, "resources": {} }
             }),
         ),

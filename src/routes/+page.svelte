@@ -1472,7 +1472,7 @@ function expandSidebar() {
     <button
       type="button"
       class="{actBtn}{sidebarTab === 'agents' ? actBtnOn : ''}"
-      title="智能体"
+      title="Agent's Commune"
       onclick={() => { sidebarTab = 'agents'; expandSidebar(); }}
     >
       <Bot class="h-5 w-5" />
