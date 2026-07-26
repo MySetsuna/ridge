@@ -35,7 +35,7 @@ function commonPrefixLen(a: string, b: string): number {
 /**
  * 计算补全 commit 相对已发送缓冲应实际发送的字节串。
  *
- * @param recentTyped 近窗口内已逐字发往 PTY 的文本（调用方负责时窗有效性）。
+ * @param recentTyped 已逐字发往 PTY、尚未被词界终结的文本（见 updatePendingWord）。
  * @param commit      输入法本次 commit 的完整文本。
  * @returns 应发送的串：`退格×N + 差量`。当无已输段可去重时 === commit 原文。
  */
@@ -46,4 +46,22 @@ export function imeCommitDelta(recentTyped: string, commit: string): string {
   const lcp = commonPrefixLen(word, commit);
   if (lcp === 0) return commit; // 与已输段无关（如中文候选）——整词直发。
   return BACKSPACE.repeat(word.length - lcp) + commit.slice(lcp);
+}
+
+/**
+ * 维护「已发送的当前词段」（iter-60 G11 二修，取代 1.2s 时窗——用户实测
+ * `Ev`+停顿选 `Everything` 超窗后重复为 `EvEverything`）。
+ *
+ * 规则：追加本次发出的明文，然后只保留最后一个空白后的段（空白=词界，段清零）。
+ * 控制键（Enter/Esc/方向/Ctrl 组合/粘贴）由调用方直接置空；Backspace 由调用方
+ * `pendingWordBackspace` 削尾。
+ */
+export function updatePendingWord(prev: string, sentText: string): string {
+  // 只保留尾词即可，前文对 lcp 无用且防无界增长。
+  return trailingWord(prev + sentText);
+}
+
+/** Backspace 已发出一格删除后，同步削掉词段末字符。 */
+export function pendingWordBackspace(prev: string): string {
+  return prev.slice(0, -1);
 }

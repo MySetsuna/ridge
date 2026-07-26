@@ -1,6 +1,11 @@
 // iter-60 G11 — imeCommitDelta 行为钉死（对话原例 SpacSpace 为首用例）。
 import { describe, expect, it } from 'vitest';
-import { imeCommitDelta, trailingWord } from './imeDelta';
+import {
+  imeCommitDelta,
+  trailingWord,
+  updatePendingWord,
+  pendingWordBackspace,
+} from './imeDelta';
 
 const BS = '\x7f';
 
@@ -44,5 +49,32 @@ describe('trailingWord', () => {
     expect(trailingWord('abc ')).toBe('');
     expect(trailingWord('abc')).toBe('abc');
     expect(trailingWord('')).toBe('');
+  });
+});
+
+describe('pendingWord 精确追踪（二修：无时窗）', () => {
+  it('用户实测案：Ev 已发、第三键进组合态、停顿后选 Everything → 只发 erything', () => {
+    let w = '';
+    w = updatePendingWord(w, 'E');
+    w = updatePendingWord(w, 'v');
+    // 「e」在组合态只进预编辑不发 PTY——词段仍是 Ev；停顿任意久后 commit：
+    expect(imeCommitDelta(w, 'Everything')).toBe('erything');
+  });
+
+  it('updatePendingWord：追加并按空白断词', () => {
+    expect(updatePendingWord('', 'Ev')).toBe('Ev');
+    expect(updatePendingWord('Ev', 'e')).toBe('Eve');
+    expect(updatePendingWord('Eve', ' ')).toBe('');
+    expect(updatePendingWord('git', ' com')).toBe('com');
+    expect(updatePendingWord('a', 'b\n')).toBe('');
+  });
+
+  it('pendingWordBackspace 削尾一字符', () => {
+    expect(pendingWordBackspace('Eve')).toBe('Ev');
+    expect(pendingWordBackspace('')).toBe('');
+  });
+
+  it('控制键清段后（调用方置空）commit 整词直发，不误退格', () => {
+    expect(imeCommitDelta('', 'Evil')).toBe('Evil');
   });
 });
