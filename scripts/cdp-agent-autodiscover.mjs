@@ -42,9 +42,10 @@ const httpJson = (p) =>
 const dir = path.join(os.tmpdir(), 'ridge-agent-e2e');
 fs.mkdirSync(dir, { recursive: true });
 const fake = path.join(dir, 'aider.exe');
-const src = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'timeout.exe');
-if (!fs.existsSync(fake)) fs.copyFileSync(src, fake);
-log('fake agent binary:', fake);
+// 底座取 `ping.exe`，与另外两条 e2e 完全一致：三个脚本共用同一个文件名，
+// 「已存在就跳过拷贝」会把上一条脚本的二进制留下来，参数对不上即刻退出、整条链路假红。
+// 故一律**先收尸、再覆盖**。
+const src = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'PING.EXE');
 {
   // 清掉上一轮残留的替身，否则「agent 退出 → 花名册回收」这一半永远测不到。
   // 只按**这个可执行文件的全路径**匹配 —— 绝不 `taskkill /IM`，那会误伤同名真进程。
@@ -56,6 +57,8 @@ log('fake agent binary:', fake);
     /* 没有残留 */
   }
 }
+fs.copyFileSync(src, fake);
+log('fake agent binary:', fake);
 
 const list = await httpJson('/json/list');
 const t = list.find((x) => x.type === 'page' && !/devtools/.test(x.url || ''));
@@ -108,9 +111,9 @@ if (!paneId) throw new Error('no mounted pane');
 const roster0 = (await invoke('get_teammate_topology', { workspaceId: wsId })).r;
 log('roster BEFORE:', JSON.stringify((roster0?.roster ?? []).map((m) => m.id)));
 
-// 在该 pane 里启动替身 agent（600s 足够跑完本测）。CR 结尾＝真回车。
-// 短时长：替身会自然退出，用来验证「agent 退了要从花名册回收」这一半。
-await invoke('write_to_pty', { paneId, data: `& '${fake}' /t 25 /nobreak\r` });
+// 在该 pane 里前台启动替身 agent。CR 结尾＝真回车。
+// 短时长（ping 25 次≈25s）：替身会自然退出，用来验证「agent 退了要从花名册回收」这一半。
+await invoke('write_to_pty', { paneId, data: `& '${fake}' -n 25 127.0.0.1\r` });
 log('launched fake agent in pane; waiting for autodiscover…');
 
 let hit = null;

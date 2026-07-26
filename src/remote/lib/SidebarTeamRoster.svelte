@@ -115,8 +115,11 @@
       pending = p;
       health = h;
       failed = false;
-    } catch {
-      failed = true; // 静默保留上次快照；下轮轮询自愈
+    } catch (e) {
+      failed = true; // 保留上次快照；下轮轮询自愈
+      // 面板上只剩一个「—」，不打日志根本查不出是鉴权、超时还是命令被拒
+      // （iter-63 排查这条 bug 绕了三轮就是因为这里全静默）。
+      console.warn('[remote] roster refresh failed', e);
     }
   }
 
