@@ -183,6 +183,13 @@ interface PaneEntry {
 		isAlt: boolean,
 		isInlineTui: boolean,
 	) => Promise<void> | void;
+	/** iter-60 G3：raw 字节模式（手机 SPA feedUtf8 自解析，无 Rust Resize delta）
+	 *  下，本地 kernel 网格由 fitPane **直接** resize——P4 前 TerminalController 的
+	 *  语义。P4 换共享 manager 后丢了这一步：桌面靠 delta 回灌改格，LAN 手机靠
+	 *  `pty-resized` 回执，而 **cloud 腿两者皆无**（cloudRemote.onPtyResize 注释
+	 *  自证「effectively unused」）→ 公网手机 kernel 永卡初始格 → 「终端尺寸与
+	 *  网页尺寸不匹配」（0.1.1 起）。TerminalCanvas attach/unpark 后置 true。 */
+	localGridAuthority?: boolean;
 	/** Debounce timer for fit. ResizeObserver fires many times during
 	 *  splitpanes drag (or SvelteKit hydration). Each fit calls
 	 *  `kernel.resize` AND triggers an async PTY resize via the handler.
@@ -3380,6 +3387,13 @@ export class TerminalManager {
 	rows(paneId: string): number { return this.panes.get(paneId)?.kernel.rows() ?? 0; }
 	cols(paneId: string): number { return this.panes.get(paneId)?.kernel.cols() ?? 0; }
 
+	/** iter-60 G3：标记 raw 字节模式 pane（本地网格权威在 fit，见 PaneEntry 注释）。
+	 *  幂等；park/unpark 间存续。 */
+	setLocalGridAuthority(paneId: string, on: boolean): void {
+		const entry = this.panes.get(paneId);
+		if (entry) entry.localGridAuthority = on;
+	}
+
 	/** iter-60 G4: actual render backend of this pane's handle ("WebGPU" /
 	 *  "Canvas2D"), or null when the pane isn't attached. The mobile footer
 	 *  binds this —前 P4 重构后曾恒显默认值。 */
@@ -4619,7 +4633,14 @@ export class TerminalManager {
 		// reachable; the Rust path's `set_pane_delta_mode` already
 		// covers the equivalent "clean snapshot on resize" scenario via
 		// force_full_reframe.
+		//
+		// iter-60 G3 例外：raw 字节模式 pane（localGridAuthority，手机 SPA）没有
+		// delta 回灌，本地网格在此直接改——否则 cloud 腿（无 pty-resized 回执）
+		// 的 kernel 永卡初始格。上面的 delta-race 顾虑仅适用于 Rust-delta 镜像。
 		void wipeBeforePty;
+		if (entry.localGridAuthority) {
+			entry.kernel.resize(rows, cols);
+		}
 		await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
 		// Mirror resize will follow via apply_delta(Resize) in the
 		// next pty-delta frame — handler emits it synchronously.
