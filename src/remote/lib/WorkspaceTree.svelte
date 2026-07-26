@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { ListTree, Plus, X, FolderOpen, ChevronRight, Bookmark } from 'lucide-svelte';
+  import { ListTree, Plus, X, FolderOpen, ChevronRight, Bookmark, Bot } from 'lucide-svelte';
   import { t, tr } from '$lib/i18n';
   import type { PaneInfo, WorkspaceInfo, RemoteLink, SavedWorkspaceFile } from '@ridge/remote';
   import { treeState, toggleWsExpanded, seedActiveWorkspace, pruneExpanded } from './treeState.svelte';
@@ -297,6 +297,24 @@
     }
   }
 
+  // iter-61：把终端标记 / 取消标记为 agent（纳入指挥部花名册）。位置在关闭按钮左侧。
+  // agentId 取终端标题（缺省 'agent'）——与桌面 SplitContainer 的同名按钮同口径。
+  async function toggleAgentMark(e: Event, wsId: string, pane: PaneInfo) {
+    e.stopPropagation();
+    if (!ws?.markPaneAgent || busy) return;
+    busy = true;
+    err = '';
+    try {
+      await ws.markPaneAgent(wsId, pane.id, !pane.isAgent, pane.title || 'agent');
+      if (wsId === activeWorkspaceId) ws.listPanes();
+      else await fetchPeek(wsId);
+    } catch (e2) {
+      err = e2 instanceof Error ? e2.message : String(e2);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function closePaneRow(e: Event, id: string) {
     e.stopPropagation();
     if (!ws || busy || !canManageWorkspaces) return;
@@ -414,6 +432,21 @@
                       <span class="pane-name">{pane.title || $t('mobile.terminalDefault')}</span>
                       {#if pane.cwd}<span class="pane-cwd">{pane.cwd}</span>{/if}
                     </span>
+                    <!-- iter-61 agent 标记：终端项右侧、关闭按钮左侧。 -->
+                    {#if canManageWorkspaces && ws?.markPaneAgent}
+                      <span
+                        class="row-agent"
+                        class:on={pane.isAgent}
+                        role="button"
+                        tabindex="-1"
+                        onclick={(e) => toggleAgentMark(e, wsp.id, pane)}
+                        onkeydown={() => {}}
+                        title={pane.isAgent ? $t('mobile.unmarkAgent') : $t('mobile.markAgent')}
+                        aria-label={pane.isAgent ? $t('mobile.unmarkAgent') : $t('mobile.markAgent')}
+                      >
+                        <Bot class="w-3 h-3" />
+                      </span>
+                    {/if}
                     {#if canManageWorkspaces && isActiveWs && wsPanes.length > 1}
                       <span
                         class="row-close"
@@ -565,6 +598,11 @@
 
   .row-close{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:4px;color:var(--rg-fg-muted);opacity:.55;flex-shrink:0;margin-left:auto}
   .row-close:active{background:rgba(255,255,255,.1);opacity:1;color:var(--rg-ansi-red)}
+  /* iter-61 agent 标记：与关闭同尺寸；`margin-left:auto` 让它成为右侧簇的起点，
+     关闭按钮紧随其后（关闭自身的 auto 在同一行内不再生效，顺序即视觉顺序）。 */
+  .row-agent{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:4px;color:var(--rg-fg-muted);opacity:.55;flex-shrink:0;margin-left:auto}
+  .row-agent.on{color:var(--rg-accent);opacity:1}
+  .row-agent:active{background:rgba(255,255,255,.1);opacity:1;color:var(--rg-accent)}
 
   .tree-foot{display:flex;align-items:center;gap:6px;padding:6px 10px;border-top:1px solid var(--rg-border-bright);font-size:10px;color:var(--rg-fg-muted)}
   .foot-dot{width:6px;height:6px;border-radius:50%;background:var(--rg-ansi-green)}

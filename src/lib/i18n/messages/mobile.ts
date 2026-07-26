@@ -13,6 +13,8 @@ export const zh: Record<string, string> = {
   noWorkspace: '无工作区',
   terminalDefault: '终端',
   closeTerminal: '关闭终端',
+  markAgent: '标记为智能体',
+  unmarkAgent: '取消智能体标记',
   noTerminal: '无终端',
   newTerminalBtn: '新建终端',
 
@@ -134,6 +136,8 @@ export const en: Record<string, string> = {
   noWorkspace: 'No workspaces',
   terminalDefault: 'Terminal',
   closeTerminal: 'Close terminal',
+  markAgent: 'Mark as agent',
+  unmarkAgent: 'Unmark agent',
   noTerminal: 'No terminals',
   newTerminalBtn: 'New terminal',
 

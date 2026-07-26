@@ -232,6 +232,11 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "resolve_hitl_remote",
     // R19：只读编排健康（suspended / pending 计数）——与桌面 Agent Center badge 同源。
     "get_orchestration_health",
+    // iter-61：把某 pane 标记/取消标记为 agent（远端工作区弹层的「标记」按钮）。
+    // 只改本机 teammate 侧表（pane 状态 + agent→pane 映射），不 spawn、不写文件、
+    // 不暴露 token；等价于桌面 SplitContainer 上早有的同名按钮。列 MUTATING。
+    "register_teammate_agent",
+    "release_teammate_agent",
     // ── Search ──
     "text_search",
     // `search` is the alias the headless ridge-cli control protocol
@@ -318,6 +323,9 @@ pub const MUTATING_METHODS: &[&str] = &[
     // ── Teammate（P2 阶段 2）──
     // 远端裁决放行高危命令 = 写操作；只读会话拒。
     "resolve_hitl_remote",
+    // iter-61：agent 标记切换改 teammate 侧表 = 写操作。
+    "register_teammate_agent",
+    "release_teammate_agent",
 ];
 
 /// True if `method` mutates host state (see [`MUTATING_METHODS`]). The read-only

@@ -14,7 +14,9 @@
   import { invoke } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-  import { Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Pause, Play, Users } from 'lucide-svelte';
+  import { Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Pause, Play, Users, Send } from 'lucide-svelte';
+  import { autoGrow } from '$lib/actions/autoGrow';
+  import { memberTasksStore, recordMemberTask } from './memberTasks';
   import { settingsStore } from '$lib/stores/settings';
   import { fileEditorStore } from '$lib/stores/fileEditor';
   import { workspaceSaveInfoStore, refreshWorkspaceSaveInfo } from '$lib/stores/paneTree';
@@ -119,13 +121,115 @@
   }
   let decisions = $state<HitlDecisionEntry[]>([]);
 
-  // iter-60 G6：本机进程指纹发现的 agent CLI（roster 之外的「Discovered」区）。
+  // iter-61：成员级监控/干预（用户需求：监控每个 agent 状态与任务进度，可干预）。
+  interface HitlPendingItem {
+    id: string;
+    initiator: string;
+    reason: string;
+    createdAt: number;
+  }
+  let hitlPending = $state<HitlPendingItem[]>([]);
+  let memberInput = $state<Record<string, string>>({});
+  let answerOpen = $state<Record<string, boolean>>({});
+  let answerText = $state<Record<string, string>>({});
+
+  function parseHitlPending(raw: unknown): HitlPendingItem[] {
+    if (!Array.isArray(raw)) return [];
+    return raw.flatMap((v) => {
+      const r = v as Record<string, unknown> | null;
+      if (!r || typeof r.id !== 'string') return [];
+      return [{
+        id: r.id,
+        initiator: typeof r.initiator === 'string' ? r.initiator : '',
+        reason: typeof r.reason === 'string' ? r.reason : '',
+        createdAt: typeof r.createdAt === 'number' ? r.createdAt : 0,
+      }];
+    });
+  }
+
+  /** 某成员的待审批项（initiator 可能是 paneId / agent 名 / agent id）。 */
+  function pendingFor(m: TeammateProfile): HitlPendingItem[] {
+    return hitlPending.filter(
+      (p) => p.initiator === m.paneId || p.initiator === m.name || p.initiator === m.id
+    );
+  }
+
+  /** 成员状态徽标：等待审批 > 已暂停 > 运行中 > 失联 > 空闲。 */
+  function statusLabel(m: TeammateProfile, hasPending: boolean): { text: string; cls: string } {
+    if (hasPending) return { text: '等待审批', cls: 'text-amber-300' };
+    switch (m.status) {
+      case 'Suspended':
+        return { text: '已暂停', cls: 'text-amber-300' };
+      case 'Working':
+        return { text: '运行中', cls: 'text-emerald-300' };
+      case 'Disappeared':
+        return { text: '失联', cls: 'text-[var(--rg-fg-muted)]' };
+      default:
+        return { text: '空闲', cls: 'text-[var(--rg-fg-muted)]' };
+    }
+  }
+
+  async function decideHitl(id: string, verdict: 'approve' | 'reject') {
+    try {
+      await invoke('resolve_hitl_request', { id, verdict, replacement: null });
+    } catch (e) {
+      console.warn('[agent-center] resolve_hitl_request failed', e);
+    }
+    await refresh();
+  }
+
+  /** 给成员直接派任务：写入其 pane stdin（\r 结尾 = 终端回车语义）。 */
+  async function sendToMember(m: TeammateProfile) {
+    const text = (memberInput[m.id] ?? '').trim();
+    if (!text || !m.paneId) return;
+    try {
+      await invoke('write_to_pty', { paneId: m.paneId, data: `${text}\r` });
+      recordMemberTask(m.id, text);
+      memberInput = { ...memberInput, [m.id]: '' };
+    } catch (e) {
+      console.warn('[agent-center] member dispatch failed', e);
+      showToast('向该成员投递失败', 'error');
+    }
+  }
+
+  // 「最近回答」= 该 pane scrollback 尾部（剥 ANSI 后的纯文本，取末 4000 字）。
+  const ANSWER_TAIL_BYTES = 16 * 1024;
+  function stripAnsi(s: string): string {
+    return s
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+      .replace(/\x1b[@-Z\\-_]/g, '')
+      .replace(/\r/g, '');
+  }
+  async function toggleAnswer(m: TeammateProfile) {
+    const open = !answerOpen[m.id];
+    answerOpen = { ...answerOpen, [m.id]: open };
+    if (!open || !m.paneId) return;
+    try {
+      const chunk = await invoke<{ bytes?: number[] }>('get_pane_scrollback_tail', {
+        paneId: m.paneId,
+        maxBytes: ANSWER_TAIL_BYTES,
+      });
+      const raw = new TextDecoder().decode(new Uint8Array(chunk?.bytes ?? []));
+      const clean = stripAnsi(raw)
+        .split('\n')
+        .map((l) => l.trimEnd())
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+      answerText = { ...answerText, [m.id]: clean.slice(-4000) || '（暂无输出）' };
+    } catch {
+      answerText = { ...answerText, [m.id]: '（读取失败）' };
+    }
+  }
+
+  // iter-60 G6：本机进程指纹发现的 agent CLI。并入成员列表「未分组」展示（无独立卡）。
   let discovered = $state<{ name: string; pid: number }[]>([]);
   const discoveryOn = $derived($settingsStore.agentDiscoveryEnabled);
-
-  // V-M1-S3：workspace memory goal（最小编辑区）
-  let memGoal = $state('');
-  let memGoalDirty = $state(false);
+  // 与 roster 同名者视为已入册，不重复展示。
+  const discoveredExtra = $derived(
+    discovered.filter((d) => !topology.roster.some((m) => m.name === d.name))
+  );
 
   async function refresh(opts?: { heavy?: boolean }) {
     pollGeneration += 1;
@@ -167,6 +271,12 @@
         pendingHitl = 0;
       }
     }
+    // iter-61：待审批列表（进程内内存读，轻量）——驱动成员行「等待审批」徽标与行内裁决。
+    try {
+      hitlPending = parseHitlPending(await invoke('list_hitl_pending'));
+    } catch {
+      hitlPending = [];
+    }
     // iter-60 G6：轻量 Agent 自动发现（后端 5s TTL 缓存；关开关即恒空零扫描）。
     try {
       discovered = discoveryOn
@@ -186,14 +296,6 @@
         decisions = Array.isArray(list) ? list : [];
       } catch {
         decisions = [];
-      }
-      if (workspaceId && !memGoalDirty) {
-        try {
-          const mem = await invoke<{ goal?: string }>('get_workspace_memory', { workspaceId });
-          memGoal = typeof mem?.goal === 'string' ? mem.goal : '';
-        } catch {
-          /* dir not ready */
-        }
       }
       try {
         gitGuard = await refreshGitGuardStats();
@@ -219,17 +321,6 @@
     lastPollMs = ms;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(() => void refresh(), ms);
-  }
-
-  async function saveMemGoal() {
-    if (!workspaceId) return;
-    try {
-      await invoke('set_workspace_memory', { workspaceId, goal: memGoal });
-      memGoalDirty = false;
-      showToast('工作区目标已保存', 'info');
-    } catch (e) {
-      console.warn('[agent-center] set_workspace_memory failed', e);
-    }
   }
 
   // 随应用打包的 MCP 接入引导文档（见 tauri.conf.json bundle.resources）。
@@ -301,6 +392,11 @@
       const trip = parseCircuitTripped(e.payload);
       if (trip) trips = [trip, ...trips].slice(0, TRIP_CAP);
     });
+    // iter-61：标记/释放 agent（register/release_teammate_agent）后端会 emit
+    // teammate-layout-changed——立即刷新花名册，标记秒级入列（不再等 3s 轮询）。
+    const unLayout = listen('teammate-layout-changed', () => {
+      void refresh();
+    });
     // Agent 自助拉入：后端 `ridge_join_group` emit → 落到该工作区的编组 store。
     // 后端 emit 的 workspaceId = MCP 的活动工作区，与本面板的 `workspaceId`(焦点工作区)
     // 常态一致；仅在两者短暂不同步时才 mismatch。失败一律 warn（勿静默吞——评审 HIGH）。
@@ -341,6 +437,7 @@
       if (pollTimer) clearInterval(pollTimer);
       unTrip.then((f) => f()).catch(() => {});
       unJoin.then((f) => f()).catch(() => {});
+      unLayout.then((f) => f()).catch(() => {});
     };
   });
 </script>
@@ -444,45 +541,6 @@
         {/if}
       </section>
     {/if}
-    <!-- iter-60 G6：本机自动发现（进程指纹）。只读展示，不入 roster、不建 pane。 -->
-    {#if discoveryOn && discovered.length > 0}
-      <section class="rounded-md border border-[var(--rg-border)] px-2 py-1.5">
-        <h3 class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-          Discovered <span class="normal-case">（本机 agent 进程）</span>
-        </h3>
-        <ul class="mt-1 space-y-0.5">
-          {#each discovered as d (d.pid)}
-            <li class="flex items-center gap-1.5 text-[10px] font-mono text-[var(--rg-fg-muted)]">
-              <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400/70"></span>
-              <span class="truncate">{d.name}</span>
-              <span class="opacity-60">pid {d.pid}</span>
-            </li>
-          {/each}
-        </ul>
-      </section>
-    {/if}
-    <!-- V-M1-S3：工作区目标（goal）最小编辑 -->
-    {#if workspaceId}
-      <section class="rounded-md border border-[var(--rg-border)] px-2 py-1.5">
-        <h3 class="text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">工作区目标</h3>
-        <textarea
-          class="mt-1 w-full resize-y rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] px-1.5 py-1 text-[11px] text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)]"
-          rows="2"
-          placeholder="本工作区目标（写入 workspace-memory）"
-          bind:value={memGoal}
-          oninput={() => (memGoalDirty = true)}
-        ></textarea>
-        <div class="mt-1 flex justify-end">
-          <button
-            type="button"
-            disabled={!memGoalDirty}
-            onclick={saveMemGoal}
-            class="rounded border border-[var(--rg-border)] px-2 py-0.5 text-[10px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] disabled:opacity-40"
-          >保存</button>
-        </div>
-      </section>
-    {/if}
-
     <!-- 异常（熔断告警）：worker 死循环被熔断时置顶；无事件则零渲染 -->
     {#if trips.length > 0}
       <section class="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5">
@@ -544,7 +602,7 @@
             : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
           <Bot class="h-3.5 w-3.5" /> 成员
-          <span class="font-mono text-[10px] opacity-70">{topology.roster.length}</span>
+          <span class="font-mono text-[10px] opacity-70">{topology.roster.length + (discoveryOn ? discoveredExtra.length : 0)}</span>
         </button>
         <button
           type="button"
@@ -560,35 +618,109 @@
       </div>
 
       {#if teamTab === 'members'}
-        <!-- 成员聚合列表：全体 roster（状态 + 组归属 + 暂停/恢复）——监控总览。 -->
-        <ul class="space-y-0.5">
+        <!-- 成员聚合列表（iter-61 监控/干预中枢）：状态徽标 + 最近任务 + 最近回答
+             （默认折叠）+ 每成员输入框 + 待审批行内裁决 + 暂停/恢复。扁平无卡片。 -->
+        <ul class="space-y-1.5">
           {#each topology.roster as m (m.id)}
             {@const grp = groupOfAgent(groupStore.groups, m.id)}
-            <li class="group flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]">
-              <span class="h-1.5 w-1.5 rounded-full {statusDot(m)} shrink-0" title={m.status}></span>
-              <span class="min-w-0 flex-1 truncate text-[12px]">{m.name}</span>
-              {#if grp}
-                <span
-                  class="flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-medium"
-                  style="color:{grp.color};background:color-mix(in srgb, {grp.color} 16%, transparent)"
-                  title="所属编组：{grp.name}"
+            {@const pend = pendingFor(m)}
+            {@const st = statusLabel(m, pend.length > 0)}
+            {@const lastTask = $memberTasksStore[m.id]}
+            <li class="group rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]/60">
+              <div class="flex items-center gap-2">
+                <span class="h-1.5 w-1.5 rounded-full {statusDot(m)} shrink-0" title={m.status}></span>
+                <span class="min-w-0 flex-1 truncate text-[12px]" title={m.name}>{m.name}</span>
+                <span class="shrink-0 text-[9px] {st.cls}">{st.text}</span>
+                {#if grp}
+                  <span
+                    class="flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-medium"
+                    style="color:{grp.color};background:color-mix(in srgb, {grp.color} 16%, transparent)"
+                    title="所属编组：{grp.name}"
+                  >
+                    <span class="h-1.5 w-1.5 rounded-full" style="background:{grp.color}"></span>
+                    {grp.name}
+                  </span>
+                {:else}
+                  <span class="shrink-0 text-[9px] text-[var(--rg-fg-muted)]/60">未分组</span>
+                {/if}
+                <button
+                  class="hidden shrink-0 text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] group-hover:block"
+                  title={m.status === 'Suspended' ? '恢复 agent 输入' : '暂停 agent 输入（人类输入不受限）'}
+                  onclick={() => toggleSuspend(m)}
                 >
-                  <span class="h-1.5 w-1.5 rounded-full" style="background:{grp.color}"></span>
-                  {grp.name}
-                </span>
-              {:else}
-                <span class="shrink-0 text-[9px] text-[var(--rg-fg-muted)]/60">未分组</span>
+                  {#if m.status === 'Suspended'}<Play class="h-3 w-3" />{:else}<Pause class="h-3 w-3" />{/if}
+                </button>
+              </div>
+              {#if lastTask}
+                <p class="mt-0.5 pl-3.5 text-[10px] text-[var(--rg-fg-muted)] truncate" title={lastTask.text}>
+                  任务：{lastTask.text}
+                </p>
               {/if}
-              <button
-                class="hidden shrink-0 text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] group-hover:block"
-                title={m.status === 'Suspended' ? '恢复 agent 输入' : '暂停 agent 输入（人类输入不受限）'}
-                onclick={() => toggleSuspend(m)}
-              >
-                {#if m.status === 'Suspended'}<Play class="h-3 w-3" />{:else}<Pause class="h-3 w-3" />{/if}
-              </button>
+              {#each pend as p (p.id)}
+                <div class="mt-0.5 flex items-center gap-1.5 pl-3.5 text-[10px] text-amber-300">
+                  <span class="min-w-0 flex-1 truncate" title={p.reason}>审批：{p.reason || '高危操作待裁决'}</span>
+                  <button
+                    class="shrink-0 rounded border border-emerald-400/40 px-1.5 py-0.5 text-[9px] text-emerald-300 hover:bg-emerald-500/15"
+                    onclick={() => decideHitl(p.id, 'approve')}
+                  >批准</button>
+                  <button
+                    class="shrink-0 rounded border border-red-400/40 px-1.5 py-0.5 text-[9px] text-red-300 hover:bg-red-500/15"
+                    onclick={() => decideHitl(p.id, 'reject')}
+                  >驳回</button>
+                </div>
+              {/each}
+              {#if m.paneId}
+                <div class="mt-0.5 pl-3.5">
+                  <button
+                    class="text-[10px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
+                    onclick={() => toggleAnswer(m)}
+                  >最近回答 {answerOpen[m.id] ? '▾' : '▸'}</button>
+                  {#if answerOpen[m.id]}
+                    <pre
+                      class="mt-0.5 max-h-48 overflow-y-auto rg-scroll whitespace-pre-wrap break-words rounded bg-[var(--rg-bg)] px-1.5 py-1 font-mono text-[10px] leading-snug text-[var(--rg-fg-muted)]"
+                    >{answerText[m.id] ?? '…'}</pre>
+                  {/if}
+                  <div class="mt-1 flex items-end gap-1">
+                    <textarea
+                      rows="1"
+                      use:autoGrow={{ maxRows: 3, value: memberInput[m.id] ?? '' }}
+                      value={memberInput[m.id] ?? ''}
+                      oninput={(e) => (memberInput = { ...memberInput, [m.id]: e.currentTarget.value })}
+                      onkeydown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+                          e.preventDefault();
+                          void sendToMember(m);
+                        }
+                      }}
+                      placeholder="给 {m.name} 派任务…（Enter 发送）"
+                      class="min-w-0 flex-1 resize-none rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] px-1.5 py-0.5 text-[11px] leading-snug text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)]"
+                    ></textarea>
+                    <button
+                      type="button"
+                      title="发送给该成员"
+                      aria-label="发送给该成员"
+                      onclick={() => sendToMember(m)}
+                      class="flex items-center justify-center rounded border border-[var(--rg-border)] p-1 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-accent)]"
+                    >
+                      <Send class="h-3 w-3" />
+                    </button>
+                  </div>
+                </div>
+              {/if}
             </li>
           {/each}
-          {#if topology.roster.length === 0}
+          <!-- iter-60 G6 改：自动发现的本机 agent 进程直接并入成员列表（未分组，只读——无 pane 不可暂停/入组）。 -->
+          {#if discoveryOn}
+            {#each discoveredExtra as d (d.pid)}
+              <li class="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]">
+                <span class="h-1.5 w-1.5 rounded-full bg-emerald-400/70 shrink-0" title="自动发现（本机进程）"></span>
+                <span class="min-w-0 flex-1 truncate text-[12px]">{d.name}</span>
+                <span class="shrink-0 font-mono text-[9px] text-[var(--rg-fg-muted)]/60">pid {d.pid}</span>
+                <span class="shrink-0 text-[9px] text-[var(--rg-fg-muted)]/60">未分组</span>
+              </li>
+            {/each}
+          {/if}
+          {#if topology.roster.length === 0 && (!discoveryOn || discoveredExtra.length === 0)}
             <li class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">暂无成员</li>
           {/if}
         </ul>

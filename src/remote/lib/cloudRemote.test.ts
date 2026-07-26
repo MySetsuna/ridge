@@ -120,9 +120,10 @@ describe('CloudRemoteConnection panes', () => {
     await flush();
 
     const panesMsg = msgs.find((m) => m.type === 'panes');
+    // iter-61：叶子附带 agent 标记态（agent_state==='busy'），供工作区弹层的标记按钮。
     expect(panesMsg).toEqual({ type: 'panes', panes: [
-      { id: 'pane-a', title: 'A', cwd: '/a' },
-      { id: 'pane-b', title: undefined, cwd: undefined },
+      { id: 'pane-a', title: 'A', cwd: '/a', isAgent: false },
+      { id: 'pane-b', title: undefined, cwd: undefined, isAgent: false },
     ] });
     expect(metas).toContainEqual(['pane-a', 'A', '/a']);
     expect(metas).toContainEqual(['pane-b', null, null]);

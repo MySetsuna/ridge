@@ -89,6 +89,8 @@ export interface PaneInfo {
   id: string;
   title?: string;
   cwd?: string;
+  /** iter-61：该 pane 是否已标记为 agent（工作区弹层标记按钮的当前态）。 */
+  isAgent?: boolean;
 }
 
 export interface WorkspaceInfo {
@@ -284,6 +286,11 @@ export interface RemoteLink {
    * there's nothing more to load. The LAN link omits it (optional) → no-op there.
    */
   fetchOlderScrollback?(paneId: string): Promise<Uint8Array | null>;
+  /**
+   * iter-61：把某 pane 标记 / 取消标记为 agent（远端工作区弹层的标记按钮）。
+   * 两条腿（LAN invoke-request / cloud RPC）都实现；老 host 会以错误拒绝，UI 提示即可。
+   */
+  markPaneAgent?(workspaceId: string, paneId: string, on: boolean, agentId?: string): Promise<void>;
   sendStdin(paneId: string, data: string): void;
   refreshPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
   claimPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
@@ -945,6 +952,28 @@ export class RemoteConnection implements RemoteLink {
     )) as { _result?: { outcome: HitlResolveOutcome }; _error?: unknown };
     if (data._error) throw new Error(String(data._error));
     return data._result?.outcome ?? 'already-resolved';
+  }
+
+  // iter-61：把某 pane 标记/取消标记为 agent（工作区弹层终端项的「标记」按钮）。
+  // 同 invoke-request 白名单边界；agentId 由调用方给（一般取 pane 标题）。
+  async markPaneAgent(
+    workspaceId: string,
+    paneId: string,
+    on: boolean,
+    agentId?: string,
+  ): Promise<void> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: on ? 'register_teammate_agent' : 'release_teammate_agent',
+        args: on
+          ? { workspaceId, paneId, agentId: agentId || 'agent' }
+          : { workspaceId, paneId },
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _error?: unknown };
+    if (data._error) throw new Error(String(data._error));
   }
 
   async getOrchestrationHealth(): Promise<OrchestrationHealth> {

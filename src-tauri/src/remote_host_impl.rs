@@ -312,6 +312,11 @@ fn build_remote_pane_list(ws: &crate::state::Workspace) -> Vec<serde_json::Value
                 "cwd": node
                     .and_then(|n| n.cwd.as_ref().map(|p| p.to_string_lossy().to_string()))
                     .unwrap_or_default(),
+                // iter-61：agent 标记态（远端工作区弹层的标记按钮据此高亮/切换）。
+                "isAgent": matches!(
+                    ws.teammate_pane_states.get(&pane_id),
+                    Some(crate::state::PaneState::Busy)
+                ),
             })
         })
         .collect();
@@ -2368,6 +2373,27 @@ async fn dispatch_invoke_request(
         )),
         // R19：只读编排健康（suspended / pending）——与桌面 Agent Center badge 同源。
         "get_orchestration_health" => val(Ok(crate::commands::teammate::get_orchestration_health())),
+        // iter-61：远端把某 pane 标记/取消标记为 agent（工作区弹层「标记」按钮）。
+        // 与桌面 SplitContainer 同一对命令；只改 teammate 侧表，不 spawn 进程。
+        "register_teammate_agent" => unit(
+            crate::commands::pane::register_teammate_agent(
+                handle.state(),
+                handle.clone(),
+                s(args, "workspaceId"),
+                s(args, "paneId"),
+                s(args, "agentId"),
+            )
+            .await,
+        ),
+        "release_teammate_agent" => unit(
+            crate::commands::pane::release_teammate_agent(
+                handle.state(),
+                handle.clone(),
+                s(args, "workspaceId"),
+                s(args, "paneId"),
+            )
+            .await,
+        ),
 
         // ── Theme / settings (S1: migrated into ridge-core) ──
         // These three handlers now live in `ridge_core`; route them through

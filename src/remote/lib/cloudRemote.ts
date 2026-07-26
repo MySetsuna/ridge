@@ -103,7 +103,8 @@ function flattenLeaves(node: PaneNode | null | undefined): PaneInfo[] {
   if (!node) return [];
   if (node.type === 'leaf') {
     if (!node.id) return []; // pre-hydration placeholder leaf
-    return [{ id: node.id, title: node.title, cwd: node.cwd }];
+    // iter-61：agent 标记态随叶子下发（LAN 腿在 build_remote_pane_list 里同源附带）。
+    return [{ id: node.id, title: node.title, cwd: node.cwd, isAgent: node.agent_state === 'busy' }];
   }
   return node.children.flatMap(flattenLeaves);
 }
@@ -585,6 +586,26 @@ export class CloudRemoteConnection implements RemoteLink {
     } catch {
       return false;
     }
+  }
+
+  // iter-61：标记 / 取消标记某 pane 为 agent（工作区弹层终端项的标记按钮）。
+  // 与 LAN 腿同一对命令；老 host 的 allowlist 无此项 → invoke 抛错，UI 提示不静默。
+  async markPaneAgent(
+    workspaceId: string,
+    paneId: string,
+    on: boolean,
+    agentId?: string,
+  ): Promise<void> {
+    if (on) {
+      await invoke('register_teammate_agent', {
+        workspaceId,
+        paneId,
+        agentId: agentId || 'agent',
+      });
+    } else {
+      await invoke('release_teammate_agent', { workspaceId, paneId });
+    }
+    void this._refreshPanes();
   }
 
   // ── workspaces ───────────────────────────────────────────────────────────────

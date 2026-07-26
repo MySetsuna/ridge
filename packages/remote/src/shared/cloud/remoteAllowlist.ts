@@ -115,6 +115,9 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'resolve_hitl_remote',
   // R19：只读编排健康（suspended / pending）——桌面 Agent Center badge 同源。
   'get_orchestration_health',
+  // iter-61：pane 的 agent 标记切换（远端工作区弹层「标记」按钮）。
+  'register_teammate_agent',
+  'release_teammate_agent',
   // ── Search ──
   'text_search',
   'search',
@@ -196,6 +199,9 @@ export const MUTATING_METHODS: readonly string[] = [
   'split_pane',
   // ── Teammate（P2 阶段 2）──
   'resolve_hitl_remote',
+  // iter-61：agent 标记切换（写 teammate 侧表）。
+  'register_teammate_agent',
+  'release_teammate_agent',
 ];
 
 const ALLOW_SET: ReadonlySet<string> = new Set(REMOTE_ALLOWLIST);

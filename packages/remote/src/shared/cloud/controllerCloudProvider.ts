@@ -67,6 +67,13 @@ const DISCONNECTED_WATCHDOG_MS = 15_000;
 const ICE_RESTART_DEADLINE_MS = 12_000;
 /** WebSocket 连接超时（ms）：超时未 open 则判失败重连。 */
 const WS_CONNECT_TIMEOUT_MS = 10_000;
+/**
+ * iter-61：整体接通看门狗（ms）。从 `connect()` 起算，到期仍未 'connected' 即判失败
+ * 并给出可操作提示。此前任一环节缺位（host 不在房、host 收不到 offer、answer 丢失、
+ * ICE 打不通）都会让 UI **永远**停在「正在连接远程桌面…」——用户实测 rdg 公网远控
+ * 即此形态，无任何可诊断信息。宁可报错也不无限转圈。
+ */
+const CONNECT_WATCHDOG_MS = 30_000;
 
 // ── 信令 error 帧分类（契约 §5 错误码 / §5.3 SUPERSEDED）──
 /** 终态错误：鉴权/计费/归属类，重连也无用 → 进 'error' 态、停止重连、提示用户。 */
@@ -148,6 +155,10 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private iceRestartTimer: ReturnType<typeof setTimeout> | null = null;
   /** 本次断线是否已尝试过 ICE restart（避免对同一次断线反复 restart 死循环）。 */
   private iceRestartTried = false;
+  /** iter-61 接通看门狗计时器（限期未 connected → 可读错误，取代无限 spinner）。 */
+  private connectWatchdog: ReturnType<typeof setTimeout> | null = null;
+  /** host 是否在房（welcome.peerPresent / peer-join / peer-leave 维护），供超时诊断分级。 */
+  private hostPresent = false;
 
   // ── B3（D-GM-10）E2EE 公钥↔身份绑定状态 ──
   /** host 经已认证信令旁路转发回来的临时公钥；尚未到达为 null。 */
@@ -180,7 +191,37 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private setState(s: CloudConnectionState): void {
     if (this.state === s) return;
     this.state = s;
+    // iter-61：接通即撤看门狗；离开 connected（重连中）则重新起表，保证任何一次
+    // 「连不上」都在限期内变成可读错误而不是无限 spinner。
+    if (s === 'connected') this.clearConnectWatchdog();
     this.cb.onState?.(s);
+  }
+
+  /** iter-61 接通看门狗：限期内未 'connected' → 报可操作错误（附最后已知阶段）。 */
+  private armConnectWatchdog(): void {
+    this.clearConnectWatchdog();
+    this.connectWatchdog = setTimeout(() => {
+      this.connectWatchdog = null;
+      if (this.closed || this.state === 'connected') return;
+      const stage = !this.hostPresent
+        ? '远程主机未上线（host 未连接到中继）'
+        : !this.offerStarted
+          ? '尚未发起连接协商'
+          : this.state === 'handshaking'
+            ? '加密握手未完成'
+            : '网络协商未完成（可能被 NAT/防火墙阻断）';
+      this.fail(
+        `连接远程桌面超时：${stage}。请确认目标主机上 Ridge / rdg remote 正在运行，然后重试。`,
+        'HOST_UNREACHABLE',
+      );
+    }, CONNECT_WATCHDOG_MS);
+  }
+
+  private clearConnectWatchdog(): void {
+    if (this.connectWatchdog) {
+      clearTimeout(this.connectWatchdog);
+      this.connectWatchdog = null;
+    }
   }
 
   private fail(message: string, code?: string): void {
@@ -201,8 +242,10 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.reconnectAttempts = 0;
     this.offerStarted = false;
     this.hostDevice = deviceId;
+    this.hostPresent = false;
     this.resetBinding();
     this.setState('connecting');
+    this.armConnectWatchdog();
 
     // §diagnostic: 记录连接开始（不打 username/token 等凭据，避免泄漏到浏览器 console）
     console.log('[cloud-controller] connecting', {
@@ -587,14 +630,21 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     switch (msg.t) {
       case 'welcome':
         // controller 是 offerer：host 已在房（peerPresent:true）则立即发起 offer。
+        this.hostPresent = !!msg.peerPresent;
         if (msg.peerPresent) await this.startOffer();
+        // iter-61：host 不在房时明确告知（非终态——它可能马上上线；看门狗兜底）。
+        else this.cb.onError?.('远程主机当前不在线，正在等待其上线…', 'HOST_OFFLINE');
         break;
       case 'peer-join':
         // host 随后进房 → 此时发起 offer（契约 §5.1：controller 收 peer-join 后建 offer）。
-        if (msg.role === 'host') await this.startOffer();
+        if (msg.role === 'host') {
+          this.hostPresent = true;
+          await this.startOffer();
+        }
         break;
       case 'peer-leave':
         // host 离开：尚未建立 RTC 时判失败（已连通后交给 connectionstatechange）。
+        if (msg.role === 'host') this.hostPresent = false;
         if (msg.role === 'host' && !this.closed && this.state === 'connecting') {
           this.fail('对端（host）已离开', 'NETWORK');
         }
@@ -738,7 +788,9 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     if (this.closed) return;
     this.iceRestartTried = false; // 新 pc：下一次抖动可再尝试 ICE restart
     this.offerStarted = false;
+    this.hostPresent = false;
     this.resetBinding();
+    this.armConnectWatchdog(); // 重建也受限期约束，永不无限「连接中」
     if (this.iceServers.length === 0) {
       void this.refetchIceAndBuild();
       return;
@@ -818,6 +870,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this.clearDisconnectedWatchdog();
     this.clearIceRestartDeadline();
+    this.clearConnectWatchdog();
     if (this.dc) {
       this.dc.onopen = this.dc.onclose = this.dc.onmessage = null;
       try { this.dc.close(); } catch { /* ignore */ }

@@ -141,9 +141,12 @@ function parseProfile(v: unknown): TeammateProfile | null {
   const id = asString(rec.id) ?? asString(rec.agentId) ?? asString(rec.agent_id);
   if (!id) return null;
   const paneId = asString(rec.paneId) ?? asString(rec.pane_id) ?? '';
+  // 显示名自动同步 pane 标题（iter-61 用户需求）：后端 inject_roster_titles 随拓扑
+  // 附带实时 OSC 标题 `title`；有则优先于注册时的静态 name。id 保持稳定不受影响。
+  const title = asString(rec.title);
   return {
     id,
-    name: asString(rec.name) ?? id,
+    name: title && title.trim() ? title : (asString(rec.name) ?? id),
     paneId,
     role: asRole(rec.role),
     status: asStatus(rec.status),

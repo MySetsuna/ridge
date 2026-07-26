@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { RefreshCw, MousePointer2, Clipboard, Palette, Globe, MessageSquareText } from 'lucide-svelte';
+  import { RefreshCw, MousePointer2, Clipboard, Palette, Globe } from 'lucide-svelte';
   import { t } from '$lib/i18n';
   import { locale, setLocale } from '$lib/i18n/locale';
   import type { PaneInfo, WorkspaceInfo, RemoteLink } from '@ridge/remote';
@@ -50,9 +50,8 @@
     <button class="ctrl-btn" class:active={selectionMode} onclick={() => selectionMode = !selectionMode} title={$t('mobile.selectionToggle')} tabindex="-1">
       <MousePointer2 class="w-4 h-4" />
     </button>
-    <button class="ctrl-btn" class:active={sentenceBuffer} onclick={() => sentenceBuffer = !sentenceBuffer} title={$t('mobile.sentenceBufferToggle')} tabindex="-1">
-      <MessageSquareText class="w-4 h-4" />
-    </button>
+    <!-- 句级输入缓冲按钮已移除（用户反馈：不明所以的「对话」按钮）。sentenceBuffer
+         prop 保留接线，默认关闭；后续如需可在设置里重新暴露。 -->
     <button class="ctrl-btn" onclick={onRefresh} title={$t('mobile.lockAndRefresh')} tabindex="-1">
       <RefreshCw class="w-4 h-4" />
     </button>
