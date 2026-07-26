@@ -38,8 +38,6 @@ export interface UserSettings {
   /// `set_hitl_enabled` 默认一致，保证 send-keys 行为零变化。**独立生效，不被总
   /// 开关左右**（不可整体关：开启的安全闸不会被无关 UI 开关静默撤销）。
   teammateHitlEnabled: boolean;
-  /// iter-60 G6：Agent 自动发现（本机进程指纹，5s 缓存）。关=后端恒空、零扫描。
-  agentDiscoveryEnabled: boolean;
 }
 
 const DEFAULTS: UserSettings = {
@@ -57,7 +55,6 @@ const DEFAULTS: UserSettings = {
   remoteEnabled: false,
   teammateEnabled: true,
   teammateHitlEnabled: false,
-  agentDiscoveryEnabled: true,
 };
 
 const LS_KEY = 'ridge-settings';
@@ -140,10 +137,6 @@ function load(): UserSettings {
       typeof obj.teammateHitlEnabled === 'boolean'
         ? obj.teammateHitlEnabled
         : DEFAULTS.teammateHitlEnabled,
-    agentDiscoveryEnabled:
-      typeof obj.agentDiscoveryEnabled === 'boolean'
-        ? obj.agentDiscoveryEnabled
-        : DEFAULTS.agentDiscoveryEnabled,
   };
 }
 

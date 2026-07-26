@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Check, Crown, ShieldAlert, X } from 'lucide-svelte';
+  import { Check, Crown, Send, ShieldAlert, X } from 'lucide-svelte';
   import type {
     HitlPendingItem,
     OrchestrationHealth,
     RemoteLink,
+    TeammateRosterMember,
     TeammateTopology,
   } from '@ridge/remote';
 
@@ -56,6 +57,36 @@
   /** 组员 agent_id → 花名册条目（供编组视图渲染名字 / 状态 / 组长冠）。 */
   function memberOf(agentId: string) {
     return topo.roster.find((m) => m.id === agentId);
+  }
+
+  // iter-62：手机端也要能分别监控/干预每个 agent（此前只有一行只读名字）。
+  /** 每个成员的输入框内容 / 「最近回复」展开态（按 agent id 键）。 */
+  let msgInput = $state<Record<string, string>>({});
+  let openReply = $state<Record<string, boolean>>({});
+
+  /** 状态徽标：待审批 > 已暂停 > 运行中（终端还在吐字）> 空闲 / 失联。 */
+  function statusOf(m: TeammateRosterMember): { key: string; text: string } {
+    if (pendingFor(m).length > 0) return { key: 'pending', text: '等待审批' };
+    if (m.status === 'Suspended') return { key: 'suspended', text: '已暂停' };
+    if (m.status === 'Disappeared') return { key: 'gone', text: '失联' };
+    if (m.activity === 'working') return { key: 'working', text: '运行中' };
+    return { key: 'idle', text: '空闲' };
+  }
+
+  /** 该成员名下的待审批项（initiator 可能是 paneId / agent 名 / agent id）。 */
+  function pendingFor(m: TeammateRosterMember): HitlPendingItem[] {
+    return pending.filter(
+      (p) => p.initiator === m.id || p.initiator === m.paneId || p.initiator === m.name
+    );
+  }
+
+  /** 给该成员发消息：写其 pane stdin。
+   *  `\r`（CR = 回车键真实字节）结尾——`\n` 只会在 TUI 输入框里插一个换行、不提交。 */
+  function sendTo(m: TeammateRosterMember) {
+    const text = (msgInput[m.id] ?? '').trim();
+    if (!text || !m.paneId) return;
+    ws.sendStdin(m.paneId, `${text}\r`);
+    msgInput = { ...msgInput, [m.id]: '' };
   }
 
   async function decide(p: HitlPendingItem, verdict: 'approve' | 'reject') {
@@ -136,25 +167,16 @@
   </div>
 
   {#if subTab === 'members'}
-    <!-- 成员聚合列表（只读监控）：全体 roster + 组长冠（顶层 leaderId，现常为空）。 -->
+    <!-- 成员列表：与桌面同构的监控 + 干预（状态 / 最近回复 / 单独发消息）。 -->
     {#if topo.roster.length === 0}
-      <p class="empty">{failed ? '—' : 'No agents in this workspace'}</p>
+      <p class="empty">{failed ? '—' : '本工作区暂无 agent'}</p>
     {:else}
       {#each topo.roster as m (m.id)}
-        <button class="member" onclick={() => m.paneId && onSelectPane?.(m.paneId)} tabindex="-1">
-          <span
-            class="dot"
-            class:working={m.status === 'Working'}
-            class:suspended={m.status === 'Suspended'}
-          ></span>
-          <span class="name" title={m.id}>{m.name}</span>
-          {#if topo.leaderId === m.id}<Crown class="w-3 h-3 crown" />{/if}
-          <span class="role">{m.status === 'Suspended' ? '暂停' : m.role}</span>
-        </button>
+        {@render memberCard(m, topo.leaderId === m.id)}
       {/each}
     {/if}
   {:else}
-    <!-- 编组视图（只读）：桌面建的编组镜像。组色条 + 成员 + 组长冠。 -->
+    <!-- 编组视图：桌面建的编组镜像；成员卡与「成员」页完全一致（可发消息/看状态）。 -->
     {#if groups.length === 0}
       <p class="empty">暂无编组（在桌面端「编组」里创建）</p>
     {:else}
@@ -170,20 +192,17 @@
           {:else}
             {#each g.memberAgentIds as aid (aid)}
               {@const m = memberOf(aid)}
-              <button
-                class="member in-group"
-                onclick={() => m?.paneId && onSelectPane?.(m.paneId)}
-                tabindex="-1"
-              >
-                <span
-                  class="dot"
-                  class:working={m?.status === 'Working'}
-                  class:suspended={m?.status === 'Suspended'}
-                ></span>
-                <span class="name" title={aid}>{m?.name ?? aid}</span>
-                {#if g.leaderAgentId === aid}<Crown class="w-3 h-3 crown" />{/if}
-                {#if !m}<span class="role">失联</span>{/if}
-              </button>
+              {#if m}
+                {@render memberCard(m, g.leaderAgentId === aid)}
+              {:else}
+                <div class="member-card offline">
+                  <div class="member-head">
+                    <span class="dot"></span>
+                    <span class="name" title={aid}>{aid}</span>
+                    <span class="role">失联</span>
+                  </div>
+                </div>
+              {/if}
             {/each}
           {/if}
         </div>
@@ -191,6 +210,67 @@
     {/if}
   {/if}
 </div>
+
+<!-- 一个成员的监控 + 干预卡：状态 / 自动识别标注 / 最近回复（折叠）/ 单独发消息。 -->
+{#snippet memberCard(m: TeammateRosterMember, isLeader: boolean)}
+  {@const st = statusOf(m)}
+  <div class="member-card">
+    <div class="member-head">
+      <button class="head-main" onclick={() => m.paneId && onSelectPane?.(m.paneId)} tabindex="-1">
+        <span class="dot" class:working={st.key === 'working'} class:suspended={st.key === 'suspended'}></span>
+        <span class="name" title={m.id}>{m.name}</span>
+      </button>
+      {#if isLeader}<Crown class="w-3 h-3 crown" />{/if}
+      {#if m.isAuto}<span class="tag">自动</span>{/if}
+      <span class="role" class:live={st.key === 'working'}>{st.text}</span>
+    </div>
+
+    {#if pendingFor(m).length > 0}
+      {#each pendingFor(m) as p (p.id)}
+        <div class="member-approval">
+          <span class="name" title={p.reason}>审批：{p.reason}</span>
+          <button class="act approve" title="Approve" onclick={() => void decide(p, 'approve')}>
+            <Check class="w-3 h-3" />
+          </button>
+          <button class="act reject" title="Reject" onclick={() => void decide(p, 'reject')}>
+            <X class="w-3 h-3" />
+          </button>
+        </div>
+      {/each}
+    {/if}
+
+    {#if m.recentOutput}
+      <button class="reply-toggle" onclick={() => (openReply[m.id] = !openReply[m.id])}>
+        <span>最近回复 {openReply[m.id] ? '▾' : '▸'}</span>
+        {#if !openReply[m.id]}
+          <span class="reply-peek">{m.recentOutput.split('\n').at(-1) ?? ''}</span>
+        {/if}
+      </button>
+      {#if openReply[m.id]}
+        <pre class="reply">{m.recentOutput}</pre>
+      {/if}
+    {/if}
+
+    <div class="msg-row">
+      <input
+        class="msg-input"
+        type="text"
+        placeholder="给 {m.name} 发消息…"
+        value={msgInput[m.id] ?? ''}
+        oninput={(e) => (msgInput = { ...msgInput, [m.id]: e.currentTarget.value })}
+        onkeydown={(e) => {
+          if (e.key === 'Enter' && !e.isComposing) {
+            e.preventDefault();
+            sendTo(m);
+          }
+        }}
+      />
+      <button class="act send" title="发送" aria-label="发送给该成员" onclick={() => sendTo(m)}>
+        <Send class="w-3 h-3" />
+      </button>
+    </div>
+  </div>
+{/snippet}
 
 <style>
   .roster{display:flex;flex-direction:column;gap:2px;padding:8px;overflow-y:auto}
@@ -211,9 +291,23 @@
   .act.reject:active{color:#f87171}
   .empty{margin:12px;font-size:12px;color:var(--rg-fg-muted);text-align:center}
   .empty-group{padding:4px 12px 6px 16px;font-size:11px;color:var(--rg-fg-muted)}
-  .member{display:flex;align-items:center;gap:8px;padding:8px 10px;border:none;border-radius:8px;background:none;color:var(--rg-fg);cursor:pointer;text-align:left;font-size:13px}
-  .member.in-group{padding-left:16px}
-  .member:active{background:var(--rg-surface-2)}
+
+  /* 成员卡（iter-62）：状态 + 最近回复 + 独立发消息框，与桌面面板同构。 */
+  .member-card{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border-radius:8px;background:var(--rg-surface-2);margin:2px 0}
+  .member-card.offline{opacity:.55}
+  .member-head{display:flex;align-items:center;gap:6px;font-size:13px}
+  .head-main{display:flex;align-items:center;gap:8px;flex:1;min-width:0;border:none;background:none;color:var(--rg-fg);text-align:left;padding:0;cursor:pointer;font-size:13px}
+  .head-main:active{opacity:.7}
+  .tag{font-size:9px;padding:1px 5px;border:1px solid var(--rg-border);border-radius:999px;color:var(--rg-fg-muted);flex-shrink:0}
+  .role.live{color:var(--rg-accent)}
+  .member-approval{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--rg-accent)}
+  .reply-toggle{display:flex;align-items:center;gap:6px;border:none;background:none;padding:0;color:var(--rg-fg-muted);font-size:11px;text-align:left;cursor:pointer;min-width:0}
+  .reply-peek{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75}
+  .reply{margin:0;max-height:160px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:var(--rg-bg);border-radius:6px;padding:6px;font-size:11px;line-height:1.35;color:var(--rg-fg-muted)}
+  .msg-row{display:flex;align-items:center;gap:6px}
+  .msg-input{flex:1;min-width:0;border:1px solid var(--rg-border);border-radius:6px;background:var(--rg-bg);color:var(--rg-fg);font-size:12px;padding:5px 8px;outline:none}
+  .msg-input:focus{border-color:color-mix(in srgb,var(--rg-accent) 60%,transparent)}
+  .act.send:active{color:var(--rg-accent)}
   .group{border:1px solid var(--rg-border);border-radius:8px;overflow:hidden;margin:2px 0}
   .group-bar{height:3px}
   .group-head{display:flex;align-items:center;gap:8px;padding:6px 10px}

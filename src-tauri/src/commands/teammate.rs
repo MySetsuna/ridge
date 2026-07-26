@@ -35,7 +35,7 @@ pub(crate) fn topology_json(ws: &Workspace, wid: Uuid) -> Value {
         ws.teammate_pane_titles
             .get(pane)
             .cloned()
-            .unwrap_or_else(|| agent_id.to_string())
+            .unwrap_or_else(|| pretty_agent_name(agent_id))
     };
     // 组长不再由能力自动竞选（改由前端「编组」为每个组手动指定组长）；顶层花名册无全局
     // Leader，leaderId 恒 null、所有成员 role=Worker。`cap_of`/`name_of` 仍供 roster 用。
@@ -69,6 +69,9 @@ pub(crate) fn topology_json(ws: &Workspace, wid: Uuid) -> Value {
                 "paneIndex": pane_index,
                 "role": role,
                 "status": status,
+                // iter-62：自动识别（pane 下真跑着 agent CLI）vs 人工标记。UI 据此
+                // 标注来源，两者能力完全相同（都有 pane，可派任务/暂停/入组）。
+                "isAuto": agent_id.starts_with(AUTO_AGENT_PREFIX),
                 "capability": serde_json::to_value(cap).unwrap_or(Value::Null),
             })
         })
@@ -85,6 +88,101 @@ pub(crate) fn topology_json(ws: &Workspace, wid: Uuid) -> Value {
     })
 }
 
+/// 自动入册的 agent id 前缀。人工「标记为 agent」的 id 不带此前缀，
+/// 故自动同步只回收自己造的条目，绝不动用户手标的成员。
+pub(crate) const AUTO_AGENT_PREFIX: &str = "auto:";
+
+/// `auto:claude:1a2b3c4d` → `claude`；非自动 id 原样返回。仅在 pane 无实时标题时
+/// 作展示名兜底（有标题一律以标题为准，见 `inject_roster_titles`）。
+fn pretty_agent_name(agent_id: &str) -> String {
+    match agent_id.strip_prefix(AUTO_AGENT_PREFIX) {
+        Some(rest) => rest.split(':').next().unwrap_or(rest).to_string(),
+        None => agent_id.to_string(),
+    }
+}
+
+/// iter-62 —— 把「本工作区各 pane 下真正在跑的 agent CLI」同步进花名册。
+///
+/// 用户要的是**自动识别在 Ridge 里运行的 agent**，而不是手点标记、也不是本机全量
+/// 进程指纹（后者会把 Ridge 外的 agent 也算进来）。判据：pane 的 shell 子树里挂着
+/// 一个 agent CLI 进程（见 [`crate::teammate::autodiscover`]，一次扫描 + TTL 缓存）。
+///
+/// 幂等且**只在有增删时**取写锁——面板 3s 轮询绝大多数轮次是纯读。
+/// 返回是否发生了变更（调用方据此决定要不要广播布局事件）。
+pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
+    // 1) 读：pane → shell pid。
+    let panes: Vec<(Uuid, u32)> = {
+        let map = state.workspaces.read();
+        let Some(ws) = map.get(&wid) else {
+            return false;
+        };
+        ws.terminals
+            .iter()
+            .filter_map(|(pane, h)| h.child_pid.map(|pid| (*pane, pid)))
+            .collect()
+    };
+    let found = crate::teammate::autodiscover::scan_cached(&panes);
+
+    // 2) 比对期望的自动条目与现状；无差异就此打住（不取写锁）。
+    let desired: std::collections::HashMap<Uuid, String> = found
+        .iter()
+        .map(|a| {
+            let short = a.pane.simple().to_string();
+            (
+                a.pane,
+                format!("{AUTO_AGENT_PREFIX}{}:{}", a.name, &short[..8]),
+            )
+        })
+        .collect();
+    let live_panes: std::collections::HashSet<Uuid> = panes.iter().map(|(p, _)| *p).collect();
+    let (stale, missing) = {
+        let map = state.workspaces.read();
+        let Some(ws) = map.get(&wid) else {
+            return false;
+        };
+        let stale: Vec<String> = ws
+            .teammate_agent_pane_map
+            .iter()
+            .filter(|(id, pane)| {
+                id.starts_with(AUTO_AGENT_PREFIX)
+                    // pane 还在但 agent 退了 → 回收；pane 没了也回收。
+                    && (!live_panes.contains(pane) || desired.get(pane) != Some(*id))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let missing: Vec<(Uuid, String)> = desired
+            .iter()
+            .filter(|(pane, id)| ws.teammate_agent_pane_map.get(*id) != Some(*pane))
+            // 该 pane 已被人工标记过 → 尊重人工，不再叠一个自动条目。
+            .filter(|(pane, _)| !ws.teammate_agent_pane_map.values().any(|p| p == *pane))
+            .map(|(pane, id)| (*pane, id.clone()))
+            .collect();
+        (stale, missing)
+    };
+    if stale.is_empty() && missing.is_empty() {
+        return false;
+    }
+
+    // 3) 写：回收失效自动条目 + 补入新发现。
+    let mut map = state.workspaces.write();
+    let Some(ws) = map.get_mut(&wid) else {
+        return false;
+    };
+    for id in &stale {
+        if let Some(pane) = ws.teammate_agent_pane_map.remove(id) {
+            ws.teammate_pane_states.remove(&pane);
+        }
+    }
+    for (pane, id) in &missing {
+        ws.teammate_agent_pane_map.insert(id.clone(), *pane);
+        // Busy = 「这是 agent pane」（驱动分屏上的 agent 徽章）。是否**正在干活**由
+        // `inject_roster_runtime` 按输出流水号变化另判，不与此混淆。
+        ws.teammate_pane_states
+            .insert(*pane, crate::state::PaneState::Busy);
+    }
+    true
+}
+
 /// D1 —— 返回某工作区（缺省=活动工作区）的团队拓扑快照。只读。
 #[tauri::command]
 pub async fn get_teammate_topology(
@@ -95,20 +193,163 @@ pub async fn get_teammate_topology(
         Some(s) => Uuid::parse_str(&s).map_err(|e| e.to_string())?,
         None => *state.active_workspace.read(),
     };
-    // 有 typed 画像 → 跑 Leader 竞选（真实角色/leader）；否则回退侧表映射。
+    Ok(topology_snapshot(&state, wid)?)
+}
+
+/// 拓扑快照的唯一实现（桌面 IPC 与远端 LAN/云 dispatch 共用）：
+/// 自动识别同步 → 侧表/画像映射 → 实时标题 → 运行时（活跃度 / 近期输出）。
+pub(crate) fn topology_snapshot(state: &AppState, wid: Uuid) -> Result<Value, String> {
+    // 先把「pane 下真跑着 agent」的现状同步进侧表，快照才含自动成员。
+    let changed = sync_workspace_agents(state, wid);
+    // 有typed 画像 → 跑 Leader 竞选（真实角色/leader）；否则回退侧表映射。
     // 两路都补 `paneIndex`：典型画像路径需把工作区当前叶子顺序传入 topology_for。
-    let workspaces = state.workspaces.read();
-    let ws = workspaces
-        .get(&wid)
-        .ok_or_else(|| format!("workspace {wid} not found"))?;
-    let mut topo = if crate::teammate::profiles::has(wid) {
-        let leaves = ws.pane_tree.get_all_leaves();
-        crate::teammate::profiles::topology_for(wid, &leaves)
-    } else {
-        topology_json(ws, wid)
+    let mut topo = {
+        let workspaces = state.workspaces.read();
+        let ws = workspaces
+            .get(&wid)
+            .ok_or_else(|| format!("workspace {wid} not found"))?;
+        let mut topo = if crate::teammate::profiles::has(wid) {
+            let leaves = ws.pane_tree.get_all_leaves();
+            crate::teammate::profiles::topology_for(wid, &leaves)
+        } else {
+            topology_json(ws, wid)
+        };
+        inject_roster_titles(&mut topo, ws);
+        topo
     };
-    inject_roster_titles(&mut topo, ws);
+    inject_roster_runtime(&mut topo, state, wid);
+    if let Some(obj) = topo.as_object_mut() {
+        obj.insert("rosterChanged".into(), json!(changed));
+    }
     Ok(topo)
+}
+
+/// 近期回复的取样字节数（够覆盖十来行，远小于一次 scrollback tail 的 256 KiB）。
+const RECENT_TAIL_BYTES: usize = 6 * 1024;
+/// 输出流水号多久没动就算「空闲」。面板轮询 3s，取 12s ≈ 4 轮无输出。
+const ACTIVE_WINDOW_MS: u128 = 12_000;
+
+/// iter-62 —— 给 roster 补运行时字段，让「监控」不再只有一个静态徽标：
+/// - `activity`：`working` / `idle`，按该 pane 输出流水号是否还在增长判定；
+/// - `outputSeq`：流水号本身（客户端可自行做更细的活跃度展示）；
+/// - `recentOutput`：scrollback 末尾剥 ANSI 后的最后几行（「最近回复」直接可见，
+///   免去每个成员一次额外 IPC —— 手机端尤其吃这份省）。
+fn inject_roster_runtime(topology: &mut Value, state: &AppState, wid: Uuid) {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::Instant;
+    /// pane → (上次见到的流水号, 该流水号首次出现的时刻)。进程内，无需持久化。
+    static SEEN: Mutex<Option<HashMap<Uuid, (u64, Instant)>>> = Mutex::new(None);
+
+    let Some(roster) = topology.get_mut("roster").and_then(|r| r.as_array_mut()) else {
+        return;
+    };
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = seen.get_or_insert_with(HashMap::new);
+    for entry in roster.iter_mut() {
+        let Some(pane) = entry
+            .get("paneId")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+        else {
+            continue;
+        };
+        let chunk = state.get_pty_scrollback_tail(wid, pane, RECENT_TAIL_BYTES);
+        let now = Instant::now();
+        let since = match seen.get(&pane) {
+            Some((prev_seq, at)) if *prev_seq == chunk.head_seq => at.elapsed().as_millis(),
+            _ => {
+                seen.insert(pane, (chunk.head_seq, now));
+                0
+            }
+        };
+        let Some(obj) = entry.as_object_mut() else {
+            continue;
+        };
+        obj.insert(
+            "activity".into(),
+            json!(if since < ACTIVE_WINDOW_MS {
+                "working"
+            } else {
+                "idle"
+            }),
+        );
+        obj.insert("outputSeq".into(), json!(chunk.head_seq));
+        obj.insert("recentOutput".into(), json!(tail_lines(&chunk.bytes, 6)));
+    }
+    // 已消失的 pane 不再累积。
+    let live: std::collections::HashSet<Uuid> = topology
+        .get("roster")
+        .and_then(|r| r.as_array())
+        .map(|r| {
+            r.iter()
+                .filter_map(|e| e.get("paneId").and_then(|v| v.as_str()))
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    seen.retain(|p, _| live.contains(p));
+}
+
+/// 取一段终端输出的最后 `n` 个非空行（剥 ANSI / OSC，归一 `\r`）。
+pub(crate) fn tail_lines(raw: &str, n: usize) -> String {
+    let clean = strip_ansi(raw);
+    let mut lines: Vec<&str> = clean
+        .lines()
+        .map(|l| l.trim_end())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() > n {
+        lines = lines.split_off(lines.len() - n);
+    }
+    lines.join("\n")
+}
+
+/// 极简 ANSI/OSC 剥离（展示用，不追求完备）：CSI、OSC、双字节转义序列。
+fn strip_ansi(s: &str) -> String {
+    let bytes: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == '\u{1b}' {
+            i += 1;
+            match bytes.get(i) {
+                // CSI：参数字节 0x30–0x3F、中间字节 0x20–0x2F，终止于 0x40–0x7E。
+                Some('[') => {
+                    i += 1;
+                    while i < bytes.len() && !matches!(bytes[i], '\u{40}'..='\u{7e}') {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                // OSC：到 BEL 或 ST(ESC \) 结束。
+                Some(']') => {
+                    i += 1;
+                    while i < bytes.len() {
+                        if bytes[i] == '\u{7}' {
+                            i += 1;
+                            break;
+                        }
+                        if bytes[i] == '\u{1b}' && bytes.get(i + 1) == Some(&'\\') {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                // 其它两字节转义。
+                Some(_) => i += 1,
+                None => {}
+            }
+            continue;
+        }
+        if c != '\r' {
+            out.push(c);
+        }
+        i += 1;
+    }
+    out
 }
 
 /// iter-60 G7 —— roster 条目并入 pane 标题（`title`，OSC 实时标题）：Commune MCP
@@ -303,65 +544,6 @@ pub fn set_workspace_memory(
     Ok(())
 }
 
-/// V-DISC / iter-60 G6 —— 探测本机常见 agent CLI 进程（`enabled=false` 时恒空）。
-///
-/// 实现约束（对话需求「轻量化、性能要好」+ git 风暴 postmortem）：
-/// - **进程内枚举**（sysinfo），不再 spawn `tasklist`/`ps` 子进程（原实现是一处
-///   绕过外部进程闸的裸 spawn）；
-/// - **5s TTL 缓存**：UI 轮询/多调用方共享一次扫描，关面板即零开销；
-/// - 匹配逻辑复用 `teammate::discover::discover_agents` 纯函数（已有单测钉死）。
-#[tauri::command]
-pub fn discover_cli_agents(enabled: bool) -> Result<Value, String> {
-    if !enabled {
-        return Ok(Value::Array(vec![]));
-    }
-    Ok(Value::Array(
-        discovered_agents_cached()
-            .into_iter()
-            .map(|a| json!({ "name": a.name, "pid": a.pid }))
-            .collect(),
-    ))
-}
-
-/// 5s TTL 缓存的进程指纹扫描（G6）。
-fn discovered_agents_cached() -> Vec<crate::teammate::discover::DiscoveredAgent> {
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-    type Cache = Option<(Instant, Vec<crate::teammate::discover::DiscoveredAgent>)>;
-    static CACHE: Mutex<Cache> = Mutex::new(None);
-    const TTL: Duration = Duration::from_secs(5);
-
-    let mut guard = CACHE.lock().unwrap();
-    if let Some((at, cached)) = guard.as_ref() {
-        if at.elapsed() < TTL {
-            return cached.clone();
-        }
-    }
-    let procs = list_process_names_sysinfo();
-    let found = crate::teammate::discover::discover_agents(
-        true,
-        &procs
-            .iter()
-            .map(|(pid, n)| (*pid, n.as_str()))
-            .collect::<Vec<_>>(),
-    );
-    *guard = Some((Instant::now(), found.clone()));
-    found
-}
-
-/// 进程内枚举 (pid, image name) —— 仅刷新进程表，不取 CPU/内存等重字段。
-fn list_process_names_sysinfo() -> Vec<(u32, String)> {
-    use sysinfo::{ProcessRefreshKind, RefreshKind, System, UpdateKind};
-    let sys = System::new_with_specifics(
-        RefreshKind::new()
-            .with_processes(ProcessRefreshKind::new().with_exe(UpdateKind::Never)),
-    );
-    sys.processes()
-        .iter()
-        .map(|(pid, p)| (pid.as_u32(), p.name().to_string_lossy().to_string()))
-        .collect()
-}
-
 /// P2 阶段 1 —— 待裁决高危动作的**脱敏**只读列表（`teammate` 能力下远端可见）。
 /// 投影仅 `{id, initiator, level, reason, createdAt}`——不含 `action` 命令全文
 /// （可含密钥；见 `hitl::list_pending` 的钉死测试）。裁决通道仍不可远达。
@@ -483,11 +665,50 @@ mod tests {
         let member = v["roster"][0].as_object().expect("roster member object");
         for key in member.keys() {
             assert!(
-                ["id", "name", "paneId", "paneIndex", "role", "status", "capability"]
-                    .contains(&key.as_str()),
+                [
+                    "id",
+                    "name",
+                    "paneId",
+                    "paneIndex",
+                    "role",
+                    "status",
+                    "capability",
+                    // iter-62：仅标注「自动识别 vs 人工标记」的布尔，无敏感面。
+                    "isAuto",
+                ]
+                .contains(&key.as_str()),
                 "unexpected roster field `{key}`"
             );
         }
+    }
+
+    /// iter-62：自动入册前缀的展示名兜底——`auto:claude:1a2b3c4d` 不该原样露给用户。
+    #[test]
+    fn auto_agent_id_renders_a_readable_name() {
+        assert_eq!(pretty_agent_name("auto:claude:1a2b3c4d"), "claude");
+        assert_eq!(pretty_agent_name("claude-a"), "claude-a");
+    }
+
+    /// `isAuto` 只认前缀，人工标记恒 false。
+    #[test]
+    fn is_auto_flag_tracks_the_prefix() {
+        let mut ws = ws_with_agent();
+        let pane = Uuid::new_v4();
+        ws.teammate_agent_pane_map
+            .insert(format!("{AUTO_AGENT_PREFIX}codex:deadbeef"), pane);
+        let v = topology_json(&ws, Uuid::new_v4());
+        let roster = v["roster"].as_array().unwrap();
+        let auto = roster.iter().find(|m| m["isAuto"] == true).expect("auto member");
+        assert_eq!(auto["name"], "codex");
+        assert!(roster.iter().any(|m| m["isAuto"] == false));
+    }
+
+    /// 展示用 ANSI 剥离：CSI / OSC 都要吃掉，只留最后几行正文。
+    #[test]
+    fn tail_lines_strips_escapes_and_keeps_last_lines() {
+        let raw = "\u{1b}]0;title\u{7}\u{1b}[31mone\u{1b}[0m\r\n\r\ntwo\r\nthree\r\n";
+        assert_eq!(tail_lines(raw, 2), "two\nthree");
+        assert_eq!(tail_lines(raw, 9), "one\ntwo\nthree");
     }
 
     /// G1：暂停覆写 status 投影为 Suspended（无新字段），恢复后回落运行态。
@@ -502,7 +723,7 @@ mod tests {
         let v = topology_json(&ws, wid);
         assert_eq!(v["roster"][0]["status"], "Suspended");
         // 字段集不因暂停扩张（脱敏面不变）。
-        assert_eq!(v["roster"][0].as_object().unwrap().len(), 7);
+        assert_eq!(v["roster"][0].as_object().unwrap().len(), 8);
         crate::teammate::suspend::resume(wid, pane);
         assert_eq!(topology_json(&ws, wid)["roster"][0]["status"], "Working");
     }

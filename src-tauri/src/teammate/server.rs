@@ -519,18 +519,10 @@ async fn route_register_agent(
 /// `paneIndex`（典型画像路径把当前叶子序列传入 `topology_for`），供 MCP 寻址自洽。
 /// 由 `route_get_team_profile`（HTTP）与 `ridge_get_team_profile`（MCP tool）共用。
 pub(crate) fn team_profile_snapshot(ctx: &TeammateCtx, wid: Uuid) -> serde_json::Value {
-    let map = ctx.state.workspaces.read();
-    let Some(ws) = map.get(&wid) else {
-        return serde_json::json!({ "roster": [], "leaderId": null, "edges": [] });
-    };
-    let mut topo = if super::profiles::has(wid) {
-        super::profiles::topology_for(wid, &ws.pane_tree.get_all_leaves())
-    } else {
-        crate::commands::teammate::topology_json(ws, wid)
-    };
-    // iter-60 G7：Commune 工具（ridge_get_team_profile）同样带 pane title 摘要。
-    crate::commands::teammate::inject_roster_titles(&mut topo, ws);
-    topo
+    // iter-62：与桌面/远端面板同一份实现——自动识别在 Ridge 里跑着的 agent、
+    // 实时标题、活跃度与近期输出，MCP 侧「查兵马」也一并拿到。
+    crate::commands::teammate::topology_snapshot(&ctx.state, wid)
+        .unwrap_or_else(|_| serde_json::json!({ "roster": [], "leaderId": null, "edges": [] }))
 }
 
 /// 花名册快照（只读）：Leader 启动时「查兵马」。复用 D1 拓扑映射。

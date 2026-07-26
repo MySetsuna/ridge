@@ -12,11 +12,12 @@
   // 组长不再由后端能力竞选自动产生——顶层 leaderId 恒 null，组长纯由用户在此指定。
 
   import { invoke } from '@tauri-apps/api/core';
-  import { Users, Plus, Trash2, Pencil, Send, X, Ghost, Crown, Play, Pause, Palette } from 'lucide-svelte';
+  import { Users, Plus, Trash2, Pencil, Send, Ghost, Palette } from 'lucide-svelte';
   import { alertDialog, confirmDialog, promptDialog } from '$lib/components/RidgeDialog.svelte';
   import { autoGrow } from '$lib/actions/autoGrow';
   import { recordMemberTask } from './memberTasks';
-  import type { TeammateProfile } from './teammateModel';
+  import AgentMemberRow from './AgentMemberRow.svelte';
+  import type { TeammateProfile, PendingApproval } from './teammateModel';
   import {
     teammateGroupStore,
     resolveMembers,
@@ -32,8 +33,19 @@
     workspaceId?: string;
     /** 该工作区的 .ridge 文件路径（解析稳定持久化键；未保存为 null）。 */
     filePath: string | null;
+    /** 待审批项（与成员 Tab 同源），行内裁决用。 */
+    hitlPending?: readonly PendingApproval[];
+    /** 通知父面板立刻重拉拓扑（暂停/裁决后不等下一轮轮询）。 */
+    onRefresh?: () => void;
   }
-  let { roster, workspaceId, filePath }: Props = $props();
+  let { roster, workspaceId, filePath, hitlPending = [], onRefresh }: Props = $props();
+
+  /** 某成员的待审批项（initiator 可能是 paneId / agent 名 / agent id）。 */
+  function pendingFor(p: TeammateProfile | null, agentId: string): PendingApproval[] {
+    return hitlPending.filter(
+      (h) => h.initiator === agentId || h.initiator === p?.paneId || h.initiator === p?.name
+    );
+  }
 
   const store = teammateGroupStore();
 
@@ -102,19 +114,6 @@
     store.setLeader(g.id, g.leaderAgentId === agentId ? null : agentId);
   }
 
-  // 软暂停 / 恢复（agent 写路径门控；人类输入不受限）。状态刷新靠父面板轮询（POLL_MS）。
-  async function toggleSuspend(mem: ResolvedGroupMember) {
-    if (!workspaceId || !mem.paneId) return;
-    try {
-      await invoke(mem.profile?.status === 'Suspended' ? 'resume_agent' : 'suspend_agent', {
-        workspaceId,
-        paneId: mem.paneId,
-      });
-    } catch (e) {
-      console.warn('[teammate-groups] suspend/resume failed', e);
-    }
-  }
-
   async function renameGroup(g: TeammateGroup) {
     const name = await promptDialog({ title: '重命名编组', message: '新的组名', defaultValue: g.name });
     if (name && name.trim()) store.rename(g.id, name);
@@ -162,64 +161,24 @@
   }
 </script>
 
-<!-- 单个成员行（未分组 group=null 时不渲染组长/失联移除，仅状态点+名+暂停）。 -->
+<!-- 单个成员行 —— 与成员 Tab **同一个组件**，故两边展示一致（状态 / 最近任务 /
+     最近回复 / 每人独立发消息框 / 行内审批）。编组视图额外给出组长与移出组。 -->
 {#snippet memberRow(mem: ResolvedGroupMember, group: TeammateGroup | null)}
-  {@const isLeader = !!group && group.leaderAgentId === mem.agentId}
-  <li
-    class="group/mem flex items-center gap-2 rounded px-1 py-0.5 text-[11px] {mem.present
-      ? ''
-      : 'opacity-50'} {isLeader ? 'bg-amber-400/5' : ''}"
-  >
-    {#if mem.present}
-      <span class="h-1.5 w-1.5 rounded-full {statusDot(mem.profile)} shrink-0"></span>
-    {:else}
-      <Ghost class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
-    {/if}
-    <span class="min-w-0 flex-1 truncate" title={mem.present ? mem.name : '失联（已离线）'}>
-      {mem.name}
-    </span>
-
-    {#if group && mem.present}
-      <button
-        type="button"
-        title={isLeader ? '取消组长' : '设为组长'}
-        aria-label={isLeader ? '取消组长' : '设为组长'}
-        onclick={() => toggleLeader(group, mem.agentId)}
-        class="shrink-0 transition {isLeader
-          ? 'text-amber-400'
-          : 'text-[var(--rg-fg-muted)] opacity-0 hover:text-amber-400 group-hover/mem:opacity-100'}"
-      >
-        <Crown class="h-3 w-3" />
-      </button>
-    {/if}
-
-    {#if mem.present && mem.paneId}
-      <button
-        type="button"
-        title={mem.profile?.status === 'Suspended'
-          ? '恢复 agent 输入'
-          : '暂停 agent 输入（人类输入不受限）'}
-        aria-label="暂停或恢复 agent"
-        onclick={() => toggleSuspend(mem)}
-        class="shrink-0 text-[var(--rg-fg-muted)] opacity-0 transition hover:text-[var(--rg-fg)] group-hover/mem:opacity-100"
-      >
-        {#if mem.profile?.status === 'Suspended'}<Play class="h-3 w-3" />{:else}<Pause class="h-3 w-3" />{/if}
-      </button>
-    {/if}
-
-    {#if group && !mem.present}
-      <span class="text-[9px] uppercase tracking-wide text-[var(--rg-fg-muted)]">失联</span>
-      <button
-        type="button"
-        title="从组移除"
-        aria-label="从组移除失联成员"
-        onclick={() => store.removeMember(group.id, mem.agentId)}
-        class="shrink-0 text-[var(--rg-fg-muted)] hover:text-red-400"
-      >
-        <X class="h-3 w-3" />
-      </button>
-    {/if}
-  </li>
+  <AgentMemberRow
+    profile={mem.profile}
+    agentId={mem.agentId}
+    name={mem.name}
+    {workspaceId}
+    pending={pendingFor(mem.profile, mem.agentId)}
+    leader={group
+      ? {
+          isLeader: group.leaderAgentId === mem.agentId,
+          toggle: () => toggleLeader(group, mem.agentId),
+          remove: () => store.removeMember(group.id, mem.agentId),
+        }
+      : null}
+    {onRefresh}
+  />
 {/snippet}
 
 <section>

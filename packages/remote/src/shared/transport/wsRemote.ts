@@ -212,6 +212,15 @@ export interface TeammateRosterMember {
   role: string;
   status: string;
   capability?: unknown;
+  /** iter-62：由「该分屏下真跑着 agent CLI」自动识别入册（而非人工标记）。 */
+  isAuto?: boolean;
+  /** iter-62：终端近 12s 是否还在吐字（`working` / `idle`）。 */
+  activity?: string;
+  /** iter-62：该 pane 输出的单调流水号。 */
+  outputSeq?: number;
+  /** iter-62：近期回复——pane 尾部输出剥 ANSI 的最后几行，随快照下发，
+   *  手机端因此不必为每个成员各发一次 RPC。 */
+  recentOutput?: string;
 }
 
 /** P1 teammate 拓扑快照（roster + leader；edges 预留）。 */
