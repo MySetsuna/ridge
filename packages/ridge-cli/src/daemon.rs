@@ -50,7 +50,7 @@ fn fatal_hint(code: &str) -> &'static str {
 pub async fn run(shell: Option<String>, cwd: Option<String>, root: Option<String>) -> Result<()> {
     let auth = config::load_auth()
         .context("failed to load credentials")?
-        .context("no device credentials — run `ridge-cli remote --enable` first")?;
+        .context("本机尚未激活云端设备：先跑 `rdg login`（或 `rdg login --browser`）绑定本机，再启动公网远控")?;
 
     tracing::info!(
         target: "ridge_cli::daemon",
@@ -89,6 +89,15 @@ pub async fn run(shell: Option<String>, cwd: Option<String>, root: Option<String
                     error = %e,
                     backoff_secs = backoff.as_secs(),
                     "session loop error; reconnecting"
+                );
+                // 可见性（iter-62）：连不上中继时旧实现只 warn 进日志再静默退避，前台
+                // `rdg remote` 一片空白，用户只能从控制端的「远程主机当前不在线」反推。
+                // 把失败原因与下次重试间隔直接打到 stderr（TUI 模式下 stderr 已重定向到
+                // 日志文件，不会糊屏）。
+                eprintln!(
+                    "! 连接信令中继失败（{}s 后重试）：{e:#}\n  入口：{}",
+                    backoff.as_secs(),
+                    auth.public_entry()
                 );
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_BACKOFF);

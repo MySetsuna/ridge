@@ -111,6 +111,10 @@ pub struct App {
     action_tx: mpsc::UnboundedSender<Action>,
     workspace: SharedWorkspace,
     session_count: usize,
+    /// 进程内云守护任务句柄。`start_daemon()` 记的 PID 就是本 TUI 自己的 PID
+    /// （守护跑在本进程的 tokio 上），所以「Stop daemon」**绝不能**去 taskkill 那个
+    /// PID —— 那会把整个 rdg 打死。改为 abort 这个任务。
+    daemon_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl App {
@@ -141,6 +145,7 @@ impl App {
             action_tx,
             workspace,
             session_count: 1,
+            daemon_task: None,
         }
     }
 
@@ -315,31 +320,45 @@ fn handle_main_key(app: &mut App, code: KeyCode) {
                     let _ = app.action_tx.send(Action::StopLanRemote);
                 }
                 MenuItem::StartDaemon => {
-                    match daemon_ctl::start_daemon() {
-                        Ok(()) => {
-                            app.log("Daemon started".into());
-                            if let Ok(Some(_auth)) = config::load_auth() {
-                                let shell: Option<String> = None;
-                                let cwd: Option<String> = None;
-                                let root: Option<String> = None;
-                                tokio::spawn(async move {
-                                    if let Err(e) = crate::daemon::run(shell, cwd, root).await {
+                    // 先验激活：未激活时旧实现照样 write_pid + 报「Daemon started」，
+                    // 用户以为主机已上线，控制端却永远「远程主机当前不在线」。
+                    if config::load_auth().ok().flatten().is_none() {
+                        app.log("本机未激活云端设备：先选 Login / activate device".into());
+                    } else if app.daemon_task.is_some() {
+                        app.log("云守护已在本进程内运行".into());
+                    } else {
+                        match daemon_ctl::start_daemon() {
+                            Ok(()) => {
+                                let entry = app
+                                    .auth
+                                    .as_ref()
+                                    .map(|a| a.public_entry())
+                                    .unwrap_or_default();
+                                app.daemon_task = Some(tokio::spawn(async move {
+                                    if let Err(e) = crate::daemon::run(None, None, None).await {
                                         // 不能 eprintln!（会糊 TUI）——落 tracing（TUI 模式写文件）。
                                         tracing::error!(target: "ridge_cli::dashboard", error = %e, "daemon exited");
                                     }
-                                });
-                                app.log("Daemon task spawned".into());
-                            } else {
-                                app.log("Device not activated — run Login first".into());
+                                }));
+                                app.log(format!("云守护已启动，入口 {entry}"));
                             }
+                            Err(e) => app.log(format!("Start failed: {e}")),
                         }
-                        Err(e) => app.log(format!("Start failed: {e}")),
                     }
                 }
-                MenuItem::StopDaemon => match daemon_ctl::stop_daemon() {
-                    Ok(()) => app.log("Daemon stopped".into()),
-                    Err(e) => app.log(format!("Stop failed: {e}")),
-                },
+                MenuItem::StopDaemon => {
+                    if let Some(task) = app.daemon_task.take() {
+                        task.abort();
+                        daemon_ctl::remove_pid();
+                        app.log("云守护已停止".into());
+                    } else {
+                        // 非本进程记录的守护（外部 `rdg remote`）才走 PID 路径。
+                        match daemon_ctl::stop_daemon() {
+                            Ok(()) => app.log("Daemon stopped".into()),
+                            Err(e) => app.log(format!("Stop failed: {e}")),
+                        }
+                    }
+                }
                 MenuItem::Login => {
                     let _ = app.action_tx.send(Action::RunLogin);
                 }
