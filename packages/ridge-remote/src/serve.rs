@@ -29,6 +29,8 @@ use axum::{
 use serde::Deserialize;
 use tower_http::compression::CompressionLayer;
 
+pub use crate::embed_ui::UiKind;
+
 /// UA 分流的静态 serve 配置：移动 SPA 目录（必有）+ 可选桌面 SPA 目录。
 ///
 /// - `mobile_dir`：`pnpm build:remote` 产物（`static/remote/`），移动/触屏浏览器与
@@ -66,30 +68,53 @@ impl UaServeConfig {
     }
 
     /// 是否给该请求发桌面 SPA：先按 [`crate::ua::prefer_desktop_ui`] 判定（尊重
-    /// `?ui=` 覆盖），再校验桌面产物 `index.html` 确实存在（缺失即回退移动 SPA）。
+    /// `?ui=` 覆盖），再校验桌面产物确实拿得到——**磁盘或内嵌**任一即可。
+    ///
+    /// 只看磁盘是 iter-62 的 bug：单文件 `rdg` 的 exe 旁没有 `web-remote-dist`，
+    /// 这一腿恒 false，于是电脑浏览器也被发手机 SPA。内嵌产物（`embed-ui`）同样
+    /// 是「拿得到桌面 SPA」，必须计入。
     pub fn wants_desktop_ui(&self, headers: &HeaderMap, ui_override: Option<&str>) -> bool {
         let ua = headers
             .get(axum::http::header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        crate::ua::prefer_desktop_ui(ua, ui_override)
-            && self
-                .desktop_dir
-                .as_ref()
-                .map(|d| d.join("index.html").exists())
-                .unwrap_or(false)
+        crate::ua::prefer_desktop_ui(ua, ui_override) && self.desktop_ui_available()
     }
 
-    /// 该请求应命中的 UI 目录（桌面 vs 移动）。也是未知客户端路由回退 index.html
-    /// 的 SPA 壳目录。
-    pub fn ui_dir(&self, headers: &HeaderMap, ui_override: Option<&str>) -> &Path {
+    /// 桌面 SPA 是否可服务（磁盘产物 > 内嵌产物）。
+    pub fn desktop_ui_available(&self) -> bool {
+        self.desktop_dir
+            .as_ref()
+            .map(|d| d.join("index.html").exists())
+            .unwrap_or(false)
+            || crate::embed_ui::has_kind(UiKind::Desktop)
+    }
+
+    /// 该请求应命中的 UI 形态 + 其磁盘目录（无磁盘产物时 `None`，走内嵌）。
+    /// 目录也是未知客户端路由回退 index.html 的 SPA 壳目录。
+    ///
+    /// **绝不**在桌面形态下回落到 `mobile_dir`：那会让磁盘上的手机 index.html
+    /// 冒充桌面壳——正是要修的串台。
+    pub fn ui_target(&self, headers: &HeaderMap, ui_override: Option<&str>) -> UiTarget<'_> {
         if self.wants_desktop_ui(headers, ui_override) {
-            // wants_desktop_ui 为真 ⇒ desktop_dir 必为 Some。
-            self.desktop_dir.as_deref().unwrap_or(&self.mobile_dir)
+            UiTarget {
+                kind: UiKind::Desktop,
+                dir: self.desktop_dir.as_deref(),
+            }
         } else {
-            &self.mobile_dir
+            UiTarget {
+                kind: UiKind::Mobile,
+                dir: Some(&self.mobile_dir),
+            }
         }
     }
+}
+
+/// 一次请求解析出的 UI 形态与其磁盘目录（`None` = 该形态只有内嵌产物）。
+#[derive(Clone, Copy)]
+pub struct UiTarget<'a> {
+    pub kind: UiKind,
+    pub dir: Option<&'a Path>,
 }
 
 /// 探测某个 UI 产物目录，返回首个含 `index.html` 的候选；都不存在则 `None`。候选顺序：
@@ -226,7 +251,7 @@ async fn root_handler(
     headers: HeaderMap,
     Query(q): Query<UiQuery>,
 ) -> impl IntoResponse {
-    serve_index(st.cfg.ui_dir(&headers, q.ui.as_deref())).await
+    serve_shell(st.cfg.ui_target(&headers, q.ui.as_deref())).await
 }
 
 /// Structured error token when Remote SPA assets are missing (V-B6A / Bug6a).
@@ -250,13 +275,27 @@ fn remote_ui_missing_html() -> String {
 /// Serve `index.html` with `Cache-Control: no-cache` so a freshly deployed
 /// build (new hashed asset names, new service worker) is always picked up on
 /// the next visit instead of being pinned by a stale cached shell.
+///
+/// 旧签名（只吃一个目录）保留给外部调用方；形态感知的入口是 [`serve_shell`]。
 pub async fn serve_index(dir: &Path) -> Response {
-    let index_path = dir.join("index.html");
+    serve_shell(UiTarget {
+        kind: UiKind::Mobile,
+        dir: Some(dir),
+    })
+    .await
+}
+
+/// 按 UI 形态发 SPA 壳：磁盘 > 内嵌，两者皆无才给 `REMOTE_UI_MISSING` 提示页。
+pub async fn serve_shell(target: UiTarget<'_>) -> Response {
+    let disk = match target.dir {
+        Some(dir) => tokio::fs::read(dir.join("index.html")).await.ok(),
+        None => None,
+    };
     // 磁盘 > 内嵌：本地开发改前端立即生效；单文件分发（rdg，`embed-ui`）磁盘无产物
-    // 时回落到编进二进制的那份，杜绝 REMOTE_UI_MISSING。
-    let bytes = match tokio::fs::read(&index_path).await {
-        Ok(b) => Some(b),
-        Err(_) => crate::embed_ui::get("index.html"),
+    // 时回落到编进二进制的那份，杜绝 REMOTE_UI_MISSING / 桌面被发手机页。
+    let bytes = match disk {
+        Some(b) => Some(b),
+        None => crate::embed_ui::get_kind(target.kind, "index.html"),
     };
     match bytes {
         Some(bytes) => axum::response::Response::builder()
@@ -327,8 +366,8 @@ async fn spa_fallback_handler(
 
     // §UA fork: a desktop browser resolves root-level files (and the SvelteKit
     // `_app/*` bundle) against the desktop build; the mobile SPA against
-    // mobile_dir. The chosen dir is also the SPA shell for unknown client routes.
-    let base = st.cfg.ui_dir(&headers, q.ui.as_deref());
+    // mobile_dir. The chosen target is also the SPA shell for unknown client routes.
+    let target = st.cfg.ui_target(&headers, q.ui.as_deref());
 
     // axum percent-decodes `uri.path()` before we see it, so a `%2e%2e`
     // traversal arrives as a literal `..`. First-line string guard rejects the
@@ -340,30 +379,33 @@ async fn spa_fallback_handler(
         && !rel.contains(':')
         && !rel.starts_with('/');
     if !safe {
-        return serve_index(base).await;
+        return serve_shell(target).await;
     }
 
     // …then a canonical-path containment check is the authoritative guard: the
     // resolved target (symlinks + `.` segments collapsed) must live inside the
     // chosen UI dir. `canonicalize` fails for non-existent paths, which naturally
     // routes unknown SPA client-side routes to the shell.
-    let candidate = base.join(rel);
-    let within = match (
-        tokio::fs::canonicalize(&candidate).await,
-        tokio::fs::canonicalize(base).await,
-    ) {
-        (Ok(real), Ok(root)) => real.starts_with(&root).then_some(real),
-        _ => None,
+    let within = match target.dir {
+        Some(base) => match (
+            tokio::fs::canonicalize(base.join(rel)).await,
+            tokio::fs::canonicalize(base).await,
+        ) {
+            (Ok(real), Ok(root)) => real.starts_with(&root).then_some(real),
+            _ => None,
+        },
+        None => None,
     };
-    // 磁盘未命中 → 内嵌（单文件 rdg 的 sw.js / manifest / icons 走这条），
-    // 仍未命中才回落 SPA 壳。`rel` 已过上面的穿越守卫。
+    // 磁盘未命中 → 同形态的内嵌产物（单文件 rdg 的 sw.js / manifest / icons /
+    // 桌面 `_app/immutable/*` 都走这条），仍未命中才回落 SPA 壳。
+    // `rel` 已过上面的穿越守卫。
     let disk = match &within {
         Some(real) => tokio::fs::read(real).await.ok(),
         None => None,
     };
     let bytes = match disk {
         Some(b) => Some(b),
-        None => crate::embed_ui::get(rel),
+        None => crate::embed_ui::get_kind(target.kind, rel),
     };
     match bytes {
         Some(bytes) => {
@@ -386,7 +428,7 @@ async fn spa_fallback_handler(
                 .body(axum::body::Body::from(bytes))
                 .unwrap()
         }
-        None => serve_index(base).await,
+        None => serve_shell(target).await,
     }
 }
 
@@ -425,16 +467,25 @@ pub fn root_asset_headers(path: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Serve static assets (JS, CSS, WASM) from the built mobile output directory.
+/// Serve static assets (JS, CSS, WASM) from the built output directory of the
+/// UI the request resolved to（此前恒取 `mobile_dir`——桌面 SPA 一旦也用 `/assets/*`
+/// 就会串到手机产物上）。
 async fn assets_handler(
     State(st): State<ServeState>,
+    headers: HeaderMap,
+    Query(q): Query<UiQuery>,
     axum::extract::Path(path): axum::extract::Path<String>,
 ) -> impl IntoResponse {
-    let file_path = st.cfg.mobile_dir.join("assets").join(&path);
-    // 磁盘 > 内嵌（同 serve_index：单文件 rdg 靠内嵌供资产）。
-    let read = match tokio::fs::read(&file_path).await {
-        Ok(b) => Some(b),
-        Err(_) => crate::embed_ui::get(&format!("assets/{path}")),
+    let target = st.cfg.ui_target(&headers, q.ui.as_deref());
+    let rel = format!("assets/{path}");
+    let disk = match target.dir {
+        Some(dir) => tokio::fs::read(dir.join(&rel)).await.ok(),
+        None => None,
+    };
+    // 磁盘 > 内嵌（同 serve_shell：单文件 rdg 靠内嵌供资产）。
+    let read = match disk {
+        Some(b) => Some(b),
+        None => crate::embed_ui::get_kind(target.kind, &rel),
     };
     match read {
         Some(bytes) => {
@@ -483,16 +534,72 @@ mod tests {
         assert!(h.contains("pnpm build:remote"));
     }
 
-    /// 单文件分发（rdg）回归钉：开 `embed-ui` 编出来的库必须真带 UI。
-    /// 若构建机漏跑 `pnpm build:remote`，内嵌为空 → LAN 远控又会 REMOTE_UI_MISSING，
-    /// 这条测试在发布前就把它抓住（feature 关闭时不涉及，故 cfg 门控）。
+    /// 单文件分发（rdg）回归钉：开 `embed-ui` 编出来的库必须真带**两套** UI。
+    /// 漏跑 `pnpm build:remote` → LAN 远控 REMOTE_UI_MISSING；漏跑
+    /// `pnpm build:desktop-web` → 电脑浏览器被发手机页（iter-62 用户实测）。
+    /// 两条都在发布前就抓住（feature 关闭时不涉及，故 cfg 门控）。
     #[cfg(feature = "embed-ui")]
     #[test]
     fn embedded_ui_is_present_when_feature_on() {
         assert!(
             crate::embed_ui::has_ui(),
-            "embed-ui 已开启但内嵌产物为空——构建前须先跑 `pnpm build:remote`"
+            "embed-ui 已开启但手机内嵌产物为空——构建前须先跑 `pnpm build:remote`"
         );
         assert!(crate::embed_ui::get("index.html").is_some_and(|b| !b.is_empty()));
+        assert!(
+            crate::embed_ui::has_kind(UiKind::Desktop),
+            "embed-ui 已开启但桌面内嵌产物为空——构建前须先跑 `pnpm build:desktop-web`"
+        );
+    }
+
+    /// iter-62 串台钉：两套内嵌产物必须**真的不同**且各归其位。
+    /// 桌面壳是 SvelteKit 全量 SPA（`_app/immutable` 入口），手机壳是 vite 轻量 SPA
+    /// （`/assets` 入口）；一旦 `get_kind` 取错，电脑浏览器拿到的就是手机页。
+    #[cfg(feature = "embed-ui")]
+    #[test]
+    fn embedded_desktop_and_mobile_shells_are_distinct() {
+        let desktop = crate::embed_ui::get_kind(UiKind::Desktop, "index.html").expect("desktop");
+        let mobile = crate::embed_ui::get_kind(UiKind::Mobile, "index.html").expect("mobile");
+        assert_ne!(desktop, mobile, "桌面/手机内嵌壳不得是同一份");
+        let d = String::from_utf8_lossy(&desktop);
+        let m = String::from_utf8_lossy(&mobile);
+        // 各自的**入口脚本**互斥：SvelteKit 走 `_app/immutable/entry/`，vite 轻量端走 `/assets/`。
+        assert!(
+            d.contains("_app/immutable/entry/"),
+            "桌面壳应以 SvelteKit 入口起步: {}",
+            &d[..d.len().min(400)]
+        );
+        assert!(m.contains("/assets/"), "手机壳应以 vite /assets 入口起步");
+        assert!(!d.contains("src=\"/assets/"), "桌面壳不该是手机产物");
+        // 桌面包的 SvelteKit 入口脚本必须也取得到，否则壳能开、页面白屏。
+        assert!(crate::embed_ui::get_kind(UiKind::Desktop, "_app/version.json").is_some());
+    }
+
+    /// iter-62 回归钉：桌面 UA 的分流不得只看磁盘产物。单文件 `rdg` 没有
+    /// `web-remote-dist` 目录（`desktop_dir=None`），但内嵌带着桌面 SPA —— 此时
+    /// 必须仍判「发桌面」，且**绝不**把手机磁盘目录当桌面壳（那正是串台）。
+    #[cfg(feature = "embed-ui")]
+    #[test]
+    fn desktop_ua_uses_embedded_desktop_when_no_disk_dir() {
+        let cfg = UaServeConfig {
+            mobile_dir: PathBuf::from("static").join("remote"),
+            desktop_dir: None,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::USER_AGENT,
+            axum::http::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"),
+        );
+        assert!(cfg.wants_desktop_ui(&headers, None));
+        let target = cfg.ui_target(&headers, None);
+        assert_eq!(target.kind, UiKind::Desktop);
+        assert!(target.dir.is_none(), "桌面形态无磁盘产物时不得回落手机目录");
+
+        let mut phone = HeaderMap::new();
+        phone.insert(
+            axum::http::header::USER_AGENT,
+            axum::http::HeaderValue::from_static("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)"),
+        );
+        assert_eq!(cfg.ui_target(&phone, None).kind, UiKind::Mobile);
     }
 }
