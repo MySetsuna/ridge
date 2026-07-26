@@ -1276,49 +1276,6 @@ export async function syncPaneLayoutFromBackend() {
   }
 }
 
-/**
- * §4a workspace keep-alive: load every workspace's pane tree into the
- * `workspacePaneTrees` cache so the +page.svelte template can mount
- * each workspace's SplitContainer in parallel. Active workspace is
- * skipped �?caller already wrote it.
- *
- * Failures per-workspace are non-fatal: we just leave that workspace's
- * cache slot unset, which makes its first switch fall back to the prior
- * IPC-driven path. Idempotent �?safe to call repeatedly.
- */
-async function prefetchAllWorkspaceTrees(
-  list: { id: string }[],
-  activeId: string,
-  activeLayout: PaneNode
-): Promise<void> {
-  if (!isTauri()) return;
-  // Active is already cached by caller via setActiveTree; ensure it's
-  // there in case the caller path skipped (defensive).
-  workspacePaneTrees.update((m) => {
-    const m2 = new Map(m);
-    m2.set(activeId, activeLayout);
-    return m2;
-  });
-  await Promise.all(
-    list
-      .filter((w) => w.id && w.id !== activeId)
-      .map(async (w) => {
-        try {
-          const layout = await invoke<PaneNode>('get_pane_layout_for', {
-            workspaceId: w.id,
-          });
-          workspacePaneTrees.update((m) => {
-            const m2 = new Map(m);
-            m2.set(w.id, layout);
-            return m2;
-          });
-        } catch (err) {
-          console.warn('prefetchAllWorkspaceTrees', w.id, err);
-        }
-      })
-  );
-}
-
 export async function refreshWorkspaces() {
   if (!isTauri()) return;
   try {
@@ -1331,12 +1288,10 @@ export async function refreshWorkspaces() {
     setActiveTree(active, layout);
     activeWorkspaceId.set(active);
     reconcileActivePaneId(layout);
-    // §4a workspace keep-alive: prefetch every workspace's layout so the
-    // +page.svelte template can render their SplitContainers in parallel
-    // (CSS hidden for inactive). First switch to a previously-untouched
-    // workspace becomes a CSS class flip + one frame instead of an IPC
-    // round-trip + remount + atlas warm-up.
-    void prefetchAllWorkspaceTrees(list, active, layout);
+    // §4a keep-alive 懒挂载后（iter-62）不再预取所有工作区 layout：+page.svelte
+    // 只挂访问过的工作区，未访问的树取来也没人用，而每次刷新按 tab 数扇出 N 次
+    // `get_pane_layout_for` 正是「tab 越多越卡」的一份贡献。首次切换由
+    // `switchWorkspace` 自行取该区 layout 并写缓存。
     const cwds = extractCwdsFromLayout(layout, active);
     paneCwdStore.update((store) => mergePaneCwds(store, cwds));
     await setupPaneCwdListeners(active);

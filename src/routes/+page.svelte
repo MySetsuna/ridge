@@ -179,7 +179,7 @@
   import { parseLayoutChange, type LayoutChange } from '$lib/teammate/layoutEvent';
   import { get } from 'svelte/store';
 
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -200,6 +200,30 @@
 
   let rootNode = $derived($paneTreeStore);
   let hasPaneLayout = $derived(getAllPaneIds(rootNode).length > 0);
+
+  // §4a keep-alive 改「懒挂载」(iter-62) —— 多工作区 tab 卡死的第三根因。
+  //
+  // 原实现把 **每个** 工作区的 SplitContainer 一次性挂满（非活动的 display:none）。
+  // 代价随 tab 数线性叠：每个 pane 都要 create_pane → get_pane_scrollback_tail
+  // (256 KiB 走 IPC) → activate_pane_pty(spawn 一个 shell) → 建 wasm kernel +
+  // Rust 侧 PaneParser(2000 行镜像)，并常驻 git/cwd/标题 等每 pane 订阅。
+  // 恢复一个 3 tab × N pane 的会话 = 启动瞬间几十个 ConPTY spawn + 数 MB
+  // scrollback 回放挤在主线程/IPC 队列 → 整个交互面板僵住。
+  //（同一放大器也是 iter-61 git 进程风暴的载体：「N 个 pane 含隐藏工作区」。）
+  //
+  // 改：只挂**访问过**的工作区（集合只增不减）。首次切过去时 switchWorkspace 已
+  // 自取该区 layout，故挂载即刻可用；之后仍是纯 CSS display 翻转的秒切，
+  // keep-alive 的收益一分不丢，而没打开过的 tab 一分钱不花。
+  let mountedWorkspaces = $state<string[]>([]);
+  $effect(() => {
+    const id = $activeWorkspaceId;
+    if (!id) return;
+    // untrack：本 effect 只该由 activeWorkspaceId 驱动。若把 mountedWorkspaces 也读成
+    // 依赖，写回自身会让它再跑一轮（虽会收敛，但白跑且易埋自循环）。
+    untrack(() => {
+      if (!mountedWorkspaces.includes(id)) mountedWorkspaces = [...mountedWorkspaces, id];
+    });
+  });
 
   // §A.9 (2026-05-08 follow-up) — single global canvas. ALL workspaces'
   // panes render onto one `<canvas data-rg-host>` mounted ONCE at the
@@ -1924,7 +1948,7 @@ function expandSidebar() {
         {#if $activeWorkspaceId && hasPaneLayout}
           {#each $workspacesList as ws (ws.id)}
             {@const tree = $workspacePaneTrees.get(ws.id)}
-            {#if tree}
+            {#if tree && mountedWorkspaces.includes(ws.id)}
               <div
                 class="relative flex-1 min-w-0 min-h-0"
                 style="display:{ws.id === $activeWorkspaceId ? 'flex' : 'none'};"
