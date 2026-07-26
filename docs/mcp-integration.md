@@ -1,209 +1,158 @@
-# Ridge 内置 MCP Server · 接入文档
+# Ridge 内置 MCP Server（Agent's Commune）· 接入文档
 
-> 适用版本：≥ v0.0.8（Domain C「内置端侧 MCP server」随该版本发布）。
-
----
-
-## 有没有内置 MCP？—— 有
-
-Ridge **自带一个端侧 MCP（Model Context Protocol）server**。任何 MCP-原生的客户端（如 Claude Code、Cursor、或你自己写的 MCP 客户端）都能挂进来，用标准协议驱动 Ridge 的多智能体协同能力——在分屏间派活、互发消息、读取工作区上下文。
-
-- **传输**：WebSocket
-- **协议**：JSON-RPC 2.0（MCP 2024-11-05）
-- **端点**：`ws://<host>/api/v1/mcp/ws`
-- **鉴权**：Bearer token
-
-> 这是仓库里**唯一**的 MCP server；没有其它内置或外挂的 MCP 服务端。它复用 Ridge 既有的 teammate HTTP/WS 传输（`src-tauri/src/teammate/server.rs`）+ 纯协议核心（`packages/ridge-core/src/mcp/`）。
+> 适用版本：≥ v0.1.4。桌面 Ridge 与无头 `rdg` **同一份实现**（crate `ridge-mcp`），能力对等。
 
 ---
 
-## 1. 怎么找到端点和令牌
+## 它解决什么
 
-Ridge 为每个 **teammate 分屏**注入两个环境变量——你的 MCP 客户端进程（跑在某个分屏里的智能体）直接读它们即可，无需手配：
+Ridge 自带一个端侧 **MCP（Model Context Protocol）server**，把一个终端工作区变成**跨 agent 的协作总线**：
+接进来的可以是 Claude Code、Cursor、或你自己写的 MCP 客户端——它们彼此没有共同的内部协议，
+但都能在同一工作区里**发现同伴、派活、观察进展、异步回话、传大块中间产物**。
 
-| 环境变量 | 含义 |
+- **协议**：JSON-RPC 2.0（MCP `2024-11-05`）
+- **传输**：stdio（经 `rdg mcp`）/ HTTP（`POST /api/v1/mcp`）/ WebSocket（`/api/v1/mcp/ws`）
+- **鉴权**：`Authorization: Bearer <token>` 或 `x-ridge-token: <token>`
+- **宿主**：桌面 Ridge、无头 `rdg tmux`（同一 crate，同一套工具与资源）
+
+---
+
+## 1. 接入（三选一）
+
+### A. stdio —— 推荐，随安装即用
+
+```bash
+claude mcp add ridge -- rdg mcp
+```
+
+`rdg mcp` 自动发现本机端点与 token（`RIDGE_TEAMMATE_URL/_TOKEN` → 临时目录 sidecar），
+后端重启换端口也会自愈。桌面 Ridge 与 `rdg tmux` 都能连。显式指定：
+`rdg mcp --url http://127.0.0.1:PORT --token <tok>`。
+
+> 为什么不建议写死 URL：端口是 ephemeral、token 每次启动重随机，静态配置隔天即失效。
+
+### B. HTTP
+
+```bash
+claude mcp add --transport http ridge "$RIDGE_TEAMMATE_URL/api/v1/mcp" \
+  --header "Authorization: Bearer $RIDGE_TEAMMATE_TOKEN"
+```
+
+一发一收的 JSON-RPC；通知（无 `id`）回 `202 Accepted` 空体。
+
+### C. WebSocket
+
+`ws://<host>/api/v1/mcp/ws`，升级请求带 `Authorization: Bearer <token>`（或 `x-ridge-token`）。
+
+### 端点与 token 从哪来
+
+| 来源 | 说明 |
 | --- | --- |
-| `RIDGE_TEAMMATE_URL` | teammate 服务的 base URL（形如 `http://127.0.0.1:<port>`），把 scheme 换成 `ws`、路径接 `/api/v1/mcp/ws` 即为 MCP 端点 |
-| `RIDGE_TEAMMATE_TOKEN` | Bearer 鉴权令牌 |
-
-WebSocket 连接时带上鉴权头：
-
-```
-Authorization: Bearer <RIDGE_TEAMMATE_TOKEN>
-```
-
-（也支持 `X-Ridge-Token: <token>` 头，与 teammate 其它路由一致。）
-
-> teammate 服务**按需惰性启动**：进程在首个 PTY 创建时拉起并绑定，所以只有「在 Ridge 分屏里运行」的客户端才拿得到上述环境变量。
+| `RIDGE_TEAMMATE_URL` / `RIDGE_TEAMMATE_TOKEN` | Ridge 注入进每个 teammate 分屏的 env，子进程直接继承 |
+| `TMPDIR/ridge-teammate-endpoint-*.json` | sidecar（`{"url","token"}`）；后端重启换端口后由宿主刷新 |
+| `rdg tmux` 启动日志 | 无头 host 把 `RIDGE_TEAMMATE_*` 导出行打到 stderr |
 
 ---
 
-## 2. 握手与发现
+## 2. 方法
 
-### initialize
+| method | 说明 |
+| --- | --- |
+| `initialize` | 握手，返回 serverInfo / capabilities / instructions |
+| `ping` | 心跳 |
+| `tools/list` · `tools/call` | 工具发现与调用 |
+| `resources/list` · `resources/templates/list` · `resources/read` | 资源发现与读取 |
+| `notifications/*` | 通知**无响应**（符合 JSON-RPC 2.0，不再回伪错误） |
 
-```jsonc
-// → 请求
-{ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }
+---
 
-// ← 响应
-{
-  "jsonrpc": "2.0", "id": 1,
-  "result": {
-    "protocolVersion": "2024-11-05",
-    "serverInfo": { "name": "ridge-teammate", "version": "0.0.8" },
-    "capabilities": { "tools": {}, "resources": {} }
-  }
-}
-```
+## 3. 工具（9 个，全部可调）
 
-### tools/list
-
-```jsonc
-// → 请求
-{ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }
-
-// ← 响应（result.tools[]，每项含 name / description / inputSchema）
-```
-
-可用工具（注册表，`mcp/registry.rs`）：
-
-| 工具 | 用途 | 状态 |
+| 工具 | 参数 | 用途 |
 | --- | --- | --- |
-| `ridge_send_to_teammate` | 向指定分屏的队友发一段文本/消息 | ✅ 已接线（落活动工作区） |
-| `ridge_delegate_task` | 给某个 Worker 派活（注入任务 + 标记 Working） | ✅ 已接线（落活动工作区） |
-| `ridge_split_pane` | 分屏，开一个新分屏给队友 | ⚙️ 已登记，`tools/call` 暂未路由 |
-| `ridge_stash_data` | 把数据暂存到内存 Stash，供 `ridge://cache/<id>` 读取 | ✅ 已接线（`tools/call` 存 + `resources/read` 回读；FIFO 64 条/32 MiB） |
-| `ridge_get_team_profile` | 取团队花名册（roster + leader + edges） | ✅ 已接线（`tools/call` 路由，只读返回花名册；也可走 `resources/read`） |
-| `ridge_join_group` | 把某成员（`agent_id` 或 pane）加入按名字寻址的已有编组 | ✅ 已接线（`tools/call` 路由，事件桥落前端编组；见 §3） |
+| `ridge_get_team_profile` | 无 | **先调它**。花名册：成员 `paneId` + `paneIndex` + 状态 + 编组 |
+| `ridge_send_to_teammate` | `target_pane_id, message, from?` | 向该 pane 注入文本，并留一份到收件箱 |
+| `ridge_delegate_task` | `target_pane_id, objective, max_steps?` | 派活：注入任务 + 目标标记「工作中」 |
+| `ridge_capture_pane` | `target_pane_id, lines?` | 抓该 pane **渲染后**的屏幕文本（监控队友进展，不是转义序列堆） |
+| `ridge_inbox_read` | `target_pane_id, peek?` | 取走投递给该 pane 的消息（跨 agent 异步回话通道） |
+| `ridge_report_progress` | `target_pane_id, status, detail?` | 回流一条进展（桌面落前端进度事件） |
+| `ridge_split_pane` | `direction, role, initial_cmd?` | 开一个新 pane 给队友；`role` 落成 pane 标题 |
+| `ridge_join_group` | `group_name, agent_id? \| target_pane_id?` | 加入按名字寻址的已有编组（桌面前端 SSOT，fire-and-forget） |
+| `ridge_stash_data` | `data` | 存文本，返回 `ridge://cache/<id>`，供别的 agent 回读 |
 
-### resources/list（约定）
+**寻址**：`target_pane_id` 同时接受花名册回传的 `paneId`（桌面是 Uuid 串，无头是 `%N`）与
+`paneIndex`（数字）。越界/失效目标返回 `-32602`，绝不静默落到 0 号分屏。
 
-资源以 `ridge://` URI 暴露：
-
-| URI | 内容 | 状态 |
-| --- | --- | --- |
-| `ridge://workspace/active-panes` | 活动工作区花名册（roster + leader + edges）；roster 每个成员同时含 `paneId`(Uuid)+`paneIndex`(数字) | ✅ 已接线 |
-| `ridge://workspace/git-status` | 工作区 Git 状态 | ⚙️ 已定义 URI，读取暂未接线 |
-| `ridge://workspace/editor-context` | 编辑器上下文 | ⚙️ 已定义 URI，读取暂未接线 |
-| `ridge://cache/<id>` | 从内存 Stash 读暂存数据 | ⚙️ 已定义 URI，读取暂未接线 |
+**错误语义**：工具名不存在 → JSON-RPC `-32601`；宿主不提供该能力（如无头 host 无前端编组）→
+正常 result 带 `isError: true`，客户端可让模型自行改道。
 
 ---
 
-## 3. 调用工具
+## 4. 资源
 
-### tools/call — 给队友派活
-
-```jsonc
-// → 请求
-{
-  "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-  "params": {
-    "name": "ridge_delegate_task",
-    "arguments": { "target_pane_id": 2, "objective": "为缓存层补单元测试" }
-  }
-}
-
-// ← 响应
-{
-  "jsonrpc": "2.0", "id": 3,
-  "result": { "content": [ { "type": "text", "text": "delivered" } ] }
-}
-```
-
-- `ridge_send_to_teammate`：参数 `{ target_pane_id, message }`，向该分屏注入文本。
-- `ridge_delegate_task`：参数 `{ target_pane_id, objective }`，注入任务 + 把目标分屏标为「工作中」。
-- `ridge_get_team_profile`：无参数，只读返回当前活动工作区花名册（等价于 `resources/read` 的 active-panes，`content[].text` 内嵌 JSON）。**推荐先调它发现目标**，再据成员的 `paneId`/`paneIndex` 寻址发消息。
-- `ridge_join_group`：参数 `{ group_name, agent_id? , target_pane_id? }`——把某成员加入**按名字寻址**的已有编组（`group_name` 必填；成员用 `agent_id`（花名册 `id`）或 `target_pane_id`（后端反查 `agent_id`）二选一）。校验成员在花名册后 emit 事件桥，前端「智能体」面板落地到该工作区的编组。**编组是前端 localStorage SSOT，后端不持有**：故返回 `dispatched` 只表示「已投递」，不代表组存在或已加入（组名不存在则前端静默 no-op）；同名编组取首个匹配。成员不在花名册返回 `-32602`。
-- `target_pane_id` 支持两种寻址，二选一：
-  - **`paneId`（Uuid 字符串，推荐）**——花名册里每个成员的 `paneId`。直投前服务端会校验它仍是当前活动工作区的叶子分屏，**伪造或已失效（陈旧）的 Uuid 会返回 `-32602 invalid params`（`pane <uuid> 不在当前活动工作区`），不会静默落到 0 号分屏**。
-  - **`paneIndex`（数字索引，从 0 起）**——花名册里每个成员的 `paneIndex`，按当前活动工作区叶子顺序寻址；越界索引同样返回 `-32602`。
-- 所有寻址都落在**当前活动工作区**。
-
-未实现的工具名会返回 JSON-RPC 错误 `-32601 method not found: unknown tool: <name>`。
+| URI | 内容 |
+| --- | --- |
+| `ridge://workspace/active-panes` | 花名册（同 `ridge_get_team_profile`） |
+| `ridge://workspace/git-status` | 各 pane 所在仓库根 + 当前分支。**只读 `.git/HEAD`，不 spawn git**（见 CLAUDE.md「git 进程风暴」教训） |
+| `ridge://workspace/editor-context` | 各 pane 的标题 / cwd / 忙闲 |
+| `ridge://cache/<id>` | 回读 `ridge_stash_data` 存入的内容 |
 
 ---
 
-## 4. 读取资源
+## 5. 典型协作流
 
-### resources/read — 读活动工作区花名册
-
-```jsonc
-// → 请求
-{
-  "jsonrpc": "2.0", "id": 4, "method": "resources/read",
-  "params": { "uri": "ridge://workspace/active-panes" }
-}
-
-// ← 响应（text 内嵌 JSON 字符串：{roster,leaderId,edges}）
-{
-  "jsonrpc": "2.0", "id": 4,
-  "result": {
-    "contents": [ {
-      "uri": "ridge://workspace/active-panes",
-      "mimeType": "application/json",
-      "text": "{\"roster\":[...],\"leaderId\":null,\"edges\":[]}"
-    } ]
-  }
-}
-```
-
-> roster 每个成员含 `id` / `name` / `paneId`(Uuid) / `paneIndex`(数字) / `role` / `status`；拿到后用 `paneId`（推荐）或 `paneIndex` 即可回到 `tools/call` 寻址该分屏。
-
-其它 `ridge://` URI 当前返回 `-32602 resource not yet available`（URI 已定义、读取后续接线）。非法 URI 返回 `-32602 invalid ridge:// uri`。
-
----
-
-## 5. 错误码
-
-标准 JSON-RPC：`-32700` 解析错误 / `-32600` 非法请求 / `-32601` 方法或工具未找到 / `-32602` 参数无效 / `-32603` 内部错误。
+1. `ridge_get_team_profile` 看有谁、谁空闲。
+2. 没有合适的 pane → `ridge_split_pane { direction, role }` 开一个。
+3. `ridge_delegate_task { target_pane_id, objective }` 派活（fire-and-forget，别同步等）。
+4. 大块上下文走 `ridge_stash_data` 拿 `ridge://cache/<id>`，把 URI 写进 objective 让对方 `resources/read`。
+5. 想知道干得怎么样 → `ridge_capture_pane` 抓屏；对方可用 `ridge_report_progress` 主动汇报。
+6. 收对方留言 → `ridge_inbox_read`（取走即清空；`peek: true` 只看不取）。
 
 ---
 
 ## 6. 当前限制（诚实说明）
 
-- `tools/call` 目前路由 `ridge_send_to_teammate`、`ridge_delegate_task`、`ridge_get_team_profile`、`ridge_join_group`、`ridge_stash_data`；仅 `ridge_split_pane` 尚未路由（`tools/list` 可见，调用返回 unknown——需前端分屏+spawn 落地，属 2-sided）。
-- `resources/read` 目前接 `ridge://workspace/active-panes` 与 `ridge://cache/<id>`（后者回读 `ridge_stash_data` 暂存内容）。
-- **`notifications/progress` 服务端推送暂未实现**（需要 WS split sink）；当前是请求-响应循环。
-- 所有动作落在**当前活动工作区**（暂不支持跨工作区寻址 pane）。
-- **`ridge_join_group` 是一次写入·fire-and-forget**：编组数据只在前端，后端无法同步确认组是否存在或是否加入成功；agent 想确认需人工看「智能体」面板（后续可加 `ridge://workspace/groups` 只读资源 + 前端→后端同步）。前端监听在「智能体」面板挂载时才生效。
+- **服务端主动推送（`notifications/progress`）仍未实现**：当前是请求-响应循环。要「进展更新」请轮询
+  `ridge_capture_pane` / `ridge_get_team_profile`，或让 worker 调 `ridge_report_progress`、leader 读收件箱。
+- 所有动作落在**当前活动工作区**（桌面）/ **default socket**（无头），暂不支持跨工作区寻址。
+- `ridge_join_group` 一次写入·fire-and-forget：编组数据在前端 localStorage，后端无法确认是否落地；
+  无头 host 直接返回 `isError`（无前端）。
+- 收件箱是**进程内内存**（每 pane 200 条 FIFO），宿主重启即清空；Stash 同理（64 条 / 32 MiB）。
+- 无头 host 的 `ridge_split_pane` 忽略 `direction`（引擎里 pane 是列表，没有几何方向）。
 
 ---
 
-## 7. 最小客户端示例（Node，原生 WebSocket）
+## 7. 最小客户端示例（Node，HTTP 传输）
 
 ```js
 // 跑在 Ridge 分屏里：读环境变量拿端点 + 令牌
 const base = process.env.RIDGE_TEAMMATE_URL;      // http://127.0.0.1:<port>
 const token = process.env.RIDGE_TEAMMATE_TOKEN;
-const url = base.replace(/^http/, 'ws') + '/api/v1/mcp/ws';
-
-const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
-let id = 0;
-const call = (method, params = {}) =>
-  new Promise((res) => {
-    const myId = ++id;
-    const onMsg = (e) => {
-      const m = JSON.parse(e.data);
-      if (m.id === myId) { ws.removeEventListener('message', onMsg); res(m); }
-    };
-    ws.addEventListener('message', onMsg);
-    ws.send(JSON.stringify({ jsonrpc: '2.0', id: myId, method, params }));
+const call = async (method, params = {}) => {
+  const r = await fetch(`${base}/api/v1/mcp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-ridge-token': token },
+    body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
   });
+  return r.status === 202 ? null : r.json();
+};
 
-ws.addEventListener('open', async () => {
-  await call('initialize');
-  const tools = await call('tools/list');
-  console.log(tools.result.tools.map((t) => t.name));
-  // 先发现队友：roster 里每个成员都带 paneId(Uuid) 和 paneIndex(数字)
-  const profile = await call('tools/call', { name: 'ridge_get_team_profile' });
-  const roster = JSON.parse(profile.result.content[0].text).roster;
-  // target_pane_id 二选一：paneId(Uuid，推荐) 或 paneIndex(数字)
-  const target = roster[0]?.paneId ?? 1;
-  await call('tools/call', { name: 'ridge_delegate_task', arguments: { target_pane_id: target, objective: '跑单元测试' } });
+const profile = await call('tools/call', { name: 'ridge_get_team_profile', arguments: {} });
+const roster = JSON.parse(profile.result.content[0].text).roster;
+const target = roster[0].paneId;             // 或 roster[0].paneIndex（数字）
+await call('tools/call', {
+  name: 'ridge_delegate_task',
+  arguments: { target_pane_id: target, objective: '跑单元测试' },
 });
+const screen = await call('tools/call', {
+  name: 'ridge_capture_pane',
+  arguments: { target_pane_id: target, lines: 40 },
+});
+console.log(screen.result.content[0].text);
 ```
 
 ---
 
-*相关文档：用户手册 `docs/teammate-user-guide.md`。*
+*实现：`packages/ridge-mcp/`（协议 + 工具 + 传输，两端唯一一份）、
+`src-tauri/src/teammate/mcp.rs`（桌面宿主实装）、`packages/ridge-tmux/src/mcp.rs`（无头宿主实装）、
+`packages/ridge-cli/src/mcp_stdio.rs`（`rdg mcp` stdio 桥）。用户手册：`docs/teammate-user-guide.md`。*

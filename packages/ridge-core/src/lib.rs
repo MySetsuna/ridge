@@ -39,7 +39,9 @@ pub mod device_identity;
 pub mod dispatch;
 pub mod error;
 pub mod fs;
-pub mod mcp;
+/// MCP 已独立成 `ridge-mcp` crate（桌面与 rdg 共用同一份实现）。这里保留再导出，
+/// 历史调用点 `ridge_core::mcp::…` 无需改动。
+pub use ridge_mcp as mcp;
 pub mod process_guard;
 pub mod external_spawn_registry;
 pub mod pty;

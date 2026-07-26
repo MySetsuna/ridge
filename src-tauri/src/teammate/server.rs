@@ -1,4 +1,4 @@
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::Arc;
 
 use axum::{
     extract::{Query, State},
@@ -7,7 +7,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
@@ -18,25 +17,20 @@ use crate::state::{AppState, PaneState, Workspace};
 use tauri::Emitter;
 
 use super::hitl;
-use super::layout_event::{LayoutChange, TEAMMATE_GROUP_ADD_MEMBER, TEAMMATE_LAYOUT_CHANGED};
+use super::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use super::native::{self, NativeError};
 use crate::engine::pane_tree::SplitDirection;
 use crate::engine::parser::PaneParser;
 use crate::engine::pty::{spawn_pty_reader, PtyHandle};
-use ridge_core::mcp::resource::StashStore;
-
-/// 进程级内存 Stash 中转站（MCP `ridge_stash_data` 存、`ridge://cache/<id>` 读）。仿
-/// `super::profiles` 的 LazyLock 全局；纯数据 `Mutex`，不在请求处理线程链上，与楔死无关。
-static STASH: LazyLock<Mutex<StashStore>> = LazyLock::new(|| Mutex::new(StashStore::with_defaults()));
 
 #[derive(Clone)]
-struct TeammateCtx {
-    state: AppState,
-    token: Arc<String>,
-    handle: tauri::AppHandle,
+pub(crate) struct TeammateCtx {
+    pub(crate) state: AppState,
+    pub(crate) token: Arc<String>,
+    pub(crate) handle: tauri::AppHandle,
 }
 
-fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
+pub(crate) fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
     if headers
         .get("x-ridge-token")
         .and_then(|v| v.to_str().ok())
@@ -337,13 +331,14 @@ async fn run_server(
         .route("/api/v1/team-profile", get(route_get_team_profile))
         .route("/api/v1/delegate-task", post(route_delegate_task))
         .route("/api/v1/report-progress", post(route_report_progress))
-        // Domain C 内置 MCP server（WebSocket / JSON-RPC 2.0）
-        .route("/api/v1/mcp/ws", get(route_mcp_ws))
         // GUI-only native route: summon a headless session into a VISIBLE
         // workspace (needs AppState/AppHandle), so it stays on TeammateCtx
         // rather than in the shared, host-agnostic router below.
         .route("/api/v1/tmux/summon", post(route_tmux_summon))
-        .with_state(ctx)
+        .with_state(ctx.clone())
+        // Domain C 内置 MCP server：WS（ws://…/api/v1/mcp/ws）+ HTTP（POST …/api/v1/mcp）。
+        // 协议分发在 ridge-core，宿主实装在 teammate::mcp，与 rdg 无头 host 同一份。
+        .merge(super::mcp::router(ctx))
         // All other native tmux routes are served by the shared engine crate.
         .merge(ridge_tmux::http::native_router(native_ctx))
         // 楔死诊断埋点：`.layer` 挂在 `.merge` 之后 → 包住**全部**路由（含 native_router
@@ -523,7 +518,7 @@ async fn route_register_agent(
 /// 有 typed 画像 → 跑 Leader 竞选返回真实角色；否则回退侧表映射。两路都带数字
 /// `paneIndex`（典型画像路径把当前叶子序列传入 `topology_for`），供 MCP 寻址自洽。
 /// 由 `route_get_team_profile`（HTTP）与 `ridge_get_team_profile`（MCP tool）共用。
-fn team_profile_snapshot(ctx: &TeammateCtx, wid: Uuid) -> serde_json::Value {
+pub(crate) fn team_profile_snapshot(ctx: &TeammateCtx, wid: Uuid) -> serde_json::Value {
     let map = ctx.state.workspaces.read();
     let Some(ws) = map.get(&wid) else {
         return serde_json::json!({ "roster": [], "leaderId": null, "edges": [] });
@@ -654,297 +649,6 @@ async fn route_report_progress(
     (StatusCode::OK, "ok").into_response()
 }
 
-// ===== Domain C: 内置端侧 MCP server（WebSocket / JSON-RPC 2.0）=====
-// 复用 ridge_core::mcp 纯协议核心 + remote/server.rs 同款 axum 0.7 ws 样板。
-// 请求-响应循环（最小可用）：initialize / tools/list / tools/call / resources/read。
-// 进度通知 (notifications/progress) 需 split sink，后续接入；当前不阻断主链路。
-
-async fn route_mcp_ws(
-    ws: WebSocketUpgrade,
-    State(ctx): State<TeammateCtx>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if !auth_ok(&headers, &ctx.token) {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    }
-    ws.on_upgrade(move |socket| mcp_socket(socket, ctx))
-}
-
-async fn mcp_socket(mut socket: WebSocket, ctx: TeammateCtx) {
-    let registry = ridge_core::mcp::registry::ToolRegistry::default();
-    while let Some(Ok(msg)) = socket.recv().await {
-        let text = match msg {
-            Message::Text(t) => t,
-            Message::Close(_) => break,
-            _ => continue,
-        };
-        let reply = handle_mcp_message(&text, &registry, &ctx).await;
-        if socket.send(Message::Text(reply)).await.is_err() {
-            break;
-        }
-    }
-}
-
-async fn handle_mcp_message(
-    text: &str,
-    registry: &ridge_core::mcp::registry::ToolRegistry,
-    ctx: &TeammateCtx,
-) -> String {
-    use ridge_core::mcp::protocol as proto;
-    let req = match proto::parse_request(text.as_bytes()) {
-        Ok(r) => r,
-        Err(_) => {
-            return proto::mcp_error(serde_json::Value::Null, proto::PARSE_ERROR, "parse error")
-                .to_string()
-        }
-    };
-    let id = req.id.clone();
-    let resp = match req.method.as_str() {
-        proto::METHOD_INITIALIZE => proto::mcp_result(
-            id,
-            serde_json::json!({
-                "protocolVersion": "2024-11-05",
-                // iter-60 G5 品牌层改名：MCP 对外名 Agent's Commune（协议方法名不动）。
-                "serverInfo": { "name": "agents-commune", "title": "Agent's Commune", "version": env!("CARGO_PKG_VERSION") },
-                "capabilities": { "tools": {}, "resources": {} }
-            }),
-        ),
-        proto::METHOD_TOOLS_LIST => proto::mcp_result(id, registry.tools_list_result()),
-        proto::METHOD_TOOLS_CALL => mcp_tools_call(id, &req.params, ctx).await,
-        proto::METHOD_RESOURCES_READ => mcp_resources_read(id, &req.params, ctx),
-        other => {
-            proto::mcp_error(id, proto::METHOD_NOT_FOUND, &format!("method not found: {other}"))
-        }
-    };
-    resp.to_string()
-}
-
-/// tools/call 最小路由：在活动工作区上落地 ridge_send_to_teammate / ridge_delegate_task。
-async fn mcp_tools_call(
-    id: serde_json::Value,
-    params: &serde_json::Value,
-    ctx: &TeammateCtx,
-) -> serde_json::Value {
-    use ridge_core::mcp::protocol as proto;
-    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    let args = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    let wid = *ctx.state.active_workspace.read();
-    match name {
-        "ridge_send_to_teammate" | "ridge_delegate_task" => {
-            use ridge_core::mcp::addressing::{parse_pane_target, PaneTarget};
-            // 缺口1 寻址自洽：`target_pane_id` 同时接受花名册回传的 `paneId`(Uuid 串)
-            // 与 `paneIndex`(数字)。Uuid 直投前先校验它仍是当前工作区的叶子 pane，
-            // 数字则回退既有索引寻址，两路落到同一组目标。
-            let target = args
-                .get("target_pane_id")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            let text = args
-                .get("message")
-                .or_else(|| args.get("objective"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let pid = match parse_pane_target(&target) {
-                Ok(PaneTarget::Uuid(u)) => {
-                    if pane::teammate_pane_is_leaf(&ctx.state, wid, u) {
-                        u
-                    } else {
-                        return proto::mcp_error(
-                            id,
-                            proto::INVALID_PARAMS,
-                            &format!("pane {u} 不在当前活动工作区"),
-                        );
-                    }
-                }
-                Ok(PaneTarget::Index(idx)) => {
-                    match pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
-                        Ok(u) => u,
-                        Err(e) => {
-                            return proto::mcp_error(id, proto::INVALID_PARAMS, &e.to_string())
-                        }
-                    }
-                }
-                Err(e) => return proto::mcp_error(id, proto::INVALID_PARAMS, &e),
-            };
-            let payload = format!("{text}\n");
-            // G1：MCP 文本注入同属 agent 写路径，走 suspend 收口。
-            match super::suspend::agent_pty_write(&ctx.state, wid, pid, payload.as_bytes()) {
-                Ok(()) => {
-                    if name == "ridge_delegate_task" {
-                        let mut map = ctx.state.workspaces.write();
-                        if let Some(ws) = map.get_mut(&wid) {
-                            ws.teammate_pane_states.insert(pid, PaneState::Busy);
-                        }
-                    }
-                    proto::mcp_result(
-                        id,
-                        serde_json::json!({ "content": [ { "type": "text", "text": "delivered" } ] }),
-                    )
-                }
-                Err(e) => proto::mcp_error(id, proto::INTERNAL_ERROR, &e.to_string()),
-            }
-        }
-        // 缺口3：只读返回花名册，让 agent「先发现目标再发消息」。复用 team-profile
-        // 生成逻辑，roster 同时带 paneId(Uuid)+paneIndex(数字)，与上面的寻址兼容闭环。
-        "ridge_get_team_profile" => {
-            let snapshot = team_profile_snapshot(ctx, wid);
-            proto::mcp_result(
-                id,
-                serde_json::json!({
-                    "content": [ { "type": "text", "text": snapshot.to_string() } ]
-                }),
-            )
-        }
-        // 2026-07-04：把某成员加入按名字寻址的已有编组。编组是前端 localStorage SSOT，
-        // 后端不持有——校验成员在花名册后，emit 事件桥，前端 AgentCenterPanel 落地
-        // （一次写入·fire-and-forget，返回 dispatched 不代表组存在，见设计稿 §6）。
-        "ridge_join_group" => {
-            use ridge_core::mcp::addressing::{parse_pane_target, PaneTarget};
-            let group_name = args
-                .get("group_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            if group_name.is_empty() {
-                return proto::mcp_error(id, proto::INVALID_PARAMS, "group_name 不能为空");
-            }
-            // 成员寻址：agent_id 直给，或 target_pane_id（Uuid/数字）反查 agent_id，二选一。
-            let agent_id: String = if let Some(a) =
-                args.get("agent_id").and_then(|v| v.as_str())
-            {
-                a.trim().to_string()
-            } else if let Some(target) = args.get("target_pane_id") {
-                let pid = match parse_pane_target(target) {
-                    Ok(PaneTarget::Uuid(u)) => {
-                        if pane::teammate_pane_is_leaf(&ctx.state, wid, u) {
-                            u
-                        } else {
-                            return proto::mcp_error(
-                                id,
-                                proto::INVALID_PARAMS,
-                                &format!("pane {u} 不在当前活动工作区"),
-                            );
-                        }
-                    }
-                    Ok(PaneTarget::Index(idx)) => {
-                        match pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
-                            Ok(u) => u,
-                            Err(e) => {
-                                return proto::mcp_error(id, proto::INVALID_PARAMS, &e.to_string())
-                            }
-                        }
-                    }
-                    Err(e) => return proto::mcp_error(id, proto::INVALID_PARAMS, &e),
-                };
-                match super::profiles::agent_id_for_pane(wid, pid) {
-                    Some(a) => a,
-                    None => {
-                        return proto::mcp_error(
-                            id,
-                            proto::INVALID_PARAMS,
-                            &format!("pane {pid} 未注册为 teammate（无 agent_id）"),
-                        )
-                    }
-                }
-            } else {
-                return proto::mcp_error(
-                    id,
-                    proto::INVALID_PARAMS,
-                    "需提供 agent_id 或 target_pane_id",
-                );
-            };
-            if agent_id.is_empty() {
-                return proto::mcp_error(id, proto::INVALID_PARAMS, "agent_id 不能为空");
-            }
-            if !super::profiles::contains_agent(wid, &agent_id) {
-                return proto::mcp_error(
-                    id,
-                    proto::INVALID_PARAMS,
-                    &format!("agent_id {agent_id} 不在当前活动工作区花名册"),
-                );
-            }
-            let _ = ctx.handle.emit(
-                TEAMMATE_GROUP_ADD_MEMBER,
-                serde_json::json!({
-                    "workspaceId": wid.to_string(),
-                    "groupName": group_name,
-                    "agentId": agent_id,
-                }),
-            );
-            proto::mcp_result(
-                id,
-                serde_json::json!({ "content": [ { "type": "text", "text": "dispatched" } ] }),
-            )
-        }
-        // 把一段文本存进内存 Stash，返回 `ridge://cache/<id>`，供 resources/read 回读
-        // （agent 间传大块中间产物用；FIFO 淘汰，默认 64 条/32 MiB）。#14。
-        "ridge_stash_data" => {
-            let data = args.get("data").and_then(|v| v.as_str()).unwrap_or("");
-            if data.is_empty() {
-                return proto::mcp_error(id, proto::INVALID_PARAMS, "data 不能为空");
-            }
-            let uri = STASH.lock().unwrap().stash_uri(data.as_bytes().to_vec());
-            proto::mcp_result(
-                id,
-                serde_json::json!({ "content": [ { "type": "text", "text": uri } ] }),
-            )
-        }
-        other => proto::mcp_error(id, proto::METHOD_NOT_FOUND, &format!("unknown tool: {other}")),
-    }
-}
-
-/// resources/read：`ridge://workspace/active-panes`（花名册）+ `ridge://cache/<id>`（Stash）。
-fn mcp_resources_read(
-    id: serde_json::Value,
-    params: &serde_json::Value,
-    ctx: &TeammateCtx,
-) -> serde_json::Value {
-    use ridge_core::mcp::protocol as proto;
-    use ridge_core::mcp::resource::RidgeUri;
-    let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
-    match RidgeUri::parse(uri) {
-        Ok(RidgeUri::WorkspaceActivePanes) => {
-            let wid = *ctx.state.active_workspace.read();
-            let map = ctx.state.workspaces.read();
-            let snapshot = map
-                .get(&wid)
-                .map(|ws| crate::commands::teammate::topology_json(ws, wid))
-                .unwrap_or_else(|| serde_json::json!({ "roster": [] }));
-            proto::mcp_result(
-                id,
-                serde_json::json!({
-                    "contents": [ {
-                        "uri": uri,
-                        "mimeType": "application/json",
-                        "text": snapshot.to_string()
-                    } ]
-                }),
-            )
-        }
-        Ok(RidgeUri::Cache(cache_id)) => {
-            // #14：回读 ridge_stash_data 存的内存 Stash 内容（不存在/已淘汰 → INVALID_PARAMS）。
-            let text = STASH
-                .lock()
-                .unwrap()
-                .read(&cache_id)
-                .map(|b| String::from_utf8_lossy(b).to_string());
-            match text {
-                Some(t) => proto::mcp_result(
-                    id,
-                    serde_json::json!({
-                        "contents": [ { "uri": uri, "mimeType": "text/plain", "text": t } ]
-                    }),
-                ),
-                None => proto::mcp_error(id, proto::INVALID_PARAMS, "cache 项不存在或已淘汰"),
-            }
-        }
-        Ok(_) => proto::mcp_error(id, proto::INVALID_PARAMS, "resource not yet available"),
-        Err(_) => proto::mcp_error(id, proto::INVALID_PARAMS, "invalid ridge:// uri"),
-    }
-}
 
 #[derive(Deserialize)]
 struct ReleasePaneBody {

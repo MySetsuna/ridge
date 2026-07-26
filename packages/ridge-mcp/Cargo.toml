@@ -1,0 +1,28 @@
+[package]
+name = "ridge-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "Ridge 内置 MCP server：协议内核 + 工具语义 + 宿主抽象 + axum 传输。桌面（Tauri）与无头 rdg 共用同一份，禁止分叉。"
+license = "MIT"
+
+# 独立成包的理由：MCP 原先只长在桌面 `src-tauri/src/teammate/server.rs` 里，rdg
+# 无头 host 没有，能力天然分叉。抽成 crate 后两个宿主只实现 `server::McpHost`
+# （拿状态、动 pane），协议/工具/传输永远是同一份实现。
+#
+# `ridge_core::mcp` 仍以 `pub use ridge_mcp as mcp;` 再导出，历史调用点零改动。
+
+[lib]
+name = "ridge_mcp"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+thiserror = "1"
+
+# ── `axum-transport` feature ── WS + HTTP 两条 JSON-RPC 路由。宿主开这个 feature
+# 就能 `merge(mcp_router(...))`；纯协议嵌入者（测试、其它传输）不必拉 axum。
+axum = { version = "0.7", features = ["ws"], optional = true }
+
+[features]
+axum-transport = ["dep:axum"]

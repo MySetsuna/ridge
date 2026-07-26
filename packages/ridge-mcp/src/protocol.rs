@@ -13,6 +13,9 @@ pub const METHOD_INITIALIZE: &str = "initialize";
 pub const METHOD_TOOLS_LIST: &str = "tools/list";
 pub const METHOD_TOOLS_CALL: &str = "tools/call";
 pub const METHOD_RESOURCES_READ: &str = "resources/read";
+pub const METHOD_RESOURCES_LIST: &str = "resources/list";
+pub const METHOD_RESOURCES_TEMPLATES_LIST: &str = "resources/templates/list";
+pub const METHOD_PING: &str = "ping";
 pub const METHOD_NOTIFY_PROGRESS: &str = "notifications/progress";
 
 // ── JSON-RPC 2.0 标准错误码 ──
@@ -26,10 +29,21 @@ pub const INTERNAL_ERROR: i64 = -32603;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpRequest {
     pub jsonrpc: String,
+    /// 通知（`notifications/*`）没有 `id`：缺省解析为 `Null`，由 [`McpRequest::is_notification`]
+    /// 判定。旧版把 `id` 设为必填 → 客户端握手后的 `notifications/initialized` 直接
+    /// 解析失败并回一条 `-32700`，MCP 客户端侧显示为伪错误。
+    #[serde(default)]
     pub id: Value,
     pub method: String,
     #[serde(default)]
     pub params: Value,
+}
+
+impl McpRequest {
+    /// JSON-RPC 2.0 通知：无 `id`，**不得**有响应。
+    pub fn is_notification(&self) -> bool {
+        self.id.is_null()
+    }
 }
 
 /// JSON-RPC 错误对象。

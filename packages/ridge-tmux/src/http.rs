@@ -97,12 +97,15 @@ pub fn native_router(ctx: NativeHttpCtx) -> Router {
 /// (`ridge-cli`) call this directly; the desktop server merges
 /// [`native_router`] into its larger router instead.
 pub async fn serve(listener: tokio::net::TcpListener, ctx: NativeHttpCtx) -> std::io::Result<()> {
-    axum::serve(listener, native_router(ctx)).await
+    // 无头 host 与桌面一样内置 MCP（同一份 `ridge_mcp` 实现）：agent 接上就能发现
+    // 同伴、派活、抓屏、异步回话，不必先有桌面。
+    let app = native_router(ctx.clone()).merge(crate::mcp::router(ctx));
+    axum::serve(listener, app).await
 }
 
 // ===================== helpers =====================
 
-fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
+pub(crate) fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
     if headers
         .get("x-ridge-token")
         .and_then(|v| v.to_str().ok())

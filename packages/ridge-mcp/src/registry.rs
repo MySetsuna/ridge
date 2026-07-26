@@ -15,6 +15,15 @@ pub struct ToolSpec {
     pub input_schema: serde_json::Value,
 }
 
+/// pane 寻址参数的统一 schema：花名册回传的 `paneId`（Uuid 串）与 `paneIndex`（数字）
+/// 都合法。旧规格只写 `"type": "number"`，按规格生成参数的客户端拿不到 Uuid 这条路。
+fn pane_target_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": ["string", "number"],
+        "description": "目标 pane：花名册的 paneId（Uuid 串，推荐）或 paneIndex（数字索引）"
+    })
+}
+
 // ─── ToolRegistry ────────────────────────────────────────────────────────────
 
 /// Ridge MCP 工具注册表。
@@ -53,17 +62,20 @@ impl Default for ToolRegistry {
             },
             ToolSpec {
                 name: "ridge_send_to_teammate".to_string(),
-                description: "向指定 pane 的 teammate 发送文本消息。".to_string(),
+                description:
+                    "向指定 pane 的 teammate 发送文本消息（写入其 stdin，并留一份到收件箱）。"
+                        .to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "target_pane_id": {
-                            "type": "number",
-                            "description": "目标 pane 的数字 ID"
-                        },
+                        "target_pane_id": pane_target_schema(),
                         "message": {
                             "type": "string",
                             "description": "要发送的消息内容"
+                        },
+                        "from": {
+                            "type": "string",
+                            "description": "发送方标识（跨 agent 协作时写自己的名字，默认 mcp-client）"
                         }
                     },
                     "required": ["target_pane_id", "message"]
@@ -75,10 +87,7 @@ impl Default for ToolRegistry {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "target_pane_id": {
-                            "type": "number",
-                            "description": "负责执行任务的 pane ID"
-                        },
+                        "target_pane_id": pane_target_schema(),
                         "objective": {
                             "type": "string",
                             "description": "任务目标描述"
@@ -93,16 +102,70 @@ impl Default for ToolRegistry {
             },
             ToolSpec {
                 name: "ridge_stash_data".to_string(),
-                description: "将 base64 编码的内容存入 ridge:// 内存中转站，返回 URI。".to_string(),
+                description:
+                    "把一段文本存进 ridge:// 内存中转站，返回 ridge://cache/<id>，供其它 agent resources/read 回读。"
+                        .to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "content_base64": {
+                        "data": {
                             "type": "string",
-                            "description": "要暂存的内容（base64 编码）"
+                            "description": "要暂存的纯文本内容"
                         }
                     },
-                    "required": ["content_base64"]
+                    "required": ["data"]
+                }),
+            },
+            ToolSpec {
+                name: "ridge_capture_pane".to_string(),
+                description: "抓取指定 pane 的当前屏幕文本（已渲染，非转义序列），用于观察队友进展。"
+                    .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "target_pane_id": pane_target_schema(),
+                        "lines": {
+                            "type": "number",
+                            "description": "取末 N 行（默认 80，上限 2000）"
+                        }
+                    },
+                    "required": ["target_pane_id"]
+                }),
+            },
+            ToolSpec {
+                name: "ridge_inbox_read".to_string(),
+                description:
+                    "取走投递给某个 pane 的消息（跨 agent 异步回话通道；stdin 注入之外的可靠副本）。"
+                        .to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "target_pane_id": pane_target_schema(),
+                        "peek": {
+                            "type": "boolean",
+                            "description": "true 只窥视不清空（默认 false：取走即清空）"
+                        }
+                    },
+                    "required": ["target_pane_id"]
+                }),
+            },
+            ToolSpec {
+                name: "ridge_report_progress".to_string(),
+                description: "向工作区回流一条进展（worker 主动汇报，落前端进度事件）。".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "target_pane_id": pane_target_schema(),
+                        "status": {
+                            "type": "string",
+                            "description": "状态标识，如 working / blocked / done"
+                        },
+                        "detail": {
+                            "type": "string",
+                            "description": "一句话说明"
+                        }
+                    },
+                    "required": ["target_pane_id", "status"]
                 }),
             },
             ToolSpec {
@@ -171,9 +234,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_registry_has_six_tools() {
+    fn default_registry_has_nine_tools() {
         let reg = ToolRegistry::default();
-        assert_eq!(reg.tools().len(), 6);
+        assert_eq!(reg.tools().len(), 9);
     }
 
     #[test]
@@ -197,7 +260,7 @@ mod tests {
             description: "test".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
         });
-        assert_eq!(reg.tools().len(), 7);
+        assert_eq!(reg.tools().len(), 10);
         assert!(reg.get("custom_tool").is_some());
     }
 
@@ -206,7 +269,7 @@ mod tests {
         let reg = ToolRegistry::default();
         let v = reg.tools_list_result();
         assert!(v["tools"].is_array());
-        assert_eq!(v["tools"].as_array().unwrap().len(), 6);
+        assert_eq!(v["tools"].as_array().unwrap().len(), 9);
     }
 
     #[test]
@@ -238,12 +301,28 @@ mod tests {
     }
 
     #[test]
-    fn ridge_stash_data_requires_content_base64() {
+    fn ridge_stash_data_requires_data() {
+        // 规格曾写 content_base64、实现却读 data —— 客户端按规格调用必失败。统一为 data。
         let reg = ToolRegistry::default();
         let spec = reg.get("ridge_stash_data").unwrap();
         let required = spec.input_schema["required"].as_array().unwrap();
         let names: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(names.contains(&"content_base64"));
+        assert!(names.contains(&"data"));
+    }
+
+    #[test]
+    fn pane_target_schema_accepts_uuid_and_index() {
+        let reg = ToolRegistry::default();
+        for name in [
+            "ridge_send_to_teammate",
+            "ridge_delegate_task",
+            "ridge_capture_pane",
+            "ridge_inbox_read",
+        ] {
+            let t = &reg.get(name).unwrap().input_schema["properties"]["target_pane_id"]["type"];
+            let kinds: Vec<&str> = t.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+            assert!(kinds.contains(&"string") && kinds.contains(&"number"), "{name} 寻址类型过窄");
+        }
     }
 
     #[test]
@@ -258,15 +337,21 @@ mod tests {
 
     #[test]
     fn routed_tools_are_advertised() {
-        // 缺口3 回归守卫：`tools/call`（src-tauri/teammate/server.rs::mcp_tools_call）
-        // 路由这三个工具。它们必须出现在 `tools/list` 里，否则 agent 发现得到却调用即
-        // "unknown tool"，自由交流链路断。
+        // 回归守卫：`tools/call`（ridge_core::mcp::server::tools_call）路由这些工具。
+        // 它们必须出现在 `tools/list` 里，否则 agent 发现得到却调用即 "unknown tool"，
+        // 自由交流链路断。反向守卫（广告了必须能调）在 server.rs 的
+        // `every_advertised_tool_is_routed`。
         let reg = ToolRegistry::default();
         for name in [
             "ridge_send_to_teammate",
             "ridge_delegate_task",
             "ridge_get_team_profile",
             "ridge_join_group",
+            "ridge_split_pane",
+            "ridge_capture_pane",
+            "ridge_inbox_read",
+            "ridge_report_progress",
+            "ridge_stash_data",
         ] {
             assert!(
                 reg.get(name).is_some(),
