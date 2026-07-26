@@ -194,6 +194,9 @@
       // can unpark the (still-alive) kernel instead of leaking / double-attaching.
       if (!alive) { manager.park(paneId); return; }
       attached = true;
+      // iter-60 G3：手机 SPA = raw 字节模式，本地网格权威在 fit（cloud 腿无
+      // pty-resized 回执，不能等 host 改格——P4 回归根因）。
+      manager.setLocalGridAuthority(paneId, true);
       // iter-60 G4: report the ACTUAL render backend (P4 refactor lost this
       // binding — footer showed the 'Canvas2D' default even under WebGPU).
       backendName = manager.backendName(paneId) ?? 'Canvas2D';
