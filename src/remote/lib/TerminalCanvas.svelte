@@ -16,6 +16,7 @@
     pendingWordBackspace,
     trailingWord,
   } from '@ridge/remote/shared/terminal/imeDelta';
+  import { SentenceBuffer, SENTENCE_FLUSH_MS } from '@ridge/remote/shared/terminal/sentenceBuffer';
 
   // P4 (2026-07-25): this component no longer owns a single `TerminalController`
   // + canvas. It is now the MOBILE INPUT-ADAPTATION LAYER over the SHARED
@@ -26,10 +27,12 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId, workspaceId, onStdin, onResize, onHostClipboard, onNearTop, selectionMode = $bindable(false), backendName = $bindable('Canvas2D') }: {
+  let { paneId, workspaceId, onStdin, onResize, onHostClipboard, onNearTop, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
     onStdin: (data: string) => void;
+    /** iter-60：句级输入缓冲开关（语音/高频改写场景；alt-screen/TUI 鼠标态自动旁路）。 */
+    sentenceBuffer?: boolean;
     onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
     /** Mirror a copied selection onto the desktop host's clipboard (so the host's
      *  native Ctrl+V paste picks it up). The control end's copy writes BOTH. */
@@ -223,6 +226,9 @@
   onDestroy(() => {
     alive = false;
     if (gapRemeasureTimer) clearTimeout(gapRemeasureTimer);
+    // 句级缓冲：卸载前落笔，防切 pane 丢缓冲文本。
+    if (attached && !sbuf.empty) sbufFlush();
+    if (sbufTimer !== null) { clearTimeout(sbufTimer); sbufTimer = null; }
     // Keep-alive: PARK (kernel survives, scrollback preserved), never detach.
     // Real teardown (manager.detach) happens in MainApp only when the host
     // actually closes the pane.
@@ -280,6 +286,13 @@
   // ── Virtual Keyboard (called from MainApp header) ──
   export function handleVirtualKey(key: string, ctrlKey: boolean, alt: boolean, shift: boolean) {
     if (!attached) return;
+    // 句级缓冲：同物理键——Backspace 先耗缓冲，其余控制键先落笔再发。
+    if (key === 'Backspace' && !ctrlKey && !alt && sbufActive() && sbuf.backspace()) {
+      sbufPaint();
+      sbufSchedule();
+      return;
+    }
+    if (!sbuf.empty) sbufFlush();
     // G11：虚拟键盘同物理键界规则——Backspace 削已发词段，其余控制键清段。
     pendingWord = key === 'Backspace' && !ctrlKey && !alt ? pendingWordBackspace(pendingWord) : '';
     const bytes = kEncodeKey(key, ctrlKey, alt, shift, false);
@@ -488,6 +501,35 @@
   // `Ev`+停顿+选 `Everything` → `EvEverything`。
   let pendingWord = '';
 
+  // ── 句级输入缓冲（sentenceBuffer prop 开启时）────────────────────────────
+  const sbuf = new SentenceBuffer();
+  let sbufTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** 缓冲激活 = 开关开 && 非 TUI 场景（alt-screen / 鼠标上报要逐键，旁路）。 */
+  function sbufActive(): boolean {
+    return sentenceBuffer && attached && !isAltScreen() && !isMouseReporting();
+  }
+  /** 把缓冲文本画到预编辑覆盖层（与 IME preedit 同通道；组合中则拼上组合段）。 */
+  function sbufPaint(composing = '') {
+    const text = sbuf.preview + composing;
+    const a = manager.inputAnchorResolved(paneId);
+    if (a && text) manager.setPreedit(paneId, text, a.row, a.col);
+    else if (!text && !isComposing) manager.clearPreedit(paneId);
+  }
+  function sbufSchedule() {
+    if (sbufTimer !== null) clearTimeout(sbufTimer);
+    sbufTimer = setTimeout(() => { sbufTimer = null; sbufFlush(); }, SENTENCE_FLUSH_MS);
+  }
+  /** 落笔：缓冲全文一次发 PTY，词段随之更新（后续差量仍可用）。 */
+  function sbufFlush() {
+    if (sbufTimer !== null) { clearTimeout(sbufTimer); sbufTimer = null; }
+    const text = sbuf.takeFlush();
+    if (!text) return;
+    onStdin(text);
+    pendingWord = updatePendingWord(pendingWord, text);
+    if (!isComposing) manager.clearPreedit(paneId);
+  }
+
   function handleCompositionStart() {
     // §R4 IME: mark the input-start anchor + capture the preedit anchor cell.
     isComposing = true;
@@ -497,6 +539,11 @@
   function handleCompositionUpdate(e: CompositionEvent) {
     // Renderer-side preedit overlay: painted on top of the cell grid without
     // touching kernel cells (a TUI redraw can't corrupt it and vice-versa).
+    // 句级缓冲开启且有缓冲文本时，预览 = 缓冲 + 组合中段（一体显示）。
+    if (sbufActive() && !sbuf.empty) {
+      sbufPaint(e.data ?? '');
+      return;
+    }
     const a = manager.inputAnchorResolved(paneId);
     if (a) manager.setPreedit(paneId, e.data ?? '', a.row, a.col);
   }
@@ -518,6 +565,16 @@
     // Some IMEs fire `input` before `compositionend`; don't send twice.
     if (data === lastInputText && Date.now() - lastInputTime < IME_DUP_WINDOW_MS) {
       lastInputText = '';
+      return;
+    }
+    // 句级缓冲：commit 在缓冲内前缀合并（Ev+Everything→Everything），零 PTY 字节。
+    if (sbufActive()) {
+      if (sbuf.empty) manager.markInputStart(paneId);
+      sbuf.commit(data);
+      sbufPaint();
+      sbufSchedule();
+      imeCommitExpect = data;
+      imeCommitExpectTime = Date.now();
       return;
     }
     // iter-60 G11（二修，无时窗）：自动补全提交去重——已发送「当前词段」与
@@ -567,6 +624,12 @@
     // 点的修正词就此丢失。iter-60 G11 改为差量应用：与已发词段求公共前缀，退格
     // 删多余尾巴再补差量——修正生效且不重复。无已发词段上下文时仍丢弃防误发。
     if (inputType === 'insertReplacementText') {
+      // 句级缓冲：回改在缓冲内整词替换（跨词回改也不丢，语音主收益点）。
+      if (sbufActive() && sbuf.replaceTrailing(text)) {
+        sbufPaint();
+        sbufSchedule();
+        return;
+      }
       const delta = imeCommitDelta(pendingWord, text);
       if (delta && delta !== text) {
         onStdin(delta);
@@ -578,12 +641,23 @@
     }
     // §2 Sticky on-screen modifier armed → form a chord (Ctrl+C …) per character.
     if (anyMod()) {
+      if (!sbuf.empty) sbufFlush(); // 句级缓冲：组合键先落笔。
       pendingWord = ''; // G11：组合键=词界。
       const sm = consumeMods();
       for (const ch of text) {
         const bytes = kEncodeKey(ch, sm.ctrl, sm.alt, sm.shift, false);
         onStdin(bytes.length > 0 ? td.decode(bytes) : ch);
       }
+      return;
+    }
+    // 句级缓冲：明文进缓冲画预编辑，停顿才落笔（语音/高频改写零退格窗口）。
+    if (sbufActive()) {
+      if (sbuf.empty) manager.markInputStart(paneId);
+      sbuf.insert(text);
+      sbufPaint();
+      sbufSchedule();
+      lastInputText = text;
+      lastInputTime = Date.now();
       return;
     }
     onStdin(text);
@@ -614,6 +688,15 @@
     }
     const specialKeys: Record<string, string> = { Enter: '\r', Escape: '\x1b', Tab: '\t', Insert: '\x1b[2~' };
     const shiftSpecial: Record<string, string> = { Tab: '\x1b[Z' };
+    // 句级缓冲：Backspace 先耗缓冲（本地删，不发 PTY）；其余控制键先把缓冲落笔
+    // 再发控制字节（保证 "word\r" 顺序）。
+    if (e.key === 'Backspace' && !e.ctrlKey && !e.metaKey && !e.altKey && sbufActive() && sbuf.backspace()) {
+      e.preventDefault();
+      sbufPaint();
+      sbufSchedule();
+      return;
+    }
+    if (!sbuf.empty) sbufFlush();
     // G11：控制键=词界。Backspace 削已发词段一格，其余控制/组合键直接清段——
     // 光标/行内容已非我们可见，宁可放弃去重也不误退格。
     if (e.shiftKey && shiftSpecial[e.key]) { e.preventDefault(); pendingWord = ''; onStdin(shiftSpecial[e.key]); return; }
@@ -655,6 +738,7 @@
   /** Encode arbitrary text as a bracketed paste and forward it to the host. */
   function sendPaste(text: string) {
     if (!attached || !text) return;
+    if (!sbuf.empty) sbufFlush(); // 句级缓冲：粘贴前先落笔，保输入顺序。
     pendingWord = ''; // G11：粘贴=词界（粘贴内容不参与补全去重）。
     const bytes = kEncodePaste(text);
     if (bytes.length > 0) onStdin(td.decode(bytes));
