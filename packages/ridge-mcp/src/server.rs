@@ -56,6 +56,8 @@ pub trait McpHost: Send + Sync {
     fn team_profile(&self) -> Value;
 
     /// 把文本写进目标 pane 的 stdin；`mark_busy` 为真时同时把该 pane 标记「工作中」。
+    ///
+    /// 宿主负责补 Enter，用 [`enter_terminated`]——**必须是 CR**，见该函数说明。
     fn send_text(&self, target: &Value, text: &str, mark_busy: bool) -> HostResult<()>;
 
     /// 抓目标 pane 的**渲染后**屏幕文本（末 `lines` 行）。监控队友干活用。
@@ -89,6 +91,16 @@ pub trait McpHost: Send + Sync {
 
     /// 把寻址参数归一为**稳定字符串键**（收件箱按它分桶）。宿主须校验目标存在。
     fn pane_key(&self, target: &Value) -> HostResult<String>;
+}
+
+/// 给注入文本补一个 **CR**（0x0D）作 Enter，并吃掉调用方自带的尾部换行。
+///
+/// 为什么不是 LF：Claude Code / Cursor 这类 raw-mode TUI 把 LF 当「插入换行」，
+/// 消息会**停在对端输入框永不提交**（实测：整段进了 composer，agent 根本没收到）；
+/// 终端上 Enter 的线上字节本就是 CR。shell 在 canonical 模式下同样接受 CR，
+/// 故两类目标统一用 CR。
+pub fn enter_terminated(text: &str) -> String {
+    format!("{}\r", text.trim_end_matches(['\r', '\n']))
 }
 
 // ─── 进程内共享状态：Stash + 收件箱 ──────────────────────────────────────────
@@ -380,6 +392,15 @@ mod tests {
     fn call(msg: &str) -> Value {
         let out = handle_message(msg, &FakeHost, "test").expect("expected a response");
         serde_json::from_str(&out).unwrap()
+    }
+
+    #[test]
+    fn enter_is_cr_not_lf() {
+        // 回归守卫：LF 会让消息卡在对端 TUI 输入框（实测），Enter 必须是 CR。
+        assert_eq!(enter_terminated("hi"), "hi\r");
+        assert_eq!(enter_terminated("hi\n"), "hi\r");
+        assert_eq!(enter_terminated("hi\r\n"), "hi\r");
+        assert!(!enter_terminated("hi").contains('\n'));
     }
 
     #[test]
