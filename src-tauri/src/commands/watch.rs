@@ -45,6 +45,13 @@ fn is_scm_relevant(path: &Path) -> bool {
     if s.ends_with(".lock") {
         return false;
     }
+    // fsmonitor--daemon cookies (2026-07-26 git 风暴根因)：core.fsmonitor=true 的仓库里，
+    // 每次 `git status`/`git diff` 查询 fsmonitor 守护进程都会在 `.git/fsmonitor--daemon/
+    // cookies/` 创建+删除 cookie 文件。若不过滤：我们自己的 SCM 刷新 → cookie 变更 →
+    // watcher 再触发刷新 → 无限自反馈，表现为后台 git.exe 不停 spawn/kill。
+    if s.contains("fsmonitor--daemon") {
+        return false;
+    }
     true
 }
 
@@ -165,4 +172,30 @@ pub async fn start_watching_repos(
     let paths: Vec<PathBuf> = roots.iter().map(PathBuf::from).collect();
     state.git_watcher.sync_watched(&paths, &app);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_scm_relevant;
+    use std::path::Path;
+
+    #[test]
+    fn fsmonitor_cookies_are_noise() {
+        // git 风暴回归钉：fsmonitor 查询 cookie 决不能触发 scm-repo-changed。
+        assert!(!is_scm_relevant(Path::new(
+            r"C:\repo\.git\fsmonitor--daemon\cookies\1234-5"
+        )));
+        assert!(!is_scm_relevant(Path::new(
+            "/repo/.git/fsmonitor--daemon/cookies/abc"
+        )));
+    }
+
+    #[test]
+    fn head_index_refs_stay_relevant() {
+        assert!(is_scm_relevant(Path::new(r"C:\repo\.git\HEAD")));
+        assert!(is_scm_relevant(Path::new(r"C:\repo\.git\index")));
+        assert!(is_scm_relevant(Path::new(r"C:\repo\.git\refs\heads\main")));
+        assert!(!is_scm_relevant(Path::new(r"C:\repo\.git\index.lock")));
+        assert!(!is_scm_relevant(Path::new(r"C:\repo\.git\objects\ab\cd")));
+    }
 }
