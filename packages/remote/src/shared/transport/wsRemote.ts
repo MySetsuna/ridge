@@ -93,6 +93,28 @@ export interface PaneInfo {
   isAgent?: boolean;
 }
 
+/**
+ * 在途请求的键。**必须带 `_reqId`**（iter-63 手机端 e2e 实证）：
+ * 旧实现只按 `responseType` 作键，于是任何两条并发 `invoke-request` 都注册在
+ * `'invoke-result'` 这一个键上，后者 `set` 直接顶掉前者——前一条永远等不到回包，
+ * 5s 后超时抛错；活下来那条还可能收到**另一条命令**的结果。手机端花名册正是
+ * `Promise.all([topology, hitlPending, health])` 三连发，于是恒定失败、只显示一个「—」，
+ * 而后端数据一直是对的（数据面直测 roster 完好）。
+ *
+ * 无 `_reqId` 的老式请求（list-workspaces 等）保持按类型作键，行为逐字不变。
+ */
+export function pendingKey(responseType: string, reqId: unknown): string {
+  return typeof reqId === 'number' ? `${responseType}#${reqId}` : responseType;
+}
+
+/** host `detect_available_shells` 的一条（与桌面 `ShellInfo` 同形）。 */
+export interface RemoteShellInfo {
+  id: string;
+  label: string;
+  program: string;
+  args: string[];
+}
+
 export interface WorkspaceInfo {
   id: string;
   name?: string;
@@ -300,6 +322,14 @@ export interface RemoteLink {
    * 两条腿（LAN invoke-request / cloud RPC）都实现；老 host 会以错误拒绝，UI 提示即可。
    */
   markPaneAgent?(workspaceId: string, paneId: string, on: boolean, agentId?: string): Promise<void>;
+  /**
+   * iter-63：手机端切终端类型（PS → WSL / Git Bash …）。
+   * 列表与桌面**同源**——都是 host 的 `detect_available_shells`，不在客户端另攒一份，
+   * 否则两端会漂移（用户明确要求「终端类型列表对齐桌面端」）。
+   */
+  listShells?(): Promise<RemoteShellInfo[]>;
+  /** 原地换 shell：拆该 pane 的 PTY → 按新 program/args 重建 → 重新激活。 */
+  changePaneShell?(workspaceId: string, paneId: string, shell: RemoteShellInfo): Promise<void>;
   sendStdin(paneId: string, data: string): void;
   refreshPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
   claimPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
@@ -634,9 +664,10 @@ export class RemoteConnection implements RemoteLink {
         const isResult = type.endsWith('-result') || type === 'workspaces'
           || type === 'current-project' || type === 'workspace-panes';
         if (isResult) {
-          const pending = this._pendingRequests.get(type);
+          const key = pendingKey(type, (msg as { _reqId?: unknown })._reqId);
+          const pending = this._pendingRequests.get(key);
           if (pending) {
-            this._pendingRequests.delete(type);
+            this._pendingRequests.delete(key);
             pending.resolve(msg);
             return;
           }
@@ -827,12 +858,13 @@ export class RemoteConnection implements RemoteLink {
   }
 
   private async _sendAndWait(request: Record<string, unknown>, responseType: string, timeoutMs = 5000): Promise<unknown> {
+    const key = pendingKey(responseType, request._reqId);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this._pendingRequests.delete(responseType);
+        this._pendingRequests.delete(key);
         reject(new Error(`WS request ${responseType} timed out`));
       }, timeoutMs);
-      this._pendingRequests.set(responseType, {
+      this._pendingRequests.set(key, {
         resolve: (v) => { clearTimeout(timer); resolve(v); },
         reject: (e) => { clearTimeout(timer); reject(e); },
       });
@@ -1000,6 +1032,51 @@ export class RemoteConnection implements RemoteLink {
       suspendedAgents: Number(data._result?.suspendedAgents ?? 0),
       pendingHitl: Number(data._result?.pendingHitl ?? 0),
     };
+  }
+
+  /** iter-63：终端类型列表 —— 与桌面同源（host `detect_available_shells`）。 */
+  async listShells(): Promise<RemoteShellInfo[]> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'detect_available_shells',
+        args: {},
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _result?: RemoteShellInfo[]; _error?: unknown };
+    if (data._error) throw new Error(String(data._error));
+    return Array.isArray(data._result) ? data._result : [];
+  }
+
+  /** iter-63：原地换 shell。两步与桌面 `changePaneShell` 逐字同序：换 → 再激活 PTY。 */
+  async changePaneShell(
+    workspaceId: string,
+    paneId: string,
+    shell: RemoteShellInfo,
+  ): Promise<void> {
+    const change = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'change_pane_shell',
+        args: { paneId, shell: shell.program, args: shell.args ?? [] },
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _error?: unknown };
+    if (change._error) throw new Error(String(change._error));
+    // 重建后必须再激活一次，否则新 PTY 没有订阅者，手机端只看到一块死屏。
+    // rows/cols 交给 host 用该 pane 现有几何（远端不掌握真实网格）。
+    const activate = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'activate_pane_pty',
+        args: { workspaceId, paneId },
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _error?: unknown };
+    if (activate._error) throw new Error(String(activate._error));
   }
 
   async switchWorkspace(workspaceId: string): Promise<boolean> {
