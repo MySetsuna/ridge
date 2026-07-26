@@ -45,6 +45,11 @@ getrandom = "0.2"
 # 首页配图纯属冗余（`remote/` 就是 `static/remote` 的副本，已单独内嵌），排掉少嵌 ~3.5 MiB。
 rust-embed = { version = "8", optional = true, default-features = false, features = ["interpolate-folder-path", "include-exclude"] }
 
+[dev-dependencies]
+# 端到端 serve 钉（tests/ua_fork_serve.rs）需要多线程 runtime + `#[tokio::test]`；
+# HTTP 请求是手写的 TCP，不引第三方 client。
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net", "io-util"] }
+
 [features]
 default = []
 # 单文件分发的 CLI（rdg）打开它：`static/remote` 产物随二进制走，
