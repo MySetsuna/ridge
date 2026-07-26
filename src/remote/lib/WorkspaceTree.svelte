@@ -4,6 +4,7 @@
   import { t, tr } from '$lib/i18n';
   import type { PaneInfo, WorkspaceInfo, RemoteLink, SavedWorkspaceFile } from '@ridge/remote';
   import { treeState, toggleWsExpanded, seedActiveWorkspace, pruneExpanded } from './treeState.svelte';
+  import PaneShellPicker from './PaneShellPicker.svelte';
 
   // §item1（移动端导航重构）：把「工作区 + 终端」整合为一个树形级联控件，
   // 放在底部导航条最右边——原本渲染类型标签(engine-badge)的位置。
@@ -422,10 +423,22 @@
                    工作区用 peek 快照（list-workspace-panes 拉取，不切换工作区）。 -->
               <div class="pane-group">
                 {#each wsPanes as pane (pane.id)}
-                  <button
+                  <!-- 行本体从 <button> 改为 role=button 的 div：行内已有 role=button 的
+                       操作项，且 iter-63 的「切换终端类型」菜单里是真 <button>，嵌在
+                       <button> 里既非法也会吞点击。 -->
+                  <div class="pane-item">
+                  <div
                     class="pane-row"
                     class:active={isActiveWs && pane.id === activePaneId}
+                    role="button"
+                    tabindex="0"
                     onclick={() => selectPaneInWorkspace(wsp.id, pane.id)}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        selectPaneInWorkspace(wsp.id, pane.id);
+                      }
+                    }}
                   >
                     <span class="pane-dot">▸</span>
                     <span class="pane-text">
@@ -451,6 +464,14 @@
                         </span>
                       </span>
                     {/if}
+                    {#if canManageWorkspaces && isActiveWs}
+                      <PaneShellPicker
+                        {ws}
+                        workspaceId={wsp.id}
+                        paneId={pane.id}
+                        onswitched={() => ws?.listPanes()}
+                      />
+                    {/if}
                     {#if canManageWorkspaces && isActiveWs && wsPanes.length > 1}
                       <span
                         class="row-close"
@@ -463,7 +484,8 @@
                         <X class="w-3 h-3" />
                       </span>
                     {/if}
-                  </button>
+                  </div>
+                  </div>
                 {/each}
                 {#if wsPanes.length === 0}
                   <div class="pane-empty">{loadingPeek ? $t('mobile.loading') : $t('mobile.treeNoTerminal')}</div>
@@ -586,6 +608,9 @@
   .ws-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
 
   .pane-group{display:flex;flex-direction:column;gap:1px;margin:1px 0 4px 0;padding-left:18px;border-left:1px solid var(--rg-border-bright);margin-left:14px}
+  /* iter-63：切换终端类型的菜单绝对定位挂在 .pane-item 上（它在 DOM 里位于
+     flex 行内，脱流后才不会把行撑变形）。 */
+  .pane-item{position:relative}
   .pane-row{display:flex;align-items:flex-start;gap:6px;width:100%;padding:7px 8px;border:none;border-radius:6px;background:none;color:var(--rg-fg-muted);font-size:12px;cursor:pointer;text-align:left;transition:background .12s,color .12s}
   .pane-row:active{background:var(--rg-surface-2)}
   .pane-row.active{color:var(--rg-fg);background:color-mix(in srgb,var(--rg-accent) 10%,transparent)}

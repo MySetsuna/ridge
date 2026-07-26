@@ -46,6 +46,7 @@ import {
   type TeammateTopology,
   type HitlPendingItem,
   type HitlResolveOutcome,
+  type RemoteShellInfo,
 } from '@ridge/remote';
 
 /** Backend `list_workspaces` row (subset we use). */
@@ -606,6 +607,23 @@ export class CloudRemoteConnection implements RemoteLink {
       await invoke('release_teammate_agent', { workspaceId, paneId });
     }
     void this._refreshPanes();
+  }
+
+  // iter-63：终端类型列表与切换。与 LAN 腿同一对命令、与桌面同一个 host 检测器
+  // （`detect_available_shells`），三处不会漂移。
+  async listShells(): Promise<RemoteShellInfo[]> {
+    const r = await invoke<RemoteShellInfo[]>('detect_available_shells', {});
+    return Array.isArray(r) ? r : [];
+  }
+
+  async changePaneShell(
+    workspaceId: string,
+    paneId: string,
+    shell: RemoteShellInfo,
+  ): Promise<void> {
+    await invoke('change_pane_shell', { paneId, shell: shell.program, args: shell.args ?? [] });
+    // 重建后必须再激活，否则新 PTY 无订阅者，远端只看到死屏。
+    await invoke('activate_pane_pty', { workspaceId, paneId });
   }
 
   // ── workspaces ───────────────────────────────────────────────────────────────

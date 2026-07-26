@@ -17,6 +17,11 @@ export const zh: Record<string, string> = {
   unmarkAgent: '取消智能体标记',
   agentBadgeOn: '智能体',
   agentBadgeOff: '标记',
+  shellSwitch: '切换终端类型',
+  shellPickTitle: '终端类型',
+  shellEmpty: '未检测到可用终端',
+  shellSwitching: '正在切换…',
+  shellSwitchFail: '切换终端类型失败',
   noTerminal: '无终端',
   newTerminalBtn: '新建终端',
 
@@ -142,6 +147,11 @@ export const en: Record<string, string> = {
   unmarkAgent: 'Unmark agent',
   agentBadgeOn: 'Agent',
   agentBadgeOff: 'Mark',
+  shellSwitch: 'Switch shell',
+  shellPickTitle: 'Shell type',
+  shellEmpty: 'No shells detected',
+  shellSwitching: 'Switching…',
+  shellSwitchFail: 'Failed to switch shell',
   noTerminal: 'No terminals',
   newTerminalBtn: 'New terminal',
 
