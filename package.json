@@ -28,6 +28,7 @@
     "cdp:smoke": "node scripts/cdp-smoke.mjs",
     "cdp:pty": "node scripts/cdp-pty-parsers.mjs",
     "cdp:pane-graph": "node scripts/cdp-pane-graph.mjs",
+    "cdp:multitab": "node scripts/cdp-multitab-freeze.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

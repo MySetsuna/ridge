@@ -293,6 +293,16 @@ export function resolveMembers(
 
 // ── 持久化（防御式解析） ──
 
+/** 结构等价判定（编组/任务都是可 JSON 化的小数组，直接比序列化足够且最省代码）。
+ *  导出以便单测钉死——它是「多 tab 卡死」的第二道防线判据。 */
+export function persistedEquals(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
 function asRecord(v: unknown): Record<string, unknown> | null {
   return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : null;
 }
@@ -412,8 +422,14 @@ class TeammateGroupStore {
     if (key === this.storageKey) return;
     this.storageKey = key;
     const loaded = loadPersisted(key);
-    this.groups = loaded.groups;
-    this.tasks = loaded.tasks;
+    // 只在**内容真的变了**时才写 `$state`（iter-62 硬护栏）。key 守卫防的是同一
+    // 调用方重复调用；这一层防的是**两个调用方拿不同 key 互相打架**——那会让读
+    // `groups` 的 effect 与写 `groups` 的 effect 互相失效，滚成
+    // `effect_update_depth_exceeded`（实测一次 15 秒 long task，整个面板僵住）。
+    // 写之前先比内容：即便所有权守卫将来被改坏，最坏也只是键来回翻，不再有
+    // $state 写入 → 循环无法成立。
+    if (!persistedEquals(loaded.groups, this.groups)) this.groups = loaded.groups;
+    if (!persistedEquals(loaded.tasks, this.tasks)) this.tasks = loaded.tasks;
     // 切入工作区即把本地编组推后端一次，保证镜像与本地一致（供 remote 只读同步）。
     this.syncBackend();
   }

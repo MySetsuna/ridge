@@ -25,6 +25,7 @@ import {
   resolveMembers,
   parsePersisted,
   serializePersisted,
+  persistedEquals,
 } from './teammateGroups.svelte';
 import type { TeammateProfile } from './teammateModel';
 
@@ -261,5 +262,31 @@ describe('persistence round-trip', () => {
     const parsed = parsePersisted(mixed);
     expect(parsed.groups.map((g) => g.id)).toEqual(['ok']);
     expect(parsed.tasks.map((t) => t.objective)).toEqual(['keep']);
+  });
+});
+
+// ── iter-62 回归钉：多工作区并存时不得反复重写 $state ──────────────────────
+//
+// 现场（CDP e2e 实证，见 scripts/cdp-multitab-freeze.mjs）：keep-alive 让多个
+// 工作区的 SplitContainer 同时挂载，每个都拿**自己的** workspaceId 调
+// setWorkspace，于是单例 store 的 key 被两边轮流翻，每翻一次就写一遍
+// `groups`/`tasks`；而 pane 徽章又读 `groups` → 读写互相失效 →
+// `effect_update_depth_exceeded`，dev 版一次 **15 秒** long task，抛错后整个
+// 交互面板僵住（用户「开两个以上 tab 就卡死」）。
+//
+// 主修是所有权收敛（只有活动工作区驱动 store，见 SplitContainer.svelte）；
+// 这里钉住第二道防线的判据：**内容没变就不换引用**，写入无从发生、循环无从成立。
+// （store 类本身是 runes，node 环境不编译，故只测这条纯判据 + e2e 兜底。）
+describe('persistedEquals（多 tab 卡死的第二道防线）', () => {
+  it('内容相同即等价——切工作区时不必重写 $state', () => {
+    expect(persistedEquals([], [])).toBe(true);
+    const g = buildGroup('A', GROUP_COLORS[0], ['agent-a']);
+    expect(persistedEquals([g], [{ ...g }])).toBe(true);
+  });
+
+  it('内容不同即不等价——该换的引用必须换', () => {
+    const g = buildGroup('A', GROUP_COLORS[0], ['agent-a']);
+    expect(persistedEquals([g], [])).toBe(false);
+    expect(persistedEquals([g], [{ ...g, name: 'B' }])).toBe(false);
   });
 });

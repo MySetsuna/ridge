@@ -70,10 +70,22 @@ import {
   let { node, workspaceId, splitPath = [] }: Props = $props();
 
   // 编组染色数据源：pane 标题栏的机器人大按钮据「该 pane agent 所属编组」着色。与
-  // AgentCenterPanel 共用同一惰性单例 store；setWorkspace 按稳定键幂等（多 leaf 实例
-  // 各自调用同键无副作用）。groups 为 $state，组定义变化即驱动按钮重着色。
+  // AgentCenterPanel 共用同一惰性单例 store。
+  //
+  // §多 tab 卡死根因（iter-62，CDP e2e 实证）：此处原本无条件用**本实例的**
+  // workspaceId 调 setWorkspace。旧注释「多 leaf 实例各自调用同键无副作用」只在
+  // 单工作区内成立——keep-alive 让**多个工作区的 SplitContainer 同时挂载**，各自
+  // 传不同 workspaceId，于是两个 effect 轮流把单例 store 切到自己那边、各自写
+  // `groups`/`tasks`，而下面 badge 又读 `teammateGroups.groups` → 互相失效、
+  // 无限 ping-pong → `effect_update_depth_exceeded`。dev 版每轮抓栈，实测一次
+  // **15 秒**的 long task；抛错后该子树响应性即死，整个交互面板僵住、连「+」
+  // 新建工作区都没反应。这正是用户「开两个以上 tab 就卡死」的现场。
+  //
+  // 修法是**收敛所有权**：store 是全局单例，只能由**活动**工作区驱动，非活动
+  // 工作区（display:none，看不见）不参与。这样任一时刻只有一个 key 写入，循环消失。
   const teammateGroups = teammateGroupStore();
   $effect(() => {
+    if (workspaceId !== $activeWorkspaceId) return;
     teammateGroups.setWorkspace(
       workspaceId,
       $workspaceSaveInfoStore[workspaceId]?.file_path ?? null
