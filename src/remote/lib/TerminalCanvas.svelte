@@ -3,7 +3,7 @@
   import { t } from '$lib/i18n';
   import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
   import { anyMod, consumeMods } from './modState.svelte';
-  import { keyboardShiftPx } from './keyboardOffset';
+  import { terminalViewportHeightPx } from './keyboardOffset';
   import { writeClipboard } from './clipboard';
   import { copySelectionOnly } from '@ridge/remote/shared/terminal/mobileCopy';
   import {
@@ -79,16 +79,12 @@
   let selAnchorCol = 0;
   let isSelectingLocal = false;
 
-  // Keyboard offset (mobile): when the system soft keyboard appears, the
-  // container is pushed up by exactly enough to seat the INPUT ROW just above
-  // the keyboard top — computed from the cursor's pixel position (R3).
-  let keyboardOffset = $state(0);
+  // §kb-height（iter-63）：软键盘弹出时终端宿主的自适配高度（CSS px）；`null` = 键盘
+  // 收起，高度交还 `flex:1`。取代旧的 `translateY` 位移法——见 keyboardOffset.ts 首注。
+  let keyboardHeight = $state<number | null>(null);
   // §kb-stable: the vertical gap (CSS px) between the container's BOTTOM edge
   // and the layout-viewport bottom. Measured ONLY while the keyboard is hidden.
   let gapBelowCanvas = 0;
-  // True while the soft keyboard is up (tracks the hidden→shown edge).
-  let keyboardVisible = false;
-
   // Touch state. Single-finger swipe = scroll; tap = focus (+ click-through).
   let touchStartY = 0;
   let touchStartX = 0;
@@ -869,32 +865,31 @@
     };
   });
 
-  // ── Cursor-anchored keyboard offset (R3) ──
-  const KB_GAP_PX = 8;
+  // ── §kb-height：终端宿主随视觉视口收高（iter-63 取代光标锚定位移）──
+  /** 再挤也要留住的最小终端高，否则 refit 会算出 0 行。 */
+  const KB_MIN_TERM_PX = 48;
+  /** 键盘收起时测得的容器顶边 y；键盘弹出后容器变矮**不会**改变顶边，故可当常量用。 */
+  let containerTopWhenIdle = 0;
 
-  /** Offset (CSS px) to translate the container up so the cursor's INPUT ROW
-   *  sits just above the keyboard. §kb-stable: every term is transform-
-   *  independent so recomputing per visualViewport resize converges. */
-  function computeKeyboardOffset(): number {
+  /** 键盘弹出时终端宿主该有的高度；收起返回 null（交还 flex）。 */
+  function computeTerminalHeight(): number | null {
     const vv = window.visualViewport;
-    if (!vv || !containerEl) return 0;
-    const kh = Math.max(0, window.innerHeight - (vv.height || 0));
-    const canvasH = containerEl.clientHeight; // layout height — a translateY can't change it
-    const cur = getCursorPixel();
-    const cursorBottom = cur ? cur.y + cur.h : canvasH;
-    return keyboardShiftPx({
-      keyboardHeightPx: kh,
-      gapBelowCanvasPx: gapBelowCanvas,
-      cursorFromCanvasBottomPx: Math.max(0, canvasH - cursorBottom),
-      gapPx: KB_GAP_PX,
+    if (!vv || !containerEl) return null;
+    return terminalViewportHeightPx({
+      layoutHeightPx: window.innerHeight,
+      visualHeightPx: vv.height || 0,
+      visualOffsetTopPx: vv.offsetTop || 0,
+      containerTopPx: containerTopWhenIdle,
+      chromeBelowPx: gapBelowCanvas,
+      minHeightPx: KB_MIN_TERM_PX,
     });
   }
 
-  /** Re-measure the stable container-bottom → layout-bottom gap. Safe only while
-   *  the keyboard is hidden (keyboardOffset === 0): no transform applied. */
+  /** 重测容器上下两侧的稳定几何。只在键盘收起时安全——那时没有自适配高度介入。 */
   function measureGapBelowCanvas(): void {
-    if (!containerEl || keyboardOffset !== 0) return;
+    if (!containerEl || keyboardHeight !== null) return;
     const r = containerEl.getBoundingClientRect();
+    containerTopWhenIdle = Math.round(r.top);
     gapBelowCanvas = Math.max(0, Math.round(window.innerHeight - r.bottom));
   }
 
@@ -912,20 +907,16 @@
     if (!vv) return;
     function onViewportResize() {
       if (!vv) return;
-      const kh = Math.max(0, window.innerHeight - (vv.height || 0));
-      if (kh <= 0) {
-        keyboardVisible = false;
-        keyboardOffset = 0;
-        scheduleGapRemeasure(); // refresh once the un-shift settles (guarded)
+      const next = computeTerminalHeight();
+      if (next === null) {
+        keyboardHeight = null;
+        scheduleGapRemeasure(); // 等布局回弹稳定后再重测（自带 guard）
         return;
       }
       // First show: snap the terminal to the prompt so the anchored cursor is
       // the live input row. Done once per show — not on every slide-in resize.
-      if (!keyboardVisible) {
-        keyboardVisible = true;
-        manager.scrollToBottom(paneId);
-      }
-      keyboardOffset = computeKeyboardOffset();
+      if (keyboardHeight === null) manager.scrollToBottom(paneId);
+      keyboardHeight = next;
     }
     vv.addEventListener('resize', onViewportResize);
     measureGapBelowCanvas();
@@ -945,11 +936,11 @@
     return () => window.removeEventListener('orientationchange', onOrientation);
   });
 
-  // iter-61 WebGPU host 模式：keyboardOffset 是 transform（不改布局尺寸），
-  // ResizeObserver 不触发，但 GPU scissor 以容器 bbox 相对 host 画布计算——
-  // 位移后必须显式重算。容器有 200ms transform 过渡，故立即 + 过渡结束后各校一次。
+  // §kb-height：高度变了要重新 fit（网格行数变 → PTY resize），GPU scissor 也随之
+  // 重算。高度是真布局变化，ResizeObserver 本可捕获，但显式调一次更早收敛；240ms
+  // 后再校一次，覆盖键盘滑入动画期间视觉视口的连续变化。
   $effect(() => {
-    void keyboardOffset;
+    void keyboardHeight;
     if (!attached) return;
     manager.viewportChanged(paneId);
     const t = setTimeout(() => manager.viewportChanged(paneId), 240);
@@ -965,7 +956,7 @@
   onmousemove={handleMouseMove}
   onmouseup={handleMouseUp}
   oncontextmenu={handleContextMenu}
-  style="transform: translateY(-{keyboardOffset}px)"
+  style={keyboardHeight === null ? '' : `height:${keyboardHeight}px;flex:0 0 auto`}
 >
   {#if !attached}
     <div class="loading">{$t('mobile.initializingTerminal')}</div>
@@ -1012,7 +1003,9 @@
 </div>
 
 <style>
-  .container{position:relative;flex:1;overflow:hidden;background:var(--rg-bg);touch-action:manipulation;transition:transform .2s ease}
+  /* §kb-height：键盘弹出时由内联 `height` 接管（见脚本）；过渡放在 height 上，
+     transform 已不再使用。 */
+  .container{position:relative;flex:1;overflow:hidden;background:var(--rg-bg);touch-action:manipulation;transition:height .18s ease}
   /* Near-invisible input sink parked at the cursor. pointer-events:none keeps it
      from stealing canvas clicks. Opacity must be >0 so the IME candidate window
      anchors to a detectable element. */

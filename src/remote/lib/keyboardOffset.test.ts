@@ -1,131 +1,56 @@
 import { describe, it, expect } from 'vitest';
-import { keyboardShiftPx } from './keyboardOffset';
+import { terminalViewportHeightPx } from './keyboardOffset';
 
-const GAP = 8;
+const MIN = 48;
 
-describe('keyboardShiftPx (mobile soft-keyboard canvas shift)', () => {
-  it('returns 0 when the keyboard is hidden (keyboardHeight = 0)', () => {
-    // Arrange
-    const input = {
-      keyboardHeightPx: 0,
-      gapBelowCanvasPx: 60,
-      cursorFromCanvasBottomPx: 0,
-      gapPx: GAP,
-    };
+/** 一台「布局 800、底部 Tab 56、终端从 y=100 起」的典型手机。 */
+const phone = (visualHeightPx: number, visualOffsetTopPx = 0) => ({
+  layoutHeightPx: 800,
+  visualHeightPx,
+  visualOffsetTopPx,
+  containerTopPx: 100,
+  chromeBelowPx: 56,
+  minHeightPx: MIN,
+});
 
-    // Act
-    const shift = keyboardShiftPx(input);
-
-    // Assert
-    expect(shift).toBe(0);
+describe('terminalViewportHeightPx（手机软键盘下的终端高度自适配）', () => {
+  it('键盘收起返回 null —— 高度交还 flex:1', () => {
+    expect(terminalViewportHeightPx(phone(800))).toBeNull();
   });
 
-  it('returns 0 for a negative keyboard height (degenerate viewport math)', () => {
-    expect(
-      keyboardShiftPx({
-        keyboardHeightPx: -120,
-        gapBelowCanvasPx: 0,
-        cursorFromCanvasBottomPx: 0,
-        gapPx: GAP,
-      }),
-    ).toBe(0);
+  it('退化输入（视觉视口反而更高）也返回 null，不产生诡异高度', () => {
+    expect(terminalViewportHeightPx(phone(900))).toBeNull();
+    expect(terminalViewportHeightPx(phone(Number.NaN))).toBeNull();
   });
 
-  it('lifts the cursor to gapPx above the keyboard when cursor sits at the canvas bottom', () => {
-    // Arrange: keyboard 300px tall, canvas flush to the layout bottom (no bottom
-    // bar), cursor on the last row.
-    const input = {
-      keyboardHeightPx: 300,
-      gapBelowCanvasPx: 0,
-      cursorFromCanvasBottomPx: 0,
-      gapPx: GAP,
-    };
-
-    // Act
-    const shift = keyboardShiftPx(input);
-
-    // Assert: shift = kh + gap = 308.
-    expect(shift).toBe(308);
+  it('键盘弹出后容器收到「可见区底边 - 顶边 - 底部 chrome」', () => {
+    // 键盘 300 → 视觉视口 500；可见底边 500；500 - 100 - 56 = 344。
+    expect(terminalViewportHeightPx(phone(500))).toBe(344);
   });
 
-  it('subtracts the bottom-bar gap (fixes the old full-keyboard over-shift)', () => {
-    // Arrange: a 56px bottom tab bar sits between the canvas and the keyboard.
-    const withBar = keyboardShiftPx({
-      keyboardHeightPx: 300,
-      gapBelowCanvasPx: 56,
-      cursorFromCanvasBottomPx: 0,
-      gapPx: GAP,
-    });
-    const withoutBar = keyboardShiftPx({
-      keyboardHeightPx: 300,
-      gapBelowCanvasPx: 0,
-      cursorFromCanvasBottomPx: 0,
-      gapPx: GAP,
-    });
-
-    // Assert: the bar's height is removed from the shift, so the input row lands
-    // just above the keyboard instead of being lifted a full bar-height too high.
-    expect(withBar).toBe(withoutBar - 56);
-    expect(withBar).toBe(252);
+  it('页面被上推时（offsetTop>0）按可见区底边算，而不是按视觉高', () => {
+    // iOS 聚焦输入框会把页面上推：视觉视口高 500，但整体下移 40。
+    expect(terminalViewportHeightPx(phone(500, 40))).toBe(384);
   });
 
-  it('shifts less when the cursor is already above the canvas bottom', () => {
-    // Arrange: cursor 120px up from the canvas bottom (e.g. a TUI status bar below).
-    const shift = keyboardShiftPx({
-      keyboardHeightPx: 300,
-      gapBelowCanvasPx: 0,
-      cursorFromCanvasBottomPx: 120,
-      gapPx: GAP,
-    });
-
-    // Assert: kh + gap - 120 = 188.
-    expect(shift).toBe(188);
-  });
-
-  it('clamps to 0 when the cursor already clears the keyboard (no negative shift)', () => {
-    // Arrange: a tall bottom gap + high cursor already keep the input visible.
-    const shift = keyboardShiftPx({
-      keyboardHeightPx: 100,
-      gapBelowCanvasPx: 200,
-      cursorFromCanvasBottomPx: 50,
-      gapPx: GAP,
-    });
-
-    // Assert: 100 + 8 - 200 - 50 < 0 → clamped.
-    expect(shift).toBe(0);
-  });
-
-  it('is bounded by keyboardHeight + gap and never exceeds it', () => {
-    // Regression guard for the "blank terminal" symptom: with non-negative gaps,
-    // the shift can never exceed kh + gapPx, so the canvas can never be flung
-    // entirely off-screen the way the old transform-coupled formula could.
-    for (const kh of [120, 260, 360, 520]) {
-      for (const gapBelow of [0, 40, 90]) {
-        for (const cursorUp of [0, 30, 150]) {
-          const shift = keyboardShiftPx({
-            keyboardHeightPx: kh,
-            gapBelowCanvasPx: gapBelow,
-            cursorFromCanvasBottomPx: cursorUp,
-            gapPx: GAP,
-          });
-          expect(shift).toBeGreaterThanOrEqual(0);
-          expect(shift).toBeLessThanOrEqual(kh + GAP);
-        }
-      }
+  it('键盘越高，终端越矮 —— 单调，且永不越过键盘顶边', () => {
+    let prev = Number.POSITIVE_INFINITY;
+    for (const kb of [200, 260, 320, 420]) {
+      const h = terminalViewportHeightPx(phone(800 - kb))!;
+      expect(h).toBeLessThan(prev);
+      // 容器底边 = 100 + h + 56，必须落在可见区底边（800-kb）之内。
+      expect(100 + h + 56).toBeLessThanOrEqual(800 - kb);
+      prev = h;
     }
   });
 
-  it('is a pure function — identical inputs always yield identical output', () => {
-    // The root-cause regression came from a hidden dependency on the live
-    // (animating) transform. This pins that the result depends ONLY on its args.
-    const input = {
-      keyboardHeightPx: 333,
-      gapBelowCanvasPx: 47,
-      cursorFromCanvasBottomPx: 19,
-      gapPx: GAP,
-    };
-    const first = keyboardShiftPx(input);
-    const again = keyboardShiftPx({ ...input });
-    expect(again).toBe(first);
+  it('极端挤压时钳到下限，绝不给出 0/负高（否则 refit 会算出 0 行）', () => {
+    // 键盘吃掉 780 → 可见区只剩 20，可用高为负。
+    expect(terminalViewportHeightPx(phone(20))).toBe(MIN);
+  });
+
+  it('是纯函数：同输入恒同输出（旧实现正是因为读了动画中的 transform 才发散）', () => {
+    const input = phone(517, 13);
+    expect(terminalViewportHeightPx({ ...input })).toBe(terminalViewportHeightPx(input));
   });
 });
