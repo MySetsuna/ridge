@@ -41,7 +41,9 @@ getrandom = "0.2"
 # 可选：把移动 SPA 产物编进二进制（`embed-ui` feature，rdg CLI 用）。
 # `interpolate-folder-path`：`#[folder = "$CARGO_MANIFEST_DIR/../../static/remote"]`
 # 需要它才会展开环境变量（否则把 `$CARGO_MANIFEST_DIR` 当字面目录名→编译期报错）。
-rust-embed = { version = "8", optional = true, default-features = false, features = ["interpolate-folder-path"] }
+# `include-exclude`：桌面产物 `web-remote-dist` 里 `remote/`、`mobile/`、`docs/`、
+# 首页配图纯属冗余（`remote/` 就是 `static/remote` 的副本，已单独内嵌），排掉少嵌 ~3.5 MiB。
+rust-embed = { version = "8", optional = true, default-features = false, features = ["interpolate-folder-path", "include-exclude"] }
 
 [features]
 default = []
