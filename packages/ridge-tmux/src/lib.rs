@@ -35,6 +35,8 @@ use uuid::Uuid;
 // have a single source of truth (no duplicated route logic per host).
 #[cfg(feature = "http")]
 pub mod http;
+#[cfg(feature = "http")]
+pub mod mcp;
 
 /// 每个 native 面板输出环形缓冲上限（字节）。capture-pane 从这里取快照，喂一台
 /// 一次性 `Terminal` 重渲当前屏。256 KiB 足以覆盖一屏 + 一段滚动历史。
@@ -1108,6 +1110,53 @@ pub fn list_all_sessions() -> Vec<NativeSessionInfo> {
                 height: s.height,
                 attached,
             });
+        }
+    }
+    out
+}
+
+/// MCP 花名册里的一条 pane。无头 host 没有桌面那套 agent profile，身份就是
+/// 「会话:窗口.面板」+ 全局 `%id`；`flat_index` 是跨窗口拍平后的稳定序号，供
+/// MCP 的 `paneIndex` 寻址用（与 `%id` 二选一，语义同桌面）。
+#[derive(Debug, Clone, Serialize)]
+pub struct RosterPane {
+    pub flat_index: usize,
+    /// `%N` 形式的全局面板 id，可直接作 `target` 传回引擎。
+    pub pane_id: String,
+    pub session: String,
+    pub window: usize,
+    pub pane: usize,
+    pub title: String,
+    pub cwd: Option<String>,
+    pub width: u16,
+    pub height: u16,
+    /// 该 pane 是否已被 GUI 领养（summon）。
+    pub attached: bool,
+}
+
+/// 某 socket 上全部会话的 pane 拍平列表（MCP `ridge_get_team_profile` 的数据源）。
+pub fn roster_panes(socket: &str) -> Vec<RosterPane> {
+    let srv = registry().lock().unwrap();
+    let mut out = Vec::new();
+    let Some(sock) = srv.sockets.get(socket) else {
+        return out;
+    };
+    for s in &sock.sessions {
+        for (wi, w) in s.windows.iter().enumerate() {
+            for (pi, p) in w.panes.iter().enumerate() {
+                out.push(RosterPane {
+                    flat_index: out.len(),
+                    pane_id: format!("%{}", p.global_id),
+                    session: s.name.clone(),
+                    window: wi,
+                    pane: pi,
+                    title: w.name.clone(),
+                    cwd: p.cwd.clone(),
+                    width: p.width,
+                    height: p.height,
+                    attached: p.attachment.is_some(),
+                });
+            }
         }
     }
     out

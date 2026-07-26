@@ -130,6 +130,9 @@ ridge-term = { path = "../packages/ridge-term", default-features = false }
 # dep does not pull anything new into the desktop binary's graph beyond
 # serde/serde_json/tokio/thiserror/tracing (all already present).
 ridge-core = { path = "../packages/ridge-core" }
+# 内置 MCP server：协议 + 工具语义 + WS/HTTP 传输，与无头 rdg 共用同一个 crate；
+# 桌面这边只在 `teammate::mcp` 实现 `McpHost`（怎么动本工作区的 pane）。
+ridge-mcp = { path = "../packages/ridge-mcp", features = ["axum-transport"] }
 
 # S-decouple: the headless tmux session engine, extracted out of
 # `teammate/native.rs` into a standalone Tauri-free crate so the SAME engine

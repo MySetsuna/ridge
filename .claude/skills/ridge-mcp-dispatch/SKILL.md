@@ -7,7 +7,8 @@ description: 教大模型使用 Ridge 终端内置的 MCP server 在多个终端
 
 Ridge（桌面 app）与 `rdg`（无头 host）内建一个 **MCP server**，让运行在某个 pane 里的
 你，去驱动**同一工作区其它 pane** 里的 teammate agent：拆分屏、派活、传数据、读上下文。
-协议是 JSON-RPC 2.0 over WebSocket。
+协议是 JSON-RPC 2.0，三条传输：**stdio（`rdg mcp`）/ HTTP（`POST /api/v1/mcp`）/ WebSocket**。
+桌面与 rdg 是**同一份实现**（crate `ridge-mcp`），工具与资源完全对等。
 
 ## 1. 我在 Ridge 里吗？怎么连？
 
@@ -19,11 +20,15 @@ RIDGE_TEAMMATE_TOKEN  # 鉴权 token
 RIDGE_WORKSPACE_ID    # 发起方工作区 UUID（HTTP 放置路由需要，作 X-Ridge-Workspace 头）
 ```
 
-**MCP WebSocket 端点** = `RIDGE_TEAMMATE_URL` 把 `http` 换成 `ws`，再接 `/api/v1/mcp/ws`：
+**端点**（任选其一）：
 
 ```
-ws://127.0.0.1:<port>/api/v1/mcp/ws
+POST  http://127.0.0.1:<port>/api/v1/mcp      # 一发一收 JSON-RPC，最省事
+ws://127.0.0.1:<port>/api/v1/mcp/ws           # 长连
+rdg mcp                                        # stdio 桥，端点/token 自动发现，端口漂移自愈
 ```
+
+给别的 MCP 客户端接入直接用：`claude mcp add ridge -- rdg mcp`。
 
 **鉴权**：升级请求带头 `x-ridge-token: <RIDGE_TEAMMATE_TOKEN>`（或 `Authorization: Bearer <token>`）。缺/错 → 401。
 
@@ -38,11 +43,13 @@ ws://127.0.0.1:<port>/api/v1/mcp/ws
 | `initialize` | 握手，返回 serverInfo/capabilities。可选，直接调工具也行。 |
 | `tools/list` | 列出全部工具规格。 |
 | `tools/call` | `params: { "name": <tool>, "arguments": {...} }` 调工具。 |
+| `resources/list` · `resources/templates/list` | 列可读资源。 |
 | `resources/read` | `params: { "uri": "ridge://..." }` 读资源。 |
+| `ping` | 心跳。通知（无 `id`）**不会有响应**（HTTP 回 202）。 |
 
 请求形如 `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{...}}`；一发一收。
 
-## 3. 六个工具（`tools/call` 的 name）
+## 3. 九个工具（`tools/call` 的 name）——全部已路由
 
 | name | arguments | 作用 / 语义 |
 |---|---|---|
@@ -55,16 +62,24 @@ ws://127.0.0.1:<port>/api/v1/mcp/ws
 
 **`target_pane_id` 寻址**：既接受花名册回传的 `paneId`（UUID 字符串），也接受 `paneIndex`（叶子数字索引，或其字符串）。UUID 会先校验它仍是当前活动工作区的叶子 pane。
 
-> 已知偏差：`ridge_stash_data` 的 `tools/list` 规格里字段名写作 `content_base64`，但服务端实际
-> 读的是 `data`（纯文本，非 base64）。**按 `data` 传**，别按规格里的 `content_base64`。
+此外三个（跨 agent 协作用）：
 
-## 4. 四个资源（`resources/read` 的 uri）
+| name | arguments | 作用 / 语义 |
+|---|---|---|
+| `ridge_capture_pane` | `{target_pane_id, lines?}` | 抓该 pane **渲染后**的屏幕文本（默认 80 行）。监控队友进展就用它，不要去读原始 scrollback。 |
+| `ridge_inbox_read` | `{target_pane_id, peek?}` | 取走投递给该 pane 的消息（`ridge_send_to_teammate` 会自动留副本）。异构 agent 的异步回话通道；取走即清空，`peek:true` 只看。 |
+| `ridge_report_progress` | `{target_pane_id, status, detail?}` | 主动汇报进展，桌面落前端进度事件（无头 host 回 `isError`）。 |
+
+> 错误语义：工具名不存在 → `-32601`；**宿主不支持该能力**（如无头 host 无编组）→ 正常 result 带
+> `isError: true`，据此改道即可，不必当协议崩坏。
+
+## 4. 四个资源（`resources/read` 的 uri，`resources/list` 可发现）
 
 | uri | 内容 |
 |---|---|
 | `ridge://workspace/active-panes` | 当前工作区花名册（同 `ridge_get_team_profile`，含 paneId+paneIndex）。 |
-| `ridge://workspace/git-status` | 工作区 git 状态。 |
-| `ridge://workspace/editor-context` | 当前编辑器上下文（打开的文件等）。 |
+| `ridge://workspace/git-status` | 各 pane 所在仓库根 + 分支（只读 `.git/HEAD`，**不 spawn git**）。 |
+| `ridge://workspace/editor-context` | 各 pane 的标题 / cwd / 忙闲。 |
 | `ridge://cache/<id>` | 回读 `ridge_stash_data` 存入的 blob。 |
 
 ## 5. 典型派发流程
@@ -73,7 +88,9 @@ ws://127.0.0.1:<port>/api/v1/mcp/ws
 2. 没有合适的空 pane → `ridge_split_pane {direction, role}` 开一个。
 3. `ridge_delegate_task {target_pane_id: <paneId 或 index>, objective}` 把子任务派下去（pane 转 Busy）。
 4. 需要给多个 agent 共享大段上下文 → `ridge_stash_data {data}` 拿 `ridge://cache/<id>`，把 URI 放进 objective 里让对方 `resources/read` 回读，避免把大块内容塞进消息。
-5. 派发是 fire-and-forget：**不要**卡住等返回；对方完成会经 `report-progress` 回流到前端进度事件。你继续做别的，或轮询花名册状态。
+5. 派发是 fire-and-forget：**不要**卡住等返回。要看进展就轮询 `ridge_capture_pane`（渲染后屏幕）
+   或花名册状态；对方也可主动 `ridge_report_progress`，留言走 `ridge_inbox_read` 取。
+6. 服务端**没有**主动推送（`notifications/progress` 未实现）——别等通知，自己轮询。
 
 ## 6. 不想开 WS？HTTP 也有一份（curl 友好）
 

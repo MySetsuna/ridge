@@ -69,6 +69,31 @@ pub enum UriError {
     EmptyCacheId,
 }
 
+// ─── git 只读探测（两个宿主共用）─────────────────────────────────────────────
+
+/// 向上找最近的 `.git`（目录或 worktree 文件）。**纯 fs 探测，不 spawn git**——
+/// `ridge://workspace/git-status` 可能被 agent 高频调用，见 CLAUDE.md「git 进程风暴」。
+pub fn git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut cur = Some(start);
+    while let Some(dir) = cur {
+        if dir.join(".git").exists() {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// 从 `.git/HEAD` 读当前分支名；detached HEAD 时回短 sha。纯 fs 读。
+pub fn git_branch(root: &std::path::Path) -> Option<String> {
+    let head = std::fs::read_to_string(root.join(".git").join("HEAD")).ok()?;
+    let head = head.trim();
+    Some(match head.strip_prefix("ref: refs/heads/") {
+        Some(b) => b.to_string(),
+        None => head.chars().take(12).collect(),
+    })
+}
+
 // ─── StashStore ──────────────────────────────────────────────────────────────
 
 /// 内存 Stash 中转站：以 UUID v4 为键存储二进制 blob，支持条数与总字节双门限 FIFO 淘汰。

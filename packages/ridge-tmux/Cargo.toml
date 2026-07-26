@@ -39,8 +39,11 @@ parking_lot = "0.12"
 # native `/api/v1/tmux/*` surface, so BOTH the desktop teammate server and the
 # headless `ridge-cli` host mount ONE shared router (no duplicated handlers).
 # Off by default — the bare engine stays dep-light for pure embedders.
-axum = { version = "0.7", optional = true }
+axum = { version = "0.7", features = ["ws"], optional = true }
 serde_json = { version = "1", optional = true }
+# 内置 MCP：协议分发、工具语义、WS/HTTP 传输全部来自这一个 crate，桌面与本
+# 无头 host 用的是同一份实现——这里只提供「怎么动本引擎的 pane」的宿主实装。
+ridge-mcp = { path = "../ridge-mcp", features = ["axum-transport"], optional = true }
 
 [features]
-http = ["dep:axum", "dep:serde_json", "tokio/net", "tokio/rt"]
+http = ["dep:axum", "dep:serde_json", "dep:ridge-mcp", "tokio/net", "tokio/rt"]
