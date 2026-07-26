@@ -154,13 +154,23 @@ fn prepare_zsh_zdotdir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// Phase 1: 建 PTY 对 + 登记 `PendingSpawn`。
+///
+/// 函数体是**阻塞**的（openpty + 写 shell 集成脚本）。`async fn` 命令在 Tauri 的
+/// tokio 多线程运行时上跑，阻塞体会占满一个 worker；多个 pane 同时挂载时（每个工作区
+/// 的每个分屏都要建一次）会把 worker 全部占住，**其余所有 invoke 排队** —— 前端表现
+/// 就是整个交互面板僵住（iter-62 多 tab 卡死的一环）。故下沉到 `spawn_blocking`。
 #[tauri::command]
 pub async fn create_pane(
     state: State<'_, AppState>,
     pane_id: String,
     shell: Option<String>,
 ) -> Result<(), String> {
-    create_pane_inner(&state, pane_id, shell).map_err(|e| e.to_string())
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || create_pane_inner(&st, pane_id, shell))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 /// T14：检索系统可用 shell。返回 `(id, label, program)` 三元组列表。
@@ -807,6 +817,9 @@ pub fn ensure_pane_pty_workspace(
 /// `Ok(())` immediately if the pane is already running. Called by the
 /// front-end **after** xterm.fitAddon has reported real container dimensions
 /// so the child shell's initial size matches what the user sees.
+/// 同 `create_pane`：函数体阻塞（`slave.spawn_command` 起一个真 shell，Windows 上
+/// ConPTY + 用户 profile 脚本动辄几百毫秒），必须离开 async worker，否则 N 个 pane
+/// 并发激活会把运行时占满、拖死全部 IPC。
 #[tauri::command]
 pub async fn activate_pane_pty(
     state: State<'_, AppState>,
@@ -816,12 +829,17 @@ pub async fn activate_pane_pty(
     rows: Option<u16>,
     cols: Option<u16>,
 ) -> Result<(), String> {
-    activate_pane_pty_inner(state, app, workspace_id, pane_id, rows, cols)
-        .map_err(|e| e.to_string())
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        activate_pane_pty_inner(&st, app, workspace_id, pane_id, rows, cols)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 fn activate_pane_pty_inner(
-    state: State<'_, AppState>,
+    state: &AppState,
     app: tauri::AppHandle,
     workspace_id: String,
     pane_id: String,
@@ -831,7 +849,7 @@ fn activate_pane_pty_inner(
     let workspace_id = Uuid::parse_str(&workspace_id)
         .map_err(|_| AppError::PtyError("invalid workspace_id".into()))?;
     let pane_id = parse_pane_id(&pane_id)?;
-    activate_pane_pty_state(state.inner(), Some(&app), workspace_id, pane_id, rows, cols)
+    activate_pane_pty_state(state, Some(&app), workspace_id, pane_id, rows, cols)
 }
 
 /// Phase 2 core, decoupled from Tauri's `State`/`AppHandle` so non-front-end
@@ -1783,8 +1801,13 @@ async fn kill_pane_inner(state: State<'_, AppState>, pane_id: String) -> Result<
 /// `get_pane_scrollback_before` to page further up.
 ///
 /// See `docs/TERMINAL_SCROLLBACK.md` for the overall design.
+///
+/// `async` 是刻意的（iter-62 多 tab 卡死）：Tauri 里同步 `fn` 命令在**主线程**执行，
+/// 而每个 pane 挂载都要拉一次 256 KiB 的 tail —— 一个工作区多 pane、多工作区并发挂载
+/// 时，几十次「取块 + 序列化数 MB 字符串」全排在主线程上，交互面板整体僵住。函数体
+/// 本身仍是同步内存拷贝，仅换到异步运行时的工作线程上跑。
 #[tauri::command]
-pub fn get_pane_scrollback_tail(
+pub async fn get_pane_scrollback_tail(
     state: State<'_, AppState>,
     pane_id: String,
     max_bytes: usize,
