@@ -88,6 +88,28 @@ pub(crate) fn topology_json(ws: &Workspace, wid: Uuid) -> Value {
     })
 }
 
+/// pane 的实时 OSC 标题是否**有信息量**，值得拿去覆盖成员显示名。
+///
+/// 背景（iter-62 e2e 实测）：Windows 上 shell 自己会把标题设成
+/// `管理员: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`。
+/// 自动识别出来的成员本该显示 `claude`，却被这种「壳自报家门」的标题盖掉，
+/// 花名册上一排全是 powershell 路径，谁是谁完全看不出来。
+///
+/// 判据保守：只把**看起来就是个可执行文件路径**的标题判为无信息量；agent 自己
+/// 设的标题（`claude — 正在编辑 foo.rs` 之类）一律保留。
+pub(crate) fn is_meaningful_title(title: &str) -> bool {
+    let t = title.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let lower = t.to_ascii_lowercase();
+    // `...\powershell.exe` / `/bin/bash` —— 末段是个可执行名且整体像路径。
+    let looks_like_path = lower.contains('\\') || lower.contains('/');
+    let last = lower.rsplit(['\\', '/']).next().unwrap_or(&lower);
+    let is_exe = last.ends_with(".exe") || matches!(last, "bash" | "zsh" | "sh" | "fish" | "cmd");
+    !(looks_like_path && is_exe)
+}
+
 /// 自动入册的 agent id 前缀。人工「标记为 agent」的 id 不带此前缀，
 /// 故自动同步只回收自己造的条目，绝不动用户手标的成员。
 pub(crate) const AUTO_AGENT_PREFIX: &str = "auto:";
@@ -374,7 +396,9 @@ pub fn inject_roster_titles(topology: &mut Value, ws: &crate::state::Workspace) 
             .get(&pid)
             .and_then(|h| h.parser.lock().title())
             .filter(|t| !t.trim().is_empty());
-        let t = live.or_else(|| ws.teammate_pane_titles.get(&pid).cloned());
+        let t = live
+            .filter(|t| is_meaningful_title(t))
+            .or_else(|| ws.teammate_pane_titles.get(&pid).cloned());
         if let Some(t) = t {
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert("title".into(), json!(t));
@@ -701,6 +725,28 @@ mod tests {
         let auto = roster.iter().find(|m| m["isAuto"] == true).expect("auto member");
         assert_eq!(auto["name"], "codex");
         assert!(roster.iter().any(|m| m["isAuto"] == false));
+    }
+
+    /// iter-62 e2e 实测：Windows shell 自报的标题会把自动识别成员的名字盖成
+    /// 一串 powershell 路径。这类「就是个可执行文件路径」的标题必须判为无信息量。
+    #[test]
+    fn shell_self_titles_are_not_meaningful() {
+        for t in [
+            "管理员: C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "C:\\Program Files\\Git\\bin\\bash.exe",
+            "/bin/zsh",
+            "   ",
+        ] {
+            assert!(!is_meaningful_title(t), "should be ignored: {t}");
+        }
+        for t in [
+            "claude — 正在改 serve.rs",
+            "codex: running tests",
+            "npm run dev",
+            "claude",
+        ] {
+            assert!(is_meaningful_title(t), "should be kept: {t}");
+        }
     }
 
     /// 展示用 ANSI 剥离：CSI / OSC 都要吃掉，只留最后几行正文。
