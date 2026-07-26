@@ -210,7 +210,27 @@ pub fn run() {
                 tracing::info!(target: "ridge::init", phase = 3, "setup: building splash init script");
                 let splash_init_script = theme::build_splash_init_script(app.handle(), &app_data_dir);
                 tracing::info!(target: "ridge::init", phase = 4, "setup: building and showing main window");
-                let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+                let mut window_builder =
+                    WebviewWindowBuilder::new(app, "main", WebviewUrl::default());
+                // §CDP 可测性（iter-62）：`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 环境变量
+                // 只在**宿主没有显式设置**附加参数时才被 WebView2 采纳；Tauri/wry 默认就会传
+                // 一串自己的附加参数，于是环境变量被静默吞掉——`pnpm tauri:dev:cdp` 一直起不来
+                // CDP 端点（无 `DevToolsActivePort`，实测 WebView2 150 的 dev 进程命令行里
+                // 压根没有 `--remote-debugging-*`），docs/CDP_TESTING.md 记载的用法名存实亡。
+                // 显式把该环境变量透传成 additional_browser_args，调试口才真的打开；
+                // 未设该变量时不调用此方法，行为与之前逐字一致（发布版不受影响）。
+                #[cfg(windows)]
+                if let Ok(extra) = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") {
+                    if !extra.trim().is_empty() {
+                        tracing::info!(
+                            target: "ridge::init",
+                            args = %extra,
+                            "applying WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
+                        );
+                        window_builder = window_builder.additional_browser_args(&extra);
+                    }
+                }
+                let window = window_builder
                     .title("ridge")
                     .inner_size(800.0, 600.0)
                     .decorations(false)
