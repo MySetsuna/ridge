@@ -16,9 +16,15 @@ use anyhow::{Context, Result};
 
 const PID_FILE: &str = "daemon.pid";
 
+/// PID 文件与 `auth.json` / `rdg.log` 同根。
+///
+/// 此前这里用 `BaseDirs::config_dir().join("ridge")`，而 `config::auth_path()` 用
+/// `ProjectDirs("ridge").config_dir()` —— Windows 上前者是 `%APPDATA%\ridge`、后者是
+/// `%APPDATA%\ridge\config`，凭据与 PID 各写一处，排障时对不上账。
 fn config_dir() -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|d| d.config_dir().join("ridge"))
+    crate::config::auth_path()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
@@ -138,6 +144,12 @@ pub fn stop_daemon() -> Result<()> {
 #[cfg(windows)]
 pub fn stop_daemon() -> Result<()> {
     let pid = read_pid().context("未找到 PID 文件")?;
+    // 守护跑在**本进程**的 tokio 上时 `start_daemon` 记的就是自己的 PID；taskkill 它
+    // 等于自杀（用户按「Stop daemon」整个 rdg 消失）。此路径只处理外部进程。
+    if pid == std::process::id() {
+        remove_pid();
+        anyhow::bail!("守护运行在本进程内，请由调用方停止其任务而非结束进程");
+    }
     Command::new("taskkill")
         .args(["/F", "/PID", &pid.to_string()])
         .status()
