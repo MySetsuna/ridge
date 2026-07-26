@@ -133,6 +133,27 @@
    *  single `git commit` writes HEAD + index + refs in quick succession;
    *  coalescing 250ms ensures one refresh per user operation, not 3–5. */
   const watcherDebounce = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 自反馈熔断（2026-07-26 git 风暴二道防线）：我们自己的 status/diff 探测会引起
+   *  .git 内部写入（fsmonitor cookie 等），若 watcher 事件与上次刷新间隔过近，视为
+   *  自身回声——合并到最小间隔之后再刷，杜绝「刷新→事件→刷新」永动。 */
+  const lastWatcherRefreshAt = new Map<string, number>();
+  const WATCHER_MIN_INTERVAL_MS = 2000;
+
+  /** watcher 触发的刷新统一入口：250ms 合并突发 + 每 repo ≥2s 最小间隔。 */
+  function scheduleWatcherRefresh(root: string): void {
+    const prev = watcherDebounce.get(root);
+    if (prev) clearTimeout(prev);
+    const since = Date.now() - (lastWatcherRefreshAt.get(root) ?? 0);
+    const delay = Math.max(250, WATCHER_MIN_INTERVAL_MS - since);
+    watcherDebounce.set(
+      root,
+      setTimeout(() => {
+        watcherDebounce.delete(root);
+        lastWatcherRefreshAt.set(root, Date.now());
+        void refreshStatus(root);
+      }, delay)
+    );
+  }
 
   /** Cancel the in-flight discovery scan (if any) so it stops issuing git
    *  calls. Safe to call when nothing is running. */
@@ -1661,15 +1682,7 @@ onMount(() => {
       if (best) hit.add(best);
     }
     for (const root of hit) {
-      const prev = watcherDebounce.get(root);
-      if (prev) clearTimeout(prev);
-      watcherDebounce.set(
-        root,
-        setTimeout(() => {
-          watcherDebounce.delete(root);
-          void refreshStatus(root);
-        }, 250)
-      );
+      scheduleWatcherRefresh(root);
     }
   });
 
@@ -1682,19 +1695,11 @@ onMount(() => {
         unlistenRepoChanged = await listen<string>('scm-repo-changed', (evt) => {
           const root = evt.payload;
           if (!root) return;
-          const prev = watcherDebounce.get(root);
-          if (prev) clearTimeout(prev);
-          watcherDebounce.set(
-            root,
-            setTimeout(() => {
-              watcherDebounce.delete(root);
-              void refreshStatus(root);
-              // Graph NOT refreshed here — external git changes (e.g. terminal
-              // commit) would cause rapid auto-reloads. Graph updates only on:
-              // manual refresh button or SCM-panel git operations (commit,
-              // branch switch, sync). Initial discovery handles rootsChanged.
-            }, 250)
-          );
+          // Graph NOT refreshed here — external git changes (e.g. terminal
+          // commit) would cause rapid auto-reloads. Graph updates only on:
+          // manual refresh button or SCM-panel git operations (commit,
+          // branch switch, sync). Initial discovery handles rootsChanged.
+          scheduleWatcherRefresh(root);
         });
       } catch (e) {
         console.warn('listen scm-repo-changed failed', e);
