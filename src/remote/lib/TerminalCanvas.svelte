@@ -10,7 +10,12 @@
     decideTouchMouseGesture,
     decideTouchScroll,
   } from '@ridge/remote/shared/terminal/mobileTouchScroll';
-  import { imeCommitDelta } from '@ridge/remote/shared/terminal/imeDelta';
+  import {
+    imeCommitDelta,
+    updatePendingWord,
+    pendingWordBackspace,
+    trailingWord,
+  } from '@ridge/remote/shared/terminal/imeDelta';
 
   // P4 (2026-07-25): this component no longer owns a single `TerminalController`
   // + canvas. It is now the MOBILE INPUT-ADAPTATION LAYER over the SHARED
@@ -275,6 +280,8 @@
   // ── Virtual Keyboard (called from MainApp header) ──
   export function handleVirtualKey(key: string, ctrlKey: boolean, alt: boolean, shift: boolean) {
     if (!attached) return;
+    // G11：虚拟键盘同物理键界规则——Backspace 削已发词段，其余控制键清段。
+    pendingWord = key === 'Backspace' && !ctrlKey && !alt ? pendingWordBackspace(pendingWord) : '';
     const bytes = kEncodeKey(key, ctrlKey, alt, shift, false);
     if (bytes.length > 0) { onStdin(td.decode(bytes)); return; }
     const map: Record<string, string> = { Tab: '\t', Escape: '\x1b', Enter: '\r', Backspace: '\x7f', Delete: '\x1b[3~', Home: '\x1b[H', End: '\x1b[F', PageUp: '\x1b[5~', PageDown: '\x1b[6~', Insert: '\x1b[2~' };
@@ -476,6 +483,10 @@
   const RECENT_SENT_WINDOW_MS = 1200;
   let recentSent = '';
   let recentSentTime = 0;
+  // iter-60 G11 二修：已发送「当前词段」精确追踪（无时窗）。补全 commit 与它求
+  // 公共前缀只发差量；控制键/回车/粘贴置空，Backspace 削尾。时窗法实测漏
+  // `Ev`+停顿+选 `Everything` → `EvEverything`。
+  let pendingWord = '';
 
   function handleCompositionStart() {
     // §R4 IME: mark the input-start anchor + capture the preedit anchor cell.
@@ -509,13 +520,15 @@
       lastInputText = '';
       return;
     }
-    // iter-60 G11：自动补全提交去重——已逐字发送的当前词与 commit 求公共前缀，
-    // 只发「退格×N + 差量」（Spac + Space → 只发 e；Spac + Spice → ␡␡ice）。
-    // 差量含退格须走 raw onStdin（bracketed paste 会把 \x7f 变字面量）。
-    if (Date.now() - recentSentTime < RECENT_SENT_WINDOW_MS) {
-      const delta = imeCommitDelta(recentSent, data);
+    // iter-60 G11（二修，无时窗）：自动补全提交去重——已发送「当前词段」与
+    // commit 求公共前缀，只发「退格×N + 差量」（Spac+Space→e；Ev+Everything→
+    // erything；Spac+Spice→␡␡ice）。差量含退格须走 raw onStdin（bracketed
+    // paste 会把 \x7f 变字面量）。
+    {
+      const delta = imeCommitDelta(pendingWord, data);
       if (delta !== data) {
         if (delta) onStdin(delta);
+        pendingWord = trailingWord(data);
         recentSent = data;
         recentSentTime = Date.now();
         imeCommitExpect = data;
@@ -525,6 +538,7 @@
     }
     // Commit: encodePaste + ship to PTY via the registered dataHandler (onStdin).
     manager.paste(paneId, data);
+    pendingWord = trailingWord(data);
     // Arm dedup for the trailing `input` event that normally follows.
     imeCommitExpect = data;
     imeCommitExpectTime = Date.now();
@@ -550,21 +564,21 @@
       return;
     }
     // §1 Autocorrect / predictive replacement：旧行为是整帧丢弃（保字面），用户
-    // 点的修正词就此丢失。iter-60 G11 改为差量应用：与已发段求公共前缀，退格删
-    // 多余尾巴再补差量——修正生效且不重复。窗口外（无已发上下文）仍丢弃防误发。
+    // 点的修正词就此丢失。iter-60 G11 改为差量应用：与已发词段求公共前缀，退格
+    // 删多余尾巴再补差量——修正生效且不重复。无已发词段上下文时仍丢弃防误发。
     if (inputType === 'insertReplacementText') {
-      if (Date.now() - recentSentTime < RECENT_SENT_WINDOW_MS) {
-        const delta = imeCommitDelta(recentSent, text);
-        if (delta && delta !== text) {
-          onStdin(delta);
-          recentSent = text;
-          recentSentTime = Date.now();
-        }
+      const delta = imeCommitDelta(pendingWord, text);
+      if (delta && delta !== text) {
+        onStdin(delta);
+        pendingWord = trailingWord(text);
+        recentSent = text;
+        recentSentTime = Date.now();
       }
       return;
     }
     // §2 Sticky on-screen modifier armed → form a chord (Ctrl+C …) per character.
     if (anyMod()) {
+      pendingWord = ''; // G11：组合键=词界。
       const sm = consumeMods();
       for (const ch of text) {
         const bytes = kEncodeKey(ch, sm.ctrl, sm.alt, sm.shift, false);
@@ -573,6 +587,7 @@
       return;
     }
     onStdin(text);
+    pendingWord = updatePendingWord(pendingWord, text);
     lastInputText = text;
     lastInputTime = Date.now();
     recentSent = (Date.now() - recentSentTime < RECENT_SENT_WINDOW_MS ? recentSent : '') + text;
@@ -599,22 +614,27 @@
     }
     const specialKeys: Record<string, string> = { Enter: '\r', Escape: '\x1b', Tab: '\t', Insert: '\x1b[2~' };
     const shiftSpecial: Record<string, string> = { Tab: '\x1b[Z' };
-    if (e.shiftKey && shiftSpecial[e.key]) { e.preventDefault(); onStdin(shiftSpecial[e.key]); return; }
-    if (specialKeys[e.key]) { e.preventDefault(); onStdin(specialKeys[e.key]); return; }
+    // G11：控制键=词界。Backspace 削已发词段一格，其余控制/组合键直接清段——
+    // 光标/行内容已非我们可见，宁可放弃去重也不误退格。
+    if (e.shiftKey && shiftSpecial[e.key]) { e.preventDefault(); pendingWord = ''; onStdin(shiftSpecial[e.key]); return; }
+    if (specialKeys[e.key]) { e.preventDefault(); pendingWord = ''; onStdin(specialKeys[e.key]); return; }
     if (['Backspace','Delete','Home','End','PageUp','PageDown'].includes(e.key) || e.key.startsWith('F') && e.key.length >= 2) {
       e.preventDefault();
+      pendingWord = e.key === 'Backspace' ? pendingWordBackspace(pendingWord) : '';
       const bytes = kEncodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
       if (bytes.length > 0) onStdin(td.decode(bytes));
       return;
     }
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
+      pendingWord = '';
       const bytes = kEncodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
       if (bytes.length > 0) onStdin(td.decode(bytes));
       return;
     }
     if (e.key.length === 1) {
       e.preventDefault();
+      pendingWord = '';
       const bytes = kEncodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
       if (bytes.length > 0) onStdin(td.decode(bytes));
       else onStdin(e.key);
@@ -622,6 +642,7 @@
     }
     if (e.key.startsWith('Arrow')) {
       e.preventDefault();
+      pendingWord = '';
       const bytes = kEncodeKey(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
       if (bytes.length > 0) onStdin(td.decode(bytes));
       else {
@@ -634,6 +655,7 @@
   /** Encode arbitrary text as a bracketed paste and forward it to the host. */
   function sendPaste(text: string) {
     if (!attached || !text) return;
+    pendingWord = ''; // G11：粘贴=词界（粘贴内容不参与补全去重）。
     const bytes = kEncodePaste(text);
     if (bytes.length > 0) onStdin(td.decode(bytes));
   }
