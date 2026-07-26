@@ -14,9 +14,8 @@
   import { invoke } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-  import { Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Pause, Play, Users, Send } from 'lucide-svelte';
-  import { autoGrow } from '$lib/actions/autoGrow';
-  import { memberTasksStore, recordMemberTask } from './memberTasks';
+  import { Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Users } from 'lucide-svelte';
+  import AgentMemberRow from './AgentMemberRow.svelte';
   import { settingsStore } from '$lib/stores/settings';
   import { fileEditorStore } from '$lib/stores/fileEditor';
   import { workspaceSaveInfoStore, refreshWorkspaceSaveInfo } from '$lib/stores/paneTree';
@@ -129,9 +128,6 @@
     createdAt: number;
   }
   let hitlPending = $state<HitlPendingItem[]>([]);
-  let memberInput = $state<Record<string, string>>({});
-  let answerOpen = $state<Record<string, boolean>>({});
-  let answerText = $state<Record<string, string>>({});
 
   function parseHitlPending(raw: unknown): HitlPendingItem[] {
     if (!Array.isArray(raw)) return [];
@@ -153,83 +149,6 @@
       (p) => p.initiator === m.paneId || p.initiator === m.name || p.initiator === m.id
     );
   }
-
-  /** 成员状态徽标：等待审批 > 已暂停 > 运行中 > 失联 > 空闲。 */
-  function statusLabel(m: TeammateProfile, hasPending: boolean): { text: string; cls: string } {
-    if (hasPending) return { text: '等待审批', cls: 'text-amber-300' };
-    switch (m.status) {
-      case 'Suspended':
-        return { text: '已暂停', cls: 'text-amber-300' };
-      case 'Working':
-        return { text: '运行中', cls: 'text-emerald-300' };
-      case 'Disappeared':
-        return { text: '失联', cls: 'text-[var(--rg-fg-muted)]' };
-      default:
-        return { text: '空闲', cls: 'text-[var(--rg-fg-muted)]' };
-    }
-  }
-
-  async function decideHitl(id: string, verdict: 'approve' | 'reject') {
-    try {
-      await invoke('resolve_hitl_request', { id, verdict, replacement: null });
-    } catch (e) {
-      console.warn('[agent-center] resolve_hitl_request failed', e);
-    }
-    await refresh();
-  }
-
-  /** 给成员直接派任务：写入其 pane stdin（\r 结尾 = 终端回车语义）。 */
-  async function sendToMember(m: TeammateProfile) {
-    const text = (memberInput[m.id] ?? '').trim();
-    if (!text || !m.paneId) return;
-    try {
-      await invoke('write_to_pty', { paneId: m.paneId, data: `${text}\r` });
-      recordMemberTask(m.id, text);
-      memberInput = { ...memberInput, [m.id]: '' };
-    } catch (e) {
-      console.warn('[agent-center] member dispatch failed', e);
-      showToast('向该成员投递失败', 'error');
-    }
-  }
-
-  // 「最近回答」= 该 pane scrollback 尾部（剥 ANSI 后的纯文本，取末 4000 字）。
-  const ANSWER_TAIL_BYTES = 16 * 1024;
-  function stripAnsi(s: string): string {
-    return s
-      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-      .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
-      .replace(/\x1b[@-Z\\-_]/g, '')
-      .replace(/\r/g, '');
-  }
-  async function toggleAnswer(m: TeammateProfile) {
-    const open = !answerOpen[m.id];
-    answerOpen = { ...answerOpen, [m.id]: open };
-    if (!open || !m.paneId) return;
-    try {
-      const chunk = await invoke<{ bytes?: number[] }>('get_pane_scrollback_tail', {
-        paneId: m.paneId,
-        maxBytes: ANSWER_TAIL_BYTES,
-      });
-      const raw = new TextDecoder().decode(new Uint8Array(chunk?.bytes ?? []));
-      const clean = stripAnsi(raw)
-        .split('\n')
-        .map((l) => l.trimEnd())
-        .join('\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-      answerText = { ...answerText, [m.id]: clean.slice(-4000) || '（暂无输出）' };
-    } catch {
-      answerText = { ...answerText, [m.id]: '（读取失败）' };
-    }
-  }
-
-  // iter-60 G6：本机进程指纹发现的 agent CLI。并入成员列表「未分组」展示（无独立卡）。
-  let discovered = $state<{ name: string; pid: number }[]>([]);
-  const discoveryOn = $derived($settingsStore.agentDiscoveryEnabled);
-  // 与 roster 同名者视为已入册，不重复展示。
-  const discoveredExtra = $derived(
-    discovered.filter((d) => !topology.roster.some((m) => m.name === d.name))
-  );
 
   async function refresh(opts?: { heavy?: boolean }) {
     pollGeneration += 1;
@@ -276,16 +195,6 @@
       hitlPending = parseHitlPending(await invoke('list_hitl_pending'));
     } catch {
       hitlPending = [];
-    }
-    // iter-60 G6：轻量 Agent 自动发现（后端 5s TTL 缓存；关开关即恒空零扫描）。
-    try {
-      discovered = discoveryOn
-        ? ((await invoke<{ name: string; pid: number }[]>('discover_cli_agents', {
-            enabled: true,
-          })) ?? [])
-        : [];
-    } catch {
-      discovered = [];
     }
     // Heavy: decisions / memory / git / audit — not every 3s (iter 50 perf).
     if (doHeavy) {
@@ -354,33 +263,6 @@
         title: '复制连接信息',
         message: typeof e === 'string' ? e : `获取连接信息失败：${e instanceof Error ? e.message : String(e)}`,
       });
-    }
-  }
-
-  function statusDot(t: TeammateProfile): string {
-    switch (t.status) {
-      case 'Working':
-        return 'bg-emerald-400 animate-pulse';
-      case 'Suspended':
-        return 'bg-amber-400';
-      case 'Disappeared':
-        return 'bg-[var(--rg-fg-muted)]/40';
-      default:
-        return 'bg-[var(--rg-fg-muted)]';
-    }
-  }
-
-  // G1：软暂停 / 恢复（agent 写路径门控；人类输入不受限）。
-  async function toggleSuspend(t: TeammateProfile) {
-    if (!workspaceId || !t.paneId) return;
-    try {
-      await invoke(t.status === 'Suspended' ? 'resume_agent' : 'suspend_agent', {
-        workspaceId,
-        paneId: t.paneId,
-      });
-      await refresh();
-    } catch (e) {
-      console.warn('[agent-center] suspend/resume failed', e);
     }
   }
 
@@ -602,7 +484,7 @@
             : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
           <Bot class="h-3.5 w-3.5" /> 成员
-          <span class="font-mono text-[10px] opacity-70">{topology.roster.length + (discoveryOn ? discoveredExtra.length : 0)}</span>
+          <span class="font-mono text-[10px] opacity-70">{topology.roster.length}</span>
         </button>
         <button
           type="button"
@@ -618,115 +500,36 @@
       </div>
 
       {#if teamTab === 'members'}
-        <!-- 成员聚合列表（iter-61 监控/干预中枢）：状态徽标 + 最近任务 + 最近回答
-             （默认折叠）+ 每成员输入框 + 待审批行内裁决 + 暂停/恢复。扁平无卡片。 -->
+        <!-- 成员聚合列表：成员由后端**自动识别**（分屏下真跑着 agent CLI 即入册），
+             行内容与编组 Tab 完全一致（共用 AgentMemberRow）。 -->
         <ul class="space-y-1.5">
           {#each topology.roster as m (m.id)}
             {@const grp = groupOfAgent(groupStore.groups, m.id)}
-            {@const pend = pendingFor(m)}
-            {@const st = statusLabel(m, pend.length > 0)}
-            {@const lastTask = $memberTasksStore[m.id]}
-            <li class="group rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]/60">
-              <div class="flex items-center gap-2">
-                <span class="h-1.5 w-1.5 rounded-full {statusDot(m)} shrink-0" title={m.status}></span>
-                <span class="min-w-0 flex-1 truncate text-[12px]" title={m.name}>{m.name}</span>
-                <span class="shrink-0 text-[9px] {st.cls}">{st.text}</span>
-                {#if grp}
-                  <span
-                    class="flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-medium"
-                    style="color:{grp.color};background:color-mix(in srgb, {grp.color} 16%, transparent)"
-                    title="所属编组：{grp.name}"
-                  >
-                    <span class="h-1.5 w-1.5 rounded-full" style="background:{grp.color}"></span>
-                    {grp.name}
-                  </span>
-                {:else}
-                  <span class="shrink-0 text-[9px] text-[var(--rg-fg-muted)]/60">未分组</span>
-                {/if}
-                <button
-                  class="hidden shrink-0 text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)] group-hover:block"
-                  title={m.status === 'Suspended' ? '恢复 agent 输入' : '暂停 agent 输入（人类输入不受限）'}
-                  onclick={() => toggleSuspend(m)}
-                >
-                  {#if m.status === 'Suspended'}<Play class="h-3 w-3" />{:else}<Pause class="h-3 w-3" />{/if}
-                </button>
-              </div>
-              {#if lastTask}
-                <p class="mt-0.5 pl-3.5 text-[10px] text-[var(--rg-fg-muted)] truncate" title={lastTask.text}>
-                  任务：{lastTask.text}
-                </p>
-              {/if}
-              {#each pend as p (p.id)}
-                <div class="mt-0.5 flex items-center gap-1.5 pl-3.5 text-[10px] text-amber-300">
-                  <span class="min-w-0 flex-1 truncate" title={p.reason}>审批：{p.reason || '高危操作待裁决'}</span>
-                  <button
-                    class="shrink-0 rounded border border-emerald-400/40 px-1.5 py-0.5 text-[9px] text-emerald-300 hover:bg-emerald-500/15"
-                    onclick={() => decideHitl(p.id, 'approve')}
-                  >批准</button>
-                  <button
-                    class="shrink-0 rounded border border-red-400/40 px-1.5 py-0.5 text-[9px] text-red-300 hover:bg-red-500/15"
-                    onclick={() => decideHitl(p.id, 'reject')}
-                  >驳回</button>
-                </div>
-              {/each}
-              {#if m.paneId}
-                <div class="mt-0.5 pl-3.5">
-                  <button
-                    class="text-[10px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
-                    onclick={() => toggleAnswer(m)}
-                  >最近回答 {answerOpen[m.id] ? '▾' : '▸'}</button>
-                  {#if answerOpen[m.id]}
-                    <pre
-                      class="mt-0.5 max-h-48 overflow-y-auto rg-scroll whitespace-pre-wrap break-words rounded bg-[var(--rg-bg)] px-1.5 py-1 font-mono text-[10px] leading-snug text-[var(--rg-fg-muted)]"
-                    >{answerText[m.id] ?? '…'}</pre>
-                  {/if}
-                  <div class="mt-1 flex items-end gap-1">
-                    <textarea
-                      rows="1"
-                      use:autoGrow={{ maxRows: 3, value: memberInput[m.id] ?? '' }}
-                      value={memberInput[m.id] ?? ''}
-                      oninput={(e) => (memberInput = { ...memberInput, [m.id]: e.currentTarget.value })}
-                      onkeydown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-                          e.preventDefault();
-                          void sendToMember(m);
-                        }
-                      }}
-                      placeholder="给 {m.name} 派任务…（Enter 发送）"
-                      class="min-w-0 flex-1 resize-none rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] px-1.5 py-0.5 text-[11px] leading-snug text-[var(--rg-fg)] outline-none focus:border-[var(--rg-accent)]"
-                    ></textarea>
-                    <button
-                      type="button"
-                      title="发送给该成员"
-                      aria-label="发送给该成员"
-                      onclick={() => sendToMember(m)}
-                      class="flex items-center justify-center rounded border border-[var(--rg-border)] p-1 text-[var(--rg-fg-muted)] transition-colors hover:text-[var(--rg-accent)]"
-                    >
-                      <Send class="h-3 w-3" />
-                    </button>
-                  </div>
-                </div>
-              {/if}
-            </li>
+            <AgentMemberRow
+              profile={m}
+              agentId={m.id}
+              name={m.name}
+              {workspaceId}
+              pending={pendingFor(m)}
+              groupBadge={grp ? { name: grp.name, color: grp.color } : null}
+              onRefresh={() => void refresh()}
+            />
           {/each}
-          <!-- iter-60 G6 改：自动发现的本机 agent 进程直接并入成员列表（未分组，只读——无 pane 不可暂停/入组）。 -->
-          {#if discoveryOn}
-            {#each discoveredExtra as d (d.pid)}
-              <li class="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]">
-                <span class="h-1.5 w-1.5 rounded-full bg-emerald-400/70 shrink-0" title="自动发现（本机进程）"></span>
-                <span class="min-w-0 flex-1 truncate text-[12px]">{d.name}</span>
-                <span class="shrink-0 font-mono text-[9px] text-[var(--rg-fg-muted)]/60">pid {d.pid}</span>
-                <span class="shrink-0 text-[9px] text-[var(--rg-fg-muted)]/60">未分组</span>
-              </li>
-            {/each}
-          {/if}
-          {#if topology.roster.length === 0 && (!discoveryOn || discoveredExtra.length === 0)}
-            <li class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">暂无成员</li>
+          {#if topology.roster.length === 0}
+            <li class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">
+              暂无成员——在任一分屏里启动 claude / codex 等 agent CLI，会自动入册。
+            </li>
           {/if}
         </ul>
       {:else}
-        <!-- 编组视图：未分组卡 + 各编组（组长 / 配色 / 派任务）。 -->
-        <TeammateGroups roster={topology.roster} {workspaceId} {filePath} />
+        <!-- 编组视图：与成员视图同款成员行 + 组长设定 / 建组 / 配色 / 给组派任务。 -->
+        <TeammateGroups
+          roster={topology.roster}
+          {workspaceId}
+          {filePath}
+          {hitlPending}
+          onRefresh={() => void refresh()}
+        />
       {/if}
     </section>
   </div>

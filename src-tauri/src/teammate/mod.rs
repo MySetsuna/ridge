@@ -1,3 +1,4 @@
+pub(crate) mod autodiscover;
 pub(crate) mod circuit;
 pub(crate) mod context_files;
 pub(crate) mod discover;

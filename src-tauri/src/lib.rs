@@ -881,7 +881,6 @@ pub fn run() {
             commands::teammate::get_workspace_memory,
             commands::teammate::set_workspace_memory,
             commands::teammate::set_teammate_groups,
-            commands::teammate::discover_cli_agents,
             commands::teammate::checkpoint_workspace_rollback,
             commands::teammate::rollback_workspace,
             commands::teammate::resolve_hitl_request,

@@ -28,9 +28,10 @@ import {
 } from './teammateGroups.svelte';
 import type { TeammateProfile } from './teammateModel';
 
+const runtime = { isAuto: false, activity: 'idle', outputSeq: 0, recentOutput: '' } as const;
 const roster: TeammateProfile[] = [
-  { id: 'agent-a', name: 'Claude', paneId: 'uuid-a', role: 'Leader', status: 'Working' },
-  { id: 'agent-b', name: 'Codex', paneId: 'uuid-b', role: 'Worker', status: 'Idle' },
+  { id: 'agent-a', name: 'Claude', paneId: 'uuid-a', role: 'Leader', status: 'Working', ...runtime },
+  { id: 'agent-b', name: 'Codex', paneId: 'uuid-b', role: 'Worker', status: 'Idle', ...runtime },
 ];
 
 describe('stableWorkspaceKey', () => {

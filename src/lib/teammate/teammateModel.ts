@@ -38,6 +38,10 @@ export function riskLabel(level: RiskLevel): 'L0' | 'L1' | 'L2' {
 
 // ── Roster / topology ──
 
+/** 活跃度（iter-62）：按该 pane 的输出流水号是否还在增长判定，与 `status`
+ *  （是不是 agent pane / 有没有被暂停）正交。 */
+export type AgentActivity = 'working' | 'idle';
+
 /** A roster entry — one teammate's front-end profile. */
 export interface TeammateProfile {
   readonly id: string;
@@ -48,6 +52,15 @@ export interface TeammateProfile {
   readonly status: TeammateStatus;
   /** Auto-detected capability tier the Leader was elected from (optional). */
   readonly capability?: AgentTier;
+  /** iter-62：由「pane 下真跑着 agent CLI」自动识别入册（而非人工标记）。 */
+  readonly isAuto: boolean;
+  /** iter-62：终端是否还在吐字（近 12s 有输出）。 */
+  readonly activity: AgentActivity;
+  /** iter-62：该 pane 输出的单调流水号（供更细的活跃度判断/去重）。 */
+  readonly outputSeq: number;
+  /** iter-62：近期回复——scrollback 末尾剥 ANSI 的最后几行，随快照下发
+   *  （面板与手机端无需再为每个成员单独发一次 IPC）。 */
+  readonly recentOutput: string;
 }
 
 export interface TopologyEdge {
@@ -80,6 +93,13 @@ export interface HitlRequest {
   readonly action: string;
   readonly level: RiskLevel;
   /** Human-readable why-flagged reason from the risk classifier. */
+  readonly reason: string;
+}
+
+/** 面板行内裁决用的**脱敏**待审批项（`list_hitl_pending` 投影，无命令全文）。 */
+export interface PendingApproval {
+  readonly id: string;
+  readonly initiator: string;
   readonly reason: string;
 }
 
@@ -151,6 +171,10 @@ function parseProfile(v: unknown): TeammateProfile | null {
     role: asRole(rec.role),
     status: asStatus(rec.status),
     capability: asTier(rec.capability),
+    isAuto: rec.isAuto === true,
+    activity: rec.activity === 'working' ? 'working' : 'idle',
+    outputSeq: typeof rec.outputSeq === 'number' ? rec.outputSeq : 0,
+    recentOutput: asString(rec.recentOutput) ?? '',
   };
 }
 
