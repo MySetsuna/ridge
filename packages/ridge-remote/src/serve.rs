@@ -108,6 +108,43 @@ impl UaServeConfig {
             }
         }
     }
+
+    /// 与 `kind` **相反**的那套产物。仅供具体资产的跨形态回退，见 [`read_from_other_ui`]。
+    pub fn other_ui_target(&self, kind: UiKind) -> UiTarget<'_> {
+        match kind {
+            UiKind::Desktop => UiTarget {
+                kind: UiKind::Mobile,
+                dir: Some(&self.mobile_dir),
+            },
+            UiKind::Mobile => UiTarget {
+                kind: UiKind::Desktop,
+                dir: self.desktop_dir.as_deref(),
+            },
+        }
+    }
+}
+
+/// 从**另一形态**的产物里取同名资产（磁盘 > 内嵌）；取不到返回 `None`。
+///
+/// 为什么必须跨形态回退（iter-62 e2e 实证，页面白屏）：`?ui=` 覆盖只出现在**页面
+/// 那一次**请求上；浏览器随后拉 `/assets/index-*.js`、`/_app/immutable/*` 时不带
+/// 这个查询参数，于是又被 UA 判回另一套产物 → 整页资源 404、CSS 被当 text/plain
+/// 拒收，`<div id="app">` 永远是空的。两套产物文件名带内容哈希、路径前缀也不相交
+/// （`assets/` vs `_app/`），跨形态查不会张冠李戴。
+///
+/// **只对具体资产回退**：SPA 壳（index.html）绝不跨形态——那正是「电脑浏览器被发
+/// 手机页」的串台本身，必须由 UA/显式覆盖单方决定。
+async fn read_from_other_ui(cfg: &UaServeConfig, kind: UiKind, rel: &str) -> Option<Vec<u8>> {
+    if rel == "index.html" || rel.ends_with("/index.html") {
+        return None;
+    }
+    let other = cfg.other_ui_target(kind);
+    // 调用方已过穿越守卫（rel 不含 `..` / `\` / `:`）。
+    let disk = match other.dir {
+        Some(dir) => tokio::fs::read(dir.join(rel)).await.ok(),
+        None => None,
+    };
+    disk.or_else(|| crate::embed_ui::get_kind(other.kind, rel))
 }
 
 /// 一次请求解析出的 UI 形态与其磁盘目录（`None` = 该形态只有内嵌产物）。
@@ -137,15 +174,50 @@ fn probe_ui_dir(rel: &Path) -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         candidates.extend(exe.ancestors().skip(1).take(6).map(|d| d.join(rel)));
     }
-    // §diagnostic: 记录探测路径便于调试
-    for candidate in &candidates {
-        if candidate.join("index.html").exists() {
-            tracing::debug!(target: "ridge::remote::serve", path = %candidate.display(), "UI dir found");
-            return Some(candidate.clone());
+    let hits: Vec<(PathBuf, Option<std::time::SystemTime>)> = candidates
+        .into_iter()
+        .filter_map(|c| {
+            let index = c.join("index.html");
+            index
+                .metadata()
+                .ok()
+                .filter(|m| m.is_file())
+                .map(|m| (c, m.modified().ok()))
+        })
+        .collect();
+    match pick_freshest(&hits) {
+        Some(dir) => {
+            tracing::debug!(target: "ridge::remote::serve", path = %dir.display(), "UI dir found");
+            Some(dir)
+        }
+        None => {
+            tracing::warn!(target: "ridge::remote::serve", rel = %rel.display(), "UI dir not found in any candidate path");
+            None
         }
     }
-    tracing::warn!(target: "ridge::remote::serve", rel = %rel.display(), "UI dir not found in any candidate path");
-    None
+}
+
+/// 在**已命中**的候选目录里挑一个：取 `index.html` 最新的那份；时间戳读不到或
+/// 全部并列时退回候选顺序里的第一个（即原来的「最靠近 exe」语义）。
+///
+/// 为什么不能只按顺序取（iter-63 实测，排查耗了四轮）：exe 旁的那份是**构建时的
+/// 拷贝**。开发里 `pnpm build:remote` 更新了仓库根的 `static/remote`，而
+/// `target/debug/static/remote` 还停在几小时前——顺序优先让陈旧拷贝一直盖住新产物，
+/// 页面看着正常、跑的却是旧 bundle，改什么都「没生效」。装机升级留下的旧拷贝同理。
+pub fn pick_freshest(hits: &[(PathBuf, Option<std::time::SystemTime>)]) -> Option<PathBuf> {
+    let mut best: Option<&(PathBuf, Option<std::time::SystemTime>)> = None;
+    for h in hits {
+        best = match best {
+            None => Some(h),
+            // 严格大于：并列时保留先出现者，退化为原有顺序语义。
+            Some(b) => match (h.1, b.1) {
+                (Some(t), Some(bt)) if t > bt => Some(h),
+                (Some(_), None) => Some(h),
+                _ => Some(b),
+            },
+        };
+    }
+    best.map(|(p, _)| p.clone())
 }
 
 /// serve 这批 handler 的 axum State：UI 目录配置 + TLS 门（HSTS 头）+ `remote_enabled`
@@ -407,6 +479,12 @@ async fn spa_fallback_handler(
         Some(b) => Some(b),
         None => crate::embed_ui::get_kind(target.kind, rel),
     };
+    // 仍未命中 → 另一形态的同名资产（`?ui=` 覆盖后续请求不带参数，见
+    // read_from_other_ui；壳 index.html 被该函数拒绝，不会串台）。都没有才回落 SPA 壳。
+    let bytes = match bytes {
+        Some(b) => Some(b),
+        None => read_from_other_ui(&st.cfg, target.kind, rel).await,
+    };
     match bytes {
         Some(bytes) => {
             // SvelteKit emits content-hashed bundles under `_app/immutable/` —
@@ -477,15 +555,25 @@ async fn assets_handler(
     axum::extract::Path(path): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let target = st.cfg.ui_target(&headers, q.ui.as_deref());
+    // 穿越守卫（与 spa_fallback_handler 同款）：axum 先百分号解码，`%2e%2e` 到手即 `..`。
+    // 通配段此前直接 join 进产物目录，等于把 `/assets/../..` 交给文件系统。
+    if path.contains("..") || path.contains('\\') || path.contains(':') || path.starts_with('/') {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
     let rel = format!("assets/{path}");
     let disk = match target.dir {
         Some(dir) => tokio::fs::read(dir.join(&rel)).await.ok(),
         None => None,
     };
-    // 磁盘 > 内嵌（同 serve_shell：单文件 rdg 靠内嵌供资产）。
+    // 磁盘 > 内嵌（同 serve_shell：单文件 rdg 靠内嵌供资产）> 另一形态（`?ui=` 覆盖
+    // 后续的资产请求不带该参数，见 read_from_other_ui）。
     let read = match disk {
         Some(b) => Some(b),
         None => crate::embed_ui::get_kind(target.kind, &rel),
+    };
+    let read = match read {
+        Some(b) => Some(b),
+        None => read_from_other_ui(&st.cfg, target.kind, &rel).await,
     };
     match read {
         Some(bytes) => {
@@ -518,6 +606,42 @@ async fn assets_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// iter-63：exe 旁的构建拷贝会长期盖住仓库里刚构建出来的新产物（实测 dev 下
+    /// `target/debug/static/remote` 停在几小时前，页面跑的一直是旧 bundle）。
+    /// 命中多个候选时必须取**最新**的那份。
+    #[test]
+    fn freshest_ui_dir_wins_over_an_older_copy_next_to_the_exe() {
+        use std::time::{Duration, SystemTime};
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let new = SystemTime::UNIX_EPOCH + Duration::from_secs(9_000);
+        let hits = vec![
+            (PathBuf::from("exe-side"), Some(old)),
+            (PathBuf::from("repo-root"), Some(new)),
+        ];
+        assert_eq!(pick_freshest(&hits), Some(PathBuf::from("repo-root")));
+    }
+
+    /// 时间戳读不到 / 完全并列 → 退回原有的「候选顺序第一个」语义，行为不变。
+    #[test]
+    fn pick_freshest_falls_back_to_candidate_order() {
+        use std::time::{Duration, SystemTime};
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(42);
+        assert_eq!(
+            pick_freshest(&[(PathBuf::from("a"), None), (PathBuf::from("b"), None)]),
+            Some(PathBuf::from("a"))
+        );
+        assert_eq!(
+            pick_freshest(&[(PathBuf::from("a"), Some(t)), (PathBuf::from("b"), Some(t))]),
+            Some(PathBuf::from("a"))
+        );
+        // 有时间戳者胜过读不到时间戳者（后者无从比较，保守让位）。
+        assert_eq!(
+            pick_freshest(&[(PathBuf::from("a"), None), (PathBuf::from("b"), Some(t))]),
+            Some(PathBuf::from("b"))
+        );
+        assert_eq!(pick_freshest(&[]), None);
+    }
 
     #[test]
     fn remote_ui_missing_message_carries_code_and_repair_hint() {
