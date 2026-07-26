@@ -76,8 +76,20 @@ export const paneGitStatusStore = { subscribe: _store.subscribe };
 const lastCwdByPane = new Map<string, string>();
 /** repoRoot → in-flight promise so parallel pane requests coalesce. */
 const inflightByRepo = new Map<string, Promise<RepoSnapshot | null>>();
-/** Stable repoRoot → cached repo snapshot (pre-merge with availableRepos). */
-const cacheByRepo = new Map<string, RepoSnapshot | null>();
+/** Stable repoRoot → cached repo snapshot (pre-merge with availableRepos) + 取回时刻。 */
+const cacheByRepo = new Map<string, { snap: RepoSnapshot | null; at: number }>();
+/**
+ * 快照复用窗口（ms）。同一 repo 在窗口内的重复请求直接吃缓存，不再 spawn git。
+ *
+ * 2026-07-26 多工作区 tab 卡死的放大器就在这里：每个 pane（**含隐藏工作区的**）
+ * 都独立 track 自己的 git 状态，而 `resolveRepoSnapshot` 只**写**缓存从不**读**，
+ * 于是 N 个 pane 指向同一个 repo 时就是 N 份 `get_scm_status`+`git_diff_summary`
+ * ——而 `get_scm_status` 内部还要再开 3 个 git 进程。3 个 tab × 4 个 pane 同仓
+ * ≈ 单轮刷新百余次 CreateProcess（Windows 每次 50–150ms），主线程 invoke 队列
+ * 随即堵死，表现为「开两个以上 tab 就卡」。窗口取 1.5s：一轮突发（挂载潮/
+ * watcher 刷新/心跳）收敛成每 repo 一次 git，用户手动操作后的刷新不受影响。
+ */
+const SNAPSHOT_TTL_MS = 1500;
 /** Debounce timers per pane — a rapid cwd bounce won't trigger N fetches. */
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** User-chosen repo per pane when the pane's cwd hosts >1 repo. Cleared
@@ -104,6 +116,10 @@ async function resolveRepoSnapshot(
   // null; the next heartbeat/invalidate refetches. Accepted G1 trade-off.)
   const existing = inflightByRepo.get(repoRoot);
   if (existing) return existing;
+  // 窗口内复用上一份快照：把「每 pane 一次 git」压回「每 repo 一次 git」。
+  // 显式失效（invalidatePaneGitStatusForRepo）会先删条目，故不影响手动刷新时效。
+  const cached = cacheByRepo.get(repoRoot);
+  if (cached && Date.now() - cached.at < SNAPSHOT_TTL_MS) return cached.snap;
   const p = (async () => {
     try {
       // Run status + numstat in parallel — both hit git on the same repo
@@ -134,12 +150,14 @@ async function resolveRepoSnapshot(
         behind: s.behind,
         hasUpstream: s.has_upstream ?? false,
       };
-      cacheByRepo.set(repoRoot, snap);
+      cacheByRepo.set(repoRoot, { snap, at: Date.now() });
       return snap;
     } catch (err) {
       // G1: a superseded fetch is not "repo has no git data" — don't poison
       // the cache; the newer same-slot fetch (or next heartbeat) will land.
-      if (!String(err).includes('superseded')) cacheByRepo.set(repoRoot, null);
+      if (!String(err).includes('superseded')) {
+        cacheByRepo.set(repoRoot, { snap: null, at: Date.now() });
+      }
       return null;
     } finally {
       inflightByRepo.delete(repoRoot);
