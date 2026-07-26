@@ -135,6 +135,54 @@ async fn desktop_app_assets_resolve_from_the_embedded_desktop_bundle() {
     );
 }
 
+/// `?ui=` 覆盖后**后续资产请求**也必须取得到——这是 iter-62 手机端 e2e 实测抓到的
+/// 白屏真因：覆盖参数只在页面那一次请求上，浏览器随后拉 `/assets/index-*.js` /
+/// `/_app/immutable/*` 时不带它，于是又被 UA 判回另一套产物，整页 404。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn assets_resolve_across_ui_kinds_because_the_override_is_not_on_asset_requests() {
+    let h = start().await;
+
+    // 桌面 UA 打开手机页后拉手机资产：URL 上没有 `?ui=mobile`。
+    let (_, shell) = get(h.port, "/?ui=mobile", DESKTOP_UA);
+    let mobile_js = shell
+        .split("src=\"")
+        .find_map(|s| s.split('"').next().filter(|p| p.starts_with("/assets/")))
+        .expect("手机壳里应有 /assets/ 入口脚本");
+    let (status, body) = get(h.port, mobile_js, DESKTOP_UA);
+    assert!(status.contains("200"), "{mobile_js} → {status}（页面会白屏）");
+    assert!(!body.is_empty(), "{mobile_js} 空响应");
+
+    // 反向：手机 UA 打开桌面页后拉 `_app` 资产，同样不带覆盖参数。
+    let (status, body) = get(h.port, "/_app/version.json", IPHONE_UA);
+    assert!(status.contains("200"), "_app/version.json → {status}");
+    assert!(body.contains("version"), "桌面资产跨形态没取到：{body}");
+}
+
+/// 跨形态回退**只对具体资产**——壳绝不跨，否则又回到「电脑浏览器被发手机页」。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shell_never_falls_back_across_ui_kinds() {
+    let h = start().await;
+    let (_, desktop) = get(h.port, "/index.html", DESKTOP_UA);
+    assert!(
+        !desktop.contains("src=\"/assets/"),
+        "index.html 跨形态串台了：{}",
+        &desktop[..desktop.len().min(400)]
+    );
+}
+
+/// 资产路径的穿越守卫：`/assets/*` 通配段此前被直接 join 进产物目录。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn asset_path_traversal_is_rejected() {
+    let h = start().await;
+    for p in [
+        "/assets/../../../../Windows/win.ini",
+        "/assets/..%2f..%2fetc%2fpasswd",
+    ] {
+        let (status, _) = get(h.port, p, DESKTOP_UA);
+        assert!(status.contains("404"), "{p} → {status}");
+    }
+}
+
 /// 未知客户端路由回落到**对应形态**的壳，而不是另一端的壳。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_client_route_falls_back_to_its_own_shell() {
