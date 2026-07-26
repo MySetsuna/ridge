@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { RefreshCw, MousePointer2, Clipboard, Palette, Globe } from 'lucide-svelte';
+  import { RefreshCw, MousePointer2, Clipboard, Palette, Globe, MessageSquareText } from 'lucide-svelte';
   import { t } from '$lib/i18n';
   import { locale, setLocale } from '$lib/i18n/locale';
   import type { PaneInfo, WorkspaceInfo, RemoteLink } from '@ridge/remote';
@@ -16,6 +16,7 @@
     canUseTheme = true,
     canManageWorkspaces = true,
     selectionMode = $bindable(false),
+    sentenceBuffer = $bindable(false),
     backendName = 'Canvas2D',
     panes = [],
     activePaneId = $bindable(null),
@@ -30,6 +31,8 @@
     canUseTheme?: boolean;
     canManageWorkspaces?: boolean;
     selectionMode?: boolean;
+    /** 句级输入缓冲（语音听写友好）开关。 */
+    sentenceBuffer?: boolean;
     backendName?: string;
     panes?: PaneInfo[];
     activePaneId?: string | null;
@@ -46,6 +49,9 @@
   <div class="group group-left">
     <button class="ctrl-btn" class:active={selectionMode} onclick={() => selectionMode = !selectionMode} title={$t('mobile.selectionToggle')} tabindex="-1">
       <MousePointer2 class="w-4 h-4" />
+    </button>
+    <button class="ctrl-btn" class:active={sentenceBuffer} onclick={() => sentenceBuffer = !sentenceBuffer} title={$t('mobile.sentenceBufferToggle')} tabindex="-1">
+      <MessageSquareText class="w-4 h-4" />
     </button>
     <button class="ctrl-btn" onclick={onRefresh} title={$t('mobile.lockAndRefresh')} tabindex="-1">
       <RefreshCw class="w-4 h-4" />

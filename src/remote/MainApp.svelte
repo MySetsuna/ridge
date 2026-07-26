@@ -45,6 +45,14 @@
   // §selection: explicit selection mode (toggled in BottomTabBar). When on, a
   // single-finger drag selects; when off it scrolls (no accidental selection).
   let selectionMode = $state(false);
+  // 句级输入缓冲（语音听写友好）——localStorage 持久，TabBar 切换。
+  const LS_SBUF_KEY = 'rg-remote-sentence-buffer';
+  let sentenceBuffer = $state(((): boolean => {
+    try { return localStorage.getItem(LS_SBUF_KEY) === '1'; } catch { return false; }
+  })());
+  $effect(() => {
+    try { localStorage.setItem(LS_SBUF_KEY, sentenceBuffer ? '1' : '0'); } catch { /* quota */ }
+  });
   let sidebarTab: RemotePanel | null = $state(null);
   // Optimistic until D9 hello completes; onMount immediately replaces these via
   // refreshCapabilities and subscribes to reconnect renegotiation.
@@ -796,6 +804,7 @@
           onHostClipboard={(text) => ws.setHostClipboard(text)}
           onNearTop={loadOlderScrollback}
           bind:selectionMode
+          {sentenceBuffer}
         />
       {/key}
     {/await}
@@ -842,6 +851,7 @@
     {canUseTheme}
     {canManageWorkspaces}
     bind:selectionMode
+    bind:sentenceBuffer
     {panes}
     bind:activePaneId
     {workspaces}
