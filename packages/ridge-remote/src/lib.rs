@@ -6,6 +6,9 @@
 /// LAN 远控鉴权原语（TOTP 持有者 `RemoteAuth`、会话令牌 `SessionStore`、
 /// TOTP 暴力破解节流 `VerifyThrottle`）。已从 src-tauri 迁入共享层，零 Tauri 依赖。
 pub mod auth;
+/// 内嵌移动 SPA 产物（`embed-ui` feature，rdg 单文件分发用）。未开启时恒空，
+/// serve 行为不变（纯磁盘探测）。
+pub mod embed_ui;
 /// `RemoteHost` trait 组（宿主抽象缝）：`HostMeta`/`HostAuth`/`WorkspaceProvider`
 /// + `serve_websocket` 钩子。让共享 `server_app` 路由用一份代码驱动桌面/rdg/云端，
 /// 零 Tauri 依赖。

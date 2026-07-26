@@ -944,6 +944,17 @@
     window.addEventListener('orientationchange', onOrientation);
     return () => window.removeEventListener('orientationchange', onOrientation);
   });
+
+  // iter-61 WebGPU host 模式：keyboardOffset 是 transform（不改布局尺寸），
+  // ResizeObserver 不触发，但 GPU scissor 以容器 bbox 相对 host 画布计算——
+  // 位移后必须显式重算。容器有 200ms transform 过渡，故立即 + 过渡结束后各校一次。
+  $effect(() => {
+    void keyboardOffset;
+    if (!attached) return;
+    manager.viewportChanged(paneId);
+    const t = setTimeout(() => manager.viewportChanged(paneId), 240);
+    return () => clearTimeout(t);
+  });
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->

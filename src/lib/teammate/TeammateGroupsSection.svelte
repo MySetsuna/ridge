@@ -14,6 +14,8 @@
   import { invoke } from '@tauri-apps/api/core';
   import { Users, Plus, Trash2, Pencil, Send, X, Ghost, Crown, Play, Pause, Palette } from 'lucide-svelte';
   import { alertDialog, confirmDialog, promptDialog } from '$lib/components/RidgeDialog.svelte';
+  import { autoGrow } from '$lib/actions/autoGrow';
+  import { recordMemberTask } from './memberTasks';
   import type { TeammateProfile } from './teammateModel';
   import {
     teammateGroupStore,
@@ -151,6 +153,7 @@
     try {
       await invoke('write_to_pty', { paneId: leader.paneId, data: `${text}\r` });
       store.recordTask(g.id, text, [leader.agentId]);
+      recordMemberTask(leader.agentId, text); // 成员级「最近任务」同步（成员列表展示）
       taskInput = { ...taskInput, [g.id]: '' };
     } catch (e) {
       console.error('[teammate-groups] dispatch write_to_pty failed', e);
@@ -312,11 +315,11 @@
     </div>
   {/if}
 
-  <ul class="mt-1.5 space-y-2">
-    <!-- 未分组默认卡（虚线边框区分；无组长/派任务/解散） -->
+  <ul class="mt-1.5 space-y-3">
+    <!-- 未分组（扁平：标题行 + 成员行，无卡片） -->
     {#if ungrouped.length > 0}
-      <li class="overflow-hidden rounded-md border border-dashed border-[var(--rg-border)]">
-        <div class="p-2 space-y-1.5">
+      <li>
+        <div class="space-y-1">
           <div class="flex items-center gap-1.5">
             <Ghost class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
             <span class="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--rg-fg-muted)]">未分组</span>
@@ -327,20 +330,16 @@
               {@render memberRow(mem, null)}
             {/each}
           </ul>
-          <p class="text-[10px] leading-snug text-[var(--rg-fg-muted)]/70">
-            未分组成员不接受编组任务；勾选建组或用各组「＋」将其加入编组。
-          </p>
         </div>
       </li>
     {/if}
 
-    <!-- 组卡片 -->
+    <!-- 各编组（扁平：色点 + 组名标题行 + 成员行，无卡片/配色条） -->
     {#each groupViews as { group, members } (group.id)}
-      <li class="overflow-hidden rounded-md border border-[var(--rg-border)]">
-        <!-- 配色条 -->
-        <div class="h-1" style="background-color: {group.color}"></div>
-        <div class="p-2 space-y-1.5">
+      <li>
+        <div class="space-y-1">
           <div class="flex items-center gap-1.5">
+            <span class="h-2 w-2 shrink-0 rounded-full" style="background-color: {group.color}"></span>
             <span class="min-w-0 flex-1 truncate text-[12px] font-medium">{group.name}</span>
             <span class="font-mono text-[10px] text-[var(--rg-fg-muted)]">{members.length}</span>
             <!-- 改配色（预设或自定义）：原生取色器覆盖在图标上 -->
@@ -427,6 +426,7 @@
           <div class="flex items-end gap-1.5">
             <textarea
               rows="1"
+              use:autoGrow={{ maxRows: 3, value: taskInput[group.id] ?? '' }}
               value={taskInput[group.id] ?? ''}
               oninput={(e) => (taskInput = { ...taskInput, [group.id]: e.currentTarget.value })}
               onkeydown={(e) => {

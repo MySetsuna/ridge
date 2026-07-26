@@ -252,13 +252,19 @@ fn remote_ui_missing_html() -> String {
 /// the next visit instead of being pinned by a stale cached shell.
 pub async fn serve_index(dir: &Path) -> Response {
     let index_path = dir.join("index.html");
-    match tokio::fs::read(&index_path).await {
-        Ok(bytes) => axum::response::Response::builder()
+    // 磁盘 > 内嵌：本地开发改前端立即生效；单文件分发（rdg，`embed-ui`）磁盘无产物
+    // 时回落到编进二进制的那份，杜绝 REMOTE_UI_MISSING。
+    let bytes = match tokio::fs::read(&index_path).await {
+        Ok(b) => Some(b),
+        Err(_) => crate::embed_ui::get("index.html"),
+    };
+    match bytes {
+        Some(bytes) => axum::response::Response::builder()
             .header(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")
             .header(axum::http::header::CACHE_CONTROL, "no-cache")
             .body(axum::body::Body::from(bytes))
             .unwrap(),
-        Err(_) => {
+        None => {
             // Fallback: structured error code + repair hint (not silent empty 200 without guidance)
             axum::response::Response::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
@@ -349,12 +355,18 @@ async fn spa_fallback_handler(
         (Ok(real), Ok(root)) => real.starts_with(&root).then_some(real),
         _ => None,
     };
-    let Some(real) = within else {
-        return serve_index(base).await;
+    // 磁盘未命中 → 内嵌（单文件 rdg 的 sw.js / manifest / icons 走这条），
+    // 仍未命中才回落 SPA 壳。`rel` 已过上面的穿越守卫。
+    let disk = match &within {
+        Some(real) => tokio::fs::read(real).await.ok(),
+        None => None,
     };
-
-    match tokio::fs::read(&real).await {
-        Ok(bytes) => {
+    let bytes = match disk {
+        Some(b) => Some(b),
+        None => crate::embed_ui::get(rel),
+    };
+    match bytes {
+        Some(bytes) => {
             // SvelteKit emits content-hashed bundles under `_app/immutable/` —
             // safe to cache forever; everything else revalidates.
             let (content_type, cache_control) = if rel.starts_with("_app/immutable/") {
@@ -374,7 +386,7 @@ async fn spa_fallback_handler(
                 .body(axum::body::Body::from(bytes))
                 .unwrap()
         }
-        Err(_) => serve_index(base).await,
+        None => serve_index(base).await,
     }
 }
 
@@ -419,8 +431,13 @@ async fn assets_handler(
     axum::extract::Path(path): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     let file_path = st.cfg.mobile_dir.join("assets").join(&path);
-    match tokio::fs::read(&file_path).await {
-        Ok(bytes) => {
+    // 磁盘 > 内嵌（同 serve_index：单文件 rdg 靠内嵌供资产）。
+    let read = match tokio::fs::read(&file_path).await {
+        Ok(b) => Some(b),
+        Err(_) => crate::embed_ui::get(&format!("assets/{path}")),
+    };
+    match read {
+        Some(bytes) => {
             let (content_type, cache_control) = if path.ends_with(".js") {
                 ("application/javascript", "max-age=31536000, immutable")
             } else if path.ends_with(".css") {
@@ -443,7 +460,7 @@ async fn assets_handler(
                 .unwrap();
             response
         }
-        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
 
@@ -464,5 +481,18 @@ mod tests {
         assert!(h.contains(REMOTE_UI_MISSING_CODE));
         assert!(h.contains("data-ridge-error"));
         assert!(h.contains("pnpm build:remote"));
+    }
+
+    /// 单文件分发（rdg）回归钉：开 `embed-ui` 编出来的库必须真带 UI。
+    /// 若构建机漏跑 `pnpm build:remote`，内嵌为空 → LAN 远控又会 REMOTE_UI_MISSING，
+    /// 这条测试在发布前就把它抓住（feature 关闭时不涉及，故 cfg 门控）。
+    #[cfg(feature = "embed-ui")]
+    #[test]
+    fn embedded_ui_is_present_when_feature_on() {
+        assert!(
+            crate::embed_ui::has_ui(),
+            "embed-ui 已开启但内嵌产物为空——构建前须先跑 `pnpm build:remote`"
+        );
+        assert!(crate::embed_ui::get("index.html").is_some_and(|b| !b.is_empty()));
     }
 }

@@ -242,6 +242,44 @@
     } catch { /* manager not loaded / already torn down */ }
   }
 
+  // iter-61 手机 WebGPU 回归修复：P4 前旧 controller 每 pane 自建 SurfaceHost；
+  // P4 改用共享 manager 后，WebGPU 只在存在全局 SurfaceHost 时启用——
+  // `newWithWebgpuFirst(canvas, None)` 在 Rust 里恒回落 Canvas2D（ridge-term
+  // lib.rs），而手机端从未调用 attachHost → 恒 Canvas2D（随机下划线等 canvas2d
+  // 伪影随之）。此 action 复刻桌面 +page 的全局 host 画布：应用生命周期绑定一次，
+  // 随父容器 resize 同步 GPU 交换链；WebGPU 不可用时静默回落 per-pane Canvas2D。
+  function hostCanvas(node: HTMLCanvasElement) {
+    let observer: ResizeObserver | undefined;
+    let torndown = false;
+    let mgr: import('@ridge/remote/shared/terminal/manager').TerminalManager | null = null;
+    void (async () => {
+      try {
+        const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
+        if (torndown) return;
+        mgr = TerminalManager.instance();
+        await mgr.attachHost(node);
+        const parent = node.parentElement;
+        if (parent && !torndown) {
+          observer = new ResizeObserver((entries) => {
+            const e = entries[entries.length - 1];
+            if (e) mgr?.resizeHost({ wCss: e.contentRect.width, hCss: e.contentRect.height });
+            else mgr?.resizeHost();
+          });
+          observer.observe(parent);
+        }
+      } catch (err) {
+        console.warn('[mobile] attachHost failed — per-pane Canvas2D fallback', err);
+      }
+    })();
+    return {
+      destroy() {
+        torndown = true;
+        observer?.disconnect();
+        mgr?.detachHost();
+      },
+    };
+  }
+
   // A fresh `panes` list arrived for the CURRENT active workspace. Panes tagged
   // to `activeWsId` that vanished from it were truly closed → detach their
   // kernels (and drop the host-side output buffer). Other workspaces' kernels
@@ -786,28 +824,34 @@
       {/if}
     </header>
 
-    {#await TerminalCanvas}
-      <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
-    {:then module}
-      <!-- §keep-alive (P4): key on activePaneId so switching panes REMOUNTS the
-           input surface (onMount attach/unpark, onDestroy park) — mirroring the
-           desktop RidgePane mount/unmount → attach/park lifecycle. The pane's
-           kernel survives the remount (parked), so no wipe / no white-screen. -->
-      {#key activePaneId}
-        <module.default
-          bind:this={canvasRef}
-          bind:backendName
-          paneId={activePaneId}
-          workspaceId={activeWorkspaceId}
-          {onStdin}
-          {onResize}
-          onHostClipboard={(text) => ws.setHostClipboard(text)}
-          onNearTop={loadOlderScrollback}
-          bind:selectionMode
-          {sentenceBuffer}
-        />
-      {/key}
-    {/await}
+    <!-- iter-61: term-stage 把「全局 WebGPU host 画布 + 终端容器」限定在终端区域
+         内叠放（header/底栏不受层叠影响）。容器在 host 模式被 attach() 置透明，
+         GPU 像素经画布透出；WebGPU 不可用时 attach() 回落 per-pane Canvas2D。 -->
+    <div class="term-stage">
+      <canvas class="host-canvas" aria-hidden="true" use:hostCanvas></canvas>
+      {#await TerminalCanvas}
+        <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
+      {:then module}
+        <!-- §keep-alive (P4): key on activePaneId so switching panes REMOUNTS the
+             input surface (onMount attach/unpark, onDestroy park) — mirroring the
+             desktop RidgePane mount/unmount → attach/park lifecycle. The pane's
+             kernel survives the remount (parked), so no wipe / no white-screen. -->
+        {#key activePaneId}
+          <module.default
+            bind:this={canvasRef}
+            bind:backendName
+            paneId={activePaneId}
+            workspaceId={activeWorkspaceId}
+            {onStdin}
+            {onResize}
+            onHostClipboard={(text) => ws.setHostClipboard(text)}
+            onNearTop={loadOlderScrollback}
+            bind:selectionMode
+            {sentenceBuffer}
+          />
+        {/key}
+      {/await}
+    </div>
   {/if}
 
   {#if sidebarTab !== null && panelAvailability[sidebarTab]}
@@ -862,6 +906,9 @@
 
 <style>
   .app-root{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--rg-bg);color:var(--rg-fg)}
+  /* iter-61: 终端区叠放层——WebGPU host 画布垫底，终端容器（host 模式透明）在上。 */
+  .term-stage{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+  .host-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:0;display:block;pointer-events:none}
   .conn-banner{flex-shrink:0;padding:6px 12px;text-align:center;font-size:12px;font-weight:600;color:#fff;background:var(--rg-ansi-yellow,#bb8009);z-index:50;display:flex;align-items:center;justify-content:center;gap:10px}
   .conn-banner.lost{background:var(--rg-ansi-red,#cf222e)}
   .conn-msg{flex:0 1 auto}

@@ -38,6 +38,13 @@ uuid = { version = "1" }
 parking_lot = "0.12"
 # OS CSPRNG for unguessable session tokens (audit C2)
 getrandom = "0.2"
+# 可选：把移动 SPA 产物编进二进制（`embed-ui` feature，rdg CLI 用）。
+# `interpolate-folder-path`：`#[folder = "$CARGO_MANIFEST_DIR/../../static/remote"]`
+# 需要它才会展开环境变量（否则把 `$CARGO_MANIFEST_DIR` 当字面目录名→编译期报错）。
+rust-embed = { version = "8", optional = true, default-features = false, features = ["interpolate-folder-path"] }
 
 [features]
 default = []
+# 单文件分发的 CLI（rdg）打开它：`static/remote` 产物随二进制走，
+# 免去「exe 旁必须有 static/remote」的隐式依赖（REMOTE_UI_MISSING 根因）。
+embed-ui = ["dep:rust-embed"]

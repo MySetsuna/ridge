@@ -126,7 +126,15 @@ pub fn inject_roster_titles(topology: &mut Value, ws: &crate::state::Workspace) 
         else {
             continue;
         };
-        if let Some(t) = ws.teammate_pane_titles.get(&pid) {
+        // iter-61：优先取 PTY 解析器的实时 OSC 标题（与 pane 列表同源），
+        // 侧表 teammate_pane_titles 仅作回退——前端据此把成员显示名同步到 pane 标题。
+        let live = ws
+            .terminals
+            .get(&pid)
+            .and_then(|h| h.parser.lock().title())
+            .filter(|t| !t.trim().is_empty());
+        let t = live.or_else(|| ws.teammate_pane_titles.get(&pid).cloned());
+        if let Some(t) = t {
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert("title".into(), json!(t));
             }
