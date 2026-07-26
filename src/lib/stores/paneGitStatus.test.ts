@@ -164,3 +164,79 @@ describe('cwd-down semantics + multi-repo switcher', () => {
     expect(info?.availableRepos).toEqual(['/elsewhere/c']);
   });
 });
+
+describe('多 pane / 多工作区 git 放大器（2026-07-26 卡死回归钉）', () => {
+  // fake timer 冻结 Date.now：每个用例先越过快照复用窗口，免吃上一用例的缓存。
+  beforeEach(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+
+  it('同一 repo 的多个 pane 在窗口内只跑一次 git（每 repo 一次，而非每 pane 一次）', async () => {
+    let scmCalls = 0;
+    mockInvoke.mockImplementation((cmd: string, args: unknown) => {
+      if (cmd === 'find_git_repos_below') {
+        return Promise.resolve(['/code/ridge']);
+      }
+      if (cmd === 'get_scm_status') {
+        scmCalls++;
+        return Promise.resolve({
+          repo_root: (args as { repoRoot: string }).repoRoot,
+          current_branch: 'main',
+          ahead: 0,
+          behind: 0,
+          staged: [],
+          changes: [],
+          untracked: [],
+          has_upstream: true,
+        });
+      }
+      if (cmd === 'git_diff_summary') return Promise.resolve({ added: 0, removed: 0 });
+      return Promise.resolve(null);
+    });
+
+    // 3 个工作区 tab × 4 个 pane，全指向同一个 repo —— 旧实现 = 12 次 get_scm_status
+    // （每次内部再开 3 个 git 进程），主线程 invoke 队列随即堵死。
+    for (let ws = 0; ws < 3; ws++) {
+      for (let p = 0; p < 4; p++) {
+        mod.trackPaneGitStatus(`ws${ws}-pane${p}`, '/code');
+      }
+    }
+    await vi.advanceTimersByTimeAsync(260);
+
+    expect(scmCalls).toBe(1);
+    // 每个 pane 仍拿到完整信息（复用同一快照，不是"只有第一个 pane 有数据"）。
+    const all = get(mod.paneGitStatusStore);
+    expect(all['ws0-pane0']?.branch).toBe('main');
+    expect(all['ws2-pane3']?.branch).toBe('main');
+  });
+
+  it('显式失效后重新取（缓存不阻断手动/watcher 刷新）', async () => {
+    let scmCalls = 0;
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'find_git_repos_below') return Promise.resolve(['/code/ridge']);
+      if (cmd === 'get_scm_status') {
+        scmCalls++;
+        return Promise.resolve({
+          repo_root: '/code/ridge',
+          current_branch: `b${scmCalls}`,
+          ahead: 0,
+          behind: 0,
+          staged: [],
+          changes: [],
+          untracked: [],
+          has_upstream: true,
+        });
+      }
+      if (cmd === 'git_diff_summary') return Promise.resolve({ added: 0, removed: 0 });
+      return Promise.resolve(null);
+    });
+
+    mod.trackPaneGitStatus('inv1', '/code');
+    await vi.advanceTimersByTimeAsync(260);
+    expect(scmCalls).toBe(1);
+
+    await mod.invalidatePaneGitStatusForRepo('/code/ridge');
+    expect(scmCalls).toBe(2);
+    expect(get(mod.paneGitStatusStore).inv1?.branch).toBe('b2');
+  });
+});
