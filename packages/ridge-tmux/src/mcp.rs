@@ -104,8 +104,13 @@ impl McpHost for TmuxMcpHost {
 
     fn send_text(&self, target: &Value, text: &str, _mark_busy: bool) -> HostResult<()> {
         let t = self.target_of(target)?;
-        // 与桌面一致：补换行，对端 shell/agent 才当成一条已提交的输入。
-        crate::send_keys(&self.socket, &t, &self.gui.sessions_for(&self.socket), &format!("{text}\n"))
+        // 与桌面一致：补 CR 作 Enter（LF 在 raw-mode TUI 里只插换行、不提交）。
+        crate::send_keys(
+            &self.socket,
+            &t,
+            &self.gui.sessions_for(&self.socket),
+            &ridge_mcp::server::enter_terminated(text),
+        )
             .map(|_| ())
             .map_err(engine_err)
     }

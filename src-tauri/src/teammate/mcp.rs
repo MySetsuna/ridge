@@ -70,7 +70,10 @@ impl McpHost for DesktopMcpHost {
     fn send_text(&self, target: &Value, text: &str, mark_busy: bool) -> HostResult<()> {
         let wid = self.wid();
         let pid = self.resolve(target)?;
-        let payload = format!("{text}\n");
+        // Enter 必须是 **CR**（0x0D）：LF 在 Claude Code/Cursor 这类 raw-mode TUI 里只是
+        // 「插入换行」，消息会停在输入框永不提交（实测：整段落进对端 composer 没发出去）。
+        // 与 `send-keys` 路由的既有口径一致（那里也把 \r 视作已提交）。
+        let payload = ridge_mcp::server::enter_terminated(text);
         // G1：MCP 文本注入同属 agent 写路径，走 suspend 收口。
         super::suspend::agent_pty_write(&self.ctx.state, wid, pid, payload.as_bytes())
             .map_err(|e| HostError::Internal(e.to_string()))?;
