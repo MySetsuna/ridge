@@ -31,6 +31,7 @@ import {
   type EphemeralKeyPair,
 } from './e2ee';
 import type { CloudHostBridgeLike } from './ridgeCloudProvider';
+import type { WorkspaceScopeAssertion } from './workspaceScope';
 import { ChunkReassembler } from '@ridge/remote';
 
 /** 传输层分片测试帮手：从 host 发出的（单条）线消息还原出密文（剥掉 SINGLE tag）。 */
@@ -177,6 +178,7 @@ function signContext(context: Uint8Array): Promise<Uint8Array> {
 interface BridgeRecord {
   cid: string;
   bindTranscript: Uint8Array | null;
+  workspaceScope: WorkspaceScopeAssertion | null;
   send: (p: Uint8Array) => void;
 }
 
@@ -184,6 +186,7 @@ interface BridgeRecord {
 async function makeHost(opts: {
   signContext?: (c: Uint8Array) => Promise<Uint8Array>;
   identityPub?: Uint8Array;
+  verifyWorkspaceScope?: (token: string) => Promise<WorkspaceScopeAssertion | null>;
 }) {
   const { RidgeCloudHost } = await loadHost();
   const bridges: BridgeRecord[] = [];
@@ -192,8 +195,9 @@ async function makeHost(opts: {
     { ...CONFIG, signContext: opts.signContext, identityPub: opts.identityPub },
     {
       onError: (m) => errors.push(m),
-      createBridge: (cid, send, bindTranscript): CloudHostBridgeLike => {
-        bridges.push({ cid, bindTranscript, send });
+      verifyWorkspaceScope: opts.verifyWorkspaceScope,
+      createBridge: (cid, send, bindTranscript, workspaceScope): CloudHostBridgeLike => {
+        bridges.push({ cid, bindTranscript, workspaceScope, send });
         return {
           handleFrame: () => {},
           reset: () => {},
@@ -297,6 +301,46 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     expect(bridges[0].bindTranscript).not.toBeNull();
     expect(Array.from(bridges[0].bindTranscript!)).toEqual(Array.from(expected));
 
+    host.goOffline();
+  });
+
+  it('workspace-scope 经 host 二次验证后才透传给业务桥', async () => {
+    const scope: WorkspaceScopeAssertion = {
+      grantId: 'grant-1',
+      granteeUserId: 'guest-1',
+      ownerUserId: 'owner-1',
+      deviceName: DEVICE,
+      workspaceId: 'ws-shared',
+      role: 'operator',
+      delegable: false,
+    };
+    const verifyWorkspaceScope = vi.fn(async (token: string) =>
+      token === 'scope-token' ? scope : null,
+    );
+    const { host, bridges } = await makeHost({
+      signContext,
+      identityPub: ID_PUB,
+      verifyWorkspaceScope,
+    });
+    await host.goOnline(DEVICE);
+    await flush();
+    const ws = FakeWebSocket.instances[0];
+    ws.deliver({ t: 'welcome', room: `${DEVICE}-alice`, role: 'host', peerPresent: false });
+    ws.deliver({ t: 'peer-join', role: 'controller', cid: CID });
+    ws.deliver({ t: 'workspace-scope', cid: CID, token: 'scope-token' });
+    ws.deliver({ t: 'offer', sdp: 'controller-offer', cid: CID });
+    await flush();
+    const dc = FakePeerConnection.instances[0].attachControllerChannel();
+    dc.fireOpen();
+    const ctrlEph = generateEphemeralKeyPair();
+    ws.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(ctrlEph.publicKey), cid: CID });
+    await flush();
+    dc.deliver(encodeHandshakeFrame(ctrlEph.publicKey));
+    await flush();
+
+    expect(verifyWorkspaceScope).toHaveBeenCalledWith('scope-token');
+    expect(bridges).toHaveLength(1);
+    expect(bridges[0].workspaceScope).toEqual(scope);
     host.goOffline();
   });
 

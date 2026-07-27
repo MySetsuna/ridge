@@ -69,6 +69,7 @@ export const API_BASE = `${cloudHttpScheme(BASE_DOMAIN)}://${BASE_DOMAIN}/api/v1
 export type ApiErrorCode =
   | 'UNAUTHORIZED'
   | 'FORBIDDEN'
+  | 'SCOPE_DENIED'
   | 'NOT_FOUND'
   | 'INVALID_INPUT'
   | 'INVALID_KEY'
@@ -111,6 +112,37 @@ export interface DeviceDto {
   online?: boolean;
   /** 主机最近一次接入的秒级 unix 时间戳；缺省表示从未上线。 */
   lastSeenAt?: number;
+}
+
+export interface WorkspaceShareDto {
+  id: string;
+  ownerUserId: string;
+  ownerUsername?: string;
+  deviceId: string;
+  deviceName: string;
+  workspaceId: string;
+  granteeUserId: string;
+  granteeUsername?: string;
+  granteeEmail: string;
+  role: 'operator';
+  status: 'pending' | 'active' | 'declined' | 'revoked';
+  expiresAt?: string;
+  createdAt: string;
+}
+
+export interface WorkspaceShareScope {
+  grantId: string;
+  granteeUserId: string;
+  ownerUserId: string;
+  deviceName: string;
+  workspaceId: string;
+  role: 'operator';
+  delegable: false;
+}
+
+export interface WorkspaceShareToken extends WorkspaceShareScope {
+  token: string;
+  expiresIn: number;
 }
 
 /** 用户形状（契约 §4.1，前后端共用）。 */
@@ -326,6 +358,69 @@ export function getMe(token: string): Promise<{ user: UserDto }> {
 
 export function setUsername(token: string, username: string): Promise<{ user: UserDto }> {
   return request<{ user: UserDto }>('/auth/set-username', { method: 'POST', token, body: { username } });
+}
+
+// ─── 跨账号单工作区分享 ─────────────────────────────────────────────────────
+
+export function createWorkspaceShare(
+  token: string,
+  input: { deviceName: string; workspaceId: string; grantee: string; role?: 'operator' },
+): Promise<WorkspaceShareDto> {
+  return request<WorkspaceShareDto>('/workspace-shares', {
+    method: 'POST',
+    token,
+    body: input,
+  });
+}
+
+export function listWorkspaceShares(token: string): Promise<{ shares: WorkspaceShareDto[] }> {
+  return request<{ shares: WorkspaceShareDto[] }>('/workspace-shares', { token });
+}
+
+export function listSharedWithMe(token: string): Promise<{ shares: WorkspaceShareDto[] }> {
+  return request<{ shares: WorkspaceShareDto[] }>('/workspace-shares/shared-with-me', { token });
+}
+
+export function acceptWorkspaceShare(token: string, grantId: string): Promise<WorkspaceShareDto> {
+  return request<WorkspaceShareDto>(`/workspace-shares/${encodeURIComponent(grantId)}/accept`, {
+    method: 'POST',
+    token,
+  });
+}
+
+export function declineWorkspaceShare(token: string, grantId: string): Promise<WorkspaceShareDto> {
+  return request<WorkspaceShareDto>(`/workspace-shares/${encodeURIComponent(grantId)}/decline`, {
+    method: 'POST',
+    token,
+  });
+}
+
+export function revokeWorkspaceShare(token: string, grantId: string): Promise<WorkspaceShareDto> {
+  return request<WorkspaceShareDto>(`/workspace-shares/${encodeURIComponent(grantId)}`, {
+    method: 'DELETE',
+    token,
+  });
+}
+
+export function getWorkspaceShareToken(
+  token: string,
+  grantId: string,
+): Promise<WorkspaceShareToken> {
+  return request<WorkspaceShareToken>(
+    `/workspace-shares/${encodeURIComponent(grantId)}/access-token`,
+    { method: 'POST', token },
+  );
+}
+
+export function verifyWorkspaceShareAccess(
+  deviceToken: string,
+  token: string,
+): Promise<WorkspaceShareScope> {
+  return request<WorkspaceShareScope>('/workspace-shares/verify-access', {
+    method: 'POST',
+    token: deviceToken,
+    body: { token },
+  });
 }
 
 // ─── 父域 SSO bootstrap（设计 2026-06-12-cloud-domain-sso）─────────────────────
