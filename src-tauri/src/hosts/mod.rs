@@ -260,8 +260,8 @@ impl HostRegistry {
         self.outbound.remove(host_id);
     }
 
-    /// Detach local foreign view: unsubscribe remote, drop sink/mapping, clear attached flag.
-    /// Does **not** disconnect host or kill remote PTY.
+    /// Detach local foreign view. Keep the host connection while another pane from that host is
+    /// attached; disconnect it after the last pane. Never kills the remote PTY.
     pub fn detach_foreign(&self, pane_id: uuid::Uuid) -> Result<RemoteRef, String> {
         let att = self
             .foreign_by_pane
@@ -269,20 +269,44 @@ impl HostRegistry {
             .remove(&pane_id)
             .ok_or_else(|| format!("pane {pane_id} is not foreign"))?;
         let remote = att.remote;
-        self.live_sinks
-            .write()
-            .remove(&(remote.host_id.clone(), remote.remote_pane_id.clone()));
-        // Drop live buffer bytes for this session (keep history tail for re-attach seed).
-        self.live_outputs
-            .write()
-            .remove(&(remote.host_id.clone(), remote.remote_pane_id.clone()));
-        // C8/C50: clear per-session BP counters on detach (registry API used).
-        self.live_bp
-            .clear_session(&remote.host_id, &remote.remote_pane_id);
+        let remaining = self.foreign_by_pane.read();
+        let remote_still_attached = remaining.values().any(|f| {
+            f.remote.host_id == remote.host_id
+                && f.remote.remote_pane_id == remote.remote_pane_id
+        });
+        let host_still_attached = remaining
+            .values()
+            .any(|f| f.remote.host_id == remote.host_id);
+        drop(remaining);
+
         if let Some(client) = self.outbound.get(&remote.host_id) {
-            let _ = client.unsubscribe(&remote.remote_pane_id);
+            if !remote_still_attached {
+                let _ = client.unsubscribe(&remote.remote_pane_id);
+            }
+            if !host_still_attached {
+                client.disconnect();
+            }
         }
-        self.set_session_attached(&remote.host_id, &remote.remote_pane_id, false);
+        if !remote_still_attached {
+            self.live_sinks
+                .write()
+                .remove(&(remote.host_id.clone(), remote.remote_pane_id.clone()));
+            // Drop live buffer bytes for this session (keep history tail for re-attach seed).
+            self.live_outputs
+                .write()
+                .remove(&(remote.host_id.clone(), remote.remote_pane_id.clone()));
+            self.live_bp
+                .clear_session(&remote.host_id, &remote.remote_pane_id);
+            self.set_session_attached(&remote.host_id, &remote.remote_pane_id, false);
+        }
+        if !host_still_attached {
+            self.reconnect.cancel(&remote.host_id);
+            self.set_status(
+                &remote.host_id,
+                HostStatus::Disconnected,
+                "最后一个接入 pane 已关闭",
+            );
+        }
         self.publish_control_plane();
         Ok(remote)
     }
@@ -1156,12 +1180,18 @@ mod tests {
             sessions: vec![],
         });
         let mock = Arc::new(MockOutboundTransport::new());
-        mock.preset_list(&[RemoteSessionInfo {
-            id: "main".into(),
-            title: "shell".into(),
-        }]);
+        mock.preset_list(&[
+            RemoteSessionInfo {
+                id: "main".into(),
+                title: "shell".into(),
+            },
+            RemoteSessionInfo {
+                id: "second".into(),
+                title: "shell-2".into(),
+            },
+        ]);
         let sessions = bind_outbound_and_list(&reg, "lan:h", mock.clone()).unwrap();
-        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions.len(), 2);
         assert_eq!(reg.get("lan:h").unwrap().status, HostStatus::Connected);
 
         let client = reg.outbound_client("lan:h").unwrap();
@@ -1188,10 +1218,30 @@ mod tests {
             },
         );
         reg.set_session_attached("lan:h", "main", true);
+        let second_pane = uuid::Uuid::new_v4();
+        client.subscribe("second").unwrap();
+        reg.register_foreign(
+            second_pane,
+            RemoteRef {
+                host_id: "lan:h".into(),
+                host_label: "h".into(),
+                remote_pane_id: "second".into(),
+                kind: HostKind::Remote,
+            },
+        );
+        reg.set_session_attached("lan:h", "second", true);
+
         let detached = reg.detach_foreign(pane).unwrap();
         assert_eq!(detached.remote_pane_id, "main");
         assert!(reg.foreign_for_pane(pane).is_none());
         assert!(!client.is_subscribed("main"));
+        assert!(client.is_subscribed("second"));
+        assert_eq!(client.state(), outbound::OutboundState::Subscribed);
+        assert_eq!(reg.get("lan:h").unwrap().status, HostStatus::Connected);
+
+        reg.detach_foreign(second_pane).unwrap();
+        assert_eq!(client.state(), outbound::OutboundState::Disconnected);
+        assert_eq!(reg.get("lan:h").unwrap().status, HostStatus::Disconnected);
     }
 
     #[test]

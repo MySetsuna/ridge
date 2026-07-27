@@ -202,6 +202,10 @@ impl OutboundTransport for LanOutboundTransport {
     fn drain_pane_raw(&self) -> Vec<(String, Vec<u8>)> {
         std::mem::take(&mut *self.inbound_pane.lock())
     }
+
+    fn close(&self) {
+        LanOutboundTransport::close(self);
+    }
 }
 
 /// Build endpoint URL for diagnostics (never logs token).

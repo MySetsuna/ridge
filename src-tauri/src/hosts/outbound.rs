@@ -4,7 +4,7 @@
 //! - 前端永不直连多 host；本模块由桌面 Rust 持有出站会话。
 //! - 帧语义对齐 ridge-cli mux：0x10 pane raw / 0x11 JSON-RPC / 0x12 control。
 //! - 生产可接真 WebSocket；单测用 [`MockOutboundTransport`] 驱动 shipped 路径。
-//! - 关本地 foreign 视图 = detach（unsubscribe），不断 host、不杀远端 PTY。
+//! - 关本地 foreign 视图 = detach；同 host 尚有视图则保连接，最后一个关闭则断连接；均不杀远端 PTY。
 
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -37,6 +37,8 @@ pub trait OutboundTransport: Send + Sync {
     fn send_raw(&self, frame: &[u8]) -> Result<(), String>;
     /// 拉取已缓冲的入站 pane raw 帧（host→controller 0x10）。
     fn drain_pane_raw(&self) -> Vec<(String, Vec<u8>)>;
+    /// 关闭底层连接。无状态测试传输可用默认空实现。
+    fn close(&self) {}
 }
 
 /// 线形 mux 辅助（与 ridge-cli `mux` 对齐的最小子集，避免跨 crate 依赖）。
@@ -344,6 +346,11 @@ impl OutboundClient {
     pub fn mark_disconnected(&self) {
         *self.state.lock() = OutboundState::Disconnected;
         self.subscriptions.lock().clear();
+    }
+
+    pub fn disconnect(&self) {
+        self.transport.close();
+        self.mark_disconnected();
     }
 }
 
