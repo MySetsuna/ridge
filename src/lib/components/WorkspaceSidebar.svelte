@@ -19,9 +19,10 @@
  onReorder: (fromIndex: number, toIndex: number) => void;
  onSave: () => void;
  onCreate: () => void;
+ onShare?: (id: string, currentName: string | undefined) => void;
  }
 
- let { workspaces, activeWorkspaceId, onSelect, onRename, onDelete, onReorder, onSave, onCreate }: Props = $props();
+ let { workspaces, activeWorkspaceId, onSelect, onRename, onDelete, onReorder, onSave, onCreate, onShare }: Props = $props();
 
  let draggingIndex: number | null = $state(null);
  let dragOverIndex: number | null = $state(null);
@@ -85,6 +86,11 @@
  editingName = ws.name || tr('explorer.workspaceDefault', { seq: ws.displaySeq });
  }
  },
+ ...(onShare ? [{
+ id: 'share',
+ label: '分享工作区…',
+ action: () => onShare(ws.id, ws.name)
+ }] : []),
  { id: 'divider1', divider: true },
  {
  id: 'delete',
