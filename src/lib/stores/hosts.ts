@@ -7,12 +7,14 @@
 // 生命周期不变量：
 //   工作区里关闭 foreign pane = detach（会话保活）；**真正终止**只能在此面板里做。
 import { writable, get } from 'svelte/store';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
   activeWorkspaceId,
   paneTreeStore,
   syncPaneLayoutFromBackend,
   dockPane,
+  setPaneCwd,
+  closePane as closeLocalPane,
 } from '$lib/stores/paneTree';
 import type { PaneNode } from '$lib/types';
 import type { AttachRegion } from '$lib/stores/dockRegionPicker';
@@ -46,6 +48,18 @@ import {
   listSharedWithMe,
   revokeWorkspaceShare,
 } from '@ridge/remote/shared/cloud/apiClient';
+import { RemoteConnection } from '@ridge/remote';
+import {
+  loadHostForest,
+  type HostForestResult,
+  type HostTopologyLink,
+} from '$lib/hosts/hostForest';
+import { connectCloudHostTopologyLink } from '$lib/remote/cloud/cloudHostTopologyLink';
+import {
+  bindRemotePane,
+  deleteRemotePane,
+  unbindRemotePane,
+} from '$lib/hosts/remotePaneBindings';
 
 export type HostKind = 'headless' | 'remote' | 'rdg' | 'shared' | 'sharing';
 export type HostStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
@@ -88,6 +102,18 @@ export interface HostSession {
   ownerUsername?: string;
   deviceName?: string;
   granteeLabel?: string;
+  cwd?: string;
+  isAgent?: boolean;
+}
+
+export interface HostWorkspace {
+  id: string;
+  name: string;
+  active: boolean;
+  sessions: HostSession[];
+  shareGrantId?: string;
+  shareStatus?: HostSession['shareStatus'];
+  role?: 'operator';
 }
 
 export interface Host {
@@ -98,6 +124,7 @@ export interface Host {
   /** 远端主机的状态说明（如「live 传输待接入」）；headless 无。 */
   detail?: string;
   sessions: HostSession[];
+  workspaces: HostWorkspace[];
 }
 
 /** 后端 `host_list_snapshot` 回传的远端主机记录（crate::hosts::HostRecord，不含凭据）。 */
@@ -118,6 +145,219 @@ export const hostsError = writable('');
 
 const HEADLESS_HOST_ID = 'headless';
 
+export interface RegisteredHostLink {
+  hostId: string;
+  kind: 'remote' | 'rdg';
+  label: string;
+  detail?: string;
+  deviceName?: string;
+  link: HostTopologyLink;
+  manualDisconnected?: boolean;
+}
+
+const registeredHostLinks = new Map<string, RegisteredHostLink>();
+const topologyByHost = new Map<string, HostForestResult>();
+const topologyInFlight = new Map<string, Promise<HostForestResult>>();
+
+export function registerHostTopologyLink(source: RegisteredHostLink): () => void {
+  const previous = registeredHostLinks.get(source.hostId);
+  if (previous && previous.link !== source.link) void previous.link.disconnect();
+  registeredHostLinks.set(source.hostId, source);
+  return () => {
+    if (registeredHostLinks.get(source.hostId)?.link !== source.link) return;
+    registeredHostLinks.delete(source.hostId);
+    topologyByHost.delete(source.hostId);
+  };
+}
+
+export function hasHostTopologyLink(hostId: string): boolean {
+  return registeredHostLinks.has(hostId);
+}
+
+export function hostShareDeviceName(hostId: string): string | undefined {
+  return registeredHostLinks.get(hostId)?.deviceName;
+}
+
+export async function refreshHostTopology(hostId: string): Promise<HostForestResult | null> {
+  const source = registeredHostLinks.get(hostId);
+  if (!source) return null;
+  if (source.manualDisconnected || source.link.state() === 'disconnected') {
+    return topologyByHost.get(hostId) ?? null;
+  }
+  const current = topologyInFlight.get(hostId);
+  if (current) return current;
+  const pending = loadHostForest([{ hostId, link: source.link }])
+    .then(async ([result]) => {
+      topologyByHost.set(hostId, result);
+      if (isTauri() && !result.error) {
+        await invoke('register_frontend_host', {
+          hostId,
+          kind: source.kind,
+          label: source.label,
+          sessions: result.workspaces.flatMap((workspace) =>
+            workspace.panes.map((pane) => ({ id: pane.id, title: pane.title }))),
+        });
+      }
+      return result;
+    })
+    .finally(() => topologyInFlight.delete(hostId));
+  topologyInFlight.set(hostId, pending);
+  return pending;
+}
+
+export async function closeHostPane(hostId: string, paneId: string): Promise<void> {
+  const source = registeredHostLinks.get(hostId);
+  if (!source) throw new Error('该主机未提供 pane 删除能力');
+  const closed = await deleteRemotePane(hostId, paneId, source.link, closeLocalPane);
+  if (!closed) throw new Error('远端 pane 删除失败');
+  await refreshHosts();
+}
+
+function topologyLink(hostId: string): HostTopologyLink {
+  const source = registeredHostLinks.get(hostId);
+  if (!source || source.manualDisconnected) throw new Error('主机未连接');
+  return source.link;
+}
+
+export async function createHostWorkspace(hostId: string, name?: string): Promise<void> {
+  const id = await topologyLink(hostId).createWorkspace(name);
+  if (!id) throw new Error('远端工作区创建失败');
+  await refreshHosts();
+}
+
+export async function openHostWorkspace(hostId: string, workspaceId: string): Promise<void> {
+  if (!await topologyLink(hostId).switchWorkspace(workspaceId)) {
+    throw new Error('远端工作区打开失败');
+  }
+  await refreshHosts();
+}
+
+export async function renameHostWorkspace(
+  hostId: string,
+  workspaceId: string,
+  name: string,
+): Promise<void> {
+  const link = topologyLink(hostId);
+  if (!link.renameWorkspace || !await link.renameWorkspace(workspaceId, name)) {
+    throw new Error('远端工作区重命名失败');
+  }
+  await refreshHosts();
+}
+
+export async function saveHostWorkspace(
+  hostId: string,
+  workspaceId: string,
+  name: string,
+): Promise<void> {
+  const link = topologyLink(hostId);
+  if (!link.saveWorkspace || !await link.saveWorkspace(workspaceId, name)) {
+    throw new Error('远端工作区保存失败');
+  }
+}
+
+export async function createHostPane(hostId: string, workspaceId: string): Promise<void> {
+  const link = topologyLink(hostId);
+  if (!await link.switchWorkspace(workspaceId)) throw new Error('远端工作区打开失败');
+  if (!await link.createPane()) throw new Error('远端 pane 创建失败');
+  await refreshHosts();
+}
+
+export async function closeHostWorkspace(hostId: string, workspaceId: string): Promise<void> {
+  if (!await topologyLink(hostId).closeWorkspace(workspaceId)) {
+    throw new Error('远端工作区关闭失败');
+  }
+  await refreshHosts();
+}
+
+export async function markHostPaneAgent(
+  hostId: string,
+  workspaceId: string,
+  paneId: string,
+  on: boolean,
+): Promise<void> {
+  const link = topologyLink(hostId);
+  const mark = link.markPaneAgent;
+  if (!mark) throw new Error('该主机不支持 Agent 标记');
+  await mark.call(link, workspaceId, paneId, on);
+  await refreshHosts();
+}
+
+export async function changeHostPaneShell(
+  hostId: string,
+  workspaceId: string,
+  paneId: string,
+  shellId: string,
+): Promise<void> {
+  const link = topologyLink(hostId);
+  if (!link.listShells || !link.changePaneShell) throw new Error('该主机不支持切换 shell');
+  const shells = await link.listShells();
+  const shell = shells.find((candidate) => candidate.id === shellId);
+  if (!shell) throw new Error('所选 shell 不可用');
+  await link.changePaneShell(workspaceId, paneId, shell);
+  await refreshHosts();
+}
+
+export async function hostShellChoices(hostId: string): Promise<Array<{ id: string; label: string }>> {
+  const link = topologyLink(hostId);
+  if (!link.listShells) return [];
+  return (await link.listShells()).map(({ id, label }) => ({ id, label }));
+}
+
+function paneSession(
+  hostId: string,
+  workspaceId: string,
+  pane: HostForestResult['workspaces'][number]['panes'][number],
+): HostSession {
+  return {
+    socket: hostId,
+    name: pane.title,
+    remoteSessionId: pane.id,
+    workspaceId,
+    windows: 0,
+    panes: 1,
+    width: 0,
+    height: 0,
+    attached: false,
+    cwd: pane.cwd,
+    isAgent: pane.isAgent,
+  };
+}
+
+function linkedHost(
+  source: RegisteredHostLink,
+  topology: HostForestResult,
+  previous?: Host,
+): Host {
+  const attached = new Set(
+    previous?.sessions
+      .filter((session) => session.attached)
+      .map((session) => session.remoteSessionId)
+      .filter((id): id is string => !!id),
+  );
+  const workspaces = topology.workspaces.map((workspace) => ({
+    id: workspace.id,
+    name: workspace.name,
+    active: workspace.active,
+    sessions: workspace.panes.map((pane) => ({
+      ...paneSession(source.hostId, workspace.id, pane),
+      attached: attached.has(pane.id),
+    })),
+  }));
+  return {
+    id: source.hostId,
+    kind: source.kind,
+    label: source.label,
+    status: source.manualDisconnected || source.link.state() === 'disconnected'
+      ? 'disconnected'
+      : topology.error
+      ? 'error'
+      : source.link.state() === 'connected' ? 'connected' : 'connecting',
+    detail: topology.error || source.detail,
+    workspaces,
+    sessions: workspaces.flatMap((workspace) => workspace.sessions),
+  };
+}
+
 /**
  * 刷新主机/会话快照。当前聚合后端 native 会话为「本机（无头）」单一 host；
  * 远端/rdg host 在 P3/P4 由各自连接推送后合并进 hostsStore。
@@ -135,6 +375,12 @@ export async function refreshHosts(): Promise<void> {
       label: '本机（无头）',
       status: 'connected',
       sessions: sessions ?? [],
+      workspaces: [{
+        id: HEADLESS_HOST_ID,
+        name: '无头会话',
+        active: true,
+        sessions: sessions ?? [],
+      }],
     });
   } catch (e) {
     err = e instanceof Error ? e.message : String(e);
@@ -143,22 +389,29 @@ export async function refreshHosts(): Promise<void> {
   try {
     const recs = await invoke<HostRecord[]>('host_list_snapshot');
     for (const r of recs ?? []) {
+      const sessions = (r.sessions ?? []).map((s) => ({
+        socket: r.id,
+        name: s.title || s.id,
+        remoteSessionId: s.id,
+        windows: 0,
+        panes: 0,
+        width: 0,
+        height: 0,
+        attached: s.attached,
+      }));
       next.push({
         id: r.id,
         kind: r.kind,
         label: r.label,
         status: r.status,
         detail: r.detail,
-        sessions: (r.sessions ?? []).map((s) => ({
-          socket: r.id,
-          name: s.title || s.id,
-          remoteSessionId: s.id,
-          windows: 0,
-          panes: 0,
-          width: 0,
-          height: 0,
-          attached: s.attached,
-        })),
+        sessions,
+        workspaces: sessions.length > 0 ? [{
+          id: `${r.id}:legacy`,
+          name: '远端会话',
+          active: true,
+          sessions,
+        }] : [],
       });
     }
   } catch {
@@ -182,10 +435,11 @@ export async function refreshHosts(): Promise<void> {
             status: share.status === 'active' ? 'connected' : 'connecting',
             detail: '跨账号单工作区；不可二次转发主机或 Remote',
             sessions: [],
+            workspaces: [],
           };
           grouped.set(key, host);
         }
-        host.sessions.push({
+        const session: HostSession = {
           socket: key,
           name: `工作区 ${share.workspaceId.slice(0, 8)}`,
           remoteSessionId: share.workspaceId,
@@ -199,6 +453,16 @@ export async function refreshHosts(): Promise<void> {
           width: 0,
           height: 0,
           attached: false,
+        };
+        host.sessions.push(session);
+        host.workspaces.push({
+          id: share.workspaceId,
+          name: session.name,
+          active: share.status === 'active',
+          sessions: [],
+          shareGrantId: share.id,
+          shareStatus: share.status,
+          role: 'operator',
         });
       }
       next.push(...grouped.values());
@@ -227,11 +491,29 @@ export async function refreshHosts(): Promise<void> {
             height: 0,
             attached: false,
           })),
+          workspaces: visible.map((share) => ({
+            id: share.workspaceId,
+            name: `工作区 ${share.workspaceId.slice(0, 8)}`,
+            active: share.status === 'active',
+            sessions: [],
+            shareGrantId: share.id,
+            shareStatus: share.status,
+            role: 'operator',
+          })),
         });
       }
     } catch {
       /* 云登录不可用时不影响本机/普通主机列表。 */
     }
+  }
+  await Promise.all([...registeredHostLinks.keys()].map(refreshHostTopology));
+  for (const source of registeredHostLinks.values()) {
+    const topology = topologyByHost.get(source.hostId);
+    if (!topology) continue;
+    const index = next.findIndex((host) => host.id === source.hostId);
+    const projected = linkedHost(source, topology, index >= 0 ? next[index] : undefined);
+    if (index >= 0) next[index] = projected;
+    else next.push(projected);
   }
   hostsStore.set(next);
   hostsError.set(err);
@@ -318,25 +600,89 @@ export async function connectHost(
   kind: 'remote' | 'rdg',
   label: string,
   addr: string,
-  token?: string
+  token?: string,
+  channel: 'lan' | 'public' = 'lan',
 ): Promise<void> {
-  await invoke('connect_host', {
+  if (channel === 'lan') {
+    const raw = addr.trim();
+    const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    const host = url.hostname;
+    const secure = url.protocol === 'https:';
+    const port = Number(url.port || (secure ? 443 : 80));
+    const code = token?.trim();
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65535 || !code) {
+      throw new Error('LAN 主机地址或 TOTP 无效');
+    }
+    const link = new RemoteConnection();
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        off();
+        link.disconnect();
+        reject(new Error('LAN 主机连接超时'));
+      }, 10_000);
+      const off = link.onStateChange((state) => {
+        if (state === 'connected') {
+          clearTimeout(timer);
+          off();
+          resolve();
+        } else if (state === 'error') {
+          clearTimeout(timer);
+          off();
+          reject(new Error(link.lastFailure()?.message || 'LAN 主机拒绝连接'));
+        }
+      });
+      link.connect(host, port, code, 'code', secure);
+    });
+    const hostId = `lan:${host}:${port}`;
+    registerHostTopologyLink({
+      hostId,
+      kind,
+      label: label.trim() || host,
+      detail: `${secure ? 'wss' : 'ws'}://${host}:${port}`,
+      link,
+    });
+    await refreshHosts();
+    return;
+  }
+  const deviceName = addr.trim();
+  const code = token?.trim();
+  if (!deviceName || !code) throw new Error('公网设备名或 TOTP 无效');
+  const link = await connectCloudHostTopologyLink(deviceName, code);
+  const hostId = `cloud:${deviceName}`;
+  registerHostTopologyLink({
+    hostId,
     kind,
-    label: label.trim() || null,
-    addr: addr.trim(),
-    token: token?.trim() || null,
+    label: label.trim() || deviceName,
+    detail: '公网同账号 · Cloud E2EE',
+    deviceName,
+    link,
   });
   await refreshHosts();
 }
 
 /** 断开一台远端主机（保留登记）。 */
 export async function disconnectHost(hostId: string): Promise<void> {
+  const linked = registeredHostLinks.get(hostId);
+  if (linked) {
+    linked.link.disconnect();
+    linked.manualDisconnected = true;
+    await refreshHosts();
+    return;
+  }
   await invoke('disconnect_host', { hostId });
   await refreshHosts();
 }
 
 /** 忘记一台远端主机（移除登记）。 */
 export async function forgetHost(hostId: string): Promise<void> {
+  const linked = registeredHostLinks.get(hostId);
+  if (linked) {
+    linked.link.disconnect();
+    registeredHostLinks.delete(hostId);
+    topologyByHost.delete(hostId);
+    await refreshHosts();
+    return;
+  }
   await invoke('forget_host', { hostId });
   await refreshHosts();
 }
@@ -414,11 +760,25 @@ export async function attachRemoteHostSession(
     // plan is retained for UI diagnostics.
   }
   const wid = get(activeWorkspaceId);
+  const linked = registeredHostLinks.get(hostId);
   const paneId = await invoke<string>('attach_host_session', {
     hostId,
     sessionId,
     workspaceId: wid ?? null,
   });
+  if (linked && wid) {
+    const session = get(hostsStore)
+      .find((host) => host.id === hostId)
+      ?.sessions.find((item) => item.remoteSessionId === sessionId);
+    bindRemotePane({
+      localPaneId: paneId,
+      hostId,
+      workspaceId: session?.workspaceId || '',
+      remotePaneId: sessionId,
+      link: linked.link,
+    });
+    setPaneCwd(wid, paneId, session?.cwd);
+  }
   noteLifecycleSubscribe(hostId, sessionId);
   await refreshHosts();
   await syncPaneLayoutFromBackend();
@@ -445,6 +805,7 @@ export async function detachRemoteHostSession(paneId: string): Promise<void> {
     paneId,
     workspaceId: wid ?? null,
   });
+  unbindRemotePane(paneId);
   await refreshHosts();
   await syncPaneLayoutFromBackend();
 }
@@ -599,7 +960,10 @@ export async function fetchLiveBackpressure(
  */
 export async function pumpAllConnectedOutbound(): Promise<number> {
   const hosts = get(hostsStore);
-  const targets = hosts.filter((h) => h.kind !== 'headless' && h.status === 'connected');
+  const targets = hosts.filter((h) =>
+    h.kind !== 'headless'
+    && h.status === 'connected'
+    && !registeredHostLinks.has(h.id));
   // Perf (iter 50): pump hosts in parallel — sequential IPC stacked latency.
   const parts = await Promise.all(targets.map((h) => pumpHostOutput(h.id)));
   return parts.reduce((a, b) => a + b, 0);

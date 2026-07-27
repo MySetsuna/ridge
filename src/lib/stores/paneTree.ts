@@ -1595,6 +1595,8 @@ export async function closePane(paneId: string) {
     /* local pane or already detached */
   }
   await invoke('close_pane', { paneId });
+  const { unbindRemotePane } = await import('$lib/hosts/remotePaneBindings');
+  unbindRemotePane(paneId);
   // Real-close cleanup (TASKS §5.1). Manager.park stays mounted across
   // split / reparent unmount, so detach must happen here when the pane
   // is genuinely gone from the backend tree.

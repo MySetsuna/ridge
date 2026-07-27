@@ -8,6 +8,7 @@
 /// `lib.rs` invoke_handler and capabilityContract tests).
 pub const DESKTOP_ONLY_HOST_METHODS: &[&str] = &[
     "host_list_snapshot",
+    "register_frontend_host",
     "connect_host",
     "disconnect_host",
     "forget_host",
@@ -30,6 +31,7 @@ pub const DESKTOP_ONLY_HOST_METHODS: &[&str] = &[
 /// Methods that mutate host connectivity / foreign panes.
 pub const DESKTOP_ONLY_HOST_MUTATING: &[&str] = &[
     "connect_host",
+    "register_frontend_host",
     "disconnect_host",
     "forget_host",
     "attach_host_session",
@@ -75,6 +77,7 @@ mod tests {
     fn desktop_only_set_is_closed_and_includes_detach() {
         assert!(is_desktop_only_host_method("detach_host_session"));
         assert!(is_desktop_only_host_method("attach_host_session"));
+        assert!(is_desktop_only_host_method("register_frontend_host"));
         assert!(is_desktop_only_host_mutating("connect_host"));
         assert!(!is_desktop_only_host_mutating("host_list_snapshot"));
         assert!(!is_desktop_only_host_method("get_orchestration_health"));

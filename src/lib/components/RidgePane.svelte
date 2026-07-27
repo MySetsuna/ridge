@@ -28,6 +28,7 @@ import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
+import { activateRemotePaneBinding, remotePaneBinding } from '$lib/hosts/remotePaneBindings';
 import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '@ridge/remote/shared/terminal/tuiGate';
 import {
 	deriveBufferEvent,
@@ -998,6 +999,11 @@ function onPtyData(bytes: Uint8Array) {
 	// (key sequences are all ASCII), but a future binary tunneling
 	// path may want a base64 alternative.
 	const s = new TextDecoder().decode(bytes);
+	const remote = remotePaneBinding(paneId);
+	if (remote) {
+		remote.link.sendStdin(remote.remotePaneId, s);
+		return;
+	}
 	void invoke('write_to_pty', { paneId, data: s }).catch((err) => {
 		console.error('write_to_pty', err);
 	});
@@ -1016,6 +1022,11 @@ function onPtyResize(
 		if (import.meta.env?.DEV) {
 			console.warn('[ridge-pane] resize skipped — non-UUID paneId:', paneId);
 		}
+		return Promise.resolve();
+	}
+	const remote = remotePaneBinding(paneId);
+	if (remote) {
+		remote.link.refreshPane(remote.remotePaneId, rows, cols, 0, 0);
 		return Promise.resolve();
 	}
 	// §1.24 / §A.3: `isAlt` and `isInlineTui` both let the backend skip
@@ -1163,6 +1174,12 @@ onMount(() => {
 		manager.onData(paneId, onPtyData);
 		manager.onResize(paneId, onPtyResize);
 		manager.onEvent(paneId, onKernelEvent);
+
+		const remote = remotePaneBinding(paneId);
+		if (remote) {
+			activateRemotePaneBinding(paneId);
+			return;
+		}
 
 		// 3) PTY backend lifecycle
 		try {

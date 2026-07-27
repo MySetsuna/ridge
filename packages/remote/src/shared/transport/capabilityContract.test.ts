@@ -9,6 +9,7 @@ import {
   type RemoteCapability,
 } from './capabilityContract';
 import { CLIENT_CAPABILITIES } from './rpcClient';
+import { DESKTOP_PRIVILEGED_METHODS } from './protocolAdmission';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 
@@ -84,6 +85,7 @@ describe('cross-entry Remote capability contract', () => {
       'forget_host',
       'get_outbound_stats',
       'host_list_snapshot',
+      'register_frontend_host',
       'list_host_sessions',
       'disconnect_host',
     ]) {
@@ -93,11 +95,15 @@ describe('cross-entry Remote capability contract', () => {
 
   it('keeps DESKTOP_ONLY_HOST_METHODS rust list aligned with deny list', () => {
     const hostsDesktop = source('src-tauri/src/hosts/desktop_surface.rs');
+    expect(rustStringArray(hostsDesktop, 'DESKTOP_ONLY_HOST_METHODS')).toEqual(
+      DESKTOP_PRIVILEGED_METHODS,
+    );
     for (const method of [
       'connect_host',
       'detach_host_session',
       'get_outbound_stats',
       'attach_host_session',
+      'register_frontend_host',
     ]) {
       expect(hostsDesktop).toContain(`"${method}"`);
       expect(REMOTE_ALLOWLIST).not.toContain(method);

@@ -25,6 +25,8 @@ describe('protocolAdmission (C55)', () => {
     expect(admitRemoteMethod('connect_host').ok).toBe(false);
     expect(admitRemoteMethod('list_hitl_pending').ok).toBe(true);
     expect(isDesktopPrivileged('attach_host_session')).toBe(true);
+    expect(admitRemoteMethod('register_frontend_host').ok).toBe(false);
+    expect(admitRemoteMethod('get_foreign_history_tail').ok).toBe(false);
   });
 
   it('boundary validation', () => {

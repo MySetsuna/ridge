@@ -3,8 +3,8 @@
   // 只分两类**接入通道**——与网页端一致，不再暴露 ridge/rdg 的实现细节：
   //   • 局域网 (LAN)：直连，无需登录，只需「地址 + TOTP 验证码」。
   //   • 公网       ：经云端中继，需先登录账户（复用「公网远控」的云端登录态）；
-  //                  已登录后同样只需「地址 + TOTP 验证码」。
-  // 凭据(TOTP)只传给后端 live 传输里程使用，前端与主机记录都不留存。
+  //                  已登录后只需「设备名 + TOTP 验证码」。
+  // 凭据(TOTP)只用于本次握手，不落库。
   import { Globe, Wifi, X, Loader2 } from 'lucide-svelte';
   import { portal } from '$lib/actions/portal';
   import { connectHost } from '$lib/stores/hosts';
@@ -91,9 +91,7 @@
     }
     busy = true;
     try {
-      // 后端 live 传输里程尚未接线：当前登记主机 + 传入 TOTP（不落库）。LAN / 公网
-      // 两条通道当前都登记为 'remote'（后端暂不区分通道）。
-      await connectHost('remote', label, addr, totp);
+      await connectHost('remote', label, addr, totp, channel);
       close();
     } catch (e) {
       await alertDialog({ title: '接入失败', message: e instanceof Error ? e.message : String(e) });
@@ -161,7 +159,7 @@
           <!-- 公网登录 gate：复用云端登录态（与公网远控同一账户）。 -->
           <div class="space-y-2 rounded-lg border border-[var(--rg-border)] bg-[var(--rg-surface)] p-3">
             <p class="text-[11px] leading-relaxed text-[var(--rg-fg-muted)]">
-              公网接入需先登录云端账户（与「公网远控」同一账户）。登录后只需填写地址与 TOTP 验证码。
+              公网整机接入需先登录同一云端账户。登录后填写该账户下设备名与 TOTP 验证码。
             </p>
             <button
               type="button"
@@ -202,10 +200,10 @@
             <p class="text-[11px] text-[var(--rg-fg-muted)]">已登录：<span class="text-[var(--rg-fg)]">{account}</span></p>
           {/if}
           <label class="block">
-            <span class="text-[11px] text-[var(--rg-fg-muted)]">地址</span>
+            <span class="text-[11px] text-[var(--rg-fg-muted)]">{channel === 'public' ? '设备名' : '地址'}</span>
             <input
               bind:value={addr}
-              placeholder={channel === 'public' ? 'host:port（公网主机）' : '192.168.1.5:9528'}
+              placeholder={channel === 'public' ? 'ridge-desktop' : '192.168.1.5:9528'}
               class="mt-1 h-9 w-full rounded-lg border border-[var(--rg-border)] bg-[var(--rg-surface)] px-2.5 text-[13px] outline-none focus:border-[var(--rg-accent)]"
             />
           </label>
@@ -233,8 +231,7 @@
           <p class="text-[10px] leading-relaxed text-[var(--rg-fg-muted)]">
             {channel === 'lan'
               ? '局域网直连，无需登录——填对地址与 TOTP 验证码即可接入。'
-              : '公网经云端中继，已登录账户后填对地址与 TOTP 验证码即可接入。'}
-            远端 PTY 实时流接管（live 传输）为下一里程，需 rebuild + 真实主机联调。
+              : '公网经 Cloud E2EE 中继；relay 与 host 均校验同账号，异账号整机接入会被拒绝。'}
           </p>
         {/if}
       </div>

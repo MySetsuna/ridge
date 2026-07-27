@@ -13,6 +13,12 @@
     ChevronDown,
     PlugZap,
     Link2,
+    Folder,
+    Bot,
+    Share2,
+    Pencil,
+    Save,
+    Terminal,
   } from 'lucide-svelte';
   import {
     hostsStore,
@@ -23,6 +29,18 @@
     terminateSession,
     attachSession,
     attachRemoteHostSession,
+    closeHostPane,
+    hasHostTopologyLink,
+    createHostWorkspace,
+    openHostWorkspace,
+    renameHostWorkspace,
+    saveHostWorkspace,
+    createHostPane,
+    closeHostWorkspace,
+    markHostPaneAgent,
+    changeHostPaneShell,
+    hostShellChoices,
+    hostShareDeviceName,
     acceptSharedWorkspace,
     openSharedWorkspace,
     revokeSharedWorkspace,
@@ -55,6 +73,7 @@
   import { confirmDialog, promptDialog, alertDialog } from '../RidgeDialog.svelte';
   import { hostSessionDrag } from '$lib/actions/hostSessionDrag';
   import HostConnectDialog from './HostConnectDialog.svelte';
+  import { shareWorkspaceWithAccount } from '$lib/workspace/shareWorkspace';
 
   let connectOpen = $state(false);
 
@@ -67,6 +86,7 @@
 
   // 展开状态：默认展开「本机（无头）」。
   let expanded = $state<Record<string, boolean>>({ headless: true });
+  let expandedWorkspaces = $state<Record<string, boolean>>({});
   let busy = $state(false);
   let tickInFlight = false;
 
@@ -97,7 +117,8 @@
   }
 
   async function refreshOutboundStats(opts?: { withHistory?: boolean }) {
-    const remotes = $hostsStore.filter((h) => h.kind === 'remote' || h.kind === 'rdg');
+    const remotes = $hostsStore.filter((h) =>
+      (h.kind === 'remote' || h.kind === 'rdg') && !hasHostTopologyLink(h.id));
     // Parallel stats IPC (iter 50 perf).
     const pairs = await Promise.all(
       remotes.map(async (h) => [h.id, await fetchOutboundStats(h.id)] as const),
@@ -137,6 +158,7 @@
       const reconJobs: Promise<unknown>[] = [];
       for (const h of $hostsStore) {
         if (h.kind === 'headless' || h.kind === 'shared' || h.kind === 'sharing') continue;
+        if (hasHostTopologyLink(h.id)) continue;
         const row = toRow(h);
         if (!showReconnectControls(row)) continue;
         const recon = $hostReconnectById[h.id];
@@ -200,6 +222,19 @@
 
   function toggle(id: string) {
     expanded = { ...expanded, [id]: !expanded[id] };
+  }
+
+  function workspaceKey(hostId: string, workspaceId: string): string {
+    return `${hostId}\0${workspaceId}`;
+  }
+
+  function workspaceOpen(hostId: string, workspaceId: string): boolean {
+    return expandedWorkspaces[workspaceKey(hostId, workspaceId)] ?? true;
+  }
+
+  function toggleWorkspace(hostId: string, workspaceId: string): void {
+    const key = workspaceKey(hostId, workspaceId);
+    expandedWorkspaces = { ...expandedWorkspaces, [key]: !workspaceOpen(hostId, workspaceId) };
   }
 
   function hostIcon(kind: Host['kind']) {
@@ -278,6 +313,158 @@
     } finally {
       busy = false;
     }
+  }
+
+  async function onDeletePane(s: HostSession, host: Host) {
+    if (!s.remoteSessionId) return;
+    const ok = await confirmDialog({
+      title: '删除远端 pane',
+      message: `确定删除 pane「${s.name}」吗？其 PTY 将结束；不会删除工作区或其他 pane。`,
+      danger: true,
+    });
+    if (!ok) return;
+    busy = true;
+    try {
+      await closeHostPane(host.id, s.remoteSessionId);
+    } catch (e) {
+      await alertDialog({ title: '删除失败', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function onNewRemoteWorkspace(host: Host) {
+    const name = await promptDialog({
+      title: '新建远端工作区',
+      message: `在「${host.label}」新建工作区。`,
+      placeholder: '工作区名称（可选）',
+    });
+    if (name === null) return;
+    busy = true;
+    try {
+      await createHostWorkspace(host.id, name.trim() || undefined);
+    } catch (e) {
+      await alertDialog({ title: '新建失败', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function onOpenWorkspace(host: Host, workspaceId: string) {
+    busy = true;
+    try {
+      await openHostWorkspace(host.id, workspaceId);
+    } catch (e) {
+      await alertDialog({ title: '打开失败', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function onNewRemotePane(host: Host, workspaceId: string) {
+    busy = true;
+    try {
+      await createHostPane(host.id, workspaceId);
+    } catch (e) {
+      await alertDialog({ title: '新建失败', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function onRenameRemoteWorkspace(host: Host, workspaceId: string, currentName: string) {
+    const name = await promptDialog({
+      title: '重命名远端工作区',
+      message: `修改「${currentName}」的名称。`,
+      placeholder: currentName,
+      defaultValue: currentName,
+    });
+    if (!name?.trim() || name.trim() === currentName) return;
+    busy = true;
+    try {
+      await renameHostWorkspace(host.id, workspaceId, name.trim());
+    } catch (e) {
+      await alertDialog({ title: '重命名失败', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function onSaveRemoteWorkspace(host: Host, workspaceId: string, currentName: string) {
+    const name = await promptDialog({
+      title: '保存远端工作区',
+      message: '保存为远端主机上的 .ridge 文件。',
+      placeholder: currentName,
+      defaultValue: currentName,
+    });
+    if (!name?.trim()) return;
+    busy = true;
+    try {
+      await saveHostWorkspace(host.id, workspaceId, name.trim());
+    } catch (e) {
+      await alertDialog({ title: '保存失败', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function onCloseRemoteWorkspace(host: Host, workspaceId: string, name: string) {
+    const ok = await confirmDialog({
+      title: '关闭远端工作区',
+      message: `确定关闭「${name}」及其全部 pane 吗？`,
+      danger: true,
+    });
+    if (!ok) return;
+    busy = true;
+    try {
+      await closeHostWorkspace(host.id, workspaceId);
+    } catch (e) {
+      await alertDialog({ title: '关闭失败', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function onToggleAgent(host: Host, s: HostSession) {
+    if (!s.workspaceId || !s.remoteSessionId) return;
+    busy = true;
+    try {
+      await markHostPaneAgent(host.id, s.workspaceId, s.remoteSessionId, !s.isAgent);
+    } catch (e) {
+      await alertDialog({ title: '标记失败', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function onChangeShell(host: Host, s: HostSession) {
+    if (!s.workspaceId || !s.remoteSessionId) return;
+    busy = true;
+    try {
+      const shells = await hostShellChoices(host.id);
+      if (shells.length === 0) throw new Error('未检测到可用 shell');
+      const choice = await promptDialog({
+        title: '切换终端类型',
+        message: shells.map((shell) => `${shell.id} — ${shell.label}`).join('\n'),
+        placeholder: shells[0].id,
+        defaultValue: shells[0].id,
+      });
+      if (!choice?.trim()) return;
+      await changeHostPaneShell(host.id, s.workspaceId, s.remoteSessionId, choice.trim());
+    } catch (e) {
+      await alertDialog({ title: '切换失败', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function onShareRemoteWorkspace(host: Host, workspaceId: string, name: string) {
+    await shareWorkspaceWithAccount({
+      workspaceId,
+      workspaceName: name,
+      deviceName: hostShareDeviceName(host.id),
+    });
+    await refreshHosts();
   }
 
   async function onRevokeShare(s: HostSession) {
@@ -400,7 +587,18 @@
             {/if}
           </button>
           {#if host.kind === 'remote' || host.kind === 'rdg'}
-            {#if showReconnectControls(toRow(host))}
+            {#if hasHostTopologyLink(host.id)}
+              <button
+                type="button"
+                title="新建远端工作区"
+                disabled={busy}
+                class="opacity-0 group-hover:opacity-100 mr-0.5 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)]"
+                onclick={() => void onNewRemoteWorkspace(host)}
+              >
+                <Plus class="h-3.5 w-3.5" />
+              </button>
+            {/if}
+            {#if !hasHostTopologyLink(host.id) && showReconnectControls(toRow(host))}
               <button
                 type="button"
                 title="步进重连"
@@ -442,78 +640,192 @@
         {/if}
 
         {#if open}
-          {#if host.sessions.length === 0}
+          {#if host.workspaces.length === 0}
             <p class="pl-9 pr-3 py-1.5 text-[11px] text-[var(--rg-fg-muted)] leading-relaxed">
               {#if host.kind === 'headless'}暂无会话 —— 点击 ＋ 新建无头终端{:else}{host.detail || '暂无会话'}{/if}
             </p>
           {/if}
-          {#each host.sessions as s (s.socket + ':' + s.name)}
-            <div
-              use:hostSessionDrag={{ socket: s.socket, name: s.name, enabled: host.kind !== 'shared' && host.kind !== 'sharing' }}
-              title={host.kind === 'shared' ? '共享工作区：打开后可用资源管理器、Git 与 Agent' : host.kind === 'sharing' ? '已分享工作区' : '拖入工作区某个 pane 即可停靠接入（或点右侧接入按钮）'}
-              class="group flex items-center gap-2 pl-9 pr-2 py-1 hover:bg-[var(--rg-surface)] transition-colors {host.kind === 'shared' || host.kind === 'sharing' ? '' : 'cursor-grab active:cursor-grabbing'}"
-            >
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-1.5">
-                  <span class="text-[11px] truncate" title={s.name}>{s.name}</span>
-                  {#if host.kind === 'shared' || host.kind === 'sharing'}
-                    <span
-                      class="shrink-0 rounded-full border border-[var(--rg-border)] px-1.5 text-[9px] text-[var(--rg-fg-muted)]"
-                    >
-                      {host.kind === 'sharing' ? (s.shareStatus === 'pending' ? '待接受' : '已生效') : (s.shareStatus === 'pending' ? '待接受' : '工作区')}
-                    </span>
-                  {:else if s.attached}
-                    <span
-                      class="shrink-0 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/40 px-1.5 text-[9px] font-semibold uppercase tracking-wider"
-                      title="已接入某工作区"
-                    >
-                      已接入
-                    </span>
-                  {/if}
-                </div>
-                <p class="text-[10px] text-[var(--rg-fg-muted)] truncate">
-                  {#if host.kind === 'shared'}
-                    单工作区 · operator · 禁止二次转发
-                  {:else if host.kind === 'sharing'}
-                    分享给 {s.granteeLabel || '对方账户'} · operator
-                  {:else}
-                    {#if s.socket !== 'headless' && s.socket !== 'default'}<span class="font-mono">{s.socket}</span> · {/if}{s.windows}w · {s.panes}p · {s.width}×{s.height}
-                  {/if}
-                </p>
-              </div>
-              {#if !s.attached && host.kind !== 'sharing'}
+          {#each host.workspaces as workspace (workspace.id)}
+            {@const workspaceExpanded = workspaceOpen(host.id, workspace.id)}
+            {@const shareSession = host.sessions.find((session) => session.workspaceId === workspace.id)}
+            <div class="group flex items-center gap-1.5 pl-7 pr-2 py-1 hover:bg-[var(--rg-surface)]">
+              <button
+                type="button"
+                class="flex flex-1 min-w-0 items-center gap-1.5 text-left"
+                onclick={() => toggleWorkspace(host.id, workspace.id)}
+              >
+                {#if workspaceExpanded}
+                  <ChevronDown class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
+                {:else}
+                  <ChevronRight class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
+                {/if}
+                <Folder class="h-3.5 w-3.5 shrink-0 text-[var(--rg-fg-muted)]" />
+                <span class="min-w-0 flex-1 truncate text-[11px]" title={workspace.name}>{workspace.name}</span>
+                {#if workspace.active}
+                  <span class="h-1.5 w-1.5 rounded-full bg-emerald-400" title="活动工作区"></span>
+                {/if}
+                <span class="text-[9px] tabular-nums text-[var(--rg-fg-muted)]">{workspace.sessions.length}</span>
+              </button>
+              {#if shareSession && host.kind === 'shared'}
                 <button
                   type="button"
-                  title={host.kind === 'shared' ? (s.shareStatus === 'pending' ? '接受邀请' : '打开共享工作区') : '接入到当前工作区'}
+                  title={shareSession.shareStatus === 'pending' ? '接受邀请' : '打开共享工作区'}
                   disabled={busy}
-                  class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)] transition-all disabled:opacity-40"
-                  onclick={() => void onAttach(s, host)}
+                  class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)]"
+                  onclick={() => void onAttach(shareSession, host)}
                 >
                   <PlugZap class="h-3.5 w-3.5" />
                 </button>
-              {/if}
-              {#if host.kind === 'sharing'}
-              <button
-                type="button"
-                title="撤销分享"
-                disabled={busy}
-                class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-rose-500/15 hover:text-rose-300 transition-all disabled:opacity-40"
-                onclick={() => void onRevokeShare(s)}
-              >
-                <Trash2 class="h-3.5 w-3.5" />
-              </button>
-              {:else if host.kind !== 'shared'}
-              <button
-                type="button"
-                title="终止会话（真正结束进程，不可恢复）"
-                disabled={busy}
-                class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-rose-500/15 hover:text-rose-300 transition-all disabled:opacity-40"
-                onclick={() => void onTerminate(s)}
-              >
-                <Trash2 class="h-3.5 w-3.5" />
-              </button>
+              {:else if shareSession && host.kind === 'sharing'}
+                <button
+                  type="button"
+                  title="撤销分享"
+                  disabled={busy}
+                  class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-rose-500/15 hover:text-rose-300"
+                  onclick={() => void onRevokeShare(shareSession)}
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                </button>
+              {:else if hasHostTopologyLink(host.id)}
+                <button
+                  type="button"
+                  title="打开远端工作区"
+                  disabled={busy}
+                  class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)]"
+                  onclick={() => void onOpenWorkspace(host, workspace.id)}
+                >
+                  <PlugZap class="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  title="添加 pane"
+                  disabled={busy}
+                  class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)]"
+                  onclick={() => void onNewRemotePane(host, workspace.id)}
+                >
+                  <Plus class="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  title="重命名工作区"
+                  disabled={busy}
+                  class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)]"
+                  onclick={() => void onRenameRemoteWorkspace(host, workspace.id, workspace.name)}
+                >
+                  <Pencil class="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  title="保存工作区"
+                  disabled={busy}
+                  class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)]"
+                  onclick={() => void onSaveRemoteWorkspace(host, workspace.id, workspace.name)}
+                >
+                  <Save class="h-3.5 w-3.5" />
+                </button>
+                {#if hostShareDeviceName(host.id)}
+                  <button
+                    type="button"
+                    title="分享工作区"
+                    disabled={busy}
+                    class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)]"
+                    onclick={() => void onShareRemoteWorkspace(host, workspace.id, workspace.name)}
+                  >
+                    <Share2 class="h-3.5 w-3.5" />
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  title="关闭远端工作区"
+                  disabled={busy}
+                  class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-rose-500/15 hover:text-rose-300"
+                  onclick={() => void onCloseRemoteWorkspace(host, workspace.id, workspace.name)}
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                </button>
               {/if}
             </div>
+            {#if workspaceExpanded && shareSession}
+              <p class="pl-14 pr-3 pb-1 text-[10px] text-[var(--rg-fg-muted)] truncate">
+                {host.kind === 'sharing'
+                  ? `分享给 ${shareSession.granteeLabel || '对方账户'} · operator`
+                  : '单工作区 · operator · 禁止二次转发'}
+              </p>
+            {/if}
+            {#if workspaceExpanded}
+              {#each workspace.sessions as s (s.socket + ':' + s.name)}
+                <div
+                  use:hostSessionDrag={{ socket: s.socket, name: s.name, enabled: host.kind !== 'shared' && host.kind !== 'sharing' }}
+                  title="拖入工作区某个 pane 即可停靠接入（或点右侧接入按钮）"
+                  class="group flex items-center gap-2 pl-14 pr-2 py-1 hover:bg-[var(--rg-surface)] transition-colors cursor-grab active:cursor-grabbing"
+                >
+                  {#if s.isAgent}<Bot class="h-3.5 w-3.5 shrink-0 text-[var(--rg-accent)]" />{/if}
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-[11px] truncate" title={s.name}>{s.name}</span>
+                      {#if s.attached}
+                        <span class="shrink-0 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/40 px-1.5 text-[9px]">已接入</span>
+                      {/if}
+                    </div>
+                    <p class="text-[10px] text-[var(--rg-fg-muted)] truncate" title={s.cwd}>
+                      {s.cwd || `${s.windows}w · ${s.panes}p · ${s.width}×${s.height}`}
+                    </p>
+                  </div>
+                  {#if !s.attached}
+                    <button
+                      type="button"
+                      title="接入到当前工作区"
+                      disabled={busy}
+                      class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)]"
+                      onclick={() => void onAttach(s, host)}
+                    >
+                      <PlugZap class="h-3.5 w-3.5" />
+                    </button>
+                  {/if}
+                  {#if hasHostTopologyLink(host.id)}
+                    <button
+                      type="button"
+                      title="切换 shell"
+                      disabled={busy}
+                      class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)]"
+                      onclick={() => void onChangeShell(host, s)}
+                    >
+                      <Terminal class="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      title={s.isAgent ? '取消 Agent 标记' : '标记为 Agent'}
+                      disabled={busy}
+                      class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)]"
+                      onclick={() => void onToggleAgent(host, s)}
+                    >
+                      <Bot class="h-3.5 w-3.5" />
+                    </button>
+                  {/if}
+                  {#if host.kind === 'headless'}
+                    <button
+                      type="button"
+                      title="终止会话（真正结束进程，不可恢复）"
+                      disabled={busy}
+                      class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-rose-500/15 hover:text-rose-300"
+                      onclick={() => void onTerminate(s)}
+                    >
+                      <Trash2 class="h-3.5 w-3.5" />
+                    </button>
+                  {:else if hasHostTopologyLink(host.id)}
+                    <button
+                      type="button"
+                      title="删除远端 pane"
+                      disabled={busy}
+                      class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-rose-500/15 hover:text-rose-300"
+                      onclick={() => void onDeletePane(s, host)}
+                    >
+                      <Trash2 class="h-3.5 w-3.5" />
+                    </button>
+                  {/if}
+                </div>
+              {/each}
+            {/if}
           {/each}
         {/if}
       </div>

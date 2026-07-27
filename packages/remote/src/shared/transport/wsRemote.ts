@@ -298,7 +298,13 @@ export interface RemoteLink {
   cycleTheme(currentId: string): void;
   setHostClipboard(text: string): void;
   /** LAN-only signature; the cloud impl ignores it (it boots via cloudControllerBoot). */
-  connect(host: string, port: number, auth?: string, authType?: 'code' | 'token'): void;
+  connect(
+    host: string,
+    port: number,
+    auth?: string,
+    authType?: 'code' | 'token',
+    secure?: boolean,
+  ): void;
   getPaneOutput(paneId: string): string[];
   pruneOutputs(liveIds: Set<string>): void;
   send(msg: Record<string, unknown>): void;
@@ -347,6 +353,8 @@ export interface RemoteLink {
   getOrchestrationHealth(): Promise<OrchestrationHealth>;
   switchWorkspace(workspaceId: string): Promise<boolean>;
   createWorkspace(name?: string): Promise<string | null>;
+  renameWorkspace?(workspaceId: string, name: string): Promise<boolean>;
+  saveWorkspace?(workspaceId: string, name: string): Promise<boolean>;
   createPane(shell?: string): Promise<string | null>;
   closePane(paneId: string): Promise<boolean>;
   closeWorkspace(workspaceId: string): Promise<boolean>;
@@ -364,6 +372,18 @@ export interface SavedWorkspaceFile {
   path: string;
   /** Seconds since epoch (host FS mtime). */
   mtimeSecs: number;
+}
+
+export function remoteWebSocketUrl(input: {
+  host: string;
+  port: number;
+  auth: string;
+  authType: 'code' | 'token';
+  device: string;
+  secure: boolean;
+}): string {
+  const scheme = input.secure ? 'wss' : 'ws';
+  return `${scheme}://${input.host}:${input.port}/ws?${input.authType}=${encodeURIComponent(input.auth)}&device=${encodeURIComponent(input.device)}`;
 }
 
 export class RemoteConnection implements RemoteLink {
@@ -389,6 +409,7 @@ export class RemoteConnection implements RemoteLink {
   private _port: number = 0;
   private _token: string = '';
   private _authType: 'code' | 'token' = 'code';
+  private _secure: boolean | null = null;
 
   // ── Reconnect / heartbeat state ──
   private _intentionalClose = false;
@@ -506,7 +527,13 @@ export class RemoteConnection implements RemoteLink {
    *  Mirrors the server's `ridge::remote::perf` trace. */
   getPerf() { return { ...this._perf }; }
 
-  connect(host: string, port: number, auth?: string, authType: 'code' | 'token' = 'code') {
+  connect(
+    host: string,
+    port: number,
+    auth?: string,
+    authType: 'code' | 'token' = 'code',
+    secure?: boolean,
+  ) {
     if (!auth) { this.failWith({ category: 'channel', message: 'missing credential' }); return; }
     this._clearReconnectTimer();
     this._intentionalClose = false;
@@ -515,6 +542,7 @@ export class RemoteConnection implements RemoteLink {
     this._port = port;
     this._token = auth;
     this._authType = authType;
+    this._secure = secure ?? null;
     this._attachWindowListeners();
     this._open();
   }
@@ -536,13 +564,18 @@ export class RemoteConnection implements RemoteLink {
     // Match the page's scheme: an HTTPS-served page must use wss:// (mixed
     // content blocks ws:// from https://). TLS is what unlocks WebGPU on the
     // LAN, so this is the common path in production.
-    const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
-    const param = this._authType === 'token' ? 'token' : 'code';
+    const secure = this._secure ?? location.protocol === 'https:';
     // §L-3: pin the session to this device (in addition to its source IP) so a
     // token replayed from another device behind the same NAT egress can't
     // connect. MUST match the `device` sent to /verify at issuance.
-    const device = encodeURIComponent(getRemoteDeviceId());
-    const url = `${wsScheme}://${this._host}:${this._port}/ws?${param}=${encodeURIComponent(this._token)}&device=${device}`;
+    const url = remoteWebSocketUrl({
+      host: this._host,
+      port: this._port,
+      auth: this._token,
+      authType: this._authType,
+      device: getRemoteDeviceId(),
+      secure,
+    });
     const ws = new WebSocket(url);
     this.ws = ws;
     ws.binaryType = 'arraybuffer';
@@ -1087,6 +1120,32 @@ export class RemoteConnection implements RemoteLink {
   async createWorkspace(name?: string): Promise<string | null> {
     const data = await this._sendAndWait({ type: 'create-workspace', name: name || '' }, 'create-workspace-result') as Record<string, unknown>;
     return (data.success && data.workspaceId) ? String(data.workspaceId) : null;
+  }
+
+  async renameWorkspace(workspaceId: string, name: string): Promise<boolean> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'rename_workspace',
+        args: { workspaceId, name },
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _error?: unknown };
+    return !data._error;
+  }
+
+  async saveWorkspace(workspaceId: string, name: string): Promise<boolean> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'save_workspace_to_file',
+        args: { workspaceId, name },
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _error?: unknown };
+    return !data._error;
   }
 
   async listSavedWorkspaceFiles(): Promise<SavedWorkspaceFile[]> {
