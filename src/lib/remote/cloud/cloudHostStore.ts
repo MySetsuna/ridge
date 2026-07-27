@@ -16,9 +16,17 @@ import { listen } from '@tauri-apps/api/event';
 import { tr } from '$lib/i18n';
 import { cloudHostOnline } from '$lib/stores/remoteStatus';
 import * as cloudAuth from '@ridge/remote/shared/cloud/auth';
+import * as cloudApi from '@ridge/remote/shared/cloud/apiClient';
 import { RidgeCloudHost, type CloudControllerSession, type HostSignalState } from '@ridge/remote/shared/cloud/ridgeCloudProvider';
 import { CloudHostBridge } from '@ridge/remote/shared/cloud/cloudHostBridge';
 import { makeCloudHostPaneSource } from '@ridge/remote/shared/cloud/cloudHostPaneSource';
+import {
+  collectPaneIds,
+  filterWorkspaceResult,
+  planWorkspaceInvoke,
+  type WorkspaceAccess,
+  type WorkspaceScopeAssertion,
+} from '@ridge/remote/shared/cloud/workspaceScope';
 
 // ── 公开响应式状态（组件用 `$hostState` 等订阅）─────────────────────────────
 export const hostState = writable<HostSignalState>('offline');
@@ -30,6 +38,53 @@ export const hostError = writable('');
 let host: RidgeCloudHost | null = null;
 // 本机 Ed25519 设备身份公钥（取一次缓存），握手发 0x02 设备签名帧。
 let deviceIdentityPub: Uint8Array | null = null;
+
+async function refreshWorkspaceAccess(access: WorkspaceAccess): Promise<void> {
+  const layout = await invoke<unknown>('get_pane_layout_for', {
+    workspaceId: access.workspaceId,
+  });
+  const paneIds = collectPaneIds(layout);
+  const roots = new Set<string>();
+  for (const paneId of paneIds) {
+    const cwd = await invoke<string | null>('get_pane_cwd', {
+      workspaceId: access.workspaceId,
+      paneId,
+    });
+    if (!cwd) continue;
+    roots.add(cwd);
+    const repoRoot = await invoke<string | null>('find_git_repo_root', { path: cwd });
+    if (repoRoot) roots.add(repoRoot);
+  }
+  access.paneIds = paneIds;
+  access.roots = [...roots];
+}
+
+async function invokeWorkspaceScoped(
+  access: WorkspaceAccess,
+  method: string,
+  params?: unknown,
+): Promise<unknown> {
+  await refreshWorkspaceAccess(access);
+  const plan = planWorkspaceInvoke(method, params, access);
+  if (plan.kind === 'deny') {
+    throw {
+      code: -32003,
+      message: `workspace share denied: ${plan.reason}`,
+      data: { kind: 'scope_denied', workspaceId: access.workspaceId },
+    };
+  }
+  if (plan.kind === 'result') return plan.value;
+  const result = await invoke<unknown>(plan.method, plan.params);
+  if (
+    plan.method === 'split_pane' ||
+    plan.method === 'dock_pane' ||
+    plan.method === 'close_pane' ||
+    plan.method === 'create_pane'
+  ) {
+    await refreshWorkspaceAccess(access);
+  }
+  return filterWorkspaceResult(method, result, access.workspaceId);
+}
 
 // 跨 agent 命令：通知 Rust 侧云端远控活跃状态（契约 §8.1）。容错。
 async function notifyCloudActive(active: boolean): Promise<void> {
@@ -58,6 +113,11 @@ function buildHost(): RidgeCloudHost | null {
       identityPub: deviceIdentityPub ?? undefined,
     },
     {
+      verifyWorkspaceScope: async (token): Promise<WorkspaceScopeAssertion | null> => {
+        const current = cloudAuth.snapshot();
+        if (!current.deviceToken) return null;
+        return cloudApi.verifyWorkspaceShareAccess(current.deviceToken, token);
+      },
       onHostState: (st) => {
         hostState.set(st);
         if (st === 'error') hostError.set(tr('cloud.hostError'));
@@ -74,18 +134,28 @@ function buildHost(): RidgeCloudHost | null {
         hostError.set(msg);
       },
       // host=Tauri 桌面 app：注入真实 invoke + pane 源 + 本机 TOTP 校验（契约 §0/§4/§5.1）。
-      createBridge: (_cid, send, bindTranscript) =>
-        new CloudHostBridge({
-          invoke: (method, params) => invoke(method, params),
+      createBridge: (_cid, send, bindTranscript, workspaceScope) => {
+        const access: WorkspaceAccess | null = workspaceScope
+          ? { ...workspaceScope, paneIds: new Set(), roots: [] }
+          : null;
+        const paneSource = makeCloudHostPaneSource({ invoke, listen });
+        return new CloudHostBridge({
+          invoke: (method, params) =>
+            access ? invokeWorkspaceScoped(access, method, params) : invoke(method, params),
           sendFrame: send,
           // B2（D-GM-11）：用 subscribe_pane_raw 专用 raw fan-out（RemotePtyEvent::
           // RawBytes → Tauri event pane-raw-{pane}）。
-          paneOutputSource: makeCloudHostPaneSource({ invoke, listen }),
+          paneOutputSource: access
+            ? (paneId, onOutput) =>
+                access.paneIds.has(paneId) ? paneSource(paneId, onOutput) : () => {}
+            : paneSource,
           // 明文 totp-verify（旧 controller / host 回落 0x01 时）。
-          totpVerifier: (code) => invoke<boolean>('verify_remote_totp', { code }),
+          totpVerifier: access
+            ? undefined
+            : (code) => invoke<boolean>('verify_remote_totp', { code }),
           // 零信任 #1（概念 5）：host 发 0x02 → bindTranscript 非空时启用 totp-bind
           // 信道绑定校验（HMAC tag，明文码不上线）。
-          totpBindVerifier: bindTranscript
+          totpBindVerifier: !access && bindTranscript
             ? (tag) =>
                 invoke<boolean>('verify_remote_totp_bind', {
                   transcript: Array.from(bindTranscript),
@@ -100,11 +170,22 @@ function buildHost(): RidgeCloudHost | null {
             const names = ['pane-meta-changed', 'pane-tree-changed'] as const;
             const unsubs: Array<() => void> = [];
             for (const name of names) {
-              void listen(name, (e) => emit(name, e.payload)).then((un) => unsubs.push(un));
+              void listen(name, (e) => {
+                if (!access) {
+                  emit(name, e.payload);
+                  return;
+                }
+                const workspaceId =
+                  e.payload && typeof e.payload === 'object'
+                    ? (e.payload as Record<string, unknown>).workspaceId
+                    : undefined;
+                if (workspaceId === access.workspaceId) emit(name, e.payload);
+              }).then((un) => unsubs.push(un));
             }
             return () => { for (const un of unsubs) un(); };
           },
-        }),
+        });
+      },
     },
   );
 }
