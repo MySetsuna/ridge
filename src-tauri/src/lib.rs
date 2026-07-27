@@ -838,6 +838,7 @@ pub fn run() {
             ridge_file::save_workspace_to_file,
             ridge_file::open_workspace_from_file,
             ridge_file::delete_workspace_file,
+            ridge_file::delete_saved_workspace_file,
             ridge_file::get_workspace_save_info,
             ridge_file::list_workspace_save_info,
             ridge_file::get_last_opened_workspace_path,

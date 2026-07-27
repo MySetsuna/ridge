@@ -1555,6 +1555,24 @@ function findLeafOrigin(
   return null;
 }
 
+function cleanupPaneRuntime(paneId: string): void {
+  teardownPtyBridge(paneId);
+  TerminalManager.instance().detach(paneId);
+  paneOscTitleStore.update((s) => {
+    if (!(paneId in s)) return s;
+    const c = { ...s };
+    delete c[paneId];
+    return c;
+  });
+  terminalTitles.update((t) => {
+    if (!(paneId in t)) return t;
+    const c = { ...t };
+    delete c[paneId];
+    return c;
+  });
+  void import('@ridge/remote/shared/terminal/paneShell').then((m) => m.clearPaneShellSelection(paneId));
+}
+
 export async function closePane(paneId: string) {
   if (!isTauri()) return;
   // Foreign multi-host view: best-effort detach first (unsubscribe remote;
@@ -1587,23 +1605,7 @@ export async function closePane(paneId: string) {
   //   2. Manager.detach — frees wasm kernel + render handle.
   //   3. Drop title-store entries so SplitContainer / Explorer don't
   //      keep showing a label for a pane that no longer exists.
-  teardownPtyBridge(paneId);
-  TerminalManager.instance().detach(paneId);
-  paneOscTitleStore.update((s) => {
-    if (!(paneId in s)) return s;
-    const c = { ...s };
-    delete c[paneId];
-    return c;
-  });
-  terminalTitles.update((t) => {
-    if (!(paneId in t)) return t;
-    const c = { ...t };
-    delete c[paneId];
-    return c;
-  });
-  // §I-2: drop this pane's selected-shell entry on genuine close (dynamic
-  // import avoids a static cycle — paneShell.ts imports from this module).
-  void import('@ridge/remote/shared/terminal/paneShell').then((m) => m.clearPaneShellSelection(paneId));
+  cleanupPaneRuntime(paneId);
   await syncPaneLayoutFromBackend();
 }
 
@@ -1620,8 +1622,16 @@ export async function toggleEditor(paneId: string, filePath?: string) {
 /** 关闭工作�?*/
 export async function closeWorkspace(workspaceId: string) {
   if (!isTauri()) return;
+  const cachedTree =
+    get(workspacePaneTrees).get(workspaceId) ??
+    (get(activeWorkspaceId) === workspaceId ? get(paneTreeStore) : undefined);
+  const closingPaneIds = cachedTree ? getAllPaneIds(cachedTree) : [];
   try {
     await invoke('close_workspace', { workspaceId });
+    // Workspace close unmounts every RidgePane. Without genuine-close cleanup,
+    // their kernels remain parked; reopening the same .ridge file reuses its
+    // pane UUIDs and incorrectly unparks stale kernels instead of creating PTYs.
+    for (const paneId of closingPaneIds) cleanupPaneRuntime(paneId);
     // 在拉取新的工作区快照之前就清理本地资源，避免残留�?
     // 1) 拆除该工作区�?pane-cwd 监听�?
     // 2) �?paneCwdStore 删除所�?`${workspaceId}:*` 键；
@@ -1799,6 +1809,12 @@ export async function openWorkspaceFromFile(path: string): Promise<string> {
 
 export async function deleteWorkspaceFile(workspaceId: string): Promise<void> {
   await invoke('delete_workspace_file', { workspaceId });
+  await refreshWorkspaceSaveInfo();
+  await refreshWorkspaces();
+}
+
+export async function deleteSavedWorkspaceFile(path: string): Promise<void> {
+  await invoke('delete_saved_workspace_file', { path });
   await refreshWorkspaceSaveInfo();
   await refreshWorkspaces();
 }
