@@ -53,6 +53,8 @@ type HostAccess =
 
 共享节点虽视觉纳入 Hosts forest，却绝不伪装整机：标题带“共享”，host 菜单不出现“添加工作区/忘记主机”。
 
+shared workspace 为 **remote projection**，不插入控制端本地 `AppState.workspaces`。Explorer、Git、Agent、Terminal 四面持同一 `WorkspaceResourceProvider`；其 origin 始终指向 owner host。
+
 ## 4. Cloud 授权模型
 
 新增顺序 migration：
@@ -127,9 +129,56 @@ ControllerScope::WorkspaceShare { grant_id, workspace_id, role, expires_at }
 | stdin/resize/focus | ✓ | ✗ | ✓ |
 | create/delete pane、change shell | ✓ | ✗ | ✓ |
 | create/close workspace、share/转分享 | ✓ | ✗ | ✗ |
-| 文件/Git/Search | ✓ | v1 ✗ | v1 ✗ |
+| Explorer 文件树/读取/搜索 | ✓ | 仅目标 root 只读 | 仅目标 root 读写 |
+| Git status/diff/log | ✓ | 仅目标 root | 仅目标 root |
+| Git 写操作 | ✓ | ✗ | ✓，沿用既有 HITL/进程闸 |
+| Agent roster/状态/最近回复 | ✓ | 仅目标 workspace | 仅目标 workspace |
+| Agent 派活/暂停/恢复/召唤 | ✓ | ✗ | ✓，沿用既有 HITL |
+| Remote/Hosts 启停、host export | ✓ | ✗ | ✗ |
 
 事件亦按 scope 投影；不得先广播全量、再靠前端隐藏。
+
+### 5.1 资源面同源
+
+```mermaid
+graph LR
+  ShareNode[SharedWorkspaceNode]
+  Provider[WorkspaceResourceProvider scope=grant/workspace]
+  Terminal[Terminal/Panes]
+  Explorer[Explorer]
+  Git[Git]
+  Agent[Agent tab]
+  Origin[Origin Host]
+  ShareNode --> Provider
+  Provider --> Terminal
+  Provider --> Explorer
+  Provider --> Git
+  Provider --> Agent
+  Provider --> Origin
+```
+
+- `WorkspaceResourceProvider` 复用现有 Remote RPC；每调用都附隐式 scope，不让 UI 自报任意 `workspaceId`。
+- Explorer：host canonicalize workspace root 与目标路径；拒绝 `..`、root 外绝对路径、越界 symlink。
+- Git：repo root 须 canonicalize 后位于 workspace root；所有外部 git 仍经现有唯一进程闸。
+- Agent：只投影该 workspace topology/history/health；写操作携稳定 agent id，host 再反查归属。
+
+### 5.2 非转授/非二跳
+
+```mermaid
+graph TD
+  Owner[Origin Host] -->|workspace_share, delegable=false| Guest[Controller]
+  Guest -. 禁止 .-> GuestRemote[Guest Remote Host]
+  Guest -. 禁止 .-> Third[Third Controller]
+```
+
+四层硬闸：
+
+1. cloud：`workspace_share` token 不能以 `role=host` 入房，不能创 device/新 share；grant 不含转授权。
+2. host：policy 永拒 Remote/Hosts/share/export 方法。
+3. controller backend：shared projection 不写本地 workspace graph，不进入 `host_list_snapshot`/Remote host inventory。
+4. UI：共享视图不出现 Remote/Host/再次分享入口；此层仅体验收敛，安全不依赖它。
+
+即使 guest 同时启动自己的 LAN/public Remote，导出器只枚举 `origin=local_owned`；`origin=shared_remote` 必为负断言。
 
 ## 6. LAN 与公网
 
@@ -154,6 +203,7 @@ ControllerScope::WorkspaceShare { grant_id, workspace_id, role, expires_at }
 - owner 工作区 `⋯`：打开、添加 pane、重命名、保存、分享/管理成员、关闭。
 - shared 工作区 `⋯`：打开、刷新、退出分享；operator 另有添加 pane。
 - pane `⋯`：接入/聚焦、复制标识；owner/operator 可切 shell、标记 Agent、删除；viewer 无写项。
+- 打开 shared workspace 后，主区域呈现其 Terminal、Explorer、Git、Agent 四 tab；不切成本地 workspace，不出现 Remote/Hosts 转发入口。
 - 删除 pane/关闭 workspace/撤销分享须确认；操作后按该 host 增量刷新，不全局闪烁。
 
 ## 8. 实施切片
@@ -163,14 +213,18 @@ ControllerScope::WorkspaceShare { grant_id, workspace_id, role, expires_at }
 3. 复用既有 `RemoteLink.listWorkspaces/listWorkspacePanes/create* / close*`，用 adapter 接 Hosts store；不再扩 `list_panes` 平行协议。
 4. 完成 LAN/public 真实 provider 注册表与 per-host lifecycle。
 5. Hosts 三层 forest + 分级菜单 + role/capability 收敛。
-6. ridge-cloud grant/invite/scoped JWT/WS room 门禁。
-7. host per-cid scope、RPC/事件双闸、撤销踢线。
-8. headless 只作代码证据复核；若现有 header→DTO→store→Agent Center→summon 任一测缺，则补契约测，不与 share scope 合流。
+6. 抽 `WorkspaceResourceProvider`，让 Terminal/Explorer/Git/Agent 四面同吃一个 scoped origin；shared projection 不入本地 workspace graph。
+7. ridge-cloud grant/invite/scoped JWT/WS room 门禁。
+8. host per-cid scope、路径/repo/agent 归属校验、RPC/事件双闸、撤销踢线。
+9. 加非转授负契约：share token 不能作 host；guest Remote inventory 永无 shared projection。
+10. headless 只作代码证据复核；若现有 header→DTO→store→Agent Center→summon 任一测缺，则补契约测，不与 share scope 合流。
 
 ## 9. 停止条件与验收
 
 - 若 adapter 需复制 `RemoteLink` RPC 名称/DTO，停；先收敛共享接口。
 - 若任何 share 请求可见 sibling workspace id/title/pane/event，立即停机修安全边界。
+- 若 shared workspace 可进入 guest 本地 workspace graph/Remote export inventory，立即停机修非转授边界。
+- 若 Explorer/Git/Agent 任一调用仅靠前端隐藏 workspaceId、host 未作归属校验，未完成。
 - 若撤销仅阻新连、不终止既有 cid，未完成。
 - 若 LAN 仍只 probe TCP 或需测试注入 socket，不称“已接入”。
 - 自动闸：cloud repo/auth/WS、host policy、transport isolation、Svelte store/menu、`pnpm check`、相关 Rust workspace。
@@ -181,5 +235,5 @@ ControllerScope::WorkspaceShare { grant_id, workspace_id, role, expires_at }
 1. 角色采用 `viewer/operator`，默认 `viewer`。
 2. 分享只支持定向 Ridge 账号，不做匿名 bearer link。
 3. workspace share v1 仅 cloud relay；LAN 优化后置。
-4. viewer 不可 stdin；operator 可 pane 级管理，但不可 workspace/分享管理。
-5. v1 禁共享工作区文件/Git/Search，待路径沙箱另立需求。
+4. viewer 可读 Terminal/Explorer/Git/Agent；operator 可该区既有写操作，但不可 workspace/分享/host 管理。
+5. shared workspace 永不可经 guest Remote/Hosts 二次转发；projection 与本地 workspace graph 物理分离。

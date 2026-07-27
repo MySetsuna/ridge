@@ -20,4 +20,6 @@ NotebookLM 建议一轮覆盖真实 Socket、三层 DTO、store、多级 UI、he
 - full-host：同账号、全 host scope。
 - workspace-share：可跨账号、单 workspace capability grant。
 - 两者统一 UI forest 与 RPC policy，不统一授权范围。
+- 用户补充：shared workspace 须呈现 origin 的 Explorer/Git/Agent；以同一 scoped provider 接入，不复制成本地状态。
+- 用户补充：share capability 不可转授；guest 侧 Remote/Hosts 永不得导出 shared projection。
 - 产品行为仍在 `REQUIREMENTS-SPEC` Pending；获批前不生成执行合同、不改业务码。
