@@ -176,6 +176,8 @@ export interface CloudHostBridgeConfig {
    * pane-tree-changed 等）。verified 前静默丢弃；返回函数在 `reset()` 时调用退订。
    */
   hostEventSource?: (emit: (name: string, payload: unknown) => void) => () => void;
+  /** Scope-grant sessions are already authenticated by the owner-host Cloud check. */
+  preauthorized?: boolean;
 }
 
 /** 一个待执行/已发出请求的取消令牌（$/cancel 尽力中止用）。 */
@@ -218,6 +220,7 @@ export class CloudHostBridge {
    *   - 未注入 `totpVerifier` ⇒ 默认 true（向后兼容，不门控）。
    */
   private verified: boolean;
+  private readonly preauthorized: boolean;
   /**
    * SECURITY (audit #3): 本连接累计 TOTP 失败次数；≥ {@link MAX_TOTP_ATTEMPTS} 即锁死
    * TOTP 通道（防 CONTROL 通道爆破）。`reset()` 清零。
@@ -254,12 +257,20 @@ export class CloudHostBridge {
     // 未注入**任何** TOTP 校验器 ⇒ 不门控（向后兼容既有 cloud 路径）。注入了任一种
     // （明文 totp-verify 或信道绑定 totp-bind）即门控业务帧，直至其一通过。
     this.verified = !config.totpVerifier && !config.totpBindVerifier;
+    this.preauthorized = config.preauthorized === true;
     this.log =
       config.log ??
       ((level, message, detail) => {
         // eslint-disable-next-line no-console
         console[level](`[cloudHostBridge] ${message}`, detail ?? '');
       });
+  }
+
+  /** Called by the provider after the DataChannel is marked connected. */
+  onConnected(): void {
+    if (this.preauthorized && this.verified && !this.rejected) {
+      this.sendControl({ t: 'totp-result', ok: true, source: 'workspace-share' });
+    }
   }
 
   /**

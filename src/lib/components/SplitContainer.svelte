@@ -677,7 +677,7 @@ import {
               title={leafCount <= 1
                 ? $t('workspace.keepOnePane')
                 : node.type === 'leaf' && node.origin
-                  ? '断开此 pane（会话仍在「主机」面板运行，不会被终止）'
+                  ? '断开此 pane（会话仍在「接入」面板运行，不会被终止）'
                   : $t('workspace.closeThisPane')}
               disabled={leafCount <= 1}
               class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] text-base leading-none transition-colors hover:bg-white/[0.06] hover:text-[var(--rg-fg)] disabled:opacity-25 disabled:pointer-events-none"

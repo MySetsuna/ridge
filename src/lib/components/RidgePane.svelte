@@ -1601,7 +1601,7 @@ async function onAttachNewHeadless(targetPaneId: string): Promise<void> {
 		const name = await newHeadlessSession();
 		await attachSessionAt('headless', name, targetPaneId, region);
 	} catch {
-		/* 失败静默：用户可在「主机」面板重试/排查 */
+		/* 失败静默：用户可在「接入」面板重试/排查 */
 	}
 }
 
@@ -1643,7 +1643,7 @@ function attachSubmenuChildren(targetPaneId: string): ContextMenuItem[] {
 		});
 	}
 	items.push({ id: 'attach-manage-sep', divider: true });
-	items.push({ id: 'attach-open-hosts', label: '管理主机…', action: () => openHostsTab() });
+	items.push({ id: 'attach-open-hosts', label: '管理接入…', action: () => openHostsTab() });
 	return items;
 }
 

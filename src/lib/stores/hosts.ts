@@ -1,6 +1,6 @@
 // src/lib/stores/hosts.ts
 //
-// 「主机 / Hosts」侧边栏 tab 的状态 SSOT。承载所有「外部终端 provider」：
+// 「接入」侧边栏 tab 的状态 SSOT。承载所有外部终端与共享工作区 provider：
 //   - headless：本机无头会话（复用后端 list/summon/new/terminate native 命令）
 //   - remote / rdg：远端 ridge / rdg 主机（P3/P4 接入，此处先留类型与占位）
 //
@@ -37,8 +37,17 @@ import {
   summarizeHistoryBadge,
   type HistoryTailSnapshot,
 } from '$lib/hosts/foreignHistorySession';
+import * as cloudAuth from '@ridge/remote/shared/cloud/auth';
+import {
+  BASE_DOMAIN,
+  acceptWorkspaceShare,
+  cloudHttpScheme,
+  listWorkspaceShares,
+  listSharedWithMe,
+  revokeWorkspaceShare,
+} from '@ridge/remote/shared/cloud/apiClient';
 
-export type HostKind = 'headless' | 'remote' | 'rdg';
+export type HostKind = 'headless' | 'remote' | 'rdg' | 'shared' | 'sharing';
 export type HostStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
 
 /** 后端 `list_native_sessions` 回传的 native 会话摘要（与 ridge_tmux::NativeSessionInfo 对齐）。 */
@@ -72,6 +81,13 @@ export interface HostSession {
   height: number;
   /** 是否已被某工作区领养（attached=已接入）。 */
   attached: boolean;
+  /** 跨账号工作区分享元数据；普通终端会话均为空。 */
+  workspaceId?: string;
+  shareGrantId?: string;
+  shareStatus?: 'pending' | 'active' | 'declined' | 'revoked';
+  ownerUsername?: string;
+  deviceName?: string;
+  granteeLabel?: string;
 }
 
 export interface Host {
@@ -147,6 +163,75 @@ export async function refreshHosts(): Promise<void> {
     }
   } catch {
     /* host_list_snapshot 不可用（如 web-remote 未授权）：仅忽略远端主机 */
+  }
+  // ③ 跨账号分享：按 owner host 聚合，每个 grant 是其下单独工作区。
+  const auth = cloudAuth.snapshot();
+  if (auth.userToken) {
+    try {
+      const { shares } = await listSharedWithMe(auth.userToken);
+      const grouped = new Map<string, Host>();
+      for (const share of shares) {
+        if (!['pending', 'active'].includes(share.status)) continue;
+        const key = `shared:${share.ownerUserId}:${share.deviceName}`;
+        let host = grouped.get(key);
+        if (!host) {
+          host = {
+            id: key,
+            kind: 'shared',
+            label: `${share.ownerUsername || '共享用户'} · ${share.deviceName}`,
+            status: share.status === 'active' ? 'connected' : 'connecting',
+            detail: '跨账号单工作区；不可二次转发主机或 Remote',
+            sessions: [],
+          };
+          grouped.set(key, host);
+        }
+        host.sessions.push({
+          socket: key,
+          name: `工作区 ${share.workspaceId.slice(0, 8)}`,
+          remoteSessionId: share.workspaceId,
+          workspaceId: share.workspaceId,
+          shareGrantId: share.id,
+          shareStatus: share.status,
+          ownerUsername: share.ownerUsername,
+          deviceName: share.deviceName,
+          windows: 1,
+          panes: 0,
+          width: 0,
+          height: 0,
+          attached: false,
+        });
+      }
+      next.push(...grouped.values());
+
+      const outgoing = await listWorkspaceShares(auth.userToken);
+      const visible = outgoing.shares.filter((share) =>
+        ['pending', 'active'].includes(share.status),
+      );
+      if (visible.length > 0) {
+        next.push({
+          id: 'sharing:outgoing',
+          kind: 'sharing',
+          label: '本机已分享',
+          status: 'connected',
+          detail: '在此撤销邀请或已生效分享',
+          sessions: visible.map((share) => ({
+            socket: 'sharing:outgoing',
+            name: `工作区 ${share.workspaceId.slice(0, 8)}`,
+            workspaceId: share.workspaceId,
+            shareGrantId: share.id,
+            shareStatus: share.status,
+            granteeLabel: share.granteeUsername || share.granteeEmail,
+            windows: 1,
+            panes: 0,
+            width: 0,
+            height: 0,
+            attached: false,
+          })),
+        });
+      }
+    } catch {
+      /* 云登录不可用时不影响本机/普通主机列表。 */
+    }
   }
   hostsStore.set(next);
   hostsError.set(err);
@@ -253,6 +338,31 @@ export async function disconnectHost(hostId: string): Promise<void> {
 /** 忘记一台远端主机（移除登记）。 */
 export async function forgetHost(hostId: string): Promise<void> {
   await invoke('forget_host', { hostId });
+  await refreshHosts();
+}
+
+export async function acceptSharedWorkspace(grantId: string): Promise<void> {
+  const token = cloudAuth.snapshot().userToken;
+  if (!token) throw new Error('请先登录 Ridge Cloud');
+  await acceptWorkspaceShare(token, grantId);
+  await refreshHosts();
+}
+
+export async function openSharedWorkspace(session: HostSession): Promise<void> {
+  if (!session.shareGrantId || !session.ownerUsername || !session.deviceName) {
+    throw new Error('共享工作区信息不完整');
+  }
+  const url =
+    `${cloudHttpScheme(BASE_DOMAIN)}://${session.deviceName}-${session.ownerUsername}.${BASE_DOMAIN}` +
+    `/?share=${encodeURIComponent(session.shareGrantId)}`;
+  const { openUrl } = await import('@tauri-apps/plugin-opener');
+  await openUrl(url);
+}
+
+export async function revokeSharedWorkspace(grantId: string): Promise<void> {
+  const token = cloudAuth.snapshot().userToken;
+  if (!token) throw new Error('请先登录 Ridge Cloud');
+  await revokeWorkspaceShare(token, grantId);
   await refreshHosts();
 }
 

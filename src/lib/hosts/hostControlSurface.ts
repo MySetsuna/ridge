@@ -16,7 +16,7 @@ import {
 } from '../../../packages/remote/src/shared/hosts/foreignPaneStatus';
 import { sleepMsForAttempt } from '../stores/hostReconnect';
 
-export type HostKindUi = 'headless' | 'remote' | 'rdg';
+export type HostKindUi = 'headless' | 'remote' | 'rdg' | 'shared' | 'sharing';
 
 export interface HostRowModel {
   id: string;

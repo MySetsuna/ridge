@@ -25,6 +25,7 @@
     onRename: (id: string, name: string) => void;
     onSave?: (id: string, currentName: string | undefined) => void;
     onDeleteSave?: (id: string) => void;
+    onShare?: (id: string, currentName: string | undefined) => void;
     actions?: Snippet;
     trailingActions?: Snippet;
   }
@@ -38,6 +39,7 @@
     onRename,
     onSave,
     onDeleteSave,
+    onShare,
     actions,
     trailingActions,
   }: Props = $props();
@@ -127,6 +129,12 @@
         id: 'delete-save',
         label: tr('workspace.tabDeleteSave'),
         action: () => onDeleteSave?.(ws.id),
+      },
+      {
+        id: 'share',
+        label: '分享工作区…',
+        disabled: !onShare,
+        action: () => onShare?.(ws.id, ws.name),
       },
       { id: 'divider2', divider: true },
       {

@@ -38,6 +38,9 @@
   // live transport so MainApp shows link status + auto-reconnects (this closure
   // survives CloudAuthScreen unmount — the provider keeps the reference alive).
   let cloudConn: CloudRemoteConnection | null = null;
+  const shareGrantId =
+    typeof location === 'undefined' ? null : new URLSearchParams(location.search).get('share');
+  let shareMode = false;
 
   onMount(() => { void boot(); });
 
@@ -74,10 +77,8 @@
       return;
     }
     phase = 'connecting';
-    handle = mod.bootCloudControllerFromUrl(
-      location.search,
-      {
-        onState: (s) => {
+    const callbacks = {
+        onState: (s: import('@ridge/remote').CloudConnectionState) => {
           // Post-gate: hand ongoing state to the live transport (drop / reconnect).
           if (cloudConn) { cloudConn.notifyState(s); return; }
           // Pre-gate: this is the initial connect driving the TOTP prompt.
@@ -86,6 +87,18 @@
             try { sessionStorage.removeItem(TENANT_BOUNCE_KEY); } catch { /* ignore */ }
             error = '';
             loading = false;
+            if (shareMode && handle) {
+              if (handle.adapter.authState() === 'authorized') {
+                void finishConnected(null);
+              } else {
+                const stop = handle.adapter.onAuthChange((auth) => {
+                  if (auth !== 'authorized') return;
+                  stop();
+                  void finishConnected(null);
+                });
+              }
+              return;
+            }
             // §7.4 信任授权优先：受信设备静默握手通过即跳过 TOTP（host 端经握手已开 §4 门）。
             // 旧 host 不识别 totp-trust-hello → 10s 超时 resolve(false) → 退化到 TOTP 输入。
             // 无缓存码（mobile 不缓存），故信任授权失败直接进 need-totp 手输。
@@ -106,7 +119,7 @@
             error = error || tr('main.remoteGateErrCloud');
           }
         },
-        onError: (msg, code) => {
+        onError: (msg: string, code?: string) => {
           // Post-gate: 把服务端「已认证但无权」的稳定 code 转发给 live transport，让它
           // 分级（用户问题 / 设备停用 / 通道）并驱动 MainApp 的 banner + 退回登录逻辑。
           if (cloudConn) { cloudConn.notifyError(msg, code); return; }
@@ -118,9 +131,44 @@
           else if (code === 'NOT_PREMIUM') error = tr('main.remoteGateErrNotPremium');
           else error = msg || tr('main.remoteGateErrCloud');
         },
-      },
-      location.hostname,
-    );
+      };
+
+    if (shareGrantId) {
+      const auth = await import('@ridge/remote/shared/cloud/auth');
+      const api = await import('@ridge/remote/shared/cloud/apiClient');
+      const userToken = auth.snapshot().userToken;
+      if (!userToken) {
+        phase = 'error';
+        error = tr('main.remoteGateErrNotLoggedIn');
+        return;
+      }
+      try {
+        const received = await api.listSharedWithMe(userToken);
+        const grant = received.shares.find(
+          (item) => item.id === shareGrantId && item.status === 'active',
+        );
+        if (!grant?.ownerUsername) throw new Error('共享工作区不存在、未接受或已撤销');
+        const scoped = await api.getWorkspaceShareToken(userToken, shareGrantId);
+        shareMode = true;
+        handle = mod.startCloudControllerBoot({
+          userToken: scoped.token,
+          fixedToken: true,
+          hostDevice: scoped.deviceName,
+          username: grant.ownerUsername,
+          ...callbacks,
+        });
+      } catch (e) {
+        phase = 'error';
+        error = e instanceof Error ? e.message : '共享工作区接入失败';
+        return;
+      }
+    } else {
+      handle = mod.bootCloudControllerFromUrl(
+        location.search,
+        callbacks,
+        location.hostname,
+      );
+    }
 
     if (!handle) {
       // bootCloudControllerFromUrl returns null only when user token / username is

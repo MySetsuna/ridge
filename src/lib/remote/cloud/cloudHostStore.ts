@@ -143,6 +143,7 @@ function buildHost(): RidgeCloudHost | null {
           invoke: (method, params) =>
             access ? invokeWorkspaceScoped(access, method, params) : invoke(method, params),
           sendFrame: send,
+          preauthorized: !!access,
           // B2（D-GM-11）：用 subscribe_pane_raw 专用 raw fan-out（RemotePtyEvent::
           // RawBytes → Tauri event pane-raw-{pane}）。
           paneOutputSource: access
