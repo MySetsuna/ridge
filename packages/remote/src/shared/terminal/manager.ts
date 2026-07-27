@@ -1129,19 +1129,25 @@ export class TerminalManager {
 	 * or off-canvas resolves to `{ w: 0, h: 0 }` and the host's
 	 * `record_pane` skips it entirely (parked-by-clip).
 	 *
-	 * No-op for Canvas2D-mode panes (per-pane DOM canvas, not host).
+	 * Canvas2D fallback still uses this path in shared-grid mode: the
+	 * per-pane canvas must letterbox to the shared kernel grid too, otherwise
+	 * a browser whose WebGPU probe fails renders a different geometry than
+	 * the host. Normal Canvas2D mode keeps its legacy full-container path.
 	 */
 	private _recomputeViewport(entry: PaneEntry): void {
 		const gh = this.globalHost;
-		if (!gh || !this._isHostMode(entry)) return;
-		const hostCanvas = gh.canvas;
 		const cr = entry.container.getBoundingClientRect();
 		// Hidden workspace tab → bbox 0×0 → degenerate scissor / kernel
 		// resize. Skip; the next visible-tick ResizeObserver fire (or
 		// the §A.8 host_canvas_rect that grows with the workspace
 		// becoming visible) will redo this with the correct rect.
 		if (cr.width <= 0 || cr.height <= 0) return;
-		const hr = hostCanvas.getBoundingClientRect();
+		const hostCanvas = gh?.canvas;
+		const hostMode = gh !== null && this._isHostMode(entry);
+		if (!hostMode && !this._sharedRemoteMode) return;
+		const hr = hostMode && hostCanvas
+			? hostCanvas.getBoundingClientRect()
+			: cr;
 		const cs = window.getComputedStyle(entry.container);
 		const padL = parseFloat(cs.paddingLeft) || 0;
 		const padT = parseFloat(cs.paddingTop) || 0;
@@ -1172,6 +1178,19 @@ export class TerminalManager {
 		// kernel grid resize + force redraw, so we only call it when
 		// dims actually changed (it short-circuits internally).
 		const handle = entry.handle;
+		if (!hostMode) {
+			// Canvas2D has no host scissor; make the DOM canvas itself the
+			// centered shared-grid viewport and keep pointer math on geometry.
+			const left = geometry.gridClientXCss - cr.left;
+			const top = geometry.gridClientYCss - cr.top;
+			entry.canvas.style.position = 'absolute';
+			entry.canvas.style.left = `${left}px`;
+			entry.canvas.style.top = `${top}px`;
+			entry.canvas.style.width = `${geometry.gridWidthCss}px`;
+			entry.canvas.style.height = `${geometry.gridHeightCss}px`;
+			handle?.resize(Math.round(geometry.gridWidthCss), Math.round(geometry.gridHeightCss), dpr);
+			return;
+		}
 		const handleVp = handle as unknown as {
 			setViewportOffset?: (x: number, y: number) => void;
 		} | null;
@@ -3045,7 +3064,7 @@ export class TerminalManager {
 	cellFromEvent(paneId: string, e: { clientX: number; clientY: number }): { row: number; col: number } | null {
 		const ent = this.panes.get(paneId);
 		if (!ent || ent.cellW <= 0 || ent.cellH <= 0) return null;
-		if (ent.geometry && this._isHostMode(ent)) {
+		if (ent.geometry && this._sharedRemoteMode) {
 			const rows = ent.kernel.rows();
 			const cols = ent.kernel.cols();
 			if (rows === 0 || cols === 0) return null;
@@ -4404,6 +4423,15 @@ export class TerminalManager {
 			entry.lastFitPaddingPx = entry.lastAppliedPaddingPx ?? 0;
 			this._recomputeViewport(entry);
 		} else {
+			if (!this._sharedRemoteMode) {
+				// Shared-grid Canvas2D fallback may have letterboxed the
+				// per-pane canvas; restore its normal full-container layout.
+				entry.canvas.style.position = 'relative';
+				entry.canvas.style.left = '';
+				entry.canvas.style.top = '';
+				entry.canvas.style.width = '100%';
+				entry.canvas.style.height = '100%';
+			}
 			entry.handle?.resize(wCss, hCss, dpr);
 		}
 
