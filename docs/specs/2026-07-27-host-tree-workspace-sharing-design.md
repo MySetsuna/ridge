@@ -1,6 +1,6 @@
 # 主机树与单工作区分享设计
 
-状态：`DRAFT / 待用户批准 REQUIREMENTS-SPEC Pending`
+状态：`APPROVED`（`REQ-REMOTE-HOST-TREE-01`、`REQ-WORKSPACE-SHARE-01`）
 
 ## 1. 结论
 
@@ -264,9 +264,9 @@ graph TD
 - 自动闸：cloud repo/auth/WS、host policy、transport isolation、Svelte store/menu、`pnpm check`、相关 Rust workspace。
 - 代码验收不冒充真机；公网/LAN 各需一条 loopback/live fixture，生产凭据与真机证据另列用户轨。
 
-## 10. 待批准决策
+## 10. 已批准决策
 
-1. 首选 `viewer/operator`、默认 `viewer`；若只读闭环成本过高，v1 明确降级为 operator-only，不做伪 viewer。
+1. v1 采用 operator-only；API/UI 明拒 viewer，不做伪只读。后续仅在 host 全资源写面闭环后再启用 viewer。
 2. 分享只支持定向 Ridge 账号，不做匿名 bearer link。
 3. workspace share v1 仅 cloud relay；LAN 优化后置。
 4. viewer 可读 Terminal/Explorer/Git/Agent；operator 可该区既有写操作，但不可 workspace/分享/host 管理。

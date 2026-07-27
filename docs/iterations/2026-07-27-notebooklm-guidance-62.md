@@ -1,28 +1,39 @@
-# NotebookLM 指导 62：多主机树与工作区分享
+# NotebookLM 指导 62：主机树、工作区分享与浏览器几何
+
+来源：`PROJECT-STATE` + `REQUIREMENTS-SPEC`（2026-07-27 替换后双来源）。
 
 ## Maker 原建议
 
-NotebookLM 建议一轮覆盖真实 Socket、三层 DTO、store、多级 UI、headless 归因与远程 CRUD；主张 LAN/public 复用既有 Remote 原语。
+NotebookLM 要求同轮覆盖三项 Active，顺序为：
+
+1. wind 几何 SSOT 与鼠标命中修复。
+2. ridge-cloud grant、邀请与 scoped token。
+3. wind host→workspace→pane DTO/树。
+4. wind scoped provider，把共享区接入 Terminal/Explorer/Git/Agent。
+
+其安全建议：完整 host 同账号门禁不动；grant 绑定
+`owner/device/workspace/grantee/role/expiry`；首版可 operator-only；撤销/过期
+fail-closed；共享资源不可二次转发。其测试建议：分数 DPR 纯函数、异账号越界合同、
+撤销踢线、R62-SAVED 回归。
 
 ## Checker
 
-| 原建议 | 代码事实校验 | 裁决 |
+| 原建议 | 代码事实 | 裁决 |
 | --- | --- | --- |
-| 新建 `remote/lan_client.rs` + `tokio-tungstenite` | 本仓已有 `RemoteConnection`/Cloud provider；直接再造协议会成副本 | reframed：先以 adapter 复用 `RemoteLink`，transport 只注册现有 provider |
-| LAN/public 统一用 `ControllerCloudProvider` | LAN 不应依赖云信令，现有 `RemoteConnection` 已是 LAN 腿 | reframed：统一接口与 policy，不统一 transport |
-| 新建 `get_host_topology` | `RemoteLink` 已有 listWorkspaces/listWorkspacePanes/CRUD | reframed：Hosts store adapter 聚合既有原语，避免平行 RPC |
-| headless 加入远端三层树 | native headless 是本机 provider，creator DTO/Agent Center/summon 已接 | 采纳“补证据”，不混入 workspace-share 授权 |
-| TLS 失败降级手动注入 socket | 手动注入不是生产能力，且会制造假完成 | non-goal；替代：显示 unsupported/error，不伪称已接入 |
-| >200ms 即停止轮询 | 无现成可判定基线，阈值臆造 | reframed：展开按需 + 每 host 单飞刷新 + 队列有界确定性测 |
+| 新房间 `share:{grant_id}` | host 当前只加入 owner/device room；独立 share room 无 host，若令 host 为每个 grant 重入则放大状态与连接 | **reframe**：scoped controller 仍路由 owner/device room；RoomRegistry 保存 controller grant 元数据并可按 grant 踢线 |
+| `cellWidth * dpr` 换算 pointer | `clientX/getBoundingClientRect/cellW` 均为 CSS px；乘 DPR 会在 125%/150% 缩放再次放大 | **驳回**：DPR 只用于 renderer device viewport；pointer 用同一 CSS geometry 的 grid origin/cell |
+| 新增 16ms throttle + final sync | 全局 host ResizeObserver 已逐帧合并；manager 已有 500ms trailing fit 与 pointerup flush | **驳回**：复用现有有界机制；只统一几何快照与保证最终 claim |
+| `remoteAllowlist.ts` | 实际 SSOT 为 Rust capability + TS mirror/合同，并无该文件 | **reframe**：沿现有 `REMOTE_ALLOWLIST`/capability parity 增 scope policy，不造协议副本 |
+| relay 单发 `FORCE_DISCONNECT` | 已有 RoomRegistry controller sender/cid 生命周期 | **reframe**：DB revoke 后以 grant→room/cid 索引踢线；host 收 peer-leave 清 scoped bridge |
+| viewer/operator 同发 | 文件、Git、Agent 写面多，若任一只靠 UI 即伪只读 | **收窄**：v1 operator-only；API/UI 稳定拒绝 viewer，保留模型枚举待后续闭环 |
+| 新 `get_host_topology` | `RemoteLink` 已有 workspace/pane list 与 CRUD | **驳回**：store adapter 聚合既有原语；不扩平行 RPC |
 
-## 新增用户约束后的锁定方向
+## 最终采纳
 
-- full-host：公网 cloud 同账号、全 host scope；LAN 不限制账户关系，沿用 LAN TOTP/session/E2EE。
-- workspace-share：可跨账号、单 workspace capability grant。
-- 两者统一 UI forest 与 RPC policy，不统一授权范围。
-- 用户补充：shared workspace 须呈现 origin 的 Explorer/Git/Agent；以同一 scoped provider 接入，不复制成本地状态。
-- 用户补充：share capability 不可转授；guest 侧 Remote/Hosts 永不得导出 shared projection。
-- 用户纠正：删除 pane 默认仅删目标 pane；删后若该控制端已无同源 host 的其他接入 pane，才断开 host，尚有第二个 pane 则保持连接。
-- 用户补充：共享 pane cwd 在 Explorer 与本机 cwd 同层呈现并可开文件；viewer/operator 约束应贯穿文件 UI 与 host RPC，若首版难闭环则只开放 operator。
-- 用户补充：Ridge 桌面须从 Explorer 工作区标题、WorkspaceTree 工作区行、Hosts owner 工作区进入同一分享对话框；Cloud 须负责 grant/inbox/token/路由/撤销踢线，资源明文与最终授权留在 host。
-- 产品行为仍在 `REQUIREMENTS-SPEC` Pending；获批前不生成执行合同、不改业务码。
+- 三项 Active 均进 iteration 62；R62-SAVED 同轮回归。
+- 几何先行：共享纯函数产出 content rect、grid、CSS/device viewport、pointer origin。
+- full-host 与 workspace-share 共 UI forest、Remote RPC，不共授权。
+- Cloud 数据库为 grant 真相；短 token 每次 WS upgrade 重查；完整 host 同账号判断不放宽。
+- host 必须逐 invoke、pane subscribe、event 验 scope；relay 不读 E2EE 业务明文。
+- v1 operator-only；共享区仍不可创建/关闭 workspace、转分享、host/Remote 二跳。
+- 三个桌面入口调用同一分享对话框；共享 projection 不写本地 workspace graph。

@@ -3,6 +3,10 @@
 > 本地只保留此一份需求文档。Pending 未获用户明确批准前，不改代码、不生成执行合同、不上传；
 > NotebookLM 继续使用上一版已批准的 `REQUIREMENTS-SPEC` 来源。
 
+## 待审批变更 (Pending Changes)
+
+无
+
 ## 正式需求 (Active Requirements)
 
 ### REQ-REMOTE-HOST-TREE-01 · 公网同账号 / LAN 直连主机与三层拓扑

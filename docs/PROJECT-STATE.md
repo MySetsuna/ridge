@@ -1,12 +1,12 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-27（iteration 61：Remote 显式入口、配额停放、移动端弹层、全局 Agent 中心与无头会话回收）
+状态日期：2026-07-27（iteration 62 准备：主机树、跨账号单工作区分享、浏览器 Remote 几何）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
 证据等级：
-- **代码事实**：由 2026-07-27 CodeGraph（629 文件 / 12,855 节点 / 19,620 边）与当前源码确认。
+- **代码事实**：由 2026-07-27 CodeGraph（634 文件 / 12,979 节点 / 19,829 边）与当前源码确认。
 - **Git 事实**：由本地分支、HEAD 与提交历史确认。
 - **运行事实**：必须有本轮测试/退出码证据；缺证据时明确写「未验证」。
 - **文档声明**：若与代码冲突，以代码为当前行为、以协议为应修正目标。
@@ -33,7 +33,7 @@ Ridge 要成为**本地优先、随处可接入的人机协作开发控制平面
 
 - 协议 SSOT 唯一：`C:\code\ridge-cloud\docs\ridge-cloud-protocol.md` 为权威全文；`wind` 侧只保留 canonical 入口 + 自动守卫（iteration 1 后已收敛，双 SSOT 债务关闭）。协议变更先改权威契约，再改服务端与所有客户端。
 - relay 不读取终端业务明文；业务帧只在端侧 E2EE 加解密。
-- host 与 controller 必须同账户；role 匹配 JWT scope 与设备；房间/配额/付费权限用已验证身份 + 数据库实时状态（不信任长寿命 JWT plan claim）。
+- 公网完整 host 接入要求 host/controller 同账户；LAN 不施加账户归属限制，以 LAN TOTP/session/E2EE 为边界；跨账号仅可经「单工作区分享」能力接入，且不得把 host/remote 能力二次转发。role 匹配 JWT scope 与分享授权；房间/配额/付费权限用已验证身份 + 数据库实时状态（不信任长寿命 JWT plan claim）。
 - TOTP/受信设备验证必须在业务帧门控前完成；**business-ready = transport connected + authorized**（iteration 3 修复后锁定：E2EE connected 但 TOTP 未授权时不得发送 hello/pane recovery）。
 - 远控 resize、输入、Pane 订阅与 scrollback 语义跨 desktop/LAN/cloud/CLI 一致；能力必须先协商宣告，未宣告入口显式拒绝而非静默分叉（iteration 2 起由跨入口合同测试守卫）。
 - migration 只追加；日志不得输出 token、TOTP seed、私钥、`RIDGE_ARTIFACT_TOKEN`。
@@ -72,6 +72,24 @@ host: RidgeCloudHost(device JWT) ↔ ridge-cloud /ws（认证、授权、房间�
 controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHostBridge ↔ 本机 invoke/Pane 输出
 ```
 
+iteration 62 当前/目标边界：
+
+```mermaid
+flowchart LR
+  subgraph Current["当前"]
+    HP["HostsPanel"] --> FS["Host.sessions 扁平 pane"]
+    VP["共享 Remote viewport"] --> LB["kernel grid 居中 letterbox"]
+    PE["pointer event"] --> PAD["仅减 CSS padding"]
+  end
+  subgraph Target["目标"]
+    HT["host"] --> WT["workspace"] --> PT["pane"]
+    SW["跨账号 share grant"] --> ONE["唯一 workspace scope"]
+    ONE --> RES["Explorer / Git / Agent"]
+    ONE -. 禁止 .-> HOP["host/remote 二次转发"]
+    GEO["content rect + padding + cell + DPR"] --> GRID["viewport / rows / cols / pointer 同源"]
+  end
+```
+
 关键符号与行为（均有确定性测试守卫，见 §5）：
 - `packages/remote/src/shared/cloud/controllerCloudProvider.ts::ControllerCloudProvider`（:114）：退避重连；RTC `disconnected` 15 秒 watchdog → ICE restart；restart 后 12 秒 deadline 未恢复 → 升级整体重建（旧 PC/DC/WS 关闭）；重建后重新 E2EE + TOTP，hello/pane recovery **恰好一次**，timer 清零；`disconnected` <15 秒自愈不触发任何重建/重复恢复。`reconnect`（:684）。
 - `packages/remote/src/shared/cloud/cloudHostBridge.ts::CloudHostBridge`（:202）：验证完成前门控 invoke 与 Pane 订阅；TOTP、信道绑定 TOTP、trusted-controller、E2EE 临时公钥绑定钩子；Pane 背压 drain 后每受影响 Pane 恰好重同步一次、不串 Pane。注意：若某些 verifier 未注入，桥为兼容旧路径可能默认放行——「代码支持安全钩子」不自动证明每个生产入口已启用（→ 差距 S1）。
@@ -92,12 +110,12 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 | 项 | wind |
 | --- | --- |
-| 分支 / HEAD | `main` / `f110dd0`（工作树仅保留用户原有 `Cargo.lock` 改动，未纳入本轮提交） |
+| 分支 / HEAD | `main` / `8185cd8`，相对 `origin/main` ahead 7 / behind 0；用户已确认继续推进，作为本轮有意基线 |
 | 应用版本 | 0.0.20 |
-| CodeGraph | 629 文件 / 12,855 节点 / 19,620 边（2026-07-27 healthy） |
-| 工具链 | 2026-07-27：Vitest 99 文件，1,237 绿 / 1 skipped；svelte-check 0 errors / 2 既有 warnings；`cargo check -p ridge --lib`、tmux bin、ridge-tmux 11 测、rdg dashboard 2 测、JSONL 解析 3 测均 exit 0 |
+| CodeGraph | 634 文件 / 12,979 节点 / 19,829 边（2026-07-27 healthy） |
+| 工具链 | 本轮 preflight exit 0；已保存工作区修复：paneTree Vitest 59/59、Rust 限定删除测试 1/1、`cargo check --lib` exit 0、svelte-check 0 errors / 2 既有 warnings |
 
-`ridge-cloud`：`codex/remote-artifacts-status` / `beb87ea`；iteration 61 新增 migration 0015 与配额停放原因，`db::device_quota::tests` 6/6 绿。生产 Dokku SHA、TURN 可达性、artifact current 指针仍**未实测**。
+`ridge-cloud`：`main` / `a5e2be6`，与 `origin/main` 同步；CodeGraph 已获用户授权初始化（160 文件 / 3,623 节点 / 12,264 边）。生产 Dokku SHA、TURN 可达性、artifact current 指针仍**未实测**。
 
 ## 5. 迭代闭环成果（iteration 1–4）与确定性证据
 
@@ -160,6 +178,10 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 | ID | 差距 | 优先级 | 当前状态 |
 | --- | --- | --- | --- |
+| R62-HOST-TREE | 公网/LAN host→workspace→pane 统一管理树 | P0 | **Active / 未实现**：现有 `HostsPanel.svelte` 仅消费 `Host.sessions` 扁平列表；须复用 `RemoteLink.listWorkspaces/listWorkspacePanes` 与既有 workspace/pane CRUD；删除 pane 后按控制端同源 host 已接入 pane 引用计数决定是否断连 |
+| R62-WS-SHARE | 跨账号单工作区分享 | P0 | **Active / 未实现**：需 Cloud 分享授权/接受/撤销/角色与数据面 scope；桌面在 Explorer 工作区标题、WorkspaceTree 行、Hosts owner workspace 提供入口；接入后 cwd 与本机 cwd 同形显示，可打开文件并出现 Git/Agent；禁止二次转发 host/remote |
+| R62-GEOMETRY | 桌面浏览器 LAN/public pane 网格、画面与指针一致 | P0 | **Active / 根因已定位待修**：共享 Remote `_recomputeViewport` 以当前 kernel grid 居中 letterbox，而 `cellFromEvent` 仅减 padding、未减 viewport 偏移；尺寸认领与像素尺寸还分取 container/clientWidth，须归一到共享几何 SSOT |
+| R62-SAVED | 已保存工作区重开、删除、滚动条统一 | P1 | **代码已实现待并轮回归**（`fe37599`）：关闭时清理 pane runtime；受限 Tauri 删除命令；确认后刷新；弹层使用 `rg-scroll` |
 | T1 | 开发门禁可运行性 | P0 | **关闭**（iteration 7：loader 根修后 `cargo test --workspace` 首次整仓 exit 0，全部门禁本机可运行） |
 | T2 | Cloud 协议双 SSOT | P0 | **关闭**（iteration 1 收敛 + 自动守卫；EOL 误报已根治） |
 | T3 | 生产两条版本线状态证据 | P0 | **代码侧关闭**（status 端点 + 一键脚本）；生产实跑与分支合并部署待用户 |
@@ -177,7 +199,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | E1 | WebGPU 收益测量 | P3/用户轨 | **重定义**（iteration 9 簿记校正）：WebGPU 为生产默认路径非实验（历史措辞误导致 NotebookLM 提删除建议，已驳回留档）；剩余工作 = 真机 GPU 收益测量，属用户轨 |
 | E2 | 高级自动编排 | P3/实验 | **已关闭**（iteration 9）：待真实多 Agent 瓶颈证据重开；不占活跃清单 |
 
-**终态声明（iteration 14 后）**：用户指令解冻后，P2 阶段 2 与 M1 切片二 + M2 亦已实现——**笔记本存量愿景与规划中一切可自动化项皆毕**。剩余项无一可无输入推进：G1 阶段二（待痛点证据）、G1 回滚 + M1 切片三（待用户需求定义）、C1 补路由（待真实场景）、真机/生产/合并（用户轨，动线 `docs/plans/30-min-verification-session.md`）。循环回归**低频维护态**：每轮 = 全门禁绿 + 导读刷新 + 零回归。
+**历史终态声明（iteration 14 后）**：当时存量自动化项皆毕。2026-07-27 用户新增并审批 R62 四项，故退出低频维护态；以 §6 R62 行为当前实施范围。
 
 **iteration 15–16（2026-07-24）**：15：H1 TCP、G1-OS/RB、M1s3、B6A/B3/DISC/MOB-CP、TUI/resize/paste。16：V-G1-JOB + V-H1-LIVE 最小闭环。应用版本 **0.0.18**。
 
@@ -220,7 +242,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 
 ## 7. 开放问题
 
-**当前无待定夺规划问题。** 用户轨：真机验证 LAN/public Remote 首屏、移动端弹层触控、Agent TUI 退出后的 roster 收敛、无头会话唤醒；ridge-cloud 分支审查/合并/部署。请 NotebookLM 基于 iteration 61 现状，只提出一个最高价值下一步，并给出反对理由、停止条件与最小验证闭环。
+**当前无待审批需求；有三项 Active 未实现。** iteration 62 必须同轮推进 R62-HOST-TREE、R62-WS-SHARE、R62-GEOMETRY，并将 R62-SAVED 纳入回归。请 NotebookLM 产出一份可执行契约：先列跨仓依赖与安全边界，再给最小切片、确定性测试、停止条件与减法方案；不得把任一 Active 项降为“后续”或只写设计。
 
 ## 8. NotebookLM 评审要求（沿用）
 
