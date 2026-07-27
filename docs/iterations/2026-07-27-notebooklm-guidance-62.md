@@ -23,4 +23,6 @@ NotebookLM 建议一轮覆盖真实 Socket、三层 DTO、store、多级 UI、he
 - 用户补充：shared workspace 须呈现 origin 的 Explorer/Git/Agent；以同一 scoped provider 接入，不复制成本地状态。
 - 用户补充：share capability 不可转授；guest 侧 Remote/Hosts 永不得导出 shared projection。
 - 用户纠正：删除 pane 默认仅删目标 pane；删后若该控制端已无同源 host 的其他接入 pane，才断开 host，尚有第二个 pane 则保持连接。
+- 用户补充：共享 pane cwd 在 Explorer 与本机 cwd 同层呈现并可开文件；viewer/operator 约束应贯穿文件 UI 与 host RPC，若首版难闭环则只开放 operator。
+- 用户补充：Ridge 桌面须从 Explorer 工作区标题、WorkspaceTree 工作区行、Hosts owner 工作区进入同一分享对话框；Cloud 须负责 grant/inbox/token/路由/撤销踢线，资源明文与最终授权留在 host。
 - 产品行为仍在 `REQUIREMENTS-SPEC` Pending；获批前不生成执行合同、不改业务码。
