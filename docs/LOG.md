@@ -7,6 +7,7 @@
 - 完成：阶段二三层资源树全项；阶段三以不可委派 scoped token 建独立内存投影，将共享 Terminal、Files、Git、Search、Agent 接入桌面；真实 pane/metadata 回写接入树；不污染本机 workspace/global transport；二跳继续 fail-closed。
 - 门禁：Vitest 107 文件 1255 绿 / 1 skip；svelte-check 0 errors / 2 既有 warnings；`cargo check -p ridge` 与 desktop host boundary 2/2 先前同轮绿；Remote/桌面 production build exit 0。
 - 提交：`9adfc4d`、`0e71da6`、`08eeff6`。
+- 发布：`main` 推至 `9a7e5f9`；`publish-remote` run `30265723678` success，已激活 `0.1.6+g9a7e5f9`（231 文件，21.50 MiB）。
 - 未闭：R62-WS-SHARE、R62-HOST-TREE、R62-GEOMETRY 均只欠相应真实跨账号/LAN/public E2E。
 - NLM 对抗评审：采纳内存投影；驳回不存在的 `RpcClient.scoped`、`CloudHostBridge.rs`、`remote_read_dir` 及“纯终端降级”，校正为 host scoped JWT/DB 授权 + 现有 RPC 复用。
 
