@@ -2,6 +2,14 @@
 
 按时间倒序追加；每条记录包含已完成事项、下一步、熔断与被驳回建议。
 
+## 2026-07-27 — iteration 62（阶段三：共享桌面资源投影）
+
+- 完成：阶段二三层资源树全项；阶段三以不可委派 scoped token 建独立内存投影，将共享 Terminal、Files、Git、Search、Agent 接入桌面；真实 pane/metadata 回写接入树；不污染本机 workspace/global transport；二跳继续 fail-closed。
+- 门禁：Vitest 107 文件 1255 绿 / 1 skip；svelte-check 0 errors / 2 既有 warnings；`cargo check -p ridge` 与 desktop host boundary 2/2 先前同轮绿；Remote/桌面 production build exit 0。
+- 提交：`9adfc4d`、`0e71da6`、`08eeff6`。
+- 未闭：R62-WS-SHARE、R62-HOST-TREE、R62-GEOMETRY 均只欠相应真实跨账号/LAN/public E2E。
+- NLM 对抗评审：采纳内存投影；驳回不存在的 `RpcClient.scoped`、`CloudHostBridge.rs`、`remote_read_dir` 及“纯终端降级”，校正为 host scoped JWT/DB 授权 + 现有 RPC 复用。
+
 ## 2026-07-24 — iteration 50（未用符号 + 终端/IO 性能）
 
 - **卡顿根因**：Hosts 每拍全量 history base64 + 双 BP IPC + 健康机仍 step 重连；hover 无 Ctrl 仍 hitTest；AgentCenter 3s 全量重 IPC。
