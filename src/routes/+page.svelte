@@ -21,6 +21,7 @@
   import { Smartphone, Server } from 'lucide-svelte';
   // 云端登录态：侧栏头像 + 账户气泡。
   import { cloudAuth, logout as cloudLogout } from '@ridge/remote/shared/cloud/auth';
+  import { createWorkspaceShare } from '@ridge/remote/shared/cloud/apiClient';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
   import SaveWorkspaceDialog from '$lib/components/SaveWorkspaceDialog.svelte';
   import QuickOpen from '$lib/components/QuickOpen.svelte';
@@ -798,6 +799,42 @@ function expandSidebar() {
     }
   }
 
+  async function handleTabShare(wsId: string, currentName: string | undefined) {
+    const token = $cloudAuth.userToken;
+    const deviceName = $cloudAuth.deviceName;
+    if (!token || !deviceName) {
+      await alertDialog({
+        title: '无法分享',
+        message: '请先登录 Ridge Cloud，并激活本机设备。',
+      });
+      return;
+    }
+    const grantee = await promptDialog({
+      title: '分享工作区',
+      message: `将「${currentName?.trim() || '当前工作区'}」分享给另一账户。当前版本授予操作权限，可读写文件、Git、终端与 Agent；不可二次转发主机或 Remote。`,
+      placeholder: '对方用户名或邮箱',
+    });
+    if (!grantee?.trim()) return;
+    try {
+      await createWorkspaceShare(token, {
+        deviceName,
+        workspaceId: wsId,
+        grantee: grantee.trim(),
+        role: 'operator',
+      });
+      await alertDialog({
+        title: '邀请已发送',
+        message: '对方接受后，可在「接入」面板打开此工作区。',
+      });
+    } catch (e) {
+      await alertDialog({
+        title: '分享失败',
+        message: e instanceof Error ? e.message : String(e),
+        danger: true,
+      });
+    }
+  }
+
   /** Run a git command against the SCM-selected repo (or any one repo
    *  if SCM hasn't been opened yet). Surface errors in a themed alert. */
   async function runGitOnSelectedRepo(cmd: string, label: string): Promise<void> {
@@ -1521,11 +1558,11 @@ function expandSidebar() {
       <Bot class="h-5 w-5" />
     </button>
     {/if}
-    <!-- 主机 / Hosts：外部终端来源（本机无头 + 远端 ridge/rdg）。会话真正关闭的唯一入口。 -->
+    <!-- 接入：本机无头、远端主机、共享工作区的统一入口。 -->
     <button
       type="button"
       class="{actBtn}{sidebarTab === 'hosts' ? actBtnOn : ''}"
-      title="主机"
+      title="接入"
       onclick={() => { sidebarTab = 'hosts'; expandSidebar(); }}
     >
       <Server class="h-5 w-5" />
@@ -1622,7 +1659,7 @@ function expandSidebar() {
         </div>
         {/if}
 
-        <!-- Hosts tab（主机）：本机无头会话 + 远端 ridge/rdg。始终挂载（桌面 + web-remote）。 -->
+        <!-- 接入 tab：本机无头、远端 ridge/rdg、跨账号共享工作区。 -->
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'hosts' ? '' : 'hidden'}">
           <HostsPanel />
         </div>
@@ -1733,6 +1770,7 @@ function expandSidebar() {
           onRename={renameWorkspace}
           onSave={handleTabSave}
           onDeleteSave={handleTabDeleteSave}
+          onShare={handleTabShare}
         >
           {#snippet actions()}
             <button

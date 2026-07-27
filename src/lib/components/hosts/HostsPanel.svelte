@@ -1,5 +1,5 @@
 <script lang="ts">
-  // 「主机 / Hosts」侧边栏面板。承载所有外部终端 provider：本机无头会话 + 远端
+  // 「接入」侧边栏面板。承载所有外部终端 provider：本机无头会话 + 远端
   // ridge / rdg 主机（P3/P4）。是会话**真正关闭**的唯一入口（工作区里关闭只 detach）。
   import { onMount, onDestroy } from 'svelte';
   import {
@@ -23,6 +23,9 @@
     terminateSession,
     attachSession,
     attachRemoteHostSession,
+    acceptSharedWorkspace,
+    openSharedWorkspace,
+    revokeSharedWorkspace,
     forgetHost,
     pumpAllConnectedOutbound,
     fetchOutboundStats,
@@ -94,7 +97,7 @@
   }
 
   async function refreshOutboundStats(opts?: { withHistory?: boolean }) {
-    const remotes = $hostsStore.filter((h) => h.kind !== 'headless');
+    const remotes = $hostsStore.filter((h) => h.kind === 'remote' || h.kind === 'rdg');
     // Parallel stats IPC (iter 50 perf).
     const pairs = await Promise.all(
       remotes.map(async (h) => [h.id, await fetchOutboundStats(h.id)] as const),
@@ -133,7 +136,7 @@
       // poll for healthy Connected hosts (that burned step_host_reconnect IPC).
       const reconJobs: Promise<unknown>[] = [];
       for (const h of $hostsStore) {
-        if (h.kind === 'headless') continue;
+        if (h.kind === 'headless' || h.kind === 'shared' || h.kind === 'sharing') continue;
         const row = toRow(h);
         if (!showReconnectControls(row)) continue;
         const recon = $hostReconnectById[h.id];
@@ -200,7 +203,13 @@
   }
 
   function hostIcon(kind: Host['kind']) {
-    return kind === 'headless' ? Cpu : kind === 'rdg' ? Server : Globe;
+    return kind === 'headless'
+      ? Cpu
+      : kind === 'rdg'
+        ? Server
+        : kind === 'shared' || kind === 'sharing'
+          ? Link2
+          : Globe;
   }
   function statusDotClass(status: Host['status']): string {
     switch (status) {
@@ -235,7 +244,13 @@
   async function onAttach(s: HostSession, host: Host) {
     busy = true;
     try {
-      if (host.kind === 'headless') {
+      if (host.kind === 'shared') {
+        if (!s.shareGrantId) throw new Error('共享授权缺失');
+        if (s.shareStatus === 'pending') {
+          await acceptSharedWorkspace(s.shareGrantId);
+          await openSharedWorkspace({ ...s, shareStatus: 'active' });
+        } else await openSharedWorkspace(s);
+      } else if (host.kind === 'headless') {
         await attachSession(s.socket, s.name);
       } else {
         const sessionId = s.remoteSessionId || s.name;
@@ -260,6 +275,24 @@
       await terminateSession(s.socket, s.name);
     } catch (e) {
       await alertDialog({ title: '终止失败', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function onRevokeShare(s: HostSession) {
+    if (!s.shareGrantId) return;
+    const ok = await confirmDialog({
+      title: '撤销工作区分享',
+      message: `确定撤销「${s.name}」对 ${s.granteeLabel || '对方账户'} 的分享吗？在线连接将立即断开。`,
+      danger: true,
+    });
+    if (!ok) return;
+    busy = true;
+    try {
+      await revokeSharedWorkspace(s.shareGrantId);
+    } catch (e) {
+      await alertDialog({ title: '撤销失败', message: e instanceof Error ? e.message : String(e) });
     } finally {
       busy = false;
     }
@@ -294,7 +327,7 @@
   >
     <div class="min-w-0 flex-1">
       <span class="text-[12px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]"
-        >主机</span
+        >接入</span
       >
       <p class="text-[10px] text-[var(--rg-fg-muted)] truncate" title={hostsHeaderSummary($hostsStore.map(toRow))}>
         {hostsHeaderSummary($hostsStore.map(toRow))}
@@ -303,7 +336,7 @@
     <div class="flex items-center gap-1">
       <button
         type="button"
-        title="连接远端主机 / rdg"
+        title="接入远端主机 / rdg"
         class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--rg-fg-muted)] transition-colors hover:bg-white/[0.06] hover:text-[var(--rg-fg)]"
         onclick={onConnectHost}
       >
@@ -366,7 +399,7 @@
               {/each}
             {/if}
           </button>
-          {#if host.kind !== 'headless'}
+          {#if host.kind === 'remote' || host.kind === 'rdg'}
             {#if showReconnectControls(toRow(host))}
               <button
                 type="button"
@@ -398,7 +431,7 @@
             </button>
           {/if}
         </div>
-        {#if open && host.kind !== 'headless'}
+        {#if open && (host.kind === 'remote' || host.kind === 'rdg')}
           {@const row = toRow(host)}
           {@const alerts = buildHostRowAlerts(row)}
           {#if alerts.length > 0 || row.outbound}
@@ -416,14 +449,20 @@
           {/if}
           {#each host.sessions as s (s.socket + ':' + s.name)}
             <div
-              use:hostSessionDrag={{ socket: s.socket, name: s.name }}
-              title="拖入工作区某个 pane 即可停靠接入（或点右侧接入按钮）"
-              class="group flex items-center gap-2 pl-9 pr-2 py-1 hover:bg-[var(--rg-surface)] transition-colors cursor-grab active:cursor-grabbing"
+              use:hostSessionDrag={{ socket: s.socket, name: s.name, enabled: host.kind !== 'shared' && host.kind !== 'sharing' }}
+              title={host.kind === 'shared' ? '共享工作区：打开后可用资源管理器、Git 与 Agent' : host.kind === 'sharing' ? '已分享工作区' : '拖入工作区某个 pane 即可停靠接入（或点右侧接入按钮）'}
+              class="group flex items-center gap-2 pl-9 pr-2 py-1 hover:bg-[var(--rg-surface)] transition-colors {host.kind === 'shared' || host.kind === 'sharing' ? '' : 'cursor-grab active:cursor-grabbing'}"
             >
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-1.5">
                   <span class="text-[11px] truncate" title={s.name}>{s.name}</span>
-                  {#if s.attached}
+                  {#if host.kind === 'shared' || host.kind === 'sharing'}
+                    <span
+                      class="shrink-0 rounded-full border border-[var(--rg-border)] px-1.5 text-[9px] text-[var(--rg-fg-muted)]"
+                    >
+                      {host.kind === 'sharing' ? (s.shareStatus === 'pending' ? '待接受' : '已生效') : (s.shareStatus === 'pending' ? '待接受' : '工作区')}
+                    </span>
+                  {:else if s.attached}
                     <span
                       class="shrink-0 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-400/40 px-1.5 text-[9px] font-semibold uppercase tracking-wider"
                       title="已接入某工作区"
@@ -433,13 +472,19 @@
                   {/if}
                 </div>
                 <p class="text-[10px] text-[var(--rg-fg-muted)] truncate">
-                  {#if s.socket !== 'headless' && s.socket !== 'default'}<span class="font-mono">{s.socket}</span> · {/if}{s.windows}w · {s.panes}p · {s.width}×{s.height}
+                  {#if host.kind === 'shared'}
+                    单工作区 · operator · 禁止二次转发
+                  {:else if host.kind === 'sharing'}
+                    分享给 {s.granteeLabel || '对方账户'} · operator
+                  {:else}
+                    {#if s.socket !== 'headless' && s.socket !== 'default'}<span class="font-mono">{s.socket}</span> · {/if}{s.windows}w · {s.panes}p · {s.width}×{s.height}
+                  {/if}
                 </p>
               </div>
-              {#if !s.attached}
+              {#if !s.attached && host.kind !== 'sharing'}
                 <button
                   type="button"
-                  title="接入到当前工作区"
+                  title={host.kind === 'shared' ? (s.shareStatus === 'pending' ? '接受邀请' : '打开共享工作区') : '接入到当前工作区'}
                   disabled={busy}
                   class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-white/[0.08] hover:text-[var(--rg-accent)] transition-all disabled:opacity-40"
                   onclick={() => void onAttach(s, host)}
@@ -447,6 +492,17 @@
                   <PlugZap class="h-3.5 w-3.5" />
                 </button>
               {/if}
+              {#if host.kind === 'sharing'}
+              <button
+                type="button"
+                title="撤销分享"
+                disabled={busy}
+                class="opacity-0 group-hover:opacity-100 flex h-6 w-6 items-center justify-center rounded text-[var(--rg-fg-muted)] hover:bg-rose-500/15 hover:text-rose-300 transition-all disabled:opacity-40"
+                onclick={() => void onRevokeShare(s)}
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </button>
+              {:else if host.kind !== 'shared'}
               <button
                 type="button"
                 title="终止会话（真正结束进程，不可恢复）"
@@ -456,6 +512,7 @@
               >
                 <Trash2 class="h-3.5 w-3.5" />
               </button>
+              {/if}
             </div>
           {/each}
         {/if}

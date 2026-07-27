@@ -82,6 +82,7 @@ export interface CloudHostBridgeLike {
   reset(): void;
   /** 弱网 P1：注入 DataChannel 背压流控（可选；未实现则不背压）。 */
   attachChannelControl?(ctrl: ChannelBackpressure): void;
+  onConnected?(): void;
 }
 
 /** host 端信令角色（契约 §3：WS query ?role=）。出站连接以 {@link Role} 收窄。 */
@@ -596,6 +597,7 @@ export class RidgeCloudHost {
       },
     });
     this.setConnState(conn, 'connected');
+    bridge.onConnected?.();
   }
 
   /** 把一帧明文加密经某连接的 DataChannel 发回 controller（传输层分片，修 max-message-size）。 */

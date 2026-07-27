@@ -45,6 +45,8 @@ export const CLOUD_USER_PARAM = 'u'; // username（host label 拼接 + 同账户
 export interface CloudControllerBootParams {
   /** user JWT（scope=user）。省略时从 auth.ts 持久化的 cloudAuth 取。 */
   userToken?: string;
+  /** workspace-share token must remain fixed; never replace it with the account access token. */
+  fixedToken?: boolean;
   /** 目标 host 的 device_name（房间 label 的 device 段，§1.1）。 */
   hostDevice: string;
   /** username（房间 label 的 username 段，§1.1）。省略时从 cloudAuth.user.username 取。 */
@@ -161,7 +163,7 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
     // 传 getter 而非固定字符串：每次 WS/WebRTC (重)连时动态读 cloudAuth store，
     // 保证使用的是最新 access token，防止 15 分钟过期后重连失败。
     provider = new ControllerCloudProvider({
-      userToken: () => get(cloudAuth).userToken ?? userToken,
+      userToken: params.fixedToken ? userToken : () => get(cloudAuth).userToken ?? userToken,
       username,
       baseDomain: undefined,
     }, callbacks);
@@ -180,13 +182,15 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
   // 使上方 getter `() => get(cloudAuth).userToken` 在 WS 重连时总能拿到有效 token。
   // 注意：页面在后台时浏览器会暂停/节流 setInterval，故仅靠此 timer 不足以覆盖后台休眠
   // 超过 15 分钟的场景——回前台补偿逻辑见下方 attachForegroundListeners。
-  if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(() => { void refreshAccess(); }, TOKEN_REFRESH_INTERVAL_MS);
+  if (!params.fixedToken) {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(() => { void refreshAccess(); }, TOKEN_REFRESH_INTERVAL_MS);
+  }
 
   // 回前台探活：token 刷新后立即唤醒 provider 重连（跳过退避等待）。
   // visibilitychange + online + pageshow + focus 四路覆盖各浏览器/系统的恢复事件。
   detachForegroundListeners(); // 防止重复 boot 时残留旧监听
-  attachForegroundListeners(() => {
+  if (!params.fixedToken) attachForegroundListeners(() => {
     // 仅在页面可见时处理（过滤 focus 在 tab 切换时的重复触发）。
     if (typeof document !== 'undefined' && document.hidden) return;
     // 先刷新 token（单飞：refreshAccess 内部去重，多次唤醒不并发），

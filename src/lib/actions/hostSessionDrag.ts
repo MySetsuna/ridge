@@ -1,6 +1,6 @@
 // src/lib/actions/hostSessionDrag.ts
 //
-// Svelte action：从「主机」面板把一个会话拖入工作区停靠。复用 SplitContainer 既有的
+// Svelte action：从「接入」面板把一个会话拖入工作区停靠。复用 SplitContainer 既有的
 // 方向半区预览 —— 拖拽期间把哨兵塞进 paneDragSourceId（它永不等于任何真实 pane id，
 // 故所有 pane 都显示预览），并按光标位置写 paneDockHover；落点 = attachSessionAt。
 //
@@ -20,6 +20,7 @@ const THRESHOLD = 4;
 export interface HostSessionDragParams {
   socket: string;
   name: string;
+  enabled?: boolean;
 }
 
 export function hostSessionDrag(node: HTMLElement, params: HostSessionDragParams) {
@@ -71,12 +72,13 @@ export function hostSessionDrag(node: HTMLElement, params: HostSessionDragParams
       try {
         await attachSessionAt(cur.socket, cur.name, hover.paneId, hover.region as AttachRegion);
       } catch {
-        /* 接入失败静默：可在「主机」面板重试 */
+        /* 接入失败静默：可在「接入」面板重试 */
       }
     }
   }
 
   function onDown(e: PointerEvent): void {
+    if (cur.enabled === false) return;
     if (e.button !== 0) return;
     // 放过按钮：让行内 [接入]/[终止] 的点击正常工作。
     if ((e.target as HTMLElement).closest('button')) return;
