@@ -636,11 +636,16 @@ import {
                 {@const grp = node.agent_id
                   ? groupOfAgent(teammateGroups.groups, node.agent_id)
                   : undefined}
-                <!-- 智能体状态大按钮：未标记=灰「标记」；starting=琥珀「启动中」；busy=翠绿
-                     「运行中」；被编组则整体染该组配色（覆盖状态色）并显示组名。点击=切换标记
-                     （纳入 / 移出指挥部花名册）。 -->
+                <!-- 图标颜色表达状态；完整语义留在 title/aria-label，免挤占 pane 标题栏。 -->
                 <button
                   type="button"
+                  aria-label={grp
+                    ? `编组「${grp.name}」${isAgent ? ' · 运行中' : ''}（点击取消标记智能体）`
+                    : isAgent
+                      ? '智能体运行中（点击取消标记）'
+                      : aState === 'starting'
+                        ? '智能体启动中'
+                        : '把此分屏标记为智能体（纳入指挥部花名册）'}
                   title={grp
                     ? `编组「${grp.name}」${isAgent ? ' · 运行中' : ''}（点击取消标记智能体）`
                     : isAgent
@@ -651,7 +656,7 @@ import {
                   style={grp
                     ? `color:${grp.color};border-color:${grp.color};background:color-mix(in srgb, ${grp.color} 16%, transparent)`
                     : ''}
-                  class="flex h-7 items-center gap-1.5 rounded-lg border px-2 text-[11px] font-medium transition-colors {grp
+                  class="relative flex h-7 w-7 items-center justify-center rounded-lg border text-[11px] font-medium transition-colors {grp
                     ? ''
                     : isAgent
                       ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
@@ -660,13 +665,10 @@ import {
                         : 'border-transparent text-[var(--rg-fg-muted)] hover:border-[var(--rg-border)] hover:text-[var(--rg-fg)]'}"
                   onclick={() => toggleTeammateAgent(node.id, isAgent)}
                 >
-                  {#if isAgent}
-                    <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-current animate-pulse"></span>
-                  {/if}
                   <Bot class="h-4 w-4 shrink-0" />
-                  <span class="truncate max-w-[100px]">
-                    {#if grp}{grp.name}{:else if isAgent}运行中{:else if aState === 'starting'}启动中{:else}标记{/if}
-                  </span>
+                  {#if isAgent}
+                    <span class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-current animate-pulse"></span>
+                  {/if}
                 </button>
               {/if}
             {/if}

@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { ListTree, Plus, X, FolderOpen, ChevronRight, Bookmark, Bot } from 'lucide-svelte';
   import { t, tr } from '$lib/i18n';
+  import { portal } from '$lib/actions/portal';
   import type { PaneInfo, WorkspaceInfo, RemoteLink, SavedWorkspaceFile } from '@ridge/remote';
   import { treeState, toggleWsExpanded, seedActiveWorkspace, pruneExpanded } from './treeState.svelte';
   import PaneShellPicker from './PaneShellPicker.svelte';
@@ -340,7 +341,12 @@
 </script>
 
 {#if open}
-  <div class="tree-backdrop" onclick={close} role="presentation"></div>
+  <div
+    class="tree-backdrop"
+    onclick={close}
+    role="presentation"
+    use:portal={{ id: 'mobile-workspace-tree-backdrop' }}
+  ></div>
 {/if}
 
 <div class="tree-anchor">
@@ -351,7 +357,11 @@
   </button>
 
   {#if open}
-    <div class="tree-popup" role="menu">
+    <div
+      class="tree-popup"
+      role="menu"
+      use:portal={{ id: 'mobile-workspace-tree-popup' }}
+    >
       <div class="tree-head">
         <span class="tree-head-title">
           {$t('mobile.treeTitle')}
@@ -510,8 +520,18 @@
 
   <!-- 已保存工作区：次级弹层（只打开，无删除/重命名/浏览管理） -->
   {#if savedOpen}
-    <div class="saved-backdrop" onclick={closeSaved} role="presentation"></div>
-    <div class="saved-popup" role="dialog" aria-label={$t('mobile.savedTitle')}>
+    <div
+      class="saved-backdrop"
+      onclick={closeSaved}
+      role="presentation"
+      use:portal={{ id: 'mobile-saved-workspaces-backdrop' }}
+    ></div>
+    <div
+      class="saved-popup"
+      role="dialog"
+      aria-label={$t('mobile.savedTitle')}
+      use:portal={{ id: 'mobile-saved-workspaces-popup' }}
+    >
       <div class="tree-head">
         <span class="tree-head-title">{$t('mobile.savedTitle')}</span>
         <button class="tree-add" onclick={closeSaved} title={$t('mobile.savedClose')} tabindex="-1">
@@ -577,8 +597,8 @@
      than "nothing happened". */
   .tree-spin{display:inline-block;width:10px;height:10px;margin-left:6px;border:1.5px solid color-mix(in srgb,var(--rg-accent) 30%,transparent);border-top-color:var(--rg-accent);border-radius:50%;animation:treeSpin .6s linear infinite}
   @keyframes treeSpin{to{transform:rotate(360deg)}}
-  .tree-add{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid var(--rg-border-bright);border-radius:6px;background:var(--rg-bg);color:var(--rg-fg-muted);cursor:pointer}
-  .tree-add:active{color:var(--rg-accent);border-color:color-mix(in srgb,var(--rg-accent) 40%,transparent)}
+  .tree-add{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;border-radius:6px;background:transparent;color:var(--rg-fg-muted);cursor:pointer}
+  .tree-add:active{color:var(--rg-accent);background:color-mix(in srgb,var(--rg-fg) 10%,transparent)}
   .tree-add:disabled{opacity:.4}
 
   .saved-backdrop{position:fixed;inset:0;z-index:47;background:rgba(0,0,0,.25)}

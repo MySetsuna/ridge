@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Folder, GitBranch, Search, Users, X } from 'lucide-svelte';
+  import { Folder, GitBranch, Search, Bot, X } from 'lucide-svelte';
   import { t } from '$lib/i18n';
   import SidebarFileTree from '../../shared/sidebar/SidebarFileTree.svelte';
   import SidebarGitPanel from '../../shared/sidebar/SidebarGitPanel.svelte';
@@ -53,7 +53,7 @@
       {/if}
       {#if available.team}
         <button class="tab" class:active={tab === 'team'} onclick={() => setTab('team')} title="Team" tabindex="-1">
-          <Users class="w-4 h-4" />
+          <Bot class="w-4 h-4" />
         </button>
       {/if}
     </div>
