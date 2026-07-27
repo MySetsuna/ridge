@@ -13,6 +13,7 @@
   import { startTotpIdentitySync } from '$lib/remote/totpIdentitySync';
   import { cloudAuth as cloudAuthStore } from '@ridge/remote/shared/cloud/auth';
   import { BASE_DOMAIN, cloudHttpScheme } from '@ridge/remote/shared/cloud/apiClient';
+  import { remoteBootMode } from '$lib/remote/remoteBootMode';
 
   // §web-remote: when the desktop SPA is served to a plain browser by the LAN
   // remote server, `@tauri-apps/api/*` is aliased to the shims in
@@ -72,11 +73,14 @@
     // true，此处若不提前注册则 SW 永不安装，缓存与自更新全失效。注册幂等，下游接线成功路径
     // 不再重复调用。务必只在此 WEB_REMOTE 路径注册（Tauri 分支已早 return，不应有 SW）。
     registerServiceWorker();
-    // §cloud: 两种方式进入 cloud-controller 模式（优先级从高到低）：
-//   1. URL query: `?cloudHost=<device>&u=<username>`（显式指定）
-  //   2. 租户域名: `{device}-{username}.9527127.xyz`（自动从 hostname 解析）
-  // 非 cloud 模式则走 LAN TOTP 流程。
-    void startCloudControllerBootMode();
+    // Transport selection happens before any request. A desktop bundle served
+    // by rdg/LAN must not wait for the public cookie bootstrap before opening
+    // its same-origin TOTP/session WebSocket.
+    if (remoteBootMode(location.hostname, location.search, BASE_DOMAIN) === 'lan') {
+      void startWebRemoteBoot();
+    } else {
+      void startCloudControllerBootMode();
+    }
   });
 
   // Cloud controller boot: bootCloudControllerFromUrl tries both URL query

@@ -44,10 +44,10 @@ impl MenuItem {
     fn label(self) -> &'static str {
         match self {
             MenuItem::ShowQrCode => "Show TOTP QR code",
-            MenuItem::StartLanRemote => "Start LAN remote (https://...)",
-            MenuItem::StopLanRemote => "Stop LAN remote",
-            MenuItem::StartDaemon => "Start daemon (cloud)",
-            MenuItem::StopDaemon => "Stop daemon",
+            MenuItem::StartLanRemote => "Start LAN Remote",
+            MenuItem::StopLanRemote => "Stop LAN Remote",
+            MenuItem::StartDaemon => "Start public Remote",
+            MenuItem::StopDaemon => "Stop public Remote",
             MenuItem::Login => "Login / activate device",
             MenuItem::Quit => "Quit",
         }
@@ -138,7 +138,7 @@ impl App {
             totp,
             qr_text: String::new(),
             totp_code,
-            lan_addr: format!("https://{lan_ip}:{port}/login"),
+            lan_addr: lan_origin(&lan_ip, port),
             lan_running: false,
             lan_shutdown_tx: None,
             public_entry: auth.as_ref().map(|a| a.public_entry()),
@@ -175,8 +175,6 @@ pub async fn run() -> Result<()> {
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Action>();
     let mut app = App::new(tx.clone());
-    // 自动启动 LAN 远程服务
-    let _ = tx.send(Action::StartLanRemote);
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
 
@@ -408,7 +406,10 @@ fn render_main(frame: &mut Frame, app: &App) {
     .block(Block::default().borders(Borders::ALL).title(" Dashboard "));
     frame.render_widget(title, chunks[0]);
 
-    let mut status_lines = vec![Line::from(format!("  Daemon: {}", daemon_ctl::status()))];
+    let mut status_lines = vec![Line::from(format!(
+        "  Public:  {}",
+        daemon_ctl::status()
+    ))];
 
     let lan_status = if app.lan_running { "Running" } else { "Stopped" };
     let lan_style = if app.lan_running {
@@ -505,4 +506,26 @@ fn render_qr(frame: &mut Frame, app: &App) {
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(area)[1],
     );
+}
+
+fn lan_origin(lan_ip: &str, port: u16) -> String {
+    format!("https://{lan_ip}:{port}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{lan_origin, MenuItem};
+
+    #[test]
+    fn lan_status_shows_origin_without_login_path() {
+        assert_eq!(lan_origin("172.21.130.235", 9527), "https://172.21.130.235:9527");
+    }
+
+    #[test]
+    fn remote_menu_uses_product_names() {
+        assert_eq!(MenuItem::StartLanRemote.label(), "Start LAN Remote");
+        assert_eq!(MenuItem::StopLanRemote.label(), "Stop LAN Remote");
+        assert_eq!(MenuItem::StartDaemon.label(), "Start public Remote");
+        assert_eq!(MenuItem::StopDaemon.label(), "Stop public Remote");
+    }
 }
