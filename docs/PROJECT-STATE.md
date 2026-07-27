@@ -1,12 +1,12 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-24（AC4：CONTRACT-40…49 底座 + CONTRACT-50…59 加厚弧 · 出站 PTY/链接/护栏/控制面/组合验收）
+状态日期：2026-07-27（iteration 61：Remote 显式入口、配额停放、移动端弹层、全局 Agent 中心与无头会话回收）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
 证据等级：
-- **代码事实**：由 2026-07-23 增量同步后的 CodeGraph 与当前源码确认；2026-07-24 note 对账以源码符号 + iteration 报告为准。
+- **代码事实**：由 2026-07-27 CodeGraph（629 文件 / 12,855 节点 / 19,620 边）与当前源码确认。
 - **Git 事实**：由本地分支、HEAD 与提交历史确认。
 - **运行事实**：必须有本轮测试/退出码证据；缺证据时明确写「未验证」。
 - **文档声明**：若与代码冲突，以代码为当前行为、以协议为应修正目标。
@@ -55,7 +55,7 @@ Svelte 页面/组件 → Tauri invoke/事件 → src-tauri commands / ridge-core
 - `packages/ridge-term` 为终端语义 SSOT（parser/grid/scrollback/selection/search/增量渲染/WASM 绑定）；渲染为 **WebGPU-first + Canvas2D 自动回退**（`default=["webgpu"]` 生产默认特性，运行时 GPU 探测驱动，2026-05-05 用户反馈钦定「不设 build flag/opt-in」）——非实验代码，**不得删除**；真机收益测量属用户轨（E1）。
 - `packages/ridge-core` 承接 workspace/pane/Git 命令与异步 dispatch；Tauri 保留宿主状态、平台资源与事件桥。
 - `packages/ridge-cli/src/main.rs`：`tui` / `login` / `remote`（公网 host daemon）/ `connect`（LAN controller）/ `tmux`。
-- Teammate/MCP：tmux shim + Ridge MCP server → teammate server / ridge-tmux → 工作区变更 → `AgentCenterPanel.svelte`（拓扑、分组、HITL 审批、熔断）。桌面有 `resolve_hitl_request`；该能力刻意不在 Remote allowlist。
+- Teammate/MCP：tmux shim + Ridge MCP server → teammate server / ridge-tmux → 工作区变更 → `AgentCenterPanel.svelte`。iteration 61 后 Agent Center 跨全部工作区聚合 roster，并显示 Claude/Codex JSONL 最近助手回复与 Agent 所创 native 无头会话；OSC 标题优先、前台进程兜底自动登记/释放 pane Agent 状态。桌面有 `resolve_hitl_request`；该能力刻意不在 Remote allowlist。
 
 ### 3.2 远控三入口
 
@@ -83,21 +83,21 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 单 Rust/Axum 服务：API + WebSocket relay + 多 SPA 托管（主域账户/设备、`admin.{base}` 管理端、`{device}-{username}.{base}` 租户 controller 按 UA 分桌面/移动产物）。
 - `src/router.rs::build_router` / `spa_fallback`；`src/middleware.rs::tenant_resolver`。
 - JWT `user`/`device` scope，新签发 EdDSA(Ed25519)、迁移期兼容 HS256；父域 `ridge_sso` HttpOnly cookie + 短时 access token；DB 只存 refresh hash。
-- `src/ws/handler.rs::ws_upgrade` 升级前后校验租户/token/scope/设备归属/parked/订阅/连接上限；房间 key 用已验签 `user_id`+设备名。
+- `src/ws/handler.rs::ws_upgrade` 升级前后校验租户/token/scope/设备归属/parked/订阅/连接上限；房间 key 用已验签 `user_id`+设备名。host 与 controller 均按数据库实时用户组计算设备配额；配额停放以 `parked_by_quota` 区分人工禁用，故恢复配额不会误启人工关闭设备。
 - `GET /api/v1/ice-servers` 恒返 STUN；配置 `TURN_HOST`+`TURN_STATIC_AUTH_SECRET` 才追加 coturn 时效凭据。
 - Remote artifact 独立发布线：`wind` 构建 desktop/mobile 两套产物 → `RIDGE_ARTIFACT_TOKEN` 上传 `/api/v1/remote-artifacts` → 持久卷 `releases/<version>` → current 指针激活，保留最近 3 个回滚。
-- PostgreSQL + SQLx，14 个顺序迁移；统一 `{ok,data}`/`{ok:false,error}` 信封；CORS/体限/限流/安全头/脱敏外层防线。
+- PostgreSQL + SQLx，15 个顺序迁移；统一 `{ok,data}`/`{ok:false,error}` 信封；CORS/体限/限流/安全头/脱敏外层防线。
 
 ## 4. 仓库快照
 
 | 项 | wind |
 | --- | --- |
-| 分支 / HEAD | `codex/remote-git-diff-iteration-1`，较 `origin/main` 领先 48+ 提交（Level 2 draft；审查导读每轮闭环强制刷新：`docs/review/branch-review-guide.md`） |
-| 应用版本 | 0.0.19（iteration 20 bump；见 Cargo/package/tauri 三处同步） |
-| CodeGraph | 542 文件 / 11,365 节点 / 18,029 边（2026-07-23 sync） |
-| 工具链 | **全链绿**：pnpm + vitest + 增量 svelte-check + 双仓 cargo 均本机 exit 0；`cargo test --workspace` 于 iteration 7 **首次整仓通过**（历史 `-p ridge --lib` loader 载败已根修，见 §5 iteration 7） |
+| 分支 / HEAD | `main` / `f110dd0`（工作树仅保留用户原有 `Cargo.lock` 改动，未纳入本轮提交） |
+| 应用版本 | 0.0.20 |
+| CodeGraph | 629 文件 / 12,855 节点 / 19,620 边（2026-07-27 healthy） |
+| 工具链 | 2026-07-27：Vitest 99 文件，1,237 绿 / 1 skipped；svelte-check 0 errors / 2 既有 warnings；`cargo check -p ridge --lib`、tmux bin、ridge-tmux 11 测、rdg dashboard 2 测、JSONL 解析 3 测均 exit 0 |
 
-`ridge-cloud`：本轮在 `codex/remote-artifacts-status` 分支新增只读 status 端点（cargo 124 全绿，待人工审查合并部署）；生产 Dokku SHA、TURN 可达性、artifact current 指针仍**未实测**（脚本已备，待用户对生产实跑）。
+`ridge-cloud`：`codex/remote-artifacts-status` / `beb87ea`；iteration 61 新增 migration 0015 与配额停放原因，`db::device_quota::tests` 6/6 绿。生产 Dokku SHA、TURN 可达性、artifact current 指针仍**未实测**。
 
 ## 5. 迭代闭环成果（iteration 1–4）与确定性证据
 
@@ -164,7 +164,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | T2 | Cloud 协议双 SSOT | P0 | **关闭**（iteration 1 收敛 + 自动守卫；EOL 误报已根治） |
 | T3 | 生产两条版本线状态证据 | P0 | **代码侧关闭**（status 端点 + 一键脚本）；生产实跑与分支合并部署待用户 |
 | S1 | 兼容安全回落可观测退役 | P0/P1 | **审计 + 遥测两阶段关闭**（F1–F4 计数已实施；F5 已退役删除；F6 由 S1 门禁测试守构造纪律）；逐面 fail-closed 翻闸待真实数据窗口（用户轨） |
-| P1 | Remote Agent 控制台 MVP | P1 | **代码侧关闭**（iteration 6：capability `teammate` + roster 面板 + 切 pane）；真机 UI 人工核验待用户 |
+| P1 | Remote / Desktop Agent 控制台 | P1 | **代码侧关闭**（iteration 6 Remote roster；iteration 61 桌面跨工作区 roster、最近回复、自动 pane 状态、无头会话唤醒）；真机 UI 人工核验待用户 |
 | P2 | Remote HITL/接管闭环 | P1 | **全闭**（iteration 13：远端裁决通道实现——票据单次消费、modify 永不开放、审计接 M1）；真机核验待用户 |
 | G1 | 单 Agent 暂停/恢复/接管/回滚 | P1 | **暂停/恢复/软接管 + OS 冻结 + 回滚关闭**（iteration 15：soft gate + Unix SIGSTOP/Win NtSuspend fail-open；git worktree 补丁 checkpoint/rollback） |
 | A1 | 共享内核减法审计 | P1 | **关闭**（iteration 10：close/rename 同源化落地 + LAN 漏广播缺陷修复；历史切片累计五处、净删 200+ 行；后续减法随日常纪律进行，不再占差距行） |
@@ -173,7 +173,7 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 | M1 | Workspace Memory | P2 | **切片一+二+三关闭**（iteration 11/14/15：暂停态 + 裁决审计 + goal/constraints/tasks API/UI） |
 | M2 | Agent 归因事件 | P2 | **关闭**（iteration 14：审批/裁决审计归因至稳定 agent_id） |
 | H1 | 远端 host live PTY | P2 | **代码侧 LAN 出站闭合**（22–24/29–30：Transport+Mock+LAN 相位机、subscribe/write/resize/detach、**pump_host_output 生产命令**、Hosts 轮询泵、live cap；真机 OS WebSocket 读循环仍可接 `LanOutboundTransport::inject_socket_ready`）；真机双端联调用户轨 |
-| C1 | rdg 行为一致性 | P2 | **关闭**（iteration 10：五缺口逐项判定零残留；git/workspace 列补路由候选待真实需求触发，触发时按 A2 纪律接线） |
+| C1 | rdg 行为一致性 | P2 | **关闭**（iteration 61：LAN/public Remote 显式手动启停，LAN 根 URL 与桌面路由语义一致） |
 | E1 | WebGPU 收益测量 | P3/用户轨 | **重定义**（iteration 9 簿记校正）：WebGPU 为生产默认路径非实验（历史措辞误导致 NotebookLM 提删除建议，已驳回留档）；剩余工作 = 真机 GPU 收益测量，属用户轨 |
 | E2 | 高级自动编排 | P3/实验 | **已关闭**（iteration 9）：待真实多 Agent 瓶颈证据重开；不占活跃清单 |
 
@@ -208,9 +208,19 @@ controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHo
 - **31 OP-USER-RAIL**：`scripts/check-user-rail-gates.mjs` 假凭据 fail-closed；notes 标 implemented。
 - Skill 仓库 + 本机三端：`不简单驳回/升值落地` + `约 2 日大迭代禁糊弄`。
 
+**iteration 61（2026-07-27，Remote × Agent Center 整合）**：
+- `rdg` TUI 不再启动即自动开放 LAN；LAN 与公网 Remote 均为显式启停，LAN 展示根 URL（无 `/login`）。
+- Web Remote 依据 host/query 先判 LAN/cloud；LAN 直入 `startWebRemoteBoot`，不再先打云端 bootstrap，消除桌面白壳等待。
+- ridge-cloud 修 host 角色误按 free quota 的根因；新增 `parked_by_quota`，只自动恢复配额所停设备，人工禁用不复活。
+- 移动端工作区与保存弹层经 portal 挂 `body`；Team 统一 Bot 图标；pane Agent 动作为无尾文图标；弹层右侧动作无边框。
+- Agent Center 标题栏只留标题，控制项迁入内容；roster 跨工作区聚合并标工作区；读取 Claude/Codex session JSONL 的 assistant 内容显示最近回复。
+- PTY 注入 `RIDGE_PANE_ID`，tmux shim 回传创建工作区/pane，ridge-tmux native session 保存并投影 creator；Agent Center 显示未接入无头会话并可唤醒回创建工作区。
+- `RidgePane` 以 OSC 标题 + 前台进程识别 Claude/Codex/Gemini/OpenCode/Aider/Copilot，幂等登记/周期对账/退出释放，统一 pane 标题态与 Agent roster。
+- 提交：wind `367b293`、`0b1985e`、`3bde775`、`f110dd0`；ridge-cloud `beb87ea`。自动门禁见 §4。
+
 ## 7. 开放问题
 
-**当前无待定夺规划问题。** 用户轨：真机 smoke、生产 Remote 云上传（换机 token）、分支 merge。请 NotebookLM：下一迭代是否还有 git 路径未走 `git_output` 的旁路？是否需把 acquire 超时做成可观测计数？
+**当前无待定夺规划问题。** 用户轨：真机验证 LAN/public Remote 首屏、移动端弹层触控、Agent TUI 退出后的 roster 收敛、无头会话唤醒；ridge-cloud 分支审查/合并/部署。请 NotebookLM 基于 iteration 61 现状，只提出一个最高价值下一步，并给出反对理由、停止条件与最小验证闭环。
 
 ## 8. NotebookLM 评审要求（沿用）
 
