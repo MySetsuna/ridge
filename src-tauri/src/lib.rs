@@ -829,6 +829,7 @@ pub fn run() {
             project::move_path,
             project::path_exists,
             project::read_claude_history,
+            project::read_agent_recent_replies,
             project::read_opencode_history,
             project::get_git_changed_files,
             process::get_pane_foreground_process,

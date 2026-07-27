@@ -14,11 +14,22 @@
   import { invoke } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-  import { Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Users } from 'lucide-svelte';
+  import { Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Users, MonitorUp } from 'lucide-svelte';
   import AgentMemberRow from './AgentMemberRow.svelte';
   import { settingsStore } from '$lib/stores/settings';
   import { fileEditorStore } from '$lib/stores/fileEditor';
-  import { workspaceSaveInfoStore, refreshWorkspaceSaveInfo } from '$lib/stores/paneTree';
+  import {
+    workspaceSaveInfoStore,
+    refreshWorkspaceSaveInfo,
+    workspacesList,
+    paneCwdStore,
+  } from '$lib/stores/paneTree';
+  import {
+    hostsStore,
+    refreshHosts,
+    attachSession,
+    type HostSession,
+  } from '$lib/stores/hosts';
   import { alertDialog } from '$lib/components/RidgeDialog.svelte';
   import { showToast } from '$lib/stores/toast';
   import { setTeammateHitlEnabled } from './teammateSettings';
@@ -65,7 +76,24 @@
   }
   let { workspaceId }: Props = $props();
 
-  let topology = $state<TopologySnapshot>(EMPTY_TOPOLOGY);
+  let topologies = $state<Record<string, TopologySnapshot>>({});
+  const topology = $derived(
+    workspaceId ? (topologies[workspaceId] ?? EMPTY_TOPOLOGY) : EMPTY_TOPOLOGY
+  );
+  const allMembers = $derived(
+    $workspacesList.flatMap((workspace) =>
+      (topologies[workspace.id]?.roster ?? []).map((profile) => ({
+        workspaceId: workspace.id,
+        workspaceName: workspace.name?.trim() || `工作区 ${workspace.displaySeq}`,
+        profile,
+      }))
+    )
+  );
+  const headlessSessions = $derived(
+    ($hostsStore.find((host) => host.kind === 'headless')?.sessions ?? []).filter(
+      (session) => !session.attached
+    )
+  );
   let trips = $state<CircuitTrip[]>([]);
   /** R17-HITL-BADGE / TEAM-HEALTH */
   let pendingHitl = $state(0);
@@ -77,6 +105,15 @@
   let healthGeneration = $state(0);
   let gitGuard = $state<GitGuardStats | null>(null);
   let hitlAuditItems = $state<HitlAuditItem[]>([]);
+  interface AgentRecentReply {
+    agent: string;
+    text: string;
+    timestamp: number;
+    project: string;
+    sessionId?: string;
+  }
+  let recentReplies = $state<AgentRecentReply[]>([]);
+  let wakingSession = $state('');
 
   const hitlOn = $derived($settingsStore.teammateHitlEnabled);
   const orchModel = $derived(
@@ -106,7 +143,7 @@
   );
 
   function nameOf(paneId: string): string {
-    return topology.roster.find((t) => t.paneId === paneId)?.name ?? paneId;
+    return allMembers.find((member) => member.profile.paneId === paneId)?.profile.name ?? paneId;
   }
 
   // M1 切片二：裁决审计历史（环形 ≤50；条目无命令全文）。
@@ -153,12 +190,18 @@
   async function refresh(opts?: { heavy?: boolean }) {
     pollGeneration += 1;
     const doHeavy = opts?.heavy ?? pollGeneration % HEAVY_EVERY_N === 1;
-    try {
-      const raw = await invoke(TOPOLOGY_CMD, { workspaceId });
-      topology = parseTopologySnapshot(raw);
-    } catch {
-      topology = EMPTY_TOPOLOGY;
-    }
+    const workspaceIds = $workspacesList.map((workspace) => workspace.id);
+    if (workspaceId && !workspaceIds.includes(workspaceId)) workspaceIds.push(workspaceId);
+    const snapshots = await Promise.all(
+      workspaceIds.map(async (id) => {
+        try {
+          return [id, parseTopologySnapshot(await invoke(TOPOLOGY_CMD, { workspaceId: id }))] as const;
+        } catch {
+          return [id, EMPTY_TOPOLOGY] as const;
+        }
+      })
+    );
+    topologies = Object.fromEntries(snapshots);
     try {
       // OP-AGENT-CP: full control-plane snapshot (degraded/level/foreign/outbound).
       // Prefer this single call over separate get_pending_hitl_count when healthy.
@@ -219,6 +262,15 @@
       } catch {
         hitlAuditItems = [];
       }
+      try {
+        recentReplies = await invoke<AgentRecentReply[]>('read_agent_recent_replies', {
+          projectPaths: [...new Set(Object.values($paneCwdStore).filter(Boolean))],
+          limit: 24,
+        });
+      } catch {
+        recentReplies = [];
+      }
+      void refreshHosts();
     }
     reschedulePoll();
   }
@@ -266,6 +318,31 @@
     }
   }
 
+  function workspaceLabel(id?: string): string {
+    if (!id) return '未关联工作区';
+    const workspace = $workspacesList.find((item) => item.id === id);
+    return workspace?.name?.trim() || (workspace ? `工作区 ${workspace.displaySeq}` : id);
+  }
+
+  function replyTime(timestamp: number): string {
+    return timestamp ? new Date(timestamp).toLocaleString() : '';
+  }
+
+  async function wakeSession(session: HostSession) {
+    const key = `${session.socket}:${session.name}`;
+    wakingSession = key;
+    try {
+      await attachSession(
+        session.socket,
+        session.name,
+        session.creator_workspace_id || workspaceId
+      );
+    } catch (e) {
+      showToast(`唤醒失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+    } finally {
+      wakingSession = '';
+    }
+  }
   onMount(() => {
     void refresh({ heavy: true });
     // 拉取工作区保存信息，让编组的稳定持久化键（.ridge 路径）可解析。
@@ -325,16 +402,19 @@
 </script>
 
 <div class="flex h-full flex-col text-[var(--rg-fg)]">
-  <!-- 头部：标题 + 「审批」快捷开关（HITL）。完整开关在设置面板「智能体」分区。 -->
+  <!-- 标题栏仅承载标题；控制项属于面板内容，可随窄侧栏自然换行。 -->
   <header
     data-tauri-drag-region
-    class="flex h-11 shrink-0 items-center justify-between border-b border-[var(--rg-border)] px-3"
+    class="flex h-11 shrink-0 items-center border-b border-[var(--rg-border)] px-3"
   >
     <!-- iter-60 G5 品牌层改名：内置 MCP/控制面对外名 Agent's Commune（wire 方法名不动） -->
     <span class="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
       <Bot class="h-3.5 w-3.5" /> Agent's Commune
     </span>
-    <div class="flex items-center gap-1">
+  </header>
+
+  <div class="flex-1 overflow-y-auto rg-scroll flex flex-col gap-4 px-3 py-3">
+    <section class="flex flex-wrap items-center gap-1 rounded-md border border-[var(--rg-border)] p-2">
       <!-- MCP 接入引导：内置编辑器只读打开打包文档 -->
       <button
         type="button"
@@ -398,10 +478,7 @@
           data-testid="orch-suspended-badge"
         >暂停 {suspendedAgents}</span>
       {/if}
-    </div>
-  </header>
-
-  <div class="flex-1 overflow-y-auto rg-scroll flex flex-col gap-4 px-3 py-3">
+    </section>
     {#if shouldShowAuditSection(pendingHitl, hitlAuditItems.length)}
       {@const auditModel = buildHitlAuditPanel(auditFiltered.items)}
       <section class="rounded-md border border-[var(--rg-border)] px-2 py-1.5" data-testid="hitl-audit-panel">
@@ -472,6 +549,59 @@
       </section>
     {/if}
 
+    {#if headlessSessions.length > 0}
+      <section>
+        <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
+          <MonitorUp class="h-3 w-3 text-[var(--rg-accent)]/70" /> Agent 后台终端
+          <span class="ml-auto font-mono">{headlessSessions.length}</span>
+        </h3>
+        <ul class="mt-1 space-y-0.5">
+          {#each headlessSessions as session (session.socket + ':' + session.name)}
+            {@const sessionKey = `${session.socket}:${session.name}`}
+            <li class="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]">
+              <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400"></span>
+              <span class="min-w-0 flex-1">
+                <span class="block truncate text-[11px]" title={session.name}>{session.name}</span>
+                <span class="block truncate text-[9px] text-[var(--rg-fg-muted)]">
+                  {workspaceLabel(session.creator_workspace_id)}
+                  {#if session.creator_pane_id} · pane {session.creator_pane_id.slice(0, 8)}{/if}
+                </span>
+              </span>
+              <button
+                type="button"
+                disabled={wakingSession === sessionKey}
+                onclick={() => wakeSession(session)}
+                class="shrink-0 rounded border border-[var(--rg-border)] px-1.5 py-0.5 text-[10px] text-[var(--rg-accent)] disabled:opacity-40"
+              >{wakingSession === sessionKey ? '唤醒中' : '唤醒'}</button>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+
+    {#if recentReplies.length > 0}
+      <section>
+        <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
+          <Bot class="h-3 w-3 text-[var(--rg-accent)]/70" /> 最近回复
+          <span class="ml-auto font-mono">{recentReplies.length}</span>
+        </h3>
+        <ul class="mt-1 space-y-1">
+          {#each recentReplies.slice(0, 12) as reply (reply.agent + reply.timestamp + reply.text)}
+            <li class="rounded bg-[var(--rg-surface)]/50 px-2 py-1.5">
+              <div class="flex items-center gap-1.5 text-[9px] text-[var(--rg-fg-muted)]">
+                <span class="font-medium text-[var(--rg-accent)]">{reply.agent}</span>
+                <span class="min-w-0 flex-1 truncate" title={reply.project}>{reply.project}</span>
+                <span class="shrink-0">{replyTime(reply.timestamp)}</span>
+              </div>
+              <p class="mt-0.5 line-clamp-3 whitespace-pre-wrap text-[11px] leading-snug" title={reply.text}>
+                {reply.text}
+              </p>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+
     <!-- 成员聚合 / 编组：两视图 Tab 切换（监控总览 vs 编组协作） -->
     <section class="flex flex-col gap-2">
       <div class="flex items-center gap-1 rounded-md border border-[var(--rg-border)] p-0.5">
@@ -484,7 +614,7 @@
             : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
           <Bot class="h-3.5 w-3.5" /> 成员
-          <span class="font-mono text-[10px] opacity-70">{topology.roster.length}</span>
+          <span class="font-mono text-[10px] opacity-70">{allMembers.length}</span>
         </button>
         <button
           type="button"
@@ -500,22 +630,25 @@
       </div>
 
       {#if teamTab === 'members'}
-        <!-- 成员聚合列表：成员由后端**自动识别**（分屏下真跑着 agent CLI 即入册），
-             行内容与编组 Tab 完全一致（共用 AgentMemberRow）。 -->
+        <!-- 跨工作区聚合；成员行仍复用完整监控/干预组件。 -->
         <ul class="space-y-1.5">
-          {#each topology.roster as m (m.id)}
-            {@const grp = groupOfAgent(groupStore.groups, m.id)}
+          {#each allMembers as member (member.workspaceId + ':' + member.profile.id)}
+            {@const m = member.profile}
+            {@const grp = member.workspaceId === workspaceId
+              ? groupOfAgent(groupStore.groups, m.id)
+              : undefined}
             <AgentMemberRow
               profile={m}
               agentId={m.id}
               name={m.name}
-              {workspaceId}
+              workspaceId={member.workspaceId}
+              sourceLabel={member.workspaceName}
               pending={pendingFor(m)}
               groupBadge={grp ? { name: grp.name, color: grp.color } : null}
               onRefresh={() => void refresh()}
             />
           {/each}
-          {#if topology.roster.length === 0}
+          {#if allMembers.length === 0}
             <li class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">
               暂无成员——在任一分屏里启动 claude / codex 等 agent CLI，会自动入册。
             </li>

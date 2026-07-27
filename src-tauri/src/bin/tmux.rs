@@ -398,6 +398,14 @@ fn auth_headers(token: &str) -> reqwest::header::HeaderMap {
             }
         }
     }
+    if let Ok(pane) = env::var("RIDGE_PANE_ID") {
+        let pane = pane.trim();
+        if !pane.is_empty() {
+            if let Ok(v) = reqwest::header::HeaderValue::from_str(pane) {
+                m.insert("X-Ridge-Pane", v);
+            }
+        }
+    }
     m
 }
 

@@ -252,6 +252,8 @@ async fn route_new_session(
     let req = NewSessionReq {
         socket: body.socket,
         name: body.name,
+        creator_workspace_id: header_text(&headers, "X-Ridge-Workspace"),
+        creator_pane_id: header_text(&headers, "X-Ridge-Pane"),
         window_name: body.window_name,
         cwd: body.cwd,
         width: body.width,
@@ -265,6 +267,15 @@ async fn route_new_session(
         Ok(out) => (StatusCode::OK, out).into_response(),
         Err(e) => native_err_to_response(e),
     }
+}
+
+fn header_text(headers: &HeaderMap, name: &'static str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 async fn route_has_session(

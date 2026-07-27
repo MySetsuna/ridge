@@ -722,6 +722,7 @@ pub fn ensure_pane_pty_workspace(
             // 发起方工作区身份：shim 继承后回传 `X-Ridge-Workspace`，让后端把 split/
             // 复用/接管锁定在「发起 tmux 的会话所在工作区」，而非 GUI 当前聚焦工作区。
             cmd.env("RIDGE_WORKSPACE_ID", workspace_id.to_string());
+            cmd.env("RIDGE_PANE_ID", pane_id.to_string());
             let log_path = std::env::var("Ridge_TMUX_LOG")
                 .ok()
                 .filter(|s| !s.trim().is_empty());
@@ -1920,6 +1921,8 @@ pub fn new_headless_session(name: Option<String>, cwd: Option<String>) -> Result
         // 专用无头 socket（非 "default"，与 teammate/GUI 折叠互不干扰）。
         socket: "headless".to_string(),
         name: Some(name.clone()),
+        creator_workspace_id: None,
+        creator_pane_id: None,
         window_name: None,
         cwd,
         width: 80,
