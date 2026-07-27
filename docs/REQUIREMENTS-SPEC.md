@@ -5,24 +5,24 @@
 
 ## 待审批变更 (Pending Changes)
 
-### PENDING-REQ-REMOTE-HOST-TREE-01 · 同账号主机接入与三层拓扑
+### PENDING-REQ-REMOTE-HOST-TREE-01 · 公网同账号 / LAN 直连主机与三层拓扑
 
 - 类型：`FIX`
 - 原始意图：接入公网或局域网远端主机后，读取现有 pane，以“主机 → 工作区 → pane”树展示并管理。
 - 目标行为：
-  - “接入主机”仅允许同一 Ridge 账户；LAN 亦须证明同账号，不以知道 IP/TOTP 代替账户归属。
+  - 公网 cloud “接入主机”仅允许同一 Ridge 账户；LAN 不限制账户归属，沿用 LAN 自身的 TOTP/session/E2EE 认证。
   - 主机菜单：刷新、添加工作区、断开/忘记；工作区菜单：打开、添加 pane、重命名、保存、分享、关闭；pane 菜单：接入/聚焦、标记 Agent、切 shell、删除。
+  - “删除 pane”仅删除目标远端 pane/PTY，须二次确认；不得连带删除 workspace 或其他 pane。
+  - 删除成功后，以该控制端当前接入的同源 host pane 为引用计数：若为 `0`，断开该控制端与 host 的连接；若仍有至少一个 pane，保持连接。删除失败不减计数、不触发断开。
   - 菜单逐项受 host capability 与调用者 scope 门控；不支持项不展示。
 - 范围：桌面 Hosts 侧栏、LAN/cloud controller 连接、host topology DTO、远程 workspace/pane CRUD 与确定性测试。
-- 非目标：跨主机拖拽 pane、远端 pane 像素预览、绕过 TOTP/E2EE、让不同账户取得整机视图。
-- 不可动边界：relay 不见 PTY 明文；同账号整机门禁由 cloud 与 host 双重校验；删除保留“最后一个 pane 不可删”等现有守卫。
-- 假设/待确认：
-  - LAN 首版仍需登录同一账户并换取短期 LAN access proof；离线纯 LAN 仅保留本机明确批准的设备 grant，不接受匿名 TOTP。
-  - “删除 pane”指结束该远端 pane/PTY，属不可恢复动作，须二次确认。
+- 非目标：跨主机拖拽 pane、远端 pane 像素预览、绕过 LAN TOTP/E2EE、让不同账户经公网 cloud 取得整机视图。
+- 不可动边界：relay 不见 PTY 明文；公网同账号整机门禁由 cloud 与 host 双重校验；LAN 不以 cloud 账户关系作门禁。
 - 确定性验收：
   - 两台 host fixture 各含多 workspace/pane，树投影隔离且层级正确。
-  - 同账号 token 可列全树；异账号普通 user token 在 relay 与 host 两端皆拒绝。
-  - 菜单动作路由到选定 host/workspace/pane，跨 host 污染为零；删除末 pane 稳定拒绝。
+  - 公网同账号 token 可列全树；异账号普通 user token 在 relay 与 host 两端皆拒绝。
+  - LAN 不要求账户匹配；有效 TOTP/session fixture 可接入，无效 LAN 凭据仍拒绝。
+  - 菜单动作路由到选定 host/workspace/pane，跨 host 污染为零；删后尚有第二个同源接入 pane 时连接保留，删掉该控制端最后一个同源接入 pane 时仅断开一次。
 - 预期落点：`packages/remote/**`、`src-tauri/src/hosts/**`、`src/lib/stores/hosts.ts`、`src/lib/components/hosts/**`、`ridge-cloud/src/ws/**`。
 
 ### PENDING-REQ-WORKSPACE-SHARE-01 · 跨账号单工作区分享

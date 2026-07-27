@@ -17,9 +17,10 @@ NotebookLM 建议一轮覆盖真实 Socket、三层 DTO、store、多级 UI、he
 
 ## 新增用户约束后的锁定方向
 
-- full-host：同账号、全 host scope。
+- full-host：公网 cloud 同账号、全 host scope；LAN 不限制账户关系，沿用 LAN TOTP/session/E2EE。
 - workspace-share：可跨账号、单 workspace capability grant。
 - 两者统一 UI forest 与 RPC policy，不统一授权范围。
 - 用户补充：shared workspace 须呈现 origin 的 Explorer/Git/Agent；以同一 scoped provider 接入，不复制成本地状态。
 - 用户补充：share capability 不可转授；guest 侧 Remote/Hosts 永不得导出 shared projection。
+- 用户纠正：删除 pane 默认仅删目标 pane；删后若该控制端已无同源 host 的其他接入 pane，才断开 host，尚有第二个 pane 则保持连接。
 - 产品行为仍在 `REQUIREMENTS-SPEC` Pending；获批前不生成执行合同、不改业务码。
