@@ -31,6 +31,7 @@
         ws={projection.link}
         dataProvider={projection.dataProvider}
         workspaceManagement={false}
+        sharedGrid={true}
         embedded
       />
     </div>

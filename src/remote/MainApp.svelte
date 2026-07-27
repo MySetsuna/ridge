@@ -29,12 +29,13 @@
   import { createWsSidebarProvider } from './lib/sidebarProvider';
   import type { DataProvider } from '$lib/transport';
 
-  let { ws, dataProvider, workspaceManagement = true, paneManagement = true, embedded = false }: {
+  let { ws, dataProvider, workspaceManagement = true, paneManagement = true, embedded = false, sharedGrid = !embedded }: {
     ws: RemoteLink;
     dataProvider?: DataProvider;
     workspaceManagement?: boolean;
     paneManagement?: boolean;
     embedded?: boolean;
+    sharedGrid?: boolean;
   } = $props();
   let panes = $state<PaneInfo[]>([]);
   let activePaneId = $state<string | null>(null);
@@ -265,6 +266,7 @@
         const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
         if (torndown) return;
         mgr = TerminalManager.instance();
+        if (sharedGrid) mgr.setSharedRemoteMode(true);
         await mgr.attachHost(node);
         const parent = node.parentElement;
         if (parent && !torndown) {
@@ -283,6 +285,7 @@
       destroy() {
         torndown = true;
         observer?.disconnect();
+        if (sharedGrid) mgr?.setSharedRemoteMode(false);
         mgr?.detachHost();
       },
     };
