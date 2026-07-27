@@ -54,7 +54,7 @@ type HostAccess =
 
 共享节点虽视觉纳入 Hosts forest，却绝不伪装整机：标题带“共享”，host 菜单不出现“添加工作区/忘记主机”。
 
-shared workspace 为 **remote projection**，不插入控制端本地 `AppState.workspaces`。Explorer、Git、Agent、Terminal 四面持同一 `WorkspaceResourceProvider`；其 origin 始终指向 owner host。
+shared workspace 为 **remote projection**，不插入控制端本地 `AppState.workspaces`。Explorer、Git、Agent、Terminal 四面持同一 `WorkspaceResourceProvider`；其 origin 始终指向 owner host。资源管理器仍把远端 pane `cwd` 渲染成普通 `ExplorerWorkspaceGroup.columns`：位置、折叠、目录树、文件打开体验与本机 cwd 一致，唯 I/O provider 与 capability 不同。
 
 ## 4. Cloud 授权模型
 
@@ -79,6 +79,18 @@ API：
 - owner：`POST /api/v1/workspace-shares`、`GET ...`、`PATCH role/expiry`、`DELETE revoke`。
 - grantee：`GET /api/v1/workspace-shares/inbox`、`POST /:id/accept|decline`。
 - controller：`POST /:id/access-token` 换 15 分钟 scoped token。
+
+Cloud 与桌面分工：
+
+| 环节 | ridge-cloud | owner 桌面/host | grantee 桌面 |
+| --- | --- | --- | --- |
+| 创建邀请 | 解析 username/email，校验 owner/device 绑定，落 grant | 提交当前 `device_id + workspace_id`；证明 workspace 存在且可分享 | — |
+| 接受邀请 | 校验 grantee，改 active，推送 inbox 事件 | — | 接受/拒绝并刷新 Hosts 共享节点 |
+| 建连 | 签发短期 scoped token，路由至 owner/device room | 以 `cid` 建 `WorkspaceShare` scope，二次校验 workspace/role | 建 scoped provider，不注册成 host |
+| 数据 | 仅转 E2EE 帧，不见资源明文 | 执行 Terminal/Explorer/Git/Agent RPC 与事件过滤 | 以共享 cwd/四 tab 呈现 |
+| 撤销/到期 | DB 置状态并终止对应 controller cid | 清订阅、拒绝旧 token/后续 RPC | 移除共享节点、关闭相关视图 |
+
+Cloud 另提供 owner grants 列表、grantee inbox、角色/到期修改及状态推送；不承载文件、Git、Agent、PTY 数据。`workspace_id` 只作不透明授权键，展示名可存邀请时快照，不能据此枚举同 host 资源。
 
 JWT 新 scope：
 
@@ -131,6 +143,8 @@ ControllerScope::WorkspaceShare { grant_id, workspace_id, role, expires_at }
 | create/delete pane、change shell | ✓ | ✗ | ✓ |
 | create/close workspace、share/转分享 | ✓ | ✗ | ✗ |
 | Explorer 文件树/读取/搜索 | ✓ | 仅目标 root 只读 | 仅目标 root 读写 |
+| Explorer 打开文件 | ✓ | ✓，远端只读 buffer | ✓，远端可保存 |
+| Explorer 新建/保存/重命名/删除/粘贴 | ✓ | ✗ | ✓，仅目标 root |
 | Git status/diff/log | ✓ | 仅目标 root | 仅目标 root |
 | Git 写操作 | ✓ | ✗ | ✓，沿用既有 HITL/进程闸 |
 | Agent roster/状态/最近回复 | ✓ | 仅目标 workspace | 仅目标 workspace |
@@ -159,7 +173,10 @@ graph LR
 ```
 
 - `WorkspaceResourceProvider` 复用现有 Remote RPC；每调用都附隐式 scope，不让 UI 自报任意 `workspaceId`。
+- `ExplorerWorkspaceGroup`/cwd 行复用现有视觉与交互模型；列数据增 `providerId + accessRole`，文件打开/刷新/写入经 provider 分派，不把 origin host 路径交给本机 FS API。
 - Explorer：host canonicalize workspace root 与目标路径；拒绝 `..`、root 外绝对路径、越界 symlink。
+- viewer：文件仍可打开；编辑器 buffer 标只读，隐藏或禁用保存、新建、重命名、删除、剪切/粘贴。operator：复用正常 Remote 写能力。两者皆以 host policy 为安全真相。
+- 降级规则：若上述只读链任一写入口或 host RPC 未闭环，v1 仅发行 operator，角色选择器不展示 viewer；不得以前端隐藏冒充 viewer。
 - Git：repo root 须 canonicalize 后位于 workspace root；所有外部 git 仍经现有唯一进程闸。
 - Agent：只投影该 workspace topology/history/health；写操作携稳定 agent id，host 再反查归属。
 
@@ -209,6 +226,16 @@ graph TD
 - pane 删除成功并刷新拓扑后，计算该控制端对同源 `hostId` 的接入 pane 引用数：为 `0` 时断开一次 host 连接；仍有第二个 pane 时保持连接。只计该控制端已接入的 pane，不计 host 全部 pane；删除失败不减计数。
 - 删除与接入/刷新须按 host 串行或带 generation 校验，避免并发完成顺序造成误断线。
 
+### 7.1 Ridge 桌面分享入口
+
+三处入口调用同一 `openWorkspaceShareDialog(origin, workspaceId)`，不复制业务状态：
+
+1. 本机 Explorer 工作区标题：新增 `⋯ → 分享工作区`。
+2. `WorkspaceTree.svelte` 工作区行：新增 `⋯ → 分享工作区`，与关闭动作并列。
+3. `HostsPanel.svelte` 已接入 owner 工作区：`⋯ → 分享工作区`。
+
+`WorkspaceShareDialog` 含：受邀账号、角色、到期时间、待接受/已接受成员、改角色、撤销。未登录 cloud 时先登录；本机尚未注册可路由的 public host/device 时，明确要求启用公网 Remote，不得创建不可连接邀请。grantee 的邀请收件箱及已接受共享统一进入 Hosts 侧栏“共享给我”；shared projection 菜单永无再次分享。
+
 ## 8. 实施切片
 
 1. 先删 probe 假 session 与“live 下一里程”误导文案，建立诚实 disconnected/unsupported 状态。
@@ -216,8 +243,8 @@ graph TD
 3. 复用既有 `RemoteLink.listWorkspaces/listWorkspacePanes/create* / close*`，用 adapter 接 Hosts store；不再扩 `list_panes` 平行协议。
 4. 完成 LAN/public 真实 provider 注册表与 per-host lifecycle。
 5. Hosts 三层 forest + 分级菜单 + role/capability 收敛。
-6. 抽 `WorkspaceResourceProvider`，让 Terminal/Explorer/Git/Agent 四面同吃一个 scoped origin；shared projection 不入本地 workspace graph。
-7. ridge-cloud grant/invite/scoped JWT/WS room 门禁。
+6. 抽 `WorkspaceResourceProvider`，让 Terminal/Explorer/Git/Agent 四面同吃一个 scoped origin；共享 cwd 复用 `ExplorerWorkspaceGroup` 呈现，文件 I/O 按 provider/role 分派；shared projection 不入本地 workspace graph。
+7. ridge-cloud grant/invite/scoped JWT/WS room 门禁、inbox/owner grants API、状态事件及撤销踢线。
 8. host per-cid scope、路径/repo/agent 归属校验、RPC/事件双闸、撤销踢线。
 9. 加非转授负契约：share token 不能作 host；guest Remote inventory 永无 shared projection。
 10. headless 只作代码证据复核；若现有 header→DTO→store→Agent Center→summon 任一测缺，则补契约测，不与 share scope 合流。
@@ -232,12 +259,14 @@ graph TD
 - 若 LAN 仍只 probe TCP 或需测试注入 socket，不称“已接入”。
 - LAN fixture 须证明异账号亦可凭有效 TOTP/session 接入；无效凭据仍拒绝。
 - pane 生命周期测须覆盖：第二个同源接入 pane 存在则不断线；删掉该控制端最后一个同源接入 pane 则只断开一次；删除失败不断线。
+- 共享 cwd 测须证明与本机 cwd 同层呈现、文件可打开；viewer 所有写入口与 RPC 双拒，operator 仅写 origin root。若走 operator-only，角色 API/UI 不得宣称支持 viewer。
+- 三个桌面入口须命中同一分享 command/dialog；未登录、未启用公网 host、撤销/到期皆有确定状态。
 - 自动闸：cloud repo/auth/WS、host policy、transport isolation、Svelte store/menu、`pnpm check`、相关 Rust workspace。
 - 代码验收不冒充真机；公网/LAN 各需一条 loopback/live fixture，生产凭据与真机证据另列用户轨。
 
 ## 10. 待批准决策
 
-1. 角色采用 `viewer/operator`，默认 `viewer`。
+1. 首选 `viewer/operator`、默认 `viewer`；若只读闭环成本过高，v1 明确降级为 operator-only，不做伪 viewer。
 2. 分享只支持定向 Ridge 账号，不做匿名 bearer link。
 3. workspace share v1 仅 cloud relay；LAN 优化后置。
 4. viewer 可读 Terminal/Explorer/Git/Agent；operator 可该区既有写操作，但不可 workspace/分享/host 管理。
