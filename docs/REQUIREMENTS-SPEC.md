@@ -5,7 +5,52 @@
 
 ## 待审批变更 (Pending Changes)
 
-_无_
+### PENDING-REQ-REMOTE-HOST-TREE-01 · 同账号主机接入与三层拓扑
+
+- 类型：`FIX`
+- 原始意图：接入公网或局域网远端主机后，读取现有 pane，以“主机 → 工作区 → pane”树展示并管理。
+- 目标行为：
+  - “接入主机”仅允许同一 Ridge 账户；LAN 亦须证明同账号，不以知道 IP/TOTP 代替账户归属。
+  - 主机菜单：刷新、添加工作区、断开/忘记；工作区菜单：打开、添加 pane、重命名、保存、分享、关闭；pane 菜单：接入/聚焦、标记 Agent、切 shell、删除。
+  - 菜单逐项受 host capability 与调用者 scope 门控；不支持项不展示。
+- 范围：桌面 Hosts 侧栏、LAN/cloud controller 连接、host topology DTO、远程 workspace/pane CRUD 与确定性测试。
+- 非目标：跨主机拖拽 pane、远端 pane 像素预览、绕过 TOTP/E2EE、让不同账户取得整机视图。
+- 不可动边界：relay 不见 PTY 明文；同账号整机门禁由 cloud 与 host 双重校验；删除保留“最后一个 pane 不可删”等现有守卫。
+- 假设/待确认：
+  - LAN 首版仍需登录同一账户并换取短期 LAN access proof；离线纯 LAN 仅保留本机明确批准的设备 grant，不接受匿名 TOTP。
+  - “删除 pane”指结束该远端 pane/PTY，属不可恢复动作，须二次确认。
+- 确定性验收：
+  - 两台 host fixture 各含多 workspace/pane，树投影隔离且层级正确。
+  - 同账号 token 可列全树；异账号普通 user token 在 relay 与 host 两端皆拒绝。
+  - 菜单动作路由到选定 host/workspace/pane，跨 host 污染为零；删除末 pane 稳定拒绝。
+- 预期落点：`packages/remote/**`、`src-tauri/src/hosts/**`、`src/lib/stores/hosts.ts`、`src/lib/components/hosts/**`、`ridge-cloud/src/ws/**`。
+
+### PENDING-REQ-WORKSPACE-SHARE-01 · 跨账号单工作区分享
+
+- 类型：`NEW`
+- 原始意图：用户可只分享一个工作区；它区别于接入整台主机，可授权给不同 Ridge 用户，并统一显示在主机侧栏。
+- 目标行为：
+  - owner 从工作区菜单创建/撤销邀请；受邀用户登录后，只见该工作区及其 pane，不得枚举同 host 其他工作区、设备或会话。
+  - 角色两级：`viewer` 只读拓扑/输出；`operator` 另可 stdin、resize、添加/删除 pane、切 shell。二者均不得添加/关闭工作区、转分享、改 host 设置。
+  - Hosts 侧栏统一投影：整机接入显示普通 host 全树；分享显示“共享：工作区名 · owner/host”受限根节点，只含一个 workspace。
+  - 分享邀请替代 TOTP 知识传递；controller 取得短期 `workspace_share` capability token，relay 与 host 依据 `grant_id + workspace_id + role` 双重门控。
+- 范围：ridge-cloud grant/invite 数据模型与 API、scoped JWT、WS room 入场、host 每-controller scope、Remote RPC/事件过滤、Hosts 树与权限菜单、撤销/过期。
+- 非目标：匿名公开链接、无账户访客、转分享、分享整个 host、跨 workspace 文件访问、首版 LAN P2P 优化。
+- 不可动边界：
+  - grant 绑定 `owner_user_id + device_id + workspace_id + grantee_user_id`；短 token 不作为数据库真相源。
+  - host 不信任 relay 单点裁决；每条 RPC、pane 订阅、事件广播均按 controller scope 再校验。
+  - 首版 workspace share 走 cloud relay；即使双方同 LAN，亦先完成 cloud 身份/授权，不降级匿名直连。
+  - v1 文件/Git/Search 默认禁用，待有 workspace 根路径沙箱的独立需求后开放。
+- 假设/待确认：
+  - 默认角色为 `viewer`；owner 可显式改为 `operator`。
+  - 邀请按 Ridge username/email 定向，不提供 bearer link；默认 7 天待接受、已接受 grant 可设到期或永久。
+  - owner 关闭 workspace 或撤销 grant 时，服务端立刻踢出对应 controller，host 清订阅。
+- 确定性验收：
+  - grantee A 仅能列获授 workspace；访问 sibling workspace、创建 workspace、转分享均返回稳定 `SCOPE_DENIED`。
+  - viewer 写/改操作全拒；operator 仅获 pane 级白名单；owner 原能力不回归。
+  - grant 撤销/过期后既有连接被踢、重连失败；token 重放不恢复权限。
+  - UI 同屏展示同账号 full-host 与跨账号 shared-workspace，菜单随 role 精确收敛。
+- 预期落点：`ridge-cloud/migrations/**`、`ridge-cloud/src/{api,auth,db,ws}/**`、`packages/remote/src/shared/cloud/**`、`src/lib/components/hosts/**`、`src/lib/stores/hosts.ts`、host bridge policy/tests。
 
 ## 正式需求 (Active Requirements)
 
