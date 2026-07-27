@@ -1768,10 +1768,10 @@ function refreshForRemote() {
 	// Select this pane's workspace in the sidebar/WorkspaceTree so the
 	// active terminal and workspace tree stay in sync after a refresh.
 	activeWorkspaceId.set(workspaceId);
-	// §shared-remote: CLAIM the shared PTY at this viewer's size. On the
-	// browser controller (sharedRemoteMode) passive fits no longer resize the
-	// PTY, so this explicit claim is the only path that pushes this pane's
-	// dimensions to the host; on the host it's an idempotent re-fit. The
+	// §shared-remote: immediately CLAIM the shared PTY at this viewer's size.
+	// The browser controller also claims after bounded layout settle; this
+	// explicit path remains the user's recovery override. On the host it is an
+	// idempotent re-fit. The
 	// broadcast Resize delta then re-letterboxes every viewer.
 	manager.claimPaneSize(paneId);
 	manager.forceFullRedraw(paneId);
