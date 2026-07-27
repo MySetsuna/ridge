@@ -16,6 +16,9 @@
   import RemotePanel from '$lib/remote/RemotePanel.svelte';
   import AgentCenterPanel from '$lib/teammate/AgentCenterPanel.svelte';
   import HostsPanel from '$lib/components/hosts/HostsPanel.svelte';
+  import SharedWorkspaceSurface from '$lib/components/hosts/SharedWorkspaceSurface.svelte';
+  import SharedWorkspaceResourcePanel from '$lib/components/hosts/SharedWorkspaceResourcePanel.svelte';
+  import { activeSharedWorkspaceProjection } from '$lib/remote/cloud/sharedWorkspaceProjection';
   import DockRegionPicker from '$lib/components/hosts/DockRegionPicker.svelte';
   import { initTeammateBoot } from '$lib/teammate/teammateSettings';
   import { Smartphone, Server } from 'lucide-svelte';
@@ -1516,7 +1519,7 @@ function expandSidebar() {
       <GitBranch class="h-5 w-5" />
     </button>
     <!-- 智能体指挥部（Domain Zero）独立 Tab。总开关关闭时不渲染入口。 -->
-    {#if teammateEnabled}
+    {#if teammateEnabled || $activeSharedWorkspaceProjection}
     <button
       type="button"
       class="{actBtn}{sidebarTab === 'agents' ? actBtnOn : ''}"
@@ -1602,14 +1605,22 @@ function expandSidebar() {
             {$t('main.sidebarGitHeader')}
           </div>
           <div class="flex-1 min-h-0 overflow-hidden">
-            <SourceControl />
+            {#if $activeSharedWorkspaceProjection}
+              <SharedWorkspaceResourcePanel mode="git" />
+            {:else}
+              <SourceControl />
+            {/if}
           </div>
         </div>
 
         <!-- Search tab -->
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'search' ? '' : 'hidden'}">
           <div class="flex-1 min-h-0 overflow-hidden">
-            <SearchSidebar active={sidebarTab === 'search'} />
+            {#if $activeSharedWorkspaceProjection}
+              <SharedWorkspaceResourcePanel mode="search" />
+            {:else}
+              <SearchSidebar active={sidebarTab === 'search'} />
+            {/if}
           </div>
         </div>
 
@@ -1621,9 +1632,13 @@ function expandSidebar() {
         {/if}
 
         <!-- Agents tab（智能体指挥部）：总开关开启时才挂载 -->
-        {#if teammateEnabled}
+        {#if teammateEnabled || $activeSharedWorkspaceProjection}
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'agents' ? '' : 'hidden'}">
-          <AgentCenterPanel workspaceId={$activeWorkspaceId} />
+          {#if $activeSharedWorkspaceProjection}
+            <SharedWorkspaceResourcePanel mode="team" />
+          {:else}
+            <AgentCenterPanel workspaceId={$activeWorkspaceId} />
+          {/if}
         </div>
         {/if}
 
@@ -1641,7 +1656,9 @@ function expandSidebar() {
             <span>{$t('main.sidebarExplorerHeader')}</span>
           </div>
           <div class="flex-1 min-h-0 overflow-hidden">
-            {#if $activeWorkspaceId}
+            {#if $activeSharedWorkspaceProjection}
+              <SharedWorkspaceResourcePanel mode="files" />
+            {:else if $activeWorkspaceId}
               <Explorer workspaceId={$activeWorkspaceId} onShare={handleTabShare} />
             {:else}
               <div
@@ -1962,6 +1979,7 @@ function expandSidebar() {
     <div
       class="relative flex-1 min-h-0 min-w-0 overflow-hidden flex flex-row bg-[var(--rg-bg-raised)]"
     >
+      <SharedWorkspaceSurface />
       <div class="relative flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
         {#if $activeWorkspaceId && hasPaneLayout}
           {#each $workspacesList as ws (ws.id)}

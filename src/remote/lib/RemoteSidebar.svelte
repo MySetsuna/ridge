@@ -7,13 +7,15 @@
   import SidebarTeamRoster from './SidebarTeamRoster.svelte';
   import { createWsSidebarProvider } from './sidebarProvider';
   import type { RemoteLink, RemotePanel } from '@ridge/remote';
+  import type { DataProvider } from '$lib/transport';
 
-  let { tab = 'files', cwd = '', available, ws, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane }: {
+  let { tab = 'files', cwd = '', available, ws, dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane }: {
     tab?: RemotePanel;
     cwd?: string;
     available: Readonly<Record<RemotePanel, boolean>>;
     /** P1 roster：team 面板取数用（capability `teammate` 协商后 tab 才可见）。 */
     ws?: RemoteLink;
+    dataProvider?: DataProvider;
     onClose: () => void;
     onTabChange?: (t: RemotePanel) => void;
     /** Open a file in the read-only viewer (file tree row / search hit). */
@@ -26,7 +28,7 @@
 
   // Rooted at the active pane's cwd — the same source the desktop ridge shows.
   // Recreated (and the panel remounted via {#key}) when the pane cwd changes.
-  const provider = $derived(createWsSidebarProvider(cwd));
+  const provider = $derived(createWsSidebarProvider(cwd, dataProvider));
 
   function setTab(t: RemotePanel) {
     if (available[t]) onTabChange?.(t);
