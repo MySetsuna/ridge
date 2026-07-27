@@ -112,12 +112,12 @@ flowchart LR
 
 | 项 | wind |
 | --- | --- |
-| 分支 / 功能与发布基线 | `main` / `67e0631`；Remote 构建源 `67e0631` |
+| 分支 / 功能与发布基线 | `main` / `5f7433d`；Remote 构建源 `5f7433d` |
 | 应用版本 | 0.1.6 |
 | CodeGraph | 656 文件 / 13,444 节点 / 19,410 边（2026-07-27 healthy） |
 | 工具链 | preflight 与需求闸 exit 0；Vitest 107 文件 1255 绿 / 1 skip；svelte-check 0 errors / 2 既有 warnings；`cargo check -p ridge` exit 0；desktop host boundary Rust 2/2；Remote 与桌面 production build exit 0 |
 
-`ridge-cloud`：`main` / `a5e2be6`，与 `origin/main` 同步；CodeGraph 已获用户授权初始化（160 文件 / 3,623 节点 / 12,264 边）。Remote artifact current 已由 run `30278843596` 激活为 `0.1.6+g67e0631`；生产 Dokku SHA、TURN 可达性仍**未实测**。
+`ridge-cloud`：`main` / `a5e2be6`，与 `origin/main` 同步；CodeGraph 已获用户授权初始化（160 文件 / 3,623 节点 / 12,264 边）。Remote artifact current 已由 run `30284595465` 激活为 `0.1.6+g5f7433d`；生产 Dokku SHA、TURN 可达性仍**未实测**。
 
 ## 5. 迭代闭环成果（iteration 1–4）与确定性证据
 
