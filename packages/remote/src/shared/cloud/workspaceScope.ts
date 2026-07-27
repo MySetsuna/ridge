@@ -1,3 +1,5 @@
+import { isDesktopPrivileged } from '../transport/protocolAdmission';
+
 export interface WorkspaceScopeAssertion {
   grantId: string;
   granteeUserId: string;
@@ -145,7 +147,9 @@ export function planWorkspaceInvoke(
   if (access.role !== 'operator' || access.delegable !== false) {
     return { kind: 'deny', reason: 'unsupported workspace-share role' };
   }
-  if (NEVER_SHARED.has(method)) return { kind: 'deny', reason: 'second hop or host-global method' };
+  if (NEVER_SHARED.has(method) || isDesktopPrivileged(method)) {
+    return { kind: 'deny', reason: 'second hop or host-global method' };
+  }
 
   const params =
     rawParams && typeof rawParams === 'object' && !Array.isArray(rawParams)

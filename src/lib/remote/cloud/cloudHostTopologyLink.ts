@@ -1,0 +1,255 @@
+import {
+  createCloudWebrtcTransportWith,
+  RpcClient,
+  type CloudConnectionCallbacks,
+  type CloudWebrtcAdapter,
+  type PaneInfo,
+  type RemoteShellInfo,
+  type WorkspaceInfo,
+} from '@ridge/remote';
+import { ControllerCloudProvider } from '@ridge/remote/shared/cloud/controllerCloudProvider';
+import { snapshot as authSnapshot } from '@ridge/remote/shared/cloud/auth';
+import type { HostTopologyLink } from '$lib/hosts/hostForest';
+import type { PaneNode } from '$lib/types';
+import { verifyTotpOverControl } from './cloudControllerBoot';
+
+interface BackendWorkspace {
+  id: string;
+  name?: string;
+}
+
+function flattenPanes(node: PaneNode | null | undefined): PaneInfo[] {
+  if (!node) return [];
+  if (node.type === 'leaf') {
+    return node.id
+      ? [{
+          id: node.id,
+          title: node.title,
+          cwd: node.cwd,
+          isAgent: node.agent_state === 'busy',
+        }]
+      : [];
+  }
+  return node.children.flatMap(flattenPanes);
+}
+
+class CloudHostTopologyLink implements HostTopologyLink {
+  private readonly workspaceByPane = new Map<string, string>();
+  constructor(
+    private readonly adapter: CloudWebrtcAdapter,
+    private readonly rpc: RpcClient,
+  ) {}
+
+  state() {
+    return this.adapter.state();
+  }
+
+  disconnect(): void {
+    this.rpc.dispose();
+    this.adapter.close();
+    this.adapter.dispose();
+  }
+
+  async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {
+    const [rows, activeId] = await Promise.all([
+      this.rpc.request<BackendWorkspace[]>('list_workspaces'),
+      this.rpc.request<string>('get_active_workspace_id'),
+    ]);
+    return {
+      workspaces: rows.map((workspace) => ({
+        id: workspace.id,
+        name: workspace.name,
+        active: workspace.id === activeId,
+      })),
+    };
+  }
+
+  async listWorkspacePanes(workspaceId: string): Promise<PaneInfo[]> {
+    const tree = await this.rpc.request<PaneNode>('get_pane_layout_for', { workspaceId });
+    const panes = flattenPanes(tree);
+    for (const pane of panes) this.workspaceByPane.set(pane.id, workspaceId);
+    return panes;
+  }
+
+  async closePane(paneId: string): Promise<boolean> {
+    try {
+      await this.rpc.request('close_pane', { paneId });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async switchWorkspace(workspaceId: string): Promise<boolean> {
+    try {
+      await this.rpc.request('switch_workspace', { workspaceId });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async createWorkspace(name?: string): Promise<string | null> {
+    try {
+      return await this.rpc.request<string>('create_workspace', name ? { name } : {});
+    } catch {
+      return null;
+    }
+  }
+
+  async renameWorkspace(workspaceId: string, name: string): Promise<boolean> {
+    try {
+      await this.rpc.request('rename_workspace', { workspaceId, name });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async saveWorkspace(workspaceId: string, name: string): Promise<boolean> {
+    try {
+      await this.rpc.request('save_workspace_to_file', { workspaceId, name });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async createPane(): Promise<string | null> {
+    try {
+      const tree = await this.rpc.request<PaneNode>('get_pane_layout');
+      const first = flattenPanes(tree)[0];
+      if (!first) return null;
+      const result = await this.rpc.request<{ pane_id: string }>('split_pane', {
+        paneId: first.id,
+        direction: 'horizontal',
+      });
+      return result.pane_id || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async closeWorkspace(workspaceId: string): Promise<boolean> {
+    try {
+      await this.rpc.request('close_workspace', { workspaceId });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async markPaneAgent(
+    workspaceId: string,
+    paneId: string,
+    on: boolean,
+    agentId?: string,
+  ): Promise<void> {
+    await this.rpc.request(
+      on ? 'register_teammate_agent' : 'release_teammate_agent',
+      on
+        ? { workspaceId, paneId, agentId: agentId || 'agent' }
+        : { workspaceId, paneId },
+    );
+  }
+
+  async listShells(): Promise<RemoteShellInfo[]> {
+    return this.rpc.request<RemoteShellInfo[]>('detect_available_shells');
+  }
+
+  async changePaneShell(
+    workspaceId: string,
+    paneId: string,
+    shell: RemoteShellInfo,
+  ): Promise<void> {
+    await this.rpc.request('change_pane_shell', {
+      paneId,
+      shell: shell.program,
+      args: shell.args ?? [],
+    });
+    await this.rpc.request('activate_pane_pty', { workspaceId, paneId });
+  }
+
+  onRawBytes(fn: (paneId: string, bytes: Uint8Array) => void): () => void {
+    return this.adapter.onPaneBytes(fn);
+  }
+
+  subscribePane(paneId: string): void {
+    this.rpc.notify('subscribe-pane', { paneId });
+  }
+
+  sendStdin(paneId: string, data: string): void {
+    void this.rpc.request('write_to_pty', { paneId, data });
+  }
+
+  refreshPane(
+    paneId: string,
+    rows: number,
+    cols: number,
+    _pixelWidth: number,
+    _pixelHeight: number,
+  ): void {
+    void this.rpc.request('resize_pane', {
+      workspaceId: this.workspaceByPane.get(paneId),
+      paneId,
+      rows,
+      cols,
+    });
+  }
+
+  getPaneOutput(): string[] {
+    return [];
+  }
+}
+
+export async function connectCloudHostTopologyLink(
+  hostDevice: string,
+  totp: string,
+): Promise<HostTopologyLink> {
+  const auth = authSnapshot();
+  const username = auth.user?.username;
+  if (!auth.userToken || !username) throw new Error('公网接入需登录含用户名的 Ridge 账户');
+
+  let provider!: ControllerCloudProvider;
+  let resolveConnected!: () => void;
+  let rejectConnected!: (error: Error) => void;
+  const connected = new Promise<void>((resolve, reject) => {
+    resolveConnected = resolve;
+    rejectConnected = reject;
+  });
+  const adapter = createCloudWebrtcTransportWith(hostDevice, (adapterCallbacks) => {
+    const callbacks: CloudConnectionCallbacks = {
+      onState: (state) => {
+        adapterCallbacks.onState?.(state);
+        if (state === 'connected') resolveConnected();
+        if (state === 'error') rejectConnected(new Error('公网主机连接失败'));
+      },
+      onFrame: (frame) => adapterCallbacks.onFrame?.(frame),
+      onError: (message) => rejectConnected(new Error(message)),
+    };
+    provider = new ControllerCloudProvider({
+      userToken: () => authSnapshot().userToken || auth.userToken!,
+      username,
+      baseDomain: undefined,
+    }, callbacks);
+    return provider;
+  });
+
+  const rpc = new RpcClient(adapter);
+  const timer = setTimeout(() => rejectConnected(new Error('公网主机连接超时')), 20_000);
+  try {
+    void adapter.connect();
+    await connected;
+    const verified = await verifyTotpOverControl(adapter, totp);
+    if (!verified) throw new Error('TOTP 验证失败');
+    rpc.hello();
+    return new CloudHostTopologyLink(adapter, rpc);
+  } catch (error) {
+    rpc.dispose();
+    adapter.close();
+    adapter.dispose();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}

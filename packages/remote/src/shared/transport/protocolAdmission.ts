@@ -4,16 +4,25 @@
  */
 
 export const DESKTOP_PRIVILEGED_METHODS = [
+  'host_list_snapshot',
+  'register_frontend_host',
   'connect_host',
   'disconnect_host',
   'forget_host',
   'attach_host_session',
   'detach_host_session',
+  'list_host_sessions',
+  'inject_host_output',
+  'get_outbound_stats',
   'pump_host_output',
+  'bind_mock_outbound_and_list',
   'step_host_reconnect',
   'cancel_host_reconnect',
-  'bind_mock_outbound_and_list',
-  'get_outbound_stats',
+  'get_foreign_history_tail',
+  'append_foreign_history',
+  'foreign_history_pull_budget',
+  'set_foreign_history_cap',
+  'get_live_backpressure',
 ] as const;
 
 export const METHOD_ALIASES: Record<string, string> = {

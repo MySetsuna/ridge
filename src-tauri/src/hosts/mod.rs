@@ -12,10 +12,8 @@ pub mod live_backpressure;
 pub mod outbound;
 pub mod reconnect_supervisor;
 
-
-
 use parking_lot::RwLock;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -27,7 +25,7 @@ use outbound::{
 use tauri::State;
 
 /// 主机类型：远端 ridge（LAN/cloud）或 rdg（ridge-cli headless host）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HostKind {
     Remote,
@@ -52,6 +50,13 @@ pub struct HostSessionMeta {
     pub title: String,
     /// 是否已被本地某工作区领养。
     pub attached: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendHostSession {
+    pub id: String,
+    pub title: String,
 }
 
 /// 一台已登记的远端主机记录（序列化给前端 Hosts 面板）。**不含凭据**。
@@ -482,6 +487,38 @@ pub fn probe_tcp(host: &str, port: u16, timeout_ms: u64) -> Result<(), String> {
 #[tauri::command]
 pub fn host_list_snapshot(state: State<'_, AppState>) -> Vec<HostRecord> {
     state.hosts.snapshot()
+}
+
+/// Register topology discovered by a desktop-owned RemoteLink. Desktop-only: never admitted
+/// through the remote invoke surface, so a shared workspace cannot re-export its origin.
+#[tauri::command]
+pub fn register_frontend_host(
+    state: State<'_, AppState>,
+    host_id: String,
+    kind: HostKind,
+    label: String,
+    sessions: Vec<FrontendHostSession>,
+) {
+    let rows = sessions
+        .into_iter()
+        .map(|session| HostSessionMeta {
+            attached: !state
+                .hosts
+                .panes_for_remote(&host_id, &session.id)
+                .is_empty(),
+            id: session.id,
+            title: session.title,
+        })
+        .collect();
+    state.hosts.upsert(HostRecord {
+        id: host_id,
+        kind,
+        label,
+        addr: "frontend-remote-link".into(),
+        status: HostStatus::Connected,
+        detail: "RemoteLink topology".into(),
+        sessions: rows,
+    });
 }
 
 /// 登记并探测一台远端主机（V-H1：TCP 可达 → Connected，否则 Error）。

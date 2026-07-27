@@ -771,6 +771,7 @@ pub fn run() {
             terminal::terminate_native_session,
             // 「主机 / Hosts」远端主机登记（P3/P4 基础层，桌面本地命令，不入远程白名单）。
             hosts::host_list_snapshot,
+            hosts::register_frontend_host,
             hosts::connect_host,
             hosts::disconnect_host,
             hosts::forget_host,

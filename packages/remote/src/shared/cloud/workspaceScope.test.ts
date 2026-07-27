@@ -6,6 +6,7 @@ import {
   planWorkspaceInvoke,
   type WorkspaceAccess,
 } from './workspaceScope';
+import { DESKTOP_PRIVILEGED_METHODS } from '../transport/protocolAdmission';
 
 const access: WorkspaceAccess = {
   grantId: 'grant',
@@ -50,7 +51,12 @@ describe('workspace share scope', () => {
       'invoke',
     );
     expect(planWorkspaceInvoke('connect_host', {}, access).kind).toBe('deny');
+    expect(planWorkspaceInvoke('register_frontend_host', {}, access).kind).toBe('deny');
+    expect(planWorkspaceInvoke('get_foreign_history_tail', {}, access).kind).toBe('deny');
     expect(planWorkspaceInvoke('create_workspace', {}, access).kind).toBe('deny');
+    for (const method of DESKTOP_PRIVILEGED_METHODS) {
+      expect(planWorkspaceInvoke(method, {}, access).kind, method).toBe('deny');
+    }
   });
 
   it('projects host workspace enumeration to the single grant', () => {
