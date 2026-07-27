@@ -122,8 +122,8 @@ export interface ManagerOptions {
 	 *  synchronous `new RenderHandle(canvas)` constructor. Setting this
 	 *  flag in a Canvas2D-only build is therefore a no-op, not an error.
 	 *
-	 *  Default: read from `localStorage.RIDGE_WEBGPU === '1'` so users can
-	 *  flip it from the browser console without rebuilding. */
+	 *  Default: true. WebGPU may fall back only when the browser/adapter or
+	 *  wasm feature is genuinely unavailable. */
 	preferWebgpu?: boolean;
 }
 
@@ -651,17 +651,7 @@ export class TerminalManager {
 			// === 'function'` check skips the upgrade and goes straight to
 			// Canvas2D. Either way, no opt-in build flag or storage gate.
 			//
-			// Escape hatch (debugging only):
-			//   localStorage.RIDGE_WEBGPU = '0'; location.reload()
-			let preferWebgpu = true;
-			try {
-				if (typeof localStorage !== 'undefined') {
-					const v = localStorage.getItem('RIDGE_WEBGPU');
-					if (v === '0' || v === 'false') preferWebgpu = false;
-				}
-			} catch {
-				// LS denied (private mode / SSR) — keep the WebGPU default.
-			}
+			const preferWebgpu = true;
 			TerminalManager._instance = new TerminalManager(
 				opts ?? {
 					// Font-stack ordering: named monospace fonts first
