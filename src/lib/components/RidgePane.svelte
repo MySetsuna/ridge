@@ -42,7 +42,6 @@ import { hostsStore, refreshHosts, newHeadlessSession, attachSessionAt } from '$
 import { pickDockRegion } from '$lib/stores/dockRegionPicker';
 import type { ContextMenuItem } from '$lib/stores/contextMenu';
 import { Terminal, PlugZap } from 'lucide-svelte';
-import { detectAgentName, nextAgentSync } from '$lib/teammate/agentProcess';
 
 interface Props {
 	paneId: string;
@@ -145,33 +144,6 @@ const FG_POLL_INTERVAL_MS = 1000;
 let foregroundProcessRunning = false;
 let foregroundPollTimer: ReturnType<typeof setInterval> | null = null;
 
-async function syncDetectedAgent(processName?: string | null): Promise<void> {
-	// A completed foreground poll with `null` is authoritative: the shell is
-	// idle even if the prior TUI title has not yet been reset by the prompt.
-	const detected = processName === null
-		? null
-		: detectAgentName(
-				processName,
-				get(paneOscTitleStore)[paneId],
-				get(terminalTitles)[paneId]
-			);
-	const action = nextAgentSync(`${workspaceId}:${paneId}`, detected);
-	if (action.kind === 'none') return;
-	try {
-		if (action.kind === 'register') {
-			await invoke('register_teammate_agent', {
-				workspaceId,
-				paneId,
-				agentId: action.agentId,
-			});
-		} else {
-			await invoke('release_teammate_agent', { workspaceId, paneId });
-		}
-	} catch (error) {
-		console.warn('[ridge-pane] auto agent sync failed', error);
-	}
-}
-
 async function refreshForegroundRunning(): Promise<void> {
 	if (!alive || !isTauri()) return;
 	try {
@@ -188,7 +160,6 @@ async function refreshForegroundRunning(): Promise<void> {
 				? store
 				: ({ ...store, [paneId]: name ?? '' })
 		);
-		void syncDetectedAgent(name);
 	} catch {
 		foregroundProcessRunning = false;
 	}
@@ -1084,7 +1055,6 @@ function onKernelEvent(ev: KernelEvent) {
 			// Same pattern paneCwdStore::setPaneCwd uses (paneTree.ts).
 			paneOscTitleStore.update((s) => s[paneId] === ev.value ? s : ({ ...s, [paneId]: ev.value }));
 			terminalTitles.update((m) => m[paneId] === ev.value ? m : ({ ...m, [paneId]: ev.value }));
-			void syncDetectedAgent();
 			break;
 		case 'Bell':
 			triggerBellFlash();
