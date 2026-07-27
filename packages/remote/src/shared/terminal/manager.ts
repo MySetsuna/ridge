@@ -1173,12 +1173,14 @@ export class TerminalManager {
 			// centered shared-grid viewport and keep pointer math on geometry.
 			const left = geometry.gridClientXCss - cr.left;
 			const top = geometry.gridClientYCss - cr.top;
+			// resize() also writes the canvas CSS dimensions; apply the
+			// letterbox style after it or its `100%` reset wins.
+			handle?.resize(Math.round(geometry.gridWidthCss), Math.round(geometry.gridHeightCss), dpr);
 			entry.canvas.style.position = 'absolute';
 			entry.canvas.style.left = `${left}px`;
 			entry.canvas.style.top = `${top}px`;
 			entry.canvas.style.width = `${geometry.gridWidthCss}px`;
 			entry.canvas.style.height = `${geometry.gridHeightCss}px`;
-			handle?.resize(Math.round(geometry.gridWidthCss), Math.round(geometry.gridHeightCss), dpr);
 			return;
 		}
 		const handleVp = handle as unknown as {
