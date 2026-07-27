@@ -25,7 +25,7 @@
 
 1. **「ridge-core 自动加载 sidecar」——层错**：suspend 注册表在 `src-tauri/src/teammate/suspend.rs`（进程级，iteration 9），sidecar IO 与启动恢复同属 src-tauri（app 数据目录经 `state.app_handle`）；ridge-core 零涉。验收改 `cargo test -p ridge --lib`。
 2. **「关区写入延迟 >200ms 停机」——不可判定**：本仓无性能门禁，时延断言在单测环境非确定。改确定性停机/韧性条款：**sidecar IO 失败 fail-open**（暂停语义继续、log warn、不阻断关闭/启动）；损坏 json 启动不 panic（设计 §3 已定）。
-3. **`docs/designs/` 路径**：仓惯例为 `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`。
+3. **`docs/designs/` 路径**：仓惯例为 `docs/specs/YYYY-MM-DD-<topic>-design.md`。
 
 ### 结论
 

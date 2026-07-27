@@ -3,7 +3,7 @@
 **状态**：不现在实现 · 仅备忘 + 供审核  
 **差距 ID**：H1 完整段 / 历史 `V-H1-LIVE` 完整  
 **何时进入迭代**：2026-07-24 **iteration 16** 评估后将「完整出站 PTY」纳入产品线，但只交付**最小闭环**；完整客户端刻意记为下一里程。此后 17–19 / 双报告均 **未当 open**。  
-**相关设计**：`docs/superpowers/specs/2026-06-30-multi-host-foreign-terminal-hosts-design.md` §2  
+**相关设计**：`docs/specs/2026-06-30-multi-host-foreign-terminal-hosts-design.md` §2
 **已实现（最小）**：TCP 探测 · attach 门控 · `remote_ref` / `live_sink` · foreign 登记 · `fanout_live_output`→parser
 
 ---

@@ -19,7 +19,7 @@
 
 ### G2[M1] Workspace Memory 设计文档（零代码）
 
-- `docs/superpowers/specs/2026-07-23-workspace-memory-design.md`：6 字段语义（目标/约束/决策/任务/运行状态/时间戳级别）、持久化落点选型（`.ridge` 文件段 vs 独立 sidecar json，与既有 save/restore 与 auto-save 的关系）、首批真实读写方（G1 暂停态恢复 + HITL 审批历史）、隐私边界（不落命令全文/密钥）。
+- `docs/specs/2026-07-23-workspace-memory-design.md`：6 字段语义（目标/约束/决策/任务/运行状态/时间戳级别）、持久化落点选型（`.ridge` 文件段 vs 独立 sidecar json，与既有 save/restore 与 auto-save 的关系）、首批真实读写方（G1 暂停态恢复 + HITL 审批历史）、隐私边界（不落命令全文/密钥）。
 - 验收：文档提交；零代码 diff。
 - 减法：不写 struct、不写迁移（驳回 NotebookLM struct-only 三度提案）。
 
