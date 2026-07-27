@@ -8,10 +8,11 @@
 
 | 入口 | 身份关系 | 可见范围 | 根节点 |
 | --- | --- | --- | --- |
-| 接入主机 | host/controller 同一 Ridge 用户 | host 全部 workspace/pane | 普通主机 |
+| 公网接入主机 | host/controller 同一 Ridge 用户 | host 全部 workspace/pane | 普通主机 |
+| LAN 接入主机 | 不限制 Ridge 账户关系；校验 LAN TOTP/session/E2EE | host 全部 workspace/pane | 普通主机 |
 | 分享工作区 | owner 定向授权另一 Ridge 用户 | 恰一个 workspace 及其 pane | 受限“共享工作区” |
 
-TOTP 证明“握有此 host 的临时验证码”，不能证明账户归属；故 LAN 整机接入仍须同账号 proof。分享不把 TOTP 交给受邀者，改用可撤销的 workspace grant。
+公网整机接入以 cloud 账户归属为门禁；LAN 不校验账户归属，仅走 LAN 自身认证。分享不把 TOTP 交给受邀者，改用可撤销的 workspace grant。
 
 ## 2. 当前代码事实与缺口
 
@@ -94,7 +95,7 @@ JWT 新 scope：
 }
 ```
 
-数据库为真相源：WS upgrade 每次重查 active/expiry/role；token 仅缓存身份声明。整机 controller 继续 `scope=user` 且 `sub == device.owner_user_id`。
+数据库为真相源：WS upgrade 每次重查 active/expiry/role；token 仅缓存身份声明。公网整机 controller 继续 `scope=user` 且 `sub == device.owner_user_id`；LAN 不复用此账户门禁。
 
 ## 5. WS 房间与 host 双重门禁
 
@@ -183,7 +184,7 @@ graph TD
 ## 6. LAN 与公网
 
 - 公网 full-host：沿现有 cloud room；同账号门禁不变。
-- LAN full-host：controller 登录 cloud 后换短期 `lan_host_access` proof；host 校验签名与 owner user id，再走 LAN TOTP/E2EE。离线时仅接受 host 本地已批准、可撤销的 trusted-device grant。
+- LAN full-host：不要求 controller 与 host 属于同一 Ridge 账户；host 只校验既有 LAN TOTP/session/E2EE 凭据。不得暗中回退至 cloud owner user id 校验。
 - workspace share v1：仅 cloud relay。后续可在 scoped cloud 握手成功后协商 LAN 数据面，但授权仍取 cloud grant，不另造 LAN 分享协议。
 - 两腿共享 `RemoteLink`/RPC/DTO/policy；差异止于 transport 与 credential acquisition。
 
@@ -204,7 +205,9 @@ graph TD
 - shared 工作区 `⋯`：打开、刷新、退出分享；operator 另有添加 pane。
 - pane `⋯`：接入/聚焦、复制标识；owner/operator 可切 shell、标记 Agent、删除；viewer 无写项。
 - 打开 shared workspace 后，主区域呈现其 Terminal、Explorer、Git、Agent 四 tab；不切成本地 workspace，不出现 Remote/Hosts 转发入口。
-- 删除 pane/关闭 workspace/撤销分享须确认；操作后按该 host 增量刷新，不全局闪烁。
+- 删除 pane/关闭 workspace/撤销分享须确认；删除 pane 只作用于目标 pane，不连带 workspace 或其他 pane。
+- pane 删除成功并刷新拓扑后，计算该控制端对同源 `hostId` 的接入 pane 引用数：为 `0` 时断开一次 host 连接；仍有第二个 pane 时保持连接。只计该控制端已接入的 pane，不计 host 全部 pane；删除失败不减计数。
+- 删除与接入/刷新须按 host 串行或带 generation 校验，避免并发完成顺序造成误断线。
 
 ## 8. 实施切片
 
@@ -227,6 +230,8 @@ graph TD
 - 若 Explorer/Git/Agent 任一调用仅靠前端隐藏 workspaceId、host 未作归属校验，未完成。
 - 若撤销仅阻新连、不终止既有 cid，未完成。
 - 若 LAN 仍只 probe TCP 或需测试注入 socket，不称“已接入”。
+- LAN fixture 须证明异账号亦可凭有效 TOTP/session 接入；无效凭据仍拒绝。
+- pane 生命周期测须覆盖：第二个同源接入 pane 存在则不断线；删掉该控制端最后一个同源接入 pane 则只断开一次；删除失败不断线。
 - 自动闸：cloud repo/auth/WS、host policy、transport isolation、Svelte store/menu、`pnpm check`、相关 Rust workspace。
 - 代码验收不冒充真机；公网/LAN 各需一条 loopback/live fixture，生产凭据与真机证据另列用户轨。
 
