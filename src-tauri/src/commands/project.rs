@@ -2,8 +2,10 @@ use crate::fs::{DirectoryPage, FileNode, ReplaceStats, SearchResult};
 use crate::state::AppState;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::UNIX_EPOCH;
 use tauri::State;
 use tokio::sync::Semaphore;
 use tokio::task::JoinError;
@@ -762,6 +764,224 @@ fn read_claude_history_sync(
     entries
 }
 
+// ─── Agent assistant replies ─────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRecentReply {
+    pub agent: String,
+    pub text: String,
+    pub timestamp: u64,
+    pub project: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+/// Read recent assistant messages from Claude Code and Codex session JSONL.
+/// Files are bounded newest-first and only their metadata prefix + tail are read.
+#[tauri::command]
+pub async fn read_agent_recent_replies(
+    project_paths: Vec<String>,
+    limit: Option<usize>,
+) -> Vec<AgentRecentReply> {
+    tokio::task::spawn_blocking(move || {
+        let Some(home) = dirs::home_dir() else {
+            return Vec::new();
+        };
+        read_agent_recent_replies_sync(&home, project_paths, limit.unwrap_or(40))
+    })
+    .await
+    .unwrap_or_default()
+}
+
+fn read_agent_recent_replies_sync(
+    home: &Path,
+    project_paths: Vec<String>,
+    limit: usize,
+) -> Vec<AgentRecentReply> {
+    let filters = normalized_paths(&project_paths);
+    let roots = [
+        ("Claude", home.join(".claude").join("projects")),
+        ("Codex", home.join(".codex").join("sessions")),
+    ];
+    let mut files = Vec::new();
+    for (agent, root) in roots {
+        collect_jsonl_files(&root, agent, 0, &mut files);
+    }
+    files.sort_by(|a, b| b.2.cmp(&a.2));
+    files.truncate(200);
+
+    let mut replies = Vec::new();
+    for (agent, path, modified) in files {
+        let Ok(content) = read_jsonl_window(&path) else {
+            continue;
+        };
+        replies.extend(parse_agent_jsonl(agent, &content, modified));
+    }
+    replies.retain(|reply| {
+        filters.is_empty() || filters.iter().any(|path| same_or_child_path(&reply.project, path))
+    });
+    replies.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    replies.truncate(limit.min(100));
+    replies
+}
+
+fn normalized_paths(paths: &[String]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| path.replace('\\', "/").trim_end_matches('/').to_lowercase())
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+fn same_or_child_path(project: &str, filter: &str) -> bool {
+    let project = project.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    project == filter
+        || project.starts_with(&format!("{filter}/"))
+        || filter.starts_with(&format!("{project}/"))
+}
+
+fn collect_jsonl_files(
+    dir: &Path,
+    agent: &'static str,
+    depth: usize,
+    out: &mut Vec<(&'static str, PathBuf, u64)>,
+) {
+    if depth > 8 || out.len() >= 400 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonl_files(&path, agent, depth + 1, out);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or_default();
+            out.push((agent, path, modified));
+        }
+        if out.len() >= 400 {
+            break;
+        }
+    }
+}
+
+fn read_jsonl_window(path: &Path) -> std::io::Result<String> {
+    const PREFIX: u64 = 64 * 1024;
+    const TAIL: u64 = 1024 * 1024;
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    if len <= PREFIX + TAIL {
+        let mut content = String::new();
+        file.read_to_string(&mut content)?;
+        return Ok(content);
+    }
+
+    let mut prefix = vec![0; PREFIX as usize];
+    file.read_exact(&mut prefix)?;
+    file.seek(SeekFrom::End(-(TAIL as i64)))?;
+    let mut tail = Vec::with_capacity(TAIL as usize);
+    file.read_to_end(&mut tail)?;
+    let mut content = String::from_utf8_lossy(&prefix).into_owned();
+    content.push('\n');
+    content.push_str(&String::from_utf8_lossy(&tail));
+    Ok(content)
+}
+
+fn parse_agent_jsonl(agent: &str, content: &str, fallback_timestamp: u64) -> Vec<AgentRecentReply> {
+    let mut project = String::new();
+    let mut session_id = None;
+    let mut replies = Vec::new();
+
+    for line in content.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(|v| v.as_str()) == Some("session_meta") {
+            let payload = &value["payload"];
+            project = payload
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            session_id = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            continue;
+        }
+
+        let message = if value.get("type").and_then(|v| v.as_str()) == Some("assistant") {
+            &value["message"]
+        } else if value.get("type").and_then(|v| v.as_str()) == Some("response_item") {
+            &value["payload"]
+        } else {
+            continue;
+        };
+        if message.get("role").and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(text) = extract_message_text(message.get("content")) else {
+            continue;
+        };
+        let line_project = value
+            .get("cwd")
+            .or_else(|| value.get("project"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(&project)
+            .to_string();
+        let line_session = value
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| session_id.clone());
+        replies.push(AgentRecentReply {
+            agent: agent.to_string(),
+            text,
+            timestamp: json_timestamp_ms(&value).unwrap_or(fallback_timestamp),
+            project: line_project,
+            session_id: line_session,
+        });
+    }
+    replies
+}
+
+fn extract_message_text(content: Option<&serde_json::Value>) -> Option<String> {
+    let text = match content? {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| {
+                let kind = item.get("type").and_then(|v| v.as_str());
+                matches!(kind, Some("text" | "output_text"))
+                    .then(|| item.get("text").and_then(|v| v.as_str()))
+                    .flatten()
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.chars().take(4000).collect())
+}
+
+fn json_timestamp_ms(value: &serde_json::Value) -> Option<u64> {
+    let timestamp = value.get("timestamp")?;
+    if let Some(number) = timestamp.as_u64() {
+        return Some(number);
+    }
+    chrono::DateTime::parse_from_rfc3339(timestamp.as_str()?)
+        .ok()
+        .map(|value| value.timestamp_millis().max(0) as u64)
+}
+
 #[tauri::command]
 pub async fn path_exists(path: String) -> Result<bool, String> {
     // §S5: delegate to the migrated `ridge_core` port (same normalisation).
@@ -808,6 +1028,41 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn parses_claude_assistant_reply() {
+        let replies = parse_agent_jsonl(
+            "Claude",
+            r#"{"type":"assistant","timestamp":"2026-07-27T01:02:03Z","cwd":"C:\\code\\wind","sessionId":"claude-1","message":{"role":"assistant","content":[{"type":"text","text":"fixed it"}]}}"#,
+            0,
+        );
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].agent, "Claude");
+        assert_eq!(replies[0].text, "fixed it");
+        assert_eq!(replies[0].project, r"C:\code\wind");
+        assert_eq!(replies[0].session_id.as_deref(), Some("claude-1"));
+    }
+
+    #[test]
+    fn parses_codex_session_metadata_and_output_text() {
+        let replies = parse_agent_jsonl(
+            "Codex",
+            r#"{"type":"session_meta","payload":{"id":"codex-1","cwd":"C:\\code\\wind"}}
+{"timestamp":"2026-07-27T02:03:04Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"tests green"}]}}"#,
+            0,
+        );
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].text, "tests green");
+        assert_eq!(replies[0].project, r"C:\code\wind");
+        assert_eq!(replies[0].session_id.as_deref(), Some("codex-1"));
+    }
+
+    #[test]
+    fn project_filter_accepts_children_not_siblings() {
+        assert!(same_or_child_path(r"C:\code\wind\src", "c:/code/wind"));
+        assert!(same_or_child_path(r"C:\code\wind", "c:/code/wind/src"));
+        assert!(!same_or_child_path(r"C:\code\windmill", "c:/code/wind"));
     }
 
     // ── create_file / create_directory ──────────────────────────────────────

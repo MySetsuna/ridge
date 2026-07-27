@@ -45,6 +45,8 @@ export type HostStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
 export interface NativeSessionInfo {
   socket: string;
   name: string;
+  creator_workspace_id?: string;
+  creator_pane_id?: string;
   windows: number;
   panes: number;
   width: number;
@@ -57,6 +59,8 @@ export interface HostSession {
   /** provider 域内会话键：headless 用 (socket, name)。 */
   socket: string;
   name: string;
+  creator_workspace_id?: string;
+  creator_pane_id?: string;
   /**
    * Remote/rdg: backend HostSessionMeta.id (pane id on host).
    * Headless: empty (uses socket+name).
@@ -172,8 +176,12 @@ export async function terminateSession(socket: string, target: string): Promise<
  * 接入：把一个会话召唤进当前查看的工作区。P1 直接 summon（后端决定落点，通常拆分活动
  * pane）；P2 在右键/拖拽场景下走 dock 区域选择的 attach_foreign_session 精确落点。
  */
-export async function attachSession(socket: string, target: string): Promise<void> {
-  const wid = get(activeWorkspaceId);
+export async function attachSession(
+  socket: string,
+  target: string,
+  workspaceId?: string
+): Promise<void> {
+  const wid = workspaceId || get(activeWorkspaceId);
   await invoke('summon_native_session', { socket, target, workspaceId: wid ?? null });
   await refreshHosts();
 }

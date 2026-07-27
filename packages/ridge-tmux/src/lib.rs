@@ -111,6 +111,9 @@ struct Session {
     id: usize,
     name: String,
     created_at: SystemTime,
+    /// 发起 `tmux new-session` 的 Ridge GUI pane；用于把无头会话归回创建者。
+    creator_workspace_id: Option<String>,
+    creator_pane_id: Option<String>,
     windows: Vec<Window>,
     active_window: usize,
     /// `-x`/`-y` 指定的会话默认尺寸（cols × rows）。
@@ -147,6 +150,8 @@ pub struct GuiSession {
 pub struct NewSessionReq {
     pub socket: String,
     pub name: Option<String>,
+    pub creator_workspace_id: Option<String>,
+    pub creator_pane_id: Option<String>,
     pub window_name: Option<String>,
     pub cwd: Option<String>,
     pub width: u16,
@@ -661,6 +666,8 @@ pub fn new_session(req: NewSessionReq, gui: &[GuiSession]) -> NativeResult {
         id: session_id,
         name: name.clone(),
         created_at: SystemTime::now(),
+        creator_workspace_id: req.creator_workspace_id,
+        creator_pane_id: req.creator_pane_id,
         windows: vec![window],
         active_window: 0,
         width: req.width,
@@ -1083,6 +1090,10 @@ pub fn list_sessions_lines(socket: &str, fmt: Option<&str>) -> Vec<String> {
 pub struct NativeSessionInfo {
     pub socket: String,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creator_workspace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creator_pane_id: Option<String>,
     pub windows: usize,
     pub panes: usize,
     pub width: u16,
@@ -1104,6 +1115,8 @@ pub fn list_all_sessions() -> Vec<NativeSessionInfo> {
             out.push(NativeSessionInfo {
                 socket: socket_name.clone(),
                 name: s.name.clone(),
+                creator_workspace_id: s.creator_workspace_id.clone(),
+                creator_pane_id: s.creator_pane_id.clone(),
                 windows: s.windows.len(),
                 panes: total_panes,
                 width: s.width,
@@ -1480,6 +1493,8 @@ mod tests {
             id: 3,
             name: "probe".to_string(),
             created_at: SystemTime::now(),
+            creator_workspace_id: None,
+            creator_pane_id: None,
             windows: vec![],
             active_window: 0,
             width: 200,

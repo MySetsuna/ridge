@@ -23,6 +23,7 @@
     /** 显示名（失联时用编组里记的旧名）。 */
     name: string;
     workspaceId?: string;
+    sourceLabel?: string;
     /** 该成员的待审批项（可为空）。 */
     pending?: readonly PendingApproval[];
     /** 组归属标注（成员 Tab 用：显示所属组名/颜色）。 */
@@ -37,6 +38,7 @@
     agentId,
     name,
     workspaceId,
+    sourceLabel,
     pending = [],
     groupBadge = null,
     leader = null,
@@ -110,6 +112,11 @@
       <Ghost class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
     {/if}
     <span class="min-w-0 flex-1 truncate text-[12px]" title={name}>{name}</span>
+    {#if sourceLabel}
+      <span class="max-w-24 shrink-0 truncate text-[9px] text-[var(--rg-fg-muted)]" title={sourceLabel}>
+        {sourceLabel}
+      </span>
+    {/if}
     <span class="shrink-0 text-[9px] {status.cls}">{status.text}</span>
 
     {#if profile?.isAuto}
