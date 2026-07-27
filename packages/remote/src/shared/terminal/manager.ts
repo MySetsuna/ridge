@@ -40,6 +40,11 @@ import { getWorkerRenderer, isWorkerRenderingEnabled } from './workerRendererSin
 import { perfMark } from './perfTrace';
 import { DEFAULT_TERM_FONT } from './fontStack';
 import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
+import {
+	cellFromClientPoint,
+	computePaneGeometry,
+	type PaneGeometry,
+} from './paneGeometry';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
@@ -329,6 +334,8 @@ interface PaneEntry {
 	 *  `undefined` the same as a zero-size rect — the pane is parked-by-
 	 *  clip until JS computes a real viewport. */
 	viewport?: { x: number; y: number; w: number; h: number };
+	/** CSS/device geometry used by renderer, pointer, wheel and selection. */
+	geometry?: PaneGeometry;
 	/** §shared-remote (2026-06-14): the kernel (rows, cols) the last
 	 *  `_recomputeViewport` sized the centered letterbox for. In
 	 *  `sharedRemoteMode` the scissor tracks the SHARED PTY grid (not the
@@ -453,18 +460,17 @@ export class TerminalManager {
 	 *  `_isContainerHidden` falls back to the bbox path so the very
 	 *  first pane attach still renders. */
 	private _activeWorkspaceId: string | null = null;
-	/** §shared-remote (2026-06-14): "manual lock + centered letterbox" mode.
+	/** §shared-remote: shared-grid mode for the desktop browser controller.
 	 *  Enabled only on the desktop-in-browser controller (WEB_REMOTE). One PTY
 	 *  has one grid; multiple viewers of different sizes can't all fill it. In
 	 *  this mode:
-	 *   - a passive `fitPane` (ResizeObserver / workspace switch) does NOT claim
-	 *     the shared PTY (no `resize_pane`) — it only re-letterboxes;
+	 *   - live ResizeObserver frames only re-letterbox;
+	 *   - the existing trailing-edge/pointerup fit claims the settled size once;
 	 *   - `_recomputeViewport` sizes the scissor to the KERNEL's current grid
 	 *     (the shared size, driven by Resize deltas) and CENTERS it in the pane,
 	 *     so the surplus area is intentional terminal-bg letterbox, not a dead
 	 *     zone;
-	 *   - only an explicit `claimPaneSize` (the refresh button) resizes the PTY
-	 *     to this viewer's container size.
+	 *   - `claimPaneSize` remains an immediate manual recovery path.
 	 *  Off (normal desktop): byte-for-byte the prior behaviour. */
 	private _sharedRemoteMode = false;
 	/** P2.2: monotonic counter, bumped at the bottom of every RAF tick.
@@ -1142,54 +1148,24 @@ export class TerminalManager {
 		const padR = parseFloat(cs.paddingRight) || 0;
 		const padB = parseFloat(cs.paddingBottom) || 0;
 		const dpr = window.devicePixelRatio || 1;
-		const hostWDev = Math.round(hr.width * dpr);
-		const hostHDev = Math.round(hr.height * dpr);
-		let cssX = cr.left - hr.left + padL;
-		let cssY = cr.top - hr.top + padT;
-		let cssW = Math.max(0, cr.width - padL - padR);
-		let cssH = Math.max(0, cr.height - padT - padB);
-		// Shrink the scissor to cells-exact dimensions.
-		//
-		// Normal mode (§E1, 2026-06-02): size to the CONTAINER's cell capacity,
-		// anchored to the content-box origin (no centering) so col/row 0 renders
-		// flush against the pane border; residual right/bottom space shows as bg.
-		//
-		// §shared-remote (2026-06-14): size to the KERNEL's CURRENT grid (the
-		// shared PTY size, driven by broadcast Resize deltas — NOT this viewer's
-		// container) and CENTER it in the content-box. A viewer whose pane is
-		// larger than the shared grid then shows the terminal centered with
-		// intentional bg letterbox instead of a top-left island + dead zone; a
-		// smaller viewer clips (clamped below).
-		if (entry.cellW > 0 && entry.cellH > 0) {
-			let cols: number;
-			let rows: number;
-			if (this._sharedRemoteMode) {
-				cols = Math.max(1, entry.kernel.cols());
-				rows = Math.max(1, entry.kernel.rows());
-			} else {
-				cols = Math.max(1, Math.floor(cssW / entry.cellW));
-				rows = Math.max(1, Math.floor(cssH / entry.cellH));
-			}
-			let gridW = cols * entry.cellW;
-			let gridH = rows * entry.cellH;
-			if (this._sharedRemoteMode) {
-				cssX += Math.max(0, (cssW - gridW) / 2);
-				cssY += Math.max(0, (cssH - gridH) / 2);
-				gridW = Math.min(gridW, cssW);
-				gridH = Math.min(gridH, cssH);
-				entry.lastViewportKernelRows = rows;
-				entry.lastViewportKernelCols = cols;
-			}
-			cssW = gridW;
-			cssH = gridH;
+		const geometry = computePaneGeometry({
+			container: cr,
+			host: hr,
+			padding: { left: padL, top: padT, right: padR, bottom: padB },
+			cellWidthCss: entry.cellW,
+			cellHeightCss: entry.cellH,
+			dpr,
+			sharedGrid: this._sharedRemoteMode
+				? { rows: entry.kernel.rows(), cols: entry.kernel.cols() }
+				: undefined,
+		});
+		if (!geometry) return;
+		entry.geometry = geometry;
+		entry.viewport = geometry.viewportDevice;
+		if (this._sharedRemoteMode) {
+			entry.lastViewportKernelRows = geometry.rows;
+			entry.lastViewportKernelCols = geometry.cols;
 		}
-		// Add small epsilon to device-pixel width/height to avoid 1px
-		// clipping on right/bottom edges due to sub-pixel rounding.
-		const xDev = Math.max(0, Math.floor(cssX * dpr));
-		const yDev = Math.max(0, Math.floor(cssY * dpr));
-		const wDev = Math.max(0, Math.min(hostWDev - xDev, Math.ceil((cssX + cssW) * dpr) - xDev));
-		const hDev = Math.max(0, Math.min(hostHDev - yDev, Math.ceil((cssY + cssH) * dpr) - yDev));
-		entry.viewport = { x: xDev, y: yDev, w: wDev, h: hDev };
 
 		// Push offset (x, y) and size (w, h) separately. `setViewportOffset`
 		// is cheap (just updates two u32 fields); `resize` triggers
@@ -1200,9 +1176,13 @@ export class TerminalManager {
 			setViewportOffset?: (x: number, y: number) => void;
 		} | null;
 		if (handleVp !== null && typeof handleVp.setViewportOffset === 'function') {
-			handleVp.setViewportOffset(xDev, yDev);
+			handleVp.setViewportOffset(geometry.viewportDevice.x, geometry.viewportDevice.y);
 		}
-		entry.handle?.resize(Math.round(cssW), Math.round(cssH), dpr);
+		entry.handle?.resize(
+			Math.round(geometry.gridWidthCss),
+			Math.round(geometry.gridHeightCss),
+			dpr,
+		);
 	}
 
 	/**
@@ -1355,23 +1335,8 @@ export class TerminalManager {
 		// getSelectionText; we just translate pointer coords → cell coords
 		// and stream updates while dragging. Pointer capture on pointerdown
 		// keeps moves flowing even when the cursor leaves the container.
-		const computeCell = (e: PointerEvent): { row: number; col: number } | null => {
-			const ent = this.panes.get(paneId);
-			if (!ent || ent.cellW <= 0 || ent.cellH <= 0) return null;
-			const rect = ent.container.getBoundingClientRect();
-			// §1.30: subtract container padding — canvas content starts at
-			// `rect.top/left + pad`, not at the rect edge. See cellFromEvent
-			// docstring for the full bug write-up.
-			const pad = ent.lastFitPaddingPx ?? ent.lastAppliedPaddingPx ?? 0;
-			const x = e.clientX - rect.left - pad;
-			const y = e.clientY - rect.top - pad;
-			const cols = ent.kernel.cols();
-			const rows = ent.kernel.rows();
-			if (cols === 0 || rows === 0) return null;
-			const col = Math.max(0, Math.min(cols - 1, Math.floor(x / ent.cellW)));
-			const row = Math.max(0, Math.min(rows - 1, Math.floor(y / ent.cellH)));
-			return { row, col };
-		};
+		const computeCell = (e: PointerEvent): { row: number; col: number } | null =>
+			this.cellFromEvent(paneId, e);
 		// JS-side mirror of selection.rs:22 — the abs-row encoding wasm
 		// Selection uses is `0..sb_len` for scrollback rows and
 		// `sb_len..sb_len+rows` for live grid rows, so the correct vp→abs
@@ -2901,20 +2866,9 @@ export class TerminalManager {
 		if (!entry || !entry.dataHandler) return false;
 		if (entry.kernel.mouseReportingModes() === 0) return false;
 
-		const rect = entry.container.getBoundingClientRect();
-		// §1.30: subtract container padding before dividing — TUIs that
-		// receive a wheel-as-mouse SGR report deserve the same accurate
-		// row/col as click handlers. Otherwise wheel-over-cell-N gets
-		// reported as cell-N+1 once `pad > 0`.
-		const pad = entry.lastFitPaddingPx ?? entry.lastAppliedPaddingPx ?? 0;
-		const x = ev.clientX - rect.left - pad;
-		const y = ev.clientY - rect.top - pad;
-		if (entry.cellW <= 0 || entry.cellH <= 0) return false;
-		const cols = entry.kernel.cols();
-		const rows = entry.kernel.rows();
-		if (cols === 0 || rows === 0) return false;
-		const col = Math.max(0, Math.min(cols - 1, Math.floor(x / entry.cellW)));
-		const row = Math.max(0, Math.min(rows - 1, Math.floor(y / entry.cellH)));
+		const cell = this.cellFromEvent(paneId, ev);
+		if (!cell) return false;
+		const { row, col } = cell;
 
 		const delta = ev.deltaY;
 		if (delta === 0) return false;
@@ -3091,6 +3045,12 @@ export class TerminalManager {
 	cellFromEvent(paneId: string, e: { clientX: number; clientY: number }): { row: number; col: number } | null {
 		const ent = this.panes.get(paneId);
 		if (!ent || ent.cellW <= 0 || ent.cellH <= 0) return null;
+		if (ent.geometry && this._isHostMode(ent)) {
+			const rows = ent.kernel.rows();
+			const cols = ent.kernel.cols();
+			if (rows === 0 || cols === 0) return null;
+			return cellFromClientPoint(ent.geometry, e.clientX, e.clientY, rows, cols);
+		}
 		const rect = ent.container.getBoundingClientRect();
 		const pad = ent.lastFitPaddingPx ?? ent.lastAppliedPaddingPx ?? 0;
 		const x = e.clientX - rect.left - pad;
@@ -3585,16 +3545,9 @@ export class TerminalManager {
 		// Check scrollbar target — same as internal isInScrollbar.
 		const tgt = e.target as Element | null;
 		if (tgt?.closest?.('.rg-scrollbar-track, .rg-scrollbar-thumb')) return false;
-		// Compute cell coordinates from the pointer position.
-		const rect = ent.container.getBoundingClientRect();
-		const pad = ent.lastFitPaddingPx ?? ent.lastAppliedPaddingPx ?? 0;
-		const x = e.clientX - rect.left - pad;
-		const y = e.clientY - rect.top - pad;
-		const cols = ent.kernel.cols();
-		const rows = ent.kernel.rows();
-		if (cols === 0 || rows === 0) return false;
-		const col = Math.max(0, Math.min(cols - 1, Math.floor(x / ent.cellW)));
-		const cellRow = Math.max(0, Math.min(rows - 1, Math.floor(y / ent.cellH)));
+		const cell = this.cellFromEvent(paneId, e);
+		if (!cell) return false;
+		const { row: cellRow, col } = cell;
 		// Cancel any queued mouse move to prevent stale motion events.
 		if (ent.mouseMoveRaf !== null) {
 			cancelAnimationFrame(ent.mouseMoveRaf);
@@ -4129,7 +4082,7 @@ export class TerminalManager {
 					ent.cellW = quantizeCellSize(cellW, dpr);
 					ent.cellH = quantizeCellSize(cellH, dpr);
 					ent.lastConfiguredDpr = dpr;
-					void this.fitPane(ent);
+					void this.fitPane(ent, this._sharedRemoteMode);
 				});
 				continue;
 			}
@@ -4140,7 +4093,7 @@ export class TerminalManager {
 			entry.cellH = quantizeCellSize(Number(h), dpr);
 			entry.lastConfiguredDpr = dpr;
 			entry.handle.invalidateAll();
-			void this.fitPane(entry);
+			void this.fitPane(entry, this._sharedRemoteMode);
 		}
 		this.wake();
 	}
@@ -4198,12 +4151,12 @@ export class TerminalManager {
 			clearTimeout(entry.pendingFitTimer);
 			entry.pendingFitTimer = null;
 		}
-		void this.fitPane(entry);
+		void this.fitPane(entry, this._sharedRemoteMode);
 	}
 
-	/** §shared-remote (2026-06-14): toggle "manual lock + centered letterbox"
-	 *  mode (see `_sharedRemoteMode`). Enabled on the desktop-in-browser
-	 *  controller so a passive layout change never fights the shared PTY size.
+	/** Toggle shared-grid + centered-letterbox mode. Enabled on the browser
+	 *  controller; live layout frames remain visual-only and the bounded
+	 *  trailing fit claims the final grid.
 	 *  Re-letterboxes every attached pane on the transition so the change is
 	 *  visible without waiting for the next ResizeObserver fire. */
 	setSharedRemoteMode(on: boolean): void {
@@ -4223,10 +4176,8 @@ export class TerminalManager {
 		this.wake();
 	}
 
-	/** §shared-remote (2026-06-14): explicit "lock the shared PTY to THIS
-	 *  viewer's size" — the per-pane refresh button. Unlike the passive
-	 *  `fitPaneNow` (which in shared mode only re-letterboxes), this always
-	 *  claims: it resizes the real PTY (`resize_pane` over the tunnel) to the
+	/** Explicitly lock the shared PTY to this viewer — the refresh button.
+	 *  It resizes the real PTY (`resize_pane` over the tunnel) to the
 	 *  container size; the broadcast Resize delta then grows every viewer's
 	 *  kernel grid, and the centered-letterbox tracking re-clips to it. In
 	 *  normal (non-shared) mode it is identical to `fitPaneNow`. */
@@ -4311,7 +4262,7 @@ export class TerminalManager {
 			// Re-check parked: a park() call could have come in during
 			// the debounce window, freeing entry.handle.
 			if (!e || e.parked) return;
-			void this.fitPane(e);
+			void this.fitPane(e, this._sharedRemoteMode);
 		}, RESIZE_SETTLE_MS);
 	}
 
@@ -4358,7 +4309,7 @@ export class TerminalManager {
 			clearTimeout(entry.pendingFitTimer);
 			entry.pendingFitTimer = null;
 			if (entry.parked) continue;
-			void this.fitPane(entry);
+			void this.fitPane(entry, this._sharedRemoteMode);
 		}
 	}
 
@@ -4372,29 +4323,15 @@ export class TerminalManager {
 		// equivalent to the content-box).
 		let wCss: number;
 		let hCss: number;
-		// Track the container rect (host mode only) so we can later
-		// redistribute the rounding leftover into symmetric padding —
-		// see the "center cells in content-box" step below.
-		let containerWCss = 0;
-		let containerHCss = 0;
 		if (this._isHostMode(entry)) {
 			const cr = entry.container.getBoundingClientRect();
-			containerWCss = cr.width;
-			containerHCss = cr.height;
-			// Use the user-configured base padding as a floor — never read
-			// the live CSS padding here. The live value gets rewritten at
-			// the end of fitPane to absorb the cell rounding leftover, and
-			// reading it back would feed a slightly inflated padding into
-			// the next col/row computation, slowly drifting the grid size
-			// on every fit. opts.paddingPx is the single source of truth
-			// for "how much margin should we *at least* leave around the
-			// grid"; the actual on-screen padding ends up >= that.
-			const basePad = Math.max(
-				0,
-				Math.min(64, Math.round((entry.lastAppliedPaddingPx ?? this.opts.paddingPx) || 0)),
-			);
-			wCss = Math.max(0, Math.floor(cr.width - 2 * basePad));
-			hCss = Math.max(0, Math.floor(cr.height - 2 * basePad));
+			const cs = window.getComputedStyle(entry.container);
+			const padL = parseFloat(cs.paddingLeft) || 0;
+			const padT = parseFloat(cs.paddingTop) || 0;
+			const padR = parseFloat(cs.paddingRight) || 0;
+			const padB = parseFloat(cs.paddingBottom) || 0;
+			wCss = Math.max(0, cr.width - padL - padR);
+			hCss = Math.max(0, cr.height - padT - padB);
 		} else {
 			const rect = entry.canvas.getBoundingClientRect();
 			wCss = Math.floor(rect.width);
@@ -4431,13 +4368,9 @@ export class TerminalManager {
 			entry.lastConfiguredDpr = dpr;
 		}
 
-		// §shared-remote: a PASSIVE fit (ResizeObserver / workspace switch /
-		// padding tick) must NOT claim the shared PTY — that's the multi-viewer
-		// resize fight that left the controller's grid stuck at the host's size
-		// (content top-left, dead zone around it). Just re-letterbox the current
-		// kernel grid centered in the container and bail. Only an explicit claim
-		// (the refresh button → claimPaneSize → claim=true) falls through to the
-		// PTY resize path below. Non-shared (normal desktop) mode is unaffected.
+		// Shared mode keeps immediate visual-only recomputes separate from the
+		// bounded settled claim. Callers pass `claim=true` only on attach,
+		// trailing-edge/pointerup fit, font/DPR settle, or manual refresh.
 		if (this._sharedRemoteMode && !claim) {
 			this._recomputeViewport(entry);
 			return;
@@ -4467,7 +4400,7 @@ export class TerminalManager {
 			// Cells start flush against the container's content-box
 			// origin so the left edge has zero gap. Any residual
 			// right/bottom space (< 1 cell) displays as workspace bg.
-			rows = Math.max(1, Math.floor(containerHCss / entry.cellH));
+			rows = Math.max(1, Math.floor(hCss / entry.cellH));
 			entry.lastFitPaddingPx = entry.lastAppliedPaddingPx ?? 0;
 			this._recomputeViewport(entry);
 		} else {
@@ -4935,7 +4868,7 @@ export class TerminalManager {
 				if (entry.wasHiddenLastTick) {
 					entry.wasHiddenLastTick = false;
 					this._recomputeViewport(entry);
-					void this.fitPane(entry);
+					void this.fitPane(entry, this._sharedRemoteMode);
 				}
 				// Synchronous output mode (?2026): hold rendering while the
 				// TUI emits a multi-step redraw, so the user never sees a

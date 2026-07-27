@@ -267,10 +267,9 @@
   function globalHostCanvas(node: HTMLCanvasElement) {
     const manager = TerminalManager.instance();
     // §shared-remote: the desktop-in-browser controller shares one PTY (one grid)
-    // with the host and other viewers. Enable "manual lock + centered letterbox"
-    // so a passive layout change never fights the shared size and the terminal
-    // letterboxes instead of leaving a dead zone. Host (Tauri) build keeps the
-    // normal container-driven auto-fit.
+    // with the host and other viewers. Live resize frames letterbox the current
+    // shared grid; the manager's bounded trailing fit claims the settled browser
+    // size. Host (Tauri) build keeps the normal container-driven auto-fit.
     if (webRemote) manager.setSharedRemoteMode(true);
     // §wallpaper-gpu: 订阅 activeWallpaperGpu store，每次 emission 立刻上传纹理。
     // attachHost 是 async；store 可能在 host 就绪前就 emit（no-op）。
