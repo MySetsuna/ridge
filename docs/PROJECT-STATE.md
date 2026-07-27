@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-27（iteration 62 准备：主机树、跨账号单工作区分享、浏览器 Remote 几何）
+状态日期：2026-07-27（iteration 62 代码侧完成；三项真实链路 E2E 待执行）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -72,22 +72,24 @@ host: RidgeCloudHost(device JWT) ↔ ridge-cloud /ws（认证、授权、房间�
 controller: ControllerCloudProvider(user JWT) ↔ WebRTC DC ↔ E2EE ↔ CloudHostBridge ↔ 本机 invoke/Pane 输出
 ```
 
-iteration 62 当前/目标边界：
+iteration 62 当前边界：
 
 ```mermaid
 flowchart LR
-  subgraph Current["当前"]
-    HP["HostsPanel"] --> FS["Host.sessions 扁平 pane"]
-    VP["共享 Remote viewport"] --> LB["kernel grid 居中 letterbox"]
-    PE["pointer event"] --> PAD["仅减 CSS padding"]
-  end
-  subgraph Target["目标"]
-    HT["host"] --> WT["workspace"] --> PT["pane"]
-    SW["跨账号 share grant"] --> ONE["唯一 workspace scope"]
-    ONE --> RES["Explorer / Git / Agent"]
-    ONE -. 禁止 .-> HOP["host/remote 二次转发"]
-    GEO["content rect + padding + cell + DPR"] --> GRID["viewport / rows / cols / pointer 同源"]
-  end
+  HP["HostsPanel.svelte"] --> HS["hosts.ts"]
+  HS --> HF["loadHostForest"]
+  HF --> LAN["RemoteConnection"]
+  HF --> PUB["CloudHostTopologyLink"]
+  LAN --> HT["host → workspace → pane"]
+  PUB --> HT
+  HT --> BIND["bindRemotePane"]
+  BIND --> RP["RidgePane / TerminalManager"]
+  SW["workspace share grant"] --> SCOPE["planWorkspaceInvoke"]
+  SCOPE -. 禁止 .-> HOP["desktop Host / Remote 二次转发"]
+  SW --> PROJ["独立 SharedWorkspaceProjection"]
+  PROJ --> DESK["桌面 Terminal / Explorer / Git / Search / Agent"]
+  PROJ -. 禁止 .-> GLOBAL["本机 AppState / global transport"]
+  GEO["PaneGeometry SSOT"] --> GRID["viewport / rows / cols / pointer"]
 ```
 
 关键符号与行为（均有确定性测试守卫，见 §5）：
@@ -110,10 +112,10 @@ flowchart LR
 
 | 项 | wind |
 | --- | --- |
-| 分支 / HEAD | `main` / `8185cd8`，相对 `origin/main` ahead 7 / behind 0；用户已确认继续推进，作为本轮有意基线 |
-| 应用版本 | 0.0.20 |
-| CodeGraph | 634 文件 / 12,979 节点 / 19,829 边（2026-07-27 healthy） |
-| 工具链 | 本轮 preflight exit 0；已保存工作区修复：paneTree Vitest 59/59、Rust 限定删除测试 1/1、`cargo check --lib` exit 0、svelte-check 0 errors / 2 既有 warnings |
+| 分支 / 功能基线 | `main` / `08eeff6` |
+| 应用版本 | 0.1.6 |
+| CodeGraph | 656 文件 / 13,444 节点 / 19,410 边（2026-07-27 healthy） |
+| 工具链 | preflight 与需求闸 exit 0；Vitest 107 文件 1255 绿 / 1 skip；svelte-check 0 errors / 2 既有 warnings；`cargo check -p ridge` exit 0；desktop host boundary Rust 2/2；Remote 与桌面 production build exit 0 |
 
 `ridge-cloud`：`main` / `a5e2be6`，与 `origin/main` 同步；CodeGraph 已获用户授权初始化（160 文件 / 3,623 节点 / 12,264 边）。生产 Dokku SHA、TURN 可达性、artifact current 指针仍**未实测**。
 
@@ -178,10 +180,10 @@ flowchart LR
 
 | ID | 差距 | 优先级 | 当前状态 |
 | --- | --- | --- | --- |
-| R62-HOST-TREE | 公网/LAN host→workspace→pane 统一管理树 | P0 | **Active / 未实现**：现有 `HostsPanel.svelte` 仅消费 `Host.sessions` 扁平列表；须复用 `RemoteLink.listWorkspaces/listWorkspacePanes` 与既有 workspace/pane CRUD；删除 pane 后按控制端同源 host 已接入 pane 引用计数决定是否断连 |
-| R62-WS-SHARE | 跨账号单工作区分享 | P0 | **Active / 未实现**：需 Cloud 分享授权/接受/撤销/角色与数据面 scope；桌面在 Explorer 工作区标题、WorkspaceTree 行、Hosts owner workspace 提供入口；接入后 cwd 与本机 cwd 同形显示，可打开文件并出现 Git/Agent；禁止二次转发 host/remote |
-| R62-GEOMETRY | 桌面浏览器 LAN/public pane 网格、画面与指针一致 | P0 | **Active / 根因已定位待修**：共享 Remote `_recomputeViewport` 以当前 kernel grid 居中 letterbox，而 `cellFromEvent` 仅减 padding、未减 viewport 偏移；尺寸认领与像素尺寸还分取 container/clientWidth，须归一到共享几何 SSOT |
-| R62-SAVED | 已保存工作区重开、删除、滚动条统一 | P1 | **代码已实现待并轮回归**（`fe37599`）：关闭时清理 pane runtime；受限 Tauri 删除命令；确认后刷新；弹层使用 `rg-scroll` |
+| R62-HOST-TREE | 公网/LAN host→workspace→pane 统一管理树 | P0 | **代码已实现，真链 E2E 待补**（`0e71da6`）：`loadHostForest` 聚合既有 RemoteLink；LAN/Public 独立连接；工作区打开/新增/重命名/保存/分享/关闭与 pane 接入/Agent/shell/删除已接 UI；远端 pane 本地绑定；删失败不减引用、第二 pane 保持、最后 pane 断连一次。双 host/引用计数/协议边界测试绿 |
+| R62-WS-SHARE | 跨账号单工作区分享 | P0 | **代码已实现，真链 E2E 待补**（`08eeff6`）：不可委派 scoped token 驱动独立内存投影；桌面 Terminal/Files/Git/Search/Agent 共用显式 provider；接入树投影真实 pane 并随推送更新；不写本机 workspace/global transport；workspace 管理关闭且 Host/Remote 二跳全拒 |
+| R62-GEOMETRY | 桌面浏览器 LAN/public pane 网格、画面与指针一致 | P0 | **代码已实现，真实浏览器 E2E 待补**（`96ce9fc`）：共享 `PaneGeometry` 统一 content rect、padding、cell、DPR、grid 与 pointer clamp；纯函数/manager/合同回归绿 |
+| R62-SAVED | 已保存工作区重开、删除、滚动条统一 | P1 | **关闭**（`fe37599`）：关闭清 pane runtime；默认目录直接 `.ridge` 受限删除；确认后原位刷新；弹层使用 `rg-scroll`；相关 Vitest/Rust/svelte-check 绿 |
 | T1 | 开发门禁可运行性 | P0 | **关闭**（iteration 7：loader 根修后 `cargo test --workspace` 首次整仓 exit 0，全部门禁本机可运行） |
 | T2 | Cloud 协议双 SSOT | P0 | **关闭**（iteration 1 收敛 + 自动守卫；EOL 误报已根治） |
 | T3 | 生产两条版本线状态证据 | P0 | **代码侧关闭**（status 端点 + 一键脚本）；生产实跑与分支合并部署待用户 |
@@ -242,7 +244,7 @@ flowchart LR
 
 ## 7. 开放问题
 
-**当前无待审批需求；有三项 Active 未实现。** iteration 62 必须同轮推进 R62-HOST-TREE、R62-WS-SHARE、R62-GEOMETRY，并将 R62-SAVED 纳入回归。请 NotebookLM 产出一份可执行契约：先列跨仓依赖与安全边界，再给最小切片、确定性测试、停止条件与减法方案；不得把任一 Active 项降为“后续”或只写设计。
+**当前无待审批代码需求；iteration 62 三项均进入真实链路验收。** R62-WS-SHARE 尚需跨账号邀请/接受/桌面打开、多 CWD 文件读写、Git、Agent、pane 动态、撤销踢线与二跳拒绝；R62-HOST-TREE 与 R62-GEOMETRY 尚各欠真实 LAN/public browser/host E2E。不得以自动测试冒充真链。
 
 ## 8. NotebookLM 评审要求（沿用）
 

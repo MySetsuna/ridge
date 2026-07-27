@@ -37,3 +37,27 @@ fail-closed；共享资源不可二次转发。其测试建议：分数 DPR 纯�
 - host 必须逐 invoke、pane subscribe、event 验 scope；relay 不读 E2EE 业务明文。
 - v1 operator-only；共享区仍不可创建/关闭 workspace、转分享、host/Remote 二跳。
 - 三个桌面入口调用同一分享对话框；共享 projection 不写本地 workspace graph。
+
+## 第二轮：桌面 scoped-provider 接法
+
+NotebookLM 建议以独立、内存态投影承载 `grantId + workspaceId`，复用 Remote
+终端、文件、Git、搜索与 Agent 资源；关闭时整体销毁，不写本机工作区图。
+
+| 原建议 | 裁决 | 校正 |
+| --- | --- | --- |
+| 建独立 projection store | **采纳并收窄** | 单活动投影；只存授权 workspace、pane 与独立连接/provider；不持久化 |
+| 客户端注入授权 metadata / `RpcClient.scoped` | **驳回** | metadata 不构成授权；host 只信 ridge-cloud `workspace_share` JWT 与 host 侧 `planWorkspaceInvoke` |
+| 新建 `CloudHostBridge.rs` | **驳回（符号不存在）** | 实际桥为 TS `cloudHostBridge.ts`；桌面侧复用 `TauriBridge + RpcClient` |
+| 调用 `remote_read_dir` 等新 RPC | **驳回（方法不存在）** | 复用 `get_file_tree/read_file/get_scm_status/text_search/get_teammate_topology` |
+| 困难时退化为纯终端 | **驳回** | 违反已批准需求；失败须 fail-closed，不得隐去 Explorer/Git/Agent |
+
+锁定实现：
+
+- `getWorkspaceShareToken` 取得不可委派 token；客户端复核 grant/workspace/device 与 `delegable=false`。
+- 每个投影创建独立 `TauriBridge/RpcClient/CloudRemoteConnection`；不安装 global transport，不发 `use-global-workspace`。
+- `TauriDataProvider` 接受显式 invoker；桌面 Files/Git/Search/Agent 与嵌入终端共用该 provider。
+- `CloudRemoteConnection` 保留既有默认 Tauri API 路径；仅共享场景显式注入独立桥。
+- workspace 管理关闭、pane operator 操作保留；host/remote desktop API 仍由 scope deny-list 全拒。
+
+自动证据：Vitest 107 文件、1255 通过、1 跳过；svelte-check 0 error；
+Remote 与桌面 production build exit 0。尚欠跨账号真实链路 E2E。
