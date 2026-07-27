@@ -2,6 +2,11 @@ import { invoke } from '@tauri-apps/api/core';
 import type { DataProvider, GitStatusResult, SearchResult } from './types';
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
 
+export type DataInvoke = <T>(
+  method: string,
+  args?: Record<string, unknown>,
+) => Promise<T>;
+
 // Raw backend shapes that need remapping onto the DataProvider contract. These
 // mirror the Rust structs in src-tauri/src/commands/{git,project}.rs and
 // fs/search.rs. `git_status` / `search_files` aren't real Tauri commands — the
@@ -33,44 +38,46 @@ interface RawSearchHit {
 }
 
 export class TauriDataProvider implements DataProvider {
+  constructor(private readonly call: DataInvoke = invoke) {}
+
   // ── Filesystem ──
   async getFileTree(path: string, depth = 1): Promise<FileNode> {
-    return invoke<FileNode>('get_file_tree', { path, depth });
+    return this.call<FileNode>('get_file_tree', { path, depth });
   }
   async getDirectoryChildren(path: string, offset: number, limit?: number): Promise<DirectoryPage> {
     const args: Record<string, unknown> = { path, offset };
     if (limit !== undefined) args.limit = limit;
-    return invoke<DirectoryPage>('get_directory_children', args);
+    return this.call<DirectoryPage>('get_directory_children', args);
   }
   async pathExists(path: string): Promise<boolean> {
-    return invoke<boolean>('path_exists', { path });
+    return this.call<boolean>('path_exists', { path });
   }
   async readFile(path: string): Promise<string> {
-    return invoke<string>('read_file', { path });
+    return this.call<string>('read_file', { path });
   }
   async writeFile(path: string, content: string): Promise<void> {
-    await invoke('write_file', { path, content });
+    await this.call('write_file', { path, content });
   }
   async renamePath(from: string, to: string): Promise<void> {
-    await invoke('rename_path', { from, to });
+    await this.call('rename_path', { from, to });
   }
   async deletePath(path: string): Promise<void> {
-    await invoke('delete_path', { path });
+    await this.call('delete_path', { path });
   }
   async createFile(path: string): Promise<void> {
-    await invoke('create_file', { path });
+    await this.call('create_file', { path });
   }
   async createDirectory(path: string): Promise<void> {
-    await invoke('create_directory', { path });
+    await this.call('create_directory', { path });
   }
   async copyPath(from: string, to: string): Promise<void> {
-    await invoke('copy_path', { from, to });
+    await this.call('copy_path', { from, to });
   }
   async movePath(from: string, to: string): Promise<void> {
-    await invoke('move_path', { from, to });
+    await this.call('move_path', { from, to });
   }
   async revealInFileManager(path: string): Promise<void> {
-    await invoke('reveal_in_file_manager', { path });
+    await this.call('reveal_in_file_manager', { path });
   }
 
   // ── Git ──
@@ -79,8 +86,8 @@ export class TauriDataProvider implements DataProvider {
     // pull the recent commits from `get_git_info_with_cwd` in parallel, then
     // remap both into `GitStatusResult` (identical to WsDataProvider's output).
     const [scm, info] = await Promise.all([
-      invoke<ScmRepoStatusRaw>('get_scm_status', { repoRoot }),
-      invoke<GitRepoInfoRaw>('get_git_info_with_cwd', { cwd: repoRoot }),
+      this.call<ScmRepoStatusRaw>('get_scm_status', { repoRoot }),
+      this.call<GitRepoInfoRaw>('get_git_info_with_cwd', { cwd: repoRoot }),
     ]);
     return {
       staged: scm.staged.map((f) => ({ name: f.path, status: f.status })),
@@ -90,54 +97,54 @@ export class TauriDataProvider implements DataProvider {
     };
   }
   async gitStage(repoRoot: string, paths: string[]): Promise<void> {
-    await invoke('git_stage', { repoRoot, paths });
+    await this.call('git_stage', { repoRoot, paths });
   }
   async gitUnstage(repoRoot: string, paths: string[]): Promise<void> {
-    await invoke('git_unstage', { repoRoot, paths });
+    await this.call('git_unstage', { repoRoot, paths });
   }
   async gitCommit(repoRoot: string, message: string, amend?: boolean): Promise<void> {
-    await invoke('git_commit', { repoRoot, message, amend: amend ?? false });
+    await this.call('git_commit', { repoRoot, message, amend: amend ?? false });
   }
   async gitPull(repoRoot: string): Promise<void> {
-    await invoke('git_pull', { repoRoot });
+    await this.call('git_pull', { repoRoot });
   }
   async gitPush(repoRoot: string, setUpstream?: boolean): Promise<void> {
-    await invoke('git_push', { repoRoot, setUpstream: setUpstream ?? false });
+    await this.call('git_push', { repoRoot, setUpstream: setUpstream ?? false });
   }
   async gitSync(repoRoot: string): Promise<void> {
-    await invoke('git_sync', { repoRoot });
+    await this.call('git_sync', { repoRoot });
   }
   async gitCheckout(repoRoot: string, branch: string, create?: boolean): Promise<void> {
-    await invoke('git_checkout', { repoRoot, branch, create: create ?? false });
+    await this.call('git_checkout', { repoRoot, branch, create: create ?? false });
   }
   async gitRevert(repoRoot: string, hash: string): Promise<void> {
-    await invoke('git_revert', { repoRoot, hash });
+    await this.call('git_revert', { repoRoot, hash });
   }
   async gitCherryPick(repoRoot: string, hash: string): Promise<void> {
-    await invoke('git_cherry_pick', { repoRoot, hash });
+    await this.call('git_cherry_pick', { repoRoot, hash });
   }
   async gitReset(repoRoot: string, mode: string, commit: string): Promise<void> {
-    await invoke('git_reset', { repoRoot, mode, commit });
+    await this.call('git_reset', { repoRoot, mode, commit });
   }
   async gitCreateTag(repoRoot: string, name: string, message?: string): Promise<void> {
-    await invoke('git_create_tag', { repoRoot, name, message: message ?? '' });
+    await this.call('git_create_tag', { repoRoot, name, message: message ?? '' });
   }
   async gitDiscard(repoRoot: string, paths: string[]): Promise<void> {
-    await invoke('git_discard', { repoRoot, paths });
+    await this.call('git_discard', { repoRoot, paths });
   }
   async gitCleanUntracked(repoRoot: string): Promise<void> {
-    await invoke('git_clean_untracked', { repoRoot });
+    await this.call('git_clean_untracked', { repoRoot });
   }
   async gitDiffFile(repoRoot: string, path: string, cached = false): Promise<string> {
-    return invoke<string>('git_diff_file', { repoRoot, path, cached });
+    return this.call<string>('git_diff_file', { repoRoot, path, cached });
   }
 
   // ── Search ──
   async searchFiles(query: string, path?: string): Promise<SearchResult[]> {
     if (!query.trim()) return [];
     // Empty path → fall back to the active project (mirrors the remote server).
-    const root = path?.trim() || (await invoke<string | null>('get_current_project')) || '.';
-    const hits = await invoke<RawSearchHit[]>('text_search', { root, query, maxResults: 500 });
+    const root = path?.trim() || (await this.call<string | null>('get_current_project')) || '.';
+    const hits = await this.call<RawSearchHit[]>('text_search', { root, query, maxResults: 500 });
     return hits.map((h) => ({ path: h.file, line: h.line, column: h.column, snippet: h.content }));
   }
 }

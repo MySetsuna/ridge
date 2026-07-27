@@ -27,8 +27,15 @@
   } from '@ridge/remote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
+  import type { DataProvider } from '$lib/transport';
 
-  let { ws }: { ws: RemoteLink } = $props();
+  let { ws, dataProvider, workspaceManagement = true, paneManagement = true, embedded = false }: {
+    ws: RemoteLink;
+    dataProvider?: DataProvider;
+    workspaceManagement?: boolean;
+    paneManagement?: boolean;
+    embedded?: boolean;
+  } = $props();
   let panes = $state<PaneInfo[]>([]);
   let activePaneId = $state<string | null>(null);
   // The active pane object (for its title in the header breadcrumb), derived
@@ -62,7 +69,8 @@
     search: true,
     team: false,
   });
-  let canManageWorkspaces = $state(true);
+  let canManageWorkspaces = $state(false);
+  let canManagePanes = $state(false);
   let canUseTheme = $state(true);
   // Read-only file / git-diff viewer overlay. Opened from the sidebar (tap a
   // file in the tree / a search hit → 'file'; tap a changed file in git → 'diff').
@@ -71,7 +79,7 @@
   let activeCwd = $state('');
   // Provider rooted at the active cwd — backs the file/diff viewer (the sidebar
   // builds its own internally). Recreated when the cwd changes.
-  const sidebarProvider = $derived(createWsSidebarProvider(activeCwd));
+  const sidebarProvider = $derived(createWsSidebarProvider(activeCwd, dataProvider));
 
   // iter-60 G10（导航栈语义，取代旧 §close-to-terminal 一刀切）：关闭 viewer 回
   // 「打开它的那一级」——从侧栏（文件树/git/搜索）打开的，关闭回该侧栏页；从终端
@@ -448,7 +456,8 @@
 
   function refreshCapabilities() {
     panelAvailability = getRemotePanelAvailability((capability) => ws.hasCapability(capability));
-    canManageWorkspaces = ws.hasCapability('workspace');
+    canManageWorkspaces = workspaceManagement && ws.hasCapability('workspace');
+    canManagePanes = paneManagement && ws.hasCapability('pane');
     canUseTheme = ws.hasCapability('theme');
     if (sidebarTab && !panelAvailability[sidebarTab]) sidebarTab = null;
     if (viewer?.kind === 'diff' && !panelAvailability.git) viewer = null;
@@ -460,7 +469,7 @@
   //  这里显式置为新 id 以确保即使有多个 pane 也聚焦到刚建的那个）。失败时把错误
   // 文案显示给用户，绝不静默吞掉。
   async function handleCreatePane() {
-    if (creatingPane || !canManageWorkspaces) return;
+    if (creatingPane || !canManagePanes) return;
     creatingPane = true;
     createError = '';
     try {
@@ -733,7 +742,7 @@
   });
 </script>
 
-<div class="app-root">
+<div class="app-root" class:embedded>
   {#if wsState !== 'connected'}
     <!-- §断连提示 + §fail-grading（任务 A 问题1）: live link status.
          - 非 error（disconnected/connecting）: 传输在自动重连 → 「重连中」，不阻断。
@@ -864,6 +873,7 @@
         available={panelAvailability}
         cwd={activeCwd}
         {ws}
+        {dataProvider}
         onClose={() => sidebarTab = null}
         onTabChange={selectSidebarTab}
         onOpenFile={openFileViewer}
@@ -894,6 +904,7 @@
     onThemeToggle={handleThemeToggle}
     {canUseTheme}
     {canManageWorkspaces}
+    {canManagePanes}
     bind:selectionMode
     bind:sentenceBuffer
     {panes}
@@ -906,6 +917,7 @@
 
 <style>
   .app-root{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--rg-bg);color:var(--rg-fg)}
+  .app-root.embedded{position:absolute}
   /* iter-61: 终端区叠放层——WebGPU host 画布垫底，终端容器（host 模式透明）在上。 */
   .term-stage{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
   .host-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:0;display:block;pointer-events:none}

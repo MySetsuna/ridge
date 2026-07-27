@@ -24,7 +24,7 @@
 //     的 cloudAuth）取 user token，从 URL query 或 hostname 取 hostDevice/username 覆盖默认。
 //   - 幂等：重复 boot 返回同一句柄（避免重复 attach / 多条 WebRTC）。
 
-import { bridge } from '$lib/transport/tauriShim/bridge';
+import { bridge, type TauriBridge } from '$lib/transport/tauriShim/bridge';
 import { setTransport } from '$lib/transport';
 import { TauriDataProvider } from '$lib/transport/tauri';
 import {
@@ -75,6 +75,13 @@ export interface CloudControllerHandle {
   tryTrustGrant(timeoutMs?: number): Promise<boolean>;
   /** 断开并释放（幂等）：close 适配器（→ provider.disconnect）。 */
   disconnect(): void;
+}
+
+export interface CloudControllerBootOptions {
+  isolated?: boolean;
+  targetBridge?: TauriBridge;
+  useGlobalWorkspace?: boolean;
+  installGlobalTransport?: boolean;
 }
 
 /** §4 controller→host TOTP 验证默认超时（ms）。蜂窝网络加 TURN relay 延迟高，从 10s 提至 20s。 */
@@ -131,8 +138,13 @@ function detachForegroundListeners(): void {
  *
  * @throws 缺少 userToken / username（无法拼 room / 鉴权）时抛错。
  */
-export function startCloudControllerBoot(params: CloudControllerBootParams): CloudControllerHandle {
-  if (active) return active; // 幂等：已接线
+export function startCloudControllerBoot(
+  params: CloudControllerBootParams,
+  options: CloudControllerBootOptions = {},
+): CloudControllerHandle {
+  const isolated = options.isolated === true;
+  if (!isolated && active) return active; // 幂等：已接线
+  const targetBridge = options.targetBridge ?? bridge;
 
   const auth = authSnapshot();
   const userToken = params.userToken ?? auth.userToken ?? undefined;
@@ -171,9 +183,11 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
   });
 
   // bridge 内部建 L2 RpcClient + D9 $/hello + use-global-workspace（与 LAN boot 一致）。
-  bridge.attach(adapter);
+  targetBridge.attach(adapter, { useGlobalWorkspace: options.useGlobalWorkspace });
   // FS/git/search 等 DataProvider 消费者走同一 shimmed invoke（经 bridge → RpcClient）。
-  setTransport(new TauriDataProvider());
+  if (options.installGlobalTransport !== false) {
+    setTransport(new TauriDataProvider((method, args) => targetBridge.invoke(method, args)));
+  }
 
   // 发起连接（信令 → offer → E2EE → connected）。失败经 provider onError/onState 透传。
   void adapter.connect();
@@ -182,15 +196,15 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
   // 使上方 getter `() => get(cloudAuth).userToken` 在 WS 重连时总能拿到有效 token。
   // 注意：页面在后台时浏览器会暂停/节流 setInterval，故仅靠此 timer 不足以覆盖后台休眠
   // 超过 15 分钟的场景——回前台补偿逻辑见下方 attachForegroundListeners。
-  if (!params.fixedToken) {
+  if (!params.fixedToken && !isolated) {
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(() => { void refreshAccess(); }, TOKEN_REFRESH_INTERVAL_MS);
   }
 
   // 回前台探活：token 刷新后立即唤醒 provider 重连（跳过退避等待）。
   // visibilitychange + online + pageshow + focus 四路覆盖各浏览器/系统的恢复事件。
-  detachForegroundListeners(); // 防止重复 boot 时残留旧监听
-  if (!params.fixedToken) attachForegroundListeners(() => {
+  if (!isolated) detachForegroundListeners(); // 防止重复 boot 时残留旧监听
+  if (!params.fixedToken && !isolated) attachForegroundListeners(() => {
     // 仅在页面可见时处理（过滤 focus 在 tab 切换时的重复触发）。
     if (typeof document !== 'undefined' && document.hidden) return;
     // 先刷新 token（单飞：refreshAccess 内部去重，多次唤醒不并发），
@@ -208,17 +222,18 @@ export function startCloudControllerBoot(params: CloudControllerBootParams): Clo
       return performTrustHandshake(adapter, timeoutMs);
     },
     disconnect() {
-      detachForegroundListeners(); // 回收前台监听，防内存泄漏
-      if (refreshTimer) {
+      if (!isolated) detachForegroundListeners(); // 回收前台监听，防内存泄漏
+      if (!isolated && refreshTimer) {
         clearInterval(refreshTimer);
         refreshTimer = null;
       }
+      targetBridge.detach();
       adapter.close();
       adapter.dispose();
-      if (active === handle) active = null;
+      if (!isolated && active === handle) active = null;
     },
   };
-  active = handle;
+  if (!isolated) active = handle;
   return handle;
 }
 

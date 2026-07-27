@@ -29,7 +29,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { PaneNode } from '$lib/types';
 import type { CloudControllerHandle } from '$lib/remote/cloud/cloudControllerBoot';
-import { bridge } from '$lib/transport/tauriShim/bridge';
+import { bridge, type TauriEvent } from '$lib/transport/tauriShim/bridge';
 import {
   classifyFailure,
   type RemoteLink,
@@ -110,8 +110,32 @@ function flattenLeaves(node: PaneNode | null | undefined): PaneInfo[] {
   return node.children.flatMap(flattenLeaves);
 }
 
+interface CloudRemoteBridge {
+  invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+  listen<T>(name: string, cb: (event: TauriEvent<T>) => void): Promise<UnlistenFn> | UnlistenFn;
+  subscribePane(paneId: string, workspaceId?: string): Promise<void> | void;
+  hasCapability(capability: string): boolean;
+  onCapabilitiesChanged(fn: () => void): UnlistenFn;
+}
+
+const defaultCloudRemoteBridge: CloudRemoteBridge = {
+  invoke,
+  listen,
+  async subscribePane(paneId, workspaceId) {
+    await invoke('register_pane_delta_channel', {
+      workspaceId: workspaceId ?? '',
+      paneId,
+      channel: new Channel(),
+    });
+  },
+  hasCapability: (capability) => bridge.hasCapability(capability),
+  onCapabilitiesChanged: (fn) => bridge.onCapabilitiesChanged(fn),
+};
+
 export class CloudRemoteConnection implements RemoteLink {
   private readonly handle: CloudControllerHandle;
+  private readonly bridge: CloudRemoteBridge;
+  private readonly fixedAuthorized: boolean;
 
   private _state: ConnectionState = 'connecting';
   // 最近一次失败分级（任务 A 问题1）。云端服务端「已认证但无权」会经信令 error 帧把
@@ -154,16 +178,22 @@ export class CloudRemoteConnection implements RemoteLink {
   // Guards against overlapping reconnect handling on a flapping link.
   private _reconnecting = false;
 
-  constructor(handle: CloudControllerHandle) {
+  constructor(
+    handle: CloudControllerHandle,
+    bridgeInstance: CloudRemoteBridge = defaultCloudRemoteBridge,
+    options: { fixedAuthorized?: boolean } = {},
+  ) {
     this.handle = handle;
+    this.bridge = bridgeInstance;
+    this.fixedAuthorized = options.fixedAuthorized === true;
   }
 
   hasCapability(capability: string): boolean {
-    return bridge.hasCapability(capability);
+    return this.bridge.hasCapability(capability);
   }
 
   onCapabilitiesChanged(fn: () => void): () => void {
-    return bridge.onCapabilitiesChanged(fn);
+    return this.bridge.onCapabilitiesChanged(fn);
   }
 
   /**
@@ -174,14 +204,14 @@ export class CloudRemoteConnection implements RemoteLink {
    */
   async init(): Promise<void> {
     try {
-      this._activeWorkspaceId = await invoke<string>('get_active_workspace_id');
+      this._activeWorkspaceId = await this.bridge.invoke<string>('get_active_workspace_id');
     } catch {
       this._activeWorkspaceId = '';
     }
     // Host pushes `pane-tree-changed` when ITS layout mutates (desktop user splits /
     // closes / a teammate agent reshapes panes). Re-list so the mobile tracks it.
     try {
-      this.treeUnlisten = await listen('pane-tree-changed', () => {
+      this.treeUnlisten = await this.bridge.listen('pane-tree-changed', () => {
         void this._refreshPanes();
       });
     } catch {
@@ -193,7 +223,7 @@ export class CloudRemoteConnection implements RemoteLink {
     // header title/cwd and the pane-switcher popup refresh in real time instead
     // of waiting for the next layout poll.
     try {
-      this.metaUnlisten = await listen<{ paneId?: string; title?: string; cwd?: string }>(
+      this.metaUnlisten = await this.bridge.listen<{ paneId?: string; title?: string; cwd?: string }>(
         'pane-meta-changed',
         (e) => {
           const p = e.payload;
@@ -278,10 +308,10 @@ export class CloudRemoteConnection implements RemoteLink {
       // no-op ok); a full re-handshake re-gates it, so the cached code re-opens it —
       // unless a long outage expired the code's time window, in which case the host
       // rejects and we surface 'error' so the user refreshes for a fresh code.
-      let ok = true;
-      if (this._verifiedCode) {
+      let ok = this.fixedAuthorized;
+      if (!this.fixedAuthorized && this._verifiedCode) {
         ok = await this.handle.verifyTotp(this._verifiedCode).catch(() => false);
-      } else {
+      } else if (!this.fixedAuthorized) {
         // §7.4：本会话经信任授权进入（无缓存 TOTP 码）。full re-handshake 会重置 host 的
         // §4 门，故重连后重跑静默信任握手重新开门；旧 host 无 challenge → 超时 false。
         ok = await this.handle.tryTrustGrant().catch(() => false);
@@ -311,7 +341,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   private async _loadTheme(): Promise<void> {
     try {
-      const entry = await invoke<ThemeEntryLite | null>('get_active_theme_entry');
+      const entry = await this.bridge.invoke<ThemeEntryLite | null>('get_active_theme_entry');
       if (entry && entry.colors) {
         const themeType = entry.type === 'light' ? 'light' : 'dark';
         this._lastTheme = { id: entry.id, themeType, colors: entry.colors };
@@ -385,7 +415,7 @@ export class CloudRemoteConnection implements RemoteLink {
   private async _refreshPanes(): Promise<void> {
     let leaves: PaneInfo[];
     try {
-      const layout = await invoke<PaneNode>('get_pane_layout');
+      const layout = await this.bridge.invoke<PaneNode>('get_pane_layout');
       leaves = flattenLeaves(layout);
     } catch {
       return; // host not ready / transient — leave the UI as-is
@@ -417,7 +447,7 @@ export class CloudRemoteConnection implements RemoteLink {
     if (!cursor || cursor.atOldest || this.fetchingOlder.has(paneId)) return null;
     this.fetchingOlder.add(paneId);
     try {
-      const chunk = await invoke<ScrollbackChunk>('get_pane_scrollback_before', {
+      const chunk = await this.bridge.invoke<ScrollbackChunk>('get_pane_scrollback_before', {
         paneId,
         beforeSeq: cursor.oldestSeq,
         maxBytes: REMOTE_OLDER_SCROLLBACK_BYTES,
@@ -460,7 +490,7 @@ export class CloudRemoteConnection implements RemoteLink {
         // the prior get_pane_resync_preamble was never in the real allow-list → dead fix).
         let seeded = false;
         try {
-          const rf = await invoke<PaneResyncFrame>('get_pane_resync_frame', {
+          const rf = await this.bridge.invoke<PaneResyncFrame>('get_pane_resync_frame', {
             paneId,
             maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
           });
@@ -476,7 +506,7 @@ export class CloudRemoteConnection implements RemoteLink {
         }
         if (!seeded) {
           try {
-            const chunk = await invoke<ScrollbackChunk>('get_pane_scrollback_tail', {
+            const chunk = await this.bridge.invoke<ScrollbackChunk>('get_pane_scrollback_tail', {
               paneId,
               maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
             });
@@ -499,7 +529,7 @@ export class CloudRemoteConnection implements RemoteLink {
       // Per-pane `pty-output-{ws}-{pane}` event. The bridge keys its dispatch on the
       // trailing pane UUID only, so the ws segment is cosmetic — but we use the real
       // active ws for fidelity. Payload arrives as decoded `{data}`; re-encode to bytes.
-      const unlisten = await listen<{ data: string }>(
+      const unlisten = await this.bridge.listen<{ data: string }>(
         `pty-output-${this._activeWorkspaceId}-${paneId}`,
         (e) => {
           const bytes = this.encoder.encode(e.payload?.data ?? '');
@@ -514,11 +544,7 @@ export class CloudRemoteConnection implements RemoteLink {
       this.ptyUnlisten.set(paneId, unlisten);
       // Tell the host to start streaming (core.ts maps this to bridge.subscribePane →
       // 'subscribe-pane' notify; the Channel arg is ignored in the browser shim).
-      await invoke('register_pane_delta_channel', {
-        workspaceId: this._activeWorkspaceId,
-        paneId,
-        channel: new Channel(),
-      });
+      await this.bridge.subscribePane(paneId, this._activeWorkspaceId);
     } catch {
       /* subscribe failed — pane stays blank; a later refresh/re-subscribe retries */
     } finally {
@@ -528,7 +554,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   sendStdin(paneId: string, data: string): void {
     if (!paneId) return;
-    void invoke('write_to_pty', { paneId, data }).catch(() => {});
+    void this.bridge.invoke('write_to_pty', { paneId, data }).catch(() => {});
   }
 
   refreshPane(paneId: string, rows: number, cols: number, _pixelWidth?: number, _pixelHeight?: number): void {
@@ -540,7 +566,7 @@ export class CloudRemoteConnection implements RemoteLink {
   private _resize(paneId: string, rows: number, cols: number): void {
     if (!paneId || rows <= 0 || cols <= 0) return;
     this._refreshSeq++;
-    void invoke('resize_pane', {
+    void this.bridge.invoke('resize_pane', {
       workspaceId: this._activeWorkspaceId,
       paneId,
       rows,
@@ -553,21 +579,21 @@ export class CloudRemoteConnection implements RemoteLink {
 
   async createPane(): Promise<string | null> {
     try {
-      const layout = await invoke<PaneNode>('get_pane_layout');
+      const layout = await this.bridge.invoke<PaneNode>('get_pane_layout');
       const leaves = flattenLeaves(layout);
       if (leaves.length > 0) {
         // Add a terminal to the current workspace by splitting the first leaf — the
         // desktop's own "new terminal" primitive. The mobile renders one pane at a
         // time, so it just shows the new pane; the host sees a split (shared reality).
-        const result = await invoke<{ pane_id: string }>('split_pane', {
+        const result = await this.bridge.invoke<{ pane_id: string }>('split_pane', {
           paneId: leaves[0].id,
           direction: 'horizontal',
         });
         return result.pane_id || null;
       }
       // Empty workspace: spin up a fresh one and surface its first pane.
-      await invoke<string>('create_workspace');
-      const after = flattenLeaves(await invoke<PaneNode>('get_pane_layout'));
+      await this.bridge.invoke<string>('create_workspace');
+      const after = flattenLeaves(await this.bridge.invoke<PaneNode>('get_pane_layout'));
       return after[0]?.id ?? null;
     } catch {
       return null;
@@ -576,7 +602,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   async closePane(paneId: string): Promise<boolean> {
     try {
-      await invoke('close_pane', { paneId });
+      await this.bridge.invoke('close_pane', { paneId });
       const unlisten = this.ptyUnlisten.get(paneId);
       if (unlisten) {
         this.ptyUnlisten.delete(paneId);
@@ -598,13 +624,13 @@ export class CloudRemoteConnection implements RemoteLink {
     agentId?: string,
   ): Promise<void> {
     if (on) {
-      await invoke('register_teammate_agent', {
+      await this.bridge.invoke('register_teammate_agent', {
         workspaceId,
         paneId,
         agentId: agentId || 'agent',
       });
     } else {
-      await invoke('release_teammate_agent', { workspaceId, paneId });
+      await this.bridge.invoke('release_teammate_agent', { workspaceId, paneId });
     }
     void this._refreshPanes();
   }
@@ -612,7 +638,7 @@ export class CloudRemoteConnection implements RemoteLink {
   // iter-63：终端类型列表与切换。与 LAN 腿同一对命令、与桌面同一个 host 检测器
   // （`detect_available_shells`），三处不会漂移。
   async listShells(): Promise<RemoteShellInfo[]> {
-    const r = await invoke<RemoteShellInfo[]>('detect_available_shells', {});
+    const r = await this.bridge.invoke<RemoteShellInfo[]>('detect_available_shells', {});
     return Array.isArray(r) ? r : [];
   }
 
@@ -621,17 +647,21 @@ export class CloudRemoteConnection implements RemoteLink {
     paneId: string,
     shell: RemoteShellInfo,
   ): Promise<void> {
-    await invoke('change_pane_shell', { paneId, shell: shell.program, args: shell.args ?? [] });
+    await this.bridge.invoke('change_pane_shell', {
+      paneId,
+      shell: shell.program,
+      args: shell.args ?? [],
+    });
     // 重建后必须再激活，否则新 PTY 无订阅者，远端只看到死屏。
-    await invoke('activate_pane_pty', { workspaceId, paneId });
+    await this.bridge.invoke('activate_pane_pty', { workspaceId, paneId });
   }
 
   // ── workspaces ───────────────────────────────────────────────────────────────
   async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {
     try {
       const [list, activeId] = await Promise.all([
-        invoke<BackendWorkspace[]>('list_workspaces'),
-        invoke<string>('get_active_workspace_id').catch(() => this._activeWorkspaceId),
+        this.bridge.invoke<BackendWorkspace[]>('list_workspaces'),
+        this.bridge.invoke<string>('get_active_workspace_id').catch(() => this._activeWorkspaceId),
       ]);
       if (activeId) this._activeWorkspaceId = activeId;
       const workspaces = (list ?? []).map((w) => ({
@@ -647,7 +677,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   // P1 roster：cloud 侧经 tauriShim invoke → bridge.invoke → allowlist 门控。
   async getTeammateTopology(workspaceId?: string): Promise<TeammateTopology> {
-    return invoke<TeammateTopology>(
+    return this.bridge.invoke<TeammateTopology>(
       'get_teammate_topology',
       workspaceId ? { workspaceId } : {},
     );
@@ -655,7 +685,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   // P2 阶段 1：脱敏待审批快照（无 action 全文），同 allowlist 门控。
   async listHitlPending(): Promise<HitlPendingItem[]> {
-    return invoke<HitlPendingItem[]>('list_hitl_pending', {});
+    return this.bridge.invoke<HitlPendingItem[]>('list_hitl_pending', {});
   }
 
   // P2 阶段 2：远端裁决（nonce 单次消费；仅 approve/reject）。
@@ -664,7 +694,7 @@ export class CloudRemoteConnection implements RemoteLink {
     nonce: string,
     verdict: 'approve' | 'reject',
   ): Promise<HitlResolveOutcome> {
-    const r = await invoke<{ outcome: HitlResolveOutcome }>('resolve_hitl_remote', {
+    const r = await this.bridge.invoke<{ outcome: HitlResolveOutcome }>('resolve_hitl_remote', {
       id,
       nonce,
       verdict,
@@ -673,7 +703,7 @@ export class CloudRemoteConnection implements RemoteLink {
   }
 
   async getOrchestrationHealth(): Promise<import('@ridge/remote').OrchestrationHealth> {
-    const h = await invoke<{ suspendedAgents?: number; pendingHitl?: number }>(
+    const h = await this.bridge.invoke<{ suspendedAgents?: number; pendingHitl?: number }>(
       'get_orchestration_health',
       {},
     );
@@ -685,7 +715,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   async switchWorkspace(workspaceId: string): Promise<boolean> {
     try {
-      await invoke('switch_workspace', { workspaceId });
+      await this.bridge.invoke('switch_workspace', { workspaceId });
       this._activeWorkspaceId = workspaceId;
       return true;
     } catch {
@@ -695,7 +725,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   async createWorkspace(name?: string): Promise<string | null> {
     try {
-      const id = await invoke<string>('create_workspace', name ? { name } : {});
+      const id = await this.bridge.invoke<string>('create_workspace', name ? { name } : {});
       return id || null;
     } catch {
       return null;
@@ -706,7 +736,7 @@ export class CloudRemoteConnection implements RemoteLink {
     import('@ridge/remote').SavedWorkspaceFile[]
   > {
     try {
-      const raw = await invoke<
+      const raw = await this.bridge.invoke<
         { name?: string; path?: string; mtime_secs?: number; mtimeSecs?: number }[]
       >('list_saved_workspace_files');
       if (!Array.isArray(raw)) return [];
@@ -724,7 +754,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   async openWorkspaceFromFile(path: string): Promise<string | null> {
     try {
-      const id = await invoke<string>('open_workspace_from_file', { path });
+      const id = await this.bridge.invoke<string>('open_workspace_from_file', { path });
       return id || null;
     } catch (e) {
       throw e instanceof Error ? e : new Error(String(e));
@@ -733,7 +763,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   async closeWorkspace(workspaceId: string): Promise<boolean> {
     try {
-      await invoke('close_workspace', { workspaceId });
+      await this.bridge.invoke('close_workspace', { workspaceId });
       return true;
     } catch {
       return false;
@@ -742,7 +772,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   async listWorkspacePanes(workspaceId: string): Promise<PaneInfo[]> {
     try {
-      const layout = await invoke<PaneNode>('get_pane_layout_for', { workspaceId });
+      const layout = await this.bridge.invoke<PaneNode>('get_pane_layout_for', { workspaceId });
       return flattenLeaves(layout);
     } catch {
       return [];
@@ -760,7 +790,7 @@ export class CloudRemoteConnection implements RemoteLink {
   }
   private async _cycleTheme(currentId: string): Promise<void> {
     try {
-      const tf = await invoke<{ themes?: ThemeEntryLite[] }>('get_theme_data');
+      const tf = await this.bridge.invoke<{ themes?: ThemeEntryLite[] }>('get_theme_data');
       const themes = (tf?.themes ?? []).filter((t) => t && t.id && t.colors);
       if (themes.length === 0) return;
       const cur = themes.findIndex((t) => t.id === currentId);

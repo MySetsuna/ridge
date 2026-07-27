@@ -21,6 +21,7 @@
     ws,
     backendName = 'Canvas2D',
     canManageWorkspaces = true,
+    canManagePanes = true,
     onWorkspacesChanged,
   }: {
     panes: PaneInfo[];
@@ -30,6 +31,7 @@
     ws?: RemoteLink;
     backendName?: string;
     canManageWorkspaces?: boolean;
+    canManagePanes?: boolean;
     // 工作区列表发生增删后通知上层刷新（create/close-workspace-result 被
     // _sendAndWait 消费，不会触发 MainApp.onMessage，故需显式回调拉取新列表）。
     onWorkspacesChanged?: () => void;
@@ -281,7 +283,7 @@
   }
 
   async function newPane() {
-    if (!ws || busy || !canManageWorkspaces) return;
+    if (!ws || busy || !canManagePanes) return;
     busy = true;
     err = '';
     try {
@@ -319,7 +321,7 @@
 
   async function closePaneRow(e: Event, id: string) {
     e.stopPropagation();
-    if (!ws || busy || !canManageWorkspaces) return;
+    if (!ws || busy || !canManagePanes) return;
     const idx = panes.findIndex((p) => p.id === id);
     busy = true;
     err = '';
@@ -457,7 +459,7 @@
                     </span>
                     <!-- agent 标记：终端项右侧、关闭按钮左侧。与桌面分屏标题栏同款
                          「图标 + 文字」，光一个淡图标在手机上根本看不出标没标（iter-62）。 -->
-                    {#if canManageWorkspaces && ws?.markPaneAgent}
+                    {#if canManagePanes && ws?.markPaneAgent}
                       <span
                         class="row-agent"
                         class:on={pane.isAgent}
@@ -474,7 +476,7 @@
                         </span>
                       </span>
                     {/if}
-                    {#if canManageWorkspaces && isActiveWs}
+                    {#if canManagePanes && isActiveWs}
                       <PaneShellPicker
                         {ws}
                         workspaceId={wsp.id}
@@ -482,7 +484,7 @@
                         onswitched={() => ws?.listPanes()}
                       />
                     {/if}
-                    {#if canManageWorkspaces && isActiveWs && wsPanes.length > 1}
+                    {#if canManagePanes && isActiveWs && wsPanes.length > 1}
                       <span
                         class="row-close"
                         role="button"
@@ -500,7 +502,7 @@
                 {#if wsPanes.length === 0}
                   <div class="pane-empty">{loadingPeek ? $t('mobile.loading') : $t('mobile.treeNoTerminal')}</div>
                 {/if}
-                {#if canManageWorkspaces && isActiveWs}
+                {#if canManagePanes && isActiveWs}
                   <button class="pane-new" onclick={newPane} disabled={busy}>
                     <Plus class="w-3.5 h-3.5 shrink-0" />
                     <span>{$t('mobile.treeNewTerminal')}</span>

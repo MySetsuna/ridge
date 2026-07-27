@@ -41,9 +41,7 @@ import {
 } from '$lib/hosts/foreignHistorySession';
 import * as cloudAuth from '@ridge/remote/shared/cloud/auth';
 import {
-  BASE_DOMAIN,
   acceptWorkspaceShare,
-  cloudHttpScheme,
   listWorkspaceShares,
   listSharedWithMe,
   revokeWorkspaceShare,
@@ -60,6 +58,11 @@ import {
   deleteRemotePane,
   unbindRemotePane,
 } from '$lib/hosts/remotePaneBindings';
+import {
+  activeSharedWorkspaceProjection,
+  currentSharedWorkspaceProjection,
+  openSharedWorkspaceProjection,
+} from '$lib/remote/cloud/sharedWorkspaceProjection';
 
 export type HostKind = 'headless' | 'remote' | 'rdg' | 'shared' | 'sharing';
 export type HostStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
@@ -144,6 +147,48 @@ export const hostsLoading = writable(false);
 export const hostsError = writable('');
 
 const HEADLESS_HOST_ID = 'headless';
+
+activeSharedWorkspaceProjection.subscribe((projection) => {
+  if (!projection) return;
+  hostsStore.update((hosts) => hosts.map((host) => {
+    if (host.kind !== 'shared') return host;
+    const workspace = host.workspaces.find((entry) => entry.shareGrantId === projection.grantId);
+    if (!workspace) return host;
+    const seed = host.sessions.find((session) => session.shareGrantId === projection.grantId);
+    const base: HostSession = seed ?? {
+      socket: host.id,
+      name: projection.name,
+      workspaceId: projection.workspaceId,
+      shareGrantId: projection.grantId,
+      shareStatus: workspace.shareStatus,
+      ownerUsername: projection.ownerUsername,
+      deviceName: projection.deviceName,
+      windows: 0,
+      panes: 0,
+      width: 0,
+      height: 0,
+      attached: true,
+    };
+    const projected = projection.panes.map((pane): HostSession => ({
+      ...base,
+      name: pane.title || pane.id,
+      remoteSessionId: pane.id,
+      windows: 0,
+      panes: 1,
+      attached: true,
+      cwd: pane.cwd,
+      isAgent: pane.isAgent,
+    }));
+    const otherSessions = host.sessions.filter((session) => session.shareGrantId !== projection.grantId);
+    return {
+      ...host,
+      sessions: [...otherSessions, ...projected],
+      workspaces: host.workspaces.map((entry) => entry.shareGrantId === projection.grantId
+        ? { ...entry, name: projection.name, sessions: projected }
+        : entry),
+    };
+  }));
+});
 
 export interface RegisteredHostLink {
   hostId: string;
@@ -423,6 +468,7 @@ export async function refreshHosts(): Promise<void> {
     try {
       const { shares } = await listSharedWithMe(auth.userToken);
       const grouped = new Map<string, Host>();
+      const activeProjection = currentSharedWorkspaceProjection();
       for (const share of shares) {
         if (!['pending', 'active'].includes(share.status)) continue;
         const key = `shared:${share.ownerUserId}:${share.deviceName}`;
@@ -439,27 +485,46 @@ export async function refreshHosts(): Promise<void> {
           };
           grouped.set(key, host);
         }
-        const session: HostSession = {
+        const baseSession = {
           socket: key,
-          name: `工作区 ${share.workspaceId.slice(0, 8)}`,
-          remoteSessionId: share.workspaceId,
           workspaceId: share.workspaceId,
           shareGrantId: share.id,
           shareStatus: share.status,
           ownerUsername: share.ownerUsername,
           deviceName: share.deviceName,
-          windows: 1,
-          panes: 0,
-          width: 0,
-          height: 0,
-          attached: false,
         };
-        host.sessions.push(session);
+        const projection = activeProjection?.grantId === share.id
+          ? activeProjection
+          : null;
+        const sessions: HostSession[] = projection
+          ? projection.panes.map((pane) => ({
+              ...baseSession,
+              name: pane.title || pane.id,
+              remoteSessionId: pane.id,
+              windows: 0,
+              panes: 1,
+              width: 0,
+              height: 0,
+              attached: true,
+              cwd: pane.cwd,
+              isAgent: pane.isAgent,
+            }))
+          : [{
+              ...baseSession,
+              name: `工作区 ${share.workspaceId.slice(0, 8)}`,
+              remoteSessionId: share.workspaceId,
+              windows: 1,
+              panes: 0,
+              width: 0,
+              height: 0,
+              attached: false,
+            }];
+        host.sessions.push(...sessions);
         host.workspaces.push({
           id: share.workspaceId,
-          name: session.name,
+          name: projection?.name || `工作区 ${share.workspaceId.slice(0, 8)}`,
           active: share.status === 'active',
-          sessions: [],
+          sessions: projection ? sessions : [],
           shareGrantId: share.id,
           shareStatus: share.status,
           role: 'operator',
@@ -698,11 +763,14 @@ export async function openSharedWorkspace(session: HostSession): Promise<void> {
   if (!session.shareGrantId || !session.ownerUsername || !session.deviceName) {
     throw new Error('共享工作区信息不完整');
   }
-  const url =
-    `${cloudHttpScheme(BASE_DOMAIN)}://${session.deviceName}-${session.ownerUsername}.${BASE_DOMAIN}` +
-    `/?share=${encodeURIComponent(session.shareGrantId)}`;
-  const { openUrl } = await import('@tauri-apps/plugin-opener');
-  await openUrl(url);
+  await openSharedWorkspaceProjection({
+    grantId: session.shareGrantId,
+    workspaceId: session.workspaceId || session.remoteSessionId || '',
+    name: session.name,
+    ownerUsername: session.ownerUsername,
+    deviceName: session.deviceName,
+  });
+  await refreshHosts();
 }
 
 export async function revokeSharedWorkspace(grantId: string): Promise<void> {

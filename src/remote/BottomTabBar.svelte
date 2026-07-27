@@ -15,6 +15,7 @@
     onThemeToggle,
     canUseTheme = true,
     canManageWorkspaces = true,
+    canManagePanes = true,
     selectionMode = $bindable(false),
     sentenceBuffer = $bindable(false),
     backendName = 'Canvas2D',
@@ -30,6 +31,7 @@
     onThemeToggle?: () => void;
     canUseTheme?: boolean;
     canManageWorkspaces?: boolean;
+    canManagePanes?: boolean;
     selectionMode?: boolean;
     /** 句级输入缓冲（语音听写友好）开关。 */
     sentenceBuffer?: boolean;
@@ -79,6 +81,7 @@
     {backendName}
     {onWorkspacesChanged}
     {canManageWorkspaces}
+    {canManagePanes}
   />
 </div>
 

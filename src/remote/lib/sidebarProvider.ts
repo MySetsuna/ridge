@@ -4,7 +4,7 @@
 // shared sidebar components' `SidebarProvider` contract, so the remote renders
 // the *same* file-tree / git / search components as the desktop.
 
-import { getTransport } from '$lib/transport';
+import { getTransport, type DataProvider } from '$lib/transport';
 import type {
   SidebarProvider,
   DirListing,
@@ -21,8 +21,8 @@ function parentOf(path: string): string | null {
 }
 
 /** Build a `SidebarProvider` rooted at `cwd` (the active pane's working dir). */
-export function createWsSidebarProvider(cwd: string): SidebarProvider {
-  const dp = getTransport();
+export function createWsSidebarProvider(cwd: string, dataProvider?: DataProvider): SidebarProvider {
+  const dp = dataProvider ?? getTransport();
   const root = cwd || '/';
 
   return {

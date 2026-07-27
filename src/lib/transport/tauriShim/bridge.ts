@@ -37,7 +37,7 @@ export type UnlistenFn = () => void;
 
 const INVOKE_TIMEOUT_MS = 20_000;
 
-class TauriBridge {
+export class TauriBridge {
   private transport: ChannelTransport | null = null;
   private rpc: RpcClient | null = null;
   private listenerId = 0;
@@ -59,7 +59,8 @@ class TauriBridge {
    *  boot in +layout.svelte after the handshake succeeds. The boot builds the
    *  adapter (e.g. `createLanWsTransport(conn)`) so the bridge stays free of any
    *  concrete-transport dependency. */
-  attach(transport: ChannelTransport): void {
+  attach(transport: ChannelTransport, options: { useGlobalWorkspace?: boolean } = {}): void {
+    this.detach();
     this.transport = transport;
     this.rpc = new RpcClient(transport, { defaultTimeoutMs: INVOKE_TIMEOUT_MS });
 
@@ -93,7 +94,23 @@ class TauriBridge {
     // desktop and switches workspaces via the real `switch_workspace` command, so
     // the host must track the GLOBAL active workspace for this client (not the
     // mobile per-client view). See `use_global_ws` in remote/server.rs.
-    this.rpc.notify('use-global-workspace');
+    if (options.useGlobalWorkspace !== false) this.rpc.notify('use-global-workspace');
+  }
+
+  detach(): void {
+    for (const dispose of this.disposers.splice(0)) {
+      try {
+        dispose();
+      } catch {
+        // stale transport listener
+      }
+    }
+    this.rpc?.dispose();
+    this.rpc = null;
+    this.transport = null;
+    this.eventListeners.clear();
+    this.ptyListeners.clear();
+    this.subscribedPanes.clear();
   }
 
   /** True if the host advertised `capability` in the D9 `$/hello` intersection
