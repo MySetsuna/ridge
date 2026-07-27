@@ -1,7 +1,7 @@
 # CONTRACT — Iteration 61 / Remote-Agent 贯通（约 2 日）
 
 需求：`REQ-REMOTE-01/02`、`REQ-CLOUD-01`、`REQ-MOBILE-01`、`REQ-AGENT-01/02`  
-设计：`docs/superpowers/specs/2026-07-27-rdg-remote-agent-center-integration-design.md`
+设计：`docs/specs/2026-07-27-rdg-remote-agent-center-integration-design.md`
 
 ## 目标 1：rdg 显式 Remote 控制面
 

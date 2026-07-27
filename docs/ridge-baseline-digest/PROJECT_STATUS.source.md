@@ -1121,7 +1121,7 @@ wind
 
  有 138 个已跟踪 Markdown，其中 
 
-docs/superpowers/**
+docs/specs/**
 
  56 个、
 

@@ -140,7 +140,7 @@
 - 验证：cargo workspace exit 0；workspace::tests 2 绿；vitest 559/1skip；svelte-check 0 errors；双脚本 exit 0。
 - 熔断：无停机触发；同源化未暴露锁序冲突；rename 未触发减法条款。
 - 下一步：iteration 11——M1 切片一（suspended panes 落 sidecar + 启动恢复）主线 + P2 阶段 2 设计文档 + 维护节律。存量趋收敛：其后仅剩 G1 阶段二与 M2/M1 后续切片，做尽即转低频维护态待用户轨。
-- 驳回：NotebookLM「ridge-core 自动加载 sidecar」（层错——suspend 居 src-tauri）；「关区写入 >200ms 停机线」（不可判定，改 IO fail-open 韧性条款）；`docs/designs/` 路径（归 superpowers/specs 惯例）；M2 并轮建议（留待切片一落地后裁决）。采纳：M1 主线、低频维护态与「制造工作」红线、Windows 竞态缺口文档声明存照。
+- 驳回：NotebookLM「ridge-core 自动加载 sidecar」（层错——suspend 居 src-tauri）；「关区写入 >200ms 停机线」（不可判定，改 IO fail-open 韧性条款）；`docs/designs/` 路径（归 `docs/specs` 惯例）；M2 并轮建议（留待切片一落地后裁决）。采纳：M1 主线、低频维护态与「制造工作」红线、Windows 竞态缺口文档声明存照。
 
 ## 2026-07-23 — iteration 9
 

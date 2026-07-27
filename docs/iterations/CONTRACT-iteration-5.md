@@ -9,7 +9,7 @@
 
 - 产出 `docs/security/cloud-fallback-matrix.md`：枚举每个 host/controller 构造点（desktop host `cloudHostStore.ts`、CLI host `ridge-cli`、LAN host、cloud controller desktop/mobile）× 每个 verifier（明文 TOTP、totp-bind、trusted-controller、设备身份 0x02、E2EE pubkey 绑定）的注入状态、回落条件与 `file:line` 证据。
 - 新增确定性测试：`CloudHostBridge` 在「verifier 注入」与「verifier 缺失」两种构造下的门控/回落行为逐项断言（含：缺 totpVerifier 时的放行面、缺 bindTranscript 时 0x01 回落语义）。
-- 遥测（握手版本/绑定模式/回落原因计数）与退役条件只出设计文档 `docs/superpowers/specs/2026-07-23-s1-fallback-telemetry-retirement-design.md`，不实现产品遥测、不翻 fail-closed 开关。
+- 遥测（握手版本/绑定模式/回落原因计数）与退役条件只出设计文档 `docs/specs/2026-07-23-s1-fallback-telemetry-retirement-design.md`，不实现产品遥测、不翻 fail-closed 开关。
 
 ### G2[T3] 生产两条版本线只读状态证据
 

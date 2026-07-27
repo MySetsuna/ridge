@@ -3,8 +3,8 @@
 ## Communication
 - Think in English, respond in Simplified Chinese. Code comments follow the existing language style of each repo.
 
-## Workflow（Ponytail 建造精简法，取代 Superpowers 流程）
-- **不再走 Superpowers 流程**（brainstorming → writing-plans → executing-plans / subagent-driven-development）与**强制设计 spec 文档**；重大改动以一句 rationale + 聚焦的提交说明代替。
+## Workflow（Ponytail 建造精简法）
+- 不强制阶段化流程或设计 spec 文档；重大改动以一句 rationale + 聚焦提交说明代替。
 - 建造走 **Ponytail**：改前先读懂；沿「先谋删 → YAGNI → 复用本仓 → 标准库 → 平台原生 → 已装依赖 → 一行 → 最小可跑」止于首个成立档；每行自问「不写何害」，删优于增；根因修（grep 全调用方，共有函数一处修好）；`diff>50` 行先一句陈由；非平凡逻辑留最小自检。
 - 不写未请求的抽象，不做多分支/大爆炸式重构；**不省**：信任边界校验、防丢数据错误处理、安全、无障碍、用户明确要求。
 

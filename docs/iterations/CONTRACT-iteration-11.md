@@ -21,7 +21,7 @@
 
 ### G2[P2] 阶段 2 裁决通道设计文档（零代码）
 
-- `docs/superpowers/specs/2026-07-23-hitl-resolution-v2-design.md`：nonce 防重放（挑战-响应 or 服务端一次性 id）、单次消费语义（PENDING 取出即毁 vs 标记）、过期与 fail-closed 交互（既有 120s 超时如何与远端裁决竞合）、多 controller 冲突（首达裁决生效？须审计双方）、审计记录规范（接 M1 `decisions` 切片二，只存风险分类+摘要）、传输面选型（`teammate` 能力下新方法 vs 0x12 CONTROL 通道，比较后择一）、桌面/远端一致性。
+- `docs/specs/2026-07-23-hitl-resolution-v2-design.md`：nonce 防重放（挑战-响应 or 服务端一次性 id）、单次消费语义（PENDING 取出即毁 vs 标记）、过期与 fail-closed 交互（既有 120s 超时如何与远端裁决竞合）、多 controller 冲突（首达裁决生效？须审计双方）、审计记录规范（接 M1 `decisions` 切片二，只存风险分类+摘要）、传输面选型（`teammate` 能力下新方法 vs 0x12 CONTROL 通道，比较后择一）、桌面/远端一致性。
 - 验收：文档提交；零代码 diff。
 - 减法：排除审批委托/批量裁决等边缘逻辑，仅核心单条裁决流。
 

@@ -20,7 +20,7 @@
 
 ### G2[G1] Agent 暂停/恢复跨平台设计文档（零代码）
 
-- `docs/superpowers/specs/2026-07-23-agent-suspend-resume-design.md`：可暂停边界（PTY/进程/agent 会话三层）、Windows 路线（无 SIGSTOP：job object 冻结 vs stdin 门控 vs PTY 暂停，选型+理由）、Unix SIGSTOP/SIGCONT、恢复语义与 HITL 交互、失败/超时 fail 方向。
+- `docs/specs/2026-07-23-agent-suspend-resume-design.md`：可暂停边界（PTY/进程/agent 会话三层）、Windows 路线（无 SIGSTOP：job object 冻结 vs stdin 门控 vs PTY 暂停，选型+理由）、Unix SIGSTOP/SIGCONT、恢复语义与 HITL 交互、失败/超时 fail 方向。
 - 验收：文档提交；本目标 git diff 仅含 docs（零代码/枚举变更）。
 - 减法：不加 `Suspended/Resuming` 枚举变体（无实现的死状态，驳回 NotebookLM）。
 
