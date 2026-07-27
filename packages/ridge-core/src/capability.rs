@@ -259,6 +259,7 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     "git_blame",
     "git_file_log",
     "git_diff_file",
+    "git_stash_list",
     "git_fetch",
     // ── Git (mutating) ──
     "git_stage",
