@@ -21,7 +21,7 @@
   import { Smartphone, Server } from 'lucide-svelte';
   // 云端登录态：侧栏头像 + 账户气泡。
   import { cloudAuth, logout as cloudLogout } from '@ridge/remote/shared/cloud/auth';
-  import { createWorkspaceShare } from '@ridge/remote/shared/cloud/apiClient';
+  import { shareWorkspaceWithAccount } from '$lib/workspace/shareWorkspace';
   import SearchSidebar from '$lib/components/SearchSidebar.svelte';
   import SaveWorkspaceDialog from '$lib/components/SaveWorkspaceDialog.svelte';
   import QuickOpen from '$lib/components/QuickOpen.svelte';
@@ -800,39 +800,7 @@ function expandSidebar() {
   }
 
   async function handleTabShare(wsId: string, currentName: string | undefined) {
-    const token = $cloudAuth.userToken;
-    const deviceName = $cloudAuth.deviceName;
-    if (!token || !deviceName) {
-      await alertDialog({
-        title: '无法分享',
-        message: '请先登录 Ridge Cloud，并激活本机设备。',
-      });
-      return;
-    }
-    const grantee = await promptDialog({
-      title: '分享工作区',
-      message: `将「${currentName?.trim() || '当前工作区'}」分享给另一账户。当前版本授予操作权限，可读写文件、Git、终端与 Agent；不可二次转发主机或 Remote。`,
-      placeholder: '对方用户名或邮箱',
-    });
-    if (!grantee?.trim()) return;
-    try {
-      await createWorkspaceShare(token, {
-        deviceName,
-        workspaceId: wsId,
-        grantee: grantee.trim(),
-        role: 'operator',
-      });
-      await alertDialog({
-        title: '邀请已发送',
-        message: '对方接受后，可在「接入」面板打开此工作区。',
-      });
-    } catch (e) {
-      await alertDialog({
-        title: '分享失败',
-        message: e instanceof Error ? e.message : String(e),
-        danger: true,
-      });
-    }
+    await shareWorkspaceWithAccount({ workspaceId: wsId, workspaceName: currentName });
   }
 
   /** Run a git command against the SCM-selected repo (or any one repo
@@ -1674,7 +1642,7 @@ function expandSidebar() {
           </div>
           <div class="flex-1 min-h-0 overflow-hidden">
             {#if $activeWorkspaceId}
-              <Explorer workspaceId={$activeWorkspaceId} />
+              <Explorer workspaceId={$activeWorkspaceId} onShare={handleTabShare} />
             {:else}
               <div
                 class="p-4 text-[13px] leading-relaxed text-[var(--rg-fg-muted)]"

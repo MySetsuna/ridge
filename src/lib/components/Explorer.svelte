@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { ChevronRight, RefreshCw, FolderOpen, Save, Trash2, Terminal, File, Folder } from 'lucide-svelte';
+	import { ChevronRight, RefreshCw, FolderOpen, Save, Share2, Trash2, Terminal, File, Folder } from 'lucide-svelte';
 	import { alertDialog, confirmDialog } from './RidgeDialog.svelte';
 	import {
 		fileExplorerStore,
@@ -52,9 +52,10 @@
 
 	interface Props {
 		workspaceId: string;
+		onShare?: (id: string, currentName: string | undefined) => void;
 	}
 
-	let { workspaceId }: Props = $props();
+	let { workspaceId, onShare }: Props = $props();
 
 	// 慢加载（VS Code 风格）：col.loading 转 true 起 500ms 计时；到点仍未完成才挂进度条，
 	// 数据到立刻撤掉。仅在没有缓存 tree 时启用——后台刷新保持静默。
@@ -905,6 +906,20 @@
 					<span class="text-[10px] text-[var(--rg-fg-muted)] shrink-0">
 						{group.columns.length}
 					</span>
+
+					{#if onShare}
+						<button
+							type="button"
+							class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--rg-fg-muted)] opacity-0 group-hover/ws:opacity-100 hover:!text-[var(--rg-accent)] hover:bg-[var(--rg-surface)] transition-all"
+							title="分享工作区"
+							onclick={(e) => {
+								e.stopPropagation();
+								onShare?.(group.workspaceId, group.workspaceName);
+							}}
+						>
+							<Share2 class="h-3 w-3" />
+						</button>
+					{/if}
 
 					<!-- Save (unsaved only) / Delete (saved only) action -->
 					{#if !info?.file_path}
