@@ -254,6 +254,70 @@ pub fn list_saved_workspace_files() -> Result<Vec<SavedWorkspaceEntry>, String> 
     Ok(out)
 }
 
+fn delete_saved_file_from_dir(save_dir: &Path, requested: &str) -> Result<PathBuf, String> {
+    let target = PathBuf::from(requested);
+    if !target
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("ridge"))
+        .unwrap_or(false)
+    {
+        return Err("只能删除 .ridge 工作区文件".into());
+    }
+    let root = std::fs::canonicalize(save_dir).map_err(|e| e.to_string())?;
+    let canonical = std::fs::canonicalize(&target).map_err(|e| e.to_string())?;
+    if canonical.parent() != Some(root.as_path()) {
+        return Err("只能删除默认工作区目录中的文件".into());
+    }
+    std::fs::remove_file(&canonical).map_err(|e| e.to_string())?;
+    Ok(canonical)
+}
+
+#[tauri::command]
+pub fn delete_saved_workspace_file(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let target = delete_saved_file_from_dir(&default_save_dir(), &path)?;
+
+    let detached_ids: Vec<Uuid> = {
+        let mut map = state.workspaces.write();
+        map.iter_mut()
+            .filter_map(|(id, ws)| {
+                let matches = ws
+                    .associated_file_path
+                    .as_ref()
+                    .map(|p| p == &target || p == Path::new(&path))
+                    .unwrap_or(false);
+                if matches {
+                    ws.associated_file_path = None;
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+    let mut names = state.workspace_names.write();
+    for id in detached_ids {
+        names.remove(&id);
+    }
+    drop(names);
+
+    let ptr = last_opened_pointer_path(&app_handle);
+    if std::fs::read_to_string(&ptr)
+        .map(|s| PathBuf::from(s.trim()) == target || s.trim() == path)
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(ptr);
+    }
+    let mut recent = load_recent(&app_handle);
+    recent.retain(|p| Path::new(p) != target && p != &path);
+    save_recent(&app_handle, &recent);
+    Ok(())
+}
+
 /// Tauri command — front-end calls on startup (after deciding it's not a cli launch
 /// with a cwd-resident .ridge) to fetch the workspaces it should auto-open.
 /// Stale entries (file deleted) are filtered out and the on-disk list is rewritten.
@@ -839,4 +903,32 @@ fn write_workspace_snapshot(state: &AppState, workspace_id: Uuid) -> Result<(), 
     let wf = snapshot_workspace(state, workspace_id, &name)?;
     let json = serde_json::to_vec_pretty(&wf).map_err(|e| e.to_string())?;
     atomic_write(&path, &json).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::delete_saved_file_from_dir;
+    use std::fs;
+
+    #[test]
+    fn saved_file_delete_is_limited_to_direct_ridge_children() {
+        let base =
+            std::env::temp_dir().join(format!("ridge-saved-delete-{}", uuid::Uuid::new_v4()));
+        let save_dir = base.join("ridge-workspaces");
+        fs::create_dir_all(&save_dir).unwrap();
+
+        let saved = save_dir.join("saved.ridge");
+        fs::write(&saved, b"{}").unwrap();
+        delete_saved_file_from_dir(&save_dir, saved.to_str().unwrap()).unwrap();
+        assert!(!saved.exists());
+
+        let outside = base.join("outside.ridge");
+        fs::write(&outside, b"{}").unwrap();
+        let err = delete_saved_file_from_dir(&save_dir, outside.to_str().unwrap()).unwrap_err();
+        assert_eq!(err, "只能删除默认工作区目录中的文件");
+        assert!(outside.exists());
+
+        fs::remove_file(outside).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
 }

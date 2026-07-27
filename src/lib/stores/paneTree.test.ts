@@ -1184,3 +1184,54 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
     expect(__mockManagerSpies.fitPaneNow).toHaveBeenCalledWith('pane-b');
   });
 });
+
+describe('closeWorkspace runtime cleanup', () => {
+  beforeEach(() => {
+    __mockManagerSpies.detach.mockReset();
+    globalEventListeners.clear();
+  });
+
+  it('detaches every cached pane so reopening saved UUIDs creates fresh PTYs', async () => {
+    const tauri = await import('@tauri-apps/api/core');
+    const { teardownPtyBridge } = await import('@ridge/remote/shared/terminal/ptyBridge');
+    const invokeMock = vi.mocked(tauri.invoke);
+    const teardownMock = vi.mocked(teardownPtyBridge);
+    invokeMock.mockReset();
+    teardownMock.mockReset();
+
+    const closingTree = {
+      type: 'split' as const,
+      id: 'split-closing',
+      direction: 'horizontal' as const,
+      children: [
+        { type: 'leaf' as const, id: 'saved-pane-a' },
+        { type: 'leaf' as const, id: 'saved-pane-b' },
+      ],
+      ratios: [50, 50],
+    };
+    paneTreeModule.workspacePaneTrees.set(new Map([['ws-closing', closingTree]]));
+    paneTreeModule.paneTreeStore.set(closingTree);
+    paneTreeModule.activeWorkspaceId.set('ws-closing');
+
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_workspaces') {
+        return [{ id: 'ws-keep', index: 0, displaySeq: 0 }];
+      }
+      if (cmd === 'get_active_workspace_id') return 'ws-keep';
+      if (cmd === 'get_pane_layout') return { type: 'leaf', id: 'keep-pane' };
+      if (cmd === 'list_workspace_save_info') return [];
+      return null;
+    });
+
+    await paneTreeModule.closeWorkspace('ws-closing');
+
+    expect(invokeMock).toHaveBeenCalledWith('close_workspace', { workspaceId: 'ws-closing' });
+    expect(teardownMock).toHaveBeenCalledTimes(2);
+    expect(teardownMock).toHaveBeenCalledWith('saved-pane-a');
+    expect(teardownMock).toHaveBeenCalledWith('saved-pane-b');
+    expect(__mockManagerSpies.detach).toHaveBeenCalledTimes(2);
+    expect(__mockManagerSpies.detach).toHaveBeenCalledWith('saved-pane-a');
+    expect(__mockManagerSpies.detach).toHaveBeenCalledWith('saved-pane-b');
+    expect(get(paneTreeModule.workspacePaneTrees).has('ws-closing')).toBe(false);
+  });
+});

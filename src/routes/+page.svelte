@@ -69,7 +69,6 @@
   import {
     paneTreeStore,
     workspacePaneTrees,
-    workspaceSaveInfoStore,
     activePaneId,
     splitActivePane,
     splitPane,
@@ -92,6 +91,7 @@
     listSavedWorkspaceFiles,
     refreshWorkspaceSaveInfo,
     deleteWorkspaceFile,
+    deleteSavedWorkspaceFile,
     closePane,
     paneCwdStore,
     scheduleForceFitActivePanes,
@@ -147,6 +147,26 @@
       await openWorkspaceFromFile(path);
     } catch (err) {
       await alertDialog({ title: tr('main.dlgOpenFailTitle'), message: String(err), danger: true });
+    }
+  }
+
+  async function deleteSaved(entry: { name: string; path: string }) {
+    const confirmed = await confirmDialog({
+      title: tr('main.savedWorkspacesDeleteConfirmTitle'),
+      message: tr('main.savedWorkspacesDeleteConfirmMessage', { name: entry.name }),
+      okLabel: tr('main.savedWorkspacesDelete'),
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await deleteSavedWorkspaceFile(entry.path);
+      savedList = await listSavedWorkspaceFiles();
+    } catch (err) {
+      await alertDialog({
+        title: tr('main.savedWorkspacesDeleteFailed'),
+        message: String(err),
+        danger: true,
+      });
     }
   }
 
@@ -1752,7 +1772,7 @@ function expandSidebar() {
                       {$t('main.savedWorkspacesBrowse')}
                     </button>
                   </div>
-                  <div class="max-h-[260px] overflow-y-auto">
+                  <div class="rg-scroll max-h-[260px] overflow-y-auto">
                     {#if savedList.length === 0}
                       <div class="px-3 py-2 text-[11px] text-[var(--rg-fg-muted)]">{$t('main.savedWorkspacesEmpty')}</div>
                     {:else}
@@ -1773,14 +1793,7 @@ function expandSidebar() {
                             title={$t('main.savedWorkspacesDelete')}
                             onclick={(e) => {
                               e.stopPropagation();
-                              const info = Object.values($workspaceSaveInfoStore).find(
-                                (i) => i.file_path === s.path
-                              );
-                              if (info) {
-                                void deleteWorkspaceFile(info.workspace_id);
-                              } else {
-                                console.warn('Workspace file not associated with active workspace, direct deletion not implemented');
-                              }
+                              void deleteSaved(s);
                             }}
                           >
                             <Trash2 class="h-3.5 w-3.5" />

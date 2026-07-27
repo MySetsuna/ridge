@@ -55,6 +55,9 @@ export const zh: Record<string, string> = {
   savedWorkspacesBrowseTitle: '从任意 .ridge 文件打开（OS 文件选择器）',
   savedWorkspacesEmpty: '~/ridge-workspaces 下暂无 .ridge 文件',
   savedWorkspacesDelete: '删除工作区',
+  savedWorkspacesDeleteConfirmTitle: '删除已保存工作区？',
+  savedWorkspacesDeleteConfirmMessage: '将永久删除“{name}”的 .ridge 文件。',
+  savedWorkspacesDeleteFailed: '删除已保存工作区失败',
 
   // toolbar buttons
   newWorkspaceBtn: '新建根工作区（独立分屏树与终端）',
@@ -178,6 +181,9 @@ export const en: Record<string, string> = {
   savedWorkspacesBrowseTitle: 'Open from any .ridge file (OS file picker)',
   savedWorkspacesEmpty: 'No .ridge files in ~/ridge-workspaces',
   savedWorkspacesDelete: 'Delete workspace',
+  savedWorkspacesDeleteConfirmTitle: 'Delete saved workspace?',
+  savedWorkspacesDeleteConfirmMessage: 'This permanently deletes the .ridge file for “{name}”.',
+  savedWorkspacesDeleteFailed: 'Failed to delete saved workspace',
 
   // toolbar buttons
   newWorkspaceBtn: 'New root workspace (independent split tree & terminals)',
