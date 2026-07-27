@@ -9,6 +9,7 @@
 - 提交：`9adfc4d`、`0e71da6`、`08eeff6`。
 - 发布：`main` 推至 `9a7e5f9`；`publish-remote` run `30265723678` success，已激活 `0.1.6+g9a7e5f9`（231 文件，21.50 MiB）。
 - 修复：发现几何算法虽已发布，standalone Remote `MainApp` 漏接 `setSharedRemoteMode(true)`；`1d3a347` 补接 browser/embedded shared grid，重发 run `30272240047` success，激活 `0.1.6+g1d3a347`。
+- 复核：公网浏览器若 WebGPU 降级 Canvas2D，shared-grid 几何原先旁路；`67e0631` 令降级路径同样 letterbox/坐标映射，run `30278843596` success，激活 `0.1.6+g67e0631`。
 - 未闭：R62-WS-SHARE、R62-HOST-TREE、R62-GEOMETRY 均只欠相应真实跨账号/LAN/public E2E。
 - NLM 对抗评审：采纳内存投影；驳回不存在的 `RpcClient.scoped`、`CloudHostBridge.rs`、`remote_read_dir` 及“纯终端降级”，校正为 host scoped JWT/DB 授权 + 现有 RPC 复用。
 
