@@ -4421,6 +4421,14 @@ export class TerminalManager {
 			rows = Math.max(1, Math.floor(hCss / entry.cellH));
 			entry.lastFitPaddingPx = entry.lastAppliedPaddingPx ?? 0;
 			this._recomputeViewport(entry);
+		} else if (this._sharedRemoteMode) {
+			// Shared Canvas2D may already be letterboxed to the kernel's
+			// previous grid. Never measure that shrunken canvas for the claim;
+			// measure the pane so the first fit can grow the host PTY grid.
+			const rect = entry.container.getBoundingClientRect();
+			const cs = window.getComputedStyle(entry.container);
+			wCss = Math.floor(rect.width - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0));
+			hCss = Math.floor(rect.height - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0));
 		} else {
 			if (!this._sharedRemoteMode) {
 				// Shared-grid Canvas2D fallback may have letterboxed the
