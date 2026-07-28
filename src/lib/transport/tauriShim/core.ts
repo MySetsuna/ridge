@@ -38,7 +38,9 @@ export function invoke<T = unknown>(cmd: string, args: Record<string, unknown> =
   // means "start streaming this pane". Map it onto the subscribe-pane fan-out.
   if (cmd === 'register_pane_delta_channel') {
     const paneId = String(args.paneId ?? '');
-    if (paneId) bridge.subscribePane(paneId);
+    const workspaceId = typeof args.workspaceId === 'string' ? args.workspaceId : undefined;
+    const active = typeof args.active === 'boolean' ? args.active : undefined;
+    if (paneId) bridge.subscribePane(paneId, workspaceId, active);
     return Promise.resolve(undefined as T);
   }
   // The browser consumes raw PTY bytes (not postcard deltas), so the delta-mode

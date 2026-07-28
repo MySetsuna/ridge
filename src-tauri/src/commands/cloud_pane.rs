@@ -42,18 +42,41 @@ const RESYNC_SCROLLBACK_BYTES: usize = ridge_remote::pane::RESYNC_SCROLLBACK_CLO
 /// 条目**带 owning sub_id**：快速退订→重订阅同一 pane 时，旧转发任务异步收尾与旧
 /// unsubscribe 都只在 `sub_id` 匹配时才移除条目，避免误删新订阅者刚插入的条目
 /// （否则新订阅者的背压自愈会静默失效 —— 见 2026-07-02 审查 MEDIUM）。
-static DESYNC_FLAGS: OnceLock<Mutex<HashMap<Uuid, (u64, Arc<AtomicBool>)>>> = OnceLock::new();
+static DESYNC_FLAGS: OnceLock<Mutex<HashMap<(Uuid, Uuid), (u64, Arc<AtomicBool>)>>> =
+    OnceLock::new();
 
-fn desync_flags() -> &'static Mutex<HashMap<Uuid, (u64, Arc<AtomicBool>)>> {
+fn desync_flags() -> &'static Mutex<HashMap<(Uuid, Uuid), (u64, Arc<AtomicBool>)>> {
     DESYNC_FLAGS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// 仅当 `pane` 的 desync 条目仍归属 `sub_id`（未被更晚的重订阅顶替）时移除。
-fn remove_desync_if_owner(pane: Uuid, sub_id: u64) {
+fn remove_desync_if_owner(ws: Uuid, pane: Uuid, sub_id: u64) {
     let mut flags = desync_flags().lock().unwrap();
-    if flags.get(&pane).is_some_and(|(id, _)| *id == sub_id) {
-        flags.remove(&pane);
+    if flags
+        .get(&(ws, pane))
+        .is_some_and(|(id, _)| *id == sub_id)
+    {
+        flags.remove(&(ws, pane));
     }
+}
+
+fn resolve_workspace(
+    state: &AppState,
+    workspace_id: Option<&str>,
+    pane: Uuid,
+) -> Result<Uuid, String> {
+    let ws = match workspace_id {
+        Some(id) => Uuid::parse_str(id).map_err(|_| "invalid workspaceId".to_string())?,
+        None => state.active_workspace_id(),
+    };
+    let workspaces = state.workspaces.read();
+    let workspace = workspaces
+        .get(&ws)
+        .ok_or_else(|| "workspace not found".to_string())?;
+    if !workspace.pane_tree.panes.contains_key(&pane) {
+        return Err("pane not found in workspace".to_string());
+    }
+    Ok(ws)
 }
 
 /// `invoke('subscribe_pane_raw', { paneId })`：开始把该 pane 的裸 PTY 字节经
@@ -61,25 +84,27 @@ fn remove_desync_if_owner(pane: Uuid, sub_id: u64) {
 #[tauri::command]
 pub fn subscribe_pane_raw(
     pane_id: String,
+    workspace_id: Option<String>,
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<(), String> {
     let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
-    let ws = state.active_workspace_id();
+    let explicit_workspace = workspace_id.is_some();
+    let ws = resolve_workspace(&state, workspace_id.as_deref(), pane)?;
 
     // 引用计数登记：同一 WebView 内多个 controller 桥订阅同一 pane 时共用一条 live
     // fan-out（emit `pane-raw-{pane}` 广播到所有订阅了该 pane 的桥）。已存在则 +1、
     // 不重复注册（避免双份 sub / 双份转发任务）；仅首次订阅才真正注册 + 起转发任务。
     {
         let mut subs = state.cloud_pane_raw_subs.lock();
-        match subs.entry(pane) {
+        match subs.entry((ws, pane)) {
             Entry::Occupied(mut o) => {
-                o.get_mut().2 += 1;
+                o.get_mut().1 += 1;
                 return Ok(());
             }
             Entry::Vacant(slot) => {
                 let sub_id = RemoteSubId::next();
-                slot.insert((ws, sub_id, 1));
+                slot.insert((sub_id, 1));
                 let (raw_tx, mut raw_rx) =
                     tokio::sync::mpsc::channel::<RemotePtyEvent>(RAW_CHAN_CAP);
                 // desync 标志：lib.rs fan-out（队列满）与 resync_pane_raw（JS 背压）共置位，
@@ -88,7 +113,7 @@ pub fn subscribe_pane_raw(
                 desync_flags()
                     .lock()
                     .unwrap()
-                    .insert(pane, (sub_id, Arc::clone(&desync)));
+                    .insert((ws, pane), (sub_id, Arc::clone(&desync)));
                 state.register_remote_sub(
                     ws,
                     pane,
@@ -100,7 +125,11 @@ pub fn subscribe_pane_raw(
                 );
                 // 转发任务：raw_rx → Tauri event。注销时 `unregister_remote_sub` 丢弃
                 // 持有 raw_tx 的 RemotePaneSub（唯一发送端）→ 通道关闭 → 本任务自然结束。
-                let event_name = format!("pane-raw-{pane}");
+                let event_name = if explicit_workspace {
+                    format!("pane-raw-{ws}-{pane}")
+                } else {
+                    format!("pane-raw-{pane}")
+                };
                 // clone AppState（Arc 内部共享）供任务内取 scrollback 做重同步。
                 let app_state = state.inner().clone();
                 tauri::async_runtime::spawn(async move {
@@ -152,7 +181,7 @@ pub fn subscribe_pane_raw(
                     }
                     // 通道关闭（unsubscribe）：清理 desync 注册，防 map 随历史 pane 增长。
                     // 仅当条目仍属本 sub 才移除——快速重订阅已换主则不误删新条目。
-                    remove_desync_if_owner(pane, sub_id);
+                    remove_desync_if_owner(ws, pane, sub_id);
                 });
             }
         }
@@ -162,17 +191,30 @@ pub fn subscribe_pane_raw(
 
 /// `invoke('unsubscribe_pane_raw', { paneId })`：停止该 pane 的裸字节转发。幂等。
 #[tauri::command]
-pub fn unsubscribe_pane_raw(pane_id: String, state: State<AppState>) -> Result<(), String> {
+pub fn unsubscribe_pane_raw(
+    pane_id: String,
+    workspace_id: Option<String>,
+    state: State<AppState>,
+) -> Result<(), String> {
     let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
+    let ws = match workspace_id.as_deref() {
+        Some(id) => Uuid::parse_str(id).map_err(|_| "invalid workspaceId".to_string())?,
+        None => state
+            .cloud_pane_raw_subs
+            .lock()
+            .keys()
+            .find_map(|(ws, pid)| (*pid == pane).then_some(*ws))
+            .unwrap_or_else(|| state.active_workspace_id()),
+    };
     // 引用计数递减：仅当最后一个 controller 退订（refcount → 0）才真正注销 fan-out，
     // 否则保留（仍有其它 controller 在看该 pane，不能断它们的流）。
     let teardown = {
         let mut subs = state.cloud_pane_raw_subs.lock();
-        match subs.get_mut(&pane) {
+        match subs.get_mut(&(ws, pane)) {
             Some(entry) => {
-                entry.2 = entry.2.saturating_sub(1);
-                if entry.2 == 0 {
-                    subs.remove(&pane) // Some((ws, sub_id, 0))
+                entry.1 = entry.1.saturating_sub(1);
+                if entry.1 == 0 {
+                    subs.remove(&(ws, pane))
                 } else {
                     None // 仍有订阅者，保留
                 }
@@ -180,12 +222,12 @@ pub fn unsubscribe_pane_raw(pane_id: String, state: State<AppState>) -> Result<(
             None => None,
         }
     };
-    if let Some((ws, sub_id, _)) = teardown {
+    if let Some((sub_id, _)) = teardown {
         // 丢弃 RemotePaneSub（唯一 raw_tx）→ 转发任务的 raw_rx 关闭 → 任务结束。
         state.unregister_remote_sub(ws, pane, sub_id);
         // 转发任务结束时也会清理；此处显式移除以即时释放（双移除幂等）。仅当条目仍属
         // 本 sub 才移除，避免与并发的同 pane 重订阅竞态误删新订阅者的条目。
-        remove_desync_if_owner(pane, sub_id);
+        remove_desync_if_owner(ws, pane, sub_id);
     }
     Ok(())
 }
@@ -199,9 +241,14 @@ pub fn unsubscribe_pane_raw(pane_id: String, state: State<AppState>) -> Result<(
 /// 背压反馈环。**仅用于背压自愈**这类自动触发路径——用户主动触发的初次回放走
 /// `replay_pane_scrollback_raw`（不限频，且不依赖下一帧）。
 #[tauri::command]
-pub fn resync_pane_raw(pane_id: String) -> Result<(), String> {
+pub fn resync_pane_raw(
+    pane_id: String,
+    workspace_id: Option<String>,
+    state: State<AppState>,
+) -> Result<(), String> {
     let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
-    if let Some((_, flag)) = desync_flags().lock().unwrap().get(&pane) {
+    let ws = resolve_workspace(&state, workspace_id.as_deref(), pane)?;
+    if let Some((_, flag)) = desync_flags().lock().unwrap().get(&(ws, pane)) {
         flag.store(true, Ordering::Release);
     }
     Ok(())
@@ -222,22 +269,28 @@ pub fn resync_pane_raw(pane_id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn replay_pane_scrollback_raw(
     pane_id: String,
+    workspace_id: Option<String>,
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<(), String> {
     let pane = Uuid::parse_str(&pane_id).map_err(|_| "invalid paneId".to_string())?;
+    let explicit_workspace = workspace_id.is_some();
+    let ws = resolve_workspace(&state, workspace_id.as_deref(), pane)?;
     // 仅对已订阅的 pane 回放：desync_flags 的 key 与活跃 sub 一一对应（注册/注销同步维护）。
-    let subscribed = desync_flags().lock().unwrap().contains_key(&pane);
+    let subscribed = desync_flags().lock().unwrap().contains_key(&(ws, pane));
     if !subscribed {
         return Ok(());
     }
-    let ws = state.active_workspace_id();
     let history = state.get_recent_scrollback_for(ws, pane, RESYNC_SCROLLBACK_BYTES);
     // §mode-reattach: RIS + 活动模式前导 + scrollback（共享 SSOT）。
     let (modes, alt) = state.get_pane_modes(ws, pane);
     let resync = ridge_term::term::modes::build_resync_frame(&history, &modes, alt);
     let b64 = base64::engine::general_purpose::STANDARD.encode(&resync);
-    let event_name = format!("pane-raw-{pane}");
+    let event_name = if explicit_workspace {
+        format!("pane-raw-{ws}-{pane}")
+    } else {
+        format!("pane-raw-{pane}")
+    };
     let _ = app.emit(&event_name, serde_json::json!({ "b64": b64 }));
     Ok(())
 }

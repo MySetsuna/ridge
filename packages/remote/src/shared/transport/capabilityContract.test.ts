@@ -67,6 +67,8 @@ describe('cross-entry Remote capability contract', () => {
   it('keeps snapshot/diff admitted while host-privileged methods remain excluded', () => {
     expect(REMOTE_ALLOWLIST).toContain('get_workspace_snapshot');
     expect(REMOTE_ALLOWLIST).toContain('git_diff_file');
+    expect(REMOTE_ALLOWLIST).toContain('git_stash_list');
+    expect(desktopHost).toMatch(/"git_stash_list"\s*=>/);
     expect(REMOTE_ALLOWLIST).not.toContain('get_remote_info');
     expect(REMOTE_ALLOWLIST).not.toContain('get_remote_totp');
     expect(rustCapability).toContain('pub const REMOTE_ALLOWLIST');

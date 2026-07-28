@@ -471,9 +471,6 @@
                         aria-label={pane.isAgent ? $t('mobile.unmarkAgent') : $t('mobile.markAgent')}
                       >
                         <Bot class="w-3 h-3" />
-                        <span class="row-agent-text">
-                          {pane.isAgent ? $t('mobile.agentBadgeOn') : $t('mobile.agentBadgeOff')}
-                        </span>
                       </span>
                     {/if}
                     {#if canManagePanes && isActiveWs}
@@ -649,12 +646,9 @@
 
   .row-close{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:4px;color:var(--rg-fg-muted);opacity:.55;flex-shrink:0;margin-left:auto}
   .row-close:active{background:rgba(255,255,255,.1);opacity:1;color:var(--rg-ansi-red)}
-  /* iter-61 agent 标记：与关闭同尺寸；`margin-left:auto` 让它成为右侧簇的起点，
-     关闭按钮紧随其后（关闭自身的 auto 在同一行内不再生效，顺序即视觉顺序）。 */
-  .row-agent{display:flex;align-items:center;gap:3px;justify-content:center;height:20px;padding:0 5px;border:1px solid var(--rg-border);border-radius:999px;color:var(--rg-fg-muted);opacity:.7;flex-shrink:0;margin-left:auto}
-  .row-agent-text{font-size:9px;line-height:1;white-space:nowrap}
-  .row-agent.on{color:var(--rg-accent);opacity:1;border-color:color-mix(in srgb,var(--rg-accent) 50%,transparent);background:color-mix(in srgb,var(--rg-accent) 14%,transparent)}
-  .row-agent:active{background:rgba(255,255,255,.1);opacity:1;color:var(--rg-accent)}
+  /* Pure icon; transparent hit box keeps the former text-pill width. */
+  .row-agent{display:flex;align-items:center;justify-content:center;width:36px;height:20px;padding:0;border:0;border-radius:0;background:transparent;color:var(--rg-fg-muted);opacity:.7;flex-shrink:0;margin-left:auto}
+  .row-agent.on,.row-agent:active{color:var(--rg-accent);opacity:1;background:transparent}
 
   .tree-foot{display:flex;align-items:center;gap:6px;padding:6px 10px;border-top:1px solid var(--rg-border-bright);font-size:10px;color:var(--rg-fg-muted)}
   .foot-dot{width:6px;height:6px;border-radius:50%;background:var(--rg-ansi-green)}

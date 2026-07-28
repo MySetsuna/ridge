@@ -204,14 +204,23 @@ describe('CloudHostBridge — $/cancel', () => {
 describe('CloudHostBridge — pane stream (D-GM-7 layout)', () => {
   it('pushes subscribed pane output back as 0x10 || paneIdLen || paneId || raw', () => {
     let emit: (raw: Uint8Array) => void = () => {};
-    const paneOutputSource = vi.fn((paneId: string, onOutput: (raw: Uint8Array) => void) => {
+    const paneOutputSource = vi.fn((
+      paneId: string,
+      workspaceId: string | undefined,
+      onOutput: (raw: Uint8Array) => void,
+    ) => {
       expect(paneId).toBe('pane-1');
+      expect(workspaceId).toBe('workspace-1');
       emit = onOutput;
       return () => {};
     });
     const rig = makeRig({ paneOutputSource });
 
-    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'pane-1' } });
+    rig.sendJson({
+      jsonrpc: '2.0',
+      method: 'subscribe-pane',
+      params: { paneId: 'pane-1', workspaceId: 'workspace-1' },
+    });
     expect(paneOutputSource).toHaveBeenCalledOnce();
 
     const raw = new TextEncoder().encode('hello pty');
@@ -616,35 +625,94 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
     };
   }
 
-  it('bufferedAmount 高于上水位(8MiB) → 丢 pane 帧（不发）；回落 drain 后 invoke resync_pane_raw', async () => {
-    const invoke = vi.fn(async () => null);
+  it('bufferedAmount 高于上水位(8MiB) → 丢 pane 帧；回落后仅向当前控制端发私有快照', async () => {
+    const invoke = vi.fn(async () => ({ frame: '\x1bcRECOVERED' }));
     const rig = makeRig({ invoke });
     const ch = fakeChannel();
     rig.bridge.attachChannelControl(ch.ctrl);
+    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'pane-1', active: true } });
 
     // 高水位（>8 MiB）→ 丢帧，未发出 pane 帧。
     ch.setBuffered(9 * 1024 * 1024);
     rig.bridge.pushPaneOutput('pane-1', new Uint8Array([1, 2, 3]));
     expect(rig.sentPane()).toHaveLength(0);
 
-    // 缓冲回落 → drain → 对背压期间丢帧的 pane 请求 host 重放（复用 desync→RIS+scrollback）。
+    // 缓冲回落 → 私有 canonical frame；不经广播式 Tauri resync。
     ch.setBuffered(0);
     ch.drain();
     await vi.waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('resync_pane_raw', { paneId: 'pane-1' }),
+      expect(invoke).toHaveBeenCalledWith('get_pane_resync_frame', {
+        paneId: 'pane-1',
+        workspaceId: undefined,
+        maxBytes: 256 * 1024,
+      }),
     );
+    expect(new TextDecoder().decode(rig.sentPane()[0].bytes)).toBe('\x1bcRECOVERED');
   });
 
   it('bufferedAmount 低于上水位 → 正常发 pane 帧', () => {
     const rig = makeRig();
     const ch = fakeChannel();
     rig.bridge.attachChannelControl(ch.ctrl);
+    rig.sendJson({
+      jsonrpc: '2.0',
+      method: 'subscribe-pane',
+      params: { paneId: 'pane-1', active: true },
+    });
     ch.setBuffered(1024); // 远低于上水位
     rig.bridge.pushPaneOutput('pane-1', new Uint8Array([9, 9]));
     const panes = rig.sentPane();
     expect(panes).toHaveLength(1);
     expect(panes[0].paneId).toBe('pane-1');
     expect([...panes[0].bytes]).toEqual([9, 9]);
+  });
+
+  it('background stops at the existing low watermark while active uses reserved capacity', () => {
+    const rig = makeRig();
+    const ch = fakeChannel();
+    rig.bridge.attachChannelControl(ch.ctrl);
+    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'active', active: true } });
+    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'background' } });
+    ch.setBuffered(2 * 1024 * 1024);
+    rig.bridge.pushPaneOutput('background', new Uint8Array([1]));
+    rig.bridge.pushPaneOutput('active', new Uint8Array([2]));
+    expect(rig.sentPane().map((p) => p.paneId)).toEqual(['active']);
+  });
+
+  it('ordered channel admits at most one background frame before active traffic', () => {
+    let buffered = 0;
+    const sent: Uint8Array[] = [];
+    const bridge = new CloudHostBridge({
+      invoke: vi.fn(async () => null),
+      sendFrame: (frame) => {
+        sent.push(frame);
+        buffered += frame.byteLength;
+      },
+    });
+    bridge.attachChannelControl({
+      bufferedAmount: () => buffered,
+      onDrained: () => () => {},
+    });
+    bridge.handleFrame(encodeJsonFrame({
+      jsonrpc: '2.0',
+      method: 'subscribe-pane',
+      params: { paneId: 'active', active: true },
+    }));
+    bridge.handleFrame(encodeJsonFrame({
+      jsonrpc: '2.0',
+      method: 'subscribe-pane',
+      params: { paneId: 'background', active: false },
+    }));
+
+    bridge.pushPaneOutput('background', new Uint8Array([1]));
+    bridge.pushPaneOutput('background', new Uint8Array([2]));
+    bridge.pushPaneOutput('active', new Uint8Array([3]));
+
+    expect(sent.map((frame) => demuxFrame(frame)))
+      .toMatchObject([
+        { kind: 'pane', paneId: 'background' },
+        { kind: 'pane', paneId: 'active' },
+      ]);
   });
 
   it('未注入 channel control → 不背压（向后兼容：总是直发）', () => {

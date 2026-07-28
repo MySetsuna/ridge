@@ -34,10 +34,13 @@ describe('makeCloudHostPaneSource', () => {
 
     const source = makeCloudHostPaneSource({ invoke, listen });
     const got: Uint8Array[] = [];
-    source('pane-7', (raw) => got.push(raw));
+    source('pane-7', 'workspace-3', (raw) => got.push(raw));
 
-    expect(listen).toHaveBeenCalledWith('pane-raw-pane-7', expect.any(Function));
-    expect(invoke).toHaveBeenCalledWith('subscribe_pane_raw', { paneId: 'pane-7' });
+    expect(listen).toHaveBeenCalledWith('pane-raw-workspace-3-pane-7', expect.any(Function));
+    expect(invoke).toHaveBeenCalledWith('subscribe_pane_raw', {
+      paneId: 'pane-7',
+      workspaceId: 'workspace-3',
+    });
 
     await Promise.resolve(); // let listen() resolve
     // Host pushes a raw frame → decoded bytes reach onOutput.
@@ -53,7 +56,7 @@ describe('makeCloudHostPaneSource', () => {
       return () => {};
     });
     const got: Uint8Array[] = [];
-    makeCloudHostPaneSource({ invoke, listen })('p', (r) => got.push(r));
+    makeCloudHostPaneSource({ invoke, listen })('p', undefined, (r) => got.push(r));
     await Promise.resolve();
     handler!({ payload: { b64: 123 } });
     handler!({ payload: {} });
@@ -64,12 +67,15 @@ describe('makeCloudHostPaneSource', () => {
     const invoke = vi.fn().mockResolvedValue(undefined);
     const unlisten = vi.fn();
     const listen: ListenFn = vi.fn(async () => unlisten);
-    const unsub = makeCloudHostPaneSource({ invoke, listen })('p', () => {});
+    const unsub = makeCloudHostPaneSource({ invoke, listen })('p', undefined, () => {});
     await Promise.resolve(); // listen resolves, unlisten stored
 
     unsub();
     expect(unlisten).toHaveBeenCalledTimes(1);
-    expect(invoke).toHaveBeenCalledWith('unsubscribe_pane_raw', { paneId: 'p' });
+    expect(invoke).toHaveBeenCalledWith('unsubscribe_pane_raw', {
+      paneId: 'p',
+      workspaceId: undefined,
+    });
   });
 
   it('handles unsubscribe BEFORE listen resolves (no leaked listener)', async () => {
@@ -78,7 +84,7 @@ describe('makeCloudHostPaneSource', () => {
     let resolveListen!: (u: () => void) => void;
     const listen: ListenFn = vi.fn(() => new Promise<() => void>((res) => (resolveListen = res)));
 
-    const unsub = makeCloudHostPaneSource({ invoke, listen })('p', () => {});
+    const unsub = makeCloudHostPaneSource({ invoke, listen })('p', undefined, () => {});
     unsub(); // unsubscribe while listen() is still pending
     resolveListen(unlisten); // listen finally resolves
     await Promise.resolve();
@@ -88,7 +94,9 @@ describe('makeCloudHostPaneSource', () => {
   it('swallows invoke failures (no stream must not crash the host)', async () => {
     const invoke = vi.fn().mockRejectedValue(new Error('command missing'));
     const listen: ListenFn = vi.fn(async () => () => {});
-    expect(() => makeCloudHostPaneSource({ invoke, listen })('p', () => {})).not.toThrow();
+    expect(() =>
+      makeCloudHostPaneSource({ invoke, listen })('p', undefined, () => {}),
+    ).not.toThrow();
     await Promise.resolve();
   });
 });

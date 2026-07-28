@@ -10,20 +10,40 @@ const fetchJson = (p) => new Promise((res, rej) => {
   r.on('timeout', () => r.destroy(new Error('timeout'))); r.on('error', rej);
 });
 const targets = await fetchJson('/json/list');
-const ridge = targets.find((t) => t.type === 'page' && typeof t.url === 'string' && (t.url.includes('tauri.localhost') || t.url.startsWith('tauri://') || t.title === 'Ridge' || t.url.includes(':1420') || t.url.includes(':5173')));
+const pages = targets.filter((t) => t.type === 'page' && typeof t.url === 'string');
+const ridge =
+  pages.find((t) => t.url.includes('tauri.localhost') || t.url.startsWith('tauri://'))
+  ?? pages.find((t) => t.url.includes(':1420') || t.url.includes(':5173'));
 if (!ridge) { console.error('no ridge target'); process.exit(1); }
 const ws = new WebSocket(ridge.webSocketDebuggerUrl);
 let id = 0; const want = new Map();
 const call = (method, params) => new Promise((resolve) => { const mid = ++id; want.set(mid, resolve); ws.send(JSON.stringify({ id: mid, method, params })); });
 ws.addEventListener('message', (ev) => { const m = JSON.parse(ev.data); if (m.id && want.has(m.id)) { want.get(m.id)(m); want.delete(m.id); } });
 const evalExpr = (expr) => call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
+const invokeExpr = (cmd, args = {}) =>
+  `(window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke)(${JSON.stringify(cmd)}, ${JSON.stringify(args)})`;
 ws.addEventListener('open', async () => {
   await call('Runtime.enable', {});
-  const en = await evalExpr("window.__TAURI__.core.invoke('set_remote_enabled', { enabled: true }).then(()=>'ok').catch(e=>'ERR:'+e)");
+  const en = await evalExpr(`${invokeExpr('set_remote_enabled', { enabled: true })}.then(()=>'ok').catch(e=>'ERR:'+e)`);
   console.error('[enable] set_remote_enabled ->', en?.result?.result?.value);
+  if (en?.result?.exceptionDetails) {
+    const diag = await evalExpr(`({
+      tauriKeys: Object.keys(window).filter((key) => key.includes('TAURI')),
+      coreResources: performance.getEntriesByType('resource')
+        .map((entry) => entry.name)
+        .filter((name) => name.includes('tauri-apps_api_core'))
+    })`);
+    console.error(
+      '[enable] evaluation failed:',
+      en.result.exceptionDetails.exception?.description ?? en.result.exceptionDetails.text,
+      diag?.result?.result?.value,
+    );
+    ws.close();
+    process.exit(3);
+  }
   // poll get_remote_info until ready (the server bind is async)
   for (let i = 0; i < 30; i++) {
-    const r = await evalExpr("window.__TAURI__.core.invoke('get_remote_info')");
+    const r = await evalExpr(invokeExpr('get_remote_info'));
     const v = r?.result?.result?.value;
     if (v && v.ready && v.port > 0) { console.error(`[enable] ready port=${v.port} lanIp=${v.lanIp}`); console.log(JSON.stringify({ port: v.port, code: v.totpCode })); ws.close(); process.exit(0); }
     await new Promise((s) => setTimeout(s, 1000));

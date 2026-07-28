@@ -147,8 +147,10 @@ function buildHost(): RidgeCloudHost | null {
           // B2（D-GM-11）：用 subscribe_pane_raw 专用 raw fan-out（RemotePtyEvent::
           // RawBytes → Tauri event pane-raw-{pane}）。
           paneOutputSource: access
-            ? (paneId, onOutput) =>
-                access.paneIds.has(paneId) ? paneSource(paneId, onOutput) : () => {}
+            ? (paneId, workspaceId, onOutput) =>
+                access.paneIds.has(paneId)
+                  ? paneSource(paneId, workspaceId, onOutput)
+                  : () => {}
             : paneSource,
           // 明文 totp-verify（旧 controller / host 回落 0x01 时）。
           totpVerifier: access

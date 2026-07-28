@@ -170,6 +170,9 @@ pub struct ScrollbackChunk {
     /// Starting seq of `bytes`. For `get_pane_scrollback_before` callers use
     /// this as the next `before_seq` to page further up.
     pub start_seq: u64,
+    /// Seq immediately after `bytes`; paging commits only when this equals the
+    /// controller's previously committed oldest seq.
+    pub end_seq: u64,
     /// True when this response includes the very first retained byte — no
     /// older data is available from the store (may still exist in xterm's
     /// own buffer if it's still mounted).
@@ -565,7 +568,7 @@ pub struct AppState {
     /// value = `(ws, sub_id, refcount)`：同一 WebView 内多个 controller 桥订阅同一 pane 时
     /// 共用一条 live fan-out（广播到所有订阅了该 pane 的桥），refcount 记订阅者数——
     /// 只有降到 0 才真正注销，避免一个 controller 退订就把仍在看的其它 controller 断流。
-    pub cloud_pane_raw_subs: Arc<Mutex<HashMap<Uuid, (Uuid, u64, u32)>>>,
+    pub cloud_pane_raw_subs: Arc<Mutex<HashMap<(Uuid, Uuid), (u64, u32)>>>,
 }
 
 impl AppState {
@@ -720,6 +723,7 @@ impl AppState {
             return ScrollbackChunk {
                 bytes: String::new(),
                 start_seq: 0,
+                end_seq: 0,
                 at_oldest: true,
                 head_seq: 0,
             };
@@ -733,6 +737,7 @@ impl AppState {
             return ScrollbackChunk {
                 bytes: String::new(),
                 start_seq: oldest_seq,
+                end_seq: oldest_seq,
                 at_oldest: true,
                 head_seq,
             };
@@ -774,11 +779,14 @@ impl AppState {
         for piece in rev_pieces.iter().rev() {
             out.extend_from_slice(piece);
         }
+        let at_oldest = at_oldest && start_seq == oldest_seq;
+        align_page_start_to_line(&mut out, &mut start_seq, at_oldest);
         let bytes = String::from_utf8_lossy(&out).into_owned();
         ScrollbackChunk {
             bytes,
             start_seq,
-            at_oldest: at_oldest && start_seq == oldest_seq,
+            end_seq: head_seq,
+            at_oldest,
             head_seq,
         }
     }
@@ -808,6 +816,7 @@ impl AppState {
             return ScrollbackChunk {
                 bytes: String::new(),
                 start_seq: since_seq,
+                end_seq: since_seq,
                 at_oldest: true,
                 head_seq: 0,
             };
@@ -823,6 +832,7 @@ impl AppState {
             return ScrollbackChunk {
                 bytes: String::new(),
                 start_seq: since_seq,
+                end_seq: since_seq,
                 at_oldest: oldest_seq == 0,
                 head_seq,
             };
@@ -863,6 +873,7 @@ impl AppState {
         ScrollbackChunk {
             bytes: String::from_utf8_lossy(&out).into_owned(),
             start_seq,
+            end_seq: head_seq,
             at_oldest: start_seq == oldest_seq,
             head_seq,
         }
@@ -882,6 +893,7 @@ impl AppState {
             return ScrollbackChunk {
                 bytes: String::new(),
                 start_seq: 0,
+                end_seq: 0,
                 at_oldest: true,
                 head_seq: 0,
             };
@@ -895,6 +907,7 @@ impl AppState {
             return ScrollbackChunk {
                 bytes: String::new(),
                 start_seq: before_seq,
+                end_seq: before_seq,
                 at_oldest: before_seq <= oldest_seq,
                 head_seq,
             };
@@ -939,11 +952,15 @@ impl AppState {
         for piece in rev_pieces.iter().rev() {
             out.extend_from_slice(piece);
         }
+        let end_seq = before_seq.min(head_seq);
+        let at_oldest = start_seq <= oldest_seq;
+        align_page_start_to_line(&mut out, &mut start_seq, at_oldest);
         let bytes = String::from_utf8_lossy(&out).into_owned();
         ScrollbackChunk {
             bytes,
             start_seq,
-            at_oldest: start_seq <= oldest_seq,
+            end_seq,
+            at_oldest,
             head_seq,
         }
     }
@@ -1095,6 +1112,19 @@ fn is_utf8_char_boundary(bytes: &[u8], index: usize) -> bool {
     }
     // A boundary is any byte that is NOT a continuation byte.
     (bytes[index] & 0b1100_0000) != 0b1000_0000
+}
+
+/// Partial pages begin after the first retained newline when one exists. This
+/// keeps independent terminal-parser sandboxes from inventing half-row seams.
+/// The oldest retained page and a genuine long line remain byte-exact.
+fn align_page_start_to_line(bytes: &mut Vec<u8>, start_seq: &mut u64, at_oldest: bool) {
+    if at_oldest {
+        return;
+    }
+    if let Some(cut) = bytes.iter().position(|b| *b == b'\n').map(|i| i + 1) {
+        bytes.drain(..cut);
+        *start_seq += cut as u64;
+    }
 }
 
 #[cfg(test)]

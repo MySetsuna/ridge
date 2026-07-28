@@ -1807,14 +1807,34 @@ async fn kill_pane_inner(state: State<'_, AppState>, pane_id: String) -> Result<
 /// 而每个 pane 挂载都要拉一次 256 KiB 的 tail —— 一个工作区多 pane、多工作区并发挂载
 /// 时，几十次「取块 + 序列化数 MB 字符串」全排在主线程上，交互面板整体僵住。函数体
 /// 本身仍是同步内存拷贝，仅换到异步运行时的工作线程上跑。
+fn resolve_pane_workspace(
+    state: &AppState,
+    workspace_id: Option<&str>,
+    pane_id: Uuid,
+) -> Result<Uuid, String> {
+    let workspace_id = match workspace_id {
+        Some(id) => Uuid::parse_str(id).map_err(|_| "invalid workspaceId".to_string())?,
+        None => state.active_workspace_id(),
+    };
+    let workspaces = state.workspaces.read();
+    let workspace = workspaces
+        .get(&workspace_id)
+        .ok_or_else(|| "workspace not found".to_string())?;
+    if !workspace.pane_tree.panes.contains_key(&pane_id) {
+        return Err("pane not found in workspace".to_string());
+    }
+    Ok(workspace_id)
+}
+
 #[tauri::command]
 pub async fn get_pane_scrollback_tail(
     state: State<'_, AppState>,
     pane_id: String,
+    workspace_id: Option<String>,
     max_bytes: usize,
 ) -> Result<crate::state::ScrollbackChunk, String> {
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
-    let workspace_id = state.active_workspace_id();
+    let workspace_id = resolve_pane_workspace(&state, workspace_id.as_deref(), pane_id)?;
     Ok(state.get_pty_scrollback_tail(workspace_id, pane_id, max_bytes))
 }
 
@@ -1825,11 +1845,12 @@ pub async fn get_pane_scrollback_tail(
 pub fn get_pane_scrollback_before(
     state: State<'_, AppState>,
     pane_id: String,
+    workspace_id: Option<String>,
     before_seq: u64,
     max_bytes: usize,
 ) -> Result<crate::state::ScrollbackChunk, String> {
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
-    let workspace_id = state.active_workspace_id();
+    let workspace_id = resolve_pane_workspace(&state, workspace_id.as_deref(), pane_id)?;
     Ok(state.get_pty_scrollback_before(workspace_id, pane_id, before_seq, max_bytes))
 }
 
@@ -1859,10 +1880,11 @@ pub struct PaneResyncFrame {
 pub fn get_pane_resync_frame(
     state: State<'_, AppState>,
     pane_id: String,
+    workspace_id: Option<String>,
     max_bytes: usize,
 ) -> Result<PaneResyncFrame, String> {
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
-    let workspace_id = state.active_workspace_id();
+    let workspace_id = resolve_pane_workspace(&state, workspace_id.as_deref(), pane_id)?;
     let chunk = state.get_pty_scrollback_tail(workspace_id, pane_id, max_bytes);
     let (modes, alt) = state.get_pane_modes(workspace_id, pane_id);
     let frame = ridge_term::term::modes::build_resync_frame(chunk.bytes.as_bytes(), &modes, alt);

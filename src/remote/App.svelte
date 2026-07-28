@@ -5,6 +5,7 @@
   import { RemoteConnection, type RemoteLink } from '@ridge/remote';
   import { setTransport } from '$lib/transport';
   import { WsDataProvider } from '$lib/transport/ws';
+  import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
 
   // §mobile-cloud (design 2026-06-16): the mobile app now has TWO transports —
   //   - LAN:   RemoteConnection (WebSocket, self-signed TLS) — phone on same network.
@@ -45,6 +46,14 @@
   let ws = $state<RemoteLink | null>(initialLan);
   let verified = $state(false);
   let transportSet = $state(false);
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        refetchOnWindowFocus: false,
+        retry: 1,
+      },
+    },
+  });
 
   // LAN sidebar transport. (Cloud sets TauriDataProvider inside cloudControllerBoot,
   // so we must NOT install WsDataProvider in cloud mode.)
@@ -62,17 +71,19 @@
   }
 </script>
 
-{#if mode === 'cloud'}
-  {#if !verified}
-    <CloudAuthScreen
-      onready={(conn) => { ws = conn; verified = true; }}
-      onfallbacklan={fallbackToLan}
-    />
+<QueryClientProvider client={queryClient}>
+  {#if mode === 'cloud'}
+    {#if !verified}
+      <CloudAuthScreen
+        onready={(conn) => { ws = conn; verified = true; }}
+        onfallbacklan={fallbackToLan}
+      />
+    {:else if ws}
+      <MainApp {ws} />
+    {/if}
+  {:else if !verified}
+    <AuthScreen ws={lanWs!} onverified={() => verified = true} />
   {:else if ws}
     <MainApp {ws} />
   {/if}
-{:else if !verified}
-  <AuthScreen ws={lanWs!} onverified={() => verified = true} />
-{:else if ws}
-  <MainApp {ws} />
-{/if}
+</QueryClientProvider>

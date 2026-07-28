@@ -138,6 +138,8 @@ export interface GitStatus {
 export type WsMessage = {
   type: 'panes';
   panes: PaneInfo[];
+  /** Iteration 63: identifies cached snapshots pushed for non-active workspaces. */
+  workspaceId?: string;
 } | {
   type: 'output';
   paneId: string;
@@ -315,14 +317,23 @@ export interface RemoteLink {
   // kernel, and just resumes the live stream. `sinceSeq` (forward-compat) requests
   // an incremental gap replay from that byte cursor instead. Omit both for a fresh
   // subscribe (full RIS + scrollback + mode reattach).
-  subscribePane(paneId: string, opts?: { resume?: boolean; sinceSeq?: number }): void;
+  subscribePane(
+    paneId: string,
+    opts?: {
+      resume?: boolean;
+      sinceSeq?: number;
+      workspaceId?: string;
+      /** Foreground pane owns the transport's reserved priority lane. */
+      active?: boolean;
+    },
+  ): void;
   /**
    * §history-pull（cloud-only）: fetch the next older batch of a pane's scrollback
    * (seq-cursor paging via get_pane_scrollback_before) to PREPEND above the current
    * buffer when the viewport nears the top. Returns the raw bytes, or null when
    * there's nothing more to load. The LAN link omits it (optional) → no-op there.
    */
-  fetchOlderScrollback?(paneId: string): Promise<Uint8Array | null>;
+  fetchOlderScrollback?(paneId: string): Promise<PendingScrollbackPage | null>;
   /**
    * iter-61：把某 pane 标记 / 取消标记为 agent（远端工作区弹层的标记按钮）。
    * 两条腿（LAN invoke-request / cloud RPC）都实现；老 host 会以错误拒绝，UI 提示即可。
@@ -372,6 +383,16 @@ export interface SavedWorkspaceFile {
   path: string;
   /** Seconds since epoch (host FS mtime). */
   mtimeSecs: number;
+}
+
+/** A scrollback page whose cursor advances only after kernel prepend succeeds. */
+export interface PendingScrollbackPage {
+  bytes: Uint8Array;
+  startSeq: number;
+  endSeq: number;
+  atOldest: boolean;
+  commit(): boolean;
+  discard(): void;
 }
 
 export function remoteWebSocketUrl(input: {
@@ -432,6 +453,7 @@ export class RemoteConnection implements RemoteLink {
   // 每 pane 的 seq 游标：订阅时由 host 的 `scrollback-meta` 帧播种（首屏 tail 的最旧字节），
   // 用户滚顶时经 `scrollback-before` 分批向更旧推进。atOldest 后停止分页。
   private scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
+  private paneWorkspaces = new Map<string, string>();
   // 正在拉取更旧历史的 pane（去重快速连续的滚顶加载）。
   private fetchingOlder = new Set<string>();
 
@@ -882,6 +904,9 @@ export class RemoteConnection implements RemoteLink {
     for (const id of [...this.paneOutputs.keys()]) {
       if (!liveIds.has(id)) this.paneOutputs.delete(id);
     }
+    for (const id of [...this.paneWorkspaces.keys()]) {
+      if (!liveIds.has(id)) this.paneWorkspaces.delete(id);
+    }
   }
 
   send(msg: Record<string, unknown>) {
@@ -906,10 +931,16 @@ export class RemoteConnection implements RemoteLink {
   }
 
   listPanes() { this.send({ type: 'list-panes' }); }
-  subscribePane(paneId: string, opts?: { resume?: boolean; sinceSeq?: number }) {
+  subscribePane(
+    paneId: string,
+    opts?: { resume?: boolean; sinceSeq?: number; workspaceId?: string; active?: boolean },
+  ) {
     const msg: Record<string, unknown> = { type: 'subscribe-pane', paneId };
+    if (opts?.workspaceId) this.paneWorkspaces.set(paneId, opts.workspaceId);
     if (opts?.resume) msg.resume = true;
     if (opts?.sinceSeq !== undefined) msg.sinceSeq = opts.sinceSeq;
+    if (opts?.workspaceId) msg.workspaceId = opts.workspaceId;
+    if (opts?.active !== undefined) msg.active = opts.active;
     this.send(msg);
   }
 
@@ -922,26 +953,54 @@ export class RemoteConnection implements RemoteLink {
    * stop keep it safe under rapid scroll-up. Mirrors
    * CloudRemoteConnection.fetchOlderScrollback.
    */
-  async fetchOlderScrollback(paneId: string): Promise<Uint8Array | null> {
+  async fetchOlderScrollback(paneId: string): Promise<PendingScrollbackPage | null> {
     const cursor = this.scrollbackCursor.get(paneId);
     if (!cursor || cursor.atOldest || this.fetchingOlder.has(paneId)) return null;
     this.fetchingOlder.add(paneId);
     try {
       const result = await this._sendAndWait(
-        { type: 'scrollback-before', paneId, beforeSeq: cursor.oldestSeq, maxBytes: 64 * 1024 },
+        {
+          type: 'scrollback-before',
+          paneId,
+          workspaceId: this.paneWorkspaces.get(paneId),
+          beforeSeq: cursor.oldestSeq,
+          maxBytes: 64 * 1024,
+        },
         'scrollback-before-result',
-      ) as { bytes?: string; startSeq?: number; atOldest?: boolean };
-      this.scrollbackCursor.set(paneId, {
-        oldestSeq: Number(result.startSeq),
+      ) as { bytes?: string; startSeq?: number; endSeq?: number; atOldest?: boolean };
+      const startSeq = Number(result.startSeq);
+      const endSeq = Number(result.endSeq);
+      const bytes = result.bytes ? new TextEncoder().encode(String(result.bytes)) : new Uint8Array();
+      if (!(startSeq < endSeq) || endSeq !== cursor.oldestSeq || bytes.length === 0) {
+        if (bytes.length === 0 && endSeq === cursor.oldestSeq && result.atOldest) {
+          this.scrollbackCursor.set(paneId, { ...cursor, atOldest: true });
+        }
+        this.fetchingOlder.delete(paneId);
+        return null;
+      }
+      let settled = false;
+      const finish = () => {
+        if (!settled) {
+          settled = true;
+          this.fetchingOlder.delete(paneId);
+        }
+      };
+      return {
+        bytes,
+        startSeq,
+        endSeq,
         atOldest: !!result.atOldest,
-      });
-      return result.bytes ? new TextEncoder().encode(String(result.bytes)) : null;
+        commit: () => {
+          if (settled || this.scrollbackCursor.get(paneId)?.oldestSeq !== endSeq) return false;
+          this.scrollbackCursor.set(paneId, { oldestSeq: startSeq, atOldest: !!result.atOldest });
+          finish();
+          return true;
+        },
+        discard: finish,
+      };
     } catch {
-      // Timeout / reject: stop paging so we don't spam on every scroll-up.
-      this.scrollbackCursor.set(paneId, { oldestSeq: cursor.oldestSeq, atOldest: true });
-      return null;
-    } finally {
       this.fetchingOlder.delete(paneId);
+      return null;
     }
   }
   listFiles(path?: string) { this.send({ type: 'list-files', path: path || '' }); }
@@ -1247,6 +1306,7 @@ export class RemoteConnection implements RemoteLink {
     // §history-pull: drop per-pane seq cursors + in-flight flags so a fresh
     // transport re-seeds from the host's next `scrollback-meta`.
     this.scrollbackCursor.clear();
+    this.paneWorkspaces.clear();
     this.fetchingOlder.clear();
   }
 

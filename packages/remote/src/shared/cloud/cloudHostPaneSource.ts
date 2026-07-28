@@ -61,12 +61,19 @@ export function base64ToBytes(b64: string): Uint8Array {
  */
 export function makeCloudHostPaneSource(deps: CloudHostPaneSourceDeps): PaneOutputSource {
   const log = deps.log ?? (() => {});
-  return (paneId: string, onOutput: (raw: Uint8Array) => void): Unsubscribe => {
+  return (
+    paneId: string,
+    workspaceId: string | undefined,
+    onOutput: (raw: Uint8Array) => void,
+  ): Unsubscribe => {
     let active = true;
     let unlisten: (() => void) | null = null;
+    const eventName = workspaceId
+      ? `pane-raw-${workspaceId}-${paneId}`
+      : `pane-raw-${paneId}`;
 
     deps
-      .listen<{ b64?: unknown }>(`pane-raw-${paneId}`, (event) => {
+      .listen<{ b64?: unknown }>(eventName, (event) => {
         if (!active) return;
         const b64 = event.payload?.b64;
         if (typeof b64 !== 'string') return;
@@ -77,9 +84,11 @@ export function makeCloudHostPaneSource(deps: CloudHostPaneSourceDeps): PaneOutp
         if (active) unlisten = u;
         else u(); // 已在 listen resolve 前退订 → 立刻撤监听
       })
-      .catch((e) => log(`listen(pane-raw-${paneId}) failed`, e));
+      .catch((e) => log(`listen(${eventName}) failed`, e));
 
-    deps.invoke('subscribe_pane_raw', { paneId }).catch((e) => log(`subscribe_pane_raw failed`, e));
+    deps.invoke('subscribe_pane_raw', { paneId, workspaceId }).catch((e) =>
+      log(`subscribe_pane_raw failed`, e),
+    );
 
     return () => {
       active = false;
@@ -87,7 +96,9 @@ export function makeCloudHostPaneSource(deps: CloudHostPaneSourceDeps): PaneOutp
         unlisten();
         unlisten = null;
       }
-      deps.invoke('unsubscribe_pane_raw', { paneId }).catch((e) => log(`unsubscribe_pane_raw failed`, e));
+      deps.invoke('unsubscribe_pane_raw', { paneId, workspaceId }).catch((e) =>
+        log(`unsubscribe_pane_raw failed`, e),
+      );
     };
   };
 }

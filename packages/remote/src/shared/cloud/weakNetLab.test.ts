@@ -9,6 +9,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CloudHostBridge } from './cloudHostBridge';
+import { encodeJsonFrame } from '../transport/cloudMux';
 import {
   authorize,
   completeE2ee,
@@ -169,7 +170,9 @@ describe('弱网实验室 — B. DataChannel 背压水位扫描（8MiB 上水位
   for (const buffered of [1 * MIB, 8 * MIB + 1, 12 * MIB]) {
     const overHigh = buffered > 8 * MIB;
     it(`buffered=${(buffered / MIB).toFixed(0)}MiB → ${overHigh ? '丢帧并在 drain 后每 pane 恰一次 resync' : '直发不丢'}`, async () => {
-      const invoke = vi.fn(async (_method: string, _params?: Record<string, unknown>) => null);
+      const invoke = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({
+        frame: '\x1bcRECOVERED',
+      }));
       const sent: Uint8Array[] = [];
       const bridge = new CloudHostBridge({ invoke, sendFrame: (frame) => sent.push(frame) });
       let level = buffered;
@@ -182,14 +185,28 @@ describe('弱网实验室 — B. DataChannel 背压水位扫描（8MiB 上水位
         },
       });
       const panes = ['pane-a', 'pane-b', 'pane-c'];
+      bridge.handleFrame(encodeJsonFrame({
+        jsonrpc: '2.0',
+        method: 'subscribe-pane',
+        params: { paneId: panes[0], active: true },
+      }));
       for (const paneId of panes) bridge.pushPaneOutput(paneId, new Uint8Array([1, 2, 3]));
 
-      if (!overHigh) {
-        expect(sent).toHaveLength(panes.length);
+      if (buffered <= MIB) {
+        expect(sent).toHaveLength(1);
         metrics.push({
           family: 'backpressure',
           params: { bufferedMiB: buffered / MIB, panes: panes.length },
-          observed: { dropped: 0, resyncs: 0 },
+          observed: { dropped: panes.length - 1, resyncs: 0 },
+        });
+        return;
+      }
+      if (!overHigh) {
+        expect(sent).toHaveLength(1);
+        metrics.push({
+          family: 'backpressure',
+          params: { bufferedMiB: buffered / MIB, panes: panes.length },
+          observed: { dropped: panes.length - 1, resyncs: 0 },
         });
         return;
       }
@@ -197,16 +214,14 @@ describe('弱网实验室 — B. DataChannel 背压水位扫描（8MiB 上水位
       expect(sent).toHaveLength(0);
       level = 0;
       drain!();
-      await Promise.resolve();
-      const resyncs = invoke.mock.calls.filter(([m]) => m === 'resync_pane_raw');
-      expect(resyncs).toHaveLength(panes.length);
-      expect(new Set(resyncs.map(([, p]) => (p as { paneId: string }).paneId)).size).toBe(
-        panes.length,
-      );
+      await vi.waitFor(() => expect(sent).toHaveLength(1));
+      const resyncs = invoke.mock.calls.filter(([m]) => m === 'get_pane_resync_frame');
+      expect(resyncs).toHaveLength(1);
+      expect((resyncs[0][1] as { paneId: string }).paneId).toBe(panes[0]);
       metrics.push({
         family: 'backpressure',
         params: { bufferedMiB: buffered / MIB, panes: panes.length },
-        observed: { dropped: panes.length, resyncs: resyncs.length },
+        observed: { dropped: panes.length, resyncs: 1 },
       });
     });
   }

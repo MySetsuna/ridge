@@ -43,7 +43,10 @@ import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
 import { MAX_PANE_FRAME_BYTES } from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
-import type { ChannelBackpressure } from './cloudHostBridge';
+import {
+  BUFFERED_LOW_WATERMARK,
+  type ChannelBackpressure,
+} from './cloudHostBridge';
 import type { WorkspaceScopeAssertion } from './workspaceScope';
 import { backoffMs } from '../reconnectPolicy';
 
@@ -60,8 +63,6 @@ const DC_LABEL = 'ridge';
  * 缓冲回落到此即触发 `bufferedamountlow` → 通知 bridge 重同步。与 cloudHostBridge 的
  * 上水位（8 MiB）配对。
  */
-const BUFFERED_LOW_WATERMARK = 1 * 1024 * 1024; // 1 MiB
-
 /** host 端信令 WS 在线状态（与 per-controller 的 CloudConnectionState 区分）。 */
 export type HostSignalState = 'offline' | 'connecting' | 'online' | 'error';
 
