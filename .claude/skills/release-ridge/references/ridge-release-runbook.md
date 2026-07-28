@@ -161,7 +161,14 @@ gh run watch $ridgeCloudRun.databaseId --repo MySetsuna/ridge-cloud --exit-statu
 ssh dokku@oracle apps:unlock ridge-cloud
 ```
 
-4. 重新触发精确 SHA 的工作流。
+4. 重新触发精确 SHA，并显式传入一次性授权：
+
+```powershell
+gh workflow run deploy-dokku.yml --repo MySetsuna/ridge-cloud --ref main `
+  -f "ref=$ridgeCloudTarget" -f unlock_stale=true
+```
+
+工作流先查 Dokku build record；尚有 `running` build 则拒绝解锁。
 
 ### 云端验收
 
