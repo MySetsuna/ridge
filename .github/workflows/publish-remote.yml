@@ -76,3 +76,12 @@ jobs:
           else
             pnpm publish:remote-cloud
           fi
+          status="$(
+            curl --fail --silent --show-error \
+              -H "Authorization: Bearer $RIDGE_ARTIFACT_TOKEN" \
+              "${RIDGE_CLOUD_ARTIFACT_URL%/}/status"
+          )"
+          jq -e '.data.desktopIndex == true and .data.mobileIndex == true' <<<"$status"
+          curl --fail --silent --show-error --retry 5 --retry-delay 2 \
+            --output /dev/null \
+            'https://s4host-s4test.9527127.xyz/favicon.png'
