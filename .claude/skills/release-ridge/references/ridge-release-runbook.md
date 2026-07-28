@@ -136,7 +136,15 @@ gh workflow run deploy-dokku.yml --repo MySetsuna/ridge-cloud --ref main -f "ref
 工作流在 GitHub runner 用 BuildKit/GHA cache 构建 `linux/amd64` 运行时镜像，冒烟后由
 `docker image save | ssh ... git:load-image` 直传 Dokku。生产机只构建一层 `FROM`，
 不再重编 Rust。镜像 `/app/CHECKS` 必须含 `/api/v1/health`，否则镜像部署会退化为
-仅检查进程存活。
+仅检查进程存活。工作流须在构建前验证 `/data/remote-apps` 持久卷，并写入：
+
+```text
+REMOTE_ARTIFACTS_ROOT=/data/remote-apps
+REMOTE_APP_DIR=/data/remote-apps/remote-app
+```
+
+二者不可分叉；否则上传 API 可成功激活，而租户静态托管仍返回
+`Static assets not built yet`。
 
 ```powershell
 $ridgeCloudRun = gh run list --repo MySetsuna/ridge-cloud --workflow deploy-dokku.yml `
@@ -199,6 +207,20 @@ pnpm publish:remote-cloud
 ```powershell
 pnpm publish:remote-cloud --no-build
 ```
+
+上传成功后用同一 token 查询 current 指针：
+
+```powershell
+$ridgeArtifactStatus = Invoke-RestMethod `
+  -Headers @{ Authorization = "Bearer $env:RIDGE_ARTIFACT_TOKEN" } `
+  'https://9527127.xyz/api/v1/remote-artifacts/status'
+$ridgeArtifactStatus.data |
+  Select-Object version,desktopIndex,mobileIndex
+```
+
+`desktopIndex` 与 `mobileIndex` 必须均为 `true`。随后以已登录浏览器打开真实租户
+`https://<device>-<username>.9527127.xyz/`；须返回 Remote HTML 并完成一次连接，
+不得出现 `Static assets not built yet`。上传响应 200 只证明写入成功，不证明静态路径已接通。
 
 ### HTTP 413
 
@@ -264,6 +286,7 @@ $ridgeArtifactToken = $null
 | Dokku deploy lock | 中断留下残留锁 | 先确认无活跃部署，授权后 `apps:unlock` |
 | 上传 HTTP 413 | Nginx 1 MiB 限制 | `nginx:set 64m` 后 `proxy:build-config` |
 | 上传 HTTP 500 / Permission denied | 卷属主不匹配 appuser | 授权后把实际 storage 卷 chown 为 `10001:10001` |
+| 上传成功但租户 503 | `REMOTE_APP_DIR` 仍指相对目录或卷未挂载 | 验 storage report；设为 `/data/remote-apps/remote-app` 后重部署 |
 | Node 在失败上传后出现 libuv assertion | 上游 HTTP 失败后的次生退出 | 先修后端 413/500，再 `--no-build` 重试 |
 
 ## 最终验收
@@ -275,6 +298,7 @@ $ridgeArtifactToken = $null
 - `ridge-cloud` 预期 SHA、Action run ID 与镜像 revision。
 - 健康接口 HTTP 状态和版本。
 - remote 上传响应中的激活版本。
-- 持久卷中 `releases/<version>/desktop-app/index.html` 与 `mobile-app/index.html` 的存在性。
+- status 的 `desktopIndex` / `mobileIndex` 均为 true，且真实租户 URL 已返回 Remote HTML。
+- 持久卷中 `releases/<version>/remote-app/desktop/index.html` 与 `remote-app/mobile/index.html` 的存在性。
 - 两个仓库最终 `git status --short --branch`，并明确哪些是发布前就存在的脏文件。
 - 是否发生过取消、解锁、Nginx 修改或 chown，以及对应授权。

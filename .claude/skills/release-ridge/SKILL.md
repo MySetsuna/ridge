@@ -35,6 +35,7 @@ description: 同步 Ridge 相关仓库并完成 Windows release 构建、缓存�
 
 - 以精确源 SHA 手动触发 `ridge-cloud` 的 `deploy-dokku.yml`；禁止恢复源码 `git push` 冷构建。
 - 工作流须在 CI 用 BuildKit 缓存构建镜像，经 SSH `git:load-image` 直传；镜像内 `/app/CHECKS` 保留 HTTP 就绪闸。
+- 工作流须验证 `/data/remote-apps` 持久卷，并固定 `REMOTE_APP_DIR=/data/remote-apps/remote-app`；上传根与静态读取根不可分叉。
 - 首次缓存预热可较久；后续若仍异常慢，查 Action build 分层命中率与 Dokku build record，不以盲等代替诊断。
 - 验收：Action 成功、镜像 revision 等于预期 SHA、生产健康接口返回 200。
 
@@ -43,7 +44,7 @@ description: 同步 Ridge 相关仓库并完成 Windows release 构建、缓存�
 - 先确保新 artifact API 已随 ridge-cloud 上线。
 - 安全读取 token，构建并上传 desktop/mobile bundle。上传失败而本地产物完好时用 `pnpm publish:remote-cloud --no-build` 重试。
 - 413 检查 Nginx 上传上限；500“产物落盘失败”检查持久卷属主。修复配置或属主属于生产变更，遵守授权门禁。
-- 验收：响应给出激活版本，持久卷存在该版本的 desktop/mobile 实体目录。
+- 验收：响应给出激活版本；status 的 desktop/mobile index 均为 true；登录后的真实租户 URL 返回 Remote HTML，禁止以上传 200 代替上线。
 
 ### 5. 收尾
 
