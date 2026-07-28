@@ -4396,7 +4396,7 @@ export class TerminalManager {
 
 		// Cells fit into the container; round DOWN to avoid drawing past
 		// the right/bottom edge.
-		const cols = Math.max(1, Math.floor(wCss / entry.cellW));
+		let cols = Math.max(1, Math.floor(wCss / entry.cellW));
 		let rows = Math.max(1, Math.floor(hCss / entry.cellH));
 
 		// Equal padding on all four sides, using the horizontal-center
@@ -4429,6 +4429,8 @@ export class TerminalManager {
 			const cs = window.getComputedStyle(entry.container);
 			wCss = Math.floor(rect.width - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0));
 			hCss = Math.floor(rect.height - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0));
+			cols = Math.max(1, Math.floor(wCss / entry.cellW));
+			rows = Math.max(1, Math.floor(hCss / entry.cellH));
 		} else {
 			if (!this._sharedRemoteMode) {
 				// Shared-grid Canvas2D fallback may have letterboxed the
@@ -4612,10 +4614,14 @@ export class TerminalManager {
 		// delta 回灌，本地网格在此直接改——否则 cloud 腿（无 pty-resized 回执）
 		// 的 kernel 永卡初始格。上面的 delta-race 顾虑仅适用于 Rust-delta 镜像。
 		void wipeBeforePty;
-		if (entry.localGridAuthority) {
+		if (entry.localGridAuthority || this._sharedRemoteMode) {
 			entry.kernel.resize(rows, cols);
 		}
 		await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
+		// Browser raw-byte remote has no PTY delta callback. The local kernel
+		// was resized above; immediately project the new grid or the canvas
+		// remains letterboxed to the previous 80×24 geometry until another fit.
+		if (this._sharedRemoteMode && entry.localGridAuthority) this._recomputeViewport(entry);
 		// Mirror resize will follow via apply_delta(Resize) in the
 		// next pty-delta frame — handler emits it synchronously.
 		// Drop the renderer's per-row hash snapshot the instant the kernel
