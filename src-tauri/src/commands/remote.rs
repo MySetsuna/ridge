@@ -37,6 +37,17 @@ pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, Stri
                     .filter(|id| !leaves.contains(id))
                     .map(|id| id.to_string())
                     .collect();
+                let sizes: Vec<serde_json::Value> = ws
+                    .pane_sizes
+                    .iter()
+                    .map(|(id, (rows, cols))| {
+                        serde_json::json!({
+                            "pane": id.to_string(),
+                            "rows": rows,
+                            "cols": cols,
+                        })
+                    })
+                    .collect();
                 serde_json::json!({
                     "ws": wid.to_string(),
                     "leaves": leaves.len(),
@@ -44,6 +55,7 @@ pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, Stri
                     "pending": ws.pending_spawns.len(),
                     "orphanTerminals": orphan_terms,
                     "orphanPending": orphan_pend,
+                    "sizes": sizes,
                 })
             })
             .collect()

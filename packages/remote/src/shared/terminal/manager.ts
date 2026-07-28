@@ -544,6 +544,19 @@ export class TerminalManager {
 	private constructor(opts: ManagerOptions) {
 		this.opts = opts;
 
+		if (typeof window !== 'undefined') {
+			try {
+				if (window.localStorage?.RIDGE_DIAG === '1') {
+					const diagWindow = window as typeof window & {
+						__RIDGE_TERMINAL_GEOMETRY?: () => unknown;
+					};
+					diagWindow.__RIDGE_TERMINAL_GEOMETRY = () => this.debugGeometry();
+				}
+			} catch {
+				// Storage may be unavailable in hardened browser contexts.
+			}
+		}
+
 		// Defensive `loadingdone` debounce. §4.6 used to bundle Noto
 		// Color Emoji which fired ~10 `loadingdone` events as its
 		// unicode-range subsets landed; without coalescing each event
@@ -3364,6 +3377,27 @@ export class TerminalManager {
 
 	rows(paneId: string): number { return this.panes.get(paneId)?.kernel.rows() ?? 0; }
 	cols(paneId: string): number { return this.panes.get(paneId)?.kernel.cols() ?? 0; }
+
+	/** RIDGE_DIAG-only geometry snapshot for real-browser remote E2E. */
+	debugGeometry(): unknown[] {
+		return Array.from(this.panes.values()).map((entry) => {
+			const container = entry.container.getBoundingClientRect();
+			const canvas = entry.canvas.getBoundingClientRect();
+			const clientX = canvas.right - entry.cellW / 2;
+			const clientY = canvas.bottom - entry.cellH / 2;
+			return {
+				paneId: entry.paneId,
+				workspaceId: entry.workspaceId,
+				container: { x: container.x, y: container.y, width: container.width, height: container.height },
+				canvas: { x: canvas.x, y: canvas.y, width: canvas.width, height: canvas.height },
+				backing: { width: entry.canvas.width, height: entry.canvas.height },
+				cell: { width: entry.cellW, height: entry.cellH },
+				kernel: { rows: entry.kernel.rows(), cols: entry.kernel.cols() },
+				reported: { rows: entry.lastReportedRows, cols: entry.lastReportedCols },
+				bottomRightHit: this.cellFromEvent(entry.paneId, { clientX, clientY }),
+			};
+		});
+	}
 
 	/** iter-60 G3：标记 raw 字节模式 pane（本地网格权威在 fit，见 PaneEntry 注释）。
 	 *  幂等；park/unpark 间存续。 */

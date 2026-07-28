@@ -8,6 +8,7 @@ import http from 'node:http';
 
 const port = process.env.CDP_PORT ?? '9222';
 const host = '127.0.0.1';
+const geometryOnly = process.argv.includes('--geometry');
 
 function fetchJson(path) {
   return new Promise((resolve, reject) => {
@@ -65,7 +66,7 @@ ws.addEventListener('open', async () => {
   }
   // Machine-readable last line for piping; human lines above.
   console.error(`[totp] lanIp=${val.lanIp} port=${val.port} ready=${val.ready} remoteEnabled=${val.remoteEnabled}`);
-  console.log(val.totpCode);
+  console.log(geometryOnly ? JSON.stringify(val.paneDebug ?? []) : val.totpCode);
   ws.close();
   process.exit(0);
 });
