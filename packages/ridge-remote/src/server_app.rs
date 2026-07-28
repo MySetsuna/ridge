@@ -252,7 +252,12 @@ async fn status_handler(State(ctx): State<AppCtx>) -> Json<StatusResponse> {
 
 /// GET /verify —— 始终是移动 SPA 壳（桌面 SPA 自带 +layout 鉴权门）。
 async fn verify_handler_get(State(ctx): State<AppCtx>) -> impl IntoResponse {
-    crate::serve::serve_index(&ctx.host.serve_cfg().mobile_dir).await
+    let cfg = ctx.host.serve_cfg();
+    crate::serve::serve_shell(crate::serve::UiTarget {
+        kind: crate::embed_ui::UiKind::Mobile,
+        dir: cfg.disk_dir(crate::embed_ui::UiKind::Mobile),
+    })
+    .await
 }
 
 async fn verify_handler_post(

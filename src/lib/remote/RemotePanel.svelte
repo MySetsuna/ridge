@@ -160,7 +160,7 @@
   }
   function buildLinkUri(lanIp: string, port: number): string {
     // Always point the phone at THIS instance's own remote server over HTTPS
-    // (self-signed → secure context). It serves the built `static/remote` bundle
+    // (self-signed → secure context). It serves the built `remote-dist` bundle
     // and handles /verify, /ws same-origin.
     //
     // §dev: deliberately NOT the Vite dev server (`:5174`). That path proxies

@@ -32,7 +32,7 @@ pub async fn run(
 ) -> Result<()> {
     let lan_ip = config::detect_lan_ip();
     let machine_name = host_name();
-    // 运行时候选目录探测（移动 `static/remote` + 可选桌面 `web-remote-dist`）已下沉
+    // 运行时统一 `remote-dist` 产物根探测已下沉
     // 到共享 serve 层；缺失时回退移动 SPA 提示页。
     let serve_cfg = UaServeConfig::resolve_ui_dirs();
 

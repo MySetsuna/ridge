@@ -2,7 +2,7 @@
 node_modules
 /build
 /dist
-/web-remote-dist
+/remote-dist
 /release
 /.webview2-*
 *.log
@@ -25,7 +25,6 @@ bash.exe.stackdump
 .ridge-remote-port
 /coverage
 /test-results
-/static/remote
 /packages/ridge-term/pkg
 plotforge.db
 

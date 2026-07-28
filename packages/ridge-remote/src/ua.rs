@@ -3,8 +3,7 @@
 //! 这是 **单一事实来源（SSOT）**：局域网远控服务端（桌面 Tauri app
 //! `src-tauri/src/remote/server.rs`）与公网远控中继（ridge-cloud 的
 //! `spa_fallback`）都应复用这里的判定，避免"手机/桌面"分叉规则在两个入口漂移。
-//! 两端 serve 的本就是同一套客户端产物（wind `web-remote-dist` 桌面 SPA /
-//! `static/remote` 移动 SPA），分叉决策也理应共用一份。
+//! 两端 serve 同一 `remote-dist` 产物根，分叉决策亦共用一份。
 
 /// 标记移动/触屏浏览器的 User-Agent 子串。UA 命中任一即发轻量移动 SPA，
 /// 其余一律发完整桌面 SPA。

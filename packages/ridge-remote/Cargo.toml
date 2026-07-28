@@ -38,13 +38,11 @@ uuid = { version = "1" }
 parking_lot = "0.12"
 # OS CSPRNG for unguessable session tokens (audit C2)
 getrandom = "0.2"
-# 可选：把移动 SPA 产物编进二进制（`embed-ui` feature，rdg CLI 用）。
-# `interpolate-folder-path`：`#[folder = "$CARGO_MANIFEST_DIR/../../static/remote"]`
+# 可选：把统一 Remote SPA 产物编进二进制（`embed-ui` feature，rdg CLI 用）。
+# `interpolate-folder-path`：`#[folder = "$CARGO_MANIFEST_DIR/../../remote-dist"]`
 # 需要它才会展开环境变量（否则把 `$CARGO_MANIFEST_DIR` 当字面目录名→编译期报错）。
-# `include-exclude`：桌面产物 `web-remote-dist` 里 `remote/`、`mobile/`、`docs/`、
-# 首页配图纯属冗余（`remote/` 就是 `static/remote` 的副本，已单独内嵌），排掉少嵌 ~3.5 MiB。
-# `compression`：两套 SPA 排除冗余后仍有约 26 MiB（`web-remote-dist` 23 MiB +
-# `static/remote` 2.9 MiB），此前逐字节原样进二进制——rdg 体积的大头是它，不是代码
+# `include-exclude`：桌面产物里的 docs 与首页配图不服务 Remote，排除以减体积。
+# `compression`：桌面/移动 SPA 此前逐字节原样进二进制——rdg 体积的大头是它，不是代码
 # （二进制已 `strip` + thin LTO）。开压缩后按 deflate 存、首次读取时惰性解压。
 # 同机实测（Windows x64，`cargo build --release -p ridge-cli --bin rdg`）：
 #   关：44.1 MiB → 开：30.1 MiB，**减 14.0 MiB（−32%）**。
@@ -60,6 +58,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net",
 
 [features]
 default = []
-# 单文件分发的 CLI（rdg）打开它：`static/remote` 产物随二进制走，
-# 免去「exe 旁必须有 static/remote」的隐式依赖（REMOTE_UI_MISSING 根因）。
+# 单文件分发的 CLI（rdg）打开它：`remote-dist` 产物随二进制走，
+# 免去「exe 旁必须有 Remote 静态目录」的隐式依赖（REMOTE_UI_MISSING 根因）。
 embed-ui = ["dep:rust-embed"]

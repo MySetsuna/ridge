@@ -2092,7 +2092,7 @@ async fn dispatch_invoke_request(
     // migrated core methods, so capability_denied=1001 / read_only=1002 /
     // path_traversal=1003 / … reach the client intact (asserted by the S7
     // conformance suite). This LEGACY leg stays message-only on purpose: old
-    // clients (web-remote-dist, mobile SPA) consume the bare `_error` string and
+    // browser Remote clients consume the bare `_error` string and
     // must not change. Paired anchor: `lanWsAdapter.handleInbound`.
     fn core_result_to_envelope(
         r: Result<serde_json::Value, ridge_core::CoreError>,
@@ -2517,7 +2517,7 @@ async fn dispatch_invoke_request(
 // The LAN host historically spoke a bespoke envelope: invoke as
 // `{type:'invoke-request', cmd, args, _reqId}` → `{type:'invoke-result',
 // _reqId, _result|_error}`, control as flat `{type:'…', …}` frames. That LEGACY
-// leg is left byte-for-byte unchanged (web-remote-dist + the mobile SPA depend
+// leg is left byte-for-byte unchanged (both browser Remote shapes depend
 // on it). This section adds a *parallel* JSON-RPC 2.0 leg per the S0 contract
 // (`docs/contracts/ridge-cloud-protocol.md` §7.0/§7.3/§7.4):
 //

@@ -63,10 +63,8 @@ jobs:
       # 套件里个别测试有平台耦合（theme 读写等，Windows 开发轨保障），不进发布门。
       - name: ridge-core unit tests (git guard / supersede)
         run: cargo test -p ridge-core --lib -- commands::git process_guard
-      - name: vite build smoke (mobile remote bundle)
+      - name: vite build smoke (unified remote bundle)
         run: pnpm build:remote
-      - name: vite build smoke (desktop-web bundle)
-        run: pnpm build:desktop-web
 
   build:
     needs: test

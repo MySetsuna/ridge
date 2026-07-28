@@ -21,7 +21,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROFILE_DIR = path.resolve(__dirname, '..', '.pw-remote-profile');
 
 // The live host serves HTTPS and UA-forks: a mobile UA gets the mobile PWA
-// (static/remote, where the fix lives). 9528 serves the freshly-built bundle.
+// (remote-dist/mobile, where the fix lives). 9528 serves the freshly-built bundle.
 const URL = process.env.RIDGE_URL || 'https://127.0.0.1:9528';
 const CODE = (process.env.RIDGE_CODE || '').replace(/\D/g, '').slice(0, 6);
 const PHASE = process.env.RIDGE_PHASE || 'probe';

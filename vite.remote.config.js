@@ -151,7 +151,7 @@ export default defineConfig({
     }),
   ],
   build: {
-    outDir: path.resolve(__dirname, 'static/remote'),
+    outDir: path.resolve(__dirname, 'remote-dist/mobile'),
     emptyOutDir: true,
     target: 'esnext',
     modulePreload: false,

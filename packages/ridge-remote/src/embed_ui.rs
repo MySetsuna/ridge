@@ -1,8 +1,8 @@
-//! 内嵌前端 SPA 产物（`embed-ui` feature）：手机轻量 SPA + 桌面完整 SPA。
+//! 内嵌统一 Remote 产物（`embed-ui` feature）：手机轻量 SPA + 桌面完整 SPA。
 //!
 //! **为何存在**：`rdg` 以**单个可执行文件**分发（Release 资产 `rdg-X.Y.Z-*`）。
 //! serve 的磁盘探测（[`crate::serve`] 的 `probe_ui_dir`）只找 CWD / exe 上溯里的
-//! `static/remote` 与 `web-remote-dist`——单文件场景下哪都没有：
+//! `remote-dist`——单文件场景下磁盘目录不存在：
 //!   - 手机产物缺失 → LAN 远控恒返回 `REMOTE_UI_MISSING`（iter-61 已修）；
 //!   - 桌面产物缺失 → `wants_desktop_ui` 的「产物存在」这一腿恒 false，于是
 //!     **桌面浏览器也被发手机 SPA**（iter-62 用户实测：rdg LAN 远控用电脑浏览器
@@ -15,42 +15,35 @@
 /// 请求应命中的 UI 形态。决定内嵌回落取哪一份产物。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UiKind {
-    /// `static/remote`（`pnpm build:remote`）——手机/触屏轻量 SPA。
+    /// `remote-dist/mobile`——手机/触屏轻量 SPA。
     Mobile,
-    /// `web-remote-dist`（`pnpm build:desktop-web`）——桌面完整 SPA。
+    /// `remote-dist/desktop`——桌面完整 SPA。
     Desktop,
+}
+
+impl UiKind {
+    pub(crate) const fn dir_name(self) -> &'static str {
+        match self {
+            Self::Mobile => "mobile",
+            Self::Desktop => "desktop",
+        }
+    }
 }
 
 #[cfg(feature = "embed-ui")]
 mod imp {
     use rust_embed::RustEmbed;
 
-    /// `static/remote`（`pnpm build:remote` 产物）。目录由 build.rs 保证存在
-    /// （可能为空 → `get` 恒 None → 行为与未开 feature 一致）。
+    /// 单一 `remote-dist` 根；目录由 build.rs 保证存在（可能为空）。
     #[derive(RustEmbed)]
-    #[folder = "$CARGO_MANIFEST_DIR/../../static/remote"]
-    struct MobileUi;
+    #[folder = "$CARGO_MANIFEST_DIR/../../remote-dist"]
+    #[exclude = "desktop/docs/*"]
+    #[exclude = "desktop/*.jpg"]
+    struct RemoteUi;
 
-    /// `web-remote-dist`（`pnpm build:desktop-web` 产物）。
-    ///
-    /// 排除的是**纯冗余**：`remote/` 是 adapter-static 把 `static/remote` 原样拷进
-    /// 产物的副本（已由 `MobileUi` 内嵌一份）、`mobile/` 同理、`docs/` 与首页配图
-    /// 只服务于官网壳。少嵌 ~3.5 MiB，且桌面 SPA 运行期一个都不取。
-    #[derive(RustEmbed)]
-    #[folder = "$CARGO_MANIFEST_DIR/../../web-remote-dist"]
-    #[exclude = "remote/*"]
-    #[exclude = "mobile/*"]
-    #[exclude = "docs/*"]
-    #[exclude = "*.jpg"]
-    struct DesktopUi;
-
-    /// 取一个内嵌文件（相对各自产物根的路径，`/` 分隔）。
+    /// 取一个内嵌文件（相对所选形态根的路径，`/` 分隔）。
     pub fn get_kind(kind: super::UiKind, rel: &str) -> Option<Vec<u8>> {
-        match kind {
-            super::UiKind::Mobile => MobileUi::get(rel),
-            super::UiKind::Desktop => DesktopUi::get(rel),
-        }
-        .map(|f| f.data.into_owned())
+        RemoteUi::get(&format!("{}/{rel}", kind.dir_name())).map(|f| f.data.into_owned())
     }
 
     /// 该形态是否真带了 UI（空目录编译 = 无 index.html）。

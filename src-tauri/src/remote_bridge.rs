@@ -392,8 +392,8 @@ async fn run_remote_server(
     };
     tracing::info!(target: "ridge::remote", port, lan_ip = %lan_ip, "Remote control server listening");
 
-    // Resolve the static UI dirs (mobile `static/remote` + optional desktop
-    // `web-remote-dist`). 运行时候选目录探测已下沉到 `ridge_remote::serve`。
+    // Resolve the unified `remote-dist` root. 运行时候选目录探测已下沉到
+    // `ridge_remote::serve`。
     let serve_cfg = ridge_remote::serve::UaServeConfig::resolve_ui_dirs();
 
     let machine_name = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
