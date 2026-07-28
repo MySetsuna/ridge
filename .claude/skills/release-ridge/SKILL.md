@@ -1,6 +1,6 @@
 ---
 name: release-ridge
-description: 同步 Ridge 相关仓库并完成 Windows release 构建、Dokku ridge-cloud 发布、分离式 desktop/mobile remote 产物上传与生产验收。用户要求“发布 Ridge”“构建 release”“部署 ridge-cloud”“发布 remote 产物”“清理 Dokku 发布锁”“处理 Ridge 强推”或继续/恢复上述发布流程时使用。
+description: 同步 Ridge 相关仓库并完成 Windows release 构建、缓存镜像直传 Dokku、分离式 desktop/mobile remote 产物上传与生产验收。用户要求“发布 Ridge”“构建 release”“部署 ridge-cloud”“发布 remote 产物”“清理 Dokku 发布锁”或继续/恢复上述发布流程时使用。
 ---
 
 # 发布 Ridge
@@ -13,7 +13,7 @@ description: 同步 Ridge 相关仓库并完成 Windows release 构建、Dokku r
 2. 按阶段执行。上一个阶段未验收，不进入下一个阶段。
 3. 把普通发布授权限制在拉取、构建、常规 Dokku 推送和产物上传。直接强推、解锁、修改 Nginx、修改持久卷属主仍需明确授权；用户已在当前请求授权时不重复询问。
 4. 不打印、写盘或提交 `RIDGE_ARTIFACT_TOKEN`。只在当前进程环境中短暂设置，用完立即清除。
-5. 长时间无新日志不等于失败。Windows release 和 Dokku 冷构建都可能持续数十分钟；检查进程、远端状态和 deploy lock 后再决定是否中断。
+5. 长时间无新日志不等于失败。Windows release 或首次 CI 镜像构建可能持续数十分钟；先查 Action job、Dokku build record 与 deploy lock。
 6. 任何失败先保留原始症状，再按 runbook 的“症状 → 根因 → 恢复”处理；不要用 `git reset --hard`、删除缓存或直接强推掩盖问题。
 
 ## 阶段门禁
@@ -33,10 +33,10 @@ description: 同步 Ridge 相关仓库并完成 Windows release 构建、Dokku r
 
 ### 3. 发布 ridge-cloud
 
-- 抓取 Dokku `main`，比较它与 `develop` 的左右提交和预期目标 SHA。
-- 优先普通推送；确需覆盖远端时先用绑定已观察 SHA 的 `--force-with-lease`。只有当前请求明确授权才使用 `--force`。
-- 不因冷构建日志缓冲而主动断开。客户端已中断且服务端确认残留锁时，获授权后解锁并重新推送。
-- 验收：Dokku `main` 指向预期 SHA，部署健康检查通过，生产健康接口返回 200。
+- 以精确源 SHA 手动触发 `ridge-cloud` 的 `deploy-dokku.yml`；禁止恢复源码 `git push` 冷构建。
+- 工作流须在 CI 用 BuildKit 缓存构建镜像，经 SSH `git:load-image` 直传；镜像内 `/app/CHECKS` 保留 HTTP 就绪闸。
+- 首次缓存预热可较久；后续若仍异常慢，查 Action build 分层命中率与 Dokku build record，不以盲等代替诊断。
+- 验收：Action 成功、镜像 revision 等于预期 SHA、生产健康接口返回 200。
 
 ### 4. 发布 remote 产物
 
