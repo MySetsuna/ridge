@@ -1176,11 +1176,18 @@ export class TerminalManager {
 			// resize() also writes the canvas CSS dimensions; apply the
 			// letterbox style after it or its `100%` reset wins.
 			handle?.resize(Math.round(geometry.gridWidthCss), Math.round(geometry.gridHeightCss), dpr);
-			entry.canvas.style.position = 'absolute';
-			entry.canvas.style.left = `${left}px`;
-			entry.canvas.style.top = `${top}px`;
-			entry.canvas.style.width = `${geometry.gridWidthCss}px`;
-			entry.canvas.style.height = `${geometry.gridHeightCss}px`;
+			const projectCanvas = () => {
+				// Canvas2D/WASM resize may restore its CSS box on the following
+				// render tick; apply the projection once more after that tick.
+				if (!this._sharedRemoteMode || entry.geometry !== geometry) return;
+				entry.canvas.style.position = 'absolute';
+				entry.canvas.style.left = `${left}px`;
+				entry.canvas.style.top = `${top}px`;
+				entry.canvas.style.width = `${geometry.gridWidthCss}px`;
+				entry.canvas.style.height = `${geometry.gridHeightCss}px`;
+			};
+			projectCanvas();
+			if (typeof requestAnimationFrame === 'function') requestAnimationFrame(projectCanvas);
 			return;
 		}
 		const handleVp = handle as unknown as {
@@ -4425,6 +4432,12 @@ export class TerminalManager {
 				entry.canvas.style.height = '100%';
 			}
 			entry.handle?.resize(wCss, hCss, dpr);
+			// Canvas2D fallback: `resize()` resets the canvas CSS box to
+			// 100%/100%. In shared remote mode the box is letterboxed to the
+			// shared PTY grid, so restore that projection immediately. Do this
+			// even when the PTY grid itself is unchanged; otherwise a later
+			// claim fit can leave the canvas full-pane and visually misaligned.
+			if (this._sharedRemoteMode) this._recomputeViewport(entry);
 		}
 
 		// Self-healing: also compare against the kernel's actual grid. If a
