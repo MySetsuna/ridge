@@ -165,10 +165,11 @@ ssh dokku@oracle apps:unlock ridge-cloud
 
 ```powershell
 gh workflow run deploy-dokku.yml --repo MySetsuna/ridge-cloud --ref main `
-  -f "ref=$ridgeCloudTarget" -f unlock_stale=true
+  -f "ref=$ridgeCloudTarget" -f recover_interrupted=true
 ```
 
-工作流先查 Dokku build record；尚有 `running` build 则拒绝解锁。
+工作流先查 Dokku build record；若旧 build 仍为 `running`，以 `builds:cancel` 停其进程组，
+再确认无活跃 build 后解锁。
 
 ### 云端验收
 
