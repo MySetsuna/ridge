@@ -82,7 +82,7 @@ beforeEach(() => {
       case 'get_pane_scrollback_tail':
         return { bytes: 'HIST', start_seq: 100, at_oldest: false, head_seq: 116 };
       case 'get_pane_scrollback_before':
-        return { bytes: 'OLDER', start_seq: 60, at_oldest: true, head_seq: 116 };
+        return { bytes: 'OLDER', start_seq: 60, end_seq: 100, at_oldest: true, head_seq: 116 };
       default: return undefined;
     }
   });
@@ -197,7 +197,8 @@ describe('CloudRemoteConnection panes', () => {
       'get_pane_scrollback_before',
       expect.objectContaining({ paneId: 'pane-a', beforeSeq: 100 }),
     );
-    expect(older && new TextDecoder().decode(older)).toBe('OLDER');
+    expect(older && new TextDecoder().decode(older.bytes)).toBe('OLDER');
+    expect(older?.commit()).toBe(true);
 
     // The mock's page reported at_oldest → a further scroll-up is a no-op (null),
     // and doesn't fire another before-fetch.

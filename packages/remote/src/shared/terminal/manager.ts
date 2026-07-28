@@ -336,6 +336,8 @@ interface PaneEntry {
 	viewport?: { x: number; y: number; w: number; h: number };
 	/** CSS/device geometry used by renderer, pointer, wheel and selection. */
 	geometry?: PaneGeometry;
+	/** Visual-only stage translateY; layout/grid geometry intentionally stays fixed. */
+	visualOffsetY?: number;
 	/** §shared-remote (2026-06-14): the kernel (rows, cols) the last
 	 *  `_recomputeViewport` sized the centered letterbox for. In
 	 *  `sharedRemoteMode` the scissor tracks the SHARED PTY grid (not the
@@ -2760,11 +2762,11 @@ export class TerminalManager {
 	 *  live (the Tauri `get_pane_scrollback_before` IPC, in Ridge's case)
 	 *  and tracking the seq cursor for paged "load older" UX. Manager
 	 *  itself stays host-agnostic — it doesn't know about Tauri. */
-	prependScrollback(paneId: string, data: string | Uint8Array): void {
+	prependScrollback(paneId: string, data: string | Uint8Array): boolean {
 		const entry = this.panes.get(paneId);
-		if (!entry) return;
+		if (!entry) return false;
 		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-		if (bytes.length === 0) return;
+		if (bytes.length === 0) return false;
 		entry.kernel.prependScrollback(bytes);
 		// No selection / search clear here: prepend grows the scrollback
 		// at its older end and leaves all existing rows in place, so any
@@ -2772,6 +2774,7 @@ export class TerminalManager {
 		// Likewise no pending_response / pending_events to drain — the
 		// kernel discards both for prepend-mode bytes by design.
 		this.wake();
+		return true;
 	}
 
 	/** Subscribe to typed kernel events (title, cwd, hyperlinks, bell).
@@ -3080,7 +3083,13 @@ export class TerminalManager {
 			const rows = ent.kernel.rows();
 			const cols = ent.kernel.cols();
 			if (rows === 0 || cols === 0) return null;
-			return cellFromClientPoint(ent.geometry, e.clientX, e.clientY, rows, cols);
+			return cellFromClientPoint(
+				ent.geometry,
+				e.clientX,
+				e.clientY - (ent.visualOffsetY ?? 0),
+				rows,
+				cols,
+			);
 		}
 		const rect = ent.container.getBoundingClientRect();
 		const pad = ent.lastFitPaddingPx ?? ent.lastAppliedPaddingPx ?? 0;
@@ -3092,6 +3101,12 @@ export class TerminalManager {
 		const col = Math.max(0, Math.min(cols - 1, Math.floor(x / ent.cellW)));
 		const row = Math.max(0, Math.min(rows - 1, Math.floor(y / ent.cellH)));
 		return { row, col };
+	}
+
+	/** Keep shared-grid pointer mapping aligned with a CSS-only stage transform. */
+	setVisualOffsetY(paneId: string, offsetY: number): void {
+		const ent = this.panes.get(paneId);
+		if (ent) ent.visualOffsetY = Number.isFinite(offsetY) ? offsetY : 0;
 	}
 
 	/** Write raw bytes to the pane's PTY via dataHandler. */

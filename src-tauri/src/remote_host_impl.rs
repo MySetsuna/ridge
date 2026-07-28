@@ -27,6 +27,44 @@ use ridge_remote::serve::UaServeConfig;
 
 use crate::state::{AppState, RemotePaneSub, RemoteSubId};
 
+type ScheduledPtyEvent = (bool, crate::types::RemotePtyEvent);
+
+fn spawn_remote_lane_scheduler(
+    cap: usize,
+) -> (
+    mpsc::Sender<crate::types::RemotePtyEvent>,
+    mpsc::Sender<crate::types::RemotePtyEvent>,
+    mpsc::Receiver<ScheduledPtyEvent>,
+) {
+    let (active_tx, mut active_rx) = mpsc::channel(cap);
+    let (background_tx, mut background_rx) = mpsc::channel(cap);
+    // One slot is the contract: at most one already-selected background frame
+    // can precede active traffic; queued background backlog never can.
+    let (scheduled_tx, scheduled_rx) = mpsc::channel(1);
+    tokio::spawn(async move {
+        loop {
+            // Reserve output capacity BEFORE selecting a lane. Otherwise a
+            // second low frame can be selected and block behind the one-slot
+            // queue, making a newly-arrived active frame wait behind two lows.
+            let Ok(permit) = scheduled_tx.reserve().await else {
+                return;
+            };
+            if let Ok(event) = active_rx.try_recv() {
+                permit.send((true, event));
+                continue;
+            }
+            let next = tokio::select! {
+                biased;
+                event = active_rx.recv() => event.map(|e| (true, e)),
+                event = background_rx.recv() => event.map(|e| (false, e)),
+            };
+            let Some(event) = next else { return };
+            permit.send(event);
+        }
+    });
+    (active_tx, background_tx, scheduled_rx)
+}
+
 /// 桌面 LAN 远控宿主：包装 `AppState` + 鉴权 + 静态服务配置，供共享 `server_app` 驱动。
 pub struct DesktopHost {
     pub state: AppState,
@@ -414,20 +452,26 @@ async fn handle_ws(
     // §perf (B方案): upgrade 段 = WS 升级握手到本任务真正开始执行的耗时。
     tracing::info!(target: "ridge::remote::perf", client_id, elapsed_ms = upgrade_start.elapsed().as_millis() as u64, "ws_upgrade");
 
-    // Per-client mpsc channel — isolated from other WS clients.
-    let (raw_tx, mut raw_rx) = mpsc::channel::<crate::types::RemotePtyEvent>(512);
+    // Per-client active/background lanes. The one-slot merge means a low frame
+    // can be in flight, but a low backlog can never sit ahead of a new active frame.
+    let cap = ridge_remote::pane::RAW_CHAN_CAP;
+    let (active_raw_tx, background_raw_tx, mut raw_rx) =
+        spawn_remote_lane_scheduler(cap);
     let sub_id = RemoteSubId::next();
 
-    // Shared with the active `RemotePaneSub`: the PTY fan-out (lib.rs) sets this
-    // when it has to drop a frame because `raw_tx` is full. The WS task clears it
-    // and re-syncs the client on the next forwarded frame.
-    let desync = Arc::new(AtomicBool::new(false));
+    // Gap and throttle state is per pane; one noisy background pane must never
+    // dirty or throttle the foreground pane.
+    let mut desync_by_pane:
+        std::collections::HashMap<(Uuid, Uuid), Arc<AtomicBool>> =
+        std::collections::HashMap::new();
     // §resync-throttle: a resync replays up to 64 KiB of scrollback, so under a
     // sustained-overload feedback loop (slow client → drops → resync → slower)
     // we cap it to at most once per interval. The desync flag is only CONSUMED
     // when we actually resync — if throttled, it stays set so a later frame
     // (after the interval) performs the recovery instead of losing the signal.
-    let mut last_resync: Option<Instant> = None;
+    let mut last_resync_by_pane:
+        std::collections::HashMap<(Uuid, Uuid), Instant> =
+        std::collections::HashMap::new();
     const RESYNC_MIN_INTERVAL: Duration = ridge_remote::pane::RESYNC_MIN_INTERVAL;
 
     // §rate-limit: per-connection token bucket for `data-request`. An
@@ -438,12 +482,8 @@ async fn handle_ws(
     const DR_WINDOW: Duration = Duration::from_secs(5);
     const DR_MAX_PER_WINDOW: u32 = 120;
 
-    // Track which (ws, pane) this client is currently subscribed to. The mobile
-    // SPA views ONE pane at a time, so `current_pane` is a single slot that
-    // subscribe-pane replaces. The desktop UI in a browser shows SPLITS (many
-    // panes at once); when `use_global_ws` is set it keeps every subscribed pane
-    // live in `subscribed_panes` instead (raw frames are pane-prefixed, so the
-    // client demuxes them). Both are unregistered on workspace change / disconnect.
+    // current_pane owns Files/Git/Search cwd and active QoS only. Every visited
+    // pane remains in subscribed_panes across ordinary pane/workspace switches.
     let mut current_pane: Option<(Uuid, Uuid)> = None;
     let mut subscribed_panes: std::collections::HashSet<(Uuid, Uuid)> =
         std::collections::HashSet::new();
@@ -551,9 +591,9 @@ async fn handle_ws(
                 for (ws, p) in subscribed_panes.drain() {
                     state.unregister_remote_sub(ws, p, sub_id);
                 }
-                if let Some((ws, p)) = current_pane.take() {
-                    state.unregister_remote_sub(ws, p, sub_id);
-                }
+                desync_by_pane.clear();
+                last_resync_by_pane.clear();
+                current_pane = None;
                 active_ws_id = g;
             }
         }
@@ -696,27 +736,61 @@ async fn handle_ws(
                                     };
                                     build_remote_pane_list(ws)
                                 };
-                                ws_tx.send(Message::Text(serde_json::json!({"type":"panes","panes":pane_list}).to_string())).await
+                                ws_tx.send(Message::Text(serde_json::json!({
+                                    "type":"panes",
+                                    "workspaceId": active_ws_id.to_string(),
+                                    "panes":pane_list
+                                }).to_string())).await
                             }
                             Some("subscribe-pane") => {
                                 let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
                                 if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                                    let new_key = (active_ws_id, pane_id);
-                                    // Mobile: single-pane view — replace the previous
-                                    // subscription. Desktop (global): keep every split
-                                    // pane subscribed; register each pane once.
-                                    let do_register = if use_global_ws {
-                                        subscribed_panes.insert(new_key)
-                                    } else {
-                                        if let Some((ws, p)) = current_pane.take() {
-                                            state.unregister_remote_sub(ws, p, sub_id);
+                                    let target_ws = parsed["workspaceId"].as_str()
+                                        .and_then(|s| Uuid::parse_str(s).ok())
+                                        .unwrap_or(active_ws_id);
+                                    let pane_exists = state.workspaces.read()
+                                        .get(&target_ws)
+                                        .is_some_and(|ws| ws.terminals.contains_key(&pane_id));
+                                    if !pane_exists { continue; }
+                                    let new_key = (target_ws, pane_id);
+                                    let wants_active = parsed["active"].as_bool().unwrap_or(!use_global_ws);
+                                    if wants_active {
+                                        if let Some(old_key) = current_pane {
+                                            if old_key != new_key && subscribed_panes.contains(&old_key) {
+                                                state.unregister_remote_sub(old_key.0, old_key.1, sub_id);
+                                                if let Some(flag) = desync_by_pane.get(&old_key) {
+                                                    state.register_remote_sub(
+                                                        old_key.0,
+                                                        old_key.1,
+                                                        RemotePaneSub {
+                                                            id: sub_id,
+                                                            raw_tx: background_raw_tx.clone(),
+                                                            desync: Arc::clone(flag),
+                                                        },
+                                                    );
+                                                }
+                                            }
                                         }
                                         current_pane = Some(new_key);
-                                        true
-                                    };
+                                    }
+                                    let do_register = subscribed_panes.insert(new_key);
                                     if !do_register {
-                                        // Already subscribed (idempotent re-subscribe) —
-                                        // skip re-registering and re-sending scrollback.
+                                        // Promotion only swaps this pane onto the active lane;
+                                        // its kernel/subscription/history remain intact.
+                                        if wants_active {
+                                            state.unregister_remote_sub(target_ws, pane_id, sub_id);
+                                            if let Some(flag) = desync_by_pane.get(&new_key) {
+                                                state.register_remote_sub(
+                                                    target_ws,
+                                                    pane_id,
+                                                    RemotePaneSub {
+                                                        id: sub_id,
+                                                        raw_tx: active_raw_tx.clone(),
+                                                        desync: Arc::clone(flag),
+                                                    },
+                                                );
+                                            }
+                                        }
                                         continue;
                                     }
 
@@ -725,20 +799,24 @@ async fn handle_ws(
                                     {
                                         let workspaces = state.workspaces.read();
                                         if let Some(h) = workspaces
-                                            .get(&active_ws_id)
+                                            .get(&target_ws)
                                             .and_then(|ws| ws.terminals.get(&pane_id))
                                         {
                                             h.delta_mode.store(true, Ordering::Release);
                                         }
                                     }
 
-                                    // Fresh subscription starts in-sync.
-                                    desync.store(false, Ordering::Release);
+                                    let desync = Arc::new(AtomicBool::new(false));
+                                    desync_by_pane.insert(new_key, Arc::clone(&desync));
                                     state.register_remote_sub(
-                                        active_ws_id, pane_id,
+                                        target_ws, pane_id,
                                         RemotePaneSub {
                                             id: sub_id,
-                                            raw_tx: raw_tx.clone(),
+                                            raw_tx: if wants_active {
+                                                active_raw_tx.clone()
+                                            } else {
+                                                background_raw_tx.clone()
+                                            },
                                             desync: desync.clone(),
                                         },
                                     );
@@ -787,12 +865,12 @@ async fn handle_ws(
                                     let cap = ridge_remote::pane::RESYNC_SCROLLBACK_LAN;
                                     let (chunk, incremental) = if let Some(cursor) = since_seq {
                                         let c = state.get_pty_scrollback_since(
-                                            active_ws_id, pane_id, cursor, cap,
+                                            target_ws, pane_id, cursor, cap,
                                         );
                                         let contiguous = c.start_seq == cursor;
                                         (c, contiguous)
                                     } else {
-                                        (state.get_pty_scrollback_tail(active_ws_id, pane_id, cap), false)
+                                        (state.get_pty_scrollback_tail(target_ws, pane_id, cap), false)
                                     };
 
                                     if incremental {
@@ -809,7 +887,7 @@ async fn handle_ws(
                                         // here and let the live stream continue. (No RIS, no scrollback.)
                                     } else if !chunk.bytes.is_empty() {
                                         // Fresh / gapped: RIS + active-mode preamble + scrollback.
-                                        let (modes, alt) = state.get_pane_modes(active_ws_id, pane_id);
+                                        let (modes, alt) = state.get_pane_modes(target_ws, pane_id);
                                         let resync = ridge_remote::pane::pane_resync_frame(
                                             pane_id, chunk.bytes.as_bytes(), &modes, alt,
                                         );
@@ -850,15 +928,19 @@ async fn handle_ws(
                                 let before_seq = parsed["beforeSeq"].as_u64().unwrap_or(0);
                                 let max_bytes =
                                     parsed["maxBytes"].as_u64().unwrap_or(65536) as usize;
+                                let target_ws = parsed["workspaceId"].as_str()
+                                    .and_then(|s| Uuid::parse_str(s).ok())
+                                    .unwrap_or(active_ws_id);
                                 let result = if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
                                     let chunk = state.get_pty_scrollback_before(
-                                        active_ws_id, pane_id, before_seq, max_bytes,
+                                        target_ws, pane_id, before_seq, max_bytes,
                                     );
                                     serde_json::json!({
                                         "type": "scrollback-before-result",
                                         "_reqId": req_id,
                                         "bytes": chunk.bytes,
                                         "startSeq": chunk.start_seq,
+                                        "endSeq": chunk.end_seq,
                                         "atOldest": chunk.at_oldest,
                                     })
                                 } else {
@@ -867,6 +949,7 @@ async fn handle_ws(
                                         "_reqId": req_id,
                                         "bytes": "",
                                         "startSeq": before_seq,
+                                        "endSeq": before_seq,
                                         "atOldest": true,
                                     })
                                 };
@@ -916,9 +999,6 @@ async fn handle_ws(
                                         // the global active_workspace. Drop the current pane
                                         // subscription so the old workspace's stream stops; the
                                         // client re-subscribes after its next list-panes.
-                                        if let Some((ws, p)) = current_pane.take() {
-                                            state.unregister_remote_sub(ws, p, sub_id);
-                                        }
                                         active_ws_id = id;
                                         serde_json::json!({ "type": "switch-workspace-result", "success": true, "workspaceId": id.to_string() })
                                     } else {
@@ -958,9 +1038,6 @@ async fn handle_ws(
                                 // §state-sep: the new workspace is shared data (visible to all),
                                 // but only THIS client jumps to it. Other clients / the desktop
                                 // stay on their own selection.
-                                if let Some((ws, p)) = current_pane.take() {
-                                    state.unregister_remote_sub(ws, p, sub_id);
-                                }
                                 active_ws_id = id;
                                 if let Some(ref n) = name {
                                     state.workspace_names.write().insert(id, n.clone());
@@ -1006,10 +1083,21 @@ async fn handle_ws(
                                             // §state-sep: if THIS client was on the closed
                                             // workspace, fall back to the first remaining one
                                             // (independently of the desktop / other clients).
+                                            let closed: Vec<_> = subscribed_panes
+                                                .iter()
+                                                .copied()
+                                                .filter(|(ws, _)| *ws == id)
+                                                .collect();
+                                            for (ws, pane) in closed {
+                                                subscribed_panes.remove(&(ws, pane));
+                                                desync_by_pane.remove(&(ws, pane));
+                                                last_resync_by_pane.remove(&(ws, pane));
+                                                state.unregister_remote_sub(ws, pane, sub_id);
+                                            }
+                                            if current_pane.is_some_and(|(ws, _)| ws == id) {
+                                                current_pane = None;
+                                            }
                                             if active_ws_id == id {
-                                                if let Some((ws, p)) = current_pane.take() {
-                                                    state.unregister_remote_sub(ws, p, sub_id);
-                                                }
                                                 if let Some(first_id) = state.workspace_order.read().first().cloned() {
                                                     active_ws_id = first_id;
                                                 }
@@ -1150,6 +1238,15 @@ async fn handle_ws(
                                 };
                                 let send = ws_tx.send(Message::Text(result.to_string())).await;
                                 if success {
+                                    if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
+                                        subscribed_panes.remove(&(active_ws_id, pane_id));
+                                        desync_by_pane.remove(&(active_ws_id, pane_id));
+                                        last_resync_by_pane.remove(&(active_ws_id, pane_id));
+                                        state.unregister_remote_sub(active_ws_id, pane_id, sub_id);
+                                        if current_pane == Some((active_ws_id, pane_id)) {
+                                            current_pane = None;
+                                        }
+                                    }
                                     let _ = state.remote_structural_tx.send(
                                         crate::types::RemoteStructuralEvent::PanesChanged { workspace_id: active_ws_id }
                                     );
@@ -1441,14 +1538,30 @@ async fn handle_ws(
                     }
                     event = raw_rx.recv() => {
                         match event {
-                            Some(crate::types::RemotePtyEvent::RawBytes { workspace_id, pane_id, bytes }) => {
+                            Some((foreground, crate::types::RemotePtyEvent::RawBytes { workspace_id, pane_id, bytes })) => {
                                 // §perf (B方案): first-byte 段 = 从 raw_rx 收到的第一帧 PTY
                                 // 输出，用 Option<Instant> 守卫只打一次。
                                 if first_pty_bytes_at.is_none() {
                                     first_pty_bytes_at = Some(Instant::now());
                                     tracing::info!(target: "ridge::remote::perf", client_id, elapsed_ms = ws_connect_start.elapsed().as_millis() as u64, "ws_first_pty_bytes");
                                 }
-                                if workspace_id == active_ws_id {
+                                let key = (workspace_id, pane_id);
+                                if subscribed_panes.contains(&key) {
+                                    let Some(desync) = desync_by_pane.get(&key) else { continue; };
+                                    // Stale frames already queued on the prior lane are never
+                                    // allowed to cross a focus barrier.
+                                    if (foreground && current_pane != Some(key))
+                                        || (!foreground && current_pane == Some(key))
+                                    {
+                                        desync.store(true, Ordering::Release);
+                                        continue;
+                                    }
+                                    // Once a background pane has a hole, later bytes would only
+                                    // corrupt its parser. Keep it subscribed but stale until it
+                                    // is promoted and receives one bounded resync.
+                                    if desync.load(Ordering::Acquire) && current_pane != Some(key) {
+                                        continue;
+                                    }
                                     // §resync: if the fan-out dropped frames for this sub, the
                                     // client's vte stream has a hole that would corrupt every
                                     // subsequent parse. Reset the terminal (RIS) and replay
@@ -1459,11 +1572,12 @@ async fn handle_ws(
                                     // throttled it stays set for a later frame to handle.
                                     if desync.load(Ordering::Acquire) {
                                         let now = Instant::now();
-                                        let throttled = last_resync
-                                            .is_some_and(|t| now.duration_since(t) < RESYNC_MIN_INTERVAL);
+                                        let throttled = last_resync_by_pane
+                                            .get(&key)
+                                            .is_some_and(|t| now.duration_since(*t) < RESYNC_MIN_INTERVAL);
                                         if !throttled {
                                             desync.store(false, Ordering::Release);
-                                            last_resync = Some(now);
+                                            last_resync_by_pane.insert(key, now);
                                             let history = state.get_recent_scrollback_for(
                                                 workspace_id, pane_id, ridge_remote::pane::RESYNC_SCROLLBACK_LAN,
                                             );
@@ -1485,8 +1599,8 @@ async fn handle_ws(
                                     }
                                 }
                             }
-                            Some(crate::types::RemotePtyEvent::Metadata { workspace_id, pane_id, title, cwd }) => {
-                                if workspace_id == active_ws_id {
+                            Some((_, crate::types::RemotePtyEvent::Metadata { workspace_id, pane_id, title, cwd })) => {
+                                if subscribed_panes.contains(&(workspace_id, pane_id)) {
                                     let _ = ws_tx.send(Message::Text(serde_json::json!({
                                         "type": "pty-meta",
                                         "paneId": pane_id.to_string(),
@@ -1507,8 +1621,8 @@ async fn handle_ws(
                                     }
                                 }
                             }
-                            Some(crate::types::RemotePtyEvent::PtyResized { workspace_id, pane_id, rows, cols }) => {
-                                if workspace_id == active_ws_id {
+                            Some((_, crate::types::RemotePtyEvent::PtyResized { workspace_id, pane_id, rows, cols })) => {
+                                if subscribed_panes.contains(&(workspace_id, pane_id)) {
                                     let _ = ws_tx.send(Message::Text(serde_json::json!({
                                         "type": "pty-resized",
                                         "paneId": pane_id.to_string(),
@@ -1523,26 +1637,28 @@ async fn handle_ws(
                     structural = structural_rx.recv() => {
                         match structural {
                             Ok(crate::types::RemoteStructuralEvent::PanesChanged { workspace_id }) => {
-                                if workspace_id == active_ws_id {
+                                if subscribed_panes.iter().any(|(ws, _)| *ws == workspace_id) {
                                     // Self-heal orphaned PTYs/pending before re-enumerating.
                                     crate::commands::terminal::reap_orphan_panes_all(&state).await;
                                     // Re-enumerate panes for this workspace and push to client.
                                     let pane_list = {
                                         let workspaces = state.workspaces.read();
-                                        if let Some(ws) = workspaces.get(&active_ws_id) {
+                                        if let Some(ws) = workspaces.get(&workspace_id) {
                                             build_remote_pane_list(ws)
                                         } else {
                                             Vec::new()
                                         }
                                     };
                                     let _ = ws_tx.send(Message::Text(serde_json::json!({
-                                        "type": "panes", "panes": pane_list
+                                        "type": "panes",
+                                        "workspaceId": workspace_id.to_string(),
+                                        "panes": pane_list
                                     }).to_string())).await;
                                     // §web-remote: desktop UI re-syncs layout on pane-tree-changed.
                                     let _ = ws_tx.send(Message::Text(serde_json::json!({
                                         "type": "event",
                                         "name": "pane-tree-changed",
-                                        "payload": { "workspaceId": active_ws_id.to_string() },
+                                        "payload": { "workspaceId": workspace_id.to_string() },
                                     }).to_string())).await;
                                 }
                             }
@@ -1684,9 +1800,6 @@ async fn handle_ws(
 
     // Clean up: unregister from all subscribed panes (single-pane mobile slot +
     // the multi-pane desktop set).
-    if let Some((ws, pane)) = current_pane.take() {
-        state.unregister_remote_sub(ws, pane, sub_id);
-    }
     for (ws, pane) in subscribed_panes.drain() {
         state.unregister_remote_sub(ws, pane, sub_id);
     }
@@ -1891,6 +2004,7 @@ async fn dispatch_data_request(
             )
             .await,
         ),
+        "git_stash_list" => val(git::git_stash_list(s(params, "repoRoot")).await),
 
         // ── Search ──
         "search_files" => search_files_result(state, s(params, "query"), s(params, "path")).await,
@@ -2445,6 +2559,7 @@ async fn dispatch_invoke_request(
         .await),
         "git_list_branches" => val(git::git_list_branches(s(args, "repoRoot")).await),
         "git_diff_summary" => val(git::git_diff_summary(s(args, "repoRoot"), opt_s(args, "slot")).await),
+        "git_stash_list" => val(git::git_stash_list(s(args, "repoRoot")).await),
         "git_get_file_versions" => val(git::git_get_file_versions(
             s(args, "repoRoot"),
             s(args, "path"),
@@ -2804,6 +2919,41 @@ mod jsonrpc_tests {
     //! they are verified by `cargo check` here and runnable by the user post-
     //! rebuild; the S7 TS conformance suite covers the same negotiation E2E.)
     use super::*;
+
+    fn raw(pane_id: Uuid) -> crate::types::RemotePtyEvent {
+        crate::types::RemotePtyEvent::RawBytes {
+            workspace_id: Uuid::nil(),
+            pane_id,
+            bytes: Arc::new(vec![1]),
+        }
+    }
+
+    fn pane_id(event: ScheduledPtyEvent) -> (bool, Uuid) {
+        match event {
+            (
+                foreground,
+                crate::types::RemotePtyEvent::RawBytes { pane_id, .. },
+            ) => (foreground, pane_id),
+            _ => panic!("expected raw bytes"),
+        }
+    }
+
+    #[tokio::test]
+    async fn active_lane_overtakes_background_backlog_after_one_in_flight_frame() {
+        let (active, background, mut scheduled) = spawn_remote_lane_scheduler(8);
+        let low_in_flight = Uuid::new_v4();
+        let low_backlog = Uuid::new_v4();
+        let high = Uuid::new_v4();
+
+        background.send(raw(low_in_flight)).await.unwrap();
+        tokio::task::yield_now().await;
+        background.send(raw(low_backlog)).await.unwrap();
+        active.send(raw(high)).await.unwrap();
+
+        assert_eq!(pane_id(scheduled.recv().await.unwrap()), (false, low_in_flight));
+        assert_eq!(pane_id(scheduled.recv().await.unwrap()), (true, high));
+        assert_eq!(pane_id(scheduled.recv().await.unwrap()), (false, low_backlog));
+    }
 
     #[test]
     fn jsonrpc_result_frame_shape() {

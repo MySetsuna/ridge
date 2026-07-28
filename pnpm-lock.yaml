@@ -32,6 +32,9 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.2.2
         version: 4.2.2(vite@6.4.2(@types/node@25.9.1)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.22.3))
+      '@tanstack/svelte-query':
+        specifier: ^6.1.38
+        version: 6.1.38(svelte@5.55.9)
       '@tauri-apps/plugin-clipboard-manager':
         specifier: ^2.3.2
         version: 2.3.2
@@ -1750,6 +1753,14 @@ packages:
     resolution: {integrity: sha512-mEiF5HO1QqCLXoNEfXVA1Tzo+cYsrqV7w9Juj2wdUFyW07JRenqMG225MvPwr3ZD9N1bFQj46X7r33iHxLUW0w==}
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
+
+  '@tanstack/query-core@5.101.4':
+    resolution: {integrity: sha512-gNwcvOJcRbLWPOLG/2OBm+zM+Yv+MKsXKEOWC57USuZDEsI71hEErQsiEGx5wX9rzWWkfwM0fVSPoiIFSsxfiw==}
+
+  '@tanstack/svelte-query@6.1.38':
+    resolution: {integrity: sha512-oV5S/+uAot23p3lJChLAHr82+8ApgQMyIgroWPpN0d6Y6TlThRbLSXnhx6CoUk6AkwlCPxf9vh4SOHa0eXHiWg==}
+    peerDependencies:
+      svelte: ^5.25.0
 
   '@tauri-apps/api@2.11.0':
     resolution: {integrity: sha512-7CinYODhky9lmO23xHnUFv0Xt43fbtWMyxZcLcRBlFkcgXKuEirBvHpmtJ89YMhyeGcq20Wuc47Fa4XjyniywA==}
@@ -6450,6 +6461,13 @@ snapshots:
       '@tailwindcss/oxide': 4.2.2
       tailwindcss: 4.2.2
       vite: 6.4.2(@types/node@25.9.1)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.22.3)
+
+  '@tanstack/query-core@5.101.4': {}
+
+  '@tanstack/svelte-query@6.1.38(svelte@5.55.9)':
+    dependencies:
+      '@tanstack/query-core': 5.101.4
+      svelte: 5.55.9
 
   '@tauri-apps/api@2.11.0': {}
 

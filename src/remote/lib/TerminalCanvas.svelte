@@ -3,7 +3,7 @@
   import { t } from '$lib/i18n';
   import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
   import { anyMod, consumeMods } from './modState.svelte';
-  import { terminalViewportHeightPx } from './keyboardOffset';
+  import { terminalVisualShiftPx } from './keyboardOffset';
   import { writeClipboard } from './clipboard';
   import { copySelectionOnly } from '@ridge/remote/shared/terminal/mobileCopy';
   import {
@@ -27,7 +27,7 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId, workspaceId, onStdin, onResize, onHostClipboard, onNearTop, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
+  let { paneId, workspaceId, onStdin, onResize, onHostClipboard, onNearTop, onKeyboardShift, scrollbackLoading = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
     onStdin: (data: string) => void;
@@ -40,6 +40,8 @@
     /** §history-pull: fired when the user scrolls the viewport near the top of the
      *  in-kernel scrollback, so MainApp can lazily fetch + prepend older history. */
     onNearTop?: () => void;
+    onKeyboardShift?: (shift: number) => void;
+    scrollbackLoading?: boolean;
     selectionMode?: boolean;
     backendName?: string;
   } = $props();
@@ -79,12 +81,6 @@
   let selAnchorCol = 0;
   let isSelectingLocal = false;
 
-  // §kb-height（iter-63）：软键盘弹出时终端宿主的自适配高度（CSS px）；`null` = 键盘
-  // 收起，高度交还 `flex:1`。取代旧的 `translateY` 位移法——见 keyboardOffset.ts 首注。
-  let keyboardHeight = $state<number | null>(null);
-  // §kb-stable: the vertical gap (CSS px) between the container's BOTTOM edge
-  // and the layout-viewport bottom. Measured ONLY while the keyboard is hidden.
-  let gapBelowCanvas = 0;
   // Touch state. Single-finger swipe = scroll; tap = focus (+ click-through).
   let touchStartY = 0;
   let touchStartX = 0;
@@ -224,7 +220,8 @@
 
   onDestroy(() => {
     alive = false;
-    if (gapRemeasureTimer) clearTimeout(gapRemeasureTimer);
+    manager.setVisualOffsetY(paneId, 0);
+    onKeyboardShift?.(0);
     // 句级缓冲：卸载前落笔，防切 pane 丢缓冲文本。
     if (attached && !sbuf.empty) sbufFlush();
     if (sbufTimer !== null) { clearTimeout(sbufTimer); sbufTimer = null; }
@@ -272,8 +269,15 @@
   /** Feed raw PTY bytes into THIS pane's kernel (MainApp routes the active
    *  pane's stream here; the manager holds each pane's history). */
   export function feedUtf8(bytes: Uint8Array) { manager.feed(paneId, bytes); }
+  /** Route bytes to any live/parked pane kernel, not only this mounted surface. */
+  export function feedPane(targetPaneId: string, bytes: Uint8Array) {
+    manager.feed(targetPaneId, bytes);
+  }
   /** §history-pull: prepend older PTY history at the oldest end of the ring. */
   export function prependScrollback(bytes: Uint8Array) { manager.prependScrollback(paneId, bytes); }
+  export function prependScrollbackForPane(targetPaneId: string, bytes: Uint8Array) {
+    return manager.prependScrollback(targetPaneId, bytes);
+  }
   /** Theme is GLOBAL on the manager (all panes); fine for mobile (one theme). */
   export function applyTheme(theme: Record<string, string>) { manager.setTheme(theme); }
   /** Host told us the PTY resized → resize this pane's kernel grid + repaint. */
@@ -865,64 +869,46 @@
     };
   });
 
-  // ── §kb-height：终端宿主随视觉视口收高（iter-63 取代光标锚定位移）──
-  /** 再挤也要留住的最小终端高，否则 refit 会算出 0 行。 */
-  const KB_MIN_TERM_PX = 48;
-  /** 键盘收起时测得的容器顶边 y；键盘弹出后容器变矮**不会**改变顶边，故可当常量用。 */
+  // ── §kb-transform：只移动视觉投影，绝不 refit/resize grid ──
   let containerTopWhenIdle = 0;
 
-  /** 键盘弹出时终端宿主该有的高度；收起返回 null（交还 flex）。 */
-  function computeTerminalHeight(): number | null {
+  function computeKeyboardShift(): number {
     const vv = window.visualViewport;
-    if (!vv || !containerEl) return null;
-    return terminalViewportHeightPx({
+    const anchor = manager.inputAnchorResolved(paneId);
+    if (!vv || !containerEl || !anchor) return 0;
+    return terminalVisualShiftPx({
       layoutHeightPx: window.innerHeight,
       visualHeightPx: vv.height || 0,
       visualOffsetTopPx: vv.offsetTop || 0,
-      containerTopPx: containerTopWhenIdle,
-      chromeBelowPx: gapBelowCanvas,
-      minHeightPx: KB_MIN_TERM_PX,
+      stageTopPx: containerTopWhenIdle,
+      cursorYPx: anchor.y,
+      cellHeightPx: anchor.cellH,
     });
   }
 
-  /** 重测容器上下两侧的稳定几何。只在键盘收起时安全——那时没有自适配高度介入。 */
-  function measureGapBelowCanvas(): void {
-    if (!containerEl || keyboardHeight !== null) return;
-    const r = containerEl.getBoundingClientRect();
-    containerTopWhenIdle = Math.round(r.top);
-    gapBelowCanvas = Math.max(0, Math.round(window.innerHeight - r.bottom));
-  }
-
-  let gapRemeasureTimer: ReturnType<typeof setTimeout> | null = null;
-  function scheduleGapRemeasure(): void {
-    if (gapRemeasureTimer) clearTimeout(gapRemeasureTimer);
-    gapRemeasureTimer = setTimeout(() => {
-      gapRemeasureTimer = null;
-      measureGapBelowCanvas();
-    }, 260);
+  function applyKeyboardShift(): void {
+    const next = computeKeyboardShift();
+    manager.setVisualOffsetY(paneId, next);
+    onKeyboardShift?.(next);
   }
 
   $effect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
-    function onViewportResize() {
-      if (!vv) return;
-      const next = computeTerminalHeight();
-      if (next === null) {
-        keyboardHeight = null;
-        scheduleGapRemeasure(); // 等布局回弹稳定后再重测（自带 guard）
-        return;
+    function onViewportChange() {
+      if (window.innerHeight - vv!.height <= 0 && containerEl) {
+        containerTopWhenIdle = Math.round(containerEl.getBoundingClientRect().top);
       }
-      // First show: snap the terminal to the prompt so the anchored cursor is
-      // the live input row. Done once per show — not on every slide-in resize.
-      if (keyboardHeight === null) manager.scrollToBottom(paneId);
-      keyboardHeight = next;
+      applyKeyboardShift();
     }
-    vv.addEventListener('resize', onViewportResize);
-    measureGapBelowCanvas();
-    scheduleGapRemeasure();
-    onViewportResize();
-    return () => vv.removeEventListener('resize', onViewportResize);
+    if (containerEl) containerTopWhenIdle = Math.round(containerEl.getBoundingClientRect().top);
+    vv.addEventListener('resize', onViewportChange);
+    vv.addEventListener('scroll', onViewportChange);
+    onViewportChange();
+    return () => {
+      vv.removeEventListener('resize', onViewportChange);
+      vv.removeEventListener('scroll', onViewportChange);
+    };
   });
 
   // orientationchange fires the most disruptive grid change; refit explicitly
@@ -930,34 +916,27 @@
   $effect(() => {
     function onOrientation() {
       if (attached) manager.viewportChanged(paneId);
-      scheduleGapRemeasure();
+      if (containerEl) containerTopWhenIdle = Math.round(containerEl.getBoundingClientRect().top);
+      applyKeyboardShift();
     }
     window.addEventListener('orientationchange', onOrientation);
     return () => window.removeEventListener('orientationchange', onOrientation);
   });
 
-  // §kb-height：高度变了要重新 fit（网格行数变 → PTY resize），GPU scissor 也随之
-  // 重算。高度是真布局变化，ResizeObserver 本可捕获，但显式调一次更早收敛；240ms
-  // 后再校一次，覆盖键盘滑入动画期间视觉视口的连续变化。
-  $effect(() => {
-    void keyboardHeight;
-    if (!attached) return;
-    manager.viewportChanged(paneId);
-    const t = setTimeout(() => manager.viewportChanged(paneId), 240);
-    return () => clearTimeout(t);
-  });
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="container" bind:this={containerEl} role="application"
+<div class="container" bind:this={containerEl} role="application" aria-busy={scrollbackLoading}
   ontouchstart={handleTouchStart}
   ontouchend={handleTouchEnd}
   onmousedown={handleMouseDown}
   onmousemove={handleMouseMove}
   onmouseup={handleMouseUp}
   oncontextmenu={handleContextMenu}
-  style={keyboardHeight === null ? '' : `height:${keyboardHeight}px;flex:0 0 auto`}
 >
+  {#if scrollbackLoading}
+    <div class="scrollback-loading" role="progressbar" aria-label="Loading older terminal output"></div>
+  {/if}
   {#if !attached}
     <div class="loading">{$t('mobile.initializingTerminal')}</div>
   {/if}
@@ -1003,9 +982,10 @@
 </div>
 
 <style>
-  /* §kb-height：键盘弹出时由内联 `height` 接管（见脚本）；过渡放在 height 上，
-     transform 已不再使用。 */
-  .container{position:relative;flex:1;overflow:hidden;background:var(--rg-bg);touch-action:manipulation;transition:height .18s ease}
+  .container{position:relative;flex:1;overflow:hidden;background:var(--rg-bg);touch-action:manipulation}
+  .scrollback-loading{position:absolute;top:0;left:0;right:0;height:2px;z-index:8;overflow:hidden;background:color-mix(in srgb,var(--rg-accent) 20%,transparent)}
+  .scrollback-loading::after{content:"";position:absolute;inset:0;width:35%;background:var(--rg-accent);animation:scrollback-progress .9s ease-in-out infinite}
+  @keyframes scrollback-progress{from{transform:translateX(-100%)}to{transform:translateX(385%)}}
   /* Near-invisible input sink parked at the cursor. pointer-events:none keeps it
      from stealing canvas clicks. Opacity must be >0 so the IME candidate window
      anchors to a detectable element. */

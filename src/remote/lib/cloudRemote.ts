@@ -33,6 +33,7 @@ import { bridge, type TauriEvent } from '$lib/transport/tauriShim/bridge';
 import {
   classifyFailure,
   type RemoteLink,
+  type PendingScrollbackPage,
   type ConnectionState,
   type ConnectionFailure,
   type PaneInfo,
@@ -81,6 +82,7 @@ const REMOTE_OLDER_SCROLLBACK_BYTES = 64 * 1024;
 interface ScrollbackChunk {
   bytes: string;
   start_seq: number;
+  end_seq: number;
   at_oldest: boolean;
   head_seq: number;
 }
@@ -113,7 +115,7 @@ function flattenLeaves(node: PaneNode | null | undefined): PaneInfo[] {
 interface CloudRemoteBridge {
   invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
   listen<T>(name: string, cb: (event: TauriEvent<T>) => void): Promise<UnlistenFn> | UnlistenFn;
-  subscribePane(paneId: string, workspaceId?: string): Promise<void> | void;
+  subscribePane(paneId: string, workspaceId?: string, active?: boolean): Promise<void> | void;
   hasCapability(capability: string): boolean;
   onCapabilitiesChanged(fn: () => void): UnlistenFn;
 }
@@ -121,10 +123,11 @@ interface CloudRemoteBridge {
 const defaultCloudRemoteBridge: CloudRemoteBridge = {
   invoke,
   listen,
-  async subscribePane(paneId, workspaceId) {
+  async subscribePane(paneId, workspaceId, active) {
     await invoke('register_pane_delta_channel', {
       workspaceId: workspaceId ?? '',
       paneId,
+      active,
       channel: new Channel(),
     });
   },
@@ -154,6 +157,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   // Per-pane `pty-output-*` unlisten handles (bounded via pruneOutputs / disconnect).
   private ptyUnlisten = new Map<string, UnlistenFn>();
+  private paneWorkspaces = new Map<string, string>();
   // Panes whose subscribe is in flight (so concurrent subscribe calls stay idempotent).
   private subscribing = new Set<string>();
   // §history-pull: per-pane seq cursor for lazy "scroll up to load older". Seeded
@@ -295,6 +299,7 @@ export class CloudRemoteConnection implements RemoteLink {
       try { unlisten(); } catch { /* handle points at a dead transport — ignore */ }
     }
     this.ptyUnlisten.clear();
+    this.paneWorkspaces.clear();
     this.subscribing.clear();
     this.scrollbackCursor.clear();
     this.fetchingOlder.clear();
@@ -428,10 +433,22 @@ export class CloudRemoteConnection implements RemoteLink {
     }
   }
 
-  subscribePane(paneId: string, opts?: { resume?: boolean; sinceSeq?: number }): void {
-    if (!paneId || this.ptyUnlisten.has(paneId) || this.subscribing.has(paneId)) return;
+  subscribePane(
+    paneId: string,
+    opts?: { resume?: boolean; sinceSeq?: number; workspaceId?: string; active?: boolean },
+  ): void {
+    if (!paneId) return;
+    const workspaceId = opts?.workspaceId ?? this._activeWorkspaceId;
+    this.paneWorkspaces.set(paneId, workspaceId);
+    if (this.ptyUnlisten.has(paneId)) {
+      if (opts?.active !== undefined) {
+        void this.bridge.subscribePane(paneId, workspaceId, opts.active);
+      }
+      return;
+    }
+    if (this.subscribing.has(paneId)) return;
     this.subscribing.add(paneId);
-    void this._subscribe(paneId, opts?.resume ?? false);
+    void this._subscribe(paneId, opts?.resume ?? false, workspaceId, opts?.active);
   }
 
   /**
@@ -442,31 +459,62 @@ export class CloudRemoteConnection implements RemoteLink {
    * cursor yet, a fetch is already in flight, or the host rejected the command).
    * Idempotent-safe under rapid scroll-up (fetchingOlder dedup + atOldest stop).
    */
-  async fetchOlderScrollback(paneId: string): Promise<Uint8Array | null> {
+  async fetchOlderScrollback(paneId: string): Promise<PendingScrollbackPage | null> {
     const cursor = this.scrollbackCursor.get(paneId);
     if (!cursor || cursor.atOldest || this.fetchingOlder.has(paneId)) return null;
     this.fetchingOlder.add(paneId);
     try {
       const chunk = await this.bridge.invoke<ScrollbackChunk>('get_pane_scrollback_before', {
         paneId,
+        workspaceId: this.paneWorkspaces.get(paneId) ?? this._activeWorkspaceId,
         beforeSeq: cursor.oldestSeq,
         maxBytes: REMOTE_OLDER_SCROLLBACK_BYTES,
       });
-      this.scrollbackCursor.set(paneId, {
-        oldestSeq: chunk.start_seq,
+      const bytes = chunk.bytes ? this.encoder.encode(chunk.bytes) : new Uint8Array();
+      if (!(chunk.start_seq < chunk.end_seq)
+          || chunk.end_seq !== cursor.oldestSeq
+          || bytes.length === 0) {
+        if (bytes.length === 0 && chunk.end_seq === cursor.oldestSeq && chunk.at_oldest) {
+          this.scrollbackCursor.set(paneId, { ...cursor, atOldest: true });
+        }
+        this.fetchingOlder.delete(paneId);
+        return null;
+      }
+      let settled = false;
+      const finish = () => {
+        if (!settled) {
+          settled = true;
+          this.fetchingOlder.delete(paneId);
+        }
+      };
+      return {
+        bytes,
+        startSeq: chunk.start_seq,
+        endSeq: chunk.end_seq,
         atOldest: chunk.at_oldest,
-      });
-      return chunk.bytes ? this.encoder.encode(chunk.bytes) : null;
+        commit: () => {
+          if (settled || this.scrollbackCursor.get(paneId)?.oldestSeq !== chunk.end_seq) return false;
+          this.scrollbackCursor.set(paneId, {
+            oldestSeq: chunk.start_seq,
+            atOldest: chunk.at_oldest,
+          });
+          finish();
+          return true;
+        },
+        discard: finish,
+      };
     } catch {
-      // Older host / rejected: stop paging so we don't spam on every scroll.
-      this.scrollbackCursor.set(paneId, { oldestSeq: cursor.oldestSeq, atOldest: true });
-      return null;
-    } finally {
       this.fetchingOlder.delete(paneId);
+      return null;
     }
   }
 
-  private async _subscribe(paneId: string, resume = false): Promise<void> {
+  private async _subscribe(
+    paneId: string,
+    resume = false,
+    workspaceId = this._activeWorkspaceId,
+    active?: boolean,
+  ): Promise<void> {
     try {
       // §history-pull（2026-07-02）: the host no longer pushes an on-subscribe
       // `RIS + 256KiB` replay. Pull our own ~1.5-screen tail FIRST and hand it to
@@ -492,6 +540,7 @@ export class CloudRemoteConnection implements RemoteLink {
         try {
           const rf = await this.bridge.invoke<PaneResyncFrame>('get_pane_resync_frame', {
             paneId,
+            workspaceId,
             maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
           });
           if (!this.subscribing.has(paneId)) return; // torn down during the fetch
@@ -508,6 +557,7 @@ export class CloudRemoteConnection implements RemoteLink {
           try {
             const chunk = await this.bridge.invoke<ScrollbackChunk>('get_pane_scrollback_tail', {
               paneId,
+              workspaceId,
               maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
             });
             if (!this.subscribing.has(paneId)) return;
@@ -530,7 +580,7 @@ export class CloudRemoteConnection implements RemoteLink {
       // trailing pane UUID only, so the ws segment is cosmetic — but we use the real
       // active ws for fidelity. Payload arrives as decoded `{data}`; re-encode to bytes.
       const unlisten = await this.bridge.listen<{ data: string }>(
-        `pty-output-${this._activeWorkspaceId}-${paneId}`,
+        `pty-output-${workspaceId}-${paneId}`,
         (e) => {
           const bytes = this.encoder.encode(e.payload?.data ?? '');
           if (bytes.length) this.rawByteListeners.forEach((fn) => fn(paneId, bytes));
@@ -544,7 +594,7 @@ export class CloudRemoteConnection implements RemoteLink {
       this.ptyUnlisten.set(paneId, unlisten);
       // Tell the host to start streaming (core.ts maps this to bridge.subscribePane →
       // 'subscribe-pane' notify; the Channel arg is ignored in the browser shim).
-      await this.bridge.subscribePane(paneId, this._activeWorkspaceId);
+      await this.bridge.subscribePane(paneId, workspaceId, active);
     } catch {
       /* subscribe failed — pane stays blank; a later refresh/re-subscribe retries */
     } finally {
@@ -606,6 +656,7 @@ export class CloudRemoteConnection implements RemoteLink {
       const unlisten = this.ptyUnlisten.get(paneId);
       if (unlisten) {
         this.ptyUnlisten.delete(paneId);
+        this.paneWorkspaces.delete(paneId);
         try { unlisten(); } catch { /* already gone */ }
       }
       void this._refreshPanes();
@@ -821,6 +872,7 @@ export class CloudRemoteConnection implements RemoteLink {
       if (!liveIds.has(paneId)) {
         this.ptyUnlisten.delete(paneId);
         this.scrollbackCursor.delete(paneId); // release the pane's seq cursor too
+        this.paneWorkspaces.delete(paneId);
         try { unlisten(); } catch { /* already gone */ }
       }
     }

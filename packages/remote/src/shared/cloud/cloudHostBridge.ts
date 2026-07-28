@@ -92,7 +92,8 @@ export interface ChannelBackpressure {
  * → OOM/卡死）。8 MiB 远低于 libwebrtc ~16 MiB 硬上限，留余量给在途帧。低水位（1 MiB）
  * 在 provider 侧设 `bufferedAmountLowThreshold`，回落经 onDrained 通知。
  */
-const BUFFERED_HIGH_WATERMARK = 8 * 1024 * 1024; // 8 MiB
+export const BUFFERED_LOW_WATERMARK = 1 * 1024 * 1024;
+export const BUFFERED_HIGH_WATERMARK = 8 * 1024 * 1024;
 
 /**
  * 执行本地命令的注入点。生产环境为 `@tauri-apps/api/core` 的 `invoke`。
@@ -112,6 +113,7 @@ export type SendFrameFn = (plaintext: Uint8Array) => void;
  */
 export type PaneOutputSource = (
   paneId: string,
+  workspaceId: string | undefined,
   onOutput: (raw: Uint8Array) => void,
 ) => Unsubscribe;
 
@@ -239,6 +241,9 @@ export class CloudHostBridge {
   private channelUnsub: (() => void) | null = null;
   /** 背压期间丢帧的 pane：缓冲回落后请求 host 重放 RIS+scrollback。 */
   private readonly backpressuredPanes = new Set<string>();
+  private activePaneId: string | null = null;
+  private readonly paneWorkspaces = new Map<string, string | undefined>();
+  private readonly recoveringPanes = new Set<string>();
 
   constructor(config: CloudHostBridgeConfig) {
     this.invoke = config.invoke;
@@ -703,10 +708,21 @@ export class CloudHostBridge {
   // event 通道（invoke 订阅 + onPaneRaw event）桥进来，要么等 host 迁到 Rust 后由
   // Rust 侧直接编码。S5 的 D10 屏幕快照（先发快照再续 raw）在此处之前注入。
   private handleSubscribePane(params: unknown): void {
-    const paneId = (params as { paneId?: unknown } | null | undefined)?.paneId;
+    const rec = params as {
+      paneId?: unknown;
+      workspaceId?: unknown;
+      active?: unknown;
+    } | null | undefined;
+    const paneId = rec?.paneId;
     if (typeof paneId !== 'string' || paneId.length === 0) {
       this.log('warn', 'subscribe-pane without a valid paneId; ignored');
       return;
+    }
+    const workspaceId = typeof rec?.workspaceId === 'string' ? rec.workspaceId : undefined;
+    this.paneWorkspaces.set(paneId, workspaceId);
+    if (rec?.active === true) {
+      this.activePaneId = paneId;
+      if (this.backpressuredPanes.has(paneId)) void this.recoverPane(paneId);
     }
     if (this.paneSubs.has(paneId)) return; // 幂等：已订阅
 
@@ -720,7 +736,7 @@ export class CloudHostBridge {
       return;
     }
 
-    const unsub = this.paneOutputSource(paneId, (raw) => {
+    const unsub = this.paneOutputSource(paneId, workspaceId, (raw) => {
       this.pushPaneOutput(paneId, raw);
     });
     this.paneSubs.set(paneId, unsub);
@@ -746,7 +762,15 @@ export class CloudHostBridge {
     if (!this.verified) return;
     // §背压（弱网 P1）：DataChannel 缓冲过高 → 丢帧（而非无界堆积撑爆 SCTP 缓冲 → OOM/卡死），
     // 记录待重同步；缓冲回落后 onChannelDrained 请求 host 重放 RIS+scrollback 修复空洞。
-    if (this.channel && this.channel.bufferedAmount() > BUFFERED_HIGH_WATERMARK) {
+    // Ordered SCTP cannot overtake bytes already queued. Background therefore
+    // admits only when the channel is empty: at most one low frame can precede
+    // a newly-active frame. Active retains the existing 1–8 MiB reserve.
+    const limit = paneId === this.activePaneId ? BUFFERED_HIGH_WATERMARK : 0;
+    if (this.channel && this.channel.bufferedAmount() > limit) {
+      this.backpressuredPanes.add(paneId);
+      return;
+    }
+    if (this.recoveringPanes.has(paneId)) {
       this.backpressuredPanes.add(paneId);
       return;
     }
@@ -765,12 +789,35 @@ export class CloudHostBridge {
    */
   private onChannelDrained(): void {
     if (this.backpressuredPanes.size === 0) return;
-    const panes = [...this.backpressuredPanes];
-    this.backpressuredPanes.clear();
+    const panes = this.activePaneId && this.backpressuredPanes.has(this.activePaneId)
+      ? [this.activePaneId]
+      : [];
     for (const paneId of panes) {
-      void Promise.resolve(this.invoke('resync_pane_raw', { paneId })).catch((e) =>
-        this.log('warn', `resync_pane_raw(${paneId}) failed`, e),
-      );
+      void this.recoverPane(paneId);
+    }
+  }
+
+  /**
+   * Recover only this controller. The old Tauri event resync broadcast reset
+   * every controller subscribed to the same pane.
+   */
+  private async recoverPane(paneId: string): Promise<void> {
+    if (this.recoveringPanes.has(paneId) || this.activePaneId !== paneId) return;
+    this.recoveringPanes.add(paneId);
+    const workspaceId = this.paneWorkspaces.get(paneId);
+    try {
+      const frame = await this.invoke('get_pane_resync_frame', {
+        paneId,
+        workspaceId,
+        maxBytes: 256 * 1024,
+      }) as { frame?: unknown };
+      if (this.activePaneId !== paneId || typeof frame?.frame !== 'string') return;
+      this.sendFrame(encodePaneFrame(paneId, new TextEncoder().encode(frame.frame)));
+      this.backpressuredPanes.delete(paneId);
+    } catch (e) {
+      this.log('warn', `private pane recovery(${paneId}) failed`, e);
+    } finally {
+      this.recoveringPanes.delete(paneId);
     }
   }
 
@@ -785,6 +832,9 @@ export class CloudHostBridge {
         this.log('warn', `pane unsubscribe(${paneId}) threw`, e);
       }
     }
+    if (this.activePaneId === paneId) this.activePaneId = null;
+    this.paneWorkspaces.delete(paneId);
+    this.recoveringPanes.delete(paneId);
   }
 
   /** 把一帧 JSON 控制信封编码为 0x11 帧并发出。 */
@@ -805,6 +855,8 @@ export class CloudHostBridge {
     for (const [paneId] of this.paneSubs) this.unsubscribePane(paneId);
     this.paneSubs.clear();
     this.backpressuredPanes.clear(); // 弱网 P1：清背压待重同步集
+    this.paneWorkspaces.clear();
+    this.recoveringPanes.clear();
     // iter-60 G9：断开/重连时退订 host 事件 tap（provider 每连接 createBridge 新桥）。
     this.hostEventStop?.();
     this.hostEventStop = null;

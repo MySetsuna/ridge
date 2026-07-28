@@ -46,7 +46,7 @@ export class TauriBridge {
   // PTY-output listeners, keyed by paneId, fed by the binary raw-byte fan-out.
   private ptyListeners = new Map<string, Map<number, EventCallback<{ data: string }>>>();
   // Panes we've subscribed to, so we can re-subscribe after a reconnect.
-  private subscribedPanes = new Set<string>();
+  private subscribedPanes = new Map<string, { workspaceId?: string; active?: boolean }>();
   private decoder = new TextDecoder();
   private disposers: Unsubscribe[] = [];
 
@@ -77,8 +77,8 @@ export class TauriBridge {
     // Re-subscribe panes after a reconnect (raw-byte snapshot re-pull, D10).
     this.disposers.push(
       this.rpc.onReconnected(() => {
-        for (const paneId of this.subscribedPanes) {
-          this.rpc?.notify('subscribe-pane', { paneId });
+        for (const [paneId, options] of this.subscribedPanes) {
+          this.rpc?.notify('subscribe-pane', { paneId, ...options });
         }
       }),
     );
@@ -163,9 +163,10 @@ export class TauriBridge {
 
   /** Start the host streaming raw PTY bytes for a pane (replaces the desktop's
    *  Tauri `Channel` + `register_pane_delta_channel` path). */
-  subscribePane(paneId: string): void {
-    this.subscribedPanes.add(paneId);
-    this.rpc?.notify('subscribe-pane', { paneId });
+  subscribePane(paneId: string, workspaceId?: string, active?: boolean): void {
+    const options = { workspaceId, active };
+    this.subscribedPanes.set(paneId, options);
+    this.rpc?.notify('subscribe-pane', { paneId, ...options });
   }
 
   // ── internal dispatch ─────────────────────────────────────────────────────

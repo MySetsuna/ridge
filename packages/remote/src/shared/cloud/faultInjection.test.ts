@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RpcClient } from '../transport/rpcClient';
 import { RpcReconnectError } from '../transport/types';
 import { CloudHostBridge } from './cloudHostBridge';
+import { encodeJsonFrame } from '../transport/cloudMux';
 import {
   AuthGatedTransport,
   authorize,
@@ -233,8 +234,8 @@ describe('Cloud Remote provider → adapter → RpcClient recovery', () => {
 });
 
 describe('CloudHostBridge deterministic pane backpressure', () => {
-  it('resyncs each affected pane exactly once per drain without crossing panes', async () => {
-    const invoke = vi.fn(async () => null);
+  it('reserves drain recovery for active pane; dirty background recovers on promotion', async () => {
+    const invoke = vi.fn(async () => ({ frame: '\x1bcRECOVERED' }));
     const sent: Uint8Array[] = [];
     const bridge = new CloudHostBridge({ invoke, sendFrame: (frame) => sent.push(frame) });
     let buffered = 9 * 1024 * 1024;
@@ -249,29 +250,41 @@ describe('CloudHostBridge deterministic pane backpressure', () => {
       },
     });
 
+    bridge.handleFrame(encodeJsonFrame({
+      jsonrpc: '2.0',
+      method: 'subscribe-pane',
+      params: { paneId: 'pane-a', active: true },
+    }));
+    bridge.handleFrame(encodeJsonFrame({
+      jsonrpc: '2.0',
+      method: 'subscribe-pane',
+      params: { paneId: 'pane-b', active: false },
+    }));
     bridge.pushPaneOutput('pane-a', new Uint8Array([1]));
     bridge.pushPaneOutput('pane-a', new Uint8Array([2]));
     bridge.pushPaneOutput('pane-b', new Uint8Array([3]));
     buffered = 0;
     drain?.();
     drain?.();
-    await Promise.resolve();
-    expect(invoke.mock.calls).toEqual([
-      ['resync_pane_raw', { paneId: 'pane-a' }],
-      ['resync_pane_raw', { paneId: 'pane-b' }],
-    ]);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    expect(invoke.mock.calls[0][0]).toBe('get_pane_resync_frame');
+    expect(invoke.mock.calls[0][1]).toEqual({
+      paneId: 'pane-a',
+      workspaceId: undefined,
+      maxBytes: 256 * 1024,
+    });
 
-    bridge.pushPaneOutput('pane-c', new Uint8Array([4]));
-    buffered = 9 * 1024 * 1024;
-    bridge.pushPaneOutput('pane-a', new Uint8Array([5]));
-    buffered = 0;
-    drain?.();
-    await Promise.resolve();
-    expect(invoke.mock.calls).toEqual([
-      ['resync_pane_raw', { paneId: 'pane-a' }],
-      ['resync_pane_raw', { paneId: 'pane-b' }],
-      ['resync_pane_raw', { paneId: 'pane-a' }],
-    ]);
-    expect(sent).toHaveLength(1);
+    bridge.handleFrame(encodeJsonFrame({
+      jsonrpc: '2.0',
+      method: 'subscribe-pane',
+      params: { paneId: 'pane-b', active: true },
+    }));
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    expect(invoke.mock.calls[1][1]).toEqual({
+      paneId: 'pane-b',
+      workspaceId: undefined,
+      maxBytes: 256 * 1024,
+    });
+    expect(sent).toHaveLength(2);
   });
 });

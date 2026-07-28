@@ -104,9 +104,8 @@
 {/if}
 
 <style>
-  /* 与 .row-agent / .row-close 同尺寸同形，排在它们之间。 */
-  .row-shell{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid var(--rg-border);border-radius:999px;color:var(--rg-fg-muted);opacity:.7;flex-shrink:0}
-  .row-shell.on,.row-shell:active{color:var(--rg-accent);opacity:1;border-color:color-mix(in srgb,var(--rg-accent) 50%,transparent);background:color-mix(in srgb,var(--rg-accent) 14%,transparent)}
+  .row-shell{display:flex;align-items:center;justify-content:center;width:20px;height:20px;border:0;border-radius:0;background:transparent;color:var(--rg-fg-muted);opacity:.7;flex-shrink:0}
+  .row-shell.on,.row-shell:active{color:var(--rg-accent);opacity:1;background:transparent}
   /* 脱流挂在 .pane-item（WorkspaceTree 里 position:relative）下沿，
      否则它会被当成 flex 行的一个子项把行撑变形。 */
   .shell-menu{position:absolute;top:100%;left:24px;right:8px;z-index:20;border:1px solid var(--rg-border);border-radius:8px;background:var(--rg-surface);box-shadow:0 6px 18px -4px rgba(0,0,0,.55);overflow:hidden}
