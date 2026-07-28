@@ -16,10 +16,10 @@
 
 | 项目 | 默认值 |
 |---|---|
-| 桌面仓库 | `C:\code\wind`，分支 `develop` |
-| 云端仓库 | `C:\code\ridge-cloud`，分支 `develop` |
-| Dokku 远端 | `dokku@oracle:ridge-cloud` |
-| Dokku 目标 ref | `develop:main` |
+| 桌面仓库 | `C:\code\wind`，分支 `main` |
+| 云端仓库 | `C:\code\ridge-cloud`，分支 `main` |
+| 云部署工作流 | `MySetsuna/ridge-cloud` 的 `deploy-dokku.yml` |
+| Dokku 应用 | `ridge-cloud` |
 | 健康接口 | `https://9527127.xyz/api/v1/health` |
 | artifact API | `https://9527127.xyz/api/v1/remote-artifacts` |
 | Rust 工具链 | `C:\DevKit\Rust\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin` |
@@ -43,14 +43,14 @@ git remote -v
 
 ```powershell
 git fetch origin
-git pull --ff-only origin develop
+git pull --ff-only origin main
 ```
 
 若 pull 报告“未跟踪文件将被覆盖”，先确认精确文件，再用带时间戳的相邻备份名保留，例如：
 
 ```powershell
 Move-Item -LiteralPath 'AGENTS.md' -Destination 'AGENTS.md.pre-sync-20260720'
-git pull --ff-only origin develop
+git pull --ff-only origin main
 ```
 
 不要覆盖已有备份名。同步后核对原有脏文件和备份仍存在。
@@ -122,47 +122,38 @@ git status --short
 
 若产生 staged diff，停止并检查，不要提交或重置。
 
-## Dokku 发布 ridge-cloud
+## 镜像发布 ridge-cloud
 
 在 `C:\code\ridge-cloud`：
 
 ```powershell
 git fetch origin
-git pull --ff-only origin develop
-git fetch dokku main
-git rev-list --left-right --count develop...dokku/main
-git log --oneline --left-right --decorate develop...dokku/main
-$ridgeCloudTarget = git rev-parse develop
+git pull --ff-only origin main
+$ridgeCloudTarget = git rev-parse main
+gh workflow run deploy-dokku.yml --repo MySetsuna/ridge-cloud --ref main -f "ref=$ridgeCloudTarget"
 ```
 
-### 常规推送
+工作流在 GitHub runner 用 BuildKit/GHA cache 构建 `linux/amd64` 运行时镜像，冒烟后由
+`docker image save | ssh ... git:load-image` 直传 Dokku。生产机只构建一层 `FROM`，
+不再重编 Rust。镜像 `/app/CHECKS` 必须含 `/api/v1/health`，否则镜像部署会退化为
+仅检查进程存活。
 
 ```powershell
-git push --progress dokku develop:main
+$ridgeCloudRun = gh run list --repo MySetsuna/ridge-cloud --workflow deploy-dokku.yml `
+  --event workflow_dispatch --limit 1 --json databaseId,headSha,status,url |
+  ConvertFrom-Json
+if ($ridgeCloudRun.headSha -ne $ridgeCloudTarget) { throw '部署 run 源 SHA 不符' }
+gh run watch $ridgeCloudRun.databaseId --repo MySetsuna/ridge-cloud --exit-status
 ```
 
-Dokku Docker 冷构建可能数十分钟没有连续输出。只要 SSH/推送进程仍存活，或服务端仍在构建，就继续等待并定期给用户状态更新。
-
-### 分叉与强推门禁
-
-非快进时先解释 Dokku 独有提交。如果远端提交只是旧部署产物，而当前分支已故意删除这些 tracked 产物，获得覆盖授权后优先：
-
-```powershell
-$ridgeObservedDokkuMain = git rev-parse dokku/main
-git push --progress --force-with-lease="main:$ridgeObservedDokkuMain" dokku develop:main
-```
-
-仅当用户明确说可以“强制推送”，且重新核对目标 SHA 后，才执行：
-
-```powershell
-git push --progress --force dokku develop:main
-```
+首次运行须预热 Rust 构建层，仍可能较久；后续应主要复用依赖层。若镜像直传步骤超过
+15 分钟或整 job 超过 45 分钟，工作流自动终止，勿无限等待。
 
 ### 中断与 deploy lock
 
-不要因为日志缓冲主动终止冷构建。若客户端已经中断，重试明确返回 deploy lock：
+取消 Action 后若 `git:load-image` 已进入 Dokku，重试可能返回 deploy lock：
 
-1. 检查 Dokku `main` 是否已经更新，并检查应用/部署进程状态。
+1. 检查 Action、Dokku build record 与应用进程，确认生产当前版本。
 2. 确认锁是残留锁，不是另一个仍在运行的发布。
 3. 获授权后执行：
 
@@ -170,17 +161,17 @@ git push --progress --force dokku develop:main
 ssh dokku@oracle apps:unlock ridge-cloud
 ```
 
-4. 重新执行与授权级别一致的推送。
+4. 重新触发精确 SHA 的工作流。
 
 ### 云端验收
 
 ```powershell
-git ls-remote --heads dokku main
 Invoke-WebRequest -UseBasicParsing 'https://9527127.xyz/api/v1/health' |
   Select-Object StatusCode,Content
 ```
 
-远端 SHA 必须等于 `$ridgeCloudTarget`，健康接口必须返回 HTTP 200。
+Action 的 `Resolve source revision` 与镜像
+`org.opencontainers.image.revision` 必须等于 `$ridgeCloudTarget`；健康接口必须返回 HTTP 200。
 
 ## 分离式 remote 产物
 
@@ -260,7 +251,8 @@ $ridgeArtifactToken = $null
 | Rustup 卡住或 manifest 缺失 | 调错工具链/用户缓存为空 | 显式设置 DevKit `CARGO`、`RUSTC`、`CARGO_HOME` |
 | cargo metadata 卡住 | 尝试访问网络或错误缓存 | 验证 DevKit 缓存，使用 `--offline --locked` |
 | rustc exit 1 且无诊断 | 构建内存压力 | 清点残留进程，`cargo build ... -j 1` |
-| Dokku non-fast-forward | `main` 有部署专用提交 | 比较分叉；授权后 lease 强推 |
+| CI 镜像构建仍慢 | GHA cache 首次预热或层失效 | 查 Buildx cache 命中；勿回退生产机源码构建 |
+| 镜像直传超时 | SSH 中断或运行时镜像异常膨胀 | 查 Action 首因、镜像大小与 Dokku build record |
 | Dokku deploy lock | 中断留下残留锁 | 先确认无活跃部署，授权后 `apps:unlock` |
 | 上传 HTTP 413 | Nginx 1 MiB 限制 | `nginx:set 64m` 后 `proxy:build-config` |
 | 上传 HTTP 500 / Permission denied | 卷属主不匹配 appuser | 授权后把实际 storage 卷 chown 为 `10001:10001` |
@@ -272,9 +264,9 @@ $ridgeArtifactToken = $null
 
 - `wind` 的分支与发布 SHA。
 - 安装包绝对路径、字节数、SHA-256。
-- `ridge-cloud` 预期 SHA 与 Dokku `main` 实际 SHA。
+- `ridge-cloud` 预期 SHA、Action run ID 与镜像 revision。
 - 健康接口 HTTP 状态和版本。
 - remote 上传响应中的激活版本。
 - 持久卷中 `releases/<version>/desktop-app/index.html` 与 `mobile-app/index.html` 的存在性。
 - 两个仓库最终 `git status --short --branch`，并明确哪些是发布前就存在的脏文件。
-- 是否发生过强推、解锁、Nginx 修改或 chown，以及对应授权。
+- 是否发生过取消、解锁、Nginx 修改或 chown，以及对应授权。
