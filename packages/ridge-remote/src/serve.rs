@@ -1,4 +1,4 @@
-//! 前端静态资源 serve（UA 分流：桌面完整 SPA vs 移动轻量 SPA）。
+//! 前端统一产物 serve（UA 分流：桌面完整 SPA vs 移动轻量 SPA）。
 //!
 //! 从桌面 `src-tauri/src/remote/server.rs` 下沉到共享 crate，供 LAN 远控服务端
 //! （桌面 Tauri app / rdg CLI）复用。**零 Tauri 依赖**：serve 逻辑只依赖静态目录
@@ -31,47 +31,35 @@ use tower_http::compression::CompressionLayer;
 
 pub use crate::embed_ui::UiKind;
 
-/// UA 分流的静态 serve 配置：移动 SPA 目录（必有）+ 可选桌面 SPA 目录。
-///
-/// - `mobile_dir`：`pnpm build:remote` 产物（`static/remote/`），移动/触屏浏览器与
-///   验证页（`/verify`）用它。
-/// - `desktop_dir`：`pnpm build:desktop-web` 产物（`web-remote-dist/`），桌面浏览器
-///   （UA 分流命中且产物存在时）用它；`None` 或产物缺失时桌面 UA 回退移动 SPA。
+/// UA 分流的静态 serve 配置。桌面与移动形态均位于同一 `remote-dist` 根。
 #[derive(Clone, Debug)]
 pub struct UaServeConfig {
-    pub mobile_dir: PathBuf,
-    pub desktop_dir: Option<PathBuf>,
+    pub remote_dir: PathBuf,
 }
 
 impl UaServeConfig {
-    /// 运行时候选目录探测：泛化桌面 `server.rs` 里对 `static/remote` 与
-    /// `web-remote-dist` 的候选路径探测。候选顺序见 [`probe_ui_dir`]：
-    /// `RIDGE_REMOTE_UI_ROOT` 覆盖 → CWD → exe 目录逐级上溯（兼容桌面 exe 与更浅的
-    /// `rdg` exe，无需按二进制标定级数）。
-    ///
-    /// 移动目录探测不到时回退到 `static/remote`（serve_index 会给出"未构建"提示页）；
-    /// 桌面目录探测不到时为 `None`。
+    /// `RIDGE_REMOTE_UI_ROOT` 可直接覆盖统一产物根；否则从 CWD / exe 上溯探测
+    /// `remote-dist`，取最新命中，避免开发期旧 staging 盖住新构建。
     pub fn resolve_ui_dirs() -> Self {
-        let mobile_dir = probe_ui_dir(&PathBuf::from("static").join("remote"))
-            .unwrap_or_else(|| PathBuf::from("static").join("remote"));
-        let desktop_dir = probe_ui_dir(&PathBuf::from("web-remote-dist"));
-        // §diagnostic: 记录 UI 目录解析结果
+        let remote_dir = probe_ui_root().unwrap_or_else(|| PathBuf::from("remote-dist"));
         tracing::info!(target: "ridge::remote::serve",
-            mobile_dir = %mobile_dir.display(),
-            desktop_dir = desktop_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_else(|| "None".to_string()),
-            "UI dirs resolved"
+            remote_dir = %remote_dir.display(),
+            "Remote UI root resolved"
         );
-        Self {
-            mobile_dir,
-            desktop_dir,
-        }
+        Self { remote_dir }
+    }
+
+    /// 所选形态的磁盘目录；缺 index.html 即视为未构建，交给内嵌产物兜底。
+    pub fn disk_dir(&self, kind: UiKind) -> Option<PathBuf> {
+        let dir = self.remote_dir.join(kind.dir_name());
+        dir.join("index.html").is_file().then_some(dir)
     }
 
     /// 是否给该请求发桌面 SPA：先按 [`crate::ua::prefer_desktop_ui`] 判定（尊重
     /// `?ui=` 覆盖），再校验桌面产物确实拿得到——**磁盘或内嵌**任一即可。
     ///
-    /// 只看磁盘是 iter-62 的 bug：单文件 `rdg` 的 exe 旁没有 `web-remote-dist`，
-    /// 这一腿恒 false，于是电脑浏览器也被发手机 SPA。内嵌产物（`embed-ui`）同样
+    /// 只看磁盘是 iter-62 的 bug：单文件 `rdg` 无外置桌面产物时，
+    /// 电脑浏览器会被发手机 SPA。内嵌产物（`embed-ui`）同样
     /// 是「拿得到桌面 SPA」，必须计入。
     pub fn wants_desktop_ui(&self, headers: &HeaderMap, ui_override: Option<&str>) -> bool {
         let ua = headers
@@ -83,42 +71,38 @@ impl UaServeConfig {
 
     /// 桌面 SPA 是否可服务（磁盘产物 > 内嵌产物）。
     pub fn desktop_ui_available(&self) -> bool {
-        self.desktop_dir
-            .as_ref()
-            .map(|d| d.join("index.html").exists())
-            .unwrap_or(false)
-            || crate::embed_ui::has_kind(UiKind::Desktop)
+        self.disk_dir(UiKind::Desktop).is_some() || crate::embed_ui::has_kind(UiKind::Desktop)
     }
 
     /// 该请求应命中的 UI 形态 + 其磁盘目录（无磁盘产物时 `None`，走内嵌）。
     /// 目录也是未知客户端路由回退 index.html 的 SPA 壳目录。
     ///
-    /// **绝不**在桌面形态下回落到 `mobile_dir`：那会让磁盘上的手机 index.html
+    /// **绝不**在桌面形态下回落到移动目录：那会让磁盘上的手机 index.html
     /// 冒充桌面壳——正是要修的串台。
-    pub fn ui_target(&self, headers: &HeaderMap, ui_override: Option<&str>) -> UiTarget<'_> {
+    pub fn ui_target(&self, headers: &HeaderMap, ui_override: Option<&str>) -> UiTarget {
         if self.wants_desktop_ui(headers, ui_override) {
             UiTarget {
                 kind: UiKind::Desktop,
-                dir: self.desktop_dir.as_deref(),
+                dir: self.disk_dir(UiKind::Desktop),
             }
         } else {
             UiTarget {
                 kind: UiKind::Mobile,
-                dir: Some(&self.mobile_dir),
+                dir: self.disk_dir(UiKind::Mobile),
             }
         }
     }
 
     /// 与 `kind` **相反**的那套产物。仅供具体资产的跨形态回退，见 [`read_from_other_ui`]。
-    pub fn other_ui_target(&self, kind: UiKind) -> UiTarget<'_> {
+    pub fn other_ui_target(&self, kind: UiKind) -> UiTarget {
         match kind {
             UiKind::Desktop => UiTarget {
                 kind: UiKind::Mobile,
-                dir: Some(&self.mobile_dir),
+                dir: self.disk_dir(UiKind::Mobile),
             },
             UiKind::Mobile => UiTarget {
                 kind: UiKind::Desktop,
-                dir: self.desktop_dir.as_deref(),
+                dir: self.disk_dir(UiKind::Desktop),
             },
         }
     }
@@ -140,7 +124,7 @@ async fn read_from_other_ui(cfg: &UaServeConfig, kind: UiKind, rel: &str) -> Opt
     }
     let other = cfg.other_ui_target(kind);
     // 调用方已过穿越守卫（rel 不含 `..` / `\` / `:`）。
-    let disk = match other.dir {
+    let disk = match other.dir.as_ref() {
         Some(dir) => tokio::fs::read(dir.join(rel)).await.ok(),
         None => None,
     };
@@ -148,41 +132,45 @@ async fn read_from_other_ui(cfg: &UaServeConfig, kind: UiKind, rel: &str) -> Opt
 }
 
 /// 一次请求解析出的 UI 形态与其磁盘目录（`None` = 该形态只有内嵌产物）。
-#[derive(Clone, Copy)]
-pub struct UiTarget<'a> {
+#[derive(Clone)]
+pub struct UiTarget {
     pub kind: UiKind,
-    pub dir: Option<&'a Path>,
+    pub dir: Option<PathBuf>,
 }
 
-/// 探测某个 UI 产物目录，返回首个含 `index.html` 的候选；都不存在则 `None`。候选顺序：
-/// 0. `RIDGE_REMOTE_UI_ROOT/<rel>`——显式覆盖，真·无头部署（资产不在 exe 附近）时设它；
-/// 1. `CWD/<rel>`——dev（从工程根 `cargo run`）；
-/// 2..N. 从 exe 目录**逐级上溯**（最多 6 级）找 `<ancestor>/<rel>`。
+/// 探测统一产物根；候选须至少含一套形态的 index.html。
+/// 0. `RIDGE_REMOTE_UI_ROOT`；1. CWD/remote-dist；2..N. exe 上溯/remote-dist。
 ///
 /// 上溯替代旧的「固定 parent×4」：桌面 exe 在 `src-tauri/target/release`（工程根深 4 级），
 /// 而 `rdg` 是 workspace 成员，exe 落 `target/release`（工程根深 2 级）——固定 4 级对 rdg
 /// 会过冲到工程根之外。逐级上溯取**最靠近 exe 的命中**（最正确），一份代码兼容两种深度，
 /// 且 `exe 旁`（深 1 级，NSIS/打包把资源拷到 exe 旁）也被覆盖。
-fn probe_ui_dir(rel: &Path) -> Option<PathBuf> {
+fn probe_ui_root() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(root) = std::env::var_os("RIDGE_REMOTE_UI_ROOT") {
-        candidates.push(PathBuf::from(root).join(rel));
+        candidates.push(PathBuf::from(root));
     }
-    candidates.push(rel.to_path_buf());
+    candidates.push(PathBuf::from("remote-dist"));
     // 从 exe 目录逐级上溯（最多 6 级）：`ancestors()` 首项是 exe 自身，`skip(1)` 起于其
     // 所在目录，`take(6)` 封顶；顺序即「exe 旁 → 更上层」，取最靠近 exe 的命中。
     if let Ok(exe) = std::env::current_exe() {
-        candidates.extend(exe.ancestors().skip(1).take(6).map(|d| d.join(rel)));
+        candidates.extend(
+            exe.ancestors()
+                .skip(1)
+                .take(6)
+                .map(|d| d.join("remote-dist")),
+        );
     }
     let hits: Vec<(PathBuf, Option<std::time::SystemTime>)> = candidates
         .into_iter()
         .filter_map(|c| {
-            let index = c.join("index.html");
-            index
-                .metadata()
-                .ok()
+            [UiKind::Desktop, UiKind::Mobile]
+                .into_iter()
+                .filter_map(|kind| c.join(kind.dir_name()).join("index.html").metadata().ok())
                 .filter(|m| m.is_file())
-                .map(|m| (c, m.modified().ok()))
+                .filter_map(|m| m.modified().ok())
+                .max()
+                .map(|mtime| (c, Some(mtime)))
         })
         .collect();
     match pick_freshest(&hits) {
@@ -191,7 +179,7 @@ fn probe_ui_dir(rel: &Path) -> Option<PathBuf> {
             Some(dir)
         }
         None => {
-            tracing::warn!(target: "ridge::remote::serve", rel = %rel.display(), "UI dir not found in any candidate path");
+            tracing::warn!(target: "ridge::remote::serve", "Remote UI root not found");
             None
         }
     }
@@ -201,8 +189,7 @@ fn probe_ui_dir(rel: &Path) -> Option<PathBuf> {
 /// 全部并列时退回候选顺序里的第一个（即原来的「最靠近 exe」语义）。
 ///
 /// 为什么不能只按顺序取（iter-63 实测，排查耗了四轮）：exe 旁的那份是**构建时的
-/// 拷贝**。开发里 `pnpm build:remote` 更新了仓库根的 `static/remote`，而
-/// `target/debug/static/remote` 还停在几小时前——顺序优先让陈旧拷贝一直盖住新产物，
+/// 拷贝**。开发里仓库根产物已更新，而 target staging 仍停在几小时前——顺序优先让陈旧拷贝一直盖住新产物，
 /// 页面看着正常、跑的却是旧 bundle，改什么都「没生效」。装机升级留下的旧拷贝同理。
 pub fn pick_freshest(hits: &[(PathBuf, Option<std::time::SystemTime>)]) -> Option<PathBuf> {
     let mut best: Option<&(PathBuf, Option<std::time::SystemTime>)> = None;
@@ -332,7 +319,7 @@ pub const REMOTE_UI_MISSING_CODE: &str = "REMOTE_UI_MISSING";
 /// User-facing repair hint + error code for missing `index.html` (unit-testable).
 pub fn remote_ui_missing_message() -> String {
     format!(
-        "{code}: Remote UI not built yet. Run: pnpm build:remote (or RIDGE_REMOTE_UI_ROOT to a built static/remote).",
+        "{code}: Remote UI not built yet. Run: pnpm build:remote (or set RIDGE_REMOTE_UI_ROOT to remote-dist).",
         code = REMOTE_UI_MISSING_CODE
     )
 }
@@ -352,14 +339,14 @@ fn remote_ui_missing_html() -> String {
 pub async fn serve_index(dir: &Path) -> Response {
     serve_shell(UiTarget {
         kind: UiKind::Mobile,
-        dir: Some(dir),
+        dir: Some(dir.to_path_buf()),
     })
     .await
 }
 
 /// 按 UI 形态发 SPA 壳：磁盘 > 内嵌，两者皆无才给 `REMOTE_UI_MISSING` 提示页。
-pub async fn serve_shell(target: UiTarget<'_>) -> Response {
-    let disk = match target.dir {
+pub async fn serve_shell(target: UiTarget) -> Response {
+    let disk = match target.dir.as_ref() {
         Some(dir) => tokio::fs::read(dir.join("index.html")).await.ok(),
         None => None,
     };
@@ -438,7 +425,7 @@ async fn spa_fallback_handler(
 
     // §UA fork: a desktop browser resolves root-level files (and the SvelteKit
     // `_app/*` bundle) against the desktop build; the mobile SPA against
-    // mobile_dir. The chosen target is also the SPA shell for unknown client routes.
+    // mobile shape. The chosen target is also the SPA shell for unknown client routes.
     let target = st.cfg.ui_target(&headers, q.ui.as_deref());
 
     // axum percent-decodes `uri.path()` before we see it, so a `%2e%2e`
@@ -458,7 +445,7 @@ async fn spa_fallback_handler(
     // resolved target (symlinks + `.` segments collapsed) must live inside the
     // chosen UI dir. `canonicalize` fails for non-existent paths, which naturally
     // routes unknown SPA client-side routes to the shell.
-    let within = match target.dir {
+    let within = match target.dir.as_ref() {
         Some(base) => match (
             tokio::fs::canonicalize(base.join(rel)).await,
             tokio::fs::canonicalize(base).await,
@@ -546,7 +533,7 @@ pub fn root_asset_headers(path: &str) -> (&'static str, &'static str) {
 }
 
 /// Serve static assets (JS, CSS, WASM) from the built output directory of the
-/// UI the request resolved to（此前恒取 `mobile_dir`——桌面 SPA 一旦也用 `/assets/*`
+/// UI the request resolved to（此前恒取移动目录——桌面 SPA 一旦也用 `/assets/*`
 /// 就会串到手机产物上）。
 async fn assets_handler(
     State(st): State<ServeState>,
@@ -561,7 +548,7 @@ async fn assets_handler(
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
     let rel = format!("assets/{path}");
-    let disk = match target.dir {
+    let disk = match target.dir.as_ref() {
         Some(dir) => tokio::fs::read(dir.join(&rel)).await.ok(),
         None => None,
     };
@@ -607,8 +594,7 @@ async fn assets_handler(
 mod tests {
     use super::*;
 
-    /// iter-63：exe 旁的构建拷贝会长期盖住仓库里刚构建出来的新产物（实测 dev 下
-    /// `target/debug/static/remote` 停在几小时前，页面跑的一直是旧 bundle）。
+    /// iter-63：exe 旁的构建拷贝会长期盖住仓库里刚构建出来的新产物。
     /// 命中多个候选时必须取**最新**的那份。
     #[test]
     fn freshest_ui_dir_wins_over_an_older_copy_next_to_the_exe() {
@@ -658,10 +644,7 @@ mod tests {
         assert!(h.contains("pnpm build:remote"));
     }
 
-    /// 单文件分发（rdg）回归钉：开 `embed-ui` 编出来的库必须真带**两套** UI。
-    /// 漏跑 `pnpm build:remote` → LAN 远控 REMOTE_UI_MISSING；漏跑
-    /// `pnpm build:desktop-web` → 电脑浏览器被发手机页（iter-62 用户实测）。
-    /// 两条都在发布前就抓住（feature 关闭时不涉及，故 cfg 门控）。
+    /// 单文件分发（rdg）回归钉：一次 `pnpm build:remote` 必须产出并内嵌两套 UI。
     #[cfg(feature = "embed-ui")]
     #[test]
     fn embedded_ui_is_present_when_feature_on() {
@@ -672,7 +655,7 @@ mod tests {
         assert!(crate::embed_ui::get("index.html").is_some_and(|b| !b.is_empty()));
         assert!(
             crate::embed_ui::has_kind(UiKind::Desktop),
-            "embed-ui 已开启但桌面内嵌产物为空——构建前须先跑 `pnpm build:desktop-web`"
+            "embed-ui 已开启但桌面内嵌产物为空——构建前须先跑 `pnpm build:remote`"
         );
     }
 
@@ -699,15 +682,12 @@ mod tests {
         assert!(crate::embed_ui::get_kind(UiKind::Desktop, "_app/version.json").is_some());
     }
 
-    /// iter-62 回归钉：桌面 UA 的分流不得只看磁盘产物。单文件 `rdg` 没有
-    /// `web-remote-dist` 目录（`desktop_dir=None`），但内嵌带着桌面 SPA —— 此时
-    /// 必须仍判「发桌面」，且**绝不**把手机磁盘目录当桌面壳（那正是串台）。
+    /// iter-62 回归钉：桌面 UA 的分流不得只看磁盘产物。
     #[cfg(feature = "embed-ui")]
     #[test]
     fn desktop_ua_uses_embedded_desktop_when_no_disk_dir() {
         let cfg = UaServeConfig {
-            mobile_dir: PathBuf::from("static").join("remote"),
-            desktop_dir: None,
+            remote_dir: PathBuf::from("__no_such_remote_dist__"),
         };
         let mut headers = HeaderMap::new();
         headers.insert(

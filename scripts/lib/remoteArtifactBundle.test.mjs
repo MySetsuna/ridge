@@ -7,15 +7,15 @@ import { packBundle, buildManifest, resolveConfig, collectFiles } from './remote
 describe('packBundle（线格式须与 ridge-cloud parse_header 逐字节一致）', () => {
   it('frames u32 BE 头长 + JSON 头 + 文件体拼接', () => {
     const buf = packBundle(buildManifest({ version: '1', gitSha: 'a', builtAt: 't' }), [
-      { path: 'desktop-app/index.html', bytes: Buffer.from('abc') },
-      { path: 'mobile-app/index.html', bytes: Buffer.from('de') },
+      { path: 'remote-app/desktop/index.html', bytes: Buffer.from('abc') },
+      { path: 'remote-app/mobile/index.html', bytes: Buffer.from('de') },
     ]);
     const n = buf.readUInt32BE(0);
     const header = JSON.parse(buf.subarray(4, 4 + n).toString('utf8'));
     expect(header.manifest).toEqual({ version: '1', gitSha: 'a', builtAt: 't' });
     expect(header.files).toEqual([
-      { path: 'desktop-app/index.html', size: 3 },
-      { path: 'mobile-app/index.html', size: 2 },
+      { path: 'remote-app/desktop/index.html', size: 3 },
+      { path: 'remote-app/mobile/index.html', size: 2 },
     ]);
     expect(buf.subarray(4 + n).toString()).toBe('abcde');
     // 总长 == 4 + headerLen + sum(sizes)（Rust 端 SizeMismatch 校验的等式）。
@@ -41,8 +41,8 @@ describe('collectFiles', () => {
     fs.writeFileSync(path.join(dir, 'index.html'), 'x');
     fs.mkdirSync(path.join(dir, 'sub'));
     fs.writeFileSync(path.join(dir, 'sub', 'a.js'), 'y');
-    const files = collectFiles(dir, 'desktop-app').map((f) => f.path).sort();
-    expect(files).toEqual(['desktop-app/index.html', 'desktop-app/sub/a.js']);
+    const files = collectFiles(dir, 'remote-app').map((f) => f.path).sort();
+    expect(files).toEqual(['remote-app/index.html', 'remote-app/sub/a.js']);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

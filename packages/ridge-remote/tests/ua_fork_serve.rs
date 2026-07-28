@@ -1,12 +1,11 @@
 //! 端到端钉：**真起一个 HTTP server、真发 HTTP 请求**，验证 UA 分流发对了页。
 //!
 //! 为什么不是单测：iter-62 之前的 bug 恰恰不在某个谓词里，而在「谓词 → 取哪份
-//! 字节」这条装配链上（`ui_dir` 在桌面产物缺失时回落 `mobile_dir`，于是磁盘上的
+//! 字节」这条装配链上（旧 `ui_dir` 曾在桌面产物缺失时回落移动目录，于是磁盘上的
 //! 手机 index 冒充了桌面壳）。只断言 `wants_desktop_ui` 为真是抓不住的——必须
 //! 沿着 socket 把真正回给浏览器的那份 HTML 拿回来看。
 //!
-//! 场景刻意模拟**单文件 `rdg`**：`desktop_dir: None`（exe 旁没有 `web-remote-dist`），
-//! 桌面 SPA 只能来自内嵌产物。这正是用户实测里「电脑浏览器打开进了手机页」的现场。
+//! 场景刻意模拟**单文件 `rdg`**：磁盘无 `remote-dist`，桌面 SPA 只能来自内嵌产物。
 //!
 //! 需要 `embed-ui`（内嵌产物）才有意义，故整文件 cfg 门控。
 
@@ -30,10 +29,8 @@ struct Harness {
 fn state() -> ServeState {
     ServeState {
         cfg: UaServeConfig {
-            // 指向一个**不存在**的目录：磁盘全落空，两套 UI 都只能走内嵌，
-            // 与单文件 rdg 的现场一致（也避免测试受仓库里现有产物影响）。
-            mobile_dir: PathBuf::from("__no_such_dir__").join("static").join("remote"),
-            desktop_dir: None,
+            // 指向一个不存在的统一根：两套 UI 都只能走内嵌。
+            remote_dir: PathBuf::from("__no_such_remote_dist__"),
         },
         tls_enabled: false,
         enabled: Arc::new(AtomicBool::new(true)),

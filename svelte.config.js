@@ -5,13 +5,10 @@
 import adapter from "@sveltejs/adapter-static";
 import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 
-// §web-remote: the desktop-in-browser build (RIDGE_WEB_REMOTE=1) emits to
-// `web-remote-dist/` — a sibling of the Tauri `build/` output, deliberately
-// OUTSIDE `static/` so adapter-static doesn't recursively copy the 1.4M static
-// dir (which itself holds the mobile build) into the output. The host's remote
-// server serves this dir to desktop browsers (UA-forked). No base path: the
-// SvelteKit app keeps its `/_app/*` asset prefix, which never collides with the
-// mobile build's `/assets/*`.
+// Browser Remote has one physical artifact root. The complete desktop SPA lives
+// under `remote-dist/desktop`; the lightweight touch SPA lives under
+// `remote-dist/mobile`. No base path: both are served at an isolated origin root
+// after the host/cloud selects a UI shape.
 const WEB_REMOTE = !!process.env.RIDGE_WEB_REMOTE;
 
 /** @type {import('@sveltejs/kit').Config} */
@@ -20,7 +17,9 @@ const config = {
   kit: {
     adapter: adapter({
       fallback: "index.html",
-      ...(WEB_REMOTE ? { pages: "web-remote-dist", assets: "web-remote-dist" } : {}),
+      ...(WEB_REMOTE
+        ? { pages: "remote-dist/desktop", assets: "remote-dist/desktop" }
+        : {}),
     }),
     // §web-remote: the service worker (src/service-worker.ts) is built for both
     // targets but only REGISTERED in the web-remote boot (+layout.svelte). The

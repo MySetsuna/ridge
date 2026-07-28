@@ -4,7 +4,7 @@
 // Renders a crisper, higher-contrast variant of static/ridge-mark.svg onto a
 // solid dark (#0d1117) background at the sizes the web app manifest +
 // apple-touch-icon need, writing them to src/remote/public/ so the remote Vite
-// build (vite.remote.config.js) copies them to static/remote/ root.
+// build (vite.remote.config.js) copies them to remote-dist/mobile.
 //
 //   node scripts/gen-remote-icons.mjs
 

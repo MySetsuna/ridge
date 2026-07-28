@@ -112,7 +112,7 @@ webrtc = { version = "0.11", optional = true }
 axum = { version = "0.7", features = ["ws"] }
 # Shared remote-control server infrastructure (TLS + HTTP/WS server lifecycle)。
 # `embed-ui`：rdg 以**单文件**分发（Release 资产 rdg-X.Y.Z-*），exe 旁没有
-# `static/remote` → LAN 远控恒 REMOTE_UI_MISSING。开此 feature 把 `pnpm build:remote`
+# Remote 静态目录缺失 → LAN 远控恒 REMOTE_UI_MISSING。开此 feature 把 `pnpm build:remote`
 # 产物编进二进制（磁盘优先，内嵌兜底），单文件即可开箱服务。
 ridge-remote = { path = "../ridge-remote", features = ["embed-ui"] }
 # §mode-reattach — same terminal kernel the desktop uses, for the headless LAN

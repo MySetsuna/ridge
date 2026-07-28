@@ -1,7 +1,7 @@
 // scripts/prune-stale-fonts.mjs
 //
 // 构建产物清理守卫：从 web-remote 输出目录 *以及* 它们的 Tauri 资源 STAGING 副本
-// （target/{debug,release}/{web-remote-dist,static/remote}）里删除陈旧的超大字体。
+// （target/{debug,release}/remote-dist）里删除陈旧的超大字体。
 //
 // 为什么需要：vite/SvelteKit 会清空各自的 outDir，但 Tauri 的资源 staging 是
 // **增量拷贝**——源码里删掉的字体（如 ce6e679 移除的 4.8MB NotoColorEmoji.ttf）会
@@ -21,12 +21,9 @@ const MAX_FONT_BYTES = 1024 * 1024; // 1MB —— codicon/flags 远低于此
 const FONT_RE = /\.(ttf|otf|woff2?)$/i;
 
 const SCAN_DIRS = [
-  'web-remote-dist',
-  'static/remote',
-  'target/debug/web-remote-dist',
-  'target/release/web-remote-dist',
-  'target/debug/static/remote',
-  'target/release/static/remote',
+  'remote-dist',
+  'target/debug/remote-dist',
+  'target/release/remote-dist',
 ].map((p) => join(root, p));
 
 /** @param {string} dir @param {string[]} out */

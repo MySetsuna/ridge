@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pnpm publish:remote-cloud —— 构建桌面/手机 Remote 产物，打成 bundle 直发云端持久卷。
+// pnpm publish:remote-cloud —— 构建单一 Remote 产物，打成 bundle 直发云端持久卷。
 //
 // 部署解耦（2026-07-11 设计稿）：不再拷进 ridge-cloud 仓库/镜像，改经鉴权端点
 // POST /api/v1/remote-artifacts 上传 → 云端原子换 current → static_host 换即生效、
@@ -9,7 +9,7 @@
 //   RIDGE_CLOUD_ARTIFACT_URL=https://9527127.xyz/api/v1/remote-artifacts \
 //   RIDGE_ARTIFACT_TOKEN=<token> pnpm publish:remote-cloud
 // flag：
-//   --no-build       跳过构建，用现有 web-remote-dist / static/remote 产物
+//   --no-build       跳过构建，用现有 remote-dist 产物
 //   --dry-run        只打包不上传，落 build/remote-artifact-<ver>.bundle
 //   --rollback [ver] 回滚 current 到上一个（或指定）release
 import { execSync } from 'node:child_process';
@@ -24,8 +24,7 @@ import {
 } from './lib/remoteArtifactBundle.mjs';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
-const DESKTOP_DIST = path.join(ROOT, 'web-remote-dist');
-const MOBILE_DIST = path.join(ROOT, 'static', 'remote');
+const REMOTE_DIST = path.join(ROOT, 'remote-dist');
 
 const die = (msg) => {
   console.error('✗ ' + msg);
@@ -77,11 +76,10 @@ async function main() {
 
   // ── 构建 ──
   if (cfg.build) {
-    console.log('· 构建桌面 + 手机 Remote 产物…');
-    run('pnpm build:desktop-web');
+    console.log('· 构建 Remote 统一产物…');
     run('pnpm build:remote');
   }
-  for (const dist of [DESKTOP_DIST, MOBILE_DIST]) {
+  for (const dist of ['desktop', 'mobile'].map((kind) => path.join(REMOTE_DIST, kind))) {
     if (!fs.existsSync(path.join(dist, 'index.html'))) {
       die(`产物缺失：${dist}/index.html 不存在（先构建，或去掉 --no-build）`);
     }
@@ -93,10 +91,7 @@ async function main() {
     gitSha: gitSha(),
     builtAt: new Date().toISOString(),
   });
-  const files = [
-    ...collectFiles(DESKTOP_DIST, 'desktop-app'),
-    ...collectFiles(MOBILE_DIST, 'mobile-app'),
-  ];
+  const files = collectFiles(REMOTE_DIST, 'remote-app');
   const bundle = packBundle(manifest, files);
   const ver = `${manifest.version}+g${manifest.gitSha}`;
   console.log(
