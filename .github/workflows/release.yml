@@ -150,10 +150,10 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: 'Ridge __VERSION__'
           releaseBody: |
-            多主机「Hosts」侧边栏：统一「外部来源终端」抽象——本机无头会话 / 局域网远端 / rdg 远端主机各带来源徽标；右键「接入终端」+ dock 区域选择 + 拖拽停靠可把外部 pane 接入当前布局；远端主机注册表 + 连接对话框（凭据不落库）。
-            智能体协同增强：MCP 自由交流寻址 + 接入引导 + 手动编组。
-            公网远控丝滑化：改懒加载 scrollback（首屏自拉约 1.5 屏、滚顶分批拉历史，取代 host 全量回放）+ 桌面 in-browser 首屏预算收敛；cloud pane fan-out 引用计数——多控制端看同一 pane 不再互相断流；修快速重订阅竞态（desync 按 owning sub_id 精确移除）。
-            终端修复：resize reflow 残留（delta 镜像发散 reflow）；前台有进程时禁用 shell-history 弹层并覆盖进程内命令（OSC 133;A）；teammate/auto_place 分屏白屏（建 pane fit 后补强制全量重绘）。
+            接入资源统一：新增三层远程资源树；桌面端可分享单工作区，资源管理器、Git 与 Agent 资源按授权范围接入，末个外部 pane 删除后正确断开源 host。
+            已保存工作区：修复关闭后重开失败，补删除能力并统一弹层滚动条。
+            浏览器 Remote：LAN / 公网共用同一产物与终端几何链路；修复 pane、Canvas、PTY 行列不同步及鼠标命中错位，并补远程 git stash 列表能力。
+            发布链：移除 web-remote-dist 临时分叉，Remote desktop/mobile 产物统一构建、上传与激活。
 
             产物：桌面安装包 Windows（.exe / .msi）、Linux（.deb / .AppImage）、macOS（.dmg，Apple Silicon + Intel 各一份，未签名）；命令行程序 rdg（Windows / Linux / macOS-arm64）。
           releaseDraft: true
