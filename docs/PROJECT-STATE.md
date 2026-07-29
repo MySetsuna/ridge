@@ -376,3 +376,18 @@ sequenceDiagram
 - 聚焦 Vitest：3 文件、46 测通过；Svelte 分段诊断：components 35 文件、routes 2 文件，
   均 0 error / 0 warning。全仓 Svelte 诊断同机负载下 64 秒超时，未追杀任何既有进程。
 - 自动轨完成；60Hz 手感、Windows shell reveal 及用户卷上的权限/跨卷矩阵仍属用户轨证据。
+
+## 2026-07-29 iteration 68 · Agent 交互与原生会话
+
+- Agent 成员名可按显式 workspace/pane 跨工作区定位；仅在真实终端 DOM 获焦后确认红/黄暂态。
+  成员卡与 pane header 机器人图标读取同一 `agentPaneAttentionStore`；等待审批为黄、停止为红，
+  且均保留文字与 aria 语义。动态标题继续由 topology 注入的 OSC title 同源投影。
+- 首次进入 Agent's Commune 时，旧持久化侧栏宽度不足会一次夹至 288px，无需切 tab 自愈。
+- Agent history 后端改为按原生 session id 聚合：一 session 一行，保留稳定标题、id、Agent、
+  cwd、最近活动与最新 assistant 输出；同 session 多回复仅取最新。Grok 因无已验证原生格式，
+  UI 明示未启用，不猜路径/字段。
+- 恢复不再拼 shell 字符串：新 pane 调 `launch_agent_session`，以既有
+  `StructuredPtyCommand { program, args, cwd }` 直启；失败回收本次新 pane。
+- 前端聚焦测 2 文件、44 测通过；teammate/components/routes 分段 Svelte 诊断均 0 error。
+  Rust 聚焦 test 与 `cargo check -p ridge --lib` 各 64 秒受同机 Cargo 负载超时；未清锁、未触碰
+  宿主 Ridge，故 Rust 运行闸仍待同机负载退去后复跑。

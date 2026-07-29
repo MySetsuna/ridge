@@ -443,11 +443,14 @@ function toggleSidebar() {
   saveSidebarSettings();
 }
 
-// 展开侧边栏（不切换折叠状态，用于 tab 切换时）
-function expandSidebar() {
+// 展开侧边栏；有最低宽要求的内容（Agent 卡片）首次进入即修正旧的窄宽持久值。
+function expandSidebar(minWidth = 0) {
   if (sidebarCollapsed) {
     sidebarCollapsed = false;
-    sidebarWidth = 288;
+    sidebarWidth = Math.min(sidebarMaxPx, Math.max(288, minWidth));
+    saveSidebarSettings();
+  } else if (sidebarWidth < minWidth) {
+    sidebarWidth = Math.min(sidebarMaxPx, minWidth);
     saveSidebarSettings();
   }
 }
@@ -1573,7 +1576,7 @@ function expandSidebar() {
       type="button"
       class="{actBtn}{sidebarTab === 'agents' ? actBtnOn : ''}"
       title="Agent's Commune"
-      onclick={() => { sidebarTab = 'agents'; expandSidebar(); }}
+      onclick={() => { sidebarTab = 'agents'; expandSidebar(288); }}
     >
       <Bot class="h-5 w-5" />
     </button>
