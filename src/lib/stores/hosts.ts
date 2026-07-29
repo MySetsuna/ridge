@@ -78,6 +78,7 @@ export interface NativeSessionInfo {
   width: number;
   height: number;
   attached: boolean;
+  cwd?: string;
 }
 
 /** 一台主机下的一个会话（provider 真正持有的 PTY）。 */
@@ -250,10 +251,10 @@ export async function refreshHostTopology(hostId: string): Promise<HostForestRes
   return pending;
 }
 
-export async function closeHostPane(hostId: string, paneId: string): Promise<void> {
+export async function closeHostPane(hostId: string, workspaceId: string, paneId: string): Promise<void> {
   const source = registeredHostLinks.get(hostId);
   if (!source) throw new Error('该主机未提供 pane 删除能力');
-  const closed = await deleteRemotePane(hostId, paneId, source.link, closeLocalPane);
+  const closed = await deleteRemotePane(hostId, workspaceId, paneId, source.link, closeLocalPane);
   if (!closed) throw new Error('远端 pane 删除失败');
   await refreshHosts();
 }

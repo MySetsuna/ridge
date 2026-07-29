@@ -1,5 +1,6 @@
 import type {
   PaneInfo,
+  PaneRef,
   RemoteLink,
   WorkspaceInfo,
 } from '@ridge/remote';
@@ -36,19 +37,19 @@ export interface HostTopologyLink extends HostForestLink {
   renameWorkspace?(workspaceId: string, name: string): Promise<boolean>;
   saveWorkspace?(workspaceId: string, name: string): Promise<boolean>;
   createPane(shell?: string): Promise<string | null>;
-  closePane(paneId: string): Promise<boolean>;
+  closePane(pane: PaneRef): Promise<boolean>;
   closeWorkspace(workspaceId: string): Promise<boolean>;
-  onRawBytes(fn: (paneId: string, bytes: Uint8Array) => void): () => void;
-  subscribePane(paneId: string): void;
-  sendStdin(paneId: string, data: string): void;
+  onRawBytes(fn: (pane: PaneRef, bytes: Uint8Array) => void): () => void;
+  subscribePane(pane: PaneRef): void;
+  sendStdin(pane: PaneRef, data: string): void;
   refreshPane(
-    paneId: string,
+    pane: PaneRef,
     rows: number,
     cols: number,
     pixelWidth: number,
     pixelHeight: number,
   ): void;
-  getPaneOutput(paneId: string): string[];
+  getPaneOutput(pane: PaneRef): string[];
   markPaneAgent?(
     workspaceId: string,
     paneId: string,

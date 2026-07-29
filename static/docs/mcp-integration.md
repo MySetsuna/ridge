@@ -1,6 +1,6 @@
-# Ridge 内置 MCP Server（Agent's Commune）· 接入文档
+# Ridge 桌面内置 MCP Server（Agent's Commune）· 接入文档
 
-> 适用版本：≥ v0.1.4。桌面 Ridge 与无头 `rdg` **同一份实现**（crate `ridge-mcp`），能力对等。
+> 适用版本：≥ v0.1.4。**Ridge 桌面版已经内置 MCP server，无须安装 `rdg`。** `rdg` 是另一款无头应用；仅在它自身作为 host 运行时，才按本文的「无头 rdg」章节接入。
 
 ---
 
@@ -11,38 +11,56 @@ Ridge 自带一个端侧 **MCP（Model Context Protocol）server**，把一个�
 但都能在同一工作区里**发现同伴、派活、观察进展、异步回话、传大块中间产物**。
 
 - **协议**：JSON-RPC 2.0（MCP `2024-11-05`）
-- **传输**：stdio（经 `rdg mcp`）/ HTTP（`POST /api/v1/mcp`）/ WebSocket（`/api/v1/mcp/ws`）
+- **传输**：桌面 Ridge 优先 HTTP（`POST /api/v1/mcp`）或 WebSocket（`/api/v1/mcp/ws`）；stdio 客户端使用独立 `ridge-mcp` companion
 - **鉴权**：`Authorization: Bearer <token>` 或 `x-ridge-token: <token>`
-- **宿主**：桌面 Ridge、无头 `rdg tmux`（同一 crate，同一套工具与资源）
+- **宿主**：桌面 Ridge；无头 `rdg tmux` 是独立 host，复用协议实现但不构成桌面 Ridge 的安装依赖
 
 ---
 
-## 1. 接入（三选一）
+## 1. 安装与接入
 
-### A. stdio —— 推荐，随安装即用
+### A. 桌面 Ridge（首选；不安装 `rdg`）
 
-```bash
-claude mcp add ridge -- rdg mcp
-```
+打开 Ridge 后，在要运行 Agent 的 **Ridge pane** 内启动 MCP 客户端。Ridge 会为该 pane 的子进程注入：
+`RIDGE_TEAMMATE_URL`、`RIDGE_TEAMMATE_TOKEN`、`RIDGE_WORKSPACE_ID`；MCP server 已随桌面后端启动。
+客户端使用下列 HTTP 或 WebSocket 端点即可，无须另起服务、无须写死端口或 token。
 
-`rdg mcp` 自动发现本机端点与 token（`RIDGE_TEAMMATE_URL/_TOKEN` → 临时目录 sidecar），
-后端重启换端口也会自愈。桌面 Ridge 与 `rdg tmux` 都能连。显式指定：
-`rdg mcp --url http://127.0.0.1:PORT --token <tok>`。
+> 端口与 token 都是临时值。客户端若在 Ridge pane 外启动，既拿不到这些变量，也不应把 token 复制到配置文件或聊天记录。
 
-> 为什么不建议写死 URL：端口是 ephemeral、token 每次启动重随机，静态配置隔天即失效。
+### B. 桌面 Ridge · HTTP
 
-### B. HTTP
+适合每次都在 Ridge pane 内启动、并在运行时读取环境变量的客户端。以下仅是临时直连探针；**不要**把展开后的 URL 或 token 写入持久 MCP 配置：
 
 ```bash
-claude mcp add --transport http ridge "$RIDGE_TEAMMATE_URL/api/v1/mcp" \
-  --header "Authorization: Bearer $RIDGE_TEAMMATE_TOKEN"
+curl -sS -X POST "$RIDGE_TEAMMATE_URL/api/v1/mcp" \
+  -H "Authorization: Bearer $RIDGE_TEAMMATE_TOKEN" \
+  -H "content-type: application/json" \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 ```
 
 一发一收的 JSON-RPC；通知（无 `id`）回 `202 Accepted` 空体。
 
-### C. WebSocket
+### C. 桌面 Ridge · WebSocket
 
 `ws://<host>/api/v1/mcp/ws`，升级请求带 `Authorization: Bearer <token>`（或 `x-ridge-token`）。
+
+### D. 持久 MCP 配置（Codex、Claude 等；Ridge companion）
+
+持久 MCP 配置中的 HTTP URL 通常是静态值，而 Ridge 本机端点会漂移。`ridge-mcp` 是只做端点发现与 stdio↔HTTP 转发的 Ridge companion，**不是 `rdg`**：
+
+```bash
+cargo install --path packages/ridge-mcp-bridge --bin ridge-mcp
+codex mcp add ridge -- ridge-mcp
+# Claude Code 同理：claude mcp add ridge -- ridge-mcp
+```
+
+它按 `RIDGE_TEAMMATE_URL/_TOKEN` → Ridge endpoint sidecar 自动发现；端口或 token 更新后首个失败请求会重新发现并重试一次。显式指定可用
+`ridge-mcp --url http://127.0.0.1:PORT --token <tok>`。修改 Codex MCP 配置后须新开会话。
+
+### E. 无头 `rdg`（独立 host；按需）
+
+`rdg` 只用于无桌面环境托管 Ridge 的无头会话；它不是 Ridge 桌面 MCP 的安装器。无头 `rdg tmux` 同样会导出
+`RIDGE_TEAMMATE_*`，故也可由上节的 `ridge-mcp` companion 接入。旧 `rdg mcp` 仅保留兼容别名。
 
 ### 端点与 token 从哪来
 
@@ -66,13 +84,17 @@ claude mcp add --transport http ridge "$RIDGE_TEAMMATE_URL/api/v1/mcp" \
 
 ---
 
-## 3. 工具（9 个，全部可调）
+## 3. 工具（13 个，全部可调）
 
 | 工具 | 参数 | 用途 |
 | --- | --- | --- |
 | `ridge_get_team_profile` | 无 | **先调它**。花名册：成员 `paneId` + `paneIndex` + 状态 + 编组 |
-| `ridge_send_to_teammate` | `target_pane_id, message, from?` | 向该 pane 注入文本，并留一份到收件箱 |
-| `ridge_delegate_task` | `target_pane_id, objective, max_steps?` | 派活：注入任务 + 目标标记「工作中」 |
+| `ridge_send_to_teammate` | `target_pane_id, message, from?` | 仅写入草稿并建回执；**不**按 Enter |
+| `ridge_send_and_submit` | `target_pane_id, message, from?` | 显式写入并派发 Enter；结果仅称 `submit_dispatched` |
+| `ridge_delegate_task` | `target_pane_id, objective, max_steps?` | 显式提交任务并标记「工作中」；同样不等于 Agent 已执行 |
+| `ridge_delivery_status` | `target_pane_id, receipt_id` | 查询投递回执：派发、终端接受、Agent 确认三层分列 |
+| `ridge_acknowledge_receipt` | `target_pane_id, receipt_id, status, detail?` | 目标 Agent 明确确认/拒绝；唯一路径可令 `agentAcknowledged=true` |
+| `ridge_report_execution_rejection` | `executor, policy_source, request_id, reason, next_step, ...` | 上报外部网关拒绝；显示归因卡，**不**伪称 Ridge 可重试 |
 | `ridge_capture_pane` | `target_pane_id, lines?` | 抓该 pane **渲染后**的屏幕文本（监控队友进展，不是转义序列堆） |
 | `ridge_inbox_read` | `target_pane_id, peek?` | 取走投递给该 pane 的消息（跨 agent 异步回话通道） |
 | `ridge_report_progress` | `target_pane_id, status, detail?` | 回流一条进展（桌面落前端进度事件） |
@@ -82,6 +104,14 @@ claude mcp add --transport http ridge "$RIDGE_TEAMMATE_URL/api/v1/mcp" \
 
 **寻址**：`target_pane_id` 同时接受花名册回传的 `paneId`（桌面是 Uuid 串，无头是 `%N`）与
 `paneIndex`（数字）。越界/失效目标返回 `-32602`，绝不静默落到 0 号分屏。
+
+**投递语义**：`draft_injected` 仅表明文本已注入；`submit_dispatched` 仅表明 Enter 已派发；
+`terminalAccepted=true` 仅表明 host 已完成终端写入；均不表明终端程序或 Agent 已消费。只有目标 Agent
+调用 `ridge_acknowledge_receipt` 后，回执才会出现 `agentAcknowledged=true`。
+
+**外部拒绝**：若执行层在 Ridge 之前拒绝（例如 `rejected: blocked by policy`），调用
+`ridge_report_execution_rejection`。卡片必须给出真实执行者、策略来源、request ID、原因与可行下一步；
+它不是 Ridge HITL 挂起项，Ridge 不会把“知悉”描述为已批准或已重试。
 
 **错误语义**：工具名不存在 → JSON-RPC `-32601`；宿主不提供该能力（如无头 host 无前端编组）→
 正常 result 带 `isError: true`，客户端可让模型自行改道。
@@ -103,10 +133,10 @@ claude mcp add --transport http ridge "$RIDGE_TEAMMATE_URL/api/v1/mcp" \
 
 1. `ridge_get_team_profile` 看有谁、谁空闲。
 2. 没有合适的 pane → `ridge_split_pane { direction, role }` 开一个。
-3. `ridge_delegate_task { target_pane_id, objective }` 派活（fire-and-forget，别同步等）。
+3. `ridge_delegate_task { target_pane_id, objective }` 派活并保存 `receiptId`；需核验投递层级时调用 `ridge_delivery_status`，别把派发回执说成已执行。
 4. 大块上下文走 `ridge_stash_data` 拿 `ridge://cache/<id>`，把 URI 写进 objective 让对方 `resources/read`。
 5. 想知道干得怎么样 → `ridge_capture_pane` 抓屏；对方可用 `ridge_report_progress` 主动汇报。
-6. 收对方留言 → `ridge_inbox_read`（取走即清空；`peek: true` 只看不取）。
+6. 收对方留言 → `ridge_inbox_read`（取走即清空；`peek: true` 只看不取）；目标 Agent 消费后以 `ridge_acknowledge_receipt` 明确回执。
 
 ---
 
@@ -155,4 +185,4 @@ console.log(screen.result.content[0].text);
 
 *实现：`packages/ridge-mcp/`（协议 + 工具 + 传输，两端唯一一份）、
 `src-tauri/src/teammate/mcp.rs`（桌面宿主实装）、`packages/ridge-tmux/src/mcp.rs`（无头宿主实装）、
-`packages/ridge-cli/src/mcp_stdio.rs`（`rdg mcp` stdio 桥）。用户手册：`docs/teammate-user-guide.md`。*
+`packages/ridge-mcp-bridge/`（独立 `ridge-mcp` stdio companion；`rdg mcp` 复用它）。用户手册：`docs/teammate-user-guide.md`。*

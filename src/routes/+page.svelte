@@ -1492,6 +1492,7 @@ function expandSidebar() {
 >
   <!-- 左侧图标导航栏 -->
   <aside
+    aria-label="Primary navigation"
     class="w-[52px] shrink-0 flex flex-col items-center py-3 gap-1.5 border-r border-[var(--rg-border)] bg-[var(--rg-surface)]/35 backdrop-blur-2xl"
   >
     <button

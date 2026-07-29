@@ -225,3 +225,15 @@
 - 熔断：note 五类原始建议大多已实现，触发来源陈旧熔断；`pnpm check` 可启动但 180 秒无诊断后超时，完整门禁未宣称全绿。
 - 驳回：NotebookLM 的“恢复工具链为 P0”已过期；Remote Agent 控制台在数据能力远程化前不启动；弱网与真机风险无数据，不做确定排序。
 - 后续：用户授权跨仓修改后，已同步最新 ridge-cloud，并将 wind 陈旧协议全文收敛为 canonical 入口 + 自动守卫；协议双 SSOT 债务关闭。
+# 2026-07-29 · Iteration 65 deep research
+
+- 需求门禁：`requirements_gate.py assert-executable --file docs/REQUIREMENTS-SPEC.md` 通过；已批准 Commune/Remote 两项 Active。
+- CodeGraph：`codegraph sync` 成功；复合 pane 身份、键盘回底/光标锚定、Agent 状态同步及 WebWorker 候选已纳入合同 65。
+- NotebookLM：以 `REQUIREMENTS-SPEC`、`PROJECT-STATE` 与深研报告查询下一步；结论为 Worker 仅卸载 CPU 解析/合并，服务端仍须独立 bounded priority writer。
+- 验证：`teammateModel.test.ts`、`keyboardOffset.test.ts` 22/22 通过；全量 Vitest 现有 12 项失败，集中于 Remote API 复合 `PaneRef` 迁移兼容（cloudRemote、lanWsAdapter、remotePaneBindings），未宣称全绿。
+## 2026-07-29 · iteration 65（Remote 连续性收口）
+
+- 完成：严格复合 `PaneRef`、Worker 分页解码/seq 验证、cursor-only 键盘回底、RemoteTab 切换失败回滚、Agent roster→pane header 同步与 Commune 控制区移底。
+- 完成：LAN WebSocket sink 独占 writer；高优先 control/active 与有界低优先 background/scrollback 分 lane，低队列满只标 desync，不阻断 reader。
+- 验证：Vitest 109 文件 1263 通过 / 1 skip；svelte-check 0 error/0 warning；cargo check 成功；Rust lane 优先级测试通过。
+- 未闭：真实手机/桌面弱网 E2E 与用户真机验收仍需执行；Worker 已落地但性能收益须由 trace/真机量测证实。

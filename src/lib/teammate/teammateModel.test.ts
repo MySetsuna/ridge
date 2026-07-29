@@ -69,6 +69,12 @@ describe('parseTopologySnapshot', () => {
     expect(parseTopologySnapshot('nope')).toEqual(EMPTY_TOPOLOGY);
     expect(parseTopologySnapshot({})).toEqual(EMPTY_TOPOLOGY);
   });
+
+  it('preserves the backend auto-discovery change signal without guessing', () => {
+    expect(parseTopologySnapshot({ rosterChanged: true }).rosterChanged).toBe(true);
+    expect(parseTopologySnapshot({ rosterChanged: false }).rosterChanged).toBe(false);
+    expect(parseTopologySnapshot({ rosterChanged: 'true' }).rosterChanged).toBe(false);
+  });
 });
 
 describe('parseHitlRequest', () => {
@@ -86,6 +92,7 @@ describe('parseHitlRequest', () => {
       action: 'git push origin main',
       level: 'Dangerous',
       reason: 'git push 推送远端',
+      kind: 'approval',
     });
   });
 
@@ -106,6 +113,23 @@ describe('parseHitlRequest', () => {
   it('returns null without an id (nothing to reply to)', () => {
     expect(parseHitlRequest({ action: 'x' })).toBeNull();
     expect(parseHitlRequest(null)).toBeNull();
+  });
+
+  it('keeps an externally reported rejection distinct from an approvable Ridge request', () => {
+    const req = parseHitlRequest({
+      id: 'external-1',
+      kind: 'external_rejection',
+      executor: 'Codex execution gateway',
+      policySource: 'organization policy',
+      requestId: 'request-42',
+      reason: 'rejected: blocked by policy',
+    });
+    expect(req).toMatchObject({
+      kind: 'external_rejection',
+      executor: 'Codex execution gateway',
+      policySource: 'organization policy',
+      requestId: 'request-42',
+    });
   });
 });
 

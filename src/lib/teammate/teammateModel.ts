@@ -74,12 +74,15 @@ export interface TopologySnapshot {
   readonly roster: readonly TeammateProfile[];
   readonly leaderId: string | null;
   readonly edges: readonly TopologyEdge[];
+  /** Backend auto-discovery changed pane↔agent projection during this snapshot. */
+  readonly rosterChanged: boolean;
 }
 
 export const EMPTY_TOPOLOGY: TopologySnapshot = {
   roster: [],
   leaderId: null,
   edges: [],
+  rosterChanged: false,
 };
 
 // ── HITL (Domain D2) ──
@@ -94,6 +97,13 @@ export interface HitlRequest {
   readonly level: RiskLevel;
   /** Human-readable why-flagged reason from the risk classifier. */
   readonly reason: string;
+  /** Concrete execution layer; never label an unknown rejection as Ridge. */
+  readonly executor?: string;
+  readonly policySource?: string;
+  readonly requestId?: string;
+  readonly nextStep?: string;
+  /** A report from another execution gateway, not a Ridge-pending approval. */
+  readonly kind: 'approval' | 'external_rejection';
 }
 
 /** 面板行内裁决用的**脱敏**待审批项（`list_hitl_pending` 投影，无命令全文）。 */
@@ -205,7 +215,7 @@ export function parseTopologySnapshot(payload: unknown): TopologySnapshot {
     })
     .filter((e): e is TopologyEdge => e !== null);
 
-  return { roster, leaderId, edges };
+  return { roster, leaderId, edges, rosterChanged: rec.rosterChanged === true };
 }
 
 /**
@@ -224,6 +234,11 @@ export function parseHitlRequest(payload: unknown): HitlRequest | null {
     action: asString(rec.action) ?? '',
     level: asRisk(rec.risk ?? rec.level),
     reason: asString(rec.reason) ?? '',
+    executor: asString(rec.executor),
+    policySource: asString(rec.policySource) ?? asString(rec.policy_source),
+    requestId: asString(rec.requestId) ?? asString(rec.request_id),
+    nextStep: asString(rec.nextStep) ?? asString(rec.next_step),
+    kind: rec.kind === 'external_rejection' ? 'external_rejection' : 'approval',
   };
 }
 

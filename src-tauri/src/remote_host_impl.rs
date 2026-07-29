@@ -433,7 +433,25 @@ async fn handle_ws(
     upgrade_start: Instant,
 ) {
     use futures::{SinkExt, StreamExt};
-    let (mut ws_tx, mut ws_rx) = socket.split();
+    let (mut socket_tx, mut ws_rx) = socket.split();
+    // The reader never owns the WebSocket sink. A slow client therefore cannot
+    // suspend stdin/control handling while a scrollback frame is in flight.
+    // High is control + active raw; low is background raw + scrollback. The
+    // writer re-checks high before every low frame.
+    let writer_cap = ridge_remote::pane::RAW_CHAN_CAP;
+    let (ws_tx, mut high_tx_rx) = mpsc::channel::<Message>(writer_cap);
+    let (low_tx, mut low_tx_rx) = mpsc::channel::<Message>(writer_cap);
+    tokio::spawn(async move {
+        loop {
+            let next = tokio::select! {
+                biased;
+                message = high_tx_rx.recv() => message,
+                message = low_tx_rx.recv() => message,
+            };
+            let Some(message) = next else { return };
+            if socket_tx.send(message).await.is_err() { return; }
+        }
+    });
 
     // Register this client in the remote client registry so the desktop
     // RemotePanel can list, disconnect, or blacklist it.
@@ -745,9 +763,14 @@ async fn handle_ws(
                             Some("subscribe-pane") => {
                                 let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
                                 if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                                    let target_ws = parsed["workspaceId"].as_str()
-                                        .and_then(|s| Uuid::parse_str(s).ok())
-                                        .unwrap_or(active_ws_id);
+                                    let Some(target_ws) = parsed["workspaceId"].as_str()
+                                        .and_then(|s| Uuid::parse_str(s).ok()) else {
+                                        let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                            "type": "error", "code": "MISSING_WORKSPACE",
+                                            "message": "subscribe-pane requires workspaceId"
+                                        }).to_string())).await;
+                                        continue;
+                                    };
                                     let pane_exists = state.workspaces.read()
                                         .get(&target_ws)
                                         .is_some_and(|ws| ws.terminals.contains_key(&pane_id));
@@ -880,7 +903,7 @@ async fn handle_ws(
                                             let frame = ridge_remote::pane::pane_frame(
                                                 pane_id, chunk.bytes.as_bytes(),
                                             );
-                                            let _ = ws_tx.send(Message::Binary(frame.into())).await;
+                                            let _ = low_tx.try_send(Message::Binary(frame.into()));
                                         }
                                     } else if resume {
                                         // Live-only resume: alive kernel keeps its history; send nothing
@@ -891,7 +914,7 @@ async fn handle_ws(
                                         let resync = ridge_remote::pane::pane_resync_frame(
                                             pane_id, chunk.bytes.as_bytes(), &modes, alt,
                                         );
-                                        let _ = ws_tx.send(Message::Binary(resync.into())).await;
+                                        let _ = low_tx.try_send(Message::Binary(resync.into()));
                                     }
                                     // Seed/refresh the client's paging + resume cursor. `headSeq` is the
                                     // controller's next resume cursor; `incremental` tells it whether the
@@ -901,6 +924,7 @@ async fn handle_ws(
                                     if !resume || since_seq.is_some() {
                                         let meta = serde_json::json!({
                                             "type": "scrollback-meta",
+                                            "workspaceId": target_ws.to_string(),
                                             "paneId": pane_id.to_string(),
                                             "startSeq": chunk.start_seq,
                                             "atOldest": chunk.at_oldest,
@@ -929,20 +953,27 @@ async fn handle_ws(
                                 let max_bytes =
                                     parsed["maxBytes"].as_u64().unwrap_or(65536) as usize;
                                 let target_ws = parsed["workspaceId"].as_str()
-                                    .and_then(|s| Uuid::parse_str(s).ok())
-                                    .unwrap_or(active_ws_id);
+                                    .and_then(|s| Uuid::parse_str(s).ok());
                                 let result = if let Ok(pane_id) = Uuid::parse_str(pane_id_str) {
-                                    let chunk = state.get_pty_scrollback_before(
-                                        target_ws, pane_id, before_seq, max_bytes,
-                                    );
-                                    serde_json::json!({
-                                        "type": "scrollback-before-result",
-                                        "_reqId": req_id,
-                                        "bytes": chunk.bytes,
-                                        "startSeq": chunk.start_seq,
-                                        "endSeq": chunk.end_seq,
-                                        "atOldest": chunk.at_oldest,
-                                    })
+                                    if let Some(target_ws) = target_ws {
+                                        let chunk = state.get_pty_scrollback_before(
+                                            target_ws, pane_id, before_seq, max_bytes,
+                                        );
+                                        serde_json::json!({
+                                            "type": "scrollback-before-result",
+                                            "_reqId": req_id,
+                                            "bytes": chunk.bytes,
+                                            "startSeq": chunk.start_seq,
+                                            "endSeq": chunk.end_seq,
+                                            "atOldest": chunk.at_oldest,
+                                        })
+                                    } else {
+                                        serde_json::json!({
+                                            "type": "scrollback-before-result", "_reqId": req_id,
+                                            "bytes": "", "startSeq": before_seq, "endSeq": before_seq,
+                                            "atOldest": true, "error": "MISSING_WORKSPACE"
+                                        })
+                                    }
                                 } else {
                                     serde_json::json!({
                                         "type": "scrollback-before-result",
@@ -1588,14 +1619,21 @@ async fn handle_ws(
                                             let resync = ridge_remote::pane::pane_resync_frame(
                                                 pane_id, &history, &modes, alt,
                                             );
-                                            if ws_tx.send(Message::Binary(resync.into())).await.is_err() {
-                                                break;
+                                            if (if foreground { &ws_tx } else { &low_tx })
+                                                .try_send(Message::Binary(resync.into()))
+                                                .is_err()
+                                            {
+                                                desync.store(true, Ordering::Release);
+                                                continue;
                                             }
                                         }
                                     }
                                     let frame = ridge_remote::pane::pane_frame(pane_id, &bytes);
-                                    if ws_tx.send(Message::Binary(frame.into())).await.is_err() {
-                                        break;
+                                    if (if foreground { &ws_tx } else { &low_tx })
+                                        .try_send(Message::Binary(frame.into()))
+                                        .is_err()
+                                    {
+                                        desync.store(true, Ordering::Release);
                                     }
                                 }
                             }
@@ -1603,6 +1641,7 @@ async fn handle_ws(
                                 if subscribed_panes.contains(&(workspace_id, pane_id)) {
                                     let _ = ws_tx.send(Message::Text(serde_json::json!({
                                         "type": "pty-meta",
+                                        "workspaceId": workspace_id.to_string(),
                                         "paneId": pane_id.to_string(),
                                         "title": title,
                                         "cwd": cwd.clone(),
@@ -2334,7 +2373,15 @@ async fn dispatch_invoke_request(
             .await,
         ),
         "write_to_pty" => {
-            unit(terminal::write_to_pty(handle.state(), s(args, "paneId"), s(args, "data")).await)
+            unit(
+                terminal::write_to_pty(
+                    handle.state(),
+                    s(args, "paneId"),
+                    s(args, "data"),
+                    opt_s(args, "workspaceId"),
+                )
+                .await,
+            )
         }
         "resize_pane" => unit(
             terminal::resize_pane(

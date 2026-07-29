@@ -3293,6 +3293,7 @@ export class TerminalManager {
 		if (!e) return;
 		e.kernel.scrollToBottom();
 		e.linkSpans.markDirty();
+		this.wake();
 	}
 
 	scrollUp(paneId: string, lines: number): void {

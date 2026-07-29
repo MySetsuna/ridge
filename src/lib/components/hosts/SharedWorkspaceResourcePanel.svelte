@@ -58,7 +58,7 @@
       {:else if mode === 'search'}
         <SidebarSearch {provider} onOpenFile={openFile} />
       {:else}
-        <SidebarTeamRoster ws={projection.link} />
+        <SidebarTeamRoster ws={projection.link} workspaceId={projection.workspaceId} />
       {/if}
     </div>
   </div>

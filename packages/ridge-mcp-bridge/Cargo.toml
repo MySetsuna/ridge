@@ -1,0 +1,17 @@
+[package]
+name = "ridge-mcp-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Ridge desktop MCP stdio bridge; discovers the ephemeral local endpoint without rdg"
+license = "MIT"
+
+[[bin]]
+name = "ridge-mcp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util"] }

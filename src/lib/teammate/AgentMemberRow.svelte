@@ -11,6 +11,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { Crown, Pause, Play, Send, X, Ghost } from 'lucide-svelte';
   import { autoGrow } from '$lib/actions/autoGrow';
+  import { enqueuePtyWrite } from '$lib/terminal/ptyWriteQueue';
   import { memberTasksStore, recordMemberTask } from './memberTasks';
   import { showToast } from '$lib/stores/toast';
   import type { TeammateProfile, PendingApproval } from './teammateModel';
@@ -71,7 +72,9 @@
     const text = input.trim();
     if (!text || !paneId) return;
     try {
-      await invoke('write_to_pty', { paneId, data: `${text}\r` });
+      await enqueuePtyWrite(`${workspaceId}:${paneId}`, () =>
+        invoke('write_to_pty', { workspaceId, paneId, data: `${text}\r` }),
+      );
       recordMemberTask(agentId, text);
       input = '';
     } catch (e) {

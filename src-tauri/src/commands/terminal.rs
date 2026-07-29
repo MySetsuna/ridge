@@ -1041,8 +1041,9 @@ pub async fn write_to_pty(
     state: State<'_, AppState>,
     pane_id: String,
     data: String,
+    workspace_id: Option<String>,
 ) -> Result<(), String> {
-    write_to_pty_async(state, pane_id, data)
+    write_to_pty_async(state, pane_id, data, workspace_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1055,9 +1056,11 @@ pub fn write_to_pty_inner(
     state: State<'_, AppState>,
     pane_id: String,
     data: String,
+    workspace_id: Option<String>,
 ) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
-    let wid = state.active_workspace_id();
+    let wid = resolve_pane_workspace(&state, workspace_id.as_deref(), pane_id)
+        .map_err(AppError::PtyError)?;
     let map = state.workspaces.read();
     let ws = map
         .get(&wid)
@@ -1084,9 +1087,11 @@ async fn write_to_pty_async(
     state: State<'_, AppState>,
     pane_id: String,
     data: String,
+    workspace_id: Option<String>,
 ) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
-    let wid = state.active_workspace_id();
+    let wid = resolve_pane_workspace(&state, workspace_id.as_deref(), pane_id)
+        .map_err(AppError::PtyError)?;
     // Foreign panes route via outbound live sink (OP-WS-PTY); never write local ConPTY.
     {
         let map = state.workspaces.read();
@@ -1113,13 +1118,14 @@ async fn write_to_pty_async(
         })?;
         (handle.writer.clone(), data.clone())
     };
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let mut w = writer.lock();
-        let _ = w.write_all(_data.as_bytes());
-        let _ = w.flush();
+        w.write_all(_data.as_bytes())?;
+        w.flush()?;
+        Ok(())
     })
     .await
-    .map_err(|_| AppError::PtyError("blocking task panicked".into()))?;
+    .map_err(|_| AppError::PtyError("blocking task panicked".into()))??;
     Ok(())
 }
 
@@ -1824,6 +1830,46 @@ fn resolve_pane_workspace(
         return Err("pane not found in workspace".to_string());
     }
     Ok(workspace_id)
+}
+
+#[cfg(test)]
+mod write_scope_tests {
+    use super::*;
+    use crate::commands::workspace::insert_new_workspace;
+    use crate::engine::pane_tree::PaneTree;
+    use crate::types::GlobalEvent;
+
+    #[test]
+    fn explicit_workspace_routes_input_without_following_active_workspace() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<GlobalEvent>(1);
+        let state = AppState::new(tx);
+        let active = state.active_workspace_id();
+        let active_pane = state.workspaces.read()[&active]
+            .pane_tree
+            .panes
+            .keys()
+            .next()
+            .copied()
+            .expect("default workspace root pane");
+
+        let target = Uuid::parse_str(&insert_new_workspace(&state, PaneTree::new(), None))
+            .expect("workspace id");
+        let target_pane = state.workspaces.read()[&target]
+            .pane_tree
+            .panes
+            .keys()
+            .next()
+            .copied()
+            .expect("target workspace root pane");
+        *state.active_workspace.write() = active;
+
+        assert_eq!(
+            resolve_pane_workspace(&state, Some(&target.to_string()), target_pane),
+            Ok(target),
+        );
+        assert!(resolve_pane_workspace(&state, Some(&active.to_string()), target_pane).is_err());
+        assert_eq!(resolve_pane_workspace(&state, None, active_pane), Ok(active));
+    }
 }
 
 #[tauri::command]

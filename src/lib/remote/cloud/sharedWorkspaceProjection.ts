@@ -1,7 +1,7 @@
 import { writable } from 'svelte/store';
 import { getWorkspaceShareToken } from '@ridge/remote/shared/cloud/apiClient';
 import { snapshot as authSnapshot } from '@ridge/remote/shared/cloud/auth';
-import type { PaneInfo } from '@ridge/remote';
+import type { PaneInfo, PaneRef } from '@ridge/remote';
 import type { DataProvider } from '$lib/transport';
 import { TauriDataProvider } from '$lib/transport/tauri';
 import { TauriBridge } from '$lib/transport/tauriShim/bridge';
@@ -133,11 +133,12 @@ export async function openSharedWorkspaceProjection(input: {
     const stopMessages = connection.onMessage((message) => {
       if (message.type === 'panes') updatePanes(message.panes);
     });
-    const stopMetadata = connection.onMetadata((paneId, title, cwd) => {
+    const stopMetadata = connection.onMetadata((pane: PaneRef, title, cwd) => {
       if (!current || current.link !== connection) return;
-      updatePanes(current.panes.map((pane) => pane.id === paneId
-        ? { ...pane, title: title ?? undefined, cwd: cwd ?? undefined }
-        : pane));
+      const paneId = pane.paneId;
+      updatePanes(current.panes.map((item) => item.id === paneId
+        ? { ...item, title: title ?? undefined, cwd: cwd ?? undefined }
+        : item));
     });
     stopCurrentPaneSync = () => {
       stopMessages();

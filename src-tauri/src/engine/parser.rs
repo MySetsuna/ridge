@@ -1031,4 +1031,33 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn multiline_console_echo_preserves_source_line_order_through_delta_mirror() {
+        use ridge_term::term::terminal::Terminal;
+
+        let lines = [
+            "$P='http://127.0.0.1:51081'",
+            "$C='chrome.exe'",
+            "Start-Process $C",
+            "notebooklm.google.com",
+        ];
+        let mut producer = make_parser(8, 80);
+        let mut mirror = Terminal::new(8, 80, 1_000);
+        mirror
+            .apply_frame(&producer.feed_and_diff(b""))
+            .expect("initial mirror frame");
+        mirror
+            .apply_frame(&producer.feed_and_diff(lines.join("\r\n").as_bytes()))
+            .expect("ordered multiline delta frame");
+
+        for (row, expected) in lines.iter().enumerate() {
+            let actual: String = mirror.grid().row(row).expect("visible row")
+                .cells
+                .iter()
+                .map(|cell| cell.ch)
+                .collect();
+            assert_eq!(actual.trim_end(), *expected, "line {row} reversed or displaced");
+        }
+    }
 }

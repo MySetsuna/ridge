@@ -9,8 +9,9 @@
     TeammateTopology,
   } from '@ridge/remote';
 
-  let { ws, onSelectPane }: {
+  let { ws, workspaceId, onSelectPane }: {
     ws: RemoteLink;
+    workspaceId: string;
     /** 点击成员 → 切到其 pane（MVP：拓扑取自活动工作区，pane 即当前工作区内）。 */
     onSelectPane?: (paneId: string) => void;
   } = $props();
@@ -85,7 +86,7 @@
   function sendTo(m: TeammateRosterMember) {
     const text = (msgInput[m.id] ?? '').trim();
     if (!text || !m.paneId) return;
-    ws.sendStdin(m.paneId, `${text}\r`);
+    ws.sendStdin({ workspaceId, paneId: m.paneId }, `${text}\r`);
     msgInput = { ...msgInput, [m.id]: '' };
   }
 

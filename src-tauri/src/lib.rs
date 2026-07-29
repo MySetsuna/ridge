@@ -891,6 +891,9 @@ pub fn run() {
             commands::teammate::get_teammate_topology,
             commands::teammate::list_hitl_pending,
             commands::teammate::resolve_hitl_remote,
+            commands::teammate::list_hitl_pending_local,
+            commands::teammate::list_execution_rejections_local,
+            commands::teammate::dismiss_execution_rejection,
             // M1 切片二：裁决审计历史（仅桌面 IPC）
             commands::teammate::list_hitl_decisions,
             // G1 阶段一软暂停 + 可选 OS 冻结（仅桌面本机 IPC，不入 REMOTE_ALLOWLIST）

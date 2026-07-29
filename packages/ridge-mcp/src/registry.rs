@@ -28,7 +28,7 @@ fn pane_target_schema() -> serde_json::Value {
 
 /// Ridge MCP 工具注册表。
 ///
-/// `Default::default()` 预注册六个内置工具。可调用 `register` 追加自定义工具。
+/// `Default::default()` 预注册内置工具。可调用 `register` 追加自定义工具。
 #[derive(Debug, Clone)]
 pub struct ToolRegistry {
     tools: Vec<ToolSpec>,
@@ -63,7 +63,7 @@ impl Default for ToolRegistry {
             ToolSpec {
                 name: "ridge_send_to_teammate".to_string(),
                 description:
-                    "向指定 pane 的 teammate 发送文本消息（写入其 stdin，并留一份到收件箱）。"
+                    "向指定 pane 写入文本草稿并留一份到收件箱；不派发 Enter，返回 draft_injected。"
                         .to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -83,7 +83,7 @@ impl Default for ToolRegistry {
             },
             ToolSpec {
                 name: "ridge_delegate_task".to_string(),
-                description: "将一个多步骤任务委派给指定 pane 的 teammate 执行。".to_string(),
+                description: "将一个多步骤任务委派给指定 pane 并显式派发 Enter；返回 submit_dispatched，不代表 Agent 已执行。".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -98,6 +98,62 @@ impl Default for ToolRegistry {
                         }
                     },
                     "required": ["target_pane_id", "objective"]
+                }),
+            },
+            ToolSpec {
+                name: "ridge_send_and_submit".to_string(),
+                description: "向目标 pane 写入文本并显式派发 Enter。回执另列 terminalAccepted；二者均不代表 Agent 已执行。".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "target_pane_id": pane_target_schema(),
+                        "message": { "type": "string", "description": "要写入并提交的文本" },
+                        "from": { "type": "string", "description": "发送方标识" }
+                    },
+                    "required": ["target_pane_id", "message"]
+                }),
+            },
+            ToolSpec {
+                name: "ridge_delivery_status".to_string(),
+                description: "读取指定投递回执。submit_dispatched 只表示已派发 Enter；terminalAccepted 与 agentAcknowledged 分别独立报告。".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "target_pane_id": pane_target_schema(),
+                        "receipt_id": { "type": "string", "description": "发送工具返回的 receiptId" }
+                    },
+                    "required": ["target_pane_id", "receipt_id"]
+                }),
+            },
+            ToolSpec {
+                name: "ridge_acknowledge_receipt".to_string(),
+                description: "目标 Agent 明确确认或拒绝一条已投递输入；仅此工具可把 agentAcknowledged 置真。".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "target_pane_id": pane_target_schema(),
+                        "receipt_id": { "type": "string", "description": "收到消息中的 receiptId" },
+                        "status": { "type": "string", "enum": ["agent_acknowledged", "agent_rejected"] },
+                        "detail": { "type": "string", "description": "可选的确认或拒绝原因" }
+                    },
+                    "required": ["target_pane_id", "receipt_id", "status"]
+                }),
+            },
+            ToolSpec {
+                name: "ridge_report_execution_rejection".to_string(),
+                description: "上报外部执行网关的拒绝，生成含执行者、策略来源、请求 ID 与替代步骤的 Ridge 桌面卡片。只记录/展示；绝不表示 Ridge 可重试外部命令。".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "initiator": { "type": "string", "description": "发起该外部操作的 agent/客户端" },
+                        "action": { "type": "string", "description": "可选：拒绝的命令或安全摘要；不得包含密钥" },
+                        "executor": { "type": "string", "description": "实际拒绝方，例如 Codex execution gateway" },
+                        "policy_source": { "type": "string", "description": "策略来源，例如组织执行策略" },
+                        "request_id": { "type": "string", "description": "外部拒绝返回的 request ID" },
+                        "reason": { "type": "string", "description": "拒绝原因/错误原文摘要" },
+                        "next_step": { "type": "string", "description": "用户可执行的替代步骤；不得声称 Ridge 可以重试" }
+                    },
+                    "required": ["executor", "policy_source", "request_id", "reason", "next_step"]
                 }),
             },
             ToolSpec {
@@ -234,9 +290,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_registry_has_nine_tools() {
+    fn default_registry_has_thirteen_tools() {
         let reg = ToolRegistry::default();
-        assert_eq!(reg.tools().len(), 9);
+        assert_eq!(reg.tools().len(), 13);
     }
 
     #[test]
@@ -260,7 +316,7 @@ mod tests {
             description: "test".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
         });
-        assert_eq!(reg.tools().len(), 10);
+        assert_eq!(reg.tools().len(), 14);
         assert!(reg.get("custom_tool").is_some());
     }
 
@@ -269,7 +325,7 @@ mod tests {
         let reg = ToolRegistry::default();
         let v = reg.tools_list_result();
         assert!(v["tools"].is_array());
-        assert_eq!(v["tools"].as_array().unwrap().len(), 9);
+        assert_eq!(v["tools"].as_array().unwrap().len(), 13);
     }
 
     #[test]
@@ -315,9 +371,12 @@ mod tests {
         let reg = ToolRegistry::default();
         for name in [
             "ridge_send_to_teammate",
+            "ridge_send_and_submit",
             "ridge_delegate_task",
             "ridge_capture_pane",
             "ridge_inbox_read",
+            "ridge_delivery_status",
+            "ridge_acknowledge_receipt",
         ] {
             let t = &reg.get(name).unwrap().input_schema["properties"]["target_pane_id"]["type"];
             let kinds: Vec<&str> = t.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
@@ -344,12 +403,16 @@ mod tests {
         let reg = ToolRegistry::default();
         for name in [
             "ridge_send_to_teammate",
+            "ridge_send_and_submit",
             "ridge_delegate_task",
             "ridge_get_team_profile",
             "ridge_join_group",
             "ridge_split_pane",
             "ridge_capture_pane",
             "ridge_inbox_read",
+            "ridge_delivery_status",
+            "ridge_acknowledge_receipt",
+            "ridge_report_execution_rejection",
             "ridge_report_progress",
             "ridge_stash_data",
         ] {

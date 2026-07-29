@@ -9,7 +9,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use ridge_mcp::resource::{git_branch, git_root, RidgeUri};
-use ridge_mcp::server::{HostError, HostResult, McpHost};
+use ridge_mcp::server::{HostError, HostResult, InputDispatch, McpHost};
 use ridge_mcp::transport::{mcp_router, McpTransportCtx};
 
 use crate::http::{GuiSessionSource, NativeHttpCtx};
@@ -102,17 +102,27 @@ impl McpHost for TmuxMcpHost {
         json!({ "roster": roster, "leaderId": null, "edges": [], "groups": [] })
     }
 
-    fn send_text(&self, target: &Value, text: &str, _mark_busy: bool) -> HostResult<()> {
+    fn send_text(
+        &self,
+        target: &Value,
+        text: &str,
+        submit: bool,
+        _mark_busy: bool,
+    ) -> HostResult<InputDispatch> {
         let t = self.target_of(target)?;
         // 与桌面一致：补 CR 作 Enter（LF 在 raw-mode TUI 里只插换行、不提交）。
         crate::send_keys(
             &self.socket,
             &t,
             &self.gui.sessions_for(&self.socket),
-            &ridge_mcp::server::enter_terminated(text),
+            &if submit { ridge_mcp::server::enter_terminated(text) } else { text.to_string() },
         )
-            .map(|_| ())
-            .map_err(engine_err)
+        .map(|_| InputDispatch {
+            // tmux accepted the control command, but exposes no receipt that
+            // its target terminal consumed the bytes.
+            terminal_accepted: false,
+        })
+        .map_err(engine_err)
     }
 
     fn capture_pane(&self, target: &Value, lines: usize) -> HostResult<String> {

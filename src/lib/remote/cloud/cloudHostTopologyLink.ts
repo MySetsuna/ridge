@@ -4,6 +4,7 @@ import {
   type CloudConnectionCallbacks,
   type CloudWebrtcAdapter,
   type PaneInfo,
+  type PaneRef,
   type RemoteShellInfo,
   type WorkspaceInfo,
 } from '@ridge/remote';
@@ -71,9 +72,12 @@ class CloudHostTopologyLink implements HostTopologyLink {
     return panes;
   }
 
-  async closePane(paneId: string): Promise<boolean> {
+  async closePane(pane: PaneRef): Promise<boolean> {
     try {
-      await this.rpc.request('close_pane', { paneId });
+      await this.rpc.request('close_pane', {
+        workspaceId: pane.workspaceId,
+        paneId: pane.paneId,
+      });
       return true;
     } catch {
       return false;
@@ -170,34 +174,45 @@ class CloudHostTopologyLink implements HostTopologyLink {
     await this.rpc.request('activate_pane_pty', { workspaceId, paneId });
   }
 
-  onRawBytes(fn: (paneId: string, bytes: Uint8Array) => void): () => void {
-    return this.adapter.onPaneBytes(fn);
+  onRawBytes(fn: (pane: PaneRef, bytes: Uint8Array) => void): () => void {
+    return this.adapter.onPaneBytes((paneId, bytes) => {
+      const workspaceId = this.workspaceByPane.get(paneId);
+      if (workspaceId) fn({ workspaceId, paneId }, bytes);
+    });
   }
 
-  subscribePane(paneId: string): void {
-    this.rpc.notify('subscribe-pane', { paneId });
+  subscribePane(pane: PaneRef): void {
+    this.workspaceByPane.set(pane.paneId, pane.workspaceId);
+    this.rpc.notify('subscribe-pane', {
+      workspaceId: pane.workspaceId,
+      paneId: pane.paneId,
+    });
   }
 
-  sendStdin(paneId: string, data: string): void {
-    void this.rpc.request('write_to_pty', { paneId, data });
+  sendStdin(pane: PaneRef, data: string): void {
+    void this.rpc.request('write_to_pty', {
+      workspaceId: pane.workspaceId,
+      paneId: pane.paneId,
+      data,
+    });
   }
 
   refreshPane(
-    paneId: string,
+    pane: PaneRef,
     rows: number,
     cols: number,
     _pixelWidth: number,
     _pixelHeight: number,
   ): void {
     void this.rpc.request('resize_pane', {
-      workspaceId: this.workspaceByPane.get(paneId),
-      paneId,
+      workspaceId: pane.workspaceId,
+      paneId: pane.paneId,
       rows,
       cols,
     });
   }
 
-  getPaneOutput(): string[] {
+  getPaneOutput(_pane: PaneRef): string[] {
     return [];
   }
 }
