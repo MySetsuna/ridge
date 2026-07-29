@@ -440,6 +440,9 @@
     // Browser previews have neither Tauri IPC nor its event bridge. The
     // web-remote shim reports true and forwards these listeners to its host.
     if (!isTauri()) return;
+    // Start topology polling before the initial heavy refresh: git/audit/history
+    // probes must not delay auto-discovered agents appearing in the roster.
+    reschedulePoll();
     void refresh({ heavy: true });
     // 拉取工作区保存信息，让编组的稳定持久化键（.ridge 路径）可解析。
     void refreshWorkspaceSaveInfo();
@@ -489,7 +492,10 @@
       }
     });
     return () => {
-      if (pollTimer) clearInterval(pollTimer);
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = undefined;
+      }
       unTrip.then((f) => f()).catch(() => {});
       unJoin.then((f) => f()).catch(() => {});
       unLayout.then((f) => f()).catch(() => {});
