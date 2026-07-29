@@ -56,6 +56,7 @@ const {
   refreshColumnsCovering,
   explorerClipboard,
   setExplorerClipboard,
+  remainingCutClipboard,
   parentDirectory,
 } = await import('./fileExplorer');
 
@@ -292,6 +293,26 @@ describe('explorerClipboard store', () => {
     expect(get(explorerClipboard)).toEqual({ paths: ['/x', '/y'], mode: 'cut', seq: 0 });
     setExplorerClipboard(null);
     expect(get(explorerClipboard)).toBeNull();
+  });
+
+  it('retains only failed cut paths in their original order', () => {
+    const clip = { paths: ['/a', '/b', '/c'], mode: 'cut' as const, seq: 7 };
+    expect(remainingCutClipboard(clip, ['/c', '/a'])).toEqual({
+      paths: ['/a', '/c'],
+      mode: 'cut',
+      seq: 7,
+    });
+  });
+
+  it('clears a fully successful cut and retains a fully failed cut', () => {
+    const clip = { paths: ['/a', '/b'], mode: 'cut' as const, seq: 7 };
+    expect(remainingCutClipboard(clip, [])).toBeNull();
+    expect(remainingCutClipboard(clip, clip.paths)).toEqual(clip);
+  });
+
+  it('does not consume a copy clipboard', () => {
+    const clip = { paths: ['/a', '/b'], mode: 'copy' as const, seq: 7 };
+    expect(remainingCutClipboard(clip, ['/a'])).toBe(clip);
   });
 });
 
