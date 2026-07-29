@@ -363,7 +363,11 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
                 Err(HostError::InvalidParams("message/objective 不能为空".into()))
             } else {
                 let delegate = name == "ridge_delegate_task";
-                let submit = name != "ridge_send_to_teammate";
+                let submit = if name == "ridge_send_to_teammate" {
+                    args.get("submit").and_then(Value::as_bool).unwrap_or(true)
+                } else {
+                    true
+                };
                 let t = target();
                 host.pane_key(&t).and_then(|key| {
                     host.send_text(&t, text, submit, delegate).map(|dispatch| {
@@ -649,19 +653,35 @@ mod tests {
     }
 
     #[test]
-    fn send_receipts_distinguish_draft_from_submit_dispatch() {
-        let draft = json!({
+    fn send_defaults_to_submit_and_preserves_explicit_draft() {
+        let default_send = json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
             "params":{"name":"ridge_send_to_teammate","arguments":{"target_pane_id":8,"message":"hi"}}
         })
         .to_string();
-        let submit = json!({
+        let draft = json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"ridge_send_to_teammate","arguments":{"target_pane_id":8,"message":"hi","submit":false}}
+        })
+        .to_string();
+        let forced_submit = json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
             "params":{"name":"ridge_send_and_submit","arguments":{"target_pane_id":8,"message":"hi"}}
         })
         .to_string();
-        let draft_text = call(&draft)["result"]["content"][0]["text"].as_str().unwrap().to_string();
-        let submit_text = call(&submit)["result"]["content"][0]["text"].as_str().unwrap().to_string();
+        let default_text = call(&default_send)["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let draft_text = call(&draft)["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let submit_text = call(&forced_submit)["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(default_text.contains("submit_dispatched"));
         assert!(draft_text.contains("draft_injected"));
         assert!(submit_text.contains("submit_dispatched"));
         assert!(submit_text.contains("\"terminalAccepted\":true"));
