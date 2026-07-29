@@ -3502,6 +3502,8 @@ export class TerminalManager {
 				placeAbove: boolean,
 				totalItems: number,
 				firstVisible: number,
+				viewportCols: number,
+				viewportRows: number,
 			) => void;
 		};
 		// `items` is the JS-windowed VISIBLE slice; `selectedIndex` is
@@ -3514,6 +3516,8 @@ export class TerminalManager {
 			placeAbove,
 			totalItems,
 			firstVisible,
+			entry.kernel.cols(),
+			entry.kernel.rows(),
 		);
 		this.wake();
 	}

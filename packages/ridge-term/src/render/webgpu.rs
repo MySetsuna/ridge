@@ -55,6 +55,9 @@ use super::glyph_atlas::{GlyphEntry, GlyphKey};
 use super::gpu_context::GpuContext;
 use super::surface_host::{ScissorRect, SurfaceHost};
 use crate::render::procedural_box;
+use crate::render::renderer::{
+    history_overlay_geometry, history_text, history_text_width,
+};
 use crate::render::backend::{CursorDraw, FrameMetrics, RenderBackend, RowDraw, Theme};
 use crate::term::cell::{scan_line_path, RenderPath};
 use crate::term::attr_table::AttrTable;
@@ -1144,53 +1147,44 @@ impl RenderBackend for WebGpuPaneBackend {
         // selected row inverts bg/fg; 1-device-px border.
         // §1.35 — added cell padding (H_PAD_CELLS / V_PAD_CELLS) for
         // visual breathing room around content and selection highlight.
-        let visible_count = overlay.items.len().min(overlay.max_visible_rows);
-        if visible_count == 0 {
+        let requested_visible = overlay.items.len().min(overlay.max_visible_rows);
+        if requested_visible == 0 {
             return;
         }
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
         let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
 
-        const H_PAD_CELLS: f32 = 0.6;
-        const V_PAD_CELLS: f32 = 0.35;
-        let pad_w = H_PAD_CELLS * cell_w;
-        let pad_h = V_PAD_CELLS * cell_h;
-
-        const COL_CAP: usize = 80;
         let normalised: Vec<String> = overlay
             .items
             .iter()
-            .take(visible_count)
-            .map(|s| s.replace(['\r', '\n'], " ↵ "))
+            .take(requested_visible)
+            .map(|s| history_text(s))
             .collect();
         let row_widths_cells: Vec<usize> = normalised
             .iter()
-            .map(|s| {
-                let mut w = 0usize;
-                for c in s.chars() {
-                    w += if (c as u32) < 0x80 { 1 } else { 2 };
-                    if w >= COL_CAP {
-                        break;
-                    }
-                }
-                w.min(COL_CAP)
-            })
+            .map(|s| history_text_width(s))
             .collect();
-        let panel_cells_w = row_widths_cells.iter().copied().max().unwrap_or(0).max(8);
-        // §history-scroll — reserve room on the right for a scrollbar when the
-        // full filtered list is longer than the visible window.
-        let needs_scrollbar = overlay.total_items > visible_count;
-        let sb_w = if needs_scrollbar { (cell_w * 0.30).clamp(4.0, 10.0) } else { 0.0 };
-        let sb_gap = if needs_scrollbar { (cell_w * 0.18).max(2.0) } else { 0.0 };
-        let panel_w = panel_cells_w as f32 * cell_w + 2.0 * pad_w + sb_w + sb_gap;
-        let panel_h = visible_count as f32 * cell_h + 2.0 * pad_h;
-
-        let panel_x = (overlay.anchor_col as f32 * cell_w).max(0.0);
-        let panel_y_top = if overlay.place_above {
-            ((overlay.anchor_row as f32) * cell_h - panel_h).max(0.0)
-        } else {
-            (overlay.anchor_row as f32 + 1.0) * cell_h
+        let widest_cells = row_widths_cells.iter().copied().max().unwrap_or(0);
+        let Some(geometry) = history_overlay_geometry(
+            overlay,
+            widest_cells,
+            requested_visible,
+            cell_w,
+            cell_h,
+        ) else {
+            return;
         };
+        let visible_count = geometry.visible_count;
+        let panel_cells_w = geometry.content_cols;
+        let needs_scrollbar =
+            overlay.total_items > visible_count && geometry.scrollbar_w > 0.0;
+        let sb_w = geometry.scrollbar_w;
+        let panel_w = geometry.panel_w;
+        let panel_h = geometry.panel_h;
+        let panel_x = geometry.panel_x;
+        let panel_y_top = geometry.panel_y;
+        let pad_w = geometry.pad_w;
+        let pad_h = geometry.pad_h;
 
         let inner_x = panel_x + pad_w;
         let inner_y = panel_y_top + pad_h;
@@ -1233,7 +1227,7 @@ impl RenderBackend for WebGpuPaneBackend {
                 (ctx.font_size_px * 100.0).round() as u16,
             )
         };
-        for (row_i, text) in normalised.iter().enumerate() {
+        for (row_i, text) in normalised.iter().take(visible_count).enumerate() {
             let row_y = inner_y + row_i as f32 * cell_h;
             let selected =
                 overlay.selected_index >= 0 && row_i == overlay.selected_index as usize;
@@ -1293,7 +1287,7 @@ impl RenderBackend for WebGpuPaneBackend {
         }
 
         // 4) 1-device-px border.
-        let bw = 1.0_f32.max(self.metrics.dpr.round());
+        let bw = 1.0_f32;
         for (x, y, w, h) in [
             (panel_x, panel_y_top, panel_w, bw),
             (panel_x, panel_y_top + panel_h - bw, panel_w, bw),
