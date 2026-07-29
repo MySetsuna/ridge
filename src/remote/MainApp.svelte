@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import { Folder, GitBranch, Search, Bot, Keyboard } from 'lucide-svelte';
   // Type-only import of the lazily-loaded TerminalCanvas, used solely to type
@@ -18,7 +18,9 @@
   import BottomTabBar from './BottomTabBar.svelte';
   import {
     getRemotePanelAvailability,
+    paneRefKey,
     type RemoteLink,
+    type PaneRef,
     type RemotePanel,
     type PaneInfo,
     type ConnectionState,
@@ -27,6 +29,7 @@
   } from '@ridge/remote';
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
+  import { ScrollbackDecoder } from './lib/scrollbackWorker';
   import type { DataProvider } from '$lib/transport';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
@@ -48,6 +51,12 @@
     embedded?: boolean;
     sharedGrid?: boolean;
   } = $props();
+
+  function activePaneRef(): PaneRef | null {
+    return ui.activeWorkspaceId && ui.activePaneId
+      ? { workspaceId: ui.activeWorkspaceId, paneId: ui.activePaneId }
+      : null;
+  }
   const LS_SBUF_KEY = 'rg-remote-sentence-buffer';
   const ui = new MobileRemoteUiState(((): boolean => {
     try { return localStorage.getItem(LS_SBUF_KEY) === '1'; } catch { return false; }
@@ -55,6 +64,8 @@
   let wsState = $state<ConnectionState>('disconnected');
   const queryClient = useQueryClient();
   const sessionId = () => remoteSessionId(ws);
+  const scrollbackDecoder = new ScrollbackDecoder();
+  onDestroy(() => scrollbackDecoder.dispose());
   const workspacesQuery = createQuery(() => ({
     queryKey: remoteQueryKeys.workspaces(sessionId()),
     queryFn: () => requestWorkspaceSnapshot(ws),
@@ -217,17 +228,20 @@
   // top; fetch the next older batch (cloud link only) and prepend it. Guard against
   // a pane switch mid-fetch so we never prepend one pane's history onto another.
   async function loadOlderScrollback() {
-    const pid = ui.activePaneId;
-    if (!pid || !canvasRef || !ws.fetchOlderScrollback
-        || scrollbackLoadingPaneIds.includes(pid)) return;
-    scrollbackLoadingPaneIds = [...scrollbackLoadingPaneIds, pid];
+    const pane = activePaneRef();
+    if (!pane || !canvasRef || !ws.fetchOlderScrollback) return;
+    const key = paneRefKey(pane);
+    if (scrollbackLoadingPaneIds.includes(key)) return;
+    scrollbackLoadingPaneIds = [...scrollbackLoadingPaneIds, key];
     let page: Awaited<ReturnType<NonNullable<RemoteLink['fetchOlderScrollback']>>> = null;
     try {
-      page = await ws.fetchOlderScrollback(pid);
-      if (page && canvasRef.prependScrollbackForPane(pid, page.bytes)) page.commit();
+      page = await ws.fetchOlderScrollback(pane);
+      if (!page) return;
+      const bytes = await scrollbackDecoder.decode(pane, page.startSeq, page.endSeq, page.bytes);
+      if (bytes && canvasRef?.prependScrollbackForPane(key, bytes)) page.commit();
     } finally {
       page?.discard();
-      scrollbackLoadingPaneIds = scrollbackLoadingPaneIds.filter((id) => id !== pid);
+      scrollbackLoadingPaneIds = scrollbackLoadingPaneIds.filter((id) => id !== key);
     }
   }
 
@@ -245,7 +259,7 @@
   // paneCache cross-ws prune: release only panes that vanished from THEIR OWN
   // workspace's list (mobile can only close panes in the active workspace), so a
   // cross-workspace switch-back keeps the other workspaces' kernels alive.
-  const attachedPaneWs = new Map<string, string>();
+  const attachedPanes = new Map<string, PaneRef>();
 
   // §keep-alive resume: panes whose mirror kernel has ALREADY received its full
   // RIS resync (scrollback + mode reattach) this session and is in-sync. On a
@@ -319,12 +333,15 @@
   function pruneDeadPanes(activeWsId: string, liveIds: string[]) {
     const live = new Set(liveIds);
     const dead: string[] = [];
-    for (const [id, ws2] of attachedPaneWs) {
-      if (ws2 === activeWsId && !live.has(id)) { dead.push(id); attachedPaneWs.delete(id); }
+    for (const [key, pane] of attachedPanes) {
+      if (pane.workspaceId === activeWsId && !live.has(pane.paneId)) {
+        dead.push(key);
+        attachedPanes.delete(key);
+      }
     }
     if (dead.length > 0) {
       void detachPaneKernels(dead);
-      ws.pruneOutputs(new Set([...attachedPaneWs.keys()]));
+      ws.pruneOutputs(new Set(attachedPanes.keys()));
     }
   }
 
@@ -334,12 +351,15 @@
   function pruneCachesForClosedWorkspaces(liveWorkspaceIds: string[]) {
     const liveWs = new Set(liveWorkspaceIds);
     const dead: string[] = [];
-    for (const [id, ws2] of attachedPaneWs) {
-      if (!liveWs.has(ws2)) { dead.push(id); attachedPaneWs.delete(id); }
+    for (const [key, pane] of attachedPanes) {
+      if (!liveWs.has(pane.workspaceId)) {
+        dead.push(key);
+        attachedPanes.delete(key);
+      }
     }
     if (dead.length > 0) {
       void detachPaneKernels(dead);
-      ws.pruneOutputs(new Set([...attachedPaneWs.keys()]));
+      ws.pruneOutputs(new Set(attachedPanes.keys()));
     }
   }
 
@@ -360,7 +380,8 @@
   }
 
   function onStdin(data: string) {
-    if (ui.activePaneId) ws.sendStdin(ui.activePaneId, data);
+    const pane = activePaneRef();
+    if (pane) ws.sendStdin(pane, data);
   }
 
   // Automatic refit (ResizeObserver / visualViewport): the controller fires this
@@ -371,13 +392,15 @@
   // button (resize real PTY + parser, broadcast `pty-resized`), giving automatic
   // 自适应全屏 reflow without the manual tap.
   function onResize(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
-    ws.claimPane(paneId, rows, cols, pixelWidth, pixelHeight);
+    if (!ui.activeWorkspaceId) return;
+    ws.claimPane({ workspaceId: ui.activeWorkspaceId, paneId }, rows, cols, pixelWidth, pixelHeight);
   }
 
   function handleRefresh() {
     if (ui.activePaneId && canvasRef) {
       const d = canvasRef.getDims();
-      if (d) ws.refreshPane(ui.activePaneId, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
+      const pane = activePaneRef();
+      if (d && pane) ws.refreshPane(pane, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
     }
     ws.listPanes();
     refreshWorkspaces();
@@ -398,7 +421,10 @@
       const cur = ws.lastRefreshSeq();
       if (cur <= _refreshSeq) return; // stale, a newer call already went through
       _refreshSeq = cur;
-      ws.refreshPane(pid, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
+      const pane = activePaneRef();
+      if (pane && pane.paneId === pid) {
+        ws.refreshPane(pane, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
+      }
     }, 100);
   }
 
@@ -593,15 +619,16 @@
         );
       }
     });
-    ws.onRawBytes((paneId, data) => {
+    ws.onRawBytes((pane, data) => {
       // §keep-alive (P4): feed the frame into its pane's alive kernel via the
       // active pane's TerminalCanvas. The host single-subscribes so this is the
       // active pane; a straggler for a just-unsubscribed pane is dropped (it
       // isn't the mounted TerminalCanvas). No cache, no reconcile, no wipe — the
       // host's on-subscribe replay is absorbed by the alive kernel.
-      canvasRef?.feedPane(paneId, data);
+      canvasRef?.feedPane(paneRefKey(pane), data);
     });
-    ws.onMetadata((paneId, title, cwd) => {
+    ws.onMetadata((pane, title, cwd) => {
+      const { paneId, workspaceId } = pane;
       // §realtime-title: reflect the live pane title in the workspace tree (and
       // header) the instant it changes, instead of waiting for the next
       // list-panes round-trip. pty-meta only fires for the active workspace's
@@ -609,7 +636,7 @@
       // the tree's periodic poll.
       if (title != null && title.length > 0) {
         queryClient.setQueryData(
-          remoteQueryKeys.panes(sessionId(), attachedPaneWs.get(paneId) ?? ui.activeWorkspaceId),
+          remoteQueryKeys.panes(sessionId(), workspaceId),
           (current: PaneInfo[] | undefined) =>
             mergeRemoteItems(current, [{ id: paneId, title } as PaneInfo]),
         );
@@ -618,20 +645,20 @@
       // popup shows live per-pane cwd（此前只有 active pane 的侧栏根会更新）.
       if (cwd != null && cwd.length > 0) {
         queryClient.setQueryData(
-          remoteQueryKeys.panes(sessionId(), attachedPaneWs.get(paneId) ?? ui.activeWorkspaceId),
+          remoteQueryKeys.panes(sessionId(), workspaceId),
           (current: PaneInfo[] | undefined) =>
             mergeRemoteItems(current, [{ id: paneId, cwd } as PaneInfo]),
         );
       }
-      if (paneId === ui.activePaneId) {
+      if (paneId === ui.activePaneId && workspaceId === ui.activeWorkspaceId) {
         // Title drives the document/tab title directly.
         if (title != null && title.length > 0) document.title = title;
         // cwd roots the sidebar (file tree / git / search) at the pane's dir.
         if (cwd != null && cwd.length > 0) activeCwd = cwd;
       }
     });
-    ws.onPtyResize((paneId, rows, cols) => {
-      if (paneId === ui.activePaneId) {
+    ws.onPtyResize((pane, rows, cols) => {
+      if (pane.paneId === ui.activePaneId && pane.workspaceId === ui.activeWorkspaceId) {
         canvasRef?.resizeKernel(rows, cols);
       }
     });
@@ -667,18 +694,22 @@
       // so force a full RIS resync on the next visit to each pane (clear the replayed
       // set). The active pane is full-resynced now (subscribePane below, resume=false).
       replayedPanes.clear();
-      for (const [paneId, workspaceId] of attachedPaneWs) {
-        if (paneId !== pid) ws.subscribePane(paneId, { workspaceId, active: false });
+      for (const pane of attachedPanes.values()) {
+        if (pane.paneId !== pid || pane.workspaceId !== ui.activeWorkspaceId) {
+          ws.subscribePane(pane, { active: false });
+        }
       }
       if (pid) {
-        const workspaceId = attachedPaneWs.get(pid) ?? ui.activeWorkspaceId;
-        ws.subscribePane(pid, { workspaceId, active: true });
-        replayedPanes.add(pid);
+        const pane = activePaneRef();
+        if (!pane) return;
+        const key = paneRefKey(pane);
+        ws.subscribePane(pane, { active: true });
+        replayedPanes.add(key);
         // The new server socket has no knowledge of our viewport size.
         // Claim it immediately so the PTY is reflowed and the terminal
         // doesn't stay stuck at the 80x24 default.
         const d = canvasRef?.getDims();
-        if (d) ws.claimPane(pid, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
+        if (d) ws.claimPane(pane, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
       }
       ws.listPanes();
       refreshWorkspaces();
@@ -710,7 +741,8 @@
     const workspaceId = ui.activeWorkspaceId;
     if (!pid) { subscribedPaneId = null; return; } // null gap → force re-subscribe next
     untrack(() => {
-      const subscriptionKey = `${workspaceId}:${pid}`;
+      const pane = { workspaceId, paneId: pid };
+      const subscriptionKey = paneRefKey(pane);
       if (subscriptionKey === subscribedPaneId) return;
       subscribedPaneId = subscriptionKey;
       // Remember this pane as the last active for the current workspace, and
@@ -721,7 +753,7 @@
         persistActiveWs(workspaceId);
         // Track for keep-alive GC: this pane's kernel is (being) attached under
         // the active workspace; released only when the host closes it.
-        attachedPaneWs.set(pid, workspaceId);
+        attachedPanes.set(subscriptionKey, pane);
       }
       // §keep-alive (P4): NO resetForSwitch / no cache pre-paint. The pane's
       // kernel stays alive across switches (its TerminalCanvas parks it, not
@@ -731,9 +763,9 @@
       // by the alive kernel.
       // First visit seeds the kernel; later focus changes only promote the existing
       // subscription to the active QoS lane. Background subscriptions remain live.
-      const resume = replayedPanes.has(pid);
-      ws.subscribePane(pid, { resume, workspaceId, active: true });
-      replayedPanes.add(pid);
+      const resume = replayedPanes.has(subscriptionKey);
+      ws.subscribePane(pane, { resume, active: true });
+      replayedPanes.add(subscriptionKey);
     });
   });
 
@@ -885,7 +917,7 @@
              input surface (onMount attach/unpark, onDestroy park) — mirroring the
              desktop RidgePane mount/unmount → attach/park lifecycle. The pane's
              kernel survives the remount (parked), so no wipe / no white-screen. -->
-        {#key ui.activePaneId}
+        {#key `${ui.activeWorkspaceId}:${ui.activePaneId}`}
           <module.default
             bind:this={canvasRef}
             bind:backendName
@@ -896,7 +928,7 @@
             onHostClipboard={(text) => ws.setHostClipboard(text)}
             onNearTop={loadOlderScrollback}
             onKeyboardShift={(shift: number) => ui.keyboardShift = shift}
-            scrollbackLoading={scrollbackLoadingPaneIds.includes(ui.activePaneId)}
+            scrollbackLoading={scrollbackLoadingPaneIds.includes(`${ui.activeWorkspaceId}:${ui.activePaneId}`)}
             bind:selectionMode={ui.selectionMode}
             sentenceBuffer={ui.sentenceBuffer}
           />
@@ -914,6 +946,7 @@
         tab={ui.sidebarTab}
         available={panelAvailability}
         cwd={activeCwd}
+        workspaceId={ui.activeWorkspaceId}
         {ws}
         {dataProvider}
         onClose={() => ui.sidebarTab = null}

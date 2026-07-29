@@ -20,7 +20,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import { CloudRemoteConnection } from './cloudRemote';
 import type { PaneNode } from '$lib/types';
-import type { WsMessage } from '@ridge/remote';
+import type { PaneRef, WsMessage } from '@ridge/remote';
 
 // Captured listen() handlers keyed by event name, so tests can fire host events.
 let handlers: Record<string, (e: { payload: unknown }) => void>;
@@ -37,6 +37,7 @@ const LAYOUT: PaneNode = {
     { type: 'leaf', id: 'pane-b' },
   ],
 };
+const PANE = { workspaceId: 'ws1', paneId: 'pane-a' } as const;
 
 function fakeHandle() {
   disconnectSpy = vi.fn();
@@ -112,9 +113,9 @@ describe('CloudRemoteConnection panes', () => {
   it('listPanes flattens the tree into a panes message + metadata', async () => {
     const conn = await connected();
     const msgs: WsMessage[] = [];
-    const metas: Array<[string, string | null, string | null]> = [];
+    const metas: Array<[PaneRef, string | null, string | null]> = [];
     conn.onMessage((m) => msgs.push(m));
-    conn.onMetadata((id, title, cwd) => metas.push([id, title, cwd]));
+    conn.onMetadata((pane, title, cwd) => metas.push([pane, title, cwd]));
 
     conn.listPanes();
     await flush();
@@ -125,16 +126,16 @@ describe('CloudRemoteConnection panes', () => {
       { id: 'pane-a', title: 'A', cwd: '/a', isAgent: false },
       { id: 'pane-b', title: undefined, cwd: undefined, isAgent: false },
     ] });
-    expect(metas).toContainEqual(['pane-a', 'A', '/a']);
-    expect(metas).toContainEqual(['pane-b', null, null]);
+    expect(metas).toContainEqual([{ workspaceId: 'ws1', paneId: 'pane-a' }, 'A', '/a']);
+    expect(metas).toContainEqual([{ workspaceId: 'ws1', paneId: 'pane-b' }, null, null]);
   });
 
   it('subscribePane seeds a scrollback tail (RIS + history) then streams live pty bytes', async () => {
     const conn = await connected();
-    const got: Array<[string, Uint8Array]> = [];
-    conn.onRawBytes((id, bytes) => got.push([id, bytes]));
+    const got: Array<[PaneRef, Uint8Array]> = [];
+    conn.onRawBytes((pane, bytes) => got.push([pane, bytes]));
 
-    conn.subscribePane('pane-a');
+    conn.subscribePane(PANE);
     await flush();
 
     // §R-CLOUD-CONVERGE: controller pulls ONE host-built resync frame (no client
@@ -145,7 +146,7 @@ describe('CloudRemoteConnection panes', () => {
     );
     // …and feeds `frame` verbatim as the first frame (RIS + preamble + history).
     expect(got).toHaveLength(1);
-    expect(got[0][0]).toBe('pane-a');
+    expect(got[0][0]).toEqual(PANE);
     expect(new TextDecoder().decode(got[0][1])).toBe('\x1bcHIST');
 
     // Then the live stream is wired via register_pane_delta_channel (→ subscribe-pane).
@@ -163,8 +164,8 @@ describe('CloudRemoteConnection panes', () => {
 
   it('§R-CLOUD-CONVERGE version-skew: falls back to RIS + tail when the host lacks get_pane_resync_frame', async () => {
     const conn = await connected();
-    const got: Array<[string, Uint8Array]> = [];
-    conn.onRawBytes((id, bytes) => got.push([id, bytes]));
+    const got: Array<[PaneRef, Uint8Array]> = [];
+    conn.onRawBytes((pane, bytes) => got.push([pane, bytes]));
 
     // Simulate an OLDER desktop host whose allow-list rejects the new command.
     invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
@@ -175,7 +176,7 @@ describe('CloudRemoteConnection panes', () => {
       return undefined;
     });
 
-    conn.subscribePane('pane-a');
+    conn.subscribePane(PANE);
     await flush();
 
     // The new command was attempted first, then the legacy tail seeded RIS + history
@@ -188,11 +189,11 @@ describe('CloudRemoteConnection panes', () => {
 
   it('fetchOlderScrollback pages one older batch, advances the cursor, then stops at oldest', async () => {
     const conn = await connected();
-    conn.subscribePane('pane-a');
+    conn.subscribePane(PANE);
     await flush();
 
     // First scroll-up: pages older history (bytes < tail.start_seq) and returns it.
-    const older = await conn.fetchOlderScrollback('pane-a');
+    const older = await conn.fetchOlderScrollback(PANE);
     expect(invokeMock).toHaveBeenCalledWith(
       'get_pane_scrollback_before',
       expect.objectContaining({ paneId: 'pane-a', beforeSeq: 100 }),
@@ -203,21 +204,21 @@ describe('CloudRemoteConnection panes', () => {
     // The mock's page reported at_oldest → a further scroll-up is a no-op (null),
     // and doesn't fire another before-fetch.
     const before = invokeMock.mock.calls.filter((c) => c[0] === 'get_pane_scrollback_before').length;
-    expect(await conn.fetchOlderScrollback('pane-a')).toBeNull();
+    expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
     const after = invokeMock.mock.calls.filter((c) => c[0] === 'get_pane_scrollback_before').length;
     expect(after).toBe(before); // stopped — no redundant fetch at oldest
   });
 
   it('fetchOlderScrollback returns null when the pane was never subscribed (no cursor)', async () => {
     const conn = await connected();
-    expect(await conn.fetchOlderScrollback('pane-z')).toBeNull();
+    expect(await conn.fetchOlderScrollback({ workspaceId: 'ws1', paneId: 'pane-z' })).toBeNull();
   });
 
   it('subscribePane is idempotent per pane', async () => {
     const conn = await connected();
-    conn.subscribePane('pane-a');
+    conn.subscribePane(PANE);
     await flush();
-    conn.subscribePane('pane-a');
+    conn.subscribePane(PANE);
     await flush();
     const regCalls = invokeMock.mock.calls.filter((c) => c[0] === 'register_pane_delta_channel');
     expect(regCalls).toHaveLength(1);
@@ -225,15 +226,15 @@ describe('CloudRemoteConnection panes', () => {
 
   it('sendStdin writes to the pty', async () => {
     const conn = await connected();
-    conn.sendStdin('pane-a', 'ls\n');
+    conn.sendStdin(PANE, 'ls\n');
     await flush();
-    expect(invokeMock).toHaveBeenCalledWith('write_to_pty', { paneId: 'pane-a', data: 'ls\n' });
+    expect(invokeMock).toHaveBeenCalledWith('write_to_pty', { workspaceId: 'ws1', paneId: 'pane-a', data: 'ls\n' });
   });
 
   it('claimPane resizes the host pty and bumps the refresh seq', async () => {
     const conn = await connected();
     const before = conn.lastRefreshSeq();
-    conn.claimPane('pane-a', 30, 100, 0, 0);
+    conn.claimPane(PANE, 30, 100, 0, 0);
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('resize_pane', {
       workspaceId: 'ws1', paneId: 'pane-a', rows: 30, cols: 100,
@@ -250,19 +251,19 @@ describe('CloudRemoteConnection panes', () => {
 
   it('closePane closes and stops streaming the pane', async () => {
     const conn = await connected();
-    conn.subscribePane('pane-a');
+    conn.subscribePane(PANE);
     await flush();
     expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
 
-    const ok = await conn.closePane('pane-a');
+    const ok = await conn.closePane(PANE);
     expect(ok).toBe(true);
-    expect(invokeMock).toHaveBeenCalledWith('close_pane', { paneId: 'pane-a' });
+    expect(invokeMock).toHaveBeenCalledWith('close_pane', { workspaceId: 'ws1', paneId: 'pane-a' });
     expect(handlers['pty-output-ws1-pane-a']).toBeUndefined();
   });
 
   it('pruneOutputs releases listeners for panes the host dropped', async () => {
     const conn = await connected();
-    conn.subscribePane('pane-a');
+    conn.subscribePane(PANE);
     await flush();
     conn.pruneOutputs(new Set(['pane-b'])); // pane-a no longer live
     expect(handlers['pty-output-ws1-pane-a']).toBeUndefined();
@@ -284,7 +285,7 @@ describe('CloudRemoteConnection workspaces', () => {
     expect(await conn.switchWorkspace('ws2')).toBe(true);
     expect(invokeMock).toHaveBeenCalledWith('switch_workspace', { workspaceId: 'ws2' });
     // Subsequent pane subscription targets the new workspace's event name.
-    conn.subscribePane('pane-a');
+    conn.subscribePane({ workspaceId: 'ws2', paneId: 'pane-a' });
     await flush();
     expect(handlers['pty-output-ws2-pane-a']).toBeTypeOf('function');
   });
@@ -343,7 +344,7 @@ describe('CloudRemoteConnection reconnect', () => {
 describe('CloudRemoteConnection lifecycle', () => {
   it('disconnect tears down listeners and the WebRTC handle', async () => {
     const conn = await connected();
-    conn.subscribePane('pane-a');
+    conn.subscribePane(PANE);
     await flush();
     conn.disconnect();
     expect(conn.state()).toBe('disconnected');

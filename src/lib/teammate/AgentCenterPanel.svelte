@@ -10,11 +10,11 @@
   // 完整开关在设置面板「智能体」分区。
 
   import { onMount } from 'svelte';
-  import { listen } from '@tauri-apps/api/event';
-  import { invoke } from '@tauri-apps/api/core';
+  import { emit, listen } from '@tauri-apps/api/event';
+  import { invoke, isTauri } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-  import { Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Users, MonitorUp } from 'lucide-svelte';
+  import { Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Users, MonitorUp, History } from 'lucide-svelte';
   import AgentMemberRow from './AgentMemberRow.svelte';
   import { settingsStore } from '$lib/stores/settings';
   import { fileEditorStore } from '$lib/stores/fileEditor';
@@ -23,6 +23,8 @@
     refreshWorkspaceSaveInfo,
     workspacesList,
     paneCwdStore,
+    activePaneId,
+    splitPane,
   } from '$lib/stores/paneTree';
   import {
     hostsStore,
@@ -111,9 +113,55 @@
     timestamp: number;
     project: string;
     sessionId?: string;
+    resume?: { executable: string; argv: string[]; cwd: string; sessionId: string };
   }
   let recentReplies = $state<AgentRecentReply[]>([]);
   let wakingSession = $state('');
+  let historyExpanded = $state<Record<string, boolean>>({});
+  const recentReplyGroups = $derived.by(() => {
+    const groups = new Map<string, AgentRecentReply[]>();
+    for (const reply of recentReplies) {
+      const key = reply.agent.trim().toLowerCase() || 'unknown';
+      const bucket = groups.get(key) ?? [];
+      bucket.push(reply);
+      groups.set(key, bucket);
+    }
+    return [...groups.entries()].map(([key, replies]) => ({ key, replies }));
+  });
+
+  function toggleHistoryGroup(key: string): void {
+    historyExpanded = { ...historyExpanded, [key]: !(historyExpanded[key] ?? true) };
+  }
+
+  function resumeCommand(reply: AgentRecentReply): string | null {
+    if (reply.resume?.executable && reply.resume.argv.length > 0) {
+      const args = reply.resume.argv.map((arg) => `"${arg.replace(/["`$\\]/g, '')}"`).join(' ');
+      return `${reply.resume.executable} ${args}`;
+    }
+    if (!reply.sessionId) return null;
+    const id = reply.sessionId.replace(/["`$\\]/g, '');
+    if (reply.agent.toLowerCase() === 'claude') return `claude --resume "${id}"`;
+    if (reply.agent.toLowerCase() === 'codex') return `codex resume "${id}"`;
+    return null;
+  }
+
+  function runningSessionFor(reply: AgentRecentReply): HostSession | null {
+    const id = reply.resume?.sessionId ?? reply.sessionId;
+    if (!id) return null;
+    return headlessSessions.find((session) => session.name === id) ?? null;
+  }
+
+  async function resumeAgentSession(reply: AgentRecentReply): Promise<void> {
+    const command = resumeCommand(reply);
+    if (!command || !workspaceId || !$activePaneId) return;
+    try {
+      const paneId = await splitPane($activePaneId, 'horizontal');
+      await invoke('create_pane', { paneId, shell: null });
+      await invoke('write_to_pty', { workspaceId, paneId, data: `${command}\r` });
+    } catch (e) {
+      showToast(`恢复会话失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+    }
+  }
 
   const hitlOn = $derived($settingsStore.teammateHitlEnabled);
   const orchModel = $derived(
@@ -133,7 +181,7 @@
   const orchHeader = $derived(formatOrchHeader(orchModel));
 
   // 顶部「成员聚合 / 编组」两视图 Tab（核心监控：目标 / 异常 / 审批 始终在 Tab 之上，不随切换）。
-  let teamTab = $state<'members' | 'groups'>('members');
+  let teamTab = $state<'members' | 'groups' | 'history'>('members');
   // 编组 store（单例，与 TeammateGroups 共用）：成员聚合列表据此标注每人组归属。
   const groupStore = teammateGroupStore();
 
@@ -202,6 +250,12 @@
       })
     );
     topologies = Object.fromEntries(snapshots);
+    // Auto-discovery mutates the backend pane state while producing the topology
+    // snapshot. Promote that one-shot fact onto the existing layout SSOT event so
+    // RidgePane headers and the Agent tab refresh from the same backend state.
+    if (snapshots.some(([, snapshot]) => snapshot.rosterChanged)) {
+      await emit('teammate-layout-changed', { kind: 'state' });
+    }
     try {
       // OP-AGENT-CP: full control-plane snapshot (degraded/level/foreign/outbound).
       // Prefer this single call over separate get_pending_hitl_count when healthy.
@@ -344,6 +398,9 @@
     }
   }
   onMount(() => {
+    // Browser previews have neither Tauri IPC nor its event bridge. The
+    // web-remote shim reports true and forwards these listeners to its host.
+    if (!isTauri()) return;
     void refresh({ heavy: true });
     // 拉取工作区保存信息，让编组的稳定持久化键（.ridge 路径）可解析。
     void refreshWorkspaceSaveInfo();
@@ -414,6 +471,7 @@
   </header>
 
   <div class="flex-1 overflow-y-auto rg-scroll flex flex-col gap-4 px-3 py-3">
+    {#snippet bottomControls()}
     <section class="flex flex-wrap items-center gap-1 rounded-md border border-[var(--rg-border)] p-2">
       <!-- MCP 接入引导：内置编辑器只读打开打包文档 -->
       <button
@@ -548,7 +606,9 @@
         </ul>
       </section>
     {/if}
+    {/snippet}
 
+    {#snippet historyContent()}
     {#if headlessSessions.length > 0}
       <section>
         <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
@@ -579,30 +639,61 @@
       </section>
     {/if}
 
-    {#if recentReplies.length > 0}
+    {#if recentReplyGroups.length > 0}
       <section>
         <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
           <Bot class="h-3 w-3 text-[var(--rg-accent)]/70" /> 最近回复
           <span class="ml-auto font-mono">{recentReplies.length}</span>
         </h3>
-        <ul class="mt-1 space-y-1">
-          {#each recentReplies.slice(0, 12) as reply (reply.agent + reply.timestamp + reply.text)}
-            <li class="rounded bg-[var(--rg-surface)]/50 px-2 py-1.5">
-              <div class="flex items-center gap-1.5 text-[9px] text-[var(--rg-fg-muted)]">
-                <span class="font-medium text-[var(--rg-accent)]">{reply.agent}</span>
-                <span class="min-w-0 flex-1 truncate" title={reply.project}>{reply.project}</span>
-                <span class="shrink-0">{replyTime(reply.timestamp)}</span>
-              </div>
-              <p class="mt-0.5 line-clamp-3 whitespace-pre-wrap text-[11px] leading-snug" title={reply.text}>
-                {reply.text}
-              </p>
-            </li>
+        <div class="mt-1 space-y-1">
+          {#each recentReplyGroups as group (group.key)}
+            <section class="rounded border border-[var(--rg-border)]/60">
+              <button type="button" class="flex w-full items-center gap-2 px-2 py-1 text-left text-[10px]" onclick={() => toggleHistoryGroup(group.key)}>
+                <span class="font-medium text-[var(--rg-accent)]">{group.key}</span>
+                <span class="font-mono text-[var(--rg-fg-muted)]">{group.replies.length}</span>
+                <span class="ml-auto text-[var(--rg-fg-muted)]">{historyExpanded[group.key] ?? true ? '−' : '+'}</span>
+              </button>
+              {#if historyExpanded[group.key] ?? true}
+                <ul class="space-y-1 px-1 pb-1">
+                  {#each group.replies.slice(0, 12) as reply (reply.agent + reply.timestamp + reply.text)}
+                    <li class="rounded bg-[var(--rg-surface)]/50 px-2 py-1.5">
+                      <div class="flex items-center gap-1.5 text-[9px] text-[var(--rg-fg-muted)]">
+                        <span class="min-w-0 flex-1 truncate" title={reply.project}>{reply.project}</span>
+                        <span class="shrink-0">{replyTime(reply.timestamp)}</span>
+                        {#if runningSessionFor(reply)}
+                          {@const running = runningSessionFor(reply)}
+                          <button
+                            type="button"
+                            class="shrink-0 rounded border border-emerald-400/40 px-1 text-[9px] text-emerald-300"
+                            onclick={() => running && void wakeSession(running)}
+                            title="复用正在运行的 native session"
+                          >接入</button>
+                        {:else if resumeCommand(reply)}
+                          <button
+                            type="button"
+                            class="shrink-0 rounded border border-[var(--rg-border)] px-1 text-[9px] text-[var(--rg-accent)] disabled:opacity-40"
+                            disabled={!workspaceId || !$activePaneId}
+                            title={!workspaceId || !$activePaneId ? '需先选中工作区与 pane' : `在新 pane 恢复 ${reply.agent} 会话`}
+                            onclick={() => void resumeAgentSession(reply)}
+                          >恢复</button>
+                        {/if}
+                      </div>
+                      <p class="mt-0.5 line-clamp-3 whitespace-pre-wrap text-[11px] leading-snug" title={reply.text}>{reply.text}</p>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </section>
           {/each}
-        </ul>
+        </div>
       </section>
     {/if}
+    {#if headlessSessions.length === 0 && recentReplies.length === 0}
+      <p class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">暂无历史会话。</p>
+    {/if}
+    {/snippet}
 
-    <!-- 成员聚合 / 编组：两视图 Tab 切换（监控总览 vs 编组协作） -->
+    <!-- 成员 / 编组 / 历史：顶级三视图。 -->
     <section class="flex flex-col gap-2">
       <div class="flex items-center gap-1 rounded-md border border-[var(--rg-border)] p-0.5">
         <button
@@ -626,6 +717,17 @@
         >
           <Users class="h-3.5 w-3.5" /> 编组
           <span class="font-mono text-[10px] opacity-70">{groupStore.groups.length}</span>
+        </button>
+        <button
+          type="button"
+          onclick={() => (teamTab = 'history')}
+          class="flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors {teamTab ===
+          'history'
+            ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)]'
+            : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
+        >
+          <History class="h-3.5 w-3.5" /> 历史
+          <span class="font-mono text-[10px] opacity-70">{headlessSessions.length + recentReplies.length}</span>
         </button>
       </div>
 
@@ -654,7 +756,7 @@
             </li>
           {/if}
         </ul>
-      {:else}
+      {:else if teamTab === 'groups'}
         <!-- 编组视图：与成员视图同款成员行 + 组长设定 / 建组 / 配色 / 给组派任务。 -->
         <TeammateGroups
           roster={topology.roster}
@@ -663,7 +765,12 @@
           {hitlPending}
           onRefresh={() => void refresh()}
         />
+      {:else}
+        {@render historyContent()}
       {/if}
     </section>
+
+    <!-- 控制、文档、HITL 与健康信息属于滚动内容，并固定在三 Tab 主体之后。 -->
+    {@render bottomControls()}
   </div>
 </div>

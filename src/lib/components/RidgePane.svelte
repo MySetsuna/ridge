@@ -28,6 +28,7 @@ import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
+import { enqueuePtyWrite } from '$lib/terminal/ptyWriteQueue';
 import { activateRemotePaneBinding, remotePaneBinding } from '$lib/hosts/remotePaneBindings';
 import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '@ridge/remote/shared/terminal/tuiGate';
 import {
@@ -1001,10 +1002,16 @@ function onPtyData(bytes: Uint8Array) {
 	const s = new TextDecoder().decode(bytes);
 	const remote = remotePaneBinding(paneId);
 	if (remote) {
-		remote.link.sendStdin(remote.remotePaneId, s);
+		remote.link.sendStdin({
+			workspaceId: remote.workspaceId,
+			paneId: remote.remotePaneId,
+		}, s);
 		return;
 	}
-	void invoke('write_to_pty', { paneId, data: s }).catch((err) => {
+	// Tauri invokes are asynchronous. Keep their completion FIFO per pane: one
+	// clipboard paste remains one atomic payload, and no later key/input can
+	// overtake any byte of it while ConPTY is back-pressured.
+	void enqueuePtyWrite(`${workspaceId}:${paneId}`, () => invoke('write_to_pty', { workspaceId, paneId, data: s })).catch((err) => {
 		console.error('write_to_pty', err);
 	});
 }
@@ -1026,7 +1033,10 @@ function onPtyResize(
 	}
 	const remote = remotePaneBinding(paneId);
 	if (remote) {
-		remote.link.refreshPane(remote.remotePaneId, rows, cols, 0, 0);
+		remote.link.refreshPane({
+			workspaceId: remote.workspaceId,
+			paneId: remote.remotePaneId,
+		}, rows, cols, 0, 0);
 		return Promise.resolve();
 	}
 	// §1.24 / §A.3: `isAlt` and `isInlineTui` both let the backend skip
@@ -1702,7 +1712,9 @@ function onContextMenu(e: MouseEvent) {
 			//   2. `manager.clearScrollback(paneId)` — physical drop of
 			//      the in-memory ring buffer + viewport snap to live.
 			if (isTauri()) {
-				void invoke('write_to_pty', { paneId, data: '\x1b[H\x1b[2J' }).catch(() => {});
+				void enqueuePtyWrite(`${workspaceId}:${paneId}`, () =>
+					invoke('write_to_pty', { workspaceId, paneId, data: '\x1b[H\x1b[2J' }),
+				).catch(() => {});
 			}
 			manager.clearScrollback(paneId);
 		}},

@@ -325,7 +325,7 @@
     if (!ok) return;
     busy = true;
     try {
-      await closeHostPane(host.id, s.remoteSessionId);
+      await closeHostPane(host.id, s.workspaceId ?? '', s.remoteSessionId);
     } catch (e) {
       await alertDialog({ title: '删除失败', message: e instanceof Error ? e.message : String(e) });
     } finally {

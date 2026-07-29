@@ -11,7 +11,9 @@ use uuid::Uuid;
 
 use ridge_mcp::addressing::{parse_pane_target, PaneTarget};
 use ridge_mcp::resource::{git_branch, git_root, RidgeUri};
-use ridge_mcp::server::{HostError, HostResult, McpHost};
+use ridge_mcp::server::{
+    ExternalExecutionRejection, HostError, HostResult, InputDispatch, McpHost,
+};
 use ridge_mcp::transport::{mcp_router, McpTransportCtx};
 
 use super::layout_event::{LayoutChange, TEAMMATE_GROUP_ADD_MEMBER, TEAMMATE_LAYOUT_CHANGED};
@@ -67,13 +69,23 @@ impl McpHost for DesktopMcpHost {
         team_profile_snapshot(&self.ctx, self.wid())
     }
 
-    fn send_text(&self, target: &Value, text: &str, mark_busy: bool) -> HostResult<()> {
+    fn send_text(
+        &self,
+        target: &Value,
+        text: &str,
+        submit: bool,
+        mark_busy: bool,
+    ) -> HostResult<InputDispatch> {
         let wid = self.wid();
         let pid = self.resolve(target)?;
         // Enter 必须是 **CR**（0x0D）：LF 在 Claude Code/Cursor 这类 raw-mode TUI 里只是
         // 「插入换行」，消息会停在输入框永不提交（实测：整段落进对端 composer 没发出去）。
         // 与 `send-keys` 路由的既有口径一致（那里也把 \r 视作已提交）。
-        let payload = ridge_mcp::server::enter_terminated(text);
+        let payload = if submit {
+            ridge_mcp::server::enter_terminated(text)
+        } else {
+            text.to_string()
+        };
         // G1：MCP 文本注入同属 agent 写路径，走 suspend 收口。
         super::suspend::agent_pty_write(&self.ctx.state, wid, pid, payload.as_bytes())
             .map_err(|e| HostError::Internal(e.to_string()))?;
@@ -83,7 +95,27 @@ impl McpHost for DesktopMcpHost {
                 ws.teammate_pane_states.insert(pid, PaneState::Busy);
             }
         }
-        Ok(())
+        Ok(InputDispatch {
+            // `agent_pty_write` reached `write_all + flush`; this proves the
+            // local terminal transport accepted bytes, not agent consumption.
+            terminal_accepted: true,
+        })
+    }
+
+    fn report_execution_rejection(
+        &self,
+        report: ExternalExecutionRejection,
+    ) -> HostResult<String> {
+        Ok(super::hitl::report_external_rejection(
+            &self.ctx.handle,
+            &report.initiator,
+            &report.action,
+            &report.executor,
+            &report.policy_source,
+            &report.request_id,
+            &report.reason,
+            &report.next_step,
+        ))
     }
 
     fn capture_pane(&self, target: &Value, lines: usize) -> HostResult<String> {

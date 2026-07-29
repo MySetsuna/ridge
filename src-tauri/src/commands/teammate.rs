@@ -576,6 +576,27 @@ pub fn list_hitl_pending() -> Result<Value, String> {
     Ok(Value::Array(hitl::list_pending()))
 }
 
+/// Desktop-only recovery snapshot for the local approval modal. Unlike the
+/// remote-safe projection, this includes the original action and therefore
+/// must never be added to the remote capability allowlist.
+#[tauri::command]
+pub fn list_hitl_pending_local() -> Result<Value, String> {
+    Ok(Value::Array(hitl::list_pending_local()))
+}
+
+/// Desktop-only recovery snapshot for external execution-gateway rejections.
+/// It is intentionally outside the Remote allowlist: Ridge did not execute the
+/// rejected action and cannot expose/retry it through a controller connection.
+#[tauri::command]
+pub fn list_execution_rejections_local() -> Result<Value, String> {
+    Ok(Value::Array(hitl::list_external_rejections_local()))
+}
+
+#[tauri::command]
+pub fn dismiss_execution_rejection(id: String) -> Result<bool, String> {
+    Ok(hitl::dismiss_external_rejection(&id))
+}
+
 /// P2 阶段 2 —— 远端裁决（`teammate` 能力下 mutating 方法）：一次性 nonce 票据
 /// 恒时比对 + 单次消费；verdict 仅 approve/reject（modify 永不开放）。返回
 /// `{outcome}` ∈ consumed/already-resolved/nonce-mismatch/bad-verdict。

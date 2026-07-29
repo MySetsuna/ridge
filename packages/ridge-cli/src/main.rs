@@ -28,7 +28,6 @@ mod fs_reuse;
 mod ice;
 mod key_binding;
 mod login_flow;
-mod mcp_stdio;
 mod mux;
 mod protocol;
 mod pty;
@@ -85,9 +84,8 @@ enum Command {
     /// 供 PATH 上的 `tmux` shim 连接——让无头会话直接在本 host 运行。
     Tmux(TmuxArgs),
 
-    /// 把本机 Ridge 的内置 MCP 以 **stdio** 暴露给 MCP 客户端（Claude Code / Cursor…）：
-    /// `claude mcp add ridge -- rdg mcp`。端点与 token 自动发现（env → sidecar），
-    /// 桌面 Ridge 与无头 `rdg tmux` 通吃，端口漂移自愈。
+    /// 兼容别名：把本机 Ridge MCP 以 stdio 暴露给客户端。桌面 Ridge 请优先使用独立
+    /// `ridge-mcp` companion；`rdg mcp` 仅为既有无头脚本保留，端点发现实现相同。
     Mcp(McpArgs),
 }
 
@@ -228,7 +226,7 @@ async fn main() -> Result<()> {
             }
         }
         Some(Command::Tmux(args)) => run_tmux(args).await,
-        Some(Command::Mcp(args)) => mcp_stdio::run(args.url, args.token).await,
+        Some(Command::Mcp(args)) => ridge_mcp_bridge::run(args.url, args.token).await,
         // 无子命令：进入仪表盘（daemon status + 操作菜单）。
         // 通过菜单的 "Local shell session" 或子命令 `rdg tui` 进入 passthrough TUI。
         None => {

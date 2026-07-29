@@ -5,9 +5,90 @@
 
 ## 待审批变更 (Pending Changes)
 
-无
-
 ## 正式需求 (Active Requirements)
+
+### REQ-AGENT-COMMUNE-CONTINUITY-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-28`
+- 类型：`MODIFY` + `FIX`
+- 版本：`v0.2.4`
+- 批准证据：用户明确“批准所有”。
+- 原始意图：
+  - Agent's Commune 面板当前位于顶部的操控按钮与文档入口区域，移至面板滚动内容最底部。
+  - 已批准的“成员 / 编组 / 历史”三页签继续推进，不得因本轮 Remote 重构丢失或降级。
+  - Agent Tab 已识别某 Agent 为运行中时，对应 pane header 必须同步为同一运行状态。
+- 目标行为与用户可观察结果：
+  - 面板顶级导航恰为“成员 / 编组 / 历史”；成员、编组、历史主体之后才显示 MCP 文档、连接信息、HITL、健康及暂停等操控区。
+  - 自动发现、手工注册、暂停/恢复、退出等所有 roster 变更均驱动 pane tree 的同一 Agent 状态投影；禁止 Agent Tab 显示运行中而 pane header 仍为空闲/未知。
+  - 状态同步须幂等；轮询未变化不得制造布局事件风暴或重复刷新。
+- 范围：
+  - `src/lib/teammate/**`、pane tree/layout 同步入口、必要的 Tauri topology DTO 与组件/单元测试。
+  - `REQ-AGENT-HISTORY-01` 与 `CONTRACT-iteration-64.md` 保持有效并纳入同一大迭代。
+- 非目标：
+  - 改 Remote 协议；把 Agent 历史上传云端；改变第三方 CLI session 文件。
+- 不可动边界：
+  - pane header 与 Agent Tab 必须读取同一后端事实；不得另造第二份持久状态。
+  - 控制区移底不得破坏键盘导航、滚动可达性、HITL 安全门或现有操作语义。
+- 假设与待确认：
+  - “展示在最底部”解释为 Agent's Commune 自身滚动内容底部，而非固定吸底悬浮层。
+- 确定性验收：
+  - 组件结构测试证明控制/文档区 DOM 顺序晚于三 Tab 全部内容，且键盘可达。
+  - topology 自动发现由未运行变运行时，恰触发一次 pane layout 同步；无变化轮询触发零次；退出/暂停/恢复状态一致。
+  - Agent Tab 与 pane header 对同一 pane/agent 的状态值逐项一致。
+- 预期落点：
+  - `src/lib/teammate/AgentCenterPanel.svelte`
+  - `src/lib/teammate/teammateModel.ts`
+  - `src/routes/+page.svelte` / pane tree 既有布局同步入口
+  - 对应 Vitest/Svelte 组件测试
+
+### REQ-REMOTE-SMOOTH-STATE-02
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-28`
+- 类型：`MODIFY` + `FIX`
+- 版本：`v0.2.5`
+- 批准证据：用户明确“批准所有”。
+- 关联：`REQ-MOBILE-REMOTE-STATE-01`、`REQ-REMOTE-03`
+- 原始意图：
+  - iteration 63 的手机 Remote 体验未达预期；已有“可唤起键盘”仅算部分实现。
+  - 唤起键盘时完全按 terminal 光标定位，禁止受手指触点影响；光标不可解析时按屏幕/终端可见区中心处理。
+  - 唤起键盘时若终端不在底部，自动滚动到底部。
+  - pane 必须归属其真实 workspace，不得挂到当前激活 workspace；已访问 pane 真正在后台保活，手机与桌面浏览器切换丝滑。
+  - 加载 scrollback 不得占住当前 pane 的输入/控制传输路径，尤其不得令终端无法文字输入。
+- 目标行为与用户可观察结果：
+  - 输入 textarea/IME 锚点只取 terminal cursor 的投影坐标；pointer/touch 坐标仅用于既有 TUI 鼠标报告，不参与键盘锚点。cursor 不可见、越界或未知时使用终端可见区中心。
+  - 每次显式唤起软键盘前，当前 pane 原子滚至 live bottom，再按光标锚点聚焦；不得改变 PTY rows/cols 或底层 canvas/container 高度。
+  - pane/session 身份端到端为 `(workspaceId,paneId)`；异步响应、push、scrollback、kernel、订阅及重连恢复均携带并校验 workspaceId。除首次兼容握手外，禁止以 `activeWorkspaceId` 给缺失归属的 pane 补值。
+  - 已访问且仍存活的 pane 在不可见 workspace 中继续有界收流；切换只转移可见性、输入焦点与尺寸所有权，不销毁 kernel、不退订、不全量重放。切回立即呈现离开期间尾帧。
+  - scrollback 请求、编码、排队与发送属于有界、可取消的低优先级工作；输入/control 与 active live raw 在调度上可抢占。一个历史页遇 WebSocket/DataChannel 背压时不得阻塞 stdin/control 接收，也不得阻塞 active live writer。
+  - 快速重复滚顶、切 pane/workspace 或取消历史加载时，旧页不得提交到错误 pane；取消须释放队列容量、任务与计数。
+- 范围：
+  - `src/remote/**`
+  - `packages/remote/src/shared/{terminal,transport}/**`
+  - `src-tauri/src/remote_host_impl.rs` 及共享 Remote 协议/scrollback store 的必要收敛
+  - 手机与桌面浏览器 Remote 的确定性 fixture/E2E
+- 非目标：
+  - 把 PTY 字节放入 Query cache；后台 pane 抢尺寸所有权；用无界缓存掩盖物理带宽不足；本轮发布。
+- 不可动边界：
+  - 复用同一已认证连接；是否增加内部 writer task/优先队列由深研与对抗评审决定，但不得靠第二 WebSocket/DataChannel 绕过调度缺陷。
+  - 低优先级任务必须有有界队列、取消、清理与确定性计数归零；不得用固定 FPS/延时阈值冒充流畅。
+  - 工作区归属不信任 UI 当前选择；服务端须校验复合身份，错误 workspace 明确拒绝。
+- 假设与待确认：
+  - “否则就当手指点击在屏幕中间”解释为无法取得有效 terminal cursor 时，把隐藏输入锚到终端可见区中心；不合成 TUI 鼠标点击。
+  - “自动滚动到底部”只在用户显式唤起键盘时发生，不在浏览历史时被后台 viewport 变化强制拉底。
+- 确定性验收：
+  - 键盘纯函数/组件测：不同触点输入得到完全相同锚点；有效 cursor 精确投影；无效 cursor 回退中心；聚焦调用顺序为 `scrollToBottom → resolve cursor/fallback → focus`。
+  - 复合身份竞态测：`wsA/pane1` 请求未决时切到 `wsB`，迟到的 list/push/scrollback 仍只更新 `wsA/pane1`；缺 workspaceId 的非握手消息被拒，不落入 active workspace。
+  - 保活测：`ws1/A → ws1/B → ws2/C → ws1/A` 后 A/B/C 订阅与 kernel 均存续；A 离开期间尾帧切回即见，无 RIS/全量 replay；真关闭按复合身份精确清理。
+  - 背压同构测：人为挂起 scrollback sink 时，stdin/control 与 active raw 仍可推进；取消历史页后低优先级队列、任务计数归零；active 最多等待一个已开始的有界低优先级分片。
+  - 浏览器 E2E：手机 visualViewport fixture 与桌面浏览器均覆盖跨 workspace 快切、后台持续输出、键盘开合、非底部唤起回底、滚顶加载期间连续输入。
+- 预期落点：
+  - `src/remote/MainApp.svelte`
+  - `src/remote/lib/TerminalCanvas.svelte`
+  - `packages/remote/src/shared/terminal/manager.ts`
+  - `src-tauri/src/remote_host_impl.rs`
+  - Remote transport/session 既有 SSOT 与对应测试
 
 ### REQ-MOBILE-REMOTE-STATE-01 · Mobile Remote 连续状态、后台 pane 与软键盘视口
 
@@ -254,3 +335,5 @@
 | v0.2.1 | 2026-07-28 | `PENDING-REQ-MOBILE-REMOTE-STATE-01` | Mobile Remote Query/store、跨 workspace pane 保活、键盘 transform、scrollback 拼接/loading 与 pane 行纯 icon 转 Active | 新增 `REQ-MOBILE-REMOTE-STATE-01`；修订 `REQ-MOBILE-01` / `REQ-REMOTE-03` | 用户明确“批准 PENDING-REQ-MOBILE-REMOTE-STATE-01” |
 | v0.2.2 | 2026-07-28 | `PENDING-REQ-MOBILE-ACTIVE-QOS-01` | 弱网 active pane 逻辑保留通道转 Active | 修订 `REQ-MOBILE-REMOTE-STATE-01` | 用户明确“批准” |
 | v0.2.3 | 2026-07-28 | `<AUTO-APPROVED>` | Agent Center“最近回复”升级为按 Agent 分组、可折叠且可恢复的新“历史”页；扩展 CLI adapter | 新增 `REQ-AGENT-HISTORY-01` | 用户明确“添加任务并按 NLM 流程自动审批通过” |
+| v0.2.4 | 2026-07-28 | `PENDING-REQ-AGENT-COMMUNE-CONTINUITY-01` | Commune 控制/文档区移底，保留成员/编组/历史，并统一 Agent Tab 与 pane header 状态 | 新增 `REQ-AGENT-COMMUNE-CONTINUITY-01`；关联 `REQ-AGENT-HISTORY-01` | 用户明确“批准所有” |
+| v0.2.5 | 2026-07-28 | `PENDING-REQ-REMOTE-SMOOTH-STATE-02` | 光标锚定键盘、唤起回底、复合 pane 身份、后台保活与非阻断 scrollback 转 Active | 新增 `REQ-REMOTE-SMOOTH-STATE-02`；修订 `REQ-MOBILE-REMOTE-STATE-01` / `REQ-REMOTE-03` | 用户明确“批准所有” |

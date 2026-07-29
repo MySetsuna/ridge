@@ -1099,6 +1099,8 @@ pub struct NativeSessionInfo {
     pub width: u16,
     pub height: u16,
     pub attached: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 /// 遍历所有 socket 的所有 native 会话，返回摘要列表。
@@ -1112,6 +1114,11 @@ pub fn list_all_sessions() -> Vec<NativeSessionInfo> {
                 .windows
                 .iter()
                 .any(|w| w.panes.iter().any(|p| p.attachment.is_some()));
+            let cwd = s
+                .windows
+                .get(s.active_window)
+                .and_then(|w| w.panes.get(w.active_pane))
+                .and_then(|p| p.cwd.clone());
             out.push(NativeSessionInfo {
                 socket: socket_name.clone(),
                 name: s.name.clone(),
@@ -1122,6 +1129,7 @@ pub fn list_all_sessions() -> Vec<NativeSessionInfo> {
                 width: s.width,
                 height: s.height,
                 attached,
+                cwd,
             });
         }
     }

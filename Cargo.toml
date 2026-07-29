@@ -16,6 +16,7 @@ members = [
     "packages/ridge-core",
     "packages/ridge-cli",
     "packages/ridge-mcp",
+    "packages/ridge-mcp-bridge",
     "packages/ridge-remote",
     "packages/ridge-term",
     "packages/ridge-tmux",

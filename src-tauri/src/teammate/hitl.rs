@@ -8,7 +8,7 @@
 //! 保持现有 send-keys 行为零变化——前端 `HitlApprovalModal` 挂载并真机 e2e 通过后，
 //! 再经 `set_hitl_enabled(true)` 开启。注册表是进程全局 (单进程)，无需改 `AppState`。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
@@ -31,6 +31,7 @@ pub const HITL_EVENT: &str = "teammate://hitl-approval-required";
 
 /// 人类未裁决时的挂起上限——超时后 fail-closed 视为拒绝（绝不静默放行高危）。
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
+const EXTERNAL_REJECTION_CAP: usize = 50;
 
 /// 挂起项：裁决信号 + 供远端只读列表的**脱敏**元数据。
 /// P2 阶段 1（iteration 8）：`list_pending` 投影仅暴露此处字段——
@@ -38,6 +39,9 @@ const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 struct PendingEntry {
     tx: oneshot::Sender<HitlResolution>,
     initiator: String,
+    /// Full text stays process-local: it is only sent to the local approval UI.
+    /// Never expose it through the remote pending projection or audit log.
+    action: String,
     reason: String,
     created_at_ms: u64,
     /// P2 阶段 2：一次性裁决票据（随挂起项生成，uuid v4 不可猜；仅经 E2EE 信道
@@ -81,6 +85,11 @@ fn record_decision(entry: &PendingEntry, source: &str, verdict: &str, outcome: &
 
 static PENDING: LazyLock<Mutex<HashMap<String, PendingEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Rejections observed outside Ridge's own input gateway. They must remain
+/// separate from `PENDING`: approving a Ridge card cannot retry an operation
+/// that was rejected before it ever reached Ridge.
+static EXTERNAL_REJECTIONS: LazyLock<Mutex<VecDeque<serde_json::Value>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::new()));
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -117,7 +126,14 @@ pub async fn request_approval(
 
     let id = format!("hitl_{}", COUNTER.fetch_add(1, Ordering::Relaxed));
     let (tx, rx) = oneshot::channel();
-    insert_pending(id.clone(), Some(wid), initiator, &assessment.reason, tx);
+    insert_pending(
+        id.clone(),
+        Some(wid),
+        initiator,
+        action,
+        &assessment.reason,
+        tx,
+    );
 
     let _ = handle.emit(
         HITL_EVENT,
@@ -127,6 +143,10 @@ pub async fn request_approval(
             "action": action,
             "level": "Dangerous",
             "reason": assessment.reason,
+            "executor": "Ridge agent input gateway",
+            "policySource": "Ridge HITL",
+            "requestId": id,
+            "nextStep": "批准后由 Ridge 继续同一条已挂起的输入；这不代表外部执行网关已放行。",
         }),
     );
 
@@ -148,6 +168,7 @@ fn insert_pending(
     id: String,
     wid: Option<uuid::Uuid>,
     initiator: &str,
+    action: &str,
     reason: &str,
     tx: oneshot::Sender<HitlResolution>,
 ) {
@@ -161,6 +182,7 @@ fn insert_pending(
             PendingEntry {
                 tx,
                 initiator: initiator.to_string(),
+                action: action.to_string(),
                 reason: reason.to_string(),
                 created_at_ms,
                 nonce: uuid::Uuid::new_v4().simple().to_string(),
@@ -195,6 +217,103 @@ pub fn list_pending() -> Vec<serde_json::Value> {
     };
     items.sort_by_key(|(t, _)| *t);
     items.into_iter().map(|(_, v)| v).collect()
+}
+
+/// Desktop-only recovery snapshot. A renderer can mount after the original
+/// event, so it reloads this list rather than silently timing out the action.
+/// The raw action never crosses a remote-control transport.
+pub fn list_pending_local() -> Vec<serde_json::Value> {
+    let mut items: Vec<(u64, serde_json::Value)> = match PENDING.lock() {
+        Ok(g) => g
+            .iter()
+            .map(|(id, e)| {
+                (
+                    e.created_at_ms,
+                    serde_json::json!({
+                        "id": id,
+                        "initiator": e.initiator,
+                        "action": e.action,
+                        "level": "Dangerous",
+                        "reason": e.reason,
+                    }),
+                )
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    items.sort_by_key(|(created_at_ms, _)| *created_at_ms);
+    items.into_iter().map(|(_, item)| item).collect()
+}
+
+/// Records an external execution-gateway rejection and emits a local-only card.
+/// `executor`/`policy_source`/`request_id` are required by the MCP schema so
+/// callers cannot collapse an unknown external policy into a misleading Ridge
+/// attribution. The report deliberately has no approve/retry resolution.
+pub fn report_external_rejection(
+    handle: &tauri::AppHandle,
+    initiator: &str,
+    action: &str,
+    executor: &str,
+    policy_source: &str,
+    request_id: &str,
+    reason: &str,
+    next_step: &str,
+) -> String {
+    let id = format!("external_rejection_{}", COUNTER.fetch_add(1, Ordering::Relaxed));
+    let report = serde_json::json!({
+        "id": id,
+        "kind": "external_rejection",
+        "initiator": initiator,
+        "action": action,
+        "level": "Dangerous",
+        "reason": reason,
+        "executor": executor,
+        "policySource": policy_source,
+        "requestId": request_id,
+        "nextStep": next_step,
+    });
+    if let Ok(mut reports) = EXTERNAL_REJECTIONS.lock() {
+        reports.push_back(report.clone());
+        while reports.len() > EXTERNAL_REJECTION_CAP {
+            reports.pop_front();
+        }
+    }
+    super::hitl_audit::append_audit(super::hitl_audit::AuditEntry {
+        id: id.clone(),
+        ts_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+        source: "external-execution-rejection".into(),
+        initiator: initiator.into(),
+        verdict: "rejected-before-ridge".into(),
+        risk_level: "Unknown".into(),
+        reason_summary: reason.into(),
+        outcome: format!("executor={executor}; policy={policy_source}; request={request_id}"),
+    });
+    let _ = handle.emit(HITL_EVENT, report);
+    id
+}
+
+/// Local recovery snapshot for rejection cards emitted before the renderer was
+/// mounted. These cards expose only what the reporting agent supplied locally;
+/// they are never added to Remote capability routes.
+pub fn list_external_rejections_local() -> Vec<serde_json::Value> {
+    EXTERNAL_REJECTIONS
+        .lock()
+        .map(|reports| reports.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+pub fn dismiss_external_rejection(id: &str) -> bool {
+    let Ok(mut reports) = EXTERNAL_REJECTIONS.lock() else {
+        return false;
+    };
+    let Some(index) = reports.iter().position(|report| report["id"] == id) else {
+        return false;
+    };
+    reports.remove(index);
+    true
 }
 
 /// R17-HITL-BADGE: pending approval count for UI badge.
@@ -275,7 +394,7 @@ mod tests {
     fn list_pending_projection_is_sanitized_and_cleared_on_resolve() {
         let id = "hitl_test_sanitized_0".to_string();
         let (tx, mut rx) = oneshot::channel();
-        insert_pending(id.clone(), None, "claude-a", "递归删除目录", tx);
+        insert_pending(id.clone(), None, "claude-a", "rm -rf ./scratch", "递归删除目录", tx);
 
         let mine: Vec<_> = list_pending()
             .into_iter()
@@ -295,6 +414,13 @@ mod tests {
         assert_eq!(item["initiator"], "claude-a");
         assert!(item["resolutionNonce"].as_str().is_some_and(|n| n.len() >= 32));
 
+        let local = list_pending_local()
+            .into_iter()
+            .find(|v| v["id"] == id.as_str())
+            .expect("local recovery snapshot");
+        assert_eq!(local["action"], "rm -rf ./scratch");
+        assert!(local.get("resolutionNonce").is_none());
+
         assert!(resolve(&id, "reject", None));
         assert!(matches!(rx.try_recv(), Ok(HitlResolution::Reject)));
         assert!(list_pending().iter().all(|v| v["id"] != id.as_str()));
@@ -306,7 +432,7 @@ mod tests {
     fn resolve_remote_single_consume_nonce_and_verdict_gates() {
         let id = "hitl_test_remote_0".to_string();
         let (tx, mut rx) = oneshot::channel();
-        insert_pending(id.clone(), None, "claude-b", "强制推送", tx);
+        insert_pending(id.clone(), None, "claude-b", "git push --force", "强制推送", tx);
         let nonce = list_pending()
             .into_iter()
             .find(|v| v["id"] == id.as_str())
@@ -337,7 +463,7 @@ mod tests {
 
         let id = "hitl_test_decision_0".to_string();
         let (tx, _rx) = oneshot::channel();
-        insert_pending(id.clone(), Some(wid), "claude-c", "递归删除目录", tx);
+        insert_pending(id.clone(), Some(wid), "claude-c", "rm -rf ./scratch", "递归删除目录", tx);
         let nonce = list_pending()
             .into_iter()
             .find(|v| v["id"] == id.as_str())

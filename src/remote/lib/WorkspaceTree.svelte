@@ -195,14 +195,20 @@
     err = '';
     // 切换前清空活动 pane：避免在新工作区 panes 回包前残留旧 pane 订阅。
     // 新活动工作区由 §auto-expand-active effect 自动展开其终端。
+    const previousWorkspaceId = activeWorkspaceId;
+    const previousPaneId = activePaneId;
     activePaneId = null;
-    activeWorkspaceId = id;
     try {
       await ws.switchWorkspace(id);
+      activeWorkspaceId = id;
       ws.listPanes();
     } catch (e) {
       err = e instanceof Error ? e.message : String(e);
     } finally {
+      if (err) {
+        activeWorkspaceId = previousWorkspaceId;
+        activePaneId = previousPaneId;
+      }
       busy = false;
     }
   }
@@ -326,7 +332,8 @@
     busy = true;
     err = '';
     try {
-      const ok = await ws.closePane(id);
+      if (!activeWorkspaceId) return;
+      const ok = await ws.closePane({ workspaceId: activeWorkspaceId, paneId: id });
       if (ok) {
         if (id === activePaneId) {
           const remaining = panes.filter((p) => p.id !== id);

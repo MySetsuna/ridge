@@ -2,6 +2,16 @@ import { getRemoteDeviceId } from './deviceId';
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 
+/** Remote pane identity. paneId alone is never sufficient across workspaces. */
+export interface PaneRef {
+  workspaceId: string;
+  paneId: string;
+}
+
+export function paneRefKey(ref: PaneRef): string {
+  return `${ref.workspaceId}:${ref.paneId}`;
+}
+
 // ── 连接失败分级（任务 A）───────────────────────────────────────────────────
 // 服务端 WS 在「已认证但无权」时会先升级、下发一帧 `{t:"error",code,message}`，再以
 // close code 4403 关闭；匿名/伪造则是不透明 403（连升级都不给）。客户端据此把失败分成
@@ -58,9 +68,9 @@ function uuidFromBytes(bytes: Uint8Array, offset: number = 0): string {
   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
 }
 
-export type RawByteListener = (paneId: string, data: Uint8Array) => void;
-export type MetaListener = (paneId: string, title: string | null, cwd: string | null) => void;
-export type PtyResizeListener = (paneId: string, rows: number, cols: number) => void;
+export type RawByteListener = (pane: PaneRef, data: Uint8Array) => void;
+export type MetaListener = (pane: PaneRef, title: string | null, cwd: string | null) => void;
+export type PtyResizeListener = (pane: PaneRef, rows: number, cols: number) => void;
 export type ThemeListener = (colors: Record<string, string>, themeType: 'dark' | 'light') => void;
 
 // Keep for backward compat — consumers should migrate to onRawBytes.
@@ -142,19 +152,23 @@ export type WsMessage = {
   workspaceId?: string;
 } | {
   type: 'output';
+  workspaceId: string;
   paneId: string;
   data: string;
 } | {
   type: 'delta';
+  workspaceId: string;
   paneId: string;
   data: string;
 } | {
   type: 'pty-meta';
+  workspaceId: string;
   paneId: string;
   title: string | null;
   cwd: string | null;
 } | {
   type: 'pty-resized';
+  workspaceId: string;
   paneId: string;
   rows: number;
   cols: number;
@@ -307,7 +321,7 @@ export interface RemoteLink {
     authType?: 'code' | 'token',
     secure?: boolean,
   ): void;
-  getPaneOutput(paneId: string): string[];
+  getPaneOutput(pane: PaneRef): string[];
   pruneOutputs(liveIds: Set<string>): void;
   send(msg: Record<string, unknown>): void;
   listPanes(): void;
@@ -318,11 +332,10 @@ export interface RemoteLink {
   // an incremental gap replay from that byte cursor instead. Omit both for a fresh
   // subscribe (full RIS + scrollback + mode reattach).
   subscribePane(
-    paneId: string,
+    pane: PaneRef,
     opts?: {
       resume?: boolean;
       sinceSeq?: number;
-      workspaceId?: string;
       /** Foreground pane owns the transport's reserved priority lane. */
       active?: boolean;
     },
@@ -333,7 +346,7 @@ export interface RemoteLink {
    * buffer when the viewport nears the top. Returns the raw bytes, or null when
    * there's nothing more to load. The LAN link omits it (optional) → no-op there.
    */
-  fetchOlderScrollback?(paneId: string): Promise<PendingScrollbackPage | null>;
+  fetchOlderScrollback?(pane: PaneRef): Promise<PendingScrollbackPage | null>;
   /**
    * iter-61：把某 pane 标记 / 取消标记为 agent（远端工作区弹层的标记按钮）。
    * 两条腿（LAN invoke-request / cloud RPC）都实现；老 host 会以错误拒绝，UI 提示即可。
@@ -347,9 +360,9 @@ export interface RemoteLink {
   listShells?(): Promise<RemoteShellInfo[]>;
   /** 原地换 shell：拆该 pane 的 PTY → 按新 program/args 重建 → 重新激活。 */
   changePaneShell?(workspaceId: string, paneId: string, shell: RemoteShellInfo): Promise<void>;
-  sendStdin(paneId: string, data: string): void;
-  refreshPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
-  claimPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
+  sendStdin(pane: PaneRef, data: string): void;
+  refreshPane(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
+  claimPane(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
   lastRefreshSeq(): number;
   listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }>;
   /** P1 roster：只读拓扑快照（capability `teammate` 协商后可用；UI 轮询取数）。 */
@@ -367,7 +380,7 @@ export interface RemoteLink {
   renameWorkspace?(workspaceId: string, name: string): Promise<boolean>;
   saveWorkspace?(workspaceId: string, name: string): Promise<boolean>;
   createPane(shell?: string): Promise<string | null>;
-  closePane(paneId: string): Promise<boolean>;
+  closePane(pane: PaneRef): Promise<boolean>;
   closeWorkspace(workspaceId: string): Promise<boolean>;
   listWorkspacePanes(workspaceId: string): Promise<PaneInfo[]>;
   /** Host `~/ridge-workspaces/*.ridge` inventory (open-only on mobile; no manage). */
@@ -453,7 +466,8 @@ export class RemoteConnection implements RemoteLink {
   // 每 pane 的 seq 游标：订阅时由 host 的 `scrollback-meta` 帧播种（首屏 tail 的最旧字节），
   // 用户滚顶时经 `scrollback-before` 分批向更旧推进。atOldest 后停止分页。
   private scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
-  private paneWorkspaces = new Map<string, string>();
+  /** Binary pane frames carry paneId; bind it to the explicit subscription ref. */
+  private paneRefs = new Map<string, PaneRef>();
   // 正在拉取更旧历史的 pane（去重快速连续的滚顶加载）。
   private fetchingOlder = new Set<string>();
 
@@ -650,7 +664,9 @@ export class RemoteConnection implements RemoteLink {
           firstPtyBytesMs: p.connectStart != null ? Math.round(now - p.connectStart) : null,
         });
       }
-      this.rawByteListeners.forEach(fn => fn(paneId, rawBytes));
+      const pane = this.paneRefs.get(paneId);
+      if (!pane) return;
+      this.rawByteListeners.forEach(fn => fn(pane, rawBytes));
       return;
     }
     try {
@@ -683,13 +699,17 @@ export class RemoteConnection implements RemoteLink {
 
         // New remote event types — dispatch before result routing.
         if (type === 'pty-meta') {
-          const m = msg as { paneId: string; title: string | null; cwd: string | null };
-          this.metaListeners.forEach(fn => fn(m.paneId, m.title, m.cwd));
+          const m = msg as { workspaceId?: unknown; paneId?: unknown; title: string | null; cwd: string | null };
+          if (typeof m.workspaceId !== 'string' || typeof m.paneId !== 'string') return;
+          const pane = { workspaceId: m.workspaceId, paneId: m.paneId };
+          this.metaListeners.forEach(fn => fn(pane, m.title, m.cwd));
           return;
         }
         if (type === 'pty-resized') {
-          const r = msg as { paneId: string; rows: number; cols: number };
-          this.resizeListeners.forEach(fn => fn(r.paneId, r.rows, r.cols));
+          const r = msg as { workspaceId?: unknown; paneId?: unknown; rows: number; cols: number };
+          if (typeof r.workspaceId !== 'string' || typeof r.paneId !== 'string') return;
+          const pane = { workspaceId: r.workspaceId, paneId: r.paneId };
+          this.resizeListeners.forEach(fn => fn(pane, r.rows, r.cols));
           return;
         }
         if (type === 'theme') {
@@ -708,7 +728,11 @@ export class RemoteConnection implements RemoteLink {
           // `scrollback-meta` isn't a WsMessage variant — read fields off the
           // untyped `rec` (like the error-frame path above) instead of casting the
           // union, which wouldn't overlap.
-          this.scrollbackCursor.set(String(rec.paneId), {
+          if (typeof rec.workspaceId !== 'string' || typeof rec.paneId !== 'string') return;
+          this.scrollbackCursor.set(paneRefKey({
+            workspaceId: rec.workspaceId,
+            paneId: rec.paneId,
+          }), {
             oldestSeq: Number(rec.startSeq),
             atOldest: !!rec.atOldest,
           });
@@ -741,13 +765,15 @@ export class RemoteConnection implements RemoteLink {
       } else if (this._state === 'connected') {
         // Normal connected path: handle output buffering and dispatch.
         if (msg.type === 'output') {
+          if (typeof msg.workspaceId !== 'string') return;
+          const key = paneRefKey({ workspaceId: msg.workspaceId, paneId: msg.paneId });
           const lines = msg.data.split('\n');
-          const existing = this.paneOutputs.get(msg.paneId) || [];
+          const existing = this.paneOutputs.get(key) || [];
           existing.push(...lines);
           if (existing.length > MAX_PANE_OUTPUT_LINES) {
             existing.splice(0, existing.length - MAX_PANE_OUTPUT_LINES);
           }
-          this.paneOutputs.set(msg.paneId, existing);
+          this.paneOutputs.set(key, existing);
         }
         this.messageListeners.forEach(fn => fn(msg));
       }
@@ -892,8 +918,8 @@ export class RemoteConnection implements RemoteLink {
     this._onVisibility = this._onOnline = this._onForeground = null;
   }
 
-  getPaneOutput(paneId: string): string[] {
-    return this.paneOutputs.get(paneId) || [];
+  getPaneOutput(pane: PaneRef): string[] {
+    return this.paneOutputs.get(paneRefKey(pane)) || [];
   }
 
   /** Drop cached text output for panes no longer present. The UI calls this with
@@ -904,8 +930,8 @@ export class RemoteConnection implements RemoteLink {
     for (const id of [...this.paneOutputs.keys()]) {
       if (!liveIds.has(id)) this.paneOutputs.delete(id);
     }
-    for (const id of [...this.paneWorkspaces.keys()]) {
-      if (!liveIds.has(id)) this.paneWorkspaces.delete(id);
+    for (const [paneId, pane] of [...this.paneRefs]) {
+      if (!liveIds.has(paneRefKey(pane))) this.paneRefs.delete(paneId);
     }
   }
 
@@ -932,14 +958,15 @@ export class RemoteConnection implements RemoteLink {
 
   listPanes() { this.send({ type: 'list-panes' }); }
   subscribePane(
-    paneId: string,
-    opts?: { resume?: boolean; sinceSeq?: number; workspaceId?: string; active?: boolean },
+    pane: PaneRef,
+    opts?: { resume?: boolean; sinceSeq?: number; active?: boolean },
   ) {
-    const msg: Record<string, unknown> = { type: 'subscribe-pane', paneId };
-    if (opts?.workspaceId) this.paneWorkspaces.set(paneId, opts.workspaceId);
+    const { paneId, workspaceId } = pane;
+    if (!paneId || !workspaceId) return;
+    const msg: Record<string, unknown> = { type: 'subscribe-pane', paneId, workspaceId };
+    this.paneRefs.set(paneId, pane);
     if (opts?.resume) msg.resume = true;
     if (opts?.sinceSeq !== undefined) msg.sinceSeq = opts.sinceSeq;
-    if (opts?.workspaceId) msg.workspaceId = opts.workspaceId;
     if (opts?.active !== undefined) msg.active = opts.active;
     this.send(msg);
   }
@@ -953,16 +980,17 @@ export class RemoteConnection implements RemoteLink {
    * stop keep it safe under rapid scroll-up. Mirrors
    * CloudRemoteConnection.fetchOlderScrollback.
    */
-  async fetchOlderScrollback(paneId: string): Promise<PendingScrollbackPage | null> {
-    const cursor = this.scrollbackCursor.get(paneId);
-    if (!cursor || cursor.atOldest || this.fetchingOlder.has(paneId)) return null;
-    this.fetchingOlder.add(paneId);
+  async fetchOlderScrollback(pane: PaneRef): Promise<PendingScrollbackPage | null> {
+    const key = paneRefKey(pane);
+    const cursor = this.scrollbackCursor.get(key);
+    if (!cursor || cursor.atOldest || this.fetchingOlder.has(key)) return null;
+    this.fetchingOlder.add(key);
     try {
       const result = await this._sendAndWait(
         {
           type: 'scrollback-before',
-          paneId,
-          workspaceId: this.paneWorkspaces.get(paneId),
+          paneId: pane.paneId,
+          workspaceId: pane.workspaceId,
           beforeSeq: cursor.oldestSeq,
           maxBytes: 64 * 1024,
         },
@@ -973,16 +1001,16 @@ export class RemoteConnection implements RemoteLink {
       const bytes = result.bytes ? new TextEncoder().encode(String(result.bytes)) : new Uint8Array();
       if (!(startSeq < endSeq) || endSeq !== cursor.oldestSeq || bytes.length === 0) {
         if (bytes.length === 0 && endSeq === cursor.oldestSeq && result.atOldest) {
-          this.scrollbackCursor.set(paneId, { ...cursor, atOldest: true });
+          this.scrollbackCursor.set(key, { ...cursor, atOldest: true });
         }
-        this.fetchingOlder.delete(paneId);
+        this.fetchingOlder.delete(key);
         return null;
       }
       let settled = false;
       const finish = () => {
         if (!settled) {
           settled = true;
-          this.fetchingOlder.delete(paneId);
+            this.fetchingOlder.delete(key);
         }
       };
       return {
@@ -991,21 +1019,23 @@ export class RemoteConnection implements RemoteLink {
         endSeq,
         atOldest: !!result.atOldest,
         commit: () => {
-          if (settled || this.scrollbackCursor.get(paneId)?.oldestSeq !== endSeq) return false;
-          this.scrollbackCursor.set(paneId, { oldestSeq: startSeq, atOldest: !!result.atOldest });
+          if (settled || this.scrollbackCursor.get(key)?.oldestSeq !== endSeq) return false;
+          this.scrollbackCursor.set(key, { oldestSeq: startSeq, atOldest: !!result.atOldest });
           finish();
           return true;
         },
         discard: finish,
       };
     } catch {
-      this.fetchingOlder.delete(paneId);
+      this.fetchingOlder.delete(key);
       return null;
     }
   }
   listFiles(path?: string) { this.send({ type: 'list-files', path: path || '' }); }
   listGitStatus() { this.send({ type: 'list-git-status' }); }
-  sendStdin(paneId: string, data: string) { this.send({ type: 'stdin', paneId, data }); }
+  sendStdin(pane: PaneRef, data: string) {
+    this.send({ type: 'stdin', paneId: pane.paneId, workspaceId: pane.workspaceId, data });
+  }
   /** @deprecated Host-side bookkeeping only — records a fallback size but never
    *  reflows the shared PTY (no `pty-resized` broadcast), so the remote stays
    *  clipped. The automatic resize path now uses {@link claimPane} so a viewport
@@ -1020,9 +1050,18 @@ export class RemoteConnection implements RemoteLink {
    *
    *  Each call increments a monotonic sequence counter so the backend can
    *  ignore stale requests when multiple remotes contend for the size lock. */
-  refreshPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
+  refreshPane(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
     this._refreshSeq++;
-    this.send({ type: 'refresh-pane', paneId, rows, cols, pixelWidth, pixelHeight, seq: this._refreshSeq });
+    this.send({
+      type: 'refresh-pane',
+      paneId: pane.paneId,
+      workspaceId: pane.workspaceId,
+      rows,
+      cols,
+      pixelWidth,
+      pixelHeight,
+      seq: this._refreshSeq,
+    });
   }
   /** Implicit "I just interacted / my viewport changed" size claim. Same host
    *  effect as refreshPane (resizes the real PTY + canonical parser and
@@ -1030,9 +1069,18 @@ export class RemoteConnection implements RemoteLink {
    *  automatic viewport-driven resize path so a genuine layout change reflows
    *  the host PTY — `resize` alone is host-side bookkeeping that never reflows.
    *  Shares the monotonic seq counter so the host can drop stale claims. */
-  claimPane(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
+  claimPane(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
     this._refreshSeq++;
-    this.send({ type: 'claim-pane', paneId, rows, cols, pixelWidth, pixelHeight, seq: this._refreshSeq });
+    this.send({
+      type: 'claim-pane',
+      paneId: pane.paneId,
+      workspaceId: pane.workspaceId,
+      rows,
+      cols,
+      pixelWidth,
+      pixelHeight,
+      seq: this._refreshSeq,
+    });
   }
   lastRefreshSeq(): number { return this._refreshSeq; }
 
@@ -1250,8 +1298,12 @@ export class RemoteConnection implements RemoteLink {
     return (data.success && data.paneId) ? String(data.paneId) : null;
   }
 
-  async closePane(paneId: string): Promise<boolean> {
-    const data = await this._sendAndWait({ type: 'close-pane', paneId }, 'close-pane-result') as Record<string, unknown>;
+  async closePane(pane: PaneRef): Promise<boolean> {
+    const data = await this._sendAndWait({
+      type: 'close-pane',
+      paneId: pane.paneId,
+      workspaceId: pane.workspaceId,
+    }, 'close-pane-result') as Record<string, unknown>;
     return (data as Record<string, unknown>).success === true;
   }
 
@@ -1306,7 +1358,7 @@ export class RemoteConnection implements RemoteLink {
     // §history-pull: drop per-pane seq cursors + in-flight flags so a fresh
     // transport re-seeds from the host's next `scrollback-meta`.
     this.scrollbackCursor.clear();
-    this.paneWorkspaces.clear();
+    this.paneRefs.clear();
     this.fetchingOlder.clear();
   }
 

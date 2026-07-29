@@ -2058,6 +2058,11 @@
 <!-- 图片预览 -->
 {#if current && isImageFile && current.imageUrl}
 <div class="absolute inset-0 flex items-center justify-center bg-[var(--rg-bg-raised)] overflow-auto p-4">
+  <button
+    type="button"
+    class="max-w-full max-h-full cursor-zoom-in"
+    onclick={() => { if (current?.imageUrl) previewImage = { src: current.imageUrl, alt: current.name }; }}
+  >
   <img
     src={(() => {
       const u = current.imageUrl!;
@@ -2067,21 +2072,13 @@
     })()}
     alt={current.name}
     class="max-w-full max-h-full object-contain rounded-lg shadow-lg cursor-zoom-in"
-    role="button"
-    tabindex="0"
     title="点击全窗口预览（缩放/旋转）"
-    onclick={() => { if (current?.imageUrl) previewImage = { src: current.imageUrl, alt: current.name }; }}
-    onkeydown={(e) => {
-      if ((e.key === 'Enter' || e.key === ' ') && current?.imageUrl) {
-        e.preventDefault();
-        previewImage = { src: current.imageUrl, alt: current.name };
-      }
-    }}
     onerror={(e) => {
       const img = e.currentTarget as HTMLImageElement;
       console.warn('[FileEditor] image failed to load', current!.path, img.src);
     }}
   />
+  </button>
 </div>
 {/if}
 

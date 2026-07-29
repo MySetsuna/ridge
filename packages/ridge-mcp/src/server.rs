@@ -9,10 +9,11 @@
 //! 彼此没有共同的内部协议——它们只共享**这个 server**：花名册发现同伴、注入消息、
 //! 派活、抓对方屏幕、收件箱异步回话、Stash 传大块产物。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use crate::protocol as proto;
 use crate::registry::ToolRegistry;
@@ -49,16 +50,56 @@ impl HostError {
 
 pub type HostResult<T> = Result<T, HostError>;
 
+/// What the host can prove synchronously after writing a pane input buffer.
+/// It deliberately stops at the transport boundary: an interactive program or
+/// agent still needs to acknowledge consumption separately.
+#[derive(Debug, Clone, Copy)]
+pub struct InputDispatch {
+    pub terminal_accepted: bool,
+}
+
+/// A rejection observed at another execution layer (for example Codex's
+/// execution gateway). Ridge only records and displays it: no report may imply
+/// that Ridge caused the rejection or can retry the original operation.
+#[derive(Debug, Clone)]
+pub struct ExternalExecutionRejection {
+    pub initiator: String,
+    pub action: String,
+    pub executor: String,
+    pub policy_source: String,
+    pub request_id: String,
+    pub reason: String,
+    pub next_step: String,
+}
+
 /// 宿主必须提供的最小动作面。所有方法同步：桌面与 rdg 的实现都只做加锁读写，
 /// 不做网络/子进程等慢操作（慢操作会拖住 teammate HTTP 的单线程 runtime）。
 pub trait McpHost: Send + Sync {
     /// 花名册快照（roster + leader + edges + groups）。
     fn team_profile(&self) -> Value;
 
-    /// 把文本写进目标 pane 的 stdin；`mark_busy` 为真时同时把该 pane 标记「工作中」。
-    ///
-    /// 宿主负责补 Enter，用 [`enter_terminated`]——**必须是 CR**，见该函数说明。
-    fn send_text(&self, target: &Value, text: &str, mark_busy: bool) -> HostResult<()>;
+    /// Writes text into a pane input buffer. `submit` explicitly dispatches
+    /// Enter. `terminal_accepted` only reports a successful host→terminal
+    /// transport write; it never implies agent consumption.
+    fn send_text(
+        &self,
+        target: &Value,
+        text: &str,
+        submit: bool,
+        mark_busy: bool,
+    ) -> HostResult<InputDispatch>;
+
+    /// Surface an externally rejected execution to the desktop user. The
+    /// default keeps non-desktop hosts honest: they cannot claim a visible
+    /// approval/retry flow they do not own.
+    fn report_execution_rejection(
+        &self,
+        _report: ExternalExecutionRejection,
+    ) -> HostResult<String> {
+        Err(HostError::Unsupported(
+            "本宿主无法展示外部执行拒绝；请在拥有该执行网关的界面查看原因和重试入口".into(),
+        ))
+    }
 
     /// 抓目标 pane 的**渲染后**屏幕文本（末 `lines` 行）。监控队友干活用。
     fn capture_pane(&self, target: &Value, lines: usize) -> HostResult<String>;
@@ -122,6 +163,64 @@ fn inbox() -> &'static Mutex<HashMap<String, Vec<Value>>> {
 }
 
 const INBOX_CAP: usize = 200;
+
+struct ReceiptStore {
+    by_id: HashMap<String, Value>,
+    order: VecDeque<String>,
+}
+
+fn receipts() -> &'static Mutex<ReceiptStore> {
+    static RECEIPTS: std::sync::OnceLock<Mutex<ReceiptStore>> = std::sync::OnceLock::new();
+    RECEIPTS.get_or_init(|| Mutex::new(ReceiptStore {
+        by_id: HashMap::new(),
+        order: VecDeque::new(),
+    }))
+}
+
+fn receipt_insert(id: String, value: Value) {
+    let mut store = receipts().lock().unwrap();
+    store.order.push_back(id.clone());
+    store.by_id.insert(id, value);
+    while store.order.len() > INBOX_CAP {
+        if let Some(expired) = store.order.pop_front() {
+            store.by_id.remove(&expired);
+        }
+    }
+}
+
+fn receipt_get(key: &str, id: &str) -> HostResult<Value> {
+    let store = receipts().lock().unwrap();
+    let value = store
+        .by_id
+        .get(id)
+        .ok_or_else(|| HostError::InvalidParams("receipt 不存在或已过期".into()))?;
+    if value.get("targetKey").and_then(Value::as_str) != Some(key) {
+        return Err(HostError::InvalidParams("receipt 不属于该 target pane".into()));
+    }
+    Ok(value.clone())
+}
+
+fn receipt_ack(key: &str, id: &str, status: &str, detail: Option<&str>) -> HostResult<Value> {
+    if !matches!(status, "agent_acknowledged" | "agent_rejected") {
+        return Err(HostError::InvalidParams(
+            "status 只能是 agent_acknowledged 或 agent_rejected".into(),
+        ));
+    }
+    let mut store = receipts().lock().unwrap();
+    let value = store
+        .by_id
+        .get_mut(id)
+        .ok_or_else(|| HostError::InvalidParams("receipt 不存在或已过期".into()))?;
+    if value.get("targetKey").and_then(Value::as_str) != Some(key) {
+        return Err(HostError::InvalidParams("receipt 不属于该 target pane".into()));
+    }
+    value["status"] = Value::String(status.to_string());
+    value["agentAcknowledged"] = Value::Bool(status == "agent_acknowledged");
+    if let Some(detail) = detail.filter(|v| !v.is_empty()) {
+        value["detail"] = Value::String(detail.to_string());
+    }
+    Ok(value.clone())
+}
 
 fn inbox_push(key: &str, entry: Value) {
     let mut map = inbox().lock().unwrap();
@@ -256,7 +355,7 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
     let out: HostResult<String> = match name {
         "ridge_get_team_profile" => Ok(host.team_profile().to_string()),
 
-        "ridge_send_to_teammate" | "ridge_delegate_task" => {
+        "ridge_send_to_teammate" | "ridge_send_and_submit" | "ridge_delegate_task" => {
             let text = arg_str(&args, "message")
                 .or_else(|| arg_str(&args, "objective"))
                 .unwrap_or("");
@@ -264,18 +363,34 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
                 Err(HostError::InvalidParams("message/objective 不能为空".into()))
             } else {
                 let delegate = name == "ridge_delegate_task";
+                let submit = name != "ridge_send_to_teammate";
                 let t = target();
                 host.pane_key(&t).and_then(|key| {
-                    host.send_text(&t, text, delegate).map(|()| {
+                    host.send_text(&t, text, submit, delegate).map(|dispatch| {
+                        let status = if submit { "submit_dispatched" } else { "draft_injected" };
+                        let receipt_id = Uuid::new_v4().to_string();
+                        let receipt = json!({
+                            "receiptId": receipt_id,
+                            "targetKey": key,
+                            "from": arg_str(&args, "from").unwrap_or("mcp-client"),
+                            "kind": if delegate { "task" } else { "message" },
+                            "status": status,
+                            "terminalAccepted": dispatch.terminal_accepted,
+                            "agentAcknowledged": false,
+                            "text": text,
+                        });
+                        receipt_insert(receipt_id.clone(), receipt.clone());
                         inbox_push(
                             &key,
-                            json!({
-                                "from": arg_str(&args, "from").unwrap_or("mcp-client"),
-                                "kind": if delegate { "task" } else { "message" },
-                                "text": text,
-                            }),
+                            receipt,
                         );
-                        "delivered".to_string()
+                        json!({
+                            "receiptId": receipt_id,
+                            "status": status,
+                            "terminalAccepted": dispatch.terminal_accepted,
+                            "agentAcknowledged": false,
+                            "next": if submit { "call ridge_delivery_status; target agent may call ridge_acknowledge_receipt" } else { "call ridge_send_and_submit to dispatch Enter" },
+                        }).to_string()
                     })
                 })
             }
@@ -323,6 +438,64 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
                 .map(|key| Value::Array(inbox_take(&key, peek)).to_string())
         }
 
+        "ridge_delivery_status" => {
+            let receipt_id = arg_str(&args, "receipt_id")
+                .ok_or_else(|| HostError::InvalidParams("receipt_id 不能为空".into()));
+            receipt_id.and_then(|receipt_id| {
+                host.pane_key(&target())
+                    .and_then(|key| receipt_get(&key, receipt_id))
+                    .map(|receipt| receipt.to_string())
+            })
+        }
+
+        "ridge_acknowledge_receipt" => {
+            let receipt_id = arg_str(&args, "receipt_id")
+                .ok_or_else(|| HostError::InvalidParams("receipt_id 不能为空".into()));
+            let status = arg_str(&args, "status")
+                .ok_or_else(|| HostError::InvalidParams("status 不能为空".into()));
+            match (receipt_id, status) {
+                (Ok(receipt_id), Ok(status)) => host
+                    .pane_key(&target())
+                    .and_then(|key| receipt_ack(&key, receipt_id, status, arg_str(&args, "detail")))
+                    .map(|receipt| receipt.to_string()),
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
+        }
+
+        "ridge_report_execution_rejection" => {
+            let required = |key| {
+                arg_str(&args, key).ok_or_else(|| HostError::InvalidParams(format!("{key} 不能为空")))
+            };
+            match (
+                required("executor"),
+                required("policy_source"),
+                required("request_id"),
+                required("reason"),
+                required("next_step"),
+            ) {
+                (Ok(executor), Ok(policy_source), Ok(request_id), Ok(reason), Ok(next_step)) => host
+                    .report_execution_rejection(ExternalExecutionRejection {
+                        initiator: arg_str(&args, "initiator").unwrap_or("mcp-client").to_string(),
+                        action: arg_str(&args, "action").unwrap_or("").to_string(),
+                        executor: executor.to_string(),
+                        policy_source: policy_source.to_string(),
+                        request_id: request_id.to_string(),
+                        reason: reason.to_string(),
+                        next_step: next_step.to_string(),
+                    })
+                    .map(|id| json!({
+                        "reportId": id,
+                        "status": "reported",
+                        "retry": "not_available_from_ridge",
+                    }).to_string()),
+                (Err(error), _, _, _, _)
+                | (_, Err(error), _, _, _)
+                | (_, _, Err(error), _, _)
+                | (_, _, _, Err(error), _)
+                | (_, _, _, _, Err(error)) => Err(error),
+            }
+        }
+
         "ridge_stash_data" => {
             // 规格历史写的是 content_base64、实现读的是 data —— 两个键都接，纯文本存。
             match arg_str(&args, "data").or_else(|| arg_str(&args, "content_base64")) {
@@ -365,11 +538,25 @@ mod tests {
         fn team_profile(&self) -> Value {
             json!({ "roster": [] })
         }
-        fn send_text(&self, target: &Value, _text: &str, _busy: bool) -> HostResult<()> {
+        fn send_text(
+            &self,
+            target: &Value,
+            _text: &str,
+            _submit: bool,
+            _busy: bool,
+        ) -> HostResult<InputDispatch> {
             if target.is_null() {
                 return Err(HostError::InvalidParams("no target".into()));
             }
-            Ok(())
+            Ok(InputDispatch {
+                terminal_accepted: true,
+            })
+        }
+        fn report_execution_rejection(
+            &self,
+            report: ExternalExecutionRejection,
+        ) -> HostResult<String> {
+            Ok(format!("report:{}:{}", report.executor, report.request_id))
         }
         fn capture_pane(&self, _t: &Value, lines: usize) -> HostResult<String> {
             Ok(format!("screen({lines})"))
@@ -459,6 +646,89 @@ mod tests {
         // 取走即清空
         let v2 = call(&read);
         assert_eq!(v2["result"]["content"][0]["text"].as_str().unwrap(), "[]");
+    }
+
+    #[test]
+    fn send_receipts_distinguish_draft_from_submit_dispatch() {
+        let draft = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_send_to_teammate","arguments":{"target_pane_id":8,"message":"hi"}}
+        })
+        .to_string();
+        let submit = json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"ridge_send_and_submit","arguments":{"target_pane_id":8,"message":"hi"}}
+        })
+        .to_string();
+        let draft_text = call(&draft)["result"]["content"][0]["text"].as_str().unwrap().to_string();
+        let submit_text = call(&submit)["result"]["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(draft_text.contains("draft_injected"));
+        assert!(submit_text.contains("submit_dispatched"));
+        assert!(submit_text.contains("\"terminalAccepted\":true"));
+        assert!(submit_text.contains("\"agentAcknowledged\":false"));
+    }
+
+    #[test]
+    fn receipt_tracks_explicit_agent_acknowledgement() {
+        let send = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_send_and_submit","arguments":{"target_pane_id":91,"message":"inspect"}}
+        })
+        .to_string();
+        let sent: Value = serde_json::from_str(
+            call(&send)["result"]["content"][0]["text"].as_str().expect("send receipt"),
+        )
+        .expect("receipt JSON");
+        let receipt_id = sent["receiptId"].as_str().expect("receipt id").to_string();
+
+        let status = json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"ridge_delivery_status","arguments":{"target_pane_id":91,"receipt_id":receipt_id}}
+        })
+        .to_string();
+        let before: Value = serde_json::from_str(
+            call(&status)["result"]["content"][0]["text"].as_str().expect("status JSON"),
+        )
+        .expect("status receipt");
+        assert_eq!(before["status"], "submit_dispatched");
+        assert_eq!(before["terminalAccepted"], true);
+        assert_eq!(before["agentAcknowledged"], false);
+
+        let ack = json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"ridge_acknowledge_receipt","arguments":{
+                "target_pane_id":91,"receipt_id":receipt_id,"status":"agent_acknowledged","detail":"received"
+            }}
+        })
+        .to_string();
+        let after: Value = serde_json::from_str(
+            call(&ack)["result"]["content"][0]["text"].as_str().expect("ack JSON"),
+        )
+        .expect("ack receipt");
+        assert_eq!(after["status"], "agent_acknowledged");
+        assert_eq!(after["agentAcknowledged"], true);
+        assert_eq!(after["detail"], "received");
+    }
+
+    #[test]
+    fn external_rejection_keeps_executor_attribution_and_never_claims_retry() {
+        let message = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_report_execution_rejection","arguments":{
+                "executor":"Codex execution gateway",
+                "policy_source":"organization execution policy",
+                "request_id":"request-42",
+                "reason":"rejected: blocked by policy",
+                "next_step":"use the gateway approval flow, then retry there"
+            }}
+        })
+        .to_string();
+        let response = call(&message);
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("report response");
+        assert!(text.contains("report:Codex execution gateway:request-42"));
+        assert!(text.contains("not_available_from_ridge"));
     }
 
     #[test]

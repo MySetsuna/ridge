@@ -122,8 +122,10 @@ AI 智能体偶尔会卡进「改代码 → 跑测试 → 同样报错 → 再�
 队员之间通过 Ridge 内置的 **MCP 工具**协作，你**通常不用直接碰**——它们由智能体的运行时（如 Claude Code）自动调用。当前已接线（`tools/call` 路由）的协作能力：
 
 - **查花名册（`ridge_get_team_profile`）**：只读取当前工作区的 roster + leader + edges；agent 先调它发现队友，再据成员的 `paneId` / `paneIndex` 寻址。
-- **发消息（`ridge_send_to_teammate`）**：向指定分屏的队友注入一段文本。
-- **派活（`ridge_delegate_task`）**：把一个目标交给某个 Worker，向那个分屏注入任务并把它标记为「工作中」。
+- **写草稿（`ridge_send_to_teammate`）**：向指定分屏注入文本，但**不**模拟 Enter；返回 `draft_injected`，不等于命令已执行。
+- **显式提交（`ridge_send_and_submit`）**：写入文本并派发 Enter；返回 `submit_dispatched`，仍不等于终端程序或 Agent 已消费。
+- **派活（`ridge_delegate_task`）**：显式提交目标给某个 Worker，并标记为「工作中」。
+- **查回执（`ridge_delivery_status`）**：分别查看草稿/提交、终端写入接受与 Agent 确认；目标 Agent 以 `ridge_acknowledge_receipt` 明确确认或拒绝。
 - **加入编组（`ridge_join_group`）**：把某成员（按 `agent_id` 或 pane）加进一个按名字寻址的已有编组。
 
 > 早期的「TML 中间格式 / 广播求助 / 协作审计面板」在底座化瘦身中**已移除**——协作现在是**标准 MCP 工具的直接调用**，没有中间标记语言，也不再有「协作审计」这一栏。完整工具表（含 `ridge_split_pane` / `ridge_stash_data` 等已登记待路由项）见 `docs/mcp-integration.md`。
@@ -132,12 +134,14 @@ AI 智能体偶尔会卡进「改代码 → 跑测试 → 同样报错 → 再�
 
 ## 6. 内置 MCP server（高级 / 给开发者）
 
-Ridge 自带一个标准 **MCP（Model Context Protocol）** 服务端，让 MCP-原生的智能体直接挂进来用 Ridge 的能力。
+桌面 Ridge 自带一个标准 **MCP（Model Context Protocol）** 服务端；打开 Ridge 并在它的 pane 内启动 Agent 即可，**无须安装或启动 `rdg`**。Codex 等仅支持 stdio 的客户端使用独立 `ridge-mcp` companion；`rdg` 是另一款无头应用，旧 `rdg mcp` 仅兼容既有脚本。
 
 - **端点**：`ws://<teammate-host>/api/v1/mcp/ws`（teammate 服务的 WebSocket，带 bearer token 鉴权；地址/令牌通过分屏环境变量 `RIDGE_TEAMMATE_*` 注入）。
 - **协议**：JSON-RPC 2.0，支持 `initialize` / `tools/list` / `tools/call` / `resources/read`。
 - **工具**：`ridge_send_to_teammate`、`ridge_delegate_task`、`ridge_split_pane`、`ridge_stash_data`、`ridge_get_team_profile` 等。
 - **资源**：`ridge://workspace/active-panes`（活动工作区花名册）等 `ridge://` URI。
+
+完整接入、HTTP/WebSocket 配置及无头 `rdg` 的独立说明见 `docs/mcp-integration.md`。
 
 普通用户不用关心这一层；它是给「自带 MCP 客户端的智能体」用的标准接入口。
 

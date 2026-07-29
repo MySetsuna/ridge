@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { invoke } from '@tauri-apps/api/core';
+  import { invoke, isTauri } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import QrCode from './QrCode.svelte';
   import { Smartphone, RefreshCw, Power, PowerOff, Wifi, Zap, Globe, WifiOff, Loader2, Plus, ExternalLink, Monitor, Ban } from 'lucide-svelte';
@@ -332,6 +332,9 @@
   });
 
   onMount(() => {
+    // Plain browser/dev-server preview has no Tauri event bridge. The real
+    // web-remote bundle aliases it, so it still takes this path.
+    if (!isTauri()) return;
     refreshRemoteInfo();
     // §totp-persist：种子被重置 / 登录态切换后，Rust 发此事件 → 刷新二维码+码。
     const unlistenTotp = listen('remote-totp-changed', () => { void refreshRemoteInfo(); });

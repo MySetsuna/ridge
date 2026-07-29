@@ -15,6 +15,7 @@
   import { Users, Plus, Trash2, Pencil, Send, Ghost, Palette } from 'lucide-svelte';
   import { alertDialog, confirmDialog, promptDialog } from '$lib/components/RidgeDialog.svelte';
   import { autoGrow } from '$lib/actions/autoGrow';
+  import { enqueuePtyWrite } from '$lib/terminal/ptyWriteQueue';
   import { recordMemberTask } from './memberTasks';
   import AgentMemberRow from './AgentMemberRow.svelte';
   import type { TeammateProfile, PendingApproval } from './teammateModel';
@@ -150,7 +151,9 @@
       return;
     }
     try {
-      await invoke('write_to_pty', { paneId: leader.paneId, data: `${text}\r` });
+      await enqueuePtyWrite(`${workspaceId}:${leader.paneId}`, () =>
+        invoke('write_to_pty', { workspaceId, paneId: leader.paneId, data: `${text}\r` }),
+      );
       store.recordTask(g.id, text, [leader.agentId]);
       recordMemberTask(leader.agentId, text); // 成员级「最近任务」同步（成员列表展示）
       taskInput = { ...taskInput, [g.id]: '' };

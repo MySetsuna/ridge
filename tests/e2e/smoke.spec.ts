@@ -56,7 +56,7 @@ async function bootSpa(page: Page): Promise<void> {
 test.describe('Ridge dev-server chrome', () => {
   test('boots and mounts the left rail with at least two buttons', async ({ page }) => {
     await bootSpa(page);
-    const leftRail = page.locator('aside.w-\\[52px\\]').first();
+    const leftRail = page.getByRole('complementary', { name: 'Primary navigation' });
     await expect(leftRail).toBeVisible({ timeout: 10_000 });
     const railButtons = leftRail.locator('button');
     expect(await railButtons.count()).toBeGreaterThanOrEqual(2);
@@ -73,7 +73,7 @@ test.describe('Ridge dev-server chrome', () => {
 
   test('clicking files/git rail buttons switches the sidebar tab', async ({ page }) => {
     await bootSpa(page);
-    const rail = page.locator('aside.w-\\[52px\\]').first();
+    const rail = page.getByRole('complementary', { name: 'Primary navigation' });
     await expect(rail).toBeVisible({ timeout: 10_000 });
     const buttons = rail.locator('button');
     // Click both in sequence — no assertion on content (which needs Tauri),
@@ -224,7 +224,7 @@ test.describe('P1 boot + resize regression guards', () => {
     await page.setViewportSize({ width: 800, height: 600 });
     await page.waitForTimeout(120);
     await page.setViewportSize({ width: 1280, height: 800 });
-    const leftRail = page.locator('aside.w-\\[52px\\]').first();
+    const leftRail = page.getByRole('complementary', { name: 'Primary navigation' });
     await expect(leftRail).toBeVisible({ timeout: 5_000 });
   });
 

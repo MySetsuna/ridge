@@ -768,6 +768,15 @@ fn read_claude_history_sync(
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentResumeSpec {
+    pub executable: String,
+    pub argv: Vec<String>,
+    pub cwd: String,
+    pub session_id: String,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentRecentReply {
     pub agent: String,
     pub text: String,
@@ -775,6 +784,8 @@ pub struct AgentRecentReply {
     pub project: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume: Option<AgentResumeSpec>,
 }
 
 /// Read recent assistant messages from Claude Code and Codex session JSONL.
@@ -942,12 +953,26 @@ fn parse_agent_jsonl(agent: &str, content: &str, fallback_timestamp: u64) -> Vec
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .or_else(|| session_id.clone());
+        let resume = line_session.as_ref().and_then(|id| {
+            let (executable, argv) = match agent.to_ascii_lowercase().as_str() {
+                "claude" => ("claude", vec!["--resume", id.as_str()]),
+                "codex" => ("codex", vec!["resume", id.as_str()]),
+                _ => return None,
+            };
+            Some(AgentResumeSpec {
+                executable: executable.to_string(),
+                argv: argv.into_iter().map(str::to_string).collect(),
+                cwd: line_project.clone(),
+                session_id: id.clone(),
+            })
+        });
         replies.push(AgentRecentReply {
             agent: agent.to_string(),
             text,
             timestamp: json_timestamp_ms(&value).unwrap_or(fallback_timestamp),
             project: line_project,
             session_id: line_session,
+            resume,
         });
     }
     replies
@@ -1042,6 +1067,9 @@ mod tests {
         assert_eq!(replies[0].text, "fixed it");
         assert_eq!(replies[0].project, r"C:\code\wind");
         assert_eq!(replies[0].session_id.as_deref(), Some("claude-1"));
+        assert_eq!(replies[0].resume.as_ref().map(|r| r.executable.as_str()), Some("claude"));
+        assert_eq!(replies[0].resume.as_ref().map(|r| r.argv.clone()), Some(vec!["--resume".into(), "claude-1".into()]));
+        assert_eq!(replies[0].resume.as_ref().map(|r| r.cwd.as_str()), Some(r"C:\code\wind"));
     }
 
     #[test]
@@ -1056,6 +1084,8 @@ mod tests {
         assert_eq!(replies[0].text, "tests green");
         assert_eq!(replies[0].project, r"C:\code\wind");
         assert_eq!(replies[0].session_id.as_deref(), Some("codex-1"));
+        assert_eq!(replies[0].resume.as_ref().map(|r| r.executable.as_str()), Some("codex"));
+        assert_eq!(replies[0].resume.as_ref().map(|r| r.argv.clone()), Some(vec!["resume".into(), "codex-1".into()]));
     }
 
     #[test]

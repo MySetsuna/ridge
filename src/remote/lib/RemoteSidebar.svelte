@@ -9,9 +9,10 @@
   import type { RemoteLink, RemotePanel } from '@ridge/remote';
   import type { DataProvider } from '$lib/transport';
 
-  let { tab = 'files', cwd = '', available, ws, dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane }: {
+  let { tab = 'files', cwd = '', workspaceId = '', available, ws, dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane }: {
     tab?: RemotePanel;
     cwd?: string;
+    workspaceId?: string;
     available: Readonly<Record<RemotePanel, boolean>>;
     /** P1 roster：team 面板取数用（capability `teammate` 协商后 tab 才可见）。 */
     ws?: RemoteLink;
@@ -70,7 +71,7 @@
       {:else if tab === 'git'}
         <SidebarGitPanel {provider} {onOpenDiff} />
       {:else if tab === 'team' && ws}
-        <SidebarTeamRoster {ws} {onSelectPane} />
+        <SidebarTeamRoster {ws} {workspaceId} {onSelectPane} />
       {:else}
         <SidebarSearch {provider} {onOpenFile} />
       {/if}

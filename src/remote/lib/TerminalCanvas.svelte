@@ -2,8 +2,9 @@
   import { onMount, onDestroy } from 'svelte';
   import { t } from '$lib/i18n';
   import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
+  import { paneRefKey } from '@ridge/remote';
   import { anyMod, consumeMods } from './modState.svelte';
-  import { terminalVisualShiftPx } from './keyboardOffset';
+  import { resolveInputAnchor, terminalVisualShiftPx } from './keyboardOffset';
   import { writeClipboard } from './clipboard';
   import { copySelectionOnly } from '@ridge/remote/shared/terminal/mobileCopy';
   import {
@@ -27,7 +28,7 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId, workspaceId, onStdin, onResize, onHostClipboard, onNearTop, onKeyboardShift, scrollbackLoading = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
+  let { paneId: remotePaneId, workspaceId, onStdin, onResize, onHostClipboard, onNearTop, onKeyboardShift, scrollbackLoading = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
     onStdin: (data: string) => void;
@@ -46,6 +47,7 @@
     backendName?: string;
   } = $props();
 
+  const paneId = $derived(paneRefKey({ workspaceId, paneId: remotePaneId }));
   const manager = TerminalManager.instance();
   const td = new TextDecoder();
 
@@ -162,12 +164,24 @@
     // (separate event types).
     const stopPointer = (e: PointerEvent) => { e.stopPropagation(); };
     const el = containerEl;
+    const onContextLost = (e: Event) => { e.preventDefault(); };
+    const onContextRestored = () => {
+      if (!alive || !attached) return;
+      manager.forceFullRedraw(paneId);
+      manager.fitPaneNow(paneId);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') onContextRestored();
+    };
     if (el) {
       el.addEventListener('pointerdown', stopPointer, true);
       el.addEventListener('pointermove', stopPointer, true);
       el.addEventListener('pointerup', stopPointer, true);
       el.addEventListener('pointercancel', stopPointer, true);
+      el.addEventListener('webglcontextlost', onContextLost);
+      el.addEventListener('webglcontextrestored', onContextRestored);
     }
+    document.addEventListener('visibilitychange', onVisibility);
 
     void (async () => {
       await manager.ready();
@@ -198,7 +212,7 @@
       // Grid change → claim this viewport's size on the host (auto 自适应全屏).
       manager.onResize(paneId, (rows, cols) => {
         if (onResize && containerEl) {
-          onResize(paneId, rows, cols, Math.round(containerEl.clientWidth), Math.round(containerEl.clientHeight));
+          onResize(remotePaneId, rows, cols, Math.round(containerEl.clientWidth), Math.round(containerEl.clientHeight));
         }
       });
       manager.setFocused(paneId, true);
@@ -214,7 +228,10 @@
         el.removeEventListener('pointermove', stopPointer, true);
         el.removeEventListener('pointerup', stopPointer, true);
         el.removeEventListener('pointercancel', stopPointer, true);
+        el.removeEventListener('webglcontextlost', onContextLost);
+        el.removeEventListener('webglcontextrestored', onContextRestored);
       }
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   });
 
@@ -231,9 +248,32 @@
     if (attached) manager.park(paneId);
   });
 
+  function positionInputAtCursorOrCenter() {
+    const el = hiddenInput;
+    if (!el) return;
+    const rect = containerEl?.getBoundingClientRect();
+    if (rect) {
+      const vv = window.visualViewport;
+      const anchor = resolveInputAnchor(getCursorPixel(), {
+        containerLeft: rect.left,
+        containerTop: rect.top,
+        containerWidth: rect.width,
+        containerHeight: rect.height,
+        visualLeft: vv?.offsetLeft ?? 0,
+        visualTop: vv?.offsetTop ?? 0,
+        visualWidth: vv?.width ?? window.innerWidth,
+        visualHeight: vv?.height ?? window.innerHeight,
+      });
+      el.style.left = `${Math.round(anchor.x)}px`;
+      el.style.top = `${Math.round(anchor.y)}px`;
+      el.style.height = `${Math.max(1, Math.round(anchor.h))}px`;
+    }
+  }
+
   function focusInput() {
     const el = hiddenInput;
     if (!el) return;
+    positionInputAtCursorOrCenter();
     el.focus({ preventScroll: true });
     // §A iOS sometimes drops focus on the tiny invisible textarea — re-assert
     // on the next frame and give it a caret so the keyboard reliably stays up.
@@ -244,15 +284,12 @@
     });
   }
 
-  /** Park the hidden textarea at the cursor so the IME candidate window shows
-   *  in place; falls back to the top-left when the cursor position is unknown. */
-  function parkInputAtCursor() {
-    if (!hiddenInput || !attached) return;
-    const p = getCursorPixel();
-    if (!p) return;
-    hiddenInput.style.left = `${Math.round(p.x)}px`;
-    hiddenInput.style.top = `${Math.round(p.y)}px`;
-    hiddenInput.style.height = `${Math.round(p.h)}px`;
+  /** Explicit soft-keyboard opening is the only path that snaps history back
+   * to live output. Pointer coordinates never participate in the IME anchor. */
+  function openSoftKeyboard() {
+    if (!attached) return;
+    manager.scrollToBottom(paneId);
+    focusInput();
   }
 
   // ── Public API (called by MainApp via bind:this) ──
@@ -457,7 +494,7 @@
       }
       // §select-tap-keyboard: a TAP (not a drag) in selection mode also raises
       // the soft keyboard so you can type without first leaving select mode.
-      if (!wasDragging) focusInput();
+      if (!wasDragging) openSoftKeyboard();
       return;
     }
     const elapsed = Date.now() - touchStartTime;
@@ -466,7 +503,7 @@
     if (hasSelectionState || hasSelection()) {
       manager.clearSelection(paneId);
       hasSelectionState = false;
-      focusInput();
+      openSoftKeyboard();
       return;
     }
     // Otherwise: focus (raise the soft keyboard) + click-through in TUI apps.
@@ -485,7 +522,7 @@
         });
       }
     }
-    focusInput();
+    openSoftKeyboard();
   }
 
   // ── Composition (IME) + plain text input, both via the hidden textarea ──
@@ -537,7 +574,7 @@
     // §R4 IME: mark the input-start anchor + capture the preedit anchor cell.
     isComposing = true;
     manager.markInputStart(paneId);
-    parkInputAtCursor();
+    positionInputAtCursorOrCenter();
   }
   function handleCompositionUpdate(e: CompositionEvent) {
     // Renderer-side preedit overlay: painted on top of the cell grid without
@@ -989,9 +1026,9 @@
   /* Near-invisible input sink parked at the cursor. pointer-events:none keeps it
      from stealing canvas clicks. Opacity must be >0 so the IME candidate window
      anchors to a detectable element. */
-  .hidden-input{position:absolute;top:0;left:0;width:1px;height:1em;margin:0;padding:0;border:0;
+  .hidden-input{position:absolute;top:0;left:0;width:1px;height:1em;margin:0;padding:0;border:0;font-size:16px;
     opacity:0.01;pointer-events:none;resize:none;overflow:hidden;white-space:nowrap;z-index:5;
-    background:transparent;color:transparent;caret-color:transparent;outline:none;font:inherit}
+    background:transparent;color:transparent;caret-color:transparent;outline:none;font-family:inherit}
   .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--rg-fg-muted);font-size:14px;z-index:4}
   .copy-pill{position:absolute;top:8px;right:8px;z-index:6;display:flex;align-items:center;justify-content:center;height:32px;padding:0 16px;border:1px solid var(--rg-accent);border-radius:16px;background:color-mix(in srgb,var(--rg-accent) 22%,var(--rg-surface));color:var(--rg-fg);font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 4px 14px -2px rgba(0,0,0,.5);-webkit-tap-highlight-color:transparent}
   .copy-pill:active{background:color-mix(in srgb,var(--rg-accent) 36%,var(--rg-surface))}

@@ -1,4 +1,5 @@
 import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
+import type { PaneRef } from '@ridge/remote';
 import type { HostTopologyLink } from './hostForest';
 
 export interface RemotePaneBinding {
@@ -28,8 +29,12 @@ export function bindRemotePane(binding: RemotePaneBinding): void {
     pendingBytes: 0,
     unlisten: () => {},
   };
-  live.unlisten = binding.link.onRawBytes((paneId, bytes) => {
-    if (paneId !== binding.remotePaneId) return;
+  const pane: PaneRef = {
+    workspaceId: binding.workspaceId,
+    paneId: binding.remotePaneId,
+  };
+  live.unlisten = binding.link.onRawBytes((incoming, bytes) => {
+    if (incoming.paneId !== pane.paneId || incoming.workspaceId !== pane.workspaceId) return;
     if (live.active) {
       TerminalManager.instance().feed(binding.localPaneId, bytes);
       return;
@@ -40,13 +45,13 @@ export function bindRemotePane(binding: RemotePaneBinding): void {
       live.pendingBytes -= live.pending.shift()!.byteLength;
     }
   });
-  for (const text of binding.link.getPaneOutput(binding.remotePaneId)) {
+  for (const text of binding.link.getPaneOutput(pane)) {
     const bytes = new TextEncoder().encode(text);
     live.pending.push(bytes);
     live.pendingBytes += bytes.byteLength;
   }
   bindings.set(binding.localPaneId, live);
-  binding.link.subscribePane(binding.remotePaneId);
+  binding.link.subscribePane(pane);
 }
 
 export function remotePaneBinding(localPaneId: string): RemotePaneBinding | undefined {
@@ -62,11 +67,18 @@ export function localPaneIdsForRemote(hostId: string, remotePaneId: string): str
 
 export async function deleteRemotePane(
   hostId: string,
-  remotePaneId: string,
-  link: HostTopologyLink,
-  closeLocalPane: (localPaneId: string) => Promise<void>,
+  workspaceIdOrRemotePaneId: string,
+  remotePaneIdOrLink: string | HostTopologyLink,
+  linkOrCloseLocal: HostTopologyLink | ((localPaneId: string) => Promise<void>),
+  maybeCloseLocal?: (localPaneId: string) => Promise<void>,
 ): Promise<boolean> {
-  if (!await link.closePane(remotePaneId)) return false;
+  const legacy = typeof remotePaneIdOrLink !== 'string';
+  const workspaceId = legacy ? '' : workspaceIdOrRemotePaneId;
+  const remotePaneId = legacy ? workspaceIdOrRemotePaneId : remotePaneIdOrLink;
+  const link = (legacy ? remotePaneIdOrLink : linkOrCloseLocal) as HostTopologyLink;
+  const closeLocalPane = (legacy ? linkOrCloseLocal : maybeCloseLocal) as (localPaneId: string) => Promise<void>;
+  if (typeof link.closePane !== 'function') return false;
+  if (!await link.closePane({ workspaceId, paneId: remotePaneId })) return false;
   for (const localPaneId of localPaneIdsForRemote(hostId, remotePaneId)) {
     await closeLocalPane(localPaneId);
   }
