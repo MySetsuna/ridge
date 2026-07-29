@@ -215,10 +215,11 @@
   // readText() is permitted. Previously this sent `{type:'paste'}` to the host,
   // which had no handler — so the button did nothing.
   async function handlePaste() {
-    if (!ui.activePaneId || !canvasRef) return;
+    const target = canvasRef;
+    if (!activePaneRef() || !target) return;
     try {
       const text = await navigator.clipboard.readText();
-      if (text) canvasRef.pasteText(text);
+      if (text) target.pasteText(text);
     } catch { /* clipboard blocked: no permission / insecure context */ }
   }
 
@@ -227,9 +228,8 @@
   // scrolls up. TerminalCanvas fires onNearTop when the viewport nears the buffer
   // top; fetch the next older batch (cloud link only) and prepend it. Guard against
   // a pane switch mid-fetch so we never prepend one pane's history onto another.
-  async function loadOlderScrollback() {
-    const pane = activePaneRef();
-    if (!pane || !canvasRef || !ws.fetchOlderScrollback) return;
+  async function loadOlderScrollback(pane: PaneRef) {
+    if (!canvasRef || !ws.fetchOlderScrollback) return;
     const key = paneRefKey(pane);
     if (scrollbackLoadingPaneIds.includes(key)) return;
     scrollbackLoadingPaneIds = [...scrollbackLoadingPaneIds, key];
@@ -379,9 +379,8 @@
     kernelTheme = buildKernelTheme(colors);
   }
 
-  function onStdin(data: string) {
-    const pane = activePaneRef();
-    if (pane) ws.sendStdin(pane, data);
+  function onStdin(pane: PaneRef, data: string) {
+    ws.sendStdin(pane, data);
   }
 
   // Automatic refit (ResizeObserver / visualViewport): the controller fires this
@@ -391,9 +390,8 @@
   // until the manual refresh button. `claimPane` runs the SAME host path as that
   // button (resize real PTY + parser, broadcast `pty-resized`), giving automatic
   // 自适应全屏 reflow without the manual tap.
-  function onResize(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
-    if (!ui.activeWorkspaceId) return;
-    ws.claimPane({ workspaceId: ui.activeWorkspaceId, paneId }, rows, cols, pixelWidth, pixelHeight);
+  function onResize(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
+    ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight);
   }
 
   function handleRefresh() {
@@ -739,7 +737,7 @@
   $effect(() => {
     const pid = ui.activePaneId;
     const workspaceId = ui.activeWorkspaceId;
-    if (!pid) { subscribedPaneId = null; return; } // null gap → force re-subscribe next
+    if (!pid || !workspaceId) { subscribedPaneId = null; return; } // null gap → force re-subscribe next
     untrack(() => {
       const pane = { workspaceId, paneId: pid };
       const subscriptionKey = paneRefKey(pane);
