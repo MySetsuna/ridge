@@ -12,8 +12,9 @@
 // Usage: pnpm tauri:dev:cdp (running) → node scripts/cdp-dirchildren-probe.mjs [path]
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import http from 'node:http';
+import { resolveCdpPort } from './cdp-port.mjs';
 
-const CDP_PORT = Number(process.env.CDP_PORT ?? 9222);
+const CDP_PORT = resolveCdpPort();
 const DIR = process.argv[2] || 'C:/code/wind';
 const PAGE = 3;
 const log = (...a) => console.log('[dirchildren]', ...a);

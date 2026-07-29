@@ -9,8 +9,9 @@
 //        node scripts/cdp-term-input.mjs "echo hi"  # custom command
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import http from 'node:http';
+import { resolveCdpPort } from './cdp-port.mjs';
 
-const CDP_PORT = Number(process.env.CDP_PORT ?? 9222);
+const CDP_PORT = resolveCdpPort();
 
 // Default emoji conformance sheet (single PowerShell line; `cls` first for a
 // clean frame). Covers: basic, CJK width, ZWJ sequences, skin-tone modifiers,
@@ -61,6 +62,7 @@ async function cdpEnableRemote() {
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   let pane = null;
+  let workspace = null;
   const sendJson = (o) => ws.send(JSON.stringify(o));
   const finish = (ok, msg) => { try { ws.close(); } catch {} console.log(msg); process.exit(ok ? 0 : 1); };
   const tmo = setTimeout(() => finish(false, 'timeout'), 12000);
@@ -70,14 +72,15 @@ async function cdpEnableRemote() {
     if (typeof ev.data !== 'string') return;
     let m; try { m = JSON.parse(ev.data); } catch { return; }
     if (m.type === 'panes') {
+      workspace = m.workspaceId;
       if (m.panes.length) { pane = m.panes[0].id; drive(); }
       else sendJson({ type: 'create-pane' });
-    } else if (m.type === 'create-pane-result' && m.success) { pane = m.paneId; setTimeout(drive, 600); }
+    } else if (m.type === 'create-pane-result' && m.success) { pane = m.paneId; sendJson({ type: 'list-panes' }); }
   };
   function drive() {
     console.log('pane =', pane);
-    sendJson({ type: 'subscribe-pane', paneId: pane });
-    setTimeout(() => { sendJson({ type: 'stdin', paneId: pane, data: cmd + '\r' }); }, 300);
+    sendJson({ type: 'subscribe-pane', workspaceId: workspace, paneId: pane });
+    setTimeout(() => { sendJson({ type: 'stdin', workspaceId: workspace, paneId: pane, data: cmd + '\r' }); }, 300);
     setTimeout(() => { clearTimeout(tmo); finish(true, 'injected ✓'); }, 1500);
   }
 })().catch((e) => { console.error('FAIL:', e.message); process.exit(1); });

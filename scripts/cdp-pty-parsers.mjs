@@ -28,8 +28,9 @@
 // Exit 0 = all three parsers confirmed; non-zero = failure (see summary).
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import http from 'node:http';
+import { resolveCdpPort } from './cdp-port.mjs';
 
-const CDP_PORT = Number(process.env.CDP_PORT ?? 9222);
+const CDP_PORT = resolveCdpPort();
 const log = (...a) => console.log('[pty-e2e]', ...a);
 const fail = (m) => { console.error('[pty-e2e] FAIL:', m); process.exit(1); };
 
@@ -158,11 +159,11 @@ async function waitForRidgeTarget(maxMs = 90000) {
     done();
   }
 
-  function drive(paneId) {
+  function drive(workspaceId, paneId) {
     summary.pane = paneId;
     log('subscribe-pane', paneId);
-    ws.send(JSON.stringify({ type: 'subscribe-pane', paneId }));
-    setTimeout(() => { log('stdin → marker command'); ws.send(JSON.stringify({ type: 'stdin', paneId, data: CMD + '\r' })); }, 800);
+    ws.send(JSON.stringify({ type: 'subscribe-pane', workspaceId, paneId }));
+    setTimeout(() => { log('stdin → marker command'); ws.send(JSON.stringify({ type: 'stdin', workspaceId, paneId, data: CMD + '\r' })); }, 800);
     // Collect for a window long enough for the shell to echo + run + emit.
     setTimeout(evaluateAndFinish, 6500);
   }
@@ -175,10 +176,10 @@ async function waitForRidgeTarget(maxMs = 90000) {
     if (typeof ev.data === 'string') {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if (m.type === 'panes') {
-        if (m.panes.length) drive(m.panes[0].id);
+        if (m.panes.length) drive(m.workspaceId, m.panes[0].id);
         else { log('no panes → create-pane'); ws.send(JSON.stringify({ type: 'create-pane' })); }
       } else if (m.type === 'create-pane-result') {
-        if (m.success && m.paneId) setTimeout(() => drive(m.paneId), 800);
+        if (m.success && m.paneId) ws.send(JSON.stringify({ type: 'list-panes' }));
         else { summary.errors.push('create-pane failed: ' + (m.error || '?')); evaluateAndFinish(); }
       } else if (m.type === 'pty-meta') {
         summary.metas++;

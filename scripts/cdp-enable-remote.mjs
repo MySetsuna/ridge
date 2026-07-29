@@ -3,7 +3,8 @@
 // resolved port + current pairing code. Used to bring the dev:cdp host's remote
 // up after a restart so the mobile-remote e2e can connect. dev-only.
 import http from 'node:http';
-const port = process.env.CDP_PORT ?? '9222';
+import { resolveCdpPort } from './cdp-port.mjs';
+const port = resolveCdpPort();
 const host = '127.0.0.1';
 const fetchJson = (p) => new Promise((res, rej) => {
   const r = http.get({ host, port, path: p, timeout: 3000 }, (x) => { let b = ''; x.on('data', (c) => (b += c)); x.on('end', () => { try { res(JSON.parse(b)); } catch (e) { rej(e); } }); });

@@ -10,7 +10,11 @@ if (process.env.TAURI_SKIP_VITE_DEV) {
 
 console.log('[start-vite-dev] Starting Vite dev server...');
 
-const child = spawn('pnpm', ['run', 'dev'], {
+const viteArgs = ['run', 'dev'];
+if (process.env.RIDGE_DEV_SERVER_PORT) {
+  viteArgs.push('--host', '127.0.0.1', '--port', process.env.RIDGE_DEV_SERVER_PORT, '--strictPort');
+}
+const child = spawn('pnpm', viteArgs, {
   stdio: 'inherit',
   shell: true,
   env: {
