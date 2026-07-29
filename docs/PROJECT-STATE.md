@@ -212,8 +212,8 @@ sequenceDiagram
 | R62-GEOMETRY | 桌面浏览器 LAN/public pane 网格、画面与指针一致 | P0 | **代码已实现，真实浏览器 E2E 待补**（`96ce9fc`）：共享 `PaneGeometry` 统一 content rect、padding、cell、DPR、grid 与 pointer clamp；纯函数/manager/合同回归绿 |
 | R62-SAVED | 已保存工作区重开、删除、滚动条统一 | P1 | **关闭**（`fe37599`）：关闭清 pane runtime；默认目录直接 `.ridge` 受限删除；确认后原位刷新；弹层使用 `rg-scroll`；相关 Vitest/Rust/svelte-check 绿 |
 | R63-MOBILE-CONTINUITY | Mobile Query/store、跨 workspace pane 保活、弱网 active QoS、键盘 transform、scrollback 连续分页/loading 与 pane 行纯 icon | P0 | **代码已修，真机验收待补**：cursor-only+回底、复合 PaneRef、host fail-closed、后台保活与 high/low writer 已落地并有定向测试；仍缺真实手机/浏览器切换、弱网与长 scrollback 证据 |
-| R64-AGENT-HISTORY | Agent 历史会话按类型分组折叠，以原始结构化参数恢复；运行中会话复用成员/编组交互项；扩展 CLI adapter | P1 | **部分完成**：历史回复已按 Agent 类型分组并可折叠；后端输出 `resume{executable,argv,cwd,sessionId}`，native session 摘要新增 active pane `cwd`，同名 sessionId 可直接接入复用；仍缺跨命名 session 的稳定 ID 持久化 |
-| R65-AGENT-COMMUNE | 控制/文档区移底；成员/编组/历史连续；Agent Tab 与 pane header 同状态 | P0 | **部分完成**：控制/文档移底、三 tab、rosterChanged/status sync 已落地；历史仍缺按类型分组折叠、结构化 resume 与完整历史 adapter |
+| R64-AGENT-HISTORY | Agent 历史会话按类型分组折叠，以原始结构化参数恢复；运行中会话复用成员/编组交互项；扩展 CLI adapter | P1 | **代码已修，真 CLI 证据待补**：按原生 session id 一 session 一行；标题/id/cwd/latest assistant 分区展示，结构化 `executable+argv+cwd` 恢复；未知 CLI/Grok 诚实禁用，不发明跨命名 ID |
+| R65-AGENT-COMMUNE | 控制/文档区移底；成员/编组/历史连续；Agent Tab 与 pane header 同状态 | P0 | **代码已修，真实接收待复验**：控制/文档移底、三 tab、attention/status 同源、历史与结构化 resume 已落地；Commune MCP send 默认以 CR 提交，目标 Agent 真机接收属 user-track |
 | R65-REMOTE-SMOOTH | 复合 pane 身份、后台保活、cursor-only 键盘回底、非阻断 scrollback | P0 | **代码已修，深研与真机验收中**：复合身份、fail-closed、worker scrollback、独立高低优先级 writer、WebGL context restore/visibility 重绘已落地；仍需真实桌面 RemoteTab/移动端 E2E |
 
 ### 2026-07-29 iteration 65 实施证据
@@ -441,3 +441,14 @@ sequenceDiagram
 - `fileExplorer.test.ts` 33 测通过；`Explorer.svelte` 编译通过。全仓与 components
   `svelte-check` 分别于 184/124 秒超时，已按精确 PID 回收本轮自产检查树，未触碰宿主 Ridge。
   Windows 权限/跨卷真实用户卷矩阵仍属 user-track。
+
+## 2026-07-29 iteration 73 · 已批残项终审
+
+- NLM 初审提出稳定 UUID registry、OS PID/PTy 探测、Explorer 批量 DTO 与粘贴 telemetry；
+  逐项对照合同与 CodeGraph 后，前三者分别违背原生 session id、PTY master 能力边界或既有逐路径
+  诊断事实，telemetry 仅属“假设/待确认”，均不扩张实现。
+- iteration 72 闭合唯一真实代码缺口后，以最新两源再次对抗复核，结论为“无代码侧残项，仅余
+  user-track”。故修正 R64/R65 旧状态，删除“跨命名稳定 ID 持久化”等伪缺口。
+- 余项仅可由真实环境给证：Windows ConPTY/PowerShell/用户卷、Codex/Claude PTY 录制、
+  真实分屏与 60Hz 手感、真实 Agent/无头链、LAN/public/WebRTC、跨账号分享及 iOS/Android。
+  按禁令不启动或干预宿主 Ridge，不发布，不以 fixture 冒充。
