@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { loadHostForest, type HostForestSource } from './hostForest';
+import {
+  hostTopologyErrorKind,
+  loadHostForest,
+  retainHostForest,
+  type HostForestResult,
+  type HostForestSource,
+} from './hostForest';
 
 function source(
   hostId: string,
@@ -81,5 +87,53 @@ describe('loadHostForest', () => {
         }],
       },
     ]);
+  });
+
+  it('retains the last successful tree when a refresh fails', () => {
+    const previous: HostForestResult = {
+      hostId: 'host-a',
+      workspaces: [{ id: 'w', name: 'kept', active: true, panes: [] }],
+    };
+    expect(retainHostForest(previous, {
+      hostId: 'host-a',
+      workspaces: [],
+      error: 'list_workspaces timeout',
+    })).toEqual({
+      hostId: 'host-a',
+      workspaces: previous.workspaces,
+      error: 'list_workspaces timeout',
+    });
+    expect(retainHostForest({
+      ...previous,
+      error: 'first timeout',
+    }, {
+      hostId: 'host-a',
+      workspaces: [],
+      error: 'second timeout',
+    }).workspaces).toEqual(previous.workspaces);
+  });
+
+  it('cancels a pending host refresh without waiting for its transport', async () => {
+    const controller = new AbortController();
+    const pending: HostForestSource = {
+      hostId: 'slow',
+      signal: controller.signal,
+      link: {
+        listWorkspaces: vi.fn(
+          () => new Promise<{ workspaces: [] }>(() => {}),
+        ),
+        listWorkspacePanes: vi.fn(),
+      },
+    };
+    const result = loadHostForest([pending]);
+    controller.abort();
+    await expect(result).resolves.toEqual([
+      { hostId: 'slow', workspaces: [], error: '请求已取消' },
+    ]);
+  });
+
+  it('separates authentication failures from retryable transport failures', () => {
+    expect(hostTopologyErrorKind('TOTP 验证失败')).toBe('auth');
+    expect(hostTopologyErrorKind('list_workspaces timeout')).toBe('retryable');
   });
 });
