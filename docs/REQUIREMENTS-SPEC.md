@@ -582,10 +582,37 @@
 - 验收：ridge-tmux 测试证明 creator metadata 从 HTTP header 入 session/list DTO；tmux shim 测试证明工作区/pane header 传播；前端测试证明按 agent 归组与 attach 调用。
 - 追踪：`src-tauri/src/bin/tmux.rs`、`src-tauri/src/commands/terminal.rs`、`packages/ridge-tmux/src/{http.rs,lib.rs}`、`src/lib/stores/hosts.ts`、`AgentCenterPanel.svelte`。
 
+### REQ-AGENT-COMMUNE-MCP-SUBMIT-03
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.1`
+- 批准证据：用户明确“批准”，要求载入本迭代并修复。
+- 类型：`FIX`
+- 关联：`REQ-AGENT-COMMUNE-CONTINUITY-01`；取代 `CONTRACT-iteration-65.md`
+  中 `ridge_send_to_teammate` 默认仅注入草稿的旧语义。
+- 原始意图：Ridge Agents Commune MCP 的发送方法须让目标 Agent 真正收到提交；不得只把提示词
+  留在目标输入框。
+- 根因证据：共享 MCP 将 `ridge_send_to_teammate` 默认映射为 `submit=false`；
+  旧 HTTP `delegate-task` 与 `send-keys` 提交路径另使用 LF。Claude/Codex raw-mode TUI
+  需 CR 表示 Enter，LF 只会留在编辑框。
+- 目标行为：
+  - `ridge_send_to_teammate` 默认写入并提交；仅显式 `submit:false` 时注入草稿。
+  - `ridge_send_and_submit`、`ridge_delegate_task` 继续强制提交。
+  - 所有提交型 MCP/HTTP/tmux 路径统一去除尾随 CR/LF 后追加单一 CR。
+  - 回执只声明 `submit_dispatched`、`terminalAccepted`；未经目标 Agent 明确确认，
+    `agentAcknowledged` 仍为 false。
+- 边界：不启动、终止或干预宿主 Ridge；不以 PTY 接受写入冒充 Agent 已执行；保留显式草稿能力。
+- 验收：Rust 测证明默认 send 进入提交态、显式草稿仍不提交、Enter 字节恒为 CR 无 LF；
+  legacy delegate/send-keys 复用同一规范化函数；相关 crate 测试与 `git diff --check` 通过。
+- 预期落点：`packages/ridge-mcp/src/{registry,server}.rs`、
+  `src-tauri/src/teammate/server.rs`。
+
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
 | --- | --- | --- | --- | --- | --- |
+| v0.3.1 | 2026-07-29 | `<DIRECT-FIX>` | Commune MCP send 默认真提交；提交 Enter 统一为 CR | 新增 `REQ-AGENT-COMMUNE-MCP-SUBMIT-03`；取代 iteration 65 的默认草稿语义 | 用户明确“批准”，要求载入本迭代并修复 |
 | v0.3.0 | 2026-07-29 | 本轮 12 项 `PENDING-REQ-*` | 终端、Explorer、Remote、Agent 与对比度深研转 Active；无头项收紧为仅诊断，删除须另批 | 新增 12 项 `REQ-*`；既有 Active 差距继续有效 | 用户授权“审核无问题即全部通过”；Codex 审计通过 |
 | v0.2.0 | 2026-07-27 | `<INITIAL>` | 建立 Remote/Agent 六项需求基线 | - | 用户本线程六项明确落地指令 |
 | v0.2.0 | 2026-07-27 | `PENDING-REQ-REMOTE-HOST-TREE-01` | 公网/LAN 主机三层树转 Active | 新增 `REQ-REMOTE-HOST-TREE-01` | 用户明确“将之前 pending 的两个需求通过审批” |

@@ -63,7 +63,7 @@ impl Default for ToolRegistry {
             ToolSpec {
                 name: "ridge_send_to_teammate".to_string(),
                 description:
-                    "向指定 pane 写入文本草稿并留一份到收件箱；不派发 Enter，返回 draft_injected。"
+                    "向指定 pane 写入文本、默认派发 Enter，并留一份到收件箱；仅 submit=false 时注入草稿。"
                         .to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -76,6 +76,10 @@ impl Default for ToolRegistry {
                         "from": {
                             "type": "string",
                             "description": "发送方标识（跨 agent 协作时写自己的名字，默认 mcp-client）"
+                        },
+                        "submit": {
+                            "type": "boolean",
+                            "description": "是否派发 Enter；默认 true，仅显式 false 时保留为草稿"
                         }
                     },
                     "required": ["target_pane_id", "message"]

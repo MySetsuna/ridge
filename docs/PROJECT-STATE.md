@@ -417,3 +417,17 @@ sequenceDiagram
   `list_native_sessions` → `native::list_all_sessions`，Hosts/Agent Center 只投影该 DTO，
   `summon_native_session` 以显式 workspace 接入。任意外部 OS PID 无 PTY master，继续不展示、
   不伪造可召唤。按用户禁令未启动宿主，真进程链保留用户轨。
+
+## 2026-07-29 iteration 71 · Commune MCP 提交语义
+
+- 根因确认：`ridge_send_to_teammate` 虽名为发送，却默认 `submit=false`，故只把提示词留在目标
+  Agent 输入框；旧 `delegate-task`、`send-keys` 与 split 初始命令另以 LF 模拟 Enter，
+  Claude/Codex raw-mode TUI 不一定提交。
+- `ridge_send_to_teammate` 现默认真提交，仅显式 `submit:false` 留草稿；
+  `ridge_send_and_submit` / `ridge_delegate_task` 继续强制提交。桌面 MCP 与 tmux MCP 原有
+  `enter_terminated` 路径保持不变。
+- legacy delegate、send-keys、HITL 修改及 split 初始命令统一复用 `enter_terminated`：
+  去尾随 CR/LF 后仅追加单一 CR。回执仍不把 PTY 接受冒充 Agent 已确认。
+- `ridge-mcp` 60 测、Ridge teammate server 5 测通过；`git diff --check` 通过。全仓 fmt check
+  因大量既有格式漂移失败，未借机改写。按禁令未启动、终止或干预宿主 Ridge；目标 Agent
+  真机接收留用户轨复验。
