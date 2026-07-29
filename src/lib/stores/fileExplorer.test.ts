@@ -56,7 +56,47 @@ const {
   refreshColumnsCovering,
   explorerClipboard,
   setExplorerClipboard,
+  parentDirectory,
 } = await import('./fileExplorer');
+
+describe('first-open freshness', () => {
+  it('derives POSIX and Windows parent directories', () => {
+    expect(parentDirectory('/repo/src/a.ts')).toBe('/repo/src');
+    expect(parentDirectory('C:\\repo\\src\\a.ts')).toBe('C:\\repo\\src');
+  });
+
+  it('refreshes parent then returns the canonical fresh path', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      entries: [{ name: 'A.ts', path: 'C:\\Repo\\A.ts', is_dir: false }],
+      total: 1,
+      offset: 0,
+      has_more: false,
+    });
+
+    await expect(fileExplorerStore.resolveFreshFile('ws:C:\\Repo', 'c:\\repo\\a.ts'))
+      .resolves.toBe('C:\\Repo\\A.ts');
+    expect(mockInvoke).toHaveBeenCalledWith('get_directory_children', {
+      path: 'c:\\repo',
+      offset: 0,
+    });
+  });
+
+  it('does not resolve deleted files or directory replacements', async () => {
+    mockInvoke
+      .mockResolvedValueOnce({ entries: [], total: 0, offset: 0, has_more: false })
+      .mockResolvedValueOnce({
+        entries: [{ name: 'gone.ts', path: '/repo/gone.ts', is_dir: true }],
+        total: 1,
+        offset: 0,
+        has_more: false,
+      });
+
+    await expect(fileExplorerStore.resolveFreshFile('ws:/repo', '/repo/gone.ts'))
+      .resolves.toBeNull();
+    await expect(fileExplorerStore.resolveFreshFile('ws:/repo', '/repo/gone.ts'))
+      .resolves.toBeNull();
+  });
+});
 
 describe('uniqueChildName', () => {
   it('returns desired name when no collision', () => {
