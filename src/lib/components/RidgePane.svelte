@@ -210,7 +210,7 @@ function snapshotHistoryItems(query: string): string[] {
 function computeHistoryWindow(anchorRow: number, placeAbove: boolean): number {
 	const rows = manager.rows(paneId) || 24;
 	const avail = placeAbove ? anchorRow : Math.max(0, rows - anchorRow - 1);
-	return Math.max(3, Math.min(HISTORY_OVERLAY_MAX_WINDOW, avail));
+	return Math.max(1, Math.min(HISTORY_OVERLAY_MAX_WINDOW, avail));
 }
 
 function pushHistoryOverlay(): void {

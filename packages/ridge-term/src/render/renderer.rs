@@ -138,6 +138,179 @@ pub struct HistoryOverlay {
     /// §history-scroll — index of `items[0]` within the full filtered
     /// list. Drives the scrollbar thumb's vertical position.
     pub first_visible: usize,
+    /// Visible terminal grid dimensions. Geometry is clipped to this
+    /// pane-local cell rect, never the workspace host canvas.
+    pub viewport_cols: usize,
+    pub viewport_rows: usize,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) const HISTORY_OVERLAY_COL_CAP: usize = 80;
+
+#[cfg(any(target_arch = "wasm32", test))]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HistoryOverlayGeometry {
+    pub panel_x: f32,
+    pub panel_y: f32,
+    pub panel_w: f32,
+    pub panel_h: f32,
+    pub pad_w: f32,
+    pub pad_h: f32,
+    pub content_cols: usize,
+    pub visible_count: usize,
+    pub scrollbar_w: f32,
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn history_text(text: &str) -> String {
+    text.replace(['\r', '\n'], " ↵ ")
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn history_text_width(text: &str) -> usize {
+    text.chars()
+        .map(|ch| if ch.is_ascii() { 1 } else { 2 })
+        .sum::<usize>()
+        .min(HISTORY_OVERLAY_COL_CAP)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn truncate_history_text(text: &str, max_cells: usize) -> String {
+    let mut cells = 0usize;
+    text.chars()
+        .take_while(|ch| {
+            let next = cells + if ch.is_ascii() { 1 } else { 2 };
+            if next > max_cells {
+                false
+            } else {
+                cells = next;
+                true
+            }
+        })
+        .collect()
+}
+
+/// Resolve the popup inside the pane-local cell rectangle. Prefer the
+/// requested anchor side, flip when the other side fits, then clamp.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn history_overlay_geometry(
+    overlay: &HistoryOverlay,
+    widest_cells: usize,
+    requested_visible: usize,
+    cell_w: f32,
+    cell_h: f32,
+) -> Option<HistoryOverlayGeometry> {
+    if requested_visible == 0
+        || overlay.viewport_cols == 0
+        || overlay.viewport_rows == 0
+        || cell_w <= 0.0
+        || cell_h <= 0.0
+    {
+        return None;
+    }
+
+    let viewport_w = overlay.viewport_cols as f32 * cell_w;
+    let viewport_h = overlay.viewport_rows as f32 * cell_h;
+    if viewport_w < cell_w || viewport_h < cell_h {
+        return None;
+    }
+
+    let mut pad_w = 0.6 * cell_w;
+    let mut pad_h = 0.35 * cell_h;
+    if viewport_w < cell_w + 2.0 * pad_w {
+        pad_w = ((viewport_w - cell_w) / 2.0).max(0.0);
+    }
+    if viewport_h < cell_h + 2.0 * pad_h {
+        pad_h = ((viewport_h - cell_h) / 2.0).max(0.0);
+    }
+
+    let mut visible_count = requested_visible
+        .min(overlay.max_visible_rows)
+        .min(((viewport_h - 2.0 * pad_h) / cell_h).floor().max(1.0) as usize);
+    let mut needs_scrollbar = overlay.total_items > visible_count;
+    let mut scrollbar_w = if needs_scrollbar {
+        (cell_w * 0.30).clamp(4.0, 10.0)
+    } else {
+        0.0
+    };
+    let mut scrollbar_gap = if needs_scrollbar {
+        (cell_w * 0.18).max(2.0)
+    } else {
+        0.0
+    };
+    if viewport_w < cell_w + 2.0 * pad_w + scrollbar_w + scrollbar_gap {
+        scrollbar_w = 0.0;
+        scrollbar_gap = 0.0;
+        needs_scrollbar = false;
+    }
+
+    let desired_cols = widest_cells.clamp(8, HISTORY_OVERLAY_COL_CAP);
+    let desired_w =
+        desired_cols as f32 * cell_w + 2.0 * pad_w + scrollbar_w + scrollbar_gap;
+    let panel_w = desired_w.min(viewport_w);
+    let content_cols = (((panel_w - 2.0 * pad_w - scrollbar_w - scrollbar_gap) / cell_w)
+        .floor()
+        .max(1.0) as usize)
+        .min(desired_cols);
+
+    let anchor_row = overlay.anchor_row.min(overlay.viewport_rows.saturating_sub(1));
+    let above_h = anchor_row as f32 * cell_h;
+    let below_h = viewport_h - (anchor_row as f32 + 1.0) * cell_h;
+    let rows_that_fit = |height: f32| {
+        ((height - 2.0 * pad_h) / cell_h)
+            .floor()
+            .max(0.0) as usize
+    };
+    let above_rows = rows_that_fit(above_h);
+    let below_rows = rows_that_fit(below_h);
+    let preferred_rows = if overlay.place_above {
+        above_rows
+    } else {
+        below_rows
+    };
+    let fallback_rows = if overlay.place_above {
+        below_rows
+    } else {
+        above_rows
+    };
+    let place_above = if preferred_rows >= visible_count {
+        overlay.place_above
+    } else if fallback_rows >= visible_count {
+        !overlay.place_above
+    } else if above_rows.max(below_rows) > 0 {
+        let use_above = above_rows >= below_rows;
+        visible_count = visible_count.min(if use_above { above_rows } else { below_rows });
+        use_above
+    } else {
+        overlay.place_above
+    };
+
+    let panel_h = (visible_count as f32 * cell_h + 2.0 * pad_h).min(viewport_h);
+    let panel_x = if desired_w > viewport_w {
+        ((viewport_w - panel_w) / 2.0).round()
+    } else {
+        (overlay.anchor_col.min(overlay.viewport_cols.saturating_sub(1)) as f32 * cell_w)
+            .clamp(0.0, viewport_w - panel_w)
+    };
+    let wanted_y = if place_above {
+        anchor_row as f32 * cell_h - panel_h
+    } else {
+        (anchor_row as f32 + 1.0) * cell_h
+    };
+    let panel_y = wanted_y.clamp(0.0, viewport_h - panel_h);
+
+    Some(HistoryOverlayGeometry {
+        panel_x,
+        panel_y,
+        panel_w,
+        panel_h,
+        pad_w,
+        pad_h,
+        content_cols,
+        visible_count,
+        scrollbar_w: if needs_scrollbar { scrollbar_w } else { 0.0 },
+    })
 }
 
 impl<B: RenderBackend> Renderer<B> {
@@ -824,7 +997,7 @@ fn compute_row_hash(row: &crate::term::cell::Row) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::compute_row_hash;
+    use super::{compute_row_hash, history_overlay_geometry, HistoryOverlay};
     use crate::term::cell::{Cell, HyperlinkSpan, Row};
 
     fn row_with_text(text: &str, cols: usize) -> Row {
@@ -836,6 +1009,54 @@ mod tests {
             r.cells[i] = Cell::new(ch, crate::term::attr_table::AttrId::DEFAULT, 1);
         }
         r
+    }
+
+    fn overlay(row: usize, col: usize, above: bool, rows: usize, cols: usize) -> HistoryOverlay {
+        HistoryOverlay {
+            items: vec!["01234567890123456789".into(); 12],
+            selected_index: 0,
+            anchor_row: row,
+            anchor_col: col,
+            place_above: above,
+            max_visible_rows: 12,
+            total_items: 12,
+            first_visible: 0,
+            viewport_cols: cols,
+            viewport_rows: rows,
+        }
+    }
+
+    #[test]
+    fn history_overlay_flips_and_stays_inside_each_dpr_fixture() {
+        for dpr in [1.0_f32, 1.25, 1.5, 2.0] {
+            let o = overlay(23, 79, false, 24, 80);
+            let g = history_overlay_geometry(&o, 20, 8, 8.0 * dpr, 16.0 * dpr)
+                .expect("geometry");
+            let viewport_w = 80.0 * 8.0 * dpr;
+            let viewport_h = 24.0 * 16.0 * dpr;
+            assert!(g.panel_x >= 0.0 && g.panel_y >= 0.0);
+            assert!(g.panel_x + g.panel_w <= viewport_w + 0.01);
+            assert!(g.panel_y + g.panel_h <= viewport_h + 0.01);
+            assert!(g.panel_y < 23.0 * 16.0 * dpr, "must flip above");
+        }
+    }
+
+    #[test]
+    fn history_overlay_narrow_width_is_centered() {
+        let o = overlay(10, 18, false, 20, 6);
+        let g = history_overlay_geometry(&o, 80, 5, 8.0, 16.0).expect("geometry");
+        let viewport_w = 6.0 * 8.0;
+        let center_error = ((g.panel_x + g.panel_w / 2.0) - viewport_w / 2.0).abs();
+        assert!(center_error <= 1.0);
+        assert!(g.content_cols >= 1);
+    }
+
+    #[test]
+    fn history_overlay_reduces_rows_when_neither_side_fits() {
+        let o = overlay(2, 2, true, 5, 20);
+        let g = history_overlay_geometry(&o, 10, 12, 8.0, 16.0).expect("geometry");
+        assert!(g.visible_count < 12);
+        assert!(g.panel_y + g.panel_h <= 5.0 * 16.0);
     }
 
     #[test]
