@@ -389,8 +389,8 @@ sequenceDiagram
 - 恢复不再拼 shell 字符串：新 pane 调 `launch_agent_session`，以既有
   `StructuredPtyCommand { program, args, cwd }` 直启；失败回收本次新 pane。
 - 前端聚焦测 2 文件、44 测通过；teammate/components/routes 分段 Svelte 诊断均 0 error。
-  Rust 聚焦 test 与 `cargo check -p ridge --lib` 各 64 秒受同机 Cargo 负载超时；未清锁、未触碰
-  宿主 Ridge，故 Rust 运行闸仍待同机负载退去后复跑。
+  Rust 聚焦 session 聚合测试复跑 1/1 通过并完成 `ridge` lib 编译；独立
+  `cargo check -p ridge --lib` 仍于 64 秒超时，未清锁、未触碰宿主 Ridge。
 
 ## 2026-07-29 iteration 69 · History overlay 与渲染证据
 
@@ -405,3 +405,15 @@ sequenceDiagram
 - 自动对比度研究裁决：只建议静态 token WCAG 2.2 lint + forced-colors fixture；全局运行时
   DOM/像素采样与终端 ANSI 改色 deferred。见 `docs/research/auto-contrast-2026-07-29.md`。
 - 全程未启动、终止或干预宿主 Ridge。
+
+## 2026-07-29 iteration 70 · 单 host 重试与无头能力边界
+
+- topology 失败不再把最后成功 workspace/pane 树清空；保留树并投影首因。错误 host 从 5 秒
+  自动轮询中退出，须在该 host 行显式重试，故不再无限重放。
+- 同 host 重试复用既有 in-flight；组件卸载可取消等待并阻止陈旧提交。鉴权/TOTP/401/403
+  不盲重试，按钮改为“重新接入”；其他 host 不刷新、不清空。
+- 聚焦 Host forest 5 测通过；全仓 Svelte/TypeScript 0 error / 0 warning。
+- 无头链审计：`new_headless_session` → Ridge-owned `headless` socket，
+  `list_native_sessions` → `native::list_all_sessions`，Hosts/Agent Center 只投影该 DTO，
+  `summon_native_session` 以显式 workspace 接入。任意外部 OS PID 无 PTY master，继续不展示、
+  不伪造可召唤。按用户禁令未启动宿主，真进程链保留用户轨。

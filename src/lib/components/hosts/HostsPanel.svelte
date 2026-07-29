@@ -25,6 +25,8 @@
     hostsLoading,
     hostsError,
     refreshHosts,
+    retryHostTopology,
+    cancelHostTopologyRetry,
     newHeadlessSession,
     terminateSession,
     attachSession,
@@ -54,6 +56,7 @@
     type Host,
     type HostSession,
   } from '$lib/stores/hosts';
+  import { hostTopologyErrorKind } from '$lib/hosts/hostForest';
   import {
     buildHostRowAlerts,
     hostsHeaderSummary,
@@ -88,6 +91,7 @@
   let expanded = $state<Record<string, boolean>>({ headless: true });
   let expandedWorkspaces = $state<Record<string, boolean>>({});
   let busy = $state(false);
+  let topologyRetrying = $state<Record<string, boolean>>({});
   let tickInFlight = false;
 
   function toRow(host: Host): HostRowModel {
@@ -218,7 +222,30 @@
   });
   onDestroy(() => {
     if (poll) clearInterval(poll);
+    for (const hostId of Object.keys(topologyRetrying)) {
+      cancelHostTopologyRetry(hostId);
+    }
   });
+
+  async function onRetryTopology(host: Host): Promise<void> {
+    if (requiresReconnect(host)) {
+      connectOpen = true;
+      return;
+    }
+    if (topologyRetrying[host.id]) return;
+    topologyRetrying = { ...topologyRetrying, [host.id]: true };
+    try {
+      await retryHostTopology(host.id);
+    } finally {
+      const next = { ...topologyRetrying };
+      delete next[host.id];
+      topologyRetrying = next;
+    }
+  }
+
+  function requiresReconnect(host: Host): boolean {
+    return host.status === 'disconnected' || hostTopologyErrorKind(host.detail) === 'auth';
+  }
 
   function toggle(id: string) {
     expanded = { ...expanded, [id]: !expanded[id] };
@@ -587,6 +614,19 @@
             {/if}
           </button>
           {#if host.kind === 'remote' || host.kind === 'rdg'}
+            {#if hasHostTopologyLink(host.id) && (host.status === 'error' || host.status === 'disconnected')}
+              <button
+                type="button"
+                title={requiresReconnect(host) ? '重新接入此主机' : '重试此主机'}
+                aria-label={requiresReconnect(host) ? '重新接入此主机' : '重试此主机'}
+                disabled={topologyRetrying[host.id]}
+                class="mr-0.5 flex h-6 shrink-0 items-center justify-center gap-1 rounded border border-rose-400/40 px-1.5 text-[10px] text-rose-200 hover:bg-rose-500/15 disabled:opacity-40"
+                onclick={() => void onRetryTopology(host)}
+              >
+                <RefreshCw class="h-3 w-3 {topologyRetrying[host.id] ? 'animate-spin' : ''}" />
+                {requiresReconnect(host) ? '重新接入' : '重试'}
+              </button>
+            {/if}
             {#if hasHostTopologyLink(host.id)}
               <button
                 type="button"
@@ -635,6 +675,11 @@
           {#if alerts.length > 0 || row.outbound}
             <p class="pl-9 pr-3 py-0.5 text-[10px] text-amber-200/90 truncate" title={alerts.join(' · ')}>
               {#if alerts.length}{alerts.join(' · ')}{:else}{summarizeOutbound(row)}{/if}
+            </p>
+          {/if}
+          {#if hasHostTopologyLink(host.id) && (host.status === 'error' || host.status === 'disconnected')}
+            <p class="pl-9 pr-3 py-1 text-[10px] text-rose-200 truncate" title={host.detail}>
+              {host.detail || '主机连接不可用'}
             </p>
           {/if}
         {/if}

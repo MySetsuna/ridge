@@ -22,6 +22,7 @@ export interface HostForestWorkspace {
 export interface HostForestSource {
   hostId: string;
   link: HostForestLink;
+  signal?: AbortSignal;
 }
 
 export type HostForestLink = Pick<
@@ -66,6 +67,41 @@ export interface HostForestResult {
   error?: string;
 }
 
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new Error('请求已取消'));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error('请求已取消'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Failure keeps the last successful tree visible; success replaces it. */
+export function retainHostForest(
+  previous: HostForestResult | undefined,
+  next: HostForestResult,
+): HostForestResult {
+  return next.error && previous
+    ? { ...next, workspaces: previous.workspaces }
+    : next;
+}
+
+export function hostTopologyErrorKind(error?: string): 'auth' | 'retryable' {
+  return error && /(?:auth|unauthor|forbidden|totp|登录|鉴权|认证|401|403)/i.test(error)
+    ? 'auth'
+    : 'retryable';
+}
+
 function paneNode(pane: PaneInfo): HostForestPane {
   return {
     id: pane.id,
@@ -78,8 +114,9 @@ function paneNode(pane: PaneInfo): HostForestPane {
 async function workspaceNode(
   link: HostForestLink,
   workspace: WorkspaceInfo,
+  signal?: AbortSignal,
 ): Promise<HostForestWorkspace> {
-  const panes = await link.listWorkspacePanes(workspace.id);
+  const panes = await abortable(link.listWorkspacePanes(workspace.id), signal);
   return {
     id: workspace.id,
     name: workspace.name?.trim() || `工作区 ${workspace.id.slice(0, 8)}`,
@@ -93,13 +130,13 @@ export async function loadHostForest(
   sources: readonly HostForestSource[],
 ): Promise<HostForestResult[]> {
   return Promise.all(
-    sources.map(async ({ hostId, link }) => {
+    sources.map(async ({ hostId, link, signal }) => {
       try {
-        const { workspaces } = await link.listWorkspaces();
+        const { workspaces } = await abortable(link.listWorkspaces(), signal);
         return {
           hostId,
           workspaces: await Promise.all(
-            workspaces.map((workspace) => workspaceNode(link, workspace)),
+            workspaces.map((workspace) => workspaceNode(link, workspace, signal)),
           ),
         };
       } catch (error) {
