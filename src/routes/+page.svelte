@@ -620,6 +620,7 @@ function expandSidebar() {
   function getContextMenuTarget(e: MouseEvent): {
     target: ContextMenuTarget;
     paneId?: string;
+    workspaceId?: string;
   } {
     const target = e.target as HTMLElement;
 
@@ -649,7 +650,14 @@ function expandSidebar() {
       const wrapper = headerEl.closest('.splitpanes__pane') as HTMLElement | null;
       const paneEl = wrapper?.querySelector('[data-rg-pane-id]') as HTMLElement | null;
       const paneId = paneEl?.getAttribute('data-rg-pane-id');
-      return { target: 'pane-header', paneId: paneId ?? undefined };
+      const workspaceId = headerEl
+        .closest('[data-rg-ws-pane-host]')
+        ?.getAttribute('data-rg-ws-pane-host');
+      return {
+        target: 'pane-header',
+        paneId: paneId ?? undefined,
+        workspaceId: workspaceId ?? undefined,
+      };
     }
 
     // 检查是否点击在终端或编辑器内容区域
@@ -666,6 +674,9 @@ function expandSidebar() {
       const paneId =
         paneEl.getAttribute('data-rg-pane-id') ||
         (paneEl as HTMLElement).dataset?.rgPaneId;
+      const workspaceId = paneEl
+        .closest('[data-rg-ws-pane-host]')
+        ?.getAttribute('data-rg-ws-pane-host') ?? undefined;
       // 判断是终端还是编辑器（通过 class 判断）。
       // RidgePane 渲染时挂 `.rg-pane-container[data-rg-pane-id]`；保留
       // `.rg-terminal-surface` 兜底以防其他外壳类名出现。Monaco 编辑器
@@ -674,12 +685,12 @@ function expandSidebar() {
         target.closest('.rg-pane-container') || target.closest('.rg-terminal-surface');
       const isEditor = target.closest('.monaco-editor');
       if (isTerminal) {
-        return { target: 'terminal', paneId };
+        return { target: 'terminal', paneId, workspaceId };
       }
       if (isEditor) {
-        return { target: 'editor', paneId };
+        return { target: 'editor', paneId, workspaceId };
       }
-      return { target: 'pane-content', paneId };
+      return { target: 'pane-content', paneId, workspaceId };
     }
 
     return { target: 'unknown' };
@@ -847,36 +858,61 @@ function expandSidebar() {
     }
   }
 
-  function copyPaneCwd(targetPaneId?: string): void {
-    const pid = targetPaneId || get(activePaneId);
-    if (!pid) return;
-    const wid = get(activeWorkspaceId);
-    const cwd = get(paneCwdStore)[`${wid}:${pid}`] ?? '';
-    if (!cwd) {
+  interface PanePathContext {
+    workspaceId: string;
+    paneId: string;
+    cwd: string;
+    workspaceRoot: string;
+  }
+
+  function capturePanePathContext(
+    targetWorkspaceId?: string,
+    targetPaneId?: string
+  ): PanePathContext | null {
+    const workspaceId = targetWorkspaceId || get(activeWorkspaceId);
+    const paneId = targetPaneId || get(activePaneId);
+    if (!workspaceId || !paneId) return null;
+    const cwds = get(paneCwdStore);
+    const cwd = cwds[`${workspaceId}:${paneId}`] ?? '';
+    if (!cwd) return null;
+    const workspaceRoot = Object.entries(cwds)
+      .find(([key, value]) => key.startsWith(`${workspaceId}:`) && !!value)?.[1] ?? cwd;
+    return { workspaceId, paneId, cwd, workspaceRoot };
+  }
+
+  function relativePaneCwd(context: PanePathContext): string {
+    const path = context.cwd.replace(/\\/g, '/').replace(/\/+$/, '');
+    const root = context.workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+    const windows = /^[A-Za-z]:\//.test(path) || path.startsWith('//');
+    const pathKey = windows ? path.toLowerCase() : path;
+    const rootKey = windows ? root.toLowerCase() : root;
+    if (pathKey === rootKey) return '.';
+    return pathKey.startsWith(`${rootKey}/`) ? path.slice(root.length + 1) : context.cwd;
+  }
+
+  function copyPaneCwd(context: PanePathContext | null, relative = false): void {
+    if (!context) {
       void alertDialog({ title: tr('main.dlgCopyCwdTitle'), message: tr('main.dlgCopyCwdMsg') });
       return;
     }
-    navigator.clipboard?.writeText(cwd).catch(() => {
+    navigator.clipboard?.writeText(relative ? relativePaneCwd(context) : context.cwd).catch(() => {
       /* swallow — alert would fire too late after store unmount */
     });
   }
 
-  function revealPaneCwd(targetPaneId?: string): void {
-    if (!isTauri()) return;
-    const pid = targetPaneId || get(activePaneId);
-    if (!pid) return;
-    const wid = get(activeWorkspaceId);
-    const cwd = get(paneCwdStore)[`${wid}:${pid}`] ?? '';
-    if (!cwd) return;
-    void invoke('reveal_in_file_manager', { path: cwd });
+  function revealPaneCwd(context: PanePathContext | null): void {
+    if (!isTauri() || !context) return;
+    void invoke('reveal_in_file_manager', { path: context.cwd });
   }
 
   // 生成右键菜单项
   function getContextMenuItems(
     target: ContextMenuTarget,
-    paneId?: string
+    paneId?: string,
+    workspaceId?: string
   ): ContextMenuItem[] {
     const items: ContextMenuItem[] = [];
+    const panePath = capturePanePathContext(workspaceId, paneId);
 
     switch (target) {
       case 'terminal':
@@ -923,13 +959,19 @@ function expandSidebar() {
             id: 'copy-cwd',
             label: tr('main.ctxCopyCwd'),
             icon: Copy,
-            action: () => copyPaneCwd(paneId),
+            action: () => copyPaneCwd(panePath),
+          },
+          {
+            id: 'copy-cwd-relative',
+            label: tr('explorer.ctxCopyRelative'),
+            icon: Copy,
+            action: () => copyPaneCwd(panePath, true),
           },
           {
             id: 'reveal',
             label: tr('main.ctxRevealCwd'),
             icon: FolderOpen,
-            action: () => revealPaneCwd(paneId),
+            action: () => revealPaneCwd(panePath),
           }
         );
         break;
@@ -1072,13 +1114,19 @@ function expandSidebar() {
             id: 'copy-cwd',
             label: tr('main.ctxCopyCwd'),
             icon: Copy,
-            action: () => copyPaneCwd(paneId),
+            action: () => copyPaneCwd(panePath),
+          },
+          {
+            id: 'copy-cwd-relative',
+            label: tr('explorer.ctxCopyRelative'),
+            icon: Copy,
+            action: () => copyPaneCwd(panePath, true),
           },
           {
             id: 'reveal',
             label: tr('main.ctxReveal'),
             icon: FolderOpen,
-            action: () => revealPaneCwd(paneId),
+            action: () => revealPaneCwd(panePath),
           },
           { divider: true, id: 'divider-2' },
           {
@@ -1115,7 +1163,7 @@ function expandSidebar() {
     // resize 过程中不显示自定义菜单
     if (isResizeInProgress()) return;
 
-    const { target, paneId } = getContextMenuTarget(e);
+    const { target, paneId, workspaceId } = getContextMenuTarget(e);
 
     // Monaco 已经显示了它自己的菜单 —— Ridge 不再叠加一层稀疏菜单。
     if (target === 'editor') return;
@@ -1129,8 +1177,8 @@ function expandSidebar() {
     // handler 拥有其菜单」模式见上面 editor。
     if (target === 'terminal') return;
 
-    const items = getContextMenuItems(target, paneId);
-    showContextMenu(e.clientX, e.clientY, items, target, paneId);
+    const items = getContextMenuItems(target, paneId, workspaceId);
+    showContextMenu(e.clientX, e.clientY, items, target, paneId, workspaceId);
   }
 
   // 侧栏切换 public event：任何组件（例如 pane 标题栏的 git pill）通过

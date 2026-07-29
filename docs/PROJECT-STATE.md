@@ -363,3 +363,16 @@ sequenceDiagram
 - 聚焦 Vitest：8 文件、45 测通过；Remote Svelte-only 编译：13 文件、0 错误。
 - 全量 `pnpm check`、Remote build 与 Rust 聚焦测受同机并行构建影响，60–124 秒内无结果；
   本轮自产子进程树已回收，未触碰宿主 Ridge。真实 LAN/公网/移动设备仍属用户轨。
+
+## 2026-07-29 iteration 67 · Explorer 连续性与菜单身份
+
+- 首次打开未在 tab 中的树文件前，先拉取父目录完整分页并以新清单返回路径解析；文件消失或变为
+  目录则不打开陈旧节点，并刷新根树。既有 tab 仍走原 dirty/clean 保护逻辑。
+- FileTree 复制、相对复制、搜索与 reveal 改用菜单打开时捕获路径；递归节点补传 paste；
+  cwd 与 pane header 菜单统一绝对/相对/reveal。pane header 捕获
+  `{workspaceId,paneId,cwd}`，动作执行不再回读 active workspace。
+- Explorer resize 在 pointerup/cancel/onDestroy 后释放 pointer capture、window listeners、
+  状态与 dragging class；拖中仍只写内存，结束仅持久化一次。
+- 聚焦 Vitest：3 文件、46 测通过；Svelte 分段诊断：components 35 文件、routes 2 文件，
+  均 0 error / 0 warning。全仓 Svelte 诊断同机负载下 64 秒超时，未追杀任何既有进程。
+- 自动轨完成；60Hz 手感、Windows shell reveal 及用户卷上的权限/跨卷矩阵仍属用户轨证据。
