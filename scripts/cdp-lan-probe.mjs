@@ -10,7 +10,7 @@
 // danger verifier).
 //
 // Flow:
-//   1. CDP-attach to the Ridge page on :9222, call invoke('set_remote_enabled',
+//   1. CDP-attach to the Ridge page on its dynamic dev port, call invoke('set_remote_enabled',
 //      {enabled:true}) then poll invoke('get_remote_info') for port + TOTP.
 //   2. Open wss://127.0.0.1:<port>/ws?code=<TOTP> and run the handshake:
 //      hello → list-panes → subscribe-pane → stdin(echo) → claim-pane → ping.
@@ -20,8 +20,9 @@
 // Usage: node scripts/cdp-lan-probe.mjs   (with tauri:dev:cdp already running)
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import http from 'node:http';
+import { resolveCdpPort } from './cdp-port.mjs';
 
-const CDP_PORT = Number(process.env.CDP_PORT ?? 9222);
+const CDP_PORT = resolveCdpPort();
 const log = (...a) => console.log('[probe]', ...a);
 const fail = (m) => { console.error('[probe] FAIL:', m); process.exit(1); };
 
@@ -127,13 +128,13 @@ async function waitForRidgeTarget(maxMs = 90000) {
   const hardTimeout = setTimeout(() => { summary.errors.push('hard timeout'); done(false); }, 25000);
 
   // Subscribe to a pane, then exercise stdin/claim-pane/ping to drive live frames.
-  function drivePane(paneId) {
+  function drivePane(workspaceId, paneId) {
     firstPane = paneId;
     summary.subscribedPane = paneId;
     log('subscribe-pane', paneId);
-    ws.send(JSON.stringify({ type: 'subscribe-pane', paneId }));
-    setTimeout(() => { log('stdin echo →', ECHO); ws.send(JSON.stringify({ type: 'stdin', paneId, data: `echo ${ECHO}\r` })); }, 800);
-    setTimeout(() => ws.send(JSON.stringify({ type: 'claim-pane', paneId, rows: 30, cols: 100, pixelWidth: 0, pixelHeight: 0, seq: 1 })), 1500);
+    ws.send(JSON.stringify({ type: 'subscribe-pane', workspaceId, paneId }));
+    setTimeout(() => { log('stdin echo →', ECHO); ws.send(JSON.stringify({ type: 'stdin', workspaceId, paneId, data: `echo ${ECHO}\r` })); }, 800);
+    setTimeout(() => ws.send(JSON.stringify({ type: 'claim-pane', workspaceId, paneId, rows: 30, cols: 100, pixelWidth: 0, pixelHeight: 0, seq: 1 })), 1500);
     setTimeout(() => ws.send(JSON.stringify({ type: 'ping' })), 2400);
   }
 
@@ -150,12 +151,12 @@ async function waitForRidgeTarget(maxMs = 90000) {
       else if (m.type === 'panes') {
         summary.panes = m.panes;
         log(`panes: ${m.panes.length} →`, m.panes.map((p) => `${p.id.slice(0, 8)}…(${p.title})`).join(', '));
-        if (m.panes.length) drivePane(m.panes[0].id);
+        if (m.panes.length) drivePane(m.workspaceId, m.panes[0].id);
         else { log('no panes → create-pane'); ws.send(JSON.stringify({ type: 'create-pane' })); }
       }
       else if (m.type === 'create-pane-result') {
         log('create-pane-result:', JSON.stringify(m));
-        if (m.success && m.paneId) { summary.createdPane = m.paneId; setTimeout(() => drivePane(m.paneId), 800); }
+        if (m.success && m.paneId) { summary.createdPane = m.paneId; ws.send(JSON.stringify({ type: 'list-panes' })); }
         else { summary.errors.push('create-pane failed: ' + (m.error || '?')); done(false); }
       }
       else { log('text frame:', ev.data.slice(0, 120)); }

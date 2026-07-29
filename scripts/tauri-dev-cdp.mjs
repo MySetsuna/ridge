@@ -31,12 +31,22 @@
 // The env vars only live for this child process; no shell side effects.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { DEV_USER_DATA_DIR, readDevToolsActivePort } from './cdp-port.mjs';
 
 const userDataDir = DEV_USER_DATA_DIR;
 const portFile = path.join(userDataDir, 'cdp-port.txt');
 const activePortFile = path.join(userDataDir, 'EBWebView', 'DevToolsActivePort');
+const configFile = path.join(userDataDir, 'tauri-dev-cdp.config.json');
+const vitePort = await new Promise((resolve, reject) => {
+  const server = net.createServer();
+  server.once('error', reject);
+  server.listen(0, '127.0.0.1', () => {
+    const address = server.address();
+    server.close(() => resolve(address.port));
+  });
+});
 
 // Start from a clean slate so the DevToolsActivePort we later read is THIS run's.
 try { fs.rmSync(activePortFile, { force: true }); } catch { /* ignore */ }
@@ -54,9 +64,13 @@ process.env.WEBVIEW2_USER_DATA_FOLDER = userDataDir;
 // instance would be focused-and-exited on launch. Gated entirely in lib.rs by
 // this env var; the installed/release app never sets it. (See docs/CDP_TESTING.md.)
 process.env.RIDGE_DISABLE_SINGLE_INSTANCE = '1';
+process.env.RIDGE_DEV_SERVER_PORT = String(vitePort);
+fs.mkdirSync(userDataDir, { recursive: true });
+fs.writeFileSync(configFile, JSON.stringify({ build: { devUrl: `http://127.0.0.1:${vitePort}` } }));
 
 console.log(`[tauri-dev-cdp] WebView2 CDP   : dynamic port (Chromium 136+ blocks fixed ports)`);
 console.log(`[tauri-dev-cdp] user-data-dir : ${userDataDir}`);
+console.log(`[tauri-dev-cdp] Ridge Vite URL : http://127.0.0.1:${vitePort}`);
 console.log(`[tauri-dev-cdp] waiting for DevToolsActivePort after the Ridge window opens…`);
 
 // Poll for the dynamic port and surface it once the webview registers CDP.
@@ -71,7 +85,12 @@ const poll = setInterval(() => {
   }
 }, 1000);
 
-const child = spawn('pnpm', ['tauri', 'dev'], {
+const child = spawn('pnpm', [
+  'tauri',
+  'dev',
+  '--config',
+  configFile,
+], {
   stdio: 'inherit',
   shell: true,
   env: process.env,
