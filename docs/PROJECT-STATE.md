@@ -391,3 +391,17 @@ sequenceDiagram
 - 前端聚焦测 2 文件、44 测通过；teammate/components/routes 分段 Svelte 诊断均 0 error。
   Rust 聚焦 test 与 `cargo check -p ridge --lib` 各 64 秒受同机 Cargo 负载超时；未清锁、未触碰
   宿主 Ridge，故 Rust 运行闸仍待同机负载退去后复跑。
+
+## 2026-07-29 iteration 69 · History overlay 与渲染证据
+
+- History overlay 新增 pane-local `viewport_cols/viewport_rows`；共享纯几何先按光标侧锚定，空间
+  不足则翻向、减行、夹紧。过窄时以 pane cell rect 水平居中；WebGPU 与此前缺失实现的
+  Canvas2D 共用几何、宽度及截断规则。
+- 几何单测覆盖 DPR `1/1.25/1.5/2`、右下角翻向、窄宽居中及双侧不足减行；wasm32 编译通过，
+  故双 backend 代码路径已静态验收。真实分屏、侧栏与缩放观感仍属用户轨。
+- Raster 审计确认两 backend 已共用 `procedural_box`，但缺原生 PowerShell 对照矩阵；未猜改
+  字体/hinting/atlas。Codex render 审计确认 feed→dirty→compose→present 顺序与单焦点光标
+  护栏既存，但缺 Codex/Claude PTY 录制及逐帧 trace；未改 blink 或刷新策略。
+- 自动对比度研究裁决：只建议静态 token WCAG 2.2 lint + forced-colors fixture；全局运行时
+  DOM/像素采样与终端 ANSI 改色 deferred。见 `docs/research/auto-contrast-2026-07-29.md`。
+- 全程未启动、终止或干预宿主 Ridge。
