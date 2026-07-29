@@ -7,6 +7,265 @@
 
 ## 正式需求 (Active Requirements)
 
+### REQ-TERMINAL-PASTE-ORDER-02
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.0`
+- 批准证据：用户授权“审核无问题即全部通过”；审计通过。
+- 类型：`FIX`
+- 关联：`CONTRACT-iteration-65.md` 目标 7。
+- 原始意图：ridge 粘贴多行时，行序不得颠倒、交错或错乱。
+- 当前证据：`RidgePane.pasteIntoPane` 将文本编码为单一 bracketed-paste payload，并以
+  `(workspaceId,paneId)` FIFO 队列投递；该代码已随 `v0.1.9` 发布，但现场仍失败。
+- 目标行为：本机、接入 pane、Remote pane 的一次粘贴皆保持源字符与行序；同 pane 后续键入、
+  MCP 注入、拖放路径不得越过粘贴 payload。
+- 范围：桌面/Remote 终端粘贴入口、每 pane 写队列、PTY stdin 与 delta mirror 测试。
+- 非目标：改变 shell 自身对 bracketed paste 的解释；为跨 pane 输入建立全局队列。
+- 边界：不得以逐行延时、固定 sleep 或全局串行掩盖；须保留显式复合 pane 身份。
+- 假设/待确认：需采集失败发生于快捷键、右键、拖放还是 MCP 注入路径；各路径分别归因。
+- 验收：编号多行含 CRLF/LF、Unicode、末尾无换行 fixture；PTY echo 与 delta mirror 字节序
+  等于输入；并发后续键入只可位于 payload 之后；真实 Windows ConPTY 冒烟。
+- 预期落点：`RidgePane.svelte`、PTY 写队列、Remote stdin 路由及对应 TS/Rust/E2E。
+
+### REQ-TERMINAL-RASTER-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.0`
+- 批准证据：用户授权“审核无问题即全部通过”；审计通过。
+- 类型：`FIX`
+- 原始意图：ridge-term 中 PowerShell/Codex 的细线、边框与字形须接近原生 PowerShell 的平滑度。
+- 当前证据：共享 `TerminalManager` 默认优先 WebGPU、失败回退 Canvas2D，并按 DPR 量化 cell；
+  `image-1.png` 仍显示观感差异，现无原生对照矩阵。
+- 目标行为：同字体、字号、DPR 与缩放下，线框连续、基线稳定、字形不锯齿/发虚；WebGPU 与
+  Canvas2D fallback 不得产生明显不同的 cell 几何。
+- 范围：ridge-term 字形栅格、字体栈、glyph atlas、Canvas2D/WebGPU 设备像素映射。
+- 非目标：重做终端协议解析；改变用户选定字体语义。
+- 边界：不得以 CSS blur/transform、截图后处理或改 PTY rows/cols 假装修复。
+- 假设/待确认：先判字体栈、hinting、device-pixel 对齐、WebGPU atlas 或 Canvas2D raster 哪层失真。
+- 验收：DPR `1/1.25/1.5/2`、100%/125%/150% 缩放的原生 PS 对照图；同一 box-drawing fixture
+  验证 cell、基线、1px 线连续；两 backend 均有可复核捕获。
+- 预期落点：共享 terminal manager/font stack、ridge-term renderer 与视觉 fixture。
+
+### REQ-CODEX-RENDER-STABILITY-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.0`
+- 批准证据：用户授权“审核无问题即全部通过”；审计通过。
+- 类型：`FIX`
+- 原始意图：Codex 在 ridge-term 连续输出时，画面与光标不得到处闪烁。
+- 当前证据：非活动 pane 已调用 `setFocused(false)` 隐藏光标；同步输出、dirty-row 与强制重绘
+  亦有专门路径，但现场仍复现。尚无证据证明与 Claude 旧缺陷同根。
+- 目标行为：活动 pane 仅真实终端光标按协议闪烁；非活动 pane 无光标；Codex 流式更新不得交替
+  呈现半帧、旧帧或多位置 cursor。
+- 范围：Codex/Claude 流式 PTY 录制、kernel dirty 状态、render/present 与 cursor focus 投影。
+- 非目标：关闭所有动画；为单一 Agent CLI 写硬编码渲染分支。
+- 边界：先以 kernel cell/dirty/render trace 分层归因；不得简单关闭所有 cursor blink 或降低刷新率。
+- 假设/待确认：Codex 与 Claude 是否同根，须由同一录制回放矩阵裁决。
+- 验收：同一 Codex JSONL/PTY 录制重放；逐帧断言单 cursor、单调 frame generation、无旧行复活；
+  与 Claude fixture 对照，明确共同或独立根因。
+- 预期落点：`RidgePane.svelte`、`TerminalManager`、ridge-term render loop 与录制回放测试。
+
+### REQ-HISTORY-OVERLAY-GEOMETRY-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.0`
+- 批准证据：用户授权“审核无问题即全部通过”；审计通过。
+- 类型：`MODIFY` + `FIX`
+- 原始意图：历史弹层依 pane 可见区域动态定位；pane 过窄时居中展示。
+- 当前证据：现实现仅按 cursor row 选择上/下与可见行数，未把 pane 可见宽度、裁剪区、邻 pane
+  覆盖与窄宽居中纳入模型。
+- 目标行为：弹层完全落入当前 pane 可见 rect；优先锚定输入光标，空间不足则翻向/夹紧；宽度不足
+  时在 pane 可见区居中并保持选择项可读。
+- 范围：桌面 RidgePane 历史 overlay 几何、renderer 投影与键盘选择。
+- 非目标：改 shell history 数据源、排序或去重语义。
+- 边界：不得溢出到不可见 pane 或以 viewport 全窗代替 pane rect；滚动、键盘与焦点语义不变。
+- 验收：四角光标、分屏裁剪、侧栏开合、窄 pane、DPR/缩放 fixture；断言 overlay rect 始终被
+  pane visible rect 包含，窄宽时水平中心误差不超过 1 CSS px。
+- 预期落点：`RidgePane.svelte`、ridge-term `HistoryOverlay` 几何与组件/renderer 测试。
+
+### REQ-EXPLORER-FREE-RESIZE-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.0`
+- 批准证据：用户授权“审核无问题即全部通过”；审计通过。
+- 类型：`MODIFY` + `FIX`
+- 原始意图：文件树展示域拖拽须“无拘无束”；指针可越过下方展开面板，拖动直接压缩其展示域；
+  resize 跟手，空余空间自动占用。
+- 当前证据：现有 `measureFreeFollowSpan`、window pointer listener、pointer capture、ResizeObserver
+  与 stored-height reclamp 已发布；用户现场仍受下方面板 header/属性区阻塞。
+- 目标行为：拖柄跟随整个 Explorer 可见纵轴；上区扩张时下区实时压缩至其最小可用高度，
+  下区不得以自身 header/属性命中截断拖动；释放后各区自动填满可用高度，无空洞。
+- 范围：桌面 Explorer cwd stack、展示域高度分配、pointer 生命周期与持久化。
+- 非目标：重做全局 pane split 布局；移除面板最小高度。
+- 边界：保留各面板最小可用高度、键盘/无障碍与滚动；不得无界 RAF/observer 或每帧持久化。
+- 假设/待确认：“自动占用”解释为参与同一布局的可伸缩展示域按现有优先级吃满剩余空间。
+- 验收：跨越下方面板 header 的连续 pointer 轨迹；每帧高度和等于容器可用高、无负值/空洞；
+  60Hz 拖动无长任务，pointerup/cancel 后监听器与 dragging class 归零。
+- 预期落点：`Explorer.svelte`、Explorer 高度 store 与交互/性能测试。
+
+### REQ-EXPLORER-FILE-CONTINUITY-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.0`
+- 批准证据：用户授权“审核无问题即全部通过”；审计通过。
+- 类型：`MODIFY` + `FIX`
+- 原始意图：已打开文件自动更新；新文件首次打开前刷新所属文件夹；复制、粘贴、移动完整可靠。
+- 当前证据：fileEditor 已处理 fs-watch、clean 静默重载、dirty 冲突、图片 cache-bust；
+  FileTree/Explorer 已有 copy/cut/paste/move 与跨列刷新，32 个聚焦测试通过；现场仍判“不完善”。
+- 目标行为：
+  - 外部改动的 clean tab 自动同步；dirty tab 明确保留/重载选择；删除/重建状态可恢复。
+  - 首次打开树中节点前，先刷新其父目录并按规范路径重新解析目标；目标消失则不打开陈旧内容。
+  - 单选/多选、文件/目录、同盘/跨盘、跨 cwd、冲突重命名、部分失败皆有原子可诊断结果；
+    move 成功后源/目标所有可见列同步刷新。
+- 范围：桌面 Explorer/FileTree、fileEditor/fileExplorer store、fs-watch 与本机文件命令。
+- 非目标：自动解决用户未保存内容冲突；把 Remote/shared 绝对路径当本机路径。
+- 边界：不得覆盖未保存编辑；不得信任过期树路径越出 cwd；批量失败不得静默吞项。
+- 假设/待确认：用户尚未给出复制/移动的具体失败组合；关闭前须补真实复现步骤。
+- 验收：fs-watch 与 dirty 冲突测试；“刷新父目录→解析→打开”顺序 spy；复制/移动矩阵覆盖冲突、
+  权限拒绝、跨卷 fallback、部分失败与 refreshNonce；Windows 真文件系统冒烟。
+- 预期落点：`FileTree.svelte`、`Explorer.svelte`、fileExplorer/fileEditor store 与 Rust fs 命令。
+
+### REQ-EXPLORER-CONTEXT-ACTIONS-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.0`
+- 批准证据：用户授权“审核无问题即全部通过”；审计通过。
+- 类型：`FIX` + `MODIFY`
+- 原始意图：cwd 节点与 pane header 右键菜单均提供复制路径、复制相对路径、在文件管理器中显示，
+  且跳到正确位置。
+- 当前证据：FileTree 普通节点已有两种复制；cwd 菜单缺二者；pane header 仅复制 cwd，
+  且 `copyPaneCwd/revealPaneCwd` 以当前 active workspace 查目标 pane，存在跨工作区错配。
+- 目标行为：动作始终绑定菜单打开时捕获的 `{workspaceId,paneId,cwd}`；绝对路径复制 canonical cwd，
+  相对路径以该 workspace 根为基准；Reveal 对目录打开该目录，对文件选中该文件。
+- 范围：cwd/FileTree/pane header 菜单与本机 reveal 命令。
+- 非目标：让本机文件管理器打开无法映射的 Remote/shared 路径。
+- 边界：不得在 action 执行时重新读取活动工作区替换捕获身份；Remote/shared 路径不冒充本机路径。
+- 假设/待确认：cwd 自身相对路径以 workspace root 为基准，workspace root 本身显示 `.`。
+- 验收：在 wsA pane 菜单打开后切到 wsB 再点击动作，仍操作 wsA；cwd/FileTree/pane header 菜单
+  项一致；目录与文件 reveal 走正确 OS 参数；shared/remote 明确禁用或走 origin 能力。
+- 预期落点：`Explorer.svelte`、`FileTree.svelte`、`+page.svelte`、reveal 命令与菜单测试。
+
+### REQ-REMOTE-HOST-RETRY-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.0`
+- 批准证据：用户授权“审核无问题即全部通过”；审计通过。
+- 类型：`FIX`
+- 关联：`REQ-REMOTE-HOST-TREE-01`。
+- 原始意图：远端接入黑屏或 `list_workspaces` 超时时，在故障位置提供重试。
+- 当前证据：Remote MainApp 有连接级 reload 重试；HostsPanel 仅顶栏全局刷新与错误文本，
+  `image-3.png` 的 host/workspace RPC 超时行无就地动作。
+- 目标行为：失败 host/树节点显示可点击“重试”；仅重放该 host 的认证连接与 topology 请求，
+  单飞、可取消、保留最近成功树；连续失败展示首因与下一步，不黑屏。
+- 范围：Hosts 树 topology 请求、错误投影、单 host 重试与连接恢复。
+- 非目标：对鉴权拒绝无限重放；全页 reload 其他正常 host。
+- 边界：不得无限自动重试、重复创建连接或清空其他 host；鉴权/停用类错误须引导重新登录，
+  不伪装成网络重试。
+- 验收：20 秒超时、断网、鉴权失败、恢复网络 fixture；单 host 重试不刷新其他 host；重复点击
+  仅一请求；成功原位替换，失败仍保留错误与按钮。
+- 预期落点：Hosts store/`HostsPanel.svelte`、RemoteLink topology 请求与组件/E2E。
+
+### REQ-AGENT-INTERACTION-STATE-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.0`
+- 批准证据：用户授权“审核无问题即全部通过”；审计通过。
+- 类型：`MODIFY` + `FIX`
+- 关联：`REQ-AGENT-01`、`REQ-AGENT-COMMUNE-CONTINUITY-01`。
+- 原始意图：
+  - 首次进入 Agent's Commune 不得窄折叠；无需切 tab 自愈。
+  - 点击活跃 Agent，直接切到其工作区、聚焦并高亮对应 pane。
+  - Agent 停止为红，等待审批为黄；Agent 卡片边框与 pane header Agent 图标同步显色，
+    直至目标 pane 真正聚焦才清除暂态高亮。
+  - 交互卡片实时接收动态标题。
+- 当前证据：AgentMemberRow 已有等待审批黄点、运行绿点、OSC title 优先；失联用 muted，
+  行本身无跨工作区导航，亦无“直到聚焦才消失”的统一暂态。
+- 目标行为：状态与标题由 topology/pane tree 同一事实投影；导航使用显式 workspace/pane；
+  红/黄暂态在 Agent 卡片与 pane header 一致，聚焦目标 pane 后原子确认并清除。
+- 范围：桌面 Agent Center、AgentMemberRow、pane header、跨工作区聚焦与 topology 标题投影。
+- 非目标：改变 Agent 进程生命周期；以颜色替代状态文本或安全审批。
+- 边界：颜色不得成为唯一语义；须有文本/aria-label；轮询不变不得制造布局或标题事件风暴。
+- 假设/待确认：“停止运行”映射 `Disappeared`/进程退出，不等同用户主动暂停。
+- 验收：首次挂载真实宽度 fixture；wsA→点击 wsB Agent 后 active workspace/pane 唯一匹配；
+  Working→Waiting→Focused 与 Working→Disappeared 状态机；两表面颜色/文本同源；动态 title
+  更新一次、无变化零事件。
+- 预期落点：AgentCenter/AgentMemberRow、pane tree/header、`+page.svelte`、teammate model/tests。
+
+### REQ-AGENT-HISTORY-SOURCE-02
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.0`
+- 批准证据：用户授权“审核无问题即全部通过”；审计通过。
+- 类型：`MODIFY` + `FIX`
+- 关联：`REQ-AGENT-HISTORY-01`。
+- 原始意图：历史须从各 Agent 最新原生 JSONL/会话源取得真实回复；一 session 一行，展示稳定标题
+  与 session id；Claude/Grok 均覆盖；展示参考 Codex 桌面端作模块化、窄宽适配。
+- 当前证据：后端仅扫描 Claude/Codex；前端 DTO 名为 `AgentRecentReply`，按每条回复分组/渲染，
+  标题仍为“最近回复”，行展示 project/time/text，未形成 session 聚合；Grok 无 adapter。
+- 目标行为：
+  - adapter 独立声明 discovery/parser/title/recent-output/resume 能力；损坏一类不拖垮全页。
+  - 以原生 session id 聚合，一 session 一行；标题、id、Agent、cwd、最近活动与最新真实 assistant
+    回复分区展示；进行中 session 替换为成员页同款可交互卡片。
+  - Claude、Codex、Grok 读取各自当前格式；无证据的 CLI 诚实禁用，不猜路径/字段。
+  - 卡片在宽/窄侧栏均自适应，不因首次挂载宽度错误折叠。
+- 范围：本机 Agent history adapter/DTO、Agent Center 历史与运行中交互卡片。
+- 非目标：上传历史、索引全文、修改第三方 session 或伪造 resume。
+- 边界：不上传历史，不修改第三方文件；不以 title/cwd 合并身份；resume 只用结构化 argv。
+- 假设/待确认：“模仿 Codex 桌面端”解释为信息分区、渐进展开与响应式布局，不复制其品牌视觉。
+- 验收：每 Agent 多 session/多回复/损坏/超大 JSONL fixture；最新回复与真实最后 assistant 项一致；
+  session 数等于行数；标题/id 可见；运行中交集仅一交互卡；Grok 有本机或官方格式证据。
+- 预期落点：project history adapter、Agent Center/history DTO、组件与真 CLI/fixture。
+
+### REQ-AUTO-CONTRAST-RESEARCH-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.0`
+- 批准证据：用户授权“审核无问题即全部通过”；审计通过。
+- 类型：`NEW`（仅深研，不授权产品实现）
+- 原始意图：文字与所在背景色差过低时，自动切换为可读主题色；若通用方案风险高则暂缓。
+- 目标：先比较静态 design-token 对比约束、APCA/WCAG 对比选择、透明/渐变/图片背景采样与
+  浏览器 forced-colors；提出最小可行且性能有界的方案。
+- 范围：主题 token、普通 UI 文本与隔离视觉 fixture；终端 ANSI 面仅作风险评估。
+- 非目标：本轮直接部署全局动态判色；改写第三方网页/终端内容色。
+- 边界：本条仅授权研究与 fixture，不授权全局运行时逐像素监听、强改第三方终端颜色
+  或牺牲语义配色。
+- 假设/待确认：若静态 token 即可覆盖主要问题，则优先删去运行时检测方案。
+- 停机条件：无法在不引入持续采样/布局抖动的前提下稳定判色，则归档为 deferred，不实现。
+- 验收：候选方案含正确性反例、性能成本、a11y 标准、减法方案与可证伪原型。
+- 预期落点：深研报告与隔离颜色纯函数/视觉 fixture；无业务代码默认。
+
+### REQ-HEADLESS-DETECTION-02
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-29`
+- 版本：`v0.3.0`
+- 批准证据：用户授权“审核无问题即全部通过”；审计收紧为仅诊断，不预授权删除。
+- 类型：`MODIFY`
+- 关联：`REQ-AGENT-02`。
+- 原始意图：确认当前无头 shell 检测为何仍失效；若可靠检测/召唤不可行，可放弃该功能。
+- 当前证据：Agent Center 仅投影 `hostsStore.kind === "headless"` 的 Ridge native sessions；
+  后端只承诺 Ridge 持有 PTY master 的 session 可召唤，任意脱离 PTY 的 OS PID 明确不可接管。
+- 目标行为：先区分“Ridge-owned native session 未被列出”之 Bug 与“任意外部无头 shell”之
+  非能力；前者修复 metadata/list/投影链，后者不得伪造可召唤。
+- 范围：Ridge-owned native/tmux session 的创建、发现、归因、投影与召唤。
+- 非目标：接管 Ridge 未持有 PTY master 的任意 OS PID。
+- 决策点：若用户期望仅为任意外部 PID，建议移除/改名该入口；若为 Ridge-owned session，
+  保留并补确定性发现与诊断。移除或改名须另建 Pending 明确批准，本条不授权删除。
+- 验收：tmux shim 创建→list DTO→Agent Center 投影→召唤完整真进程链；外部 PID 明确显示
+  “不可接管”或不展示；无误报。
+- 预期落点：ridge-tmux/native session、terminal commands、hosts store、Agent Center。
+
 ### REQ-AGENT-COMMUNE-CONTINUITY-01
 
 - 状态：`ACTIVE`
@@ -327,6 +586,7 @@
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
 | --- | --- | --- | --- | --- | --- |
+| v0.3.0 | 2026-07-29 | 本轮 12 项 `PENDING-REQ-*` | 终端、Explorer、Remote、Agent 与对比度深研转 Active；无头项收紧为仅诊断，删除须另批 | 新增 12 项 `REQ-*`；既有 Active 差距继续有效 | 用户授权“审核无问题即全部通过”；Codex 审计通过 |
 | v0.2.0 | 2026-07-27 | `<INITIAL>` | 建立 Remote/Agent 六项需求基线 | - | 用户本线程六项明确落地指令 |
 | v0.2.0 | 2026-07-27 | `PENDING-REQ-REMOTE-HOST-TREE-01` | 公网/LAN 主机三层树转 Active | 新增 `REQ-REMOTE-HOST-TREE-01` | 用户明确“将之前 pending 的两个需求通过审批” |
 | v0.2.0 | 2026-07-27 | `PENDING-REQ-WORKSPACE-SHARE-01` | 跨账号单工作区分享转 Active | 新增 `REQ-WORKSPACE-SHARE-01` | 同上 |
