@@ -25,6 +25,9 @@
     paneCwdStore,
     activePaneId,
     splitPane,
+    closePane,
+    setAgentPaneAttention,
+    type AgentPaneAttention,
   } from '$lib/stores/paneTree';
   import {
     hostsStore,
@@ -109,15 +112,17 @@
   let hitlAuditItems = $state<HitlAuditItem[]>([]);
   interface AgentRecentReply {
     agent: string;
+    title: string;
     text: string;
     timestamp: number;
-    project: string;
-    sessionId?: string;
+    cwd: string;
+    sessionId: string;
     resume?: { executable: string; argv: string[]; cwd: string; sessionId: string };
   }
   let recentReplies = $state<AgentRecentReply[]>([]);
   let wakingSession = $state('');
   let historyExpanded = $state<Record<string, boolean>>({});
+  let observedAgentSignals = new Map<string, AgentPaneAttention | null>();
   const recentReplyGroups = $derived.by(() => {
     const groups = new Map<string, AgentRecentReply[]>();
     for (const reply of recentReplies) {
@@ -128,21 +133,44 @@
     }
     return [...groups.entries()].map(([key, replies]) => ({ key, replies }));
   });
+  const unmatchedHeadlessSessions = $derived(
+    headlessSessions.filter(
+      (session) => !recentReplies.some((history) => history.sessionId === session.name)
+    )
+  );
 
   function toggleHistoryGroup(key: string): void {
     historyExpanded = { ...historyExpanded, [key]: !(historyExpanded[key] ?? true) };
   }
 
-  function resumeCommand(reply: AgentRecentReply): string | null {
-    if (reply.resume?.executable && reply.resume.argv.length > 0) {
-      const args = reply.resume.argv.map((arg) => `"${arg.replace(/["`$\\]/g, '')}"`).join(' ');
-      return `${reply.resume.executable} ${args}`;
+  function syncAgentAttention(): void {
+    const next = new Map<string, AgentPaneAttention | null>();
+    for (const member of allMembers) {
+      const profile = member.profile;
+      if (!profile.paneId) continue;
+      const key = `${member.workspaceId}:${profile.paneId}`;
+      const signal: AgentPaneAttention | null = pendingFor(profile).length > 0
+        ? 'waiting'
+        : profile.status === 'Disappeared'
+          ? 'stopped'
+          : null;
+      const previous = observedAgentSignals.get(key);
+      // A transient stays visible until the target pane actually receives focus.
+      // Returning to a neutral backend state only arms the next transition; it
+      // must not acknowledge an event the user has not inspected.
+      if (signal !== null && signal !== previous) {
+        setAgentPaneAttention(member.workspaceId, profile.paneId, signal);
+      }
+      next.set(key, signal);
     }
-    if (!reply.sessionId) return null;
-    const id = reply.sessionId.replace(/["`$\\]/g, '');
-    if (reply.agent.toLowerCase() === 'claude') return `claude --resume "${id}"`;
-    if (reply.agent.toLowerCase() === 'codex') return `codex resume "${id}"`;
-    return null;
+    observedAgentSignals = next;
+  }
+
+  function canResume(reply: AgentRecentReply): boolean {
+    return !!reply.resume?.executable
+      && reply.resume.argv.length > 0
+      && !!reply.resume.cwd
+      && reply.resume.sessionId === reply.sessionId;
   }
 
   function runningSessionFor(reply: AgentRecentReply): HostSession | null {
@@ -152,13 +180,23 @@
   }
 
   async function resumeAgentSession(reply: AgentRecentReply): Promise<void> {
-    const command = resumeCommand(reply);
-    if (!command || !workspaceId || !$activePaneId) return;
+    const resume = reply.resume;
+    if (!resume || !canResume(reply) || !workspaceId || !$activePaneId) return;
+    const targetWorkspaceId = workspaceId;
+    let createdPaneId = '';
     try {
-      const paneId = await splitPane($activePaneId, 'horizontal');
-      await invoke('create_pane', { paneId, shell: null });
-      await invoke('write_to_pty', { workspaceId, paneId, data: `${command}\r` });
+      createdPaneId = await splitPane($activePaneId, 'horizontal');
+      await invoke('launch_agent_session', {
+        workspaceId: targetWorkspaceId,
+        paneId: createdPaneId,
+        executable: resume.executable,
+        argv: resume.argv,
+        cwd: resume.cwd,
+      });
     } catch (e) {
+      if (createdPaneId) {
+        try { await closePane(createdPaneId); } catch { /* keep original launch error */ }
+      }
       showToast(`恢复会话失败：${e instanceof Error ? e.message : String(e)}`, 'error');
     }
   }
@@ -293,6 +331,7 @@
     } catch {
       hitlPending = [];
     }
+    syncAgentAttention();
     // Heavy: decisions / memory / git / audit — not every 3s (iter 50 perf).
     if (doHeavy) {
       try {
@@ -609,14 +648,14 @@
     {/snippet}
 
     {#snippet historyContent()}
-    {#if headlessSessions.length > 0}
+    {#if unmatchedHeadlessSessions.length > 0}
       <section>
         <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
           <MonitorUp class="h-3 w-3 text-[var(--rg-accent)]/70" /> Agent 后台终端
-          <span class="ml-auto font-mono">{headlessSessions.length}</span>
+          <span class="ml-auto font-mono">{unmatchedHeadlessSessions.length}</span>
         </h3>
         <ul class="mt-1 space-y-0.5">
-          {#each headlessSessions as session (session.socket + ':' + session.name)}
+          {#each unmatchedHeadlessSessions as session (session.socket + ':' + session.name)}
             {@const sessionKey = `${session.socket}:${session.name}`}
             <li class="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]">
               <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400"></span>
@@ -642,7 +681,7 @@
     {#if recentReplyGroups.length > 0}
       <section>
         <h3 class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--rg-fg-muted)]">
-          <Bot class="h-3 w-3 text-[var(--rg-accent)]/70" /> 最近回复
+          <Bot class="h-3 w-3 text-[var(--rg-accent)]/70" /> 会话历史
           <span class="ml-auto font-mono">{recentReplies.length}</span>
         </h3>
         <div class="mt-1 space-y-1">
@@ -655,10 +694,10 @@
               </button>
               {#if historyExpanded[group.key] ?? true}
                 <ul class="space-y-1 px-1 pb-1">
-                  {#each group.replies.slice(0, 12) as reply (reply.agent + reply.timestamp + reply.text)}
+                  {#each group.replies.slice(0, 12) as reply (reply.agent + ':' + reply.sessionId)}
                     <li class="rounded bg-[var(--rg-surface)]/50 px-2 py-1.5">
                       <div class="flex items-center gap-1.5 text-[9px] text-[var(--rg-fg-muted)]">
-                        <span class="min-w-0 flex-1 truncate" title={reply.project}>{reply.project}</span>
+                        <span class="min-w-0 flex-1 truncate font-medium text-[var(--rg-fg)]" title={reply.title}>{reply.title}</span>
                         <span class="shrink-0">{replyTime(reply.timestamp)}</span>
                         {#if runningSessionFor(reply)}
                           {@const running = runningSessionFor(reply)}
@@ -668,7 +707,7 @@
                             onclick={() => running && void wakeSession(running)}
                             title="复用正在运行的 native session"
                           >接入</button>
-                        {:else if resumeCommand(reply)}
+                        {:else if canResume(reply)}
                           <button
                             type="button"
                             class="shrink-0 rounded border border-[var(--rg-border)] px-1 text-[9px] text-[var(--rg-accent)] disabled:opacity-40"
@@ -678,6 +717,10 @@
                           >恢复</button>
                         {/if}
                       </div>
+                      <p class="mt-0.5 truncate font-mono text-[9px] text-[var(--rg-fg-muted)]" title={reply.sessionId}>
+                        {reply.sessionId}
+                      </p>
+                      <p class="truncate text-[9px] text-[var(--rg-fg-muted)]" title={reply.cwd}>{reply.cwd}</p>
                       <p class="mt-0.5 line-clamp-3 whitespace-pre-wrap text-[11px] leading-snug" title={reply.text}>{reply.text}</p>
                     </li>
                   {/each}
@@ -688,7 +731,10 @@
         </div>
       </section>
     {/if}
-    {#if headlessSessions.length === 0 && recentReplies.length === 0}
+    <p class="px-1.5 py-1 text-[9px] text-[var(--rg-fg-muted)]">
+      Grok：未启用（尚无可验证的原生会话格式）。
+    </p>
+    {#if unmatchedHeadlessSessions.length === 0 && recentReplies.length === 0}
       <p class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">暂无历史会话。</p>
     {/if}
     {/snippet}
@@ -727,7 +773,7 @@
             : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
           <History class="h-3.5 w-3.5" /> 历史
-          <span class="font-mono text-[10px] opacity-70">{headlessSessions.length + recentReplies.length}</span>
+          <span class="font-mono text-[10px] opacity-70">{unmatchedHeadlessSessions.length + recentReplies.length}</span>
         </button>
       </div>
 

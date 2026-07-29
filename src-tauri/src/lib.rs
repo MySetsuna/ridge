@@ -749,6 +749,7 @@ pub fn run() {
             terminal::activate_pane_pty,
             terminal::get_teammate_metrics,
             terminal::change_pane_shell,
+            terminal::launch_agent_session,
             terminal::detect_available_shells,
             terminal::get_shell_history,
             terminal::write_to_pty,

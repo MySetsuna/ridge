@@ -2,6 +2,7 @@ use crate::fs::{DirectoryPage, FileNode, ReplaceStats, SearchResult};
 use crate::state::AppState;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -779,16 +780,16 @@ pub struct AgentResumeSpec {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRecentReply {
     pub agent: String,
+    pub title: String,
     pub text: String,
     pub timestamp: u64,
-    pub project: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+    pub cwd: String,
+    pub session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume: Option<AgentResumeSpec>,
 }
 
-/// Read recent assistant messages from Claude Code and Codex session JSONL.
+/// Read one latest-assistant row per native Claude Code / Codex session.
 /// Files are bounded newest-first and only their metadata prefix + tail are read.
 #[tauri::command]
 pub async fn read_agent_recent_replies(
@@ -822,15 +823,24 @@ fn read_agent_recent_replies_sync(
     files.sort_by(|a, b| b.2.cmp(&a.2));
     files.truncate(200);
 
-    let mut replies = Vec::new();
+    let mut sessions: HashMap<(String, String), AgentRecentReply> = HashMap::new();
     for (agent, path, modified) in files {
         let Ok(content) = read_jsonl_window(&path) else {
             continue;
         };
-        replies.extend(parse_agent_jsonl(agent, &content, modified));
+        for session in parse_agent_jsonl(agent, &content, modified) {
+            let key = (session.agent.to_ascii_lowercase(), session.session_id.clone());
+            match sessions.get(&key) {
+                Some(current) if current.timestamp > session.timestamp => {}
+                _ => {
+                    sessions.insert(key, session);
+                }
+            }
+        }
     }
+    let mut replies: Vec<_> = sessions.into_values().collect();
     replies.retain(|reply| {
-        filters.is_empty() || filters.iter().any(|path| same_or_child_path(&reply.project, path))
+        filters.is_empty() || filters.iter().any(|path| same_or_child_path(&reply.cwd, path))
     });
     replies.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     replies.truncate(limit.min(100));
@@ -909,7 +919,8 @@ fn read_jsonl_window(path: &Path) -> std::io::Result<String> {
 fn parse_agent_jsonl(agent: &str, content: &str, fallback_timestamp: u64) -> Vec<AgentRecentReply> {
     let mut project = String::new();
     let mut session_id = None;
-    let mut replies = Vec::new();
+    let mut session_title = String::new();
+    let mut sessions: HashMap<String, AgentRecentReply> = HashMap::new();
 
     for line in content.lines() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -926,6 +937,13 @@ fn parse_agent_jsonl(agent: &str, content: &str, fallback_timestamp: u64) -> Vec
                 .get("id")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
+            session_title = payload
+                .get("title")
+                .or_else(|| payload.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             continue;
         }
 
@@ -953,11 +971,28 @@ fn parse_agent_jsonl(agent: &str, content: &str, fallback_timestamp: u64) -> Vec
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .or_else(|| session_id.clone());
-        let resume = line_session.as_ref().and_then(|id| {
+        let Some(line_session) = line_session else {
+            continue;
+        };
+        let line_title = value
+            .get("title")
+            .or_else(|| value.get("sessionTitle"))
+            .or_else(|| value.get("slug"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .unwrap_or(&session_title);
+        let title = if line_title.is_empty() {
+            format!("{} {}", agent, line_session.chars().take(8).collect::<String>())
+        } else {
+            line_title.to_string()
+        };
+        let resume = {
+            let id = &line_session;
             let (executable, argv) = match agent.to_ascii_lowercase().as_str() {
                 "claude" => ("claude", vec!["--resume", id.as_str()]),
                 "codex" => ("codex", vec!["resume", id.as_str()]),
-                _ => return None,
+                _ => continue,
             };
             Some(AgentResumeSpec {
                 executable: executable.to_string(),
@@ -965,16 +1000,25 @@ fn parse_agent_jsonl(agent: &str, content: &str, fallback_timestamp: u64) -> Vec
                 cwd: line_project.clone(),
                 session_id: id.clone(),
             })
-        });
-        replies.push(AgentRecentReply {
+        };
+        let reply = AgentRecentReply {
             agent: agent.to_string(),
+            title,
             text,
             timestamp: json_timestamp_ms(&value).unwrap_or(fallback_timestamp),
-            project: line_project,
-            session_id: line_session,
+            cwd: line_project,
+            session_id: line_session.clone(),
             resume,
-        });
+        };
+        match sessions.get(&line_session) {
+            Some(current) if current.timestamp > reply.timestamp => {}
+            _ => {
+                sessions.insert(line_session, reply);
+            }
+        }
     }
+    let mut replies: Vec<_> = sessions.into_values().collect();
+    replies.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     replies
 }
 
@@ -1064,9 +1108,10 @@ mod tests {
         );
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].agent, "Claude");
+        assert_eq!(replies[0].title, "Claude claude-1");
         assert_eq!(replies[0].text, "fixed it");
-        assert_eq!(replies[0].project, r"C:\code\wind");
-        assert_eq!(replies[0].session_id.as_deref(), Some("claude-1"));
+        assert_eq!(replies[0].cwd, r"C:\code\wind");
+        assert_eq!(replies[0].session_id, "claude-1");
         assert_eq!(replies[0].resume.as_ref().map(|r| r.executable.as_str()), Some("claude"));
         assert_eq!(replies[0].resume.as_ref().map(|r| r.argv.clone()), Some(vec!["--resume".into(), "claude-1".into()]));
         assert_eq!(replies[0].resume.as_ref().map(|r| r.cwd.as_str()), Some(r"C:\code\wind"));
@@ -1082,10 +1127,25 @@ mod tests {
         );
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].text, "tests green");
-        assert_eq!(replies[0].project, r"C:\code\wind");
-        assert_eq!(replies[0].session_id.as_deref(), Some("codex-1"));
+        assert_eq!(replies[0].cwd, r"C:\code\wind");
+        assert_eq!(replies[0].session_id, "codex-1");
         assert_eq!(replies[0].resume.as_ref().map(|r| r.executable.as_str()), Some("codex"));
         assert_eq!(replies[0].resume.as_ref().map(|r| r.argv.clone()), Some(vec!["resume".into(), "codex-1".into()]));
+    }
+
+    #[test]
+    fn aggregates_one_latest_reply_per_native_session() {
+        let replies = parse_agent_jsonl(
+            "Claude",
+            r#"{"type":"assistant","timestamp":"2026-07-27T01:00:00Z","cwd":"/repo","sessionId":"s1","message":{"role":"assistant","content":"old"}}
+{"type":"assistant","timestamp":"2026-07-27T02:00:00Z","cwd":"/repo","sessionId":"s1","message":{"role":"assistant","content":"latest"}}
+{"type":"assistant","timestamp":"2026-07-27T01:30:00Z","cwd":"/repo","sessionId":"s2","message":{"role":"assistant","content":"other"}}"#,
+            0,
+        );
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0].session_id, "s1");
+        assert_eq!(replies[0].text, "latest");
+        assert_eq!(replies[1].session_id, "s2");
     }
 
     #[test]
