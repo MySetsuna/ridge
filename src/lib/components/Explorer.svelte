@@ -13,6 +13,7 @@
 		flattenVisiblePaths,
 		explorerClipboard,
 		setExplorerClipboard,
+		remainingCutClipboard,
 		resolveActiveClipboard,
 		uniqueChildName,
 		refreshColumnsCovering,
@@ -567,6 +568,7 @@
 
 		const cmd = clip.mode === 'copy' ? 'copy_path' : 'move_path';
 		const errors: string[] = [];
+		const failedPaths: string[] = [];
 		for (const from of clip.paths) {
 			const name = from.split(/[\\/]/).pop() || 'untitled';
 			const unique = uniqueChildName(targetDir, name, existingInTarget);
@@ -576,12 +578,13 @@
 			try {
 				await invoke(cmd, { from, to });
 			} catch (e) {
+				failedPaths.push(from);
 				errors.push(`${from}: ${e}`);
 			}
 		}
-		// Consume the clipboard on successful cut; copy stays armed so repeat-paste works.
-		if (clip.mode === 'cut' && errors.length < clip.paths.length) {
-			setExplorerClipboard(null);
+		// Partial cut keeps only failed paths armed for retry; successful paths must not move twice.
+		if (clip.mode === 'cut') {
+			setExplorerClipboard(remainingCutClipboard(clip, failedPaths));
 		}
 		// Refresh every column that had the target dir in its cached tree —
 		// fixes the "two panes at same cwd see stale tree after paste" case.

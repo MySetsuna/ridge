@@ -876,6 +876,17 @@ export function setExplorerClipboard(clip: ExplorerClipboard | null): void {
 	_clipboard.set(clip);
 }
 
+/** 部分 cut 失败时仅保留失败路径，成功项不再重复移动。 */
+export function remainingCutClipboard(
+	clip: ExplorerClipboard,
+	failedPaths: Iterable<string>,
+): ExplorerClipboard | null {
+	if (clip.mode !== 'cut') return clip;
+	const failed = new Set(failedPaths);
+	const paths = clip.paths.filter((path) => failed.has(path));
+	return paths.length > 0 ? { ...clip, paths } : null;
+}
+
 /**
  * 判定本次粘贴该用内部剪贴板（ridge 自己 copy/cut）还是系统剪贴板（外部应用 copy 的文件）。
  * 内部序列号与当前系统序列号一致 → 内部权威（外部未改写过，覆盖 copy/cut）；

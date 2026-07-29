@@ -431,3 +431,13 @@ sequenceDiagram
 - `ridge-mcp` 60 测、Ridge teammate server 5 测通过；`git diff --check` 通过。全仓 fmt check
   因大量既有格式漂移失败，未借机改写。按禁令未启动、终止或干预宿主 Ridge；目标 Agent
   真机接收留用户轨复验。
+
+## 2026-07-29 iteration 72 · Explorer 部分 cut 恢复
+
+- 对 NLM 残项作代码复核：Explorer 已逐路径执行 copy/move、聚合
+  `source path: error` 并刷新源/目标列，故“仅通用 Error”不成立。
+- 真缺口为部分 cut 成功时旧逻辑清空整个内部剪贴板；失败路径虽显示，却无法直接重试。
+  新纯函数按原顺序仅保留失败路径；全成功清空，全失败全留，copy 不受影响。
+- `fileExplorer.test.ts` 33 测通过；`Explorer.svelte` 编译通过。全仓与 components
+  `svelte-check` 分别于 184/124 秒超时，已按精确 PID 回收本轮自产检查树，未触碰宿主 Ridge。
+  Windows 权限/跨卷真实用户卷矩阵仍属 user-track。
