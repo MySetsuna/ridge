@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { t } from '$lib/i18n';
   import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
-  import { paneRefKey } from '@ridge/remote';
+  import { paneRefKey, type PaneRef } from '@ridge/remote';
   import { anyMod, consumeMods } from './modState.svelte';
   import { resolveInputAnchor, terminalVisualShiftPx } from './keyboardOffset';
   import { writeClipboard } from './clipboard';
@@ -28,19 +28,19 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId: remotePaneId, workspaceId, onStdin, onResize, onHostClipboard, onNearTop, onKeyboardShift, scrollbackLoading = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
+  let { paneId: remotePaneId, workspaceId, onStdin: onPaneStdin, onResize: onPaneResize, onHostClipboard, onNearTop: onPaneNearTop, onKeyboardShift, scrollbackLoading = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
-    onStdin: (data: string) => void;
+    onStdin: (pane: PaneRef, data: string) => void;
     /** iter-60：句级输入缓冲开关（语音/高频改写场景；alt-screen/TUI 鼠标态自动旁路）。 */
     sentenceBuffer?: boolean;
-    onResize?: (paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
+    onResize?: (pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
     /** Mirror a copied selection onto the desktop host's clipboard (so the host's
      *  native Ctrl+V paste picks it up). The control end's copy writes BOTH. */
     onHostClipboard?: (text: string) => void;
     /** §history-pull: fired when the user scrolls the viewport near the top of the
      *  in-kernel scrollback, so MainApp can lazily fetch + prepend older history. */
-    onNearTop?: () => void;
+    onNearTop?: (pane: PaneRef) => void;
     onKeyboardShift?: (shift: number) => void;
     scrollbackLoading?: boolean;
     selectionMode?: boolean;
@@ -51,14 +51,24 @@
   const manager = TerminalManager.instance();
   const td = new TextDecoder();
 
+  function ownPaneRef(): PaneRef | null {
+    return workspaceId && remotePaneId ? { workspaceId, paneId: remotePaneId } : null;
+  }
+
+  function onStdin(data: string): void {
+    const pane = ownPaneRef();
+    if (pane) onPaneStdin(pane, data);
+  }
+
   /** Scroll-up rows-from-top threshold that triggers a lazy older-history fetch.
    *  ~1.5 screens of headroom so the fetch lands before the user hits the very top. */
   const NEAR_TOP_ROWS = 24;
 
   /** Fire onNearTop when the viewport is within NEAR_TOP_ROWS of the buffer top. */
   function maybeLoadOlder() {
-    if (!attached || !onNearTop) return;
-    if (rowsAboveViewport() <= NEAR_TOP_ROWS) onNearTop();
+    const pane = ownPaneRef();
+    if (!attached || !pane || !onPaneNearTop) return;
+    if (rowsAboveViewport() <= NEAR_TOP_ROWS) onPaneNearTop(pane);
   }
 
   let containerEl: HTMLDivElement | undefined = $state();
@@ -211,8 +221,9 @@
       manager.onData(paneId, (bytes) => onStdin(td.decode(bytes)));
       // Grid change → claim this viewport's size on the host (auto 自适应全屏).
       manager.onResize(paneId, (rows, cols) => {
-        if (onResize && containerEl) {
-          onResize(remotePaneId, rows, cols, Math.round(containerEl.clientWidth), Math.round(containerEl.clientHeight));
+        const pane = ownPaneRef();
+        if (onPaneResize && pane && containerEl) {
+          onPaneResize(pane, rows, cols, Math.round(containerEl.clientWidth), Math.round(containerEl.clientHeight));
         }
       });
       manager.setFocused(paneId, true);
