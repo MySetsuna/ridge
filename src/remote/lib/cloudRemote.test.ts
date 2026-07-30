@@ -249,8 +249,74 @@ describe('CloudRemoteConnection panes', () => {
   it('sendStdin writes to the pty', async () => {
     const conn = await connected();
     conn.sendStdin(PANE, 'ls\n');
-    await flush();
-    expect(invokeMock).toHaveBeenCalledWith('write_to_pty', { workspaceId: 'ws1', paneId: 'pane-a', data: 'ls\n' });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(invokeMock).toHaveBeenCalledWith('write_to_pty', {
+      workspaceId: 'ws1',
+      paneId: 'pane-a',
+      data: 'ls\n',
+      inputSourceId: expect.any(String),
+      inputSequence: 1,
+    });
+  });
+
+  it('batches and serializes terminal input without reordering', async () => {
+    const conn = await connected();
+    invokeMock.mockClear();
+    let releaseFirst!: () => void;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd !== 'write_to_pty') return Promise.resolve(undefined);
+      if (!releaseFirst) return new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return Promise.resolve(undefined);
+    });
+
+    conn.sendStdin(PANE, 'a');
+    conn.sendStdin(PANE, 'b');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    conn.sendStdin(PANE, 'c');
+    conn.sendStdin(PANE, 'd');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty')).toHaveLength(1);
+
+    releaseFirst();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const writes = invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty');
+    expect(writes).toHaveLength(2);
+    expect(writes[0][1]).toMatchObject({ data: 'ab', inputSequence: 1 });
+    expect(writes[1][1]).toMatchObject({
+      data: 'cd',
+      inputSourceId: writes[0][1].inputSourceId,
+      inputSequence: 2,
+    });
+  });
+
+  it('retries a failed input batch with the same sequence after backoff', async () => {
+    const conn = await connected();
+    invokeMock.mockClear();
+    let attempts = 0;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd !== 'write_to_pty') return Promise.resolve(undefined);
+      attempts += 1;
+      return attempts === 1 ? Promise.reject(new Error('timeout')) : Promise.resolve(undefined);
+    });
+    vi.useFakeTimers();
+    try {
+      conn.sendStdin(PANE, 'x');
+      await vi.advanceTimersByTimeAsync(4);
+      expect(attempts).toBe(1);
+      await vi.advanceTimersByTimeAsync(249);
+      expect(attempts).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(attempts).toBe(2);
+      const writes = invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty');
+      expect(writes[0][1]).toMatchObject({ data: 'x', inputSequence: 1 });
+      expect(writes[1][1]).toMatchObject({
+        data: 'x',
+        inputSourceId: writes[0][1].inputSourceId,
+        inputSequence: 1,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('claimPane resizes the host pty and bumps the refresh seq', async () => {

@@ -160,6 +160,12 @@ pub struct PaneScrollback {
     pub total_bytes: usize,
 }
 
+#[derive(Default)]
+pub struct PtyInputSequenceState {
+    pub last_sequence: u64,
+    pub last_digest: Option<[u8; 32]>,
+}
+
 /// One page of scrollback bytes returned by `get_pane_scrollback_tail` /
 /// `_before`. Always UTF-8-safe at both ends.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -502,6 +508,11 @@ pub struct AppState {
     ///   - delta_cb:  desktop Tauri Channel for delta frames (replaces pty_delta_channels)
     ///   - remote_subs: mobile WS client subscribers with per-client mpsc channels
     pub pty_pane_registry: Arc<RwLock<HashMap<(Uuid, Uuid), PaneRegistry>>>,
+    /// Idempotent remote input lanes, keyed by `(workspace, pane, controller source)`.
+    /// Each lane serializes writes and stores the last applied sequence so a response
+    /// timeout/reconnect can retry without duplicating terminal input.
+    pub pty_input_lanes:
+        Arc<RwLock<HashMap<(Uuid, Uuid, String), Arc<tokio::sync::Mutex<PtyInputSequenceState>>>>>,
     /// Remote Control (主线一): the port the WebSocket server is listening on.
     /// 0 means the server is not running (failed to bind or disabled).
     pub remote_port: Arc<RwLock<u16>>,
@@ -624,6 +635,7 @@ impl AppState {
             startup_cli_cwd,
             user_default_cwd: Arc::new(RwLock::new(None)),
             pty_pane_registry: Arc::new(RwLock::new(HashMap::new())),
+            pty_input_lanes: Arc::new(RwLock::new(HashMap::new())),
             remote_port: Arc::new(RwLock::new(0)),
             remote_auth: Arc::new(RemoteAuth::new()),
             device_identity: Arc::new(ridge_core::DeviceIdentity::load_or_create()),
@@ -707,6 +719,12 @@ impl AppState {
 
     pub fn clear_pty_scrollback(&self, ws: Uuid, pane: Uuid) {
         self.pty_scrollback.write().remove(&(ws, pane));
+    }
+
+    pub fn clear_pty_input_lanes(&self, ws: Uuid, pane: Uuid) {
+        self.pty_input_lanes
+            .write()
+            .retain(|(lane_ws, lane_pane, _), _| *lane_ws != ws || *lane_pane != pane);
     }
 
     /// Return the tail of up-to `max_bytes` bytes, starting on a UTF-8 char

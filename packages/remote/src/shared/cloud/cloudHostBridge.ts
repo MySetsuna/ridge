@@ -212,6 +212,8 @@ export class CloudHostBridge {
 
   /** 在途 invoke（id → 令牌），供 $/cancel 尽力中止。 */
   private readonly inflight = new Map<string, InflightInvoke>();
+  /** Same terminal input sequence retries share one host invoke until it settles. */
+  private readonly inputInvokes = new Map<string, { data: unknown; promise: Promise<unknown> }>();
   /** 已订阅 pane（paneId → 取消订阅）。host-global 多 pane：每 pane 登记一次。 */
   private readonly paneSubs = new Map<string, Unsubscribe>();
   /** 会话是否已终止（0x11 bye；置位后丢弃一切业务帧）。 */
@@ -669,7 +671,7 @@ export class CloudHostBridge {
     this.inflight.set(key, token);
 
     try {
-      const result = await this.invoke(methodCanon, callParams);
+      const result = await this.invokeWithInputDedupe(methodCanon, callParams);
       if (token.cancelled) return; // 已 $/cancel：不回响应（client 已 reject）
       this.sendControl(jsonrpcResult(id, result ?? null));
     } catch (e) {
@@ -678,6 +680,37 @@ export class CloudHostBridge {
     } finally {
       this.inflight.delete(key);
     }
+  }
+
+  private invokeWithInputDedupe(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    if (method !== 'write_to_pty') return this.invoke(method, params);
+    const source = params.inputSourceId;
+    const sequence = params.inputSequence;
+    const paneId = params.paneId;
+    if (
+      typeof source !== 'string'
+      || (typeof sequence !== 'number' && typeof sequence !== 'string')
+      || typeof paneId !== 'string'
+    ) {
+      return this.invoke(method, params);
+    }
+    const key = `${String(params.workspaceId ?? '')}\0${paneId}\0${source}\0${String(sequence)}`;
+    const existing = this.inputInvokes.get(key);
+    if (existing) {
+      if (existing.data !== params.data) {
+        return Promise.reject(new Error('terminal input sequence reused with different data'));
+      }
+      return existing.promise;
+    }
+    const request = Promise.resolve().then(() => this.invoke(method, params));
+    const tracked = request.finally(() => {
+      if (this.inputInvokes.get(key)?.promise === tracked) this.inputInvokes.delete(key);
+    });
+    this.inputInvokes.set(key, { data: params.data, promise: tracked });
+    return tracked;
   }
 
   /** notification 形态的命令转发（无 id，不回响应；中途出错仅记日志）。 */
@@ -852,6 +885,7 @@ export class CloudHostBridge {
       token.abort.abort();
     }
     this.inflight.clear();
+    this.inputInvokes.clear();
     for (const [paneId] of this.paneSubs) this.unsubscribePane(paneId);
     this.paneSubs.clear();
     this.backpressuredPanes.clear(); // 弱网 P1：清背压待重同步集

@@ -2379,6 +2379,8 @@ async fn dispatch_invoke_request(
                     s(args, "paneId"),
                     s(args, "data"),
                     opt_s(args, "workspaceId"),
+                    opt_s(args, "inputSourceId"),
+                    args.get("inputSequence").and_then(|value| value.as_u64()),
                 )
                 .await,
             )
