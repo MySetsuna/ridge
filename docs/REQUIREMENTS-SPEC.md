@@ -1,18 +1,19 @@
 # Ridge · 需求规范（REQUIREMENTS-SPEC）
 
-> 本地只保留此一份需求文档。Pending 未获用户明确批准前，不改代码、不生成执行合同、不上传；
-> NotebookLM 继续使用上一版已批准的 `REQUIREMENTS-SPEC` 来源。
-
-## 待审批变更 (Pending Changes)
+> 本文件仅含用户已批准的 Active 需求；Pending 仅存本地 `PENDING-REQUIREMENTS.md`。
 
 ## 正式需求 (Active Requirements)
 
 ### REQ-AGENT-COMMUNE-CONTINUITY-01
 
-- 状态：`ACTIVE`
+- 状态:`ACTIVE`
 - 日期：`2026-07-28`
 - 类型：`MODIFY` + `FIX`
-- 版本：`v0.2.4`
+- 版本:`v0.2.4`
+- 行为:见下列“目标行为与用户可观察结果”。
+- 边界:见下列范围、非目标与不可动边界。
+- 验收:见下列确定性验收。
+- 追踪:见下列预期落点。
 - 批准证据：用户明确“批准所有”。
 - 原始意图：
   - Agent's Commune 面板当前位于顶部的操控按钮与文档入口区域，移至面板滚动内容最底部。
@@ -44,10 +45,14 @@
 
 ### REQ-REMOTE-SMOOTH-STATE-02
 
-- 状态：`ACTIVE`
+- 状态:`ACTIVE`
 - 日期：`2026-07-28`
 - 类型：`MODIFY` + `FIX`
-- 版本：`v0.2.5`
+- 版本:`v0.2.5`
+- 行为:见下列“目标行为与用户可观察结果”。
+- 边界:见下列范围、非目标与不可动边界。
+- 验收:见下列确定性验收。
+- 追踪:见下列预期落点。
 - 批准证据：用户明确“批准所有”。
 - 关联：`REQ-MOBILE-REMOTE-STATE-01`、`REQ-REMOTE-03`
 - 原始意图：
@@ -92,10 +97,14 @@
 
 ### REQ-MOBILE-REMOTE-STATE-01 · Mobile Remote 连续状态、后台 pane 与软键盘视口
 
-- 状态：`ACTIVE`
+- 状态:`ACTIVE`
 - 日期：`2026-07-28`
 - 类型：`MODIFY` + `FIX`
-- 版本：`v0.2.2`
+- 版本:`v0.2.2`
+- 行为:见下列目标行为。
+- 边界:见下列范围、非目标与不可动边界。
+- 验收:见下列确定性验收。
+- 追踪:见下列预期落点。
 - 关联：`REQ-MOBILE-01`、`REQ-REMOTE-03`
 - 原始意图：
   - 远端异步状态交由 Query 管理，前端交互状态交由 store 管理；刷新保留当前页面与旧数据，后台静默替换。
@@ -144,7 +153,12 @@
 
 ### REQ-AGENT-HISTORY-01 · Agent 历史会话分组、折叠与一键恢复
 
-- 状态：`APPROVED`
+- 状态:`ACTIVE`
+- 版本:`v0.2.3`
+- 行为:见下列目标行为。
+- 边界:见下列范围与非目标。
+- 验收:见下列确定性验收。
+- 追踪:Agent Center 历史页、Agent adapter registry、pane 恢复入口及对应 fixture/E2E。
 - 日期：`2026-07-28`
 - 类型：`MODIFY` + `NEW`
 - 批准证据：用户明确要求“添加任务并按 NLM 流程自动审批通过”。
@@ -175,8 +189,12 @@
 
 ### REQ-REMOTE-HOST-TREE-01 · 公网同账号 / LAN 直连主机与三层拓扑
 
-- 状态：`ACTIVE`
-- 版本：`v0.2.0`
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:见下列目标行为。
+- 边界:见下列范围、非目标与不可动边界。
+- 验收:见下列确定性验收。
+- 追踪:见下列预期落点。
 - 类型：`FIX`
 - 原始意图：接入公网或局域网远端主机后，读取现有 pane，以“主机 → 工作区 → pane”树展示并管理。
 - 目标行为：
@@ -197,8 +215,12 @@
 
 ### REQ-WORKSPACE-SHARE-01 · 跨账号单工作区分享
 
-- 状态：`ACTIVE`
-- 版本：`v0.2.0`
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:见下列目标行为。
+- 边界:见下列范围、非目标与不可动边界。
+- 验收:见下列确定性验收。
+- 追踪:见下列预期落点。
 - 类型：`NEW`
 - 原始意图：用户可只分享一个工作区；它区别于接入整台主机，可授权给不同 Ridge 用户，并统一显示在主机侧栏。
 - 目标行为：
@@ -238,91 +260,120 @@
 
 ### REQ-WORKSPACE-SAVED-01 · 已保存工作区可重开、可删除及滚动条统一
 
-- 状态：`ACTIVE`
-- 版本：`v0.2.0`
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
 - 类型：`FIX`
 - 原始意图：已保存工作区打开并使用、关闭后须能再次载入；已保存列表须能删除文件，滚动条须与应用一致。
-- 行为：
+- 行为:见下列工作区关闭、保存文件删除与滚动条规则。
   - 关闭工作区须同时清理其 pane 的前端 PTY bridge、terminal kernel 与标题等 runtime；再次打开同一 `.ridge` 内复用的 pane UUID 时必须创建新 PTY，不得误复用 parked runtime。
   - “已保存工作区”弹层可删除默认保存目录内的 `.ridge`，无论该文件是否仍关联已打开工作区；删除前确认，成功后原位刷新列表。
   - 弹层滚动区复用应用通用 `rg-scroll` 样式。
-- 边界：按路径删除仅允许默认 `~/ridge-workspaces/` 的直接 `.ridge` 文件；拒绝目录外、子目录、其他扩展名及 symlink 越界；不删除工作区 cwd 内项目文件。
-- 验收：前端测证明关闭两 pane 工作区逐一 teardown/detach；Rust 测证明仅默认目录直接 `.ridge` 可删；`svelte-check`、Rust check 通过。
-- 追踪：`src/lib/stores/paneTree.ts`、`src/routes/+page.svelte`、`src-tauri/src/commands/ridge_file.rs`、`src/app.css`。
+- 边界:按路径删除仅允许默认 `~/ridge-workspaces/` 的直接 `.ridge` 文件；拒绝目录外、子目录、其他扩展名及 symlink 越界；不删除工作区 cwd 内项目文件。
+- 验收:前端测证明关闭两 pane 工作区逐一 teardown/detach；Rust 测证明仅默认目录直接 `.ridge` 可删；`svelte-check`、Rust check 通过。
+- 追踪:`src/lib/stores/paneTree.ts`、`src/routes/+page.svelte`、`src-tauri/src/commands/ridge_file.rs`、`src/app.css`。
 
 ### REQ-REMOTE-03 · 桌面浏览器 Remote pane 尺寸与指针命中一致
 
-- 状态：`ACTIVE`
-- 版本：`v0.2.0`
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
 - 类型：`FIX`
 - 原始意图：桌面浏览器经 LAN 或公网 Remote 时，pane 展示尺寸、终端实际 rows/cols 与鼠标点击位置须一致。
-- 行为：
+- 行为:见下列 LAN/public 共享几何规则。
+- 边界:见下列范围、非目标与不可动边界。
   - LAN 与公网共用一套 pane 几何真相：以最终内容区 `getBoundingClientRect()`、实际 padding、cell 尺寸与 `devicePixelRatio` 计算 viewport、rows/cols、resize/claim。
   - 鼠标/触控坐标须用同一内容区原点与缩放换算映射至终端 cell；不得混用 CSS 像素、设备像素、窗口坐标或旧布局缓存。
   - 首次挂载、分屏拖拽、侧栏变化、浏览器 resize、DPR/缩放变化及重连后均重算；LAN/public transport 不各写几何算法。
 - 范围：桌面浏览器 Remote 的 terminal container、共享 renderer/manager、resize/claim 协议与鼠标编码；LAN/public 回归测。
 - 非目标：改动原生桌面本机 pane 产品尺寸、重做终端渲染器、以 CSS transform 掩盖后端 rows/cols 错误。
 - 不可动边界：几何 SSOT 位于共享 terminal 层；发送给 host 的 rows/cols 与本地 renderer grid 必须同源；修复不得增加无界 ResizeObserver/轮询或 resize 风暴。
-- 验收：
+- 验收:见下列纯函数与浏览器 E2E 验收。
   - 纯函数测覆盖 DPR `1/1.25/1.5/2`、padding、分数像素、边界点击，断言 viewport→grid 与 pointer→cell 同源且 clamp 正确。
   - 浏览器 E2E 分别走 LAN/public fixture；初始、分屏拖拽、侧栏开合、窗口缩放后，DOM pane rect、renderer viewport、host rows/cols 一致，鼠标报告 cell 与点击目标一致。
   - resize 合并有界、最终尺寸必达；不得以截图视觉近似代替协议断言。
 - 预期落点：`src/remote/**`、`packages/remote/src/shared/terminal/**`、`src/lib/components/RidgePane.svelte`、LAN/cloud Remote resize 与鼠标协议测试。
+- 追踪:见上述预期落点。
 
 ### REQ-REMOTE-01 · rdg Remote 入口与启停语义
 
-- 状态：`ACTIVE`
-- 版本：`v0.2.0`
-- 行为：rdg 仪表盘 LAN 地址只显示根地址（如 `https://172.21.130.235:9527`），不附 `/login`；LAN Remote 默认停止，须用户显式启动；TUI 内须有名称明确的公网 Remote 启动/停止入口。
-- 边界：不改变 `rdg remote` 子命令兼容性；退出 TUI 时仍须回收由本 TUI 启动的服务。
-- 验收：dashboard 单测证明根 URL、初始 stopped、无启动 action；菜单文本与动作测试证明 LAN/公网入口明确。
-- 追踪：`packages/ridge-cli/src/tui/dashboard.rs` → dashboard tests。
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:rdg 仪表盘 LAN 地址只显示根地址（如 `https://172.21.130.235:9527`），不附 `/login`；LAN Remote 默认停止，须用户显式启动；TUI 内须有名称明确的公网 Remote 启动/停止入口。
+- 边界:不改变 `rdg remote` 子命令兼容性；退出 TUI 时仍须回收由本 TUI 启动的服务。
+- 验收:dashboard 单测证明根 URL、初始 stopped、无启动 action；菜单文本与动作测试证明 LAN/公网入口明确。
+- 追踪:`packages/ridge-cli/src/tui/dashboard.rs` → dashboard tests。
 
 ### REQ-REMOTE-02 · rdg LAN 桌面浏览器真正接入
 
-- 状态：`ACTIVE`
-- 版本：`v0.2.0`
-- 行为：桌面浏览器访问 rdg LAN Remote 时直接走 LAN TOTP/session 启动链，完成 WebSocket、workspace、pane、PTY 接入；不得只显示空白桌面壳。
-- 边界：公网租户域仍走 Cloud WebRTC/E2EE；LAN 与 Cloud 启动判定不得依赖远端 cloud API 成败。
-- 验收：启动判定纯逻辑测试覆盖 LAN IP/localhost 与 cloud 租户/query；LAN host 协议 probe 或等价集成测试证明握手、订阅、stdin 回显。
-- 追踪：`src/routes/+layout.svelte`、新增启动判定 helper/tests、`packages/ridge-cli/src/tui/lan_host*`。
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:桌面浏览器访问 rdg LAN Remote 时直接走 LAN TOTP/session 启动链，完成 WebSocket、workspace、pane、PTY 接入；不得只显示空白桌面壳。
+- 边界:公网租户域仍走 Cloud WebRTC/E2EE；LAN 与 Cloud 启动判定不得依赖远端 cloud API 成败。
+- 验收:启动判定纯逻辑测试覆盖 LAN IP/localhost 与 cloud 租户/query；LAN host 协议 probe 或等价集成测试证明握手、订阅、stdin 回显。
+- 追踪:`src/routes/+layout.svelte`、新增启动判定 helper/tests、`packages/ridge-cli/src/tui/lan_host*`。
 
 ### REQ-CLOUD-01 · 公网 Remote 设备配额不得误停 rdg
 
-- 状态：`ACTIVE`
-- 版本：`v0.2.0`
-- 行为：host 与 controller 均按数据库实时用户组计算设备配额；配额自动停用与用户手动停用须分因记录；额度恢复时仅自动启用“因配额停用”的设备。
-- 边界：不绕过会员 Remote 权限、设备归属、WS 并发或 controller 数量门禁；手动停用不可被后台 daemon 自动撤销。
-- 验收：ridge-cloud 单测覆盖会员 host 不按免费额度降级、quota/manual 两种停用区分、额度恢复只恢复 quota-parked；WS 门控回归全绿。
-- 追踪：`ridge-cloud/src/ws/handler.rs`、`src/db/device_quota.rs`、`src/db/device_repo.rs`、顺序 migration。
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:host 与 controller 均按数据库实时用户组计算设备配额；配额自动停用与用户手动停用须分因记录；额度恢复时仅自动启用“因配额停用”的设备。
+- 边界:不绕过会员 Remote 权限、设备归属、WS 并发或 controller 数量门禁；手动停用不可被后台 daemon 自动撤销。
+- 验收:ridge-cloud 单测覆盖会员 host 不按免费额度降级、quota/manual 两种停用区分、额度恢复只恢复 quota-parked；WS 门控回归全绿。
+- 追踪:`ridge-cloud/src/ws/handler.rs`、`src/db/device_quota.rs`、`src/db/device_repo.rs`、顺序 migration。
 
 ### REQ-MOBILE-01 · Mobile Remote 弹层、图标与按钮
 
-- 状态：`ACTIVE`
-- 版本：`v0.2.0`
-- 行为：工作区/终端类型切换层通过 portal 挂到 `body`；顶部 Agent 协作入口使用小机器人；Agent 图标后不跟“标记/运行中/启动中”等标记文案；手机 Remote 右侧功能按钮不显示 border 外壳。
-- 边界：保留按钮的 `title`/`aria-label`、触控尺寸、焦点与点击行为。
-- 验收：Svelte/Vitest 断言 portal action、Bot 图标及无标记文案；移动构建与 svelte-check 全绿。
-- 追踪：`src/remote/lib/WorkspaceTree.svelte`、`src/remote/MainApp.svelte`、`src/remote/lib/RemoteSidebar.svelte`、`src/lib/components/SplitContainer.svelte`。
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:工作区/终端类型切换层通过 portal 挂到 `body`；顶部 Agent 协作入口使用小机器人；Agent 图标后不跟“标记/运行中/启动中”等标记文案；手机 Remote 右侧功能按钮不显示 border 外壳。
+- 边界:保留按钮的 `title`/`aria-label`、触控尺寸、焦点与点击行为。
+- 验收:Svelte/Vitest 断言 portal action、Bot 图标及无标记文案；移动构建与 svelte-check 全绿。
+- 追踪:`src/remote/lib/WorkspaceTree.svelte`、`src/remote/MainApp.svelte`、`src/remote/lib/RemoteSidebar.svelte`、`src/lib/components/SplitContainer.svelte`。
 
 ### REQ-AGENT-01 · 全局 Agent Center、pane 状态与最近回复
 
-- 状态：`ACTIVE`
-- 版本：`v0.2.0`
-- 行为：Agent tab 聚合所有已打开工作区的 agents，不以焦点工作区过滤；原顶部操作移入可滚动内容；自动识别的 agent 进程须同步 pane header 与 roster 状态；最近回复从 Claude/Codex JSONL 会话历史提取并显示。
-- 边界：工作区目标、编组编辑等写操作仍须显式落到所属工作区；JSONL 扫描须有文件数、单文件读取量与返回条数上限，不上传会话内容。
-- 验收：聚合模型与进程识别单测；Rust JSONL fixture 测试覆盖 Claude/Codex assistant 文本、项目过滤与有界排序；pane header UI 不显示尾随标记文案。
-- 追踪：`src/lib/teammate/AgentCenterPanel.svelte`、`src/lib/components/RidgePane.svelte`、`src-tauri/src/commands/project.rs`。
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:Agent tab 聚合所有已打开工作区的 agents，不以焦点工作区过滤；原顶部操作移入可滚动内容；自动识别的 agent 进程须同步 pane header 与 roster 状态；最近回复从 Claude/Codex JSONL 会话历史提取并显示。
+- 边界:工作区目标、编组编辑等写操作仍须显式落到所属工作区；JSONL 扫描须有文件数、单文件读取量与返回条数上限，不上传会话内容。
+- 验收:聚合模型与进程识别单测；Rust JSONL fixture 测试覆盖 Claude/Codex assistant 文本、项目过滤与有界排序；pane header UI 不显示尾随标记文案。
+- 追踪:`src/lib/teammate/AgentCenterPanel.svelte`、`src/lib/components/RidgePane.svelte`、`src-tauri/src/commands/project.rs`。
 
 ### REQ-AGENT-02 · Agent 启动的无头 Shell 发现与唤起
 
-- 状态：`ACTIVE`
-- 版本：`v0.2.0`
-- 行为：经 Ridge tmux shim 由 pane/agent 启动的 native 无头 session 记录创建工作区与 pane；Agent Center 自动列入对应 agent，支持一键召唤到当前工作区；未能归因的普通无头 session 仍可单列。
-- 边界：仅承诺 Ridge 持有 PTY master 的 native session 可召唤；任意已脱离 PTY、仅剩 OS PID 的后台进程不可伪装成可接管会话。
-- 验收：ridge-tmux 测试证明 creator metadata 从 HTTP header 入 session/list DTO；tmux shim 测试证明工作区/pane header 传播；前端测试证明按 agent 归组与 attach 调用。
-- 追踪：`src-tauri/src/bin/tmux.rs`、`src-tauri/src/commands/terminal.rs`、`packages/ridge-tmux/src/{http.rs,lib.rs}`、`src/lib/stores/hosts.ts`、`AgentCenterPanel.svelte`。
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:经 Ridge tmux shim 由 pane/agent 启动的 native 无头 session 记录创建工作区与 pane；Agent Center 自动列入对应 agent，支持一键召唤到当前工作区；未能归因的普通无头 session 仍可单列。
+- 边界:仅承诺 Ridge 持有 PTY master 的 native session 可召唤；任意已脱离 PTY、仅剩 OS PID 的后台进程不可伪装成可接管会话。
+- 验收:ridge-tmux 测试证明 creator metadata 从 HTTP header 入 session/list DTO；tmux shim 测试证明工作区/pane header 传播；前端测试证明按 agent 归组与 attach 调用。
+- 追踪:`src-tauri/src/bin/tmux.rs`、`src-tauri/src/commands/terminal.rs`、`packages/ridge-tmux/src/{http.rs,lib.rs}`、`src/lib/stores/hosts.ts`、`AgentCenterPanel.svelte`。
 
+### REQ-20260730-01 · 下一迭代：Remote、桌面端与跨窗口稳定性重构
+
+- 批准依据:`全部批准，现在立刻快速推进。可以使用subagent 或者 用ridge-mcp启动队友高速迭代`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 行为:拉取并冻结最新代码基线，完整纳入最近两次项目 NLM 对话、上一迭代半成品/未完成/回归项及本次 Remote/桌面稳定性与性能需求；建立三源去重追踪后，按依赖、风险、优先级与可验证性逐轮推进。须消除 Remote 公网高频重复 RPC、超时队列、非 Git 轮询、销毁 Pane 残留请求与重复日志；约束桌面终端内存和 Scrollback，统一真正清空语义；补齐 Agent's Commune 可见性核查、桌面多窗口与 Remote 工作区单例、远程 Host 接入/反馈/拖拽/Resize 全链路。
+- 边界:保留用户工作与 Git 历史；不自动发布、不推送、不删除用户数据、不作无关重构；NotebookLM 只供战略建议，不裁决代码事实；窗口允许多开但 Remote 工作区跨窗口全局单例；终端输入不得丢字节、乱序或改变交互语义；外部进程统一经具墙钟超时、取消、Windows 进程树清理及同生死许可的出口；低优先级浏览器 Warning 不阻塞核心交付。
+- 验收:① 三源矩阵逐项标注已完成/半完成/未完成/回归并附代码、提交/状态和测试证据；② 迭代任务逐项列现状、目标、方案、验收、回归、依赖、风险、优先级、顺序；③ 同场景 Console 重复错误较基线减少至少 90%，同错聚合计数；④ 非 Git 目录每目录生命周期至多探测一次，确认后停 status/branch/stash 轮询，目录切换才重检；⑤ 同键幂等 RPC 未完成时合并，Resize/Input 调度有界且输入不丢不乱，超时指数退避、暂停阈值、队列上限、统计均有确定性测试；⑥ Pane Destroy 后 Pending RPC/计数归零，陈旧 Pane fail-closed，真挂起替身验证超时/取消后进程树回收；⑦ Scrollback 有明确上限和自动释放测试，右键清空及 clear 均清页面、Scrollback、后台缓冲；⑧ 多窗口并存且 Remote 工作区全局单例，重复打开聚焦旧窗口；⑨ 远程 Host 可列出/创建/拖拽接入，弹窗立即关闭、面板反馈阶段，接入后按实际尺寸自动 Resize，按钮可重同步；⑩ Agent's Commune 以可见 E2E 或明确未落地证据验收；⑪ 相关单测、集成/E2E、typecheck、lint、build、运行冒烟均记录命令、退出码和证据；⑫ 性能同场景 A/B 报告 RPC 数、延迟、CPU、网络、WebView2 内存、正确率。
+- 追踪:`REQ-20260730-01 → .iteration/context.json 单目标执行包 → RPC/SCM/PTY/terminal/window/remote-host/commune symbols and paths → deterministic unit/integration/E2E/performance regressions`
+
+#### 执行顺序
+
+1. 同步并冻结基线；读取最近两次 NLM 对话与上一迭代状态，只作事实盘点。
+2. 建三源去重矩阵，先识别既有护栏、半成品、缺测与回归，避免重复建设。
+3. 先立可观测基线与统一 RPC/PTY 生命周期护栏；继而 SCM 非 Git 缓存、日志聚合；再处理终端内存/清空。
+4. 生命周期和观测护栏稳定后，分波推进跨窗口工作区单例与远程 Host 接入。
+5. Agent's Commune 先核需求—实现—展示链：已有则修展示/回归，未有则最小实现。
+6. 核心闸通过后方处理浏览器 Warning。
+
+#### 回归矩阵下限
+
+- 本地桌面、Remote 局域网、Remote 公网等价受控场景；正常网络、延迟、丢包、断连、重连。
+- Git 仓库、非 Git 目录、目录切换；watcher/heartbeat/pane/SCM 多触发同源共闸。
+- Pane 创建、输入、Resize、销毁、恢复；销毁/超时/取消竞态与队列饱和。
+- 长时输出、超限 Scrollback、重复 clear/右键清空、Pane 关闭后的 WebView2 内存回落。
+- 两窗口争用同 Remote 工作区、旧窗口最小化/后台、焦点切换、新窗口打开空闲工作区。
+- 远程 Host 慢发现、空列表、已有工作区、新建失败、拖拽接入、接入后尺寸变化与手动重同步。
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
