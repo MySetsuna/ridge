@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-30（iteration 75 自动轨与 Dev/CDP 验收通过；移动真机手感及跨平台安装包仍属用户/CI 轨）
+状态日期：2026-07-30（iteration 76 已完成三源盘点与首批 RPC/Resize/SCM 护栏；公网、真机与 WebView2 长时证据仍属外部轨）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -15,46 +15,54 @@
 
 ## 当前迭代目标
 
-- `REQ-20260730-01`：整合最近两次项目 NLM 对话、上一迭代遗留及 Remote/桌面稳定性需求；先建三源证据矩阵，再按依赖、风险、优先级与可验证性逐轮推进。
+- `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 推进 Remote/桌面稳定性；当前顺序为 RPC/输入/Resize → SCM → Pane 生命周期/日志 → 内存/Host → 多窗口/Commune。
+- `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`：项目源码无 Chrome Extension Messaging；保持业务零 diff，待受影响手机 clean-profile/扩展 A/B 终局归因。
 
 ## 已验证代码事实
 
-- 2026-07-30 已将 `origin/main@f62133c` 合入本地 `main@7b24424`；远端 iteration 75 代码与文档均已进入当前工作树。
-- 本轮尚未把用户新增问题宣称为已完成；须以 CodeGraph、当前源码、测试与运行基线逐项核验。
+- `origin/main@f62133c` 已合入；本地业务代码基线 `fc6a73b598f4`，未推送。
+- `RpcClient` 现有 256 在途硬上限、超时 `$/cancel` 与 queue/timeout diagnostics（`5eece08`）。
+- 手机 Cloud Resize 现为每 Pane 一在途加一 latest pending；重复尺寸去重，close/prune/disconnect 清 lane（`45355db`）。
+- SCM 已缓存同 cwd 的空/非 Git 发现结果，`get_scm_status` 按 root single-flight 并传稳定 slot（`fc6a73b`）。
+- Chrome Messaging 全源码审计无命中；`service-worker.ts` 的 PWA `Client.postMessage` 非 Extension Messaging。
 
 ## 相关模块与 symbol
 
-- 待本轮有界 CodeGraph 查询确认：Remote RPC/transport、SCM polling、PTY/Pane 生命周期、terminal kernel/scrollback、Hosts、Agent's Commune、Tauri window/workspace ownership。
+- RPC/Resize:`RpcClient.request/settle/diagnostics`、`CloudRemoteConnection._resize/_drainResizeLane`。
+- SCM:`SourceControl.discoverRepos/refreshStatus`、`get_scm_status(slot)`、Git process timeout/tree-kill tests。
+- 待处理:`CloudRemoteConnection.sendStdin`、pane lifecycle registry、`TerminalManager.clearScrollback/destroy`、Hosts staged attach、Tauri workspace owner registry、Commune visibility。
 
 ## 最近完成与当前 diff
 
-- 最近完成:`iteration 75 handoff（远端 f62133c）；本轮批准 REQ-20260730-01 并合入最新远端。`
-- 当前 diff:`业务代码无未提交改动；仅 .iteration 与既有本地生成目录未跟踪。`
+- 最近完成:`5eece08` RPC cap/timeout cancel；`45355db` Resize latest-win；`fc6a73b` SCM negative cache/single-flight。
+- 当前 diff:`仅 iteration 76 合同与本状态更新；.iteration 和既有本地生成目录保持未跟踪。`
 
 ## 验证状态
 
-- `requirements_gate.py assert-task-executable --json`：退出码 `0`。
-- `preflight.py --strict --require-notebooklm`：退出码 `0`；CodeGraph ready、NLM CLI 可用、Node/Rust 原生验证器可用。
-- 产品测试与性能 A/B：尚未运行；不得据此宣称本轮产品目标完成。
+- 需求闸、preflight、Notebook 冷循环准入：退出码 `0`；NLM 实际 query 因 Google auth expired 失败。
+- 三个只读 worker 结果经 `agent_dispatch.py validate-batch`：`valid=true`。
+- 聚焦 Vitest：47/47；`pnpm check`：0 errors / 0 warnings。
+- 公网、手机真机、WebView2 长时性能 A/B 尚未运行；不得宣称总体目标完成。
 
 ## 当前失败信号与风险
 
-- 失败信号:`state_snapshot.py 首次因 PROJECT-STATE 旧骨架缺固定标题退出 2；本次仅迁移骨架后重跑。`
-- 风险:`需求跨 Remote、桌面壳层、Tauri、PTY、SCM 与跨窗口所有权；重复 RPC 和销毁竞态可能共享根因，须先建可观测基线。`
+- 失败信号:`NotebookLM authentication expired`；手机 `runtime.lastError` 尚无首条 warning script URL。
+- 风险:`write_to_pty` 超时后盲重试可能重复输入，故须先加 host acknowledgement/idempotency；多窗口与现有 single-instance 直接冲突；Host/clear/内存缺运行同构证据。
 
 ## 架构边界
 
-- 目标/非目标:`先完成三源事实盘点与统一 RPC/PTY 护栏；不发布、不推送、不删用户数据、不作无关重构。`
-- 锁定决策:`窗口可多开；Remote 工作区跨窗口全局单例。终端输入不丢字节、不乱序。NotebookLM 不裁决代码事实。`
-- 基线依据:`main@7b24424；REQ-20260730-01；CodeGraph ready。`
-- 模块与落点:`由下一轮 CodeGraph 有界事实包确认。`
-- 关键接口/直接路径:`由 write_to_pty、resize_pane、get_scm_status、list branches、Pane destroy/terminal clear 调用链确认。`
+- 目标/非目标:`先完成统一 RPC/PTY 生命周期和观测，再跨窗口/Host；不发布、不推送、不删用户数据、不作无关重构。`
+- 锁定决策:`窗口可多开；Remote 工作区跨窗口全局单例。输入不丢、不乱、不盲重放。NotebookLM 不裁决代码事实。`
+- 基线依据:`main@fc6a73b598f4`；两项 Active REQ；guidance 64/65；三个 worker 审计结果。
+- 模块与落点:`packages/remote transport`、`cloudRemote`、`SourceControl`、terminal manager、Hosts、Tauri window ownership、Agent Center。
+- 关键接口/直接路径:`write_to_pty` 序列确认、`resize_pane` latest-win、SCM shared detection、Pane destroy cancellation。
 
 ## 需求—代码—测试追踪
 
 | Active REQ | 状态 | 代码证据 | 测试/质量证据 |
 | --- | --- | --- | --- |
-| `REQ-20260730-01` | inventory | 待三源矩阵与 CodeGraph 核验 | 需求闸/能力闸已绿；产品闸待跑 |
+| `REQ-20260730-01` | in progress | `5eece08`、`45355db`、`fc6a73b`；`CONTRACT-iteration-76.md` | 47 Vitest；Svelte check 绿；运行 A/B 待补 |
+| `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01` | code excluded / environment proof pending | 全源码无 Chrome Messaging；PWA worker 非该 API | worker result valid；手机 A/B 待补 |
 
 ## Known failed approaches
 
@@ -62,18 +70,17 @@
 
 ## 下一项已批准工作
 
-- 读取项目 NLM 最近两次对话与 iteration 75 状态；并行核查代码现状，形成已完成/半完成/未完成/回归矩阵。
+- 为手机 Cloud `write_to_pty` 增序列确认与有界保序调度；随后共享 Repository Detection Cache、Pane destroy cancellation 与日志聚合。
 
 ## 本轮 delta
 
-- 变更:`docs/REQUIREMENTS-SPEC.md`、`docs/PROJECT-STATE.md` 与本地 `.iteration/**`。
-- 直接影响:`仅需求治理与冷循环输入；业务行为未改。`
-- 验证:`需求闸和 NLM 能力预检退出码 0；状态快照迁移后待重跑。`
-- 质量:`Sonar 配置存在但 scanner 缺失；Vitest coverage 与 Playwright 配置可用。`
-- Agent 编排:`待 context/dispatch gate。`
-- 模型路由:`待 Ridge capability revision 动态解析。`
-- Worker 回收:`尚未派发。`
-- Token:`未做同任务 A/B，不宣称节省。`
+- 变更:`RpcClient`、Cloud Resize、SCM 调度、iteration 76 合同/状态。
+- 直接影响:`RPC 拥塞 fail-fast；超时通知远端取消；Resize RPC 合并；非 Git 重扫与同 root status 重入减少。`
+- 验证:`requirements/notebook/dispatch 闸绿；47 Vitest；Svelte check 绿。`
+- 质量:`Sonar scanner 仍缺；公网/内存 A/B 待补。`
+- Agent 编排:`native 三 worker，只读、全结果 valid；Ridge profile capability 未暴露，未猜测 pane 启动参数。`
+- Worker 回收:`3/3 completed，无越界写。`
+- Token:`子 worker 无逐会话可信计量，记 0 而不伪造节省；同任务 baseline 尚无。`
 
 ## 历史状态正文（截至 iteration 75）
 
