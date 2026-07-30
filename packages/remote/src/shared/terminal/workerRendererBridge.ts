@@ -36,11 +36,11 @@
  * dev-only `console.warn`.
  */
 
-import { getWorkerRenderer } from './workerRendererSingleton';
+import { failWorkerRenderer, getWorkerRenderer } from './workerRendererSingleton';
 import type { WorkerHostedRenderer } from './workerHostedRenderer';
 import type { RendererBackend } from './renderWorker.protocol';
 
-const DEFAULT_BACKEND: RendererBackend = 'webgpu';
+const DEFAULT_BACKEND: RendererBackend = 'canvas2d';
 const DEFAULT_SCROLLBACK = 5000;
 
 function devMode(): boolean {
@@ -55,6 +55,14 @@ function warn(label: string, err: unknown): void {
 	if (!devMode()) return;
 	// eslint-disable-next-line no-console
 	console.warn(`[ridge-term/worker-bridge] ${label}`, err);
+}
+
+function fail(label: string, err: unknown): void {
+	warn(label, err);
+	if (err instanceof Error && err.message === 'render worker terminated with pending requests') {
+		return;
+	}
+	failWorkerRenderer(err);
 }
 
 /** Resolve the active worker renderer, swallowing factory errors. Tests
@@ -92,6 +100,10 @@ export interface WorkerRendererBridge {
 	 *  main-thread kernel keeps the original bytes intact (see the
 	 *  module-level note). */
 	applyDelta(paneId: string, bytes: Uint8Array): void;
+	/** Mirror raw PTY bytes consumed by the main-thread semantic kernel. */
+	feed(paneId: string, bytes: Uint8Array): void;
+	/** Release only the parked pane's paint surface; keep its worker kernel. */
+	releaseCanvas(paneId: string): void;
 	/** Mirror a resize. */
 	resize(paneId: string, rows: number, cols: number, dpr: number, wCss?: number, hCss?: number): void;
 	/** Reconfigure font on an already-initialized pane. The worker
@@ -168,7 +180,7 @@ export const workerRendererBridge: WorkerRendererBridge = {
 			dims: { rows, cols, dpr },
 			backend: opts?.backend ?? DEFAULT_BACKEND,
 			scrollbackLines: opts?.scrollbackLines ?? DEFAULT_SCROLLBACK,
-		}).catch((err) => warn(`init ${paneId}`, err));
+		}).catch((err) => fail(`init ${paneId}`, err));
 	},
 
 	applyDelta(paneId, bytes): void {
@@ -186,18 +198,34 @@ export const workerRendererBridge: WorkerRendererBridge = {
 			// .slice() so the kernel can still consume the original bytes.
 			// Cheap because the buffer is typically ≤ tens of KB per frame.
 			r.applyDelta(paneId, bytes.slice()).catch((err) =>
-				warn(`applyDelta ${paneId}`, err),
+				fail(`applyDelta ${paneId}`, err),
 			);
 		} catch (err) {
-			warn(`applyDelta ${paneId} (sync)`, err);
+			fail(`applyDelta ${paneId} (sync)`, err);
 		}
+	},
+
+	feed(paneId, bytes): void {
+		const r = active();
+		if (!r) return;
+		try {
+			r.feed(paneId, bytes.slice()).catch((err) => fail(`feed ${paneId}`, err));
+		} catch (err) {
+			fail(`feed ${paneId} (sync)`, err);
+		}
+	},
+
+	releaseCanvas(paneId): void {
+		const r = active();
+		if (!r) return;
+		r.releaseCanvas(paneId).catch((err) => fail(`releaseCanvas ${paneId}`, err));
 	},
 
 	resize(paneId, rows, cols, dpr, wCss, hCss): void {
 		const r = active();
 		if (!r) return;
 		r.resize(paneId, rows, cols, dpr, wCss, hCss).catch((err) =>
-			warn(`resize ${paneId}`, err),
+			fail(`resize ${paneId}`, err),
 		);
 	},
 
@@ -214,12 +242,12 @@ export const workerRendererBridge: WorkerRendererBridge = {
 					onMetrics(response.cellW, response.cellH);
 				}
 			})
-			.catch((err) => warn(`setFont ${paneId}`, err));
+			.catch((err) => fail(`setFont ${paneId}`, err));
 	},
 
 	destroy(paneId): void {
 		const r = active();
 		if (!r) return;
-		r.destroy(paneId).catch((err) => warn(`destroy ${paneId}`, err));
+		r.destroy(paneId).catch((err) => fail(`destroy ${paneId}`, err));
 	},
 };

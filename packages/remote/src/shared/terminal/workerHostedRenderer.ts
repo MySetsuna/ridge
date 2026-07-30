@@ -46,6 +46,7 @@ import type {
 export interface WorkerLike {
 	postMessage(message: unknown, transfer?: Transferable[]): void;
 	onmessage: ((this: WorkerLike, ev: MessageEvent) => void) | null;
+	onerror?: ((event: ErrorEvent) => unknown) | null;
 	terminate(): void;
 }
 
@@ -53,7 +54,11 @@ export interface WorkerLike {
 interface Pending {
 	resolve: (response: RenderWorkerResponse) => void;
 	reject: (err: Error) => void;
+	timer: ReturnType<typeof setTimeout>;
 }
+
+export const MAX_WORKER_PENDING = 256;
+export const WORKER_REQUEST_TIMEOUT_MS = 5000;
 
 /**
  * Errors thrown by the wrapper when the worker sends back an `error`
@@ -89,10 +94,20 @@ export class WorkerHostedRenderer {
 	private pending = new Map<number, Pending>();
 	private nextReqId = 1;
 	private terminated = false;
+	private onFatal?: (error: Error) => void;
 
-	constructor(worker: WorkerLike) {
+	constructor(worker: WorkerLike, onFatal?: (error: Error) => void) {
 		this.worker = worker;
+		this.onFatal = onFatal;
 		this.worker.onmessage = (event: MessageEvent) => this.onMessage(event);
+		this.worker.onerror = (event: ErrorEvent) => {
+			this.fail(
+				new WorkerRendererError(
+					event.message || 'render worker crashed',
+					'apply_delta_failed',
+				),
+			);
+		};
 	}
 
 	/**
@@ -105,12 +120,15 @@ export class WorkerHostedRenderer {
 		this.terminated = true;
 		const pending = Array.from(this.pending.values());
 		this.pending.clear();
+		this.worker.onmessage = null;
+		this.worker.onerror = null;
 		try {
 			this.worker.terminate();
 		} catch {
 			/* Worker may already be dead — ignore. */
 		}
 		for (const p of pending) {
+			clearTimeout(p.timer);
 			p.reject(
 				new WorkerRendererError(
 					'render worker terminated with pending requests',
@@ -177,8 +195,10 @@ export class WorkerHostedRenderer {
 		return this.send({ type: 'applyDelta', paneId, bytes }, transferable);
 	}
 
-	feed(paneId: string, data: string): Promise<RenderWorkerResponse> {
-		return this.send({ type: 'feed', paneId, data });
+	feed(paneId: string, bytes: Uint8Array): Promise<RenderWorkerResponse> {
+		const transferable =
+			bytes.buffer instanceof ArrayBuffer ? [bytes.buffer] : undefined;
+		return this.send({ type: 'feed', paneId, bytes }, transferable);
 	}
 
 	resize(
@@ -235,17 +255,51 @@ export class WorkerHostedRenderer {
 				),
 			);
 		}
+		if (this.pending.size >= MAX_WORKER_PENDING) {
+			const error = new WorkerRendererError(
+				`render worker pending limit exceeded (${MAX_WORKER_PENDING})`,
+				'apply_delta_failed',
+				'paneId' in request ? request.paneId : undefined,
+			);
+			this.fail(error);
+			return Promise.reject(error);
+		}
 		const id = this.nextReqId++;
 		return new Promise<RenderWorkerResponse>((resolve, reject) => {
-			this.pending.set(id, { resolve, reject });
+			const timer = setTimeout(() => {
+				const pending = this.pending.get(id);
+				if (!pending) return;
+				this.pending.delete(id);
+				const error = new WorkerRendererError(
+					`render worker request timed out after ${WORKER_REQUEST_TIMEOUT_MS}ms`,
+					'apply_delta_failed',
+					'paneId' in request ? request.paneId : undefined,
+				);
+				pending.reject(error);
+				this.fail(error);
+			}, WORKER_REQUEST_TIMEOUT_MS);
+			this.pending.set(id, { resolve, reject, timer });
 			const wire = { ...request, __reqId: id };
 			try {
 				this.worker.postMessage(wire, transfer ?? []);
 			} catch (err) {
+				const pending = this.pending.get(id);
+				if (pending) clearTimeout(pending.timer);
 				this.pending.delete(id);
 				reject(err instanceof Error ? err : new Error(String(err)));
 			}
 		});
+	}
+
+	releaseCanvas(paneId: string): Promise<RenderWorkerResponse> {
+		return this.send({ type: 'releaseCanvas', paneId });
+	}
+
+	private fail(error: Error): void {
+		if (this.terminated) return;
+		const notify = this.onFatal;
+		this.terminate();
+		notify?.(error);
 	}
 
 	private onMessage(event: MessageEvent): void {
@@ -269,6 +323,7 @@ export class WorkerHostedRenderer {
 			return;
 		}
 		this.pending.delete(id);
+		clearTimeout(pending.timer);
 		if (data && data.type === 'error') {
 			pending.reject(
 				new WorkerRendererError(data.message, data.code, data.paneId),

@@ -83,9 +83,13 @@ export type RenderWorkerRequest =
 			bytes: Uint8Array;
 	  }
 	| {
+			type: 'releaseCanvas';
+			paneId: string;
+	  }
+	| {
 			type: 'feed';
 			paneId: string;
-			data: string;
+			bytes: Uint8Array;
 	  }
 	| {
 			type: 'resize';
@@ -168,6 +172,7 @@ export function isRenderWorkerRequest(value: unknown): value is RenderWorkerRequ
 		t === 'init' ||
 		t === 'bindCanvas' ||
 		t === 'applyDelta' ||
+		t === 'releaseCanvas' ||
 		t === 'feed' ||
 		t === 'resize' ||
 		t === 'destroy' ||

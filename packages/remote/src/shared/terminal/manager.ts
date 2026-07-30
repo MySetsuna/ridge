@@ -36,7 +36,12 @@ import type { HostPorts } from './ports';
 import { invoke } from '@tauri-apps/api/core';
 import type { ActiveWallpaperGpu, InputBufferState } from './types';
 import { workerRendererBridge, workerLifecycleOnFit } from './workerRendererBridge';
-import { getWorkerRenderer, isWorkerRenderingEnabled } from './workerRendererSingleton';
+import {
+	failWorkerRenderer,
+	getWorkerRenderer,
+	isWorkerRenderingEnabled,
+	onWorkerRendererFailure,
+} from './workerRendererSingleton';
 import { perfMark } from './perfTrace';
 import { DEFAULT_TERM_FONT } from './fontStack';
 import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
@@ -545,6 +550,7 @@ export class TerminalManager {
 
 	private constructor(opts: ManagerOptions) {
 		this.opts = opts;
+		onWorkerRendererFailure((error) => this._fallbackWorkerRendering(error));
 
 		if (typeof window !== 'undefined') {
 			try {
@@ -1245,8 +1251,9 @@ export class TerminalManager {
 			try { await this.attachHostPromise; } catch { /* attachHost handles errors internally */ }
 		}
 
+		const usingWorker = this.usingWorkerRenderer();
 		const gh = this.globalHost;
-		const useHost = gh !== null && this.opts.preferWebgpu;
+		const useHost = gh !== null && this.opts.preferWebgpu && !usingWorker;
 		let canvas: HTMLCanvasElement;
 		let hostHandle: SurfaceHostHandle | undefined;
 		if (useHost && gh) {
@@ -1291,7 +1298,6 @@ export class TerminalManager {
 		// wrong for one frame, then correct. Mouse-cell lookups
 		// before that first fit briefly resolve to row 0 / col 0,
 		// which is acceptable for an opt-in flag-gated path.
-		const usingWorker = this.usingWorkerRenderer();
 		const handle: RenderHandle | null = usingWorker
 			? null
 			: await this._makeHandle(canvas, hostHandle);
@@ -1818,23 +1824,30 @@ export class TerminalManager {
 		// route pointer events to the canvas element first; once
 		// detached its event behavior is undefined and we'd lose
 		// pointer capture during mouse-mode TUI rendering.
-		if (usingWorker && typeof canvas.transferControlToOffscreen === 'function') {
+		if (usingWorker) {
 			try {
 				canvas.style.pointerEvents = 'none';
 				const offscreen = canvas.transferControlToOffscreen();
 				const wr = getWorkerRenderer();
 				if (wr) {
+					this.workerAttached.add(paneId);
 					// §p4 ITER 5 (2026-05-22) — pass measure args so the
 					// worker can `configure()` the new RenderHandle and
 					// return real cell metrics in the `ready` response.
 					// On success we update `entry.cellW / cellH` (still
 					// quantized to dev-pixel grid) and trigger a fit so
 					// the first visible frame sees the right rows/cols.
-					wr.bindCanvas(paneId, offscreen, {
-						font: this.opts.fontFamily,
-						fontSizePx: this.opts.fontSizePx,
-						dpr,
+					wr.init({
+						paneId,
+						dims: { rows: 24, cols: 80, dpr },
+						backend: 'canvas2d',
+						scrollbackLines,
 					})
+						.then(() => wr.bindCanvas(paneId, offscreen, {
+							font: this.opts.fontFamily,
+							fontSizePx: this.opts.fontSizePx,
+							dpr,
+						}))
 						.then((response) => {
 							if (
 								response.type === 'ready' &&
@@ -1852,17 +1865,11 @@ export class TerminalManager {
 							}
 						})
 						.catch((err) => {
-							if (import.meta.env?.DEV) {
-								// eslint-disable-next-line no-console
-								console.warn('[ridge-term] worker bindCanvas rejected', err);
-							}
+							failWorkerRenderer(err);
 						});
 				}
 			} catch (err) {
-				if (import.meta.env?.DEV) {
-					// eslint-disable-next-line no-console
-					console.warn('[ridge-term] transferControlToOffscreen failed', err);
-				}
+				failWorkerRenderer(err);
 			}
 		}
 
@@ -2323,6 +2330,9 @@ export class TerminalManager {
 			try { entry.canvas.remove(); } catch { /* already detached */ }
 		}
 		try { entry.handle?.free(); } catch { /* ignore */ }
+		if (this.workerAttached.has(paneId)) {
+			workerRendererBridge.releaseCanvas(paneId);
+		}
 
 		// §A.4: kernel stays alive while parked, but the flush timer is
 		// tied to setTimeout — cancel it and replay any buffered bytes
@@ -2362,8 +2372,9 @@ export class TerminalManager {
 			try { await this.attachHostPromise; } catch { /* ignore */ }
 		}
 
+		const usingWorker = this.workerAttached.has(paneId) && this.usingWorkerRenderer();
 		const gh = this.globalHost;
-		const useHost = gh !== null && this.opts.preferWebgpu;
+		const useHost = gh !== null && this.opts.preferWebgpu && !usingWorker;
 		let canvas: HTMLCanvasElement;
 		let hostHandle: SurfaceHostHandle | undefined;
 		if (useHost && gh) {
@@ -2381,12 +2392,16 @@ export class TerminalManager {
 			container.style.padding = `${this.opts.paddingPx}px`;
 		}
 
-		const handle = await this._makeHandle(canvas, hostHandle);
+		const handle: RenderHandle | null = usingWorker
+			? null
+			: await this._makeHandle(canvas, hostHandle);
 		const dpr = window.devicePixelRatio || 1;
-		const [cellW, cellH] = handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
-			| [number, number]
-			| Float32Array;
-		if (this.opts.theme) {
+		const [cellW, cellH] = handle
+			? (handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
+					| [number, number]
+					| Float32Array)
+			: ([entry.cellW, entry.cellH] as [number, number]);
+		if (handle && this.opts.theme) {
 			handle.applyTheme(this.opts.theme);
 		}
 
@@ -2412,6 +2427,36 @@ export class TerminalManager {
 		// `cached === clamped` and short-circuits — leaving the new
 		// container at zero padding after every split / reparent.
 		entry.lastAppliedPaddingPx = undefined;
+
+		if (usingWorker) {
+			try {
+				canvas.style.pointerEvents = 'none';
+				const offscreen = canvas.transferControlToOffscreen();
+				const wr = getWorkerRenderer();
+				if (wr) {
+					wr.bindCanvas(paneId, offscreen, {
+						font: this.opts.fontFamily,
+						fontSizePx: this.opts.fontSizePx,
+						dpr,
+					}).then((response) => {
+						if (
+							response.type === 'ready' &&
+							typeof response.cellW === 'number' &&
+							typeof response.cellH === 'number'
+						) {
+							const current = this.panes.get(paneId);
+							if (!current || current.parked) return;
+							current.cellW = quantizeCellSize(response.cellW, dpr);
+							current.cellH = quantizeCellSize(response.cellH, dpr);
+							current.lastConfiguredDpr = dpr;
+							this.fitPaneNow(paneId);
+						}
+					}).catch(failWorkerRenderer);
+				}
+			} catch (error) {
+				failWorkerRenderer(error);
+			}
+		}
 
 		container.addEventListener('focusin', entry.focusListener);
 		container.addEventListener('focusout', entry.blurListener);
@@ -2611,7 +2656,11 @@ export class TerminalManager {
 		const pre = traceCursor ? `(${k.cursorRow()},${k.cursorCol()})` : '';
 		while (offset < bytes.length) {
 			const end = Math.min(offset + FEED_CHUNK_BYTES, bytes.length);
-			entry.kernel.feed(bytes.subarray(offset, end));
+			const chunk = bytes.subarray(offset, end);
+			entry.kernel.feed(chunk);
+			if (this.workerAttached.has(entry.paneId)) {
+				workerRendererBridge.feed(entry.paneId, chunk);
+			}
 			offset = end;
 			if (performance.now() - start >= FEED_PER_CALL_BUDGET_MS) break;
 		}
@@ -2989,7 +3038,11 @@ export class TerminalManager {
 			'\x1b[?25h' + // show cursor
 			'\x1b[?1049l\x1b[?1047l\x1b[?47l'; // leave alt-screen (all variants)
 		try {
-			entry.kernel.feed(new TextEncoder().encode(seq));
+			const bytes = new TextEncoder().encode(seq);
+			entry.kernel.feed(bytes);
+			if (this.workerAttached.has(paneId)) {
+				workerRendererBridge.feed(paneId, bytes);
+			}
 		} catch {
 			return; // kernel may be freed mid-teardown
 		}
@@ -3666,7 +3719,57 @@ export class TerminalManager {
 	 *  on the next pane attach; already-attached panes keep their initial
 	 *  decision until detach. */
 	usingWorkerRenderer(): boolean {
-		return isWorkerRenderingEnabled() && getWorkerRenderer() !== null;
+		return (
+			isWorkerRenderingEnabled() &&
+			typeof HTMLCanvasElement !== 'undefined' &&
+			typeof HTMLCanvasElement.prototype.transferControlToOffscreen === 'function' &&
+			getWorkerRenderer() !== null
+		);
+	}
+
+	private _fallbackWorkerRendering(error: Error): void {
+		const paneIds = Array.from(this.workerAttached);
+		this.workerAttached.clear();
+		if (import.meta.env?.DEV) {
+			// eslint-disable-next-line no-console
+			console.warn('[ridge-term] render worker disabled; restoring main-thread canvases', error);
+		}
+		for (const paneId of paneIds) {
+			const entry = this.panes.get(paneId);
+			if (entry) void this._restoreMainThreadRenderer(entry);
+		}
+	}
+
+	private async _restoreMainThreadRenderer(entry: PaneEntry): Promise<void> {
+		if (entry.parked || entry.handle) return;
+		const canvas = document.createElement('canvas');
+		canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
+		canvas.setAttribute('aria-hidden', 'true');
+		if (entry.canvas.parentElement === entry.container) {
+			entry.canvas.replaceWith(canvas);
+		} else {
+			entry.container.appendChild(canvas);
+		}
+		entry.canvas = canvas;
+		const handle = await this._makeHandle(canvas);
+		if (this.panes.get(entry.paneId) !== entry || entry.parked || entry.handle) {
+			try { handle.free(); } catch { /* stale fallback */ }
+			canvas.remove();
+			return;
+		}
+		const dpr = window.devicePixelRatio || 1;
+		const metrics = handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
+			| [number, number]
+			| Float32Array;
+		if (this.opts.theme) handle.applyTheme(this.opts.theme);
+		entry.handle = handle;
+		entry.cellW = quantizeCellSize(Number(metrics[0]), dpr);
+		entry.cellH = quantizeCellSize(Number(metrics[1]), dpr);
+		entry.lastConfiguredDpr = dpr;
+		entry.lastReportedRows = -1;
+		entry.lastReportedCols = -1;
+		this.fitPaneNow(entry.paneId);
+		this.wake();
 	}
 
 	/** §1.33 (2026-05-22): kernel-side gate for the shell-history popup.
