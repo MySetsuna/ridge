@@ -40,6 +40,7 @@
   import { overlayScroll } from '$lib/actions/overlayScroll';
   import { portal } from '$lib/actions/portal';
   import { popupStyleFor } from '$lib/utils/anchorRect';
+  import { reportRepeatedError } from '$lib/utils/repeatedError';
   import { mapLimit, GIT_FANOUT_CONCURRENCY, recommendedGitConcurrency } from '$lib/utils/pLimit';
   import {
     invalidatePaneGitStatusForRepo,
@@ -311,7 +312,7 @@
         void invalidatePaneGitStatusForRepo(root);
       } catch (e) {
         if (isNotGitRepositoryError(e)) markPaneGitRepoNonGit(root);
-        console.error('get_scm_status failed', root, e);
+        reportRepeatedError('get_scm_status failed', e);
       }
     })();
     statusInFlight.set(root, request);
@@ -439,7 +440,7 @@
       stashes = await invoke<StashEntry[]>('git_stash_list', { repoRoot: root });
     } catch (e) {
       if (isNotGitRepositoryError(e)) markPaneGitRepoNonGit(root);
-      console.error('git_stash_list failed', e);
+      reportRepeatedError('git_stash_list failed', e);
       stashes = [];
     }
   }
@@ -1425,7 +1426,7 @@
       };
     } catch (e) {
       if (isNotGitRepositoryError(e)) markPaneGitRepoNonGit(root);
-      console.error('list branches', e);
+      reportRepeatedError('list branches', e);
     }
   }
   async function openBranchPicker(root: string, ev: MouseEvent): Promise<void> {
