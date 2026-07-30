@@ -166,7 +166,7 @@ describe('cwd-down semantics + multi-repo switcher', () => {
 });
 
 describe('non-Git repository detection cache', () => {
-  it('stops status invalidation after the first explicit non-repository failure', async () => {
+  it('stops 100 status invalidations after the first explicit non-repository failure', async () => {
     let scmCalls = 0;
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'find_git_repos_below') return Promise.resolve(['/stale/repo']);
@@ -183,7 +183,10 @@ describe('non-Git repository detection cache', () => {
     expect(scmCalls).toBe(1);
     expect(get(mod.paneGitStatusStore)['non-git-cache']).toBeNull();
 
-    await mod.invalidatePaneGitStatusForRepo('/stale/repo');
+    await Promise.all(Array.from(
+      { length: 100 },
+      () => mod.invalidatePaneGitStatusForRepo('/stale/repo'),
+    ));
     expect(scmCalls).toBe(1);
   });
 
@@ -251,10 +254,10 @@ describe('多 pane / 多工作区 git 放大器（2026-07-26 卡死回归钉）'
       return Promise.resolve(null);
     });
 
-    // 3 个工作区 tab × 4 个 pane，全指向同一个 repo —— 旧实现 = 12 次 get_scm_status
+    // 10 个工作区 tab × 10 个 pane，全指向同一个 repo —— 旧实现 = 100 次 get_scm_status
     // （每次内部再开 3 个 git 进程），主线程 invoke 队列随即堵死。
-    for (let ws = 0; ws < 3; ws++) {
-      for (let p = 0; p < 4; p++) {
+    for (let ws = 0; ws < 10; ws++) {
+      for (let p = 0; p < 10; p++) {
         mod.trackPaneGitStatus(`ws${ws}-pane${p}`, '/code');
       }
     }
@@ -264,7 +267,7 @@ describe('多 pane / 多工作区 git 放大器（2026-07-26 卡死回归钉）'
     // 每个 pane 仍拿到完整信息（复用同一快照，不是"只有第一个 pane 有数据"）。
     const all = get(mod.paneGitStatusStore);
     expect(all['ws0-pane0']?.branch).toBe('main');
-    expect(all['ws2-pane3']?.branch).toBe('main');
+    expect(all['ws9-pane9']?.branch).toBe('main');
   });
 
   it('显式失效后重新取（缓存不阻断手动/watcher 刷新）', async () => {

@@ -192,6 +192,31 @@ describe('RpcClient.request — bounded in-flight set', () => {
     await expect(p1).rejects.toBeInstanceOf(RpcReconnectError);
     await expect(p2).rejects.toBeInstanceOf(RpcReconnectError);
   });
+
+  it('bounds a 1,000-request burst at the default 256 in-flight limit', async () => {
+    const transport = new FakeTransport();
+    const rpc = new RpcClient(transport, { defaultTimeoutMs: 0 });
+    const outcomes = Array.from(
+      { length: 1_000 },
+      (_, index) => rpc.request('burst', { index }).then(
+        () => null,
+        (error: unknown) => error,
+      ),
+    );
+
+    expect(transport.sent).toHaveLength(256);
+    expect(rpc.diagnostics).toMatchObject({
+      inFlight: 256,
+      peakInFlight: 256,
+      sent: 256,
+      queueRejected: 744,
+    });
+
+    rpc.dispose();
+    const errors = await Promise.all(outcomes);
+    expect(errors.filter((error) => error instanceof RpcQueueFullError)).toHaveLength(744);
+    expect(errors.filter((error) => error instanceof RpcReconnectError)).toHaveLength(256);
+  });
 });
 
 describe('RpcClient.cancel — id + AbortSignal', () => {
