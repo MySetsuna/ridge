@@ -45,6 +45,7 @@ row above remains governed by local symbols and deterministic/physical evidence.
 
 - Local gate: requirements gate, strict preflight (untracked runtime dirs allowed), focused Vitest/Rust suites, `pnpm check`, Remote desktop/mobile build, and `git diff --check` all report exit `0`.
 - 2026-07-30 local run: focused Vitest `12 files / 253 tests` passed; `pnpm check` reported `0 errors / 0 warnings`; `cargo test -p ridge-term --lib` reported `395 passed`; remote smoke evidence example validator passed; `pnpm build:remote` exited `0` (140.4 s). Build output retains non-blocking dynamic-import/chunk-size and empty PWA glob warnings; no new owned browser warning was introduced.
+- 2026-07-31 isolated Dev/CDP probe: no Dev Ridge was listening (`pnpm cdp:smoke` → `ECONNREFUSED 127.0.0.1:5037`); this environment rejected the isolated `tauri:dev:cdp` process launch before a child existed. Record this as an automation-environment gap, not a product failure or a substitute for physical evidence.
 - No claim of “overall complete” until the external rows contain timestamped evidence with browser/OS/build and scenario details.
 - `runtime.lastError` acceptance is zero business-code diff unless a first warning source URL proves project ownership.
 - Grok remains `canResume=false` until an actual native history fixture proves executable/argv/cwd/session semantics.
