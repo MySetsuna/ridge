@@ -137,6 +137,7 @@
    *  .git 内部写入（fsmonitor cookie 等），若 watcher 事件与上次刷新间隔过近，视为
    *  自身回声——合并到最小间隔之后再刷，杜绝「刷新→事件→刷新」永动。 */
   const lastWatcherRefreshAt = new Map<string, number>();
+  const statusInFlight = new Map<string, Promise<void>>();
   const WATCHER_MIN_INTERVAL_MS = 2000;
 
   /** watcher 触发的刷新统一入口：250ms 合并突发 + 每 repo ≥2s 最小间隔。 */
@@ -206,7 +207,11 @@
     const uniqueCwds = Array.from(new Set(Object.values(cwds).filter(Boolean))).sort();
     const sig = uniqueCwds.join('|');
     const cache = getScmCache();
-    if (!force && sig === cache.lastCwdSignature && cache.repoRoots.length > 0) return;
+    // A confirmed empty result is a negative cache entry too. Re-probe only when
+    // the cwd signature changes; otherwise manual/watcher refreshes would keep
+    // rediscovering the same non-Git directory.
+    if (sig === cache.lastCwdSignature && cache.repoRoots.length === 0) return;
+    if (!force && sig === cache.lastCwdSignature) return;
 
     // Device-adaptive: high-core machines blast through the scan; 2–4 core
     // laptops keep a core free for the UI so they load progressively without
@@ -279,18 +284,29 @@
     }
   }
 
-  async function refreshStatus(root: string): Promise<void> {
-    try {
-      const s = await invoke<ScmRepoStatus>('get_scm_status', { repoRoot: root });
-      setScmRepoStatus(root, s);
-      // Cascade to the pane git pill cache: stage/commit/sync writes should
-      // be reflected on the pane title bar without waiting for a cwd change
-      // tick. invalidate is idempotent and best-effort, so safe to fire on
-      // every status read (including initial discovery).
-      void invalidatePaneGitStatusForRepo(root);
-    } catch (e) {
-      console.error('get_scm_status failed', root, e);
-    }
+  function refreshStatus(root: string): Promise<void> {
+    const existing = statusInFlight.get(root);
+    if (existing) return existing;
+    const request = (async () => {
+      try {
+        const s = await invoke<ScmRepoStatus>('get_scm_status', {
+          repoRoot: root,
+          slot: `scm-status:${root}`,
+        });
+        setScmRepoStatus(root, s);
+        // Cascade to the pane git pill cache: stage/commit/sync writes should
+        // be reflected on the pane title bar without waiting for a cwd change
+        // tick. invalidate is idempotent and best-effort, so safe to fire on
+        // every status read (including initial discovery).
+        void invalidatePaneGitStatusForRepo(root);
+      } catch (e) {
+        console.error('get_scm_status failed', root, e);
+      }
+    })();
+    statusInFlight.set(root, request);
+    return request.finally(() => {
+      if (statusInFlight.get(root) === request) statusInFlight.delete(root);
+    });
   }
 
   // ─── Repo collapse state (changes panel) ──────────────────────────────────
