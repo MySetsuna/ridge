@@ -28,6 +28,7 @@ import {
 import {
   CANCEL_METHOD,
   RpcCancelledError,
+  RpcQueueFullError,
   RpcReconnectError,
   RpcRemoteError,
   RpcTimeoutError,
@@ -41,6 +42,7 @@ import {
 } from './types';
 
 const DEFAULT_TIMEOUT_MS = 20_000;
+export const DEFAULT_MAX_IN_FLIGHT = 256;
 
 /** D9 handshake method name (contract §7.3). */
 export const HELLO_METHOD = '$/hello';
@@ -92,13 +94,26 @@ export type ResyncHook = () => void;
 export interface RpcClientOptions {
   /** Default per-request timeout (ms). */
   defaultTimeoutMs?: number;
+  /** Hard cap for requests awaiting a response. Excess work fails before wire send. */
+  maxInFlight?: number;
   /** Optional id factory (e.g. for deterministic tests). Default: incrementing. */
   nextId?: () => JsonRpcId;
+}
+
+export interface RpcDiagnostics {
+  inFlight: number;
+  peakInFlight: number;
+  sent: number;
+  settled: number;
+  timedOut: number;
+  cancelled: number;
+  queueRejected: number;
 }
 
 export class RpcClient {
   private readonly transport: ChannelTransport;
   private readonly defaultTimeoutMs: number;
+  private readonly maxInFlight: number;
   private readonly nextId: () => JsonRpcId;
 
   private pending = new Map<JsonRpcId, Pending>();
@@ -108,6 +123,14 @@ export class RpcClient {
   private prevState: TransportState;
   private ready: boolean;
   private disposers: Unsubscribe[] = [];
+  private counters = {
+    peakInFlight: 0,
+    sent: 0,
+    settled: 0,
+    timedOut: 0,
+    cancelled: 0,
+    queueRejected: 0,
+  };
 
   // ── D9 handshake state ──
   private negotiated: NegotiatedProtocol | null = null;
@@ -118,6 +141,7 @@ export class RpcClient {
   constructor(transport: ChannelTransport, opts: RpcClientOptions = {}) {
     this.transport = transport;
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.maxInFlight = Math.max(1, Math.floor(opts.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT));
     this.nextId = opts.nextId ?? (() => ++this.seq);
     this.prevState = transport.state();
     this.ready = this.prevState === 'connected' && transport.authState() === 'authorized';
@@ -137,26 +161,31 @@ export class RpcClient {
     params?: unknown,
     options: RpcRequestOptions = {},
   ): Promise<T> {
+    if (options.signal?.aborted) return Promise.reject(new RpcCancelledError(method));
+    if (this.pending.size >= this.maxInFlight) {
+      this.counters.queueRejected += 1;
+      return Promise.reject(new RpcQueueFullError(method, this.maxInFlight));
+    }
+
     const id = this.nextId();
     const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
 
     return new Promise<T>((resolve, reject) => {
-      // Already-aborted signal → reject before touching the wire.
-      if (options.signal?.aborted) {
-        reject(new RpcCancelledError(method));
-        return;
-      }
-
       const timer =
         timeoutMs > 0
           ? setTimeout(() => {
-              this.settle(id, () => reject(new RpcTimeoutError(method, timeoutMs)));
+              if (this.settle(id, () => reject(new RpcTimeoutError(method, timeoutMs)))) {
+                this.counters.timedOut += 1;
+                this.sendCancel(id);
+              }
             }, timeoutMs)
           : null;
 
       const onAbort = () => {
-        this.settle(id, () => reject(new RpcCancelledError(method)));
-        this.sendCancel(id);
+        if (this.settle(id, () => reject(new RpcCancelledError(method)))) {
+          this.counters.cancelled += 1;
+          this.sendCancel(id);
+        }
       };
       if (options.signal) options.signal.addEventListener('abort', onAbort, { once: true });
 
@@ -168,14 +197,18 @@ export class RpcClient {
         signal: options.signal,
         onAbort,
       });
+      this.counters.peakInFlight = Math.max(this.counters.peakInFlight, this.pending.size);
 
       this.transport.sendControl(buildRequest(id, method, params));
+      this.counters.sent += 1;
     });
   }
 
   /** Explicitly cancel an in-flight request by id (sends `$/cancel`). */
   cancel(id: JsonRpcId): void {
-    this.settle(id, (p) => p.reject(new RpcCancelledError(p.method)));
+    if (this.settle(id, (p) => p.reject(new RpcCancelledError(p.method)))) {
+      this.counters.cancelled += 1;
+    }
     this.sendCancel(id);
   }
 
@@ -242,6 +275,11 @@ export class RpcClient {
     return this.pending.size;
   }
 
+  /** Snapshot for queue/timeout monitoring; counters are monotonic per client. */
+  get diagnostics(): RpcDiagnostics {
+    return { inFlight: this.pending.size, ...this.counters };
+  }
+
   /** Detach from the transport and reject any in-flight requests. */
   dispose(): void {
     for (const d of this.disposers) d();
@@ -255,24 +293,27 @@ export class RpcClient {
   }
 
   /** Resolve/reject + clean up one pending entry by id. No-op if unknown. */
-  private settle(id: JsonRpcId, run: (p: Pending) => void): void {
+  private settle(id: JsonRpcId, run: (p: Pending) => void): boolean {
     const p = this.pending.get(id);
-    if (!p) return;
+    if (!p) return false;
     this.pending.delete(id);
     if (p.timer) clearTimeout(p.timer);
     if (p.signal && p.onAbort) p.signal.removeEventListener('abort', p.onAbort);
     run(p);
+    return true;
   }
 
   private handleControl(frame: ControlFrame): void {
     if (isJsonRpcResponse(frame)) {
-      this.settle(frame.id, (p) => {
+      if (this.settle(frame.id, (p) => {
         if (isErrorResponse(frame)) {
           p.reject(new RpcRemoteError(p.method, frame.error));
         } else {
           p.resolve(frame.result);
         }
-      });
+      })) {
+        this.counters.settled += 1;
+      }
       return;
     }
     if (isJsonRpcNotification(frame)) {

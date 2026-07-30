@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RpcClient } from './rpcClient';
 import {
   RpcCancelledError,
+  RpcQueueFullError,
   RpcReconnectError,
   RpcRemoteError,
   RpcTimeoutError,
@@ -143,6 +144,11 @@ describe('RpcClient.request — timeout', () => {
     vi.advanceTimersByTime(1000);
     await rejection;
     expect(rpc.inFlight).toBe(0);
+    expect(transport.sent).toEqual([
+      { jsonrpc: '2.0', id: 1, method: 'slow' },
+      { jsonrpc: '2.0', method: '$/cancel', params: { id: 1 } },
+    ]);
+    expect(rpc.diagnostics).toMatchObject({ timedOut: 1, sent: 1, inFlight: 0 });
   });
 
   it('honours a per-request timeout override', async () => {
@@ -162,6 +168,29 @@ describe('RpcClient.request — timeout', () => {
     transport.deliver({ jsonrpc: '2.0', id, result: 7 });
     await expect(p).resolves.toBe(7);
     vi.advanceTimersByTime(5000); // no late rejection
+  });
+});
+
+describe('RpcClient.request — bounded in-flight set', () => {
+  it('rejects excess requests before wire send and records the peak', async () => {
+    const transport = new FakeTransport();
+    const rpc = new RpcClient(transport, { maxInFlight: 2, defaultTimeoutMs: 0 });
+    const p1 = rpc.request('a');
+    const p2 = rpc.request('b');
+    const p3 = rpc.request('c');
+
+    await expect(p3).rejects.toBeInstanceOf(RpcQueueFullError);
+    expect(transport.sent).toHaveLength(2);
+    expect(rpc.diagnostics).toMatchObject({
+      inFlight: 2,
+      peakInFlight: 2,
+      sent: 2,
+      queueRejected: 1,
+    });
+
+    rpc.dispose();
+    await expect(p1).rejects.toBeInstanceOf(RpcReconnectError);
+    await expect(p2).rejects.toBeInstanceOf(RpcReconnectError);
   });
 });
 

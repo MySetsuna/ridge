@@ -158,6 +158,14 @@ export class RpcTimeoutError extends Error {
   }
 }
 
+/** Error thrown before wire send when the bounded RPC in-flight set is full. */
+export class RpcQueueFullError extends Error {
+  constructor(method: string, limit: number) {
+    super(`rpc('${method}') rejected: in-flight limit ${limit} reached`);
+    this.name = 'RpcQueueFullError';
+  }
+}
+
 /** Error thrown when a request is cancelled via AbortSignal / cancel(). */
 export class RpcCancelledError extends Error {
   constructor(method: string) {
