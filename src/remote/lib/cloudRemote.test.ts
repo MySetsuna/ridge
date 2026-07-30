@@ -264,6 +264,57 @@ describe('CloudRemoteConnection panes', () => {
     expect(conn.lastRefreshSeq()).toBe(before + 1);
   });
 
+  it('coalesces resize bursts to one in-flight plus the latest value', async () => {
+    const conn = await connected();
+    invokeMock.mockClear();
+    let releaseFirst!: () => void;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd !== 'resize_pane') return Promise.resolve(undefined);
+      if (!releaseFirst) return new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return Promise.resolve(undefined);
+    });
+
+    conn.refreshPane(PANE, 20, 80);
+    conn.refreshPane(PANE, 21, 81);
+    conn.refreshPane(PANE, 22, 82);
+    await Promise.resolve();
+    expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')).toHaveLength(1);
+
+    releaseFirst();
+    await flush();
+    const resizeCalls = invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane');
+    expect(resizeCalls).toHaveLength(2);
+    expect(resizeCalls[1]).toEqual([
+      'resize_pane',
+      { workspaceId: 'ws1', paneId: 'pane-a', rows: 22, cols: 82 },
+    ]);
+
+    conn.refreshPane(PANE, 22, 82);
+    await flush();
+    expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')).toHaveLength(2);
+  });
+
+  it('drops queued resize work when the pane closes', async () => {
+    const conn = await connected();
+    invokeMock.mockClear();
+    let releaseResize!: () => void;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'resize_pane') {
+        return new Promise<void>((resolve) => { releaseResize = resolve; });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    conn.refreshPane(PANE, 20, 80);
+    conn.refreshPane(PANE, 30, 100);
+    await Promise.resolve();
+    await conn.closePane(PANE);
+    releaseResize();
+    await flush();
+
+    expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')).toHaveLength(1);
+  });
+
   it('createPane splits the first existing leaf', async () => {
     const conn = await connected();
     const id = await conn.createPane();
