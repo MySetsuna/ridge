@@ -1,12 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PaneInfo, RemoteLink, WsMessage } from '@ridge/remote';
 import {
+  confirmedWorkspaceTarget,
   dedupeRemoteItems,
   mergeRemoteItems,
   requestPaneSnapshot,
 } from './remoteQueries';
 
 describe('remote query snapshots', () => {
+  it('commits a composite target only after the host switch succeeds', async () => {
+    await expect(confirmedWorkspaceTarget(async () => false, 'ws-b', 'pane-b'))
+      .resolves.toBeNull();
+    await expect(confirmedWorkspaceTarget(async () => true, 'ws-b', 'pane-b'))
+      .resolves.toEqual({ workspaceId: 'ws-b', paneId: 'pane-b' });
+  });
+
   it('dedupes canonical ids and lets the newest push win', () => {
     expect(dedupeRemoteItems([{ id: 'a', title: 'old' }, { id: 'a', title: 'new' }]))
       .toEqual([{ id: 'a', title: 'new' }]);
@@ -28,6 +36,7 @@ describe('remote query snapshots', () => {
     } as unknown as RemoteLink;
     const pending = requestPaneSnapshot(link, 'ws-2');
     listener({ type: 'panes', workspaceId: 'ws-1', panes: [] });
+    listener({ type: 'panes', panes: [{ id: 'unscoped', title: 'wrong' }] as PaneInfo[] });
     const expected = [{ id: 'p-2', title: 'two' }] as PaneInfo[];
     listener({ type: 'panes', workspaceId: 'ws-2', panes: expected });
     await expect(pending).resolves.toEqual(expected);

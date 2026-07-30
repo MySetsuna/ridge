@@ -63,7 +63,7 @@ export function requestPaneSnapshot(
     };
     stop = link.onMessage((message: WsMessage) => {
       if (message.type !== 'panes') return;
-      if (message.workspaceId && message.workspaceId !== workspaceId) return;
+      if (message.workspaceId !== workspaceId) return;
       stop();
       signal?.removeEventListener('abort', abort);
       resolve(dedupeRemoteItems(message.panes));
@@ -80,4 +80,12 @@ export function requestPaneSnapshot(
 export async function requestWorkspaceSnapshot(link: RemoteLink): Promise<WorkspaceInfo[]> {
   const result = await link.listWorkspaces();
   return dedupeRemoteItems(result.workspaces ?? []);
+}
+
+export async function confirmedWorkspaceTarget(
+  switchWorkspace: (workspaceId: string) => Promise<boolean>,
+  workspaceId: string,
+  paneId: string | null,
+): Promise<{ workspaceId: string; paneId: string | null } | null> {
+  return await switchWorkspace(workspaceId) ? { workspaceId, paneId } : null;
 }

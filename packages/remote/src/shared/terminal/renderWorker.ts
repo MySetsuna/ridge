@@ -34,7 +34,9 @@ import {
  *  structural so tests can pass a mock without pulling in the real
  *  wasm module (which is unavailable in vitest's node env). */
 export interface KernelHandle {
+	feed(bytes: Uint8Array): void;
 	applyDeltaFrame(bytes: Uint8Array): void;
+	resize(rows: number, cols: number): void;
 	free(): void;
 }
 
@@ -46,6 +48,7 @@ export interface KernelHandle {
  *  dims through. Kept structural so tests can mock it. */
 export interface RendererHandle {
 	render(): void;
+	resize(widthCss: number, heightCss: number, dpr: number): void;
 	free(): void;
 	/** Re-measure cell metrics with a new font config. Returns the
 	 *  quantized cellW / cellH computed from the renderer's font
@@ -140,6 +143,14 @@ export function handleRequest(
 					message: `pane ${request.paneId} already initialized`,
 				};
 			}
+			if (adapter === null) {
+				return {
+					type: 'error',
+					paneId: request.paneId,
+					code: 'apply_delta_failed',
+					message: 'render worker wasm adapter unavailable',
+				};
+			}
 			let kernel: KernelHandle | undefined;
 			if (adapter) {
 				try {
@@ -199,13 +210,35 @@ export function handleRequest(
 			// structured error so the host can decide to retry or fall
 			// back. Pane state retains `canvasBound=true` even on factory
 			// failure so a follow-up retry doesn't re-trigger pane init.
+			let cellW: number | undefined;
+			let cellH: number | undefined;
 			if (adapter?.createRenderer && request.canvas && pane.kernel) {
 				try {
+					try {
+						pane.renderer?.free();
+					} catch {
+						/* replacing a detached parked canvas — old renderer is best-effort */
+					}
 					pane.renderer = adapter.createRenderer({
 						canvas: request.canvas,
 						kernel: pane.kernel,
 						backend: pane.backend,
 					});
+					if (
+						pane.renderer.configure &&
+						request.font &&
+						typeof request.fontSizePx === 'number' &&
+						typeof request.dpr === 'number'
+					) {
+						const metrics = pane.renderer.configure(
+							request.font,
+							request.fontSizePx,
+							request.dpr,
+						);
+						cellW = metrics.cellW;
+						cellH = metrics.cellH;
+					}
+					pane.renderer.render();
 				} catch (err) {
 					return {
 						type: 'error',
@@ -219,6 +252,8 @@ export function handleRequest(
 				type: 'ready',
 				paneId: request.paneId,
 				backend: pane.backend,
+				cellW,
+				cellH,
 			};
 		}
 
@@ -275,6 +310,30 @@ export function handleRequest(
 			};
 		}
 
+		case 'releaseCanvas': {
+			const pane = state.get(request.paneId);
+			if (!pane) {
+				return {
+					type: 'error',
+					paneId: request.paneId,
+					code: 'pane_not_initialized',
+					message: `releaseCanvas before init for pane ${request.paneId}`,
+				};
+			}
+			try {
+				pane.renderer?.free();
+			} catch {
+				/* renderer already freed */
+			}
+			pane.renderer = undefined;
+			pane.canvasBound = false;
+			return {
+				type: 'ready',
+				paneId: request.paneId,
+				backend: pane.backend,
+			};
+		}
+
 		case 'feed': {
 			const pane = state.get(request.paneId);
 			if (!pane) {
@@ -285,10 +344,17 @@ export function handleRequest(
 					message: `feed before init for pane ${request.paneId}`,
 				};
 			}
-			// P4.9: wasmKernel.feed(request.data) — but the text path is
-			// scheduled for full removal once the Channel path is
-			// proven, so this branch may be deleted before it ever
-			// gets wired up.
+			try {
+				pane.kernel?.feed(request.bytes);
+				pane.renderer?.render();
+			} catch (err) {
+				return {
+					type: 'error',
+					paneId: request.paneId,
+					code: 'feed_failed',
+					message: `kernel.feed failed: ${err instanceof Error ? err.message : String(err)}`,
+				};
+			}
 			return {
 				type: 'ready',
 				paneId: request.paneId,
@@ -309,6 +375,24 @@ export function handleRequest(
 			pane.rows = request.rows;
 			pane.cols = request.cols;
 			pane.dpr = request.dpr;
+			try {
+				pane.kernel?.resize(request.rows, request.cols);
+				if (
+					pane.renderer &&
+					typeof request.wCss === 'number' &&
+					typeof request.hCss === 'number'
+				) {
+					pane.renderer.resize(request.wCss, request.hCss, request.dpr);
+					pane.renderer.render();
+				}
+			} catch (err) {
+				return {
+					type: 'error',
+					paneId: request.paneId,
+					code: 'resize_failed',
+					message: `resize failed: ${err instanceof Error ? err.message : String(err)}`,
+				};
+			}
 			return {
 				type: 'ready',
 				paneId: request.paneId,
@@ -377,8 +461,6 @@ export function handleRequest(
 				type: 'ready',
 				paneId: request.paneId,
 				backend: pane.backend,
-				cellW,
-				cellH,
 			};
 		}
 	}
@@ -449,6 +531,26 @@ async function loadKernelAdapter(): Promise<KernelAdapter | null> {
 			create({ rows, cols, scrollback }) {
 				return new wasm.TerminalKernel(rows, cols, scrollback);
 			},
+			createRenderer({ canvas, kernel }) {
+				const handle = wasm.RenderHandle.newFromOffscreen(canvas);
+				const typedKernel = kernel as InstanceType<typeof wasm.TerminalKernel>;
+				return {
+					render: () => {
+						handle.render(typedKernel);
+					},
+					resize: (widthCss, heightCss, dpr) => {
+						handle.resize(widthCss, heightCss, dpr);
+					},
+					configure: (family, sizePx, dpr) => {
+						const metrics = handle.configure(family, sizePx, dpr);
+						return {
+							cellW: Number(metrics[0]),
+							cellH: Number(metrics[1]),
+						};
+					},
+					free: () => handle.free(),
+				};
+			},
 		};
 	} catch (err) {
 		// eslint-disable-next-line no-console
@@ -494,12 +596,8 @@ if (isInWorkerScope()) {
 	}
 
 	// P4.7 + Iter 15 (2026-05-22) — install the listener even if wasm
-	// load throws unexpectedly. `loadKernelAdapter` already wraps the
-	// imports in try/catch and returns null on failure, but a defensive
-	// outer `.catch` ensures any UNCAUGHT failure (e.g. browser refused
-	// to honor `import()`, scope cast surprise, etc.) still installs
-	// the listener — otherwise host postMessage queues forever and the
-	// host's `WorkerHostedRenderer.pending` Map leaks.
+	// A null adapter makes `init` fail explicitly, causing the host to
+	// replace the transferred canvas with its live main-thread mirror.
 	loadKernelAdapter()
 		.then((a) => {
 			adapter = a;

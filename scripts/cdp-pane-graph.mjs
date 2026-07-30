@@ -23,8 +23,9 @@
 // Exit 0 = both characterized behaviours hold; non-zero = regression/failure.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import http from 'node:http';
+import { resolveCdpPort } from './cdp-port.mjs';
 
-const CDP_PORT = Number(process.env.CDP_PORT ?? 9222);
+const CDP_PORT = resolveCdpPort();
 const log = (...a) => console.log('[pane-graph]', ...a);
 const fail = (m) => {
   console.error('[pane-graph] FAIL:', m);
@@ -157,6 +158,8 @@ const invoke = (cdp, cmd, args) =>
 
   // LAN-WS observer: count `panes` frames (the broadcast re-enumeration).
   let lanPanes = 0;
+  let observedWorkspaceId = null;
+  let observedPaneId = null;
   const ws = new WebSocket(`wss://127.0.0.1:${info.port}/ws?code=${info.totpCode}&device=cdp-pane-graph`);
   await new Promise((res, rej) => {
     ws.onopen = res;
@@ -171,10 +174,22 @@ const invoke = (cdp, cmd, args) =>
     } catch {
       return;
     }
-    if (m.type === 'panes') lanPanes++;
+    if (m.type === 'panes') {
+      lanPanes++;
+      observedWorkspaceId = m.workspaceId;
+      observedPaneId = m.panes?.[0]?.id ?? null;
+    }
   };
   ws.send(JSON.stringify({ type: 'list-panes' }));
   await sleep(500); // let the initial panes frame land
+  if (!observedWorkspaceId || !observedPaneId) fail('LAN observer found no workspace pane');
+  ws.send(JSON.stringify({
+    type: 'subscribe-pane',
+    workspaceId: observedWorkspaceId,
+    paneId: observedPaneId,
+    active: false,
+  }));
+  await sleep(300);
 
   const summary = {
     baselineLeaves: null,

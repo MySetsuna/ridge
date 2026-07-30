@@ -49,6 +49,16 @@ export interface ImeAnchorInput {
 	dpr: number;
 }
 
+export function activateIme(ops: {
+	scrollToBottom(): void;
+	positionAtCursorOrCenter(): void;
+	focus(): void;
+}): void {
+	ops.scrollToBottom();
+	ops.positionAtCursorOrCenter();
+	ops.focus();
+}
+
 /**
  * scissor 的设备像素原点，逐字对应 `_recomputeViewport`：
  *   cssX = container.left - host.left + padL

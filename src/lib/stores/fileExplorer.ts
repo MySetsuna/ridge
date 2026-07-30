@@ -85,6 +85,23 @@ function cwdColumnId(workspaceId: string, cwd: string): string {
 	return `${workspaceId}:${cwd}`;
 }
 
+function normalizedPathKey(path: string): string {
+	const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+	return /^[A-Za-z]:\//.test(normalized) || normalized.startsWith('//')
+		? normalized.toLowerCase()
+		: normalized;
+}
+
+export function parentDirectory(path: string): string {
+	const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
+	const splitAt = normalized.lastIndexOf('/');
+	if (splitAt < 0) return '.';
+	if (splitAt === 0) return '/';
+	if (splitAt === 2 && /^[A-Za-z]:/.test(normalized)) return normalized.slice(0, 3);
+	const parent = normalized.slice(0, splitAt);
+	return path.includes('\\') ? parent.replace(/\//g, '\\') : parent;
+}
+
 // ─── Per-column persistence (expandedPaths + selectedPath) ───────────────────
 // Stored under one localStorage key per column so reading a single workspace
 // doesn't deserialise every other workspace's state. Hard-capped at 500 paths
@@ -513,6 +530,18 @@ function createFileExplorerStore() {
 		},
 
 		/**
+		 * Refresh the parent listing before a first open and return the path
+		 * supplied by that fresh listing. A deleted file or directory
+		 * replacement resolves to null, so callers never open stale tree data.
+		 */
+		async resolveFreshFile(columnId: string, path: string): Promise<string | null> {
+			const entries = await this.loadChildren(columnId, parentDirectory(path));
+			const targetKey = normalizedPathKey(path);
+			const fresh = entries.find((entry) => normalizedPathKey(entry.path) === targetKey);
+			return fresh && !fresh.is_dir ? fresh.path : null;
+		},
+
+		/**
 		 * Expand multiple paths at once — a single store update + (implicitly)
 		 * one localStorage write. Used by `Explorer.revealInTree` which needs
 		 * to open a deep chain of ancestors without triggering N separate
@@ -845,6 +874,17 @@ export const explorerClipboard = { subscribe: _clipboard.subscribe };
 
 export function setExplorerClipboard(clip: ExplorerClipboard | null): void {
 	_clipboard.set(clip);
+}
+
+/** 部分 cut 失败时仅保留失败路径，成功项不再重复移动。 */
+export function remainingCutClipboard(
+	clip: ExplorerClipboard,
+	failedPaths: Iterable<string>,
+): ExplorerClipboard | null {
+	if (clip.mode !== 'cut') return clip;
+	const failed = new Set(failedPaths);
+	const paths = clip.paths.filter((path) => failed.has(path));
+	return paths.length > 0 ? { ...clip, paths } : null;
 }
 
 /**

@@ -48,6 +48,7 @@ import {
 } from '@ridge/remote/shared/cloud/apiClient';
 import { RemoteConnection } from '@ridge/remote';
 import {
+  retainHostForest,
   loadHostForest,
   type HostForestResult,
   type HostTopologyLink,
@@ -203,7 +204,8 @@ export interface RegisteredHostLink {
 
 const registeredHostLinks = new Map<string, RegisteredHostLink>();
 const topologyByHost = new Map<string, HostForestResult>();
-const topologyInFlight = new Map<string, Promise<HostForestResult>>();
+const topologyInFlight = new Map<string, Promise<HostForestResult | null>>();
+const topologyAbortByHost = new Map<string, AbortController>();
 
 export function registerHostTopologyLink(source: RegisteredHostLink): () => void {
   const previous = registeredHostLinks.get(source.hostId);
@@ -211,6 +213,8 @@ export function registerHostTopologyLink(source: RegisteredHostLink): () => void
   registeredHostLinks.set(source.hostId, source);
   return () => {
     if (registeredHostLinks.get(source.hostId)?.link !== source.link) return;
+    topologyAbortByHost.get(source.hostId)?.abort();
+    topologyAbortByHost.delete(source.hostId);
     registeredHostLinks.delete(source.hostId);
     topologyByHost.delete(source.hostId);
   };
@@ -232,8 +236,14 @@ export async function refreshHostTopology(hostId: string): Promise<HostForestRes
   }
   const current = topologyInFlight.get(hostId);
   if (current) return current;
-  const pending = loadHostForest([{ hostId, link: source.link }])
-    .then(async ([result]) => {
+  const controller = new AbortController();
+  topologyAbortByHost.set(hostId, controller);
+  const pending = loadHostForest([{ hostId, link: source.link, signal: controller.signal }])
+    .then(async ([loaded]) => {
+      if (controller.signal.aborted) {
+        return null;
+      }
+      const result = retainHostForest(topologyByHost.get(hostId), loaded);
       topologyByHost.set(hostId, result);
       if (isTauri() && !result.error) {
         await invoke('register_frontend_host', {
@@ -246,9 +256,34 @@ export async function refreshHostTopology(hostId: string): Promise<HostForestRes
       }
       return result;
     })
-    .finally(() => topologyInFlight.delete(hostId));
+    .finally(() => {
+      topologyInFlight.delete(hostId);
+      if (topologyAbortByHost.get(hostId) === controller) {
+        topologyAbortByHost.delete(hostId);
+      }
+    });
   topologyInFlight.set(hostId, pending);
   return pending;
+}
+
+export function cancelHostTopologyRetry(hostId: string): void {
+  topologyAbortByHost.get(hostId)?.abort();
+}
+
+/** Refresh one linked host only. Existing in-flight work is shared. */
+export async function retryHostTopology(hostId: string): Promise<HostForestResult | null> {
+  const result = await refreshHostTopology(hostId);
+  const source = registeredHostLinks.get(hostId);
+  if (!source || !result) return result;
+  hostsStore.update((hosts) => {
+    const index = hosts.findIndex((host) => host.id === hostId);
+    const projected = linkedHost(source, result, index >= 0 ? hosts[index] : undefined);
+    if (index < 0) return [...hosts, projected];
+    const next = [...hosts];
+    next[index] = projected;
+    return next;
+  });
+  return result;
 }
 
 export async function closeHostPane(hostId: string, workspaceId: string, paneId: string): Promise<void> {
@@ -572,7 +607,11 @@ export async function refreshHosts(): Promise<void> {
       /* 云登录不可用时不影响本机/普通主机列表。 */
     }
   }
-  await Promise.all([...registeredHostLinks.keys()].map(refreshHostTopology));
+  await Promise.all(
+    [...registeredHostLinks.keys()]
+      .filter((hostId) => !topologyByHost.get(hostId)?.error)
+      .map(refreshHostTopology),
+  );
   for (const source of registeredHostLinks.values()) {
     const topology = topologyByHost.get(source.hostId);
     if (!topology) continue;

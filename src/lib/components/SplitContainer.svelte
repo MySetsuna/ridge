@@ -36,6 +36,7 @@ import {
     getAllPaneIds,
     closePane as closePaneApi,
     activePaneId,
+    agentPaneAttentionStore,
     paneDragSourceId,
     paneDockHover,
     activeWorkspaceId,
@@ -633,32 +634,45 @@ import {
               {#if $settingsStore.teammateEnabled}
                 {@const aState = node.agent_state}
                 {@const isAgent = aState === 'busy'}
+                {@const attention = $agentPaneAttentionStore[`${workspaceId}:${node.id}`]}
                 {@const grp = node.agent_id
                   ? groupOfAgent(teammateGroups.groups, node.agent_id)
                   : undefined}
                 <!-- 图标颜色表达状态；完整语义留在 title/aria-label，免挤占 pane 标题栏。 -->
                 <button
                   type="button"
-                  aria-label={grp
-                    ? `编组「${grp.name}」${isAgent ? ' · 运行中' : ''}（点击取消标记智能体）`
-                    : isAgent
+                  aria-label={attention === 'waiting'
+                    ? '智能体等待审批（点击取消标记）'
+                    : attention === 'stopped'
+                      ? '智能体已停止（点击重新标记）'
+                      : grp
+                        ? `编组「${grp.name}」${isAgent ? ' · 运行中' : ''}（点击取消标记智能体）`
+                        : isAgent
                       ? '智能体运行中（点击取消标记）'
                       : aState === 'starting'
                         ? '智能体启动中'
                         : '把此分屏标记为智能体（纳入指挥部花名册）'}
-                  title={grp
-                    ? `编组「${grp.name}」${isAgent ? ' · 运行中' : ''}（点击取消标记智能体）`
-                    : isAgent
+                  title={attention === 'waiting'
+                    ? '智能体等待审批'
+                    : attention === 'stopped'
+                      ? '智能体已停止'
+                      : grp
+                        ? `编组「${grp.name}」${isAgent ? ' · 运行中' : ''}（点击取消标记智能体）`
+                        : isAgent
                       ? '智能体运行中（点击取消标记）'
                       : aState === 'starting'
                         ? '智能体启动中'
                         : '把此分屏标记为智能体（纳入指挥部花名册）'}
-                  style={grp
+                  style={!attention && grp
                     ? `color:${grp.color};border-color:${grp.color};background:color-mix(in srgb, ${grp.color} 16%, transparent)`
                     : ''}
-                  class="relative flex h-7 w-7 items-center justify-center rounded-lg border text-[11px] font-medium transition-colors {grp
-                    ? ''
-                    : isAgent
+                  class="relative flex h-7 w-7 items-center justify-center rounded-lg border text-[11px] font-medium transition-colors {attention === 'waiting'
+                    ? 'border-amber-400/70 bg-amber-500/15 text-amber-300'
+                    : attention === 'stopped'
+                      ? 'border-red-400/70 bg-red-500/15 text-red-300'
+                      : grp
+                        ? ''
+                        : isAgent
                       ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
                       : aState === 'starting'
                         ? 'border-amber-400/40 bg-amber-500/15 text-amber-300'
@@ -666,7 +680,7 @@ import {
                   onclick={() => toggleTeammateAgent(node.id, isAgent)}
                 >
                   <Bot class="h-4 w-4 shrink-0" />
-                  {#if isAgent}
+                  {#if isAgent || attention}
                     <span class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-current animate-pulse"></span>
                   {/if}
                 </button>

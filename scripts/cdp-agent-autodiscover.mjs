@@ -49,13 +49,14 @@ const src = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'PING
 {
   // 清掉上一轮残留的替身，否则「agent 退出 → 花名册回收」这一半永远测不到。
   // 只按**这个可执行文件的全路径**匹配 —— 绝不 `taskkill /IM`，那会误伤同名真进程。
-  const { execSync } = await import('node:child_process');
-  const q = fake.replace(/\\/g, '\\\\');
-  try {
-    execSync(`wmic process where "ExecutablePath='${q}'" call terminate`, { stdio: 'ignore' });
-  } catch {
-    /* 没有残留 */
-  }
+  const { spawnSync } = await import('node:child_process');
+  const q = fake.replace(/'/g, "''");
+  spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq '${q}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`,
+  ], { stdio: 'ignore' });
 }
 fs.copyFileSync(src, fake);
 log('fake agent binary:', fake);

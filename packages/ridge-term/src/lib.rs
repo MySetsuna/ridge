@@ -1422,6 +1422,8 @@ mod renderer_js {
             place_above: bool,
             total_items: u32,
             first_visible: u32,
+            viewport_cols: u32,
+            viewport_rows: u32,
         ) {
             let items: Vec<String> = items.iter().filter_map(|v| v.as_string()).collect();
             // JS pre-windows to the visible slice; render all of it (capped
@@ -1437,6 +1439,8 @@ mod renderer_js {
                     max_visible_rows,
                     total_items: total_items as usize,
                     first_visible: first_visible as usize,
+                    viewport_cols: viewport_cols as usize,
+                    viewport_rows: viewport_rows as usize,
                 });
         }
 

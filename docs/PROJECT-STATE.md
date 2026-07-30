@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-29（用户否决 iteration 63 实际体验；本轮修复代码已落地，真机与历史能力仍待验收/补齐）
+状态日期：2026-07-30（iteration 75 自动轨与 Dev/CDP 验收通过；移动真机手感及跨平台安装包仍属用户/CI 轨）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -130,8 +130,8 @@ sequenceDiagram
 
 | 项 | wind |
 | --- | --- |
-| 分支 / 功能与发布基线 | `main` / `fbde55d58e1b`，与 `origin/main` 同步；工作树仅含本轮批准需求/审计文档及既有本地 artifacts |
-| 应用版本 | 0.1.8（待发布） |
+| 分支 / 功能与发布基线 | `main` / `28898b34c3ef`，与 `origin/main` 同步；该基线已发布 `v0.1.10`，工作树含 iteration 75 已批实现 |
+| 应用版本 | 0.1.10（`v0.1.10` 安装资产已发布；iteration 75 尚未另起版本 tag） |
 | CodeGraph | 895 文件 / 37,969 节点 / 177,401 边（2026-07-28 sync/status exit 0） |
 | 工具链 | iteration 63 曾有 Vitest/Rust/build/LAN E2E 绿证据，但用户真机否决其体验，故旧闸只证明 fixture 通过，不证明本轮需求闭合；改后须补同构竞态/背压/E2E |
 
@@ -212,8 +212,8 @@ sequenceDiagram
 | R62-GEOMETRY | 桌面浏览器 LAN/public pane 网格、画面与指针一致 | P0 | **代码已实现，真实浏览器 E2E 待补**（`96ce9fc`）：共享 `PaneGeometry` 统一 content rect、padding、cell、DPR、grid 与 pointer clamp；纯函数/manager/合同回归绿 |
 | R62-SAVED | 已保存工作区重开、删除、滚动条统一 | P1 | **关闭**（`fe37599`）：关闭清 pane runtime；默认目录直接 `.ridge` 受限删除；确认后原位刷新；弹层使用 `rg-scroll`；相关 Vitest/Rust/svelte-check 绿 |
 | R63-MOBILE-CONTINUITY | Mobile Query/store、跨 workspace pane 保活、弱网 active QoS、键盘 transform、scrollback 连续分页/loading 与 pane 行纯 icon | P0 | **代码已修，真机验收待补**：cursor-only+回底、复合 PaneRef、host fail-closed、后台保活与 high/low writer 已落地并有定向测试；仍缺真实手机/浏览器切换、弱网与长 scrollback 证据 |
-| R64-AGENT-HISTORY | Agent 历史会话按类型分组折叠，以原始结构化参数恢复；运行中会话复用成员/编组交互项；扩展 CLI adapter | P1 | **部分完成**：历史回复已按 Agent 类型分组并可折叠；后端输出 `resume{executable,argv,cwd,sessionId}`，native session 摘要新增 active pane `cwd`，同名 sessionId 可直接接入复用；仍缺跨命名 session 的稳定 ID 持久化 |
-| R65-AGENT-COMMUNE | 控制/文档区移底；成员/编组/历史连续；Agent Tab 与 pane header 同状态 | P0 | **部分完成**：控制/文档移底、三 tab、rosterChanged/status sync 已落地；历史仍缺按类型分组折叠、结构化 resume 与完整历史 adapter |
+| R64-AGENT-HISTORY | Agent 历史会话按类型分组折叠，以原始结构化参数恢复；运行中会话复用成员/编组交互项；扩展 CLI adapter | P1 | **代码已修，真 CLI 证据待补**：按原生 session id 一 session 一行；标题/id/cwd/latest assistant 分区展示，结构化 `executable+argv+cwd` 恢复；未知 CLI/Grok 诚实禁用，不发明跨命名 ID |
+| R65-AGENT-COMMUNE | 控制/文档区移底；成员/编组/历史连续；Agent Tab 与 pane header 同状态 | P0 | **代码已修，真实接收待复验**：控制/文档移底、三 tab、attention/status 同源、历史与结构化 resume 已落地；Commune MCP send 默认以 CR 提交，目标 Agent 真机接收属 user-track |
 | R65-REMOTE-SMOOTH | 复合 pane 身份、后台保活、cursor-only 键盘回底、非阻断 scrollback | P0 | **代码已修，深研与真机验收中**：复合身份、fail-closed、worker scrollback、独立高低优先级 writer、WebGL context restore/visibility 重绘已落地；仍需真实桌面 RemoteTab/移动端 E2E |
 
 ### 2026-07-29 iteration 65 实施证据
@@ -355,3 +355,122 @@ sequenceDiagram
 - 回归：Remote 统一构建通过；`ridge-remote --features embed-ui` 31 单测 + 7 socket E2E 通过；artifact bundle 4 测通过；ridge-cloud artifact 11 测、router 13 测通过；桌面与 rdg `cargo check` 通过。
 - 未闭项：公网 Remote 几何真实 E2E、双形态 PWA 清缓存后验证、全量发布。未绿不得发布。
 - 中间 E2E 曾证实共享 Canvas2D 停在默认 `80×24`；`8e6ec6f` 补齐按 container 重算与 resize 后重投影，随后 LAN E2E 已得 `122×41`。公网仍未验，故需求保持 ACTIVE。
+
+## 2026-07-29 iteration 66 · Remote 复合身份回调
+
+- `TerminalCanvas` 的 stdin、resize、near-top 回调改为携自身 `PaneRef`；`MainApp`
+  不再于回调执行时回读活动工作区。异步剪贴板粘贴亦捕获触发时 canvas，避免切换后错投。
+- 聚焦 Vitest：8 文件、45 测通过；Remote Svelte-only 编译：13 文件、0 错误。
+- 全量 `pnpm check`、Remote build 与 Rust 聚焦测受同机并行构建影响，60–124 秒内无结果；
+  本轮自产子进程树已回收，未触碰宿主 Ridge。真实 LAN/公网/移动设备仍属用户轨。
+
+## 2026-07-29 iteration 67 · Explorer 连续性与菜单身份
+
+- 首次打开未在 tab 中的树文件前，先拉取父目录完整分页并以新清单返回路径解析；文件消失或变为
+  目录则不打开陈旧节点，并刷新根树。既有 tab 仍走原 dirty/clean 保护逻辑。
+- FileTree 复制、相对复制、搜索与 reveal 改用菜单打开时捕获路径；递归节点补传 paste；
+  cwd 与 pane header 菜单统一绝对/相对/reveal。pane header 捕获
+  `{workspaceId,paneId,cwd}`，动作执行不再回读 active workspace。
+- Explorer resize 在 pointerup/cancel/onDestroy 后释放 pointer capture、window listeners、
+  状态与 dragging class；拖中仍只写内存，结束仅持久化一次。
+- 聚焦 Vitest：3 文件、46 测通过；Svelte 分段诊断：components 35 文件、routes 2 文件，
+  均 0 error / 0 warning。全仓 Svelte 诊断同机负载下 64 秒超时，未追杀任何既有进程。
+- 自动轨完成；60Hz 手感、Windows shell reveal 及用户卷上的权限/跨卷矩阵仍属用户轨证据。
+
+## 2026-07-29 iteration 68 · Agent 交互与原生会话
+
+- Agent 成员名可按显式 workspace/pane 跨工作区定位；仅在真实终端 DOM 获焦后确认红/黄暂态。
+  成员卡与 pane header 机器人图标读取同一 `agentPaneAttentionStore`；等待审批为黄、停止为红，
+  且均保留文字与 aria 语义。动态标题继续由 topology 注入的 OSC title 同源投影。
+- 首次进入 Agent's Commune 时，旧持久化侧栏宽度不足会一次夹至 288px，无需切 tab 自愈。
+- Agent history 后端改为按原生 session id 聚合：一 session 一行，保留稳定标题、id、Agent、
+  cwd、最近活动与最新 assistant 输出；同 session 多回复仅取最新。Grok 因无已验证原生格式，
+  UI 明示未启用，不猜路径/字段。
+- 恢复不再拼 shell 字符串：新 pane 调 `launch_agent_session`，以既有
+  `StructuredPtyCommand { program, args, cwd }` 直启；失败回收本次新 pane。
+- 前端聚焦测 2 文件、44 测通过；teammate/components/routes 分段 Svelte 诊断均 0 error。
+  Rust 聚焦 session 聚合测试复跑 1/1 通过并完成 `ridge` lib 编译；独立
+  `cargo check -p ridge --lib` 仍于 64 秒超时，未清锁、未触碰宿主 Ridge。
+
+## 2026-07-29 iteration 69 · History overlay 与渲染证据
+
+- History overlay 新增 pane-local `viewport_cols/viewport_rows`；共享纯几何先按光标侧锚定，空间
+  不足则翻向、减行、夹紧。过窄时以 pane cell rect 水平居中；WebGPU 与此前缺失实现的
+  Canvas2D 共用几何、宽度及截断规则。
+- 几何单测覆盖 DPR `1/1.25/1.5/2`、右下角翻向、窄宽居中及双侧不足减行；wasm32 编译通过，
+  故双 backend 代码路径已静态验收。真实分屏、侧栏与缩放观感仍属用户轨。
+- Raster 审计确认两 backend 已共用 `procedural_box`，但缺原生 PowerShell 对照矩阵；未猜改
+  字体/hinting/atlas。Codex render 审计确认 feed→dirty→compose→present 顺序与单焦点光标
+  护栏既存，但缺 Codex/Claude PTY 录制及逐帧 trace；未改 blink 或刷新策略。
+- 自动对比度研究裁决：只建议静态 token WCAG 2.2 lint + forced-colors fixture；全局运行时
+  DOM/像素采样与终端 ANSI 改色 deferred。见 `docs/research/auto-contrast-2026-07-29.md`。
+- 全程未启动、终止或干预宿主 Ridge。
+
+## 2026-07-29 iteration 70 · 单 host 重试与无头能力边界
+
+- topology 失败不再把最后成功 workspace/pane 树清空；保留树并投影首因。错误 host 从 5 秒
+  自动轮询中退出，须在该 host 行显式重试，故不再无限重放。
+- 同 host 重试复用既有 in-flight；组件卸载可取消等待并阻止陈旧提交。鉴权/TOTP/401/403
+  不盲重试，按钮改为“重新接入”；其他 host 不刷新、不清空。
+- 聚焦 Host forest 5 测通过；全仓 Svelte/TypeScript 0 error / 0 warning。
+- 无头链审计：`new_headless_session` → Ridge-owned `headless` socket，
+  `list_native_sessions` → `native::list_all_sessions`，Hosts/Agent Center 只投影该 DTO，
+  `summon_native_session` 以显式 workspace 接入。任意外部 OS PID 无 PTY master，继续不展示、
+  不伪造可召唤。按用户禁令未启动宿主，真进程链保留用户轨。
+
+## 2026-07-29 iteration 71 · Commune MCP 提交语义
+
+- 根因确认：`ridge_send_to_teammate` 虽名为发送，却默认 `submit=false`，故只把提示词留在目标
+  Agent 输入框；旧 `delegate-task`、`send-keys` 与 split 初始命令另以 LF 模拟 Enter，
+  Claude/Codex raw-mode TUI 不一定提交。
+- `ridge_send_to_teammate` 现默认真提交，仅显式 `submit:false` 留草稿；
+  `ridge_send_and_submit` / `ridge_delegate_task` 继续强制提交。桌面 MCP 与 tmux MCP 原有
+  `enter_terminated` 路径保持不变。
+- legacy delegate、send-keys、HITL 修改及 split 初始命令统一复用 `enter_terminated`：
+  去尾随 CR/LF 后仅追加单一 CR。回执仍不把 PTY 接受冒充 Agent 已确认。
+- `ridge-mcp` 60 测、Ridge teammate server 5 测通过；`git diff --check` 通过。全仓 fmt check
+  因大量既有格式漂移失败，未借机改写。按禁令未启动、终止或干预宿主 Ridge；目标 Agent
+  真机接收留用户轨复验。
+
+## 2026-07-29 iteration 72 · Explorer 部分 cut 恢复
+
+- 对 NLM 残项作代码复核：Explorer 已逐路径执行 copy/move、聚合
+  `source path: error` 并刷新源/目标列，故“仅通用 Error”不成立。
+- 真缺口为部分 cut 成功时旧逻辑清空整个内部剪贴板；失败路径虽显示，却无法直接重试。
+  新纯函数按原顺序仅保留失败路径；全成功清空，全失败全留，copy 不受影响。
+- `fileExplorer.test.ts` 33 测通过；`Explorer.svelte` 编译通过。全仓与 components
+  `svelte-check` 分别于 184/124 秒超时，已按精确 PID 回收本轮自产检查树，未触碰宿主 Ridge。
+  Windows 权限/跨卷真实用户卷矩阵仍属 user-track。
+
+## 2026-07-29 iteration 73 · 已批残项终审
+
+- NLM 初审提出稳定 UUID registry、OS PID/PTy 探测、Explorer 批量 DTO 与粘贴 telemetry；
+  逐项对照合同与 CodeGraph 后，前三者分别违背原生 session id、PTY master 能力边界或既有逐路径
+  诊断事实，telemetry 仅属“假设/待确认”，均不扩张实现。
+- iteration 72 闭合唯一真实代码缺口后，以最新两源再次对抗复核，结论为“无代码侧残项，仅余
+  user-track”。故修正 R64/R65 旧状态，删除“跨命名稳定 ID 持久化”等伪缺口。
+- 余项仅可由真实环境给证：Windows ConPTY/PowerShell/用户卷、Codex/Claude PTY 录制、
+  真实分屏与 60Hz 手感、真实 Agent/无头链、LAN/public/WebRTC、跨账号分享及 iOS/Android。
+  按禁令不启动或干预宿主 Ridge，不发布，不以 fixture 冒充。
+
+## 2026-07-30 iteration 75 · Mobile 连续性与 Commune 跨工作区
+
+- Cloud `panes` snapshot 绑定请求发起时的 workspace；稳态拒绝无作用域快照。workspace/pane
+  切换仅在 host 确认后原子提交，失败保留旧 frame、焦点与订阅。
+- Mobile 输入顺序固定为 `scrollToBottom → cursor/fallback anchor → focus`；系统 IME 与虚拟
+  键盘按钮分离；scrollback 错误/retry 属 pane 本地，重试事件不穿透终端。
+- 支持 `Worker + OffscreenCanvas` 时，单例 render Worker 为唯一 painter；raw PTY bytes 进入
+  worker kernel 后绘制。park 仅释放 canvas，rebind 立即画当前 kernel；崩溃/超时回退主线程并
+  清空 pending。Dev/CDP 真 Worker 跑通 ping/init/feed/bind/resize/release/parked-feed/rebind/
+  destroy，末态 pending=0。
+- Commune MCP 新增 workspace 枚举、launch capability/profile、显式复合身份 create/send；
+  model/effort 由宿主白名单决定，命令走 argv。checkpoint 替换先建新 pane，成功后方停止精确
+  旧 Worker；显式 workspace 不匹配时 fail-closed。
+- `ridge-mcp` companion 进入 Tauri external binary 与 release matrix；`--print-config` 不落
+  endpoint/token，连接失败会重发现 endpoint。构建脚本按 target/version 生成并核验 sidecar。
+- 自动证据：Vitest 110 文件、1286 通过/1 跳过；Svelte 0 error/0 warning；MCP 65、bridge 5、
+  desktop host 2 测通过；Windows sidecar `--check --require-built` 通过；mobile production
+  build 含独立 render Worker、WASM 与 term chunks。完整 `build:remote` 的旧 desktop 子构建
+  曾超时，精确回收本轮 3 个孤儿 Node；未触碰宿主 Ridge。
+- 未冒充完成：iOS/Android 真实键盘与 60Hz pane 手感、macOS/Linux/Windows clean-install
+  包体矩阵仍待对应设备/CI 证据；本轮代码与 Dev 验收已闭合。

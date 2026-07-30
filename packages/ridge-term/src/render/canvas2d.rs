@@ -37,6 +37,9 @@ use crate::render::backend::{
     resolve_cell_colors, CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme,
 };
 use crate::render::procedural_box;
+use crate::render::renderer::{
+    history_overlay_geometry, history_text, history_text_width, truncate_history_text,
+};
 use crate::term::attr_table::AttrTable;
 use crate::term::attrs::Flags;
 // Glyphs draw at their natural size via a plain `fill_text` (no
@@ -591,6 +594,127 @@ impl RenderBackend for Canvas2dBackend {
             let y_bottom = ((row + 1) as f64 * self.metrics.cell_h as f64).round();
             let y = y_bottom - 1.0;
             self.ctx.fill_rect(x_left, y, w, 1.0);
+        }
+    }
+
+    fn draw_history_overlay(
+        &mut self,
+        overlay: &crate::render::renderer::HistoryOverlay,
+        theme: &Theme,
+    ) {
+        let requested_visible = overlay.items.len().min(overlay.max_visible_rows);
+        if requested_visible == 0 {
+            return;
+        }
+        let cell_w = self.metrics.cell_w.max(1.0);
+        let cell_h = self.metrics.cell_h.max(1.0);
+        let normalised: Vec<String> = overlay
+            .items
+            .iter()
+            .take(requested_visible)
+            .map(|item| history_text(item))
+            .collect();
+        let widest_cells = normalised
+            .iter()
+            .map(|item| history_text_width(item))
+            .max()
+            .unwrap_or(0);
+        let Some(geometry) = history_overlay_geometry(
+            overlay,
+            widest_cells,
+            requested_visible,
+            cell_w,
+            cell_h,
+        ) else {
+            return;
+        };
+
+        let panel_x = geometry.panel_x as f64;
+        let panel_y = geometry.panel_y as f64;
+        let panel_w = geometry.panel_w as f64;
+        let panel_h = geometry.panel_h as f64;
+        let inner_x = panel_x + geometry.pad_w as f64;
+        let inner_y = panel_y + geometry.pad_h as f64;
+        let row_h = cell_h as f64;
+
+        self.ctx.set_fill_style_str(&Self::rgba_to_css(theme.bg));
+        self.ctx.fill_rect(panel_x, panel_y, panel_w, panel_h);
+
+        if overlay.selected_index >= 0
+            && (overlay.selected_index as usize) < geometry.visible_count
+        {
+            self.ctx.set_fill_style_str(&Self::rgba_to_css(theme.fg));
+            self.ctx.fill_rect(
+                inner_x,
+                inner_y + overlay.selected_index as f64 * row_h,
+                panel_w - 2.0 * geometry.pad_w as f64,
+                row_h,
+            );
+        }
+
+        self.ctx.set_font(&self.font_css);
+        self.ctx.set_text_baseline("top");
+        for (row, item) in normalised
+            .iter()
+            .take(geometry.visible_count)
+            .enumerate()
+        {
+            let selected =
+                overlay.selected_index >= 0 && row == overlay.selected_index as usize;
+            self.ctx.set_fill_style_str(&Self::rgba_to_css(if selected {
+                theme.bg
+            } else {
+                theme.fg
+            }));
+            let text = truncate_history_text(item, geometry.content_cols);
+            let _ = self
+                .ctx
+                .fill_text(&text, inner_x, inner_y + row as f64 * row_h);
+        }
+
+        let border = (1.0 / self.metrics.dpr.max(1.0)) as f64;
+        self.ctx.set_fill_style_str(&Self::rgba_to_css(theme.fg));
+        for (x, y, w, h) in [
+            (panel_x, panel_y, panel_w, border),
+            (panel_x, panel_y + panel_h - border, panel_w, border),
+            (panel_x, panel_y, border, panel_h),
+            (panel_x + panel_w - border, panel_y, border, panel_h),
+        ] {
+            self.ctx.fill_rect(x, y, w, h);
+        }
+
+        if geometry.scrollbar_w > 0.0
+            && overlay.total_items > geometry.visible_count
+            && overlay.total_items > 0
+        {
+            let mix = |t: f32| {
+                let mut color = [0u8; 4];
+                for index in 0..3 {
+                    color[index] =
+                        (theme.bg[index] as f32 * (1.0 - t) + theme.fg[index] as f32 * t)
+                            .round() as u8;
+                }
+                color[3] = 255;
+                color
+            };
+            let scrollbar_w = geometry.scrollbar_w as f64;
+            let scrollbar_x = panel_x + panel_w - scrollbar_w - border;
+            let track_y = panel_y + border;
+            let track_h = (panel_h - 2.0 * border).max(1.0);
+            let total = overlay.total_items as f64;
+            let fraction_start = (overlay.first_visible as f64 / total).clamp(0.0, 1.0);
+            let fraction_len =
+                (geometry.visible_count as f64 / total).clamp(0.0, 1.0);
+            let min_thumb = (track_h * 0.10).clamp(10.0, track_h);
+            let thumb_h = (fraction_len * track_h).max(min_thumb).min(track_h);
+            let thumb_y =
+                (track_y + fraction_start * track_h).min(track_y + track_h - thumb_h);
+            self.ctx.set_fill_style_str(&Self::rgba_to_css(mix(0.18)));
+            self.ctx
+                .fill_rect(scrollbar_x, track_y, scrollbar_w, track_h);
+            self.ctx.set_fill_style_str(&Self::rgba_to_css(mix(0.55)));
+            self.ctx
+                .fill_rect(scrollbar_x, thumb_y, scrollbar_w, thumb_h);
         }
     }
 

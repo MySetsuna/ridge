@@ -8,9 +8,8 @@
  *
  * This module exposes:
  *
- *   - `isWorkerRenderingEnabled()` — reads the `window.__RIDGE_USE_WORKER`
- *     feature flag. Default off; opt-in by setting the global to `true`
- *     before any pane mounts.
+ *   - `isWorkerRenderingEnabled()` — enabled by default; explicit false/0
+ *     remains the compatibility escape hatch.
  *   - `getWorkerRenderer()` — returns the singleton, lazily creating it on
  *     first call. Returns `null` when the feature flag is off or when the
  *     environment has no `Worker` constructor (SSR / vitest node env).
@@ -41,14 +40,15 @@ import { WorkerHostedRenderer, type WorkerLike } from './workerHostedRenderer';
  *  because workers and SSR may not expose it. */
 export function isWorkerRenderingEnabled(): boolean {
 	const g = globalThis as unknown as { __RIDGE_USE_WORKER?: unknown };
-	if (g.__RIDGE_USE_WORKER === true) return true;
+	if (typeof g.__RIDGE_USE_WORKER === 'boolean') return g.__RIDGE_USE_WORKER;
 	try {
 		const v = globalThis.localStorage?.getItem('RIDGE_USE_WORKER');
 		if (v === '1' || v === 'true') return true;
+		if (v === '0' || v === 'false') return false;
 	} catch {
 		/* SSR / worker / sandboxed origin — localStorage unavailable */
 	}
-	return false;
+	return true;
 }
 
 /** Returns true when the runtime exposes a real `Worker` constructor.
@@ -58,6 +58,25 @@ function hasWorkerSupport(): boolean {
 }
 
 let singleton: WorkerHostedRenderer | null = null;
+let disabledAfterFailure = false;
+const failureListeners = new Set<(error: Error) => void>();
+
+function notifyFailure(error: Error): void {
+	disabledAfterFailure = true;
+	const failed = singleton;
+	singleton = null;
+	failed?.terminate();
+	for (const listener of failureListeners) listener(error);
+}
+
+export function onWorkerRendererFailure(listener: (error: Error) => void): () => void {
+	failureListeners.add(listener);
+	return () => failureListeners.delete(listener);
+}
+
+export function failWorkerRenderer(error: unknown): void {
+	notifyFailure(error instanceof Error ? error : new Error(String(error)));
+}
 
 /**
  * Optional injection seam used by tests. Production callers leave this
@@ -79,10 +98,11 @@ export function __setWorkerFactory(factory: WorkerFactory | null): void {
  */
 export function getWorkerRenderer(): WorkerHostedRenderer | null {
 	if (singleton) return singleton;
+	if (disabledAfterFailure) return null;
 	if (!isWorkerRenderingEnabled()) return null;
 	if (factoryOverride) {
 		try {
-			singleton = new WorkerHostedRenderer(factoryOverride());
+			singleton = new WorkerHostedRenderer(factoryOverride(), notifyFailure);
 			return singleton;
 		} catch (err) {
 			console.warn('[ridge-term] worker renderer factory threw', err);
@@ -99,7 +119,7 @@ export function getWorkerRenderer(): WorkerHostedRenderer | null {
 		// assigns an arrow-function listener (no `this` reliance), so the
 		// cast is safe — and unavoidable without pulling the full DOM
 		// `Worker` type into the wrapper's interface.
-		singleton = new WorkerHostedRenderer(worker as unknown as WorkerLike);
+		singleton = new WorkerHostedRenderer(worker as unknown as WorkerLike, notifyFailure);
 		return singleton;
 	} catch (err) {
 		// Bundler couldn't resolve the URL pattern (e.g. environment lacks
@@ -116,11 +136,13 @@ export function getWorkerRenderer(): WorkerHostedRenderer | null {
  * lazily spawn a new one (assuming the flag still says yes). Idempotent.
  */
 export function disposeWorkerRenderer(): void {
-	if (!singleton) return;
-	try {
-		singleton.terminate();
-	} catch {
-		/* worker already dead */
+	if (singleton) {
+		try {
+			singleton.terminate();
+		} catch {
+			/* worker already dead */
+		}
+		singleton = null;
 	}
-	singleton = null;
+	disabledAfterFailure = false;
 }
