@@ -7,7 +7,7 @@
   // 凭据(TOTP)只用于本次握手，不落库。
   import { Globe, Wifi, X, Loader2 } from 'lucide-svelte';
   import { portal } from '$lib/actions/portal';
-  import { connectHost } from '$lib/stores/hosts';
+  import { connectHost, hostConnectProgress } from '$lib/stores/hosts';
   import { alertDialog } from '../RidgeDialog.svelte';
   import { cloudAuth, isLoggedIn, login as cloudLogin, loginViaBrowser } from '@ridge/remote/shared/cloud/auth';
 
@@ -20,7 +20,6 @@
   let label = $state('');
   let addr = $state('');
   let totp = $state('');
-  let busy = $state(false);
 
   // 公网登录态（复用云端 auth store，与「公网远控」tab 同一账户）。
   const loggedIn = $derived(isLoggedIn($cloudAuth));
@@ -89,14 +88,18 @@
       await alertDialog({ title: '缺少验证码', message: '请填写主机的 TOTP 验证码。' });
       return;
     }
-    busy = true;
+    const request = {
+      channel,
+      label,
+      addr,
+      totp,
+    };
+    // Connection discovery can take seconds; move progress to the Hosts panel.
+    close();
     try {
-      await connectHost('remote', label, addr, totp, channel);
-      close();
+      await connectHost('remote', request.label, request.addr, request.totp, request.channel);
     } catch (e) {
       await alertDialog({ title: '接入失败', message: e instanceof Error ? e.message : String(e) });
-    } finally {
-      busy = false;
     }
   }
 </script>
@@ -246,7 +249,7 @@
         </button>
         <button
           type="button"
-          disabled={busy || !readyForFields || !addr.trim() || !totp.trim()}
+          disabled={($hostConnectProgress?.phase !== 'error' && $hostConnectProgress !== null) || !readyForFields || !addr.trim() || !totp.trim()}
           class="h-8 rounded-lg bg-[var(--rg-accent)] px-3 text-[12px] font-medium text-black hover:opacity-90 disabled:opacity-40"
           onclick={submit}
         >

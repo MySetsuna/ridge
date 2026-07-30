@@ -147,6 +147,13 @@ export const hostsStore = writable<Host[]>([]);
 export const hostsLoading = writable(false);
 /** 上次刷新错误（面板顶部提示用），空串=无错误。 */
 export const hostsError = writable('');
+export interface HostConnectProgress {
+  phase: 'connecting' | 'loading-workspaces' | 'error';
+  label: string;
+  detail: string;
+}
+/** Long host handshakes outlive the modal; keep their progress visible in the panel. */
+export const hostConnectProgress = writable<HostConnectProgress | null>(null);
 
 const HEADLESS_HOST_ID = 'headless';
 
@@ -708,61 +715,81 @@ export async function connectHost(
   token?: string,
   channel: 'lan' | 'public' = 'lan',
 ): Promise<void> {
-  if (channel === 'lan') {
-    const raw = addr.trim();
-    const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
-    const host = url.hostname;
-    const secure = url.protocol === 'https:';
-    const port = Number(url.port || (secure ? 443 : 80));
-    const code = token?.trim();
-    if (!host || !Number.isInteger(port) || port < 1 || port > 65535 || !code) {
-      throw new Error('LAN 主机地址或 TOTP 无效');
-    }
-    const link = new RemoteConnection();
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        off();
-        link.disconnect();
-        reject(new Error('LAN 主机连接超时'));
-      }, 10_000);
-      const off = link.onStateChange((state) => {
-        if (state === 'connected') {
-          clearTimeout(timer);
+  const progressLabel = label.trim() || addr.trim();
+  hostConnectProgress.set({
+    phase: 'connecting',
+    label: progressLabel,
+    detail: channel === 'lan' ? '正在连接局域网主机…' : '正在建立公网加密通道…',
+  });
+  try {
+    if (channel === 'lan') {
+      const raw = addr.trim();
+      const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+      const host = url.hostname;
+      const secure = url.protocol === 'https:';
+      const port = Number(url.port || (secure ? 443 : 80));
+      const code = token?.trim();
+      if (!host || !Number.isInteger(port) || port < 1 || port > 65535 || !code) {
+        throw new Error('LAN 主机地址或 TOTP 无效');
+      }
+      const link = new RemoteConnection();
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
           off();
-          resolve();
-        } else if (state === 'error') {
-          clearTimeout(timer);
-          off();
-          reject(new Error(link.lastFailure()?.message || 'LAN 主机拒绝连接'));
-        }
+          link.disconnect();
+          reject(new Error('LAN 主机连接超时'));
+        }, 10_000);
+        const off = link.onStateChange((state) => {
+          if (state === 'connected') {
+            clearTimeout(timer);
+            off();
+            resolve();
+          } else if (state === 'error') {
+            clearTimeout(timer);
+            off();
+            reject(new Error(link.lastFailure()?.message || 'LAN 主机拒绝连接'));
+          }
+        });
+        link.connect(host, port, code, 'code', secure);
       });
-      link.connect(host, port, code, 'code', secure);
-    });
-    const hostId = `lan:${host}:${port}`;
-    registerHostTopologyLink({
-      hostId,
-      kind,
-      label: label.trim() || host,
-      detail: `${secure ? 'wss' : 'ws'}://${host}:${port}`,
-      link,
+      const hostId = `lan:${host}:${port}`;
+      registerHostTopologyLink({
+        hostId,
+        kind,
+        label: label.trim() || host,
+        detail: `${secure ? 'wss' : 'ws'}://${host}:${port}`,
+        link,
+      });
+    } else {
+      const deviceName = addr.trim();
+      const code = token?.trim();
+      if (!deviceName || !code) throw new Error('公网设备名或 TOTP 无效');
+      const link = await connectCloudHostTopologyLink(deviceName, code);
+      const hostId = `cloud:${deviceName}`;
+      registerHostTopologyLink({
+        hostId,
+        kind,
+        label: label.trim() || deviceName,
+        detail: '公网同账号 · Cloud E2EE',
+        deviceName,
+        link,
+      });
+    }
+    hostConnectProgress.set({
+      phase: 'loading-workspaces',
+      label: progressLabel,
+      detail: '连接成功，正在读取远端工作区…',
     });
     await refreshHosts();
-    return;
+    hostConnectProgress.set(null);
+  } catch (error) {
+    hostConnectProgress.set({
+      phase: 'error',
+      label: progressLabel,
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
-  const deviceName = addr.trim();
-  const code = token?.trim();
-  if (!deviceName || !code) throw new Error('公网设备名或 TOTP 无效');
-  const link = await connectCloudHostTopologyLink(deviceName, code);
-  const hostId = `cloud:${deviceName}`;
-  registerHostTopologyLink({
-    hostId,
-    kind,
-    label: label.trim() || deviceName,
-    detail: '公网同账号 · Cloud E2EE',
-    deviceName,
-    link,
-  });
-  await refreshHosts();
 }
 
 /** 断开一台远端主机（保留登记）。 */
