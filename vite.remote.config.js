@@ -152,6 +152,7 @@ export default defineConfig({
   ],
   build: {
     outDir: path.resolve(__dirname, 'remote-dist/mobile'),
+    chunkSizeWarningLimit: 500,
     emptyOutDir: true,
     target: 'esnext',
     modulePreload: false,
@@ -173,8 +174,6 @@ export default defineConfig({
           // Split workspace tree
           if (id.includes('/remote/lib/WorkspaceTree')) return 'workspace-tree';
         },
-        // Smaller chunk size for better caching
-        chunkSizeWarningLimit: 500,
       },
     },
   },

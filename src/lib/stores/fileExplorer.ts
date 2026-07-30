@@ -797,9 +797,9 @@ export function toggleWorkspaceCollapsed(workspaceId: string): void {
 const COLLAPSED_COLUMNS_KEY = 'ridge-explorer-collapsed-columns';
 
 function loadCollapsedColumns(): Set<string> {
-	if (typeof localStorage === 'undefined') return new Set();
+	if (typeof window === 'undefined') return new Set();
 	try {
-		const raw = localStorage.getItem(COLLAPSED_COLUMNS_KEY);
+		const raw = window.localStorage.getItem(COLLAPSED_COLUMNS_KEY);
 		if (!raw) return new Set();
 		const arr = JSON.parse(raw);
 		return Array.isArray(arr) ? new Set(arr.filter((s: unknown) => typeof s === 'string')) : new Set();
@@ -809,9 +809,9 @@ function loadCollapsedColumns(): Set<string> {
 }
 
 function persistCollapsedColumns(s: Set<string>): void {
-	if (typeof localStorage === 'undefined') return;
+	if (typeof window === 'undefined') return;
 	try {
-		localStorage.setItem(COLLAPSED_COLUMNS_KEY, JSON.stringify(Array.from(s)));
+		window.localStorage.setItem(COLLAPSED_COLUMNS_KEY, JSON.stringify(Array.from(s)));
 	} catch {
 		/* ignore */
 	}
