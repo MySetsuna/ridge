@@ -39,7 +39,7 @@
 - RPC/Resize:`RpcClient.request/settle/diagnostics`、`CloudRemoteConnection._invokePane/_resize/_drainResizeLane/sendStdin`。
 - SCM:`SourceControl.discoverRepos/refreshStatus`、shared non-Git cache、`get_scm_status(slot)`。
 - Clear/Host:`GridDelta::ScrollbackClear`、`clear_pane_terminal`、`hostConnectProgress`、`claimPaneSize`。
-- 待处理:隐式 `active_workspace` 命令按 window/workspace 分区、Host 拖拽真机 E2E、WASM protocol v3 正式构建。
+- 待处理:隐式 `active_workspace` 命令按 window/workspace 分区、Host 拖拽真机 E2E。
 
 ## 最近完成与当前 diff
 
@@ -53,12 +53,13 @@
 - 聚焦验证：输入/Remote 105/105；生命周期 54/54；SCM 26/26；日志 3/3；foreign binding 2/2；`pnpm check` 0 errors / 0 warnings。
 - 第二波集成：Host/drag/paneTree 69/69；Rust ownership/release/auth-launch 3/3。
 - `ridge-term` 全量 395 + protocol smoke 33；Tauri 输入序列、clear parser 与 Arc-release 聚焦测试均绿。
+- `ridge-term` release WASM 已重建并实例化验证 protocol v3；桌面/手机 Remote bundle exit 0；consumer 46/46。
 - 公网、手机真机、WebView2 长时性能 A/B 尚未运行；不得宣称总体目标完成。
 
 ## 当前失败信号与风险
 
 - 失败信号:`NotebookLM authentication expired`；手机 `runtime.lastError` 尚无首条 warning script URL。
-- 风险:现有 ignored WASM 实测仍为 protocol v2，`wasm32-unknown-unknown` 安装两次超时；多窗口虽已分配所有权，旧命令仍可能读取进程全局 `active_workspace`；Host 拖拽、公网与 WebView2 内存仍缺运行同构证据。
+- 风险:多窗口虽已分配所有权，旧命令仍可能读取进程全局 `active_workspace`；Host 拖拽、公网与 WebView2 内存仍缺运行同构证据；Remote build 尚有既存 chunk/dynamic-import 警告。
 
 ## 架构边界
 
@@ -81,14 +82,14 @@
 
 ## 下一项已批准工作
 
-- 将旧式隐式 `active_workspace` 命令改为显式 workspace/window 作用域；并行补 WASM v3 构建与 Host/手机/公网/WebView2 外部证据。
+- 将旧式隐式 `active_workspace` 命令改为显式 workspace/window 作用域；并行补 Host/手机/公网/WebView2 外部证据。
 
 ## 本轮 delta
 
 - 变更:`RpcClient`、Cloud 输入/Resize、SCM、Pane 生命周期、错误聚合、终端真清空、Host 全链、Commune 可见性、多窗口所有权。
 - 直接影响:`RPC 有界且超时取消；输入保序退避；Resize 合并；非 Git 停轮询；销毁 Pane 不再收请求；重复 Console 错误聚合；clear 释放 retained blocks。`
 - 验证:`requirements/notebook/dispatch 闸绿；第二波集成 69/69；多窗口 Rust 3/3；ridge-term 全量与 Svelte check 绿。`
-- 质量:`Sonar scanner 仍缺；WASM target 安装超时；公网/内存 A/B 待补。`
+- 质量:`Sonar scanner 仍缺；WASM/Remote 正式构建绿；公网/内存 A/B 待补。`
 - Agent 编排:`native 三 worker，只读、全结果 valid；Ridge profile capability 未暴露，未猜测 pane 启动参数。`
 - Worker 回收:`3/3 completed，无越界写。`
 - Token:`子 worker 无逐会话可信计量，记 0 而不伪造节省；同任务 baseline 尚无。`
