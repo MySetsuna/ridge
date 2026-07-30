@@ -100,7 +100,7 @@
 - Implementation: one `clearPaneHistory(PaneRef)` path for canvas/kernel/scrollback/backend; pressure/hidden-pane eviction preserves active screen and input; expose per-pane bytes/kernel/worker counters.
 - Acceptance: over-limit history evicts oldest blocks; both clear entries render empty and report zero scrollback/backend buffered bytes; closed/evicted pane memory falls after GC observation; WebView2 long-run curve plateaus.
 - Regression: alternate screen, selection/search, parked panes, reconnect replay, active TUI.
-- Status/evidence: core complete in `c1ec8a2`: protocol v3 `ScrollbackClear`, visible-grid wipe, cursor home, primary scrollback release, selection/search reset, backend replay-store release, and one authoritative Tauri command for right-click clear. Full `ridge-term` suite 395 plus 33 protocol smoke passed; Tauri parser/Arc-release tests passed. WebView2 long-run plateau and rebuilt Remote WASM artifact remain external/build gates.
+- Status/evidence: core complete in `c1ec8a2`: protocol v3 `ScrollbackClear`, visible-grid wipe, cursor home, primary scrollback release, selection/search reset, backend replay-store release, and one authoritative Tauri command for right-click clear. Full `ridge-term` suite 395 plus 33 protocol smoke passed; Tauri parser/Arc-release tests passed. Release WASM rebuilt after bypassing the slow proxy, encoded-frame version verified as `3`, and desktop/mobile Remote bundles completed. WebView2 long-run plateau remains external.
 
 ### 76.8 Remote Host staged attach — P1/P2
 
@@ -157,6 +157,8 @@
 - Host drag/settlement plus multi-window frontend integration: 69/69.
 - Multi-window Rust ownership/release/auth-launch tests: 3/3.
 - Full `ridge-term`: 395 tests plus 33 protocol smoke; focused Tauri true-clear parser/Arc-release tests passed.
+- Release `ridge-term` WASM build: exit `0` in 82.7 s; instantiated cursor delta prefix `[3,7,1,1,3,4,1,1]`.
+- Desktop + mobile `pnpm build:remote`: exit `0` in 185.5 s; terminal bridge/worker consumers 46/46.
 - `pnpm check`: 0 errors, 0 warnings.
 
 ## Remaining external evidence
@@ -164,6 +166,5 @@
 - Refresh NotebookLM authentication, then compare the live newest two conversations with guidance 64/65; any new product behavior enters Pending approval.
 - Affected phone: capture first `runtime.lastError` source and clean-profile/extension A/B.
 - Public Remote and WebView2 long-run A/B cannot be claimed from unit fixtures.
-- Rebuild and verify the generated Remote WASM artifact for protocol v3. The checked ignored `packages/ridge-term/pkg` is dated 2026-07-27 and its encoded frame starts with version `2`; source is version `3`. Two `rustup target add wasm32-unknown-unknown` attempts timed out without output; exact processes were terminated and the target remains uninstalled.
 - Partition the remaining implicit process-global `active_workspace` command paths by explicit workspace/window before claiming full multi-window mutation isolation.
 - No push or release performed.
