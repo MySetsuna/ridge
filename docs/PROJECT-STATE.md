@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-29（用户否决 iteration 63 实际体验；本轮修复代码已落地，真机与历史能力仍待验收/补齐）
+状态日期：2026-07-30（iteration 75 自动轨与 Dev/CDP 验收通过；移动真机手感及跨平台安装包仍属用户/CI 轨）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -130,8 +130,8 @@ sequenceDiagram
 
 | 项 | wind |
 | --- | --- |
-| 分支 / 功能与发布基线 | `main` / `fbde55d58e1b`，与 `origin/main` 同步；工作树仅含本轮批准需求/审计文档及既有本地 artifacts |
-| 应用版本 | 0.1.8（待发布） |
+| 分支 / 功能与发布基线 | `main` / `28898b34c3ef`，与 `origin/main` 同步；该基线已发布 `v0.1.10`，工作树含 iteration 75 已批实现 |
+| 应用版本 | 0.1.10（`v0.1.10` 安装资产已发布；iteration 75 尚未另起版本 tag） |
 | CodeGraph | 895 文件 / 37,969 节点 / 177,401 边（2026-07-28 sync/status exit 0） |
 | 工具链 | iteration 63 曾有 Vitest/Rust/build/LAN E2E 绿证据，但用户真机否决其体验，故旧闸只证明 fixture 通过，不证明本轮需求闭合；改后须补同构竞态/背压/E2E |
 
@@ -452,3 +452,25 @@ sequenceDiagram
 - 余项仅可由真实环境给证：Windows ConPTY/PowerShell/用户卷、Codex/Claude PTY 录制、
   真实分屏与 60Hz 手感、真实 Agent/无头链、LAN/public/WebRTC、跨账号分享及 iOS/Android。
   按禁令不启动或干预宿主 Ridge，不发布，不以 fixture 冒充。
+
+## 2026-07-30 iteration 75 · Mobile 连续性与 Commune 跨工作区
+
+- Cloud `panes` snapshot 绑定请求发起时的 workspace；稳态拒绝无作用域快照。workspace/pane
+  切换仅在 host 确认后原子提交，失败保留旧 frame、焦点与订阅。
+- Mobile 输入顺序固定为 `scrollToBottom → cursor/fallback anchor → focus`；系统 IME 与虚拟
+  键盘按钮分离；scrollback 错误/retry 属 pane 本地，重试事件不穿透终端。
+- 支持 `Worker + OffscreenCanvas` 时，单例 render Worker 为唯一 painter；raw PTY bytes 进入
+  worker kernel 后绘制。park 仅释放 canvas，rebind 立即画当前 kernel；崩溃/超时回退主线程并
+  清空 pending。Dev/CDP 真 Worker 跑通 ping/init/feed/bind/resize/release/parked-feed/rebind/
+  destroy，末态 pending=0。
+- Commune MCP 新增 workspace 枚举、launch capability/profile、显式复合身份 create/send；
+  model/effort 由宿主白名单决定，命令走 argv。checkpoint 替换先建新 pane，成功后方停止精确
+  旧 Worker；显式 workspace 不匹配时 fail-closed。
+- `ridge-mcp` companion 进入 Tauri external binary 与 release matrix；`--print-config` 不落
+  endpoint/token，连接失败会重发现 endpoint。构建脚本按 target/version 生成并核验 sidecar。
+- 自动证据：Vitest 110 文件、1286 通过/1 跳过；Svelte 0 error/0 warning；MCP 65、bridge 5、
+  desktop host 2 测通过；Windows sidecar `--check --require-built` 通过；mobile production
+  build 含独立 render Worker、WASM 与 term chunks。完整 `build:remote` 的旧 desktop 子构建
+  曾超时，精确回收本轮 3 个孤儿 Node；未触碰宿主 Ridge。
+- 未冒充完成：iOS/Android 真实键盘与 60Hz pane 手感、macOS/Linux/Windows clean-install
+  包体矩阵仍待对应设备/CI 证据；本轮代码与 Dev 验收已闭合。

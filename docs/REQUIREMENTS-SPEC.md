@@ -3,11 +3,16 @@
 > 本地只保留此一份需求文档。Pending 未获用户明确批准前，不改代码、不生成执行合同、不上传；
 > NotebookLM 继续使用上一版已批准的 `REQUIREMENTS-SPEC` 来源。
 
-## 待审批变更 (Pending Changes)
-
 ## 正式需求 (Active Requirements)
 
 ### REQ-TERMINAL-PASTE-ORDER-02
+
+- 状态:`ACTIVE`
+- 版本:`v0.3.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
@@ -30,6 +35,13 @@
 
 ### REQ-TERMINAL-RASTER-01
 
+- 状态:`ACTIVE`
+- 版本:`v0.3.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
 - 版本：`v0.3.0`
@@ -49,6 +61,13 @@
 - 预期落点：共享 terminal manager/font stack、ridge-term renderer 与视觉 fixture。
 
 ### REQ-CODEX-RENDER-STABILITY-01
+
+- 状态:`ACTIVE`
+- 版本:`v0.3.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
@@ -70,6 +89,13 @@
 
 ### REQ-HISTORY-OVERLAY-GEOMETRY-01
 
+- 状态:`ACTIVE`
+- 版本:`v0.3.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
 - 版本：`v0.3.0`
@@ -88,6 +114,13 @@
 - 预期落点：`RidgePane.svelte`、ridge-term `HistoryOverlay` 几何与组件/renderer 测试。
 
 ### REQ-EXPLORER-FREE-RESIZE-01
+
+- 状态:`ACTIVE`
+- 版本:`v0.3.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
@@ -109,6 +142,13 @@
 - 预期落点：`Explorer.svelte`、Explorer 高度 store 与交互/性能测试。
 
 ### REQ-EXPLORER-FILE-CONTINUITY-01
+
+- 状态:`ACTIVE`
+- 版本:`v0.3.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
@@ -133,6 +173,13 @@
 
 ### REQ-EXPLORER-CONTEXT-ACTIONS-01
 
+- 状态:`ACTIVE`
+- 版本:`v0.3.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
 - 版本：`v0.3.0`
@@ -154,6 +201,13 @@
 
 ### REQ-REMOTE-HOST-RETRY-01
 
+- 状态:`ACTIVE`
+- 版本:`v0.3.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
 - 版本：`v0.3.0`
@@ -174,6 +228,13 @@
 - 预期落点：Hosts store/`HostsPanel.svelte`、RemoteLink topology 请求与组件/E2E。
 
 ### REQ-AGENT-INTERACTION-STATE-01
+
+- 状态:`ACTIVE`
+- 版本:`v0.3.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
@@ -202,6 +263,13 @@
 
 ### REQ-AGENT-HISTORY-SOURCE-02
 
+- 状态:`ACTIVE`
+- 版本:`v0.3.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
 - 版本：`v0.3.0`
@@ -228,6 +296,13 @@
 
 ### REQ-AUTO-CONTRAST-RESEARCH-01
 
+- 状态:`ACTIVE`
+- 版本:`v0.3.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
 - 版本：`v0.3.0`
@@ -246,6 +321,13 @@
 - 预期落点：深研报告与隔离颜色纯函数/视觉 fixture；无业务代码默认。
 
 ### REQ-HEADLESS-DETECTION-02
+
+- 状态:`ACTIVE`
+- 版本:`v0.3.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
@@ -267,6 +349,13 @@
 - 预期落点：ridge-tmux/native session、terminal commands、hosts store、Agent Center。
 
 ### REQ-AGENT-COMMUNE-CONTINUITY-01
+
+- 状态:`ACTIVE`
+- 版本:`v0.2.4`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 日期：`2026-07-28`
@@ -302,6 +391,13 @@
   - 对应 Vitest/Svelte 组件测试
 
 ### REQ-REMOTE-SMOOTH-STATE-02
+
+- 状态:`ACTIVE`
+- 版本:`v0.2.5`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 日期：`2026-07-28`
@@ -350,6 +446,13 @@
   - Remote transport/session 既有 SSOT 与对应测试
 
 ### REQ-MOBILE-REMOTE-STATE-01 · Mobile Remote 连续状态、后台 pane 与软键盘视口
+
+- 状态:`ACTIVE`
+- 版本:`v0.2.2`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 日期：`2026-07-28`
@@ -403,6 +506,13 @@
 
 ### REQ-AGENT-HISTORY-01 · Agent 历史会话分组、折叠与一键恢复
 
+- 状态:`ACTIVE`
+- 版本:`v0.2.3`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`APPROVED`
 - 日期：`2026-07-28`
 - 类型：`MODIFY` + `NEW`
@@ -434,6 +544,13 @@
 
 ### REQ-REMOTE-HOST-TREE-01 · 公网同账号 / LAN 直连主机与三层拓扑
 
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`ACTIVE`
 - 版本：`v0.2.0`
 - 类型：`FIX`
@@ -455,6 +572,13 @@
 - 预期落点：`packages/remote/**`、`src-tauri/src/hosts/**`、`src/lib/stores/hosts.ts`、`src/lib/components/hosts/**`、`ridge-cloud/src/ws/**`。
 
 ### REQ-WORKSPACE-SHARE-01 · 跨账号单工作区分享
+
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 版本：`v0.2.0`
@@ -497,6 +621,13 @@
 
 ### REQ-WORKSPACE-SAVED-01 · 已保存工作区可重开、可删除及滚动条统一
 
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`ACTIVE`
 - 版本：`v0.2.0`
 - 类型：`FIX`
@@ -510,6 +641,13 @@
 - 追踪：`src/lib/stores/paneTree.ts`、`src/routes/+page.svelte`、`src-tauri/src/commands/ridge_file.rs`、`src/app.css`。
 
 ### REQ-REMOTE-03 · 桌面浏览器 Remote pane 尺寸与指针命中一致
+
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 版本：`v0.2.0`
@@ -530,6 +668,13 @@
 
 ### REQ-REMOTE-01 · rdg Remote 入口与启停语义
 
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`ACTIVE`
 - 版本：`v0.2.0`
 - 行为：rdg 仪表盘 LAN 地址只显示根地址（如 `https://172.21.130.235:9527`），不附 `/login`；LAN Remote 默认停止，须用户显式启动；TUI 内须有名称明确的公网 Remote 启动/停止入口。
@@ -538,6 +683,13 @@
 - 追踪：`packages/ridge-cli/src/tui/dashboard.rs` → dashboard tests。
 
 ### REQ-REMOTE-02 · rdg LAN 桌面浏览器真正接入
+
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 版本：`v0.2.0`
@@ -548,6 +700,13 @@
 
 ### REQ-CLOUD-01 · 公网 Remote 设备配额不得误停 rdg
 
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`ACTIVE`
 - 版本：`v0.2.0`
 - 行为：host 与 controller 均按数据库实时用户组计算设备配额；配额自动停用与用户手动停用须分因记录；额度恢复时仅自动启用“因配额停用”的设备。
@@ -556,6 +715,13 @@
 - 追踪：`ridge-cloud/src/ws/handler.rs`、`src/db/device_quota.rs`、`src/db/device_repo.rs`、顺序 migration。
 
 ### REQ-MOBILE-01 · Mobile Remote 弹层、图标与按钮
+
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 版本：`v0.2.0`
@@ -566,6 +732,13 @@
 
 ### REQ-AGENT-01 · 全局 Agent Center、pane 状态与最近回复
 
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`ACTIVE`
 - 版本：`v0.2.0`
 - 行为：Agent tab 聚合所有已打开工作区的 agents，不以焦点工作区过滤；原顶部操作移入可滚动内容；自动识别的 agent 进程须同步 pane header 与 roster 状态；最近回复从 Claude/Codex JSONL 会话历史提取并显示。
@@ -575,6 +748,13 @@
 
 ### REQ-AGENT-02 · Agent 启动的无头 Shell 发现与唤起
 
+- 状态:`ACTIVE`
+- 版本:`v0.2.0`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+
 - 状态：`ACTIVE`
 - 版本：`v0.2.0`
 - 行为：经 Ridge tmux shim 由 pane/agent 启动的 native 无头 session 记录创建工作区与 pane；Agent Center 自动列入对应 agent，支持一键召唤到当前工作区；未能归因的普通无头 session 仍可单列。
@@ -583,6 +763,13 @@
 - 追踪：`src-tauri/src/bin/tmux.rs`、`src-tauri/src/commands/terminal.rs`、`packages/ridge-tmux/src/{http.rs,lib.rs}`、`src/lib/stores/hosts.ts`、`AgentCenterPanel.svelte`。
 
 ### REQ-AGENT-COMMUNE-MCP-SUBMIT-03
+
+- 状态:`ACTIVE`
+- 版本:`v0.3.1`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 
 - 状态：`ACTIVE`
 - 日期：`2026-07-29`
@@ -608,10 +795,104 @@
 - 预期落点：`packages/ridge-mcp/src/{registry,server}.rs`、
   `src-tauri/src/teammate/server.rs`。
 
+### REQ-MOBILE-REMOTE-WORKER-AUTHORITY-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-30`
+- 版本：`v0.3.3`
+- 批准证据：用户批准将 Mobile Remote 的 Web Worker、pane 切换与输入链路问题纳入下一迭代并推进。
+- 类型：`MODIFY` + `PERFORMANCE`
+- 原始意图：Remote 渲染移出主线程；pane 切换丝滑，后台 pane 持续消费输出，切回不白屏、不跳帧。
+- 目标行为：支持 `Worker + OffscreenCanvas` 时，单例 render Worker 为唯一可见 painter；主线程 kernel 仅保留输入语义与故障回退。pane 停放仅释放 canvas，kernel 与订阅继续；真实关闭方销毁。
+- 范围：共享 terminal manager、render Worker、host bridge、生命周期与故障回退。
+- 非目标：第二条 WebSocket/DataChannel、第二份 pane cache、重写 Rust renderer。
+- 边界：请求须有界并具超时；Worker 崩溃、超时或 bind 失败后 pending 归零，恢复主线程且不丢当前 pane 内容。
+- 验收：真实 Worker `init → feed/apply → bind → resize → park/unpark → destroy`；仅一个 painter；`A → B → C → A` 保留状态；失败回退后 pending/worker 计数归零。
+- 预期落点：`packages/remote/src/shared/terminal/{manager,renderWorker,workerHostedRenderer,workerRendererBridge,workerRendererSingleton}*`。
+
+
+- 状态:`ACTIVE`
+- 版本:`v0.3.3`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+### REQ-MOBILE-REMOTE-INPUT-FEEDBACK-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-30`
+- 版本：`v0.3.3`
+- 批准证据：用户批准将唤起键盘滚底、输入框置顶、输入高速健壮性及相邻 UI 问题纳入迭代。
+- 类型：`MODIFY` + `FIX`
+- 原始意图：触屏输入、系统 IME、虚拟键盘及弱网反馈须相互独立，输入路径保持低延迟、可恢复。
+- 目标行为：系统 IME 唤起固定执行 `scrollToBottom → cursor/fallback anchor → focus`；输入锚点仅取 cursor/fallback，禁用 pointer 坐标；虚拟键盘显示与系统 IME 聚焦分离；scrollback 错误属 pane 本地并可重试。
+- 范围：Mobile Remote 终端输入、键盘偏移、scrollback retry、脏/重同步状态反馈。
+- 非目标：改变 PTY rows/cols、凭空新增 freshness 状态源、绝对延迟/FPS 承诺。
+- 边界：stdin/control 与 active raw 不得被 scrollback 或后台输出阻塞；重试按钮事件不得穿透终端；挂起与取消后队列归零。
+- 验收：IME 顺序测试、键盘偏移测试、弱网优先级/取消测试、pane-local retry 测试及 Dev CDP 实测通过。
+- 预期落点：`src/remote/lib/TerminalCanvas.svelte`、共享 terminal/input helpers 与相关测试。
+
+
+- 状态:`ACTIVE`
+- 版本:`v0.3.3`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+### REQ-AGENT-COMMUNE-LAUNCH-PROFILE-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-30`
+- 版本：`v0.3.4`
+- 批准证据：用户确认 MCP 需求须补充跨工作区创建及发送消息给 Agent，并批准继续。
+- 类型：`ADD` + `FIX`
+- 原始意图：Ridge Agents Commune MCP 能安全创建指定类型 Agent，跨工作区定位并真正提交消息；长任务可把 checkpoint 交给新 pane 后停止旧 Worker。
+- 目标行为：
+  - 提供可发现、受控的 `launch_profile` 与 capability；model/reasoning effort 仅能取 profile 明示允许值。
+  - `initial_cmd` 与结构化 profile 互斥；命令使用安全 argv，不经 shell 拼接提示词。
+  - 枚举 workspace/Agent，并以 `(workspaceId,paneId/agentId)` 复合身份创建、定位与发送。
+  - 仅省略 `workspaceId` 时保留当前工作区兼容语义；显式身份不匹配、伪造或歧义须失败关闭。
+  - profile 支持时可传递 checkpoint；新 pane 成功后再停止精确指定的旧 Worker。
+- 范围：`ridge-mcp` 工具注册/协议、桌面 `McpHost`、workspace/pane 解析与 launch argv。
+- 非目标：猜测宿主未声明的模型清单；用 shell/剪贴板模拟 Agent 提交；跨工作区隐式搜索同名 pane。
+- 验收：capability gating；跨工作区 create/send 仅到目标复合身份；raw string/number 目标规范化；checkpoint 替换先新后旧；CR 提交链路与拒绝路径均有确定性测。
+- 预期落点：`packages/ridge-mcp/src/{registry,server}.rs`、`src-tauri/src/teammate/mcp.rs`。
+
+
+- 状态:`ACTIVE`
+- 版本:`v0.3.4`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
+### REQ-RIDGE-MCP-INSTALLER-01
+
+- 状态：`ACTIVE`
+- 日期：`2026-07-30`
+- 版本：`v0.3.4`
+- 批准证据：用户批准本迭代需求，并授权 Dev 验收、提交推送与全量发布。
+- 类型：`ADD`
+- 原始意图：用户安装 Ridge 后即可稳定注册 `ridge-mcp`，无需另装仓库工具或保存易失 endpoint/token。
+- 目标行为：所有桌面安装包捆绑与版本一致的 `ridge-mcp` companion；路径、执行权限、签名、升级和卸载跟随 Ridge；提供 `--print-config` 输出不含 endpoint/token 的 stdio 配置；运行时发现/轮换 endpoint 后重试。
+- 范围：bridge CLI、Tauri external binary、构建脚本、release matrix 与 MCP 集成文档。
+- 非目标：把短期端口/token 写入配置；以空 tag 或无资产 Release 代替安装包。
+- 边界：构建、检查外部进程均须具墙钟超时；目标 triple 与包版本须匹配；缺 companion 时打包失败。
+- 验收：bridge 测试；sidecar `--check --require-built`；clean-machine 包体检查；endpoint rotation；各平台 release job 校验 companion。
+- 预期落点：`packages/ridge-mcp-bridge/**`、`scripts/build-ridge-mcp-sidecar.mjs`、`src-tauri/tauri.conf.json`、`.github/workflows/release.yml`。
+
+
+- 状态:`ACTIVE`
+- 版本:`v0.3.4`
+- 行为:见本条既有原始意图与目标行为。
+- 边界:见本条既有范围、非目标及不可动边界。
+- 验收:见本条既有确定性验收与用户可观察结果。
+- 追踪:见本条既有预期落点或追踪。
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
 | --- | --- | --- | --- | --- | --- |
+| v0.3.4 | 2026-07-30 | `<DIRECT-APPROVAL>` | Commune typed launch profile、跨工作区 Agent create/send、checkpoint 替换及 installer companion | 新增 `REQ-AGENT-COMMUNE-LAUNCH-PROFILE-01`、`REQ-RIDGE-MCP-INSTALLER-01` | 用户确认补充跨工作区范围并批准继续 |
+| v0.3.3 | 2026-07-30 | `<DIRECT-APPROVAL>` | Mobile render Worker authority、切换连续性、IME/虚拟键盘与 pane-local 恢复 | 新增 `REQ-MOBILE-REMOTE-WORKER-AUTHORITY-01`、`REQ-MOBILE-REMOTE-INPUT-FEEDBACK-01` | 用户批准 |
 | v0.3.1 | 2026-07-29 | `<DIRECT-FIX>` | Commune MCP send 默认真提交；提交 Enter 统一为 CR | 新增 `REQ-AGENT-COMMUNE-MCP-SUBMIT-03`；取代 iteration 65 的默认草稿语义 | 用户明确“批准”，要求载入本迭代并修复 |
 | v0.3.0 | 2026-07-29 | 本轮 12 项 `PENDING-REQ-*` | 终端、Explorer、Remote、Agent 与对比度深研转 Active；无头项收紧为仅诊断，删除须另批 | 新增 12 项 `REQ-*`；既有 Active 差距继续有效 | 用户授权“审核无问题即全部通过”；Codex 审计通过 |
 | v0.2.0 | 2026-07-27 | `<INITIAL>` | 建立 Remote/Agent 六项需求基线 | - | 用户本线程六项明确落地指令 |
