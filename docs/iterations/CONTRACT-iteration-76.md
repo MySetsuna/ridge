@@ -2,7 +2,7 @@
 
 - Date: 2026-07-30
 - Status: in progress
-- Implementation baseline: `origin/main@f62133c`, local implementation `c290143`
+- Implementation baseline: `origin/main@f62133c`, local implementation `5723828`
 - Requirements: `REQ-20260730-01`, `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`
 - Delivery rule: one concern per commit; no push, release, or generated Remote artifact in this iteration unless separately authorized.
 
@@ -31,9 +31,9 @@
 | RPC request containment | Per-request timeout/Abort/reconnect cleanup existed; pending cap, timeout cancel, metrics absent | Partly complete | First slice landed in `5eece08` |
 | Mobile Cloud input/resize | Resize was per event and input fire-and-forget | Core containment complete | Resize `45355db`; sequenced input `9904b53` |
 | Non-Git polling | Empty discovery, branch and stash did not share repository truth | Complete frontend containment | First slice `fc6a73b`; shared negative cache `a01f7db` |
-| Host attach | Topology/list/create, single-flight, abort and last-good existed; progress and initial measured resize were absent | Feedback/resize complete; slow-Host and drag E2E remain | `7b7daee`, `c290143` |
+| Host attach | Topology/list/create, single-flight, abort and last-good existed; progress, incremental settlement and unified drag were absent | Core implementation complete; physical E2E remains | `7b7daee`, `c290143`, `0d273c3` |
 | Terminal clear/memory | Scrollback cap and teardown existed; right-click only fed ANSI and did not release all retained blocks | True-clear core complete; WebView2 long-run proof remains | `c1ec8a2` |
-| Desktop multi-window | Tauri release path remains single-instance and creates only `main`; no workspace owner registry | Conflicts with approved behavior | New process/window ownership protocol after lifecycle guards |
+| Desktop multi-window | Tauri used one process and one `main` WebView; no workspace owner registry | Ownership core complete; implicit global-active commands remain | `5723828` |
 | Mobile `runtime.lastError` | No project `chrome.runtime`, `chrome.tabs`, `browser.runtime`, `sendResponse`, or `runtime.lastError`; PWA worker only uses `Client.postMessage` | Project code excluded; environment attribution pending | Zero business diff; mobile clean-profile/extension A/B |
 
 ## Execution plan
@@ -109,7 +109,7 @@
 - Implementation: per-Host settled refresh with last-good data, abort/generation guard, explicit progress DTO; converge drag, button and programmatic attach on one binding path; read actual pane rect and send immediate Resize.
 - Acceptance: fast Host appears while another hangs; errors remain actionable; existing/create workspaces refresh; drag attaches; first frame uses measured size; Resize button resyncs.
 - Regression: LAN/public/offline/slow Host, reconnect, duplicate attach, pane destroy during attach.
-- Status/evidence: modal-close/progress phases complete in `7b7daee`; first measured pane resize and Resize-button convergence complete in `c290143`; binding tests 2/2. Independent slow-Host settlement and physical drag/list/create E2E remain.
+- Status/evidence: modal-close/progress phases complete in `7b7daee`; first measured pane resize and Resize-button convergence complete in `c290143`; per-Host settled publication, generation/Abort/last-good and unified native/Remote drag path complete in `0d273c3`. Host/drag focused tests are included in the 69-test integration gate. Physical dual-Host drag/list/create/resize E2E remains.
 
 ### 76.9 Desktop multi-window and workspace ownership — P2
 
@@ -118,6 +118,7 @@
 - Implementation: app-level `workspaceId→windowLabel` registry, atomic claim/release, focus existing owner on conflict; new windows may open only unowned workspaces.
 - Acceptance: two windows coexist; opening an owned workspace focuses/restores old window; crash/close releases ownership; race has exactly one winner.
 - Regression: tray/deep-root close, restore set, local workspace behavior, remote reconnect, minimized/background owner.
+- Status/evidence: ownership core complete in `5723828`: ordinary second launch creates `ridge-window-N` in the first process; auth deep-link still focuses `main`; atomic `workspaceId→windowLabel` claim rejects races, restores/focuses the owner, and emits targeted `ridge://focus-workspace`; close/destroy/delete release claims; a new window selects or creates an unowned workspace. Rust focused tests 3/3, `paneTree` 60/60. Remaining correctness slice: several legacy backend commands still infer process-global `active_workspace`; each must become explicit-workspace or window-scoped before simultaneous cross-window mutation is called fully isolated.
 
 ### 76.10 Agent's Commune visibility — P2
 
@@ -153,6 +154,8 @@
 - SCM focused suite: 26/26.
 - Repeated-error logger: 3/3.
 - Foreign-pane binding/resize: 2/2.
+- Host drag/settlement plus multi-window frontend integration: 69/69.
+- Multi-window Rust ownership/release/auth-launch tests: 3/3.
 - Full `ridge-term`: 395 tests plus 33 protocol smoke; focused Tauri true-clear parser/Arc-release tests passed.
 - `pnpm check`: 0 errors, 0 warnings.
 
@@ -161,6 +164,6 @@
 - Refresh NotebookLM authentication, then compare the live newest two conversations with guidance 64/65; any new product behavior enters Pending approval.
 - Affected phone: capture first `runtime.lastError` source and clean-profile/extension A/B.
 - Public Remote and WebView2 long-run A/B cannot be claimed from unit fixtures.
-- Rebuild and verify the generated Remote WASM artifact for protocol v3; the local development build exceeded 100 seconds and was terminated without leaving a live process.
-- Desktop multi-window/workspace-owner protocol remains the next unimplemented code slice.
+- Rebuild and verify the generated Remote WASM artifact for protocol v3. The checked ignored `packages/ridge-term/pkg` is dated 2026-07-27 and its encoded frame starts with version `2`; source is version `3`. Two `rustup target add wasm32-unknown-unknown` attempts timed out without output; exact processes were terminated and the target remains uninstalled.
+- Partition the remaining implicit process-global `active_workspace` command paths by explicit workspace/window before claiming full multi-window mutation isolation.
 - No push or release performed.
