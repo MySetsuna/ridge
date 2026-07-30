@@ -200,12 +200,11 @@ jobs:
           $nsis = Get-ChildItem target/release/bundle/nsis/*.exe -ErrorAction Stop | Select-Object -First 1
           $listing = & 7z l $nsis.FullName
           if ($LASTEXITCODE -ne 0 -or -not ($listing -match 'ridge-mcp\.exe')) { throw "ridge-mcp.exe missing from $($nsis.Name)" }
-          # MSI payload lives in an embedded CAB; 7z only lists the container. Use Windows Installer's
-          # administrative extraction so this asserts the installed tree rather than an archive heuristic.
+          # MSI payload lives in an embedded CAB; WiX names the external binary Bin_ridge_mcp.exe.
           $extract = Join-Path $env:RUNNER_TEMP 'ridge-msi-extract'
-          & msiexec.exe /a $msi.FullName /qn "TARGETDIR=$extract"
-          if ($LASTEXITCODE -ne 0 -or -not (Get-ChildItem $extract -Recurse -Filter ridge-mcp.exe -ErrorAction SilentlyContinue)) {
-            throw "ridge-mcp.exe missing from installed MSI payload $($msi.Name)"
+          & 7z x $msi.FullName "-o$extract" -y | Out-Null
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $extract 'Bin_ridge_mcp.exe'))) {
+            throw "ridge-mcp.exe missing from MSI payload $($msi.Name)"
           }
 
       # 发布产物附带 rdg CLI：tauri.conf 的 beforeBundleCommand 已 `pnpm build:cli` 把
