@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-30（iteration 76 已落地两波稳定性改造；多窗口所有权核心已成，隐式 active 分区与公网/真机/WebView2 长测未完成）
+状态日期：2026-07-30（iteration 76 代码实现已收口；NLM live、手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -15,12 +15,12 @@
 
 ## 当前迭代目标
 
-- `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 推进 Remote/桌面稳定性；RPC/输入/Resize、SCM、Pane 生命周期、日志、真清空、Host、Commune、多窗口所有权核心已落地；下项为隐式 `active_workspace` 分窗与外部运行证据。
+- `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 推进 Remote/桌面稳定性；RPC/输入/Resize、SCM、Pane 生命周期、日志、真清空、Host、Commune、多窗口所有权及窗级 active 核心已落地；仅外部运行证据待补。
 - `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`：项目源码无 Chrome Extension Messaging；保持业务零 diff，待受影响手机 clean-profile/扩展 A/B 终局归因。
 
 ## 已验证代码事实
 
-- `origin/main@f62133c` 已合入；本地实现基线 `5723828`，未推送。
+- `origin/main@f62133c` 已合入；本地实现基线 `a9023f3`，未推送。
 - `RpcClient` 现有 256 在途硬上限、超时 `$/cancel` 与 queue/timeout diagnostics（`5eece08`）。
 - 手机 Cloud Resize 现为每 Pane 一在途加一 latest pending；重复尺寸去重，close/prune/disconnect 清 lane（`45355db`）。
 - Cloud 输入现为每 Pane 一在途、4 ms 聚合、序列/摘要去重、指数退避及阈值暂停（`9904b53`）。
@@ -32,19 +32,22 @@
 - Host topology 逐 Host settled 发布，慢源不再阻塞快源；代际/Abort/last-good 与拖拽统一入口已落（`0d273c3`）。
 - Agent's Commune 入口不再受隐式 setting 隐藏（`2b53650`）。
 - 普通二次启动现创建独立 WebView；原子工作区认领、冲突聚焦、关闭/销毁/删除释放已落（`5723828`）。
-- Chrome Messaging 全源码审计无命中；`service-worker.ts` 的 PWA `Client.postMessage` 非 Extension Messaging。
+- 每个桌面窗口现有独立 selected-workspace SSOT；native active/layout/ratio 按窗口解析，Pane/Terminal 关键变更按唯一 pane id 定位，Remote/CLI 保留全局语义（`a9023f3`）。
+- 1,000 RPC/input/resize burst、100 次非 Git/共享 repo、126 次重复日志均已有量化回归钉（`3e967a1`）。
+- owned Node localStorage 与 Vite chunk 配置告警已修（`74cb80d`）。
+- 手机 Remote 项目源码及构建输入无 Chrome Extension Messaging；`service-worker.ts` 的 PWA `Client.postMessage` 非 Extension Messaging。项目归属已排除，环境注入器/第三方扩展仍待真机隔离。
 
 ## 相关模块与 symbol
 
 - RPC/Resize:`RpcClient.request/settle/diagnostics`、`CloudRemoteConnection._invokePane/_resize/_drainResizeLane/sendStdin`。
 - SCM:`SourceControl.discoverRepos/refreshStatus`、shared non-Git cache、`get_scm_status(slot)`。
 - Clear/Host:`GridDelta::ScrollbackClear`、`clear_pane_terminal`、`hostConnectProgress`、`claimPaneSize`。
-- 待处理:隐式 `active_workspace` 命令按 window/workspace 分区、Host 拖拽真机 E2E。
+- 待处理:仅外部证据——NLM live auth、手机 clean-profile/禁注入器、公网/WebView2 长跑、双窗口桌面 E2E、双 Host 接入 E2E。
 
 ## 最近完成与当前 diff
 
-- 最近完成:`0d273c3` 慢 Host/统一接入；`5723828` 多窗口所有权核心；首波提交见 iteration 合同。
-- 当前 diff:`iteration 76 合同、状态与手机审计；.iteration 和既有本地生成目录保持未跟踪。`
+- 最近完成:`74cb80d` owned warning 清理；`3e967a1` 稳定性量化回归；`a9023f3` 窗级 active 隔离。
+- 当前 diff:仅 iteration 76 合同与本状态文档收尾；`.iteration` 和既有本地生成目录保持未跟踪。
 
 ## 验证状态
 
@@ -52,20 +55,22 @@
 - 三个只读 worker 结果经 `agent_dispatch.py validate-batch`：`valid=true`。
 - 聚焦验证：输入/Remote 105/105；生命周期 54/54；SCM 26/26；日志 3/3；foreign binding 2/2；`pnpm check` 0 errors / 0 warnings。
 - 第二波集成：Host/drag/paneTree 69/69；Rust ownership/release/auth-launch 3/3。
+- 本轮量化稳定性四文件套件 70/70：RPC 1,000 → 256/744；非 Git 100 → 1；共享 repo 100 pane → 1；重复日志 126 → 2 条；输入 1,000 → 1 RPC；失败 5 次暂停 30 s；Resize 1,000 → 2 RPC。
+- 窗级 active：新增 Rust selection/race 2/2；`paneTree` 60/60；`cargo check --lib` 完成，仅 38 条既存 warning；`pnpm check` 0 errors / 0 warnings。
 - `ridge-term` 全量 395 + protocol smoke 33；Tauri 输入序列、clear parser 与 Arc-release 聚焦测试均绿。
 - `ridge-term` release WASM 已重建并实例化验证 protocol v3；桌面/手机 Remote bundle exit 0；consumer 46/46。
 - 公网、手机真机、WebView2 长时性能 A/B 尚未运行；不得宣称总体目标完成。
 
 ## 当前失败信号与风险
 
-- 失败信号:`NotebookLM authentication expired`；手机 `runtime.lastError` 尚无首条 warning script URL。
-- 风险:多窗口虽已分配所有权，旧命令仍可能读取进程全局 `active_workspace`；Host 拖拽、公网与 WebView2 内存仍缺运行同构证据；Remote build 尚有既存 chunk/dynamic-import 警告。
+- 失败信号:`NotebookLM authentication expired`；手机 `runtime.lastError` 尚无首条 warning script URL/Frame/注入器 owner。
+- 风险:自动测试不替代双窗口桌面、双 Host、手机、公网 Remote 与 WebView2 长跑；Remote build 尚有既存 dynamic-import 警告。
 
 ## 架构边界
 
 - 目标/非目标:`先完成统一 RPC/PTY 生命周期和观测，再跨窗口/Host；不发布、不推送、不删用户数据、不作无关重构。`
 - 锁定决策:`窗口可多开；Remote 工作区跨窗口全局单例。输入不丢、不乱、不盲重放。NotebookLM 不裁决代码事实。`
-- 基线依据:`main@5723828`；两项 Active REQ；guidance 64/65；三个 worker 审计结果。
+- 基线依据:`main@a9023f3`；两项 Active REQ；guidance 64/65；三个 worker 审计结果。
 - 模块与落点:`packages/remote transport`、`cloudRemote`、`SourceControl`、terminal manager、Hosts、Tauri window ownership、Agent Center。
 - 关键接口/直接路径:`write_to_pty` 序列确认、`resize_pane` latest-win、SCM shared detection、Pane destroy cancellation。
 
@@ -73,8 +78,8 @@
 
 | Active REQ | 状态 | 代码证据 | 测试/质量证据 |
 | --- | --- | --- | --- |
-| `REQ-20260730-01` | in progress | `5eece08` 至 `5723828`；`CONTRACT-iteration-76.md` | TS/Rust 聚焦与全量闸绿；运行 A/B 待补 |
-| `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01` | code excluded / environment proof pending | 全源码无 Chrome Messaging；`2026-07-30-mobile-runtime-lasterror-audit.md` | worker result valid；手机 A/B 待补 |
+| `REQ-20260730-01` | implementation complete / external proof pending | `5eece08` 至 `a9023f3`；`CONTRACT-iteration-76.md` | TS/Rust/build 闸绿；公网、长跑、双窗、双 Host 待补 |
+| `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01` | project source excluded / environment proof pending | 全源码与构建输入无 Chrome Messaging；`2026-07-30-mobile-runtime-lasterror-audit.md` | worker valid；手机 clean-profile/禁注入器 A/B 待补 |
 
 ## Known failed approaches
 
@@ -82,13 +87,13 @@
 
 ## 下一项已批准工作
 
-- 将旧式隐式 `active_workspace` 命令改为显式 workspace/window 作用域；并行补 Host/手机/公网/WebView2 外部证据。
+- 恢复 NLM live auth；执行手机 clean-profile/禁注入器归因、公网 Remote/WebView2 长跑、双窗口桌面 E2E 与双 Host 接入 E2E。未获这些外部证据前不宣称总体运行验收完成。
 
 ## 本轮 delta
 
-- 变更:`RpcClient`、Cloud 输入/Resize、SCM、Pane 生命周期、错误聚合、终端真清空、Host 全链、Commune 可见性、多窗口所有权。
-- 直接影响:`RPC 有界且超时取消；输入保序退避；Resize 合并；非 Git 停轮询；销毁 Pane 不再收请求；重复 Console 错误聚合；clear 释放 retained blocks。`
-- 验证:`requirements/notebook/dispatch 闸绿；第二波集成 69/69；多窗口 Rust 3/3；ridge-term 全量与 Svelte check 绿。`
+- 变更:`RpcClient`、Cloud 输入/Resize、SCM、Pane 生命周期、错误聚合、终端真清空、Host 全链、Commune、多窗口所有权与窗级 active；量化 burst 回归与 owned warning 清理。
+- 直接影响:`RPC 有界且超时取消；输入保序退避；Resize 合并；非 Git 停轮询；销毁 Pane 不再收请求；重复 Console 错误聚合；clear 释放 retained blocks；双窗关键 Pane/Terminal 变更不串 workspace。`
+- 验证:`requirements/notebook/dispatch 闸绿；第二波 69/69；量化稳定性 70/70；paneTree 60/60；多窗口 Rust 3/3 + 新增 2/2；ridge-term 全量与 Svelte check 绿。`
 - 质量:`Sonar scanner 仍缺；WASM/Remote 正式构建绿；公网/内存 A/B 待补。`
 - Agent 编排:`native 三 worker，只读、全结果 valid；Ridge profile capability 未暴露，未猜测 pane 启动参数。`
 - Worker 回收:`3/3 completed，无越界写。`

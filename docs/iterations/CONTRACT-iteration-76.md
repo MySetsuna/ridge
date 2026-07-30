@@ -1,8 +1,8 @@
 # Iteration 76 Contract — Remote stability, bounded RPC, and desktop ownership
 
 - Date: 2026-07-30
-- Status: in progress
-- Implementation baseline: `origin/main@f62133c`, local implementation `5723828`
+- Status: implementation complete; external evidence pending
+- Implementation baseline: `origin/main@f62133c`, local implementation `a9023f3`
 - Requirements: `REQ-20260730-01`, `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`
 - Delivery rule: one concern per commit; no push, release, or generated Remote artifact in this iteration unless separately authorized.
 
@@ -33,7 +33,7 @@
 | Non-Git polling | Empty discovery, branch and stash did not share repository truth | Complete frontend containment | First slice `fc6a73b`; shared negative cache `a01f7db` |
 | Host attach | Topology/list/create, single-flight, abort and last-good existed; progress, incremental settlement and unified drag were absent | Core implementation complete; physical E2E remains | `7b7daee`, `c290143`, `0d273c3` |
 | Terminal clear/memory | Scrollback cap and teardown existed; right-click only fed ANSI and did not release all retained blocks | True-clear core complete; WebView2 long-run proof remains | `c1ec8a2` |
-| Desktop multi-window | Tauri used one process and one `main` WebView; no workspace owner registry | Ownership core complete; implicit global-active commands remain | `5723828` |
+| Desktop multi-window | Tauri used one process and one `main` WebView; no workspace owner registry | Ownership and window-scoped mutation core complete; physical E2E remains | `5723828`, `a9023f3` |
 | Mobile `runtime.lastError` | No project `chrome.runtime`, `chrome.tabs`, `browser.runtime`, `sendResponse`, or `runtime.lastError`; PWA worker only uses `Client.postMessage` | Project code excluded; environment attribution pending | Zero business diff; mobile clean-profile/extension A/B |
 
 ## Execution plan
@@ -118,7 +118,7 @@
 - Implementation: app-level `workspaceId→windowLabel` registry, atomic claim/release, focus existing owner on conflict; new windows may open only unowned workspaces.
 - Acceptance: two windows coexist; opening an owned workspace focuses/restores old window; crash/close releases ownership; race has exactly one winner.
 - Regression: tray/deep-root close, restore set, local workspace behavior, remote reconnect, minimized/background owner.
-- Status/evidence: ownership core complete in `5723828`: ordinary second launch creates `ridge-window-N` in the first process; auth deep-link still focuses `main`; atomic `workspaceId→windowLabel` claim rejects races, restores/focuses the owner, and emits targeted `ridge://focus-workspace`; close/destroy/delete release claims; a new window selects or creates an unowned workspace. Rust focused tests 3/3, `paneTree` 60/60. Remaining correctness slice: several legacy backend commands still infer process-global `active_workspace`; each must become explicit-workspace or window-scoped before simultaneous cross-window mutation is called fully isolated.
+- Status/evidence: complete in `5723828` + `a9023f3`: ordinary second launch creates `ridge-window-N`; auth deep-link still focuses `main`; atomic claim rejects races, focuses the owner and releases on close/destroy/delete. Each desktop window now has its own selected-workspace SSOT; native active/layout/ratio commands resolve by window, while split/close/toggle/create/change-shell resolve the globally unique pane id instead of following another window's process-global active value. Remote/CLI retain the global command contract. Ownership/auth-launch tests 3/3, two new Rust selection/race tests passed, `paneTree` 60/60, `cargo check --lib` completed with only 38 pre-existing warnings. Two-window desktop E2E remains external.
 
 ### 76.10 Agent's Commune visibility — P2
 
@@ -131,9 +131,9 @@
 
 ### 76.11 Mobile `runtime.lastError` attribution — P2, zero-code unless proven
 
-- Current: source audit found no Chrome Extension Messaging API.
+- Current: source and built-input audit found no project `chrome.runtime.onMessage`, `chrome.tabs.sendMessage`, `runtime.sendMessage`, `sendResponse`, Port messaging, or `runtime.lastError`; the PWA worker uses standard `Client.postMessage`, not Extension Messaging.
 - Target: identify the first warning's script URL/frame/extension owner and stop sustained repetition at its owner.
-- Implementation: reproduce on the affected phone with clean browser profile/incognito where supported, then enable extensions/injected tools one at a time; record first warning source and count.
+- Implementation: reproduce on the affected phone with a clean profile/incognito where supported, then disable injected browsers/tools and re-enable them one at a time; record the first warning's script URL/frame/extension owner and count.
 - Acceptance: clean profile has zero sustained warnings; enabling the offending extension reproduces it, or a project URL proves ownership and opens a new approved code slice.
 - Regression: PWA service worker storage message still works; no Console filtering/suppression is added.
 
@@ -143,6 +143,7 @@
 - Target: remove owned warnings after core stability; quantify improvement without hardware-independent promises.
 - Acceptance: same scenario before/after records RPC by method/key, timeout/queue peaks, p50/p95 input latency, CPU, network, WebView2 memory and correctness; repeated Console errors fall at least 90%, invalid Git work is near zero.
 - Regression: desktop, LAN, public cloud; normal/latency/loss/disconnect/reconnect.
+- Status/evidence: owned build warnings removed in `74cb80d`: browser storage guards now use `window.localStorage`, and `chunkSizeWarningLimit` is placed at Vite's supported `build` level. This does not prove the phone warning's external owner.
 
 ## Deterministic gates run this round
 
@@ -156,6 +157,9 @@
 - Foreign-pane binding/resize: 2/2.
 - Host drag/settlement plus multi-window frontend integration: 69/69.
 - Multi-window Rust ownership/release/auth-launch tests: 3/3.
+- Multi-window window-selection and simultaneous-claim Rust tests: 2/2; `paneTree` 60/60; `cargo check --lib` completed with 38 pre-existing warnings.
+- Quantified stability gate (`3e967a1`), rerun as four files: 70/70. Assertions include RPC burst 1,000 → 256 sent / 744 rejected; non-Git 100 invalidations → one SCM call; 100 panes sharing one repo → one status call; 126 repeats → first log plus one summary; 1,000 input events → one ordered RPC; five failures → 30 s pause; 1,000 resize observations → one in-flight plus final latest RPC.
+- Owned warning cleanup (`74cb80d`): `pnpm check` remains 0 errors / 0 warnings.
 - Full `ridge-term`: 395 tests plus 33 protocol smoke; focused Tauri true-clear parser/Arc-release tests passed.
 - Release `ridge-term` WASM build: exit `0` in 82.7 s; instantiated cursor delta prefix `[3,7,1,1,3,4,1,1]`.
 - Desktop + mobile `pnpm build:remote`: exit `0` in 185.5 s; terminal bridge/worker consumers 46/46.
@@ -164,7 +168,8 @@
 ## Remaining external evidence
 
 - Refresh NotebookLM authentication, then compare the live newest two conversations with guidance 64/65; any new product behavior enters Pending approval.
-- Affected phone: capture first `runtime.lastError` source and clean-profile/extension A/B.
+- Affected phone: clean-profile/incognito plus injected-browser/tool disable/enable A/B; capture the first `runtime.lastError` source. Project source ownership is excluded, but environmental root cause is not yet proven.
 - Public Remote and WebView2 long-run A/B cannot be claimed from unit fixtures.
-- Partition the remaining implicit process-global `active_workspace` command paths by explicit workspace/window before claiming full multi-window mutation isolation.
+- Two-window physical/desktop E2E remains required despite deterministic ownership and selection tests.
+- Dual-Host list/create/drag/attach/initial-resize/manual-resize E2E remains required.
 - No push or release performed.
