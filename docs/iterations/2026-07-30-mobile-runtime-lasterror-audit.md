@@ -4,6 +4,9 @@
 - Scope: the sustained warning observed on the phone Remote page:
   `Unchecked runtime.lastError: A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received`
 - Status: project source excluded; exact browser/injected owner awaits phone evidence.
+- NLM auth: live `https://notebook.google.com/` session verified through proxy
+  `http://127.0.0.1:51081`; this only enables strategy lookup and does not alter
+  the attribution result.
 
 ## Source result
 
@@ -15,6 +18,11 @@ Repository-wide source and call-path inspection found no use of:
 - `browser.runtime`
 - `sendResponse`
 - an extension listener that returns `true`
+
+The exact source scan also found no matching API in current mobile build inputs
+(`src`, `packages`, `src-tauri`, Vite/Svelte config). Generic `onMessage` and
+`sendMessage` symbols seen in ignored/generated bundles belong to ordinary
+worker/editor libraries; they are not Chrome Extension Messaging registrations.
 
 The owned mobile/PWA path is:
 

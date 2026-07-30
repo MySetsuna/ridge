@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-30（iteration 76 代码实现已收口；NLM live、手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-07-30（iteration 77 三日走查进行中；NLM live 已恢复，手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -15,7 +15,7 @@
 
 ## 当前迭代目标
 
-- `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 推进 Remote/桌面稳定性；RPC/输入/Resize、SCM、Pane 生命周期、日志、真清空、Host、Commune、多窗口所有权及窗级 active 核心已落地；仅外部运行证据待补。
+- `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 与 `CONTRACT-iteration-77.md` 推进 Remote/桌面稳定性；RPC/输入/Resize、SCM、Pane 生命周期、日志、真清空、Host、Commune、多窗口所有权及窗级 active 核心已落地；仅外部运行证据待补。
 - `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`：项目源码无 Chrome Extension Messaging；保持业务零 diff，待受影响手机 clean-profile/扩展 A/B 终局归因。
 
 ## 已验证代码事实
@@ -42,16 +42,16 @@
 - RPC/Resize:`RpcClient.request/settle/diagnostics`、`CloudRemoteConnection._invokePane/_resize/_drainResizeLane/sendStdin`。
 - SCM:`SourceControl.discoverRepos/refreshStatus`、shared non-Git cache、`get_scm_status(slot)`。
 - Clear/Host:`GridDelta::ScrollbackClear`、`clear_pane_terminal`、`hostConnectProgress`、`claimPaneSize`。
-- 待处理:仅外部证据——NLM live auth、手机 clean-profile/禁注入器、公网/WebView2 长跑、双窗口桌面 E2E、双 Host 接入 E2E。
+- 待处理:外部证据——手机 clean-profile/禁注入器、公网 Remote/双 Host E2E、WebView2 长跑、双窗口桌面 E2E、Agent/Headless 真链、Explorer 跨卷权限及原生 PowerShell/PTY 录制；Grok 仍待真实原生历史格式。
 
 ## 最近完成与当前 diff
 
 - 最近完成:`74cb80d` owned warning 清理；`3e967a1` 稳定性量化回归；`a9023f3` 窗级 active 隔离。
-- 当前 diff:仅 iteration 76 合同与本状态文档收尾；`.iteration` 和既有本地生成目录保持未跟踪。
+- 当前 diff:iteration 77 走查合同与本状态文档；`.iteration` 和既有本地生成目录保持未跟踪。
 
 ## 验证状态
 
-- 需求闸、preflight、Notebook 冷循环准入：退出码 `0`；NLM 实际 query 因 Google auth expired 失败。
+- 需求闸、preflight、Notebook 冷循环准入：退出码 `0`；NLM live `https://notebook.google.com/` 代理验证成功，`nlm login --check` 与 `nlm notebook list` 均 exit `0`，notebook 数量 `20`；最新查询仅作策略建议。
 - 三个只读 worker 结果经 `agent_dispatch.py validate-batch`：`valid=true`。
 - 聚焦验证：输入/Remote 105/105；生命周期 54/54；SCM 26/26；日志 3/3；foreign binding 2/2；`pnpm check` 0 errors / 0 warnings。
 - 第二波集成：Host/drag/paneTree 69/69；Rust ownership/release/auth-launch 3/3。
@@ -59,18 +59,19 @@
 - 窗级 active：新增 Rust selection/race 2/2；`paneTree` 60/60；`cargo check --lib` 完成，仅 38 条既存 warning；`pnpm check` 0 errors / 0 warnings。
 - `ridge-term` 全量 395 + protocol smoke 33；Tauri 输入序列、clear parser 与 Arc-release 聚焦测试均绿。
 - `ridge-term` release WASM 已重建并实例化验证 protocol v3；桌面/手机 Remote bundle exit 0；consumer 46/46。
-- 公网、手机真机、WebView2 长时性能 A/B 尚未运行；不得宣称总体目标完成。
+- iteration 77 复核：关键 Remote/SCM/Host/Worker/RPC 测试 12 files / 253 tests 通过；`pnpm build:remote` exit `0`（140.4 s）；构建仅保留既有动态导入、chunk-size 与空 PWA glob 非阻塞警告。
+- 公网、手机真机、WebView2 长时性能 A/B、双窗口与双 Host 物理 E2E 尚未运行；不得宣称总体目标完成。
 
 ## 当前失败信号与风险
 
-- 失败信号:`NotebookLM authentication expired`；手机 `runtime.lastError` 尚无首条 warning script URL/Frame/注入器 owner。
+- 失败信号:手机 `runtime.lastError` 尚无首条 warning script URL/Frame/注入器 owner；公网/WebView2/物理设备证据尚未采集。
 - 风险:自动测试不替代双窗口桌面、双 Host、手机、公网 Remote 与 WebView2 长跑；Remote build 尚有既存 dynamic-import 警告。
 
 ## 架构边界
 
 - 目标/非目标:`先完成统一 RPC/PTY 生命周期和观测，再跨窗口/Host；不发布、不推送、不删用户数据、不作无关重构。`
 - 锁定决策:`窗口可多开；Remote 工作区跨窗口全局单例。输入不丢、不乱、不盲重放。NotebookLM 不裁决代码事实。`
-- 基线依据:`main@a9023f3`；两项 Active REQ；guidance 64/65；三个 worker 审计结果。
+- 基线依据:`main@a81674a`；两项稳定性 REQ；guidance 64/65 与三日历史；三个 worker 审计结果；`CONTRACT-iteration-77.md`。
 - 模块与落点:`packages/remote transport`、`cloudRemote`、`SourceControl`、terminal manager、Hosts、Tauri window ownership、Agent Center。
 - 关键接口/直接路径:`write_to_pty` 序列确认、`resize_pane` latest-win、SCM shared detection、Pane destroy cancellation。
 
@@ -87,14 +88,14 @@
 
 ## 下一项已批准工作
 
-- 恢复 NLM live auth；执行手机 clean-profile/禁注入器归因、公网 Remote/WebView2 长跑、双窗口桌面 E2E 与双 Host 接入 E2E。未获这些外部证据前不宣称总体运行验收完成。
+- 执行 iteration 77 清单：手机 clean-profile/禁注入器归因、公网 Remote/双 Host、WebView2 长跑、双窗口桌面、Agent/Headless、Explorer 跨卷权限、原生 PowerShell/PTY 录制。未获这些外部证据前不宣称总体运行验收完成。
 
 ## 本轮 delta
 
 - 变更:`RpcClient`、Cloud 输入/Resize、SCM、Pane 生命周期、错误聚合、终端真清空、Host 全链、Commune、多窗口所有权与窗级 active；量化 burst 回归与 owned warning 清理。
 - 直接影响:`RPC 有界且超时取消；输入保序退避；Resize 合并；非 Git 停轮询；销毁 Pane 不再收请求；重复 Console 错误聚合；clear 释放 retained blocks；双窗关键 Pane/Terminal 变更不串 workspace。`
 - 验证:`requirements/notebook/dispatch 闸绿；第二波 69/69；量化稳定性 70/70；paneTree 60/60；多窗口 Rust 3/3 + 新增 2/2；ridge-term 全量与 Svelte check 绿。`
-- 质量:`Sonar scanner 仍缺；WASM/Remote 正式构建绿；公网/内存 A/B 待补。`
+- 质量:`Sonar scanner 仍缺；WASM/Remote 正式构建绿；公网/内存/物理设备 A/B 待补。`
 - Agent 编排:`native 三 worker，只读、全结果 valid；Ridge profile capability 未暴露，未猜测 pane 启动参数。`
 - Worker 回收:`3/3 completed，无越界写。`
 - Token:`子 worker 无逐会话可信计量，记 0 而不伪造节省；同任务 baseline 尚无。`

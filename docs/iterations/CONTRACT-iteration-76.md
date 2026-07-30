@@ -11,7 +11,7 @@
 1. Recent NotebookLM artifacts:
    - `2026-07-29-notebooklm-guidance-65.md`: bounded scrollback Worker, composite `PaneRef`, one LAN writer, background pane survival, keyboard focus order.
    - `2026-07-28-notebooklm-guidance-64.md`: end-to-end `(workspaceId,paneId)`, bounded priority writer, Agent's Commune three-tab/history visibility.
-   - Live NotebookLM query was admitted by `notebook_gate.py`, but failed because local Google auth expired. These checked-in artifacts remain the usable conversation record; live comparison stays open, and NLM does not decide code facts.
+   - Live NotebookLM query was admitted by `notebook_gate.py` after proxy-auth repair; `https://notebook.google.com/` is reachable and the query completed. Its output remains strategy only; NLM does not decide code facts.
 2. Previous iteration:
    - `CONTRACT-iteration-75.md` and commits `c73ce87`, `d2b8b82`, `dc2788b`.
    - Completion claims were re-checked against current symbols and tests instead of copied as fact.
