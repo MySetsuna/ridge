@@ -3,6 +3,8 @@
 > 本地只保留此一份需求文档。Pending 未获用户明确批准前，不改代码、不生成执行合同、不上传；
 > NotebookLM 继续使用上一版已批准的 `REQUIREMENTS-SPEC` 来源。
 
+- 需求版本:`v1.1`
+
 ## 正式需求 (Active Requirements)
 
 ### REQ-TERMINAL-PASTE-ORDER-02
@@ -918,6 +920,22 @@
 - 长时输出、超限 Scrollback、重复 clear/右键清空、Pane 关闭后的 WebView2 内存回落。
 - 两窗口争用同 Remote 工作区、旧窗口最小化/后台、焦点切换、新窗口打开空闲工作区。
 - 远程 Host 慢发现、空列表、已有工作区、新建失败、拖拽接入、接入后尺寸变化与手动重同步。
+
+### REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01 · 手机 Remote 端 Chrome Messaging 通道关闭报错根因消除
+
+- 批准依据:`批准 PENDING-REQ-20260730-02`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 行为:定位手机 Remote 页面长期高频 `Unchecked runtime.lastError: A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received` 的真实来源。项目监听器仅在确需异步响应时保持通道；成功、失败、异常、超时、提前退出、页面/Tab/Frame/Port 销毁、切后台、导航与重连均恰一次响应或取消；无需响应者不保持通道。发送端消费并分类无接收方、通道关闭与 runtime.lastError，不无意义重试或重复监听。若项目未使用 Chrome Extension Messaging，则以移动浏览器隔离实验确认第三方来源，业务代码不作遮掩性修改。
+- 边界:仅限手机 Remote 端及其启动、PWA/service worker、共享 transport/terminal 与实际移动浏览器运行环境；先证明 API 归属再改码；普通 Worker 同名 sendMessage 不等于 Chrome API；源存在时不改 generated/minified 产物；不屏蔽 Console、不篡改第三方扩展、不顺带清其他告警；响应至多一次，监听器/timer/pending 与页面生命周期同生死且清理归零；重试有界。
+- 验收:① CodeGraph 与精确源码/清单查询列全手机 Remote Chrome Messaging 注册点、发送点及调用链，并排除普通 Worker 同名方法；② 每个 return true/等价异步监听器具成功、失败、throw、timeout、early-return、background、navigation、目标销毁分支测，恰一次完成/取消且计数归零；③ 无需响应者不 return true，Promise 模式仅在实际 API/Manifest 支持时采用；④ 发送端覆盖 no receiver、channel closed、runtime.lastError、页面销毁、切后台、超时，消费错误、重试有界、不重复注册；⑤ 同一手机 Remote 场景 A/B 中项目来源重复错误降为零，终端输入、后台保活、重连与失败反馈不回归；⑥ 若仓库无 Extension Messaging，则以干净 Profile/无扩展环境及逐个禁用对照隔离第三方来源，业务代码 diff 为零；⑦ 输出根因、修改文件、关键调用链、移动自动化/适用真机验证命令、退出码、浏览器版本与证据。
+- 追踪:`REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01 → src/remote startup/service-worker/transport or third-party mobile-browser isolation evidence → unit/integration/mobile-browser console regression`
+
+#### 停机条件
+
+- 未证明手机 Remote 端 API 归属前，不修改业务代码。
+- 实际移动浏览器/Manifest 对 Promise listener 支持不明时，先核官方契约与现有 manifest。
+- 只能在含用户数据的常用移动 Profile 复现且无痕/隔离环境不可用时，停止扩展归因并请求安全诊断窗口。
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
