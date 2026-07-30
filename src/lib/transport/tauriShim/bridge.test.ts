@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { RpcCancelledError } from '@ridge/remote';
 import type {
   AuthListener,
   ChannelTransport,
@@ -41,5 +42,29 @@ describe('TauriBridge isolated attachment', () => {
     bridge.detach();
     expect(bridge.ready).toBe(false);
     expect(disposed()).toBeGreaterThan(0);
+  });
+
+  it('forwards AbortSignal to RpcClient and emits $/cancel', async () => {
+    const { transport, sent } = rig();
+    const bridge = new TauriBridge();
+    bridge.attach(transport, { useGlobalWorkspace: false });
+    const controller = new AbortController();
+    const pending = bridge.invoke(
+      'write_to_pty',
+      { paneId: 'pane-a' },
+      { signal: controller.signal },
+    );
+    const request = sent.find(
+      (frame) => 'id' in frame && 'method' in frame && frame.method === 'write_to_pty',
+    );
+    expect(request).toBeDefined();
+
+    controller.abort();
+    await expect(pending).rejects.toBeInstanceOf(RpcCancelledError);
+    expect(sent).toContainEqual({
+      jsonrpc: '2.0',
+      method: '$/cancel',
+      params: { id: request && 'id' in request ? request.id : -1 },
+    });
   });
 });

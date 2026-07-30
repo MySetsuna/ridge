@@ -23,7 +23,12 @@
 //   • PTY out ←  binary frame (paneId || raw bytes) → onPaneBytes → pty-output.
 
 import { RpcClient } from '@ridge/remote';
-import type { ChannelTransport, ControlFrame, Unsubscribe } from '@ridge/remote';
+import type {
+  ChannelTransport,
+  ControlFrame,
+  RpcRequestOptions,
+  Unsubscribe,
+} from '@ridge/remote';
 
 /** Tauri's event payload shape, replicated so listeners are drop-in compatible. */
 export interface TauriEvent<T> {
@@ -130,10 +135,14 @@ export class TauriBridge {
   }
 
   // ── invoke ────────────────────────────────────────────────────────────────
-  invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
+  invoke<T>(
+    cmd: string,
+    args: Record<string, unknown> = {},
+    options: RpcRequestOptions = {},
+  ): Promise<T> {
     const rpc = this.rpc;
     if (!rpc) return Promise.reject(new Error(`invoke('${cmd}') before bridge connected`));
-    return rpc.request<T>(cmd, args);
+    return rpc.request<T>(cmd, args, options);
   }
 
   // ── events ──────────────────────────────────────────────────────────────

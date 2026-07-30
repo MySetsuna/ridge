@@ -33,8 +33,10 @@ import { bridge, type TauriEvent } from '$lib/transport/tauriShim/bridge';
 import {
   classifyFailure,
   paneRefKey,
+  RpcCancelledError,
   type RemoteLink,
   type PaneRef,
+  type RpcRequestOptions,
   type PendingScrollbackPage,
   type ConnectionState,
   type ConnectionFailure,
@@ -134,7 +136,11 @@ function flattenLeaves(node: PaneNode | null | undefined): PaneInfo[] {
 }
 
 interface CloudRemoteBridge {
-  invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+  invoke<T>(
+    cmd: string,
+    args?: Record<string, unknown>,
+    options?: RpcRequestOptions,
+  ): Promise<T>;
   listen<T>(name: string, cb: (event: TauriEvent<T>) => void): Promise<UnlistenFn> | UnlistenFn;
   subscribePane(paneId: string, workspaceId?: string, active?: boolean): Promise<void> | void;
   hasCapability(capability: string): boolean;
@@ -142,7 +148,12 @@ interface CloudRemoteBridge {
 }
 
 const defaultCloudRemoteBridge: CloudRemoteBridge = {
-  invoke,
+  invoke<T>(cmd: string, args?: Record<string, unknown>, options?: RpcRequestOptions) {
+    if (options) {
+      return (invoke as unknown as CloudRemoteBridge['invoke'])<T>(cmd, args, options);
+    }
+    return args ? invoke<T>(cmd, args) : invoke<T>(cmd);
+  },
   listen,
   async subscribePane(paneId, workspaceId, active) {
     await invoke('register_pane_delta_channel', {
@@ -169,6 +180,10 @@ export class CloudRemoteConnection implements RemoteLink {
   private _refreshSeq = 0;
   private readonly inputSourceId = createInputSourceId();
   private inputLanes = new Map<string, InputLane>();
+  private paneRpcControllers = new Map<string, AbortController>();
+  private closingPaneKeys = new Set<string>();
+  private deadPaneKeys = new Set<string>();
+  private disposed = false;
   private resizeLanes = new Map<string, {
     inFlight: boolean;
     activeSignature: string | null;
@@ -218,6 +233,59 @@ export class CloudRemoteConnection implements RemoteLink {
     this.handle = handle;
     this.bridge = bridgeInstance;
     this.fixedAuthorized = options.fixedAuthorized === true;
+  }
+
+  private _paneRpcSignal(pane: PaneRef): AbortSignal | null {
+    const key = paneRefKey(pane);
+    if (
+      this.disposed
+      || this.closingPaneKeys.has(key)
+      || this.deadPaneKeys.has(key)
+    ) {
+      return null;
+    }
+    let controller = this.paneRpcControllers.get(key);
+    if (!controller || controller.signal.aborted) {
+      controller = new AbortController();
+      this.paneRpcControllers.set(key, controller);
+    }
+    return controller.signal;
+  }
+
+  private _invokePane<T>(
+    pane: PaneRef,
+    cmd: string,
+    args: Record<string, unknown>,
+  ): Promise<T> {
+    const signal = this._paneRpcSignal(pane);
+    if (!signal) return Promise.reject(new RpcCancelledError(cmd));
+    return this.bridge.invoke<T>(cmd, args, { signal });
+  }
+
+  private _abortPaneRpcs(key: string): void {
+    this.paneRpcControllers.get(key)?.abort();
+    this.paneRpcControllers.delete(key);
+  }
+
+  private _abortAllPaneRpcs(): void {
+    for (const controller of this.paneRpcControllers.values()) controller.abort();
+    this.paneRpcControllers.clear();
+  }
+
+  private _deactivatePane(key: string): void {
+    this.deadPaneKeys.add(key);
+    this.closingPaneKeys.delete(key);
+    this._abortPaneRpcs(key);
+    this._dropInputLane(key);
+    this.resizeLanes.delete(key);
+    this.subscribing.delete(key);
+    this.fetchingOlder.delete(key);
+    this.scrollbackCursor.delete(key);
+    const unlisten = this.ptyUnlisten.get(key);
+    if (unlisten) {
+      this.ptyUnlisten.delete(key);
+      try { unlisten(); } catch { /* already gone */ }
+    }
   }
 
   hasCapability(capability: string): boolean {
@@ -326,6 +394,9 @@ export class CloudRemoteConnection implements RemoteLink {
    *  subscribe flags, and the lazy-scrollback seq cursors. Shared by disconnect()
    *  and the reconnect path so a fresh transport re-subscribes from a clean slate. */
   private _teardownSubscriptions(): void {
+    this._abortAllPaneRpcs();
+    this.closingPaneKeys.clear();
+    this.deadPaneKeys.clear();
     for (const [, unlisten] of this.ptyUnlisten) {
       try { unlisten(); } catch { /* handle points at a dead transport — ignore */ }
     }
@@ -477,6 +548,7 @@ export class CloudRemoteConnection implements RemoteLink {
     const { paneId, workspaceId } = pane;
     if (!paneId || !workspaceId) return;
     const key = paneRefKey(pane);
+    if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
     if (this.ptyUnlisten.has(key)) {
       if (opts?.active !== undefined) {
         void this.bridge.subscribePane(paneId, workspaceId, opts.active);
@@ -502,7 +574,7 @@ export class CloudRemoteConnection implements RemoteLink {
     if (!cursor || cursor.atOldest || this.fetchingOlder.has(key)) return null;
     this.fetchingOlder.add(key);
     try {
-      const chunk = await this.bridge.invoke<ScrollbackChunk>('get_pane_scrollback_before', {
+      const chunk = await this._invokePane<ScrollbackChunk>(pane, 'get_pane_scrollback_before', {
         paneId: pane.paneId,
         workspaceId: pane.workspaceId,
         beforeSeq: cursor.oldestSeq,
@@ -577,7 +649,7 @@ export class CloudRemoteConnection implements RemoteLink {
         // the prior get_pane_resync_preamble was never in the real allow-list → dead fix).
         let seeded = false;
         try {
-          const rf = await this.bridge.invoke<PaneResyncFrame>('get_pane_resync_frame', {
+          const rf = await this._invokePane<PaneResyncFrame>(pane, 'get_pane_resync_frame', {
             paneId,
             workspaceId,
             maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
@@ -594,7 +666,7 @@ export class CloudRemoteConnection implements RemoteLink {
         }
         if (!seeded) {
           try {
-            const chunk = await this.bridge.invoke<ScrollbackChunk>('get_pane_scrollback_tail', {
+            const chunk = await this._invokePane<ScrollbackChunk>(pane, 'get_pane_scrollback_tail', {
               paneId,
               workspaceId,
               maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
@@ -642,6 +714,7 @@ export class CloudRemoteConnection implements RemoteLink {
   sendStdin(pane: PaneRef, data: string): void {
     if (!pane.paneId || !data) return;
     const key = paneRefKey(pane);
+    if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
     let lane = this.inputLanes.get(key);
     if (!lane) {
       lane = {
@@ -677,7 +750,7 @@ export class CloudRemoteConnection implements RemoteLink {
     lane.queued = '';
     lane.inFlight = true;
     try {
-      await this.bridge.invoke('write_to_pty', {
+      await this._invokePane(pane, 'write_to_pty', {
         paneId: pane.paneId,
         ...(pane.workspaceId ? { workspaceId: pane.workspaceId } : {}),
         data,
@@ -730,6 +803,7 @@ export class CloudRemoteConnection implements RemoteLink {
   private _resize(pane: PaneRef, rows: number, cols: number): void {
     if (!pane.paneId || rows <= 0 || cols <= 0) return;
     const key = paneRefKey(pane);
+    if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
     const signature = `${rows}x${cols}`;
     let lane = this.resizeLanes.get(key);
     if (!lane) {
@@ -770,7 +844,7 @@ export class CloudRemoteConnection implements RemoteLink {
     lane.inFlight = true;
     lane.activeSignature = next.signature;
     try {
-      await this.bridge.invoke('resize_pane', {
+      await this._invokePane(next.pane, 'resize_pane', {
         ...(next.pane.workspaceId ? { workspaceId: next.pane.workspaceId } : {}),
         paneId: next.pane.paneId,
         rows: next.rows,
@@ -799,7 +873,8 @@ export class CloudRemoteConnection implements RemoteLink {
         // Add a terminal to the current workspace by splitting the first leaf — the
         // desktop's own "new terminal" primitive. The mobile renders one pane at a
         // time, so it just shows the new pane; the host sees a split (shared reality).
-        const result = await this.bridge.invoke<{ pane_id: string }>('split_pane', {
+        const target = { workspaceId: this._activeWorkspaceId, paneId: leaves[0].id };
+        const result = await this._invokePane<{ pane_id: string }>(target, 'split_pane', {
           paneId: leaves[0].id,
           direction: 'horizontal',
         });
@@ -816,6 +891,14 @@ export class CloudRemoteConnection implements RemoteLink {
 
   async closePane(pane: PaneRef): Promise<boolean> {
     const key = paneRefKey(pane);
+    if (
+      !pane.paneId
+      || this.disposed
+      || this.closingPaneKeys.has(key)
+      || this.deadPaneKeys.has(key)
+    ) return false;
+    this.closingPaneKeys.add(key);
+    this._abortPaneRpcs(key);
     this._dropInputLane(key);
     this.resizeLanes.delete(key);
     try {
@@ -823,14 +906,11 @@ export class CloudRemoteConnection implements RemoteLink {
         paneId: pane.paneId,
         ...(pane.workspaceId ? { workspaceId: pane.workspaceId } : {}),
       });
-      const unlisten = this.ptyUnlisten.get(key);
-      if (unlisten) {
-        this.ptyUnlisten.delete(key);
-        try { unlisten(); } catch { /* already gone */ }
-      }
+      this._deactivatePane(key);
       void this._refreshPanes();
       return true;
     } catch {
+      this.closingPaneKeys.delete(key);
       return false;
     }
   }
@@ -844,13 +924,17 @@ export class CloudRemoteConnection implements RemoteLink {
     agentId?: string,
   ): Promise<void> {
     if (on) {
-      await this.bridge.invoke('register_teammate_agent', {
+      await this._invokePane({ workspaceId, paneId }, 'register_teammate_agent', {
         workspaceId,
         paneId,
         agentId: agentId || 'agent',
       });
     } else {
-      await this.bridge.invoke('release_teammate_agent', { workspaceId, paneId });
+      await this._invokePane(
+        { workspaceId, paneId },
+        'release_teammate_agent',
+        { workspaceId, paneId },
+      );
     }
     void this._refreshPanes();
   }
@@ -867,13 +951,14 @@ export class CloudRemoteConnection implements RemoteLink {
     paneId: string,
     shell: RemoteShellInfo,
   ): Promise<void> {
-    await this.bridge.invoke('change_pane_shell', {
+    const pane = { workspaceId, paneId };
+    await this._invokePane(pane, 'change_pane_shell', {
       paneId,
       shell: shell.program,
       args: shell.args ?? [],
     });
     // 重建后必须再激活，否则新 PTY 无订阅者，远端只看到死屏。
-    await this.bridge.invoke('activate_pane_pty', { workspaceId, paneId });
+    await this._invokePane(pane, 'activate_pane_pty', { workspaceId, paneId });
   }
 
   // ── workspaces ───────────────────────────────────────────────────────────────
@@ -1037,19 +1122,17 @@ export class CloudRemoteConnection implements RemoteLink {
   pruneOutputs(liveIds: Set<string>): void {
     // Release `pty-output` listeners for panes the host no longer reports (bounds
     // listener growth on a long-lived PWA tab — mirrors the LAN pruneOutputs intent).
-    for (const [key, unlisten] of [...this.ptyUnlisten]) {
-      if (!liveIds.has(key)) {
-        this.ptyUnlisten.delete(key);
-        this.scrollbackCursor.delete(key); // release the pane's seq cursor too
-        this.resizeLanes.delete(key);
-        try { unlisten(); } catch { /* already gone */ }
-      }
-    }
-    for (const key of [...this.inputLanes.keys()]) {
-      if (!liveIds.has(key)) this._dropInputLane(key);
-    }
-    for (const key of [...this.resizeLanes.keys()]) {
-      if (!liveIds.has(key)) this.resizeLanes.delete(key);
+    const tracked = new Set([
+      ...this.ptyUnlisten.keys(),
+      ...this.subscribing,
+      ...this.scrollbackCursor.keys(),
+      ...this.fetchingOlder,
+      ...this.inputLanes.keys(),
+      ...this.resizeLanes.keys(),
+      ...this.paneRpcControllers.keys(),
+    ]);
+    for (const key of tracked) {
+      if (!liveIds.has(key)) this._deactivatePane(key);
     }
   }
   send(): void {
@@ -1061,6 +1144,8 @@ export class CloudRemoteConnection implements RemoteLink {
   }
 
   disconnect(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this._failure = null; // 主动断开，清掉失败分级
     this.setState('disconnected');
     this._teardownSubscriptions();

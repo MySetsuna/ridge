@@ -20,7 +20,15 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import { CloudRemoteConnection } from './cloudRemote';
 import type { PaneNode } from '$lib/types';
-import type { PaneRef, WsMessage } from '@ridge/remote';
+import {
+  RpcClient,
+  type ChannelTransport,
+  type ControlFrame,
+  type OutboundFrame,
+  type PaneRef,
+  type RpcRequestOptions,
+  type WsMessage,
+} from '@ridge/remote';
 
 // Captured listen() handlers keyed by event name, so tests can fire host events.
 let handlers: Record<string, (e: { payload: unknown }) => void>;
@@ -48,6 +56,55 @@ function fakeHandle() {
     verifyTotp: verifyTotpSpy,
     disconnect: disconnectSpy,
   };
+}
+
+function rpcBackedBridge() {
+  const sent: OutboundFrame[] = [];
+  const controlListeners = new Set<(frame: ControlFrame) => void>();
+  const transport: ChannelTransport = {
+    sendControl(frame) {
+      sent.push(frame);
+      if (
+        'id' in frame
+        && 'method' in frame
+        && frame.method !== 'write_to_pty'
+        && frame.method !== 'resize_pane'
+      ) {
+        queueMicrotask(() => {
+          for (const listener of controlListeners) {
+            listener({ jsonrpc: '2.0', id: frame.id, result: undefined });
+          }
+        });
+      }
+    },
+    onControl(listener) {
+      controlListeners.add(listener);
+      return () => controlListeners.delete(listener);
+    },
+    sendPaneBytes() {},
+    onPaneBytes() { return () => {}; },
+    connect() {},
+    close() {},
+    state: () => 'connected',
+    onStateChange: () => () => {},
+    authState: () => 'authorized',
+    onAuthChange: () => () => {},
+  };
+  const rpc = new RpcClient(transport, { defaultTimeoutMs: 0 });
+  const injectedBridge = {
+    invoke<T>(
+      cmd: string,
+      args: Record<string, unknown> = {},
+      options: RpcRequestOptions = {},
+    ) {
+      return rpc.request<T>(cmd, args, options);
+    },
+    listen: async () => () => {},
+    subscribePane: () => {},
+    hasCapability: () => true,
+    onCapabilitiesChanged: () => () => {},
+  };
+  return { injectedBridge, rpc, sent };
 }
 
 /** Flush pending microtasks/macrotasks so fire-and-forget async settles. */
@@ -165,6 +222,7 @@ describe('CloudRemoteConnection panes', () => {
     expect(invokeMock).toHaveBeenCalledWith(
       'get_pane_resync_frame',
       expect.objectContaining({ paneId: 'pane-a' }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     // …and feeds `frame` verbatim as the first frame (RIS + preamble + history).
     expect(got).toHaveLength(1);
@@ -203,8 +261,16 @@ describe('CloudRemoteConnection panes', () => {
 
     // The new command was attempted first, then the legacy tail seeded RIS + history
     // (no preamble — exactly the prior shipped cloud behavior, not a regression).
-    expect(invokeMock).toHaveBeenCalledWith('get_pane_resync_frame', expect.objectContaining({ paneId: 'pane-a' }));
-    expect(invokeMock).toHaveBeenCalledWith('get_pane_scrollback_tail', expect.objectContaining({ paneId: 'pane-a' }));
+    expect(invokeMock).toHaveBeenCalledWith(
+      'get_pane_resync_frame',
+      expect.objectContaining({ paneId: 'pane-a' }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      'get_pane_scrollback_tail',
+      expect.objectContaining({ paneId: 'pane-a' }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(got).toHaveLength(1);
     expect(new TextDecoder().decode(got[0][1])).toBe('\x1bcHIST');
   });
@@ -219,6 +285,7 @@ describe('CloudRemoteConnection panes', () => {
     expect(invokeMock).toHaveBeenCalledWith(
       'get_pane_scrollback_before',
       expect.objectContaining({ paneId: 'pane-a', beforeSeq: 100 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(older && new TextDecoder().decode(older.bytes)).toBe('OLDER');
     expect(older?.commit()).toBe(true);
@@ -256,7 +323,7 @@ describe('CloudRemoteConnection panes', () => {
       data: 'ls\n',
       inputSourceId: expect.any(String),
       inputSequence: 1,
-    });
+    }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
 
   it('batches and serializes terminal input without reordering', async () => {
@@ -326,7 +393,7 @@ describe('CloudRemoteConnection panes', () => {
     await flush();
     expect(invokeMock).toHaveBeenCalledWith('resize_pane', {
       workspaceId: 'ws1', paneId: 'pane-a', rows: 30, cols: 100,
-    });
+    }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(conn.lastRefreshSeq()).toBe(before + 1);
   });
 
@@ -353,6 +420,7 @@ describe('CloudRemoteConnection panes', () => {
     expect(resizeCalls[1]).toEqual([
       'resize_pane',
       { workspaceId: 'ws1', paneId: 'pane-a', rows: 22, cols: 82 },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     ]);
 
     conn.refreshPane(PANE, 22, 82);
@@ -384,7 +452,11 @@ describe('CloudRemoteConnection panes', () => {
   it('createPane splits the first existing leaf', async () => {
     const conn = await connected();
     const id = await conn.createPane();
-    expect(invokeMock).toHaveBeenCalledWith('split_pane', { paneId: 'pane-a', direction: 'horizontal' });
+    expect(invokeMock).toHaveBeenCalledWith(
+      'split_pane',
+      { paneId: 'pane-a', direction: 'horizontal' },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(id).toBe('pane-new');
   });
 
@@ -490,5 +562,57 @@ describe('CloudRemoteConnection lifecycle', () => {
     expect(disconnectSpy).toHaveBeenCalled();
     expect(handlers['pty-output-ws1-pane-a']).toBeUndefined();
     expect(handlers['pane-tree-changed']).toBeUndefined();
+  });
+
+  async function expectPaneRpcCancellation(
+    stop: (conn: CloudRemoteConnection) => void | Promise<unknown>,
+  ): Promise<void> {
+    vi.useFakeTimers();
+    const { injectedBridge, rpc, sent } = rpcBackedBridge();
+    const conn = new CloudRemoteConnection(fakeHandle() as never, injectedBridge);
+    try {
+      conn.sendStdin(PANE, 'x');
+      conn.refreshPane(PANE, 30, 100);
+      await vi.advanceTimersByTimeAsync(4);
+      expect(rpc.inFlight).toBe(2);
+
+      await stop(conn);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rpc.inFlight).toBe(0);
+      expect(sent.filter(
+        (frame) => 'method' in frame && frame.method === '$/cancel',
+      )).toHaveLength(2);
+
+      const paneRequestsBefore = sent.filter(
+        (frame) => 'method' in frame
+          && (frame.method === 'write_to_pty' || frame.method === 'resize_pane'),
+      ).length;
+      conn.sendStdin(PANE, 'after-destroy');
+      conn.refreshPane(PANE, 40, 120);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(sent.filter(
+        (frame) => 'method' in frame
+          && (frame.method === 'write_to_pty' || frame.method === 'resize_pane'),
+      )).toHaveLength(paneRequestsBefore);
+      expect(rpc.inFlight).toBe(0);
+    } finally {
+      rpc.dispose();
+      vi.useRealTimers();
+    }
+  }
+
+  it('closePane aborts in-flight pane RPCs and rejects later sends', async () => {
+    await expectPaneRpcCancellation(async (conn) => {
+      expect(await conn.closePane(PANE)).toBe(true);
+    });
+  });
+
+  it('pruneOutputs aborts in-flight pane RPCs and rejects later sends', async () => {
+    await expectPaneRpcCancellation((conn) => conn.pruneOutputs(new Set()));
+  });
+
+  it('disconnect aborts in-flight pane RPCs and rejects later sends', async () => {
+    await expectPaneRpcCancellation((conn) => conn.disconnect());
   });
 });

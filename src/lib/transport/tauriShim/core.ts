@@ -6,6 +6,7 @@
 // routes everything over the LAN remote WebSocket via `bridge`.
 
 import { bridge } from './bridge';
+import type { RpcRequestOptions } from '@ridge/remote';
 
 const TOKEN_KEY = 'ridge_remote_token';
 
@@ -33,7 +34,11 @@ export function isTauri(): boolean {
   return true;
 }
 
-export function invoke<T = unknown>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
+export function invoke<T = unknown>(
+  cmd: string,
+  args: Record<string, unknown> = {},
+  options: RpcRequestOptions = {},
+): Promise<T> {
   // register_pane_delta_channel carries a non-serializable Channel instance and
   // means "start streaming this pane". Map it onto the subscribe-pane fan-out.
   if (cmd === 'register_pane_delta_channel') {
@@ -48,7 +53,7 @@ export function invoke<T = unknown>(cmd: string, args: Record<string, unknown> =
   if (cmd === 'set_pane_delta_mode') {
     return Promise.resolve(undefined as T);
   }
-  return bridge.invoke<T>(cmd, args);
+  return bridge.invoke<T>(cmd, args, options);
 }
 
 /**

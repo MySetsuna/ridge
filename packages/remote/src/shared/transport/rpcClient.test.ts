@@ -224,6 +224,7 @@ describe('RpcClient.cancel — id + AbortSignal', () => {
     await expect(p).rejects.toBeInstanceOf(RpcCancelledError);
     const cancelFrame = transport.sent.find((f) => f.method === '$/cancel');
     expect(cancelFrame).toEqual({ jsonrpc: '2.0', method: '$/cancel', params: { id } });
+    expect(rpc.inFlight).toBe(0);
   });
 
   it('rejects immediately if the signal is already aborted (no wire send)', async () => {
