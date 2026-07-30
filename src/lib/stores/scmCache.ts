@@ -96,6 +96,9 @@ export interface ScmCacheState {
    *  Lets the panel decide whether to schedule a background refresh
    *  on remount (e.g. >30s old → refresh, fresher → trust cache). */
   lastDiscoverAt: number;
+  /** Roots confirmed non-Git by a Git command. Kept until cwd context changes,
+   *  so status/branch/stash callers share one negative detection result. */
+  nonGitRepoRoots: Record<string, true>;
 }
 
 const _store = writable<ScmCacheState>({
@@ -108,6 +111,7 @@ const _store = writable<ScmCacheState>({
   lastCwdSignature: '',
   lastRepoSignature: '',
   lastDiscoverAt: 0,
+  nonGitRepoRoots: {},
 });
 
 /** Read-only subscription handle for components. */
@@ -121,34 +125,45 @@ export function setScmRepoRoots(
   cwdSignature: string,
   repoSignature: string
 ): void {
-  _store.update((s) => ({
-    ...s,
-    repoRoots,
-    lastCwdSignature: cwdSignature,
-    lastRepoSignature: repoSignature,
-    lastDiscoverAt: Date.now(),
-    // Drop snapshots for repos no longer present so memory doesn't
-    // accumulate forever as the user opens/closes folders.
-    statuses: Object.fromEntries(
-      Object.entries(s.statuses).filter(([root]) => repoRoots.includes(root))
-    ),
-    graphInfos: Object.fromEntries(
-      Object.entries(s.graphInfos).filter(([root]) => repoRoots.includes(root))
-    ),
-    lastGraphLoadAt: Object.fromEntries(
-      Object.entries(s.lastGraphLoadAt).filter(([root]) => repoRoots.includes(root))
-    ),
-    selectedCommitHashByRepo: Object.fromEntries(
-      Object.entries(s.selectedCommitHashByRepo).filter(([root]) => repoRoots.includes(root))
-    ),
-  }));
+  _store.update((s) => {
+    // A cwd change is the only automatic re-probe boundary. Within one cwd
+    // context, discovery may still surface a stale/deleted .git marker; keep
+    // filtering a root once a real Git command has rejected it.
+    const cwdChanged = cwdSignature !== s.lastCwdSignature;
+    const nonGitRepoRoots = cwdChanged ? {} : s.nonGitRepoRoots;
+    const acceptedRoots = repoRoots.filter((root) => !nonGitRepoRoots[root]);
+    return {
+      ...s,
+      repoRoots: acceptedRoots,
+      lastCwdSignature: cwdSignature,
+      lastRepoSignature:
+        acceptedRoots.length === repoRoots.length ? repoSignature : acceptedRoots.join('|'),
+      lastDiscoverAt: Date.now(),
+      nonGitRepoRoots,
+      // Drop snapshots for repos no longer present so memory doesn't
+      // accumulate forever as the user opens/closes folders.
+      statuses: Object.fromEntries(
+        Object.entries(s.statuses).filter(([root]) => acceptedRoots.includes(root))
+      ),
+      graphInfos: Object.fromEntries(
+        Object.entries(s.graphInfos).filter(([root]) => acceptedRoots.includes(root))
+      ),
+      lastGraphLoadAt: Object.fromEntries(
+        Object.entries(s.lastGraphLoadAt).filter(([root]) => acceptedRoots.includes(root))
+      ),
+      selectedCommitHashByRepo: Object.fromEntries(
+        Object.entries(s.selectedCommitHashByRepo).filter(([root]) => acceptedRoots.includes(root))
+      ),
+    };
+  });
 }
 
 export function setScmRepoStatus(repoRoot: string, status: ScmRepoStatus): void {
-  _store.update((s) => ({
-    ...s,
-    statuses: { ...s.statuses, [repoRoot]: status },
-  }));
+  _store.update((s) =>
+    s.nonGitRepoRoots[repoRoot]
+      ? s
+      : { ...s, statuses: { ...s.statuses, [repoRoot]: status } }
+  );
 }
 
 export function clearScmRepoStatus(repoRoot: string): void {
@@ -159,14 +174,92 @@ export function clearScmRepoStatus(repoRoot: string): void {
   });
 }
 
+/** True only for Git's explicit "not a repository" family. Busy, timeout,
+ * superseded, permission, and transport failures must remain retryable. */
+export function isNotGitRepositoryError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'object' &&
+          error !== null &&
+          'message' in error &&
+          typeof error.message === 'string'
+        ? error.message
+        : String(error);
+  return (
+    /\bnot a git (?:repo|repository)\b/i.test(message) ||
+    /\bnot inside a git work tree\b/i.test(message)
+  );
+}
+
+/** Record a negative repository detection and evict every stale positive
+ * snapshot. All SCM polling callers consult this same cache. */
+export function markScmRepoNonGit(repoRoot: string): void {
+  if (!repoRoot) return;
+  _store.update((s) => {
+    if (s.nonGitRepoRoots[repoRoot]) return s;
+    const repoRoots = s.repoRoots.filter((root) => root !== repoRoot);
+    const statuses = { ...s.statuses };
+    const graphInfos = { ...s.graphInfos };
+    const lastGraphLoadAt = { ...s.lastGraphLoadAt };
+    const selectedCommitHashByRepo = { ...s.selectedCommitHashByRepo };
+    delete statuses[repoRoot];
+    delete graphInfos[repoRoot];
+    delete lastGraphLoadAt[repoRoot];
+    delete selectedCommitHashByRepo[repoRoot];
+    return {
+      ...s,
+      repoRoots,
+      statuses,
+      graphInfos,
+      lastGraphLoadAt,
+      selectedCommitHashByRepo,
+      selectedScmRepo: s.selectedScmRepo === repoRoot ? '' : s.selectedScmRepo,
+      lastRepoSignature: repoRoots.join('|'),
+      nonGitRepoRoots: { ...s.nonGitRepoRoots, [repoRoot]: true },
+    };
+  });
+}
+
+export function isScmRepoKnownNonGit(repoRoot: string): boolean {
+  return !!repoRoot && !!get(_store).nonGitRepoRoots[repoRoot];
+}
+
+/** Explicit reset for a pane-local cwd transition and deterministic tests.
+ * Returns the evicted roots so sibling caches can drop negative snapshots. */
+export function resetScmRepositoryDetection(cwdContext?: string): string[] {
+  const context = cwdContext?.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
+  const roots = Object.keys(get(_store).nonGitRepoRoots).filter((root) => {
+    if (!context) return true;
+    const normalized = root.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
+    return (
+      normalized === context ||
+      normalized.startsWith(`${context}/`) ||
+      context.startsWith(`${normalized}/`)
+    );
+  });
+  if (roots.length > 0) {
+    _store.update((s) => {
+      const nonGitRepoRoots = { ...s.nonGitRepoRoots };
+      for (const root of roots) delete nonGitRepoRoots[root];
+      return { ...s, nonGitRepoRoots };
+    });
+  }
+  return roots;
+}
+
 // ─── Graph info cache (round χ) ───────────────────────────────────────────
 
 export function setScmGraphInfo(repoRoot: string, info: GitRepoInfo): void {
-  _store.update((s) => ({
-    ...s,
-    graphInfos: { ...s.graphInfos, [repoRoot]: info },
-    lastGraphLoadAt: { ...s.lastGraphLoadAt, [repoRoot]: Date.now() },
-  }));
+  _store.update((s) =>
+    s.nonGitRepoRoots[repoRoot]
+      ? s
+      : {
+          ...s,
+          graphInfos: { ...s.graphInfos, [repoRoot]: info },
+          lastGraphLoadAt: { ...s.lastGraphLoadAt, [repoRoot]: Date.now() },
+        }
+  );
 }
 
 export function clearScmGraphInfo(repoRoot: string): void {

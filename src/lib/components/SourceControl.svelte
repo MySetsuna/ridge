@@ -41,7 +41,10 @@
   import { portal } from '$lib/actions/portal';
   import { popupStyleFor } from '$lib/utils/anchorRect';
   import { mapLimit, GIT_FANOUT_CONCURRENCY, recommendedGitConcurrency } from '$lib/utils/pLimit';
-  import { invalidatePaneGitStatusForRepo } from '$lib/stores/paneGitStatus';
+  import {
+    invalidatePaneGitStatusForRepo,
+    markPaneGitRepoNonGit,
+  } from '$lib/stores/paneGitStatus';
   import { onFsChange, type FsChangedPayload } from '$lib/stores/fsEvents';
   import {
     scmCacheStore,
@@ -54,6 +57,8 @@
     setScmSelectedCommit,
     getScmSelectedCommit,
     setScmSelectedRepo,
+    isNotGitRepositoryError,
+    isScmRepoKnownNonGit,
     type GitRepoInfo,
     type CommitNode,
     type DiffFile,
@@ -255,18 +260,22 @@
       // Always update cache (signature timestamps the discovery + drops
       // stale statuses for removed repos).
       setScmRepoRoots(nextRoots, sig, nextSig);
+      // setScmRepoRoots also applies the shared negative repository cache.
+      // Stay on its accepted roots so force-refresh cannot resurrect a root
+      // already rejected in this cwd context.
+      const activeRoots = getScmCache().repoRoots;
 
       // Register discovered roots with the backend filesystem watcher so
       // external git changes (pull, commit from terminal, CI) trigger automatic
       // SCM refreshes without requiring user interaction.
-      if (nextRoots.length > 0 && isTauri()) {
-        void invoke('start_watching_repos', { roots: nextRoots }).catch(() => {});
+      if (activeRoots.length > 0 && isTauri()) {
+        void invoke('start_watching_repos', { roots: activeRoots }).catch(() => {});
       }
 
-      if (selectedRepo && !nextRoots.includes(selectedRepo)) {
-        selectedRepo = nextRoots[0] ?? '';
-      } else if (!selectedRepo && nextRoots.length > 0) {
-        selectedRepo = nextRoots[0];
+      if (selectedRepo && !activeRoots.includes(selectedRepo)) {
+        selectedRepo = activeRoots[0] ?? '';
+      } else if (!selectedRepo && activeRoots.length > 0) {
+        selectedRepo = activeRoots[0];
       }
 
       // Cap concurrent `get_scm_status` fanout: each call spawns ~3 git.exe
@@ -274,7 +283,7 @@
       // burst saturates tokio's blocking pool, freezing the Explorer sidebar
       // (which queues behind us). The signal lets a directory switch abort the
       // remaining per-repo refreshes. See `src/lib/utils/pLimit.ts`.
-      await mapLimit(nextRoots, concurrency, (root) => refreshStatus(root), { signal });
+      await mapLimit(activeRoots, concurrency, (root) => refreshStatus(root), { signal });
       if (signal?.aborted) return;
       if (rootsChanged && selectedRepo) await loadGraph(selectedRepo);
     } finally {
@@ -285,6 +294,7 @@
   }
 
   function refreshStatus(root: string): Promise<void> {
+    if (isScmRepoKnownNonGit(root)) return Promise.resolve();
     const existing = statusInFlight.get(root);
     if (existing) return existing;
     const request = (async () => {
@@ -300,6 +310,7 @@
         // every status read (including initial discovery).
         void invalidatePaneGitStatusForRepo(root);
       } catch (e) {
+        if (isNotGitRepositoryError(e)) markPaneGitRepoNonGit(root);
         console.error('get_scm_status failed', root, e);
       }
     })();
@@ -416,13 +427,18 @@
   let stashCollapsed = $state(false);
 
   async function loadStashes(root: string): Promise<void> {
-    if (!isTauri()) {
+    if (
+      !isTauri() ||
+      isScmRepoKnownNonGit(root) ||
+      !getScmCache().statuses[root]
+    ) {
       stashes = [];
       return;
     }
     try {
       stashes = await invoke<StashEntry[]>('git_stash_list', { repoRoot: root });
     } catch (e) {
+      if (isNotGitRepositoryError(e)) markPaneGitRepoNonGit(root);
       console.error('git_stash_list failed', e);
       stashes = [];
     }
@@ -430,7 +446,8 @@
   // 选中仓库变化 → 重载 stash 列表。
   $effect(() => {
     const r = selectedRepo;
-    if (r) void loadStashes(r);
+    const confirmed = r ? statuses[r] : undefined;
+    if (r && confirmed && !isScmRepoKnownNonGit(r)) void loadStashes(r);
     else stashes = [];
   });
 
@@ -1400,12 +1417,14 @@
   let syncing = $state<string>(''); // root currently running a sync op
 
   async function loadBranches(root: string): Promise<void> {
+    if (isScmRepoKnownNonGit(root) || !getScmCache().statuses[root]) return;
     try {
       branchLists = {
         ...branchLists,
         [root]: await invoke<BranchInfo[]>('git_list_branches', { repoRoot: root }),
       };
     } catch (e) {
+      if (isNotGitRepositoryError(e)) markPaneGitRepoNonGit(root);
       console.error('list branches', e);
     }
   }
@@ -1504,7 +1523,12 @@
   // 并把 Explorer 的 get_file_tree 一起拖死。改用 GIT_FANOUT_CONCURRENCY
   // 控制并发，与后端 git 信号量保持同步。
   $effect(() => {
-    const pending = repoRoots.filter((root) => !branchLists[root]);
+    const pending = repoRoots.filter(
+      (root) =>
+        !!statuses[root] &&
+        !isScmRepoKnownNonGit(root) &&
+        !branchLists[root]
+    );
     if (pending.length === 0) return;
     void mapLimit(pending, GIT_FANOUT_CONCURRENCY, (root) => loadBranches(root));
   });

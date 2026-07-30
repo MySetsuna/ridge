@@ -165,6 +165,63 @@ describe('cwd-down semantics + multi-repo switcher', () => {
   });
 });
 
+describe('non-Git repository detection cache', () => {
+  it('stops status invalidation after the first explicit non-repository failure', async () => {
+    let scmCalls = 0;
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'find_git_repos_below') return Promise.resolve(['/stale/repo']);
+      if (cmd === 'get_scm_status') {
+        scmCalls++;
+        return Promise.reject(new Error('fatal: not a git repository'));
+      }
+      if (cmd === 'git_diff_summary') return Promise.resolve({ added: 0, removed: 0 });
+      return Promise.resolve(null);
+    });
+
+    mod.trackPaneGitStatus('non-git-cache', '/stale');
+    await vi.advanceTimersByTimeAsync(260);
+    expect(scmCalls).toBe(1);
+    expect(get(mod.paneGitStatusStore)['non-git-cache']).toBeNull();
+
+    await mod.invalidatePaneGitStatusForRepo('/stale/repo');
+    expect(scmCalls).toBe(1);
+  });
+
+  it('re-probes a rejected root after that pane switches directory', async () => {
+    let scmCalls = 0;
+    mockInvoke.mockImplementation((cmd: string, args: unknown) => {
+      if (cmd === 'find_git_repos_below') return Promise.resolve(['/shared/repo']);
+      if (cmd === 'get_scm_status') {
+        scmCalls++;
+        if (scmCalls === 1) {
+          return Promise.reject(new Error('Not a git repo: /shared/repo'));
+        }
+        return Promise.resolve({
+          repo_root: (args as { repoRoot: string }).repoRoot,
+          current_branch: 'recovered',
+          ahead: 0,
+          behind: 0,
+          staged: [],
+          changes: [],
+          untracked: [],
+          has_upstream: true,
+        });
+      }
+      if (cmd === 'git_diff_summary') return Promise.resolve({ added: 0, removed: 0 });
+      return Promise.resolve(null);
+    });
+
+    mod.trackPaneGitStatus('non-git-cwd-switch', '/shared/repo/subdir');
+    await vi.advanceTimersByTimeAsync(260);
+    expect(scmCalls).toBe(1);
+
+    mod.trackPaneGitStatus('non-git-cwd-switch', '/other');
+    await vi.advanceTimersByTimeAsync(260);
+    expect(scmCalls).toBe(2);
+    expect(get(mod.paneGitStatusStore)['non-git-cwd-switch']?.branch).toBe('recovered');
+  });
+});
+
 describe('多 pane / 多工作区 git 放大器（2026-07-26 卡死回归钉）', () => {
   // fake timer 冻结 Date.now：每个用例先越过快照复用窗口，免吃上一用例的缓存。
   beforeEach(async () => {

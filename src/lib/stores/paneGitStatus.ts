@@ -20,6 +20,12 @@
 import { writable, get } from 'svelte/store';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { mapLimit, GIT_FANOUT_CONCURRENCY } from '$lib/utils/pLimit';
+import {
+  isNotGitRepositoryError,
+  isScmRepoKnownNonGit,
+  markScmRepoNonGit,
+  resetScmRepositoryDetection,
+} from '$lib/stores/scmCache';
 
 export interface PaneGitInfo {
   repoRoot: string;
@@ -110,6 +116,7 @@ async function resolveRepoSnapshot(
   repoRoot: string,
   slotBase?: string,
 ): Promise<RepoSnapshot | null> {
+  if (isScmRepoKnownNonGit(repoRoot)) return null;
   // Coalesce concurrent calls for the same repoRoot. (The in-flight fetch is
   // registered under the INITIATING pane's supersede slot — if that pane
   // switches cwd mid-fetch the shared fetch dies and joiners see a transient
@@ -158,6 +165,7 @@ async function resolveRepoSnapshot(
       if (!String(err).includes('superseded')) {
         cacheByRepo.set(repoRoot, { snap: null, at: Date.now() });
       }
+      if (isNotGitRepositoryError(err)) markPaneGitRepoNonGit(repoRoot);
       return null;
     } finally {
       inflightByRepo.delete(repoRoot);
@@ -181,6 +189,7 @@ async function resolveInfoForPane(paneId: string, cwd: string): Promise<PaneGitI
   } catch {
     return null;
   }
+  repos = repos.filter((root) => !isScmRepoKnownNonGit(root));
   if (repos.length === 0) return null;
 
   // Pick which repo this pane should currently surface. User selection
@@ -221,6 +230,11 @@ export function trackPaneGitStatus(paneId: string, cwd: string | null): void {
   // calls early-return instead of churning store updates.
   const cwdNorm = cwd ?? '';
   if (prev === cwdNorm) return;
+  if (prev && cwdNorm && prev !== cwdNorm) {
+    // A real directory switch is the re-probe boundary for every shared SCM
+    // caller. Drop pane snapshots for roots released by the detection cache.
+    for (const root of resetScmRepositoryDetection(prev)) cacheByRepo.delete(root);
+  }
   lastCwdByPane.set(paneId, cwdNorm);
 
   const existing = debounceTimers.get(paneId);
@@ -255,6 +269,7 @@ export function trackPaneGitStatus(paneId: string, cwd: string | null): void {
  * the next cwd change.
  */
 export async function invalidatePaneGitStatusForRepo(repoRoot: string): Promise<void> {
+  if (isScmRepoKnownNonGit(repoRoot)) return;
   cacheByRepo.delete(repoRoot);
   const all = get(_store);
   for (const [paneId, info] of Object.entries(all)) {
@@ -275,13 +290,38 @@ export async function invalidatePaneGitStatusForRepo(repoRoot: string): Promise<
   }
 }
 
+/** Close the pane-pill side of a confirmed non-Git root immediately. Branch
+ * picker failures call this same path as status failures, so the 5-minute
+ * heartbeat cannot resurrect the rejected root. */
+export function markPaneGitRepoNonGit(repoRoot: string): void {
+  markScmRepoNonGit(repoRoot);
+  cacheByRepo.set(repoRoot, { snap: null, at: Date.now() });
+  _store.update((state) =>
+    Object.fromEntries(
+      Object.entries(state).map(([paneId, info]) => [
+        paneId,
+        info?.repoRoot === repoRoot
+          ? null
+          : info?.availableRepos.includes(repoRoot)
+            ? {
+                ...info,
+                availableRepos: info.availableRepos.filter((root) => root !== repoRoot),
+              }
+            : info,
+      ])
+    )
+  );
+}
+
 /**
  * Refresh all currently-cached repos in the background. Called by the
  * 5-minute periodic timer so branch ahead/behind counts stay fresh even
  * when the user isn't doing SCM operations.
  */
 async function refreshAllCachedRepos(): Promise<void> {
-  const roots = Array.from(cacheByRepo.keys());
+  const roots = Array.from(cacheByRepo.keys()).filter(
+    (root) => !isScmRepoKnownNonGit(root)
+  );
   // Limit concurrency: each invalidate cascades into `get_scm_status` +
   // `git_diff_summary` per pane, so a 5-minute heartbeat over 20 cached
   // repos would otherwise stampede git.exe on Windows.

@@ -18,8 +18,10 @@
   import {
     paneGitStatusStore,
     invalidatePaneGitStatusForRepo,
+    markPaneGitRepoNonGit,
     type PaneGitInfo,
   } from '$lib/stores/paneGitStatus';
+  import { isNotGitRepositoryError, isScmRepoKnownNonGit } from '$lib/stores/scmCache';
 
   interface BranchInfo {
     name: string;
@@ -64,7 +66,7 @@
   });
 
   async function loadBranches(): Promise<void> {
-    if (!info || loading) return;
+    if (!info || loading || isScmRepoKnownNonGit(info.repoRoot)) return;
     const root = info.repoRoot;
     loading = true;
     try {
@@ -77,6 +79,7 @@
         loadedRepoRoot = root;
       }
     } catch (err) {
+      if (isNotGitRepositoryError(err)) markPaneGitRepoNonGit(root);
       console.warn('[git-pill] list branches', err);
     } finally {
       loading = false;
