@@ -184,6 +184,11 @@ pub struct Grid {
     is_alt: bool,
     pub attrs: AttrTable,
     pub scrollback: Scrollback,
+    /// Monotonic count of user-visible scrollback clears (ED 2/3 or the
+    /// explicit clear API). Native delta producers compare this with their
+    /// last snapshot so the mirror and backend byte history drop the same
+    /// rows instead of retaining them after the visible screen was wiped.
+    scrollback_clear_count: u64,
     /// Bounded ring of the most recent `resize` calls. Used by JS devtools
     /// (`__RIDGE_KERNEL.lastResizeDiags()`) to confirm which branch fired
     /// during a live repro of the alt-screen resize bug.
@@ -296,6 +301,7 @@ impl Grid {
             is_alt: false,
             attrs: AttrTable::default(),
             scrollback: Scrollback::new(scrollback_lines),
+            scrollback_clear_count: 0,
             last_resizes: Vec::with_capacity(RESIZE_DIAG_RING_CAP),
             last_abs_csi_at_ms: 0,
             last_abs_csi_row: 0,
@@ -316,6 +322,29 @@ impl Grid {
     /// paths fill blank cells with the active background colour.
     pub fn set_pen(&mut self, attrs: Attrs) {
         self.pen = attrs;
+    }
+
+    pub fn scrollback_clear_count(&self) -> u64 {
+        self.scrollback_clear_count
+    }
+
+    /// Physical history release shared by parser-driven ED and explicit UI
+    /// clear. Count even an already-empty ring: the backend raw-byte store can
+    /// still contain visible output that must be discarded.
+    pub fn clear_scrollback(&mut self) {
+        self.scrollback.clear();
+        self.scrollback_clear_count = self.scrollback_clear_count.wrapping_add(1);
+    }
+
+    /// Explicit user clear: bypass the short Ctrl+C ED suppression window,
+    /// wipe the active screen, home its cursor, and release primary history.
+    pub fn clear_terminal(&mut self) {
+        let bce = self.bce_cell();
+        for row in &mut self.screen_mut().rows {
+            row.fill_blank(bce);
+        }
+        self.cursor_to(0, 0);
+        self.clear_scrollback();
     }
 
     /// Build the cell that erase / scroll / IL / DL paths use to fill
@@ -891,7 +920,11 @@ impl Grid {
 
         Self::naive_resize_screen(&mut self.primary, rows, cols);
         Self::naive_resize_screen(&mut self.alt, rows, cols);
-        let branch = if reflowed { ResizeBranch::Reflowed } else { ResizeBranch::Naive };
+        let branch = if reflowed {
+            ResizeBranch::Reflowed
+        } else {
+            ResizeBranch::Naive
+        };
 
         // §1.22 (2026-05-05): when CURRENTLY viewing alt screen at resize,
         // clear the alt buffer so the application's SIGWINCH-driven redraw
@@ -1268,10 +1301,7 @@ impl Grid {
                 if r + 1 < para_end {
                     // Wrapped row: keep the full width, minus a wide-char pad.
                     let mut take = cells.len();
-                    let next_starts_wide = src[r + 1]
-                        .cells
-                        .first()
-                        .map_or(false, |c| c.width == 2);
+                    let next_starts_wide = src[r + 1].cells.first().map_or(false, |c| c.width == 2);
                     if next_starts_wide
                         && take > 0
                         && cells[take - 1].width == 1
@@ -1392,7 +1422,10 @@ impl Grid {
         let mut new_rows: Vec<Row> = Vec::with_capacity(total_rows);
         new_rows.append(&mut out_rows); // the `visible_history` rows
         let live_space = total_rows.saturating_sub(new_rows.len());
-        for orig in cursor_area.into_iter().take(live_space.min(cursor_area_count)) {
+        for orig in cursor_area
+            .into_iter()
+            .take(live_space.min(cursor_area_count))
+        {
             new_rows.push(orig);
         }
         while new_rows.len() < total_rows {
@@ -1896,7 +1929,7 @@ impl Grid {
                 // ponytail: 门槛=不发 alt 且未被 latch 为 inline-TUI 的"裸主屏全屏重绘"
                 //   程序(罕见)会连带清 scrollback；若真命中再收窄(要求紧跟 CUP-home 等)。
                 if !self.is_alt && !self.inline_tui_sticky {
-                    self.scrollback.clear();
+                    self.clear_scrollback();
                 }
             }
             EraseMode::SavedLines => {
@@ -1915,7 +1948,7 @@ impl Grid {
                 // back to primary expect their preserved scrollback
                 // intact (kakoune / vim / less depend on this).
                 if !self.is_alt {
-                    self.scrollback.clear();
+                    self.clear_scrollback();
                 }
             }
         }
@@ -2625,7 +2658,11 @@ mod tests {
         assert!(before > 0);
         g.mark_inline_tui_sticky();
         g.erase_in_display(EraseMode::All);
-        assert_eq!(g.scrollback.len(), before, "inline-TUI 的 2J 不得清 scrollback");
+        assert_eq!(
+            g.scrollback.len(),
+            before,
+            "inline-TUI 的 2J 不得清 scrollback"
+        );
     }
 
     // alt 屏的 ED 2 不得动主屏 scrollback（alt 本无 scrollback，且返回主屏须完好）。
@@ -2641,7 +2678,11 @@ mod tests {
         assert!(before > 0);
         g.enter_alt_screen(true);
         g.erase_in_display(EraseMode::All);
-        assert_eq!(g.scrollback.len(), before, "alt 屏 2J 不得清主屏 scrollback");
+        assert_eq!(
+            g.scrollback.len(),
+            before,
+            "alt 屏 2J 不得清主屏 scrollback"
+        );
     }
 
     #[test]
@@ -2862,7 +2903,10 @@ mod tests {
             g.print(ch, Attrs::DEFAULT);
         }
         let sb_before = g.scrollback.len();
-        assert!(sb_before > 0, "precondition: some content reached scrollback");
+        assert!(
+            sb_before > 0,
+            "precondition: some content reached scrollback"
+        );
         // At least one visible row carries content before the blank.
         assert!(
             (0..g.rows()).any(|r| !row_text(&g, r).is_empty()),
@@ -3136,7 +3180,10 @@ mod tests {
         for ch in "ABCDEFGHIJKLMNOPQRSTUVWX".chars() {
             g.print(ch, Attrs::DEFAULT);
         }
-        assert!(g.row(0).unwrap().wrapped, "history row 0 wrapped at old width");
+        assert!(
+            g.row(0).unwrap().wrapped,
+            "history row 0 wrapped at old width"
+        );
         assert_eq!(row_text(&g, 1), "UVWX");
 
         // Inline-TUI frame top at row 2: record an absolute-positioning CSI
@@ -3535,7 +3582,11 @@ mod tests {
         assert_eq!(g.frame_top_row(), 3, "burst min across 5,3,7 = box top");
         g.cursor_to(8, 0);
         g.note_absolute_positioning(1_300); // gap 200ms > 120 → new burst → 8
-        assert_eq!(g.frame_top_row(), 8, "a gap longer than the burst window resets");
+        assert_eq!(
+            g.frame_top_row(),
+            8,
+            "a gap longer than the burst window resets"
+        );
     }
 
     #[test]
@@ -3587,7 +3638,10 @@ mod tests {
 
         // Set up the "wedged" state: cursor hidden, abs-CSI fresh.
         g.note_absolute_positioning(now);
-        assert!(g.is_inline_tui_active_at(now + 500, false), "heuristic on pre-Ctrl+C");
+        assert!(
+            g.is_inline_tui_active_at(now + 500, false),
+            "heuristic on pre-Ctrl+C"
+        );
 
         // User sends Ctrl+C.
         g.note_ctrl_c_sent(now + 500);
@@ -3595,19 +3649,31 @@ mod tests {
         // Within grace window → heuristic forced off even though
         // PSReadLine keeps emitting abs-CSIs.
         g.note_absolute_positioning(now + 1_000);
-        assert!(!g.is_inline_tui_active_at(now + 1_500, false), "grace window suppresses heuristic");
+        assert!(
+            !g.is_inline_tui_active_at(now + 1_500, false),
+            "grace window suppresses heuristic"
+        );
         g.note_absolute_positioning(now + 3_000);
-        assert!(!g.is_inline_tui_active_at(now + 3_400, false), "still suppressed near grace boundary");
+        assert!(
+            !g.is_inline_tui_active_at(now + 3_400, false),
+            "still suppressed near grace boundary"
+        );
 
         // Past grace window (3 s) AND fresh abs-CSI → heuristic re-engages.
         g.note_absolute_positioning(now + 4_000);
-        assert!(g.is_inline_tui_active_at(now + 4_100, false), "heuristic re-engages after grace expires");
+        assert!(
+            g.is_inline_tui_active_at(now + 4_100, false),
+            "heuristic re-engages after grace expires"
+        );
 
         // Cursor visible during grace → off regardless (no regression).
         let mut g2 = Grid::new(5, 20, 0);
         g2.note_absolute_positioning(now);
         g2.note_ctrl_c_sent(now);
-        assert!(!g2.is_inline_tui_active_at(now + 500, true), "visible cursor still wins");
+        assert!(
+            !g2.is_inline_tui_active_at(now + 500, true),
+            "visible cursor still wins"
+        );
     }
 
     #[test]
@@ -3881,7 +3947,7 @@ mod tests {
         // user complaint on 🎂.
         let mut g = Grid::new(1, 10, 0);
         g.print('中', Attrs::DEFAULT); // cols 0..=1
-        // Cursor should now be at col 2.
+                                       // Cursor should now be at col 2.
         assert_eq!(g.cursor().col, 2);
         g.backspace();
         // Pre-fix this would land at col 1 (placeholder); post-fix
@@ -3994,7 +4060,10 @@ mod tests {
         // overwriting the orphan main, so no stale sidecar survives
         // the BS+SP echo. Subsequent renders show a blank cell.
         let mut g = Grid::new(1, 10, 0);
-        g.print_grapheme("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", Attrs::DEFAULT);
+        g.print_grapheme(
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}",
+            Attrs::DEFAULT,
+        );
         // Family ZWJ cluster placed at col 0..=1 (width 2). Cluster
         // sidecar points at the full multi-codepoint string.
         assert_eq!(g.row(0).unwrap().cells[0].width, 2);

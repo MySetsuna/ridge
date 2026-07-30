@@ -86,6 +86,10 @@ pub struct PaneParser {
     /// "scrollback grew by N" from "scrollback grew but K oldest rows
     /// got evicted" (capacity rollover).
     last_scrollback_evictions: u64,
+    /// Monotonic physical-clear snapshot. Length alone cannot distinguish a
+    /// real clear from ordinary resize/reflow shrink, nor report clearing an
+    /// already-empty frontend ring while backend raw history still exists.
+    last_scrollback_clears: u64,
     /// P3.12 — `Terminal::modes()` snapshot from the previous diff.
     /// `None` only before the first frame; once set, `Modes::diff` runs
     /// against it on every frame and emits one `GridDelta::ModeChange`
@@ -115,6 +119,7 @@ impl PaneParser {
             is_alt: None,
             last_scrollback_len: 0,
             last_scrollback_evictions: 0,
+            last_scrollback_clears: 0,
             last_modes: None,
             pane_seq: 0,
             last_title: None,
@@ -195,6 +200,14 @@ impl PaneParser {
         self.diff_into_frame()
     }
 
+    /// Explicit user clear. Mutates the authoritative parser directly (never
+    /// writes ANSI bytes into the PTY input stream), then emits the same delta
+    /// shape consumed by the wasm mirror.
+    pub fn clear_terminal(&mut self) -> DeltaFrame {
+        self.terminal.clear_terminal();
+        self.diff_into_frame()
+    }
+
     /// Visible row 0 as a string (for tests / diagnostics). Trims trailing blanks.
     pub fn viewport_line0_text(&self) -> String {
         let Some(row) = self.terminal.row_at_abs(0) else {
@@ -225,6 +238,7 @@ impl PaneParser {
         // now on emits ScrollbackAppend.
         self.last_scrollback_len = self.terminal.scrollback_len();
         self.last_scrollback_evictions = self.terminal.scrollback_eviction_count();
+        self.last_scrollback_clears = self.terminal.scrollback_clear_count();
         // P3.12 — drop the mode snapshot so the next frame re-emits
         // every non-default mode. mirror's wasm Terminal already
         // tracks them from the wasm-mode session, so the resulting
@@ -326,6 +340,14 @@ impl PaneParser {
         //     scrollback capacities (set by `Terminal::new`).
         let now_len = self.terminal.scrollback_len();
         let now_evictions = self.terminal.scrollback_eviction_count();
+        let now_clears = self.terminal.scrollback_clear_count();
+        if now_clears != self.last_scrollback_clears {
+            deltas.push(GridDelta::ScrollbackClear);
+            // A clear starts a new history epoch. Rows pushed later in this
+            // same feed must be emitted relative to zero, not the old ring.
+            self.last_scrollback_len = 0;
+            self.last_scrollback_evictions = now_evictions;
+        }
         let evicted_since = now_evictions.saturating_sub(self.last_scrollback_evictions);
         // After K evictions, the previously-counted rows shifted down
         // by K. last_logical_len is what scrollback_len() would have
@@ -363,6 +385,7 @@ impl PaneParser {
         }
         self.last_scrollback_len = now_len;
         self.last_scrollback_evictions = now_evictions;
+        self.last_scrollback_clears = now_clears;
 
         // 2. Per-row diff. Resolve each cell via the live AttrTable so
         //    the comparison is stable across feed batches (an interned
@@ -719,9 +742,7 @@ mod tests {
         let frame = p.feed_and_diff(b"\x1b[?1049h\x1b[HABC");
         // 必须有覆盖 row0 且含 'A' 的 Cells delta。
         let reemits_row0 = frame.deltas.iter().any(|d| match d {
-            GridDelta::Cells { row, cells, .. } => {
-                *row == 0 && cells.iter().any(|c| c.ch == 'A')
-            }
+            GridDelta::Cells { row, cells, .. } => *row == 0 && cells.iter().any(|c| c.ch == 'A'),
             _ => false,
         });
         assert!(
@@ -1033,6 +1054,33 @@ mod tests {
     }
 
     #[test]
+    fn shell_clear_emits_scrollback_clear_delta() {
+        let mut p = make_parser(2, 5);
+        let _ = p.feed_and_diff(b"a\r\nb\r\nc\r\nd");
+        let frame = p.feed_and_diff(b"\x1b[H\x1b[2J");
+        assert!(
+            frame
+                .deltas
+                .iter()
+                .any(|d| matches!(d, GridDelta::ScrollbackClear)),
+            "accepted primary-screen ED 2 must tell the mirror/backend to release history: {:?}",
+            frame.deltas
+        );
+    }
+
+    #[test]
+    fn explicit_clear_emits_clear_and_blank_cells() {
+        let mut p = make_parser(2, 5);
+        let _ = p.feed_and_diff(b"secret\r\nhistory\r\nvisible");
+        let frame = p.clear_terminal();
+        assert!(frame
+            .deltas
+            .iter()
+            .any(|d| matches!(d, GridDelta::ScrollbackClear)));
+        assert_eq!(p.viewport_line0_text(), "");
+    }
+
+    #[test]
     fn multiline_console_echo_preserves_source_line_order_through_delta_mirror() {
         use ridge_term::term::terminal::Terminal;
 
@@ -1052,12 +1100,19 @@ mod tests {
             .expect("ordered multiline delta frame");
 
         for (row, expected) in lines.iter().enumerate() {
-            let actual: String = mirror.grid().row(row).expect("visible row")
+            let actual: String = mirror
+                .grid()
+                .row(row)
+                .expect("visible row")
                 .cells
                 .iter()
                 .map(|cell| cell.ch)
                 .collect();
-            assert_eq!(actual.trim_end(), *expected, "line {row} reversed or displaced");
+            assert_eq!(
+                actual.trim_end(),
+                *expected,
+                "line {row} reversed or displaced"
+            );
         }
     }
 }

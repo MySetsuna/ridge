@@ -112,6 +112,9 @@ pub enum GridDelta {
     /// The frontend appends to its own scrollback ring; existing rows
     /// shift up via the renderer's existing scroll path.
     ScrollbackAppend { lines: Vec<Vec<DeltaCell>> },
+    /// Producer physically dropped all saved lines. The mirror must release
+    /// its ring as well; visible cells arrive as ordinary `Cells` deltas.
+    ScrollbackClear,
     /// DEC mode flip — `mode` is the numeric `?N` code (1049 alt-screen,
     /// 25 cursor visibility, 1 cursor-keys app, 2026 sync output, etc).
     /// Frontend forwards to its kernel-mirror's mode flags.
@@ -154,11 +157,13 @@ pub struct DeltaFrame {
 }
 
 impl DeltaFrame {
+    // v3 (§terminal-clear): `ScrollbackClear` added so native parser, wasm
+    // mirror, and backend raw-byte history share one physical-clear signal.
     // v2 (§emoji-cluster): `DeltaCell.cluster` added so multi-codepoint
     // grapheme clusters survive the native→wasm delta hop. Native parser
     // and wasm consumer compile from this same source and ship together,
     // so the version bump is a fail-fast guard against a skewed bundle.
-    pub const PROTOCOL_VERSION: u16 = 2;
+    pub const PROTOCOL_VERSION: u16 = 3;
 
     pub fn new(pane_seq: u64, deltas: Vec<GridDelta>) -> Self {
         Self {
@@ -222,24 +227,28 @@ mod tests {
                 GridDelta::Cells {
                     row: 3,
                     col: 7,
-                    cells: vec![DeltaCell::blank(), DeltaCell {
-                        ch: 'X',
-                        fg: Color::DEFAULT,
-                        bg: Color::DEFAULT,
-                        flags: Flags::empty(),
-                        width: 1,
-                        cluster: None,
-                    }, DeltaCell {
-                        // §emoji-cluster — a width-2 cell carrying a ZWJ
-                        // family cluster; round-trip must preserve the
-                        // multi-codepoint `cluster` string verbatim.
-                        ch: '\u{1F468}', // 👨 (first codepoint)
-                        fg: Color::DEFAULT,
-                        bg: Color::DEFAULT,
-                        flags: Flags::empty(),
-                        width: 2,
-                        cluster: Some("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}".into()),
-                    }],
+                    cells: vec![
+                        DeltaCell::blank(),
+                        DeltaCell {
+                            ch: 'X',
+                            fg: Color::DEFAULT,
+                            bg: Color::DEFAULT,
+                            flags: Flags::empty(),
+                            width: 1,
+                            cluster: None,
+                        },
+                        DeltaCell {
+                            // §emoji-cluster — a width-2 cell carrying a ZWJ
+                            // family cluster; round-trip must preserve the
+                            // multi-codepoint `cluster` string verbatim.
+                            ch: '\u{1F468}', // 👨 (first codepoint)
+                            fg: Color::DEFAULT,
+                            bg: Color::DEFAULT,
+                            flags: Flags::empty(),
+                            width: 2,
+                            cluster: Some("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}".into()),
+                        },
+                    ],
                 },
                 GridDelta::Cursor {
                     row: 5,
@@ -251,7 +260,11 @@ mod tests {
                 GridDelta::ScrollbackAppend {
                     lines: vec![vec![DeltaCell::blank()]],
                 },
-                GridDelta::ModeChange { mode: 1049, on: true },
+                GridDelta::ScrollbackClear,
+                GridDelta::ModeChange {
+                    mode: 1049,
+                    on: true,
+                },
                 GridDelta::Resize { rows: 24, cols: 80 },
                 GridDelta::ScreenSwitch { is_alt: true },
                 GridDelta::Title("hello".into()),

@@ -1700,24 +1700,18 @@ function onContextMenu(e: MouseEvent) {
 		{ id: 'term-sep1', divider: true },
 		{ id: 'term-select-all', label: tr('workspace.ctxSelectAll'), action: () => manager.selectAll(paneId) },
 		{ id: 'term-clear', label: tr('workspace.ctxClear'), action: () => {
-			// §B.2 (2026-05-08) — full physical clear: grid + scrollback +
-			// cursor home, all in-kernel without a PTY round trip. Pre-fix
-			// this sent only Ctrl+L which the shell translated into ED 2 +
-			// cursor home — visible grid cleared but pageUp resurrected
-			// everything the user wanted gone (documented "clear 不能完全
-			// 清理" symptom). The new path:
-			//   1. `\x1b[H\x1b[2J` — cursor home + clear visible grid
-			//      (sent to PTY so the prompt redraws cleanly above the
-			//      blank rows; without this the shell still thinks the
-			//      cursor is on the old row).
-			//   2. `manager.clearScrollback(paneId)` — physical drop of
-			//      the in-memory ring buffer + viewport snap to live.
+			// Native parser is authoritative in desktop delta mode: one command
+			// clears its grid, emits ScrollbackClear to the wasm mirror, and
+			// removes backend raw replay bytes. Never write ANSI into PTY input.
 			if (isTauri()) {
-				void enqueuePtyWrite(`${workspaceId}:${paneId}`, () =>
-					invoke('write_to_pty', { workspaceId, paneId, data: '\x1b[H\x1b[2J' }),
-				).catch(() => {});
+				void invoke('clear_pane_terminal', { workspaceId, paneId }).catch(() => {
+					// Teardown race: preserve visible clear even if pane vanished
+					// before the backend command acquired its parser.
+					manager.feed(paneId, '\x1b[H\x1b[2J\x1b[3J');
+				});
+			} else {
+				manager.feed(paneId, '\x1b[H\x1b[2J\x1b[3J');
 			}
-			manager.clearScrollback(paneId);
 		}},
 		// §1.23 (2026-05-05): split + close options restored to right-click
 		// menu. Pre-xterm-removal Pane.svelte never carried these; user

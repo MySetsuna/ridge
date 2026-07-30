@@ -4,8 +4,8 @@ mod deep_root;
 mod engine;
 mod fs;
 mod hosts;
-pub mod reconnect_policy;
 mod lsp;
+pub mod reconnect_policy;
 /// 桌面进程与共享远控层之间的 Tauri 胶水层（`forward_event` + `ridge-core` 桥
 /// + `spawn_remote_server` 启动壳）——归并自已删除的 `remote/{mod,core_bridge,server}.rs`。
 mod remote_bridge;
@@ -440,6 +440,20 @@ pub fn run() {
                                     let mut p = parser.lock();
                                     p.feed_and_diff(data.as_bytes())
                                 };
+                                // Shell `clear`/`cls` is parsed by the same
+                                // authoritative kernel that drives the mirror.
+                                // Drop the raw-byte replay store on its physical
+                                // clear signal so reconnect/page-back cannot
+                                // resurrect output already removed on screen.
+                                if frame.deltas.iter().any(|delta| {
+                                    matches!(
+                                        delta,
+                                        ridge_term::term::delta::GridDelta::ScrollbackClear
+                                    )
+                                }) {
+                                    let st = handle.state::<AppState>();
+                                    st.clear_pty_scrollback(workspace_id, pane_id);
+                                }
                                 // Pump DSR/DA replies back into the PTY so
                                 // PSReadLine + ConPTY can anchor the prompt
                                 // after child process exits. Mirrors what the
@@ -760,6 +774,7 @@ pub fn run() {
             clipboard_files::write_clipboard_file_paths,
             clipboard_files::read_clipboard_sequence,
             terminal::resize_pane,
+            terminal::clear_pane_terminal,
             terminal::set_pane_delta_mode,
             terminal::register_pane_delta_channel,
             terminal::kill_pane,

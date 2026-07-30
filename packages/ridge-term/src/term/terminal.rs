@@ -289,8 +289,7 @@ impl Terminal {
                     .push(KernelEvent::TitleChanged(t.clone()));
             }
             GridDelta::Cwd(p) => {
-                self.pending_events
-                    .push(KernelEvent::CwdChanged(p.clone()));
+                self.pending_events.push(KernelEvent::CwdChanged(p.clone()));
             }
             GridDelta::Bell => {
                 self.pending_events.push(KernelEvent::Bell);
@@ -353,6 +352,9 @@ impl Terminal {
                     let _ = self.grid.scrollback.push(row);
                 }
             }
+            GridDelta::ScrollbackClear => {
+                self.clear_scrollback();
+            }
             GridDelta::ModeChange { mode, on } => {
                 // P3.12 — symmetric counterpart to PaneParser's
                 // `Modes::diff` emission. The mode codes are the same
@@ -373,10 +375,7 @@ impl Terminal {
     /// against `DeltaFrame::PROTOCOL_VERSION` and a mismatch returns
     /// the encountered version so the caller can log a warning and
     /// skip the frame instead of corrupting the mirror.
-    pub fn apply_frame(
-        &mut self,
-        frame: &crate::term::delta::DeltaFrame,
-    ) -> Result<(), u16> {
+    pub fn apply_frame(&mut self, frame: &crate::term::delta::DeltaFrame) -> Result<(), u16> {
         if frame.version != crate::term::delta::DeltaFrame::PROTOCOL_VERSION {
             return Err(frame.version);
         }
@@ -514,7 +513,15 @@ impl Terminal {
     /// trip. Live grid is untouched — caller can pair with
     /// `erase_in_display(All)` + `cursor_to(0,0)` for a full wipe.
     pub fn clear_scrollback(&mut self) {
-        self.grid.scrollback.clear();
+        self.grid.clear_scrollback();
+        self.scroll_offset = 0;
+        self.user_scroll_locked = false;
+    }
+
+    /// Explicit terminal clear used by the native command path. Unlike ED 2,
+    /// this is deliberate user intent, so it bypasses Ctrl+C suppression.
+    pub fn clear_terminal(&mut self) {
+        self.grid.clear_terminal();
         self.scroll_offset = 0;
         self.user_scroll_locked = false;
     }
@@ -534,6 +541,10 @@ impl Terminal {
     /// which is most of them).
     pub fn scrollback_eviction_count(&self) -> u64 {
         self.grid.scrollback.eviction_count()
+    }
+
+    pub fn scrollback_clear_count(&self) -> u64 {
+        self.grid.scrollback_clear_count()
     }
     /// Whether the user has paged into history and PTY output is
     /// currently being held back from auto-snapping the viewport.
@@ -879,8 +890,14 @@ mod tests {
         t.apply_delta(&crate::term::delta::GridDelta::Reset);
 
         // Modes back to default.
-        assert!(t.modes().cursor_visible, "cursor visibility should be reset to default");
-        assert!(!t.modes().bracketed_paste, "bracketed paste should be reset to default");
+        assert!(
+            t.modes().cursor_visible,
+            "cursor visibility should be reset to default"
+        );
+        assert!(
+            !t.modes().bracketed_paste,
+            "bracketed paste should be reset to default"
+        );
         // Cursor home.
         assert_eq!(t.grid().cursor().row, 0);
         assert_eq!(t.grid().cursor().col, 0);
@@ -1024,8 +1041,7 @@ mod tests {
         t.feed(b"\x1b[?2027$p");
         let resp = t.take_pending_response();
         assert_eq!(
-            resp,
-            b"\x1b[?2027;3$y",
+            resp, b"\x1b[?2027;3$y",
             "Mode 2027 query must report permanent-set (3)"
         );
     }
@@ -1197,7 +1213,10 @@ mod tests {
     fn shell_integration_flag_stays_false_without_prompt_osc() {
         let mut t = Terminal::new(2, 5, 100);
         t.feed(b"hello\r\nworld\r\n"); // 纯输出，无 prompt OSC（模拟 WSL/cmd）
-        assert!(!t.has_shell_integration(), "无 prompt OSC 的 pane 应恒判无集成");
+        assert!(
+            !t.has_shell_integration(),
+            "无 prompt OSC 的 pane 应恒判无集成"
+        );
     }
 
     #[test]
@@ -1212,6 +1231,32 @@ mod tests {
 
         assert_eq!(t.scrollback_len(), 0);
         assert_eq!(t.scroll_offset(), 0, "viewport must snap back to live grid");
+    }
+
+    #[test]
+    fn scrollback_clear_delta_releases_mirror_history() {
+        let mut t = Terminal::new(2, 5, 100);
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        assert!(t.scrollback_len() > 0);
+
+        t.apply_delta(&crate::term::delta::GridDelta::ScrollbackClear);
+
+        assert_eq!(t.scrollback_len(), 0);
+        assert_eq!(t.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn explicit_terminal_clear_wipes_visible_and_saved_rows() {
+        let mut t = Terminal::new(2, 8, 100);
+        t.feed(b"secret\r\nhistory\r\nvisible");
+        assert!(t.scrollback_len() > 0);
+
+        t.clear_terminal();
+
+        assert_eq!(t.scrollback_len(), 0);
+        assert!(t.dump_visible_text().iter().all(String::is_empty));
+        assert_eq!(t.grid().cursor().row, 0);
+        assert_eq!(t.grid().cursor().col, 0);
     }
 
     #[test]

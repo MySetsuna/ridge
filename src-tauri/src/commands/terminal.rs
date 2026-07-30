@@ -1134,8 +1134,8 @@ pub async fn write_to_pty(
         input_source_id,
         input_sequence,
     )
-        .await
-        .map_err(|e| e.to_string())
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Drop-in blocking equivalent — does NOT defuse the ConPTY blocking issue.
@@ -1605,6 +1605,48 @@ pub fn resize_pane_inner(
     }
 }
 
+/// Clear one terminal as an authoritative state transition: native parser,
+/// wasm mirror (via delta), and backend raw replay history move together.
+/// No bytes are written to PTY input, so shells never interpret ANSI clear
+/// sequences as keystrokes.
+#[tauri::command]
+pub fn clear_pane_terminal(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    workspace_id: String,
+    pane_id: String,
+) -> Result<(), String> {
+    use ridge_term::term::delta::encode_frame;
+    use tauri::Emitter;
+
+    let workspace_id =
+        Uuid::parse_str(&workspace_id).map_err(|_| "invalid workspace_id".to_string())?;
+    let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+    let parser = {
+        let map = state.workspaces.read();
+        map.get(&workspace_id)
+            .and_then(|ws| ws.terminals.get(&pane_id))
+            .map(|handle| handle.parser.clone())
+            .ok_or_else(|| AppError::PaneNotFound(pane_id).to_string())?
+    };
+
+    let frame = {
+        let mut parser = parser.lock();
+        parser.clear_terminal()
+    };
+    state.clear_pty_scrollback(workspace_id, pane_id);
+
+    let bytes = encode_frame(&frame).map_err(|e| format!("delta encode failed: {e}"))?;
+    if let Some(sender) = state.get_pane_delta_channel(workspace_id, pane_id) {
+        sender(bytes);
+    } else {
+        let label = pane_id.to_string();
+        app.emit(&format!("pty-delta-{workspace_id}-{label}"), bytes)
+            .map_err(|e| format!("clear delta emit failed: {e}"))?;
+    }
+    Ok(())
+}
+
 /// P4.1 (2026-05-21) — store the frontend's Tauri Channel as the delta-byte
 /// sink for `(workspace_id, pane_id)`. After this command returns, the three
 /// `pty-delta-*` emit sites (`lib.rs` main loop, `resize_pane`,
@@ -1946,8 +1988,7 @@ pub fn write_pty_bytes_workspace(
     if let Some(handle) = ws.terminals.get(&pane_id) {
         // V-H1-LIVE：foreign 视图输入走 host live_sink，不写本地 PTY。
         if let Some(ref rr) = handle.remote_ref {
-            crate::hosts::route_foreign_input(app, rr, data)
-                .map_err(AppError::PtyError)?;
+            crate::hosts::route_foreign_input(app, rr, data).map_err(AppError::PtyError)?;
             return Ok(());
         }
         let mut w = handle.writer.lock();
@@ -2051,7 +2092,10 @@ mod write_scope_tests {
             Ok(target),
         );
         assert!(resolve_pane_workspace(&state, Some(&active.to_string()), target_pane).is_err());
-        assert_eq!(resolve_pane_workspace(&state, None, active_pane), Ok(active));
+        assert_eq!(
+            resolve_pane_workspace(&state, None, active_pane),
+            Ok(active)
+        );
     }
 
     #[test]
@@ -2207,7 +2251,9 @@ pub fn new_headless_session(name: Option<String>, cwd: Option<String>) -> Result
         attach_or_create: false,
         print: None,
     };
-    native::new_session(req, &[]).map(|_| name).map_err(|e| e.message())
+    native::new_session(req, &[])
+        .map(|_| name)
+        .map_err(|e| e.message())
 }
 
 /// **真正终止**一个本机无头会话（杀其子进程）——「主机」面板里会话的唯一真关闭入口。
