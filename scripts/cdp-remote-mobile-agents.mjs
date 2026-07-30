@@ -20,7 +20,6 @@ import path from 'node:path';
 import { resolveCdpPort } from './cdp-port.mjs';
 
 const CDP_PORT = Number(process.env.CDP_PORT ?? resolveCdpPort());
-const DEV_URL = process.env.RIDGE_DEV_URL ?? 'http://127.0.0.1:5173/';
 const log = (...a) => console.log('[remote-mobile]', ...a);
 const fail = (...a) => {
   console.error('[remote-mobile] FAIL:', ...a);
@@ -77,13 +76,14 @@ const dir = path.join(os.tmpdir(), 'ridge-agent-e2e');
 fs.mkdirSync(dir, { recursive: true });
 const fake = path.join(dir, 'aider.exe');
 const killFake = async () => {
-  const { execSync } = await import('node:child_process');
-  const q = fake.replace(/\\/g, '\\\\');
-  try {
-    execSync(`wmic process where "ExecutablePath='${q}'" call terminate`, { stdio: 'ignore' });
-  } catch {
-    /* 没有残留 */
-  }
+  const { spawnSync } = await import('node:child_process');
+  const q = fake.replace(/'/g, "''");
+  spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq '${q}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`,
+  ], { stdio: 'ignore' });
 };
 await killFake();
 fs.copyFileSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'PING.EXE'), fake);
@@ -92,6 +92,7 @@ fs.copyFileSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', '
 const list = await httpJson('/json/list');
 const t = list.find((x) => x.type === 'page' && !/devtools/.test(x.url || ''));
 if (!t) throw new Error('no page target on :' + CDP_PORT);
+const DEV_URL = process.env.RIDGE_DEV_URL ?? t.url;
 const sock = new WebSocket(t.webSocketDebuggerUrl);
 let id = 0;
 const pend = new Map();

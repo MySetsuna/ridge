@@ -522,42 +522,49 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 		const pathAtMenu = node.path;
 		const isDirAtMenu = node.is_dir;
 
-	// Get column cwd for relative path
-	const storeState = get(fileExplorerStore);
-	const column = storeState.columns.find((c) => c.id === columnId);
-	const cwd = column?.cwd || '';
+		const storeState = get(fileExplorerStore);
+		const column = storeState.columns.find((c) => c.id === columnId);
+		const cwd = column?.cwd || '';
 
-	const getRelativePath = (absPath: string): string => {
-		const normalizedCwd = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
-		const normalizedPath = absPath.replace(/\\/g, '/');
-		if (normalizedPath.startsWith(normalizedCwd + '/')) {
-			return normalizedPath.slice(normalizedCwd.length + 1);
-		}
-		return normalizedPath;
-	};
+		const getRelativePath = (absPath: string): string => {
+			const normalizedCwd = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
+			const normalizedPath = absPath.replace(/\\/g, '/');
+			if (normalizedPath.startsWith(normalizedCwd + '/')) {
+				return normalizedPath.slice(normalizedCwd.length + 1);
+			}
+			return normalizedPath;
+		};
 
-	const copyToClipboard = async (text: string) => {
-		try { await writeText(text); } catch (err) { console.error('Copy failed:', err); }
-	};
+		const copyToClipboard = async (text: string) => {
+			try { await writeText(text); } catch (err) { console.error('Copy failed:', err); }
+		};
 
 		const items = isDirAtMenu
 			? [
 					{ id: 'new-file', label: tr('explorer.ctxNewFile'), action: () => beginCreate('file') },
 					{ id: 'new-folder', label: tr('explorer.ctxNewFolder'), action: () => beginCreate('folder') },
 					{ id: 'divider1', divider: true },
-			{ id: 'copy', label: tr('explorer.ctxCopy'), action: () => copyToClipboard(node.path) },			{ id: 'copy-rel', label: tr('explorer.ctxCopyRelative'), action: () => copyToClipboard(getRelativePath(node.path)) },
+					{ id: 'copy', label: tr('explorer.ctxCopy'), action: () => copyToClipboard(pathAtMenu) },
+					{ id: 'copy-rel', label: tr('explorer.ctxCopyRelative'), action: () => copyToClipboard(getRelativePath(pathAtMenu)) },
 					{ id: 'paste', label: tr('explorer.ctxPaste'), action: () => onPaste?.(pathAtMenu) },
-					{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealInExplorer() },
-					{ id: 'search-in-folder', label: tr('explorer.ctxSearchInFolder'), action: () => searchInFolder(node.path) },
+					{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealInExplorer(pathAtMenu) },
+					{ id: 'search-in-folder', label: tr('explorer.ctxSearchInFolder'), action: () => searchInFolder(pathAtMenu) },
 					{ id: 'divider2', divider: true },
 					{ id: 'rename', label: tr('explorer.ctxRename'), action: () => beginRename() },
 					{ id: 'delete', label: tr('explorer.ctxDelete'), action: () => void deleteItem() },
 				]
 			: [
-					{ id: 'open', label: tr('explorer.ctxOpen'), action: () => void fileEditorStore.openFile(pathAtMenu) },
-			{ id: 'copy', label: tr('explorer.ctxCopy'), action: () => copyToClipboard(node.path) },			{ id: 'copy-rel', label: tr('explorer.ctxCopyRelative'), action: () => copyToClipboard(getRelativePath(node.path)) },
+					{
+						id: 'open',
+						label: tr('explorer.ctxOpen'),
+						action: () => onSelect
+							? onSelect(pathAtMenu, false, { shift: false, ctrl: false, meta: false })
+							: void fileEditorStore.openFile(pathAtMenu),
+					},
+					{ id: 'copy', label: tr('explorer.ctxCopy'), action: () => copyToClipboard(pathAtMenu) },
+					{ id: 'copy-rel', label: tr('explorer.ctxCopyRelative'), action: () => copyToClipboard(getRelativePath(pathAtMenu)) },
 					{ id: 'paste', label: tr('explorer.ctxPaste'), action: () => onPaste?.(pathAtMenu) },
-					{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealInExplorer() },
+					{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealInExplorer(pathAtMenu) },
 					{ id: 'divider', divider: true },
 					{ id: 'rename', label: tr('explorer.ctxRename'), action: () => beginRename() },
 					{ id: 'delete', label: tr('explorer.ctxDelete'), action: () => void deleteItem() },
@@ -685,10 +692,10 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 		if (editing && !pendingEditCommit) void commitEdit();
 	}
 
-	async function revealInExplorer(): Promise<void> {
+	async function revealInExplorer(path: string = node.path): Promise<void> {
 		if (!isTauri()) return;
 		try {
-			await invoke('reveal_in_file_manager', { path: node.path });
+			await invoke('reveal_in_file_manager', { path });
 		} catch (e) {
 			await alertDialog({ title: tr('explorer.revealFailed'), message: tr('explorer.revealFailedMessage', { error: String(e) }), danger: true });
 		}
@@ -854,6 +861,7 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 						{refreshNonce}
 						inheritedIgnored={isIgnored}
 						{onSelect}
+						{onPaste}
 					/>
 				{/each}
 			{:else if hasLoaded && !editing}

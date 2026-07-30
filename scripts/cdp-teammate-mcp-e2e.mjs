@@ -2,10 +2,10 @@
 // Domain C MCP「自由交流」端到端验证 —— P1（缺口1 寻址自洽 + 缺口3 get_team_profile 路由）。
 //
 // 直接以一个外部 MCP 客户端身份连内置 teammate MCP WebSocket，跑完整握手并断言：
-//   - initialize / tools/list：ridge_get_team_profile 与 ridge_send_to_teammate 已广告
+//   - initialize / tools/list：Agent's Commune 与 ridge_send_to_teammate 已广告
 //   - tools/call(ridge_get_team_profile)：返回 roster；非空时每个成员同时带 paneId+paneIndex
-//   - tools/call(ridge_send_to_teammate, target=<数字索引>)：delivered，且目标 pane 抓到注入文本
-//   - tools/call(ridge_send_to_teammate, target=<Uuid 字符串>)：delivered，且目标 pane 抓到注入文本
+//   - tools/call(ridge_send_to_teammate, target=<数字索引>)：返回提交 receipt，且目标 pane 执行注入命令
+//   - tools/call(ridge_send_to_teammate, target=<Uuid 字符串>)：返回提交 receipt，且目标 pane 执行注入命令
 //       ↑ 这两条共同证明缺口1：花名册回传的 paneIndex(数字) 与 paneId(Uuid) 两键落到同一 pane
 //   - tools/call(ridge_send_to_teammate, target=<伪造 Uuid>)：JSON-RPC error（INVALID_PARAMS）
 //
@@ -266,7 +266,7 @@ async function rpc(ws, method, params) {
 
   // 3) initialize
   const init = await rpc(ws, 'initialize', {});
-  check('initialize → serverInfo.name=ridge-teammate', init?.result?.serverInfo?.name === 'ridge-teammate', JSON.stringify(init));
+  check('initialize → serverInfo.name=agents-commune', init?.result?.serverInfo?.name === 'agents-commune', JSON.stringify(init));
 
   // 4) tools/list 广告了被路由的工具
   const tl = await rpc(ws, 'tools/list', {});
@@ -303,15 +303,25 @@ async function rpc(ws, method, params) {
 
   const sendIdx = await rpc(ws, 'tools/call', {
     name: 'ridge_send_to_teammate',
-    arguments: { target_pane_id: target.index, message: markIdx },
+    arguments: { target_pane_id: target.index, message: `Write-Output ${markIdx}` },
   });
-  check('send 经数字索引 → delivered', sendIdx?.result?.content?.[0]?.text === 'delivered', JSON.stringify(sendIdx));
+  const receiptIdx = JSON.parse(sendIdx?.result?.content?.[0]?.text ?? '{}');
+  check(
+    'send 经数字索引 → terminal accepted receipt',
+    receiptIdx.status === 'submit_dispatched' && receiptIdx.terminalAccepted === true && typeof receiptIdx.receiptId === 'string',
+    JSON.stringify(sendIdx),
+  );
 
   const sendUuid = await rpc(ws, 'tools/call', {
     name: 'ridge_send_to_teammate',
-    arguments: { target_pane_id: target.uuid, message: markUuid },
+    arguments: { target_pane_id: target.uuid, message: `Write-Output ${markUuid}` },
   });
-  check('send 经 Uuid 字符串 → delivered', sendUuid?.result?.content?.[0]?.text === 'delivered', JSON.stringify(sendUuid));
+  const receiptUuid = JSON.parse(sendUuid?.result?.content?.[0]?.text ?? '{}');
+  check(
+    'send 经 Uuid 字符串 → terminal accepted receipt',
+    receiptUuid.status === 'submit_dispatched' && receiptUuid.terminalAccepted === true && typeof receiptUuid.receiptId === 'string',
+    JSON.stringify(sendUuid),
+  );
 
   // 7) 伪造 Uuid → INVALID_PARAMS error（不静默落 0 号 pane）
   const bogus = crypto.randomUUID();
@@ -325,8 +335,9 @@ async function rpc(ws, method, params) {
   await new Promise((r) => setTimeout(r, 600)); // 等 PTY 回显落盘
   const cap = await httpReq(ep.url, 'GET', `/api/v1/capture-pane?pane=${target.index}&lines=200`, { token: ep.token });
   const captured = cap.text ?? '';
-  check('目标 pane 抓到「数字索引」注入文本', captured.includes(markIdx), `captured tail lacks ${markIdx}`);
-  check('目标 pane 抓到「Uuid」注入文本', captured.includes(markUuid), `captured tail lacks ${markUuid}`);
+  const count = (needle) => captured.split(needle).length - 1;
+  check('数字索引消息已提交并执行（输入+输出）', count(markIdx) >= 2, `captured ${markIdx} ${count(markIdx)} time(s)`);
+  check('Uuid 消息已提交并执行（输入+输出）', count(markUuid) >= 2, `captured ${markUuid} ${count(markUuid)} time(s)`);
 
   ws.close();
   console.log(`\n==== MCP E2E: ${pass} passed, ${fail} failed ====`);

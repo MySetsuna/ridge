@@ -9,11 +9,18 @@
   // 编组 Tab 额外传 group 上下文 → 多出「设为组长 / 从组移除」。
 
   import { invoke } from '@tauri-apps/api/core';
+  import { tick } from 'svelte';
   import { Crown, Pause, Play, Send, X, Ghost } from 'lucide-svelte';
   import { autoGrow } from '$lib/actions/autoGrow';
   import { enqueuePtyWrite } from '$lib/terminal/ptyWriteQueue';
   import { memberTasksStore, recordMemberTask } from './memberTasks';
   import { showToast } from '$lib/stores/toast';
+  import {
+    activePaneId,
+    agentPaneAttentionStore,
+    clearAgentPaneAttention,
+    switchWorkspace,
+  } from '$lib/stores/paneTree';
   import type { TeammateProfile, PendingApproval } from './teammateModel';
 
   interface Props {
@@ -52,19 +59,42 @@
   const present = $derived(profile !== null);
   const paneId = $derived(profile?.paneId ?? '');
   const lastTask = $derived($memberTasksStore[agentId]);
+  const attention = $derived(
+    workspaceId && paneId ? $agentPaneAttentionStore[`${workspaceId}:${paneId}`] : undefined
+  );
 
   /** 状态徽标优先级：待审批 > 已暂停 > 失联 > 运行中 > 空闲。 */
   const status = $derived.by(() => {
     if (pending.length > 0) return { text: '等待审批', cls: 'text-amber-300', dot: 'bg-amber-400 animate-pulse' };
-    if (!profile) return { text: '失联', cls: 'text-[var(--rg-fg-muted)]', dot: 'bg-[var(--rg-fg-muted)]/40' };
+    if (!profile) return { text: '失联', cls: 'text-red-300', dot: 'bg-red-400' };
     if (profile.status === 'Suspended')
       return { text: '已暂停', cls: 'text-amber-300', dot: 'bg-amber-400' };
     if (profile.status === 'Disappeared')
-      return { text: '失联', cls: 'text-[var(--rg-fg-muted)]', dot: 'bg-[var(--rg-fg-muted)]/40' };
+      return { text: '已停止', cls: 'text-red-300', dot: 'bg-red-400' };
     if (profile.activity === 'working')
       return { text: '运行中', cls: 'text-emerald-300', dot: 'bg-emerald-400 animate-pulse' };
     return { text: '空闲', cls: 'text-[var(--rg-fg-muted)]', dot: 'bg-[var(--rg-fg-muted)]' };
   });
+
+  async function activatePane(): Promise<void> {
+    if (!workspaceId || !paneId) return;
+    try {
+      await switchWorkspace(workspaceId);
+      activePaneId.set(paneId);
+      await tick();
+      const host = [...document.querySelectorAll<HTMLElement>('[data-rg-ws-pane-host]')]
+        .find((element) => element.getAttribute('data-rg-ws-pane-host') === workspaceId);
+      const pane = [...(host?.querySelectorAll<HTMLElement>('[data-rg-pane-id]') ?? [])]
+        .find((element) => element.getAttribute('data-rg-pane-id') === paneId);
+      const focusTarget = pane?.querySelector<HTMLElement>('.rg-ime-helper') ?? pane;
+      focusTarget?.focus();
+      if (pane && pane.contains(document.activeElement)) {
+        clearAgentPaneAttention(workspaceId, paneId);
+      }
+    } catch (error) {
+      showToast(`定位 ${name} 失败：${error instanceof Error ? error.message : String(error)}`, 'error');
+    }
+  }
 
   /** 给该成员派任务：写入其 pane stdin。
    *  以 `\r`（CR = 回车键真实字节）结尾——`\n` 只会在 TUI 输入框里插一个换行、不触发提交。 */
@@ -106,7 +136,16 @@
   }
 </script>
 
-<li class="group/mem rounded px-1.5 py-1 hover:bg-[var(--rg-surface)]/60 {present ? '' : 'opacity-60'}">
+<li
+  aria-label="{name} · {status.text}"
+  class="group/mem rounded border px-1.5 py-1 hover:bg-[var(--rg-surface)]/60
+    {attention === 'waiting'
+      ? 'border-amber-400/70 bg-amber-500/10'
+      : attention === 'stopped'
+        ? 'border-red-400/70 bg-red-500/10'
+        : 'border-transparent'}
+    {present ? '' : 'opacity-60'}"
+>
   <!-- 标题行：状态点 + 名字 + 状态词 + 来源/编组标注 + 操作 -->
   <div class="flex items-center gap-2">
     {#if present}
@@ -114,7 +153,14 @@
     {:else}
       <Ghost class="h-3 w-3 shrink-0 text-[var(--rg-fg-muted)]" />
     {/if}
-    <span class="min-w-0 flex-1 truncate text-[12px]" title={name}>{name}</span>
+    <button
+      type="button"
+      class="min-w-0 flex-1 truncate text-left text-[12px] hover:text-[var(--rg-accent)] disabled:cursor-default"
+      title={paneId ? `定位到 ${name}` : name}
+      aria-label={paneId ? `定位到 ${name} 的终端` : name}
+      disabled={!paneId || !workspaceId}
+      onclick={() => void activatePane()}
+    >{name}</button>
     {#if sourceLabel}
       <span class="max-w-24 shrink-0 truncate text-[9px] text-[var(--rg-fg-muted)]" title={sourceLabel}>
         {sourceLabel}

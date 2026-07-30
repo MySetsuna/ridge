@@ -49,13 +49,14 @@ fs.mkdirSync(dir, { recursive: true });
 const fake = path.join(dir, 'aider.exe');
 const src = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'PING.EXE');
 {
-  const { execSync } = await import('node:child_process');
-  const q = fake.replace(/\\/g, '\\\\');
-  try {
-    execSync(`wmic process where "ExecutablePath='${q}'" call terminate`, { stdio: 'ignore' });
-  } catch {
-    /* 没有残留 */
-  }
+  const { spawnSync } = await import('node:child_process');
+  const q = fake.replace(/'/g, "''");
+  spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq '${q}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`,
+  ], { stdio: 'ignore' });
   // 先收尸再覆盖：两条 e2e 用同一个文件名但不同底座（ping / timeout），
   // 「已存在就跳过拷贝」会把上一条的二进制留下来，参数对不上即刻退出。
   fs.copyFileSync(src, fake);
@@ -124,10 +125,22 @@ const opened = await ev(
 );
 if (opened !== 'clicked') fail('找不到 Agent 面板入口按钮:', opened);
 
+const membersTab = await ev(
+  `(() => {
+     const b = [...document.querySelectorAll('button')]
+       .find((x) => x.textContent.includes('成员') && x.textContent.trim().length <= 4);
+     if (!b) return 'no-members-tab';
+     b.click();
+     return 'clicked';
+   })()`,
+);
+if (membersTab !== 'clicked') fail('找不到「成员」Tab:', membersTab);
+
 /** 抓「某成员行」的能力清单：状态徽标 / 最近回复 / 发消息输入框 + 发送键。 */
 const ROW_PROBE = `(() => {
   const ta = [...document.querySelectorAll('textarea')]
-    .find((x) => (x.placeholder || '').startsWith('给 aider 发消息'));
+    .find((x) => (x.placeholder || '').startsWith('给 ')
+      && /自动/.test(x.closest('li')?.innerText || ''));
   if (!ta) return { found: false };
   const li = ta.closest('li');
   const text = li ? li.innerText : '';
@@ -167,7 +180,8 @@ if (!row?.found) {
   const sent = await ev(
     `(() => {
        const ta = [...document.querySelectorAll('textarea')]
-         .find((x) => (x.placeholder || '').startsWith('给 aider 发消息'));
+         .find((x) => (x.placeholder || '').startsWith('给 ')
+           && /自动/.test(x.closest('li')?.innerText || ''));
        if (!ta) return 'no-textarea';
        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
        setter.call(ta, ${JSON.stringify(marker)});
@@ -224,13 +238,14 @@ else {
 
 // 收尾：结束替身，别把它留给下一次跑。
 {
-  const { execSync } = await import('node:child_process');
-  const q = fake.replace(/\\/g, '\\\\');
-  try {
-    execSync(`wmic process where "ExecutablePath='${q}'" call terminate`, { stdio: 'ignore' });
-  } catch {
-    /* 已退出 */
-  }
+  const { spawnSync } = await import('node:child_process');
+  const q = fake.replace(/'/g, "''");
+  spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq '${q}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`,
+  ], { stdio: 'ignore' });
 }
 
 if (!process.exitCode) log('GATE: PASS');

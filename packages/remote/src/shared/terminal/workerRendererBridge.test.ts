@@ -59,7 +59,7 @@ describe('workerRendererBridge', () => {
 		disposeWorkerRenderer();
 		fake = makeFakeWorker();
 		__setWorkerFactory(() => fake);
-		setFlag(undefined);
+		setFlag(false);
 	});
 
 	afterEach(() => {
@@ -103,7 +103,7 @@ describe('workerRendererBridge', () => {
 			expect(w.type).toBe('init');
 			expect(w.paneId).toBe('pane-a');
 			expect(w.dims).toEqual({ rows: 24, cols: 80, dpr: 2 });
-			expect(w.backend).toBe('webgpu');
+			expect(w.backend).toBe('canvas2d');
 			expect(w.scrollbackLines).toBe(5000);
 			expect(typeof w.__reqId).toBe('number');
 		});
@@ -132,6 +132,17 @@ describe('workerRendererBridge', () => {
 			expect(fake.posted[0].transfer).toEqual([sent.buffer]);
 			// Original is still readable on the main thread.
 			expect(Array.from(original)).toEqual([10, 20, 30, 40]);
+		});
+
+		it('feed posts a transferable COPY of raw PTY bytes', () => {
+			const original = new Uint8Array([0x1b, 0x5b, 0x48]);
+			workerRendererBridge.feed('pane-a', original);
+			const sent = fake.posted[0].wire.bytes as Uint8Array;
+			expect(fake.posted[0].wire).toMatchObject({ type: 'feed', paneId: 'pane-a' });
+			expect(Array.from(sent)).toEqual(Array.from(original));
+			expect(sent.buffer).not.toBe(original.buffer);
+			expect(fake.posted[0].transfer).toEqual([sent.buffer]);
+			expect(Array.from(original)).toEqual([0x1b, 0x5b, 0x48]);
 		});
 
 		it('applyDelta swallows a sync throw from bytes.slice() (Iter 16 contract guard)', () => {

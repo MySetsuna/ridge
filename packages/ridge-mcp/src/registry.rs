@@ -24,6 +24,13 @@ fn pane_target_schema() -> serde_json::Value {
     })
 }
 
+fn workspace_id_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "string",
+        "description": "显式工作区 ID；省略时兼容当前工作区，提供时宿主必须校验且不得回退"
+    })
+}
+
 // ─── ToolRegistry ────────────────────────────────────────────────────────────
 
 /// Ridge MCP 工具注册表。
@@ -54,7 +61,28 @@ impl Default for ToolRegistry {
                         },
                         "initial_cmd": {
                             "type": "string",
-                            "description": "新 pane 启动后立即执行的命令（可选）"
+                            "description": "旧式初始命令；与 launch_profile 互斥"
+                        },
+                        "workspace_id": workspace_id_schema(),
+                        "launch_profile": {
+                            "type": "string",
+                            "description": "ridge_get_launch_capabilities 返回的 profile id"
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "profile 许可集合内的模型覆盖；禁止猜测"
+                        },
+                        "reasoning_effort": {
+                            "type": "string",
+                            "description": "profile 许可集合内的推理级覆盖；禁止猜测"
+                        },
+                        "checkpoint": {
+                            "type": "string",
+                            "description": "profile 明确支持时传入的恢复 checkpoint/session id"
+                        },
+                        "replace_target_pane_id": {
+                            "description": "新 pane 成功启动后停止的旧 Worker；须与 checkpoint 同用",
+                            "oneOf": [pane_target_schema()]
                         }
                     },
                     "required": ["direction", "role"]
@@ -63,11 +91,12 @@ impl Default for ToolRegistry {
             ToolSpec {
                 name: "ridge_send_to_teammate".to_string(),
                 description:
-                    "向指定 pane 写入文本草稿并留一份到收件箱；不派发 Enter，返回 draft_injected。"
+                    "向指定 pane 写入文本、默认派发 Enter，并留一份到收件箱；仅 submit=false 时注入草稿。"
                         .to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
                         "message": {
                             "type": "string",
@@ -76,6 +105,10 @@ impl Default for ToolRegistry {
                         "from": {
                             "type": "string",
                             "description": "发送方标识（跨 agent 协作时写自己的名字，默认 mcp-client）"
+                        },
+                        "submit": {
+                            "type": "boolean",
+                            "description": "是否派发 Enter；默认 true，仅显式 false 时保留为草稿"
                         }
                     },
                     "required": ["target_pane_id", "message"]
@@ -87,6 +120,7 @@ impl Default for ToolRegistry {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
                         "objective": {
                             "type": "string",
@@ -106,6 +140,7 @@ impl Default for ToolRegistry {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
                         "message": { "type": "string", "description": "要写入并提交的文本" },
                         "from": { "type": "string", "description": "发送方标识" }
@@ -119,6 +154,7 @@ impl Default for ToolRegistry {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
                         "receipt_id": { "type": "string", "description": "发送工具返回的 receiptId" }
                     },
@@ -131,6 +167,7 @@ impl Default for ToolRegistry {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
                         "receipt_id": { "type": "string", "description": "收到消息中的 receiptId" },
                         "status": { "type": "string", "enum": ["agent_acknowledged", "agent_rejected"] },
@@ -179,6 +216,7 @@ impl Default for ToolRegistry {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
                         "lines": {
                             "type": "number",
@@ -196,6 +234,7 @@ impl Default for ToolRegistry {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
                         "peek": {
                             "type": "boolean",
@@ -211,6 +250,7 @@ impl Default for ToolRegistry {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
                         "status": {
                             "type": "string",
@@ -226,7 +266,27 @@ impl Default for ToolRegistry {
             },
             ToolSpec {
                 name: "ridge_get_team_profile".to_string(),
-                description: "获取当前工作区所有 teammate pane 的身份与状态快照。".to_string(),
+                description: "获取指定或当前工作区所有 teammate pane 的身份与状态快照。".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": workspace_id_schema()
+                    },
+                    "required": []
+                }),
+            },
+            ToolSpec {
+                name: "ridge_list_workspaces".to_string(),
+                description: "枚举宿主可寻址工作区；先取 workspace id，再跨区发现或发送。".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            ToolSpec {
+                name: "ridge_get_launch_capabilities".to_string(),
+                description: "发现宿主 launch profile 及各 profile 允许的模型、推理级；空集合禁止覆盖。".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -241,6 +301,7 @@ impl Default for ToolRegistry {
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "workspace_id": workspace_id_schema(),
                         "group_name": {
                             "type": "string",
                             "description": "目标编组的名称（前端花名册里的组名，同名取首个）"
@@ -290,9 +351,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_registry_has_thirteen_tools() {
+    fn default_registry_has_fifteen_tools() {
         let reg = ToolRegistry::default();
-        assert_eq!(reg.tools().len(), 13);
+        assert_eq!(reg.tools().len(), 15);
     }
 
     #[test]
@@ -316,7 +377,7 @@ mod tests {
             description: "test".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
         });
-        assert_eq!(reg.tools().len(), 14);
+        assert_eq!(reg.tools().len(), 16);
         assert!(reg.get("custom_tool").is_some());
     }
 
@@ -325,7 +386,7 @@ mod tests {
         let reg = ToolRegistry::default();
         let v = reg.tools_list_result();
         assert!(v["tools"].is_array());
-        assert_eq!(v["tools"].as_array().unwrap().len(), 13);
+        assert_eq!(v["tools"].as_array().unwrap().len(), 15);
     }
 
     #[test]
@@ -379,8 +440,16 @@ mod tests {
             "ridge_acknowledge_receipt",
         ] {
             let t = &reg.get(name).unwrap().input_schema["properties"]["target_pane_id"]["type"];
-            let kinds: Vec<&str> = t.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-            assert!(kinds.contains(&"string") && kinds.contains(&"number"), "{name} 寻址类型过窄");
+            let kinds: Vec<&str> = t
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert!(
+                kinds.contains(&"string") && kinds.contains(&"number"),
+                "{name} 寻址类型过窄"
+            );
         }
     }
 
@@ -406,6 +475,8 @@ mod tests {
             "ridge_send_and_submit",
             "ridge_delegate_task",
             "ridge_get_team_profile",
+            "ridge_list_workspaces",
+            "ridge_get_launch_capabilities",
             "ridge_join_group",
             "ridge_split_pane",
             "ridge_capture_pane",
@@ -434,5 +505,42 @@ mod tests {
         let props = spec.input_schema["properties"].as_object().unwrap();
         assert!(props.contains_key("agent_id"));
         assert!(props.contains_key("target_pane_id"));
+    }
+
+    #[test]
+    fn workspace_and_launch_selectors_are_discoverable() {
+        let reg = ToolRegistry::default();
+        for name in [
+            "ridge_send_to_teammate",
+            "ridge_send_and_submit",
+            "ridge_delegate_task",
+            "ridge_capture_pane",
+            "ridge_inbox_read",
+            "ridge_delivery_status",
+            "ridge_acknowledge_receipt",
+            "ridge_report_progress",
+            "ridge_join_group",
+        ] {
+            assert!(
+                reg.get(name).unwrap().input_schema["properties"]
+                    .get("workspace_id")
+                    .is_some(),
+                "{name} missing workspace_id"
+            );
+        }
+        let split = reg.get("ridge_split_pane").unwrap();
+        for key in [
+            "workspace_id",
+            "launch_profile",
+            "model",
+            "reasoning_effort",
+            "checkpoint",
+            "replace_target_pane_id",
+        ] {
+            assert!(
+                split.input_schema["properties"].get(key).is_some(),
+                "ridge_split_pane missing {key}"
+            );
+        }
     }
 }

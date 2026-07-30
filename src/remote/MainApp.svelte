@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
   import { t, tr } from '$lib/i18n';
-  import { Folder, GitBranch, Search, Bot, Keyboard } from 'lucide-svelte';
+  import { Folder, GitBranch, Search, Bot, Keyboard, TextCursorInput } from 'lucide-svelte';
   // Type-only import of the lazily-loaded TerminalCanvas, used solely to type
   // the bind:this instance ref below. Erased at build, so it does NOT defeat
   // the dynamic import / lazy-load on the next line.
@@ -141,6 +141,7 @@
   let kernelTheme: Record<string, string> | null = $state(null);
   let backendName = $state('Canvas2D');
   let scrollbackLoadingPaneIds = $state<string[]>([]);
+  let scrollbackErrorPaneIds = $state<string[]>([]);
 
   // §remember-last-pane / §persist-state: remember the last active pane per
   // workspace AND the last active workspace, persisted to localStorage so a
@@ -215,10 +216,11 @@
   // readText() is permitted. Previously this sent `{type:'paste'}` to the host,
   // which had no handler — so the button did nothing.
   async function handlePaste() {
-    if (!ui.activePaneId || !canvasRef) return;
+    const target = canvasRef;
+    if (!activePaneRef() || !target) return;
     try {
       const text = await navigator.clipboard.readText();
-      if (text) canvasRef.pasteText(text);
+      if (text) target.pasteText(text);
     } catch { /* clipboard blocked: no permission / insecure context */ }
   }
 
@@ -227,18 +229,23 @@
   // scrolls up. TerminalCanvas fires onNearTop when the viewport nears the buffer
   // top; fetch the next older batch (cloud link only) and prepend it. Guard against
   // a pane switch mid-fetch so we never prepend one pane's history onto another.
-  async function loadOlderScrollback() {
-    const pane = activePaneRef();
-    if (!pane || !canvasRef || !ws.fetchOlderScrollback) return;
+  async function loadOlderScrollback(pane: PaneRef) {
+    if (!canvasRef || !ws.fetchOlderScrollback) return;
+    const targetCanvas = canvasRef;
     const key = paneRefKey(pane);
     if (scrollbackLoadingPaneIds.includes(key)) return;
+    scrollbackErrorPaneIds = scrollbackErrorPaneIds.filter((id) => id !== key);
     scrollbackLoadingPaneIds = [...scrollbackLoadingPaneIds, key];
     let page: Awaited<ReturnType<NonNullable<RemoteLink['fetchOlderScrollback']>>> = null;
     try {
       page = await ws.fetchOlderScrollback(pane);
       if (!page) return;
       const bytes = await scrollbackDecoder.decode(pane, page.startSeq, page.endSeq, page.bytes);
-      if (bytes && canvasRef?.prependScrollbackForPane(key, bytes)) page.commit();
+      if (bytes && targetCanvas.prependScrollbackForPane(key, bytes)) page.commit();
+    } catch {
+      if (!scrollbackErrorPaneIds.includes(key)) {
+        scrollbackErrorPaneIds = [...scrollbackErrorPaneIds, key];
+      }
     } finally {
       page?.discard();
       scrollbackLoadingPaneIds = scrollbackLoadingPaneIds.filter((id) => id !== key);
@@ -379,9 +386,8 @@
     kernelTheme = buildKernelTheme(colors);
   }
 
-  function onStdin(data: string) {
-    const pane = activePaneRef();
-    if (pane) ws.sendStdin(pane, data);
+  function onStdin(pane: PaneRef, data: string) {
+    ws.sendStdin(pane, data);
   }
 
   // Automatic refit (ResizeObserver / visualViewport): the controller fires this
@@ -391,9 +397,8 @@
   // until the manual refresh button. `claimPane` runs the SAME host path as that
   // button (resize real PTY + parser, broadcast `pty-resized`), giving automatic
   // 自适应全屏 reflow without the manual tap.
-  function onResize(paneId: string, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
-    if (!ui.activeWorkspaceId) return;
-    ws.claimPane({ workspaceId: ui.activeWorkspaceId, paneId }, rows, cols, pixelWidth, pixelHeight);
+  function onResize(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
+    ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight);
   }
 
   function handleRefresh() {
@@ -558,7 +563,10 @@
     failure = ws.lastFailure();
     ws.onMessage((msg) => {
       if (msg.type === 'panes') {
-        const workspaceId = msg.workspaceId || ui.activeWorkspaceId;
+        // Steady-state pane snapshots must carry their source workspace.
+        // A current-UI fallback races late responses onto the wrong identity.
+        if (!msg.workspaceId) return;
+        const workspaceId = msg.workspaceId;
         const nextPanes = dedupeRemoteItems(msg.panes);
         queryClient.setQueryData(remoteQueryKeys.panes(sessionId(), workspaceId), nextPanes);
         const paneIds = nextPanes.map(p => p.id);
@@ -697,6 +705,7 @@
       for (const pane of attachedPanes.values()) {
         if (pane.paneId !== pid || pane.workspaceId !== ui.activeWorkspaceId) {
           ws.subscribePane(pane, { active: false });
+          replayedPanes.add(paneRefKey(pane));
         }
       }
       if (pid) {
@@ -739,7 +748,7 @@
   $effect(() => {
     const pid = ui.activePaneId;
     const workspaceId = ui.activeWorkspaceId;
-    if (!pid) { subscribedPaneId = null; return; } // null gap → force re-subscribe next
+    if (!pid || !workspaceId) { subscribedPaneId = null; return; } // null gap → force re-subscribe next
     untrack(() => {
       const pane = { workspaceId, paneId: pid };
       const subscriptionKey = paneRefKey(pane);
@@ -889,7 +898,23 @@
           {/if}
         </div>
         <div class="header-actions">
-          <button class="hdr-btn" class:active={ui.showKeyboard} onclick={() => ui.showKeyboard = !ui.showKeyboard} title={$t('mobile.virtualKeyboard')} tabindex="-1">
+          <button
+            class="hdr-btn"
+            onclick={() => canvasRef?.openSystemKeyboard()}
+            title="Open system keyboard"
+            aria-label="Open system keyboard"
+            data-testid="system-ime-button"
+          >
+            <TextCursorInput class="w-4 h-4" />
+          </button>
+          <button
+            class="hdr-btn"
+            class:active={ui.showKeyboard}
+            onclick={() => ui.showKeyboard = !ui.showKeyboard}
+            title={$t('mobile.virtualKeyboard')}
+            aria-label={$t('mobile.virtualKeyboard')}
+            data-testid="virtual-keyboard-button"
+          >
             <Keyboard class="w-4 h-4" />
           </button>
         </div>
@@ -929,6 +954,8 @@
             onNearTop={loadOlderScrollback}
             onKeyboardShift={(shift: number) => ui.keyboardShift = shift}
             scrollbackLoading={scrollbackLoadingPaneIds.includes(`${ui.activeWorkspaceId}:${ui.activePaneId}`)}
+            scrollbackError={scrollbackErrorPaneIds.includes(`${ui.activeWorkspaceId}:${ui.activePaneId}`)}
+            onRetryScrollback={loadOlderScrollback}
             bind:selectionMode={ui.selectionMode}
             sentenceBuffer={ui.sentenceBuffer}
           />

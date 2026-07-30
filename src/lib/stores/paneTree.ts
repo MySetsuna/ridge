@@ -107,6 +107,35 @@ export function forgetWorkspaceTree(wsId: string): void {
 /** 最近一次点�?聚焦的终端窗格；分屏针对�?id（与 layout �?leaf id 一致）�?*/
 export const activePaneId = writable<string>('');
 
+export type AgentPaneAttention = 'waiting' | 'stopped';
+export const agentPaneAttentionStore = writable<Record<string, AgentPaneAttention>>({});
+
+function agentPaneAttentionKey(workspaceId: string, paneId: string): string {
+  return `${workspaceId}:${paneId}`;
+}
+
+export function setAgentPaneAttention(
+  workspaceId: string,
+  paneId: string,
+  attention: AgentPaneAttention | null
+): void {
+  if (!workspaceId || !paneId) return;
+  const key = agentPaneAttentionKey(workspaceId, paneId);
+  agentPaneAttentionStore.update((current) => {
+    if (attention === null) {
+      if (!(key in current)) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    }
+    return current[key] === attention ? current : { ...current, [key]: attention };
+  });
+}
+
+export function clearAgentPaneAttention(workspaceId: string, paneId: string): void {
+  setAgentPaneAttention(workspaceId, paneId, null);
+}
+
 /** 正在拖拽重组的源窗格 id（标题栏 dragstart 设置，dragend 清空）�?*/
 export const paneDragSourceId = writable<string | null>(null);
 

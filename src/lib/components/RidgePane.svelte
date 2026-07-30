@@ -19,7 +19,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '@ridge/remote/shared/terminal/clipboardImage';
 import { t, tr } from '$lib/i18n';
-import { activePaneId, activeWorkspaceId, setPaneCwd, paneOscTitleStore, paneForegroundProcessStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
+import { activePaneId, activeWorkspaceId, clearAgentPaneAttention, setPaneCwd, paneOscTitleStore, paneForegroundProcessStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
 import type { KernelEvent } from '@ridge/remote/shared/terminal/manager';
 import { ensurePtyBridge, enableDeltaModeThenFit } from '@ridge/remote/shared/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '@ridge/remote/shared/terminal/themeBridge';
@@ -210,7 +210,7 @@ function snapshotHistoryItems(query: string): string[] {
 function computeHistoryWindow(anchorRow: number, placeAbove: boolean): number {
 	const rows = manager.rows(paneId) || 24;
 	const avail = placeAbove ? anchorRow : Math.max(0, rows - anchorRow - 1);
-	return Math.max(3, Math.min(HISTORY_OVERLAY_MAX_WINDOW, avail));
+	return Math.max(1, Math.min(HISTORY_OVERLAY_MAX_WINDOW, avail));
 }
 
 function pushHistoryOverlay(): void {
@@ -1959,13 +1959,14 @@ function onContainerPointerDown(e: PointerEvent) {
 	// services every printable key without IME composition.
 	if ($settingsStore.terminalImeMode === 'direct') {
 		container?.focus();
-		return;
-	}
-	if (imeHelper) {
+	} else if (imeHelper) {
 		imeHelper.focus();
 		repositionImeHelper();
 	} else {
 		container?.focus();
+	}
+	if (container?.contains(document.activeElement)) {
+		clearAgentPaneAttention(workspaceId, paneId);
 	}
 }
 

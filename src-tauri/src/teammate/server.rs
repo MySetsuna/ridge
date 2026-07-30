@@ -573,7 +573,7 @@ async fn route_delegate_task(
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
-    let prompt = format!("{}\n", body.objective);
+    let prompt = ridge_mcp::server::enter_terminated(&body.objective);
     // G1：delegate 提示注入同属 agent 写路径，走 suspend 收口。
     if let Err(e) = super::suspend::agent_pty_write(&ctx.state, wid, pid, prompt.as_bytes()) {
         return (StatusCode::BAD_REQUEST, e).into_response();
@@ -640,8 +640,6 @@ async fn route_report_progress(
     }
     (StatusCode::OK, "ok").into_response()
 }
-
-
 #[derive(Deserialize)]
 struct ReleasePaneBody {
     pane_index: Option<usize>,
@@ -866,7 +864,7 @@ async fn route_split(
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                 {
-                    let data = format!("{cmd}\n");
+                    let data = ridge_mcp::server::enter_terminated(&cmd);
                     // G1：exec 命令注入同属 agent 写路径，走 suspend 收口。
                     let _ = super::suspend::agent_pty_write(&ctx.state, wid, pane_id, data.as_bytes());
                 }
@@ -1311,7 +1309,7 @@ async fn route_send_keys(
                 })
                 .unwrap_or_else(|| format!("pane#{pane_idx}"));
             match hitl::request_approval(&ctx.handle, wid, &initiator, cmd).await {
-                hitl::HitlResolution::Approve => body.text.clone(),
+                hitl::HitlResolution::Approve => ridge_mcp::server::enter_terminated(cmd),
                 hitl::HitlResolution::Reject => {
                     return (
                         StatusCode::FORBIDDEN,
@@ -1319,8 +1317,12 @@ async fn route_send_keys(
                     )
                         .into_response();
                 }
-                hitl::HitlResolution::Modify(new_cmd) => format!("{new_cmd}\n"),
+                hitl::HitlResolution::Modify(new_cmd) => {
+                    ridge_mcp::server::enter_terminated(&new_cmd)
+                }
             }
+        } else if submitted {
+            ridge_mcp::server::enter_terminated(&body.text)
         } else {
             body.text.clone()
         }

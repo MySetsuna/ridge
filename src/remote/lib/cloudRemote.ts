@@ -421,6 +421,7 @@ export class CloudRemoteConnection implements RemoteLink {
   }
 
   private async _refreshPanes(): Promise<void> {
+    const workspaceId = this._activeWorkspaceId;
     let leaves: PaneInfo[];
     try {
       const layout = await this.bridge.invoke<PaneNode>('get_pane_layout');
@@ -428,11 +429,15 @@ export class CloudRemoteConnection implements RemoteLink {
     } catch {
       return; // host not ready / transient — leave the UI as-is
     }
-    this.emitMessage({ type: 'panes', panes: leaves });
+    this.emitMessage({
+      type: 'panes',
+      workspaceId,
+      panes: leaves,
+    });
     // No native pty-meta event over cloud: derive title/cwd from the layout leaves
     // so the breadcrumb + sidebar cwd track (refreshed again on pane-tree-changed).
     for (const p of leaves) {
-      const pane = { workspaceId: this._activeWorkspaceId, paneId: p.id };
+      const pane = { workspaceId, paneId: p.id };
       this.metaListeners.forEach((fn) => fn(pane, p.title ?? null, p.cwd ?? null));
     }
   }

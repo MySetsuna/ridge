@@ -13,6 +13,7 @@
 		flattenVisiblePaths,
 		explorerClipboard,
 		setExplorerClipboard,
+		remainingCutClipboard,
 		resolveActiveClipboard,
 		uniqueChildName,
 		refreshColumnsCovering,
@@ -383,18 +384,59 @@
 		}
 	}
 
-	// cwd 头 / 文件树空白区右键：弹「新建文件 / 新建文件夹 / 刷新 / 在文件管理器显示」。
-	function showCwdContextMenu(e: MouseEvent, col: { id: string; cwd: string }): void {
+	function relativeWorkspacePath(path: string, root: string): string {
+		const slashPath = path.replace(/\\/g, '/').replace(/\/+$/, '');
+		const slashRoot = root.replace(/\\/g, '/').replace(/\/+$/, '');
+		const windows = /^[A-Za-z]:\//.test(slashPath) || slashPath.startsWith('//');
+		const pathKey = windows ? slashPath.toLowerCase() : slashPath;
+		const rootKey = windows ? slashRoot.toLowerCase() : slashRoot;
+		if (pathKey === rootKey) return '.';
+		return pathKey.startsWith(`${rootKey}/`)
+			? slashPath.slice(slashRoot.length + 1)
+			: path;
+	}
+
+	function workspaceRootCwd(workspaceId: string, fallback: string): string {
+		return get(fileExplorerStore).columns.find((c) => c.workspaceId === workspaceId)?.cwd ?? fallback;
+	}
+
+	function copyPath(path: string): void {
+		void writeText(path).catch((error) => console.error('[Explorer] copy path failed', error));
+	}
+
+	// cwd 头 / 文件树空白区右键：动作均捕获菜单打开时的列身份。
+	function showCwdContextMenu(
+		e: MouseEvent,
+		col: { id: string; workspaceId: string; cwd: string },
+	): void {
 		e.preventDefault();
 		e.stopPropagation();
+		const { id: columnId, workspaceId: targetWorkspaceId, cwd } = col;
+		const root = workspaceRootCwd(targetWorkspaceId, cwd);
 		showContextMenu(e.clientX, e.clientY, [
-			{ id: 'new-file', label: tr('explorer.ctxNewFile'), action: () => void beginColumnCreate(col.id, col.cwd, 'file') },
-			{ id: 'new-folder', label: tr('explorer.ctxNewFolder'), action: () => void beginColumnCreate(col.id, col.cwd, 'folder') },
-			{ id: 'paste', label: tr('explorer.ctxPaste'), action: () => void pasteClipboard({ columnId: col.id }) },
+			{ id: 'new-file', label: tr('explorer.ctxNewFile'), action: () => void beginColumnCreate(columnId, cwd, 'file') },
+			{ id: 'new-folder', label: tr('explorer.ctxNewFolder'), action: () => void beginColumnCreate(columnId, cwd, 'folder') },
+			{ id: 'paste', label: tr('explorer.ctxPaste'), action: () => void pasteClipboard({ columnId }) },
 			{ id: 'div1', divider: true },
-			{ id: 'refresh', label: tr('explorer.ctxRefresh'), action: () => void handleRefresh(col.id) },
-			{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealCwd(col.cwd) },
-		]);
+			{ id: 'copy', label: tr('explorer.ctxCopy'), action: () => copyPath(cwd) },
+			{ id: 'copy-rel', label: tr('explorer.ctxCopyRelative'), action: () => copyPath(relativeWorkspacePath(cwd, root)) },
+			{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealCwd(cwd) },
+			{ id: 'div2', divider: true },
+			{ id: 'refresh', label: tr('explorer.ctxRefresh'), action: () => void handleRefresh(columnId) },
+		], 'sidebar', undefined, targetWorkspaceId);
+	}
+
+	async function openTreeFile(path: string, columnId: string): Promise<void> {
+		if (get(fileEditorStore).openFiles.some((file) => file.path === path)) {
+			await fileEditorStore.openFile(path);
+			return;
+		}
+		const freshPath = await fileExplorerStore.resolveFreshFile(columnId, path);
+		if (!freshPath) {
+			await fileExplorerStore.loadTree(columnId);
+			return;
+		}
+		await fileEditorStore.openFile(freshPath);
 	}
 
 	/**
@@ -454,7 +496,7 @@
 		// Plain click → single selection.
 		fileExplorerStore.setSelectedPath(_columnId, path);
 		// Open file into the editor on plain click (dirs already toggled by FileTree).
-		if (!isDir) void fileEditorStore.openFile(path);
+		if (!isDir) void openTreeFile(path, _columnId);
 	}
 
 	// Root-level keyboard nav (ArrowUp/Down/Home/End) lives on `.explorer` so it can
@@ -526,6 +568,7 @@
 
 		const cmd = clip.mode === 'copy' ? 'copy_path' : 'move_path';
 		const errors: string[] = [];
+		const failedPaths: string[] = [];
 		for (const from of clip.paths) {
 			const name = from.split(/[\\/]/).pop() || 'untitled';
 			const unique = uniqueChildName(targetDir, name, existingInTarget);
@@ -535,12 +578,13 @@
 			try {
 				await invoke(cmd, { from, to });
 			} catch (e) {
+				failedPaths.push(from);
 				errors.push(`${from}: ${e}`);
 			}
 		}
-		// Consume the clipboard on successful cut; copy stays armed so repeat-paste works.
-		if (clip.mode === 'cut' && errors.length < clip.paths.length) {
-			setExplorerClipboard(null);
+		// Partial cut keeps only failed paths armed for retry; successful paths must not move twice.
+		if (clip.mode === 'cut') {
+			setExplorerClipboard(remainingCutClipboard(clip, failedPaths));
 		}
 		// Refresh every column that had the target dir in its cached tree —
 		// fixes the "two panes at same cwd see stale tree after paste" case.
@@ -699,6 +743,8 @@
 		startH: number;
 		columnInnerH: number;
 		stackEl: HTMLElement;
+		handleEl: HTMLElement;
+		pointerId: number;
 	} | null = null;
 	let explorerRootEl: HTMLDivElement | undefined = $state();
 
@@ -724,11 +770,20 @@
 		);
 		setExplorerBodyHeight(bodyResize.cwd, h);
 	}
-	function onBodyResizeUp(): void {
+	function onBodyResizeUp(e?: PointerEvent): void {
+		if (e && bodyResize && e.pointerId !== bodyResize.pointerId) return;
+		const finished = bodyResize;
 		bodyResize = null;
 		window.removeEventListener('pointermove', onBodyResizeMove);
 		window.removeEventListener('pointerup', onBodyResizeUp);
 		window.removeEventListener('pointercancel', onBodyResizeUp);
+		try {
+			if (finished?.handleEl.hasPointerCapture(finished.pointerId)) {
+				finished.handleEl.releasePointerCapture(finished.pointerId);
+			}
+		} catch {
+			/* handle may have detached during workspace teardown */
+		}
 		document.body.classList.remove('rg-os-dragging');
 		document.body.classList.remove('rg-explorer-resizing');
 		persistExplorerBodyHeights();
@@ -747,6 +802,8 @@
 			startH: bodyEl.getBoundingClientRect().height,
 			columnInnerH,
 			stackEl: stack,
+			handleEl: handle,
+			pointerId: e.pointerId,
 		};
 		document.body.classList.add('rg-os-dragging');
 		document.body.classList.add('rg-explorer-resizing');
@@ -781,12 +838,8 @@
 	});
 
 	onDestroy(() => {
-		window.removeEventListener('pointermove', onBodyResizeMove);
-		window.removeEventListener('pointerup', onBodyResizeUp);
-		window.removeEventListener('pointercancel', onBodyResizeUp);
 		if (bodyResize) {
-			document.body.classList.remove('rg-os-dragging');
-			document.body.classList.remove('rg-explorer-resizing');
+			onBodyResizeUp();
 		}
 	});
 

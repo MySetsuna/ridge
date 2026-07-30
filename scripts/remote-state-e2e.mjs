@@ -319,14 +319,27 @@ const loadingSeen = await page.evaluate(async () => {
   const container = document.querySelector('.container');
   if (!(container instanceof HTMLElement)) return false;
   let seen = !!document.querySelector('.scrollback-loading');
-  const observer = new MutationObserver(() => {
-    if (document.querySelector('.scrollback-loading')) seen = true;
+  const observer = new MutationObserver((records) => {
+    if (records.some((record) =>
+      (record.type === 'attributes' && record.target.getAttribute?.('aria-busy') === 'true')
+      || [...record.addedNodes].some((node) =>
+        node instanceof Element
+        && (node.matches('.scrollback-loading') || node.querySelector('.scrollback-loading')))
+    )) seen = true;
   });
-  observer.observe(document.body, { childList: true, subtree: true });
-  for (let i = 0; i < 650; i += 1) {
-    container.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }));
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['aria-busy'],
+  });
+  for (let batch = 0; batch < 160 && !seen; batch += 1) {
+    for (let i = 0; i < 8; i += 1) {
+      container.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  await new Promise((resolve) => setTimeout(resolve, 500));
   observer.disconnect();
   return seen;
 });
@@ -349,14 +362,10 @@ await page.waitForFunction(() =>
 );
 assert(true, 'scrollback loading state clears after atomic commit');
 
-// Desktop Remote mounts SourceControl even while its tab is hidden. Verify the
-// real JSON-RPC route that previously admitted git_stash_list but had no host
-// dispatch arm.
-const desktopContext = await browser.newContext({
-  ignoreHTTPSErrors: true,
-  viewport: { width: 1280, height: 800 },
-});
-const desktopPage = await desktopContext.newPage();
+// Open desktop Remote's Git tab and verify the real JSON-RPC route that
+// previously admitted git_stash_list but had no host dispatch arm.
+const desktopPage = await context.newPage();
+await desktopPage.setViewportSize({ width: 1280, height: 800 });
 let stashRequest = null;
 let stashReply = null;
 desktopPage.on('websocket', (socket) => {
@@ -389,6 +398,47 @@ if (await desktopAuth.count()) {
   await desktopAuth.fill(CODE);
   await desktopAuth.press('Enter');
 }
+const desktopGit = desktopPage.locator('button[title="Git Graph"], button[title="Git"]').first();
+await desktopGit.waitFor({ state: 'visible', timeout: 20_000 });
+await desktopGit.click();
+const directStash = await desktopPage.evaluate(() => new Promise((resolve, reject) => {
+  const token = localStorage.getItem('ridge_remote_token');
+  const device = localStorage.getItem('ridge_remote_device');
+  if (!token || !device) return reject(new Error('desktop auth storage missing'));
+  const socket = new WebSocket(
+    `wss://${location.host}/ws?token=${encodeURIComponent(token)}&device=${encodeURIComponent(device)}`,
+  );
+  const requestId = 63_001;
+  const timer = setTimeout(() => {
+    socket.close();
+    reject(new Error('git_stash_list direct route timeout'));
+  }, 15_000);
+  socket.onopen = () => {
+    socket.send(JSON.stringify({
+      jsonrpc: '2.0',
+      method: '$/hello',
+      params: { protocolVersion: 1, capabilities: ['git'] },
+    }));
+    socket.send(JSON.stringify({
+      jsonrpc: '2.0',
+      id: requestId,
+      method: 'git_stash_list',
+      params: { repoRoot: 'C:/code/wind' },
+    }));
+  };
+  socket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.id !== requestId) return;
+    clearTimeout(timer);
+    socket.close();
+    resolve(message);
+  };
+  socket.onerror = () => reject(new Error('git_stash_list direct route socket error'));
+}));
+assert(
+  !!directStash && !directStash.error,
+  'desktop Remote direct git_stash_list invoke returned successfully',
+);
 const stashDeadline = Date.now() + 30_000;
 while (Date.now() < stashDeadline && !stashReply) await sleep(100);
 assert(!!stashRequest, 'desktop Remote requested git_stash_list on the real host');
@@ -396,7 +446,7 @@ assert(
   !!stashReply && !stashReply.error && !stashReply._error,
   'desktop Remote git_stash_list route returns without RpcRemoteError',
 );
-await desktopContext.close();
+await desktopPage.close();
 
 console.log('[iter63-e2e] RESULT PASS');
 await context.close();

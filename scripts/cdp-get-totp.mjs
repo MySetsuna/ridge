@@ -5,8 +5,9 @@
 // client. The TOTP secret is in-memory only (auth.rs generate_secret), so this
 // is the sole way to obtain the current code programmatically.
 import http from 'node:http';
+import { resolveCdpPort } from './cdp-port.mjs';
 
-const port = process.env.CDP_PORT ?? '9222';
+const port = resolveCdpPort();
 const host = '127.0.0.1';
 const geometryOnly = process.argv.includes('--geometry');
 

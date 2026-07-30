@@ -173,6 +173,86 @@ pub async fn create_pane(
         .map_err(|e| e.to_string())
 }
 
+/// Launch a resumable Agent session without shell-string interpolation.
+/// The backend-issued executable/argv/cwd tuple goes straight to the existing
+/// structured portable-pty command path.
+#[tauri::command]
+pub async fn launch_agent_session(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    pane_id: String,
+    executable: String,
+    argv: Vec<String>,
+    cwd: String,
+) -> Result<(), String> {
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let workspace_id =
+            Uuid::parse_str(&workspace_id).map_err(|e| format!("invalid workspace id: {e}"))?;
+        let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+        let executable = executable.trim().to_string();
+        if executable.is_empty() {
+            return Err("agent executable is empty".to_string());
+        }
+        let cwd = PathBuf::from(cwd);
+        if !cwd.is_dir() {
+            return Err(format!("agent cwd is not a directory: {}", cwd.display()));
+        }
+
+        {
+            let mut workspaces = st.workspaces.write();
+            let workspace = workspaces
+                .get_mut(&workspace_id)
+                .ok_or_else(|| "workspace not found".to_string())?;
+            if !workspace.pane_tree.get_all_leaves().contains(&pane_id) {
+                return Err("target pane is not a live workspace leaf".to_string());
+            }
+            let pane = workspace
+                .pane_tree
+                .panes
+                .get_mut(&pane_id)
+                .ok_or_else(|| "target pane not found".to_string())?;
+            pane.cwd = Some(cwd.clone());
+            // Resume argv is session-specific; never persist it as a reusable shell kind.
+            pane.shell_kind = None;
+        }
+
+        teardown_pane_pty_if_present(&st, workspace_id, pane_id);
+        ensure_pane_pty_workspace(
+            &st,
+            workspace_id,
+            pane_id,
+            None,
+            Some(&cwd),
+            None,
+            Some(StructuredPtyCommand {
+                program: executable,
+                args: argv,
+                env: HashMap::new(),
+            }),
+            None,
+            None,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        crate::commands::git::set_pane_workdir(
+            pane_id.to_string(),
+            cwd.to_string_lossy().to_string(),
+        )?;
+        let cwd = cwd.to_string_lossy().replace('\\', "/");
+        let _ = st
+            .event_tx
+            .try_send(crate::types::GlobalEvent::PaneCwdChanged {
+                workspace_id,
+                pane_id,
+                cwd,
+            });
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// T14：检索系统可用 shell。返回 `(id, label, program)` 三元组列表。
 /// id 是 settings 持久化用的稳定标识；program 是实际可执行路径。Windows 扫描
 /// pwsh / powershell / cmd / bash（Git Bash） / wsl；Unix 扫描 zsh / bash / fish / sh。
