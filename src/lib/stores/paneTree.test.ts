@@ -1120,11 +1120,12 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
     const tauri = await import('@tauri-apps/api/core');
     const mockInvoke = vi.mocked(tauri.invoke);
     mockInvoke.mockReset();
+    paneTreeModule.activeWorkspaceId.set('ws-left');
     mockInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'split_pane') {
         return { pane_id: 'new-pane-uuid', initial_cwd: null };
       }
-      if (cmd === 'get_pane_layout') {
+      if (cmd === 'get_window_pane_layout') {
         return {
           type: 'split',
           id: 'split-1',
@@ -1141,6 +1142,10 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
 
     const newId = await paneTreeModule.splitPane('source-pane-uuid', 'horizontal');
     expect(newId).toBe('new-pane-uuid');
+    expect(mockInvoke).toHaveBeenCalledWith('split_pane', {
+      paneId: 'source-pane-uuid',
+      direction: 'horizontal',
+    });
 
     // splitPane returns BEFORE the deferred fit fires (the RAFs are
     // still queued at this point). This is the whole point of the
@@ -1170,7 +1175,7 @@ describe('splitPane forced fit after split (regression: split pane not filled)',
     mockInvoke.mockReset();
     mockInvoke.mockImplementation(async (cmd: string) => {
       if (cmd === 'dock_pane') return undefined;
-      if (cmd === 'get_pane_layout') {
+      if (cmd === 'get_window_pane_layout') {
         // Post-swap tree: pane-a and pane-b traded slots (center-dock swap).
         return {
           type: 'split',
@@ -1236,7 +1241,7 @@ describe('closeWorkspace runtime cleanup', () => {
         return [{ id: 'ws-keep', index: 0, displaySeq: 0 }];
       }
       if (cmd === 'get_active_workspace_id') return 'ws-keep';
-      if (cmd === 'get_pane_layout') return { type: 'leaf', id: 'keep-pane' };
+      if (cmd === 'get_window_pane_layout') return { type: 'leaf', id: 'keep-pane' };
       if (cmd === 'list_workspace_save_info') return [];
       return null;
     });

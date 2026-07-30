@@ -13,6 +13,13 @@ import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 import { teardownPtyBridge } from '@ridge/remote/shared/terminal/ptyBridge';
 
 const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
+const activeWorkspaceCommand = webRemote
+  ? 'get_active_workspace_id'
+  : 'get_window_active_workspace_id';
+const paneLayoutCommand = webRemote ? 'get_pane_layout' : 'get_window_pane_layout';
+const switchWorkspaceCommand = webRemote
+  ? 'switch_workspace'
+  : 'switch_window_workspace';
 
 type WorkspaceWindowClaimResult = {
   claimed: boolean;
@@ -1231,14 +1238,14 @@ export async function syncPaneLayoutFromBackend() {
     // to the default. Re-deriving the id from the host (mirrors refreshWorkspaces)
     // guarantees the refresh lands in the rendered key. On desktop the host id
     // already equals the store, so this is just one extra (cheap) IPC.
-    layout = await invoke<PaneNode>('get_pane_layout');
+    layout = await invoke<PaneNode>(paneLayoutCommand);
     // Prefer the host's authoritative active workspace id for the render key,
     // but fall back to the local store if the host is unreachable or returns an
     // unexpected (non-string/empty) value — never clobber the store with a
     // non-string result (keeps behaviour correct on desktop and in tests).
     let wsId = get(activeWorkspaceId);
     try {
-      const hostActive = await invoke<string>('get_active_workspace_id');
+      const hostActive = await invoke<string>(activeWorkspaceCommand);
       if (typeof hostActive === 'string' && hostActive) wsId = hostActive;
     } catch {
       /* keep local store value */
@@ -1329,7 +1336,7 @@ export async function refreshWorkspaces() {
     let list = await invoke<
       { id: string; index: number; name?: string; displaySeq: number }[]
     >('list_workspaces');
-    const hostActive = await invoke<string>('get_active_workspace_id');
+    const hostActive = await invoke<string>(activeWorkspaceCommand);
     let active = hostActive;
     if (!webRemote && !(await claimWorkspaceForThisWindow(active))) {
       active = '';
@@ -1346,7 +1353,7 @@ export async function refreshWorkspaces() {
         >('list_workspaces');
         await claimWorkspaceForThisWindow(active);
       }
-      await invoke('switch_workspace', { workspaceId: active });
+      await invoke(switchWorkspaceCommand, { workspaceId: active });
     }
     const layout = await invoke<PaneNode>('get_pane_layout_for', {
       workspaceId: active,
@@ -1397,7 +1404,7 @@ export async function switchWorkspace(workspaceId: string): Promise<boolean> {
   if (!isTauri()) return false;
   try {
     if (!(await claimWorkspaceForThisWindow(workspaceId))) return false;
-    await invoke('switch_workspace', { workspaceId });
+    await invoke(switchWorkspaceCommand, { workspaceId });
     const layout = await invoke<PaneNode>('get_pane_layout_for', {
       workspaceId,
     });
@@ -1424,6 +1431,7 @@ export async function splitPane(
   direction: 'horizontal' | 'vertical'
 ) {
   if (!isTauri()) return '';
+  const workspaceId = get(activeWorkspaceId);
   const result = await invoke<{ pane_id: string; initial_cwd: string | null }>('split_pane', {
     paneId,
     direction,
@@ -1431,9 +1439,8 @@ export async function splitPane(
   // Seed paneCwdStore synchronously so Explorer shows the new column immediately,
   // without waiting for the first pane-cwd-changed event from shell integration.
   if (result.initial_cwd) {
-    const wsId = get(activeWorkspaceId);
-    if (wsId) {
-      setPaneCwd(wsId, result.pane_id, result.initial_cwd);
+    if (workspaceId) {
+      setPaneCwd(workspaceId, result.pane_id, result.initial_cwd);
     }
   }
   await syncPaneLayoutFromBackend();
@@ -1582,7 +1589,14 @@ export async function persistSplitRatios(splitPath: number[], sizes: number[]) {
   );
   if (!isTauri()) return;
   try {
-    await invoke('set_split_ratios_at_path', { path: splitPath, ratios: norm });
+    await invoke(
+      webRemote ? 'set_split_ratios_at_path' : 'set_window_split_ratios_at_path',
+      {
+      workspaceId: get(activeWorkspaceId),
+      path: splitPath,
+      ratios: norm,
+      }
+    );
   } catch (e) {
     console.error('persistSplitRatios', e);
     await syncPaneLayoutFromBackend();
@@ -1597,7 +1611,13 @@ export async function persistSplitRatiosBatch(updates: SplitRatioUpdate[]) {
   );
   if (!isTauri()) return;
   try {
-    await invoke('set_split_ratios_batch', { updates });
+    await invoke(
+      webRemote ? 'set_split_ratios_batch' : 'set_window_split_ratios_batch',
+      {
+      workspaceId: get(activeWorkspaceId),
+      updates,
+      }
+    );
   } catch (e) {
     console.error('persistSplitRatiosBatch', e);
     await syncPaneLayoutFromBackend();
@@ -1667,7 +1687,9 @@ export async function closePane(paneId: string) {
   } catch {
     /* local pane or already detached */
   }
-  await invoke('close_pane', { paneId });
+  await invoke('close_pane', {
+    paneId,
+  });
   const { unbindRemotePane } = await import('$lib/hosts/remotePaneBindings');
   unbindRemotePane(paneId);
   // Real-close cleanup (TASKS §5.1). Manager.park stays mounted across

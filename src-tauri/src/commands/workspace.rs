@@ -50,6 +50,14 @@ pub fn get_active_workspace_id(state: State<'_, AppState>) -> Result<String, Str
 }
 
 #[tauri::command]
+pub fn get_window_active_workspace_id(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+) -> Result<String, String> {
+    Ok(state.active_workspace_for_window(window.label()).to_string())
+}
+
+#[tauri::command]
 pub fn claim_workspace_window(
     state: State<'_, AppState>,
     window: WebviewWindow,
@@ -62,6 +70,9 @@ pub fn claim_workspace_window(
     let requester = window.label().to_owned();
     match state.workspace_window_claims.claim(id, &requester) {
         WorkspaceWindowClaim::Acquired | WorkspaceWindowClaim::AlreadyOwned => {
+            state
+                .workspace_window_claims
+                .select_owned(id, &requester);
             Ok(WorkspaceWindowClaimResult {
                 claimed: true,
                 owner_window_label: requester,
@@ -89,6 +100,9 @@ pub fn claim_workspace_window(
                     state.workspace_window_claims.claim(id, &requester),
                     WorkspaceWindowClaim::Acquired | WorkspaceWindowClaim::AlreadyOwned
                 ) {
+                    state
+                        .workspace_window_claims
+                        .select_owned(id, &requester);
                     return Ok(WorkspaceWindowClaimResult {
                         claimed: true,
                         owner_window_label: requester,
@@ -106,11 +120,33 @@ pub fn claim_workspace_window(
 #[tauri::command]
 pub fn switch_workspace(state: State<'_, AppState>, workspace_id: String) -> Result<(), String> {
     let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    if !state.workspaces.read().contains_key(&id) {
+        return Err("工作区不存在".into());
+    }
+    *state.active_workspace.write() = id;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn switch_window_workspace(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+    workspace_id: String,
+) -> Result<(), String> {
+    let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
     let map = state.workspaces.read();
     if !map.contains_key(&id) {
         return Err("工作区不存在".into());
     }
     drop(map);
+    if !state
+        .workspace_window_claims
+        .select_owned(id, window.label())
+    {
+        return Err("工作区未被当前窗口占用".into());
+    }
+    // Keep legacy observers in sync; desktop commands still resolve through the
+    // per-window selection, while Remote/CLI continue using the global command.
     *state.active_workspace.write() = id;
     Ok(())
 }
@@ -187,6 +223,9 @@ pub fn create_workspace_for_window(
     let id = insert_new_workspace(&state, PaneTree::new(), name.as_deref());
     let parsed = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
     state.workspace_window_claims.claim(parsed, window.label());
+    state
+        .workspace_window_claims
+        .select_owned(parsed, window.label());
     broadcast_workspace_list_changed(&state);
     Ok(id)
 }
