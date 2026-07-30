@@ -1,7 +1,7 @@
 # Iteration 75 Contract — Mobile Remote input continuity
 
 - Date: 2026-07-29
-- Status: approved / executing
+- Status: completed / pushed
 - Requirements: `REQ-REMOTE-SMOOTH-STATE-02`,
   `REQ-MOBILE-REMOTE-STATE-01`,
   `REQ-MOBILE-REMOTE-WORKER-AUTHORITY-01`,
@@ -97,3 +97,14 @@ identity before the host switch has succeeded.
 - A fix needs a second state source or physical connection.
 - Worker authority requires changing the Rust canvas backend beyond this
   contract.
+
+## Handoff
+
+- `235b33f` docs/requirements/archive
+- `c73ce87` Mobile identity/input/render Worker
+- `d2b8b82` typed cross-workspace Commune MCP
+- `dc2788b` bundled companion, endpoint rotation/security, final installer inspection
+- Pushed: `origin/main` at `dc2788b`
+- Remaining external proof only: iOS/Android physical UX and next version tag's
+  Windows/Linux/macOS clean-install matrix. Release workflow now blocks when
+  final MSI/NSIS/DEB/AppImage/DMG lacks `ridge-mcp`.
