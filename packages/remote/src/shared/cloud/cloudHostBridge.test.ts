@@ -127,6 +127,52 @@ describe('CloudHostBridge — JSON-RPC invoke routing', () => {
     await vi.waitFor(() => expect(rig.sentJson()).toHaveLength(1));
     expect(rig.sentJson()[0]).toEqual({ jsonrpc: '2.0', id: 9, result: null });
   });
+
+  it('coalesces retries of the same terminal input sequence', async () => {
+    let resolveInvoke: (value: unknown) => void = () => {};
+    const invoke = vi.fn(() => new Promise((resolve) => { resolveInvoke = resolve; }));
+    const rig = makeRig({ invoke });
+    const params = {
+      workspaceId: 'ws-1',
+      paneId: 'pane-1',
+      data: 'abc',
+      inputSourceId: 'controller-1',
+      inputSequence: 7,
+    };
+
+    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'write_to_pty', params });
+    rig.sendJson({ jsonrpc: '2.0', id: 2, method: 'write_to_pty', params });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    resolveInvoke(null);
+    await vi.waitFor(() => expect(rig.sentJson()).toHaveLength(2));
+
+    expect(rig.sentJson()).toEqual([
+      { jsonrpc: '2.0', id: 1, result: null },
+      { jsonrpc: '2.0', id: 2, result: null },
+    ]);
+  });
+
+  it('rejects one terminal input sequence reused with different data', async () => {
+    let resolveInvoke: (value: unknown) => void = () => {};
+    const invoke = vi.fn(() => new Promise((resolve) => { resolveInvoke = resolve; }));
+    const rig = makeRig({ invoke });
+    const base = {
+      workspaceId: 'ws-1',
+      paneId: 'pane-1',
+      inputSourceId: 'controller-1',
+      inputSequence: 7,
+    };
+
+    rig.sendJson({ jsonrpc: '2.0', id: 1, method: 'write_to_pty', params: { ...base, data: 'a' } });
+    rig.sendJson({ jsonrpc: '2.0', id: 2, method: 'write_to_pty', params: { ...base, data: 'b' } });
+    await vi.waitFor(() => expect(rig.sentJson()).toHaveLength(1));
+    expect(rig.sentJson()[0]).toMatchObject({
+      id: 2,
+      error: { message: 'terminal input sequence reused with different data' },
+    });
+    expect(invoke).toHaveBeenCalledTimes(1);
+    resolveInvoke(null);
+  });
 });
 
 describe('CloudHostBridge — $/hello (D9) negotiation', () => {

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1122,8 +1123,17 @@ pub async fn write_to_pty(
     pane_id: String,
     data: String,
     workspace_id: Option<String>,
+    input_source_id: Option<String>,
+    input_sequence: Option<u64>,
 ) -> Result<(), String> {
-    write_to_pty_async(state, pane_id, data, workspace_id)
+    write_to_pty_async(
+        state,
+        pane_id,
+        data,
+        workspace_id,
+        input_source_id,
+        input_sequence,
+    )
         .await
         .map_err(|e| e.to_string())
 }
@@ -1168,10 +1178,103 @@ async fn write_to_pty_async(
     pane_id: String,
     data: String,
     workspace_id: Option<String>,
+    input_source_id: Option<String>,
+    input_sequence: Option<u64>,
 ) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
     let wid = resolve_pane_workspace(&state, workspace_id.as_deref(), pane_id)
         .map_err(AppError::PtyError)?;
+    let input_identity = validate_input_identity(input_source_id, input_sequence)?;
+    if let Some((source_id, sequence)) = input_identity {
+        let lane = {
+            let mut lanes = state.pty_input_lanes.write();
+            lanes
+                .entry((wid, pane_id, source_id))
+                .or_insert_with(|| {
+                    Arc::new(tokio::sync::Mutex::new(
+                        crate::state::PtyInputSequenceState::default(),
+                    ))
+                })
+                .clone()
+        };
+        let digest: [u8; 32] = Sha256::digest(data.as_bytes()).into();
+        let mut sequence_state = lane.lock().await;
+        match decide_input_sequence(&sequence_state, sequence, digest)? {
+            InputSequenceDecision::Duplicate => return Ok(()),
+            InputSequenceDecision::Apply => {
+                write_to_resolved_pty(&state, wid, pane_id, data).await?;
+                sequence_state.last_sequence = sequence;
+                sequence_state.last_digest = Some(digest);
+                return Ok(());
+            }
+        }
+    }
+    write_to_resolved_pty(&state, wid, pane_id, data).await
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum InputSequenceDecision {
+    Duplicate,
+    Apply,
+}
+
+fn validate_input_identity(
+    input_source_id: Option<String>,
+    input_sequence: Option<u64>,
+) -> Result<Option<(String, u64)>, AppError> {
+    match (input_source_id, input_sequence) {
+        (None, None) => Ok(None),
+        (Some(source_id), Some(sequence))
+            if !source_id.is_empty()
+                && source_id.len() <= 64
+                && source_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                && sequence > 0 =>
+        {
+            Ok(Some((source_id, sequence)))
+        }
+        _ => Err(AppError::PtyError(
+            "inputSourceId/inputSequence must be a valid pair".into(),
+        )),
+    }
+}
+
+fn decide_input_sequence(
+    state: &crate::state::PtyInputSequenceState,
+    requested: u64,
+    digest: [u8; 32],
+) -> Result<InputSequenceDecision, AppError> {
+    if requested < state.last_sequence {
+        return Err(AppError::PtyError(format!(
+            "stale terminal input sequence: last {}, got {}",
+            state.last_sequence, requested
+        )));
+    }
+    if requested == state.last_sequence {
+        if state.last_digest == Some(digest) {
+            return Ok(InputSequenceDecision::Duplicate);
+        }
+        return Err(AppError::PtyError(
+            "terminal input sequence reused with different data".into(),
+        ));
+    }
+    if requested != state.last_sequence.saturating_add(1) {
+        return Err(AppError::PtyError(format!(
+            "terminal input sequence gap: expected {}, got {}",
+            state.last_sequence.saturating_add(1),
+            requested
+        )));
+    }
+    Ok(InputSequenceDecision::Apply)
+}
+
+async fn write_to_resolved_pty(
+    state: &AppState,
+    wid: Uuid,
+    pane_id: Uuid,
+    data: String,
+) -> Result<(), AppError> {
     // Foreign panes route via outbound live sink (OP-WS-PTY); never write local ConPTY.
     {
         let map = state.workspaces.read();
@@ -1949,6 +2052,29 @@ mod write_scope_tests {
         );
         assert!(resolve_pane_workspace(&state, Some(&active.to_string()), target_pane).is_err());
         assert_eq!(resolve_pane_workspace(&state, None, active_pane), Ok(active));
+    }
+
+    #[test]
+    fn input_sequence_accepts_next_and_dedupes_retries() {
+        let mut state = crate::state::PtyInputSequenceState::default();
+        let first = [1; 32];
+        let changed = [2; 32];
+        assert_eq!(
+            decide_input_sequence(&state, 1, first).unwrap(),
+            InputSequenceDecision::Apply
+        );
+        state.last_sequence = 1;
+        state.last_digest = Some(first);
+        assert_eq!(
+            decide_input_sequence(&state, 1, first).unwrap(),
+            InputSequenceDecision::Duplicate
+        );
+        assert!(decide_input_sequence(&state, 1, changed).is_err());
+        assert!(decide_input_sequence(&state, 0, first).is_err());
+        assert!(decide_input_sequence(&state, 3, changed).is_err());
+        assert!(validate_input_identity(Some("controller_1".into()), Some(1)).is_ok());
+        assert!(validate_input_identity(Some("bad source".into()), Some(1)).is_err());
+        assert!(validate_input_identity(Some("controller".into()), None).is_err());
     }
 }
 

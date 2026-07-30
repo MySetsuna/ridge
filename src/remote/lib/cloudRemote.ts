@@ -68,6 +68,25 @@ interface ThemeEntryLite {
 /** Default PTY grid for a freshly-activated pane until the canvas claims its real size. */
 const DEFAULT_ROWS = 24;
 const DEFAULT_COLS = 80;
+const INPUT_BATCH_WINDOW_MS = 4;
+const INPUT_RETRY_BASE_MS = 250;
+const INPUT_RETRY_MAX_MS = 8_000;
+const INPUT_FAILURE_PAUSE_THRESHOLD = 5;
+const INPUT_FAILURE_PAUSE_MS = 30_000;
+
+interface InputLane {
+  queued: string;
+  nextSequence: number;
+  inFlight: boolean;
+  consecutiveFailures: number;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+function createInputSourceId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (randomUuid) return randomUuid;
+  return `cloud-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
 
 /**
  * §history-pull（2026-07-02）: 首屏拉取的 scrollback 上限（约 1.5 屏）。host 不再推
@@ -148,6 +167,8 @@ export class CloudRemoteConnection implements RemoteLink {
   private _failure: ConnectionFailure | null = null;
   private _activeWorkspaceId = '';
   private _refreshSeq = 0;
+  private readonly inputSourceId = createInputSourceId();
+  private inputLanes = new Map<string, InputLane>();
   private resizeLanes = new Map<string, {
     inFlight: boolean;
     activeSignature: string | null;
@@ -619,12 +640,85 @@ export class CloudRemoteConnection implements RemoteLink {
   }
 
   sendStdin(pane: PaneRef, data: string): void {
-    if (!pane.paneId) return;
-    void this.bridge.invoke('write_to_pty', {
-      paneId: pane.paneId,
-      ...(pane.workspaceId ? { workspaceId: pane.workspaceId } : {}),
-      data,
-    }).catch(() => {});
+    if (!pane.paneId || !data) return;
+    const key = paneRefKey(pane);
+    let lane = this.inputLanes.get(key);
+    if (!lane) {
+      lane = {
+        queued: '',
+        nextSequence: 1,
+        inFlight: false,
+        consecutiveFailures: 0,
+        timer: null,
+      };
+      this.inputLanes.set(key, lane);
+    }
+    lane.queued += data;
+    this._scheduleInputDrain(key, pane, lane, INPUT_BATCH_WINDOW_MS);
+  }
+
+  private _scheduleInputDrain(
+    key: string,
+    pane: PaneRef,
+    lane: InputLane,
+    delayMs: number,
+  ): void {
+    if (lane.inFlight || lane.timer || this.inputLanes.get(key) !== lane) return;
+    lane.timer = setTimeout(() => {
+      lane.timer = null;
+      void this._drainInputLane(key, pane, lane);
+    }, delayMs);
+  }
+
+  private async _drainInputLane(key: string, pane: PaneRef, lane: InputLane): Promise<void> {
+    if (lane.inFlight || !lane.queued || this.inputLanes.get(key) !== lane) return;
+    const data = lane.queued;
+    const sequence = lane.nextSequence;
+    lane.queued = '';
+    lane.inFlight = true;
+    try {
+      await this.bridge.invoke('write_to_pty', {
+        paneId: pane.paneId,
+        ...(pane.workspaceId ? { workspaceId: pane.workspaceId } : {}),
+        data,
+        inputSourceId: this.inputSourceId,
+        inputSequence: sequence,
+      });
+      if (this.inputLanes.get(key) !== lane) return;
+      lane.nextSequence += 1;
+      lane.consecutiveFailures = 0;
+    } catch {
+      if (this.inputLanes.get(key) !== lane) return;
+      // Same sequence is safe to retry: host serializes/dedupes it before PTY write.
+      lane.queued = data + lane.queued;
+      lane.consecutiveFailures += 1;
+    } finally {
+      lane.inFlight = false;
+      if (this.inputLanes.get(key) !== lane || !lane.queued) return;
+      const delay =
+        lane.consecutiveFailures >= INPUT_FAILURE_PAUSE_THRESHOLD
+          ? INPUT_FAILURE_PAUSE_MS
+          : lane.consecutiveFailures > 0
+            ? Math.min(
+                INPUT_RETRY_BASE_MS * 2 ** (lane.consecutiveFailures - 1),
+                INPUT_RETRY_MAX_MS,
+              )
+            : INPUT_BATCH_WINDOW_MS;
+      this._scheduleInputDrain(key, pane, lane, delay);
+    }
+  }
+
+  private _dropInputLane(key: string): void {
+    const lane = this.inputLanes.get(key);
+    if (lane?.timer) clearTimeout(lane.timer);
+    this.inputLanes.delete(key);
+  }
+
+  private _dropAllInputLanes(): void {
+    for (const lane of this.inputLanes.values()) {
+      if (lane.timer) clearTimeout(lane.timer);
+    }
+    this.inputLanes.clear();
   }
 
   refreshPane(pane: PaneRef, rows: number, cols: number, _pixelWidth?: number, _pixelHeight?: number): void {
@@ -722,6 +816,7 @@ export class CloudRemoteConnection implements RemoteLink {
 
   async closePane(pane: PaneRef): Promise<boolean> {
     const key = paneRefKey(pane);
+    this._dropInputLane(key);
     this.resizeLanes.delete(key);
     try {
       await this.bridge.invoke('close_pane', {
@@ -950,6 +1045,12 @@ export class CloudRemoteConnection implements RemoteLink {
         try { unlisten(); } catch { /* already gone */ }
       }
     }
+    for (const key of [...this.inputLanes.keys()]) {
+      if (!liveIds.has(key)) this._dropInputLane(key);
+    }
+    for (const key of [...this.resizeLanes.keys()]) {
+      if (!liveIds.has(key)) this.resizeLanes.delete(key);
+    }
   }
   send(): void {
     // Raw wsRemote frames have no meaning on the cloud invoke bridge.
@@ -963,6 +1064,7 @@ export class CloudRemoteConnection implements RemoteLink {
     this._failure = null; // 主动断开，清掉失败分级
     this.setState('disconnected');
     this._teardownSubscriptions();
+    this._dropAllInputLanes();
     if (this.treeUnlisten) {
       try { this.treeUnlisten(); } catch { /* already gone */ }
       this.treeUnlisten = null;
