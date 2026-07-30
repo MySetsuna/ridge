@@ -13,6 +13,7 @@
   import { GitBranch, ArrowUp, ArrowDown, Check, ExternalLink, Plus } from 'lucide-svelte';
   import { alertDialog } from './RidgeDialog.svelte';
   import { showToast } from '$lib/stores/toast';
+  import { reportRepeatedError } from '$lib/utils/repeatedError';
   import { t, tr } from '$lib/i18n';
   import { portal } from '$lib/actions/portal';
   import {
@@ -80,7 +81,7 @@
       }
     } catch (err) {
       if (isNotGitRepositoryError(err)) markPaneGitRepoNonGit(root);
-      console.warn('[git-pill] list branches', err);
+      reportRepeatedError('[git-pill] list branches', err, 'warn');
     } finally {
       loading = false;
     }
