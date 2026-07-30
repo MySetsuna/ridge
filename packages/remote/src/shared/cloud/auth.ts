@@ -34,11 +34,9 @@ export interface CloudAuthState {
 /** SSR/Node（测试、vite build prerender）下无 localStorage 的安全访问。 */
 function ls(): Storage | null {
   try {
-    if (typeof localStorage === 'undefined') return null;
-    // 某些运行时（如 Node 实验性 localStorage、未带文件路径）提供「半成品」全局：
-    // 对象存在但 getItem/setItem 非函数。校验方法可用，否则视为不可用退化为内存态。
-    if (typeof localStorage.getItem !== 'function') return null;
-    return localStorage;
+    if (typeof window === 'undefined') return null;
+    if (typeof window.localStorage.getItem !== 'function') return null;
+    return window.localStorage;
   } catch {
     return null;
   }
