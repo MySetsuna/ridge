@@ -12,6 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -58,6 +59,42 @@ pub struct InputDispatch {
     pub terminal_accepted: bool,
 }
 
+/// Host-advertised launch profile. Empty model/effort lists mean callers may
+/// select the profile but may not override that dimension.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchProfile {
+    pub id: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub reasoning_efforts: Vec<String>,
+    #[serde(default)]
+    pub supports_checkpoint: bool,
+}
+
+/// Capability discovery is host-owned; the MCP core never invents model names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchCapabilities {
+    #[serde(default)]
+    pub profiles: Vec<LaunchProfile>,
+}
+
+/// Typed split request passed to capable desktop/headless hosts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitPaneRequest {
+    pub workspace_id: Option<String>,
+    pub direction: String,
+    pub role: String,
+    pub initial_cmd: Option<String>,
+    pub launch_profile: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub checkpoint: Option<String>,
+    pub replace_target: Option<Value>,
+}
+
 /// A rejection observed at another execution layer (for example Codex's
 /// execution gateway). Ridge only records and displays it: no report may imply
 /// that Ridge caused the rejection or can retry the original operation.
@@ -77,6 +114,40 @@ pub struct ExternalExecutionRejection {
 pub trait McpHost: Send + Sync {
     /// 花名册快照（roster + leader + edges + groups）。
     fn team_profile(&self) -> Value;
+
+    /// Enumerate workspaces. Legacy hosts compile unchanged and report the
+    /// capability as unsupported instead of fabricating a one-workspace list.
+    fn list_workspaces(&self) -> HostResult<Value> {
+        Err(HostError::Unsupported("本宿主不支持跨工作区枚举".into()))
+    }
+
+    /// Read a workspace-scoped roster. Omitting workspace keeps the historical
+    /// current-workspace behavior; an explicit workspace fails closed by default.
+    fn team_profile_for(&self, workspace_id: Option<&str>) -> HostResult<Value> {
+        if workspace_id.is_some() {
+            return Err(HostError::InvalidParams(
+                "本宿主未实现显式 workspace 寻址".into(),
+            ));
+        }
+        Ok(self.team_profile())
+    }
+
+    /// Discover launch profiles/models/efforts. Empty lists prohibit overrides.
+    fn launch_capabilities(&self) -> HostResult<LaunchCapabilities> {
+        Ok(LaunchCapabilities::default())
+    }
+
+    /// Validate and normalize a pane target. Legacy hosts receive the original
+    /// target only when workspace is omitted; explicit workspace never degrades
+    /// silently to their current workspace.
+    fn resolve_pane_target(&self, workspace_id: Option<&str>, target: &Value) -> HostResult<Value> {
+        if workspace_id.is_some() {
+            return Err(HostError::InvalidParams(
+                "本宿主未实现显式 workspace 寻址".into(),
+            ));
+        }
+        Ok(target.clone())
+    }
 
     /// Writes text into a pane input buffer. `submit` explicitly dispatches
     /// Enter. `terminal_accepted` only reports a successful host→terminal
@@ -105,8 +176,35 @@ pub trait McpHost: Send + Sync {
     fn capture_pane(&self, target: &Value, lines: usize) -> HostResult<String>;
 
     /// 分屏并返回 `{ "paneId": ..., "paneIndex": ... }`。
-    fn split_pane(&self, direction: &str, role: &str, initial_cmd: Option<&str>)
-        -> HostResult<Value>;
+    fn split_pane(
+        &self,
+        direction: &str,
+        role: &str,
+        initial_cmd: Option<&str>,
+    ) -> HostResult<Value>;
+
+    /// Typed, workspace-aware split. The default preserves the old host method
+    /// only for its exact legacy surface and rejects every new selector.
+    fn split_pane_with(&self, request: &SplitPaneRequest) -> HostResult<Value> {
+        if request.workspace_id.is_some() {
+            return Err(HostError::InvalidParams(
+                "本宿主未实现显式 workspace 创建".into(),
+            ));
+        }
+        if request.launch_profile.is_some()
+            || request.model.is_some()
+            || request.reasoning_effort.is_some()
+        {
+            return Err(HostError::InvalidParams(
+                "本宿主未实现 launch profile".into(),
+            ));
+        }
+        self.split_pane(
+            &request.direction,
+            &request.role,
+            request.initial_cmd.as_deref(),
+        )
+    }
 
     /// 把成员加入按名字寻址的编组（前端 SSOT，fire-and-forget）。
     fn join_group(
@@ -171,10 +269,12 @@ struct ReceiptStore {
 
 fn receipts() -> &'static Mutex<ReceiptStore> {
     static RECEIPTS: std::sync::OnceLock<Mutex<ReceiptStore>> = std::sync::OnceLock::new();
-    RECEIPTS.get_or_init(|| Mutex::new(ReceiptStore {
-        by_id: HashMap::new(),
-        order: VecDeque::new(),
-    }))
+    RECEIPTS.get_or_init(|| {
+        Mutex::new(ReceiptStore {
+            by_id: HashMap::new(),
+            order: VecDeque::new(),
+        })
+    })
 }
 
 fn receipt_insert(id: String, value: Value) {
@@ -195,7 +295,9 @@ fn receipt_get(key: &str, id: &str) -> HostResult<Value> {
         .get(id)
         .ok_or_else(|| HostError::InvalidParams("receipt 不存在或已过期".into()))?;
     if value.get("targetKey").and_then(Value::as_str) != Some(key) {
-        return Err(HostError::InvalidParams("receipt 不属于该 target pane".into()));
+        return Err(HostError::InvalidParams(
+            "receipt 不属于该 target pane".into(),
+        ));
     }
     Ok(value.clone())
 }
@@ -212,7 +314,9 @@ fn receipt_ack(key: &str, id: &str, status: &str, detail: Option<&str>) -> HostR
         .get_mut(id)
         .ok_or_else(|| HostError::InvalidParams("receipt 不存在或已过期".into()))?;
     if value.get("targetKey").and_then(Value::as_str) != Some(key) {
-        return Err(HostError::InvalidParams("receipt 不属于该 target pane".into()));
+        return Err(HostError::InvalidParams(
+            "receipt 不属于该 target pane".into(),
+        ));
     }
     value["status"] = Value::String(status.to_string());
     value["agentAcknowledged"] = Value::Bool(status == "agent_acknowledged");
@@ -251,7 +355,9 @@ pub fn handle_message(text: &str, host: &dyn McpHost, version: &str) -> Option<S
     let req = match proto::parse_request(text.as_bytes()) {
         Ok(r) => r,
         Err(_) => {
-            return Some(proto::mcp_error(Value::Null, proto::PARSE_ERROR, "parse error").to_string())
+            return Some(
+                proto::mcp_error(Value::Null, proto::PARSE_ERROR, "parse error").to_string(),
+            )
         }
     };
     if req.is_notification() {
@@ -269,7 +375,9 @@ pub fn handle_message(text: &str, host: &dyn McpHost, version: &str) -> Option<S
             }),
         ),
         proto::METHOD_PING => proto::mcp_result(id, json!({})),
-        proto::METHOD_TOOLS_LIST => proto::mcp_result(id, ToolRegistry::default().tools_list_result()),
+        proto::METHOD_TOOLS_LIST => {
+            proto::mcp_result(id, ToolRegistry::default().tools_list_result())
+        }
         proto::METHOD_TOOLS_CALL => tools_call(id, &req.params, host),
         proto::METHOD_RESOURCES_LIST => proto::mcp_result(id, resources_list()),
         proto::METHOD_RESOURCES_TEMPLATES_LIST => proto::mcp_result(
@@ -282,7 +390,11 @@ pub fn handle_message(text: &str, host: &dyn McpHost, version: &str) -> Option<S
             } ] }),
         ),
         proto::METHOD_RESOURCES_READ => resources_read(id, &req.params, host),
-        other => proto::mcp_error(id, proto::METHOD_NOT_FOUND, &format!("method not found: {other}")),
+        other => proto::mcp_error(
+            id,
+            proto::METHOD_NOT_FOUND,
+            &format!("method not found: {other}"),
+        ),
     };
     Some(resp.to_string())
 }
@@ -340,27 +452,183 @@ fn resources_read(id: Value, params: &Value, host: &dyn McpHost) -> Value {
 }
 
 fn text_result(id: Value, text: impl Into<String>) -> Value {
-    proto::mcp_result(id, json!({ "content": [ { "type": "text", "text": text.into() } ] }))
+    proto::mcp_result(
+        id,
+        json!({ "content": [ { "type": "text", "text": text.into() } ] }),
+    )
 }
 
 fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
-    args.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn scoped_target(args: &Value, host: &dyn McpHost) -> HostResult<Value> {
+    host.resolve_pane_target(
+        arg_str(args, "workspace_id"),
+        args.get("target_pane_id").unwrap_or(&Value::Null),
+    )
+}
+
+fn split_request(args: &Value) -> HostResult<SplitPaneRequest> {
+    let initial_cmd = arg_str(args, "initial_cmd").map(str::to_string);
+    let launch_profile = arg_str(args, "launch_profile").map(str::to_string);
+    let model = arg_str(args, "model").map(str::to_string);
+    let reasoning_effort = arg_str(args, "reasoning_effort").map(str::to_string);
+    let checkpoint = arg_str(args, "checkpoint").map(str::to_string);
+    let replace_target = args.get("replace_target_pane_id").cloned();
+    if initial_cmd.is_some() && launch_profile.is_some() {
+        return Err(HostError::InvalidParams(
+            "initial_cmd 与 launch_profile 互斥".into(),
+        ));
+    }
+    if launch_profile.is_none()
+        && (model.is_some()
+            || reasoning_effort.is_some()
+            || checkpoint.is_some()
+            || replace_target.is_some())
+    {
+        return Err(HostError::InvalidParams(
+            "model/reasoning_effort/checkpoint/replace_target_pane_id 必须随 launch_profile 使用"
+                .into(),
+        ));
+    }
+    if replace_target.is_some() && checkpoint.is_none() {
+        return Err(HostError::InvalidParams(
+            "replace_target_pane_id 必须随 checkpoint 使用".into(),
+        ));
+    }
+    Ok(SplitPaneRequest {
+        workspace_id: arg_str(args, "workspace_id").map(str::to_string),
+        direction: arg_str(args, "direction").unwrap_or("vertical").to_string(),
+        role: arg_str(args, "role").unwrap_or("worker").to_string(),
+        initial_cmd,
+        launch_profile,
+        model,
+        reasoning_effort,
+        checkpoint,
+        replace_target,
+    })
+}
+
+fn validate_launch_request(host: &dyn McpHost, request: &SplitPaneRequest) -> HostResult<()> {
+    let Some(profile_id) = request.launch_profile.as_deref() else {
+        return Ok(());
+    };
+    let capabilities = host.launch_capabilities()?;
+    let profile = capabilities
+        .profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| HostError::InvalidParams(format!("未知 launch_profile: {profile_id}")))?;
+    if let Some(model) = request.model.as_deref() {
+        if !profile.models.iter().any(|allowed| allowed == model) {
+            return Err(HostError::InvalidParams(format!(
+                "model 不在 launch_profile {profile_id} 的许可集合"
+            )));
+        }
+    }
+    if let Some(effort) = request.reasoning_effort.as_deref() {
+        if !profile
+            .reasoning_efforts
+            .iter()
+            .any(|allowed| allowed == effort)
+        {
+            return Err(HostError::InvalidParams(format!(
+                "reasoning_effort 不在 launch_profile {profile_id} 的许可集合"
+            )));
+        }
+    }
+    if request.checkpoint.is_some() && !profile.supports_checkpoint {
+        return Err(HostError::InvalidParams(format!(
+            "launch_profile {profile_id} 不支持 checkpoint"
+        )));
+    }
+    Ok(())
+}
+
+fn split_result(mut value: Value, request: &SplitPaneRequest) -> Value {
+    let object = match value.as_object_mut() {
+        Some(object) => object,
+        None => return json!({ "status": "pane_created", "hostResult": value }),
+    };
+    object
+        .entry("status")
+        .or_insert_with(|| Value::String("pane_created".into()));
+    object.entry("workspaceId").or_insert_with(|| {
+        request
+            .workspace_id
+            .clone()
+            .map(Value::String)
+            .unwrap_or(Value::Null)
+    });
+    object.entry("launchProfile").or_insert_with(|| {
+        request
+            .launch_profile
+            .clone()
+            .map(Value::String)
+            .unwrap_or(Value::Null)
+    });
+    object.entry("model").or_insert_with(|| {
+        request
+            .model
+            .clone()
+            .map(Value::String)
+            .unwrap_or(Value::Null)
+    });
+    object.entry("reasoningEffort").or_insert_with(|| {
+        request
+            .reasoning_effort
+            .clone()
+            .map(Value::String)
+            .unwrap_or(Value::Null)
+    });
+    object
+        .entry("checkpointTransferred")
+        .or_insert_with(|| Value::Bool(request.checkpoint.is_some()));
+    object
+        .entry("replacementRequested")
+        .or_insert_with(|| Value::Bool(request.replace_target.is_some()));
+    object.entry("commandSummary").or_insert_with(|| {
+        Value::String(
+            if request.initial_cmd.is_some() {
+                "custom initial command (redacted)"
+            } else if let Some(profile) = request.launch_profile.as_deref() {
+                return Value::String(format!("launch profile {profile}"));
+            } else {
+                "default shell"
+            }
+            .into(),
+        )
+    });
+    value
 }
 
 fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
-    let target = || args.get("target_pane_id").cloned().unwrap_or(Value::Null);
+    let target = || scoped_target(&args, host);
 
     let out: HostResult<String> = match name {
-        "ridge_get_team_profile" => Ok(host.team_profile().to_string()),
+        "ridge_get_team_profile" => host
+            .team_profile_for(arg_str(&args, "workspace_id"))
+            .map(|profile| profile.to_string()),
+        "ridge_list_workspaces" => host.list_workspaces().map(|items| items.to_string()),
+        "ridge_get_launch_capabilities" => host.launch_capabilities().and_then(|capabilities| {
+            serde_json::to_string(&capabilities)
+                .map_err(|error| HostError::Internal(error.to_string()))
+        }),
 
         "ridge_send_to_teammate" | "ridge_send_and_submit" | "ridge_delegate_task" => {
             let text = arg_str(&args, "message")
                 .or_else(|| arg_str(&args, "objective"))
                 .unwrap_or("");
             if text.is_empty() {
-                Err(HostError::InvalidParams("message/objective 不能为空".into()))
+                Err(HostError::InvalidParams(
+                    "message/objective 不能为空".into(),
+                ))
             } else {
                 let delegate = name == "ridge_delegate_task";
                 let submit = if name == "ridge_send_to_teammate" {
@@ -368,8 +636,13 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
                 } else {
                     true
                 };
-                let t = target();
-                host.pane_key(&t).and_then(|key| {
+                target().and_then(|t| host.pane_key(&t).map(|key| (t, key))).and_then(|(t, key)| {
+                    let workspace_id = t
+                        .get("workspaceId")
+                        .or_else(|| t.get("workspace_id"))
+                        .cloned()
+                        .or_else(|| arg_str(&args, "workspace_id").map(|id| json!(id)))
+                        .unwrap_or(Value::Null);
                     host.send_text(&t, text, submit, delegate).map(|dispatch| {
                         let status = if submit { "submit_dispatched" } else { "draft_injected" };
                         let receipt_id = Uuid::new_v4().to_string();
@@ -381,6 +654,7 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
                             "status": status,
                             "terminalAccepted": dispatch.terminal_accepted,
                             "agentAcknowledged": false,
+                            "workspaceId": workspace_id.clone(),
                             "text": text,
                         });
                         receipt_insert(receipt_id.clone(), receipt.clone());
@@ -393,6 +667,7 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
                             "status": status,
                             "terminalAccepted": dispatch.terminal_accepted,
                             "agentAcknowledged": false,
+                            "workspaceId": workspace_id,
                             "next": if submit { "call ridge_delivery_status; target agent may call ridge_acknowledge_receipt" } else { "call ridge_send_and_submit to dispatch Enter" },
                         }).to_string()
                     })
@@ -406,49 +681,52 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(80)
                 .clamp(1, 2000) as usize;
-            host.capture_pane(&target(), lines)
+            target().and_then(|target| host.capture_pane(&target, lines))
         }
 
-        "ridge_split_pane" => {
-            let direction = arg_str(&args, "direction").unwrap_or("vertical");
-            let role = arg_str(&args, "role").unwrap_or("worker");
-            host.split_pane(direction, role, arg_str(&args, "initial_cmd"))
-                .map(|v| v.to_string())
-        }
+        "ridge_split_pane" => split_request(&args).and_then(|request| {
+            validate_launch_request(host, &request)?;
+            host.split_pane_with(&request)
+                .map(|value| split_result(value, &request).to_string())
+        }),
 
         "ridge_join_group" => match arg_str(&args, "group_name") {
             None => Err(HostError::InvalidParams("group_name 不能为空".into())),
-            Some(g) => {
-                let t = target();
+            Some(g) => target().and_then(|t| {
                 let t_ref = (!t.is_null()).then_some(&t);
                 host.join_group(g, arg_str(&args, "agent_id"), t_ref)
                     .map(|()| "dispatched".to_string())
-            }
+            }),
         },
 
         "ridge_report_progress" => {
             let status = arg_str(&args, "status").unwrap_or("update");
             let detail = arg_str(&args, "detail").unwrap_or("");
-            let t = target();
-            host.report_progress(&t, status, detail)
-                .map(|()| "reported".to_string())
+            target().and_then(|t| {
+                host.report_progress(&t, status, detail)
+                    .map(|()| "reported".to_string())
+            })
         }
 
         // 收发同一份内存队列：任何 MCP 客户端都能异步取走发给某 pane 的消息，
         // 不必依赖 stdin 注入被对方 shell 正确读到。
         "ridge_inbox_read" => {
             let peek = args.get("peek").and_then(|v| v.as_bool()).unwrap_or(false);
-            host.pane_key(&target())
-                .map(|key| Value::Array(inbox_take(&key, peek)).to_string())
+            target().and_then(|target| {
+                host.pane_key(&target)
+                    .map(|key| Value::Array(inbox_take(&key, peek)).to_string())
+            })
         }
 
         "ridge_delivery_status" => {
             let receipt_id = arg_str(&args, "receipt_id")
                 .ok_or_else(|| HostError::InvalidParams("receipt_id 不能为空".into()));
             receipt_id.and_then(|receipt_id| {
-                host.pane_key(&target())
-                    .and_then(|key| receipt_get(&key, receipt_id))
-                    .map(|receipt| receipt.to_string())
+                target().and_then(|target| {
+                    host.pane_key(&target)
+                        .and_then(|key| receipt_get(&key, receipt_id))
+                        .map(|receipt| receipt.to_string())
+                })
             })
         }
 
@@ -458,17 +736,21 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
             let status = arg_str(&args, "status")
                 .ok_or_else(|| HostError::InvalidParams("status 不能为空".into()));
             match (receipt_id, status) {
-                (Ok(receipt_id), Ok(status)) => host
-                    .pane_key(&target())
-                    .and_then(|key| receipt_ack(&key, receipt_id, status, arg_str(&args, "detail")))
-                    .map(|receipt| receipt.to_string()),
+                (Ok(receipt_id), Ok(status)) => target().and_then(|target| {
+                    host.pane_key(&target)
+                        .and_then(|key| {
+                            receipt_ack(&key, receipt_id, status, arg_str(&args, "detail"))
+                        })
+                        .map(|receipt| receipt.to_string())
+                }),
                 (Err(e), _) | (_, Err(e)) => Err(e),
             }
         }
 
         "ridge_report_execution_rejection" => {
             let required = |key| {
-                arg_str(&args, key).ok_or_else(|| HostError::InvalidParams(format!("{key} 不能为空")))
+                arg_str(&args, key)
+                    .ok_or_else(|| HostError::InvalidParams(format!("{key} 不能为空")))
             };
             match (
                 required("executor"),
@@ -477,9 +759,11 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
                 required("reason"),
                 required("next_step"),
             ) {
-                (Ok(executor), Ok(policy_source), Ok(request_id), Ok(reason), Ok(next_step)) => host
-                    .report_execution_rejection(ExternalExecutionRejection {
-                        initiator: arg_str(&args, "initiator").unwrap_or("mcp-client").to_string(),
+                (Ok(executor), Ok(policy_source), Ok(request_id), Ok(reason), Ok(next_step)) => {
+                    host.report_execution_rejection(ExternalExecutionRejection {
+                        initiator: arg_str(&args, "initiator")
+                            .unwrap_or("mcp-client")
+                            .to_string(),
                         action: arg_str(&args, "action").unwrap_or("").to_string(),
                         executor: executor.to_string(),
                         policy_source: policy_source.to_string(),
@@ -487,11 +771,15 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
                         reason: reason.to_string(),
                         next_step: next_step.to_string(),
                     })
-                    .map(|id| json!({
-                        "reportId": id,
-                        "status": "reported",
-                        "retry": "not_available_from_ridge",
-                    }).to_string()),
+                    .map(|id| {
+                        json!({
+                            "reportId": id,
+                            "status": "reported",
+                            "retry": "not_available_from_ridge",
+                        })
+                        .to_string()
+                    })
+                }
                 (Err(error), _, _, _, _)
                 | (_, Err(error), _, _, _)
                 | (_, _, Err(error), _, _)
@@ -580,9 +868,95 @@ mod tests {
         }
     }
 
-    fn call(msg: &str) -> Value {
-        let out = handle_message(msg, &FakeHost, "test").expect("expected a response");
+    struct CapableHost;
+
+    impl McpHost for CapableHost {
+        fn team_profile(&self) -> Value {
+            json!({ "workspaceId": "current", "roster": [] })
+        }
+        fn list_workspaces(&self) -> HostResult<Value> {
+            Ok(json!([{ "workspaceId": "ws-a" }, { "workspaceId": "ws-b" }]))
+        }
+        fn team_profile_for(&self, workspace_id: Option<&str>) -> HostResult<Value> {
+            let workspace_id = workspace_id.unwrap_or("current");
+            if !matches!(workspace_id, "current" | "ws-a" | "ws-b") {
+                return Err(HostError::InvalidParams("workspace 不存在".into()));
+            }
+            Ok(json!({ "workspaceId": workspace_id, "roster": [] }))
+        }
+        fn launch_capabilities(&self) -> HostResult<LaunchCapabilities> {
+            Ok(LaunchCapabilities {
+                profiles: vec![LaunchProfile {
+                    id: "codex".into(),
+                    models: vec!["gpt-5".into()],
+                    reasoning_efforts: vec!["medium".into(), "high".into()],
+                    supports_checkpoint: true,
+                }],
+            })
+        }
+        fn resolve_pane_target(
+            &self,
+            workspace_id: Option<&str>,
+            target: &Value,
+        ) -> HostResult<Value> {
+            let workspace_id = workspace_id.unwrap_or("current");
+            if !matches!(workspace_id, "current" | "ws-a" | "ws-b") {
+                return Err(HostError::InvalidParams("workspace 不存在".into()));
+            }
+            Ok(json!({ "workspaceId": workspace_id, "paneId": target }))
+        }
+        fn send_text(
+            &self,
+            target: &Value,
+            _text: &str,
+            _submit: bool,
+            _busy: bool,
+        ) -> HostResult<InputDispatch> {
+            if target.get("workspaceId").is_none() || target.get("paneId").is_none() {
+                return Err(HostError::InvalidParams("target 未复合寻址".into()));
+            }
+            Ok(InputDispatch {
+                terminal_accepted: true,
+            })
+        }
+        fn capture_pane(&self, target: &Value, _lines: usize) -> HostResult<String> {
+            Ok(target.to_string())
+        }
+        fn split_pane(&self, _d: &str, _r: &str, _c: Option<&str>) -> HostResult<Value> {
+            unreachable!("typed host uses split_pane_with")
+        }
+        fn split_pane_with(&self, request: &SplitPaneRequest) -> HostResult<Value> {
+            if !matches!(
+                request.workspace_id.as_deref(),
+                None | Some("ws-a") | Some("ws-b")
+            ) {
+                return Err(HostError::InvalidParams("workspace 不存在".into()));
+            }
+            Ok(json!({
+                "paneId": "pane-new",
+                "workspaceId": request.workspace_id,
+                "launchProfile": request.launch_profile,
+                "model": request.model,
+                "reasoningEffort": request.reasoning_effort,
+                "checkpointTransferred": request.checkpoint.is_some(),
+                "replacementRequested": request.replace_target.is_some(),
+            }))
+        }
+        fn read_resource(&self, _uri: &RidgeUri) -> HostResult<(String, String)> {
+            Ok(("application/json".into(), "{}".into()))
+        }
+        fn pane_key(&self, target: &Value) -> HostResult<String> {
+            Ok(target.to_string())
+        }
+    }
+
+    fn call_with(msg: &str, host: &dyn McpHost) -> Value {
+        let out = handle_message(msg, host, "test").expect("expected a response");
         serde_json::from_str(&out).unwrap()
+    }
+
+    fn call(msg: &str) -> Value {
+        call_with(msg, &FakeHost)
     }
 
     #[test]
@@ -646,7 +1020,10 @@ mod tests {
         .to_string();
         let v = call(&read);
         let text = v["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("\"from\":\"cursor\""), "收件箱应留副本: {text}");
+        assert!(
+            text.contains("\"from\":\"cursor\""),
+            "收件箱应留副本: {text}"
+        );
         // 取走即清空
         let v2 = call(&read);
         assert_eq!(v2["result"]["content"][0]["text"].as_str().unwrap(), "[]");
@@ -689,6 +1066,124 @@ mod tests {
     }
 
     #[test]
+    fn legacy_host_rejects_explicit_workspace_instead_of_misrouting() {
+        let msg = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_send_and_submit","arguments":{
+                "workspace_id":"ws-b","target_pane_id":8,"message":"hi"
+            }}
+        })
+        .to_string();
+        let response = call(&msg);
+        assert_eq!(response["error"]["code"], proto::INVALID_PARAMS);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("显式 workspace"));
+    }
+
+    #[test]
+    fn explicit_workspace_routes_as_composite_identity() {
+        let msg = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_send_and_submit","arguments":{
+                "workspace_id":"ws-b","target_pane_id":8,"message":"hi"
+            }}
+        })
+        .to_string();
+        let response = call_with(&msg, &CapableHost);
+        let receipt: Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(receipt["workspaceId"], "ws-b");
+        assert_eq!(receipt["status"], "submit_dispatched");
+        assert_eq!(receipt["agentAcknowledged"], false);
+    }
+
+    #[test]
+    fn launch_capabilities_are_host_owned_and_typed_split_is_validated() {
+        let discover = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_get_launch_capabilities","arguments":{}}
+        })
+        .to_string();
+        let capabilities: Value = serde_json::from_str(
+            call_with(&discover, &CapableHost)["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(capabilities["profiles"][0]["id"], "codex");
+        assert_eq!(capabilities["profiles"][0]["models"], json!(["gpt-5"]));
+
+        let split = json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"ridge_split_pane","arguments":{
+                "workspace_id":"ws-b","direction":"vertical","role":"worker",
+                "launch_profile":"codex","model":"gpt-5","reasoning_effort":"high",
+                "checkpoint":"session-1","replace_target_pane_id":"pane-old"
+            }}
+        })
+        .to_string();
+        let created: Value = serde_json::from_str(
+            call_with(&split, &CapableHost)["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(created["workspaceId"], "ws-b");
+        assert_eq!(created["launchProfile"], "codex");
+        assert_eq!(created["model"], "gpt-5");
+        assert_eq!(created["reasoningEffort"], "high");
+        assert_eq!(created["checkpointTransferred"], true);
+        assert_eq!(created["replacementRequested"], true);
+        assert_eq!(created["status"], "pane_created");
+    }
+
+    #[test]
+    fn split_rejects_mutual_exclusion_and_unadvertised_overrides() {
+        for arguments in [
+            json!({
+                "direction":"vertical","role":"worker",
+                "initial_cmd":"pwsh","launch_profile":"codex"
+            }),
+            json!({
+                "direction":"vertical","role":"worker",
+                "launch_profile":"unknown"
+            }),
+            json!({
+                "direction":"vertical","role":"worker",
+                "launch_profile":"codex","model":"invented"
+            }),
+            json!({
+                "direction":"vertical","role":"worker",
+                "launch_profile":"codex","reasoning_effort":"ultra"
+            }),
+            json!({
+                "direction":"vertical","role":"worker","model":"gpt-5"
+            }),
+            json!({
+                "direction":"vertical","role":"worker",
+                "launch_profile":"codex","replace_target_pane_id":"pane-old"
+            }),
+            json!({
+                "workspace_id":"forged","direction":"vertical","role":"worker",
+                "launch_profile":"codex"
+            }),
+        ] {
+            let msg = json!({
+                "jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"ridge_split_pane","arguments":arguments}
+            })
+            .to_string();
+            assert_eq!(
+                call_with(&msg, &CapableHost)["error"]["code"],
+                proto::INVALID_PARAMS
+            );
+        }
+    }
+
+    #[test]
     fn receipt_tracks_explicit_agent_acknowledgement() {
         let send = json!({
             "jsonrpc":"2.0","id":1,"method":"tools/call",
@@ -696,7 +1191,9 @@ mod tests {
         })
         .to_string();
         let sent: Value = serde_json::from_str(
-            call(&send)["result"]["content"][0]["text"].as_str().expect("send receipt"),
+            call(&send)["result"]["content"][0]["text"]
+                .as_str()
+                .expect("send receipt"),
         )
         .expect("receipt JSON");
         let receipt_id = sent["receiptId"].as_str().expect("receipt id").to_string();
@@ -707,7 +1204,9 @@ mod tests {
         })
         .to_string();
         let before: Value = serde_json::from_str(
-            call(&status)["result"]["content"][0]["text"].as_str().expect("status JSON"),
+            call(&status)["result"]["content"][0]["text"]
+                .as_str()
+                .expect("status JSON"),
         )
         .expect("status receipt");
         assert_eq!(before["status"], "submit_dispatched");
@@ -722,7 +1221,9 @@ mod tests {
         })
         .to_string();
         let after: Value = serde_json::from_str(
-            call(&ack)["result"]["content"][0]["text"].as_str().expect("ack JSON"),
+            call(&ack)["result"]["content"][0]["text"]
+                .as_str()
+                .expect("ack JSON"),
         )
         .expect("ack receipt");
         assert_eq!(after["status"], "agent_acknowledged");
