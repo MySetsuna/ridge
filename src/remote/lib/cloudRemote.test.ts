@@ -122,12 +122,34 @@ describe('CloudRemoteConnection panes', () => {
 
     const panesMsg = msgs.find((m) => m.type === 'panes');
     // iter-61：叶子附带 agent 标记态（agent_state==='busy'），供工作区弹层的标记按钮。
-    expect(panesMsg).toEqual({ type: 'panes', panes: [
+    expect(panesMsg).toEqual({ type: 'panes', workspaceId: 'ws1', panes: [
       { id: 'pane-a', title: 'A', cwd: '/a', isAgent: false },
       { id: 'pane-b', title: undefined, cwd: undefined, isAgent: false },
     ] });
     expect(metas).toContainEqual([{ workspaceId: 'ws1', paneId: 'pane-a' }, 'A', '/a']);
     expect(metas).toContainEqual([{ workspaceId: 'ws1', paneId: 'pane-b' }, null, null]);
+  });
+
+  it('keeps a delayed pane snapshot scoped to the workspace that requested it', async () => {
+    const conn = await connected();
+    const msgs: WsMessage[] = [];
+    let resolveLayout!: (layout: PaneNode) => void;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_pane_layout') {
+        return await new Promise<PaneNode>((resolve) => { resolveLayout = resolve; });
+      }
+      if (cmd === 'switch_workspace') return undefined;
+      return undefined;
+    });
+    conn.onMessage((message) => msgs.push(message));
+
+    conn.listPanes();
+    await Promise.resolve();
+    expect(await conn.switchWorkspace('ws2')).toBe(true);
+    resolveLayout(LAYOUT);
+    await flush();
+
+    expect(msgs.at(-1)).toMatchObject({ type: 'panes', workspaceId: 'ws1' });
   });
 
   it('subscribePane seeds a scrollback tail (RIS + history) then streams live pty bytes', async () => {

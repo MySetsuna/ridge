@@ -3,8 +3,21 @@ import {
 	scissorOriginDevicePx,
 	cellDeviceOffsetPx,
 	imeHelperCssPosition,
+	activateIme,
 	type ImeAnchorInput,
 } from './imeAnchor';
+
+describe('activateIme', () => {
+	it('orders live bottom, cursor/fallback anchor, then focus', () => {
+		const calls: string[] = [];
+		activateIme({
+			scrollToBottom: () => calls.push('bottom'),
+			positionAtCursorOrCenter: () => calls.push('anchor'),
+			focus: () => calls.push('focus'),
+		});
+		expect(calls).toEqual(['bottom', 'anchor', 'focus']);
+	});
+});
 
 /**
  * Coordinate-alignment truth table for the desktop IME helper textarea.

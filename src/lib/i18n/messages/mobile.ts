@@ -52,6 +52,7 @@ export const zh: Record<string, string> = {
   savedEmpty: '主机上暂无已保存的 .ridge 工作区',
   savedClose: '关闭',
   savedOpenFail: '打开已保存工作区失败',
+  workspaceSwitchFail: '切换工作区失败',
 
   // AuthScreen
   authSubtitle: '输入桌面端 Ridge 应用中显示的 6 位动态验证码',
@@ -182,6 +183,7 @@ export const en: Record<string, string> = {
   savedEmpty: 'No saved .ridge workspaces on the host',
   savedClose: 'Close',
   savedOpenFail: 'Failed to open saved workspace',
+  workspaceSwitchFail: 'Failed to switch workspace',
 
   // AuthScreen
   authSubtitle: 'Enter the 6-digit one-time code shown in the Ridge desktop app',

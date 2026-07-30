@@ -39,10 +39,12 @@ describe('renderWorker.protocol — isRenderWorkerRequest', () => {
 			{ type: 'init' },
 			{ type: 'bindCanvas' },
 			{ type: 'applyDelta' },
+			{ type: 'releaseCanvas' },
 			{ type: 'feed' },
 			{ type: 'resize' },
 			{ type: 'destroy' },
 			{ type: 'ping' },
+			{ type: 'setFont' },
 		];
 		for (const t of tags) {
 			expect(isRenderWorkerRequest(t)).toBe(true);
@@ -104,6 +106,23 @@ describe('renderWorker.handleRequest — init', () => {
 		expect(pane).toMatchObject({ rows: 24, cols: 80, backend: 'webgpu' });
 	});
 
+	it('rejects init when the production wasm adapter is unavailable', () => {
+		const state = makeWorkerState();
+		const ack = handleRequest(state, {
+			type: 'init',
+			paneId: PANE,
+			dims: { rows: 24, cols: 80, dpr: 1 },
+			backend: 'canvas2d',
+			scrollbackLines: 2000,
+		}, null);
+		expect(ack).toMatchObject({
+			type: 'error',
+			paneId: PANE,
+			code: 'apply_delta_failed',
+		});
+		expect(getPaneState(state, PANE)).toBeUndefined();
+	});
+
 	it('isolates state across panes', () => {
 		const state = makeWorkerState();
 		init(state, PANE);
@@ -123,6 +142,43 @@ describe('renderWorker.handleRequest — bindCanvas', () => {
 		const ack = handleRequest(state, { type: 'bindCanvas', paneId: PANE });
 		expect(ack).toMatchObject({ type: 'ready', paneId: PANE });
 		expect(getPaneState(state, PANE)?.canvasBound).toBe(true);
+	});
+
+	it('renders immediately when bind follows feed', () => {
+		const kernel = {
+			feed: vi.fn(),
+			applyDeltaFrame: vi.fn(),
+			resize: vi.fn(),
+			free: vi.fn(),
+		};
+		const renderer = {
+			render: vi.fn(),
+			resize: vi.fn(),
+			free: vi.fn(),
+		};
+		const adapter: KernelAdapter = {
+			create: () => kernel,
+			createRenderer: () => renderer,
+		};
+		const state = makeWorkerState();
+		handleRequest(state, {
+			type: 'init',
+			paneId: PANE,
+			dims: { rows: 24, cols: 80, dpr: 1 },
+			backend: 'canvas2d',
+			scrollbackLines: 2000,
+		}, adapter);
+		handleRequest(state, {
+			type: 'feed',
+			paneId: PANE,
+			bytes: new TextEncoder().encode('before-bind'),
+		}, adapter);
+		handleRequest(state, {
+			type: 'bindCanvas',
+			paneId: PANE,
+			canvas: {} as OffscreenCanvas,
+		}, adapter);
+		expect(renderer.render).toHaveBeenCalledOnce();
 	});
 
 	it('returns pane_not_initialized when init never ran', () => {
@@ -166,14 +222,18 @@ describe('renderWorker.handleRequest — applyDelta / feed', () => {
 		const ack = handleRequest(state, {
 			type: 'feed',
 			paneId: PANE,
-			data: 'hello',
+			bytes: new TextEncoder().encode('hello'),
 		});
 		expect(ack).toMatchObject({ type: 'ready', paneId: PANE });
 	});
 
 	it('feed on an unknown pane → pane_not_initialized', () => {
 		const state = makeWorkerState();
-		const ack = handleRequest(state, { type: 'feed', paneId: PANE, data: 'x' });
+		const ack = handleRequest(state, {
+			type: 'feed',
+			paneId: PANE,
+			bytes: new Uint8Array([120]),
+		});
 		expect(ack).toMatchObject({
 			type: 'error',
 			paneId: PANE,
@@ -240,6 +300,7 @@ describe('renderWorker.handleRequest — destroy', () => {
 describe('renderWorker.handleRequest — wasm KernelAdapter wiring', () => {
 	function makeMockKernel() {
 		return {
+			feed: vi.fn<(bytes: Uint8Array) => void>(),
 			applyDeltaFrame: vi.fn<(bytes: Uint8Array) => void>(),
 			free: vi.fn<() => void>(),
 		};
@@ -305,6 +366,35 @@ describe('renderWorker.handleRequest — wasm KernelAdapter wiring', () => {
 		expect(ack).toMatchObject({ type: 'ready', paneId: PANE });
 		expect(adapter.kernel.applyDeltaFrame).toHaveBeenCalledOnce();
 		expect(adapter.kernel.applyDeltaFrame).toHaveBeenCalledWith(bytes);
+	});
+
+	it('feed forwards raw PTY bytes and renders the bound canvas', () => {
+		const adapter = makeMockAdapter();
+		const renderer = {
+			render: vi.fn(),
+			resize: vi.fn(),
+			free: vi.fn(),
+		} satisfies RendererHandle;
+		adapter.createRenderer = vi.fn(() => renderer);
+		const state = makeWorkerState();
+		handleRequest(state, {
+			type: 'init',
+			paneId: PANE,
+			dims: { rows: 24, cols: 80, dpr: 1 },
+			backend: 'canvas2d',
+			scrollbackLines: 2000,
+		}, adapter);
+		handleRequest(state, {
+			type: 'bindCanvas',
+			paneId: PANE,
+			canvas: {} as OffscreenCanvas,
+		}, adapter);
+		renderer.render.mockClear();
+		const bytes = new Uint8Array([0x1b, 0x5b, 0x48]);
+		const ack = handleRequest(state, { type: 'feed', paneId: PANE, bytes }, adapter);
+		expect(ack).toMatchObject({ type: 'ready', paneId: PANE });
+		expect(adapter.kernel.feed).toHaveBeenCalledWith(bytes);
+		expect(renderer.render).toHaveBeenCalledOnce();
 	});
 
 	it('destroy frees the kernel before removing pane state', () => {
@@ -417,7 +507,7 @@ describe('renderWorker.handleRequest — wasm KernelAdapter wiring', () => {
 		expect(getPaneState(state, PANE)).toBeUndefined();
 	});
 
-	it('omitting / nulling the adapter behaves like the pre-P4.7 shadow path', () => {
+	it('omitting the adapter keeps the unit-test shadow path', () => {
 		const state = makeWorkerState();
 		const ack = handleRequest(
 			state,
@@ -428,7 +518,6 @@ describe('renderWorker.handleRequest — wasm KernelAdapter wiring', () => {
 				backend: 'webgpu',
 				scrollbackLines: 2000,
 			},
-			null,
 		);
 		expect(ack).toEqual({ type: 'ready', paneId: PANE, backend: 'webgpu' });
 		expect(getPaneState(state, PANE)?.kernel).toBeUndefined();
@@ -436,14 +525,12 @@ describe('renderWorker.handleRequest — wasm KernelAdapter wiring', () => {
 		const apply = handleRequest(
 			state,
 			{ type: 'applyDelta', paneId: PANE, bytes: new Uint8Array([0]) },
-			null,
 		);
 		expect(apply).toMatchObject({ type: 'ready', paneId: PANE });
 
 		const destroy = handleRequest(
 			state,
 			{ type: 'destroy', paneId: PANE },
-			null,
 		);
 		expect(destroy).toEqual({ type: 'destroyed', paneId: PANE });
 	});
@@ -459,13 +546,16 @@ describe('renderWorker.handleRequest — Renderer adapter wiring (p4.8)', () => 
 	function makeMockKernel() {
 		return {
 			applyDeltaFrame: vi.fn<(bytes: Uint8Array) => void>(),
+			resize: vi.fn<(rows: number, cols: number) => void>(),
 			free: vi.fn<() => void>(),
 		};
 	}
 	function makeMockRenderer() {
 		return {
 			render: vi.fn<() => void>(),
+			resize: vi.fn<(widthCss: number, heightCss: number, dpr: number) => void>(),
 			free: vi.fn<() => void>(),
+			configure: vi.fn(() => ({ cellW: 9, cellH: 18 })),
 		};
 	}
 	type MockKernel = ReturnType<typeof makeMockKernel>;
@@ -537,6 +627,7 @@ describe('renderWorker.handleRequest — Renderer adapter wiring (p4.8)', () => 
 
 	it('applyDelta drives both kernel.applyDeltaFrame and renderer.render', () => {
 		const { state, mocks } = initAndBind();
+		mocks.renderer.render.mockClear();
 		const bytes = new Uint8Array([4, 5, 6]);
 		const ack = handleRequest(
 			state,
@@ -550,6 +641,59 @@ describe('renderWorker.handleRequest — Renderer adapter wiring (p4.8)', () => 
 		const kernelOrder = mocks.kernel.applyDeltaFrame.mock.invocationCallOrder[0];
 		const rendererOrder = mocks.renderer.render.mock.invocationCallOrder[0];
 		expect(kernelOrder).toBeLessThan(rendererOrder);
+	});
+
+	it('bind configures real metrics; resize drives kernel, surface, then render', () => {
+		const mocks = makeMockAdapter();
+		const state = makeWorkerState();
+		handleRequest(state, {
+			type: 'init',
+			paneId: PANE,
+			dims: { rows: 24, cols: 80, dpr: 2 },
+			backend: 'canvas2d',
+			scrollbackLines: 2000,
+		}, mocks.adapter);
+		const bind = handleRequest(state, {
+			type: 'bindCanvas',
+			paneId: PANE,
+			canvas: fakeCanvas,
+			font: 'monospace',
+			fontSizePx: 15,
+			dpr: 2,
+		}, mocks.adapter);
+		expect(bind).toMatchObject({ type: 'ready', cellW: 9, cellH: 18 });
+		mocks.renderer.render.mockClear();
+
+		const resized = handleRequest(state, {
+			type: 'resize',
+			paneId: PANE,
+			rows: 30,
+			cols: 100,
+			dpr: 2,
+			wCss: 800,
+			hCss: 480,
+		}, mocks.adapter);
+		expect(resized).toMatchObject({ type: 'ready', paneId: PANE });
+		expect(mocks.kernel.resize).toHaveBeenCalledWith(30, 100);
+		expect(mocks.renderer.resize).toHaveBeenCalledWith(800, 480, 2);
+		expect(mocks.renderer.render).toHaveBeenCalledOnce();
+	});
+
+	it('releaseCanvas frees only the renderer and keeps the kernel for parked output', () => {
+		const { state, mocks } = initAndBind();
+		const released = handleRequest(
+			state,
+			{ type: 'releaseCanvas', paneId: PANE },
+			mocks.adapter,
+		);
+		expect(released).toMatchObject({ type: 'ready', paneId: PANE });
+		expect(mocks.renderer.free).toHaveBeenCalledOnce();
+		expect(mocks.kernel.free).not.toHaveBeenCalled();
+		expect(getPaneState(state, PANE)).toMatchObject({
+			canvasBound: false,
+			kernel: mocks.kernel,
+		});
+		expect(getPaneState(state, PANE)?.renderer).toBeUndefined();
 	});
 
 	it('destroy frees renderer BEFORE kernel', () => {

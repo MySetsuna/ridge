@@ -18,6 +18,7 @@
     trailingWord,
   } from '@ridge/remote/shared/terminal/imeDelta';
   import { SentenceBuffer, SENTENCE_FLUSH_MS } from '@ridge/remote/shared/terminal/sentenceBuffer';
+  import { activateIme } from '@ridge/remote/shared/terminal/imeAnchor';
 
   // P4 (2026-07-25): this component no longer owns a single `TerminalController`
   // + canvas. It is now the MOBILE INPUT-ADAPTATION LAYER over the SHARED
@@ -28,7 +29,7 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId: remotePaneId, workspaceId, onStdin: onPaneStdin, onResize: onPaneResize, onHostClipboard, onNearTop: onPaneNearTop, onKeyboardShift, scrollbackLoading = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
+  let { paneId: remotePaneId, workspaceId, onStdin: onPaneStdin, onResize: onPaneResize, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
     onStdin: (pane: PaneRef, data: string) => void;
@@ -41,8 +42,10 @@
     /** §history-pull: fired when the user scrolls the viewport near the top of the
      *  in-kernel scrollback, so MainApp can lazily fetch + prepend older history. */
     onNearTop?: (pane: PaneRef) => void;
+    onRetryScrollback?: (pane: PaneRef) => void;
     onKeyboardShift?: (shift: number) => void;
     scrollbackLoading?: boolean;
+    scrollbackError?: boolean;
     selectionMode?: boolean;
     backendName?: string;
   } = $props();
@@ -281,10 +284,9 @@
     }
   }
 
-  function focusInput() {
+  function focusHiddenInput() {
     const el = hiddenInput;
     if (!el) return;
-    positionInputAtCursorOrCenter();
     el.focus({ preventScroll: true });
     // §A iOS sometimes drops focus on the tiny invisible textarea — re-assert
     // on the next frame and give it a caret so the keyboard reliably stays up.
@@ -295,12 +297,24 @@
     });
   }
 
+  function focusInput() {
+    positionInputAtCursorOrCenter();
+    focusHiddenInput();
+  }
+
   /** Explicit soft-keyboard opening is the only path that snaps history back
    * to live output. Pointer coordinates never participate in the IME anchor. */
   function openSoftKeyboard() {
     if (!attached) return;
-    manager.scrollToBottom(paneId);
-    focusInput();
+    activateIme({
+      scrollToBottom: () => manager.scrollToBottom(paneId),
+      positionAtCursorOrCenter: positionInputAtCursorOrCenter,
+      focus: focusHiddenInput,
+    });
+  }
+
+  export function openSystemKeyboard() {
+    openSoftKeyboard();
   }
 
   // ── Public API (called by MainApp via bind:this) ──
@@ -985,6 +999,28 @@
   {#if scrollbackLoading}
     <div class="scrollback-loading" role="progressbar" aria-label="Loading older terminal output"></div>
   {/if}
+  {#if scrollbackError}
+    <button
+      class="scrollback-error"
+      onclick={(event) => {
+        event.stopPropagation();
+        const pane = ownPaneRef();
+        if (pane) onRetryScrollback?.(pane);
+      }}
+      ontouchstart={(event) => event.stopPropagation()}
+      ontouchend={(event) => event.stopPropagation()}
+      onpointerdown={(event) => event.stopPropagation()}
+      onpointerup={(event) => event.stopPropagation()}
+      onpointermove={(event) => event.stopPropagation()}
+      onmousedown={(event) => event.stopPropagation()}
+      onmouseup={(event) => event.stopPropagation()}
+      onmousemove={(event) => event.stopPropagation()}
+      oncontextmenu={(event) => event.stopPropagation()}
+      aria-label="Retry loading older terminal output"
+    >
+      Older output unavailable · Retry
+    </button>
+  {/if}
   {#if !attached}
     <div class="loading">{$t('mobile.initializingTerminal')}</div>
   {/if}
@@ -1033,6 +1069,7 @@
   .container{position:relative;flex:1;overflow:hidden;background:var(--rg-bg);touch-action:manipulation}
   .scrollback-loading{position:absolute;top:0;left:0;right:0;height:2px;z-index:8;overflow:hidden;background:color-mix(in srgb,var(--rg-accent) 20%,transparent)}
   .scrollback-loading::after{content:"";position:absolute;inset:0;width:35%;background:var(--rg-accent);animation:scrollback-progress .9s ease-in-out infinite}
+  .scrollback-error{position:absolute;top:6px;left:50%;z-index:9;transform:translateX(-50%);max-width:calc(100% - 24px);padding:5px 10px;border:1px solid color-mix(in srgb,var(--rg-danger,#ef4444) 45%,transparent);border-radius:999px;background:color-mix(in srgb,var(--rg-bg,#111827) 92%,transparent);color:var(--rg-fg,#f9fafb);font-size:11px;white-space:nowrap}
   @keyframes scrollback-progress{from{transform:translateX(-100%)}to{transform:translateX(385%)}}
   /* Near-invisible input sink parked at the cursor. pointer-events:none keeps it
      from stealing canvas clicks. Opacity must be >0 so the IME candidate window

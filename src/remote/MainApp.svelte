@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
   import { t, tr } from '$lib/i18n';
-  import { Folder, GitBranch, Search, Bot, Keyboard } from 'lucide-svelte';
+  import { Folder, GitBranch, Search, Bot, Keyboard, TextCursorInput } from 'lucide-svelte';
   // Type-only import of the lazily-loaded TerminalCanvas, used solely to type
   // the bind:this instance ref below. Erased at build, so it does NOT defeat
   // the dynamic import / lazy-load on the next line.
@@ -141,6 +141,7 @@
   let kernelTheme: Record<string, string> | null = $state(null);
   let backendName = $state('Canvas2D');
   let scrollbackLoadingPaneIds = $state<string[]>([]);
+  let scrollbackErrorPaneIds = $state<string[]>([]);
 
   // §remember-last-pane / §persist-state: remember the last active pane per
   // workspace AND the last active workspace, persisted to localStorage so a
@@ -230,15 +231,21 @@
   // a pane switch mid-fetch so we never prepend one pane's history onto another.
   async function loadOlderScrollback(pane: PaneRef) {
     if (!canvasRef || !ws.fetchOlderScrollback) return;
+    const targetCanvas = canvasRef;
     const key = paneRefKey(pane);
     if (scrollbackLoadingPaneIds.includes(key)) return;
+    scrollbackErrorPaneIds = scrollbackErrorPaneIds.filter((id) => id !== key);
     scrollbackLoadingPaneIds = [...scrollbackLoadingPaneIds, key];
     let page: Awaited<ReturnType<NonNullable<RemoteLink['fetchOlderScrollback']>>> = null;
     try {
       page = await ws.fetchOlderScrollback(pane);
       if (!page) return;
       const bytes = await scrollbackDecoder.decode(pane, page.startSeq, page.endSeq, page.bytes);
-      if (bytes && canvasRef?.prependScrollbackForPane(key, bytes)) page.commit();
+      if (bytes && targetCanvas.prependScrollbackForPane(key, bytes)) page.commit();
+    } catch {
+      if (!scrollbackErrorPaneIds.includes(key)) {
+        scrollbackErrorPaneIds = [...scrollbackErrorPaneIds, key];
+      }
     } finally {
       page?.discard();
       scrollbackLoadingPaneIds = scrollbackLoadingPaneIds.filter((id) => id !== key);
@@ -556,7 +563,10 @@
     failure = ws.lastFailure();
     ws.onMessage((msg) => {
       if (msg.type === 'panes') {
-        const workspaceId = msg.workspaceId || ui.activeWorkspaceId;
+        // Steady-state pane snapshots must carry their source workspace.
+        // A current-UI fallback races late responses onto the wrong identity.
+        if (!msg.workspaceId) return;
+        const workspaceId = msg.workspaceId;
         const nextPanes = dedupeRemoteItems(msg.panes);
         queryClient.setQueryData(remoteQueryKeys.panes(sessionId(), workspaceId), nextPanes);
         const paneIds = nextPanes.map(p => p.id);
@@ -695,6 +705,7 @@
       for (const pane of attachedPanes.values()) {
         if (pane.paneId !== pid || pane.workspaceId !== ui.activeWorkspaceId) {
           ws.subscribePane(pane, { active: false });
+          replayedPanes.add(paneRefKey(pane));
         }
       }
       if (pid) {
@@ -887,7 +898,23 @@
           {/if}
         </div>
         <div class="header-actions">
-          <button class="hdr-btn" class:active={ui.showKeyboard} onclick={() => ui.showKeyboard = !ui.showKeyboard} title={$t('mobile.virtualKeyboard')} tabindex="-1">
+          <button
+            class="hdr-btn"
+            onclick={() => canvasRef?.openSystemKeyboard()}
+            title="Open system keyboard"
+            aria-label="Open system keyboard"
+            data-testid="system-ime-button"
+          >
+            <TextCursorInput class="w-4 h-4" />
+          </button>
+          <button
+            class="hdr-btn"
+            class:active={ui.showKeyboard}
+            onclick={() => ui.showKeyboard = !ui.showKeyboard}
+            title={$t('mobile.virtualKeyboard')}
+            aria-label={$t('mobile.virtualKeyboard')}
+            data-testid="virtual-keyboard-button"
+          >
             <Keyboard class="w-4 h-4" />
           </button>
         </div>
@@ -927,6 +954,8 @@
             onNearTop={loadOlderScrollback}
             onKeyboardShift={(shift: number) => ui.keyboardShift = shift}
             scrollbackLoading={scrollbackLoadingPaneIds.includes(`${ui.activeWorkspaceId}:${ui.activePaneId}`)}
+            scrollbackError={scrollbackErrorPaneIds.includes(`${ui.activeWorkspaceId}:${ui.activePaneId}`)}
+            onRetryScrollback={loadOlderScrollback}
             bind:selectionMode={ui.selectionMode}
             sentenceBuffer={ui.sentenceBuffer}
           />

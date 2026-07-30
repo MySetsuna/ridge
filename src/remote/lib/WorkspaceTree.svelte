@@ -5,6 +5,7 @@
   import { portal } from '$lib/actions/portal';
   import type { PaneInfo, WorkspaceInfo, RemoteLink, SavedWorkspaceFile } from '@ridge/remote';
   import { treeState, toggleWsExpanded, seedActiveWorkspace, pruneExpanded } from './treeState.svelte';
+  import { confirmedWorkspaceTarget } from './remoteQueries';
   import PaneShellPicker from './PaneShellPicker.svelte';
 
   // §item1（移动端导航重构）：把「工作区 + 终端」整合为一个树形级联控件，
@@ -103,7 +104,10 @@
     try {
       const id = await ws.openWorkspaceFromFile(path);
       if (id) {
-        await ws.switchWorkspace(id);
+        if (!await ws.switchWorkspace(id)) {
+          savedErr = tr('mobile.savedOpenFail');
+          return;
+        }
         activeWorkspaceId = id;
         activePaneId = null;
         onWorkspacesChanged?.();
@@ -193,22 +197,22 @@
     if (!ws || busy || id === activeWorkspaceId) return;
     busy = true;
     err = '';
-    // 切换前清空活动 pane：避免在新工作区 panes 回包前残留旧 pane 订阅。
-    // 新活动工作区由 §auto-expand-active effect 自动展开其终端。
-    const previousWorkspaceId = activeWorkspaceId;
-    const previousPaneId = activePaneId;
-    activePaneId = null;
     try {
-      await ws.switchWorkspace(id);
-      activeWorkspaceId = id;
+      const target = await confirmedWorkspaceTarget(
+        ws.switchWorkspace.bind(ws),
+        id,
+        peekedPanes.get(id)?.[0]?.id ?? null,
+      );
+      if (!target) {
+        err = tr('mobile.workspaceSwitchFail');
+        return;
+      }
+      activeWorkspaceId = target.workspaceId;
+      activePaneId = target.paneId;
       ws.listPanes();
     } catch (e) {
       err = e instanceof Error ? e.message : String(e);
     } finally {
-      if (err) {
-        activeWorkspaceId = previousWorkspaceId;
-        activePaneId = previousPaneId;
-      }
       busy = false;
     }
   }
@@ -221,8 +225,12 @@
     try {
       id = await ws.createWorkspace();
       if (id) {
-        await ws.switchWorkspace(id);
+        if (!await ws.switchWorkspace(id)) {
+          err = tr('mobile.workspaceSwitchFail');
+          return;
+        }
         activeWorkspaceId = id;
+        activePaneId = null;
       }
     } catch (e) {
       err = e instanceof Error ? e.message : String(e);
@@ -275,10 +283,18 @@
     if (!ws || busy) return;
     busy = true;
     err = '';
-    activeWorkspaceId = wsId;
     try {
-      await ws.switchWorkspace(wsId);
-      activePaneId = paneId;
+      const target = await confirmedWorkspaceTarget(
+        ws.switchWorkspace.bind(ws),
+        wsId,
+        paneId,
+      );
+      if (!target) {
+        err = tr('mobile.workspaceSwitchFail');
+        return;
+      }
+      activeWorkspaceId = target.workspaceId;
+      activePaneId = target.paneId;
       ws.listPanes();
       close();
     } catch (e) {

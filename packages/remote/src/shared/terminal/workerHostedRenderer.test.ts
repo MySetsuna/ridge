@@ -13,6 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+	MAX_WORKER_PENDING,
 	WorkerHostedRenderer,
 	type WorkerLike,
 } from './workerHostedRenderer';
@@ -32,6 +33,7 @@ interface CapturedMessage {
 
 class FakeWorker implements WorkerLike {
 	onmessage: ((this: WorkerLike, ev: MessageEvent) => void) | null = null;
+	onerror: ((event: ErrorEvent) => unknown) | null = null;
 	terminated = false;
 	calls: CapturedMessage[] = [];
 	postMessage(message: unknown, transfer?: Transferable[]): void {
@@ -266,5 +268,31 @@ describe('WorkerHostedRenderer — error paths', () => {
 		renderer.terminate();
 		renderer.terminate();
 		expect(worker.terminated).toBe(true);
+	});
+
+	it('worker crash rejects pending, reports fatal, and returns pending to zero', async () => {
+		const worker = new FakeWorker();
+		const fatal = vi.fn();
+		const renderer = new WorkerHostedRenderer(worker, fatal);
+		const pending = renderer.ping('crash');
+		worker.onerror?.({ message: 'boom' } as ErrorEvent);
+		await expect(pending).rejects.toMatchObject({ name: 'WorkerRendererError' });
+		expect(renderer.pendingCount()).toBe(0);
+		expect(worker.terminated).toBe(true);
+		expect(fatal).toHaveBeenCalledOnce();
+	});
+
+	it('pending cap fails closed, terminates the worker, and clears all requests', async () => {
+		const worker = new FakeWorker();
+		const fatal = vi.fn();
+		const renderer = new WorkerHostedRenderer(worker, fatal);
+		const pending = Array.from({ length: MAX_WORKER_PENDING }, () => renderer.ping());
+		const overflow = renderer.ping();
+		await expect(overflow).rejects.toThrow(/pending limit exceeded/);
+		const settled = await Promise.allSettled(pending);
+		expect(settled.every((result) => result.status === 'rejected')).toBe(true);
+		expect(renderer.pendingCount()).toBe(0);
+		expect(worker.terminated).toBe(true);
+		expect(fatal).toHaveBeenCalledOnce();
 	});
 });
