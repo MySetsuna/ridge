@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-30（iteration 76 已完成三源盘点与首批 RPC/Resize/SCM 护栏；公网、真机与 WebView2 长时证据仍属外部轨）
+状态日期：2026-07-30（iteration 76 已落地首波九项稳定性改造；多窗口、公网/真机/WebView2 长时证据仍未完成）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -15,45 +15,53 @@
 
 ## 当前迭代目标
 
-- `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 推进 Remote/桌面稳定性；当前顺序为 RPC/输入/Resize → SCM → Pane 生命周期/日志 → 内存/Host → 多窗口/Commune。
+- `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 推进 Remote/桌面稳定性；RPC/输入/Resize、SCM、Pane 生命周期、日志、真清空、Host 反馈/首帧 Resize、Commune 可见性已落地；下项为多窗口工作区所有权。
 - `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`：项目源码无 Chrome Extension Messaging；保持业务零 diff，待受影响手机 clean-profile/扩展 A/B 终局归因。
 
 ## 已验证代码事实
 
-- `origin/main@f62133c` 已合入；本地业务代码基线 `fc6a73b598f4`，未推送。
+- `origin/main@f62133c` 已合入；本地实现基线 `c290143`，未推送。
 - `RpcClient` 现有 256 在途硬上限、超时 `$/cancel` 与 queue/timeout diagnostics（`5eece08`）。
 - 手机 Cloud Resize 现为每 Pane 一在途加一 latest pending；重复尺寸去重，close/prune/disconnect 清 lane（`45355db`）。
-- SCM 已缓存同 cwd 的空/非 Git 发现结果，`get_scm_status` 按 root single-flight 并传稳定 slot（`fc6a73b`）。
+- Cloud 输入现为每 Pane 一在途、4 ms 聚合、序列/摘要去重、指数退避及阈值暂停（`9904b53`）。
+- SCM 已有共享非 Git negative cache；status/branch/stash/watch/heartbeat 共用仓库真值（`fc6a73b`、`a01f7db`）。
+- Pane destroy 先 abort pending RPC，再清 lane/listener；dead pane fail-closed，重连新生（`826e3a1`）。
+- 终端、RPC 与 SCM 重复错误按指纹聚合，保留首错并周期汇总（`20d7be3`、`2052753`）。
+- `ScrollbackClear` 协议贯通 grid/kernel/renderer/backend；右键经权威 Tauri command 真清空并释放 replay blocks（`c1ec8a2`）。
+- Host 接入弹窗即时关闭，面板显示阶段进度；foreign pane attach 后按实测尺寸立即 Resize（`7b7daee`、`c290143`）。
+- Agent's Commune 入口不再受隐式 setting 隐藏（`2b53650`）。
 - Chrome Messaging 全源码审计无命中；`service-worker.ts` 的 PWA `Client.postMessage` 非 Extension Messaging。
 
 ## 相关模块与 symbol
 
-- RPC/Resize:`RpcClient.request/settle/diagnostics`、`CloudRemoteConnection._resize/_drainResizeLane`。
-- SCM:`SourceControl.discoverRepos/refreshStatus`、`get_scm_status(slot)`、Git process timeout/tree-kill tests。
-- 待处理:`CloudRemoteConnection.sendStdin`、pane lifecycle registry、`TerminalManager.clearScrollback/destroy`、Hosts staged attach、Tauri workspace owner registry、Commune visibility。
+- RPC/Resize:`RpcClient.request/settle/diagnostics`、`CloudRemoteConnection._invokePane/_resize/_drainResizeLane/sendStdin`。
+- SCM:`SourceControl.discoverRepos/refreshStatus`、shared non-Git cache、`get_scm_status(slot)`。
+- Clear/Host:`GridDelta::ScrollbackClear`、`clear_pane_terminal`、`hostConnectProgress`、`claimPaneSize`。
+- 待处理:Tauri workspace owner registry、多窗口创建/聚焦、慢 Host 独立 settled refresh、Host 拖拽真机 E2E、WASM protocol v3 正式构建。
 
 ## 最近完成与当前 diff
 
-- 最近完成:`5eece08` RPC cap/timeout cancel；`45355db` Resize latest-win；`fc6a73b` SCM negative cache/single-flight。
-- 当前 diff:`仅 iteration 76 合同与本状态更新；.iteration 和既有本地生成目录保持未跟踪。`
+- 最近完成:`9904b53` 输入保序；`a01f7db` SCM 共享 cache；`826e3a1` Pane 取消；`20d7be3`/`2052753` 日志聚合；`c1ec8a2` 真清空；`7b7daee`/`c290143` Host；`2b53650` Commune。
+- 当前 diff:`iteration 76 合同、状态与手机审计；.iteration 和既有本地生成目录保持未跟踪。`
 
 ## 验证状态
 
 - 需求闸、preflight、Notebook 冷循环准入：退出码 `0`；NLM 实际 query 因 Google auth expired 失败。
 - 三个只读 worker 结果经 `agent_dispatch.py validate-batch`：`valid=true`。
-- 聚焦 Vitest：47/47；`pnpm check`：0 errors / 0 warnings。
+- 聚焦验证：输入/Remote 105/105；生命周期 54/54；SCM 26/26；日志 3/3；foreign binding 2/2；`pnpm check` 0 errors / 0 warnings。
+- `ridge-term` 全量 395 + protocol smoke 33；Tauri 输入序列、clear parser 与 Arc-release 聚焦测试均绿。
 - 公网、手机真机、WebView2 长时性能 A/B 尚未运行；不得宣称总体目标完成。
 
 ## 当前失败信号与风险
 
 - 失败信号:`NotebookLM authentication expired`；手机 `runtime.lastError` 尚无首条 warning script URL。
-- 风险:`write_to_pty` 超时后盲重试可能重复输入，故须先加 host acknowledgement/idempotency；多窗口与现有 single-instance 直接冲突；Host/clear/内存缺运行同构证据。
+- 风险:`ridge-term` protocol v3 的 Remote WASM 正式构建尚未完成；多窗口与现有 single-instance 直接冲突；Host 慢源/拖拽、公网与 WebView2 内存仍缺运行同构证据。
 
 ## 架构边界
 
 - 目标/非目标:`先完成统一 RPC/PTY 生命周期和观测，再跨窗口/Host；不发布、不推送、不删用户数据、不作无关重构。`
 - 锁定决策:`窗口可多开；Remote 工作区跨窗口全局单例。输入不丢、不乱、不盲重放。NotebookLM 不裁决代码事实。`
-- 基线依据:`main@fc6a73b598f4`；两项 Active REQ；guidance 64/65；三个 worker 审计结果。
+- 基线依据:`main@c290143`；两项 Active REQ；guidance 64/65；三个 worker 审计结果。
 - 模块与落点:`packages/remote transport`、`cloudRemote`、`SourceControl`、terminal manager、Hosts、Tauri window ownership、Agent Center。
 - 关键接口/直接路径:`write_to_pty` 序列确认、`resize_pane` latest-win、SCM shared detection、Pane destroy cancellation。
 
@@ -61,8 +69,8 @@
 
 | Active REQ | 状态 | 代码证据 | 测试/质量证据 |
 | --- | --- | --- | --- |
-| `REQ-20260730-01` | in progress | `5eece08`、`45355db`、`fc6a73b`；`CONTRACT-iteration-76.md` | 47 Vitest；Svelte check 绿；运行 A/B 待补 |
-| `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01` | code excluded / environment proof pending | 全源码无 Chrome Messaging；PWA worker 非该 API | worker result valid；手机 A/B 待补 |
+| `REQ-20260730-01` | in progress | `5eece08` 至 `c290143` 共九项聚焦提交；`CONTRACT-iteration-76.md` | TS/Rust 聚焦与全量闸绿；运行 A/B 待补 |
+| `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01` | code excluded / environment proof pending | 全源码无 Chrome Messaging；`2026-07-30-mobile-runtime-lasterror-audit.md` | worker result valid；手机 A/B 待补 |
 
 ## Known failed approaches
 
@@ -70,14 +78,14 @@
 
 ## 下一项已批准工作
 
-- 为手机 Cloud `write_to_pty` 增序列确认与有界保序调度；随后共享 Repository Detection Cache、Pane destroy cancellation 与日志聚合。
+- 实现桌面多窗口与进程内 `workspaceId→windowLabel` 原子所有权；其后补慢 Host 独立刷新、拖拽 E2E。手机归因、公网/WebView2 长测并行属外部证据轨。
 
 ## 本轮 delta
 
-- 变更:`RpcClient`、Cloud Resize、SCM 调度、iteration 76 合同/状态。
-- 直接影响:`RPC 拥塞 fail-fast；超时通知远端取消；Resize RPC 合并；非 Git 重扫与同 root status 重入减少。`
-- 验证:`requirements/notebook/dispatch 闸绿；47 Vitest；Svelte check 绿。`
-- 质量:`Sonar scanner 仍缺；公网/内存 A/B 待补。`
+- 变更:`RpcClient`、Cloud 输入/Resize、SCM、Pane 生命周期、错误聚合、终端真清空、Host 反馈/Resize、Commune 可见性。
+- 直接影响:`RPC 有界且超时取消；输入保序退避；Resize 合并；非 Git 停轮询；销毁 Pane 不再收请求；重复 Console 错误聚合；clear 释放 retained blocks。`
+- 验证:`requirements/notebook/dispatch 闸绿；TS/Rust 聚焦与 ridge-term 全量绿；Svelte check 绿。`
+- 质量:`Sonar scanner 仍缺；WASM 正式构建、公网/内存 A/B 待补。`
 - Agent 编排:`native 三 worker，只读、全结果 valid；Ridge profile capability 未暴露，未猜测 pane 启动参数。`
 - Worker 回收:`3/3 completed，无越界写。`
 - Token:`子 worker 无逐会话可信计量，记 0 而不伪造节省；同任务 baseline 尚无。`

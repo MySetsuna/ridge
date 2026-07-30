@@ -2,7 +2,7 @@
 
 - Date: 2026-07-30
 - Status: in progress
-- Implementation baseline: `origin/main@f62133c`, local code `fc6a73b598f4`
+- Implementation baseline: `origin/main@f62133c`, local implementation `c290143`
 - Requirements: `REQ-20260730-01`, `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`
 - Delivery rule: one concern per commit; no push, release, or generated Remote artifact in this iteration unless separately authorized.
 
@@ -26,13 +26,13 @@
 | LAN single writer / bounded lanes | Current state records exclusive writer and bounded high/low lanes | Complete, retain regression | Do not add a second connection or writer |
 | Scrollback Worker | Worker authority, pending cap, timeout, teardown exist | Complete core; memory proof missing | Add memory/clear pressure proof |
 | Background pane continuity | Parked kernels and subscriptions exist; physical mobile proof remains external | Partly complete | Run composite-identity weak-network/physical matrix |
-| Agent's Commune | Members/groups/history UI exists, but `teammateEnabled` gates entry; typed launch profiles/cross-workspace MCP have no visible UI proof | Regression / partly complete | Fix discoverability and add visible E2E |
+| Agent's Commune | Members/groups/history UI exists; the entry was hidden by `teammateEnabled` | Discoverability regression fixed; visible E2E remains | Entry fix landed in `2b53650` |
 | Git process containment | Unified spawn, timeout, Windows tree kill, semaphore, latest-win slot and hanging-binary tests exist | Complete backend | Connect frontend stable slot and negative cache |
 | RPC request containment | Per-request timeout/Abort/reconnect cleanup existed; pending cap, timeout cancel, metrics absent | Partly complete | First slice landed in `5eece08` |
-| Mobile Cloud input/resize | Both invoked per event; errors silently swallowed | Missing | Resize slice landed in `45355db`; input protocol remains P0 |
-| Non-Git polling | Periodic scan removed and backend rejects before spawn; empty discovery was not cached, branch/stash lack shared detection | Partly complete / regression | Empty cache + status single-flight landed in `fc6a73b` |
-| Host attach | Topology/list/create, single-flight, abort, last-good exist; slow Host blocks aggregate refresh and stage feedback is absent | Partly complete | Stage loading, isolate slow Host, then drag/resize |
-| Terminal clear/memory | Scrollback cap and teardown exist; right-click/`clear`/kernel/backend equality and WebView2 release are unproved | Partly complete | Instrument, unify clear, memory-pressure regression |
+| Mobile Cloud input/resize | Resize was per event and input fire-and-forget | Core containment complete | Resize `45355db`; sequenced input `9904b53` |
+| Non-Git polling | Empty discovery, branch and stash did not share repository truth | Complete frontend containment | First slice `fc6a73b`; shared negative cache `a01f7db` |
+| Host attach | Topology/list/create, single-flight, abort and last-good existed; progress and initial measured resize were absent | Feedback/resize complete; slow-Host and drag E2E remain | `7b7daee`, `c290143` |
+| Terminal clear/memory | Scrollback cap and teardown existed; right-click only fed ANSI and did not release all retained blocks | True-clear core complete; WebView2 long-run proof remains | `c1ec8a2` |
 | Desktop multi-window | Tauri release path remains single-instance and creates only `main`; no workspace owner registry | Conflicts with approved behavior | New process/window ownership protocol after lifecycle guards |
 | Mobile `runtime.lastError` | No project `chrome.runtime`, `chrome.tabs`, `browser.runtime`, `sendResponse`, or `runtime.lastError`; PWA worker only uses `Client.postMessage` | Project code excluded; environment attribution pending | Zero business diff; mobile clean-profile/extension A/B |
 
@@ -64,15 +64,16 @@
 - Acceptance: slow/hanging transport preserves exact byte stream and order; one in-flight write; queue/bytes bounded; timeout threshold pauses; close returns pending/bytes/timers to zero; no `Pane not found`.
 - Regression: IME, paste, TUI mouse, normal typing, reconnect, pane close, LAN/cloud parity.
 - Stop condition: do not ship a retry-only client queue without host acknowledgement—it can duplicate input.
+- Status/evidence: complete in `9904b53`; per-pane 4 ms batch, one in-flight request, monotonic sequence/idempotency digest, capped exponential backoff and pause threshold. Focused TypeScript suite 105/105; Rust sequence test passed.
 
 ### 76.4 SCM repository detection and status scheduling — P0/P1
 
 - Current: backend hard guards and `slot` existed; frontend omitted `slot`. Empty discovery was not a negative cache entry.
 - Target: one detection per cwd signature; one status request per repo; status/branch/stash share repository truth.
-- Implementation: empty-result negative cache; per-root status single-flight; stable `scm-status:${root}` slot. Next slice moves detection cache into a shared store consumed by branch/stash.
+- Implementation: empty-result negative cache; per-root status single-flight; stable `scm-status:${root}` slot; shared negative-root truth consumed by status/branch/stash/watch/heartbeat.
 - Acceptance: 100 same-cwd non-Git triggers produce one discovery and zero status/branch/stash git processes; cwd change rechecks once; concurrent same-root status produces one RPC.
 - Regression: repo creation after cwd transition, multi-repo discovery, watcher/manual refresh, commit/pull graph invalidation.
-- Status/evidence: first slice complete in `fc6a73b`; shared branch/stash cache and process-count test remain.
+- Status/evidence: complete in `fc6a73b` and `a01f7db`; focused SCM suite 26/26. Real process-count A/B remains part of the public Remote gate.
 
 ### 76.5 Pane-scoped lifecycle registry — P1, after 76.3
 
@@ -81,6 +82,7 @@
 - Implementation: composite-key lifecycle token with `AbortController`, queues, listeners, scrollback fetch and resize lane; destroy order is mark-dead → cancel/clear → unsubscribe → close.
 - Acceptance: hanging write/resize/scrollback followed by destroy yields zero pending/timers/listeners/bytes; late result cannot mutate state or retry.
 - Regression: park/unpark is not destroy; `A→B→C→A` preserves live panes; reconnect creates a fresh generation.
+- Status/evidence: complete in `826e3a1`; destroy aborts pane RPC, clears lanes/listeners and blocks post-destroy sends; reconnect creates fresh state. Focused lifecycle/transport suite 54/54.
 
 ### 76.6 Error aggregation and RPC backoff — P1
 
@@ -89,6 +91,7 @@
 - Implementation: one shared logger/telemetry sink; cancelled/superseded are debug; timeout/queue are counters; exponential backoff with capped delay and half-open probe for idempotent reads only.
 - Acceptance: 126 identical errors produce at most first event plus one `repeated 126 times` summary; no blind retry for terminal input; counters are deterministic.
 - Regression: distinct errors remain distinct, development stack retained once, reconnect clears only transient circuit state.
+- Status/evidence: terminal/RPC aggregation `20d7be3`; SCM aggregation `2052753`; focused logger suite 3/3. Input backoff is complete; a generic circuit for idempotent reads remains optional until public traces prove need.
 
 ### 76.7 Terminal memory and true clear — P1
 
@@ -97,6 +100,7 @@
 - Implementation: one `clearPaneHistory(PaneRef)` path for canvas/kernel/scrollback/backend; pressure/hidden-pane eviction preserves active screen and input; expose per-pane bytes/kernel/worker counters.
 - Acceptance: over-limit history evicts oldest blocks; both clear entries render empty and report zero scrollback/backend buffered bytes; closed/evicted pane memory falls after GC observation; WebView2 long-run curve plateaus.
 - Regression: alternate screen, selection/search, parked panes, reconnect replay, active TUI.
+- Status/evidence: core complete in `c1ec8a2`: protocol v3 `ScrollbackClear`, visible-grid wipe, cursor home, primary scrollback release, selection/search reset, backend replay-store release, and one authoritative Tauri command for right-click clear. Full `ridge-term` suite 395 plus 33 protocol smoke passed; Tauri parser/Arc-release tests passed. WebView2 long-run plateau and rebuilt Remote WASM artifact remain external/build gates.
 
 ### 76.8 Remote Host staged attach — P1/P2
 
@@ -105,6 +109,7 @@
 - Implementation: per-Host settled refresh with last-good data, abort/generation guard, explicit progress DTO; converge drag, button and programmatic attach on one binding path; read actual pane rect and send immediate Resize.
 - Acceptance: fast Host appears while another hangs; errors remain actionable; existing/create workspaces refresh; drag attaches; first frame uses measured size; Resize button resyncs.
 - Regression: LAN/public/offline/slow Host, reconnect, duplicate attach, pane destroy during attach.
+- Status/evidence: modal-close/progress phases complete in `7b7daee`; first measured pane resize and Resize-button convergence complete in `c290143`; binding tests 2/2. Independent slow-Host settlement and physical drag/list/create E2E remain.
 
 ### 76.9 Desktop multi-window and workspace ownership — P2
 
@@ -121,6 +126,7 @@
 - Implementation: make gate state explicit, connect typed profiles to existing create flow, preserve backend roster as SSOT.
 - Acceptance: visible E2E covers enabled, disabled, no-agent, cross-workspace create/send and forged identity rejection.
 - Regression: member/group/history keyboard access, HITL controls, pane header status, no duplicate history source.
+- Status/evidence: entry is always visible and explicitly enables teammate UI on open in `2b53650`; launch-profile and cross-workspace visible E2E remain.
 
 ### 76.11 Mobile `runtime.lastError` attribution — P2, zero-code unless proven
 
@@ -142,7 +148,12 @@
 - `requirements_gate.py assert-task-executable`: exit `0`.
 - `notebook_gate.py assert-allowed --trigger user_requested`: exit `0`; subsequent query failed only at external authentication.
 - Three read-only worker packets: batch validation `valid=true`, no writes outside result/evidence paths.
-- `pnpm vitest run packages/remote/src/shared/transport/rpcClient.test.ts src/remote/lib/cloudRemote.test.ts`: 47/47.
+- Terminal input/Remote transport focused TypeScript suite: 105/105; Rust input sequence test passed.
+- Pane lifecycle/transport focused suite: 54/54.
+- SCM focused suite: 26/26.
+- Repeated-error logger: 3/3.
+- Foreign-pane binding/resize: 2/2.
+- Full `ridge-term`: 395 tests plus 33 protocol smoke; focused Tauri true-clear parser/Arc-release tests passed.
 - `pnpm check`: 0 errors, 0 warnings.
 
 ## Remaining external evidence
@@ -150,4 +161,6 @@
 - Refresh NotebookLM authentication, then compare the live newest two conversations with guidance 64/65; any new product behavior enters Pending approval.
 - Affected phone: capture first `runtime.lastError` source and clean-profile/extension A/B.
 - Public Remote and WebView2 long-run A/B cannot be claimed from unit fixtures.
+- Rebuild and verify the generated Remote WASM artifact for protocol v3; the local development build exceeded 100 seconds and was terminated without leaving a live process.
+- Desktop multi-window/workspace-owner protocol remains the next unimplemented code slice.
 - No push or release performed.
