@@ -24,6 +24,7 @@
     hostsStore,
     hostsLoading,
     hostsError,
+    hostConnectProgress,
     refreshHosts,
     retryHostTopology,
     cancelHostTopologyRetry,
@@ -579,6 +580,21 @@
   {#if $hostsError}
     <div class="px-3 py-1.5 text-[11px] text-rose-300 bg-rose-500/10 border-b border-rose-500/20 truncate" title={$hostsError}>
       {$hostsError}
+    </div>
+  {/if}
+  {#if $hostConnectProgress}
+    <div
+      class="flex items-center gap-2 px-3 py-2 text-[11px] border-b {$hostConnectProgress.phase === 'error'
+        ? 'text-rose-300 bg-rose-500/10 border-rose-500/20'
+        : 'text-[var(--rg-fg-muted)] bg-[var(--rg-surface)]/40 border-[var(--rg-border)]'}"
+      title={$hostConnectProgress.detail}
+    >
+      {#if $hostConnectProgress.phase !== 'error'}
+        <RefreshCw class="h-3 w-3 shrink-0 animate-spin" />
+      {/if}
+      <span class="min-w-0 truncate">
+        {$hostConnectProgress.label} · {$hostConnectProgress.detail}
+      </span>
     </div>
   {/if}
 
