@@ -48,13 +48,27 @@ curl -sS -X POST "$RIDGE_TEAMMATE_URL/api/v1/mcp" \
 
 持久 MCP 配置中的 HTTP URL 通常是静态值，而 Ridge 本机端点会漂移。`ridge-mcp` 是只做端点发现与 stdio↔HTTP 转发的 Ridge companion，**不是 `rdg`**：
 
+桌面安装包已捆绑同版本 companion；普通用户无须源码、Rust 或 Cargo。在 Ridge 安装目录运行：
+
+```bash
+ridge-mcp --print-config
+codex mcp add ridge -- /absolute/path/to/ridge-mcp
+# Claude Code：claude mcp add ridge -- /absolute/path/to/ridge-mcp
+```
+
+`--print-config` 输出可粘贴的 `mcpServers.ridge` stdio 配置，命令为当前 companion 的绝对路径；
+不含端口或 token。Windows 为 `ridge-mcp.exe`，Linux/macOS 为 `ridge-mcp`。升级由安装器原位替换，
+卸载随 Ridge 一并清理。
+
+仅源码开发者使用：
+
 ```bash
 cargo install --path packages/ridge-mcp-bridge --bin ridge-mcp
 codex mcp add ridge -- ridge-mcp
 # Claude Code 同理：claude mcp add ridge -- ridge-mcp
 ```
 
-它按 `RIDGE_TEAMMATE_URL/_TOKEN` → Ridge endpoint sidecar 自动发现；端口或 token 更新后首个失败请求会重新发现并重试一次。显式指定可用
+它按 `RIDGE_TEAMMATE_URL/_TOKEN` → Ridge runtime endpoint sidecar 自动发现；sidecar 仅属运行期、只接受普通文件与 `127.0.0.1` 端点（Unix 要求 `0600`）。端口或 token 更新后，首次连接失败或 `401/403` 会重新发现并重试一次。显式指定可用
 `ridge-mcp --url http://127.0.0.1:PORT --token <tok>`。修改 Codex MCP 配置后须新开会话。
 
 ### E. 无头 `rdg`（独立 host；按需）
@@ -67,7 +81,7 @@ codex mcp add ridge -- ridge-mcp
 | 来源 | 说明 |
 | --- | --- |
 | `RIDGE_TEAMMATE_URL` / `RIDGE_TEAMMATE_TOKEN` | Ridge 注入进每个 teammate 分屏的 env，子进程直接继承 |
-| `TMPDIR/ridge-teammate-endpoint-*.json` | sidecar（`{"url","token"}`）；后端重启换端口后由宿主刷新 |
+| `TMPDIR/ridge-teammate-endpoint-*.json` | 运行期 sidecar（`{"url","token"}`，非 MCP 持久配置）；后端重启换端口后由宿主刷新 |
 | `rdg tmux` 启动日志 | 无头 host 把 `RIDGE_TEAMMATE_*` 导出行打到 stderr |
 
 ---
