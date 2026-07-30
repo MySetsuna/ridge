@@ -148,6 +148,12 @@ export class CloudRemoteConnection implements RemoteLink {
   private _failure: ConnectionFailure | null = null;
   private _activeWorkspaceId = '';
   private _refreshSeq = 0;
+  private resizeLanes = new Map<string, {
+    inFlight: boolean;
+    activeSignature: string | null;
+    lastAppliedSignature: string | null;
+    pending: { pane: PaneRef; rows: number; cols: number; signature: string } | null;
+  }>();
 
   private stateListeners = new Set<(s: ConnectionState) => void>();
   private reconnectListeners = new Set<() => void>();
@@ -306,6 +312,7 @@ export class CloudRemoteConnection implements RemoteLink {
     this.subscribing.clear();
     this.scrollbackCursor.clear();
     this.fetchingOlder.clear();
+    this.resizeLanes.clear();
   }
 
   private async _handleReconnect(): Promise<void> {
@@ -628,13 +635,63 @@ export class CloudRemoteConnection implements RemoteLink {
   }
   private _resize(pane: PaneRef, rows: number, cols: number): void {
     if (!pane.paneId || rows <= 0 || cols <= 0) return;
+    const key = paneRefKey(pane);
+    const signature = `${rows}x${cols}`;
+    let lane = this.resizeLanes.get(key);
+    if (!lane) {
+      lane = {
+        inFlight: false,
+        activeSignature: null,
+        lastAppliedSignature: null,
+        pending: null,
+      };
+      this.resizeLanes.set(key, lane);
+    }
+    if (
+      lane.pending?.signature === signature
+      || (!lane.pending && lane.activeSignature === signature)
+      || (!lane.inFlight && lane.lastAppliedSignature === signature)
+    ) {
+      return;
+    }
+    // latest-value-wins: one in-flight request plus one replaceable pending value.
+    lane.pending = { pane, rows, cols, signature };
     this._refreshSeq++;
-    void this.bridge.invoke('resize_pane', {
-      ...(pane.workspaceId ? { workspaceId: pane.workspaceId } : {}),
-      paneId: pane.paneId,
-      rows,
-      cols,
-    }).catch(() => {});
+    void this._drainResizeLane(key, lane);
+  }
+
+  private async _drainResizeLane(
+    key: string,
+    lane: {
+      inFlight: boolean;
+      activeSignature: string | null;
+      lastAppliedSignature: string | null;
+      pending: { pane: PaneRef; rows: number; cols: number; signature: string } | null;
+    },
+  ): Promise<void> {
+    if (lane.inFlight || this.resizeLanes.get(key) !== lane) return;
+    const next = lane.pending;
+    if (!next) return;
+    lane.pending = null;
+    lane.inFlight = true;
+    lane.activeSignature = next.signature;
+    try {
+      await this.bridge.invoke('resize_pane', {
+        ...(next.pane.workspaceId ? { workspaceId: next.pane.workspaceId } : {}),
+        paneId: next.pane.paneId,
+        rows: next.rows,
+        cols: next.cols,
+      });
+      if (this.resizeLanes.get(key) === lane) lane.lastAppliedSignature = next.signature;
+    } catch {
+      // A later geometry observation retries; never fan out retries from a timeout.
+    } finally {
+      lane.inFlight = false;
+      lane.activeSignature = null;
+      if (this.resizeLanes.get(key) === lane && lane.pending) {
+        void this._drainResizeLane(key, lane);
+      }
+    }
   }
   lastRefreshSeq(): number {
     return this._refreshSeq;
@@ -664,12 +721,13 @@ export class CloudRemoteConnection implements RemoteLink {
   }
 
   async closePane(pane: PaneRef): Promise<boolean> {
+    const key = paneRefKey(pane);
+    this.resizeLanes.delete(key);
     try {
       await this.bridge.invoke('close_pane', {
         paneId: pane.paneId,
         ...(pane.workspaceId ? { workspaceId: pane.workspaceId } : {}),
       });
-      const key = paneRefKey(pane);
       const unlisten = this.ptyUnlisten.get(key);
       if (unlisten) {
         this.ptyUnlisten.delete(key);
@@ -888,6 +946,7 @@ export class CloudRemoteConnection implements RemoteLink {
       if (!liveIds.has(key)) {
         this.ptyUnlisten.delete(key);
         this.scrollbackCursor.delete(key); // release the pane's seq cursor too
+        this.resizeLanes.delete(key);
         try { unlisten(); } catch { /* already gone */ }
       }
     }
