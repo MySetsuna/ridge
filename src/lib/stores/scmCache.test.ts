@@ -12,6 +12,10 @@ import {
   shouldRefreshGraphOnMount,
   setScmSelectedCommit,
   getScmSelectedCommit,
+  isNotGitRepositoryError,
+  isScmRepoKnownNonGit,
+  markScmRepoNonGit,
+  resetScmRepositoryDetection,
   type ScmRepoStatus,
   type GitRepoInfo,
 } from './scmCache';
@@ -29,6 +33,7 @@ const fixtureStatus = (root: string): ScmRepoStatus => ({
 
 beforeEach(() => {
   // Wipe state between tests — the store is module-scope so it persists.
+  resetScmRepositoryDetection();
   setScmRepoRoots([], '', '');
 });
 
@@ -89,6 +94,34 @@ describe('scmCacheStore', () => {
     // Force the cache age past the window by passing a tiny maxAge.
     await new Promise((r) => setTimeout(r, 5));
     expect(shouldRefreshOnMount(1)).toBe(true);
+  });
+
+  it('shares a non-Git result until the cwd signature changes', () => {
+    setScmRepoRoots(['/gone'], '/workspace', '/gone');
+    setScmRepoStatus('/gone', fixtureStatus('/gone'));
+
+    markScmRepoNonGit('/gone');
+    expect(isScmRepoKnownNonGit('/gone')).toBe(true);
+    expect(getScmCache().repoRoots).toEqual([]);
+    expect(getScmCache().statuses['/gone']).toBeUndefined();
+
+    // Same cwd discovery cannot resurrect the rejected root.
+    setScmRepoRoots(['/gone'], '/workspace', '/gone');
+    expect(getScmCache().repoRoots).toEqual([]);
+
+    // Directory switch is the explicit re-probe boundary.
+    setScmRepoRoots(['/gone'], '/other-workspace', '/gone');
+    expect(isScmRepoKnownNonGit('/gone')).toBe(false);
+    expect(getScmCache().repoRoots).toEqual(['/gone']);
+  });
+
+  it('classifies only explicit non-repository failures as negative detection', () => {
+    expect(isNotGitRepositoryError('fatal: not a git repository')).toBe(true);
+    expect(isNotGitRepositoryError('Not a git repo: C:/tmp')).toBe(true);
+    expect(isNotGitRepositoryError('fatal: not inside a git work tree')).toBe(true);
+    expect(isNotGitRepositoryError({ message: 'fatal: not a git repository' })).toBe(true);
+    expect(isNotGitRepositoryError('git busy: concurrency permit timed out')).toBe(false);
+    expect(isNotGitRepositoryError('superseded by newer request')).toBe(false);
   });
 });
 
