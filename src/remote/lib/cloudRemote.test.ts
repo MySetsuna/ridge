@@ -356,6 +356,28 @@ describe('CloudRemoteConnection panes', () => {
     });
   });
 
+  it('collapses a 1,000-event input burst into one ordered RPC batch', async () => {
+    const conn = await connected();
+    invokeMock.mockClear();
+    vi.useFakeTimers();
+    try {
+      for (let i = 0; i < 1_000; i += 1) conn.sendStdin(PANE, 'x');
+
+      expect(invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty')).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(4);
+
+      const writes = invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty');
+      expect(writes).toHaveLength(1);
+      expect(writes[0][1]).toMatchObject({
+        data: 'x'.repeat(1_000),
+        inputSequence: 1,
+      });
+    } finally {
+      conn.disconnect();
+      vi.useRealTimers();
+    }
+  });
+
   it('retries a failed input batch with the same sequence after backoff', async () => {
     const conn = await connected();
     invokeMock.mockClear();
@@ -382,6 +404,35 @@ describe('CloudRemoteConnection panes', () => {
         inputSequence: 1,
       });
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('pauses input retries for 30 seconds after five consecutive failures', async () => {
+    const conn = await connected();
+    invokeMock.mockClear();
+    let attempts = 0;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd !== 'write_to_pty') return Promise.resolve(undefined);
+      attempts += 1;
+      return Promise.reject(new Error('write_to_pty timed out'));
+    });
+    vi.useFakeTimers();
+    try {
+      conn.sendStdin(PANE, 'x');
+      await vi.advanceTimersByTimeAsync(4);
+      await vi.advanceTimersByTimeAsync(250);
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(attempts).toBe(5);
+
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(attempts).toBe(5);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(attempts).toBe(6);
+    } finally {
+      conn.disconnect();
       vi.useRealTimers();
     }
   });
@@ -426,6 +477,31 @@ describe('CloudRemoteConnection panes', () => {
     conn.refreshPane(PANE, 22, 82);
     await flush();
     expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')).toHaveLength(2);
+  });
+
+  it('coalesces 1,000 resize observations to one in-flight RPC plus the latest value', async () => {
+    const conn = await connected();
+    invokeMock.mockClear();
+    const before = conn.lastRefreshSeq();
+    let releaseFirst!: () => void;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd !== 'resize_pane') return Promise.resolve(undefined);
+      if (!releaseFirst) return new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return Promise.resolve(undefined);
+    });
+
+    for (let i = 0; i < 1_000; i += 1) {
+      conn.refreshPane(PANE, 20 + i, 80 + i);
+    }
+    await Promise.resolve();
+    expect(invokeMock.mock.calls.filter((call) => call[0] === 'resize_pane')).toHaveLength(1);
+    expect(conn.lastRefreshSeq()).toBe(before + 1_000);
+
+    releaseFirst();
+    await flush();
+    const resizes = invokeMock.mock.calls.filter((call) => call[0] === 'resize_pane');
+    expect(resizes).toHaveLength(2);
+    expect(resizes[1][1]).toMatchObject({ rows: 1_019, cols: 1_079 });
   });
 
   it('drops queued resize work when the pane closes', async () => {

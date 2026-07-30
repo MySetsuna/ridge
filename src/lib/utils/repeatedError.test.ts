@@ -17,13 +17,13 @@ describe('reportRepeatedError', () => {
   it('keeps the first error and summarizes an identical burst', () => {
     const error = new Error('write_to_pty timed out');
     reportRepeatedError('write_to_pty', error);
-    for (let i = 0; i < 100; i += 1) reportRepeatedError('write_to_pty', error);
+    for (let i = 0; i < 126; i += 1) reportRepeatedError('write_to_pty', error);
 
     expect(console.error).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(5_000);
     expect(console.error).toHaveBeenCalledTimes(2);
     expect(console.error).toHaveBeenLastCalledWith(
-      'write_to_pty (Error: write_to_pty timed out), repeated 100 times',
+      'write_to_pty (Error: write_to_pty timed out), repeated 126 times',
     );
   });
 
