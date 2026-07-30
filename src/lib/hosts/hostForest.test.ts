@@ -3,6 +3,7 @@ import {
   hostTopologyErrorKind,
   loadHostForest,
   retainHostForest,
+  settleHostTopologyRefreshes,
   type HostForestResult,
   type HostForestSource,
 } from './hostForest';
@@ -135,5 +136,38 @@ describe('loadHostForest', () => {
   it('separates authentication failures from retryable transport failures', () => {
     expect(hostTopologyErrorKind('TOTP 验证失败')).toBe('auth');
     expect(hostTopologyErrorKind('list_workspaces timeout')).toBe('retryable');
+  });
+
+  it('publishes a fast host without waiting for a slow sibling', async () => {
+    let resolveSlow!: (value: HostForestResult) => void;
+    const slow = new Promise<HostForestResult>((resolve) => { resolveSlow = resolve; });
+    const seen: string[] = [];
+    const pending = settleHostTopologyRefreshes([
+      { hostId: 'slow', refresh: () => slow },
+      {
+        hostId: 'fast',
+        refresh: async () => ({ hostId: 'fast', workspaces: [] }),
+      },
+    ], (result) => seen.push(result.hostId));
+
+    await vi.waitFor(() => expect(seen).toEqual(['fast']));
+    resolveSlow({ hostId: 'slow', workspaces: [] });
+    await expect(pending).resolves.toHaveLength(2);
+    expect(seen).toEqual(['fast', 'slow']);
+  });
+
+  it('settles one host error without rejecting sibling refreshes', async () => {
+    const seen: HostForestResult[] = [];
+    const results = await settleHostTopologyRefreshes([
+      { hostId: 'bad', refresh: async () => { throw new Error('slow timeout'); } },
+      { hostId: 'good', refresh: async () => ({ hostId: 'good', workspaces: [] }) },
+    ], (result) => seen.push(result));
+
+    expect(results).toContainEqual({
+      hostId: 'bad',
+      workspaces: [],
+      error: 'slow timeout',
+    });
+    expect(seen.map((result) => result.hostId).sort()).toEqual(['bad', 'good']);
   });
 });
