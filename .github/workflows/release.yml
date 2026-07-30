@@ -173,8 +173,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(find src-tauri/target -path '*/bundle/macos/*.app/Contents/MacOS/ridge-mcp' -type f -perm -111 | wc -l)" -ge 1
-          dmg="$(find src-tauri/target -path '*/bundle/dmg/*.dmg' -type f | head -1)"
+          test "$(find target -path '*/bundle/macos/*.app/Contents/MacOS/ridge-mcp' -type f -perm -111 | wc -l)" -ge 1
+          dmg="$(find target -path '*/bundle/dmg/*.dmg' -type f | head -1)"
           mount="$(mktemp -d)"
           hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount"
           trap 'hdiutil detach "$mount"' EXIT
@@ -185,9 +185,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          deb="$(find src-tauri/target -path '*/bundle/deb/*.deb' -type f | head -1)"
+          deb="$(find target -path '*/bundle/deb/*.deb' -type f | head -1)"
           dpkg-deb -c "$deb" | grep -E '/ridge-mcp$'
-          appimage="$(find src-tauri/target -path '*/bundle/appimage/*.AppImage' -type f | head -1)"
+          appimage="$(find target -path '*/bundle/appimage/*.AppImage' -type f | head -1)"
           chmod +x "$appimage"
           (cd "$(dirname "$appimage")" && "./$(basename "$appimage")" --appimage-extract >/dev/null)
           test -x "$(dirname "$appimage")/squashfs-root/usr/bin/ridge-mcp"
@@ -197,8 +197,8 @@ jobs:
         shell: pwsh
         run: |
           $assets = @(
-            Get-ChildItem src-tauri/target/release/bundle/msi/*.msi,
-              src-tauri/target/release/bundle/nsis/*.exe -ErrorAction Stop
+            Get-ChildItem target/release/bundle/msi/*.msi,
+              target/release/bundle/nsis/*.exe -ErrorAction Stop
           )
           if ($assets.Count -lt 2) { throw "missing MSI or NSIS installer" }
           foreach ($asset in $assets) {

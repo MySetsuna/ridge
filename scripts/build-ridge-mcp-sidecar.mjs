@@ -28,11 +28,12 @@ function hostTriple() {
   return match[1];
 }
 
+const detectedHost = hostTriple();
 const target =
   valueAfter('--target') ||
   process.env.RIDGE_MCP_TARGET?.trim() ||
   process.env.CARGO_BUILD_TARGET?.trim() ||
-  hostTriple();
+  detectedHost;
 const tauri = JSON.parse(readFileSync(join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
 const version = String(tauri.version ?? '').trim();
 if (!version) throw new Error('src-tauri/tauri.conf.json has no version');
@@ -42,25 +43,35 @@ if (!Array.isArray(externalBin) || !externalBin.includes('binaries/ridge-mcp')) 
   throw new Error('tauri bundle.externalBin must contain binaries/ridge-mcp');
 }
 
-const windows = target.includes('windows');
-const extension = windows ? '.exe' : '';
-const source = join(root, 'target', target, 'release', `ridge-mcp${extension}`);
-const destination = join(root, 'src-tauri', 'binaries', `ridge-mcp-${target}${extension}`);
+function sidecarPaths(forTarget) {
+  const windows = forTarget.includes('windows');
+  const extension = windows ? '.exe' : '';
+  return {
+    windows,
+    source: join(root, 'target', forTarget, 'release', `ridge-mcp${extension}`),
+    destination: join(root, 'src-tauri', 'binaries', `ridge-mcp-${forTarget}${extension}`),
+  };
+}
+
+const { windows, destination } = sidecarPaths(target);
 
 if (!check) {
-  execFileSync(
-    'cargo',
-    ['build', '--release', '--package', 'ridge-mcp-bridge', '--bin', 'ridge-mcp', '--target', target],
-    {
-      cwd: root,
-      env: { ...process.env, RIDGE_MCP_BUNDLE_VERSION: version },
-      stdio: 'inherit',
-      timeout: 15 * 60_000,
-    },
-  );
-  mkdirSync(dirname(destination), { recursive: true });
-  copyFileSync(source, destination);
-  if (!windows) chmodSync(destination, 0o755);
+  for (const buildTarget of new Set([target, detectedHost])) {
+    const paths = sidecarPaths(buildTarget);
+    execFileSync(
+      'cargo',
+      ['build', '--release', '--package', 'ridge-mcp-bridge', '--bin', 'ridge-mcp', '--target', buildTarget],
+      {
+        cwd: root,
+        env: { ...process.env, RIDGE_MCP_BUNDLE_VERSION: version },
+        stdio: 'inherit',
+        timeout: 15 * 60_000,
+      },
+    );
+    mkdirSync(dirname(paths.destination), { recursive: true });
+    copyFileSync(paths.source, paths.destination);
+    if (!paths.windows) chmodSync(paths.destination, 0o755);
+  }
 }
 
 if (requireBuilt) {
@@ -70,7 +81,7 @@ if (requireBuilt) {
   if (!readFileSync(destination).includes(Buffer.from(version))) {
     throw new Error(`sidecar does not embed Ridge version ${version}: ${destination}`);
   }
-  if (target === hostTriple()) {
+  if (target === detectedHost) {
     const reported = execFileSync(destination, ['--version'], {
       encoding: 'utf8',
       timeout: 10_000,
