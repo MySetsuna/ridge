@@ -30,8 +30,7 @@
     cancelHostTopologyRetry,
     newHeadlessSession,
     terminateSession,
-    attachSession,
-    attachRemoteHostSession,
+    attachHostSession,
     closeHostPane,
     hasHostTopologyLink,
     createHostWorkspace,
@@ -313,11 +312,15 @@
           await acceptSharedWorkspace(s.shareGrantId);
           await openSharedWorkspace({ ...s, shareStatus: 'active' });
         } else await openSharedWorkspace(s);
-      } else if (host.kind === 'headless') {
-        await attachSession(s.socket, s.name);
-      } else {
-        const sessionId = s.remoteSessionId || s.name;
-        await attachRemoteHostSession(host.id, sessionId);
+      } else if (host.kind === 'headless' || host.kind === 'remote' || host.kind === 'rdg') {
+        await attachHostSession({
+          kind: host.kind,
+          socket: s.socket,
+          target: s.name,
+          hostId: host.id,
+          sessionId: s.remoteSessionId,
+          workspaceId: s.workspaceId,
+        });
       }
     } catch (e) {
       await alertDialog({ title: '接入失败', message: e instanceof Error ? e.message : String(e) });
@@ -816,7 +819,15 @@
             {#if workspaceExpanded}
               {#each workspace.sessions as s (s.socket + ':' + s.name)}
                 <div
-                  use:hostSessionDrag={{ socket: s.socket, name: s.name, enabled: host.kind !== 'shared' && host.kind !== 'sharing' }}
+                  use:hostSessionDrag={{
+                    kind: host.kind === 'rdg' ? 'rdg' : host.kind === 'remote' ? 'remote' : 'headless',
+                    socket: s.socket,
+                    name: s.name,
+                    hostId: host.id,
+                    sessionId: s.remoteSessionId,
+                    workspaceId: s.workspaceId,
+                    enabled: host.kind !== 'shared' && host.kind !== 'sharing',
+                  }}
                   title="拖入工作区某个 pane 即可停靠接入（或点右侧接入按钮）"
                   class="group flex items-center gap-2 pl-14 pr-2 py-1 hover:bg-[var(--rg-surface)] transition-colors cursor-grab active:cursor-grabbing"
                 >

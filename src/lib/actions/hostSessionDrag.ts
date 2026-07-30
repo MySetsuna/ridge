@@ -9,7 +9,7 @@
 import { get } from 'svelte/store';
 import { paneDragSourceId, paneDockHover } from '$lib/stores/paneTree';
 import { attachDirectionAt } from '@ridge/remote/shared/terminal/paneDockResolve';
-import { attachSessionAt } from '$lib/stores/hosts';
+import { attachHostSession, type HostAttachRequest } from '$lib/stores/hosts';
 import type { AttachRegion } from '$lib/stores/dockRegionPicker';
 
 /** 哨兵：会话拖拽期间写进 paneDragSourceId（永不等于真实 pane id → 所有 pane 显示预览）。 */
@@ -17,10 +17,29 @@ export const HOST_SESSION_DRAG_SOURCE = '__host-session-drag__';
 
 const THRESHOLD = 4;
 
-export interface HostSessionDragParams {
-  socket: string;
+export interface HostSessionDragParams extends Pick<
+  HostAttachRequest,
+  'kind' | 'socket' | 'hostId' | 'sessionId' | 'workspaceId'
+> {
   name: string;
   enabled?: boolean;
+}
+
+export function hostAttachRequestAt(
+  params: HostSessionDragParams,
+  targetPaneId: string,
+  region: AttachRegion,
+): HostAttachRequest {
+  return {
+    kind: params.kind,
+    socket: params.socket,
+    target: params.name,
+    hostId: params.hostId,
+    sessionId: params.sessionId,
+    workspaceId: params.workspaceId,
+    targetPaneId,
+    region,
+  };
 }
 
 export function hostSessionDrag(node: HTMLElement, params: HostSessionDragParams) {
@@ -70,7 +89,9 @@ export function hostSessionDrag(node: HTMLElement, params: HostSessionDragParams
     endDrag();
     if (wasDragging && hover) {
       try {
-        await attachSessionAt(cur.socket, cur.name, hover.paneId, hover.region as AttachRegion);
+        await attachHostSession(
+          hostAttachRequestAt(cur, hover.paneId, hover.region as AttachRegion),
+        );
       } catch {
         /* 接入失败静默：可在「接入」面板重试 */
       }

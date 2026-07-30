@@ -67,6 +67,11 @@ export interface HostForestResult {
   error?: string;
 }
 
+export interface HostTopologyRefreshJob {
+  hostId: string;
+  refresh(): Promise<HostForestResult | null>;
+}
+
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
   if (signal.aborted) return Promise.reject(new Error('请求已取消'));
@@ -148,4 +153,29 @@ export async function loadHostForest(
       }
     }),
   );
+}
+
+/** Run hosts concurrently but publish each result as soon as that host settles.
+ * A slow transport therefore cannot hide already-ready sibling forests. */
+export async function settleHostTopologyRefreshes(
+  jobs: readonly HostTopologyRefreshJob[],
+  onSettled: (result: HostForestResult) => void,
+): Promise<HostForestResult[]> {
+  const settled = await Promise.all(
+    jobs.map(async ({ hostId, refresh }) => {
+      let result: HostForestResult | null;
+      try {
+        result = await refresh();
+      } catch (error) {
+        result = {
+          hostId,
+          workspaces: [],
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      if (result) onSettled(result);
+      return result;
+    }),
+  );
+  return settled.filter((result): result is HostForestResult => result !== null);
 }

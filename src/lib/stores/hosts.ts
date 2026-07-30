@@ -50,6 +50,7 @@ import { RemoteConnection } from '@ridge/remote';
 import {
   retainHostForest,
   loadHostForest,
+  settleHostTopologyRefreshes,
   type HostForestResult,
   type HostTopologyLink,
 } from '$lib/hosts/hostForest';
@@ -213,15 +214,28 @@ const registeredHostLinks = new Map<string, RegisteredHostLink>();
 const topologyByHost = new Map<string, HostForestResult>();
 const topologyInFlight = new Map<string, Promise<HostForestResult | null>>();
 const topologyAbortByHost = new Map<string, AbortController>();
+const topologyGenerationByHost = new Map<string, number>();
+let hostsRefreshGeneration = 0;
+
+function supersedeHostTopology(hostId: string): number {
+  topologyAbortByHost.get(hostId)?.abort();
+  topologyAbortByHost.delete(hostId);
+  topologyInFlight.delete(hostId);
+  const generation = (topologyGenerationByHost.get(hostId) ?? 0) + 1;
+  topologyGenerationByHost.set(hostId, generation);
+  return generation;
+}
 
 export function registerHostTopologyLink(source: RegisteredHostLink): () => void {
   const previous = registeredHostLinks.get(source.hostId);
-  if (previous && previous.link !== source.link) void previous.link.disconnect();
+  if (previous && previous.link !== source.link) {
+    supersedeHostTopology(source.hostId);
+    void previous.link.disconnect();
+  }
   registeredHostLinks.set(source.hostId, source);
   return () => {
     if (registeredHostLinks.get(source.hostId)?.link !== source.link) return;
-    topologyAbortByHost.get(source.hostId)?.abort();
-    topologyAbortByHost.delete(source.hostId);
+    supersedeHostTopology(source.hostId);
     registeredHostLinks.delete(source.hostId);
     topologyByHost.delete(source.hostId);
   };
@@ -235,19 +249,30 @@ export function hostShareDeviceName(hostId: string): string | undefined {
   return registeredHostLinks.get(hostId)?.deviceName;
 }
 
-export async function refreshHostTopology(hostId: string): Promise<HostForestResult | null> {
+export async function refreshHostTopology(
+  hostId: string,
+  options?: { supersede?: boolean },
+): Promise<HostForestResult | null> {
   const source = registeredHostLinks.get(hostId);
   if (!source) return null;
   if (source.manualDisconnected || source.link.state() === 'disconnected') {
     return topologyByHost.get(hostId) ?? null;
   }
+  if (options?.supersede) supersedeHostTopology(hostId);
   const current = topologyInFlight.get(hostId);
   if (current) return current;
+  const generation = (topologyGenerationByHost.get(hostId) ?? 0) + 1;
+  topologyGenerationByHost.set(hostId, generation);
   const controller = new AbortController();
   topologyAbortByHost.set(hostId, controller);
-  const pending = loadHostForest([{ hostId, link: source.link, signal: controller.signal }])
+  let pending!: Promise<HostForestResult | null>;
+  pending = loadHostForest([{ hostId, link: source.link, signal: controller.signal }])
     .then(async ([loaded]) => {
-      if (controller.signal.aborted) {
+      if (
+        controller.signal.aborted ||
+        topologyGenerationByHost.get(hostId) !== generation ||
+        registeredHostLinks.get(hostId)?.link !== source.link
+      ) {
         return null;
       }
       const result = retainHostForest(topologyByHost.get(hostId), loaded);
@@ -264,7 +289,7 @@ export async function refreshHostTopology(hostId: string): Promise<HostForestRes
       return result;
     })
     .finally(() => {
-      topologyInFlight.delete(hostId);
+      if (topologyInFlight.get(hostId) === pending) topologyInFlight.delete(hostId);
       if (topologyAbortByHost.get(hostId) === controller) {
         topologyAbortByHost.delete(hostId);
       }
@@ -274,22 +299,13 @@ export async function refreshHostTopology(hostId: string): Promise<HostForestRes
 }
 
 export function cancelHostTopologyRetry(hostId: string): void {
-  topologyAbortByHost.get(hostId)?.abort();
+  supersedeHostTopology(hostId);
 }
 
 /** Refresh one linked host only. Existing in-flight work is shared. */
 export async function retryHostTopology(hostId: string): Promise<HostForestResult | null> {
-  const result = await refreshHostTopology(hostId);
-  const source = registeredHostLinks.get(hostId);
-  if (!source || !result) return result;
-  hostsStore.update((hosts) => {
-    const index = hosts.findIndex((host) => host.id === hostId);
-    const projected = linkedHost(source, result, index >= 0 ? hosts[index] : undefined);
-    if (index < 0) return [...hosts, projected];
-    const next = [...hosts];
-    next[index] = projected;
-    return next;
-  });
+  const result = await refreshHostTopology(hostId, { supersede: true });
+  if (result) publishHostTopology(hostId, result);
   return result;
 }
 
@@ -446,12 +462,44 @@ function linkedHost(
   };
 }
 
+function pendingLinkedHost(source: RegisteredHostLink, previous?: Host): Host {
+  const disconnected = source.manualDisconnected || source.link.state() === 'disconnected';
+  return {
+    id: source.hostId,
+    kind: source.kind,
+    label: source.label,
+    status: disconnected ? 'disconnected' : 'connecting',
+    detail: disconnected
+      ? source.detail
+      : previous?.detail || '正在读取远端工作区…',
+    workspaces: previous?.workspaces ?? [],
+    sessions: previous?.sessions ?? [],
+  };
+}
+
+function publishHostTopology(hostId: string, loaded: HostForestResult): void {
+  const source = registeredHostLinks.get(hostId);
+  if (!source) return;
+  const result = retainHostForest(topologyByHost.get(hostId), loaded);
+  topologyByHost.set(hostId, result);
+  hostsStore.update((hosts) => {
+    const index = hosts.findIndex((host) => host.id === hostId);
+    const projected = linkedHost(source, result, index >= 0 ? hosts[index] : undefined);
+    if (index < 0) return [...hosts, projected];
+    const next = [...hosts];
+    next[index] = projected;
+    return next;
+  });
+}
+
 /**
  * 刷新主机/会话快照。当前聚合后端 native 会话为「本机（无头）」单一 host；
  * 远端/rdg host 在 P3/P4 由各自连接推送后合并进 hostsStore。
  */
 export async function refreshHosts(): Promise<void> {
+  const refreshGeneration = ++hostsRefreshGeneration;
   hostsLoading.set(true);
+  const previousById = new Map(get(hostsStore).map((host) => [host.id, host]));
   const next: Host[] = [];
   let err = '';
   // ① 本机（无头）：native 会话。
@@ -614,22 +662,32 @@ export async function refreshHosts(): Promise<void> {
       /* 云登录不可用时不影响本机/普通主机列表。 */
     }
   }
-  await Promise.all(
-    [...registeredHostLinks.keys()]
-      .filter((hostId) => !topologyByHost.get(hostId)?.error)
-      .map(refreshHostTopology),
-  );
   for (const source of registeredHostLinks.values()) {
     const topology = topologyByHost.get(source.hostId);
-    if (!topology) continue;
     const index = next.findIndex((host) => host.id === source.hostId);
-    const projected = linkedHost(source, topology, index >= 0 ? next[index] : undefined);
+    const previous = index >= 0 ? next[index] : previousById.get(source.hostId);
+    const projected = topology
+      ? linkedHost(source, topology, previous)
+      : pendingLinkedHost(source, previous);
     if (index >= 0) next[index] = projected;
     else next.push(projected);
   }
+  if (refreshGeneration !== hostsRefreshGeneration) return;
   hostsStore.set(next);
   hostsError.set(err);
   hostsLoading.set(false);
+
+  const jobs = [...registeredHostLinks.keys()]
+    .filter((hostId) => !topologyByHost.get(hostId)?.error)
+    .map((hostId) => ({
+      hostId,
+      refresh: () => refreshHostTopology(hostId),
+    }));
+  await settleHostTopologyRefreshes(jobs, (result) => {
+    if (refreshGeneration === hostsRefreshGeneration) {
+      publishHostTopology(result.hostId, result);
+    }
+  });
 }
 
 /** 新建一个本机无头会话（仅创建、不接入）；返回会话名。 */
@@ -655,14 +713,57 @@ export async function terminateSession(socket: string, target: string): Promise<
  * 接入：把一个会话召唤进当前查看的工作区。P1 直接 summon（后端决定落点，通常拆分活动
  * pane）；P2 在右键/拖拽场景下走 dock 区域选择的 attach_foreign_session 精确落点。
  */
+export interface HostAttachRequest {
+  kind: 'headless' | 'remote' | 'rdg';
+  socket: string;
+  target: string;
+  hostId?: string;
+  sessionId?: string;
+  workspaceId?: string;
+  targetPaneId?: string;
+  region?: AttachRegion;
+}
+
+/** Single attach pipeline for button, drag/drop, and programmatic callers. */
+export async function attachHostSession(request: HostAttachRequest): Promise<string | null> {
+  if (request.kind === 'remote' || request.kind === 'rdg') {
+    const hostId = request.hostId || request.socket;
+    const sessionId = request.sessionId || request.target;
+    return attachRemoteHostSessionImpl(
+      hostId,
+      sessionId,
+      request.targetPaneId,
+      request.region,
+    );
+  }
+
+  const wid = request.workspaceId || get(activeWorkspaceId);
+  const gid = await invoke<number>('summon_native_session', {
+    socket: request.socket,
+    target: request.target,
+    workspaceId: wid ?? null,
+  });
+  let paneId: string | null = null;
+  if (request.targetPaneId && request.region) {
+    await syncPaneLayoutFromBackend();
+    paneId = findPaneByOriginSession(
+      get(paneTreeStore),
+      `${request.socket}:${gid}`,
+    );
+    if (paneId && paneId !== request.targetPaneId) {
+      await dockPane(paneId, request.targetPaneId, request.region);
+    }
+  }
+  await refreshHosts();
+  return paneId;
+}
+
 export async function attachSession(
   socket: string,
   target: string,
   workspaceId?: string
 ): Promise<void> {
-  const wid = workspaceId || get(activeWorkspaceId);
-  await invoke('summon_native_session', { socket, target, workspaceId: wid ?? null });
-  await refreshHosts();
+  await attachHostSession({ kind: 'headless', socket, target, workspaceId });
 }
 
 /** 在 pane 树里按 origin 会话键 `socket:gid` 找到刚领养的 foreign pane。 */
@@ -690,18 +791,13 @@ export async function attachSessionAt(
   targetPaneId: string,
   region: AttachRegion
 ): Promise<void> {
-  const wid = get(activeWorkspaceId);
-  const gid = await invoke<number>('summon_native_session', {
+  await attachHostSession({
+    kind: 'headless',
     socket,
     target,
-    workspaceId: wid ?? null,
+    targetPaneId,
+    region,
   });
-  await syncPaneLayoutFromBackend();
-  const newPaneId = findPaneByOriginSession(get(paneTreeStore), `${socket}:${gid}`);
-  if (newPaneId && newPaneId !== targetPaneId) {
-    await dockPane(newPaneId, targetPaneId, region);
-  }
-  await refreshHosts();
 }
 
 /**
@@ -883,9 +979,11 @@ export const foreignHistoryByKey = writable<Record<string, HistoryTailSnapshot>>
  * Attach a remote host session into the active workspace as a foreign pane.
  * Backend: attach_host_session (subscribe when outbound bound).
  */
-export async function attachRemoteHostSession(
+async function attachRemoteHostSessionImpl(
   hostId: string,
   sessionId: string,
+  targetPaneId?: string,
+  region?: AttachRegion,
 ): Promise<string> {
   // C50: refresh history tail + seed plan before attach (product path).
   await fetchForeignHistoryTail(hostId, sessionId);
@@ -917,6 +1015,26 @@ export async function attachRemoteHostSession(
   noteLifecycleSubscribe(hostId, sessionId);
   await refreshHosts();
   await syncPaneLayoutFromBackend();
+  if (targetPaneId && region && paneId !== targetPaneId) {
+    // dockPane performs another layout sync and force-fits every mounted pane.
+    // That preserves the first real DOM-measured Resize for remote attachments.
+    await dockPane(paneId, targetPaneId, region);
+  }
+  return paneId;
+}
+
+export async function attachRemoteHostSession(
+  hostId: string,
+  sessionId: string,
+): Promise<string> {
+  const paneId = await attachHostSession({
+    kind: registeredHostLinks.get(hostId)?.kind ?? 'remote',
+    socket: hostId,
+    target: sessionId,
+    hostId,
+    sessionId,
+  });
+  if (!paneId) throw new Error('远端 pane 接入失败');
   return paneId;
 }
 
