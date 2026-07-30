@@ -471,6 +471,7 @@ pub enum WorkspaceWindowClaim {
 #[derive(Debug, Default)]
 pub struct WorkspaceWindowClaims {
     owners: Mutex<HashMap<Uuid, String>>,
+    selected_by_window: Mutex<HashMap<String, Uuid>>,
 }
 
 impl WorkspaceWindowClaims {
@@ -494,6 +495,9 @@ impl WorkspaceWindowClaims {
             .is_some_and(|owner| window_label.map_or(true, |label| owner == label));
         if can_release {
             owners.remove(&workspace_id);
+            self.selected_by_window
+                .lock()
+                .retain(|_, selected| *selected != workspace_id);
         }
         can_release
     }
@@ -502,7 +506,23 @@ impl WorkspaceWindowClaims {
         let mut owners = self.owners.lock();
         let before = owners.len();
         owners.retain(|_, owner| owner != window_label);
+        self.selected_by_window.lock().remove(window_label);
         before - owners.len()
+    }
+
+    pub fn select_owned(&self, workspace_id: Uuid, window_label: &str) -> bool {
+        let owners = self.owners.lock();
+        if owners.get(&workspace_id).map(String::as_str) != Some(window_label) {
+            return false;
+        }
+        self.selected_by_window
+            .lock()
+            .insert(window_label.to_owned(), workspace_id);
+        true
+    }
+
+    pub fn selected_workspace(&self, window_label: &str) -> Option<Uuid> {
+        self.selected_by_window.lock().get(window_label).copied()
     }
 }
 
@@ -714,6 +734,12 @@ impl AppState {
 
     pub fn active_workspace_id(&self) -> Uuid {
         *self.active_workspace.read()
+    }
+
+    pub fn active_workspace_for_window(&self, window_label: &str) -> Uuid {
+        self.workspace_window_claims
+            .selected_workspace(window_label)
+            .unwrap_or_else(|| self.active_workspace_id())
     }
 
     /// 取下一个未命名工作区的展示序号并自增。仅在创建/还原工作区时调用一次。
@@ -1592,6 +1618,66 @@ mod pty_delta_channel_tests {
         assert_eq!(
             claims.claim(second, "other"),
             WorkspaceWindowClaim::Acquired
+        );
+    }
+
+    #[test]
+    fn two_windows_keep_independent_selected_workspaces() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<GlobalEvent>(1);
+        let state = AppState::new(tx);
+        let first = state.active_workspace_id();
+        let second = Uuid::parse_str(&crate::commands::workspace::insert_new_workspace(
+            &state,
+            PaneTree::new(),
+            None,
+        ))
+        .unwrap();
+        state.workspace_window_claims.claim(first, "main");
+        state.workspace_window_claims.claim(second, "secondary");
+        assert!(state.workspace_window_claims.select_owned(first, "main"));
+        assert!(state
+            .workspace_window_claims
+            .select_owned(second, "secondary"));
+
+        *state.active_workspace.write() = second;
+        assert_eq!(state.active_workspace_for_window("main"), first);
+        assert_eq!(state.active_workspace_for_window("secondary"), second);
+        assert!(!state
+            .workspace_window_claims
+            .select_owned(first, "secondary"));
+    }
+
+    #[test]
+    fn simultaneous_claim_has_exactly_one_owner() {
+        let claims = Arc::new(WorkspaceWindowClaims::default());
+        let workspace = Uuid::new_v4();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let handles: Vec<_> = ["left", "right"]
+            .into_iter()
+            .map(|label| {
+                let claims = Arc::clone(&claims);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    claims.claim(workspace, label)
+                })
+            })
+            .collect();
+        barrier.wait();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, WorkspaceWindowClaim::Acquired))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, WorkspaceWindowClaim::OwnedBy(_)))
+                .count(),
+            1
         );
     }
 }

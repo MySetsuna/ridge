@@ -22,6 +22,16 @@ use crate::utils::error::AppError;
 use crate::utils::pane_id::parse_pane_id;
 use crate::utils::pty_log;
 
+fn workspace_containing_pane(state: &AppState, pane_id: Uuid) -> Option<Uuid> {
+    state.workspaces.read().iter().find_map(|(wid, workspace)| {
+        workspace
+            .pane_tree
+            .panes
+            .contains_key(&pane_id)
+            .then_some(*wid)
+    })
+}
+
 /// 把 PowerShell 脚本编码成 `-EncodedCommand` 要求的 base64(UTF-16LE) 字符串。
 /// 用 EncodedCommand 传参是 Windows 上最可靠的方式：命令行只剩纯 ASCII base64，
 /// 不会被 `CreateProcess` / portable-pty 的引号/转义层破坏 `$` `&` `{` `;` 这些字符。
@@ -279,7 +289,8 @@ pub async fn change_pane_shell(
     args: Vec<String>,
 ) -> Result<(), String> {
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
-    let workspace_id = state.active_workspace_id();
+    let workspace_id = workspace_containing_pane(&state, pane_id)
+        .ok_or_else(|| AppError::PaneNotFound(pane_id).to_string())?;
     let cwd = {
         let map = state.workspaces.read();
         map.get(&workspace_id)
@@ -338,8 +349,19 @@ pub fn create_pane_inner(
     pane_id: String,
     shell: Option<String>,
 ) -> Result<(), AppError> {
+    let parsed = parse_pane_id(&pane_id)?;
+    let workspace_id =
+        workspace_containing_pane(state, parsed).ok_or(AppError::PaneNotFound(parsed))?;
+    create_pane_in_workspace(state, workspace_id, pane_id, shell)
+}
+
+fn create_pane_in_workspace(
+    state: &AppState,
+    workspace_id: Uuid,
+    pane_id: String,
+    shell: Option<String>,
+) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
-    let workspace_id = state.active_workspace_id();
 
     // 优先使用 pane tree 中已记录的 CWD（分屏时由 split_pane 从父 pane 继承），
     // 若已保存过 shell_kind（来自 .ridge 文件恢复）也一并取出。

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{State, WebviewWindow};
 use uuid::Uuid;
 
 use crate::commands::terminal;
@@ -11,6 +11,30 @@ use crate::teammate::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use crate::types::{GlobalEvent, PaneMode};
 use crate::utils::error::AppError;
 use crate::utils::pane_id::parse_pane_id;
+
+fn workspace_for_window(
+    state: &AppState,
+    window: &WebviewWindow,
+    workspace_id: Option<&str>,
+) -> Result<Uuid, String> {
+    workspace_id
+        .map(|id| Uuid::parse_str(id).map_err(|_| "invalid workspaceId".to_string()))
+        .unwrap_or_else(|| Ok(state.active_workspace_for_window(window.label())))
+}
+
+fn workspace_containing_pane(state: &AppState, pane_id: Uuid) -> Option<Uuid> {
+    state
+        .workspaces
+        .read()
+        .iter()
+        .find_map(|(wid, workspace)| {
+            workspace
+                .pane_tree
+                .panes
+                .contains_key(&pane_id)
+                .then_some(*wid)
+        })
+}
 
 /// Returned by `split_pane` so the frontend can immediately seed `paneCwdStore`
 /// without waiting for the first `pane-cwd-changed` event from shell integration.
@@ -197,6 +221,15 @@ pub fn get_pane_layout(state: State<'_, AppState>) -> Result<LayoutNode, String>
     get_pane_layout_for_inner(&state, &wid.to_string())
 }
 
+#[tauri::command]
+pub fn get_window_pane_layout(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+) -> Result<LayoutNode, String> {
+    let wid = state.active_workspace_for_window(window.label());
+    get_pane_layout_for_inner(&state, &wid.to_string())
+}
+
 /// §4a workspace keep-alive: read any workspace's layout without
 /// switching to it. Used by the frontend to prefetch every workspace's
 /// tree on boot so all SplitContainers can mount in parallel and
@@ -255,6 +288,27 @@ pub async fn set_split_ratios_at_path(
     ratios: Vec<f32>,
 ) -> Result<(), String> {
     let wid = state.active_workspace_id();
+    set_split_ratios_at_path_in(&state, wid, path, ratios)
+}
+
+#[tauri::command]
+pub async fn set_window_split_ratios_at_path(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+    path: Vec<usize>,
+    ratios: Vec<f32>,
+    workspace_id: Option<String>,
+) -> Result<(), String> {
+    let wid = workspace_for_window(&state, &window, workspace_id.as_deref())?;
+    set_split_ratios_at_path_in(&state, wid, path, ratios)
+}
+
+fn set_split_ratios_at_path_in(
+    state: &AppState,
+    wid: Uuid,
+    path: Vec<usize>,
+    ratios: Vec<f32>,
+) -> Result<(), String> {
     let mut map = state.workspaces.write();
     let ws = map
         .get_mut(&wid)
@@ -279,6 +333,25 @@ pub async fn set_split_ratios_batch(
     updates: Vec<SplitRatioUpdate>,
 ) -> Result<(), String> {
     let wid = state.active_workspace_id();
+    set_split_ratios_batch_in(&state, wid, updates)
+}
+
+#[tauri::command]
+pub async fn set_window_split_ratios_batch(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+    updates: Vec<SplitRatioUpdate>,
+    workspace_id: Option<String>,
+) -> Result<(), String> {
+    let wid = workspace_for_window(&state, &window, workspace_id.as_deref())?;
+    set_split_ratios_batch_in(&state, wid, updates)
+}
+
+fn set_split_ratios_batch_in(
+    state: &AppState,
+    wid: Uuid,
+    updates: Vec<SplitRatioUpdate>,
+) -> Result<(), String> {
     let mut map = state.workspaces.write();
     let ws = map
         .get_mut(&wid)
@@ -422,14 +495,23 @@ pub fn split_pane_inner(
     pane_id: String,
     direction: String,
 ) -> Result<SplitPaneResult, AppError> {
+    let parsed = parse_pane_id(&pane_id)?;
+    let wid = workspace_containing_pane(state, parsed).ok_or(AppError::PaneNotFound(parsed))?;
+    split_pane_in_workspace(state, wid, pane_id, direction)
+}
+
+fn split_pane_in_workspace(
+    state: &AppState,
+    wid: Uuid,
+    pane_id: String,
+    direction: String,
+) -> Result<SplitPaneResult, AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
     let dir = if direction == "horizontal" {
         SplitDirection::Horizontal
     } else {
         SplitDirection::Vertical
     };
-    let wid = state.active_workspace_id();
-
     // 取父 pane 的 cwd：优先从 pane_tree 读（已被 OSC 7 或定时轮询同步过）；
     // 若 tree 尚未记录（例如 PowerShell/cmd 无 OSC 7 且刚 spawn 还未被轮询），
     // 就现场查 shell 进程 OS 层 cwd，保证"分屏一定继承当前目录"。
@@ -625,9 +707,13 @@ pub(crate) fn teammate_split_pane(
 
 /// 关闭指定窗格：结束 PTY、从 PaneTree 移除。至少保留一个窗格。
 #[tauri::command]
-pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(), String> {
+pub async fn close_pane(
+    state: State<'_, AppState>,
+    pane_id: String,
+) -> Result<(), String> {
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
-    let wid = state.active_workspace_id();
+    let wid = workspace_containing_pane(&state, pane_id)
+        .ok_or_else(|| AppError::PaneNotFound(pane_id).to_string())?;
     let leaves: Vec<Uuid> = {
         let map = state.workspaces.read();
         let ws = map.get(&wid).ok_or_else(|| "无活动工作区".to_string())?;
@@ -875,18 +961,21 @@ pub async fn toggle_mode(
     pane_id: String,
     mode: PaneMode,
 ) -> Result<(), String> {
-    toggle_mode_inner(state, pane_id, mode)
+    let parsed = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+    let wid = workspace_containing_pane(&state, parsed)
+        .ok_or_else(|| AppError::PaneNotFound(parsed).to_string())?;
+    toggle_mode_in_workspace(state, wid, pane_id, mode)
         .await
         .map_err(|e| e.to_string())
 }
 
-async fn toggle_mode_inner(
+async fn toggle_mode_in_workspace(
     state: State<'_, AppState>,
+    wid: Uuid,
     pane_id: String,
     mode: PaneMode,
 ) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
-    let wid = state.active_workspace_id();
     {
         let mut map = state.workspaces.write();
         let ws = map
