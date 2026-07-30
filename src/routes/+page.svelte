@@ -11,7 +11,7 @@
   import ContextMenu from '$lib/components/ContextMenu.svelte';
   import WindDialog from '$lib/components/RidgeDialog.svelte';
   import WindToast from '$lib/components/WindToast.svelte';
-  import { settingsStore, initSettingsBoot } from '$lib/stores/settings';
+  import { settingsStore, initSettingsBoot, setSetting } from '$lib/stores/settings';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import RemotePanel from '$lib/remote/RemotePanel.svelte';
   import AgentCenterPanel from '$lib/teammate/AgentCenterPanel.svelte';
@@ -1192,8 +1192,13 @@ function expandSidebar(minWidth = 0) {
     if (
       detail === 'files' ||
       detail === 'search' ||
-      detail === 'git'
+      detail === 'git' ||
+      detail === 'hosts' ||
+      detail === 'agents'
     ) {
+      if (detail === 'agents' && !teammateEnabled) {
+        setSetting('teammateEnabled', true);
+      }
       sidebarTab = detail;
       if (sidebarCollapsed) {
         sidebarCollapsed = false;
@@ -1570,17 +1575,19 @@ function expandSidebar(minWidth = 0) {
     >
       <GitBranch class="h-5 w-5" />
     </button>
-    <!-- 智能体指挥部（Domain Zero）独立 Tab。总开关关闭时不渲染入口。 -->
-    {#if teammateEnabled || $activeSharedWorkspaceProjection}
+    <!-- Commune 入口恒可见；点击显式启用本地协同 UI，后台仍受各安全开关约束。 -->
     <button
       type="button"
       class="{actBtn}{sidebarTab === 'agents' ? actBtnOn : ''}"
-      title="Agent's Commune"
-      onclick={() => { sidebarTab = 'agents'; expandSidebar(288); }}
+      title={teammateEnabled ? "Agent's Commune" : "Agent's Commune（点击启用）"}
+      onclick={() => {
+        if (!teammateEnabled) setSetting('teammateEnabled', true);
+        sidebarTab = 'agents';
+        expandSidebar(288);
+      }}
     >
       <Bot class="h-5 w-5" />
     </button>
-    {/if}
     <!-- 接入：本机无头、远端主机、共享工作区的统一入口。 -->
     <button
       type="button"
