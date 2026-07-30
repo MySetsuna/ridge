@@ -15,10 +15,10 @@ use crate::commands::watch::GitWatcher;
 use crate::db::ProjectStore;
 use crate::engine::pane_tree::PaneTree;
 use crate::engine::pty::PtyHandle;
-use ridge_term::term::modes::Modes;
-use ridge_remote::auth::{RemoteAuth, SessionStore, VerifyThrottle};
 use crate::types::{GlobalEvent, RemotePtyEvent};
 use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
+use ridge_remote::auth::{RemoteAuth, SessionStore, VerifyThrottle};
+use ridge_term::term::modes::Modes;
 
 /// Two-stage PTY spawn record.
 ///
@@ -1275,6 +1275,24 @@ mod scrollback_tests {
         state.clear_pty_scrollback(ws, pane);
         let chunk = state.get_pty_scrollback_tail(ws, pane, 1024);
         assert!(chunk.bytes.is_empty());
+    }
+
+    #[test]
+    fn clear_releases_backend_block_references() {
+        let (state, ws, pane) = make_state();
+        state.append_pty_scrollback(ws, pane, &"x".repeat(SCROLLBACK_BLOCK_SIZE));
+        let weak = {
+            let map = state.pty_scrollback.read();
+            let entry = map.get(&(ws, pane)).expect("entry");
+            Arc::downgrade(entry.blocks.front().expect("frozen block"))
+        };
+
+        state.clear_pty_scrollback(ws, pane);
+
+        assert!(
+            weak.upgrade().is_none(),
+            "physical clear must release the backend's retained block"
+        );
     }
 }
 

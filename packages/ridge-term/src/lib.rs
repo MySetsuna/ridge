@@ -141,9 +141,11 @@ impl JsTerminal {
         // abs-row infrastructure has been in place for several rounds;
         // the over-eager invalidation was the actual blocker.
         let evictions_before = self.inner.scrollback_eviction_count();
+        let clears_before = self.inner.scrollback_clear_count();
         self.inner.feed(bytes);
         let evictions_after = self.inner.scrollback_eviction_count();
-        if evictions_after != evictions_before {
+        let clears_after = self.inner.scrollback_clear_count();
+        if evictions_after != evictions_before || clears_after != clears_before {
             // Eviction crossed an abs-row boundary — anchor records
             // would now point to wrong content. Drop them; user
             // re-issues the query.
@@ -227,11 +229,15 @@ impl JsTerminal {
             .deltas
             .iter()
             .any(|d| matches!(d, crate::term::delta::GridDelta::Reset));
+        let has_scrollback_clear = frame
+            .deltas
+            .iter()
+            .any(|d| matches!(d, crate::term::delta::GridDelta::ScrollbackClear));
         self.inner
             .apply_frame(&frame)
             .map_err(|v| JsValue::from_str(&format!("protocol version {v} not supported")))?;
         let evictions_after = self.inner.scrollback_eviction_count();
-        if has_reset || evictions_after != evictions_before {
+        if has_reset || has_scrollback_clear || evictions_after != evictions_before {
             self.selection.clear();
             self.search.clear();
         }
@@ -583,7 +589,7 @@ impl JsTerminal {
     #[wasm_bindgen(js_name = e2eEncodeCursorDeltaFrame)]
     pub fn e2e_encode_cursor_delta_frame(&self, pane_seq: u32, row: u16, col: u16) -> Vec<u8> {
         use crate::term::delta::{
-            CursorShape as DeltaCursorShape, DeltaFrame, GridDelta, encode_frame,
+            encode_frame, CursorShape as DeltaCursorShape, DeltaFrame, GridDelta,
         };
         let frame = DeltaFrame::new(
             pane_seq as u64,
@@ -911,7 +917,16 @@ impl JsTerminal {
         ctrl: bool,
         alt: bool,
     ) -> Vec<u8> {
-        crate::input::encode_mouse(button, row, col, action, shift, ctrl, alt, self.inner.modes())
+        crate::input::encode_mouse(
+            button,
+            row,
+            col,
+            action,
+            shift,
+            ctrl,
+            alt,
+            self.inner.modes(),
+        )
     }
 
     #[wasm_bindgen(js_name = dumpVisibleText)]
@@ -968,7 +983,7 @@ mod delta_selection_tests {
     //! re-reported on 2026-05-21.
     use super::*;
     use crate::term::delta::{
-        CursorShape as DeltaCursorShape, DeltaCell, DeltaFrame, GridDelta, encode_frame,
+        encode_frame, CursorShape as DeltaCursorShape, DeltaCell, DeltaFrame, GridDelta,
     };
 
     /// Drive a typical TUI repaint into a fresh kernel, set a host
@@ -1073,8 +1088,11 @@ mod delta_selection_tests {
                 row
             })
             .collect();
-        let frame = encode_frame(&DeltaFrame::new(0, vec![GridDelta::ScrollbackAppend { lines }]))
-            .expect("encode append");
+        let frame = encode_frame(&DeltaFrame::new(
+            0,
+            vec![GridDelta::ScrollbackAppend { lines }],
+        ))
+        .expect("encode append");
         t.apply_delta_frame(&frame).unwrap();
 
         assert!(
@@ -1197,11 +1215,8 @@ mod renderer_js {
                             dpr: 1.0,
                             tui_mode: false,
                         };
-                        let renderer = Renderer::new(
-                            AnyBackend::Webgpu(b),
-                            metrics,
-                            Theme::default_dark(),
-                        );
+                        let renderer =
+                            Renderer::new(AnyBackend::Webgpu(b), metrics, Theme::default_dark());
                         return Ok(RenderHandle { renderer });
                     }
                     Err(e) => {
@@ -1549,8 +1564,7 @@ mod renderer_js {
         /// the same `<canvas data-rg-ws-host>`) as their workspace tab.
         pub(crate) fn host_rc(
             &self,
-        ) -> std::rc::Rc<std::cell::RefCell<crate::render::surface_host::SurfaceHost>>
-        {
+        ) -> std::rc::Rc<std::cell::RefCell<crate::render::surface_host::SurfaceHost>> {
             self.host.clone()
         }
     }
@@ -1800,12 +1814,12 @@ mod shell_history_gate_tests {
         // that locked sticky permanently after the first TUI use would
         // pass the earlier negative tests but break daily use.
         let mut t = JsTerminal::new(24, 80, 200);
-        t.feed(b"\x1b[H");                    // CUP — abs-positioning CSI
-        t.feed(b"\x1b[?25l");                 // hide cursor (TUI active)
+        t.feed(b"\x1b[H"); // CUP — abs-positioning CSI
+        t.feed(b"\x1b[?25l"); // hide cursor (TUI active)
         let baseline = clock_baseline();
         assert!(!t.should_allow_shell_history_at(baseline));
-        t.feed(b"\x1b[?25h");                 // back to shell
-        // Far past both sticky and inline-TUI decay.
+        t.feed(b"\x1b[?25h"); // back to shell
+                              // Far past both sticky and inline-TUI decay.
         assert!(t.should_allow_shell_history_at(baseline + 10_000));
     }
 }
