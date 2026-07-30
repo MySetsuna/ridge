@@ -1189,6 +1189,9 @@ onMount(() => {
 		const remote = remotePaneBinding(paneId);
 		if (remote) {
 			activateRemotePaneBinding(paneId);
+			// manager.attach already measured the real container; claim now so
+			// the foreign PTY never remains at its placeholder 80x24 geometry.
+			manager.claimPaneSize(paneId);
 			return;
 		}
 
