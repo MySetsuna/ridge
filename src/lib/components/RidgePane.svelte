@@ -43,6 +43,7 @@ import { getShells, changePaneShell, type ShellInfo } from '@ridge/remote/shared
 import { hostsStore, refreshHosts, newHeadlessSession, attachSessionAt } from '$lib/stores/hosts';
 import { pickDockRegion } from '$lib/stores/dockRegionPicker';
 import type { ContextMenuItem } from '$lib/stores/contextMenu';
+import { reportRepeatedError } from '$lib/utils/repeatedError';
 import { Terminal, PlugZap } from 'lucide-svelte';
 
 interface Props {
@@ -1012,7 +1013,7 @@ function onPtyData(bytes: Uint8Array) {
 	// clipboard paste remains one atomic payload, and no later key/input can
 	// overtake any byte of it while ConPTY is back-pressured.
 	void enqueuePtyWrite(`${workspaceId}:${paneId}`, () => invoke('write_to_pty', { workspaceId, paneId, data: s })).catch((err) => {
-		console.error('write_to_pty', err);
+		reportRepeatedError('write_to_pty', err);
 	});
 }
 
@@ -1051,7 +1052,7 @@ function onPtyResize(
 	return invoke('resize_pane', { workspaceId, paneId, rows, cols, isAlt, isInlineTui }).then(
 		() => undefined,
 		(err) => {
-			console.error('resize_pane', err);
+			reportRepeatedError('resize_pane', err);
 		},
 	);
 }
