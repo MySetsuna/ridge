@@ -461,12 +461,60 @@ impl RemoteBlacklist {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceWindowClaim {
+    Acquired,
+    AlreadyOwned,
+    OwnedBy(String),
+}
+
+#[derive(Debug, Default)]
+pub struct WorkspaceWindowClaims {
+    owners: Mutex<HashMap<Uuid, String>>,
+}
+
+impl WorkspaceWindowClaims {
+    /// Check-and-insert under one lock so simultaneous windows cannot both win.
+    pub fn claim(&self, workspace_id: Uuid, window_label: &str) -> WorkspaceWindowClaim {
+        let mut owners = self.owners.lock();
+        match owners.get(&workspace_id) {
+            Some(owner) if owner == window_label => WorkspaceWindowClaim::AlreadyOwned,
+            Some(owner) => WorkspaceWindowClaim::OwnedBy(owner.clone()),
+            None => {
+                owners.insert(workspace_id, window_label.to_owned());
+                WorkspaceWindowClaim::Acquired
+            }
+        }
+    }
+
+    pub fn release_workspace(&self, workspace_id: Uuid, window_label: Option<&str>) -> bool {
+        let mut owners = self.owners.lock();
+        let can_release = owners
+            .get(&workspace_id)
+            .is_some_and(|owner| window_label.map_or(true, |label| owner == label));
+        if can_release {
+            owners.remove(&workspace_id);
+        }
+        can_release
+    }
+
+    pub fn release_window(&self, window_label: &str) -> usize {
+        let mut owners = self.owners.lock();
+        let before = owners.len();
+        owners.retain(|_, owner| owner != window_label);
+        before - owners.len()
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub workspaces: Arc<RwLock<HashMap<Uuid, Workspace>>>,
     pub workspace_order: Arc<RwLock<Vec<Uuid>>>,
     pub workspace_names: Arc<RwLock<HashMap<Uuid, String>>>,
     pub active_workspace: Arc<RwLock<Uuid>>,
+    /// Process-local ownership of desktop workspaces. Multiple WebViews may coexist,
+    /// but one workspace is rendered by at most one window at a time.
+    pub workspace_window_claims: Arc<WorkspaceWindowClaims>,
     /// 下一个未命名工作区的展示序号；每次新建（包括从 .ridge 还原）`fetch_add 1`。
     /// 关闭工作区不会回收已发出的序号 —— 用户期望「工作区 2」一旦创建就不会被另一个
     /// 重新顶替，避免标签语义漂移。
@@ -622,6 +670,7 @@ impl AppState {
             workspace_order: Arc::new(RwLock::new(vec![id])),
             workspace_names: Arc::new(RwLock::new(HashMap::new())),
             active_workspace: Arc::new(RwLock::new(id)),
+            workspace_window_claims: Arc::new(WorkspaceWindowClaims::default()),
             next_workspace_seq: Arc::new(RwLock::new(2)),
             event_tx,
             pty_scrollback: Arc::new(RwLock::new(HashMap::new())),
@@ -1500,5 +1549,49 @@ mod pty_delta_channel_tests {
         // Unregister via clone B; clone A should see the empty slot too.
         state_b.unregister_pane_delta_channel(ws, pane);
         assert!(state_a.get_pane_delta_channel(ws, pane).is_none());
+    }
+
+    #[test]
+    fn workspace_claim_is_exclusive_and_release_is_owner_checked() {
+        let claims = WorkspaceWindowClaims::default();
+        let workspace = Uuid::new_v4();
+
+        assert_eq!(
+            claims.claim(workspace, "main"),
+            WorkspaceWindowClaim::Acquired
+        );
+        assert_eq!(
+            claims.claim(workspace, "main"),
+            WorkspaceWindowClaim::AlreadyOwned
+        );
+        assert_eq!(
+            claims.claim(workspace, "ridge-window-1"),
+            WorkspaceWindowClaim::OwnedBy("main".into())
+        );
+        assert!(!claims.release_workspace(workspace, Some("ridge-window-1")));
+        assert!(claims.release_workspace(workspace, Some("main")));
+        assert_eq!(
+            claims.claim(workspace, "ridge-window-1"),
+            WorkspaceWindowClaim::Acquired
+        );
+    }
+
+    #[test]
+    fn releasing_a_window_frees_all_its_workspaces() {
+        let claims = WorkspaceWindowClaims::default();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        claims.claim(first, "secondary");
+        claims.claim(second, "secondary");
+
+        assert_eq!(claims.release_window("secondary"), 2);
+        assert_eq!(
+            claims.claim(first, "other"),
+            WorkspaceWindowClaim::Acquired
+        );
+        assert_eq!(
+            claims.claim(second, "other"),
+            WorkspaceWindowClaim::Acquired
+        );
     }
 }

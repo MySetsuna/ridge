@@ -623,9 +623,9 @@ describe('cwd listeners refreshed after pane mutations (Issue #2)', () => {
     };
 
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'get_pane_layout') return ws2Layout;
+      if (cmd === 'get_pane_layout_for') return ws2Layout;
       return undefined;
-    }); // Make get_pane_layout return the new layout (switch_workspace doesn't need to return anything)
+    });
 
     await paneTreeModule.switchWorkspace('ws2');
 
@@ -636,6 +636,24 @@ describe('cwd listeners refreshed after pane mutations (Issue #2)', () => {
 
     const store = get(paneTreeModule.paneCwdStore);
     expect(store['ws2:pane-ws2-1']).toBe('/ws2/cwd');
+  });
+
+  it('does not switch or load a workspace owned by another window', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const invokeMock = invoke as ReturnType<typeof vi.fn>;
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'claim_workspace_window') {
+        return { claimed: false, ownerWindowLabel: 'main' };
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    await expect(paneTreeModule.switchWorkspace('owned-ws')).resolves.toBe(false);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith('claim_workspace_window', {
+      workspaceId: 'owned-ws',
+    });
   });
 });
 

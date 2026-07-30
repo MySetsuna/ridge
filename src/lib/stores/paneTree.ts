@@ -12,6 +12,24 @@ import { fileExplorerStore } from '$lib/stores/fileExplorer';
 import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 import { teardownPtyBridge } from '@ridge/remote/shared/terminal/ptyBridge';
 
+const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
+
+type WorkspaceWindowClaimResult = {
+  claimed: boolean;
+  ownerWindowLabel: string;
+};
+
+async function claimWorkspaceForThisWindow(workspaceId: string): Promise<boolean> {
+  if (webRemote) return true;
+  const result = await invoke<WorkspaceWindowClaimResult>(
+    'claim_workspace_window',
+    { workspaceId }
+  );
+  // Older hosts and lightweight test shims may not expose this desktop-only
+  // command yet; their undefined result preserves the former single-window path.
+  return result?.claimed ?? true;
+}
+
 function normalizeSplitRatios(sizes: number[]): number[] {
   const s = sizes.reduce((a, b) => a + b, 0);
   if (s <= 1e-9) return sizes.map(() => 100 / Math.max(sizes.length, 1));
@@ -1308,11 +1326,31 @@ export async function syncPaneLayoutFromBackend() {
 export async function refreshWorkspaces() {
   if (!isTauri()) return;
   try {
-    const list = await invoke<
+    let list = await invoke<
       { id: string; index: number; name?: string; displaySeq: number }[]
     >('list_workspaces');
-    const active = await invoke<string>('get_active_workspace_id');
-    const layout = await invoke<PaneNode>('get_pane_layout');
+    const hostActive = await invoke<string>('get_active_workspace_id');
+    let active = hostActive;
+    if (!webRemote && !(await claimWorkspaceForThisWindow(active))) {
+      active = '';
+      for (const workspace of list) {
+        if (await claimWorkspaceForThisWindow(workspace.id)) {
+          active = workspace.id;
+          break;
+        }
+      }
+      if (!active) {
+        active = await invoke<string>('create_workspace_for_window');
+        list = await invoke<
+          { id: string; index: number; name?: string; displaySeq: number }[]
+        >('list_workspaces');
+        await claimWorkspaceForThisWindow(active);
+      }
+      await invoke('switch_workspace', { workspaceId: active });
+    }
+    const layout = await invoke<PaneNode>('get_pane_layout_for', {
+      workspaceId: active,
+    });
     workspacesList.set(list);
     setActiveTree(active, layout);
     activeWorkspaceId.set(active);
@@ -1340,7 +1378,9 @@ export async function refreshWorkspaces() {
 export async function createWorkspace() {
   if (!isTauri()) return;
   try {
-    await invoke<string>('create_workspace');
+    await invoke<string>(
+      webRemote ? 'create_workspace' : 'create_workspace_for_window'
+    );
     await refreshWorkspaces();
   } catch (e) {
     console.error('createWorkspace', e);
@@ -1353,17 +1393,21 @@ export async function createWorkspace() {
   }
 }
 
-export async function switchWorkspace(workspaceId: string) {
-  if (!isTauri()) return;
+export async function switchWorkspace(workspaceId: string): Promise<boolean> {
+  if (!isTauri()) return false;
   try {
+    if (!(await claimWorkspaceForThisWindow(workspaceId))) return false;
     await invoke('switch_workspace', { workspaceId });
-    const layout = await invoke<PaneNode>('get_pane_layout');
+    const layout = await invoke<PaneNode>('get_pane_layout_for', {
+      workspaceId,
+    });
     setActiveTree(workspaceId, layout);
     activeWorkspaceId.set(workspaceId);
     reconcileActivePaneId(layout);
     const cwds = extractCwdsFromLayout(layout, workspaceId);
     paneCwdStore.update((store) => mergePaneCwds(store, cwds));
     await setupPaneCwdListeners(workspaceId);
+    return true;
   } catch (e) {
     console.error('switchWorkspace', workspaceId, e);
     reportDevIssue({

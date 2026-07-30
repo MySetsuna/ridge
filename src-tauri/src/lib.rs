@@ -19,7 +19,7 @@ mod utils;
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::commands::{
@@ -42,6 +42,64 @@ fn window_state_flags() -> StateFlags {
     StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED | StateFlags::FULLSCREEN
 }
 use tokio::sync::mpsc;
+
+static NEXT_WINDOW_LABEL: AtomicU64 = AtomicU64::new(1);
+
+fn is_auth_focus_launch(argv: &[String]) -> bool {
+    argv.iter()
+        .any(|arg| arg.to_ascii_lowercase().starts_with("ridge://auth/focus"))
+}
+
+fn build_ridge_window(
+    app: &tauri::AppHandle,
+    label: &str,
+    restore_geometry: bool,
+) -> tauri::Result<tauri::WebviewWindow> {
+    let app_data_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("ridge");
+    let splash_init_script = theme::build_splash_init_script(app, &app_data_dir);
+    let mut builder = WebviewWindowBuilder::new(app, label.to_owned(), WebviewUrl::default());
+    #[cfg(windows)]
+    if let Ok(extra) = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") {
+        if !extra.trim().is_empty() {
+            builder = builder.additional_browser_args(&extra);
+        }
+    }
+    let window = builder
+        .title("ridge")
+        .inner_size(800.0, 600.0)
+        .decorations(false)
+        .visible(false)
+        .devtools(true)
+        .initialization_script(&splash_init_script)
+        .build()?;
+    if restore_geometry {
+        if let Err(error) = window.restore_state(window_state_flags()) {
+            tracing::warn!(
+                target: "ridge::init",
+                %error,
+                "restore window state failed; using default geometry"
+            );
+        }
+    }
+    window.show()?;
+    Ok(window)
+}
+
+fn open_secondary_window(app: &tauri::AppHandle) {
+    let serial = NEXT_WINDOW_LABEL.fetch_add(1, Ordering::Relaxed);
+    let label = format!("ridge-window-{serial}");
+    if let Err(error) = build_ridge_window(app, &label, false) {
+        tracing::error!(
+            target: "ridge::init",
+            %label,
+            %error,
+            "failed to create secondary window"
+        );
+        crate::deep_root::focus_main_window(app);
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -83,8 +141,12 @@ pub fn run() {
     // （正式版持有 single-instance 锁；调试实例若也注册会被立即聚焦并退出）。
     // 仅该 dev 工作流设置此变量；正式构建从不设置，启动行为完全不变。
     if std::env::var_os("RIDGE_DISABLE_SINGLE_INSTANCE").is_none() {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            crate::deep_root::focus_main_window(app);
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if is_auth_focus_launch(&argv) {
+                crate::deep_root::focus_main_window(app);
+            } else {
+                open_secondary_window(app);
+            }
         }));
     }
     builder
@@ -110,9 +172,17 @@ pub fn run() {
         // `get_restore_set` 取回并自动 reopen。这里必须同步：spawn 异步任务在
         // 进程退出前可能跑不完。
         .on_window_event(|window, event| {
+            let app = window.app_handle();
+            let state = app.state::<AppState>();
+            if matches!(event, WindowEvent::Destroyed) {
+                state.workspace_window_claims.release_window(window.label());
+                return;
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let app = window.app_handle();
-                let state = app.state::<AppState>();
+                if window.label() != "main" {
+                    state.workspace_window_claims.release_window(window.label());
+                    return;
+                }
                 // §4 阻止误退出（Deep Root Mode）：点窗口关闭按钮默认**隐藏到托盘**，
                 // 而非退出进程 —— 否则用户误关窗口会连同远控通道 / teammate / pane
                 // 生命周期一并销毁。仅当「彻底退出 Ridge」托盘项已置 `quitting` 标志
@@ -147,7 +217,7 @@ pub fn run() {
         })
         .manage(app_state)
         .setup({
-            let app_data_dir = app_data_dir.clone();
+            let _app_data_dir = app_data_dir.clone();
             move |app| {
                 tracing::info!(target: "ridge::init", phase = 1, "setup: storing AppHandle");
                 // §clipboard-image: 清理上次会话遗留的临时粘贴图片（超过 1h 的）。单文件不即时
@@ -207,48 +277,8 @@ pub fn run() {
                 // the very first frame would render with the hardcoded fallback
                 // colors because `localStorage.ridge-theme-data` is empty until
                 // SvelteKit hydrates. See `src/app.html` for the consumer end.
-                tracing::info!(target: "ridge::init", phase = 3, "setup: building splash init script");
-                let splash_init_script = theme::build_splash_init_script(app.handle(), &app_data_dir);
                 tracing::info!(target: "ridge::init", phase = 4, "setup: building and showing main window");
-                let mut window_builder =
-                    WebviewWindowBuilder::new(app, "main", WebviewUrl::default());
-                // §CDP 可测性（iter-62）：`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 环境变量
-                // 只在**宿主没有显式设置**附加参数时才被 WebView2 采纳；Tauri/wry 默认就会传
-                // 一串自己的附加参数，于是环境变量被静默吞掉——`pnpm tauri:dev:cdp` 一直起不来
-                // CDP 端点（无 `DevToolsActivePort`，实测 WebView2 150 的 dev 进程命令行里
-                // 压根没有 `--remote-debugging-*`），docs/CDP_TESTING.md 记载的用法名存实亡。
-                // 显式把该环境变量透传成 additional_browser_args，调试口才真的打开；
-                // 未设该变量时不调用此方法，行为与之前逐字一致（发布版不受影响）。
-                #[cfg(windows)]
-                if let Ok(extra) = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") {
-                    if !extra.trim().is_empty() {
-                        tracing::info!(
-                            target: "ridge::init",
-                            args = %extra,
-                            "applying WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
-                        );
-                        window_builder = window_builder.additional_browser_args(&extra);
-                    }
-                }
-                let window = window_builder
-                    .title("ridge")
-                    .inner_size(800.0, 600.0)
-                    .decorations(false)
-                    // 不调 `.transparent(false)`：该方法在 macOS 上被 cfg 门控在
-                    // `macos-private-api` feature 之后（Win/Linux 无门控），而我们传的就是
-                    // 默认值 false（窗口本就不透明）。删掉这个 no-op 调用即可让 macOS 编译通过，
-                    // 三平台行为不变（仍是不透明窗口）。
-                    .visible(false)
-                    .devtools(true)
-                    .initialization_script(&splash_init_script)
-                    .build()?;
-                // 恢复上次窗口几何（大小/位置/最大化/全屏）。必须在 show() 之前，否则会先以
-                // 上面 inner_size 的默认 800×600 绘制一帧再跳变到恢复值。首次启动（无状态文件）
-                // 时 restore_state 为 no-op，沿用默认几何。失败仅告警、用默认值继续。
-                if let Err(e) = window.restore_state(window_state_flags()) {
-                    tracing::warn!(target: "ridge::init", error = %e, "restore window state failed; using default geometry");
-                }
-                window.show()?;
+                build_ridge_window(app.handle(), "main", true)?;
 
                 tracing::info!(target: "ridge::init", phase = 5, "setup: building system tray");
                 // Deep Root Mode（§8.1）：构建系统托盘（恢复工作台 / 彻底退出）。
@@ -808,6 +838,8 @@ pub fn run() {
             workspace::create_workspace,
             workspace::get_active_workspace_id,
             workspace::list_workspaces,
+            workspace::claim_workspace_window,
+            workspace::create_workspace_for_window,
             workspace::switch_workspace,
             workspace::close_workspace,
             workspace::reorder_workspaces,
@@ -941,4 +973,26 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod window_launch_tests {
+    use super::is_auth_focus_launch;
+
+    #[test]
+    fn only_auth_deep_link_reuses_the_main_window() {
+        assert!(is_auth_focus_launch(&[
+            "ridge.exe".into(),
+            "ridge://auth/focus".into()
+        ]));
+        assert!(is_auth_focus_launch(&[
+            "ridge.exe".into(),
+            "RIDGE://AUTH/FOCUS?approved=1".into()
+        ]));
+        assert!(!is_auth_focus_launch(&["ridge.exe".into()]));
+        assert!(!is_auth_focus_launch(&[
+            "ridge.exe".into(),
+            "C:\\work\\project".into()
+        ]));
+    }
 }
