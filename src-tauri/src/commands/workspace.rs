@@ -1,11 +1,20 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State, WebviewWindow};
 use uuid::Uuid;
 
 use crate::engine::pane_tree::PaneTree;
-use crate::state::{AppState, Workspace};
+use crate::state::{AppState, Workspace, WorkspaceWindowClaim};
+
+pub const FOCUS_WORKSPACE_EVENT: &str = "ridge://focus-workspace";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceWindowClaimResult {
+    pub claimed: bool,
+    pub owner_window_label: String,
+}
 
 /// 工作区列表的唯一实现（A1 同源化）：桌面 IPC 命令与 remote_bridge 的
 /// `HostStateAccessor::workspaces_list` 共用；序列形 = core `WorkspaceEntry`
@@ -38,6 +47,60 @@ pub fn list_workspaces(
 #[tauri::command]
 pub fn get_active_workspace_id(state: State<'_, AppState>) -> Result<String, String> {
     Ok(state.active_workspace_id().to_string())
+}
+
+#[tauri::command]
+pub fn claim_workspace_window(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+    workspace_id: String,
+) -> Result<WorkspaceWindowClaimResult, String> {
+    let id = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    if !state.workspaces.read().contains_key(&id) {
+        return Err("工作区不存在".into());
+    }
+    let requester = window.label().to_owned();
+    match state.workspace_window_claims.claim(id, &requester) {
+        WorkspaceWindowClaim::Acquired | WorkspaceWindowClaim::AlreadyOwned => {
+            Ok(WorkspaceWindowClaimResult {
+                claimed: true,
+                owner_window_label: requester,
+            })
+        }
+        WorkspaceWindowClaim::OwnedBy(owner) => {
+            if let Some(owner_window) = window.app_handle().get_webview_window(&owner) {
+                let _ = owner_window.unminimize();
+                let _ = owner_window.show();
+                let _ = owner_window.set_focus();
+                if let Err(error) = owner_window.emit(FOCUS_WORKSPACE_EVENT, &workspace_id) {
+                    tracing::warn!(
+                        target: "ridge::workspace",
+                        %workspace_id,
+                        owner_window = %owner,
+                        %error,
+                        "failed to tell owning window to select workspace"
+                    );
+                }
+            } else {
+                // A destroyed window can disappear just before its lifecycle event.
+                // Clear that stale owner and make one bounded retry.
+                state.workspace_window_claims.release_window(&owner);
+                if matches!(
+                    state.workspace_window_claims.claim(id, &requester),
+                    WorkspaceWindowClaim::Acquired | WorkspaceWindowClaim::AlreadyOwned
+                ) {
+                    return Ok(WorkspaceWindowClaimResult {
+                        claimed: true,
+                        owner_window_label: requester,
+                    });
+                }
+            }
+            Ok(WorkspaceWindowClaimResult {
+                claimed: false,
+                owner_window_label: owner,
+            })
+        }
+    }
 }
 
 #[tauri::command]
@@ -93,14 +156,17 @@ pub fn insert_new_workspace(state: &AppState, pane_tree: PaneTree, name: Option<
 /// **桌面命令**与 **ridge-core `WorkspaceWriter` 端口**（远端经 dispatch 新建）共用。返回新 id。
 pub fn create_workspace_core(state: &AppState, name: Option<&str>) -> String {
     let id = insert_new_workspace(state, PaneTree::new(), name);
-    // Broadcast workspace list change to remote clients and desktop frontend.
+    broadcast_workspace_list_changed(state);
+    id
+}
+
+fn broadcast_workspace_list_changed(state: &AppState) {
     let _ = state
         .remote_structural_tx
         .send(crate::types::RemoteStructuralEvent::WorkspacesChanged);
     let _ = state
         .event_tx
         .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
-    id
 }
 
 /// 新建根工作区：独立分屏树与终端表，并切换为当前活动区。
@@ -110,6 +176,19 @@ pub fn create_workspace(
     name: Option<String>,
 ) -> Result<String, String> {
     Ok(create_workspace_core(&state, name.as_deref()))
+}
+
+#[tauri::command]
+pub fn create_workspace_for_window(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+    name: Option<String>,
+) -> Result<String, String> {
+    let id = insert_new_workspace(&state, PaneTree::new(), name.as_deref());
+    let parsed = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    state.workspace_window_claims.claim(parsed, window.label());
+    broadcast_workspace_list_changed(&state);
+    Ok(id)
 }
 
 /// close 的**唯一**实现（A1 同源化，iteration 10）：桌面命令、`WorkspaceWriter` 端口与
@@ -126,6 +205,7 @@ pub fn close_workspace_core(state: &AppState, id: Uuid) -> Result<(), String> {
         }
     }
     state.workspaces.write().remove(&id);
+    state.workspace_window_claims.release_workspace(id, None);
     // 名称随区清理（旧桌面/端口副本遗留残条——名称表以 id 为键，残条永不再被读）。
     state.workspace_names.write().remove(&id);
     // M1 切片一：暂停侧表 + sidecar 随区清理（设计定的单点钩；best-effort）。
@@ -135,12 +215,7 @@ pub fn close_workspace_core(state: &AppState, id: Uuid) -> Result<(), String> {
             *state.active_workspace.write() = first;
         }
     }
-    let _ = state
-        .remote_structural_tx
-        .send(crate::types::RemoteStructuralEvent::WorkspacesChanged);
-    let _ = state
-        .event_tx
-        .try_send(crate::types::GlobalEvent::WorkspaceListChanged);
+    broadcast_workspace_list_changed(state);
     Ok(())
 }
 

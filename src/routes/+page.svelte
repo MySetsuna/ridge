@@ -1494,6 +1494,14 @@ function expandSidebar(minWidth = 0) {
           void refreshWorkspaces();
         }
       );
+      const unlistenFocusWorkspace = await listen<string>(
+        'ridge://focus-workspace',
+        (event) => {
+          if (typeof event.payload === 'string' && event.payload) {
+            void switchWorkspace(event.payload);
+          }
+        }
+      );
 
       const prevUnlisten = unlisten;
       unlisten = () => {
@@ -1501,6 +1509,7 @@ function expandSidebar(minWidth = 0) {
         unlistenActive();
         unlistenPaneTreeChanged();
         unlistenWorkspaceListChanged();
+        unlistenFocusWorkspace();
       };
       } catch (err) {
         console.error('[boot] init failed', err);
