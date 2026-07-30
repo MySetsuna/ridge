@@ -32,6 +32,7 @@ plotforge.db
 # workspace root, relocating the cargo target dir from `src-tauri/target` to the
 # repo root (`src-tauri/.gitignore` still covers the old path).
 /target
+/src-tauri/binaries/ridge-mcp-*
 
 # CDP dev-test artifacts
 .cdp-shots/

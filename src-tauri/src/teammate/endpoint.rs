@@ -45,9 +45,21 @@ pub fn sidecar_path(socket_path: &str) -> PathBuf {
 }
 
 fn write_one(socket_path: &str, url: &str, token: &str) {
+    use std::io::Write;
+
     let body = serde_json::json!({ "url": url, "token": token }).to_string();
     let path = sidecar_path(socket_path);
-    if let Err(e) = std::fs::write(&path, body) {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Err(e) = options
+        .open(&path)
+        .and_then(|mut file| file.write_all(body.as_bytes()))
+    {
         tracing::warn!(target: "ridge::teammate", "sidecar write failed {}: {e}", path.display());
     }
 }
@@ -86,7 +98,10 @@ mod tests {
             sanitize_socket("C:/code/wind/teammate.sock"),
             "C__code_wind_teammate_sock"
         );
-        assert_eq!(sanitize_socket("/ridge/teammate.sock"), "_ridge_teammate_sock");
+        assert_eq!(
+            sanitize_socket("/ridge/teammate.sock"),
+            "_ridge_teammate_sock"
+        );
         assert_eq!(sanitize_socket("abc123"), "abc123");
     }
 }
