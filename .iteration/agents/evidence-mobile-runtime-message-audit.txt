@@ -1,0 +1,98 @@
+task_id: mobile-runtime-message-audit
+dispatch_id: 116c7eac1da88bb58f726441
+packet_hash: b84475784eba39125f46a289a667624db7ea5bdc0eafedb3a24781319ddee578
+baseline_head: 4f8ab2ed1d7094b1e65a42a4ac49d06de064e055
+date: 2026-07-30
+
+CODEGRAPH
+Query:
+Within only src/service-worker.ts, vite.remote.config.js, src/remote/svelte.config.js,
+src/remote/MainApp.svelte, and package.json: locate any Chrome/Browser Extension
+Messaging APIs or lifecycle registrations relevant to chrome.runtime.onMessage,
+chrome.tabs.sendMessage, sendResponse, runtime.lastError. Distinguish ordinary
+Service Worker/PWA/web Worker messaging from Extension Messaging.
+
+Result:
+- No allowed project source symbol or call path for Chrome/Browser Extension
+  Messaging was found.
+- CodeGraph instead returned a generated web-remote-dist worker containing an
+  ordinary method named sendMessage. That generated file is outside task scope and
+  the name alone is not chrome.runtime/tabs messaging.
+
+ALLOWED-SOURCE EVIDENCE
+- src/service-worker.ts:26 casts self to ServiceWorkerGlobalScope.
+- src/service-worker.ts:47-49 uses Client.postMessage only to broadcast
+  CLEAR_STORAGE after a PWA cache version change.
+- src/service-worker.ts:55,68,80 registers only install, activate, and fetch service
+  worker events. It has no message listener, sendResponse callback, return-true
+  channel retention, chrome.runtime, chrome.tabs, or runtime.lastError access.
+- vite.remote.config.js:3,52-64 configures vite-plugin-pwa/VitePWA and manual PWA
+  registration; lines 83-103 define a standard web app manifest, not a browser
+  extension manifest.
+- src/remote/svelte.config.js contains only vitePreprocess configuration.
+- src/remote/MainApp.svelte uses ordinary app/Web APIs. The only matching lifecycle
+  registrations inspected are visualViewport resize/scroll listeners at lines
+  812-823, with paired cleanup. It contains no Extension Messaging API.
+- package.json declares vite-plugin-pwa and workbox-window, but no Chrome extension
+  runtime library or extension manifest/build dependency.
+
+VERIFICATION 1
+command:
+rg -n "chrome\.(runtime|tabs)|browser\.(runtime|tabs)|sendResponse|runtime\.lastError" src packages vite.remote.config.js --glob "!**/dist/**"
+output:
+<no matches>
+exit_code: 1
+expected_exit: 1
+outcome: pass
+
+VERIFICATION 2
+command:
+git diff --exit-code -- src/service-worker.ts vite.remote.config.js src/remote/svelte.config.js src/remote/MainApp.svelte package.json
+output:
+<no diff>
+exit_code: 0
+expected_exit: 0
+outcome: pass
+
+DIAGNOSIS
+The exact Chrome warning requires an Extension Messaging listener which retained a
+response channel (return true or equivalent) and then lost that channel before a
+response. The audited Ridge mobile Remote sources own no such listener or sender.
+Ridge's PWA service worker Client.postMessage is a different Web API and cannot
+produce that chrome.runtime response-channel warning.
+
+Code ownership is therefore disproved for the audited source. The leading runtime
+hypothesis is code injected by a third-party mobile-browser extension, browser
+feature, password manager, translator, debugging bridge, or vendor component. This
+runtime attribution is not final until the same device/browser reproducer passes
+the isolation procedure below. No Console suppression or business-code workaround
+is justified.
+
+REAL-DEVICE ISOLATION / REGRESSION PROCEDURE
+1. On the affected phone, record browser name/version, OS version, Ridge Remote URL,
+   installed/enabled extensions or content-modifying features, and exact actions.
+2. Attach remote DevTools, enable Preserve log, clear Console, reload Ridge Remote,
+   then exercise terminal input, background/foreground, reconnect, pane switch, and
+   page navigation. Save the first warning's stack and source URL. A
+   chrome-extension:// or browser-extension:// URL identifies the injecting owner.
+3. Repeat the identical scenario in a clean browser profile or private/incognito
+   session with every optional extension/content modifier disabled. Clear site data
+   first; keep browser version, URL, account, network, and actions unchanged.
+4. If the warning disappears, enable extensions/features one at a time (or binary
+   search them) until it returns. Record extension name, version, ID/source URL,
+   warning count over a fixed five-minute scenario, and Console export.
+5. If it remains in a clean profile, unregister Ridge's PWA service worker, clear
+   site storage/cache, reload, and repeat. Because audited source has no Extension
+   Messaging API, persistence then points to browser/vendor tooling; absence only
+   implicates generated/runtime PWA code and requires a captured source stack before
+   any project change.
+6. Acceptance for attribution: project-source A/B warning count remains zero in the
+   clean profile; enabling the identified external component restores the warning.
+   Confirm terminal input, background/foreground, reconnect, and failure feedback
+   remain functional. Keep business-code diff empty.
+
+CHANGES
+- Business/document/dependency/generated files changed: none.
+- Control-plane outputs only:
+  .iteration/agents/evidence-mobile-runtime-message-audit.txt
+  .iteration/agents/result-mobile-runtime-message-audit.json

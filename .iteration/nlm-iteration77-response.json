@@ -1,0 +1,19 @@
+{
+  "status": "NEEDS_MORE_EVIDENCE",
+  "confirmed_facts": [
+    {"fact": "Project source excludes Chrome Extension Messaging; mobile attribution remains unverified.", "evidence": "Current PROJECT-STATE and REQUIREMENTS-SPEC sources."},
+    {"fact": "Core RPC, SCM, pane lifecycle, clear, host and window guards have deterministic evidence.", "evidence": "Current PROJECT-STATE source and local test records."}
+  ],
+  "contradictions": [],
+  "unverified_hypotheses": [
+    {"hypothesis": "The phone warning is injected by an extension or browser tool.", "support": ["No project API match"], "against": ["No affected-phone source URL yet"], "experiment": "Clean-profile/incognito and one-by-one injector A/B."}
+  ],
+  "candidates": [
+    {"core": "Run physical mobile continuity and warning attribution first.", "constraints": ["No business-code diff before ownership evidence"], "risks": ["Requires affected phone"], "reversibility": "Evidence-only run.", "scope": ["iOS Safari", "Android Chrome"], "validation": ["Console source URL and clean-profile count"]},
+    {"core": "Run public WebRTC geometry/backpressure and dual-host matrix.", "constraints": ["Use real tenant and TURN path"], "risks": ["Deployment/account unavailable"], "reversibility": "Evidence-only run.", "scope": ["canvas/pane rect", "resize", "resync"], "validation": ["Timestamped JSON evidence"]},
+    {"core": "Collect native Agent, Explorer and raster traces before changing code.", "constraints": ["Do not guess Grok format or visual fixes"], "risks": ["Requires native CLI and Windows volume matrix"], "reversibility": "No code change until fixture exists.", "scope": ["Grok", "headless", "PowerShell", "PTY"], "validation": ["Fixture, trace, or explicit deferred record"]}
+  ],
+  "recommendation": "Keep code stable and close external evidence in dependency order.",
+  "next_step": {"type": "experiment", "value": "Execute mobile clean-profile/injector A/B, then public Remote and dual-host evidence."},
+  "stop_conditions": ["No physical device, public tenant, or native fixture; record gap instead of guessing."]
+}

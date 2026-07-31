@@ -1,0 +1,4 @@
+按最佳架构收口已批 Active：
+REQ-RIDGE-KERNEL-HOST-01 / DOMAIN-01 / MCP-AS-KERNEL-API-01。
+本轮：独立 ridge-kernel 进程 + 发现(pid/port) + 桌面 detect-or-spawn + 彻底退出走内核 shutdown；
+rdg/CLI 对齐。允许破坏性；不做低配终态。

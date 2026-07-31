@@ -84,7 +84,44 @@ fn sidecar_endpoint() -> Option<Endpoint> {
     best.map(|(_, endpoint)| endpoint)
 }
 
-/// 按「显式参数 → Ridge pane 环境 → endpoint sidecar」发现当前端点。
+/// 从 `%LOCALAPPDATA%/ridge/kernel.json` 发现独立 ridge-kernel MCP 面。
+/// 与 HOST 外壳同发现机制；无 Tauri 时仍可用（REQ-RIDGE-MCP-AS-KERNEL-API-01）。
+fn kernel_endpoint() -> Option<Endpoint> {
+    let path = {
+        #[cfg(windows)]
+        {
+            let local = std::env::var_os("LOCALAPPDATA")?;
+            PathBuf::from(local).join("ridge").join("kernel.json")
+        }
+        #[cfg(not(windows))]
+        {
+            let home = std::env::var_os("HOME")?;
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("ridge")
+                .join("kernel.json")
+        }
+    };
+    let body = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let port = value.get("port")?.as_u64()? as u16;
+    let token = value.get("token")?.as_str()?.trim();
+    if token.is_empty() || port == 0 {
+        return None;
+    }
+    // 轻量健康：连不上则当内核已死，交给 sidecar 回退。
+    let base_url = format!("http://127.0.0.1:{port}");
+    if !is_loopback_endpoint(&base_url) {
+        return None;
+    }
+    Some(Endpoint {
+        base_url,
+        token: token.to_string(),
+    })
+}
+
+/// 按「显式参数 → pane 环境 → **ridge-kernel 登记** → teammate sidecar」发现。
 pub fn discover(url: Option<String>, token: Option<String>) -> Result<Endpoint> {
     let clean = |value: Option<String>| {
         value
@@ -100,8 +137,14 @@ pub fn discover(url: Option<String>, token: Option<String>) -> Result<Endpoint> 
     {
         return Ok(Endpoint { base_url, token });
     }
+    // 优先独立内核（深根 / 无 Tauri）；sidecar 仍兼容「仅桌面 teammate 在跑」。
+    if let Some(ep) = kernel_endpoint() {
+        return Ok(ep);
+    }
     sidecar_endpoint().ok_or_else(|| {
-        anyhow!("找不到 Ridge MCP 端点：请在 Ridge pane 内启动 Codex，或先打开 Ridge 工作区。")
+        anyhow!(
+            "找不到 Ridge MCP 端点：请启动 ridge-kernel / Ridge 桌面，或在 pane 内设置 RIDGE_TEAMMATE_*。"
+        )
     })
 }
 

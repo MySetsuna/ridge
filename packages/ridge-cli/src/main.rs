@@ -21,6 +21,7 @@ mod config;
 mod core_host;
 mod daemon;
 mod daemon_ctl;
+mod kernel_ctl;
 mod device_flow;
 mod e2ee;
 mod envelope;
@@ -87,6 +88,38 @@ enum Command {
     /// 兼容别名：把本机 Ridge MCP 以 stdio 暴露给客户端。桌面 Ridge 请优先使用独立
     /// `ridge-mcp` companion；`rdg mcp` 仅为既有无头脚本保留，端点发现实现相同。
     Mcp(McpArgs),
+
+    /// 内核生命周期（REQ-RIDGE-KERNEL-HOST-01）：status / stop。
+    /// 深根模式下桌面退出后可用 `rdg kernel stop` 结束仍在跑的桌面宿主内核。
+    Kernel(KernelArgs),
+}
+
+#[derive(Args)]
+struct KernelArgs {
+    #[command(subcommand)]
+    command: KernelCommand,
+}
+
+#[derive(Subcommand)]
+enum KernelCommand {
+    /// 显示 kernel.pid 登记状态。
+    Status,
+    /// 结束登记中的内核进程。
+    Stop,
+    /// detect-or-spawn 独立 ridge-kernel。
+    Ensure,
+    /// 领域：agent profiles（经内核 SSOT）。
+    Agents,
+    /// 领域：列目录 `rdg kernel fs-list <path>`。
+    FsList {
+        path: String,
+    },
+    /// 领域：Git status `rdg kernel git-status <path>`。
+    GitStatus {
+        path: String,
+    },
+    /// MCP tools/list 冒烟（无 Tauri）。
+    McpSmoke,
 }
 
 #[derive(Args)]
@@ -114,6 +147,15 @@ struct TuiArgs {
     /// 可用 Ctrl+Shift+方向键切换 pane，Ctrl+F1..F12 切换工作区。
     #[arg(long, default_value_t = 1)]
     sessions: usize,
+
+    /// 无头仅启 LAN Remote host（无仪表盘/TUI）：打印根 URL 与 TOTP，Ctrl+C 停。
+    /// 用于 9527 真机冒烟（REQ-RDG-REMOTE-CONNECT-01）。
+    #[arg(long)]
+    lan_host: bool,
+
+    /// LAN 监听端口（仅 `--lan-host`；0 = 配置默认，生产 9527 / dev 5002）。
+    #[arg(long, default_value_t = 0)]
+    port: u16,
 }
 
 #[derive(Args)]
@@ -209,7 +251,9 @@ async fn main() -> Result<()> {
     init_tracing(is_tui_mode(&cli));
     match cli.command {
         Some(Command::Tui(args)) => {
-            if args.sessions > 1 {
+            if args.lan_host {
+                tui::run_lan_host_only(args.port, args.shell, args.cwd).await
+            } else if args.sessions > 1 {
                 tui::run_local_pager(args.shell, args.cwd, args.sessions).await
             } else {
                 tui::run_local(args.shell, args.cwd).await
@@ -227,6 +271,53 @@ async fn main() -> Result<()> {
         }
         Some(Command::Tmux(args)) => run_tmux(args).await,
         Some(Command::Mcp(args)) => ridge_mcp_bridge::run(args.url, args.token).await,
+        Some(Command::Kernel(args)) => match args.command {
+            KernelCommand::Status => {
+                println!("{}", kernel_ctl::status_line());
+                Ok(())
+            }
+            KernelCommand::Stop => {
+                if kernel_ctl::desktop_kernel_running()
+                    && !kernel_ctl::confirm_quit_kernel_with_desktop()
+                {
+                    println!("已取消");
+                    return Ok(());
+                }
+                kernel_ctl::stop_kernel().map_err(anyhow::Error::msg)?;
+                println!("kernel stopped");
+                Ok(())
+            }
+            KernelCommand::Ensure => {
+                let ep = kernel_ctl::ensure_kernel_running().map_err(anyhow::Error::msg)?;
+                println!("kernel ready pid={} port={}", ep.pid, ep.port);
+                Ok(())
+            }
+            KernelCommand::Agents => {
+                println!("{}", kernel_ctl::domain_agents().map_err(anyhow::Error::msg)?);
+                Ok(())
+            }
+            KernelCommand::FsList { path } => {
+                println!(
+                    "{}",
+                    kernel_ctl::domain_fs_list(&path).map_err(anyhow::Error::msg)?
+                );
+                Ok(())
+            }
+            KernelCommand::GitStatus { path } => {
+                println!(
+                    "{}",
+                    kernel_ctl::domain_git_status(&path).map_err(anyhow::Error::msg)?
+                );
+                Ok(())
+            }
+            KernelCommand::McpSmoke => {
+                println!(
+                    "{}",
+                    kernel_ctl::mcp_tools_list_smoke().map_err(anyhow::Error::msg)?
+                );
+                Ok(())
+            }
+        },
         // 无子命令：进入仪表盘（daemon status + 操作菜单）。
         // 通过菜单的 "Local shell session" 或子命令 `rdg tui` 进入 passthrough TUI。
         None => {

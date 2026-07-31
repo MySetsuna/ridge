@@ -68,7 +68,7 @@ codex mcp add ridge -- ridge-mcp
 # Claude Code 同理：claude mcp add ridge -- ridge-mcp
 ```
 
-它按 `RIDGE_TEAMMATE_URL/_TOKEN` → Ridge runtime endpoint sidecar 自动发现；sidecar 仅属运行期、只接受普通文件与 `127.0.0.1` 端点（Unix 要求 `0600`）。端口或 token 更新后，首次连接失败或 `401/403` 会重新发现并重试一次。显式指定可用
+它按 `RIDGE_TEAMMATE_URL/_TOKEN` → **`%LOCALAPPDATA%/ridge/kernel.json`（独立 ridge-kernel MCP）** → Ridge runtime endpoint sidecar 自动发现。无 Tauri 仅内核时，companion 仍可连 `http://127.0.0.1:<kernel-port>/api/v1/mcp`（token 同 kernel.json）。sidecar 仅属运行期、只接受普通文件与 `127.0.0.1` 端点（Unix 要求 `0600`）。端口或 token 更新后，首次连接失败或 `401/403` 会重新发现并重试一次。显式指定可用
 `ridge-mcp --url http://127.0.0.1:PORT --token <tok>`。修改 Codex MCP 配置后须新开会话。
 
 ### E. 无头 `rdg`（独立 host；按需）
@@ -81,8 +81,10 @@ codex mcp add ridge -- ridge-mcp
 | 来源 | 说明 |
 | --- | --- |
 | `RIDGE_TEAMMATE_URL` / `RIDGE_TEAMMATE_TOKEN` | Ridge 注入进每个 teammate 分屏的 env，子进程直接继承 |
+| `%LOCALAPPDATA%/ridge/kernel.json` | 独立 `ridge-kernel` 登记（`pid/port/token`）；`POST /api/v1/mcp` 为无桌面 MCP 面（REQ-RIDGE-MCP-AS-KERNEL-API-01） |
 | `TMPDIR/ridge-teammate-endpoint-*.json` | 运行期 sidecar（`{"url","token"}`，非 MCP 持久配置）；后端重启换端口后由宿主刷新 |
 | `rdg tmux` 启动日志 | 无头 host 把 `RIDGE_TEAMMATE_*` 导出行打到 stderr |
+| `rdg kernel ensure|agents|fs-list|mcp-smoke` | CLI 验收：拉起内核、领域只读、MCP tools/list |
 
 ---
 
@@ -160,6 +162,7 @@ codex mcp add ridge -- ridge-mcp
   `ridge_capture_pane` / `ridge_get_team_profile`，或让 worker 调 `ridge_report_progress`、leader 读收件箱。
 - 所有动作落在**当前活动工作区**（桌面）/ **default socket**（无头），暂不支持跨工作区寻址。
 - `ridge_join_group` 一次写入·fire-and-forget：编组数据在前端 localStorage，后端无法确认是否落地；
+- `ridge_join_group` 入参：`group_name` 必填，且须 `agent_id` **或** `target_pane_id`（可只给 agent_id，不必解析 pane）；成员须在花名册（`teammate_agent_pane_map` 含 `auto:` + typed profiles）。非法参数 JSON-RPC `-32602`；companion/无桌面宿主返回 MCP `isError`（能力不支持，非 silent OK）。见 `REQ-MCP-JOIN-GROUP-01`。
   无头 host 直接返回 `isError`（无前端）。
 - 收件箱是**进程内内存**（每 pane 200 条 FIFO），宿主重启即清空；Stash 同理（64 条 / 32 MiB）。
 - 无头 host 的 `ridge_split_pane` 忽略 `direction`（引擎里 pane 是列表，没有几何方向）。

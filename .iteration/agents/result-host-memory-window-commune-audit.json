@@ -1,0 +1,155 @@
+{
+  "baseline": {
+    "codegraph_revision": "current-index-after-origin-main-merge",
+    "head": "4f8ab2ed1d7094b1e65a42a4ac49d06de064e055",
+    "worktree_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "changed_paths": [],
+  "dispatch_id": "116c7eac1da88bb58f726441",
+  "findings": [
+    {
+      "classification": "iteration-75-carryover",
+      "evidence": [
+        "docs/iterations/CONTRACT-iteration-75.md:4 标为 completed/pushed；:108-110 明列 iOS/Android 真机 UX 与跨平台 clean-install matrix 仍属外部证明。",
+        "docs/PROJECT-STATE.md:520-539 记载 Commune 跨工作区代码与自动闸已闭合，但 iOS/Android 真机和安装包矩阵未完成。"
+      ],
+      "status": "partial",
+      "summary": "迭代 75 本身只直接覆盖本审计中的 Commune/移动连续性；Host、WebView2 内存、完整清空、多窗口工作区单例不在其合同范围，须作为新迭代项，不能误作已交付。"
+    },
+    {
+      "classification": "remote-host-topology-and-actions",
+      "evidence": [
+        "src/lib/stores/hosts.ts:231-266 以 hostId 共享 topology in-flight、AbortController 取消，并以 retainHostForest 保留最后成功树。",
+        "src/lib/stores/hosts.ts:303-350 已接 create/open/rename/save/create-pane/close workspace；:407-439 将 topology 投影为 host→workspace→pane。",
+        "src/lib/stores/hosts.ts:610-625 仍 Promise.all 等待全部无错误 link 的 topology 后才提交列表与结束 hostsLoading；慢 Host 可拖住整个刷新。",
+        "src/lib/components/hosts/HostsPanel.svelte:152-192 有 tick 重叠保护；:363-399 有新建工作区/Pane错误弹窗；:568-575 仅在刷新按钮显示全局 spinner。"
+      ],
+      "status": "partial",
+      "summary": "已有工作区列举、创建及单 Host 重试底座，故非零实现；但连接/刷新仍可能长时等待，阶段进度、单 Host 局部 loading、失败后可恢复反馈及用户现场问题均无运行证据。HostConnectDialog 不在包内，无法证明“发起即关弹窗”。"
+    },
+    {
+      "classification": "remote-host-drag-attach",
+      "evidence": [
+        "src/lib/components/hosts/HostsPanel.svelte:801-805 对 remote/rdg 会话启用 hostSessionDrag。",
+        "src/lib/stores/hosts.ts:680-697 的精确停靠 attachSessionAt 只调用 summon_native_session；:859-893 的远端按钮路径则调用 attach_host_session + bindRemotePane，二者并非同一链。"
+      ],
+      "status": "unverified-likely-gap",
+      "summary": "UI 宣称远程 Host 可拖拽，但允许范围内没有远程 drop→attachRemoteHostSession→dock 的同源链；须补调用链与 E2E，不得按文案宣称已打通。"
+    },
+    {
+      "classification": "remote-host-first-frame-resize",
+      "evidence": [
+        "packages/remote/src/shared/terminal/manager.ts:1762-1808 注册 ResizeObserver；:1876-1886 在挂载后首个 rAF 读取实际容器并 fit。",
+        "packages/remote/src/shared/terminal/manager.ts:4354-4386 的 claimPaneSize 会强制 claim，并在 1 秒后核对 kernel/lastReported 尺寸、失败仅重试一次。",
+        "src/lib/stores/hosts.ts:859-893 远程接入后 bindRemotePane、refreshHosts、syncPaneLayoutFromBackend；允许范围内无远端 resize 回调和手动按钮的端到端测试。"
+      ],
+      "status": "partial",
+      "summary": "首帧 fit 与手动 claim 原语已存在；远程 Host pane 是否实际把 rows/cols 发到远端、按钮是否可达，缺同构测试与运行证据。"
+    },
+    {
+      "classification": "terminal-memory-and-scrollback",
+      "evidence": [
+        "packages/remote/src/shared/terminal/manager.ts:664-707 默认 scrollbackLines=2000；:1317-1331 按设置为新 pane 建固定容量 kernel，注释声明设置范围 100..10000。",
+        "packages/remote/src/shared/terminal/manager.ts:2176-2274 的 detach 断开观察器/监听器，取消 rAF、interval、fit/feed timer，清缓冲，free handle/kernel，destroy worker 映射并删 pane。",
+        "packages/remote/src/shared/terminal/manager.ts 未出现 WebView2 heap/memory-pressure 采样、阈值回收或隐藏 pane 自动释放策略；隐藏工作区 kernel 仍持续收 PTY 数据。"
+      ],
+      "status": "partial",
+      "summary": "硬容量与销毁回收已有，能防无限行数及真关闭泄漏；但 6 GB 现场所需的持续增长定位、内存基线/回落断言、压力触发自动释放均未实现。"
+    },
+    {
+      "classification": "terminal-clear-equivalence",
+      "evidence": [
+        "packages/remote/src/shared/terminal/manager.ts:3219-3232 的 clearScrollback 仅调用 kernel.clearScrollback() 与 wake()。",
+        "src/routes/+page.svelte:1174-1181 明确右键清空由未纳入本包的 RidgePane 拥有；本允许范围无法证明它同时清可见屏、scrollback、远端/后端缓存。"
+      ],
+      "status": "unverified-regression",
+      "summary": "历史文档把 Clear 标为已实现，但新验收要求更强；当前证据只证前端 kernel scrollback，不能证明 clear 与右键清空三层内存语义一致，应视为回归/半成品继续承接。"
+    },
+    {
+      "classification": "desktop-multi-window-workspace-singleton",
+      "evidence": [
+        "src-tauri/src/lib.rs:77-88 正式构建注册 tauri_plugin_single_instance，第二进程只聚焦 main 后退出。",
+        "src-tauri/src/lib.rs:202-251 只创建固定 label=main 的应用窗口。",
+        "允许文件内无 workspace→window owner registry、重复打开检测、旧窗口 show/focus 或窗口释放占用协议。"
+      ],
+      "status": "not-implemented-conflict",
+      "summary": "现实现与“桌面允许多开”直接冲突；Remote 工作区跨窗口单例亦无所有权层。此项需在 RPC/PTY 生命周期护栏稳定后独立实施。"
+    },
+    {
+      "classification": "agents-commune-visibility",
+      "evidence": [
+        "src/routes/+page.svelte:352-359 以 teammateEnabled 控制 agents tab；:1573-1583 仅 teammateEnabled 或 active shared projection 时显示 Agent's Commune 入口。",
+        "src/routes/+page.svelte:1686-1694 已挂 AgentCenterPanel；src/lib/teammate/AgentCenterPanel.svelte:506-515 显示 Agent's Commune 标题，:748-823 提供成员/编组/历史三视图。",
+        "AgentCenterPanel/+page 对 launch_profile、launchProfile、profile_id、profileId、create_teammate 等可见操作零命中；CodeGraph 对 HostsPanel/AgentCenterPanel 报告无覆盖测试。"
+      ],
+      "status": "implemented-but-not-surfaced",
+      "summary": "侧栏并非未实现；其入口被设置开关隐藏，且迭代 75 新增的 typed launch profile/跨工作区 MCP 能力未投影为可见 UI，因此用户“未观察到变化”有代码依据。须先补开关可发现性与可见 E2E，再决定是否增 UI。"
+    }
+  ],
+  "model_execution": {
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "high"
+  },
+  "packet_hash": "fe9b8b739d214c78e1652f4dd62fcdf7f350250add226b00533d2081a05f89f4",
+  "recommended_execution_order": [
+    {
+      "order": 1,
+      "priority": "P0",
+      "task": "先建立 WebView2/terminal 内存运行基线与 pane 销毁后回落断言；统一 clear/right-click clear 的页面、scrollback、后端缓存语义。"
+    },
+    {
+      "order": 2,
+      "priority": "P1",
+      "task": "Host 连接改为弹窗立即关闭、面板 per-host staged loading；刷新不被慢 Host 全局阻塞，并补列表/创建失败恢复测试。"
+    },
+    {
+      "order": 3,
+      "priority": "P1",
+      "task": "合流远程 Host 点击与拖拽接入，接入完成后按真实 DOM 尺寸发送首帧 Resize；Resize 按钮走同一 claim 并验证回执。"
+    },
+    {
+      "order": 4,
+      "priority": "P1",
+      "task": "移除应用级 single-instance 约束，建立进程内 workspace owner registry；重复打开时聚焦旧窗口，释放时原子解绑。"
+    },
+    {
+      "order": 5,
+      "priority": "P2",
+      "task": "为 Agent's Commune 增开关可发现性与可见 E2E；再以最小 UI 暴露已存在的 launch profile/跨工作区能力。"
+    }
+  ],
+  "result_hash": "04fbf6e1535ce65534f510a59ea0c8004463a78e44cc099002e96ed009cc4f37",
+  "schema_version": 1,
+  "status": "completed",
+  "summary": "审计完成：Host、终端生命周期及 Commune 均有可复用底座；Host 反馈/拖拽/远端 Resize 与完整 clear 尚属半成品，WebView2 自动释放未实现；桌面 single-instance 与多开需求直接冲突；Commune 已挂载但受开关门控，且迭代 75 新能力未形成可见侧栏变化。",
+  "task_id": "host-memory-window-commune-audit",
+  "token_usage": {
+    "cache_read": 0,
+    "cache_write": 0,
+    "input": 0,
+    "output": 0,
+    "total": 0
+  },
+  "verification": [
+    {
+      "command": "rg -n \"clearScrollback|scrollback|destroy|Host|workspace|AgentCenter|Commune|resize\" docs/iterations/CONTRACT-iteration-75.md src/lib/stores/hosts.ts src/lib/components/hosts/HostsPanel.svelte src/lib/teammate/AgentCenterPanel.svelte packages/remote/src/shared/terminal/manager.ts src/routes/+page.svelte src-tauri/src/lib.rs",
+      "evidence": {
+        "path": ".iteration/agents/evidence-host-memory-window-commune-audit.txt",
+        "sha256": "023ec50fd96b2b01d6be6867917b8a7311eb8b70e0de73286c396537f3c6a5f1"
+      },
+      "exit_code": 0,
+      "expected_exit": 0,
+      "outcome": "pass"
+    },
+    {
+      "command": "git diff --exit-code -- docs/iterations/CONTRACT-iteration-75.md docs/PROJECT-STATE.md src/lib/stores/hosts.ts src/lib/components/hosts/HostsPanel.svelte src/lib/teammate/AgentCenterPanel.svelte packages/remote/src/shared/terminal/manager.ts src/routes/+page.svelte src-tauri/src/lib.rs",
+      "evidence": {
+        "path": ".iteration/agents/evidence-host-memory-window-commune-audit.txt",
+        "sha256": "023ec50fd96b2b01d6be6867917b8a7311eb8b70e0de73286c396537f3c6a5f1"
+      },
+      "exit_code": 0,
+      "expected_exit": 0,
+      "outcome": "pass"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "intake_id": "INTAKE-20260731-KERNEL-LIFECYCLE",
+  "classification": "pending",
+  "summary": "Kernel lifecycle deep-root mode + domain + mcp",
+  "requirement_ids": [],
+  "pending_ids": [
+    "PENDING-REQ-RIDGE-KERNEL-HOST-01",
+    "PENDING-REQ-RIDGE-KERNEL-DOMAIN-01",
+    "PENDING-REQ-RIDGE-MCP-AS-KERNEL-API-01"
+  ],
+  "approval_reasons": [
+    "user-lifecycle-detail-revision",
+    "not-always-on-service",
+    "tray-rdg-exit-semantics"
+  ],
+  "open_questions": [],
+  "approval_evidence": ""
+}

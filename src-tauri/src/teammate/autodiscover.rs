@@ -24,6 +24,10 @@ const TTL: Duration = Duration::from_millis(2500);
 /// 3 层足够覆盖 `claude` / `npx claude` / PowerShell 包装等常见形态。
 const MAX_DEPTH: usize = 3;
 
+type ScanCache = Option<(Instant, Vec<(Uuid, u32)>, Vec<PaneAgent>)>;
+/// 与 `scan_cached` / `invalidate_cache` 共享，覆盖 processNames 后必须清空。
+static SCAN_CACHE: Mutex<ScanCache> = Mutex::new(None);
+
 /// 某 pane 上识别到的 agent。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneAgent {
@@ -33,11 +37,22 @@ pub struct PaneAgent {
     pub pid: u32,
 }
 
-/// 纯函数核心：给定 pane→shell pid 与一张 (pid, ppid, name) 进程表，
-/// 找出每个 pane 下**最深的**一个 agent CLI 进程。注入进程表以便单测无 OS 耦合。
+/// 运行时入口：内置 + 磁盘/内存用户覆盖（[`super::agent_catalog::load_profile_overrides`]）。
 pub fn match_agent_panes(
     panes: &[(Uuid, u32)],
     procs: &[(u32, Option<u32>, String)],
+) -> Vec<PaneAgent> {
+    let overrides = super::agent_catalog::load_profile_overrides();
+    let names = super::discover::known_agent_names_runtime(&overrides);
+    match_agent_panes_with_names(panes, procs, &names)
+}
+
+/// 纯函数核心：给定 pane→shell pid、进程表、进程名单，找出每个 pane 下命中的 agent。
+/// 单测注入自定义 processNames 时走此入口，证明覆盖名单参与识别。
+pub fn match_agent_panes_with_names(
+    panes: &[(Uuid, u32)],
+    procs: &[(u32, Option<u32>, String)],
+    process_names: &[String],
 ) -> Vec<PaneAgent> {
     let mut children: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
     for (pid, ppid, name) in procs {
@@ -48,13 +63,13 @@ pub fn match_agent_panes(
     let mut out = Vec::new();
     for (pane, shell_pid) in panes {
         // BFS，取首个命中（更靠近 shell 的那个即 agent 本体或其包装，二者名字都
-        // 会命中 KNOWN_AGENT_NAMES；包装层如 node/npx 不在名单里，自然跳过）。
+        // 会命中名单；包装层如 node/npx 不在名单里，自然跳过）。
         let mut frontier = vec![*shell_pid];
         'depth: for _ in 0..MAX_DEPTH {
             let mut next = Vec::new();
             for pid in frontier.drain(..) {
                 for (cpid, cname) in children.get(&pid).map(|v| v.as_slice()).unwrap_or(&[]) {
-                    if let Some(stem) = agent_stem(cname) {
+                    if let Some(stem) = agent_stem(cname, process_names) {
                         out.push(PaneAgent {
                             pane: *pane,
                             name: stem,
@@ -75,17 +90,16 @@ pub fn match_agent_panes(
 }
 
 /// 进程名命中 agent CLI 名单则返回其 stem（去路径、去 `.exe`、小写）。
-/// 名单与 [`super::discover::KNOWN_AGENT_NAMES`] 同源，避免两处漂移。
-fn agent_stem(name: &str) -> Option<String> {
+fn agent_stem(name: &str, process_names: &[String]) -> Option<String> {
     let lower = name.to_ascii_lowercase();
     let stem = lower
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or(&lower)
         .trim_end_matches(".exe");
-    super::discover::KNOWN_AGENT_NAMES
+    process_names
         .iter()
-        .any(|k| stem.contains(k))
+        .any(|k| stem.contains(k.as_str()))
         .then(|| stem.to_string())
 }
 
@@ -94,15 +108,12 @@ fn agent_stem(name: &str) -> Option<String> {
 /// 缓存键含 pane 集合，pane 增删（split/close）会立即失效重扫，不会因为窗口内
 /// 复用而漏掉新 pane。
 pub fn scan_cached(panes: &[(Uuid, u32)]) -> Vec<PaneAgent> {
-    type Cache = Option<(Instant, Vec<(Uuid, u32)>, Vec<PaneAgent>)>;
-    static CACHE: Mutex<Cache> = Mutex::new(None);
-
     if panes.is_empty() {
         return Vec::new();
     }
     let mut key = panes.to_vec();
     key.sort();
-    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = SCAN_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((at, cached_key, cached)) = guard.as_ref() {
         if at.elapsed() < TTL && cached_key == &key {
             return cached.clone();
@@ -111,6 +122,12 @@ pub fn scan_cached(panes: &[(Uuid, u32)]) -> Vec<PaneAgent> {
     let found = match_agent_panes(panes, &list_processes());
     *guard = Some((Instant::now(), key, found.clone()));
     found
+}
+
+/// 设置覆盖变更后丢弃 TTL，下一轮轮询立刻按新 processNames 识别。
+pub fn invalidate_cache() {
+    let mut guard = SCAN_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = None;
 }
 
 /// 进程内枚举 (pid, ppid, image name)。仅刷新进程表，不取 CPU/内存/exe 路径。
@@ -198,5 +215,66 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert!(found.iter().any(|f| f.pane == a && f.name == "claude"));
         assert!(found.iter().any(|f| f.pane == b && f.name == "gemini"));
+    }
+
+    /// 0.1.5 回归：grok 必须经 agent_catalog 运行时名单命中。
+    #[test]
+    fn grok_process_under_pane_shell_is_matched() {
+        let pane = ws_pane(7);
+        let procs = vec![
+            (100, None, "pwsh.exe".to_string()),
+            (200, Some(100), "grok.exe".to_string()),
+        ];
+        let found = match_agent_panes(&[(pane, 100)], &procs);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "grok");
+        assert_eq!(found[0].pid, 200);
+    }
+
+    /// 自定义 processName 仅当注入名单时命中——证明识别走名单而非写死 builtins。
+    #[test]
+    fn custom_process_name_matched_only_when_in_names() {
+        let pane = ws_pane(8);
+        let procs = vec![
+            (100, None, "pwsh.exe".to_string()),
+            (200, Some(100), "my-custom-agent.exe".to_string()),
+        ];
+        let builtins = super::super::discover::known_agent_names_runtime(&[]);
+        assert!(
+            match_agent_panes_with_names(&[(pane, 100)], &procs, &builtins).is_empty(),
+            "unknown stem must not match builtins-only list"
+        );
+        let mut with_custom = builtins;
+        with_custom.push("my-custom-agent".into());
+        let found = match_agent_panes_with_names(&[(pane, 100)], &procs, &with_custom);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "my-custom-agent");
+        assert_eq!(found[0].pid, 200);
+    }
+
+    /// 运行时覆盖 store → `match_agent_panes` 实路径（非 with_names 旁路）。
+    #[test]
+    fn match_agent_panes_honors_in_memory_overrides() {
+        use super::super::agent_catalog::{
+            set_profile_overrides_in_memory, AgentProfile,
+        };
+        let pane = ws_pane(9);
+        let procs = vec![
+            (100, None, "pwsh.exe".to_string()),
+            (200, Some(100), "ridge-extra-cli.exe".to_string()),
+        ];
+        let prev = super::super::agent_catalog::load_profile_overrides();
+        set_profile_overrides_in_memory(vec![AgentProfile {
+            id: "ridge-extra".into(),
+            process_names: vec!["ridge-extra-cli".into()],
+            executable: "ridge-extra-cli".into(),
+            resume_argv: vec![],
+            yolo_args: vec![],
+            yolo_position: "before".into(),
+        }]);
+        let found = match_agent_panes(&[(pane, 100)], &procs);
+        set_profile_overrides_in_memory(prev);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "ridge-extra-cli");
     }
 }

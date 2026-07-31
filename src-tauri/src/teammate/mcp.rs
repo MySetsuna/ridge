@@ -43,6 +43,31 @@ impl DesktopMcpHost {
         *self.ctx.state.active_workspace.read()
     }
 
+    /// 花名册是否含 agent：侧表 map（auto/手标）∪ typed profiles。
+    fn roster_contains(&self, wid: Uuid, agent_id: &str) -> bool {
+        if super::profiles::contains_agent(wid, agent_id) {
+            return true;
+        }
+        self.ctx
+            .state
+            .workspaces
+            .read()
+            .get(&wid)
+            .is_some_and(|ws| ws.teammate_agent_pane_map.contains_key(agent_id))
+    }
+
+    fn agent_id_for_pane_any(&self, wid: Uuid, pane: Uuid) -> Option<String> {
+        if let Some(id) = super::profiles::agent_id_for_pane(wid, pane) {
+            return Some(id);
+        }
+        let map = self.ctx.state.workspaces.read();
+        let ws = map.get(&wid)?;
+        ws.teammate_agent_pane_map
+            .iter()
+            .find(|(_, p)| **p == pane)
+            .map(|(id, _)| id.clone())
+    }
+
     fn workspace_id(&self, workspace_id: Option<&str>) -> HostResult<Uuid> {
         let wid = match workspace_id {
             Some(raw) => Uuid::parse_str(raw)
@@ -100,7 +125,8 @@ impl DesktopMcpHost {
     }
 
     fn launch_profiles() -> Vec<LaunchProfile> {
-        ["codex", "claude", "gemini"]
+        // 与 agent_catalog 内置 id 对齐（含 grok）。
+        ["codex", "claude", "gemini", "grok"]
             .into_iter()
             .filter(|id| Self::profile_program(id).is_some())
             .map(|id| LaunchProfile {
@@ -108,7 +134,7 @@ impl DesktopMcpHost {
                 // Desktop 不猜宿主模型/effort；空集令 core 拒绝 typed 覆盖。
                 models: Vec::new(),
                 reasoning_efforts: Vec::new(),
-                supports_checkpoint: matches!(id, "codex" | "claude")
+                supports_checkpoint: matches!(id, "codex" | "claude" | "grok")
                     && Self::profile_program(id)
                         .and_then(|path| path.extension().map(|ext| ext.to_owned()))
                         .and_then(|ext| ext.to_str().map(str::to_string))
@@ -181,6 +207,7 @@ impl DesktopMcpHost {
         Ok(match (profile, checkpoint) {
             ("codex", Some(value)) => vec!["resume".into(), value.into()],
             ("claude", Some(value)) => vec!["--resume".into(), value.into()],
+            ("grok", Some(value)) => vec!["--resume".into(), value.into()],
             (_, Some(_)) => {
                 return Err(HostError::InvalidParams(format!(
                     "launch profile {profile} 不支持 checkpoint"
@@ -485,10 +512,24 @@ impl McpHost for DesktopMcpHost {
         agent_id: Option<&str>,
         target: Option<&Value>,
     ) -> HostResult<()> {
+        let group_name = group_name.trim();
+        if group_name.is_empty() {
+            return Err(HostError::InvalidParams("group_name 不能为空".into()));
+        }
+        // 花名册 SSOT 与 `ridge_get_team_profile` 一致：workspace.teammate_agent_pane_map
+        // （含 auto:）+ typed profiles。旧路径只查 profiles → 自动识别成员永远 -32602。
         let (wid, agent_id): (Uuid, String) = match agent_id {
             Some(a) => {
                 let wid = match target {
-                    Some(value) => self.resolve(value)?.0,
+                    Some(value) => {
+                        if value.get("paneId").is_some() || value.get("paneIndex").is_some() {
+                            self.resolve(value)?.0
+                        } else if let Some(ws) = value.get("workspaceId").and_then(Value::as_str) {
+                            self.workspace_id(Some(ws))?
+                        } else {
+                            self.wid()
+                        }
+                    }
                     None => self.wid(),
                 };
                 (wid, a.to_string())
@@ -498,13 +539,17 @@ impl McpHost for DesktopMcpHost {
                     HostError::InvalidParams("需提供 agent_id 或 target_pane_id".into())
                 })?;
                 let (wid, pid) = self.resolve(t)?;
-                let id = super::profiles::agent_id_for_pane(wid, pid).ok_or_else(|| {
-                    HostError::InvalidParams(format!("pane {pid} 未注册为 teammate（无 agent_id）"))
-                })?;
+                let id = self
+                    .agent_id_for_pane_any(wid, pid)
+                    .ok_or_else(|| {
+                        HostError::InvalidParams(format!(
+                            "pane {pid} 未注册为 teammate（无 agent_id）"
+                        ))
+                    })?;
                 (wid, id)
             }
         };
-        if !super::profiles::contains_agent(wid, &agent_id) {
+        if !self.roster_contains(wid, &agent_id) {
             return Err(HostError::InvalidParams(format!(
                 "agent_id {agent_id} 不在 workspace {wid} 花名册"
             )));

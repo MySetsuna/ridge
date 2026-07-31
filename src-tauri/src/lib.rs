@@ -14,6 +14,7 @@ mod remote_host_impl;
 mod state;
 mod teammate;
 mod tray;
+mod kernel_lifecycle;
 mod types;
 mod utils;
 
@@ -281,7 +282,36 @@ pub fn run() {
                 build_ridge_window(app.handle(), "main", true)?;
 
                 tracing::info!(target: "ridge::init", phase = 5, "setup: building system tray");
-                // Deep Root Mode（§8.1）：构建系统托盘（恢复工作台 / 彻底退出）。
+                // REQ-RIDGE-KERNEL-HOST-01：detect-or-spawn 独立 ridge-kernel 进程。
+                match crate::kernel_lifecycle::ensure_kernel_running() {
+                    Ok(ep) => {
+                        tracing::info!(
+                            target: "ridge::kernel_lifecycle",
+                            pid = ep.pid,
+                            port = ep.port,
+                            "ridge-kernel ready"
+                        );
+                        // 验收④：内核被 CLI/rdg 杀掉后桌面外壳自退。
+                        let exit_handle = app.handle().clone();
+                        let stop_flag = app.state::<crate::state::AppState>().quitting.clone();
+                        crate::kernel_lifecycle::spawn_kernel_death_watcher(
+                            move || {
+                                exit_handle
+                                    .state::<crate::state::AppState>()
+                                    .quitting
+                                    .store(true, std::sync::atomic::Ordering::Release);
+                                exit_handle.exit(0);
+                            },
+                            move || stop_flag.load(std::sync::atomic::Ordering::Acquire),
+                        );
+                    }
+                    Err(e) => tracing::error!(
+                        target: "ridge::kernel_lifecycle",
+                        error = %e,
+                        "failed to start/attach ridge-kernel (shell continues; deep-root incomplete)"
+                    ),
+                }
+                // 托盘：恢复工作台 / 退出桌面端 / 彻底退出（内核）。
                 // 失败不应阻断启动 —— 没有托盘时窗口仍可正常使用，只是少了深根入口。
                 if let Err(e) = crate::tray::build_tray(app) {
                     tracing::error!(target: "ridge::tray", error = %e, "tray init failed");
@@ -884,6 +914,9 @@ pub fn run() {
             project::path_exists,
             project::read_claude_history,
             project::read_agent_recent_replies,
+            project::list_agent_profiles,
+            project::save_agent_profile_overrides,
+            project::plan_agent_resume,
             project::read_opencode_history,
             project::get_git_changed_files,
             process::get_pane_foreground_process,

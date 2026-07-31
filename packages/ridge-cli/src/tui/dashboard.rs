@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 
 use crate::config;
 use crate::daemon_ctl;
+use crate::kernel_ctl;
 use crate::login_flow;
 use crate::totp::RemoteTotp;
 use ridge_core::workspace::pane_tree::SplitDirection;
@@ -37,7 +38,10 @@ enum MenuItem {
     StartDaemon,
     StopDaemon,
     Login,
+    /// 仅退出 rdg UI（内核若由桌面承载则继续）。
     Quit,
+    /// 彻底退出内核；桌面仍在时命令行 Y/N 确认。
+    QuitKernel,
 }
 
 impl MenuItem {
@@ -49,7 +53,8 @@ impl MenuItem {
             MenuItem::StartDaemon => "Start public Remote",
             MenuItem::StopDaemon => "Stop public Remote",
             MenuItem::Login => "Login / activate device",
-            MenuItem::Quit => "Quit",
+            MenuItem::Quit => "Quit rdg (keep kernel)",
+            MenuItem::QuitKernel => "彻底退出内核",
         }
     }
 }
@@ -62,13 +67,18 @@ const MENU_ITEMS: &[MenuItem] = &[
     MenuItem::StopDaemon,
     MenuItem::Login,
     MenuItem::Quit,
+    MenuItem::QuitKernel,
 ];
 
 enum Action {
     RunLogin,
+    /// 彻底退出内核：须先退 TUI 再做 stdin Y/N。
+    QuitKernel,
     Refresh,
     StartLanRemote,
     StopLanRemote,
+    /// LAN host task 退出/失败：清 running 并写 log（禁止 UI 假绿）。
+    LanRemoteFailed(String),
 }
 
 /// 仪表盘登录方式：邮箱密码（默认，无浏览器环境）或浏览器授权（WSL / 远端友好）。
@@ -168,6 +178,20 @@ impl App {
 
 pub async fn run() -> Result<()> {
     crate::TUI_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+    // HOST：仪表盘启动 detect-or-spawn 内核（失败不阻断 UI）。
+    match kernel_ctl::ensure_kernel_running() {
+        Ok(ep) => tracing::info!(
+            target: "ridge_cli::dashboard",
+            pid = ep.pid,
+            port = ep.port,
+            "ridge-kernel ready"
+        ),
+        Err(e) => tracing::warn!(
+            target: "ridge_cli::dashboard",
+            error = %e,
+            "ensure ridge-kernel failed"
+        ),
+    }
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout());
@@ -215,6 +239,35 @@ pub async fn run() -> Result<()> {
                     app.auth = config::load_auth().ok().flatten();
                     app.public_entry = app.auth.as_ref().map(|a| a.public_entry());
                 }
+                Action::QuitKernel => {
+                    // 退 TUI 再 stdin Y/N（废弃 MessageBox）。
+                    drop(terminal);
+                    stdout().execute(LeaveAlternateScreen)?;
+                    disable_raw_mode()?;
+
+                    if kernel_ctl::desktop_kernel_running() {
+                        println!("{}", kernel_ctl::status_line());
+                        if !kernel_ctl::confirm_quit_kernel_with_desktop() {
+                            println!("已取消彻底退出内核");
+                            enable_raw_mode()?;
+                            stdout().execute(EnterAlternateScreen)?;
+                            terminal =
+                                Terminal::new(ratatui::backend::CrosstermBackend::new(stdout()))?;
+                            app.log("已取消彻底退出内核".into());
+                            continue;
+                        }
+                    }
+                    match kernel_ctl::stop_kernel() {
+                        Ok(()) => println!("内核已结束；rdg 退出"),
+                        Err(e) => println!("{e}；rdg 退出"),
+                    }
+                    // 已离开 TUI；占位 terminal 供 loop break 后统一 cleanup。
+                    enable_raw_mode()?;
+                    stdout().execute(EnterAlternateScreen)?;
+                    terminal =
+                        Terminal::new(ratatui::backend::CrosstermBackend::new(stdout()))?;
+                    app.quit = true;
+                }
                 Action::StartLanRemote => {
                     if app.lan_running {
                         app.log("LAN remote already running".into());
@@ -226,12 +279,21 @@ pub async fn run() -> Result<()> {
                         app.lan_shutdown_tx = Some(shutdown_tx);
                         app.lan_running = true;
                         app.log(format!("Starting LAN remote on port {port}..."));
+                        // 失败时必须清 running 标志并写 log：旧实现仅 tracing，UI 仍显示 Running，
+                        // 用户以为已接通实则 bind/TLS 失败（REQ-RDG-REMOTE-CONNECT-01 回归面）。
+                        let fail_tx = app.action_tx.clone();
                         tokio::spawn(async move {
                             if let Err(e) = super::lan_host::run(port, totp, workspace, shutdown_rx).await {
                                 tracing::warn!(target: "ridge_cli::dashboard", error = %e, "LAN remote stopped");
+                                let _ = fail_tx.send(Action::LanRemoteFailed(e.to_string()));
                             }
                         });
                     }
+                }
+                Action::LanRemoteFailed(msg) => {
+                    app.lan_shutdown_tx = None;
+                    app.lan_running = false;
+                    app.log(format!("LAN remote failed: {msg}"));
                 }
                 Action::StopLanRemote => {
                     if let Some(tx) = app.lan_shutdown_tx.take() {
@@ -246,6 +308,17 @@ pub async fn run() -> Result<()> {
         }
 
         if app.quit {
+            break;
+        }
+
+        // 内核被桌面/CLI 彻底退出后，rdg 应自动退出（REQ-RIDGE-KERNEL-HOST-01 联动）。
+        // 仅当启动时曾见过内核、且现已消失时触发，避免「从未起桌面」时误退。
+        static SAW_KERNEL: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if kernel_ctl::is_kernel_running() {
+            SAW_KERNEL.store(true, std::sync::atomic::Ordering::Relaxed);
+        } else if SAW_KERNEL.load(std::sync::atomic::Ordering::Relaxed) {
+            app.log("内核已退出，rdg 联动退出".into());
             break;
         }
 
@@ -361,6 +434,10 @@ fn handle_main_key(app: &mut App, code: KeyCode) {
                     let _ = app.action_tx.send(Action::RunLogin);
                 }
                 MenuItem::Quit => app.quit = true,
+                MenuItem::QuitKernel => {
+                    // 退 TUI + 命令行 Y/N（见 Action::QuitKernel）。
+                    let _ = app.action_tx.send(Action::QuitKernel);
+                }
             }
             let _ = app.action_tx.send(Action::Refresh);
         }
@@ -527,5 +604,7 @@ mod tests {
         assert_eq!(MenuItem::StopLanRemote.label(), "Stop LAN Remote");
         assert_eq!(MenuItem::StartDaemon.label(), "Start public Remote");
         assert_eq!(MenuItem::StopDaemon.label(), "Stop public Remote");
+        assert_eq!(MenuItem::Quit.label(), "Quit rdg (keep kernel)");
+        assert_eq!(MenuItem::QuitKernel.label(), "彻底退出内核");
     }
 }

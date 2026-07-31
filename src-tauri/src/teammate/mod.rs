@@ -1,3 +1,4 @@
+pub(crate) mod agent_catalog;
 pub(crate) mod autodiscover;
 pub(crate) mod circuit;
 pub(crate) mod context_files;

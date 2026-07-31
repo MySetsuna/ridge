@@ -1,0 +1,41 @@
+{
+  "ok": true,
+  "at": "2026-07-31T00:57:54.817Z",
+  "port": 3536,
+  "url": "https://127.0.0.1:3536",
+  "status": {
+    "lan_ip": "192.168.1.11",
+    "period_secs": 30,
+    "pid": 11312,
+    "port": 3536,
+    "ready": true,
+    "schema_version": 1,
+    "totp": "454917",
+    "updated_at_unix": 1785459406,
+    "url_lan": "https://192.168.1.11:3536",
+    "url_loopback": "https://127.0.0.1:3536"
+  },
+  "results": [
+    {
+      "name": "desktop",
+      "ok": true,
+      "detail": "canvas=true tree=false ws=true",
+      "browserErrors": [],
+      "wsUrls": [
+        "wss://127.0.0.1:3536/ws?token=<redacted>&device=b44b5ee5-35ad-4bdc-b102-c44484d9bdca"
+      ],
+      "screenshot": "C:\\code\\wind\\.iteration\\artifacts\\rdg-remote-e2e\\desktop.png"
+    },
+    {
+      "name": "mobile",
+      "ok": true,
+      "detail": "canvas=true tree=true ws=true",
+      "browserErrors": [],
+      "wsUrls": [
+        "wss://127.0.0.1:3536/ws?token=<redacted>&device=17802d1a-7b0b-4950-8581-a2f25badf8a4"
+      ],
+      "screenshot": "C:\\code\\wind\\.iteration\\artifacts\\rdg-remote-e2e\\mobile.png"
+    }
+  ],
+  "hostLogTail": "rdg LAN Remote host (headless)\n  本机打开: https://127.0.0.1:3536   ← 优先用这个\n  局域网  : https://192.168.1.11:3536   （他机；本机若开了系统代理会失败）\n  TOTP: 454917 (every 30s)\n  证书自签：浏览器选「高级 → 继续访问」；不要用 http://\n  警告: 检测到 https_proxy/ALL_PROXY。本机请用 127.0.0.1，或把 192.168.1.11 加入 no_proxy。\n  Ctrl+C to stop\n  ready: listening on 3536\n  TOTP: 047805\n  TOTP: 608967\n"
+}

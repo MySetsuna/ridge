@@ -36,6 +36,64 @@
   let customModalOpen = $state(false);
   let customEditingId = $state<string | null>(null);
 
+  // Agent 配置覆盖（localStorage）；与 Rust agent_catalog 合并。
+  const AGENT_OVERRIDES_KEY = 'ridge.agentProfiles.overrides';
+  let agentOverridesJson = $state('[]');
+  let agentProfilesHint = $state('');
+  let agentProfilesPreview = $state<Array<{
+    id: string;
+    processNames?: string[];
+    executable?: string;
+    yoloArgs?: string[];
+  }>>([]);
+  function loadAgentOverridesRaw(): void {
+    try {
+      agentOverridesJson = localStorage.getItem(AGENT_OVERRIDES_KEY) ?? '[]';
+    } catch {
+      agentOverridesJson = '[]';
+    }
+  }
+  async function loadAgentProfilesPreview(): Promise<void> {
+    loadAgentOverridesRaw();
+    let overrides: unknown[] = [];
+    try {
+      const parsed = JSON.parse(agentOverridesJson) as unknown;
+      overrides = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      agentProfilesHint = '覆盖 JSON 无效';
+      return;
+    }
+    try {
+      if (isTauri()) {
+        agentProfilesPreview = await invoke('list_agent_profiles', { overrides });
+        agentProfilesHint = `${agentProfilesPreview.length} 条（默认+覆盖）`;
+      } else {
+        agentProfilesHint = '非 Tauri：仅显示本地覆盖草稿';
+      }
+    } catch (e) {
+      agentProfilesHint = `加载失败：${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+  async function saveAgentOverrides(): Promise<void> {
+    try {
+      const parsed = JSON.parse(agentOverridesJson) as unknown;
+      if (!Array.isArray(parsed)) throw new Error('须为 JSON 数组');
+      localStorage.setItem(AGENT_OVERRIDES_KEY, JSON.stringify(parsed, null, 2));
+      agentOverridesJson = JSON.stringify(parsed, null, 2);
+      // 后端持久化：autodiscover 读 processNames，仅 localStorage 则发现永不认自定义名。
+      if (isTauri()) {
+        await invoke('save_agent_profile_overrides', { overrides: parsed });
+      }
+      agentProfilesHint = '已保存覆盖（含发现名单）';
+      void loadAgentProfilesPreview();
+    } catch (e) {
+      agentProfilesHint = `保存失败：${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+  $effect(() => {
+    if (open && activeSection === 'agents') void loadAgentProfilesPreview();
+  });
+
   function openNewCustomTheme(): void { customEditingId = null; customModalOpen = true; }
   function openEditCustomTheme(id: string): void { customEditingId = id; customModalOpen = true; }
   async function removeCustomTheme(id: string): Promise<void> {
@@ -488,6 +546,44 @@
                   ariaLabel="安全审批"
                   onchange={(next) => setTeammateHitlEnabled(next)}
                 />
+              </div>
+
+              <!-- Agent 启动表：进程名 / resume / yolo；识别与恢复同读此表 -->
+              <div class="p-3 rounded border border-[var(--rg-border)] bg-[var(--rg-surface)]/50 space-y-2">
+                <div class="text-[12px] text-[var(--rg-fg)]">Agent 启动与识别</div>
+                <div class="text-[11px] text-[var(--rg-fg-muted)]">
+                  内置 claude / codex / grok 等默认进程名与 YOLO 参数。可在下方 JSON 覆盖或追加自定义 agent（id、processNames、executable、resumeArgv 含 {'{session}'}、yoloArgs）。
+                </div>
+                <textarea
+                  class="w-full min-h-[140px] rounded border border-[var(--rg-border)] bg-[var(--rg-bg)] p-2 font-mono text-[10px] text-[var(--rg-fg)]"
+                  bind:value={agentOverridesJson}
+                  spellcheck="false"
+                ></textarea>
+                <div class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    class="rounded border border-[var(--rg-border)] px-2 py-1 text-[11px] hover:bg-[var(--rg-surface-2)]"
+                    onclick={() => void loadAgentProfilesPreview()}
+                  >加载默认+覆盖</button>
+                  <button
+                    type="button"
+                    class="rounded border border-[var(--rg-accent)]/50 px-2 py-1 text-[11px] text-[var(--rg-accent)]"
+                    onclick={() => saveAgentOverrides()}
+                  >保存覆盖</button>
+                  <span class="text-[10px] text-[var(--rg-fg-muted)]">{agentProfilesHint}</span>
+                </div>
+                {#if agentProfilesPreview.length > 0}
+                  <ul class="max-h-40 overflow-auto space-y-1 text-[10px] font-mono">
+                    {#each agentProfilesPreview as p (p.id)}
+                      <li class="truncate text-[var(--rg-fg-muted)]" title={JSON.stringify(p)}>
+                        <span class="text-[var(--rg-accent)]">{p.id}</span>
+                        · proc=[{(p.processNames ?? []).join(',')}]
+                        · exe={p.executable}
+                        · yolo=[{(p.yoloArgs ?? []).join(' ')}]
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
               </div>
             </div>
 

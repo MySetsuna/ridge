@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "intake_id": "INTAKE-20260731-NLM-P0",
+  "classification": "pending",
+  "summary": "NLM openplan P0 three items as next iteration Pending",
+  "requirement_ids": [],
+  "pending_ids": [
+    "PENDING-REQ-R-CDP-150-01",
+    "PENDING-REQ-R-VERIFY-01",
+    "PENDING-REQ-R-INCR-01"
+  ],
+  "approval_reasons": [
+    "user-requested-next-iter-from-nlm-latest",
+    "openplan-note-4b8db248-p0-order"
+  ],
+  "open_questions": [],
+  "approval_evidence": ""
+}

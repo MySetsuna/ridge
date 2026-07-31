@@ -1,0 +1,23 @@
+[
+  {
+    "history_index": 11,
+    "note_id": "1dd91891-a781-40ab-b298-4b236ce8c6b8",
+    "title": "[对话·用户] 我明白我要做的事了。是要把ridge内核彻底从tauri耦合的状态拆除。一些前端状态只在taur",
+    "question": "我明白我要做的事了。是要把ridge内核彻底从tauri耦合的状态拆除。一些前端状态只在tauri，tui,web三种外壳内管理。web的remote接入，实际上是不经过tauri的，而是直接接入ridge内核。因此它的前端状态可以和ridge完全分离。桌面端的多开于此也是同理。rdg-cli至此也可以和桌面端ridge接入同一套服务。web端甚至能看到更多的工作区，因为桌面端ridge可以多开。它的工作区还要按window窗口组合，这是纯tauri层的分流行为。你明白我的意思和整体设想吗。下一步，我完完全全做好这个内核，才去做其他功能",
+    "answer_len": 2142
+  },
+  {
+    "history_index": 12,
+    "note_id": "a7962b2f-a54c-4a62-9235-16255c5fd097",
+    "title": "[对话·用户] 疑问点是ridge-mcp完全由tauri接管。我的设想不是这样的。如果目前只能这样，说明这mc",
+    "question": "疑问点是ridge-mcp完全由tauri接管。我的设想不是这样的。如果目前只能这样，说明这mcp没做对。他应该基于teammate服务或者tmux垫片，然后直接可以拉起新的终端并启动agent，以及可以使agent相互定位和交流",
+    "answer_len": 1938
+  },
+  {
+    "history_index": 13,
+    "note_id": "27be8446-ccd8-4d3a-b096-8f1f12b45700",
+    "title": "[对话·用户] 包括文件系统管理，git管理，接入问题，agent管理编组和历史问题，启动远端接入问题，都应该是",
+    "question": "包括文件系统管理，git管理，接入问题，agent管理编组和历史问题，启动远端接入问题，都应该是内核能力，设置问题等等。完全不依赖tauri，他是完完全全的外壳。甚至有可能正是因为这些能力没有和tauri解耦，因此无头的rdg始终不可用",
+    "answer_len": 2237
+  }
+]

@@ -1,0 +1,925 @@
+COMMAND 1
+rg -n "clearScrollback|scrollback|destroy|Host|workspace|AgentCenter|Commune|resize" docs/iterations/CONTRACT-iteration-75.md src/lib/stores/hosts.ts src/lib/components/hosts/HostsPanel.svelte src/lib/teammate/AgentCenterPanel.svelte packages/remote/src/shared/terminal/manager.ts src/routes/+page.svelte src-tauri/src/lib.rs
+EXIT_CODE=0
+OUTPUT
+src-tauri/src/lib.rs:12:/// 桌面 `RemoteHost` 实现（`DesktopHost` 包装 `AppState`）。
+src-tauri/src/lib.rs:27:    terminal, theme, watch, workspace,
+src-tauri/src/lib.rs:109:        // 工作区路径写到 `restore_workspaces.json`，下次非 cli 启动时由前端
+src-tauri/src/lib.rs:163:                // M1：注入 workspace-memory 目录（一次），随即载入 sidecar 重挂
+src-tauri/src/lib.rs:166:                    teammate::memory::init_dir(base.join("workspace-memory"));
+src-tauri/src/lib.rs:362:                            workspace_id,
+src-tauri/src/lib.rs:380:                                if let Some(entry) = reg.get(&(workspace_id, pane_id)) {
+src-tauri/src/lib.rs:387:                                                    workspace_id,
+src-tauri/src/lib.rs:396:                                                // scrollback) on its next forwarded frame
+src-tauri/src/lib.rs:420:                            // pulled under a single `workspaces` read-lock, then
+src-tauri/src/lib.rs:422:                            // read-lock is shared with other map readers (resize,
+src-tauri/src/lib.rs:423:                            // scrollback, etc.) so PTY throughput isn't gated on
+src-tauri/src/lib.rs:427:                                let map = st.workspaces.read();
+src-tauri/src/lib.rs:428:                                map.get(&workspace_id)
+src-tauri/src/lib.rs:468:                                                st.get_pane_delta_channel(workspace_id, pane_id)
+src-tauri/src/lib.rs:474:                                                    &format!("pty-delta-{workspace_id}-{label}"),
+src-tauri/src/lib.rs:484:                                                ws = %workspace_id,
+src-tauri/src/lib.rs:496:                                .entry((workspace_id, pane_id))
+src-tauri/src/lib.rs:502:                                pending_output.remove(&(workspace_id, pane_id));
+src-tauri/src/lib.rs:505:                                    &format!("pty-output-{workspace_id}-{label}"),
+src-tauri/src/lib.rs:511:                            workspace_id,
+src-tauri/src/lib.rs:515:                            if let Some(payload) = pending_output.remove(&(workspace_id, pane_id)) {
+src-tauri/src/lib.rs:518:                                    &format!("pty-output-{workspace_id}-{label}"),
+src-tauri/src/lib.rs:525:                                    "workspaceId": workspace_id.to_string(),
+src-tauri/src/lib.rs:531:                            workspace_id,
+src-tauri/src/lib.rs:541:                                &format!("pane-mode-changed-{workspace_id}-{label}"),
+src-tauri/src/lib.rs:546:                            workspace_id,
+src-tauri/src/lib.rs:552:                            if let Some(payload) = pending_output.remove(&(workspace_id, pane_id)) {
+src-tauri/src/lib.rs:555:                                    &format!("pty-output-{workspace_id}-{label}"),
+src-tauri/src/lib.rs:565:                                    workspace_id,
+src-tauri/src/lib.rs:568:                                        workspace_id,
+src-tauri/src/lib.rs:580:                                    "workspaceId": workspace_id.to_string(),
+src-tauri/src/lib.rs:586:                                &format!("pane-cwd-changed-{workspace_id}-{label}"),
+src-tauri/src/lib.rs:591:                            workspace_id,
+src-tauri/src/lib.rs:602:                                    workspace_id,
+src-tauri/src/lib.rs:605:                                        workspace_id,
+src-tauri/src/lib.rs:616:                                    "workspaceId": workspace_id.to_string(),
+src-tauri/src/lib.rs:622:                                &format!("pane-title-changed-{workspace_id}-{label}"),
+src-tauri/src/lib.rs:627:                            workspace_id,
+src-tauri/src/lib.rs:637:                                &format!("pane-prompt-{workspace_id}-{label}"),
+src-tauri/src/lib.rs:641:                        Some(GlobalEvent::PaneTreeChanged { workspace_id }) => {
+src-tauri/src/lib.rs:645:                                    "workspaceId": workspace_id.to_string(),
+src-tauri/src/lib.rs:651:                                "workspace-list-changed",
+src-tauri/src/lib.rs:762:            terminal::resize_pane,
+src-tauri/src/lib.rs:766:            terminal::get_pane_scrollback_tail,
+src-tauri/src/lib.rs:767:            terminal::get_pane_scrollback_before,
+src-tauri/src/lib.rs:773:            // 「主机 / Hosts」远端主机登记（P3/P4 基础层，桌面本地命令，不入远程白名单）。
+src-tauri/src/lib.rs:793:            workspace::create_workspace,
+src-tauri/src/lib.rs:794:            workspace::get_active_workspace_id,
+src-tauri/src/lib.rs:795:            workspace::list_workspaces,
+src-tauri/src/lib.rs:796:            workspace::switch_workspace,
+src-tauri/src/lib.rs:797:            workspace::close_workspace,
+src-tauri/src/lib.rs:798:            workspace::reorder_workspaces,
+src-tauri/src/lib.rs:799:            workspace::rename_workspace,
+src-tauri/src/lib.rs:801:            workspace::list_workspace_history,
+src-tauri/src/lib.rs:802:            workspace::save_workspace,
+src-tauri/src/lib.rs:803:            workspace::delete_workspace_history,
+src-tauri/src/lib.rs:804:            workspace::restore_workspace,
+src-tauri/src/lib.rs:805:            workspace::toggle_pin_workspace_history,
+src-tauri/src/lib.rs:806:            workspace::rename_workspace_history,
+src-tauri/src/lib.rs:808:            workspace::list_saved_workspaces,
+src-tauri/src/lib.rs:809:            workspace::delete_saved_workspace,
+src-tauri/src/lib.rs:810:            workspace::rename_saved_workspace,
+src-tauri/src/lib.rs:840:            ridge_file::save_workspace_to_file,
+src-tauri/src/lib.rs:841:            ridge_file::open_workspace_from_file,
+src-tauri/src/lib.rs:842:            ridge_file::delete_workspace_file,
+src-tauri/src/lib.rs:843:            ridge_file::delete_saved_workspace_file,
+src-tauri/src/lib.rs:844:            ridge_file::get_workspace_save_info,
+src-tauri/src/lib.rs:845:            ridge_file::list_workspace_save_info,
+src-tauri/src/lib.rs:846:            ridge_file::get_last_opened_workspace_path,
+src-tauri/src/lib.rs:848:            ridge_file::clear_last_opened_workspace_path,
+src-tauri/src/lib.rs:849:            ridge_file::get_default_workspace_save_dir,
+src-tauri/src/lib.rs:851:            ridge_file::list_recent_workspaces,
+src-tauri/src/lib.rs:852:            ridge_file::clear_recent_workspaces,
+src-tauri/src/lib.rs:854:            ridge_file::list_saved_workspace_files,
+src-tauri/src/lib.rs:888:            commands::cloud_pane::replay_pane_scrollback_raw,
+src-tauri/src/lib.rs:906:            commands::teammate::scan_workspace_context_files,
+src-tauri/src/lib.rs:908:            commands::teammate::get_workspace_memory,
+src-tauri/src/lib.rs:909:            commands::teammate::set_workspace_memory,
+src-tauri/src/lib.rs:911:            commands::teammate::checkpoint_workspace_rollback,
+src-tauri/src/lib.rs:912:            commands::teammate::rollback_workspace,
+src/routes/+page.svelte:17:  import AgentCenterPanel from '$lib/teammate/AgentCenterPanel.svelte';
+src/routes/+page.svelte:18:  import HostsPanel from '$lib/components/hosts/HostsPanel.svelte';
+src/routes/+page.svelte:27:  import { shareWorkspaceWithAccount } from '$lib/workspace/shareWorkspace';
+src/routes/+page.svelte:75:    workspacePaneTrees,
+src/routes/+page.svelte:81:    workspacesList,
+src/routes/+page.svelte:105:  import { initEditorWindowHost } from '$lib/stores/editorWindow';
+src/routes/+page.svelte:129:  // 副按钮 = 已保存工作区（Bookmark 图标，列出 ~/ridge-workspaces/*.ridge）。
+src/routes/+page.svelte:218:  import { makeHostPorts } from '$lib/terminal/hostPorts';
+src/routes/+page.svelte:220:  // §P2：app 启动即注入 manager 的 HostPorts（settings/cwd/链接路由）。置于模块顶层，
+src/routes/+page.svelte:221:  // 早于任何 RidgePane 子组件 onMount 的 pane attach（读 scrollback 设置）与全局 canvas
+src/routes/+page.svelte:223:  TerminalManager.setHostPorts(makeHostPorts());
+src/routes/+page.svelte:231:  // 代价随 tab 数线性叠：每个 pane 都要 create_pane → get_pane_scrollback_tail
+src/routes/+page.svelte:235:  // scrollback 回放挤在主线程/IPC 队列 → 整个交互面板僵住。
+src/routes/+page.svelte:252:  // §A.9 (2026-05-08 follow-up) — single global canvas. ALL workspaces'
+src/routes/+page.svelte:254:  // pane area's parent (outside the per-workspace `{#each}` loop).
+src/routes/+page.svelte:255:  // Switching workspaces is then a pure DOM display flip on the
+src/routes/+page.svelte:260:  // Inactive workspaces' panes are skipped at render time via the 0×0
+src/routes/+page.svelte:267:  // Svelte action: bind THE canvas to the manager's global SurfaceHost
+src/routes/+page.svelte:268:  // via `manager.attachHost(canvas)`, observe its parent for resize so
+src/routes/+page.svelte:271:  function globalHostCanvas(node: HTMLCanvasElement) {
+src/routes/+page.svelte:274:    // with the host and other viewers. Live resize frames letterbox the current
+src/routes/+page.svelte:276:    // size. Host (Tauri) build keeps the normal container-driven auto-fit.
+src/routes/+page.svelte:279:    // attachHost 是 async；store 可能在 host 就绪前就 emit（no-op）。
+src/routes/+page.svelte:285:    void manager.attachHost(node)
+src/routes/+page.svelte:291:        console.warn('[ridge] attachHost failed for global canvas', err);
+src/routes/+page.svelte:296:      // §fix(resize-sync): resize the host canvas + recompute ALL pane scissors
+src/routes/+page.svelte:303:      // never resize the observed parent), so a synchronous resize here cannot
+src/routes/+page.svelte:308:        if (e) manager.resizeHost({ wCss: e.contentRect.width, hCss: e.contentRect.height });
+src/routes/+page.svelte:309:        else manager.resizeHost();
+src/routes/+page.svelte:314:      destroy() {
+src/routes/+page.svelte:317:        manager.detachHost();
+src/routes/+page.svelte:322:  // §A.9 — when the active workspace changes, the SplitContainer
+src/routes/+page.svelte:324:  // microtask. Pane containers in the newly-active workspace transition
+src/routes/+page.svelte:325:  // from 0×0 → real bbox; the old workspace's go the other way. The
+src/routes/+page.svelte:332:  // tell the manager which workspace just became active. It will
+src/routes/+page.svelte:333:  // recompute viewports for that workspace's panes against the (still
+src/routes/+page.svelte:373:  // Sidebar resize cap. Tracked as $state (not just $derived) so a
+src/routes/+page.svelte:374:  // window-level `resize` listener can push updates — `window.innerWidth`
+src/routes/+page.svelte:626:    workspaceId?: string;
+src/routes/+page.svelte:636:    if (target.closest('.rg-workspace-tabs')) {
+src/routes/+page.svelte:637:      return { target: 'workspace-tabs' };
+src/routes/+page.svelte:656:      const workspaceId = headerEl
+src/routes/+page.svelte:662:        workspaceId: workspaceId ?? undefined,
+src/routes/+page.svelte:680:      const workspaceId = paneEl
+src/routes/+page.svelte:691:        return { target: 'terminal', paneId, workspaceId };
+src/routes/+page.svelte:694:        return { target: 'editor', paneId, workspaceId };
+src/routes/+page.svelte:696:      return { target: 'pane-content', paneId, workspaceId };
+src/routes/+page.svelte:716:  /** Close every leaf pane in the active workspace EXCEPT the given one. */
+src/routes/+page.svelte:749:      let list = get(workspacesList);
+src/routes/+page.svelte:751:      // 总是上面的 refreshWorkspaces 因竞态/权限（如 list_workspaces 被白名单拒）失败留下
+src/routes/+page.svelte:756:        list = get(workspacesList);
+src/routes/+page.svelte:774:    const ws = get(workspacesList).find((w) => w.id === wid);
+src/routes/+page.svelte:820:    await shareWorkspaceWithAccount({ workspaceId: wsId, workspaceName: currentName });
+src/routes/+page.svelte:865:    workspaceId: string;
+src/routes/+page.svelte:868:    workspaceRoot: string;
+src/routes/+page.svelte:875:    const workspaceId = targetWorkspaceId || get(activeWorkspaceId);
+src/routes/+page.svelte:877:    if (!workspaceId || !paneId) return null;
+src/routes/+page.svelte:879:    const cwd = cwds[`${workspaceId}:${paneId}`] ?? '';
+src/routes/+page.svelte:881:    const workspaceRoot = Object.entries(cwds)
+src/routes/+page.svelte:882:      .find(([key, value]) => key.startsWith(`${workspaceId}:`) && !!value)?.[1] ?? cwd;
+src/routes/+page.svelte:883:    return { workspaceId, paneId, cwd, workspaceRoot };
+src/routes/+page.svelte:888:    const root = context.workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+src/routes/+page.svelte:915:    workspaceId?: string
+src/routes/+page.svelte:918:    const panePath = capturePanePathContext(workspaceId, paneId);
+src/routes/+page.svelte:1035:      case 'workspace-tabs':
+src/routes/+page.svelte:1166:    // resize 过程中不显示自定义菜单
+src/routes/+page.svelte:1169:    const { target, paneId, workspaceId } = getContextMenuTarget(e);
+src/routes/+page.svelte:1183:    const items = getContextMenuItems(target, paneId, workspaceId);
+src/routes/+page.svelte:1184:    showContextMenu(e.clientX, e.clientY, items, target, paneId, workspaceId);
+src/routes/+page.svelte:1238:    // the user resizes the window — otherwise a 2000px-wide sidebar
+src/routes/+page.svelte:1249:    window.addEventListener('resize', onResize);
+src/routes/+page.svelte:1275:      // canvas itself is mounted by `globalHostCanvas` action on the
+src/routes/+page.svelte:1276:      // pane-area wrapper (just outside the workspace `{#each}` loop);
+src/routes/+page.svelte:1277:      // see the markup section below. No per-workspace canvas, no
+src/routes/+page.svelte:1278:      // per-workspace attachHost — switching workspaces is a pure DOM
+src/routes/+page.svelte:1288:      void initEditorWindowHost();
+src/routes/+page.svelte:1323:      // reject 并冒泡，跳过下方 ensureActiveWorkspace() → workspacesList 留空 →
+src/routes/+page.svelte:1354:              console.warn('restore workspace failed', p, e);
+src/routes/+page.svelte:1364:            console.warn('close default workspace after auto-open failed', e);
+src/routes/+page.svelte:1368:        console.warn('startup workspace resolution failed', err);
+src/routes/+page.svelte:1409:        // post-split width → 终端右侧死区、且不随 pane resize 自适应。`state`
+src/routes/+page.svelte:1421:          // the count to the ACTIVE workspace's pane host: the keep-alive renderer
+src/routes/+page.svelte:1422:          // mounts EVERY workspace's SplitContainer at once (inactive ones are
+src/routes/+page.svelte:1424:          // the active workspace's tree — an unscoped query would over-count.
+src/routes/+page.svelte:1479:      // Remote-initiated pane/workspace changes: refresh the desktop UI.
+src/routes/+page.svelte:1480:      const unlistenPaneTreeChanged = await listen<{ workspaceId: string }>(
+src/routes/+page.svelte:1487:        'workspace-list-changed',
+src/routes/+page.svelte:1512:      window.removeEventListener('resize', onResize);
+src/routes/+page.svelte:1578:      title="Agent's Commune"
+src/routes/+page.svelte:1692:            <AgentCenterPanel workspaceId={$activeWorkspaceId} />
+src/routes/+page.svelte:1699:          <HostsPanel />
+src/routes/+page.svelte:1714:              <Explorer workspaceId={$activeWorkspaceId} onShare={handleTabShare} />
+src/routes/+page.svelte:1745:    class="rg-sidebar-resize absolute top-0 h-full w-2 shrink-0 cursor-col-resize select-none z-30 {sidebarCollapsed ? 'left-0' : '-right-1'} {isResizingSidebar ? 'rg-sidebar-resize-active' : ''}"
+src/routes/+page.svelte:1789:    <!-- §safe-area: height grows by env(safe-area-inset-top) so the workspace
+src/routes/+page.svelte:1802:          workspaces={$workspacesList}
+src/routes/+page.svelte:1835:                  use:portal={{ id: 'saved-workspaces' }}
+src/routes/+page.svelte:2037:          {#each $workspacesList as ws (ws.id)}
+src/routes/+page.svelte:2038:            {@const tree = $workspacePaneTrees.get(ws.id)}
+src/routes/+page.svelte:2045:                <SplitContainer workspaceId={ws.id} node={tree} />
+src/routes/+page.svelte:2055:             and serves every workspace's panes via per-pane scissors on
+src/routes/+page.svelte:2056:             the host. Switching workspaces is just a CSS `display:flex/
+src/routes/+page.svelte:2057:             none` flip on each workspace's SplitContainer wrapper above;
+src/routes/+page.svelte:2062:             Mounted AFTER the workspace each-loop in tree order so that
+src/routes/+page.svelte:2068:             canvas to the SplitContainer for resize/focus interaction. -->
+src/routes/+page.svelte:2070:          use:globalHostCanvas
+docs/iterations/CONTRACT-iteration-75.md:14:Current code already owns per-pane parked kernels, a real scrollback decode
+docs/iterations/CONTRACT-iteration-75.md:22:1. Every `panes` snapshot carries its source workspace. MainApp never maps an
+docs/iterations/CONTRACT-iteration-75.md:23:   unscoped post-handshake snapshot onto the currently selected workspace.
+docs/iterations/CONTRACT-iteration-75.md:24:2. Workspace/pane switching commits `{workspaceId,paneId}` only after the host
+docs/iterations/CONTRACT-iteration-75.md:30:4. Re-verify that stdin/control and active raw can advance while scrollback or
+docs/iterations/CONTRACT-iteration-75.md:38:   pane-local scrollback retry and reuse existing dirty/resync truth for
+docs/iterations/CONTRACT-iteration-75.md:42:8. Add discoverable typed launch profiles plus composite cross-workspace
+docs/iterations/CONTRACT-iteration-75.md:43:   Agent creation and message delivery. Explicit workspace identity is
+docs/iterations/CONTRACT-iteration-75.md:44:   validated by the host; omission alone retains current-workspace behavior.
+docs/iterations/CONTRACT-iteration-75.md:51:- `packages/remote/src/shared/terminal/{manager,renderWorker,workerHostedRenderer,workerRendererBridge,workerRendererSingleton}*`
+docs/iterations/CONTRACT-iteration-75.md:66:- Cloud/LAN `panes` snapshots update only their explicit workspace query key.
+docs/iterations/CONTRACT-iteration-75.md:67:- A failed workspace switch leaves old workspace, pane, canvas, focus, and
+docs/iterations/CONTRACT-iteration-75.md:69:- A successful cross-workspace pane selection exposes no intermediate
+docs/iterations/CONTRACT-iteration-75.md:70:  `{new workspace, old pane}` pair.
+docs/iterations/CONTRACT-iteration-75.md:75:- Worker bind/apply/resize/destroy is real, failure falls back without losing
+docs/iterations/CONTRACT-iteration-75.md:79:- MCP capability discovery gates launch overrides. Cross-workspace create/send
+docs/iterations/CONTRACT-iteration-75.md:80:  reaches only the requested `(workspaceId,paneId/agentId)` and rejects forged
+docs/iterations/CONTRACT-iteration-75.md:105:- `d2b8b82` typed cross-workspace Commune MCP
+src/lib/components/hosts/HostsPanel.svelte:27:    refreshHosts,
+src/lib/components/hosts/HostsPanel.svelte:28:    retryHostTopology,
+src/lib/components/hosts/HostsPanel.svelte:29:    cancelHostTopologyRetry,
+src/lib/components/hosts/HostsPanel.svelte:33:    attachRemoteHostSession,
+src/lib/components/hosts/HostsPanel.svelte:34:    closeHostPane,
+src/lib/components/hosts/HostsPanel.svelte:35:    hasHostTopologyLink,
+src/lib/components/hosts/HostsPanel.svelte:36:    createHostWorkspace,
+src/lib/components/hosts/HostsPanel.svelte:37:    openHostWorkspace,
+src/lib/components/hosts/HostsPanel.svelte:38:    renameHostWorkspace,
+src/lib/components/hosts/HostsPanel.svelte:39:    saveHostWorkspace,
+src/lib/components/hosts/HostsPanel.svelte:40:    createHostPane,
+src/lib/components/hosts/HostsPanel.svelte:41:    closeHostWorkspace,
+src/lib/components/hosts/HostsPanel.svelte:42:    markHostPaneAgent,
+src/lib/components/hosts/HostsPanel.svelte:43:    changeHostPaneShell,
+src/lib/components/hosts/HostsPanel.svelte:49:    forgetHost,
+src/lib/components/hosts/HostsPanel.svelte:53:    pumpBadgeForHost,
+src/lib/components/hosts/HostsPanel.svelte:56:    type Host,
+src/lib/components/hosts/HostsPanel.svelte:57:    type HostSession,
+src/lib/components/hosts/HostsPanel.svelte:61:    buildHostRowAlerts,
+src/lib/components/hosts/HostsPanel.svelte:67:    type HostRowModel,
+src/lib/components/hosts/HostsPanel.svelte:70:    cancelHostReconnect,
+src/lib/components/hosts/HostsPanel.svelte:74:    stepHostReconnect,
+src/lib/components/hosts/HostsPanel.svelte:78:  import HostConnectDialog from './HostConnectDialog.svelte';
+src/lib/components/hosts/HostsPanel.svelte:79:  import { shareWorkspaceWithAccount } from '$lib/workspace/shareWorkspace';
+src/lib/components/hosts/HostsPanel.svelte:97:  function toRow(host: Host): HostRowModel {
+src/lib/components/hosts/HostsPanel.svelte:125:      (h.kind === 'remote' || h.kind === 'rdg') && !hasHostTopologyLink(h.id));
+src/lib/components/hosts/HostsPanel.svelte:157:      await refreshHosts();
+src/lib/components/hosts/HostsPanel.svelte:165:        if (hasHostTopologyLink(h.id)) continue;
+src/lib/components/hosts/HostsPanel.svelte:180:          reconJobs.push(stepHostReconnect(h.id, false));
+src/lib/components/hosts/HostsPanel.svelte:186:          reconJobs.push(stepHostReconnect(h.id, true));
+src/lib/components/hosts/HostsPanel.svelte:195:  function hostExtraBadges(host: Host): string[] {
+src/lib/components/hosts/HostsPanel.svelte:197:    const pump = pumpBadgeForHost(host.id);
+src/lib/components/hosts/HostsPanel.svelte:226:      cancelHostTopologyRetry(hostId);
+src/lib/components/hosts/HostsPanel.svelte:230:  async function onRetryTopology(host: Host): Promise<void> {
+src/lib/components/hosts/HostsPanel.svelte:238:      await retryHostTopology(host.id);
+src/lib/components/hosts/HostsPanel.svelte:246:  function requiresReconnect(host: Host): boolean {
+src/lib/components/hosts/HostsPanel.svelte:254:  function workspaceKey(hostId: string, workspaceId: string): string {
+src/lib/components/hosts/HostsPanel.svelte:255:    return `${hostId}\0${workspaceId}`;
+src/lib/components/hosts/HostsPanel.svelte:258:  function workspaceOpen(hostId: string, workspaceId: string): boolean {
+src/lib/components/hosts/HostsPanel.svelte:259:    return expandedWorkspaces[workspaceKey(hostId, workspaceId)] ?? true;
+src/lib/components/hosts/HostsPanel.svelte:262:  function toggleWorkspace(hostId: string, workspaceId: string): void {
+src/lib/components/hosts/HostsPanel.svelte:263:    const key = workspaceKey(hostId, workspaceId);
+src/lib/components/hosts/HostsPanel.svelte:264:    expandedWorkspaces = { ...expandedWorkspaces, [key]: !workspaceOpen(hostId, workspaceId) };
+src/lib/components/hosts/HostsPanel.svelte:267:  function hostIcon(kind: Host['kind']) {
+src/lib/components/hosts/HostsPanel.svelte:276:  function statusDotClass(status: Host['status']): string {
+src/lib/components/hosts/HostsPanel.svelte:306:  async function onAttach(s: HostSession, host: Host) {
+src/lib/components/hosts/HostsPanel.svelte:319:        await attachRemoteHostSession(host.id, sessionId);
+src/lib/components/hosts/HostsPanel.svelte:328:  async function onTerminate(s: HostSession) {
+src/lib/components/hosts/HostsPanel.svelte:345:  async function onDeletePane(s: HostSession, host: Host) {
+src/lib/components/hosts/HostsPanel.svelte:355:      await closeHostPane(host.id, s.workspaceId ?? '', s.remoteSessionId);
+src/lib/components/hosts/HostsPanel.svelte:363:  async function onNewRemoteWorkspace(host: Host) {
+src/lib/components/hosts/HostsPanel.svelte:372:      await createHostWorkspace(host.id, name.trim() || undefined);
+src/lib/components/hosts/HostsPanel.svelte:380:  async function onOpenWorkspace(host: Host, workspaceId: string) {
+src/lib/components/hosts/HostsPanel.svelte:383:      await openHostWorkspace(host.id, workspaceId);
+src/lib/components/hosts/HostsPanel.svelte:391:  async function onNewRemotePane(host: Host, workspaceId: string) {
+src/lib/components/hosts/HostsPanel.svelte:394:      await createHostPane(host.id, workspaceId);
+src/lib/components/hosts/HostsPanel.svelte:402:  async function onRenameRemoteWorkspace(host: Host, workspaceId: string, currentName: string) {
+src/lib/components/hosts/HostsPanel.svelte:412:      await renameHostWorkspace(host.id, workspaceId, name.trim());
+src/lib/components/hosts/HostsPanel.svelte:420:  async function onSaveRemoteWorkspace(host: Host, workspaceId: string, currentName: string) {
+src/lib/components/hosts/HostsPanel.svelte:430:      await saveHostWorkspace(host.id, workspaceId, name.trim());
+src/lib/components/hosts/HostsPanel.svelte:438:  async function onCloseRemoteWorkspace(host: Host, workspaceId: string, name: string) {
+src/lib/components/hosts/HostsPanel.svelte:447:      await closeHostWorkspace(host.id, workspaceId);
+src/lib/components/hosts/HostsPanel.svelte:455:  async function onToggleAgent(host: Host, s: HostSession) {
+src/lib/components/hosts/HostsPanel.svelte:456:    if (!s.workspaceId || !s.remoteSessionId) return;
+src/lib/components/hosts/HostsPanel.svelte:459:      await markHostPaneAgent(host.id, s.workspaceId, s.remoteSessionId, !s.isAgent);
+src/lib/components/hosts/HostsPanel.svelte:467:  async function onChangeShell(host: Host, s: HostSession) {
+src/lib/components/hosts/HostsPanel.svelte:468:    if (!s.workspaceId || !s.remoteSessionId) return;
+src/lib/components/hosts/HostsPanel.svelte:480:      await changeHostPaneShell(host.id, s.workspaceId, s.remoteSessionId, choice.trim());
+src/lib/components/hosts/HostsPanel.svelte:488:  async function onShareRemoteWorkspace(host: Host, workspaceId: string, name: string) {
+src/lib/components/hosts/HostsPanel.svelte:490:      workspaceId,
+src/lib/components/hosts/HostsPanel.svelte:491:      workspaceName: name,
+src/lib/components/hosts/HostsPanel.svelte:494:    await refreshHosts();
+src/lib/components/hosts/HostsPanel.svelte:497:  async function onRevokeShare(s: HostSession) {
+src/lib/components/hosts/HostsPanel.svelte:515:  function onConnectHost() {
+src/lib/components/hosts/HostsPanel.svelte:519:  async function onForgetHost(host: Host) {
+src/lib/components/hosts/HostsPanel.svelte:528:      await forgetHost(host.id);
+src/lib/components/hosts/HostsPanel.svelte:555:        onclick={onConnectHost}
+src/lib/components/hosts/HostsPanel.svelte:572:        onclick={() => void refreshHosts()}
+src/lib/components/hosts/HostsPanel.svelte:617:            {#if hasHostTopologyLink(host.id) && (host.status === 'error' || host.status === 'disconnected')}
+src/lib/components/hosts/HostsPanel.svelte:630:            {#if hasHostTopologyLink(host.id)}
+src/lib/components/hosts/HostsPanel.svelte:641:            {#if !hasHostTopologyLink(host.id) && showReconnectControls(toRow(host))}
+src/lib/components/hosts/HostsPanel.svelte:647:                onclick={() => void stepHostReconnect(host.id, host.status === 'connected')}
+src/lib/components/hosts/HostsPanel.svelte:656:                onclick={() => void cancelHostReconnect(host.id)}
+src/lib/components/hosts/HostsPanel.svelte:666:              onclick={() => void onForgetHost(host)}
+src/lib/components/hosts/HostsPanel.svelte:674:          {@const alerts = buildHostRowAlerts(row)}
+src/lib/components/hosts/HostsPanel.svelte:680:          {#if hasHostTopologyLink(host.id) && (host.status === 'error' || host.status === 'disconnected')}
+src/lib/components/hosts/HostsPanel.svelte:688:          {#if host.workspaces.length === 0}
+src/lib/components/hosts/HostsPanel.svelte:693:          {#each host.workspaces as workspace (workspace.id)}
+src/lib/components/hosts/HostsPanel.svelte:694:            {@const workspaceExpanded = workspaceOpen(host.id, workspace.id)}
+src/lib/components/hosts/HostsPanel.svelte:695:            {@const shareSession = host.sessions.find((session) => session.workspaceId === workspace.id)}
+src/lib/components/hosts/HostsPanel.svelte:700:                onclick={() => toggleWorkspace(host.id, workspace.id)}
+src/lib/components/hosts/HostsPanel.svelte:702:                {#if workspaceExpanded}
+src/lib/components/hosts/HostsPanel.svelte:708:                <span class="min-w-0 flex-1 truncate text-[11px]" title={workspace.name}>{workspace.name}</span>
+src/lib/components/hosts/HostsPanel.svelte:709:                {#if workspace.active}
+src/lib/components/hosts/HostsPanel.svelte:712:                <span class="text-[9px] tabular-nums text-[var(--rg-fg-muted)]">{workspace.sessions.length}</span>
+src/lib/components/hosts/HostsPanel.svelte:734:              {:else if hasHostTopologyLink(host.id)}
+src/lib/components/hosts/HostsPanel.svelte:740:                  onclick={() => void onOpenWorkspace(host, workspace.id)}
+src/lib/components/hosts/HostsPanel.svelte:749:                  onclick={() => void onNewRemotePane(host, workspace.id)}
+src/lib/components/hosts/HostsPanel.svelte:758:                  onclick={() => void onRenameRemoteWorkspace(host, workspace.id, workspace.name)}
+src/lib/components/hosts/HostsPanel.svelte:767:                  onclick={() => void onSaveRemoteWorkspace(host, workspace.id, workspace.name)}
+src/lib/components/hosts/HostsPanel.svelte:777:                    onclick={() => void onShareRemoteWorkspace(host, workspace.id, workspace.name)}
+src/lib/components/hosts/HostsPanel.svelte:787:                  onclick={() => void onCloseRemoteWorkspace(host, workspace.id, workspace.name)}
+src/lib/components/hosts/HostsPanel.svelte:793:            {#if workspaceExpanded && shareSession}
+src/lib/components/hosts/HostsPanel.svelte:800:            {#if workspaceExpanded}
+src/lib/components/hosts/HostsPanel.svelte:801:              {#each workspace.sessions as s (s.socket + ':' + s.name)}
+src/lib/components/hosts/HostsPanel.svelte:830:                  {#if hasHostTopologyLink(host.id)}
+src/lib/components/hosts/HostsPanel.svelte:860:                  {:else if hasHostTopologyLink(host.id)}
+src/lib/components/hosts/HostsPanel.svelte:881:<HostConnectDialog bind:open={connectOpen} />
+src/lib/teammate/AgentCenterPanel.svelte:2:  // AgentCenterPanel —— 智能体状态面板（左侧图标栏独立 Tab）。
+src/lib/teammate/AgentCenterPanel.svelte:22:    workspaceSaveInfoStore,
+src/lib/teammate/AgentCenterPanel.svelte:24:    workspacesList,
+src/lib/teammate/AgentCenterPanel.svelte:34:    refreshHosts,
+src/lib/teammate/AgentCenterPanel.svelte:36:    type HostSession,
+src/lib/teammate/AgentCenterPanel.svelte:80:    workspaceId?: string;
+src/lib/teammate/AgentCenterPanel.svelte:82:  let { workspaceId }: Props = $props();
+src/lib/teammate/AgentCenterPanel.svelte:86:    workspaceId ? (topologies[workspaceId] ?? EMPTY_TOPOLOGY) : EMPTY_TOPOLOGY
+src/lib/teammate/AgentCenterPanel.svelte:89:    $workspacesList.flatMap((workspace) =>
+src/lib/teammate/AgentCenterPanel.svelte:90:      (topologies[workspace.id]?.roster ?? []).map((profile) => ({
+src/lib/teammate/AgentCenterPanel.svelte:91:        workspaceId: workspace.id,
+src/lib/teammate/AgentCenterPanel.svelte:92:        workspaceName: workspace.name?.trim() || `工作区 ${workspace.displaySeq}`,
+src/lib/teammate/AgentCenterPanel.svelte:109:  let outboundHostsConnected = $state(0);
+src/lib/teammate/AgentCenterPanel.svelte:151:      const key = `${member.workspaceId}:${profile.paneId}`;
+src/lib/teammate/AgentCenterPanel.svelte:162:        setAgentPaneAttention(member.workspaceId, profile.paneId, signal);
+src/lib/teammate/AgentCenterPanel.svelte:176:  function runningSessionFor(reply: AgentRecentReply): HostSession | null {
+src/lib/teammate/AgentCenterPanel.svelte:184:    if (!resume || !canResume(reply) || !workspaceId || !$activePaneId) return;
+src/lib/teammate/AgentCenterPanel.svelte:185:    const targetWorkspaceId = workspaceId;
+src/lib/teammate/AgentCenterPanel.svelte:190:        workspaceId: targetWorkspaceId,
+src/lib/teammate/AgentCenterPanel.svelte:213:      outboundHostsConnected,
+src/lib/teammate/AgentCenterPanel.svelte:228:    (workspaceId ? $workspaceSaveInfoStore[workspaceId]?.file_path : null) ?? null
+src/lib/teammate/AgentCenterPanel.svelte:279:    const workspaceIds = $workspacesList.map((workspace) => workspace.id);
+src/lib/teammate/AgentCenterPanel.svelte:280:    if (workspaceId && !workspaceIds.includes(workspaceId)) workspaceIds.push(workspaceId);
+src/lib/teammate/AgentCenterPanel.svelte:282:      workspaceIds.map(async (id) => {
+src/lib/teammate/AgentCenterPanel.svelte:284:          return [id, parseTopologySnapshot(await invoke(TOPOLOGY_CMD, { workspaceId: id }))] as const;
+src/lib/teammate/AgentCenterPanel.svelte:306:        outboundHostsConnected?: number;
+src/lib/teammate/AgentCenterPanel.svelte:314:      outboundHostsConnected = Number(h?.outboundHostsConnected ?? 0);
+src/lib/teammate/AgentCenterPanel.svelte:321:      outboundHostsConnected = 0;
+src/lib/teammate/AgentCenterPanel.svelte:338:        const list = workspaceId
+src/lib/teammate/AgentCenterPanel.svelte:339:          ? await invoke<HitlDecisionEntry[]>('list_hitl_decisions', { workspaceId })
+src/lib/teammate/AgentCenterPanel.svelte:366:      void refreshHosts();
+src/lib/teammate/AgentCenterPanel.svelte:414:  function workspaceLabel(id?: string): string {
+src/lib/teammate/AgentCenterPanel.svelte:416:    const workspace = $workspacesList.find((item) => item.id === id);
+src/lib/teammate/AgentCenterPanel.svelte:417:    return workspace?.name?.trim() || (workspace ? `工作区 ${workspace.displaySeq}` : id);
+src/lib/teammate/AgentCenterPanel.svelte:424:  async function wakeSession(session: HostSession) {
+src/lib/teammate/AgentCenterPanel.svelte:431:        session.creator_workspace_id || workspaceId
+src/lib/teammate/AgentCenterPanel.svelte:459:    // 后端 emit 的 workspaceId = MCP 的活动工作区，与本面板的 `workspaceId`(焦点工作区)
+src/lib/teammate/AgentCenterPanel.svelte:465:      // 某工作区的加成员事件落到空/错的 store 键。之前 `workspaceId &&` 会在焦点为空时短路
+src/lib/teammate/AgentCenterPanel.svelte:466:      // 跳过校验，导致误落；这里改为先丢弃空焦点，再对「带 workspaceId 却与焦点不符」丢弃。
+src/lib/teammate/AgentCenterPanel.svelte:467:      if (!workspaceId) {
+src/lib/teammate/AgentCenterPanel.svelte:469:          `[teammate-groups] join dropped: no focused workspace (event workspace ${payload.workspaceId ?? 'n/a'})`
+src/lib/teammate/AgentCenterPanel.svelte:473:      if (payload.workspaceId && payload.workspaceId !== workspaceId) {
+src/lib/teammate/AgentCenterPanel.svelte:475:          `[teammate-groups] join dropped: event workspace ${payload.workspaceId} !== focused ${workspaceId}`
+src/lib/teammate/AgentCenterPanel.svelte:480:      store.setWorkspace(workspaceId, filePath); // 保证 store 键落在当前工作区
+src/lib/teammate/AgentCenterPanel.svelte:489:          `[teammate-groups] join no-op: group "${payload.groupName}" not found in current workspace`
+src/lib/teammate/AgentCenterPanel.svelte:512:    <!-- iter-60 G5 品牌层改名：内置 MCP/控制面对外名 Agent's Commune（wire 方法名不动） -->
+src/lib/teammate/AgentCenterPanel.svelte:514:      <Bot class="h-3.5 w-3.5" /> Agent's Commune
+src/lib/teammate/AgentCenterPanel.svelte:565:          title="gen {healthGeneration} · foreign {foreignAttached} · outbound hosts {outboundHostsConnected}"
+src/lib/teammate/AgentCenterPanel.svelte:632:    <!-- M1 切片二：审批历史（最近在上，最多显示 10；来源=workspace-memory decisions 节） -->
+src/lib/teammate/AgentCenterPanel.svelte:671:                  {workspaceLabel(session.creator_workspace_id)}
+src/lib/teammate/AgentCenterPanel.svelte:720:                            disabled={!workspaceId || !$activePaneId}
+src/lib/teammate/AgentCenterPanel.svelte:721:                            title={!workspaceId || !$activePaneId ? '需先选中工作区与 pane' : `在新 pane 恢复 ${reply.agent} 会话`}
+src/lib/teammate/AgentCenterPanel.svelte:789:          {#each allMembers as member (member.workspaceId + ':' + member.profile.id)}
+src/lib/teammate/AgentCenterPanel.svelte:791:            {@const grp = member.workspaceId === workspaceId
+src/lib/teammate/AgentCenterPanel.svelte:798:              workspaceId={member.workspaceId}
+src/lib/teammate/AgentCenterPanel.svelte:799:              sourceLabel={member.workspaceName}
+src/lib/teammate/AgentCenterPanel.svelte:815:          {workspaceId}
+src/lib/stores/hosts.ts:51:  retainHostForest,
+src/lib/stores/hosts.ts:52:  loadHostForest,
+src/lib/stores/hosts.ts:53:  type HostForestResult,
+src/lib/stores/hosts.ts:54:  type HostTopologyLink,
+src/lib/stores/hosts.ts:56:import { connectCloudHostTopologyLink } from '$lib/remote/cloud/cloudHostTopologyLink';
+src/lib/stores/hosts.ts:68:export type HostKind = 'headless' | 'remote' | 'rdg' | 'shared' | 'sharing';
+src/lib/stores/hosts.ts:69:export type HostStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
+src/lib/stores/hosts.ts:75:  creator_workspace_id?: string;
+src/lib/stores/hosts.ts:86:export interface HostSession {
+src/lib/stores/hosts.ts:90:  creator_workspace_id?: string;
+src/lib/stores/hosts.ts:93:   * Remote/rdg: backend HostSessionMeta.id (pane id on host).
+src/lib/stores/hosts.ts:104:  workspaceId?: string;
+src/lib/stores/hosts.ts:114:export interface HostWorkspace {
+src/lib/stores/hosts.ts:118:  sessions: HostSession[];
+src/lib/stores/hosts.ts:120:  shareStatus?: HostSession['shareStatus'];
+src/lib/stores/hosts.ts:124:export interface Host {
+src/lib/stores/hosts.ts:126:  kind: HostKind;
+src/lib/stores/hosts.ts:128:  status: HostStatus;
+src/lib/stores/hosts.ts:131:  sessions: HostSession[];
+src/lib/stores/hosts.ts:132:  workspaces: HostWorkspace[];
+src/lib/stores/hosts.ts:135:/** 后端 `host_list_snapshot` 回传的远端主机记录（crate::hosts::HostRecord，不含凭据）。 */
+src/lib/stores/hosts.ts:136:interface HostRecord {
+src/lib/stores/hosts.ts:141:  status: HostStatus;
+src/lib/stores/hosts.ts:146:export const hostsStore = writable<Host[]>([]);
+src/lib/stores/hosts.ts:157:    const workspace = host.workspaces.find((entry) => entry.shareGrantId === projection.grantId);
+src/lib/stores/hosts.ts:158:    if (!workspace) return host;
+src/lib/stores/hosts.ts:160:    const base: HostSession = seed ?? {
+src/lib/stores/hosts.ts:163:      workspaceId: projection.workspaceId,
+src/lib/stores/hosts.ts:165:      shareStatus: workspace.shareStatus,
+src/lib/stores/hosts.ts:174:    const projected = projection.panes.map((pane): HostSession => ({
+src/lib/stores/hosts.ts:188:      workspaces: host.workspaces.map((entry) => entry.shareGrantId === projection.grantId
+src/lib/stores/hosts.ts:195:export interface RegisteredHostLink {
+src/lib/stores/hosts.ts:201:  link: HostTopologyLink;
+src/lib/stores/hosts.ts:205:const registeredHostLinks = new Map<string, RegisteredHostLink>();
+src/lib/stores/hosts.ts:206:const topologyByHost = new Map<string, HostForestResult>();
+src/lib/stores/hosts.ts:207:const topologyInFlight = new Map<string, Promise<HostForestResult | null>>();
+src/lib/stores/hosts.ts:208:const topologyAbortByHost = new Map<string, AbortController>();
+src/lib/stores/hosts.ts:210:export function registerHostTopologyLink(source: RegisteredHostLink): () => void {
+src/lib/stores/hosts.ts:211:  const previous = registeredHostLinks.get(source.hostId);
+src/lib/stores/hosts.ts:213:  registeredHostLinks.set(source.hostId, source);
+src/lib/stores/hosts.ts:215:    if (registeredHostLinks.get(source.hostId)?.link !== source.link) return;
+src/lib/stores/hosts.ts:216:    topologyAbortByHost.get(source.hostId)?.abort();
+src/lib/stores/hosts.ts:217:    topologyAbortByHost.delete(source.hostId);
+src/lib/stores/hosts.ts:218:    registeredHostLinks.delete(source.hostId);
+src/lib/stores/hosts.ts:219:    topologyByHost.delete(source.hostId);
+src/lib/stores/hosts.ts:223:export function hasHostTopologyLink(hostId: string): boolean {
+src/lib/stores/hosts.ts:224:  return registeredHostLinks.has(hostId);
+src/lib/stores/hosts.ts:228:  return registeredHostLinks.get(hostId)?.deviceName;
+src/lib/stores/hosts.ts:231:export async function refreshHostTopology(hostId: string): Promise<HostForestResult | null> {
+src/lib/stores/hosts.ts:232:  const source = registeredHostLinks.get(hostId);
+src/lib/stores/hosts.ts:235:    return topologyByHost.get(hostId) ?? null;
+src/lib/stores/hosts.ts:240:  topologyAbortByHost.set(hostId, controller);
+src/lib/stores/hosts.ts:241:  const pending = loadHostForest([{ hostId, link: source.link, signal: controller.signal }])
+src/lib/stores/hosts.ts:246:      const result = retainHostForest(topologyByHost.get(hostId), loaded);
+src/lib/stores/hosts.ts:247:      topologyByHost.set(hostId, result);
+src/lib/stores/hosts.ts:253:          sessions: result.workspaces.flatMap((workspace) =>
+src/lib/stores/hosts.ts:254:            workspace.panes.map((pane) => ({ id: pane.id, title: pane.title }))),
+src/lib/stores/hosts.ts:261:      if (topologyAbortByHost.get(hostId) === controller) {
+src/lib/stores/hosts.ts:262:        topologyAbortByHost.delete(hostId);
+src/lib/stores/hosts.ts:269:export function cancelHostTopologyRetry(hostId: string): void {
+src/lib/stores/hosts.ts:270:  topologyAbortByHost.get(hostId)?.abort();
+src/lib/stores/hosts.ts:274:export async function retryHostTopology(hostId: string): Promise<HostForestResult | null> {
+src/lib/stores/hosts.ts:275:  const result = await refreshHostTopology(hostId);
+src/lib/stores/hosts.ts:276:  const source = registeredHostLinks.get(hostId);
+src/lib/stores/hosts.ts:280:    const projected = linkedHost(source, result, index >= 0 ? hosts[index] : undefined);
+src/lib/stores/hosts.ts:289:export async function closeHostPane(hostId: string, workspaceId: string, paneId: string): Promise<void> {
+src/lib/stores/hosts.ts:290:  const source = registeredHostLinks.get(hostId);
+src/lib/stores/hosts.ts:292:  const closed = await deleteRemotePane(hostId, workspaceId, paneId, source.link, closeLocalPane);
+src/lib/stores/hosts.ts:294:  await refreshHosts();
+src/lib/stores/hosts.ts:297:function topologyLink(hostId: string): HostTopologyLink {
+src/lib/stores/hosts.ts:298:  const source = registeredHostLinks.get(hostId);
+src/lib/stores/hosts.ts:303:export async function createHostWorkspace(hostId: string, name?: string): Promise<void> {
+src/lib/stores/hosts.ts:306:  await refreshHosts();
+src/lib/stores/hosts.ts:309:export async function openHostWorkspace(hostId: string, workspaceId: string): Promise<void> {
+src/lib/stores/hosts.ts:310:  if (!await topologyLink(hostId).switchWorkspace(workspaceId)) {
+src/lib/stores/hosts.ts:313:  await refreshHosts();
+src/lib/stores/hosts.ts:316:export async function renameHostWorkspace(
+src/lib/stores/hosts.ts:318:  workspaceId: string,
+src/lib/stores/hosts.ts:322:  if (!link.renameWorkspace || !await link.renameWorkspace(workspaceId, name)) {
+src/lib/stores/hosts.ts:325:  await refreshHosts();
+src/lib/stores/hosts.ts:328:export async function saveHostWorkspace(
+src/lib/stores/hosts.ts:330:  workspaceId: string,
+src/lib/stores/hosts.ts:334:  if (!link.saveWorkspace || !await link.saveWorkspace(workspaceId, name)) {
+src/lib/stores/hosts.ts:339:export async function createHostPane(hostId: string, workspaceId: string): Promise<void> {
+src/lib/stores/hosts.ts:341:  if (!await link.switchWorkspace(workspaceId)) throw new Error('远端工作区打开失败');
+src/lib/stores/hosts.ts:343:  await refreshHosts();
+src/lib/stores/hosts.ts:346:export async function closeHostWorkspace(hostId: string, workspaceId: string): Promise<void> {
+src/lib/stores/hosts.ts:347:  if (!await topologyLink(hostId).closeWorkspace(workspaceId)) {
+src/lib/stores/hosts.ts:350:  await refreshHosts();
+src/lib/stores/hosts.ts:353:export async function markHostPaneAgent(
+src/lib/stores/hosts.ts:355:  workspaceId: string,
+src/lib/stores/hosts.ts:362:  await mark.call(link, workspaceId, paneId, on);
+src/lib/stores/hosts.ts:363:  await refreshHosts();
+src/lib/stores/hosts.ts:366:export async function changeHostPaneShell(
+src/lib/stores/hosts.ts:368:  workspaceId: string,
+src/lib/stores/hosts.ts:377:  await link.changePaneShell(workspaceId, paneId, shell);
+src/lib/stores/hosts.ts:378:  await refreshHosts();
+src/lib/stores/hosts.ts:389:  workspaceId: string,
+src/lib/stores/hosts.ts:390:  pane: HostForestResult['workspaces'][number]['panes'][number],
+src/lib/stores/hosts.ts:391:): HostSession {
+src/lib/stores/hosts.ts:396:    workspaceId,
+src/lib/stores/hosts.ts:407:function linkedHost(
+src/lib/stores/hosts.ts:408:  source: RegisteredHostLink,
+src/lib/stores/hosts.ts:409:  topology: HostForestResult,
+src/lib/stores/hosts.ts:410:  previous?: Host,
+src/lib/stores/hosts.ts:411:): Host {
+src/lib/stores/hosts.ts:418:  const workspaces = topology.workspaces.map((workspace) => ({
+src/lib/stores/hosts.ts:419:    id: workspace.id,
+src/lib/stores/hosts.ts:420:    name: workspace.name,
+src/lib/stores/hosts.ts:421:    active: workspace.active,
+src/lib/stores/hosts.ts:422:    sessions: workspace.panes.map((pane) => ({
+src/lib/stores/hosts.ts:423:      ...paneSession(source.hostId, workspace.id, pane),
+src/lib/stores/hosts.ts:437:    workspaces,
+src/lib/stores/hosts.ts:438:    sessions: workspaces.flatMap((workspace) => workspace.sessions),
+src/lib/stores/hosts.ts:446:export async function refreshHosts(): Promise<void> {
+src/lib/stores/hosts.ts:448:  const next: Host[] = [];
+src/lib/stores/hosts.ts:459:      workspaces: [{
+src/lib/stores/hosts.ts:471:    const recs = await invoke<HostRecord[]>('host_list_snapshot');
+src/lib/stores/hosts.ts:490:        workspaces: sessions.length > 0 ? [{
+src/lib/stores/hosts.ts:506:      const grouped = new Map<string, Host>();
+src/lib/stores/hosts.ts:520:            workspaces: [],
+src/lib/stores/hosts.ts:526:          workspaceId: share.workspaceId,
+src/lib/stores/hosts.ts:535:        const sessions: HostSession[] = projection
+src/lib/stores/hosts.ts:550:              name: `工作区 ${share.workspaceId.slice(0, 8)}`,
+src/lib/stores/hosts.ts:551:              remoteSessionId: share.workspaceId,
+src/lib/stores/hosts.ts:559:        host.workspaces.push({
+src/lib/stores/hosts.ts:560:          id: share.workspaceId,
+src/lib/stores/hosts.ts:561:          name: projection?.name || `工作区 ${share.workspaceId.slice(0, 8)}`,
+src/lib/stores/hosts.ts:584:            name: `工作区 ${share.workspaceId.slice(0, 8)}`,
+src/lib/stores/hosts.ts:585:            workspaceId: share.workspaceId,
+src/lib/stores/hosts.ts:595:          workspaces: visible.map((share) => ({
+src/lib/stores/hosts.ts:596:            id: share.workspaceId,
+src/lib/stores/hosts.ts:597:            name: `工作区 ${share.workspaceId.slice(0, 8)}`,
+src/lib/stores/hosts.ts:611:    [...registeredHostLinks.keys()]
+src/lib/stores/hosts.ts:612:      .filter((hostId) => !topologyByHost.get(hostId)?.error)
+src/lib/stores/hosts.ts:613:      .map(refreshHostTopology),
+src/lib/stores/hosts.ts:615:  for (const source of registeredHostLinks.values()) {
+src/lib/stores/hosts.ts:616:    const topology = topologyByHost.get(source.hostId);
+src/lib/stores/hosts.ts:619:    const projected = linkedHost(source, topology, index >= 0 ? next[index] : undefined);
+src/lib/stores/hosts.ts:634:  await refreshHosts();
+src/lib/stores/hosts.ts:644:  await refreshHosts();
+src/lib/stores/hosts.ts:654:  workspaceId?: string
+src/lib/stores/hosts.ts:656:  const wid = workspaceId || get(activeWorkspaceId);
+src/lib/stores/hosts.ts:657:  await invoke('summon_native_session', { socket, target, workspaceId: wid ?? null });
+src/lib/stores/hosts.ts:658:  await refreshHosts();
+src/lib/stores/hosts.ts:690:    workspaceId: wid ?? null,
+src/lib/stores/hosts.ts:697:  await refreshHosts();
+src/lib/stores/hosts.ts:704:export async function connectHost(
+src/lib/stores/hosts.ts:742:    registerHostTopologyLink({
+src/lib/stores/hosts.ts:749:    await refreshHosts();
+src/lib/stores/hosts.ts:755:  const link = await connectCloudHostTopologyLink(deviceName, code);
+src/lib/stores/hosts.ts:757:  registerHostTopologyLink({
+src/lib/stores/hosts.ts:765:  await refreshHosts();
+src/lib/stores/hosts.ts:769:export async function disconnectHost(hostId: string): Promise<void> {
+src/lib/stores/hosts.ts:770:  const linked = registeredHostLinks.get(hostId);
+src/lib/stores/hosts.ts:774:    await refreshHosts();
+src/lib/stores/hosts.ts:778:  await refreshHosts();
+src/lib/stores/hosts.ts:782:export async function forgetHost(hostId: string): Promise<void> {
+src/lib/stores/hosts.ts:783:  const linked = registeredHostLinks.get(hostId);
+src/lib/stores/hosts.ts:786:    registeredHostLinks.delete(hostId);
+src/lib/stores/hosts.ts:787:    topologyByHost.delete(hostId);
+src/lib/stores/hosts.ts:788:    await refreshHosts();
+src/lib/stores/hosts.ts:792:  await refreshHosts();
+src/lib/stores/hosts.ts:799:  await refreshHosts();
+src/lib/stores/hosts.ts:802:export async function openSharedWorkspace(session: HostSession): Promise<void> {
+src/lib/stores/hosts.ts:808:    workspaceId: session.workspaceId || session.remoteSessionId || '',
+src/lib/stores/hosts.ts:813:  await refreshHosts();
+src/lib/stores/hosts.ts:820:  await refreshHosts();
+src/lib/stores/hosts.ts:833:  resizeOk: number;
+src/lib/stores/hosts.ts:847:export const outboundPumpByHost = writable<Record<string, PumpState>>({});
+src/lib/stores/hosts.ts:856: * Attach a remote host session into the active workspace as a foreign pane.
+src/lib/stores/hosts.ts:859:export async function attachRemoteHostSession(
+src/lib/stores/hosts.ts:871:  const linked = registeredHostLinks.get(hostId);
+src/lib/stores/hosts.ts:875:    workspaceId: wid ?? null,
+src/lib/stores/hosts.ts:884:      workspaceId: session?.workspaceId || '',
+src/lib/stores/hosts.ts:891:  await refreshHosts();
+src/lib/stores/hosts.ts:899:export async function detachRemoteHostSession(paneId: string): Promise<void> {
+src/lib/stores/hosts.ts:914:    workspaceId: wid ?? null,
+src/lib/stores/hosts.ts:917:  await refreshHosts();
+src/lib/stores/hosts.ts:921:/** Drain outbound inbound buffers into foreign parsers (Hosts poll path). */
+src/lib/stores/hosts.ts:922:export async function pumpHostOutput(hostId: string): Promise<number> {
+src/lib/stores/hosts.ts:938:  outboundPumpByHost.update((m) => {
+src/lib/stores/hosts.ts:950:export function pumpBadgeForHost(hostId: string): string {
+src/lib/stores/hosts.ts:951:  const st = get(outboundPumpByHost)[hostId];
+src/lib/stores/hosts.ts:995:      outboundPumpByHost.update((m) => {
+src/lib/stores/hosts.ts:1014:    // a second IPC on every Hosts poll. Callers that need aggregate BP invoke
+src/lib/stores/hosts.ts:1035:export const liveBackpressureByHost = writable<Record<string, LiveBackpressureDto>>({});
+src/lib/stores/hosts.ts:1043:    liveBackpressureByHost.update((m) => ({ ...m, [hostId]: raw }));
+src/lib/stores/hosts.ts:1045:      outboundPumpByHost.update((m) => {
+src/lib/stores/hosts.ts:1074:    && !registeredHostLinks.has(h.id));
+src/lib/stores/hosts.ts:1076:  const parts = await Promise.all(targets.map((h) => pumpHostOutput(h.id)));
+src/lib/stores/hosts.ts:1129:/** Operator line for a host from pump + reconnect (Hosts panel). */
+src/lib/stores/hosts.ts:1134:  const pump = get(outboundPumpByHost)[hostId];
+packages/remote/src/shared/terminal/manager.ts:31://   mgr.viewportChanged(paneId);        // call when container resizes
+packages/remote/src/shared/terminal/manager.ts:34:import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/term-wasm';
+packages/remote/src/shared/terminal/manager.ts:35:import type { HostPorts } from './ports';
+packages/remote/src/shared/terminal/manager.ts:61:// range. With dpr=1 this is a no-op. (Bug: "resize 后无法选中最右一列".)
+packages/remote/src/shared/terminal/manager.ts:82:	planHostOpen,
+packages/remote/src/shared/terminal/manager.ts:84:	type HostOpenAction,
+packages/remote/src/shared/terminal/manager.ts:85:} from './linkOpenHost';
+packages/remote/src/shared/terminal/manager.ts:114:	scrollbackLines: number;
+packages/remote/src/shared/terminal/manager.ts:153:	/** §A.8 — workspace this pane belongs to. Set at attach time so
+packages/remote/src/shared/terminal/manager.ts:154:	 *  RAF tick / resize / viewport recompute can find the right per-
+packages/remote/src/shared/terminal/manager.ts:155:	 *  workspace SurfaceHost. */
+packages/remote/src/shared/terminal/manager.ts:156:	workspaceId: string;
+packages/remote/src/shared/terminal/manager.ts:175:	resizeObserver: ResizeObserver;
+packages/remote/src/shared/terminal/manager.ts:176:	/** Last reported (rows, cols) — used to debounce IPC resize calls. */
+packages/remote/src/shared/terminal/manager.ts:179:	/** Optional callback fired when (rows, cols) changes — wired to PTY resize.
+packages/remote/src/shared/terminal/manager.ts:180:	 *  `isAlt` is the kernel's alt-screen state at resize time; the backend
+packages/remote/src/shared/terminal/manager.ts:181:	 *  uses it to skip the ConPTY resize-silence window when an alt-screen
+packages/remote/src/shared/terminal/manager.ts:187:	 *  Returns a Promise so `fitPane` can await the backend's PTY resize
+packages/remote/src/shared/terminal/manager.ts:190:	resizeHandler?: (
+packages/remote/src/shared/terminal/manager.ts:197:	 *  下，本地 kernel 网格由 fitPane **直接** resize——P4 前 TerminalController 的
+packages/remote/src/shared/terminal/manager.ts:199:	 *  `pty-resized` 回执，而 **cloud 腿两者皆无**（cloudRemote.onPtyResize 注释
+packages/remote/src/shared/terminal/manager.ts:205:	 *  `kernel.resize` AND triggers an async PTY resize via the handler.
+packages/remote/src/shared/terminal/manager.ts:210:	 *  is animating, we don't resize at all; once it settles, fit once. */
+packages/remote/src/shared/terminal/manager.ts:282:	 *   - `kernel` is alive (terminal grid, scrollback, attrs, modes,
+packages/remote/src/shared/terminal/manager.ts:287:	 *   - `dataHandler` / `eventHandler` / `resizeHandler` callbacks are
+packages/remote/src/shared/terminal/manager.ts:332:	 *  workspace resize / DPR change moves the container. Forwarded to
+packages/remote/src/shared/terminal/manager.ts:334:	 *  `entry.handle.resize(wCss, hCss, dpr)`) into the WebGPU pane
+packages/remote/src/shared/terminal/manager.ts:338:	 *  the first `_recomputeViewport` runs). Host pane lookups treat
+packages/remote/src/shared/terminal/manager.ts:354:	/** §4a workspace keep-alive (2026-05-08): set true by the RAF tick when
+packages/remote/src/shared/terminal/manager.ts:356:	 *  workspace tab is not active). Tracking this lets the next visible
+packages/remote/src/shared/terminal/manager.ts:364:	 *  编辑器或系统资源管理器。lazy 重建：feed / scroll / resize 后置 dirty
+packages/remote/src/shared/terminal/manager.ts:376:	 *  `kernel.scrollOffset()` or `kernel.scrollbackLen()` differ from
+packages/remote/src/shared/terminal/manager.ts:409:/** Trailing-edge debounce window for container resize. The pane only
+packages/remote/src/shared/terminal/manager.ts:425: *  store/util，改由主 app 启动时经 setHostPorts 注入。模块级单持有者，static 与实例
+packages/remote/src/shared/terminal/manager.ts:427:let _hostPorts: HostPorts | null = null;
+packages/remote/src/shared/terminal/manager.ts:440:	 *  successful `fitPane` for the pane. Used to decide attach-vs-resize
+packages/remote/src/shared/terminal/manager.ts:455:	 *  flips between workspace tabs. Used by `_isContainerHidden` to
+packages/remote/src/shared/terminal/manager.ts:462:	 *  Comparing `entry.workspaceId === this._activeWorkspaceId` is a
+packages/remote/src/shared/terminal/manager.ts:463:	 *  plain string compare — no layout cost. `null` means "no workspace
+packages/remote/src/shared/terminal/manager.ts:496:	 *  EVERY workspace's panes. Replaces the previous per-workspace
+packages/remote/src/shared/terminal/manager.ts:498:	 *  on every workspace switch (display:none → display:flex) and
+packages/remote/src/shared/terminal/manager.ts:502:	 *  switches; switching workspaces is a CSS display flip that changes
+packages/remote/src/shared/terminal/manager.ts:504:	 *  naturally drops scissors for inactive workspaces and the next RAF
+packages/remote/src/shared/terminal/manager.ts:505:	 *  paints the new active workspace into the existing surface — no
+packages/remote/src/shared/terminal/manager.ts:508:	 *  `null` until `attachHost(canvas)` lands at app boot. Once set, the
+packages/remote/src/shared/terminal/manager.ts:509:	 *  canvas/host pair is reused for the app lifetime. `detachHost()` is
+packages/remote/src/shared/terminal/manager.ts:511:	private globalHost: { canvas: HTMLCanvasElement; host: SurfaceHostHandle } | null = null;
+packages/remote/src/shared/terminal/manager.ts:512:	/** True between an `_invalidateHost()` call and the next RAF tick that
+packages/remote/src/shared/terminal/manager.ts:531:	/** In-flight `attachHost` init promise. Concurrent pane `attach()` /
+packages/remote/src/shared/terminal/manager.ts:533:	 *  initialisation. Resolves (never rejects) — `attachHost` swallows
+packages/remote/src/shared/terminal/manager.ts:534:	 *  init errors internally and leaves `globalHost` null when WebGPU
+packages/remote/src/shared/terminal/manager.ts:536:	private attachHostPromise: Promise<void> | null = null;
+packages/remote/src/shared/terminal/manager.ts:549:	private _resizeReleaseListener: (() => void) | null = null;
+packages/remote/src/shared/terminal/manager.ts:603:	static setHostPorts(ports: HostPorts | null): void {
+packages/remote/src/shared/terminal/manager.ts:607:	/** 读回已注入的 HostPorts（themeBridge/ptyBridge/paneShell 经此取 settings/
+packages/remote/src/shared/terminal/manager.ts:609:	static hostPorts(): HostPorts | null {
+packages/remote/src/shared/terminal/manager.ts:615:		return _hostPorts?.cwd?.current(entry.workspaceId, entry.paneId);
+packages/remote/src/shared/terminal/manager.ts:619:	 *  任意 cwd 树"判断（多 workspace 多 pane 同时活跃时，落在任一 pane
+packages/remote/src/shared/terminal/manager.ts:626:	 * C51 product path: execute a HostOpenAction from linkOpenHost.
+packages/remote/src/shared/terminal/manager.ts:630:		plan: HostOpenAction,
+packages/remote/src/shared/terminal/manager.ts:706:					scrollbackLines: 2000,
+packages/remote/src/shared/terminal/manager.ts:766:			// re-admission that amplifies switch-workspace atlas-eviction
+packages/remote/src/shared/terminal/manager.ts:799:		surfaceHost?: SurfaceHostHandle,
+packages/remote/src/shared/terminal/manager.ts:804:				host?: SurfaceHostHandle,
+packages/remote/src/shared/terminal/manager.ts:813:				// attaches in the same workspace, so clone the JS
+packages/remote/src/shared/terminal/manager.ts:815:				// refcount; both wrappers share the same SurfaceHost.
+packages/remote/src/shared/terminal/manager.ts:817:					surfaceHost &&
+packages/remote/src/shared/terminal/manager.ts:818:					typeof (surfaceHost as unknown as { clone?: () => SurfaceHostHandle }).clone ===
+packages/remote/src/shared/terminal/manager.ts:820:						? (surfaceHost as unknown as { clone: () => SurfaceHostHandle }).clone()
+packages/remote/src/shared/terminal/manager.ts:821:						: surfaceHost;
+packages/remote/src/shared/terminal/manager.ts:844:	 * given workspace tab. Each workspace tab owns its own canvas so
+packages/remote/src/shared/terminal/manager.ts:849:	 * Idempotent per workspace: a second call for the same `workspaceId`
+packages/remote/src/shared/terminal/manager.ts:852:	 * Bails silently when the wasm bundle has no `SurfaceHostHandle`
+packages/remote/src/shared/terminal/manager.ts:855:	 * affected workspace — `attach()` falls back to creating a per-pane
+packages/remote/src/shared/terminal/manager.ts:858:	public attachHost(canvas: HTMLCanvasElement): Promise<void> {
+packages/remote/src/shared/terminal/manager.ts:859:		if (this.attachHostPromise) return this.attachHostPromise;
+packages/remote/src/shared/terminal/manager.ts:860:		if (this.globalHost) {
+packages/remote/src/shared/terminal/manager.ts:865:			if (this.globalHost.canvas === canvas) return Promise.resolve();
+packages/remote/src/shared/terminal/manager.ts:867:				'[ridge-term] attachHost called with a new canvas while one is already attached; ignoring',
+packages/remote/src/shared/terminal/manager.ts:873:			const SHHCtor = SurfaceHostHandle as unknown as
+packages/remote/src/shared/terminal/manager.ts:874:				| { init: (c: HTMLCanvasElement) => Promise<SurfaceHostHandle> }
+packages/remote/src/shared/terminal/manager.ts:879:						'[ridge-term] SurfaceHostHandle missing; bundle was built --no-webgpu',
+packages/remote/src/shared/terminal/manager.ts:884:			let host: SurfaceHostHandle;
+packages/remote/src/shared/terminal/manager.ts:889:					'[ridge-term] SurfaceHost.init failed; per-pane Canvas2D will be used',
+packages/remote/src/shared/terminal/manager.ts:894:			this.globalHost = { canvas, host };
+packages/remote/src/shared/terminal/manager.ts:895:			this.resizeHost(); // initial swap-chain configure
+packages/remote/src/shared/terminal/manager.ts:897:		this.attachHostPromise = promise;
+packages/remote/src/shared/terminal/manager.ts:901:	/** §A.9 — release the global SurfaceHost (only meaningful at app
+packages/remote/src/shared/terminal/manager.ts:904:	public detachHost(): void {
+packages/remote/src/shared/terminal/manager.ts:905:		this.globalHost = null;
+packages/remote/src/shared/terminal/manager.ts:906:		this.attachHostPromise = null;
+packages/remote/src/shared/terminal/manager.ts:912:	 *  不丢失——host 就绪后 attachHost 调用方须补一次 applyWallpaperGpu）。 */
+packages/remote/src/shared/terminal/manager.ts:914:		const host = this._globalHostHandle();
+packages/remote/src/shared/terminal/manager.ts:923:	/** §A.9 — internal: global SurfaceHost lookup. The legacy
+packages/remote/src/shared/terminal/manager.ts:924:	 *  per-workspace `_hostFor(wsId)` API is gone; every pane shares
+packages/remote/src/shared/terminal/manager.ts:926:	private _globalHostHandle(): SurfaceHostHandle | null {
+packages/remote/src/shared/terminal/manager.ts:927:		return this.globalHost?.host ?? null;
+packages/remote/src/shared/terminal/manager.ts:930:	/** Call `surfaceHost.invalidate()` AND mark `_hostInvalidatePending`
+packages/remote/src/shared/terminal/manager.ts:935:	 *  `_globalHostHandle()?.invalidate()` calls bypass the flag and
+packages/remote/src/shared/terminal/manager.ts:937:	private _invalidateHost(): void {
+packages/remote/src/shared/terminal/manager.ts:938:		this._globalHostHandle()?.invalidate();
+packages/remote/src/shared/terminal/manager.ts:943:	private _globalHostCanvas(): HTMLCanvasElement | null {
+packages/remote/src/shared/terminal/manager.ts:944:		return this.globalHost?.canvas ?? null;
+packages/remote/src/shared/terminal/manager.ts:949:	 * canvas's parent (workspace content area) changes size — window
+packages/remote/src/shared/terminal/manager.ts:950:	 * resize, sidebar collapse, FileEditor toggle. Drives
+packages/remote/src/shared/terminal/manager.ts:957:	 * No-op when `surfaceHost` is null (Canvas2D-only deployment).
+packages/remote/src/shared/terminal/manager.ts:959:	public resizeHost(dims?: { wCss: number; hCss: number }): void {
+packages/remote/src/shared/terminal/manager.ts:960:		const entry = this.globalHost;
+packages/remote/src/shared/terminal/manager.ts:967:		// window even though resizeHost itself only fires at most once
+packages/remote/src/shared/terminal/manager.ts:997:		host.resize(wCss, hCss, dpr);
+packages/remote/src/shared/terminal/manager.ts:1002:		this._invalidateHost();
+packages/remote/src/shared/terminal/manager.ts:1009:	 * to drive a redraw (the canvas itself doesn't resize on workspace
+packages/remote/src/shared/terminal/manager.ts:1012:	 * the RAF loop so the very next frame paints the new workspace.
+packages/remote/src/shared/terminal/manager.ts:1014:	 * Inactive workspaces' panes naturally fall out via `_isContainerHidden`
+packages/remote/src/shared/terminal/manager.ts:1020:	public onActiveWorkspaceChanged(workspaceId: string): void {
+packages/remote/src/shared/terminal/manager.ts:1021:		this._activeWorkspaceId = workspaceId;
+packages/remote/src/shared/terminal/manager.ts:1022:		if (!this.globalHost) return;
+packages/remote/src/shared/terminal/manager.ts:1025:			if (e.workspaceId !== workspaceId) continue;
+packages/remote/src/shared/terminal/manager.ts:1032:			// renders this tick — no black flash, no missed kernel resize.
+packages/remote/src/shared/terminal/manager.ts:1035:		this._invalidateHost();
+packages/remote/src/shared/terminal/manager.ts:1041:	 * the shared SurfaceHost (WebGPU host mode); false when it owns its
+packages/remote/src/shared/terminal/manager.ts:1045:	 * `surfaceHost.invalidate()`.
+packages/remote/src/shared/terminal/manager.ts:1047:	private _isHostMode(entry: PaneEntry): boolean {
+packages/remote/src/shared/terminal/manager.ts:1048:		const gh = this.globalHost;
+packages/remote/src/shared/terminal/manager.ts:1053:	 * §4a workspace keep-alive (2026-05-08): true when the entry's pane
+packages/remote/src/shared/terminal/manager.ts:1055:	 * lives under a `display:none` ancestor (its workspace tab is not
+packages/remote/src/shared/terminal/manager.ts:1059:	 * workspaces' panes. Their kernels keep being fed by PTY in the
+packages/remote/src/shared/terminal/manager.ts:1060:	 * background (so scrollback / grid stays in sync), but no GPU work
+packages/remote/src/shared/terminal/manager.ts:1062:	 * workspace, the bbox returns non-zero next frame and isDirty=true
+packages/remote/src/shared/terminal/manager.ts:1072:		// Fast path: when we know which workspace is active, a plain
+packages/remote/src/shared/terminal/manager.ts:1078:			return entry.workspaceId !== this._activeWorkspaceId;
+packages/remote/src/shared/terminal/manager.ts:1080:		// Bootstrap fallback: no active workspace declared yet — fall
+packages/remote/src/shared/terminal/manager.ts:1095:	 * a 4-byte RGBA Uint8Array for `surfaceHost.beginFrame`. Defaults to
+packages/remote/src/shared/terminal/manager.ts:1129:	 * existing `entry.handle.resize` (which the WebGPU backend now
+packages/remote/src/shared/terminal/manager.ts:1130:	 * routes to `WebGpuPaneBackend::resize_surface` — a no-surface
+packages/remote/src/shared/terminal/manager.ts:1149:		const gh = this.globalHost;
+packages/remote/src/shared/terminal/manager.ts:1151:		// Hidden workspace tab → bbox 0×0 → degenerate scissor / kernel
+packages/remote/src/shared/terminal/manager.ts:1152:		// resize. Skip; the next visible-tick ResizeObserver fire (or
+packages/remote/src/shared/terminal/manager.ts:1153:		// the §A.8 host_canvas_rect that grows with the workspace
+packages/remote/src/shared/terminal/manager.ts:1157:		const hostMode = gh !== null && this._isHostMode(entry);
+packages/remote/src/shared/terminal/manager.ts:1188:		// is cheap (just updates two u32 fields); `resize` triggers
+packages/remote/src/shared/terminal/manager.ts:1189:		// kernel grid resize + force redraw, so we only call it when
+packages/remote/src/shared/terminal/manager.ts:1197:			// resize() also writes the canvas CSS dimensions; apply the
+packages/remote/src/shared/terminal/manager.ts:1199:			handle?.resize(Math.round(geometry.gridWidthCss), Math.round(geometry.gridHeightCss), dpr);
+packages/remote/src/shared/terminal/manager.ts:1201:				// Canvas2D/WASM resize may restore its CSS box on the following
+packages/remote/src/shared/terminal/manager.ts:1220:		entry.handle?.resize(
+packages/remote/src/shared/terminal/manager.ts:1230:	 * for resize events.
+packages/remote/src/shared/terminal/manager.ts:1239:	async attach(paneId: string, container: HTMLElement, workspaceId: string): Promise<void> {
+packages/remote/src/shared/terminal/manager.ts:1246:		// §A.9 — wait for the global SurfaceHost to settle (kicked off
+packages/remote/src/shared/terminal/manager.ts:1247:		// by +page.svelte::onMount → manager.attachHost(canvas) which
+packages/remote/src/shared/terminal/manager.ts:1249:		// per-workspace lookup.
+packages/remote/src/shared/terminal/manager.ts:1250:		if (this.attachHostPromise) {
+packages/remote/src/shared/terminal/manager.ts:1251:			try { await this.attachHostPromise; } catch { /* attachHost handles errors internally */ }
+packages/remote/src/shared/terminal/manager.ts:1255:		const gh = this.globalHost;
+packages/remote/src/shared/terminal/manager.ts:1256:		const useHost = gh !== null && this.opts.preferWebgpu && !usingWorker;
+packages/remote/src/shared/terminal/manager.ts:1258:		let hostHandle: SurfaceHostHandle | undefined;
+packages/remote/src/shared/terminal/manager.ts:1259:		if (useHost && gh) {
+packages/remote/src/shared/terminal/manager.ts:1263:			// canvas (sitting BEHIND every workspace's SplitContainer
+packages/remote/src/shared/terminal/manager.ts:1317:		// §B.2 (2026-05-08) — read scrollback capacity from settings at
+packages/remote/src/shared/terminal/manager.ts:1318:		// pane-attach time so the user's "终端 scrollback 行数" preference
+packages/remote/src/shared/terminal/manager.ts:1322:		// back to `this.opts.scrollbackLines` (constructor default 2000)
+packages/remote/src/shared/terminal/manager.ts:1326:		const scrollbackLines =
+packages/remote/src/shared/terminal/manager.ts:1329:				: this.opts.scrollbackLines;
+packages/remote/src/shared/terminal/manager.ts:1330:		// Seed kernel with default 24×80 — we'll resize to actual size right away.
+packages/remote/src/shared/terminal/manager.ts:1331:		const kernel = new TerminalKernel(24, 80, scrollbackLines);
+packages/remote/src/shared/terminal/manager.ts:1380:		// Selection uses is `0..sb_len` for scrollback rows and
+packages/remote/src/shared/terminal/manager.ts:1389:			kernel.scrollbackLen() + vpRow - kernel.scrollOffset();
+packages/remote/src/shared/terminal/manager.ts:1557:			// OP-TERM-LINK / C51: Ctrl+click open via linkOpenHost product plan
+packages/remote/src/shared/terminal/manager.ts:1562:				const workspaceRoot = roots[0] ?? null;
+packages/remote/src/shared/terminal/manager.ts:1564:					const plan = planHostOpen(oscLink.uri, 'osc8', {
+packages/remote/src/shared/terminal/manager.ts:1566:						workspaceRoot,
+packages/remote/src/shared/terminal/manager.ts:1578:						workspaceRoot,
+packages/remote/src/shared/terminal/manager.ts:1587:			// Host selection inside a TUI requires disabling mouse reporting
+packages/remote/src/shared/terminal/manager.ts:1604:			if (!clickDec.startHostSelection && !e.shiftKey) {
+packages/remote/src/shared/terminal/manager.ts:1658:		// even though the scrollback content the user wants to select
+packages/remote/src/shared/terminal/manager.ts:1764:			workspaceId,
+packages/remote/src/shared/terminal/manager.ts:1772:			resizeObserver: new ResizeObserver(() => this.viewportChanged(paneId)),
+packages/remote/src/shared/terminal/manager.ts:1806:		entry.resizeObserver.observe(container);
+packages/remote/src/shared/terminal/manager.ts:1844:						scrollbackLines,
+packages/remote/src/shared/terminal/manager.ts:1913:					scrollbackLen: (paneId: string) => number;
+packages/remote/src/shared/terminal/manager.ts:1921:					sampleHostPixel: (
+packages/remote/src/shared/terminal/manager.ts:1992:				scrollbackLen: (paneId) => {
+packages/remote/src/shared/terminal/manager.ts:1994:					return e ? e.kernel.scrollbackLen() : 0;
+packages/remote/src/shared/terminal/manager.ts:2044:				// bundle hides /src/* URLs). Pairs with `sampleHostPixel`
+packages/remote/src/shared/terminal/manager.ts:2078:				sampleHostPixel: (relX = 0.5, relY = 0.85) => {
+packages/remote/src/shared/terminal/manager.ts:2079:					const host = this.globalHost?.canvas ?? null;
+packages/remote/src/shared/terminal/manager.ts:2191:			entry.resizeObserver.disconnect();
+packages/remote/src/shared/terminal/manager.ts:2219:			// canvas to remove. Host-mode panes share the global host
+packages/remote/src/shared/terminal/manager.ts:2223:			if (this._isHostMode(entry)) {
+packages/remote/src/shared/terminal/manager.ts:2224:				this._invalidateHost();
+packages/remote/src/shared/terminal/manager.ts:2265:		// worker. `destroy` is idempotent on the worker side: an unknown
+packages/remote/src/shared/terminal/manager.ts:2267:		// destroy to fire even when the attached-set is empty (e.g.
+packages/remote/src/shared/terminal/manager.ts:2269:		workerRendererBridge.destroy(paneId);
+packages/remote/src/shared/terminal/manager.ts:2281:	 * resizeHandler closures alive.
+packages/remote/src/shared/terminal/manager.ts:2293:		entry.resizeObserver.disconnect();
+packages/remote/src/shared/terminal/manager.ts:2327:		if (this._isHostMode(entry)) {
+packages/remote/src/shared/terminal/manager.ts:2328:			this._invalidateHost();
+packages/remote/src/shared/terminal/manager.ts:2371:		if (this.attachHostPromise) {
+packages/remote/src/shared/terminal/manager.ts:2372:			try { await this.attachHostPromise; } catch { /* ignore */ }
+packages/remote/src/shared/terminal/manager.ts:2376:		const gh = this.globalHost;
+packages/remote/src/shared/terminal/manager.ts:2377:		const useHost = gh !== null && this.opts.preferWebgpu && !usingWorker;
+packages/remote/src/shared/terminal/manager.ts:2379:		let hostHandle: SurfaceHostHandle | undefined;
+packages/remote/src/shared/terminal/manager.ts:2380:		if (useHost && gh) {
+packages/remote/src/shared/terminal/manager.ts:2411:		// Force a Clear on this workspace's surface so any pre-park
+packages/remote/src/shared/terminal/manager.ts:2413:		if (useHost && hostHandle) {
+packages/remote/src/shared/terminal/manager.ts:2414:			this._invalidateHost();
+packages/remote/src/shared/terminal/manager.ts:2419:		// Force a resize-handler emit on the next fit so PTY rows/cols
+packages/remote/src/shared/terminal/manager.ts:2466:		entry.resizeObserver = new ResizeObserver(() => this.viewportChanged(paneId));
+packages/remote/src/shared/terminal/manager.ts:2467:		entry.resizeObserver.observe(container);
+packages/remote/src/shared/terminal/manager.ts:2620:		// resize-while-claude repro can be replayed in devtools to confirm
+packages/remote/src/shared/terminal/manager.ts:2806:	 *  scrollback ring. The bytes go through an isolated sandbox terminal
+packages/remote/src/shared/terminal/manager.ts:2808:	 *  untouched (see `Terminal::prepend_scrollback` in Rust).
+packages/remote/src/shared/terminal/manager.ts:2811:	 *  live (the Tauri `get_pane_scrollback_before` IPC, in Ridge's case)
+packages/remote/src/shared/terminal/manager.ts:2820:		// No selection / search clear here: prepend grows the scrollback
+packages/remote/src/shared/terminal/manager.ts:2859:	/** Register a callback for (rows, cols) changes — wire to PTY resize.
+packages/remote/src/shared/terminal/manager.ts:2860:	 *  The third arg is the kernel's alt-screen state at resize time
+packages/remote/src/shared/terminal/manager.ts:2861:	 *  (§1.24, 2026-05-06); the backend uses it to skip ConPTY's resize-
+packages/remote/src/shared/terminal/manager.ts:2867:	 *  backend ConPTY resize completes before the kernel grid narrows. */
+packages/remote/src/shared/terminal/manager.ts:2879:		entry.resizeHandler = cb;
+packages/remote/src/shared/terminal/manager.ts:2901:		// the TUI (SIGINT / TUI keybinding). Host copy is still reachable
+packages/remote/src/shared/terminal/manager.ts:2982:	 *   - there is no in-kernel scrollback to scroll instead (alt screen has
+packages/remote/src/shared/terminal/manager.ts:2983:	 *     none, but guard anyway so primary-screen scrollback keeps winning).
+packages/remote/src/shared/terminal/manager.ts:3216:	 * §B.2 (2026-05-08) — drop the in-kernel scrollback ring buffer
+packages/remote/src/shared/terminal/manager.ts:3229:	clearScrollback(paneId: string): void {
+packages/remote/src/shared/terminal/manager.ts:3230:		this.panes.get(paneId)?.kernel.clearScrollback();
+packages/remote/src/shared/terminal/manager.ts:3373:	/** Returns scroll offset (0 = at bottom) and scrollback length, for UI hints. */
+packages/remote/src/shared/terminal/manager.ts:3377:		return { offset: e.kernel.scrollOffset(), total: e.kernel.scrollbackLen() };
+packages/remote/src/shared/terminal/manager.ts:3382:	 *  or `kernel.scrollbackLen` differ from the previous emit, and once
+packages/remote/src/shared/terminal/manager.ts:3405:			const tot = e.kernel.scrollbackLen();
+packages/remote/src/shared/terminal/manager.ts:3432:				tot = entry.kernel.scrollbackLen();
+packages/remote/src/shared/terminal/manager.ts:3459:				workspaceId: entry.workspaceId,
+packages/remote/src/shared/terminal/manager.ts:3714:	 *  `canvas.transferControlToOffscreen()` + `WorkerHostedRenderer.bindCanvas`
+packages/remote/src/shared/terminal/manager.ts:3914:		const gh = this.globalHost;
+packages/remote/src/shared/terminal/manager.ts:3915:		if (!gh || !this._isHostMode(entry)) return null;
+packages/remote/src/shared/terminal/manager.ts:4177:	 *  the rAF loop. Used after split resize to redraw affected panes. */
+packages/remote/src/shared/terminal/manager.ts:4201:	/** Invalidate all panes in a specific workspace. Called after split
+packages/remote/src/shared/terminal/manager.ts:4202:	 *  resize drag completes to refresh all affected panes. */
+packages/remote/src/shared/terminal/manager.ts:4203:	invalidateWorkspace(workspaceId: string): void {
+packages/remote/src/shared/terminal/manager.ts:4206:			if (entry.workspaceId !== workspaceId) continue;
+packages/remote/src/shared/terminal/manager.ts:4299:		this._invalidateHost();
+packages/remote/src/shared/terminal/manager.ts:4318:	 * `fitPane` is async (awaits backend `resize_pane`) but callers
+packages/remote/src/shared/terminal/manager.ts:4350:		this._invalidateHost();
+packages/remote/src/shared/terminal/manager.ts:4355:	 *  It resizes the real PTY (`resize_pane` over the tunnel) to the
+packages/remote/src/shared/terminal/manager.ts:4370:		// resize_pane failed / another viewer re-claimed), retry ONCE and log
+packages/remote/src/shared/terminal/manager.ts:4371:		// loudly — this was previously a silent no-op ("resize 按钮没反应").
+packages/remote/src/shared/terminal/manager.ts:4394:	 * rect → device-pixel clamp → `setViewportOffset` + `resize_surface`,
+packages/remote/src/shared/terminal/manager.ts:4397:	 * back on release — the symptom first reported as "随 pane resize
+packages/remote/src/shared/terminal/manager.ts:4400:	 * **Kernel grid resize + PTY SIGWINCH — debounced.**
+packages/remote/src/shared/terminal/manager.ts:4416:	 * resize, no concurrent in-flight bytes.
+packages/remote/src/shared/terminal/manager.ts:4424:		// during splitter-sidebar drag. Expensive kernel resize is
+packages/remote/src/shared/terminal/manager.ts:4427:		this._invalidateHost();
+packages/remote/src/shared/terminal/manager.ts:4453:	 *  `kernel.resize` + PTY SIGWINCH between the pane's own pointerdown
+packages/remote/src/shared/terminal/manager.ts:4455:	 *  byte against a freshly-resized grid, so the release cell snaps
+packages/remote/src/shared/terminal/manager.ts:4463:		if (this._resizeReleaseListener !== null) return;
+packages/remote/src/shared/terminal/manager.ts:4465:		this._resizeReleaseListener = (e?: Event) => {
+packages/remote/src/shared/terminal/manager.ts:4470:				// a concurrent grid resize racing it.
+packages/remote/src/shared/terminal/manager.ts:4475:		document.addEventListener('pointerup', this._resizeReleaseListener, { passive: true });
+packages/remote/src/shared/terminal/manager.ts:4476:		document.addEventListener('pointercancel', this._resizeReleaseListener, { passive: true });
+packages/remote/src/shared/terminal/manager.ts:4494:		// the whole workspace. Read the CONTAINER's content-box instead
+packages/remote/src/shared/terminal/manager.ts:4501:		if (this._isHostMode(entry)) {
+packages/remote/src/shared/terminal/manager.ts:4520:		// Math.floor(0 / cellW))` we'd resize the kernel to 1×1, the PTY
+packages/remote/src/shared/terminal/manager.ts:4573:		if (this._isHostMode(entry)) {
+packages/remote/src/shared/terminal/manager.ts:4577:			// right/bottom space (< 1 cell) displays as workspace bg.
+packages/remote/src/shared/terminal/manager.ts:4601:			entry.handle?.resize(wCss, hCss, dpr);
+packages/remote/src/shared/terminal/manager.ts:4602:			// Canvas2D fallback: `resize()` resets the canvas CSS box to
+packages/remote/src/shared/terminal/manager.ts:4629:			// the same — kernel resize would be a no-op, skip.
+packages/remote/src/shared/terminal/manager.ts:4652:		// First fit: attach (init). Subsequent fits: resize. The decision
+packages/remote/src/shared/terminal/manager.ts:4673:			case 'resize':
+packages/remote/src/shared/terminal/manager.ts:4675:				// worker can resize its `RenderHandle` backing buffer.
+packages/remote/src/shared/terminal/manager.ts:4679:				workerRendererBridge.resize(
+packages/remote/src/shared/terminal/manager.ts:4697:		//   When the kernel resizes BEFORE the PTY knows about the new
+packages/remote/src/shared/terminal/manager.ts:4701:		//   resize completes before the kernel grid narrows — this
+packages/remote/src/shared/terminal/manager.ts:4709:		//   wipe) inside `kernel.resize` must land BEFORE the foreground
+packages/remote/src/shared/terminal/manager.ts:4717:		//   first, the PTY resize fire after the canvas is clean, and
+packages/remote/src/shared/terminal/manager.ts:4721:		// backend skip the ConPTY resize-silence window so the foreground
+packages/remote/src/shared/terminal/manager.ts:4723:		// src-tauri/src/commands/terminal.rs::resize_pane_inner.
+packages/remote/src/shared/terminal/manager.ts:4725:		// §1.25 (2026-05-06): the kernel itself never reflows on resize
+packages/remote/src/shared/terminal/manager.ts:4726:		// (Grid::resize always uses naive truncate/pad on both screens),
+packages/remote/src/shared/terminal/manager.ts:4734:		// §pane-resize-reflow (2026-05-09): Enhanced diagnostic for resize
+packages/remote/src/shared/terminal/manager.ts:4737:		// internal state at resize time.
+packages/remote/src/shared/terminal/manager.ts:4754:			console.debug('[ridge-term] resize decision', diag);
+packages/remote/src/shared/terminal/manager.ts:4758:		// only mode now, so the mirror's kernel resize is always driven
+packages/remote/src/shared/terminal/manager.ts:4760:		// the Resize delta. We must NOT call `entry.kernel.resize` here
+packages/remote/src/shared/terminal/manager.ts:4762:		// referencing the old/new grid mix. `entry.resizeHandler`
+packages/remote/src/shared/terminal/manager.ts:4763:		// (resize_pane Tauri command) takes care of PTY master.resize +
+packages/remote/src/shared/terminal/manager.ts:4764:		// PaneParser.resize + delta emit in one atomic sequence. The
+packages/remote/src/shared/terminal/manager.ts:4767:		// covers the equivalent "clean snapshot on resize" scenario via
+packages/remote/src/shared/terminal/manager.ts:4771:		// delta 回灌，本地网格在此直接改——否则 cloud 腿（无 pty-resized 回执）
+packages/remote/src/shared/terminal/manager.ts:4775:			entry.kernel.resize(rows, cols);
+packages/remote/src/shared/terminal/manager.ts:4777:		await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
+packages/remote/src/shared/terminal/manager.ts:4779:		// was resized above; immediately project the new grid or the canvas
+packages/remote/src/shared/terminal/manager.ts:4782:		// Mirror resize will follow via apply_delta(Resize) in the
+packages/remote/src/shared/terminal/manager.ts:4785:		// grid changed shape. `entry.handle.resize(wCss,hCss,dpr)` above
+packages/remote/src/shared/terminal/manager.ts:4790:		// resize. Calling invalidateAll unconditionally here makes the
+packages/remote/src/shared/terminal/manager.ts:4797:		// Synchronous first frame after resize. The next rAF tick is
+packages/remote/src/shared/terminal/manager.ts:4805:		// transient render error never blocks the resize from
+packages/remote/src/shared/terminal/manager.ts:4810:			console.error('[ridge-term] post-resize render error', entry.paneId, err);
+packages/remote/src/shared/terminal/manager.ts:4812:		// §pane-resize-reflow (2026-05-09): ALL resize paths need a delayed
+packages/remote/src/shared/terminal/manager.ts:4814:		// with whatever kernel state existed at the moment of resize, but
+packages/remote/src/shared/terminal/manager.ts:4817:		// 30-100 ms after resize_pane returns. Without a delayed refresh,
+packages/remote/src/shared/terminal/manager.ts:4876:			// SurfaceHost::begin_frame; without per-pane repaints those
+packages/remote/src/shared/terminal/manager.ts:4899:			// `forceHostRenderAll` boolean for the whole frame). For
+packages/remote/src/shared/terminal/manager.ts:4924:			// workspace tab is visible at a time → exactly one
+packages/remote/src/shared/terminal/manager.ts:4925:			// workspace's panes have non-zero bbox each tick. We pin
+packages/remote/src/shared/terminal/manager.ts:4927:			// render only that workspace's panes onto the shared global
+packages/remote/src/shared/terminal/manager.ts:4928:			// host. Inactive workspaces' panes are skipped via the 0×0
+packages/remote/src/shared/terminal/manager.ts:4931:			// pixels. Switching workspaces simply changes WHICH panes
+packages/remote/src/shared/terminal/manager.ts:4939:				if (!this._isHostMode(entry)) continue;
+packages/remote/src/shared/terminal/manager.ts:4941:				// First visible host pane wins: pin to its workspace.
+packages/remote/src/shared/terminal/manager.ts:4942:				if (activeWsId === null) activeWsId = entry.workspaceId;
+packages/remote/src/shared/terminal/manager.ts:4943:				// Sanity: skip any pane from a different workspace that
+packages/remote/src/shared/terminal/manager.ts:4947:				if (entry.workspaceId !== activeWsId) continue;
+packages/remote/src/shared/terminal/manager.ts:4967:					// hidden (inactive-workspace) container last tick and is
+packages/remote/src/shared/terminal/manager.ts:4972:					// workspace garble window: the first/idle pane's replay
+packages/remote/src/shared/terminal/manager.ts:4994:			let activeHost: SurfaceHostHandle | null = null;
+packages/remote/src/shared/terminal/manager.ts:4997:				activeHost = this._globalHostHandle();
+packages/remote/src/shared/terminal/manager.ts:5008:			const ensureHostFrame = (): boolean => {
+packages/remote/src/shared/terminal/manager.ts:5010:				if (!activeHost) return false;
+packages/remote/src/shared/terminal/manager.ts:5011:				hostFrameOpen = activeHost.beginFrame(themeBg);
+packages/remote/src/shared/terminal/manager.ts:5020:					// seen for a few frames right after a workspace switch
+packages/remote/src/shared/terminal/manager.ts:5050:				// §4a workspace keep-alive: skip panes whose container has
+packages/remote/src/shared/terminal/manager.ts:5051:				// 0 bbox (display:none on hidden workspace's wrapper).
+packages/remote/src/shared/terminal/manager.ts:5069:				// synchronously; the kernel-resize side effect is async
+packages/remote/src/shared/terminal/manager.ts:5071:				// pure workspace switches — typically same layout).
+packages/remote/src/shared/terminal/manager.ts:5114:			const isHost = this._isHostMode(entry);
+packages/remote/src/shared/terminal/manager.ts:5125:		if (isHost) {
+packages/remote/src/shared/terminal/manager.ts:5148:				// resize, park/unpark) wiped the canvas.
+packages/remote/src/shared/terminal/manager.ts:5153:				const shouldRender = isHost
+packages/remote/src/shared/terminal/manager.ts:5154:					? (activeHost !== null && (dirty || anyDirty || surfaceJustWiped))
+packages/remote/src/shared/terminal/manager.ts:5204:					if (isHost && !ensureHostFrame()) {
+packages/remote/src/shared/terminal/manager.ts:5217:							isHost &&
+packages/remote/src/shared/terminal/manager.ts:5246:			// §A.8: close the active workspace's host frame.
+packages/remote/src/shared/terminal/manager.ts:5247:			if (hostFrameOpen && activeHost) {
+packages/remote/src/shared/terminal/manager.ts:5249:					activeHost.endFrame();
+packages/remote/src/shared/terminal/manager.ts:5251:					console.error('[ridge-term] surfaceHost.endFrame error', err);
+packages/remote/src/shared/terminal/manager.ts:5318:		if (this._resizeReleaseListener !== null && typeof document !== 'undefined') {
+packages/remote/src/shared/terminal/manager.ts:5319:			document.removeEventListener('pointerup', this._resizeReleaseListener);
+packages/remote/src/shared/terminal/manager.ts:5320:			document.removeEventListener('pointercancel', this._resizeReleaseListener);
+packages/remote/src/shared/terminal/manager.ts:5321:			this._resizeReleaseListener = null;
+packages/remote/src/shared/terminal/manager.ts:5328:	 *  visibility flip), theme/font/resize, selection drag, etc. Cheap
+
+COMMAND 2
+git diff --exit-code -- docs/iterations/CONTRACT-iteration-75.md docs/PROJECT-STATE.md src/lib/stores/hosts.ts src/lib/components/hosts/HostsPanel.svelte src/lib/teammate/AgentCenterPanel.svelte packages/remote/src/shared/terminal/manager.ts src/routes/+page.svelte src-tauri/src/lib.rs
+EXIT_CODE=0
+OUTPUT
+
+
+AUDIT SUMMARY
+- Host topology: per-host in-flight dedupe + AbortController + last-good retention exist; refreshHosts waits all live topologies, panel exposes only global refresh spin/busy, no staged attach progress proven in allowed scope.
+- Host drag: UI enables hostSessionDrag for remote/rdg, but allowed store's precise dock primitive attachSessionAt invokes summon_native_session, while remote button uses attachRemoteHostSession; remote drag end-to-end is not proven.
+- Host resize: manager attach schedules real-container first-frame fit; claimPaneSize retries once after 1s. Remote Host binding/manual button end-to-end tests are absent in allowed scope.
+- Terminal memory: scrollback is fixed-capacity at attach (default 2000, settings comment 100..10000); detach frees DOM handle, timers, buffers, kernel and worker mapping. No WebView2 memory-pressure sampler/automatic release policy exists here.
+- Clear: clearScrollback only calls kernel.clearScrollback and wake. +page delegates right-click clear to RidgePane outside this packet. Page + scrollback + backend/remote-buffer equivalence is not proven.
+- Multi-window: src-tauri/src/lib.rs installs tauri_plugin_single_instance and creates only label main. This contradicts requested desktop multi-open; no cross-window workspace owner/focus registry appears in allowed files.
+- Commune: +page renders Agent's Commune tab and AgentCenterPanel only when teammateEnabled or shared projection; panel contains Members/Groups/History. No visible E2E coverage found by CodeGraph, so user non-observation is plausibly gate/discoverability regression, not absent implementation.
+DIAGNOSTIC COMMAND 3
+rg -n "launch_profile|launchProfile|profile_id|profileId|ridge_create|create_teammate|create.*agent|新建.*Agent|启动配置" src/lib/teammate/AgentCenterPanel.svelte src/routes/+page.svelte
+EXIT_CODE=1
+OUTPUT

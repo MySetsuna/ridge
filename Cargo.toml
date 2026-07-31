@@ -15,6 +15,7 @@ members = [
     "src-tauri",
     "packages/ridge-core",
     "packages/ridge-cli",
+    "packages/ridge-kernel",
     "packages/ridge-mcp",
     "packages/ridge-mcp-bridge",
     "packages/ridge-remote",

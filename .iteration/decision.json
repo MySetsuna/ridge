@@ -1,0 +1,52 @@
+{
+  "question": "回顾 Ridge 项目 NotebookLM 最近两次对话及近三日迭代历史：提取用户明确提出的新需求方向、复杂重构边界、优先级、验收要求与未决问题；与当前批准需求、最新代码、上一迭代提交和测试证据交叉核验，逐项列出已实现、半实现、未实现、回归与缺证据项。不得裁决代码事实或直接给出已完成结论。",
+  "target": "为下一大型迭代建立近三日历史走查清单，并供主 Agent 按依赖逐项实施与回归。",
+  "approved_constraints": [
+    "完整纳入最近两次项目 NLM 对话、上一迭代遗留与本次获批稳定性/性能需求。",
+    "手机 Remote runtime.lastError 须先证明 Chrome Messaging API 归属；若属第三方扩展，业务代码 diff 为零。",
+    "NotebookLM 只作战略建议，不裁决代码事实、根因、需求批准或质量。",
+    "终端输入不得丢字节、乱序或改变交互语义。",
+    "外部进程须有统一出口、墙钟超时、取消、Windows 进程树回收与同生死许可。",
+    "不发布、不推送、不删除用户数据、不作无关重构。"
+  ],
+  "verified_facts": [
+    {
+      "fact": "本地 main 已合并 origin/main；当前 HEAD 为 45481d7，稳定性、多窗口、WASM、三日走查及只读生产健康证据已落地。",
+      "evidence": "git status --short --branch；git log；commits 74cb80d、3e967a1、a9023f3、a81674a、0763585、c382fab、45481d7"
+    },
+    {
+      "fact": "PENDING-REQ-20260730-01 已由用户原话“全部批准”提升为 REQ-20260730-01。",
+      "evidence": ".iteration/intakes/INTAKE-20260730-02.json；docs/REQUIREMENTS-SPEC.md"
+    },
+    {
+      "fact": "需求入口闸当前 executable=true，Pending 为空且 Active 结构有效。",
+      "evidence": "requirements_gate.py assert-task-executable --json exit 0"
+    },
+    {
+      "fact": "手机 Remote Chrome Messaging 通道关闭 Fix 已提升为 REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01。",
+      "evidence": ".iteration/intakes/INTAKE-20260730-04.json；docs/REQUIREMENTS-SPEC.md"
+    },
+    {
+      "fact": "NotebookLM 外部 CDP 认证已恢复，当前有效页面为 notebook.google.com，代理校验与 Notebook 列表均成功。",
+      "evidence": "nlm_auth_flow.py verify --proxy http://127.0.0.1:51081；login_check_exit=0；notebook_count=20"
+    }
+  ],
+  "failure_signals": [],
+  "attempts": [],
+  "candidate_solutions": [
+    "先读取 Notebook 最近两次对话与仓库近三日迭代提交，再以 CodeGraph、确定性测试和现场证据逐项复核；NotebookLM 只提供候选建议。"
+  ],
+  "hypotheses": [],
+  "prohibitions": [
+    "不得以 NotebookLM 对话或回答替代当前代码、Git、测试与运行证据。",
+    "不得上传原始日志、全 Git 历史、长聊天或 Pending 草案。",
+    "不得把未在用户对话中明确提出的模型推断写成已批准需求。",
+    "不得直接实施 NotebookLM 建议。"
+  ],
+  "questions": [
+    "最近两次对话各自的时间、主题与用户明确原话要点为何？",
+    "两次对话新增或修改了哪些行为、范围、非目标、边界与验收？",
+    "哪些内容已进入当前 Active REQ，哪些缺失、冲突或仅属 NotebookLM 建议？",
+    "复杂重构涉及哪些架构边界、迁移顺序与停机条件？"
+  ]
+}

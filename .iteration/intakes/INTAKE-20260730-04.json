@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "intake_id": "INTAKE-20260730-04",
+  "classification": "approved",
+  "summary": "用户明确批准此前展示并按手机 Remote 收窄的 Chrome Messaging 通道关闭报错 Fix。",
+  "requirement_ids": [
+    "REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01"
+  ],
+  "pending_ids": [
+    "PENDING-REQ-20260730-02"
+  ],
+  "approval_reasons": [],
+  "open_questions": [],
+  "approval_evidence": "批准 PENDING-REQ-20260730-02",
+  "request_sha256": "8050e36af04d10edd2d8bb30bdbe0fe8bf255db27926d46340c030c515e52332",
+  "requirements_sha256": "ae9b60e56eb147a79e0b0c1033b1a105541eb0fd21c0204a98adaad264accf25",
+  "pending_sha256": "e2de753ae7da9a89df906ec66d743f53150a12adcddc2ef22563ff71da52733a",
+  "draft_sha256": "7097fc3b6b09e043777d6c76b248f20d4c65f6aa3aa60f4c0c6d0d908cc3db4a",
+  "previous_intake_sha256": "1566a00eba08108c62332a48d2fb145d58e472c04b23817153140d690ef8d4a3",
+  "executable": true,
+  "reasons": []
+}

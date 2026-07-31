@@ -122,6 +122,8 @@
   let recentReplies = $state<AgentRecentReply[]>([]);
   let wakingSession = $state('');
   let historyExpanded = $state<Record<string, boolean>>({});
+  /** 恢复时以 YOLO 模式启动（按 agent 配置表注入 yolo 参数）。 */
+  let resumeYolo = $state(false);
   let observedAgentSignals = new Map<string, AgentPaneAttention | null>();
   const recentReplyGroups = $derived.by(() => {
     const groups = new Map<string, AgentRecentReply[]>();
@@ -180,24 +182,58 @@
   }
 
   async function resumeAgentSession(reply: AgentRecentReply): Promise<void> {
-    const resume = reply.resume;
-    if (!resume || !canResume(reply) || !workspaceId || !$activePaneId) return;
+    if (!canResume(reply) || !workspaceId || !$activePaneId) return;
     const targetWorkspaceId = workspaceId;
     let createdPaneId = '';
     try {
+      // 按配置表生成启动计划（含 cwd + resume argv + 可选 YOLO）。
+      const planned = await invoke<{
+        executable: string;
+        argv: string[];
+        cwd: string;
+        sessionId: string;
+      }>('plan_agent_resume', {
+        agent: reply.agent,
+        sessionId: reply.sessionId,
+        cwd: reply.cwd || reply.resume?.cwd || '',
+        yolo: resumeYolo,
+        overrides: loadAgentProfileOverrides(),
+      });
+      if (!planned.cwd) {
+        throw new Error('会话未记录 cwd，无法恢复');
+      }
       createdPaneId = await splitPane($activePaneId, 'horizontal');
+      // 立刻切到新 pane，避免用户仍停在原 pane、误以为「没切 cwd / 没 resume」。
+      activePaneId.set(createdPaneId);
       await invoke('launch_agent_session', {
         workspaceId: targetWorkspaceId,
         paneId: createdPaneId,
-        executable: resume.executable,
-        argv: resume.argv,
-        cwd: resume.cwd,
+        executable: planned.executable,
+        argv: planned.argv,
+        cwd: planned.cwd,
       });
+      showToast(
+        resumeYolo
+          ? `已 YOLO 恢复 ${reply.agent} @ ${planned.cwd}`
+          : `已恢复 ${reply.agent} @ ${planned.cwd}`,
+        'success',
+      );
     } catch (e) {
       if (createdPaneId) {
         try { await closePane(createdPaneId); } catch { /* keep original launch error */ }
       }
       showToast(`恢复会话失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+    }
+  }
+
+  function loadAgentProfileOverrides(): unknown[] {
+    try {
+      const raw = localStorage.getItem('ridge.agentProfiles.overrides');
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
     }
   }
 
@@ -714,11 +750,18 @@
                             title="复用正在运行的 native session"
                           >接入</button>
                         {:else if canResume(reply)}
+                          <label
+                            class="inline-flex shrink-0 items-center gap-0.5 text-[9px] text-[var(--rg-fg-muted)]"
+                            title="开启后以该 agent 的 YOLO 参数启动（如 grok --always-approve）"
+                          >
+                            <input type="checkbox" class="h-3 w-3" bind:checked={resumeYolo} />
+                            YOLO
+                          </label>
                           <button
                             type="button"
                             class="shrink-0 rounded border border-[var(--rg-border)] px-1 text-[9px] text-[var(--rg-accent)] disabled:opacity-40"
                             disabled={!workspaceId || !$activePaneId}
-                            title={!workspaceId || !$activePaneId ? '需先选中工作区与 pane' : `在新 pane 恢复 ${reply.agent} 会话`}
+                            title={!workspaceId || !$activePaneId ? '需先选中工作区与 pane' : `在新 pane 恢复 ${reply.agent} 会话（cwd+resume${resumeYolo ? '+yolo' : ''}）`}
                             onclick={() => void resumeAgentSession(reply)}
                           >恢复</button>
                         {/if}
@@ -738,7 +781,7 @@
       </section>
     {/if}
     <p class="px-1.5 py-1 text-[9px] text-[var(--rg-fg-muted)]">
-      Grok：未启用（尚无可验证的原生会话格式）。
+      识别/恢复以设置 → 智能体 → Agent 启动表为准（内置 claude/codex/grok…，可增改进程名与 YOLO 参数）。
     </p>
     {#if unmatchedHeadlessSessions.length === 0 && recentReplies.length === 0}
       <p class="px-1.5 py-1 text-[11px] text-[var(--rg-fg-muted)]">暂无历史会话。</p>

@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "task": "Close iteration 76 deterministic warning, burst, and per-window workspace isolation wave; preserve external evidence boundaries",
+  "symbols": [
+    "CloudRemoteConnection",
+    "RepeatedErrorAggregator",
+    "RpcClient",
+    "WorkspaceWindowClaims",
+    "split_pane_in_workspace"
+  ],
+  "files": [
+    "docs/PROJECT-STATE.md",
+    "docs/iterations/CONTRACT-iteration-76.md",
+    "packages/remote/src/shared/cloud/auth.ts",
+    "packages/remote/src/shared/transport/rpcClient.test.ts",
+    "src-tauri/src/commands/pane.rs",
+    "src-tauri/src/commands/terminal.rs",
+    "src-tauri/src/commands/workspace.rs",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/state.rs",
+    "src/lib/stores/fileExplorer.ts",
+    "src/lib/stores/paneGitStatus.test.ts",
+    "src/lib/stores/paneTree.test.ts",
+    "src/lib/stores/paneTree.ts",
+    "src/lib/utils/repeatedError.test.ts",
+    "src/remote/lib/cloudRemote.test.ts",
+    "vite.remote.config.js"
+  ],
+  "tests": [
+    "packages/remote/src/shared/transport/rpcClient.test.ts",
+    "src/lib/stores/paneGitStatus.test.ts",
+    "src/lib/stores/paneTree.test.ts",
+    "src/lib/utils/repeatedError.test.ts",
+    "src/remote/lib/cloudRemote.test.ts"
+  ],
+  "constraints": [
+    "No push or release; do not claim public Remote, physical phone, dual Host, or WebView2 long-run evidence"
+  ],
+  "failed_knowledge": [
+    "Live NotebookLM comparison blocked by expired Google authentication"
+  ],
+  "requirements": {
+    "source": "docs/REQUIREMENTS-SPEC.md",
+    "ids": [
+      "REQ-20260730-01",
+      "REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01"
+    ],
+    "records": [
+      {
+        "id": "REQ-20260730-01",
+        "section": "active",
+        "title": "下一迭代：Remote、桌面端与跨窗口稳定性重构",
+        "markdown": "### REQ-20260730-01 · 下一迭代：Remote、桌面端与跨窗口稳定性重构\n\n- 批准依据:`全部批准，现在立刻快速推进。可以使用subagent 或者 用ridge-mcp启动队友高速迭代`\n- 状态:`ACTIVE`\n- 版本:`v1`\n- 行为:拉取并冻结最新代码基线，完整纳入最近两次项目 NLM 对话、上一迭代半成品/未完成/回归项及本次 Remote/桌面稳定性与性能需求；建立三源去重追踪后，按依赖、风险、优先级与可验证性逐轮推进。须消除 Remote 公网高频重复 RPC、超时队列、非 Git 轮询、销毁 Pane 残留请求与重复日志；约束桌面终端内存和 Scrollback，统一真正清空语义；补齐 Agent's Commune 可见性核查、桌面多窗口与 Remote 工作区单例、远程 Host 接入/反馈/拖拽/Resize 全链路。\n- 边界:保留用户工作与 Git 历史；不自动发布、不推送、不删除用户数据、不作无关重构；NotebookLM 只供战略建议，不裁决代码事实；窗口允许多开但 Remote 工作区跨窗口全局单例；终端输入不得丢字节、乱序或改变交互语义；外部进程统一经具墙钟超时、取消、Windows 进程树清理及同生死许可的出口；低优先级浏览器 Warning 不阻塞核心交付。\n- 验收:① 三源矩阵逐项标注已完成/半完成/未完成/回归并附代码、提交/状态和测试证据；② 迭代任务逐项列现状、目标、方案、验收、回归、依赖、风险、优先级、顺序；③ 同场景 Console 重复错误较基线减少至少 90%，同错聚合计数；④ 非 Git 目录每目录生命周期至多探测一次，确认后停 status/branch/stash 轮询，目录切换才重检；⑤ 同键幂等 RPC 未完成时合并，Resize/Input 调度有界且输入不丢不乱，超时指数退避、暂停阈值、队列上限、统计均有确定性测试；⑥ Pane Destroy 后 Pending RPC/计数归零，陈旧 Pane fail-closed，真挂起替身验证超时/取消后进程树回收；⑦ Scrollback 有明确上限和自动释放测试，右键清空及 clear 均清页面、Scrollback、后台缓冲；⑧ 多窗口并存且 Remote 工作区全局单例，重复打开聚焦旧窗口；⑨ 远程 Host 可列出/创建/拖拽接入，弹窗立即关闭、面板反馈阶段，接入后按实际尺寸自动 Resize，按钮可重同步；⑩ Agent's Commune 以可见 E2E 或明确未落地证据验收；⑪ 相关单测、集成/E2E、typecheck、lint、build、运行冒烟均记录命令、退出码和证据；⑫ 性能同场景 A/B 报告 RPC 数、延迟、CPU、网络、WebView2 内存、正确率。\n- 追踪:`REQ-20260730-01 → .iteration/context.json 单目标执行包 → RPC/SCM/PTY/terminal/window/remote-host/commune symbols and paths → deterministic unit/integration/E2E/performance regressions`\n\n#### 执行顺序\n\n1. 同步并冻结基线；读取最近两次 NLM 对话与上一迭代状态，只作事实盘点。\n2. 建三源去重矩阵，先识别既有护栏、半成品、缺测与回归，避免重复建设。\n3. 先立可观测基线与统一 RPC/PTY 生命周期护栏；继而 SCM 非 Git 缓存、日志聚合；再处理终端内存/清空。\n4. 生命周期和观测护栏稳定后，分波推进跨窗口工作区单例与远程 Host 接入。\n5. Agent's Commune 先核需求—实现—展示链：已有则修展示/回归，未有则最小实现。\n6. 核心闸通过后方处理浏览器 Warning。\n\n#### 回归矩阵下限\n\n- 本地桌面、Remote 局域网、Remote 公网等价受控场景；正常网络、延迟、丢包、断连、重连。\n- Git 仓库、非 Git 目录、目录切换；watcher/heartbeat/pane/SCM 多触发同源共闸。\n- Pane 创建、输入、Resize、销毁、恢复；销毁/超时/取消竞态与队列饱和。\n- 长时输出、超限 Scrollback、重复 clear/右键清空、Pane 关闭后的 WebView2 内存回落。\n- 两窗口争用同 Remote 工作区、旧窗口最小化/后台、焦点切换、新窗口打开空闲工作区。\n- 远程 Host 慢发现、空列表、已有工作区、新建失败、拖拽接入、接入后尺寸变化与手动重同步。"
+      },
+      {
+        "id": "REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01",
+        "section": "active",
+        "title": "手机 Remote 端 Chrome Messaging 通道关闭报错根因消除",
+        "markdown": "### REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01 · 手机 Remote 端 Chrome Messaging 通道关闭报错根因消除\n\n- 批准依据:`批准 PENDING-REQ-20260730-02`\n- 状态:`ACTIVE`\n- 版本:`v1`\n- 行为:定位手机 Remote 页面长期高频 `Unchecked runtime.lastError: A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received` 的真实来源。项目监听器仅在确需异步响应时保持通道；成功、失败、异常、超时、提前退出、页面/Tab/Frame/Port 销毁、切后台、导航与重连均恰一次响应或取消；无需响应者不保持通道。发送端消费并分类无接收方、通道关闭与 runtime.lastError，不无意义重试或重复监听。若项目未使用 Chrome Extension Messaging，则以移动浏览器隔离实验确认第三方来源，业务代码不作遮掩性修改。\n- 边界:仅限手机 Remote 端及其启动、PWA/service worker、共享 transport/terminal 与实际移动浏览器运行环境；先证明 API 归属再改码；普通 Worker 同名 sendMessage 不等于 Chrome API；源存在时不改 generated/minified 产物；不屏蔽 Console、不篡改第三方扩展、不顺带清其他告警；响应至多一次，监听器/timer/pending 与页面生命周期同生死且清理归零；重试有界。\n- 验收:① CodeGraph 与精确源码/清单查询列全手机 Remote Chrome Messaging 注册点、发送点及调用链，并排除普通 Worker 同名方法；② 每个 return true/等价异步监听器具成功、失败、throw、timeout、early-return、background、navigation、目标销毁分支测，恰一次完成/取消且计数归零；③ 无需响应者不 return true，Promise 模式仅在实际 API/Manifest 支持时采用；④ 发送端覆盖 no receiver、channel closed、runtime.lastError、页面销毁、切后台、超时，消费错误、重试有界、不重复注册；⑤ 同一手机 Remote 场景 A/B 中项目来源重复错误降为零，终端输入、后台保活、重连与失败反馈不回归；⑥ 若仓库无 Extension Messaging，则以干净 Profile/无扩展环境及逐个禁用对照隔离第三方来源，业务代码 diff 为零；⑦ 输出根因、修改文件、关键调用链、移动自动化/适用真机验证命令、退出码、浏览器版本与证据。\n- 追踪:`REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01 → src/remote startup/service-worker/transport or third-party mobile-browser isolation evidence → unit/integration/mobile-browser console regression`\n\n#### 停机条件\n\n- 未证明手机 Remote 端 API 归属前，不修改业务代码。\n- 实际移动浏览器/Manifest 对 Promise listener 支持不明时，先核官方契约与现有 manifest。\n- 只能在含用户数据的常用移动 Profile 复现且无痕/隔离环境不可用时，停止扩展归因并请求安全诊断窗口。"
+      }
+    ],
+    "max_bytes": 16384
+  },
+  "codegraph": {
+    "mode": "targeted",
+    "queries": [
+      "CloudRemoteConnection",
+      "RepeatedErrorAggregator",
+      "RpcClient",
+      "WorkspaceWindowClaims",
+      "split_pane_in_workspace"
+    ],
+    "full_rebuild": false
+  },
+  "read_policy": {
+    "allowed_files": [
+      "docs/PROJECT-STATE.md",
+      "docs/iterations/CONTRACT-iteration-76.md",
+      "packages/remote/src/shared/cloud/auth.ts",
+      "packages/remote/src/shared/transport/rpcClient.test.ts",
+      "src-tauri/src/commands/pane.rs",
+      "src-tauri/src/commands/terminal.rs",
+      "src-tauri/src/commands/workspace.rs",
+      "src-tauri/src/lib.rs",
+      "src-tauri/src/state.rs",
+      "src/lib/stores/fileExplorer.ts",
+      "src/lib/stores/paneGitStatus.test.ts",
+      "src/lib/stores/paneTree.test.ts",
+      "src/lib/stores/paneTree.ts",
+      "src/lib/utils/repeatedError.test.ts",
+      "src/remote/lib/cloudRemote.test.ts",
+      "vite.remote.config.js"
+    ],
+    "deny_unlisted": true,
+    "max_files": 30
+  },
+  "write_policy": {
+    "allowed_paths": [
+      "docs/PROJECT-STATE.md",
+      "docs/iterations/CONTRACT-iteration-76.md",
+      "packages/remote/src/shared/cloud/auth.ts",
+      "packages/remote/src/shared/transport/rpcClient.test.ts",
+      "src-tauri/src/commands/pane.rs",
+      "src-tauri/src/commands/terminal.rs",
+      "src-tauri/src/commands/workspace.rs",
+      "src-tauri/src/lib.rs",
+      "src-tauri/src/state.rs",
+      "src/lib/stores/fileExplorer.ts",
+      "src/lib/stores/paneGitStatus.test.ts",
+      "src/lib/stores/paneTree.test.ts",
+      "src/lib/stores/paneTree.ts",
+      "src/lib/utils/repeatedError.test.ts",
+      "src/remote/lib/cloudRemote.test.ts",
+      "vite.remote.config.js"
+    ],
+    "deny_unlisted": true
+  },
+  "response_policy": {
+    "format": "delta_evidence_next",
+    "forbid_background_recap": true
+  },
+  "budget": {
+    "schema_version": 1,
+    "max": {
+      "exploration_calls": 5,
+      "codegraph_queries": 10,
+      "files_read": 30,
+      "retries": 3,
+      "token": 80000
+    }
+  }
+}

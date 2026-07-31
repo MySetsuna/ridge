@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "intake_id": "INTAKE-20260731-KERNEL-LIFECYCLE",
+  "classification": "pending",
+  "summary": "Kernel lifecycle deep-root mode + domain + mcp",
+  "requirement_ids": [],
+  "pending_ids": [
+    "PENDING-REQ-RIDGE-KERNEL-HOST-01",
+    "PENDING-REQ-RIDGE-KERNEL-DOMAIN-01",
+    "PENDING-REQ-RIDGE-MCP-AS-KERNEL-API-01"
+  ],
+  "approval_reasons": [
+    "user-lifecycle-detail-revision",
+    "not-always-on-service",
+    "tray-rdg-exit-semantics"
+  ],
+  "open_questions": [],
+  "approval_evidence": "",
+  "request_sha256": "c92fd88e54a4748b043e90f4670df1ca4e8ec5446d62efa53e2908897b07afa8",
+  "requirements_sha256": "4684d482f0407061f22c74491957e9cf92c060f9e2296b5e9a717d1179cbd4bf",
+  "pending_sha256": "6ab8a80a746aa9d1d0c2c99e6971b78fd4106d5acff60ea54d1d1eaee038c807",
+  "draft_sha256": "b8c881a8b557ebf400d657e006114c41cfadd6dc5f984462ac0b18d6cc4e4501",
+  "previous_intake_sha256": "",
+  "executable": false,
+  "reasons": [
+    "approval_required"
+  ]
+}

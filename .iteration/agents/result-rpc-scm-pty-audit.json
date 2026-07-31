@@ -1,0 +1,166 @@
+{
+  "baseline": {
+    "codegraph_revision": "current-index-after-origin-main-merge",
+    "head": "4f8ab2ed1d7094b1e65a42a4ac49d06de064e055",
+    "worktree_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "changed_paths": [],
+  "dispatch_id": "116c7eac1da88bb58f726441",
+  "findings": [
+    {
+      "area": "Git 外部进程唯一出口与回收",
+      "evidence": [
+        "packages/ridge-core/src/commands/git.rs:26-36 前后端具名并发边界及墙钟/网络/permit 超时",
+        "packages/ridge-core/src/commands/git.rs:237-262 git_cmd 统一入口与 Windows CREATE_NO_WINDOW",
+        "packages/ridge-core/src/commands/git.rs:317-403 run_command_with_timeout 在超时/断线时杀进程树并回收活跃计数",
+        "packages/ridge-core/src/commands/git.rs:417-470 semaphore acquire deadline 与 per-slot latest-win",
+        "packages/ridge-core/src/commands/git.rs:2788-3058 含唯一出口、真挂起进程、杀树、queued stale 不 spawn 测试"
+      ],
+      "gap": "此层只约束 git 子进程；不等于 RPC 队列、调用去重或前端取消已完成。",
+      "status": "已完成"
+    },
+    {
+      "area": "get_scm_status latest-win 与取消",
+      "call_chain": "cwd/watcher/remount/manual → runScan/scheduleWatcherRefresh → refreshStatus(root) → invoke(get_scm_status, {repoRoot}) → get_scm_status(slot=None) → spawn_git_blocking_slotted(None) → 三个顺序 git 子进程",
+      "evidence": [
+        "packages/ridge-core/src/commands/git.rs:1041-1045 接受 slot 并走 spawn_git_blocking_slotted",
+        "src/lib/components/SourceControl.svelte:282-294 调用 get_scm_status 时未传 slot",
+        "src/lib/components/SourceControl.svelte:158-180、193-280 的 AbortController/mapLimit 只阻止继续派发",
+        "src/lib/utils/pLimit.ts:16-22 明载已发 invoke 不能取消，最多仍有 limit 个请求继续运行"
+      ],
+      "first_fix": "refreshStatus(root) 统一经 module-scope inflightByRoot；调用传 slot=`scm-status:${normalizedRoot}`。新请求复用同 promise，确需 latest-win 时才 supersede，且 superseded 错误静默。",
+      "isomorphic_test": "让旧同槽 get_scm_status 使用真挂起假 git；触发 cwd/watcher 新请求后断言旧进程树及时归零、仅新结果写缓存、活跃计数归零、Console 无失败噪音。",
+      "root_cause": "后端 latest-win 能力已落地，主调用链未提供稳定槽键，故同 repo 重刷不能 supersede；AbortSignal 未跨 invoke 下沉。",
+      "status": "回归/半完成"
+    },
+    {
+      "area": "非 Git 目录检测与 SCM 轮询",
+      "evidence": [
+        "src/lib/components/SourceControl.svelte:106-111 已取消周期扫描，仅 cwd 集合变化触发",
+        "src/lib/components/SourceControl.svelte:203-280 只对 find_git_repos_below 返回的 .git 根刷新 status",
+        "packages/ridge-core/src/commands/git.rs:1048-1053 在 spawn git 前以 .git ancestors 快速拒绝",
+        "src/lib/components/SourceControl.svelte:209 仅当 repoRoots.length > 0 才命中 cwd signature 快路",
+        "packages/ridge-core/src/commands/git.rs:1285-1304 与 1435-1452 的 branch/stash list 未做非 Git 前置检测，仍会 spawn git"
+      ],
+      "first_fix": "缓存 normalized cwd → git/non-git + generation；空 repoRoots 亦命中 lastCwdSignature。branch/status/stash 共用检测结果，目录 generation 变更才失效。",
+      "gap": "空结果未形成目录生命周期负缓存；同一非 Git cwd 在组件重挂/手刷时仍重扫。branch/stash 也无统一 Repository Detection Cache。",
+      "isomorphic_test": "同一非 Git 目录连续 mount/manual/watcher 触发 100 次，断言检测一次，status/branch/stash git 子进程为 0；切 cwd 后恰重检一次。",
+      "status": "半完成"
+    },
+    {
+      "area": "RpcClient 请求护栏",
+      "evidence": [
+        "packages/remote/src/shared/transport/rpcClient.ts:135-174 每请求默认 20 秒 timeout，并支持 AbortSignal",
+        "packages/remote/src/shared/transport/rpcClient.ts:245-265 dispose/settle 清 timer 与 abort listener",
+        "packages/remote/src/shared/transport/rpcClient.ts:339-390 断连时 rejectAllInFlight，pending 归零",
+        "packages/remote/src/shared/cloud/faultInjection.test.ts:74-105、205-233 验证断连与 100 次恢复后 inFlight/timer 归零"
+      ],
+      "first_fix": "RpcClient 增全局 pending cap、method/key 诊断计数及 timeout 后 $/cancel；语义去重由上层显式 policy/key 驱动，禁止对 write_to_pty 盲目同 method 去重。",
+      "gap": "pending Map 无上限；同 method/key 可无限并发；无合并、排队、指数退避、暂停阈值、超时统计。timeout 分支只本地 settle，未 sendCancel，host 可能继续执行。request 亦未按 ready 状态 fail-closed。",
+      "isomorphic_test": "制造永不回应 transport：超过 cap 立即拒绝；timeout 后 pending=0 且只发一次 $/cancel；连续超时触发指数退避/暂停，恢复后探测放行；统计值精确。",
+      "status": "半完成"
+    },
+    {
+      "area": "Terminal Input 调度",
+      "evidence": [
+        "src/lib/components/RidgePane.svelte:995-1016 桌面输入进入 enqueuePtyWrite，保每 Pane FIFO",
+        "src/remote/lib/cloudRemote.ts:614-621 移动 Cloud Remote 每次输入直接 bridge.invoke(write_to_pty)，仅 catch 丢弃错误",
+        "src/lib/components/RidgePane.svelte:1329-1368 卸载只 park manager，未取消已排 write"
+      ],
+      "first_fix": "CloudRemoteConnection 增 per-pane ordered byte queue：单 in-flight、微任务/短窗合批、字节上限、超时退避；绝不丢字节或乱序。Pane close/prune/disconnect 取消并清 pending。",
+      "gap": "桌面 FIFO tail 无队列长度/字节上限与 Pane 销毁取消；前项卡住则后项无限堆积。移动端无 FIFO、合批、上限、背压、退避或可观测性，失败被静默吞掉。",
+      "isomorphic_test": "慢/超时 transport 下连续输入序号字节与大粘贴；断言 host 收到内容逐字节相等且顺序一致、inFlight=1、队列不越界；close 后 pending/计数归零且无 Pane not found。",
+      "status": "桌面半完成，移动 Remote 未完成"
+    },
+    {
+      "area": "Resize 调度",
+      "evidence": [
+        "src/remote/lib/cloudRemote.ts:623-638 refreshPane/claimPane 每次直接 invoke resize_pane，无相同尺寸去重、debounce、singleflight 或 backoff",
+        "src/lib/components/RidgePane.svelte:967-1056 仅拒绝非 UUID paneId；其余 resize 直接等待 invoke",
+        "src/remote/lib/cloudRemote.ts:639-641 _refreshSeq 只计调用，不是 timeout/queue 指标"
+      ],
+      "first_fix": "per-pane resize latest-value-wins：相同尺寸跳过；一项 in-flight + 一项覆盖式 pending；布局稳定后立即发送最终实际尺寸，超时按同键退避，Pane 关闭即取消。",
+      "isomorphic_test": "ResizeObserver 1,000 次尺寸抖动且首请求挂起；断言在途至多 1、待发至多 1、最终 host 尺寸等于最后值、重复相同值不发、销毁后无调用。",
+      "status": "未完成（移动 Cloud Remote）；桌面调用点仅局部防御"
+    },
+    {
+      "area": "Pane 生命周期与 Pending RPC",
+      "evidence": [
+        "src/remote/lib/cloudRemote.ts:299-309 reconnect/disconnect 清输出订阅集合",
+        "src/remote/lib/cloudRemote.ts:666-683 closePane 只移除 pty-output listener",
+        "src/remote/lib/cloudRemote.ts:884-917 prune/disconnect 清 listener/cursor 并断 transport",
+        "packages/remote/src/shared/transport/rpcClient.ts:245-250 dispose 全局 reject pending"
+      ],
+      "first_fix": "以 workspaceId:paneId 统一生命周期 token；所有 pane RPC 注册其下。Destroy 先标 dead/abort pending/清队列，再发 close；完成回调须核对 generation，陈旧 Pane fail-closed。",
+      "gap": "缺 Pane-scoped AbortController/pending registry；closePane/pruneOutputs 不取消 write/resize/scrollback invoke。桌面 enqueue tail 亦无 pane destroy API。",
+      "isomorphic_test": "write、resize、scrollback 各挂起一项后 close；断言取消帧、pending/队列/监听器/计数全归零，迟到响应不得写状态或重试。",
+      "status": "半完成"
+    },
+    {
+      "area": "Branch/Stash 去重与错误日志",
+      "evidence": [
+        "src/lib/components/SourceControl.svelte:1386-1395 branch list 每次直接 invoke，错误逐次 console.error",
+        "src/lib/components/PaneGitPill.svelte:66-84 仅单组件 loading 防重与迟到结果防污染；多 Pane 同 repo 不共享",
+        "src/lib/components/SourceControl.svelte:402-419 stash 由 selectedRepo effect 调用，错误逐次 console.error",
+        "src/lib/components/RidgePane.svelte:1014-1055 write/resize 失败逐次 console.error"
+      ],
+      "first_fix": "查询类 RPC 统一 keyed singleflight/cache；日志按 error fingerprint 聚合，首条 Debug/Info，窗口期末输出 repeated N times；superseded/cancel 不计业务错误。",
+      "gap": "无跨组件同 repo singleflight、无取消、无错误聚合/重复计数/等级；部分移动端 catch 全静默，既不可观测又无退避。",
+      "isomorphic_test": "100 个 Pane 同 repo 同时开 picker，仅一条 git_list_branches；注入同错 126 次，仅首条及一次汇总，汇总包含 repeated 126 times。",
+      "status": "未完成/局部"
+    },
+    {
+      "area": "确定性回归覆盖",
+      "evidence": [
+        "packages/ridge-core/src/commands/git.rs 已覆盖真挂起、杀树、并发闸、同槽 supersede",
+        "packages/remote/src/shared/cloud/faultInjection.test.ts 已覆盖断连重连与 pending/timer 归零"
+      ],
+      "gap": "未覆盖 RPC pending cap、同键合并、timeout cancel、退避/熔断、Terminal Input 保序有界队列、Resize latest-win、Pane destroy cancel、非 Git 负缓存与日志聚合。",
+      "status": "半完成"
+    }
+  ],
+  "model_execution": {
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "high"
+  },
+  "packet_hash": "a9f6a54d765797d22500ad72f4af8007a4c0a287911f593d8cccf0162b2b3f88",
+  "priority_order": [
+    "P0：移动 Cloud Remote write_to_pty 保序有界队列 + resize_pane latest-win；禁止静默失败",
+    "P0：RpcClient pending cap、timeout cancel、timeout/queue 指标、退避/暂停阈值",
+    "P0：get_scm_status 稳定 slot + per-root singleflight，取消下沉至 git 杀树",
+    "P1：Repository Detection Cache 覆盖空/非 Git，status/branch/stash 共用",
+    "P1：Pane-scoped lifecycle token，Destroy 清 pending/队列",
+    "P1：错误 fingerprint 聚合与 repeated N times 汇总"
+  ],
+  "result_hash": "ecd49ea3f153c0bd6005a377106e6e6a0eafa18150c36f216749477e82e8c933",
+  "schema_version": 1,
+  "status": "completed",
+  "summary": "Git 子进程硬护栏已完成，但未贯通到前端调用：get_scm_status 的 slot 从未传入，取消仅停后续 fanout；移动 Cloud Remote 的 write_to_pty/resize_pane 仍逐次 fire-and-forget。RpcClient 仅有单请求超时、Abort、重连/释放清 pending，缺队列上限、同键合并、退避/熔断、超时统计与超时后远端取消。首修应先在移动 Remote 建每 Pane 语义调度器（输入保序合批、Resize latest-win），并令所有状态查询传稳定 slot/共享 singleflight；随后补 Pane 销毁取消及同构弱网测试。",
+  "task_id": "rpc-scm-pty-audit",
+  "token_usage": {
+    "cache_read": 0,
+    "cache_write": 0,
+    "input": 0,
+    "output": 0,
+    "total": 0
+  },
+  "token_usage_note": "当前子代理无可归属的逐会话计量；token-usage --all 仅返回跨会话全局汇总，故不伪造分摊。",
+  "verification": [
+    {
+      "command": "rg -n \"MAX_WORKER_PENDING|WORKER_REQUEST_TIMEOUT_MS|enqueuePtyWrite|get_scm_status|git_list_branches|write_to_pty|resize_pane\" packages/remote/src/shared/transport/rpcClient.ts src/remote/lib/cloudRemote.ts src/lib/components/RidgePane.svelte src/lib/components/SourceControl.svelte src/lib/components/PaneGitPill.svelte packages/ridge-core/src/commands/git.rs",
+      "evidence": {
+        "path": ".iteration/agents/evidence-rpc-scm-pty-audit.txt",
+        "sha256": "900fb39f026b8757c5934db5ba5a1b0551f39c3f1a7458edc95e2aee2cb8fdf5"
+      },
+      "exit_code": 0
+    },
+    {
+      "command": "git diff --exit-code -- packages/remote/src/shared/transport/rpcClient.ts src/remote/lib/cloudRemote.ts src/lib/components/RidgePane.svelte src/lib/components/SourceControl.svelte src/lib/components/PaneGitPill.svelte src/lib/utils/pLimit.ts packages/ridge-core/src/commands/git.rs packages/remote/src/shared/cloud/faultInjection.test.ts",
+      "evidence": {
+        "path": ".iteration/agents/evidence-rpc-scm-pty-audit.txt",
+        "sha256": "900fb39f026b8757c5934db5ba5a1b0551f39c3f1a7458edc95e2aee2cb8fdf5"
+      },
+      "exit_code": 0
+    }
+  ]
+}
