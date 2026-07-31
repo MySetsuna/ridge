@@ -1,0 +1,21 @@
+{
+    "schema_version":  1,
+    "pending_ids":  [
+
+                    ],
+    "requirement_ids":  [
+                            "REQ-RIDGE-KERNEL-HOST-01",
+                            "REQ-RIDGE-KERNEL-DOMAIN-01",
+                            "REQ-RIDGE-MCP-AS-KERNEL-API-01"
+                        ],
+    "classification":  "active",
+    "summary":  "Independent ridge-kernel process host architecture",
+    "open_questions":  [
+
+                       ],
+    "intake_id":  "INTAKE-20260731-KERNEL-BEST-01",
+    "approval_evidence":  "",
+    "approval_reasons":  [
+
+                         ]
+}

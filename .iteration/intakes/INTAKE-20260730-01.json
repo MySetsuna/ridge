@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "intake_id": "INTAKE-20260730-01",
+  "classification": "pending",
+  "summary": "整合最近两次 NotebookLM 新方向、上一迭代遗留及 Remote/桌面稳定性与性能问题，规划并推进大型下一迭代。",
+  "requirement_ids": [],
+  "pending_ids": [
+    "PENDING-REQ-20260730-01"
+  ],
+  "approval_reasons": [
+    "当前消息新增并修订多个产品行为、性能指标与重构目标，须先走 Pending 审批。"
+  ],
+  "open_questions": [
+    "最近两次 NLM 对话和上一迭代的具体事实须获批后读取；若揭示本草案未展示的新产品行为，须另行 Pending 审批。"
+  ],
+  "approval_evidence": "",
+  "request_sha256": "4eabb1c5351e83ebf6b58f97a6dda892031a93353031bfa55b945e445e263d42",
+  "requirements_sha256": "2f6651f0e7e7de8ce77a911c89f5651108639a9c940cdd707b162f740a3467d0",
+  "pending_sha256": "61470c30609c285acfa138f981d675428cf67b80552a49f81a22f63f482da435",
+  "draft_sha256": "aac392393cfd171b1459202ccd28a1db502cb304e76f0c9e4a3c56e61b534f92",
+  "previous_intake_sha256": "",
+  "executable": false,
+  "reasons": [
+    "approval_required"
+  ]
+}

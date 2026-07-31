@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "max": {
+    "exploration_calls": 5,
+    "codegraph_queries": 10,
+    "files_read": 30,
+    "retries": 3,
+    "token": 80000
+  }
+}

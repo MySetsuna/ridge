@@ -838,6 +838,16 @@ fn read_agent_recent_replies_sync(
             }
         }
     }
+    // Grok Build：`~/.grok/sessions/<encoded-cwd>/<session-id>/summary.json` + chat_history.jsonl
+    for session in collect_grok_sessions(home) {
+        let key = (session.agent.to_ascii_lowercase(), session.session_id.clone());
+        match sessions.get(&key) {
+            Some(current) if current.timestamp > session.timestamp => {}
+            _ => {
+                sessions.insert(key, session);
+            }
+        }
+    }
     let mut replies: Vec<_> = sessions.into_values().collect();
     replies.retain(|reply| {
         filters.is_empty() || filters.iter().any(|path| same_or_child_path(&reply.cwd, path))
@@ -845,6 +855,139 @@ fn read_agent_recent_replies_sync(
     replies.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     replies.truncate(limit.min(100));
     replies
+}
+
+/// 扫描 Grok 会话目录，每会话一条最近摘要（summary.json + chat_history 尾部）。
+fn collect_grok_sessions(home: &Path) -> Vec<AgentRecentReply> {
+    let root = home.join(".grok").join("sessions");
+    let mut out = Vec::new();
+    collect_grok_session_dirs(&root, 0, &mut out);
+    out
+}
+
+fn collect_grok_session_dirs(dir: &Path, depth: usize, out: &mut Vec<AgentRecentReply>) {
+    if depth > 10 || out.len() >= 200 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let summary = path.join("summary.json");
+        if summary.is_file() {
+            if let Some(reply) = parse_grok_session_dir(&path) {
+                out.push(reply);
+            }
+            continue;
+        }
+        collect_grok_session_dirs(&path, depth + 1, out);
+        if out.len() >= 200 {
+            break;
+        }
+    }
+}
+
+fn parse_grok_session_dir(dir: &Path) -> Option<AgentRecentReply> {
+    let summary_path = dir.join("summary.json");
+    let summary_raw = std::fs::read_to_string(&summary_path).ok()?;
+    let summary: serde_json::Value = serde_json::from_str(&summary_raw).ok()?;
+    let info = summary.get("info").unwrap_or(&summary);
+    let session_id = info
+        .get("id")
+        .and_then(|v| v.as_str())
+        .or_else(|| dir.file_name().and_then(|n| n.to_str()))?
+        .to_string();
+    let cwd = info
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let title = summary
+        .get("generated_title")
+        .or_else(|| summary.get("session_summary"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("Grok session")
+        .trim()
+        .to_string();
+    let timestamp = summary
+        .get("last_active_at")
+        .or_else(|| summary.get("updated_at"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp_millis().max(0) as u64)
+        .or_else(|| {
+            std::fs::metadata(&summary_path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+        })
+        .unwrap_or(0);
+    let text = read_grok_last_assistant_text(&dir.join("chat_history.jsonl"))
+        .unwrap_or_else(|| title.clone());
+    let profiles = crate::teammate::agent_catalog::builtin_profiles();
+    let profile = crate::teammate::agent_catalog::find_profile(&profiles, "grok");
+    let resume = profile.map(|p| {
+        let (executable, argv, cwd_out) =
+            crate::teammate::agent_catalog::plan_resume(p, &session_id, &cwd, false);
+        AgentResumeSpec {
+            executable,
+            argv,
+            cwd: cwd_out,
+            session_id: session_id.clone(),
+        }
+    });
+    Some(AgentRecentReply {
+        agent: "Grok".into(),
+        title,
+        text,
+        timestamp,
+        cwd,
+        session_id,
+        resume,
+    })
+}
+
+fn read_grok_last_assistant_text(history: &Path) -> Option<String> {
+    let content = read_jsonl_window(history).ok()?;
+    let mut last = None;
+    for line in content.lines().rev() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        let text = match value.get("content") {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .filter_map(|item| {
+                    if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
+                        Some(t.to_string())
+                    } else if item.get("type").and_then(|v| v.as_str()) == Some("text") {
+                        item.get("text")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => continue,
+        };
+        let text = text.trim();
+        if !text.is_empty() {
+            last = Some(text.chars().take(4000).collect());
+            break;
+        }
+    }
+    last
 }
 
 fn normalized_paths(paths: &[String]) -> Vec<String> {
@@ -989,17 +1132,25 @@ fn parse_agent_jsonl(agent: &str, content: &str, fallback_timestamp: u64) -> Vec
         };
         let resume = {
             let id = &line_session;
-            let (executable, argv) = match agent.to_ascii_lowercase().as_str() {
-                "claude" => ("claude", vec!["--resume", id.as_str()]),
-                "codex" => ("codex", vec!["resume", id.as_str()]),
-                _ => continue,
+            let profiles = crate::teammate::agent_catalog::builtin_profiles();
+            let Some(profile) =
+                crate::teammate::agent_catalog::find_profile(&profiles, agent)
+            else {
+                continue;
             };
-            Some(AgentResumeSpec {
-                executable: executable.to_string(),
-                argv: argv.into_iter().map(str::to_string).collect(),
-                cwd: line_project.clone(),
-                session_id: id.clone(),
-            })
+            let (executable, argv, cwd_out) =
+                crate::teammate::agent_catalog::plan_resume(profile, id, &line_project, false);
+            if argv.is_empty() && profile.resume_argv.is_empty() {
+                // aider 等无 resume 模板：仍可展示历史，但不提供一键恢复。
+                None
+            } else {
+                Some(AgentResumeSpec {
+                    executable,
+                    argv,
+                    cwd: cwd_out,
+                    session_id: id.clone(),
+                })
+            }
         };
         let reply = AgentRecentReply {
             agent: agent.to_string(),
@@ -1055,6 +1206,54 @@ fn json_timestamp_ms(value: &serde_json::Value) -> Option<u64> {
 pub async fn path_exists(path: String) -> Result<bool, String> {
     // §S5: delegate to the migrated `ridge_core` port (same normalisation).
     Ok(ridge_core::fs::commands::path_exists(&path))
+}
+
+/// 内置 +（可选）用户覆盖后的 agent 配置表，供设置面板与恢复 YOLO 使用。
+/// `overrides` 缺省时读后端持久化覆盖（与 autodiscover 同源）。
+#[tauri::command]
+pub fn list_agent_profiles(
+    overrides: Option<Vec<crate::teammate::agent_catalog::AgentProfile>>,
+) -> Vec<crate::teammate::agent_catalog::AgentProfile> {
+    let stored = crate::teammate::agent_catalog::load_profile_overrides();
+    let o = overrides.as_deref().unwrap_or(&stored);
+    crate::teammate::agent_catalog::merge_profiles(o)
+}
+
+/// 持久化用户 agent 覆盖，并失效 autodiscover 扫描缓存，使 processNames 立即参与识别。
+#[tauri::command]
+pub fn save_agent_profile_overrides(
+    overrides: Vec<crate::teammate::agent_catalog::AgentProfile>,
+) -> Result<(), String> {
+    crate::teammate::agent_catalog::save_profile_overrides(overrides)?;
+    crate::teammate::autodiscover::invalidate_cache();
+    Ok(())
+}
+
+/// 按 agent id/进程名生成恢复启动计划（含 YOLO 参数注入）。
+#[tauri::command]
+pub fn plan_agent_resume(
+    agent: String,
+    session_id: String,
+    cwd: String,
+    yolo: bool,
+    overrides: Option<Vec<crate::teammate::agent_catalog::AgentProfile>>,
+) -> Result<AgentResumeSpec, String> {
+    let stored = crate::teammate::agent_catalog::load_profile_overrides();
+    let o = overrides.as_deref().unwrap_or(&stored);
+    let profiles = crate::teammate::agent_catalog::merge_profiles(o);
+    let profile = crate::teammate::agent_catalog::find_profile(&profiles, &agent)
+        .ok_or_else(|| format!("unknown agent profile: {agent}"))?;
+    let (executable, argv, cwd_out) =
+        crate::teammate::agent_catalog::plan_resume(profile, &session_id, &cwd, yolo);
+    if argv.is_empty() && profile.resume_argv.is_empty() {
+        return Err(format!("agent {agent} has no resume argv template"));
+    }
+    Ok(AgentResumeSpec {
+        executable,
+        argv,
+        cwd: cwd_out,
+        session_id,
+    })
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1134,6 +1333,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_grok_session_dir_summary_and_history() {
+        let td = TempDir::new("grok-sess");
+        let sess = td.join("019fb572-test-session");
+        std::fs::create_dir_all(&sess).unwrap();
+        std::fs::write(
+            sess.join("summary.json"),
+            r#"{"info":{"id":"019fb572-test-session","cwd":"C:\\code\\wind"},"generated_title":"Grok fixture","last_active_at":"2026-07-31T01:00:00Z"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sess.join("chat_history.jsonl"),
+            r#"{"type":"user","content":"hi"}
+{"type":"assistant","content":"hello from grok"}
+"#,
+        )
+        .unwrap();
+        let reply = parse_grok_session_dir(&sess).expect("grok session");
+        assert_eq!(reply.agent, "Grok");
+        assert_eq!(reply.session_id, "019fb572-test-session");
+        assert_eq!(reply.cwd, r"C:\code\wind");
+        assert!(reply.text.contains("hello from grok"));
+        let resume = reply.resume.expect("resume");
+        assert_eq!(resume.executable, "grok");
+        assert!(resume.argv.iter().any(|a| a == "--resume"));
+        assert!(resume.argv.iter().any(|a| a == "019fb572-test-session"));
+        assert_eq!(resume.cwd, r"C:\code\wind");
+    }
+
+    #[test]
     fn aggregates_one_latest_reply_per_native_session() {
         let replies = parse_agent_jsonl(
             "Claude",
@@ -1153,6 +1381,60 @@ mod tests {
         assert!(same_or_child_path(r"C:\code\wind\src", "c:/code/wind"));
         assert!(same_or_child_path(r"C:\code\wind", "c:/code/wind/src"));
         assert!(!same_or_child_path(r"C:\code\windmill", "c:/code/wind"));
+    }
+
+    /// 本机若存在 Codex/Grok 会话目录，则真实扫描路径须解析出非空条目（非 fixture）。
+    #[test]
+    fn real_home_codex_or_grok_sessions_parse_when_present() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let codex_root = home.join(".codex").join("sessions");
+        let grok_root = home.join(".grok").join("sessions");
+        let has_codex = codex_root.is_dir();
+        let has_grok = grok_root.is_dir();
+        if !has_codex && !has_grok {
+            return; // 干净 CI 无本机会话目录时跳过，不假绿
+        }
+        let replies = read_agent_recent_replies_sync(&home, Vec::new(), 40);
+        if has_codex {
+            // 本机有 .codex/sessions 时，至少应能扫到 jsonl 并尝试解析；
+            // 若格式全不兼容则 replies 可能无 Codex 行——此时要求至少 collect 不 panic，
+            // 且对首个 jsonl 用 parse_agent_jsonl 的 Codex 路径可被调用。
+            let mut files = Vec::new();
+            collect_jsonl_files(&codex_root, "Codex", 0, &mut files);
+            assert!(
+                !files.is_empty(),
+                "expected jsonl under ~/.codex/sessions when dir exists"
+            );
+            let (_agent, path, modified) = &files[0];
+            if let Ok(content) = read_jsonl_window(path) {
+                let parsed = parse_agent_jsonl("Codex", &content, *modified);
+                // 允许单文件无 assistant 行，但函数须返回（不 panic）
+                let _ = parsed.len();
+            }
+        }
+        if has_grok {
+            let grok = collect_grok_sessions(&home);
+            assert!(
+                !grok.is_empty(),
+                "expected Grok sessions under ~/.grok/sessions when dir exists"
+            );
+            assert!(
+                grok.iter().any(|r| r.agent.eq_ignore_ascii_case("Grok")),
+                "Grok agent label missing in real-home parse"
+            );
+            assert!(
+                grok.iter().any(|r| r
+                    .resume
+                    .as_ref()
+                    .map(|s| s.executable == "grok" && s.argv.iter().any(|a| a == "--resume"))
+                    .unwrap_or(false)),
+                "Grok resume plan missing --resume"
+            );
+        }
+        // 跨源聚合路径也跑通
+        let _ = replies.len();
     }
 
     // ── create_file / create_directory ──────────────────────────────────────

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "intake_id": "INTAKE-20260731-NLM-P0",
+  "classification": "pending",
+  "summary": "NLM openplan P0 three items as next iteration Pending",
+  "requirement_ids": [],
+  "pending_ids": [
+    "PENDING-REQ-R-CDP-150-01",
+    "PENDING-REQ-R-VERIFY-01",
+    "PENDING-REQ-R-INCR-01"
+  ],
+  "approval_reasons": [
+    "user-requested-next-iter-from-nlm-latest",
+    "openplan-note-4b8db248-p0-order"
+  ],
+  "open_questions": [],
+  "approval_evidence": "",
+  "request_sha256": "768d922b0719d30542271c0df6cde2e3a62f61bef867e95273e4c004328cb6a8",
+  "requirements_sha256": "4684d482f0407061f22c74491957e9cf92c060f9e2296b5e9a717d1179cbd4bf",
+  "pending_sha256": "2de0b3178baf9701429785b5e2d6a83e1156e3d50662a2f9a8426ddb62861259",
+  "draft_sha256": "c05c40414146da1695bb75d878b30ed317481d8700a3d642a1b15aca050cee98",
+  "previous_intake_sha256": "",
+  "executable": false,
+  "reasons": [
+    "approval_required"
+  ]
+}

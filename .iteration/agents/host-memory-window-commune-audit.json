@@ -1,0 +1,107 @@
+{
+  "baseline": {
+    "codegraph_revision": "current-index-after-origin-main-merge",
+    "head": "4f8ab2ed1d7094b1e65a42a4ac49d06de064e055",
+    "worktree_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "codegraph": {
+    "facts": [
+      {
+        "evidence": "CodeGraph 返回 packages/remote/src/shared/terminal/manager.ts::clearScrollback/destroy/fit 调用点。",
+        "fact": "terminal manager 已有默认 scrollback 5000、clearScrollback、destroy 清 worker/timer/coalesced bytes 与 Resize 防抖；仍须核验 UI 右键清空及后台/远端全链语义。"
+      },
+      {
+        "evidence": "docs/iterations/CONTRACT-iteration-75.md、docs/PROJECT-STATE.md；项目 AGENTS.md 的运行事实验收规则。",
+        "fact": "迭代 75 契约与项目状态已随 origin/main 合入，须以运行证据而非文档关闭标记判断完成度。"
+      }
+    ],
+    "queries": [
+      "HostsPanel、hosts store、AgentCenterPanel、terminal manager、Tauri window 与 workspace 打开流程；远程 Host attach/resize、clearScrollback/destroy、Agent Commune 展示、多窗口单例调用链"
+    ]
+  },
+  "constraints": [
+    "先用 CodeGraph；若目标文件在索引待同步横幅中，才精确读取该文件。",
+    "不得修改业务代码、文档、依赖或生成物。",
+    "不得调用 NotebookLM、批准需求、提交或推送。",
+    "文档标记仅作线索；完成状态必须同时给代码符号、确定性测或明确缺证。",
+    "分别覆盖 Host 列表/新增反馈/拖拽/首帧 Resize、内存释放/Scrollback/clear、多窗口工作区单例、Commune 可见性。",
+    "将结构化结果写入 packet 指定 result_path；验证输出写入 .iteration/agents/evidence-host-memory-window-commune-audit.txt。"
+  ],
+  "depends_on": [],
+  "dispatch_id": "116c7eac1da88bb58f726441",
+  "exclusive_resources": [],
+  "execution_kind": "read",
+  "isolation": "shared",
+  "model_route": {
+    "difficulty": "complex",
+    "reasoning_effort": "high",
+    "resolution": "backend_adapter",
+    "tier": "frontier"
+  },
+  "objective": "承接迭代 75：核对远程 Host 接入、终端 Scrollback/真正清空/释放、多窗口与工作区单例、Agent's Commune 展示现状，标出半成品、未完成和回归及可验证首修顺序。",
+  "packet_bytes": 8300,
+  "packet_hash": "fe9b8b739d214c78e1652f4dd62fcdf7f350250add226b00533d2081a05f89f4",
+  "requirements": {
+    "ids": [
+      "REQ-20260730-01"
+    ],
+    "records": [
+      {
+        "id": "REQ-20260730-01",
+        "markdown": "### REQ-20260730-01 · 下一迭代：Remote、桌面端与跨窗口稳定性重构\n\n- 批准依据:`全部批准，现在立刻快速推进。可以使用subagent 或者 用ridge-mcp启动队友高速迭代`\n- 状态:`ACTIVE`\n- 版本:`v1`\n- 行为:拉取并冻结最新代码基线，完整纳入最近两次项目 NLM 对话、上一迭代半成品/未完成/回归项及本次 Remote/桌面稳定性与性能需求；建立三源去重追踪后，按依赖、风险、优先级与可验证性逐轮推进。须消除 Remote 公网高频重复 RPC、超时队列、非 Git 轮询、销毁 Pane 残留请求与重复日志；约束桌面终端内存和 Scrollback，统一真正清空语义；补齐 Agent's Commune 可见性核查、桌面多窗口与 Remote 工作区单例、远程 Host 接入/反馈/拖拽/Resize 全链路。\n- 边界:保留用户工作与 Git 历史；不自动发布、不推送、不删除用户数据、不作无关重构；NotebookLM 只供战略建议，不裁决代码事实；窗口允许多开但 Remote 工作区跨窗口全局单例；终端输入不得丢字节、乱序或改变交互语义；外部进程统一经具墙钟超时、取消、Windows 进程树清理及同生死许可的出口；低优先级浏览器 Warning 不阻塞核心交付。\n- 验收:① 三源矩阵逐项标注已完成/半完成/未完成/回归并附代码、提交/状态和测试证据；② 迭代任务逐项列现状、目标、方案、验收、回归、依赖、风险、优先级、顺序；③ 同场景 Console 重复错误较基线减少至少 90%，同错聚合计数；④ 非 Git 目录每目录生命周期至多探测一次，确认后停 status/branch/stash 轮询，目录切换才重检；⑤ 同键幂等 RPC 未完成时合并，Resize/Input 调度有界且输入不丢不乱，超时指数退避、暂停阈值、队列上限、统计均有确定性测试；⑥ Pane Destroy 后 Pending RPC/计数归零，陈旧 Pane fail-closed，真挂起替身验证超时/取消后进程树回收；⑦ Scrollback 有明确上限和自动释放测试，右键清空及 clear 均清页面、Scrollback、后台缓冲；⑧ 多窗口并存且 Remote 工作区全局单例，重复打开聚焦旧窗口；⑨ 远程 Host 可列出/创建/拖拽接入，弹窗立即关闭、面板反馈阶段，接入后按实际尺寸自动 Resize，按钮可重同步；⑩ Agent's Commune 以可见 E2E 或明确未落地证据验收；⑪ 相关单测、集成/E2E、typecheck、lint、build、运行冒烟均记录命令、退出码和证据；⑫ 性能同场景 A/B 报告 RPC 数、延迟、CPU、网络、WebView2 内存、正确率。\n- 追踪:`REQ-20260730-01 → .iteration/context.json 单目标执行包 → RPC/SCM/PTY/terminal/window/remote-host/commune symbols and paths → deterministic unit/integration/E2E/performance regressions`\n\n#### 执行顺序\n\n1. 同步并冻结基线；读取最近两次 NLM 对话与上一迭代状态，只作事实盘点。\n2. 建三源去重矩阵，先识别既有护栏、半成品、缺测与回归，避免重复建设。\n3. 先立可观测基线与统一 RPC/PTY 生命周期护栏；继而 SCM 非 Git 缓存、日志聚合；再处理终端内存/清空。\n4. 生命周期和观测护栏稳定后，分波推进跨窗口工作区单例与远程 Host 接入。\n5. Agent's Commune 先核需求—实现—展示链：已有则修展示/回归，未有则最小实现。\n6. 核心闸通过后方处理浏览器 Warning。\n\n#### 回归矩阵下限\n\n- 本地桌面、Remote 局域网、Remote 公网等价受控场景；正常网络、延迟、丢包、断连、重连。\n- Git 仓库、非 Git 目录、目录切换；watcher/heartbeat/pane/SCM 多触发同源共闸。\n- Pane 创建、输入、Resize、销毁、恢复；销毁/超时/取消竞态与队列饱和。\n- 长时输出、超限 Scrollback、重复 clear/右键清空、Pane 关闭后的 WebView2 内存回落。\n- 两窗口争用同 Remote 工作区、旧窗口最小化/后台、焦点切换、新窗口打开空闲工作区。\n- 远程 Host 慢发现、空列表、已有工作区、新建失败、拖拽接入、接入后尺寸变化与手动重同步。",
+        "section": "active",
+        "title": "下一迭代：Remote、桌面端与跨窗口稳定性重构"
+      }
+    ]
+  },
+  "result_path": ".iteration/agents/result-host-memory-window-commune-audit.json",
+  "schema_version": 1,
+  "scope": {
+    "allowed_files": [
+      "docs/iterations/CONTRACT-iteration-75.md",
+      "docs/PROJECT-STATE.md",
+      "src/lib/stores/hosts.ts",
+      "src/lib/components/hosts/HostsPanel.svelte",
+      "src/lib/teammate/AgentCenterPanel.svelte",
+      "packages/remote/src/shared/terminal/manager.ts",
+      "src/routes/+page.svelte",
+      "src-tauri/src/lib.rs"
+    ],
+    "allowed_write_paths": [],
+    "control_write_paths": [
+      ".iteration/agents/result-host-memory-window-commune-audit.json"
+    ],
+    "deny_unlisted": true
+  },
+  "symbols": [
+    "HostsPanel",
+    "hosts",
+    "AgentCenterPanel",
+    "clearScrollback",
+    "destroy",
+    "multi-window",
+    "workspace singleton"
+  ],
+  "task_id": "host-memory-window-commune-audit",
+  "transport": {
+    "completion_rule": "transport receipt is not completion; finalized result file is required",
+    "requested_backend": "native"
+  },
+  "verification": [
+    {
+      "command": "rg -n \"clearScrollback|scrollback|destroy|Host|workspace|AgentCenter|Commune|resize\" docs/iterations/CONTRACT-iteration-75.md src/lib/stores/hosts.ts src/lib/components/hosts/HostsPanel.svelte src/lib/teammate/AgentCenterPanel.svelte packages/remote/src/shared/terminal/manager.ts src/routes/+page.svelte src-tauri/src/lib.rs",
+      "expected_exit": 0
+    },
+    {
+      "command": "git diff --exit-code -- docs/iterations/CONTRACT-iteration-75.md docs/PROJECT-STATE.md src/lib/stores/hosts.ts src/lib/components/hosts/HostsPanel.svelte src/lib/teammate/AgentCenterPanel.svelte packages/remote/src/shared/terminal/manager.ts src/routes/+page.svelte src-tauri/src/lib.rs",
+      "expected_exit": 0
+    }
+  ],
+  "worker_policy": {
+    "may_approve_requirements": false,
+    "may_call_notebooklm": false,
+    "may_commit_or_push": false,
+    "may_expand_scope": false,
+    "must_write_result_file": true
+  }
+}

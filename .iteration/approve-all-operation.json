@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "upsert": [
+    {
+      "id": "REQ-MCP-JOIN-GROUP-01",
+      "section": "active",
+      "markdown": "### REQ-MCP-JOIN-GROUP-01 · ridge_join_group 参数/宿主校验与可观测落地\n\n- 状态:`ACTIVE`\n- 版本:`v1`\n- 行为:桌面 host 在 `group_name`+(agent_id|target_pane_id) 合法且目标在花名册时 emit TEAMMATE_GROUP_ADD_MEMBER 并由前端编组 store 消费；非法参数稳定 -32602+可读 message；companion-only 宿主返回明确 capability 错误（非 silent OK），文档与 tools/list 一致；fire-and-forget+前端 localStorage SSOT 为已知限制直至另批迁后端。\n- 边界:范围 packages/ridge-mcp、src-tauri teammate mcp/join_group 桥、AgentCenterPanel 编组加成员、docs/mcp-integration。非目标:不重做整套编组 SSOT 迁后端。不可动:不得静默落到错误 pane/0 号分屏；越界 target 必须失败。\n- 验收:合法/非法/companion 三路径有 MCP 调用证据；失败码与 message 写入 checklist；非法不得 silent OK。\n- 追踪:`REQ-MCP-JOIN-GROUP-01` → mcp.rs join_group → AgentCenterPanel group event → SCRATCH smoke"
+    },
+    {
+      "id": "REQ-NLM-OPENPLAN-01",
+      "section": "active",
+      "markdown": "### REQ-NLM-OPENPLAN-01 · 开放规划 post-v0.1.3 优先项入迭代队列\n\n- 状态:`ACTIVE`\n- 版本:`v1`\n- 行为:将 NLM 开放规划 post-v0.1.3 中 R-VERIFY、R-CDP-150、R-INCR、R-WSLEG、R-RDG-INCR 等开放项登记为可跟踪迭代条目，并在 checklist 标注来源笔记本 66919cb9 与 note 4b8db248；与 Active goal 对账后按优先级推进。\n- 边界:范围 docs/PENDING 已提升后的 Active 追踪、iteration checklist、PROJECT-STATE 索引；不在本条内强制完成全部真机验收。非目标:不把已实现闭环索引 note 当未完成需求。NLM 仅建议层；验收仍以代码/测试/证据为准。\n- 验收:nlm-extracted-requirements.md 或等价证据含开放规划表；checklist 有来源标注；本条 Active 存在且可被 gate 引用。\n- 追踪:`REQ-NLM-OPENPLAN-01` → nlm note 4b8db248 → checklist / PROJECT-STATE"
+    }
+  ],
+  "remove": [
+    "PENDING-REQ-MCP-JOIN-GROUP-01",
+    "PENDING-REQ-NLM-OPENPLAN-01"
+  ]
+}

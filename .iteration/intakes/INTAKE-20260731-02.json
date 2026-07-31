@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "intake_id": "INTAKE-20260731-02",
+  "classification": "approved",
+  "summary": "批准 rdg 四路径真接通并入 REQ-20260730-01 goal P0，不暂停其余交付，立即推进",
+  "requirement_ids": [
+    "REQ-RDG-REMOTE-CONNECT-01",
+    "REQ-20260730-01",
+    "REQ-REMOTE-01",
+    "REQ-REMOTE-02"
+  ],
+  "pending_ids": [
+    "PENDING-REQ-RDG-REMOTE-CONNECT-01"
+  ],
+  "approval_reasons": [],
+  "open_questions": [],
+  "approval_evidence": "批准。然后此前将其推进设置到此前目标中（goal），不要暂停goal",
+  "request_sha256": "72b0cf70e1e27371e853edb4787fed2b7ac55c249906bbb2a808446947bd368e",
+  "requirements_sha256": "5c47c3739f4b45f44731af0d4132dd883d96f485a6768fdcfe6ef3a04241b8bb",
+  "pending_sha256": "e2de753ae7da9a89df906ec66d743f53150a12adcddc2ef22563ff71da52733a",
+  "draft_sha256": "323f32172977883d97030cb341a5f42e44621f0a022ea41b90594de1f231a574",
+  "previous_intake_sha256": "1dc930dd48318bde90a64f308f9aa12743bd887bb5171a505a9e792cce267671",
+  "executable": true,
+  "reasons": []
+}

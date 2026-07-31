@@ -5553,6 +5553,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ridge-kernel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "dirs 5.0.1",
+ "ridge-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "ridge-mcp"
 version = "0.1.0"
 dependencies = [

@@ -44,6 +44,140 @@ pub async fn run_local(shell: Option<String>, cwd: Option<String>) -> Result<()>
     run_session(sess, rx).await
 }
 
+/// 无头仅启 LAN Remote（无仪表盘）：起 workspace + PTY + HTTPS host，打印根 URL/TOTP，
+/// Ctrl+C 退出。供 9527 冒烟与自动化（REQ-RDG-REMOTE-CONNECT-01）。
+pub async fn run_lan_host_only(port: u16, shell: Option<String>, cwd: Option<String>) -> Result<()> {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use crate::config;
+    use crate::totp::RemoteTotp;
+
+    let port = if port == 0 { config::lan_port() } else { port };
+    let lan_ip = config::detect_lan_ip();
+    let workspace = workspace::new_shared();
+    {
+        let mut w = workspace.lock().map_err(|e| anyhow!("workspace lock: {e}"))?;
+        w.create_session(shell.as_deref(), cwd.as_deref(), None, SplitDirection::Horizontal)
+            .context("create initial pane")?;
+    }
+    let totp = Arc::new(RemoteTotp::new());
+    let totp_ui = totp.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+    eprintln!("rdg LAN Remote host (headless)");
+    // 本机浏览器优先 127.0.0.1：系统/终端若设了 https_proxy（如 127.0.0.1:51081），
+    // 访问 https://192.168.x.x:9527 会走代理隧道 → 超时，表现为「像没启动」。
+    // no_proxy 通常只含 localhost/127.0.0.1，不含局域网 IP。
+    eprintln!("  本机打开: https://127.0.0.1:{port}   ← 优先用这个");
+    eprintln!("  局域网  : https://{lan_ip}:{port}   （他机；本机若开了系统代理会失败）");
+    eprintln!(
+        "  TOTP: {} (every {}s)",
+        totp_ui.current_code(),
+        RemoteTotp::period_secs()
+    );
+    eprintln!("  证书自签：浏览器选「高级 → 继续访问」；不要用 http://");
+    if std::env::var_os("https_proxy").is_some()
+        || std::env::var_os("HTTPS_PROXY").is_some()
+        || std::env::var_os("ALL_PROXY").is_some()
+    {
+        eprintln!(
+            "  警告: 检测到 https_proxy/ALL_PROXY。本机请用 127.0.0.1，或把 {lan_ip} 加入 no_proxy。"
+        );
+    }
+    eprintln!("  Ctrl+C to stop");
+
+    let host = tokio::spawn(async move {
+        if let Err(e) = lan_host::run(port, totp, workspace, shutdown_rx).await {
+            eprintln!("LAN host exited: {e}");
+        }
+    });
+
+    // 等 TCP 真正 LISTEN 再写 status（E2E 只认 ready=true，避免「文件在、端口未开」）。
+    let ready = wait_tcp_ready(port, Duration::from_secs(15)).await;
+    if host.is_finished() || !ready {
+        let _ = host.await;
+        clear_lan_host_status();
+        return Err(anyhow!(
+            "LAN host failed to listen on port {port} (busy, TLS error, or early exit)"
+        ));
+    }
+    write_lan_host_status(port, &lan_ip, &totp_ui.current_code(), std::process::id(), true);
+    eprintln!("  ready: listening on {port}");
+
+    let mut last_code = totp_ui.current_code();
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("stopping LAN host…");
+                let _ = shutdown_tx.send(());
+                let _ = host.await;
+                clear_lan_host_status();
+                return Ok(());
+            }
+            _ = tick.tick() => {
+                if host.is_finished() {
+                    let _ = host.await;
+                    clear_lan_host_status();
+                    return Err(anyhow!("LAN host exited unexpectedly"));
+                }
+                let code = totp_ui.current_code();
+                if code != last_code {
+                    last_code = code.clone();
+                    eprintln!("  TOTP: {code}");
+                }
+                write_lan_host_status(port, &lan_ip, &code, std::process::id(), true);
+            }
+        }
+    }
+}
+
+async fn wait_tcp_ready(port: u16, budget: std::time::Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + budget;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+            Ok(_) => return true,
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
+    false
+}
+
+/// E2E / agent 可读的 LAN host 状态路径（项目根 `.ridge/lan-host-status.json`）。
+fn lan_host_status_path() -> std::path::PathBuf {
+    std::env::var_os("RIDGE_LAN_STATUS_FILE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(".ridge/lan-host-status.json"))
+}
+
+fn write_lan_host_status(port: u16, lan_ip: &str, totp: &str, pid: u32, ready: bool) {
+    let path = lan_host_status_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let body = serde_json::json!({
+        "schema_version": 1,
+        "ready": ready,
+        "pid": pid,
+        "port": port,
+        "lan_ip": lan_ip,
+        "url_loopback": format!("https://127.0.0.1:{port}"),
+        "url_lan": format!("https://{lan_ip}:{port}"),
+        "totp": totp,
+        "period_secs": crate::totp::RemoteTotp::period_secs(),
+        "updated_at_unix": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    });
+    let _ = std::fs::write(&path, body.to_string());
+}
+
+fn clear_lan_host_status() {
+    let _ = std::fs::remove_file(lan_host_status_path());
+}
+
 /// 启动多会话 Pager TUI：创建 N 个本地 shell，支持 Ctrl+Shift+方向 切换 pane。
 pub async fn run_local_pager(
     shell: Option<String>,

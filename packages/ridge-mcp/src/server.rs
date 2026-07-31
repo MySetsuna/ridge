@@ -690,13 +690,33 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
                 .map(|value| split_result(value, &request).to_string())
         }),
 
+        // agent_id  alone must not force pane resolve — historically scoped_target(null)
+        // always failed on desktop (-32602) even when agent_id was valid.
         "ridge_join_group" => match arg_str(&args, "group_name") {
             None => Err(HostError::InvalidParams("group_name 不能为空".into())),
-            Some(g) => target().and_then(|t| {
-                let t_ref = (!t.is_null()).then_some(&t);
-                host.join_group(g, arg_str(&args, "agent_id"), t_ref)
-                    .map(|()| "dispatched".to_string())
-            }),
+            Some(g) => {
+                let agent = arg_str(&args, "agent_id");
+                let has_pane = args
+                    .get("target_pane_id")
+                    .is_some_and(|v| !v.is_null() && v != &Value::String(String::new()));
+                match (agent, has_pane) {
+                    (None, false) => Err(HostError::InvalidParams(
+                        "需提供 agent_id 或 target_pane_id".into(),
+                    )),
+                    (agent, true) => target().and_then(|t| {
+                        host.join_group(g, agent, Some(&t))
+                            .map(|()| "dispatched".to_string())
+                    }),
+                    (Some(agent), false) => {
+                        // workspace-only optional target for multi-ws; no pane resolve.
+                        let synthetic = arg_str(&args, "workspace_id").map(|ws| {
+                            json!({ "workspaceId": ws })
+                        });
+                        host.join_group(g, Some(agent), synthetic.as_ref())
+                            .map(|()| "dispatched".to_string())
+                    }
+                }
+            }
         },
 
         "ridge_report_progress" => {
@@ -942,6 +962,27 @@ mod tests {
                 "replacementRequested": request.replace_target.is_some(),
             }))
         }
+        fn join_group(
+            &self,
+            group_name: &str,
+            agent_id: Option<&str>,
+            target: Option<&Value>,
+        ) -> HostResult<()> {
+            if group_name.trim().is_empty() {
+                return Err(HostError::InvalidParams("group_name 不能为空".into()));
+            }
+            if agent_id.is_none() && target.is_none() {
+                return Err(HostError::InvalidParams(
+                    "需提供 agent_id 或 target_pane_id".into(),
+                ));
+            }
+            if agent_id == Some("missing-agent") {
+                return Err(HostError::InvalidParams(
+                    "agent_id missing-agent 不在花名册".into(),
+                ));
+            }
+            Ok(())
+        }
         fn read_resource(&self, _uri: &RidgeUri) -> HostResult<(String, String)> {
             Ok(("application/json".into(), "{}".into()))
         }
@@ -1138,6 +1179,73 @@ mod tests {
         assert_eq!(created["checkpointTransferred"], true);
         assert_eq!(created["replacementRequested"], true);
         assert_eq!(created["status"], "pane_created");
+    }
+
+    #[test]
+    fn join_group_agent_id_only_does_not_force_pane_resolve() {
+        let msg = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_join_group","arguments":{
+                "group_name":"alpha","agent_id":"auto:grok:deadbeef"
+            }}
+        })
+        .to_string();
+        let response = call_with(&msg, &CapableHost);
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(
+            response["result"]["content"][0]["text"].as_str().unwrap(),
+            "dispatched"
+        );
+    }
+
+    #[test]
+    fn join_group_missing_member_selector_is_invalid_params() {
+        let msg = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_join_group","arguments":{"group_name":"alpha"}}
+        })
+        .to_string();
+        let response = call_with(&msg, &CapableHost);
+        assert_eq!(response["error"]["code"], proto::INVALID_PARAMS);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("agent_id"));
+    }
+
+    #[test]
+    fn join_group_unknown_agent_is_invalid_params_not_silent_ok() {
+        let msg = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_join_group","arguments":{
+                "group_name":"alpha","agent_id":"missing-agent"
+            }}
+        })
+        .to_string();
+        let response = call_with(&msg, &CapableHost);
+        assert_eq!(response["error"]["code"], proto::INVALID_PARAMS);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("花名册"));
+    }
+
+    #[test]
+    fn join_group_unsupported_host_returns_is_error_not_silent_ok() {
+        let msg = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_join_group","arguments":{
+                "group_name":"alpha","agent_id":"worker-1"
+            }}
+        })
+        .to_string();
+        let response = call(&msg); // FakeHost default Unsupported
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"], true);
+        assert!(response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("不支持 ridge_join_group"));
     }
 
     #[test]

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "intake_id": "INTAKE-20260731-APPROVED-ALL",
+  "classification": "approved",
+  "summary": "Approved join_group and nlm openplan; continue Goal",
+  "requirement_ids": [
+    "REQ-MCP-JOIN-GROUP-01",
+    "REQ-NLM-OPENPLAN-01",
+    "REQ-AGENT-CATALOG-01",
+    "REQ-20260730-01",
+    "REQ-RDG-REMOTE-CONNECT-01"
+  ],
+  "pending_ids": [
+    "PENDING-REQ-MCP-JOIN-GROUP-01",
+    "PENDING-REQ-NLM-OPENPLAN-01"
+  ],
+  "approval_reasons": [],
+  "open_questions": [],
+  "approval_evidence": "我批准所有项",
+  "request_sha256": "61c38969d78000e926e3bbc2644f7688c7db5284915a80537a6b6105bb8a80db",
+  "requirements_sha256": "4684d482f0407061f22c74491957e9cf92c060f9e2296b5e9a717d1179cbd4bf",
+  "pending_sha256": "e2de753ae7da9a89df906ec66d743f53150a12adcddc2ef22563ff71da52733a",
+  "draft_sha256": "f55301462d6ff79745db47411bf06297dd283abdd7be42c77d22b8b45204d9cd",
+  "previous_intake_sha256": "7b80f60fcbd46875b4753b86e22aa093e62f238e682987952625f9558e022ff5",
+  "executable": true,
+  "reasons": []
+}
