@@ -84,40 +84,14 @@ fn sidecar_endpoint() -> Option<Endpoint> {
     best.map(|(_, endpoint)| endpoint)
 }
 
-/// 从 `%LOCALAPPDATA%/ridge/kernel.json` 发现独立 ridge-kernel MCP 面。
-/// 与 HOST 外壳同发现机制；无 Tauri 时仍可用（REQ-RIDGE-MCP-AS-KERNEL-API-01）。
+/// Discover the independent kernel MCP surface through the shared contract.
+/// No Tauri sidecar, path convention, or duplicate JSON schema is involved.
 fn kernel_endpoint() -> Option<Endpoint> {
-    let path = {
-        #[cfg(windows)]
-        {
-            let local = std::env::var_os("LOCALAPPDATA")?;
-            PathBuf::from(local).join("ridge").join("kernel.json")
-        }
-        #[cfg(not(windows))]
-        {
-            let home = std::env::var_os("HOME")?;
-            PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join("ridge")
-                .join("kernel.json")
-        }
-    };
-    let body = std::fs::read_to_string(path).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&body).ok()?;
-    let port = value.get("port")?.as_u64()? as u16;
-    let token = value.get("token")?.as_str()?.trim();
-    if token.is_empty() || port == 0 {
-        return None;
-    }
-    // 轻量健康：连不上则当内核已死，交给 sidecar 回退。
-    let base_url = format!("http://127.0.0.1:{port}");
-    if !is_loopback_endpoint(&base_url) {
-        return None;
-    }
+    let endpoint = ridge_kernel::client::running_endpoint()?;
+    let base_url = format!("http://127.0.0.1:{}", endpoint.port);
     Some(Endpoint {
         base_url,
-        token: token.to_string(),
+        token: endpoint.token,
     })
 }
 
