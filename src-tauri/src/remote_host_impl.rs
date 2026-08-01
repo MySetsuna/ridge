@@ -422,6 +422,57 @@ fn apply_pane_resize(
     );
 }
 
+/// Encode the resize acknowledgement sent to every subscribed remote viewer.
+/// Keep `workspaceId` on the wire: the browser transport rejects a resize event
+/// without it to prevent a stale pane from another workspace mutating its grid.
+fn pty_resized_message(workspace_id: Uuid, pane_id: Uuid, rows: u16, cols: u16) -> String {
+    serde_json::json!({
+        "type": "pty-resized",
+        "workspaceId": workspace_id.to_string(),
+        "paneId": pane_id.to_string(),
+        "rows": rows,
+        "cols": cols,
+    })
+    .to_string()
+}
+
+/// Notify remote viewers after the invoke-request resize path. Legacy
+/// `claim-pane`/`refresh-pane` already goes through `apply_pane_resize`, while
+/// the shared RPC scheduler uses `resize_pane`; both paths must produce the
+/// same `pty-resized` contract.
+fn broadcast_invoke_resize(
+    state: &AppState,
+    workspace_id: &str,
+    pane_id: &str,
+    rows: u16,
+    cols: u16,
+) {
+    let Ok(workspace_id) = Uuid::parse_str(workspace_id) else {
+        return;
+    };
+    let Ok(pane_id) = Uuid::parse_str(pane_id) else {
+        return;
+    };
+    let exists = state
+        .workspaces
+        .read()
+        .get(&workspace_id)
+        .is_some_and(|workspace| workspace.terminals.contains_key(&pane_id));
+    if !exists {
+        return;
+    }
+    state.broadcast_remote_event(
+        workspace_id,
+        pane_id,
+        crate::types::RemotePtyEvent::PtyResized {
+            workspace_id,
+            pane_id,
+            rows: rows.max(1).min(500),
+            cols: cols.max(1).min(500),
+        },
+    );
+}
+
 async fn handle_ws(
     socket: WebSocket,
     state: AppState,
@@ -1662,12 +1713,11 @@ async fn handle_ws(
                             }
                             Some((_, crate::types::RemotePtyEvent::PtyResized { workspace_id, pane_id, rows, cols })) => {
                                 if subscribed_panes.contains(&(workspace_id, pane_id)) {
-                                    let _ = ws_tx.send(Message::Text(serde_json::json!({
-                                        "type": "pty-resized",
-                                        "paneId": pane_id.to_string(),
-                                        "rows": rows,
-                                        "cols": cols,
-                                    }).to_string())).await;
+                                    let _ = ws_tx
+                                        .send(Message::Text(pty_resized_message(
+                                            workspace_id, pane_id, rows, cols,
+                                        )))
+                                        .await;
                                 }
                             }
                             None => break,
@@ -2377,29 +2427,37 @@ async fn dispatch_invoke_request(
         "write_to_pty" => {
             unit(
                 terminal::write_to_pty(
-                    handle.state(),
-                    s(args, "paneId"),
-                    s(args, "data"),
-                    opt_s(args, "workspaceId"),
-                    opt_s(args, "inputSourceId"),
-                    args.get("inputSequence").and_then(|value| value.as_u64()),
+                handle.state(),
+                s(args, "paneId"),
+                s(args, "data"),
+                opt_s(args, "workspaceId"),
+                opt_s(args, "inputSourceId"),
+                args.get("inputSequence").and_then(|value| value.as_u64()),
                 )
                 .await,
             )
         }
-        "resize_pane" => unit(
-            terminal::resize_pane(
+        "resize_pane" => {
+            let workspace_id = s(args, "workspaceId");
+            let pane_id = s(args, "paneId");
+            let rows = u16_arg(args, "rows");
+            let cols = u16_arg(args, "cols");
+            let result = terminal::resize_pane(
                 handle.state(),
                 handle.clone(),
-                s(args, "workspaceId"),
-                s(args, "paneId"),
-                u16_arg(args, "rows"),
-                u16_arg(args, "cols"),
+                workspace_id.clone(),
+                pane_id.clone(),
+                rows,
+                cols,
                 bool_opt(args, "isAlt"),
                 bool_opt(args, "isInlineTui"),
             )
-            .await,
-        ),
+            .await;
+            if result.is_ok() {
+                broadcast_invoke_resize(state, &workspace_id, &pane_id, rows, cols);
+            }
+            unit(result)
+        }
         "detect_available_shells" => plain(terminal::detect_available_shells()),
         "get_shell_history" => val(terminal::get_shell_history(s(args, "shellKind")).await),
 
@@ -3082,5 +3140,17 @@ mod jsonrpc_tests {
         assert_eq!(v["lockedRows"], serde_json::json!(24));
         assert_eq!(v["lockedCols"], serde_json::json!(80));
     }
-}
 
+    #[test]
+    fn pty_resize_frame_carries_workspace_identity() {
+        let workspace_id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let pane_id = Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&pty_resized_message(workspace_id, pane_id, 40, 120)).unwrap();
+        assert_eq!(value["type"], "pty-resized");
+        assert_eq!(value["workspaceId"], workspace_id.to_string());
+        assert_eq!(value["paneId"], pane_id.to_string());
+        assert_eq!(value["rows"], 40);
+        assert_eq!(value["cols"], 120);
+    }
+}
