@@ -5,3 +5,4 @@
 
 pub mod registry;
 pub mod client;
+pub mod agent_profiles;
