@@ -51,3 +51,23 @@ pub fn read_endpoint() -> Option<KernelEndpoint> {
     let raw = fs::read_to_string(kernel_json_path()).ok()?;
     serde_json::from_str(&raw).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_contract_round_trips_for_all_shells() {
+        let endpoint = KernelEndpoint {
+            pid: 42,
+            port: 34567,
+            token: "test-token".into(),
+            started_at_unix: 1,
+        };
+        let json = serde_json::to_string(&endpoint).unwrap();
+        let decoded: KernelEndpoint = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.pid, 42);
+        assert_eq!(decoded.port, 34567);
+        assert_eq!(decoded.token, "test-token");
+    }
+}
