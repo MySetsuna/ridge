@@ -2,7 +2,7 @@
 //!
 //! - 控制面：`/v1/health|status|shutdown`
 //! - 领域只读：`/v1/domain/*`（FS list、Agent profiles）
-//! - 最小 MCP：`POST /api/v1/mcp`（无 Tauri 可联）
+//! - 共享 MCP：`POST /api/v1/mcp`、`GET /api/v1/mcp/ws`（无 Tauri 可联）
 //!
 //! 发现：`%LOCALAPPDATA%/ridge/kernel.pid` + `kernel.json`
 
@@ -26,7 +26,7 @@ use crate::registry::{
     clear_registry, load_remote_hosts, load_roster, load_workspace_graph, remote_hosts_path,
     roster_path, workspace_graph_path, write_registry, KernelEndpoint, KernelInstanceGuard,
 };
-use crate::{domain, mcp_min, pty::PtyRegistry};
+use crate::{domain, kernel_mcp::KernelMcpHost, pty::PtyRegistry};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -43,6 +43,8 @@ pub struct AppState {
     /// Kernel-owned Agent roster/topology; process binding remains a host adapter.
     pub roster: Arc<std::sync::Mutex<ridge_core::teammate::topology::TopologyGraph>>,
     pub roster_path: std::path::PathBuf,
+    pub groups: Arc<std::sync::Mutex<HashMap<String, std::collections::HashSet<Uuid>>>>,
+    pub mcp_state: Arc<ridge_mcp::server::McpSessionState>,
     /// Kernel-owned remote host topology; shells only project or transport it.
     pub remote_hosts: Arc<std::sync::Mutex<ridge_core::remote::RemoteHostTopology>>,
     pub remote_hosts_path: std::path::PathBuf,
@@ -210,6 +212,8 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
             },
         ))),
         roster_path: roster_path(),
+        groups: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        mcp_state: Arc::new(ridge_mcp::server::McpSessionState::default()),
         remote_hosts: Arc::new(std::sync::Mutex::new(
             ridge_core::remote::RemoteHostTopology::from_records(
                 load_remote_hosts().unwrap_or_else(|error| {
@@ -222,6 +226,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         ptys: Arc::new(PtyRegistry::default()),
     };
 
+    let mcp = KernelMcpHost::router(state.clone(), Arc::new(token.clone()));
     let app = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/status", get(status))
@@ -287,8 +292,8 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
             "/v1/domain/workspaces/:workspace_id/panes/:pane_id/locked-size",
             post(domain::domain_workspace_pane_locked_size),
         )
-        .route("/api/v1/mcp", post(mcp_min::route_mcp))
-        .with_state(state);
+        .with_state(state)
+        .merge(mcp);
 
     write_registry(&KernelEndpoint {
         pid,

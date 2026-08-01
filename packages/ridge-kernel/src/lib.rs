@@ -8,5 +8,5 @@ pub mod client;
 pub mod agent_profiles;
 pub mod pty;
 mod domain;
-mod mcp_min;
+mod kernel_mcp;
 pub mod server;

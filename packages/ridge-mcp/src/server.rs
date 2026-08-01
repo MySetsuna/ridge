@@ -242,11 +242,47 @@ pub fn enter_terminated(text: &str) -> String {
     format!("{}\r", text.trim_end_matches(['\r', '\n']))
 }
 
-// ─── 进程内共享状态：Stash + 收件箱 ──────────────────────────────────────────
+// ─── MCP 会话状态：每个宿主实例隔离，兼容旧的进程级入口 ─────────────────────
 
-fn stash() -> &'static Mutex<StashStore> {
-    static STASH: std::sync::OnceLock<Mutex<StashStore>> = std::sync::OnceLock::new();
-    STASH.get_or_init(|| Mutex::new(StashStore::with_defaults()))
+pub struct McpSessionState {
+    stash: Mutex<StashStore>,
+    inbox: Mutex<HashMap<String, Vec<Value>>>,
+    receipts: Mutex<ReceiptStore>,
+}
+
+impl Default for McpSessionState {
+    fn default() -> Self {
+        Self {
+            stash: Mutex::new(StashStore::with_defaults()),
+            inbox: Mutex::new(HashMap::new()),
+            receipts: Mutex::new(ReceiptStore {
+                by_id: HashMap::new(),
+                order: VecDeque::new(),
+            }),
+        }
+    }
+}
+
+impl McpSessionState {
+    /// Drop all delivery state for a pane after its generation is destroyed.
+    /// Stash remains host-scoped and is independently bounded/evicted.
+    pub fn purge_pane(&self, key: &str) {
+        self.inbox.lock().unwrap().remove(key);
+        let mut receipts = self.receipts.lock().unwrap();
+        let expired = receipts
+            .by_id
+            .iter()
+            .filter(|(_, value)| value.get("targetKey").and_then(Value::as_str) == Some(key))
+            .map(|(id, _)| id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        receipts.by_id.retain(|id, _| !expired.contains(id));
+        receipts.order.retain(|id| !expired.contains(id));
+    }
+}
+
+fn default_state() -> &'static McpSessionState {
+    static STATE: std::sync::OnceLock<McpSessionState> = std::sync::OnceLock::new();
+    STATE.get_or_init(McpSessionState::default)
 }
 
 /// 每个 pane 一个内存收件箱（FIFO，上限 200 条）。
@@ -254,12 +290,6 @@ fn stash() -> &'static Mutex<StashStore> {
 /// 为什么要它：stdin 注入是「打断式」的——对方正在跑命令时消息会被 shell 吃掉，
 /// 且非同源 agent 没有回信通道。收件箱让任意 MCP 客户端**异步**收发：发送侧照旧
 /// 注入 stdin（人也看得见），同时留一份可被 `ridge_inbox_read` 取走的副本。
-fn inbox() -> &'static Mutex<HashMap<String, Vec<Value>>> {
-    static INBOX: std::sync::OnceLock<Mutex<HashMap<String, Vec<Value>>>> =
-        std::sync::OnceLock::new();
-    INBOX.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 const INBOX_CAP: usize = 200;
 
 struct ReceiptStore {
@@ -267,18 +297,8 @@ struct ReceiptStore {
     order: VecDeque<String>,
 }
 
-fn receipts() -> &'static Mutex<ReceiptStore> {
-    static RECEIPTS: std::sync::OnceLock<Mutex<ReceiptStore>> = std::sync::OnceLock::new();
-    RECEIPTS.get_or_init(|| {
-        Mutex::new(ReceiptStore {
-            by_id: HashMap::new(),
-            order: VecDeque::new(),
-        })
-    })
-}
-
-fn receipt_insert(id: String, value: Value) {
-    let mut store = receipts().lock().unwrap();
+fn receipt_insert(state: &McpSessionState, id: String, value: Value) {
+    let mut store = state.receipts.lock().unwrap();
     store.order.push_back(id.clone());
     store.by_id.insert(id, value);
     while store.order.len() > INBOX_CAP {
@@ -288,8 +308,8 @@ fn receipt_insert(id: String, value: Value) {
     }
 }
 
-fn receipt_get(key: &str, id: &str) -> HostResult<Value> {
-    let store = receipts().lock().unwrap();
+fn receipt_get(state: &McpSessionState, key: &str, id: &str) -> HostResult<Value> {
+    let store = state.receipts.lock().unwrap();
     let value = store
         .by_id
         .get(id)
@@ -302,13 +322,19 @@ fn receipt_get(key: &str, id: &str) -> HostResult<Value> {
     Ok(value.clone())
 }
 
-fn receipt_ack(key: &str, id: &str, status: &str, detail: Option<&str>) -> HostResult<Value> {
+fn receipt_ack(
+    state: &McpSessionState,
+    key: &str,
+    id: &str,
+    status: &str,
+    detail: Option<&str>,
+) -> HostResult<Value> {
     if !matches!(status, "agent_acknowledged" | "agent_rejected") {
         return Err(HostError::InvalidParams(
             "status 只能是 agent_acknowledged 或 agent_rejected".into(),
         ));
     }
-    let mut store = receipts().lock().unwrap();
+    let mut store = state.receipts.lock().unwrap();
     let value = store
         .by_id
         .get_mut(id)
@@ -326,8 +352,8 @@ fn receipt_ack(key: &str, id: &str, status: &str, detail: Option<&str>) -> HostR
     Ok(value.clone())
 }
 
-fn inbox_push(key: &str, entry: Value) {
-    let mut map = inbox().lock().unwrap();
+fn inbox_push(state: &McpSessionState, key: &str, entry: Value) {
+    let mut map = state.inbox.lock().unwrap();
     let q = map.entry(key.to_string()).or_default();
     q.push(entry);
     if q.len() > INBOX_CAP {
@@ -337,8 +363,8 @@ fn inbox_push(key: &str, entry: Value) {
 }
 
 /// 取走（默认）或窥视收件箱。取走后消息不再重复投递，避免 agent 反复处理旧消息。
-fn inbox_take(key: &str, peek: bool) -> Vec<Value> {
-    let mut map = inbox().lock().unwrap();
+fn inbox_take(state: &McpSessionState, key: &str, peek: bool) -> Vec<Value> {
+    let mut map = state.inbox.lock().unwrap();
     match map.get_mut(key) {
         None => Vec::new(),
         Some(q) if peek => q.clone(),
@@ -352,6 +378,17 @@ fn inbox_take(key: &str, peek: bool) -> Vec<Value> {
 /// 2.0：通知不得有响应；旧实现对 `notifications/initialized` 回 `-32601`，MCP 客户端
 /// 握手时会看到一条伪错误）。
 pub fn handle_message(text: &str, host: &dyn McpHost, version: &str) -> Option<String> {
+    handle_message_with_state(text, host, version, default_state())
+}
+
+/// Same dispatcher with host-owned state. Kernel/desktop transports each pass
+/// one instance so inbox, receipts and stash die with that host lifecycle.
+pub fn handle_message_with_state(
+    text: &str,
+    host: &dyn McpHost,
+    version: &str,
+    state: &McpSessionState,
+) -> Option<String> {
     let req = match proto::parse_request(text.as_bytes()) {
         Ok(r) => r,
         Err(_) => {
@@ -378,7 +415,7 @@ pub fn handle_message(text: &str, host: &dyn McpHost, version: &str) -> Option<S
         proto::METHOD_TOOLS_LIST => {
             proto::mcp_result(id, ToolRegistry::default().tools_list_result())
         }
-        proto::METHOD_TOOLS_CALL => tools_call(id, &req.params, host),
+        proto::METHOD_TOOLS_CALL => tools_call(id, &req.params, host, state),
         proto::METHOD_RESOURCES_LIST => proto::mcp_result(id, resources_list()),
         proto::METHOD_RESOURCES_TEMPLATES_LIST => proto::mcp_result(
             id,
@@ -389,7 +426,7 @@ pub fn handle_message(text: &str, host: &dyn McpHost, version: &str) -> Option<S
                 "mimeType": "text/plain"
             } ] }),
         ),
-        proto::METHOD_RESOURCES_READ => resources_read(id, &req.params, host),
+        proto::METHOD_RESOURCES_READ => resources_read(id, &req.params, host, state),
         other => proto::mcp_error(
             id,
             proto::METHOD_NOT_FOUND,
@@ -423,11 +460,17 @@ fn resources_list() -> Value {
     ] })
 }
 
-fn resources_read(id: Value, params: &Value, host: &dyn McpHost) -> Value {
+fn resources_read(
+    id: Value,
+    params: &Value,
+    host: &dyn McpHost,
+    state: &McpSessionState,
+) -> Value {
     let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
     match RidgeUri::parse(uri) {
         Ok(RidgeUri::Cache(cache_id)) => {
-            let text = stash()
+            let text = state
+                .stash
                 .lock()
                 .unwrap()
                 .read(&cache_id)
@@ -606,7 +649,7 @@ fn split_result(mut value: Value, request: &SplitPaneRequest) -> Value {
     value
 }
 
-fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
+fn tools_call(id: Value, params: &Value, host: &dyn McpHost, state: &McpSessionState) -> Value {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
     let target = || scoped_target(&args, host);
@@ -657,8 +700,9 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
                             "workspaceId": workspace_id.clone(),
                             "text": text,
                         });
-                        receipt_insert(receipt_id.clone(), receipt.clone());
+                        receipt_insert(state, receipt_id.clone(), receipt.clone());
                         inbox_push(
+                            state,
                             &key,
                             receipt,
                         );
@@ -734,7 +778,7 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
             let peek = args.get("peek").and_then(|v| v.as_bool()).unwrap_or(false);
             target().and_then(|target| {
                 host.pane_key(&target)
-                    .map(|key| Value::Array(inbox_take(&key, peek)).to_string())
+                        .map(|key| Value::Array(inbox_take(state, &key, peek)).to_string())
             })
         }
 
@@ -744,7 +788,7 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
             receipt_id.and_then(|receipt_id| {
                 target().and_then(|target| {
                     host.pane_key(&target)
-                        .and_then(|key| receipt_get(&key, receipt_id))
+                        .and_then(|key| receipt_get(state, &key, receipt_id))
                         .map(|receipt| receipt.to_string())
                 })
             })
@@ -759,7 +803,7 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
                 (Ok(receipt_id), Ok(status)) => target().and_then(|target| {
                     host.pane_key(&target)
                         .and_then(|key| {
-                            receipt_ack(&key, receipt_id, status, arg_str(&args, "detail"))
+                            receipt_ack(state, &key, receipt_id, status, arg_str(&args, "detail"))
                         })
                         .map(|receipt| receipt.to_string())
                 }),
@@ -812,7 +856,7 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost) -> Value {
             // 规格历史写的是 content_base64、实现读的是 data —— 两个键都接，纯文本存。
             match arg_str(&args, "data").or_else(|| arg_str(&args, "content_base64")) {
                 None => Err(HostError::InvalidParams("data 不能为空".into())),
-                Some(d) => Ok(stash().lock().unwrap().stash_uri(d.as_bytes().to_vec())),
+                Some(d) => Ok(state.stash.lock().unwrap().stash_uri(d.as_bytes().to_vec())),
             }
         }
 
@@ -996,6 +1040,11 @@ mod tests {
         serde_json::from_str(&out).unwrap()
     }
 
+    fn call_with_state(msg: &str, host: &dyn McpHost, state: &McpSessionState) -> Value {
+        let out = handle_message_with_state(msg, host, "test", state).expect("expected response");
+        serde_json::from_str(&out).unwrap()
+    }
+
     fn call(msg: &str) -> Value {
         call_with(msg, &FakeHost)
     }
@@ -1007,6 +1056,39 @@ mod tests {
         assert_eq!(enter_terminated("hi\n"), "hi\r");
         assert_eq!(enter_terminated("hi\r\n"), "hi\r");
         assert!(!enter_terminated("hi").contains('\n'));
+    }
+
+    #[test]
+    fn host_state_isolated_and_purge_removes_delivery_records() {
+        let first = McpSessionState::default();
+        let second = McpSessionState::default();
+        let send = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_send_to_teammate","arguments":{"target_pane_id":7,"message":"isolated"}}
+        })
+        .to_string();
+        let sent = call_with_state(&send, &FakeHost, &first);
+        let receipt: Value = serde_json::from_str(
+            sent["result"]["content"][0]["text"].as_str().unwrap(),
+        )
+        .unwrap();
+        let read = json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"ridge_inbox_read","arguments":{"target_pane_id":7}}
+        })
+        .to_string();
+        assert_ne!(call_with_state(&read, &FakeHost, &first)["result"]["content"][0]["text"], "[]");
+        assert_eq!(call_with_state(&read, &FakeHost, &second)["result"]["content"][0]["text"], "[]");
+        first.purge_pane("7");
+        let status = json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"ridge_delivery_status","arguments":{"target_pane_id":7,"receipt_id":receipt["receiptId"]}}
+        })
+        .to_string();
+        assert!(call_with_state(&status, &FakeHost, &first)["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("不存在"));
     }
 
     #[test]

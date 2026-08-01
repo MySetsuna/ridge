@@ -221,8 +221,8 @@ pub fn request_json(
         ""
     };
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\nx-ridge-kernel-token: {}\r\n{content_type}Content-Length: {}\r\n\r\n{payload}",
-        endpoint.token, payload.len(),
+        "{method} {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\nx-ridge-kernel-token: {}\r\nx-ridge-token: {}\r\n{content_type}Content-Length: {}\r\n\r\n{payload}",
+        endpoint.token, endpoint.token, payload.len(),
     );
     stream
         .write_all(request.as_bytes())

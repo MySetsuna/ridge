@@ -5430,7 +5430,7 @@ dependencies = [
 
 [[package]]
 name = "ridge"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "axum",
  "axum-server",
@@ -5566,6 +5566,8 @@ dependencies = [
  "parking_lot",
  "portable-pty",
  "ridge-core",
+ "ridge-mcp",
+ "ridge-term",
  "serde",
  "serde_json",
  "tokio",
