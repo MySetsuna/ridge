@@ -5,7 +5,7 @@ import {
   RpcTimeoutError,
   type RpcRequestOptions,
 } from './types';
-import { paneRefKey, type PaneRef } from './wsRemote';
+import { paneRefKey, type PaneRef } from './paneRef';
 
 export const DEFAULT_MAX_QUEUED_INPUT_BYTES = 256 * 1024;
 export const DEFAULT_INPUT_BATCH_WINDOW_MS = 0;
@@ -44,6 +44,12 @@ interface InputLane {
 interface ResizeValue {
   rows: number;
   cols: number;
+  params?: Readonly<Record<string, unknown>>;
+}
+
+interface ResizeWaiter {
+  resolve: () => void;
+  reject: (error: Error) => void;
 }
 
 interface ResizeLane {
@@ -55,6 +61,7 @@ interface ResizeLane {
   failures: number;
   paused: boolean;
   timer: ReturnType<typeof setTimeout> | null;
+  waiters: ResizeWaiter[];
 }
 
 export interface PaneRpcSchedulerOptions {
@@ -211,11 +218,39 @@ export class PaneRpcScheduler {
     return true;
   }
 
-  scheduleResize(pane: PaneRef, rows: number, cols: number): boolean {
+  scheduleResize(
+    pane: PaneRef,
+    rows: number,
+    cols: number,
+    params?: Readonly<Record<string, unknown>>,
+  ): boolean {
+    return this.enqueueResize(pane, rows, cols, undefined, params);
+  }
+
+  /** Queue a resize and settle only after the latest coalesced value applies. */
+  scheduleResizeAndWait(
+    pane: PaneRef,
+    rows: number,
+    cols: number,
+    params?: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.enqueueResize(pane, rows, cols, { resolve, reject }, params);
+    });
+  }
+
+  private enqueueResize(
+    pane: PaneRef,
+    rows: number,
+    cols: number,
+    waiter?: ResizeWaiter,
+    params?: Readonly<Record<string, unknown>>,
+  ): boolean {
     this.counters.resizeCalls += 1;
     const normalized = { rows: Math.floor(rows), cols: Math.floor(cols) };
     if (!Number.isFinite(rows) || !Number.isFinite(cols) || normalized.rows <= 0 || normalized.cols <= 0) {
       this.counters.resizeSuppressed += 1;
+      waiter?.reject(new TypeError('invalid pane resize dimensions'));
       return false;
     }
     const key = paneRefKey(pane);
@@ -230,19 +265,25 @@ export class PaneRpcScheduler {
         failures: 0,
         paused: false,
         timer: null,
+        waiters: [],
       };
       this.resizeLanes.set(key, lane);
     }
     const signature = resizeSignature(normalized);
+    if (waiter) lane.waiters.push(waiter);
     if (
       resizeSignature(lane.latest) === signature ||
       lane.activeSignature === signature ||
       (!lane.inFlight && !lane.latest && lane.lastAppliedSignature === signature)
     ) {
       this.counters.resizeSuppressed += 1;
+      if (!lane.inFlight && !lane.latest && lane.lastAppliedSignature === signature) {
+        const waiters = lane.waiters.splice(0);
+        for (const current of waiters) current.resolve();
+      }
       return false;
     }
-    lane.latest = normalized;
+    lane.latest = { ...normalized, params };
     this.scheduleResizeDrain(key, lane, this.resizeDebounceMs);
     return true;
   }
@@ -284,6 +325,10 @@ export class PaneRpcScheduler {
     const resize = this.resizeLanes.get(scope);
     if (resize?.timer) clearTimeout(resize.timer);
     this.inputLanes.delete(scope);
+    if (resize) {
+      const error = new RpcCancelledError('resize_pane');
+      for (const waiter of resize.waiters.splice(0)) waiter.reject(error);
+    }
     this.resizeLanes.delete(scope);
     this.rpc.cancelScope(scope);
   }
@@ -417,6 +462,7 @@ export class PaneRpcScheduler {
     lane.activeSignature = resizeSignature(value);
     this.counters.resizeRequests += 1;
     void this.rpc.request('resize_pane', {
+      ...value.params,
       workspaceId: lane.pane.workspaceId,
       paneId: lane.pane.paneId,
       rows: value.rows,
@@ -428,7 +474,12 @@ export class PaneRpcScheduler {
         lane.lastAppliedSignature = resizeSignature(value);
         lane.activeSignature = null;
         lane.failures = 0;
-        this.scheduleResizeDrain(key, lane, this.resizeDebounceMs);
+        if (lane.latest) {
+          this.scheduleResizeDrain(key, lane, this.resizeDebounceMs);
+        } else {
+          const waiters = lane.waiters.splice(0);
+          for (const waiter of waiters) waiter.resolve();
+        }
       },
       (error: unknown) => {
         if (this.resizeLanes.get(key) !== lane) return;
@@ -436,6 +487,10 @@ export class PaneRpcScheduler {
         lane.activeSignature = null;
         if (!lane.latest) lane.latest = value;
         this.failLane(error, 'resize', lane.pane, lane, () => this.drainResize(key, lane));
+        if (lane.paused) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          for (const waiter of lane.waiters.splice(0)) waiter.reject(failure);
+        }
       },
     );
   }

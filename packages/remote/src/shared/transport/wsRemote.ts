@@ -1,16 +1,17 @@
 import { getRemoteDeviceId } from './deviceId';
+import { PaneRpcScheduler } from './paneRpcScheduler';
+import { paneRefKey, type PaneRef } from './paneRef';
+import {
+  RpcCancelledError,
+  RpcReconnectError,
+  RpcTimeoutError,
+  type RpcRequestOptions,
+} from './types';
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 
-/** Remote pane identity. paneId alone is never sufficient across workspaces. */
-export interface PaneRef {
-  workspaceId: string;
-  paneId: string;
-}
-
-export function paneRefKey(ref: PaneRef): string {
-  return `${ref.workspaceId}:${ref.paneId}`;
-}
+export { paneRefKey } from './paneRef';
+export type { PaneRef } from './paneRef';
 
 // ── 连接失败分级（任务 A）───────────────────────────────────────────────────
 // 服务端 WS 在「已认证但无权」时会先升级、下发一帧 `{t:"error",code,message}`，再以
@@ -77,6 +78,7 @@ export type ThemeListener = (colors: Record<string, string>, themeType: 'dark' |
 export type BinaryDeltaListener = RawByteListener;
 
 const MAX_PANE_OUTPUT_LINES = 5000;
+const LAN_PANE_RPC_TIMEOUT_MS = 5_000;
 
 // ── Message queue for buffering during reconnect ──
 // If the queue exceeds this many messages, we reload the page to avoid
@@ -115,6 +117,13 @@ export interface PaneInfo {
  */
 export function pendingKey(responseType: string, reqId: unknown): string {
   return typeof reqId === 'number' ? `${responseType}#${reqId}` : responseType;
+}
+
+interface PendingRequest {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  scope?: string;
+  method?: string;
 }
 
 /** host `detect_available_shells` 的一条（与桌面 `ShellInfo` 同形）。 */
@@ -383,14 +392,20 @@ export interface RemoteLink {
   closePane(pane: PaneRef): Promise<boolean>;
   closeWorkspace(workspaceId: string): Promise<boolean>;
   listWorkspacePanes(workspaceId: string): Promise<PaneInfo[]>;
-  /** Host `~/ridge-workspaces/*.ridge` inventory (open-only on mobile; no manage). */
+  /** Host saved-workspace inventory (open-only on mobile; no manage). */
   listSavedWorkspaceFiles(): Promise<SavedWorkspaceFile[]>;
   /** Open a .ridge path on the host into a live workspace; returns workspace id. */
   openWorkspaceFromFile(path: string): Promise<string | null>;
   disconnect(): void;
 }
 
-/** Host-disk saved workspace file (list_saved_workspace_files). */
+/** Host saved-workspace entry (list_saved_workspace_files).
+ *
+ * Desktop hosts return real `~/ridge-workspaces/*.ridge` paths. The headless
+ * rdg host has no `.ridge` persistence, so it returns one explicit
+ * `rdg://workspace/<id>` current-workspace handle; passing that handle to
+ * `openWorkspaceFromFile` is an idempotent focus operation.
+ */
 export interface SavedWorkspaceFile {
   name: string;
   path: string;
@@ -436,9 +451,18 @@ export class RemoteConnection implements RemoteLink {
   // 服务端升级后下发的 `{t:"error",code}` 暂存：onclose(4403) 紧随其后，用它做精确分级。
   private _pendingServerError: { code?: string; message?: string } | null = null;
   private paneOutputs: Map<string, string[]> = new Map();
-  private _pendingRequests: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
+  private _pendingRequests: Map<string, PendingRequest> = new Map();
+  private _pendingByScope: Map<string, Set<string>> = new Map();
   private _reqCounter = 0;
   private _refreshSeq = 0;
+  private readonly paneScheduler = new PaneRpcScheduler(
+    {
+      request: <T = unknown>(method: string, params?: unknown, options?: RpcRequestOptions) =>
+        this._requestPaneRpc<T>(method, params, options),
+      cancelScope: (scope: string) => this._cancelPaneRpcScope(scope),
+    },
+    { inputSourceId: 'lan_remote' },
+  );
   private _host: string = '';
   private _port: number = 0;
   private _token: string = '';
@@ -632,6 +656,7 @@ export class RemoteConnection implements RemoteLink {
       // server socket is fresh and holds no pane subscriptions, so consumers
       // must resync. The first connect is wired by the page's own onMount.
       if (this._hasConnectedOnce) {
+        queueMicrotask(() => this.paneScheduler.resumeAll());
         this.reconnectListeners.forEach(fn => { try { fn(); } catch { /* listener owns its errors */ } });
         // Flush any messages queued during disconnect.
         this._flushQueue();
@@ -746,7 +771,7 @@ export class RemoteConnection implements RemoteLink {
           const key = pendingKey(type, (msg as { _reqId?: unknown })._reqId);
           const pending = this._pendingRequests.get(key);
           if (pending) {
-            this._pendingRequests.delete(key);
+            this._removePending(key);
             pending.resolve(msg);
             return;
           }
@@ -792,6 +817,8 @@ export class RemoteConnection implements RemoteLink {
   private _handleClose(code?: number) {
     const pending = this._pendingServerError;
     if (code === WS_CLOSE_AUTHENTICATED_FORBIDDEN || pending) {
+      this._rejectPaneRpcRequests((method) => new RpcCancelledError(method));
+      this.paneScheduler.dispose();
       this._pendingServerError = null;
       this._stopHeartbeat();
       if (this.ws) {
@@ -810,6 +837,7 @@ export class RemoteConnection implements RemoteLink {
   }
 
   private _handleDrop() {
+    this._rejectPaneRpcRequests((method) => new RpcReconnectError(method));
     this._stopHeartbeat();
     if (this.ws) {
       this.ws.onopen = this.ws.onclose = this.ws.onerror = this.ws.onmessage = null;
@@ -927,6 +955,7 @@ export class RemoteConnection implements RemoteLink {
    *  long-running session can't accumulate per-pane buffers for closed panes
    *  (unbounded memory growth → OOM on mobile). */
   pruneOutputs(liveIds: Set<string>) {
+    this.paneScheduler.prune(liveIds);
     for (const id of [...this.paneOutputs.keys()]) {
       if (!liveIds.has(id)) this.paneOutputs.delete(id);
     }
@@ -941,18 +970,127 @@ export class RemoteConnection implements RemoteLink {
     }
   }
 
-  private async _sendAndWait(request: Record<string, unknown>, responseType: string, timeoutMs = 5000): Promise<unknown> {
+  private _removePending(key: string): PendingRequest | undefined {
+    const pending = this._pendingRequests.get(key);
+    if (!pending) return undefined;
+    this._pendingRequests.delete(key);
+    if (pending.scope) {
+      const keys = this._pendingByScope.get(pending.scope);
+      keys?.delete(key);
+      if (keys?.size === 0) this._pendingByScope.delete(pending.scope);
+    }
+    return pending;
+  }
+
+  private _cancelPaneRpcScope(scope: string): number {
+    const keys = [...(this._pendingByScope.get(scope) ?? [])];
+    let cancelled = 0;
+    for (const key of keys) {
+      const pending = this._removePending(key);
+      if (!pending) continue;
+      cancelled += 1;
+      pending.reject(new RpcCancelledError(pending.method ?? 'pane-rpc'));
+    }
+    return cancelled;
+  }
+
+  /** Reject scoped pane work when the socket drops; the scheduler retries with
+   * backoff, while unrelated UI snapshots retain their existing timeout path. */
+  private _rejectPaneRpcRequests(errorFor: (method: string) => Error): void {
+    const keys = [...this._pendingByScope.values()].flatMap((set) => [...set]);
+    for (const key of keys) {
+      const pending = this._removePending(key);
+      if (pending) pending.reject(errorFor(pending.method ?? 'pane-rpc'));
+    }
+  }
+
+  private _requestPaneRpc<T = unknown>(
+    method: string,
+    params: unknown,
+    options: RpcRequestOptions = {},
+  ): Promise<T> {
+    const scope = options.scope;
+    if (!scope) return Promise.reject(new RpcCancelledError(method));
+    if (!params || typeof params !== 'object' || Array.isArray(params)) {
+      return Promise.reject(new TypeError(`Invalid pane RPC params: ${method}`));
+    }
+    if (options.signal?.aborted) return Promise.reject(new RpcCancelledError(method));
+    if (this._state !== 'connected' || this.ws?.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new RpcReconnectError(method));
+    }
+    const request = {
+      type: 'invoke-request',
+      cmd: method,
+      args: params as Record<string, unknown>,
+      _reqId: ++this._reqCounter,
+    };
+    return this._sendAndWait(
+      request,
+      'invoke-result',
+      options.timeoutMs ?? LAN_PANE_RPC_TIMEOUT_MS,
+      { scope, method, signal: options.signal },
+    ).then((value) => {
+      const data = value as { _result?: unknown; _error?: unknown };
+      if (data._error !== undefined && data._error !== null) {
+        throw new Error(String(data._error));
+      }
+      return data._result as T;
+    });
+  }
+
+  private async _sendAndWait(
+    request: Record<string, unknown>,
+    responseType: string,
+    timeoutMs = 5000,
+    options: { scope?: string; method?: string; signal?: AbortSignal } = {},
+  ): Promise<unknown> {
     const key = pendingKey(responseType, request._reqId);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this._pendingRequests.delete(key);
-        reject(new Error(`WS request ${responseType} timed out`));
+        const pending = this._removePending(key);
+        if (!pending) return;
+        pending.reject(
+          pending.method
+            ? new RpcTimeoutError(pending.method, timeoutMs)
+            : new Error(`WS request ${responseType} timed out`),
+        );
       }, timeoutMs);
-      this._pendingRequests.set(key, {
+      const pending: PendingRequest = {
         resolve: (v) => { clearTimeout(timer); resolve(v); },
         reject: (e) => { clearTimeout(timer); reject(e); },
-      });
-      this.send(request);
+        scope: options.scope,
+        method: options.method,
+      };
+      this._pendingRequests.set(key, pending);
+      if (options.scope) {
+        let keys = this._pendingByScope.get(options.scope);
+        if (!keys) {
+          keys = new Set();
+          this._pendingByScope.set(options.scope, keys);
+        }
+        keys.add(key);
+      }
+      const onAbort = () => {
+        const current = this._removePending(key);
+        if (current) current.reject(new RpcCancelledError(options.method ?? responseType));
+      };
+      if (options.signal) options.signal.addEventListener('abort', onAbort, { once: true });
+      const resolveWithCleanup = pending.resolve;
+      const rejectWithCleanup = pending.reject;
+      pending.resolve = (v) => {
+        if (options.signal) options.signal.removeEventListener('abort', onAbort);
+        resolveWithCleanup(v);
+      };
+      pending.reject = (e) => {
+        if (options.signal) options.signal.removeEventListener('abort', onAbort);
+        rejectWithCleanup(e);
+      };
+      try {
+        this.send(request);
+      } catch (error) {
+        const current = this._removePending(key);
+        current?.reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -1033,8 +1171,9 @@ export class RemoteConnection implements RemoteLink {
   }
   listFiles(path?: string) { this.send({ type: 'list-files', path: path || '' }); }
   listGitStatus() { this.send({ type: 'list-git-status' }); }
-  sendStdin(pane: PaneRef, data: string) {
-    this.send({ type: 'stdin', paneId: pane.paneId, workspaceId: pane.workspaceId, data });
+  sendStdin(pane: PaneRef, data: string): boolean {
+    if (!pane.paneId || !data) return false;
+    return this.paneScheduler.enqueueInput(pane, data);
   }
   /** @deprecated Host-side bookkeeping only — records a fallback size but never
    *  reflows the shared PTY (no `pty-resized` broadcast), so the remote stays
@@ -1050,18 +1189,8 @@ export class RemoteConnection implements RemoteLink {
    *
    *  Each call increments a monotonic sequence counter so the backend can
    *  ignore stale requests when multiple remotes contend for the size lock. */
-  refreshPane(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
-    this._refreshSeq++;
-    this.send({
-      type: 'refresh-pane',
-      paneId: pane.paneId,
-      workspaceId: pane.workspaceId,
-      rows,
-      cols,
-      pixelWidth,
-      pixelHeight,
-      seq: this._refreshSeq,
-    });
+  refreshPane(pane: PaneRef, rows: number, cols: number, _pixelWidth: number, _pixelHeight: number) {
+    if (this.paneScheduler.scheduleResize(pane, rows, cols)) this._refreshSeq++;
   }
   /** Implicit "I just interacted / my viewport changed" size claim. Same host
    *  effect as refreshPane (resizes the real PTY + canonical parser and
@@ -1069,20 +1198,15 @@ export class RemoteConnection implements RemoteLink {
    *  automatic viewport-driven resize path so a genuine layout change reflows
    *  the host PTY — `resize` alone is host-side bookkeeping that never reflows.
    *  Shares the monotonic seq counter so the host can drop stale claims. */
-  claimPane(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
-    this._refreshSeq++;
-    this.send({
-      type: 'claim-pane',
-      paneId: pane.paneId,
-      workspaceId: pane.workspaceId,
-      rows,
-      cols,
-      pixelWidth,
-      pixelHeight,
-      seq: this._refreshSeq,
-    });
+  claimPane(pane: PaneRef, rows: number, cols: number, _pixelWidth: number, _pixelHeight: number) {
+    this.paneScheduler.resume(pane);
+    if (this.paneScheduler.scheduleResize(pane, rows, cols)) this._refreshSeq++;
   }
   lastRefreshSeq(): number { return this._refreshSeq; }
+
+  get rpcSchedulingDiagnostics() {
+    return this.paneScheduler.diagnostics;
+  }
 
   // ── Workspace operations via WS ───────────────────────────────────
   async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {
@@ -1351,10 +1475,12 @@ export class RemoteConnection implements RemoteLink {
     }
     this.setState('disconnected');
     this.paneOutputs.clear();
+    this.paneScheduler.dispose();
     for (const [, pending] of this._pendingRequests) {
       pending.reject(new Error('disconnected'));
     }
     this._pendingRequests.clear();
+    this._pendingByScope.clear();
     // §history-pull: drop per-pane seq cursors + in-flight flags so a fresh
     // transport re-seeds from the host's next `scrollback-meta`.
     this.scrollbackCursor.clear();
