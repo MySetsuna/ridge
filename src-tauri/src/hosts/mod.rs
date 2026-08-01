@@ -25,6 +25,13 @@ use outbound::{
 };
 use tauri::State;
 
+fn mirror_kernel_host(method: &str, path: &str, body: Option<serde_json::Value>) {
+    let Some(endpoint) = ridge_kernel::client::running_endpoint() else { return; };
+    if let Err(error) = ridge_kernel::client::request_json(&endpoint, method, path, body.as_ref()) {
+        tracing::debug!(target: "ridge::hosts", %error, method, path, "kernel host topology mirror unavailable");
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrontendHostSession {
@@ -129,6 +136,9 @@ impl HostRegistry {
     }
 
     pub fn upsert(&self, rec: HostRecord) {
+        if let Ok(body) = serde_json::to_value(&rec) {
+            mirror_kernel_host("POST", "/v1/domain/remote-hosts", Some(body));
+        }
         self.hosts.write().upsert(rec);
     }
 
@@ -136,15 +146,20 @@ impl HostRegistry {
         self.live_sinks
             .write()
             .retain(|(hid, _), _| hid != id);
-        self.hosts.write().remove(id)
+        let removed = self.hosts.write().remove(id);
+        if removed {
+            mirror_kernel_host("DELETE", &format!("/v1/domain/remote-hosts/{id}"), None);
+        }
+        removed
     }
 
     pub fn set_status(&self, id: &str, status: HostStatus, detail: impl Into<String>) {
-        let mut hosts = self.hosts.write();
+        let hosts = self.hosts.write();
         if let Some(mut h) = hosts.get(id) {
             h.status = status;
             h.detail = detail.into();
-            hosts.upsert(h);
+            drop(hosts);
+            self.upsert(h);
         }
     }
 
@@ -278,10 +293,11 @@ impl HostRegistry {
 
     /// Apply list_panes result onto HostRecord.sessions.
     pub fn replace_sessions(&self, host_id: &str, sessions: Vec<HostSessionMeta>) {
-        let mut hosts = self.hosts.write();
+        let hosts = self.hosts.write();
         if let Some(mut h) = hosts.get(host_id) {
             h.sessions = sessions;
-            hosts.upsert(h);
+            drop(hosts);
+            self.upsert(h);
         }
     }
 
@@ -388,12 +404,13 @@ impl HostRegistry {
 
     /// Mark a session attached flag.
     pub fn set_session_attached(&self, host_id: &str, session_id: &str, attached: bool) {
-        let mut hosts = self.hosts.write();
+        let hosts = self.hosts.write();
         if let Some(mut h) = hosts.get(host_id) {
             if let Some(s) = h.sessions.iter_mut().find(|s| s.id == session_id) {
                 s.attached = attached;
             }
-            hosts.upsert(h);
+            drop(hosts);
+            self.upsert(h);
         }
     }
 }
