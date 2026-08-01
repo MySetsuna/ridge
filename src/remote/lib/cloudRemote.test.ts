@@ -697,6 +697,22 @@ describe('CloudRemoteConnection reconnect', () => {
 });
 
 describe('CloudRemoteConnection lifecycle', () => {
+  it('ignores late provider state and errors after disconnect', async () => {
+    const conn = await connected();
+    let reconnected = 0;
+    conn.onReconnect(() => reconnected++);
+    conn.disconnect();
+    verifyTotpSpy.mockClear();
+
+    conn.notifyState('connected');
+    conn.notifyError('late provider error', 'DEVICE_PARKED');
+    await flush();
+
+    expect(conn.state()).toBe('disconnected');
+    expect(reconnected).toBe(0);
+    expect(verifyTotpSpy).not.toHaveBeenCalled();
+  });
+
   it('disconnect tears down listeners and the WebRTC handle', async () => {
     const conn = await connected();
     conn.subscribePane(PANE);
