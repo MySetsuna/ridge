@@ -4,7 +4,11 @@
   import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
   import { paneRefKey, type PaneRef } from '@ridge/remote';
   import { anyMod, consumeMods } from './modState.svelte';
-  import { resolveInputAnchor, terminalVisualShiftPx } from './keyboardOffset';
+  import {
+    resolveInputAnchor,
+    stabilizeTerminalVisualShiftPx,
+    terminalVisualShiftPx,
+  } from './keyboardOffset';
   import { writeClipboard } from './clipboard';
   import { copySelectionOnly } from '@ridge/remote/shared/terminal/mobileCopy';
   import {
@@ -253,6 +257,10 @@
     alive = false;
     manager.setVisualOffsetY(paneId, 0);
     onKeyboardShift?.(0);
+    if (keyboardSettleRaf !== null) {
+      cancelAnimationFrame(keyboardSettleRaf);
+      keyboardSettleRaf = null;
+    }
     // 句级缓冲：卸载前落笔，防切 pane 丢缓冲文本。
     if (attached && !sbuf.empty) sbufFlush();
     if (sbufTimer !== null) { clearTimeout(sbufTimer); sbufTimer = null; }
@@ -933,11 +941,22 @@
 
   // ── §kb-transform：只移动视觉投影，绝不 refit/resize grid ──
   let containerTopWhenIdle = 0;
+  let keyboardShiftPx = 0;
+  let keyboardSettleRaf: number | null = null;
+  let keyboardSettleFrames = 0;
+  const KEYBOARD_SAFE_GAP_PX = 10;
+  const KEYBOARD_SHIFT_HYSTERESIS_PX = 3;
+  const KEYBOARD_SHIFT_MAX_STEP_PX = 96;
+  const KEYBOARD_MAX_SETTLE_FRAMES = 6;
 
-  function computeKeyboardShift(): number {
+  function computeKeyboardTarget(): number {
     const vv = window.visualViewport;
     const anchor = manager.inputAnchorResolved(paneId);
-    if (!vv || !containerEl || !anchor) return 0;
+    // Only a focused IME sink may move the terminal. Browser chrome and
+    // address-bar viewport changes otherwise look like a keyboard and cause
+    // the old transform to jump while merely scrolling the page.
+    if (!vv || !containerEl || !anchor || document.activeElement !== hiddenInput) return 0;
+    const keyboardTopPx = (vv.offsetTop || 0) + (vv.height || 0);
     return terminalVisualShiftPx({
       layoutHeightPx: window.innerHeight,
       visualHeightPx: vv.height || 0,
@@ -945,31 +964,70 @@
       stageTopPx: containerTopWhenIdle,
       cursorYPx: anchor.y,
       cellHeightPx: anchor.cellH,
+      inputTopPx: containerTopWhenIdle + anchor.y,
+      inputBottomPx: containerTopWhenIdle + anchor.y + anchor.cellH,
+      keyboardTopPx,
+      safeGapPx: Math.max(KEYBOARD_SAFE_GAP_PX, anchor.cellH),
+      maxShiftPx: Math.max(0, anchor.y - 3 * anchor.cellH),
     });
   }
 
   function applyKeyboardShift(): void {
-    const next = computeKeyboardShift();
-    manager.setVisualOffsetY(paneId, next);
-    onKeyboardShift?.(next);
+    const target = computeKeyboardTarget();
+    const next = stabilizeTerminalVisualShiftPx(target, keyboardShiftPx, {
+      hysteresisPx: KEYBOARD_SHIFT_HYSTERESIS_PX,
+      maxStepPx: KEYBOARD_SHIFT_MAX_STEP_PX,
+    });
+    if (next !== keyboardShiftPx) {
+      keyboardShiftPx = next;
+      manager.setVisualOffsetY(paneId, next);
+      onKeyboardShift?.(next);
+    }
+    if (next !== target && keyboardSettleFrames < KEYBOARD_MAX_SETTLE_FRAMES) {
+      keyboardSettleFrames += 1;
+      if (keyboardSettleRaf === null) {
+        keyboardSettleRaf = requestAnimationFrame(() => {
+          keyboardSettleRaf = null;
+          applyKeyboardShift();
+        });
+      }
+    } else {
+      keyboardSettleFrames = 0;
+    }
+  }
+
+  function requestKeyboardShift(): void {
+    keyboardSettleFrames = 0;
+    if (keyboardSettleRaf !== null) {
+      cancelAnimationFrame(keyboardSettleRaf);
+      keyboardSettleRaf = null;
+    }
+    applyKeyboardShift();
   }
 
   $effect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     function onViewportChange() {
-      if (window.innerHeight - vv!.height <= 0 && containerEl) {
-        containerTopWhenIdle = Math.round(containerEl.getBoundingClientRect().top);
+      if (containerEl && (vv!.offsetTop + vv!.height >= window.innerHeight - 1 || document.activeElement !== hiddenInput)) {
+        // Undo the previous visual transform when sampling the layout baseline;
+        // otherwise keyboard close would bake the stale negative shift into the
+        // next keyboard-open calculation.
+        containerTopWhenIdle = Math.round(containerEl.getBoundingClientRect().top - keyboardShiftPx);
       }
-      applyKeyboardShift();
+      requestKeyboardShift();
     }
-    if (containerEl) containerTopWhenIdle = Math.round(containerEl.getBoundingClientRect().top);
+    if (containerEl) containerTopWhenIdle = Math.round(containerEl.getBoundingClientRect().top - keyboardShiftPx);
     vv.addEventListener('resize', onViewportChange);
     vv.addEventListener('scroll', onViewportChange);
     onViewportChange();
     return () => {
       vv.removeEventListener('resize', onViewportChange);
       vv.removeEventListener('scroll', onViewportChange);
+      if (keyboardSettleRaf !== null) {
+        cancelAnimationFrame(keyboardSettleRaf);
+        keyboardSettleRaf = null;
+      }
     };
   });
 
@@ -978,8 +1036,8 @@
   $effect(() => {
     function onOrientation() {
       if (attached) manager.viewportChanged(paneId);
-      if (containerEl) containerTopWhenIdle = Math.round(containerEl.getBoundingClientRect().top);
-      applyKeyboardShift();
+      if (containerEl) containerTopWhenIdle = Math.round(containerEl.getBoundingClientRect().top - keyboardShiftPx);
+      requestKeyboardShift();
     }
     window.addEventListener('orientationchange', onOrientation);
     return () => window.removeEventListener('orientationchange', onOrientation);
