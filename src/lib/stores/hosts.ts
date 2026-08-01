@@ -52,6 +52,7 @@ import {
   loadHostForest,
   settleHostTopologyRefreshes,
   type HostForestResult,
+  type HostForestProgressListener,
   type HostTopologyLink,
 } from '$lib/hosts/hostForest';
 import { connectCloudHostTopologyLink } from '$lib/remote/cloud/cloudHostTopologyLink';
@@ -65,6 +66,7 @@ import {
   currentSharedWorkspaceProjection,
   openSharedWorkspaceProjection,
 } from '$lib/remote/cloud/sharedWorkspaceProjection';
+import { schedulePaneSizeSynchronization } from '$lib/terminal/paneSizeSync';
 
 export type HostKind = 'headless' | 'remote' | 'rdg' | 'shared' | 'sharing';
 export type HostStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
@@ -233,6 +235,7 @@ export function registerHostTopologyLink(source: RegisteredHostLink): () => void
     void previous.link.disconnect();
   }
   registeredHostLinks.set(source.hostId, source);
+  publishPendingHost(source);
   return () => {
     if (registeredHostLinks.get(source.hostId)?.link !== source.link) return;
     supersedeHostTopology(source.hostId);
@@ -251,7 +254,7 @@ export function hostShareDeviceName(hostId: string): string | undefined {
 
 export async function refreshHostTopology(
   hostId: string,
-  options?: { supersede?: boolean },
+  options?: { supersede?: boolean; onProgress?: HostForestProgressListener },
 ): Promise<HostForestResult | null> {
   const source = registeredHostLinks.get(hostId);
   if (!source) return null;
@@ -266,7 +269,18 @@ export async function refreshHostTopology(
   const controller = new AbortController();
   topologyAbortByHost.set(hostId, controller);
   let pending!: Promise<HostForestResult | null>;
-  pending = loadHostForest([{ hostId, link: source.link, signal: controller.signal }])
+  pending = loadHostForest(
+    [{ hostId, link: source.link, signal: controller.signal }],
+    (progress) => {
+      if (
+        controller.signal.aborted ||
+        topologyGenerationByHost.get(hostId) !== generation ||
+        registeredHostLinks.get(hostId)?.link !== source.link
+      ) return;
+      publishHostTopology(hostId, progress);
+      options?.onProgress?.(progress);
+    },
+  )
     .then(async ([loaded]) => {
       if (
         controller.signal.aborted ||
@@ -304,9 +318,26 @@ export function cancelHostTopologyRetry(hostId: string): void {
 
 /** Refresh one linked host only. Existing in-flight work is shared. */
 export async function retryHostTopology(hostId: string): Promise<HostForestResult | null> {
-  const result = await refreshHostTopology(hostId, { supersede: true });
+  const result = await refreshLinkedHost(hostId);
+  return result;
+}
+
+/** Refresh and publish one host only; unrelated slow hosts cannot delay it. */
+async function refreshLinkedHost(
+  hostId: string,
+  onProgress?: HostForestProgressListener,
+): Promise<HostForestResult | null> {
+  const result = await refreshHostTopology(hostId, { supersede: true, onProgress });
   if (result) publishHostTopology(hostId, result);
   return result;
+}
+
+async function refreshLinkedHostAfterMutation(hostId: string): Promise<void> {
+  const result = await refreshLinkedHost(hostId);
+  if (!result) throw new Error('远端操作已完成，但主机连接已失效');
+  if (result.error) {
+    throw new Error(`远端操作已完成，但工作区刷新失败：${result.error}`);
+  }
 }
 
 export async function closeHostPane(hostId: string, workspaceId: string, paneId: string): Promise<void> {
@@ -314,7 +345,7 @@ export async function closeHostPane(hostId: string, workspaceId: string, paneId:
   if (!source) throw new Error('该主机未提供 pane 删除能力');
   const closed = await deleteRemotePane(hostId, workspaceId, paneId, source.link, closeLocalPane);
   if (!closed) throw new Error('远端 pane 删除失败');
-  await refreshHosts();
+  await refreshLinkedHostAfterMutation(hostId);
 }
 
 function topologyLink(hostId: string): HostTopologyLink {
@@ -326,14 +357,14 @@ function topologyLink(hostId: string): HostTopologyLink {
 export async function createHostWorkspace(hostId: string, name?: string): Promise<void> {
   const id = await topologyLink(hostId).createWorkspace(name);
   if (!id) throw new Error('远端工作区创建失败');
-  await refreshHosts();
+  await refreshLinkedHostAfterMutation(hostId);
 }
 
 export async function openHostWorkspace(hostId: string, workspaceId: string): Promise<void> {
   if (!await topologyLink(hostId).switchWorkspace(workspaceId)) {
     throw new Error('远端工作区打开失败');
   }
-  await refreshHosts();
+  await refreshLinkedHostAfterMutation(hostId);
 }
 
 export async function renameHostWorkspace(
@@ -345,7 +376,7 @@ export async function renameHostWorkspace(
   if (!link.renameWorkspace || !await link.renameWorkspace(workspaceId, name)) {
     throw new Error('远端工作区重命名失败');
   }
-  await refreshHosts();
+  await refreshLinkedHostAfterMutation(hostId);
 }
 
 export async function saveHostWorkspace(
@@ -363,14 +394,14 @@ export async function createHostPane(hostId: string, workspaceId: string): Promi
   const link = topologyLink(hostId);
   if (!await link.switchWorkspace(workspaceId)) throw new Error('远端工作区打开失败');
   if (!await link.createPane()) throw new Error('远端 pane 创建失败');
-  await refreshHosts();
+  await refreshLinkedHostAfterMutation(hostId);
 }
 
 export async function closeHostWorkspace(hostId: string, workspaceId: string): Promise<void> {
   if (!await topologyLink(hostId).closeWorkspace(workspaceId)) {
     throw new Error('远端工作区关闭失败');
   }
-  await refreshHosts();
+  await refreshLinkedHostAfterMutation(hostId);
 }
 
 export async function markHostPaneAgent(
@@ -383,7 +414,7 @@ export async function markHostPaneAgent(
   const mark = link.markPaneAgent;
   if (!mark) throw new Error('该主机不支持 Agent 标记');
   await mark.call(link, workspaceId, paneId, on);
-  await refreshHosts();
+  await refreshLinkedHostAfterMutation(hostId);
 }
 
 export async function changeHostPaneShell(
@@ -398,7 +429,7 @@ export async function changeHostPaneShell(
   const shell = shells.find((candidate) => candidate.id === shellId);
   if (!shell) throw new Error('所选 shell 不可用');
   await link.changePaneShell(workspaceId, paneId, shell);
-  await refreshHosts();
+  await refreshLinkedHostAfterMutation(hostId);
 }
 
 export async function hostShellChoices(hostId: string): Promise<Array<{ id: string; label: string }>> {
@@ -455,8 +486,13 @@ function linkedHost(
       ? 'disconnected'
       : topology.error
       ? 'error'
+      : topology.loading
+      ? 'connecting'
       : source.link.state() === 'connected' ? 'connected' : 'connecting',
-    detail: topology.error || source.detail,
+    detail: topology.error
+      || (topology.loading
+        ? `正在读取远端工作区（${topology.loadedWorkspaces ?? 0}/${topology.totalWorkspaces ?? 0}）…`
+        : topology.warning || source.detail),
     workspaces,
     sessions: workspaces.flatMap((workspace) => workspace.sessions),
   };
@@ -475,6 +511,17 @@ function pendingLinkedHost(source: RegisteredHostLink, previous?: Host): Host {
     workspaces: previous?.workspaces ?? [],
     sessions: previous?.sessions ?? [],
   };
+}
+
+function publishPendingHost(source: RegisteredHostLink): void {
+  hostsStore.update((hosts) => {
+    const index = hosts.findIndex((host) => host.id === source.hostId);
+    const projected = pendingLinkedHost(source, index >= 0 ? hosts[index] : undefined);
+    if (index < 0) return [...hosts, projected];
+    const next = [...hosts];
+    next[index] = projected;
+    return next;
+  });
 }
 
 function publishHostTopology(hostId: string, loaded: HostForestResult): void {
@@ -683,7 +730,7 @@ export async function refreshHosts(): Promise<void> {
       hostId,
       refresh: () => refreshHostTopology(hostId),
     }));
-  await settleHostTopologyRefreshes(jobs, (result) => {
+  void settleHostTopologyRefreshes(jobs, (result) => {
     if (refreshGeneration === hostsRefreshGeneration) {
       publishHostTopology(result.hostId, result);
     }
@@ -812,6 +859,7 @@ export async function connectHost(
   channel: 'lan' | 'public' = 'lan',
 ): Promise<void> {
   const progressLabel = label.trim() || addr.trim();
+  let connectedHostId = '';
   hostConnectProgress.set({
     phase: 'connecting',
     label: progressLabel,
@@ -849,6 +897,7 @@ export async function connectHost(
         link.connect(host, port, code, 'code', secure);
       });
       const hostId = `lan:${host}:${port}`;
+      connectedHostId = hostId;
       registerHostTopologyLink({
         hostId,
         kind,
@@ -862,6 +911,7 @@ export async function connectHost(
       if (!deviceName || !code) throw new Error('公网设备名或 TOTP 无效');
       const link = await connectCloudHostTopologyLink(deviceName, code);
       const hostId = `cloud:${deviceName}`;
+      connectedHostId = hostId;
       registerHostTopologyLink({
         hostId,
         kind,
@@ -876,7 +926,17 @@ export async function connectHost(
       label: progressLabel,
       detail: '连接成功，正在读取远端工作区…',
     });
-    await refreshHosts();
+    const topology = await refreshLinkedHost(connectedHostId, (progress) => {
+      hostConnectProgress.set({
+        phase: 'loading-workspaces',
+        label: progressLabel,
+        detail: progress.totalWorkspaces
+          ? `正在读取远端工作区（${progress.loadedWorkspaces ?? 0}/${progress.totalWorkspaces}）…`
+          : '已连接，远端暂无工作区',
+      });
+    });
+    if (!topology) throw new Error('主机连接已失效');
+    if (topology.error) throw new Error(topology.error);
     hostConnectProgress.set(null);
   } catch (error) {
     hostConnectProgress.set({
@@ -1013,13 +1073,14 @@ async function attachRemoteHostSessionImpl(
     setPaneCwd(wid, paneId, session?.cwd);
   }
   noteLifecycleSubscribe(hostId, sessionId);
-  await refreshHosts();
+  await refreshLinkedHost(hostId);
   await syncPaneLayoutFromBackend();
   if (targetPaneId && region && paneId !== targetPaneId) {
     // dockPane performs another layout sync and force-fits every mounted pane.
     // That preserves the first real DOM-measured Resize for remote attachments.
     await dockPane(paneId, targetPaneId, region);
   }
+  schedulePaneSizeSynchronization(paneId);
   return paneId;
 }
 

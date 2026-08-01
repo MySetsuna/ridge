@@ -138,6 +138,81 @@ describe('loadHostForest', () => {
     expect(hostTopologyErrorKind('list_workspaces timeout')).toBe('retryable');
   });
 
+  it('retains only unfinished workspace panes during progressive discovery', () => {
+    const previous: HostForestResult = {
+      hostId: 'host-a',
+      workspaces: [
+        { id: 'ready', name: 'Ready', active: true, panes: [{ id: 'old-ready', title: 'Old', isAgent: false }] },
+        { id: 'slow', name: 'Slow', active: false, panes: [{ id: 'old-slow', title: 'Kept', isAgent: false }] },
+      ],
+    };
+    const retained = retainHostForest(previous, {
+      hostId: 'host-a',
+      loading: true,
+      loadedWorkspaceIds: ['ready'],
+      workspaces: [
+        { id: 'ready', name: 'Ready', active: true, panes: [{ id: 'new-ready', title: 'New', isAgent: false }] },
+        { id: 'slow', name: 'Slow', active: false, panes: [] },
+      ],
+    });
+
+    expect(retained.workspaces[0].panes[0].id).toBe('new-ready');
+    expect(retained.workspaces[1].panes[0].id).toBe('old-slow');
+  });
+
+  it('publishes workspace identities before slow pane discovery completes', async () => {
+    let releasePanes!: (panes: Array<{ id: string; title: string }>) => void;
+    const paneResult = new Promise<Array<{ id: string; title: string }>>((resolve) => {
+      releasePanes = resolve;
+    });
+    const progress: HostForestResult[] = [];
+    const pending = loadHostForest([{
+      hostId: 'slow-panes',
+      link: {
+        listWorkspaces: vi.fn(async () => ({
+          workspaces: [{ id: 'workspace-a', name: 'Ready first', active: true }],
+        })),
+        listWorkspacePanes: vi.fn(() => paneResult),
+      },
+    }], (result) => progress.push(result));
+
+    await vi.waitFor(() => expect(progress).toHaveLength(1));
+    expect(progress[0]).toMatchObject({
+      hostId: 'slow-panes',
+      loading: true,
+      loadedWorkspaces: 0,
+      totalWorkspaces: 1,
+      workspaces: [{ id: 'workspace-a', name: 'Ready first', panes: [] }],
+    });
+
+    releasePanes([{ id: 'pane-a', title: 'Shell' }]);
+    await expect(pending).resolves.toMatchObject([{
+      workspaces: [{ id: 'workspace-a', panes: [{ id: 'pane-a' }] }],
+    }]);
+  });
+
+  it('keeps workspace discovery usable when one pane listing fails', async () => {
+    const [result] = await loadHostForest([{
+      hostId: 'partial',
+      link: {
+        listWorkspaces: vi.fn(async () => ({ workspaces: [
+          { id: 'good', name: 'Good', active: true },
+          { id: 'bad', name: 'Bad', active: false },
+        ] })),
+        listWorkspacePanes: vi.fn(async (workspaceId: string) => {
+          if (workspaceId === 'bad') throw new Error('pane list timed out');
+          return [{ id: 'pane-good', title: 'Shell' }];
+        }),
+      },
+    }]);
+
+    expect(result.workspaces.map((workspace) => workspace.id)).toEqual(['good', 'bad']);
+    expect(result.workspaces[0].panes).toHaveLength(1);
+    expect(result.workspaces[1].panes).toEqual([]);
+    expect(result.warning).toContain('pane list timed out');
+    expect(result.error).toBeUndefined();
+  });
+
   it('publishes a fast host without waiting for a slow sibling', async () => {
     let resolveSlow!: (value: HostForestResult) => void;
     const slow = new Promise<HostForestResult>((resolve) => { resolveSlow = resolve; });

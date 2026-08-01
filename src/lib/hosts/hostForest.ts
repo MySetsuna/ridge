@@ -65,7 +65,15 @@ export interface HostForestResult {
   hostId: string;
   workspaces: HostForestWorkspace[];
   error?: string;
+  warning?: string;
+  loading?: boolean;
+  loadedWorkspaces?: number;
+  totalWorkspaces?: number;
+  loadedWorkspaceIds?: string[];
+  failedWorkspaceIds?: string[];
 }
+
+export type HostForestProgressListener = (result: HostForestResult) => void;
 
 export interface HostTopologyRefreshJob {
   hostId: string;
@@ -96,9 +104,18 @@ export function retainHostForest(
   previous: HostForestResult | undefined,
   next: HostForestResult,
 ): HostForestResult {
-  return next.error && previous
-    ? { ...next, workspaces: previous.workspaces }
-    : next;
+  if (next.error && previous) return { ...next, workspaces: previous.workspaces };
+  if (!previous || (!next.loading && !next.failedWorkspaceIds?.length)) return next;
+  const loaded = new Set(next.loadedWorkspaceIds ?? []);
+  const failed = new Set(next.failedWorkspaceIds ?? []);
+  const previousById = new Map(previous.workspaces.map((workspace) => [workspace.id, workspace]));
+  return {
+    ...next,
+    workspaces: next.workspaces.map((workspace) =>
+      loaded.has(workspace.id) && !failed.has(workspace.id)
+        ? workspace
+        : { ...workspace, panes: previousById.get(workspace.id)?.panes ?? workspace.panes }),
+  };
 }
 
 export function hostTopologyErrorKind(error?: string): 'auth' | 'retryable' {
@@ -133,17 +150,65 @@ async function workspaceNode(
 /** 每 host 独立失败；同 host 各 workspace pane 列表并行，结果仍按 host 返回。 */
 export async function loadHostForest(
   sources: readonly HostForestSource[],
+  onProgress?: HostForestProgressListener,
 ): Promise<HostForestResult[]> {
   return Promise.all(
     sources.map(async ({ hostId, link, signal }) => {
       try {
         const { workspaces } = await abortable(link.listWorkspaces(), signal);
-        return {
+        const nodes: HostForestWorkspace[] = workspaces.map((workspace) => ({
+          id: workspace.id,
+          name: workspace.name?.trim() || `工作区 ${workspace.id.slice(0, 8)}`,
+          active: workspace.active,
+          panes: [],
+        }));
+        onProgress?.({
           hostId,
-          workspaces: await Promise.all(
-            workspaces.map((workspace) => workspaceNode(link, workspace, signal)),
-          ),
-        };
+          workspaces: [...nodes],
+          loading: workspaces.length > 0,
+          loadedWorkspaces: 0,
+          totalWorkspaces: workspaces.length,
+          loadedWorkspaceIds: [],
+        });
+
+        const failures: string[] = [];
+        const failedWorkspaceIds: string[] = [];
+        let loadedWorkspaces = 0;
+        const loadedWorkspaceIds: string[] = [];
+        await Promise.all(workspaces.map(async (workspace, index) => {
+          let loaded = false;
+          try {
+            nodes[index] = await workspaceNode(link, workspace, signal);
+            loaded = true;
+          } catch (error) {
+            failedWorkspaceIds.push(workspace.id);
+            failures.push(
+              `${nodes[index].name}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          } finally {
+            loadedWorkspaces += 1;
+            if (loaded) loadedWorkspaceIds.push(workspace.id);
+            onProgress?.({
+              hostId,
+              workspaces: [...nodes],
+              loading: loadedWorkspaces < workspaces.length,
+              loadedWorkspaces,
+              totalWorkspaces: workspaces.length,
+              loadedWorkspaceIds: [...loadedWorkspaceIds],
+              failedWorkspaceIds: [...failedWorkspaceIds],
+              warning: failures.length > 0 ? failures.join('; ') : undefined,
+            });
+          }
+        }));
+        return failures.length > 0
+          ? {
+              hostId,
+              workspaces: nodes,
+              warning: failures.join('; '),
+              loadedWorkspaceIds,
+              failedWorkspaceIds,
+            }
+          : { hostId, workspaces: nodes };
       } catch (error) {
         return {
           hostId,
