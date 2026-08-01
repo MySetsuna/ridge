@@ -45,6 +45,7 @@ pub async fn domain_meta(
             "agents.profiles",
             "agents.roster",
             "git.status",
+            "remote.hosts",
             "workspaces",
             "mcp",
         ],
@@ -91,6 +92,39 @@ fn workspace_detail(
         "layout": layout,
         "panes": leaves,
     }))
+}
+
+/// Kernel-owned remote host topology. Transport connection remains a shell adapter.
+pub async fn domain_remote_hosts(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    let mut hosts = st.remote_hosts.lock().expect("remote host lock").values().cloned().collect::<Vec<_>>();
+    hosts.sort_by(|a, b| a.label.cmp(&b.label));
+    Ok(Json(json!({ "ok": true, "source": "ridge-kernel", "hosts": hosts })))
+}
+
+pub async fn domain_remote_host_upsert(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(host): Json<ridge_core::remote::HostRecord>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    if host.id.trim().is_empty() { return Ok(bad_request("remote host id is required")); }
+    let id = host.id.clone();
+    st.remote_hosts.lock().expect("remote host lock").insert(id.clone(), host);
+    Ok(Json(json!({ "ok": true, "host_id": id })))
+}
+
+pub async fn domain_remote_host_remove(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(host_id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    let removed = st.remote_hosts.lock().expect("remote host lock").remove(&host_id).is_some();
+    Ok(Json(json!({ "ok": true, "removed": removed, "host_id": host_id })))
 }
 
 /// Kernel-owned workspace topology. Existing shell migration remains explicit.
@@ -532,6 +566,7 @@ mod tests {
             roster: Arc::new(std::sync::Mutex::new(
                 ridge_core::teammate::topology::TopologyGraph::new(),
             )),
+            remote_hosts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             ptys: Arc::new(ridge_kernel::pty::PtyRegistry::default()),
         }
     }
@@ -549,6 +584,23 @@ mod tests {
     fn agents_nonempty() {
         let v = builtin_agent_profiles();
         assert!(v.as_array().unwrap().len() >= 3);
+    }
+
+    #[tokio::test]
+    async fn remote_host_handlers_keep_topology_in_kernel() {
+        let state = test_state();
+        let host = ridge_core::remote::HostRecord {
+            id: "remote-a".into(),
+            kind: ridge_core::remote::HostKind::Remote,
+            label: "A".into(), addr: "127.0.0.1:9900".into(),
+            status: ridge_core::remote::HostStatus::Connected,
+            detail: "live".into(), sessions: vec![],
+        };
+        let _ = domain_remote_host_upsert(State(state.clone()), test_headers(), Json(host)).await.unwrap();
+        let listed = domain_remote_hosts(State(state.clone()), test_headers()).await.unwrap().0;
+        assert_eq!(listed["hosts"][0]["id"], "remote-a");
+        let removed = domain_remote_host_remove(State(state), test_headers(), Path("remote-a".into())).await.unwrap().0;
+        assert_eq!(removed["removed"], true);
     }
 
     #[test]

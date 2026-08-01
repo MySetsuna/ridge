@@ -10,6 +10,7 @@ mod domain;
 mod mcp_min;
 
 use std::net::SocketAddr;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -52,6 +53,8 @@ pub struct AppState {
     pub workspaces: Arc<std::sync::Mutex<ridge_core::workspace::graph::WorkspaceGraph>>,
     /// Kernel-owned Agent roster/topology; process binding remains a host adapter.
     pub roster: Arc<std::sync::Mutex<ridge_core::teammate::topology::TopologyGraph>>,
+    /// Kernel-owned remote host topology; shells only project or transport it.
+    pub remote_hosts: Arc<std::sync::Mutex<HashMap<String, ridge_core::remote::HostRecord>>>,
     /// PTY process lifetime belongs to the kernel, not an API shell.
     pub ptys: Arc<ridge_kernel::pty::PtyRegistry>,
 }
@@ -102,6 +105,7 @@ async fn health(State(st): State<AppState>) -> Json<HealthBody> {
             "agents.profiles",
             "agents.roster",
             "git.status",
+            "remote.hosts",
             "workspaces",
             "mcp",
         ],
@@ -129,6 +133,7 @@ async fn status(
             "agents.profiles",
             "agents.roster",
             "git.status",
+            "remote.hosts",
             "workspaces",
             "mcp",
         ],
@@ -187,6 +192,7 @@ async fn main() -> Result<()> {
         roster: Arc::new(std::sync::Mutex::new(
             ridge_core::teammate::topology::TopologyGraph::new(),
         )),
+        remote_hosts: Arc::new(std::sync::Mutex::new(HashMap::new())),
         ptys: Arc::new(ridge_kernel::pty::PtyRegistry::default()),
     };
 
@@ -206,6 +212,14 @@ async fn main() -> Result<()> {
         )
         .route("/v1/domain/fs/list", get(domain::domain_fs_list))
         .route("/v1/domain/git/status", get(domain::domain_git_status))
+        .route(
+            "/v1/domain/remote-hosts",
+            get(domain::domain_remote_hosts).post(domain::domain_remote_host_upsert),
+        )
+        .route(
+            "/v1/domain/remote-hosts/:host_id",
+            delete(domain::domain_remote_host_remove),
+        )
         .route("/v1/domain/ptys", post(domain::domain_pty_create))
         .route(
             "/v1/domain/ptys/:pty_id/write",
