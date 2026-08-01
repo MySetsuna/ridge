@@ -114,6 +114,129 @@ const _store = writable<ScmCacheState>({
   nonGitRepoRoots: {},
 });
 
+export type ScmQueryKind = 'status' | 'diff-summary' | 'branches' | 'stashes';
+
+export interface ScmQueryDiagnostics {
+  calls: number;
+  started: number;
+  joined: number;
+  completed: number;
+  failed: number;
+  inFlight: number;
+}
+
+const scmQueries = new Map<string, Promise<unknown>>();
+const directoryContextsByOwner = new Map<string, Set<string>>();
+const queryCounters = { calls: 0, started: 0, joined: 0, completed: 0, failed: 0 };
+
+export class ScmNonGitRepositoryError extends Error {
+  constructor(readonly repoRoot: string) {
+    super(`Not a git repository: ${repoRoot}`);
+    this.name = 'ScmNonGitRepositoryError';
+  }
+}
+
+function normalizeDirectory(value: string): string {
+  const normalized = value.replaceAll('\\', '/').replace(/\/+$/, '');
+  return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function contextsOverlap(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function hasDirectoryOwner(repoRoot: string): boolean {
+  const root = normalizeDirectory(repoRoot);
+  for (const contexts of directoryContextsByOwner.values()) {
+    for (const context of contexts) {
+      if (contextsOverlap(root, context)) return true;
+    }
+  }
+  return false;
+}
+
+function releaseUnownedNegativeRoots(previousContexts: ReadonlySet<string>): string[] {
+  if (previousContexts.size === 0) return [];
+  const roots = Object.keys(get(_store).nonGitRepoRoots).filter((root) => {
+    const normalized = normalizeDirectory(root);
+    return (
+      [...previousContexts].some((context) => contextsOverlap(normalized, context)) &&
+      !hasDirectoryOwner(root)
+    );
+  });
+  if (roots.length > 0) {
+    _store.update((state) => {
+      const nonGitRepoRoots = { ...state.nonGitRepoRoots };
+      for (const root of roots) delete nonGitRepoRoots[root];
+      return { ...state, nonGitRepoRoots };
+    });
+  }
+  return roots;
+}
+
+/** Replace one pane/panel's active directory identities and release only roots
+ * whose final overlapping owner departed. */
+export function setScmDirectoryContexts(ownerId: string, directories: readonly string[]): string[] {
+  const previous = directoryContextsByOwner.get(ownerId) ?? new Set<string>();
+  const next = new Set(directories.filter(Boolean).map(normalizeDirectory));
+  if (next.size > 0) directoryContextsByOwner.set(ownerId, next);
+  else directoryContextsByOwner.delete(ownerId);
+  return releaseUnownedNegativeRoots(previous);
+}
+
+function scmQueryKey(kind: ScmQueryKind, repoRoot: string): string {
+  return `${kind}\0${normalizeDirectory(repoRoot)}`;
+}
+
+/** Cross-component same-key single-flight. Branch/stash reads wait for an
+ * active status probe, so a stale/deleted repo is rejected once before fanout. */
+export function runScmQuerySingleFlight<T>(
+  kind: ScmQueryKind,
+  repoRoot: string,
+  query: () => Promise<T>,
+): Promise<T> {
+  queryCounters.calls += 1;
+  const key = scmQueryKey(kind, repoRoot);
+  const existing = scmQueries.get(key);
+  if (existing) {
+    queryCounters.joined += 1;
+    return existing as Promise<T>;
+  }
+  queryCounters.started += 1;
+  const request = Promise.resolve().then(async () => {
+    if (kind === 'branches' || kind === 'stashes') {
+      const statusProbe = scmQueries.get(scmQueryKey('status', repoRoot));
+      if (statusProbe) await statusProbe;
+    }
+    if (isScmRepoKnownNonGit(repoRoot)) throw new ScmNonGitRepositoryError(repoRoot);
+    return query();
+  });
+  scmQueries.set(key, request);
+  void request.then(
+    () => {
+      queryCounters.completed += 1;
+      if (scmQueries.get(key) === request) scmQueries.delete(key);
+    },
+    () => {
+      queryCounters.failed += 1;
+      if (scmQueries.get(key) === request) scmQueries.delete(key);
+    },
+  );
+  return request;
+}
+
+export function getScmQueryDiagnostics(): ScmQueryDiagnostics {
+  return { ...queryCounters, inFlight: scmQueries.size };
+}
+
+/** Test/HMR reset. Active RPCs are not cancelled; late settlement cannot delete newer entries. */
+export function clearScmQuerySingleFlights(): void {
+  scmQueries.clear();
+  for (const key of Object.keys(queryCounters) as Array<keyof typeof queryCounters>) {
+    queryCounters[key] = 0;
+  }
+}
+
 /** Read-only subscription handle for components. */
 export const scmCacheStore = { subscribe: _store.subscribe };
 
@@ -123,14 +246,12 @@ export const scmCacheStore = { subscribe: _store.subscribe };
 export function setScmRepoRoots(
   repoRoots: string[],
   cwdSignature: string,
-  repoSignature: string
+  repoSignature: string,
+  directoryContexts?: readonly string[],
 ): void {
+  if (directoryContexts) setScmDirectoryContexts('source-control', directoryContexts);
   _store.update((s) => {
-    // A cwd change is the only automatic re-probe boundary. Within one cwd
-    // context, discovery may still surface a stale/deleted .git marker; keep
-    // filtering a root once a real Git command has rejected it.
-    const cwdChanged = cwdSignature !== s.lastCwdSignature;
-    const nonGitRepoRoots = cwdChanged ? {} : s.nonGitRepoRoots;
+    const nonGitRepoRoots = s.nonGitRepoRoots;
     const acceptedRoots = repoRoots.filter((root) => !nonGitRepoRoots[root]);
     return {
       ...s,
@@ -228,15 +349,11 @@ export function isScmRepoKnownNonGit(repoRoot: string): boolean {
 /** Explicit reset for a pane-local cwd transition and deterministic tests.
  * Returns the evicted roots so sibling caches can drop negative snapshots. */
 export function resetScmRepositoryDetection(cwdContext?: string): string[] {
-  const context = cwdContext?.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
+  const context = cwdContext ? normalizeDirectory(cwdContext) : undefined;
+  if (!context) directoryContextsByOwner.clear();
   const roots = Object.keys(get(_store).nonGitRepoRoots).filter((root) => {
     if (!context) return true;
-    const normalized = root.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
-    return (
-      normalized === context ||
-      normalized.startsWith(`${context}/`) ||
-      context.startsWith(`${normalized}/`)
-    );
+    return contextsOverlap(normalizeDirectory(root), context) && !hasDirectoryOwner(root);
   });
   if (roots.length > 0) {
     _store.update((s) => {

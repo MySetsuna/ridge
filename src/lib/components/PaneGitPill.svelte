@@ -22,7 +22,11 @@
     markPaneGitRepoNonGit,
     type PaneGitInfo,
   } from '$lib/stores/paneGitStatus';
-  import { isNotGitRepositoryError, isScmRepoKnownNonGit } from '$lib/stores/scmCache';
+  import {
+    isNotGitRepositoryError,
+    isScmRepoKnownNonGit,
+    runScmQuerySingleFlight,
+  } from '$lib/stores/scmCache';
 
   interface BranchInfo {
     name: string;
@@ -71,9 +75,9 @@
     const root = info.repoRoot;
     loading = true;
     try {
-      const result = await invoke<BranchInfo[]>('git_list_branches', {
-        repoRoot: root,
-      });
+      const result = await runScmQuerySingleFlight('branches', root, () =>
+        invoke<BranchInfo[]>('git_list_branches', { repoRoot: root })
+      );
       // Guard against late-resolving stale loads after another cwd switch.
       if (info?.repoRoot === root) {
         branches = result;

@@ -60,6 +60,7 @@
     setScmSelectedRepo,
     isNotGitRepositoryError,
     isScmRepoKnownNonGit,
+    runScmQuerySingleFlight,
     type GitRepoInfo,
     type CommitNode,
     type DiffFile,
@@ -260,7 +261,7 @@
       const rootsChanged = nextSig !== cache.lastRepoSignature;
       // Always update cache (signature timestamps the discovery + drops
       // stale statuses for removed repos).
-      setScmRepoRoots(nextRoots, sig, nextSig);
+      setScmRepoRoots(nextRoots, sig, nextSig, uniqueCwds);
       // setScmRepoRoots also applies the shared negative repository cache.
       // Stay on its accepted roots so force-refresh cannot resurrect a root
       // already rejected in this cwd context.
@@ -300,10 +301,12 @@
     if (existing) return existing;
     const request = (async () => {
       try {
-        const s = await invoke<ScmRepoStatus>('get_scm_status', {
-          repoRoot: root,
-          slot: `scm-status:${root}`,
-        });
+        const s = await runScmQuerySingleFlight('status', root, () =>
+          invoke<ScmRepoStatus>('get_scm_status', {
+            repoRoot: root,
+            slot: `scm-status:${root}`,
+          })
+        );
         setScmRepoStatus(root, s);
         // Cascade to the pane git pill cache: stage/commit/sync writes should
         // be reflected on the pane title bar without waiting for a cwd change
@@ -437,7 +440,9 @@
       return;
     }
     try {
-      stashes = await invoke<StashEntry[]>('git_stash_list', { repoRoot: root });
+      stashes = await runScmQuerySingleFlight('stashes', root, () =>
+        invoke<StashEntry[]>('git_stash_list', { repoRoot: root })
+      );
     } catch (e) {
       if (isNotGitRepositoryError(e)) markPaneGitRepoNonGit(root);
       reportRepeatedError('git_stash_list failed', e);
@@ -1422,7 +1427,9 @@
     try {
       branchLists = {
         ...branchLists,
-        [root]: await invoke<BranchInfo[]>('git_list_branches', { repoRoot: root }),
+        [root]: await runScmQuerySingleFlight('branches', root, () =>
+          invoke<BranchInfo[]>('git_list_branches', { repoRoot: root })
+        ),
       };
     } catch (e) {
       if (isNotGitRepositoryError(e)) markPaneGitRepoNonGit(root);

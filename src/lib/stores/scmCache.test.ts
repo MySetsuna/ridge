@@ -16,6 +16,10 @@ import {
   isScmRepoKnownNonGit,
   markScmRepoNonGit,
   resetScmRepositoryDetection,
+  clearScmQuerySingleFlights,
+  getScmQueryDiagnostics,
+  runScmQuerySingleFlight,
+  setScmDirectoryContexts,
   type ScmRepoStatus,
   type GitRepoInfo,
 } from './scmCache';
@@ -34,6 +38,7 @@ const fixtureStatus = (root: string): ScmRepoStatus => ({
 beforeEach(() => {
   // Wipe state between tests — the store is module-scope so it persists.
   resetScmRepositoryDetection();
+  clearScmQuerySingleFlights();
   setScmRepoRoots([], '', '');
 });
 
@@ -96,23 +101,23 @@ describe('scmCacheStore', () => {
     expect(shouldRefreshOnMount(1)).toBe(true);
   });
 
-  it('shares a non-Git result until the cwd signature changes', () => {
-    setScmRepoRoots(['/gone'], '/workspace', '/gone');
-    setScmRepoStatus('/gone', fixtureStatus('/gone'));
+  it('shares a non-Git result until the final directory context changes', () => {
+    setScmRepoRoots(['/workspace/gone'], '/workspace', '/workspace/gone', ['/workspace']);
+    setScmRepoStatus('/workspace/gone', fixtureStatus('/workspace/gone'));
 
-    markScmRepoNonGit('/gone');
-    expect(isScmRepoKnownNonGit('/gone')).toBe(true);
+    markScmRepoNonGit('/workspace/gone');
+    expect(isScmRepoKnownNonGit('/workspace/gone')).toBe(true);
     expect(getScmCache().repoRoots).toEqual([]);
-    expect(getScmCache().statuses['/gone']).toBeUndefined();
+    expect(getScmCache().statuses['/workspace/gone']).toBeUndefined();
 
     // Same cwd discovery cannot resurrect the rejected root.
-    setScmRepoRoots(['/gone'], '/workspace', '/gone');
+    setScmRepoRoots(['/workspace/gone'], '/workspace', '/workspace/gone', ['/workspace']);
     expect(getScmCache().repoRoots).toEqual([]);
 
     // Directory switch is the explicit re-probe boundary.
-    setScmRepoRoots(['/gone'], '/other-workspace', '/gone');
-    expect(isScmRepoKnownNonGit('/gone')).toBe(false);
-    expect(getScmCache().repoRoots).toEqual(['/gone']);
+    setScmRepoRoots(['/workspace/gone'], '/other-workspace', '/workspace/gone', ['/other-workspace']);
+    expect(isScmRepoKnownNonGit('/workspace/gone')).toBe(false);
+    expect(getScmCache().repoRoots).toEqual(['/workspace/gone']);
   });
 
   it('classifies only explicit non-repository failures as negative detection', () => {
@@ -122,6 +127,85 @@ describe('scmCacheStore', () => {
     expect(isNotGitRepositoryError({ message: 'fatal: not a git repository' })).toBe(true);
     expect(isNotGitRepositoryError('git busy: concurrency permit timed out')).toBe(false);
     expect(isNotGitRepositoryError('superseded by newer request')).toBe(false);
+  });
+
+  it('keeps a negative root until its final pane owner leaves', () => {
+    setScmDirectoryContexts('pane:a', ['/shared/repo/sub-a']);
+    setScmDirectoryContexts('pane:b', ['/shared/repo/sub-b']);
+    markScmRepoNonGit('/shared/repo');
+
+    setScmDirectoryContexts('pane:a', ['/elsewhere']);
+    expect(isScmRepoKnownNonGit('/shared/repo')).toBe(true);
+
+    setScmDirectoryContexts('pane:b', ['/elsewhere']);
+    expect(isScmRepoKnownNonGit('/shared/repo')).toBe(false);
+  });
+
+  it('single-flights 126 same-key reads and exposes exact diagnostics', async () => {
+    let starts = 0;
+    let release!: (value: string) => void;
+    const deferred = new Promise<string>((resolve) => { release = resolve; });
+    const calls = Array.from({ length: 126 }, () =>
+      runScmQuerySingleFlight('branches', '/repo', () => {
+        starts += 1;
+        return deferred;
+      })
+    );
+
+    await Promise.resolve();
+    expect(starts).toBe(1);
+    expect(getScmQueryDiagnostics()).toMatchObject({
+      calls: 126,
+      started: 1,
+      joined: 125,
+      inFlight: 1,
+    });
+
+    release('main');
+    await expect(Promise.all(calls)).resolves.toEqual(Array(126).fill('main'));
+    expect(getScmQueryDiagnostics()).toMatchObject({ completed: 1, inFlight: 0 });
+  });
+
+  it('single-flights equivalent Windows root spellings', async () => {
+    let starts = 0;
+    const first = runScmQuerySingleFlight('status', 'C:\\Repo\\', async () => {
+      starts += 1;
+      await Promise.resolve();
+      return fixtureStatus('C:\\Repo');
+    });
+    const second = runScmQuerySingleFlight('status', 'c:/repo', async () => {
+      starts += 1;
+      return fixtureStatus('c:/repo');
+    });
+
+    expect(await second).toBe(await first);
+    expect(starts).toBe(1);
+  });
+
+  it('holds branch and stash reads behind one in-flight status rejection', async () => {
+    let releaseStatus!: () => void;
+    const statusFailure = new Promise<ScmRepoStatus>((_resolve, reject) => {
+      releaseStatus = () => reject(new Error('fatal: not a git repository'));
+    });
+    let branchesStarted = 0;
+    let stashesStarted = 0;
+    const status = runScmQuerySingleFlight('status', '/gone', () => statusFailure);
+    const branches = runScmQuerySingleFlight('branches', '/gone', async () => {
+      branchesStarted += 1;
+      return [];
+    });
+    const stashes = runScmQuerySingleFlight('stashes', '/gone', async () => {
+      stashesStarted += 1;
+      return [];
+    });
+
+    await Promise.resolve();
+    expect(branchesStarted).toBe(0);
+    expect(stashesStarted).toBe(0);
+    releaseStatus();
+    await Promise.allSettled([status, branches, stashes]);
+    expect(branchesStarted).toBe(0);
+    expect(stashesStarted).toBe(0);
   });
 });
 
