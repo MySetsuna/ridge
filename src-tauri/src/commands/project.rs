@@ -803,9 +803,13 @@ fn read_agent_recent_replies_sync(
         ("Claude", home.join(".claude").join("projects")),
         ("Codex", home.join(".codex").join("sessions")),
     ];
+    // Keep one bounded discovery pass per source. A busy Claude tree must not
+    // consume the shared cap and hide every Codex session before sorting.
     let mut files = Vec::new();
     for (agent, root) in roots {
-        collect_jsonl_files(&root, agent, 0, &mut files);
+        let mut source_files = Vec::new();
+        collect_jsonl_files(&root, agent, 0, &mut source_files);
+        files.extend(source_files);
     }
     files.sort_by(|a, b| b.2.cmp(&a.2));
     files.truncate(200);
@@ -1368,6 +1372,56 @@ mod tests {
         assert!(same_or_child_path(r"C:\code\wind\src", "c:/code/wind"));
         assert!(same_or_child_path(r"C:\code\wind", "c:/code/wind/src"));
         assert!(!same_or_child_path(r"C:\code\windmill", "c:/code/wind"));
+    }
+    #[test]
+    fn history_scan_keeps_each_agent_and_recorded_cwd() {
+        let td = TempDir::new("agent-history-sources");
+        let claude = td.join(".claude/projects/project-a/session-a.jsonl");
+        let codex = td.join(".codex/sessions/2026/08/session-b.jsonl");
+        std::fs::create_dir_all(claude.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        std::fs::write(
+            &claude,
+            r#"{"type":"assistant","timestamp":"2026-08-02T01:00:00Z","cwd":"C:\\one","sessionId":"claude-a","message":{"role":"assistant","content":"from Claude"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &codex,
+            r#"{"type":"session_meta","payload":{"id":"codex-b","cwd":"D:\\two"}}
+{"timestamp":"2026-08-02T02:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"from Codex"}]}}"#,
+        )
+        .unwrap();
+
+        let replies = read_agent_recent_replies_sync(&td.path, Vec::new(), 40);
+        assert_eq!(replies.len(), 2);
+        let claude_reply = replies
+            .iter()
+            .find(|reply| reply.agent == "Claude")
+            .expect("Claude history");
+        assert_eq!(claude_reply.cwd, r"C:\one");
+        assert_eq!(claude_reply.text, "from Claude");
+        assert_eq!(
+            claude_reply.resume.as_ref().map(|resume| resume.cwd.as_str()),
+            Some(r"C:\one")
+        );
+        let codex_reply = replies
+            .iter()
+            .find(|reply| reply.agent == "Codex")
+            .expect("Codex history");
+        assert_eq!(codex_reply.cwd, r"D:\two");
+        assert_eq!(codex_reply.text, "from Codex");
+        assert_eq!(
+            codex_reply.resume.as_ref().map(|resume| resume.argv.clone()),
+            Some(vec!["resume".into(), "codex-b".into()])
+        );
+
+        let filtered = read_agent_recent_replies_sync(
+            &td.path,
+            vec!["d:/two/project".into()],
+            40,
+        );
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].agent, "Codex");
     }
 
     /// 本机若存在 Codex/Grok 会话目录，则真实扫描路径须解析出非空条目（非 fixture）。
