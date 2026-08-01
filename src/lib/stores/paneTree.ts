@@ -136,6 +136,10 @@ export const activePaneId = writable<string>('');
 export type AgentPaneAttention = 'waiting' | 'stopped';
 export const agentPaneAttentionStore = writable<Record<string, AgentPaneAttention>>({});
 
+/** Stable Agent status projection used by Pane chrome and the Commune cards. */
+export type AgentPaneStatus = 'working' | 'waiting' | 'idle' | 'stopped';
+export const agentPaneStatusStore = writable<Record<string, AgentPaneStatus>>({});
+
 function agentPaneAttentionKey(workspaceId: string, paneId: string): string {
   return `${workspaceId}:${paneId}`;
 }
@@ -160,6 +164,24 @@ export function setAgentPaneAttention(
 
 export function clearAgentPaneAttention(workspaceId: string, paneId: string): void {
   setAgentPaneAttention(workspaceId, paneId, null);
+}
+
+export function setAgentPaneStatus(
+  workspaceId: string,
+  paneId: string,
+  status: AgentPaneStatus | null,
+): void {
+  if (!workspaceId || !paneId) return;
+  const key = agentPaneAttentionKey(workspaceId, paneId);
+  agentPaneStatusStore.update((current) => {
+    if (status === null) {
+      if (!(key in current)) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    }
+    return current[key] === status ? current : { ...current, [key]: status };
+  });
 }
 
 /** 正在拖拽重组的源窗格 id（标题栏 dragstart 设置，dragend 清空）�?*/
