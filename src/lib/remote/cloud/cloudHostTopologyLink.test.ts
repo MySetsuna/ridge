@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CloudWebrtcAdapter, PaneRef, RpcClient, RpcRequestOptions } from '@ridge/remote';
 import { CloudHostTopologyLink } from './cloudHostTopologyLink';
 
@@ -7,6 +7,7 @@ class FakeRpc {
   cancelledScopes: string[] = [];
   rejectClose = false;
   rejectWorkspaceClose = false;
+  reconnectHooks = new Set<() => void>();
 
   request(method: string, params?: unknown, options?: RpcRequestOptions): Promise<unknown> {
     this.requests.push({ method, params, options });
@@ -23,6 +24,10 @@ class FakeRpc {
 
   notify(): void {}
   dispose(): void {}
+  onReconnected(hook: () => void): () => void {
+    this.reconnectHooks.add(hook);
+    return () => this.reconnectHooks.delete(hook);
+  }
   cancelScope(scope: string): number {
     this.cancelledScopes.push(scope);
     return 2;
@@ -45,6 +50,9 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
   const paneA: PaneRef = { workspaceId: 'w1', paneId: 'p1' };
   const paneB: PaneRef = { workspaceId: 'w1', paneId: 'p2' };
 
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
   it('cancels one pane scope before close and blocks stale input/resize only for that pane', async () => {
     const rpc = new FakeRpc();
     const link = linkWith(rpc);
@@ -52,6 +60,7 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
     link.subscribePane(paneB);
     link.sendStdin(paneA, 'a');
     link.refreshPane(paneA, 24, 80, 0, 0);
+    await vi.advanceTimersByTimeAsync(40);
 
     const closing = link.closePane(paneA);
     link.sendStdin(paneA, 'stale');
