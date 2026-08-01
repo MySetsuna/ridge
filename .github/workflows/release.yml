@@ -161,6 +161,11 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build rdg CLI for Intel macOS
+        if: matrix.label == 'macos-x64'
+        shell: bash
+        run: cargo build --release -p ridge-cli --target x86_64-apple-darwin
+
       - name: Build & publish (Tauri)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -177,7 +182,7 @@ jobs:
             浏览器 Remote：LAN / 公网共用同一产物与终端几何链路；修复 pane、Canvas、PTY 行列不同步及鼠标命中错位，并补远程 git stash 列表能力。
             发布链：移除 web-remote-dist 临时分叉，Remote desktop/mobile 产物统一构建、上传与激活。
 
-            产物：桌面安装包 Windows（.exe / .msi）、Linux（.deb / .AppImage）、macOS（.dmg，Apple Silicon + Intel 各一份，未签名）；命令行程序 rdg（Windows / Linux / macOS-arm64）。
+            产物：桌面安装包 Windows（.exe / .msi）、Linux（.deb / .AppImage）、macOS（.dmg，Apple Silicon + Intel 各一份，未签名）；命令行程序 rdg（Windows / Linux / macOS-arm64 / macOS-x64）。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -226,10 +231,10 @@ jobs:
 
       # 发布产物附带 rdg CLI：tauri.conf 的 beforeBundleCommand 已 `pnpm build:cli` 把
       # rdg 编到工作区根 target/release/。这里按平台重命名并上传到同一 Release（草稿）。
-      # 交叉编译的 Intel macOS 条目（rust_target≠''）跳过——build:cli 只按 host(arm64)
-      # 编、不会产出 x86_64 二进制，避免误标错架构。→ rdg 覆盖 win / linux / macos-arm64。
+      # Intel macOS now builds the CLI for x86_64 explicitly, so the binary
+      # is uploaded alongside the cross-compiled application assets.
       - name: Upload rdg CLI to release
-        if: matrix.rust_target == ''
+        if: matrix.rust_target == '' || matrix.label == 'macos-x64'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -241,10 +246,11 @@ jobs:
             windows-x64) OS=windows; ARCH=x86_64;  EXT=.exe ;;
             linux-x64)   OS=linux;   ARCH=x86_64;  EXT= ;;
             macos-arm64) OS=macos;   ARCH=aarch64; EXT= ;;
+            macos-x64)   OS=macos;   ARCH=x86_64;  EXT= ;;
             *) echo "label ${{ matrix.label }} 无需上传 rdg，跳过"; exit 0 ;;
           esac
           SRC=""
-          for c in "target/release/rdg$EXT" "src-tauri/target/release/rdg$EXT"; do
+          for c in "target/${{ matrix.rust_target }}/release/rdg$EXT" "target/release/rdg$EXT" "src-tauri/target/release/rdg$EXT"; do
             if [ -f "$c" ]; then SRC="$c"; break; fi
           done
           if [ -z "$SRC" ]; then
