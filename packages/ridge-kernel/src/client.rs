@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 use std::path::Path;
+use serde_json::Value;
 
 use crate::registry::{read_endpoint, KernelEndpoint};
 
@@ -66,4 +67,31 @@ pub fn wait_for_running(timeout: Duration) -> Option<KernelEndpoint> {
         std::thread::sleep(Duration::from_millis(80));
     }
     None
+}
+
+/// Bounded authenticated JSON request for shell adapters. No retry: callers own
+/// their projection policy and must not create duplicate control-plane writes.
+pub fn request_json(
+    endpoint: &KernelEndpoint,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value, String> {
+    let hostport = format!("127.0.0.1:{}", endpoint.port);
+    let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port))
+        .map_err(|error| format!("connect kernel: {error}"))?;
+    stream.set_read_timeout(Some(Duration::from_millis(1500))).map_err(|e| e.to_string())?;
+    stream.set_write_timeout(Some(Duration::from_millis(1500))).map_err(|e| e.to_string())?;
+    let payload = body.map(serde_json::to_string).transpose().map_err(|e| e.to_string())?.unwrap_or_default();
+    let content_type = if body.is_some() { "Content-Type: application/json\r\n" } else { "" };
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\nx-ridge-kernel-token: {}\r\n{content_type}Content-Length: {}\r\n\r\n{payload}",
+        endpoint.token, payload.len(),
+    );
+    stream.write_all(request.as_bytes()).map_err(|e| format!("write kernel: {e}"))?;
+    let mut raw = String::new();
+    stream.take(2 * 1024 * 1024).read_to_string(&mut raw).map_err(|e| format!("read kernel: {e}"))?;
+    let (head, body) = raw.split_once("\r\n\r\n").ok_or_else(|| "malformed kernel response".to_string())?;
+    if !head.starts_with("HTTP/1.1 200") { return Err(format!("kernel HTTP response: {}", head.lines().next().unwrap_or("unknown"))); }
+    serde_json::from_str(body).map_err(|e| format!("parse kernel JSON: {e}"))
 }
