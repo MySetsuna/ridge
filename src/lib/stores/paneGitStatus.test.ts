@@ -27,9 +27,14 @@ const { invoke } = await import('@tauri-apps/api/core');
 const mockInvoke = vi.mocked(invoke);
 
 const mod = await import('./paneGitStatus');
+const scm = await import('./scmCache');
+const repeatedErrors = await import('$lib/utils/repeatedError');
 
 beforeEach(() => {
   mockInvoke.mockReset();
+  scm.resetScmRepositoryDetection();
+  scm.clearScmQuerySingleFlights();
+  repeatedErrors.clearRepeatedErrors();
   vi.useFakeTimers();
 });
 
@@ -222,6 +227,83 @@ describe('non-Git repository detection cache', () => {
     await vi.advanceTimersByTimeAsync(260);
     expect(scmCalls).toBe(2);
     expect(get(mod.paneGitStatusStore)['non-git-cwd-switch']?.branch).toBe('recovered');
+  });
+
+  it('keeps two panes suppressed until the final owner leaves the rejected root', async () => {
+    let scmCalls = 0;
+    mockInvoke.mockImplementation((cmd: string, args: unknown) => {
+      if (cmd === 'find_git_repos_below') {
+        return Promise.resolve(
+          (args as { path: string }).path.startsWith('/owned') ? ['/owned/repo'] : [],
+        );
+      }
+      if (cmd === 'get_scm_status') {
+        scmCalls += 1;
+        if (scmCalls === 1) return Promise.reject(new Error('fatal: not a git repository'));
+        return Promise.resolve({
+          repo_root: '/owned/repo',
+          current_branch: 'recovered',
+          ahead: 0,
+          behind: 0,
+          staged: [],
+          changes: [],
+          untracked: [],
+          has_upstream: true,
+        });
+      }
+      if (cmd === 'git_diff_summary') return Promise.resolve({ added: 0, removed: 0 });
+      return Promise.resolve(null);
+    });
+
+    mod.trackPaneGitStatus('owner-a', '/owned/repo/a');
+    mod.trackPaneGitStatus('owner-b', '/owned/repo/b');
+    await vi.advanceTimersByTimeAsync(260);
+    expect(scmCalls).toBe(1);
+
+    mod.trackPaneGitStatus('owner-a', '/elsewhere/a');
+    await vi.advanceTimersByTimeAsync(260);
+    await Promise.all(Array.from(
+      { length: 100 },
+      () => mod.invalidatePaneGitStatusForRepo('/owned/repo'),
+    ));
+    expect(scmCalls).toBe(1);
+
+    mod.trackPaneGitStatus('owner-b', '/elsewhere/b');
+    await vi.advanceTimersByTimeAsync(260);
+    mod.trackPaneGitStatus('owner-c', '/owned/repo/c');
+    await vi.advanceTimersByTimeAsync(260);
+    expect(scmCalls).toBe(2);
+    expect(get(mod.paneGitStatusStore)['owner-c']?.branch).toBe('recovered');
+  });
+
+  it('keeps diff fallback usable while reporting its failure through aggregation', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockInvoke.mockImplementation((cmd: string, args: unknown) => {
+      if (cmd === 'find_git_repos_below') return Promise.resolve(['/diff/repo']);
+      if (cmd === 'get_scm_status') {
+        return Promise.resolve({
+          repo_root: (args as { repoRoot: string }).repoRoot,
+          current_branch: 'main',
+          ahead: 0,
+          behind: 0,
+          staged: [],
+          changes: [],
+          untracked: [],
+          has_upstream: true,
+        });
+      }
+      if (cmd === 'git_diff_summary') return Promise.reject(new Error('diff transport timeout'));
+      return Promise.resolve(null);
+    });
+
+    mod.trackPaneGitStatus('diff-error', '/diff');
+    await vi.advanceTimersByTimeAsync(260);
+    expect(get(mod.paneGitStatusStore)['diff-error']).toMatchObject({ added: 0, removed: 0 });
+    expect(warning).toHaveBeenCalledWith(
+      'git_diff_summary failed',
+      expect.objectContaining({ message: 'diff transport timeout' }),
+    );
+    warning.mockRestore();
   });
 });
 

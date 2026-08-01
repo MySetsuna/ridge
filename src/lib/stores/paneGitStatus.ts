@@ -20,11 +20,13 @@
 import { writable, get } from 'svelte/store';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { mapLimit, GIT_FANOUT_CONCURRENCY } from '$lib/utils/pLimit';
+import { reportRepeatedError } from '$lib/utils/repeatedError';
 import {
   isNotGitRepositoryError,
   isScmRepoKnownNonGit,
   markScmRepoNonGit,
-  resetScmRepositoryDetection,
+  runScmQuerySingleFlight,
+  setScmDirectoryContexts,
 } from '$lib/stores/scmCache';
 
 export interface PaneGitInfo {
@@ -134,18 +136,24 @@ async function resolveRepoSnapshot(
       // command kind so the pair doesn't kill each other (G1 latest-win is
       // per (pane, kind); a NEWER refresh of the same pane kills both).
       const [s, diffSummary] = await Promise.all([
-        invoke<ScmRepoStatus>('get_scm_status', {
-          repoRoot,
-          slot: slotBase ? `${slotBase}:scm` : undefined,
+        runScmQuerySingleFlight('status', repoRoot, () =>
+          invoke<ScmRepoStatus>('get_scm_status', {
+            repoRoot,
+            slot: `scm-status:${repoRoot}`,
+          })
+        ),
+        runScmQuerySingleFlight('diff-summary', repoRoot, () =>
+          invoke<GitDiffSummary>('git_diff_summary', {
+            repoRoot,
+            slot: slotBase ? `${slotBase}:diff` : `scm-diff:${repoRoot}`,
+          })
+        ).catch((error) => {
+          if (isNotGitRepositoryError(error)) markPaneGitRepoNonGit(repoRoot);
+          reportRepeatedError('git_diff_summary failed', error, 'warn');
+          return { added: 0, removed: 0 };
         }),
-        invoke<GitDiffSummary>('git_diff_summary', {
-          repoRoot,
-          slot: slotBase ? `${slotBase}:diff` : undefined,
-        }).catch(() => ({
-          added: 0,
-          removed: 0,
-        })),
       ]);
+      if (isScmRepoKnownNonGit(repoRoot)) return null;
       const dirtyFiles = s.staged.length + s.changes.length + s.untracked.length;
       const snap: RepoSnapshot = {
         repoRoot: s.repo_root,
@@ -162,10 +170,12 @@ async function resolveRepoSnapshot(
     } catch (err) {
       // G1: a superseded fetch is not "repo has no git data" — don't poison
       // the cache; the newer same-slot fetch (or next heartbeat) will land.
-      if (!String(err).includes('superseded')) {
+      const superseded = String(err).includes('superseded');
+      if (!superseded) {
         cacheByRepo.set(repoRoot, { snap: null, at: Date.now() });
+        if (isNotGitRepositoryError(err)) markPaneGitRepoNonGit(repoRoot);
+        reportRepeatedError('get_scm_status failed', err);
       }
-      if (isNotGitRepositoryError(err)) markPaneGitRepoNonGit(repoRoot);
       return null;
     } finally {
       inflightByRepo.delete(repoRoot);
@@ -230,11 +240,8 @@ export function trackPaneGitStatus(paneId: string, cwd: string | null): void {
   // calls early-return instead of churning store updates.
   const cwdNorm = cwd ?? '';
   if (prev === cwdNorm) return;
-  if (prev && cwdNorm && prev !== cwdNorm) {
-    // A real directory switch is the re-probe boundary for every shared SCM
-    // caller. Drop pane snapshots for roots released by the detection cache.
-    for (const root of resetScmRepositoryDetection(prev)) cacheByRepo.delete(root);
-  }
+  const releasedRoots = setScmDirectoryContexts(`pane:${paneId}`, cwd ? [cwd] : []);
+  for (const root of releasedRoots) cacheByRepo.delete(root);
   lastCwdByPane.set(paneId, cwdNorm);
 
   const existing = debounceTimers.get(paneId);
