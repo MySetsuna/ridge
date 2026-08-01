@@ -18,7 +18,7 @@ use axum::{
     Router,
 };
 
-use crate::server::{handle_message, McpHost};
+use crate::server::{handle_message_with_state, McpHost, McpSessionState};
 
 /// 传输层共享状态：宿主实装 + 鉴权 token + 对外报的版本号。
 #[derive(Clone)]
@@ -26,14 +26,25 @@ pub struct McpTransportCtx {
     pub host: Arc<dyn McpHost>,
     pub token: Arc<String>,
     pub version: Arc<String>,
+    pub state: Arc<McpSessionState>,
 }
 
 impl McpTransportCtx {
     pub fn new(host: Arc<dyn McpHost>, token: Arc<String>, version: impl Into<String>) -> Self {
+        Self::with_state(host, token, version, Arc::new(McpSessionState::default()))
+    }
+
+    pub fn with_state(
+        host: Arc<dyn McpHost>,
+        token: Arc<String>,
+        version: impl Into<String>,
+        state: Arc<McpSessionState>,
+    ) -> Self {
         Self {
             host,
             token,
             version: Arc::new(version.into()),
+            state,
         }
     }
 }
@@ -81,7 +92,12 @@ async fn serve_ws(mut socket: WebSocket, ctx: McpTransportCtx) {
             _ => continue,
         };
         // 通知（无 id）没有响应体：静默即正确。
-        let Some(reply) = handle_message(&text, ctx.host.as_ref(), &ctx.version) else {
+        let Some(reply) = handle_message_with_state(
+            &text,
+            ctx.host.as_ref(),
+            &ctx.version,
+            ctx.state.as_ref(),
+        ) else {
             continue;
         };
         if socket.send(Message::Text(reply)).await.is_err() {
@@ -99,7 +115,7 @@ async fn route_http(
     if !auth_ok(&headers, &ctx.token) {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
-    match handle_message(&body, ctx.host.as_ref(), &ctx.version) {
+    match handle_message_with_state(&body, ctx.host.as_ref(), &ctx.version, ctx.state.as_ref()) {
         Some(reply) => (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/json")],

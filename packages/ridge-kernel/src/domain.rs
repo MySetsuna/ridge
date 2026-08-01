@@ -279,9 +279,35 @@ pub async fn domain_workspace_pane_close(
         Err(body) => return Ok(body),
     };
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
+    let previous = graph.clone();
     let mut next = graph.clone();
     match next.close(workspace_id, pane_id) {
-        Ok(()) => { persist_workspaces(&st, &next)?; *graph = next; Ok(Json(json!({ "ok": true }))) },
+        Ok(()) => {
+            let pty = if st.ptys.contains(pane_id) {
+                Some(st.ptys.begin_destroy(pane_id).map_err(|_| StatusCode::CONFLICT)?)
+            } else {
+                None
+            };
+            if let Err(error) = persist_workspaces(&st, &next) {
+                if pty.is_some() {
+                    st.ptys.cancel_destroy(pane_id);
+                }
+                return Err(error);
+            }
+            if let Some(bridge) = pty {
+                if bridge.destroy().is_err() {
+                    st.ptys.cancel_destroy(pane_id);
+                    let _ = persist_workspaces(&st, &previous);
+                    return Ok(bad_request("pane PTY did not terminate; close rolled back"));
+                }
+                st.ptys
+                    .finish_destroy(pane_id)
+                    .map_err(|_| StatusCode::CONFLICT)?;
+                st.mcp_state.purge_pane(&pane_id.to_string());
+            }
+            *graph = next;
+            Ok(Json(json!({ "ok": true })))
+        },
         Err(e) => Ok(bad_request(e.to_string())),
     }
 }
@@ -475,7 +501,10 @@ pub async fn domain_pty_destroy(
     if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
     let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
     match st.ptys.destroy(pty_id) {
-        Ok(()) => Ok(Json(json!({ "ok": true }))),
+        Ok(()) => {
+            st.mcp_state.purge_pane(&pty_id.to_string());
+            Ok(Json(json!({ "ok": true })))
+        },
         Err(error) => Ok(bad_request(error.to_string())),
     }
 }
@@ -605,6 +634,8 @@ mod tests {
                 ridge_core::teammate::topology::TopologyGraph::new(),
             )),
             roster_path: std::env::temp_dir().join(format!("ridge-kernel-roster-{}.json", Uuid::new_v4())),
+            groups: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            mcp_state: Arc::new(ridge_mcp::server::McpSessionState::default()),
             remote_hosts: Arc::new(std::sync::Mutex::new(ridge_core::remote::RemoteHostTopology::default())),
             remote_hosts_path: std::env::temp_dir().join(format!("ridge-kernel-test-{}.json", Uuid::new_v4())),
             ptys: Arc::new(crate::pty::PtyRegistry::default()),

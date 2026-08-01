@@ -3,10 +3,13 @@
 use std::io::{Read, Write};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use ridge_term::term::terminal::Terminal;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -14,6 +17,7 @@ const READ_BUF: usize = 8192;
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
 const SCROLLBACK_CAP: usize = 1024 * 1024;
+const RENDER_SCROLLBACK_ROWS: usize = 4096;
 
 /// A PTY's process handles and ordered output stream. It has no UI, RPC, or
 /// Tauri dependency; lifecycle owners decide how to route its output.
@@ -28,11 +32,28 @@ pub struct PtyBridge {
 #[derive(Default)]
 pub struct PtyRegistry {
     ptys: Mutex<HashMap<Uuid, ManagedPty>>,
+    next_index: AtomicUsize,
 }
 
 struct ManagedPty {
     bridge: Arc<PtyBridge>,
     scrollback: Arc<Mutex<Vec<u8>>>,
+    renderer: Arc<Mutex<Terminal>>,
+    closing: std::sync::atomic::AtomicBool,
+    info: PtyInfo,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PtyInfo {
+    pub id: Uuid,
+    pub pane_index: usize,
+    pub workspace_id: Option<Uuid>,
+    pub role: String,
+    pub launch_profile: Option<String>,
+    pub cwd: Option<String>,
+    pub status: String,
+    pub cols: u16,
+    pub rows: u16,
 }
 
 impl PtyRegistry {
@@ -41,14 +62,37 @@ impl PtyRegistry {
         shell: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<Uuid> {
-        let (bridge, output) = PtyBridge::spawn(shell, cwd)?;
         let id = Uuid::new_v4();
+        self.spawn_command_for(id, shell, &[], cwd, None, "shell", None)
+    }
+
+    pub fn spawn_command_for(
+        &self,
+        id: Uuid,
+        program: Option<&str>,
+        args: &[String],
+        cwd: Option<&str>,
+        workspace_id: Option<Uuid>,
+        role: &str,
+        launch_profile: Option<&str>,
+    ) -> Result<Uuid> {
+        if self.contains(id) {
+            anyhow::bail!("PTY already exists: {id}");
+        }
+        let (bridge, output) = PtyBridge::spawn_command(program, args, cwd)?;
         let bridge = Arc::new(bridge);
         let scrollback = Arc::new(Mutex::new(Vec::new()));
+        let renderer = Arc::new(Mutex::new(Terminal::new(
+            DEFAULT_ROWS as usize,
+            DEFAULT_COLS as usize,
+            RENDER_SCROLLBACK_ROWS,
+        )));
         let sink = scrollback.clone();
+        let screen = renderer.clone();
         tokio::spawn(async move {
             let mut output = output;
             while let Some(bytes) = output.recv().await {
+                screen.lock().feed(&bytes);
                 let mut retained = sink.lock();
                 retained.extend_from_slice(&bytes);
                 if retained.len() > SCROLLBACK_CAP {
@@ -57,7 +101,27 @@ impl PtyRegistry {
                 }
             }
         });
-        self.ptys.lock().insert(id, ManagedPty { bridge, scrollback });
+        let info = PtyInfo {
+            id,
+            pane_index: self.next_index.fetch_add(1, Ordering::Relaxed),
+            workspace_id,
+            role: role.to_string(),
+            launch_profile: launch_profile.map(str::to_string),
+            cwd: cwd.map(str::to_string),
+            status: "Idle".to_string(),
+            cols: DEFAULT_COLS,
+            rows: DEFAULT_ROWS,
+        };
+        self.ptys.lock().insert(
+            id,
+            ManagedPty {
+                bridge,
+                scrollback,
+                renderer,
+                closing: std::sync::atomic::AtomicBool::new(false),
+                info,
+            },
+        );
         Ok(id)
     }
 
@@ -75,6 +139,23 @@ impl PtyRegistry {
             ManagedPty {
                 bridge: Arc::new(bridge),
                 scrollback: Arc::new(Mutex::new(Vec::new())),
+                renderer: Arc::new(Mutex::new(Terminal::new(
+                    DEFAULT_ROWS as usize,
+                    DEFAULT_COLS as usize,
+                    RENDER_SCROLLBACK_ROWS,
+                ))),
+                closing: std::sync::atomic::AtomicBool::new(false),
+                info: PtyInfo {
+                    id,
+                    pane_index: self.next_index.fetch_add(1, Ordering::Relaxed),
+                    workspace_id: None,
+                    role: "shell".to_string(),
+                    launch_profile: None,
+                    cwd: cwd.map(str::to_string),
+                    status: "Idle".to_string(),
+                    cols: DEFAULT_COLS,
+                    rows: DEFAULT_ROWS,
+                },
             },
         );
         Ok((id, output))
@@ -85,16 +166,58 @@ impl PtyRegistry {
     }
 
     pub fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<()> {
-        self.get(id)?.resize(cols, rows)
+        let bridge = self.get(id)?;
+        bridge.resize(cols, rows)?;
+        let mut ptys = self.ptys.lock();
+        let managed = ptys
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
+        managed.renderer.lock().resize(rows as usize, cols as usize);
+        managed.info.cols = cols;
+        managed.info.rows = rows;
+        Ok(())
     }
 
     pub fn destroy(&self, id: Uuid) -> Result<()> {
-        let managed = self
-            .ptys
-            .lock()
-            .remove(&id)
+        let bridge = self.begin_destroy(id)?;
+        if let Err(error) = bridge.destroy() {
+            self.cancel_destroy(id);
+            return Err(error);
+        }
+        self.finish_destroy(id)?;
+        Ok(())
+    }
+
+    /// Linearize pane destruction before the irreversible child kill. After
+    /// this point new writes/resizes fail; callers may cancel only if kill or
+    /// persistence fails, keeping the registry entry for retry.
+    pub fn begin_destroy(&self, id: Uuid) -> Result<Arc<PtyBridge>> {
+        let ptys = self.ptys.lock();
+        let managed = ptys
+            .get(&id)
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
-        managed.bridge.destroy()
+        if managed
+            .closing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            anyhow::bail!("PTY is already closing: {id}");
+        }
+        Ok(managed.bridge.clone())
+    }
+
+    pub fn finish_destroy(&self, id: Uuid) -> Result<()> {
+        let removed = self.ptys.lock().remove(&id);
+        if removed.is_none() {
+            anyhow::bail!("PTY not found: {id}");
+        }
+        Ok(())
+    }
+
+    pub fn cancel_destroy(&self, id: Uuid) {
+        if let Some(managed) = self.ptys.lock().get(&id) {
+            managed.closing.store(false, Ordering::Release);
+        }
     }
 
     pub fn contains(&self, id: Uuid) -> bool {
@@ -103,6 +226,34 @@ impl PtyRegistry {
 
     pub fn len(&self) -> usize {
         self.ptys.lock().len()
+    }
+
+    pub fn info(&self, id: Uuid) -> Result<PtyInfo> {
+        self.ptys
+            .lock()
+            .get(&id)
+            .map(|managed| managed.info.clone())
+            .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))
+    }
+
+    pub fn list(&self) -> Vec<PtyInfo> {
+        let mut entries = self
+            .ptys
+            .lock()
+            .values()
+            .map(|managed| managed.info.clone())
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|info| info.pane_index);
+        entries
+    }
+
+    pub fn set_status(&self, id: Uuid, status: &str) -> Result<()> {
+        let mut ptys = self.ptys.lock();
+        let managed = ptys
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
+        managed.info.status = status.to_string();
+        Ok(())
     }
 
     pub fn scrollback(&self, id: Uuid, max_bytes: usize) -> Result<Vec<u8>> {
@@ -120,20 +271,37 @@ impl PtyRegistry {
     /// Release retained output for a live pane. This is the backend half of a
     /// terminal clear; callers still clear their renderer separately.
     pub fn clear_scrollback(&self, id: Uuid) -> Result<()> {
-        let scrollback = self
+        let managed = self
             .ptys
             .lock()
             .get(&id)
-            .map(|managed| managed.scrollback.clone())
+            .map(|managed| (managed.scrollback.clone(), managed.renderer.clone()))
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
-        scrollback.lock().clear();
+        managed.0.lock().clear();
+        managed.1.lock().clear_terminal();
         Ok(())
+    }
+
+    pub fn rendered(&self, id: Uuid, lines: usize) -> Result<String> {
+        let renderer = self
+            .ptys
+            .lock()
+            .get(&id)
+            .map(|managed| managed.renderer.clone())
+            .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
+        let mut rows = renderer.lock().dump_visible_text();
+        while rows.last().is_some_and(|line| line.trim().is_empty()) {
+            rows.pop();
+        }
+        let start = rows.len().saturating_sub(lines.max(1));
+        Ok(rows[start..].join("\n"))
     }
 
     fn get(&self, id: Uuid) -> Result<Arc<PtyBridge>> {
         self.ptys
             .lock()
             .get(&id)
+            .filter(|managed| !managed.closing.load(Ordering::Acquire))
             .map(|managed| managed.bridge.clone())
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))
     }
@@ -153,6 +321,14 @@ impl PtyBridge {
         shell: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
+        Self::spawn_command(shell, &[], cwd)
+    }
+
+    pub fn spawn_command(
+        program: Option<&str>,
+        args: &[String],
+        cwd: Option<&str>,
+    ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: DEFAULT_ROWS,
@@ -161,8 +337,9 @@ impl PtyBridge {
                 pixel_height: 0,
             })
             .context("openpty failed")?;
-        let program = resolve_shell(shell);
+        let program = resolve_shell(program);
         let mut command = CommandBuilder::new(&program);
+        command.args(args);
         if let Some(dir) = cwd {
             command.cwd(dir);
         }
@@ -214,7 +391,25 @@ impl PtyBridge {
     /// Explicitly stop the child before releasing the PTY handles. Dropping a
     /// handle alone is not a lifecycle guarantee on every platform.
     pub fn destroy(&self) -> Result<()> {
-        self.child.lock().kill().context("PTY kill failed")
+        let mut child = self.child.lock();
+        if child.try_wait().context("PTY status failed")?.is_some() {
+            return Ok(());
+        }
+        let pid = child.process_id();
+        child.kill().context("PTY kill failed")?;
+        if let Some(pid) = pid {
+            ridge_core::process_guard::kill_process_tree(pid);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if child.try_wait().context("PTY reap status failed")?.is_some() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!("PTY process did not exit within 2s");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 

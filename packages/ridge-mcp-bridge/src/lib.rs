@@ -95,7 +95,7 @@ fn kernel_endpoint() -> Option<Endpoint> {
     })
 }
 
-/// 按「显式参数 → pane 环境 → **ridge-kernel 登记** → teammate sidecar」发现。
+/// 按「显式参数 → **当前 ridge-kernel 登记** → 显式 pane 环境 → teammate sidecar」发现。
 pub fn discover(url: Option<String>, token: Option<String>) -> Result<Endpoint> {
     let clean = |value: Option<String>| {
         value
@@ -107,13 +107,14 @@ pub fn discover(url: Option<String>, token: Option<String>) -> Result<Endpoint> 
     if let (Some(base_url), Some(token)) = (clean(url), clean(token)) {
         return Ok(Endpoint { base_url, token });
     }
+    // Kernel 是默认 SSOT；环境变量只作为显式 legacy/远端调试后备，避免旧 pane
+    // 指向另一套 teammate 服务造成“看似成功、实际错 pane”。
+    if let Some(ep) = kernel_endpoint() {
+        return Ok(ep);
+    }
     if let (Some(base_url), Some(token)) = (env("RIDGE_TEAMMATE_URL"), env("RIDGE_TEAMMATE_TOKEN"))
     {
         return Ok(Endpoint { base_url, token });
-    }
-    // 优先独立内核（深根 / 无 Tauri）；sidecar 仍兼容「仅桌面 teammate 在跑」。
-    if let Some(ep) = kernel_endpoint() {
-        return Ok(ep);
     }
     sidecar_endpoint().ok_or_else(|| {
         anyhow!(
