@@ -13,44 +13,17 @@ pub mod outbound;
 pub mod reconnect_supervisor;
 
 use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::state::AppState;
+pub use ridge_core::remote::{HostKind, HostRecord, HostSessionMeta, HostStatus};
 use outbound::{
     append_capped, MockOutboundTransport, OutboundClient, OutboundRegistry, OutboundTransport,
     RemoteSessionInfo, DEFAULT_LIVE_OUTPUT_CAP,
 };
 use tauri::State;
-
-/// 主机类型：远端 ridge（LAN/cloud）或 rdg（ridge-cli headless host）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HostKind {
-    Remote,
-    Rdg,
-}
-
-/// 主机连接状态。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HostStatus {
-    Connecting,
-    Connected,
-    Disconnected,
-    Error,
-}
-
-/// 远端主机上的一个会话（pane）的元数据。
-#[derive(Clone, Debug, Serialize)]
-pub struct HostSessionMeta {
-    /// 远端 pane id（provider 域内）。
-    pub id: String,
-    pub title: String,
-    /// 是否已被本地某工作区领养。
-    pub attached: bool,
-}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,19 +32,6 @@ pub struct FrontendHostSession {
     pub title: String,
 }
 
-/// 一台已登记的远端主机记录（序列化给前端 Hosts 面板）。**不含凭据**。
-#[derive(Clone, Debug, Serialize)]
-pub struct HostRecord {
-    pub id: String,
-    pub kind: HostKind,
-    pub label: String,
-    /// 地址（`ip:port` 或 rdg 地址）。凭据（token/TOTP）故意不落库、不序列化。
-    pub addr: String,
-    pub status: HostStatus,
-    /// 面向用户的状态说明（面板顶部/主机行提示）。
-    pub detail: String,
-    pub sessions: Vec<HostSessionMeta>,
-}
 
 /// 一个 foreign pane 指向的远端会话引用（`PtyHandle.remote_ref`）。live 传输里程接线。
 #[derive(Clone, Debug)]
