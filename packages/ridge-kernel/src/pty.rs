@@ -13,6 +13,7 @@ use uuid::Uuid;
 const READ_BUF: usize = 8192;
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
+const SCROLLBACK_CAP: usize = 1024 * 1024;
 
 /// A PTY's process handles and ordered output stream. It has no UI, RPC, or
 /// Tauri dependency; lifecycle owners decide how to route its output.
@@ -26,7 +27,12 @@ pub struct PtyBridge {
 /// but every write, resize, and destroy resolves through this registry.
 #[derive(Default)]
 pub struct PtyRegistry {
-    ptys: Mutex<HashMap<Uuid, Arc<PtyBridge>>>,
+    ptys: Mutex<HashMap<Uuid, ManagedPty>>,
+}
+
+struct ManagedPty {
+    bridge: Arc<PtyBridge>,
+    scrollback: Arc<Mutex<Vec<u8>>>,
 }
 
 impl PtyRegistry {
@@ -34,11 +40,25 @@ impl PtyRegistry {
         &self,
         shell: Option<&str>,
         cwd: Option<&str>,
-    ) -> Result<(Uuid, mpsc::Receiver<Vec<u8>>)> {
+    ) -> Result<Uuid> {
         let (bridge, output) = PtyBridge::spawn(shell, cwd)?;
         let id = Uuid::new_v4();
-        self.ptys.lock().insert(id, Arc::new(bridge));
-        Ok((id, output))
+        let bridge = Arc::new(bridge);
+        let scrollback = Arc::new(Mutex::new(Vec::new()));
+        let sink = scrollback.clone();
+        tokio::spawn(async move {
+            let mut output = output;
+            while let Some(bytes) = output.recv().await {
+                let mut retained = sink.lock();
+                retained.extend_from_slice(&bytes);
+                if retained.len() > SCROLLBACK_CAP {
+                    let drop_count = retained.len() - SCROLLBACK_CAP;
+                    retained.drain(..drop_count);
+                }
+            }
+        });
+        self.ptys.lock().insert(id, ManagedPty { bridge, scrollback });
+        Ok(id)
     }
 
     pub fn write(&self, id: Uuid, data: &[u8]) -> Result<()> {
@@ -50,12 +70,12 @@ impl PtyRegistry {
     }
 
     pub fn destroy(&self, id: Uuid) -> Result<()> {
-        let bridge = self
+        let managed = self
             .ptys
             .lock()
             .remove(&id)
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
-        bridge.destroy()
+        managed.bridge.destroy()
     }
 
     pub fn contains(&self, id: Uuid) -> bool {
@@ -66,11 +86,23 @@ impl PtyRegistry {
         self.ptys.lock().len()
     }
 
+    pub fn scrollback(&self, id: Uuid, max_bytes: usize) -> Result<Vec<u8>> {
+        let scrollback = self
+            .ptys
+            .lock()
+            .get(&id)
+            .map(|managed| managed.scrollback.clone())
+            .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
+        let retained = scrollback.lock();
+        let start = retained.len().saturating_sub(max_bytes.min(SCROLLBACK_CAP));
+        Ok(retained[start..].to_vec())
+    }
+
     fn get(&self, id: Uuid) -> Result<Arc<PtyBridge>> {
         self.ptys
             .lock()
             .get(&id)
-            .cloned()
+            .map(|managed| managed.bridge.clone())
             .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))
     }
 }
@@ -78,8 +110,8 @@ impl PtyRegistry {
 impl Drop for PtyRegistry {
     fn drop(&mut self) {
         let bridges = std::mem::take(self.ptys.get_mut());
-        for bridge in bridges.into_values() {
-            let _ = bridge.destroy();
+        for managed in bridges.into_values() {
+            let _ = managed.bridge.destroy();
         }
     }
 }

@@ -52,6 +52,8 @@ pub struct AppState {
     pub workspaces: Arc<std::sync::Mutex<ridge_core::workspace::graph::WorkspaceGraph>>,
     /// Kernel-owned Agent roster/topology; process binding remains a host adapter.
     pub roster: Arc<std::sync::Mutex<ridge_core::teammate::topology::TopologyGraph>>,
+    /// PTY process lifetime belongs to the kernel, not an API shell.
+    pub ptys: Arc<ridge_kernel::pty::PtyRegistry>,
 }
 
 #[derive(Serialize)]
@@ -185,6 +187,7 @@ async fn main() -> Result<()> {
         roster: Arc::new(std::sync::Mutex::new(
             ridge_core::teammate::topology::TopologyGraph::new(),
         )),
+        ptys: Arc::new(ridge_kernel::pty::PtyRegistry::default()),
     };
 
     let app = Router::new()
@@ -203,6 +206,19 @@ async fn main() -> Result<()> {
         )
         .route("/v1/domain/fs/list", get(domain::domain_fs_list))
         .route("/v1/domain/git/status", get(domain::domain_git_status))
+        .route("/v1/domain/ptys", post(domain::domain_pty_create))
+        .route(
+            "/v1/domain/ptys/:pty_id/write",
+            post(domain::domain_pty_write),
+        )
+        .route(
+            "/v1/domain/ptys/:pty_id/resize",
+            post(domain::domain_pty_resize),
+        )
+        .route(
+            "/v1/domain/ptys/:pty_id",
+            get(domain::domain_pty_scrollback).delete(domain::domain_pty_destroy),
+        )
         .route(
             "/v1/domain/workspaces",
             get(domain::domain_workspaces).post(domain::domain_workspace_create),

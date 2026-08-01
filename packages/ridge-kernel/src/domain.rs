@@ -347,6 +347,96 @@ pub async fn domain_agent_roster_remove(
 }
 
 #[derive(Deserialize)]
+pub struct PtyCreateRequest {
+    pub shell: Option<String>,
+    pub cwd: Option<String>,
+}
+
+pub async fn domain_pty_create(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<PtyCreateRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    match st.ptys.spawn(request.shell.as_deref(), request.cwd.as_deref()) {
+        Ok(pty_id) => Ok(Json(json!({ "ok": true, "pty_id": pty_id }))),
+        Err(error) => Ok(bad_request(error.to_string())),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PtyWriteRequest {
+    pub data: String,
+}
+
+pub async fn domain_pty_write(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(pty_id): Path<String>,
+    Json(request): Json<PtyWriteRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
+    match st.ptys.write(pty_id, request.data.as_bytes()) {
+        Ok(()) => Ok(Json(json!({ "ok": true }))),
+        Err(error) => Ok(bad_request(error.to_string())),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PtyResizeRequest { pub cols: u16, pub rows: u16 }
+
+pub async fn domain_pty_resize(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(pty_id): Path<String>,
+    Json(request): Json<PtyResizeRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
+    match st.ptys.resize(pty_id, request.cols, request.rows) {
+        Ok(()) => Ok(Json(json!({ "ok": true }))),
+        Err(error) => Ok(bad_request(error.to_string())),
+    }
+}
+
+pub async fn domain_pty_destroy(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(pty_id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
+    match st.ptys.destroy(pty_id) {
+        Ok(()) => Ok(Json(json!({ "ok": true }))),
+        Err(error) => Ok(bad_request(error.to_string())),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PtyScrollbackQuery { pub max_bytes: Option<usize> }
+
+pub async fn domain_pty_scrollback(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(pty_id): Path<String>,
+    Query(query): Query<PtyScrollbackQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
+    match st.ptys.scrollback(pty_id, query.max_bytes.unwrap_or(64 * 1024)) {
+        Ok(bytes) => Ok(Json(json!({
+            "ok": true,
+            "pty_id": pty_id,
+            "data": String::from_utf8_lossy(&bytes),
+        }))),
+        Err(error) => Ok(bad_request(error.to_string())),
+    }
+}
+
+#[derive(Deserialize)]
 pub struct FsListQuery {
     pub path: String,
     pub offset: Option<usize>,
@@ -437,6 +527,7 @@ mod tests {
             roster: Arc::new(std::sync::Mutex::new(
                 ridge_core::teammate::topology::TopologyGraph::new(),
             )),
+            ptys: Arc::new(ridge_kernel::pty::PtyRegistry::default()),
         }
     }
 
