@@ -45,6 +45,8 @@ import { pickDockRegion } from '$lib/stores/dockRegionPicker';
 import type { ContextMenuItem } from '$lib/stores/contextMenu';
 import { reportRepeatedError } from '$lib/utils/repeatedError';
 import { synchronizePaneSize } from '$lib/terminal/paneSizeSync';
+import { PaneRpcScheduler } from '@ridge/remote/shared/transport/paneRpcScheduler';
+import { RpcCancelledError, RpcTimeoutError, type RpcRequestOptions } from '@ridge/remote/shared/transport/types';
 import { Terminal, PlugZap } from 'lucide-svelte';
 
 interface Props {
@@ -87,6 +89,72 @@ $effect(() => {
 // reparent would be silently dropped.
 
 const manager = TerminalManager.instance();
+
+const DESKTOP_RESIZE_TIMEOUT_MS = 5_000;
+
+/** Local Tauri resize admission. Native invoke has no AbortSignal, so keep a
+ * per-component pending set: pane retirement rejects the scheduler promise
+ * and ignores any late native completion instead of reviving a dead pane. */
+function createDesktopResizeScheduler(): PaneRpcScheduler {
+	const pendingByScope = new Map<string, Set<() => void>>();
+
+	const request = <T = unknown>(
+		method: string,
+		params?: unknown,
+		options: RpcRequestOptions = {},
+	): Promise<T> => {
+		if (method !== 'resize_pane') return Promise.reject(new Error(`unsupported desktop pane RPC: ${method}`));
+		const scope = options.scope;
+		const timeoutMs = Math.max(1, options.timeoutMs ?? DESKTOP_RESIZE_TIMEOUT_MS);
+		return new Promise<T>((resolve, reject) => {
+			let settled = false;
+			let timer: ReturnType<typeof setTimeout>;
+			let cancel = () => finishReject(new RpcCancelledError(method));
+			const bucket = scope ? (pendingByScope.get(scope) ?? new Set<() => void>()) : null;
+			if (scope && !pendingByScope.has(scope)) pendingByScope.set(scope, bucket!);
+			const cleanup = () => {
+				clearTimeout(timer);
+				bucket?.delete(cancel);
+				if (scope && bucket?.size === 0) pendingByScope.delete(scope);
+			};
+			const finishResolve = (value: T) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(value);
+			};
+			const finishReject = (error: Error) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(error);
+			};
+			cancel = () => finishReject(new RpcCancelledError(method));
+			bucket?.add(cancel);
+			timer = setTimeout(() => finishReject(new RpcTimeoutError(method, timeoutMs)), timeoutMs);
+			void Promise.resolve()
+				.then(() => invoke<T>(method, params as Record<string, unknown>))
+				.then(finishResolve, (error: unknown) => finishReject(error instanceof Error ? error : new Error(String(error))));
+		});
+	};
+
+	return new PaneRpcScheduler(
+		{ request, cancelScope: (scope) => {
+			const bucket = pendingByScope.get(scope);
+			if (!bucket) return 0;
+			const pending = [...bucket];
+			for (const cancel of pending) cancel();
+			return pending.length;
+		} },
+		{
+			resizeDebounceMs: 40,
+			inputSourceId: 'desktop_resize',
+			onError: (error, operation) => reportRepeatedError(operation === 'resize' ? 'resize_pane' : 'write_to_pty', error, 'warn'),
+		},
+	);
+}
+
+const localResizeScheduler = createDesktopResizeScheduler();
 
 // §web-remote: compile-time flag for the desktop-in-browser SPA build
 // (`RIDGE_WEB_REMOTE=1 vite build`, defined in vite.config.js). When true,
@@ -1024,6 +1092,7 @@ function onPtyResize(
 	isAlt: boolean,
 	isInlineTui: boolean,
 ): Promise<void> {
+	if (!alive) return Promise.resolve();
 	// Defensive: should be impossible after the onMount UUID guard
 	// below, but leaving the cheap check in catches any future
 	// path that smuggles a bad id past attach.
@@ -1050,12 +1119,9 @@ function onPtyResize(
 	// it on plain primary — the kernel grid only narrows AFTER the
 	// backend ConPTY resize completes, eliminating the in-flight byte
 	// race that used to cause border characters to wrap on shrink.
-	return invoke('resize_pane', { workspaceId, paneId, rows, cols, isAlt, isInlineTui }).then(
-		() => undefined,
-		(err) => {
-			reportRepeatedError('resize_pane', err);
-		},
-	);
+	return localResizeScheduler
+		.scheduleResizeAndWait({ workspaceId, paneId }, rows, cols, { isAlt, isInlineTui })
+		.catch(() => undefined);
 }
 
 function onKernelEvent(ev: KernelEvent) {
@@ -1333,6 +1399,7 @@ $effect(() => {
 
 onDestroy(() => {
 	alive = false;
+	localResizeScheduler.retire({ workspaceId, paneId });
 	// §process-gate — tear down the foreground-process poll + prompt listener.
 	stopForegroundPoll();
 	promptUnlisten?.();

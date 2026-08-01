@@ -390,6 +390,16 @@ fn dispatch_lan_invoke(
                 .find(pane_id)
                 .ok_or_else(|| format!("pane not found: {pane_id}"))?;
             sess.resize(cols, rows).map_err(|e| e.to_string())?;
+            let _ = out_tx.send(Message::Text(
+                json!({
+                    "type": "pty-resized",
+                    "workspaceId": ws_id.to_string(),
+                    "paneId": pane_id.to_string(),
+                    "rows": rows,
+                    "cols": cols,
+                })
+                .to_string(),
+            ));
             Ok(Value::Null)
         }
         "get_active_workspace_id" => Ok(Value::String(ws_id.to_string())),
@@ -639,6 +649,16 @@ fn handle_text(
                 let w = workspace.lock().unwrap();
                 if let Some(sess) = w.find(pane_id) {
                     let _ = sess.resize(cols, rows);
+                    let _ = out_tx.send(Message::Text(
+                        json!({
+                            "type": "pty-resized",
+                            "workspaceId": ws_id.to_string(),
+                            "paneId": pane_id.to_string(),
+                            "rows": rows,
+                            "cols": cols,
+                        })
+                        .to_string(),
+                    ));
                 }
             }
             None
@@ -880,6 +900,35 @@ mod tests {
         assert_eq!(result["workspaceId"], ws_id.to_string());
         assert_eq!(workspace.lock().unwrap().sessions.len(), 1);
         // Dropping the shared workspace releases the PTY bridge and its child.
+        drop(workspace);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resize_invoke_emits_actual_pane_dimensions() {
+        let workspace = super::super::workspace::new_shared();
+        let ws_id = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let created = dispatch_lan_invoke("create_pane", &json!({}), &workspace, ws_id, &tx)
+            .expect("create pane");
+        let pane_id = created["paneId"].as_str().expect("pane id");
+
+        dispatch_lan_invoke(
+            "resize_pane",
+            &json!({ "paneId": pane_id, "rows": 42, "cols": 120 }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .expect("resize pane");
+
+        let frame = rx.try_recv().expect("resize event");
+        let Message::Text(text) = frame else { panic!("expected text resize event") };
+        let value: Value = serde_json::from_str(&text).expect("json resize event");
+        assert_eq!(value["type"], "pty-resized");
+        assert_eq!(value["workspaceId"], ws_id.to_string());
+        assert_eq!(value["paneId"], pane_id);
+        assert_eq!(value["rows"], 42);
+        assert_eq!(value["cols"], 120);
         drop(workspace);
     }
 }

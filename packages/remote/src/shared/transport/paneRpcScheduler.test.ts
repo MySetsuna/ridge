@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { RpcTimeoutError, type RpcRequestOptions } from './types';
+import { RpcCancelledError, RpcTimeoutError, type RpcRequestOptions } from './types';
 import {
   PaneInputQueueFullError,
   PaneRpcScheduler,
@@ -227,6 +227,39 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
 
     expect(rpc.calls).toHaveLength(2);
     expect(rpc.calls[1].params).toMatchObject({ rows: 40, cols: 120 });
+  });
+
+  it('settles coalesced waiters after the latest resize and carries request context', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc, { resizeDebounceMs: 10 });
+
+    const first = scheduler.scheduleResizeAndWait(pane, 24, 80, { isAlt: false });
+    const latest = scheduler.scheduleResizeAndWait(pane, 30, 100, { isAlt: true, isInlineTui: true });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(rpc.calls[0].params).toMatchObject({
+      rows: 30,
+      cols: 100,
+      isAlt: true,
+      isInlineTui: true,
+    });
+    let firstSettled = false;
+    let latestSettled = false;
+    void first.then(() => { firstSettled = true; });
+    void latest.then(() => { latestSettled = true; });
+
+    rpc.calls[0].resolve(undefined);
+    await flushPromises();
+    expect(firstSettled).toBe(true);
+    expect(latestSettled).toBe(true);
+  });
+
+  it('rejects a pending resize waiter when its pane is retired', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc, { resizeDebounceMs: 40 });
+    const pending = scheduler.scheduleResizeAndWait(pane, 24, 80);
+
+    scheduler.retire(pane);
+    await expect(pending).rejects.toBeInstanceOf(RpcCancelledError);
   });
 
   it('suppresses invalid and already active or applied resize values', async () => {
