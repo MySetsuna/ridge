@@ -25,7 +25,7 @@ use serde::Serialize;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use ridge_kernel::registry::{clear_registry, load_remote_hosts, load_workspace_graph, remote_hosts_path, workspace_graph_path, write_registry, KernelEndpoint};
+use ridge_kernel::registry::{clear_registry, load_remote_hosts, load_roster, load_workspace_graph, remote_hosts_path, roster_path, workspace_graph_path, write_registry, KernelEndpoint};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -54,6 +54,7 @@ pub struct AppState {
     pub workspaces_path: std::path::PathBuf,
     /// Kernel-owned Agent roster/topology; process binding remains a host adapter.
     pub roster: Arc<std::sync::Mutex<ridge_core::teammate::topology::TopologyGraph>>,
+    pub roster_path: std::path::PathBuf,
     /// Kernel-owned remote host topology; shells only project or transport it.
     pub remote_hosts: Arc<std::sync::Mutex<ridge_core::remote::RemoteHostTopology>>,
     pub remote_hosts_path: std::path::PathBuf,
@@ -193,9 +194,11 @@ async fn main() -> Result<()> {
             ridge_core::workspace::graph::WorkspaceGraph::new()
         }))),
         workspaces_path: workspace_graph_path(),
-        roster: Arc::new(std::sync::Mutex::new(
-            ridge_core::teammate::topology::TopologyGraph::new(),
-        )),
+        roster: Arc::new(std::sync::Mutex::new(load_roster().unwrap_or_else(|error| {
+            tracing::warn!(%error, "agent roster restore failed; starting empty");
+            ridge_core::teammate::topology::TopologyGraph::new()
+        }))),
+        roster_path: roster_path(),
         remote_hosts: Arc::new(std::sync::Mutex::new(ridge_core::remote::RemoteHostTopology::from_records(load_remote_hosts().unwrap_or_else(|error| {
             tracing::warn!(%error, "remote host topology restore failed; starting empty");
             HashMap::new()
