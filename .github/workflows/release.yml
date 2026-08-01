@@ -51,6 +51,8 @@ jobs:
           version: latest
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
+      - name: Check release version contract
+        run: node scripts/check-release-version.mjs
       - name: Build ridge-term wasm (test prerequisite)
         run: node packages/ridge-term/build.mjs
       - name: svelte-kit sync (vitest prerequisite — fresh checkout lacks .svelte-kit/tsconfig.json)

@@ -57,6 +57,9 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check release version contract
+        run: node scripts/check-release-version.mjs
+
       - name: Build wasm terminal kernel
         if: ${{ inputs.rollback != true && inputs.no_build != true }}
         run: node packages/ridge-term/build.mjs
