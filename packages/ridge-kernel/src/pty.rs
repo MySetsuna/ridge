@@ -1,12 +1,14 @@
 //! Shell-independent local PTY primitive shared by kernel hosts.
 
 use std::io::{Read, Write};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 const READ_BUF: usize = 8192;
 const DEFAULT_COLS: u16 = 80;
@@ -18,6 +20,68 @@ pub struct PtyBridge {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+}
+
+/// Kernel-side PTY lifecycle authority. Shells may retain an output receiver,
+/// but every write, resize, and destroy resolves through this registry.
+#[derive(Default)]
+pub struct PtyRegistry {
+    ptys: Mutex<HashMap<Uuid, Arc<PtyBridge>>>,
+}
+
+impl PtyRegistry {
+    pub fn spawn(
+        &self,
+        shell: Option<&str>,
+        cwd: Option<&str>,
+    ) -> Result<(Uuid, mpsc::Receiver<Vec<u8>>)> {
+        let (bridge, output) = PtyBridge::spawn(shell, cwd)?;
+        let id = Uuid::new_v4();
+        self.ptys.lock().insert(id, Arc::new(bridge));
+        Ok((id, output))
+    }
+
+    pub fn write(&self, id: Uuid, data: &[u8]) -> Result<()> {
+        self.get(id)?.write_input(data)
+    }
+
+    pub fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<()> {
+        self.get(id)?.resize(cols, rows)
+    }
+
+    pub fn destroy(&self, id: Uuid) -> Result<()> {
+        let bridge = self
+            .ptys
+            .lock()
+            .remove(&id)
+            .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
+        bridge.destroy()
+    }
+
+    pub fn contains(&self, id: Uuid) -> bool {
+        self.ptys.lock().contains_key(&id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.ptys.lock().len()
+    }
+
+    fn get(&self, id: Uuid) -> Result<Arc<PtyBridge>> {
+        self.ptys
+            .lock()
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))
+    }
+}
+
+impl Drop for PtyRegistry {
+    fn drop(&mut self) {
+        let bridges = std::mem::take(self.ptys.get_mut());
+        for bridge in bridges.into_values() {
+            let _ = bridge.destroy();
+        }
+    }
 }
 
 impl PtyBridge {
@@ -165,5 +229,12 @@ mod tests {
     fn resolve_shell_prefers_explicit_value() {
         assert_eq!(resolve_shell(Some("custom-shell")), "custom-shell");
         assert!(!resolve_shell(Some(" ")).is_empty());
+    }
+
+    #[test]
+    fn empty_registry_has_no_pane() {
+        let registry = PtyRegistry::default();
+        assert_eq!(registry.len(), 0);
+        assert!(!registry.contains(Uuid::new_v4()));
     }
 }
