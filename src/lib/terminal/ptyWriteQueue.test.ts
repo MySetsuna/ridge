@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { enqueuePtyWrite } from './ptyWriteQueue';
+import {
+  enqueuePtyWrite,
+  PtyWriteQueueFullError,
+  PtyWriteQueueRetiredError,
+  retirePtyWriteQueue,
+} from './ptyWriteQueue';
 
 describe('enqueuePtyWrite', () => {
   it('keeps multiline paste before later input for the same pane', async () => {
@@ -13,6 +18,7 @@ describe('enqueuePtyWrite', () => {
     const key = enqueuePtyWrite('ws:pane', async () => { sent.push('x'); });
 
     await Promise.resolve();
+    await Promise.resolve();
     expect(sent).toEqual([]);
     releasePaste();
     await Promise.all([paste, key]);
@@ -24,5 +30,39 @@ describe('enqueuePtyWrite', () => {
     await expect(enqueuePtyWrite('ws:failure', async () => { throw new Error('closed'); })).rejects.toThrow('closed');
     await enqueuePtyWrite('ws:failure', async () => { sent.push('retry'); });
     expect(sent).toEqual(['retry']);
+  });
+
+  it('bounds pending operations before a slow write can grow memory', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const first = enqueuePtyWrite('ws:bounded', () => gate, { maxPending: 2 });
+    const second = enqueuePtyWrite('ws:bounded', async () => undefined, { maxPending: 2 });
+
+    await expect(
+      enqueuePtyWrite('ws:bounded', async () => undefined, { maxPending: 2 }),
+    ).rejects.toBeInstanceOf(PtyWriteQueueFullError);
+    release();
+    await Promise.all([first, second]);
+  });
+
+  it('retires queued writes when the pane closes', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const sent: string[] = [];
+    const first = enqueuePtyWrite('ws:retire', async () => {
+      await gate;
+      sent.push('first');
+    });
+    const queued = enqueuePtyWrite('ws:retire', async () => {
+      sent.push('stale');
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    retirePtyWriteQueue('ws:retire');
+    release();
+    await first;
+    await expect(queued).rejects.toBeInstanceOf(PtyWriteQueueRetiredError);
+    expect(sent).toEqual(['first']);
   });
 });

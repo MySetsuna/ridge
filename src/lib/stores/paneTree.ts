@@ -11,6 +11,7 @@ import { reportDevIssue } from '$lib/devIssue';
 import { fileExplorerStore } from '$lib/stores/fileExplorer';
 import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 import { teardownPtyBridge } from '@ridge/remote/shared/terminal/ptyBridge';
+import { retirePtyWriteQueuesForPane } from '$lib/terminal/ptyWriteQueue';
 
 const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
 const activeWorkspaceCommand = webRemote
@@ -1641,6 +1642,10 @@ function findLeafOrigin(
 }
 
 function cleanupPaneRuntime(paneId: string): void {
+  // Cancel queued native writes before dropping the PTY/kernel. A queued
+  // invoke cannot be withdrawn from Tauri, but the queue generation guard
+  // prevents later callbacks from targeting a reused pane UUID.
+  retirePtyWriteQueuesForPane(paneId);
   teardownPtyBridge(paneId);
   TerminalManager.instance().detach(paneId);
   paneOscTitleStore.update((s) => {
