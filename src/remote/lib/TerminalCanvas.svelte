@@ -366,6 +366,7 @@
       return;
     }
     if (!sbuf.empty) sbufFlush();
+    if (key === 'Enter') manager.clearInputStart(paneId);
     // G11：虚拟键盘同物理键界规则——Backspace 削已发词段，其余控制键清段。
     pendingWord = key === 'Backspace' && !ctrlKey && !alt ? pendingWordBackspace(pendingWord) : '';
     const bytes = kEncodeKey(key, ctrlKey, alt, shift, false);
@@ -772,6 +773,7 @@
     if (!sbuf.empty) sbufFlush();
     // G11：控制键=词界。Backspace 削已发词段一格，其余控制/组合键直接清段——
     // 光标/行内容已非我们可见，宁可放弃去重也不误退格。
+    if (e.key === 'Enter') manager.clearInputStart(paneId);
     if (e.shiftKey && shiftSpecial[e.key]) { e.preventDefault(); pendingWord = ''; onStdin(shiftSpecial[e.key]); return; }
     if (specialKeys[e.key]) { e.preventDefault(); pendingWord = ''; onStdin(specialKeys[e.key]); return; }
     if (['Backspace','Delete','Home','End','PageUp','PageDown'].includes(e.key) || e.key.startsWith('F') && e.key.length >= 2) {
@@ -983,6 +985,11 @@
       manager.setVisualOffsetY(paneId, next);
       onKeyboardShift?.(next);
     }
+    // The shell can move its cursor between the button click and the next
+    // animation frame (notably after Enter prints a new prompt). Keep the
+    // actual IME sink on the same resolved cell as the visual terminal so the
+    // browser never scrolls toward a stale pre-submit anchor.
+    if (document.activeElement === hiddenInput) positionInputAtCursorOrCenter();
     if (next !== target && keyboardSettleFrames < KEYBOARD_MAX_SETTLE_FRAMES) {
       keyboardSettleFrames += 1;
       if (keyboardSettleRaf === null) {

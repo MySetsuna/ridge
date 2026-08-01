@@ -3587,6 +3587,7 @@ export class TerminalManager {
 				backing: { width: entry.canvas.width, height: entry.canvas.height },
 				cell: { width: entry.cellW, height: entry.cellH },
 				kernel: { rows: entry.kernel.rows(), cols: entry.kernel.cols() },
+				inputAnchor: this.inputAnchorResolved(entry.paneId),
 				reported: { rows: entry.lastReportedRows, cols: entry.lastReportedCols },
 				bottomRightHit: this.cellFromEvent(entry.paneId, { clientX, clientY }),
 			};
@@ -3918,12 +3919,17 @@ export class TerminalManager {
 	/** §1.32 Wave F: clear the input-start marker. Called on Enter
 	 *  (line submitted; the shell will print a new prompt and the
 	 *  next typing will re-mark). Also safe to call defensively
-	 *  whenever the pane state is reset. */
+	 *  whenever the pane state is reset. The pre-submit IME anchor is
+	 *  invalid at the same boundary: keeping it would pin the next
+	 *  mobile keyboard placement to the old prompt while the shell is
+	 *  printing output. TUI panes still resolve through their recent
+	 *  absolute-positioning CSI before the live cursor. */
 	clearInputStart(paneId: string): void {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		entry.inputStartRow = null;
 		entry.inputStartCol = null;
+		entry.imeAnchor = null;
 	}
 
 	/** §1.32 Wave F — reconstruct the real shell-input line by READING
