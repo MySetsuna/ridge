@@ -32,6 +32,17 @@ fn mirror_kernel_host(method: &str, path: &str, body: Option<serde_json::Value>)
     }
 }
 
+fn kernel_host_snapshot() -> Option<Vec<HostRecord>> {
+    let endpoint = ridge_kernel::client::running_endpoint()?;
+    let response = ridge_kernel::client::request_json(
+        &endpoint,
+        "GET",
+        "/v1/domain/remote-hosts",
+        None,
+    ).ok()?;
+    serde_json::from_value(response.get("hosts")?.clone()).ok()
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrontendHostSession {
@@ -468,7 +479,7 @@ pub fn probe_tcp(host: &str, port: u16, timeout_ms: u64) -> Result<(), String> {
 /// 快照所有已登记远端主机（读，供前端 Hosts 面板与 headless 会话合并展示）。
 #[tauri::command]
 pub fn host_list_snapshot(state: State<'_, AppState>) -> Vec<HostRecord> {
-    state.hosts.snapshot()
+    kernel_host_snapshot().unwrap_or_else(|| state.hosts.snapshot())
 }
 
 /// Register topology discovered by a desktop-owned RemoteLink. Desktop-only: never admitted
