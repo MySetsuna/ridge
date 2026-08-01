@@ -64,6 +64,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 const managerStub = {
 	feed: vi.fn(),
 	applyDeltaFrame: vi.fn(),
+	leaveAltScreen: vi.fn(),
 	rows: vi.fn(() => 24),
 	cols: vi.fn(() => 80),
 };
@@ -86,6 +87,7 @@ async function freshBridge() {
 	listenMock.mockReset();
 	managerStub.feed.mockReset();
 	managerStub.applyDeltaFrame.mockReset();
+	managerStub.leaveAltScreen.mockReset();
 	managerStub.rows.mockReturnValue(24);
 	managerStub.cols.mockReturnValue(80);
 
@@ -189,6 +191,26 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		// warn was called at least once with the diagnostic context object.
 		expect(warnSpy).toHaveBeenCalled();
 		warnSpy.mockRestore();
+	});
+
+	it('does not log a destroyed pane when backend casing differs', async () => {
+		const { ensurePtyBridge } = await freshBridge();
+		invokeMock.mockImplementation(async (cmd: string) => {
+			if (cmd === 'activate_pane_pty') throw new Error('pane not found: closed');
+			return undefined;
+		});
+		await ensurePtyBridge(PANE, WS);
+		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed');
+		expect(closed).toBeTruthy();
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		await (closed![1] as (event: unknown) => Promise<void>)({
+			payload: { workspaceId: WS, paneId: PANE },
+		});
+		expect(errorSpy).not.toHaveBeenCalledWith(
+			'activate_pane_pty (rebuild) failed',
+			expect.anything(),
+		);
+		errorSpy.mockRestore();
 	});
 
 	it('still installs listeners when register_pane_delta_channel fails', async () => {

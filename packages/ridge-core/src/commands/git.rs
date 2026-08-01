@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, OnceLock};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 /// Frontend `recommendedGitConcurrency` uses the same clamp — keep in sync.
@@ -294,6 +295,36 @@ fn git_max_concurrent() -> usize {
 
 static GIT_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
+thread_local! {
+    /// True while a caller already owns the shared async semaphore permit.
+    /// Synchronous core dispatch can use the same admission path without
+    /// recursively acquiring a permit for every child in one operation.
+    static GIT_ADMISSION_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct GitAdmissionMarker {
+    previous: bool,
+}
+
+impl Drop for GitAdmissionMarker {
+    fn drop(&mut self) {
+        GIT_ADMISSION_HELD.with(|held| held.set(self.previous));
+    }
+}
+
+fn mark_git_admission_held() -> GitAdmissionMarker {
+    let previous = GIT_ADMISSION_HELD.with(|held| {
+        let previous = held.get();
+        held.set(true);
+        previous
+    });
+    GitAdmissionMarker { previous }
+}
+
+fn git_admission_is_held() -> bool {
+    GIT_ADMISSION_HELD.with(std::cell::Cell::get)
+}
+
 fn git_semaphore() -> Arc<Semaphore> {
     GIT_SEMAPHORE
         .get_or_init(|| Arc::new(Semaphore::new(git_max_concurrent())))
@@ -437,10 +468,51 @@ where
     };
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        let _admission = mark_git_admission_held();
         f()
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))
+}
+
+/// Run a synchronous git read/write under the same process-wide admission
+/// semaphore used by async commands. Core's legacy `dispatch` API is
+/// synchronous, so it cannot await `spawn_git_blocking`; this bounded polling
+/// path prevents those calls from bypassing the cap while preserving the
+/// existing synchronous API. Nested calls from an already-admitted async
+/// operation are zero-cost and do not deadlock when the cap is saturated.
+pub fn with_git_sync_guard<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    if git_admission_is_held() {
+        return f();
+    }
+
+    let deadline = Instant::now() + git_acquire_timeout();
+    let permit = loop {
+        match git_semaphore().try_acquire_owned() {
+            Ok(permit) => break permit,
+            Err(tokio::sync::TryAcquireError::Closed) => {
+                return Err("git semaphore closed unexpectedly".to_string());
+            }
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                if Instant::now() >= deadline {
+                    note_acquire_timeout();
+                    return Err(format!(
+                        "git busy: could not acquire concurrency permit within {:?}",
+                        git_acquire_timeout()
+                    ));
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    };
+    let _admission = mark_git_admission_held();
+    let result = f();
+    drop(_admission);
+    drop(permit);
+    result
 }
 
 /// Run a git command through the process-wide admission, timeout, tree-kill,
@@ -1064,23 +1136,24 @@ pub async fn get_scm_status(
 }
 
 pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
-    let path = Path::new(&repo_root);
-    let repo_path = path
-        .ancestors()
-        .find(|p| p.join(".git").exists())
-        .ok_or_else(|| format!("Not a git repo: {}", repo_root))?;
-    let output = git_cmd()
-        .args(["status", "--porcelain=v1", "-b", "--untracked-files=normal"])
-        .current_dir(repo_path)
-        .git_output()
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let (branch_from_status, ahead, behind, has_upstream, mut staged, mut changes, untracked) =
-        parse_porcelain_v1(&stdout);
-    let branch = branch_from_status.or_else(|| get_current_branch(repo_path));
+    with_git_sync_guard(|| {
+        let path = Path::new(&repo_root);
+        let repo_path = path
+            .ancestors()
+            .find(|p| p.join(".git").exists())
+            .ok_or_else(|| format!("Not a git repo: {}", repo_root))?;
+        let output = git_cmd()
+            .args(["status", "--porcelain=v1", "-b", "--untracked-files=normal"])
+            .current_dir(repo_path)
+            .git_output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let (branch_from_status, ahead, behind, has_upstream, mut staged, mut changes, untracked) =
+            parse_porcelain_v1(&stdout);
+        let branch = branch_from_status.or_else(|| get_current_branch(repo_path));
 
     // Two parallel-style numstat calls: working-tree (index ↔ tree) for the
     // unstaged "更改" group, and `--cached` (HEAD ↔ index) for the staged
@@ -1129,15 +1202,16 @@ pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
         }
     }
 
-    Ok(ScmRepoStatus {
-        repo_root,
-        current_branch: branch,
-        ahead,
-        behind,
-        staged,
-        changes,
-        untracked,
-        has_upstream,
+        Ok(ScmRepoStatus {
+            repo_root,
+            current_branch: branch,
+            ahead,
+            behind,
+            staged,
+            changes,
+            untracked,
+            has_upstream,
+        })
     })
 }
 
@@ -1307,50 +1381,52 @@ pub async fn git_list_branches(repo_root: String) -> Result<Vec<BranchInfo>, Str
 }
 
 pub fn git_list_branches_sync(repo_root: String) -> Result<Vec<BranchInfo>, String> {
-    let path = Path::new(&repo_root);
-    let out = git_cmd()
-        .args([
-            "branch",
-            "--all",
-            "--format=%(refname:short)%09%(HEAD)%09%(upstream:short)",
-        ])
-        .current_dir(path)
-        .git_output()
-        .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).to_string());
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let mut result: Vec<BranchInfo> = Vec::new();
-    for line in stdout.lines() {
-        let line = line.trim_end();
-        if line.is_empty() {
-            continue;
+    with_git_sync_guard(|| {
+        let path = Path::new(&repo_root);
+        let out = git_cmd()
+            .args([
+                "branch",
+                "--all",
+                "--format=%(refname:short)%09%(HEAD)%09%(upstream:short)",
+            ])
+            .current_dir(path)
+            .git_output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).to_string());
         }
-        // 跳过 remotes/origin/HEAD -> origin/main 这种 symbolic ref
-        if line.contains(" -> ") {
-            continue;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut result: Vec<BranchInfo> = Vec::new();
+        for line in stdout.lines() {
+            let line = line.trim_end();
+            if line.is_empty() {
+                continue;
+            }
+            // 跳过 remotes/origin/HEAD -> origin/main 这种 symbolic ref
+            if line.contains(" -> ") {
+                continue;
+            }
+            let mut parts = line.splitn(3, '\t');
+            let name = parts.next().unwrap_or("").to_string();
+            let head_mark = parts.next().unwrap_or("");
+            let upstream = parts
+                .next()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if name.is_empty() {
+                continue;
+            }
+            let is_current = head_mark == "*";
+            let is_remote = name.starts_with("origin/") || name.starts_with("remotes/");
+            result.push(BranchInfo {
+                name,
+                is_current,
+                is_remote,
+                upstream,
+            });
         }
-        let mut parts = line.splitn(3, '\t');
-        let name = parts.next().unwrap_or("").to_string();
-        let head_mark = parts.next().unwrap_or("");
-        let upstream = parts
-            .next()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        if name.is_empty() {
-            continue;
-        }
-        let is_current = head_mark == "*";
-        let is_remote = name.starts_with("origin/") || name.starts_with("remotes/");
-        result.push(BranchInfo {
-            name,
-            is_current,
-            is_remote,
-            upstream,
-        });
-    }
-    Ok(result)
+        Ok(result)
+    })
 }
 
 /// 切换到指定分支。`create=true` 时基于 `base`（默认 HEAD）创建新分支并切换：
@@ -2524,7 +2600,8 @@ fn get_git_info_with_cwd_sync(cwd: String) -> Result<GitRepoInfo, String> {
 /// and remote git views are computed from the exact same source. Returns an
 /// empty non-repo `GitRepoInfo` on error instead of propagating.
 pub fn git_info_for_path(cwd: &Path) -> GitRepoInfo {
-    get_git_info_with_cwd_sync(cwd.to_string_lossy().to_string()).unwrap_or_default()
+    with_git_sync_guard(|| get_git_info_with_cwd_sync(cwd.to_string_lossy().to_string()))
+        .unwrap_or_default()
 }
 
 /// 内部函数：根据路径获取 git diff
@@ -2885,6 +2962,23 @@ mod guard_tests {
         assert!(s.logical_concurrency_cap >= GIT_CONCURRENCY_MIN);
         // counters are non-negative by construction (usize)
         let _ = s.timeout_kills + s.acquire_timeouts + s.active_children;
+    }
+
+    #[test]
+    fn synchronous_dispatch_guard_is_reentrant_and_restores_marker() {
+        assert!(!git_admission_is_held());
+        let value = with_git_sync_guard(|| {
+            assert!(git_admission_is_held());
+            // Nested helpers (for example status -> branch metadata) must not
+            // acquire a second permit and deadlock when the cap is saturated.
+            with_git_sync_guard(|| {
+                assert!(git_admission_is_held());
+                Ok::<_, String>(41)
+            })
+        })
+        .expect("sync guard should admit a short operation");
+        assert_eq!(value, 41);
+        assert!(!git_admission_is_held());
     }
 
     /// OP-GIT-BYPASS: production body of this file must not spawn git outside

@@ -1253,7 +1253,7 @@ onMount(() => {
 			});
 		} catch (e) {
 			const msg = String(e);
-			if (!msg.includes('Pane not found')) {
+			if (!/\bpane\s+not\s+found\b/i.test(msg)) {
 				console.error('activate_pane_pty failed', e);
 			}
 		}

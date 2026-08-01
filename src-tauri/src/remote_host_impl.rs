@@ -2061,16 +2061,18 @@ async fn git_status_result(repo_root: String) -> serde_json::Value {
         Ok(status) => status,
         Err(e) => return serde_json::json!({ "_error": e }),
     };
-    let commits = tokio::task::spawn_blocking(move || {
-        crate::commands::git::git_info_for_path(std::path::Path::new(&repo_root)).commits
-    })
-    .await
-    .map(|list| {
-        list.into_iter()
-            .map(|c| serde_json::json!({ "hash": c.hash, "msg": c.subject, "time": c.date }))
-            .collect::<Vec<_>>()
-    })
-    .unwrap_or_default();
+    // Do not call the synchronous `git_info_for_path` from an ad-hoc
+    // `spawn_blocking`: that path bypassed the shared git semaphore and could
+    // recreate the remote git.exe pile-up under repeated status polling.
+    // The paginated log command uses the same bounded admission + timeout path
+    // as `get_scm_status`, and avoids re-running branch/diff probes already
+    // covered by the status request.
+    let commits = crate::commands::git::get_git_commits_paginated(repo_root, 0, 50)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| serde_json::json!({ "hash": c.hash, "msg": c.subject, "time": c.date }))
+        .collect::<Vec<_>>();
 
     let map_files = |files: Vec<crate::commands::git::ScmFile>| {
         files
