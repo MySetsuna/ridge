@@ -21,12 +21,12 @@ mod config;
 mod core_host;
 mod daemon;
 mod daemon_ctl;
-mod kernel_ctl;
 mod device_flow;
 mod e2ee;
 mod envelope;
 mod fs_reuse;
 mod ice;
+mod kernel_ctl;
 mod key_binding;
 mod login_flow;
 mod mux;
@@ -111,13 +111,9 @@ enum KernelCommand {
     /// 领域：agent profiles（经内核 SSOT）。
     Agents,
     /// 领域：列目录 `rdg kernel fs-list <path>`。
-    FsList {
-        path: String,
-    },
+    FsList { path: String },
     /// 领域：Git status `rdg kernel git-status <path>`。
-    GitStatus {
-        path: String,
-    },
+    GitStatus { path: String },
     /// MCP tools/list 冒烟（无 Tauri）。
     McpSmoke,
 }
@@ -245,6 +241,10 @@ struct TmuxArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if ridge_kernel::client::kernel_host_requested() {
+        init_tracing(false);
+        return ridge_kernel::server::run("127.0.0.1", 0).await;
+    }
     let cli = Cli::parse();
     // 日志初始化必须在解析出子命令之后：TUI 模式（进 alternate screen）要把日志写文件
     // 而非 stderr，否则会糊住界面（问题：日志冲刷 TUI）。
@@ -293,7 +293,10 @@ async fn main() -> Result<()> {
                 Ok(())
             }
             KernelCommand::Agents => {
-                println!("{}", kernel_ctl::domain_agents().map_err(anyhow::Error::msg)?);
+                println!(
+                    "{}",
+                    kernel_ctl::domain_agents().map_err(anyhow::Error::msg)?
+                );
                 Ok(())
             }
             KernelCommand::FsList { path } => {
@@ -421,7 +424,11 @@ fn init_tracing(tui: bool) {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,ridge_cli=info"));
     if tui {
         if let Ok(path) = config::log_path() {
-            if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            if let Ok(file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
                 let writer = FileMakeWriter(std::sync::Arc::new(std::sync::Mutex::new(file)));
                 fmt()
                     .with_env_filter(filter)

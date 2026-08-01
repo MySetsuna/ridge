@@ -17,7 +17,7 @@ use crate::state::AppState;
 
 /// 菜单项 id：恢复工作台（默认双击项）。
 const MENU_ID_RESTORE: &str = "deep_root_restore";
-/// 仅退出桌面 UI：隐藏窗口，内核进程继续（深根）。
+/// 仅退出桌面外壳进程；独立内核继续（深根）。
 const MENU_ID_EXIT_DESKTOP: &str = "kernel_exit_desktop";
 /// 彻底退出：结束内核进程（本进程即宿主 v1）。
 const MENU_ID_QUIT_KERNEL: &str = "kernel_quit_full";
@@ -45,10 +45,7 @@ pub fn build_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let sep = PredefinedMenuItem::separator(handle)?;
-    let menu = Menu::with_items(
-        handle,
-        &[&restore_item, &sep, &exit_desktop, &quit_kernel],
-    )?;
+    let menu = Menu::with_items(handle, &[&restore_item, &sep, &exit_desktop, &quit_kernel])?;
 
     let mut builder = TrayIconBuilder::with_id("ridge-deep-root")
         .tooltip("Ridge")
@@ -78,19 +75,18 @@ fn on_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, event: MenuEvent) {
             }
         }
         MENU_ID_EXIT_DESKTOP => {
-            // 深根：只藏 UI，不置 quitting，不清 kernel.pid。
-            if let Some(window) = app.get_webview_window("main") {
-                if let Err(e) = window.hide() {
-                    tracing::warn!(target: "ridge::tray", error = %e, "exit desktop hide failed");
-                } else {
-                    tracing::info!(target: "ridge::tray", "exited desktop shell; kernel host still running");
-                }
-            }
+            // Deep Root：退出整个桌面 shell，独立 kernel 不受影响。
+            app.state::<AppState>()
+                .quitting
+                .store(true, std::sync::atomic::Ordering::Release);
+            tracing::info!(target: "ridge::tray", "exiting desktop shell; kernel remains running");
+            app.exit(0);
         }
         MENU_ID_QUIT_KERNEL => {
             // 先停独立内核（rdg 轮询 health/pid 后自退），再退出桌面外壳。
             if let Err(e) = kernel_lifecycle::shutdown_kernel() {
                 tracing::warn!(target: "ridge::tray", error = %e, "kernel shutdown failed");
+                return;
             }
             app.state::<AppState>()
                 .quitting

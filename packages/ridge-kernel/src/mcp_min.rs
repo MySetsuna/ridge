@@ -8,7 +8,7 @@ use axum::Json;
 use serde_json::{json, Value};
 
 use crate::domain::builtin_agent_profiles;
-use crate::AppState;
+use crate::server::AppState;
 
 fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
     if headers

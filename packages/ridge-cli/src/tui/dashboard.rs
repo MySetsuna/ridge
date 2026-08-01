@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use crossterm::ExecutableCommand;
 use futures_util::StreamExt;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
@@ -15,14 +17,14 @@ use ratatui::widgets::{Block, Borders, ListItem, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use tokio::sync::mpsc;
 
+use super::qr_display;
+use super::workspace::{new_shared, SharedWorkspace};
 use crate::config;
 use crate::daemon_ctl;
 use crate::kernel_ctl;
 use crate::login_flow;
 use crate::totp::RemoteTotp;
 use ridge_core::workspace::pane_tree::SplitDirection;
-use super::qr_display;
-use super::workspace::{new_shared, SharedWorkspace};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum View {
@@ -178,20 +180,14 @@ impl App {
 
 pub async fn run() -> Result<()> {
     crate::TUI_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
-    // HOST：仪表盘启动 detect-or-spawn 内核（失败不阻断 UI）。
-    match kernel_ctl::ensure_kernel_running() {
-        Ok(ep) => tracing::info!(
-            target: "ridge_cli::dashboard",
-            pid = ep.pid,
-            port = ep.port,
-            "ridge-kernel ready"
-        ),
-        Err(e) => tracing::warn!(
-            target: "ridge_cli::dashboard",
-            error = %e,
-            "ensure ridge-kernel failed"
-        ),
-    }
+    // Thin shell cannot run without its authoritative kernel.
+    let kernel = kernel_ctl::ensure_kernel_running().map_err(anyhow::Error::msg)?;
+    tracing::info!(
+        target: "ridge_cli::dashboard",
+        pid = kernel.pid,
+        port = kernel.port,
+        "ridge-kernel ready"
+    );
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout());
@@ -264,8 +260,7 @@ pub async fn run() -> Result<()> {
                     // 已离开 TUI；占位 terminal 供 loop break 后统一 cleanup。
                     enable_raw_mode()?;
                     stdout().execute(EnterAlternateScreen)?;
-                    terminal =
-                        Terminal::new(ratatui::backend::CrosstermBackend::new(stdout()))?;
+                    terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(stdout()))?;
                     app.quit = true;
                 }
                 Action::StartLanRemote => {
@@ -283,7 +278,9 @@ pub async fn run() -> Result<()> {
                         // 用户以为已接通实则 bind/TLS 失败（REQ-RDG-REMOTE-CONNECT-01 回归面）。
                         let fail_tx = app.action_tx.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = super::lan_host::run(port, totp, workspace, shutdown_rx).await {
+                            if let Err(e) =
+                                super::lan_host::run(port, totp, workspace, shutdown_rx).await
+                            {
                                 tracing::warn!(target: "ridge_cli::dashboard", error = %e, "LAN remote stopped");
                                 let _ = fail_tx.send(Action::LanRemoteFailed(e.to_string()));
                             }
@@ -311,13 +308,8 @@ pub async fn run() -> Result<()> {
             break;
         }
 
-        // 内核被桌面/CLI 彻底退出后，rdg 应自动退出（REQ-RIDGE-KERNEL-HOST-01 联动）。
-        // 仅当启动时曾见过内核、且现已消失时触发，避免「从未起桌面」时误退。
-        static SAW_KERNEL: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        if kernel_ctl::is_kernel_running() {
-            SAW_KERNEL.store(true, std::sync::atomic::Ordering::Relaxed);
-        } else if SAW_KERNEL.load(std::sync::atomic::Ordering::Relaxed) {
+        // 精确监视启动时 attach 的 PID；HTTP 短错不误退，PID 死亡立即联动退出。
+        if !kernel_ctl::is_kernel_process_alive(kernel.pid) {
             app.log("内核已退出，rdg 联动退出".into());
             break;
         }
@@ -374,7 +366,11 @@ fn handle_main_key(app: &mut App, code: KeyCode) {
             let item = MENU_ITEMS[app.selected];
             match item {
                 MenuItem::ShowQrCode => {
-                    let device_name = app.auth.as_ref().map(|a| a.device_name.as_str()).unwrap_or("rdg");
+                    let device_name = app
+                        .auth
+                        .as_ref()
+                        .map(|a| a.device_name.as_str())
+                        .unwrap_or("rdg");
                     let uri = app.totp.otpauth_uri(device_name);
                     let qr = qr_display::render_qr(&uri);
                     app.qr_text = format!(
@@ -483,12 +479,13 @@ fn render_main(frame: &mut Frame, app: &App) {
     .block(Block::default().borders(Borders::ALL).title(" Dashboard "));
     frame.render_widget(title, chunks[0]);
 
-    let mut status_lines = vec![Line::from(format!(
-        "  Public:  {}",
-        daemon_ctl::status()
-    ))];
+    let mut status_lines = vec![Line::from(format!("  Public:  {}", daemon_ctl::status()))];
 
-    let lan_status = if app.lan_running { "Running" } else { "Stopped" };
+    let lan_status = if app.lan_running {
+        "Running"
+    } else {
+        "Stopped"
+    };
     let lan_style = if app.lan_running {
         Style::default().fg(Color::Green)
     } else {
@@ -518,9 +515,14 @@ fn render_main(frame: &mut Frame, app: &App) {
         status_lines.push(Line::from("  Device:  not activated"));
         status_lines.push(Line::from("  Entry:   run login first"));
     }
-    let totp_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-    let totp_text = format!("  TOTP:    {} (每 {}s 刷新)  [Enter] 查看二维码",
-        app.totp_code, RemoteTotp::period_secs());
+    let totp_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let totp_text = format!(
+        "  TOTP:    {} (每 {}s 刷新)  [Enter] 查看二维码",
+        app.totp_code,
+        RemoteTotp::period_secs()
+    );
     status_lines.push(Line::from(Span::styled(totp_text, totp_style)));
 
     let status = Paragraph::new(status_lines)
@@ -595,7 +597,10 @@ mod tests {
 
     #[test]
     fn lan_status_shows_origin_without_login_path() {
-        assert_eq!(lan_origin("172.21.130.235", 9527), "https://172.21.130.235:9527");
+        assert_eq!(
+            lan_origin("172.21.130.235", 9527),
+            "https://172.21.130.235:9527"
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ mod deep_root;
 mod engine;
 mod fs;
 mod hosts;
+mod kernel_lifecycle;
 mod lsp;
 pub mod reconnect_policy;
 /// 桌面进程与共享远控层之间的 Tauri 胶水层（`forward_event` + `ridge-core` 桥
@@ -14,7 +15,6 @@ mod remote_host_impl;
 mod state;
 mod teammate;
 mod tray;
-mod kernel_lifecycle;
 mod types;
 mod utils;
 
@@ -300,6 +300,7 @@ pub fn run() {
                         let exit_handle = app.handle().clone();
                         let stop_flag = app.state::<crate::state::AppState>().quitting.clone();
                         crate::kernel_lifecycle::spawn_kernel_death_watcher(
+                            ep.pid,
                             move || {
                                 exit_handle
                                     .state::<crate::state::AppState>()

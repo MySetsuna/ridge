@@ -14,7 +14,7 @@ use std::io;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 static TREE_KILLS: AtomicU64 = AtomicU64::new(0);
 static TIMEOUTS: AtomicU64 = AtomicU64::new(0);
@@ -106,6 +106,42 @@ pub fn run_command_with_timeout(
     }
 }
 
+/// Run a command with null stdio and a wall-clock timeout. Use this for
+/// launcher commands that intentionally detach a long-lived child: piped
+/// capture can otherwise keep Windows pipe handles open past launcher exit.
+pub fn run_command_status_with_timeout(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> io::Result<std::process::ExitStatus> {
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+    let mut child = cmd.spawn()?;
+    let pid = child.id();
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if started.elapsed() >= timeout {
+            TIMEOUTS.fetch_add(1, Ordering::SeqCst);
+            kill_process_tree(pid);
+            let reap_deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < reap_deadline {
+                if child.try_wait()?.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("process timed out after {timeout:?} (killed pid {pid})"),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Snapshot for diagnostics / IPC.
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,7 +172,6 @@ pub(crate) fn test_time_budget(base: Duration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     #[test]
     fn timeout_kills_hanging_binary_and_counts() {
@@ -185,6 +220,13 @@ mod tests {
         assert!(process_tree_kill_count() >= 1);
         let snap = process_guard_stats();
         assert_eq!(snap.timeouts, process_timeout_count());
+
+        let status_err =
+            run_command_status_with_timeout(&mut Command::new(&hang), Duration::from_millis(400))
+                .expect_err("status-only launcher must timeout");
+        assert_eq!(status_err.kind(), io::ErrorKind::TimedOut);
+        assert!(process_timeout_count() >= 2);
+        assert!(process_tree_kill_count() >= 2);
         let _ = std::fs::remove_dir_all(hang.parent().unwrap());
     }
 
