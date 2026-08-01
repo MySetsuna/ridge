@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use clap::Parser;
 use serde::Serialize;
@@ -50,6 +50,8 @@ pub struct AppState {
     /// Shell-neutral workspace topology for the kernel API. Shell migration is
     /// deliberately separate, so this does not claim existing shells migrated.
     pub workspaces: Arc<std::sync::Mutex<ridge_core::workspace::graph::WorkspaceGraph>>,
+    /// Kernel-owned Agent roster/topology; process binding remains a host adapter.
+    pub roster: Arc<std::sync::Mutex<ridge_core::teammate::topology::TopologyGraph>>,
 }
 
 #[derive(Serialize)]
@@ -96,6 +98,7 @@ async fn health(State(st): State<AppState>) -> Json<HealthBody> {
         domain: &[
             "fs.list",
             "agents.profiles",
+            "agents.roster",
             "git.status",
             "workspaces",
             "mcp",
@@ -122,6 +125,7 @@ async fn status(
         domain: &[
             "fs.list",
             "agents.profiles",
+            "agents.roster",
             "git.status",
             "workspaces",
             "mcp",
@@ -178,6 +182,9 @@ async fn main() -> Result<()> {
         workspaces: Arc::new(std::sync::Mutex::new(
             ridge_core::workspace::graph::WorkspaceGraph::new(),
         )),
+        roster: Arc::new(std::sync::Mutex::new(
+            ridge_core::teammate::topology::TopologyGraph::new(),
+        )),
     };
 
     let app = Router::new()
@@ -186,6 +193,14 @@ async fn main() -> Result<()> {
         .route("/v1/shutdown", post(shutdown))
         .route("/v1/domain", get(domain::domain_meta))
         .route("/v1/domain/agents", get(domain::domain_agents))
+        .route(
+            "/v1/domain/agents/roster",
+            get(domain::domain_agent_roster).post(domain::domain_agent_roster_add),
+        )
+        .route(
+            "/v1/domain/agents/roster/:agent_id",
+            delete(domain::domain_agent_roster_remove),
+        )
         .route("/v1/domain/fs/list", get(domain::domain_fs_list))
         .route("/v1/domain/git/status", get(domain::domain_git_status))
         .route(

@@ -42,6 +42,7 @@ pub async fn domain_meta(
         capabilities: &[
             "fs.list",
             "agents.profiles",
+            "agents.roster",
             "git.status",
             "workspaces",
             "mcp",
@@ -273,6 +274,78 @@ pub async fn domain_agents(
     })))
 }
 
+fn roster_snapshot(graph: &ridge_core::teammate::topology::TopologyGraph) -> Value {
+    let mut roster = graph
+        .roster()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<ridge_core::teammate::model::Teammate>>();
+    roster.sort_by(|left, right| left.id.cmp(&right.id));
+    json!({
+        "ok": true,
+        "source": "ridge-kernel",
+        "leader_id": graph.leader_id(),
+        "roster": roster,
+    })
+}
+
+pub async fn domain_agent_roster(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(Json(roster_snapshot(&st.roster.lock().expect("roster lock"))))
+}
+
+#[derive(Deserialize)]
+pub struct AgentRosterAddRequest {
+    pub id: String,
+    pub name: String,
+    pub pane_id: u32,
+}
+
+pub async fn domain_agent_roster_add(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<AgentRosterAddRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    if request.id.trim().is_empty() || request.name.trim().is_empty() {
+        return Ok(bad_request("agent id and name are required"));
+    }
+    let capability = ridge_core::teammate::model::recognize_capability(&request.name, None);
+    let teammate = ridge_core::teammate::model::Teammate::new(request.id, request.name, request.pane_id)
+        .with_capability(capability);
+    let agent_id = teammate.id.clone();
+    st.roster
+        .lock()
+        .expect("roster lock")
+        .add_teammate(teammate);
+    Ok(Json(json!({ "ok": true, "agent_id": agent_id })))
+}
+
+pub async fn domain_agent_roster_remove(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    if agent_id.trim().is_empty() {
+        return Ok(bad_request("agent id is required"));
+    }
+    st.roster
+        .lock()
+        .expect("roster lock")
+        .remove_teammate(&agent_id);
+    Ok(Json(json!({ "ok": true, "agent_id": agent_id })))
+}
+
 #[derive(Deserialize)]
 pub struct FsListQuery {
     pub path: String,
@@ -361,6 +434,9 @@ mod tests {
             workspaces: Arc::new(std::sync::Mutex::new(
                 ridge_core::workspace::graph::WorkspaceGraph::new(),
             )),
+            roster: Arc::new(std::sync::Mutex::new(
+                ridge_core::teammate::topology::TopologyGraph::new(),
+            )),
         }
     }
 
@@ -432,5 +508,38 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(listed["active"], workspace_id);
+    }
+
+    #[tokio::test]
+    async fn roster_handlers_keep_agent_state_in_kernel() {
+        let state = test_state();
+        let _ = domain_agent_roster_add(
+            State(state.clone()),
+            test_headers(),
+            Json(AgentRosterAddRequest {
+                id: "codex-1".to_string(),
+                name: "Codex".to_string(),
+                pane_id: 7,
+            }),
+        )
+        .await
+        .unwrap();
+        let listed = domain_agent_roster(State(state.clone()), test_headers())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(listed["roster"][0]["capability"], "Skilled");
+        let _ = domain_agent_roster_remove(
+            State(state.clone()),
+            test_headers(),
+            Path("codex-1".to_string()),
+        )
+        .await
+        .unwrap();
+        let listed = domain_agent_roster(State(state), test_headers())
+            .await
+            .unwrap()
+            .0;
+        assert!(listed["roster"].as_array().unwrap().is_empty());
     }
 }
