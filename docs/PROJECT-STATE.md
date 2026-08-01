@@ -35,7 +35,13 @@ resume arguments, and child-path filtering. Code commit `b88b679` is pushed;
 see `docs/iterations/CONTRACT-iteration-84.md`. Version `0.1.30` is committed
 as `58c2cb7` and formally published with 12 assets. Release run
 `30719551852`, Remote run `30719562705`, and ridge-cloud run `30719573795` all
-passed; cloud production health returned `ok=true`.
+passed; cloud production health returned `ok=true`. Isolated WebView2/CDP
+Agent panel, auto-discovery/recovery, and LAN mobile roster/data-plane probes
+also passed; the probe emitted no `runtime.lastError`. A separate first-start
+attempt failed only because the Rust debug archive exhausted disk (`OS error
+112`); after reclaiming rebuildable Cargo package artifacts, the CDP run
+completed. Physical phone clean-profile A/B, public long-run, WebView2 heap
+soak, and dual-window/dual-host evidence remain unverified.
 
 ---
 

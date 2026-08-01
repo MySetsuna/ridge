@@ -43,6 +43,12 @@ source that the backend never returned.
   path, but the Rust debug archive failed with Windows `OS error 112` at
   `643/645`; no CDP/UI assertion was counted as passed. The exact process tree
   was terminated and only the test profile was targeted for cleanup.
+- After reclaiming rebuildable Cargo package artifacts, the isolated runtime
+  probes passed: `cdp-agent-panel-ui.mjs` (`GATE: PASS`),
+  `cdp-agent-autodiscover.mjs` (`GATE: PASS`), and
+  `cdp-remote-mobile-agents.mjs` (`GATE: PASS`). The mobile probe observed no
+  project `runtime.lastError`; its remaining console output is limited to
+  known local WebView2/worker fallback and self-signed Service Worker warnings.
 
 ## Non-claims
 
