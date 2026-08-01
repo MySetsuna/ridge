@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-30（iteration 77 三日走查进行中；NLM live 已恢复，手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-02（iteration 82 持续收敛；NLM live 已恢复，手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -17,6 +17,8 @@
 
 - `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 与 `CONTRACT-iteration-77.md` 推进 Remote/桌面稳定性；RPC/输入/Resize、SCM、Pane 生命周期、日志、真清空、Host、Commune、多窗口所有权及窗级 active 核心已落地；仅外部运行证据待补。
 - `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`：项目源码无 Chrome Extension Messaging；保持业务零 diff，待受影响手机 clean-profile/扩展 A/B 终局归因。
+- `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02` / `REQ-REMOTE-RUNTIME-PERF-MEMORY-02`：键盘视觉偏移稳定、Remote listener/worker/pending/timer 回收；代码与确定性测试已落，真机/WebView2 heap soak 待补。
+- 当前发布收敛：`main@5a67044`；`v0.1.28` annotated tag 已推，Remote run `30712763807` 已成功，ridge-cloud run `30712287282` 已成功，桌面四平台 Release 矩阵仍运行中。
 
 ## 已验证代码事实
 
@@ -36,6 +38,9 @@
 - 1,000 RPC/input/resize burst、100 次非 Git/共享 repo、126 次重复日志均已有量化回归钉（`3e967a1`）。
 - owned Node localStorage 与 Vite chunk 配置告警已修（`74cb80d`）。
 - 手机 Remote 项目源码及构建输入无 Chrome Extension Messaging；`service-worker.ts` 的 PWA `Client.postMessage` 非 Extension Messaging。项目归属已排除，环境注入器/第三方扩展仍待真机隔离。
+- `MainApp` transport unsubscribe、Cloud late-callback guard、workspace generation guard 与 Worker pane pending cancellation 已落；Pane destroy 会拒绝 pending 并忽略有界 late reply（`367c053`、`0207319`、`b402f75`）。
+- kernel Git discovery/status 已移出 async executor 且支持 ancestor repo；MCP bridge 默认仅接当前 kernel、无 kernel fail-closed（`66d51f0`、`1475abc`）。
+- Windows kernel host smoke 已真实验证 detect-or-spawn、二次 attach、FS/Agent/Git/MCP、stop；脚本现具墙钟超时、精确进程树回收与 finally 清理（`5a67044`）。
 
 ## 相关模块与 symbol
 
@@ -46,8 +51,8 @@
 
 ## 最近完成与当前 diff
 
-- 最近完成:`74cb80d` owned warning 清理；`3e967a1` 稳定性量化回归；`a9023f3` 窗级 active 隔离。
-- 当前 diff:iteration 77 走查合同与本状态文档；`.iteration` 和既有本地生成目录保持未跟踪。
+- 最近完成:`367c053`/`0207319`/`b402f75` Remote 生命周期与 Pane pending；`66d51f0`/`1475abc` kernel/MCP；`5a67044` smoke 进程护栏。
+- 当前 diff:本状态与迭代合同更新；`.iteration` 和既有本地生成目录保持未跟踪。
 
 ## 验证状态
 
@@ -62,10 +67,12 @@
 - iteration 77 复核：关键 Remote/SCM/Host/Worker/RPC 测试 12 files / 253 tests 通过；`pnpm build:remote` exit `0`（140.4 s）；构建仅保留既有动态导入、chunk-size 与空 PWA glob 非阻塞警告。
 - 2026-07-31 只读公网 health：`https://9527127.xyz/api/v1/health` HTTP `200`，服务自报版本 `0.0.7`；缺 `RIDGE_ARTIFACT_TOKEN`，Remote artifact current 未验证。此证据不证明公网 WebRTC/TURN、产物新鲜度或用户链路。
 - 公网、手机真机、WebView2 长时性能 A/B、双窗口与双 Host 物理 E2E 尚未运行；不得宣称总体目标完成。
+- 本轮新增验证：定向 Remote/Worker 48/48；完整 Vitest 120 files / 1374 passed / 1 skipped；`pnpm check` 0 errors / 0 warnings；`cargo test -p ridge-kernel --lib` 15 passed；`cargo test -p ridge-mcp-bridge --lib` 8 passed；kernel-host-smoke 全绿。
 
 ## 当前失败信号与风险
 
 - 失败信号:手机 `runtime.lastError` 尚无首条 warning script URL/Frame/注入器 owner；公网/WebView2/物理设备证据尚未采集；公网服务健康但 Remote artifact current 未获授权核验。
+- 发布风险：`v0.1.28` Release run `30712757798` test gate 已绿、四平台 build 尚未全完；未见资产前不宣称桌面 Release 完成。
 - 风险:自动测试不替代双窗口桌面、双 Host、手机、公网 Remote 与 WebView2 长跑；Remote build 尚有既存 dynamic-import 警告。
 
 ## 架构边界
@@ -90,6 +97,7 @@
 ## 下一项已批准工作
 
 - 执行 iteration 77 清单：手机 clean-profile/禁注入器归因、公网 Remote/双 Host、WebView2 长跑、双窗口桌面、Agent/Headless、Explorer 跨卷权限、原生 PowerShell/PTY 录制。未获这些外部证据前不宣称总体运行验收完成。
+- 先完成 `v0.1.28` 四平台资产核验与 Remote/cloud SHA 对账；随后补手机/WebView2/公网/双窗口/Agent 真链证据，仍以代码、测试、运行事实三者闭环。
 
 ## 本轮 delta
 
