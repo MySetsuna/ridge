@@ -35,10 +35,11 @@ Selected sequence: stable Agent/session identity → bounded all-CWD history pro
 
 ## Release evidence
 
-- `v0.1.24` release workflow `30706698658`: success, all five jobs.
-- Remote publish `30706709638`: success.
-- `ridge-cloud` deploy `30706722196`: success.
-- GitHub Release `v0.1.24`: published `2026-08-01T16:43:05Z`, 11 assets covering Windows, Linux, and macOS.
+- `v0.1.26` release workflow `30709289835`: success, all five jobs.
+- Remote publish `30709294002`: success at commit `e0f2bd6`.
+- `ridge-cloud` deploy `30709295556`: success.
+- GitHub Release `v0.1.26`: published `2026-08-01T17:50:33Z`, 11 assets covering Windows, Linux, and macOS.
+- The attempted `v0.1.25` run was rejected by the release-version gate because root `Cargo.lock` still held `0.1.24`; the tag was not published and no incomplete release was claimed. The contract was corrected before `v0.1.26`.
 
 ## Closure status
 
