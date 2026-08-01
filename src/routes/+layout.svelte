@@ -10,6 +10,8 @@
   import { onMount } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
+  import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
   import { startTotpIdentitySync } from '$lib/remote/totpIdentitySync';
   import { cloudAuth as cloudAuthStore } from '@ridge/remote/shared/cloud/auth';
   import { BASE_DOMAIN, cloudHttpScheme } from '@ridge/remote/shared/cloud/apiClient';
@@ -65,7 +67,33 @@
       // §totp-persist：仅真实桌面 host 同步登录态→TOTP 种子（web-remote 已被
       // WEB_REMOTE 分支排除，不会到这）。
       const stopTotpSync = startTotpIdentitySync(invoke, cloudAuthStore);
-      return () => stopTotpSync();
+      // Native WebView hide/show does not reliably produce a DOM
+      // visibilitychange on every WebView2 build. Keep the terminal memory
+      // policy deterministic by honoring the host lifecycle events too.
+      const unlisteners: Array<() => void> = [];
+      let listenerAlive = true;
+      void Promise.all([
+        listen('ridge://memory-reclaim', () => {
+          TerminalManager.tryInstance()?.reclaimTerminalMemory({
+            documentHidden: true,
+            forceHeapPressure: true,
+          });
+        }),
+        listen('ridge://memory-restore', () => {
+          TerminalManager.tryInstance()?.restoreTerminalMemory();
+        }),
+      ]).then((stops) => {
+        if (listenerAlive) unlisteners.push(...stops);
+        else stops.forEach((stop) => stop());
+      }).catch(() => {
+        // A closing WebView may reject listener registration; hide/restore
+        // remains best-effort and the normal visibility listener still works.
+      });
+      return () => {
+        listenerAlive = false;
+        unlisteners.splice(0).forEach((stop) => stop());
+        stopTotpSync();
+      };
     }
     // §sw-early-register：进 web-remote 页即注册 service-worker，与鉴权解耦（对齐移动端
     // main.ts 的 immediate 注册）。静态壳（_app/immutable，含 Monaco）的预缓存 +

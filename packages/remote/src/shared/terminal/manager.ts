@@ -1117,6 +1117,13 @@ export class TerminalManager {
 		};
 	}
 
+	/** Restore renderers parked by an explicit native hide/reclaim event. */
+	restoreTerminalMemory(): void {
+		this._restoreMemoryParked(this._activeWorkspaceId);
+		this._hostInvalidatePending = true;
+		this.wake();
+	}
+
 	/**
 	 * §4.3 Phase B: predicate. True when this entry is rendering through
 	 * the shared SurfaceHost (WebGPU host mode); false when it owns its
