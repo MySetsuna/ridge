@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-08-02（iteration 84 持续收敛；Agent 历史跨来源扫描已修，v0.1.30 三线发布证据待回填；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-02（iteration 84 已完成代码与三线发布；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -33,9 +33,9 @@ Claude session volume can no longer starve Codex history. The new filesystem
 fixture proves both sources, recorded CWD, latest assistant text, structured
 resume arguments, and child-path filtering. Code commit `b88b679` is pushed;
 see `docs/iterations/CONTRACT-iteration-84.md`. Version `0.1.30` is committed
-as `58c2cb7`; release, Remote artifact, and ridge-cloud jobs are running and
-must not be marked complete until their assets and production health are
-queried.
+as `58c2cb7` and formally published with 12 assets. Release run
+`30719551852`, Remote run `30719562705`, and ridge-cloud run `30719573795` all
+passed; cloud production health returned `ok=true`.
 
 ---
 
@@ -44,7 +44,7 @@ queried.
 - `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 与 `CONTRACT-iteration-77.md` 推进 Remote/桌面稳定性；RPC/输入/Resize、SCM、Pane 生命周期、日志、真清空、Host、Commune、多窗口所有权及窗级 active 核心已落地；仅外部运行证据待补。
 - `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`：项目源码无 Chrome Extension Messaging；保持业务零 diff，待受影响手机 clean-profile/扩展 A/B 终局归因。
 - `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02` / `REQ-REMOTE-RUNTIME-PERF-MEMORY-02`：键盘视觉偏移稳定、Remote listener/worker/pending/timer 回收；代码与确定性测试已落，真机/WebView2 heap soak 待补。
-- 当前发布收敛：Release/Remote 取源 `9ece51d`（移动 IME 修复与 `0.1.29` 版本合同）；当前 `main` 另含本归档提交。Remote run `30717808784` 成功（head `9ece51d`），ridge-cloud run `30717810568` 成功并通过生产健康检查；`v0.1.29` Release run `30717760186` 全矩阵成功，12 个资产已核验并正式发布，URL `https://github.com/MySetsuna/ridge/releases/tag/v0.1.29`。
+- 当前发布收敛：Release/Remote 取源 `58c2cb7`（Agent history fairness 与 `0.1.30` 版本合同）；当前 `main` 另含归档提交 `1fe1e69`。Remote run `30719562705` 成功，ridge-cloud run `30719573795` 成功并通过生产健康检查；`v0.1.30` Release run `30719551852` 全矩阵成功，12 个资产已核验并正式发布，URL `https://github.com/MySetsuna/ridge/releases/tag/v0.1.30`。
 
 ## 已验证代码事实
 
@@ -59,6 +59,8 @@ queried.
 - Host 接入弹窗即时关闭，面板显示阶段进度；foreign pane attach 后按实测尺寸立即 Resize（`7b7daee`、`c290143`）。
 - Host topology 逐 Host settled 发布，慢源不再阻塞快源；代际/Abort/last-good 与拖拽统一入口已落（`0d273c3`）。
 - Agent's Commune 入口不再受隐式 setting 隐藏（`2b53650`）。
+- Agent history discovery now bounds Claude/Codex sources independently and
+  preserves cross-CWD structured resume (`b88b679`; iteration-84 fixture).
 - 普通二次启动现创建独立 WebView；原子工作区认领、冲突聚焦、关闭/销毁/删除释放已落（`5723828`）。
 - 每个桌面窗口现有独立 selected-workspace SSOT；native active/layout/ratio 按窗口解析，Pane/Terminal 关键变更按唯一 pane id 定位，Remote/CLI 保留全局语义（`a9023f3`）。
 - 1,000 RPC/input/resize burst、100 次非 Git/共享 repo、126 次重复日志均已有量化回归钉（`3e967a1`）。
