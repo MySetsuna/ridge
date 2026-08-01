@@ -17,7 +17,7 @@ const DEFAULT_ROWS: u16 = 24;
 pub struct PtyBridge {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
-    _child: Box<dyn portable_pty::Child + Send + Sync>,
+    child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
 }
 
 impl PtyBridge {
@@ -58,7 +58,7 @@ impl PtyBridge {
             Self {
                 writer: Arc::new(Mutex::new(writer)),
                 master: Arc::new(Mutex::new(pair.master)),
-                _child: child,
+                child: Mutex::new(child),
             },
             rx,
         ))
@@ -81,6 +81,12 @@ impl PtyBridge {
                 pixel_height: 0,
             })
             .context("PTY resize failed")
+    }
+
+    /// Explicitly stop the child before releasing the PTY handles. Dropping a
+    /// handle alone is not a lifecycle guarantee on every platform.
+    pub fn destroy(&self) -> Result<()> {
+        self.child.lock().kill().context("PTY kill failed")
     }
 }
 
