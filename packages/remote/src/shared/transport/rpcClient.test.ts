@@ -23,11 +23,13 @@ import {
  */
 class FakeTransport implements ChannelTransport {
   sent: ControlFrame[] = [];
+  throwOnCancel = false;
   private controlListeners = new Set<ControlListener>();
   private stateListeners = new Set<StateListener>();
   private _state: TransportState = 'connected';
 
   sendControl(frame: ControlFrame): void {
+    if (this.throwOnCancel && frame.method === '$/cancel') throw new Error('transport closed');
     this.sent.push(frame);
   }
   onControl(cb: ControlListener): Unsubscribe {
@@ -260,9 +262,41 @@ describe('RpcClient.cancel — id + AbortSignal', () => {
     expect(transport.sent).toHaveLength(0);
   });
 
-  it('cancel on an unknown id is a no-op for pending but still emits $/cancel', () => {
+  it('cancel on an unknown id is a no-op without a meaningless wire cancel', () => {
     rpc.cancel(42);
-    expect(transport.last()).toEqual({ jsonrpc: '2.0', method: '$/cancel', params: { id: 42 } });
+    expect(transport.sent).toHaveLength(0);
+  });
+
+  it('cancelScope cancels matching requests once and preserves other scopes', async () => {
+    const a1 = rpc.request('write_to_pty', {}, { timeoutMs: 0, scope: 'pane:a' });
+    const a2 = rpc.request('resize_pane', {}, { timeoutMs: 0, scope: 'pane:a' });
+    const b = rpc.request<number>('write_to_pty', {}, { timeoutMs: 0, scope: 'pane:b' });
+    const bId = (transport.sent[2] as { id: number }).id;
+
+    expect(rpc.cancelScope('pane:a')).toBe(2);
+    await expect(a1).rejects.toBeInstanceOf(RpcCancelledError);
+    await expect(a2).rejects.toBeInstanceOf(RpcCancelledError);
+    expect(rpc.cancelScope('pane:a')).toBe(0);
+    expect(rpc.inFlight).toBe(1);
+    expect(rpc.diagnostics.cancelled).toBe(2);
+    expect(transport.sent.filter((frame) => frame.method === '$/cancel')).toHaveLength(2);
+
+    transport.deliver({ jsonrpc: '2.0', id: bId, result: 7 });
+    await expect(b).resolves.toBe(7);
+    expect(rpc.cancelScope('pane:b')).toBe(0);
+  });
+
+  it('finishes scoped teardown when the transport can no longer send cancellation', async () => {
+    const pending = rpc.request('resize_pane', {}, { timeoutMs: 0, scope: 'pane:a' });
+    transport.throwOnCancel = true;
+
+    expect(rpc.cancelScope('pane:a')).toBe(1);
+    await expect(pending).rejects.toBeInstanceOf(RpcCancelledError);
+    expect(rpc.diagnostics).toMatchObject({
+      inFlight: 0,
+      cancelled: 1,
+      cancelSendFailed: 1,
+    });
   });
 });
 

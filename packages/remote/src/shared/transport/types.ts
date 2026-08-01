@@ -139,6 +139,8 @@ export interface RpcRequestOptions {
   timeoutMs?: number;
   /** AbortSignal — aborting sends a `$/cancel` and rejects the promise. */
   signal?: AbortSignal;
+  /** Logical owner for bulk cancellation (for example one pane lifecycle). */
+  scope?: string;
 }
 
 /** Error thrown when a request is rejected because the transport reconnected
