@@ -4,10 +4,8 @@
 //! `rollback` = 已跟踪路径 `git checkout HEAD -- path`；删除快照时未跟踪的新增文件。
 //! 非 git 仓库 → 明确 Err，不静默。**不做**全盘文件系统快照。
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,21 +23,12 @@ pub struct RollbackPatch {
     pub paths: Vec<String>,
 }
 
-fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    // iter-60 顺手修：原裸 `Command::output()` 绕过外部进程闸（无超时/杀树，
-    // Windows 还闪 cmd 黑窗）。收口到 process_guard 单出口（postmortem 规则 7）。
-    let mut cmd = Command::new("git");
-    cmd.args(args).current_dir(cwd);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let out = ridge_core::process_guard::run_command_with_timeout(
-        &mut cmd,
-        std::time::Duration::from_secs(45),
+async fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    let out = ridge_core::commands::git::run_git_guarded(
+        cwd.to_string_lossy().into_owned(),
+        args.iter().map(|arg| (*arg).to_string()).collect(),
     )
+    .await
     .map_err(|e| format!("git spawn failed: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -49,12 +38,13 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// 确认 `root` 在 git 工作树内；否则 Err。
-pub fn ensure_git_repo(root: &Path) -> Result<(), String> {
-    let out = Command::new("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(root)
-        .output()
-        .map_err(|e| format!("git spawn failed: {e}"))?;
+pub async fn ensure_git_repo(root: &Path) -> Result<(), String> {
+    let out = ridge_core::commands::git::run_git_guarded(
+        root.to_string_lossy().into_owned(),
+        vec!["rev-parse".into(), "--is-inside-work-tree".into()],
+    )
+    .await
+    .map_err(|e| format!("git spawn failed: {e}"))?;
     if !out.status.success() {
         return Err("not a git repository".into());
     }
@@ -91,11 +81,16 @@ pub fn paths_from_porcelain(porcelain: &str) -> Vec<String> {
 }
 
 /// 对 workspace root 做 checkpoint，追加到 sidecar `rollbackPatches`。
-pub fn checkpoint(dir: &Path, wid: Uuid, workspace_root: &Path, label: impl Into<String>) -> Result<RollbackPatch, String> {
-    ensure_git_repo(workspace_root)?;
-    let porcelain = run_git(workspace_root, &["status", "--porcelain"])?;
+pub async fn checkpoint(
+    dir: &Path,
+    wid: Uuid,
+    workspace_root: &Path,
+    label: impl Into<String>,
+) -> Result<RollbackPatch, String> {
+    ensure_git_repo(workspace_root).await?;
+    let porcelain = run_git(workspace_root, &["status", "--porcelain"]).await?;
     // 工作区 + 暂存区相对 HEAD 的完整 diff（含 binary 占位）。
-    let diff = run_git(workspace_root, &["diff", "HEAD"])?;
+    let diff = run_git(workspace_root, &["diff", "HEAD"]).await?;
     let paths = paths_from_porcelain(&porcelain);
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -128,8 +123,8 @@ pub fn checkpoint(dir: &Path, wid: Uuid, workspace_root: &Path, label: impl Into
 
 /// 将列出路径恢复到快照时 blob：已跟踪 `git checkout HEAD -- path`；
 /// 未跟踪新增（porcelain `??`）删除文件。
-pub fn rollback(workspace_root: &Path, patch: &RollbackPatch) -> Result<(), String> {
-    ensure_git_repo(workspace_root)?;
+pub async fn rollback(workspace_root: &Path, patch: &RollbackPatch) -> Result<(), String> {
+    ensure_git_repo(workspace_root).await?;
     let mut tracked = Vec::new();
     let mut untracked = Vec::new();
     for line in patch.porcelain.lines() {
@@ -155,7 +150,7 @@ pub fn rollback(workspace_root: &Path, patch: &RollbackPatch) -> Result<(), Stri
         for p in &tracked {
             args.push(p.as_str());
         }
-        run_git(workspace_root, &args)?;
+        run_git(workspace_root, &args).await?;
     }
     for p in untracked {
         let full = workspace_root.join(&p);
@@ -180,17 +175,19 @@ pub fn latest_patch(dir: &Path, wid: Uuid) -> Option<RollbackPatch> {
 mod tests {
     use super::*;
 
-    fn init_temp_repo() -> PathBuf {
+    async fn init_temp_repo() -> PathBuf {
         let root = std::env::temp_dir().join(format!("ridge-rb-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
-        run_git(&root, &["init"]).unwrap();
-        run_git(&root, &["config", "user.email", "t@t.test"]).unwrap();
-        run_git(&root, &["config", "user.name", "t"]).unwrap();
+        run_git(&root, &["init"]).await.unwrap();
+        run_git(&root, &["config", "user.email", "t@t.test"])
+            .await
+            .unwrap();
+        run_git(&root, &["config", "user.name", "t"]).await.unwrap();
         // avoid default branch noise
-        let _ = run_git(&root, &["checkout", "-b", "main"]);
+        let _ = run_git(&root, &["checkout", "-b", "main"]).await;
         std::fs::write(root.join("a.txt"), "v1\n").unwrap();
-        run_git(&root, &["add", "a.txt"]).unwrap();
-        run_git(&root, &["commit", "-m", "init"]).unwrap();
+        run_git(&root, &["add", "a.txt"]).await.unwrap();
+        run_git(&root, &["commit", "-m", "init"]).await.unwrap();
         root
     }
 
@@ -203,21 +200,25 @@ mod tests {
         assert!(paths.contains(&"new.rs".into()));
     }
 
-    #[test]
-    fn checkpoint_and_rollback_restores_tracked() {
-        let root = init_temp_repo();
+    #[tokio::test]
+    async fn checkpoint_and_rollback_restores_tracked() {
+        let root = init_temp_repo().await;
         let mem = std::env::temp_dir().join(format!("ridge-rb-mem-{}", Uuid::new_v4()));
         let wid = Uuid::new_v4();
 
         std::fs::write(root.join("a.txt"), "v2-dirty\n").unwrap();
         std::fs::write(root.join("new.txt"), "untracked\n").unwrap();
 
-        let patch = checkpoint(&mem, wid, &root, "test").expect("checkpoint");
+        let patch = checkpoint(&mem, wid, &root, "test")
+            .await
+            .expect("checkpoint");
         assert!(patch.paths.iter().any(|p| p == "a.txt"));
         assert!(patch.paths.iter().any(|p| p == "new.txt"));
-        assert!(std::fs::read_to_string(root.join("a.txt")).unwrap().contains("v2"));
+        assert!(std::fs::read_to_string(root.join("a.txt"))
+            .unwrap()
+            .contains("v2"));
 
-        rollback(&root, &patch).expect("rollback");
+        rollback(&root, &patch).await.expect("rollback");
         let restored = std::fs::read_to_string(root.join("a.txt")).unwrap();
         // Windows git may normalize line endings → compare without CR.
         assert_eq!(restored.replace('\r', ""), "v1\n");
@@ -230,12 +231,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&mem);
     }
 
-    #[test]
-    fn checkpoint_rejects_non_git() {
+    #[tokio::test]
+    async fn checkpoint_rejects_non_git() {
         let root = std::env::temp_dir().join(format!("ridge-rb-nogit-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let mem = std::env::temp_dir().join(format!("ridge-rb-mem2-{}", Uuid::new_v4()));
-        let err = checkpoint(&mem, Uuid::new_v4(), &root, "x").unwrap_err();
+        let err = checkpoint(&mem, Uuid::new_v4(), &root, "x")
+            .await
+            .unwrap_err();
         assert!(err.contains("not a git"), "{err}");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&mem);

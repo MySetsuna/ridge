@@ -629,59 +629,46 @@ pub async fn get_git_changed_files(
     since: u64,
     until: u64,
 ) -> Result<Vec<String>, String> {
-    use std::process::Command;
+    let cwd_path = std::path::Path::new(&cwd);
+    if !cwd_path.exists() || !cwd_path.is_dir() {
+        return Ok(Vec::new());
+    }
 
-    tokio::task::spawn_blocking(move || {
-        // Validate CWD exists and is a directory
-        let cwd_path = std::path::Path::new(&cwd);
-        if !cwd_path.exists() || !cwd_path.is_dir() {
-            return Ok(Vec::new());
-        }
-
-        let since_str = format!("{}", since);
-        let until_str = format!("{}", until);
-
-        // Use git log to find changed files in the time range
-        let output = match Command::new("git")
-            .current_dir(&cwd)
-            .args(&[
-                // Match git.rs `git_cmd()`: don't take optional index locks for
-                // this read-only history scan (uniform policy; `log` itself
-                // doesn't lock the index, but keeps every background git read
-                // consistent and future-proof).
-                "--no-optional-locks",
-                "log",
-                "--since",
-                &since_str,
-                "--until",
-                &until_str,
-                "--name-only",
-                "--pretty=format:",
-                "--diff-filter=ACMRT",
-            ])
-            .output()
-        {
-            Ok(o) => o,
-            Err(_) => return Ok(Vec::new()),
-        };
-
-        if !output.status.success() {
-            return Ok(Vec::new());
-        }
-
-        let content = String::from_utf8_lossy(&output.stdout);
-        let mut files: Vec<String> = content
-            .lines()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        files.sort();
-        files.dedup();
-        Ok(files)
-    })
+    // This history scan shares the same bounded admission and process lifetime
+    // guard as every SCM call; a hung `git log` cannot pin a blocking worker.
+    let output = match ridge_core::commands::git::run_git_guarded(
+        cwd,
+        vec![
+            "log".into(),
+            "--since".into(),
+            since.to_string(),
+            "--until".into(),
+            until.to_string(),
+            "--name-only".into(),
+            "--pretty=format:".into(),
+            "--diff-filter=ACMRT".into(),
+        ],
+    )
     .await
-    .map_err(|e| format!("Task join error: {}", e))?
+    {
+        Ok(o) => o,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let content = String::from_utf8_lossy(&output.stdout);
+    let mut files: Vec<String> = content
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    files.sort();
+    files.dedup();
+    Ok(files)
 }
 
 // ─── Claude Code history ─────────────────────────────────────────────────────

@@ -488,7 +488,7 @@ pub fn scan_workspace_context_files(workspace_root: String) -> Result<Value, Str
 
 /// V-G1-RB —— 对 workspace root 做 git worktree 补丁快照，写入 sidecar rollbackPatches。
 #[tauri::command]
-pub fn checkpoint_workspace_rollback(
+pub async fn checkpoint_workspace_rollback(
     workspace_id: String,
     workspace_root: String,
     label: Option<String>,
@@ -502,13 +502,14 @@ pub fn checkpoint_workspace_rollback(
         wid,
         std::path::Path::new(&workspace_root),
         label.unwrap_or_else(|| "manual".into()),
-    )?;
+    )
+    .await?;
     serde_json::to_value(patch).map_err(|e| e.to_string())
 }
 
 /// V-G1-RB —— 用最新 rollbackPatches 条目恢复工作树。
 #[tauri::command]
-pub fn rollback_workspace(
+pub async fn rollback_workspace(
     workspace_id: String,
     workspace_root: String,
 ) -> Result<(), String> {
@@ -518,7 +519,7 @@ pub fn rollback_workspace(
     };
     let patch = crate::teammate::rollback::latest_patch(dir, wid)
         .ok_or_else(|| "no rollbackPatches in workspace memory".to_string())?;
-    crate::teammate::rollback::rollback(std::path::Path::new(&workspace_root), &patch)
+    crate::teammate::rollback::rollback(std::path::Path::new(&workspace_root), &patch).await
 }
 
 /// M1 切片三 —— 读 workspace memory 摘要（goal/constraints/tasks/…）。仅桌面 IPC。
