@@ -161,8 +161,10 @@ pub async fn domain_workspace_create(
         return Err(StatusCode::UNAUTHORIZED);
     }
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
-    let workspace_id = graph.create_workspace();
-    persist_workspaces(&st, &graph)?;
+    let mut next = graph.clone();
+    let workspace_id = next.create_workspace();
+    persist_workspaces(&st, &next)?;
+    *graph = next;
     Ok(Json(json!({
         "ok": true,
         "source": "ridge-kernel",
@@ -203,8 +205,9 @@ pub async fn domain_workspace_activate(
         Err(body) => return Ok(body),
     };
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
-    match graph.set_active(workspace_id) {
-        Ok(()) => { persist_workspaces(&st, &graph)?; Ok(Json(json!({ "ok": true, "workspace_id": workspace_id }))) },
+    let mut next = graph.clone();
+    match next.set_active(workspace_id) {
+        Ok(()) => { persist_workspaces(&st, &next)?; *graph = next; Ok(Json(json!({ "ok": true, "workspace_id": workspace_id }))) },
         Err(e) => Ok(bad_request(e.to_string())),
     }
 }
@@ -248,8 +251,9 @@ pub async fn domain_workspace_split(
         Err(body) => return Ok(body),
     };
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
-    match graph.split(workspace_id, pane_id, direction) {
-        Ok(new_pane_id) => { persist_workspaces(&st, &graph)?; Ok(Json(json!({ "ok": true, "pane_id": new_pane_id }))) },
+    let mut next = graph.clone();
+    match next.split(workspace_id, pane_id, direction) {
+        Ok(new_pane_id) => { persist_workspaces(&st, &next)?; *graph = next; Ok(Json(json!({ "ok": true, "pane_id": new_pane_id }))) },
         Err(e) => Ok(bad_request(e.to_string())),
     }
 }
@@ -271,8 +275,9 @@ pub async fn domain_workspace_pane_close(
         Err(body) => return Ok(body),
     };
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
-    match graph.close(workspace_id, pane_id) {
-        Ok(()) => { persist_workspaces(&st, &graph)?; Ok(Json(json!({ "ok": true }))) },
+    let mut next = graph.clone();
+    match next.close(workspace_id, pane_id) {
+        Ok(()) => { persist_workspaces(&st, &next)?; *graph = next; Ok(Json(json!({ "ok": true }))) },
         Err(e) => Ok(bad_request(e.to_string())),
     }
 }
@@ -301,8 +306,9 @@ pub async fn domain_workspace_pane_locked_size(
         Err(body) => return Ok(body),
     };
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
-    match graph.set_locked_size(workspace_id, pane_id, request.cols, request.rows) {
-        Ok(()) => { persist_workspaces(&st, &graph)?; Ok(Json(
+    let mut next = graph.clone();
+    match next.set_locked_size(workspace_id, pane_id, request.cols, request.rows) {
+        Ok(()) => { persist_workspaces(&st, &next)?; *graph = next; Ok(Json(
             json!({ "ok": true, "cols": request.cols, "rows": request.rows }),
         )) },
         Err(e) => Ok(bad_request(e.to_string())),
