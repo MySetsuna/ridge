@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-08-02（iteration 83 持续收敛；NLM live 已恢复，手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-02（iteration 84 持续收敛；Agent 历史跨来源扫描已修，v0.1.30 三线发布证据待回填；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -23,6 +23,19 @@ explicitly unverified.
 - **Git 事实**：由本地分支、HEAD 与提交历史确认。
 - **运行事实**：必须有本轮测试/退出码证据；缺证据时明确写「未验证」。
 - **文档声明**：若与代码冲突，以代码为当前行为、以协议为应修正目标。
+
+---
+
+## Iteration 84 update (2026-08-02)
+
+Agent history discovery now runs with an independent bounded pass per source;
+Claude session volume can no longer starve Codex history. The new filesystem
+fixture proves both sources, recorded CWD, latest assistant text, structured
+resume arguments, and child-path filtering. Code commit `b88b679` is pushed;
+see `docs/iterations/CONTRACT-iteration-84.md`. Version `0.1.30` is committed
+as `58c2cb7`; release, Remote artifact, and ridge-cloud jobs are running and
+must not be marked complete until their assets and production health are
+queried.
 
 ---
 
