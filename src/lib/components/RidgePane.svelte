@@ -44,6 +44,7 @@ import { hostsStore, refreshHosts, newHeadlessSession, attachSessionAt } from '$
 import { pickDockRegion } from '$lib/stores/dockRegionPicker';
 import type { ContextMenuItem } from '$lib/stores/contextMenu';
 import { reportRepeatedError } from '$lib/utils/repeatedError';
+import { synchronizePaneSize } from '$lib/terminal/paneSizeSync';
 import { Terminal, PlugZap } from 'lucide-svelte';
 
 interface Props {
@@ -1800,8 +1801,7 @@ function refreshForRemote() {
 	// explicit path remains the user's recovery override. On the host it is an
 	// idempotent re-fit. The
 	// broadcast Resize delta then re-letterboxes every viewer.
-	manager.claimPaneSize(paneId);
-	manager.forceFullRedraw(paneId);
+	synchronizePaneSize(paneId);
 }
 
 // Scrollbar geometry, derived from current state. Both thumb top and
@@ -2064,7 +2064,7 @@ function captureBackspace(node: HTMLElement) {
 	     pane needs no button (fitPane already owns the size). On the browser
 	     controller this is the only way to push the pane's dimensions to the
 	     host PTY. -->
-	{#if $remoteRunning || $cloudHostOnline || WEB_REMOTE}
+	{#if $remoteRunning || $cloudHostOnline || WEB_REMOTE || remotePaneBinding(paneId)}
 		<button
 			type="button"
 			class="rg-remote-refresh"

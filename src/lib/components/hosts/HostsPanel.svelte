@@ -91,8 +91,54 @@
   let expanded = $state<Record<string, boolean>>({ headless: true });
   let expandedWorkspaces = $state<Record<string, boolean>>({});
   let busy = $state(false);
+  let hostOperations = $state<Record<string, string>>({});
   let topologyRetrying = $state<Record<string, boolean>>({});
   let tickInFlight = false;
+
+  function hostBusy(hostId: string): boolean {
+    return hostOperations[hostId] !== undefined;
+  }
+
+  async function runHostOperation(
+    host: Host,
+    detail: string,
+    errorTitle: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    if (hostBusy(host.id)) return;
+    hostOperations = { ...hostOperations, [host.id]: detail };
+    try {
+      await operation();
+    } catch (error) {
+      await alertDialog({
+        title: errorTitle,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      const next = { ...hostOperations };
+      delete next[host.id];
+      hostOperations = next;
+    }
+  }
+
+  function onDragAttachState(
+    host: Host,
+    state: { pending: boolean; error?: unknown },
+  ): void {
+    if (state.pending) {
+      hostOperations = { ...hostOperations, [host.id]: '正在拖拽接入远端 Pane…' };
+      return;
+    }
+    const next = { ...hostOperations };
+    delete next[host.id];
+    hostOperations = next;
+    if (state.error) {
+      void alertDialog({
+        title: '接入失败',
+        message: state.error instanceof Error ? state.error.message : String(state.error),
+      });
+    }
+  }
 
   function toRow(host: Host): HostRowModel {
     const recon = $hostReconnectById[host.id];
@@ -304,6 +350,20 @@
   }
 
   async function onAttach(s: HostSession, host: Host) {
+    if (host.kind === 'remote' || host.kind === 'rdg') {
+      const kind = host.kind;
+      await runHostOperation(host, `正在接入 ${s.name}…`, '接入失败', async () => {
+        await attachHostSession({
+          kind,
+          socket: s.socket,
+          target: s.name,
+          hostId: host.id,
+          sessionId: s.remoteSessionId,
+          workspaceId: s.workspaceId,
+        });
+      });
+      return;
+    }
     busy = true;
     try {
       if (host.kind === 'shared') {
@@ -312,7 +372,7 @@
           await acceptSharedWorkspace(s.shareGrantId);
           await openSharedWorkspace({ ...s, shareStatus: 'active' });
         } else await openSharedWorkspace(s);
-      } else if (host.kind === 'headless' || host.kind === 'remote' || host.kind === 'rdg') {
+      } else if (host.kind === 'headless') {
         await attachHostSession({
           kind: host.kind,
           socket: s.socket,
@@ -348,20 +408,16 @@
 
   async function onDeletePane(s: HostSession, host: Host) {
     if (!s.remoteSessionId) return;
+    const remotePaneId = s.remoteSessionId;
     const ok = await confirmDialog({
       title: '删除远端 pane',
       message: `确定删除 pane「${s.name}」吗？其 PTY 将结束；不会删除工作区或其他 pane。`,
       danger: true,
     });
     if (!ok) return;
-    busy = true;
-    try {
-      await closeHostPane(host.id, s.workspaceId ?? '', s.remoteSessionId);
-    } catch (e) {
-      await alertDialog({ title: '删除失败', message: e instanceof Error ? e.message : String(e) });
-    } finally {
-      busy = false;
-    }
+    await runHostOperation(host, `正在删除 ${s.name}…`, '删除失败', async () => {
+      await closeHostPane(host.id, s.workspaceId ?? '', remotePaneId);
+    });
   }
 
   async function onNewRemoteWorkspace(host: Host) {
@@ -371,36 +427,21 @@
       placeholder: '工作区名称（可选）',
     });
     if (name === null) return;
-    busy = true;
-    try {
+    await runHostOperation(host, '正在新建远端工作区…', '新建失败', async () => {
       await createHostWorkspace(host.id, name.trim() || undefined);
-    } catch (e) {
-      await alertDialog({ title: '新建失败', message: e instanceof Error ? e.message : String(e) });
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   async function onOpenWorkspace(host: Host, workspaceId: string) {
-    busy = true;
-    try {
+    await runHostOperation(host, '正在打开远端工作区…', '打开失败', async () => {
       await openHostWorkspace(host.id, workspaceId);
-    } catch (e) {
-      await alertDialog({ title: '打开失败', message: e instanceof Error ? e.message : String(e) });
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   async function onNewRemotePane(host: Host, workspaceId: string) {
-    busy = true;
-    try {
+    await runHostOperation(host, '正在新建远端 Pane…', '新建失败', async () => {
       await createHostPane(host.id, workspaceId);
-    } catch (e) {
-      await alertDialog({ title: '新建失败', message: e instanceof Error ? e.message : String(e) });
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   async function onRenameRemoteWorkspace(host: Host, workspaceId: string, currentName: string) {
@@ -411,14 +452,9 @@
       defaultValue: currentName,
     });
     if (!name?.trim() || name.trim() === currentName) return;
-    busy = true;
-    try {
+    await runHostOperation(host, '正在重命名远端工作区…', '重命名失败', async () => {
       await renameHostWorkspace(host.id, workspaceId, name.trim());
-    } catch (e) {
-      await alertDialog({ title: '重命名失败', message: e instanceof Error ? e.message : String(e) });
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   async function onSaveRemoteWorkspace(host: Host, workspaceId: string, currentName: string) {
@@ -429,14 +465,9 @@
       defaultValue: currentName,
     });
     if (!name?.trim()) return;
-    busy = true;
-    try {
+    await runHostOperation(host, '正在保存远端工作区…', '保存失败', async () => {
       await saveHostWorkspace(host.id, workspaceId, name.trim());
-    } catch (e) {
-      await alertDialog({ title: '保存失败', message: e instanceof Error ? e.message : String(e) });
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   async function onCloseRemoteWorkspace(host: Host, workspaceId: string, name: string) {
@@ -446,32 +477,25 @@
       danger: true,
     });
     if (!ok) return;
-    busy = true;
-    try {
+    await runHostOperation(host, '正在关闭远端工作区…', '关闭失败', async () => {
       await closeHostWorkspace(host.id, workspaceId);
-    } catch (e) {
-      await alertDialog({ title: '关闭失败', message: e instanceof Error ? e.message : String(e) });
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   async function onToggleAgent(host: Host, s: HostSession) {
     if (!s.workspaceId || !s.remoteSessionId) return;
-    busy = true;
-    try {
-      await markHostPaneAgent(host.id, s.workspaceId, s.remoteSessionId, !s.isAgent);
-    } catch (e) {
-      await alertDialog({ title: '标记失败', message: e instanceof Error ? e.message : String(e) });
-    } finally {
-      busy = false;
-    }
+    const workspaceId = s.workspaceId;
+    const remotePaneId = s.remoteSessionId;
+    await runHostOperation(host, '正在更新 Agent 标记…', '标记失败', async () => {
+      await markHostPaneAgent(host.id, workspaceId, remotePaneId, !s.isAgent);
+    });
   }
 
   async function onChangeShell(host: Host, s: HostSession) {
     if (!s.workspaceId || !s.remoteSessionId) return;
-    busy = true;
-    try {
+    const workspaceId = s.workspaceId;
+    const remotePaneId = s.remoteSessionId;
+    await runHostOperation(host, '正在切换终端类型…', '切换失败', async () => {
       const shells = await hostShellChoices(host.id);
       if (shells.length === 0) throw new Error('未检测到可用 shell');
       const choice = await promptDialog({
@@ -481,12 +505,8 @@
         defaultValue: shells[0].id,
       });
       if (!choice?.trim()) return;
-      await changeHostPaneShell(host.id, s.workspaceId, s.remoteSessionId, choice.trim());
-    } catch (e) {
-      await alertDialog({ title: '切换失败', message: e instanceof Error ? e.message : String(e) });
-    } finally {
-      busy = false;
-    }
+      await changeHostPaneShell(host.id, workspaceId, remotePaneId, choice.trim());
+    });
   }
 
   async function onShareRemoteWorkspace(host: Host, workspaceId: string, name: string) {
@@ -527,14 +547,9 @@
       danger: true,
     });
     if (!ok) return;
-    busy = true;
-    try {
+    await runHostOperation(host, '正在移除主机…', '操作失败', async () => {
       await forgetHost(host.id);
-    } catch (e) {
-      await alertDialog({ title: '操作失败', message: e instanceof Error ? e.message : String(e) });
-    } finally {
-      busy = false;
-    }
+    });
   }
 </script>
 
@@ -688,6 +703,15 @@
             </button>
           {/if}
         </div>
+        {#if hostOperations[host.id]}
+          <p
+            class="flex items-center gap-1.5 pl-9 pr-3 py-1 text-[10px] text-[var(--rg-accent)]"
+            aria-live="polite"
+          >
+            <RefreshCw class="h-3 w-3 shrink-0 animate-spin" />
+            <span class="truncate">{hostOperations[host.id]}</span>
+          </p>
+        {/if}
         {#if open && (host.kind === 'remote' || host.kind === 'rdg')}
           {@const row = toRow(host)}
           {@const alerts = buildHostRowAlerts(row)}
@@ -699,6 +723,11 @@
           {#if hasHostTopologyLink(host.id) && (host.status === 'error' || host.status === 'disconnected')}
             <p class="pl-9 pr-3 py-1 text-[10px] text-rose-200 truncate" title={host.detail}>
               {host.detail || '主机连接不可用'}
+            </p>
+          {/if}
+          {#if hasHostTopologyLink(host.id) && host.status === 'connecting' && host.detail}
+            <p class="pl-9 pr-3 py-1 text-[10px] text-[var(--rg-fg-muted)] truncate" title={host.detail}>
+              {host.detail}
             </p>
           {/if}
         {/if}
@@ -826,7 +855,8 @@
                     hostId: host.id,
                     sessionId: s.remoteSessionId,
                     workspaceId: s.workspaceId,
-                    enabled: host.kind !== 'shared' && host.kind !== 'sharing',
+                    enabled: host.kind !== 'shared' && host.kind !== 'sharing' && !hostBusy(host.id),
+                    onAttachState: (state) => onDragAttachState(host, state),
                   }}
                   title="拖入工作区某个 pane 即可停靠接入（或点右侧接入按钮）"
                   class="group flex items-center gap-2 pl-14 pr-2 py-1 hover:bg-[var(--rg-surface)] transition-colors cursor-grab active:cursor-grabbing"

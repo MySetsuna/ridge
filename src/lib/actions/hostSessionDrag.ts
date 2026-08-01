@@ -23,6 +23,7 @@ export interface HostSessionDragParams extends Pick<
 > {
   name: string;
   enabled?: boolean;
+  onAttachState?: (state: { pending: boolean; error?: unknown }) => void;
 }
 
 export function hostAttachRequestAt(
@@ -88,12 +89,14 @@ export function hostSessionDrag(node: HTMLElement, params: HostSessionDragParams
     const hover = get(paneDockHover);
     endDrag();
     if (wasDragging && hover) {
+      cur.onAttachState?.({ pending: true });
       try {
         await attachHostSession(
           hostAttachRequestAt(cur, hover.paneId, hover.region as AttachRegion),
         );
-      } catch {
-        /* 接入失败静默：可在「接入」面板重试 */
+        cur.onAttachState?.({ pending: false });
+      } catch (error) {
+        cur.onAttachState?.({ pending: false, error });
       }
     }
   }
