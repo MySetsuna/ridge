@@ -27,7 +27,11 @@ use uuid::Uuid;
 use ridge_kernel::registry::{clear_registry, write_registry, KernelEndpoint};
 
 #[derive(Parser, Debug)]
-#[command(name = "ridge-kernel", version, about = "Ridge kernel control plane + domain")]
+#[command(
+    name = "ridge-kernel",
+    version,
+    about = "Ridge kernel control plane + domain"
+)]
 struct Args {
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
@@ -43,6 +47,9 @@ pub struct AppState {
     pub started_at_unix: u64,
     pub shutdown_tx: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
     pub shutting_down: Arc<AtomicBool>,
+    /// Shell-neutral workspace topology for the kernel API. Shell migration is
+    /// deliberately separate, so this does not claim existing shells migrated.
+    pub workspaces: Arc<std::sync::Mutex<ridge_core::workspace::graph::WorkspaceGraph>>,
 }
 
 #[derive(Serialize)]
@@ -86,7 +93,13 @@ async fn health(State(st): State<AppState>) -> Json<HealthBody> {
         role: "ridge-kernel",
         pid: st.pid,
         started_at_unix: st.started_at_unix,
-        domain: &["fs.list", "agents.profiles", "git.status", "mcp"],
+        domain: &[
+            "fs.list",
+            "agents.profiles",
+            "git.status",
+            "workspaces",
+            "mcp",
+        ],
     })
 }
 
@@ -106,7 +119,13 @@ async fn status(
         port: st.port,
         started_at_unix: st.started_at_unix,
         mcp: "/api/v1/mcp",
-        domain: &["fs.list", "agents.profiles", "git.status", "mcp"],
+        domain: &[
+            "fs.list",
+            "agents.profiles",
+            "git.status",
+            "workspaces",
+            "mcp",
+        ],
     }))
 }
 
@@ -156,6 +175,9 @@ async fn main() -> Result<()> {
         started_at_unix,
         shutdown_tx: Arc::new(std::sync::Mutex::new(Some(shutdown_tx))),
         shutting_down: Arc::new(AtomicBool::new(false)),
+        workspaces: Arc::new(std::sync::Mutex::new(
+            ridge_core::workspace::graph::WorkspaceGraph::new(),
+        )),
     };
 
     let app = Router::new()
@@ -166,6 +188,30 @@ async fn main() -> Result<()> {
         .route("/v1/domain/agents", get(domain::domain_agents))
         .route("/v1/domain/fs/list", get(domain::domain_fs_list))
         .route("/v1/domain/git/status", get(domain::domain_git_status))
+        .route(
+            "/v1/domain/workspaces",
+            get(domain::domain_workspaces).post(domain::domain_workspace_create),
+        )
+        .route(
+            "/v1/domain/workspaces/:workspace_id",
+            get(domain::domain_workspace_get),
+        )
+        .route(
+            "/v1/domain/workspaces/:workspace_id/activate",
+            post(domain::domain_workspace_activate),
+        )
+        .route(
+            "/v1/domain/workspaces/:workspace_id/split",
+            post(domain::domain_workspace_split),
+        )
+        .route(
+            "/v1/domain/workspaces/:workspace_id/panes/:pane_id/close",
+            post(domain::domain_workspace_pane_close),
+        )
+        .route(
+            "/v1/domain/workspaces/:workspace_id/panes/:pane_id/locked-size",
+            post(domain::domain_workspace_pane_locked_size),
+        )
         .route("/api/v1/mcp", post(mcp_min::route_mcp))
         .with_state(state);
 
