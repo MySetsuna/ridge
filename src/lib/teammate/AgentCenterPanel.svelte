@@ -22,11 +22,11 @@
     workspaceSaveInfoStore,
     refreshWorkspaceSaveInfo,
     workspacesList,
-    paneCwdStore,
     activePaneId,
     splitPane,
     closePane,
     setAgentPaneAttention,
+    setAgentPaneStatus,
     type AgentPaneAttention,
   } from '$lib/stores/paneTree';
   import {
@@ -62,6 +62,14 @@
   import { buildOrchControlModel, formatOrchHeader, healthPollMs } from './orchControlPlane';
   import { pressureFromStats, shouldSurfaceGitGuard } from '$lib/stores/processGuardPolicy';
   import type { HitlAuditItem } from '../../../packages/remote/src/shared/teammate/hitlAuditRemote';
+  import {
+    agentCardStatus,
+    agentStatusLabel,
+    aggregateAgentCardStatus,
+    buildAgentHistoryGroups,
+    normalizeAgentIdentity,
+    type AgentCardStatus,
+  } from './agentCommuneModel';
 
   const TOPOLOGY_CMD = 'get_teammate_topology';
   const CIRCUIT_EVENT = 'teammate://circuit-tripped';
@@ -125,15 +133,14 @@
   /** 恢复时以 YOLO 模式启动（按 agent 配置表注入 yolo 参数）。 */
   let resumeYolo = $state(false);
   let observedAgentSignals = new Map<string, AgentPaneAttention | null>();
-  const recentReplyGroups = $derived.by(() => {
-    const groups = new Map<string, AgentRecentReply[]>();
-    for (const reply of recentReplies) {
-      const key = reply.agent.trim().toLowerCase() || 'unknown';
-      const bucket = groups.get(key) ?? [];
-      bucket.push(reply);
-      groups.set(key, bucket);
+  const recentReplyGroups = $derived(buildAgentHistoryGroups(recentReplies));
+  const agentProfilesByIdentity = $derived.by(() => {
+    const profiles = new Map<string, TeammateProfile>();
+    for (const member of allMembers) {
+      profiles.set(normalizeAgentIdentity(member.profile.name), member.profile);
+      profiles.set(normalizeAgentIdentity(member.profile.id), member.profile);
     }
-    return [...groups.entries()].map(([key, replies]) => ({ key, replies }));
+    return profiles;
   });
   const unmatchedHeadlessSessions = $derived(
     headlessSessions.filter(
@@ -143,6 +150,15 @@
 
   function toggleHistoryGroup(key: string): void {
     historyExpanded = { ...historyExpanded, [key]: !(historyExpanded[key] ?? true) };
+  }
+
+  function statusForReply(reply: AgentRecentReply): AgentCardStatus {
+    const profile = agentProfilesByIdentity.get(normalizeAgentIdentity(reply.agent));
+    return agentCardStatus(profile, profile ? pendingFor(profile).length > 0 : false);
+  }
+
+  function statusForGroup(group: { agent: string; replies: AgentRecentReply[] }): AgentCardStatus {
+    return aggregateAgentCardStatus(group.replies.map(statusForReply));
   }
 
   function syncAgentAttention(): void {
@@ -156,6 +172,13 @@
         : profile.status === 'Disappeared'
           ? 'stopped'
           : null;
+      const paneStatus = pendingFor(profile).length > 0
+        ? 'waiting'
+        : profile.status === 'Disappeared' || profile.status === 'Suspended'
+          ? 'stopped'
+          : profile.status === 'Working' || profile.activity === 'working'
+            ? 'working'
+            : 'idle';
       const previous = observedAgentSignals.get(key);
       // A transient stays visible until the target pane actually receives focus.
       // Returning to a neutral backend state only arms the next transition; it
@@ -163,7 +186,17 @@
       if (signal !== null && signal !== previous) {
         setAgentPaneAttention(member.workspaceId, profile.paneId, signal);
       }
+      setAgentPaneStatus(member.workspaceId, profile.paneId, paneStatus);
       next.set(key, signal);
+    }
+    for (const key of observedAgentSignals.keys()) {
+      if (next.has(key)) continue;
+      const separator = key.indexOf(':');
+      if (separator <= 0) continue;
+      const oldWorkspaceId = key.slice(0, separator);
+      const oldPaneId = key.slice(separator + 1);
+      setAgentPaneAttention(oldWorkspaceId, oldPaneId, null);
+      setAgentPaneStatus(oldWorkspaceId, oldPaneId, null);
     }
     observedAgentSignals = next;
   }
@@ -393,7 +426,11 @@
       }
       try {
         recentReplies = await invoke<AgentRecentReply[]>('read_agent_recent_replies', {
-          projectPaths: [...new Set(Object.values($paneCwdStore).filter(Boolean))],
+          // History is an Agent identity surface, not a current-pane surface:
+          // an Agent's sessions must remain visible when their cwd is no longer
+          // mounted. The backend keeps this scan bounded and deduplicates by
+          // (agent, native session id).
+          projectPaths: [],
           limit: 24,
         });
       } catch {
@@ -728,9 +765,31 @@
         </h3>
         <div class="mt-1 space-y-1">
           {#each recentReplyGroups as group (group.key)}
-            <section class="rounded border border-[var(--rg-border)]/60">
+            {@const groupStatus = statusForGroup(group)}
+            <section
+              data-testid="agent-commune-card"
+              data-agent={group.key}
+              data-status={groupStatus}
+              aria-label={`${group.agent}: ${agentStatusLabel(groupStatus)}`}
+              class="rounded border border-[var(--rg-border)]/60 border-l-2 {groupStatus === 'waiting'
+                ? 'border-l-amber-400'
+                : groupStatus === 'working'
+                  ? 'border-l-emerald-400'
+                  : groupStatus === 'stopped'
+                    ? 'border-l-red-400'
+                    : groupStatus === 'idle'
+                      ? 'border-l-sky-400'
+                      : 'border-l-[var(--rg-border-bright)]'}"
+            >
               <button type="button" class="flex w-full items-center gap-2 px-2 py-1 text-left text-[10px]" onclick={() => toggleHistoryGroup(group.key)}>
-                <span class="font-medium text-[var(--rg-accent)]">{group.key}</span>
+                <span class="font-medium text-[var(--rg-accent)]">{group.agent}</span>
+                <span class="rounded px-1 text-[9px] {groupStatus === 'waiting'
+                  ? 'bg-amber-500/15 text-amber-300'
+                  : groupStatus === 'working'
+                    ? 'bg-emerald-500/15 text-emerald-300'
+                    : groupStatus === 'stopped'
+                      ? 'bg-red-500/15 text-red-300'
+                      : 'bg-[var(--rg-surface)] text-[var(--rg-fg-muted)]'}">{agentStatusLabel(groupStatus)}</span>
                 <span class="font-mono text-[var(--rg-fg-muted)]">{group.replies.length}</span>
                 <span class="ml-auto text-[var(--rg-fg-muted)]">{historyExpanded[group.key] ?? true ? '−' : '+'}</span>
               </button>

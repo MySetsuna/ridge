@@ -37,6 +37,7 @@ import {
     closePane as closePaneApi,
     activePaneId,
     agentPaneAttentionStore,
+    agentPaneStatusStore,
     paneDragSourceId,
     paneDockHover,
     activeWorkspaceId,
@@ -538,6 +539,7 @@ import {
   >
     {#if node.type === 'leaf'}
       <RgPane size={100} class="splitpanes__pane">
+        {@const paneStatus = $agentPaneStatusStore[`${workspaceId}:${node.id}`]}
         <!-- §4.3 Phase B (2026-05-07): removed `bg-[var(--rg-surface)]/90`
              and `backdrop-blur-md` from this wrapper. The 90 %-opaque
              surface tint sat on top of the global host canvas and hid
@@ -547,7 +549,16 @@ import {
              Card outline stays via the box-shadow. -->
         <div
           data-pane-id={node.id}
-          class="relative flex flex-col h-full min-h-0 min-w-0 overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.35)]"
+          data-agent-status={paneStatus ?? ''}
+          class="relative flex flex-col h-full min-h-0 min-w-0 overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.35)] {paneStatus === 'waiting'
+            ? 'ring-2 ring-inset ring-amber-400/75'
+            : paneStatus === 'working'
+              ? 'ring-2 ring-inset ring-emerald-400/65'
+              : paneStatus === 'stopped'
+                ? 'ring-2 ring-inset ring-red-400/75'
+                : paneStatus === 'idle'
+                  ? 'ring-1 ring-inset ring-sky-400/35'
+                  : ''}"
         >
           {#if $paneDragSourceId && $paneDragSourceId !== node.id}
             {@const hover = $paneDockHover && $paneDockHover.paneId === node.id ? $paneDockHover.region : null}
