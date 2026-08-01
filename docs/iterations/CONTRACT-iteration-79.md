@@ -33,6 +33,7 @@
 - Release matrix: Linux, macOS arm64/x64, and Windows all passed.
 - Release assets: 11 version-matched installers/archives/CLI binaries; Release is published, not draft.
 - Remote artifact upload activated `0.1.23+gd1f6cd9`; public health endpoint returned HTTP 200.
+- Deterministic LAN Remote E2E rerun at 2026-08-01 22:07 HKT: desktop and mobile both passed (`canvas=true`, mobile `tree=true`, WS connected, no browser errors); evidence: `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
 
 ## Explicit carry-over evidence
 
