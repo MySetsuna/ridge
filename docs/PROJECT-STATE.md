@@ -18,7 +18,7 @@
 - `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 与 `CONTRACT-iteration-77.md` 推进 Remote/桌面稳定性；RPC/输入/Resize、SCM、Pane 生命周期、日志、真清空、Host、Commune、多窗口所有权及窗级 active 核心已落地；仅外部运行证据待补。
 - `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`：项目源码无 Chrome Extension Messaging；保持业务零 diff，待受影响手机 clean-profile/扩展 A/B 终局归因。
 - `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02` / `REQ-REMOTE-RUNTIME-PERF-MEMORY-02`：键盘视觉偏移稳定、Remote listener/worker/pending/timer 回收；代码与确定性测试已落，真机/WebView2 heap soak 待补。
-- 当前发布收敛：`main@b2abd3a`；`v0.1.28` annotated tag 已推，Remote run `30712763807` 已成功，最新对账 run `30713459651` 运行中，ridge-cloud run `30712287282` 已成功，桌面四平台 Release 矩阵仍运行中。
+- 当前发布收敛：`main@c06cff0`；Remote run `30713523314` 成功，ridge-cloud run `30712287282` 成功；`v0.1.28` Release run `30714934091` 四平台与 test gate 全绿，12 个资产已核验并正式发布。
 
 ## 已验证代码事实
 
@@ -41,6 +41,8 @@
 - `MainApp` transport unsubscribe、Cloud late-callback guard、workspace generation guard 与 Worker pane pending cancellation 已落；Pane destroy 会拒绝 pending 并忽略有界 late reply（`367c053`、`0207319`、`b402f75`）。
 - kernel Git discovery/status 已移出 async executor 且支持 ancestor repo；MCP bridge 默认仅接当前 kernel、无 kernel fail-closed（`66d51f0`、`1475abc`）。
 - Windows kernel host smoke 已真实验证 detect-or-spawn、二次 attach、FS/Agent/Git/MCP、stop；脚本现具墙钟超时、精确进程树回收与 finally 清理（`5a67044`）。
+- Scrollback worker 已补 Pane-scoped cancel 回归：销毁 Pane 只取消目标 decode，其他 Pane 保持 pending，dispose 后全部归零（`bce506a`，5/5）。
+- Release workflow 已补 Intel macOS `ridge-cli --target x86_64-apple-darwin` 构建与上传，避免跨平台 CLI 资产缺失（`c06cff0`）。
 
 ## 相关模块与 symbol
 
@@ -51,7 +53,7 @@
 
 ## 最近完成与当前 diff
 
-- 最近完成:`367c053`/`0207319`/`b402f75` Remote 生命周期与 Pane pending；`66d51f0`/`1475abc` kernel/MCP；`5a67044` smoke 进程护栏。
+- 最近完成:`367c053`/`0207319`/`b402f75` Remote 生命周期与 Pane pending；`66d51f0`/`1475abc` kernel/MCP；`5a67044` smoke 进程护栏；`bce506a` Scrollback Pane cancel 测试；`c06cff0` Release CLI 资产护栏。
 - 当前 diff:本状态与迭代合同更新；`.iteration` 和既有本地生成目录保持未跟踪。
 
 ## 验证状态
@@ -68,11 +70,12 @@
 - 2026-07-31 只读公网 health：`https://9527127.xyz/api/v1/health` HTTP `200`，服务自报版本 `0.0.7`；缺 `RIDGE_ARTIFACT_TOKEN`，Remote artifact current 未验证。此证据不证明公网 WebRTC/TURN、产物新鲜度或用户链路。
 - 公网、手机真机、WebView2 长时性能 A/B、双窗口与双 Host 物理 E2E 尚未运行；不得宣称总体目标完成。
 - 本轮新增验证：定向 Remote/Worker 48/48；完整 Vitest 120 files / 1374 passed / 1 skipped；`pnpm check` 0 errors / 0 warnings；`cargo test -p ridge-kernel --lib` 15 passed；`cargo test -p ridge-mcp-bridge --lib` 8 passed；kernel-host-smoke 全绿。
+- 发布验证：`30714934091` completed/success；`v0.1.28` `draft=false`、`prerelease=false`、`publishedAt=2026-08-01T20:15:54Z`，12 个资产齐全（Windows setup/MSI/CLI、Linux deb/AppImage/CLI、macOS arm/x64 dmg/app tar/CLI）。
 
 ## 当前失败信号与风险
 
 - 失败信号:手机 `runtime.lastError` 尚无首条 warning script URL/Frame/注入器 owner；公网/WebView2/物理设备证据尚未采集；公网服务健康但 Remote artifact current 未获授权核验。
-- 发布风险：`v0.1.28` Release run `30712757798` test gate 已绿、四平台 build 尚未全完；未见资产前不宣称桌面 Release 完成。
+- 发布风险：`v0.1.28` 已完成正式发布并通过资产核验；后续版本仍须保持 macOS x64 CLI 资产检查。
 - 风险:自动测试不替代双窗口桌面、双 Host、手机、公网 Remote 与 WebView2 长跑；Remote build 尚有既存 dynamic-import 警告。
 
 ## 架构边界
@@ -97,7 +100,7 @@
 ## 下一项已批准工作
 
 - 执行 iteration 77 清单：手机 clean-profile/禁注入器归因、公网 Remote/双 Host、WebView2 长跑、双窗口桌面、Agent/Headless、Explorer 跨卷权限、原生 PowerShell/PTY 录制。未获这些外部证据前不宣称总体运行验收完成。
-- 先完成 `v0.1.28` 四平台资产核验与 Remote/cloud SHA 对账；随后补手机/WebView2/公网/双窗口/Agent 真链证据，仍以代码、测试、运行事实三者闭环。
+- `v0.1.28` 四平台资产与 Remote/cloud SHA 对账已完成；下一步仅补手机 clean-profile/WebView2/公网/双窗口/Agent 真链证据，仍以代码、测试、运行事实三者闭环。
 
 ## 本轮 delta
 
