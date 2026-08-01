@@ -48,6 +48,7 @@ pub async fn domain_meta(
             "agents.profiles",
             "agents.roster",
             "git.status",
+            "ptys.lifecycle",
             "remote.hosts",
             "workspaces",
             "mcp",
