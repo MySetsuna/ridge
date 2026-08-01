@@ -39,6 +39,10 @@ source that the backend never returned.
   `v0.1.30` with 12 assets. Remote artifact run `30719562705` passed at the
   same source SHA. ridge-cloud run `30719573795` deployed cloud SHA
   `67f712635f4f0d86f46fecfcd5ac9e4b099ac1e8` and passed production health.
+- An isolated `pnpm tauri:dev:cdp` attempt was started for the real Agent UI
+  path, but the Rust debug archive failed with Windows `OS error 112` at
+  `643/645`; no CDP/UI assertion was counted as passed. The exact process tree
+  was terminated and only the test profile was targeted for cleanup.
 
 ## Non-claims
 
