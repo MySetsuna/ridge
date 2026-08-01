@@ -18,6 +18,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { randomInt } from 'node:crypto';
 import { createServer } from 'node:net';
 import {
   mkdirSync,
@@ -42,6 +43,8 @@ const args = new Set(process.argv.slice(2));
 const portArgIdx = process.argv.indexOf('--port');
 const preferredPort =
   portArgIdx >= 0 ? Number(process.argv[portArgIdx + 1]) : Number(process.env.RIDGE_LAN_PORT || 0);
+const BROWSER_SAFE_PORT_MIN = 20_000;
+const BROWSER_SAFE_PORT_MAX = 29_999;
 
 function log(msg) {
   console.log(`[rdg-remote-e2e] ${msg}`);
@@ -63,14 +66,24 @@ function fail(msg, extra = {}) {
 
 async function freePort() {
   if (preferredPort > 0) return preferredPort;
-  return await new Promise((resolvePort, reject) => {
-    const s = createServer();
-    s.listen(0, '127.0.0.1', () => {
-      const { port } = s.address();
-      s.close(() => resolvePort(port));
+  // OS-assigned ephemeral ports may fall on Chromium's blocked-port list
+  // (for example 3659), producing ERR_UNSAFE_PORT before Ridge is contacted.
+  // Probe a high range above the Fetch bad-port list and below common ephemeral
+  // ranges so browser reachability and collision avoidance are both explicit.
+  const width = BROWSER_SAFE_PORT_MAX - BROWSER_SAFE_PORT_MIN + 1;
+  const start = randomInt(width);
+  for (let offset = 0; offset < width; offset += 1) {
+    const candidate = BROWSER_SAFE_PORT_MIN + ((start + offset) % width);
+    const available = await new Promise((resolveAvailable) => {
+      const server = createServer();
+      server.once('error', () => resolveAvailable(false));
+      server.listen(candidate, '127.0.0.1', () => {
+        server.close(() => resolveAvailable(true));
+      });
     });
-    s.on('error', reject);
-  });
+    if (available) return candidate;
+  }
+  throw new Error('no browser-safe LAN test port available');
 }
 
 /** 直连 HTTPS（rejectUnauthorized:false，agent:false 绕过代理）。 */
