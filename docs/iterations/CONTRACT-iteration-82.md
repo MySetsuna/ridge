@@ -42,6 +42,7 @@
 - `pnpm check` — 0 errors, 0 warnings.
 - `cargo test -p ridge-kernel --lib --quiet` — 15 passed.
 - `cargo test -p ridge-mcp-bridge --lib --quiet` — 8 passed.
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/kernel-host-smoke.ps1` — real Windows smoke passed: build, detect-or-spawn, second ensure attach, kernel FS/Agent/Git, MCP `tools/list`, and stop. The harness now bounds every external process and kills its exact process tree on timeout, with mandatory `finally` cleanup.
 - Focused commits pushed to `main`: `367c053`, `66d51f0`, `1475abc`, `0207319`, `b402f75`.
 
 ## Closure status
