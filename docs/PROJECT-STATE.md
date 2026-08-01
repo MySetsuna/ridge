@@ -1,9 +1,21 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-08-02（iteration 82 持续收敛；NLM live 已恢复，手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-02（iteration 83 持续收敛；NLM live 已恢复，手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
+
+### Iteration 83 update (2026-08-02)
+
+Mobile Remote IME-anchor boundary is fixed and pushed as `16d2861`; version
+contract `0.1.29` is staged on `b58815e` for the release workflow.
+`clearInputStart()` clears the stale pre-submit anchor; physical and virtual
+Enter share the reset; focused IME geometry is refreshed after keyboard-shift
+updates. Deterministic LAN/PTy mobile probe, full Vitest, Svelte check, and
+desktop/mobile LAN matrix are green. See
+`docs/iterations/CONTRACT-iteration-83.md`. Physical phone clean-profile A/B,
+WebView2 heap soak, public long-run, and dual-window/dual-host evidence remain
+explicitly unverified.
 
 证据等级：
 - **代码事实**：由 2026-07-28 CodeGraph（895 文件 / 37,969 节点 / 177,401 边）与当前源码确认。
@@ -18,7 +30,7 @@
 - `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 与 `CONTRACT-iteration-77.md` 推进 Remote/桌面稳定性；RPC/输入/Resize、SCM、Pane 生命周期、日志、真清空、Host、Commune、多窗口所有权及窗级 active 核心已落地；仅外部运行证据待补。
 - `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`：项目源码无 Chrome Extension Messaging；保持业务零 diff，待受影响手机 clean-profile/扩展 A/B 终局归因。
 - `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02` / `REQ-REMOTE-RUNTIME-PERF-MEMORY-02`：键盘视觉偏移稳定、Remote listener/worker/pending/timer 回收；代码与确定性测试已落，真机/WebView2 heap soak 待补。
-- 当前发布收敛：`main@c06cff0`；Remote run `30713523314` 成功，ridge-cloud run `30712287282` 成功；`v0.1.28` Release run `30714934091` 四平台与 test gate 全绿，12 个资产已核验并正式发布。
+- 当前发布收敛：`main@b58815e`（移动 IME 修复与 `0.1.29` 版本合同已推送，Release/Remote/cloud 发布待 CI 证据）；Remote run `30713523314` 成功，ridge-cloud run `30712287282` 成功；`v0.1.28` Release run `30714934091` 四平台与 test gate 全绿，12 个资产已核验并正式发布。
 
 ## 已验证代码事实
 
