@@ -655,6 +655,33 @@ describe('cwd listeners refreshed after pane mutations (Issue #2)', () => {
       workspaceId: 'owned-ws',
     });
   });
+
+  it('refresh acquires the desktop window workspace with one side-effect-free IPC', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const invokeMock = invoke as ReturnType<typeof vi.fn>;
+    invokeMock.mockReset();
+    const layout: import('./paneTree').PaneNode = {
+      type: 'leaf',
+      id: 'pane-window',
+    };
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_workspaces') {
+        return [{ id: 'ws-window', index: 0, displaySeq: 1 }];
+      }
+      if (cmd === 'acquire_window_workspace') return 'ws-window';
+      if (cmd === 'get_pane_layout_for') return layout;
+      if (cmd === 'list_workspace_save_info') return [];
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    await paneTreeModule.refreshWorkspaces();
+
+    expect(invokeMock).toHaveBeenCalledWith('acquire_window_workspace');
+    expect(
+      invokeMock.mock.calls.filter(([cmd]) => cmd === 'claim_workspace_window')
+    ).toHaveLength(0);
+    expect(get(paneTreeModule.activeWorkspaceId)).toBe('ws-window');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

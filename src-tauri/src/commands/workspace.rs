@@ -57,6 +57,51 @@ pub fn get_window_active_workspace_id(
     Ok(state.active_workspace_for_window(window.label()).to_string())
 }
 
+/// Resolve one desktop window's initial workspace in one backend round-trip.
+/// Existing selection wins; otherwise prefer the legacy active workspace, then
+/// the first unowned workspace. If every workspace belongs to another window,
+/// create and claim a fresh one for the requester.
+#[tauri::command]
+pub fn acquire_window_workspace(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+) -> Result<String, String> {
+    let preferred = state.active_workspace_id();
+    let candidates = state.workspace_order.read().clone();
+    // Keep the workspace map read-locked through claim admission. A concurrent
+    // close can then only remove the workspace after observing and releasing
+    // this claim, never between candidate snapshot and claim insertion.
+    let workspaces = state.workspaces.read();
+    let candidates: Vec<_> = candidates
+        .into_iter()
+        .filter(|id| workspaces.contains_key(id))
+        .collect();
+    let acquired = state.workspace_window_claims.acquire_available(
+        window.label(),
+        preferred,
+        &candidates,
+    );
+    drop(workspaces);
+    if let Some(id) = acquired {
+        return Ok(id.to_string());
+    }
+
+    let id = insert_new_workspace(&state, PaneTree::new(), None);
+    let parsed = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    match state.workspace_window_claims.claim(parsed, window.label()) {
+        WorkspaceWindowClaim::Acquired | WorkspaceWindowClaim::AlreadyOwned => {
+            state
+                .workspace_window_claims
+                .select_owned(parsed, window.label());
+            broadcast_workspace_list_changed(&state);
+            Ok(id)
+        }
+        WorkspaceWindowClaim::OwnedBy(owner) => Err(format!(
+            "new workspace was unexpectedly claimed by window {owner}"
+        )),
+    }
+}
+
 #[tauri::command]
 pub fn claim_workspace_window(
     state: State<'_, AppState>,
