@@ -44,6 +44,11 @@ against stale geometry, producing unstable keyboard placement and input delay.
 - `pnpm e2e:rdg-lan -- --skip-build`: desktop and mobile matrix passed;
   canvas/tree/WS checks passed and browser errors were empty.
 - Commit `16d2861` pushed to `origin/main`.
+- Version contract `0.1.29` (`b58815e`) and archive (`9ece51d`) were pushed;
+  Release run `30717760186` completed successfully, the draft was promoted to
+  `v0.1.29`, and all 12 platform assets were verified. Remote publish run
+  `30717808784` succeeded at head `9ece51d`; ridge-cloud deploy run
+  `30717810568` succeeded and passed its production health check.
 
 ## Non-claims and follow-up evidence
 
