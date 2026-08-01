@@ -60,8 +60,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 directories = "5"
 # Hidden password entry for `rdg login` (no echo on the terminal). Small, no C deps.
 rpassword = "7"
-# PTY — same crate + version the desktop app uses (src-tauri uses 0.8)
-portable-pty = "0.8"
 # Sync primitives (same as src-tauri)
 parking_lot = "0.12"
 
