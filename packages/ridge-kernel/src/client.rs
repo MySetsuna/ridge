@@ -21,7 +21,7 @@ pub fn is_process_alive(pid: u32) -> bool {
 
 #[cfg(not(windows))]
 pub fn is_process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    (unsafe { libc::kill(pid as libc::pid_t, 0) == 0 })
         || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
