@@ -59,7 +59,11 @@ function warn(label: string, err: unknown): void {
 
 function fail(label: string, err: unknown): void {
 	warn(label, err);
-	if (err instanceof Error && err.message === 'render worker terminated with pending requests') {
+	if (
+		err instanceof Error &&
+		(err.message === 'render worker terminated with pending requests' ||
+			err.message === 'pane destroyed; request cancelled')
+	) {
 		return;
 	}
 	failWorkerRenderer(err);
