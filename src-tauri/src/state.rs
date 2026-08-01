@@ -524,6 +524,46 @@ impl WorkspaceWindowClaims {
     pub fn selected_workspace(&self, window_label: &str) -> Option<Uuid> {
         self.selected_by_window.lock().get(window_label).copied()
     }
+
+    /// Return this window's live selection, or atomically claim the preferred/
+    /// first available workspace. Unlike the interactive claim command this has
+    /// no focus side effect, so window boot never walks other windows' tabs.
+    pub fn acquire_available(
+        &self,
+        window_label: &str,
+        preferred: Uuid,
+        candidates: &[Uuid],
+    ) -> Option<Uuid> {
+        let mut owners = self.owners.lock();
+        let mut selected = self.selected_by_window.lock();
+
+        if let Some(current) = selected.get(window_label).copied() {
+            if candidates.contains(&current)
+                && owners.get(&current).map(String::as_str) == Some(window_label)
+            {
+                return Some(current);
+            }
+            selected.remove(window_label);
+        }
+
+        let available = |id: &Uuid| match owners.get(id) {
+            None => true,
+            Some(owner) => owner == window_label,
+        };
+        let chosen = candidates
+            .iter()
+            .copied()
+            .find(|id| *id == preferred && available(id))
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|id| *id != preferred && available(id))
+            })?;
+        owners.insert(chosen, window_label.to_owned());
+        selected.insert(window_label.to_owned(), chosen);
+        Some(chosen)
+    }
 }
 
 #[derive(Clone)]
@@ -1679,5 +1719,84 @@ mod pty_delta_channel_tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn acquire_available_keeps_a_windows_existing_selection() {
+        let claims = WorkspaceWindowClaims::default();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        assert_eq!(
+            claims.acquire_available("main", first, &[first, second]),
+            Some(first)
+        );
+
+        // A later global-active change must not move an already-running window.
+        assert_eq!(
+            claims.acquire_available("main", second, &[first, second]),
+            Some(first)
+        );
+        assert_eq!(claims.selected_workspace("main"), Some(first));
+    }
+
+    #[test]
+    fn acquire_available_skips_owned_preferred_without_side_effects() {
+        let claims = WorkspaceWindowClaims::default();
+        let occupied = Uuid::new_v4();
+        let available = Uuid::new_v4();
+        claims.claim(occupied, "main");
+        claims.select_owned(occupied, "main");
+
+        assert_eq!(
+            claims.acquire_available("secondary", occupied, &[occupied, available]),
+            Some(available)
+        );
+        assert_eq!(claims.selected_workspace("main"), Some(occupied));
+        assert_eq!(claims.selected_workspace("secondary"), Some(available));
+    }
+
+    #[test]
+    fn acquire_available_reports_exhaustion_without_stealing() {
+        let claims = WorkspaceWindowClaims::default();
+        let only = Uuid::new_v4();
+        claims.claim(only, "main");
+
+        assert_eq!(
+            claims.acquire_available("secondary", only, &[only]),
+            None
+        );
+        assert_eq!(claims.selected_workspace("secondary"), None);
+        assert_eq!(
+            claims.claim(only, "secondary"),
+            WorkspaceWindowClaim::OwnedBy("main".into())
+        );
+    }
+
+    #[test]
+    fn simultaneous_initial_acquisition_assigns_distinct_workspaces() {
+        let claims = Arc::new(WorkspaceWindowClaims::default());
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let handles: Vec<_> = ["left", "right"]
+            .into_iter()
+            .map(|label| {
+                let claims = Arc::clone(&claims);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    claims.acquire_available(label, first, &[first, second])
+                })
+            })
+            .collect();
+        barrier.wait();
+        let mut results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap().unwrap())
+            .collect();
+        results.sort();
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(results, expected);
     }
 }

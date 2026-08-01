@@ -1336,24 +1336,16 @@ export async function refreshWorkspaces() {
     let list = await invoke<
       { id: string; index: number; name?: string; displaySeq: number }[]
     >('list_workspaces');
-    const hostActive = await invoke<string>(activeWorkspaceCommand);
-    let active = hostActive;
-    if (!webRemote && !(await claimWorkspaceForThisWindow(active))) {
-      active = '';
-      for (const workspace of list) {
-        if (await claimWorkspaceForThisWindow(workspace.id)) {
-          active = workspace.id;
-          break;
-        }
-      }
-      if (!active) {
-        active = await invoke<string>('create_workspace_for_window');
-        list = await invoke<
-          { id: string; index: number; name?: string; displaySeq: number }[]
-        >('list_workspaces');
-        await claimWorkspaceForThisWindow(active);
-      }
-      await invoke(switchWorkspaceCommand, { workspaceId: active });
+    const active = webRemote
+      ? await invoke<string>(activeWorkspaceCommand)
+      : await invoke<string>('acquire_window_workspace');
+    // The atomic desktop acquisition creates a workspace only when every
+    // existing one is owned by another window. Refresh the snapshot exactly
+    // once in that uncommon path so the new tab is present immediately.
+    if (!webRemote && !list.some((workspace) => workspace.id === active)) {
+      list = await invoke<
+        { id: string; index: number; name?: string; displaySeq: number }[]
+      >('list_workspaces');
     }
     const layout = await invoke<PaneNode>('get_pane_layout_for', {
       workspaceId: active,
