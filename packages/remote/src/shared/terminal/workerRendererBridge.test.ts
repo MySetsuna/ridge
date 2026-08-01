@@ -9,7 +9,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { workerRendererBridge, workerLifecycleOnFit } from './workerRendererBridge';
+import {
+	workerRendererBridge,
+	workerLifecycleOnFit,
+	reconcileWorkerRendererIdentity,
+} from './workerRendererBridge';
 import {
 	__setWorkerFactory,
 	disposeWorkerRenderer,
@@ -299,5 +303,24 @@ describe('workerLifecycleOnFit', () => {
 			isActive: true,
 		});
 		expect(action).toEqual({ kind: 'attach', rows, cols, dpr });
+	});
+});
+
+describe('reconcileWorkerRendererIdentity', () => {
+	it('clears pane bindings when a replacement worker is observed', () => {
+		const attached = new Set(['pane-a', 'pane-b']);
+		const previous = {};
+		const current = {};
+
+		expect(reconcileWorkerRendererIdentity(previous, current, attached)).toBe(current);
+		expect(attached).toEqual(new Set());
+	});
+
+	it('keeps pane bindings for the same worker instance', () => {
+		const attached = new Set(['pane-a']);
+		const worker = {};
+
+		expect(reconcileWorkerRendererIdentity(worker, worker, attached)).toBe(worker);
+		expect(attached).toEqual(new Set(['pane-a']));
 	});
 });

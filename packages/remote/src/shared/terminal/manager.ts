@@ -35,7 +35,11 @@ import init, { TerminalKernel, RenderHandle, SurfaceHostHandle } from '@ridge/te
 import type { HostPorts } from './ports';
 import { invoke } from '@tauri-apps/api/core';
 import type { ActiveWallpaperGpu, InputBufferState } from './types';
-import { workerRendererBridge, workerLifecycleOnFit } from './workerRendererBridge';
+import {
+	workerRendererBridge,
+	workerLifecycleOnFit,
+	reconcileWorkerRendererIdentity,
+} from './workerRendererBridge';
 import {
 	failWorkerRenderer,
 	getWorkerRenderer,
@@ -455,6 +459,10 @@ export class TerminalManager {
 	 *  don't spam `pane_not_initialized` errors after a mid-session
 	 *  flag toggle. Cleared on `detach`. */
 	private workerAttached = new Set<string>();
+	/** Worker instance that owns `workerAttached`. A replacement renderer starts
+	 * with no pane state, so stale entries must not send resize/bindCanvas before
+	 * the new worker receives its init. */
+	private workerRendererRef: ReturnType<typeof getWorkerRenderer> = null;
 	private rafHandle: number | null = null;
 	/** P2.2 (2026-05-20): id of the pane currently marked focused via
 	 *  `setFocused(paneId, true)`. Used by the RAF tick to render the
@@ -2471,7 +2479,7 @@ export class TerminalManager {
 		}
 		if (this.panes.get(paneId) !== entry || !entry.parked) return;
 
-		const usingWorker = this.workerAttached.has(paneId) && this.usingWorkerRenderer();
+		const usingWorker = this.usingWorkerRenderer() && this.workerAttached.has(paneId);
 		const gh = this.globalHost;
 		const useHost = gh !== null && this.opts.preferWebgpu && !usingWorker;
 		let canvas: HTMLCanvasElement;
@@ -3845,12 +3853,24 @@ export class TerminalManager {
 	 *  on the next pane attach; already-attached panes keep their initial
 	 *  decision until detach. */
 	usingWorkerRenderer(): boolean {
+		const renderer = this.syncWorkerRendererIdentity();
 		return (
 			isWorkerRenderingEnabled() &&
 			typeof HTMLCanvasElement !== 'undefined' &&
 			typeof HTMLCanvasElement.prototype.transferControlToOffscreen === 'function' &&
-			getWorkerRenderer() !== null
+			renderer !== null
 		);
+	}
+
+	/** Keep the manager's pane mirror tied to one concrete Worker instance. */
+	private syncWorkerRendererIdentity(): ReturnType<typeof getWorkerRenderer> {
+		const renderer = getWorkerRenderer();
+		this.workerRendererRef = reconcileWorkerRendererIdentity(
+			this.workerRendererRef,
+			renderer,
+			this.workerAttached,
+		);
+		return this.workerRendererRef;
 	}
 
 	private _fallbackWorkerRendering(error: Error): void {
@@ -4783,13 +4803,14 @@ export class TerminalManager {
 		// First fit: attach (init). Subsequent fits: resize. The decision
 		// is delegated to a pure helper so it is independently
 		// unit-testable (see `workerRendererBridge.test.ts` — Iter 14).
+		const workerActive = this.usingWorkerRenderer();
 		const workerAction = workerLifecycleOnFit({
 			paneId: entry.paneId,
 			rows,
 			cols,
 			dpr: entry.lastConfiguredDpr,
 			attached: this.workerAttached,
-			isActive: workerRendererBridge.isActive(),
+			isActive: workerActive,
 		});
 		switch (workerAction.kind) {
 			case 'attach':

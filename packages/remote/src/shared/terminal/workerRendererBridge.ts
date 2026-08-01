@@ -148,6 +148,21 @@ export type WorkerLifecycleAction =
 	| { kind: 'resize'; rows: number; cols: number; dpr: number }
 	| { kind: 'noop' };
 
+/** Clear pane bindings when a replacement Worker has no state from the old
+ * renderer. Keeping the identity check pure makes the restart invariant
+ * testable without constructing the wasm-backed TerminalManager. */
+export function reconcileWorkerRendererIdentity<T>(
+	previous: T | null,
+	current: T | null,
+	attached: Set<string>,
+): T | null {
+	if (previous !== current) {
+		if (previous !== null) attached.clear();
+		return current;
+	}
+	return previous;
+}
+
 export function workerLifecycleOnFit(args: {
 	paneId: string;
 	rows: number;
