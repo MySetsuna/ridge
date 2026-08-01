@@ -5,7 +5,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
@@ -29,7 +28,10 @@ pub fn read_kernel_pid() -> Option<u32> {
         .or_else(|| fs::read_to_string(kernel_pid_path()).ok()?.trim().parse().ok())
 }
 
-use ridge_kernel::client::{health_ok, is_process_alive, running_endpoint, spawn_detached, wait_for_running};
+use ridge_kernel::client::{
+    health_ok, is_process_alive, running_endpoint, spawn_detached, terminate_process,
+    wait_for_running,
+};
 
 pub fn is_kernel_running() -> bool {
     running_endpoint().is_some()
@@ -241,32 +243,18 @@ pub fn shutdown_kernel() -> Result<(), String> {
     }
     let url = format!("http://127.0.0.1:{}/v1/shutdown", ep.port);
     if !simple_http_post_auth(&url, &ep.token) {
-        // fallback taskkill
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            let _ = Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &ep.pid.to_string()])
-                .creation_flags(0x0800_0000)
-                .status();
-        }
-        #[cfg(not(windows))]
-        {
-            unsafe {
-                libc::kill(ep.pid as libc::pid_t, libc::SIGTERM);
-            }
-        }
+        terminate_process(ep.pid)?;
     }
     // wait up to 2s
     for _ in 0..20 {
         if !is_process_alive(ep.pid) {
-            break;
+            let _ = fs::remove_file(kernel_pid_path());
+            let _ = fs::remove_file(kernel_json_path());
+            return Ok(());
         }
         thread::sleep(Duration::from_millis(100));
     }
-    let _ = fs::remove_file(kernel_pid_path());
-    let _ = fs::remove_file(kernel_json_path());
-    Ok(())
+    Err(format!("kernel process {} did not exit within 2s", ep.pid))
 }
 
 #[cfg(test)]

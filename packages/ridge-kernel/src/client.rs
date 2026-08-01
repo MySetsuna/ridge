@@ -25,6 +25,36 @@ pub fn is_process_alive(pid: u32) -> bool {
         || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+#[cfg(windows)]
+pub fn terminate_process(pid: u32) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let output = std::process::Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .creation_flags(0x0800_0000)
+        .output()
+        .map_err(|error| format!("terminate kernel process {pid}: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "terminate kernel process {pid}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn terminate_process(pid: u32) -> Result<(), String> {
+    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "terminate kernel process {pid}: {}",
+            std::io::Error::last_os_error()
+        ))
+    }
+}
+
 pub fn health_ok(endpoint: &KernelEndpoint) -> bool {
     let hostport = format!("127.0.0.1:{}", endpoint.port);
     let Ok(mut stream) = TcpStream::connect(("127.0.0.1", endpoint.port)) else {
