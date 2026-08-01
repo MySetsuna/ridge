@@ -252,7 +252,9 @@ export function setScmRepoRoots(
   if (directoryContexts) setScmDirectoryContexts('source-control', directoryContexts);
   _store.update((s) => {
     const nonGitRepoRoots = s.nonGitRepoRoots;
-    const acceptedRoots = repoRoots.filter((root) => !nonGitRepoRoots[root]);
+    const acceptedRoots = repoRoots.filter(
+      (root) => !nonGitRepoRoots[normalizeDirectory(root)],
+    );
     return {
       ...s,
       repoRoots: acceptedRoots,
@@ -281,7 +283,7 @@ export function setScmRepoRoots(
 
 export function setScmRepoStatus(repoRoot: string, status: ScmRepoStatus): void {
   _store.update((s) =>
-    s.nonGitRepoRoots[repoRoot]
+    s.nonGitRepoRoots[normalizeDirectory(repoRoot)]
       ? s
       : { ...s, statuses: { ...s.statuses, [repoRoot]: status } }
   );
@@ -317,17 +319,28 @@ export function isNotGitRepositoryError(error: unknown): boolean {
  * snapshot. All SCM polling callers consult this same cache. */
 export function markScmRepoNonGit(repoRoot: string): void {
   if (!repoRoot) return;
+  const normalizedRoot = normalizeDirectory(repoRoot);
   _store.update((s) => {
-    if (s.nonGitRepoRoots[repoRoot]) return s;
-    const repoRoots = s.repoRoots.filter((root) => root !== repoRoot);
+    if (s.nonGitRepoRoots[normalizedRoot]) return s;
+    const repoRoots = s.repoRoots.filter(
+      (root) => normalizeDirectory(root) !== normalizedRoot,
+    );
     const statuses = { ...s.statuses };
     const graphInfos = { ...s.graphInfos };
     const lastGraphLoadAt = { ...s.lastGraphLoadAt };
     const selectedCommitHashByRepo = { ...s.selectedCommitHashByRepo };
-    delete statuses[repoRoot];
-    delete graphInfos[repoRoot];
-    delete lastGraphLoadAt[repoRoot];
-    delete selectedCommitHashByRepo[repoRoot];
+    for (const root of Object.keys(statuses)) {
+      if (normalizeDirectory(root) === normalizedRoot) delete statuses[root];
+    }
+    for (const root of Object.keys(graphInfos)) {
+      if (normalizeDirectory(root) === normalizedRoot) delete graphInfos[root];
+    }
+    for (const root of Object.keys(lastGraphLoadAt)) {
+      if (normalizeDirectory(root) === normalizedRoot) delete lastGraphLoadAt[root];
+    }
+    for (const root of Object.keys(selectedCommitHashByRepo)) {
+      if (normalizeDirectory(root) === normalizedRoot) delete selectedCommitHashByRepo[root];
+    }
     return {
       ...s,
       repoRoots,
@@ -335,15 +348,16 @@ export function markScmRepoNonGit(repoRoot: string): void {
       graphInfos,
       lastGraphLoadAt,
       selectedCommitHashByRepo,
-      selectedScmRepo: s.selectedScmRepo === repoRoot ? '' : s.selectedScmRepo,
+      selectedScmRepo:
+        normalizeDirectory(s.selectedScmRepo) === normalizedRoot ? '' : s.selectedScmRepo,
       lastRepoSignature: repoRoots.join('|'),
-      nonGitRepoRoots: { ...s.nonGitRepoRoots, [repoRoot]: true },
+      nonGitRepoRoots: { ...s.nonGitRepoRoots, [normalizedRoot]: true },
     };
   });
 }
 
 export function isScmRepoKnownNonGit(repoRoot: string): boolean {
-  return !!repoRoot && !!get(_store).nonGitRepoRoots[repoRoot];
+  return !!repoRoot && !!get(_store).nonGitRepoRoots[normalizeDirectory(repoRoot)];
 }
 
 /** Explicit reset for a pane-local cwd transition and deterministic tests.
@@ -369,7 +383,7 @@ export function resetScmRepositoryDetection(cwdContext?: string): string[] {
 
 export function setScmGraphInfo(repoRoot: string, info: GitRepoInfo): void {
   _store.update((s) =>
-    s.nonGitRepoRoots[repoRoot]
+    s.nonGitRepoRoots[normalizeDirectory(repoRoot)]
       ? s
       : {
           ...s,

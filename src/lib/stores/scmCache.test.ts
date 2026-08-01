@@ -120,6 +120,15 @@ describe('scmCacheStore', () => {
     expect(getScmCache().repoRoots).toEqual(['/workspace/gone']);
   });
 
+  it('normalizes non-Git cache keys across Windows path spellings', () => {
+    setScmRepoRoots(['C:\\Repo\\'], 'cwd', 'repo', ['C:\\Repo\\']);
+    markScmRepoNonGit('C:\\Repo\\');
+
+    expect(isScmRepoKnownNonGit('c:/repo')).toBe(true);
+    setScmRepoRoots(['c:/repo'], 'cwd', 'repo', ['c:/repo']);
+    expect(getScmCache().repoRoots).toEqual([]);
+  });
+
   it('classifies only explicit non-repository failures as negative detection', () => {
     expect(isNotGitRepositoryError('fatal: not a git repository')).toBe(true);
     expect(isNotGitRepositoryError('Not a git repo: C:/tmp')).toBe(true);
