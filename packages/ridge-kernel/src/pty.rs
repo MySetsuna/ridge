@@ -90,6 +90,14 @@ impl PtyBridge {
     }
 }
 
+impl Drop for PtyBridge {
+    fn drop(&mut self) {
+        // Best effort only: explicit `destroy` surfaces an operational error,
+        // while drop must never panic during registry or kernel shutdown.
+        let _ = self.child.get_mut().kill();
+    }
+}
+
 fn resolve_shell(shell: Option<&str>) -> String {
     if let Some(shell) = shell.filter(|value| !value.trim().is_empty()) {
         return shell.to_string();
