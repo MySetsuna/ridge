@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { resolveInputAnchor, terminalVisualShiftPx } from './keyboardOffset';
+import {
+  resolveInputAnchor,
+  stabilizeTerminalVisualShiftPx,
+  terminalVisualShiftPx,
+} from './keyboardOffset';
 
 const phone = (overrides: Partial<Parameters<typeof terminalVisualShiftPx>[0]> = {}) => ({
   layoutHeightPx: 800,
@@ -38,6 +42,42 @@ describe('terminalVisualShiftPx', () => {
     const input = phone({ visualOffsetTopPx: 40 });
     expect(terminalVisualShiftPx(input)).toBe(-100);
     expect(terminalVisualShiftPx({ ...input })).toBe(terminalVisualShiftPx(input));
+  });
+
+  it('uses keyboard top and input rect with an explicit safe gap', () => {
+    expect(terminalVisualShiftPx(phone({
+      keyboardTopPx: 560,
+      inputTopPx: 536,
+      inputBottomPx: 560,
+      safeGapPx: 12,
+    }))).toBe(-12);
+  });
+
+  it('preserves prior shift through sub-cell viewport jitter', () => {
+    expect(stabilizeTerminalVisualShiftPx(-101, -100, { hysteresisPx: 4 })).toBe(-100);
+    expect(stabilizeTerminalVisualShiftPx(-106, -100, { hysteresisPx: 4 })).toBe(-106);
+  });
+
+  it('converges toward a large target by a finite step', () => {
+    const options = { hysteresisPx: 0, maxStepPx: 40 };
+    let shift = 0;
+    shift = stabilizeTerminalVisualShiftPx(-130, shift, options);
+    expect(shift).toBe(-40);
+    shift = stabilizeTerminalVisualShiftPx(-130, shift, options);
+    expect(shift).toBe(-80);
+    shift = stabilizeTerminalVisualShiftPx(-130, shift, options);
+    expect(shift).toBe(-120);
+    shift = stabilizeTerminalVisualShiftPx(-130, shift, options);
+    expect(shift).toBe(-130);
+  });
+
+  it('returns toward zero after keyboard closes instead of retaining stale offset', () => {
+    expect(terminalVisualShiftPx(phone({
+      visualHeightPx: 800,
+      previousShiftPx: -100,
+      maxStepPx: 30,
+    }))).toBe(-70);
+    expect(stabilizeTerminalVisualShiftPx(0, -4, { hysteresisPx: 12 })).toBe(0);
   });
 });
 

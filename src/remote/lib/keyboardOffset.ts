@@ -6,6 +6,18 @@ export interface TerminalVisualShiftInput {
   cursorYPx: number;
   cellHeightPx: number;
   contextRows?: number;
+  /** Optional viewport-space input rect. Defaults to cursor + one cell. */
+  inputTopPx?: number;
+  inputBottomPx?: number;
+  /** Keyboard top in viewport coordinates. Defaults to offsetTop + height. */
+  keyboardTopPx?: number;
+  /** Extra breathing room below the input; defaults to one cell. */
+  safeGapPx?: number;
+  /** Previous visual shift, used for bounded convergence and hysteresis. */
+  previousShiftPx?: number;
+  hysteresisPx?: number;
+  maxStepPx?: number;
+  maxShiftPx?: number;
 }
 
 export interface InputAnchorPoint {
@@ -84,7 +96,16 @@ export function terminalVisualShiftPx({
   cursorYPx,
   cellHeightPx,
   contextRows = 3,
+  inputTopPx,
+  inputBottomPx,
+  keyboardTopPx,
+  safeGapPx,
+  previousShiftPx,
+  hysteresisPx = 0,
+  maxStepPx = Number.POSITIVE_INFINITY,
+  maxShiftPx = Number.POSITIVE_INFINITY,
 }: TerminalVisualShiftInput): number {
+  const previous = Number.isFinite(previousShiftPx) ? previousShiftPx! : undefined;
   if (
     !Number.isFinite(layoutHeightPx)
     || !Number.isFinite(visualHeightPx)
@@ -92,14 +113,66 @@ export function terminalVisualShiftPx({
     || !Number.isFinite(stageTopPx)
     || !Number.isFinite(cursorYPx)
     || !(cellHeightPx > 0)
-    || layoutHeightPx - visualHeightPx <= 0
-  ) return 0;
+  ) return previous ?? 0;
 
-  const visibleBottom = visualOffsetTopPx + visualHeightPx;
-  const cursorBottom = stageTopPx + cursorYPx + cellHeightPx;
-  const desiredBottom = visibleBottom - cellHeightPx;
-  const needed = Math.min(0, Math.round(desiredBottom - cursorBottom));
-  const contextPx = Math.max(cellHeightPx, contextRows * cellHeightPx);
-  const maxUp = Math.max(0, Math.round(cursorYPx - contextPx));
-  return Math.max(-maxUp, needed);
+  const viewportKeyboardTop = Number.isFinite(keyboardTopPx)
+    ? keyboardTopPx!
+    : visualOffsetTopPx + visualHeightPx;
+  const keyboardVisible = viewportKeyboardTop < layoutHeightPx - 1;
+  if (!keyboardVisible) {
+    return stabilizeTerminalVisualShiftPx(0, previous, { hysteresisPx, maxStepPx });
+  }
+
+  const inputTop = Number.isFinite(inputTopPx)
+    ? inputTopPx!
+    : stageTopPx + cursorYPx;
+  const measuredInputBottom = Number.isFinite(inputBottomPx)
+    ? inputBottomPx!
+    : inputTop + cellHeightPx;
+  const inputBottom = Math.max(inputTop, measuredInputBottom);
+  const safeGap = Number.isFinite(safeGapPx) && safeGapPx! >= 0
+    ? safeGapPx!
+    : cellHeightPx;
+  const desiredBottom = viewportKeyboardTop - safeGap;
+  const needed = Math.min(0, Math.round(desiredBottom - inputBottom));
+  const context = Number.isFinite(contextRows) && contextRows >= 0 ? contextRows : 3;
+  const contextPx = Math.max(cellHeightPx, context * cellHeightPx);
+  const cursorTopInStage = inputTop - stageTopPx;
+  const maxUp = Math.max(0, Math.round(cursorTopInStage - contextPx));
+  const maxShift = Number.isFinite(maxShiftPx) && maxShiftPx! >= 0 ? maxShiftPx! : Number.POSITIVE_INFINITY;
+  const bounded = Math.max(-maxUp, Math.max(-maxShift, needed));
+  return stabilizeTerminalVisualShiftPx(bounded, previous, { hysteresisPx, maxStepPx });
+}
+
+export interface VisualShiftStabilizationOptions {
+  hysteresisPx?: number;
+  maxStepPx?: number;
+}
+
+/**
+ * Apply a target visual shift without letting viewport jitter move the stage by
+ * sub-pixel noise or jump an entire terminal in one frame. Pure and deterministic
+ * so callers can replay keyboard open/close geometry in tests.
+ */
+export function stabilizeTerminalVisualShiftPx(
+  targetPx: number,
+  previousPx: number | undefined,
+  { hysteresisPx = 0, maxStepPx = Number.POSITIVE_INFINITY }: VisualShiftStabilizationOptions = {},
+): number {
+  if (!Number.isFinite(targetPx)) return Number.isFinite(previousPx) ? previousPx! : 0;
+  if (!Number.isFinite(previousPx)) return Math.round(targetPx);
+  const hysteresis = Math.max(0, Number.isFinite(hysteresisPx) ? hysteresisPx : 0);
+  // Never leave a residual negative transform after the keyboard closes. The
+  // hysteresis band is only for two non-zero keyboard positions; target zero is
+  // an explicit release, even when the previous shift is just a few pixels.
+  const hold = targetPx !== 0
+    && previousPx! !== 0
+    && Math.abs(targetPx - previousPx!) <= hysteresis;
+  const target = hold ? previousPx! : targetPx;
+  const maxStep = Number.isFinite(maxStepPx) && maxStepPx! > 0
+    ? maxStepPx!
+    : Number.POSITIVE_INFINITY;
+  const delta = target - previousPx!;
+  if (Math.abs(delta) <= maxStep) return Math.round(target);
+  return Math.round(previousPx! + Math.sign(delta) * maxStep);
 }
