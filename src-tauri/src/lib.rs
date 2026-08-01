@@ -291,6 +291,11 @@ pub fn run() {
                             port = ep.port,
                             "ridge-kernel ready"
                         );
+                        if let Some(records) = crate::hosts::kernel_host_snapshot() {
+                            app.state::<crate::state::AppState>()
+                                .hosts
+                                .restore_topology(records);
+                        }
                         // 验收④：内核被 CLI/rdg 杀掉后桌面外壳自退。
                         let exit_handle = app.handle().clone();
                         let stop_flag = app.state::<crate::state::AppState>().quitting.clone();
