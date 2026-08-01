@@ -58,7 +58,7 @@ pub enum TopologyError {
 }
 
 /// 全局拓扑图：谁在对谁下命令。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TopologyGraph {
     /// 节点：以 Teammate id 为键。
     nodes: HashMap<String, Teammate>,
@@ -316,5 +316,13 @@ mod tests {
         g.add_teammate(t);
         g.remove_by_pane(42);
         assert!(g.is_empty());
+    }
+
+    #[test]
+    fn topology_round_trips_for_kernel_persistence() {
+        let mut g = TopologyGraph::new();
+        g.add_teammate(mate("lead").with_role(AgentRole::Leader));
+        let restored: TopologyGraph = serde_json::from_str(&serde_json::to_string(&g).unwrap()).unwrap();
+        assert_eq!(restored.leader_id(), Some("lead"));
     }
 }
