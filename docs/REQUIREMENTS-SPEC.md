@@ -1007,10 +1007,52 @@
 - 边界:packages/ridge-mcp、teammate、ridge-tmux、发现/attach 与 HOST 一致、文档 不删除可选桌面捆绑安装；不重做 Commune 全部 UI 非法目标稳定失败码；禁止静默落到错误 pane 原始意图摘要:ridge-mcp 被 Tauri 接管即做错。应基于 teammate 服务或 tmux 垫片，直接拉起终端并启动 agent，支持相互定位与交流——是**内核**暴露给外部 agent 的 API 面。深根模式下桌面退出后 MCP 仍应能连内核（若内核在），而非依赖桌面进程。
 - 验收:① 无 Tauri 仅内核时 MCP initialize+tools/list+至少一类协作工具可测；② 桌面退出、内核仍在时 MCP 仍可用或可重连；③ 内核退出后 MCP 失败可观测；④ 文档写明拓扑
 - 追踪:PENDING-REQ-RIDGE-MCP-AS-KERNEL-API-01 → note a7962b2f → ridge-mcp/teammate
+
+### REQ-AGENT-COMMUNE-UI-02 · Agent's Commune interactive cards, status projection, and history recovery
+
+- 批准依据:`预审批刚刚需求`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 类型:`MODIFY` + `FIX`
+- 关联:`REQ-AGENT-INTERACTION-STATE-01`、`REQ-AGENT-HISTORY-SOURCE-02`、`REQ-AGENT-HISTORY-01`、`REQ-AGENT-COMMUNE-CONTINUITY-01`
+- 原始意图:强化 Agent's Commune 侧栏交互，使 Agent 状态、历史会话、恢复入口和 Pane 边框形成可验证闭环。
+- 行为:(1) 卡片展示稳定 Agent 身份、运行中/空闲/等待审批/停止/失败状态、标题与最近活动；左侧竖色条、文本和 `aria-label` 同源，颜色非唯一语义。(2) 点击可聚焦正确 workspace/pane，等待审批有明确入口，状态变化不造重复布局事件。(3) 从有证据的 Agent adapter 读取 JSONL/会话文件，按稳定 Agent identity（不按 CWD）分组，一 session 一行，展示标题、session id、Agent、原始 CWD、最近活动和真实最新 assistant 内容；损坏/超大/未知源局部失败且可诊断。(4) 运行中与历史以原生 session id 关联，禁止标题/CWD 猜测。(5) 恢复使用 adapter 结构化 executable/argv/CWD/session identity，在当前 workspace 新建唯一 pane，保留错误与取消语义，不拼接未转义 shell 字符串。(6) Agent 状态与对应 Pane 外边框高亮同源投影，状态变化、Pane 销毁、跨 workspace 聚焦幂等。
+- 边界:范围 `src/lib/teammate/**`、AgentCenter/Commune 卡片与状态模型、Agent history adapter/DTO、JSONL/会话解析、CWD/session identity、pane tree/header/border 投影、结构化恢复入口及必要 Tauri topology/历史 DTO 和确定性测试；不上传历史、不修改第三方会话文件、不按标题/CWD 猜测身份、不伪造无可靠 resume 契约、不引入第二持久状态源、不改 Remote 协议；pane header、Agent Tab、历史恢复读取同一后端事实；复合 `(workspaceId,paneId)` 与原生 session identity 不得回退模糊匹配；键盘导航、HITL 安全门、多窗口/工作区单例语义不得回归。
+- 验收:多 Agent、多 CWD、多 session、多回复及运行/空闲/等待审批/停止/失败、损坏/超大 JSONL fixture 下，卡片按稳定 Agent 分组且一 session 一行；左色条、状态文本、`aria-label`、Pane 外边框同状态；无变化轮询零重复事件；点击恢复在当前 workspace 恰新增一个 Pane 且捕获 executable/argv/CWD/session identity，重复点击单飞；跨 workspace 只聚焦正确 pane；Pane destroy/取消不留 pending；至少一类真实 Agent/等价进程 E2E 证明 CWD 恢复与状态闭环。
+- 追踪:`REQ-AGENT-COMMUNE-UI-02` → `.iteration/intakes/` → NLM 深研决策包 → AgentCenter/Commune card + teammate model/adapters + history parser + pane state/border projection + structured resume → Vitest/Svelte/adapter fixtures、Rust/TypeScript 集成及真进程等价 E2E → 迭代归档
+
+### REQ-MOBILE-REMOTE-KEYBOARD-QOS-02 · Mobile Remote keyboard stable visual offset
+
+- 批准依据:`这条需求也预审批通过`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 类型:`MODIFY` + `FIX`
+- 关联:`REQ-MOBILE-REMOTE-STATE-01`、`REQ-MOBILE-REMOTE-INPUT-FEEDBACK-01`、`REQ-REMOTE-SMOOTH-STATE-02`
+- 原始意图:修复手机 Remote 唤起系统键盘时输入域上移抖动、偏移漂移或被键盘遮挡的问题，同时保留既有终端核心实现。
+- 行为:仅在现有 visualViewport/光标锚点/键盘投影链上做稳定化；以键盘顶部、safe-area、输入域实际 rect 和终端 cursor/fallback anchor 计算有界视觉偏移，键盘显示、viewport resize、旋转和字体布局收敛后再有限次数校正；输入域底部须稳定位于键盘顶部安全间距之上。保持 `.term-stage`、`.container`、canvas、PTY rows/cols、核心输入/渲染/传输语义不变；pointer 坐标不参与键盘锚点。
+- 边界:范围 `src/remote` 的 keyboard offset/viewport adapter、输入域布局与其确定性测试、移动浏览器等价 E2E；不得改写终端核心、PTY 尺寸、Remote 协议或以无界 RAF/定时器追逐 viewport；所有 visualViewport/resize/focus 监听须可取消且生命周期单飞。
+- 验收:覆盖 iOS/Android 等价 visualViewport fixture、键盘开合、旋转、safe-area、缩放、长输出、非底部 pane 和快速 A→B→A；每次收敛时输入域 bottom ≤ keyboard top−安全间距，偏移有界且无抖动/累积漂移，键盘收起归零；DOM 高度、PTY claim/rows/cols 和核心渲染调用次数不变；监听器、RAF、定时器在销毁后归零；真实移动浏览器或 CDP 证据通过。
+- 追踪:`REQ-MOBILE-REMOTE-KEYBOARD-QOS-02` → `keyboardOffset`/MobileRemoteUiState → keyboard geometry fixtures + mobile E2E → iteration archive
+
+### REQ-REMOTE-RUNTIME-PERF-MEMORY-02 · Remote runtime performance, robustness, and memory reclamation
+
+- 批准依据:`这条需求也预审批通过`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 类型:`MODIFY` + `FIX`
+- 关联:`REQ-RDG-REMOTE-CONNECT-01`、`REQ-REMOTE-SMOOTH-STATE-02`、`REQ-MOBILE-REMOTE-STATE-01`
+- 原始意图:降低 Remote 手机端长期运行的 UI/RPC/订阅开销，避免 pane、scrollback、worker、canvas、listener、timer 和 pending task 持续增长或无法被 GC 回收。
+- 行为:沿现有连接、pane、scrollback、worker 和 scheduler 生命周期补齐单一释放出口；workspace/pane/connection 销毁、重连和切换时取消 pending、退订 listener、停止 timer/RAF、清空过期快照与有界 scrollback 引用、释放 worker/canvas 资源并让不可达对象自然可被 GC；输入与 active raw 优先级不受低优先级历史加载影响；重复订阅/轮询/渲染与 stale callback 必须幂等、可观测且有界。不得以生产环境强制 GC、无限重试或隐藏 Console 错误伪造修复。
+- 边界:范围 `src/remote`、`packages/remote` 生命周期/调度/scrollback/worker 资源管理及确定性性能测试与移动/公网等价运行证据；不得改变 Remote 核心协议、pane 身份、终端核心渲染算法或用第二连接绕过资源问题；所有取消须落到真实任务/监听器/进程释放。
+- 验收:长时多 pane、多 workspace、后台切换、断线重连、滚动历史和键盘开合 soak 下，listener/worker/timer/RAF/pending RPC/订阅计数在销毁后归零或回到基线；scrollback 达上限自动清理且 clear/右键清空释放页面与后台引用；Heap/对象快照无持续线性增长，输入延迟、RPC 数和 CPU/网络不回归；重复订阅和 stale callback 有确定性测试，移动真实机或等价 CDP/公网运行记录证据。
+- 追踪:`REQ-REMOTE-RUNTIME-PERF-MEMORY-02` → RemoteLink/CloudRemoteConnection + pane scheduler + scrollback/worker lifecycle → soak/heap/resource counters → iteration archive
+
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
 | --- | --- | --- | --- | --- | --- |
+| v0.3.8 | 2026-08-02 | `<DIRECT-APPROVAL>` | Mobile Remote 键盘稳定偏移与 Remote 性能/健壮性/内存回收转 Active | 新增 `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02`、`REQ-REMOTE-RUNTIME-PERF-MEMORY-02` | 用户明确「这条需求也预审批通过」 |
+| v0.3.7 | 2026-08-02 | `PENDING-REQ-20260801-AGENT-COMMUNE-UI-01` | Agent's Commune 交互卡片、状态投影、历史按 Agent 分组与 CWD 恢复转 Active | 新增 `REQ-AGENT-COMMUNE-UI-02` | 用户明确「预审批刚刚需求」 |
 | v0.3.6 | 2026-07-31 | `PENDING-REQ-RIDGE-KERNEL-HOST-01` | 内核进程与外壳生命周期（深根模式）转 Active | 新增 `REQ-RIDGE-KERNEL-HOST-01` | 用户明确「全数批准」 |
 | v0.3.6 | 2026-07-31 | `PENDING-REQ-RIDGE-KERNEL-DOMAIN-01` | 领域能力 SSOT 在内核转 Active | 新增 `REQ-RIDGE-KERNEL-DOMAIN-01` | 同上 |
 | v0.3.6 | 2026-07-31 | `PENDING-REQ-RIDGE-MCP-AS-KERNEL-API-01` | ridge-mcp 接内核面转 Active | 新增 `REQ-RIDGE-MCP-AS-KERNEL-API-01` | 同上 |
