@@ -223,6 +223,7 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
             cols,
             is_alt,
             is_inline_tui,
+            false,
         )
         .map_err(|e| e.to_string())
     }

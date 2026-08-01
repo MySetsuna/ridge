@@ -11,6 +11,8 @@ export const DEFAULT_MAX_QUEUED_INPUT_BYTES = 256 * 1024;
 export const DEFAULT_INPUT_BATCH_WINDOW_MS = 0;
 export const DEFAULT_INPUT_THROTTLE_MS = 8;
 export const DEFAULT_RESIZE_DEBOUNCE_MS = 40;
+/** Keep pane input/resize from occupying the shared RPC queue indefinitely. */
+export const DEFAULT_PANE_RPC_TIMEOUT_MS = 5_000;
 export const DEFAULT_RPC_BACKOFF_BASE_MS = 100;
 export const DEFAULT_RPC_BACKOFF_MAX_MS = 4_000;
 export const DEFAULT_RPC_PAUSE_AFTER_FAILURES = 5;
@@ -70,6 +72,7 @@ export interface PaneRpcSchedulerOptions {
   inputBatchWindowMs?: number;
   inputThrottleMs?: number;
   resizeDebounceMs?: number;
+  rpcTimeoutMs?: number;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
   pauseAfterFailures?: number;
@@ -133,6 +136,7 @@ export class PaneRpcScheduler {
   private readonly inputBatchWindowMs: number;
   private readonly inputThrottleMs: number;
   private readonly resizeDebounceMs: number;
+  private readonly rpcTimeoutMs: number;
   private readonly backoffBaseMs: number;
   private readonly backoffMaxMs: number;
   private readonly pauseAfterFailures: number;
@@ -170,6 +174,10 @@ export class PaneRpcScheduler {
     this.resizeDebounceMs = Math.max(
       0,
       Math.floor(options.resizeDebounceMs ?? DEFAULT_RESIZE_DEBOUNCE_MS),
+    );
+    this.rpcTimeoutMs = Math.max(
+      1,
+      Math.floor(options.rpcTimeoutMs ?? DEFAULT_PANE_RPC_TIMEOUT_MS),
     );
     this.backoffBaseMs = Math.max(
       1,
@@ -422,7 +430,7 @@ export class PaneRpcScheduler {
       data: batch.data,
       inputSourceId: lane.sourceId,
       inputSequence: batch.sequence,
-    }, { scope: key }).then(
+    }, { scope: key, timeoutMs: this.rpcTimeoutMs }).then(
       () => {
         if (this.inputLanes.get(key) !== lane) return;
         lane.inFlight = false;
@@ -467,7 +475,7 @@ export class PaneRpcScheduler {
       paneId: lane.pane.paneId,
       rows: value.rows,
       cols: value.cols,
-    }, { scope: key }).then(
+    }, { scope: key, timeoutMs: this.rpcTimeoutMs }).then(
       () => {
         if (this.resizeLanes.get(key) !== lane) return;
         lane.inFlight = false;
