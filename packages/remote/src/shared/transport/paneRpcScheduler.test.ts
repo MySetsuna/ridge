@@ -101,6 +101,20 @@ describe('PaneRpcScheduler input admission', () => {
     });
   });
 
+  it('optionally batches a synchronous input burst before the first wire send', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc, { inputBatchWindowMs: 4 });
+
+    scheduler.enqueueInput(pane, 'a');
+    scheduler.enqueueInput(pane, 'b');
+    scheduler.enqueueInput(pane, 'c');
+    expect(rpc.calls).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(4);
+    expect(rpc.calls).toHaveLength(1);
+    expect(rpc.calls[0].params).toMatchObject({ data: 'abc', inputSequence: 1 });
+  });
+
   it('retries a timed-out batch with the same idempotency identity', async () => {
     const rpc = new FakeRpc();
     const scheduler = createScheduler(rpc, { backoffBaseMs: 100 });
@@ -251,5 +265,20 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
     await flushPromises();
     await vi.advanceTimersByTimeAsync(10_000);
     expect(rpc.calls).toHaveLength(1);
+  });
+
+  it('prunes only stale pane scopes and reports exactly which lanes retired', () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc);
+    const livePane: PaneRef = { workspaceId: 'workspace-a', paneId: 'live' };
+    const stalePane: PaneRef = { workspaceId: 'workspace-a', paneId: 'stale' };
+
+    scheduler.enqueueInput(livePane, 'a');
+    scheduler.enqueueInput(stalePane, 'b');
+    const retired = scheduler.prune(new Set(['workspace-a:live']));
+
+    expect(retired).toEqual(['workspace-a:stale']);
+    expect(rpc.cancelledScopes).toEqual(['workspace-a:stale']);
+    expect(scheduler.diagnostics.queuedInputBytes).toBe(1);
   });
 });

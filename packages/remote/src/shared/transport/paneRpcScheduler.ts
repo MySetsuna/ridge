@@ -8,6 +8,7 @@ import {
 import { paneRefKey, type PaneRef } from './wsRemote';
 
 export const DEFAULT_MAX_QUEUED_INPUT_BYTES = 256 * 1024;
+export const DEFAULT_INPUT_BATCH_WINDOW_MS = 0;
 export const DEFAULT_INPUT_THROTTLE_MS = 8;
 export const DEFAULT_RESIZE_DEBOUNCE_MS = 40;
 export const DEFAULT_RPC_BACKOFF_BASE_MS = 100;
@@ -59,6 +60,7 @@ interface ResizeLane {
 export interface PaneRpcSchedulerOptions {
   inputSourceId?: string;
   maxQueuedInputBytes?: number;
+  inputBatchWindowMs?: number;
   inputThrottleMs?: number;
   resizeDebounceMs?: number;
   backoffBaseMs?: number;
@@ -121,6 +123,7 @@ export class PaneRpcScheduler {
   private readonly resizeLanes = new Map<string, ResizeLane>();
   private readonly sourcePrefix: string;
   private readonly maxQueuedInputBytes: number;
+  private readonly inputBatchWindowMs: number;
   private readonly inputThrottleMs: number;
   private readonly resizeDebounceMs: number;
   private readonly backoffBaseMs: number;
@@ -148,6 +151,10 @@ export class PaneRpcScheduler {
     this.maxQueuedInputBytes = Math.max(
       1,
       Math.floor(options.maxQueuedInputBytes ?? DEFAULT_MAX_QUEUED_INPUT_BYTES),
+    );
+    this.inputBatchWindowMs = Math.max(
+      0,
+      Math.floor(options.inputBatchWindowMs ?? DEFAULT_INPUT_BATCH_WINDOW_MS),
     );
     this.inputThrottleMs = Math.max(
       0,
@@ -186,16 +193,30 @@ export class PaneRpcScheduler {
     lane.queued += data;
     lane.queuedBytes += bytes;
     this.counters.inputBytesAccepted += bytes;
+    if (
+      this.inputBatchWindowMs > 0 &&
+      !lane.active &&
+      !lane.inFlight &&
+      !lane.paused &&
+      !lane.retryTimer &&
+      !lane.throttleTimer
+    ) {
+      lane.throttleTimer = setTimeout(() => {
+        lane.throttleTimer = null;
+        this.drainInput(paneRefKey(pane), lane);
+      }, this.inputBatchWindowMs);
+      return true;
+    }
     this.drainInput(paneRefKey(pane), lane);
     return true;
   }
 
-  scheduleResize(pane: PaneRef, rows: number, cols: number): void {
+  scheduleResize(pane: PaneRef, rows: number, cols: number): boolean {
     this.counters.resizeCalls += 1;
     const normalized = { rows: Math.floor(rows), cols: Math.floor(cols) };
     if (!Number.isFinite(rows) || !Number.isFinite(cols) || normalized.rows <= 0 || normalized.cols <= 0) {
       this.counters.resizeSuppressed += 1;
-      return;
+      return false;
     }
     const key = paneRefKey(pane);
     let lane = this.resizeLanes.get(key);
@@ -219,10 +240,11 @@ export class PaneRpcScheduler {
       (!lane.inFlight && !lane.latest && lane.lastAppliedSignature === signature)
     ) {
       this.counters.resizeSuppressed += 1;
-      return;
+      return false;
     }
     lane.latest = normalized;
     this.scheduleResizeDrain(key, lane, this.resizeDebounceMs);
+    return true;
   }
 
   resume(pane: PaneRef): void {
@@ -253,21 +275,35 @@ export class PaneRpcScheduler {
   }
 
   retire(pane: PaneRef): void {
-    const key = paneRefKey(pane);
-    const input = this.inputLanes.get(key);
+    this.retireScope(paneRefKey(pane));
+  }
+
+  retireScope(scope: string): void {
+    const input = this.inputLanes.get(scope);
     if (input) this.clearTimer(input);
-    const resize = this.resizeLanes.get(key);
+    const resize = this.resizeLanes.get(scope);
     if (resize?.timer) clearTimeout(resize.timer);
-    this.inputLanes.delete(key);
-    this.resizeLanes.delete(key);
-    this.rpc.cancelScope(key);
+    this.inputLanes.delete(scope);
+    this.resizeLanes.delete(scope);
+    this.rpc.cancelScope(scope);
   }
 
   dispose(): void {
     const panes = new Map<string, PaneRef>();
     for (const [key, lane] of this.inputLanes) panes.set(key, lane.pane);
     for (const [key, lane] of this.resizeLanes) panes.set(key, lane.pane);
-    for (const pane of panes.values()) this.retire(pane);
+    for (const key of panes.keys()) this.retireScope(key);
+  }
+
+  prune(liveScopes: ReadonlySet<string>): string[] {
+    const tracked = new Set([...this.inputLanes.keys(), ...this.resizeLanes.keys()]);
+    const retired: string[] = [];
+    for (const scope of tracked) {
+      if (liveScopes.has(scope)) continue;
+      this.retireScope(scope);
+      retired.push(scope);
+    }
+    return retired;
   }
 
   get diagnostics(): PaneRpcSchedulerDiagnostics {

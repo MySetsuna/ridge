@@ -32,6 +32,7 @@ import type { CloudControllerHandle } from '$lib/remote/cloud/cloudControllerBoo
 import { bridge, type TauriEvent } from '$lib/transport/tauriShim/bridge';
 import {
   classifyFailure,
+  PaneRpcScheduler,
   paneRefKey,
   RpcCancelledError,
   type RemoteLink,
@@ -71,24 +72,6 @@ interface ThemeEntryLite {
 const DEFAULT_ROWS = 24;
 const DEFAULT_COLS = 80;
 const INPUT_BATCH_WINDOW_MS = 4;
-const INPUT_RETRY_BASE_MS = 250;
-const INPUT_RETRY_MAX_MS = 8_000;
-const INPUT_FAILURE_PAUSE_THRESHOLD = 5;
-const INPUT_FAILURE_PAUSE_MS = 30_000;
-
-interface InputLane {
-  queued: string;
-  nextSequence: number;
-  inFlight: boolean;
-  consecutiveFailures: number;
-  timer: ReturnType<typeof setTimeout> | null;
-}
-
-function createInputSourceId(): string {
-  const randomUuid = globalThis.crypto?.randomUUID?.();
-  if (randomUuid) return randomUuid;
-  return `cloud-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
 
 /**
  * §history-pull（2026-07-02）: 首屏拉取的 scrollback 上限（约 1.5 屏）。host 不再推
@@ -178,18 +161,11 @@ export class CloudRemoteConnection implements RemoteLink {
   private _failure: ConnectionFailure | null = null;
   private _activeWorkspaceId = '';
   private _refreshSeq = 0;
-  private readonly inputSourceId = createInputSourceId();
-  private inputLanes = new Map<string, InputLane>();
+  private readonly paneScheduler: PaneRpcScheduler;
   private paneRpcControllers = new Map<string, AbortController>();
   private closingPaneKeys = new Set<string>();
   private deadPaneKeys = new Set<string>();
   private disposed = false;
-  private resizeLanes = new Map<string, {
-    inFlight: boolean;
-    activeSignature: string | null;
-    lastAppliedSignature: string | null;
-    pending: { pane: PaneRef; rows: number; cols: number; signature: string } | null;
-  }>();
 
   private stateListeners = new Set<(s: ConnectionState) => void>();
   private reconnectListeners = new Set<() => void>();
@@ -233,10 +209,28 @@ export class CloudRemoteConnection implements RemoteLink {
     this.handle = handle;
     this.bridge = bridgeInstance;
     this.fixedAuthorized = options.fixedAuthorized === true;
+    this.paneScheduler = new PaneRpcScheduler(
+      {
+        request: <T = unknown>(method: string, params?: unknown, rpcOptions?: RpcRequestOptions) => {
+          const scope = rpcOptions?.scope;
+          if (!scope) return Promise.reject(new RpcCancelledError(method));
+          if (!params || typeof params !== 'object' || Array.isArray(params)) {
+            return Promise.reject(new TypeError(`Invalid pane RPC params: ${method}`));
+          }
+          const signal = this._paneRpcSignalForKey(scope);
+          if (!signal) return Promise.reject(new RpcCancelledError(method));
+          return this.bridge.invoke<T>(method, params as Record<string, unknown>, {
+            ...rpcOptions,
+            signal,
+          });
+        },
+        cancelScope: (scope) => this._abortPaneRpcs(scope),
+      },
+      { inputBatchWindowMs: INPUT_BATCH_WINDOW_MS },
+    );
   }
 
-  private _paneRpcSignal(pane: PaneRef): AbortSignal | null {
-    const key = paneRefKey(pane);
+  private _paneRpcSignalForKey(key: string): AbortSignal | null {
     if (
       this.disposed
       || this.closingPaneKeys.has(key)
@@ -252,6 +246,10 @@ export class CloudRemoteConnection implements RemoteLink {
     return controller.signal;
   }
 
+  private _paneRpcSignal(pane: PaneRef): AbortSignal | null {
+    return this._paneRpcSignalForKey(paneRefKey(pane));
+  }
+
   private _invokePane<T>(
     pane: PaneRef,
     cmd: string,
@@ -262,9 +260,12 @@ export class CloudRemoteConnection implements RemoteLink {
     return this.bridge.invoke<T>(cmd, args, { signal });
   }
 
-  private _abortPaneRpcs(key: string): void {
-    this.paneRpcControllers.get(key)?.abort();
+  private _abortPaneRpcs(key: string): number {
+    const controller = this.paneRpcControllers.get(key);
+    if (!controller) return 0;
+    controller.abort();
     this.paneRpcControllers.delete(key);
+    return 1;
   }
 
   private _abortAllPaneRpcs(): void {
@@ -272,12 +273,10 @@ export class CloudRemoteConnection implements RemoteLink {
     this.paneRpcControllers.clear();
   }
 
-  private _deactivatePane(key: string): void {
+  private _deactivatePane(key: string, scopeAlreadyRetired = false): void {
     this.deadPaneKeys.add(key);
     this.closingPaneKeys.delete(key);
-    this._abortPaneRpcs(key);
-    this._dropInputLane(key);
-    this.resizeLanes.delete(key);
+    if (!scopeAlreadyRetired) this.paneScheduler.retireScope(key);
     this.subscribing.delete(key);
     this.fetchingOlder.delete(key);
     this.scrollbackCursor.delete(key);
@@ -404,7 +403,6 @@ export class CloudRemoteConnection implements RemoteLink {
     this.subscribing.clear();
     this.scrollbackCursor.clear();
     this.fetchingOlder.clear();
-    this.resizeLanes.clear();
   }
 
   private async _handleReconnect(): Promise<void> {
@@ -438,6 +436,7 @@ export class CloudRemoteConnection implements RemoteLink {
       // register_pane_delta_channel → scrollback 从缓存重绘、但实时渲染不恢复。
       // 先清掉旧订阅状态，后续 subscribePane 才会在新传输上真正重跑 _subscribe。
       this._teardownSubscriptions();
+      queueMicrotask(() => this.paneScheduler.resumeAll());
       this.reconnectListeners.forEach((fn) => {
         try { fn(); } catch { /* listener owns its errors */ }
       });
@@ -549,6 +548,7 @@ export class CloudRemoteConnection implements RemoteLink {
     if (!paneId || !workspaceId) return;
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
+    this.paneScheduler.resume(pane);
     if (this.ptyUnlisten.has(key)) {
       if (opts?.active !== undefined) {
         void this.bridge.subscribePane(paneId, workspaceId, opts.active);
@@ -711,158 +711,32 @@ export class CloudRemoteConnection implements RemoteLink {
     }
   }
 
-  sendStdin(pane: PaneRef, data: string): void {
-    if (!pane.paneId || !data) return;
+  sendStdin(pane: PaneRef, data: string): boolean {
+    if (!pane.paneId || !data) return false;
     const key = paneRefKey(pane);
-    if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
-    let lane = this.inputLanes.get(key);
-    if (!lane) {
-      lane = {
-        queued: '',
-        nextSequence: 1,
-        inFlight: false,
-        consecutiveFailures: 0,
-        timer: null,
-      };
-      this.inputLanes.set(key, lane);
-    }
-    lane.queued += data;
-    this._scheduleInputDrain(key, pane, lane, INPUT_BATCH_WINDOW_MS);
-  }
-
-  private _scheduleInputDrain(
-    key: string,
-    pane: PaneRef,
-    lane: InputLane,
-    delayMs: number,
-  ): void {
-    if (lane.inFlight || lane.timer || this.inputLanes.get(key) !== lane) return;
-    lane.timer = setTimeout(() => {
-      lane.timer = null;
-      void this._drainInputLane(key, pane, lane);
-    }, delayMs);
-  }
-
-  private async _drainInputLane(key: string, pane: PaneRef, lane: InputLane): Promise<void> {
-    if (lane.inFlight || !lane.queued || this.inputLanes.get(key) !== lane) return;
-    const data = lane.queued;
-    const sequence = lane.nextSequence;
-    lane.queued = '';
-    lane.inFlight = true;
-    try {
-      await this._invokePane(pane, 'write_to_pty', {
-        paneId: pane.paneId,
-        ...(pane.workspaceId ? { workspaceId: pane.workspaceId } : {}),
-        data,
-        inputSourceId: this.inputSourceId,
-        inputSequence: sequence,
-      });
-      if (this.inputLanes.get(key) !== lane) return;
-      lane.nextSequence += 1;
-      lane.consecutiveFailures = 0;
-    } catch {
-      if (this.inputLanes.get(key) !== lane) return;
-      // Same sequence is safe to retry: host serializes/dedupes it before PTY write.
-      lane.queued = data + lane.queued;
-      lane.consecutiveFailures += 1;
-    } finally {
-      lane.inFlight = false;
-      if (this.inputLanes.get(key) !== lane || !lane.queued) return;
-      const delay =
-        lane.consecutiveFailures >= INPUT_FAILURE_PAUSE_THRESHOLD
-          ? INPUT_FAILURE_PAUSE_MS
-          : lane.consecutiveFailures > 0
-            ? Math.min(
-                INPUT_RETRY_BASE_MS * 2 ** (lane.consecutiveFailures - 1),
-                INPUT_RETRY_MAX_MS,
-              )
-            : INPUT_BATCH_WINDOW_MS;
-      this._scheduleInputDrain(key, pane, lane, delay);
-    }
-  }
-
-  private _dropInputLane(key: string): void {
-    const lane = this.inputLanes.get(key);
-    if (lane?.timer) clearTimeout(lane.timer);
-    this.inputLanes.delete(key);
-  }
-
-  private _dropAllInputLanes(): void {
-    for (const lane of this.inputLanes.values()) {
-      if (lane.timer) clearTimeout(lane.timer);
-    }
-    this.inputLanes.clear();
+    if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return false;
+    return this.paneScheduler.enqueueInput(pane, data);
   }
 
   refreshPane(pane: PaneRef, rows: number, cols: number, _pixelWidth?: number, _pixelHeight?: number): void {
     this._resize(pane, rows, cols);
   }
   claimPane(pane: PaneRef, rows: number, cols: number, _pixelWidth?: number, _pixelHeight?: number): void {
+    this.paneScheduler.resume(pane);
     this._resize(pane, rows, cols);
   }
   private _resize(pane: PaneRef, rows: number, cols: number): void {
     if (!pane.paneId || rows <= 0 || cols <= 0) return;
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
-    const signature = `${rows}x${cols}`;
-    let lane = this.resizeLanes.get(key);
-    if (!lane) {
-      lane = {
-        inFlight: false,
-        activeSignature: null,
-        lastAppliedSignature: null,
-        pending: null,
-      };
-      this.resizeLanes.set(key, lane);
-    }
-    if (
-      lane.pending?.signature === signature
-      || (!lane.pending && lane.activeSignature === signature)
-      || (!lane.inFlight && lane.lastAppliedSignature === signature)
-    ) {
-      return;
-    }
-    // latest-value-wins: one in-flight request plus one replaceable pending value.
-    lane.pending = { pane, rows, cols, signature };
-    this._refreshSeq++;
-    void this._drainResizeLane(key, lane);
-  }
-
-  private async _drainResizeLane(
-    key: string,
-    lane: {
-      inFlight: boolean;
-      activeSignature: string | null;
-      lastAppliedSignature: string | null;
-      pending: { pane: PaneRef; rows: number; cols: number; signature: string } | null;
-    },
-  ): Promise<void> {
-    if (lane.inFlight || this.resizeLanes.get(key) !== lane) return;
-    const next = lane.pending;
-    if (!next) return;
-    lane.pending = null;
-    lane.inFlight = true;
-    lane.activeSignature = next.signature;
-    try {
-      await this._invokePane(next.pane, 'resize_pane', {
-        ...(next.pane.workspaceId ? { workspaceId: next.pane.workspaceId } : {}),
-        paneId: next.pane.paneId,
-        rows: next.rows,
-        cols: next.cols,
-      });
-      if (this.resizeLanes.get(key) === lane) lane.lastAppliedSignature = next.signature;
-    } catch {
-      // A later geometry observation retries; never fan out retries from a timeout.
-    } finally {
-      lane.inFlight = false;
-      lane.activeSignature = null;
-      if (this.resizeLanes.get(key) === lane && lane.pending) {
-        void this._drainResizeLane(key, lane);
-      }
-    }
+    if (this.paneScheduler.scheduleResize(pane, rows, cols)) this._refreshSeq++;
   }
   lastRefreshSeq(): number {
     return this._refreshSeq;
+  }
+
+  get rpcSchedulingDiagnostics() {
+    return this.paneScheduler.diagnostics;
   }
 
   async createPane(): Promise<string | null> {
@@ -898,15 +772,13 @@ export class CloudRemoteConnection implements RemoteLink {
       || this.deadPaneKeys.has(key)
     ) return false;
     this.closingPaneKeys.add(key);
-    this._abortPaneRpcs(key);
-    this._dropInputLane(key);
-    this.resizeLanes.delete(key);
+    this.paneScheduler.retire(pane);
     try {
       await this.bridge.invoke('close_pane', {
         paneId: pane.paneId,
         ...(pane.workspaceId ? { workspaceId: pane.workspaceId } : {}),
       });
-      this._deactivatePane(key);
+      this._deactivatePane(key, true);
       void this._refreshPanes();
       return true;
     } catch {
@@ -1127,12 +999,11 @@ export class CloudRemoteConnection implements RemoteLink {
       ...this.subscribing,
       ...this.scrollbackCursor.keys(),
       ...this.fetchingOlder,
-      ...this.inputLanes.keys(),
-      ...this.resizeLanes.keys(),
       ...this.paneRpcControllers.keys(),
     ]);
+    const schedulerRetired = new Set(this.paneScheduler.prune(liveIds));
     for (const key of tracked) {
-      if (!liveIds.has(key)) this._deactivatePane(key);
+      if (!liveIds.has(key)) this._deactivatePane(key, schedulerRetired.has(key));
     }
   }
   send(): void {
@@ -1148,8 +1019,8 @@ export class CloudRemoteConnection implements RemoteLink {
     this.disposed = true;
     this._failure = null; // 主动断开，清掉失败分级
     this.setState('disconnected');
+    this.paneScheduler.dispose();
     this._teardownSubscriptions();
-    this._dropAllInputLanes();
     if (this.treeUnlisten) {
       try { this.treeUnlisten(); } catch { /* already gone */ }
       this.treeUnlisten = null;

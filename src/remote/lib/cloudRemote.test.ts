@@ -22,6 +22,7 @@ import { CloudRemoteConnection } from './cloudRemote';
 import type { PaneNode } from '$lib/types';
 import {
   RpcClient,
+  RpcTimeoutError,
   type ChannelTransport,
   type ControlFrame,
   type OutboundFrame,
@@ -385,14 +386,16 @@ describe('CloudRemoteConnection panes', () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd !== 'write_to_pty') return Promise.resolve(undefined);
       attempts += 1;
-      return attempts === 1 ? Promise.reject(new Error('timeout')) : Promise.resolve(undefined);
+      return attempts === 1
+        ? Promise.reject(new RpcTimeoutError('write_to_pty', 1_000))
+        : Promise.resolve(undefined);
     });
     vi.useFakeTimers();
     try {
       conn.sendStdin(PANE, 'x');
       await vi.advanceTimersByTimeAsync(4);
       expect(attempts).toBe(1);
-      await vi.advanceTimersByTimeAsync(249);
+      await vi.advanceTimersByTimeAsync(99);
       expect(attempts).toBe(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(attempts).toBe(2);
@@ -408,28 +411,34 @@ describe('CloudRemoteConnection panes', () => {
     }
   });
 
-  it('pauses input retries for 30 seconds after five consecutive failures', async () => {
+  it('pauses input retries after five consecutive timeouts until explicit pane recovery', async () => {
     const conn = await connected();
     invokeMock.mockClear();
     let attempts = 0;
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd !== 'write_to_pty') return Promise.resolve(undefined);
       attempts += 1;
-      return Promise.reject(new Error('write_to_pty timed out'));
+      return Promise.reject(new RpcTimeoutError('write_to_pty', 1_000));
     });
     vi.useFakeTimers();
     try {
       conn.sendStdin(PANE, 'x');
       await vi.advanceTimersByTimeAsync(4);
-      await vi.advanceTimersByTimeAsync(250);
-      await vi.advanceTimersByTimeAsync(500);
-      await vi.advanceTimersByTimeAsync(1_000);
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(200);
+      await vi.advanceTimersByTimeAsync(400);
+      await vi.advanceTimersByTimeAsync(800);
       expect(attempts).toBe(5);
 
-      await vi.advanceTimersByTimeAsync(29_999);
+      await vi.advanceTimersByTimeAsync(30_000);
       expect(attempts).toBe(5);
-      await vi.advanceTimersByTimeAsync(1);
+      expect(conn.rpcSchedulingDiagnostics).toMatchObject({
+        pausedLanes: 1,
+        timeoutFailures: 5,
+      });
+
+      conn.claimPane(PANE, 24, 80);
+      await Promise.resolve();
       expect(attempts).toBe(6);
     } finally {
       conn.disconnect();
@@ -439,18 +448,25 @@ describe('CloudRemoteConnection panes', () => {
 
   it('claimPane resizes the host pty and bumps the refresh seq', async () => {
     const conn = await connected();
-    const before = conn.lastRefreshSeq();
-    conn.claimPane(PANE, 30, 100, 0, 0);
-    await flush();
-    expect(invokeMock).toHaveBeenCalledWith('resize_pane', {
-      workspaceId: 'ws1', paneId: 'pane-a', rows: 30, cols: 100,
-    }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    expect(conn.lastRefreshSeq()).toBe(before + 1);
+    vi.useFakeTimers();
+    try {
+      const before = conn.lastRefreshSeq();
+      conn.claimPane(PANE, 30, 100, 0, 0);
+      await vi.advanceTimersByTimeAsync(40);
+      expect(invokeMock).toHaveBeenCalledWith('resize_pane', {
+        workspaceId: 'ws1', paneId: 'pane-a', rows: 30, cols: 100,
+      }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+      expect(conn.lastRefreshSeq()).toBe(before + 1);
+    } finally {
+      conn.disconnect();
+      vi.useRealTimers();
+    }
   });
 
   it('coalesces resize bursts to one in-flight plus the latest value', async () => {
     const conn = await connected();
     invokeMock.mockClear();
+    vi.useFakeTimers();
     let releaseFirst!: () => void;
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd !== 'resize_pane') return Promise.resolve(undefined);
@@ -458,30 +474,37 @@ describe('CloudRemoteConnection panes', () => {
       return Promise.resolve(undefined);
     });
 
-    conn.refreshPane(PANE, 20, 80);
-    conn.refreshPane(PANE, 21, 81);
-    conn.refreshPane(PANE, 22, 82);
-    await Promise.resolve();
-    expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')).toHaveLength(1);
+    try {
+      conn.refreshPane(PANE, 20, 80);
+      await vi.advanceTimersByTimeAsync(40);
+      conn.refreshPane(PANE, 21, 81);
+      conn.refreshPane(PANE, 22, 82);
+      expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')).toHaveLength(1);
 
-    releaseFirst();
-    await flush();
-    const resizeCalls = invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane');
-    expect(resizeCalls).toHaveLength(2);
-    expect(resizeCalls[1]).toEqual([
-      'resize_pane',
-      { workspaceId: 'ws1', paneId: 'pane-a', rows: 22, cols: 82 },
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    ]);
+      releaseFirst();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(40);
+      const resizeCalls = invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane');
+      expect(resizeCalls).toHaveLength(2);
+      expect(resizeCalls[1]).toEqual([
+        'resize_pane',
+        { workspaceId: 'ws1', paneId: 'pane-a', rows: 22, cols: 82 },
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ]);
 
-    conn.refreshPane(PANE, 22, 82);
-    await flush();
-    expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')).toHaveLength(2);
+      conn.refreshPane(PANE, 22, 82);
+      await vi.advanceTimersByTimeAsync(40);
+      expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')).toHaveLength(2);
+    } finally {
+      conn.disconnect();
+      vi.useRealTimers();
+    }
   });
 
   it('coalesces 1,000 resize observations to one in-flight RPC plus the latest value', async () => {
     const conn = await connected();
     invokeMock.mockClear();
+    vi.useFakeTimers();
     const before = conn.lastRefreshSeq();
     let releaseFirst!: () => void;
     invokeMock.mockImplementation((cmd: string) => {
@@ -490,23 +513,31 @@ describe('CloudRemoteConnection panes', () => {
       return Promise.resolve(undefined);
     });
 
-    for (let i = 0; i < 1_000; i += 1) {
-      conn.refreshPane(PANE, 20 + i, 80 + i);
-    }
-    await Promise.resolve();
-    expect(invokeMock.mock.calls.filter((call) => call[0] === 'resize_pane')).toHaveLength(1);
-    expect(conn.lastRefreshSeq()).toBe(before + 1_000);
+    try {
+      conn.refreshPane(PANE, 20, 80);
+      await vi.advanceTimersByTimeAsync(40);
+      for (let i = 1; i < 1_000; i += 1) {
+        conn.refreshPane(PANE, 20 + i, 80 + i);
+      }
+      expect(invokeMock.mock.calls.filter((call) => call[0] === 'resize_pane')).toHaveLength(1);
+      expect(conn.lastRefreshSeq()).toBe(before + 1_000);
 
-    releaseFirst();
-    await flush();
-    const resizes = invokeMock.mock.calls.filter((call) => call[0] === 'resize_pane');
-    expect(resizes).toHaveLength(2);
-    expect(resizes[1][1]).toMatchObject({ rows: 1_019, cols: 1_079 });
+      releaseFirst();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(40);
+      const resizes = invokeMock.mock.calls.filter((call) => call[0] === 'resize_pane');
+      expect(resizes).toHaveLength(2);
+      expect(resizes[1][1]).toMatchObject({ rows: 1_019, cols: 1_079 });
+    } finally {
+      conn.disconnect();
+      vi.useRealTimers();
+    }
   });
 
   it('drops queued resize work when the pane closes', async () => {
     const conn = await connected();
     invokeMock.mockClear();
+    vi.useFakeTimers();
     let releaseResize!: () => void;
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === 'resize_pane') {
@@ -515,14 +546,20 @@ describe('CloudRemoteConnection panes', () => {
       return Promise.resolve(undefined);
     });
 
-    conn.refreshPane(PANE, 20, 80);
-    conn.refreshPane(PANE, 30, 100);
-    await Promise.resolve();
-    await conn.closePane(PANE);
-    releaseResize();
-    await flush();
+    try {
+      conn.refreshPane(PANE, 20, 80);
+      await vi.advanceTimersByTimeAsync(40);
+      conn.refreshPane(PANE, 30, 100);
+      await conn.closePane(PANE);
+      releaseResize();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(40);
 
-    expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')).toHaveLength(1);
+      expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')).toHaveLength(1);
+    } finally {
+      conn.disconnect();
+      vi.useRealTimers();
+    }
   });
 
   it('createPane splits the first existing leaf', async () => {
@@ -626,6 +663,37 @@ describe('CloudRemoteConnection reconnect', () => {
     await flush();
     expect(conn.state()).toBe('error');
   });
+
+  it('preserves an admitted input batch and resumes it with the same identity after re-auth', async () => {
+    vi.useFakeTimers();
+    const { injectedBridge, rpc, sent } = rpcBackedBridge();
+    const conn = new CloudRemoteConnection(fakeHandle() as never, injectedBridge);
+    try {
+      await conn.init();
+      conn.setVerifiedCode('123456');
+      conn.sendStdin(PANE, 'kept');
+      await vi.advanceTimersByTimeAsync(4);
+      const first = sent.find(
+        (frame) => 'method' in frame && frame.method === 'write_to_pty',
+      );
+      expect(first).toBeDefined();
+
+      conn.notifyState('disconnected');
+      conn.notifyState('connected');
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+      const writes = sent.filter(
+        (frame) => 'method' in frame && frame.method === 'write_to_pty',
+      );
+      expect(writes).toHaveLength(2);
+      expect(writes[1]).toMatchObject({ params: (first as { params: unknown }).params });
+      expect(rpc.inFlight).toBe(1);
+    } finally {
+      conn.disconnect();
+      rpc.dispose();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('CloudRemoteConnection lifecycle', () => {
@@ -649,7 +717,7 @@ describe('CloudRemoteConnection lifecycle', () => {
     try {
       conn.sendStdin(PANE, 'x');
       conn.refreshPane(PANE, 30, 100);
-      await vi.advanceTimersByTimeAsync(4);
+      await vi.advanceTimersByTimeAsync(40);
       expect(rpc.inFlight).toBe(2);
 
       await stop(conn);
@@ -666,7 +734,7 @@ describe('CloudRemoteConnection lifecycle', () => {
       ).length;
       conn.sendStdin(PANE, 'after-destroy');
       conn.refreshPane(PANE, 40, 120);
-      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(50);
       expect(sent.filter(
         (frame) => 'method' in frame
           && (frame.method === 'write_to_pty' || frame.method === 'resize_pane'),
