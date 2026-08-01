@@ -55,7 +55,7 @@ pub struct ForeignAttachment {
 
 /// 进程内主机注册表（AppState 持有 `Arc<HostRegistry>`）。
 pub struct HostRegistry {
-    hosts: RwLock<HashMap<String, HostRecord>>,
+    hosts: RwLock<ridge_core::remote::RemoteHostTopology>,
     /// (host_id, remote_pane_id) → stdin sink toward outbound transport.
     live_sinks: RwLock<HashMap<(String, String), LiveInputSink>>,
     /// (host_id, remote_pane_id) → stdout bytes injected from host (R17-HOST-OUT).
@@ -79,7 +79,7 @@ pub struct HostRegistry {
 impl Default for HostRegistry {
     fn default() -> Self {
         Self {
-            hosts: RwLock::new(HashMap::new()),
+            hosts: RwLock::new(ridge_core::remote::RemoteHostTopology::default()),
             live_sinks: RwLock::new(HashMap::new()),
             live_outputs: RwLock::new(HashMap::new()),
             foreign_by_pane: RwLock::new(HashMap::new()),
@@ -125,26 +125,26 @@ impl HostRegistry {
     }
 
     pub fn snapshot(&self) -> Vec<HostRecord> {
-        let mut v: Vec<HostRecord> = self.hosts.read().values().cloned().collect();
-        v.sort_by(|a, b| a.label.cmp(&b.label));
-        v
+        self.hosts.read().snapshot()
     }
 
     pub fn upsert(&self, rec: HostRecord) {
-        self.hosts.write().insert(rec.id.clone(), rec);
+        self.hosts.write().upsert(rec);
     }
 
     pub fn remove(&self, id: &str) -> bool {
         self.live_sinks
             .write()
             .retain(|(hid, _), _| hid != id);
-        self.hosts.write().remove(id).is_some()
+        self.hosts.write().remove(id)
     }
 
     pub fn set_status(&self, id: &str, status: HostStatus, detail: impl Into<String>) {
-        if let Some(h) = self.hosts.write().get_mut(id) {
+        let mut hosts = self.hosts.write();
+        if let Some(mut h) = hosts.get(id) {
             h.status = status;
             h.detail = detail.into();
+            hosts.upsert(h);
         }
     }
 
@@ -278,8 +278,10 @@ impl HostRegistry {
 
     /// Apply list_panes result onto HostRecord.sessions.
     pub fn replace_sessions(&self, host_id: &str, sessions: Vec<HostSessionMeta>) {
-        if let Some(h) = self.hosts.write().get_mut(host_id) {
+        let mut hosts = self.hosts.write();
+        if let Some(mut h) = hosts.get(host_id) {
             h.sessions = sessions;
+            hosts.upsert(h);
         }
     }
 
@@ -321,7 +323,8 @@ impl HostRegistry {
     pub fn outbound_connected_count(&self) -> usize {
         self.hosts
             .read()
-            .values()
+            .snapshot()
+            .into_iter()
             .filter(|h| h.status == HostStatus::Connected)
             .count()
     }
@@ -375,7 +378,7 @@ impl HostRegistry {
     }
 
     pub fn get(&self, id: &str) -> Option<HostRecord> {
-        self.hosts.read().get(id).cloned()
+        self.hosts.read().get(id)
     }
 
     /// R17-HOST-LIST: sessions for a host (empty if missing).
@@ -385,10 +388,12 @@ impl HostRegistry {
 
     /// Mark a session attached flag.
     pub fn set_session_attached(&self, host_id: &str, session_id: &str, attached: bool) {
-        if let Some(h) = self.hosts.write().get_mut(host_id) {
+        let mut hosts = self.hosts.write();
+        if let Some(mut h) = hosts.get(host_id) {
             if let Some(s) = h.sessions.iter_mut().find(|s| s.id == session_id) {
                 s.attached = attached;
             }
+            hosts.upsert(h);
         }
     }
 }

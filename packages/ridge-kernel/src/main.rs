@@ -54,7 +54,7 @@ pub struct AppState {
     /// Kernel-owned Agent roster/topology; process binding remains a host adapter.
     pub roster: Arc<std::sync::Mutex<ridge_core::teammate::topology::TopologyGraph>>,
     /// Kernel-owned remote host topology; shells only project or transport it.
-    pub remote_hosts: Arc<std::sync::Mutex<HashMap<String, ridge_core::remote::HostRecord>>>,
+    pub remote_hosts: Arc<std::sync::Mutex<ridge_core::remote::RemoteHostTopology>>,
     pub remote_hosts_path: std::path::PathBuf,
     /// PTY process lifetime belongs to the kernel, not an API shell.
     pub ptys: Arc<ridge_kernel::pty::PtyRegistry>,
@@ -193,10 +193,10 @@ async fn main() -> Result<()> {
         roster: Arc::new(std::sync::Mutex::new(
             ridge_core::teammate::topology::TopologyGraph::new(),
         )),
-        remote_hosts: Arc::new(std::sync::Mutex::new(load_remote_hosts().unwrap_or_else(|error| {
+        remote_hosts: Arc::new(std::sync::Mutex::new(ridge_core::remote::RemoteHostTopology::from_records(load_remote_hosts().unwrap_or_else(|error| {
             tracing::warn!(%error, "remote host topology restore failed; starting empty");
             HashMap::new()
-        }))),
+        })))),
         remote_hosts_path: remote_hosts_path(),
         ptys: Arc::new(ridge_kernel::pty::PtyRegistry::default()),
     };
