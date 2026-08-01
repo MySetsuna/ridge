@@ -44,4 +44,6 @@ These require real external evidence and are not falsified by fixtures:
 - public WebRTC/TURN latency, CPU, bandwidth, and reconnect measurements;
 - physical two-window focus/close race and dual-Host drag/resize run.
 
+The isolated `scripts/remote-gc-e2e.mjs` attempt was not counted as product evidence: the temporary `rdg` LAN host intentionally rejects `list_saved_workspace_files` and exposes no create-pane/create-workspace controls, while the fixture blocks service workers. This is a harness/host mismatch, not a pass or a suppressed warning.
+
 No carry-over is marked complete without its corresponding runtime trace or measurement.
