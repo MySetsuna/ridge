@@ -57,6 +57,28 @@ use crate::state::AppState;
 /// 收到后立即触发一次 poll，免去等待下一个轮询间隔。
 pub const AUTH_FOCUS_EVENT: &str = "ridge://auth-focus";
 
+/// Emitted immediately before a native hide. WebView2 may not deliver a DOM
+/// `visibilitychange` for an OS-level hide, so the frontend uses this event to
+/// release cold terminal renderers and bounded scrollback deterministically.
+pub const MEMORY_RECLAIM_EVENT: &str = "ridge://memory-reclaim";
+
+/// Emitted after a tray/deep-root restore so memory-parked terminal renderers
+/// can be reattached before the next user interaction.
+pub const MEMORY_RESTORE_EVENT: &str = "ridge://memory-restore";
+
+/// Tell the current WebView to release cold renderer/history resources before
+/// the native window is hidden. Best effort by design: hiding must still work
+/// when a stale WebView has already lost its event channel.
+pub fn prepare_for_hide<R: Runtime, T: Emitter<R>>(window: &T) {
+    if let Err(error) = window.emit(MEMORY_RECLAIM_EVENT, ()) {
+        tracing::debug!(
+            target: "ridge::deep_root",
+            %error,
+            "memory reclaim event unavailable before hide"
+        );
+    }
+}
+
 /// 把主窗口拉回前台（show + unminimize + set_focus）并广播 [`AUTH_FOCUS_EVENT`]。
 ///
 /// 供 deep-link 的 `on_open_url`（`ridge://auth/focus`）与 single-instance 回调复用：
@@ -100,8 +122,9 @@ pub fn enter_deep_root_mode(window: WebviewWindow, state: State<AppState>) -> Re
         return Err("NO_ACTIVE_CLOUD_REMOTE".to_string());
     }
 
-    // v1：hide（隐藏，不销毁）。连接活在隐藏的 WebView 里，保活成立。
-    // destroy-based 全量方案见模块文档（未实现，前置条件未达成）。
+    // v1：hide（隐藏，不销毁）。先显式回收终端冷资源；承载 WebRTC 的
+    // WebView 仍保活，避免把「降内存」误做成「断远控」。
+    prepare_for_hide(&window);
     window
         .hide()
         .map_err(|e| format!("failed to hide window: {e}"))?;
@@ -146,6 +169,13 @@ pub fn restore_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), Strin
     window
         .set_focus()
         .map_err(|e| format!("failed to focus window: {e}"))?;
+    if let Err(error) = window.emit(MEMORY_RESTORE_EVENT, ()) {
+        tracing::debug!(
+            target: "ridge::deep_root",
+            %error,
+            "memory restore event unavailable after show"
+        );
+    }
     tracing::info!(target: "ridge::deep_root", "restored window from deep root mode");
     Ok(())
 }

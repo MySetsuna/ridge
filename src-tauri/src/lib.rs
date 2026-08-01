@@ -196,6 +196,7 @@ pub fn run() {
                         tracing::warn!(target: "ridge::init", error = %e, "save window state on hide-to-tray failed");
                     }
                     api.prevent_close();
+                    crate::deep_root::prepare_for_hide(window);
                     if let Err(e) = window.hide() {
                         tracing::warn!(
                             target: "ridge::deep_root",
