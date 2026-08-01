@@ -1,7 +1,7 @@
 import {
   createCloudWebrtcTransportWith,
+  PaneRpcScheduler,
   RpcClient,
-  RpcCancelledError,
   paneRefKey,
   type CloudConnectionCallbacks,
   type CloudWebrtcAdapter,
@@ -39,16 +39,24 @@ function flattenPanes(node: PaneNode | null | undefined): PaneInfo[] {
 export class CloudHostTopologyLink implements HostTopologyLink {
   private readonly workspaceByPane = new Map<string, string>();
   private readonly livePanes = new Set<string>();
+  private readonly scheduler: PaneRpcScheduler;
+  private readonly stopReconnectResume: () => void;
+
   constructor(
     private readonly adapter: CloudWebrtcAdapter,
     private readonly rpc: RpcClient,
-  ) {}
+  ) {
+    this.scheduler = new PaneRpcScheduler(rpc);
+    this.stopReconnectResume = rpc.onReconnected(() => this.scheduler.resumeAll());
+  }
 
   state() {
     return this.adapter.state();
   }
 
   disconnect(): void {
+    this.stopReconnectResume();
+    this.scheduler.dispose();
     this.rpc.dispose();
     this.adapter.close();
     this.adapter.dispose();
@@ -79,9 +87,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
       }
     }
     for (const pane of panes) {
-      const ref = { workspaceId, paneId: pane.id };
-      this.workspaceByPane.set(pane.id, workspaceId);
-      this.livePanes.add(paneRefKey(ref));
+      this.activatePane({ workspaceId, paneId: pane.id });
     }
     return panes;
   }
@@ -174,11 +180,14 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     on: boolean,
     agentId?: string,
   ): Promise<void> {
+    const pane = { workspaceId, paneId };
+    if (!this.livePanes.has(paneRefKey(pane))) throw new Error(`Pane not active: ${paneId}`);
     await this.rpc.request(
       on ? 'register_teammate_agent' : 'release_teammate_agent',
       on
         ? { workspaceId, paneId, agentId: agentId || 'agent' }
         : { workspaceId, paneId },
+      { scope: paneRefKey(pane) },
     );
   }
 
@@ -191,12 +200,15 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     paneId: string,
     shell: RemoteShellInfo,
   ): Promise<void> {
+    const pane = { workspaceId, paneId };
+    const scope = paneRefKey(pane);
+    if (!this.livePanes.has(scope)) throw new Error(`Pane not active: ${paneId}`);
     await this.rpc.request('change_pane_shell', {
       paneId,
       shell: shell.program,
       args: shell.args ?? [],
-    });
-    await this.rpc.request('activate_pane_pty', { workspaceId, paneId });
+    }, { scope });
+    await this.rpc.request('activate_pane_pty', { workspaceId, paneId }, { scope });
   }
 
   onRawBytes(fn: (pane: PaneRef, bytes: Uint8Array) => void): () => void {
@@ -214,15 +226,9 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     });
   }
 
-  sendStdin(pane: PaneRef, data: string): void {
-    if (!this.livePanes.has(paneRefKey(pane))) return;
-    void this.rpc.request('write_to_pty', {
-      workspaceId: pane.workspaceId,
-      paneId: pane.paneId,
-      data,
-    }, { scope: paneRefKey(pane) }).catch((error) => {
-      if (!(error instanceof RpcCancelledError)) return Promise.reject(error);
-    });
+  sendStdin(pane: PaneRef, data: string): boolean {
+    if (!this.livePanes.has(paneRefKey(pane))) return false;
+    return this.scheduler.enqueueInput(pane, data);
   }
 
   refreshPane(
@@ -233,29 +239,27 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     _pixelHeight: number,
   ): void {
     if (!this.livePanes.has(paneRefKey(pane))) return;
-    void this.rpc.request('resize_pane', {
-      workspaceId: pane.workspaceId,
-      paneId: pane.paneId,
-      rows,
-      cols,
-    }, { scope: paneRefKey(pane) }).catch((error) => {
-      if (!(error instanceof RpcCancelledError)) return Promise.reject(error);
-    });
+    this.scheduler.scheduleResize(pane, rows, cols);
   }
 
   getPaneOutput(_pane: PaneRef): string[] {
     return [];
   }
 
+  get rpcSchedulingDiagnostics() {
+    return this.scheduler.diagnostics;
+  }
+
   private activatePane(pane: PaneRef): void {
     this.workspaceByPane.set(pane.paneId, pane.workspaceId);
     this.livePanes.add(paneRefKey(pane));
+    this.scheduler.resume(pane);
   }
 
   private retirePane(pane: PaneRef): void {
     const key = paneRefKey(pane);
     this.livePanes.delete(key);
-    this.rpc.cancelScope(key);
+    this.scheduler.retire(pane);
   }
 }
 

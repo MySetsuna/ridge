@@ -10,6 +10,7 @@
 export * from './shared/transport/types';
 export * from './shared/transport/jsonRpc';
 export * from './shared/transport/rpcClient';
+export * from './shared/transport/paneRpcScheduler';
 export * from './shared/transport/capabilityContract';
 export * from './shared/transport/cloudMux';
 export * from './shared/transport/cloudChunk';
