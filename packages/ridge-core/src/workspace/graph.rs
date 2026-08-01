@@ -23,11 +23,12 @@
 
 use crate::error::CoreError;
 use crate::workspace::pane_tree::{DockRegion, PaneNode, PaneTree, SplitDirection};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
 /// 单个 workspace 的图谱数据：布局树 + 名称 + 每 pane 锁定渲染尺寸（共享属性）。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WorkspaceMeta {
     pub pane_tree: PaneTree,
     pub name: Option<String>,
@@ -38,7 +39,7 @@ pub struct WorkspaceMeta {
 }
 
 /// 一份权威的 workspaces 集合 + 当前活动 workspace。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WorkspaceGraph {
     workspaces: HashMap<Uuid, WorkspaceMeta>,
     active: Option<Uuid>,
@@ -306,5 +307,16 @@ mod tests {
         let leaves = g.leaves(wid).unwrap();
         assert_eq!(leaves.len(), 2);
         assert!(leaves.contains(&root) && leaves.contains(&new));
+    }
+
+    #[test]
+    fn graph_round_trips_for_kernel_persistence() {
+        let mut graph = WorkspaceGraph::new();
+        let workspace = graph.create_workspace();
+        let pane = graph.leaves(workspace).unwrap()[0];
+        graph.set_locked_size(workspace, pane, 120, 40).unwrap();
+        let restored: WorkspaceGraph = serde_json::from_str(&serde_json::to_string(&graph).unwrap()).unwrap();
+        assert_eq!(restored.active(), Some(workspace));
+        assert_eq!(restored.locked_size(workspace, pane), Some((120, 40)));
     }
 }
