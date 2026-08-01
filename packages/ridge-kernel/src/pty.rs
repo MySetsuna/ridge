@@ -117,6 +117,19 @@ impl PtyRegistry {
         Ok(retained[start..].to_vec())
     }
 
+    /// Release retained output for a live pane. This is the backend half of a
+    /// terminal clear; callers still clear their renderer separately.
+    pub fn clear_scrollback(&self, id: Uuid) -> Result<()> {
+        let scrollback = self
+            .ptys
+            .lock()
+            .get(&id)
+            .map(|managed| managed.scrollback.clone())
+            .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
+        scrollback.lock().clear();
+        Ok(())
+    }
+
     fn get(&self, id: Uuid) -> Result<Arc<PtyBridge>> {
         self.ptys
             .lock()
@@ -287,5 +300,6 @@ mod tests {
         let registry = PtyRegistry::default();
         assert_eq!(registry.len(), 0);
         assert!(!registry.contains(Uuid::new_v4()));
+        assert!(registry.clear_scrollback(Uuid::new_v4()).is_err());
     }
 }
