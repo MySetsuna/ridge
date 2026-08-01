@@ -22,6 +22,10 @@
   mutating a newer or already-destroyed mobile view; teardown invalidates the
   guard before transport disposal, and workspace restore is only committed by
   the current generation.
+- `packages/remote/src/shared/terminal/workerHostedRenderer.ts` records the
+  pane identity of pending worker requests, cancels them before `destroy`, and
+  ignores bounded late-reply tombstones; pane teardown no longer waits behind
+  stale frame RPCs.
 - `packages/ridge-kernel/src/domain.rs` runs repository discovery and SCM status
   inside `spawn_blocking`, and uses ancestor-aware repository detection. A test
   covers a nested path under a repository root.
@@ -33,10 +37,12 @@
 
 - `pnpm exec vitest run src/remote/lib/listenerCleanup.test.ts src/remote/lib/cloudRemote.test.ts --reporter=dot` — 2 files, 33 passed.
 - `pnpm exec vitest run src/remote/lib/generationGuard.test.ts src/remote/lib/listenerCleanup.test.ts src/remote/lib/cloudRemote.test.ts --reporter=dot --silent` — 3 files, 35 passed.
+- `pnpm exec vitest run packages/remote/src/shared/terminal/workerHostedRenderer.test.ts packages/remote/src/shared/terminal/workerRendererBridge.test.ts --reporter=dot --silent` — 2 files, 33 passed.
+- Full Vitest — 120 files, 1374 passed, 1 skipped.
 - `pnpm check` — 0 errors, 0 warnings.
 - `cargo test -p ridge-kernel --lib --quiet` — 15 passed.
 - `cargo test -p ridge-mcp-bridge --lib --quiet` — 8 passed.
-- Focused commits pushed to `main`: `367c053`, `66d51f0`, `1475abc`, `0207319`.
+- Focused commits pushed to `main`: `367c053`, `66d51f0`, `1475abc`, `0207319`, `b402f75`.
 
 ## Closure status
 
