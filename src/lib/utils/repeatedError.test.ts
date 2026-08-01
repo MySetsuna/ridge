@@ -6,6 +6,8 @@ describe('reportRepeatedError', () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -37,5 +39,17 @@ describe('reportRepeatedError', () => {
     reportRepeatedError('resize_pane', new Error('Pane not found'));
     expect(console.warn).toHaveBeenCalledTimes(1);
     expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it('preserves explicit info/debug levels while aggregating', () => {
+    reportRepeatedError('scm probe', 'not ready', 'info');
+    reportRepeatedError('scm probe', 'not ready', 'info');
+    reportRepeatedError('trace', 'frame skipped', 'debug');
+    expect(console.info).toHaveBeenCalledTimes(1);
+    expect(console.debug).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(5_000);
+    expect(console.info).toHaveBeenLastCalledWith(
+      'scm probe (not ready), repeated 1 times',
+    );
   });
 });

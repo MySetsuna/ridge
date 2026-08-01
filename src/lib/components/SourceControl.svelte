@@ -722,6 +722,7 @@
       // the new state (e.g. half-applied changes, unmerged files).
       await loadGraph(selectedRepo);
       await refreshStatus(selectedRepo);
+      invalidateBranchCache(selectedRepo);
       void invalidatePaneGitStatusForRepo(selectedRepo);
     }
   }
@@ -1422,6 +1423,8 @@
     upstream: string | null;
   }
   let branchLists: Record<string, BranchInfo[]> = $state({});
+  const branchLoadedAt = new Map<string, number>();
+  const BRANCH_CACHE_TTL_MS = 5 * 60 * 1000;
   let branchPickerOpen = $state<string>(''); // root whose picker is open
   let pickerAnchor: HTMLElement | undefined = $state();
   let creatingBranchName = $state<string | null>(null); // null = not creating; '' or 'foo' = inline input visible
@@ -1429,15 +1432,24 @@
   let pendingCreateCommit = $state(false);
   let syncing = $state<string>(''); // root currently running a sync op
 
-  async function loadBranches(root: string): Promise<void> {
+  function invalidateBranchCache(root: string): void {
+    branchLoadedAt.delete(root);
+  }
+
+  async function loadBranches(root: string, force = false): Promise<void> {
     if (isScmRepoKnownNonGit(root) || !getScmCache().statuses[root]) return;
+    if (!force && branchLists[root] && Date.now() - (branchLoadedAt.get(root) ?? 0) < BRANCH_CACHE_TTL_MS) {
+      return;
+    }
     try {
+      const branches = await runScmQuerySingleFlight('branches', root, () =>
+        invoke<BranchInfo[]>('git_list_branches', { repoRoot: root })
+      );
       branchLists = {
         ...branchLists,
-        [root]: await runScmQuerySingleFlight('branches', root, () =>
-          invoke<BranchInfo[]>('git_list_branches', { repoRoot: root })
-        ),
+        [root]: branches,
       };
+      branchLoadedAt.set(root, Date.now());
     } catch (e) {
       if (isNotGitRepositoryError(e)) markPaneGitRepoNonGit(root);
       reportRepeatedError('list branches', e);
@@ -1460,7 +1472,8 @@
     try {
       await invoke('git_checkout', { repoRoot: root, branch, create: false });
       await refreshStatus(root);
-      await loadBranches(root);
+      invalidateBranchCache(root);
+      await loadBranches(root, true);
       if (root === selectedRepo) await loadGraph(root);
     } catch (e) {
       await alertDialog({ title: tr('scm.switchBranchFailed'), message: String(e), danger: true });
@@ -1489,7 +1502,8 @@
       creatingBranchRoot = '';
       await invoke('git_checkout', { repoRoot: root, branch: name, create: true });
       await refreshStatus(root);
-      await loadBranches(root);
+      invalidateBranchCache(root);
+      await loadBranches(root, true);
       if (root === selectedRepo) await loadGraph(root);
     } catch (e) {
       await alertDialog({ title: tr('scm.createBranchFailed'), message: String(e), danger: true });
@@ -1510,7 +1524,8 @@
         await invoke(`git_${op}`, { repoRoot: root });
       }
       await refreshStatus(root);
-      await loadBranches(root);
+      invalidateBranchCache(root);
+      await loadBranches(root, true);
       if (root === selectedRepo) await loadGraph(root);
     } catch (e) {
       await alertDialog({ title: tr('scm.opFailed'), message: `${op} 失败: ${e}`, danger: true });
@@ -1538,6 +1553,16 @@
   // 并把 Explorer 的 get_file_tree 一起拖死。改用 GIT_FANOUT_CONCURRENCY
   // 控制并发，与后端 git 信号量保持同步。
   $effect(() => {
+    const active = new Set(repoRoots);
+    const staleBranches = Object.keys(branchLists).filter((root) => !active.has(root));
+    if (staleBranches.length > 0) {
+      const next = { ...branchLists };
+      for (const root of staleBranches) delete next[root];
+      branchLists = next;
+    }
+    for (const root of branchLoadedAt.keys()) {
+      if (!repoRoots.includes(root)) branchLoadedAt.delete(root);
+    }
     const pending = repoRoots.filter(
       (root) =>
         !!statuses[root] &&

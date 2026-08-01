@@ -1,4 +1,4 @@
-export type RepeatedErrorLevel = 'warn' | 'error';
+export type RepeatedErrorLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const DEFAULT_WINDOW_MS = 5_000;
 
@@ -27,7 +27,8 @@ function classifyLevel(detail: string, fallback: RepeatedErrorLevel): RepeatedEr
 }
 
 function emit(level: RepeatedErrorLevel, ...args: unknown[]): void {
-  console[level](...args);
+  const logger = console[level];
+  if (typeof logger === 'function') logger(...args);
 }
 
 /**
