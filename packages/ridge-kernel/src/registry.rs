@@ -34,6 +34,25 @@ pub fn remote_hosts_path() -> PathBuf {
     ridge_data_dir().join("remote-hosts.json")
 }
 
+pub fn workspace_graph_path() -> PathBuf { ridge_data_dir().join("workspace-graph.json") }
+
+pub fn load_workspace_graph() -> Result<ridge_core::workspace::graph::WorkspaceGraph> {
+    let path = workspace_graph_path();
+    if !path.exists() { return Ok(ridge_core::workspace::graph::WorkspaceGraph::new()); }
+    let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
+}
+
+pub fn save_workspace_graph_at(path: &std::path::Path, graph: &ridge_core::workspace::graph::WorkspaceGraph) -> Result<()> {
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(graph).context("serialize workspace graph")?)
+        .with_context(|| format!("write {}", tmp.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
+    Ok(())
+}
+
 pub fn load_remote_hosts() -> Result<HashMap<String, ridge_core::remote::HostRecord>> {
     let path = remote_hosts_path();
     if !path.exists() { return Ok(HashMap::new()); }

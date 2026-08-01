@@ -25,7 +25,7 @@ use serde::Serialize;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use ridge_kernel::registry::{clear_registry, load_remote_hosts, remote_hosts_path, write_registry, KernelEndpoint};
+use ridge_kernel::registry::{clear_registry, load_remote_hosts, load_workspace_graph, remote_hosts_path, workspace_graph_path, write_registry, KernelEndpoint};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -51,6 +51,7 @@ pub struct AppState {
     /// Shell-neutral workspace topology for the kernel API. Shell migration is
     /// deliberately separate, so this does not claim existing shells migrated.
     pub workspaces: Arc<std::sync::Mutex<ridge_core::workspace::graph::WorkspaceGraph>>,
+    pub workspaces_path: std::path::PathBuf,
     /// Kernel-owned Agent roster/topology; process binding remains a host adapter.
     pub roster: Arc<std::sync::Mutex<ridge_core::teammate::topology::TopologyGraph>>,
     /// Kernel-owned remote host topology; shells only project or transport it.
@@ -187,9 +188,11 @@ async fn main() -> Result<()> {
         started_at_unix,
         shutdown_tx: Arc::new(std::sync::Mutex::new(Some(shutdown_tx))),
         shutting_down: Arc::new(AtomicBool::new(false)),
-        workspaces: Arc::new(std::sync::Mutex::new(
-            ridge_core::workspace::graph::WorkspaceGraph::new(),
-        )),
+        workspaces: Arc::new(std::sync::Mutex::new(load_workspace_graph().unwrap_or_else(|error| {
+            tracing::warn!(%error, "workspace topology restore failed; starting empty");
+            ridge_core::workspace::graph::WorkspaceGraph::new()
+        }))),
+        workspaces_path: workspace_graph_path(),
         roster: Arc::new(std::sync::Mutex::new(
             ridge_core::teammate::topology::TopologyGraph::new(),
         )),

@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use ridge_kernel::registry::save_remote_hosts_at;
+use ridge_kernel::registry::save_workspace_graph_at;
 
 fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
     headers
@@ -95,6 +96,10 @@ fn workspace_detail(
     }))
 }
 
+fn persist_workspaces(st: &AppState, graph: &ridge_core::workspace::graph::WorkspaceGraph) -> Result<(), StatusCode> {
+    save_workspace_graph_at(&st.workspaces_path, graph).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 /// Kernel-owned remote host topology. Transport connection remains a shell adapter.
 pub async fn domain_remote_hosts(
     State(st): State<AppState>,
@@ -157,6 +162,7 @@ pub async fn domain_workspace_create(
     }
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
     let workspace_id = graph.create_workspace();
+    persist_workspaces(&st, &graph)?;
     Ok(Json(json!({
         "ok": true,
         "source": "ridge-kernel",
@@ -198,7 +204,7 @@ pub async fn domain_workspace_activate(
     };
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
     match graph.set_active(workspace_id) {
-        Ok(()) => Ok(Json(json!({ "ok": true, "workspace_id": workspace_id }))),
+        Ok(()) => { persist_workspaces(&st, &graph)?; Ok(Json(json!({ "ok": true, "workspace_id": workspace_id }))) },
         Err(e) => Ok(bad_request(e.to_string())),
     }
 }
@@ -243,7 +249,7 @@ pub async fn domain_workspace_split(
     };
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
     match graph.split(workspace_id, pane_id, direction) {
-        Ok(new_pane_id) => Ok(Json(json!({ "ok": true, "pane_id": new_pane_id }))),
+        Ok(new_pane_id) => { persist_workspaces(&st, &graph)?; Ok(Json(json!({ "ok": true, "pane_id": new_pane_id }))) },
         Err(e) => Ok(bad_request(e.to_string())),
     }
 }
@@ -266,7 +272,7 @@ pub async fn domain_workspace_pane_close(
     };
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
     match graph.close(workspace_id, pane_id) {
-        Ok(()) => Ok(Json(json!({ "ok": true }))),
+        Ok(()) => { persist_workspaces(&st, &graph)?; Ok(Json(json!({ "ok": true }))) },
         Err(e) => Ok(bad_request(e.to_string())),
     }
 }
@@ -296,9 +302,9 @@ pub async fn domain_workspace_pane_locked_size(
     };
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
     match graph.set_locked_size(workspace_id, pane_id, request.cols, request.rows) {
-        Ok(()) => Ok(Json(
+        Ok(()) => { persist_workspaces(&st, &graph)?; Ok(Json(
             json!({ "ok": true, "cols": request.cols, "rows": request.rows }),
-        )),
+        )) },
         Err(e) => Ok(bad_request(e.to_string())),
     }
 }
@@ -571,6 +577,7 @@ mod tests {
             workspaces: Arc::new(std::sync::Mutex::new(
                 ridge_core::workspace::graph::WorkspaceGraph::new(),
             )),
+            workspaces_path: std::env::temp_dir().join(format!("ridge-kernel-workspaces-{}.json", Uuid::new_v4())),
             roster: Arc::new(std::sync::Mutex::new(
                 ridge_core::teammate::topology::TopologyGraph::new(),
             )),
@@ -638,6 +645,7 @@ mod tests {
     #[tokio::test]
     async fn workspace_handlers_mutate_only_kernel_state() {
         let state = test_state();
+        let persisted = state.workspaces_path.clone();
         let created = domain_workspace_create(State(state.clone()), test_headers())
             .await
             .unwrap()
@@ -665,11 +673,16 @@ mod tests {
         .unwrap()
         .0;
         assert!(split["pane_id"].is_string());
+        let restored: ridge_core::workspace::graph::WorkspaceGraph =
+            serde_json::from_slice(&std::fs::read(&persisted).unwrap()).unwrap();
+        assert_eq!(restored.active().unwrap().to_string(), workspace_id);
+        assert_eq!(restored.leaves(restored.active().unwrap()).unwrap().len(), 2);
         let listed = domain_workspaces(State(state), test_headers())
             .await
             .unwrap()
-            .0;
+        .0;
         assert_eq!(listed["active"], workspace_id);
+        let _ = std::fs::remove_file(persisted);
     }
 
     #[tokio::test]
