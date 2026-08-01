@@ -243,6 +243,10 @@ async fn main() -> Result<()> {
             post(domain::domain_pty_resize),
         )
         .route(
+            "/v1/domain/ptys/:pty_id/clear",
+            post(domain::domain_pty_clear),
+        )
+        .route(
             "/v1/domain/ptys/:pty_id",
             get(domain::domain_pty_scrollback).delete(domain::domain_pty_destroy),
         )

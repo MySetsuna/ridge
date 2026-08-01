@@ -482,6 +482,17 @@ pub async fn domain_pty_destroy(
     }
 }
 
+pub async fn domain_pty_clear(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(pty_id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
+    st.ptys.clear_scrollback(pty_id).map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(json!({ "ok": true, "pty_id": pty_id, "scrollback_cleared": true })))
+}
+
 #[derive(Deserialize)]
 pub struct PtyScrollbackQuery { pub max_bytes: Option<usize> }
 
