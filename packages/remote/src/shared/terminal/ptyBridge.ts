@@ -55,6 +55,10 @@ interface Bridge {
 
 const bridges = new Map<string, Bridge>();
 
+function isPaneNotFoundError(error: unknown): boolean {
+	return /\bpane\s+not\s+found\b/i.test(String(error));
+}
+
 /**
  * Subscribe to `pty-output-{workspaceId}-{paneId}` and `pane-pty-closed`
  * events for this pane. Idempotent: re-calling for the same paneId is a
@@ -151,7 +155,7 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 				});
 			} catch (err) {
 				const msg = String(err);
-				if (!msg.includes('Pane not found')) {
+				if (!isPaneNotFoundError(msg)) {
 					console.error('activate_pane_pty (rebuild) failed', err);
 				}
 			}
