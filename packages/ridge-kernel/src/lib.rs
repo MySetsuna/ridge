@@ -4,4 +4,4 @@
 //! `ridge-kernel` binary owns the process; shells consume this small contract.
 
 pub mod registry;
-
+pub mod client;
