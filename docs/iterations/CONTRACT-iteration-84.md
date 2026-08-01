@@ -56,6 +56,12 @@ source that the backend never returned.
   zero translation when the focused input is already above the IME and
   requires negative motion only when measured overlap exists; core keyboard
   geometry code is unchanged.
+- The shared pane RPC scheduler now includes flat resize context in its
+  coalescing signature. Same-size transitions that change `isAlt` or
+  `isInlineTui` therefore reach the remote PTY instead of being suppressed;
+  equivalent context key order still coalesces deterministically.
+- `pnpm exec vitest run packages/remote/src/shared/transport/paneRpcScheduler.test.ts`:
+  14 passed.
 
 ## Non-claims
 
