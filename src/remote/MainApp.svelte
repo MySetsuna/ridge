@@ -31,6 +31,7 @@
   import { createWsSidebarProvider } from './lib/sidebarProvider';
   import { ScrollbackDecoder } from './lib/scrollbackWorker';
   import { onceCleanup } from './lib/listenerCleanup';
+  import { createGenerationGuard } from './lib/generationGuard';
   import type { DataProvider } from '$lib/transport';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
@@ -69,8 +70,12 @@
   let remoteAppAlive = true;
   let stopConnection: (() => void) | null = null;
   let _refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  const workspaceRefreshGuard = createGenerationGuard();
   onDestroy(() => {
     remoteAppAlive = false;
+    // Invalidate every in-flight workspace snapshot before tearing down the
+    // transport. Late responses must never repopulate a destroyed view.
+    workspaceRefreshGuard.invalidate();
     if (_refreshTimer !== null) {
       clearTimeout(_refreshTimer);
       _refreshTimer = null;
@@ -448,11 +453,17 @@
   }
 
   async function refreshWorkspaces() {
+    // Only the newest refresh may commit state. The transport can resolve an
+    // older request after a reconnect or workspace switch, and applying it
+    // would resurrect panes/workspaces that the user already left.
+    const generation = workspaceRefreshGuard.begin();
+    const isCurrent = () => remoteAppAlive && workspaceRefreshGuard.isCurrent(generation);
     try {
       let next = await queryClient.fetchQuery({
         queryKey: remoteQueryKeys.workspaces(sessionId()),
         queryFn: () => requestWorkspaceSnapshot(ws),
       });
+      if (!isCurrent()) return;
       // §cross-ws-prune fallback: drop caches of any workspace that's gone.
       pruneCachesForClosedWorkspaces(next.map(w => w.id));
       const hostActive = next.find(w => w.active);
@@ -462,22 +473,28 @@
       // broadcasts that workspace's panes, and the panes handler restores the
       // remembered pane). Runs once; afterwards we just track the host's active.
       if (!bootRestoreDone) {
-        bootRestoreDone = true;
         if (savedActiveWs && savedActiveWs !== (hostActive?.id ?? '')
             && next.some(w => w.id === savedActiveWs)) {
           ui.activeWorkspaceId = savedActiveWs;
           ui.activePaneId = null; // force the panes handler to re-pick for the restored ws
           const ok = await ws.switchWorkspace(savedActiveWs);
+          if (!isCurrent()) return;
           if (ok) ws.listPanes();
           // Re-read so the `active` flag reflects the switch.
           const after = await requestWorkspaceSnapshot(ws);
+          if (!isCurrent()) return;
           queryClient.setQueryData(remoteQueryKeys.workspaces(sessionId()), after);
           next = after;
           const a2 = after.find(w => w.active);
           ui.activeWorkspaceId = a2 ? a2.id : savedActiveWs;
+          bootRestoreDone = true;
           return;
         }
+        // Do not consume the one-shot restore guard until this generation is
+        // still alive; a superseded request must remain retryable.
+        bootRestoreDone = true;
       }
+      if (!isCurrent()) return;
       if (hostActive) ui.activeWorkspaceId = hostActive.id;
     } catch { /* ignore */ }
   }
