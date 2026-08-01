@@ -35,6 +35,7 @@
     "e2e": "playwright test",
     "e2e:install": "playwright install chromium",
     "e2e:rdg-lan": "node scripts/rdg-remote-e2e.mjs",
+    "e2e:rdg-mobile-keyboard": "node scripts/mobile-keyboard-e2e.mjs",
     "e2e:shell": "wdio run wdio.conf.ts",
     "e2e:perf": "wdio run wdio.perf.conf.ts",
     "perf-bench": "pwsh scripts/perf-bench.ps1",
