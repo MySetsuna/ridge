@@ -4,6 +4,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -368,7 +369,7 @@ pub async fn domain_pty_create(
 
 #[derive(Deserialize)]
 pub struct PtyWriteRequest {
-    pub data: String,
+    pub data_b64: String,
 }
 
 pub async fn domain_pty_write(
@@ -379,7 +380,11 @@ pub async fn domain_pty_write(
 ) -> Result<Json<Value>, StatusCode> {
     if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
     let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
-    match st.ptys.write(pty_id, request.data.as_bytes()) {
+    let data = match base64::engine::general_purpose::STANDARD.decode(request.data_b64) {
+        Ok(data) => data,
+        Err(_) => return Ok(bad_request("data_b64 must be valid base64")),
+    };
+    match st.ptys.write(pty_id, &data) {
         Ok(()) => Ok(Json(json!({ "ok": true }))),
         Err(error) => Ok(bad_request(error.to_string())),
     }
@@ -430,7 +435,7 @@ pub async fn domain_pty_scrollback(
         Ok(bytes) => Ok(Json(json!({
             "ok": true,
             "pty_id": pty_id,
-            "data": String::from_utf8_lossy(&bytes),
+            "data_b64": base64::engine::general_purpose::STANDARD.encode(bytes),
         }))),
         Err(error) => Ok(bad_request(error.to_string())),
     }
