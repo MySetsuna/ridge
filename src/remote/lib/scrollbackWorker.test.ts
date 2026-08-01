@@ -54,4 +54,18 @@ describe('scrollback worker protocol', () => {
       decoder.dispose();
     });
   });
+
+  it('cancels only the destroyed pane and keeps other pane work pending', async () => {
+    await withWorker(SilentWorker as unknown as typeof Worker, async () => {
+      const decoder = new ScrollbackDecoder();
+      const destroyed = decoder.decode({ workspaceId: 'ws', paneId: 'gone' }, 1, 2, requestBytes());
+      const retained = decoder.decode({ workspaceId: 'ws', paneId: 'live' }, 1, 2, requestBytes());
+
+      decoder.cancel('ws:gone');
+      await expect(destroyed).resolves.toBeNull();
+
+      decoder.dispose();
+      await expect(retained).resolves.toBeNull();
+    });
+  });
 });
