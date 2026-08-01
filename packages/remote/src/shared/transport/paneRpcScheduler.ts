@@ -124,7 +124,18 @@ function retryable(error: unknown): boolean {
 }
 
 function resizeSignature(value: ResizeValue | null): string | null {
-  return value ? `${value.rows}x${value.cols}` : null;
+  if (!value) return null;
+  const params = value.params;
+  if (!params || Object.keys(params).length === 0) return `${value.rows}x${value.cols}`;
+  // Dimensions alone are not the full resize state: switching alt-screen or
+  // inline-TUI mode at the same size still changes the remote PTY contract.
+  // Sort the flat context keys so callers that construct equivalent objects in
+  // a different insertion order still coalesce deterministically.
+  const context = Object.keys(params)
+    .sort()
+    .map((key) => `${key}=${JSON.stringify(params[key])}`)
+    .join('&');
+  return `${value.rows}x${value.cols}|${context}`;
 }
 
 /** Per-pane RPC admission: ordered input, latest resize, bounded memory, one in-flight of each. */

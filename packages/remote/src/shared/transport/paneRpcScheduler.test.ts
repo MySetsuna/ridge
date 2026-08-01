@@ -299,6 +299,28 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
     });
   });
 
+  it('does not suppress a same-size resize when PTY mode context changes', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc, { resizeDebounceMs: 0 });
+
+    scheduler.scheduleResize(pane, 24, 80, { isAlt: false, isInlineTui: false });
+    await vi.runOnlyPendingTimersAsync();
+    expect(rpc.calls).toHaveLength(1);
+
+    scheduler.scheduleResize(pane, 24, 80, { isInlineTui: true, isAlt: false });
+    rpc.calls[0].resolve(undefined);
+    await flushPromises();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(rpc.calls).toHaveLength(2);
+    expect(rpc.calls[1].params).toMatchObject({
+      rows: 24,
+      cols: 80,
+      isAlt: false,
+      isInlineTui: true,
+    });
+  });
+
   it('retires the lane, cancels its scope, and prevents delayed work from resurrecting', async () => {
     const rpc = new FakeRpc();
     const scheduler = createScheduler(rpc, { resizeDebounceMs: 40 });
