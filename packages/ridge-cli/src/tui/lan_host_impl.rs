@@ -8,8 +8,8 @@
 //!   `verify_code = totp.verify`，`is_blacklisted`/`pre_verify_gate`/
 //!   `post_verify_record` 全走 trait 默认实现（宽松放行）；
 //! - 会话令牌由 rdg 自持一个 `ridge_remote::auth::SessionStore`（零 Tauri）；
-//! - `WorkspaceProvider` 面向单工作区：switch=no-op、create=在既有工作区再开 pane、
-//!   close=拒绝（最后一个工作区不可关）。
+//! - `WorkspaceProvider` 面向单工作区：switch 只接受自身 id、create=在既有工作区再开
+//!   pane、close=拒绝（最后一个工作区不可关）。保存文件接口返回当前工作区的可重开句柄。
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -30,6 +30,55 @@ use ridge_remote::serve::UaServeConfig;
 use crate::totp::RemoteTotp;
 
 use super::workspace::SharedWorkspace;
+
+/// rdg 没有桌面端 `.ridge` 持久化文件；为避免把“无保存文件”静默投影为空，
+/// 对外暴露一个不可伪造为本地路径的当前工作区句柄。客户端可把它原样传回
+/// `open_workspace_from_file`，该操作幂等地返回同一工作区 id。
+const RDG_WORKSPACE_URI_PREFIX: &str = "rdg://workspace/";
+
+fn rdg_workspace_uri(ws_id: Uuid) -> String {
+    format!("{RDG_WORKSPACE_URI_PREFIX}{ws_id}")
+}
+
+fn current_workspace_file(ws_id: Uuid) -> Value {
+    json!({
+        "name": "rdg (current workspace)",
+        "path": rdg_workspace_uri(ws_id),
+        "mtime_secs": 0,
+    })
+}
+
+fn ensure_current_workspace(requested: &str, ws_id: Uuid) -> Result<(), String> {
+    if requested == ws_id.to_string() {
+        Ok(())
+    } else {
+        Err(format!("workspace not found: {requested}"))
+    }
+}
+
+fn create_rdg_pane(
+    workspace: &SharedWorkspace,
+    shell: Option<&str>,
+    cwd: Option<&str>,
+) -> Result<Uuid, String> {
+    let mut w = workspace.lock().unwrap();
+    let split_target = w.default_session_id();
+    w.create_session(shell, cwd, split_target, SplitDirection::Horizontal)
+        .map_err(|e| e.to_string())
+}
+
+fn create_pane_result(ws_id: Uuid, pane_id: Uuid) -> Value {
+    json!({
+        "success": true,
+        "workspaceId": ws_id.to_string(),
+        "paneId": pane_id.to_string(),
+        "id": pane_id.to_string(),
+        "operation": "create-pane",
+        // rdg owns one workspace; create-workspace is an explicit pane
+        // allocation rather than a second workspace hidden behind a no-op.
+        "createdWorkspace": false,
+    })
+}
 
 /// rdg LAN 远控宿主：包装单工作区 `SharedWorkspace` + TOTP + 会话令牌 + serve 配置，
 /// 供共享 `server_app` 用一份代码驱动。
@@ -107,21 +156,22 @@ impl WorkspaceProvider for RdgHost {
     }
 
     fn switch_workspace(&self, workspace_id: &str) -> Result<Value, HostError> {
-        // 单工作区：切换即恒停留在同一工作区（no-op 成功）。
-        Ok(json!({ "success": true, "workspaceId": workspace_id }))
+        // 单工作区仍须校验目标；任意 id 成功会让客户端把陈旧/跨 host
+        // 工作区误当作已切换，后续 pane 请求才以更难诊断的方式失败。
+        ensure_current_workspace(workspace_id, self.ws_id).map_err(HostError::NotFound)?;
+        Ok(json!({ "success": true, "workspaceId": self.ws_id.to_string() }))
     }
 
     fn create_workspace(&self, _name: Option<String>) -> Result<Value, HostError> {
-        // 单工作区语义：新建"工作区"退化为在既有工作区里再开一个 pane（create_session）。
-        let mut w = self.workspace.lock().unwrap();
-        let split_target = w.default_session_id();
-        match w.create_session(None, None, split_target, SplitDirection::Horizontal) {
-            Ok(_) => Ok(json!({ "success": true, "workspaceId": self.ws_id.to_string() })),
-            Err(e) => Err(HostError::BadRequest(e.to_string())),
-        }
+        // 单工作区语义：新建“工作区”退化为在既有工作区里再开一个 pane，
+        // 并把退化结果明确返回，避免 UI 等待一个永远不会出现的新 workspace。
+        let pane_id =
+            create_rdg_pane(&self.workspace, None, None).map_err(HostError::BadRequest)?;
+        Ok(create_pane_result(self.ws_id, pane_id))
     }
 
-    fn close_workspace(&self, _workspace_id: &str) -> Result<Value, HostError> {
+    fn close_workspace(&self, workspace_id: &str) -> Result<Value, HostError> {
+        ensure_current_workspace(workspace_id, self.ws_id).map_err(HostError::NotFound)?;
         Err(HostError::BadRequest(
             "cannot close the last workspace".to_string(),
         ))
@@ -319,7 +369,9 @@ fn dispatch_lan_invoke(
                 .or_else(|| workspace.lock().unwrap().default_session_id())
                 .ok_or_else(|| "no pane".to_string())?;
             let w = workspace.lock().unwrap();
-            let sess = w.find(pane_id).ok_or_else(|| format!("pane not found: {pane_id}"))?;
+            let sess = w
+                .find(pane_id)
+                .ok_or_else(|| format!("pane not found: {pane_id}"))?;
             sess.send_input(data.as_bytes())
                 .map_err(|e| e.to_string())?;
             Ok(Value::Null)
@@ -334,12 +386,26 @@ fn dispatch_lan_invoke(
                 .or_else(|| workspace.lock().unwrap().default_session_id())
                 .ok_or_else(|| "no pane".to_string())?;
             let w = workspace.lock().unwrap();
-            let sess = w.find(pane_id).ok_or_else(|| format!("pane not found: {pane_id}"))?;
+            let sess = w
+                .find(pane_id)
+                .ok_or_else(|| format!("pane not found: {pane_id}"))?;
             sess.resize(cols, rows).map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
         "get_active_workspace_id" => Ok(Value::String(ws_id.to_string())),
         "list_workspaces" => Ok(list_workspaces_value(ws_id)),
+        "switch_workspace" => {
+            let requested = args
+                .get("workspaceId")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            ensure_current_workspace(requested, ws_id)?;
+            Ok(json!({ "success": true, "workspaceId": ws_id.to_string() }))
+        }
+        "create_workspace" => {
+            let pane_id = create_rdg_pane(workspace, None, None)?;
+            Ok(create_pane_result(ws_id, pane_id))
+        }
         "get_pane_layout" | "get_pane_layout_for" | "get_window_pane_layout" => {
             Ok(pane_layout_from_workspace(workspace))
         }
@@ -359,20 +425,39 @@ fn dispatch_lan_invoke(
             Ok(Value::Null)
         }
         // 桌面 SPA boot 可选能力：rdg 无对应实现时回空/成功，勿 error 打断「已接通」。
-        "list_saved_workspaces" | "list_workspace_save_info" | "get_shell_history" => {
-            Ok(json!([]))
+        "list_saved_workspaces" | "list_workspace_save_info" | "get_shell_history" => Ok(json!([])),
+        "list_saved_workspace_files" => Ok(json!([current_workspace_file(ws_id)])),
+        "open_workspace_from_file" => {
+            let path = args
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "path is required".to_string())?;
+            let current = rdg_workspace_uri(ws_id);
+            if path == current {
+                return Ok(Value::String(ws_id.to_string()));
+            }
+            if path.starts_with(RDG_WORKSPACE_URI_PREFIX) {
+                return Err(format!("workspace handle not found: {path}"));
+            }
+            Err("rdg LAN host exposes no .ridge files; open the current workspace handle returned by list_saved_workspace_files".to_string())
         }
         "get_theme_data" => Ok(json!({ "themes": [] })),
         "activate_pane_pty" | "set_pane_delta_mode" | "use_global_workspace" => Ok(Value::Null),
         "create_pane" => {
-            let shell = args.get("shell").and_then(Value::as_str).filter(|s| !s.is_empty());
-            let cwd = args.get("cwd").and_then(Value::as_str).filter(|s| !s.is_empty());
-            let mut w = workspace.lock().unwrap();
-            let split_target = w.default_session_id();
-            match w.create_session(shell, cwd, split_target, SplitDirection::Horizontal) {
-                Ok(id) => Ok(json!({ "paneId": id.to_string(), "id": id.to_string() })),
-                Err(e) => Err(e.to_string()),
+            let shell = args
+                .get("shell")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
+            let cwd = args
+                .get("cwd")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
+            if let Some(requested) = args.get("workspaceId").and_then(Value::as_str) {
+                ensure_current_workspace(requested, ws_id)?;
             }
+            let pane_id = create_rdg_pane(workspace, shell, cwd)?;
+            Ok(create_pane_result(ws_id, pane_id))
         }
         other => Err(format!("method not supported on rdg LAN host: {other}")),
     }
@@ -400,7 +485,11 @@ fn start_pane_subscription(
     let resume = v
         .get("resume")
         .and_then(Value::as_bool)
-        .or_else(|| v.get("params").and_then(|p| p.get("resume")).and_then(Value::as_bool))
+        .or_else(|| {
+            v.get("params")
+                .and_then(|p| p.get("resume"))
+                .and_then(Value::as_bool)
+        })
         .unwrap_or(false);
     let sub = {
         let w = workspace.lock().unwrap();
@@ -449,11 +538,8 @@ fn handle_text(
                 // 带 id 的 hello：先推 $/hello 通知体，再 result null（对齐 session 路径语义简化：
                 // 只回 result，能力体在 result 内亦可；桌面 adapter 认 hello reply 翻 native）。
                 return Some(
-                    crate::rpc::result_response(
-                        &id,
-                        hello.get("params").cloned().unwrap_or(hello),
-                    )
-                    .to_string(),
+                    crate::rpc::result_response(&id, hello.get("params").cloned().unwrap_or(hello))
+                        .to_string(),
                 );
             }
             return Some(hello.to_string());
@@ -474,14 +560,16 @@ fn handle_text(
             return None;
         }
         let id = id.unwrap();
-        return Some(match dispatch_lan_invoke(method, &params, workspace, ws_id, out_tx) {
-            Ok(result) => crate::rpc::result_response(&id, result).to_string(),
-            Err(msg) => crate::rpc::error_response(
-                &id,
-                &crate::rpc::RpcError::new(crate::rpc::JSON_RPC_METHOD_NOT_FOUND, msg),
-            )
-            .to_string(),
-        });
+        return Some(
+            match dispatch_lan_invoke(method, &params, workspace, ws_id, out_tx) {
+                Ok(result) => crate::rpc::result_response(&id, result).to_string(),
+                Err(msg) => crate::rpc::error_response(
+                    &id,
+                    &crate::rpc::RpcError::new(crate::rpc::JSON_RPC_METHOD_NOT_FOUND, msg),
+                )
+                .to_string(),
+            },
+        );
     }
 
     // ── 桌面 WEB_REMOTE 遗留 invoke-request 信封 ────────────────────────
@@ -559,14 +647,14 @@ fn handle_text(
         "create-pane" => {
             let shell = v["shell"].as_str().filter(|s| !s.is_empty());
             let cwd = v["cwd"].as_str().filter(|s| !s.is_empty());
-            let mut w = workspace.lock().unwrap();
-            let split_target = w.default_session_id();
-            let msg = match w.create_session(shell, cwd, split_target, SplitDirection::Horizontal) {
-                Ok(id) => json!({
-                    "type": "create-pane-result", "success": true, "paneId": id.to_string()
-                }),
-                Err(e) => json!({
-                    "type": "create-pane-result", "success": false, "error": e.to_string()
+            let msg = match create_rdg_pane(workspace, shell, cwd) {
+                Ok(id) => {
+                    let mut result = create_pane_result(ws_id, id);
+                    result["type"] = json!("create-pane-result");
+                    result
+                }
+                Err(error) => json!({
+                    "type": "create-pane-result", "success": false, "error": error
                 }),
             };
             Some(msg.to_string())
@@ -595,22 +683,31 @@ fn handle_text(
 
         "switch-workspace" => {
             let id = v["workspaceId"].as_str().unwrap_or("");
-            Some(
-                json!({
-                    "type": "switch-workspace-result", "success": true, "workspaceId": id
-                })
-                .to_string(),
-            )
+            let msg = match ensure_current_workspace(id, ws_id) {
+                Ok(()) => json!({
+                    "type": "switch-workspace-result", "success": true, "workspaceId": ws_id.to_string()
+                }),
+                Err(error) => json!({
+                    "type": "switch-workspace-result", "success": false, "workspaceId": id, "error": error
+                }),
+            };
+            Some(msg.to_string())
         }
 
         "create-workspace" => {
-            // 单工作区：no-op 成功（保持在既有工作区）。
-            Some(
-                json!({
-                    "type": "create-workspace-result", "success": true, "workspaceId": ws_id.to_string()
-                })
-                .to_string(),
-            )
+            // 单工作区：明确退化为创建 pane，与 WorkspaceProvider/JSON-RPC
+            // 路径保持同一语义，不再返回无法验证的 no-op 成功。
+            let msg = match create_rdg_pane(workspace, None, None) {
+                Ok(id) => {
+                    let mut result = create_pane_result(ws_id, id);
+                    result["type"] = json!("create-workspace-result");
+                    result
+                }
+                Err(error) => json!({
+                    "type": "create-workspace-result", "success": false, "error": error
+                }),
+            };
+            Some(msg.to_string())
         }
 
         "close-workspace" => Some(
@@ -692,5 +789,97 @@ mod tests {
         assert_eq!(v["jsonrpc"], "2.0");
         assert_eq!(v["id"], 1);
         assert_eq!(v["result"][0]["id"], "33333333-3333-3333-3333-333333333333");
+    }
+
+    #[test]
+    fn saved_workspace_handle_is_explicit_and_reopenable() {
+        let workspace = super::super::workspace::new_shared();
+        let ws_id = Uuid::parse_str("44444444-4444-4444-4444-444444444444").unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let files = dispatch_lan_invoke(
+            "list_saved_workspace_files",
+            &json!({}),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .expect("rdg exposes its current workspace handle");
+        assert_eq!(files.as_array().map(Vec::len), Some(1));
+        let path = files[0]["path"].as_str().expect("handle path");
+        assert_eq!(path, "rdg://workspace/44444444-4444-4444-4444-444444444444");
+
+        let reopened = dispatch_lan_invoke(
+            "open_workspace_from_file",
+            &json!({ "path": path }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .expect("current workspace handle is reopenable");
+        assert_eq!(reopened, json!("44444444-4444-4444-4444-444444444444"));
+    }
+
+    #[test]
+    fn saved_workspace_open_rejects_non_rdg_paths_with_actionable_error() {
+        let workspace = super::super::workspace::new_shared();
+        let ws_id = Uuid::parse_str("55555555-5555-5555-5555-555555555555").unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = dispatch_lan_invoke(
+            "open_workspace_from_file",
+            &json!({ "path": "C:/tmp/example.ridge" }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .expect_err("rdg must not read arbitrary host paths");
+        assert!(error.contains("list_saved_workspace_files"));
+    }
+
+    #[test]
+    fn workspace_switch_rejects_stale_or_foreign_ids() {
+        let workspace = super::super::workspace::new_shared();
+        let ws_id = Uuid::parse_str("66666666-6666-6666-6666-666666666666").unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = dispatch_lan_invoke(
+            "switch_workspace",
+            &json!({ "workspaceId": "77777777-7777-7777-7777-777777777777" }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .expect_err("foreign workspace must not report a successful switch");
+        assert!(error.contains("workspace not found"));
+    }
+
+    #[test]
+    fn single_workspace_create_result_explicitly_reports_pane_fallback() {
+        let ws_id = Uuid::parse_str("88888888-8888-8888-8888-888888888888").unwrap();
+        let pane_id = Uuid::parse_str("99999999-9999-9999-9999-999999999999").unwrap();
+        let result = create_pane_result(ws_id, pane_id);
+        assert_eq!(result["success"], true);
+        assert_eq!(result["workspaceId"], ws_id.to_string());
+        assert_eq!(result["paneId"], pane_id.to_string());
+        assert_eq!(result["operation"], "create-pane");
+        assert_eq!(result["createdWorkspace"], false);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_pane_invoke_adds_one_session_to_the_single_workspace() {
+        let workspace = super::super::workspace::new_shared();
+        let ws_id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let result = dispatch_lan_invoke(
+            "create_pane",
+            &json!({ "workspaceId": ws_id.to_string() }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .expect("create_pane should allocate a PTY-backed pane");
+        assert!(result["paneId"].as_str().is_some());
+        assert_eq!(result["workspaceId"], ws_id.to_string());
+        assert_eq!(workspace.lock().unwrap().sessions.len(), 1);
+        // Dropping the shared workspace releases the PTY bridge and its child.
+        drop(workspace);
     }
 }
