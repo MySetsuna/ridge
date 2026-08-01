@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::AppState;
 use ridge_kernel::registry::save_remote_hosts_at;
 use ridge_kernel::registry::save_workspace_graph_at;
+use ridge_kernel::registry::save_roster_at;
 
 fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
     headers
@@ -98,6 +99,10 @@ fn workspace_detail(
 
 fn persist_workspaces(st: &AppState, graph: &ridge_core::workspace::graph::WorkspaceGraph) -> Result<(), StatusCode> {
     save_workspace_graph_at(&st.workspaces_path, graph).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn persist_roster(st: &AppState, roster: &ridge_core::teammate::topology::TopologyGraph) -> Result<(), StatusCode> {
+    save_roster_at(&st.roster_path, roster).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// Kernel-owned remote host topology. Transport connection remains a shell adapter.
@@ -376,10 +381,11 @@ pub async fn domain_agent_roster_add(
     let teammate = ridge_core::teammate::model::Teammate::new(request.id, request.name, request.pane_id)
         .with_capability(capability);
     let agent_id = teammate.id.clone();
-    st.roster
-        .lock()
-        .expect("roster lock")
-        .add_teammate(teammate);
+    let mut roster = st.roster.lock().expect("roster lock");
+    let mut next = roster.clone();
+    next.add_teammate(teammate);
+    persist_roster(&st, &next)?;
+    *roster = next;
     Ok(Json(json!({ "ok": true, "agent_id": agent_id })))
 }
 
@@ -394,10 +400,11 @@ pub async fn domain_agent_roster_remove(
     if agent_id.trim().is_empty() {
         return Ok(bad_request("agent id is required"));
     }
-    st.roster
-        .lock()
-        .expect("roster lock")
-        .remove_teammate(&agent_id);
+    let mut roster = st.roster.lock().expect("roster lock");
+    let mut next = roster.clone();
+    next.remove_teammate(&agent_id);
+    persist_roster(&st, &next)?;
+    *roster = next;
     Ok(Json(json!({ "ok": true, "agent_id": agent_id })))
 }
 
@@ -587,6 +594,7 @@ mod tests {
             roster: Arc::new(std::sync::Mutex::new(
                 ridge_core::teammate::topology::TopologyGraph::new(),
             )),
+            roster_path: std::env::temp_dir().join(format!("ridge-kernel-roster-{}.json", Uuid::new_v4())),
             remote_hosts: Arc::new(std::sync::Mutex::new(ridge_core::remote::RemoteHostTopology::default())),
             remote_hosts_path: std::env::temp_dir().join(format!("ridge-kernel-test-{}.json", Uuid::new_v4())),
             ptys: Arc::new(ridge_kernel::pty::PtyRegistry::default()),
@@ -694,6 +702,7 @@ mod tests {
     #[tokio::test]
     async fn roster_handlers_keep_agent_state_in_kernel() {
         let state = test_state();
+        let persisted = state.roster_path.clone();
         let _ = domain_agent_roster_add(
             State(state.clone()),
             test_headers(),
@@ -710,6 +719,9 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(listed["roster"][0]["capability"], "Skilled");
+        let restored: ridge_core::teammate::topology::TopologyGraph =
+            serde_json::from_slice(&std::fs::read(&persisted).unwrap()).unwrap();
+        assert!(restored.get("codex-1").is_some());
         let _ = domain_agent_roster_remove(
             State(state.clone()),
             test_headers(),
@@ -722,5 +734,6 @@ mod tests {
             .unwrap()
             .0;
         assert!(listed["roster"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_file(persisted);
     }
 }
