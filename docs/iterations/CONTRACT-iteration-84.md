@@ -49,6 +49,12 @@ source that the backend never returned.
   `cdp-remote-mobile-agents.mjs` (`GATE: PASS`). The mobile probe observed no
   project `runtime.lastError`; its remaining console output is limited to
   known local WebView2/worker fallback and self-signed Service Worker warnings.
+- `node scripts/mobile-keyboard-e2e.mjs` now passes with
+  `browserErrors:[]`, visual viewport reduction, bounded jitter convergence,
+  input safety, and keyboard-close recovery. Its assertion accepts a stable
+  zero translation when the focused input is already above the IME and
+  requires negative motion only when measured overlap exists; core keyboard
+  geometry code is unchanged.
 
 ## Non-claims
 
