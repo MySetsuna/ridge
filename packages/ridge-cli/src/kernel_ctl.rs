@@ -8,6 +8,7 @@ use std::process::Command;
 use std::time::Duration;
 
 pub use ridge_kernel::registry::KernelEndpoint;
+use ridge_kernel::client::{is_process_alive, running_endpoint};
 
 pub fn kernel_pid_path() -> PathBuf {
     ridge_kernel::registry::kernel_pid_path()
@@ -29,45 +30,6 @@ pub fn read_kernel_pid() -> Option<u32> {
                 .ok()
                 .and_then(|s| s.trim().parse().ok())
         })
-}
-
-#[cfg(windows)]
-fn is_process_alive(pid: u32) -> bool {
-    use std::os::windows::process::CommandExt;
-    Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-        .creation_flags(0x0800_0000)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-        .unwrap_or(false)
-}
-
-#[cfg(not(windows))]
-fn is_process_alive(pid: u32) -> bool {
-    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-fn http_get(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("http://")?;
-    let (hostport, path) = rest.split_once('/')?;
-    let path = format!("/{path}");
-    let (host, port_s) = hostport.split_once(':')?;
-    let port: u16 = port_s.parse().ok()?;
-    let mut stream = TcpStream::connect((host, port)).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(800)))
-        .ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(800)))
-        .ok()?;
-    let req = format!("GET {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n");
-    stream.write_all(req.as_bytes()).ok()?;
-    let mut buf = String::new();
-    stream.read_to_string(&mut buf).ok()?;
-    buf.split("\r\n\r\n").nth(1).map(|s| s.to_string())
 }
 
 fn http_post_token(url: &str, token: &str) -> bool {
@@ -101,14 +63,7 @@ fn http_post_token(url: &str, token: &str) -> bool {
 }
 
 pub fn is_kernel_running() -> bool {
-    let Some(ep) = read_endpoint() else {
-        return false;
-    };
-    if !is_process_alive(ep.pid) {
-        return false;
-    }
-    http_get(&format!("http://127.0.0.1:{}/v1/health", ep.port))
-        .is_some_and(|b| b.contains("\"ok\""))
+    running_endpoint().is_some()
 }
 
 /// 是否有存活内核且不是本 rdg 进程（桌面/独立 kernel 在跑）。

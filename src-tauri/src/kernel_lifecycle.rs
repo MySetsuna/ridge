@@ -29,64 +29,10 @@ pub fn read_kernel_pid() -> Option<u32> {
         .or_else(|| fs::read_to_string(kernel_pid_path()).ok()?.trim().parse().ok())
 }
 
-#[cfg(windows)]
-fn is_process_alive(pid: u32) -> bool {
-    use std::os::windows::process::CommandExt;
-    Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-        .creation_flags(0x0800_0000)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-        .unwrap_or(false)
-}
-
-#[cfg(not(windows))]
-fn is_process_alive(pid: u32) -> bool {
-    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
+use ridge_kernel::client::{health_ok, is_process_alive, running_endpoint};
 
 pub fn is_kernel_running() -> bool {
-    read_endpoint()
-        .map(|e| is_process_alive(e.pid) && health_ok(&e))
-        .unwrap_or(false)
-}
-
-fn health_ok(ep: &KernelEndpoint) -> bool {
-    let url = format!("http://127.0.0.1:{}/v1/health", ep.port);
-    ureq_get_ok(&url)
-}
-
-/// 极薄 HTTP GET（避免给 tauri 再加 reqwest 依赖时用 std 仅？）
-/// tauri 已有大量 deps — 用 std::net 手写太长。改用 `ureq` 若无则用 Command curl.
-/// Prefer: check if ureq exists in lock, else use std + tiny blocking via powershell no.
-fn ureq_get_ok(url: &str) -> bool {
-    // Use std TcpStream + write for GET health without new dep.
-    simple_http_get(url).is_some_and(|body| body.contains("\"ok\":true") || body.contains("\"ok\": true"))
-}
-
-fn simple_http_get(url: &str) -> Option<String> {
-    // url is always http://127.0.0.1:PORT/path
-    let rest = url.strip_prefix("http://")?;
-    let (hostport, path) = rest.split_once('/')?;
-    let path = format!("/{path}");
-    let (host, port_s) = hostport.split_once(':')?;
-    let port: u16 = port_s.parse().ok()?;
-    let mut stream = std::net::TcpStream::connect((host, port)).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(800)))
-        .ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(800)))
-        .ok()?;
-    use std::io::{Read, Write};
-    let req = format!("GET {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n");
-    stream.write_all(req.as_bytes()).ok()?;
-    let mut buf = String::new();
-    stream.read_to_string(&mut buf).ok()?;
-    buf.split("\r\n\r\n").nth(1).map(|s| s.to_string())
+    running_endpoint().is_some()
 }
 
 fn simple_http_post_auth(url: &str, token: &str) -> bool {
@@ -273,7 +219,7 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
         KernelBootDecision::BecomeHost => {}
     }
 
-    if let Some(ep) = read_endpoint().filter(|e| is_process_alive(e.pid) && health_ok(e)) {
+    if let Some(ep) = running_endpoint() {
         return Ok(ep);
     }
 
