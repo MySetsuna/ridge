@@ -31,7 +31,7 @@ explicitly unverified.
 - `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 与 `CONTRACT-iteration-77.md` 推进 Remote/桌面稳定性；RPC/输入/Resize、SCM、Pane 生命周期、日志、真清空、Host、Commune、多窗口所有权及窗级 active 核心已落地；仅外部运行证据待补。
 - `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`：项目源码无 Chrome Extension Messaging；保持业务零 diff，待受影响手机 clean-profile/扩展 A/B 终局归因。
 - `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02` / `REQ-REMOTE-RUNTIME-PERF-MEMORY-02`：键盘视觉偏移稳定、Remote listener/worker/pending/timer 回收；代码与确定性测试已落，真机/WebView2 heap soak 待补。
-- 当前发布收敛：`main@9ece51d`（移动 IME 修复与 `0.1.29` 版本合同已推送）；Remote run `30717808784` 成功（head `9ece51d`），ridge-cloud run `30717810568` 成功并通过生产健康检查；`v0.1.29` Release run `30717760186` 全矩阵成功，12 个资产已核验并正式发布，URL `https://github.com/MySetsuna/ridge/releases/tag/v0.1.29`。
+- 当前发布收敛：Release/Remote 取源 `9ece51d`（移动 IME 修复与 `0.1.29` 版本合同）；当前 `main` 另含本归档提交。Remote run `30717808784` 成功（head `9ece51d`），ridge-cloud run `30717810568` 成功并通过生产健康检查；`v0.1.29` Release run `30717760186` 全矩阵成功，12 个资产已核验并正式发布，URL `https://github.com/MySetsuna/ridge/releases/tag/v0.1.29`。
 
 ## 已验证代码事实
 
