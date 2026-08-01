@@ -78,6 +78,7 @@ export interface NegotiatedProtocol {
 
 interface Pending {
   method: string;
+  scope?: string;
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   timer: ReturnType<typeof setTimeout> | null;
@@ -107,6 +108,7 @@ export interface RpcDiagnostics {
   settled: number;
   timedOut: number;
   cancelled: number;
+  cancelSendFailed: number;
   queueRejected: number;
 }
 
@@ -117,6 +119,7 @@ export class RpcClient {
   private readonly nextId: () => JsonRpcId;
 
   private pending = new Map<JsonRpcId, Pending>();
+  private pendingByScope = new Map<string, Set<JsonRpcId>>();
   private notificationHandlers = new Map<string, Set<NotificationHandler>>();
   private resyncHooks = new Set<ResyncHook>();
   private seq = 0;
@@ -129,6 +132,7 @@ export class RpcClient {
     settled: 0,
     timedOut: 0,
     cancelled: 0,
+    cancelSendFailed: 0,
     queueRejected: 0,
   };
 
@@ -191,16 +195,31 @@ export class RpcClient {
 
       this.pending.set(id, {
         method,
+        scope: options.scope,
         resolve: (v) => resolve(v as T),
         reject,
         timer,
         signal: options.signal,
         onAbort,
       });
+      if (options.scope) {
+        let ids = this.pendingByScope.get(options.scope);
+        if (!ids) {
+          ids = new Set();
+          this.pendingByScope.set(options.scope, ids);
+        }
+        ids.add(id);
+      }
       this.counters.peakInFlight = Math.max(this.counters.peakInFlight, this.pending.size);
 
-      this.transport.sendControl(buildRequest(id, method, params));
-      this.counters.sent += 1;
+      try {
+        this.transport.sendControl(buildRequest(id, method, params));
+        this.counters.sent += 1;
+      } catch (error) {
+        this.settle(id, (pending) => {
+          pending.reject(error instanceof Error ? error : new Error(String(error)));
+        });
+      }
     });
   }
 
@@ -208,8 +227,22 @@ export class RpcClient {
   cancel(id: JsonRpcId): void {
     if (this.settle(id, (p) => p.reject(new RpcCancelledError(p.method)))) {
       this.counters.cancelled += 1;
+      this.sendCancel(id);
     }
-    this.sendCancel(id);
+  }
+
+  /** Cancel every pending request owned by one lifecycle scope. */
+  cancelScope(scope: string): number {
+    const ids = [...(this.pendingByScope.get(scope) ?? [])];
+    let cancelled = 0;
+    for (const id of ids) {
+      if (this.settle(id, (p) => p.reject(new RpcCancelledError(p.method)))) {
+        cancelled += 1;
+        this.counters.cancelled += 1;
+        this.sendCancel(id);
+      }
+    }
+    return cancelled;
   }
 
   /** Fire-and-forget JSON-RPC notification (no id, no response expected). */
@@ -289,7 +322,13 @@ export class RpcClient {
 
   // ── internal ───────────────────────────────────────────────────────────────
   private sendCancel(id: JsonRpcId): void {
-    this.transport.sendControl(buildNotification(CANCEL_METHOD, { id }));
+    try {
+      this.transport.sendControl(buildNotification(CANCEL_METHOD, { id }));
+    } catch {
+      // The local request is already settled. A broken transport cannot accept
+      // cancellation, but must never resurrect the pending entry or break teardown.
+      this.counters.cancelSendFailed += 1;
+    }
   }
 
   /** Resolve/reject + clean up one pending entry by id. No-op if unknown. */
@@ -297,6 +336,11 @@ export class RpcClient {
     const p = this.pending.get(id);
     if (!p) return false;
     this.pending.delete(id);
+    if (p.scope) {
+      const ids = this.pendingByScope.get(p.scope);
+      ids?.delete(id);
+      if (ids?.size === 0) this.pendingByScope.delete(p.scope);
+    }
     if (p.timer) clearTimeout(p.timer);
     if (p.signal && p.onAbort) p.signal.removeEventListener('abort', p.onAbort);
     run(p);
@@ -423,6 +467,7 @@ export class RpcClient {
   private rejectAllInFlight(makeError: (method: string) => Error): void {
     const entries = [...this.pending.values()];
     this.pending.clear();
+    this.pendingByScope.clear();
     for (const p of entries) {
       if (p.timer) clearTimeout(p.timer);
       if (p.signal && p.onAbort) p.signal.removeEventListener('abort', p.onAbort);
