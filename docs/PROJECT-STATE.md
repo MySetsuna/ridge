@@ -32,10 +32,11 @@ Agent history discovery now runs with an independent bounded pass per source;
 Claude session volume can no longer starve Codex history. The new filesystem
 fixture proves both sources, recorded CWD, latest assistant text, structured
 resume arguments, and child-path filtering. Code commit `b88b679` is pushed;
-see `docs/iterations/CONTRACT-iteration-84.md`. Version `0.1.30` is committed
-as `58c2cb7` and formally published with 12 assets. Release run
-`30719551852`, Remote run `30719562705`, and ridge-cloud run `30719573795` all
-passed; cloud production health returned `ok=true`. Isolated WebView2/CDP
+see `docs/iterations/CONTRACT-iteration-84.md`. Version `0.1.31` is committed
+as `f8605da` and formally published with 12 assets. Release run
+`30722453238` and Remote run `30722759979` passed; artifact current activated
+`0.1.31+gf8605da`, and cloud production health returned `ok=true`. The prior
+ridge-cloud source deployment remains healthy. Isolated WebView2/CDP
 Agent panel, auto-discovery/recovery, and LAN mobile roster/data-plane probes
 also passed; the probe emitted no `runtime.lastError`. A separate first-start
 attempt failed only because the Rust debug archive exhausted disk (`OS error

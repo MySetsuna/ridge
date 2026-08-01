@@ -62,6 +62,10 @@ source that the backend never returned.
   equivalent context key order still coalesces deterministically.
 - `pnpm exec vitest run packages/remote/src/shared/transport/paneRpcScheduler.test.ts`:
   14 passed.
+- Runtime change was versioned as `0.1.31` (`f8605da`). Release workflow
+  `30722453238` passed the test gate and all four platform jobs; formal
+  `v0.1.31` now carries 12 verified assets. Remote artifact workflow
+  `30722759979` activated `0.1.31+gf8605da`; cloud health remained `ok=true`.
 
 ## Non-claims
 
