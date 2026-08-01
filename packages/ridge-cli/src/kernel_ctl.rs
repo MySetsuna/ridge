@@ -4,11 +4,12 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
+use ridge_kernel::client::{
+    is_process_alive, running_endpoint, shutdown_endpoint, spawn_detached, wait_for_running,
+};
 pub use ridge_kernel::registry::KernelEndpoint;
-use ridge_kernel::client::{is_process_alive, running_endpoint, spawn_detached, wait_for_running};
 
 pub fn kernel_pid_path() -> PathBuf {
     ridge_kernel::registry::kernel_pid_path()
@@ -23,47 +24,19 @@ pub fn read_endpoint() -> Option<KernelEndpoint> {
 }
 
 pub fn read_kernel_pid() -> Option<u32> {
-    read_endpoint()
-        .map(|e| e.pid)
-        .or_else(|| {
-            fs::read_to_string(kernel_pid_path())
-                .ok()
-                .and_then(|s| s.trim().parse().ok())
-        })
-}
-
-fn http_post_token(url: &str, token: &str) -> bool {
-    let Some(rest) = url.strip_prefix("http://") else {
-        return false;
-    };
-    let Some((hostport, path)) = rest.split_once('/') else {
-        return false;
-    };
-    let path = format!("/{path}");
-    let Some((host, port_s)) = hostport.split_once(':') else {
-        return false;
-    };
-    let Ok(port) = port_s.parse::<u16>() else {
-        return false;
-    };
-    let Ok(mut stream) = TcpStream::connect((host, port)) else {
-        return false;
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(1500)));
-    let req = format!(
-        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\nContent-Length: 0\r\nx-ridge-kernel-token: {token}\r\n\r\n"
-    );
-    if stream.write_all(req.as_bytes()).is_err() {
-        return false;
-    }
-    let mut buf = String::new();
-    let _ = stream.read_to_string(&mut buf);
-    buf.contains("200") || buf.contains("\"ok\"")
+    read_endpoint().map(|e| e.pid).or_else(|| {
+        fs::read_to_string(kernel_pid_path())
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+    })
 }
 
 pub fn is_kernel_running() -> bool {
     running_endpoint().is_some()
+}
+
+pub fn is_kernel_process_alive(pid: u32) -> bool {
+    is_process_alive(pid)
 }
 
 /// 是否有存活内核且不是本 rdg 进程（桌面/独立 kernel 在跑）。
@@ -92,64 +65,22 @@ pub fn status_line() -> String {
 /// rdg 启动：内核不在则拉起（与桌面 detect-or-spawn 同契约）。
 pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
     if let Some(ep) = read_endpoint() {
-        if is_process_alive(ep.pid) && is_kernel_running() {
-            return Ok(ep);
+        if is_process_alive(ep.pid) {
+            if ridge_kernel::client::health_ok(&ep) {
+                return Ok(ep);
+            }
+            return Err(format!(
+                "live ridge-kernel PID {} is unhealthy or protocol-incompatible; refusing a second instance",
+                ep.pid
+            ));
         }
         // stale
         let _ = fs::remove_file(kernel_pid_path());
         let _ = fs::remove_file(kernel_json_path());
     }
-    let bin = resolve_kernel_binary().ok_or_else(|| {
-        "ridge-kernel 未找到（请 cargo build -p ridge-kernel 或放到 rdg 同目录）".to_string()
-    })?;
-    spawn_detached(&bin)?;
+    let bin = std::env::current_exe().map_err(|error| format!("定位 rdg: {error}"))?;
+    spawn_detached(&bin, &[ridge_kernel::client::KERNEL_HOST_ARG])?;
     wait_for_running(Duration::from_secs(8)).ok_or_else(|| "ridge-kernel 未在时限内就绪".into())
-}
-
-fn resolve_kernel_binary() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for name in ["ridge-kernel.exe", "ridge-kernel"] {
-                let p = dir.join(name);
-                if p.is_file() {
-                    return Some(p);
-                }
-            }
-            let dev = dir
-                .join("..")
-                .join("..")
-                .join("target")
-                .join("debug")
-                .join(if cfg!(windows) {
-                    "ridge-kernel.exe"
-                } else {
-                    "ridge-kernel"
-                });
-            if dev.is_file() {
-                return Some(dev.canonicalize().unwrap_or(dev));
-            }
-            let dev2 = std::path::Path::new("target").join("debug").join(if cfg!(windows) {
-                "ridge-kernel.exe"
-            } else {
-                "ridge-kernel"
-            });
-            if dev2.is_file() {
-                return Some(dev2);
-            }
-        }
-    }
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let p = dir.join(if cfg!(windows) {
-            "ridge-kernel.exe"
-        } else {
-            "ridge-kernel"
-        });
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    None
 }
 
 /// 经内核领域 API 读 agent profiles（DOMAIN 验收路径）。
@@ -169,10 +100,7 @@ pub fn domain_fs_list(path: &str) -> Result<String, String> {
         return Err("内核不可用".into());
     }
     let enc = path.replace(' ', "%20");
-    let url = format!(
-        "http://127.0.0.1:{}/v1/domain/fs/list?path={enc}",
-        ep.port
-    );
+    let url = format!("http://127.0.0.1:{}/v1/domain/fs/list?path={enc}", ep.port);
     http_get_auth(&url, &ep.token).ok_or_else(|| "domain/fs/list 请求失败".into())
 }
 
@@ -259,36 +187,7 @@ pub fn stop_kernel() -> Result<(), String> {
         let _ = fs::remove_file(kernel_json_path());
         return Err(format!("进程 {} 已不存在", ep.pid));
     }
-    let url = format!("http://127.0.0.1:{}/v1/shutdown", ep.port);
-    if !http_post_token(&url, &ep.token) {
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            let status = Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &ep.pid.to_string()])
-                .creation_flags(0x0800_0000)
-                .status()
-                .map_err(|e| format!("taskkill: {e}"))?;
-            if !status.success() {
-                return Err(format!("taskkill 失败: {status}"));
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            unsafe {
-                libc::kill(ep.pid as libc::pid_t, libc::SIGTERM);
-            }
-        }
-    }
-    for _ in 0..20 {
-        if !is_process_alive(ep.pid) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let _ = fs::remove_file(kernel_pid_path());
-    let _ = fs::remove_file(kernel_json_path());
-    Ok(())
+    shutdown_endpoint(&ep, Duration::from_secs(2))
 }
 
 /// 彻底退出二次确认：命令行 Y/N（默认 N）。非 TTY 仅当 `RIDGE_CONFIRM_QUIT_KERNEL=1` 通过。

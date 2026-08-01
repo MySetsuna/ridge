@@ -1,8 +1,8 @@
 //! 内核发现文件读写（外壳与 kernel 共用路径约定）。
 
-use std::fs;
-use std::path::PathBuf;
 use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,9 @@ pub struct KernelEndpoint {
 }
 
 pub fn ridge_data_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("RIDGE_KERNEL_DATA_DIR").filter(|path| !path.is_empty()) {
+        return PathBuf::from(path);
+    }
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ridge")
@@ -29,52 +32,108 @@ pub fn kernel_json_path() -> PathBuf {
     ridge_data_dir().join("kernel.json")
 }
 
+pub fn kernel_lock_path() -> PathBuf {
+    ridge_data_dir().join("kernel.lock")
+}
+
+/// Process-lifetime cross-shell singleton guard. The lock file may persist,
+/// but the OS releases its lock when the owning process exits or crashes.
+pub struct KernelInstanceGuard {
+    _file: File,
+}
+
+impl KernelInstanceGuard {
+    pub fn try_acquire() -> Result<Option<Self>> {
+        Self::try_acquire_at(&kernel_lock_path())
+    }
+
+    fn try_acquire_at(path: &Path) -> Result<Option<Self>> {
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path)
+            .with_context(|| format!("open {}", path.display()))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => {
+                Err(error).with_context(|| format!("lock {}", path.display()))
+            }
+        }
+    }
+}
+
 /// Kernel-owned remote topology. Records intentionally exclude credentials.
 pub fn remote_hosts_path() -> PathBuf {
     ridge_data_dir().join("remote-hosts.json")
 }
 
-pub fn workspace_graph_path() -> PathBuf { ridge_data_dir().join("workspace-graph.json") }
+pub fn workspace_graph_path() -> PathBuf {
+    ridge_data_dir().join("workspace-graph.json")
+}
 
-pub fn roster_path() -> PathBuf { ridge_data_dir().join("agent-roster.json") }
+pub fn roster_path() -> PathBuf {
+    ridge_data_dir().join("agent-roster.json")
+}
 
 pub fn load_roster() -> Result<ridge_core::teammate::topology::TopologyGraph> {
     let path = roster_path();
-    if !path.exists() { return Ok(ridge_core::teammate::topology::TopologyGraph::new()); }
+    if !path.exists() {
+        return Ok(ridge_core::teammate::topology::TopologyGraph::new());
+    }
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
 }
 
-pub fn save_roster_at(path: &std::path::Path, roster: &ridge_core::teammate::topology::TopologyGraph) -> Result<()> {
+pub fn save_roster_at(
+    path: &std::path::Path,
+    roster: &ridge_core::teammate::topology::TopologyGraph,
+) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(roster).context("serialize agent roster")?)
-        .with_context(|| format!("write {}", tmp.display()))?;
+    fs::write(
+        &tmp,
+        serde_json::to_vec_pretty(roster).context("serialize agent roster")?,
+    )
+    .with_context(|| format!("write {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
     Ok(())
 }
 
 pub fn load_workspace_graph() -> Result<ridge_core::workspace::graph::WorkspaceGraph> {
     let path = workspace_graph_path();
-    if !path.exists() { return Ok(ridge_core::workspace::graph::WorkspaceGraph::new()); }
+    if !path.exists() {
+        return Ok(ridge_core::workspace::graph::WorkspaceGraph::new());
+    }
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
 }
 
-pub fn save_workspace_graph_at(path: &std::path::Path, graph: &ridge_core::workspace::graph::WorkspaceGraph) -> Result<()> {
+pub fn save_workspace_graph_at(
+    path: &std::path::Path,
+    graph: &ridge_core::workspace::graph::WorkspaceGraph,
+) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(graph).context("serialize workspace graph")?)
-        .with_context(|| format!("write {}", tmp.display()))?;
+    fs::write(
+        &tmp,
+        serde_json::to_vec_pretty(graph).context("serialize workspace graph")?,
+    )
+    .with_context(|| format!("write {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
     Ok(())
 }
 
 pub fn load_remote_hosts() -> Result<HashMap<String, ridge_core::remote::HostRecord>> {
     let path = remote_hosts_path();
-    if !path.exists() { return Ok(HashMap::new()); }
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
     let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
 }
@@ -138,5 +197,28 @@ mod tests {
         assert_eq!(decoded.pid, 42);
         assert_eq!(decoded.port, 34567);
         assert_eq!(decoded.token, "test-token");
+    }
+
+    #[test]
+    fn process_lock_excludes_a_second_kernel_until_owner_drops() {
+        let path = std::env::temp_dir().join(format!(
+            "ridge-kernel-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = KernelInstanceGuard::try_acquire_at(&path)
+            .unwrap()
+            .expect("first owner");
+        assert!(KernelInstanceGuard::try_acquire_at(&path)
+            .unwrap()
+            .is_none());
+        drop(first);
+        assert!(KernelInstanceGuard::try_acquire_at(&path)
+            .unwrap()
+            .is_some());
+        let _ = fs::remove_file(path);
     }
 }

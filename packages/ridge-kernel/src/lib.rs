@@ -7,3 +7,6 @@ pub mod registry;
 pub mod client;
 pub mod agent_profiles;
 pub mod pty;
+mod domain;
+mod mcp_min;
+pub mod server;

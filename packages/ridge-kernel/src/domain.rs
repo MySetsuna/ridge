@@ -9,10 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::AppState;
-use ridge_kernel::registry::save_remote_hosts_at;
-use ridge_kernel::registry::save_workspace_graph_at;
-use ridge_kernel::registry::save_roster_at;
+use crate::registry::{save_remote_hosts_at, save_roster_at, save_workspace_graph_at};
+use crate::server::AppState;
 
 fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
     headers
@@ -24,7 +22,7 @@ fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
 
 /// Kernel-owned default agent profiles.
 pub fn builtin_agent_profiles() -> Value {
-    serde_json::to_value(ridge_kernel::agent_profiles::builtin_profiles())
+    serde_json::to_value(crate::agent_profiles::builtin_profiles())
         .expect("AgentProfile serializes")
 }
 
@@ -609,7 +607,7 @@ mod tests {
             roster_path: std::env::temp_dir().join(format!("ridge-kernel-roster-{}.json", Uuid::new_v4())),
             remote_hosts: Arc::new(std::sync::Mutex::new(ridge_core::remote::RemoteHostTopology::default())),
             remote_hosts_path: std::env::temp_dir().join(format!("ridge-kernel-test-{}.json", Uuid::new_v4())),
-            ptys: Arc::new(ridge_kernel::pty::PtyRegistry::default()),
+            ptys: Arc::new(crate::pty::PtyRegistry::default()),
         }
     }
 
