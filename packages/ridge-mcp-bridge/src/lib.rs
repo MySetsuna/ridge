@@ -95,8 +95,25 @@ fn kernel_endpoint() -> Option<Endpoint> {
     })
 }
 
-/// 按「显式参数 → **当前 ridge-kernel 登记** → 显式 pane 环境 → teammate sidecar」发现。
+/// 按「显式参数 → **当前 ridge-kernel 登记**」发现；默认不回退旧 sidecar。
 pub fn discover(url: Option<String>, token: Option<String>) -> Result<Endpoint> {
+    discover_from(url, token, kernel_endpoint(), false)
+}
+
+pub fn discover_with_options(
+    url: Option<String>,
+    token: Option<String>,
+    allow_legacy_fallback: bool,
+) -> Result<Endpoint> {
+    discover_from(url, token, kernel_endpoint(), allow_legacy_fallback)
+}
+
+fn discover_from(
+    url: Option<String>,
+    token: Option<String>,
+    kernel: Option<Endpoint>,
+    allow_legacy_fallback: bool,
+) -> Result<Endpoint> {
     let clean = |value: Option<String>| {
         value
             .map(|v| v.trim().to_string())
@@ -109,28 +126,40 @@ pub fn discover(url: Option<String>, token: Option<String>) -> Result<Endpoint> 
     }
     // Kernel 是默认 SSOT；环境变量只作为显式 legacy/远端调试后备，避免旧 pane
     // 指向另一套 teammate 服务造成“看似成功、实际错 pane”。
-    if let Some(ep) = kernel_endpoint() {
+    if let Some(ep) = kernel {
         return Ok(ep);
     }
-    if let (Some(base_url), Some(token)) = (env("RIDGE_TEAMMATE_URL"), env("RIDGE_TEAMMATE_TOKEN"))
-    {
-        return Ok(Endpoint { base_url, token });
+    if allow_legacy_fallback {
+        if let (Some(base_url), Some(token)) =
+            (env("RIDGE_TEAMMATE_URL"), env("RIDGE_TEAMMATE_TOKEN"))
+        {
+            return Ok(Endpoint { base_url, token });
+        }
+        if let Some(endpoint) = sidecar_endpoint() {
+            return Ok(endpoint);
+        }
     }
-    sidecar_endpoint().ok_or_else(|| {
-        anyhow!(
-            "找不到 Ridge MCP 端点：请启动 ridge-kernel / Ridge 桌面，或在 pane 内设置 RIDGE_TEAMMATE_*。"
-        )
-    })
+    return Err(anyhow!(
+        "未找到活动 ridge-kernel；请启动 Ridge/ridge-kernel，或显式传入 --url 与 --token"
+    ));
 }
 
 /// 逐行转发 stdio JSON-RPC 到 Ridge HTTP MCP。通知的 `202` 不写 stdout。
 pub async fn run(url: Option<String>, token: Option<String>) -> Result<()> {
+    run_with_options(url, token, false).await
+}
+
+pub async fn run_with_options(
+    url: Option<String>,
+    token: Option<String>,
+    allow_legacy_fallback: bool,
+) -> Result<()> {
     let client = reqwest::Client::builder()
         // Ridge 端点恒为本机；开发机代理不应截获该请求。
         .no_proxy()
         .build()
         .context("创建 Ridge MCP HTTP client 失败")?;
-    let mut endpoint = discover(url.clone(), token.clone())?;
+    let mut endpoint = discover_with_options(url.clone(), token.clone(), allow_legacy_fallback)?;
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut output = tokio::io::stdout();
 
@@ -140,7 +169,7 @@ pub async fn run(url: Option<String>, token: Option<String>) -> Result<()> {
             continue;
         }
         let response = forward_request(&client, &request, &mut endpoint, || {
-            discover(url.clone(), token.clone())
+            discover_with_options(url.clone(), token.clone(), allow_legacy_fallback)
         })
         .await;
         if let Some(body) = response {
@@ -237,6 +266,12 @@ mod tests {
     fn explicit_arguments_win_over_discovery() {
         let endpoint = discover(Some("http://127.0.0.1:9".into()), Some("token".into())).unwrap();
         assert_eq!(endpoint.mcp_url(), "http://127.0.0.1:9/api/v1/mcp");
+    }
+
+    #[test]
+    fn default_discovery_fails_closed_without_kernel() {
+        let result = discover_from(None, None, None, false);
+        assert!(result.is_err());
     }
 
     #[test]
