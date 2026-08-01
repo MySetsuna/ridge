@@ -539,7 +539,7 @@
   });
 </script>
 
-<div class="flex h-full flex-col text-[var(--rg-fg)]">
+<div class="flex h-full flex-col text-[var(--rg-fg)]" data-testid="commune-panel">
   <!-- 标题栏仅承载标题；控制项属于面板内容，可随窄侧栏自然换行。 -->
   <header
     data-tauri-drag-region
@@ -793,6 +793,7 @@
       <div class="flex items-center gap-1 rounded-md border border-[var(--rg-border)] p-0.5">
         <button
           type="button"
+          data-testid="commune-tab-members"
           onclick={() => (teamTab = 'members')}
           class="flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors {teamTab ===
           'members'
@@ -804,6 +805,7 @@
         </button>
         <button
           type="button"
+          data-testid="commune-tab-groups"
           onclick={() => (teamTab = 'groups')}
           class="flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors {teamTab ===
           'groups'
@@ -815,6 +817,7 @@
         </button>
         <button
           type="button"
+          data-testid="commune-tab-history"
           onclick={() => (teamTab = 'history')}
           class="flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium transition-colors {teamTab ===
           'history'

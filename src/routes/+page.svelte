@@ -1587,6 +1587,7 @@ function expandSidebar(minWidth = 0) {
     <!-- Commune 入口恒可见；点击显式启用本地协同 UI，后台仍受各安全开关约束。 -->
     <button
       type="button"
+      data-testid="commune-entry"
       class="{actBtn}{sidebarTab === 'agents' ? actBtnOn : ''}"
       title={teammateEnabled ? "Agent's Commune" : "Agent's Commune（点击启用）"}
       onclick={() => {
