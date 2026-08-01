@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::AppState;
+use ridge_kernel::registry::save_remote_hosts_at;
 
 fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
     headers
@@ -113,7 +114,11 @@ pub async fn domain_remote_host_upsert(
     if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
     if host.id.trim().is_empty() { return Ok(bad_request("remote host id is required")); }
     let id = host.id.clone();
-    st.remote_hosts.lock().expect("remote host lock").insert(id.clone(), host);
+    let mut hosts = st.remote_hosts.lock().expect("remote host lock");
+    let mut next = hosts.clone();
+    next.insert(id.clone(), host);
+    save_remote_hosts_at(&st.remote_hosts_path, &next).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    *hosts = next;
     Ok(Json(json!({ "ok": true, "host_id": id })))
 }
 
@@ -123,7 +128,11 @@ pub async fn domain_remote_host_remove(
     Path(host_id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
     if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
-    let removed = st.remote_hosts.lock().expect("remote host lock").remove(&host_id).is_some();
+    let mut hosts = st.remote_hosts.lock().expect("remote host lock");
+    let mut next = hosts.clone();
+    let removed = next.remove(&host_id).is_some();
+    save_remote_hosts_at(&st.remote_hosts_path, &next).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    *hosts = next;
     Ok(Json(json!({ "ok": true, "removed": removed, "host_id": host_id })))
 }
 
@@ -567,6 +576,7 @@ mod tests {
                 ridge_core::teammate::topology::TopologyGraph::new(),
             )),
             remote_hosts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            remote_hosts_path: std::env::temp_dir().join(format!("ridge-kernel-test-{}.json", Uuid::new_v4())),
             ptys: Arc::new(ridge_kernel::pty::PtyRegistry::default()),
         }
     }
@@ -589,6 +599,7 @@ mod tests {
     #[tokio::test]
     async fn remote_host_handlers_keep_topology_in_kernel() {
         let state = test_state();
+        let persisted = state.remote_hosts_path.clone();
         let host = ridge_core::remote::HostRecord {
             id: "remote-a".into(),
             kind: ridge_core::remote::HostKind::Remote,
@@ -599,8 +610,12 @@ mod tests {
         let _ = domain_remote_host_upsert(State(state.clone()), test_headers(), Json(host)).await.unwrap();
         let listed = domain_remote_hosts(State(state.clone()), test_headers()).await.unwrap().0;
         assert_eq!(listed["hosts"][0]["id"], "remote-a");
+        let restored: std::collections::HashMap<String, ridge_core::remote::HostRecord> =
+            serde_json::from_slice(&std::fs::read(&persisted).unwrap()).unwrap();
+        assert_eq!(restored["remote-a"].label, "A");
         let removed = domain_remote_host_remove(State(state), test_headers(), Path("remote-a".into())).await.unwrap().0;
         assert_eq!(removed["removed"], true);
+        let _ = std::fs::remove_file(persisted);
     }
 
     #[test]

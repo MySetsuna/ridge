@@ -25,7 +25,7 @@ use serde::Serialize;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use ridge_kernel::registry::{clear_registry, write_registry, KernelEndpoint};
+use ridge_kernel::registry::{clear_registry, load_remote_hosts, remote_hosts_path, write_registry, KernelEndpoint};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -55,6 +55,7 @@ pub struct AppState {
     pub roster: Arc<std::sync::Mutex<ridge_core::teammate::topology::TopologyGraph>>,
     /// Kernel-owned remote host topology; shells only project or transport it.
     pub remote_hosts: Arc<std::sync::Mutex<HashMap<String, ridge_core::remote::HostRecord>>>,
+    pub remote_hosts_path: std::path::PathBuf,
     /// PTY process lifetime belongs to the kernel, not an API shell.
     pub ptys: Arc<ridge_kernel::pty::PtyRegistry>,
 }
@@ -192,7 +193,11 @@ async fn main() -> Result<()> {
         roster: Arc::new(std::sync::Mutex::new(
             ridge_core::teammate::topology::TopologyGraph::new(),
         )),
-        remote_hosts: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        remote_hosts: Arc::new(std::sync::Mutex::new(load_remote_hosts().unwrap_or_else(|error| {
+            tracing::warn!(%error, "remote host topology restore failed; starting empty");
+            HashMap::new()
+        }))),
+        remote_hosts_path: remote_hosts_path(),
         ptys: Arc::new(ridge_kernel::pty::PtyRegistry::default()),
     };
 
