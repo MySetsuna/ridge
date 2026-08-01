@@ -65,7 +65,11 @@
   const queryClient = useQueryClient();
   const sessionId = () => remoteSessionId(ws);
   const scrollbackDecoder = new ScrollbackDecoder();
-  onDestroy(() => scrollbackDecoder.dispose());
+  let remoteAppAlive = true;
+  onDestroy(() => {
+    remoteAppAlive = false;
+    scrollbackDecoder.dispose();
+  });
   const workspacesQuery = createQuery(() => ({
     queryKey: remoteQueryKeys.workspaces(sessionId()),
     queryFn: () => requestWorkspaceSnapshot(ws),
@@ -230,7 +234,7 @@
   // top; fetch the next older batch (cloud link only) and prepend it. Guard against
   // a pane switch mid-fetch so we never prepend one pane's history onto another.
   async function loadOlderScrollback(pane: PaneRef) {
-    if (!canvasRef || !ws.fetchOlderScrollback) return;
+    if (!remoteAppAlive || !canvasRef || !ws.fetchOlderScrollback) return;
     const targetCanvas = canvasRef;
     const key = paneRefKey(pane);
     if (scrollbackLoadingPaneIds.includes(key)) return;
@@ -239,16 +243,18 @@
     let page: Awaited<ReturnType<NonNullable<RemoteLink['fetchOlderScrollback']>>> = null;
     try {
       page = await ws.fetchOlderScrollback(pane);
-      if (!page) return;
+      if (!page || !remoteAppAlive) return;
       const bytes = await scrollbackDecoder.decode(pane, page.startSeq, page.endSeq, page.bytes);
-      if (bytes && targetCanvas.prependScrollbackForPane(key, bytes)) page.commit();
+      if (remoteAppAlive && bytes && targetCanvas.prependScrollbackForPane(key, bytes)) page.commit();
     } catch {
-      if (!scrollbackErrorPaneIds.includes(key)) {
+      if (remoteAppAlive && !scrollbackErrorPaneIds.includes(key)) {
         scrollbackErrorPaneIds = [...scrollbackErrorPaneIds, key];
       }
     } finally {
       page?.discard();
-      scrollbackLoadingPaneIds = scrollbackLoadingPaneIds.filter((id) => id !== key);
+      if (remoteAppAlive) {
+        scrollbackLoadingPaneIds = scrollbackLoadingPaneIds.filter((id) => id !== key);
+      }
     }
   }
 
