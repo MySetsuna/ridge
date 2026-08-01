@@ -583,27 +583,40 @@ pub async fn domain_git_status(
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    let is_repo = ridge_core::commands::git::is_git_repo(q.path.clone());
+    let path = q.path;
+    // Git discovery/status spawn external processes and may wait on the shared
+    // guard. Keep that work off the async executor so a slow repository cannot
+    // stall health, MCP, or unrelated domain requests.
+    let status_path = path.clone();
+    let (is_repo, status) = tokio::task::spawn_blocking(move || {
+        let is_repo = ridge_core::commands::git::find_git_repo_root(status_path.clone()).is_some();
+        let status = is_repo.then(|| ridge_core::commands::git::get_scm_status_sync(status_path));
+        (is_repo, status)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     if !is_repo {
         return Ok(Json(json!({
             "ok": true,
             "source": "ridge-kernel",
             "is_repo": false,
-            "path": q.path,
+            "path": path,
         })));
     }
-    match ridge_core::commands::git::get_scm_status_sync(q.path.clone()) {
+    let status = status.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    match status {
         Ok(status) => Ok(Json(json!({
             "ok": true,
             "source": "ridge-kernel",
             "is_repo": true,
-            "path": q.path,
+            "path": path,
             "status": status,
         }))),
         Err(e) => Ok(Json(json!({
             "ok": false,
             "source": "ridge-kernel",
             "is_repo": true,
+            "path": path,
             "error": e,
         }))),
     }
@@ -655,6 +668,26 @@ mod tests {
     fn agents_nonempty() {
         let v = builtin_agent_profiles();
         assert!(v.as_array().unwrap().len() >= 3);
+    }
+
+    #[tokio::test]
+    async fn git_status_recognizes_repository_ancestor_off_executor() {
+        let root = std::env::temp_dir().join(format!("ridge-kernel-git-{}", Uuid::new_v4()));
+        let child = root.join("nested");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(&child).unwrap();
+        let response = domain_git_status(
+            State(test_state()),
+            test_headers(),
+            Query(GitQuery {
+                path: child.to_string_lossy().into_owned(),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(response["is_repo"], true);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
