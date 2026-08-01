@@ -55,6 +55,7 @@ interface Pending {
 	resolve: (response: RenderWorkerResponse) => void;
 	reject: (err: Error) => void;
 	timer: ReturnType<typeof setTimeout>;
+	paneId?: string;
 }
 
 export const MAX_WORKER_PENDING = 256;
@@ -92,6 +93,7 @@ export class WorkerRendererError extends Error {
 export class WorkerHostedRenderer {
 	private worker: WorkerLike;
 	private pending = new Map<number, Pending>();
+	private ignoredReqIds = new Set<number>();
 	private nextReqId = 1;
 	private terminated = false;
 	private onFatal?: (error: Error) => void;
@@ -120,6 +122,7 @@ export class WorkerHostedRenderer {
 		this.terminated = true;
 		const pending = Array.from(this.pending.values());
 		this.pending.clear();
+		this.ignoredReqIds.clear();
 		this.worker.onmessage = null;
 		this.worker.onerror = null;
 		try {
@@ -227,6 +230,7 @@ export class WorkerHostedRenderer {
 	}
 
 	destroy(paneId: string): Promise<RenderWorkerResponse> {
+		this.cancelPane(paneId);
 		return this.send({ type: 'destroy', paneId });
 	}
 
@@ -278,7 +282,12 @@ export class WorkerHostedRenderer {
 				pending.reject(error);
 				this.fail(error);
 			}, WORKER_REQUEST_TIMEOUT_MS);
-			this.pending.set(id, { resolve, reject, timer });
+			this.pending.set(id, {
+				resolve,
+				reject,
+				timer,
+				paneId: 'paneId' in request ? request.paneId : undefined,
+			});
 			const wire = { ...request, __reqId: id };
 			try {
 				this.worker.postMessage(wire, transfer ?? []);
@@ -289,6 +298,32 @@ export class WorkerHostedRenderer {
 				reject(err instanceof Error ? err : new Error(String(err)));
 			}
 		});
+	}
+
+	/** Reject and forget every request for a pane before its destroy command
+	 * enters the worker queue. Late replies are tombstoned so they do not look
+	 * like protocol errors or keep the pane alive through retained callbacks. */
+	private cancelPane(paneId: string): void {
+		for (const [id, pending] of this.pending) {
+			if (pending.paneId !== paneId) continue;
+			this.pending.delete(id);
+			clearTimeout(pending.timer);
+			this.ignoredReqIds.add(id);
+			pending.reject(
+				new WorkerRendererError(
+					'pane destroyed; request cancelled',
+					'apply_delta_failed',
+					paneId,
+				),
+			);
+		}
+		// A pane can produce many frame requests during teardown. Keep late-reply
+		// tombstones bounded so cancellation itself cannot become a leak.
+		while (this.ignoredReqIds.size > MAX_WORKER_PENDING * 2) {
+			const oldest = this.ignoredReqIds.values().next().value as number | undefined;
+			if (oldest === undefined) break;
+			this.ignoredReqIds.delete(oldest);
+		}
 	}
 
 	releaseCanvas(paneId: string): Promise<RenderWorkerResponse> {
@@ -317,6 +352,7 @@ export class WorkerHostedRenderer {
 		}
 		const pending = this.pending.get(id);
 		if (!pending) {
+			if (this.ignoredReqIds.delete(id)) return;
 			console.warn(`[ridge-term] worker reply for unknown req id ${id}`, {
 				data,
 			});

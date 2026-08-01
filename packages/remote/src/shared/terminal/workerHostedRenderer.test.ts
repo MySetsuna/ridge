@@ -196,6 +196,37 @@ describe('WorkerHostedRenderer — concurrency', () => {
 		await renderer.destroy(PANE);
 		expect(state.get(PANE)).toBeUndefined();
 	});
+
+	it('destroy cancels pane requests and ignores their late replies', async () => {
+		const worker = new FakeWorker();
+		const renderer = new WorkerHostedRenderer(worker);
+		const delta = renderer.applyDelta(PANE, new Uint8Array([1]));
+		const resize = renderer.resize(PANE, 40, 120, 1);
+		const other = renderer.ping('keep');
+
+		const destroy = renderer.destroy(PANE);
+		expect(renderer.pendingCount()).toBe(2); // other + destroy
+		await expect(delta).rejects.toMatchObject({
+			message: 'pane destroyed; request cancelled',
+			paneId: PANE,
+		});
+		await expect(resize).rejects.toMatchObject({
+			message: 'pane destroyed; request cancelled',
+			paneId: PANE,
+		});
+
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		worker.deliverResponseFor(0, { type: 'ready', paneId: PANE, backend: 'canvas2d' });
+		worker.deliverResponseFor(1, { type: 'ready', paneId: PANE, backend: 'canvas2d' });
+		expect(warnSpy).not.toHaveBeenCalled();
+		warnSpy.mockRestore();
+
+		worker.deliverResponseFor(3, { type: 'destroyed', paneId: PANE });
+		worker.deliverResponseFor(2, { type: 'pong', token: 'keep' });
+		await expect(destroy).resolves.toMatchObject({ type: 'destroyed', paneId: PANE });
+		await expect(other).resolves.toMatchObject({ type: 'pong', token: 'keep' });
+		expect(renderer.pendingCount()).toBe(0);
+	});
 });
 
 describe('WorkerHostedRenderer — error paths', () => {
