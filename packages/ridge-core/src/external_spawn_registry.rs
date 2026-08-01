@@ -97,8 +97,28 @@ pub fn clamp_git_concurrency(n: u32) -> u32 {
 mod tests {
     use super::*;
     use crate::process_guard::{process_guard_stats, run_command_with_timeout};
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::time::Duration;
+
+    fn rust_files_below(dir: &Path, files: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if !matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("target" | ".git" | "node_modules")
+                ) {
+                    rust_files_below(&path, files);
+                }
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
 
     #[test]
     fn catalog_has_git_requiring_tree_kill() {
@@ -136,5 +156,40 @@ mod tests {
         assert_eq!(clamp_git_concurrency(0), GIT_CONCURRENCY_MIN);
         assert_eq!(clamp_git_concurrency(99), GIT_CONCURRENCY_MAX);
         assert_eq!(clamp_git_concurrency(2), 2);
+    }
+
+    #[test]
+    fn workspace_has_no_git_spawn_outside_shared_gate() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root");
+        let gate = workspace.join("packages/ridge-core/src/commands/git.rs");
+        let this_file = workspace.join("packages/ridge-core/src/external_spawn_registry.rs");
+        let mut files = Vec::new();
+        rust_files_below(&workspace.join("packages"), &mut files);
+        rust_files_below(&workspace.join("src-tauri"), &mut files);
+        let mut offenders = Vec::new();
+        for file in files {
+            if file == gate || file == this_file {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            for (line, text) in source.lines().enumerate() {
+                if text.contains("Command::new(\"git\")") {
+                    offenders.push(format!(
+                        "{}:{}",
+                        file.strip_prefix(workspace).unwrap_or(&file).display(),
+                        line + 1
+                    ));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "git spawns must use commands::git::run_git_guarded: {offenders:?}"
+        );
     }
 }

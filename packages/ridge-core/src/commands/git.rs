@@ -443,6 +443,24 @@ where
     .map_err(|e| format!("Task join error: {e}"))
 }
 
+/// Run a git command through the process-wide admission, timeout, tree-kill,
+/// and diagnostics path. Cross-crate consumers must use this instead of
+/// constructing `Command` themselves; otherwise their children are invisible
+/// to the shared concurrency cap and can recreate the historical git pileup.
+pub async fn run_git_guarded(
+    repo_root: String,
+    args: Vec<String>,
+) -> Result<std::process::Output, String> {
+    spawn_git_blocking(move || {
+        git_cmd()
+            .args(args)
+            .current_dir(repo_root)
+            .git_output()
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
 /// [`spawn_git_blocking`] plus per-slot latest-win supersede (G1): passing
 /// `Some(slot)` makes this request the slot's newest generation — any older
 /// same-slot request is killed if live, or aborts before spawning if still
