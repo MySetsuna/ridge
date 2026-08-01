@@ -1,5 +1,11 @@
 # ridge-mcp
 
+Default discovery is kernel-only: the bridge uses the active `ridge-kernel`
+registry and fails closed when the kernel is unavailable. It never silently
+falls back to a stale teammate endpoint. Explicit `--url` and `--token` remain
+supported; legacy `RIDGE_TEAMMATE_*` / sidecar discovery requires
+`--legacy-sidecar`.
+
 `ridge-mcp` 是 Ridge 桌面内置 MCP 的 stdio companion；它不是 `rdg`，也不托管无头终端。
 
 Ridge 的 HTTP MCP 端点和 token 会随桌面后端重启变化。该程序每次从 Ridge pane 的

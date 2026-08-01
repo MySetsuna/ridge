@@ -12,12 +12,15 @@ struct Args {
     /// Print a paste-ready stdio MCP configuration. Never includes endpoint or token.
     #[arg(long)]
     print_config: bool,
-    /// Ridge teammate server base URL. Omit to use the current Ridge pane or sidecar.
+    /// Ridge kernel MCP base URL. Omit to discover the current kernel.
     #[arg(long)]
     url: Option<String>,
-    /// Ridge teammate token. Omit to use the current Ridge pane or sidecar.
+    /// Ridge kernel token. Omit to discover the current kernel.
     #[arg(long)]
     token: Option<String>,
+    /// Explicitly permit legacy RIDGE_TEAMMATE_* / sidecar discovery.
+    #[arg(long)]
+    legacy_sidecar: bool,
 }
 
 #[tokio::main]
@@ -30,5 +33,5 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
-    ridge_mcp_bridge::run(args.url, args.token).await
+    ridge_mcp_bridge::run_with_options(args.url, args.token, args.legacy_sidecar).await
 }
