@@ -7,88 +7,15 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use serde::{Deserialize, Serialize};
 
 /// 进程内覆盖缓存。`None` = 尚未从磁盘 hydrate。
 static PROFILE_OVERRIDES: Mutex<Option<Vec<AgentProfile>>> = Mutex::new(None);
 
-/// 内置流行 agent 默认行。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentProfile {
-    /// 稳定 id（展示与配置键）：`claude` / `codex` / `grok` …
-    pub id: String,
-    /// 进程名 stem 子串（小写匹配，可含多个别名）。
-    pub process_names: Vec<String>,
-    /// 启动可执行名（PATH / 用户安装）。
-    pub executable: String,
-    /// resume argv 模板：`{session}` 替换为会话 id。
-    pub resume_argv: Vec<String>,
-    /// YOLO 模式追加参数（开开关时接在 resume 前或后，见 `yolo_position`）。
-    pub yolo_args: Vec<String>,
-    /// `before` = yolo 参数在 resume 参数之前；`after` = 之后。
-    #[serde(default = "default_yolo_position")]
-    pub yolo_position: String,
-}
-
-fn default_yolo_position() -> String {
-    "before".into()
-}
+pub use ridge_kernel::agent_profiles::AgentProfile;
 
 /// 内置默认表：基础流行 agent。识别只认 process_names。
 pub fn builtin_profiles() -> Vec<AgentProfile> {
-    vec![
-        AgentProfile {
-            id: "claude".into(),
-            process_names: vec!["claude".into(), "claude-code".into()],
-            executable: "claude".into(),
-            resume_argv: vec!["--resume".into(), "{session}".into()],
-            // Claude Code：跳过权限提示（yolo）
-            yolo_args: vec!["--dangerously-skip-permissions".into()],
-            yolo_position: "before".into(),
-        },
-        AgentProfile {
-            id: "codex".into(),
-            process_names: vec!["codex".into()],
-            executable: "codex".into(),
-            resume_argv: vec!["resume".into(), "{session}".into()],
-            yolo_args: vec!["--dangerously-bypass-approvals-and-sandbox".into()],
-            yolo_position: "before".into(),
-        },
-        AgentProfile {
-            id: "grok".into(),
-            process_names: vec!["grok".into()],
-            executable: "grok".into(),
-            resume_argv: vec!["--resume".into(), "{session}".into()],
-            // Grok Build：自动批准工具
-            yolo_args: vec!["--always-approve".into()],
-            yolo_position: "before".into(),
-        },
-        AgentProfile {
-            id: "gemini".into(),
-            process_names: vec!["gemini".into()],
-            executable: "gemini".into(),
-            resume_argv: vec!["--resume".into(), "{session}".into()],
-            yolo_args: vec!["--yolo".into()],
-            yolo_position: "before".into(),
-        },
-        AgentProfile {
-            id: "cursor-agent".into(),
-            process_names: vec!["cursor-agent".into()],
-            executable: "cursor-agent".into(),
-            resume_argv: vec!["--resume".into(), "{session}".into()],
-            yolo_args: vec![],
-            yolo_position: "before".into(),
-        },
-        AgentProfile {
-            id: "aider".into(),
-            process_names: vec!["aider".into()],
-            executable: "aider".into(),
-            resume_argv: vec![],
-            yolo_args: vec!["--yes".into()],
-            yolo_position: "before".into(),
-        },
-    ]
+    ridge_kernel::agent_profiles::builtin_profiles()
 }
 
 /// 发现用进程名单：合并内置 + 用户覆盖（按 id 覆盖整行）。

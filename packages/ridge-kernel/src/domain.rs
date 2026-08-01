@@ -17,15 +17,9 @@ fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
         == Some(token)
 }
 
-/// 内置 agent 表（与 `agent_catalog::builtin_profiles` 同构最小集）。
+/// Kernel-owned default agent profiles.
 pub fn builtin_agent_profiles() -> Value {
-    json!([
-        {"id":"claude","processNames":["claude","claude-code"],"executable":"claude"},
-        {"id":"codex","processNames":["codex"],"executable":"codex"},
-        {"id":"grok","processNames":["grok"],"executable":"grok"},
-        {"id":"gemini","processNames":["gemini"],"executable":"gemini"},
-        {"id":"cursor-agent","processNames":["cursor-agent"],"executable":"cursor-agent"}
-    ])
+    serde_json::to_value(crate::agent_profiles::builtin_profiles()).expect("AgentProfile serializes")
 }
 
 #[derive(Serialize)]
