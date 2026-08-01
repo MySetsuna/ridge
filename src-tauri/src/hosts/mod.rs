@@ -32,7 +32,7 @@ fn mirror_kernel_host(method: &str, path: &str, body: Option<serde_json::Value>)
     }
 }
 
-fn kernel_host_snapshot() -> Option<Vec<HostRecord>> {
+pub(crate) fn kernel_host_snapshot() -> Option<Vec<HostRecord>> {
     let endpoint = ridge_kernel::client::running_endpoint()?;
     let response = ridge_kernel::client::request_json(
         &endpoint,
@@ -144,6 +144,14 @@ impl HostRegistry {
 
     pub fn snapshot(&self) -> Vec<HostRecord> {
         self.hosts.read().snapshot()
+    }
+
+    /// Kernel owns durable host topology. A shell rebuilds only this logical
+    /// projection; live transports and pane attachments stay process-local.
+    pub fn restore_topology(&self, records: Vec<HostRecord>) {
+        *self.hosts.write() = ridge_core::remote::RemoteHostTopology::from_records(
+            records.into_iter().map(|record| (record.id.clone(), record)).collect(),
+        );
     }
 
     pub fn upsert(&self, rec: HostRecord) {
@@ -479,7 +487,12 @@ pub fn probe_tcp(host: &str, port: u16, timeout_ms: u64) -> Result<(), String> {
 /// 快照所有已登记远端主机（读，供前端 Hosts 面板与 headless 会话合并展示）。
 #[tauri::command]
 pub fn host_list_snapshot(state: State<'_, AppState>) -> Vec<HostRecord> {
-    kernel_host_snapshot().unwrap_or_else(|| state.hosts.snapshot())
+    if let Some(records) = kernel_host_snapshot() {
+        state.hosts.restore_topology(records.clone());
+        records
+    } else {
+        state.hosts.snapshot()
+    }
 }
 
 /// Register topology discovered by a desktop-owned RemoteLink. Desktop-only: never admitted
@@ -1072,6 +1085,32 @@ mod tests {
         assert!(ensure_host_status_connected(h.status, &h.detail).is_err());
         assert!(ensure_host_status_connected(HostStatus::Connected, "ok").is_ok());
         assert!(ensure_host_status_connected(HostStatus::Error, "boom").is_err());
+    }
+
+    #[test]
+    fn restore_topology_replaces_shell_projection() {
+        let reg = HostRegistry::default();
+        reg.upsert(HostRecord {
+            id: "stale".into(),
+            kind: HostKind::Remote,
+            label: "stale".into(),
+            addr: "stale".into(),
+            status: HostStatus::Disconnected,
+            detail: String::new(),
+            sessions: vec![],
+        });
+        reg.restore_topology(vec![HostRecord {
+            id: "kernel".into(),
+            kind: HostKind::Rdg,
+            label: "kernel".into(),
+            addr: "127.0.0.1".into(),
+            status: HostStatus::Connected,
+            detail: "restored".into(),
+            sessions: vec![],
+        }]);
+        let hosts = reg.snapshot();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].id, "kernel");
     }
 
     #[test]
