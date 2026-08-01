@@ -5590,6 +5590,7 @@ dependencies = [
  "anyhow",
  "clap",
  "reqwest 0.12.28",
+ "ridge-kernel",
  "serde_json",
  "tokio",
 ]
