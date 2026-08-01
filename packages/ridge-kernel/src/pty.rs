@@ -61,6 +61,25 @@ impl PtyRegistry {
         Ok(id)
     }
 
+    /// Create a managed PTY while handing its single lossless output stream to
+    /// a shell projection. The registry still owns write/resize/destroy.
+    pub fn spawn_with_output(
+        &self,
+        shell: Option<&str>,
+        cwd: Option<&str>,
+    ) -> Result<(Uuid, mpsc::Receiver<Vec<u8>>)> {
+        let (bridge, output) = PtyBridge::spawn(shell, cwd)?;
+        let id = Uuid::new_v4();
+        self.ptys.lock().insert(
+            id,
+            ManagedPty {
+                bridge: Arc::new(bridge),
+                scrollback: Arc::new(Mutex::new(Vec::new())),
+            },
+        );
+        Ok((id, output))
+    }
+
     pub fn write(&self, id: Uuid, data: &[u8]) -> Result<()> {
         self.get(id)?.write_input(data)
     }
