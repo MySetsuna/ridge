@@ -7,34 +7,18 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use serde::Deserialize;
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct KernelEndpoint {
-    pub pid: u32,
-    pub port: u16,
-    pub token: String,
-    #[serde(default)]
-    pub started_at_unix: u64,
-}
-
-fn ridge_data_dir() -> PathBuf {
-    directories::BaseDirs::new()
-        .map(|b| b.data_local_dir().join("ridge"))
-        .unwrap_or_else(|| PathBuf::from(".").join("ridge"))
-}
+pub use ridge_kernel::registry::KernelEndpoint;
 
 pub fn kernel_pid_path() -> PathBuf {
-    ridge_data_dir().join("kernel.pid")
+    ridge_kernel::registry::kernel_pid_path()
 }
 
 pub fn kernel_json_path() -> PathBuf {
-    ridge_data_dir().join("kernel.json")
+    ridge_kernel::registry::kernel_json_path()
 }
 
 pub fn read_endpoint() -> Option<KernelEndpoint> {
-    let raw = fs::read_to_string(kernel_json_path()).ok()?;
-    serde_json::from_str(&raw).ok()
+    ridge_kernel::registry::read_endpoint()
 }
 
 pub fn read_kernel_pid() -> Option<u32> {

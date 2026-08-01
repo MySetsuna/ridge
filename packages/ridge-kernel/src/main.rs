@@ -8,7 +8,6 @@
 
 mod domain;
 mod mcp_min;
-mod registry;
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,7 +24,7 @@ use serde::Serialize;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use registry::{clear_registry, write_registry, KernelEndpoint};
+use ridge_kernel::registry::{clear_registry, write_registry, KernelEndpoint};
 
 #[derive(Parser, Debug)]
 #[command(name = "ridge-kernel", version, about = "Ridge kernel control plane + domain")]
