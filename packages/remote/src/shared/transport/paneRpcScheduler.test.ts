@@ -189,6 +189,21 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it('passes one bounded timeout to input and resize RPCs', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc, { rpcTimeoutMs: 75, resizeDebounceMs: 0 });
+
+    scheduler.enqueueInput(pane, 'x');
+    expect(rpc.calls[0].options).toMatchObject({ scope: 'workspace-a:pane-a', timeoutMs: 75 });
+    rpc.calls[0].resolve(undefined);
+    await flushPromises();
+
+    scheduler.scheduleResize(pane, 24, 80);
+    await vi.runOnlyPendingTimersAsync();
+    expect(rpc.calls[1].options).toMatchObject({ scope: 'workspace-a:pane-a', timeoutMs: 75 });
+    scheduler.dispose();
+  });
+
   it('debounces resize and keeps only the latest dimensions while one request is active', async () => {
     const rpc = new FakeRpc();
     const scheduler = createScheduler(rpc, { resizeDebounceMs: 40 });

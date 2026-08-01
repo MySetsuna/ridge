@@ -1354,6 +1354,35 @@ pub async fn resize_pane(
         cols,
         isAlt.unwrap_or(false),
         isInlineTui.unwrap_or(false),
+        true,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Remote invoke variant: stale Pane/PTY failures must reach the scheduler so
+/// it can cancel the lane or apply bounded retry/backoff. Desktop UI keeps the
+/// legacy best-effort wrapper above to avoid turning a transient native resize
+/// failure into a session-level error.
+pub async fn resize_pane_remote(
+    state: &AppState,
+    app: tauri::AppHandle,
+    workspace_id: String,
+    pane_id: String,
+    rows: u16,
+    cols: u16,
+    is_alt: Option<bool>,
+    is_inline_tui: Option<bool>,
+) -> Result<(), String> {
+    resize_pane_inner(
+        state,
+        &app,
+        workspace_id,
+        pane_id,
+        rows,
+        cols,
+        is_alt.unwrap_or(false),
+        is_inline_tui.unwrap_or(false),
+        false,
     )
     .map_err(|e| e.to_string())
 }
@@ -1370,6 +1399,7 @@ pub fn resize_pane_inner(
     cols: u16,
     is_alt: bool,
     is_inline_tui: bool,
+    suppress_errors: bool,
 ) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
     // 解耦 active_workspace_id（T5）：resize 落在面板**所属**工作区（前端按 pane 传入），
@@ -1620,9 +1650,14 @@ pub fn resize_pane_inner(
             Ok(())
         }
         Err(e) => {
-            // 记录错误但返回成功，避免错误传播导致 session 中断
+            // Desktop retains best-effort semantics; remote callers pass false
+            // so a destroyed Pane becomes an actionable RPC failure.
             pty_log::resize_err(wid, pane_id, rows, cols, &e.to_string());
-            Ok(())
+            if suppress_errors {
+                Ok(())
+            } else {
+                Err(e)
+            }
         }
     }
 }

@@ -2442,8 +2442,8 @@ async fn dispatch_invoke_request(
             let pane_id = s(args, "paneId");
             let rows = u16_arg(args, "rows");
             let cols = u16_arg(args, "cols");
-            let result = terminal::resize_pane(
-                handle.state(),
+            let result = terminal::resize_pane_remote(
+                handle.state::<AppState>().inner(),
                 handle.clone(),
                 workspace_id.clone(),
                 pane_id.clone(),
