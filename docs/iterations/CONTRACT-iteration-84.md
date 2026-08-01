@@ -34,9 +34,11 @@ source that the backend never returned.
 - `cargo check --manifest-path src-tauri/Cargo.toml --lib`: exit 0; 39 existing
   warnings, no new error.
 - Commit `b88b679` pushed to `origin/main`.
-- Version contract `0.1.30` committed as `58c2cb7`; release, Remote artifact,
-  and ridge-cloud runs were dispatched from those source revisions. Their
-  completion and asset/health evidence must be appended after all jobs finish.
+- Version contract `0.1.30` committed as `58c2cb7`; release workflow
+  `30719551852` passed the test gate and all four platform jobs, then published
+  `v0.1.30` with 12 assets. Remote artifact run `30719562705` passed at the
+  same source SHA. ridge-cloud run `30719573795` deployed cloud SHA
+  `67f712635f4f0d86f46fecfcd5ac9e4b099ac1e8` and passed production health.
 
 ## Non-claims
 
@@ -46,5 +48,6 @@ WebView2 heap soak, or dual-window/dual-host evidence.
 
 ## Closure status
 
-Code and deterministic tests are complete. Iteration release/deploy evidence
-and the previously listed external gates remain tracked separately.
+Code, deterministic tests, and the three release lines are complete. The
+previously listed external phone, public-session, WebView2-soak, and
+dual-window/dual-host gates remain tracked separately.
