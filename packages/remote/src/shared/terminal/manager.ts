@@ -50,6 +50,13 @@ import {
 	computePaneGeometry,
 	type PaneGeometry,
 } from './paneGeometry';
+import {
+	isBrowserHeapUnderPressure,
+	planTerminalMemoryReclaim,
+	terminalScrollbackBudgetRows,
+	TERMINAL_MEMORY_SWEEP_MS,
+	type BrowserHeapSnapshot,
+} from './terminalMemoryPolicy';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
@@ -293,6 +300,12 @@ interface PaneEntry {
 	 *  `detach(paneId)` works regardless of parked state — both code paths
 	 *  release wasm resources at the end. */
 	parked: boolean;
+	/** Why the renderer is parked. Component parks protect a transient DOM
+	 * unmount; memory parks may be restored automatically when visible again. */
+	parkReason: 'component' | 'memory' | null;
+	/** LRU signal for aggregate scrollback reclamation. PTY output does not
+	 * refresh it: a noisy background pane must remain reclaimable. */
+	lastForegroundAt: number;
 	/** Stable user-input anchor for the IME helper textarea (§1.27 fix).
 	 *
 	 *  Reading the *live* kernel cursor every time `compositionupdate`
@@ -539,6 +552,8 @@ export class TerminalManager {
 	 *  but waking on visibility-restore avoids a lag the first time the
 	 *  user comes back. */
 	private visibilityListener: (() => void) | null = null;
+	private _lastMemorySweepAt = 0;
+	private _memoryRestorePending = new Set<string>();
 	/** Document-level `pointerup` / `pointercancel` listener installed
 	 *  lazily on first viewportChanged (= start of any drag session).
 	 *  Triggers `_flushPendingFits`, so the moment the user releases the
@@ -1019,6 +1034,9 @@ export class TerminalManager {
 	 */
 	public onActiveWorkspaceChanged(workspaceId: string): void {
 		this._activeWorkspaceId = workspaceId;
+		if (typeof document === 'undefined' || !document.hidden) {
+			this._restoreMemoryParked(workspaceId);
+		}
 		if (!this.globalHost) return;
 		for (const e of this.panes.values()) {
 			if (e.parked) continue;
@@ -1034,6 +1052,69 @@ export class TerminalManager {
 		}
 		this._invalidateHost();
 		this.wake();
+	}
+
+	private _restoreMemoryParked(workspaceId: string | null): void {
+		for (const entry of this.panes.values()) {
+			if (!entry.parked || entry.parkReason !== 'memory') continue;
+			if (workspaceId !== null && entry.workspaceId !== workspaceId) continue;
+			if (!entry.container.isConnected || this._memoryRestorePending.has(entry.paneId)) continue;
+			this._memoryRestorePending.add(entry.paneId);
+			void this.unpark(entry.paneId, entry.container)
+				.catch((error) => {
+					console.warn('[ridge-term] memory-park restore failed', entry.paneId, error);
+				})
+				.finally(() => this._memoryRestorePending.delete(entry.paneId));
+		}
+	}
+
+	/**
+	 * Release cold terminal memory without interrupting PTY streams. Renderer
+	 * resources are parked while hidden/pressured; aggregate scrollback is
+	 * bounded across panes and remains available in the host's raw replay store.
+	 */
+	reclaimTerminalMemory(args: { documentHidden?: boolean; forceHeapPressure?: boolean } = {}): {
+		clearedPaneIds: string[];
+		parkedPaneIds: string[];
+		retainedRowsBefore: number;
+		retainedRowsAfter: number;
+		heapPressure: boolean;
+	} {
+		const documentHidden = args.documentHidden ??
+			(typeof document !== 'undefined' && document.hidden);
+		const perfMemory = typeof performance !== 'undefined'
+			? (performance as Performance & { memory?: BrowserHeapSnapshot }).memory
+			: undefined;
+		const heapPressure = args.forceHeapPressure ?? isBrowserHeapUnderPressure(perfMemory);
+		const deviceMemory = typeof navigator !== 'undefined'
+			? (navigator as Navigator & { deviceMemory?: number }).deviceMemory
+			: undefined;
+		const candidates = [...this.panes.values()].map((entry) => ({
+			paneId: entry.paneId,
+			scrollbackRows: entry.kernel.scrollbackLen(),
+			focused: entry.paneId === this._focusedPaneId,
+			hidden: this._activeWorkspaceId !== null && entry.workspaceId !== this._activeWorkspaceId,
+			parked: entry.parked,
+			lastForegroundAt: entry.lastForegroundAt,
+		}));
+		const plan = planTerminalMemoryReclaim({
+			candidates,
+			rowBudget: terminalScrollbackBudgetRows(deviceMemory),
+			heapPressure,
+			documentHidden,
+		});
+		for (const paneId of plan.clearScrollbackPaneIds) {
+			const entry = this.panes.get(paneId);
+			if (entry) this._releaseScrollback(entry);
+		}
+		for (const paneId of plan.parkRendererPaneIds) this.park(paneId, 'memory');
+		return {
+			clearedPaneIds: plan.clearScrollbackPaneIds,
+			parkedPaneIds: plan.parkRendererPaneIds,
+			retainedRowsBefore: plan.retainedRowsBefore,
+			retainedRowsAfter: plan.retainedRowsAfter,
+			heapPressure: plan.heapPressure,
+		};
 	}
 
 	/**
@@ -1791,6 +1872,8 @@ export class TerminalManager {
 			pointerMoveListener,
 			pointerUpListener,
 			parked: false,
+			parkReason: null,
+			lastForegroundAt: Date.now(),
 			imeAnchor: null,
 			imeAnchorRaf: null,
 			feedBuffer: null,
@@ -2186,6 +2269,7 @@ export class TerminalManager {
 	detach(paneId: string): void {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
+		this._memoryRestorePending.delete(paneId);
 		if (!entry.parked) {
 			// Live entry — release DOM bindings before freeing wasm.
 			entry.resizeObserver.disconnect();
@@ -2286,9 +2370,15 @@ export class TerminalManager {
 	 *
 	 * If the pane is already parked or unknown, this is a no-op.
 	 */
-	park(paneId: string): void {
+	park(paneId: string, reason: 'component' | 'memory' = 'component'): void {
 		const entry = this.panes.get(paneId);
-		if (!entry || entry.parked) return;
+		if (!entry) return;
+		if (entry.parked) {
+			// A real component unmount outranks an earlier automatic memory park;
+			// never auto-restore into a container that Svelte has removed.
+			if (reason === 'component') entry.parkReason = 'component';
+			return;
+		}
 
 		entry.resizeObserver.disconnect();
 		entry.container.removeEventListener('focusin', entry.focusListener);
@@ -2341,6 +2431,7 @@ export class TerminalManager {
 		this._flushFeedBuffer(entry);
 
 		entry.parked = true;
+		entry.parkReason = reason;
 		// Don't stopRafLoop here — other panes may still need rendering.
 		// The render-loop guards against parked entries by checking the
 		// flag before calling `entry.handle.render(...)`.
@@ -2371,6 +2462,7 @@ export class TerminalManager {
 		if (this.attachHostPromise) {
 			try { await this.attachHostPromise; } catch { /* ignore */ }
 		}
+		if (this.panes.get(paneId) !== entry || !entry.parked) return;
 
 		const usingWorker = this.workerAttached.has(paneId) && this.usingWorkerRenderer();
 		const gh = this.globalHost;
@@ -2395,6 +2487,15 @@ export class TerminalManager {
 		const handle: RenderHandle | null = usingWorker
 			? null
 			: await this._makeHandle(canvas, hostHandle);
+		// Detach or a competing restore may win while renderer creation awaits.
+		// Free only our fresh resources; never mutate the retired/replaced entry.
+		if (this.panes.get(paneId) !== entry || !entry.parked) {
+			try { handle?.free(); } catch { /* best-effort abandoned restore cleanup */ }
+			if (!useHost) {
+				try { canvas.remove(); } catch { /* already detached */ }
+			}
+			return;
+		}
 		const dpr = window.devicePixelRatio || 1;
 		const [cellW, cellH] = handle
 			? (handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
@@ -2467,6 +2568,8 @@ export class TerminalManager {
 		entry.resizeObserver.observe(container);
 
 		entry.parked = false;
+		entry.parkReason = null;
+		entry.lastForegroundAt = Date.now();
 
 		requestAnimationFrame(() => {
 			const e = this.panes.get(paneId);
@@ -3227,8 +3330,21 @@ export class TerminalManager {
 	 * the user wanted gone (the documented "clear 不能完全清理" symptom).
 	 */
 	clearScrollback(paneId: string): void {
-		this.panes.get(paneId)?.kernel.clearScrollback();
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		this._releaseScrollback(entry);
 		this.wake();
+	}
+
+	private _releaseScrollback(entry: PaneEntry): void {
+		entry.kernel.clearScrollback();
+		// Worker mode owns a second semantic kernel. Feed ED 3 only to that
+		// mirror so both allocations are released without writing ANSI to PTY.
+		if (this.workerAttached.has(entry.paneId)) {
+			workerRendererBridge.feed(entry.paneId, new TextEncoder().encode('\x1b[3J'));
+		}
+		entry.lastScrollOffset = -1;
+		entry.lastScrollTotal = -1;
 	}
 
 	/** Tell the wasm renderer whether this pane is the focused one. Only the
@@ -3247,6 +3363,8 @@ export class TerminalManager {
 		// to the head of the order.
 		if (focused) {
 			this._focusedPaneId = paneId;
+			const entry = this.panes.get(paneId);
+			if (entry) entry.lastForegroundAt = Date.now();
 		} else if (this._focusedPaneId === paneId) {
 			this._focusedPaneId = null;
 		}
@@ -4841,7 +4959,12 @@ export class TerminalManager {
 		// detach-all → re-attach cycles.
 		if (this.visibilityListener === null && typeof document !== 'undefined') {
 			this.visibilityListener = () => {
-				if (!document.hidden) {
+				if (document.hidden) {
+					// A hidden WebView cannot present pixels. Release every per-pane
+					// renderer immediately; kernels and PTY handlers remain live.
+					this.reclaimTerminalMemory({ documentHidden: true });
+				} else {
+					this._restoreMemoryParked(this._activeWorkspaceId);
 					// On visibility-restore the swap chain may have been
 					// recycled by Chromium / WebView2 while we were
 					// hidden — force a full cache replay on the next
@@ -4870,6 +4993,10 @@ export class TerminalManager {
 			// reads `js_sys::Date::now()` internally, so the renderer's blink
 			// phase and our pre-render `isDirty` must use the same epoch.
 			const dateNow = Date.now();
+			if (perfNow - this._lastMemorySweepAt >= TERMINAL_MEMORY_SWEEP_MS) {
+				this._lastMemorySweepAt = perfNow;
+				this.reclaimTerminalMemory();
+			}
 			// Consume the host-invalidate flag at the start of the tick so
 			// the upcoming cache-replay pass over every visible pane counts
 			// as "real work" (the swap chain was wiped by LoadOp::Clear in
@@ -5320,6 +5447,8 @@ export class TerminalManager {
 			document.removeEventListener('pointercancel', this._resizeReleaseListener);
 			this._resizeReleaseListener = null;
 		}
+		this._lastMemorySweepAt = 0;
+		if (this.panes.size === 0) this._memoryRestorePending.clear();
 	}
 
 	/** Wake the RAF loop if it's currently asleep (idleTimer pending) or
