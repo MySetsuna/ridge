@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,36 @@ pub fn kernel_pid_path() -> PathBuf {
 
 pub fn kernel_json_path() -> PathBuf {
     ridge_data_dir().join("kernel.json")
+}
+
+/// Kernel-owned remote topology. Records intentionally exclude credentials.
+pub fn remote_hosts_path() -> PathBuf {
+    ridge_data_dir().join("remote-hosts.json")
+}
+
+pub fn load_remote_hosts() -> Result<HashMap<String, ridge_core::remote::HostRecord>> {
+    let path = remote_hosts_path();
+    if !path.exists() { return Ok(HashMap::new()); }
+    let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
+}
+
+/// Atomic replacement prevents a stopped shell from leaving a partial topology file.
+pub fn save_remote_hosts(hosts: &HashMap<String, ridge_core::remote::HostRecord>) -> Result<()> {
+    save_remote_hosts_at(&remote_hosts_path(), hosts)
+}
+
+pub fn save_remote_hosts_at(
+    path: &std::path::Path,
+    hosts: &HashMap<String, ridge_core::remote::HostRecord>,
+) -> Result<()> {
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let raw = serde_json::to_vec_pretty(hosts).context("serialize remote hosts")?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, raw).with_context(|| format!("write {}", tmp.display()))?;
+    fs::rename(&tmp, &path).with_context(|| format!("replace {}", path.display()))?;
+    Ok(())
 }
 
 pub fn write_registry(ep: &KernelEndpoint) -> Result<()> {
