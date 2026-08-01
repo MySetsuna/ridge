@@ -358,6 +358,7 @@ export class CloudRemoteConnection implements RemoteLink {
    * fires onReconnect so MainApp re-subscribes panes + re-lists workspaces.
    */
   notifyState(providerState: string): void {
+    if (this.disposed) return;
     const mapped: ConnectionState =
       providerState === 'connected' ? 'connected'
       : providerState === 'error' ? 'error'
@@ -383,6 +384,7 @@ export class CloudRemoteConnection implements RemoteLink {
    * 无差别转圈。CloudAuthScreen 在 gate 通过后把 provider onError 转发到此方法。
    */
   notifyError(message: string, code?: string): void {
+    if (this.disposed) return;
     const failure = classifyFailure(code);
     if (message) failure.message = message;
     this._failure = failure;
@@ -406,7 +408,7 @@ export class CloudRemoteConnection implements RemoteLink {
   }
 
   private async _handleReconnect(): Promise<void> {
-    if (this._reconnecting) return;
+    if (this.disposed || this._reconnecting) return;
     this._reconnecting = true;
     try {
       // Re-authorize. An ICE-restart keeps the host's §4 gate open (verifyTotp is a
@@ -421,6 +423,7 @@ export class CloudRemoteConnection implements RemoteLink {
         // §4 门，故重连后重跑静默信任握手重新开门；旧 host 无 challenge → 超时 false。
         ok = await this.handle.tryTrustGrant().catch(() => false);
       }
+      if (this.disposed) return;
       if (!ok) {
         // 重连后 re-auth 失败：多为长时间断网导致缓存 TOTP 码过期，刷新拿新码即可恢复
         //（非账户/权限问题）→ 归通道类，UI 提示「通道异常」并允许重试/刷新。

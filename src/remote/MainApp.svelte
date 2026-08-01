@@ -30,6 +30,7 @@
   import { applyThemeVars, buildKernelTheme } from './lib/theme';
   import { createWsSidebarProvider } from './lib/sidebarProvider';
   import { ScrollbackDecoder } from './lib/scrollbackWorker';
+  import { onceCleanup } from './lib/listenerCleanup';
   import type { DataProvider } from '$lib/transport';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
@@ -66,8 +67,16 @@
   const sessionId = () => remoteSessionId(ws);
   const scrollbackDecoder = new ScrollbackDecoder();
   let remoteAppAlive = true;
+  let stopConnection: (() => void) | null = null;
+  let _refreshTimer: ReturnType<typeof setTimeout> | null = null;
   onDestroy(() => {
     remoteAppAlive = false;
+    if (_refreshTimer !== null) {
+      clearTimeout(_refreshTimer);
+      _refreshTimer = null;
+    }
+    stopConnection?.();
+    stopConnection = null;
     scrollbackDecoder.dispose();
   });
   const workspacesQuery = createQuery(() => ({
@@ -417,7 +426,6 @@
     refreshWorkspaces();
   }
 
-  let _refreshTimer: ReturnType<typeof setTimeout> | null = null;
   let _refreshSeq = 0;
 
   function refreshActivePane() {
@@ -426,7 +434,7 @@
     const d = canvasRef.getDims();
     if (!d) return;
     // Debounce: coalesce rapid calls
-    if (_refreshTimer) clearTimeout(_refreshTimer);
+    if (_refreshTimer !== null) clearTimeout(_refreshTimer);
     _refreshTimer = setTimeout(() => {
       _refreshTimer = null;
       const cur = ws.lastRefreshSeq();
@@ -555,19 +563,20 @@
   }
 
   onMount(() => {
-    const stopCapabilities = ws.onCapabilitiesChanged(refreshCapabilities);
+    const stops: Array<() => unknown> = [];
+    stops.push(ws.onCapabilitiesChanged(refreshCapabilities));
     refreshCapabilities();
     // §realtime-status（任务 A 问题3）：先装状态监听，再同步一次真实连接态。云端进入
     // MainApp 时传输早已 'connected'，若不同步则 wsState 停在初值 'disconnected'，顶部
     // 误显示「重连中」直到下一次状态事件才纠正。装监听在先、同步在后，保证此刻起的每次
     // 连接事件都不漏。
-    ws.onStateChange((s) => {
+    stops.push(ws.onStateChange((s) => {
       wsState = s;
       failure = ws.lastFailure();
-    });
+    }));
     wsState = ws.state();
     failure = ws.lastFailure();
-    ws.onMessage((msg) => {
+    stops.push(ws.onMessage((msg) => {
       if (msg.type === 'panes') {
         // Steady-state pane snapshots must carry their source workspace.
         // A current-UI fallback races late responses onto the wrong identity.
@@ -632,16 +641,16 @@
             (current ?? []).map(w => w.id === msg.workspaceId ? { ...w, name: msg.name } : w),
         );
       }
-    });
-    ws.onRawBytes((pane, data) => {
+    }));
+    stops.push(ws.onRawBytes((pane, data) => {
       // §keep-alive (P4): feed the frame into its pane's alive kernel via the
       // active pane's TerminalCanvas. The host single-subscribes so this is the
       // active pane; a straggler for a just-unsubscribed pane is dropped (it
       // isn't the mounted TerminalCanvas). No cache, no reconcile, no wipe — the
       // host's on-subscribe replay is absorbed by the alive kernel.
       canvasRef?.feedPane(paneRefKey(pane), data);
-    });
-    ws.onMetadata((pane, title, cwd) => {
+    }));
+    stops.push(ws.onMetadata((pane, title, cwd) => {
       const { paneId, workspaceId } = pane;
       // §realtime-title: reflect the live pane title in the workspace tree (and
       // header) the instant it changes, instead of waiting for the next
@@ -670,18 +679,18 @@
         // cwd roots the sidebar (file tree / git / search) at the pane's dir.
         if (cwd != null && cwd.length > 0) activeCwd = cwd;
       }
-    });
-    ws.onPtyResize((pane, rows, cols) => {
+    }));
+    stops.push(ws.onPtyResize((pane, rows, cols) => {
       if (pane.paneId === ui.activePaneId && pane.workspaceId === ui.activeWorkspaceId) {
         canvasRef?.resizeKernel(rows, cols);
       }
-    });
+    }));
     // Theme: apply the snapshot pushed at connect (cached, since it usually
     // arrives before this listener) — but a user override (§theme-persist) wins.
     const t0 = ws.lastTheme();
     if (userTheme) applyTheme(userTheme.colors);
     else if (t0) applyTheme(t0.colors);
-    ws.onTheme((colors) => {
+    stops.push(ws.onTheme((colors) => {
       if (pendingCycle) {
         // Reply to our own cycle tap → adopt it as the persisted override.
         pendingCycle = false;
@@ -696,13 +705,13 @@
       } else {
         applyTheme(colors);
       }
-    });
+    }));
     // Reconnect resync (R7): a reconnect opens a brand-new host socket that
     // holds no pane subscription. §keep-alive (P4): the local kernel stays ALIVE
     // (no wipe) — we just re-subscribe the active pane so the host resumes
     // streaming into it, and re-claim the viewport size so the PTY isn't stuck
     // at the 80x24 default. The host's replay is absorbed by the alive kernel.
-    ws.onReconnect(() => {
+    stops.push(ws.onReconnect(() => {
       const pid = ui.activePaneId;
       // §keep-alive after reconnect: a disconnect leaves a gap in every mirror kernel,
       // so force a full RIS resync on the next visit to each pane (clear the replayed
@@ -734,7 +743,8 @@
       // match and silently block the re-subscribe PTY resize (#B3).
       _refreshSeq = -1;
       refreshActivePane();
-    });
+    }));
+    stopConnection = onceCleanup(stops.map((stop) => () => stop()));
     // §persist-state: seed the active workspace from localStorage before the
     // first panes/workspaces arrive so the panes handler can restore the
     // remembered pane immediately; refreshWorkspaces() then switches the host
@@ -743,7 +753,8 @@
     ws.listPanes();
     refreshWorkspaces();
     return () => {
-      stopCapabilities();
+      stopConnection?.();
+      stopConnection = null;
       ws.disconnect();
     };
   });
