@@ -3,7 +3,7 @@
 - Date: 2026-08-01
 - Scope: approved stability/performance work carried from iteration 79.
 - Code closure: `8b00138` plus `b03a7f1`, `76eb2ed`, `2eee0e9`.
-- Release line: `v0.1.24` tag pushed; GitHub Release, Remote artifact, and ridge-cloud deploy remain workflow-gated until assets and health checks are verified.
+- Release line: `v0.1.24` tag pushed; Remote publish `30706709638` and ridge-cloud deploy `30706722196` succeeded. GitHub Release `30706698658` remains workflow-gated until all assets are verified.
 - Next-iteration intake: `PENDING-REQ-20260801-AGENT-COMMUNE-UI-01` (recorded locally; not implemented or synced).
 
 ## Reconciled matrix
@@ -29,7 +29,7 @@
 
 ## Release gate
 
-Do not mark release complete until `gh release view v0.1.24` lists matching Windows, Linux, and macOS installer/CLI assets, Remote publish reports both desktop/mobile indexes, and ridge-cloud health reports the deployed revision. External checks are sampled at least five minutes apart.
+Do not mark release complete until `gh release view v0.1.24` lists matching Windows, Linux, and macOS installer/CLI assets, Remote publish reports both desktop/mobile indexes, and ridge-cloud health reports the deployed revision. Current public health is HTTP 200 but reports service version `0.0.7`, so it is not artifact-version evidence. External checks are sampled at least five minutes apart.
 
 ## Carry-over and next iteration
 
