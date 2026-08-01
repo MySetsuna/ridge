@@ -19,7 +19,7 @@ fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
 
 /// Kernel-owned default agent profiles.
 pub fn builtin_agent_profiles() -> Value {
-    serde_json::to_value(crate::agent_profiles::builtin_profiles()).expect("AgentProfile serializes")
+    serde_json::to_value(ridge_kernel::agent_profiles::builtin_profiles()).expect("AgentProfile serializes")
 }
 
 #[derive(Serialize)]

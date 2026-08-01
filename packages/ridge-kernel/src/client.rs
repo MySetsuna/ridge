@@ -3,6 +3,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
+use std::path::Path;
 
 use crate::registry::{read_endpoint, KernelEndpoint};
 
@@ -41,4 +42,28 @@ pub fn health_ok(endpoint: &KernelEndpoint) -> bool {
 
 pub fn running_endpoint() -> Option<KernelEndpoint> {
     read_endpoint().filter(|endpoint| is_process_alive(endpoint.pid) && health_ok(endpoint))
+}
+
+pub fn spawn_detached(binary: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    let result = {
+        use std::os::windows::process::CommandExt;
+        const FLAGS: u32 = 0x0000_0008 | 0x0000_0200 | 0x0800_0000;
+        std::process::Command::new(binary).creation_flags(FLAGS).spawn()
+    };
+    #[cfg(not(windows))]
+    let result = {
+        std::process::Command::new(binary).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()
+    };
+    result.map(|_| ())
+    .map_err(|error| format!("spawn ridge-kernel: {error}"))
+}
+
+pub fn wait_for_running(timeout: Duration) -> Option<KernelEndpoint> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if let Some(endpoint) = running_endpoint() { return Some(endpoint); }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    None
 }
