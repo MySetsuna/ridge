@@ -266,6 +266,13 @@
       // Stay on its accepted roots so force-refresh cannot resurrect a root
       // already rejected in this cwd context.
       const activeRoots = getScmCache().repoRoots;
+      // `lastWatcherRefreshAt` is a debounce aid, not durable state. Reclaim
+      // entries for repositories that left the active cwd set so long-lived
+      // sessions changing directories cannot grow this map without bound.
+      const activeRootSet = new Set(activeRoots);
+      for (const root of lastWatcherRefreshAt.keys()) {
+        if (!activeRootSet.has(root)) lastWatcherRefreshAt.delete(root);
+      }
 
       // Register discovered roots with the backend filesystem watcher so
       // external git changes (pull, commit from terminal, CI) trigger automatic
@@ -1773,6 +1780,7 @@ onMount(() => {
     abortActiveScan();
     for (const t of watcherDebounce.values()) clearTimeout(t);
     watcherDebounce.clear();
+    lastWatcherRefreshAt.clear();
     unlistenRepoChanged?.();
     unsubCwdWatch?.();
     unsubFsChange?.();
