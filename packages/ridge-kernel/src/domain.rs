@@ -101,8 +101,7 @@ pub async fn domain_remote_hosts(
     headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
     if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
-    let mut hosts = st.remote_hosts.lock().expect("remote host lock").values().cloned().collect::<Vec<_>>();
-    hosts.sort_by(|a, b| a.label.cmp(&b.label));
+    let hosts = st.remote_hosts.lock().expect("remote host lock").snapshot();
     Ok(Json(json!({ "ok": true, "source": "ridge-kernel", "hosts": hosts })))
 }
 
@@ -116,8 +115,8 @@ pub async fn domain_remote_host_upsert(
     let id = host.id.clone();
     let mut hosts = st.remote_hosts.lock().expect("remote host lock");
     let mut next = hosts.clone();
-    next.insert(id.clone(), host);
-    save_remote_hosts_at(&st.remote_hosts_path, &next).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    next.upsert(host);
+    save_remote_hosts_at(&st.remote_hosts_path, next.records()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     *hosts = next;
     Ok(Json(json!({ "ok": true, "host_id": id })))
 }
@@ -130,8 +129,8 @@ pub async fn domain_remote_host_remove(
     if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
     let mut hosts = st.remote_hosts.lock().expect("remote host lock");
     let mut next = hosts.clone();
-    let removed = next.remove(&host_id).is_some();
-    save_remote_hosts_at(&st.remote_hosts_path, &next).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let removed = next.remove(&host_id);
+    save_remote_hosts_at(&st.remote_hosts_path, next.records()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     *hosts = next;
     Ok(Json(json!({ "ok": true, "removed": removed, "host_id": host_id })))
 }
@@ -575,7 +574,7 @@ mod tests {
             roster: Arc::new(std::sync::Mutex::new(
                 ridge_core::teammate::topology::TopologyGraph::new(),
             )),
-            remote_hosts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            remote_hosts: Arc::new(std::sync::Mutex::new(ridge_core::remote::RemoteHostTopology::default())),
             remote_hosts_path: std::env::temp_dir().join(format!("ridge-kernel-test-{}.json", Uuid::new_v4())),
             ptys: Arc::new(ridge_kernel::pty::PtyRegistry::default()),
         }
