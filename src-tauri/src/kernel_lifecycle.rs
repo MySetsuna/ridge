@@ -29,7 +29,7 @@ pub fn read_kernel_pid() -> Option<u32> {
         .or_else(|| fs::read_to_string(kernel_pid_path()).ok()?.trim().parse().ok())
 }
 
-use ridge_kernel::client::{health_ok, is_process_alive, running_endpoint};
+use ridge_kernel::client::{health_ok, is_process_alive, running_endpoint, spawn_detached, wait_for_running};
 
 pub fn is_kernel_running() -> bool {
     running_endpoint().is_some()
@@ -141,42 +141,6 @@ fn which_in_path(name: &str) -> Option<PathBuf> {
     None
 }
 
-fn spawn_kernel_process(bin: &Path) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-        const FLAGS: u32 = 0x0000_0008 | 0x0000_0200 | 0x0800_0000;
-        Command::new(bin)
-            .creation_flags(FLAGS)
-            .spawn()
-            .map_err(|e| format!("spawn ridge-kernel: {e}"))?;
-    }
-    #[cfg(not(windows))]
-    {
-        Command::new(bin)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("spawn ridge-kernel: {e}"))?;
-    }
-    Ok(())
-}
-
-fn wait_for_kernel_ready(timeout: Duration) -> Option<KernelEndpoint> {
-    let start = std::time::Instant::now();
-    while start.elapsed() < timeout {
-        if let Some(ep) = read_endpoint() {
-            if is_process_alive(ep.pid) && health_ok(&ep) {
-                return Some(ep);
-            }
-        }
-        thread::sleep(Duration::from_millis(80));
-    }
-    None
-}
-
 /// 桌面 setup：detect-or-spawn 独立 ridge-kernel。
 pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
     let self_pid = std::process::id();
@@ -228,8 +192,8 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
             .to_string()
     })?;
     tracing::info!(target: "ridge::kernel_lifecycle", path = %bin.display(), "spawning ridge-kernel");
-    spawn_kernel_process(&bin)?;
-    wait_for_kernel_ready(Duration::from_secs(8)).ok_or_else(|| {
+    spawn_detached(&bin)?;
+    wait_for_running(Duration::from_secs(8)).ok_or_else(|| {
         "ridge-kernel did not become healthy in time (check kernel.json / logs)".to_string()
     })
 }

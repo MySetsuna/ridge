@@ -8,7 +8,7 @@ use std::process::Command;
 use std::time::Duration;
 
 pub use ridge_kernel::registry::KernelEndpoint;
-use ridge_kernel::client::{is_process_alive, running_endpoint};
+use ridge_kernel::client::{is_process_alive, running_endpoint, spawn_detached, wait_for_running};
 
 pub fn kernel_pid_path() -> PathBuf {
     ridge_kernel::registry::kernel_pid_path()
@@ -102,34 +102,8 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
     let bin = resolve_kernel_binary().ok_or_else(|| {
         "ridge-kernel 未找到（请 cargo build -p ridge-kernel 或放到 rdg 同目录）".to_string()
     })?;
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const FLAGS: u32 = 0x0000_0008 | 0x0000_0200 | 0x0800_0000;
-        Command::new(&bin)
-            .creation_flags(FLAGS)
-            .spawn()
-            .map_err(|e| format!("spawn ridge-kernel: {e}"))?;
-    }
-    #[cfg(not(windows))]
-    {
-        Command::new(&bin)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("spawn ridge-kernel: {e}"))?;
-    }
-    let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(8) {
-        if let Some(ep) = read_endpoint() {
-            if is_process_alive(ep.pid) && is_kernel_running() {
-                return Ok(ep);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(80));
-    }
-    Err("ridge-kernel 未在时限内就绪".into())
+    spawn_detached(&bin)?;
+    wait_for_running(Duration::from_secs(8)).ok_or_else(|| "ridge-kernel 未在时限内就绪".into())
 }
 
 fn resolve_kernel_binary() -> Option<PathBuf> {
