@@ -32,6 +32,11 @@
 - `packages/ridge-mcp-bridge` now defaults to the active kernel registry and
   fails closed when no kernel is available. Explicit `--url/--token` remains
   supported; legacy environment/sidecar discovery requires `--legacy-sidecar`.
+- `src/remote/lib/scrollbackWorker.test.ts` now proves Pane-scoped cancellation:
+  destroying one Pane settles only its decode while another Pane remains
+  pending; disposal settles the remainder and leaves no worker callback.
+- `.github/workflows/release.yml` now cross-builds and uploads the Intel macOS
+  `rdg` CLI instead of silently omitting that release asset.
 
 ## Verification
 
@@ -43,7 +48,10 @@
 - `cargo test -p ridge-kernel --lib --quiet` — 15 passed.
 - `cargo test -p ridge-mcp-bridge --lib --quiet` — 8 passed.
 - `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/kernel-host-smoke.ps1` — real Windows smoke passed: build, detect-or-spawn, second ensure attach, kernel FS/Agent/Git, MCP `tools/list`, and stop. The harness now bounds every external process and kills its exact process tree on timeout, with mandatory `finally` cleanup.
-- Focused commits pushed to `main`: `367c053`, `66d51f0`, `1475abc`, `0207319`, `b402f75`.
+- `pnpm exec vitest run src/remote/lib/scrollbackWorker.test.ts --reporter=dot --silent` — 1 file, 5 passed.
+- Release run `30714934091` — test gate and all four platform jobs completed successfully; `v0.1.28` published with 12 assets, including `rdg-0.1.28-x86_64-macos`.
+- Remote run `30713523314` and ridge-cloud run `30712287282` — completed successfully; SHA evidence recorded in `PROJECT-STATE.md`.
+- Focused commits pushed to `main`: `367c053`, `66d51f0`, `1475abc`, `0207319`, `b402f75`, `bce506a`, `c06cff0`.
 
 ## Closure status
 
