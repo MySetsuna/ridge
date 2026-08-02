@@ -924,6 +924,10 @@ Answer/Reasoning presentation). Its statement that Remote/PWA lacks active
 code and that Pane Border is only a TUI rail is stale/contradicted by local
 CodeGraph and tests; retained only as strategy input, with no duplicate TUI
 syntax-highlighting implementation.
+Remote/cloud latest-main refresh (2026-08-02): workflow `30746571058`
+activated `0.1.37+g26241f2` from the literal latest `main` SHA (233 files /
+21.78 MiB), with cloud health HTTP 200. Desktop `v0.1.37` remains unchanged;
+post-runtime commits are tests/docs only.
 Pane header Git-pill guard (2026-08-02): `a1d816a` asserts Repo/Branch/Diff
 pills each occur once at one sibling layer; desktop + Remote/mobile focused
 slice passes 17/17. This is a static layout guard, not physical-device proof.
