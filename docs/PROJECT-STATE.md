@@ -900,3 +900,9 @@ path.
 Remote/cloud refresh (2026-08-02): workflow `30745144695` published current
 `main` as `0.1.37+g8dfe261`; cloud health remained HTTP 200. Desktop `v0.1.37`
 was not version-bumped for docs-only changes.
+Kernel client-exit guard (2026-08-02):
+`detached_kernel_survives_client_process_exit_and_second_attach` now kills a
+real waiting `rdg` client after detached kernel health, then verifies a second
+client reattaches to the same PID; both `kernel_lifecycle_e2e` cases pass (2/2).
+This is local process-detachment evidence only; deep-root shell termination and
+public/physical host gates remain open.

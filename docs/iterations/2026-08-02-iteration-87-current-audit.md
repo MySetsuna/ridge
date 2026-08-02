@@ -251,3 +251,11 @@ ring. Desktop active-pane, pointer focus, Agent-card activation and terminal
 input clear attention; Remote focus and claim do the same. Focused regression
 slice passed 16/16 tests (`SplitContainer`, `TerminalCanvas`, and mobile
 keyboard offset), so this clarification required no new rendering path.
+
+Kernel client-exit lifecycle guard (2026-08-02): the new
+`detached_kernel_survives_client_process_exit_and_second_attach` E2E starts a
+real `rdg kernel ensure`, terminates the disposable waiting client after the
+detached kernel is healthy, then attaches a second client and asserts the same
+PID and healthy control plane. Both kernel lifecycle E2E cases passed (2/2).
+This closes the local parent-exit regression guard; deep-root shell termination
+and public/physical host evidence remain external gates.
