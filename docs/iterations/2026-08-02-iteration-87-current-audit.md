@@ -27,7 +27,7 @@ facts only; NotebookLM is strategy input, not release or runtime evidence.
 | PWA | `pwaInstallScope.test.ts` forbids app install button and `beforeinstallprompt` ownership; manifest/SW/standalone/scope remain; drawer safe-area contract is tested | Implemented per latest user correction; browser-native installation is intentionally out of business E2E |
 | Mobile `runtime.lastError` | Source audit found no Chrome Extension Messaging API; service worker uses standard `clients.matchAll`/`Client.postMessage` | No business-code fix is authorized; affected-phone source URL and clean-profile/extension A/B remain required |
 | Kernel singleton | `KernelInstanceGuard` uses process-lifetime OS lock; `registry.rs` child-process probe proves a second process cannot acquire the lock (`c692781`) | Deterministic guard implemented; real shell death/deep-root no-Tauri chain remains unverified |
-| Release / Remote | Release `v0.1.35` has 12 matching assets; Remote workflow `30736163197` activated `0.1.35+g2bce084`; cloud health is `ok` but reports service `0.0.7` | Published evidence exists; no cloud source/version change was fabricated |
+| Release / Remote | Release `v0.1.35` has 12 matching assets; Remote workflow `30737121593` activated `0.1.35+g42b55dd`; cloud health is `ok` but reports service `0.0.7` | Published evidence exists; no cloud source/version change was fabricated |
 
 ## User-visible correction captured
 
@@ -45,8 +45,9 @@ standalone/PWA layout: safe-area, notch, rotation, keyboard and theme.
    authenticated Remote Git push.
 4. WebView2 long-run heap/resource snapshot and real no-Tauri Kernel → rdg →
    ridge-mcp process chain.
-5. Remote artifact republish for the latest GitGraph and transient pane-attention
-   code; desktop Release stays at `v0.1.35` without a version bump.
+5. Authenticated Remote Git push, public soak and physical-device evidence remain
+   external; latest Remote artifact is already activated and desktop Release stays
+   at `v0.1.35` without a version bump.
 
 No Console suppression, third-party extension mutation, fake PWA install
 state, or physical-device claim is made.
