@@ -20,7 +20,7 @@ facts only; NotebookLM is strategy input, not release or runtime evidence.
 | Area | Evidence | State |
 | --- | --- | --- |
 | Remote Agent card CWD | `remote_host_impl.rs` emits pane `cwd`; `PaneInfo` carries it; `MainApp.svelte` passes `panes`; `SidebarTeamRoster.svelte:cwdFor/member-cwd` maps by `paneId` and truncates with `title`; `SidebarTeamRoster.test.ts` guards it | Implemented locally; physical mobile display still needs device evidence |
-| Agent status rail / pane border | `SidebarTeamRoster` keeps the status left rail; desktop `SplitContainer` and Remote `TerminalCanvas` paint a border only from transient waiting/stopped intervention state; focus, claim, stdin or resize clears it | Implemented locally; normal running/idle panes have no border; physical mobile display still needs device evidence |
+| Agent status rail / pane border | `SidebarTeamRoster` keeps the status left rail; desktop `SplitContainer` and Remote `TerminalCanvas` paint a border only from transient waiting/stopped intervention state; focus, claim, stdin or resize clears it; `SplitContainer.test.ts` and `TerminalCanvas.test.ts` guard the contract | Implemented locally; normal running/idle panes have no border; physical mobile display still needs device evidence |
 | Agent groups/history | Remote Members/Groups/History tabs, workspace-scoped group persistence, Agent-keyed history with `sessionId`/`cwd` | Implemented locally; real LAN/cloud mobile parity and structured resume remain external gates |
 | Query-managed Remote data | `remoteQueries.ts` stable session/workspace/path keys, stale cache, single-flight and invalidation; sidebar file/Git/search/diff use it | Implemented locally |
 | Git commit/push/Graph | capability-gated mutation surface with confirmation/cancel/progress; shared graph renderer; Remote transport preserves refs/branch/HEAD and selected commit author/date/parents; Agent group deletion is confirmed and persisted | Implemented locally; authenticated Remote push and public artifact republish remain external gates |
@@ -50,3 +50,11 @@ standalone/PWA layout: safe-area, notch, rotation, keyboard and theme.
 
 No Console suppression, third-party extension mutation, fake PWA install
 state, or physical-device claim is made.
+
+## Local gate result
+
+- `pnpm exec vitest run --reporter=dot`: 134 files, 1,424 passed, 1 skipped.
+- `pnpm check`: 0 errors, 0 warnings.
+- `cargo test -p ridge-kernel registry::tests --lib`: 4 passed.
+- `cargo check --manifest-path src-tauri/Cargo.toml`: finished successfully;
+  existing Rust warnings only.
