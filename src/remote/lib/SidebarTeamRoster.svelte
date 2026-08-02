@@ -353,7 +353,14 @@
 <!-- 一个成员的监控 + 干预卡：状态 / 自动识别标注 / 最近回复（折叠）/ 单独发消息。 -->
 {#snippet memberCard(m: TeammateRosterMember, isLeader: boolean)}
   {@const st = statusOf(m)}
-  <div class="member-card">
+  <div
+    class="member-card"
+    class:status-working={st.key === 'working'}
+    class:status-pending={st.key === 'pending'}
+    class:status-suspended={st.key === 'suspended'}
+    class:status-gone={st.key === 'gone'}
+    class:status-idle={st.key === 'idle'}
+  >
     <div class="member-head">
       <button class="head-main" onclick={() => m.paneId && onSelectPane?.(m.paneId)} tabindex="-1">
         <span class="dot" class:working={st.key === 'working'} class:suspended={st.key === 'suspended'}></span>
@@ -433,7 +440,13 @@
   .empty-group{padding:4px 12px 6px 16px;font-size:11px;color:var(--rg-fg-muted)}
 
   /* 成员卡（iter-62）：状态 + 最近回复 + 独立发消息框，与桌面面板同构。 */
-  .member-card{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border-radius:8px;background:var(--rg-surface-2);margin:2px 0}
+  .member-card{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border:1px solid transparent;border-left-width:3px;border-radius:8px;background:var(--rg-surface-2);margin:2px 0}
+  /* Keep the state signal visible even when text is truncated on a phone. */
+  .member-card.status-working{border-left-color:var(--rg-ansi-green,#3fb950)}
+  .member-card.status-pending{border-left-color:var(--rg-ansi-yellow,#d29922)}
+  .member-card.status-suspended{border-left-color:var(--rg-ansi-yellow,#d29922)}
+  .member-card.status-gone{border-left-color:var(--rg-ansi-red,#f85149)}
+  .member-card.status-idle{border-left-color:var(--rg-fg-muted)}
   .member-card.offline{opacity:.55}
   .member-head{display:flex;align-items:center;gap:6px;min-height:24px;font-size:13px;line-height:1.2}
   .head-main{display:flex;align-items:center;gap:8px;flex:1;min-width:0;min-height:24px;border:none;background:none;color:var(--rg-fg);text-align:left;padding:0;cursor:pointer;font-size:13px;line-height:1.2}
