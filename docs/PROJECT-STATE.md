@@ -12,9 +12,11 @@ worker now installs its control-plane listener before WASM loading, answers
 health pings immediately, and returns a bounded structured fallback while the
 adapter is loading. The manager suppresses resize during init/bind, cancels
 pending handshakes on park/destroy, and rejects stale callbacks after worker
-replacement. Targeted tests (63), `pnpm check` (0 errors/0 warnings), direct
-CDP ping, and the LAN mobile probe passed; the probe now fails on worker
-timeouts, `resize before init`, and project `Unchecked runtime.lastError`.
+replacement. Targeted tests (63), full Vitest (120 files / 1380 passed /
+1 skipped), `pnpm check` (0 errors/0 warnings), direct CDP ping, the isolated
+desktop/mobile LAN matrix, and mobile keyboard emulation passed; the probe now
+fails on worker timeouts, `resize before init`, and project
+`Unchecked runtime.lastError`.
 
 Iteration-85 evidence is archived in
 `docs/iterations/CONTRACT-iteration-85.md`. Release `v0.1.33` is formal with 12
@@ -22,6 +24,8 @@ assets (`30726725069`), Remote artifact `0.1.33+gc07f931` is active
 (`30727576307`), and ridge-cloud deploy `30727590385` plus health `ok=true`
 are green. Physical-phone, public-soak, WebView2-heap, and dual-window /
 dual-Host gates remain pending; no external proof is inferred from local CDP.
+LAN matrix evidence is `.iteration/artifacts/rdg-remote-e2e/last-result.json`;
+keyboard emulation evidence is `.iteration/artifacts/rdg-remote-e2e/mobile-keyboard.json`.
 
 ### Iteration 83 update (2026-08-02)
 

@@ -50,6 +50,13 @@ could also inherit stale pane IDs in the manager's attached set.
   lifecycle/runtime-messaging noise. Remaining logs are known dev WebSocket,
   Tauri callback, WebGPU fallback, and self-signed ServiceWorker environment
   warnings.
+- Full Vitest: `120` files, `1380` passed, `1` skipped; process exit `0`.
+- Isolated LAN Remote matrix (`pnpm e2e:rdg-lan -- --skip-build`): desktop and
+  mobile both `PASS` (`canvas=true`, mobile tree rendered, WebSocket connected);
+  evidence is `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
+- Mobile keyboard probe: `ok=true`, `browserErrors=[]`, bounded shift and
+  recovery assertions passed. This is Chromium emulation only, not a physical
+  phone result; evidence is `.iteration/artifacts/rdg-remote-e2e/mobile-keyboard.json`.
 
 ## Non-claims and external gates
 
