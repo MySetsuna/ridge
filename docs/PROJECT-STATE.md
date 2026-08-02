@@ -918,6 +918,12 @@ Desktop AppState/PTY/window-claim/root-authority migration remains open.
 Kernel client HTTP guard (2026-08-02): `40fa39f` adds loopback assertions for
 non-2xx and malformed-JSON failures in shared `request_json`; `cargo test -p
 ridge-kernel --lib` passes 22/22. No desktop authority migration is implied.
+NLM refresh (2026-08-02): authenticated query confirms the latest live
+NotebookLM conversation is TUI-focused (PTY physical fidelity and
+Answer/Reasoning presentation). Its statement that Remote/PWA lacks active
+code and that Pane Border is only a TUI rail is stale/contradicted by local
+CodeGraph and tests; retained only as strategy input, with no duplicate TUI
+syntax-highlighting implementation.
 Pane header Git-pill guard (2026-08-02): `a1d816a` asserts Repo/Branch/Diff
 pills each occur once at one sibling layer; desktop + Remote/mobile focused
 slice passes 17/17. This is a static layout guard, not physical-device proof.
