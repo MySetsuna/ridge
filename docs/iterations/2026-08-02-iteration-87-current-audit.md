@@ -196,3 +196,21 @@ Release and Remote/cloud activation are complete. Remaining external gates are
 explicitly carried forward (affected-phone attribution, physical-device UI,
 public WebRTC/host, WebView2 heap soak, authenticated Remote Git push and full
 Kernel domain migration); they are not silently marked done.
+Performance and Kernel convergence continuation (local evidence):
+
+- `b6d22df` extends the real PTY stress window with in-page
+  `performance.memory`/resource-entry samples when WebView2 exposes them,
+  reports unavailable heap as `null`, and adds RSS mean/p50/p95/max plus a
+  fail-closed `-RequireProcessSamples` guard to `scripts/perf-bench.ps1`.
+  `1256d1d` also samples the real worker bridge pending count, with an opt-in
+  `RIDGE_PERF_WORKER_PENDING_MAX` gate. `55af1e2` treats non-positive heap
+  counters as unavailable (`null`) instead of a false clean zero. `7c5fddc`
+  bounds the WebDriver soak timeout to the configured workload duration (up to
+  24 hours), preventing detached-driver hangs without truncating long runs.
+  One-second local sampler smoke passed;
+  sustained WebView2/device soak remains external evidence.
+- `67e5b54` exposes read-only Tauri `get_domain_convergence_report`, comparing
+  typed Kernel workspace/Agent IDs with the desktop projection and returning
+  explicit only-Kernel/only-shell/mismatch data. Transport/decode/empty/
+  duplicate failures remain visible; no authority switch, window claim or
+  persistence write is hidden behind it.
