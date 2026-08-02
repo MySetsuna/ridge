@@ -14,5 +14,6 @@ describe('desktop Pane Agent border contract', () => {
     expect(source).toContain('data-agent-attention={paneAttention ?? \'\'}');
     expect(paneSource).toContain('clearAgentPaneAttention(workspaceId, paneId)');
     expect(paneSource).toContain('if (container?.contains(document.activeElement))');
+    expect(paneSource).toContain('if (isActive) clearAgentPaneAttention(workspaceId, paneId);');
   });
 });
