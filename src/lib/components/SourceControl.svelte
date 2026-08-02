@@ -60,6 +60,7 @@
     setScmSelectedRepo,
     isNotGitRepositoryError,
     isScmRepoKnownNonGit,
+    invalidateScmQuery,
     runScmQuerySingleFlight,
     type GitRepoInfo,
     type CommitNode,
@@ -304,6 +305,10 @@
 
   function refreshStatus(root: string): Promise<void> {
     if (isScmRepoKnownNonGit(root)) return Promise.resolve();
+    // A status refresh is an explicit watcher/user signal; bypass the short
+    // read cache so writes become visible immediately. Other consumers (pane
+    // pills and remote panels) still benefit from the shared TTL snapshot.
+    invalidateScmQuery('status', root);
     const existing = statusInFlight.get(root);
     if (existing) return existing;
     const request = (async () => {
@@ -478,6 +483,7 @@
         message: msg.trim() || null,
         includeUntracked: true,
       });
+      invalidateScmQuery('stashes', root);
       await loadStashes(root);
       await refreshStatus(root);
     });
@@ -498,6 +504,7 @@
         action: () =>
           void runCommitOp(tr('scm.stashApply'), async () => {
             await invoke('git_stash_apply', { repoRoot: root, reference: st.reference });
+            invalidateScmQuery('stashes', root);
             await reload();
           }),
       },
@@ -508,6 +515,7 @@
         action: () =>
           void runCommitOp(tr('scm.stashPop'), async () => {
             await invoke('git_stash_pop', { repoRoot: root, reference: st.reference });
+            invalidateScmQuery('stashes', root);
             await reload();
           }),
       },
@@ -530,6 +538,7 @@
                 branch: bn,
                 reference: st.reference,
               });
+              invalidateScmQuery('stashes', root);
               await reload();
             });
           })(),
@@ -549,6 +558,7 @@
             if (!ok) return;
             await runCommitOp(tr('scm.stashDrop'), async () => {
               await invoke('git_stash_drop', { repoRoot: root, reference: st.reference });
+              invalidateScmQuery('stashes', root);
               await loadStashes(root);
             });
           })(),
@@ -720,6 +730,9 @@
     } finally {
       // Always refresh — even on partial failure the user wants to see
       // the new state (e.g. half-applied changes, unmerged files).
+      invalidateScmQuery('status', selectedRepo);
+      invalidateScmQuery('branches', selectedRepo);
+      invalidateScmQuery('stashes', selectedRepo);
       await loadGraph(selectedRepo);
       await refreshStatus(selectedRepo);
       invalidateBranchCache(selectedRepo);
@@ -1434,6 +1447,7 @@
 
   function invalidateBranchCache(root: string): void {
     branchLoadedAt.delete(root);
+    invalidateScmQuery('branches', root);
   }
 
   async function loadBranches(root: string, force = false): Promise<void> {
