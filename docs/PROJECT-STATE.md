@@ -1151,3 +1151,14 @@ This is a new runtime candidate after `v0.1.45`; it requires a new versioned
 release and Remote/Cloud publication. Git mutation methods using unslotted core
 APIs retain timeout/tree-kill protection and are not claimed as instant cancel.
 Physical/public/WebView2/dual-window/full-Kernel authority gates remain open.
+
+### Iteration 92 publication closure (2026-08-03)
+
+Version commit `fa3f4d3` aligned package, Tauri, Cargo, and root lockfile to
+`0.1.46`; the clean release gate passed before the annotated `v0.1.46` tag.
+Release workflow `30765004487` passed test, Linux, macOS ARM/x64, and Windows
+jobs. GitHub Release `v0.1.46` is formal (`draft=false`, `prerelease=false`)
+with 12 matching installer/CLI assets. Remote workflow `30766365105` rebuilt
+and activated `0.1.46+gfa3f4d3`; its desktop/mobile index checks passed. Cloud
+health returned HTTP 200 (`version=0.0.7`). This follow-up is documentation-only
+and does not alter the released runtime.
