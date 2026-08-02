@@ -53,3 +53,21 @@ WebView2 long-run heap/RSS soak, dual-window/Host singleton device E2E, full
 Kernel authority migration, production branch identity injection into Remote
 Query keys, and protocol-level cancellation of already-running host data tasks.
 These are not hidden by local green tests or LAN success.
+
+## Publication closure
+
+The first `v0.1.43` attempt (`30759401836`) failed its version contract because
+the root `Cargo.lock` still declared `ridge` as `0.1.42`. The failed tag was
+deleted, the version bump was reverted, and a corrected bump aligned
+`package.json`, Tauri, Cargo, and the root lockfile before retagging.
+
+The corrected commit is `6ca6f6d`. Release workflow `30759507144` passed the
+test gate and Linux, macOS ARM/x64, and Windows builds. GitHub Release
+`v0.1.43` is formal (`draft=false`, `prerelease=false`) with 12 matching
+installer/CLI assets. Remote workflow `30759691020` activated
+`0.1.43+g6ca6f6d`; its desktop/mobile index checks passed. Cloud health returned
+HTTP 200 (`version=0.0.7`).
+
+The final release gate is clean: tracked/staged diffs and non-ignored
+untracked-file checks are empty, and `HEAD == origin/main`. The remaining
+external gates above are carried forward rather than reclassified as complete.

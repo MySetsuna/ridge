@@ -1073,3 +1073,17 @@ Physical/public/WebView2/dual-window/full-Kernel authority gates remain open;
 the release notes must retain those limits. The next versioned release must
 pass the clean-worktree gate and include matching Desktop, Remote, and Cloud
 publication evidence.
+
+### Iteration 89 publication closure (2026-08-03)
+
+The first v0.1.43 tag was rejected by the release version contract because the
+root Cargo.lock remained at 0.1.42. That tag was removed and its version bump
+reverted. Corrected commit `6ca6f6d` aligned all four version sources and was
+retagged as `v0.1.43`.
+
+Release workflow `30759507144` passed test, Linux, macOS ARM/x64, and Windows;
+the formal GitHub Release has 12 matching installer/CLI assets. Remote workflow
+`30759691020` activated `0.1.43+g6ca6f6d` and passed desktop/mobile index checks.
+Cloud health returned HTTP 200 (`version=0.0.7`). Final clean-worktree and
+`HEAD == origin/main` gates passed. Physical/public/WebView2/dual-window and
+full Kernel-authority evidence remain open as documented residuals.
