@@ -108,6 +108,26 @@ import {
 	underlineCssTokens,
 	type HostOpenAction,
 } from './linkOpenHost';
+
+type LinkUnderlineRegion = { row: number; c0: number; c1: number };
+
+function createLinkUnderlineOverlay(container: HTMLElement): HTMLDivElement {
+	const el = document.createElement('div');
+	el.setAttribute('aria-hidden', 'true');
+	el.dataset.ridgeLinkUnderline = 'true';
+	el.style.cssText = [
+		'position:absolute',
+		'display:none',
+		'pointer-events:none',
+		'z-index:3',
+		'height:2px',
+		'border-radius:1px',
+		'background:var(--rg-accent,#58a6ff)',
+		'box-sizing:border-box',
+	].join(';');
+	container.appendChild(el);
+	return el;
+}
 // §1.32 Wave F: PTY-prompt suffix snapshot — reads shell-input from
 // kernel cells instead of mirroring keystrokes. See module docstring.
 
@@ -280,6 +300,7 @@ interface PaneEntry {
 	pointerDownListener: (e: PointerEvent) => void;
 	pointerMoveListener: (e: PointerEvent) => void;
 	pointerUpListener: (e: PointerEvent) => void;
+	pointerLeaveListener: (e: PointerEvent) => void;
 	/** Last `clamped` value passed to `setPadding`. Used to short-circuit
 	 *  no-op calls (RidgePane wires setPadding into a $effect that fires
 	 *  on every settings store update — without this, every font-size /
@@ -398,6 +419,11 @@ interface PaneEntry {
 	 *  编辑器或系统资源管理器。lazy 重建：feed / scroll / resize 后置 dirty
 	 *  标志，仅在 ctrl+pointermove 或 ctrl+pointerdown 时同步扫一次。 */
 	linkSpans: LinkSpanIndex;
+	/** Real DOM affordance for Ctrl/Cmd-hover. Dataset-only state is not
+	 *  painted by WebView2, so keep a pointer-events-free overlay beside the
+	 *  canvas and position it in the same CSS grid coordinates. */
+	linkUnderlineEl: HTMLDivElement | null;
+	linkUnderlineRegion: { row: number; c0: number; c1: number } | null;
 	/** P1.3 (2026-05-19): last (offset, total) pair we surfaced via
 	 *  `scrollStateHandler`. The RAF tick diffs against this and emits
 	 *  only on change, so an idle pane never wakes the subscriber.
@@ -1166,6 +1192,73 @@ export class TerminalManager {
 		return gh !== null && entry.canvas === gh.canvas;
 	}
 
+	private _clearLinkUnderline(entry: PaneEntry): void {
+		entry.linkUnderlineRegion = null;
+		const el = entry.linkUnderlineEl;
+		if (el) el.style.display = 'none';
+	}
+
+	private _positionLinkUnderline(entry: PaneEntry): void {
+		const el = entry.linkUnderlineEl;
+		const region = entry.linkUnderlineRegion;
+		if (!el || !region || region.c1 <= region.c0) {
+			if (el) el.style.display = 'none';
+			return;
+		}
+		const cellW = entry.geometry?.cellWidthCss ?? entry.cellW;
+		const cellH = entry.geometry?.cellHeightCss ?? entry.cellH;
+		if (!Number.isFinite(cellW) || !Number.isFinite(cellH) || cellW <= 0 || cellH <= 0) {
+			el.style.display = 'none';
+			return;
+		}
+		const rect = entry.container.getBoundingClientRect();
+		const gridLeft = entry.geometry
+			? entry.geometry.gridClientXCss - rect.left
+			: (entry.lastFitPaddingPx ?? entry.lastAppliedPaddingPx ?? 0);
+		const gridTop = entry.geometry
+			? entry.geometry.gridClientYCss - rect.top
+			: (entry.lastFitPaddingPx ?? entry.lastAppliedPaddingPx ?? 0);
+		const left = gridLeft + region.c0 * cellW;
+		const top = gridTop + (region.row + 1) * cellH - 2;
+		if (![left, top].every(Number.isFinite)) {
+			el.style.display = 'none';
+			return;
+		}
+		el.style.left = `${left}px`;
+		el.style.top = `${top}px`;
+		el.style.width = `${Math.max(1, (region.c1 - region.c0) * cellW)}px`;
+		el.style.display = 'block';
+	}
+
+	private _showLinkUnderline(entry: PaneEntry, region: LinkUnderlineRegion): void {
+		entry.linkUnderlineRegion = region;
+		this._positionLinkUnderline(entry);
+	}
+
+	private _osc8UnderlineRegion(
+		entry: PaneEntry,
+		row: number,
+		col: number,
+		uri: string | null,
+	): LinkUnderlineRegion {
+		if (!uri) return { row, c0: col, c1: col + 1 };
+		const same = (candidate: number): boolean => {
+			try {
+				const hit = entry.kernel.hyperlinkAt(row, candidate) as { uri?: unknown } | null;
+				return hit?.uri === uri;
+			} catch {
+				return false;
+			}
+		};
+		let c0 = col;
+		let c1 = col + 1;
+		let cols = 0;
+		try { cols = entry.kernel.cols(); } catch { /* keep one cell */ }
+		while (c0 > 0 && same(c0 - 1)) c0--;
+		while (c1 < cols && same(c1)) c1++;
+		return { row, c0, c1 };
+	}
+
 	/**
 	 * §4a workspace keep-alive (2026-05-08): true when the entry's pane
 	 * container has 0 width or 0 height — the diagnostic for "this pane
@@ -1299,6 +1392,7 @@ export class TerminalManager {
 			? (entry.visualOffsetY ?? 0)
 			: 0;
 		entry.viewport = geometry.viewportDevice;
+		this._positionLinkUnderline(entry);
 		if (this._sharedRemoteMode) {
 			entry.lastViewportKernelRows = geometry.rows;
 			entry.lastViewportKernelCols = geometry.cols;
@@ -1581,6 +1675,10 @@ export class TerminalManager {
 							ent.lastMouseSent = { row: hoverCell.row, col: hoverCell.col, buttons, action };
 						}
 					}
+					this._clearLinkUnderline(ent);
+					ent.container.style.cursor = '';
+					delete ent.container.dataset.linkUnderline;
+					delete ent.container.dataset.linkUnderlineClass;
 					return;
 				}
 			}
@@ -1616,20 +1714,27 @@ export class TerminalManager {
 				if (dec.showUnderline && span) {
 					const r = underlineRegionsFromSpan(span);
 					ent.container.dataset.linkUnderline = encodeUnderlineDataset(r.row, r.c0, r.c1);
+					this._showLinkUnderline(ent, r);
 				} else if (dec.showUnderline && link) {
-					ent.container.dataset.linkUnderline = encodeUnderlineDataset(hoverCell.row, 'osc8');
+					const uri = (link as { uri?: string }).uri ?? null;
+					const r = this._osc8UnderlineRegion(ent, hoverCell.row, hoverCell.col, uri);
+					ent.container.dataset.linkUnderline = encodeUnderlineDataset(r.row, r.c0, r.c1);
+					this._showLinkUnderline(ent, r);
 				} else {
 					delete ent.container.dataset.linkUnderline;
 					delete ent.container.dataset.linkUnderlineClass;
+					this._clearLinkUnderline(ent);
 				}
 			} else if (
 				ent.container.style.cursor === 'pointer' ||
-				ent.container.dataset.linkUnderline
+				ent.container.dataset.linkUnderline ||
+				ent.linkUnderlineRegion
 			) {
 				// Clear affordance when modifier released or left the cell.
 				ent.container.style.cursor = '';
 				delete ent.container.dataset.linkUnderline;
 				delete ent.container.dataset.linkUnderlineClass;
+				this._clearLinkUnderline(ent);
 			}
 
 			// Continue with selection drag logic.
@@ -1875,9 +1980,19 @@ export class TerminalManager {
 			stopAutoScroll(ent);
 			try { (e.target as Element | null)?.releasePointerCapture?.(e.pointerId); } catch {}
 		};
+		const pointerLeaveListener = (_e: PointerEvent) => {
+			const ent = this.panes.get(paneId);
+			if (!ent) return;
+			ent.container.style.cursor = '';
+			delete ent.container.dataset.linkUnderline;
+			delete ent.container.dataset.linkUnderlineClass;
+			this._clearLinkUnderline(ent);
+		};
 		container.addEventListener('pointerdown', pointerDownListener);
 		container.addEventListener('pointermove', pointerMoveListener);
 		container.addEventListener('pointerup', pointerUpListener);
+		container.addEventListener('pointerleave', pointerLeaveListener);
+		const linkUnderlineEl = createLinkUnderlineOverlay(container);
 
 		const entry: PaneEntry = {
 			paneId,
@@ -1910,6 +2025,7 @@ export class TerminalManager {
 			pointerDownListener,
 			pointerMoveListener,
 			pointerUpListener,
+			pointerLeaveListener,
 			parked: false,
 			parkReason: null,
 			lastForegroundAt: Date.now(),
@@ -1918,6 +2034,8 @@ export class TerminalManager {
 			feedBuffer: null,
 			feedFlushTimer: null,
 			linkSpans: new LinkSpanIndex(),
+			linkUnderlineEl,
+			linkUnderlineRegion: null,
 			lastScrollOffset: -1,
 			lastScrollTotal: -1,
 			scrollStateHandler: null,
@@ -2329,6 +2447,9 @@ export class TerminalManager {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		this._memoryRestorePending.delete(paneId);
+		this._clearLinkUnderline(entry);
+		try { entry.linkUnderlineEl?.remove(); } catch { /* already detached */ }
+		entry.linkUnderlineEl = null;
 		if (!entry.parked) {
 			// Live entry — release DOM bindings before freeing wasm.
 			entry.resizeObserver.disconnect();
@@ -2337,6 +2458,7 @@ export class TerminalManager {
 			entry.container.removeEventListener('pointerdown', entry.pointerDownListener);
 			entry.container.removeEventListener('pointermove', entry.pointerMoveListener);
 			entry.container.removeEventListener('pointerup', entry.pointerUpListener);
+			entry.container.removeEventListener('pointerleave', entry.pointerLeaveListener);
 			// pointermove batches on rAF; cancel any in-flight tick so the
 			// flush callback doesn't reach into a freed kernel via
 			// kernel.encodeMouse / dataHandler.
@@ -2446,6 +2568,10 @@ export class TerminalManager {
 		entry.container.removeEventListener('pointerdown', entry.pointerDownListener);
 		entry.container.removeEventListener('pointermove', entry.pointerMoveListener);
 		entry.container.removeEventListener('pointerup', entry.pointerUpListener);
+		entry.container.removeEventListener('pointerleave', entry.pointerLeaveListener);
+		this._clearLinkUnderline(entry);
+		try { entry.linkUnderlineEl?.remove(); } catch { /* already detached */ }
+		entry.linkUnderlineEl = null;
 		if (entry.pendingFitTimer !== null) {
 			clearTimeout(entry.pendingFitTimer);
 			entry.pendingFitTimer = null;
@@ -2561,6 +2687,7 @@ export class TerminalManager {
 			}
 			return;
 		}
+		const linkUnderlineEl = createLinkUnderlineOverlay(container);
 		const dpr = window.devicePixelRatio || 1;
 		const [cellW, cellH] = handle
 			? (handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
@@ -2574,6 +2701,8 @@ export class TerminalManager {
 		entry.container = container;
 		entry.canvas = canvas;
 		entry.handle = handle;
+		entry.linkUnderlineEl = linkUnderlineEl;
+		entry.linkUnderlineRegion = null;
 		// Force a Clear on this workspace's surface so any pre-park
 		// pixels in this slot don't bleed through during the first fit.
 		if (useHost && hostHandle) {
@@ -2638,6 +2767,7 @@ export class TerminalManager {
 		container.addEventListener('pointerdown', entry.pointerDownListener);
 		container.addEventListener('pointermove', entry.pointerMoveListener);
 		container.addEventListener('pointerup', entry.pointerUpListener);
+		container.addEventListener('pointerleave', entry.pointerLeaveListener);
 		entry.resizeObserver = new ResizeObserver(() => this.viewportChanged(paneId));
 		entry.resizeObserver.observe(container);
 
@@ -3459,6 +3589,7 @@ export class TerminalManager {
 			}
 		}
 		entry.kernel.clearScrollback();
+		this._clearLinkUnderline(entry);
 		// Clear the JS-side hyperlink index too. It owns copied visible strings
 		// and otherwise retains the pre-clear output until a later Ctrl/hover
 		// hit-test happens to rebuild it.

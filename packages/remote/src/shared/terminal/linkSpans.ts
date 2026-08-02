@@ -28,6 +28,9 @@ interface KernelLike {
   dumpVisibleText(): unknown[];
   rows(): number;
   cols(): number;
+  /** Authoritative soft-wrap bit from the terminal kernel. Older bundles
+   *  omit this method; recompute() keeps a conservative full-row fallback. */
+  rowWrapped?: (row: number) => boolean;
 }
 
 /** 已知文本扩展名白名单。命中后允许"无分隔符的裸文件名"被识别为路径。
@@ -105,6 +108,90 @@ function scanRow(row: number, line: string): LinkSpan[] {
   return spans;
 }
 
+const URL_CONTINUATION_RE = /^[^\s<>"'`{}|\\^[\]]+/;
+const PATH_CONTINUATION_RE = /^[^\s<>"'`|?*]+/;
+
+/** Return the contiguous continuation at the start of a soft-wrapped row. */
+function continuationPrefix(line: string, kind: LinkSpanKind): string {
+  const match = (kind === 'url' || kind === 'file-url')
+    ? line.match(URL_CONTINUATION_RE)
+    : line.match(PATH_CONTINUATION_RE);
+  return match?.[0] ?? '';
+}
+
+function rowIsSoftWrapped(
+  kernel: KernelLike,
+  row: number,
+  line: string,
+): boolean {
+  if (typeof kernel.rowWrapped === 'function') {
+    try {
+      return kernel.rowWrapped(row);
+    } catch {
+      // An older/partially torn-down wasm object: use the safe fallback.
+    }
+  }
+  // `dumpVisibleText` trims trailing cells. A line that still reaches the
+  // kernel width is therefore the only safe inference available to old
+  // bundles; never join ordinary shorter hard-wrapped output.
+  let cols = 0;
+  try { cols = kernel.cols(); } catch { /* keep false */ }
+  return cols > 0 && line.length >= cols;
+}
+
+/**
+ * Join a plain-text link that crosses one or more terminal soft-wrap rows.
+ * Each visual segment keeps its own hit-test coordinates while every segment
+ * carries the same complete target text for Ctrl+click/open.
+ */
+function mergeWrappedSpan(
+  span: LinkSpan,
+  lines: string[],
+  kernel: KernelLike,
+  limit: number,
+): LinkSpan[] {
+  const segments: LinkSpan[] = [{ ...span }];
+  let full = span.text;
+  let row = span.row;
+  let end = span.c1;
+
+  while (
+    row + 1 < limit &&
+    end >= lines[row]!.length &&
+    rowIsSoftWrapped(kernel, row, lines[row]!)
+  ) {
+    const nextRow = row + 1;
+    const continuation = continuationPrefix(lines[nextRow]!, span.kind);
+    if (!continuation) break;
+    full += continuation;
+    segments.push({
+      row: nextRow,
+      c0: 0,
+      c1: continuation.length,
+      text: '',
+      kind: span.kind,
+    });
+    row = nextRow;
+    end = continuation.length;
+  }
+
+  const trimmed = trimTrailingPunct(full);
+  if (!trimmed) return [];
+  // A closing punctuation mark may be on the final visual segment. Shrink
+  // only that segment so the underline/click range never includes it.
+  let drop = full.length - trimmed.length;
+  for (let i = segments.length - 1; i >= 0 && drop > 0; i--) {
+    const segment = segments[i]!;
+    const length = segment.c1 - segment.c0;
+    const remove = Math.min(length, drop);
+    segment.c1 -= remove;
+    drop -= remove;
+  }
+  const visible = segments.filter((segment) => segment.c1 > segment.c0);
+  for (const segment of visible) segment.text = trimmed;
+  return visible;
+}
+
 /** 每 pane 一份。lazy 重建：dirty 标志由 manager 在 feed/scroll/resize 时置位。 */
 export class LinkSpanIndex {
   private byRow: Map<number, LinkSpan[]> = new Map();
@@ -140,11 +227,36 @@ export class LinkSpanIndex {
       return;
     }
     const limit = Math.min(rowCount, lines.length);
+    const textLines = Array.from({ length: limit }, (_, row) =>
+      typeof lines[row] === 'string' ? (lines[row] as string) : '',
+    );
+    const coveredByContinuation = new Map<number, Array<{ c0: number; c1: number }>>();
+    const addSpan = (span: LinkSpan) => {
+      const covered = coveredByContinuation.get(span.row);
+      if (covered?.some((range) => span.c0 < range.c1 && span.c1 > range.c0)) return;
+      const rowSpans = this.byRow.get(span.row) ?? [];
+      rowSpans.push(span);
+      this.byRow.set(span.row, rowSpans);
+    };
+
     for (let row = 0; row < limit; row++) {
-      const line = typeof lines[row] === 'string' ? (lines[row] as string) : '';
+      const line = textLines[row]!;
       if (!line) continue;
-      const spans = scanRow(row, line);
-      if (spans.length > 0) this.byRow.set(row, spans);
+      for (const span of scanRow(row, line)) {
+        const merged = mergeWrappedSpan(span, textLines, kernel, limit);
+        if (merged.length === 0) continue;
+        for (const segment of merged) {
+          addSpan(segment);
+          if (segment.row !== span.row) {
+            const ranges = coveredByContinuation.get(segment.row) ?? [];
+            ranges.push({ c0: segment.c0, c1: segment.c1 });
+            coveredByContinuation.set(segment.row, ranges);
+          }
+        }
+      }
+    }
+    for (const spans of this.byRow.values()) {
+      spans.sort((a, b) => a.c0 - b.c0);
     }
     this.dirty = false;
   }
