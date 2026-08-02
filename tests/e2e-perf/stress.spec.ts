@@ -37,6 +37,7 @@ const STRESS_SEC = Math.max(1, parseInt(process.env.RIDGE_PERF_STRESS_SEC || '35
 // CI/device baselines differ, but a soak run must still report availability
 // and samples so an unavailable probe cannot be mistaken for a clean result.
 const HEAP_GROWTH_MAX_MB = Number(process.env.RIDGE_PERF_HEAP_GROWTH_MAX_MB ?? 0);
+const WORKER_PENDING_MAX = Number(process.env.RIDGE_PERF_WORKER_PENDING_MAX ?? 0);
 
 describe(`perf stress (${BACKEND})`, () => {
   before(async () => {
@@ -93,16 +94,27 @@ describe(`perf stress (${BACKEND})`, () => {
         totalHeapBytes: number | null;
         heapLimitBytes: number | null;
         resourceEntries: number;
+        workerPending: number | null;
       }> = [];
       const read = () => {
         const heap = perf.memory;
         const finite = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+        let workerPending: number | null = null;
+        try {
+          const bridge = (window as Window & {
+            __windE2E?: { workerBridge?: () => { active: boolean; pending: number } };
+          }).__windE2E?.workerBridge?.();
+          workerPending = finite(bridge?.pending);
+        } catch {
+          // Diagnostic hook is dev-only; absence is reported as null.
+        }
         samples.push({
           atMs: Math.round(performance.now()),
           usedHeapBytes: finite(heap?.usedJSHeapSize),
           totalHeapBytes: finite(heap?.totalJSHeapSize),
           heapLimitBytes: finite(heap?.jsHeapSizeLimit),
           resourceEntries: performance.getEntriesByType('resource').length,
+          workerPending,
         });
       };
       const startedAt = performance.now();
@@ -125,6 +137,12 @@ describe(`perf stress (${BACKEND})`, () => {
     );
     const resourceEntriesStart = memory?.samples?.[0]?.resourceEntries ?? 0;
     const resourceEntriesEnd = memory?.samples?.at(-1)?.resourceEntries ?? resourceEntriesStart;
+    const workerSamples = (memory?.samples ?? []).filter((sample) => sample.workerPending !== null);
+    const workerPendingMax = workerSamples.reduce<number | null>(
+      (max, sample) => max === null ? sample.workerPending : Math.max(max, sample.workerPending ?? max),
+      null,
+    );
+    const workerPendingEnd = workerSamples.at(-1)?.workerPending ?? null;
     const memoryReport = {
       completed: memory?.completed === true,
       elapsedMs: memory?.elapsedMs ?? 0,
@@ -138,6 +156,8 @@ describe(`perf stress (${BACKEND})`, () => {
       resourceEntriesStart,
       resourceEntriesEnd,
       resourceEntryGrowth: resourceEntriesEnd - resourceEntriesStart,
+      workerPendingMax,
+      workerPendingEnd,
     };
     // eslint-disable-next-line no-console
     console.log('[perf-stress] browser resource/heap soak:', JSON.stringify(memoryReport));
@@ -145,6 +165,9 @@ describe(`perf stress (${BACKEND})`, () => {
     expect(memoryReport.samples).toBeGreaterThanOrEqual(2);
     if (HEAP_GROWTH_MAX_MB > 0 && memoryReport.maxHeapGrowthMb !== null) {
       expect(memoryReport.maxHeapGrowthMb).toBeLessThanOrEqual(HEAP_GROWTH_MAX_MB);
+    }
+    if (WORKER_PENDING_MAX > 0 && memoryReport.workerPendingMax !== null) {
+      expect(memoryReport.workerPendingMax).toBeLessThanOrEqual(WORKER_PENDING_MAX);
     }
 
     // Smoke: confirm the mirror actually advanced (more than 0 lines of
