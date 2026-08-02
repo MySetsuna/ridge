@@ -59,3 +59,16 @@ Runtime changes are in the current worktree after `v0.1.44`; they must be
 versioned and published as `v0.1.45` only after the clean-worktree gate,
 version contract, full Desktop matrix, Remote artifact activation, and Cloud
 health verification pass.
+
+## Publication closure
+
+Version sources were aligned in `cd76e12`; the pre-tag clean-worktree gate
+passed with `HEAD == origin/main`. Release workflow `30762940271` passed the
+test gate and Linux, macOS ARM/x64, and Windows builds. GitHub Release
+`v0.1.45` is formal (`draft=false`, `prerelease=false`) with 12 matching
+installer/CLI assets.
+
+Remote workflow `30764190990` completed successfully and activated the new
+desktop/mobile artifact set. Cloud health returned HTTP 200 with
+`{"ok":true,"data":{"version":"0.0.7"}}`. The post-release archive change
+is documentation-only; no runtime change was made after the tag.
