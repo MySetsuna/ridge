@@ -156,7 +156,7 @@ export class TauriDataProvider implements DataProvider {
   async gitCleanUntracked(repoRoot: string): Promise<void> {
     await this.call('git_clean_untracked', { repoRoot });
   }
-  async gitDiffFile(repoRoot: string, path: string, cached = false): Promise<string> {
+  async gitDiffFile(repoRoot: string, path: string, cached = false, _signal?: AbortSignal): Promise<string> {
     return this.call<string>('git_diff_file', { repoRoot, path, cached });
   }
 

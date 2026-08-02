@@ -1,5 +1,6 @@
 <script lang="ts">
   import { X, FileText, GitBranch, Copy, Pencil, Eye, Save } from 'lucide-svelte';
+  import { onDestroy } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import type { SidebarProvider } from '../../shared/sidebar/types';
   import { writeClipboard } from './clipboard';
@@ -28,6 +29,8 @@
   let dirty = $state(false);
   let saving = $state(false);
   let saveError = $state<string | null>(null);
+  let loadGeneration = 0;
+  let loadController: AbortController | null = null;
 
   const canEdit = $derived(kind === 'file' && !loading && !error);
 
@@ -69,6 +72,10 @@
   }
 
   async function load() {
+    loadController?.abort();
+    const controller = new AbortController();
+    loadController = controller;
+    const generation = ++loadGeneration;
     loading = true;
     error = null;
     truncated = false;
@@ -76,17 +83,28 @@
     dirty = false;
     saveError = null;
     try {
-      const text = kind === 'diff' ? await provider.gitDiff(path) : await provider.readFile(path);
+      const text = kind === 'diff'
+        ? await provider.gitDiff(path, controller.signal)
+        : await provider.readFile(path, controller.signal);
+      if (controller.signal.aborted || generation !== loadGeneration) return;
       content = text;
       const { rows, truncated: tr2 } = splitLines(text);
       lines = rows;
       truncated = tr2;
     } catch (e) {
+      if (controller.signal.aborted || generation !== loadGeneration) return;
       error = e instanceof Error ? e.message : String(e);
     } finally {
-      loading = false;
+      if (generation === loadGeneration) loading = false;
     }
   }
+
+  onDestroy(() => {
+    loadController?.abort();
+    loadController = null;
+    loadGeneration += 1;
+    if (copyResetTimer) clearTimeout(copyResetTimer);
+  });
 
   async function save() {
     if (saving || !dirty) return;

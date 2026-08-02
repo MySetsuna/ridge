@@ -73,15 +73,15 @@ export interface SearchHit {
  */
 export interface SidebarProvider {
   /** List a directory. Pass "" for the provider's default root (pane cwd). */
-  listDir(path: string): Promise<DirListing>;
+  listDir(path: string, signal?: AbortSignal): Promise<DirListing>;
   gitStatus(): Promise<GitInfo>;
-  search(query: string): Promise<SearchHit[]>;
+  search(query: string, signal?: AbortSignal): Promise<SearchHit[]>;
   /** Read a file's text content (viewer). `path` is absolute. */
-  readFile(path: string): Promise<string>;
+  readFile(path: string, signal?: AbortSignal): Promise<string>;
   /** Overwrite a file's text content (editor save). `path` is absolute. */
   writeFile(path: string, content: string): Promise<void>;
   /** Unified diff of a working-tree file vs HEAD. `path` is repo-relative. */
-  gitDiff(path: string): Promise<string>;
+  gitDiff(path: string, signal?: AbortSignal): Promise<string>;
   /** Optional Git mutations. Desktop's full Source Control owns these today;
    *  Remote exposes them through its compact mobile Git panel. */
   gitStage?(paths: string[], signal?: AbortSignal): Promise<void>;

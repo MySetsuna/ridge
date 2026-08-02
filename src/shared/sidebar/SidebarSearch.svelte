@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Search } from 'lucide-svelte';
+  import { onDestroy } from 'svelte';
   import type { SidebarProvider, SearchHit } from './types';
   import { t } from '$lib/i18n';
 
@@ -13,6 +14,8 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let debounce: ReturnType<typeof setTimeout> | undefined;
+  let requestGeneration = 0;
+  let requestController: AbortController | null = null;
 
   function basename(p: string): string {
     const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
@@ -20,15 +23,27 @@
   }
 
   async function run(q: string) {
-    if (q.trim().length < 2) { results = []; return; }
+    requestController?.abort();
+    const controller = new AbortController();
+    requestController = controller;
+    const generation = ++requestGeneration;
+    if (q.trim().length < 2) {
+      results = [];
+      loading = false;
+      error = null;
+      return;
+    }
     loading = true;
     error = null;
     try {
-      results = await provider.search(q);
+      const next = await provider.search(q, controller.signal);
+      if (controller.signal.aborted || generation !== requestGeneration) return;
+      results = next;
     } catch (e) {
+      if (controller.signal.aborted || generation !== requestGeneration) return;
       error = e instanceof Error ? e.message : String(e);
     } finally {
-      loading = false;
+      if (generation === requestGeneration) loading = false;
     }
   }
 
@@ -37,6 +52,13 @@
     if (debounce) clearTimeout(debounce);
     debounce = setTimeout(() => run(query), 250);
   }
+
+  onDestroy(() => {
+    if (debounce) clearTimeout(debounce);
+    requestController?.abort();
+    requestController = null;
+    requestGeneration += 1;
+  });
 </script>
 
 <div class="search">

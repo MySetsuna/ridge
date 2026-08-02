@@ -93,9 +93,16 @@ export function fetchRemoteQuery<T>(
   queryKey: readonly unknown[],
   queryFn: (context?: { signal?: AbortSignal }) => Promise<T>,
   staleTime = REMOTE_SIDEBAR_STALE_TIME_MS,
+  observerSignal?: AbortSignal,
 ): Promise<T> {
-  if (!queryClient) return queryFn();
-  return queryClient.fetchQuery({ queryKey, queryFn, staleTime });
+  const work = queryClient
+    ? queryClient.fetchQuery({ queryKey, queryFn, staleTime })
+    : queryFn({ signal: observerSignal });
+  // A component leaving the view must stop observing its old result. When a
+  // QueryClient is present, do not feed this per-observer signal into the
+  // shared query function: cancelling one observer must not abort another
+  // consumer of the same cached request.
+  return observerSignal ? abortable(work, [observerSignal]) : work;
 }
 
 export interface RemoteTeamRosterSnapshot {
