@@ -34,13 +34,9 @@ fn mirror_kernel_host(method: &str, path: &str, body: Option<serde_json::Value>)
 
 pub(crate) fn kernel_host_snapshot() -> Option<Vec<HostRecord>> {
     let endpoint = ridge_kernel::client::running_endpoint()?;
-    let response = ridge_kernel::client::request_json(
-        &endpoint,
-        "GET",
-        "/v1/domain/remote-hosts",
-        None,
-    ).ok()?;
-    serde_json::from_value(response.get("hosts")?.clone()).ok()
+    ridge_kernel::client::read_domain_remote_hosts(&endpoint)
+        .map(|snapshot| snapshot.hosts)
+        .ok()
 }
 
 #[derive(Clone, Debug, Deserialize)]
