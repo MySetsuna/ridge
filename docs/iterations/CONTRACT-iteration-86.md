@@ -36,7 +36,8 @@ not claim the later Git mutation/Graph or Agent parity packages.
 Release gate evidence: tag `v0.1.34` from `1901eb0` completed workflow
 `30730231317`, was published from draft with all 12 Windows/Linux/macOS assets.
 The separate Remote artifact workflow `30731241075` built latest `main` at
-`b62d94b` and activated `0.1.34+gb62d94b`; cloud health remains `ok=true`.
+`b62d94b` and activated `0.1.34+gb62d94b`; ridge-cloud workflow
+`30731408697` deployed `67f7126`, and health remains `ok=true`.
 
 ## Baseline and constraints
 
