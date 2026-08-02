@@ -1125,3 +1125,13 @@ evidence: frontend full suite 141 files / 1470 passed / 1 skipped, `pnpm check`
 Branch-aware Remote Query keys and true host-side cancellation remain
 protocol-level residuals; no local test reclassifies them as complete. This
 runtime candidate requires a new versioned release after the `v0.1.44` tag.
+
+### Iteration 91 publication closure (2026-08-03)
+
+Version commit `cd76e12` aligned package, Tauri, Cargo, and root lockfile to
+`0.1.45`; the clean release gate passed before the annotated tag. Release
+workflow `30762940271` passed test plus Linux, macOS ARM/x64, and Windows
+builds. GitHub Release `v0.1.45` is formal with 12 matching assets. Remote
+workflow `30764190990` completed successfully and activated the desktop/mobile
+artifact set. Cloud health returned HTTP 200 (`version=0.0.7`). This follow-up
+is documentation-only and does not alter the released runtime.
