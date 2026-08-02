@@ -130,6 +130,8 @@
   }
   let recentReplies = $state<AgentRecentReply[]>([]);
   let wakingSession = $state('');
+  /** One resume plan/PTY launch per history session; double taps must not split two panes. */
+  let resumeBusy = $state('');
   let historyExpanded = $state<Record<string, boolean>>({});
   /** 恢复时以 YOLO 模式启动（按 agent 配置表注入 yolo 参数）。 */
   let resumeYolo = $state(false);
@@ -211,6 +213,9 @@
 
   async function resumeAgentSession(reply: AgentRecentReply): Promise<void> {
     if (!canResume(reply) || !workspaceId || !$activePaneId) return;
+    const resumeKey = `${reply.agent}:${reply.sessionId}`;
+    if (resumeBusy) return;
+    resumeBusy = resumeKey;
     const targetWorkspaceId = workspaceId;
     let createdPaneId = '';
     try {
@@ -251,6 +256,8 @@
         try { await closePane(createdPaneId); } catch { /* keep original launch error */ }
       }
       showToast(`恢复会话失败：${e instanceof Error ? e.message : String(e)}`, 'error');
+    } finally {
+      if (resumeBusy === resumeKey) resumeBusy = '';
     }
   }
 
@@ -814,7 +821,7 @@
                           <button
                             type="button"
                             class="shrink-0 rounded border border-[var(--rg-border)] px-1 text-[9px] text-[var(--rg-accent)] disabled:opacity-40"
-                            disabled={!workspaceId || !$activePaneId}
+                            disabled={!workspaceId || !$activePaneId || !!resumeBusy}
                             title={!workspaceId || !$activePaneId ? '需先选中工作区与 pane' : `在新 pane 恢复 ${reply.agent} 会话（cwd+resume${resumeYolo ? '+yolo' : ''}）`}
                             onclick={() => void resumeAgentSession(reply)}
                           >恢复</button>

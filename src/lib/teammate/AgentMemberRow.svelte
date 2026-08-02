@@ -65,15 +65,15 @@
 
   /** 状态徽标优先级：待审批 > 已暂停 > 失联 > 运行中 > 空闲。 */
   const status = $derived.by(() => {
-    if (pending.length > 0) return { text: '等待审批', cls: 'text-amber-300', dot: 'bg-amber-400 animate-pulse' };
-    if (!profile) return { text: '失联', cls: 'text-red-300', dot: 'bg-red-400' };
+    if (pending.length > 0) return { text: '等待审批', cls: 'text-amber-300', dot: 'bg-amber-400 animate-pulse', rail: 'border-l-amber-400' };
+    if (!profile) return { text: '失联', cls: 'text-red-300', dot: 'bg-red-400', rail: 'border-l-red-400' };
     if (profile.status === 'Suspended')
-      return { text: '已暂停', cls: 'text-amber-300', dot: 'bg-amber-400' };
+      return { text: '已暂停', cls: 'text-amber-300', dot: 'bg-amber-400', rail: 'border-l-amber-400' };
     if (profile.status === 'Disappeared')
-      return { text: '已停止', cls: 'text-red-300', dot: 'bg-red-400' };
+      return { text: '已停止', cls: 'text-red-300', dot: 'bg-red-400', rail: 'border-l-red-400' };
     if (profile.activity === 'working')
-      return { text: '运行中', cls: 'text-emerald-300', dot: 'bg-emerald-400 animate-pulse' };
-    return { text: '空闲', cls: 'text-[var(--rg-fg-muted)]', dot: 'bg-[var(--rg-fg-muted)]' };
+      return { text: '运行中', cls: 'text-emerald-300', dot: 'bg-emerald-400 animate-pulse', rail: 'border-l-emerald-400' };
+    return { text: '空闲', cls: 'text-[var(--rg-fg-muted)]', dot: 'bg-[var(--rg-fg-muted)]', rail: 'border-l-sky-400' };
   });
 
   async function activatePane(): Promise<void> {
@@ -138,12 +138,12 @@
 
 <li
   aria-label="{name} · {status.text}"
-  class="group/mem rounded border px-1.5 py-1 hover:bg-[var(--rg-surface)]/60
+  class="group/mem rounded border border-l-2 px-1.5 py-1 hover:bg-[var(--rg-surface)]/60
     {attention === 'waiting'
       ? 'border-amber-400/70 bg-amber-500/10'
       : attention === 'stopped'
         ? 'border-red-400/70 bg-red-500/10'
-        : 'border-transparent'}
+        : `border-transparent ${status.rail}`}
     {present ? '' : 'opacity-60'}"
 >
   <!-- 标题行：状态点 + 名字 + 状态词 + 来源/编组标注 + 操作 -->

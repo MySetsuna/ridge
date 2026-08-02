@@ -12,7 +12,10 @@
     TeammateGroup,
   } from '@ridge/remote';
   import { normalizeTeamRosterWorkspaceId } from './teamRosterScope';
-  import { buildAgentHistoryGroups } from '$lib/teammate/agentCommuneModel';
+  import {
+    buildAgentHistoryGroups,
+    shouldRefreshAgentHistory,
+  } from '$lib/teammate/agentCommuneModel';
   import {
     fetchRemoteAgentHistory,
     fetchRemoteTeamRoster,
@@ -49,7 +52,7 @@
   // 成员 / 编组 / 历史三视图；核心监控徽章 + 待审批始终在子 Tab 之上。
   let subTab = $state<'members' | 'groups' | 'history'>('members');
   let history = $state<AgentHistoryReply[]>([]);
-  let historyLoadCount = 0;
+  let historyLoadedAt = 0;
   let historyUnavailable = false;
   let resumeBusy = $state<string | null>(null);
   let historyNote = $state('');
@@ -212,8 +215,7 @@
     const rosterWorkspaceId = normalizeTeamRosterWorkspaceId(workspaceId);
     const sessionId = remoteSessionId(ws);
     try {
-      historyLoadCount += 1;
-      const loadHistory = !historyUnavailable && (history.length === 0 || historyLoadCount % 3 === 1);
+      const loadHistory = !historyUnavailable && shouldRefreshAgentHistory(historyLoadedAt);
       const [snapshot, recent] = await Promise.all([
         fetchRemoteTeamRoster(ws, queryClient, sessionId, rosterWorkspaceId),
         loadHistory
@@ -239,6 +241,7 @@
         .map((m) => m.paneId));
       if (recent) {
         history = recent;
+        historyLoadedAt = Date.now();
         historyUnavailable = false;
       }
       failed = false;

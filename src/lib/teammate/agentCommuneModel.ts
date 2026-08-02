@@ -2,6 +2,13 @@ import type { TeammateProfile } from './teammateModel';
 
 export type AgentCardStatus = 'working' | 'waiting' | 'idle' | 'completed' | 'stopped';
 
+/** History is a cold, host-wide scan; never couple it to the live roster poll. */
+export const AGENT_HISTORY_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+
+export function shouldRefreshAgentHistory(lastLoadedAt: number, now = Date.now()): boolean {
+  return lastLoadedAt <= 0 || now - lastLoadedAt >= AGENT_HISTORY_REFRESH_INTERVAL_MS;
+}
+
 export interface AgentHistoryReplyLike {
   agent: string;
   sessionId: string;
