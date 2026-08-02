@@ -115,3 +115,14 @@ Evidence: `cargo test --manifest-path src-tauri/Cargo.toml
 commands::project --lib --quiet` — 25 passed; `cargo test
 --manifest-path src-tauri/Cargo.toml commands::pane --lib --quiet` — 13
 passed; `pnpm check` — 0 errors, 0 warnings.
+
+## v0.1.42 publication closure (2026-08-03)
+
+The guard was versioned in commit `bd60f82c8d88ae0322708cc602ccfbb66f142cea`
+as `0.1.42`. Release workflow `30756926992` passed the test gate and all
+four platform build jobs; `v0.1.42` is non-draft/non-prerelease with 12
+matching installer/CLI assets. Remote workflow `30756944271` succeeded from
+the same commit, and Cloud health returned HTTP 200 (`version=0.0.7`).
+
+No failed version bump or orphan tag remains. The post-release documentation
+commit is docs-only and does not require another versioned release.
