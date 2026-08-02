@@ -18,15 +18,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::state::AppState;
-pub use ridge_core::remote::{HostKind, HostRecord, HostSessionMeta, HostStatus};
 use outbound::{
     append_capped, MockOutboundTransport, OutboundClient, OutboundRegistry, OutboundTransport,
     RemoteSessionInfo, DEFAULT_LIVE_OUTPUT_CAP,
 };
+pub use ridge_core::remote::{HostKind, HostRecord, HostSessionMeta, HostStatus};
 use tauri::State;
 
 fn mirror_kernel_host(method: &str, path: &str, body: Option<serde_json::Value>) {
-    let Some(endpoint) = ridge_kernel::client::running_endpoint() else { return; };
+    let Some(endpoint) = ridge_kernel::client::running_endpoint() else {
+        return;
+    };
     if let Err(error) = ridge_kernel::client::request_json(&endpoint, method, path, body.as_ref()) {
         tracing::debug!(target: "ridge::hosts", %error, method, path, "kernel host topology mirror unavailable");
     }
@@ -45,7 +47,6 @@ pub struct FrontendHostSession {
     pub id: String,
     pub title: String,
 }
-
 
 /// 一个 foreign pane 指向的远端会话引用（`PtyHandle.remote_ref`）。live 传输里程接线。
 #[derive(Clone, Debug)]
@@ -146,7 +147,10 @@ impl HostRegistry {
     /// projection; live transports and pane attachments stay process-local.
     pub fn restore_topology(&self, records: Vec<HostRecord>) {
         *self.hosts.write() = ridge_core::remote::RemoteHostTopology::from_records(
-            records.into_iter().map(|record| (record.id.clone(), record)).collect(),
+            records
+                .into_iter()
+                .map(|record| (record.id.clone(), record))
+                .collect(),
         );
     }
 
@@ -158,9 +162,7 @@ impl HostRegistry {
     }
 
     pub fn remove(&self, id: &str) -> bool {
-        self.live_sinks
-            .write()
-            .retain(|(hid, _), _| hid != id);
+        self.live_sinks.write().retain(|(hid, _), _| hid != id);
         let removed = self.hosts.write().remove(id);
         if removed {
             mirror_kernel_host("DELETE", &format!("/v1/domain/remote-hosts/{id}"), None);
@@ -180,10 +182,9 @@ impl HostRegistry {
 
     /// Register live stdin sink for a remote pane (V-H1-LIVE).
     pub fn set_live_sink(&self, host_id: &str, remote_pane_id: &str, sink: LiveInputSink) {
-        self.live_sinks.write().insert(
-            (host_id.to_string(), remote_pane_id.to_string()),
-            sink,
-        );
+        self.live_sinks
+            .write()
+            .insert((host_id.to_string(), remote_pane_id.to_string()), sink);
     }
 
     /// Route bytes to live sink if present. Returns true if delivered.
@@ -210,12 +211,8 @@ impl HostRegistry {
                 .fetch_add(dropped as u64, std::sync::atomic::Ordering::SeqCst);
         }
         // C8 product path: per-session registry for Hosts aggregate badges.
-        self.live_bp.record_inject(
-            host_id,
-            remote_pane_id,
-            buf.len() as u64,
-            dropped as u64,
-        );
+        self.live_bp
+            .record_inject(host_id, remote_pane_id, buf.len() as u64, dropped as u64);
         dropped
     }
 
@@ -266,8 +263,7 @@ impl HostRegistry {
         let remote = att.remote;
         let remaining = self.foreign_by_pane.read();
         let remote_still_attached = remaining.values().any(|f| {
-            f.remote.host_id == remote.host_id
-                && f.remote.remote_pane_id == remote.remote_pane_id
+            f.remote.host_id == remote.host_id && f.remote.remote_pane_id == remote.remote_pane_id
         });
         let host_still_attached = remaining
             .values()
@@ -336,13 +332,9 @@ impl HostRegistry {
     }
 
     pub fn register_foreign(&self, pane_id: uuid::Uuid, remote: RemoteRef) {
-        self.foreign_by_pane.write().insert(
-            pane_id,
-            ForeignAttachment {
-                pane_id,
-                remote,
-            },
-        );
+        self.foreign_by_pane
+            .write()
+            .insert(pane_id, ForeignAttachment { pane_id, remote });
         self.publish_control_plane();
     }
 
@@ -368,7 +360,10 @@ impl HostRegistry {
         );
     }
 
-    pub fn outbound_stats_snapshot(&self, host_id: &str) -> Option<desktop_surface::OutboundStatsDto> {
+    pub fn outbound_stats_snapshot(
+        &self,
+        host_id: &str,
+    ) -> Option<desktop_surface::OutboundStatsDto> {
         let client = self.outbound.get(host_id)?;
         let state = format!("{:?}", client.state());
         let subscribed: Vec<String> = {
@@ -394,6 +389,7 @@ impl HostRegistry {
             subscribe_ok: client.stats.subscribe_ok.load(Ordering::SeqCst),
             write_ok: client.stats.write_ok.load(Ordering::SeqCst),
             resize_ok: client.stats.resize_ok.load(Ordering::SeqCst),
+            resize_suppressed: client.stats.resize_suppressed.load(Ordering::SeqCst),
             fanout_bytes: client.stats.fanout_bytes.load(Ordering::SeqCst),
             reconnect_attempts: client.stats.reconnect_attempts.load(Ordering::SeqCst),
             resubscribe_ok: client.stats.resubscribe_ok.load(Ordering::SeqCst),
@@ -542,7 +538,11 @@ pub fn connect_host(
         "rdg" => HostKind::Rdg,
         _ => HostKind::Remote,
     };
-    let id = format!("{}:{}", if kind == HostKind::Rdg { "rdg" } else { "lan" }, addr);
+    let id = format!(
+        "{}:{}",
+        if kind == HostKind::Rdg { "rdg" } else { "lan" },
+        addr
+    );
     let label = label
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -778,7 +778,10 @@ pub fn attach_host_session(
             pixel_width: 0,
             pixel_height: 0,
         }) {
-            let portable_pty::PtyPair { master, slave: _slave } = pair;
+            let portable_pty::PtyPair {
+                master,
+                slave: _slave,
+            } = pair;
             if let Ok(w) = master.take_writer() {
                 let parser = Arc::new(parking_lot::Mutex::new(
                     crate::engine::parser::PaneParser::new(24, 80, 2000),
@@ -800,13 +803,13 @@ pub fn attach_host_session(
                 // Keep tail after first attach so re-attach can re-seed; reattach
                 // clear is a product option (plan_attach_seed clear_after).
                 let parser_c = handle.parser.clone();
-                let _seeded = state.hosts.history().seed_parser_feed(
-                    &host_id,
-                    &session_id,
-                    |bytes| {
-                        let _ = parser_c.lock().feed_and_diff(bytes);
-                    },
-                );
+                let _seeded =
+                    state
+                        .hosts
+                        .history()
+                        .seed_parser_feed(&host_id, &session_id, |bytes| {
+                            let _ = parser_c.lock().feed_and_diff(bytes);
+                        });
                 let mut map = state.workspaces.write();
                 if let Some(ws) = map.get_mut(&wid) {
                     ws.terminals.insert(pane_id, handle);
@@ -873,7 +876,10 @@ pub fn fanout_live_output(state: &AppState, host_id: &str, session_id: &str, byt
 
 /// Route stdin for a foreign remote_ref (called from write_pty path).
 pub fn route_foreign_input(state: &AppState, rr: &RemoteRef, bytes: &[u8]) -> Result<(), String> {
-    if state.hosts.write_live(&rr.host_id, &rr.remote_pane_id, bytes) {
+    if state
+        .hosts
+        .write_live(&rr.host_id, &rr.remote_pane_id, bytes)
+    {
         Ok(())
     } else {
         Err(format!(
@@ -946,10 +952,7 @@ pub fn pump_outbound_to_fanout(state: &AppState, host_id: &str) -> Result<usize,
 /// Desktop command: drain outbound inbound buffers into foreign pane parsers.
 /// Hosts UI polls this for each Connected host that has an outbound client.
 #[tauri::command]
-pub fn pump_host_output(
-    state: State<'_, AppState>,
-    host_id: String,
-) -> Result<usize, String> {
+pub fn pump_host_output(state: State<'_, AppState>, host_id: String) -> Result<usize, String> {
     pump_outbound_to_fanout(&state, &host_id)
 }
 
@@ -960,8 +963,8 @@ pub fn bind_mock_outbound_and_list(
     host_id: String,
     sessions_json: String,
 ) -> Result<Vec<HostSessionMeta>, String> {
-    let parsed: Vec<RemoteSessionInfo> = serde_json::from_str(&sessions_json)
-        .map_err(|e| format!("sessions_json: {e}"))?;
+    let parsed: Vec<RemoteSessionInfo> =
+        serde_json::from_str(&sessions_json).map_err(|e| format!("sessions_json: {e}"))?;
     // Ensure host record exists
     if state.hosts.get(&host_id).is_none() {
         return Err(format!("unknown host {host_id}; connect_host first"));
@@ -1010,9 +1013,7 @@ pub fn step_host_reconnect(
         .outbound_client(&host_id)
         .ok_or_else(|| format!("no outbound for {host_id}"))?;
     let delay = sup.step_once(&host_id, &client, host_reachable);
-    let phase = sup
-        .phase_str(&host_id)
-        .unwrap_or("None");
+    let phase = sup.phase_str(&host_id).unwrap_or("None");
     let attempt = sup.attempt(&host_id).unwrap_or(0);
     let cancelled = if sup.is_cancelled(&host_id) { 1 } else { 0 };
     let err = sup
@@ -1029,10 +1030,7 @@ pub fn step_host_reconnect(
 }
 
 #[tauri::command]
-pub fn cancel_host_reconnect(
-    state: State<'_, AppState>,
-    host_id: String,
-) -> Result<bool, String> {
+pub fn cancel_host_reconnect(state: State<'_, AppState>, host_id: String) -> Result<bool, String> {
     Ok(state.hosts.reconnect_supervisor().cancel(&host_id))
 }
 
@@ -1270,7 +1268,13 @@ mod tests {
             }),
         );
         assert!(reg.write_live("lan:h", "main", b"echo\n"));
-        assert_eq!(client.stats.write_ok.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            client
+                .stats
+                .write_ok
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
 
         let pane = uuid::Uuid::new_v4();
         reg.register_foreign(

@@ -59,6 +59,7 @@ pub struct OutboundStatsDto {
     pub subscribe_ok: u64,
     pub write_ok: u64,
     pub resize_ok: u64,
+    pub resize_suppressed: u64,
     pub fanout_bytes: u64,
     pub reconnect_attempts: u64,
     pub resubscribe_ok: u64,
