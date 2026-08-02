@@ -105,7 +105,15 @@ export class ScrollbackDecoder {
   decode(pane: { workspaceId: string; paneId: string }, startSeq: number, endSeq: number, bytes: Uint8Array): Promise<Uint8Array | null> {
     const request: ScrollbackWorkerRequest = { type: 'decode', requestId: ++this.requestId, ...pane, startSeq, endSeq, bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
     if (this.disposed || !this.worker || this.pending.size >= MAX_PENDING_DECODES) {
-      return Promise.resolve(!this.disposed && decodeScrollback(request) ? bytes : null);
+      if (this.disposed) return Promise.resolve(null);
+      try {
+        return Promise.resolve(decodeScrollback(request) ? bytes : null);
+      } catch {
+        // Keep the synchronous fallback's contract identical to the worker:
+        // malformed input settles this request as a null page, never throws
+        // out of the caller and never leaves a retained byte buffer behind.
+        return Promise.resolve(null);
+      }
     }
     return new Promise((resolve) => {
       const id = request.requestId;
