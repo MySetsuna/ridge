@@ -221,4 +221,50 @@ mod tests {
             .is_some());
         let _ = fs::remove_file(path);
     }
+
+    #[test]
+    fn process_lock_excludes_a_second_process() {
+        let path = std::env::temp_dir().join(format!(
+            "ridge-kernel-lock-cross-process-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = KernelInstanceGuard::try_acquire_at(&path)
+            .unwrap()
+            .expect("first process owns lock");
+
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "registry::tests::process_lock_probe_child",
+                "--nocapture",
+            ])
+            .env("RIDGE_KERNEL_LOCK_PROBE", &path)
+            .output()
+            .expect("spawn lock probe child");
+        assert!(
+            child.status.success(),
+            "lock probe child failed: {}",
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(String::from_utf8_lossy(&child.stdout).contains("probe-acquired=false"));
+
+        drop(first);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn process_lock_probe_child() {
+        let Some(path) = std::env::var_os("RIDGE_KERNEL_LOCK_PROBE") else {
+            return;
+        };
+        let acquired = KernelInstanceGuard::try_acquire_at(Path::new(&path))
+            .unwrap()
+            .is_some();
+        println!("probe-acquired={acquired}");
+        assert!(!acquired, "child acquired a lock owned by another process");
+    }
 }
