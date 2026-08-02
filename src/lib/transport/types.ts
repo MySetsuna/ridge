@@ -7,7 +7,7 @@ export interface GitStatusResult {
   staged: { name: string; status: string }[];
   unstaged: { name: string; status: string }[];
   untracked: string[];
-  commits: { hash: string; msg: string; time: string; parents?: string[]; refs?: string[] }[];
+  commits: { hash: string; msg: string; time: string; author?: string; parents?: string[]; refs?: string[] }[];
 }
 
 export interface SearchResult {

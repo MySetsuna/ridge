@@ -2136,6 +2136,7 @@ async fn git_status_result(repo_root: String) -> serde_json::Value {
             "hash": c.hash,
             "msg": c.subject,
             "time": c.date,
+            "author": c.author,
             "parents": c.parents,
             "refs": c.refs,
         }))
