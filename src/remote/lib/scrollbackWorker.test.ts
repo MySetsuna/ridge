@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { decodeScrollback, ScrollbackDecoder } from './scrollbackWorker';
+import { describe, expect, it, vi } from 'vitest';
+import { decodeScrollback, installScrollbackWorker, ScrollbackDecoder } from './scrollbackWorker';
 
 const requestBytes = () => new Uint8Array([111, 107]);
 
@@ -23,6 +23,23 @@ class SilentWorker {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
   postMessage(): void {}
+  terminate(): void {}
+}
+
+class ErrorReplyWorker {
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
+  postMessage(message: { requestId?: number }): void {
+    queueMicrotask(() => this.onmessage?.({
+      data: {
+        type: 'error',
+        requestId: message.requestId,
+        workspaceId: 'ws',
+        paneId: 'p',
+        message: 'decode failed',
+      },
+    } as MessageEvent));
+  }
   terminate(): void {}
 }
 
@@ -53,6 +70,49 @@ describe('scrollback worker protocol', () => {
       await expect(result).resolves.toBeNull();
       decoder.dispose();
     });
+  });
+
+  it('settles a worker decode error immediately instead of waiting for timeout', async () => {
+    await withWorker(ErrorReplyWorker as unknown as typeof Worker, async () => {
+      const decoder = new ScrollbackDecoder();
+      const result = decoder.decode({ workspaceId: 'ws', paneId: 'p' }, 1, 2, requestBytes());
+      await expect(result).resolves.toBeNull();
+      decoder.dispose();
+    });
+  });
+
+  it('worker catches decoder faults and emits a request-scoped error', () => {
+    const scope = {
+      onmessage: null as ((event: MessageEvent) => void) | null,
+      postMessage: vi.fn(),
+    };
+    const PreviousDecoder = globalThis.TextDecoder;
+    class ThrowingDecoder {
+      decode(): string { throw new Error('malformed bytes'); }
+    }
+    Object.defineProperty(globalThis, 'TextDecoder', {
+      configurable: true,
+      writable: true,
+      value: ThrowingDecoder,
+    });
+    try {
+      installScrollbackWorker(scope);
+      scope.onmessage?.({
+        data: {
+          type: 'decode', requestId: 42, workspaceId: 'ws', paneId: 'p',
+          startSeq: 1, endSeq: 2, bytes: new ArrayBuffer(1),
+        },
+      } as MessageEvent);
+      expect(scope.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'error', requestId: 42, workspaceId: 'ws', paneId: 'p',
+      }));
+    } finally {
+      Object.defineProperty(globalThis, 'TextDecoder', {
+        configurable: true,
+        writable: true,
+        value: PreviousDecoder,
+      });
+    }
   });
 
   it('cancels only the destroyed pane and keeps other pane work pending', async () => {

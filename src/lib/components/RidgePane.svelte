@@ -1781,17 +1781,21 @@ function onContextMenu(e: MouseEvent) {
 		{ id: 'term-sep1', divider: true },
 		{ id: 'term-select-all', label: tr('workspace.ctxSelectAll'), action: () => manager.selectAll(paneId) },
 		{ id: 'term-clear', label: tr('workspace.ctxClear'), action: () => {
+			// Cut the local stream first: release the wasm scrollback ring and
+			// clear the visible grid before the asynchronous native command
+			// returns. The native path below remains authoritative for PTY/raw
+			// replay state; this local step prevents a slow delta from retaining
+			// old rows or leaving stale pixels visible during the round trip.
+			manager.clearScrollback(paneId);
+			manager.feed(paneId, '\x1b[H\x1b[2J');
 			// Native parser is authoritative in desktop delta mode: one command
 			// clears its grid, emits ScrollbackClear to the wasm mirror, and
 			// removes backend raw replay bytes. Never write ANSI into PTY input.
 			if (isTauri()) {
 				void invoke('clear_pane_terminal', { workspaceId, paneId }).catch(() => {
-					// Teardown race: preserve visible clear even if pane vanished
-					// before the backend command acquired its parser.
-					manager.feed(paneId, '\x1b[H\x1b[2J\x1b[3J');
+					// Teardown race: local clear above remains visible even if the
+					// backend pane vanished before acquiring its parser.
 				});
-			} else {
-				manager.feed(paneId, '\x1b[H\x1b[2J\x1b[3J');
 			}
 		}},
 		// §1.23 (2026-05-05): split + close options restored to right-click
