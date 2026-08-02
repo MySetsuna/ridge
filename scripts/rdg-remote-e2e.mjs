@@ -55,12 +55,30 @@ function log(msg) {
   console.log(`[rdg-remote-e2e] ${msg}`);
 }
 
+function redactForEvidence(value) {
+  if (Array.isArray(value)) return value.map(redactForEvidence);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nested]) => {
+        const sensitive = /(?:token|totp|secret|password|passphrase|authorization|cookie|code)/i.test(key);
+        return [key, sensitive ? '<redacted>' : redactForEvidence(nested)];
+      }),
+    );
+  }
+  if (typeof value === 'string') {
+    return value
+      .replace(/(TOTP\s*[:=]\s*)\d{6}/gi, '$1<redacted>')
+      .replace(/([?&](?:token|totp|code)=)[^&\s]+/gi, '$1<redacted>');
+  }
+  return value;
+}
+
 function fail(msg, extra = {}) {
   const body = {
     ok: false,
     error: msg,
     at: new Date().toISOString(),
-    ...extra,
+    ...redactForEvidence(extra),
   };
   mkdirSync(EVIDENCE_DIR, { recursive: true });
   writeFileSync(join(EVIDENCE_DIR, 'last-result.json'), JSON.stringify(body, null, 2));
@@ -641,7 +659,7 @@ async function main() {
     // Accept only the process and port spawned by this run.  This is the
     // ownership fence that makes parallel probes and stale status files safe.
     status = await waitStatus(45_000, port, hostHandle.pid);
-    log(`host up pid=${status.pid} totp=${status.totp} url=${status.url_loopback}`);
+    log(`host up pid=${status.pid} totp=<redacted> url=${status.url_loopback}`);
     // 再确认 TCP（防 status 误报）
     await waitTcp(status.port, 10_000);
 
@@ -718,9 +736,9 @@ async function main() {
       },
       port,
       url,
-      status,
-      results,
-      hostLogTail,
+      status: redactForEvidence(status),
+      results: redactForEvidence(results),
+      hostLogTail: redactForEvidence(hostLogTail),
     };
     writeFileSync(join(EVIDENCE_DIR, 'last-result.json'), JSON.stringify(evidence, null, 2));
     if (!allOk) fail('browser matrix failed', { results });
