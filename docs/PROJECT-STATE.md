@@ -40,8 +40,8 @@ the complete Rust library suite is 229 passed.
 
 Iteration-85 evidence is archived in
 `docs/iterations/CONTRACT-iteration-85.md`. Release `v0.1.33` is formal with 12
-assets (`30726725069`), Remote artifact `0.1.33+g0264db5` is active
-(`30728971548`), and ridge-cloud deploy `30727590385` plus health `ok=true`
+assets (`30726725069`), Remote artifact `0.1.33+gc03675b` is active
+(`30729993458`), and ridge-cloud deploy `30727590385` plus health `ok=true`
 are green. Physical-phone, public-soak, WebView2-heap, and dual-window /
 dual-Host gates remain pending; no external proof is inferred from local CDP.
 LAN matrix evidence is `.iteration/artifacts/rdg-remote-e2e/last-result.json`;
