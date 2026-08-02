@@ -275,3 +275,9 @@ and real `scripts/kernel-host-smoke.ps1` (`ALL SMOKE PASSED`) are green.
 This is a shell-adapter safety/convergence slice, not a claim that desktop
 AppState, PTY runtime, window claims, or filesystem root authority have fully
 migrated into the kernel.
+
+Remote/cloud refresh closure (2026-08-02, kernel adapter): workflow
+`30746141772` completed successfully from `ef70b3c` and activated artifact
+`0.1.37+gef70b3c` (233 files / 21.78 MiB). Cloud health returned HTTP 200.
+The desktop `v0.1.37` Release and version remain unchanged; the follow-up
+`65700ea` only updates iteration records.
