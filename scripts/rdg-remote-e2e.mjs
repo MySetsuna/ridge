@@ -35,8 +35,13 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
+// Keep concurrent probes isolated.  A shared status path lets a stale/parallel
+// rdg process overwrite the URL while this run is polling it (the browser then
+// connects to the wrong port and the test reports a misleading connection
+// refusal).  Explicit paths remain supported for operators that need them.
 const STATUS_FILE = resolve(
-  process.env.RIDGE_LAN_STATUS_FILE || join(ROOT, '.ridge', 'lan-host-status.json'),
+  process.env.RIDGE_LAN_STATUS_FILE ||
+    join(ROOT, '.ridge', `lan-host-status-e2e-${process.pid}.json`),
 );
 const EVIDENCE_DIR = resolve(ROOT, '.iteration', 'artifacts', 'rdg-remote-e2e');
 const args = new Set(process.argv.slice(2));
@@ -175,15 +180,26 @@ function readStatus() {
   }
 }
 
-async function waitStatus(timeoutMs = 45_000) {
+async function waitStatus(timeoutMs = 45_000, expectedPort = 0, expectedPid = 0) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const st = readStatus();
-    if (st?.ready === true && st?.totp && st?.port && st?.url_loopback) return st;
+    if (
+      st?.ready === true &&
+      st?.totp &&
+      st?.port &&
+      st?.url_loopback &&
+      (!expectedPort || Number(st.port) === expectedPort) &&
+      (!expectedPid || Number(st.pid) === expectedPid)
+    ) {
+      return st;
+    }
     await sleep(200);
   }
   fail('timeout waiting for ready lan-host-status.json', {
     statusFile: STATUS_FILE,
+    expectedPort,
+    expectedPid,
     last: readStatus(),
   });
 }
@@ -243,7 +259,14 @@ function spawnHost(rdgBin, port) {
 
 async function killHost(handle) {
   const pid = handle?.pid || handle?.child?.pid;
-  if (!pid) return;
+  if (!pid) {
+    try {
+      unlinkSync(STATUS_FILE);
+    } catch {
+      /* ok */
+    }
+    return;
+  }
   try {
     if (process.platform === 'win32') {
       await new Promise((resolveKill) => {
@@ -342,12 +365,38 @@ async function runOneClient(browser, url, getTotp, profile) {
   const page = await context.newPage();
   const browserErrors = [];
   const wsUrls = [];
+  const rpcSent = new Map();
+  const rpcReceived = new Map();
+  const frameMethodsSent = new Map();
+  const frameMethodsReceived = new Map();
+  const recordRpcMethods = (payload, target) => {
+    const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
+    // Keep only method counts; never persist frame payloads/tokens in evidence.
+    for (const match of text.matchAll(/"(?:method|cmd)"\s*:\s*"([^"\\]+)"/g)) {
+      const method = match[1];
+      target.set(method, (target.get(method) || 0) + 1);
+    }
+  };
   page.on('pageerror', (e) => browserErrors.push(e.message));
   page.on('console', (msg) => {
     if (msg.type() === 'error') browserErrors.push(msg.text());
   });
   page.on('websocket', (ws) => {
     wsUrls.push(ws.url().replace(/([?&](?:token|code)=)[^&]+/g, '$1<redacted>'));
+    ws.on('framesent', ({ payload }) => {
+      recordRpcMethods(payload, frameMethodsSent);
+      for (const method of ['write_to_pty', 'resize_pane']) {
+        const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
+        if (text.includes(method)) rpcSent.set(method, (rpcSent.get(method) || 0) + 1);
+      }
+    });
+    ws.on('framereceived', ({ payload }) => {
+      recordRpcMethods(payload, frameMethodsReceived);
+      for (const method of ['write_to_pty', 'resize_pane']) {
+        const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
+        if (text.includes(method)) rpcReceived.set(method, (rpcReceived.get(method) || 0) + 1);
+      }
+    });
   });
 
   try {
@@ -470,6 +519,50 @@ async function runOneClient(browser, url, getTotp, profile) {
     }
 
     // 截图证据
+    // Exercise the real browser input and measured-resize path.  Method
+    // counts come from WebSocket frames, so a rendered shell without PTY/RPC
+    // traffic cannot pass this smoke.
+    const input = page.locator('.hidden-input').first();
+    const inputAvailable = (await input.count()) > 0;
+    if (inputAvailable) {
+      await input.focus().catch(() => {});
+    } else {
+      // Desktop builds may park the textarea only after the first canvas
+      // pointer focus.  Drive that real focus path instead of silently
+      // skipping input coverage when the sink is not attached yet.
+      await page.locator('canvas').first().click().catch(() => {});
+    }
+    await page.keyboard.type(`echo RDG_E2E_${profile.name}`);
+    await page.keyboard.press('Enter');
+    await sleep(700);
+    const resizedViewport = {
+      width: profile.viewport.width + 37,
+      height: profile.viewport.height,
+    };
+    await page.setViewportSize(resizedViewport);
+    await sleep(700);
+    const inputSent = (rpcSent.get('write_to_pty') || 0) > 0;
+    const resizeSent = (rpcSent.get('resize_pane') || 0) > 0;
+    const rpc = {
+      inputAvailable,
+      inputSent,
+      resizeSent,
+      sent: Object.fromEntries(rpcSent),
+      received: Object.fromEntries(rpcReceived),
+      frameMethodsSent: Object.fromEntries(frameMethodsSent),
+      frameMethodsReceived: Object.fromEntries(frameMethodsReceived),
+    };
+    if (!inputSent || !resizeSent) {
+      return {
+        name: profile.name,
+        ok: false,
+        detail: `control path incomplete input=${inputSent} resize=${resizeSent}`,
+        browserErrors: browserErrors.slice(-6),
+        wsUrls,
+        rpc,
+      };
+    }
+
     mkdirSync(EVIDENCE_DIR, { recursive: true });
     const shot = join(EVIDENCE_DIR, `${profile.name}.png`);
     await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
@@ -480,6 +573,7 @@ async function runOneClient(browser, url, getTotp, profile) {
       detail: `canvas=${hasCanvas} tree=${hasTree} ws=${hasWs}`,
       browserErrors: browserErrors.slice(-4),
       wsUrls,
+      rpc,
       screenshot: shot,
     };
   } catch (e) {
@@ -536,7 +630,9 @@ async function main() {
   let results = [];
   let status = null;
   try {
-    status = await waitStatus(45_000);
+    // Accept only the process and port spawned by this run.  This is the
+    // ownership fence that makes parallel probes and stale status files safe.
+    status = await waitStatus(45_000, port, hostHandle.pid);
     log(`host up pid=${status.pid} totp=${status.totp} url=${status.url_loopback}`);
     // 再确认 TCP（防 status 误报）
     await waitTcp(status.port, 10_000);

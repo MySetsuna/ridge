@@ -25,8 +25,11 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from '@playwright/test';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
+// Do not share the generic status file with another LAN probe.  A parallel
+// host can otherwise replace the URL between readiness polling and navigation.
 const STATUS_FILE = resolve(
-  process.env.RIDGE_LAN_STATUS_FILE || join(ROOT, '.ridge', 'lan-host-status.json'),
+  process.env.RIDGE_LAN_STATUS_FILE ||
+    join(ROOT, '.ridge', `lan-host-status-mobile-e2e-${process.pid}.json`),
 );
 const EVIDENCE_FILE = resolve(
   process.env.RIDGE_KEYBOARD_EVIDENCE ||
@@ -59,11 +62,20 @@ async function findPort() {
   throw new Error('no browser-safe port available');
 }
 
-async function waitReady(timeoutMs = 45_000) {
+async function waitReady(timeoutMs = 45_000, expectedPort = 0, expectedPid = 0) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const status = readStatus();
-    if (status?.ready && status.port && status.url_loopback && status.totp) return status;
+    if (
+      status?.ready &&
+      status.port &&
+      status.url_loopback &&
+      status.totp &&
+      (!expectedPort || Number(status.port) === expectedPort) &&
+      (!expectedPid || Number(status.pid) === expectedPid)
+    ) {
+      return status;
+    }
     await sleep(200);
   }
   throw new Error('timed out waiting for LAN host readiness');
@@ -172,7 +184,7 @@ async function main() {
   const browserErrors = [];
   let result;
   try {
-    const status = await waitReady();
+    const status = await waitReady(45_000, port, host.pid);
     const url = String(status.url_loopback).replace(/\/$/, '');
     browser = await chromium.launch({
       headless: true,
@@ -392,6 +404,11 @@ async function main() {
     await context?.close().catch(() => {});
     await browser?.close().catch(() => {});
     await killTree(host.pid);
+    try {
+      unlinkSync(STATUS_FILE);
+    } catch {
+      /* ok */
+    }
   }
   writeFileSync(EVIDENCE_FILE, `${JSON.stringify(result, null, 2)}\n`);
   console.log(JSON.stringify({ evidence: EVIDENCE_FILE, ...result }));
