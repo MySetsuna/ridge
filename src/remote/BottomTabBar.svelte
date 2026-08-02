@@ -91,7 +91,10 @@
   /* §offscreen-fix: trim horizontal footprint so 6 icon buttons + the workspace
      trigger fit within narrow phone widths instead of overflowing the right edge
      (the WorkspaceTree popup is viewport-anchored as a belt-and-suspenders). */
-  .actionbar{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));background:var(--rg-surface);border-top:1px solid var(--rg-border-bright);flex-shrink:0;min-height:48px}
+  /* Keep the bar as the final flex item in both browser and standalone PWA
+     viewports.  `box-sizing:border-box` makes the safe-area inset part of
+     the bar itself instead of creating a second visual strip below it. */
+  .actionbar{box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 8px env(safe-area-inset-bottom,0px);background:var(--rg-surface);border-top:1px solid var(--rg-border-bright);flex-shrink:0;align-self:stretch;margin-top:auto;min-height:48px}
   .group{display:flex;align-items:center;gap:4px;flex-shrink:0}
   /* §offscreen-fix: the icon cluster keeps its size (flex-shrink:0); when the bar
      runs out of room it's the workspace trigger that shrinks (its label
@@ -102,6 +105,7 @@
   .ctrl-btn.active{color:var(--rg-accent);background:color-mix(in srgb, var(--rg-accent) 12%, transparent);border-color:color-mix(in srgb, var(--rg-accent) 40%, transparent)}
   .lang-label{font-size:10px;font-weight:600;margin-left:2px}
   @media (pointer: coarse) {
+    .actionbar{min-height:calc(56px + env(safe-area-inset-bottom,0px))}
     .ctrl-btn{width:44px;height:44px}
   }
 </style>
