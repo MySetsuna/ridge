@@ -378,7 +378,10 @@ fn run_command_with_timeout(
             let _ = rx.recv_timeout(Duration::from_secs(5));
             note_active_child_leave();
             GIT_STALE_ABORTS.fetch_add(1, Ordering::SeqCst);
-            return Err(io::Error::new(io::ErrorKind::Interrupted, GIT_SUPERSEDED_ERR));
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                GIT_SUPERSEDED_ERR,
+            ));
         }
     }
 
@@ -413,7 +416,10 @@ fn run_command_with_timeout(
             // A newer request took over (and likely killed us). Surface the
             // supersede marker instead of a confusing exit-status error.
             GIT_STALE_ABORTS.fetch_add(1, Ordering::SeqCst);
-            return Err(io::Error::new(io::ErrorKind::Interrupted, GIT_SUPERSEDED_ERR));
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                GIT_SUPERSEDED_ERR,
+            ));
         }
     }
     out
@@ -1155,52 +1161,52 @@ pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
             parse_porcelain_v1(&stdout);
         let branch = branch_from_status.or_else(|| get_current_branch(repo_path));
 
-    // Two parallel-style numstat calls: working-tree (index ↔ tree) for the
-    // unstaged "更改" group, and `--cached` (HEAD ↔ index) for the staged
-    // group. They're separate because staged and unstaged hunks don't share
-    // a base — staging a partial change should still let the staged column
-    // show its own +N/-N. Each is one process spawn; an order of magnitude
-    // cheaper than the per-file path the modal used to take.
-    let unstaged_counts = git_cmd()
-        .args(["--no-pager", "diff", "--numstat", "--"])
-        .current_dir(repo_path)
-        .git_output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(o.stdout)
-            } else {
-                None
+        // Two parallel-style numstat calls: working-tree (index ↔ tree) for the
+        // unstaged "更改" group, and `--cached` (HEAD ↔ index) for the staged
+        // group. They're separate because staged and unstaged hunks don't share
+        // a base — staging a partial change should still let the staged column
+        // show its own +N/-N. Each is one process spawn; an order of magnitude
+        // cheaper than the per-file path the modal used to take.
+        let unstaged_counts = git_cmd()
+            .args(["--no-pager", "diff", "--numstat", "--"])
+            .current_dir(repo_path)
+            .git_output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(o.stdout)
+                } else {
+                    None
+                }
+            })
+            .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
+            .unwrap_or_default();
+        let staged_counts = git_cmd()
+            .args(["--no-pager", "diff", "--cached", "--numstat", "--"])
+            .current_dir(repo_path)
+            .git_output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(o.stdout)
+                } else {
+                    None
+                }
+            })
+            .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
+            .unwrap_or_default();
+        for f in &mut changes {
+            if let Some(&(a, d)) = unstaged_counts.get(&f.path) {
+                f.additions = a;
+                f.deletions = d;
             }
-        })
-        .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
-        .unwrap_or_default();
-    let staged_counts = git_cmd()
-        .args(["--no-pager", "diff", "--cached", "--numstat", "--"])
-        .current_dir(repo_path)
-        .git_output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(o.stdout)
-            } else {
-                None
+        }
+        for f in &mut staged {
+            if let Some(&(a, d)) = staged_counts.get(&f.path) {
+                f.additions = a;
+                f.deletions = d;
             }
-        })
-        .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
-        .unwrap_or_default();
-    for f in &mut changes {
-        if let Some(&(a, d)) = unstaged_counts.get(&f.path) {
-            f.additions = a;
-            f.deletions = d;
         }
-    }
-    for f in &mut staged {
-        if let Some(&(a, d)) = staged_counts.get(&f.path) {
-            f.additions = a;
-            f.deletions = d;
-        }
-    }
 
         Ok(ScmRepoStatus {
             repo_root,
@@ -1233,7 +1239,10 @@ fn git_stage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String> {
             cmd.arg(p);
         }
     }
-    let out = cmd.current_dir(path).git_output().map_err(|e| e.to_string())?;
+    let out = cmd
+        .current_dir(path)
+        .git_output()
+        .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -1271,7 +1280,10 @@ fn git_unstage_sync(repo_root: String, paths: Vec<String>) -> Result<(), String>
             cmd.arg(p);
         }
     }
-    let out = cmd.current_dir(path).git_output().map_err(|e| e.to_string())?;
+    let out = cmd
+        .current_dir(path)
+        .git_output()
+        .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -1350,7 +1362,10 @@ fn git_commit_sync(repo_root: String, message: String, amend: Option<bool>) -> R
     if amend.unwrap_or(false) {
         cmd.arg("--amend");
     }
-    let out = cmd.current_dir(path).git_output().map_err(|e| e.to_string())?;
+    let out = cmd
+        .current_dir(path)
+        .git_output()
+        .map_err(|e| e.to_string())?;
     if !out.status.success() {
         let s = String::from_utf8_lossy(&out.stderr).to_string();
         return Err(if s.is_empty() {
@@ -1467,7 +1482,10 @@ fn git_checkout_sync(
             cmd.args(["checkout", &branch]);
         }
     }
-    let out = cmd.current_dir(path).git_output().map_err(|e| e.to_string())?;
+    let out = cmd
+        .current_dir(path)
+        .git_output()
+        .map_err(|e| e.to_string())?;
     if !out.status.success() {
         let s = String::from_utf8_lossy(&out.stderr).to_string();
         return Err(if s.is_empty() {
@@ -2188,7 +2206,10 @@ fn git_create_tag_sync(
     if let Some(h) = hash.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
         cmd.arg(h);
     }
-    let out = cmd.current_dir(path).git_output().map_err(|e| e.to_string())?;
+    let out = cmd
+        .current_dir(path)
+        .git_output()
+        .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -2313,7 +2334,10 @@ pub fn git_diff_file_sync(
     }
     cmd.arg("--");
     cmd.arg(&path);
-    let out = cmd.current_dir(repo).git_output().map_err(|e| e.to_string())?;
+    let out = cmd
+        .current_dir(repo)
+        .git_output()
+        .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -2437,7 +2461,10 @@ pub fn git_file_log_sync(
         cmd.arg(format!("-n{n}"));
     }
     cmd.arg("--").arg(&path);
-    let out = cmd.current_dir(repo).git_output().map_err(|e| e.to_string())?;
+    let out = cmd
+        .current_dir(repo)
+        .git_output()
+        .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -2920,7 +2947,9 @@ mod guard_tests {
         };
 
         // 串行化：全局活跃计数断言不能与其他真子进程测试并行（见 git_child_test_lock）。
-        let _serial = git_child_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = git_child_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let before = git_active_child_count();
         let kills_before = git_timeout_kill_count();
         let start = Instant::now();
@@ -3056,6 +3085,12 @@ mod guard_tests {
 
     #[tokio::test]
     async fn get_scm_status_real_git_path_smoke() {
+        // This test reaches the real guarded child path. Serialize it with
+        // timeout/supersede tests so the process-wide active-child assertion
+        // cannot observe a sibling test's live git process.
+        let _serial = git_child_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Drive the real shipped entry (not a reimplementation): init a temp
         // repo with the system git binary, then call get_scm_status.
         let dir = std::env::temp_dir().join(format!(
@@ -3155,7 +3190,9 @@ mod supersede_tests {
 
     #[test]
     fn newer_generation_tree_kills_live_child_and_frees_it_fast() {
-        let _serial = git_child_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = git_child_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let script = hang_script("kill");
         let slot = "t:kill".to_string();
         let generation = git_slot_begin(&slot);
@@ -3214,7 +3251,9 @@ mod supersede_tests {
     fn stale_registration_kills_child_before_use() {
         // A task that only reaches its spawn AFTER being superseded must not
         // keep its child: registration fails → immediate reclaim.
-        let _serial = git_child_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = git_child_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let script = hang_script("stale");
         let slot = "t:stale".to_string();
         let generation = git_slot_begin(&slot);
@@ -3365,20 +3404,33 @@ mod scan_tests {
 
     #[test]
     fn commit_and_push_real_temp_repo() {
+        // Commit/push use the same real child guard; keep them out of the
+        // active-child lifecycle tests' observation window.
+        let _serial = git_child_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Exercise the same guarded command paths used by the interactive Git
         // UI, including a real local bare remote. This is intentionally local:
         // no credentials, network, or user repository are touched.
         let td = TempDir::new("commit-push");
         let repo = td.mkdir("repo");
         let bare = td.path.join("origin.git");
-        run_git_simple(td.path.to_string_lossy().as_ref(), &["init", "--bare", "origin.git"])
-            .expect("create bare remote");
-        run_git_simple(repo.to_string_lossy().as_ref(), &["init"])
-            .expect("create working repo");
-        run_git_simple(repo.to_string_lossy().as_ref(), &["config", "user.email", "test@example.invalid"])
-            .expect("configure email");
-        run_git_simple(repo.to_string_lossy().as_ref(), &["config", "user.name", "Ridge Test"])
-            .expect("configure name");
+        run_git_simple(
+            td.path.to_string_lossy().as_ref(),
+            &["init", "--bare", "origin.git"],
+        )
+        .expect("create bare remote");
+        run_git_simple(repo.to_string_lossy().as_ref(), &["init"]).expect("create working repo");
+        run_git_simple(
+            repo.to_string_lossy().as_ref(),
+            &["config", "user.email", "test@example.invalid"],
+        )
+        .expect("configure email");
+        run_git_simple(
+            repo.to_string_lossy().as_ref(),
+            &["config", "user.name", "Ridge Test"],
+        )
+        .expect("configure name");
         run_git_simple(repo.to_string_lossy().as_ref(), &["branch", "-M", "main"])
             .expect("select main branch");
         std::fs::write(repo.join("README.md"), "interactive git\n").expect("write fixture");
@@ -3402,7 +3454,11 @@ mod scan_tests {
             &["rev-parse", "refs/heads/main"],
         )
         .expect("read pushed remote head");
-        assert_eq!(remote_head.trim().len(), 40, "unexpected remote head: {remote_head}");
+        assert_eq!(
+            remote_head.trim().len(),
+            40,
+            "unexpected remote head: {remote_head}"
+        );
 
         // Advance the remote from a second local clone, then verify the
         // interactive push returns a deterministic failure instead of
@@ -3413,21 +3469,35 @@ mod scan_tests {
         )
         .expect("clone bare remote");
         let other = td.path.join("other");
-        run_git_simple(other.to_string_lossy().as_ref(), &["config", "user.email", "test@example.invalid"])
-            .expect("configure clone email");
-        run_git_simple(other.to_string_lossy().as_ref(), &["config", "user.name", "Ridge Test"])
-            .expect("configure clone name");
+        run_git_simple(
+            other.to_string_lossy().as_ref(),
+            &["config", "user.email", "test@example.invalid"],
+        )
+        .expect("configure clone email");
+        run_git_simple(
+            other.to_string_lossy().as_ref(),
+            &["config", "user.name", "Ridge Test"],
+        )
+        .expect("configure clone name");
         std::fs::write(other.join("remote.txt"), "remote advance\n").expect("write remote fixture");
         run_git_simple(other.to_string_lossy().as_ref(), &["add", "remote.txt"])
             .expect("stage remote fixture");
-        git_commit_sync(other.to_string_lossy().into_owned(), "remote advance".to_string(), None)
-            .expect("commit remote advance");
+        git_commit_sync(
+            other.to_string_lossy().into_owned(),
+            "remote advance".to_string(),
+            None,
+        )
+        .expect("commit remote advance");
         git_push_sync(other.to_string_lossy().into_owned(), None).expect("push remote advance");
         std::fs::write(repo.join("local.txt"), "local divergence\n").expect("write local fixture");
         run_git_simple(repo.to_string_lossy().as_ref(), &["add", "local.txt"])
             .expect("stage local fixture");
-        git_commit_sync(repo.to_string_lossy().into_owned(), "local divergence".to_string(), None)
-            .expect("commit local divergence");
+        git_commit_sync(
+            repo.to_string_lossy().into_owned(),
+            "local divergence".to_string(),
+            None,
+        )
+        .expect("commit local divergence");
         assert!(
             git_push_sync(repo.to_string_lossy().into_owned(), None).is_err(),
             "non-fast-forward push must fail closed"
