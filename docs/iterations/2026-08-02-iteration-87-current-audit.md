@@ -23,7 +23,7 @@ facts only; NotebookLM is strategy input, not release or runtime evidence.
 | Agent status rail / pane border | `SidebarTeamRoster` keeps the status left rail; desktop `SplitContainer` and Remote `TerminalCanvas` paint a border only from transient waiting/stopped intervention state; focus, claim, stdin or resize clears it; `SplitContainer.test.ts` and `TerminalCanvas.test.ts` guard the contract | Implemented locally; normal running/idle panes have no border; physical mobile display still needs device evidence |
 | Agent groups/history | Remote Members/Groups/History tabs, workspace-scoped group persistence, Agent-keyed history with `sessionId`/`cwd` | Implemented locally; real LAN/cloud mobile parity and structured resume remain external gates |
 | Query-managed Remote data | `remoteQueries.ts` stable session/workspace/path keys, stale cache, single-flight and invalidation; sidebar file/Git/search/diff use it | Implemented locally |
-| Git commit/push/Graph | capability-gated mutation surface with confirmation/cancel/progress; shared graph renderer; Remote transport preserves refs/branch/HEAD and selected commit author/date/parents; Agent group deletion is confirmed and persisted | Implemented locally; authenticated Remote push and public artifact republish remain external gates |
+| Git commit/push/Graph | capability-gated mutation surface with confirmation/cancel/progress; shared graph renderer; Remote transport preserves refs/branch/HEAD and selected commit author/date/parents; real temp-repo commit/push and non-fast-forward rejection now exercise the shared Rust handlers | Implemented locally; authenticated Remote push and public artifact republish remain external gates |
 | PWA | `pwaInstallScope.test.ts` forbids app install button and `beforeinstallprompt` ownership; manifest/SW/standalone/scope remain; drawer safe-area contract is tested | Implemented per latest user correction; browser-native installation is intentionally out of business E2E |
 | Mobile `runtime.lastError` | Source audit found no Chrome Extension Messaging API; service worker uses standard `clients.matchAll`/`Client.postMessage`; controlled LAN browser matrix now explicitly disables extensions and component extensions | No business-code fix is authorized; controlled clean-profile run is green, but affected-phone source URL and one-by-one extension A/B remain required |
 | Kernel singleton | `KernelInstanceGuard` uses process-lifetime OS lock; `registry.rs` child-process probe proves a second process cannot acquire the lock (`c692781`) | Deterministic guard implemented; real shell death/deep-root no-Tauri chain remains unverified |
@@ -105,6 +105,12 @@ with `browserErrors=[]`, real `write_to_pty`/`resize_pane` frames and
 project path in a no-extension profile; it does not identify the affected
 physical phone's injector, so no third-party or business-code attribution is
 claimed.
+
+Git mutation evidence update: `packages/ridge-core/src/commands/git.rs` now
+guards a real temporary-repository test through the same `git_commit_sync` and
+`git_push_sync` handlers used by the UI. It verifies local bare-remote push
+success and a later non-fast-forward push failure; no user repository or
+network credential is used. Authenticated Remote Git push remains external.
 
 Release gate: the first `v0.1.36` attempt failed before the matrix because
 `Cargo.lock` had an invalid `tracing-core` resolution; the tag was removed,

@@ -3362,4 +3362,75 @@ mod scan_tests {
         let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(5)).await;
         assert_eq!(out, vec![norm(&deep)]);
     }
+
+    #[test]
+    fn commit_and_push_real_temp_repo() {
+        // Exercise the same guarded command paths used by the interactive Git
+        // UI, including a real local bare remote. This is intentionally local:
+        // no credentials, network, or user repository are touched.
+        let td = TempDir::new("commit-push");
+        let repo = td.mkdir("repo");
+        let bare = td.path.join("origin.git");
+        run_git_simple(td.path.to_string_lossy().as_ref(), &["init", "--bare", "origin.git"])
+            .expect("create bare remote");
+        run_git_simple(repo.to_string_lossy().as_ref(), &["init"])
+            .expect("create working repo");
+        run_git_simple(repo.to_string_lossy().as_ref(), &["config", "user.email", "test@example.invalid"])
+            .expect("configure email");
+        run_git_simple(repo.to_string_lossy().as_ref(), &["config", "user.name", "Ridge Test"])
+            .expect("configure name");
+        run_git_simple(repo.to_string_lossy().as_ref(), &["branch", "-M", "main"])
+            .expect("select main branch");
+        std::fs::write(repo.join("README.md"), "interactive git\n").expect("write fixture");
+        run_git_simple(repo.to_string_lossy().as_ref(), &["add", "README.md"])
+            .expect("stage fixture");
+        git_commit_sync(
+            repo.to_string_lossy().into_owned(),
+            "initial fixture".to_string(),
+            None,
+        )
+        .expect("commit through shared handler");
+        run_git_simple(
+            repo.to_string_lossy().as_ref(),
+            &["remote", "add", "origin", bare.to_string_lossy().as_ref()],
+        )
+        .expect("configure local bare remote");
+        git_push_sync(repo.to_string_lossy().into_owned(), Some(true))
+            .expect("push through shared handler");
+        let remote_head = run_git_simple(
+            bare.to_string_lossy().as_ref(),
+            &["rev-parse", "refs/heads/main"],
+        )
+        .expect("read pushed remote head");
+        assert_eq!(remote_head.trim().len(), 40, "unexpected remote head: {remote_head}");
+
+        // Advance the remote from a second local clone, then verify the
+        // interactive push returns a deterministic failure instead of
+        // silently overwriting a non-fast-forward update.
+        run_git_simple(
+            td.path.to_string_lossy().as_ref(),
+            &["clone", bare.to_string_lossy().as_ref(), "other"],
+        )
+        .expect("clone bare remote");
+        let other = td.path.join("other");
+        run_git_simple(other.to_string_lossy().as_ref(), &["config", "user.email", "test@example.invalid"])
+            .expect("configure clone email");
+        run_git_simple(other.to_string_lossy().as_ref(), &["config", "user.name", "Ridge Test"])
+            .expect("configure clone name");
+        std::fs::write(other.join("remote.txt"), "remote advance\n").expect("write remote fixture");
+        run_git_simple(other.to_string_lossy().as_ref(), &["add", "remote.txt"])
+            .expect("stage remote fixture");
+        git_commit_sync(other.to_string_lossy().into_owned(), "remote advance".to_string(), None)
+            .expect("commit remote advance");
+        git_push_sync(other.to_string_lossy().into_owned(), None).expect("push remote advance");
+        std::fs::write(repo.join("local.txt"), "local divergence\n").expect("write local fixture");
+        run_git_simple(repo.to_string_lossy().as_ref(), &["add", "local.txt"])
+            .expect("stage local fixture");
+        git_commit_sync(repo.to_string_lossy().into_owned(), "local divergence".to_string(), None)
+            .expect("commit local divergence");
+        assert!(
+            git_push_sync(repo.to_string_lossy().into_owned(), None).is_err(),
+            "non-fast-forward push must fail closed"
+        );
+    }
 }
