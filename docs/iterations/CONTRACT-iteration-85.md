@@ -102,7 +102,8 @@ binary protocol or require a version increment.
 
 - Release workflow `30726725069` passed its test gate and all four platform
   jobs. Formal `v0.1.33` is published with 12 verified assets.
-- Remote artifact workflow `30727576307` activated `0.1.33+gc07f931`.
+- Remote artifact workflow `30728971548` activated `0.1.33+g0264db5`, which
+  contains the mobile touch-selection mapping fix.
 - ridge-cloud deploy `30727590385` completed successfully; production health
   returned `ok=true`, version `0.0.7`.
 
