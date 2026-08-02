@@ -1087,3 +1087,17 @@ the formal GitHub Release has 12 matching installer/CLI assets. Remote workflow
 Cloud health returned HTTP 200 (`version=0.0.7`). Final clean-worktree and
 `HEAD == origin/main` gates passed. Physical/public/WebView2/dual-window and
 full Kernel-authority evidence remain open as documented residuals.
+
+### Iteration 90 sidebar request-lifecycle closure (2026-08-03)
+
+Commit `d7c614d` adds generation and AbortSignal fences to the shared file
+tree, search, and file/diff viewer. Remote Query observers now carry a signal
+without cancelling a shared QueryClient request needed by another observer;
+destroyed or superseded components cannot commit stale results. Focused tests
+passed 17/17, the full suite passed 1468 tests with one skip, and `pnpm check`
+reported 0 errors and 0 warnings.
+
+This is a new publish candidate after `v0.1.43`; it is not part of that
+release. Residual physical-phone, WebView2 heap, public WebRTC/authenticated
+Git, dual-window/Host singleton, production branch identity, protocol-level
+host cancellation, and full Kernel-authority evidence remain open.
