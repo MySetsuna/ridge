@@ -1,7 +1,7 @@
 # Iteration 95 — Terminal link navigation and wrapped-copy correctness
 
 Date: 2026-08-03  
-Status: runtime candidate; release pending
+Status: closed by v0.1.49 publication
 
 ## Scope
 
@@ -50,7 +50,7 @@ Fix the installed/Desktop terminal link path for three reported behaviours:
 
 ## Commit / release
 
-Runtime commit: `06f5f74` (`fix(terminal): preserve wrapped links and show hover underline`), pushed to `origin/main`. It follows the already-tagged `v0.1.48`; it must ship as the next clean versioned release with matching Desktop, Remote, and Cloud evidence. No release claim is made until all assets and publication checks pass.
+Runtime commit: `06f5f74` (`fix(terminal): preserve wrapped links and show hover underline`), pushed to `origin/main`. Version commit `c163ed4` aligned all four version sources to `0.1.49`; annotated tag `v0.1.49` passed the clean release gate and its matrix produced 12 matching assets. Remote/Cloud workflow `30771421397` succeeded from the exact tag and Cloud health returned HTTP 200 (`version=0.0.7`).
 
 ## Residual gates
 

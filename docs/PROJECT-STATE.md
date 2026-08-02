@@ -1217,3 +1217,13 @@ and a successful WASM rebuild. Detailed record:
 This candidate follows `v0.1.48` and requires a clean `v0.1.49` Desktop
 release plus Remote/Cloud publication. Physical/WebView2 visual confirmation
 and earlier public/dual-window/branch/Kernel residuals remain open.
+
+### Iteration 95 publication closure (2026-08-03)
+
+`v0.1.49` is formal with 12 matching Desktop installer/CLI assets; release
+workflow `30770188146` passed test, Linux, macOS ARM/x64, and Windows.
+Remote/Cloud workflow `30771421397` succeeded from exact tag commit
+`c163ed4`, and Cloud health returned HTTP 200 (`version=0.0.7`). The wrapped
+link/copy and Ctrl/Cmd-hover underline slice is closed. Physical WebView2
+visual confirmation and the previously listed public/dual-window/branch/
+Kernel residuals remain environment-gated and are not falsely marked done.
