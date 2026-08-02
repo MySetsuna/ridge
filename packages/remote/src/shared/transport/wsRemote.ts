@@ -1489,12 +1489,24 @@ export class RemoteConnection implements RemoteLink {
   }
 
   async closePane(pane: PaneRef): Promise<boolean> {
+    // Stop writes/resizes before asking the host to destroy the PTY. Otherwise
+    // a late keyboard/layout event can enqueue against a pane that is already
+    // being torn down, producing `Pane not found` and a retry storm.
+    this.paneScheduler.retire(pane);
+    const key = paneRefKey(pane);
     const data = await this._sendAndWait({
       type: 'close-pane',
       paneId: pane.paneId,
       workspaceId: pane.workspaceId,
     }, 'close-pane-result') as Record<string, unknown>;
-    return (data as Record<string, unknown>).success === true;
+    const closed = (data as Record<string, unknown>).success === true;
+    if (closed) {
+      this.paneOutputs.delete(key);
+      this.paneRefs.delete(pane.paneId);
+      this.scrollbackCursor.delete(key);
+      this.fetchingOlder.delete(key);
+    }
+    return closed;
   }
 
   async closeWorkspace(workspaceId: string): Promise<boolean> {
