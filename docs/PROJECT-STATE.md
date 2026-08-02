@@ -685,3 +685,18 @@ sequenceDiagram
   曾超时，精确回收本轮 3 个孤儿 Node；未触碰宿主 Ridge。
 - 未冒充完成：iOS/Android 真实键盘与 60Hz pane 手感、macOS/Linux/Windows clean-install
   包体矩阵仍待对应设备/CI 证据；本轮代码与 Dev 验收已闭合。
+
+## 2026-08-02 iteration 86 · Remote PWA/Git/Agent 收口
+
+- `75f53dd` 已推送 `main`。Remote Git 面板完成 Changes/Graph、受能力门保护的
+  stage/commit/push、确认/取消/进度及 Query 失效；Git commit parents 贯通远端 Graph。
+- Remote Agent Commune 增加成员/编组/历史三 Tab；编组写入 workspace-memory 并经
+  LAN/Cloud capability/workspace scope 门控；历史按 Agent 跨 CWD 聚合且保留
+  `sessionId`/`cwd`，旧 Host 不支持时停止重复请求。
+- PWA 安装入口、`beforeinstallprompt`/`appinstalled` 控制器与抽屉 safe-area 已落地；
+  仍待 HTTPS 浏览器安装转场及实体刘海机证据。
+- 质量闸：Vitest `126 files / 1403 passed / 1 skipped`，`pnpm check` 0/0，Rust
+  编组校验 1 passed，`cargo check` passed（仅既有 warnings）。Remote workflow
+  `30732001054` 成功并激活 `0.1.34+g75f53dd`；桌面 `v0.1.34` 资产仍完整。
+- 未声明完成：公网长稳、WebView2 heap soak、双窗口/双 Host 实机、真实远端 Git
+  凭据推送及实体手机 PWA 安装。
