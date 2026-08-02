@@ -317,6 +317,12 @@ async function runBrowserMatrix(url, getTotp) {
     headless: true,
     args: [
       '--ignore-certificate-errors',
+      // This matrix is also the controlled clean-profile comparison for the
+      // mobile `runtime.lastError` attribution gate.  Do not let an installed
+      // extension or component extension make a product warning look owned
+      // by Remote.
+      '--disable-extensions',
+      '--disable-component-extensions-with-background-pages',
       '--no-proxy-server',
       '--proxy-bypass-list=<-loopback>;*',
     ],
@@ -706,6 +712,10 @@ async function main() {
     const evidence = {
       ok: allOk,
       at: new Date().toISOString(),
+      browserIsolation: {
+        extensionsDisabled: true,
+        isolatedContext: true,
+      },
       port,
       url,
       status,

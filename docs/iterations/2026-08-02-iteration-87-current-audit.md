@@ -25,7 +25,7 @@ facts only; NotebookLM is strategy input, not release or runtime evidence.
 | Query-managed Remote data | `remoteQueries.ts` stable session/workspace/path keys, stale cache, single-flight and invalidation; sidebar file/Git/search/diff use it | Implemented locally |
 | Git commit/push/Graph | capability-gated mutation surface with confirmation/cancel/progress; shared graph renderer; Remote transport preserves refs/branch/HEAD and selected commit author/date/parents; Agent group deletion is confirmed and persisted | Implemented locally; authenticated Remote push and public artifact republish remain external gates |
 | PWA | `pwaInstallScope.test.ts` forbids app install button and `beforeinstallprompt` ownership; manifest/SW/standalone/scope remain; drawer safe-area contract is tested | Implemented per latest user correction; browser-native installation is intentionally out of business E2E |
-| Mobile `runtime.lastError` | Source audit found no Chrome Extension Messaging API; service worker uses standard `clients.matchAll`/`Client.postMessage` | No business-code fix is authorized; affected-phone source URL and clean-profile/extension A/B remain required |
+| Mobile `runtime.lastError` | Source audit found no Chrome Extension Messaging API; service worker uses standard `clients.matchAll`/`Client.postMessage`; controlled LAN browser matrix now explicitly disables extensions and component extensions | No business-code fix is authorized; controlled clean-profile run is green, but affected-phone source URL and one-by-one extension A/B remain required |
 | Kernel singleton | `KernelInstanceGuard` uses process-lifetime OS lock; `registry.rs` child-process probe proves a second process cannot acquire the lock (`c692781`) | Deterministic guard implemented; real shell death/deep-root no-Tauri chain remains unverified |
 | Release / Remote | Release `v0.1.36` has 12 matching assets; Remote workflow `30739703846` activated `0.1.36+gf7ba0f5`; cloud health is `ok` but reports service `0.0.7` | Published evidence exists; no cloud source/version change was fabricated |
 
@@ -95,6 +95,16 @@ The public WebRTC four-path gate remains blocked by the absence of an
 authenticated `rdg login`/device credential on this machine. Cloud health HTTP
 200 and a LAN protocol smoke do not substitute for public desktop/mobile session
 evidence.
+
+Runtime warning attribution update: `scripts/rdg-remote-e2e.mjs` now launches
+Chromium with `--disable-extensions` and
+`--disable-component-extensions-with-background-pages`, and records the
+isolation mode in the evidence JSON. The latest desktop/mobile matrix passed
+with `browserErrors=[]`, real `write_to_pty`/`resize_pane` frames and
+`browserIsolation.extensionsDisabled=true`. This excludes the controlled
+project path in a no-extension profile; it does not identify the affected
+physical phone's injector, so no third-party or business-code attribution is
+claimed.
 
 Release gate: the first `v0.1.36` attempt failed before the matrix because
 `Cargo.lock` had an invalid `tracing-core` resolution; the tag was removed,
