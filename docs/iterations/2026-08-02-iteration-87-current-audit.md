@@ -391,9 +391,9 @@ they do not retroactively change the already verified release assets:
 Current deterministic gates: `pnpm check` 0 errors/0 warnings; Remote Vitest
 slice 19 files/96 tests green; focused Pane/Remote/Git slices green; kernel
 CLI unit tests 3/3; `kernel-host-smoke.ps1` green; mobile keyboard LAN
-emulation green (`browserErrors=[]`). The formal desktop Release remains
-`v0.1.38` with 12 assets and the last published Remote artifact remains
-`0.1.38+g2346f5b` until a post-release publish is explicitly verified.
+emulation green (`browserErrors=[]`). The formal desktop Release is now
+`v0.1.39` with 12 assets and the latest published Remote artifact is
+`0.1.39+gc772085`.
 
 The following are still intentionally open: affected-phone `runtime.lastError`
 attribution, physical iOS/Android/PWA safe-area and keyboard/touch runs,
@@ -401,3 +401,19 @@ public Remote/WebRTC and authenticated Git push, WebView2 long-run heap/RSS,
 dual-window/dual-host physical singleton, and full desktop AppState/PTY/
 filesystem-root Kernel authority migration. No Console warning is masked and
 no external gate is inferred from local emulation.
+
+## Versioned release v0.1.39 + full Remote/cloud synchronization (2026-08-02)
+
+`c772085` aligned the package, Tauri, Cargo, and lockfile versions at
+`0.1.39`. Release workflow `30749879814` passed its test gate and all four
+platform jobs. After verifying all 12 matching installer/CLI assets,
+`v0.1.39` was promoted from draft to a formal non-draft, non-prerelease
+release. No failed versioned release was left behind.
+
+Remote workflow `30749958058` rebuilt the same pushed versioned main commit,
+passed version/build/upload/activation and desktop/mobile index checks, and
+activated `0.1.39+gc772085` (233 files / 21.78 MiB). Cloud health returned
+HTTP 200 (`version=0.0.7`). This closes the current code publication line;
+physical phone/PWA, public WebRTC/authenticated Git push, WebView2 long-run
+heap, dual-window/dual-Host device E2E, and full Kernel authority migration
+remain explicit external gates.

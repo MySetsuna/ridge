@@ -979,8 +979,8 @@ green, while physical-phone attribution is still open.
 the typed `source=ridge-kernel` seam; `kernel-host-smoke.ps1` passes. `08ffb50`
 propagates explicit `is_git_repo` through desktop and Remote Git status, so a
 clean repository is not mistaken for a non-Git directory; Remote provider 7/7
-and ridge-core Git 33/33 tests pass. The shared release remains `v0.1.38` and
-the last published artifact remains `0.1.38+g2346f5b` pending a fresh publish.
+and ridge-core Git 33/33 tests pass. The current formal release is `v0.1.39`
+and the latest published artifact is `0.1.39+gc772085`.
 
 Current deterministic gates: `pnpm check` 0/0, Remote Vitest 19 files/96
 tests, kernel CLI 3/3, kernel-host smoke green, and mobile keyboard LAN
@@ -990,3 +990,11 @@ long-run evidence is not claimed. External gates remain physical phone
 public WebRTC and authenticated Git push, dual-window/dual-Host device E2E,
 WebView2 heap/RSS soak, and full desktop AppState/PTY/filesystem-root Kernel
 authority migration.
+
+Versioned publication closure (2026-08-02): `c772085` prepared `v0.1.39`;
+release workflow `30749879814` passed test gate plus Windows/Linux/macOS
+arm64/x64 builds, and `gh release view v0.1.39` confirms 12 matching assets,
+`draft=false`, `prerelease=false`. Remote workflow `30749958058` activated
+`0.1.39+gc772085` (233 files / 21.78 MiB), and cloud health returned HTTP 200.
+This is the latest code publication; external physical/public/WebView2 and
+full Kernel authority gates remain open.
