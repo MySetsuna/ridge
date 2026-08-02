@@ -24,6 +24,7 @@ facts only; NotebookLM is strategy input, not release or runtime evidence.
 | Agent groups/history | Remote Members/Groups/History tabs, workspace-scoped group persistence, Agent-keyed history with `sessionId`/`cwd` | Implemented locally; real LAN/cloud mobile parity and structured resume remain external gates |
 | Query-managed Remote data | `remoteQueries.ts` stable session/workspace/path keys, stale cache, single-flight and invalidation; sidebar file/Git/search/diff use it | Implemented locally |
 | Git commit/push/Graph | capability-gated mutation surface with confirmation/cancel/progress; shared graph renderer; Remote transport preserves refs/branch/HEAD and selected commit author/date/parents; real temp-repo commit/push and non-fast-forward rejection now exercise the shared Rust handlers | Implemented locally; authenticated Remote push and public artifact republish remain external gates |
+| Remote Host connect / attach | `HostConnectDialog` closes before discovery; persistent Hosts panel renders connection/workspace progress; `hostSessionDrag` and button attach share `attachHostSession`; remote attach schedules first DOM-measured pane-size synchronization; `hostConnectFlow.test.ts` guards the path | Implemented locally; public/physical Host latency and drag/resize evidence remain external |
 | PWA | `pwaInstallScope.test.ts` forbids app install button and `beforeinstallprompt` ownership; manifest/SW/standalone/scope remain; drawer safe-area contract is tested | Implemented per latest user correction; browser-native installation is intentionally out of business E2E |
 | Mobile `runtime.lastError` | Source audit found no Chrome Extension Messaging API; service worker uses standard `clients.matchAll`/`Client.postMessage`; controlled LAN browser matrix now explicitly disables extensions and component extensions | No business-code fix is authorized; controlled clean-profile run is green, but affected-phone source URL and one-by-one extension A/B remain required |
 | Kernel singleton | `KernelInstanceGuard` uses process-lifetime OS lock; `registry.rs` child-process probe proves a second process cannot acquire the lock (`c692781`) | Deterministic guard implemented; real shell death/deep-root no-Tauri chain remains unverified |
@@ -54,7 +55,7 @@ state, or physical-device claim is made.
 
 ## Local gate result
 
-- `pnpm exec vitest run --reporter=dot`: 136 files, 1,437 passed, 1 skipped.
+- `pnpm exec vitest run --reporter=dot`: 137 files, 1,439 passed, 1 skipped.
 - `pnpm check`: 0 errors, 0 warnings.
 - `cargo test -p ridge-kernel registry::tests --lib`: 4 passed.
 - `cargo check --manifest-path src-tauri/Cargo.toml`: finished successfully;
@@ -80,7 +81,7 @@ state, or physical-device claim is made.
   clients. Evidence is `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
   `pnpm e2e:rdg-mobile-keyboard` also passed Chromium emulation with selection,
   bounded keyboard shift and recovery; this is not a physical-device claim.
-- Final local gate rerun after these commits: full Vitest `136 files / 1,437
+- Final local gate rerun after these commits: full Vitest `137 files / 1,439
   passed / 1 skipped`, `pnpm check` 0/0, `cargo test -p ridge-term scrollback
   --lib` 48 passed, `cargo test -p ridge-kernel --lib` 17 passed,
   `cargo test -p ridge-mcp-bridge --lib` 8 passed, and `cargo check
