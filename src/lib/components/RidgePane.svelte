@@ -1457,6 +1457,10 @@ $effect(() => {
 	if (!container) return;
 	const isActive = $activePaneId === paneId;
 	container.dataset.rgPaneActive = String(isActive);
+	// Active/focused takeover is an acknowledgement even when focus arrived
+	// through keyboard navigation, workspace restore, or Agent-card selection.
+	// Keep the outer Pane attention ring strictly transient and intervention-only.
+	if (isActive) clearAgentPaneAttention(workspaceId, paneId);
 	if (attached) {
 		manager.setFocused(paneId, isActive);
 	}
