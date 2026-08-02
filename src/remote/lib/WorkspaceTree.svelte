@@ -662,6 +662,13 @@
   .pane-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;overflow:hidden}
   .pane-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .pane-cwd{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:var(--rg-fg-muted);opacity:.7}
+
+  /* Coarse-pointer phones use the 56px action bar (44px controls + 6px
+     vertical padding), so fixed popups must clear that larger hit area.
+     Keep the desktop 48px baseline above for mouse/web layouts. */
+  @media (pointer: coarse){
+    .tree-popup,.saved-popup{bottom:calc(56px + env(safe-area-inset-bottom,0px) + 8px)}
+  }
   .pane-empty{padding:8px;font-size:11px;color:var(--rg-fg-muted)}
   .pane-new{display:flex;align-items:center;gap:6px;width:100%;padding:7px 8px;border:1px dashed var(--rg-border-bright);border-radius:6px;background:none;color:var(--rg-fg-muted);font-size:12px;cursor:pointer;margin-top:2px}
   .pane-new:active{color:var(--rg-accent);border-color:color-mix(in srgb,var(--rg-accent) 40%,transparent)}
