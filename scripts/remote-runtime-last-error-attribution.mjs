@@ -95,6 +95,21 @@ function extensionManifest(path) {
   }
 }
 
+function resolveExtensionRoot(path) {
+  if (existsSync(join(path, 'manifest.json'))) return path;
+  // Chrome/Edge profile roots use <extension-id>/<version>/manifest.json.
+  // Resolve exactly one version level; never crawl a user's whole profile.
+  try {
+    const version = readdirSync(path, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(path, entry.name))
+      .find((candidate) => existsSync(join(candidate, 'manifest.json')));
+    return version || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Return stable, deduplicated unpacked extension paths. Invalid paths remain
  * in the list so the run can report an explicit load failure instead of
  * silently dropping an operator's requested candidate. */
@@ -104,12 +119,13 @@ export function discoverExtensions({ extensionPaths = [], extensionsRoot = '' } 
     for (const entry of readdirSync(extensionsRoot, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const path = join(extensionsRoot, entry.name);
-      if (existsSync(join(path, 'manifest.json'))) candidates.push(path);
+      const resolvedPath = resolveExtensionRoot(path);
+      if (resolvedPath) candidates.push(resolvedPath);
     }
   }
   const seen = new Set();
   return candidates
-    .map((path) => resolve(path))
+    .map((path) => resolveExtensionRoot(resolve(path)) || resolve(path))
     .filter((path) => !seen.has(path) && (seen.add(path), true))
     .sort((a, b) => a.localeCompare(b));
 }
