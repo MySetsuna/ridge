@@ -938,6 +938,20 @@ impl JsTerminal {
             .collect()
     }
 
+    /// Return whether a visible row is the head of a terminal soft-wrap.
+    ///
+    /// `dumpVisibleText()` intentionally trims trailing cells, so the JS
+    /// link scanner cannot reliably distinguish a URL that continues on the
+    /// next visual row from two hard-separated lines. Expose the parser's
+    /// authoritative row flag instead of guessing from rendered text.
+    #[wasm_bindgen(js_name = rowWrapped)]
+    pub fn row_wrapped(&self, row: usize) -> bool {
+        self.inner
+            .viewport_row(row)
+            .map(|r| r.wrapped)
+            .unwrap_or(false)
+    }
+
     /// Look up the OSC 8 hyperlink span containing the cell at `(row, col)`
     /// in viewport coordinates. Returns `{ uri, id }` or `null`. Used by
     /// the manager's Ctrl+click handler to decide whether to open a link.

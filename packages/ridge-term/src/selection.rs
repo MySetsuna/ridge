@@ -444,6 +444,16 @@ mod tests {
     }
 
     #[test]
+    fn soft_wrapped_url_copies_as_one_line() {
+        let mut t = Terminal::new(3, 12, 0);
+        let url = "https://example.com/long/path";
+        t.feed(url.as_bytes());
+        let mut s = Selection::default();
+        s.select_all(&t);
+        assert_eq!(s.text(&t), url);
+    }
+
+    #[test]
     fn range_is_empty_when_start_equals_end() {
         let r = Range {
             start: Pos { row: 1, col: 5 },
