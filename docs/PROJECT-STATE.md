@@ -1135,3 +1135,19 @@ builds. GitHub Release `v0.1.45` is formal with 12 matching assets. Remote
 workflow `30764190990` completed successfully and activated the desktop/mobile
 artifact set. Cloud health returned HTTP 200 (`version=0.0.7`). This follow-up
 is documentation-only and does not alter the released runtime.
+
+### Iteration 92 runtime closure candidate (2026-08-03)
+
+Remote legacy `data-request` now runs behind a bounded per-connection task
+registry. Abort, timeout, provider disposal, and socket teardown send a
+`data-cancel` frame; the Host aborts the matching task, invalidates its Git
+latest-win slot, and drops a result that races with cancellation. The queue is
+capped at 32 and pre-cancelled IDs are bounded and one-shot. `git_status` thus
+reclaims a live Git child through the existing process-tree guard. Deterministic
+evidence: `ws.test.ts` 6/6, full frontend 1472 passed + 1 skipped, `pnpm check`
+0/0, Host registry 11 passed, and ridge-core Git 33 passed.
+
+This is a new runtime candidate after `v0.1.45`; it requires a new versioned
+release and Remote/Cloud publication. Git mutation methods using unslotted core
+APIs retain timeout/tree-kill protection and are not claimed as instant cancel.
+Physical/public/WebView2/dual-window/full-Kernel authority gates remain open.
