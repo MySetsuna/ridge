@@ -9,4 +9,10 @@ describe('remote Agent drawer alignment contract', () => {
     expect(source).toContain('.subtabs :global(svg),.approval :global(svg),.member-head :global(svg),.act :global(svg),.msg-row :global(svg){display:block;flex:0 0 auto}');
     expect(source).toContain('.member-head{display:flex;align-items:center;gap:6px;min-height:24px');
   });
+
+  it('keeps agent state visible as a left color rail', () => {
+    expect(source).toContain('class:status-working={st.key === \'working\'}');
+    expect(source).toContain('.member-card.status-pending{border-left-color:var(--rg-ansi-yellow,#d29922)}');
+    expect(source).toContain('.member-card.status-idle{border-left-color:var(--rg-fg-muted)}');
+  });
 });
