@@ -167,6 +167,9 @@ credentials remain external gates until their evidence is captured.
   Rust group-validation test 1 passed, `cargo check` passed with pre-existing warnings.
 - Remote publish workflow `30732001054` succeeded from `75f53dd`, activating
   artifact `0.1.34+g75f53dd`; formal desktop `v0.1.34` remains unchanged and complete.
+- Product-scope correction: Remote renders no “Add to Home Screen”/install button and
+  does not intercept `beforeinstallprompt`; browser-native installation remains
+  authoritative. Manifest, Service Worker, standalone metadata and safe-area layout stay.
 - External gates unchanged: HTTPS browser/PWA install transition, physical notch phone,
   public soak, WebView2 heap soak, dual-window/dual-host E2E and authenticated real Git
   push remain unclaimed until captured.

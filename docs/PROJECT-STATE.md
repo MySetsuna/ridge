@@ -693,8 +693,8 @@ sequenceDiagram
 - Remote Agent Commune 增加成员/编组/历史三 Tab；编组写入 workspace-memory 并经
   LAN/Cloud capability/workspace scope 门控；历史按 Agent 跨 CWD 聚合且保留
   `sessionId`/`cwd`，旧 Host 不支持时停止重复请求。
-- PWA 安装入口、`beforeinstallprompt`/`appinstalled` 控制器与抽屉 safe-area 已落地；
-  仍待 HTTPS 浏览器安装转场及实体刘海机证据。
+- PWA 保留 manifest、Service Worker、standalone 元数据与抽屉 safe-area；Remote 不渲染
+  “添加到主屏幕/安装”按钮，安装交由浏览器原生入口；仍待实体 standalone/刘海机证据。
 - 质量闸：Vitest `126 files / 1403 passed / 1 skipped`，`pnpm check` 0/0，Rust
   编组校验 1 passed，`cargo check` passed（仅既有 warnings）。Remote workflow
   `30732001054` 成功并激活 `0.1.34+g75f53dd`；桌面 `v0.1.34` 资产仍完整。

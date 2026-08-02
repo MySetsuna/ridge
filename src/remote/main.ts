@@ -3,12 +3,6 @@ import { mount } from 'svelte';
 import App from './App.svelte';
 import { registerSW } from 'virtual:pwa-register';
 import { REMOTE_TERM_FONT } from '@ridge/remote/shared/terminal/fontStack';
-import { getPwaInstallController } from './lib/pwaInstall';
-
-// Capture the one-shot browser event before component UI mounts. MainApp (or a
-// future settings surface) can subscribe to this stable controller without
-// racing `beforeinstallprompt` during the initial shell boot.
-export const pwaInstallController = getPwaInstallController();
 
 // §P4 host-ports (2026-07-25): the shared TerminalManager reads app capabilities
 // (terminal scrollback lines / font / shell) through injected HostPorts. Mobile
