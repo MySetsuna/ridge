@@ -73,9 +73,10 @@ remain unverified; Git mutation/Graph and Agent parity packages are not marked d
 Release evidence: `v0.1.34` tag `1901eb0` passed workflow `30730231317`, was
 published (not draft) with 12 Windows/Linux/macOS assets. Remote workflow
 `30731241075` built latest `main` `b62d94b` and activated
-`0.1.34+gb62d94b`; `https://9527127.xyz/api/v1/health` remains `ok=true`
-(`0.0.7` cloud service). Artifact status endpoint needs its deployment token;
-the workflow log is the retained activation evidence.
+`0.1.34+gb62d94b`; ridge-cloud deploy workflow `30731408697` completed for
+`67f7126`, and `https://9527127.xyz/api/v1/health` is `ok=true` (`0.0.7`
+cloud service). Artifact status endpoint needs its deployment token; the
+Remote workflow log is the retained activation evidence.
 
 ### Iteration 83 update (2026-08-02)
 
