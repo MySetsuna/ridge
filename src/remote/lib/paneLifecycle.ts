@@ -1,21 +1,22 @@
-import type { PaneRef } from '@ridge/remote';
+import { paneRefKey, type PaneRef } from '@ridge/remote';
 
 /**
- * Release remote pane resources through the manager's pane-id API.
+ * Release remote pane resources through the manager's pane-key API.
  *
- * Remote UI bookkeeping is keyed by `workspaceId:paneId`, while
- * `TerminalManager` owns kernels by the bare `paneId`. Keeping this
- * conversion here prevents a workspace-qualified cache key from silently
- * skipping the actual kernel teardown.
+ * Remote UI and `TerminalManager` both use the workspace-qualified key. Pane
+ * ids are only unique inside one workspace; stripping `workspaceId` here can
+ * silently skip teardown (or tear down the wrong same-named pane).
  */
 export function detachPaneRefs(
 	refs: readonly PaneRef[],
-	detach: (paneId: string) => void,
+	detach: (paneKey: string) => void,
 ): void {
 	const seen = new Set<string>();
 	for (const ref of refs) {
-		if (!ref.paneId || seen.has(ref.paneId)) continue;
-		seen.add(ref.paneId);
-		detach(ref.paneId);
+		if (!ref.paneId) continue;
+		const key = paneRefKey(ref);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		detach(key);
 	}
 }
