@@ -61,6 +61,12 @@ import {
 	TERMINAL_MEMORY_SWEEP_MS,
 	type BrowserHeapSnapshot,
 } from './terminalMemoryPolicy';
+import {
+	MAX_FEED_BUFFER_BYTES,
+	dropPendingFeedBuffers,
+	shouldDrainDeferredFeed,
+	shouldFlushFeedBuffer,
+} from './terminalFeedPolicy';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
@@ -443,6 +449,7 @@ const SYNC_OUTPUT_TIMEOUT_MS = 150;
  *  trip a mid-drag re-fit. `pointerup` is the dominant trigger; this
  *  is just the safety net when the release is missed. */
 const RESIZE_SETTLE_MS = 500;
+const FEED_PER_CALL_BUDGET_MS = 4;
 
 /**
  * Singleton. Created lazily on first `instance()` call. Held by the
@@ -2742,10 +2749,18 @@ export class TerminalManager {
 				}
 				// Inside a coalesce window — append for the tail of a
 				// split-write. Same back-pressure cap as before.
+				if (bytes.byteLength >= MAX_FEED_BUFFER_BYTES) {
+					// Avoid retaining a giant source ArrayBuffer in the short-lived
+					// coalescing slot; preserve ordering by flushing the older tail
+					// first, then feed this chunk directly.
+					if (entry.feedBuffer !== null) this._flushFeedBuffer(entry);
+					this._feedNow(entry, bytes);
+					return;
+				}
 				entry.feedBuffer = entry.feedBuffer
 					? concatU8(entry.feedBuffer, bytes)
 					: bytes;
-				if (entry.feedBuffer.length >= 8192) {
+				if (shouldFlushFeedBuffer(entry.feedBuffer.length)) {
 					this._flushFeedBuffer(entry);
 				}
 				return;
@@ -2784,7 +2799,12 @@ export class TerminalManager {
 	 *  the next frame (after preserving order with any later arrivals).
 	 *  vte::Parser carries its own state across feed calls so byte-level
 	 *  chunking is safe — even mid-CSI / mid-OSC. */
-	private _feedNow(entry: PaneEntry, bytes: Uint8Array): void {
+	private _feedNow(
+		entry: PaneEntry,
+		bytes: Uint8Array,
+		budgetMs = FEED_PER_CALL_BUDGET_MS,
+		enforceDeferredCap = true,
+	): void {
 		// §1.24 PTY trace (Phase 1.2): when `localStorage.RIDGE_PTY_TRACE === '1'`,
 		// log every PTY-to-wasm byte chunk with a high-res timestamp so a live
 		// resize-while-claude repro can be replayed in devtools to confirm
@@ -2807,6 +2827,7 @@ export class TerminalManager {
 		// whole queue, no overflow check needed for the queued half).
 		if (entry.feedDeferred) {
 			entry.feedDeferred = concatU8(entry.feedDeferred, bytes);
+			if (enforceDeferredCap) this._enforceDeferredFeedCap(entry);
 			this.wake();
 			return;
 		}
@@ -2817,7 +2838,6 @@ export class TerminalManager {
 		// for typical PTY arrivals, generous enough that small bursts
 		// (the common case) finish in one chunk, strict enough that a
 		// 200 KB compile waterfall doesn't freeze the main thread.
-		const FEED_PER_CALL_BUDGET_MS = 4;
 		const FEED_CHUNK_BYTES = 16 * 1024;
 		let offset = 0;
 		const start = performance.now();
@@ -2832,7 +2852,7 @@ export class TerminalManager {
 				workerRendererBridge.feed(entry.paneId, chunk);
 			}
 			offset = end;
-			if (performance.now() - start >= FEED_PER_CALL_BUDGET_MS) break;
+			if (budgetMs !== Infinity && performance.now() - start >= budgetMs) break;
 		}
 		if (traceCursor) {
 			const ts = performance.now().toFixed(1);
@@ -2845,6 +2865,7 @@ export class TerminalManager {
 			// subarray view (would waste memory on every spill).
 			entry.feedDeferred = bytes.slice(offset);
 		}
+		if (enforceDeferredCap) this._enforceDeferredFeedCap(entry);
 
 		// 屏幕内容变化 → 链接索引失效，下次 ctrl+hover/click 时再 lazy 重建。
 		entry.linkSpans.markDirty();
@@ -2930,6 +2951,21 @@ export class TerminalManager {
 		}
 		entry.linkSpans.markDirty();
 		this.wake();
+	}
+
+	/** Keep transient PTY backlog bounded when RAF is throttled or stopped.
+	 *
+	 * We never drop bytes (doing so could split a CSI/OSC sequence and corrupt
+	 * the terminal parser). Once the deferred queue crosses its cap, drain the
+	 * queued bytes synchronously with no frame budget. This applies backpressure
+	 * to the producer while keeping retained ArrayBuffers bounded.
+	 */
+	private _enforceDeferredFeedCap(entry: PaneEntry): void {
+		while (entry.feedDeferred && shouldDrainDeferredFeed(entry.feedDeferred.byteLength)) {
+			const pending = entry.feedDeferred;
+			entry.feedDeferred = null;
+			this._feedNow(entry, pending, Infinity, false);
+		}
 	}
 
 	/** P2.1 (2026-05-20): drain any per-pane bytes that prior `_feedNow`
@@ -3401,11 +3437,27 @@ export class TerminalManager {
 	clearScrollback(paneId: string): void {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
-		this._releaseScrollback(entry);
+		// User clear is a stream cut: bytes already queued before the click
+		// must not reappear after the visible screen/history is wiped.
+		this._releaseScrollback(entry, true);
 		this.wake();
 	}
 
-	private _releaseScrollback(entry: PaneEntry): void {
+	private _releaseScrollback(entry: PaneEntry, dropPendingFeed = false): void {
+		if (dropPendingFeed) {
+			dropPendingFeedBuffers(entry);
+		} else {
+			// Automatic memory reclaim must not lose PTY output which arrived
+			// just before the sweep. Parse pending fragments first, then clear
+			// only the retained history. The hard deferred cap keeps this
+			// synchronous catch-up bounded in memory.
+			this._flushFeedBuffer(entry);
+			while (entry.feedDeferred) {
+				const pending = entry.feedDeferred;
+				entry.feedDeferred = null;
+				this._feedNow(entry, pending, Infinity, false);
+			}
+		}
 		entry.kernel.clearScrollback();
 		// Worker mode owns a second semantic kernel. Feed ED 3 only to that
 		// mirror so both allocations are released without writing ANSI to PTY.
