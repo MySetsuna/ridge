@@ -18,6 +18,13 @@ desktop/mobile LAN matrix, and mobile keyboard emulation passed; the probe now
 fails on worker timeouts, `resize before init`, and project
 `Unchecked runtime.lastError`.
 
+The mobile Remote touch-selection mapping now tracks the stage visual offset
+captured with pane geometry. A resize/re-fit while the soft keyboard is open
+therefore applies only the offset delta; the new captured/current offset guard
+is covered by `paneGeometry.test.ts` (`11` passed). Full Vitest is now `120`
+files / `1381` passed / `1` skipped; `pnpm check` remains `0` errors / `0`
+warnings, and the LAN desktop/mobile matrix remains green after the change.
+
 Iteration-85 evidence is archived in
 `docs/iterations/CONTRACT-iteration-85.md`. Release `v0.1.33` is formal with 12
 assets (`30726725069`), Remote artifact `0.1.33+gc07f931` is active
