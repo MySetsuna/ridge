@@ -1058,7 +1058,9 @@
 </div>
 
 <style>
-  .app-root{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--rg-bg);color:var(--rg-fg)}
+  /* Standalone PWA uses the dynamic viewport; keep the flex column at the
+     actual viewport edge so the action bar cannot float above a body strip. */
+  .app-root{position:fixed;inset:0;min-height:100dvh;box-sizing:border-box;display:flex;flex-direction:column;background:var(--rg-bg);color:var(--rg-fg)}
   .app-root.embedded{position:absolute}
   /* iter-61: 终端区叠放层——WebGPU host 画布垫底，终端容器（host 模式透明）在上。 */
   .term-stage{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;transition:transform .12s ease-out;will-change:transform}
