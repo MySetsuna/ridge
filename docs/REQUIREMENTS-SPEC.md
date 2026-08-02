@@ -1047,11 +1047,61 @@
 - 验收:长时多 pane、多 workspace、后台切换、断线重连、滚动历史和键盘开合 soak 下，listener/worker/timer/RAF/pending RPC/订阅计数在销毁后归零或回到基线；scrollback 达上限自动清理且 clear/右键清空释放页面与后台引用；Heap/对象快照无持续线性增长，输入延迟、RPC 数和 CPU/网络不回归；重复订阅和 stale callback 有确定性测试，移动真实机或等价 CDP/公网运行记录证据。
 - 追踪:`REQ-REMOTE-RUNTIME-PERF-MEMORY-02` → RemoteLink/CloudRemoteConnection + pane scheduler + scrollback/worker lifecycle → soak/heap/resource counters → iteration archive
 
+### REQ-MOBILE-REMOTE-PWA-SAFE-AREA-01 · Mobile Remote browser/PWA safe-area UI parity
+
+- 批准依据:`用户明确预审批通过：下一迭代 Remote PWA safe-area、Query 管理、Git 提交推送/GitGraph、Agent 侧栏桌面 parity；补充 Remote Agent 编组管理与 Agent 历史 Tab。`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 行为:普通移动网页与 PWA standalone 安装版共享同一 Remote UI 语义；刘海屏、挖孔屏、底部手势区、横竖屏旋转、键盘唤起及 viewport 变化时，侧边抽屉的功能按钮与关闭按钮均落在可见且可点击安全区内，safe-area 与 visualViewport 变化只影响布局投影，不改变终端核心、Pane 身份或 Remote 协议。
+- 边界:范围 `src/remote` 抽屉/导航/viewport adapter、CSS env safe-area、display-mode 适配、键盘与旋转 fixture、浏览器/PWA E2E；不得以 UA 特判复制两套 UI、不得牺牲无障碍焦点顺序或引入不可取消监听器。
+- 验收:Chromium mobile 与 iOS/Android 等价 fixture 覆盖 browser 与 standalone、刘海 safe-area、旋转、键盘开合和快速打开/关闭；按钮可见、可点击、焦点可达，点击命中率 100%，无 drawer listener/timer 泄漏，普通网页与 PWA 截图/交互合同一致。
+- 追踪:`REQ-MOBILE-REMOTE-PWA-SAFE-AREA-01` → drawer/viewport/safe-area → browser+PWA E2E + geometry tests → iteration archive
+
+### REQ-REMOTE-QUERY-CACHE-01 · Remote Git and file request Query management
+
+- 批准依据:`用户明确预审批通过：下一迭代 Remote PWA safe-area、Query 管理、Git 提交推送/GitGraph、Agent 侧栏桌面 parity；补充 Remote Agent 编组管理与 Agent 历史 Tab。`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 行为:Git 与文件远程请求统一进入 Query 管理，query key 必含 host/workspace/pane/path/branch 等稳定身份；同一请求单飞去重，drawer/tab 重开优先复用缓存，按 staleTime、显式刷新和 mutation 精确失效；断线时保留可辨识 stale 数据并显示状态，不发送无意义重试。
+- 边界:范围 `src/lib/stores`、`src/lib/remote`、`src/remote`、`packages/remote` 的 Git/File query hooks、缓存策略、失效与 loading/error 投影；不得新增第二缓存源、以全局 clear 代替精确失效、绕过 RPC 去重或改变 Git/File 权限与沙箱。
+- 验收:同一 host/workspace/path 连续打开只产生一次请求；切换 workspace/branch/path 不串数据；提交、推送、文件写入与重命名只失效相关 key；断线、超时、取消、Pane/Host 销毁后无 pending 请求和 stale callback；Query/RPC 计数与现有基线相比不回归。
+- 追踪:`REQ-REMOTE-QUERY-CACHE-01` → Query key/fetcher/invalidation → Vitest + Remote LAN/cloud E2E → iteration archive
+
+### REQ-GIT-INTERACTIVE-PUBLISH-GRAPH-01 · Interactive Git commit/push and GitGraph tab
+
+- 批准依据:`用户明确预审批通过：下一迭代 Remote PWA safe-area、Query 管理、Git 提交推送/GitGraph、Agent 侧栏桌面 parity；补充 Remote Agent 编组管理与 Agent 历史 Tab。`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 行为:Git UI 提供状态、变更选择、提交信息、提交与推送交互；权限/能力门、二次确认、进度、取消、冲突、超时、非 Git 与失败错误均有明确反馈；新增 GitGraph Tab 展示分支、提交节点、父子连线、当前 HEAD 与选中提交详情，数据经 Query 缓存并支持精确刷新。
+- 边界:范围 Git/SCM domain 与 RPC capability、`src/lib` Git 面板/Tab、GitGraph 投影与无障碍交互、远程 Host 同源能力和确定性测试；不得拼接未转义 shell、绕过 process guard/capability、自动 push 未确认内容、以图形层掩盖后端错误或在非 Git 目录轮询。
+- 验收:真实临时 Git 仓库覆盖 clean/dirty、提交、推送成功/拒绝、无 upstream、冲突、非 Git、超时/取消；提交/推送成功后仅失效相关 Query；GitGraph 正确绘制分支/merge/HEAD/选中详情，键盘与移动触控可用；RPC、子进程并发、日志噪音与既有护栏不回归。
+- 追踪:`REQ-GIT-INTERACTIVE-PUBLISH-GRAPH-01` → ridge-core Git SSOT + Git panel/graph → Rust/TypeScript/real-repo E2E → iteration archive
+
+### REQ-AGENT-COMMUNE-REMOTE-PARITY-01 · Remote Agent groups and history Tab parity
+
+- 批准依据:`用户明确预审批通过：下一迭代 Remote PWA safe-area、Query 管理、Git 提交推送/GitGraph、Agent 侧栏桌面 parity；补充 Remote Agent 编组管理与 Agent 历史 Tab。`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 行为:Remote 手机网页/PWA 提供与桌面同源的 Agent 侧栏能力：状态卡片、审批入口、历史展示 Tab、Agent 编组管理（创建/重命名/成员增删/排序/删除及状态）、会话 CWD/session 定位、结构化恢复、workspace/pane 聚焦与 Pane 边框反馈；移动端布局遵循 safe-area、键盘和触控无障碍。
+- 边界:范围 `src/remote` Agent Tab/历史/编组交互、共享 Agent DTO/query/cache、teammate/AgentCenter 后端能力与权限门、跨窗口/Host 身份映射和确定性测试；不得复制桌面私有状态、按标题/CWD 猜 Agent、把历史写回第三方会话文件、绕过 HITL 或 Remote capability。
+- 验收:多 Agent、多编组、多 CWD/session、运行/空闲/等待审批/停止/失败及损坏历史 fixture 下，Remote 与桌面展示同一状态/历史/成员；编组 CRUD、审批、历史 Tab、恢复和跨 workspace 聚焦均可在手机触控完成且重复操作单飞；刷新/断线/重连/窗口切换不丢组、不串 Pane、不留 pending RPC；至少一条 LAN/cloud mobile E2E 与桌面 parity 对照通过。
+- 追踪:`REQ-AGENT-COMMUNE-REMOTE-PARITY-01` → AgentCenter/Commune shared DTO + remote tabs/groups/history → Vitest/Svelte/Rust + mobile E2E → iteration archive
+
+### REQ-MOBILE-REMOTE-PWA-INSTALL-01 · Real PWA install capability and entry point
+
+- 批准依据:`用户补充：定位 PWA 安装按钮未显示根因并实现真实可验证 PWA 安装能力；纳入已预审批下一迭代。`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 行为:Remote 在满足安装资格的浏览器中显示真实可操作的 Install App 入口，正确缓存并消费 `beforeinstallprompt`，处理安装成功、用户拒绝、已安装、浏览器不支持和 iOS 手动添加到主屏幕状态；manifest、service worker、scope、icons、HTTPS/安全上下文与 standalone display-mode 形成可诊断闭环，不伪造安装状态、不静默吞事件。
+- 边界:范围 PWA manifest/service-worker registration、installability diagnostics、`beforeinstallprompt` 生命周期、Remote/PWA 设置入口、browser/PWA E2E 与兼容性说明；不得以永久按钮替代资格判断、阻塞首屏、重复监听/重复 prompt、或把第三方 WebView 当成支持 PWA。
+- 验收:Chromium mobile HTTPS fixture 能观测到 install prompt 并点击完成安装/进入 standalone；已安装/拒绝/不支持/iOS 分支显示准确反馈；manifest/service worker/scope/icons 可被检查，刷新与导航不丢 pending prompt，销毁后监听归零；普通网页与 PWA 抽屉 safe-area 交互均通过。
+- 追踪:`REQ-MOBILE-REMOTE-PWA-INSTALL-01` → manifest/SW/install controller → browser installability + mobile/PWA E2E → iteration archive
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
 | --- | --- | --- | --- | --- | --- |
 | v0.3.9 | 2026-08-02 | `<ITERATION-85>` | Mobile Remote Worker 冷启动监听、WASM fallback、Pane init/bind/resize 生命周期与 runtime noise 断言纳入实现闭环 | 收敛 `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02`、`REQ-REMOTE-RUNTIME-PERF-MEMORY-02`、`REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01` 的确定性部分；外部闸门仍待补 | 用户预审批通过；Iteration 85 contract 与 CDP/Vitest 证据 |
+| v0.3.10 | 2026-08-02 | `INTAKE-20260802-REMOTE-PWA-GIT-AGENT-01` | 下一迭代纳入 Remote browser/PWA safe-area 与真实安装能力、Git/File Query 缓存、Git commit/push + GitGraph、Agent Commune 移动端编组/历史 Tab 与桌面 parity | 新增 `REQ-MOBILE-REMOTE-PWA-SAFE-AREA-01`、`REQ-MOBILE-REMOTE-PWA-INSTALL-01`、`REQ-REMOTE-QUERY-CACHE-01`、`REQ-GIT-INTERACTIVE-PUBLISH-GRAPH-01`、`REQ-AGENT-COMMUNE-REMOTE-PARITY-01` | 用户明确下一迭代预审批，并补充 Remote Agent 编组/历史 Tab 与 PWA 安装根因闭环 |
 | v0.3.8 | 2026-08-02 | `<DIRECT-APPROVAL>` | Mobile Remote 键盘稳定偏移与 Remote 性能/健壮性/内存回收转 Active | 新增 `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02`、`REQ-REMOTE-RUNTIME-PERF-MEMORY-02` | 用户明确「这条需求也预审批通过」 |
 | v0.3.7 | 2026-08-02 | `PENDING-REQ-20260801-AGENT-COMMUNE-UI-01` | Agent's Commune 交互卡片、状态投影、历史按 Agent 分组与 CWD 恢复转 Active | 新增 `REQ-AGENT-COMMUNE-UI-02` | 用户明确「预审批刚刚需求」 |
 | v0.3.6 | 2026-07-31 | `PENDING-REQ-RIDGE-KERNEL-HOST-01` | 内核进程与外壳生命周期（深根模式）转 Active | 新增 `REQ-RIDGE-KERNEL-HOST-01` | 用户明确「全数批准」 |

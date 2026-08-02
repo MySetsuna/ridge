@@ -82,12 +82,13 @@
 <style>
   .sidebar{position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;background:var(--rg-surface);animation:slideIn .2s ease-out}
   @keyframes slideIn{from{transform:translateX(-100%)}to{transform:translateX(0)}}
-  .sb-header{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--rg-border-bright);min-height:48px}
+  /* Keep drawer controls outside the notch/Dynamic Island and home indicator. */
+  .sb-header{display:flex;align-items:center;gap:8px;padding:calc(8px + env(safe-area-inset-top,0px)) 10px 8px;border-bottom:1px solid var(--rg-border-bright);min-height:calc(48px + env(safe-area-inset-top,0px));box-sizing:border-box}
   .tabs{display:flex;gap:4px}
   .tab{display:flex;align-items:center;justify-content:center;width:34px;height:32px;border:none;border-radius:8px;background:none;color:var(--rg-fg-muted);cursor:pointer;transition:all .12s}
   .tab.active{color:var(--rg-accent);background:color-mix(in srgb, var(--rg-accent) 14%, transparent)}
   .cwd{flex:1;min-width:0;font-size:11px;color:var(--rg-fg-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
   .close{display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:none;border:none;color:var(--rg-fg-muted);border-radius:8px;cursor:pointer}
   .close:active{background:var(--rg-surface-2)}
-  .sb-body{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column}
+  .sb-body{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}
 </style>
