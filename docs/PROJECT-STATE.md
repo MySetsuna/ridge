@@ -879,3 +879,7 @@ Perf soak timeout continuation: `7c5fddc` derives the WebDriver timeout from
 `RIDGE_PERF_STRESS_SEC` plus bounded headroom (maximum 24 hours), so long runs
 are not truncated and detached drivers cannot hang indefinitely. Physical and
 public soak evidence remains external.
+Remote refresh closure (2026-08-02): workflow `30744331190` succeeded from
+main SHA `08919b675c62804d866b17a57110b2c1904baa56`; cloud health HTTP 200.
+Remote now tracks latest main artifact hash while desktop Release remains the
+verified `v0.1.37` package set.
