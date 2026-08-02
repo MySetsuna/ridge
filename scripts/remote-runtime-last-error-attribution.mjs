@@ -29,7 +29,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const RUNTIME_LAST_ERROR =
@@ -315,7 +315,10 @@ async function main() {
   const output = resolve(options.output);
   const outputDir = dirname(output);
   // The caller controls --output; keep the default inside the iteration artifact tree.
-  if (!outputDir.startsWith(ROOT)) throw new Error(`refusing evidence path outside repository: ${output}`);
+  const relativeDir = relative(ROOT, outputDir);
+  if (isAbsolute(relativeDir) || relativeDir === '..' || relativeDir.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)) {
+    throw new Error(`refusing evidence path outside repository: ${output}`);
+  }
   mkdirSync(outputDir, { recursive: true });
   writeFileSync(output, `${JSON.stringify(evidence, null, 2)}\n`);
   console.log(JSON.stringify({ evidence: output, ...classification }));
