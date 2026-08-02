@@ -1935,8 +1935,8 @@ impl Grid {
             EraseMode::SavedLines => {
                 // §B.2 (2026-05-08) — xterm `CSI 3 J` extension. Drops
                 // the entire scrollback ring buffer (physical clear:
-                // every `Vec<Option<Row>>` slot back to None, head/len
-                // reset to 0). Visible grid stays untouched, cursor
+                // drops the backing `Vec<Option<Row>>`; the next output
+                // lazily rebuilds it, with head/len reset to 0). Visible grid stays untouched, cursor
                 // stays put — this is the operation that makes a "real"
                 // clear actually clear: after this call both `clear`
                 // (`\x1b[2J\x1b[H`) AND scrollback are gone, so the
