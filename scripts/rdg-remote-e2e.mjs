@@ -522,7 +522,9 @@ async function runOneClient(browser, url, getTotp, profile) {
     // Exercise the real browser input and measured-resize path.  Method
     // counts come from WebSocket frames, so a rendered shell without PTY/RPC
     // traffic cannot pass this smoke.
-    const input = page.locator('.hidden-input').first();
+    const input = page.locator(
+      '[data-rg-pane-active="true"] .rg-ime-helper, .rg-ime-helper, .hidden-input',
+    ).first();
     const inputAvailable = (await input.count()) > 0;
     if (inputAvailable) {
       await input.focus().catch(() => {});
