@@ -77,6 +77,9 @@ could also inherit stale pane IDs in the manager's attached set.
 - Mobile keyboard probe: `ok=true`, `browserErrors=[]`, bounded shift and
   recovery assertions passed. This is Chromium emulation only, not a physical
   phone result; evidence is `.iteration/artifacts/rdg-remote-e2e/mobile-keyboard.json`.
+- The same mobile probe now dispatches a real `TouchEvent` drag after keyboard
+  recovery; `selectionTouch.ok=true` and the copy pill appeared for rows
+  `38→40`. This remains Chromium mobile emulation, not physical-phone proof.
 - LAN matrix rerun after the selection mapping change: desktop and mobile
   `PASS` (`canvas=true`, mobile tree rendered, WebSocket connected); evidence
   is `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
