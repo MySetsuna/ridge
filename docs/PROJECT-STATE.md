@@ -818,3 +818,13 @@ extension/injector A/B remain the only attribution evidence missing.
 Remote entrypoint and service worker contain no Chrome Extension Messaging API
 and keep one-way Service Worker `Client.postMessage` semantics. This guard does
 not replace the affected-phone source URL and clean-profile/one-extension A/B.
+
+### Iteration 87 kernel read seam
+
+`06bfcd2` adds typed, source-checked `read_domain_workspaces` and
+`read_domain_agent_roster` adapters in `packages/ridge-kernel/src/client.rs`;
+error and non-kernel-source responses fail closed. The seam does not replace
+desktop AppState reads: kernel workspace projections lack names/window claims,
+and kernel Agent roster identity is not the desktop `(workspaceId, UUID)` model.
+Full Tauri-shell domain migration remains open pending one canonical composite
+identity and persistence path.
