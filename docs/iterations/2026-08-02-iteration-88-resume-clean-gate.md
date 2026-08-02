@@ -101,3 +101,17 @@ The release gate was rechecked after publication: tracked and staged diffs are
 empty, no untracked non-ignored files remain, and `HEAD == origin/main`.
 Release publication includes the modified code; no failed version bump or
 orphan tag remains.
+
+## Post-publication Agent resume guard (2026-08-03)
+
+Remote `resume_agent_session` now resolves the host-owned history row by the
+exact `(agent, sessionId)` pair, uses its recorded CWD, canonicalizes both
+paths, and rejects a client CWD mismatch before creating a PTY. The lookup is
+unbounded for authority purposes; the 100-row cap remains a presentation cap.
+This closes the prior directory-only validation gap without trusting mobile
+display state.
+
+Evidence: `cargo test --manifest-path src-tauri/Cargo.toml
+commands::project --lib --quiet` — 25 passed; `cargo test
+--manifest-path src-tauri/Cargo.toml commands::pane --lib --quiet` — 13
+passed; `pnpm check` — 0 errors, 0 warnings.
