@@ -40,7 +40,16 @@ valid while useful code is uncommitted/untracked. Before the next release:
 3. require empty `git diff`, empty `git diff --cached`, empty
    `git ls-files --others --exclude-standard`, and `HEAD == origin/main`;
 4. only then bump to the next version and publish. If CI/release fails, do not
-   advance or leave a new version behind.
+advance or leave a new version behind.
+
+## Publication result
+
+The gate passed. Commit `c0d7bce` aligned all four version sources at `0.1.40`,
+was pushed before tagging, and produced annotated tag `v0.1.40`. Release run
+`30752429063` passed the test gate and all four build jobs; the formal release
+is non-draft/non-prerelease with 12 matching installer/CLI assets. Remote run
+`30752469369` passed and atomically activated `0.1.40+gc0d7bce`; Cloud health
+returned HTTP 200. No failed versioned release or orphan version bump remains.
 
 ## External gates retained
 
