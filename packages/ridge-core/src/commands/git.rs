@@ -978,6 +978,10 @@ pub struct ScmFile {
 #[derive(Clone, Debug, Serialize)]
 pub struct ScmRepoStatus {
     pub repo_root: String,
+    /// True when status collection reached a valid repository. A successful
+    /// status response can still be completely empty (clean repository), so
+    /// callers must not infer this from file or commit counts.
+    pub is_git_repo: bool,
     pub current_branch: Option<String>,
     pub ahead: u32,
     pub behind: u32,
@@ -1210,6 +1214,7 @@ pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
 
         Ok(ScmRepoStatus {
             repo_root,
+            is_git_repo: true,
             current_branch: branch,
             ahead,
             behind,

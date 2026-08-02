@@ -2158,6 +2158,7 @@ async fn git_status_result(repo_root: String) -> serde_json::Value {
     };
     serde_json::json!({
         "_result": {
+            "is_git_repo": scm.is_git_repo,
             "current_branch": scm.current_branch,
             "has_upstream": scm.has_upstream,
             "branches": branches,

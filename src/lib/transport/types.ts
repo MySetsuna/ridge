@@ -1,6 +1,8 @@
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
 
 export interface GitStatusResult {
+  /** Explicit repository identity; empty files/commits still means Git repo. */
+  is_git_repo?: boolean;
   current_branch?: string | null;
   has_upstream?: boolean;
   branches?: string[];

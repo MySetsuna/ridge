@@ -18,6 +18,7 @@ interface ScmFileRaw {
   status: string;
 }
 interface ScmRepoStatusRaw {
+  is_git_repo?: boolean;
   current_branch?: string | null;
   has_upstream?: boolean;
   staged: ScmFileRaw[];
@@ -97,6 +98,9 @@ export class TauriDataProvider implements DataProvider {
       this.call<GitRepoInfoRaw>('get_git_info_with_cwd', { cwd: repoRoot }),
     ]);
     return {
+      // A successful get_scm_status call only comes from a detected repo;
+      // preserve the explicit flag when newer hosts provide it.
+      is_git_repo: scm.is_git_repo ?? true,
       current_branch: scm.current_branch ?? info.current_branch,
       has_upstream: scm.has_upstream ?? false,
       branches: info.branches ?? [],
