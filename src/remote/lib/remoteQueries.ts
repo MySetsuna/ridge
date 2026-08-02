@@ -23,7 +23,57 @@ export const remoteQueryKeys = {
   panes: (sessionId: number, workspaceId: string) =>
     ['remote', sessionId, 'panes', workspaceId] as const,
   capabilities: (sessionId: number) => ['remote', sessionId, 'capabilities'] as const,
+  /**
+   * Sidebar reads use the same TanStack Query cache as workspace/pane reads.
+   * Keep cwd and target in every key: two panes can point at the same path
+   * while still belonging to different remote sessions.
+   */
+  sidebarFiles: (sessionId: number, cwd: string, target: string, depth = 1) =>
+    ['remote', sessionId, 'sidebar', 'files', normalizeRemotePath(cwd), normalizeRemotePath(target), depth] as const,
+  sidebarGit: (sessionId: number, cwd: string) =>
+    ['remote', sessionId, 'sidebar', 'git', normalizeRemotePath(cwd)] as const,
+  sidebarSearch: (sessionId: number, cwd: string, query: string) =>
+    ['remote', sessionId, 'sidebar', 'search', normalizeRemotePath(cwd), query] as const,
+  sidebarFile: (sessionId: number, cwd: string, path: string) =>
+    ['remote', sessionId, 'sidebar', 'file', normalizeRemotePath(cwd), normalizeRemotePath(path)] as const,
+  sidebarDiff: (sessionId: number, cwd: string, path: string) =>
+    ['remote', sessionId, 'sidebar', 'diff', normalizeRemotePath(cwd), normalizeRemotePath(path)] as const,
 };
+
+export const remoteSidebarQueryPrefix = (sessionId: number) =>
+  ['remote', sessionId, 'sidebar'] as const;
+
+/** Stable key identity for Windows/Unix paths without changing the RPC path. */
+export function normalizeRemotePath(value: string): string {
+  const normalized = value.replaceAll('\\', '/').replace(/\/+$/, '') || '/';
+  return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+/**
+ * Sidebar cache window. QueryClient still owns eviction and single-flight;
+ * this explicit stale time is what prevents a tab remount from reloading the
+ * same directory/Git snapshot on every open.
+ */
+export const REMOTE_SIDEBAR_STALE_TIME_MS = 30_000;
+
+export interface RemoteQueryClientLike {
+  fetchQuery<T>(options: {
+    queryKey: readonly unknown[];
+    queryFn: () => Promise<T>;
+    staleTime?: number;
+  }): Promise<T>;
+  invalidateQueries?: (options: { queryKey: readonly unknown[] }) => Promise<unknown> | unknown;
+}
+
+export function fetchRemoteQuery<T>(
+  queryClient: RemoteQueryClientLike | undefined,
+  queryKey: readonly unknown[],
+  queryFn: () => Promise<T>,
+  staleTime = REMOTE_SIDEBAR_STALE_TIME_MS,
+): Promise<T> {
+  if (!queryClient) return queryFn();
+  return queryClient.fetchQuery({ queryKey, queryFn, staleTime });
+}
 
 export type RemoteCapabilities = {
   panels: Readonly<Record<RemotePanel, boolean>>;

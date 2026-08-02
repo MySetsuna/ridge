@@ -12,6 +12,22 @@ import type {
   SearchHit,
   FileEntry,
 } from '../../shared/sidebar/types';
+import {
+  fetchRemoteQuery,
+  remoteQueryKeys,
+  remoteSidebarQueryPrefix,
+  REMOTE_SIDEBAR_STALE_TIME_MS,
+  type RemoteQueryClientLike,
+} from './remoteQueries';
+
+export interface WsSidebarProviderOptions {
+  /** TanStack Query client supplied by the Remote app. */
+  queryClient?: RemoteQueryClientLike;
+  /** Stable transport identity; keeps LAN/cloud caches isolated. */
+  sessionId?: number;
+  /** Override only in tests or an explicitly shorter-lived view. */
+  staleTime?: number;
+}
 
 function parentOf(path: string): string | null {
   const norm = path.replace(/[\\/]+$/, '');
@@ -21,79 +37,99 @@ function parentOf(path: string): string | null {
 }
 
 /** Build a `SidebarProvider` rooted at `cwd` (the active pane's working dir). */
-export function createWsSidebarProvider(cwd: string, dataProvider?: DataProvider): SidebarProvider {
+export function createWsSidebarProvider(
+  cwd: string,
+  dataProvider?: DataProvider,
+  options: WsSidebarProviderOptions = {},
+): SidebarProvider {
   const dp = dataProvider ?? getTransport();
   const root = cwd || '/';
+  const sessionId = options.sessionId ?? 0;
+  const staleTime = options.staleTime ?? REMOTE_SIDEBAR_STALE_TIME_MS;
+  const run = <T>(key: readonly unknown[], query: () => Promise<T>): Promise<T> =>
+    fetchRemoteQuery(options.queryClient, key, query, staleTime);
 
   return {
     async listDir(path: string): Promise<DirListing> {
       const target = path || root;
-      const tree = (await dp.getFileTree(target, 1)) as {
-        path?: string;
-        children?: Array<{ name: string; path: string; is_dir: boolean; is_ignored?: boolean; child_count?: number }>;
-      };
-      const entries: FileEntry[] = (tree.children ?? []).map((c) => ({
-        name: c.name,
-        path: c.path,
-        is_dir: c.is_dir,
-        is_ignored: c.is_ignored ?? null,
-        child_count: c.child_count ?? null,
-      }));
-      // Directories first, then case-insensitive name — matches the desktop tree.
-      entries.sort((a, b) =>
-        a.is_dir === b.is_dir
-          ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-          : a.is_dir ? -1 : 1,
-      );
-      const resolved = tree.path ?? target;
-      return { path: resolved, parent: parentOf(resolved), entries };
+      return run(remoteQueryKeys.sidebarFiles(sessionId, root, target, 1), async () => {
+        const tree = (await dp.getFileTree(target, 1)) as {
+          path?: string;
+          children?: Array<{ name: string; path: string; is_dir: boolean; is_ignored?: boolean; child_count?: number }>;
+        };
+        const entries: FileEntry[] = (tree.children ?? []).map((c) => ({
+          name: c.name,
+          path: c.path,
+          is_dir: c.is_dir,
+          is_ignored: c.is_ignored ?? null,
+          child_count: c.child_count ?? null,
+        }));
+        // Directories first, then case-insensitive name — matches the desktop tree.
+        entries.sort((a, b) =>
+          a.is_dir === b.is_dir
+            ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+            : a.is_dir ? -1 : 1,
+        );
+        const resolved = tree.path ?? target;
+        return { path: resolved, parent: parentOf(resolved), entries };
+      });
     },
 
     async gitStatus(): Promise<GitInfo> {
-      try {
-        const s = (await dp.gitStatus(root)) as {
-          staged?: Array<{ name: string; status: string }>;
-          unstaged?: Array<{ name: string; status: string }>;
-          commits?: Array<{ hash: string; msg: string; time: string }>;
-        };
-        const files = [
-          ...(s.staged ?? []).map((f) => ({ path: f.name, additions: 0, deletions: 0, status: f.status })),
-          ...(s.unstaged ?? []).map((f) => ({ path: f.name, additions: 0, deletions: 0, status: f.status })),
-        ];
-        const commits = (s.commits ?? []).map((c) => ({ hash: c.hash, subject: c.msg, author: '', date: c.time }));
-        return {
-          isGitRepo: files.length > 0 || commits.length > 0,
-          currentBranch: null,
-          branches: [],
-          files,
-          commits,
-        };
-      } catch {
-        return { isGitRepo: false, currentBranch: null, branches: [], files: [], commits: [] };
-      }
+      return run(remoteQueryKeys.sidebarGit(sessionId, root), async () => {
+        try {
+          const s = (await dp.gitStatus(root)) as {
+            staged?: Array<{ name: string; status: string }>;
+            unstaged?: Array<{ name: string; status: string }>;
+            commits?: Array<{ hash: string; msg: string; time: string }>;
+          };
+          const files = [
+            ...(s.staged ?? []).map((f) => ({ path: f.name, additions: 0, deletions: 0, status: f.status })),
+            ...(s.unstaged ?? []).map((f) => ({ path: f.name, additions: 0, deletions: 0, status: f.status })),
+          ];
+          const commits = (s.commits ?? []).map((c) => ({ hash: c.hash, subject: c.msg, author: '', date: c.time }));
+          return {
+            isGitRepo: files.length > 0 || commits.length > 0,
+            currentBranch: null,
+            branches: [],
+            files,
+            commits,
+          };
+        } catch {
+          return { isGitRepo: false, currentBranch: null, branches: [], files: [], commits: [] };
+        }
+      });
     },
 
     async search(query: string): Promise<SearchHit[]> {
-      const hits = (await dp.searchFiles(query, root)) as Array<{
-        path: string;
-        line?: number;
-        column?: number;
-        snippet?: string;
-      }>;
-      return hits.map((h) => ({ file: h.path, line: h.line ?? 0, column: h.column ?? 0, content: h.snippet ?? '' }));
+      return run(remoteQueryKeys.sidebarSearch(sessionId, root, query), async () => {
+        const hits = (await dp.searchFiles(query, root)) as Array<{
+          path: string;
+          line?: number;
+          column?: number;
+          snippet?: string;
+        }>;
+        return hits.map((h) => ({ file: h.path, line: h.line ?? 0, column: h.column ?? 0, content: h.snippet ?? '' }));
+      });
     },
 
     async readFile(path: string): Promise<string> {
-      return dp.readFile(path);
+      return run(remoteQueryKeys.sidebarFile(sessionId, root, path), () => dp.readFile(path));
     },
 
     async writeFile(path: string, content: string): Promise<void> {
-      return dp.writeFile(path, content);
+      await dp.writeFile(path, content);
+      // A successful write invalidates sidebar reads for this remote session;
+      // the next panel open gets fresh tree/Git/file content without turning
+      // ordinary tab opens into unconditional network requests.
+      await options.queryClient?.invalidateQueries?.({
+        queryKey: remoteSidebarQueryPrefix(sessionId),
+      });
     },
 
     async gitDiff(path: string): Promise<string> {
       // Working-tree diff vs HEAD (uncached), rooted at the pane cwd.
-      return dp.gitDiffFile(root, path, false);
+      return run(remoteQueryKeys.sidebarDiff(sessionId, root, path), () => dp.gitDiffFile(root, path, false));
     },
   };
 }
