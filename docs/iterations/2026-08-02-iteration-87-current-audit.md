@@ -313,3 +313,21 @@ Remote/cloud refresh closure (2026-08-02, kernel adapter): workflow
 `0.1.37+gef70b3c` (233 files / 21.78 MiB). Cloud health returned HTTP 200.
 The desktop `v0.1.37` Release and version remain unchanged; the follow-up
 `65700ea` only updates iteration records.
+
+## Iteration 88 continuation — Foreign Host Resize coalescing
+
+Commit `de001bb` closes a desktop outbound gap: `OutboundClient::resize_pane`
+now serializes the check/send path per host, suppresses an already acknowledged
+`(rows, cols)` pair, and records `resize_suppressed`. The cache is cleared on
+subscribe, unsubscribe, reconnect, and disconnect; failed sends never poison
+the cache, and a lifecycle recheck prevents a resize racing with Pane detach.
+This complements the Remote `PaneRpcScheduler` debounce/backoff path without
+changing PTY dimensions or protocol semantics.
+
+Deterministic evidence: `cargo test --manifest-path src-tauri/Cargo.toml
+hosts::outbound::tests -- --nocapture` passed 10/10, including same-size
+coalescing, failed-send recovery, and reconnect first-resize delivery. Global
+`cargo fmt --check` still reports the pre-existing `packages/ridge-cli/src/
+kernel_ctl.rs` formatting delta; the touched outbound module has no diff-check
+errors. Desktop Release remains `v0.1.37`; this runtime fix requires a fresh
+Remote artifact publish after the commit.

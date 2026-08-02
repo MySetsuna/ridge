@@ -935,3 +935,13 @@ Remote/cloud refresh closure (2026-08-02): workflow `30746141772` published
 `ef70b3c` as artifact `0.1.37+gef70b3c` (233 files / 21.78 MiB), with cloud
 health HTTP 200. Desktop Release `v0.1.37` remains unchanged; subsequent
 `65700ea` is documentation-only.
+
+## 2026-08-02 iteration 88 — Foreign Host Resize coalescing
+
+`de001bb` adds a per-host Resize admission gate to `OutboundClient`. Identical
+acknowledged dimensions are suppressed and counted; subscribe/unsubscribe,
+reconnect, and disconnect clear the applied snapshot; failed transport calls
+remain retryable. A second subscription check after gate acquisition prevents
+stale Resize delivery after Pane detach. Tauri outbound tests pass 10/10.
+This is a runtime change, so Remote must be rebuilt from `de001bb`; desktop
+version stays `0.1.37` until a versioned Release is actually green.
