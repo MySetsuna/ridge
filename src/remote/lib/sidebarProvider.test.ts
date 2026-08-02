@@ -128,6 +128,31 @@ describe('remote sidebar query contract', () => {
     expect(gitStatus).toHaveBeenNthCalledWith(2, '/repo-b');
   });
 
+  it('keeps a clean Git repository visible when status has no files or commits', async () => {
+    const dp = makeProvider({
+      gitStatus: vi.fn(async () => ({
+        is_git_repo: true,
+        current_branch: 'main',
+        staged: [],
+        unstaged: [],
+        untracked: [],
+        commits: [],
+      })),
+    });
+    const info = await createWsSidebarProvider('/clean-repo', dp).gitStatus();
+    expect(info.isGitRepo).toBe(true);
+    expect(info.files).toEqual([]);
+    expect(info.currentBranch).toBe('main');
+  });
+
+  it('defaults successful legacy Git responses to repository=true', async () => {
+    const dp = makeProvider({
+      gitStatus: vi.fn(async () => ({ staged: [], unstaged: [], untracked: [], commits: [] })),
+    });
+    await expect(createWsSidebarProvider('/legacy-clean-repo', dp).gitStatus())
+      .resolves.toMatchObject({ isGitRepo: true });
+  });
+
   it('caches Agent roster and history across sidebar remounts', async () => {
     const client = new TestQueryClient();
     const topology = { roster: [], leaderId: null, edges: [] };

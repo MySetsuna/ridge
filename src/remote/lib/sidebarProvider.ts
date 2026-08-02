@@ -79,6 +79,7 @@ export function createWsSidebarProvider(
       return run(remoteQueryKeys.sidebarGit(sessionId, root), async () => {
         try {
           const s = (await dp.gitStatus(root)) as {
+            is_git_repo?: boolean;
             staged?: Array<{ name: string; status: string }>;
             unstaged?: Array<{ name: string; status: string }>;
             untracked?: string[];
@@ -114,7 +115,10 @@ export function createWsSidebarProvider(
             refs: c.refs,
           }));
           return {
-            isGitRepo: files.length > 0 || commits.length > 0,
+            // A clean repository has no files/commits to count. Successful
+            // git_status already proves repository detection; newer hosts
+            // send the explicit flag and older hosts safely default to true.
+            isGitRepo: s.is_git_repo ?? true,
             currentBranch: s.current_branch ?? null,
             hasUpstream: s.has_upstream ?? false,
             branches: s.branches ?? [],
