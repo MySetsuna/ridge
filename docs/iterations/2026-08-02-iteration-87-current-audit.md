@@ -276,6 +276,12 @@ This is a shell-adapter safety/convergence slice, not a claim that desktop
 AppState, PTY runtime, window claims, or filesystem root authority have fully
 migrated into the kernel.
 
+Pane header single-layer guard (2026-08-02): `a1d816a` adds a static
+regression assertion that `PaneRepoSwitcher`, `PaneGitPill`, and `PaneDiffPill`
+each render once as adjacent siblings in the pane header. The focused desktop
+and Remote/mobile slice is now 17/17 green; no nested/duplicate Git pill is
+introduced.
+
 Remote/cloud refresh closure (2026-08-02, kernel adapter): workflow
 `30746141772` completed successfully from `ef70b3c` and activated artifact
 `0.1.37+gef70b3c` (233 files / 21.78 MiB). Cloud health returned HTTP 200.
