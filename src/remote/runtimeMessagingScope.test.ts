@@ -27,6 +27,7 @@ const productSources = [
   remoteMainSource,
   serviceWorkerSource,
   ...collectRemoteSources(fileURLToPath(new URL('.', import.meta.url))),
+  ...collectRemoteSources(fileURLToPath(new URL('../../packages/remote/src/', import.meta.url))),
 ];
 
 describe('Remote runtime messaging scope', () => {
