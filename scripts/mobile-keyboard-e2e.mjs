@@ -261,6 +261,77 @@ async function main() {
     await page.waitForTimeout(900);
     const restored = await metric(page);
 
+    // Touch-selection smoke: exercise the same mobile touch handlers that
+    // previously drifted from the finger after a visual-stage transform.
+    // The geometry unit test proves the exact row/column math; this browser
+    // assertion proves the real touch path reaches the copy affordance.
+    const selectionTouch = await (async () => {
+      const toggle = page.locator('.group-left .ctrl-btn').first();
+      if (!(await toggle.count())) return { ok: false, reason: 'selection toggle not found' };
+      await toggle.click();
+      await page.keyboard.type("Write-Output SEL_A; Write-Output SEL_B; Write-Output SEL_C");
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(900);
+      const sample = await metric(page);
+      const pane = sample.geometry?.[0];
+      if (!pane?.canvas || !pane.cell || !pane.kernel) {
+        return { ok: false, reason: 'terminal geometry unavailable', sample };
+      }
+      const row = Math.max(0, pane.kernel.rows - 3);
+      const endRow = Math.min(pane.kernel.rows - 1, row + 2);
+      const start = {
+        x: pane.canvas.x + pane.cell.width * 2.5,
+        y: pane.canvas.y + pane.cell.height * (row + 0.5),
+      };
+      const end = {
+        x: pane.canvas.x + pane.cell.width * 2.5,
+        y: pane.canvas.y + pane.cell.height * (endRow + 0.5),
+      };
+      await page.evaluate(({ start: a, end: b }) => {
+        const el = document.querySelector('.term-stage .container');
+        if (!el) throw new Error('terminal container unavailable');
+        const make = (p) => new Touch({
+          identifier: 7,
+          target: el,
+          clientX: p.x,
+          clientY: p.y,
+          screenX: p.x,
+          screenY: p.y,
+          pageX: p.x,
+          pageY: p.y,
+        });
+        const first = make(a);
+        const last = make(b);
+        el.dispatchEvent(new TouchEvent('touchstart', {
+          bubbles: true,
+          cancelable: true,
+          touches: [first],
+          targetTouches: [first],
+          changedTouches: [first],
+        }));
+        el.dispatchEvent(new TouchEvent('touchmove', {
+          bubbles: true,
+          cancelable: true,
+          touches: [last],
+          targetTouches: [last],
+          changedTouches: [last],
+        }));
+        el.dispatchEvent(new TouchEvent('touchend', {
+          bubbles: true,
+          cancelable: true,
+          touches: [],
+          targetTouches: [],
+          changedTouches: [last],
+        }));
+      }, { start, end });
+      await page.waitForTimeout(250);
+      const copyVisible = await page.locator('.copy-pill').isVisible().catch(() => false);
+      return { ok: copyVisible, row, endRow, start, end, copyVisible };
+    })().catch((error) => ({
+      ok: false,
+      reason: error instanceof Error ? error.message : String(error),
+    }));
+
     const visualReduced =
       (baseline.visualHeight != null && reduced.visualHeight != null
         && reduced.visualHeight < baseline.visualHeight - 20)
@@ -287,6 +358,7 @@ async function main() {
         && shiftBounded
         && inputSafe
         && recovered
+        && selectionTouch.ok
         && browserErrors.length === 0,
       emulation: 'Chromium mobile context; not physical-device evidence',
       port,
@@ -297,6 +369,7 @@ async function main() {
       reduced,
       jitter,
       restored,
+      selectionTouch,
       assertions: {
         visualReduced,
         shiftRequired,
@@ -304,6 +377,7 @@ async function main() {
         shiftBounded,
         inputSafe,
         recovered,
+        selectionTouch: selectionTouch.ok,
       },
     };
   } catch (error) {
