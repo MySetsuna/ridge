@@ -244,6 +244,11 @@ changes. Build, upload, activation, and cloud health (`HTTP 200`) passed. The
 workflow's Node/deprecated-action and checkout-submodule messages are warnings
 after the publish step, not publish failures.
 
+Remote/cloud refresh closure (2026-08-02, lifecycle guard): workflow
+`30745585264` rebuilt from `166a575` and activated `0.1.37+g166a575`; build,
+upload and activation passed, and cloud health stayed HTTP 200. The desktop
+Release remains `v0.1.37` with no version bump for this test/docs change.
+
 Pane-border clarification verification (2026-08-02): desktop and Remote
 projections are attention-only. `working`/`idle` never add an outer border;
 only `waiting`/`stopped` (or Remote `agentNeedsAttention`) render the transient
