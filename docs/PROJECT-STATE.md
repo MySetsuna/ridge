@@ -1059,3 +1059,17 @@ returned HTTP 200 (`version=0.0.7`).
 The release cleanliness gate was satisfied before tagging; the follow-up
 archive change is docs-only and is pushed separately, so no version mismatch
 or empty Release exists.
+
+### Iteration 89 runtime closure candidate (2026-08-03)
+
+`d14c812` is pushed on `main` and contains the Remote roster scope/generation
+fence, Query abort observer, non-Git SCM negative cache/error classification,
+WebSocket Git mutation cancellation propagation, and the desktop shared-
+workspace QueryClient boundary. Full Vitest, `pnpm check`, LAN desktop/mobile
+E2E, and PWA verification are green. The detailed record is
+`docs/iterations/2026-08-03-iteration-89-remote-roster-scm-lifecycle.md`.
+
+Physical/public/WebView2/dual-window/full-Kernel authority gates remain open;
+the release notes must retain those limits. The next versioned release must
+pass the clean-worktree gate and include matching Desktop, Remote, and Cloud
+publication evidence.

@@ -1,19 +1,23 @@
 {
   "ok": true,
-  "at": "2026-07-31T00:57:54.817Z",
-  "port": 3536,
-  "url": "https://127.0.0.1:3536",
+  "at": "2026-08-02T17:36:43.492Z",
+  "browserIsolation": {
+    "extensionsDisabled": true,
+    "isolatedContext": true
+  },
+  "port": 26418,
+  "url": "https://127.0.0.1:26418",
   "status": {
     "lan_ip": "192.168.1.11",
     "period_secs": 30,
-    "pid": 11312,
-    "port": 3536,
+    "pid": 28084,
+    "port": 26418,
     "ready": true,
     "schema_version": 1,
-    "totp": "454917",
-    "updated_at_unix": 1785459406,
-    "url_lan": "https://192.168.1.11:3536",
-    "url_loopback": "https://127.0.0.1:3536"
+    "totp": "<redacted>",
+    "updated_at_unix": 1785692124,
+    "url_lan": "https://192.168.1.11:26418",
+    "url_loopback": "https://127.0.0.1:26418"
   },
   "results": [
     {
@@ -22,8 +26,56 @@
       "detail": "canvas=true tree=false ws=true",
       "browserErrors": [],
       "wsUrls": [
-        "wss://127.0.0.1:3536/ws?token=<redacted>&device=b44b5ee5-35ad-4bdc-b102-c44484d9bdca"
+        "wss://127.0.0.1:26418/ws?token=<redacted>&device=22fee6cc-c168-48c6-9ab1-eeb7038b3c23"
       ],
+      "rpc": {
+        "inputAvailable": true,
+        "inputSent": true,
+        "resizeSent": true,
+        "sent": {
+          "resize_pane": 2,
+          "write_to_pty": 21
+        },
+        "received": {},
+        "frameMethodsSent": {
+          "$/hello": 1,
+          "list_workspace_save_info": 4,
+          "list_native_sessions": 16,
+          "get_theme_data": 1,
+          "get_orchestration_health": 5,
+          "host_list_snapshot": 9,
+          "set_hitl_enabled": 1,
+          "set_user_default_cwd": 1,
+          "list_workspaces": 1,
+          "get_pending_hitl_count": 5,
+          "get_active_workspace_id": 1,
+          "list_hitl_pending": 5,
+          "get_pane_layout_for": 1,
+          "get_git_guard_stats": 2,
+          "get_file_tree": 1,
+          "detect_available_shells": 1,
+          "get_shell_history": 1,
+          "get_pane_foreground_process": 33,
+          "list_hitl_audit_remote": 2,
+          "set_teammate_groups": 1,
+          "get_startup_context": 1,
+          "read_agent_recent_replies": 2,
+          "list_saved_workspaces": 1,
+          "start_watching_paths": 1,
+          "find_git_repos_below": 2,
+          "create_pane": 1,
+          "subscribe-pane": 1,
+          "get_pane_scrollback_tail": 1,
+          "activate_pane_pty": 1,
+          "resize_pane": 2,
+          "get_teammate_topology": 4,
+          "list_hitl_decisions": 1,
+          "write_to_pty": 21
+        },
+        "frameMethodsReceived": {
+          "$/hello": 1
+        }
+      },
       "screenshot": "C:\\code\\wind\\.iteration\\artifacts\\rdg-remote-e2e\\desktop.png"
     },
     {
@@ -32,10 +84,25 @@
       "detail": "canvas=true tree=true ws=true",
       "browserErrors": [],
       "wsUrls": [
-        "wss://127.0.0.1:3536/ws?token=<redacted>&device=17802d1a-7b0b-4950-8581-a2f25badf8a4"
+        "wss://127.0.0.1:26418/ws?token=<redacted>&device=f0494fc0-5dd9-4240-901f-7e8600f0ce8d"
       ],
+      "rpc": {
+        "inputAvailable": true,
+        "inputSent": true,
+        "resizeSent": true,
+        "sent": {
+          "resize_pane": 2,
+          "write_to_pty": 2
+        },
+        "received": {},
+        "frameMethodsSent": {
+          "resize_pane": 2,
+          "write_to_pty": 2
+        },
+        "frameMethodsReceived": {}
+      },
       "screenshot": "C:\\code\\wind\\.iteration\\artifacts\\rdg-remote-e2e\\mobile.png"
     }
   ],
-  "hostLogTail": "rdg LAN Remote host (headless)\n  本机打开: https://127.0.0.1:3536   ← 优先用这个\n  局域网  : https://192.168.1.11:3536   （他机；本机若开了系统代理会失败）\n  TOTP: 454917 (every 30s)\n  证书自签：浏览器选「高级 → 继续访问」；不要用 http://\n  警告: 检测到 https_proxy/ALL_PROXY。本机请用 127.0.0.1，或把 192.168.1.11 加入 no_proxy。\n  Ctrl+C to stop\n  ready: listening on 3536\n  TOTP: 047805\n  TOTP: 608967\n"
+  "hostLogTail": "rdg LAN Remote host (headless)\n  本机打开: https://127.0.0.1:26418   ← 优先用这个\n  局域网  : https://192.168.1.11:26418   （他机；本机若开了系统代理会失败）\n  TOTP: <redacted> (every 30s)\n  证书自签：浏览器选「高级 → 继续访问」；不要用 http://\n  警告: 检测到 https_proxy/ALL_PROXY。本机请用 127.0.0.1，或把 192.168.1.11 加入 no_proxy。\n  Ctrl+C to stop\n  ready: listening on 26418\n  TOTP: <redacted>\n  TOTP: <redacted>\n  TOTP: <redacted>\n"
 }
