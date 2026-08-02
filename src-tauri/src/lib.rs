@@ -300,7 +300,7 @@ pub fn run() {
                         // 验收④：内核被 CLI/rdg 杀掉后桌面外壳自退。
                         let exit_handle = app.handle().clone();
                         let stop_flag = app.state::<crate::state::AppState>().quitting.clone();
-                        crate::kernel_lifecycle::spawn_kernel_death_watcher(
+                        let _kernel_watcher = crate::kernel_lifecycle::spawn_kernel_death_watcher(
                             ep.pid,
                             move || {
                                 exit_handle
@@ -310,7 +310,15 @@ pub fn run() {
                                 exit_handle.exit(0);
                             },
                             move || stop_flag.load(std::sync::atomic::Ordering::Acquire),
-                        );
+                        )
+                        .map_err(|error| {
+                            tracing::error!(
+                                target: "ridge::kernel_lifecycle",
+                                %error,
+                                "failed to spawn ridge-kernel death watcher"
+                            );
+                            std::io::Error::other(error)
+                        })?;
                     }
                     Err(e) => tracing::error!(
                         target: "ridge::kernel_lifecycle",

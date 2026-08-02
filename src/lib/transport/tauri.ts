@@ -89,7 +89,7 @@ export class TauriDataProvider implements DataProvider {
   }
 
   // ── Git ──
-  async gitStatus(repoRoot: string): Promise<GitStatusResult> {
+  async gitStatus(repoRoot: string, _signal?: AbortSignal): Promise<GitStatusResult> {
     // `get_scm_status` carries staged/changes/untracked but no commit log, so
     // pull the recent commits from `get_git_info_with_cwd` in parallel, then
     // remap both into `GitStatusResult` (identical to WsDataProvider's output).
