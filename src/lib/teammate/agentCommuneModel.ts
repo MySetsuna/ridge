@@ -55,6 +55,19 @@ export function agentCardStatus(
   return 'idle';
 }
 
+/** Pane chrome consumes the same projection as Commune cards. A live roster
+ * entry cannot be `completed`; map that history-only state to the neutral pane
+ * state so border/highlight and card status never drift independently. */
+export type AgentPaneStatus = Exclude<AgentCardStatus, 'completed'>;
+
+export function agentPaneStatus(
+  profile: Pick<TeammateProfile, 'status' | 'activity'>,
+  pendingApproval: boolean,
+): AgentPaneStatus {
+  const status = agentCardStatus(profile, pendingApproval);
+  return status === 'completed' ? 'idle' : status;
+}
+
 const STATUS_PRIORITY: readonly AgentCardStatus[] = ['waiting', 'working', 'stopped', 'idle', 'completed'];
 
 export function aggregateAgentCardStatus(statuses: readonly AgentCardStatus[]): AgentCardStatus {
