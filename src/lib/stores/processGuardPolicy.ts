@@ -5,9 +5,9 @@
 
 import type { GitGuardStats } from './gitGuardStats';
 
-/** Must match ridge-core git concurrency constants (cross-commented). */
-export const GIT_CONCURRENCY_MIN = 1;
-export const GIT_CONCURRENCY_MAX = 4;
+/** Must match ridge-core git.rs and pLimit.ts concurrency constants. */
+export const GIT_CONCURRENCY_MIN = 2;
+export const GIT_CONCURRENCY_MAX = 12;
 
 export interface ProcessGuardView {
   active: number;

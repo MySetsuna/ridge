@@ -85,9 +85,11 @@ pub fn validate_site_module(module: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == ':' || c == '_' || c == '-')
 }
 
-/// Dual-end concurrency caps (must match frontend processGuardPolicy / git).
-pub const GIT_CONCURRENCY_MIN: u32 = 1;
-pub const GIT_CONCURRENCY_MAX: u32 = 4;
+/// Cross-layer concurrency caps (must match frontend processGuardPolicy/pLimit
+/// and `commands::git`). Keep these bounds identical so telemetry and clamps do
+/// not report a different guard from the semaphore that actually runs git.
+pub const GIT_CONCURRENCY_MIN: u32 = 2;
+pub const GIT_CONCURRENCY_MAX: u32 = 12;
 
 pub fn clamp_git_concurrency(n: u32) -> u32 {
     n.clamp(GIT_CONCURRENCY_MIN, GIT_CONCURRENCY_MAX)

@@ -15,9 +15,9 @@ const base: GitGuardStats = {
   peakActiveChildren: 0,
   timeoutKills: 0,
   acquireTimeouts: 0,
-  logicalConcurrencyCap: 4,
-  concurrencyMin: 1,
-  concurrencyMax: 4,
+  logicalConcurrencyCap: 12,
+  concurrencyMin: 2,
+  concurrencyMax: 12,
 };
 
 describe('processGuardPolicy (C52)', () => {
@@ -34,7 +34,7 @@ describe('processGuardPolicy (C52)', () => {
   });
 
   it('elevated at cap', () => {
-    const v = pressureFromStats({ ...base, activeChildren: 4 });
+    const v = pressureFromStats({ ...base, activeChildren: 12 });
     expect(v.pressure).toBe('elevated');
     expect(v.badge).toMatch(/git/);
   });
