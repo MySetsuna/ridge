@@ -12,6 +12,18 @@ use uuid::Uuid;
 use crate::registry::{save_remote_hosts_at, save_roster_at, save_workspace_graph_at};
 use crate::server::AppState;
 
+pub(crate) const KERNEL_FS_ROOT_ENV: &str = "RIDGE_KERNEL_FS_ROOT";
+
+/// Read the host-granted filesystem root once when the kernel starts. Empty or
+/// unset keeps the existing desktop compatibility mode; a non-empty root makes
+/// the kernel's FS domain endpoint the enforcing authority for that process.
+pub(crate) fn fs_scope_from_env() -> ridge_core::sandbox::RootScope {
+    std::env::var_os(KERNEL_FS_ROOT_ENV)
+        .filter(|value| !value.to_string_lossy().trim().is_empty())
+        .map(|value| ridge_core::sandbox::RootScope::from_roots([value]))
+        .unwrap_or_else(ridge_core::sandbox::RootScope::unrestricted)
+}
+
 fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
     headers
         .get("x-ridge-kernel-token")
@@ -556,6 +568,14 @@ pub async fn domain_fs_list(
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
+    if !st.fs_scope.is_allowed(&q.path) {
+        return Ok(Json(json!({
+            "ok": false,
+            "source": "ridge-kernel",
+            "path": q.path,
+            "error": "path outside kernel filesystem root",
+        })));
+    }
     match ridge_core::fs::commands::get_directory_children(&q.path, q.offset, q.limit) {
         Ok(page) => Ok(Json(json!({
             "ok": true,
@@ -652,6 +672,7 @@ mod tests {
             remote_hosts: Arc::new(std::sync::Mutex::new(ridge_core::remote::RemoteHostTopology::default())),
             remote_hosts_path: std::env::temp_dir().join(format!("ridge-kernel-test-{}.json", Uuid::new_v4())),
             ptys: Arc::new(crate::pty::PtyRegistry::default()),
+            fs_scope: ridge_core::sandbox::RootScope::unrestricted(),
         }
     }
 
@@ -687,6 +708,35 @@ mod tests {
         .unwrap()
         .0;
         assert_eq!(response["is_repo"], true);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn fs_list_rejects_paths_outside_kernel_scope() {
+        let root = std::env::temp_dir().join(format!("ridge-kernel-fs-root-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = root
+            .parent()
+            .expect("temp root has parent")
+            .join(format!("ridge-kernel-fs-outside-{}", Uuid::new_v4()));
+        let mut state = test_state();
+        state.fs_scope = ridge_core::sandbox::RootScope::from_roots([root.clone()]);
+
+        let response = domain_fs_list(
+            State(state),
+            test_headers(),
+            Query(FsListQuery {
+                path: outside.to_string_lossy().into_owned(),
+                offset: None,
+                limit: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["source"], "ridge-kernel");
+        assert_eq!(response["error"], "path outside kernel filesystem root");
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -50,6 +50,9 @@ pub struct AppState {
     pub remote_hosts_path: std::path::PathBuf,
     /// PTY process lifetime belongs to the kernel, not an API shell.
     pub ptys: Arc<PtyRegistry>,
+    /// Optional host-granted filesystem roots for kernel domain reads. An
+    /// empty scope preserves the desktop migration window (unrestricted).
+    pub fs_scope: ridge_core::sandbox::RootScope,
 }
 
 #[derive(Serialize)]
@@ -224,6 +227,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         )),
         remote_hosts_path: remote_hosts_path(),
         ptys: Arc::new(PtyRegistry::default()),
+        fs_scope: domain::fs_scope_from_env(),
     };
 
     let mcp = KernelMcpHost::router(state.clone(), Arc::new(token.clone()));

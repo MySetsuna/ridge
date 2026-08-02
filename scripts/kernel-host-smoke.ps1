@@ -4,6 +4,9 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $env:RIDGE_CONFIRM_QUIT_KERNEL = "1"
+# Exercise the same root policy a headless/remote host can grant to the
+# kernel. Unset/empty keeps desktop compatibility; this smoke opts in.
+$env:RIDGE_KERNEL_FS_ROOT = $root
 
 # Every external process in this smoke must have a wall-clock bound and a
 # process-tree cleanup path. A timed-out `rdg kernel ensure` otherwise leaves a
@@ -74,6 +77,9 @@ try {
   Assert-True ($agents -match "claude|profiles") "domain agents: $agents"
   $fs = Invoke-Checked -FilePath $rdg -ArgumentList @('kernel', 'fs-list', $root) -TimeoutMs 10000
   Assert-True ($fs -match "ok") "domain fs-list: $fs"
+  $outside = Join-Path (Split-Path -Parent $root) ("ridge-kernel-fs-outside-$PID")
+  $blocked = Invoke-Checked -FilePath $rdg -ArgumentList @('kernel', 'fs-list', $outside) -TimeoutMs 10000
+  Assert-True ($blocked -match '"ok"\s*:\s*false' -and $blocked -match 'outside kernel filesystem root') "fs root blocks outside path: $blocked"
   $git = Invoke-Checked -FilePath $rdg -ArgumentList @('kernel', 'git-status', $root) -TimeoutMs 30000
   Assert-True ($git -match "ridge-kernel|is_repo|status") "domain git-status: $git"
   $hosts = Invoke-Checked -FilePath $rdg -ArgumentList @('kernel', 'remote-hosts') -TimeoutMs 10000
