@@ -173,3 +173,17 @@ credentials remain external gates until their evidence is captured.
 - External gates unchanged: HTTPS browser/PWA install transition, physical notch phone,
   public soak, WebView2 heap soak, dual-window/dual-host E2E and authenticated real Git
   push remain unclaimed until captured.
+
+## Iteration 86 post-checkpoint (2026-08-02)
+
+- `64eff8d` pushed Agent roster/history through the shared Remote Query layer:
+  session/workspace keys, 30-second stale reuse, single-flight fetches, mutation
+  invalidation and stale-response cancellation. Reopening the mobile Agent drawer
+  no longer reissues fresh RPCs inside the cache window.
+- `c424fe2` anchors the mobile action bar to the dynamic standalone viewport and
+  makes the safe-area inset part of the bar box; `d779f07` applies theme variables
+  atomically and synchronizes `html`/`body`/PWA `theme-color` to stop edge flashes.
+- `ae67e11` adds deterministic Agent drawer icon/text alignment coverage. Full local
+  verification: Vitest `128 files / 1402 passed / 1 skipped`, `pnpm check` 0/0.
+- These commits are pushed to `origin/main`; Remote artifact republish is required
+  before claiming the new UI is active. Desktop `v0.1.34` remains unchanged.
