@@ -722,3 +722,12 @@ sequenceDiagram
   `4` 测试通过。桌面 `v0.1.34` 不升版；Remote 须从 `0d10e2c`（或后续文档提交）
   重建并原子激活。真机 PWA/刘海、公网长稳、WebView2 heap、双窗口/双 Host、真实
   Remote Git push、扩展归因仍待外部证据。
+## 2026-08-02 iteration 86 publish checkpoint
+
+- Remote workflow `30733546603` succeeded from `12662ac`; artifact
+  `0.1.34+g12662ac` was uploaded and atomically activated. `remote-dist` built
+  both desktop/mobile bundles and PWA assets; desktop `v0.1.34` remains unchanged.
+- Workflow warnings are non-blocking: PWA optional font/media globs are empty and
+  GitHub reports Node 20 action deprecation. No build, upload, or activation step
+  failed. Cloud health remains `ok=true`; no cloud source changed, so no version
+  bump or separate cloud release was fabricated.

@@ -199,3 +199,9 @@ terminal-feed and Rust guard suites are green. Remote publish must be rerun from
 the product commit after this checkpoint; desktop `v0.1.34` is deliberately not
 bumped. Physical-device, public-soak, heap-soak, dual-window/host and real-push
 evidence remain unclaimed.
+## Iteration 86 publish checkpoint (2026-08-02)
+
+Remote workflow `30733546603` completed successfully from `12662ac`, activating
+`0.1.34+g12662ac` after building both desktop/mobile bundles. Desktop `v0.1.34`
+was not bumped. Empty optional PWA media/font globs and GitHub Node-20 deprecation
+annotations are warnings only; build, upload, status and activation gates passed.
