@@ -107,10 +107,6 @@ export const zh: Record<string, string> = {
   sidebarSearchTitle: '搜索',
   sidebarClose: '关闭',
   loading: '加载中…',
-  pwaInstall: '安装 Ridge Remote',
-  pwaInstallIos: '添加到主屏幕',
-  pwaInstallIosHelp: '请打开浏览器分享菜单，选择“添加到主屏幕”。',
-  pwaInstallError: '安装未完成，请稍后重试。',
 
   // TerminalCanvas
   initializingTerminal: '初始化终端引擎…',
@@ -242,10 +238,6 @@ export const en: Record<string, string> = {
   sidebarSearchTitle: 'Search',
   sidebarClose: 'Close',
   loading: 'Loading…',
-  pwaInstall: 'Install Ridge Remote',
-  pwaInstallIos: 'Add to Home Screen',
-  pwaInstallIosHelp: 'Open the browser share menu and choose “Add to Home Screen”.',
-  pwaInstallError: 'Install did not finish. Try again later.',
 
   // TerminalCanvas
   initializingTerminal: 'Initializing terminal engine…',
