@@ -167,6 +167,13 @@ pub struct OutboundClient {
     sessions: Mutex<Vec<RemoteSessionInfo>>,
     /// remote_pane_id → subscribed
     subscriptions: Mutex<HashMap<String, bool>>,
+    /// One resize per host transport at a time. The transport call is
+    /// synchronous, so holding this gate also closes the check/send race when
+    /// two ResizeObservers report the same dimensions concurrently.
+    resize_gate: Mutex<()>,
+    /// Last dimensions acknowledged by the remote pane. Cleared on detach or
+    /// reconnect so the first resize after a new subscription is never lost.
+    resize_last_applied: Mutex<HashMap<String, (u16, u16)>>,
     /// 观测计数（可测，不落盘）
     pub stats: OutboundStats,
 }
@@ -179,6 +186,7 @@ pub struct OutboundStats {
     pub unsubscribe_ok: AtomicU64,
     pub write_ok: AtomicU64,
     pub resize_ok: AtomicU64,
+    pub resize_suppressed: AtomicU64,
     pub fanout_bytes: AtomicU64,
     pub reconnect_attempts: AtomicU64,
     pub resubscribe_ok: AtomicU64,
@@ -199,6 +207,8 @@ impl OutboundClient {
             transport,
             sessions: Mutex::new(Vec::new()),
             subscriptions: Mutex::new(HashMap::new()),
+            resize_gate: Mutex::new(()),
+            resize_last_applied: Mutex::new(HashMap::new()),
             stats: OutboundStats::default(),
         }
     }
@@ -223,7 +233,10 @@ impl OutboundClient {
     /// T1: hello + list_panes
     pub fn connect_and_list(&self) -> Result<Vec<RemoteSessionInfo>, String> {
         *self.state.lock() = OutboundState::Connecting;
-        match self.transport.send_json_rpc("$/hello", json!({ "role": "controller" })) {
+        match self
+            .transport
+            .send_json_rpc("$/hello", json!({ "role": "controller" }))
+        {
             Ok(_) => {
                 self.stats.hello_ok.fetch_add(1, Ordering::SeqCst);
                 *self.state.lock() = OutboundState::HelloOk;
@@ -258,13 +271,13 @@ impl OutboundClient {
         ) {
             return Err(format!("cannot subscribe in state {st:?}"));
         }
-        self.transport.send_json_rpc(
-            "subscribe-pane",
-            json!({ "paneId": remote_pane_id }),
-        )?;
+        let _gate = self.resize_gate.lock();
+        self.transport
+            .send_json_rpc("subscribe-pane", json!({ "paneId": remote_pane_id }))?;
         self.subscriptions
             .lock()
             .insert(remote_pane_id.to_string(), true);
+        self.resize_last_applied.lock().remove(remote_pane_id);
         self.stats.subscribe_ok.fetch_add(1, Ordering::SeqCst);
         *self.state.lock() = OutboundState::Subscribed;
         Ok(())
@@ -272,11 +285,11 @@ impl OutboundClient {
 
     /// detach: unsubscribe，保留 host 连接
     pub fn unsubscribe(&self, remote_pane_id: &str) -> Result<(), String> {
-        self.transport.send_json_rpc(
-            "unsubscribe-pane",
-            json!({ "paneId": remote_pane_id }),
-        )?;
+        let _gate = self.resize_gate.lock();
+        self.transport
+            .send_json_rpc("unsubscribe-pane", json!({ "paneId": remote_pane_id }))?;
         self.subscriptions.lock().remove(remote_pane_id);
+        self.resize_last_applied.lock().remove(remote_pane_id);
         self.stats.unsubscribe_ok.fetch_add(1, Ordering::SeqCst);
         if self.subscriptions.lock().is_empty() {
             *self.state.lock() = OutboundState::Listed;
@@ -304,10 +317,24 @@ impl OutboundClient {
         if !self.is_subscribed(remote_pane_id) {
             return Err(format!("not subscribed: {remote_pane_id}"));
         }
+        // Serialize the check and the wire call. Without this gate two
+        // concurrent layout observers can both miss the cache and enqueue the
+        // same resize before either response returns.
+        let _gate = self.resize_gate.lock();
+        if !self.is_subscribed(remote_pane_id) {
+            return Err(format!("not subscribed: {remote_pane_id}"));
+        }
+        if self.resize_last_applied.lock().get(remote_pane_id).copied() == Some((rows, cols)) {
+            self.stats.resize_suppressed.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
+        }
         self.transport.send_json_rpc(
             "resize_pane",
             json!({ "paneId": remote_pane_id, "rows": rows, "cols": cols }),
         )?;
+        self.resize_last_applied
+            .lock()
+            .insert(remote_pane_id.to_string(), (rows, cols));
         self.stats.resize_ok.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -324,6 +351,10 @@ impl OutboundClient {
     pub fn reconnect_resubscribe(&self, pane_ids: &[String]) -> Result<(), String> {
         self.stats.reconnect_attempts.fetch_add(1, Ordering::SeqCst);
         *self.state.lock() = OutboundState::Connecting;
+        {
+            let _gate = self.resize_gate.lock();
+            self.resize_last_applied.lock().clear();
+        }
         self.connect_and_list()?;
         for id in pane_ids {
             // 先确保本地 map 干净，避免双订
@@ -344,13 +375,15 @@ impl OutboundClient {
     }
 
     pub fn mark_disconnected(&self) {
+        let _gate = self.resize_gate.lock();
         *self.state.lock() = OutboundState::Disconnected;
         self.subscriptions.lock().clear();
+        self.resize_last_applied.lock().clear();
     }
 
     pub fn disconnect(&self) {
-        self.transport.close();
         self.mark_disconnected();
+        self.transport.close();
     }
 }
 
@@ -412,9 +445,7 @@ pub struct OutboundRegistry {
 
 impl OutboundRegistry {
     pub fn insert(&self, client: Arc<OutboundClient>) {
-        self.clients
-            .lock()
-            .insert(client.host_id.clone(), client);
+        self.clients.lock().insert(client.host_id.clone(), client);
     }
 
     pub fn get(&self, host_id: &str) -> Option<Arc<OutboundClient>> {
@@ -475,6 +506,52 @@ mod tests {
         assert_eq!(client.stats.write_ok.load(Ordering::SeqCst), 1);
         assert_eq!(client.stats.resize_ok.load(Ordering::SeqCst), 1);
         assert_eq!(client.stats.unsubscribe_ok.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn resize_coalesces_same_dimensions_and_resets_after_reconnect() {
+        let (mock, client) = mock_client();
+        client.connect_and_list().unwrap();
+        client.subscribe("main").unwrap();
+
+        client.resize_pane("main", 24, 80).unwrap();
+        client.resize_pane("main", 24, 80).unwrap();
+        client.resize_pane("main", 30, 100).unwrap();
+
+        let resize_calls = mock
+            .rpc_log
+            .lock()
+            .iter()
+            .filter(|(method, _)| method == "resize_pane")
+            .count();
+        assert_eq!(resize_calls, 2);
+        assert_eq!(client.stats.resize_ok.load(Ordering::SeqCst), 2);
+        assert_eq!(client.stats.resize_suppressed.load(Ordering::SeqCst), 1);
+
+        client.mark_disconnected();
+        client.reconnect_resubscribe(&["main".into()]).unwrap();
+        client.resize_pane("main", 30, 100).unwrap();
+        let resize_calls_after_reconnect = mock
+            .rpc_log
+            .lock()
+            .iter()
+            .filter(|(method, _)| method == "resize_pane")
+            .count();
+        assert_eq!(resize_calls_after_reconnect, 3);
+    }
+
+    #[test]
+    fn failed_resize_does_not_poison_duplicate_suppression_cache() {
+        let (mock, client) = mock_client();
+        client.connect_and_list().unwrap();
+        client.subscribe("main").unwrap();
+        *mock.fail_next.lock() = Some("resize transport failed".into());
+
+        assert!(client.resize_pane("main", 24, 80).is_err());
+        client.resize_pane("main", 24, 80).unwrap();
+
+        assert_eq!(client.stats.resize_ok.load(Ordering::SeqCst), 1);
+        assert_eq!(client.stats.resize_suppressed.load(Ordering::SeqCst), 0);
     }
 
     #[test]
