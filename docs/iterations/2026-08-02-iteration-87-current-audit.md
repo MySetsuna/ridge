@@ -236,3 +236,11 @@ Runtime attribution and Kernel host seam continuation:
   desktop host snapshot through the authenticated `source=ridge-kernel` seam.
   `cargo test -p ridge-kernel --lib` remains 21 passed and the real
   `scripts/kernel-host-smoke.ps1` completed all ensure/attach/domain/MCP checks.
+
+Pane-border clarification verification (2026-08-02): desktop and Remote
+projections are attention-only. `working`/`idle` never add an outer border;
+only `waiting`/`stopped` (or Remote `agentNeedsAttention`) render the transient
+ring. Desktop active-pane, pointer focus, Agent-card activation and terminal
+input clear attention; Remote focus and claim do the same. Focused regression
+slice passed 16/16 tests (`SplitContainer`, `TerminalCanvas`, and mobile
+keyboard offset), so this clarification required no new rendering path.

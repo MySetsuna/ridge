@@ -869,6 +869,9 @@ cloud health is HTTP 200 (`version=0.0.7`).
 Iteration 87 is archived with the remaining external gates carried forward;
 no physical-device, public-WebRTC, WebView2-soak, authenticated-push or full
 Kernel-domain-migration claim is implied by the successful release.
+Pane-border clarification (2026-08-02): border is transient HITL feedback only;
+normal `working`/`idle` panes stay border-free, and focus/claim/input clears the
+pending ring. Desktop and Remote focused regression slice: 16/16 passed.
 Iteration 87 performance/kernel continuation (2026-08-02): `b6d22df`,
 `1256d1d`, and `55af1e2` add real WebView2 heap/resource and worker-pending
 sampling plus fail-closed RSS/process guards; unavailable heap is `null`, never
