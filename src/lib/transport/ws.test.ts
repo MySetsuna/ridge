@@ -42,6 +42,18 @@ describe('WsDataProvider lifecycle', () => {
     provider.dispose();
   });
 
+  it('cancels non-signal requests when the provider is disposed', async () => {
+    const connection = fakeConnection();
+    const provider = new WsDataProvider(connection as unknown as RemoteConnection);
+    const pending = provider.pathExists('/repo');
+    const rejection = expect(pending).rejects.toThrow('provider disposed');
+
+    provider.dispose();
+
+    await rejection;
+    expect(connection.send).toHaveBeenCalledWith({ type: 'data-cancel', _reqId: 1 });
+  });
+
   it('honors an AbortSignal without waiting for the transport timeout', async () => {
     const connection = fakeConnection();
     const provider = new WsDataProvider(connection as unknown as RemoteConnection);
@@ -51,6 +63,7 @@ describe('WsDataProvider lifecycle', () => {
     controller.abort();
 
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(connection.send).toHaveBeenCalledWith({ type: 'data-cancel', _reqId: 1 });
     provider.dispose();
   });
 
@@ -63,6 +76,24 @@ describe('WsDataProvider lifecycle', () => {
     controller.abort();
 
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(connection.send).toHaveBeenCalledWith({ type: 'data-cancel', _reqId: 1 });
     provider.dispose();
+  });
+
+  it('cancels a timed-out request on the host instead of leaving remote work queued', async () => {
+    vi.useFakeTimers();
+    try {
+      const connection = fakeConnection();
+      const provider = new WsDataProvider(connection as unknown as RemoteConnection);
+      const pending = provider.readFile('/repo/file.txt');
+      const rejection = expect(pending).rejects.toThrow('timed out');
+      await vi.advanceTimersByTimeAsync(10000);
+
+      await rejection;
+      expect(connection.send).toHaveBeenCalledWith({ type: 'data-cancel', _reqId: 1 });
+      provider.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

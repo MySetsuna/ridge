@@ -166,6 +166,13 @@ fn git_slot_begin(slot: &str) -> u64 {
     generation
 }
 
+/// Cancel a live slotted Git request and invalidate any queued generation.
+/// Remote transports call this when a data observer disappears; the existing
+/// process-tree guard then reclaims the child and its semaphore permit.
+pub fn cancel_git_slot(slot: &str) {
+    let _ = git_slot_begin(slot);
+}
+
 fn git_slot_is_stale(slot: &str, generation: u64) -> bool {
     git_slots()
         .lock()

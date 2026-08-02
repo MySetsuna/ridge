@@ -29,6 +29,81 @@ use crate::state::{AppState, RemotePaneSub, RemoteSubId};
 
 type ScheduledPtyEvent = (bool, crate::types::RemotePtyEvent);
 
+const MAX_IN_FLIGHT_DATA_REQUESTS: usize = 32;
+const MAX_PRE_CANCELLED_DATA_REQUESTS: usize = 1024;
+
+struct PendingDataRequest {
+    handle: tokio::task::JoinHandle<()>,
+    git_slot: String,
+}
+
+/// Per-WebSocket data-request lifecycle. A request is either in-flight,
+/// pre-cancelled (cancel raced ahead of request), or completed exactly once.
+/// Keeping the task handle here makes disconnect and pane teardown observable
+/// cancellation points instead of merely dropping a frontend promise.
+struct DataRequestRegistry {
+    entries: std::collections::HashMap<u64, PendingDataRequest>,
+    pre_cancelled: std::collections::HashSet<u64>,
+}
+
+impl DataRequestRegistry {
+    fn new() -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            pre_cancelled: std::collections::HashSet::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn insert(&mut self, id: u64, entry: PendingDataRequest) -> bool {
+        if self.entries.contains_key(&id) {
+            return false;
+        }
+        self.entries.insert(id, entry);
+        true
+    }
+
+    fn contains(&self, id: u64) -> bool {
+        self.entries.contains_key(&id)
+    }
+
+    fn take_pre_cancelled(&mut self, id: u64) -> bool {
+        self.pre_cancelled.remove(&id)
+    }
+
+    /// Abort the task if present; otherwise remember the cancellation for a
+    /// request frame that is still in flight on the WebSocket.
+    fn cancel(&mut self, id: u64) -> Option<String> {
+        if let Some(entry) = self.entries.remove(&id) {
+            entry.handle.abort();
+            return Some(entry.git_slot);
+        }
+        if self.pre_cancelled.len() < MAX_PRE_CANCELLED_DATA_REQUESTS {
+            self.pre_cancelled.insert(id);
+        }
+        None
+    }
+
+    /// A result is sent only if its task still owns the request id. A cancel
+    /// racing with a completed task therefore cannot produce a second reply.
+    fn complete(&mut self, id: u64) -> bool {
+        self.entries.remove(&id).is_some()
+    }
+
+    fn cancel_all(&mut self) -> Vec<String> {
+        let mut slots = Vec::with_capacity(self.entries.len());
+        for (_, entry) in self.entries.drain() {
+            entry.handle.abort();
+            slots.push(entry.git_slot);
+        }
+        self.pre_cancelled.clear();
+        slots
+    }
+}
+
 fn spawn_remote_lane_scheduler(
     cap: usize,
 ) -> (
@@ -561,6 +636,13 @@ async fn handle_ws(
     let mut dr_count: u32 = 0;
     const DR_WINDOW: Duration = Duration::from_secs(5);
     const DR_MAX_PER_WINDOW: u32 = 120;
+
+    // Data requests are independent tasks so one slow Git/file operation
+    // cannot block PTY/control traffic. The registry supplies cancellation and
+    // a hard in-flight cap, preventing an unbounded remote queue.
+    let mut data_requests = DataRequestRegistry::new();
+    let (data_result_tx, mut data_result_rx) =
+        mpsc::channel::<(u64, serde_json::Value)>(MAX_IN_FLIGHT_DATA_REQUESTS);
 
     // current_pane owns Files/Git/Search cwd and active QoS only. Every visited
     // pane remains in subscribed_panes across ordinary pane/workspace switches.
@@ -1557,6 +1639,33 @@ async fn handle_ws(
                                 let req_id = parsed["_reqId"].as_u64().unwrap_or(0);
                                 let method = parsed["method"].as_str().unwrap_or("").to_string();
 
+                                if req_id == 0 {
+                                    ws_tx.send(Message::Text(serde_json::json!({
+                                        "type": "data-result",
+                                        "_reqId": req_id,
+                                        "_error": "invalid data request id",
+                                    }).to_string())).await
+                                } else if data_requests.take_pre_cancelled(req_id) {
+                                    ws_tx.send(Message::Text(serde_json::json!({
+                                        "type": "data-result",
+                                        "_reqId": req_id,
+                                        "_error": "data request cancelled",
+                                    }).to_string())).await
+                                } else if data_requests.len() >= MAX_IN_FLIGHT_DATA_REQUESTS {
+                                    tracing::warn!(target: "ridge::remote", client_id, req_id, "data-request in-flight cap exceeded; rejecting");
+                                    ws_tx.send(Message::Text(serde_json::json!({
+                                        "type": "data-result",
+                                        "_reqId": req_id,
+                                        "_error": "too many in-flight data requests",
+                                    }).to_string())).await
+                                } else if data_requests.contains(req_id) {
+                                    ws_tx.send(Message::Text(serde_json::json!({
+                                        "type": "data-result",
+                                        "_reqId": req_id,
+                                        "_error": "duplicate data request id",
+                                    }).to_string())).await
+                                } else {
+
                                 // §rate-limit: refill the window, then count this request.
                                 if dr_window_start.elapsed() >= DR_WINDOW {
                                     dr_window_start = Instant::now();
@@ -1571,22 +1680,43 @@ async fn handle_ws(
                                     );
                                     let reply = serde_json::json!({
                                         "_reqId": req_id,
+                                        "type": "data-result",
                                         "_error": "rate limited: too many data requests",
                                     });
                                     ws_tx.send(Message::Text(reply.to_string())).await
                                 } else {
-                                    let mut reply =
-                                        dispatch_data_request(&method, &parsed, &state).await;
-                                    if let Some(obj) = reply.as_object_mut() {
-                                        obj.insert("_reqId".to_string(), serde_json::json!(req_id));
-                                        // §data-result-type: tag the reply so it survives
-                                        // RemoteConnection's onmessage routing (a typeless reply
-                                        // tripped `type.endsWith('-result')` → TypeError → the
-                                        // reply was silently dropped and the sidebar never loaded).
-                                        obj.insert("type".to_string(), serde_json::json!("data-result"));
-                                    }
-                                    ws_tx.send(Message::Text(reply.to_string())).await
+                                    let git_slot = format!("remote:{client_id}:{req_id}");
+                                    let result_tx = data_result_tx.clone();
+                                    let task_method = method.clone();
+                                    let task_params = parsed.clone();
+                                    let task_state = state.clone();
+                                    let task_slot = git_slot.clone();
+                                    let handle = tokio::spawn(async move {
+                                        let reply = dispatch_data_request(
+                                            &task_method,
+                                            &task_params,
+                                            &task_state,
+                                            Some(task_slot),
+                                        )
+                                        .await;
+                                        let _ = result_tx.send((req_id, reply)).await;
+                                    });
+                                    // IDs are monotonic per connection; a duplicate was rejected
+                                    // above and therefore cannot overwrite a live task.
+                                    let _ = data_requests.insert(req_id, PendingDataRequest { handle, git_slot });
+                                    Ok(())
                                 }
+                                }
+                            }
+                            Some("data-cancel") => {
+                                let req_id = parsed["_reqId"].as_u64().unwrap_or(0);
+                                if req_id != 0 {
+                                    if let Some(slot) = data_requests.cancel(req_id) {
+                                        ridge_core::commands::git::cancel_git_slot(&slot);
+                                    }
+                                    tracing::debug!(target: "ridge::remote", client_id, req_id, "data request cancelled");
+                                }
+                                Ok(())
                             }
                             Some("invoke-request") => {
                                 // Backs the browser-side Tauri `invoke()` shim
@@ -1628,6 +1758,20 @@ async fn handle_ws(
                                 ws_tx.send(Message::Text(serde_json::json!({"type":"error","message":"unknown message type"}).to_string())).await
                             }
                         };
+                    }
+                    data_result = data_result_rx.recv() => {
+                        let Some((req_id, mut reply)) = data_result else { break; };
+                        // A cancelled task may already have queued a result. The
+                        // registry ownership check suppresses that stale reply.
+                        if data_requests.complete(req_id) {
+                            if let Some(obj) = reply.as_object_mut() {
+                                obj.insert("_reqId".to_string(), serde_json::json!(req_id));
+                                obj.insert("type".to_string(), serde_json::json!("data-result"));
+                            }
+                            if ws_tx.send(Message::Text(reply.to_string())).await.is_err() {
+                                break;
+                            }
+                        }
                     }
                     event = raw_rx.recv() => {
                         match event {
@@ -1898,6 +2042,13 @@ async fn handle_ws(
                 }
     }
 
+    // Cancel all detached data work before dropping the socket. Slotted Git
+    // requests also invalidate the process-guard generation, killing a live
+    // child tree instead of waiting for the normal timeout.
+    for slot in data_requests.cancel_all() {
+        ridge_core::commands::git::cancel_git_slot(&slot);
+    }
+
     // Clean up: unregister from all subscribed panes (single-pane mobile slot +
     // the multi-pane desktop set).
     for (ws, pane) in subscribed_panes.drain() {
@@ -1959,6 +2110,7 @@ async fn dispatch_data_request(
     method: &str,
     params: &serde_json::Value,
     state: &AppState,
+    git_slot: Option<String>,
 ) -> serde_json::Value {
     use crate::commands::{git, project};
 
@@ -2044,7 +2196,7 @@ async fn dispatch_data_request(
         "move_path" => unit(project::move_path(s(params, "from"), s(params, "to")).await),
 
         // ── Git ── (all async; offload internally)
-        "git_status" => git_status_result(s(params, "repoRoot")).await,
+        "git_status" => git_status_result(s(params, "repoRoot"), git_slot).await,
         "git_stage" => unit(git::git_stage(s(params, "repoRoot"), path_list(params)).await),
         "git_unstage" => unit(git::git_unstage(s(params, "repoRoot"), path_list(params)).await),
         "git_commit" => unit(
@@ -2117,8 +2269,8 @@ async fn dispatch_data_request(
 /// shape: `{ staged, unstaged, untracked, commits }`. Commits aren't part of
 /// `ScmRepoStatus`, so they're pulled separately via `git_info_for_path` on a
 /// blocking thread (it shells out to `git log`).
-async fn git_status_result(repo_root: String) -> serde_json::Value {
-    let scm = match crate::commands::git::get_scm_status(repo_root.clone(), None).await {
+async fn git_status_result(repo_root: String, git_slot: Option<String>) -> serde_json::Value {
+    let scm = match crate::commands::git::get_scm_status(repo_root.clone(), git_slot).await {
         Ok(status) => status,
         Err(e) => return serde_json::json!({ "_error": e }),
     };
@@ -3186,6 +3338,29 @@ mod jsonrpc_tests {
         assert_eq!(pane_id(scheduled.recv().await.unwrap()), (false, low_in_flight));
         assert_eq!(pane_id(scheduled.recv().await.unwrap()), (true, high));
         assert_eq!(pane_id(scheduled.recv().await.unwrap()), (false, low_backlog));
+    }
+
+    #[tokio::test]
+    async fn data_request_registry_cancels_once_and_suppresses_stale_completion() {
+        let mut registry = DataRequestRegistry::new();
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        assert!(registry.insert(
+            7,
+            PendingDataRequest {
+                handle,
+                git_slot: "remote:test:7".into(),
+            },
+        ));
+        assert_eq!(registry.cancel(7).as_deref(), Some("remote:test:7"));
+        assert!(!registry.complete(7), "cancelled request cannot complete twice");
+
+        // Cancellation may arrive before the request frame; it is consumed
+        // exactly once when that frame eventually arrives.
+        assert!(registry.cancel(8).is_none());
+        assert!(registry.take_pre_cancelled(8));
+        assert!(!registry.take_pre_cancelled(8));
     }
 
     #[test]

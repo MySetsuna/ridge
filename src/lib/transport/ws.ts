@@ -49,15 +49,16 @@ export class WsDataProvider implements DataProvider {
     this.offState?.();
     this.offMessage = null;
     this.offState = null;
-    this.rejectPending(new Error('WS data provider disposed'));
+    this.rejectPending(new Error('WS data provider disposed'), true);
   }
 
-  private rejectPending(error: Error): void {
-    const pending = [...this.pending.values()];
+  private rejectPending(error: Error, notifyRemote = false): void {
+    const pending = [...this.pending.entries()];
     this.pending.clear();
-    for (const req of pending) {
+    for (const [id, req] of pending) {
       clearTimeout(req.timer);
       if (req.signal && req.onAbort) req.signal.removeEventListener('abort', req.onAbort);
+      if (notifyRemote) this.cancelRemote(id);
       req.reject(error);
     }
   }
@@ -74,7 +75,8 @@ export class WsDataProvider implements DataProvider {
     const payload: Record<string, unknown> = { type: 'data-request', method, _reqId: id, ...params };
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
+        if (!this.pending.delete(id)) return;
+        this.cancelRemote(id);
         if (signal && onAbort) signal.removeEventListener('abort', onAbort);
         reject(new Error(`WS request "${method}" timed out`));
       }, 10000);
@@ -83,6 +85,7 @@ export class WsDataProvider implements DataProvider {
         if (!req) return;
         clearTimeout(req.timer);
         this.pending.delete(id);
+        this.cancelRemote(id);
         signal?.removeEventListener('abort', onAbort);
         reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
       };
@@ -103,6 +106,15 @@ export class WsDataProvider implements DataProvider {
         reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
+  }
+
+  /** Tell the host to stop work after the observer has detached or timed out. */
+  private cancelRemote(id: number): void {
+    try {
+      this.conn.send({ type: 'data-cancel', _reqId: id });
+    } catch {
+      // The local promise is already settled; a closed socket needs no retry.
+    }
   }
 
   // ── Filesystem ──
