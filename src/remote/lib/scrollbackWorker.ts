@@ -44,7 +44,21 @@ export function installScrollbackWorker(scope: WorkerScope): void {
   scope.onmessage = (event: MessageEvent<ScrollbackWorkerRequest>) => {
     try {
       const result = decodeScrollback(event.data);
-      if (result) scope.postMessage(result);
+      if (result) {
+        scope.postMessage(result);
+        return;
+      }
+      // Invalid/stale sequence ranges are still terminal for this request.
+      // Posting an error keeps the host pending map bounded immediately;
+      // silently dropping the message would hold the promise until timeout.
+      const request = event.data;
+      scope.postMessage({
+        type: 'error',
+        requestId: Number(request?.requestId) || 0,
+        workspaceId: typeof request?.workspaceId === 'string' ? request.workspaceId : '',
+        paneId: typeof request?.paneId === 'string' ? request.paneId : '',
+        message: 'invalid scrollback sequence',
+      });
     } catch (error) {
       // Malformed/oversized input must fail this request, not tear down the
       // worker or leave the main-thread promise waiting for its timeout.
