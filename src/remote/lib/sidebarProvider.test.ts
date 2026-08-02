@@ -77,11 +77,25 @@ afterEach(() => vi.restoreAllMocks());
 describe('remote sidebar query contract', () => {
   it('uses stable, session- and cwd-scoped keys', () => {
     expect(remoteQueryKeys.sidebarFiles(4, 'C:\\Repo\\', 'C:\\Repo\\', 1))
-      .toEqual(['remote', 4, 'sidebar', 'files', 'c:/repo', 'c:/repo', 1]);
+      .toEqual(['remote', 4, 'sidebar', '', '', '', 'files', 'c:/repo', 'c:/repo', 1]);
     expect(remoteQueryKeys.sidebarFiles(4, 'C:\\Repo', 'C:\\Repo', 1))
       .toEqual(remoteQueryKeys.sidebarFiles(4, 'C:\\Repo\\', 'C:\\Repo\\', 1));
     expect(remoteQueryKeys.sidebarGit(4, '/repo'))
       .not.toEqual(remoteQueryKeys.sidebarGit(5, '/repo'));
+  });
+
+  it('separates identical paths across workspace, pane, and branch scope', () => {
+    const a = remoteQueryKeys.sidebarGit(4, '/repo', {
+      workspaceId: 'ws-a', paneId: 'pane-a', branch: 'main',
+    });
+    const b = remoteQueryKeys.sidebarGit(4, '/repo', {
+      workspaceId: 'ws-b', paneId: 'pane-a', branch: 'main',
+    });
+    const c = remoteQueryKeys.sidebarGit(4, '/repo', {
+      workspaceId: 'ws-a', paneId: 'pane-a', branch: 'feature',
+    });
+    expect(a).not.toEqual(b);
+    expect(a).not.toEqual(c);
   });
 
   it('single-flights and caches identical file requests across sidebar remounts', async () => {
@@ -124,8 +138,8 @@ describe('remote sidebar query contract', () => {
     expect(first.branches).toEqual(['main', 'feature/topic']);
     expect(first.commits[0]?.refs).toEqual(['head:', 'branch:main']);
     expect(gitStatus).toHaveBeenCalledTimes(2);
-    expect(gitStatus).toHaveBeenNthCalledWith(1, '/repo-a');
-    expect(gitStatus).toHaveBeenNthCalledWith(2, '/repo-b');
+    expect(gitStatus).toHaveBeenNthCalledWith(1, '/repo-a', undefined);
+    expect(gitStatus).toHaveBeenNthCalledWith(2, '/repo-b', undefined);
   });
 
   it('keeps a clean Git repository visible when status has no files or commits', async () => {
@@ -183,20 +197,26 @@ describe('remote sidebar query contract', () => {
     expect(link.getTeammateTopology).toHaveBeenCalledTimes(2);
   });
 
-  it('delegates Git mutations and invalidates only the session sidebar prefix', async () => {
+  it('delegates Git mutations and invalidates only the scoped sidebar prefix', async () => {
     const client = new TestQueryClient();
     const gitCommit = vi.fn(async () => undefined);
     const gitPush = vi.fn(async () => undefined);
     const dp = makeProvider({ gitCommit, gitPush });
-    const sidebar = createWsSidebarProvider('/repo', dp, { queryClient: client, sessionId: 9 });
+    const sidebar = createWsSidebarProvider('/repo', dp, {
+      queryClient: client,
+      sessionId: 9,
+      workspaceId: 'ws-1',
+      paneId: 'pane-1',
+      branch: 'main',
+    });
 
     await sidebar.gitCommit?.('message');
     await sidebar.gitPush?.(true);
     expect(gitCommit).toHaveBeenCalledWith('/repo', 'message', false);
     expect(gitPush).toHaveBeenCalledWith('/repo', true);
     expect(client.invalidations).toEqual([
-      ['remote', 9, 'sidebar'],
-      ['remote', 9, 'sidebar'],
+      ['remote', 9, 'sidebar', 'ws-1', 'pane-1', 'main'],
+      ['remote', 9, 'sidebar', 'ws-1', 'pane-1', 'main'],
     ]);
   });
 });

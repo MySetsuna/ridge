@@ -13,6 +13,12 @@ import type {
 const sessionIds = new WeakMap<object, number>();
 let nextSessionId = 1;
 
+export interface RemoteSidebarScope {
+  workspaceId?: string;
+  paneId?: string;
+  branch?: string;
+}
+
 export function remoteSessionId(link: RemoteLink): number {
   let id = sessionIds.get(link);
   if (id === undefined) {
@@ -38,25 +44,31 @@ export const remoteQueryKeys = {
    * Keep cwd and target in every key: two panes can point at the same path
    * while still belonging to different remote sessions.
    */
-  sidebarFiles: (sessionId: number, cwd: string, target: string, depth = 1) =>
-    ['remote', sessionId, 'sidebar', 'files', normalizeRemotePath(cwd), normalizeRemotePath(target), depth] as const,
-  sidebarGit: (sessionId: number, cwd: string) =>
-    ['remote', sessionId, 'sidebar', 'git', normalizeRemotePath(cwd)] as const,
-  sidebarSearch: (sessionId: number, cwd: string, query: string) =>
-    ['remote', sessionId, 'sidebar', 'search', normalizeRemotePath(cwd), query] as const,
-  sidebarFile: (sessionId: number, cwd: string, path: string) =>
-    ['remote', sessionId, 'sidebar', 'file', normalizeRemotePath(cwd), normalizeRemotePath(path)] as const,
-  sidebarDiff: (sessionId: number, cwd: string, path: string) =>
-    ['remote', sessionId, 'sidebar', 'diff', normalizeRemotePath(cwd), normalizeRemotePath(path)] as const,
+  sidebarFiles: (sessionId: number, cwd: string, target: string, depth = 1, scope?: RemoteSidebarScope) =>
+    ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'files', normalizeRemotePath(cwd), normalizeRemotePath(target), depth] as const,
+  sidebarGit: (sessionId: number, cwd: string, scope?: RemoteSidebarScope) =>
+    ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'git', normalizeRemotePath(cwd)] as const,
+  sidebarSearch: (sessionId: number, cwd: string, query: string, scope?: RemoteSidebarScope) =>
+    ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'search', normalizeRemotePath(cwd), query] as const,
+  sidebarFile: (sessionId: number, cwd: string, path: string, scope?: RemoteSidebarScope) =>
+    ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'file', normalizeRemotePath(cwd), normalizeRemotePath(path)] as const,
+  sidebarDiff: (sessionId: number, cwd: string, path: string, scope?: RemoteSidebarScope) =>
+    ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'diff', normalizeRemotePath(cwd), normalizeRemotePath(path)] as const,
 };
 
-export const remoteSidebarQueryPrefix = (sessionId: number) =>
-  ['remote', sessionId, 'sidebar'] as const;
+export const remoteSidebarQueryPrefix = (sessionId: number, scope?: RemoteSidebarScope) =>
+  scope
+    ? ['remote', sessionId, 'sidebar', scopePart(scope.workspaceId), scopePart(scope.paneId), scopePart(scope.branch)] as const
+    : ['remote', sessionId, 'sidebar'] as const;
 
 /** Stable key identity for Windows/Unix paths without changing the RPC path. */
 export function normalizeRemotePath(value: string): string {
   const normalized = value.replaceAll('\\', '/').replace(/\/+$/, '') || '/';
   return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function scopePart(value: string | undefined): string {
+  return value?.trim() ?? '';
 }
 
 /**
@@ -65,11 +77,12 @@ export function normalizeRemotePath(value: string): string {
  * same directory/Git snapshot on every open.
  */
 export const REMOTE_SIDEBAR_STALE_TIME_MS = 30_000;
+export const REMOTE_QUERY_TIMEOUT_MS = 15_000;
 
 export interface RemoteQueryClientLike {
   fetchQuery<T>(options: {
     queryKey: readonly unknown[];
-    queryFn: () => Promise<T>;
+    queryFn: (context?: { signal?: AbortSignal }) => Promise<T>;
     staleTime?: number;
   }): Promise<T>;
   invalidateQueries?: (options: { queryKey: readonly unknown[] }) => Promise<unknown> | unknown;
@@ -78,7 +91,7 @@ export interface RemoteQueryClientLike {
 export function fetchRemoteQuery<T>(
   queryClient: RemoteQueryClientLike | undefined,
   queryKey: readonly unknown[],
-  queryFn: () => Promise<T>,
+  queryFn: (context?: { signal?: AbortSignal }) => Promise<T>,
   staleTime = REMOTE_SIDEBAR_STALE_TIME_MS,
 ): Promise<T> {
   if (!queryClient) return queryFn();
@@ -161,32 +174,79 @@ export function requestPaneSnapshot(
   link: RemoteLink,
   workspaceId: string,
   signal?: AbortSignal,
+  timeoutMs = REMOTE_QUERY_TIMEOUT_MS,
 ): Promise<PaneInfo[]> {
   return new Promise((resolve, reject) => {
     let stop = () => {};
-    const abort = () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const cleanup = () => {
       stop();
-      reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+      signal?.removeEventListener('abort', abort);
+      if (timer !== undefined) clearTimeout(timer);
+    };
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn();
+    };
+    const abort = () => {
+      finish(() => reject(signal?.reason ?? new DOMException('Aborted', 'AbortError')));
     };
     stop = link.onMessage((message: WsMessage) => {
       if (message.type !== 'panes') return;
       if (message.workspaceId !== workspaceId) return;
-      stop();
-      signal?.removeEventListener('abort', abort);
-      resolve(dedupeRemoteItems(message.panes));
+      finish(() => resolve(dedupeRemoteItems(message.panes)));
     });
     if (signal?.aborted) {
       abort();
       return;
     }
     signal?.addEventListener('abort', abort, { once: true });
-    link.listPanes();
+    timer = setTimeout(() => finish(() => reject(new Error(`list panes timed out after ${timeoutMs}ms`))), timeoutMs);
+    try {
+      link.listPanes();
+    } catch (error) {
+      finish(() => reject(error));
+    }
   });
 }
 
-export async function requestWorkspaceSnapshot(link: RemoteLink): Promise<WorkspaceInfo[]> {
-  const result = await link.listWorkspaces();
-  return dedupeRemoteItems(result.workspaces ?? []);
+export function requestWorkspaceSnapshot(
+  link: RemoteLink,
+  signal?: AbortSignal,
+  timeoutMs = REMOTE_QUERY_TIMEOUT_MS,
+): Promise<WorkspaceInfo[]> {
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const cleanup = () => {
+      signal?.removeEventListener('abort', abort);
+      if (timer !== undefined) clearTimeout(timer);
+    };
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn();
+    };
+    const abort = () => {
+      finish(() => reject(signal?.reason ?? new DOMException('Aborted', 'AbortError')));
+    };
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    signal?.addEventListener('abort', abort, { once: true });
+    timer = setTimeout(() => finish(() => reject(new Error(`list workspaces timed out after ${timeoutMs}ms`))), timeoutMs);
+    Promise.resolve()
+      .then(() => link.listWorkspaces())
+      .then(
+        (result) => finish(() => resolve(dedupeRemoteItems(result.workspaces ?? []))),
+        (error) => finish(() => reject(error)),
+      );
+  });
 }
 
 export async function confirmedWorkspaceTarget(

@@ -5,6 +5,7 @@ import {
   dedupeRemoteItems,
   mergeRemoteItems,
   requestPaneSnapshot,
+  requestWorkspaceSnapshot,
 } from './remoteQueries';
 
 describe('remote query snapshots', () => {
@@ -42,5 +43,33 @@ describe('remote query snapshots', () => {
     await expect(pending).resolves.toEqual(expected);
     expect(link.listPanes).toHaveBeenCalledOnce();
     expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('rejects and detaches when pane snapshot is aborted', async () => {
+    const stop = vi.fn();
+    const link = {
+      onMessage: vi.fn(() => stop),
+      listPanes: vi.fn(),
+    } as unknown as RemoteLink;
+    const controller = new AbortController();
+    const pending = requestPaneSnapshot(link, 'ws-abort', controller.signal, 100);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('bounds pane and workspace snapshots when the transport never replies', async () => {
+    const paneLink = {
+      onMessage: vi.fn(() => vi.fn()),
+      listPanes: vi.fn(),
+    } as unknown as RemoteLink;
+    await expect(requestPaneSnapshot(paneLink, 'ws-timeout', undefined, 1))
+      .rejects.toThrow('list panes timed out');
+
+    const workspaceLink = {
+      listWorkspaces: vi.fn(() => new Promise<never>(() => undefined)),
+    } as unknown as RemoteLink;
+    await expect(requestWorkspaceSnapshot(workspaceLink, undefined, 1))
+      .rejects.toThrow('list workspaces timed out');
   });
 });
