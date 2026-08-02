@@ -869,3 +869,13 @@ cloud health is HTTP 200 (`version=0.0.7`).
 Iteration 87 is archived with the remaining external gates carried forward;
 no physical-device, public-WebRTC, WebView2-soak, authenticated-push or full
 Kernel-domain-migration claim is implied by the successful release.
+Iteration 87 performance/kernel continuation (2026-08-02): `b6d22df`,
+`1256d1d`, and `55af1e2` add real WebView2 heap/resource and worker-pending
+sampling plus fail-closed RSS/process guards; unavailable heap is `null`, never
+zero. `67e5b54` exposes read-only desktop `get_domain_convergence_report` over
+typed Kernel workspace/Agent reads. Local checks pass; sustained device/public
+soak and full domain migration remain external.
+Perf soak timeout continuation: `7c5fddc` derives the WebDriver timeout from
+`RIDGE_PERF_STRESS_SEC` plus bounded headroom (maximum 24 hours), so long runs
+are not truncated and detached drivers cannot hang indefinitely. Physical and
+public soak evidence remains external.
