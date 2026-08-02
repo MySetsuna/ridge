@@ -85,7 +85,8 @@ state, or physical-device claim is made.
   bounded keyboard shift and recovery; this is not a physical-device claim.
 - Final local gate rerun after these commits: full Vitest `137 files / 1,439
   passed / 1 skipped`, `pnpm check` 0/0, `cargo test -p ridge-term scrollback
-  --lib` 48 passed, `cargo test -p ridge-kernel --lib` 17 passed,
+  --lib` 48 passed, `cargo test -p ridge-core --lib` 309 passed across three
+  parallel reruns, `cargo test -p ridge-kernel --lib` 19 passed,
   `cargo test -p ridge-mcp-bridge --lib` 8 passed, and `cargo check
   --manifest-path src-tauri/Cargo.toml` exit 0 (39 pre-existing warnings).
 - Kernel deep-root evidence is in
@@ -121,7 +122,18 @@ Git mutation evidence update: `packages/ridge-core/src/commands/git.rs` now
 guards a real temporary-repository test through the same `git_commit_sync` and
 `git_push_sync` handlers used by the UI. It verifies local bare-remote push
 success and a later non-fast-forward push failure; no user repository or
-network credential is used. Authenticated Remote Git push remains external.
+network credential is used. The real-child lifecycle probes now share one test
+lock, eliminating a parallel-test race in the global active-child assertion;
+three parallel full `ridge-core` runs passed. Authenticated Remote Git push
+remains external.
+
+Kernel read seam update: `06bfcd2` adds typed, source-checked
+`read_domain_workspaces` and `read_domain_agent_roster` adapters in
+`packages/ridge-kernel/src/client.rs`, with error/non-kernel-source guards.
+This is an explicit migration seam only: desktop workspace names/window claims
+and Agent `(workspaceId, UUID)` identity are not represented by the current
+kernel projections, so existing AppState paths remain and full Tauri-shell
+migration is not claimed.
 
 Release gate: the first `v0.1.36` attempt failed before the matrix because
 `Cargo.lock` had an invalid `tracing-core` resolution; the tag was removed,
