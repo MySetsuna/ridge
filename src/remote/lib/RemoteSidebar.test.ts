@@ -9,4 +9,8 @@ describe('Remote drawer safe-area contract', () => {
     expect(source).toContain('min-height:calc(48px + env(safe-area-inset-top,0px))');
     expect(source).toContain('padding-bottom:env(safe-area-inset-bottom,0px)');
   });
+
+  it('remounts panel content when the Remote session, workspace, pane, or CWD changes', () => {
+    expect(source).toContain('{#key `${ws ? remoteSessionId(ws) : 0}:${workspaceId}:${paneId}:${cwd}`}');
+  });
 });

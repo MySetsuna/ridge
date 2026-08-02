@@ -24,7 +24,18 @@ describe('remote Agent drawer alignment contract', () => {
 
   it('keeps roster polling at the five-minute contract interval', () => {
     expect(source).toContain('const ROSTER_POLL_INTERVAL_MS = 5 * 60 * 1000;');
-    expect(source).toContain('setInterval(() => void refresh(), ROSTER_POLL_INTERVAL_MS)');
+    expect(source).toContain('setInterval(() => void startRefresh(), ROSTER_POLL_INTERVAL_MS)');
+  });
+
+  it('fences refreshes by full Remote scope and cancels on teardown', () => {
+    expect(source).toContain('createTeamRosterScopeGuard');
+    expect(source).toContain('teamRosterScopeKey(remoteSessionId(ws), workspaceId, panes)');
+    expect(source).toContain('const run = scopeGuard.begin();');
+    expect(source).toContain('scopeGuard.invalidate();');
+    expect(source).toContain('onAttentionChange?.([])');
+    expect(source).toContain('ws.onReconnect');
+    expect(source).toContain('fetchRemoteTeamRoster(ws, queryClient, sessionId, rosterWorkspaceId, signal)');
+    expect(source).toContain('!signal.aborted && scopeGuard.isCurrent(generation)');
   });
 
   it('offers host-structured Agent resume and preserves recorded CWD', () => {

@@ -167,6 +167,24 @@ describe('remote sidebar query contract', () => {
       .resolves.toMatchObject({ isGitRepo: true });
   });
 
+  it('caches an explicit non-Git result for the provider root', async () => {
+    const gitStatus = vi.fn(async () => { throw new Error('Not a git repo: /tmp/no-repo'); });
+    const sidebar = createWsSidebarProvider('/tmp/no-repo', makeProvider({ gitStatus }));
+
+    await expect(sidebar.gitStatus()).resolves.toMatchObject({ isGitRepo: false });
+    await expect(sidebar.gitStatus()).resolves.toMatchObject({ isGitRepo: false });
+    expect(gitStatus).toHaveBeenCalledOnce();
+  });
+
+  it('does not turn transport failures into a cached non-Git result', async () => {
+    const gitStatus = vi.fn(async () => { throw new Error('socket timed out'); });
+    const sidebar = createWsSidebarProvider('/tmp/repo', makeProvider({ gitStatus }));
+
+    await expect(sidebar.gitStatus()).rejects.toThrow('socket timed out');
+    await expect(sidebar.gitStatus()).rejects.toThrow('socket timed out');
+    expect(gitStatus).toHaveBeenCalledTimes(2);
+  });
+
   it('caches Agent roster and history across sidebar remounts', async () => {
     const client = new TestQueryClient();
     const topology = { roster: [], leaderId: null, edges: [] };

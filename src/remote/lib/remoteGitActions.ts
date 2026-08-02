@@ -42,19 +42,23 @@ export async function runRemoteGitAction(
 
   switch (action) {
     case 'stage':
-      await provider.gitStage?.([...options.paths ?? []]);
+      if (signal) await provider.gitStage?.([...options.paths ?? []], signal);
+      else await provider.gitStage?.([...options.paths ?? []]);
       break;
     case 'unstage':
-      await provider.gitUnstage?.([...options.paths ?? []]);
+      if (signal) await provider.gitUnstage?.([...options.paths ?? []], signal);
+      else await provider.gitUnstage?.([...options.paths ?? []]);
       break;
     case 'commit': {
       const message = options.message?.trim() ?? '';
       if (!message) throw new Error('Commit message cannot be empty');
-      await provider.gitCommit?.(message);
+      if (signal) await provider.gitCommit?.(message, false, signal);
+      else await provider.gitCommit?.(message);
       break;
     }
     case 'push':
-      await provider.gitPush?.(options.setUpstream ?? false);
+      if (signal) await provider.gitPush?.(options.setUpstream ?? false, signal);
+      else await provider.gitPush?.(options.setUpstream ?? false);
       break;
   }
   if (isAborted(signal)) return { status: 'cancelled', reason: 'aborted' };

@@ -114,18 +114,19 @@ export function fetchRemoteTeamRoster(
   queryClient: RemoteQueryClientLike | undefined,
   sessionId: number,
   workspaceId?: string,
+  signal?: AbortSignal,
 ): Promise<RemoteTeamRosterSnapshot> {
   return fetchRemoteQuery(
     queryClient,
     remoteQueryKeys.teamRoster(sessionId, workspaceId),
-    async () => {
-      const [topology, pending, health] = await Promise.all([
+    (context) => abortable(
+      Promise.all([
         link.getTeammateTopology(workspaceId),
         link.listHitlPending(),
         link.getOrchestrationHealth().catch(() => ({ suspendedAgents: 0, pendingHitl: 0 })),
-      ]);
-      return { topology, pending, health };
-    },
+      ]).then(([topology, pending, health]) => ({ topology, pending, health })),
+      [signal, context?.signal],
+    ),
     REMOTE_SIDEBAR_STALE_TIME_MS,
   );
 }
@@ -136,13 +137,46 @@ export function fetchRemoteAgentHistory(
   queryClient: RemoteQueryClientLike | undefined,
   sessionId: number,
   limit = 24,
+  signal?: AbortSignal,
 ): Promise<AgentHistoryReply[]> {
   return fetchRemoteQuery(
     queryClient,
     remoteQueryKeys.agentHistory(sessionId, limit),
-    () => link.listAgentHistory(limit),
+    (context) => abortable(link.listAgentHistory(limit), [signal, context?.signal]),
     REMOTE_SIDEBAR_STALE_TIME_MS,
   );
+}
+
+/**
+ * QueryClient cancellation must stop the caller from observing a late remote
+ * snapshot even when the legacy RemoteLink method has no signal parameter.
+ * The transport promise may still finish its bounded RPC timeout, but it can
+ * no longer commit data into the new scope.
+ */
+function abortable<T>(work: Promise<T>, signals: readonly (AbortSignal | undefined)[]): Promise<T> {
+  const active = signals.filter((value): value is AbortSignal => value !== undefined);
+  const aborted = active.find((signal) => signal.aborted);
+  if (aborted) return Promise.reject(aborted.reason ?? new DOMException('Aborted', 'AbortError'));
+  if (active.length === 0) return work;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => active.forEach((signal) => signal.removeEventListener('abort', onAbort));
+    const finish = <V>(fn: (value: V) => void, value: V) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const onAbort = () => {
+      const signal = active.find((candidate) => candidate.aborted);
+      finish(reject, signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+    };
+    active.forEach((signal) => signal.addEventListener('abort', onAbort, { once: true }));
+    work.then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+  });
 }
 
 export type RemoteCapabilities = {

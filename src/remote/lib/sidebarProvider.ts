@@ -43,6 +43,28 @@ function parentOf(path: string): string | null {
   return norm.slice(0, idx) || norm.slice(0, idx + 1);
 }
 
+function isNotGitRepositoryError(error: unknown): boolean {
+  const detail = error instanceof Error
+    ? error.message
+    : typeof error === 'object' && error !== null && 'message' in error
+      ? String((error as { message?: unknown }).message ?? '')
+      : String(error ?? '');
+  return /\bnot a git (?:repository|repo)\b/i.test(detail);
+}
+
+function emptyGitInfo(): GitInfo {
+  return {
+    isGitRepo: false,
+    currentBranch: null,
+    branches: [],
+    files: [],
+    staged: [],
+    unstaged: [],
+    untracked: [],
+    commits: [],
+  };
+}
+
 /** Build a `SidebarProvider` rooted at `cwd` (the active pane's working dir). */
 export function createWsSidebarProvider(
   cwd: string,
@@ -58,6 +80,9 @@ export function createWsSidebarProvider(
     branch: options.scope?.branch ?? options.branch,
   };
   const staleTime = options.staleTime ?? REMOTE_SIDEBAR_STALE_TIME_MS;
+  // A confirmed non-Git cwd stays negative until this provider's root changes.
+  // Query's normal stale window must not restart SCM probes for that cwd.
+  let nonGitRepoConfirmed = false;
   const run = <T>(
     key: readonly unknown[],
     query: (signal?: AbortSignal) => Promise<T>,
@@ -95,18 +120,27 @@ export function createWsSidebarProvider(
     },
 
     async gitStatus(): Promise<GitInfo> {
+      if (nonGitRepoConfirmed) return emptyGitInfo();
       return run(remoteQueryKeys.sidebarGit(sessionId, root, scope), async (signal) => {
+        let s: {
+          is_git_repo?: boolean;
+          staged?: Array<{ name: string; status: string }>;
+          unstaged?: Array<{ name: string; status: string }>;
+          untracked?: string[];
+          current_branch?: string | null;
+          has_upstream?: boolean;
+          branches?: string[];
+          commits?: Array<{ hash: string; msg: string; time: string; author?: string; parents?: string[]; refs?: string[] }>;
+        };
         try {
-            const s = (await dp.gitStatus(root, signal)) as {
-            is_git_repo?: boolean;
-            staged?: Array<{ name: string; status: string }>;
-            unstaged?: Array<{ name: string; status: string }>;
-            untracked?: string[];
-            current_branch?: string | null;
-            has_upstream?: boolean;
-            branches?: string[];
-            commits?: Array<{ hash: string; msg: string; time: string; author?: string; parents?: string[]; refs?: string[] }>;
-          };
+          s = (await dp.gitStatus(root, signal)) as typeof s;
+        } catch (error) {
+          // Only a host-confirmed "not a git repository" is a negative SCM
+          // result. Transport, timeout, and cancellation errors stay visible.
+          if (!isNotGitRepositoryError(error)) throw error;
+          nonGitRepoConfirmed = true;
+          return emptyGitInfo();
+        }
           const staged = (s.staged ?? []).map((f) => ({
             path: f.name,
             additions: 0,
@@ -133,7 +167,7 @@ export function createWsSidebarProvider(
             parents: c.parents,
             refs: c.refs,
           }));
-          return {
+          const info: GitInfo = {
             // A clean repository has no files/commits to count. Successful
             // git_status already proves repository detection; newer hosts
             // send the explicit flag and older hosts safely default to true.
@@ -147,18 +181,8 @@ export function createWsSidebarProvider(
             untracked,
             commits,
           };
-        } catch {
-          return {
-            isGitRepo: false,
-            currentBranch: null,
-            branches: [],
-            files: [],
-            staged: [],
-            unstaged: [],
-            untracked: [],
-            commits: [],
-          };
-        }
+          if (!info.isGitRepo) nonGitRepoConfirmed = true;
+          return info;
       });
     },
 
@@ -188,29 +212,33 @@ export function createWsSidebarProvider(
       });
     },
 
-    async gitStage(paths: string[]): Promise<void> {
-      await dp.gitStage(root, paths);
+    async gitStage(paths: string[], signal?: AbortSignal): Promise<void> {
+      if (signal) await dp.gitStage(root, paths, signal);
+      else await dp.gitStage(root, paths);
       await options.queryClient?.invalidateQueries?.({
         queryKey: remoteSidebarQueryPrefix(sessionId, scope),
       });
     },
 
-    async gitUnstage(paths: string[]): Promise<void> {
-      await dp.gitUnstage(root, paths);
+    async gitUnstage(paths: string[], signal?: AbortSignal): Promise<void> {
+      if (signal) await dp.gitUnstage(root, paths, signal);
+      else await dp.gitUnstage(root, paths);
       await options.queryClient?.invalidateQueries?.({
         queryKey: remoteSidebarQueryPrefix(sessionId, scope),
       });
     },
 
-    async gitCommit(message: string, amend = false): Promise<void> {
-      await dp.gitCommit(root, message, amend);
+    async gitCommit(message: string, amend = false, signal?: AbortSignal): Promise<void> {
+      if (signal) await dp.gitCommit(root, message, amend, signal);
+      else await dp.gitCommit(root, message, amend);
       await options.queryClient?.invalidateQueries?.({
         queryKey: remoteSidebarQueryPrefix(sessionId, scope),
       });
     },
 
-    async gitPush(setUpstream = false): Promise<void> {
-      await dp.gitPush(root, setUpstream);
+    async gitPush(setUpstream = false, signal?: AbortSignal): Promise<void> {
+      if (signal) await dp.gitPush(root, setUpstream, signal);
+      else await dp.gitPush(root, setUpstream);
       await options.queryClient?.invalidateQueries?.({
         queryKey: remoteSidebarQueryPrefix(sessionId, scope),
       });

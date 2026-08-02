@@ -138,8 +138,6 @@
   function cancelAction(): void {
     actionController?.abort();
     actionNotice = 'Cancelled';
-    action = null;
-    actionController = null;
   }
 
   function stageAll(): void {

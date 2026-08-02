@@ -84,8 +84,8 @@ export interface SidebarProvider {
   gitDiff(path: string): Promise<string>;
   /** Optional Git mutations. Desktop's full Source Control owns these today;
    *  Remote exposes them through its compact mobile Git panel. */
-  gitStage?(paths: string[]): Promise<void>;
-  gitUnstage?(paths: string[]): Promise<void>;
-  gitCommit?(message: string, amend?: boolean): Promise<void>;
-  gitPush?(setUpstream?: boolean): Promise<void>;
+  gitStage?(paths: string[], signal?: AbortSignal): Promise<void>;
+  gitUnstage?(paths: string[], signal?: AbortSignal): Promise<void>;
+  gitCommit?(message: string, amend?: boolean, signal?: AbortSignal): Promise<void>;
+  gitPush?(setUpstream?: boolean, signal?: AbortSignal): Promise<void>;
 }

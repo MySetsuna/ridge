@@ -149,20 +149,20 @@ export class WsDataProvider implements DataProvider {
   async gitStatus(repoRoot: string, signal?: AbortSignal): Promise<GitStatusResult> {
     return this.request<GitStatusResult>('git_status', { repoRoot }, signal);
   }
-  async gitStage(repoRoot: string, paths: string[]): Promise<void> {
-    await this.request<void>('git_stage', { repoRoot, paths });
+  async gitStage(repoRoot: string, paths: string[], signal?: AbortSignal): Promise<void> {
+    await this.request<void>('git_stage', { repoRoot, paths }, signal);
   }
-  async gitUnstage(repoRoot: string, paths: string[]): Promise<void> {
-    await this.request<void>('git_unstage', { repoRoot, paths });
+  async gitUnstage(repoRoot: string, paths: string[], signal?: AbortSignal): Promise<void> {
+    await this.request<void>('git_unstage', { repoRoot, paths }, signal);
   }
-  async gitCommit(repoRoot: string, message: string, amend?: boolean): Promise<void> {
-    await this.request<void>('git_commit', { repoRoot, message, amend: amend ?? false });
+  async gitCommit(repoRoot: string, message: string, amend?: boolean, signal?: AbortSignal): Promise<void> {
+    await this.request<void>('git_commit', { repoRoot, message, amend: amend ?? false }, signal);
   }
   async gitPull(repoRoot: string): Promise<void> {
     await this.request<void>('git_pull', { repoRoot });
   }
-  async gitPush(repoRoot: string, setUpstream?: boolean): Promise<void> {
-    await this.request<void>('git_push', { repoRoot, setUpstream: setUpstream ?? false });
+  async gitPush(repoRoot: string, setUpstream?: boolean, signal?: AbortSignal): Promise<void> {
+    await this.request<void>('git_push', { repoRoot, setUpstream: setUpstream ?? false }, signal);
   }
   async gitSync(repoRoot: string): Promise<void> {
     await this.request<void>('git_sync', { repoRoot });
