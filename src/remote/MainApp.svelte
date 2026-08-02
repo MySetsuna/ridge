@@ -142,7 +142,12 @@
   let activeCwd = $state('');
   // Provider rooted at the active cwd — backs the file/diff viewer (the sidebar
   // builds its own internally). Recreated when the cwd changes.
-  const sidebarProvider = $derived(createWsSidebarProvider(activeCwd, dataProvider));
+  const sidebarProvider = $derived(
+    createWsSidebarProvider(activeCwd, dataProvider, {
+      queryClient,
+      sessionId: sessionId(),
+    }),
+  );
 
   // iter-60 G10（导航栈语义，取代旧 §close-to-terminal 一刀切）：关闭 viewer 回
   // 「打开它的那一级」——从侧栏（文件树/git/搜索）打开的，关闭回该侧栏页；从终端

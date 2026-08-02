@@ -6,8 +6,10 @@
   import SidebarSearch from '../../shared/sidebar/SidebarSearch.svelte';
   import SidebarTeamRoster from './SidebarTeamRoster.svelte';
   import { createWsSidebarProvider } from './sidebarProvider';
+  import { remoteSessionId } from './remoteQueries';
   import type { RemoteLink, RemotePanel } from '@ridge/remote';
   import type { DataProvider } from '$lib/transport';
+  import { useQueryClient } from '@tanstack/svelte-query';
 
   let { tab = 'files', cwd = '', workspaceId = '', available, ws, dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane }: {
     tab?: RemotePanel;
@@ -29,7 +31,11 @@
 
   // Rooted at the active pane's cwd — the same source the desktop ridge shows.
   // Recreated (and the panel remounted via {#key}) when the pane cwd changes.
-  const provider = $derived(createWsSidebarProvider(cwd, dataProvider));
+  const queryClient = useQueryClient();
+  const provider = $derived(createWsSidebarProvider(cwd, dataProvider, {
+    queryClient,
+    sessionId: ws ? remoteSessionId(ws) : 0,
+  }));
 
   function setTab(t: RemotePanel) {
     if (available[t]) onTabChange?.(t);
