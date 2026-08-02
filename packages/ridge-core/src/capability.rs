@@ -236,6 +236,7 @@ pub const REMOTE_ALLOWLIST: &[&str] = &[
     // writes update workspace-memory only; neither method launches a process.
     "read_agent_recent_replies",
     "set_teammate_groups",
+    "resume_agent_session",
     // iter-61：把某 pane 标记/取消标记为 agent（远端工作区弹层的「标记」按钮）。
     // 只改本机 teammate 侧表（pane 状态 + agent→pane 映射），不 spawn、不写文件、
     // 不暴露 token；等价于桌面 SplitContainer 上早有的同名按钮。列 MUTATING。
@@ -329,6 +330,7 @@ pub const MUTATING_METHODS: &[&str] = &[
     // 远端裁决放行高危命令 = 写操作；只读会话拒。
     "resolve_hitl_remote",
     "set_teammate_groups",
+    "resume_agent_session",
     // iter-61：agent 标记切换改 teammate 侧表 = 写操作。
     "register_teammate_agent",
     "release_teammate_agent",

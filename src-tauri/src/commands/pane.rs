@@ -847,6 +847,8 @@ pub(crate) fn remote_create_pane(
     state: &AppState,
     ws_id: Uuid,
     shell: Option<String>,
+    cwd_override: Option<std::path::PathBuf>,
+    structured_command: Option<terminal::StructuredPtyCommand>,
 ) -> Result<Uuid, AppError> {
     // Decide: attach to the existing leaf (first terminal) or split the largest.
     let (target_pane, split_dir) = {
@@ -887,7 +889,11 @@ pub(crate) fn remote_create_pane(
             .get_mut(&ws_id)
             .ok_or_else(|| AppError::PtyError("workspace missing".into()))?;
         let id = ws.pane_tree.split(target_pane, dir)?;
-        if let Some(ref cwd_str) = parent_cwd {
+        let pane_cwd = cwd_override
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .or_else(|| parent_cwd.clone());
+        if let Some(ref cwd_str) = pane_cwd {
             if let Some(np) = ws.pane_tree.panes.get_mut(&id) {
                 np.cwd = Some(std::path::PathBuf::from(cwd_str));
             }
@@ -897,21 +903,67 @@ pub(crate) fn remote_create_pane(
         target_pane
     };
 
-    let cwd_path = parent_cwd.as_ref().map(std::path::PathBuf::from);
+    if let Some(ref cwd) = cwd_override {
+        let mut map = state.workspaces.write();
+        if let Some(ws) = map.get_mut(&ws_id) {
+            if let Some(pane) = ws.pane_tree.panes.get_mut(&new_pane_id) {
+                pane.cwd = Some(cwd.clone());
+            }
+        }
+    }
+
+    let effective_cwd = cwd_override
+        .clone()
+        .or_else(|| parent_cwd.clone().map(std::path::PathBuf::from));
     terminal::ensure_pane_pty_workspace(
         state,
         ws_id,
         new_pane_id,
         shell,
-        cwd_path.as_deref(),
+        effective_cwd.as_deref(),
         None,
-        None,
+        structured_command,
         None,
         None,
         None,
     )?;
     crate::commands::ridge_file::schedule_auto_save(state, ws_id);
     Ok(new_pane_id)
+}
+
+/// Create a pane and launch a registered Agent session in its recorded CWD.
+/// The profile is resolved on-host and PTY uses structured argv (no shell
+/// command interpolation from the mobile client).
+pub(crate) fn remote_resume_agent_pane(
+    state: &AppState,
+    ws_id: Uuid,
+    agent: String,
+    session_id: String,
+    cwd: String,
+) -> Result<Uuid, AppError> {
+    let cwd = std::path::PathBuf::from(cwd.trim());
+    if !cwd.is_dir() {
+        return Err(AppError::PtyError("Agent session CWD is not a directory".into()));
+    }
+    let plan = crate::commands::project::plan_agent_resume(
+        agent,
+        session_id,
+        cwd.to_string_lossy().into_owned(),
+        false,
+        None,
+    )
+    .map_err(AppError::PtyError)?;
+    remote_create_pane(
+        state,
+        ws_id,
+        None,
+        Some(cwd),
+        Some(terminal::StructuredPtyCommand {
+            program: plan.executable,
+            args: plan.argv,
+            env: HashMap::new(),
+        }),
+    )
 }
 
 /// §6 — close a terminal in a SPECIFIC workspace (remote counterpart of
