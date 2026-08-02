@@ -3498,6 +3498,12 @@ mod scan_tests {
         )
         .expect("commit remote advance");
         git_push_sync(other.to_string_lossy().into_owned(), None).expect("push remote advance");
+        let remote_head_after_other = run_git_simple(
+            bare.to_string_lossy().as_ref(),
+            &["rev-parse", "refs/heads/main"],
+        )
+        .expect("read remote head after remote advance");
+        assert_ne!(remote_head_after_other.trim(), remote_head.trim());
         std::fs::write(repo.join("local.txt"), "local divergence\n").expect("write local fixture");
         run_git_simple(repo.to_string_lossy().as_ref(), &["add", "local.txt"])
             .expect("stage local fixture");
@@ -3511,5 +3517,11 @@ mod scan_tests {
             git_push_sync(repo.to_string_lossy().into_owned(), None).is_err(),
             "non-fast-forward push must fail closed"
         );
+        let remote_head_after = run_git_simple(
+            bare.to_string_lossy().as_ref(),
+            &["rev-parse", "refs/heads/main"],
+        )
+        .expect("read remote head after rejected push");
+        assert_eq!(remote_head_after.trim(), remote_head_after_other.trim());
     }
 }
