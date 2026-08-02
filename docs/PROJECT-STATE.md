@@ -5,6 +5,17 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 96 update (2026-08-03)
+
+Git 请求槽生命周期审计发现一处长期稳定性缺口：远程请求所有权已释放后
+若仍收到重复取消，旧实现会新建空槽并永久保留；嵌套 Git helper 还会重开
+generation，令复合操作的取消身份不一致。`packages/ridge-core/src/commands/git.rs`
+现以原子存在性检查处理取消，未知/重复取消不分配槽；同槽嵌套 scope 复用
+ambient `(slot, generation)`。新增 128 次重复取消与嵌套 generation 回归。
+`cargo test -p ridge-core commands::git --lib` 39/39、`pnpm check` 0/0 通过。
+归档见 `docs/iterations/2026-08-03-iteration-96-git-slot-lifecycle.md`。
+该切片不替代手机、公网、WebView2、双窗口及完整 Kernel 迁移外部闸门。
+
 ## Iteration 85 update (2026-08-02)
 
 The mobile Remote worker cold-start/lifecycle slice is locally closed. The
