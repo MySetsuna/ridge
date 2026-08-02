@@ -5539,6 +5539,7 @@ dependencies = [
  "ed25519-dalek",
  "glob",
  "ignore",
+ "libc",
  "rand 0.8.6",
  "regex",
  "ridge-mcp",

@@ -67,5 +67,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [target.'cfg(windows)'.dependencies]
 sysinfo = "0.31"
 
+[target.'cfg(unix)'.dependencies]
+# Process-group creation/kill lets process_guard reclaim descendants on Unix.
+# Keep this target-scoped so Windows/other targets do not gain an unnecessary
+# dependency; the workspace lock already contains libc for other Unix crates.
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "sync", "macros", "rt-multi-thread", "time"] }
