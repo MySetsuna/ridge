@@ -456,6 +456,10 @@
     ws.sendStdin(pane, data);
   }
 
+  function onPaneFocus(pane: PaneRef): void {
+    clearAgentAttention(pane);
+  }
+
   // Automatic refit (ResizeObserver / visualViewport): the controller fires this
   // only when the grid actually changed (cols/rows/DPR delta), i.e. a genuine
   // viewport change that needs the host to reflow. A bare `resize` is host-side
@@ -1032,6 +1036,7 @@
             agentState={activePane?.agentState ?? (activePane?.isAgent ? 'busy' : undefined)}
             agentNeedsAttention={paneNeedsAttention(activePane)}
             {onStdin}
+            onFocus={onPaneFocus}
             {onResize}
             onHostClipboard={(text) => ws.setHostClipboard(text)}
             onNearTop={loadOlderScrollback}

@@ -12,8 +12,14 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).not.toContain('.container.agent-idle{');
   });
 
+  it('clears the transient rail when the pane input surface receives focus', () => {
+    expect(source).toContain('onFocus: onPaneFocus');
+    expect(source).toContain('onPaneFocus?.(pane)');
+    expect(source).toContain('manager.setFocused(paneId, true)');
+  });
+
   it('keeps renderer cursor ownership when the mobile IME sink blurs', () => {
-    expect(source).toContain('onfocus={() => manager.setFocused(paneId, true)}');
+    expect(source).toContain('manager.setFocused(paneId, true);');
     expect(source).not.toContain('onblur={() => manager.setFocused(paneId, false)}');
     expect(source).toContain('caret-color:var(--rg-accent,#58a6ff)');
   });
