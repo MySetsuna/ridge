@@ -13,7 +13,12 @@ const fetchJson = (p) => new Promise((res, rej) => {
 const targets = await fetchJson('/json/list');
 const pages = targets.filter((t) => t.type === 'page' && typeof t.url === 'string');
 const ridge =
-  pages.find((t) => t.url.includes('tauri.localhost') || t.url.startsWith('tauri://'))
+  pages.find((t) =>
+    t.title === 'Ridge'
+      || t.url.includes('tauri.localhost')
+      || t.url.startsWith('tauri://')
+      || t.url.includes('127.0.0.1:')
+  )
   ?? pages.find((t) => t.url.includes(':1420') || t.url.includes(':5173'));
 if (!ridge) { console.error('no ridge target'); process.exit(1); }
 const ws = new WebSocket(ridge.webSocketDebuggerUrl);
