@@ -145,3 +145,12 @@ Remote artifact publish gate: workflow `30739703846` succeeded from `f7ba0f5`
 and activated `0.1.36+gf7ba0f5` with both desktop/mobile indexes. Cloud
 `/api/v1/health` returned HTTP 200 (`version=0.0.7`); no cloud source/version
 change was fabricated.
+
+Release attempt audit: tag `v0.1.37` / workflow `30741069265` was deliberately
+rolled back after its test gate exposed a platform-dependent false assumption
+in the new real-repository push guard: Linux bare Git permits non-fast-forward
+updates unless configured otherwise. The remote/local tag was deleted, the
+version bump reverted, and `main` returned to `0.1.36`. `149d085` sets
+`receive.denyNonFastForwards=true` in the temporary bare remote; the targeted
+test and three parallel full `ridge-core` runs now pass. No failed release or
+version bump is claimed.
