@@ -13,11 +13,17 @@
 // @ts-nocheck
 import { config as baseConfig } from './wdio.conf';
 
+const stressSeconds = Math.max(1, Number.parseInt(process.env.RIDGE_PERF_STRESS_SEC ?? '35', 10) || 35);
+// Keep Mocha's outer timeout ahead of the in-page sampler. This permits real
+// long-run WebView2 soak windows (for example 10–30 minutes) while retaining a
+// hard upper bound so a detached driver cannot leave a CI job hanging forever.
+const perfTimeoutMs = Math.min(24 * 60 * 60 * 1000, (stressSeconds + 120) * 1000);
+
 export const config: WebdriverIO.Config = {
   ...baseConfig,
   specs: ['./tests/e2e-perf/**/*.spec.ts'],
   mochaOpts: {
     ui: 'bdd',
-    timeout: 180_000,
+    timeout: perfTimeoutMs,
   },
 };
