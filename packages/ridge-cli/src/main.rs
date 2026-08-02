@@ -114,6 +114,8 @@ enum KernelCommand {
     FsList { path: String },
     /// 领域：Git status `rdg kernel git-status <path>`。
     GitStatus { path: String },
+    /// 领域：Remote Host topology（经当前 ridge-kernel SSOT）。
+    RemoteHosts,
     /// MCP tools/list 冒烟（无 Tauri）。
     McpSmoke,
 }
@@ -310,6 +312,13 @@ async fn main() -> Result<()> {
                 println!(
                     "{}",
                     kernel_ctl::domain_git_status(&path).map_err(anyhow::Error::msg)?
+                );
+                Ok(())
+            }
+            KernelCommand::RemoteHosts => {
+                println!(
+                    "{}",
+                    kernel_ctl::domain_remote_hosts().map_err(anyhow::Error::msg)?
                 );
                 Ok(())
             }

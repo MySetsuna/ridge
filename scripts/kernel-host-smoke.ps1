@@ -76,6 +76,8 @@ try {
   Assert-True ($fs -match "ok") "domain fs-list: $fs"
   $git = Invoke-Checked -FilePath $rdg -ArgumentList @('kernel', 'git-status', $root) -TimeoutMs 30000
   Assert-True ($git -match "ridge-kernel|is_repo|status") "domain git-status: $git"
+  $hosts = Invoke-Checked -FilePath $rdg -ArgumentList @('kernel', 'remote-hosts') -TimeoutMs 10000
+  Assert-True ($hosts -match '"source"\s*:\s*"ridge-kernel"' -and $hosts -match '"hosts"\s*:') "domain remote-hosts: $hosts"
 
   # MCP
   $mcp = Invoke-Checked -FilePath $rdg -ArgumentList @('kernel', 'mcp-smoke') -TimeoutMs 10000

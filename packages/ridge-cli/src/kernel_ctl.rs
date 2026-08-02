@@ -101,6 +101,14 @@ pub fn domain_git_status(path: &str) -> Result<String, String> {
     .map(|value| value.to_string())
 }
 
+/// Read the kernel-owned registered Remote Host topology. Live transport and
+/// session handles remain shell adapters.
+pub fn domain_remote_hosts() -> Result<String, String> {
+    kernel_get_json(DOMAIN_REMOTE_HOSTS_PATH)
+}
+
+const DOMAIN_REMOTE_HOSTS_PATH: &str = "/v1/domain/remote-hosts";
+
 /// 最小 MCP tools/list 冒烟（经内核 /api/v1/mcp）。
 pub fn mcp_tools_list_smoke() -> Result<String, String> {
     let body = serde_json::json!({
@@ -199,5 +207,10 @@ mod tests {
             encode_query_component(r"C:\\work tree\a?b#c%20"),
             "C%3A%5C%5Cwork%20tree%5Ca%3Fb%23c%2520"
         );
+    }
+
+    #[test]
+    fn remote_hosts_domain_route_is_kernel_owned() {
+        assert_eq!(DOMAIN_REMOTE_HOSTS_PATH, "/v1/domain/remote-hosts");
     }
 }
