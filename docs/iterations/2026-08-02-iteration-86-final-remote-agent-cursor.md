@@ -31,10 +31,10 @@ from the host; no unverified pane-level HITL mapping is claimed.
 - `pnpm check`: 0 errors, 0 warnings.
 - Full Vitest: 131 files passed; 1,418 passed, 1 skipped.
 - Targeted Agent/Query tests: 2 files, 6 passed.
-- Remote publish workflow `30734591703` succeeded from `f129d81`.
-- Activated Remote artifact: `0.1.34+gf129d81`; desktop/mobile indexes passed.
-- Desktop GitHub Release remains `v0.1.34` with its existing 12 assets; no
-  version bump was made for a Remote-only patch.
+- Remote publish workflow `30736163197` succeeded from `2bce084`.
+- Activated Remote artifact: `0.1.35+g2bce084`; desktop/mobile indexes passed.
+- GitHub Release `v0.1.35` is formal (`draft=false`) with all 12 expected
+  Windows/Linux/macOS installer and CLI assets.
 
 ## Explicit external gates
 

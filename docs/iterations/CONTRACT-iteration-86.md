@@ -218,8 +218,9 @@ annotations are warnings only; build, upload, status and activation gates passed
 - `d818500`: source contract test guards the five-minute interval.
 - Verification: `pnpm check` 0 errors/0 warnings; Vitest 131 files, 1,418
   passed, 1 skipped; targeted Agent/Query tests 6 passed.
-- Remote workflow `30734591703` succeeded from `f129d81` and activated
-  `0.1.34+gf129d81`. Desktop `v0.1.34` remains unchanged.
+- Remote workflow `30736163197` succeeded from `2bce084` and activated
+  `0.1.35+g2bce084` with desktop/mobile indexes.
+- GitHub Release `v0.1.35` is formal (`draft=false`) with 12 expected assets.
 - HITL approval is card-level (yellow rail and controls); no pane-level HITL
   mapping is claimed. Physical PWA/notch, public soak, WebView2 heap,
   dual-window/host, authenticated Git push and clean-profile extension
