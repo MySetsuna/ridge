@@ -101,6 +101,45 @@
   // from the live `panes` list by id — mirrors the panes.find(...) lookup used
   // for the active cwd below.
   let activePane = $derived(panes.find((p) => p.id === ui.activePaneId));
+
+  // Pane borders are a transient HITL affordance, never a permanent Agent
+  // status rail. Acknowledging/focusing/claiming a pane suppresses the rail
+  // until the pending item disappears; the next distinct pending item may
+  // raise it again.
+  let attentionPaneKeys = $state<string[]>([]);
+  const acknowledgedAttention = new Set<string>();
+  function updateAgentAttention(paneIds: string[]): void {
+    const incoming = new Set(paneIds.filter(Boolean).map((paneId) => paneRefKey({
+      workspaceId: ui.activeWorkspaceId,
+      paneId,
+    })));
+    for (const key of acknowledgedAttention) {
+      if (!incoming.has(key)) acknowledgedAttention.delete(key);
+    }
+    attentionPaneKeys = [...incoming].filter((key) => !acknowledgedAttention.has(key));
+  }
+  function clearAgentAttention(pane: PaneRef | null): void {
+    if (!pane) return;
+    const key = paneRefKey(pane);
+    acknowledgedAttention.add(key);
+    attentionPaneKeys = attentionPaneKeys.filter((current) => current !== key);
+  }
+  function paneNeedsAttention(pane: PaneInfo | undefined): boolean {
+    return !!pane && attentionPaneKeys.includes(paneRefKey({
+      workspaceId: ui.activeWorkspaceId,
+      paneId: pane.id,
+    }));
+  }
+  function selectAgentPane(paneId: string): void {
+    clearAgentAttention({ workspaceId: ui.activeWorkspaceId, paneId });
+    ui.activePaneId = paneId;
+    ui.sidebarTab = null;
+  }
+  $effect(() => {
+    // Any existing focus/claim wins over a pending visual hint.
+    const pane = activePaneRef();
+    if (pane && attentionPaneKeys.includes(paneRefKey(pane))) clearAgentAttention(pane);
+  });
   // §fail-grading（任务 A 问题1）：最近一次失败分级。驱动顶部 banner 的差异化处置——
   // 'user'（账户/权限不匹配）退回登录、'parked'（设备停用）提示去控制台、'channel'
   // （信令/网络/并发）显示「通道异常」并允许重试。
@@ -413,6 +452,7 @@
   }
 
   function onStdin(pane: PaneRef, data: string) {
+    clearAgentAttention(pane);
     ws.sendStdin(pane, data);
   }
 
@@ -424,6 +464,7 @@
   // button (resize real PTY + parser, broadcast `pty-resized`), giving automatic
   // 自适应全屏 reflow without the manual tap.
   function onResize(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
+    clearAgentAttention(pane);
     ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight);
   }
 
@@ -989,6 +1030,7 @@
             paneId={ui.activePaneId}
             workspaceId={ui.activeWorkspaceId}
             agentState={activePane?.agentState ?? (activePane?.isAgent ? 'busy' : undefined)}
+            agentNeedsAttention={paneNeedsAttention(activePane)}
             {onStdin}
             {onResize}
             onHostClipboard={(text) => ws.setHostClipboard(text)}
@@ -1022,7 +1064,8 @@
         onTabChange={selectSidebarTab}
         onOpenFile={openFileViewer}
         onOpenDiff={openDiffViewer}
-        onSelectPane={(paneId: string) => { ui.activePaneId = paneId; ui.sidebarTab = null; }}
+        onSelectPane={selectAgentPane}
+        onAttentionChange={updateAgentAttention}
       />
     {/await}
   {/if}

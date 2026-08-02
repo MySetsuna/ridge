@@ -21,7 +21,7 @@
     type RemoteQueryClientLike,
   } from './remoteQueries';
 
-  let { ws, workspaceId, queryClient, panes = [], onSelectPane }: {
+  let { ws, workspaceId, queryClient, panes = [], onSelectPane, onAttentionChange }: {
     ws: RemoteLink;
     workspaceId: string;
     /** Current workspace panes; Agent paneId is the authoritative CWD mapping. */
@@ -30,6 +30,8 @@
     queryClient?: RemoteQueryClientLike;
     /** 点击成员 → 切到其 pane（MVP：拓扑取自活动工作区，pane 即当前工作区内）。 */
     onSelectPane?: (paneId: string) => void;
+    /** Pending HITL panes only; normal Agent activity never paints a pane border. */
+    onAttentionChange?: (paneIds: string[]) => void;
   } = $props();
 
   // P1 MVP：轮询取数（合同明确不建订阅流）。Query cache handles drawer
@@ -207,6 +209,10 @@
         : [];
       pending = p;
       health = h;
+      onAttentionChange?.(t.roster
+        .filter((m) => m.status === 'Disappeared'
+          || p.some((item) => item.initiator === m.id || item.initiator === m.paneId || item.initiator === m.name))
+        .map((m) => m.paneId));
       if (recent) {
         history = recent;
         historyUnavailable = false;

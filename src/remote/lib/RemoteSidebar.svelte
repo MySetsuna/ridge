@@ -11,7 +11,7 @@
   import type { DataProvider } from '$lib/transport';
   import { useQueryClient } from '@tanstack/svelte-query';
 
-  let { tab = 'files', cwd = '', workspaceId = '', available, ws, panes = [], dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane }: {
+  let { tab = 'files', cwd = '', workspaceId = '', available, ws, panes = [], dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane, onAttentionChange }: {
     tab?: RemotePanel;
     cwd?: string;
     workspaceId?: string;
@@ -29,6 +29,8 @@
     onOpenDiff?: (path: string) => void;
     /** P1 roster：点击成员切到其 pane。 */
     onSelectPane?: (paneId: string) => void;
+    /** Pending HITL pane keys only; normal Agent state is not a border signal. */
+    onAttentionChange?: (paneIds: string[]) => void;
   } = $props();
 
   // Rooted at the active pane's cwd — the same source the desktop ridge shows.
@@ -79,7 +81,7 @@
       {:else if tab === 'git'}
         <RemoteGitPanel {provider} {onOpenDiff} />
       {:else if tab === 'team' && ws}
-        <SidebarTeamRoster {ws} {workspaceId} {queryClient} {panes} {onSelectPane} />
+        <SidebarTeamRoster {ws} {workspaceId} {queryClient} {panes} {onSelectPane} {onAttentionChange} />
       {:else}
         <SidebarSearch {provider} {onOpenFile} />
       {/if}
