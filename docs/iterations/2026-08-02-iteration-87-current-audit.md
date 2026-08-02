@@ -95,3 +95,9 @@ The public WebRTC four-path gate remains blocked by the absence of an
 authenticated `rdg login`/device credential on this machine. Cloud health HTTP
 200 and a LAN protocol smoke do not substitute for public desktop/mobile session
 evidence.
+
+Remote artifact publish gate: workflow `30738272039` succeeded from
+`15b4063`; it activated `0.1.35+g15b4063` with both desktop/mobile indexes.
+Cloud `/api/v1/health` returned HTTP 200 (`version=0.0.7`). Desktop Release
+`v0.1.35` was not rebuilt or version-bumped; its existing 12 assets remain the
+formal release evidence.

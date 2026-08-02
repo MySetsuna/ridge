@@ -785,3 +785,8 @@ Final local rerun: full Vitest `135 files / 1,433 passed / 1 skipped`,
 `pnpm check` 0/0, ridge-term Scrollback 48, ridge-kernel 17,
 ridge-mcp-bridge 8, and `cargo check --manifest-path src-tauri/Cargo.toml`
 exit 0 (39 existing warnings).
+
+Remote artifact workflow `30738272039` then succeeded from `15b4063` and
+activated `0.1.35+g15b4063` with desktop/mobile indexes. Cloud health remained
+HTTP 200 (`version=0.0.7`); desktop Release `v0.1.35` stayed unchanged with
+its existing 12 assets.
