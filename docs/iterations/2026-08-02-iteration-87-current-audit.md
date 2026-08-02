@@ -295,6 +295,13 @@ Remote Pane Border are present and tested. Therefore this NLM result is
 archived as strategy input, not a new approved implementation item; no TUI
 syntax-highlighting work is duplicated in this iteration.
 
+Remote/cloud latest-main refresh (2026-08-02): workflow `30746571058`
+completed successfully from `26241f2` and activated `0.1.37+g26241f2`
+(233 files / 21.78 MiB). Cloud health returned HTTP 200. The desktop
+`v0.1.37` Release remains unchanged because post-`ef70b3c` commits are tests
+and iteration records only; the Remote artifact now nevertheless tracks the
+literal latest `main` SHA.
+
 Pane header single-layer guard (2026-08-02): `a1d816a` adds a static
 regression assertion that `PaneRepoSwitcher`, `PaneGitPill`, and `PaneDiffPill`
 each render once as adjacent siblings in the pane header. The focused desktop
