@@ -33,6 +33,11 @@ reads use session- and cwd-scoped keys with a bounded stale window and Query
 single-flight; successful file writes invalidate the sidebar prefix. This does
 not claim the later Git mutation/Graph or Agent parity packages.
 
+Release gate evidence: tag `v0.1.34` from `1901eb0` completed workflow
+`30730231317`, was published from draft with all 12 Windows/Linux/macOS assets.
+The separate Remote artifact workflow `30731241075` built latest `main` at
+`b62d94b` and activated `0.1.34+gb62d94b`; cloud health remains `ok=true`.
+
 ## Baseline and constraints
 
 - Current code baseline is `origin/main` after the v0.1.34 tag is built; do not
