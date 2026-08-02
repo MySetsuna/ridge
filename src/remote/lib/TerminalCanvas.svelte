@@ -33,11 +33,13 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId: remotePaneId, workspaceId, agentState, onStdin: onPaneStdin, onResize: onPaneResize, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
+  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onResize: onPaneResize, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
-    /** Host teammate state; used only for a visual inset rail. */
+    /** Host teammate state; retained for diagnostics, never a persistent pane border. */
     agentState?: 'idle' | 'busy' | 'starting';
+    /** Short-lived HITL/user-intervention highlight; cleared on focus/claim. */
+    agentNeedsAttention?: boolean;
     onStdin: (pane: PaneRef, data: string) => void;
     /** iter-60：句级输入缓冲开关（语音/高频改写场景；alt-screen/TUI 鼠标态自动旁路）。 */
     sentenceBuffer?: boolean;
@@ -1057,9 +1059,7 @@
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
   class="container"
-  class:agent-working={agentState === 'busy'}
-  class:agent-starting={agentState === 'starting'}
-  class:agent-idle={agentState === 'idle'}
+  class:agent-needs-attention={agentNeedsAttention}
   data-agent-state={agentState ?? ''}
   bind:this={containerEl}
   role="application"
@@ -1142,10 +1142,8 @@
 
 <style>
   .container{position:relative;flex:1;overflow:hidden;background:var(--rg-bg);touch-action:manipulation}
-  /* Visual-only status rail: inset shadow preserves pane geometry and PTY fit. */
-  .container.agent-working{box-shadow:inset 0 0 0 2px var(--rg-ansi-green,#3fb950)}
-  .container.agent-starting{box-shadow:inset 0 0 0 2px var(--rg-ansi-yellow,#d29922)}
-  .container.agent-idle{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--rg-accent) 45%,transparent)}
+  /* Temporary HITL rail only: normal running/idle panes have no border. */
+  .container.agent-needs-attention{box-shadow:inset 0 0 0 2px var(--rg-ansi-yellow,#d29922)}
   .scrollback-loading{position:absolute;top:0;left:0;right:0;height:2px;z-index:8;overflow:hidden;background:color-mix(in srgb,var(--rg-accent) 20%,transparent)}
   .scrollback-loading::after{content:"";position:absolute;inset:0;width:35%;background:var(--rg-accent);animation:scrollback-progress .9s ease-in-out infinite}
   .scrollback-error{position:absolute;top:6px;left:50%;z-index:9;transform:translateX(-50%);max-width:calc(100% - 24px);padding:5px 10px;border:1px solid color-mix(in srgb,var(--rg-danger,#ef4444) 45%,transparent);border-radius:999px;background:color-mix(in srgb,var(--rg-bg,#111827) 92%,transparent);color:var(--rg-fg,#f9fafb);font-size:11px;white-space:nowrap}

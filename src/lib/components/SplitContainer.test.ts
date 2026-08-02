@@ -1,0 +1,15 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+
+const source = readFileSync(new URL('./SplitContainer.svelte', import.meta.url), 'utf8');
+
+describe('desktop Pane Agent border contract', () => {
+  it('uses transient attention only; runtime status never paints a border', () => {
+    expect(source).toContain('{@const paneAttention = $agentPaneAttentionStore');
+    expect(source).toContain("paneAttention === 'waiting'");
+    expect(source).toContain("paneAttention === 'stopped'");
+    expect(source).not.toContain("paneStatus === 'working'");
+    expect(source).not.toContain("paneStatus === 'idle'");
+    expect(source).toContain('data-agent-attention={paneAttention ?? \'\'}');
+  });
+});
