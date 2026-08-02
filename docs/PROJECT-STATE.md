@@ -17,10 +17,11 @@ CDP ping, and the LAN mobile probe passed; the probe now fails on worker
 timeouts, `resize before init`, and project `Unchecked runtime.lastError`.
 
 Iteration-85 evidence is archived in
-`docs/iterations/CONTRACT-iteration-85.md`. Versioned Release/Remote/cloud
-publication and physical-phone, public-soak, WebView2-heap, and dual-window /
-dual-Host gates remain pending; no external proof is inferred from the local
-CDP run.
+`docs/iterations/CONTRACT-iteration-85.md`. Release `v0.1.33` is formal with 12
+assets (`30726725069`), Remote artifact `0.1.33+gc07f931` is active
+(`30727576307`), and ridge-cloud deploy `30727590385` plus health `ok=true`
+are green. Physical-phone, public-soak, WebView2-heap, and dual-window /
+dual-Host gates remain pending; no external proof is inferred from local CDP.
 
 ### Iteration 83 update (2026-08-02)
 
