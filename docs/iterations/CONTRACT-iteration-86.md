@@ -215,6 +215,7 @@ annotations are warnings only; build, upload, status and activation gates passed
   workspace-tree rows show the same lifecycle highlight.
 - `f129d81`: Agent roster liveness refresh is five minutes; Query cache still
   provides stale reuse and single-flight behavior.
+- `d818500`: source contract test guards the five-minute interval.
 - Verification: `pnpm check` 0 errors/0 warnings; Vitest 131 files, 1,418
   passed, 1 skipped; targeted Agent/Query tests 6 passed.
 - Remote workflow `30734591703` succeeded from `f129d81` and activated
