@@ -54,3 +54,17 @@ The code commit is `d7c614d`, pushed to `origin/main`. Because code changed
 after `v0.1.43`, the next release must be `v0.1.44` and must pass the clean
 worktree gate, the version-contract check, the full release matrix with
 matching assets, Remote publication, and Cloud health verification.
+
+## Publication closure
+
+Version sources were aligned in `24420a4` and the pre-tag clean-worktree gate
+passed with `HEAD == origin/main`. Release workflow `30761202858` completed
+successfully across test, Linux, macOS ARM/x64, and Windows. GitHub Release
+`v0.1.44` is formal (`draft=false`, `prerelease=false`) with 12 matching
+installer/CLI assets: the four `rdg-*` binaries, desktop installers for
+Windows/Linux/macOS, and both macOS app archives.
+
+Remote workflow `30762473570` completed successfully and activated the new
+desktop/mobile artifact set. Cloud health returned HTTP 200 with
+`{"ok":true,"data":{"version":"0.0.7"}}`. The post-release documentation
+archive is docs-only; no runtime change was made after the tag.
