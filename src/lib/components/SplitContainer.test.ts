@@ -16,4 +16,13 @@ describe('desktop Pane Agent border contract', () => {
     expect(paneSource).toContain('if (container?.contains(document.activeElement))');
     expect(paneSource).toContain('if (isActive) clearAgentPaneAttention(workspaceId, paneId);');
   });
+
+  it('keeps PaneHeader Git pill at one sibling layer', () => {
+    expect((source.match(/<PaneGitPill\b/g) ?? []).length).toBe(1);
+    expect((source.match(/<PaneDiffPill\b/g) ?? []).length).toBe(1);
+    expect((source.match(/<PaneRepoSwitcher\b/g) ?? []).length).toBe(1);
+    expect(source).toMatch(
+      /<PaneRepoSwitcher paneId=\{node\.id\} \/>\r?\n\s+<PaneGitPill paneId=\{node\.id\} \/>\r?\n\s+<PaneDiffPill paneId=\{node\.id\} \/>/,
+    );
+  });
 });
