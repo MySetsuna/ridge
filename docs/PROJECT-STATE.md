@@ -854,3 +854,9 @@ assumption: Linux clone did not guarantee the competing push targeted
 explicit `HEAD:refs/heads/main` setup refspec, while the final stale push still
 uses the shared interactive handler. Version remains `0.1.36` pending a green
 full matrix.
+
+The fourth `v0.1.37` retry (`30742240439`) exposed the remaining clone-default
+assumption: the bare remote's missing default branch could produce a detached
+fixture unrelated to `main`. Tag and version were removed again; `cbada57`
+uses `git clone --branch main` plus explicit `HEAD:refs/heads/main` setup. The
+final stale push still exercises `git_push_sync`; version remains `0.1.36`.
