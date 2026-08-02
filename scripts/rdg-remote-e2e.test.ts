@@ -34,6 +34,13 @@ describe('LAN Remote E2E process ownership fence', () => {
     expect(lanProbe).toContain('isolatedContext: true');
   });
 
+  it('redacts temporary authentication material from evidence', () => {
+    expect(lanProbe).toContain('redactForEvidence');
+    expect(lanProbe).toContain("totp=<redacted>");
+    expect(lanProbe).toContain("status: redactForEvidence(status)");
+    expect(lanProbe).toContain("hostLogTail: redactForEvidence(hostLogTail)");
+  });
+
   it('removes probe status files during teardown', () => {
     expect(lanProbe).toContain('unlinkSync(STATUS_FILE)');
     expect(keyboardProbe).toContain('unlinkSync(STATUS_FILE)');

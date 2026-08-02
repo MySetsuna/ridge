@@ -99,7 +99,8 @@ evidence.
 Runtime warning attribution update: `scripts/rdg-remote-e2e.mjs` now launches
 Chromium with `--disable-extensions` and
 `--disable-component-extensions-with-background-pages`, and records the
-isolation mode in the evidence JSON. The latest desktop/mobile matrix passed
+isolation mode in the evidence JSON; temporary TOTP/auth material is redacted
+from logs and artifacts. The latest desktop/mobile matrix passed
 with `browserErrors=[]`, real `write_to_pty`/`resize_pane` frames and
 `browserIsolation.extensionsDisabled=true`. This excludes the controlled
 project path in a no-extension profile; it does not identify the affected
