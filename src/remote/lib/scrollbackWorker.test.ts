@@ -115,6 +115,23 @@ describe('scrollback worker protocol', () => {
     }
   });
 
+  it('worker settles invalid sequence requests instead of leaving them pending', () => {
+    const scope = {
+      onmessage: null as ((event: MessageEvent) => void) | null,
+      postMessage: vi.fn(),
+    };
+    installScrollbackWorker(scope);
+    scope.onmessage?.({
+      data: {
+        type: 'decode', requestId: 43, workspaceId: 'ws', paneId: 'p',
+        startSeq: 2, endSeq: 2, bytes: new ArrayBuffer(0),
+      },
+    } as MessageEvent);
+    expect(scope.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error', requestId: 43, workspaceId: 'ws', paneId: 'p',
+    }));
+  });
+
   it('synchronous fallback settles decoder faults as null', async () => {
     const previousWorker = (globalThis as typeof globalThis & { Worker?: typeof Worker }).Worker;
     const PreviousDecoder = globalThis.TextDecoder;
