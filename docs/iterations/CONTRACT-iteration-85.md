@@ -62,6 +62,15 @@ a Console-suppression task.
 
 ## Closure status
 
-Deterministic code and local/CDP evidence are closed. Versioned release,
-Remote artifact activation, ridge-cloud health, and the external gates remain
-pending until their corresponding run IDs and assets are recorded.
+Deterministic code and local/CDP evidence are closed. The focused code commit
+is `3a6a9ce`; the version-contract repair is `c07f931` (same `0.1.33` release,
+no version increment after the first failed gate).
+
+- Release workflow `30726725069` passed its test gate and all four platform
+  jobs. Formal `v0.1.33` is published with 12 verified assets.
+- Remote artifact workflow `30727576307` activated `0.1.33+gc07f931`.
+- ridge-cloud deploy `30727590385` completed successfully; production health
+  returned `ok=true`, version `0.0.7`.
+
+Physical-phone clean-profile attribution, public Remote soak, WebView2 heap
+soak, and dual-window/dual-host evidence remain external follow-up gates.
