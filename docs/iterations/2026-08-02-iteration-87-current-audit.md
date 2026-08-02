@@ -27,7 +27,7 @@ facts only; NotebookLM is strategy input, not release or runtime evidence.
 | PWA | `pwaInstallScope.test.ts` forbids app install button and `beforeinstallprompt` ownership; manifest/SW/standalone/scope remain; drawer safe-area contract is tested | Implemented per latest user correction; browser-native installation is intentionally out of business E2E |
 | Mobile `runtime.lastError` | Source audit found no Chrome Extension Messaging API; service worker uses standard `clients.matchAll`/`Client.postMessage` | No business-code fix is authorized; affected-phone source URL and clean-profile/extension A/B remain required |
 | Kernel singleton | `KernelInstanceGuard` uses process-lifetime OS lock; `registry.rs` child-process probe proves a second process cannot acquire the lock (`c692781`) | Deterministic guard implemented; real shell death/deep-root no-Tauri chain remains unverified |
-| Release / Remote | Release `v0.1.35` has 12 matching assets; Remote workflow `30738272039` activated `0.1.35+g15b4063`; cloud health is `ok` but reports service `0.0.7` | Published evidence exists; no cloud source/version change was fabricated |
+| Release / Remote | Release `v0.1.36` has 12 matching assets; Remote workflow `30739703846` activated `0.1.36+gf7ba0f5`; cloud health is `ok` but reports service `0.0.7` | Published evidence exists; no cloud source/version change was fabricated |
 
 ## User-visible correction captured
 
@@ -46,8 +46,8 @@ standalone/PWA layout: safe-area, notch, rotation, keyboard and theme.
 4. WebView2 long-run heap/resource snapshot and real no-Tauri Kernel → rdg →
    ridge-mcp process chain.
 5. Authenticated Remote Git push, public soak and physical-device evidence remain
-   external; latest Remote artifact is already activated and desktop Release stays
-   at `v0.1.35` without a version bump.
+   external; latest Remote artifact is activated and desktop Release `v0.1.36`
+   is formal with matching assets.
 
 No Console suppression, third-party extension mutation, fake PWA install
 state, or physical-device claim is made.
@@ -96,8 +96,13 @@ authenticated `rdg login`/device credential on this machine. Cloud health HTTP
 200 and a LAN protocol smoke do not substitute for public desktop/mobile session
 evidence.
 
-Remote artifact publish gate: workflow `30738272039` succeeded from
-`15b4063`; it activated `0.1.35+g15b4063` with both desktop/mobile indexes.
-Cloud `/api/v1/health` returned HTTP 200 (`version=0.0.7`). Desktop Release
-`v0.1.35` was not rebuilt or version-bumped; its existing 12 assets remain the
-formal release evidence.
+Release gate: the first `v0.1.36` attempt failed before the matrix because
+`Cargo.lock` had an invalid `tracing-core` resolution; the tag was removed,
+the lockfile was corrected, and the fixed annotated tag was rebuilt. Workflow
+`30738592676` passed test gate plus Windows/Linux/macOS arm64/x64 builds; formal
+Release `v0.1.36` is published with 12 matching assets.
+
+Remote artifact publish gate: workflow `30739703846` succeeded from `f7ba0f5`
+and activated `0.1.36+gf7ba0f5` with both desktop/mobile indexes. Cloud
+`/api/v1/health` returned HTTP 200 (`version=0.0.7`); no cloud source/version
+change was fabricated.
