@@ -80,6 +80,11 @@ state, or physical-device claim is made.
   clients. Evidence is `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
   `pnpm e2e:rdg-mobile-keyboard` also passed Chromium emulation with selection,
   bounded keyboard shift and recovery; this is not a physical-device claim.
+- Final local gate rerun after these commits: full Vitest `135 files / 1,433
+  passed / 1 skipped`, `pnpm check` 0/0, `cargo test -p ridge-term scrollback
+  --lib` 48 passed, `cargo test -p ridge-kernel --lib` 17 passed,
+  `cargo test -p ridge-mcp-bridge --lib` 8 passed, and `cargo check
+  --manifest-path src-tauri/Cargo.toml` exit 0 (39 pre-existing warnings).
 - Kernel deep-root evidence is in
   `.iteration/agents/result-kernel-deep-root.json`: singleton, no-Tauri host,
   rdg attach/stop, kernel-backed FS/Agent/Git/MCP and standalone MCP bridge
