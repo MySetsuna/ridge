@@ -19,6 +19,8 @@ export const REMOTE_CAPABILITY_METHODS = {
     'list_hitl_audit_remote',
     'resolve_hitl_remote',
     'get_orchestration_health',
+    'read_agent_recent_replies',
+    'set_teammate_groups',
   ],
 } as const;
 

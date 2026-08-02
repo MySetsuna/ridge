@@ -2,7 +2,7 @@
   import { Folder, GitBranch, Search, Bot, X } from 'lucide-svelte';
   import { t } from '$lib/i18n';
   import SidebarFileTree from '../../shared/sidebar/SidebarFileTree.svelte';
-  import SidebarGitPanel from '../../shared/sidebar/SidebarGitPanel.svelte';
+  import RemoteGitPanel from './RemoteGitPanel.svelte';
   import SidebarSearch from '../../shared/sidebar/SidebarSearch.svelte';
   import SidebarTeamRoster from './SidebarTeamRoster.svelte';
   import { createWsSidebarProvider } from './sidebarProvider';
@@ -75,7 +75,7 @@
       {#if tab === 'files'}
         <SidebarFileTree {provider} {onOpenFile} />
       {:else if tab === 'git'}
-        <SidebarGitPanel {provider} {onOpenDiff} />
+        <RemoteGitPanel {provider} {onOpenDiff} />
       {:else if tab === 'team' && ws}
         <SidebarTeamRoster {ws} {workspaceId} {onSelectPane} />
       {:else}

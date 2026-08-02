@@ -179,6 +179,8 @@ export function planWorkspaceInvoke(
     method.startsWith('list_hitl_') ||
     method === 'resolve_hitl_remote' ||
     method === 'get_orchestration_health' ||
+    method === 'read_agent_recent_replies' ||
+    method === 'set_teammate_groups' ||
     method === 'register_teammate_agent' ||
     method === 'release_teammate_agent'
   ) {

@@ -270,11 +270,43 @@ export interface TeammateRosterMember {
   recentOutput?: string;
 }
 
+/** Durable Agent history row shared by desktop and Remote.
+ *
+ * The host reads real Claude/Codex/Grok session files and returns this
+ * projection. Keep `cwd` and `sessionId` in the wire contract: grouping by
+ * Agent must not discard the context needed to resume a session.
+ */
+export interface AgentHistoryReply {
+  agent: string;
+  title: string;
+  text: string;
+  timestamp: number;
+  cwd: string;
+  sessionId: string;
+  resume?: {
+    executable: string;
+    argv: string[];
+    cwd: string;
+    sessionId: string;
+  };
+}
+
+/** Workspace-persisted Agent group projection. */
+export interface TeammateGroup {
+  id: string;
+  name: string;
+  color: string;
+  memberAgentIds: string[];
+  leaderAgentId?: string;
+}
+
 /** P1 teammate 拓扑快照（roster + leader；edges 预留）。 */
 export interface TeammateTopology {
   roster: TeammateRosterMember[];
   leaderId: string | null;
   edges: unknown[];
+  /** Optional for older hosts; populated by current hosts from workspace-memory. */
+  groups?: TeammateGroup[];
 }
 
 /** P2：待裁决高危动作的脱敏快照——绝不含 action 命令全文。 */
@@ -376,6 +408,10 @@ export interface RemoteLink {
   listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }>;
   /** P1 roster：只读拓扑快照（capability `teammate` 协商后可用；UI 轮询取数）。 */
   getTeammateTopology(workspaceId?: string): Promise<TeammateTopology>;
+  /** Real session-file history, grouped by Agent on the client. */
+  listAgentHistory(limit?: number): Promise<AgentHistoryReply[]>;
+  /** Persist the current workspace's Agent groups for Remote/desktop parity. */
+  setTeammateGroups(workspaceId: string, groups: readonly TeammateGroup[]): Promise<void>;
   listHitlPending(): Promise<HitlPendingItem[]>;
   resolveHitlRemote(
     id: string,
@@ -1228,6 +1264,36 @@ export class RemoteConnection implements RemoteLink {
     )) as { _result?: TeammateTopology; _error?: unknown };
     if (data._error) throw new Error(String(data._error));
     return data._result ?? { roster: [], leaderId: null, edges: [] };
+  }
+
+  async listAgentHistory(limit = 24): Promise<AgentHistoryReply[]> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'read_agent_recent_replies',
+        args: { projectPaths: [], limit: Math.max(1, Math.min(100, Math.floor(limit))) },
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _result?: unknown; _error?: unknown };
+    if (data._error) throw new Error(String(data._error));
+    return Array.isArray(data._result) ? data._result as AgentHistoryReply[] : [];
+  }
+
+  async setTeammateGroups(
+    workspaceId: string,
+    groups: readonly TeammateGroup[],
+  ): Promise<void> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'set_teammate_groups',
+        args: { workspaceId, groups },
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _error?: unknown };
+    if (data._error) throw new Error(String(data._error));
   }
 
   // P2 阶段 1：脱敏待审批快照（同 invoke-request 白名单边界；无 action 全文）。

@@ -132,7 +132,7 @@ describe('cross-entry Remote capability contract', () => {
 
   it('admits the teammate roster read while HITL adjudication stays host-privileged', () => {
     // P2：只读 roster + 脱敏待审批快照（非 mutating）+ 阶段 2 远端裁决（mutating）。
-    for (const method of ['get_teammate_topology', 'list_hitl_pending']) {
+    for (const method of ['get_teammate_topology', 'list_hitl_pending', 'read_agent_recent_replies']) {
       expect(REMOTE_ALLOWLIST).toContain(method);
       expect(rustStringArray(rustCapability, 'REMOTE_ALLOWLIST')).toContain(method);
       expect(rustStringArray(rustCapability, 'MUTATING_METHODS')).not.toContain(method);
@@ -142,6 +142,10 @@ describe('cross-entry Remote capability contract', () => {
     expect(rustStringArray(rustCapability, 'REMOTE_ALLOWLIST')).toContain('resolve_hitl_remote');
     expect(MUTATING_METHODS).toContain('resolve_hitl_remote');
     expect(rustStringArray(rustCapability, 'MUTATING_METHODS')).toContain('resolve_hitl_remote');
+    expect(REMOTE_ALLOWLIST).toContain('set_teammate_groups');
+    expect(rustStringArray(rustCapability, 'REMOTE_ALLOWLIST')).toContain('set_teammate_groups');
+    expect(MUTATING_METHODS).toContain('set_teammate_groups');
+    expect(rustStringArray(rustCapability, 'MUTATING_METHODS')).toContain('set_teammate_groups');
     // P2 阶段 2 之前：HITL 裁决、网关开关与 G1 暂停/恢复（写操作）不得远程可达。
     for (const method of ['resolve_hitl_request', 'set_hitl_enabled', 'suspend_agent', 'resume_agent']) {
       expect(REMOTE_ALLOWLIST).not.toContain(method);

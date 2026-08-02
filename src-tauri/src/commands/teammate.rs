@@ -539,10 +539,56 @@ pub fn get_workspace_memory(workspace_id: String) -> Result<Value, String> {
 #[tauri::command]
 pub fn set_teammate_groups(workspace_id: String, groups: Value) -> Result<(), String> {
     let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
+    validate_teammate_groups(&groups)?;
     let Some(dir) = crate::teammate::memory::dir() else {
         return Ok(());
     };
     crate::teammate::memory::set_teammate_groups(dir, wid, &groups);
+    Ok(())
+}
+
+/// Validate the small workspace-memory projection before accepting a Remote
+/// write. Unknown fields remain forward-compatible, but IDs/names/members are
+/// bounded so a controller cannot turn the sidecar into an unbounded payload.
+fn validate_teammate_groups(groups: &Value) -> Result<(), String> {
+    let Some(items) = groups.as_array() else {
+        return Err("groups must be an array".into());
+    };
+    if items.len() > 128 {
+        return Err("too many groups".into());
+    }
+    for (index, item) in items.iter().enumerate() {
+        let Some(group) = item.as_object() else {
+            return Err(format!("group {index} must be an object"));
+        };
+        for key in ["id", "name", "color"] {
+            let Some(value) = group.get(key).and_then(Value::as_str) else {
+                return Err(format!("group {index} missing {key}"));
+            };
+            if value.trim().is_empty() || value.len() > 128 {
+                return Err(format!("group {index} invalid {key}"));
+            }
+        }
+        let Some(members) = group.get("memberAgentIds").and_then(Value::as_array) else {
+            return Err(format!("group {index} memberAgentIds must be an array"));
+        };
+        if members.len() > 256 {
+            return Err(format!("group {index} has too many members"));
+        }
+        for member in members {
+            let Some(id) = member.as_str() else {
+                return Err(format!("group {index} has invalid member id"));
+            };
+            if id.trim().is_empty() || id.len() > 128 {
+                return Err(format!("group {index} has invalid member id"));
+            }
+        }
+        if let Some(leader) = group.get("leaderAgentId") {
+            if !leader.is_null() && leader.as_str().is_none() {
+                return Err(format!("group {index} has invalid leaderAgentId"));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -696,6 +742,22 @@ mod tests {
         ws.teammate_pane_states.insert(pane, PaneState::Busy);
         ws.teammate_pane_titles.insert(pane, "编译中".into());
         ws
+    }
+
+    #[test]
+    fn remote_group_projection_validation_keeps_contract_bounded() {
+        let valid = serde_json::json!([{
+            "id": "g1",
+            "name": "Build",
+            "color": "#60a5fa",
+            "memberAgentIds": ["claude-a"],
+            "leaderAgentId": "claude-a"
+        }]);
+        assert!(validate_teammate_groups(&valid).is_ok());
+        assert!(validate_teammate_groups(&serde_json::json!({})).is_err());
+        assert!(validate_teammate_groups(&serde_json::json!([{
+            "id": "g1", "name": "Build", "color": "#60a5fa", "memberAgentIds": [1]
+        }])).is_err());
     }
 
     /// P1/S1 脱敏门禁：远程暴露的拓扑投影不得含敏感字段（get_teammate_topology 自

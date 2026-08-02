@@ -81,22 +81,58 @@ export function createWsSidebarProvider(
           const s = (await dp.gitStatus(root)) as {
             staged?: Array<{ name: string; status: string }>;
             unstaged?: Array<{ name: string; status: string }>;
-            commits?: Array<{ hash: string; msg: string; time: string }>;
+            untracked?: string[];
+            current_branch?: string | null;
+            has_upstream?: boolean;
+            commits?: Array<{ hash: string; msg: string; time: string; parents?: string[] }>;
           };
+          const staged = (s.staged ?? []).map((f) => ({
+            path: f.name,
+            additions: 0,
+            deletions: 0,
+            status: f.status,
+          }));
+          const unstaged = (s.unstaged ?? []).map((f) => ({
+            path: f.name,
+            additions: 0,
+            deletions: 0,
+            status: f.status,
+          }));
+          const untracked = s.untracked ?? [];
           const files = [
-            ...(s.staged ?? []).map((f) => ({ path: f.name, additions: 0, deletions: 0, status: f.status })),
-            ...(s.unstaged ?? []).map((f) => ({ path: f.name, additions: 0, deletions: 0, status: f.status })),
+            ...staged,
+            ...unstaged,
+            ...untracked.map((path) => ({ path, additions: 0, deletions: 0, status: '??' })),
           ];
-          const commits = (s.commits ?? []).map((c) => ({ hash: c.hash, subject: c.msg, author: '', date: c.time }));
+          const commits = (s.commits ?? []).map((c) => ({
+            hash: c.hash,
+            subject: c.msg,
+            author: '',
+            date: c.time,
+            parents: c.parents,
+          }));
           return {
             isGitRepo: files.length > 0 || commits.length > 0,
-            currentBranch: null,
+            currentBranch: s.current_branch ?? null,
+            hasUpstream: s.has_upstream ?? false,
             branches: [],
             files,
+            staged,
+            unstaged,
+            untracked,
             commits,
           };
         } catch {
-          return { isGitRepo: false, currentBranch: null, branches: [], files: [], commits: [] };
+          return {
+            isGitRepo: false,
+            currentBranch: null,
+            branches: [],
+            files: [],
+            staged: [],
+            unstaged: [],
+            untracked: [],
+            commits: [],
+          };
         }
       });
     },
@@ -122,6 +158,34 @@ export function createWsSidebarProvider(
       // A successful write invalidates sidebar reads for this remote session;
       // the next panel open gets fresh tree/Git/file content without turning
       // ordinary tab opens into unconditional network requests.
+      await options.queryClient?.invalidateQueries?.({
+        queryKey: remoteSidebarQueryPrefix(sessionId),
+      });
+    },
+
+    async gitStage(paths: string[]): Promise<void> {
+      await dp.gitStage(root, paths);
+      await options.queryClient?.invalidateQueries?.({
+        queryKey: remoteSidebarQueryPrefix(sessionId),
+      });
+    },
+
+    async gitUnstage(paths: string[]): Promise<void> {
+      await dp.gitUnstage(root, paths);
+      await options.queryClient?.invalidateQueries?.({
+        queryKey: remoteSidebarQueryPrefix(sessionId),
+      });
+    },
+
+    async gitCommit(message: string, amend = false): Promise<void> {
+      await dp.gitCommit(root, message, amend);
+      await options.queryClient?.invalidateQueries?.({
+        queryKey: remoteSidebarQueryPrefix(sessionId),
+      });
+    },
+
+    async gitPush(setUpstream = false): Promise<void> {
+      await dp.gitPush(root, setUpstream);
       await options.queryClient?.invalidateQueries?.({
         queryKey: remoteSidebarQueryPrefix(sessionId),
       });

@@ -2121,7 +2121,12 @@ async fn git_status_result(repo_root: String) -> serde_json::Value {
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|c| serde_json::json!({ "hash": c.hash, "msg": c.subject, "time": c.date }))
+        .map(|c| serde_json::json!({
+            "hash": c.hash,
+            "msg": c.subject,
+            "time": c.date,
+            "parents": c.parents,
+        }))
         .collect::<Vec<_>>();
 
     let map_files = |files: Vec<crate::commands::git::ScmFile>| {
@@ -2132,6 +2137,8 @@ async fn git_status_result(repo_root: String) -> serde_json::Value {
     };
     serde_json::json!({
         "_result": {
+            "current_branch": scm.current_branch,
+            "has_upstream": scm.has_upstream,
             "staged": map_files(scm.staged),
             "unstaged": map_files(scm.changes),
             "untracked": scm.untracked.into_iter().map(|f| f.path).collect::<Vec<_>>(),
@@ -2596,6 +2603,20 @@ async fn dispatch_invoke_request(
         )),
         // R19：只读编排健康（suspended / pending）——与桌面 Agent Center badge 同源。
         "get_orchestration_health" => val(Ok(crate::commands::teammate::get_orchestration_health())),
+        "read_agent_recent_replies" => plain(
+            project::read_agent_recent_replies(
+                vec_s(args, "projectPaths"),
+                Some(usize_opt(args, "limit").unwrap_or(40).clamp(1, 100)),
+            )
+            .await,
+        ),
+        "set_teammate_groups" => match from_arg::<serde_json::Value>(args, "groups") {
+            Ok(groups) => val(crate::commands::teammate::set_teammate_groups(
+                s(args, "workspaceId"),
+                groups,
+            )),
+            Err(e) => val::<()>(Err(format!("invalid groups: {e}"))),
+        },
         // iter-61：远端把某 pane 标记/取消标记为 agent（工作区弹层「标记」按钮）。
         // 与桌面 SplitContainer 同一对命令；只改 teammate 侧表，不 spawn 进程。
         "register_teammate_agent" => unit(
