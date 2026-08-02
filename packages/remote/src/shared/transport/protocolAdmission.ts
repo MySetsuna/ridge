@@ -82,6 +82,8 @@ export const TEAMMATE_REMOTE_REQUIRED = [
   'list_hitl_audit_remote',
   'resolve_hitl_remote',
   'get_orchestration_health',
+  'read_agent_recent_replies',
+  'set_teammate_groups',
 ] as const;
 
 export function missingRequired(allowlist: string[], required: readonly string[]): string[] {
@@ -107,7 +109,12 @@ export function methodCategory(
 ): 'desktop_host' | 'teammate' | 'workspace' | 'terminal' | 'other' {
   const c = canonicalizeMethod(method);
   if (isDesktopPrivileged(c) || c.startsWith('host_') || c.includes('_host_')) return 'desktop_host';
-  if (c.includes('hitl') || c.includes('teammate') || c.includes('orchestration')) return 'teammate';
+  if (
+    c.includes('hitl')
+    || c.includes('teammate')
+    || c.includes('orchestration')
+    || c === 'read_agent_recent_replies'
+  ) return 'teammate';
   if (c.includes('workspace')) return 'workspace';
   if (c.includes('pty') || c.includes('terminal') || c.includes('write_to')) return 'terminal';
   return 'other';

@@ -43,6 +43,7 @@ function makeProvider(overrides: Partial<DataProvider> = {}): DataProvider {
 /** Small QueryClient-shaped test double; production uses TanStack Query. */
 class TestQueryClient {
   private readonly cache = new Map<string, { promise: Promise<unknown>; expiresAt: number }>();
+  readonly invalidations: unknown[][] = [];
 
   fetchQuery<T>({
     queryKey,
@@ -62,6 +63,10 @@ class TestQueryClient {
       if (this.cache.get(key)?.promise === promise) this.cache.delete(key);
     });
     return promise;
+  }
+
+  invalidateQueries({ queryKey }: { queryKey: readonly unknown[] }): void {
+    this.invalidations.push([...queryKey]);
   }
 }
 
@@ -110,5 +115,22 @@ describe('remote sidebar query contract', () => {
     expect(gitStatus).toHaveBeenCalledTimes(2);
     expect(gitStatus).toHaveBeenNthCalledWith(1, '/repo-a');
     expect(gitStatus).toHaveBeenNthCalledWith(2, '/repo-b');
+  });
+
+  it('delegates Git mutations and invalidates only the session sidebar prefix', async () => {
+    const client = new TestQueryClient();
+    const gitCommit = vi.fn(async () => undefined);
+    const gitPush = vi.fn(async () => undefined);
+    const dp = makeProvider({ gitCommit, gitPush });
+    const sidebar = createWsSidebarProvider('/repo', dp, { queryClient: client, sessionId: 9 });
+
+    await sidebar.gitCommit?.('message');
+    await sidebar.gitPush?.(true);
+    expect(gitCommit).toHaveBeenCalledWith('/repo', 'message', false);
+    expect(gitPush).toHaveBeenCalledWith('/repo', true);
+    expect(client.invalidations).toEqual([
+      ['remote', 9, 'sidebar'],
+      ['remote', 9, 'sidebar'],
+    ]);
   });
 });

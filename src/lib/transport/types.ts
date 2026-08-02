@@ -1,10 +1,12 @@
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
 
 export interface GitStatusResult {
+  current_branch?: string | null;
+  has_upstream?: boolean;
   staged: { name: string; status: string }[];
   unstaged: { name: string; status: string }[];
   untracked: string[];
-  commits: { hash: string; msg: string; time: string }[];
+  commits: { hash: string; msg: string; time: string; parents?: string[] }[];
 }
 
 export interface SearchResult {

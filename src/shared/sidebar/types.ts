@@ -37,14 +37,21 @@ export interface GitCommit {
   subject: string;
   author: string;
   date: string;
+  /** Parent hashes are optional for older hosts; present when GitGraph data is available. */
+  parents?: string[];
 }
 
 export interface GitInfo {
   isGitRepo: boolean;
   currentBranch?: string | null;
+  hasUpstream?: boolean;
   branches: string[];
   /** Working-tree changes (same source as the desktop Git panel). */
   files: GitDiffFile[];
+  /** Exact index/working-tree groups, when the transport exposes them. */
+  staged?: GitDiffFile[];
+  unstaged?: GitDiffFile[];
+  untracked?: string[];
   commits: GitCommit[];
 }
 
@@ -73,4 +80,10 @@ export interface SidebarProvider {
   writeFile(path: string, content: string): Promise<void>;
   /** Unified diff of a working-tree file vs HEAD. `path` is repo-relative. */
   gitDiff(path: string): Promise<string>;
+  /** Optional Git mutations. Desktop's full Source Control owns these today;
+   *  Remote exposes them through its compact mobile Git panel. */
+  gitStage?(paths: string[]): Promise<void>;
+  gitUnstage?(paths: string[]): Promise<void>;
+  gitCommit?(message: string, amend?: boolean): Promise<void>;
+  gitPush?(setUpstream?: boolean): Promise<void>;
 }

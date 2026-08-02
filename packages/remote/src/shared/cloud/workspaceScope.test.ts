@@ -68,4 +68,17 @@ describe('workspace share scope', () => {
       ),
     ).toEqual([{ id: 'ws-shared', name: 'Shared' }]);
   });
+
+  it('pins Agent history and group writes to the granted workspace', () => {
+    expect(planWorkspaceInvoke('read_agent_recent_replies', {}, access)).toEqual({
+      kind: 'invoke',
+      method: 'read_agent_recent_replies',
+      params: { workspaceId: 'ws-shared' },
+    });
+    expect(planWorkspaceInvoke('set_teammate_groups', {}, access)).toEqual({
+      kind: 'invoke',
+      method: 'set_teammate_groups',
+      params: { workspaceId: 'ws-shared' },
+    });
+  });
 });

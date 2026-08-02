@@ -102,7 +102,7 @@
       }
     },
     "teammate": {
-      "methods": ["get_teammate_topology", "list_hitl_pending", "list_hitl_audit_remote", "resolve_hitl_remote", "get_orchestration_health"],
+      "methods": ["get_teammate_topology", "list_hitl_pending", "list_hitl_audit_remote", "resolve_hitl_remote", "get_orchestration_health", "read_agent_recent_replies", "set_teammate_groups"],
       "cells": {
         "desktop": "supported",
         "lan": "supported",

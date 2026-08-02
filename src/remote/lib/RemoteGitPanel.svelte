@@ -1,0 +1,257 @@
+<script lang="ts">
+  import { GitBranch, RefreshCw, Upload, Check, XCircle, Network } from 'lucide-svelte';
+  import { t } from '$lib/i18n';
+  import GitGraph from '../../lib/components/GitGraph.svelte';
+  import type { GraphCommit } from '../../lib/components/gitGraphLayout';
+  import type { SidebarProvider, GitDiffFile, GitInfo } from '../../shared/sidebar/types';
+  import { hasRemoteGitWriteCapability, runRemoteGitAction, type RemoteGitAction } from './remoteGitActions';
+
+  let { provider, onOpenDiff }: {
+    provider: SidebarProvider;
+    onOpenDiff?: (path: string) => void;
+  } = $props();
+
+  let info = $state<GitInfo>({
+    isGitRepo: false,
+    currentBranch: null,
+    hasUpstream: false,
+    branches: [],
+    files: [],
+    staged: [],
+    unstaged: [],
+    untracked: [],
+    commits: [],
+  });
+  let loading = $state(false);
+  let error = $state<string | null>(null);
+  let view = $state<'changes' | 'graph'>('changes');
+  let commitMessage = $state('');
+  let action = $state<RemoteGitAction | null>(null);
+  let actionError = $state('');
+  let actionNotice = $state('');
+  let actionController = $state<AbortController | null>(null);
+
+  const canWrite = $derived(hasRemoteGitWriteCapability(provider));
+  const stagedFiles = $derived(info.staged ?? []);
+  const unstagedFiles = $derived([
+    ...(info.unstaged ?? []),
+    ...(info.untracked ?? []).map((path) => ({ path, additions: 0, deletions: 0, status: '??' })),
+  ]);
+  const graphCommits = $derived<GraphCommit[]>(
+    info.commits.map((commit, index) => ({
+      hash: commit.hash,
+      // Older hosts omit parents. A linear fallback still gives a useful
+      // history view without pretending the transport knows branch topology.
+      parents: commit.parents ?? (info.commits[index + 1] ? [info.commits[index + 1].hash] : []),
+    })),
+  );
+
+  async function load(force = false): Promise<void> {
+    if (loading || (action && !force)) return;
+    loading = true;
+    error = null;
+    try {
+      info = await provider.gitStatus();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  $effect(() => { void load(); });
+
+  function statusClass(status: string): string {
+    const code = status.trim().charAt(0);
+    if (code === 'A' || code === '?') return 'added';
+    if (code === 'D') return 'deleted';
+    if (code === 'R' || code === 'C') return 'renamed';
+    return 'modified';
+  }
+
+  function filesForStage(): string[] {
+    return unstagedFiles.map((file) => file.path).filter(Boolean);
+  }
+
+  async function runAction(
+    next: RemoteGitAction,
+    options: { paths?: readonly string[]; message?: string; setUpstream?: boolean } = {},
+  ): Promise<void> {
+    if (action || !canWrite) return;
+    action = next;
+    actionError = '';
+    actionNotice = '';
+    const controller = new AbortController();
+    actionController = controller;
+    try {
+      const result = await runRemoteGitAction({
+        provider,
+        action: next,
+        paths: options.paths,
+        message: options.message,
+        setUpstream: options.setUpstream,
+        signal: controller.signal,
+        confirm: () => {
+          if (next === 'commit') {
+            return confirm(`Commit ${stagedFiles.length} staged file(s)?\n\n${options.message ?? ''}`);
+          }
+          if (next === 'push') return confirm('Push the current branch to its upstream?');
+          return true;
+        },
+      });
+      if (result.status === 'cancelled') {
+        actionNotice = 'Cancelled';
+      } else if (result.status === 'unavailable') {
+        actionError = 'Remote Git write capability is unavailable';
+      } else {
+        actionNotice = next === 'commit' ? 'Committed' : next === 'push' ? 'Pushed' : 'Updated';
+        if (next === 'commit') commitMessage = '';
+        await load(true);
+      }
+    } catch (e) {
+      if (!controller.signal.aborted) actionError = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (actionController === controller) {
+        actionController = null;
+        action = null;
+      }
+    }
+  }
+
+  function cancelAction(): void {
+    actionController?.abort();
+    actionNotice = 'Cancelled';
+    action = null;
+    actionController = null;
+  }
+
+  function stageAll(): void {
+    const paths = filesForStage();
+    if (paths.length === 0) return;
+    void runAction('stage', { paths });
+  }
+
+  function commit(): void {
+    const message = commitMessage.trim();
+    if (!message || stagedFiles.length === 0) return;
+    void runAction('commit', { message });
+  }
+
+  function push(): void {
+    // The core handler uses `origin HEAD` only when no tracking ref exists;
+    // normal pushes retain the repository's configured remote/branch.
+    void runAction('push', { setUpstream: !info.hasUpstream });
+  }
+
+  function fileRows(files: GitDiffFile[]): GitDiffFile[] {
+    return files.filter((file, index, all) => all.findIndex((candidate) => candidate.path === file.path) === index);
+  }
+</script>
+
+<div class="git">
+  <div class="git-bar">
+    <span class="branch" title={info.currentBranch ?? ''}>
+      <GitBranch class="w-4 h-4 shrink-0" />
+      <span class="branch-name">{info.currentBranch || (info.isGitRepo ? 'detached' : $t('scm.notGitRepo'))}</span>
+    </span>
+    <button class="view-btn" class:active={view === 'changes'} type="button" onclick={() => view = 'changes'}>{$t('scm.changesSection')}</button>
+    <button class="view-btn" class:active={view === 'graph'} type="button" onclick={() => view = 'graph'}>{$t('scm.graphSection')}</button>
+    <button class="icon-btn" type="button" onclick={() => void load()} disabled={!!action} title={$t('scm.refresh')} aria-label={$t('scm.refresh')}><RefreshCw class="w-4 h-4" /></button>
+  </div>
+
+  {#if action}
+    <div class="operation" role="status">
+      <span>{action === 'stage' ? 'Staging' : action === 'commit' ? 'Committing' : 'Pushing'}…</span>
+      <button type="button" class="cancel-btn" onclick={cancelAction}><XCircle class="w-4 h-4" /> Cancel</button>
+    </div>
+  {/if}
+  {#if actionError}<p class="msg err" role="alert">{actionError}</p>{/if}
+  {#if actionNotice}<p class="msg notice" role="status">{actionNotice}</p>{/if}
+
+  {#if error}
+    <span class="msg err" role="alert">{error}</span>
+  {:else if loading && info.files.length === 0 && info.commits.length === 0}
+    <span class="msg">{$t('scm.loading')}</span>
+  {:else if !info.isGitRepo}
+    <span class="msg">{$t('scm.notGitRepoMsg')}</span>
+  {:else if view === 'graph'}
+    <div class="graph-body">
+      {#if graphCommits.length === 0}
+        <span class="msg">{$t('scm.noRepoToShow')}</span>
+      {:else}
+        <div class="graph-canvas"><GitGraph commits={graphCommits} dx={12} dy={28} /></div>
+        <div class="graph-rows">
+          {#each info.commits as commit (commit.hash)}
+            <div class="graph-row">
+              <code>{commit.hash.slice(0, 8)}</code>
+              <span title={commit.subject}>{commit.subject}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {:else}
+    <div class="git-body">
+      {#if canWrite}
+        <div class="write-box">
+          <div class="write-actions">
+            <button type="button" onclick={stageAll} disabled={!!action || unstagedFiles.length === 0}><Check class="w-4 h-4" /> {$t('scm.stageAll')}</button>
+            <button type="button" onclick={push} disabled={!!action}><Upload class="w-4 h-4" /> Push</button>
+          </div>
+          <textarea bind:value={commitMessage} rows="2" placeholder={$t('scm.commitMessagePlaceholder')} aria-label={$t('scm.commitMessagePlaceholder')}></textarea>
+          <button type="button" class="commit-btn" onclick={commit} disabled={!!action || !commitMessage.trim() || stagedFiles.length === 0}>
+            <Network class="w-4 h-4" /> {$t('scm.commitButton', { count: stagedFiles.length })}
+          </button>
+        </div>
+      {/if}
+      <p class="section">{$t('scm.staged')} ({stagedFiles.length})</p>
+      {#if stagedFiles.length === 0}
+        <span class="msg">{$t('scm.commitDisabledTooltip')}</span>
+      {:else}
+        {#each fileRows(stagedFiles) as file (file.path)}
+          <button type="button" class="file-row tappable" onclick={() => onOpenDiff?.(file.path)}>
+            <span class="badge {statusClass(file.status)}">{file.status.trim() || 'M'}</span>
+            <span class="fpath" title={file.path}>{file.path}</span>
+          </button>
+        {/each}
+      {/if}
+      <p class="section">{$t('scm.changes')} ({unstagedFiles.length})</p>
+      {#if unstagedFiles.length === 0}
+        <span class="msg">{$t('scm.workingTreeClean')}</span>
+      {:else}
+        {#each fileRows(unstagedFiles) as file (file.path)}
+          <button type="button" class="file-row tappable" onclick={() => onOpenDiff?.(file.path)}>
+            <span class="badge {statusClass(file.status)}">{file.status.trim() || 'M'}</span>
+            <span class="fpath" title={file.path}>{file.path}</span>
+          </button>
+        {/each}
+      {/if}
+    </div>
+  {/if}
+</div>
+
+<style>
+  .git{display:flex;flex-direction:column;height:100%;min-height:0;color:var(--rg-fg)}
+  .git-bar{display:flex;align-items:center;gap:3px;padding:4px 6px;border-bottom:1px solid var(--rg-border-bright);min-height:38px}
+  .branch{flex:1;min-width:0;display:flex;align-items:center;gap:5px;color:var(--rg-ansi-magenta,#d2a8ff);font-size:12px}
+  .branch-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .view-btn{border:0;background:none;color:var(--rg-fg-muted);border-radius:5px;padding:4px 5px;font-size:10px;cursor:pointer}
+  .view-btn.active{background:color-mix(in srgb,var(--rg-accent) 15%,transparent);color:var(--rg-accent)}
+  .icon-btn,.cancel-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;border:0;background:none;color:var(--rg-fg-muted);border-radius:6px;cursor:pointer}
+  .icon-btn{width:28px;height:28px}.icon-btn:disabled{opacity:.45;cursor:default}
+  .operation{display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:color-mix(in srgb,var(--rg-accent) 10%,transparent);font-size:11px}
+  .cancel-btn{padding:3px 5px;color:var(--rg-ansi-red);font-size:11px}
+  .msg{display:block;color:var(--rg-fg-muted);font-size:12px;padding:6px 8px}.msg.err{color:var(--rg-ansi-red)}.msg.notice{color:var(--rg-ansi-green)}
+  .git-body,.graph-body{flex:1;min-height:0;overflow-y:auto;padding:6px 8px;-webkit-overflow-scrolling:touch}
+  .write-box{display:flex;flex-direction:column;gap:6px;padding:4px 0 8px;border-bottom:1px solid var(--rg-border)}
+  .write-actions{display:flex;gap:6px}.write-actions button,.commit-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:30px;border:1px solid var(--rg-border-bright);border-radius:6px;background:var(--rg-surface-2);color:var(--rg-fg);font-size:11px;padding:0 8px;cursor:pointer}
+  .write-actions button:disabled,.commit-btn:disabled{opacity:.45;cursor:default}
+  textarea{resize:vertical;min-height:40px;border:1px solid var(--rg-border-bright);border-radius:5px;background:var(--rg-bg);color:var(--rg-fg);font:inherit;font-size:12px;padding:5px}
+  .commit-btn{background:color-mix(in srgb,var(--rg-accent) 16%,transparent);border-color:color-mix(in srgb,var(--rg-accent) 55%,transparent)}
+  .section{font-size:11px;color:var(--rg-fg-muted);text-transform:uppercase;letter-spacing:.4px;margin:7px 0 3px}
+  .file-row{display:flex;align-items:center;gap:7px;padding:4px 2px;font-size:12px;width:100%;border:0;background:none;color:inherit;text-align:left;border-radius:4px}
+  .file-row.tappable{cursor:pointer}.file-row.tappable:active{background:var(--rg-surface-2)}
+  .badge{flex-shrink:0;width:17px;text-align:center;font-size:10px;font-weight:700}.badge.modified{color:var(--rg-ansi-yellow,#d29922)}.badge.added{color:var(--rg-ansi-green)}.badge.deleted{color:var(--rg-ansi-red)}.badge.renamed{color:var(--rg-accent)}
+  .fpath{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+  .graph-body{display:flex;gap:8px}.graph-canvas{flex:0 0 auto}.graph-rows{min-width:0;flex:1;padding-top:1px}.graph-row{display:flex;align-items:center;gap:7px;height:28px;min-width:0;font-size:11px;color:var(--rg-fg-muted)}.graph-row code{font-size:10px;color:var(--rg-ansi-magenta,#d2a8ff)}.graph-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+</style>

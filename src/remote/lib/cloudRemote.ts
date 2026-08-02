@@ -50,6 +50,8 @@ import {
   type ThemeListener,
   type ThemeSnapshot,
   type TeammateTopology,
+  type AgentHistoryReply,
+  type TeammateGroup,
   type HitlPendingItem,
   type HitlResolveOutcome,
   type RemoteShellInfo,
@@ -861,6 +863,21 @@ export class CloudRemoteConnection implements RemoteLink {
       'get_teammate_topology',
       workspaceId ? { workspaceId } : {},
     );
+  }
+
+  async listAgentHistory(limit = 24): Promise<AgentHistoryReply[]> {
+    const result = await this.bridge.invoke<unknown>('read_agent_recent_replies', {
+      projectPaths: [],
+      limit: Math.max(1, Math.min(100, Math.floor(limit))),
+    });
+    return Array.isArray(result) ? result as AgentHistoryReply[] : [];
+  }
+
+  async setTeammateGroups(
+    workspaceId: string,
+    groups: readonly TeammateGroup[],
+  ): Promise<void> {
+    await this.bridge.invoke('set_teammate_groups', { workspaceId, groups });
   }
 
   // P2 阶段 1：脱敏待审批快照（无 action 全文），同 allowlist 门控。
