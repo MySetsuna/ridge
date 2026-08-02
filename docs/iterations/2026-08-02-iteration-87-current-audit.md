@@ -28,7 +28,7 @@ facts only; NotebookLM is strategy input, not release or runtime evidence.
 | PWA | `pwaInstallScope.test.ts` forbids app install button and `beforeinstallprompt` ownership; manifest/SW/standalone/scope remain; drawer safe-area contract is tested | Implemented per latest user correction; browser-native installation is intentionally out of business E2E |
 | Mobile `runtime.lastError` | Source audit found no Chrome Extension Messaging API; service worker uses standard `clients.matchAll`/`Client.postMessage`; controlled LAN browser matrix now explicitly disables extensions and component extensions | No business-code fix is authorized; controlled clean-profile run is green, but affected-phone source URL and one-by-one extension A/B remain required |
 | Kernel singleton | `KernelInstanceGuard` uses process-lifetime OS lock; `registry.rs` child-process probe proves a second process cannot acquire the lock (`c692781`) | Deterministic guard implemented; real shell death/deep-root no-Tauri chain remains unverified |
-| Release / Remote | Release `v0.1.37` is formal with 12 matching assets; Remote workflow `30743623499` activated `0.1.37+ge4e0f91`; cloud health HTTP 200 reports service `0.0.7` | Published evidence verified; no cloud source/version change was fabricated |
+| Release / Remote | Release `v0.1.37` is formal with 12 matching assets; latest Remote workflow `30746141772` activated `0.1.37+gef70b3c`; cloud health HTTP 200 reports service `0.0.7` | Published evidence verified; no cloud source/version change was fabricated |
 
 ## User-visible correction captured
 
@@ -47,7 +47,7 @@ standalone/PWA layout: safe-area, notch, rotation, keyboard and theme.
 4. WebView2 long-run heap/resource snapshot and real no-Tauri Kernel → rdg →
    ridge-mcp process chain.
 5. Authenticated Remote Git push, public soak and physical-device evidence remain
-   external; latest Remote artifact `0.1.37+ge4e0f91` is activated and desktop
+   external; latest Remote artifact `0.1.37+gef70b3c` is activated and desktop
    Release `v0.1.37` is formal with 12 matching assets.
 
 No Console suppression, third-party extension mutation, fake PWA install
@@ -254,7 +254,7 @@ projections are attention-only. `working`/`idle` never add an outer border;
 only `waiting`/`stopped` (or Remote `agentNeedsAttention`) render the transient
 ring. Desktop active-pane, pointer focus, Agent-card activation and terminal
 input clear attention; Remote focus and claim do the same. Focused regression
-slice passed 16/16 tests (`SplitContainer`, `TerminalCanvas`, and mobile
+slice passed 17/17 tests (`SplitContainer`, `TerminalCanvas`, and mobile
 keyboard offset), so this clarification required no new rendering path.
 
 Kernel client-exit lifecycle guard (2026-08-02): the new
