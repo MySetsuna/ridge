@@ -790,3 +790,15 @@ Remote artifact workflow `30738272039` then succeeded from `15b4063` and
 activated `0.1.35+g15b4063` with desktop/mobile indexes. Cloud health remained
 HTTP 200 (`version=0.0.7`); desktop Release `v0.1.35` stayed unchanged with
 its existing 12 assets.
+
+### Iteration 87 final release and Remote activation
+
+The first `v0.1.36` release attempt failed before the build matrix because of
+an invalid `tracing-core` lock resolution. The tag was removed, `Cargo.lock`
+was corrected in `f7ba0f5`, and the annotated tag was rebuilt. Release workflow
+`30738592676` passed the test gate and all four platform jobs; formal Release
+`v0.1.36` is published with 12 matching Windows/Linux/macOS assets.
+
+Remote workflow `30739703846` succeeded from `f7ba0f5` and atomically activated
+`0.1.36+gf7ba0f5`; both desktop and mobile indexes passed. Cloud health remains
+HTTP 200 (`version=0.0.7`), with no cloud source/version change in this slice.
