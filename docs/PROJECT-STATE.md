@@ -731,3 +731,11 @@ sequenceDiagram
   GitHub reports Node 20 action deprecation. No build, upload, or activation step
   failed. Cloud health remains `ok=true`; no cloud source changed, so no version
   bump or separate cloud release was fabricated.
+
+## Iteration 86 final Remote Agent/cursor checkpoint (2026-08-02)
+
+See [`docs/iterations/2026-08-02-iteration-86-final-remote-agent-cursor.md`](iterations/2026-08-02-iteration-86-final-remote-agent-cursor.md).
+The final Remote artifact is `0.1.34+gf129d81` from workflow `30734591703`;
+desktop `v0.1.34` was not bumped. Local checks are green: `pnpm check` 0/0 and
+Vitest 131 files, 1,418 passed, 1 skipped. External physical-device, soak,
+dual-window/host and authenticated-push gates remain explicitly unclaimed.
