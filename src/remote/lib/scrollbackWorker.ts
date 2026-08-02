@@ -8,7 +8,7 @@ export type ScrollbackWorkerRequest = {
   bytes: ArrayBuffer;
 };
 
-export type ScrollbackWorkerResult = {
+export type ScrollbackWorkerDecoded = {
   type: 'decoded';
   requestId: number;
   workspaceId: string;
@@ -18,8 +18,17 @@ export type ScrollbackWorkerResult = {
   text: string;
 };
 
+export type ScrollbackWorkerResult = ScrollbackWorkerDecoded | {
+  /** A malformed/failed decode is terminal for this request only. */
+  type: 'error';
+  requestId: number;
+  workspaceId: string;
+  paneId: string;
+  message: string;
+};
+
 /** Pure worker-safe decoder; DOM/kernel ownership remains on the main thread. */
-export function decodeScrollback(request: ScrollbackWorkerRequest): ScrollbackWorkerResult | null {
+export function decodeScrollback(request: ScrollbackWorkerRequest): ScrollbackWorkerDecoded | null {
   if (request.startSeq >= request.endSeq || !request.workspaceId || !request.paneId) return null;
   const text = new TextDecoder().decode(request.bytes);
   return { type: 'decoded', requestId: request.requestId, workspaceId: request.workspaceId,
@@ -36,9 +45,17 @@ export function installScrollbackWorker(scope: WorkerScope): void {
     try {
       const result = decodeScrollback(event.data);
       if (result) scope.postMessage(result);
-    } catch {
+    } catch (error) {
       // Malformed/oversized input must fail this request, not tear down the
-      // worker or leave the main-thread promise pending forever.
+      // worker or leave the main-thread promise waiting for its timeout.
+      const request = event.data;
+      scope.postMessage({
+        type: 'error',
+        requestId: Number(request?.requestId) || 0,
+        workspaceId: typeof request?.workspaceId === 'string' ? request.workspaceId : '',
+        paneId: typeof request?.paneId === 'string' ? request.paneId : '',
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 }
@@ -65,6 +82,10 @@ export class ScrollbackDecoder {
         this.worker.onmessage = (event: MessageEvent<ScrollbackWorkerResult>) => {
           const pending = this.pending.get(event.data?.requestId);
           if (!pending) return;
+          if (event.data?.type === 'error') {
+            this.settle(event.data.requestId, null);
+            return;
+          }
           const paneKey = `${event.data.workspaceId}:${event.data.paneId}`;
           if (pending.paneKey !== paneKey || typeof event.data.text !== 'string') {
             this.settle(event.data.requestId, null);

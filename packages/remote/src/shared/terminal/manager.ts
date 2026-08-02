@@ -3459,6 +3459,10 @@ export class TerminalManager {
 			}
 		}
 		entry.kernel.clearScrollback();
+		// Clear the JS-side hyperlink index too. It owns copied visible strings
+		// and otherwise retains the pre-clear output until a later Ctrl/hover
+		// hit-test happens to rebuild it.
+		entry.linkSpans.clear();
 		// Worker mode owns a second semantic kernel. Feed ED 3 only to that
 		// mirror so both allocations are released without writing ANSI to PTY.
 		if (this.isWorkerPaneReady(entry.paneId)) {

@@ -114,6 +114,14 @@ export class LinkSpanIndex {
     this.dirty = true;
   }
 
+  /** Drop cached link strings immediately when a pane is physically cleared.
+   * `markDirty()` alone keeps the old Map until the next Ctrl/hover hit-test,
+   * which needlessly retains terminal output after the user asked to clear. */
+  clear(): void {
+    this.byRow.clear();
+    this.dirty = true;
+  }
+
   /** 同步重建可见区索引。kernel.dumpVisibleText 返回 rows() 行数组。 */
   recompute(kernel: KernelLike): void {
     this.byRow.clear();

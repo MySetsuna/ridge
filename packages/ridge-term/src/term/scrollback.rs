@@ -77,6 +77,11 @@ impl Scrollback {
             // Degenerate: scrollback disabled.
             return Some(row);
         }
+        // `clear()` deliberately releases the backing allocation instead of
+        // retaining a full-capacity Vec for an empty pane. Recreate the ring
+        // lazily on the first subsequent output so an explicit clear can
+        // actually release the memory held by long-lived panes.
+        self.ensure_storage();
         if self.len < self.capacity {
             let idx = (self.head + self.len) % self.capacity;
             self.entries[idx] = Some(row);
@@ -105,6 +110,7 @@ impl Scrollback {
         if self.capacity == 0 {
             return Some(row);
         }
+        self.ensure_storage();
         let new_head = (self.head + self.capacity - 1) % self.capacity;
         if self.len < self.capacity {
             self.entries[new_head] = Some(row);
@@ -140,11 +146,20 @@ impl Scrollback {
         // — covers the case where some other code path triggers a
         // physical clear without going through the JS API.
         self.eviction_count = self.eviction_count.wrapping_add(self.len as u64);
-        for slot in &mut self.entries {
-            *slot = None;
-        }
+        // Dropping the whole Vec matters: clearing each Option only drops
+        // individual rows while retaining the capacity-sized slot array for
+        // the lifetime of the pane. Keep `capacity` as the policy limit and
+        // lazily allocate a fresh ring in `push`/`push_front`.
+        self.entries = Vec::new();
         self.head = 0;
         self.len = 0;
+    }
+
+    fn ensure_storage(&mut self) {
+        if self.entries.len() == self.capacity {
+            return;
+        }
+        self.entries.resize_with(self.capacity, || None);
     }
 }
 
@@ -166,6 +181,22 @@ mod tests {
         assert_eq!(s.len(), 2);
         assert_eq!(s.get(0).unwrap().cells[0].ch, 'a');
         assert_eq!(s.get(1).unwrap().cells[0].ch, 'b');
+    }
+
+    #[test]
+    fn clear_releases_ring_storage_and_reallocates_on_next_push() {
+        let mut s = Scrollback::new(3);
+        assert!(s.push(row_marked('a')).is_none());
+        assert_eq!(s.entries.len(), 3);
+        s.clear();
+        assert_eq!(s.len(), 0);
+        assert!(s.entries.is_empty());
+        assert_eq!(s.capacity(), 3);
+
+        assert!(s.push(row_marked('b')).is_none());
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.entries.len(), 3);
+        assert_eq!(s.get(0).unwrap().cells[0].ch, 'b');
     }
 
     #[test]
