@@ -879,6 +879,7 @@ pub fn run() {
             workspace::get_active_workspace_id,
             workspace::get_window_active_workspace_id,
             workspace::list_workspaces,
+            workspace::get_domain_convergence_report,
             workspace::acquire_window_workspace,
             workspace::claim_workspace_window,
             workspace::create_workspace_for_window,

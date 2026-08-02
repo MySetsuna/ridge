@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{Emitter, Manager, State, WebviewWindow};
@@ -42,6 +43,47 @@ pub fn list_workspaces(
     state: State<'_, AppState>,
 ) -> Result<Vec<ridge_core::commands::workspace::WorkspaceEntry>, String> {
     Ok(list_workspaces_entries(&state))
+}
+
+fn sorted_agent_ids<I>(ids: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    ids.into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Return the desktop's visible Agent identity projection without mutating
+/// workspace state. The projection is intentionally global: the kernel roster
+/// has no workspace field yet, so a duplicate Agent ID across workspaces is one
+/// stable identity rather than a fabricated workspace-qualified identity.
+fn desktop_agent_ids(state: &AppState) -> Vec<String> {
+    let workspaces = state.workspaces.read();
+    sorted_agent_ids(
+        workspaces
+            .values()
+            .flat_map(|workspace| workspace.teammate_agent_pane_map.keys().cloned()),
+    )
+}
+
+/// Read-only desktop/kernel convergence diagnostic. This command never
+/// switches source of truth, claims windows, or persists either projection;
+/// kernel transport/decoding failures remain visible to the caller.
+#[tauri::command]
+pub fn get_domain_convergence_report(
+    state: State<'_, AppState>,
+) -> Result<ridge_kernel::client::DomainConvergenceReport, String> {
+    let endpoint = ridge_kernel::client::running_endpoint()
+        .ok_or_else(|| "ridge-kernel domain convergence unavailable".to_string())?;
+    let shell_workspaces = list_workspaces_entries(&state)
+        .into_iter()
+        .map(|entry| entry.id)
+        .collect::<Vec<_>>();
+    let shell_agents = desktop_agent_ids(&state);
+    ridge_kernel::client::read_domain_convergence(&endpoint, &shell_workspaces, &shell_agents, &[])
+        .map_err(|error| format!("ridge-kernel domain convergence failed: {error}"))
 }
 
 #[tauri::command]
@@ -567,6 +609,18 @@ mod tests {
     fn test_state() -> AppState {
         let (tx, _rx) = mpsc::channel(8);
         AppState::new(tx)
+    }
+
+    #[test]
+    fn desktop_agent_projection_is_sorted_and_deduplicated() {
+        assert_eq!(
+            sorted_agent_ids(vec![
+                "agent-b".to_string(),
+                "agent-a".to_string(),
+                "agent-b".to_string(),
+            ]),
+            vec!["agent-a".to_string(), "agent-b".to_string()]
+        );
     }
 
     /// A1 同源化门禁（iteration 10）：close 唯一实现必须 ①清 names ②发
