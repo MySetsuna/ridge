@@ -1,5 +1,7 @@
 //! Shell-neutral discovery and health probes for the kernel control plane.
 
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -12,6 +14,57 @@ use crate::registry::{clear_registry, read_endpoint, KernelEndpoint};
 
 pub const KERNEL_HOST_ARG: &str = "--ridge-kernel-host";
 pub const KERNEL_PROTOCOL_VERSION: u64 = 1;
+
+/// Read-only domain projections shared by desktop and headless shells.
+///
+/// These are deliberately smaller than the shell-owned workspace/teammate
+/// models: the kernel owns stable identity and topology, while each shell may
+/// decorate the projection with UI-only names or window claims. Keeping the
+/// decoder here gives future callers one authenticated, source-checked seam
+/// without silently replacing the existing shell state.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct KernelWorkspaceSnapshot {
+    pub active: Option<String>,
+    #[serde(default)]
+    pub workspaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct KernelAgentRosterSnapshot {
+    pub leader_id: Option<String>,
+    #[serde(default)]
+    pub roster: Vec<ridge_core::teammate::model::Teammate>,
+}
+
+fn decode_domain_snapshot<T: DeserializeOwned>(value: Value) -> Result<T, String> {
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("kernel domain request failed")
+            .to_string());
+    }
+    if value.get("source").and_then(Value::as_str) != Some("ridge-kernel") {
+        return Err("kernel domain response has unexpected source".to_string());
+    }
+    serde_json::from_value(value).map_err(|error| format!("decode kernel domain response: {error}"))
+}
+
+/// Read the kernel-owned workspace identity/topology projection.
+pub fn read_domain_workspaces(
+    endpoint: &KernelEndpoint,
+) -> Result<KernelWorkspaceSnapshot, String> {
+    let value = request_json(endpoint, "GET", "/v1/domain/workspaces", None)?;
+    decode_domain_snapshot(value)
+}
+
+/// Read the kernel-owned Agent roster projection.
+pub fn read_domain_agent_roster(
+    endpoint: &KernelEndpoint,
+) -> Result<KernelAgentRosterSnapshot, String> {
+    let value = request_json(endpoint, "GET", "/v1/domain/agents/roster", None)?;
+    decode_domain_snapshot(value)
+}
 
 pub fn kernel_host_requested() -> bool {
     std::env::args().nth(1).as_deref() == Some(KERNEL_HOST_ARG)
@@ -247,6 +300,7 @@ pub fn request_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -285,6 +339,57 @@ mod tests {
             r#"{"ok":true,"role":"ridge-kernel","protocolVersion":2}"#
         ));
         assert!(!health_probe(r#"{"ok":true,"role":"ridge-kernel"}"#));
+    }
+
+    #[test]
+    fn domain_read_contract_decodes_identity_without_shell_decorations() {
+        let workspaces: KernelWorkspaceSnapshot = decode_domain_snapshot(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "active": "workspace-a",
+            "workspaces": ["workspace-a", "workspace-b"],
+        }))
+        .unwrap();
+        assert_eq!(workspaces.active.as_deref(), Some("workspace-a"));
+        assert_eq!(workspaces.workspaces, ["workspace-a", "workspace-b"]);
+
+        let roster: KernelAgentRosterSnapshot = decode_domain_snapshot(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "leader_id": "codex-1",
+            "roster": [{
+                "id": "codex-1",
+                "name": "Codex",
+                "pane_id": 7,
+                "role": "Worker",
+                "status": "Idle",
+                "capability": "Skilled"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(roster.leader_id.as_deref(), Some("codex-1"));
+        assert_eq!(roster.roster[0].id, "codex-1");
+        assert_eq!(roster.roster[0].pane_id, 7);
+    }
+
+    #[test]
+    fn domain_read_contract_rejects_error_and_non_kernel_sources() {
+        let error = decode_domain_snapshot::<KernelWorkspaceSnapshot>(json!({
+            "ok": false,
+            "source": "ridge-kernel",
+            "error": "not ready"
+        }))
+        .unwrap_err();
+        assert_eq!(error, "not ready");
+
+        let source = decode_domain_snapshot::<KernelWorkspaceSnapshot>(json!({
+            "ok": true,
+            "source": "tauri",
+            "active": null,
+            "workspaces": []
+        }))
+        .unwrap_err();
+        assert_eq!(source, "kernel domain response has unexpected source");
     }
 
     #[test]
