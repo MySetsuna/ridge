@@ -35,6 +35,8 @@ Remote JSON-RPC Git reads from the WebSocket executor; `fc2c597` preserves
 unknown-Agent history and keeps Claude/Codex discovery caps independent. The
 focused guards pass (`paneLifecycle`: 3, `jsonrpc_tests`: 10,
 `commands::project::tests`: 24).
+The latest full rerun is `pnpm test`: 121 files / 1383 passed / 1 skipped;
+the complete Rust library suite is 229 passed.
 
 Iteration-85 evidence is archived in
 `docs/iterations/CONTRACT-iteration-85.md`. Release `v0.1.33` is formal with 12

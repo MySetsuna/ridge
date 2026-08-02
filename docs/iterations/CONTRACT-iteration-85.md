@@ -55,7 +55,7 @@ could also inherit stale pane IDs in the manager's attached set.
   lifecycle/runtime-messaging noise. Remaining logs are known dev WebSocket,
   Tauri callback, WebGPU fallback, and self-signed ServiceWorker environment
   warnings.
-- Full Vitest: `120` files, `1381` passed, `1` skipped; process exit `0`.
+- Full Vitest: `121` files, `1383` passed, `1` skipped; process exit `0`.
 - Mobile geometry guard: `paneGeometry.test.ts` `11` passed, including a
   captured-offset/current-offset drag case; Remote terminal suite `252`
   passed.
@@ -99,6 +99,10 @@ could also inherit stale pane IDs in the manager's attached set.
   resume command) and applies the Claude/Codex discovery cap independently
   before merging. `commands::project::tests` has 24 passing tests, including
   cross-CWD history and unknown-Agent retention.
+
+The later full rerun supersedes the earlier baseline counts: `pnpm test`
+reported 121 files / 1383 passed / 1 skipped, and the complete Rust library
+reported 229 passed.
 
 ## Non-claims and external gates
 
