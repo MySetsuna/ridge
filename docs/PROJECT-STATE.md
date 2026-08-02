@@ -1193,6 +1193,16 @@ This candidate follows `v0.1.46` and must publish as a new version with
 Desktop/Remote/Cloud evidence. Physical/public/WebView2/dual-window/branch-
 identity/full-Kernel authority gates remain open.
 
+### Iteration 94 publication closure (2026-08-03)
+
+Version commit `3106880` aligned package, Tauri, Cargo, and root lockfile to
+`0.1.48`; the clean release gate passed before the annotated `v0.1.48` tag.
+Release workflow `30768599304` passed test, Linux, macOS ARM/x64, and Windows;
+the formal GitHub Release has 12 matching assets. Remote/Cloud workflow
+`30770018373` succeeded from the exact tag; Cloud health returned HTTP 200
+(`version=0.0.7`). This closes Iteration 94. The terminal-link candidate below
+is newer runtime work and is not part of `v0.1.48`.
+
 ### Iteration 95 runtime closure candidate (2026-08-03)
 
 Commit `06f5f74` fixes installed/Desktop terminal links: soft-wrapped URL and
