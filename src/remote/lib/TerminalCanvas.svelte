@@ -33,7 +33,7 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onResize: onPaneResize, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
+  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onResize: onPaneResize, onFocus: onPaneFocus, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
     /** Host teammate state; retained for diagnostics, never a persistent pane border. */
@@ -41,6 +41,8 @@
     /** Short-lived HITL/user-intervention highlight; cleared on focus/claim. */
     agentNeedsAttention?: boolean;
     onStdin: (pane: PaneRef, data: string) => void;
+    /** Fired when this pane's input surface actually receives focus. */
+    onFocus?: (pane: PaneRef) => void;
     /** iter-60：句级输入缓冲开关（语音/高频改写场景；alt-screen/TUI 鼠标态自动旁路）。 */
     sentenceBuffer?: boolean;
     onResize?: (pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
@@ -1119,7 +1121,11 @@
     oncompositionupdate={handleCompositionUpdate}
     oncompositionend={handleCompositionEnd}
     onpaste={handlePaste}
-    onfocus={() => manager.setFocused(paneId, true)}
+    onfocus={() => {
+      manager.setFocused(paneId, true);
+      const pane = ownPaneRef();
+      if (pane) onPaneFocus?.(pane);
+    }}
     onblur={() => { /* IME sink blur must not hide the active pane renderer cursor. */ }}
   ></textarea>
 
