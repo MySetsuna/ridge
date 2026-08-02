@@ -220,7 +220,22 @@ impl Drop for GitSlotLease {
 /// Remote transports call this when a data observer disappears; the existing
 /// process-tree guard then reclaims the child and its semaphore permit.
 pub fn cancel_git_slot(slot: &str) {
-    let _ = git_slot_begin(slot);
+    // A late/duplicate cancel must not create a permanent empty registry entry.
+    // The request registry only calls this for an owned task, but keeping this
+    // guard here makes the cancellation API safe for transports and shutdown
+    // races that arrive after ownership was already removed.
+    let victims = {
+        let mut map = git_slots().lock().unwrap();
+        let Some(entry) = map.get_mut(slot) else {
+            return;
+        };
+        entry.generation += 1;
+        entry.live.drain(..).map(|(_, pid)| pid).collect::<Vec<_>>()
+    };
+    for pid in victims {
+        GIT_SUPERSEDE_KILLS.fetch_add(1, Ordering::SeqCst);
+        crate::process_guard::kill_process_tree(pid);
+    }
 }
 
 fn git_slot_is_stale(slot: &str, generation: u64) -> bool {
@@ -273,6 +288,17 @@ pub async fn with_git_request_slot<F>(slot: String, future: F) -> F::Output
 where
     F: Future,
 {
+    // Composite Git operations (for example sync = fetch + pull + push) may
+    // call another helper that enters a request slot. Reusing the ambient
+    // generation keeps one cancellation/supersede identity across every
+    // child instead of opening a new generation mid-operation.
+    if let Some((ambient_slot, generation)) = current_git_request_slot()
+        .filter(|(ambient_slot, _)| ambient_slot == &slot)
+    {
+        return GIT_REQUEST_SLOT
+            .scope(Some((ambient_slot, generation)), future)
+            .await;
+    }
     let generation = git_slot_begin(&slot);
     let _lease = GitSlotLease::new(slot.clone(), generation);
     GIT_REQUEST_SLOT
@@ -3558,6 +3584,37 @@ mod supersede_tests {
         })
         .await;
         assert_eq!(result.unwrap(), 7);
+        assert!(!git_slots().lock().unwrap().contains_key(&slot));
+    }
+
+    #[tokio::test]
+    async fn nested_request_slot_reuses_ambient_generation() {
+        let slot = format!("t:nested:{}", uuid::Uuid::new_v4());
+        let outer = with_git_request_slot(slot.clone(), async {
+            let outer_generation = current_git_request_slot()
+                .expect("outer slot")
+                .1;
+            with_git_request_slot(slot.clone(), async {
+                assert_eq!(
+                    current_git_request_slot().expect("nested slot").1,
+                    outer_generation,
+                    "nested Git helper must keep the parent cancellation generation"
+                );
+                spawn_git_blocking(|| 7).await
+            })
+            .await
+        })
+        .await;
+        assert_eq!(outer.unwrap(), 7);
+        assert!(!git_slots().lock().unwrap().contains_key(&slot));
+    }
+
+    #[test]
+    fn duplicate_cancel_for_unknown_slot_does_not_grow_registry() {
+        let slot = format!("t:unknown-cancel:{}", uuid::Uuid::new_v4());
+        for _ in 0..128 {
+            cancel_git_slot(&slot);
+        }
         assert!(!git_slots().lock().unwrap().contains_key(&slot));
     }
 
