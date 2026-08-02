@@ -1192,3 +1192,18 @@ generation. Evidence: ridge-core Git 37/37, Host JSON-RPC 12/12, Remote 26/26,
 This candidate follows `v0.1.46` and must publish as a new version with
 Desktop/Remote/Cloud evidence. Physical/public/WebView2/dual-window/branch-
 identity/full-Kernel authority gates remain open.
+
+### Iteration 95 runtime closure candidate (2026-08-03)
+
+Commit `06f5f74` fixes installed/Desktop terminal links: soft-wrapped URL and
+path spans now carry their full target across visual rows; Ctrl/Cmd-click opens
+that complete target; Ctrl/Cmd-hover paints a real DOM underline instead of
+writing an unconsumed dataset only. Rust selection keeps soft-wrap copies free
+of inserted newlines while preserving hard breaks. Evidence: full Vitest
+142 files / 1475 passed / 1 skipped, `pnpm check` 0/0, ridge-term 397/397,
+and a successful WASM rebuild. Detailed record:
+`docs/iterations/2026-08-03-iteration-95-terminal-link-navigation.md`.
+
+This candidate follows `v0.1.48` and requires a clean `v0.1.49` Desktop
+release plus Remote/Cloud publication. Physical/WebView2 visual confirmation
+and earlier public/dual-window/branch/Kernel residuals remain open.
