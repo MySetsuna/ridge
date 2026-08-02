@@ -15,7 +15,9 @@
 # Samples CPU% and RSS of Wind-related processes once per `IntervalSec`,
 # reports mean / p50 / p95 / max over the run, and writes a CSV + summary
 # into `scripts/perf-runs/` (gitignored). Pair before/after labels to
-# quantify each PR's impact.
+# quantify each PR's impact. Add `-RequireProcessSamples` for a soak gate
+# that fails when the tracked app tree disappears; `-RssMaxMb N` adds a real
+# WorkingSet cap without pretending a missing process is zero memory.
 #
 # Notes
 # - CPU% is whole-machine (process CPU / interval / logical cores * 100),
@@ -25,7 +27,9 @@
 
 [CmdletBinding()]
 param(
+  [ValidateRange(1, 86400)]
   [int]$DurationSec = 60,
+  [ValidateRange(1, 3600)]
   [int]$IntervalSec = 1,
   [string]$Label = 'idle',
   # P3.14 (2026-05-20) — record which `Settings.parserBackend` was
@@ -67,6 +71,12 @@ param(
   # wasm parser path (whose VTE parsing happens in WebView2's JS
   # thread) look ~5-15 percentage points cheaper than reality.
   [switch]$IncludeWebView2,
+  # Optional real-resource gates for long-run soak jobs. RSS is the summed
+  # WorkingSet64 of the tracked process tree (including WebView2 when the
+  # switch above is used). `-RequireProcessSamples` fails closed if the app
+  # disappears during the window instead of silently reporting zero CPU/RSS.
+  [double]$RssMaxMb = 0,
+  [switch]$RequireProcessSamples,
   [string]$OutputDir = $null
 )
 
@@ -291,9 +301,40 @@ CPU% (whole-machine, all tracked procs summed)
   max  : $([math]::Round($max, 2))
 "@
 
+$rss = @($samples | ForEach-Object { [double]$_.rss_mb_total })
+$rssSorted = @($rss | Sort-Object)
+$rssCount = $rssSorted.Count
+$rssMean = if ($rssCount -gt 0) { ($rss | Measure-Object -Average).Average } else { 0 }
+$rssP50 = if ($rssCount -gt 0) { $rssSorted[[math]::Min($rssCount - 1, [int]($rssCount * 0.5))] } else { 0 }
+$rssP95 = if ($rssCount -gt 0) { $rssSorted[[math]::Min($rssCount - 1, [int]($rssCount * 0.95))] } else { 0 }
+$rssMax = if ($rssCount -gt 0) { ($rss | Measure-Object -Maximum).Maximum } else { 0 }
+$procCounts = @($samples | ForEach-Object { [int]$_.proc_count })
+$emptyProcSamples = @($procCounts | Where-Object { $_ -lt 1 }).Count
+$minProcCount = if ($procCounts.Count -gt 0) { ($procCounts | Measure-Object -Minimum).Minimum } else { 0 }
+$maxProcCount = if ($procCounts.Count -gt 0) { ($procCounts | Measure-Object -Maximum).Maximum } else { 0 }
+$summary += @"
+
+RSS MB (WorkingSet64, all tracked procs summed)
+  mean : $([math]::Round($rssMean, 1))
+  p50  : $([math]::Round($rssP50, 1))
+  p95  : $([math]::Round($rssP95, 1))
+  max  : $([math]::Round($rssMax, 1))
+  process_count : min=$minProcCount max=$maxProcCount
+  empty_process_samples : $emptyProcSamples
+"@
+
 $summary | Out-File -FilePath $summaryPath -Encoding UTF8
 Write-Host ""
 Write-Host $summary
 Write-Host ""
 Write-Host "CSV     : $csvPath"
 Write-Host "Summary : $summaryPath"
+
+if ($RequireProcessSamples -and $emptyProcSamples -gt 0) {
+  Write-Error "Tracked process tree disappeared in $emptyProcSamples sample(s); refusing a false clean soak result."
+  exit 1
+}
+if ($RssMaxMb -gt 0 -and $rssMax -gt $RssMaxMb) {
+  Write-Error "RSS max $([math]::Round($rssMax, 1)) MB exceeded configured cap $RssMaxMb MB."
+  exit 1
+}

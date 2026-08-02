@@ -31,11 +31,20 @@ import { waitForAppReady, firstPaneId } from '../e2e-shell/helpers';
 // invocations don't crash, but it no longer triggers a localStorage
 // flip + refresh.
 const BACKEND = (process.env.RIDGE_PERF_BACKEND || 'rust') as 'rust' | 'wasm';
-const STRESS_SEC = parseInt(process.env.RIDGE_PERF_STRESS_SEC || '35', 10);
+const STRESS_SEC = Math.max(1, parseInt(process.env.RIDGE_PERF_STRESS_SEC || '35', 10) || 35);
+// Browser heap is exposed by Chromium/WebView2 only when the runtime allows
+// it. Keep the probe real (no mock fallback) and make the growth gate opt-in:
+// CI/device baselines differ, but a soak run must still report availability
+// and samples so an unavailable probe cannot be mistaken for a clean result.
+const HEAP_GROWTH_MAX_MB = Number(process.env.RIDGE_PERF_HEAP_GROWTH_MAX_MB ?? 0);
 
 describe(`perf stress (${BACKEND})`, () => {
   before(async () => {
     await waitForAppReady();
+    // The in-page memory sampler runs for the whole stress window. A bounded
+    // WebDriver script timeout prevents a detached WebView from hanging the
+    // run forever while still allowing the configured soak duration.
+    await browser.setTimeout({ script: (STRESS_SEC + 30) * 1000 });
   });
 
   it(`writes a ${STRESS_SEC}s PowerShell stress stream to PTY`, async () => {
@@ -64,13 +73,79 @@ describe(`perf stress (${BACKEND})`, () => {
 
     // Sentinel: bytes are written to PTY; PowerShell parses the line
     // and starts echoing. Give it ~500 ms to settle into a steady-state
-    // throughput, then sleep through the sampling window.
+    // throughput, then sample real browser heap/resource counters during the
+    // stress window. `performance.memory` is unavailable on some WebView2
+    // builds; those runs are reported as unavailable, never as zero usage.
     await browser.pause(500);
     // eslint-disable-next-line no-console
     console.log(`[perf-stress] entering ${STRESS_SEC}s sample window`);
-    await browser.pause(STRESS_SEC * 1000);
+    const memory = await browser.executeAsync((seconds, doneCb) => {
+      const perf = performance as Performance & {
+        memory?: {
+          usedJSHeapSize?: number;
+          totalJSHeapSize?: number;
+          jsHeapSizeLimit?: number;
+        };
+      };
+      const samples: Array<{
+        atMs: number;
+        usedHeapBytes: number | null;
+        totalHeapBytes: number | null;
+        heapLimitBytes: number | null;
+        resourceEntries: number;
+      }> = [];
+      const read = () => {
+        const heap = perf.memory;
+        const finite = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+        samples.push({
+          atMs: Math.round(performance.now()),
+          usedHeapBytes: finite(heap?.usedJSHeapSize),
+          totalHeapBytes: finite(heap?.totalJSHeapSize),
+          heapLimitBytes: finite(heap?.jsHeapSizeLimit),
+          resourceEntries: performance.getEntriesByType('resource').length,
+        });
+      };
+      const startedAt = performance.now();
+      read();
+      const interval = window.setInterval(read, 1000);
+      window.setTimeout(() => {
+        window.clearInterval(interval);
+        read();
+        doneCb({ completed: true, elapsedMs: Math.round(performance.now() - startedAt), samples });
+      }, Math.max(1, Number(seconds)) * 1000);
+    }, STRESS_SEC);
     // eslint-disable-next-line no-console
     console.log(`[perf-stress] sample window done, exiting`);
+
+    const heapSamples = (memory?.samples ?? []).filter((sample) => sample.usedHeapBytes !== null);
+    const initialHeap = heapSamples[0]?.usedHeapBytes ?? null;
+    const maxHeap = heapSamples.reduce<number | null>(
+      (max, sample) => max === null ? sample.usedHeapBytes : Math.max(max, sample.usedHeapBytes ?? max),
+      null,
+    );
+    const resourceEntriesStart = memory?.samples?.[0]?.resourceEntries ?? 0;
+    const resourceEntriesEnd = memory?.samples?.at(-1)?.resourceEntries ?? resourceEntriesStart;
+    const memoryReport = {
+      completed: memory?.completed === true,
+      elapsedMs: memory?.elapsedMs ?? 0,
+      samples: memory?.samples?.length ?? 0,
+      heapAvailable: heapSamples.length > 0,
+      initialHeapMb: initialHeap === null ? null : Number((initialHeap / 1048576).toFixed(1)),
+      maxHeapMb: maxHeap === null ? null : Number((maxHeap / 1048576).toFixed(1)),
+      maxHeapGrowthMb: initialHeap === null || maxHeap === null
+        ? null
+        : Number(((maxHeap - initialHeap) / 1048576).toFixed(1)),
+      resourceEntriesStart,
+      resourceEntriesEnd,
+      resourceEntryGrowth: resourceEntriesEnd - resourceEntriesStart,
+    };
+    // eslint-disable-next-line no-console
+    console.log('[perf-stress] browser resource/heap soak:', JSON.stringify(memoryReport));
+    expect(memoryReport.completed).toBe(true);
+    expect(memoryReport.samples).toBeGreaterThanOrEqual(2);
+    if (HEAP_GROWTH_MAX_MB > 0 && memoryReport.maxHeapGrowthMb !== null) {
+      expect(memoryReport.maxHeapGrowthMb).toBeLessThanOrEqual(HEAP_GROWTH_MAX_MB);
+    }
 
     // Smoke: confirm the mirror actually advanced (more than 0 lines of
     // scrollback). This is the only assertion — perf data comes from
