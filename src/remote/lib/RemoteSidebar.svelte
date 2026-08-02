@@ -11,10 +11,11 @@
   import type { DataProvider } from '$lib/transport';
   import { useQueryClient } from '@tanstack/svelte-query';
 
-  let { tab = 'files', cwd = '', workspaceId = '', available, ws, panes = [], dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane, onAttentionChange }: {
+  let { tab = 'files', cwd = '', workspaceId = '', paneId = '', available, ws, panes = [], dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane, onAttentionChange }: {
     tab?: RemotePanel;
     cwd?: string;
     workspaceId?: string;
+    paneId?: string;
     available: Readonly<Record<RemotePanel, boolean>>;
     /** P1 roster：team 面板取数用（capability `teammate` 协商后 tab 才可见）。 */
     ws?: RemoteLink;
@@ -39,6 +40,8 @@
   const provider = $derived(createWsSidebarProvider(cwd, dataProvider, {
     queryClient,
     sessionId: ws ? remoteSessionId(ws) : 0,
+    workspaceId,
+    paneId,
   }));
 
   function setTab(t: RemotePanel) {

@@ -17,6 +17,7 @@ import {
   remoteQueryKeys,
   remoteSidebarQueryPrefix,
   REMOTE_SIDEBAR_STALE_TIME_MS,
+  type RemoteSidebarScope,
   type RemoteQueryClientLike,
 } from './remoteQueries';
 
@@ -25,6 +26,12 @@ export interface WsSidebarProviderOptions {
   queryClient?: RemoteQueryClientLike;
   /** Stable transport identity; keeps LAN/cloud caches isolated. */
   sessionId?: number;
+  /** Stable resource identity; prevents same-CWD cache collisions. */
+  scope?: RemoteSidebarScope;
+  /** Convenience fields for callers that do not build a scope object. */
+  workspaceId?: string;
+  paneId?: string;
+  branch?: string;
   /** Override only in tests or an explicitly shorter-lived view. */
   staleTime?: number;
 }
@@ -45,15 +52,27 @@ export function createWsSidebarProvider(
   const dp = dataProvider ?? getTransport();
   const root = cwd || '/';
   const sessionId = options.sessionId ?? 0;
+  const scope: RemoteSidebarScope = {
+    workspaceId: options.scope?.workspaceId ?? options.workspaceId,
+    paneId: options.scope?.paneId ?? options.paneId,
+    branch: options.scope?.branch ?? options.branch,
+  };
   const staleTime = options.staleTime ?? REMOTE_SIDEBAR_STALE_TIME_MS;
-  const run = <T>(key: readonly unknown[], query: () => Promise<T>): Promise<T> =>
-    fetchRemoteQuery(options.queryClient, key, query, staleTime);
+  const run = <T>(
+    key: readonly unknown[],
+    query: (signal?: AbortSignal) => Promise<T>,
+  ): Promise<T> => fetchRemoteQuery(
+    options.queryClient,
+    key,
+    ({ signal } = {}) => query(signal),
+    staleTime,
+  );
 
   return {
     async listDir(path: string): Promise<DirListing> {
       const target = path || root;
-      return run(remoteQueryKeys.sidebarFiles(sessionId, root, target, 1), async () => {
-        const tree = (await dp.getFileTree(target, 1)) as {
+      return run(remoteQueryKeys.sidebarFiles(sessionId, root, target, 1, scope), async (signal) => {
+        const tree = (await dp.getFileTree(target, 1, signal)) as {
           path?: string;
           children?: Array<{ name: string; path: string; is_dir: boolean; is_ignored?: boolean; child_count?: number }>;
         };
@@ -76,9 +95,9 @@ export function createWsSidebarProvider(
     },
 
     async gitStatus(): Promise<GitInfo> {
-      return run(remoteQueryKeys.sidebarGit(sessionId, root), async () => {
+      return run(remoteQueryKeys.sidebarGit(sessionId, root, scope), async (signal) => {
         try {
-          const s = (await dp.gitStatus(root)) as {
+            const s = (await dp.gitStatus(root, signal)) as {
             is_git_repo?: boolean;
             staged?: Array<{ name: string; status: string }>;
             unstaged?: Array<{ name: string; status: string }>;
@@ -144,8 +163,8 @@ export function createWsSidebarProvider(
     },
 
     async search(query: string): Promise<SearchHit[]> {
-      return run(remoteQueryKeys.sidebarSearch(sessionId, root, query), async () => {
-        const hits = (await dp.searchFiles(query, root)) as Array<{
+      return run(remoteQueryKeys.sidebarSearch(sessionId, root, query, scope), async (signal) => {
+        const hits = (await dp.searchFiles(query, root, signal)) as Array<{
           path: string;
           line?: number;
           column?: number;
@@ -156,7 +175,7 @@ export function createWsSidebarProvider(
     },
 
     async readFile(path: string): Promise<string> {
-      return run(remoteQueryKeys.sidebarFile(sessionId, root, path), () => dp.readFile(path));
+      return run(remoteQueryKeys.sidebarFile(sessionId, root, path, scope), (signal) => dp.readFile(path, signal));
     },
 
     async writeFile(path: string, content: string): Promise<void> {
@@ -165,41 +184,41 @@ export function createWsSidebarProvider(
       // the next panel open gets fresh tree/Git/file content without turning
       // ordinary tab opens into unconditional network requests.
       await options.queryClient?.invalidateQueries?.({
-        queryKey: remoteSidebarQueryPrefix(sessionId),
+        queryKey: remoteSidebarQueryPrefix(sessionId, scope),
       });
     },
 
     async gitStage(paths: string[]): Promise<void> {
       await dp.gitStage(root, paths);
       await options.queryClient?.invalidateQueries?.({
-        queryKey: remoteSidebarQueryPrefix(sessionId),
+        queryKey: remoteSidebarQueryPrefix(sessionId, scope),
       });
     },
 
     async gitUnstage(paths: string[]): Promise<void> {
       await dp.gitUnstage(root, paths);
       await options.queryClient?.invalidateQueries?.({
-        queryKey: remoteSidebarQueryPrefix(sessionId),
+        queryKey: remoteSidebarQueryPrefix(sessionId, scope),
       });
     },
 
     async gitCommit(message: string, amend = false): Promise<void> {
       await dp.gitCommit(root, message, amend);
       await options.queryClient?.invalidateQueries?.({
-        queryKey: remoteSidebarQueryPrefix(sessionId),
+        queryKey: remoteSidebarQueryPrefix(sessionId, scope),
       });
     },
 
     async gitPush(setUpstream = false): Promise<void> {
       await dp.gitPush(root, setUpstream);
       await options.queryClient?.invalidateQueries?.({
-        queryKey: remoteSidebarQueryPrefix(sessionId),
+        queryKey: remoteSidebarQueryPrefix(sessionId, scope),
       });
     },
 
     async gitDiff(path: string): Promise<string> {
       // Working-tree diff vs HEAD (uncached), rooted at the pane cwd.
-      return run(remoteQueryKeys.sidebarDiff(sessionId, root, path), () => dp.gitDiffFile(root, path, false));
+      return run(remoteQueryKeys.sidebarDiff(sessionId, root, path, scope), (signal) => dp.gitDiffFile(root, path, false, signal));
     },
   };
 }

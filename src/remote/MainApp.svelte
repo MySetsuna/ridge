@@ -87,7 +87,7 @@
   });
   const workspacesQuery = createQuery(() => ({
     queryKey: remoteQueryKeys.workspaces(sessionId()),
-    queryFn: () => requestWorkspaceSnapshot(ws),
+    queryFn: ({ signal }) => requestWorkspaceSnapshot(ws, signal),
     enabled: wsState === 'connected',
   }));
   const panesQuery = createQuery(() => ({
@@ -169,6 +169,8 @@
     createWsSidebarProvider(activeCwd, dataProvider, {
       queryClient,
       sessionId: sessionId(),
+      workspaceId: ui.activeWorkspaceId,
+      paneId: ui.activePaneId ?? undefined,
     }),
   );
 
@@ -1062,6 +1064,7 @@
         available={panelAvailability}
         cwd={activeCwd}
         workspaceId={ui.activeWorkspaceId}
+        paneId={ui.activePaneId ?? undefined}
         {ws}
         {panes}
         {dataProvider}

@@ -5,11 +5,14 @@
   import SidebarTeamRoster from '../../../remote/lib/SidebarTeamRoster.svelte';
   import FileViewer from '../../../remote/lib/FileViewer.svelte';
   import { createWsSidebarProvider } from '../../../remote/lib/sidebarProvider';
+  import { remoteSessionId } from '../../../remote/lib/remoteQueries';
   import { activeSharedWorkspaceProjection } from '$lib/remote/cloud/sharedWorkspaceProjection';
+  import { useQueryClient } from '@tanstack/svelte-query';
 
   let { mode }: { mode: 'files' | 'git' | 'search' | 'team' } = $props();
 
   const projection = $derived($activeSharedWorkspaceProjection);
+  const queryClient = useQueryClient();
   const roots = $derived(
     projection
       ? [...new Set(projection.panes.map((pane) => pane.cwd).filter((cwd): cwd is string => !!cwd))]
@@ -23,7 +26,12 @@
   });
 
   const provider = $derived(
-    projection ? createWsSidebarProvider(selectedCwd, projection.dataProvider) : null,
+    projection ? createWsSidebarProvider(selectedCwd, projection.dataProvider, {
+      queryClient,
+      sessionId: remoteSessionId(projection.link),
+      workspaceId: projection.workspaceId,
+      paneId: projection.panes.find((pane) => pane.cwd === selectedCwd)?.id,
+    }) : null,
   );
 
   function openFile(path: string, line?: number) {

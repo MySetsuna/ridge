@@ -21,10 +21,10 @@ export interface SearchResult {
 
 export interface DataProvider {
   // ── Filesystem ──
-  getFileTree(path: string, depth?: number): Promise<FileNode>;
+  getFileTree(path: string, depth?: number, signal?: AbortSignal): Promise<FileNode>;
   getDirectoryChildren(path: string, offset: number, limit?: number): Promise<DirectoryPage>;
   pathExists(path: string): Promise<boolean>;
-  readFile(path: string): Promise<string>;
+  readFile(path: string, signal?: AbortSignal): Promise<string>;
   writeFile(path: string, content: string): Promise<void>;
   renamePath(from: string, to: string): Promise<void>;
   deletePath(path: string): Promise<void>;
@@ -35,7 +35,7 @@ export interface DataProvider {
   revealInFileManager(path: string): Promise<void>;
 
   // ── Git ──
-  gitStatus(repoRoot: string): Promise<GitStatusResult>;
+  gitStatus(repoRoot: string, signal?: AbortSignal): Promise<GitStatusResult>;
   gitStage(repoRoot: string, paths: string[]): Promise<void>;
   gitUnstage(repoRoot: string, paths: string[]): Promise<void>;
   gitCommit(repoRoot: string, message: string, amend?: boolean): Promise<void>;
@@ -50,8 +50,8 @@ export interface DataProvider {
   gitDiscard(repoRoot: string, paths: string[]): Promise<void>;
   gitCleanUntracked(repoRoot: string): Promise<void>;
   /** Unified diff of a single file vs HEAD (or the index when `cached`). */
-  gitDiffFile(repoRoot: string, path: string, cached?: boolean): Promise<string>;
+  gitDiffFile(repoRoot: string, path: string, cached?: boolean, signal?: AbortSignal): Promise<string>;
 
   // ── Search ──
-  searchFiles(query: string, path?: string): Promise<SearchResult[]>;
+  searchFiles(query: string, path?: string, signal?: AbortSignal): Promise<SearchResult[]>;
 }
