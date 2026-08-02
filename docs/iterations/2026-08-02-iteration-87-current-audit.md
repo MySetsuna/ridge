@@ -237,6 +237,13 @@ Runtime attribution and Kernel host seam continuation:
   `cargo test -p ridge-kernel --lib` remains 21 passed and the real
   `scripts/kernel-host-smoke.ps1` completed all ensure/attach/domain/MCP checks.
 
+Remote/cloud refresh closure (2026-08-02): workflow `30745144695` rebuilt from
+current `main` SHA `8dfe261` and activated artifact `0.1.37+g8dfe261`. The
+desktop Release stays `v0.1.37`; no version bump was made for documentation-only
+changes. Build, upload, activation, and cloud health (`HTTP 200`) passed. The
+workflow's Node/deprecated-action and checkout-submodule messages are warnings
+after the publish step, not publish failures.
+
 Pane-border clarification verification (2026-08-02): desktop and Remote
 projections are attention-only. `working`/`idle` never add an outer border;
 only `waiting`/`stopped` (or Remote `agentNeedsAttention`) render the transient

@@ -897,3 +897,6 @@ Physical-phone source attribution remains open. `3593a84` scans every shipped
 remote-host reads now use the typed, source-checked seam, and
 `scripts/kernel-host-smoke.ps1` passed the real no-Tauri ensure/attach/domain/MCP
 path.
+Remote/cloud refresh (2026-08-02): workflow `30745144695` published current
+`main` as `0.1.37+g8dfe261`; cloud health remained HTTP 200. Desktop `v0.1.37`
+was not version-bumped for docs-only changes.
