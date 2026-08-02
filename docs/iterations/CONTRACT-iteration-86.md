@@ -187,3 +187,15 @@ credentials remain external gates until their evidence is captured.
   verification: Vitest `128 files / 1402 passed / 1 skipped`, `pnpm check` 0/0.
 - These commits are pushed to `origin/main`; Remote workflow `30732961345` succeeded
   and activated artifact `0.1.34+g3d10a9c`. Desktop `v0.1.34` remains unchanged.
+
+## Iteration 86 hardening checkpoint (2026-08-02)
+
+`87abb3b`, `ea39897`, `71678e3`, `86f0c29` and `0d10e2c` complete the local
+stability pass: bounded SCM result caching/invalidation with generation fences;
+LAN pane-destroy cancellation and output cleanup; aligned Git guard caps; and
+bounded/deferred PTY feed memory with clear-time backlog disposal. Full Vitest is
+`129 files / 1409 passed / 1 skipped`; `pnpm check` is `0/0`; targeted RPC/SCM,
+terminal-feed and Rust guard suites are green. Remote publish must be rerun from
+the product commit after this checkpoint; desktop `v0.1.34` is deliberately not
+bumped. Physical-device, public-soak, heap-soak, dual-window/host and real-push
+evidence remain unclaimed.

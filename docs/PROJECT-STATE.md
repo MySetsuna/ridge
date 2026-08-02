@@ -706,3 +706,19 @@ sequenceDiagram
 - `64eff8d`：Remote 手机 Agent roster/history 纳入共享 Query，按 session/workspace 隔离，30 秒 stale、single-flight、mutation 失效与旧响应取消；重开抽屉不在缓存窗内重复 RPC。
 - `c424fe2`：standalone/PWA 底部功能条按动态 viewport 与 safe-area 贴底；`d779f07`：主题变量原子应用并同步 html/body 与 PWA `theme-color`，消除边缘闪烁；`ae67e11`：Agent 抽屉图标/文案对齐守卫。
 - 本地验证：Vitest `128 files / 1402 passed / 1 skipped`，`pnpm check` 0/0。上述提交均已推送；Remote workflow `30732961345` 成功并激活 `0.1.34+g3d10a9c`，桌面 `v0.1.34` 不升版。
+
+## 2026-08-02 iteration 86 hardening checkpoint
+
+- `87abb3b` + `ea39897`：SCM 结果 TTL 缓存有界，status/diff/branches/stashes
+  跨组件 single-flight/失效，并以 generation fence 防旧响应回填。
+- `71678e3`：LAN `closePane` 先撤销 Pane 调度器，再销毁 PTY；确认关闭后清理
+  output/history，待发 write/resize RPC 不再回灌已销毁 Pane。
+- `86f0c29`：前端、process-spawn registry、ridge-core Git 并发上下限统一为
+  `2..12`，监控与实际 semaphore 策略一致。
+- `0d10e2c`：PTY 临时 feed 内存设 `8 KiB` 合并上限、`2 MiB` deferred 上限；
+  RAF 被节流时施加同步 backpressure，clear 时释放队列字节与 timer。
+- 验证：Vitest `129 files / 1409 passed / 1 skipped`；`pnpm check` 0 errors/0
+  warnings；RPC/SCM 定向 `47 + 36`、terminal feed `9`、ridge-core 外部进程守卫
+  `4` 测试通过。桌面 `v0.1.34` 不升版；Remote 须从 `0d10e2c`（或后续文档提交）
+  重建并原子激活。真机 PWA/刘海、公网长稳、WebView2 heap、双窗口/双 Host、真实
+  Remote Git push、扩展归因仍待外部证据。
