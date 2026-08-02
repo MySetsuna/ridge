@@ -60,6 +60,9 @@ could also inherit stale pane IDs in the manager's attached set.
   src-tauri/Cargo.toml --lib commands::project::tests` — `23` passed,
   including a structured Codex resume assertion that preserves session id,
   argv, and recorded CWD.
+- Commune/Panes now consume one `agentPaneStatus` projection for card and
+  border state; `agentCommuneModel.test.ts` remains green (`3` passed) and
+  `pnpm check` remains `0` errors / `0` warnings.
 - Isolated LAN Remote matrix (`pnpm e2e:rdg-lan -- --skip-build`): desktop and
   mobile both `PASS` (`canvas=true`, mobile tree rendered, WebSocket connected);
   evidence is `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
@@ -78,9 +81,12 @@ a Console-suppression task.
 
 ## Closure status
 
-Deterministic code and local/CDP evidence are closed. The focused code commit
-is `3a6a9ce`; the version-contract repair is `c07f931` (same `0.1.33` release,
-no version increment after the first failed gate).
+Deterministic code and local/CDP evidence are closed. The focused worker code
+commit is `3a6a9ce`; structured resume coverage is `0716a05`; shared Commune /
+Pane status projection is `1c2ede3`; the version-contract repair is `c07f931`
+(same `0.1.33` release, no version increment after the first failed gate).
+The latter two commits are test/projection-only follow-ups; they do not change
+the published Remote protocol or release asset contents.
 
 - Release workflow `30726725069` passed its test gate and all four platform
   jobs. Formal `v0.1.33` is published with 12 verified assets.
