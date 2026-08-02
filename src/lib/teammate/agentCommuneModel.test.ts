@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AGENT_HISTORY_REFRESH_INTERVAL_MS,
   agentCardStatus,
   agentPaneStatus,
   aggregateAgentCardStatus,
   buildAgentHistoryGroups,
   normalizeAgentIdentity,
+  shouldRefreshAgentHistory,
 } from './agentCommuneModel';
 
 describe('agent commune view model', () => {
@@ -31,5 +33,11 @@ describe('agent commune view model', () => {
     expect(agentPaneStatus({ status: 'Suspended', activity: 'idle' }, false)).toBe('stopped');
     expect(agentPaneStatus({ status: 'Idle', activity: 'idle' }, false)).toBe('idle');
     expect(aggregateAgentCardStatus(['completed', 'working', 'waiting'])).toBe('waiting');
+  });
+
+  it('refreshes host-wide history on a five-minute cadence, not every roster poll', () => {
+    expect(shouldRefreshAgentHistory(0, 100)).toBe(true);
+    expect(shouldRefreshAgentHistory(100, 100 + AGENT_HISTORY_REFRESH_INTERVAL_MS - 1)).toBe(false);
+    expect(shouldRefreshAgentHistory(100, 100 + AGENT_HISTORY_REFRESH_INTERVAL_MS)).toBe(true);
   });
 });
