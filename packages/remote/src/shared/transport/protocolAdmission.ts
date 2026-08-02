@@ -84,6 +84,7 @@ export const TEAMMATE_REMOTE_REQUIRED = [
   'get_orchestration_health',
   'read_agent_recent_replies',
   'set_teammate_groups',
+  'resume_agent_session',
 ] as const;
 
 export function missingRequired(allowlist: string[], required: readonly string[]): string[] {
@@ -114,6 +115,7 @@ export function methodCategory(
     || c.includes('teammate')
     || c.includes('orchestration')
     || c === 'read_agent_recent_replies'
+    || c === 'resume_agent_session'
   ) return 'teammate';
   if (c.includes('workspace')) return 'workspace';
   if (c.includes('pty') || c.includes('terminal') || c.includes('write_to')) return 'terminal';

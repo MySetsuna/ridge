@@ -416,6 +416,13 @@ export interface RemoteLink {
   listAgentHistory(limit?: number): Promise<AgentHistoryReply[]>;
   /** Persist the current workspace's Agent groups for Remote/desktop parity. */
   setTeammateGroups(workspaceId: string, groups: readonly TeammateGroup[]): Promise<void>;
+  /** Create a new pane and resume a recorded Agent session in its CWD. */
+  resumeAgentSession(
+    workspaceId: string,
+    agent: string,
+    sessionId: string,
+    cwd: string,
+  ): Promise<string | null>;
   listHitlPending(): Promise<HitlPendingItem[]>;
   resolveHitlRemote(
     id: string,
@@ -1298,6 +1305,26 @@ export class RemoteConnection implements RemoteLink {
       'invoke-result',
     )) as { _error?: unknown };
     if (data._error) throw new Error(String(data._error));
+  }
+
+  async resumeAgentSession(
+    workspaceId: string,
+    agent: string,
+    sessionId: string,
+    cwd: string,
+  ): Promise<string | null> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'resume_agent_session',
+        args: { workspaceId, agent, sessionId, cwd },
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _result?: { paneId?: unknown }; _error?: unknown };
+    if (data._error) throw new Error(String(data._error));
+    const paneId = data._result?.paneId;
+    return typeof paneId === 'string' && paneId.length > 0 ? paneId : null;
   }
 
   // P2 阶段 1：脱敏待审批快照（同 invoke-request 白名单边界；无 action 全文）。

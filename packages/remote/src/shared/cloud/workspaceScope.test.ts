@@ -80,5 +80,10 @@ describe('workspace share scope', () => {
       method: 'set_teammate_groups',
       params: { workspaceId: 'ws-shared' },
     });
+    expect(planWorkspaceInvoke('resume_agent_session', { cwd: 'C:\\repo\\shared' }, access)).toEqual({
+      kind: 'invoke',
+      method: 'resume_agent_session',
+      params: { cwd: 'C:\\repo\\shared', workspaceId: 'ws-shared' },
+    });
   });
 });

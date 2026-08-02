@@ -181,6 +181,7 @@ export function planWorkspaceInvoke(
     method === 'get_orchestration_health' ||
     method === 'read_agent_recent_replies' ||
     method === 'set_teammate_groups' ||
+    method === 'resume_agent_session' ||
     method === 'register_teammate_agent' ||
     method === 'release_teammate_agent'
   ) {

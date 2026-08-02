@@ -56,3 +56,18 @@ scripts/tmp-*.mjs
 # 本机工具目录（iter-60 顺手）：pnpm 独立 store 与 NLM MCP 虚拟环境
 .pnpm-store/
 .venv-notebooklm/
+
+# Local iteration runtime state. Authoritative requirements, decisions and
+# release evidence live under docs/; transient intake/agent/artifact files
+# stay local and must not become release inputs.
+/.iteration/**
+
+# Generated remote/PWA output and local runtime signal directories.
+/.pw-remote-profile-backup-*/
+/.ridge/
+/static/remote/
+/web-remote-dist/
+
+# Separate ridge-code checkout used for local reference work; it is not part
+# of this repository's release graph.
+/ridge-code/

@@ -123,6 +123,7 @@ beforeEach(() => {
       case 'list_workspaces': return [{ id: 'ws1', name: 'One' }, { id: 'ws2', name: 'Two' }];
       case 'split_pane': return { pane_id: 'pane-new', initial_cwd: null };
       case 'create_workspace': return 'ws-new';
+      case 'resume_agent_session': return { paneId: 'pane-resumed' };
       case 'get_active_theme_entry':
         return { id: 'dark1', type: 'dark', colors: { bg: '#000', accent: '#0f0' } };
       case 'get_theme_data':
@@ -694,6 +695,18 @@ describe('CloudRemoteConnection reconnect', () => {
       rpc.dispose();
       vi.useRealTimers();
     }
+  });
+
+  it('resumes an Agent session through host structured launch with recorded CWD', async () => {
+    const conn = await connected();
+    await expect(conn.resumeAgentSession('ws1', 'Codex', 'session-42', 'C:\\repo\\shared'))
+      .resolves.toBe('pane-resumed');
+    expect(invokeMock).toHaveBeenCalledWith('resume_agent_session', {
+      workspaceId: 'ws1',
+      agent: 'Codex',
+      sessionId: 'session-42',
+      cwd: 'C:\\repo\\shared',
+    });
   });
 });
 

@@ -887,6 +887,23 @@ export class CloudRemoteConnection implements RemoteLink {
     await this.bridge.invoke('set_teammate_groups', { workspaceId, groups });
   }
 
+  async resumeAgentSession(
+    workspaceId: string,
+    agent: string,
+    sessionId: string,
+    cwd: string,
+  ): Promise<string | null> {
+    const result = await this.bridge.invoke<{ paneId?: unknown }>('resume_agent_session', {
+      workspaceId,
+      agent,
+      sessionId,
+      cwd,
+    });
+    return typeof result?.paneId === 'string' && result.paneId.length > 0
+      ? result.paneId
+      : null;
+  }
+
   // P2 阶段 1：脱敏待审批快照（无 action 全文），同 allowlist 门控。
   async listHitlPending(): Promise<HitlPendingItem[]> {
     return this.bridge.invoke<HitlPendingItem[]>('list_hitl_pending', {});

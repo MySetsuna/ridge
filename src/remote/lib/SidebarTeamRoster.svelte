@@ -51,6 +51,8 @@
   let history = $state<AgentHistoryReply[]>([]);
   let historyLoadCount = 0;
   let historyUnavailable = false;
+  let resumeBusy = $state<string | null>(null);
+  let historyNote = $state('');
   let refreshToken = 0;
   let newGroupName = $state('');
   let groupBusy = $state(false);
@@ -161,6 +163,28 @@
 
   function cwdFor(m: TeammateRosterMember): string {
     return panes.find((pane) => pane.id === m.paneId)?.cwd?.trim() ?? '';
+  }
+
+  async function resumeHistory(reply: AgentHistoryReply): Promise<void> {
+    const spec = reply.resume;
+    if (!spec || !workspaceId || resumeBusy) return;
+    const key = `${reply.agent}:${reply.sessionId}:${reply.timestamp}`;
+    resumeBusy = key;
+    historyNote = '';
+    try {
+      const paneId = await ws.resumeAgentSession(
+        workspaceId,
+        reply.agent,
+        reply.sessionId,
+        spec.cwd || reply.cwd,
+      );
+      if (!paneId) throw new Error('Host did not return a pane');
+      onSelectPane?.(paneId);
+    } catch (e) {
+      historyNote = e instanceof Error ? e.message : String(e);
+    } finally {
+      resumeBusy = null;
+    }
   }
 
   /** 给该成员发消息：写其 pane stdin。
@@ -360,6 +384,7 @@
     {#if historyGroups.length === 0}
       <p class="empty">暂无 Agent 历史</p>
     {:else}
+      {#if historyNote}<p class="note" role="status">{historyNote}</p>{/if}
       {#each historyGroups as group (group.key)}
         <section class="history-group">
           <div class="group-head">
@@ -368,7 +393,19 @@
           </div>
           {#each group.replies.slice(0, 12) as reply (reply.sessionId + ':' + reply.timestamp)}
             <article class="history-item">
-              <div class="history-title" title={reply.title}>{reply.title || 'Agent reply'}</div>
+              <div class="history-head">
+                <div class="history-title" title={reply.title}>{reply.title || 'Agent reply'}</div>
+                {#if reply.resume}
+                  {@const resumeKey = `${reply.agent}:${reply.sessionId}:${reply.timestamp}`}
+                  <button
+                    class="resume"
+                    type="button"
+                    disabled={resumeBusy !== null}
+                    aria-label={`Resume ${reply.agent} session ${reply.sessionId}`}
+                    onclick={() => void resumeHistory(reply)}
+                  >{resumeBusy === resumeKey ? 'Starting…' : 'Resume'}</button>
+                {/if}
+              </div>
               <div class="history-meta">{reply.cwd || '/'} · {reply.sessionId}</div>
               <p>{reply.text}</p>
             </article>
@@ -512,7 +549,11 @@
   .member-add:active,.member-remove:active{color:var(--rg-accent)}
   .history-group{border:1px solid var(--rg-border);border-radius:8px;overflow:hidden;margin:2px 0}
   .history-item{padding:7px 9px;border-top:1px solid var(--rg-border);font-size:11px;line-height:1.35}
+  .history-head{display:flex;align-items:center;gap:6px;min-width:0}
   .history-title{font-weight:600;color:var(--rg-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .resume{flex:0 0 auto;border:1px solid var(--rg-border);border-radius:5px;background:transparent;color:var(--rg-fg-muted);font-size:10px;padding:2px 6px;cursor:pointer}
+  .resume:disabled{opacity:.5;cursor:default}
+  .resume:not(:disabled):active{color:var(--rg-accent);border-color:var(--rg-accent)}
   .history-meta{margin-top:2px;color:var(--rg-fg-muted);font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .history-item p{margin:4px 0 0;color:var(--rg-fg-muted);white-space:pre-wrap;word-break:break-word;max-height:80px;overflow:auto}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--rg-fg-muted);flex-shrink:0}

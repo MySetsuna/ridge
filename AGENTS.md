@@ -53,6 +53,10 @@
 
 ## Releases（硬规矩）
 
+### 发版前工作区洁净闸
+
+若工作区仍有可复用代码修改（未提交或未追踪），不得直接发版。须先判定其为真实逻辑、已废弃内容或生成物：真实逻辑落地测试后提交并推送；生成物/运行态加入明确忽略规则或清理；废弃内容安全移除。发版前必须同时满足 `git diff --exit-code`、`git diff --cached --exit-code` 与 `git ls-files --others --exclude-standard` 均无输出，且 `HEAD` 已推送至目标远端。版本化 Release、Remote artifact、Cloud 发布均受此闸约束。
+
 发 **versioned GitHub Release**（`vX.Y.Z`）时，**必须**带上与该版本号一致的安装包/CLI 产物，形态对齐历史 Release（如 `v0.0.16` / `v0.0.17`），**禁止**只建空 tag + 文字说明、无 asset。
 
 ### 期望产物（与 `.github/workflows/release.yml` 矩阵一致）

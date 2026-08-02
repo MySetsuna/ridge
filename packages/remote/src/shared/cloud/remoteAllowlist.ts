@@ -117,6 +117,7 @@ export const REMOTE_ALLOWLIST: readonly string[] = [
   'get_orchestration_health',
   'read_agent_recent_replies',
   'set_teammate_groups',
+  'resume_agent_session',
   // iter-61：pane 的 agent 标记切换（远端工作区弹层「标记」按钮）。
   'register_teammate_agent',
   'release_teammate_agent',
@@ -203,6 +204,7 @@ export const MUTATING_METHODS: readonly string[] = [
   // ── Teammate（P2 阶段 2）──
   'resolve_hitl_remote',
   'set_teammate_groups',
+  'resume_agent_session',
   // iter-61：agent 标记切换（写 teammate 侧表）。
   'register_teammate_agent',
   'release_teammate_agent',
