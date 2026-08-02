@@ -37,7 +37,21 @@ await sleep(1500);
 if (await page.locator('input[inputmode="numeric"]').count()) { if (!CODE) { log('need RIDGE_CODE'); process.exit(3); } await page.locator('input[inputmode="numeric"]').fill(CODE); await page.locator('button').first().click(); }
 await page.waitForSelector('.app-root', { timeout: 20000 });
 await sleep(1200);
-const openTree = async () => { if (!(await page.locator('.tree-popup').count())) { await page.locator('.tree-trigger').click(); await page.waitForSelector('.tree-popup'); await sleep(150); } };
+const openTree = async () => {
+  const popup = page.locator('.tree-popup');
+  if (!(await popup.isVisible().catch(() => false))) {
+    await page.locator('.tree-trigger').click();
+    await popup.waitFor({ state: 'visible' });
+    await sleep(150);
+  }
+};
+const openTreeForPaneCreate = async () => {
+  await openTree();
+  // After a reload the tree shell can be present before the pane controls are
+  // rehydrated from the remote topology. Wait for the actual control so the
+  // trace measures lifecycle state, not a Playwright timing race.
+  await page.waitForSelector('.pane-new', { state: 'visible', timeout: 20_000 });
+};
 const paneCount = async () => { await openTree(); return page.locator('.pane-row').count(); };
 const wsActive = async () => { await openTree(); return page.locator('.ws-row.active .ws-name').first().textContent(); };
 
@@ -55,7 +69,7 @@ await openTree(); const cur = await page.evaluate(() => [...document.querySelect
 // reconnect (reload page → mobile reconnects)
 await page.reload({ waitUntil: 'domcontentloaded' }); await sleep(2000); await page.waitForSelector('.app-root', { timeout: 20000 }).catch(() => {}); await step('6 reconnect(reload)');
 // create + close a pane after reconnect
-await openTree(); { const n = await page.locator('.pane-row').count(); await page.locator('.pane-new').first().evaluate((el) => el.click()); for (let k = 0; k < 25 && (await page.locator('.pane-row').count()) <= n; k++) await sleep(200); } await step('7 create-pane-after-reconnect');
+await openTreeForPaneCreate(); { const n = await page.locator('.pane-row').count(); await page.locator('.pane-new').first().evaluate((el) => el.click()); for (let k = 0; k < 25 && (await page.locator('.pane-row').count()) <= n; k++) await sleep(200); } await step('7 create-pane-after-reconnect');
 
 // final: two-pass reap. Pass1 clears orphans; pass2 must find 0 — if the
 // reap→PaneClosed→frontend-rebuild cycle still existed, pass2 would re-find them.
