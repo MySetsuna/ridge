@@ -23,6 +23,7 @@ import { mapLimit, GIT_FANOUT_CONCURRENCY } from '$lib/utils/pLimit';
 import { reportRepeatedError } from '$lib/utils/repeatedError';
 import {
   isNotGitRepositoryError,
+  invalidateScmQuery,
   isScmRepoKnownNonGit,
   markScmRepoNonGit,
   runScmQuerySingleFlight,
@@ -278,6 +279,8 @@ export function trackPaneGitStatus(paneId: string, cwd: string | null): void {
 export async function invalidatePaneGitStatusForRepo(repoRoot: string): Promise<void> {
   if (isScmRepoKnownNonGit(repoRoot)) return;
   cacheByRepo.delete(repoRoot);
+  invalidateScmQuery('status', repoRoot);
+  invalidateScmQuery('diff-summary', repoRoot);
   const all = get(_store);
   for (const [paneId, info] of Object.entries(all)) {
     // After round 40 a pane has `availableRepos` — invalidate any pane

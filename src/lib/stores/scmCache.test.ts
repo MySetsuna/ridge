@@ -15,6 +15,7 @@ import {
   isNotGitRepositoryError,
   isScmRepoKnownNonGit,
   markScmRepoNonGit,
+  invalidateScmQuery,
   resetScmRepositoryDetection,
   clearScmQuerySingleFlights,
   getScmQueryDiagnostics,
@@ -189,6 +190,47 @@ describe('scmCacheStore', () => {
 
     expect(await second).toBe(await first);
     expect(starts).toBe(1);
+  });
+
+  it('reuses a completed read within its bounded TTL and exposes cache hits', async () => {
+    let starts = 0;
+    const query = () => {
+      starts += 1;
+      return Promise.resolve(['main']);
+    };
+
+    await expect(runScmQuerySingleFlight('branches', 'C:\\Repo', query)).resolves.toEqual(['main']);
+    await expect(runScmQuerySingleFlight('branches', 'c:/repo', query)).resolves.toEqual(['main']);
+    expect(starts).toBe(1);
+    expect(getScmQueryDiagnostics()).toMatchObject({ cacheHits: 1, started: 1, inFlight: 0 });
+  });
+
+  it('invalidates completed snapshots so a write is visible immediately', async () => {
+    let starts = 0;
+    const query = () => Promise.resolve(`branch-${++starts}`);
+
+    await expect(runScmQuerySingleFlight('branches', '/repo', query)).resolves.toBe('branch-1');
+    expect(invalidateScmQuery('branches', '/repo')).toBe(1);
+    await expect(runScmQuerySingleFlight('branches', '/repo', query)).resolves.toBe('branch-2');
+    expect(starts).toBe(2);
+  });
+
+  it('does not cache a read that was invalidated while in flight', async () => {
+    let starts = 0;
+    let release!: (value: string) => void;
+    const first = runScmQuerySingleFlight('status', '/repo', () => {
+      starts += 1;
+      return new Promise<string>((resolve) => { release = resolve; });
+    });
+    await Promise.resolve();
+    invalidateScmQuery('status', '/repo');
+    release('stale');
+    await expect(first).resolves.toBe('stale');
+    await expect(runScmQuerySingleFlight('status', '/repo', () => {
+      starts += 1;
+      return Promise.resolve('fresh');
+    })).resolves.toBe('fresh');
+    expect(starts).toBe(2);
   });
 
   it('holds branch and stash reads behind one in-flight status rejection', async () => {

@@ -120,14 +120,36 @@ export interface ScmQueryDiagnostics {
   calls: number;
   started: number;
   joined: number;
+  cacheHits: number;
   completed: number;
   failed: number;
   inFlight: number;
 }
 
 const scmQueries = new Map<string, Promise<unknown>>();
+interface ScmQueryCacheEntry {
+  value: unknown;
+  expiresAt: number;
+}
+
+/** Completed SCM reads are short-lived snapshots, not durable state. Keeping
+ * them here lets the pane pill and Source Control sidebar share one result
+ * even when their requests happen a few milliseconds apart. The cap prevents
+ * a long-lived session that visits many repositories from retaining payloads
+ * forever; explicit mutation paths call invalidateScmQuery below. */
+const scmQueryResults = new Map<string, ScmQueryCacheEntry>();
+/** Monotonic invalidation generations prevent an old read that was already
+ * in flight when a Git mutation completed from repopulating the cache. */
+const scmQueryEpochs = new Map<string, number>();
+const MAX_SCM_QUERY_CACHE_ENTRIES = 256;
+const DEFAULT_SCM_QUERY_TTL_MS: Record<ScmQueryKind, number> = {
+  status: 1_500,
+  'diff-summary': 1_500,
+  branches: 30_000,
+  stashes: 30_000,
+};
 const directoryContextsByOwner = new Map<string, Set<string>>();
-const queryCounters = { calls: 0, started: 0, joined: 0, completed: 0, failed: 0 };
+const queryCounters = { calls: 0, started: 0, joined: 0, cacheHits: 0, completed: 0, failed: 0 };
 
 export class ScmNonGitRepositoryError extends Error {
   constructor(readonly repoRoot: string) {
@@ -194,6 +216,7 @@ export function runScmQuerySingleFlight<T>(
   kind: ScmQueryKind,
   repoRoot: string,
   query: () => Promise<T>,
+  options: { cacheTtlMs?: number; force?: boolean } = {},
 ): Promise<T> {
   queryCounters.calls += 1;
   const key = scmQueryKey(kind, repoRoot);
@@ -202,7 +225,19 @@ export function runScmQuerySingleFlight<T>(
     queryCounters.joined += 1;
     return existing as Promise<T>;
   }
+  const ttlMs = Math.max(0, options.cacheTtlMs ?? DEFAULT_SCM_QUERY_TTL_MS[kind]);
+  if (!options.force && ttlMs > 0) {
+    const cached = scmQueryResults.get(key);
+    if (cached) {
+      if (cached.expiresAt > Date.now()) {
+        queryCounters.cacheHits += 1;
+        return Promise.resolve(cached.value as T);
+      }
+      scmQueryResults.delete(key);
+    }
+  }
   queryCounters.started += 1;
+  const epoch = scmQueryEpochs.get(key) ?? 0;
   const request = Promise.resolve().then(async () => {
     if (kind === 'branches' || kind === 'stashes') {
       const statusProbe = scmQueries.get(scmQueryKey('status', repoRoot));
@@ -213,8 +248,18 @@ export function runScmQuerySingleFlight<T>(
   });
   scmQueries.set(key, request);
   void request.then(
-    () => {
+    (value) => {
       queryCounters.completed += 1;
+      if (ttlMs > 0 && (scmQueryEpochs.get(key) ?? 0) === epoch) {
+        // Refresh insertion order so the cap behaves as an inexpensive LRU.
+        scmQueryResults.delete(key);
+        scmQueryResults.set(key, { value, expiresAt: Date.now() + ttlMs });
+        while (scmQueryResults.size > MAX_SCM_QUERY_CACHE_ENTRIES) {
+          const oldest = scmQueryResults.keys().next().value as string | undefined;
+          if (!oldest) break;
+          scmQueryResults.delete(oldest);
+        }
+      }
       if (scmQueries.get(key) === request) scmQueries.delete(key);
     },
     () => {
@@ -229,9 +274,31 @@ export function getScmQueryDiagnostics(): ScmQueryDiagnostics {
   return { ...queryCounters, inFlight: scmQueries.size };
 }
 
+/** Invalidate completed snapshots after a Git mutation or cwd transition.
+ * Without this, a branch checkout/commit could be hidden until the short TTL
+ * expires even though the in-flight dedupe itself is correct. */
+export function invalidateScmQuery(
+  kind: ScmQueryKind | 'all',
+  repoRoot?: string,
+): number {
+  let removed = 0;
+  const normalized = repoRoot ? normalizeDirectory(repoRoot) : undefined;
+  const keys = new Set([...scmQueryResults.keys(), ...scmQueries.keys()]);
+  for (const key of keys) {
+    const [queryKind, root] = key.split('\0');
+    if (kind !== 'all' && queryKind !== kind) continue;
+    if (normalized !== undefined && root !== normalized) continue;
+    if (scmQueryResults.delete(key)) removed += 1;
+    scmQueryEpochs.set(key, (scmQueryEpochs.get(key) ?? 0) + 1);
+  }
+  return removed;
+}
+
 /** Test/HMR reset. Active RPCs are not cancelled; late settlement cannot delete newer entries. */
 export function clearScmQuerySingleFlights(): void {
   scmQueries.clear();
+  scmQueryResults.clear();
+  scmQueryEpochs.clear();
   for (const key of Object.keys(queryCounters) as Array<keyof typeof queryCounters>) {
     queryCounters[key] = 0;
   }
@@ -320,6 +387,7 @@ export function isNotGitRepositoryError(error: unknown): boolean {
 export function markScmRepoNonGit(repoRoot: string): void {
   if (!repoRoot) return;
   const normalizedRoot = normalizeDirectory(repoRoot);
+  invalidateScmQuery('all', normalizedRoot);
   _store.update((s) => {
     if (s.nonGitRepoRoots[normalizedRoot]) return s;
     const repoRoots = s.repoRoots.filter(

@@ -25,6 +25,7 @@
   import {
     isNotGitRepositoryError,
     isScmRepoKnownNonGit,
+    invalidateScmQuery,
     runScmQuerySingleFlight,
   } from '$lib/stores/scmCache';
 
@@ -133,6 +134,7 @@
         branch,
         create: false,
       });
+      invalidateScmQuery('branches', info.repoRoot);
       await invalidatePaneGitStatusForRepo(info.repoRoot);
       open = false;
       showToast(tr('scm.switchedToBranch', { branch }));
@@ -191,6 +193,7 @@
       // Pull a fresh branch list so the new one shows up with Check.
       branches = [];
       loadedRepoRoot = null;
+      invalidateScmQuery('branches', info.repoRoot);
       await invalidatePaneGitStatusForRepo(info.repoRoot);
       showToast(tr('scm.createdAndSwitched', { branch: trimmed }));
       await loadBranches();
