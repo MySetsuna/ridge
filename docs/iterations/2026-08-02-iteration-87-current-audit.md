@@ -59,3 +59,34 @@ state, or physical-device claim is made.
 - `cargo test -p ridge-kernel registry::tests --lib`: 4 passed.
 - `cargo check --manifest-path src-tauri/Cargo.toml`: finished successfully;
   existing Rust warnings only.
+
+## Iteration 87 continuation — memory, focus acknowledgement and LAN control path
+
+- `e41e733`, `cea02b9`, `9aa23dc`, and `ab01e66` harden terminal reclamation:
+  Scrollback drops its backing ring on clear and lazily reallocates on output;
+  link-span rows and local right-click clear release immediately; worker decode
+  faults and invalid ranges return request-scoped errors instead of leaving a
+  pending decode until the 10-second timeout. Deterministic evidence: ridge-term
+  Scrollback 48 tests, then 8 and 9 scrollback-worker tests, all passing.
+  WebView2/mobile heap soak and allocator RSS return remain external gates.
+- `4c7fb4f` completes the transient Agent attention contract on mobile: the
+  hidden terminal input now acknowledges the pane on real focus, in addition to
+  Agent selection, stdin, claim and Resize. Normal working/idle panes remain
+  border-free; `pnpm check` stays 0 errors/0 warnings.
+- `b20ea58` and `144a467` fence LAN probe ownership with per-process status files,
+  spawned PID/port checks, teardown cleanup and contract tests. The latest
+  `pnpm e2e:rdg-lan` passed both desktop and mobile dashboard paths with
+  `browserErrors=[]`, `write_to_pty` and `resize_pane` frames observed on both
+  clients. Evidence is `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
+  `pnpm e2e:rdg-mobile-keyboard` also passed Chromium emulation with selection,
+  bounded keyboard shift and recovery; this is not a physical-device claim.
+- Kernel deep-root evidence is in
+  `.iteration/agents/result-kernel-deep-root.json`: singleton, no-Tauri host,
+  rdg attach/stop, kernel-backed FS/Agent/Git/MCP and standalone MCP bridge
+  probes passed. The desktop workspace/teammate domain is still partly
+  AppState-backed, so full kernel-domain migration is not closed.
+
+The public WebRTC four-path gate remains blocked by the absence of an
+authenticated `rdg login`/device credential on this machine. Cloud health HTTP
+200 and a LAN protocol smoke do not substitute for public desktop/mobile session
+evidence.
