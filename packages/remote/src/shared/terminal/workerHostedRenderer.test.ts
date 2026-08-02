@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	MAX_WORKER_PENDING,
+	WORKER_INIT_TIMEOUT_MS,
 	WorkerHostedRenderer,
 	type WorkerLike,
 } from './workerHostedRenderer';
@@ -325,5 +326,33 @@ describe('WorkerHostedRenderer — error paths', () => {
 		expect(renderer.pendingCount()).toBe(0);
 		expect(worker.terminated).toBe(true);
 		expect(fatal).toHaveBeenCalledOnce();
+	});
+
+	it('keeps an unresponsive init bounded by the cold-start timeout', async () => {
+		vi.useFakeTimers();
+		try {
+			const worker = new FakeWorker();
+			const fatal = vi.fn();
+			const renderer = new WorkerHostedRenderer(worker, fatal);
+			const pending = renderer.init({
+				paneId: PANE,
+				dims: { rows: 24, cols: 80, dpr: 1 },
+				backend: 'canvas2d',
+				scrollbackLines: 2000,
+			});
+			const rejection = expect(pending).rejects.toMatchObject({
+				message: `render worker init request timed out after ${WORKER_INIT_TIMEOUT_MS}ms`,
+			});
+
+			await vi.advanceTimersByTimeAsync(WORKER_INIT_TIMEOUT_MS - 1);
+			expect(renderer.pendingCount()).toBe(1);
+			await vi.advanceTimersByTimeAsync(1);
+			await rejection;
+			expect(renderer.pendingCount()).toBe(0);
+			expect(worker.terminated).toBe(true);
+			expect(fatal).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

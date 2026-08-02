@@ -27,13 +27,13 @@
  * allocation only happens when the flag is on, so the legacy default
  * path pays nothing.
  *
- * Why fire-and-forget
- * -------------------
+ * Why the bridge stays non-blocking
+ * -------------------------------
  * The manager's hot paths (`applyDeltaFrame`, `fitPane`) cannot block
- * on a worker round-trip without ruining the per-frame budget. Each
- * call attaches a `.catch` so an `unhandledrejection` never leaks into
- * the console, but the caller does not await. Errors are surfaced as
- * dev-only `console.warn`.
+ * on a worker round-trip without ruining the per-frame budget. Data and
+ * resize calls remain fire-and-forget; `attach` returns a boolean promise
+ * solely so the manager can publish the pane as ready after the init ack.
+ * Errors are consumed and surfaced as dev-only `console.warn`.
  */
 
 import { failWorkerRenderer, getWorkerRenderer } from './workerRendererSingleton';
@@ -89,7 +89,9 @@ export interface WorkerRendererBridge {
 	 *  no Worker support). Wired through to `WorkerHostedRenderer.pendingCount`.
 	 *  Useful for e2e specs verifying that the worker is keeping up. */
 	pendingCount(): number;
-	/** Mirror a new pane into the worker. Idempotent at the worker: a
+	/** Mirror a new pane into the worker. Resolves true only after init
+	 *  acknowledgement; resolves false on an unavailable/failed worker.
+	 *  Idempotent at the worker: a
 	 *  duplicate attach for the same paneId becomes a
 	 *  `pane_already_initialized` error response, which the bridge
 	 *  swallows via its dev-only warn. */
@@ -99,7 +101,7 @@ export interface WorkerRendererBridge {
 		cols: number,
 		dpr: number,
 		opts?: { backend?: RendererBackend; scrollbackLines?: number },
-	): void;
+	): Promise<boolean>;
 	/** Mirror a postcard delta frame. Sends a `.slice()` copy so the
 	 *  main-thread kernel keeps the original bytes intact (see the
 	 *  module-level note). */
@@ -138,7 +140,8 @@ export interface WorkerRendererBridge {
  * is independently unit-testable without standing up a wasm-laden
  * TerminalManager fixture. The caller (manager.ts) consumes the
  * tagged-union result and (a) calls the matching bridge method and
- * (b) updates its private `workerAttached: Set<string>` on `attach`.
+ * (b) updates its private `workerAttached: Set<string>` only after the
+ * returned promise resolves true.
  *
  * Keeping this here (next to the bridge itself) rather than in the
  * manager keeps the worker plumbing in one place.
@@ -155,9 +158,11 @@ export function reconcileWorkerRendererIdentity<T>(
 	previous: T | null,
 	current: T | null,
 	attached: Set<string>,
+	initializing?: Set<string>,
 ): T | null {
 	if (previous !== current) {
 		if (previous !== null) attached.clear();
+		initializing?.clear();
 		return current;
 	}
 	return previous;
@@ -169,9 +174,15 @@ export function workerLifecycleOnFit(args: {
 	cols: number;
 	dpr: number;
 	attached: ReadonlySet<string>;
+	initializing?: ReadonlySet<string>;
 	isActive: boolean;
 }): WorkerLifecycleAction {
-	const { paneId, rows, cols, dpr, attached, isActive } = args;
+	const { paneId, rows, cols, dpr, attached, initializing, isActive } = args;
+	// `init`/`bindCanvas` are asynchronous. While either is in flight,
+	// sending a resize races the worker's pane creation and produces the
+	// high-frequency `resize before init` failure seen on mobile WebView2.
+	// Keep the latest fit in the manager; it re-runs once initialization acks.
+	if (initializing?.has(paneId)) return { kind: 'noop' };
 	if (attached.has(paneId)) {
 		return { kind: 'resize', rows, cols, dpr };
 	}
@@ -191,15 +202,20 @@ export const workerRendererBridge: WorkerRendererBridge = {
 		return r ? r.pendingCount() : 0;
 	},
 
-	attach(paneId, rows, cols, dpr, opts): void {
+	attach(paneId, rows, cols, dpr, opts): Promise<boolean> {
 		const r = active();
-		if (!r) return;
-		r.init({
+		if (!r) return Promise.resolve(false);
+		return r.init({
 			paneId,
 			dims: { rows, cols, dpr },
 			backend: opts?.backend ?? DEFAULT_BACKEND,
 			scrollbackLines: opts?.scrollbackLines ?? DEFAULT_SCROLLBACK,
-		}).catch((err) => fail(`init ${paneId}`, err));
+		})
+			.then(() => true)
+			.catch((err) => {
+				fail(`init ${paneId}`, err);
+				return false;
+			});
 	},
 
 	applyDelta(paneId, bytes): void {
