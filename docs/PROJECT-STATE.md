@@ -802,3 +802,14 @@ was corrected in `f7ba0f5`, and the annotated tag was rebuilt. Release workflow
 Remote workflow `30739703846` succeeded from `f7ba0f5` and atomically activated
 `0.1.36+gf7ba0f5`; both desktop and mobile indexes passed. Cloud health remains
 HTTP 200 (`version=0.0.7`), with no cloud source/version change in this slice.
+
+### Iteration 87 runtime warning isolation evidence
+
+`scripts/rdg-remote-e2e.mjs` now runs the controlled Chromium comparison with
+extensions and component-extension background pages disabled, and persists the
+isolation mode in `.iteration/artifacts/rdg-remote-e2e/last-result.json`. The
+latest desktop/mobile matrix passed with `browserErrors=[]`,
+`write_to_pty`/`resize_pane` observed on both clients, and
+`browserIsolation.extensionsDisabled=true`. Repository source still contains no
+Chrome Extension Messaging API; affected-phone source URL and one-by-one
+extension/injector A/B remain the only attribution evidence missing.

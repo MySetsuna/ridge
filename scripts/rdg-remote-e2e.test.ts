@@ -27,6 +27,13 @@ describe('LAN Remote E2E process ownership fence', () => {
     expect(lanProbe).toContain('resizeSent');
   });
 
+  it('runs the browser comparison without extension messaging injectors', () => {
+    expect(lanProbe).toContain("'--disable-extensions'");
+    expect(lanProbe).toContain("'--disable-component-extensions-with-background-pages'");
+    expect(lanProbe).toContain('extensionsDisabled: true');
+    expect(lanProbe).toContain('isolatedContext: true');
+  });
+
   it('removes probe status files during teardown', () => {
     expect(lanProbe).toContain('unlinkSync(STATUS_FILE)');
     expect(keyboardProbe).toContain('unlinkSync(STATUS_FILE)');
