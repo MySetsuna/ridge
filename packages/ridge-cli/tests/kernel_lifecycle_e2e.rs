@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use ridge_core::process_guard::{run_command_status_with_timeout, run_command_with_timeout};
@@ -41,6 +41,30 @@ fn ensure_rdg(binary: &Path, data_dir: &Path) -> std::process::ExitStatus {
         Duration::from_secs(15),
     )
     .unwrap_or_else(|error| panic!("rdg kernel ensure: {error}"))
+}
+
+fn spawn_rdg(binary: &Path, data_dir: &Path, args: &[&str]) -> Child {
+    rdg_command(binary, data_dir, args)
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn rdg {args:?}: {error}"))
+}
+
+fn wait_for_endpoint(data_dir: &Path, timeout: Duration) -> KernelEndpoint {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(bytes) = fs::read(data_dir.join("kernel.json")) {
+            if let Ok(endpoint) = serde_json::from_slice::<KernelEndpoint>(&bytes) {
+                if ridge_kernel::client::health_ok(&endpoint) {
+                    return endpoint;
+                }
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "ridge-kernel did not become healthy before client lifecycle probe timed out"
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    }
 }
 
 struct KernelCleanup {
@@ -209,4 +233,36 @@ fn standalone_rdg_converges_to_one_kernel_and_serves_domain_and_mcp() {
         .is_err(),
         "stopped kernel still accepted MCP requests"
     );
+}
+
+#[test]
+fn detached_kernel_survives_client_process_exit_and_second_attach() {
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rdg"));
+    let data_dir = isolated_data_dir();
+    fs::create_dir_all(&data_dir).unwrap();
+    let _cleanup = KernelCleanup {
+        binary: binary.clone(),
+        data_dir: data_dir.clone(),
+    };
+
+    // The shell/client is disposable: once the detached kernel is healthy,
+    // terminate the waiting rdg process and prove a fresh client can attach
+    // to the same PID. This guards the Windows CREATE flags / Unix setsid
+    // contract instead of only checking logical semaphore convergence.
+    let mut client = spawn_rdg(&binary, &data_dir, &["kernel", "ensure"]);
+    let endpoint = wait_for_endpoint(&data_dir, Duration::from_secs(8));
+    if client.try_wait().unwrap().is_none() {
+        client.kill().expect("terminate disposable rdg client");
+    }
+    let _ = client.wait();
+
+    let attached = run_rdg(&binary, &data_dir, &["kernel", "ensure"]);
+    assert!(
+        attached.status.success(),
+        "second client failed to attach: {}",
+        String::from_utf8_lossy(&attached.stderr)
+    );
+    let reattached = wait_for_endpoint(&data_dir, Duration::from_secs(2));
+    assert_eq!(reattached.pid, endpoint.pid);
+    assert!(ridge_kernel::client::health_ok(&reattached));
 }
