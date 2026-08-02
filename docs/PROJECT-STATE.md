@@ -828,3 +828,8 @@ desktop AppState reads: kernel workspace projections lack names/window claims,
 and kernel Agent roster identity is not the desktop `(workspaceId, UUID)` model.
 Full Tauri-shell domain migration remains open pending one canonical composite
 identity and persistence path.
+
+The attempted `v0.1.37` release was rolled back after CI caught a
+platform-dependent Git test assumption. The tag was deleted, the version bump
+reverted, and no failed release is treated as published. The temporary bare
+remote now explicitly denies non-fast-forward updates (`149d085`).
