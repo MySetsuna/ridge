@@ -205,3 +205,21 @@ Remote workflow `30733546603` completed successfully from `12662ac`, activating
 `0.1.34+g12662ac` after building both desktop/mobile bundles. Desktop `v0.1.34`
 was not bumped. Empty optional PWA media/font globs and GitHub Node-20 deprecation
 annotations are warnings only; build, upload, status and activation gates passed.
+
+## Iteration 86 final Remote Agent/cursor checkpoint (2026-08-02)
+
+- `e344e57`: desktop IME helper owns the visible native caret while renderer
+  focus is active; blur restores renderer focus without reopening the keyboard.
+- `478c047` + `a4c146e`: remote pane projection carries `cwd`, `agentId` and
+  `agentState`; Agent cards show CWD and state rails, while pane containers and
+  workspace-tree rows show the same lifecycle highlight.
+- `f129d81`: Agent roster liveness refresh is five minutes; Query cache still
+  provides stale reuse and single-flight behavior.
+- Verification: `pnpm check` 0 errors/0 warnings; Vitest 131 files, 1,418
+  passed, 1 skipped; targeted Agent/Query tests 6 passed.
+- Remote workflow `30734591703` succeeded from `f129d81` and activated
+  `0.1.34+gf129d81`. Desktop `v0.1.34` remains unchanged.
+- HITL approval is card-level (yellow rail and controls); no pane-level HITL
+  mapping is claimed. Physical PWA/notch, public soak, WebView2 heap,
+  dual-window/host, authenticated Git push and clean-profile extension
+  attribution remain external gates.
