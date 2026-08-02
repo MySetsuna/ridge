@@ -226,7 +226,8 @@ pub async fn filename_search(root: String, pattern: String) -> Result<Vec<String
     // "Root path does not exist" string + `SearchEngine::search_files`). The
     // host keeps the `spawn_blocking` offload.
     tokio::task::spawn_blocking(move || {
-        ridge_core::fs::commands::filename_search(&root, &pattern).map_err(|e| e.to_command_string())
+        ridge_core::fs::commands::filename_search(&root, &pattern)
+            .map_err(|e| e.to_command_string())
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
@@ -809,10 +810,11 @@ fn read_agent_recent_replies_sync(
     for (agent, root) in roots {
         let mut source_files = Vec::new();
         collect_jsonl_files(&root, agent, 0, &mut source_files);
+        source_files.sort_by(|a, b| b.2.cmp(&a.2));
+        source_files.truncate(200);
         files.extend(source_files);
     }
     files.sort_by(|a, b| b.2.cmp(&a.2));
-    files.truncate(200);
 
     let mut sessions: HashMap<(String, String), AgentRecentReply> = HashMap::new();
     for (agent, path, modified) in files {
@@ -820,7 +822,10 @@ fn read_agent_recent_replies_sync(
             continue;
         };
         for session in parse_agent_jsonl(agent, &content, modified) {
-            let key = (session.agent.to_ascii_lowercase(), session.session_id.clone());
+            let key = (
+                session.agent.to_ascii_lowercase(),
+                session.session_id.clone(),
+            );
             match sessions.get(&key) {
                 Some(current) if current.timestamp > session.timestamp => {}
                 _ => {
@@ -831,7 +836,10 @@ fn read_agent_recent_replies_sync(
     }
     // Grok Build：`~/.grok/sessions/<encoded-cwd>/<session-id>/summary.json` + chat_history.jsonl
     for session in collect_grok_sessions(home) {
-        let key = (session.agent.to_ascii_lowercase(), session.session_id.clone());
+        let key = (
+            session.agent.to_ascii_lowercase(),
+            session.session_id.clone(),
+        );
         match sessions.get(&key) {
             Some(current) if current.timestamp > session.timestamp => {}
             _ => {
@@ -841,7 +849,10 @@ fn read_agent_recent_replies_sync(
     }
     let mut replies: Vec<_> = sessions.into_values().collect();
     replies.retain(|reply| {
-        filters.is_empty() || filters.iter().any(|path| same_or_child_path(&reply.cwd, path))
+        filters.is_empty()
+            || filters
+                .iter()
+                .any(|path| same_or_child_path(&reply.cwd, path))
     });
     replies.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     replies.truncate(limit.min(100));
@@ -990,7 +1001,10 @@ fn normalized_paths(paths: &[String]) -> Vec<String> {
 }
 
 fn same_or_child_path(project: &str, filter: &str) -> bool {
-    let project = project.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    let project = project
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_lowercase();
     project == filter
         || project.starts_with(&format!("{filter}/"))
         || filter.starts_with(&format!("{project}/"))
@@ -1117,31 +1131,31 @@ fn parse_agent_jsonl(agent: &str, content: &str, fallback_timestamp: u64) -> Vec
             .filter(|title| !title.is_empty())
             .unwrap_or(&session_title);
         let title = if line_title.is_empty() {
-            format!("{} {}", agent, line_session.chars().take(8).collect::<String>())
+            format!(
+                "{} {}",
+                agent,
+                line_session.chars().take(8).collect::<String>()
+            )
         } else {
             line_title.to_string()
         };
         let resume = {
             let id = &line_session;
             let profiles = crate::teammate::agent_catalog::builtin_profiles();
-            let Some(profile) =
-                crate::teammate::agent_catalog::find_profile(&profiles, agent)
-            else {
-                continue;
-            };
-            let (executable, argv, cwd_out) =
-                crate::teammate::agent_catalog::plan_resume(profile, id, &line_project, false);
-            if argv.is_empty() && profile.resume_argv.is_empty() {
-                // aider 等无 resume 模板：仍可展示历史，但不提供一键恢复。
-                None
-            } else {
-                Some(AgentResumeSpec {
-                    executable,
-                    argv,
-                    cwd: cwd_out,
-                    session_id: id.clone(),
-                })
-            }
+            crate::teammate::agent_catalog::find_profile(&profiles, agent).and_then(|profile| {
+                let (executable, argv, cwd_out) =
+                    crate::teammate::agent_catalog::plan_resume(profile, id, &line_project, false);
+                if argv.is_empty() && profile.resume_argv.is_empty() {
+                    None
+                } else {
+                    Some(AgentResumeSpec {
+                        executable,
+                        argv,
+                        cwd: cwd_out,
+                        session_id: id.clone(),
+                    })
+                }
+            })
         };
         let reply = AgentRecentReply {
             agent: agent.to_string(),
@@ -1302,9 +1316,18 @@ mod tests {
         assert_eq!(replies[0].text, "fixed it");
         assert_eq!(replies[0].cwd, r"C:\code\wind");
         assert_eq!(replies[0].session_id, "claude-1");
-        assert_eq!(replies[0].resume.as_ref().map(|r| r.executable.as_str()), Some("claude"));
-        assert_eq!(replies[0].resume.as_ref().map(|r| r.argv.clone()), Some(vec!["--resume".into(), "claude-1".into()]));
-        assert_eq!(replies[0].resume.as_ref().map(|r| r.cwd.as_str()), Some(r"C:\code\wind"));
+        assert_eq!(
+            replies[0].resume.as_ref().map(|r| r.executable.as_str()),
+            Some("claude")
+        );
+        assert_eq!(
+            replies[0].resume.as_ref().map(|r| r.argv.clone()),
+            Some(vec!["--resume".into(), "claude-1".into()])
+        );
+        assert_eq!(
+            replies[0].resume.as_ref().map(|r| r.cwd.as_str()),
+            Some(r"C:\code\wind")
+        );
     }
 
     #[test]
@@ -1319,8 +1342,14 @@ mod tests {
         assert_eq!(replies[0].text, "tests green");
         assert_eq!(replies[0].cwd, r"C:\code\wind");
         assert_eq!(replies[0].session_id, "codex-1");
-        assert_eq!(replies[0].resume.as_ref().map(|r| r.executable.as_str()), Some("codex"));
-        assert_eq!(replies[0].resume.as_ref().map(|r| r.argv.clone()), Some(vec!["resume".into(), "codex-1".into()]));
+        assert_eq!(
+            replies[0].resume.as_ref().map(|r| r.executable.as_str()),
+            Some("codex")
+        );
+        assert_eq!(
+            replies[0].resume.as_ref().map(|r| r.argv.clone()),
+            Some(vec!["resume".into(), "codex-1".into()])
+        );
     }
 
     #[test]
@@ -1386,11 +1415,26 @@ mod tests {
     }
 
     #[test]
+    fn keeps_history_for_unknown_agent_without_resume_plan() {
+        let replies = parse_agent_jsonl(
+            "CustomAgent",
+            r#"{"type":"assistant","timestamp":"2026-07-27T03:00:00Z","cwd":"D:\\custom","sessionId":"custom-1","message":{"role":"assistant","content":"custom output"}}"#,
+            0,
+        );
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].agent, "CustomAgent");
+        assert_eq!(replies[0].cwd, r"D:\custom");
+        assert_eq!(replies[0].text, "custom output");
+        assert!(replies[0].resume.is_none());
+    }
+
+    #[test]
     fn project_filter_accepts_children_not_siblings() {
         assert!(same_or_child_path(r"C:\code\wind\src", "c:/code/wind"));
         assert!(same_or_child_path(r"C:\code\wind", "c:/code/wind/src"));
         assert!(!same_or_child_path(r"C:\code\windmill", "c:/code/wind"));
     }
+
     #[test]
     fn history_scan_keeps_each_agent_and_recorded_cwd() {
         let td = TempDir::new("agent-history-sources");
