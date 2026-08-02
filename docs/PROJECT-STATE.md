@@ -1112,3 +1112,16 @@ Remote workflow `30762473570` completed successfully and activated the
 desktop/mobile artifact set. Cloud health returned HTTP 200
 (`version=0.0.7`). This follow-up is documentation-only and does not alter
 the released runtime.
+
+### Iteration 91 runtime closure candidate (2026-08-03)
+
+The next runtime slice adds Git status Abort/generation fences to shared and
+Remote panels, threads optional signals through the SidebarProvider contract,
+and makes kernel watcher thread-spawn failure observable. Deterministic
+evidence: frontend full suite 141 files / 1470 passed / 1 skipped, `pnpm check`
+0/0, and kernel lifecycle tests 5/5. The detailed record is
+`docs/iterations/2026-08-03-iteration-91-git-kernel-lifecycle.md`.
+
+Branch-aware Remote Query keys and true host-side cancellation remain
+protocol-level residuals; no local test reclassifies them as complete. This
+runtime candidate requires a new versioned release after the `v0.1.44` tag.
