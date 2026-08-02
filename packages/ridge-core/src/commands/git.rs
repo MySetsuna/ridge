@@ -3474,7 +3474,13 @@ mod scan_tests {
         // silently overwriting a non-fast-forward update.
         run_git_simple(
             td.path.to_string_lossy().as_ref(),
-            &["clone", bare.to_string_lossy().as_ref(), "other"],
+            &[
+                "clone",
+                "--branch",
+                "main",
+                bare.to_string_lossy().as_ref(),
+                "other",
+            ],
         )
         .expect("clone bare remote");
         let other = td.path.join("other");
