@@ -184,4 +184,25 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
     expect(conn.rpcSchedulingDiagnostics.queuedInputBytes).toBe(0);
     conn.disconnect();
   });
+
+  it('cancels pending pane RPCs before LAN pane destruction', async () => {
+    const { conn, ws } = connect();
+
+    conn.sendStdin(pane, 'stale-before-close');
+    expect(invokeFrames(ws, 'write_to_pty')).toHaveLength(1);
+
+    const closing = conn.closePane(pane);
+    const closeFrame = ws.sent.find((frame) => frame.type === 'close-pane');
+    expect(closeFrame).toBeDefined();
+
+    // Resolving the close command must not allow the retired write lane to
+    // retry after the PTY has gone away.
+    ws.receive({ type: 'close-pane-result', success: true });
+    await closing;
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(invokeFrames(ws, 'write_to_pty')).toHaveLength(1);
+    expect(conn.rpcSchedulingDiagnostics.queuedInputBytes).toBe(0);
+    conn.disconnect();
+  });
 });
