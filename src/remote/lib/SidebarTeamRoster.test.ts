@@ -27,6 +27,12 @@ describe('remote Agent drawer alignment contract', () => {
     expect(source).toContain('setInterval(() => void refresh(), ROSTER_POLL_INTERVAL_MS)');
   });
 
+  it('offers host-structured Agent resume and preserves recorded CWD', () => {
+    expect(source).toContain('ws.resumeAgentSession(');
+    expect(source).toContain('spec.cwd || reply.cwd');
+    expect(source).toContain('aria-label={`Resume ${reply.agent} session ${reply.sessionId}`}');
+  });
+
   it('deletes a group only after confirmation and persists the filtered roster', () => {
     expect(source).toContain('globalThis.confirm(`Delete Agent group "${group.name}"?`)');
     expect(source).toContain('persistGroups(groups.filter((g) => g.id !== group.id))');

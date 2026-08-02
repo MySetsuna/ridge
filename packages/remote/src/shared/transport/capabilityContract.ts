@@ -21,6 +21,7 @@ export const REMOTE_CAPABILITY_METHODS = {
     'get_orchestration_health',
     'read_agent_recent_replies',
     'set_teammate_groups',
+    'resume_agent_session',
   ],
 } as const;
 
