@@ -1,8 +1,9 @@
 //! Shell-neutral discovery and health probes for the kernel control plane.
 
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
@@ -34,6 +35,130 @@ pub struct KernelAgentRosterSnapshot {
     pub leader_id: Option<String>,
     #[serde(default)]
     pub roster: Vec<ridge_core::teammate::model::Teammate>,
+}
+
+/// Exact identity-set comparison between the kernel projection and a shell's
+/// visible projection. No names, ordering, or UI-only decorations participate.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DomainIdentityDiff {
+    pub intersection: Vec<String>,
+    pub only_kernel: Vec<String>,
+    pub only_shell: Vec<String>,
+}
+
+/// Explicit stable-key evidence that the two projections disagree on an
+/// entity identity. The comparator never infers this from list position.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DomainIdentityMismatch {
+    pub scope: String,
+    pub key: String,
+    pub kernel_id: String,
+    pub shell_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DomainConvergenceReport {
+    pub workspaces: DomainIdentityDiff,
+    pub agents: DomainIdentityDiff,
+    pub identity_mismatches: Vec<DomainIdentityMismatch>,
+}
+
+fn checked_identity_set(scope: &str, ids: &[String]) -> Result<BTreeSet<String>, String> {
+    let mut result = BTreeSet::new();
+    for id in ids {
+        if id.trim().is_empty() {
+            return Err(format!("{scope} projection contains an empty identity"));
+        }
+        if !result.insert(id.clone()) {
+            return Err(format!(
+                "{scope} projection contains duplicate identity {id}"
+            ));
+        }
+    }
+    Ok(result)
+}
+
+fn identity_diff(
+    kernel_scope: &str,
+    kernel_ids: &[String],
+    shell_ids: &[String],
+) -> Result<DomainIdentityDiff, String> {
+    let kernel = checked_identity_set(&format!("kernel {kernel_scope}"), kernel_ids)?;
+    let shell = checked_identity_set(&format!("shell {kernel_scope}"), shell_ids)?;
+    Ok(DomainIdentityDiff {
+        intersection: kernel.intersection(&shell).cloned().collect(),
+        only_kernel: kernel.difference(&shell).cloned().collect(),
+        only_shell: shell.difference(&kernel).cloned().collect(),
+    })
+}
+
+/// Build a fail-visible, read-only convergence report. `identity_mismatches`
+/// must come from an explicit stable key (for example pane ID); this function
+/// deliberately does not guess mismatches from list ordering or set gaps.
+pub fn build_domain_convergence_report(
+    kernel_workspaces: &[String],
+    shell_workspaces: &[String],
+    kernel_agents: &[String],
+    shell_agents: &[String],
+    identity_mismatches: &[DomainIdentityMismatch],
+) -> Result<DomainConvergenceReport, String> {
+    for mismatch in identity_mismatches {
+        if mismatch.scope.trim().is_empty()
+            || mismatch.key.trim().is_empty()
+            || mismatch.kernel_id.trim().is_empty()
+            || mismatch.shell_id.trim().is_empty()
+        {
+            return Err("identity mismatch contains an empty field".to_string());
+        }
+        if mismatch.kernel_id == mismatch.shell_id {
+            return Err(format!(
+                "identity mismatch {}:{} has equal IDs {}",
+                mismatch.scope, mismatch.key, mismatch.kernel_id
+            ));
+        }
+    }
+    let mut mismatches = identity_mismatches.to_vec();
+    mismatches.sort_by(|left, right| {
+        (&left.scope, &left.key, &left.kernel_id, &left.shell_id).cmp(&(
+            &right.scope,
+            &right.key,
+            &right.kernel_id,
+            &right.shell_id,
+        ))
+    });
+    Ok(DomainConvergenceReport {
+        workspaces: identity_diff("workspace", kernel_workspaces, shell_workspaces)?,
+        agents: identity_diff("agent", kernel_agents, shell_agents)?,
+        identity_mismatches: mismatches,
+    })
+}
+
+/// Fetch both kernel-owned projections, then compare them with the shell's
+/// visible IDs. Errors remain visible to the caller; no fallback to shell
+/// state or persistence is performed.
+pub fn read_domain_convergence(
+    endpoint: &KernelEndpoint,
+    shell_workspaces: &[String],
+    shell_agents: &[String],
+    identity_mismatches: &[DomainIdentityMismatch],
+) -> Result<DomainConvergenceReport, String> {
+    let kernel_workspaces = read_domain_workspaces(endpoint)?;
+    let kernel_agents = read_domain_agent_roster(endpoint)?;
+    let kernel_agent_ids = kernel_agents
+        .roster
+        .iter()
+        .map(|agent| agent.id.clone())
+        .collect::<Vec<_>>();
+    build_domain_convergence_report(
+        &kernel_workspaces.workspaces,
+        shell_workspaces,
+        &kernel_agent_ids,
+        shell_agents,
+        identity_mismatches,
+    )
 }
 
 fn decode_domain_snapshot<T: DeserializeOwned>(value: Value) -> Result<T, String> {
@@ -390,6 +515,69 @@ mod tests {
         }))
         .unwrap_err();
         assert_eq!(source, "kernel domain response has unexpected source");
+    }
+
+    #[test]
+    fn convergence_report_separates_exact_sets_and_sorts_mismatches() {
+        let report = build_domain_convergence_report(
+            &["workspace-b".into(), "workspace-a".into()],
+            &["workspace-a".into(), "workspace-c".into()],
+            &["agent-b".into(), "agent-a".into()],
+            &["agent-a".into(), "agent-c".into()],
+            &[DomainIdentityMismatch {
+                scope: "agent".into(),
+                key: "pane:7".into(),
+                kernel_id: "agent-b".into(),
+                shell_id: "agent-c".into(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            report.workspaces.intersection,
+            vec!["workspace-a".to_string()]
+        );
+        assert_eq!(
+            report.workspaces.only_kernel,
+            vec!["workspace-b".to_string()]
+        );
+        assert_eq!(
+            report.workspaces.only_shell,
+            vec!["workspace-c".to_string()]
+        );
+        assert_eq!(report.agents.intersection, vec!["agent-a".to_string()]);
+        assert_eq!(report.identity_mismatches[0].key, "pane:7");
+        assert_eq!(
+            serde_json::to_value(&report).unwrap()["workspaces"]["onlyKernel"],
+            json!(["workspace-b"])
+        );
+    }
+
+    #[test]
+    fn convergence_report_fails_visible_on_duplicate_or_invalid_identity() {
+        let duplicate = build_domain_convergence_report(
+            &["workspace-a".into(), "workspace-a".into()],
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap_err();
+        assert!(duplicate.contains("duplicate identity"));
+
+        let empty_mismatch = build_domain_convergence_report(
+            &[],
+            &[],
+            &[],
+            &[],
+            &[DomainIdentityMismatch {
+                scope: "agent".into(),
+                key: "pane:7".into(),
+                kernel_id: "".into(),
+                shell_id: "agent-c".into(),
+            }],
+        )
+        .unwrap_err();
+        assert_eq!(empty_mismatch, "identity mismatch contains an empty field");
     }
 
     #[test]
