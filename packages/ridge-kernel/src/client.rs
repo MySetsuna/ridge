@@ -484,6 +484,43 @@ mod tests {
         assert!(!health_probe(r#"{"ok":true,"role":"ridge-kernel"}"#));
     }
 
+    fn request_probe(status: &'static str, body: &'static str) -> Result<Value, String> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let result = request_json(
+            &KernelEndpoint {
+                pid: std::process::id(),
+                port,
+                token: "request-probe-token".into(),
+                started_at_unix: 1,
+            },
+            "GET",
+            "/v1/domain/agents",
+            None,
+        );
+        server.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn request_json_fails_closed_on_http_status_and_malformed_json() {
+        let unauthorized = request_probe("401 Unauthorized", r#"{"ok":false}"#).unwrap_err();
+        assert!(unauthorized.contains("HTTP response: HTTP/1.1 401 Unauthorized"));
+
+        let malformed = request_probe("200 OK", "not-json").unwrap_err();
+        assert!(malformed.starts_with("parse kernel JSON:"));
+    }
+
     #[test]
     fn domain_read_contract_decodes_identity_without_shell_decorations() {
         let workspaces: KernelWorkspaceSnapshot = decode_domain_snapshot(json!({
