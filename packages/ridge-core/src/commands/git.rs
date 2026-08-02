@@ -3420,6 +3420,15 @@ mod scan_tests {
             &["init", "--bare", "origin.git"],
         )
         .expect("create bare remote");
+        // Bare repositories do not universally reject non-fast-forward
+        // updates by default (notably on the Linux CI image). Make the
+        // rejection policy explicit so this guard exercises the same closed
+        // failure contract on every platform.
+        run_git_simple(
+            bare.to_string_lossy().as_ref(),
+            &["config", "receive.denyNonFastForwards", "true"],
+        )
+        .expect("configure non-fast-forward rejection");
         run_git_simple(repo.to_string_lossy().as_ref(), &["init"]).expect("create working repo");
         run_git_simple(
             repo.to_string_lossy().as_ref(),
