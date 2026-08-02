@@ -47,8 +47,8 @@ standalone/PWA layout: safe-area, notch, rotation, keyboard and theme.
 4. WebView2 long-run heap/resource snapshot and real no-Tauri Kernel → rdg →
    ridge-mcp process chain.
 5. Authenticated Remote Git push, public soak and physical-device evidence remain
-   external; latest Remote artifact is activated and desktop Release `v0.1.36`
-   is formal with matching assets.
+   external; latest Remote artifact `0.1.37+ge4e0f91` is activated and desktop
+   Release `v0.1.37` is formal with 12 matching assets.
 
 No Console suppression, third-party extension mutation, fake PWA install
 state, or physical-device claim is made.
