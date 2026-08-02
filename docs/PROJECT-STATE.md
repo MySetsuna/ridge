@@ -761,4 +761,8 @@ a border. Remote follows the same rule through `agentNeedsAttention`; focus,
 Agent selection, stdin, resize or pane claim acknowledges and clears the hint.
 Remote GitGraph transport/selected-commit metadata is local-verified in
 `0e608b9` and `c421c83`; these commits require Remote artifact republish, not a
-desktop version bump.
+desktop version bump (republish now satisfied below).
+
+Remote workflow `30737121593` subsequently built and atomically activated
+`0.1.35+g42b55dd`; `desktopIndex` and `mobileIndex` checks passed. The workflow
+emitted only existing Node 20/empty optional glob/submodule cleanup warnings.
