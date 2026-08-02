@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CloudWebrtcAdapter, PaneRef, RpcClient, RpcRequestOptions } from '@ridge/remote';
+import type { PaneNode } from '$lib/types';
 import { CloudHostTopologyLink } from './cloudHostTopologyLink';
 
 class FakeRpc {
@@ -7,6 +8,7 @@ class FakeRpc {
   cancelledScopes: string[] = [];
   rejectClose = false;
   rejectWorkspaceClose = false;
+  paneLayout: PaneNode | null = null;
   reconnectHooks = new Set<() => void>();
 
   request(method: string, params?: unknown, options?: RpcRequestOptions): Promise<unknown> {
@@ -19,6 +21,7 @@ class FakeRpc {
         ? Promise.reject(new Error('workspace close failed'))
         : Promise.resolve(null);
     }
+    if (method === 'get_pane_layout_for') return Promise.resolve(this.paneLayout);
     return new Promise(() => {});
   }
 
@@ -52,6 +55,26 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
 
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
+
+  it('preserves Agent state, id, and CWD in the cloud pane projection', async () => {
+    const rpc = new FakeRpc();
+    rpc.paneLayout = {
+      type: 'split',
+      id: 'root',
+      direction: 'horizontal',
+      ratios: [50, 50],
+      children: [
+        { type: 'leaf', id: 'agent-pane', title: 'Agent', cwd: 'C:\\work\\agent', agent_state: 'busy', agent_id: 'agent-1' },
+        { type: 'leaf', id: 'idle-pane', cwd: '/tmp', agent_state: 'idle' },
+      ],
+    };
+    const link = linkWith(rpc);
+
+    await expect(link.listWorkspacePanes('w1')).resolves.toEqual([
+      { id: 'agent-pane', title: 'Agent', cwd: 'C:\\work\\agent', isAgent: true, agentState: 'busy', agentId: 'agent-1' },
+      { id: 'idle-pane', title: undefined, cwd: '/tmp', isAgent: false, agentState: 'idle' },
+    ]);
+  });
 
   it('cancels one pane scope before close and blocks stale input/resize only for that pane', async () => {
     const rpc = new FakeRpc();
