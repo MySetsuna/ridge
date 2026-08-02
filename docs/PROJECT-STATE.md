@@ -915,3 +915,7 @@ FS, Git, and MCP domain calls through shared authenticated
 HTTP/JSON failures remain visible and Windows query paths are fully encoded.
 Focused CLI tests, lifecycle E2E, and `scripts/kernel-host-smoke.ps1` passed.
 Desktop AppState/PTY/window-claim/root-authority migration remains open.
+Remote/cloud refresh closure (2026-08-02): workflow `30746141772` published
+`ef70b3c` as artifact `0.1.37+gef70b3c` (233 files / 21.78 MiB), with cloud
+health HTTP 200. Desktop Release `v0.1.37` remains unchanged; subsequent
+`65700ea` is documentation-only.
