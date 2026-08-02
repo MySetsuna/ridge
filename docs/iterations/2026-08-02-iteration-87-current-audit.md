@@ -176,3 +176,10 @@ assumption: Linux clone inherited a bare remote `HEAD` that did not point at
 That tag and version bump were again removed immediately. `8fa19b6` pins the
 fixture update to `HEAD:refs/heads/main`; the real handler push remains the
 stale final operation and the remote-head invariant is explicit.
+
+The fourth retry `v0.1.37` / workflow `30742240439` showed the clone itself
+could still start off the bare repository's non-existent default branch, so
+the explicit setup push was rejected before the intended stale-push assertion.
+Its tag and version were removed immediately. `cbada57` clones with
+`--branch main`, then pins the setup push to `HEAD:refs/heads/main`; targeted
+real-repository and 36-test release-filter checks pass locally.
