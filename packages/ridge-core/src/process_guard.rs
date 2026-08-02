@@ -41,7 +41,7 @@ pub fn reset_process_guard_counters_for_test() {
 /// the timeout path can signal the whole tree instead of leaving shell/grandchild
 /// processes behind. `pre_exec` only invokes the async-signal-safe `setpgid`.
 #[cfg(unix)]
-fn configure_process_group(command: &mut Command) {
+pub(crate) fn configure_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
 
     // `pre_exec` runs between fork and exec; the closure must not allocate or
@@ -58,7 +58,7 @@ fn configure_process_group(command: &mut Command) {
 }
 
 #[cfg(not(unix))]
-fn configure_process_group(_command: &mut Command) {}
+pub(crate) fn configure_process_group(_command: &mut Command) {}
 
 /// Kill a process tree. Windows: `taskkill /T`; Unix: TERM then KILL to the
 /// dedicated process group (with a PID fallback for callers that predate the

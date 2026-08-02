@@ -503,6 +503,10 @@ fn run_command_with_timeout(
     // Match `Command::output` defaults: piped stdout/stderr.
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // Git's timeout/supersede path uses the shared tree killer. On Unix the
+    // child must first become its own process-group leader; otherwise a
+    // shell/helper descendant can survive the parent kill and keep CPU/locks.
+    crate::process_guard::configure_process_group(cmd);
     let child = cmd.spawn()?;
     let pid = child.id();
     note_active_child_enter();
@@ -3358,6 +3362,32 @@ mod supersede_tests {
         }
     }
 
+    #[cfg(unix)]
+    fn descendant_hang_script(tag: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "ridge-git-tree-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("hang-tree.sh");
+        let pid_file = dir.join("child.pid");
+        let pid_path = pid_file.to_string_lossy().replace('\'', "'\\''");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nsleep 30 &\necho $! > '{pid_path}'\nwait\n"),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        (script, pid_file)
+    }
+
     #[test]
     fn slot_registry_generation_semantics() {
         let g1 = git_slot_begin("t:reg");
@@ -3429,6 +3459,39 @@ mod supersede_tests {
             .get(&slot)
             .map(|s| s.live.is_empty())
             .unwrap_or(true));
+        let _ = std::fs::remove_dir_all(script.parent().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_timeout_kills_process_group_descendant() {
+        let _serial = git_child_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (script, pid_file) = descendant_hang_script("timeout");
+        let mut command = Command::new(&script);
+        let error = run_command_with_timeout(&mut command, Duration::from_millis(400))
+            .expect_err("hanging Git helper must time out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        let child_pid = (0..40)
+            .find_map(|_| {
+                std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|value| value.trim().parse::<i32>().ok())
+                    .or_else(|| {
+                        std::thread::sleep(Duration::from_millis(25));
+                        None
+                    })
+            })
+            .expect("helper should record descendant pid");
+        for _ in 0..40 {
+            let alive = unsafe { libc::kill(child_pid, 0) == 0 };
+            if !alive {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_ne!(unsafe { libc::kill(child_pid, 0) }, 0, "descendant survived Git timeout");
         let _ = std::fs::remove_dir_all(script.parent().unwrap());
     }
 
