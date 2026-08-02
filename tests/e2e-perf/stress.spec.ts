@@ -99,6 +99,10 @@ describe(`perf stress (${BACKEND})`, () => {
       const read = () => {
         const heap = perf.memory;
         const finite = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+        const heapValue = (value: unknown) => {
+          const n = finite(value);
+          return n !== null && n > 0 ? n : null;
+        };
         let workerPending: number | null = null;
         try {
           const bridge = (window as Window & {
@@ -110,9 +114,9 @@ describe(`perf stress (${BACKEND})`, () => {
         }
         samples.push({
           atMs: Math.round(performance.now()),
-          usedHeapBytes: finite(heap?.usedJSHeapSize),
-          totalHeapBytes: finite(heap?.totalJSHeapSize),
-          heapLimitBytes: finite(heap?.jsHeapSizeLimit),
+          usedHeapBytes: heapValue(heap?.usedJSHeapSize),
+          totalHeapBytes: heapValue(heap?.totalJSHeapSize),
+          heapLimitBytes: heapValue(heap?.jsHeapSizeLimit),
           resourceEntries: performance.getEntriesByType('resource').length,
           workerPending,
         });
