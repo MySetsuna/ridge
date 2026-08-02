@@ -64,6 +64,7 @@
   import type { HitlAuditItem } from '../../../packages/remote/src/shared/teammate/hitlAuditRemote';
   import {
     agentCardStatus,
+    agentPaneStatus,
     agentStatusLabel,
     aggregateAgentCardStatus,
     buildAgentHistoryGroups,
@@ -172,13 +173,7 @@
         : profile.status === 'Disappeared'
           ? 'stopped'
           : null;
-      const paneStatus = pendingFor(profile).length > 0
-        ? 'waiting'
-        : profile.status === 'Disappeared' || profile.status === 'Suspended'
-          ? 'stopped'
-          : profile.status === 'Working' || profile.activity === 'working'
-            ? 'working'
-            : 'idle';
+      const paneStatus = agentPaneStatus(profile, pendingFor(profile).length > 0);
       const previous = observedAgentSignals.get(key);
       // A transient stays visible until the target pane actually receives focus.
       // Returning to a neutral backend state only arms the next transition; it

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   agentCardStatus,
+  agentPaneStatus,
   aggregateAgentCardStatus,
   buildAgentHistoryGroups,
   normalizeAgentIdentity,
@@ -27,6 +28,8 @@ describe('agent commune view model', () => {
     expect(agentCardStatus({ status: 'Idle', activity: 'idle' }, false)).toBe('idle');
     expect(agentCardStatus({ status: 'Working', activity: 'working' }, false)).toBe('working');
     expect(agentCardStatus({ status: 'Idle', activity: 'idle' }, true)).toBe('waiting');
+    expect(agentPaneStatus({ status: 'Suspended', activity: 'idle' }, false)).toBe('stopped');
+    expect(agentPaneStatus({ status: 'Idle', activity: 'idle' }, false)).toBe('idle');
     expect(aggregateAgentCardStatus(['completed', 'working', 'waiting'])).toBe('waiting');
   });
 });
