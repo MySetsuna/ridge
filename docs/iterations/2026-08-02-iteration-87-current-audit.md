@@ -72,8 +72,10 @@ state, or physical-device claim is made.
   WebView2/mobile heap soak and allocator RSS return remain external gates.
 - `4c7fb4f` completes the transient Agent attention contract on mobile: the
   hidden terminal input now acknowledges the pane on real focus, in addition to
-  Agent selection, stdin, claim and Resize. Normal working/idle panes remain
-  border-free; `pnpm check` stays 0 errors/0 warnings.
+  Agent selection, stdin, claim and Resize. `1c9e8b8` extends the same
+  acknowledgement to desktop programmatic active-pane takeover, so keyboard,
+  restore and Agent-card focus cannot leave a stale outer ring. Normal
+  working/idle panes remain border-free; `pnpm check` stays 0 errors/0 warnings.
 - `b20ea58` and `144a467` fence LAN probe ownership with per-process status files,
   spawned PID/port checks, teardown cleanup and contract tests. The latest
   `pnpm e2e:rdg-lan` passed both desktop and mobile dashboard paths with
