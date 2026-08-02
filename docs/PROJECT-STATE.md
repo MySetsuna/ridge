@@ -16,6 +16,16 @@ ambient `(slot, generation)`。新增 128 次重复取消与嵌套 generation �
 归档见 `docs/iterations/2026-08-03-iteration-96-git-slot-lifecycle.md`。
 该切片不替代手机、公网、WebView2、双窗口及完整 Kernel 迁移外部闸门。
 
+## Iteration 97 update (2026-08-03)
+
+继续审计外部进程生命周期：共享 process guard 虽已具 Unix process-group
+TERM/KILL，Git 自有 spawn 出口此前未先建立独立 process group，shell/helper
+后代可能在超时或 latest-win 取消后残留。现由
+`packages/ridge-core/src/commands/git.rs` 在每次 guarded Git spawn 前接入同一
+护栏；Windows 仍走 `taskkill /T`。新增 Unix Git 路径 descendant timeout 守卫。
+`cargo test -p ridge-core commands::git --lib` 39/39，`process_guard` 3/3。
+归档见 `docs/iterations/2026-08-03-iteration-97-git-process-group.md`。
+
 ## Iteration 85 update (2026-08-02)
 
 The mobile Remote worker cold-start/lifecycle slice is locally closed. The
