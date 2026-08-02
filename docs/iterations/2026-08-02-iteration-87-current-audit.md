@@ -214,3 +214,7 @@ Performance and Kernel convergence continuation (local evidence):
   explicit only-Kernel/only-shell/mismatch data. Transport/decode/empty/
   duplicate failures remain visible; no authority switch, window claim or
   persistence write is hidden behind it.
+Remote refresh closure: workflow `30744331190` completed successfully from
+`08919b675c62804d866b17a57110b2c1904baa56`; the cloud health endpoint remains
+HTTP 200. This refresh advances the Remote artifact to the latest main hash
+without changing the already verified desktop Release version `v0.1.37`.
