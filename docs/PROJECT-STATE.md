@@ -24,6 +24,9 @@ therefore applies only the offset delta; the new captured/current offset guard
 is covered by `paneGeometry.test.ts` (`11` passed). Full Vitest is now `120`
 files / `1381` passed / `1` skipped; `pnpm check` remains `0` errors / `0`
 warnings, and the LAN desktop/mobile matrix remains green after the change.
+The keyboard probe also dispatches a real mobile `TouchEvent` drag after
+recovery; `selectionTouch.ok=true` and the copy affordance appeared for the
+target rows. Physical-device attribution remains separate.
 
 Iteration-85 evidence is archived in
 `docs/iterations/CONTRACT-iteration-85.md`. Release `v0.1.33` is formal with 12
@@ -223,7 +226,7 @@ Svelte 页面/组件 → Tauri invoke/事件 → src-tauri commands / ridge-core
 - `packages/ridge-core` 承接 workspace/pane/Git 命令与异步 dispatch；Tauri 保留宿主状态、平台资源与事件桥。
 - `packages/ridge-cli/src/main.rs`：`tui` / `login` / `remote`（公网 host daemon）/ `connect`（LAN controller）/ `tmux`。
 - Teammate/MCP：tmux shim + Ridge MCP server → teammate server / ridge-tmux → 工作区变更 → `AgentCenterPanel.svelte`。iteration 61 后 Agent Center 跨全部工作区聚合 roster，并显示 Claude/Codex JSONL 最近助手回复与 Agent 所创 native 无头会话；OSC 标题优先、前台进程兜底自动登记/释放 pane Agent 状态。桌面有 `resolve_hitl_request`；该能力刻意不在 Remote allowlist。
-- Agent 当前状态：`rosterChanged` 已进入前端 DTO，并触发 roster/layout 刷新；Agent Tab 与 pane header 已共用运行态映射。`AgentCenterPanel.svelte` 已具备成员/编组/历史三 tab，控制、HITL、文档入口已移至内容底部；历史目前仅聚合后台终端与最近回复，按类型分组、折叠及结构化 resume 仍缺。
+- Agent 当前状态：`rosterChanged` 已进入前端 DTO，并触发 roster/layout 刷新；Agent Tab 与 pane header 已共用运行态映射。`AgentCenterPanel.svelte` 已具备成员/编组/历史三 tab，控制、HITL、文档入口已移至内容底部；历史按 Agent identity 跨 CWD 分组、按会话折叠，并以结构化 `executable+argv+cwd+sessionId` 恢复；真 CLI 接收仍属用户轨证据。
 
 ### 3.2 远控三入口
 
