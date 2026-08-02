@@ -941,10 +941,19 @@ pub(crate) fn remote_resume_agent_pane(
     session_id: String,
     cwd: String,
 ) -> Result<Uuid, AppError> {
-    let cwd = std::path::PathBuf::from(cwd.trim());
-    if !cwd.is_dir() {
-        return Err(AppError::PtyError("Agent session CWD is not a directory".into()));
+    let requested_cwd = std::path::PathBuf::from(cwd.trim());
+    let recorded_cwd = crate::commands::project::recorded_agent_session_cwd(&agent, &session_id)
+        .map_err(AppError::PtyError)?;
+    let requested_canonical = std::fs::canonicalize(&requested_cwd)
+        .map_err(|_| AppError::PtyError("Agent session CWD is not a directory".into()))?;
+    let recorded_canonical = std::fs::canonicalize(&recorded_cwd)
+        .map_err(|_| AppError::PtyError("Agent session CWD is not a directory".into()))?;
+    if !same_canonical_path(&requested_canonical, &recorded_canonical) {
+        return Err(AppError::PtyError(
+            "Agent session CWD does not match host history".into(),
+        ));
     }
+    let cwd = recorded_canonical;
     let plan = crate::commands::project::plan_agent_resume(
         agent,
         session_id,
@@ -964,6 +973,19 @@ pub(crate) fn remote_resume_agent_pane(
             env: HashMap::new(),
         }),
     )
+}
+
+fn same_canonical_path(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let left = left.to_string_lossy();
+    let right = right.to_string_lossy();
+    #[cfg(windows)]
+    {
+        left.eq_ignore_ascii_case(&right)
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
 }
 
 /// §6 — close a terminal in a SPECIFIC workspace (remote counterpart of
@@ -1220,5 +1242,17 @@ mod workspace_decoupling_tests {
         let err = release_teammate_agent_in(&state, Uuid::new_v4(), Uuid::new_v4())
             .expect_err("unknown workspace must be rejected");
         assert!(err.contains("工作区不存在"), "unexpected error: {err}");
+    }
+}
+
+#[cfg(test)]
+mod remote_resume_path_tests {
+    use super::same_canonical_path;
+    use std::path::Path;
+
+    #[test]
+    fn canonical_path_match_is_exact() {
+        assert!(same_canonical_path(Path::new("/repo"), Path::new("/repo")));
+        assert!(!same_canonical_path(Path::new("/repo"), Path::new("/repo-other")));
     }
 }
