@@ -56,6 +56,10 @@ could also inherit stale pane IDs in the manager's attached set.
 - `cargo test --manifest-path src-tauri/Cargo.toml pty_delta_channel_tests`:
   `17` passed, including simultaneous workspace acquisition and per-window
   selection isolation.
+- Agent history/resume adapter: `cargo test --manifest-path
+  src-tauri/Cargo.toml --lib commands::project::tests` — `23` passed,
+  including a structured Codex resume assertion that preserves session id,
+  argv, and recorded CWD.
 - Isolated LAN Remote matrix (`pnpm e2e:rdg-lan -- --skip-build`): desktop and
   mobile both `PASS` (`canvas=true`, mobile tree rendered, WebSocket connected);
   evidence is `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
