@@ -8,6 +8,7 @@
     TeammateRosterMember,
     TeammateTopology,
   } from '@ridge/remote';
+  import { normalizeTeamRosterWorkspaceId } from './teamRosterScope';
 
   let { ws, workspaceId, onSelectPane }: {
     ws: RemoteLink;
@@ -103,7 +104,7 @@
   async function refresh() {
     try {
       const [t, p, h] = await Promise.all([
-        ws.getTeammateTopology(),
+        ws.getTeammateTopology(normalizeTeamRosterWorkspaceId(workspaceId)),
         ws.listHitlPending(),
         ws.getOrchestrationHealth().catch(() => ({ suspendedAgents: 0, pendingHitl: 0 })),
       ]);
