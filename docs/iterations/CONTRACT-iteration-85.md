@@ -84,6 +84,22 @@ could also inherit stale pane IDs in the manager's attached set.
   `PASS` (`canvas=true`, mobile tree rendered, WebSocket connected); evidence
   is `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
 
+## Follow-up hardening
+
+- `9020bdd` fixes the mobile prune key mismatch: remote bookkeeping keeps
+  `{workspaceId, paneId}` refs, then converts to the bare `paneId` expected by
+  `TerminalManager.detach`. Duplicate refs are collapsed; the guard is covered
+  by `paneLifecycle.test.ts`.
+- `778bb06` moves synchronous `ridge_core::dispatch` Git reads off the Remote
+  WebSocket executor via `spawn_blocking`. The method allowlist covers SCM
+  status, branches, diff, blame, log, repository discovery, and paginated
+  commits; JSON-RPC error semantics are preserved. `jsonrpc_tests` has 10
+  passing tests, including a non-Git status path.
+- `fc2c597` keeps history rows for unknown/custom Agents (without inventing a
+  resume command) and applies the Claude/Codex discovery cap independently
+  before merging. `commands::project::tests` has 24 passing tests, including
+  cross-CWD history and unknown-Agent retention.
+
 ## Non-claims and external gates
 
 This contract does not claim physical-phone clean-profile attribution,
@@ -99,9 +115,10 @@ Deterministic code and local/CDP evidence are closed. The focused worker code
 commit is `3a6a9ce`; structured resume coverage is `0716a05`; shared Commune /
 Pane status projection is `1c2ede3`; the version-contract repair is `c07f931`
 (same `0.1.33` release, no version increment after the first failed gate).
-Mobile touch-selection geometry is `0264db5`. The latter three commits are
-test/projection/Remote-only follow-ups; they do not change the desktop release
-binary protocol or require a version increment.
+Mobile touch-selection geometry is `0264db5`; follow-up hardening is
+`9020bdd`, `778bb06`, and `fc2c597`. These are test/projection/Remote-only
+follow-ups; they do not change the desktop release binary protocol or require
+a version increment.
 
 - Release workflow `30726725069` passed its test gate and all four platform
   jobs. Formal `v0.1.33` is published with 12 verified assets.

@@ -28,6 +28,14 @@ The keyboard probe also dispatches a real mobile `TouchEvent` drag after
 recovery; `selectionTouch.ok=true` and the copy affordance appeared for the
 target rows. Physical-device attribution remains separate.
 
+Follow-up hardening is pushed: `9020bdd` converts workspace-qualified mobile
+pane refs to bare `paneId` before `TerminalManager.detach`, preventing closed
+Pane kernels/workers from remaining parked; `778bb06` offloads synchronous
+Remote JSON-RPC Git reads from the WebSocket executor; `fc2c597` preserves
+unknown-Agent history and keeps Claude/Codex discovery caps independent. The
+focused guards pass (`paneLifecycle`: 3, `jsonrpc_tests`: 10,
+`commands::project::tests`: 24).
+
 Iteration-85 evidence is archived in
 `docs/iterations/CONTRACT-iteration-85.md`. Release `v0.1.33` is formal with 12
 assets (`30726725069`), Remote artifact `0.1.33+g0264db5` is active
