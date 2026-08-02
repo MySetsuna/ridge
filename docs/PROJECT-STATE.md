@@ -945,3 +945,8 @@ remain retryable. A second subscription check after gate acquisition prevents
 stale Resize delivery after Pane detach. Tauri outbound tests pass 10/10.
 This is a runtime change, so Remote must be rebuilt from `de001bb`; desktop
 version stays `0.1.37` until a versioned Release is actually green.
+
+Remote publish closure: workflow `30747286348` built from `25d525b` and
+activated `0.1.37+g25d525b` after successful build/upload/index checks (233
+files, 21.78 MiB). Cloud health is HTTP 200. Desktop Release `v0.1.37` is
+formal with 12 assets; no version bump was made for this runtime fix.

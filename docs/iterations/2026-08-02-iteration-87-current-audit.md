@@ -331,3 +331,11 @@ coalescing, failed-send recovery, and reconnect first-resize delivery. Global
 kernel_ctl.rs` formatting delta; the touched outbound module has no diff-check
 errors. Desktop Release remains `v0.1.37`; this runtime fix requires a fresh
 Remote artifact publish after the commit.
+
+Remote publish closure: workflow `30747286348` built from `25d525b`, passed
+version/build/upload/activation checks, and activated `0.1.37+g25d525b`
+(233 files / 21.78 MiB). The artifact contains the Foreign Host Resize guard
+and the archived iteration records. Cloud health remains HTTP 200; formal
+desktop Release `v0.1.37` remains non-draft/non-prerelease with 12 assets.
+Warnings are limited to existing optional PWA glob, Node deprecation, and
+checkout-submodule cleanup notices after successful activation.
