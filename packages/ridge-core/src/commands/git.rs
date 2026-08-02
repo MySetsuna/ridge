@@ -280,6 +280,46 @@ where
         .await
 }
 
+/// Return the active async request slot, if the caller entered one with
+/// [`with_git_request_slot`]. Synchronous core dispatch uses this exact
+/// generation instead of opening a newer one after it crosses `spawn_blocking`.
+pub fn current_git_request_slot() -> Option<(String, u64)> {
+    GIT_REQUEST_SLOT.try_with(Clone::clone).ok().flatten()
+}
+
+/// Run synchronous core dispatch under the same per-request slot as the async
+/// helpers. `ridge_core::dispatch` intentionally stays synchronous, so its
+/// `spawn_blocking` caller must install the thread-local slot explicitly for
+/// child-PID registration and process-tree cancellation to remain effective.
+pub fn with_git_sync_request_slot<F, T>(slot: String, f: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    let generation = git_slot_begin(&slot);
+    let _lease = GitSlotLease::new(slot.clone(), generation);
+    GIT_SLOT_CTX.with(|ctx| {
+        let previous = ctx.replace(Some((slot, generation)));
+        let result = f();
+        ctx.replace(previous);
+        result
+    })
+}
+
+/// Install an already-owned generation on a blocking thread. This is the
+/// bridge for synchronous `ridge_core::dispatch`; cancellation of the owning
+/// async request therefore cannot race a second `git_slot_begin` call.
+pub fn with_git_sync_request_generation<F, T>(slot: String, generation: u64, f: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    GIT_SLOT_CTX.with(|ctx| {
+        let previous = ctx.replace(Some((slot, generation)));
+        let result = f();
+        ctx.replace(previous);
+        result
+    })
+}
+
 /// 测试串行锁：`GIT_ACTIVE_CHILDREN` 是全局计数，任何「真持挂起子进程」的测试
 /// 并行会互相污染彼此的 before/after 断言（CI 实证：guard 超时测撞上 supersede
 /// 杀树测 → after>before）。所有 spawn 真子进程的测试先拿这把锁。
@@ -3461,6 +3501,49 @@ mod supersede_tests {
         cancel_git_slot(&slot);
         let result = task.await.unwrap().expect("Git admission");
         let error = result.expect_err("cancelled ambient child must fail");
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(t0.elapsed() < crate::process_guard::test_time_budget(Duration::from_secs(15)));
+        assert!(!git_slots().lock().unwrap().contains_key(&slot));
+        let _ = std::fs::remove_dir_all(script.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn sync_request_slot_kills_core_git_child_on_cancel() {
+        let _serial = git_child_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let script = hang_script("sync-slot");
+        let slot = format!("t:sync-slot:{}", uuid::Uuid::new_v4());
+        let task_slot = slot.clone();
+        let task_script = script.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            with_git_sync_request_slot(task_slot, || {
+                let mut command = Command::new(&task_script);
+                run_command_with_timeout(&mut command, Duration::from_secs(30))
+            })
+        });
+
+        let t0 = Instant::now();
+        loop {
+            let registered = git_slots()
+                .lock()
+                .unwrap()
+                .get(&slot)
+                .map(|s| !s.live.is_empty())
+                .unwrap_or(false);
+            if registered {
+                break;
+            }
+            assert!(
+                t0.elapsed() < crate::process_guard::test_time_budget(Duration::from_secs(10)),
+                "sync core child never registered"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        cancel_git_slot(&slot);
+        let result = task.await.unwrap();
+        let error = result.expect_err("cancelled sync child must fail");
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert!(t0.elapsed() < crate::process_guard::test_time_budget(Duration::from_secs(15)));
         assert!(!git_slots().lock().unwrap().contains_key(&slot));

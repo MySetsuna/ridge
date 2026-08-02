@@ -128,6 +128,8 @@ interface PendingRequest {
   reject: (error: Error) => void;
   scope?: string;
   method?: string;
+  /** Best-effort host cancellation for a legacy invoke request. */
+  cancel?: () => void;
 }
 
 /** host `detect_available_shells` 的一条（与桌面 `ShellInfo` 同形）。 */
@@ -1036,6 +1038,7 @@ export class RemoteConnection implements RemoteLink {
       const pending = this._removePending(key);
       if (!pending) continue;
       cancelled += 1;
+      pending.cancel?.();
       pending.reject(new RpcCancelledError(pending.method ?? 'pane-rpc'));
     }
     return cancelled;
@@ -1047,7 +1050,10 @@ export class RemoteConnection implements RemoteLink {
     const keys = [...this._pendingByScope.values()].flatMap((set) => [...set]);
     for (const key of keys) {
       const pending = this._removePending(key);
-      if (pending) pending.reject(errorFor(pending.method ?? 'pane-rpc'));
+      if (pending) {
+        pending.cancel?.();
+        pending.reject(errorFor(pending.method ?? 'pane-rpc'));
+      }
     }
   }
 
@@ -1093,9 +1099,21 @@ export class RemoteConnection implements RemoteLink {
   ): Promise<unknown> {
     const key = pendingKey(responseType, request._reqId);
     return new Promise((resolve, reject) => {
+      let cancelSent = false;
+      const cancelHostRequest = () => {
+        if (cancelSent || request.type !== 'invoke-request') return;
+        const reqId = request._reqId;
+        if (typeof reqId !== 'number' && typeof reqId !== 'string') return;
+        cancelSent = true;
+        // Legacy LAN hosts cannot consume native JSON-RPC cancellation while
+        // translating invoke frames. Keep this wire-level cancellation additive
+        // so old hosts ignore it and new hosts abort the owned task.
+        this.send({ type: 'invoke-cancel', _reqId: reqId });
+      };
       const timer = setTimeout(() => {
         const pending = this._removePending(key);
         if (!pending) return;
+        pending.cancel?.();
         pending.reject(
           pending.method
             ? new RpcTimeoutError(pending.method, timeoutMs)
@@ -1107,6 +1125,7 @@ export class RemoteConnection implements RemoteLink {
         reject: (e) => { clearTimeout(timer); reject(e); },
         scope: options.scope,
         method: options.method,
+        cancel: cancelHostRequest,
       };
       this._pendingRequests.set(key, pending);
       if (options.scope) {
@@ -1119,7 +1138,10 @@ export class RemoteConnection implements RemoteLink {
       }
       const onAbort = () => {
         const current = this._removePending(key);
-        if (current) current.reject(new RpcCancelledError(options.method ?? responseType));
+        if (current) {
+          current.cancel?.();
+          current.reject(new RpcCancelledError(options.method ?? responseType));
+        }
       };
       if (options.signal) options.signal.addEventListener('abort', onAbort, { once: true });
       const resolveWithCleanup = pending.resolve;

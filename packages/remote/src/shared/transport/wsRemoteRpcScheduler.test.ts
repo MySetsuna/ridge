@@ -152,8 +152,10 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
 
     conn.sendStdin(pane, 'retry-me');
     expect(invokeFrames(ws, 'write_to_pty')).toHaveLength(1);
+    const first = invokeFrames(ws, 'write_to_pty')[0];
 
     await vi.advanceTimersByTimeAsync(5_000);
+    expect(ws.sent).toContainEqual({ type: 'invoke-cancel', _reqId: first._reqId });
     expect(conn.rpcSchedulingDiagnostics).toMatchObject({
       inputFailures: 1,
       timeoutFailures: 1,

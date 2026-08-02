@@ -31,6 +31,11 @@ type ScheduledPtyEvent = (bool, crate::types::RemotePtyEvent);
 
 const MAX_IN_FLIGHT_DATA_REQUESTS: usize = 32;
 const MAX_PRE_CANCELLED_DATA_REQUESTS: usize = 1024;
+/// Invoke requests (the browser desktop bridge and the legacy mobile
+/// `invoke-request` path) run independently from the reader loop so a slow
+/// command cannot block `$/cancel`, PTY input, or health checks.
+const MAX_IN_FLIGHT_INVOKE_REQUESTS: usize = 32;
+const MAX_PRE_CANCELLED_INVOKE_REQUESTS: usize = 1024;
 
 struct PendingDataRequest {
     handle: tokio::task::JoinHandle<()>,
@@ -44,6 +49,123 @@ struct PendingDataRequest {
 struct DataRequestRegistry {
     entries: std::collections::HashMap<u64, PendingDataRequest>,
     pre_cancelled: std::collections::HashSet<u64>,
+}
+
+/// Wire identity for an invoke request. Native JSON-RPC uses a serialized id
+/// (normally a number); the legacy envelope has its own numeric namespace so
+/// a late cancellation cannot accidentally cancel a request from the other
+/// leg.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum InvokeRequestKey {
+    Legacy(u64),
+    JsonRpc(String),
+}
+
+impl InvokeRequestKey {
+    fn jsonrpc(id: &serde_json::Value) -> Self {
+        Self::JsonRpc(serde_json::to_string(id).unwrap_or_else(|_| "null".to_string()))
+    }
+
+    fn slot_name(&self) -> String {
+        match self {
+            Self::Legacy(id) => format!("legacy:{id}"),
+            Self::JsonRpc(id) => format!("jsonrpc:{id}"),
+        }
+    }
+}
+
+enum InvokeResult {
+    Legacy {
+        key: InvokeRequestKey,
+        reply: serde_json::Value,
+    },
+    JsonRpc {
+        key: InvokeRequestKey,
+        reply: serde_json::Value,
+    },
+}
+
+struct PendingInvokeRequest {
+    handle: tokio::task::JoinHandle<()>,
+    git_slot: String,
+}
+
+/// Per-WebSocket invoke lifecycle. The request reader remains responsive while
+/// a command runs; cancellation removes ownership before aborting the task, so
+/// a result racing with cancellation is dropped exactly once.
+struct InvokeRequestRegistry {
+    entries: std::collections::HashMap<InvokeRequestKey, PendingInvokeRequest>,
+    pre_cancelled: std::collections::HashSet<InvokeRequestKey>,
+}
+
+impl InvokeRequestRegistry {
+    fn new() -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            pre_cancelled: std::collections::HashSet::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn contains(&self, key: &InvokeRequestKey) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    fn insert(&mut self, key: InvokeRequestKey, entry: PendingInvokeRequest) -> bool {
+        if self.entries.contains_key(&key) {
+            return false;
+        }
+        self.entries.insert(key, entry);
+        true
+    }
+
+    fn take_pre_cancelled(&mut self, key: &InvokeRequestKey) -> bool {
+        self.pre_cancelled.remove(key)
+    }
+
+    /// Abort an in-flight task, or remember a cancel that raced ahead of its
+    /// request frame. Return the Git slot so the process guard can kill any
+    /// already-spawned child tree before the task unwinds.
+    fn cancel(&mut self, key: &InvokeRequestKey) -> Option<String> {
+        self.cancel_keys(std::slice::from_ref(key))
+    }
+
+    /// Cancel across wire aliases without recording multiple tombstones. A
+    /// browser request may have been translated to legacy `invoke-request`
+    /// before the JSON-RPC handshake, while its `$/cancel` still carries the
+    /// native JSON-RPC notification.
+    fn cancel_keys(&mut self, keys: &[InvokeRequestKey]) -> Option<String> {
+        for key in keys {
+            if let Some(entry) = self.entries.remove(key) {
+                entry.handle.abort();
+                return Some(entry.git_slot);
+            }
+        }
+        for key in keys {
+            if self.pre_cancelled.len() >= MAX_PRE_CANCELLED_INVOKE_REQUESTS {
+                break;
+            }
+            self.pre_cancelled.insert(key.clone());
+        }
+        None
+    }
+
+    fn complete(&mut self, key: &InvokeRequestKey) -> bool {
+        self.entries.remove(key).is_some()
+    }
+
+    fn cancel_all(&mut self) -> Vec<String> {
+        let mut slots = Vec::with_capacity(self.entries.len());
+        for (_, entry) in self.entries.drain() {
+            entry.handle.abort();
+            slots.push(entry.git_slot);
+        }
+        self.pre_cancelled.clear();
+        slots
+    }
 }
 
 impl DataRequestRegistry {
@@ -644,6 +766,14 @@ async fn handle_ws(
     let (data_result_tx, mut data_result_rx) =
         mpsc::channel::<(u64, serde_json::Value)>(MAX_IN_FLIGHT_DATA_REQUESTS);
 
+    // Invoke requests (legacy and native JSON-RPC) use the same bounded,
+    // cancellable task ownership. Results return through this channel so the
+    // reader loop can continue receiving cancellation and control frames while
+    // a command is running.
+    let mut invoke_requests = InvokeRequestRegistry::new();
+    let (invoke_result_tx, mut invoke_result_rx) =
+        mpsc::channel::<InvokeResult>(MAX_IN_FLIGHT_INVOKE_REQUESTS);
+
     // current_pane owns Files/Git/Search cwd and active QoS only. Every visited
     // pane remains in subscribed_panes across ordinary pane/workspace switches.
     let mut current_pane: Option<(Uuid, Uuid)> = None;
@@ -725,9 +855,6 @@ async fn handle_ws(
     // cannot be interrupted simply run to completion — the guard guarantees we
     // never crash and never send a stale result for a cancelled id. Bounded so a
     // hostile client cannot grow it without limit.
-    let mut cancelled_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    const MAX_CANCELLED_IDS: usize = 1024;
-
     // Periodic health check (1s): tears down an ALREADY-OPEN connection when
     // remote control is toggled off, this client is force-disconnected
     // (kill_flag), its device/IP gets blacklisted, or — for token sessions — the
@@ -791,18 +918,26 @@ async fn handle_ws(
                                 }
                                 // ── $/cancel: register the target id (notification, no id) ──
                                 (Some("$/cancel"), _) => {
-                                    if let Some(target) = params.get("id").and_then(|i| i.as_u64()) {
-                                        if cancelled_ids.len() < MAX_CANCELLED_IDS {
-                                            cancelled_ids.insert(target);
+                                    if let Some(target) = params.get("id") {
+                                        let key = InvokeRequestKey::jsonrpc(target);
+                                        let legacy_key = target
+                                            .as_u64()
+                                            .map(InvokeRequestKey::Legacy);
+                                        let keys = legacy_key
+                                            .as_ref()
+                                            .map(|legacy| vec![key.clone(), legacy.clone()])
+                                            .unwrap_or_else(|| vec![key.clone()]);
+                                        if let Some(slot) = invoke_requests.cancel_keys(&keys) {
+                                            ridge_core::commands::git::cancel_git_slot(&slot);
                                         }
-                                        tracing::debug!(target: "ridge::remote", target, "received $/cancel");
+                                        tracing::debug!(target: "ridge::remote", id = %target, "received $/cancel");
                                     }
                                     continue;
                                 }
                                 // ── JSON-RPC request (has id) → dispatch + JSON-RPC reply ──
                                 (Some(m), true) => {
                                     let id = parsed.get("id").cloned().unwrap_or(serde_json::Value::Null);
-                                    let id_u64 = id.as_u64();
+                                    let key = InvokeRequestKey::jsonrpc(&id);
 
                                     // §rate-limit: shared token bucket with the legacy leg.
                                     if dr_window_start.elapsed() >= DR_WINDOW {
@@ -822,28 +957,63 @@ async fn handle_ws(
                                     }
 
                                     // §cancel: a request whose id was already cancelled never runs.
-                                    if let Some(uid) = id_u64 {
-                                        if cancelled_ids.remove(&uid) {
-                                            let err = serde_json::json!({
-                                                "code": JSON_RPC_INTERNAL_ERROR,
-                                                "message": "request cancelled",
-                                                "data": { "kind": "cancelled" },
-                                            });
-                                            let _ = ws_tx.send(Message::Text(jsonrpc_error(&id, err).to_string())).await;
-                                            continue;
-                                        }
+                                    if invoke_requests.take_pre_cancelled(&key) {
+                                        let err = serde_json::json!({
+                                            "code": JSON_RPC_INTERNAL_ERROR,
+                                            "message": "request cancelled",
+                                            "data": { "kind": "cancelled" },
+                                        });
+                                        let _ = ws_tx.send(Message::Text(jsonrpc_error(&id, err).to_string())).await;
+                                        continue;
                                     }
 
-                                    let reply = match dispatch_invoke_jsonrpc(m, &params, &state).await {
-                                        Ok(result) => jsonrpc_result(&id, result),
-                                        Err(error) => jsonrpc_error(&id, error),
-                                    };
+                                    if invoke_requests.len() >= MAX_IN_FLIGHT_INVOKE_REQUESTS
+                                        || invoke_requests.contains(&key)
+                                    {
+                                        let err = serde_json::json!({
+                                            "code": JSON_RPC_INTERNAL_ERROR,
+                                            "message": "too many invoke requests",
+                                            "data": { "kind": "queue_full" },
+                                        });
+                                        let _ = ws_tx.send(Message::Text(jsonrpc_error(&id, err).to_string())).await;
+                                        continue;
+                                    }
+
+                                    let result_tx = invoke_result_tx.clone();
+                                    let task_method = m.to_string();
+                                    let task_params = params.clone();
+                                    let task_state = state.clone();
+                                    let task_id = id.clone();
+                                    let task_key = key.clone();
+                                    let git_slot = format!("remote:{client_id}:invoke:{}", key.slot_name());
+                                    let task_slot = git_slot.clone();
+                                    let handle = tokio::spawn(async move {
+                                        let reply = ridge_core::commands::git::with_git_request_slot(
+                                            task_slot,
+                                            dispatch_invoke_jsonrpc(
+                                                &task_method,
+                                                &task_params,
+                                                &task_state,
+                                            ),
+                                        )
+                                        .await
+                                        .map_or_else(
+                                            |error| jsonrpc_error(&task_id, error),
+                                            |result| jsonrpc_result(&task_id, result),
+                                        );
+                                        let _ = result_tx
+                                            .send(InvokeResult::JsonRpc {
+                                                key: task_key,
+                                                reply,
+                                            })
+                                            .await;
+                                    });
+                                    let _ = invoke_requests.insert(
+                                        key,
+                                        PendingInvokeRequest { handle, git_slot },
+                                    );
                                     // §cancel: if the client cancelled while the (serial) dispatch
                                     // was running, drop the stale result instead of sending it.
-                                    let cancelled = id_u64.map(|uid| cancelled_ids.remove(&uid)).unwrap_or(false);
-                                    if !cancelled {
-                                        let _ = ws_tx.send(Message::Text(reply.to_string())).await;
-                                    }
                                     continue;
                                 }
                                 // ── JSON-RPC notification (no id) → reuse legacy handlers ──
@@ -1722,6 +1892,17 @@ async fn handle_ws(
                                 }
                                 Ok(())
                             }
+                            Some("invoke-cancel") => {
+                                let req_id = parsed["_reqId"].as_u64().unwrap_or(0);
+                                if req_id != 0 {
+                                    let key = InvokeRequestKey::Legacy(req_id);
+                                    if let Some(slot) = invoke_requests.cancel(&key) {
+                                        ridge_core::commands::git::cancel_git_slot(&slot);
+                                    }
+                                    tracing::debug!(target: "ridge::remote", client_id, req_id, "invoke request cancelled");
+                                }
+                                Ok(())
+                            }
                             Some("invoke-request") => {
                                 // Backs the browser-side Tauri `invoke()` shim
                                 // (src/lib/transport/tauriShim/core.ts) used when the FULL
@@ -1748,20 +1929,80 @@ async fn handle_ws(
                                     });
                                     ws_tx.send(Message::Text(reply.to_string())).await
                                 } else {
-                                    let empty = serde_json::json!({});
-                                    let args = parsed.get("args").unwrap_or(&empty);
-                                    let mut reply = dispatch_invoke_request(&cmd, args, &state).await;
-                                    if let Some(obj) = reply.as_object_mut() {
-                                        obj.insert("_reqId".to_string(), serde_json::json!(req_id));
-                                        obj.insert("type".to_string(), serde_json::json!("invoke-result"));
+                                    let key = InvokeRequestKey::Legacy(req_id);
+                                    if invoke_requests.take_pre_cancelled(&key) {
+                                        let reply = serde_json::json!({
+                                            "type": "invoke-result", "_reqId": req_id,
+                                            "_error": "request cancelled",
+                                        });
+                                        ws_tx.send(Message::Text(reply.to_string())).await
+                                    } else if req_id == 0
+                                        || invoke_requests.len() >= MAX_IN_FLIGHT_INVOKE_REQUESTS
+                                        || invoke_requests.contains(&key)
+                                    {
+                                        let reply = serde_json::json!({
+                                            "type": "invoke-result", "_reqId": req_id,
+                                            "_error": if req_id == 0 {
+                                                "invalid invoke request id"
+                                            } else {
+                                                "too many invoke requests"
+                                            },
+                                        });
+                                        ws_tx.send(Message::Text(reply.to_string())).await
+                                    } else {
+                                        let empty = serde_json::json!({});
+                                        let args = parsed.get("args").unwrap_or(&empty).clone();
+                                        let result_tx = invoke_result_tx.clone();
+                                        let task_cmd = cmd.clone();
+                                        let task_state = state.clone();
+                                        let task_key = key.clone();
+                                        let git_slot = format!("remote:{client_id}:invoke:{}", key.slot_name());
+                                        let task_slot = git_slot.clone();
+                                        let handle = tokio::spawn(async move {
+                                            let mut reply = ridge_core::commands::git::with_git_request_slot(
+                                                task_slot,
+                                                dispatch_invoke_request(&task_cmd, &args, &task_state),
+                                            )
+                                            .await;
+                                            if let Some(obj) = reply.as_object_mut() {
+                                                obj.insert("_reqId".to_string(), serde_json::json!(req_id));
+                                                obj.insert("type".to_string(), serde_json::json!("invoke-result"));
+                                            }
+                                            let _ = result_tx
+                                                .send(InvokeResult::Legacy { key: task_key, reply })
+                                                .await;
+                                        });
+                                        let _ = invoke_requests.insert(
+                                            key,
+                                            PendingInvokeRequest { handle, git_slot },
+                                        );
+                                        Ok(())
                                     }
-                                    ws_tx.send(Message::Text(reply.to_string())).await
                                 }
                             }
                             _ => {
                                 ws_tx.send(Message::Text(serde_json::json!({"type":"error","message":"unknown message type"}).to_string())).await
                             }
                         };
+                    }
+                    invoke_result = invoke_result_rx.recv() => {
+                        let Some(result) = invoke_result else { break; };
+                        match result {
+                            InvokeResult::Legacy { key, reply } => {
+                                if invoke_requests.complete(&key) {
+                                    if ws_tx.send(Message::Text(reply.to_string())).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            InvokeResult::JsonRpc { key, reply } => {
+                                if invoke_requests.complete(&key) {
+                                    if ws_tx.send(Message::Text(reply.to_string())).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
                     data_result = data_result_rx.recv() => {
                         let Some((req_id, mut reply)) = data_result else { break; };
@@ -2050,6 +2291,9 @@ async fn handle_ws(
     // requests also invalidate the process-guard generation, killing a live
     // child tree instead of waiting for the normal timeout.
     for slot in data_requests.cancel_all() {
+        ridge_core::commands::git::cancel_git_slot(&slot);
+    }
+    for slot in invoke_requests.cancel_all() {
         ridge_core::commands::git::cancel_git_slot(&slot);
     }
 
@@ -3111,8 +3355,21 @@ async fn dispatch_core_git_offloaded(
     method: String,
     args: serde_json::Value,
     ctx: ridge_core::Ctx,
+    git_slot: Option<(String, u64)>,
 ) -> Result<Result<serde_json::Value, ridge_core::CoreError>, tokio::task::JoinError> {
-    tokio::task::spawn_blocking(move || ridge_core::dispatch(&method, args, &ctx)).await
+    tokio::task::spawn_blocking(move || {
+        match git_slot {
+            Some((slot, generation)) => {
+                ridge_core::commands::git::with_git_sync_request_generation(
+                    slot,
+                    generation,
+                    || ridge_core::dispatch(&method, args, &ctx),
+                )
+            }
+            None => ridge_core::dispatch(&method, args, &ctx),
+        }
+    })
+    .await
 }
 
 /// Dispatch one **JSON-RPC** invoke. Returns `Ok(result_value)` or
@@ -3146,7 +3403,14 @@ async fn dispatch_invoke_jsonrpc(
         };
         let ctx = crate::remote_bridge::remote_ctx(&handle, state, "remote");
         if is_core_git_dispatch_method(cmd) {
-            return match dispatch_core_git_offloaded(cmd.to_string(), args.clone(), ctx).await {
+            return match dispatch_core_git_offloaded(
+                cmd.to_string(),
+                args.clone(),
+                ctx,
+                ridge_core::commands::git::current_git_request_slot(),
+            )
+            .await
+            {
                 Ok(result) => result.map_err(|e| e.to_json_rpc()),
                 Err(e) => Err(serde_json::json!({
                     "code": JSON_RPC_INTERNAL_ERROR,
@@ -3367,6 +3631,39 @@ mod jsonrpc_tests {
         assert!(!registry.take_pre_cancelled(8));
     }
 
+    #[tokio::test]
+    async fn invoke_request_registry_cancels_once_and_bounds_duplicates() {
+        let mut registry = InvokeRequestRegistry::new();
+        let key = InvokeRequestKey::Legacy(7);
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        assert!(registry.insert(
+            key.clone(),
+            PendingInvokeRequest {
+                handle,
+                git_slot: "remote:test:invoke:7".into(),
+            },
+        ));
+        assert!(!registry.insert(
+            key.clone(),
+            PendingInvokeRequest {
+                handle: tokio::spawn(async {}),
+                git_slot: "duplicate".into(),
+            },
+        ));
+        assert_eq!(
+            registry.cancel(&key).as_deref(),
+            Some("remote:test:invoke:7")
+        );
+        assert!(!registry.complete(&key), "cancelled invoke cannot complete twice");
+
+        let raced = InvokeRequestKey::JsonRpc("8".into());
+        assert!(registry.cancel(&raced).is_none());
+        assert!(registry.take_pre_cancelled(&raced));
+        assert!(!registry.take_pre_cancelled(&raced));
+    }
+
     #[test]
     fn jsonrpc_result_frame_shape() {
         let f = jsonrpc_result(&serde_json::json!(7), serde_json::json!({"ok": true}));
@@ -3481,6 +3778,7 @@ mod jsonrpc_tests {
             "get_scm_status".to_string(),
             serde_json::json!({ "repoRoot": root.to_string_lossy() }),
             ctx,
+            None,
         )
         .await
         .expect("blocking task should join")
