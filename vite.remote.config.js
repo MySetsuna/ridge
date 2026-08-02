@@ -102,19 +102,12 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Precache the built shell + EVERY static asset type the remote can
-        // emit so the SW truly takes over offline: app shell (js/css/html),
-        // terminal wasm, fonts (woff2/woff/ttf), all image formats
-        // (png/jpg/jpeg/gif/svg/webp/ico), data (json/txt/webmanifest) and
-        // media (mp3/mp4/wav/ogg/webm). Missing a type here = that file silently
-        // bypasses the cache and breaks offline, which is the bug being fixed.
-        globPatterns: [
-          '**/*.{js,css,html,wasm}',
-          '**/*.{woff2,woff,ttf}',
-          '**/*.{png,jpg,jpeg,gif,svg,webp,ico}',
-          '**/*.{mp3,mp4,wav,ogg,webm}',
-          '**/*.{json,txt,webmanifest}',
-        ],
+        // Precache the complete emitted shell rather than a list of optional
+        // extensions. Workbox warns (and exits non-zero) when an optional glob
+        // matches no files; a new build commonly has no media/font assets. A
+        // single catch-all keeps future asset types offline-capable while the
+        // flag font remains explicitly on-demand below.
+        globPatterns: ['**/*'],
         // Keep the flag-only emoji subset OUT of the precache so it stays truly
         // on-demand: the unicode-range @font-face (injected only on flag-less
         // OSes — see flagEmojiSupport.ts) makes the browser fetch flags.woff2
