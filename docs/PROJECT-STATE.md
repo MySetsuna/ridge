@@ -705,4 +705,4 @@ sequenceDiagram
 
 - `64eff8d`：Remote 手机 Agent roster/history 纳入共享 Query，按 session/workspace 隔离，30 秒 stale、single-flight、mutation 失效与旧响应取消；重开抽屉不在缓存窗内重复 RPC。
 - `c424fe2`：standalone/PWA 底部功能条按动态 viewport 与 safe-area 贴底；`d779f07`：主题变量原子应用并同步 html/body 与 PWA `theme-color`，消除边缘闪烁；`ae67e11`：Agent 抽屉图标/文案对齐守卫。
-- 本地验证：Vitest `128 files / 1402 passed / 1 skipped`，`pnpm check` 0/0。上述提交均已推送；Remote artifact 需随最新 `main` 重发，桌面 `v0.1.34` 不升版。
+- 本地验证：Vitest `128 files / 1402 passed / 1 skipped`，`pnpm check` 0/0。上述提交均已推送；Remote workflow `30732961345` 成功并激活 `0.1.34+g3d10a9c`，桌面 `v0.1.34` 不升版。

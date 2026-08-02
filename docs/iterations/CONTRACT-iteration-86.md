@@ -185,5 +185,5 @@ credentials remain external gates until their evidence is captured.
   atomically and synchronizes `html`/`body`/PWA `theme-color` to stop edge flashes.
 - `ae67e11` adds deterministic Agent drawer icon/text alignment coverage. Full local
   verification: Vitest `128 files / 1402 passed / 1 skipped`, `pnpm check` 0/0.
-- These commits are pushed to `origin/main`; Remote artifact republish is required
-  before claiming the new UI is active. Desktop `v0.1.34` remains unchanged.
+- These commits are pushed to `origin/main`; Remote workflow `30732961345` succeeded
+  and activated artifact `0.1.34+g3d10a9c`. Desktop `v0.1.34` remains unchanged.
