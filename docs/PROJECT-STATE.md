@@ -900,6 +900,9 @@ path.
 Remote/cloud refresh (2026-08-02): workflow `30745144695` published current
 `main` as `0.1.37+g8dfe261`; cloud health remained HTTP 200. Desktop `v0.1.37`
 was not version-bumped for docs-only changes.
+Remote/cloud refresh (2026-08-02): workflow `30745585264` rebuilt commit
+`166a575` and activated `0.1.37+g166a575`; build/upload/activation passed and
+cloud health stayed HTTP 200. Desktop `v0.1.37` remains unchanged.
 Kernel client-exit guard (2026-08-02):
 `detached_kernel_survives_client_process_exit_and_second_attach` now kills a
 real waiting `rdg` client after detached kernel health, then verifies a second
