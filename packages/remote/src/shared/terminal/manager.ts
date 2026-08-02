@@ -50,7 +50,7 @@ import { perfMark } from './perfTrace';
 import { DEFAULT_TERM_FONT } from './fontStack';
 import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
 import {
-	cellFromClientPoint,
+	cellFromVisualClientPoint,
 	computePaneGeometry,
 	type PaneGeometry,
 } from './paneGeometry';
@@ -366,6 +366,9 @@ interface PaneEntry {
 	viewport?: { x: number; y: number; w: number; h: number };
 	/** CSS/device geometry used by renderer, pointer, wheel and selection. */
 	geometry?: PaneGeometry;
+	/** Stage visual offset captured alongside `geometry`; pointer mapping uses
+	 *  the delta from this snapshot to the event's current offset. */
+	geometryVisualOffsetY?: number;
 	/** Visual-only stage translateY; layout/grid geometry intentionally stays fixed. */
 	visualOffsetY?: number;
 	/** §shared-remote (2026-06-14): the kernel (rows, cols) the last
@@ -1285,6 +1288,9 @@ export class TerminalManager {
 		});
 		if (!geometry) return;
 		entry.geometry = geometry;
+		entry.geometryVisualOffsetY = this._sharedRemoteMode
+			? (entry.visualOffsetY ?? 0)
+			: 0;
 		entry.viewport = geometry.viewportDevice;
 		if (this._sharedRemoteMode) {
 			entry.lastViewportKernelRows = geometry.rows;
@@ -3300,10 +3306,12 @@ export class TerminalManager {
 			const rows = ent.kernel.rows();
 			const cols = ent.kernel.cols();
 			if (rows === 0 || cols === 0) return null;
-			return cellFromClientPoint(
+			return cellFromVisualClientPoint(
 				ent.geometry,
 				e.clientX,
-				e.clientY - (ent.visualOffsetY ?? 0),
+				e.clientY,
+				ent.visualOffsetY ?? 0,
+				ent.geometryVisualOffsetY ?? 0,
 				rows,
 				cols,
 			);
