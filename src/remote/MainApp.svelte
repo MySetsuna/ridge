@@ -32,6 +32,7 @@
   import { ScrollbackDecoder } from './lib/scrollbackWorker';
   import { onceCleanup } from './lib/listenerCleanup';
   import { createGenerationGuard } from './lib/generationGuard';
+  import { detachPaneRefs } from './lib/paneLifecycle';
   import type { DataProvider } from '$lib/transport';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
@@ -300,16 +301,16 @@
   // Free the kernels of truly-closed panes. Dynamic import keeps the (large)
   // manager out of the mobile entry bundle — the lazy TerminalCanvas already
   // loaded it by the time any pane exists, so this resolves instantly.
-  async function detachPaneKernels(ids: string[]) {
-    if (ids.length === 0) return;
+  async function detachPaneKernels(refs: PaneRef[]) {
+    if (refs.length === 0) return;
     // A truly-closed pane can never resume — drop it from the resume set so a later
     // pane reusing the same id (unlikely, but ids are host-assigned) starts fresh.
-    for (const id of ids) replayedPanes.delete(id);
+    for (const ref of refs) replayedPanes.delete(paneRefKey(ref));
     try {
       const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
       const mgr = TerminalManager.tryInstance();
       if (!mgr) return;
-      for (const id of ids) mgr.detach(id);
+      detachPaneRefs(refs, (paneId) => mgr.detach(paneId));
     } catch { /* manager not loaded / already torn down */ }
   }
 
@@ -359,10 +360,10 @@
   // are untouched (§cross-ws-prune parity).
   function pruneDeadPanes(activeWsId: string, liveIds: string[]) {
     const live = new Set(liveIds);
-    const dead: string[] = [];
+    const dead: PaneRef[] = [];
     for (const [key, pane] of attachedPanes) {
       if (pane.workspaceId === activeWsId && !live.has(pane.paneId)) {
-        dead.push(key);
+        dead.push(pane);
         attachedPanes.delete(key);
       }
     }
@@ -377,10 +378,10 @@
   // never sees those panes again).
   function pruneCachesForClosedWorkspaces(liveWorkspaceIds: string[]) {
     const liveWs = new Set(liveWorkspaceIds);
-    const dead: string[] = [];
+    const dead: PaneRef[] = [];
     for (const [key, pane] of attachedPanes) {
       if (!liveWs.has(pane.workspaceId)) {
-        dead.push(key);
+        dead.push(pane);
         attachedPanes.delete(key);
       }
     }
