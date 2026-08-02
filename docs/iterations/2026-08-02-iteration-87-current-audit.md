@@ -417,3 +417,32 @@ HTTP 200 (`version=0.0.7`). This closes the current code publication line;
 physical phone/PWA, public WebRTC/authenticated Git push, WebView2 long-run
 heap, dual-window/dual-Host device E2E, and full Kernel authority migration
 remain explicit external gates.
+
+## Iteration 88 continuation: Agent history resume and release cleanliness (2026-08-02)
+
+The continuation landed only after the previous release baseline was inspected:
+
+- `86f24af` fixes workspace-scoped Remote pane kernel detachment, so closing a
+  pane releases its scrollback/kernel/worker resources and same-named panes in
+  different workspaces remain independent.
+- `a908066` adds the optional `RIDGE_KERNEL_FS_ROOT` fail-closed boundary and
+  keeps the kernel host smoke green; this is a migration seam, not a claim that
+  desktop AppState/PTY authority has moved completely.
+- `b8ac246` closes the Remote Agent-history resume path. The card exposes the
+  recorded CWD, the transport/allowlist admits `resume_agent_session`, and the
+  host validates the directory, resolves the registered profile, launches a
+  structured argv PTY, activates the pane, and emits topology events. No shell
+  interpolation is accepted from the mobile client.
+- `19b20c2` hardens the LAN lifecycle probes; `d0d1ab6` records the release
+  cleanliness rule and ignores only verified generated/runtime/reference paths.
+
+Deterministic evidence: Remote resume/cloud/workspace/pane-lifecycle tests
+`46/46`; `pnpm check` `0 errors / 0 warnings`; Rust Pane tests `12 passed`;
+`ridge-kernel` tests `23 passed`; `scripts/kernel-host-smoke.ps1` `ALL SMOKE
+PASSED`. The release gate is explicit: no version bump, tag, Remote artifact,
+or Cloud publication is allowed until tracked and untracked code changes are
+landed, committed, pushed, and the worktree is clean.
+
+Still external: physical phone attribution/safe-area/keyboard/touch, public
+WebRTC and authenticated Git push, WebView2 long-run heap, dual-window/Host
+device E2E, and full desktop Kernel authority migration.
