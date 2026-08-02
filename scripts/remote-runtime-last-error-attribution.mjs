@@ -239,13 +239,17 @@ async function observeProfile({ url, durationMs, extensionPath, headed }) {
   const extensionWorkers = context?.serviceWorkers?.()
     ?.map((worker) => redactText(worker.url()))
     .filter((workerUrl) => workerUrl.startsWith('chrome-extension://')) || [];
+  const extensionPages = context?.pages?.()
+    ?.map((page) => redactText(page.url()))
+    .filter((pageUrl) => pageUrl.startsWith('chrome-extension://')) || [];
   const runtimeLastErrors = logs.filter((entry) => isRuntimeLastError(entry.text));
   const result = {
     kind: isExtension ? 'extension' : 'clean-profile',
     extensionPath: extensionPath || null,
     extensionName: extensionPath ? extensionManifest(extensionPath)?.name || basename(extensionPath) : null,
-    extensionLoaded: !isExtension || extensionWorkers.length > 0,
+    extensionLoaded: !isExtension || extensionWorkers.length > 0 || extensionPages.length > 0,
     extensionWorkers,
+    extensionPages,
     navigation,
     browser: isExtension ? `Chromium persistent profile (${headed ? 'headed' : 'headless'})` : 'Chromium incognito clean profile',
     runtimeLastErrorCount: runtimeLastErrors.length,
