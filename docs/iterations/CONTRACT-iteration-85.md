@@ -51,6 +51,11 @@ could also inherit stale pane IDs in the manager's attached set.
   Tauri callback, WebGPU fallback, and self-signed ServiceWorker environment
   warnings.
 - Full Vitest: `120` files, `1380` passed, `1` skipped; process exit `0`.
+- `cargo test -p ridge-kernel --lib`: `15` passed; kernel Git ancestor
+  detection and domain handlers remain green.
+- `cargo test --manifest-path src-tauri/Cargo.toml pty_delta_channel_tests`:
+  `17` passed, including simultaneous workspace acquisition and per-window
+  selection isolation.
 - Isolated LAN Remote matrix (`pnpm e2e:rdg-lan -- --skip-build`): desktop and
   mobile both `PASS` (`canvas=true`, mobile tree rendered, WebSocket connected);
   evidence is `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
