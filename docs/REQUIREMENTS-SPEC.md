@@ -1051,6 +1051,7 @@
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
 | --- | --- | --- | --- | --- | --- |
+| v0.3.9 | 2026-08-02 | `<ITERATION-85>` | Mobile Remote Worker 冷启动监听、WASM fallback、Pane init/bind/resize 生命周期与 runtime noise 断言纳入实现闭环 | 收敛 `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02`、`REQ-REMOTE-RUNTIME-PERF-MEMORY-02`、`REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01` 的确定性部分；外部闸门仍待补 | 用户预审批通过；Iteration 85 contract 与 CDP/Vitest 证据 |
 | v0.3.8 | 2026-08-02 | `<DIRECT-APPROVAL>` | Mobile Remote 键盘稳定偏移与 Remote 性能/健壮性/内存回收转 Active | 新增 `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02`、`REQ-REMOTE-RUNTIME-PERF-MEMORY-02` | 用户明确「这条需求也预审批通过」 |
 | v0.3.7 | 2026-08-02 | `PENDING-REQ-20260801-AGENT-COMMUNE-UI-01` | Agent's Commune 交互卡片、状态投影、历史按 Agent 分组与 CWD 恢复转 Active | 新增 `REQ-AGENT-COMMUNE-UI-02` | 用户明确「预审批刚刚需求」 |
 | v0.3.6 | 2026-07-31 | `PENDING-REQ-RIDGE-KERNEL-HOST-01` | 内核进程与外壳生命周期（深根模式）转 Active | 新增 `REQ-RIDGE-KERNEL-HOST-01` | 用户明确「全数批准」 |

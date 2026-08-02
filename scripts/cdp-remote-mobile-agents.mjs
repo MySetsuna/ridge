@@ -209,6 +209,18 @@ try {
        localStorage.setItem('ridge_remote_device', ${JSON.stringify(device)});
      } catch {} return 1; })()`,
   );
+  // The LAN endpoint can retain an older self-signed ServiceWorker between
+  // runs. Unregister it before the second navigation so this probe exercises
+  // the freshly built mobile assets instead of a stale precache revision.
+  await ev(`(async () => {
+    try {
+      for (const registration of await navigator.serviceWorker?.getRegistrations?.() ?? []) {
+        await registration.unregister();
+      }
+      for (const key of await caches?.keys?.() ?? []) await caches.delete(key);
+    } catch {}
+    return 1;
+  })()`);
   await send('Page.navigate', { url: mobileUrl });
   await sleep(4000);
 
@@ -293,6 +305,14 @@ try {
   }
   log('mobile probe:', JSON.stringify(probe));
   if (pageLogs.length) log('page logs:\n  ' + [...new Set(pageLogs)].slice(0, 12).join('\n  '));
+  const lifecycleNoise = pageLogs.filter((message) =>
+    /render worker (?:init request timed out|request timed out)|resize before init|Unchecked runtime\.lastError/i.test(
+      message,
+    ),
+  );
+  if (lifecycleNoise.length) {
+    fail('mobile page emitted terminal lifecycle/runtime messaging noise:', [...new Set(lifecycleNoise)]);
+  }
   if (!probe?.sawAider) {
     fail('手机端没有渲染出自动识别的 agent 成员');
   } else {

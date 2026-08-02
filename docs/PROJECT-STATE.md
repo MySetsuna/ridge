@@ -5,6 +5,23 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 85 update (2026-08-02)
+
+The mobile Remote worker cold-start/lifecycle slice is locally closed. The
+worker now installs its control-plane listener before WASM loading, answers
+health pings immediately, and returns a bounded structured fallback while the
+adapter is loading. The manager suppresses resize during init/bind, cancels
+pending handshakes on park/destroy, and rejects stale callbacks after worker
+replacement. Targeted tests (63), `pnpm check` (0 errors/0 warnings), direct
+CDP ping, and the LAN mobile probe passed; the probe now fails on worker
+timeouts, `resize before init`, and project `Unchecked runtime.lastError`.
+
+Iteration-85 evidence is archived in
+`docs/iterations/CONTRACT-iteration-85.md`. Versioned Release/Remote/cloud
+publication and physical-phone, public-soak, WebView2-heap, and dual-window /
+dual-Host gates remain pending; no external proof is inferred from the local
+CDP run.
+
 ### Iteration 83 update (2026-08-02)
 
 Mobile Remote IME-anchor boundary is fixed and pushed as `16d2861`; version

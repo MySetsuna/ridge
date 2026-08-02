@@ -251,6 +251,19 @@ describe('workerLifecycleOnFit', () => {
 		expect(action).toEqual({ kind: 'resize', rows, cols, dpr });
 	});
 
+	it('returns noop while init/bindCanvas is still in flight', () => {
+		const action = workerLifecycleOnFit({
+			paneId,
+			rows,
+			cols,
+			dpr,
+			attached: new Set([paneId]),
+			initializing: new Set([paneId]),
+			isActive: true,
+		});
+		expect(action).toEqual({ kind: 'noop' });
+	});
+
 	it('attached.has is checked BEFORE isActive (resize wins even if bridge went inactive)', () => {
 		// If the flag was flipped OFF mid-session, isActive returns false
 		// but the pane is still in the attached set (we don't clean on
@@ -309,18 +322,22 @@ describe('workerLifecycleOnFit', () => {
 describe('reconcileWorkerRendererIdentity', () => {
 	it('clears pane bindings when a replacement worker is observed', () => {
 		const attached = new Set(['pane-a', 'pane-b']);
+		const initializing = new Set(['pane-c']);
 		const previous = {};
 		const current = {};
 
-		expect(reconcileWorkerRendererIdentity(previous, current, attached)).toBe(current);
+		expect(reconcileWorkerRendererIdentity(previous, current, attached, initializing)).toBe(current);
 		expect(attached).toEqual(new Set());
+		expect(initializing).toEqual(new Set());
 	});
 
 	it('keeps pane bindings for the same worker instance', () => {
 		const attached = new Set(['pane-a']);
+		const initializing = new Set(['pane-b']);
 		const worker = {};
 
-		expect(reconcileWorkerRendererIdentity(worker, worker, attached)).toBe(worker);
+		expect(reconcileWorkerRendererIdentity(worker, worker, attached, initializing)).toBe(worker);
 		expect(attached).toEqual(new Set(['pane-a']));
+		expect(initializing).toEqual(new Set(['pane-b']));
 	});
 });

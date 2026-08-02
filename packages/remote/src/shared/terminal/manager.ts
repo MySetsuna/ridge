@@ -74,6 +74,14 @@ function quantizeCellSize(raw: number, dpr: number): number {
     if (!Number.isFinite(raw) || raw <= 0 || !Number.isFinite(dpr) || dpr <= 0) return raw;
     return Math.round(raw * dpr) / dpr;
 }
+
+function isExpectedWorkerLifecycleCancellation(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return (
+		message === 'pane destroyed; request cancelled' ||
+		message === 'render worker terminated with pending requests'
+	);
+}
 // Vite-native asset URL: this returns the bundled / dev-served path of
 // the .wasm file at build time. Bypasses the "auto-locate next to .js"
 // path that breaks under vite's pre-bundle (the cause of the
@@ -459,6 +467,9 @@ export class TerminalManager {
 	 *  don't spam `pane_not_initialized` errors after a mid-session
 	 *  flag toggle. Cleared on `detach`. */
 	private workerAttached = new Set<string>();
+	/** Pane ids between worker `init`/`bindCanvas` acknowledgements. A fit
+	 *  must not send `resize` until this handshake completes. */
+	private workerInitializing = new Set<string>();
 	/** Worker instance that owns `workerAttached`. A replacement renderer starts
 	 * with no pane state, so stale entries must not send resize/bindCanvas before
 	 * the new worker receives its init. */
@@ -1926,9 +1937,9 @@ export class TerminalManager {
 			try {
 				canvas.style.pointerEvents = 'none';
 				const offscreen = canvas.transferControlToOffscreen();
-				const wr = getWorkerRenderer();
+				const wr = this.syncWorkerRendererIdentity();
 				if (wr) {
-					this.workerAttached.add(paneId);
+					this.workerInitializing.add(paneId);
 					// §p4 ITER 5 (2026-05-22) — pass measure args so the
 					// worker can `configure()` the new RenderHandle and
 					// return real cell metrics in the `ready` response.
@@ -1941,12 +1952,28 @@ export class TerminalManager {
 						backend: 'canvas2d',
 						scrollbackLines,
 					})
-						.then(() => wr.bindCanvas(paneId, offscreen, {
-							font: this.opts.fontFamily,
-							fontSizePx: this.opts.fontSizePx,
-							dpr,
-						}))
+						.then(() => {
+							const ent = this.panes.get(paneId);
+							if (
+								!ent ||
+								ent.parked ||
+								!this.workerInitializing.has(paneId) ||
+								!this.isCurrentWorkerRenderer(wr)
+							) return null;
+							return wr.bindCanvas(paneId, offscreen, {
+								font: this.opts.fontFamily,
+								fontSizePx: this.opts.fontSizePx,
+								dpr,
+							});
+						})
 						.then((response) => {
+							if (!response) {
+								this.workerInitializing.delete(paneId);
+								return;
+							}
+							this.workerInitializing.delete(paneId);
+							if (!this.isCurrentWorkerRenderer(wr)) return;
+							this.workerAttached.add(paneId);
 							if (
 								response.type === 'ready' &&
 								typeof response.cellW === 'number' &&
@@ -1963,10 +1990,14 @@ export class TerminalManager {
 							}
 						})
 						.catch((err) => {
-							failWorkerRenderer(err);
+							this.workerInitializing.delete(paneId);
+							if (!isExpectedWorkerLifecycleCancellation(err) && this.isCurrentWorkerRenderer(wr)) {
+								failWorkerRenderer(err);
+							}
 						});
 				}
 			} catch (err) {
+				this.workerInitializing.delete(paneId);
 				failWorkerRenderer(err);
 			}
 		}
@@ -2367,6 +2398,7 @@ export class TerminalManager {
 		// flag flipped off mid-session).
 		workerRendererBridge.destroy(paneId);
 		this.workerAttached.delete(paneId);
+		this.workerInitializing.delete(paneId);
 		this.panes.delete(paneId);
 		if (this.panes.size === 0) {
 			this.stopRafLoop();
@@ -2435,7 +2467,12 @@ export class TerminalManager {
 			try { entry.canvas.remove(); } catch { /* already detached */ }
 		}
 		try { entry.handle?.free(); } catch { /* ignore */ }
-		if (this.workerAttached.has(paneId)) {
+		if (this.workerInitializing.has(paneId)) {
+			// Cancel an in-flight init/bind handshake instead of retaining an
+			// OffscreenCanvas until its timeout. Unpark will use the safe
+			// main-thread path unless a later attach explicitly reclaims it.
+			workerRendererBridge.destroy(paneId);
+		} else if (this.isWorkerPaneReady(paneId)) {
 			workerRendererBridge.releaseCanvas(paneId);
 		}
 
@@ -2479,7 +2516,7 @@ export class TerminalManager {
 		}
 		if (this.panes.get(paneId) !== entry || !entry.parked) return;
 
-		const usingWorker = this.usingWorkerRenderer() && this.workerAttached.has(paneId);
+		const usingWorker = this.usingWorkerRenderer() && this.isWorkerPaneReady(paneId);
 		const gh = this.globalHost;
 		const useHost = gh !== null && this.opts.preferWebgpu && !usingWorker;
 		let canvas: HTMLCanvasElement;
@@ -2548,13 +2585,16 @@ export class TerminalManager {
 			try {
 				canvas.style.pointerEvents = 'none';
 				const offscreen = canvas.transferControlToOffscreen();
-				const wr = getWorkerRenderer();
+				const wr = this.syncWorkerRendererIdentity();
 				if (wr) {
+					this.workerInitializing.add(paneId);
 					wr.bindCanvas(paneId, offscreen, {
 						font: this.opts.fontFamily,
 						fontSizePx: this.opts.fontSizePx,
 						dpr,
 					}).then((response) => {
+						this.workerInitializing.delete(paneId);
+						if (!this.isCurrentWorkerRenderer(wr)) return;
 						if (
 							response.type === 'ready' &&
 							typeof response.cellW === 'number' &&
@@ -2567,9 +2607,15 @@ export class TerminalManager {
 							current.lastConfiguredDpr = dpr;
 							this.fitPaneNow(paneId);
 						}
-					}).catch(failWorkerRenderer);
+					}).catch((error) => {
+						this.workerInitializing.delete(paneId);
+						if (!isExpectedWorkerLifecycleCancellation(error) && this.isCurrentWorkerRenderer(wr)) {
+							failWorkerRenderer(error);
+						}
+					});
 				}
 			} catch (error) {
+				this.workerInitializing.delete(paneId);
 				failWorkerRenderer(error);
 			}
 		}
@@ -2776,7 +2822,7 @@ export class TerminalManager {
 			const end = Math.min(offset + FEED_CHUNK_BYTES, bytes.length);
 			const chunk = bytes.subarray(offset, end);
 			entry.kernel.feed(chunk);
-			if (this.workerAttached.has(entry.paneId)) {
+			if (this.isWorkerPaneReady(entry.paneId)) {
 				workerRendererBridge.feed(entry.paneId, chunk);
 			}
 			offset = end;
@@ -2860,7 +2906,7 @@ export class TerminalManager {
 		// render worker when the feature flag is on AND this pane has
 		// been attached over there. Bridge handles the .slice() copy so
 		// the kernel call above still owns the original bytes.
-		if (this.workerAttached.has(paneId)) {
+		if (this.isWorkerPaneReady(paneId)) {
 			workerRendererBridge.applyDelta(paneId, bytes);
 		}
 		// Pump DSR/DA replies the mirror produced via apply_delta back to
@@ -3158,7 +3204,7 @@ export class TerminalManager {
 		try {
 			const bytes = new TextEncoder().encode(seq);
 			entry.kernel.feed(bytes);
-			if (this.workerAttached.has(paneId)) {
+			if (this.isWorkerPaneReady(paneId)) {
 				workerRendererBridge.feed(paneId, bytes);
 			}
 		} catch {
@@ -3355,7 +3401,7 @@ export class TerminalManager {
 		entry.kernel.clearScrollback();
 		// Worker mode owns a second semantic kernel. Feed ED 3 only to that
 		// mirror so both allocations are released without writing ANSI to PTY.
-		if (this.workerAttached.has(entry.paneId)) {
+		if (this.isWorkerPaneReady(entry.paneId)) {
 			workerRendererBridge.feed(entry.paneId, new TextEncoder().encode('\x1b[3J'));
 		}
 		entry.lastScrollOffset = -1;
@@ -3869,13 +3915,32 @@ export class TerminalManager {
 			this.workerRendererRef,
 			renderer,
 			this.workerAttached,
+			this.workerInitializing,
 		);
 		return this.workerRendererRef;
 	}
 
+	/** Async worker callbacks must not resurrect bindings after a renderer
+	 *  restart or explicit dispose. Comparing both manager and singleton
+	 *  identity prevents an old init acknowledgement from touching the new
+	 *  worker's pane set. */
+	private isCurrentWorkerRenderer(renderer: ReturnType<typeof getWorkerRenderer>): boolean {
+		return renderer !== null && this.workerRendererRef === renderer && getWorkerRenderer() === renderer;
+	}
+
+	/** Hot paths use this guard instead of reading `workerAttached` directly.
+	 *  Avoid creating a worker merely because a normal (main-thread) pane
+	 *  received PTY bytes; only an already-known renderer is synchronized. */
+	private isWorkerPaneReady(paneId: string): boolean {
+		if (this.workerRendererRef === null) return false;
+		this.syncWorkerRendererIdentity();
+		return this.workerAttached.has(paneId) && !this.workerInitializing.has(paneId);
+	}
+
 	private _fallbackWorkerRendering(error: Error): void {
-		const paneIds = Array.from(this.workerAttached);
+		const paneIds = Array.from(new Set([...this.workerAttached, ...this.workerInitializing]));
 		this.workerAttached.clear();
+		this.workerInitializing.clear();
 		if (import.meta.env?.DEV) {
 			// eslint-disable-next-line no-console
 			console.warn('[ridge-term] render worker disabled; restoring main-thread canvases', error);
@@ -4810,17 +4875,26 @@ export class TerminalManager {
 			cols,
 			dpr: entry.lastConfiguredDpr,
 			attached: this.workerAttached,
+			initializing: this.workerInitializing,
 			isActive: workerActive,
 		});
 		switch (workerAction.kind) {
 			case 'attach':
-				workerRendererBridge.attach(
-					entry.paneId,
-					workerAction.rows,
-					workerAction.cols,
-					workerAction.dpr,
-				);
-				this.workerAttached.add(entry.paneId);
+				{
+					const renderer = this.syncWorkerRendererIdentity();
+					this.workerInitializing.add(entry.paneId);
+					void workerRendererBridge.attach(
+						entry.paneId,
+						workerAction.rows,
+						workerAction.cols,
+						workerAction.dpr,
+					).then((ready) => {
+						this.workerInitializing.delete(entry.paneId);
+						if (!ready || !this.isCurrentWorkerRenderer(renderer)) return;
+						this.workerAttached.add(entry.paneId);
+						this.fitPaneNow(entry.paneId);
+					});
+				}
 				break;
 			case 'resize':
 				// §p4 ITER 7 (2026-05-22) — also pass CSS dims so the

@@ -29,6 +29,7 @@ import {
 	type RenderWorkerResponse,
 	type RendererBackend,
 } from './renderWorker.protocol';
+import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
 
 /** Minimal slice of the wasm `TerminalKernel` the worker drives. Stays
  *  structural so tests can pass a mock without pulling in the real
@@ -526,7 +527,11 @@ interface WorkerScopeLike {
 async function loadKernelAdapter(): Promise<KernelAdapter | null> {
 	try {
 		const wasm = await import('@ridge/term-wasm');
-		await wasm.default();
+		// Keep worker startup aligned with TerminalManager.ready(). The
+		// package's default URL is relative to the worker chunk and can point
+		// at a non-existent dev/remote asset, leaving the bootstrap awaiting
+		// WASM forever before it installs its message listener.
+		await wasm.default(wasmUrl);
 		return {
 			create({ rows, cols, scrollback }) {
 				return new wasm.TerminalKernel(rows, cols, scrollback);
@@ -565,50 +570,61 @@ async function loadKernelAdapter(): Promise<KernelAdapter | null> {
 if (isInWorkerScope()) {
 	const state = makeWorkerState();
 	const scope = self as unknown as WorkerScopeLike;
-	// The browser queues incoming `message` events on the worker's
-	// internal port until we install a listener. We finish wasm load
-	// first so the very first message a pane sends (typically `init`)
-	// already has the adapter available — no per-pane race.
-	let adapter: KernelAdapter | null = null;
+	// Install the control-plane listener before WASM starts loading. WebView2
+	// can spend seconds compiling the cold kernel; delaying the listener makes
+	// the host's first `init` request look like a hung worker and blocks the
+	// main-thread fallback. `undefined` means loading, `null` means failed.
+	let adapter: KernelAdapter | null | undefined;
 
-	function installListener(): void {
-		scope.addEventListener('message', (event: MessageEvent<unknown>) => {
-			// `__reqId` is a host-side correlation id (see WorkerHostedRenderer).
-			// It's NOT part of the typed RenderWorkerRequest — it travels alongside
-			// the payload as an extra property. The bootstrap reads it from the
-			// raw event.data and reflects it on every response so the host can
-			// resolve the matching pending promise. If the host didn't include
-			// one (e.g. a malformed message), `id` is undefined and responses
-			// won't be correlated — same as the legacy direct-postMessage path.
-			const id = (event.data as { __reqId?: number } | null)?.__reqId;
-			if (!isRenderWorkerRequest(event.data)) {
-				const response: RenderWorkerResponse = {
-					type: 'error',
-					code: 'unknown_message',
-					message: `unknown request shape: ${JSON.stringify(event.data)}`,
-				};
-				scope.postMessage({ ...response, __reqId: id });
-				return;
-			}
-			const response = handleRequest(state, event.data, adapter);
+	scope.addEventListener('message', (event: MessageEvent<unknown>) => {
+		// `__reqId` is a host-side correlation id (see WorkerHostedRenderer).
+		// It travels alongside the typed request and is reflected on every
+		// response so the host resolves exactly one pending promise.
+		const id = (event.data as { __reqId?: number } | null)?.__reqId;
+		if (!isRenderWorkerRequest(event.data)) {
+			const response: RenderWorkerResponse = {
+				type: 'error',
+				code: 'unknown_message',
+				message: `unknown request shape: ${JSON.stringify(event.data)}`,
+			};
 			scope.postMessage({ ...response, __reqId: id });
-		});
-	}
+			return;
+		}
+		// Health checks must never wait for the WASM adapter. Other requests
+		// receive a structured error while loading, which lets the host cancel
+		// the worker handoff and restore the already-live main-thread canvas.
+		if (event.data.type === 'ping') {
+			const response = handleRequest(state, event.data);
+			scope.postMessage({ ...response, __reqId: id });
+			return;
+		}
+		if (adapter === undefined) {
+			const response: RenderWorkerResponse = {
+				type: 'error',
+				paneId: 'paneId' in event.data ? event.data.paneId : undefined,
+				code: 'apply_delta_failed',
+				message: 'render worker wasm adapter is still loading',
+			};
+			scope.postMessage({ ...response, __reqId: id });
+			return;
+		}
+		const response = handleRequest(state, event.data, adapter);
+		scope.postMessage({ ...response, __reqId: id });
+	});
 
-	// P4.7 + Iter 15 (2026-05-22) — install the listener even if wasm
-	// A null adapter makes `init` fail explicitly, causing the host to
-	// replace the transferred canvas with its live main-thread mirror.
-	loadKernelAdapter()
+	// P4.7 + Iter 15 (2026-05-22) — adapter failure remains explicit: an
+	// adapter of `null` makes `init` fail, causing the host to restore the
+	// live main-thread mirror. The listener above stays available throughout.
+	void loadKernelAdapter()
 		.then((a) => {
 			adapter = a;
-			installListener();
 		})
 		.catch((err) => {
 			// eslint-disable-next-line no-console
 			console.warn(
-				'[ridge-term/worker] unexpected loadKernelAdapter rejection — installing listener without an adapter',
+				'[ridge-term/worker] unexpected loadKernelAdapter rejection — continuing without an adapter',
 				err,
 			);
-			installListener();
+			adapter = null;
 		});
 }

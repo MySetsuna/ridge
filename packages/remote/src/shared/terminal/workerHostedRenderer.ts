@@ -56,10 +56,15 @@ interface Pending {
 	reject: (err: Error) => void;
 	timer: ReturnType<typeof setTimeout>;
 	paneId?: string;
+	requestType: RenderWorkerRequest['type'];
 }
 
 export const MAX_WORKER_PENDING = 256;
 export const WORKER_REQUEST_TIMEOUT_MS = 5000;
+/** Cold WebView2 startup may compile/load the WASM adapter before the
+ *  worker installs its listener. Keep this control-plane handshake bounded,
+ *  but do not apply the hot-path RPC timeout to it. */
+export const WORKER_INIT_TIMEOUT_MS = 15000;
 
 /**
  * Errors thrown by the wrapper when the worker sends back an `error`
@@ -270,23 +275,27 @@ export class WorkerHostedRenderer {
 		}
 		const id = this.nextReqId++;
 		return new Promise<RenderWorkerResponse>((resolve, reject) => {
+			const timeoutMs = request.type === 'init'
+				? WORKER_INIT_TIMEOUT_MS
+				: WORKER_REQUEST_TIMEOUT_MS;
 			const timer = setTimeout(() => {
 				const pending = this.pending.get(id);
 				if (!pending) return;
 				this.pending.delete(id);
 				const error = new WorkerRendererError(
-					`render worker request timed out after ${WORKER_REQUEST_TIMEOUT_MS}ms`,
+					`render worker ${request.type} request timed out after ${timeoutMs}ms`,
 					'apply_delta_failed',
 					'paneId' in request ? request.paneId : undefined,
 				);
 				pending.reject(error);
 				this.fail(error);
-			}, WORKER_REQUEST_TIMEOUT_MS);
+			}, timeoutMs);
 			this.pending.set(id, {
 				resolve,
 				reject,
 				timer,
 				paneId: 'paneId' in request ? request.paneId : undefined,
+				requestType: request.type,
 			});
 			const wire = { ...request, __reqId: id };
 			try {
