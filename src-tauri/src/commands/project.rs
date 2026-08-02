@@ -855,8 +855,54 @@ fn read_agent_recent_replies_sync(
                 .any(|path| same_or_child_path(&reply.cwd, path))
     });
     replies.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    replies.truncate(limit.min(100));
+    // `usize::MAX` is an internal exact-session lookup sentinel.  UI callers
+    // remain capped at 100; the resume authority must not reject an older
+    // valid session merely because it fell outside that presentation window.
+    if limit != usize::MAX {
+        replies.truncate(limit.min(100));
+    }
     replies
+}
+
+/// Resolve the host-owned CWD for one recorded Agent session.
+///
+/// Remote clients may display and send a CWD, but that value is presentation
+/// data, not an authority boundary.  Resume callers use this lookup to bind a
+/// session id to the CWD recorded in the host's history files before creating
+/// a PTY.  Exact `(agent, session_id)` matching is intentional: CWD/title
+/// guesses would let a stale card resume a different project.
+pub(crate) fn recorded_agent_session_cwd(
+    agent: &str,
+    session_id: &str,
+) -> Result<PathBuf, String> {
+    let agent = agent.trim();
+    let session_id = session_id.trim();
+    if agent.is_empty() || session_id.is_empty() {
+        return Err("Agent session identity is required".into());
+    }
+    let home = dirs::home_dir().ok_or_else(|| "Agent history home is unavailable".to_string())?;
+    let replies = read_agent_recent_replies_sync(&home, Vec::new(), usize::MAX);
+    let cwd = find_recorded_agent_session_cwd(&replies, agent, session_id)
+        .ok_or_else(|| format!("Agent session not found in host history: {agent}/{session_id}"))?;
+    let path = PathBuf::from(cwd);
+    if !path.is_dir() {
+        return Err("Agent session CWD is not a directory".into());
+    }
+    Ok(path)
+}
+
+fn find_recorded_agent_session_cwd(
+    replies: &[AgentRecentReply],
+    agent: &str,
+    session_id: &str,
+) -> Option<String> {
+    replies
+        .iter()
+        .find(|reply| {
+            reply.agent.eq_ignore_ascii_case(agent) && reply.session_id == session_id
+        })
+        .map(|reply| reply.cwd.trim().to_string())
+        .filter(|cwd| !cwd.is_empty())
 }
 
 /// 扫描 Grok 会话目录，每会话一条最近摘要（summary.json + chat_history 尾部）。
@@ -1412,6 +1458,36 @@ mod tests {
         assert_eq!(replies[0].session_id, "s1");
         assert_eq!(replies[0].text, "latest");
         assert_eq!(replies[1].session_id, "s2");
+    }
+
+    #[test]
+    fn recorded_session_cwd_requires_exact_agent_and_session_identity() {
+        let replies = vec![
+            AgentRecentReply {
+                agent: "Codex".into(),
+                title: "one".into(),
+                text: "".into(),
+                timestamp: 1,
+                cwd: r"D:\one".into(),
+                session_id: "same-id".into(),
+                resume: None,
+            },
+            AgentRecentReply {
+                agent: "Claude".into(),
+                title: "two".into(),
+                text: "".into(),
+                timestamp: 2,
+                cwd: r"D:\two".into(),
+                session_id: "same-id".into(),
+                resume: None,
+            },
+        ];
+        assert_eq!(
+            find_recorded_agent_session_cwd(&replies, "codex", "same-id").as_deref(),
+            Some(r"D:\one")
+        );
+        assert!(find_recorded_agent_session_cwd(&replies, "codex", "missing").is_none());
+        assert!(find_recorded_agent_session_cwd(&replies, "grok", "same-id").is_none());
     }
 
     #[test]
