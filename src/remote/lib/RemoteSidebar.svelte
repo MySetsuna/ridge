@@ -77,7 +77,7 @@
       {:else if tab === 'git'}
         <RemoteGitPanel {provider} {onOpenDiff} />
       {:else if tab === 'team' && ws}
-        <SidebarTeamRoster {ws} {workspaceId} {onSelectPane} />
+        <SidebarTeamRoster {ws} {workspaceId} {queryClient} {onSelectPane} />
       {:else}
         <SidebarSearch {provider} {onOpenFile} />
       {/if}

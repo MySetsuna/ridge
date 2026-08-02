@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DataProvider } from '$lib/transport';
 import { createWsSidebarProvider } from './sidebarProvider';
 import {
+  fetchRemoteAgentHistory,
+  fetchRemoteTeamRoster,
   REMOTE_SIDEBAR_STALE_TIME_MS,
   remoteQueryKeys,
 } from './remoteQueries';
@@ -115,6 +117,36 @@ describe('remote sidebar query contract', () => {
     expect(gitStatus).toHaveBeenCalledTimes(2);
     expect(gitStatus).toHaveBeenNthCalledWith(1, '/repo-a');
     expect(gitStatus).toHaveBeenNthCalledWith(2, '/repo-b');
+  });
+
+  it('caches Agent roster and history across sidebar remounts', async () => {
+    const client = new TestQueryClient();
+    const topology = { roster: [], leaderId: null, edges: [] };
+    const link = {
+      getTeammateTopology: vi.fn(async () => topology),
+      listHitlPending: vi.fn(async () => []),
+      getOrchestrationHealth: vi.fn(async () => ({ suspendedAgents: 0, pendingHitl: 0 })),
+      listAgentHistory: vi.fn(async () => []),
+    } as unknown as import('@ridge/remote').RemoteLink;
+
+    await Promise.all([
+      fetchRemoteTeamRoster(link, client, 12, 'workspace-a'),
+      fetchRemoteTeamRoster(link, client, 12, 'workspace-a'),
+      fetchRemoteAgentHistory(link, client, 12),
+      fetchRemoteAgentHistory(link, client, 12),
+    ]);
+    expect(link.getTeammateTopology).toHaveBeenCalledOnce();
+    expect(link.listHitlPending).toHaveBeenCalledOnce();
+    expect(link.getOrchestrationHealth).toHaveBeenCalledOnce();
+    expect(link.listAgentHistory).toHaveBeenCalledOnce();
+
+    await fetchRemoteTeamRoster(link, client, 12, 'workspace-a');
+    await fetchRemoteAgentHistory(link, client, 12);
+    expect(link.getTeammateTopology).toHaveBeenCalledOnce();
+    expect(link.listAgentHistory).toHaveBeenCalledOnce();
+
+    await fetchRemoteTeamRoster(link, client, 12, 'workspace-b');
+    expect(link.getTeammateTopology).toHaveBeenCalledTimes(2);
   });
 
   it('delegates Git mutations and invalidates only the session sidebar prefix', async () => {
