@@ -360,3 +360,44 @@ Physical phone `runtime.lastError` attribution, physical PWA/notch/keyboard
 and touch evidence, public WebRTC soak, authenticated Git push, WebView2
 long-run heap/resource evidence, and full deep-root Kernel authority migration
 remain external gates and are not marked complete by CI publication.
+
+## Iteration 88 continuation — current main audit (2026-08-02)
+
+The following local slices are now on `main` after the `v0.1.38` publication;
+they do not retroactively change the already verified release assets:
+
+- `81acf20` makes the Remote PWA build deterministic: Workbox precaches the
+  catch-all static asset set without unmatched-glob warnings, and
+  `verify:pwa` checks manifest, service worker, standalone scope, safe-area
+  CSS, and the absence of an in-app install/prompt owner. `pnpm build:remote:mobile`
+  and `pnpm verify:pwa` both pass; the browser remains the installation owner.
+- `3fc0073` extends the runtime messaging source guard through
+  `packages/remote/src`. The repository still contains no Chrome Extension
+  Messaging API in shipped Remote code; clean-profile and LAN browser probes
+  remain green without Console suppression. The affected physical phone's
+  injector/source URL and one-extension-at-a-time A/B remain unverified.
+- `7199ead` adds the no-Tauri `rdg kernel remote-hosts` read command. It uses
+  the typed, authenticated `source=ridge-kernel` seam and fails closed on
+  unavailable, non-2xx, or malformed responses. `kernel-host-smoke.ps1`
+  reports `ALL SMOKE PASSED` and the topology payload is explicit.
+- `08ffb50` preserves explicit `is_git_repo` through the Git status transport.
+  A clean repository with zero files and zero commits is no longer rendered
+  as “not a Git repository”; legacy successful hosts default safely to true.
+  Remote provider tests (7/7) and `ridge-core` Git tests (33/33) pass.
+- `b6d22df`, `1256d1d`, `55af1e2`, and `7c5fddc` keep heap/RSS/worker-pending
+  probes fail-closed and bind WebDriver soak timeout to the configured run.
+  No WebView2 CDP was available, so no device-level heap trend is claimed.
+
+Current deterministic gates: `pnpm check` 0 errors/0 warnings; Remote Vitest
+slice 19 files/96 tests green; focused Pane/Remote/Git slices green; kernel
+CLI unit tests 3/3; `kernel-host-smoke.ps1` green; mobile keyboard LAN
+emulation green (`browserErrors=[]`). The formal desktop Release remains
+`v0.1.38` with 12 assets and the last published Remote artifact remains
+`0.1.38+g2346f5b` until a post-release publish is explicitly verified.
+
+The following are still intentionally open: affected-phone `runtime.lastError`
+attribution, physical iOS/Android/PWA safe-area and keyboard/touch runs,
+public Remote/WebRTC and authenticated Git push, WebView2 long-run heap/RSS,
+dual-window/dual-host physical singleton, and full desktop AppState/PTY/
+filesystem-root Kernel authority migration. No Console warning is masked and
+no external gate is inferred from local emulation.
