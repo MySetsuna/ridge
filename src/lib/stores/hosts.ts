@@ -463,19 +463,25 @@ function linkedHost(
   topology: HostForestResult,
   previous?: Host,
 ): Host {
-  const attached = new Set(
-    previous?.sessions
-      .filter((session) => session.attached)
-      .map((session) => session.remoteSessionId)
-      .filter((id): id is string => !!id),
-  );
+  const attached = collectAttachedRemotePanes(previous?.sessions ?? []);
+  const paneOccurrences = new Map<string, number>();
+  for (const workspace of topology.workspaces) {
+    for (const pane of workspace.panes) {
+      paneOccurrences.set(pane.id, (paneOccurrences.get(pane.id) ?? 0) + 1);
+    }
+  }
   const workspaces = topology.workspaces.map((workspace) => ({
     id: workspace.id,
     name: workspace.name,
     active: workspace.active,
     sessions: workspace.panes.map((pane) => ({
       ...paneSession(source.hostId, workspace.id, pane),
-      attached: attached.has(pane.id),
+      attached: isRemotePaneAttached(
+        attached,
+        workspace.id,
+        pane.id,
+        paneOccurrences.get(pane.id) ?? 0,
+      ),
     })),
   }));
   return {
@@ -779,6 +785,7 @@ export async function attachHostSession(request: HostAttachRequest): Promise<str
     return attachRemoteHostSessionImpl(
       hostId,
       sessionId,
+      request.workspaceId,
       request.targetPaneId,
       request.region,
     );
@@ -1035,6 +1042,40 @@ export const outboundLifecycleByKey = writable<Record<string, OutboundSession>>(
 /** C50 product path: history tail badges from get_foreign_history_tail. */
 export const foreignHistoryByKey = writable<Record<string, HistoryTailSnapshot>>({});
 
+/** Remote pane identity is scoped by workspace. */
+export function remotePaneKey(workspaceId: string, paneId: string): string {
+  return `${workspaceId}\0${paneId}`;
+}
+
+export interface AttachedRemotePaneIndex {
+  scoped: Set<string>;
+  /** Legacy host snapshots omitted workspaceId; use only when unambiguous. */
+  unscoped: Set<string>;
+}
+
+export function collectAttachedRemotePanes(
+  sessions: readonly Pick<HostSession, 'workspaceId' | 'remoteSessionId' | 'attached'>[],
+): AttachedRemotePaneIndex {
+  const scoped = new Set<string>();
+  const unscoped = new Set<string>();
+  for (const session of sessions) {
+    if (!session.attached || !session.remoteSessionId) continue;
+    if (session.workspaceId) scoped.add(remotePaneKey(session.workspaceId, session.remoteSessionId));
+    else unscoped.add(session.remoteSessionId);
+  }
+  return { scoped, unscoped };
+}
+
+export function isRemotePaneAttached(
+  index: AttachedRemotePaneIndex,
+  workspaceId: string,
+  paneId: string,
+  paneOccurrences: number,
+): boolean {
+  return index.scoped.has(remotePaneKey(workspaceId, paneId))
+    || (paneOccurrences === 1 && index.unscoped.has(paneId));
+}
+
 /**
  * Attach a remote host session into the active workspace as a foreign pane.
  * Backend: attach_host_session (subscribe when outbound bound).
@@ -1042,6 +1083,7 @@ export const foreignHistoryByKey = writable<Record<string, HistoryTailSnapshot>>
 async function attachRemoteHostSessionImpl(
   hostId: string,
   sessionId: string,
+  remoteWorkspaceId?: string,
   targetPaneId?: string,
   region?: AttachRegion,
 ): Promise<string> {
@@ -1062,7 +1104,8 @@ async function attachRemoteHostSessionImpl(
   if (linked && wid) {
     const session = get(hostsStore)
       .find((host) => host.id === hostId)
-      ?.sessions.find((item) => item.remoteSessionId === sessionId);
+      ?.sessions.find((item) => item.remoteSessionId === sessionId
+        && (!remoteWorkspaceId || item.workspaceId === remoteWorkspaceId));
     bindRemotePane({
       localPaneId: paneId,
       hostId,
@@ -1087,6 +1130,7 @@ async function attachRemoteHostSessionImpl(
 export async function attachRemoteHostSession(
   hostId: string,
   sessionId: string,
+  remoteWorkspaceId?: string,
 ): Promise<string> {
   const paneId = await attachHostSession({
     kind: registeredHostLinks.get(hostId)?.kind ?? 'remote',
@@ -1094,6 +1138,7 @@ export async function attachRemoteHostSession(
     target: sessionId,
     hostId,
     sessionId,
+    workspaceId: remoteWorkspaceId,
   });
   if (!paneId) throw new Error('远端 pane 接入失败');
   return paneId;
