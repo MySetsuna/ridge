@@ -276,6 +276,12 @@ This is a shell-adapter safety/convergence slice, not a claim that desktop
 AppState, PTY runtime, window claims, or filesystem root authority have fully
 migrated into the kernel.
 
+Kernel client failure guard (2026-08-02): `40fa39f` adds a real loopback
+server test for the shared `request_json` seam. Non-2xx responses and malformed
+JSON now have deterministic fail-closed assertions; the full `ridge-kernel`
+unit suite passes 22/22. This strengthens the shell-adapter contract without
+claiming deeper desktop authority migration.
+
 Pane header single-layer guard (2026-08-02): `a1d816a` adds a static
 regression assertion that `PaneRepoSwitcher`, `PaneGitPill`, and `PaneDiffPill`
 each render once as adjacent siblings in the pane header. The focused desktop
