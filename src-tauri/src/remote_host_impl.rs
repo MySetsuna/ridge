@@ -1692,11 +1692,15 @@ async fn handle_ws(
                                     let task_state = state.clone();
                                     let task_slot = git_slot.clone();
                                     let handle = tokio::spawn(async move {
-                                        let reply = dispatch_data_request(
-                                            &task_method,
-                                            &task_params,
-                                            &task_state,
-                                            Some(task_slot),
+                                        let slot_for_scope = task_slot.clone();
+                                        let reply = ridge_core::commands::git::with_git_request_slot(
+                                            slot_for_scope,
+                                            dispatch_data_request(
+                                                &task_method,
+                                                &task_params,
+                                                &task_state,
+                                                Some(task_slot),
+                                            ),
                                         )
                                         .await;
                                         let _ = result_tx.send((req_id, reply)).await;
