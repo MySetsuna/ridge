@@ -9,4 +9,10 @@ describe('remote workspace popup safe-area contract', () => {
     expect(source).toContain('@media (pointer: coarse)');
     expect(source).toContain('.tree-popup,.saved-popup{bottom:calc(56px + env(safe-area-inset-bottom,0px) + 8px)}');
   });
+
+  it('keeps pane rows keyed to the runtime Agent state', () => {
+    expect(source).toContain("class:agent-working={pane.agentState === 'busy'");
+    expect(source).toContain("class:agent-starting={pane.agentState === 'starting'}");
+    expect(source).toContain('.pane-row.agent-idle .pane-dot');
+  });
 });

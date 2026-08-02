@@ -465,6 +465,9 @@
                   <div
                     class="pane-row"
                     class:active={isActiveWs && pane.id === activePaneId}
+                    class:agent-working={pane.agentState === 'busy' || (pane.isAgent && !pane.agentState)}
+                    class:agent-starting={pane.agentState === 'starting'}
+                    class:agent-idle={pane.agentState === 'idle'}
                     role="button"
                     tabindex="0"
                     onclick={() => selectPaneInWorkspace(wsp.id, pane.id)}
@@ -657,6 +660,9 @@
   .pane-row:active{background:var(--rg-surface-2)}
   .pane-row.active{color:var(--rg-fg);background:color-mix(in srgb,var(--rg-accent) 10%,transparent)}
   .pane-dot{color:var(--rg-accent);font-size:10px;flex-shrink:0;line-height:18px}
+  .pane-row.agent-working .pane-dot{color:var(--rg-ansi-green,#3fb950)}
+  .pane-row.agent-starting .pane-dot{color:var(--rg-ansi-yellow,#d29922)}
+  .pane-row.agent-idle .pane-dot{color:color-mix(in srgb,var(--rg-accent) 55%,var(--rg-fg-muted))}
   /* §pane-cwd: 标题 + cwd 垂直堆叠。title 主字，cwd 标题下方小字(灰、可截断)，
      缺失则整行不渲染(见模板 {#if pane.cwd})。 */
   .pane-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;overflow:hidden}

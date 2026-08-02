@@ -115,7 +115,14 @@ function flattenLeaves(node: PaneNode | null | undefined): PaneInfo[] {
   if (node.type === 'leaf') {
     if (!node.id) return []; // pre-hydration placeholder leaf
     // iter-61：agent 标记态随叶子下发（LAN 腿在 build_remote_pane_list 里同源附带）。
-    return [{ id: node.id, title: node.title, cwd: node.cwd, isAgent: node.agent_state === 'busy' }];
+    return [{
+      id: node.id,
+      title: node.title,
+      cwd: node.cwd,
+      isAgent: node.agent_state === 'busy',
+      ...(node.agent_state ? { agentState: node.agent_state } : {}),
+      ...(node.agent_id ? { agentId: node.agent_id } : {}),
+    }];
   }
   return node.children.flatMap(flattenLeaves);
 }

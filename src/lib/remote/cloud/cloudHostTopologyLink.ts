@@ -30,6 +30,8 @@ function flattenPanes(node: PaneNode | null | undefined): PaneInfo[] {
           title: node.title,
           cwd: node.cwd,
           isAgent: node.agent_state === 'busy',
+          ...(node.agent_state ? { agentState: node.agent_state } : {}),
+          ...(node.agent_id ? { agentId: node.agent_id } : {}),
         }]
       : [];
   }

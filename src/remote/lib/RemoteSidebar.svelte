@@ -7,17 +7,19 @@
   import SidebarTeamRoster from './SidebarTeamRoster.svelte';
   import { createWsSidebarProvider } from './sidebarProvider';
   import { remoteSessionId } from './remoteQueries';
-  import type { RemoteLink, RemotePanel } from '@ridge/remote';
+  import type { PaneInfo, RemoteLink, RemotePanel } from '@ridge/remote';
   import type { DataProvider } from '$lib/transport';
   import { useQueryClient } from '@tanstack/svelte-query';
 
-  let { tab = 'files', cwd = '', workspaceId = '', available, ws, dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane }: {
+  let { tab = 'files', cwd = '', workspaceId = '', available, ws, panes = [], dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane }: {
     tab?: RemotePanel;
     cwd?: string;
     workspaceId?: string;
     available: Readonly<Record<RemotePanel, boolean>>;
     /** P1 roster：team 面板取数用（capability `teammate` 协商后 tab 才可见）。 */
     ws?: RemoteLink;
+    /** Active workspace pane snapshot; maps Agent cards to their live CWD. */
+    panes?: PaneInfo[];
     dataProvider?: DataProvider;
     onClose: () => void;
     onTabChange?: (t: RemotePanel) => void;
@@ -77,7 +79,7 @@
       {:else if tab === 'git'}
         <RemoteGitPanel {provider} {onOpenDiff} />
       {:else if tab === 'team' && ws}
-        <SidebarTeamRoster {ws} {workspaceId} {queryClient} {onSelectPane} />
+        <SidebarTeamRoster {ws} {workspaceId} {queryClient} {panes} {onSelectPane} />
       {:else}
         <SidebarSearch {provider} {onOpenFile} />
       {/if}
