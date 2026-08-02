@@ -2845,6 +2845,36 @@ const CORE_MIGRATED_METHODS: &[&str] = &[
     "split_pane",
 ];
 
+/// `ridge_core::dispatch` is synchronous by contract. Git read methods in
+/// this list can wait on the shared semaphore and spawn/collect git children;
+/// never run them on the remote WebSocket executor.
+const CORE_GIT_DISPATCH_METHODS: &[&str] = &[
+    "git_op_in_progress",
+    "get_git_info_with_cwd",
+    "get_scm_status",
+    "git_list_branches",
+    "find_git_repos_below",
+    "find_git_repo_root",
+    "git_blame",
+    "git_file_log",
+    "git_diff_file",
+    "git_diff_summary",
+    "git_get_file_versions",
+    "get_git_commits_paginated",
+];
+
+fn is_core_git_dispatch_method(method: &str) -> bool {
+    CORE_GIT_DISPATCH_METHODS.contains(&method)
+}
+
+async fn dispatch_core_git_offloaded(
+    method: String,
+    args: serde_json::Value,
+    ctx: ridge_core::Ctx,
+) -> Result<Result<serde_json::Value, ridge_core::CoreError>, tokio::task::JoinError> {
+    tokio::task::spawn_blocking(move || ridge_core::dispatch(&method, args, &ctx)).await
+}
+
 /// Dispatch one **JSON-RPC** invoke. Returns `Ok(result_value)` or
 /// `Err(json_rpc_error_object)` where the error object is `{code,message,data}`.
 ///
@@ -2875,6 +2905,16 @@ async fn dispatch_invoke_jsonrpc(
             }
         };
         let ctx = crate::remote_bridge::remote_ctx(&handle, state, "remote");
+        if is_core_git_dispatch_method(cmd) {
+            return match dispatch_core_git_offloaded(cmd.to_string(), args.clone(), ctx).await {
+                Ok(result) => result.map_err(|e| e.to_json_rpc()),
+                Err(e) => Err(serde_json::json!({
+                    "code": JSON_RPC_INTERNAL_ERROR,
+                    "message": format!("core git dispatch task failed: {e}"),
+                    "data": { "kind": "internal" },
+                })),
+            };
+        }
         return ridge_core::dispatch(cmd, args.clone(), &ctx).map_err(|e| e.to_json_rpc());
     }
 
@@ -3123,6 +3163,67 @@ mod jsonrpc_tests {
         }));
         assert_eq!(reply["method"], "$/bye");
         assert_eq!(reply["params"]["reason"], "protocol-version-mismatch");
+    }
+
+    struct EmptyCoreState;
+
+    impl ridge_core::CoreState for EmptyCoreState {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    struct EmptyEventSink;
+
+    impl ridge_core::EventSink for EmptyEventSink {
+        fn emit(
+            &self,
+            _scope: ridge_core::EventScope,
+            _connection: &ridge_core::ConnectionId,
+            _name: &str,
+            _payload: serde_json::Value,
+        ) {
+        }
+    }
+
+    #[test]
+    fn core_git_dispatch_method_set_covers_sync_git_reads() {
+        for method in [
+            "get_scm_status",
+            "git_list_branches",
+            "git_diff_summary",
+            "get_git_info_with_cwd",
+            "get_git_commits_paginated",
+        ] {
+            assert!(is_core_git_dispatch_method(method), "{method} must be offloaded");
+        }
+        assert!(!is_core_git_dispatch_method("get_theme_data"));
+    }
+
+    #[tokio::test]
+    async fn offloaded_git_dispatch_preserves_non_git_result() {
+        let root = std::env::temp_dir().join(format!(
+            "ridge-remote-git-dispatch-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = ridge_core::Ctx::new(
+            Arc::new(EmptyCoreState),
+            Arc::new(EmptyEventSink),
+            Arc::new(ridge_core::TokioSpawner),
+            ridge_core::CapabilitySet::remote_default(),
+        );
+        let result = dispatch_core_git_offloaded(
+            "get_scm_status".to_string(),
+            serde_json::json!({ "repoRoot": root.to_string_lossy() }),
+            ctx,
+        )
+        .await
+        .expect("blocking task should join")
+        .expect_err("non-Git path must return a core error");
+        assert!(result.to_command_string().to_ascii_lowercase().contains("git"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
