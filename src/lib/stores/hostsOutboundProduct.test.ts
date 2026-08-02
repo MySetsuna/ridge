@@ -15,6 +15,9 @@ import {
   foreignHistoryByKey,
   attachSeedPlanForSession,
   hostOperatorAlert,
+  collectAttachedRemotePanes,
+  isRemotePaneAttached,
+  remotePaneKey,
 } from './hosts';
 
 describe('hosts product path (C50/C54/C58 wiring)', () => {
@@ -62,5 +65,24 @@ describe('hosts product path (C50/C54/C58 wiring)', () => {
     expect(a).toBeTruthy();
     const b = hostOperatorAlert('h3', 2);
     expect(b).toMatch(/重连/);
+  });
+  it('keeps attached state scoped to workspace when pane ids repeat', () => {
+    const index = collectAttachedRemotePanes([
+      { workspaceId: 'workspace-a', remoteSessionId: 'pane-1', attached: true },
+      { workspaceId: 'workspace-b', remoteSessionId: 'pane-1', attached: false },
+    ]);
+
+    expect(remotePaneKey('workspace-a', 'pane-1')).not.toBe(remotePaneKey('workspace-b', 'pane-1'));
+    expect(isRemotePaneAttached(index, 'workspace-a', 'pane-1', 2)).toBe(true);
+    expect(isRemotePaneAttached(index, 'workspace-b', 'pane-1', 2)).toBe(false);
+  });
+
+  it('only applies legacy unscoped attachment when pane id is unambiguous', () => {
+    const index = collectAttachedRemotePanes([
+      { remoteSessionId: 'legacy-pane', attached: true },
+    ]);
+
+    expect(isRemotePaneAttached(index, 'workspace-a', 'legacy-pane', 1)).toBe(true);
+    expect(isRemotePaneAttached(index, 'workspace-a', 'legacy-pane', 2)).toBe(false);
   });
 });
