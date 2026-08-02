@@ -264,3 +264,14 @@ detached kernel is healthy, then attaches a second client and asserts the same
 PID and healthy control plane. Both kernel lifecycle E2E cases passed (2/2).
 This closes the local parent-exit regression guard; deep-root shell termination
 and public/physical host evidence remain external gates.
+
+Kernel shell-adapter convergence (2026-08-02): `ef70b3c` removes the rdg
+CLI's duplicated raw `TcpStream` GET/POST implementations. Agent/FS/Git/MCP
+domain calls now use the shared authenticated `ridge_kernel::client::request_json`
+seam, including HTTP-status and JSON failure handling. Windows paths are
+percent-encoded as one query component so spaces, separators, `?`, `#`, and
+`%` cannot alter the route. The focused CLI unit test, lifecycle E2E (2/2),
+and real `scripts/kernel-host-smoke.ps1` (`ALL SMOKE PASSED`) are green.
+This is a shell-adapter safety/convergence slice, not a claim that desktop
+AppState, PTY runtime, window claims, or filesystem root authority have fully
+migrated into the kernel.

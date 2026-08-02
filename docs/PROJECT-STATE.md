@@ -909,3 +909,9 @@ real waiting `rdg` client after detached kernel health, then verifies a second
 client reattaches to the same PID; both `kernel_lifecycle_e2e` cases pass (2/2).
 This is local process-detachment evidence only; deep-root shell termination and
 public/physical host gates remain open.
+Kernel shell-adapter convergence (2026-08-02): `ef70b3c` routes rdg Agent,
+FS, Git, and MCP domain calls through shared authenticated
+`ridge_kernel::client::request_json`, removing duplicated raw socket clients;
+HTTP/JSON failures remain visible and Windows query paths are fully encoded.
+Focused CLI tests, lifecycle E2E, and `scripts/kernel-host-smoke.ps1` passed.
+Desktop AppState/PTY/window-claim/root-authority migration remains open.
