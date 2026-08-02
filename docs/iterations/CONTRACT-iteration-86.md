@@ -152,3 +152,21 @@ Pane lifecycle/pending cancellation、多窗口 workspace singleton、PWA focus/
 Physical iOS/Android notch device, installed PWA on a real notch device, public Remote
 long-run, WebView2 heap soak, dual-window/dual-Host physical E2E, and real remote push
 credentials remain external gates until their evidence is captured.
+
+## Iteration 86 completion checkpoint (2026-08-02)
+
+- `75f53dd` pushed to `main`: Remote Git Changes/Graph panel now supports guarded stage,
+  commit and push actions with capability checks, confirmation, cancellation, progress,
+  Query invalidation and commit-parent graph data. Remote File/Git reads remain
+  session/CWD-scoped and single-flight.
+- Remote Agent Commune now has Members/Groups/History tabs. Groups are validated and
+  persisted to workspace memory through LAN/Cloud allowlists; history scans real
+  Claude/Codex/Grok session files, groups by Agent across CWD, and retains session/CWD
+  identity. Older hosts fail closed for the optional history RPC.
+- Verification: full Vitest `126 files / 1403 passed / 1 skipped`, `pnpm check` 0/0,
+  Rust group-validation test 1 passed, `cargo check` passed with pre-existing warnings.
+- Remote publish workflow `30732001054` succeeded from `75f53dd`, activating
+  artifact `0.1.34+g75f53dd`; formal desktop `v0.1.34` remains unchanged and complete.
+- External gates unchanged: HTTPS browser/PWA install transition, physical notch phone,
+  public soak, WebView2 heap soak, dual-window/dual-host E2E and authenticated real Git
+  push remain unclaimed until captured.
