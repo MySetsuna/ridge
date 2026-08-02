@@ -860,3 +860,8 @@ assumption: the bare remote's missing default branch could produce a detached
 fixture unrelated to `main`. Tag and version were removed again; `cbada57`
 uses `git clone --branch main` plus explicit `HEAD:refs/heads/main` setup. The
 final stale push still exercises `git_push_sync`; version remains `0.1.36`.
+Release/Remote closure: `30742422090` passed test gate plus Windows/Linux/macOS
+arm64/x64 builds. Formal GitHub Release `v0.1.37` is published with 12
+matching installer/CLI assets. Remote workflow `30743623499` passed its build,
+upload and index checks and activated `0.1.37+ge4e0f91` for desktop/mobile;
+cloud health is HTTP 200 (`version=0.0.7`).
