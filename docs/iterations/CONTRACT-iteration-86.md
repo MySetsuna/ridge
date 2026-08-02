@@ -28,6 +28,11 @@ Browser HTTPS install, real standalone transition and physical notch-device
 interaction remain evidence gates below; no browser install success is claimed
 from the local build alone.
 
+The Query portion of P0 is also wired locally: sidebar file/Git/search/read/diff
+reads use session- and cwd-scoped keys with a bounded stale window and Query
+single-flight; successful file writes invalidate the sidebar prefix. This does
+not claim the later Git mutation/Graph or Agent parity packages.
+
 ## Baseline and constraints
 
 - Current code baseline is `origin/main` after the v0.1.34 tag is built; do not

@@ -65,8 +65,10 @@ the browser one-shot install prompt before mount, `PwaInstallAction.svelte`
 renders the available/iOS entry, and `RemoteSidebar.svelte` applies top/bottom
 safe-area insets. Deterministic PWA/controller tests are green (6), `pnpm check`
 is green, and the production mobile artifact contains the manifest, service worker
-and install handler. HTTPS browser install/standalone and real notch-device
-evidence remain unverified; Query/Git/Agent parity packages are not marked done.
+and install handler. Sidebar File/Git/Search reads now use session/CWD-scoped
+Query keys with single-flight/cache and write invalidation; targeted Query tests
+are green (6). HTTPS browser install/standalone and real notch-device evidence
+remain unverified; Git mutation/Graph and Agent parity packages are not marked done.
 
 ### Iteration 83 update (2026-08-02)
 
