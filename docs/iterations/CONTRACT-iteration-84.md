@@ -78,3 +78,20 @@ WebView2 heap soak, or dual-window/dual-host evidence.
 Code, deterministic tests, and the three release lines are complete. The
 previously listed external phone, public-session, WebView2-soak, and
 dual-window/dual-host gates remain tracked separately.
+
+### v0.1.32 worker-renderer lifecycle closure (2026-08-02)
+
+- `workerRendererBridge.ts` now reconciles renderer identity with the manager's
+  attached-pane set. A replacement worker clears stale bindings before fit or
+  unpark; the next operation therefore cannot issue `resize`/`bindCanvas`
+  against a worker that has not received `init`.
+- `workerRendererBridge.test.ts` and `workerRendererSingleton.test.ts`: 31
+  tests passed. `pnpm check`: 0 errors, 0 warnings.
+- Commit `859b396` is pushed. Version `0.1.32` is committed as `ac0a4b1`.
+  Release workflow `30723870060` passed all five jobs; formal `v0.1.32` is
+  published with 12 verified assets. Remote workflow `30723873999` activated
+  `0.1.32+gac0a4b1`. Cloud production health returned `ok=true`.
+
+The lifecycle fix closes the deterministic worker-restart regression. Physical
+phone clean-profile attribution, public Remote long-run, WebView2 heap soak,
+and dual-window/dual-host E2E remain explicitly unverified external gates.
