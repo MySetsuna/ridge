@@ -35,7 +35,34 @@ pub fn reset_process_guard_counters_for_test() {
     TIMEOUTS.store(0, Ordering::SeqCst);
 }
 
-/// Kill a process tree. Windows: `taskkill /T`; Unix: TERM then KILL.
+/// Configure a child as a process-group leader on Unix.
+///
+/// Every descendant that does not deliberately detach inherits this group, so
+/// the timeout path can signal the whole tree instead of leaving shell/grandchild
+/// processes behind. `pre_exec` only invokes the async-signal-safe `setpgid`.
+#[cfg(unix)]
+fn configure_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    // `pre_exec` runs between fork and exec; the closure must not allocate or
+    // touch locks. `setpgid(0, 0)` makes the child its own process-group leader.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut Command) {}
+
+/// Kill a process tree. Windows: `taskkill /T`; Unix: TERM then KILL to the
+/// dedicated process group (with a PID fallback for callers that predate the
+/// group setup).
 pub fn kill_process_tree(pid: u32) {
     TREE_KILLS.fetch_add(1, Ordering::SeqCst);
     #[cfg(windows)]
@@ -50,8 +77,28 @@ pub fn kill_process_tree(pid: u32) {
             .stderr(Stdio::null())
             .status();
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
+        let group = -(pid as libc::pid_t);
+        let group_term_ok = unsafe { libc::kill(group, libc::SIGTERM) == 0 };
+        if !group_term_ok {
+            // A process launched before process-group setup (or one whose
+            // group already exited) still gets the best-effort PID fallback.
+            let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        if group_term_ok {
+            // Do not send a second PID signal after a successful group TERM:
+            // the original PID may have exited and been reused by then.
+            let _ = unsafe { libc::kill(group, libc::SIGKILL) };
+        } else {
+            let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        // Keep a portable fallback for targets without a native process-group
+        // API. Production desktop/CLI targets are covered above.
         let _ = Command::new("kill")
             .args(["-TERM", &pid.to_string()])
             .stdin(Stdio::null())
@@ -76,6 +123,7 @@ pub fn run_command_with_timeout(
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    configure_process_group(cmd);
     let child = cmd.spawn()?;
     let pid = child.id();
 
@@ -116,6 +164,7 @@ pub fn run_command_status_with_timeout(
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
+    configure_process_group(cmd);
     let mut child = cmd.spawn()?;
     let pid = child.id();
     let started = Instant::now();
@@ -228,6 +277,68 @@ mod tests {
         assert!(process_timeout_count() >= 2);
         assert!(process_tree_kill_count() >= 2);
         let _ = std::fs::remove_dir_all(hang.parent().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_kills_unix_process_group_descendants() {
+        reset_process_guard_counters_for_test();
+        let dir = std::env::temp_dir().join(format!(
+            "ridge-pg-tree-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("hang-tree.sh");
+        let pid_file = dir.join("pids");
+        // The shell and its sleep child both inherit the process group created
+        // by configure_process_group. Record both PIDs so the assertion checks
+        // the descendant, not only the root waiter.
+        let pid_path = pid_file.to_string_lossy().replace('\'', "'\\''");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nsleep 30 &\nchild=$!\nprintf '%s %s' \"$$\" \"$child\" > '{pid_path}'\nwait \"$child\"\n"
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let err = run_command_with_timeout(&mut Command::new(&script), Duration::from_millis(400))
+            .expect_err("must timeout");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let (group_pid, child_pid) = loop {
+            if let Ok(raw) = std::fs::read_to_string(&pid_file) {
+                let mut pids = raw.split_whitespace().filter_map(|p| p.parse::<i32>().ok());
+                if let (Some(group_pid), Some(child_pid)) = (pids.next(), pids.next()) {
+                    break (group_pid, child_pid);
+                }
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for child PID");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        // The timeout path must reclaim the whole group, not just the shell.
+        // Wait briefly for init to reap a killed descendant before asserting.
+        while Instant::now() < deadline {
+            let group_alive = unsafe { libc::kill(-(group_pid as libc::pid_t), 0) == 0 };
+            let child_alive = unsafe { libc::kill(child_pid as libc::pid_t, 0) == 0 };
+            if !group_alive && !child_alive {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!unsafe { libc::kill(-(group_pid as libc::pid_t), 0) == 0 });
+        assert!(!unsafe { libc::kill(child_pid as libc::pid_t, 0) == 0 });
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
