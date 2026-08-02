@@ -228,6 +228,7 @@
       <div class="selected-commit" role="region" aria-label="Selected commit">
         <strong>{selectedCommit.subject}</strong>
         <code>{selectedCommit.hash}</code>
+        <span>{selectedCommit.author || 'Unknown author'} · {selectedCommit.date}</span>
         <span>{selectedCommit.parents?.length ?? 0} parent(s)</span>
       </div>
     {/if}

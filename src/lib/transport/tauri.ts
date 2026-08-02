@@ -28,6 +28,7 @@ interface CommitNodeRaw {
   hash: string;
   subject: string;
   date: string;
+  author?: string;
   parents?: string[];
   refs?: string[];
 }
@@ -106,6 +107,7 @@ export class TauriDataProvider implements DataProvider {
         hash: c.hash,
         msg: c.subject,
         time: c.date,
+        author: c.author,
         parents: c.parents,
         refs: c.refs,
       })),

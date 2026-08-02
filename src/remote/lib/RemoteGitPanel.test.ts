@@ -20,6 +20,7 @@ describe('remote Git panel contract', () => {
     expect(source).toContain('info.branches.length > 0');
     expect(source).toContain("commit.refs?.includes('head:')");
     expect(source).toContain('Selected commit');
+    expect(source).toContain('selectedCommit.author');
     expect(source).toContain('selectedHash = commit.hash');
   });
 });

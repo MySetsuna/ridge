@@ -85,7 +85,7 @@ export function createWsSidebarProvider(
             current_branch?: string | null;
             has_upstream?: boolean;
             branches?: string[];
-            commits?: Array<{ hash: string; msg: string; time: string; parents?: string[]; refs?: string[] }>;
+            commits?: Array<{ hash: string; msg: string; time: string; author?: string; parents?: string[]; refs?: string[] }>;
           };
           const staged = (s.staged ?? []).map((f) => ({
             path: f.name,
@@ -108,7 +108,7 @@ export function createWsSidebarProvider(
           const commits = (s.commits ?? []).map((c) => ({
             hash: c.hash,
             subject: c.msg,
-            author: '',
+            author: c.author ?? '',
             date: c.time,
             parents: c.parents,
             refs: c.refs,
