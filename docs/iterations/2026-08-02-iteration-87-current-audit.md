@@ -339,3 +339,24 @@ and the archived iteration records. Cloud health remains HTTP 200; formal
 desktop Release `v0.1.37` remains non-draft/non-prerelease with 12 assets.
 Warnings are limited to existing optional PWA glob, Node deprecation, and
 checkout-submodule cleanup notices after successful activation.
+
+## Versioned release + Remote synchronization closure (2026-08-02)
+
+`2346f5b` prepared version `0.1.38` across the package, Tauri, Cargo, and
+lockfile contracts. Release workflow `30747757222` passed its test gate and
+all four build jobs (macOS arm64/x64, Linux x64, Windows x64). Release
+`v0.1.38` was promoted from draft only after verifying all 12 matching
+installer/CLI assets; it is now non-draft and non-prerelease. This is a real
+versioned release, not an empty tag.
+
+Remote workflow `30748970383` then rebuilt the same pushed commit and passed
+version, build, upload, activation, and desktop/mobile index checks. Cloud
+activated `0.1.38+g2346f5b` (233 files / 21.78 MiB); the public health endpoint
+returned HTTP 200. Existing Node/deprecation and dynamic-import messages are
+non-blocking warnings after successful publication.
+
+The release/Remote/cloud publication line is closed for this iteration.
+Physical phone `runtime.lastError` attribution, physical PWA/notch/keyboard
+and touch evidence, public WebRTC soak, authenticated Git push, WebView2
+long-run heap/resource evidence, and full deep-root Kernel authority migration
+remain external gates and are not marked complete by CI publication.

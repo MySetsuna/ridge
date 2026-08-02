@@ -950,3 +950,19 @@ Remote publish closure: workflow `30747286348` built from `25d525b` and
 activated `0.1.37+g25d525b` after successful build/upload/index checks (233
 files, 21.78 MiB). Cloud health is HTTP 200. Desktop Release `v0.1.37` is
 formal with 12 assets; no version bump was made for this runtime fix.
+
+### Iteration 88 versioned release + Remote/cloud closure (2026-08-02)
+
+Commit `2346f5b` aligned the package, Tauri, Cargo, and lockfile versions at
+`0.1.38`. Release workflow `30747757222` passed the test gate and all four
+platform build jobs. `v0.1.38` is now a formal non-draft, non-prerelease
+release with the 12 matching Windows/Linux/macOS installer and `rdg` CLI
+assets; no empty tag was accepted.
+
+Remote workflow `30748970383` rebuilt that same commit and passed build,
+upload, activation, and desktop/mobile index checks. Current artifact is
+`0.1.38+g2346f5b` (233 files / 21.78 MiB); `https://9527127.xyz/api/v1/health`
+returned HTTP 200. Release and Remote/cloud publication are closed for this
+iteration. Physical phone/runtime attribution, device PWA geometry/keyboard/
+touch, public WebRTC soak, authenticated Git push, WebView2 long-run heap, and
+full deep-root Kernel authority migration remain external gates.
