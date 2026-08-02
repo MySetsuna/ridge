@@ -218,3 +218,21 @@ Remote refresh closure: workflow `30744331190` completed successfully from
 `08919b675c62804d866b17a57110b2c1904baa56`; the cloud health endpoint remains
 HTTP 200. This refresh advances the Remote artifact to the latest main hash
 without changing the already verified desktop Release version `v0.1.37`.
+Runtime attribution and Kernel host seam continuation:
+
+- `580d1cf`, `be710e0`, `5cd0b72`, and `1eab8e4` add
+  `scripts/remote-runtime-last-error-attribution.mjs` plus a static guard and
+  `e2e:runtime-attribution`. It runs a fresh clean profile first, then one
+  temporary profile per requested extension (including installed
+  `<id>/<version>` layouts), captures Console/pageerror without suppression,
+  redacts credentials, and fails closed on clean-profile warnings or unverified
+  extension loading. Current data-URL smoke is `clean-profile-only` with
+  `attributionComplete:false`; the headed installed-extension run loaded five
+  of six candidates with no warning, one candidate remained
+  `extension-load-unverified`, and a single Google Translate A/B completed with
+  no warning. No third-party source is claimed. `3593a84` expands the static
+  messaging guard to every shipped `src/remote` implementation file.
+- The same continuation adds typed `read_domain_remote_hosts` and routes the
+  desktop host snapshot through the authenticated `source=ridge-kernel` seam.
+  `cargo test -p ridge-kernel --lib` remains 21 passed and the real
+  `scripts/kernel-host-smoke.ps1` completed all ensure/attach/domain/MCP checks.

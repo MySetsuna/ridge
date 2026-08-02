@@ -883,3 +883,14 @@ Remote refresh closure (2026-08-02): workflow `30744331190` succeeded from
 main SHA `08919b675c62804d866b17a57110b2c1904baa56`; cloud health HTTP 200.
 Remote now tracks latest main artifact hash while desktop Release remains the
 verified `v0.1.37` package set.
+Runtime attribution continuation (2026-08-02): the Remote probe now performs
+clean-profile then one-extension-at-a-time runs, captures unsuppressed browser
+logs, and reports `attributionComplete:false` unless a complete A/B is proven.
+The clean data-URL smoke is intentionally `clean-profile-only`; a headed local
+installed-extension run loaded five of six candidates without the warning, one
+remained load-unverified, and a single Google Translate A/B completed cleanly.
+Physical-phone source attribution remains open. `3593a84` scans every shipped
+`src/remote` implementation file for Chrome extension messaging APIs. Kernel
+remote-host reads now use the typed, source-checked seam, and
+`scripts/kernel-host-smoke.ps1` passed the real no-Tauri ensure/attach/domain/MCP
+path.
