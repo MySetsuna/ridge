@@ -84,7 +84,8 @@ export function createWsSidebarProvider(
             untracked?: string[];
             current_branch?: string | null;
             has_upstream?: boolean;
-            commits?: Array<{ hash: string; msg: string; time: string; parents?: string[] }>;
+            branches?: string[];
+            commits?: Array<{ hash: string; msg: string; time: string; parents?: string[]; refs?: string[] }>;
           };
           const staged = (s.staged ?? []).map((f) => ({
             path: f.name,
@@ -110,12 +111,13 @@ export function createWsSidebarProvider(
             author: '',
             date: c.time,
             parents: c.parents,
+            refs: c.refs,
           }));
           return {
             isGitRepo: files.length > 0 || commits.length > 0,
             currentBranch: s.current_branch ?? null,
             hasUpstream: s.has_upstream ?? false,
-            branches: [],
+            branches: s.branches ?? [],
             files,
             staged,
             unstaged,

@@ -26,4 +26,10 @@ describe('remote Agent drawer alignment contract', () => {
     expect(source).toContain('const ROSTER_POLL_INTERVAL_MS = 5 * 60 * 1000;');
     expect(source).toContain('setInterval(() => void refresh(), ROSTER_POLL_INTERVAL_MS)');
   });
+
+  it('deletes a group only after confirmation and persists the filtered roster', () => {
+    expect(source).toContain('globalThis.confirm(`Delete Agent group "${group.name}"?`)');
+    expect(source).toContain('persistGroups(groups.filter((g) => g.id !== group.id))');
+    expect(source).toContain('title="Delete group"');
+  });
 });

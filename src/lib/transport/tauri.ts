@@ -29,9 +29,11 @@ interface CommitNodeRaw {
   subject: string;
   date: string;
   parents?: string[];
+  refs?: string[];
 }
 interface GitRepoInfoRaw {
   current_branch?: string | null;
+  branches?: string[];
   commits: CommitNodeRaw[];
 }
 interface RawSearchHit {
@@ -96,10 +98,17 @@ export class TauriDataProvider implements DataProvider {
     return {
       current_branch: scm.current_branch ?? info.current_branch,
       has_upstream: scm.has_upstream ?? false,
+      branches: info.branches ?? [],
       staged: scm.staged.map((f) => ({ name: f.path, status: f.status })),
       unstaged: scm.changes.map((f) => ({ name: f.path, status: f.status })),
       untracked: scm.untracked.map((f) => f.path),
-      commits: info.commits.map((c) => ({ hash: c.hash, msg: c.subject, time: c.date, parents: c.parents })),
+      commits: info.commits.map((c) => ({
+        hash: c.hash,
+        msg: c.subject,
+        time: c.date,
+        parents: c.parents,
+        refs: c.refs,
+      })),
     };
   }
   async gitStage(repoRoot: string, paths: string[]): Promise<void> {

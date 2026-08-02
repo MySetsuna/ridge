@@ -16,5 +16,10 @@ describe('remote Git panel contract', () => {
     expect(source).toContain("view = 'graph'");
     expect(source).toContain("import GitGraph from '../../lib/components/GitGraph.svelte'");
     expect(source).toContain('parents: commit.parents ??');
+    expect(source).toContain('const branchNames = $derived(');
+    expect(source).toContain('info.branches.length > 0');
+    expect(source).toContain("commit.refs?.includes('head:')");
+    expect(source).toContain('Selected commit');
+    expect(source).toContain('selectedHash = commit.hash');
   });
 });
