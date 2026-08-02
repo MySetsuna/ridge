@@ -1037,3 +1037,12 @@ Final release cleanliness check passed: `git diff`, `git diff --cached`, and
 non-ignored untracked-file checks are empty, and `HEAD` matches `origin/main`.
 Remaining external gates listed above are intentionally still open and are not
 claimed closed by this publication.
+
+### Post-v0.1.41 Agent resume guard (2026-08-03)
+
+Remote `resume_agent_session` now binds the request to an exact `(agent,
+sessionId)` row from host history, uses that recorded CWD, canonicalizes both
+paths, and rejects a mismatch before PTY creation. Authority lookup is not
+limited by the UI's 100-row history cap. Rust command tests pass (project
+25/25, pane 13/13) and `pnpm check` remains 0/0. This is the next versioned
+publish candidate; it is not represented as part of `v0.1.41`.
