@@ -766,3 +766,17 @@ desktop version bump (republish now satisfied below).
 Remote workflow `30737121593` subsequently built and atomically activated
 `0.1.35+g42b55dd`; `desktopIndex` and `mobileIndex` checks passed. The workflow
 emitted only existing Node 20/empty optional glob/submodule cleanup warnings.
+
+### Iteration 87 continuation — current local evidence
+
+`e41e733`/`cea02b9`/`ab01e66` release terminal Scrollback/link-span memory on
+clear and settle invalid or failed Worker decode requests immediately;
+`4c7fb4f` clears the transient Agent Pane border when the mobile terminal input
+actually receives focus. `b20ea58`/`144a467` isolate LAN probe ownership and
+exercise real browser `write_to_pty` plus `resize_pane` on desktop and mobile;
+the latest matrix and mobile-keyboard emulation both pass with no browser errors.
+Kernel deep-root evidence is recorded in
+`.iteration/agents/result-kernel-deep-root.json`; full desktop domain migration
+is intentionally still open. Public WebRTC four-path, physical-device, heap
+soak, authenticated Git push and affected-phone extension-attribution gates
+remain unclaimed.
