@@ -37,6 +37,15 @@ pub struct KernelAgentRosterSnapshot {
     pub roster: Vec<ridge_core::teammate::model::Teammate>,
 }
 
+/// Kernel-owned registered remote-host topology. Credentials and live
+/// transport handles are intentionally absent from the shared domain record;
+/// shells may rebuild those process-local adapters from this projection.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct KernelRemoteHostsSnapshot {
+    #[serde(default)]
+    pub hosts: Vec<ridge_core::remote::HostRecord>,
+}
+
 /// Exact identity-set comparison between the kernel projection and a shell's
 /// visible projection. No names, ordering, or UI-only decorations participate.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -188,6 +197,15 @@ pub fn read_domain_agent_roster(
     endpoint: &KernelEndpoint,
 ) -> Result<KernelAgentRosterSnapshot, String> {
     let value = request_json(endpoint, "GET", "/v1/domain/agents/roster", None)?;
+    decode_domain_snapshot(value)
+}
+
+/// Read the kernel-owned registered remote-host topology through the same
+/// authenticated, source-checked seam as workspaces and Agents.
+pub fn read_domain_remote_hosts(
+    endpoint: &KernelEndpoint,
+) -> Result<KernelRemoteHostsSnapshot, String> {
+    let value = request_json(endpoint, "GET", "/v1/domain/remote-hosts", None)?;
     decode_domain_snapshot(value)
 }
 
@@ -495,6 +513,23 @@ mod tests {
         assert_eq!(roster.leader_id.as_deref(), Some("codex-1"));
         assert_eq!(roster.roster[0].id, "codex-1");
         assert_eq!(roster.roster[0].pane_id, 7);
+
+        let hosts: KernelRemoteHostsSnapshot = decode_domain_snapshot(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "hosts": [{
+                "id": "host-a",
+                "kind": "remote",
+                "label": "A",
+                "addr": "127.0.0.1:9900",
+                "status": "connected",
+                "detail": "live",
+                "sessions": []
+            }]
+        }))
+        .unwrap();
+        assert_eq!(hosts.hosts[0].id, "host-a");
+        assert_eq!(hosts.hosts[0].kind, ridge_core::remote::HostKind::Remote);
     }
 
     #[test]
