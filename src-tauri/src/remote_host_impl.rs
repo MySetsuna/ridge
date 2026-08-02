@@ -344,6 +344,15 @@ fn build_remote_pane_list(ws: &crate::state::Workspace) -> Vec<serde_json::Value
                         .then(|| "pending...".to_string())
                 })
                 .unwrap_or_else(|| "terminal".to_string());
+            let agent_id = ws
+                .teammate_agent_pane_map
+                .iter()
+                .find_map(|(agent, owner)| (*owner == pane_id).then(|| agent.clone()));
+            let agent_state = ws.teammate_pane_states.get(&pane_id).map(|state| match state {
+                crate::state::PaneState::Idle => "idle",
+                crate::state::PaneState::Busy => "busy",
+                crate::state::PaneState::Starting => "starting",
+            });
             serde_json::json!({
                 "id": pane_id.to_string(),
                 "title": title,
@@ -355,6 +364,8 @@ fn build_remote_pane_list(ws: &crate::state::Workspace) -> Vec<serde_json::Value
                     ws.teammate_pane_states.get(&pane_id),
                     Some(crate::state::PaneState::Busy)
                 ),
+                "agentState": agent_state,
+                "agentId": agent_id,
             })
         })
         .collect();

@@ -4,6 +4,7 @@
   import type {
     HitlPendingItem,
     OrchestrationHealth,
+    PaneInfo,
     RemoteLink,
     TeammateRosterMember,
     TeammateTopology,
@@ -20,9 +21,11 @@
     type RemoteQueryClientLike,
   } from './remoteQueries';
 
-  let { ws, workspaceId, queryClient, onSelectPane }: {
+  let { ws, workspaceId, queryClient, panes = [], onSelectPane }: {
     ws: RemoteLink;
     workspaceId: string;
+    /** Current workspace panes; Agent paneId is the authoritative CWD mapping. */
+    panes?: PaneInfo[];
     /** Remote mobile supplies the shared QueryClient; desktop keeps direct reads. */
     queryClient?: RemoteQueryClientLike;
     /** 点击成员 → 切到其 pane（MVP：拓扑取自活动工作区，pane 即当前工作区内）。 */
@@ -146,6 +149,10 @@
     return pending.filter(
       (p) => p.initiator === m.id || p.initiator === m.paneId || p.initiator === m.name
     );
+  }
+
+  function cwdFor(m: TeammateRosterMember): string {
+    return panes.find((pane) => pane.id === m.paneId)?.cwd?.trim() ?? '';
   }
 
   /** 给该成员发消息：写其 pane stdin。
@@ -353,6 +360,7 @@
 <!-- 一个成员的监控 + 干预卡：状态 / 自动识别标注 / 最近回复（折叠）/ 单独发消息。 -->
 {#snippet memberCard(m: TeammateRosterMember, isLeader: boolean)}
   {@const st = statusOf(m)}
+  {@const cwd = cwdFor(m)}
   <div
     class="member-card"
     class:status-working={st.key === 'working'}
@@ -370,6 +378,10 @@
       {#if m.isAuto}<span class="tag">自动</span>{/if}
       <span class="role" class:live={st.key === 'working'}>{st.text}</span>
     </div>
+
+    {#if cwd}
+      <span class="member-cwd" title={cwd}>{cwd}</span>
+    {/if}
 
     {#if pendingFor(m).length > 0}
       {#each pendingFor(m) as p (p.id)}
@@ -449,6 +461,7 @@
   .member-card.status-idle{border-left-color:var(--rg-fg-muted)}
   .member-card.offline{opacity:.55}
   .member-head{display:flex;align-items:center;gap:6px;min-height:24px;font-size:13px;line-height:1.2}
+  .member-cwd{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-left:14px;color:var(--rg-fg-muted);font:10px ui-monospace,SFMono-Regular,Consolas,monospace;opacity:.8}
   .head-main{display:flex;align-items:center;gap:8px;flex:1;min-width:0;min-height:24px;border:none;background:none;color:var(--rg-fg);text-align:left;padding:0;cursor:pointer;font-size:13px;line-height:1.2}
   .head-main:active{opacity:.7}
   .tag{display:inline-flex;align-items:center;font-size:9px;line-height:1;padding:2px 5px;border:1px solid var(--rg-border);border-radius:999px;color:var(--rg-fg-muted);flex-shrink:0}

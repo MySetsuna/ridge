@@ -988,6 +988,7 @@
             bind:backendName
             paneId={ui.activePaneId}
             workspaceId={ui.activeWorkspaceId}
+            agentState={activePane?.agentState ?? (activePane?.isAgent ? 'busy' : undefined)}
             {onStdin}
             {onResize}
             onHostClipboard={(text) => ws.setHostClipboard(text)}
@@ -1015,6 +1016,7 @@
         cwd={activeCwd}
         workspaceId={ui.activeWorkspaceId}
         {ws}
+        {panes}
         {dataProvider}
         onClose={() => ui.sidebarTab = null}
         onTabChange={selectSidebarTab}

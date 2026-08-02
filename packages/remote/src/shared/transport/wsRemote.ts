@@ -103,6 +103,10 @@ export interface PaneInfo {
   cwd?: string;
   /** iter-61：该 pane 是否已标记为 agent（工作区弹层标记按钮的当前态）。 */
   isAgent?: boolean;
+  /** Runtime teammate state, kept alongside the desktop PaneNode contract. */
+  agentState?: 'idle' | 'busy' | 'starting';
+  /** Stable teammate id when the host has one bound to this pane. */
+  agentId?: string;
 }
 
 /**

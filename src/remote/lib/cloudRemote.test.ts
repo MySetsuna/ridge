@@ -42,8 +42,8 @@ const LAYOUT: PaneNode = {
   direction: 'horizontal',
   ratios: [50, 50],
   children: [
-    { type: 'leaf', id: 'pane-a', title: 'A', cwd: '/a' },
-    { type: 'leaf', id: 'pane-b' },
+    { type: 'leaf', id: 'pane-a', title: 'A', cwd: '/a', agent_state: 'busy', agent_id: 'agent-a' },
+    { type: 'leaf', id: 'pane-b', agent_state: 'idle' },
   ],
 };
 const PANE = { workspaceId: 'ws1', paneId: 'pane-a' } as const;
@@ -179,10 +179,11 @@ describe('CloudRemoteConnection panes', () => {
     await flush();
 
     const panesMsg = msgs.find((m) => m.type === 'panes');
-    // iter-61：叶子附带 agent 标记态（agent_state==='busy'），供工作区弹层的标记按钮。
+    // Agent runtime state travels with the pane so mobile terminal chrome can
+    // show the same working/idle cue as the desktop pane.
     expect(panesMsg).toEqual({ type: 'panes', workspaceId: 'ws1', panes: [
-      { id: 'pane-a', title: 'A', cwd: '/a', isAgent: false },
-      { id: 'pane-b', title: undefined, cwd: undefined, isAgent: false },
+      { id: 'pane-a', title: 'A', cwd: '/a', isAgent: true, agentState: 'busy', agentId: 'agent-a' },
+      { id: 'pane-b', title: undefined, cwd: undefined, isAgent: false, agentState: 'idle' },
     ] });
     expect(metas).toContainEqual([{ workspaceId: 'ws1', paneId: 'pane-a' }, 'A', '/a']);
     expect(metas).toContainEqual([{ workspaceId: 'ws1', paneId: 'pane-b' }, null, null]);
