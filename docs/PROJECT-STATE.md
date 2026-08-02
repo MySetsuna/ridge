@@ -1023,3 +1023,17 @@ Deterministic evidence: targeted Remote/Agent/transport tests 20/20 passed;
 authenticated Git push, dual-window/Host singleton, or full Kernel domain
 authority migration. Those remain active requirements and are not hidden by a
 successful local release.
+
+### Publication closure for the latest changes (2026-08-03)
+
+Commit `22e6e2933d9adfd8d413134052eff9cbac17e1d9` contains the continuation
+slice and version `0.1.41`. Release workflow `30755076173` completed
+successfully across test, Linux, macOS ARM/x64, and Windows jobs. Release
+`v0.1.41` is published (`draft=false`, `prerelease=false`) with 12 matching
+installer/CLI assets. Remote workflow `30755719992` completed successfully
+from the same commit; Cloud health returned HTTP 200 (`version=0.0.7`).
+
+Final release cleanliness check passed: `git diff`, `git diff --cached`, and
+non-ignored untracked-file checks are empty, and `HEAD` matches `origin/main`.
+Remaining external gates listed above are intentionally still open and are not
+claimed closed by this publication.

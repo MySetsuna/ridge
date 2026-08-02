@@ -86,3 +86,18 @@ desktop history lacks OpenCode/MiMo/Chinese CLI adapters and stable native
 session merge; Remote resume CWD is directory-checked but not canonical-
 session-bound; public/physical Remote, WebView2 heap soak, authenticated Git
 push, dual-window/Host, and full Kernel domain authority migration remain open.
+
+## Final publication for the continuation slice (2026-08-03)
+
+The landed Query/Agent changes were committed as
+`22e6e2933d9adfd8d413134052eff9cbac17e1d9`, versioned `0.1.41`, and pushed
+before tagging. Release workflow `30755076173` passed its test gate and all
+four platform build jobs. GitHub Release `v0.1.41` is non-draft/non-prerelease
+with all 12 matching installer and `rdg` CLI assets. Remote workflow
+`30755719992` succeeded from the same commit. Cloud health returned HTTP 200
+(`version=0.0.7`).
+
+The release gate was rechecked after publication: tracked and staged diffs are
+empty, no untracked non-ignored files remain, and `HEAD == origin/main`.
+Release publication includes the modified code; no failed version bump or
+orphan tag remains.
