@@ -1,8 +1,6 @@
 //! 与桌面/ridge-kernel 共享的内核发现与控制（REQ-RIDGE-KERNEL-HOST-01）。
 
 use std::fs;
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -85,97 +83,74 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
 
 /// 经内核领域 API 读 agent profiles（DOMAIN 验收路径）。
 pub fn domain_agents() -> Result<String, String> {
-    let ep = read_endpoint().ok_or_else(|| "内核未登记".to_string())?;
-    if !is_kernel_running() {
-        return Err("内核不可用".into());
-    }
-    let url = format!("http://127.0.0.1:{}/v1/domain/agents", ep.port);
-    http_get_auth(&url, &ep.token).ok_or_else(|| "domain/agents 请求失败".into())
+    kernel_get_json("/v1/domain/agents")
 }
 
 /// 经内核领域 API 列目录。
 pub fn domain_fs_list(path: &str) -> Result<String, String> {
-    let ep = read_endpoint().ok_or_else(|| "内核未登记".to_string())?;
-    if !is_kernel_running() {
-        return Err("内核不可用".into());
-    }
-    let enc = path.replace(' ', "%20");
-    let url = format!("http://127.0.0.1:{}/v1/domain/fs/list?path={enc}", ep.port);
-    http_get_auth(&url, &ep.token).ok_or_else(|| "domain/fs/list 请求失败".into())
-}
-
-fn http_get_auth(url: &str, token: &str) -> Option<String> {
-    let rest = url.strip_prefix("http://")?;
-    let (hostport, path) = rest.split_once('/')?;
-    let path = format!("/{path}");
-    let (host, port_s) = hostport.split_once(':')?;
-    let port: u16 = port_s.parse().ok()?;
-    let mut stream = TcpStream::connect((host, port)).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(2000)))
-        .ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(2000)))
-        .ok()?;
-    let req = format!(
-        "GET {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\nx-ridge-kernel-token: {token}\r\n\r\n"
-    );
-    stream.write_all(req.as_bytes()).ok()?;
-    let mut buf = String::new();
-    stream.read_to_string(&mut buf).ok()?;
-    buf.split("\r\n\r\n").nth(1).map(|s| s.to_string())
+    kernel_get_json(&format!("/v1/domain/fs/list?path={}", encode_query_component(path)))
+        .map(|value| value.to_string())
 }
 
 /// 经内核 Git status（DOMAIN）。
 pub fn domain_git_status(path: &str) -> Result<String, String> {
-    let ep = read_endpoint().ok_or_else(|| "内核未登记".to_string())?;
-    if !is_kernel_running() {
-        return Err("内核不可用".into());
-    }
-    let enc = path.replace(' ', "%20");
-    let url = format!(
-        "http://127.0.0.1:{}/v1/domain/git/status?path={enc}",
-        ep.port
-    );
-    http_get_auth(&url, &ep.token).ok_or_else(|| "domain/git/status 请求失败".into())
+    kernel_get_json(&format!(
+        "/v1/domain/git/status?path={}",
+        encode_query_component(path)
+    ))
+    .map(|value| value.to_string())
 }
 
 /// 最小 MCP tools/list 冒烟（经内核 /api/v1/mcp）。
 pub fn mcp_tools_list_smoke() -> Result<String, String> {
-    let ep = read_endpoint().ok_or_else(|| "内核未登记".to_string())?;
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+    });
+    let value = kernel_request(
+        read_endpoint().ok_or_else(|| "内核未登记".to_string())?,
+        "POST",
+        "/api/v1/mcp",
+        Some(&body),
+    )?;
+    Ok(value.to_string())
+}
+
+fn kernel_get_json(path: &str) -> Result<String, String> {
+    let endpoint = read_endpoint().ok_or_else(|| "内核未登记".to_string())?;
+    let value = kernel_request(endpoint, "GET", path, None)?;
+    Ok(value.to_string())
+}
+
+fn kernel_request(
+    endpoint: KernelEndpoint,
+    method: &str,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<serde_json::Value, String> {
     if !is_kernel_running() {
         return Err("内核不可用".into());
     }
-    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
-    http_post_json(
-        &format!("http://127.0.0.1:{}/api/v1/mcp", ep.port),
-        &ep.token,
-        body,
-    )
-    .ok_or_else(|| "mcp tools/list 失败".into())
+    ridge_kernel::client::request_json(&endpoint, method, path, body)
 }
 
-fn http_post_json(url: &str, token: &str, body: &str) -> Option<String> {
-    let rest = url.strip_prefix("http://")?;
-    let (hostport, path) = rest.split_once('/')?;
-    let path = format!("/{path}");
-    let (host, port_s) = hostport.split_once(':')?;
-    let port: u16 = port_s.parse().ok()?;
-    let mut stream = TcpStream::connect((host, port)).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(2000)))
-        .ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(2000)))
-        .ok()?;
-    let req = format!(
-        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\nx-ridge-token: {token}\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(req.as_bytes()).ok()?;
-    let mut buf = String::new();
-    stream.read_to_string(&mut buf).ok()?;
-    buf.split("\r\n\r\n").nth(1).map(|s| s.to_string())
+/// Encode one query component without introducing a new URL dependency in the
+/// CLI shell. This keeps Windows paths (`C:\\work\\a b`) and reserved bytes
+/// from changing the kernel route or query boundaries.
+fn encode_query_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0F) as usize] as char);
+        }
+    }
+    encoded
 }
 
 pub fn stop_kernel() -> Result<(), String> {
@@ -216,5 +191,13 @@ mod tests {
     #[test]
     fn self_alive() {
         assert!(is_process_alive(std::process::id()));
+    }
+
+    #[test]
+    fn query_component_encodes_windows_paths_and_reserved_bytes() {
+        assert_eq!(
+            encode_query_component(r"C:\\work tree\a?b#c%20"),
+            "C%3A%5C%5Cwork%20tree%5Ca%3Fb%23c%2520"
+        );
     }
 }
