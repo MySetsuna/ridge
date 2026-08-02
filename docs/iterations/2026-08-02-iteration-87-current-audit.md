@@ -28,7 +28,7 @@ facts only; NotebookLM is strategy input, not release or runtime evidence.
 | PWA | `pwaInstallScope.test.ts` forbids app install button and `beforeinstallprompt` ownership; manifest/SW/standalone/scope remain; drawer safe-area contract is tested | Implemented per latest user correction; browser-native installation is intentionally out of business E2E |
 | Mobile `runtime.lastError` | Source audit found no Chrome Extension Messaging API; service worker uses standard `clients.matchAll`/`Client.postMessage`; controlled LAN browser matrix now explicitly disables extensions and component extensions | No business-code fix is authorized; controlled clean-profile run is green, but affected-phone source URL and one-by-one extension A/B remain required |
 | Kernel singleton | `KernelInstanceGuard` uses process-lifetime OS lock; `registry.rs` child-process probe proves a second process cannot acquire the lock (`c692781`) | Deterministic guard implemented; real shell death/deep-root no-Tauri chain remains unverified |
-| Release / Remote | Release `v0.1.36` has 12 matching assets; Remote workflow `30739703846` activated `0.1.36+gf7ba0f5`; cloud health is `ok` but reports service `0.0.7` | Published evidence exists; no cloud source/version change was fabricated |
+| Release / Remote | Release `v0.1.37` is formal with 12 matching assets; Remote workflow `30743623499` activated `0.1.37+ge4e0f91`; cloud health HTTP 200 reports service `0.0.7` | Published evidence verified; no cloud source/version change was fabricated |
 
 ## User-visible correction captured
 
@@ -183,3 +183,10 @@ the explicit setup push was rejected before the intended stale-push assertion.
 Its tag and version were removed immediately. `cbada57` clones with
 `--branch main`, then pins the setup push to `HEAD:refs/heads/main`; targeted
 real-repository and 36-test release-filter checks pass locally.
+Final release closure: workflow `30742422090` passed test gate and all four
+platform jobs. `v0.1.37` was then promoted from draft to formal Release with
+12 matching assets (Windows setup/MSI, Linux deb/AppImage, macOS arm64/x64
+DMGs/tars, and four rdg CLI binaries). Remote/cloud workflow `30743623499`
+passed build, upload and authenticated index checks; it activated
+`0.1.37+ge4e0f91` with desktop/mobile indexes. Cloud health returned HTTP 200
+(`version=0.0.7`), and the artifact host favicon check returned 200.
