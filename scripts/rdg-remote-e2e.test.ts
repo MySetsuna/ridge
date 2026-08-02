@@ -21,6 +21,12 @@ describe('LAN Remote E2E process ownership fence', () => {
     expect(keyboardProbe).toContain('Number(status.pid) === expectedPid');
   });
 
+  it('drives a real terminal input surface before accepting the matrix', () => {
+    expect(lanProbe).toContain('.rg-ime-helper');
+    expect(lanProbe).toContain('inputSent');
+    expect(lanProbe).toContain('resizeSent');
+  });
+
   it('removes probe status files during teardown', () => {
     expect(lanProbe).toContain('unlinkSync(STATUS_FILE)');
     expect(keyboardProbe).toContain('unlinkSync(STATUS_FILE)');
