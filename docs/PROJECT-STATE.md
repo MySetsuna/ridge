@@ -966,3 +966,27 @@ returned HTTP 200. Release and Remote/cloud publication are closed for this
 iteration. Physical phone/runtime attribution, device PWA geometry/keyboard/
 touch, public WebRTC soak, authenticated Git push, WebView2 long-run heap, and
 full deep-root Kernel authority migration remain external gates.
+
+## Current main continuation (2026-08-02)
+
+`81acf20` closes the deterministic Remote PWA build/verification gap: catch-all
+precache, manifest/service-worker/standalone/safe-area checks, and no in-app
+install prompt owner. `3fc0073` recursively guards shipped Remote sources
+against Chrome Extension Messaging APIs; clean-profile and LAN probes remain
+green, while physical-phone attribution is still open.
+
+`7199ead` adds `rdg kernel remote-hosts`, a no-Tauri authenticated read through
+the typed `source=ridge-kernel` seam; `kernel-host-smoke.ps1` passes. `08ffb50`
+propagates explicit `is_git_repo` through desktop and Remote Git status, so a
+clean repository is not mistaken for a non-Git directory; Remote provider 7/7
+and ridge-core Git 33/33 tests pass. The shared release remains `v0.1.38` and
+the last published artifact remains `0.1.38+g2346f5b` pending a fresh publish.
+
+Current deterministic gates: `pnpm check` 0/0, Remote Vitest 19 files/96
+tests, kernel CLI 3/3, kernel-host smoke green, and mobile keyboard LAN
+emulation with `browserErrors=[]`. WebView2 CDP was unavailable, so heap/RSS
+long-run evidence is not claimed. External gates remain physical phone
+`runtime.lastError` source attribution, physical PWA geometry/keyboard/touch,
+public WebRTC and authenticated Git push, dual-window/dual-Host device E2E,
+WebView2 heap/RSS soak, and full desktop AppState/PTY/filesystem-root Kernel
+authority migration.
