@@ -1046,3 +1046,16 @@ paths, and rejects a mismatch before PTY creation. Authority lookup is not
 limited by the UI's 100-row history cap. Rust command tests pass (project
 25/25, pane 13/13) and `pnpm check` remains 0/0. This is the next versioned
 publish candidate; it is not represented as part of `v0.1.41`.
+
+### v0.1.42 publication closure (2026-08-03)
+
+The Agent resume CWD guard was released in commit
+`bd60f82c8d88ae0322708cc602ccfbb66f142cea`. Desktop workflow `30756926992`
+passed test, Linux, macOS ARM/x64, and Windows jobs. GitHub Release `v0.1.42`
+is published (`draft=false`, `prerelease=false`) with 12 matching assets.
+Remote workflow `30756944271` succeeded from the same commit; Cloud health
+returned HTTP 200 (`version=0.0.7`).
+
+The release cleanliness gate was satisfied before tagging; the follow-up
+archive change is docs-only and is pushed separately, so no version mismatch
+or empty Release exists.
