@@ -1286,7 +1286,7 @@ async fn handle_ws(
                                 let shell = parsed["shell"].as_str()
                                     .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
                                 let mut success = false;
-                                let result = match crate::commands::pane::remote_create_pane(&state, active_ws_id, shell) {
+                                let result = match crate::commands::pane::remote_create_pane(&state, active_ws_id, shell, None, None) {
                                     Ok(new_id) => match crate::commands::terminal::activate_pane_pty_state(
                                         &state, None, active_ws_id, new_id,
                                         Some(mobile_rows), Some(mobile_cols),
@@ -2626,6 +2626,46 @@ async fn dispatch_invoke_request(
         )),
         // R19：只读编排健康（suspended / pending）——与桌面 Agent Center badge 同源。
         "get_orchestration_health" => val(Ok(crate::commands::teammate::get_orchestration_health())),
+        // Resume a recorded Agent session without shell interpolation. The
+        // host resolves the registered profile, validates CWD, creates the
+        // pane, and activates the structured PTY before returning its id.
+        "resume_agent_session" => {
+            let result = Uuid::parse_str(&s(args, "workspaceId"))
+                .map_err(|_| "invalid workspaceId".to_string())
+                .and_then(|workspace_id| {
+                    pane::remote_resume_agent_pane(
+                        state,
+                        workspace_id,
+                        s(args, "agent"),
+                        s(args, "sessionId"),
+                        s(args, "cwd"),
+                    )
+                    .and_then(|pane_id| {
+                        terminal::activate_pane_pty_state(
+                            state,
+                            None,
+                            workspace_id,
+                            pane_id,
+                            None,
+                            None,
+                        )
+                        .map(|()| (workspace_id, pane_id))
+                    })
+                    .map_err(|e| e.to_string())
+                });
+            match result {
+                Ok((workspace_id, pane_id)) => {
+                    let _ = state.remote_structural_tx.send(
+                        crate::types::RemoteStructuralEvent::PanesChanged { workspace_id },
+                    );
+                    let _ = state.event_tx.try_send(
+                        crate::types::GlobalEvent::PaneTreeChanged { workspace_id },
+                    );
+                    val(Ok(serde_json::json!({ "paneId": pane_id.to_string() })))
+                }
+                Err(e) => val::<serde_json::Value>(Err(e)),
+            }
+        }
         "read_agent_recent_replies" => plain(
             project::read_agent_recent_replies(
                 vec_s(args, "projectPaths"),
