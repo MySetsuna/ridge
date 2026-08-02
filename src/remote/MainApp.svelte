@@ -354,7 +354,7 @@
       const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
       const mgr = TerminalManager.tryInstance();
       if (!mgr) return;
-      detachPaneRefs(refs, (paneId) => mgr.detach(paneId));
+      detachPaneRefs(refs, (paneKey) => mgr.detach(paneKey));
     } catch { /* manager not loaded / already torn down */ }
   }
 
