@@ -1101,3 +1101,14 @@ This is a new publish candidate after `v0.1.43`; it is not part of that
 release. Residual physical-phone, WebView2 heap, public WebRTC/authenticated
 Git, dual-window/Host singleton, production branch identity, protocol-level
 host cancellation, and full Kernel-authority evidence remain open.
+
+### Iteration 90 publication closure (2026-08-03)
+
+Version commit `24420a4` aligned package, Tauri, Cargo, and root lockfile to
+`0.1.44`; the clean release gate passed before the annotated `v0.1.44` tag.
+Release workflow `30761202858` passed test plus Linux, macOS ARM/x64, and
+Windows builds. GitHub Release `v0.1.44` is formal with 12 matching assets.
+Remote workflow `30762473570` completed successfully and activated the
+desktop/mobile artifact set. Cloud health returned HTTP 200
+(`version=0.0.7`). This follow-up is documentation-only and does not alter
+the released runtime.
