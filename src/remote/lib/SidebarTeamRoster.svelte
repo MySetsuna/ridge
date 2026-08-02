@@ -32,8 +32,9 @@
     onSelectPane?: (paneId: string) => void;
   } = $props();
 
-  // P1 MVP：轮询取数（合同明确不建订阅流）。5s 与桌面 Agent Center 刷新粒度同级。
-  const POLL_MS = 5000;
+  // P1 MVP：轮询取数（合同明确不建订阅流）。Query cache handles drawer
+  // remounts; this timer is only a slow liveness refresh.
+  const ROSTER_POLL_INTERVAL_MS = 5 * 60 * 1000;
   let topo = $state<TeammateTopology>({ roster: [], leaderId: null, edges: [] });
   let pending = $state<HitlPendingItem[]>([]);
   let health = $state<OrchestrationHealth>({ suspendedAgents: 0, pendingHitl: 0 });
@@ -216,7 +217,7 @@
 
   onMount(() => {
     void refresh();
-    const timer = setInterval(() => void refresh(), POLL_MS);
+    const timer = setInterval(() => void refresh(), ROSTER_POLL_INTERVAL_MS);
     const offCapabilities = ws.onCapabilitiesChanged(() => { historyUnavailable = false; });
     return () => {
       refreshToken += 1;
