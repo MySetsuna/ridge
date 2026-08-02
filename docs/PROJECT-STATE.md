@@ -865,3 +865,7 @@ arm64/x64 builds. Formal GitHub Release `v0.1.37` is published with 12
 matching installer/CLI assets. Remote workflow `30743623499` passed its build,
 upload and index checks and activated `0.1.37+ge4e0f91` for desktop/mobile;
 cloud health is HTTP 200 (`version=0.0.7`).
+
+Iteration 87 is archived with the remaining external gates carried forward;
+no physical-device, public-WebRTC, WebView2-soak, authenticated-push or full
+Kernel-domain-migration claim is implied by the successful release.

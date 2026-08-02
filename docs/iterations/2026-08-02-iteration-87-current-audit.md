@@ -190,3 +190,9 @@ DMGs/tars, and four rdg CLI binaries). Remote/cloud workflow `30743623499`
 passed build, upload and authenticated index checks; it activated
 `0.1.37+ge4e0f91` with desktop/mobile indexes. Cloud health returned HTTP 200
 (`version=0.0.7`), and the artifact host favicon check returned 200.
+
+Iteration 87 archive marker: implementation, deterministic local gates, formal
+Release and Remote/cloud activation are complete. Remaining external gates are
+explicitly carried forward (affected-phone attribution, physical-device UI,
+public WebRTC/host, WebView2 heap soak, authenticated Remote Git push and full
+Kernel domain migration); they are not silently marked done.
