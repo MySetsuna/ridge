@@ -117,19 +117,19 @@ export class TauriDataProvider implements DataProvider {
       })),
     };
   }
-  async gitStage(repoRoot: string, paths: string[]): Promise<void> {
+  async gitStage(repoRoot: string, paths: string[], _signal?: AbortSignal): Promise<void> {
     await this.call('git_stage', { repoRoot, paths });
   }
-  async gitUnstage(repoRoot: string, paths: string[]): Promise<void> {
+  async gitUnstage(repoRoot: string, paths: string[], _signal?: AbortSignal): Promise<void> {
     await this.call('git_unstage', { repoRoot, paths });
   }
-  async gitCommit(repoRoot: string, message: string, amend?: boolean): Promise<void> {
+  async gitCommit(repoRoot: string, message: string, amend?: boolean, _signal?: AbortSignal): Promise<void> {
     await this.call('git_commit', { repoRoot, message, amend: amend ?? false });
   }
   async gitPull(repoRoot: string): Promise<void> {
     await this.call('git_pull', { repoRoot });
   }
-  async gitPush(repoRoot: string, setUpstream?: boolean): Promise<void> {
+  async gitPush(repoRoot: string, setUpstream?: boolean, _signal?: AbortSignal): Promise<void> {
     await this.call('git_push', { repoRoot, setUpstream: setUpstream ?? false });
   }
   async gitSync(repoRoot: string): Promise<void> {

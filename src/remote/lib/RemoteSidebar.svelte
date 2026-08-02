@@ -78,7 +78,7 @@
   </div>
 
   <div class="sb-body">
-    {#key cwd}
+    {#key `${ws ? remoteSessionId(ws) : 0}:${workspaceId}:${paneId}:${cwd}`}
       {#if tab === 'files'}
         <SidebarFileTree {provider} {onOpenFile} />
       {:else if tab === 'git'}

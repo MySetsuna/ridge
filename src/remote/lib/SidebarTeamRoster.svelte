@@ -11,7 +11,11 @@
     AgentHistoryReply,
     TeammateGroup,
   } from '@ridge/remote';
-  import { normalizeTeamRosterWorkspaceId } from './teamRosterScope';
+  import {
+    createTeamRosterScopeGuard,
+    normalizeTeamRosterWorkspaceId,
+    teamRosterScopeKey,
+  } from './teamRosterScope';
   import {
     buildAgentHistoryGroups,
     shouldRefreshAgentHistory,
@@ -61,6 +65,9 @@
   let groupBusy = $state(false);
   let groupNote = $state('');
   const historyGroups = $derived(buildAgentHistoryGroups(history));
+  const scopeGuard = createTeamRosterScopeGuard();
+  let currentScopeKey = '';
+  let disposed = false;
 
   /** 防御式解析后端下发的编组条目（外部数据不信任；无 id 则丢弃）。 */
   function parseRemoteGroup(v: unknown): TeammateGroup | null {
@@ -207,25 +214,26 @@
       resolveNote = `#${p.id}: failed`;
     }
     await invalidateRosterQuery();
-    await refresh();
+    await startRefresh();
   }
 
-  async function refresh() {
+  async function refresh(generation: number, signal: AbortSignal) {
     const token = ++refreshToken;
     const rosterWorkspaceId = normalizeTeamRosterWorkspaceId(workspaceId);
     const sessionId = remoteSessionId(ws);
     try {
+      if (signal.aborted || !scopeGuard.isCurrent(generation)) return;
       const loadHistory = !historyUnavailable && shouldRefreshAgentHistory(historyLoadedAt);
       const [snapshot, recent] = await Promise.all([
-        fetchRemoteTeamRoster(ws, queryClient, sessionId, rosterWorkspaceId),
+        fetchRemoteTeamRoster(ws, queryClient, sessionId, rosterWorkspaceId, signal),
         loadHistory
-          ? fetchRemoteAgentHistory(ws, queryClient, sessionId, 24).catch(() => {
-              historyUnavailable = true;
+          ? fetchRemoteAgentHistory(ws, queryClient, sessionId, 24, signal).catch(() => {
+              if (!signal.aborted && scopeGuard.isCurrent(generation)) historyUnavailable = true;
               return null;
             })
           : Promise.resolve(null),
       ]);
-      if (token !== refreshToken) return;
+      if (token !== refreshToken || signal.aborted || !scopeGuard.isCurrent(generation)) return;
       const { topology: t, pending: p, health: h } = snapshot;
       topo = t;
       // groups 随 topology 快照下发（TeammateTopology 类型未含，运行时扩展读取）。
@@ -246,6 +254,7 @@
       }
       failed = false;
     } catch (e) {
+      if (signal.aborted || !scopeGuard.isCurrent(generation)) return;
       failed = true; // 保留上次快照；下轮轮询自愈
       // 面板上只剩一个「—」，不打日志根本查不出是鉴权、超时还是命令被拒
       // （iter-63 排查这条 bug 绕了三轮就是因为这里全静默）。
@@ -253,13 +262,35 @@
     }
   }
 
+  function startRefresh(resetScope = false): Promise<void> {
+    if (disposed) return Promise.resolve();
+    if (resetScope) {
+      historyLoadedAt = 0;
+      historyUnavailable = false;
+      onAttentionChange?.([]);
+    }
+    const run = scopeGuard.begin();
+    return refresh(run.generation, run.signal);
+  }
+
+  $effect(() => {
+    const nextScopeKey = teamRosterScopeKey(remoteSessionId(ws), workspaceId, panes);
+    if (nextScopeKey === currentScopeKey) return;
+    currentScopeKey = nextScopeKey;
+    void startRefresh(true);
+  });
+
   onMount(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), ROSTER_POLL_INTERVAL_MS);
-    const offCapabilities = ws.onCapabilitiesChanged(() => { historyUnavailable = false; });
+    const timer = setInterval(() => void startRefresh(), ROSTER_POLL_INTERVAL_MS);
+    const offReconnect = ws.onReconnect(() => { void startRefresh(true); });
+    const offCapabilities = ws.onCapabilitiesChanged(() => { void startRefresh(true); });
     return () => {
+      disposed = true;
+      scopeGuard.invalidate();
       refreshToken += 1;
       clearInterval(timer);
+      onAttentionChange?.([]);
+      offReconnect();
       offCapabilities();
     };
   });

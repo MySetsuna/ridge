@@ -3,6 +3,8 @@ import type { PaneInfo, RemoteLink, WsMessage } from '@ridge/remote';
 import {
   confirmedWorkspaceTarget,
   dedupeRemoteItems,
+  fetchRemoteAgentHistory,
+  fetchRemoteTeamRoster,
   mergeRemoteItems,
   requestPaneSnapshot,
   requestWorkspaceSnapshot,
@@ -71,5 +73,22 @@ describe('remote query snapshots', () => {
     } as unknown as RemoteLink;
     await expect(requestWorkspaceSnapshot(workspaceLink, undefined, 1))
       .rejects.toThrow('list workspaces timed out');
+  });
+
+  it('rejects late Agent snapshots when the active scope is aborted', async () => {
+    const controller = new AbortController();
+    const link = {
+      listAgentHistory: vi.fn(() => new Promise<never>(() => undefined)),
+      getTeammateTopology: vi.fn(() => new Promise<never>(() => undefined)),
+      listHitlPending: vi.fn(() => new Promise<never>(() => undefined)),
+      getOrchestrationHealth: vi.fn(() => new Promise<never>(() => undefined)),
+    } as unknown as RemoteLink;
+
+    const history = fetchRemoteAgentHistory(link, undefined, 1, 24, controller.signal);
+    const roster = fetchRemoteTeamRoster(link, undefined, 1, 'ws-a', controller.signal);
+    controller.abort();
+
+    await expect(history).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(roster).rejects.toMatchObject({ name: 'AbortError' });
   });
 });

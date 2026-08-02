@@ -47,6 +47,20 @@ describe('remote Git action contract', () => {
     expect(gitCommit).toHaveBeenCalledWith('fix remote git');
   });
 
+  it('forwards the cancellation signal to a remote mutation', async () => {
+    const controller = new AbortController();
+    const gitPush = vi.fn(async (_setUpstream: boolean, signal?: AbortSignal) => {
+      expect(signal).toBe(controller.signal);
+    });
+    const result = await runRemoteGitAction({
+      provider: provider({ gitPush }),
+      action: 'push',
+      signal: controller.signal,
+    });
+    expect(result).toEqual({ status: 'success' });
+    expect(gitPush).toHaveBeenCalledWith(false, controller.signal);
+  });
+
   it('does not dispatch after an abort and reports unavailable capabilities', async () => {
     const controller = new AbortController();
     controller.abort();

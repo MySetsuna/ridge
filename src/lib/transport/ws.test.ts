@@ -53,4 +53,16 @@ describe('WsDataProvider lifecycle', () => {
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     provider.dispose();
   });
+
+  it('honors an AbortSignal for a Git mutation as well', async () => {
+    const connection = fakeConnection();
+    const provider = new WsDataProvider(connection as unknown as RemoteConnection);
+    const controller = new AbortController();
+    const pending = provider.gitPush('/repo', false, controller.signal);
+
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    provider.dispose();
+  });
 });

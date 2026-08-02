@@ -36,11 +36,11 @@ export interface DataProvider {
 
   // ── Git ──
   gitStatus(repoRoot: string, signal?: AbortSignal): Promise<GitStatusResult>;
-  gitStage(repoRoot: string, paths: string[]): Promise<void>;
-  gitUnstage(repoRoot: string, paths: string[]): Promise<void>;
-  gitCommit(repoRoot: string, message: string, amend?: boolean): Promise<void>;
+  gitStage(repoRoot: string, paths: string[], signal?: AbortSignal): Promise<void>;
+  gitUnstage(repoRoot: string, paths: string[], signal?: AbortSignal): Promise<void>;
+  gitCommit(repoRoot: string, message: string, amend?: boolean, signal?: AbortSignal): Promise<void>;
   gitPull(repoRoot: string): Promise<void>;
-  gitPush(repoRoot: string, setUpstream?: boolean): Promise<void>;
+  gitPush(repoRoot: string, setUpstream?: boolean, signal?: AbortSignal): Promise<void>;
   gitSync(repoRoot: string): Promise<void>;
   gitCheckout(repoRoot: string, branch: string, create?: boolean): Promise<void>;
   gitRevert(repoRoot: string, hash: string): Promise<void>;

@@ -16,6 +16,7 @@
   import { cloudAuth as cloudAuthStore } from '@ridge/remote/shared/cloud/auth';
   import { BASE_DOMAIN, cloudHttpScheme } from '@ridge/remote/shared/cloud/apiClient';
   import { remoteBootMode } from '$lib/remote/remoteBootMode';
+  import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
 
   // §web-remote: when the desktop SPA is served to a plain browser by the LAN
   // remote server, `@tauri-apps/api/*` is aliased to the shims in
@@ -39,6 +40,11 @@
   // until the bridge is attached, so the desktop UI never calls `invoke()`
   // before the WS is live.
   let { children } = $props();
+  // Shared-workspace panels use the Query-backed sidebar provider. Keep one
+  // client at the desktop layout boundary so nested panels always have context.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 0 } },
+  });
   let ready = $state(!WEB_REMOTE);
   let phase = $state('connecting'); // 'connecting' | 'need-code' | 'need-totp' | 'error'
   let code = $state('');
@@ -370,6 +376,7 @@
   // to the system emoji fonts, which are reliable across all platforms.
 </script>
 
+<QueryClientProvider client={queryClient}>
 {#if ready}
   <div class="min-h-screen min-h-[100dvh] bg-[var(--rg-bg)] text-[var(--rg-fg)] antialiased">
     {#if editorWindow}
@@ -436,6 +443,7 @@
 {#if browser && !WEB_REMOTE && !editorWindow}
   <HitlApprovalModal />
 {/if}
+</QueryClientProvider>
 
 <style>
   .wr-gate { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; background: var(--rg-bg, #0d1117); color: var(--rg-fg, #e6edf3); }
