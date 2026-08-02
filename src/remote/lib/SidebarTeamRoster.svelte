@@ -12,10 +12,19 @@
   } from '@ridge/remote';
   import { normalizeTeamRosterWorkspaceId } from './teamRosterScope';
   import { buildAgentHistoryGroups } from '$lib/teammate/agentCommuneModel';
+  import {
+    fetchRemoteAgentHistory,
+    fetchRemoteTeamRoster,
+    remoteQueryKeys,
+    remoteSessionId,
+    type RemoteQueryClientLike,
+  } from './remoteQueries';
 
-  let { ws, workspaceId, onSelectPane }: {
+  let { ws, workspaceId, queryClient, onSelectPane }: {
     ws: RemoteLink;
     workspaceId: string;
+    /** Remote mobile supplies the shared QueryClient; desktop keeps direct reads. */
+    queryClient?: RemoteQueryClientLike;
     /** 点击成员 → 切到其 pane（MVP：拓扑取自活动工作区，pane 即当前工作区内）。 */
     onSelectPane?: (paneId: string) => void;
   } = $props();
@@ -36,6 +45,7 @@
   let history = $state<AgentHistoryReply[]>([]);
   let historyLoadCount = 0;
   let historyUnavailable = false;
+  let refreshToken = 0;
   let newGroupName = $state('');
   let groupBusy = $state(false);
   let groupNote = $state('');
@@ -64,6 +74,14 @@
     return `remote-${Date.now().toString(36)}`;
   }
 
+  async function invalidateRosterQuery(): Promise<void> {
+    const rosterWorkspaceId = normalizeTeamRosterWorkspaceId(workspaceId);
+    if (!queryClient || !rosterWorkspaceId) return;
+    await queryClient.invalidateQueries?.({
+      queryKey: remoteQueryKeys.teamRoster(remoteSessionId(ws), rosterWorkspaceId),
+    });
+  }
+
   async function persistGroups(next: TeammateGroup[]): Promise<void> {
     if (!workspaceId || groupBusy) return;
     groupBusy = true;
@@ -71,6 +89,7 @@
     try {
       await ws.setTeammateGroups(workspaceId, next);
       groups = next;
+      await invalidateRosterQuery();
       groupNote = '编组已保存';
     } catch (e) {
       groupNote = `保存失败：${e instanceof Error ? e.message : String(e)}`;
@@ -145,24 +164,28 @@
     } catch {
       resolveNote = `#${p.id}: failed`;
     }
+    await invalidateRosterQuery();
     await refresh();
   }
 
   async function refresh() {
+    const token = ++refreshToken;
+    const rosterWorkspaceId = normalizeTeamRosterWorkspaceId(workspaceId);
+    const sessionId = remoteSessionId(ws);
     try {
       historyLoadCount += 1;
       const loadHistory = !historyUnavailable && (history.length === 0 || historyLoadCount % 3 === 1);
-      const [t, p, h, recent] = await Promise.all([
-        ws.getTeammateTopology(normalizeTeamRosterWorkspaceId(workspaceId)),
-        ws.listHitlPending(),
-        ws.getOrchestrationHealth().catch(() => ({ suspendedAgents: 0, pendingHitl: 0 })),
+      const [snapshot, recent] = await Promise.all([
+        fetchRemoteTeamRoster(ws, queryClient, sessionId, rosterWorkspaceId),
         loadHistory
-          ? ws.listAgentHistory(24).catch(() => {
+          ? fetchRemoteAgentHistory(ws, queryClient, sessionId, 24).catch(() => {
               historyUnavailable = true;
               return null;
             })
           : Promise.resolve(null),
       ]);
+      if (token !== refreshToken) return;
+      const { topology: t, pending: p, health: h } = snapshot;
       topo = t;
       // groups 随 topology 快照下发（TeammateTopology 类型未含，运行时扩展读取）。
       const rawGroups = (t as TeammateTopology & { groups?: unknown }).groups;
@@ -189,6 +212,7 @@
     const timer = setInterval(() => void refresh(), POLL_MS);
     const offCapabilities = ws.onCapabilitiesChanged(() => { historyUnavailable = false; });
     return () => {
+      refreshToken += 1;
       clearInterval(timer);
       offCapabilities();
     };
@@ -394,14 +418,15 @@
   .badge.hitl{border-color:color-mix(in srgb,var(--rg-accent) 50%,transparent);color:var(--rg-accent)}
   .badge.sus{opacity:.9}
   .section{margin:4px 2px;font-size:11px;color:var(--rg-fg-muted);text-transform:uppercase;letter-spacing:.04em}
-  .subtabs{display:flex;gap:4px;padding:4px 2px 6px}
-  .subtabs button{flex:1;font-size:11px;padding:4px 8px;border:1px solid var(--rg-border);border-radius:6px;background:none;color:var(--rg-fg-muted);cursor:pointer}
+  .subtabs{display:flex;align-items:stretch;gap:4px;padding:4px 2px 6px}
+  .subtabs button{display:inline-flex;align-items:center;justify-content:center;gap:4px;flex:1;min-width:0;font-size:11px;line-height:1.2;padding:4px 8px;border:1px solid var(--rg-border);border-radius:6px;background:none;color:var(--rg-fg-muted);cursor:pointer}
+  .subtabs :global(svg),.approval :global(svg),.member-head :global(svg),.act :global(svg),.msg-row :global(svg){display:block;flex:0 0 auto}
   .subtabs button.active{color:var(--rg-fg);border-color:color-mix(in srgb,var(--rg-accent) 50%,transparent);background:color-mix(in srgb,var(--rg-accent) 12%,transparent)}
   .dot.suspended{background:#f59e0b}
-  .approval{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:var(--rg-surface-2);font-size:13px}
+  .approval{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:var(--rg-surface-2);font-size:13px;line-height:1.2}
   .approval :global(.risk){color:var(--rg-accent);flex-shrink:0}
   .note{margin:0 2px 4px;font-size:11px;color:var(--rg-fg-muted)}
-  .act{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;border-radius:6px;background:var(--rg-surface);color:var(--rg-fg-muted);cursor:pointer;flex-shrink:0}
+  .act{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;border-radius:6px;background:var(--rg-surface);color:var(--rg-fg-muted);cursor:pointer;flex-shrink:0;line-height:1}
   .act.approve:active{color:#34d399}
   .act.reject:active{color:#f87171}
   .empty{margin:12px;font-size:12px;color:var(--rg-fg-muted);text-align:center}
@@ -410,12 +435,12 @@
   /* 成员卡（iter-62）：状态 + 最近回复 + 独立发消息框，与桌面面板同构。 */
   .member-card{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border-radius:8px;background:var(--rg-surface-2);margin:2px 0}
   .member-card.offline{opacity:.55}
-  .member-head{display:flex;align-items:center;gap:6px;font-size:13px}
-  .head-main{display:flex;align-items:center;gap:8px;flex:1;min-width:0;border:none;background:none;color:var(--rg-fg);text-align:left;padding:0;cursor:pointer;font-size:13px}
+  .member-head{display:flex;align-items:center;gap:6px;min-height:24px;font-size:13px;line-height:1.2}
+  .head-main{display:flex;align-items:center;gap:8px;flex:1;min-width:0;min-height:24px;border:none;background:none;color:var(--rg-fg);text-align:left;padding:0;cursor:pointer;font-size:13px;line-height:1.2}
   .head-main:active{opacity:.7}
-  .tag{font-size:9px;padding:1px 5px;border:1px solid var(--rg-border);border-radius:999px;color:var(--rg-fg-muted);flex-shrink:0}
+  .tag{display:inline-flex;align-items:center;font-size:9px;line-height:1;padding:2px 5px;border:1px solid var(--rg-border);border-radius:999px;color:var(--rg-fg-muted);flex-shrink:0}
   .role.live{color:var(--rg-accent)}
-  .member-approval{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--rg-accent)}
+  .member-approval{display:flex;align-items:center;gap:6px;font-size:11px;line-height:1.2;color:var(--rg-accent)}
   .reply-toggle{display:flex;align-items:center;gap:6px;border:none;background:none;padding:0;color:var(--rg-fg-muted);font-size:11px;text-align:left;cursor:pointer;min-width:0}
   .reply-peek{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.75}
   .reply{margin:0;max-height:160px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:var(--rg-bg);border-radius:6px;padding:6px;font-size:11px;line-height:1.35;color:var(--rg-fg-muted)}
@@ -431,7 +456,7 @@
   .group-name{flex:1;min-width:0;border:1px solid transparent;background:transparent;color:var(--rg-fg);font-size:12px;font-weight:600;outline:none}
   .group-name:focus{border-color:var(--rg-border);border-radius:4px;padding:1px 4px}
   .group-member{position:relative}
-  .member-remove{position:absolute;right:8px;bottom:8px;width:22px;height:22px;border:1px solid var(--rg-border);border-radius:5px;background:var(--rg-bg);color:var(--rg-fg-muted);cursor:pointer}
+  .member-remove{position:absolute;right:8px;bottom:8px;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border:1px solid var(--rg-border);border-radius:5px;background:var(--rg-bg);color:var(--rg-fg-muted);cursor:pointer;line-height:1}
   .member-add{display:block;width:calc(100% - 16px);margin:4px 8px 7px;padding:3px 6px;border:1px dashed var(--rg-border);border-radius:5px;background:transparent;color:var(--rg-fg-muted);font-size:10px;text-align:left;cursor:pointer}
   .member-add:active,.member-remove:active{color:var(--rg-accent)}
   .history-group{border:1px solid var(--rg-border);border-radius:8px;overflow:hidden;margin:2px 0}
@@ -442,5 +467,5 @@
   .dot{width:8px;height:8px;border-radius:50%;background:var(--rg-fg-muted);flex-shrink:0}
   .dot.working{background:var(--rg-accent)}
   .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .role{font-size:11px;color:var(--rg-fg-muted)}
+  .role{font-size:11px;line-height:1.2;color:var(--rg-fg-muted)}
 </style>

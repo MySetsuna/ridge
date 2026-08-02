@@ -1,7 +1,11 @@
 import type {
+  AgentHistoryReply,
+  HitlPendingItem,
   PaneInfo,
   RemoteLink,
   RemotePanel,
+  TeammateTopology,
+  OrchestrationHealth,
   WorkspaceInfo,
   WsMessage,
 } from '@ridge/remote';
@@ -23,6 +27,12 @@ export const remoteQueryKeys = {
   panes: (sessionId: number, workspaceId: string) =>
     ['remote', sessionId, 'panes', workspaceId] as const,
   capabilities: (sessionId: number) => ['remote', sessionId, 'capabilities'] as const,
+  /** Agent sidebar data is scoped by remote session + active workspace. */
+  teamRoster: (sessionId: number, workspaceId?: string) =>
+    ['remote', sessionId, 'team', workspaceId ?? ''] as const,
+  /** Agent history is host-wide; CWD grouping happens in the sidebar. */
+  agentHistory: (sessionId: number, limit = 24) =>
+    ['remote', sessionId, 'team', 'history', limit] as const,
   /**
    * Sidebar reads use the same TanStack Query cache as workspace/pane reads.
    * Keep cwd and target in every key: two panes can point at the same path
@@ -73,6 +83,53 @@ export function fetchRemoteQuery<T>(
 ): Promise<T> {
   if (!queryClient) return queryFn();
   return queryClient.fetchQuery({ queryKey, queryFn, staleTime });
+}
+
+export interface RemoteTeamRosterSnapshot {
+  topology: TeammateTopology;
+  pending: HitlPendingItem[];
+  health: OrchestrationHealth;
+}
+
+/**
+ * Query-backed Agent roster snapshot. Keeping this in the shared query layer
+ * makes sidebar remounts single-flight and lets the QueryClient retain the
+ * last successful snapshot while the drawer is closed.
+ */
+export function fetchRemoteTeamRoster(
+  link: RemoteLink,
+  queryClient: RemoteQueryClientLike | undefined,
+  sessionId: number,
+  workspaceId?: string,
+): Promise<RemoteTeamRosterSnapshot> {
+  return fetchRemoteQuery(
+    queryClient,
+    remoteQueryKeys.teamRoster(sessionId, workspaceId),
+    async () => {
+      const [topology, pending, health] = await Promise.all([
+        link.getTeammateTopology(workspaceId),
+        link.listHitlPending(),
+        link.getOrchestrationHealth().catch(() => ({ suspendedAgents: 0, pendingHitl: 0 })),
+      ]);
+      return { topology, pending, health };
+    },
+    REMOTE_SIDEBAR_STALE_TIME_MS,
+  );
+}
+
+/** Query-backed Agent history; callers may apply a local capability breaker. */
+export function fetchRemoteAgentHistory(
+  link: RemoteLink,
+  queryClient: RemoteQueryClientLike | undefined,
+  sessionId: number,
+  limit = 24,
+): Promise<AgentHistoryReply[]> {
+  return fetchRemoteQuery(
+    queryClient,
+    remoteQueryKeys.agentHistory(sessionId, limit),
+    () => link.listAgentHistory(limit),
+    REMOTE_SIDEBAR_STALE_TIME_MS,
+  );
 }
 
 export type RemoteCapabilities = {
