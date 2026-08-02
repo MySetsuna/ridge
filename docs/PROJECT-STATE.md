@@ -740,3 +740,25 @@ GitHub Release `v0.1.35` is formal with 12 assets. Local checks are green:
 `pnpm check` 0/0 and Vitest 131 files, 1,418 passed, 1 skipped. External
 physical-device, soak, dual-window/host and authenticated-push gates remain
 explicitly unclaimed.
+
+## Iteration 87 current audit (2026-08-02)
+
+See [`docs/iterations/2026-08-02-iteration-87-current-audit.md`](iterations/2026-08-02-iteration-87-current-audit.md).
+The latest user correction is authoritative: Remote renders no in-app PWA
+install control and does not own `beforeinstallprompt`; browser-native install
+UI remains outside business code. Remote Agent cards now expose true pane CWD
+through stable `paneId` mapping. `c692781` adds a cross-process
+`KernelInstanceGuard` probe; `0cbb636` guards browser-native PWA scope. The
+remaining phone attribution, physical-device, public soak, WebView2 heap,
+authenticated-push and no-Tauri deep-root gates remain unclaimed.
+
+### Iteration 87 correction — transient Agent intervention border
+
+The Pane border is now an ephemeral human-intervention hint only. Desktop
+`SplitContainer` reads `agentPaneAttentionStore` (`waiting`/`stopped`) for the
+inset ring; runtime `working`/`idle` status remains diagnostic and never paints
+a border. Remote follows the same rule through `agentNeedsAttention`; focus,
+Agent selection, stdin, resize or pane claim acknowledges and clears the hint.
+Remote GitGraph transport/selected-commit metadata is local-verified in
+`0e608b9` and `c421c83`; these commits require Remote artifact republish, not a
+desktop version bump.

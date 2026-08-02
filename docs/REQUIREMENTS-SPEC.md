@@ -247,19 +247,19 @@
 - 原始意图：
   - 首次进入 Agent's Commune 不得窄折叠；无需切 tab 自愈。
   - 点击活跃 Agent，直接切到其工作区、聚焦并高亮对应 pane。
-  - Agent 停止为红，等待审批为黄；Agent 卡片边框与 pane header Agent 图标同步显色，
-    直至目标 pane 真正聚焦才清除暂态高亮。
+  - Agent 停止为红，等待审批为黄；Agent 卡片状态色条常驻，Pane Border 仅在需要用户介入时暂态显色，
+    直至目标 pane 被用户接管或真正聚焦才清除。
   - 交互卡片实时接收动态标题。
 - 当前证据：AgentMemberRow 已有等待审批黄点、运行绿点、OSC title 优先；失联用 muted，
   行本身无跨工作区导航，亦无“直到聚焦才消失”的统一暂态。
 - 目标行为：状态与标题由 topology/pane tree 同一事实投影；导航使用显式 workspace/pane；
-  红/黄暂态在 Agent 卡片与 pane header 一致，聚焦目标 pane 后原子确认并清除。
+  Agent 卡片持续呈现运行/空闲语义，Pane Border 只映射需介入的暂态，聚焦或接管目标 pane 后原子确认并清除。
 - 范围：桌面 Agent Center、AgentMemberRow、pane header、跨工作区聚焦与 topology 标题投影。
 - 非目标：改变 Agent 进程生命周期；以颜色替代状态文本或安全审批。
 - 边界：颜色不得成为唯一语义；须有文本/aria-label；轮询不变不得制造布局或标题事件风暴。
 - 假设/待确认：“停止运行”映射 `Disappeared`/进程退出，不等同用户主动暂停。
 - 验收：首次挂载真实宽度 fixture；wsA→点击 wsB Agent 后 active workspace/pane 唯一匹配；
-  Working→Waiting→Focused 与 Working→Disappeared 状态机；两表面颜色/文本同源；动态 title
+  Working→Waiting→Focused 与 Working→Disappeared 状态机；卡片颜色/文本同源，Pane Border 仅在 Waiting/介入态出现并在 Focus/Claim 后清零；动态 title
   更新一次、无变化零事件。
 - 预期落点：AgentCenter/AgentMemberRow、pane tree/header、`+page.svelte`、teammate model/tests。
 
@@ -1015,10 +1015,10 @@
 - 版本:`v1`
 - 类型:`MODIFY` + `FIX`
 - 关联:`REQ-AGENT-INTERACTION-STATE-01`、`REQ-AGENT-HISTORY-SOURCE-02`、`REQ-AGENT-HISTORY-01`、`REQ-AGENT-COMMUNE-CONTINUITY-01`
-- 原始意图:强化 Agent's Commune 侧栏交互，使 Agent 状态、历史会话、恢复入口和 Pane 边框形成可验证闭环。
-- 行为:(1) 卡片展示稳定 Agent 身份、运行中/空闲/等待审批/停止/失败状态、标题与最近活动；左侧竖色条、文本和 `aria-label` 同源，颜色非唯一语义。(2) 点击可聚焦正确 workspace/pane，等待审批有明确入口，状态变化不造重复布局事件。(3) 从有证据的 Agent adapter 读取 JSONL/会话文件，按稳定 Agent identity（不按 CWD）分组，一 session 一行，展示标题、session id、Agent、原始 CWD、最近活动和真实最新 assistant 内容；损坏/超大/未知源局部失败且可诊断。(4) 运行中与历史以原生 session id 关联，禁止标题/CWD 猜测。(5) 恢复使用 adapter 结构化 executable/argv/CWD/session identity，在当前 workspace 新建唯一 pane，保留错误与取消语义，不拼接未转义 shell 字符串。(6) Agent 状态与对应 Pane 外边框高亮同源投影，状态变化、Pane 销毁、跨 workspace 聚焦幂等。
+- 原始意图:强化 Agent's Commune 侧栏交互，使 Agent 状态、历史会话、恢复入口和需介入时的暂态 Pane Border 形成可验证闭环。
+- 行为:(1) 卡片展示稳定 Agent 身份、运行中/空闲/等待审批/停止/失败状态、标题与最近活动；左侧竖色条、文本和 `aria-label` 同源，颜色非唯一语义。(2) 点击可聚焦正确 workspace/pane，等待审批有明确入口，状态变化不造重复布局事件。(3) 从有证据的 Agent adapter 读取 JSONL/会话文件，按稳定 Agent identity（不按 CWD）分组，一 session 一行，展示标题、session id、Agent、原始 CWD、最近活动和真实最新 assistant 内容；损坏/超大/未知源局部失败且可诊断。(4) 运行中与历史以原生 session id 关联，禁止标题/CWD 猜测。(5) 恢复使用 adapter 结构化 executable/argv/CWD/session identity，在当前 workspace 新建唯一 pane，保留错误与取消语义，不拼接未转义 shell 字符串。(6) Pane Border 只映射需用户介入的暂态 attention/HITL 状态；正常运行/空闲无 Border，用户接管或聚焦后立即清除；Pane 销毁、跨 workspace 聚焦幂等。
 - 边界:范围 `src/lib/teammate/**`、AgentCenter/Commune 卡片与状态模型、Agent history adapter/DTO、JSONL/会话解析、CWD/session identity、pane tree/header/border 投影、结构化恢复入口及必要 Tauri topology/历史 DTO 和确定性测试；不上传历史、不修改第三方会话文件、不按标题/CWD 猜测身份、不伪造无可靠 resume 契约、不引入第二持久状态源、不改 Remote 协议；pane header、Agent Tab、历史恢复读取同一后端事实；复合 `(workspaceId,paneId)` 与原生 session identity 不得回退模糊匹配；键盘导航、HITL 安全门、多窗口/工作区单例语义不得回归。
-- 验收:多 Agent、多 CWD、多 session、多回复及运行/空闲/等待审批/停止/失败、损坏/超大 JSONL fixture 下，卡片按稳定 Agent 分组且一 session 一行；左色条、状态文本、`aria-label`、Pane 外边框同状态；无变化轮询零重复事件；点击恢复在当前 workspace 恰新增一个 Pane 且捕获 executable/argv/CWD/session identity，重复点击单飞；跨 workspace 只聚焦正确 pane；Pane destroy/取消不留 pending；至少一类真实 Agent/等价进程 E2E 证明 CWD 恢复与状态闭环。
+- 验收:多 Agent、多 CWD、多 session、多回复及运行/空闲/等待审批/停止/失败、损坏/超大 JSONL fixture 下，卡片按稳定 Agent 分组且一 session 一行；左色条、状态文本、`aria-label` 同源，Pane Border 仅在 attention/HITL 时出现并在接管/聚焦后清除；无变化轮询零重复事件；点击恢复在当前 workspace 恰新增一个 Pane 且捕获 executable/argv/CWD/session identity，重复点击单飞；跨 workspace 只聚焦正确 pane；Pane destroy/取消不留 pending；至少一类真实 Agent/等价进程 E2E 证明 CWD 恢复与状态闭环。
 - 追踪:`REQ-AGENT-COMMUNE-UI-02` → `.iteration/intakes/` → NLM 深研决策包 → AgentCenter/Commune card + teammate model/adapters + history parser + pane state/border projection + structured resume → Vitest/Svelte/adapter fixtures、Rust/TypeScript 集成及真进程等价 E2E → 迭代归档
 
 ### REQ-MOBILE-REMOTE-KEYBOARD-QOS-02 · Mobile Remote keyboard stable visual offset
@@ -1082,26 +1082,28 @@
 - 批准依据:`用户明确预审批通过：下一迭代 Remote PWA safe-area、Query 管理、Git 提交推送/GitGraph、Agent 侧栏桌面 parity；补充 Remote Agent 编组管理与 Agent 历史 Tab。`
 - 状态:`ACTIVE`
 - 版本:`v1`
-- 行为:Remote 手机网页/PWA 提供与桌面同源的 Agent 侧栏能力：状态卡片、审批入口、历史展示 Tab、Agent 编组管理（创建/重命名/成员增删/排序/删除及状态）、会话 CWD/session 定位、结构化恢复、workspace/pane 聚焦与 Pane 边框反馈；移动端布局遵循 safe-area、键盘和触控无障碍。
+- 行为:Remote 手机网页/PWA 提供与桌面同源的 Agent 侧栏能力：状态卡片（每张卡展示真实 CWD，按稳定 `paneId`/Agent identity 映射并安全截断）、审批入口、历史展示 Tab、Agent 编组管理（创建/重命名/成员增删/排序/删除及状态）、会话 CWD/session 定位、结构化恢复、workspace/pane 聚焦与仅待用户介入的暂态 Pane Border 反馈；移动端布局遵循 safe-area、键盘和触控无障碍。
 - 边界:范围 `src/remote` Agent Tab/历史/编组交互、共享 Agent DTO/query/cache、teammate/AgentCenter 后端能力与权限门、跨窗口/Host 身份映射和确定性测试；不得复制桌面私有状态、按标题/CWD 猜 Agent、把历史写回第三方会话文件、绕过 HITL 或 Remote capability。
-- 验收:多 Agent、多编组、多 CWD/session、运行/空闲/等待审批/停止/失败及损坏历史 fixture 下，Remote 与桌面展示同一状态/历史/成员；编组 CRUD、审批、历史 Tab、恢复和跨 workspace 聚焦均可在手机触控完成且重复操作单飞；刷新/断线/重连/窗口切换不丢组、不串 Pane、不留 pending RPC；至少一条 LAN/cloud mobile E2E 与桌面 parity 对照通过。
+- 验收:多 Agent、多编组、多 CWD/session、运行/空闲/等待审批/停止/失败及损坏历史 fixture 下，Remote 与桌面展示同一状态/历史/成员及每卡真实 CWD；编组 CRUD、审批、历史 Tab、恢复和跨 workspace 聚焦均可在手机触控完成且重复操作单飞；刷新/断线/重连/窗口切换不丢组、不串 Pane、不留 pending RPC；至少一条 LAN/cloud mobile E2E 与桌面 parity 对照通过。
 - 追踪:`REQ-AGENT-COMMUNE-REMOTE-PARITY-01` → AgentCenter/Commune shared DTO + remote tabs/groups/history → Vitest/Svelte/Rust + mobile E2E → iteration archive
 
-### REQ-MOBILE-REMOTE-PWA-INSTALL-01 · Real PWA install capability and entry point
+### REQ-MOBILE-REMOTE-PWA-INSTALL-01 · Browser-native PWA install compatibility (no in-app install control)
 
 - 批准依据:`用户补充：定位 PWA 安装按钮未显示根因并实现真实可验证 PWA 安装能力；纳入已预审批下一迭代。`
 - 状态:`ACTIVE`
 - 版本:`v1`
-- 行为:Remote 在满足安装资格的浏览器中显示真实可操作的 Install App 入口，正确缓存并消费 `beforeinstallprompt`，处理安装成功、用户拒绝、已安装、浏览器不支持和 iOS 手动添加到主屏幕状态；manifest、service worker、scope、icons、HTTPS/安全上下文与 standalone display-mode 形成可诊断闭环，不伪造安装状态、不静默吞事件。
-- 边界:范围 PWA manifest/service-worker registration、installability diagnostics、`beforeinstallprompt` 生命周期、Remote/PWA 设置入口、browser/PWA E2E 与兼容性说明；不得以永久按钮替代资格判断、阻塞首屏、重复监听/重复 prompt、或把第三方 WebView 当成支持 PWA。
-- 验收:Chromium mobile HTTPS fixture 能观测到 install prompt 并点击完成安装/进入 standalone；已安装/拒绝/不支持/iOS 分支显示准确反馈；manifest/service worker/scope/icons 可被检查，刷新与导航不丢 pending prompt，销毁后监听归零；普通网页与 PWA 抽屉 safe-area 交互均通过。
-- 追踪:`REQ-MOBILE-REMOTE-PWA-INSTALL-01` → manifest/SW/install controller → browser installability + mobile/PWA E2E → iteration archive
+- 行为:Remote 不显示“添加到主屏幕”或 Install App 按钮，不拦截、不消费、不伪造 `beforeinstallprompt` 或安装状态；安装由浏览器原生 UI 完成。业务仅保证 manifest、service worker、scope、icons、HTTPS/安全上下文与 standalone/display-mode 链路可诊断，并使普通网页与 PWA 使用同一 safe-area、旋转、键盘、主题和抽屉交互语义。
+- 边界:范围 PWA manifest/service-worker registration、安装资格只读诊断、display-mode 与布局投影、browser/PWA E2E 与兼容性说明；不得引入永久安装按钮、重复监听/重复 prompt、阻塞首屏、屏蔽 Console，或把第三方 WebView 当成支持 PWA。
+- 验收:Chromium mobile HTTPS fixture 可检查 manifest/service worker/scope/icons 与 standalone/display-mode；普通网页和已安装 PWA 的抽屉按钮均在 safe-area 内可见可点，旋转/键盘/主题切换不闪烁；无 `beforeinstallprompt` 业务监听、无安装状态伪造；浏览器原生安装入口不纳入业务 E2E。
+- 追踪:`REQ-MOBILE-REMOTE-PWA-INSTALL-01` → manifest/SW/display-mode diagnostics → browser+PWA layout E2E → iteration archive
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
 | --- | --- | --- | --- | --- | --- |
 | v0.3.9 | 2026-08-02 | `<ITERATION-85>` | Mobile Remote Worker 冷启动监听、WASM fallback、Pane init/bind/resize 生命周期与 runtime noise 断言纳入实现闭环 | 收敛 `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02`、`REQ-REMOTE-RUNTIME-PERF-MEMORY-02`、`REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01` 的确定性部分；外部闸门仍待补 | 用户预审批通过；Iteration 85 contract 与 CDP/Vitest 证据 |
 | v0.3.10 | 2026-08-02 | `INTAKE-20260802-REMOTE-PWA-GIT-AGENT-01` | 下一迭代纳入 Remote browser/PWA safe-area 与真实安装能力、Git/File Query 缓存、Git commit/push + GitGraph、Agent Commune 移动端编组/历史 Tab 与桌面 parity | 新增 `REQ-MOBILE-REMOTE-PWA-SAFE-AREA-01`、`REQ-MOBILE-REMOTE-PWA-INSTALL-01`、`REQ-REMOTE-QUERY-CACHE-01`、`REQ-GIT-INTERACTIVE-PUBLISH-GRAPH-01`、`REQ-AGENT-COMMUNE-REMOTE-PARITY-01` | 用户明确下一迭代预审批，并补充 Remote Agent 编组/历史 Tab 与 PWA 安装根因闭环 |
+| v0.3.11 | 2026-08-02 | `<DIRECT-REVISION>` | PWA 安装改由浏览器原生 UI；Remote 业务不显示安装按钮、不监听/消费 `beforeinstallprompt`，仅负责 standalone/PWA safe-area 与布局适配；补充手机 Agent 卡片真实 CWD 展示 | 修订 `REQ-MOBILE-REMOTE-PWA-INSTALL-01`；补充 `REQ-AGENT-COMMUNE-REMOTE-PARITY-01` 的卡片 CWD 观察项 | 用户明确“Remote端不要显示添加到主屏幕这个按钮”及“Agent卡片也需要展示Cwd” |
+| v0.3.12 | 2026-08-02 | `<DIRECT-REVISION>` | Pane Border 改为仅待用户介入的暂态提示；正常运行/空闲不描边，聚焦、接管、输入或 Resize 后清除；Agent 状态色条/文本仍常驻 | 修订 `REQ-AGENT-INTERACTION-STATE-01`、`REQ-AGENT-COMMUNE-UI-02`、`REQ-AGENT-COMMUNE-REMOTE-PARITY-01` 的 Pane 反馈语义 | 用户明确“只有需要用户介入时，才高亮 Pane 的 Border” |
 | v0.3.8 | 2026-08-02 | `<DIRECT-APPROVAL>` | Mobile Remote 键盘稳定偏移与 Remote 性能/健壮性/内存回收转 Active | 新增 `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02`、`REQ-REMOTE-RUNTIME-PERF-MEMORY-02` | 用户明确「这条需求也预审批通过」 |
 | v0.3.7 | 2026-08-02 | `PENDING-REQ-20260801-AGENT-COMMUNE-UI-01` | Agent's Commune 交互卡片、状态投影、历史按 Agent 分组与 CWD 恢复转 Active | 新增 `REQ-AGENT-COMMUNE-UI-02` | 用户明确「预审批刚刚需求」 |
 | v0.3.6 | 2026-07-31 | `PENDING-REQ-RIDGE-KERNEL-HOST-01` | 内核进程与外壳生命周期（深根模式）转 Active | 新增 `REQ-RIDGE-KERNEL-HOST-01` | 用户明确「全数批准」 |
