@@ -47,6 +47,27 @@ dual-Host gates remain pending; no external proof is inferred from local CDP.
 LAN matrix evidence is `.iteration/artifacts/rdg-remote-e2e/last-result.json`;
 keyboard emulation evidence is `.iteration/artifacts/rdg-remote-e2e/mobile-keyboard.json`.
 
+## Iteration 86 intake (2026-08-02)
+
+`INTAKE-20260802-REMOTE-PWA-GIT-AGENT-01` is executable with no Pending
+records. Next scope: `REQ-MOBILE-REMOTE-PWA-SAFE-AREA-01` (PWA/browser notch-safe
+drawer), `REQ-REMOTE-QUERY-CACHE-01` (Git/File Query single-flight/cache),
+`REQ-GIT-INTERACTIVE-PUBLISH-GRAPH-01` (safe commit/push + GitGraph), and
+`REQ-AGENT-COMMUNE-REMOTE-PARITY-01` (mobile Agent groups + history Tab and
+desktop parity), plus `REQ-MOBILE-REMOTE-PWA-INSTALL-01` (real install prompt,
+manifest/service-worker eligibility and accurate installed/unsupported states).
+Contract: `docs/iterations/CONTRACT-iteration-86.md`. Order is P0 PWA
+installability/safe-area → Query contracts, then P1 Git workflow/Graph → Agent
+groups/history parity; release failure must not trigger another version bump.
+
+Iteration 86 P0 progress: `src/remote/lib/pwaInstall.ts` captures and consumes
+the browser one-shot install prompt before mount, `PwaInstallAction.svelte`
+renders the available/iOS entry, and `RemoteSidebar.svelte` applies top/bottom
+safe-area insets. Deterministic PWA/controller tests are green (6), `pnpm check`
+is green, and the production mobile artifact contains the manifest, service worker
+and install handler. HTTPS browser install/standalone and real notch-device
+evidence remain unverified; Query/Git/Agent parity packages are not marked done.
+
 ### Iteration 83 update (2026-08-02)
 
 Mobile Remote IME-anchor boundary is fixed and pushed as `16d2861`; version

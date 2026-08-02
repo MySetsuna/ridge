@@ -33,6 +33,12 @@
   import { onceCleanup } from './lib/listenerCleanup';
   import { createGenerationGuard } from './lib/generationGuard';
   import { detachPaneRefs } from './lib/paneLifecycle';
+  import PwaInstallAction from './PwaInstallAction.svelte';
+  import {
+    getPwaInstallController,
+    type PwaInstallResult,
+    type PwaInstallSnapshot,
+  } from './lib/pwaInstall';
   import type { DataProvider } from '$lib/transport';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
@@ -64,6 +70,12 @@
   const ui = new MobileRemoteUiState(((): boolean => {
     try { return localStorage.getItem(LS_SBUF_KEY) === '1'; } catch { return false; }
   })());
+  // The controller is created by the entry module before App mounts, so a
+  // one-shot beforeinstallprompt event cannot race component hydration.
+  const pwaInstallController = getPwaInstallController();
+  let pwaInstallSnapshot = $state<PwaInstallSnapshot>(pwaInstallController.getSnapshot());
+  let pwaInstallNotice = $state('');
+  let pwaInstallNoticeTimer: ReturnType<typeof setTimeout> | null = null;
   let wsState = $state<ConnectionState>('disconnected');
   const queryClient = useQueryClient();
   const sessionId = () => remoteSessionId(ws);
@@ -83,6 +95,10 @@
     }
     stopConnection?.();
     stopConnection = null;
+    if (pwaInstallNoticeTimer !== null) {
+      clearTimeout(pwaInstallNoticeTimer);
+      pwaInstallNoticeTimer = null;
+    }
     scrollbackDecoder.dispose();
   });
   const workspacesQuery = createQuery(() => ({
@@ -580,8 +596,29 @@
     }
   }
 
+  function showPwaInstallNotice(message: string): void {
+    pwaInstallNotice = message;
+    if (pwaInstallNoticeTimer !== null) clearTimeout(pwaInstallNoticeTimer);
+    pwaInstallNoticeTimer = setTimeout(() => {
+      pwaInstallNotice = '';
+      pwaInstallNoticeTimer = null;
+    }, 6000);
+  }
+
+  async function handlePwaInstall(): Promise<void> {
+    const result: PwaInstallResult = await pwaInstallController.promptInstall();
+    if (result.outcome !== 'accepted') showPwaInstallNotice(tr('mobile.pwaInstallError'));
+  }
+
+  function handlePwaInstallManual(): void {
+    showPwaInstallNotice(tr('mobile.pwaInstallIosHelp'));
+  }
+
   onMount(() => {
     const stops: Array<() => unknown> = [];
+    stops.push(pwaInstallController.subscribe((snapshot) => {
+      pwaInstallSnapshot = snapshot;
+    }));
     stops.push(ws.onCapabilitiesChanged(refreshCapabilities));
     refreshCapabilities();
     // §realtime-status（任务 A 问题3）：先装状态监听，再同步一次真实连接态。云端进入
@@ -894,7 +931,13 @@
           {creatingPane ? $t('mobile.creating') : $t('mobile.newTerminal')}
         </button>
       {/if}
+      <PwaInstallAction
+        snapshot={pwaInstallSnapshot}
+        onInstall={handlePwaInstall}
+        onManual={handlePwaInstallManual}
+      />
       {#if createError}<p class="create-error">{createError}</p>{/if}
+      {#if pwaInstallNotice}<p class="pwa-notice" role="status">{pwaInstallNotice}</p>{/if}
     </div>
   {:else if ui.activePaneId}
     <header class="mobile-header" style="transform: translateY({headerShift}px)">
@@ -933,6 +976,11 @@
           {/if}
         </div>
         <div class="header-actions">
+          <PwaInstallAction
+            snapshot={pwaInstallSnapshot}
+            onInstall={handlePwaInstall}
+            onManual={handlePwaInstallManual}
+          />
           <button
             class="hdr-btn"
             onclick={() => canvasRef?.openSystemKeyboard()}
@@ -1068,6 +1116,7 @@
   .create-btn:active{background:color-mix(in srgb,var(--rg-accent) 26%,transparent)}
   .create-btn:disabled{opacity:.5;cursor:not-allowed}
   .create-error{font-size:12px;color:var(--rg-ansi-red)}
+  .pwa-notice{max-width:min(90vw,420px);margin:0;text-align:center;font-size:12px;color:var(--rg-fg-muted)}
   .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;touch-action:none}
   .mobile-header{position:sticky;top:0;display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 0 0;background:var(--rg-bg);border-bottom:1px solid color-mix(in srgb,var(--rg-fg) 12%,transparent);z-index:30;min-height:calc(44px + env(safe-area-inset-top))}
   .header-row{display:flex;align-items:center;height:44px;padding:0 8px;gap:4px}
@@ -1076,7 +1125,7 @@
   .breadcrumb-line{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;max-width:100%}
   .breadcrumb-text{font-size:13px;color:var(--rg-fg-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .breadcrumb-cwd{max-width:100%;font-size:10px;line-height:1.2;color:var(--rg-fg-muted);opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-  .header-actions{display:flex;gap:2px}
+  .header-actions{display:flex;align-items:center;gap:2px}
   .hdr-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;border:none;border-radius:8px;background:transparent;color:var(--rg-fg-muted);cursor:pointer;transition:all .15s}
   .hdr-btn:active{background:color-mix(in srgb,var(--rg-fg) 10%,transparent);color:var(--rg-fg)}
   .hdr-btn.active{color:var(--rg-accent)}
