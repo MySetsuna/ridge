@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { cellFromClientPoint, computePaneGeometry } from './paneGeometry';
+import {
+	cellFromClientPoint,
+	cellFromVisualClientPoint,
+	computePaneGeometry,
+} from './paneGeometry';
 
 const container = { left: 100.25, top: 50.5, width: 803.5, height: 503.25 };
 const host = { left: 20, top: 10, width: 1200, height: 800 };
@@ -74,4 +78,23 @@ it('rejects zero content or invalid cell metrics', () => {
 		cellHeightCss: 20,
 		dpr: 1,
 	})).toBeNull();
+});
+
+it('maps touch against the geometry snapshot without double-applying a stage transform', () => {
+	// Geometry was captured while the stage was shifted -40px. The user then
+	// drags after the keyboard settles at -60px; row 2 centre is visually y=90.
+	const geometry = computePaneGeometry({
+		container: { left: 0, top: 60, width: 400, height: 80 },
+		host: { left: 0, top: 60, width: 400, height: 80 },
+		padding: { left: 0, top: 0, right: 0, bottom: 0 },
+		cellWidthCss: 10,
+		cellHeightCss: 20,
+		dpr: 1,
+		sharedGrid: { rows: 4, cols: 40 },
+	})!;
+
+	// Current event y=90; normalize to the captured frame: 90 - (-60) + (-40)=110.
+	expect(cellFromVisualClientPoint(geometry, 25, 90, -60, -40)).toEqual({ row: 2, col: 2 });
+	// The old mapping (subtracting only current offset) would clamp to row 3.
+	expect(cellFromClientPoint(geometry, 25, 90 - (-60))).toEqual({ row: 3, col: 2 });
 });

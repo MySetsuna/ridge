@@ -102,3 +102,32 @@ export function cellFromClientPoint(
 	)));
 	return { row, col };
 }
+
+/**
+ * Map a client point to a cell when the shared terminal stage may be moved by
+ * a CSS-only visual transform (mobile soft keyboard avoidance).
+ *
+ * `geometryVisualOffsetY` is the stage offset present when the geometry was
+ * captured; `visualOffsetY` is the offset present when the touch event fired.
+ * Applying their difference avoids subtracting the same transform twice when
+ * a resize/re-fit happens while the keyboard is open.
+ */
+export function cellFromVisualClientPoint(
+	geometry: PaneGeometry,
+	clientX: number,
+	clientY: number,
+	visualOffsetY = 0,
+	geometryVisualOffsetY = 0,
+	rows = geometry.rows,
+	cols = geometry.cols,
+): { row: number; col: number } {
+	const current = Number.isFinite(visualOffsetY) ? visualOffsetY : 0;
+	const captured = Number.isFinite(geometryVisualOffsetY) ? geometryVisualOffsetY : 0;
+	return cellFromClientPoint(
+		geometry,
+		clientX,
+		clientY - current + captured,
+		rows,
+		cols,
+	);
+}
