@@ -1162,3 +1162,17 @@ with 12 matching installer/CLI assets. Remote workflow `30766365105` rebuilt
 and activated `0.1.46+gfa3f4d3`; its desktop/mobile index checks passed. Cloud
 health returned HTTP 200 (`version=0.0.7`). This follow-up is documentation-only
 and does not alter the released runtime.
+
+### Iteration 93 runtime closure candidate (2026-08-03)
+
+Git cancellation context now propagates through every async Git helper used by
+legacy Remote `data-request`. One request owns one fixed `(slot, generation)`;
+later steps cannot reopen a canceled generation, and idle slot registry entries
+are released. Deterministic ridge-core tests now cover 36 cases, including a
+real hanging child, cancel/complete cleanup, and cancellation between
+sequential Git steps. Host JSON-RPC tests remain 11/11 green. The detailed
+record is `docs/iterations/2026-08-03-iteration-93-git-request-slot-propagation.md`.
+
+This is a new runtime candidate after `v0.1.46`; it requires a new versioned
+Desktop release plus Remote/Cloud publication. JSON-RPC invoke cancellation,
+physical/public/WebView2/dual-window/full-Kernel authority gates remain open.
