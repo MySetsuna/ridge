@@ -833,3 +833,10 @@ The attempted `v0.1.37` release was rolled back after CI caught a
 platform-dependent Git test assumption. The tag was deleted, the version bump
 reverted, and no failed release is treated as published. The temporary bare
 remote now explicitly denies non-fast-forward updates (`149d085`).
+
+Kernel convergence diagnostics: `087cfd8` adds a read-only,
+source-checked `DomainConvergenceReport` comparing exact workspace and Agent
+identity sets, with explicit stable-key mismatch records and fail-closed empty,
+duplicate, or malformed identities. It does not switch desktop AppState
+authority or persist a second projection; the current kernel and shell identity
+models still require a canonical composite key before migration.

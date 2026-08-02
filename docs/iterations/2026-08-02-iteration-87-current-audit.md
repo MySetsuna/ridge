@@ -86,7 +86,7 @@ state, or physical-device claim is made.
 - Final local gate rerun after these commits: full Vitest `137 files / 1,439
   passed / 1 skipped`, `pnpm check` 0/0, `cargo test -p ridge-term scrollback
   --lib` 48 passed, `cargo test -p ridge-core --lib` 309 passed across three
-  parallel reruns, `cargo test -p ridge-kernel --lib` 19 passed,
+  parallel reruns, `cargo test -p ridge-kernel --lib` 21 passed,
   `cargo test -p ridge-mcp-bridge --lib` 8 passed, and `cargo check
   --manifest-path src-tauri/Cargo.toml` exit 0 (39 pre-existing warnings).
 - Kernel deep-root evidence is in
@@ -134,6 +134,13 @@ This is an explicit migration seam only: desktop workspace names/window claims
 and Agent `(workspaceId, UUID)` identity are not represented by the current
 kernel projections, so existing AppState paths remain and full Tauri-shell
 migration is not claimed.
+
+Kernel convergence diagnostic update: `087cfd8` adds a read-only
+`DomainConvergenceReport` over exact workspace/Agent identity sets plus explicit
+stable-key mismatch records. Empty or duplicate identities and malformed
+mismatches fail closed; list order is never treated as identity. No desktop
+source-of-truth switch or persistence write is hidden behind this diagnostic.
+`cargo test -p ridge-kernel --lib` now passes 21 tests.
 
 Release gate: the first `v0.1.36` attempt failed before the matrix because
 `Cargo.lock` had an invalid `tracing-core` resolution; the tag was removed,
