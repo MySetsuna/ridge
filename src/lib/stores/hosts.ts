@@ -1021,6 +1021,7 @@ export interface OutboundStats {
   subscribeOk: number;
   writeOk: number;
   resizeOk: number;
+  resizeSuppressed?: number;
   fanoutBytes: number;
   reconnectAttempts: number;
   resubscribeOk: number;
