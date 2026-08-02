@@ -296,9 +296,13 @@ export function invalidateScmQuery(
 
 /** Test/HMR reset. Active RPCs are not cancelled; late settlement cannot delete newer entries. */
 export function clearScmQuerySingleFlights(): void {
+  // Invalidate generations before dropping references so a late settlement
+  // from an old HMR/test request cannot repopulate a freshly cleared cache.
+  for (const key of new Set([...scmQueries.keys(), ...scmQueryResults.keys()])) {
+    scmQueryEpochs.set(key, (scmQueryEpochs.get(key) ?? 0) + 1);
+  }
   scmQueries.clear();
   scmQueryResults.clear();
-  scmQueryEpochs.clear();
   for (const key of Object.keys(queryCounters) as Array<keyof typeof queryCounters>) {
     queryCounters[key] = 0;
   }
