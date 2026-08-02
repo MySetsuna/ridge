@@ -1324,6 +1324,24 @@ mod tests {
     }
 
     #[test]
+    fn plan_agent_resume_keeps_session_identity_and_recorded_cwd() {
+        let cwd = r"D:\agent-work\repo";
+        let planned = plan_agent_resume(
+            "Codex".into(),
+            "codex-session-42".into(),
+            cwd.into(),
+            false,
+            Some(Vec::new()),
+        )
+        .expect("built-in Codex resume profile");
+
+        assert_eq!(planned.executable, "codex");
+        assert_eq!(planned.argv, vec!["resume", "codex-session-42"]);
+        assert_eq!(planned.cwd, cwd);
+        assert_eq!(planned.session_id, "codex-session-42");
+    }
+
+    #[test]
     fn parses_grok_session_dir_summary_and_history() {
         let td = TempDir::new("grok-sess");
         let sess = td.join("019fb572-test-session");
