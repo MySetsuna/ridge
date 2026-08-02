@@ -735,7 +735,8 @@ sequenceDiagram
 ## Iteration 86 final Remote Agent/cursor checkpoint (2026-08-02)
 
 See [`docs/iterations/2026-08-02-iteration-86-final-remote-agent-cursor.md`](iterations/2026-08-02-iteration-86-final-remote-agent-cursor.md).
-The final Remote artifact is `0.1.34+gf129d81` from workflow `30734591703`;
-desktop `v0.1.34` was not bumped. Local checks are green: `pnpm check` 0/0 and
-Vitest 131 files, 1,418 passed, 1 skipped. External physical-device, soak,
-dual-window/host and authenticated-push gates remain explicitly unclaimed.
+The final Remote artifact is `0.1.35+g2bce084` from workflow `30736163197`;
+GitHub Release `v0.1.35` is formal with 12 assets. Local checks are green:
+`pnpm check` 0/0 and Vitest 131 files, 1,418 passed, 1 skipped. External
+physical-device, soak, dual-window/host and authenticated-push gates remain
+explicitly unclaimed.
