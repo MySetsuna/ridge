@@ -840,3 +840,10 @@ identity sets, with explicit stable-key mismatch records and fail-closed empty,
 duplicate, or malformed identities. It does not switch desktop AppState
 authority or persist a second projection; the current kernel and shell identity
 models still require a canonical composite key before migration.
+
+Release retry audit: workflow `30741669936` again failed only in the focused
+real Git push guard because the Linux bare-remote fixture accepted the stale
+push. The `v0.1.37` tag and version bump were deleted/reverted immediately.
+`f7ee232` makes the fixture deterministic with a temporary rejecting
+`pre-receive` hook and verifies the remote head is unchanged after the failed
+push. Version remains `0.1.36` until a full release gate succeeds.

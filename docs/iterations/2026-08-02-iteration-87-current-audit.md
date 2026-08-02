@@ -161,3 +161,11 @@ version bump reverted, and `main` returned to `0.1.36`. `149d085` sets
 `receive.denyNonFastForwards=true` in the temporary bare remote; the targeted
 test and three parallel full `ridge-core` runs now pass. No failed release or
 version bump is claimed.
+
+The retry `v0.1.37` / workflow `30741669936` also stopped at the focused Git
+gate: the Linux bare-remote fixture still accepted the stale push despite the
+configured policy. Its tag and version bump were removed immediately. The
+fixture now installs a temporary rejecting `pre-receive` hook, asserts the
+remote head advances for the competing clone, and asserts the rejected push
+leaves that head unchanged (`f7ee232`). Targeted 36-test release filter and the
+real commit/push test pass locally; no failed release is published.
