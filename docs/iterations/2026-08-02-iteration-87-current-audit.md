@@ -107,6 +107,13 @@ project path in a no-extension profile; it does not identify the affected
 physical phone's injector, so no third-party or business-code attribution is
 claimed.
 
+The local source guard `src/remote/runtimeMessagingScope.test.ts` now asserts
+that the Remote entrypoint and service worker contain no Chrome Extension
+Messaging APIs (`chrome.runtime`, `chrome.tabs`, `sendResponse`, or
+`runtime.lastError`) and continue to use one-way service-worker
+`Client.postMessage`. This is a deterministic repository guard; it does not
+replace attribution on the affected phone.
+
 Git mutation evidence update: `packages/ridge-core/src/commands/git.rs` now
 guards a real temporary-repository test through the same `git_commit_sync` and
 `git_push_sync` handlers used by the UI. It verifies local bare-remote push
