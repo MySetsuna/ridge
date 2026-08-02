@@ -38,6 +38,11 @@ could also inherit stale pane IDs in the manager's attached set.
   clear precache before the fresh navigation. The probe fails on worker init
   timeout, `resize before init`, hot worker timeout, or project
   `Unchecked runtime.lastError` output; it does not suppress other warnings.
+- Keep mobile touch selection aligned with the rendered shared grid when the
+  keyboard stage is translated. Geometry now records the visual offset that
+  was active at capture time; touch mapping applies only the delta to the
+  event-time offset, preventing a resize/re-fit during keyboard motion from
+  double-applying `translateY`.
 
 ## Verification
 
@@ -50,7 +55,10 @@ could also inherit stale pane IDs in the manager's attached set.
   lifecycle/runtime-messaging noise. Remaining logs are known dev WebSocket,
   Tauri callback, WebGPU fallback, and self-signed ServiceWorker environment
   warnings.
-- Full Vitest: `120` files, `1380` passed, `1` skipped; process exit `0`.
+- Full Vitest: `120` files, `1381` passed, `1` skipped; process exit `0`.
+- Mobile geometry guard: `paneGeometry.test.ts` `11` passed, including a
+  captured-offset/current-offset drag case; Remote terminal suite `252`
+  passed.
 - `cargo test -p ridge-kernel --lib`: `15` passed; kernel Git ancestor
   detection and domain handlers remain green.
 - `cargo test --manifest-path src-tauri/Cargo.toml pty_delta_channel_tests`:
@@ -69,6 +77,9 @@ could also inherit stale pane IDs in the manager's attached set.
 - Mobile keyboard probe: `ok=true`, `browserErrors=[]`, bounded shift and
   recovery assertions passed. This is Chromium emulation only, not a physical
   phone result; evidence is `.iteration/artifacts/rdg-remote-e2e/mobile-keyboard.json`.
+- LAN matrix rerun after the selection mapping change: desktop and mobile
+  `PASS` (`canvas=true`, mobile tree rendered, WebSocket connected); evidence
+  is `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
 
 ## Non-claims and external gates
 
@@ -85,8 +96,9 @@ Deterministic code and local/CDP evidence are closed. The focused worker code
 commit is `3a6a9ce`; structured resume coverage is `0716a05`; shared Commune /
 Pane status projection is `1c2ede3`; the version-contract repair is `c07f931`
 (same `0.1.33` release, no version increment after the first failed gate).
-The latter two commits are test/projection-only follow-ups; they do not change
-the published Remote protocol or release asset contents.
+Mobile touch-selection geometry is `0264db5`. The latter three commits are
+test/projection/Remote-only follow-ups; they do not change the desktop release
+binary protocol or require a version increment.
 
 - Release workflow `30726725069` passed its test gate and all four platform
   jobs. Formal `v0.1.33` is published with 12 verified assets.
