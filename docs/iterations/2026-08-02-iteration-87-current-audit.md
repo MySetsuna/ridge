@@ -282,6 +282,19 @@ JSON now have deterministic fail-closed assertions; the full `ridge-kernel`
 unit suite passes 22/22. This strengthens the shell-adapter contract without
 claiming deeper desktop authority migration.
 
+NLM refresh (2026-08-02, authenticated through the fixed proxy): the latest
+NotebookLM conversation list contains one active 10-turn TUI conversation;
+the follow-up query identified its two latest relevant records as Windows PTY
+physical-fidelity audit and TUI Answer/Reasoning presentation. It recommends
+visible-only code highlighting and large-block navigation, while explicitly
+leaving PTY/native-scrollback as evidence-only. NLM also incorrectly stated
+that Remote/PWA had no active code evidence and described a one-cell TUI rail as
+the Pane Border contract. Local CodeGraph and regression evidence contradict
+those two claims: Remote Query/PWA/Agent/RPC paths and the transient desktop/
+Remote Pane Border are present and tested. Therefore this NLM result is
+archived as strategy input, not a new approved implementation item; no TUI
+syntax-highlighting work is duplicated in this iteration.
+
 Pane header single-layer guard (2026-08-02): `a1d816a` adds a static
 regression assertion that `PaneRepoSwitcher`, `PaneGitPill`, and `PaneDiffPill`
 each render once as adjacent siblings in the pane header. The focused desktop
