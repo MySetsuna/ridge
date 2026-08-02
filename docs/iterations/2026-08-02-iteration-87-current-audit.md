@@ -169,3 +169,10 @@ fixture now installs a temporary rejecting `pre-receive` hook, asserts the
 remote head advances for the competing clone, and asserts the rejected push
 leaves that head unchanged (`f7ee232`). Targeted 36-test release filter and the
 real commit/push test pass locally; no failed release is published.
+
+The next retry `v0.1.37` / workflow `30742032341` exposed one more fixture-only
+assumption: Linux clone inherited a bare remote `HEAD` that did not point at
+`main`, so an unqualified competing push left `refs/heads/main` unchanged.
+That tag and version bump were again removed immediately. `8fa19b6` pins the
+fixture update to `HEAD:refs/heads/main`; the real handler push remains the
+stale final operation and the remote-head invariant is explicit.

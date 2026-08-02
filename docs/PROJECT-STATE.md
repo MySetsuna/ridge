@@ -847,3 +847,10 @@ push. The `v0.1.37` tag and version bump were deleted/reverted immediately.
 `f7ee232` makes the fixture deterministic with a temporary rejecting
 `pre-receive` hook and verifies the remote head is unchanged after the failed
 push. Version remains `0.1.36` until a full release gate succeeds.
+
+The following `v0.1.37` retry (`30742032341`) found a second fixture-only
+assumption: Linux clone did not guarantee the competing push targeted
+`refs/heads/main`. Tag and version were removed again; `8fa19b6` uses the
+explicit `HEAD:refs/heads/main` setup refspec, while the final stale push still
+uses the shared interactive handler. Version remains `0.1.36` pending a green
+full matrix.
