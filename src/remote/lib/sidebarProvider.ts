@@ -86,15 +86,17 @@ export function createWsSidebarProvider(
   const run = <T>(
     key: readonly unknown[],
     query: (signal?: AbortSignal) => Promise<T>,
+    observerSignal?: AbortSignal,
   ): Promise<T> => fetchRemoteQuery(
     options.queryClient,
     key,
     ({ signal } = {}) => query(signal),
     staleTime,
+    observerSignal,
   );
 
   return {
-    async listDir(path: string): Promise<DirListing> {
+    async listDir(path: string, signal?: AbortSignal): Promise<DirListing> {
       const target = path || root;
       return run(remoteQueryKeys.sidebarFiles(sessionId, root, target, 1, scope), async (signal) => {
         const tree = (await dp.getFileTree(target, 1, signal)) as {
@@ -116,7 +118,7 @@ export function createWsSidebarProvider(
         );
         const resolved = tree.path ?? target;
         return { path: resolved, parent: parentOf(resolved), entries };
-      });
+      }, signal);
     },
 
     async gitStatus(): Promise<GitInfo> {
@@ -186,7 +188,7 @@ export function createWsSidebarProvider(
       });
     },
 
-    async search(query: string): Promise<SearchHit[]> {
+    async search(query: string, signal?: AbortSignal): Promise<SearchHit[]> {
       return run(remoteQueryKeys.sidebarSearch(sessionId, root, query, scope), async (signal) => {
         const hits = (await dp.searchFiles(query, root, signal)) as Array<{
           path: string;
@@ -195,11 +197,11 @@ export function createWsSidebarProvider(
           snippet?: string;
         }>;
         return hits.map((h) => ({ file: h.path, line: h.line ?? 0, column: h.column ?? 0, content: h.snippet ?? '' }));
-      });
+      }, signal);
     },
 
-    async readFile(path: string): Promise<string> {
-      return run(remoteQueryKeys.sidebarFile(sessionId, root, path, scope), (signal) => dp.readFile(path, signal));
+    async readFile(path: string, signal?: AbortSignal): Promise<string> {
+      return run(remoteQueryKeys.sidebarFile(sessionId, root, path, scope), (querySignal) => dp.readFile(path, querySignal), signal);
     },
 
     async writeFile(path: string, content: string): Promise<void> {
@@ -244,9 +246,9 @@ export function createWsSidebarProvider(
       });
     },
 
-    async gitDiff(path: string): Promise<string> {
+    async gitDiff(path: string, signal?: AbortSignal): Promise<string> {
       // Working-tree diff vs HEAD (uncached), rooted at the pane cwd.
-      return run(remoteQueryKeys.sidebarDiff(sessionId, root, path, scope), (signal) => dp.gitDiffFile(root, path, false, signal));
+      return run(remoteQueryKeys.sidebarDiff(sessionId, root, path, scope), (querySignal) => dp.gitDiffFile(root, path, false, querySignal), signal);
     },
   };
 }

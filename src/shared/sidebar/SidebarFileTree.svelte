@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Folder, File as FileIcon, ChevronUp, RefreshCw } from 'lucide-svelte';
+  import { onDestroy } from 'svelte';
   import { t } from '$lib/i18n';
   import type { SidebarProvider, FileEntry } from './types';
 
@@ -13,21 +14,35 @@
   let entries = $state<FileEntry[]>([]);
   let loading = $state(false);
   let error = $state<string | null>(null);
+  let requestGeneration = 0;
+  let requestController: AbortController | null = null;
 
   async function load(target: string) {
+    requestController?.abort();
+    const controller = new AbortController();
+    requestController = controller;
+    const generation = ++requestGeneration;
     loading = true;
     error = null;
     try {
-      const listing = await provider.listDir(target);
+      const listing = await provider.listDir(target, controller.signal);
+      if (controller.signal.aborted || generation !== requestGeneration) return;
       path = listing.path;
       parent = listing.parent ?? null;
       entries = listing.entries;
     } catch (e) {
+      if (controller.signal.aborted || generation !== requestGeneration) return;
       error = e instanceof Error ? e.message : String(e);
     } finally {
-      loading = false;
+      if (generation === requestGeneration) loading = false;
     }
   }
+
+  onDestroy(() => {
+    requestController?.abort();
+    requestController = null;
+    requestGeneration += 1;
+  });
 
   function onEntry(entry: FileEntry) {
     if (entry.is_dir) load(entry.path);
