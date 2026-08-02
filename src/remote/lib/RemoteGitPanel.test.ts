@@ -6,6 +6,7 @@ const source = readFileSync(new URL('./RemoteGitPanel.svelte', import.meta.url),
 describe('remote Git panel contract', () => {
   it('keeps the mobile write surface behind a provider capability gate', () => {
     expect(source).toContain('hasRemoteGitWriteCapability(provider)');
+    expect(source).toContain('info.isGitRepo && hasRemoteGitWriteCapability(provider)');
     expect(source).toContain("runAction('commit'");
     expect(source).toContain("runAction('push'");
     expect(source).toContain('actionController?.abort()');

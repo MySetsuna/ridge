@@ -32,7 +32,10 @@
   let actionController = $state<AbortController | null>(null);
   let selectedHash = $state<string | null>(null);
 
-  const canWrite = $derived(hasRemoteGitWriteCapability(provider));
+  // Capability alone is insufficient: a clean/non-Git pane must not expose
+  // stage/commit/push controls before the status query proves repository
+  // identity.
+  const canWrite = $derived(info.isGitRepo && hasRemoteGitWriteCapability(provider));
   const stagedFiles = $derived(info.staged ?? []);
   const unstagedFiles = $derived([
     ...(info.unstaged ?? []),
