@@ -3497,7 +3497,11 @@ mod scan_tests {
             None,
         )
         .expect("commit remote advance");
-        git_push_sync(other.to_string_lossy().into_owned(), None).expect("push remote advance");
+        run_git_simple(
+            other.to_string_lossy().as_ref(),
+            &["push", "origin", "HEAD:refs/heads/main"],
+        )
+        .expect("push remote advance to main");
         let remote_head_after_other = run_git_simple(
             bare.to_string_lossy().as_ref(),
             &["rev-parse", "refs/heads/main"],
