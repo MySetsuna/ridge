@@ -9,12 +9,62 @@
 
 import { hex8 } from '@ridge/remote/shared/terminal/cssColor';
 
-/** Set every theme color as a `--rg-*` custom property on :root. */
+/**
+ * Pick the colour the browser should use for the page edge/status bar.
+ * `bg` is the chrome background; old/partial theme payloads may only carry
+ * `term-bg`, so keep that as a safe fallback.
+ */
+export function themeChromeColor(colors: Record<string, string>): string | null {
+  for (const key of ['bg', 'term-bg']) {
+    const value = colors[key];
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+/**
+ * Apply a theme in one browser style commit.
+ *
+ * Updating dozens of custom properties one-by-one lets a mobile WebView paint
+ * an intermediate frame (the page edge still uses the old `theme-color` while
+ * the content already uses the new `--rg-bg`). Build the declaration on a
+ * detached style object, then replace the root style once; sync the body and
+ * browser chrome colour in the same task. This keeps PWA edge pixels and the
+ * document background on the same palette without changing terminal behaviour.
+ */
 export function applyThemeVars(colors: Record<string, string>): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
-  for (const [key, value] of Object.entries(colors)) {
-    root.style.setProperty(`--rg-${key}`, value);
+  const entries = Object.entries(colors)
+    .filter(([key, value]) => key.length > 0 && typeof value === 'string');
+  const chromeColor = themeChromeColor(colors);
+
+  // Prepare the complete declaration off-DOM. Preserve unrelated inline
+  // startup/runtime variables and only replace the live style attribute once.
+  let atomicApplied = false;
+  try {
+    const draft = document.createElement('div');
+    draft.style.cssText = root.style.cssText;
+    for (const [key, value] of entries) draft.style.setProperty(`--rg-${key}`, value);
+    if (chromeColor) draft.style.backgroundColor = chromeColor;
+    root.style.cssText = draft.style.cssText;
+    atomicApplied = true;
+  } catch {
+    // Very small DOM shims (SSR/tests) may not expose createElement/style.cssText.
+    // Keep the old behaviour as a defensive fallback.
+    for (const [key, value] of entries) root.style.setProperty(`--rg-${key}`, value);
+  }
+
+  if (chromeColor) {
+    // Explicit edge fills avoid a one-frame transparent strip while custom
+    // properties recascade on mobile Safari/Chromium standalone windows.
+    // `background-color` was included in the atomic declaration above. The
+    // fallback path (or a minimal style shim) still needs the direct write.
+    if (!atomicApplied) root.style.backgroundColor = chromeColor;
+    if (document.body) document.body.style.backgroundColor = chromeColor;
+
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    if (meta) meta.content = chromeColor;
   }
 }
 
