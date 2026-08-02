@@ -915,6 +915,9 @@ FS, Git, and MCP domain calls through shared authenticated
 HTTP/JSON failures remain visible and Windows query paths are fully encoded.
 Focused CLI tests, lifecycle E2E, and `scripts/kernel-host-smoke.ps1` passed.
 Desktop AppState/PTY/window-claim/root-authority migration remains open.
+Kernel client HTTP guard (2026-08-02): `40fa39f` adds loopback assertions for
+non-2xx and malformed-JSON failures in shared `request_json`; `cargo test -p
+ridge-kernel --lib` passes 22/22. No desktop authority migration is implied.
 Pane header Git-pill guard (2026-08-02): `a1d816a` asserts Repo/Branch/Diff
 pills each occur once at one sibling layer; desktop + Remote/mobile focused
 slice passes 17/17. This is a static layout guard, not physical-device proof.
