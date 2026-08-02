@@ -813,3 +813,8 @@ latest desktop/mobile matrix passed with `browserErrors=[]`,
 `browserIsolation.extensionsDisabled=true`. Repository source still contains no
 Chrome Extension Messaging API; affected-phone source URL and one-by-one
 extension/injector A/B remain the only attribution evidence missing.
+
+`src/remote/runtimeMessagingScope.test.ts` is the deterministic source guard:
+Remote entrypoint and service worker contain no Chrome Extension Messaging API
+and keep one-way Service Worker `Client.postMessage` semantics. This guard does
+not replace the affected-phone source URL and clean-profile/one-extension A/B.
