@@ -904,6 +904,16 @@ function onCompositionStart() {
 		// Anchor on focus too, in case the user clicked into the pane and
 		// expects the next IME composition to appear near the current cursor.
 		repositionImeHelper();
+		// When the IME textarea owns focus, let its native caret be the single
+		// visible caret; the renderer must not blink a second caret underneath it.
+		if (get(activePaneId) === paneId) manager.setFocused(paneId, false);
+	}
+
+	function onImeHelperBlur() {
+		// A blur can be caused by opening a drawer or a native dialog. Restore the
+		// terminal caret for the active pane, but never steal focus back here (that
+		// would reopen an IME/keyboard without a user gesture).
+		if (get(activePaneId) === paneId) manager.setFocused(paneId, true);
 	}
 
 	function onImeHelperPaste(e: ClipboardEvent) {
@@ -2099,6 +2109,7 @@ function captureBackspace(node: HTMLElement) {
 			oncompositionupdate={onCompositionUpdate}
 			oncompositionend={onCompositionEnd}
 			onfocus={onImeHelperFocus}
+			onblur={onImeHelperBlur}
 			onpaste={onImeHelperPaste}
 		></textarea>
 	{/if}
@@ -2275,7 +2286,8 @@ function captureBackspace(node: HTMLElement) {
 		height: var(--rg-ime-cell-h, 18px);
 		opacity: 1;
 		pointer-events: none;
-		caret-color: transparent;
+		/* Native caret is the input-field cursor while IME owns focus. */
+		caret-color: var(--rg-accent, currentColor);
 		background: transparent;
 		color: transparent;
 		border: none;
@@ -2301,7 +2313,7 @@ function captureBackspace(node: HTMLElement) {
 		height: var(--rg-ime-cell-h, 18px);
 		opacity: 0;
 		pointer-events: none;
-		caret-color: transparent;
+		caret-color: var(--rg-accent, currentColor);
 		color: transparent;
 		background: transparent;
 	}
