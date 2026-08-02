@@ -1,5 +1,6 @@
 <script lang="ts">
   import { GitBranch, RefreshCw, Upload, Check, XCircle, Network } from 'lucide-svelte';
+  import { onDestroy } from 'svelte';
   import { t } from '$lib/i18n';
   import GitGraph from '../../lib/components/GitGraph.svelte';
   import type { GraphCommit } from '../../lib/components/gitGraphLayout';
@@ -31,6 +32,8 @@
   let actionNotice = $state('');
   let actionController = $state<AbortController | null>(null);
   let selectedHash = $state<string | null>(null);
+  let loadGeneration = 0;
+  let loadController: AbortController | null = null;
 
   // Capability alone is insufficient: a clean/non-Git pane must not expose
   // stage/commit/push controls before the status query proves repository
@@ -65,18 +68,32 @@
 
   async function load(force = false): Promise<void> {
     if (loading || (action && !force)) return;
+    loadController?.abort();
+    const controller = new AbortController();
+    loadController = controller;
+    const generation = ++loadGeneration;
     loading = true;
     error = null;
     try {
-      info = await provider.gitStatus();
+      const next = await provider.gitStatus(controller.signal);
+      if (controller.signal.aborted || generation !== loadGeneration) return;
+      info = next;
     } catch (e) {
+      if (controller.signal.aborted || generation !== loadGeneration) return;
       error = e instanceof Error ? e.message : String(e);
     } finally {
-      loading = false;
+      if (generation === loadGeneration) loading = false;
     }
   }
 
   $effect(() => { void load(); });
+
+  onDestroy(() => {
+    loadController?.abort();
+    loadController = null;
+    loadGeneration += 1;
+    actionController?.abort();
+  });
 
   function statusClass(status: string): string {
     const code = status.trim().charAt(0);

@@ -121,9 +121,9 @@ export function createWsSidebarProvider(
       }, signal);
     },
 
-    async gitStatus(): Promise<GitInfo> {
+    async gitStatus(signal?: AbortSignal): Promise<GitInfo> {
       if (nonGitRepoConfirmed) return emptyGitInfo();
-      return run(remoteQueryKeys.sidebarGit(sessionId, root, scope), async (signal) => {
+      return run(remoteQueryKeys.sidebarGit(sessionId, root, scope), async (querySignal) => {
         let s: {
           is_git_repo?: boolean;
           staged?: Array<{ name: string; status: string }>;
@@ -135,7 +135,7 @@ export function createWsSidebarProvider(
           commits?: Array<{ hash: string; msg: string; time: string; author?: string; parents?: string[]; refs?: string[] }>;
         };
         try {
-          s = (await dp.gitStatus(root, signal)) as typeof s;
+          s = (await dp.gitStatus(root, querySignal)) as typeof s;
         } catch (error) {
           // Only a host-confirmed "not a git repository" is a negative SCM
           // result. Transport, timeout, and cancellation errors stay visible.
@@ -185,7 +185,7 @@ export function createWsSidebarProvider(
           };
           if (!info.isGitRepo) nonGitRepoConfirmed = true;
           return info;
-      });
+      }, signal);
     },
 
     async search(query: string, signal?: AbortSignal): Promise<SearchHit[]> {

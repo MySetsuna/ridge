@@ -1,5 +1,6 @@
 <script lang="ts">
   import { GitBranch, RefreshCw } from 'lucide-svelte';
+  import { onDestroy } from 'svelte';
   import type { SidebarProvider, GitInfo } from './types';
   import { t } from '$lib/i18n';
 
@@ -13,20 +14,35 @@
   let info = $state<GitInfo>({ isGitRepo: false, currentBranch: null, branches: [], files: [], commits: [] });
   let loading = $state(false);
   let error = $state<string | null>(null);
+  let requestGeneration = 0;
+  let requestController: AbortController | null = null;
 
   async function load() {
+    requestController?.abort();
+    const controller = new AbortController();
+    requestController = controller;
+    const generation = ++requestGeneration;
     loading = true;
     error = null;
     try {
-      info = await provider.gitStatus();
+      const next = await provider.gitStatus(controller.signal);
+      if (controller.signal.aborted || generation !== requestGeneration) return;
+      info = next;
     } catch (e) {
+      if (controller.signal.aborted || generation !== requestGeneration) return;
       error = e instanceof Error ? e.message : String(e);
     } finally {
-      loading = false;
+      if (generation === requestGeneration) loading = false;
     }
   }
 
   $effect(() => { void load(); });
+
+  onDestroy(() => {
+    requestController?.abort();
+    requestController = null;
+    requestGeneration += 1;
+  });
 
   function statusClass(s: string): string {
     const c = s.trim().charAt(0);

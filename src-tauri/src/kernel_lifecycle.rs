@@ -118,7 +118,7 @@ pub fn spawn_kernel_death_watcher(
     kernel_pid: u32,
     mut on_death: impl FnMut() + Send + 'static,
     should_stop: impl Fn() -> bool + Send + 'static,
-) {
+) -> Result<std::thread::JoinHandle<()>, String> {
     std::thread::Builder::new()
         .name("ridge-kernel-watch".into())
         .spawn(move || loop {
@@ -136,7 +136,7 @@ pub fn spawn_kernel_death_watcher(
             }
             thread::sleep(Duration::from_millis(1500));
         })
-        .ok();
+        .map_err(|error| format!("spawn ridge-kernel watcher: {error}"))
 }
 
 /// 彻底退出：请求内核 shutdown（不杀本桌面进程之外的逻辑由调用方 exit）。
@@ -185,6 +185,16 @@ mod tests {
 
     #[test]
     fn is_kernel_running_without_registry_is_false_or_live() {
+        let observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let callback_observed = std::sync::Arc::clone(&observed);
+        let watcher = spawn_kernel_death_watcher(
+            u32::MAX,
+            move || callback_observed.store(true, std::sync::atomic::Ordering::Release),
+            || false,
+        )
+        .expect("watcher thread should start");
+        watcher.join().expect("watcher should exit after dead PID");
+        assert!(observed.load(std::sync::atomic::Ordering::Acquire));
         // 无登记时必 false；有本机存活 kernel 时 true——仅断言不 panic。
         let _ = is_kernel_running();
     }

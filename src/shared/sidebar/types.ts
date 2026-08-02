@@ -74,7 +74,7 @@ export interface SearchHit {
 export interface SidebarProvider {
   /** List a directory. Pass "" for the provider's default root (pane cwd). */
   listDir(path: string, signal?: AbortSignal): Promise<DirListing>;
-  gitStatus(): Promise<GitInfo>;
+  gitStatus(signal?: AbortSignal): Promise<GitInfo>;
   search(query: string, signal?: AbortSignal): Promise<SearchHit[]>;
   /** Read a file's text content (viewer). `path` is absolute. */
   readFile(path: string, signal?: AbortSignal): Promise<string>;
