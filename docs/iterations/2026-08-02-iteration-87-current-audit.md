@@ -54,7 +54,7 @@ state, or physical-device claim is made.
 
 ## Local gate result
 
-- `pnpm exec vitest run --reporter=dot`: 134 files, 1,424 passed, 1 skipped.
+- `pnpm exec vitest run --reporter=dot`: 136 files, 1,437 passed, 1 skipped.
 - `pnpm check`: 0 errors, 0 warnings.
 - `cargo test -p ridge-kernel registry::tests --lib`: 4 passed.
 - `cargo check --manifest-path src-tauri/Cargo.toml`: finished successfully;
@@ -80,7 +80,7 @@ state, or physical-device claim is made.
   clients. Evidence is `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
   `pnpm e2e:rdg-mobile-keyboard` also passed Chromium emulation with selection,
   bounded keyboard shift and recovery; this is not a physical-device claim.
-- Final local gate rerun after these commits: full Vitest `135 files / 1,433
+- Final local gate rerun after these commits: full Vitest `136 files / 1,437
   passed / 1 skipped`, `pnpm check` 0/0, `cargo test -p ridge-term scrollback
   --lib` 48 passed, `cargo test -p ridge-kernel --lib` 17 passed,
   `cargo test -p ridge-mcp-bridge --lib` 8 passed, and `cargo check

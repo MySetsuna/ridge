@@ -781,7 +781,7 @@ is intentionally still open. Public WebRTC four-path, physical-device, heap
 soak, authenticated Git push and affected-phone extension-attribution gates
 remain unclaimed.
 
-Final local rerun: full Vitest `135 files / 1,433 passed / 1 skipped`,
+Final local rerun: full Vitest `136 files / 1,437 passed / 1 skipped`,
 `pnpm check` 0/0, ridge-term Scrollback 48, ridge-kernel 17,
 ridge-mcp-bridge 8, and `cargo check --manifest-path src-tauri/Cargo.toml`
 exit 0 (39 existing warnings).
