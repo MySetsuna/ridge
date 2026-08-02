@@ -1176,3 +1176,19 @@ record is `docs/iterations/2026-08-03-iteration-93-git-request-slot-propagation.
 This is a new runtime candidate after `v0.1.46`; it requires a new versioned
 Desktop release plus Remote/Cloud publication. JSON-RPC invoke cancellation,
 physical/public/WebView2/dual-window/full-Kernel authority gates remain open.
+
+### Iteration 94 runtime closure candidate (2026-08-03)
+
+Unix guarded commands now create and kill a dedicated process group, proven by a
+real shell-plus-descendant test under WSL; Windows process-tree behavior stays
+on `taskkill /T`. Remote legacy `invoke-request` and native JSON-RPC now share a
+bounded task registry with `$/cancel`/`invoke-cancel`, stale-result suppression,
+disconnect cleanup, and one-shot browser cancellation on timeout/Abort/scope
+teardown. Native synchronous core Git dispatch preserves the outer request
+generation. Evidence: ridge-core Git 37/37, Host JSON-RPC 12/12, Remote 26/26,
+`pnpm check` 0/0. Detailed record:
+`docs/iterations/2026-08-03-iteration-94-process-and-invoke-cancellation.md`.
+
+This candidate follows `v0.1.46` and must publish as a new version with
+Desktop/Remote/Cloud evidence. Physical/public/WebView2/dual-window/branch-
+identity/full-Kernel authority gates remain open.
