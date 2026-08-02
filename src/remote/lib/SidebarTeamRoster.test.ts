@@ -21,4 +21,9 @@ describe('remote Agent drawer alignment contract', () => {
     expect(source).toContain('<span class="member-cwd" title={cwd}>{cwd}</span>');
     expect(source).toContain('.member-cwd{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap');
   });
+
+  it('keeps roster polling at the five-minute contract interval', () => {
+    expect(source).toContain('const ROSTER_POLL_INTERVAL_MS = 5 * 60 * 1000;');
+    expect(source).toContain('setInterval(() => void refresh(), ROSTER_POLL_INTERVAL_MS)');
+  });
 });
