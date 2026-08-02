@@ -15,6 +15,7 @@
 //! - acquire timeout so stale fan-out cannot queue forever under a hung git.
 
 use serde::Serialize;
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -137,6 +138,10 @@ struct GitSlot {
     generation: u64,
     /// (generation, pid) of currently-running children for this slot.
     live: Vec<(u64, u32)>,
+    /// Async operations that still own this slot generation. A request can
+    /// supersede another request while the older task is still unwinding, so
+    /// leases are keyed by generation instead of one lossy total counter.
+    leases: std::collections::HashMap<u64, usize>,
 }
 
 fn git_slots() -> &'static std::sync::Mutex<std::collections::HashMap<String, GitSlot>> {
@@ -154,6 +159,7 @@ fn git_slot_begin(slot: &str) -> u64 {
         let entry = map.entry(slot.to_string()).or_insert(GitSlot {
             generation: 0,
             live: Vec::new(),
+            leases: std::collections::HashMap::new(),
         });
         entry.generation += 1;
         generation = entry.generation;
@@ -164,6 +170,50 @@ fn git_slot_begin(slot: &str) -> u64 {
         crate::process_guard::kill_process_tree(pid);
     }
     generation
+}
+
+fn git_slot_retain(slot: &str, generation: u64) {
+    let mut map = git_slots().lock().unwrap();
+    if let Some(entry) = map.get_mut(slot) {
+        *entry.leases.entry(generation).or_default() += 1;
+    }
+}
+
+fn git_slot_release(slot: &str, generation: u64) {
+    let mut map = git_slots().lock().unwrap();
+    let remove = match map.get_mut(slot) {
+        Some(entry) => {
+            if let Some(count) = entry.leases.get_mut(&generation) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    entry.leases.remove(&generation);
+                }
+            }
+            entry.leases.is_empty() && entry.live.is_empty()
+        }
+        None => false,
+    };
+    if remove {
+        map.remove(slot);
+    }
+}
+
+struct GitSlotLease {
+    slot: String,
+    generation: u64,
+}
+
+impl GitSlotLease {
+    fn new(slot: String, generation: u64) -> Self {
+        git_slot_retain(&slot, generation);
+        Self { slot, generation }
+    }
+}
+
+impl Drop for GitSlotLease {
+    fn drop(&mut self) {
+        git_slot_release(&self.slot, self.generation);
+    }
 }
 
 /// Cancel a live slotted Git request and invalidate any queued generation.
@@ -206,6 +256,28 @@ thread_local! {
     /// consults it to tie the child pid to its slot for supersede kills.
     static GIT_SLOT_CTX: std::cell::RefCell<Option<(String, u64)>> =
         const { std::cell::RefCell::new(None) };
+}
+
+tokio::task_local! {
+    /// Logical Remote request slot propagated through every async Git helper.
+    /// This keeps existing public Git APIs compatible while allowing a host
+    /// transport to cancel all child processes spawned by one request.
+    static GIT_REQUEST_SLOT: Option<(String, u64)>;
+}
+
+/// Run an async Git operation under one latest-win cancellation slot.
+/// Existing callers need no signature change; nested `spawn_git_blocking`
+/// calls inherit this slot and register their real child PID with the shared
+/// process-tree guard.
+pub async fn with_git_request_slot<F>(slot: String, future: F) -> F::Output
+where
+    F: Future,
+{
+    let generation = git_slot_begin(&slot);
+    let _lease = GitSlotLease::new(slot.clone(), generation);
+    GIT_REQUEST_SLOT
+        .scope(Some((slot, generation)), future)
+        .await
 }
 
 /// 测试串行锁：`GIT_ACTIVE_CHILDREN` 是全局计数，任何「真持挂起子进程」的测试
@@ -458,7 +530,7 @@ impl CommandExtGit for Command {
 ///
 /// Acquire is bounded ([`git_acquire_timeout`]): under a saturated/hung git
 /// pipeline new work fails closed instead of queuing without bound.
-async fn spawn_git_blocking<F, T>(f: F) -> Result<T, String>
+async fn spawn_git_blocking_raw<F, T>(f: F) -> Result<T, String>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
@@ -486,6 +558,20 @@ where
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))
+}
+
+async fn spawn_git_blocking<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let slot = GIT_REQUEST_SLOT.try_with(Clone::clone).ok().flatten();
+    if let Some((slot, generation)) = slot {
+        // The slotted helper expects a Result-returning closure; wrapping the
+        // existing value keeps all legacy Git APIs source-compatible.
+        return spawn_git_blocking_generation(slot, generation, move || Ok(f())).await;
+    }
+    spawn_git_blocking_raw(f).await
 }
 
 /// Run a synchronous git read/write under the same process-wide admission
@@ -557,10 +643,31 @@ where
     X: Send + 'static,
 {
     let Some(slot) = slot else {
-        return spawn_git_blocking(f).await?;
+        return spawn_git_blocking_raw(f).await?;
     };
+    if let Some((ambient_slot, generation)) = GIT_REQUEST_SLOT
+        .try_with(Clone::clone)
+        .ok()
+        .flatten()
+        .filter(|(ambient_slot, _)| ambient_slot == &slot)
+    {
+        return spawn_git_blocking_generation(ambient_slot, generation, f).await;
+    }
     let generation = git_slot_begin(&slot);
-    spawn_git_blocking(move || {
+    let _lease = GitSlotLease::new(slot.clone(), generation);
+    spawn_git_blocking_generation(slot, generation, f).await
+}
+
+async fn spawn_git_blocking_generation<F, X>(
+    slot: String,
+    generation: u64,
+    f: F,
+) -> Result<X, String>
+where
+    F: FnOnce() -> Result<X, String> + Send + 'static,
+    X: Send + 'static,
+{
+    spawn_git_blocking_raw(move || {
         if git_slot_is_stale(&slot, generation) {
             GIT_STALE_ABORTS.fetch_add(1, Ordering::SeqCst);
             return Err(GIT_SUPERSEDED_ERR.to_string());
@@ -3311,6 +3418,96 @@ mod supersede_tests {
         let err = out.expect_err("queued stale task must abort");
         assert!(err.contains("superseded"), "err: {err}");
         assert!(!ran.load(Ordering::SeqCst), "stale closure must not run");
+    }
+
+    #[tokio::test]
+    async fn ambient_request_slot_kills_plain_git_child_on_cancel() {
+        let _serial = git_child_test_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let script = hang_script("ambient");
+        let slot = format!("t:ambient:{}", uuid::Uuid::new_v4());
+        let task_slot = slot.clone();
+        let task_script = script.clone();
+        let task = tokio::spawn(async move {
+            with_git_request_slot(task_slot, async move {
+                spawn_git_blocking(move || {
+                    let mut command = Command::new(&task_script);
+                    run_command_with_timeout(&mut command, Duration::from_secs(30))
+                })
+                .await
+            })
+            .await
+        });
+
+        let t0 = Instant::now();
+        loop {
+            let registered = git_slots()
+                .lock()
+                .unwrap()
+                .get(&slot)
+                .map(|s| !s.live.is_empty())
+                .unwrap_or(false);
+            if registered {
+                break;
+            }
+            assert!(
+                t0.elapsed() < crate::process_guard::test_time_budget(Duration::from_secs(10)),
+                "ambient child never registered"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        cancel_git_slot(&slot);
+        let result = task.await.unwrap().expect("Git admission");
+        let error = result.expect_err("cancelled ambient child must fail");
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(t0.elapsed() < crate::process_guard::test_time_budget(Duration::from_secs(15)));
+        assert!(!git_slots().lock().unwrap().contains_key(&slot));
+        let _ = std::fs::remove_dir_all(script.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn ambient_request_slot_releases_registry_after_complete() {
+        let slot = format!("t:ambient-complete:{}", uuid::Uuid::new_v4());
+        let result = with_git_request_slot(slot.clone(), async {
+            spawn_git_blocking(|| 7).await
+        })
+        .await;
+        assert_eq!(result.unwrap(), 7);
+        assert!(!git_slots().lock().unwrap().contains_key(&slot));
+    }
+
+    #[tokio::test]
+    async fn ambient_request_slot_cancel_stays_stale_for_later_steps() {
+        let slot = format!("t:ambient-stale:{}", uuid::Uuid::new_v4());
+        let (first_done_tx, first_done_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let second_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let second_started_task = second_started.clone();
+        let task_slot = slot.clone();
+        let task = tokio::spawn(async move {
+            with_git_request_slot(task_slot, async move {
+                spawn_git_blocking(|| ()).await?;
+                let _ = first_done_tx.send(());
+                let _ = release_rx.await;
+                spawn_git_blocking(move || {
+                    second_started_task.store(true, Ordering::SeqCst);
+                    ()
+                })
+                .await
+            })
+            .await
+        });
+
+        first_done_rx.await.unwrap();
+        cancel_git_slot(&slot);
+        let _ = release_tx.send(());
+        let result = task.await.unwrap();
+        let error = result.expect_err("cancelled scope must reject later Git steps");
+        assert!(error.contains("superseded"), "error: {error}");
+        assert!(!second_started.load(Ordering::SeqCst));
+        assert!(!git_slots().lock().unwrap().contains_key(&slot));
     }
 }
 
