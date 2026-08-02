@@ -30,6 +30,7 @@
   let actionError = $state('');
   let actionNotice = $state('');
   let actionController = $state<AbortController | null>(null);
+  let selectedHash = $state<string | null>(null);
 
   const canWrite = $derived(hasRemoteGitWriteCapability(provider));
   const stagedFiles = $derived(info.staged ?? []);
@@ -44,6 +45,19 @@
       // history view without pretending the transport knows branch topology.
       parents: commit.parents ?? (info.commits[index + 1] ? [info.commits[index + 1].hash] : []),
     })),
+  );
+  const headCommit = $derived(
+    info.commits.find((commit) => commit.refs?.includes('head:')) ?? info.commits[0] ?? null,
+  );
+  const branchNames = $derived(
+    info.branches.length > 0
+      ? [...new Set(info.branches)]
+      : [...new Set(info.commits.flatMap((commit) => (commit.refs ?? [])
+          .filter((ref) => ref.startsWith('branch:'))
+          .map((ref) => ref.slice('branch:'.length))))],
+  );
+  const selectedCommit = $derived(
+    info.commits.find((commit) => commit.hash === selectedHash) ?? headCommit,
   );
 
   async function load(force = false): Promise<void> {
@@ -168,6 +182,14 @@
   {#if actionError}<p class="msg err" role="alert">{actionError}</p>{/if}
   {#if actionNotice}<p class="msg notice" role="status">{actionNotice}</p>{/if}
 
+  {#if view === 'graph' && branchNames.length > 0}
+    <div class="branch-list" aria-label="Branches">
+      {#each branchNames as branch (branch)}
+        <span class="branch-pill" class:head={branch === info.currentBranch}>{branch}</span>
+      {/each}
+    </div>
+  {/if}
+
   {#if error}
     <span class="msg err" role="alert">{error}</span>
   {:else if loading && info.files.length === 0 && info.commits.length === 0}
@@ -182,14 +204,33 @@
         <div class="graph-canvas"><GitGraph commits={graphCommits} dx={12} dy={28} /></div>
         <div class="graph-rows">
           {#each info.commits as commit (commit.hash)}
-            <div class="graph-row">
+            {@const refs = (commit.refs ?? []).filter((ref) => ref !== 'head:')}
+            <button
+              type="button"
+              class="graph-row"
+              class:selected={selectedCommit?.hash === commit.hash}
+              aria-pressed={selectedCommit?.hash === commit.hash}
+              onclick={() => selectedHash = commit.hash}
+            >
               <code>{commit.hash.slice(0, 8)}</code>
               <span title={commit.subject}>{commit.subject}</span>
-            </div>
+              {#if refs.length > 0}
+                <span class="graph-refs">
+                  {#each refs as ref (ref)}<em>{ref.replace(/^(branch|tag):/, '')}</em>{/each}
+                </span>
+              {/if}
+            </button>
           {/each}
         </div>
       {/if}
     </div>
+    {#if selectedCommit}
+      <div class="selected-commit" role="region" aria-label="Selected commit">
+        <strong>{selectedCommit.subject}</strong>
+        <code>{selectedCommit.hash}</code>
+        <span>{selectedCommit.parents?.length ?? 0} parent(s)</span>
+      </div>
+    {/if}
   {:else}
     <div class="git-body">
       {#if canWrite}
@@ -243,6 +284,9 @@
   .cancel-btn{padding:3px 5px;color:var(--rg-ansi-red);font-size:11px}
   .msg{display:block;color:var(--rg-fg-muted);font-size:12px;padding:6px 8px}.msg.err{color:var(--rg-ansi-red)}.msg.notice{color:var(--rg-ansi-green)}
   .git-body,.graph-body{flex:1;min-height:0;overflow-y:auto;padding:6px 8px;-webkit-overflow-scrolling:touch}
+  .branch-list{display:flex;gap:4px;flex-wrap:wrap;padding:4px 8px;border-bottom:1px solid var(--rg-border-bright)}
+  .branch-pill{border:1px solid var(--rg-border);border-radius:999px;padding:2px 6px;color:var(--rg-fg-muted);font-size:10px}
+  .branch-pill.head{border-color:var(--rg-accent);color:var(--rg-accent)}
   .write-box{display:flex;flex-direction:column;gap:6px;padding:4px 0 8px;border-bottom:1px solid var(--rg-border)}
   .write-actions{display:flex;gap:6px}.write-actions button,.commit-btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:30px;border:1px solid var(--rg-border-bright);border-radius:6px;background:var(--rg-surface-2);color:var(--rg-fg);font-size:11px;padding:0 8px;cursor:pointer}
   .write-actions button:disabled,.commit-btn:disabled{opacity:.45;cursor:default}
@@ -253,5 +297,5 @@
   .file-row.tappable{cursor:pointer}.file-row.tappable:active{background:var(--rg-surface-2)}
   .badge{flex-shrink:0;width:17px;text-align:center;font-size:10px;font-weight:700}.badge.modified{color:var(--rg-ansi-yellow,#d29922)}.badge.added{color:var(--rg-ansi-green)}.badge.deleted{color:var(--rg-ansi-red)}.badge.renamed{color:var(--rg-accent)}
   .fpath{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
-  .graph-body{display:flex;gap:8px}.graph-canvas{flex:0 0 auto}.graph-rows{min-width:0;flex:1;padding-top:1px}.graph-row{display:flex;align-items:center;gap:7px;height:28px;min-width:0;font-size:11px;color:var(--rg-fg-muted)}.graph-row code{font-size:10px;color:var(--rg-ansi-magenta,#d2a8ff)}.graph-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .graph-body{display:flex;gap:8px}.graph-canvas{flex:0 0 auto}.graph-rows{min-width:0;flex:1;padding-top:1px}.graph-row{display:flex;align-items:center;gap:7px;width:100%;height:28px;min-width:0;padding:0 3px;border:0;border-radius:4px;background:none;font:inherit;font-size:11px;color:var(--rg-fg-muted);text-align:left;cursor:pointer}.graph-row:hover,.graph-row.selected{background:var(--rg-surface-2);color:var(--rg-fg)}.graph-row code{font-size:10px;color:var(--rg-ansi-magenta,#d299ff);flex-shrink:0}.graph-row>span:not(.graph-refs){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.graph-refs{display:flex;gap:3px;flex-shrink:0}.graph-refs em{font-style:normal;border:1px solid var(--rg-border);border-radius:3px;padding:1px 3px;color:var(--rg-accent);font-size:9px}.selected-commit{display:flex;flex-wrap:wrap;gap:6px;align-items:baseline;padding:6px 8px;border-top:1px solid var(--rg-border-bright);background:var(--rg-surface-2);font-size:11px}.selected-commit strong{flex:1;min-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--rg-fg)}.selected-commit code{font-size:10px;color:var(--rg-ansi-magenta,#d299ff)}.selected-commit span{color:var(--rg-fg-muted);font-size:10px}
 </style>

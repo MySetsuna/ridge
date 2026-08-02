@@ -2128,7 +2128,7 @@ async fn git_status_result(repo_root: String) -> serde_json::Value {
     // The paginated log command uses the same bounded admission + timeout path
     // as `get_scm_status`, and avoids re-running branch/diff probes already
     // covered by the status request.
-    let commits = crate::commands::git::get_git_commits_paginated(repo_root, 0, 50)
+    let commits = crate::commands::git::get_git_commits_paginated(repo_root.clone(), 0, 50)
         .await
         .unwrap_or_default()
         .into_iter()
@@ -2137,7 +2137,16 @@ async fn git_status_result(repo_root: String) -> serde_json::Value {
             "msg": c.subject,
             "time": c.date,
             "parents": c.parents,
+            "refs": c.refs,
         }))
+        .collect::<Vec<_>>();
+    // Branch listing is part of the same Git snapshot consumed by the Remote
+    // Graph tab. A failed optional branch probe must not hide a valid status.
+    let branches = crate::commands::git::git_list_branches(repo_root.clone())
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|branch| branch.name)
         .collect::<Vec<_>>();
 
     let map_files = |files: Vec<crate::commands::git::ScmFile>| {
@@ -2150,6 +2159,7 @@ async fn git_status_result(repo_root: String) -> serde_json::Value {
         "_result": {
             "current_branch": scm.current_branch,
             "has_upstream": scm.has_upstream,
+            "branches": branches,
             "staged": map_files(scm.staged),
             "unstaged": map_files(scm.changes),
             "untracked": scm.untracked.into_iter().map(|f| f.path).collect::<Vec<_>>(),

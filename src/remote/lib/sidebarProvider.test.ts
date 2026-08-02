@@ -108,12 +108,21 @@ describe('remote sidebar query contract', () => {
 
   it('single-flights Git status but keeps cwd identities separate', async () => {
     const client = new TestQueryClient();
-    const gitStatus = vi.fn(async () => ({ staged: [], unstaged: [], untracked: [], commits: [] }));
+    const gitStatus = vi.fn(async () => ({
+      current_branch: 'main',
+      branches: ['main', 'feature/topic'],
+      staged: [],
+      unstaged: [],
+      untracked: [],
+      commits: [{ hash: 'head', msg: 'head commit', time: 'now', refs: ['head:', 'branch:main'] }],
+    }));
     const dp = makeProvider({ gitStatus });
     const a = createWsSidebarProvider('/repo-a', dp, { queryClient: client, sessionId: 7 });
     const b = createWsSidebarProvider('/repo-b', dp, { queryClient: client, sessionId: 7 });
 
-    await Promise.all([a.gitStatus(), a.gitStatus(), b.gitStatus()]);
+    const [first] = await Promise.all([a.gitStatus(), a.gitStatus(), b.gitStatus()]);
+    expect(first.branches).toEqual(['main', 'feature/topic']);
+    expect(first.commits[0]?.refs).toEqual(['head:', 'branch:main']);
     expect(gitStatus).toHaveBeenCalledTimes(2);
     expect(gitStatus).toHaveBeenNthCalledWith(1, '/repo-a');
     expect(gitStatus).toHaveBeenNthCalledWith(2, '/repo-b');

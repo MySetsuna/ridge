@@ -39,6 +39,8 @@ export interface GitCommit {
   date: string;
   /** Parent hashes are optional for older hosts; present when GitGraph data is available. */
   parents?: string[];
+  /** Ref decorations (`head:`, `branch:<name>`, `tag:<name>`) from the host log. */
+  refs?: string[];
 }
 
 export interface GitInfo {

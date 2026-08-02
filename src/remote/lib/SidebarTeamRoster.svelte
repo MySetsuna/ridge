@@ -118,6 +118,11 @@
     void persistGroups(groups.map((g) => g.id === group.id ? { ...g, name: trimmed } : g));
   }
 
+  function deleteGroup(group: TeammateGroup): void {
+    if (groupBusy || !globalThis.confirm(`Delete Agent group "${group.name}"?`)) return;
+    void persistGroups(groups.filter((g) => g.id !== group.id));
+  }
+
   function toggleMember(group: TeammateGroup, agentId: string): void {
     const has = group.memberAgentIds.includes(agentId);
     const memberAgentIds = has
@@ -306,6 +311,16 @@
               onchange={(e) => renameGroup(g, e.currentTarget.value)}
             />
             <span class="role">{g.memberAgentIds.length}</span>
+            <button
+              class="group-delete"
+              type="button"
+              title="Delete group"
+              aria-label={`Delete group ${g.name}`}
+              disabled={groupBusy}
+              onclick={() => deleteGroup(g)}
+            >
+              ×
+            </button>
           </div>
           {#if g.memberAgentIds.length === 0}
             <p class="empty-group">空组</p>
@@ -479,6 +494,9 @@
   .group-bar{height:3px}
   .group-head{display:flex;align-items:center;gap:8px;padding:6px 10px}
   .group-head .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;font-size:12px}
+  .group-delete{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border:1px solid var(--rg-border);border-radius:5px;background:transparent;color:var(--rg-fg-muted);cursor:pointer;line-height:1}
+  .group-delete:disabled{opacity:.45;cursor:default}
+  .group-delete:not(:disabled):active{color:var(--rg-ansi-red)}
   .group-create{display:flex;gap:6px;padding:2px 0 6px}
   .group-name{flex:1;min-width:0;border:1px solid transparent;background:transparent;color:var(--rg-fg);font-size:12px;font-weight:600;outline:none}
   .group-name:focus{border-color:var(--rg-border);border-radius:4px;padding:1px 4px}
