@@ -14,6 +14,7 @@ Date: 2026-08-02
 - `f129d81` changes the Agent roster liveness refresh from a 5-second loop to a
   five-minute interval. TanStack Query remains the cache/single-flight layer;
   opening the drawer does not issue an unconditional fresh RPC.
+- `d818500` adds a source contract test for the five-minute interval.
 
 ## Key call path
 
@@ -42,4 +43,3 @@ heap soak, dual-window/dual-host E2E, authenticated real Git push, and clean
 browser-profile extension attribution still require their respective real
 environments. Tauri is currently a compatibility shell over local host/PTY
 services, not yet a pure UI shell.
-
