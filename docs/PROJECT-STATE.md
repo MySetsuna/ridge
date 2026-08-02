@@ -998,3 +998,28 @@ arm64/x64 builds, and `gh release view v0.1.39` confirms 12 matching assets,
 `0.1.39+gc772085` (233 files / 21.78 MiB), and cloud health returned HTTP 200.
 This is the latest code publication; external physical/public/WebView2 and
 full Kernel authority gates remain open.
+
+## Latest continuation (2026-08-02)
+
+The formal desktop release is now `v0.1.40` (`c0d7bce`), with 12 matching
+assets; Remote activation `30752469369` succeeded at `0.1.40+gc0d7bce`, and
+Cloud health returned HTTP 200. The current main documentation head is
+`aac8cb1`; runtime changes below are the next publish candidate.
+
+This continuation closes a local Remote Query/Agent Commune slice:
+
+- sidebar keys carry session/host, workspace, pane, CWD/path, and optional
+  branch scope; mutations invalidate only that scope;
+- pane/workspace snapshots clean listeners on abort/error/success and bounded
+  timeout; `WsDataProvider` clears and rejects pending requests on transport
+  loss or send failure;
+- desktop history resume is single-flight, Agent rows show status rails, and
+  Remote Agent history scans occur every five minutes.
+
+Deterministic evidence: targeted Remote/Agent/transport tests 20/20 passed;
+`pnpm check` 0 errors/0 warnings; LAN desktop/mobile E2E passed with
+`browserErrors=[]`, input/resize true. These do not prove physical phone
+`runtime.lastError` attribution, public WebRTC, WebView2 heap soak, real
+authenticated Git push, dual-window/Host singleton, or full Kernel domain
+authority migration. Those remain active requirements and are not hidden by a
+successful local release.

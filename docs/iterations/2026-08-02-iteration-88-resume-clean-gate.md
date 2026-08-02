@@ -1,7 +1,7 @@
 # Iteration 88 continuation — Agent resume and release cleanliness
 
 Date: 2026-08-02
-Baseline: formal desktop release `v0.1.39` (`c772085`)
+Baseline: formal desktop release `v0.1.40` (`c0d7bce`)
 
 ## Landed
 
@@ -58,3 +58,31 @@ safe-area/keyboard/touch, public WebRTC, authenticated Git push, WebView2
 long-run heap, dual-window/Host device singleton E2E, and full desktop
 AppState/PTY/filesystem-root Kernel authority migration still need their
 respective runtime evidence. Local tests do not overclaim those gates.
+
+## Continuation slice: Remote Query lifecycle and Agent Commune
+
+- Sidebar cache keys now include remote session, workspace, pane, CWD/path, and
+  optional branch. Git/file mutations invalidate only the matching scoped
+  prefix, preventing same-path cross-pane/workspace cache reuse.
+- Pane/workspace snapshots clean listeners on success, abort, send failure, and
+  bounded timeout (`15s` default). `WsDataProvider` now propagates AbortSignal
+  through sidebar reads and rejects all data requests on transport
+  disconnect/error or synchronous send failure; `dispose()` detaches listeners
+  and clears timers.
+- Desktop Agent history resume is single-flight, all live Agent rows expose a
+  status-colored rail, and Remote history scans run on a strict five-minute
+  cadence rather than every third roster poll.
+
+Evidence: `pnpm exec vitest run src/remote/lib/remoteQueries.test.ts
+src/remote/lib/sidebarProvider.test.ts src/lib/teammate/agentCommuneModel.test.ts
+src/lib/transport/ws.test.ts` — 4 files, 20 tests passed; `pnpm check` — 0
+errors, 0 warnings. `pnpm e2e:rdg-lan -- --skip-build` passed desktop/mobile
+LAN checks (`ws=true`, `browserErrors=[]`, input/resize true); this is LAN
+evidence only.
+
+Residuals remain explicit: Tauri host calls do not interrupt an already-started
+IPC operation; PaneInfo has no canonical Git branch;
+desktop history lacks OpenCode/MiMo/Chinese CLI adapters and stable native
+session merge; Remote resume CWD is directory-checked but not canonical-
+session-bound; public/physical Remote, WebView2 heap soak, authenticated Git
+push, dual-window/Host, and full Kernel domain authority migration remain open.
