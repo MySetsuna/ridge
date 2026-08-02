@@ -115,6 +115,25 @@ describe('scrollback worker protocol', () => {
     }
   });
 
+  it('synchronous fallback settles decoder faults as null', async () => {
+    const previousWorker = (globalThis as typeof globalThis & { Worker?: typeof Worker }).Worker;
+    const PreviousDecoder = globalThis.TextDecoder;
+    class ThrowingDecoder {
+      decode(): string { throw new Error('malformed bytes'); }
+    }
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: undefined });
+    Object.defineProperty(globalThis, 'TextDecoder', { configurable: true, writable: true, value: ThrowingDecoder });
+    try {
+      const decoder = new ScrollbackDecoder();
+      await expect(decoder.decode({ workspaceId: 'ws', paneId: 'p' }, 1, 2, requestBytes())).resolves.toBeNull();
+      decoder.dispose();
+    } finally {
+      if (previousWorker) Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: previousWorker });
+      else Reflect.deleteProperty(globalThis, 'Worker');
+      Object.defineProperty(globalThis, 'TextDecoder', { configurable: true, writable: true, value: PreviousDecoder });
+    }
+  });
+
   it('cancels only the destroyed pane and keeps other pane work pending', async () => {
     await withWorker(SilentWorker as unknown as typeof Worker, async () => {
       const decoder = new ScrollbackDecoder();
