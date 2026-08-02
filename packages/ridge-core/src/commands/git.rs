@@ -3504,6 +3504,21 @@ mod scan_tests {
         )
         .expect("read remote head after remote advance");
         assert_ne!(remote_head_after_other.trim(), remote_head.trim());
+        // Make the final server-side rejection deterministic across Git
+        // versions and transport implementations. The hook stands in for a
+        // remote policy rejecting the stale update; the handler must surface
+        // the non-zero push and must not overwrite the remote head.
+        let hook = bare.join("hooks").join("pre-receive");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").expect("write rejecting hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&hook)
+                .expect("read hook metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&hook, permissions).expect("make hook executable");
+        }
         std::fs::write(repo.join("local.txt"), "local divergence\n").expect("write local fixture");
         run_git_simple(repo.to_string_lossy().as_ref(), &["add", "local.txt"])
             .expect("stage local fixture");
