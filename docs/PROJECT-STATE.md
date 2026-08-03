@@ -5,6 +5,16 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 112 update (2026-08-03)
+
+User-visible host disconnect now commits `HostStatus::Disconnected` through
+the kernel before marking the outbound transport disconnected or clearing live
+buffers. Kernel failure leaves the client and Connected projection retryable;
+the local test seam is explicit. Host tests are 20/20. This follow-up remains
+unreleased because the daily publication window is frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-112-host-disconnect-kernel-first.md`.
+
 ## Iteration 111 update (2026-08-03)
 
 Outbound list ingress now commits sessions plus Connected status/detail in one

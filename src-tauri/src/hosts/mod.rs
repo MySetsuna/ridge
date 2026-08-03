@@ -222,6 +222,24 @@ impl HostRegistry {
         }
     }
 
+    /// Kernel-authoritative status transition used by user-visible disconnect
+    /// paths. The transport is not torn down until this write succeeds.
+    pub fn set_status_kernel_authoritative(
+        &self,
+        id: &str,
+        status: HostStatus,
+        detail: impl Into<String>,
+    ) -> Result<(), String> {
+        let mut host = self
+            .hosts
+            .read()
+            .get(id)
+            .ok_or_else(|| format!("鏈煡涓绘満: {id}"))?;
+        host.status = status;
+        host.detail = detail.into();
+        self.upsert_kernel_authoritative(host)
+    }
+
     /// Register live stdin sink for a remote pane (V-H1-LIVE).
     pub fn set_live_sink(&self, host_id: &str, remote_pane_id: &str, sink: LiveInputSink) {
         self.live_sinks
@@ -802,8 +820,7 @@ pub fn ensure_host_connected(state: &AppState, host_id: &str) -> Result<(), Stri
 /// 断开一台远端主机（置 `Disconnected`；不移除登记；清 outbound 订阅）。
 #[tauri::command]
 pub fn disconnect_host(state: State<'_, AppState>, host_id: String) -> Result<(), String> {
-    disconnect_host_outbound(&state.hosts, &host_id);
-    Ok(())
+    disconnect_host_outbound(&state.hosts, &host_id)
 }
 
 /// 忘记一台远端主机（移除登记 + 出站客户端）。
@@ -1318,7 +1335,21 @@ pub fn bind_mock_outbound_and_list(
 }
 
 /// Host disconnect: mark outbound disconnected + host status (subscriptions cleared).
-pub fn disconnect_host_outbound(hosts: &HostRegistry, host_id: &str) {
+pub fn disconnect_host_outbound(hosts: &HostRegistry, host_id: &str) -> Result<(), String> {
+    disconnect_host_outbound_with(hosts, host_id, |hosts, host_id| {
+        hosts.set_status_kernel_authoritative(host_id, HostStatus::Disconnected, "已断开")
+    })
+}
+
+fn disconnect_host_outbound_with<F>(
+    hosts: &HostRegistry,
+    host_id: &str,
+    set_status: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&HostRegistry, &str) -> Result<(), String>,
+{
+    set_status(hosts, host_id)?;
     if let Some(c) = hosts.outbound_client(host_id) {
         c.mark_disconnected();
     }
@@ -1328,8 +1359,8 @@ pub fn disconnect_host_outbound(hosts: &HostRegistry, host_id: &str) {
         outs.retain(|(h, _), _| h != host_id);
     }
     hosts.live_bp().clear_host(host_id);
-    hosts.set_status(host_id, HostStatus::Disconnected, "已断开");
     hosts.on_host_disconnected_schedule_reconnect(host_id);
+    Ok(())
 }
 
 /// Drive one reconnect supervisor step (Hosts poll / tests).
@@ -2062,8 +2093,46 @@ mod tests {
         .unwrap();
         let c = reg.outbound_client("lan:h").unwrap();
         c.subscribe("main").unwrap();
-        disconnect_host_outbound(&reg, "lan:h");
+        disconnect_host_outbound_with(&reg, "lan:h", |hosts, host_id| {
+            hosts.set_status(host_id, HostStatus::Disconnected, "test");
+            Ok(())
+        })
+        .unwrap();
         assert!(!c.is_subscribed("main"));
         assert_eq!(reg.get("lan:h").unwrap().status, HostStatus::Disconnected);
+    }
+
+    #[test]
+    fn disconnect_kernel_failure_keeps_transport_usable() {
+        let reg = HostRegistry::default();
+        reg.upsert(HostRecord {
+            id: "lan:disconnect-failure".into(),
+            kind: HostKind::Remote,
+            label: "disconnect-failure".into(),
+            addr: "x".into(),
+            status: HostStatus::Connected,
+            detail: "ok".into(),
+            sessions: vec![],
+        });
+        let mock = Arc::new(MockOutboundTransport::new());
+        mock.preset_list(&[]);
+        bind_outbound_and_list_with(
+            &reg,
+            "lan:disconnect-failure",
+            mock,
+            |hosts, sessions| {
+                hosts.replace_sessions("lan:disconnect-failure", sessions);
+                hosts.set_status("lan:disconnect-failure", HostStatus::Connected, "test");
+                Ok(())
+            },
+        )
+        .unwrap();
+        let client = reg.outbound_client("lan:disconnect-failure").unwrap();
+
+        let error = disconnect_host_outbound(&reg, "lan:disconnect-failure")
+            .expect_err("kernel-unavailable disconnect must fail closed");
+        assert!(error.contains("ridge-kernel"));
+        assert_eq!(client.state(), outbound::OutboundState::Listed);
+        assert_eq!(reg.get("lan:disconnect-failure").unwrap().status, HostStatus::Connected);
     }
 }
