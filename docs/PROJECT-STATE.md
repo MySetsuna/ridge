@@ -5,6 +5,19 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 101 update (2026-08-03)
+
+Remote mobile Git first paint is now asynchronous: `git_status` returns only
+working-tree state, while branch/history use a separate cancellable Query on
+Graph selection. Host data-request dispatch exposes both lazy reads, with
+single-flight caching, teardown fencing, and legacy-host fallback. Reconnect and
+failure banners reserve the PWA top safe area for notch devices. Full Vitest is
+144 files / 1489 passed / 1 skipped; `pnpm check` is 0/0; remote mobile PWA
+build passes. Commits `16a34bf` and `d8ae245` are pushed. The daily publication
+window was already consumed by `v0.1.54`, so this follow-up is queued for the
+next release; no second artifact publication was attempted.
+Archive: `docs/iterations/2026-08-03-iteration-101-remote-git-async-pwa-safe-area.md`.
+
 ## Iteration 100 update (2026-08-03)
 
 Remote Query/PWA and Agent Commune parity deterministic slice is complete and
