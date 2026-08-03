@@ -72,6 +72,17 @@ impl DeltaCell {
     }
 }
 
+/// One scrollback row carried by the delta protocol.
+///
+/// `Row::wrapped` is row metadata, not cell content. Keeping it beside the
+/// row avoids repeating one boolean on every cell while preserving the
+/// terminal's logical-line boundary across the native-parser -> wasm mirror.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeltaLine {
+    pub cells: Vec<DeltaCell>,
+    pub wrapped: bool,
+}
+
 /// Cursor shape carried in the `Cursor` delta variant. Parallel to
 /// `render::backend::CursorStyle` but defined here so the parser
 /// engine doesn't have to depend on the (wasm-only) render module.
@@ -95,6 +106,10 @@ pub enum GridDelta {
     Cells {
         row: u16,
         col: u16,
+        /// Whether the target row is the head of a soft-wrapped visual line.
+        /// Sent even when `cells` is empty so a wrap-boundary change does not
+        /// require retransmitting an entire row.
+        wrapped: bool,
         cells: Vec<DeltaCell>,
     },
     /// Cursor position / visibility / shape changed. Emitted on every
@@ -111,7 +126,7 @@ pub enum GridDelta {
     /// New line(s) pushed to scrollback (top row of grid scrolled out).
     /// The frontend appends to its own scrollback ring; existing rows
     /// shift up via the renderer's existing scroll path.
-    ScrollbackAppend { lines: Vec<Vec<DeltaCell>> },
+    ScrollbackAppend { lines: Vec<DeltaLine> },
     /// Producer physically dropped all saved lines. The mirror must release
     /// its ring as well; visible cells arrive as ordinary `Cells` deltas.
     ScrollbackClear,
@@ -157,13 +172,16 @@ pub struct DeltaFrame {
 }
 
 impl DeltaFrame {
+    // v4 (soft-wrap-delta): carry row `wrapped` metadata for live and
+    // scrollback rows; otherwise the desktop delta mirror cannot distinguish
+    // a visual soft wrap from a hard newline during copy/link hit-testing.
     // v3 (§terminal-clear): `ScrollbackClear` added so native parser, wasm
     // mirror, and backend raw-byte history share one physical-clear signal.
     // v2 (§emoji-cluster): `DeltaCell.cluster` added so multi-codepoint
     // grapheme clusters survive the native→wasm delta hop. Native parser
     // and wasm consumer compile from this same source and ship together,
     // so the version bump is a fail-fast guard against a skewed bundle.
-    pub const PROTOCOL_VERSION: u16 = 3;
+    pub const PROTOCOL_VERSION: u16 = 4;
 
     pub fn new(pane_seq: u64, deltas: Vec<GridDelta>) -> Self {
         Self {
@@ -227,6 +245,7 @@ mod tests {
                 GridDelta::Cells {
                     row: 3,
                     col: 7,
+                    wrapped: true,
                     cells: vec![
                         DeltaCell::blank(),
                         DeltaCell {
@@ -258,7 +277,10 @@ mod tests {
                     shape: CursorShape::Bar,
                 },
                 GridDelta::ScrollbackAppend {
-                    lines: vec![vec![DeltaCell::blank()]],
+                    lines: vec![DeltaLine {
+                        cells: vec![DeltaCell::blank()],
+                        wrapped: true,
+                    }],
                 },
                 GridDelta::ScrollbackClear,
                 GridDelta::ModeChange {
