@@ -13,8 +13,8 @@ describe('remote Git panel contract', () => {
   });
 
   it('offers a dedicated Changes/Graph tab and reuses the shared graph renderer', () => {
-    expect(source).toContain("view = 'changes'");
-    expect(source).toContain("view = 'graph'");
+    expect(source).toContain("$state<'changes' | 'graph'>('changes')");
+    expect(source).toContain("view === 'graph'");
     expect(source).toContain("import GitGraph from '../../lib/components/GitGraph.svelte'");
     expect(source).toContain('parents: commit.parents ??');
     expect(source).toContain('const branchNames = $derived(');
@@ -23,5 +23,12 @@ describe('remote Git panel contract', () => {
     expect(source).toContain('Selected commit');
     expect(source).toContain('selectedCommit.author');
     expect(source).toContain('selectedHash = commit.hash');
+  });
+
+  it('defers first status RPC and loads Graph history only on demand', () => {
+    expect(source).toContain('requestAnimationFrame');
+    expect(source).toContain('provider.gitGraph');
+    expect(source).toContain('function loadGraph');
+    expect(source).toContain("if (next === 'graph') void loadGraph()");
   });
 });

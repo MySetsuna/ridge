@@ -8,6 +8,7 @@ import { getTransport, type DataProvider } from '$lib/transport';
 import type {
   SidebarProvider,
   DirListing,
+  GitGraph,
   GitInfo,
   SearchHit,
   FileEntry,
@@ -102,6 +103,37 @@ export function createWsSidebarProvider(
     query: (signal?: AbortSignal) => Promise<T>,
     observerSignal?: AbortSignal,
   ): Promise<T> => run(key, query, observerSignal, 0);
+
+  const readGraph = async (signal?: AbortSignal): Promise<GitGraph> => {
+    if (dp.gitGraph) {
+      const graph = await dp.gitGraph(root, signal);
+      return {
+        branches: graph.branches ?? [],
+        commits: (graph.commits ?? []).map((c) => ({
+          hash: c.hash,
+          subject: c.msg,
+          author: c.author ?? '',
+          date: c.time,
+          parents: c.parents,
+          refs: c.refs,
+        })),
+      };
+    }
+    // Older hosts return graph details in git_status. Keep that fallback so a
+    // new controller remains usable during rolling host upgrades.
+    const status = await dp.gitStatus(root, signal);
+    return {
+      branches: status.branches ?? [],
+      commits: (status.commits ?? []).map((c) => ({
+        hash: c.hash,
+        subject: c.msg,
+        author: c.author ?? '',
+        date: c.time,
+        parents: c.parents,
+        refs: c.refs,
+      })),
+    };
+  };
 
   return {
     async listDir(path: string, signal?: AbortSignal): Promise<DirListing> {
@@ -270,6 +302,14 @@ export function createWsSidebarProvider(
         if (!info.isGitRepo) nonGitRepoConfirmed = true;
         return info;
       }, signal);
+    },
+
+    async gitGraph(signal?: AbortSignal): Promise<GitGraph> {
+      return run(remoteQueryKeys.sidebarGitGraph(sessionId, root, scope), readGraph, signal);
+    },
+
+    async refreshGitGraph(signal?: AbortSignal): Promise<GitGraph> {
+      return runFresh(remoteQueryKeys.sidebarGitGraph(sessionId, root, scope), readGraph, signal);
     },
 
     async search(query: string, signal?: AbortSignal): Promise<SearchHit[]> {

@@ -1,10 +1,10 @@
 <script lang="ts">
   import { GitBranch, RefreshCw, Upload, Check, XCircle, Network } from 'lucide-svelte';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { t } from '$lib/i18n';
   import GitGraph from '../../lib/components/GitGraph.svelte';
   import type { GraphCommit } from '../../lib/components/gitGraphLayout';
-  import type { SidebarProvider, GitDiffFile, GitInfo } from '../../shared/sidebar/types';
+  import type { SidebarProvider, GitDiffFile, GitGraph as GitGraphData, GitInfo } from '../../shared/sidebar/types';
   import { hasRemoteGitWriteCapability, runRemoteGitAction, type RemoteGitAction } from './remoteGitActions';
 
   let { provider, onOpenDiff }: {
@@ -25,6 +25,8 @@
   });
   let loading = $state(false);
   let error = $state<string | null>(null);
+  let graphLoading = $state(false);
+  let graphError = $state<string | null>(null);
   let view = $state<'changes' | 'graph'>('changes');
   let commitMessage = $state('');
   let action = $state<RemoteGitAction | null>(null);
@@ -34,6 +36,10 @@
   let selectedHash = $state<string | null>(null);
   let loadGeneration = 0;
   let loadController: AbortController | null = null;
+  let graphGeneration = 0;
+  let graphController: AbortController | null = null;
+  let statusTask: Promise<void> | null = null;
+  let graphTask: Promise<void> | null = null;
 
   // Capability alone is insufficient: a clean/non-Git pane must not expose
   // stage/commit/push controls before the status query proves repository
@@ -66,34 +72,96 @@
     info.commits.find((commit) => commit.hash === selectedHash) ?? headCommit,
   );
 
-  async function load(force = false): Promise<void> {
-    if (loading || (action && !force)) return;
+  function load(force = false): Promise<void> {
+    if (statusTask && !force) return statusTask;
+    if (action && !force) return Promise.resolve();
     loadController?.abort();
     const controller = new AbortController();
     loadController = controller;
     const generation = ++loadGeneration;
-    loading = true;
-    error = null;
-    try {
-      const next = force && provider.refreshGit
-        ? await provider.refreshGit(controller.signal)
-        : await provider.gitStatus(controller.signal);
-      if (controller.signal.aborted || generation !== loadGeneration) return;
-      info = next;
-    } catch (e) {
-      if (controller.signal.aborted || generation !== loadGeneration) return;
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      if (generation === loadGeneration) loading = false;
-    }
+    const task = (async () => {
+      loading = true;
+      error = null;
+      try {
+        const next = force && provider.refreshGit
+          ? await provider.refreshGit(controller.signal)
+          : await provider.gitStatus(controller.signal);
+        if (controller.signal.aborted || generation !== loadGeneration) return;
+        info = next;
+      } catch (e) {
+        if (controller.signal.aborted || generation !== loadGeneration) return;
+        error = e instanceof Error ? e.message : String(e);
+      } finally {
+        if (generation === loadGeneration) loading = false;
+      }
+    })();
+    const tracked = task.finally(() => {
+      if (statusTask === tracked) statusTask = null;
+    });
+    statusTask = tracked;
+    return tracked;
   }
 
-  $effect(() => { void load(); });
+  function loadGraph(force = false): Promise<void> {
+    if (!provider.gitGraph) return Promise.resolve();
+    if (graphTask && !force) return graphTask;
+    if (action && !force) return Promise.resolve();
+    graphController?.abort();
+    const generation = ++graphGeneration;
+    const task = (async () => {
+      await load();
+      if (generation !== graphGeneration || !info.isGitRepo || !provider.gitGraph) return;
+      const controller = new AbortController();
+      graphController = controller;
+      graphLoading = true;
+      graphError = null;
+      try {
+        const next: GitGraphData = force && provider.refreshGitGraph
+          ? await provider.refreshGitGraph(controller.signal)
+          : await provider.gitGraph(controller.signal);
+        if (controller.signal.aborted || generation !== graphGeneration) return;
+        info = { ...info, branches: next.branches, commits: next.commits };
+      } catch (e) {
+        if (controller.signal.aborted || generation !== graphGeneration) return;
+        graphError = e instanceof Error ? e.message : String(e);
+      } finally {
+        if (generation === graphGeneration) graphLoading = false;
+        if (graphController === controller) graphController = null;
+      }
+    })();
+    const tracked = task.finally(() => {
+      if (graphTask === tracked) graphTask = null;
+    });
+    graphTask = tracked;
+    return tracked;
+  }
+
+  function selectView(next: 'changes' | 'graph'): void {
+    view = next;
+    if (next === 'graph') void loadGraph();
+  }
+
+  onMount(() => {
+    // Yield one frame before the first remote RPC. The drawer paints its
+    // controls immediately; Git status then arrives through the async Query.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const frame = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame(() => { timer = setTimeout(() => void load(), 0); })
+      : undefined;
+    if (frame === undefined) timer = setTimeout(() => void load(), 0);
+    return () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  });
 
   onDestroy(() => {
     loadController?.abort();
     loadController = null;
     loadGeneration += 1;
+    graphController?.abort();
+    graphController = null;
+    graphGeneration += 1;
     actionController?.abort();
   });
 
@@ -143,6 +211,7 @@
         actionNotice = next === 'commit' ? 'Committed' : next === 'push' ? 'Pushed' : 'Updated';
         if (next === 'commit') commitMessage = '';
         await load(true);
+        if (view === 'graph') await loadGraph(true);
       }
     } catch (e) {
       if (!controller.signal.aborted) actionError = e instanceof Error ? e.message : String(e);
@@ -188,9 +257,9 @@
       <GitBranch class="w-4 h-4 shrink-0" />
       <span class="branch-name">{info.currentBranch || (info.isGitRepo ? 'detached' : $t('scm.notGitRepo'))}</span>
     </span>
-    <button class="view-btn" class:active={view === 'changes'} type="button" onclick={() => view = 'changes'}>{$t('scm.changesSection')}</button>
-    <button class="view-btn" class:active={view === 'graph'} type="button" onclick={() => view = 'graph'}>{$t('scm.graphSection')}</button>
-    <button class="icon-btn" type="button" onclick={() => void load(true)} disabled={!!action} title={$t('scm.refresh')} aria-label={$t('scm.refresh')}><RefreshCw class="w-4 h-4" /></button>
+    <button class="view-btn" class:active={view === 'changes'} type="button" onclick={() => selectView('changes')}>{$t('scm.changesSection')}</button>
+    <button class="view-btn" class:active={view === 'graph'} type="button" onclick={() => selectView('graph')}>{$t('scm.graphSection')}</button>
+    <button class="icon-btn" type="button" onclick={() => { void load(true); if (view === 'graph') void loadGraph(true); }} disabled={!!action} title={$t('scm.refresh')} aria-label={$t('scm.refresh')}><RefreshCw class="w-4 h-4" /></button>
   </div>
 
   {#if action}
@@ -216,6 +285,10 @@
     <span class="msg">{$t('scm.loading')}</span>
   {:else if !info.isGitRepo}
     <span class="msg">{$t('scm.notGitRepoMsg')}</span>
+  {:else if view === 'graph' && graphError}
+    <span class="msg err" role="alert">{graphError}</span>
+  {:else if view === 'graph' && graphLoading && info.commits.length === 0}
+    <span class="msg">{$t('scm.loading')}</span>
   {:else if view === 'graph'}
     <div class="graph-body">
       {#if graphCommits.length === 0}

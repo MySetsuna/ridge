@@ -192,6 +192,25 @@ describe('remote sidebar query contract', () => {
     expect(gitStatus).toHaveBeenCalledTimes(2);
   });
 
+  it('caches lazy Graph history separately from the initial Git status', async () => {
+    const client = new TestQueryClient();
+    const gitGraph = vi.fn(async () => ({
+      branches: ['main'],
+      commits: [{ hash: 'head', msg: 'head', time: 'now', author: 'a', refs: ['head:'] }],
+    }));
+    const sidebar = createWsSidebarProvider('/repo', makeProvider({ gitGraph }), {
+      queryClient: client,
+      sessionId: 9,
+    });
+
+    const [first, second] = await Promise.all([sidebar.gitGraph?.(), sidebar.gitGraph?.()]);
+    expect(first?.branches).toEqual(['main']);
+    expect(second?.commits[0]?.hash).toBe('head');
+    expect(gitGraph).toHaveBeenCalledOnce();
+    await sidebar.gitGraph?.();
+    expect(gitGraph).toHaveBeenCalledOnce();
+  });
+
   it('keeps a clean Git repository visible when status has no files or commits', async () => {
     const dp = makeProvider({
       gitStatus: vi.fn(async () => ({

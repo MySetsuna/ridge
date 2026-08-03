@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { DataProvider, GitStatusResult, SearchResult } from './types';
+import type { DataProvider, GitGraphResult, GitStatusResult, SearchResult } from './types';
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
 
 export type DataInvoke = <T>(
@@ -114,6 +114,23 @@ export class TauriDataProvider implements DataProvider {
         author: c.author,
         parents: c.parents,
         refs: c.refs,
+      })),
+    };
+  }
+  async gitGraph(repoRoot: string, _signal?: AbortSignal): Promise<GitGraphResult> {
+    const [branches, commits] = await Promise.all([
+      this.call<Array<{ name?: string }>>('git_list_branches', { repoRoot }),
+      this.call<Array<CommitNodeRaw>>('get_git_commits_paginated', { repoRoot, offset: 0, limit: 50 }),
+    ]);
+    return {
+      branches: branches.map((branch) => branch.name ?? '').filter(Boolean),
+      commits: commits.map((commit) => ({
+        hash: commit.hash,
+        msg: commit.subject,
+        time: commit.date,
+        author: commit.author,
+        parents: commit.parents,
+        refs: commit.refs,
       })),
     };
   }
