@@ -12,7 +12,7 @@ pub mod live_backpressure;
 pub mod outbound;
 pub mod reconnect_supervisor;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -89,6 +89,9 @@ pub struct ForeignAttachment {
 /// 进程内主机注册表（AppState 持有 `Arc<HostRegistry>`）。
 pub struct HostRegistry {
     hosts: RwLock<ridge_core::remote::RemoteHostTopology>,
+    /// Serialize attach transactions so two windows cannot pass the duplicate
+    /// check before either one publishes its foreign pane.
+    attach_transaction: Mutex<()>,
     /// (host_id, remote_pane_id) → stdin sink toward outbound transport.
     live_sinks: RwLock<HashMap<(String, String), LiveInputSink>>,
     /// (host_id, remote_pane_id) → stdout bytes injected from host (R17-HOST-OUT).
@@ -113,6 +116,7 @@ impl Default for HostRegistry {
     fn default() -> Self {
         Self {
             hosts: RwLock::new(ridge_core::remote::RemoteHostTopology::default()),
+            attach_transaction: Mutex::new(()),
             live_sinks: RwLock::new(HashMap::new()),
             live_outputs: RwLock::new(HashMap::new()),
             foreign_by_pane: RwLock::new(HashMap::new()),
@@ -129,6 +133,10 @@ impl Default for HostRegistry {
 }
 
 impl HostRegistry {
+    pub fn begin_attach_transaction(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.attach_transaction.lock()
+    }
+
     pub fn reconnect_supervisor(&self) -> &reconnect_supervisor::ReconnectSupervisor {
         &self.reconnect
     }
@@ -219,6 +227,18 @@ impl HostRegistry {
         self.live_sinks
             .write()
             .insert((host_id.to_string(), remote_pane_id.to_string()), sink);
+    }
+
+    /// Remove a live stdin sink when an attach transaction aborts.
+    ///
+    /// Attach has several fallible boundaries (subscribe, layout split and
+    /// PTY creation).  Keeping the cleanup primitive next to registration
+    /// prevents a failed attach from retaining a closure that routes bytes to
+    /// a session with no local pane.
+    pub fn remove_live_sink(&self, host_id: &str, remote_pane_id: &str) {
+        self.live_sinks
+            .write()
+            .remove(&(host_id.to_string(), remote_pane_id.to_string()));
     }
 
     /// Route bytes to live sink if present. Returns true if delivered.
@@ -372,6 +392,15 @@ impl HostRegistry {
         self.publish_control_plane();
     }
 
+    /// Remove a foreign attachment when an attach transaction aborts.
+    pub fn unregister_foreign(&self, pane_id: uuid::Uuid) -> Option<ForeignAttachment> {
+        let removed = self.foreign_by_pane.write().remove(&pane_id);
+        if removed.is_some() {
+            self.publish_control_plane();
+        }
+        removed
+    }
+
     /// foreign attachment count (control-plane publish).
     pub fn foreign_count(&self) -> usize {
         self.foreign_by_pane.read().len()
@@ -457,6 +486,30 @@ impl HostRegistry {
             drop(hosts);
             self.upsert(h);
         }
+    }
+
+    /// Checked variant used by attach transactions.  The legacy setter is
+    /// intentionally kept for reconnect/detach paths where a missing host is
+    /// already an expected no-op; attach must not report success for a session
+    /// that disappeared between validation and commit.
+    pub fn set_session_attached_checked(
+        &self,
+        host_id: &str,
+        session_id: &str,
+        attached: bool,
+    ) -> Result<(), String> {
+        let hosts = self.hosts.write();
+        let mut host = hosts
+            .get(host_id)
+            .ok_or_else(|| format!("未知主机: {host_id}"))?;
+        let session = host
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == session_id)
+            .ok_or_else(|| format!("未知会话: {session_id}"))?;
+        session.attached = attached;
+        drop(hosts);
+        self.upsert_kernel_authoritative(host)
     }
 }
 
@@ -731,6 +784,92 @@ pub fn get_live_backpressure(
     state.hosts.live_bp().aggregate_for_host(&host_id)
 }
 
+/// Build the local terminal endpoint before mutating host/layout state.
+///
+/// A foreign pane still needs a local PTY master for the parser and terminal
+/// command surface, even though its writer routes to `remote_ref`.  Returning
+/// an error here is deliberate: silently continuing would leave a host session
+/// marked attached with no local terminal to render or resize.
+fn create_foreign_terminal(remote: RemoteRef) -> Result<crate::engine::pty::PtyHandle, String> {
+    use portable_pty::{native_pty_system, PtySize};
+    use std::sync::atomic::{AtomicBool, AtomicI64};
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| format!("foreign PTY open failed: {error}"))?;
+    let portable_pty::PtyPair { master, slave: _ } = pair;
+    let writer = master
+        .take_writer()
+        .map_err(|error| format!("foreign PTY writer failed: {error}"))?;
+    Ok(crate::engine::pty::PtyHandle {
+        master: Arc::new(parking_lot::Mutex::new(master)),
+        writer: Arc::new(parking_lot::Mutex::new(writer)),
+        _child: None,
+        native_ref: None,
+        native_cancel: None,
+        remote_ref: Some(remote),
+        job: None,
+        child_pid: None,
+        resize_silence_deadline: Arc::new(AtomicI64::new(0)),
+        parser: Arc::new(parking_lot::Mutex::new(
+            crate::engine::parser::PaneParser::new(24, 80, 2000),
+        )),
+        delta_mode: Arc::new(AtomicBool::new(false)),
+    })
+}
+
+/// Undo every local side effect made after a foreign attach started.
+///
+/// The helper is intentionally idempotent: callers can use it for any failure
+/// boundary without needing to know which later steps ran.  Dropping a removed
+/// terminal handle closes the local PTY; `close` removes the new leaf and
+/// restores the pre-split layout.
+fn rollback_host_attach(
+    state: &AppState,
+    workspace_id: uuid::Uuid,
+    pane_id: uuid::Uuid,
+    host_id: &str,
+    session_id: &str,
+    client: Option<&Arc<OutboundClient>>,
+    subscribed: bool,
+    sink_installed: bool,
+    foreign_registered: bool,
+) {
+    if let Some(ws) = state.workspaces.write().get_mut(&workspace_id) {
+        ws.terminals.remove(&pane_id);
+        let _ = ws.pane_tree.close(pane_id);
+    }
+    if foreign_registered {
+        state.hosts.unregister_foreign(pane_id);
+    }
+    if sink_installed {
+        state.hosts.remove_live_sink(host_id, session_id);
+    }
+    if subscribed {
+        if let Some(client) = client {
+            let _ = client.unsubscribe(session_id);
+        }
+    }
+}
+
+fn ensure_remote_session_available(
+    hosts: &HostRegistry,
+    host_id: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    if let Some(existing_pane) = hosts.panes_for_remote(host_id, session_id).first() {
+        return Err(format!(
+            "远端会话已接入 pane: {existing_pane}; 请聚焦已有视图"
+        ));
+    }
+    Ok(())
+}
+
 /// V-H1-LIVE / R17-HOST-PANE：把远端会话接入为 foreign 视图（需 Connected）。
 /// 注册 live stdin sink、foreign 元数据；若有 outbound 客户端则 **subscribe**。
 #[tauri::command]
@@ -740,7 +879,17 @@ pub fn attach_host_session(
     session_id: String,
     workspace_id: Option<String>,
 ) -> Result<String, String> {
-    ensure_host_connected(&state, &host_id)?;
+    attach_host_session_inner(&state, host_id, session_id, workspace_id)
+}
+
+fn attach_host_session_inner(
+    state: &AppState,
+    host_id: String,
+    session_id: String,
+    workspace_id: Option<String>,
+) -> Result<String, String> {
+    let _attach_transaction = state.hosts.begin_attach_transaction();
+    ensure_host_connected(state, &host_id)?;
     let host = state
         .hosts
         .get(&host_id)
@@ -756,26 +905,6 @@ pub fn attach_host_session(
         None => state.active_workspace_id(),
     };
 
-    // Prefer split of first leaf so layout gains a real pane id; fall back to fresh uuid.
-    let pane_id = {
-        let mut map = state.workspaces.write();
-        if let Some(ws) = map.get_mut(&wid) {
-            let leaves = ws.pane_tree.get_all_leaves();
-            if let Some(target) = leaves.first().copied() {
-                use ridge_core::workspace::pane_tree::SplitDirection;
-                if let Ok(id) = ws.pane_tree.split(target, SplitDirection::Vertical) {
-                    id
-                } else {
-                    uuid::Uuid::new_v4()
-                }
-            } else {
-                uuid::Uuid::new_v4()
-            }
-        } else {
-            uuid::Uuid::new_v4()
-        }
-    };
-
     let remote = RemoteRef {
         host_id: host_id.clone(),
         host_label,
@@ -783,9 +912,68 @@ pub fn attach_host_session(
         kind,
     };
 
-    // Prefer outbound client write path when bound; else buffer sink for tests.
-    if let Some(client) = state.hosts.outbound_client(&host_id) {
+    // A remote session owns one local foreign view.  Re-attaching it would
+    // overwrite the existing live sink, and a later rollback could then erase
+    // the first pane's input route.  Reject duplicates before PTY/subscribe
+    // side effects; the caller can use the returned pane id to focus it.
+    ensure_remote_session_available(&state.hosts, &host_id, &session_id)?;
+
+    // Validate the workspace before touching the remote subscription.  A
+    // missing/empty workspace is a hard failure; generating a random pane id
+    // would create a foreign attachment that can never be rendered.
+    let target = {
+        let map = state.workspaces.read();
+        let ws = map.get(&wid).ok_or_else(|| format!("未知工作区: {wid}"))?;
+        ws.pane_tree
+            .get_all_leaves()
+            .first()
+            .copied()
+            .ok_or_else(|| format!("工作区无可拆分 pane: {wid}"))?
+    };
+
+    // Create the local PTY before any layout/host mutation.  PTY failures are
+    // surfaced instead of returning an attached session without a terminal.
+    let handle = create_foreign_terminal(remote.clone())?;
+    let parser_c = handle.parser.clone();
+
+    // Subscribe before splitting.  A failed subscribe therefore has no local
+    // layout or attachment side effect to roll back.
+    let client = state.hosts.outbound_client(&host_id);
+    let mut subscribed = false;
+    if let Some(client) = client.as_ref() {
         client.subscribe(&session_id)?;
+        subscribed = true;
+    }
+
+    // Commit the layout split only after all fallible setup above succeeded.
+    // If another command removed the workspace/target in the meantime, undo
+    // the remote subscription before returning the error.
+    let split_result = {
+        let mut map = state.workspaces.write();
+        match map.get_mut(&wid) {
+            Some(ws) => {
+                use ridge_core::workspace::pane_tree::SplitDirection;
+                ws.pane_tree
+                    .split(target, SplitDirection::Vertical)
+                    .map_err(|error| format!("工作区 split 失败: {error}"))
+            }
+            None => Err(format!("未知工作区: {wid}")),
+        }
+    };
+    let pane_id = match split_result {
+        Ok(id) => id,
+        Err(error) => {
+            if subscribed {
+                if let Some(client) = client.as_ref() {
+                    let _ = client.unsubscribe(&session_id);
+                }
+            }
+            return Err(error);
+        }
+    };
+
+    // Prefer outbound client write path when bound; else buffer sink for tests.
+    let sink_installed = if let Some(client) = client.as_ref() {
         let client_c = client.clone();
         let session_id_c = session_id.clone();
         state.hosts.set_live_sink(
@@ -797,6 +985,7 @@ pub fn attach_host_session(
                 }
             }),
         );
+        true
     } else {
         let host_id_c = host_id.clone();
         let session_id_c = session_id.clone();
@@ -817,62 +1006,66 @@ pub fn attach_host_session(
                 );
             }),
         );
-    }
+        true
+    };
     state.hosts.register_foreign(pane_id, remote.clone());
-    state
+
+    // AC4-C6: seed scrollback once via history API (uses seed_parser_feed).
+    // Keep tail after first attach so re-attach can re-seed; reattach clear is
+    // a product option (plan_attach_seed clear_after).
+    let _seeded = state
         .hosts
-        .set_session_attached(&host_id, &session_id, true);
+        .history()
+        .seed_parser_feed(&host_id, &session_id, |bytes| {
+            let _ = parser_c.lock().feed_and_diff(bytes);
+        });
 
     // Install foreign terminal handle so write_pty routes via remote_ref.
     {
-        use portable_pty::{native_pty_system, PtySize};
-        use std::sync::atomic::{AtomicBool, AtomicI64};
-        use std::sync::Arc;
-        let pty_system = native_pty_system();
-        if let Ok(pair) = pty_system.openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        }) {
-            let portable_pty::PtyPair {
-                master,
-                slave: _slave,
-            } = pair;
-            if let Ok(w) = master.take_writer() {
-                let parser = Arc::new(parking_lot::Mutex::new(
-                    crate::engine::parser::PaneParser::new(24, 80, 2000),
-                ));
-                let handle = crate::engine::pty::PtyHandle {
-                    master: Arc::new(parking_lot::Mutex::new(master)),
-                    writer: Arc::new(parking_lot::Mutex::new(w)),
-                    _child: None,
-                    native_ref: None,
-                    native_cancel: None,
-                    remote_ref: Some(remote),
-                    job: None,
-                    child_pid: None,
-                    resize_silence_deadline: Arc::new(AtomicI64::new(0)),
-                    parser,
-                    delta_mode: Arc::new(AtomicBool::new(false)),
-                };
-                // AC4-C6: seed scrollback once via history API (uses seed_parser_feed).
-                // Keep tail after first attach so re-attach can re-seed; reattach
-                // clear is a product option (plan_attach_seed clear_after).
-                let parser_c = handle.parser.clone();
-                let _seeded =
-                    state
-                        .hosts
-                        .history()
-                        .seed_parser_feed(&host_id, &session_id, |bytes| {
-                            let _ = parser_c.lock().feed_and_diff(bytes);
-                        });
-                let mut map = state.workspaces.write();
-                if let Some(ws) = map.get_mut(&wid) {
-                    ws.terminals.insert(pane_id, handle);
-                }
+        let mut map = state.workspaces.write();
+        let terminal_error = match map.get_mut(&wid) {
+            None => Some(format!("未知工作区: {wid}")),
+            Some(ws) if ws.terminals.contains_key(&pane_id) => {
+                Some(format!("pane 已存在: {pane_id}"))
             }
+            Some(ws) => {
+                ws.terminals.insert(pane_id, handle);
+                None
+            }
+        };
+        drop(map);
+        if let Some(error) = terminal_error {
+            rollback_host_attach(
+                state,
+                wid,
+                pane_id,
+                &host_id,
+                &session_id,
+                client.as_ref(),
+                subscribed,
+                sink_installed,
+                true,
+            );
+            return Err(error);
         }
+    }
+
+    if let Err(error) = state
+        .hosts
+        .set_session_attached_checked(&host_id, &session_id, true)
+    {
+        rollback_host_attach(
+            state,
+            wid,
+            pane_id,
+            &host_id,
+            &session_id,
+            client.as_ref(),
+            subscribed,
+            sink_installed,
+            true,
+        );
+        return Err(error);
     }
 
     Ok(pane_id.to_string())
@@ -1206,6 +1399,110 @@ mod tests {
 
         assert!(error.contains("ridge-kernel"));
         assert!(reg.snapshot().is_empty());
+    }
+
+    #[test]
+    fn rollback_host_attach_clears_every_partial_side_effect() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let state = AppState::new(tx);
+        let host_id = "lan:rollback";
+        let session_id = "main";
+        state.hosts.upsert(HostRecord {
+            id: host_id.into(),
+            kind: HostKind::Remote,
+            label: "rollback".into(),
+            addr: "127.0.0.1:1".into(),
+            status: HostStatus::Connected,
+            detail: "test".into(),
+            sessions: vec![HostSessionMeta {
+                id: session_id.into(),
+                title: "shell".into(),
+                attached: false,
+            }],
+        });
+
+        let mock = Arc::new(MockOutboundTransport::new());
+        mock.preset_list(&[RemoteSessionInfo {
+            id: session_id.into(),
+            title: "shell".into(),
+        }]);
+        let client = Arc::new(OutboundClient::new(host_id, mock));
+        client.connect_and_list().unwrap();
+        client.subscribe(session_id).unwrap();
+        state.hosts.bind_outbound(client.clone());
+
+        let wid = state.active_workspace_id();
+        let (pane_id, before_leaves) = {
+            let mut map = state.workspaces.write();
+            let ws = map.get_mut(&wid).unwrap();
+            let before = ws.pane_tree.get_all_leaves();
+            let pane_id = ws
+                .pane_tree
+                .split(
+                    before[0],
+                    ridge_core::workspace::pane_tree::SplitDirection::Vertical,
+                )
+                .unwrap();
+            (pane_id, before)
+        };
+        let remote = RemoteRef {
+            host_id: host_id.into(),
+            host_label: "rollback".into(),
+            remote_pane_id: session_id.into(),
+            kind: HostKind::Remote,
+        };
+        state
+            .hosts
+            .set_live_sink(host_id, session_id, Arc::new(|_| {}));
+        state.hosts.register_foreign(pane_id, remote.clone());
+        state
+            .workspaces
+            .write()
+            .get_mut(&wid)
+            .unwrap()
+            .terminals
+            .insert(pane_id, create_foreign_terminal(remote).unwrap());
+
+        rollback_host_attach(
+            &state,
+            wid,
+            pane_id,
+            host_id,
+            session_id,
+            Some(&client),
+            true,
+            true,
+            true,
+        );
+
+        let map = state.workspaces.read();
+        let ws = map.get(&wid).unwrap();
+        assert_eq!(ws.pane_tree.get_all_leaves(), before_leaves);
+        assert!(!ws.terminals.contains_key(&pane_id));
+        assert!(state.hosts.foreign_for_pane(pane_id).is_none());
+        assert!(!state.hosts.write_live(host_id, session_id, b"x"));
+        assert!(!state.hosts.get(host_id).unwrap().sessions[0].attached);
+        assert!(!client.is_subscribed(session_id));
+    }
+
+    #[test]
+    fn duplicate_remote_attach_is_rejected_before_side_effects() {
+        let reg = HostRegistry::default();
+        let pane_id = uuid::Uuid::new_v4();
+        reg.register_foreign(
+            pane_id,
+            RemoteRef {
+                host_id: "lan:duplicate".into(),
+                host_label: "duplicate".into(),
+                remote_pane_id: "main".into(),
+                kind: HostKind::Remote,
+            },
+        );
+
+        let error = ensure_remote_session_available(&reg, "lan:duplicate", "main")
+            .expect_err("duplicate remote session must fail closed");
+        assert!(error.contains(&pane_id.to_string()));
+        assert_eq!(reg.panes_for_remote("lan:duplicate", "main"), vec![pane_id]);
     }
 
     #[test]
