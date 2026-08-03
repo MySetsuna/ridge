@@ -30,13 +30,17 @@ export function makeHostPorts(): HostPorts {
 			},
 			subscribe(cb) {
 				// Svelte store：订阅即同步触发一次，themeBridge 依赖此初次推送。
-				return settingsStore.subscribe((s) =>
+				let lastKey: string | undefined;
+				return settingsStore.subscribe((s) => {
+					const key = `${s.terminalScrollbackLines}\u0000${s.terminalFontFamily}\u0000${s.defaultShell}`;
+					if (key === lastKey) return;
+					lastKey = key;
 					cb({
 						terminalScrollbackLines: s.terminalScrollbackLines,
 						terminalFontFamily: s.terminalFontFamily,
 						defaultShell: s.defaultShell,
-					}),
-				);
+					});
+				});
 			},
 		},
 		workspace: {

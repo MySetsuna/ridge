@@ -4,6 +4,7 @@
      z-index 9994（低于 ContextMenu 9999）。
 -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { X, Palette, Type, Puzzle, Terminal as TerminalIcon, FolderOpen, Bug, Languages, Pencil, Trash2, Plus, Image as ImageIcon, Bot } from 'lucide-svelte';
@@ -46,6 +47,36 @@
     executable?: string;
     yoloArgs?: string[];
   }>>([]);
+  let agentLoadGeneration = 0;
+  let cancelAgentSchedule: (() => void) | undefined;
+
+  type IdleCallback = (task: () => void) => (() => void);
+  const scheduleIdle: IdleCallback = (task) => {
+    if (typeof window === 'undefined') {
+      task();
+      return () => {};
+    }
+    let cancelled = false;
+    const run = () => {
+      if (!cancelled) task();
+    };
+    const idleWindow = globalThis as typeof globalThis & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (idleWindow.requestIdleCallback) {
+      const id = idleWindow.requestIdleCallback(run, { timeout: 500 });
+      return () => {
+        cancelled = true;
+        idleWindow.cancelIdleCallback?.(id);
+      };
+    }
+    const id = globalThis.setTimeout(run, 0);
+    return () => {
+      cancelled = true;
+      globalThis.clearTimeout(id);
+    };
+  };
   function loadAgentOverridesRaw(): void {
     try {
       agentOverridesJson = localStorage.getItem(AGENT_OVERRIDES_KEY) ?? '[]';
@@ -54,23 +85,30 @@
     }
   }
   async function loadAgentProfilesPreview(): Promise<void> {
+    const generation = ++agentLoadGeneration;
     loadAgentOverridesRaw();
     let overrides: unknown[] = [];
     try {
       const parsed = JSON.parse(agentOverridesJson) as unknown;
       overrides = Array.isArray(parsed) ? parsed : [];
     } catch {
-      agentProfilesHint = '覆盖 JSON 无效';
+      if (generation === agentLoadGeneration && open && activeSection === 'agents') {
+        agentProfilesHint = '覆盖 JSON 无效';
+      }
       return;
     }
     try {
       if (isTauri()) {
-        agentProfilesPreview = await invoke('list_agent_profiles', { overrides });
-        agentProfilesHint = `${agentProfilesPreview.length} 条（默认+覆盖）`;
+        const profiles = await invoke<typeof agentProfilesPreview>('list_agent_profiles', { overrides });
+        if (generation !== agentLoadGeneration || !open || activeSection !== 'agents') return;
+        agentProfilesPreview = profiles;
+        agentProfilesHint = `${profiles.length} 条（默认+覆盖）`;
       } else {
+        if (generation !== agentLoadGeneration || !open || activeSection !== 'agents') return;
         agentProfilesHint = '非 Tauri：仅显示本地覆盖草稿';
       }
     } catch (e) {
+      if (generation !== agentLoadGeneration || !open || activeSection !== 'agents') return;
       agentProfilesHint = `加载失败：${e instanceof Error ? e.message : String(e)}`;
     }
   }
@@ -91,7 +129,22 @@
     }
   }
   $effect(() => {
-    if (open && activeSection === 'agents') void loadAgentProfilesPreview();
+    const isOpen = open;
+    const section = activeSection;
+    if (isOpen && section === 'agents') {
+      untrack(() => {
+        cancelAgentSchedule?.();
+        cancelAgentSchedule = scheduleIdle(() => {
+          cancelAgentSchedule = undefined;
+          if (open && activeSection === 'agents') void loadAgentProfilesPreview();
+        });
+      });
+    }
+    return () => {
+      agentLoadGeneration += 1;
+      cancelAgentSchedule?.();
+      cancelAgentSchedule = undefined;
+    };
   });
 
   function openNewCustomTheme(): void { customEditingId = null; customModalOpen = true; }
@@ -111,19 +164,43 @@
   }
   let availableShells = $state<ShellInfo[]>([]);
   let shellsLoaded = $state(false);
+  let shellsLoading = $state(false);
+  let shellLoadGeneration = 0;
+  let cancelShellSchedule: (() => void) | undefined;
   async function loadShells(): Promise<void> {
-    if (!isTauri() || shellsLoaded) return;
+    if (!isTauri() || shellsLoaded || shellsLoading) return;
+    const generation = ++shellLoadGeneration;
+    shellsLoading = true;
     try {
-      availableShells = await invoke<ShellInfo[]>('detect_available_shells');
+      const shells = await invoke<ShellInfo[]>('detect_available_shells');
+      if (generation !== shellLoadGeneration || !open || activeSection !== 'terminal') return;
+      availableShells = shells;
+      shellsLoaded = true;
     } catch (e) {
+      if (generation !== shellLoadGeneration || !open || activeSection !== 'terminal') return;
       console.warn('detect_available_shells failed', e);
       availableShells = [];
-    } finally {
       shellsLoaded = true;
+    } finally {
+      shellsLoading = false;
     }
   }
   $effect(() => {
-    if (open) void loadShells();
+    const isOpen = open;
+    const section = activeSection;
+    if (isOpen && section === 'terminal') {
+      untrack(() => {
+        cancelShellSchedule?.();
+        cancelShellSchedule = scheduleIdle(() => {
+          cancelShellSchedule = undefined;
+          if (open && activeSection === 'terminal') void loadShells();
+        });
+      });
+    }
+    return () => {
+      cancelShellSchedule?.();
+      cancelShellSchedule = undefined;
+    };
   });
 
   // 让 panel 在打开时占据焦点 → ESC 关闭。
@@ -151,18 +228,15 @@
 
   const themePreview = $derived.by(() => {
     const out: Record<string, { bg: string; surface: string; accent: string; fg: string; hasBg: boolean; bgOpacity: number }> = {};
-    for (const id of themeIds) {
-      const t = $themeData.themes.find(x => x.id === id);
-      if (t) {
-        out[id] = {
-          bg: t.colors['bg'] ?? '#000',
-          surface: t.colors['surface'] ?? '#111',
-          accent: t.colors['accent'] ?? '#fff',
-          fg: t.colors['fg'] ?? '#ccc',
-          hasBg: !!t.bgImage,
-          bgOpacity: t.bgImageOpacity ?? 1,
-        };
-      }
+    for (const t of $themeData.themes) {
+      out[t.id] = {
+        bg: t.colors['bg'] ?? '#000',
+        surface: t.colors['surface'] ?? '#111',
+        accent: t.colors['accent'] ?? '#fff',
+        fg: t.colors['fg'] ?? '#ccc',
+        hasBg: !!t.bgImage,
+        bgOpacity: t.bgImageOpacity ?? 1,
+      };
     }
     return out;
   });
@@ -170,17 +244,44 @@
   // 主题背景图缩略 URL（异步解析 theme-assets 文件名 → convertFileSrc）。
   // 仅对带 bgImage 的主题解析；解析结果存这里供卡片预览叠图。
   let themeBgUrls = $state<Record<string, string | null>>({});
+  let themeUrlGeneration = 0;
+  let cancelThemeUrlSchedule: (() => void) | undefined;
   $effect(() => {
-    // 依赖 $themeData：主题增删改后重算。逐个解析尚未缓存的带图主题。
-    for (const t of $themeData.themes) {
-      if (t.bgImage && themeBgUrls[t.id] === undefined) {
-        // 先占位 null 防重复触发，再异步填真值。
-        themeBgUrls = { ...themeBgUrls, [t.id]: null };
-        void resolveThemeBgUrl(t).then((url) => {
-          if (url) themeBgUrls = { ...themeBgUrls, [t.id]: url };
-        });
-      }
-    }
+    const isOpen = open;
+    const section = activeSection;
+    const themes = $themeData.themes;
+    if (!isOpen || section !== 'appearance') return;
+    untrack(() => {
+      cancelThemeUrlSchedule?.();
+      const generation = ++themeUrlGeneration;
+      cancelThemeUrlSchedule = scheduleIdle(() => {
+        cancelThemeUrlSchedule = undefined;
+        const known = themeBgUrls;
+        const pending = themes.filter((t) => t.bgImage && known[t.id] === undefined);
+        if (pending.length === 0) return;
+        themeBgUrls = {
+          ...themeBgUrls,
+          ...Object.fromEntries(pending.map((t) => [t.id, null])),
+        };
+        void Promise.all(pending.map(async (t) => ({ id: t.id, url: await resolveThemeBgUrl(t) })))
+          .then((resolved) => {
+            if (generation !== themeUrlGeneration || !open || activeSection !== 'appearance') return;
+            const urls = Object.fromEntries(
+              resolved.filter((entry): entry is { id: string; url: string } => !!entry.url)
+                .map((entry) => [entry.id, entry.url]),
+            );
+            if (Object.keys(urls).length > 0) themeBgUrls = { ...themeBgUrls, ...urls };
+          })
+          .catch(() => {
+            // A missing theme asset must not reject the settings panel.
+          });
+      });
+    });
+    return () => {
+      themeUrlGeneration += 1;
+      cancelThemeUrlSchedule?.();
+      cancelThemeUrlSchedule = undefined;
+    };
   });
 
   const SECTIONS = $derived<{ id: SectionId; label: string; icon: typeof Palette }[]>([
@@ -198,8 +299,8 @@
 
 {#if open}
   <div
-    class="fixed inset-0 bg-black/55 backdrop-blur-sm flex items-center justify-center"
-    style="z-index: 9994;"
+    class="fixed inset-0 bg-black/55 flex items-center justify-center"
+    style="z-index: 9994; contain: layout paint;"
     role="presentation"
     onmousedown={(e) => {
       if (e.target === e.currentTarget) onClose();
@@ -208,6 +309,7 @@
     <div
       bind:this={rootEl}
       class="w-[860px] max-w-[92vw] h-[560px] max-h-[88vh] bg-[var(--rg-bg-raised)] border border-[var(--rg-border)] rounded-xl shadow-2xl shadow-black/40 flex overflow-hidden"
+      style="contain: content;"
       role="dialog"
       aria-modal="true"
       aria-label={$t('settings.title')}
@@ -273,11 +375,15 @@
                         {#if p.hasBg && themeBgUrls[id]}
                           <!-- 该主题带壁纸：把背景图铺在预览条上（按主题 opacity），
                                色块浮于其上 → 卡片一眼可见"此主题带背景图"。 -->
-                          <div
-                            class="absolute inset-0 bg-center bg-cover bg-no-repeat"
-                            style="background-image: url('{themeBgUrls[id]}'); opacity: {p.bgOpacity};"
+                          <img
+                            class="absolute inset-0 h-full w-full object-cover"
+                            src={themeBgUrls[id] ?? undefined}
+                            alt=""
+                            loading="lazy"
+                            decoding="async"
+                            style="opacity: {p.bgOpacity};"
                             aria-hidden="true"
-                          ></div>
+                          />
                           <div class="absolute top-1 left-1 flex items-center justify-center rounded bg-black/45 p-0.5 text-white/90" title={$t('customTheme.bgImage')}>
                             <ImageIcon size={11} />
                           </div>

@@ -1260,6 +1260,12 @@ function expandSidebar(minWidth = 0) {
     let unlisten: (() => void) | undefined;
     let unlistenResized: (() => void) | undefined;
     let unsubDefaultCwd: (() => void) | undefined;
+    let defaultCwdSyncTimer: ReturnType<typeof setTimeout> | undefined;
+    let defaultCwdSyncInFlight = false;
+    let defaultCwdSyncPending = false;
+    let defaultCwdSyncValue: string | null = null;
+    let defaultCwdSyncLastQueued: string | null | undefined;
+    let defaultCwdSyncActive = true;
     let unlistenDrop: (() => void) | undefined;
     let appReadyTimeout: ReturnType<typeof setTimeout> | undefined;
     let appReadySignaled = false;
@@ -1325,14 +1331,48 @@ function expandSidebar(minWidth = 0) {
         }
       }
 
-      // 把用户配置的默认工作目录同步到后端 AppState（启动时 + 每次设置变更）。
-      // 必须在 refreshWorkspaces / 任何 create_pane 之前订阅，否则首个 pane 会用旧
-      // 优先级（home）而不是用户配置。Svelte writable 的 subscribe 立即用当前值
-      // 触发一次，所以无需另写初始 push 路径。
-      unsubDefaultCwd = settingsStore.subscribe((s) => {
-        void invoke('set_user_default_cwd', { path: s.defaultCwd || null }).catch((err) => {
+      // 把用户配置的默认工作目录同步到后端 AppState。只观察 defaultCwd，且
+      // 对输入框逐字变化做 trailing debounce；否则任何设置项（主题、滚动行数等）
+      // 都会重复发 set_user_default_cwd，设置页和 RPC 队列一起抖动。
+      async function flushDefaultCwdSync(): Promise<void> {
+        if (!defaultCwdSyncActive || defaultCwdSyncInFlight || !defaultCwdSyncPending) return;
+        const path = defaultCwdSyncValue;
+        defaultCwdSyncPending = false;
+        defaultCwdSyncInFlight = true;
+        try {
+          await invoke('set_user_default_cwd', { path });
+        } catch (err) {
           console.warn('set_user_default_cwd failed', err);
-        });
+        } finally {
+          defaultCwdSyncInFlight = false;
+          if (defaultCwdSyncActive && defaultCwdSyncPending) {
+            if (defaultCwdSyncTimer !== undefined) clearTimeout(defaultCwdSyncTimer);
+            defaultCwdSyncTimer = setTimeout(() => {
+              defaultCwdSyncTimer = undefined;
+              void flushDefaultCwdSync();
+            }, 150);
+          }
+        }
+      }
+      function queueDefaultCwdSync(value: string): void {
+        if (!defaultCwdSyncActive) return;
+        const path = value || null;
+        if (path === defaultCwdSyncLastQueued) return;
+        defaultCwdSyncLastQueued = path;
+        defaultCwdSyncValue = path;
+        defaultCwdSyncPending = true;
+        if (defaultCwdSyncInFlight) {
+          if (defaultCwdSyncTimer !== undefined) clearTimeout(defaultCwdSyncTimer);
+          defaultCwdSyncTimer = setTimeout(() => {
+            defaultCwdSyncTimer = undefined;
+            void flushDefaultCwdSync();
+          }, 150);
+          return;
+        }
+        void flushDefaultCwdSync();
+      }
+      unsubDefaultCwd = settingsStore.subscribe((s) => {
+        queueDefaultCwdSync(s.defaultCwd);
       });
 
       // §web-remote 工作区兜底（关键）：refreshWorkspaces() 在 catch 里 re-throw
@@ -1536,6 +1576,8 @@ function expandSidebar(minWidth = 0) {
       unlisten?.();
       unlistenResized?.();
       unsubDefaultCwd?.();
+      defaultCwdSyncActive = false;
+      if (defaultCwdSyncTimer !== undefined) clearTimeout(defaultCwdSyncTimer);
       unlistenDrop?.();
       if (appReadyTimeout !== undefined) clearTimeout(appReadyTimeout);
       window.removeEventListener('ridge:pane-attached', onFirstPaneAttached);
