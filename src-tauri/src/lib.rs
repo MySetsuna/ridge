@@ -284,54 +284,76 @@ pub fn run() {
 
                 tracing::info!(target: "ridge::init", phase = 5, "setup: building system tray");
                 // REQ-RIDGE-KERNEL-HOST-01：detect-or-spawn 独立 ridge-kernel 进程。
-                match crate::kernel_lifecycle::ensure_kernel_running() {
-                    Ok(ep) => {
-                        tracing::info!(
-                            target: "ridge::kernel_lifecycle",
-                            pid = ep.pid,
-                            port = ep.port,
-                            "ridge-kernel ready"
-                        );
-                        match crate::hosts::kernel_host_snapshot() {
-                            Ok(records) => app
-                                .state::<crate::state::AppState>()
-                                .hosts
-                                .restore_topology(records),
-                            Err(error) => tracing::warn!(
+                // Kernel discovery performs bounded filesystem, process and HTTP
+                // probes and may wait for a newly spawned host. Keep it off the
+                // setup callback so the WebView stays interactive while the
+                // control plane starts.
+                let kernel_handle = app.handle().clone();
+                let kernel_hosts = app.state::<crate::state::AppState>().hosts.clone();
+                let kernel_stop = app.state::<crate::state::AppState>().quitting.clone();
+                tauri::async_runtime::spawn(async move {
+                    let bootstrap = tauri::async_runtime::spawn_blocking(|| {
+                        let endpoint = crate::kernel_lifecycle::ensure_kernel_running()?;
+                        let hosts = crate::hosts::kernel_host_snapshot();
+                        Ok::<_, String>((endpoint, hosts))
+                    })
+                    .await;
+
+                    match bootstrap {
+                        Ok(Ok((ep, host_snapshot))) => {
+                            tracing::info!(
                                 target: "ridge::kernel_lifecycle",
-                                %error,
-                                "kernel host topology restore unavailable; shell will fail closed"
-                            ),
-                        }
-                        // 验收④：内核被 CLI/rdg 杀掉后桌面外壳自退。
-                        let exit_handle = app.handle().clone();
-                        let stop_flag = app.state::<crate::state::AppState>().quitting.clone();
-                        let _kernel_watcher = crate::kernel_lifecycle::spawn_kernel_death_watcher(
-                            ep.pid,
-                            move || {
-                                exit_handle
-                                    .state::<crate::state::AppState>()
-                                    .quitting
-                                    .store(true, std::sync::atomic::Ordering::Release);
-                                exit_handle.exit(0);
-                            },
-                            move || stop_flag.load(std::sync::atomic::Ordering::Acquire),
-                        )
-                        .map_err(|error| {
-                            tracing::error!(
-                                target: "ridge::kernel_lifecycle",
-                                %error,
-                                "failed to spawn ridge-kernel death watcher"
+                                pid = ep.pid,
+                                port = ep.port,
+                                "ridge-kernel ready"
                             );
-                            std::io::Error::other(error)
-                        })?;
+                            match host_snapshot {
+                                Ok(records) => kernel_hosts.restore_topology(records),
+                                Err(error) => tracing::warn!(
+                                    target: "ridge::kernel_lifecycle",
+                                    %error,
+                                    "kernel host topology restore unavailable; shell will fail closed"
+                                ),
+                            }
+                            // If CLI/rdg shuts down the kernel, the desktop shell
+                            // must exit instead of continuing with stale state.
+                            let exit_handle = kernel_handle.clone();
+                            let watcher_stop = kernel_stop.clone();
+                            if let Err(error) =
+                                crate::kernel_lifecycle::spawn_kernel_death_watcher(
+                                    ep.pid,
+                                    move || {
+                                        exit_handle
+                                            .state::<crate::state::AppState>()
+                                            .quitting
+                                            .store(true, std::sync::atomic::Ordering::Release);
+                                        exit_handle.exit(0);
+                                    },
+                                    move || {
+                                        watcher_stop
+                                            .load(std::sync::atomic::Ordering::Acquire)
+                                    },
+                                )
+                            {
+                                tracing::error!(
+                                    target: "ridge::kernel_lifecycle",
+                                    %error,
+                                    "failed to spawn ridge-kernel death watcher"
+                                );
+                            }
+                        }
+                        Ok(Err(error)) => tracing::error!(
+                            target: "ridge::kernel_lifecycle",
+                            %error,
+                            "failed to start/attach ridge-kernel (shell continues; deep-root incomplete)"
+                        ),
+                        Err(error) => tracing::error!(
+                            target: "ridge::kernel_lifecycle",
+                            %error,
+                            "kernel bootstrap task failed (shell continues; deep-root incomplete)"
+                        ),
                     }
-                    Err(e) => tracing::error!(
-                        target: "ridge::kernel_lifecycle",
-                        error = %e,
-                        "failed to start/attach ridge-kernel (shell continues; deep-root incomplete)"
-                    ),
-                }
+                });
                 // 托盘：恢复工作台 / 退出桌面端 / 彻底退出（内核）。
                 // 失败不应阻断启动 —— 没有托盘时窗口仍可正常使用，只是少了深根入口。
                 if let Err(e) = crate::tray::build_tray(app) {

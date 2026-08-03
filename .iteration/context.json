@@ -26,7 +26,9 @@
     "src/lib/stores/themes.ts",
     "src/lib/stores/themes.slug.test.ts",
     "src-tauri/src/commands/terminal.rs",
-    "src/routes/+page.svelte"
+    "src-tauri/src/lib.rs",
+    "src/routes/+page.svelte",
+    "docs/iterations/2026-08-03-iteration-136-startup-kernel-bootstrap.md"
   ],
   "tests": [
     "packages/remote/src/shared/terminal/manager.test.ts",
@@ -111,12 +113,14 @@
       "docs/iterations/2026-08-03-iteration-133-osc8-link-and-lan-evidence.md",
       "docs/iterations/2026-08-03-iteration-134-settings-performance-and-race-guards.md",
       "docs/iterations/2026-08-03-iteration-135-settings-blocking-offload.md",
+      "docs/iterations/2026-08-03-iteration-136-startup-kernel-bootstrap.md",
       "src/lib/components/SettingsPanel.svelte",
       "src/lib/components/SettingsPanel.test.ts",
       "src/lib/terminal/hostPorts.ts",
       "src/lib/stores/themes.ts",
       "src/lib/stores/themes.slug.test.ts",
       "src-tauri/src/commands/terminal.rs",
+      "src-tauri/src/lib.rs",
       "src-tauri/src/remote_host_impl.rs",
       "src/routes/+page.svelte",
       "docs/archive/events-2026-08.jsonl"
