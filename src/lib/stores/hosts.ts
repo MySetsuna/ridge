@@ -388,6 +388,7 @@ export async function saveHostWorkspace(
   if (!link.saveWorkspace || !await link.saveWorkspace(workspaceId, name)) {
     throw new Error('远端工作区保存失败');
   }
+  await refreshLinkedHostAfterMutation(hostId);
 }
 
 export async function createHostPane(hostId: string, workspaceId: string): Promise<void> {
