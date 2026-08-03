@@ -1136,6 +1136,18 @@
   @supports (padding-top:env(safe-area-inset-top)) {
     .conn-banner{padding-top:calc(6px + env(safe-area-inset-top,0px));min-height:calc(30px + env(safe-area-inset-top,0px))}
   }
+  /* A few standalone Android/WebView shells expose a cutout but report a zero
+     env() value. Keep the notice below the portrait status/cutout belt there;
+     modern engines still use the larger physical inset when available. */
+  @media (display-mode:standalone) and (orientation:portrait) {
+    .conn-banner{padding-top:44px;min-height:68px}
+    @supports (padding-top:constant(safe-area-inset-top)) {
+      .conn-banner{padding-top:max(44px,calc(6px + constant(safe-area-inset-top)));min-height:max(68px,calc(30px + constant(safe-area-inset-top)))}
+    }
+    @supports (padding-top:env(safe-area-inset-top)) {
+      .conn-banner{padding-top:max(44px,calc(6px + env(safe-area-inset-top,0px)));min-height:max(68px,calc(30px + env(safe-area-inset-top,0px)))}
+    }
+  }
   .conn-banner.lost{background:var(--rg-ansi-red,#cf222e)}
   .conn-msg{flex:0 1 auto}
   .conn-action{flex-shrink:0;border:1px solid rgba(255,255,255,.7);background:rgba(255,255,255,.15);color:#fff;font-size:12px;font-weight:600;border-radius:6px;padding:3px 10px;cursor:pointer}

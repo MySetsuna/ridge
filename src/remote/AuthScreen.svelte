@@ -240,6 +240,18 @@
   @supports (padding-top:env(safe-area-inset-top)) {
     .screen{padding-top:calc(24px + env(safe-area-inset-top,0px));padding-right:max(24px,env(safe-area-inset-right,0px));padding-bottom:calc(24px + env(safe-area-inset-bottom,0px));padding-left:max(24px,env(safe-area-inset-left,0px))}
   }
+  /* Some standalone Android/WebView shells expose the display cutout while
+     returning zero for env(). Keep the retry/login card below a conservative
+     portrait top belt; a real inset still wins through max(). */
+  @media (display-mode:standalone) and (orientation:portrait) {
+    .screen{padding-top:44px}
+    @supports (padding-top:constant(safe-area-inset-top)) {
+      .screen{padding-top:max(44px,calc(24px + constant(safe-area-inset-top)))}
+    }
+    @supports (padding-top:env(safe-area-inset-top)) {
+      .screen{padding-top:max(44px,calc(24px + env(safe-area-inset-top,0px)))}
+    }
+  }
   .logo{display:block;width:64px;height:64px;margin:0 auto 16px}
   h1{font-size:20px;font-weight:600;margin-bottom:4px;color:var(--rg-fg)}
   .sub{color:var(--rg-fg-muted);font-size:14px;margin-bottom:24px;text-align:center;line-height:1.5}
