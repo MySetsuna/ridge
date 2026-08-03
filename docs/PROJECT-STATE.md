@@ -13,7 +13,7 @@ Graph selection. Host data-request dispatch exposes both lazy reads, with
 single-flight caching, teardown fencing, and legacy-host fallback. Reconnect and
 failure banners reserve the PWA top safe area for notch devices. Full Vitest is
 144 files / 1489 passed / 1 skipped; `pnpm check` is 0/0; remote mobile PWA
-build passes. Commits `16a34bf` and `d8ae245` are pushed. The daily publication
+build passes; Rust Remote Host tests are 12/12. Commits `16a34bf` and `d8ae245` are pushed. The daily publication
 window was already consumed by `v0.1.54`, so this follow-up is queued for the
 next release; no second artifact publication was attempted.
 Archive: `docs/iterations/2026-08-03-iteration-101-remote-git-async-pwa-safe-area.md`.
