@@ -23,6 +23,9 @@
     "src/remote/MainApp.svelte",
     "src/remote/lib/cloudRemote.ts",
     "src/lib/terminal/hostPorts.ts",
+    "src/lib/stores/themes.ts",
+    "src/lib/stores/themes.slug.test.ts",
+    "src-tauri/src/commands/terminal.rs",
     "src/routes/+page.svelte"
   ],
   "tests": [
@@ -107,9 +110,14 @@
       "docs/iterations/2026-08-03-iteration-132-desktop-terminal-performance-and-link-hover.md",
       "docs/iterations/2026-08-03-iteration-133-osc8-link-and-lan-evidence.md",
       "docs/iterations/2026-08-03-iteration-134-settings-performance-and-race-guards.md",
+      "docs/iterations/2026-08-03-iteration-135-settings-blocking-offload.md",
       "src/lib/components/SettingsPanel.svelte",
       "src/lib/components/SettingsPanel.test.ts",
       "src/lib/terminal/hostPorts.ts",
+      "src/lib/stores/themes.ts",
+      "src/lib/stores/themes.slug.test.ts",
+      "src-tauri/src/commands/terminal.rs",
+      "src-tauri/src/remote_host_impl.rs",
       "src/routes/+page.svelte",
       "docs/archive/events-2026-08.jsonl"
     ],
