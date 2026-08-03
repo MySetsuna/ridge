@@ -120,9 +120,33 @@ function createLinkUnderlineOverlay(container: HTMLElement): HTMLDivElement {
 		'display:none',
 		'pointer-events:none',
 		'z-index:3',
-		'height:2px',
-		'border-radius:1px',
+		'height:1px',
+		'border-radius:0',
 		'background:var(--rg-accent,#58a6ff)',
+		'box-sizing:border-box',
+	].join(';');
+	container.appendChild(el);
+	return el;
+}
+
+function createLinkHintOverlay(container: HTMLElement): HTMLDivElement {
+	const el = document.createElement('div');
+	el.setAttribute('aria-hidden', 'true');
+	el.dataset.ridgeLinkHint = 'true';
+	el.textContent = '按 Ctrl 可跳转';
+	el.style.cssText = [
+		'position:absolute',
+		'display:none',
+		'pointer-events:none',
+		'z-index:4',
+		'padding:2px 6px',
+		'border:1px solid color-mix(in srgb,var(--rg-fg,#fff) 18%,transparent)',
+		'border-radius:4px',
+		'background:var(--rg-bg-elevated,#20252d)',
+		'color:var(--rg-fg,#fff)',
+		'font:12px/1.2 system-ui,sans-serif',
+		'white-space:nowrap',
+		'box-shadow:0 2px 8px rgba(0,0,0,.24)',
 		'box-sizing:border-box',
 	].join(';');
 	container.appendChild(el);
@@ -427,13 +451,15 @@ interface PaneEntry {
 	/** 终端纯文本链接 / 路径检测器。OSC 8 hyperlinkAt 之外的兜底：识别
 	 *  https://、file://、绝对 / 相对路径，配合 Ctrl+click 路由到 ridge
 	 *  编辑器或系统资源管理器。lazy 重建：feed / scroll / resize 后置 dirty
-	 *  标志，仅在 ctrl+pointermove 或 ctrl+pointerdown 时同步扫一次。 */
+	 *  标志，在 hover/click 时按需同步扫一次。 */
 	linkSpans: LinkSpanIndex;
-	/** Real DOM affordance for Ctrl/Cmd-hover. Dataset-only state is not
-	 *  painted by WebView2, so keep a pointer-events-free overlay beside the
-	 *  canvas and position it in the same CSS grid coordinates. */
-	linkUnderlineEl: HTMLDivElement | null;
-	linkUnderlineRegion: { row: number; c0: number; c1: number } | null;
+	/** Real DOM affordance for link hover. Dataset-only state is not painted by
+	 * WebView2, so keep pointer-events-free overlays beside the canvas and
+	 * position them in the same CSS grid coordinates. */
+	linkUnderlineEls: HTMLDivElement[];
+	linkUnderlineRegions: { row: number; c0: number; c1: number }[];
+	linkHintEl: HTMLDivElement | null;
+	linkHintRegion: { row: number; c0: number; c1: number } | null;
 	/** P1.3 (2026-05-19): last (offset, total) pair we surfaced via
 	 *  `scrollStateHandler`. The RAF tick diffs against this and emits
 	 *  only on change, so an idle pane never wakes the subscriber.
@@ -545,6 +571,10 @@ export class TerminalManager {
 	 *  `_isContainerHidden` falls back to the bbox path so the very
 	 *  first pane attach still renders. */
 	private _activeWorkspaceId: string | null = null;
+	/** Theme updates for hidden keep-alive workspaces are spread across turns so
+	 * a settings click only pays the visible panes' atlas invalidation cost. */
+	private _themeGeneration = 0;
+	private _themeDeferredTimer: ReturnType<typeof setTimeout> | null = null;
 	/** §shared-remote: shared-grid mode for the desktop browser controller.
 	 *  Enabled only on the desktop-in-browser controller (WEB_REMOTE). One PTY
 	 *  has one grid; multiple viewers of different sizes can't all fill it. In
@@ -1007,6 +1037,27 @@ export class TerminalManager {
 		return this.globalHost?.host ?? null;
 	}
 
+	/**
+	 * Start the DOM host when a pane wins the mount race.  Desktop keeps the
+	 * shared host canvas after the workspace tree for stacking, so the first
+	 * RidgePane can attach before the canvas action has called attachHost().
+	 * If the canvas is already in the DOM, claim it here; the action's later
+	 * call is idempotent.  Without this bridge the pane receives no host and
+	 * `newWithWebgpuFirst(canvas, null)` intentionally falls back to Canvas2D.
+	 */
+	private async _ensureDomHostStarted(): Promise<void> {
+		if (!this.opts.preferWebgpu || this.globalHost || this.attachHostPromise) return;
+		if (typeof document === 'undefined') return;
+		const hostCanvas = document.querySelector('canvas[data-rg-host]');
+		if (!(hostCanvas instanceof HTMLCanvasElement)) return;
+		try {
+			await this.attachHost(hostCanvas);
+		} catch {
+			// attachHost owns the fallback policy; pane attach continues with
+			// per-pane Canvas2D when adapter/device acquisition is unavailable.
+		}
+	}
+
 	/** Call `surfaceHost.invalidate()` AND mark `_hostInvalidatePending`
 	 *  so the next RAF tick treats cache-replay passes as real work
 	 *  (rather than letting the idle-sleep gate skip them and leave the
@@ -1203,18 +1254,72 @@ export class TerminalManager {
 	}
 
 	private _clearLinkUnderline(entry: PaneEntry): void {
-		entry.linkUnderlineRegion = null;
-		const el = entry.linkUnderlineEl;
-		if (el) el.style.display = 'none';
+		entry.linkUnderlineRegions = [];
+		for (const el of entry.linkUnderlineEls) el.style.display = 'none';
+		this._clearLinkHint(entry);
 	}
 
 	private _positionLinkUnderline(entry: PaneEntry): void {
-		const el = entry.linkUnderlineEl;
-		const region = entry.linkUnderlineRegion;
-		if (!el || !region || region.c1 <= region.c0) {
-			if (el) el.style.display = 'none';
+		const regions = entry.linkUnderlineRegions;
+		const els = entry.linkUnderlineEls;
+		if (regions.length === 0) {
+			for (const el of els) el.style.display = 'none';
 			return;
 		}
+		const cellW = entry.geometry?.cellWidthCss ?? entry.cellW;
+		const cellH = entry.geometry?.cellHeightCss ?? entry.cellH;
+		if (!Number.isFinite(cellW) || !Number.isFinite(cellH) || cellW <= 0 || cellH <= 0) {
+			for (const el of els) el.style.display = 'none';
+			return;
+		}
+		const rect = entry.container.getBoundingClientRect();
+		const gridLeft = entry.geometry
+			? entry.geometry.gridClientXCss - rect.left
+			: (entry.lastFitPaddingPx ?? entry.lastAppliedPaddingPx ?? 0);
+		const gridTop = entry.geometry
+			? entry.geometry.gridClientYCss - rect.top
+			: (entry.lastFitPaddingPx ?? entry.lastAppliedPaddingPx ?? 0);
+		for (let i = 0; i < els.length; i++) {
+			const el = els[i]!;
+			const region = regions[i];
+			if (!region || region.c1 <= region.c0) {
+				el.style.display = 'none';
+				continue;
+			}
+			const left = gridLeft + region.c0 * cellW;
+			const top = gridTop + (region.row + 1) * cellH - 1;
+			if (![left, top].every(Number.isFinite)) {
+				el.style.display = 'none';
+				continue;
+			}
+			el.style.left = `${left}px`;
+			el.style.top = `${top}px`;
+			el.style.width = `${Math.max(1, (region.c1 - region.c0) * cellW)}px`;
+			el.style.display = 'block';
+		}
+	}
+
+	private _showLinkUnderlines(entry: PaneEntry, regions: LinkUnderlineRegion[]): void {
+		this._clearLinkHint(entry);
+		entry.linkUnderlineRegions = regions.filter((region) => region.c1 > region.c0);
+		while (entry.linkUnderlineEls.length < entry.linkUnderlineRegions.length) {
+			entry.linkUnderlineEls.push(createLinkUnderlineOverlay(entry.container));
+		}
+		while (entry.linkUnderlineEls.length > entry.linkUnderlineRegions.length) {
+			entry.linkUnderlineEls.pop()?.remove();
+		}
+		this._positionLinkUnderline(entry);
+	}
+
+	private _clearLinkHint(entry: PaneEntry): void {
+		entry.linkHintRegion = null;
+		if (entry.linkHintEl) entry.linkHintEl.style.display = 'none';
+	}
+
+	private _positionLinkHint(entry: PaneEntry): void {
+		const el = entry.linkHintEl;
+		const region = entry.linkHintRegion;
+		if (!el || !region) return;
 		const cellW = entry.geometry?.cellWidthCss ?? entry.cellW;
 		const cellH = entry.geometry?.cellHeightCss ?? entry.cellH;
 		if (!Number.isFinite(cellW) || !Number.isFinite(cellH) || cellW <= 0 || cellH <= 0) {
@@ -1229,20 +1334,20 @@ export class TerminalManager {
 			? entry.geometry.gridClientYCss - rect.top
 			: (entry.lastFitPaddingPx ?? entry.lastAppliedPaddingPx ?? 0);
 		const left = gridLeft + region.c0 * cellW;
-		const top = gridTop + (region.row + 1) * cellH - 2;
+		const top = Math.max(2, gridTop + region.row * cellH - 26);
 		if (![left, top].every(Number.isFinite)) {
 			el.style.display = 'none';
 			return;
 		}
 		el.style.left = `${left}px`;
 		el.style.top = `${top}px`;
-		el.style.width = `${Math.max(1, (region.c1 - region.c0) * cellW)}px`;
 		el.style.display = 'block';
 	}
 
-	private _showLinkUnderline(entry: PaneEntry, region: LinkUnderlineRegion): void {
-		entry.linkUnderlineRegion = region;
-		this._positionLinkUnderline(entry);
+	private _showLinkHint(entry: PaneEntry, region: LinkUnderlineRegion): void {
+		if (!entry.linkHintEl) entry.linkHintEl = createLinkHintOverlay(entry.container);
+		entry.linkHintRegion = region;
+		this._positionLinkHint(entry);
 	}
 
 	private _osc8UnderlineRegion(
@@ -1403,6 +1508,7 @@ export class TerminalManager {
 			: 0;
 		entry.viewport = geometry.viewportDevice;
 		this._positionLinkUnderline(entry);
+		this._positionLinkHint(entry);
 		if (this._sharedRemoteMode) {
 			entry.lastViewportKernelRows = geometry.rows;
 			entry.lastViewportKernelCols = geometry.cols;
@@ -1471,6 +1577,7 @@ export class TerminalManager {
 		// by +page.svelte::onMount → manager.attachHost(canvas) which
 		// races RidgePane mounts). Single global init now, so no
 		// per-workspace lookup.
+		await this._ensureDomHostStarted();
 		if (this.attachHostPromise) {
 			try { await this.attachHostPromise; } catch { /* attachHost handles errors internally */ }
 		}
@@ -1693,13 +1800,12 @@ export class TerminalManager {
 				}
 			}
 
-			// Ctrl/Cmd-hover over OSC 8 or pure-text link → pointer + underline
-			// affordance (OP-TERM-LINK). Bare hover does not underline (TUI-safe).
-			// Perf (iter 50): without modifier skip hyperlinkAt/hitTest entirely —
-			// those walk kernel cells and were the main hover-path cost after C51.
+			// Hover over OSC 8 or pure-text link. Ctrl/Cmd paints the actionable
+			// underline; bare hover only shows a non-blocking hint. The link index
+			// is lazy and cached, so this does not rescan terminal text per move.
 			const isMacUA2 = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 			const mod2 = pending.ctrlKey || (isMacUA2 && pending.metaKey);
-			if (hoverCell && mod2) {
+			if (hoverCell) {
 				const link = ent.kernel.hyperlinkAt(hoverCell.row, hoverCell.col);
 				const span = link
 					? null
@@ -1710,7 +1816,7 @@ export class TerminalManager {
 					: span?.text ?? null;
 				const dec = decideHoverUnderline({
 					hasLinkHit: hit,
-					modifierHeld: true,
+					modifierHeld: mod2,
 					spanText,
 				});
 				ent.container.style.cursor = dec.cursor;
@@ -1722,14 +1828,27 @@ export class TerminalManager {
 					delete ent.container.dataset.linkUnderlineClass;
 				}
 				if (dec.showUnderline && span) {
-					const r = underlineRegionsFromSpan(span);
-					ent.container.dataset.linkUnderline = encodeUnderlineDataset(r.row, r.c0, r.c1);
-					this._showLinkUnderline(ent, r);
+					const regions = ent.linkSpans
+						.regionsForSpan(ent.kernel, span)
+						.map(underlineRegionsFromSpan);
+					const r = regions[0];
+					if (r) {
+						ent.container.dataset.linkUnderline = encodeUnderlineDataset(r.row, r.c0, r.c1);
+						this._showLinkUnderlines(ent, regions);
+					}
 				} else if (dec.showUnderline && link) {
 					const uri = (link as { uri?: string }).uri ?? null;
 					const r = this._osc8UnderlineRegion(ent, hoverCell.row, hoverCell.col, uri);
 					ent.container.dataset.linkUnderline = encodeUnderlineDataset(r.row, r.c0, r.c1);
-					this._showLinkUnderline(ent, r);
+					this._showLinkUnderlines(ent, [r]);
+				} else if (dec.showHint && span) {
+					delete ent.container.dataset.linkUnderline;
+					this._clearLinkUnderline(ent);
+					this._showLinkHint(ent, underlineRegionsFromSpan(span));
+				} else if (dec.showHint && link) {
+					delete ent.container.dataset.linkUnderline;
+					this._clearLinkUnderline(ent);
+					this._showLinkHint(ent, this._osc8UnderlineRegion(ent, hoverCell.row, hoverCell.col, (link as { uri?: string }).uri ?? null));
 				} else {
 					delete ent.container.dataset.linkUnderline;
 					delete ent.container.dataset.linkUnderlineClass;
@@ -1738,7 +1857,7 @@ export class TerminalManager {
 			} else if (
 				ent.container.style.cursor === 'pointer' ||
 				ent.container.dataset.linkUnderline ||
-				ent.linkUnderlineRegion
+				ent.linkUnderlineRegions.length > 0 || ent.linkHintRegion
 			) {
 				// Clear affordance when modifier released or left the cell.
 				ent.container.style.cursor = '';
@@ -2037,7 +2156,7 @@ export class TerminalManager {
 		container.addEventListener('pointerleave', pointerLeaveListener);
 		container.addEventListener('keydown', modifierKeyListener);
 		container.addEventListener('keyup', modifierKeyListener);
-		const linkUnderlineEl = createLinkUnderlineOverlay(container);
+		const linkHintEl = createLinkHintOverlay(container);
 
 		const entry: PaneEntry = {
 			paneId,
@@ -2081,8 +2200,10 @@ export class TerminalManager {
 			feedBuffer: null,
 			feedFlushTimer: null,
 			linkSpans: new LinkSpanIndex(),
-			linkUnderlineEl,
-			linkUnderlineRegion: null,
+			linkUnderlineEls: [],
+			linkUnderlineRegions: [],
+			linkHintEl,
+			linkHintRegion: null,
 			lastScrollOffset: -1,
 			lastScrollTotal: -1,
 			scrollStateHandler: null,
@@ -2495,8 +2616,12 @@ export class TerminalManager {
 		if (!entry) return;
 		this._memoryRestorePending.delete(paneId);
 		this._clearLinkUnderline(entry);
-		try { entry.linkUnderlineEl?.remove(); } catch { /* already detached */ }
-		entry.linkUnderlineEl = null;
+		for (const el of entry.linkUnderlineEls) {
+			try { el.remove(); } catch { /* already detached */ }
+		}
+		entry.linkUnderlineEls = [];
+		try { entry.linkHintEl?.remove(); } catch { /* already detached */ }
+		entry.linkHintEl = null;
 		if (!entry.parked) {
 			// Live entry — release DOM bindings before freeing wasm.
 			entry.resizeObserver.disconnect();
@@ -2621,8 +2746,12 @@ export class TerminalManager {
 		entry.container.removeEventListener('keydown', entry.modifierKeyListener);
 		entry.container.removeEventListener('keyup', entry.modifierKeyListener);
 		this._clearLinkUnderline(entry);
-		try { entry.linkUnderlineEl?.remove(); } catch { /* already detached */ }
-		entry.linkUnderlineEl = null;
+		for (const el of entry.linkUnderlineEls) {
+			try { el.remove(); } catch { /* already detached */ }
+		}
+		entry.linkUnderlineEls = [];
+		try { entry.linkHintEl?.remove(); } catch { /* already detached */ }
+		entry.linkHintEl = null;
 		if (entry.pendingFitTimer !== null) {
 			clearTimeout(entry.pendingFitTimer);
 			entry.pendingFitTimer = null;
@@ -2701,6 +2830,7 @@ export class TerminalManager {
 		if (!entry.parked) {
 			throw new Error(`TerminalManager.unpark: pane ${paneId} is already attached`);
 		}
+		await this._ensureDomHostStarted();
 		if (this.attachHostPromise) {
 			try { await this.attachHostPromise; } catch { /* ignore */ }
 		}
@@ -2738,7 +2868,7 @@ export class TerminalManager {
 			}
 			return;
 		}
-		const linkUnderlineEl = createLinkUnderlineOverlay(container);
+		const linkHintEl = createLinkHintOverlay(container);
 		const dpr = window.devicePixelRatio || 1;
 		const [cellW, cellH] = handle
 			? (handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
@@ -2752,8 +2882,10 @@ export class TerminalManager {
 		entry.container = container;
 		entry.canvas = canvas;
 		entry.handle = handle;
-		entry.linkUnderlineEl = linkUnderlineEl;
-		entry.linkUnderlineRegion = null;
+		entry.linkUnderlineEls = [];
+		entry.linkUnderlineRegions = [];
+		entry.linkHintEl = linkHintEl;
+		entry.linkHintRegion = null;
 		// Force a Clear on this workspace's surface so any pre-park
 		// pixels in this slot don't bleed through during the first fit.
 		if (useHost && hostHandle) {
@@ -4740,11 +4872,28 @@ export class TerminalManager {
 	/** Apply theme overrides to all panes. */
 	setTheme(theme: Record<string, string>): void {
 		this.opts.theme = theme;
+		const generation = ++this._themeGeneration;
+		if (this._themeDeferredTimer !== null) {
+			clearTimeout(this._themeDeferredTimer);
+			this._themeDeferredTimer = null;
+		}
 		let applied = 0;
 		let parked = 0;
+		const deferred: PaneEntry[] = [];
+		const applyEntry = (entry: PaneEntry): void => {
+			if (entry.parked) return;
+			entry.handle?.applyDefaultTheme();
+			entry.handle?.applyTheme(theme);
+			entry.handle?.invalidateAll();
+			applied++;
+		};
 		for (const entry of this.panes.values()) {
 			// Parked panes pick up the theme on the next unpark via this.opts.
 			if (entry.parked) { parked++; continue; }
+			if (this._activeWorkspaceId !== null && entry.workspaceId !== this._activeWorkspaceId) {
+				deferred.push(entry);
+				continue;
+			}
 			entry.handle?.applyDefaultTheme();
 			entry.handle?.applyTheme(theme);
 			// Theme change doesn't bump kernel dirty, so the next frame's
@@ -4764,6 +4913,21 @@ export class TerminalManager {
 		if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_THEME_TRACE') === '1') {
 			// eslint-disable-next-line no-console
 			console.debug(`[theme-trace] setTheme applied=${applied} parked=${parked} totalKeys=${Object.keys(theme).length} bg=${theme.background ?? '∅'}`);
+		}
+		if (deferred.length > 0) {
+			let index = 0;
+			const flushDeferred = () => {
+				this._themeDeferredTimer = null;
+				if (generation !== this._themeGeneration) return;
+				const end = Math.min(index + 4, deferred.length);
+				for (; index < end; index++) applyEntry(deferred[index]!);
+				if (index < deferred.length) {
+					this._themeDeferredTimer = setTimeout(flushDeferred, 0);
+				} else {
+					this.wake();
+				}
+			};
+			this._themeDeferredTimer = setTimeout(flushDeferred, 0);
 		}
 		this.wake();
 	}

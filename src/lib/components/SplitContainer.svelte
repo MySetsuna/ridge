@@ -99,7 +99,12 @@ import {
   // recursion handles their own leaves.
   $effect(() => {
     if (node.type !== 'leaf') return;
-    const cwd = $paneCwdStore[`${workspaceId}:${node.id}`] ?? '';
+    // Keep Git/SCM polling scoped to the visible workspace. Keep-alive panes
+    // remain mounted under display:none; querying each of them at boot caused
+    // a find_git_repos_below + status/diff fan-out before the first paint.
+    const cwd = workspaceId === $activeWorkspaceId
+      ? ($paneCwdStore[`${workspaceId}:${node.id}`] ?? '')
+      : '';
     trackPaneGitStatus(node.id, cwd || null);
   });
   let splitHost: HTMLElement | undefined;

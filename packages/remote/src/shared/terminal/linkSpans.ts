@@ -22,6 +22,8 @@ export interface LinkSpan {
   c1: number;  // exclusive end col
   text: string; // 命中文本（已剥两端常见标点）
   kind: LinkSpanKind;
+  /** Stable identity for one logical link, including soft-wrapped segments. */
+  linkId?: string;
 }
 
 interface KernelLike {
@@ -180,7 +182,8 @@ function mergeWrappedSpan(
       c0: 0,
       c1: continuation.length,
       text: '',
-      kind: span.kind,
+        kind: span.kind,
+        linkId: span.linkId,
     });
     row = nextRow;
     end = continuation.length;
@@ -254,7 +257,12 @@ export class LinkSpanIndex {
       const line = textLines[row]!;
       if (!line) continue;
       for (const span of scanRow(row, line)) {
-        const merged = mergeWrappedSpan(span, textLines, kernel, limit);
+        const merged = mergeWrappedSpan(
+          { ...span, linkId: `${span.row}:${span.c0}:${span.kind}` },
+          textLines,
+          kernel,
+          limit,
+        );
         if (merged.length === 0) continue;
         for (const segment of merged) {
           addSpan(segment);
@@ -281,5 +289,18 @@ export class LinkSpanIndex {
       if (col >= s.c0 && col < s.c1) return s;
     }
     return null;
+  }
+
+  /** Return every visual segment belonging to the same logical link. */
+  regionsForSpan(kernel: KernelLike, span: LinkSpan): LinkSpan[] {
+    if (this.dirty) this.recompute(kernel);
+    if (!span.linkId) return [span];
+    const regions: LinkSpan[] = [];
+    for (const rowSpans of this.byRow.values()) {
+      for (const candidate of rowSpans) {
+        if (candidate.linkId === span.linkId) regions.push(candidate);
+      }
+    }
+    return regions.length > 0 ? regions : [span];
   }
 }

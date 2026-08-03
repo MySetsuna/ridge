@@ -9,22 +9,28 @@ import {
 } from './linkAffordance';
 
 describe('decideHoverUnderline', () => {
-  it('shows underline only when modifier + hit', () => {
+	it('shows underline with modifier and a hint on bare hover', () => {
     expect(
       decideHoverUnderline({ hasLinkHit: true, modifierHeld: true, spanText: 'https://x' }),
     ).toEqual({
-      showUnderline: true,
-      cursor: 'pointer',
+		showUnderline: true,
+		showHint: false,
+		hintText: null,
+		cursor: 'pointer',
       spanText: 'https://x',
     });
     expect(decideHoverUnderline({ hasLinkHit: true, modifierHeld: false })).toEqual({
-      showUnderline: false,
-      cursor: '',
+		showUnderline: false,
+		showHint: true,
+		hintText: '按 Ctrl 可跳转',
+		cursor: '',
       spanText: null,
     });
     expect(decideHoverUnderline({ hasLinkHit: false, modifierHeld: true })).toEqual({
-      showUnderline: false,
-      cursor: '',
+		showUnderline: false,
+		showHint: false,
+		hintText: null,
+		cursor: '',
       spanText: null,
     });
   });

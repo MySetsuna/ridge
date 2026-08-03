@@ -5,6 +5,11 @@ const source = readFileSync(new URL('./SplitContainer.svelte', import.meta.url),
 const paneSource = readFileSync(new URL('./RidgePane.svelte', import.meta.url), 'utf8');
 
 describe('desktop Pane Agent border contract', () => {
+  it('scopes Git polling to the active workspace', () => {
+    expect(source).toContain('workspaceId === $activeWorkspaceId');
+    expect(source).toContain('trackPaneGitStatus(node.id, cwd || null)');
+  });
+
   it('uses transient attention only; runtime status never paints a border', () => {
     expect(source).toContain('{@const paneAttention = $agentPaneAttentionStore');
     expect(source).toContain("paneAttention === 'waiting'");

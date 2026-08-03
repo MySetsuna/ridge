@@ -3,6 +3,7 @@
  *
  * Pure functions — no DOM. Manager wires these into pointer handlers so:
  * - Ctrl/Cmd-hover on a link → show underline + pointer (affordance)
+ * - Bare hover on a link → show a hint that Ctrl/Cmd enables navigation
  * - TUI mouse reporting on → click goes to program only; open link needs Ctrl+click
  * - TUI mouse off → Ctrl+click opens; bare click never opens (avoids accidental nav)
  */
@@ -17,6 +18,9 @@ export type LinkOpenTarget =
 export interface HoverUnderlineDecision {
   /** Whether renderer/DOM should paint underline under the span. */
   showUnderline: boolean;
+  /** Whether a non-blocking hint should tell the user to hold Ctrl/Cmd. */
+  showHint: boolean;
+  hintText: string | null;
   /** CSS cursor value (`pointer` | ``). */
   cursor: '' | 'pointer';
   /** Hit span text when underline should show. */
@@ -97,22 +101,24 @@ export function resolvePathAgainstCwd(
 }
 
 /**
- * Hover affordance: underline only with Ctrl/Cmd modifier (iTerm/VS Code style).
- * Without modifier, no underline (TUI UIs often use their own hover).
+ * Hover affordance: Ctrl/Cmd shows the actionable underline; bare hover shows
+ * a small hint instead of making a click look immediately navigable.
  */
 export function decideHoverUnderline(opts: {
   hasLinkHit: boolean;
   modifierHeld: boolean;
   spanText?: string | null;
 }): HoverUnderlineDecision {
-  if (opts.hasLinkHit && opts.modifierHeld) {
+  if (opts.hasLinkHit) {
     return {
-      showUnderline: true,
-      cursor: 'pointer',
+      showUnderline: opts.modifierHeld,
+      showHint: !opts.modifierHeld,
+      hintText: opts.modifierHeld ? null : '按 Ctrl 可跳转',
+      cursor: opts.modifierHeld ? 'pointer' : '',
       spanText: opts.spanText ?? null,
     };
   }
-  return { showUnderline: false, cursor: '', spanText: null };
+  return { showUnderline: false, showHint: false, hintText: null, cursor: '', spanText: null };
 }
 
 /**
