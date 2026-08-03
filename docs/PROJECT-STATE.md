@@ -5,6 +5,21 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 121 update (2026-08-03)
+
+Installed/Desktop terminal links now preserve a URL when the first visual
+row ends in punctuation that the scanner trims. The logical target restores
+that punctuation only when the suffix is punctuation-only and the kernel
+confirms a soft wrap; hard breaks and ordinary trailing text remain separate.
+The existing Rust selection implementation already joins soft-wrapped rows;
+new partial-selection coverage proves copy emits no visual newline. The
+merged target is exercised through hover underline, Ctrl-click arbitration,
+and host-open planning. Link tests pass 23/23, `cargo test -p ridge-term
+--lib` passes 398/398, and `pnpm check` is clean. Physical installed-WebView2
+evidence remains external; no release after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-121-terminal-link-wrap-guards.md`.
+
 ## Iteration 120 update (2026-08-03)
 
 Remote host workspace save now refreshes the linked topology after the remote

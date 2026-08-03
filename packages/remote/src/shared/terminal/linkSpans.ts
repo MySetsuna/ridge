@@ -155,11 +155,22 @@ function mergeWrappedSpan(
   let row = span.row;
   let end = span.c1;
 
-  while (
-    row + 1 < limit &&
-    end >= lines[row]!.length &&
-    rowIsSoftWrapped(kernel, row, lines[row]!)
-  ) {
+  while (row + 1 < limit) {
+    const currentLine = lines[row]!;
+    if (!rowIsSoftWrapped(kernel, row, currentLine)) break;
+    // `pushSpan` trims sentence punctuation from the hit range. If the
+    // terminal wrapped exactly after a valid URL character such as `,` or
+    // `)`, `end` therefore falls one or more cells short of the visual row
+    // edge even though the link continues on the next row. Only treat a
+    // punctuation-only suffix as part of the link; text after a link still
+    // correctly blocks continuation.
+    const trimmedSuffix = currentLine.slice(end);
+    const atVisualEdge = end >= currentLine.length;
+    const punctuationSuffix = /^[.,;:!?)\]}>]+$/.test(trimmedSuffix);
+    if (!atVisualEdge && !punctuationSuffix) break;
+    // The scanner trimmed this suffix from the visual hit range, but it is
+    // still part of the logical target when the next row continues it.
+    if (punctuationSuffix) full += trimmedSuffix;
     const nextRow = row + 1;
     const continuation = continuationPrefix(lines[nextRow]!, span.kind);
     if (!continuation) break;
