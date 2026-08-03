@@ -1,65 +1,35 @@
 {
   "schema_version": 1,
-  "task": "Implement Agent Commune attention/title lifecycle, eliminate Tab-switch black frames, and close the desktop PTY restart-reattach gap on the approved iteration baseline",
+  "task": "Make desktop pane PTY creation fail-closed on the kernel authority; preserve test-only local seam and verify kernel lifecycle",
   "symbols": [
-    "AgentCenterPanel",
-    "HostsPanel",
-    "get_scm_status",
-    "list_branches",
-    "resize_pane",
-    "write_to_pty"
+    "ensure_pane_pty_workspace",
+    "kernel_endpoint_for_shell",
+    "attach_or_spawn_kernel_command",
+    "install_kernel_pty",
+    "activate_pane_pty_state"
   ],
   "files": [
     "docs/PROJECT-STATE.md",
-    "docs/iterations/CONTRACT-iteration-75.md",
-    "packages/remote/src/shared/terminal/manager.ts",
-    "src-tauri/src/remote_host_impl.rs",
-    "src/lib/components/RidgePane.svelte",
-    "src/lib/components/SettingsPanel.svelte",
-    "src/lib/components/SettingsPanel.test.ts",
-    "src/lib/components/hosts/HostsPanel.svelte",
-    "src/lib/stores/hosts.ts",
-      "src/lib/teammate/AgentCenterPanel.svelte",
-    "src/lib/teammate/AgentMemberRow.svelte",
-    "src/lib/teammate/agentCommuneModel.ts",
-    "src/lib/teammate/agentCommuneModel.test.ts",
-    "src/lib/components/SplitContainer.svelte",
-    "src/lib/stores/paneTree.ts",
-    "src/lib/stores/paneTree.test.ts",
-    "src/lib/terminal/rendererBackend.test.ts",
-    "src/remote/MainApp.svelte",
-    "src/remote/lib/cloudRemote.ts",
-    "src/lib/terminal/hostPorts.ts",
-    "src/lib/stores/themes.ts",
-    "src/lib/stores/themes.slug.test.ts",
+    "docs/REQUIREMENTS-SPEC.md",
+    "docs/archive/events-2026-08.jsonl",
     "src-tauri/src/commands/terminal.rs",
     "src-tauri/src/engine/kernel_pty.rs",
-    "src-tauri/src/engine/pty.rs",
-    "src-tauri/src/hosts/mod.rs",
-    "src-tauri/src/teammate/server.rs",
     "packages/ridge-kernel/src/client.rs",
     "packages/ridge-kernel/src/domain.rs",
     "packages/ridge-kernel/src/pty.rs",
     "packages/ridge-kernel/src/server.rs",
-    "src-tauri/Cargo.toml",
-    "src-tauri/src/lib.rs",
-    "src/routes/+page.svelte",
-      "docs/iterations/2026-08-03-iteration-136-startup-kernel-bootstrap.md",
-      "docs/iterations/2026-08-03-iteration-137-agent-attention-and-live-title.md",
-      "docs/iterations/2026-08-03-iteration-138-tab-switch-and-pty-reattach.md"
+    "docs/iterations/2026-08-04-iteration-152-kernel-pty-authority.md"
   ],
   "tests": [
-    "packages/remote/src/shared/terminal/manager.test.ts",
-    "src/lib/stores/paneTree.test.ts",
-    "src/lib/terminal/rendererBackend.test.ts",
-    "src/lib/hosts/hostForest.test.ts",
-    "src/remote/lib/cloudRemote.test.ts",
-    "src/remote/lib/remoteQueries.test.ts"
+    "src-tauri/src/commands/terminal.rs (pty_lifecycle_contract_tests)",
+    "packages/ridge-kernel/src/pty.rs (unit tests)",
+    "cargo test -p ridge --lib",
+    "cargo check -p ridge --lib"
   ],
   "constraints": [
     "NotebookLM is strategy input only; runtime, tests, and source remain factual authority",
-    "Do not attribute mobile runtime.lastError to this repository without browser isolation evidence",
-    "Keep attention identity workspaceId:paneId; focus is the only acknowledgement path",
+    "Desktop production pane PTYs are kernel-owned; local PTY fallback may exist only under cfg(test)",
+    "No hidden local fallback after kernel bootstrap/create failure",
     "Do not scan generated or minified artifacts as source evidence"
   ],
   "failed_knowledge": [],
@@ -67,7 +37,9 @@
     "source": "docs/REQUIREMENTS-SPEC.md",
     "ids": [
       "REQ-20260730-01",
-      "REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01"
+      "REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01",
+      "REQ-RIDGE-KERNEL-HOST-01",
+      "REQ-RIDGE-KERNEL-DOMAIN-01"
     ],
     "records": [
       {
@@ -134,6 +106,8 @@
     "allowed_paths": [
       ".iteration/context.json",
       "docs/PROJECT-STATE.md",
+      "docs/REQUIREMENTS-SPEC.md",
+      "docs/iterations/2026-08-04-iteration-152-kernel-pty-authority.md",
       "docs/iterations/CONTRACT-iteration-76.md",
       "docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md",
       "docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md",

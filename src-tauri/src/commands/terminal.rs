@@ -692,31 +692,20 @@ fn install_kernel_pty(
     Ok(true)
 }
 
-/// Resolve the singleton kernel for ordinary shell PTYs. Setup starts the
-/// kernel off the UI path, so the first pane can race that bootstrap. Waiting
-/// through the lifecycle helper preserves the non-blocking setup while making
-/// the restart contract deterministic; the helper's process lock coalesces
-/// concurrent desktop/host attempts. Unit tests keep the old local seam.
-fn kernel_endpoint_for_shell() -> Option<ridge_kernel::registry::KernelEndpoint> {
+/// Resolve the singleton kernel for every desktop pane PTY. Production never
+/// falls back to a Tauri-owned child: a missing or unhealthy kernel is an
+/// explicit launch error. Unit tests retain the local seam below so they do
+/// not spawn a detached kernel as a side effect of `cargo test`.
+fn kernel_endpoint_for_shell() -> Result<ridge_kernel::registry::KernelEndpoint, String> {
     if let Some(endpoint) = ridge_kernel::client::running_endpoint() {
-        return Some(endpoint);
+        return Ok(endpoint);
     }
     #[cfg(test)]
     {
-        return None;
+        return Err("ridge-kernel disabled in unit tests".to_string());
     }
     #[cfg(not(test))]
-    match crate::kernel_lifecycle::ensure_kernel_running() {
-        Ok(endpoint) => Some(endpoint),
-        Err(error) => {
-            tracing::warn!(
-                target: "ridge::kernel_pty",
-                %error,
-                "kernel bootstrap unavailable for ordinary shell"
-            );
-            None
-        }
-    }
+    crate::kernel_lifecycle::ensure_kernel_running()
 }
 
 fn attach_or_spawn_kernel_pty(
@@ -885,79 +874,96 @@ pub fn ensure_pane_pty_workspace(
         }
     }
 
-    // Structured Agent launches now use the same kernel-owned child/process
-    // lifecycle as ordinary shells. Keep the local pending-spawn path as a
-    // compatibility fallback when kernel bootstrap is unavailable.
+    // Structured Agent launches use the same kernel-owned child/process
+    // lifecycle as ordinary shells. A kernel bootstrap or RPC failure is
+    // surfaced to the caller; silently creating a local child would violate
+    // the restart/reattach contract and leave two lifecycle authorities.
     if ic.is_none() {
         if let Some(spec) = sc.as_ref() {
             crate::teammate::ensure_teammate_started(state);
-            if let Some(endpoint) = kernel_endpoint_for_shell() {
-                let env = kernel_structured_env(
-                    state,
-                    workspace_id,
-                    pane_id,
-                    cwd,
-                    tmux_pane_index,
-                    spec,
-                )
-                .map_err(AppError::PtyError)?;
-                match attach_or_spawn_kernel_command(
-                    state,
-                    endpoint,
-                    workspace_id,
-                    pane_id,
-                    Some(&spec.program),
-                    &spec.args,
-                    &env,
-                    cwd,
-                    "agent",
-                    None,
-                ) {
-                    Ok(true) => {
-                        if let Some(tx) = ready_tx.take() {
-                            let _ = tx.send(Ok(()));
-                        }
-                        return Ok(());
+            let endpoint = kernel_endpoint_for_shell().map_err(|error| {
+                AppError::PtyError(format!("ridge-kernel unavailable for Agent PTY: {error}"))
+            })?;
+            let env = kernel_structured_env(
+                state,
+                workspace_id,
+                pane_id,
+                cwd,
+                tmux_pane_index,
+                spec,
+            )
+            .map_err(AppError::PtyError)?;
+            match attach_or_spawn_kernel_command(
+                state,
+                endpoint,
+                workspace_id,
+                pane_id,
+                Some(&spec.program),
+                &spec.args,
+                &env,
+                cwd,
+                "agent",
+                None,
+            ) {
+                Ok(true) | Ok(false) => {
+                    if let Some(tx) = ready_tx.take() {
+                        let _ = tx.send(Ok(()));
                     }
-                    Ok(false) => {}
-                    Err(error) => tracing::warn!(
-                        target: "ridge::kernel_pty",
-                        %workspace_id,
-                        %pane_id,
-                        error = %error,
-                        "kernel Agent PTY unavailable; falling back to local PTY"
-                    ),
+                    return Ok(());
+                }
+                Err(error) => {
+                    return Err(AppError::PtyError(format!(
+                        "ridge-kernel Agent PTY unavailable: {error}"
+                    )));
                 }
             }
         }
     }
 
     if kernel_candidate && !has_explicit_launch {
-        if let Some(endpoint) = kernel_endpoint_for_shell() {
-            match attach_or_spawn_kernel_pty(
-                state,
-                endpoint,
-                workspace_id,
-                pane_id,
-                shell.as_deref(),
-                cwd,
-            ) {
-                Ok(true) => {
-                    if let Some(tx) = ready_tx.take() {
-                        let _ = tx.send(Ok(()));
-                    }
-                    return Ok(());
+        let endpoint = kernel_endpoint_for_shell().map_err(|error| {
+            AppError::PtyError(format!("ridge-kernel unavailable for shell PTY: {error}"))
+        })?;
+        match attach_or_spawn_kernel_pty(
+            state,
+            endpoint,
+            workspace_id,
+            pane_id,
+            shell.as_deref(),
+            cwd,
+        ) {
+            Ok(true) | Ok(false) => {
+                if let Some(tx) = ready_tx.take() {
+                    let _ = tx.send(Ok(()));
                 }
-                Ok(false) => {}
-                Err(error) => tracing::warn!(
-                    target: "ridge::kernel_pty",
-                    %workspace_id,
-                    %pane_id,
-                    error = %error,
-                    "kernel PTY unavailable; falling back to local PTY"
-                ),
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(AppError::PtyError(format!(
+                    "ridge-kernel shell PTY unavailable: {error}"
+                )));
             }
         }
+    }
+
+    // `initial_command` has no kernel-safe structured representation at this
+    // boundary. Reject it instead of silently spawning a desktop-local child;
+    // callers must provide `StructuredPtyCommand` so argv/env stay explicit.
+    if ic.is_some() {
+        return Err(AppError::PtyError(
+            "initial_command is unsupported for kernel-owned PTYs; use StructuredPtyCommand"
+                .into(),
+        ));
+    }
+
+    // Keep the pending-spawn implementation as a unit-test seam only. In a
+    // production build the branches above always return through the kernel,
+    // so this code cannot create a second PTY authority.
+    #[cfg(not(test))]
+    {
+        return Err(AppError::PtyError(
+            "ridge-kernel did not install the requested PTY".into(),
+        ));
     }
 
     // Local/structured launches still need the teammate server binding before
@@ -2603,6 +2609,27 @@ mod write_scope_tests {
 
 #[cfg(test)]
 mod pty_lifecycle_contract_tests {
+    #[test]
+    fn production_pane_creation_is_kernel_fail_closed() {
+        let source = include_str!("terminal.rs");
+        let production = source
+            .split("mod pty_lifecycle_contract_tests")
+            .next()
+            .unwrap_or(source);
+        assert!(
+            !production.contains("falling back to local PTY"),
+            "kernel failures must not silently fall back to a desktop-local PTY"
+        );
+        assert!(
+            production.contains("ridge-kernel did not install the requested PTY"),
+            "production path must surface a missing kernel PTY"
+        );
+        assert!(
+            production.contains("#[cfg(not(test))]"),
+            "local pending-spawn seam must stay test-only"
+        );
+    }
+
     #[test]
     fn both_local_teardown_paths_use_tree_kill_helper() {
         // Keep the two production teardown paths (replacement and explicit

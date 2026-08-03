@@ -5,6 +5,22 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 152, 2026-08-04)
+
+- Desktop pane PTY creation is now kernel-authoritative in production. Kernel
+  bootstrap/list/create/attach failures surface as errors; no local Tauri PTY
+  fallback can hide a split lifecycle or leave an orphan child process.
+- The legacy `initial_command` launch is rejected explicitly; structured Agent
+  launches must use `StructuredPtyCommand` so argv/env remain bounded and
+  restart-safe. The native pending-spawn path is test-only.
+- Rust verification: `cargo test -p ridge --lib` 253 passed; focused PTY
+  lifecycle contract 2 passed; `cargo check -p ridge --lib` exit 0. No version
+  bump or release was made. Physical restart/reattach, public/physical Remote,
+  WebView2 heap soak, dual-window/Host, and full Kernel-domain evidence remain
+  open.
+
+Archive: `docs/iterations/2026-08-04-iteration-152-kernel-pty-authority.md`.
+
 ## Current snapshot (iteration 151, 2026-08-03)
 
 - Remote WorkspaceTree now keeps the last good non-active workspace peek
