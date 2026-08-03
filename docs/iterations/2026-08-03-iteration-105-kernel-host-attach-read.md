@@ -15,6 +15,8 @@ therefore remain attachable until the next UI refresh.
   accepting an attach request.
 - A successful read replaces the shell projection; missing, disconnected, or
   kernel-unavailable hosts fail closed before any remote session is routed.
+- `forget_host` keeps the outbound transport intact until the kernel delete
+  succeeds, avoiding a half-forgotten shell state on a failed delete.
 
 ## Verification
 

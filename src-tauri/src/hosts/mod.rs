@@ -677,8 +677,8 @@ pub fn disconnect_host(state: State<'_, AppState>, host_id: String) -> Result<()
 /// 忘记一台远端主机（移除登记 + 出站客户端）。
 #[tauri::command]
 pub fn forget_host(state: State<'_, AppState>, host_id: String) -> Result<(), String> {
-    state.hosts.remove_outbound(&host_id);
     state.hosts.remove_kernel_authoritative(&host_id)?;
+    state.hosts.remove_outbound(&host_id);
     Ok(())
 }
 
