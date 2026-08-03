@@ -769,9 +769,23 @@ export class CloudHostBridge {
       return;
     }
 
-    const unsub = this.paneOutputSource(paneId, workspaceId, (raw) => {
-      this.pushPaneOutput(paneId, raw);
-    });
+    let unsub: Unsubscribe;
+    try {
+      unsub = this.paneOutputSource(paneId, workspaceId, (raw) => {
+        this.pushPaneOutput(paneId, raw);
+      });
+    } catch (error) {
+      // A source failure must not escape the notification handler or strand a
+      // half-registered Pane subscription in the bridge.
+      this.log('warn', `paneOutputSource(${paneId}) failed`, error);
+      this.paneSubs.set(paneId, () => {});
+      return;
+    }
+    if (typeof unsub !== 'function') {
+      this.log('warn', `paneOutputSource(${paneId}) returned no unsubscribe`);
+      this.paneSubs.set(paneId, () => {});
+      return;
+    }
     this.paneSubs.set(paneId, unsub);
 
     // §history-pull（2026-07-02）：host **不再**在订阅时推 `RIS + 256KiB` 初始回放。

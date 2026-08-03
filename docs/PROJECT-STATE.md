@@ -5,6 +5,22 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 143, 2026-08-03)
+
+- PTY bridge attach is now single-flight per stable Pane key. A close racing
+  asynchronous Tauri listener registration cancels the attach and removes any
+  listener already acquired, preventing duplicate Channels and post-destroy
+  output callbacks.
+- Cloud host raw-pane streaming now registers the Tauri event listener before
+  sending `subscribe_pane_raw`; unsubscribe is serialized after an in-flight
+  subscribe, and output callbacks/source failures are contained and logged.
+- Focused lifecycle tests pass; no version bump or publication was made because
+  `v0.1.54` consumed today's allowance. Physical phone/public Remote, WebView2
+  heap soak, dual-window/dual-host, and full Kernel-domain authority remain
+  external or larger-scope evidence gates.
+
+Archive: `docs/iterations/2026-08-03-iteration-143-pty-cloud-lifecycle.md`.
+
 ## Current snapshot (iteration 142, 2026-08-03)
 
 - rdg now answers the legacy Remote sidebar frames `list-files`,
