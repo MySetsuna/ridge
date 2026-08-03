@@ -267,6 +267,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         .route("/v1/domain/fs/list", get(domain::domain_fs_list))
         .route("/v1/domain/git/status", get(domain::domain_git_status))
         .route("/v1/domain/git/branches", get(domain::domain_git_branches))
+        .route("/v1/domain/git/stashes", get(domain::domain_git_stashes))
         .route(
             "/v1/domain/git/diff-summary",
             get(domain::domain_git_diff_summary),

@@ -24,6 +24,7 @@
 pub use ridge_core::commands::git::{
     git_info_for_path, BranchInfo, CommitFileEntry, CommitNode, GitDiffStatus, GitDiffSummary,
     GitFileVersions, GitGuardStats, GitOpInProgress, GitRepoInfo, ScmFile, ScmRepoStatus,
+    StashEntry,
 };
 
 use serde_json::{json, Value};
@@ -236,8 +237,15 @@ pub async fn git_push_tag(repo_root: String, name: String) -> Result<String, Str
 #[tauri::command]
 pub async fn git_stash_list(
     repo_root: String,
-) -> Result<Vec<ridge_core::commands::git::StashEntry>, String> {
-    ridge_core::commands::git::git_stash_list(repo_root).await
+) -> Result<Vec<StashEntry>, String> {
+    tokio::task::spawn_blocking(move || {
+        let endpoint = crate::kernel_lifecycle::ensure_kernel_running()?;
+        ridge_kernel::client::read_domain_git_stashes(&endpoint, &repo_root)?.ok_or_else(|| {
+            format!("Not a git repo: {repo_root}")
+        })
+    })
+    .await
+    .map_err(|error| format!("kernel Git stashes task failed: {error}"))?
 }
 
 #[tauri::command]

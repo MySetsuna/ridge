@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "task": "Route Remote fast SCM status through the authenticated ridge-kernel Git domain without losing its no-numstat latency contract",
+  "task": "Route Remote SCM stash-list reads through the authenticated ridge-kernel Git domain with non-Git preflight",
   "symbols": [
-    "domain_git_status",
-    "read_domain_git_status_fast",
-    "get_scm_status_fast",
-    "get_scm_status_fast_sync",
-    "git_status_path",
+    "domain_git_stashes",
+    "read_domain_git_stashes",
+    "git_stash_list",
+    "decode_domain_git_stashes",
+    "StashEntry",
     "GitQuery"
   ],
   "files": [
@@ -19,11 +19,12 @@
     "packages/ridge-kernel/src/server.rs",
     "src-tauri/src/commands/git.rs",
     "docs/iterations/2026-08-04-iteration-160-kernel-git-diff-summary.md",
-    "docs/iterations/2026-08-04-iteration-161-kernel-git-fast-status.md"
+    "docs/iterations/2026-08-04-iteration-161-kernel-git-fast-status.md",
+    "docs/iterations/2026-08-04-iteration-162-kernel-git-stashes.md"
   ],
   "tests": [
-    "packages/ridge-kernel/src/client.rs (fast-status URL contract)",
-    "packages/ridge-kernel/src/domain.rs (non-Git fast-status domain guard)",
+    "packages/ridge-kernel/src/client.rs (stash-list decoder contract)",
+    "packages/ridge-kernel/src/domain.rs (non-Git stash-list domain guard)",
     "cargo test -p ridge-kernel --lib",
     "cargo test -p ridge --lib",
     "cargo test -p ridge-core --lib",
@@ -34,7 +35,7 @@
     "NotebookLM is strategy input only; runtime, tests, and source remain factual authority",
     "Desktop production pane PTYs, SCM status reads, and kernel bootstrap are kernel-owned",
     "Kernel watcher tolerates transient health failures but exits after a bounded consecutive threshold",
-    "Remote fast SCM status uses the authenticated kernel Git domain and preserves the no-numstat contract",
+    "Remote SCM stash-list reads use the authenticated kernel Git domain after non-Git preflight",
     "No hidden local fallback after kernel bootstrap/domain request failure",
     "Do not scan generated or minified artifacts as source evidence"
   ],
@@ -121,6 +122,7 @@
       "docs/iterations/2026-08-04-iteration-159-sidebar-lazy-mount.md",
       "docs/iterations/2026-08-04-iteration-160-kernel-git-diff-summary.md",
       "docs/iterations/2026-08-04-iteration-161-kernel-git-fast-status.md",
+      "docs/iterations/2026-08-04-iteration-162-kernel-git-stashes.md",
       "docs/iterations/CONTRACT-iteration-76.md",
       "docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md",
       "docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md",
