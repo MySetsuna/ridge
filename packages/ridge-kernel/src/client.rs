@@ -270,6 +270,7 @@ pub fn create_domain_pty(
     cwd: Option<&str>,
     workspace_id: Option<uuid::Uuid>,
     role: &str,
+    launch_profile: Option<&str>,
 ) -> Result<uuid::Uuid, String> {
     let body = serde_json::json!({
         "pty_id": pty_id,
@@ -277,6 +278,7 @@ pub fn create_domain_pty(
         "cwd": cwd,
         "workspace_id": workspace_id,
         "role": role,
+        "launch_profile": launch_profile,
     });
     let value = request_json(endpoint, "POST", "/v1/domain/ptys", Some(&body))?;
     let response: KernelPtyCreateResponse = decode_domain_snapshot(value)?;

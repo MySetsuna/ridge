@@ -162,8 +162,9 @@ fn recent_workspaces_path(app: &tauri::AppHandle) -> PathBuf {
     dir.join("recent_workspaces.json")
 }
 
-/// `restore_workspaces.json` 路径：close 时把当前已保存（associated_file_path != None）
-/// 工作区的 .ridge 路径列表写到这里；下次非 cli 启动时回读用于自动恢复 tab。
+/// `restore_workspaces.json` 路径：close 时把当前工作区的 .ridge 路径列表写到这里；
+/// 下次非 cli 启动时回读用于自动恢复 tab。未显式保存的工作区使用下方 session 目录
+/// 中的应用私有临时快照，因此普通终端也能跨 Ridge 重启重接。
 fn restore_workspaces_path(app: &tauri::AppHandle) -> PathBuf {
     let dir = app
         .path()
@@ -173,22 +174,93 @@ fn restore_workspaces_path(app: &tauri::AppHandle) -> PathBuf {
     dir.join("restore_workspaces.json")
 }
 
-/// 收集当前所有 `associated_file_path` 非空的工作区路径，按 workspace_order 顺序写出。
-/// 仅在窗口关闭事件里同步调用（进程即将退出，不能 spawn 异步）。
+fn session_restore_dir(app: &tauri::AppHandle) -> PathBuf {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("session-workspaces");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+fn session_restore_path(dir: &Path, workspace_id: Uuid) -> PathBuf {
+    dir.join(format!("session-{workspace_id}.ridge"))
+}
+
+fn is_session_restore_path(path: &Path, dir: &Path) -> bool {
+    path.parent() == Some(dir)
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("session-") && name.ends_with(".ridge"))
+}
+
+/// 收集当前所有工作区路径，按 workspace_order 顺序写出。已保存工作区复用用户文件；
+/// 未保存工作区同步写入应用私有 session 快照。仅在窗口关闭事件里调用（进程即将退出，
+/// 不能 spawn 异步），故所有快照写入均有界且失败可见但不阻止退出。
 pub fn save_restore_set(app: &tauri::AppHandle, state: &AppState) {
     let order = state.workspace_order.read().clone();
+    let names = state.workspace_names.read().clone();
     let map = state.workspaces.read();
-    let paths: Vec<String> = order
+    let pending = order
         .iter()
         .filter_map(|wid| {
-            map.get(wid).and_then(|ws| {
-                ws.associated_file_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
+            map.get(wid).map(|ws| {
+                let name = names
+                    .get(wid)
+                    .cloned()
+                    .unwrap_or_else(|| format!("工作区 {}", ws.display_seq));
+                (*wid, ws.associated_file_path.clone(), name)
             })
         })
-        .collect();
+        .collect::<Vec<_>>();
     drop(map);
+    drop(names);
+
+    let session_dir = session_restore_dir(app);
+    let mut live_session_files = std::collections::HashSet::new();
+    let mut paths = Vec::with_capacity(pending.len());
+    for (workspace_id, associated_path, name) in pending {
+        if let Some(path) = associated_path
+            .as_ref()
+            .filter(|path| !is_session_restore_path(path, &session_dir))
+        {
+            paths.push(path.to_string_lossy().to_string());
+            continue;
+        }
+        let target =
+            associated_path.unwrap_or_else(|| session_restore_path(&session_dir, workspace_id));
+        match snapshot_workspace(state, workspace_id, &name)
+            .and_then(|snapshot| serde_json::to_vec_pretty(&snapshot).map_err(|e| e.to_string()))
+            .and_then(|json| atomic_write(&target, &json).map_err(|e| e.to_string()))
+        {
+            Ok(()) => {
+                live_session_files.insert(target.clone());
+                paths.push(target.to_string_lossy().to_string());
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "ridge::workspace_restore",
+                    %workspace_id,
+                    %error,
+                    "unsaved workspace session snapshot failed"
+                );
+            }
+        }
+    }
+    // Remove snapshots for workspaces closed before this exit. They are
+    // generated state, never user-authored files, and otherwise accumulate.
+    if let Ok(entries) = std::fs::read_dir(&session_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("ridge")
+                && !live_session_files.contains(&path)
+            {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
     if let Ok(s) = serde_json::to_string_pretty(&paths) {
         let _ = std::fs::write(restore_workspaces_path(app), s);
     }
@@ -907,7 +979,7 @@ fn write_workspace_snapshot(state: &AppState, workspace_id: Uuid) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use super::delete_saved_file_from_dir;
+    use super::{delete_saved_file_from_dir, session_restore_path};
     use std::fs;
 
     #[test]
@@ -930,5 +1002,15 @@ mod tests {
 
         fs::remove_file(outside).unwrap();
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn session_restore_path_is_stable_and_private_to_workspace_id() {
+        let dir = std::env::temp_dir().join("ridge-session-restore-test");
+        let id = uuid::Uuid::nil();
+        assert_eq!(
+            session_restore_path(&dir, id),
+            dir.join("session-00000000-0000-0000-0000-000000000000.ridge")
+        );
     }
 }

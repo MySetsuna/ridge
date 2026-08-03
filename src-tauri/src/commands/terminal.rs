@@ -684,6 +684,7 @@ fn attach_or_spawn_kernel_pty(
             cwd_string.as_deref(),
             Some(workspace_id),
             "shell",
+            Some("ridge-interactive"),
         )?;
         (pty_id, None, 80, 24)
     };
