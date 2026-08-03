@@ -10,6 +10,9 @@ default-run = "ridge"
 [features]
 # 对于自定义构建，启用 "devtools" 这个特性
 devtools = ["tauri/devtools"]
+# Production builds must enable Tauri's custom protocol so the bundled
+# `frontendDist` is served from `tauri.localhost` instead of the dev URL.
+custom-protocol = ["tauri/custom-protocol"]
 
 # 交叉编译 macOS Intel (x86_64) 时，arm64 runner 上没有 x86_64 的系统 OpenSSL，而 git2 →
 # libgit2-sys / libssh2-sys 依赖 openssl-sys → 链接失败。此特性让 openssl 从源码 vendored
