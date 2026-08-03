@@ -1025,7 +1025,7 @@
          内叠放（header/底栏不受层叠影响）。容器在 host 模式被 attach() 置透明，
          GPU 像素经画布透出；WebGPU 不可用时 attach() 回落 per-pane Canvas2D。 -->
     <div class="term-stage" style:transform={`translateY(${ui.keyboardShift}px)`}>
-      <canvas class="host-canvas" aria-hidden="true" use:hostCanvas></canvas>
+      <canvas class="host-canvas" data-rg-host aria-hidden="true" use:hostCanvas></canvas>
       {#await TerminalCanvas}
         <div class="terminal-loading">{$t('mobile.initializingTerminal')}</div>
       {:then module}
@@ -1128,33 +1128,33 @@
   /* Keep the notice itself below the cutout.  Some standalone WebViews paint a
      fixed/flex child at y=0 even when padding on that child is ignored, so the
      safe-area offset lives in a separate flex item rather than in the text box. */
-  .conn-banner-safe{flex-shrink:0;padding-top:env(safe-area-inset-top,0px);box-sizing:border-box;background:var(--rg-bg);z-index:50}
+  .conn-banner-safe{position:relative;flex:0 0 auto;margin-top:env(safe-area-inset-top,0px);box-sizing:border-box;background:var(--rg-bg);z-index:50}
   /* Older standalone WebKit exposes the cutout through constant(). */
   @supports (padding-top:constant(safe-area-inset-top)) {
-    .conn-banner-safe{padding-top:constant(safe-area-inset-top)}
+    .conn-banner-safe{margin-top:constant(safe-area-inset-top)}
   }
   @supports (padding-top:env(safe-area-inset-top)) {
-    .conn-banner-safe{padding-top:env(safe-area-inset-top,0px)}
+    .conn-banner-safe{margin-top:env(safe-area-inset-top,0px)}
   }
   .conn-banner{flex-shrink:0;padding:6px max(12px,env(safe-area-inset-right,0px));min-height:30px;box-sizing:border-box;text-align:center;font-size:12px;font-weight:600;color:#fff;background:var(--rg-ansi-yellow,#bb8009);display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
   /* A few standalone Android/WebView shells expose a cutout but report zero
      for env(). Keep both reconnect and failure content below the belt. */
   @media (display-mode:standalone) and (orientation:portrait) {
-    .conn-banner-safe{padding-top:44px}
+    .conn-banner-safe{margin-top:64px}
     @supports (padding-top:constant(safe-area-inset-top)) {
-      .conn-banner-safe{padding-top:max(44px,constant(safe-area-inset-top))}
+      .conn-banner-safe{margin-top:max(64px,constant(safe-area-inset-top))}
     }
     @supports (padding-top:env(safe-area-inset-top)) {
-      .conn-banner-safe{padding-top:max(44px,env(safe-area-inset-top,0px))}
+      .conn-banner-safe{margin-top:max(64px,env(safe-area-inset-top,0px))}
     }
   }
   /* iOS standalone may expose only navigator.standalone (not display-mode). */
-  :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{padding-top:44px}
+  :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{margin-top:64px}
   @supports (padding-top:constant(safe-area-inset-top)) {
-    :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{padding-top:max(44px,constant(safe-area-inset-top))}
+    :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{margin-top:max(64px,constant(safe-area-inset-top))}
   }
   @supports (padding-top:env(safe-area-inset-top)) {
-    :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{padding-top:max(44px,env(safe-area-inset-top,0px))}
+    :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{margin-top:max(64px,env(safe-area-inset-top,0px))}
   }
   .conn-banner.lost{background:var(--rg-ansi-red,#cf222e)}
   .conn-msg{flex:0 1 auto}
@@ -1167,9 +1167,9 @@
   .create-error{font-size:12px;color:var(--rg-ansi-red)}
   .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;touch-action:none}
   .mobile-header{position:sticky;top:0;display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 0 0;background:var(--rg-bg);border-bottom:1px solid color-mix(in srgb,var(--rg-fg) 12%,transparent);z-index:30;min-height:calc(44px + env(safe-area-inset-top))}
-  :global(html[data-ridge-pwa="standalone"]) .mobile-header{padding-top:44px;min-height:88px}
+  :global(html[data-ridge-pwa="standalone"]) .mobile-header{padding-top:64px;min-height:108px}
   @supports (padding-top:env(safe-area-inset-top)) {
-    :global(html[data-ridge-pwa="standalone"]) .mobile-header{padding-top:max(44px,env(safe-area-inset-top,0px));min-height:max(88px,calc(44px + env(safe-area-inset-top,0px)))}
+    :global(html[data-ridge-pwa="standalone"]) .mobile-header{padding-top:max(64px,env(safe-area-inset-top,0px));min-height:max(108px,calc(44px + env(safe-area-inset-top,0px)))}
   }
   .header-row{display:flex;align-items:center;height:44px;padding:0 8px;gap:4px}
   .header-nav{display:flex;gap:2px}

@@ -31,4 +31,11 @@ describe('remote Git panel contract', () => {
     expect(source).toContain('function loadGraph');
     expect(source).toContain("if (next === 'graph') void loadGraph()");
   });
+
+  it('keeps a successful Query snapshot visible when a refresh fails', () => {
+    expect(source).toContain('let hasSnapshot = $state(false)');
+    expect(source).toContain('hasSnapshot = true');
+    expect(source).toContain('Showing cached snapshot');
+    expect(source).toContain('hasSnapshot && view === \'graph\' && graphError && graphCommits.length === 0');
+  });
 });
