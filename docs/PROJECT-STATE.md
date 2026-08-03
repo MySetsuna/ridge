@@ -7,7 +7,7 @@
 
 ## Current snapshot (iteration 132, 2026-08-03)
 
-- `wind` `main` is pushed at `9c8e1f3` (code commits `2079685`, `c9bc7c0`,
+- `wind` `main` is pushed (code commits `2079685`, `c9bc7c0`,
   `26b4f42`, `afbfa11`). Desktop terminal now defaults to the main-thread
   WebGPU host; worker Canvas2D is explicit opt-in. Startup listener timing,
   inactive-workspace SCM polling, theme decode/invalidation, duplicate caret,
