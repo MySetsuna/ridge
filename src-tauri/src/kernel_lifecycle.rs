@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -33,9 +34,14 @@ pub fn read_kernel_pid() -> Option<u32> {
 }
 
 use ridge_kernel::client::{
-    health_ok, is_process_alive, running_endpoint, shutdown_endpoint, spawn_detached,
-    wait_for_running,
+    is_process_alive, running_endpoint, shutdown_endpoint, spawn_detached, wait_for_running,
 };
+
+static KERNEL_BOOT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn kernel_boot_lock() -> &'static Mutex<()> {
+    KERNEL_BOOT_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 pub fn is_kernel_running() -> bool {
     running_endpoint().is_some()
@@ -64,6 +70,12 @@ pub fn decide_boot(
 
 /// 桌面 setup：detect-or-spawn 独立 ridge-kernel。
 pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
+    // Setup and the first Pane can arrive concurrently. Hold one process-local
+    // gate across detect, spawn, and readiness so neither caller can launch a
+    // second kernel or observe the first one's half-written registry.
+    let _boot_guard = kernel_boot_lock()
+        .lock()
+        .map_err(|_| "ridge-kernel boot lock poisoned".to_string())?;
     let self_pid = std::process::id();
     let file_pid = read_kernel_pid();
     let alive = file_pid.is_some_and(is_process_alive);
@@ -71,7 +83,7 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
 
     match decision {
         KernelBootDecision::AttachExisting { pid } => {
-            if let Some(ep) = read_endpoint().filter(|e| e.pid == pid && health_ok(e)) {
+            if let Some(ep) = wait_for_running(Duration::from_secs(8)).filter(|e| e.pid == pid) {
                 tracing::info!(
                     target: "ridge::kernel_lifecycle",
                     pid,
@@ -197,5 +209,29 @@ mod tests {
         assert!(observed.load(std::sync::atomic::Ordering::Acquire));
         // 无登记时必 false；有本机存活 kernel 时 true——仅断言不 panic。
         let _ = is_kernel_running();
+    }
+
+    #[test]
+    fn kernel_boot_lock_serializes_concurrent_bootstraps() {
+        use std::sync::mpsc;
+
+        let first_guard = kernel_boot_lock().lock().expect("boot lock should be usable");
+        let (attempted_tx, attempted_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            attempted_tx.send(()).expect("worker should start");
+            let _guard = kernel_boot_lock().lock().expect("worker should acquire lock");
+            acquired_tx.send(()).expect("worker should report acquisition");
+        });
+
+        attempted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker should reach the boot gate");
+        assert!(acquired_rx.try_recv().is_err());
+        drop(first_guard);
+        acquired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker should acquire after the first bootstrap exits");
+        worker.join().expect("worker should exit cleanly");
     }
 }
