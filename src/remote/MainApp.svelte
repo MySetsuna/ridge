@@ -1126,7 +1126,16 @@
   /* The fixed app root starts under the notch in standalone PWA. Reserve the
      top inset on both reconnect and failure banners so their text/actions stay
      visible and tappable before the mobile header paints. */
-  .conn-banner{flex-shrink:0;padding:calc(6px + env(safe-area-inset-top,0px)) 12px 6px;min-height:calc(30px + env(safe-area-inset-top,0px));box-sizing:border-box;text-align:center;font-size:12px;font-weight:600;color:#fff;background:var(--rg-ansi-yellow,#bb8009);z-index:50;display:flex;align-items:center;justify-content:center;gap:10px}
+  .conn-banner{flex-shrink:0;padding:6px max(12px,env(safe-area-inset-right,0px)) 6px max(12px,env(safe-area-inset-left,0px));min-height:30px;box-sizing:border-box;text-align:center;font-size:12px;font-weight:600;color:#fff;background:var(--rg-ansi-yellow,#bb8009);z-index:50;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
+  /* Older standalone WebKit exposes the cutout through constant(); keep this
+     fallback before env() so a PWA never places the reconnect action under a
+     notch when its browser has not migrated the safe-area API yet. */
+  @supports (padding-top:constant(safe-area-inset-top)) {
+    .conn-banner{padding-top:calc(6px + constant(safe-area-inset-top));min-height:calc(30px + constant(safe-area-inset-top))}
+  }
+  @supports (padding-top:env(safe-area-inset-top)) {
+    .conn-banner{padding-top:calc(6px + env(safe-area-inset-top,0px));min-height:calc(30px + env(safe-area-inset-top,0px))}
+  }
   .conn-banner.lost{background:var(--rg-ansi-red,#cf222e)}
   .conn-msg{flex:0 1 auto}
   .conn-action{flex-shrink:0;border:1px solid rgba(255,255,255,.7);background:rgba(255,255,255,.15);color:#fff;font-size:12px;font-weight:600;border-radius:6px;padding:3px 10px;cursor:pointer}

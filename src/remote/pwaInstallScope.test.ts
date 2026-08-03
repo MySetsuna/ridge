@@ -33,6 +33,9 @@ describe('Remote PWA installation scope', () => {
     expect(mainSource).toContain('env(safe-area-inset-top');
     expect(mainSource).toContain('.conn-banner{');
     expect(mainSource).toContain('min-height:calc(30px + env(safe-area-inset-top,0px))');
+    expect(mainSource).toContain('max(12px,env(safe-area-inset-right,0px))');
+    expect(mainSource).toContain('constant(safe-area-inset-top)');
+    expect(mainSource).toContain('flex-wrap:wrap');
     expect(mainSource).toContain('height:100dvh');
     expect(bottomBarSource).toContain('env(safe-area-inset-bottom');
     expect(bottomBarSource).toContain('margin-top:auto');
@@ -45,6 +48,7 @@ describe('Remote PWA installation scope', () => {
     for (const source of [authSource, cloudAuthSource]) {
       expect(source).toContain('env(safe-area-inset-top,0px)');
       expect(source).toContain('env(safe-area-inset-bottom,0px)');
+      expect(source).toContain('constant(safe-area-inset-top)');
       expect(source).toContain('overflow-y:auto');
       expect(source).toContain('box-sizing:border-box');
       expect(source).toContain('justify-content:safe center');
