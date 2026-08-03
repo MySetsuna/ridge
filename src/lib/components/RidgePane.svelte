@@ -2339,8 +2339,9 @@ function captureBackspace(node: HTMLElement) {
 		height: var(--rg-ime-cell-h, 18px);
 		opacity: 1;
 		pointer-events: none;
-		/* Native caret is the input-field cursor while IME owns focus. */
-		caret-color: var(--rg-accent, currentColor);
+		/* The wasm renderer owns the terminal caret.  Leaving the native
+		 * textarea caret visible paints a second thin bar at the IME anchor. */
+		caret-color: transparent;
 		background: transparent;
 		color: transparent;
 		border: none;
@@ -2366,7 +2367,7 @@ function captureBackspace(node: HTMLElement) {
 		height: var(--rg-ime-cell-h, 18px);
 		opacity: 0;
 		pointer-events: none;
-		caret-color: var(--rg-accent, currentColor);
+		caret-color: transparent;
 		color: transparent;
 		background: transparent;
 	}

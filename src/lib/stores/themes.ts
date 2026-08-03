@@ -185,10 +185,33 @@ export async function resolveThemeBgUrl(t: ThemeEntry | undefined): Promise<stri
  * 把一个主题的背景图解码为 RGBA 像素数组（用于 WebGPU 上传）。
  * 无背景图 / 解码失败时返回 null（调用方降级纯色）。
  */
-async function decodeThemeBgRgba(t: ThemeEntry | undefined): Promise<ActiveWallpaperGpu | null> {
+const _inflightBgDecodes = new Map<string, Promise<ActiveWallpaperGpu | null>>();
+
+async function decodeThemeBgRgba(
+  t: ThemeEntry | undefined,
+  resolvedUrl?: string | null,
+): Promise<ActiveWallpaperGpu | null> {
   if (!t || !t.bgImage) return null;
-  const url = await resolveThemeBgUrl(t);
+  const url = resolvedUrl ?? await resolveThemeBgUrl(t);
   if (!url) return null;
+
+  // Theme toggles can arrive faster than an image decode. Share one decode
+  // per URL so a rapid switch cannot queue duplicate Image + Canvas2D work.
+  const existing = _inflightBgDecodes.get(url);
+  if (existing) return existing;
+
+  const pending = decodeThemeBgRgbaImpl(t, url);
+  _inflightBgDecodes.set(url, pending);
+  void pending.finally(() => {
+    if (_inflightBgDecodes.get(url) === pending) _inflightBgDecodes.delete(url);
+  });
+  return pending;
+}
+
+async function decodeThemeBgRgbaImpl(
+  t: ThemeEntry,
+  url: string,
+): Promise<ActiveWallpaperGpu | null> {
   try {
     // §wallpaper-fix: 用 <img> 元素加载（走 CSP img-src——asset.localhost 在白名单，
     // 旧 .rg-pane-bgimg 的 CSS background-image 即如此），而非 fetch（走 connect-src，
@@ -225,12 +248,18 @@ async function decodeThemeBgRgba(t: ThemeEntry | undefined): Promise<ActiveWallp
 }
 
 /** 解析某主题的背景图为可加载 URL，更新 activeBgImage 信号。fire-and-forget。 */
+let _bgGeneration = 0;
 export async function setActiveBgImage(themeId: string): Promise<void> {
+  const generation = ++_bgGeneration;
   const t = getTheme(themeId);
   const opacity = t?.bgImageOpacity ?? 1;
   const url = await resolveThemeBgUrl(t);
+  // A newer theme wins. Do not let a slow image decode from an older click
+  // overwrite the current wallpaper or keep repainting the host surface.
+  if (generation !== _bgGeneration) return;
   bgImageStore.set({ url, opacity });
-  // GPU 路径：并发解码 RGBA 并更新 GPU 壁纸信号。
-  const gpu = await decodeThemeBgRgba(t);
+  // GPU 路径：解码经 URL 去重，且只提交最新主题结果。
+  const gpu = await decodeThemeBgRgba(t, url);
+  if (generation !== _bgGeneration) return;
   wallpaperGpuStore.set(gpu);
 }

@@ -24,6 +24,10 @@ describe('LinkSpanIndex', () => {
     expect(first?.text).toBe('https://example.com/long/path');
     expect(second?.text).toBe(first?.text);
     expect(second).toMatchObject({ row: 1, c0: 0, c1: 7 });
+    expect(first && index.regionsForSpan(kernel, first)).toMatchObject([
+      { row: 0 },
+      { row: 1, c0: 0, c1: 7 },
+    ]);
   });
 
   it('does not join a hard line break that merely looks continuous', () => {

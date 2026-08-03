@@ -8,8 +8,8 @@
  *
  * This module exposes:
  *
- *   - `isWorkerRenderingEnabled()` — enabled by default; explicit false/0
- *     remains the compatibility escape hatch.
+ *   - `isWorkerRenderingEnabled()` — opt-in only; explicit true/1 enables the
+ *     legacy worker path, while the main-thread WebGPU host remains default.
  *   - `getWorkerRenderer()` — returns the singleton, lazily creating it on
  *     first call. Returns `null` when the feature flag is off or when the
  *     environment has no `Worker` constructor (SSR / vitest node env).
@@ -26,8 +26,8 @@
  *      kernel on the main thread.
  *   3. `RidgePane.svelte` calls `canvas.transferControlToOffscreen()` and
  *      ships the OffscreenCanvas to the renderer via `bindCanvas`.
- *   4. The legacy main-thread path stays as the fallback for the period
- *      while the feature flag is opt-in.
+ *   4. The main-thread WebGPU path stays the default while worker rendering
+ *      remains an explicit compatibility opt-in.
  */
 
 import { WorkerHostedRenderer, type WorkerLike } from './workerHostedRenderer';
@@ -48,7 +48,9 @@ export function isWorkerRenderingEnabled(): boolean {
 	} catch {
 		/* SSR / worker / sandboxed origin — localStorage unavailable */
 	}
-	return true;
+	// Worker OffscreenCanvas path currently calls `newFromOffscreen`, which is
+	// Canvas2D-only. Keep it opt-in so desktop panes use shared WebGPU host.
+	return false;
 }
 
 /** Returns true when the runtime exposes a real `Worker` constructor.

@@ -1261,6 +1261,13 @@ function expandSidebar(minWidth = 0) {
     let unlistenResized: (() => void) | undefined;
     let unsubDefaultCwd: (() => void) | undefined;
     let unlistenDrop: (() => void) | undefined;
+    let appReadyTimeout: ReturnType<typeof setTimeout> | undefined;
+    // Register before workspace restore IPC; otherwise the one-shot pane
+    // event can be lost and the splash waits for the 5s fallback timeout.
+    const onFirstPaneAttached = () => {
+      window.dispatchEvent(new CustomEvent('ridge:app-ready'));
+    };
+    window.addEventListener('ridge:pane-attached', onFirstPaneAttached, { once: true });
 
     void (async () => {
       try {
@@ -1381,15 +1388,15 @@ function expandSidebar(minWidth = 0) {
       // 工作区就绪后强制 fit 一次：web-remote/cloud-controller 连接后若漏了这次
       // fit，pane 终端不铺满（容器尺寸已定但 PTY cols/rows 未跟随）。
       scheduleForceFitActivePanes();
-      await loadSavedWorkspaces();
-      await refreshWorkspaceSaveInfo();
+      // Saved-workspace metadata is not needed to paint the first terminal.
+      // Keep it off the critical path so slow disk/kernel IPC cannot hold the
+      // desktop splash after the first pane is already interactive.
+      void loadSavedWorkspaces().catch((e) => console.warn('load saved workspaces failed', e));
+      void refreshWorkspaceSaveInfo().catch((e) => console.warn('refresh workspace save info failed', e));
 
       // 等待首个终端面板就绪后关闭 loader
-      window.addEventListener('ridge:pane-attached', () => {
-        window.dispatchEvent(new CustomEvent('ridge:app-ready'));
-      }, { once: true });
       // 兜底：5秒后无论如何关闭 loader，避免异常阻塞
-      setTimeout(() => {
+      appReadyTimeout = setTimeout(() => {
         window.dispatchEvent(new CustomEvent('ridge:app-ready'));
       }, 5000);
 
@@ -1521,6 +1528,8 @@ function expandSidebar(minWidth = 0) {
       unlistenResized?.();
       unsubDefaultCwd?.();
       unlistenDrop?.();
+      if (appReadyTimeout !== undefined) clearTimeout(appReadyTimeout);
+      window.removeEventListener('ridge:pane-attached', onFirstPaneAttached);
       document.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('ridge:open-sidebar-tab', handleOpenSidebarTab as EventListener);
       window.removeEventListener('resize', onResize);
