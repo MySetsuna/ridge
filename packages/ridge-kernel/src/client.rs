@@ -3,7 +3,7 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
@@ -272,9 +272,38 @@ pub fn create_domain_pty(
     role: &str,
     launch_profile: Option<&str>,
 ) -> Result<uuid::Uuid, String> {
+    create_domain_pty_with_command(
+        endpoint,
+        pty_id,
+        shell,
+        &[],
+        cwd,
+        workspace_id,
+        role,
+        launch_profile,
+        &HashMap::new(),
+    )
+}
+
+/// Create a kernel-owned PTY with explicit argv/env while preserving the
+/// stable pane identity used for reconnect and replay.
+pub fn create_domain_pty_with_command(
+    endpoint: &KernelEndpoint,
+    pty_id: uuid::Uuid,
+    program: Option<&str>,
+    args: &[String],
+    cwd: Option<&str>,
+    workspace_id: Option<uuid::Uuid>,
+    role: &str,
+    launch_profile: Option<&str>,
+    env: &HashMap<String, String>,
+) -> Result<uuid::Uuid, String> {
     let body = serde_json::json!({
         "pty_id": pty_id,
-        "shell": shell,
+        "program": program,
+        "shell": program,
+        "args": args,
+        "env": env,
         "cwd": cwd,
         "workspace_id": workspace_id,
         "role": role,

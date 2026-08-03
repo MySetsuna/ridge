@@ -5,6 +5,24 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 144, 2026-08-03)
+
+- Structured Agent launches now try the authenticated `ridge-kernel` PTY
+  domain with explicit argv/environment, stable Pane identity, teammate/TMUX
+  metadata, and the existing resize-after-real-dimensions contract. Kernel
+  success resolves teammate split readiness immediately.
+- Kernel launch payloads are bounded (argument count, environment count and
+  bytes) before child creation. If Kernel bootstrap or attach fails, the
+  existing local pending-spawn path remains available.
+- Kernel 33 tests, Tauri 252 tests, full Vitest 1529 passed/1 skipped, and
+  `pnpm check` 0/0 are green. No release or version bump was made because
+  `v0.1.54` consumed today's allowance.
+- Physical tray restart, public/physical Remote, WebView2 heap soak,
+  dual-window/dual-host, and full external Kernel authority evidence remain
+  open gates.
+
+Archive: `docs/iterations/2026-08-03-iteration-144-kernel-agent-launch.md`.
+
 ## Current snapshot (iteration 143, 2026-08-03)
 
 - PTY bridge attach is now single-flight per stable Pane key. A close racing

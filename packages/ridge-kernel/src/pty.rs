@@ -375,10 +375,37 @@ impl PtyRegistry {
         role: &str,
         launch_profile: Option<&str>,
     ) -> Result<Uuid> {
+        self.spawn_command_for_with_env(
+            id,
+            program,
+            args,
+            cwd,
+            workspace_id,
+            role,
+            launch_profile,
+            &HashMap::new(),
+        )
+    }
+
+    /// Spawn a PTY with an explicit argv and bounded caller-provided
+    /// environment. The kernel remains the child-process authority; callers
+    /// only supply launch data and never receive native PTY handles.
+    pub fn spawn_command_for_with_env(
+        &self,
+        id: Uuid,
+        program: Option<&str>,
+        args: &[String],
+        cwd: Option<&str>,
+        workspace_id: Option<Uuid>,
+        role: &str,
+        launch_profile: Option<&str>,
+        env: &HashMap<String, String>,
+    ) -> Result<Uuid> {
         if self.contains(id) {
             anyhow::bail!("PTY already exists: {id}");
         }
-        let (bridge, output) = PtyBridge::spawn_command(program, args, cwd, launch_profile)?;
+        let (bridge, output) =
+            PtyBridge::spawn_command_with_env(program, args, cwd, launch_profile, env)?;
         let bridge = Arc::new(bridge);
         let scrollback = Arc::new(Mutex::new(Vec::new()));
         let renderer = Arc::new(Mutex::new(Terminal::new(
@@ -689,6 +716,22 @@ impl PtyBridge {
         cwd: Option<&str>,
         launch_profile: Option<&str>,
     ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
+        Self::spawn_command_with_env(
+            program,
+            args,
+            cwd,
+            launch_profile,
+            &HashMap::new(),
+        )
+    }
+
+    pub fn spawn_command_with_env(
+        program: Option<&str>,
+        args: &[String],
+        cwd: Option<&str>,
+        launch_profile: Option<&str>,
+        env: &HashMap<String, String>,
+    ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: DEFAULT_ROWS,
@@ -702,6 +745,9 @@ impl PtyBridge {
         command.args(args);
         if let Some(dir) = cwd {
             command.cwd(dir);
+        }
+        for (key, value) in env {
+            command.env(key, value);
         }
         command.env("TERM", "xterm-256color");
         apply_shell_integration(&mut command, &program, launch_profile);
@@ -962,6 +1008,54 @@ mod tests {
         assert_eq!(registry.len(), 0);
         assert!(!registry.contains(Uuid::new_v4()));
         assert!(registry.clear_scrollback(Uuid::new_v4()).is_err());
+    }
+
+    #[tokio::test]
+    async fn explicit_launch_environment_reaches_child_process() {
+        let mut env = HashMap::new();
+        env.insert("RIDGE_KERNEL_TEST_ENV".to_string(), "kernel-ok".to_string());
+        #[cfg(windows)]
+        let (program, args) = (
+            Some("cmd.exe"),
+            vec!["/d".to_string(), "/c".to_string(), "echo %RIDGE_KERNEL_TEST_ENV%".to_string()],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = (
+            Some("/bin/sh"),
+            vec![
+                "-c".to_string(),
+                "printf '%s' \"$RIDGE_KERNEL_TEST_ENV\"".to_string(),
+            ],
+        );
+        let (bridge, mut output) = PtyBridge::spawn_command_with_env(
+            program,
+            &args,
+            None,
+            None,
+            &env,
+        )
+        .expect("spawn explicit environment child");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut data = Vec::new();
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(chunk) = tokio::time::timeout(remaining, output.recv())
+                .await
+                .expect("child output timeout")
+            else {
+                break;
+            };
+            data.extend_from_slice(&chunk);
+            if String::from_utf8_lossy(&data).contains("kernel-ok") {
+                break;
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&data).contains("kernel-ok"),
+            "child output did not contain explicit env: {:?}",
+            data
+        );
+        bridge.destroy().expect("destroy env test child");
     }
 
     #[tokio::test]

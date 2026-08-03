@@ -7,6 +7,7 @@ use axum::Json;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -554,6 +555,13 @@ pub struct PtyCreateRequest {
     /// Stable pane identity supplied by a shell. When omitted, the kernel
     /// generates a UUID for backwards-compatible callers.
     pub pty_id: Option<Uuid>,
+    /// Optional explicit executable. `shell` remains the compatibility field
+    /// for ordinary interactive PTYs.
+    pub program: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
     pub shell: Option<String>,
     pub cwd: Option<String>,
     pub workspace_id: Option<Uuid>,
@@ -573,14 +581,30 @@ pub async fn domain_pty_create(
     }
     let pty_id = request.pty_id.unwrap_or_else(Uuid::new_v4);
     let role = request.role.as_deref().unwrap_or("shell");
-    match st.ptys.spawn_command_for(
+    let program = request.program.as_deref().or(request.shell.as_deref());
+    if request.args.len() > 128 {
+        return Ok(bad_request("too many PTY launch arguments"));
+    }
+    if request.env.len() > 256 {
+        return Ok(bad_request("too many PTY launch environment entries"));
+    }
+    let env_bytes: usize = request
+        .env
+        .iter()
+        .map(|(key, value)| key.len().saturating_add(value.len()))
+        .sum();
+    if env_bytes > 64 * 1024 {
+        return Ok(bad_request("PTY launch environment is too large"));
+    }
+    match st.ptys.spawn_command_for_with_env(
         pty_id,
-        request.shell.as_deref(),
-        &[],
+        program,
+        &request.args,
         request.cwd.as_deref(),
         request.workspace_id,
         role,
         request.launch_profile.as_deref(),
+        &request.env,
     ) {
         Ok(pty_id) => {
             if let (Some(cols), Some(rows)) = (request.cols, request.rows) {
@@ -1133,6 +1157,9 @@ mod tests {
             test_headers(),
             Json(PtyCreateRequest {
                 pty_id: Some(pane_id),
+                program: None,
+                args: Vec::new(),
+                env: HashMap::new(),
                 shell: None,
                 cwd: None,
                 workspace_id: Some(Uuid::new_v4()),
@@ -1155,6 +1182,33 @@ mod tests {
         assert_eq!(listed["source"], "ridge-kernel");
         assert_eq!(listed["ptys"][0]["pty_id"], pane_id.to_string());
         state.ptys.destroy(pane_id).expect("destroy test PTY");
+    }
+
+    #[tokio::test]
+    async fn pty_create_rejects_unbounded_launch_payload_before_spawn() {
+        let state = test_state();
+        let response = domain_pty_create(
+            State(state.clone()),
+            test_headers(),
+            Json(PtyCreateRequest {
+                pty_id: Some(Uuid::new_v4()),
+                program: Some("cmd.exe".into()),
+                args: (0..129).map(|n| n.to_string()).collect(),
+                env: HashMap::new(),
+                shell: None,
+                cwd: None,
+                workspace_id: None,
+                role: Some("agent".into()),
+                launch_profile: None,
+                cols: None,
+                rows: None,
+            }),
+        )
+        .await
+        .expect("bounded launch response")
+        .0;
+        assert_eq!(response["ok"], false);
+        assert_eq!(state.ptys.len(), 0);
     }
 
     #[test]

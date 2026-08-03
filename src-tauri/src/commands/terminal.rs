@@ -466,9 +466,8 @@ pub struct StructuredPtyCommand {
 }
 
 /// Claude Code shells out to `tmux`, while Cargo places `tmux(.exe)` beside the main binary.
-/// Returns the shim directory so callers can re-enforce it after applying extra env vars that
-/// might otherwise overwrite PATH (e.g. structured-launch env from Claude Code).
-fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) -> Option<PathBuf> {
+/// Resolve the shim once so native and kernel launches apply the same PATH contract.
+fn wind_tmux_shim_dir() -> Option<PathBuf> {
     let tmux_name = if cfg!(windows) { "tmux.exe" } else { "tmux" };
 
     // Dev builds: use the pre-built shim in dist/teammate-shim/ under the workspace root.
@@ -505,9 +504,31 @@ fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) -> Option<PathBuf>
         eprintln!("[ridge] tmux shim not found at {}", shim_dir.display());
         return None;
     }
+    Some(shim_dir)
+}
+
+fn prepend_path_with_wind_tmux_shim(cmd: &mut CommandBuilder) -> Option<PathBuf> {
+    let shim_dir = wind_tmux_shim_dir()?;
     let sep = if cfg!(windows) { ';' } else { ':' };
     let path = std::env::var("PATH").unwrap_or_default();
     cmd.env("PATH", format!("{}{sep}{path}", shim_dir.display()));
+    Some(shim_dir)
+}
+
+fn prepend_path_with_wind_tmux_shim_env(env: &mut HashMap<String, String>) -> Option<PathBuf> {
+    let shim_dir = wind_tmux_shim_dir()?;
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    let path = env
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default();
+    env.retain(|key, _| !key.eq_ignore_ascii_case("PATH"));
+    env.insert(
+        "PATH".to_string(),
+        format!("{}{sep}{path}", shim_dir.display()),
+    );
     Some(shim_dir)
 }
 
@@ -532,6 +553,47 @@ fn tmux_env_value(pane_slot: usize, cwd: Option<&Path>, state: &AppState) -> Str
         let _ = (cwd, state);
         format!("/ridge/teammate.sock,0,{pane_slot}")
     }
+}
+
+fn kernel_structured_env(
+    state: &AppState,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    cwd: Option<&Path>,
+    tmux_pane_index: Option<usize>,
+    spec: &StructuredPtyCommand,
+) -> Result<HashMap<String, String>, String> {
+    let binding = state
+        .teammate_binding
+        .read()
+        .clone()
+        .ok_or_else(|| "teammate server not ready; cannot spawn agent pane".to_string())?;
+    let mut env = spec.env.clone();
+    let _shim_dir = prepend_path_with_wind_tmux_shim_env(&mut env);
+    env.insert("RIDGE_TEAMMATE_URL".to_string(), binding.base_url.to_string());
+    env.insert("RIDGE_TEAMMATE_TOKEN".to_string(), binding.token.to_string());
+    env.insert("Ridge_TERMINAL".to_string(), "1".to_string());
+
+    let pane_slot = tmux_pane_index.unwrap_or(0);
+    let tmux_value = tmux_env_value(pane_slot, cwd, state);
+    if let Some(sock) = tmux_value.split(',').next() {
+        crate::teammate::endpoint::write_sidecar(
+            sock,
+            binding.base_url.as_str(),
+            binding.token.as_str(),
+        );
+    }
+    env.insert("TMUX".to_string(), tmux_value);
+    env.insert("TMUX_PANE".to_string(), pane_slot.to_string());
+    env.insert("RIDGE_WORKSPACE_ID".to_string(), workspace_id.to_string());
+    env.insert("RIDGE_PANE_ID".to_string(), pane_id.to_string());
+    if let Some(log) = std::env::var("Ridge_TMUX_LOG")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        env.insert("Ridge_TMUX_LOG".to_string(), log);
+    }
+    Ok(env)
 }
 
 /// 拆掉已有 PTY（不发 `PaneClosed` 全局事件，避免前端 `recoverPtySession` 与 teammate 重起打架）。
@@ -665,6 +727,32 @@ fn attach_or_spawn_kernel_pty(
     shell: Option<&str>,
     cwd: Option<&Path>,
 ) -> Result<bool, String> {
+    attach_or_spawn_kernel_command(
+        state,
+        endpoint,
+        workspace_id,
+        pane_id,
+        shell,
+        &[],
+        &HashMap::new(),
+        cwd,
+        "shell",
+        Some("ridge-interactive"),
+    )
+}
+
+fn attach_or_spawn_kernel_command(
+    state: &AppState,
+    endpoint: ridge_kernel::registry::KernelEndpoint,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    program: Option<&str>,
+    args: &[String],
+    env: &HashMap<String, String>,
+    cwd: Option<&Path>,
+    role: &str,
+    launch_profile: Option<&str>,
+) -> Result<bool, String> {
     let info = ridge_kernel::client::list_domain_ptys(&endpoint)?
         .into_iter()
         .find(|entry| entry.pty_id == pane_id || entry.id == pane_id);
@@ -677,14 +765,16 @@ fn attach_or_spawn_kernel_pty(
             info.rows,
         )
     } else {
-        let pty_id = ridge_kernel::client::create_domain_pty(
+        let pty_id = ridge_kernel::client::create_domain_pty_with_command(
             &endpoint,
             pane_id,
-            shell,
+            program,
+            args,
             cwd_string.as_deref(),
             Some(workspace_id),
-            "shell",
-            Some("ridge-interactive"),
+            role,
+            launch_profile,
+            env,
         )?;
         (pty_id, None, 80, 24)
     };
@@ -751,7 +841,7 @@ pub fn ensure_pane_pty_workspace(
     initial_command: Option<&str>,
     structured_command: Option<StructuredPtyCommand>,
     tmux_pane_index: Option<usize>,
-    ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    mut ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
     trace_id: Option<String>,
 ) -> Result<(), AppError> {
     let kernel_candidate = initial_command.is_none()
@@ -795,6 +885,53 @@ pub fn ensure_pane_pty_workspace(
         }
     }
 
+    // Structured Agent launches now use the same kernel-owned child/process
+    // lifecycle as ordinary shells. Keep the local pending-spawn path as a
+    // compatibility fallback when kernel bootstrap is unavailable.
+    if ic.is_none() {
+        if let Some(spec) = sc.as_ref() {
+            crate::teammate::ensure_teammate_started(state);
+            if let Some(endpoint) = kernel_endpoint_for_shell() {
+                let env = kernel_structured_env(
+                    state,
+                    workspace_id,
+                    pane_id,
+                    cwd,
+                    tmux_pane_index,
+                    spec,
+                )
+                .map_err(AppError::PtyError)?;
+                match attach_or_spawn_kernel_command(
+                    state,
+                    endpoint,
+                    workspace_id,
+                    pane_id,
+                    Some(&spec.program),
+                    &spec.args,
+                    &env,
+                    cwd,
+                    "agent",
+                    None,
+                ) {
+                    Ok(true) => {
+                        if let Some(tx) = ready_tx.take() {
+                            let _ = tx.send(Ok(()));
+                        }
+                        return Ok(());
+                    }
+                    Ok(false) => {}
+                    Err(error) => tracing::warn!(
+                        target: "ridge::kernel_pty",
+                        %workspace_id,
+                        %pane_id,
+                        error = %error,
+                        "kernel Agent PTY unavailable; falling back to local PTY"
+                    ),
+                }
+            }
+        }
+    }
+
     if kernel_candidate && !has_explicit_launch {
         if let Some(endpoint) = kernel_endpoint_for_shell() {
             match attach_or_spawn_kernel_pty(
@@ -805,7 +942,12 @@ pub fn ensure_pane_pty_workspace(
                 shell.as_deref(),
                 cwd,
             ) {
-                Ok(true) => return Ok(()),
+                Ok(true) => {
+                    if let Some(tx) = ready_tx.take() {
+                        let _ = tx.send(Ok(()));
+                    }
+                    return Ok(());
+                }
                 Ok(false) => {}
                 Err(error) => tracing::warn!(
                     target: "ridge::kernel_pty",
