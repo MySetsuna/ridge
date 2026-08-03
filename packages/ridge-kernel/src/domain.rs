@@ -7,12 +7,22 @@ use axum::Json;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::registry::{save_remote_hosts_at, save_roster_at, save_workspace_graph_at};
-use crate::server::AppState;
+use crate::pty::{PtyOutputLeaseError, PtyOutputRead};
+use crate::server::{AppState, OutputLeaseSlot};
+
+/// Bound HTTP lease handles even when clients disappear without DELETE. The
+/// PTY replay bytes remain bounded separately by `PtyOutputHub`.
+const MAX_OUTPUT_HTTP_LEASES: usize = 1024;
 
 pub(crate) const KERNEL_FS_ROOT_ENV: &str = "RIDGE_KERNEL_FS_ROOT";
+const DEFAULT_OUTPUT_POLL_TIMEOUT_MS: u64 = 15_000;
+const MAX_OUTPUT_POLL_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_OUTPUT_POLL_FRAMES: usize = 32;
+const MAX_OUTPUT_POLL_FRAMES: usize = 64;
 
 /// Read the host-granted filesystem root once when the kernel starts. Empty or
 /// unset keeps the existing desktop compatibility mode; a non-empty root makes
@@ -59,6 +69,7 @@ pub async fn domain_meta(
             "agents.roster",
             "git.status",
             "ptys.lifecycle",
+            "ptys.output-lease",
             "remote.hosts",
             "workspaces",
             "mcp",
@@ -388,6 +399,11 @@ pub async fn domain_workspace_pane_close(
             } else {
                 None
             };
+            if pty.is_some() {
+                // A pane close is a terminal lifecycle transition for every
+                // HTTP lease, including clients that never issue DELETE.
+                remove_output_leases_for_pty(&st, pane_id);
+            }
             if let Err(error) = persist_workspaces(&st, &next) {
                 if pty.is_some() {
                     st.ptys.cancel_destroy(pane_id);
@@ -600,7 +616,11 @@ pub async fn domain_pty_destroy(
 ) -> Result<Json<Value>, StatusCode> {
     if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
     let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
-    match st.ptys.destroy(pty_id) {
+    let result = st.ptys.destroy(pty_id);
+    // `destroy` closes the hub and wakes pending polls. Remove idle HTTP
+    // handles as well; their Drop detaches from the bounded replay state.
+    remove_output_leases_for_pty(&st, pty_id);
+    match result {
         Ok(()) => {
             st.mcp_state.purge_pane(&pty_id.to_string());
             Ok(Json(json!({ "ok": true })))
@@ -639,6 +659,269 @@ pub async fn domain_pty_scrollback(
         }))),
         Err(error) => Ok(bad_request(error.to_string())),
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct PtyOutputAttachQuery {
+    /// Resume after this sequence number. `None` starts at the oldest retained
+    /// frame in the bounded replay window.
+    pub after_seq: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct PtyOutputPollQuery {
+    /// Long-poll wait bound. The kernel rejects values above the hard cap so a
+    /// stalled client cannot hold a lease forever.
+    pub timeout_ms: Option<u64>,
+    /// Maximum frames returned in one response.
+    pub max_frames: Option<usize>,
+}
+
+fn remove_output_leases_for_pty(st: &AppState, pty_id: Uuid) {
+    let mut leases = st.output_leases.lock().expect("output lease lock");
+    leases.retain(|_, slot| slot.pty_id != pty_id);
+}
+
+fn output_lease_slot(
+    st: &AppState,
+    pty_id: Uuid,
+    lease_id: Uuid,
+) -> Result<std::sync::Arc<OutputLeaseSlot>, Json<Value>> {
+    let leases = st.output_leases.lock().expect("output lease lock");
+    let slot = leases
+        .get(&lease_id)
+        .cloned()
+        .ok_or_else(|| bad_request("PTY output lease not found"))?;
+    if slot.pty_id != pty_id {
+        return Err(bad_request("PTY output lease belongs to another PTY"));
+    }
+    Ok(slot)
+}
+
+fn remove_output_lease(st: &AppState, pty_id: Uuid, lease_id: Uuid) -> bool {
+    let mut leases = st.output_leases.lock().expect("output lease lock");
+    if leases
+        .get(&lease_id)
+        .is_some_and(|slot| slot.pty_id == pty_id)
+    {
+        leases.remove(&lease_id);
+        true
+    } else {
+        false
+    }
+}
+
+fn output_read_json(pty_id: Uuid, lease_id: Uuid, read: PtyOutputRead) -> Value {
+    match read {
+        PtyOutputRead::Data(frames) => json!({
+            "ok": true,
+            "kind": "data",
+            "pty_id": pty_id,
+            "lease_id": lease_id,
+            "frames": frames.into_iter().map(|frame| json!({
+                "seq": frame.seq,
+                "data_b64": base64::engine::general_purpose::STANDARD.encode(frame.data),
+            })).collect::<Vec<_>>(),
+        }),
+        PtyOutputRead::Lagged {
+            requested_seq,
+            oldest_seq,
+            latest_seq,
+        } => json!({
+            "ok": true,
+            "kind": "lagged",
+            "pty_id": pty_id,
+            "lease_id": lease_id,
+            "requested_seq": requested_seq,
+            "oldest_seq": oldest_seq,
+            "latest_seq": latest_seq,
+            "resync_required": true,
+        }),
+    }
+}
+
+/// Create a bounded, replayable PTY output lease for HTTP clients.
+pub async fn domain_pty_output_attach(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(pty_id): Path<String>,
+    Query(query): Query<PtyOutputAttachQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pty_id = match parse_id(&pty_id, "pty") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
+    {
+        let leases = st.output_leases.lock().expect("output lease lock");
+        if leases.len() >= MAX_OUTPUT_HTTP_LEASES {
+            return Ok(bad_request("PTY output lease capacity exhausted"));
+        }
+    }
+    match st.ptys.attach_output(pty_id, query.after_seq) {
+        Ok(lease) => {
+            let lease_id = lease.id();
+            let slot = std::sync::Arc::new(OutputLeaseSlot {
+                pty_id,
+                lease,
+                poll_lock: tokio::sync::Mutex::new(()),
+            });
+            let mut leases = st.output_leases.lock().expect("output lease lock");
+            if leases.len() >= MAX_OUTPUT_HTTP_LEASES {
+                drop(leases);
+                // The preflight can race another attach. Drop detaches the
+                // bounded PTY lease and releases its cursor before returning.
+                return Ok(bad_request("PTY output lease capacity exhausted"));
+            }
+            leases.insert(lease_id, slot);
+            Ok(Json(json!({
+                "ok": true,
+                "pty_id": pty_id,
+                "lease_id": lease_id,
+                "protocol": "bounded-seq-v1",
+            })))
+        }
+        Err(error) => Ok(bad_request(error.to_string())),
+    }
+}
+
+/// Long-poll one output lease. A timeout is a normal empty event, not a
+/// transport error; lifecycle closure removes the lease and returns a stable
+/// protocol error so clients stop retrying a destroyed pane.
+pub async fn domain_pty_output_poll(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path((pty_id, lease_id)): Path<(String, String)>,
+    Query(query): Query<PtyOutputPollQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pty_id = match parse_id(&pty_id, "pty") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
+    let lease_id = match parse_id(&lease_id, "lease") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
+    let timeout_ms = query
+        .timeout_ms
+        .unwrap_or(DEFAULT_OUTPUT_POLL_TIMEOUT_MS);
+    if timeout_ms > MAX_OUTPUT_POLL_TIMEOUT_MS {
+        return Ok(bad_request(format!(
+            "timeout_ms must be <= {MAX_OUTPUT_POLL_TIMEOUT_MS}"
+        )));
+    }
+    let max_frames = query.max_frames.unwrap_or(DEFAULT_OUTPUT_POLL_FRAMES);
+    if max_frames == 0 || max_frames > MAX_OUTPUT_POLL_FRAMES {
+        return Ok(bad_request(format!(
+            "max_frames must be between 1 and {MAX_OUTPUT_POLL_FRAMES}"
+        )));
+    }
+    let slot = match output_lease_slot(&st, pty_id, lease_id) {
+        Ok(slot) => slot,
+        Err(body) => return Ok(body),
+    };
+    let _poll_guard = slot.poll_lock.lock().await;
+    match slot
+        .lease
+        .next(Duration::from_millis(timeout_ms), max_frames)
+        .await
+    {
+        Ok(read) => Ok(Json(output_read_json(pty_id, lease_id, read))),
+        Err(PtyOutputLeaseError::TimedOut) => Ok(Json(json!({
+            "ok": true,
+            "kind": "timeout",
+            "pty_id": pty_id,
+            "lease_id": lease_id,
+            "frames": [],
+        }))),
+        Err(error @ (PtyOutputLeaseError::Detached
+        | PtyOutputLeaseError::Closing
+        | PtyOutputLeaseError::Closed)) => {
+            remove_output_lease(&st, pty_id, lease_id);
+            Ok(bad_request(error.to_string()))
+        }
+        Err(error) => Ok(bad_request(error.to_string())),
+    }
+}
+
+/// Explicitly move a lagged lease back to the oldest retained sequence.
+pub async fn domain_pty_output_resync(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path((pty_id, lease_id)): Path<(String, String)>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pty_id = match parse_id(&pty_id, "pty") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
+    let lease_id = match parse_id(&lease_id, "lease") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
+    let slot = match output_lease_slot(&st, pty_id, lease_id) {
+        Ok(slot) => slot,
+        Err(body) => return Ok(body),
+    };
+    let _poll_guard = slot.poll_lock.lock().await;
+    match slot.lease.resync() {
+        Ok(cursor_seq) => Ok(Json(json!({
+            "ok": true,
+            "kind": "resynced",
+            "pty_id": pty_id,
+            "lease_id": lease_id,
+            "cursor_seq": cursor_seq,
+        }))),
+        Err(error) => {
+            remove_output_lease(&st, pty_id, lease_id);
+            Ok(bad_request(error.to_string()))
+        }
+    }
+}
+
+/// Detach an HTTP output lease. The operation is idempotent from the client's
+/// perspective: a missing lease is reported as a normal protocol error rather
+/// than leaving a retrying client attached forever.
+pub async fn domain_pty_output_detach(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path((pty_id, lease_id)): Path<(String, String)>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pty_id = match parse_id(&pty_id, "pty") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
+    let lease_id = match parse_id(&lease_id, "lease") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
+    let slot = {
+        let mut leases = st.output_leases.lock().expect("output lease lock");
+        match leases.get(&lease_id) {
+            Some(slot) if slot.pty_id == pty_id => leases.remove(&lease_id),
+            Some(_) => return Ok(bad_request("PTY output lease belongs to another PTY")),
+            None => return Ok(bad_request("PTY output lease not found")),
+        }
+    };
+    if let Some(slot) = slot {
+        let _ = slot.lease.detach();
+    }
+    Ok(Json(json!({
+        "ok": true,
+        "kind": "detached",
+        "pty_id": pty_id,
+        "lease_id": lease_id,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -760,6 +1043,7 @@ mod tests {
             remote_hosts: Arc::new(std::sync::Mutex::new(ridge_core::remote::RemoteHostTopology::default())),
             remote_hosts_path: std::env::temp_dir().join(format!("ridge-kernel-test-{}.json", Uuid::new_v4())),
             ptys: Arc::new(crate::pty::PtyRegistry::default()),
+            output_leases: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             fs_scope: ridge_core::sandbox::RootScope::unrestricted(),
         }
     }
@@ -826,6 +1110,119 @@ mod tests {
         assert_eq!(response["source"], "ridge-kernel");
         assert_eq!(response["error"], "path outside kernel filesystem root");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn pty_output_http_requires_auth_and_bounds_long_poll() {
+        let state = test_state();
+        let pty_id = Uuid::new_v4().to_string();
+        let unauthorized = domain_pty_output_attach(
+            State(state.clone()),
+            HeaderMap::new(),
+            Path(pty_id.clone()),
+            Query(PtyOutputAttachQuery::default()),
+        )
+        .await;
+        assert!(matches!(unauthorized, Err(StatusCode::UNAUTHORIZED)));
+
+        let too_long = domain_pty_output_poll(
+            State(state.clone()),
+            test_headers(),
+            Path((pty_id.clone(), Uuid::new_v4().to_string())),
+            Query(PtyOutputPollQuery {
+                timeout_ms: Some(MAX_OUTPUT_POLL_TIMEOUT_MS + 1),
+                max_frames: Some(1),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(too_long["ok"], false);
+        assert!(too_long["error"].as_str().unwrap().contains("timeout_ms"));
+
+        let too_many = domain_pty_output_poll(
+            State(state),
+            test_headers(),
+            Path((pty_id, Uuid::new_v4().to_string())),
+            Query(PtyOutputPollQuery {
+                timeout_ms: Some(0),
+                max_frames: Some(MAX_OUTPUT_POLL_FRAMES + 1),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(too_many["ok"], false);
+        assert!(too_many["error"].as_str().unwrap().contains("max_frames"));
+    }
+
+    #[tokio::test]
+    async fn pty_output_http_unknown_lease_does_not_retry_or_allocate_state() {
+        let state = test_state();
+        let pty_id = Uuid::new_v4().to_string();
+        let lease_id = Uuid::new_v4().to_string();
+        let response = domain_pty_output_detach(
+            State(state.clone()),
+            test_headers(),
+            Path((pty_id.clone(), lease_id)),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(response["ok"], false);
+        assert_eq!(state.output_leases.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn pty_output_http_poll_resync_and_detach_share_one_cursor() {
+        let state = test_state();
+        let pty_id = Uuid::new_v4();
+        let lease = crate::pty::test_output_lease();
+        let lease_id = lease.id();
+        state.output_leases.lock().unwrap().insert(
+            lease_id,
+            std::sync::Arc::new(OutputLeaseSlot {
+                pty_id,
+                lease,
+                poll_lock: tokio::sync::Mutex::new(()),
+            }),
+        );
+
+        let timeout = domain_pty_output_poll(
+            State(state.clone()),
+            test_headers(),
+            Path((pty_id.to_string(), lease_id.to_string())),
+            Query(PtyOutputPollQuery {
+                timeout_ms: Some(0),
+                max_frames: Some(1),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(timeout["kind"], "timeout");
+
+        let resynced = domain_pty_output_resync(
+            State(state.clone()),
+            test_headers(),
+            Path((pty_id.to_string(), lease_id.to_string())),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(resynced["kind"], "resynced");
+        assert_eq!(resynced["cursor_seq"], 1);
+
+        let detached = domain_pty_output_detach(
+            State(state.clone()),
+            test_headers(),
+            Path((pty_id.to_string(), lease_id.to_string())),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(detached["kind"], "detached");
+        assert!(state.output_leases.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

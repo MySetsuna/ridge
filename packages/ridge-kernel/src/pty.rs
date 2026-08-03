@@ -273,7 +273,7 @@ impl PtyOutputLease {
     }
 
     pub async fn next(
-        &mut self,
+        &self,
         timeout: Duration,
         max_frames: usize,
     ) -> Result<PtyOutputRead, PtyOutputLeaseError> {
@@ -302,11 +302,11 @@ impl PtyOutputLease {
         }
     }
 
-    pub fn resync(&mut self) -> Result<u64, PtyOutputLeaseError> {
+    pub fn resync(&self) -> Result<u64, PtyOutputLeaseError> {
         self.hub.resync(self.id)
     }
 
-    pub fn detach(&mut self) -> Result<(), PtyOutputLeaseError> {
+    pub fn detach(&self) -> Result<(), PtyOutputLeaseError> {
         if self.hub.detach(self.id) {
             Ok(())
         } else {
@@ -649,6 +649,13 @@ impl Drop for PtyRegistry {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn test_output_lease() -> PtyOutputLease {
+    Arc::new(PtyOutputHub::new())
+        .attach(None)
+        .expect("test output lease")
+}
+
 impl PtyBridge {
     pub fn spawn(
         shell: Option<&str>,
@@ -841,7 +848,7 @@ mod tests {
         for seq in 0..(OUTPUT_REPLAY_CAP_FRAMES + 4) {
             hub.publish(&[(seq % 256) as u8]);
         }
-        let mut lease = hub.attach(Some(0)).expect("attach open output");
+        let lease = hub.attach(Some(0)).expect("attach open output");
         assert_eq!(
             lease.next(Duration::ZERO, 8).await,
             Ok(PtyOutputRead::Lagged {
@@ -870,7 +877,7 @@ mod tests {
     #[tokio::test]
     async fn output_lease_timeout_detach_and_close_fail_closed() {
         let hub = Arc::new(PtyOutputHub::new());
-        let mut lease = hub.attach(None).expect("attach open output");
+        let lease = hub.attach(None).expect("attach open output");
         assert_eq!(
             lease.next(Duration::from_millis(1), 1).await,
             Err(PtyOutputLeaseError::TimedOut)
@@ -881,7 +888,7 @@ mod tests {
             Err(PtyOutputLeaseError::Detached)
         );
 
-        let mut pending = hub.attach(None).expect("second lease");
+        let pending = hub.attach(None).expect("second lease");
         let closer = hub.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -896,7 +903,7 @@ mod tests {
     #[tokio::test]
     async fn output_lease_closing_rejects_attach_then_cancel_reopens_for_new_lease() {
         let hub = Arc::new(PtyOutputHub::new());
-        let mut old = hub.attach(None).expect("attach open output");
+        let old = hub.attach(None).expect("attach open output");
         hub.begin_closing();
         assert_eq!(
             old.next(Duration::ZERO, 1).await,
@@ -907,7 +914,7 @@ mod tests {
             Err(PtyOutputLeaseError::Closing)
         ));
         hub.cancel_closing();
-        let mut fresh = hub.attach(None).expect("cancel reopens output");
+        let fresh = hub.attach(None).expect("cancel reopens output");
         hub.publish(b"ok");
         assert_eq!(
             fresh.next(Duration::ZERO, 1).await,
