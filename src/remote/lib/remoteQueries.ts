@@ -48,6 +48,8 @@ export const remoteQueryKeys = {
     ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'files', normalizeRemotePath(cwd), normalizeRemotePath(target), depth] as const,
   sidebarGit: (sessionId: number, cwd: string, scope?: RemoteSidebarScope) =>
     ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'git', normalizeRemotePath(cwd)] as const,
+  sidebarGitGraph: (sessionId: number, cwd: string, scope?: RemoteSidebarScope) =>
+    ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'git-graph', normalizeRemotePath(cwd)] as const,
   sidebarSearch: (sessionId: number, cwd: string, query: string, scope?: RemoteSidebarScope) =>
     ['remote', sessionId, 'sidebar', scopePart(scope?.workspaceId), scopePart(scope?.paneId), scopePart(scope?.branch), 'search', normalizeRemotePath(cwd), query] as const,
   sidebarFile: (sessionId: number, cwd: string, path: string, scope?: RemoteSidebarScope) =>

@@ -57,6 +57,12 @@ export interface GitInfo {
   commits: GitCommit[];
 }
 
+/** Lazy Graph payload; status and history have independent lifecycles. */
+export interface GitGraph {
+  branches: string[];
+  commits: GitCommit[];
+}
+
 export interface SearchHit {
   /** Absolute path of the matching file. */
   file: string;
@@ -83,6 +89,10 @@ export interface SidebarProvider {
   gitStatus(signal?: AbortSignal): Promise<GitInfo>;
   /** Optional explicit refresh path for a user-triggered SCM refresh. */
   refreshGit?(signal?: AbortSignal): Promise<GitInfo>;
+  /** Optional lazy Graph query; must not run during initial Git tab paint. */
+  gitGraph?(signal?: AbortSignal): Promise<GitGraph>;
+  /** Optional explicit Graph refresh, retaining the same Query key. */
+  refreshGitGraph?(signal?: AbortSignal): Promise<GitGraph>;
   search(query: string, signal?: AbortSignal): Promise<SearchHit[]>;
   /** Read a file's text content (viewer). `path` is absolute. */
   readFile(path: string, signal?: AbortSignal): Promise<string>;

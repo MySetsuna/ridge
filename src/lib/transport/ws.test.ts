@@ -42,6 +42,29 @@ describe('WsDataProvider lifecycle', () => {
     provider.dispose();
   });
 
+  it('loads Git Graph through separate cancellable branch and history requests', async () => {
+    const connection = fakeConnection();
+    connection.send.mockImplementation((payload: { type?: string; _reqId?: number; method?: string }) => {
+      if (payload.type !== 'data-request' || payload._reqId === undefined) return;
+      queueMicrotask(() => connection.emitMessage({
+        type: 'data-result',
+        _reqId: payload._reqId,
+        _result: payload.method === 'git_list_branches'
+          ? [{ name: 'main' }]
+          : [{ hash: 'head', subject: 'head', date: 'now', author: 'a', refs: ['head:'] }],
+      }));
+    });
+    const provider = new WsDataProvider(connection as unknown as RemoteConnection);
+
+    await expect(provider.gitGraph('/repo')).resolves.toMatchObject({
+      branches: ['main'],
+      commits: [{ hash: 'head', msg: 'head' }],
+    });
+    expect(connection.send).toHaveBeenCalledWith(expect.objectContaining({ method: 'git_list_branches' }));
+    expect(connection.send).toHaveBeenCalledWith(expect.objectContaining({ method: 'get_git_commits_paginated' }));
+    provider.dispose();
+  });
+
   it('cancels non-signal requests when the provider is disposed', async () => {
     const connection = fakeConnection();
     const provider = new WsDataProvider(connection as unknown as RemoteConnection);

@@ -1,4 +1,4 @@
-import type { DataProvider, GitStatusResult, SearchResult } from './types';
+import type { DataProvider, GitGraphResult, GitStatusResult, SearchResult } from './types';
 import type { RemoteConnection } from '@ridge/remote';
 import type { FileNode, DirectoryPage } from '$lib/stores/project';
 
@@ -159,7 +159,42 @@ export class WsDataProvider implements DataProvider {
 
   // ── Git ──
   async gitStatus(repoRoot: string, signal?: AbortSignal): Promise<GitStatusResult> {
-    return this.request<GitStatusResult>('git_status', { repoRoot }, signal);
+    // Remote Git tab needs working-tree state first; history/branches are a
+    // separate lazy query so opening the mobile drawer never waits on `git log`
+    // or branch enumeration.
+    return this.request<GitStatusResult>('git_status', { repoRoot, includeDetails: false }, signal);
+  }
+  async gitGraph(repoRoot: string, signal?: AbortSignal): Promise<GitGraphResult> {
+    const controller = new AbortController();
+    const relayAbort = () => controller.abort(signal?.reason);
+    if (signal?.aborted) controller.abort(signal.reason);
+    signal?.addEventListener('abort', relayAbort, { once: true });
+    try {
+      const [branches, commits] = await Promise.all([
+        this.request<Array<{ name?: string }>>('git_list_branches', { repoRoot }, controller.signal),
+        this.request<Array<{ hash: string; subject?: string; date?: string; author?: string; parents?: string[]; refs?: string[] }>>(
+          'get_git_commits_paginated',
+          { repoRoot, offset: 0, limit: 50 },
+          controller.signal,
+        ),
+      ]);
+      return {
+        branches: branches.map((branch) => branch.name ?? '').filter(Boolean),
+        commits: commits.map((commit) => ({
+          hash: commit.hash,
+          msg: commit.subject ?? '',
+          time: commit.date ?? '',
+          author: commit.author,
+          parents: commit.parents,
+          refs: commit.refs,
+        })),
+      };
+    } catch (error) {
+      controller.abort();
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', relayAbort);
+    }
   }
   async gitStage(repoRoot: string, paths: string[], signal?: AbortSignal): Promise<void> {
     await this.request<void>('git_stage', { repoRoot, paths }, signal);

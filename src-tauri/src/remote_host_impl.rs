@@ -2398,6 +2398,9 @@ async fn dispatch_data_request(
     fn usize_opt(v: &serde_json::Value, k: &str) -> Option<usize> {
         v[k].as_u64().map(|n| n as usize)
     }
+    fn u32_value(v: &serde_json::Value, k: &str) -> u32 {
+        v[k].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32
+    }
     fn path_list(v: &serde_json::Value) -> Vec<String> {
         v["paths"]
             .as_array()
@@ -2444,7 +2447,25 @@ async fn dispatch_data_request(
         "move_path" => unit(project::move_path(s(params, "from"), s(params, "to")).await),
 
         // ── Git ── (all async; offload internally)
-        "git_status" => git_status_result(s(params, "repoRoot"), git_slot).await,
+        "git_status" => git_status_result(
+            s(params, "repoRoot"),
+            git_slot,
+            // Older controllers omit the flag and still receive the original
+            // combined payload. Current Remote sends false to keep first paint
+            // limited to working-tree state.
+            params
+                .get("includeDetails")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true),
+        )
+        .await,
+        "git_list_branches" => val(git::git_list_branches(s(params, "repoRoot")).await),
+        "get_git_commits_paginated" => val(git::get_git_commits_paginated(
+            s(params, "repoRoot"),
+            u32_value(params, "offset"),
+            u32_value(params, "limit"),
+        )
+        .await),
         "git_stage" => unit(git::git_stage(s(params, "repoRoot"), path_list(params)).await),
         "git_unstage" => unit(git::git_unstage(s(params, "repoRoot"), path_list(params)).await),
         "git_commit" => unit(
@@ -2513,42 +2534,44 @@ async fn dispatch_data_request(
     }
 }
 
-/// Maps `ScmRepoStatus` (+ recent commit log) into the frontend `GitStatusResult`
-/// shape: `{ staged, unstaged, untracked, commits }`. Commits aren't part of
-/// `ScmRepoStatus`, so they're pulled separately via `git_info_for_path` on a
-/// blocking thread (it shells out to `git log`).
-async fn git_status_result(repo_root: String, git_slot: Option<String>) -> serde_json::Value {
+/// Maps `ScmRepoStatus` into the frontend `GitStatusResult` shape. Graph data is
+/// optional: the current mobile controller requests it separately on demand,
+/// so opening Git never waits on `git log` and branch enumeration.
+async fn git_status_result(
+    repo_root: String,
+    git_slot: Option<String>,
+    include_details: bool,
+) -> serde_json::Value {
     let scm = match crate::commands::git::get_scm_status(repo_root.clone(), git_slot).await {
         Ok(status) => status,
         Err(e) => return serde_json::json!({ "_error": e }),
     };
-    // Do not call the synchronous `git_info_for_path` from an ad-hoc
-    // `spawn_blocking`: that path bypassed the shared git semaphore and could
-    // recreate the remote git.exe pile-up under repeated status polling.
-    // The paginated log command uses the same bounded admission + timeout path
-    // as `get_scm_status`, and avoids re-running branch/diff probes already
-    // covered by the status request.
-    let commits = crate::commands::git::get_git_commits_paginated(repo_root.clone(), 0, 50)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|c| serde_json::json!({
-            "hash": c.hash,
-            "msg": c.subject,
-            "time": c.date,
-            "author": c.author,
-            "parents": c.parents,
-            "refs": c.refs,
-        }))
-        .collect::<Vec<_>>();
-    // Branch listing is part of the same Git snapshot consumed by the Remote
-    // Graph tab. A failed optional branch probe must not hide a valid status.
-    let branches = crate::commands::git::git_list_branches(repo_root.clone())
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|branch| branch.name)
-        .collect::<Vec<_>>();
+    let (branches, commits) = if include_details {
+        // Compatibility path for older controllers. New Remote clients use
+        // `gitGraph` below, keeping these optional probes out of first paint.
+        let commits = crate::commands::git::get_git_commits_paginated(repo_root.clone(), 0, 50)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| serde_json::json!({
+                "hash": c.hash,
+                "msg": c.subject,
+                "time": c.date,
+                "author": c.author,
+                "parents": c.parents,
+                "refs": c.refs,
+            }))
+            .collect::<Vec<_>>();
+        let branches = crate::commands::git::git_list_branches(repo_root)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|branch| branch.name)
+            .collect::<Vec<_>>();
+        (branches, commits)
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     let map_files = |files: Vec<crate::commands::git::ScmFile>| {
         files

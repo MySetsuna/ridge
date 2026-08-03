@@ -12,6 +12,12 @@ export interface GitStatusResult {
   commits: { hash: string; msg: string; time: string; author?: string; parents?: string[]; refs?: string[] }[];
 }
 
+/** Graph-only Git payload. Status and history have independent lifecycles. */
+export interface GitGraphResult {
+  branches: string[];
+  commits: GitStatusResult['commits'];
+}
+
 export interface SearchResult {
   path: string;
   line?: number;
@@ -36,6 +42,8 @@ export interface DataProvider {
 
   // ── Git ──
   gitStatus(repoRoot: string, signal?: AbortSignal): Promise<GitStatusResult>;
+  /** Optional lazy history/branch query used by Remote Git Graph. */
+  gitGraph?(repoRoot: string, signal?: AbortSignal): Promise<GitGraphResult>;
   gitStage(repoRoot: string, paths: string[], signal?: AbortSignal): Promise<void>;
   gitUnstage(repoRoot: string, paths: string[], signal?: AbortSignal): Promise<void>;
   gitCommit(repoRoot: string, message: string, amend?: boolean, signal?: AbortSignal): Promise<void>;
