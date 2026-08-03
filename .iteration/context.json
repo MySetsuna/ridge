@@ -1,15 +1,13 @@
 {
   "schema_version": 1,
-  "task": "Move high-frequency desktop Git reads and allowlisted mutations behind the authenticated ridge-kernel Git domain",
+  "task": "Route Remote fast SCM status through the authenticated ridge-kernel Git domain without losing its no-numstat latency contract",
   "symbols": [
-    "domain_git_diff_summary",
-    "read_domain_git_diff_summary",
-    "domain_git_mutate",
-    "mutate_domain_git",
-    "GitMutationRequest",
-    "git_diff_summary",
-    "GitDiffSummary",
-    "git_diff_summary_sync"
+    "domain_git_status",
+    "read_domain_git_status_fast",
+    "get_scm_status_fast",
+    "get_scm_status_fast_sync",
+    "git_status_path",
+    "GitQuery"
   ],
   "files": [
     "docs/PROJECT-STATE.md",
@@ -20,11 +18,12 @@
     "packages/ridge-kernel/src/domain.rs",
     "packages/ridge-kernel/src/server.rs",
     "src-tauri/src/commands/git.rs",
-    "docs/iterations/2026-08-04-iteration-160-kernel-git-diff-summary.md"
+    "docs/iterations/2026-08-04-iteration-160-kernel-git-diff-summary.md",
+    "docs/iterations/2026-08-04-iteration-161-kernel-git-fast-status.md"
   ],
   "tests": [
-    "packages/ridge-kernel/src/client.rs (typed diff-summary and mutation decoder contracts)",
-    "packages/ridge-kernel/src/domain.rs (non-Git diff-summary and mutation guard tests)",
+    "packages/ridge-kernel/src/client.rs (fast-status URL contract)",
+    "packages/ridge-kernel/src/domain.rs (non-Git fast-status domain guard)",
     "cargo test -p ridge-kernel --lib",
     "cargo test -p ridge --lib",
     "cargo test -p ridge-core --lib",
@@ -35,7 +34,7 @@
     "NotebookLM is strategy input only; runtime, tests, and source remain factual authority",
     "Desktop production pane PTYs, SCM status reads, and kernel bootstrap are kernel-owned",
     "Kernel watcher tolerates transient health failures but exits after a bounded consecutive threshold",
-    "Desktop high-frequency Git reads and allowlisted stage/unstage/commit/checkout/push mutations use the authenticated kernel domain",
+    "Remote fast SCM status uses the authenticated kernel Git domain and preserves the no-numstat contract",
     "No hidden local fallback after kernel bootstrap/domain request failure",
     "Do not scan generated or minified artifacts as source evidence"
   ],
@@ -121,6 +120,7 @@
       "docs/iterations/2026-08-04-iteration-158-settings-lazy-load.md",
       "docs/iterations/2026-08-04-iteration-159-sidebar-lazy-mount.md",
       "docs/iterations/2026-08-04-iteration-160-kernel-git-diff-summary.md",
+      "docs/iterations/2026-08-04-iteration-161-kernel-git-fast-status.md",
       "docs/iterations/CONTRACT-iteration-76.md",
       "docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md",
       "docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md",

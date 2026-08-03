@@ -328,6 +328,14 @@ fn encode_query_component(value: &str) -> String {
     encoded
 }
 
+fn git_status_path(path: &str, fast: bool) -> String {
+    format!(
+        "/v1/domain/git/status?path={}{}",
+        encode_query_component(path),
+        if fast { "&fast=1" } else { "" },
+    )
+}
+
 /// Read the kernel-owned workspace identity/topology projection.
 pub fn read_domain_workspaces(
     endpoint: &KernelEndpoint,
@@ -361,13 +369,28 @@ pub fn read_domain_git_status(
     endpoint: &KernelEndpoint,
     path: &str,
 ) -> Result<Option<ScmRepoStatus>, String> {
+    read_domain_git_status_mode(endpoint, path, false)
+}
+
+/// Read the compact Git status projection used by Remote first paint. The
+/// kernel keeps repository detection and the single porcelain status spawn in
+/// the same domain while skipping numstat children.
+pub fn read_domain_git_status_fast(
+    endpoint: &KernelEndpoint,
+    path: &str,
+) -> Result<Option<ScmRepoStatus>, String> {
+    read_domain_git_status_mode(endpoint, path, true)
+}
+
+fn read_domain_git_status_mode(
+    endpoint: &KernelEndpoint,
+    path: &str,
+    fast: bool,
+) -> Result<Option<ScmRepoStatus>, String> {
     let value = request_json(
         endpoint,
         "GET",
-        &format!(
-            "/v1/domain/git/status?path={}",
-            encode_query_component(path)
-        ),
+        &git_status_path(path, fast),
         None,
     )?;
     decode_domain_git_status(value)
@@ -1131,6 +1154,10 @@ mod tests {
         assert_eq!(
             encode_query_component(r"C:\work dir?x#1"),
             "C%3A%5Cwork%20dir%3Fx%231"
+        );
+        assert_eq!(
+            git_status_path(r"C:\work dir?x#1", true),
+            "/v1/domain/git/status?path=C%3A%5Cwork%20dir%3Fx%231&fast=1"
         );
     }
 

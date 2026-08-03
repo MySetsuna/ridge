@@ -1055,6 +1055,8 @@ pub async fn domain_fs_list(
 #[derive(Deserialize)]
 pub struct GitQuery {
     pub path: String,
+    #[serde(default)]
+    pub fast: bool,
 }
 
 /// Explicit Git write operations owned by the kernel. The tagged request keeps
@@ -1167,14 +1169,20 @@ pub async fn domain_git_status(
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    let path = q.path;
+    let GitQuery { path, fast } = q;
     // Git discovery/status spawn external processes and may wait on the shared
     // guard. Keep that work off the async executor so a slow repository cannot
     // stall health, MCP, or unrelated domain requests.
     let status_path = path.clone();
     let (is_repo, status) = tokio::task::spawn_blocking(move || {
         let is_repo = ridge_core::commands::git::find_git_repo_root(status_path.clone()).is_some();
-        let status = is_repo.then(|| ridge_core::commands::git::get_scm_status_sync(status_path));
+        let status = is_repo.then(|| {
+            if fast {
+                ridge_core::commands::git::get_scm_status_fast_sync(status_path)
+            } else {
+                ridge_core::commands::git::get_scm_status_sync(status_path)
+            }
+        });
         (is_repo, status)
     })
     .await
@@ -1425,6 +1433,7 @@ mod tests {
             test_headers(),
             Query(GitQuery {
                 path: child.to_string_lossy().into_owned(),
+                fast: false,
             }),
         )
         .await
@@ -1464,6 +1473,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn git_status_fast_confirms_non_repository_without_numstat() {
+        let root = std::env::temp_dir().join(format!("ridge-kernel-non-git-fast-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let response = domain_git_status(
+            State(test_state()),
+            test_headers(),
+            Query(GitQuery {
+                path: root.to_string_lossy().into_owned(),
+                fast: true,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["source"], "ridge-kernel");
+        assert_eq!(response["is_repo"], false);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn git_branches_confirms_non_repository_without_spawning_branch() {
         let root = std::env::temp_dir().join(format!("ridge-kernel-non-git-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
@@ -1472,6 +1502,7 @@ mod tests {
             test_headers(),
             Query(GitQuery {
                 path: root.to_string_lossy().into_owned(),
+                fast: false,
             }),
         )
         .await
@@ -1493,6 +1524,7 @@ mod tests {
             test_headers(),
             Query(GitQuery {
                 path: root.to_string_lossy().into_owned(),
+                fast: false,
             }),
         )
         .await
