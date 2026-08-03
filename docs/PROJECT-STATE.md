@@ -5,6 +5,17 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 120 update (2026-08-03)
+
+Remote host workspace save now refreshes the linked topology after the remote
+mutation succeeds, so updated names and workspace lists appear immediately in
+Hosts instead of waiting for an unrelated poll/reconnect. A deterministic
+source contract test guards the ordering. Targeted Vitest passes; this
+follow-up remains unreleased because the daily publication window is frozen
+after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-120-host-workspace-save-refresh.md`.
+
 ## Iteration 119 update (2026-08-03)
 
 Standalone PWA detection now runs before Svelte mounts and covers iOS's
