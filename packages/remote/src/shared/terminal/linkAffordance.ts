@@ -121,6 +121,70 @@ export function decideHoverUnderline(opts: {
   return { showUnderline: false, showHint: false, hintText: null, cursor: '', spanText: null };
 }
 
+export interface Osc8LinkGrid {
+  rows(): number;
+  cols(): number;
+  hyperlinkAt(row: number, col: number): { uri?: unknown } | null;
+  /** True when this row's last cell soft-wraps into the next row. */
+  rowWrapped?: (row: number) => boolean;
+}
+
+/**
+ * Return every visual segment of the OSC-8 link under the hovered cell.
+ *
+ * OSC-8 carries a URI per cell, but not a logical span id. Only join adjacent
+ * rows when the terminal's authoritative soft-wrap flag proves they are one
+ * visual line; repeated copies of the same URI on separate hard lines stay
+ * independent. This keeps the underline continuous without over-highlighting.
+ */
+export function osc8UnderlineRegions(
+  grid: Osc8LinkGrid,
+  row: number,
+  col: number,
+  uri: string | null,
+): { row: number; c0: number; c1: number }[] {
+  if (!uri) return [{ row, c0: col, c1: col + 1 }];
+  let rows = 0;
+  let cols = 0;
+  try { rows = Math.max(0, grid.rows()); } catch { rows = row + 1; }
+  try { cols = Math.max(1, grid.cols()); } catch { cols = col + 1; }
+  if (row < 0 || row >= rows || col < 0 || col >= cols) {
+    return [{ row, c0: col, c1: col + 1 }];
+  }
+  const same = (r: number, c: number): boolean => {
+    try { return grid.hyperlinkAt(r, c)?.uri === uri; } catch { return false; }
+  };
+  const segmentAt = (r: number, seed: number) => {
+    if (r < 0 || r >= rows || seed < 0 || seed >= cols || !same(r, seed)) return null;
+    let c0 = seed;
+    let c1 = seed + 1;
+    while (c0 > 0 && same(r, c0 - 1)) c0 -= 1;
+    while (c1 < cols && same(r, c1)) c1 += 1;
+    return { row: r, c0, c1 };
+  };
+  const current = segmentAt(row, col);
+  if (!current) return [{ row, c0: col, c1: col + 1 }];
+  const regions = [current];
+  const wrapped = (r: number): boolean => {
+    try { return grid.rowWrapped?.(r) === true; } catch { return false; }
+  };
+  let head = current;
+  while (head.c0 === 0 && head.row > 0 && wrapped(head.row - 1)) {
+    const previous = segmentAt(head.row - 1, cols - 1);
+    if (!previous || previous.c1 !== cols) break;
+    regions.unshift(previous);
+    head = previous;
+  }
+  let tail = current;
+  while (tail.c1 === cols && tail.row < rows - 1 && wrapped(tail.row)) {
+    const next = segmentAt(tail.row + 1, 0);
+    if (!next || next.c0 !== 0) break;
+    regions.push(next);
+    tail = next;
+  }
+  return regions;
+}
+
 /**
  * Click arbitration matrix.
  * mouseReportingOn: DEC mouse modes active on kernel.

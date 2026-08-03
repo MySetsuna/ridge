@@ -100,7 +100,12 @@ function isExpectedWorkerLifecycleCancellation(error: unknown): boolean {
 // .wasm next to the .js.
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
 import { LinkSpanIndex } from './linkSpans';
-import { decideHoverUnderline, decideLinkClick, underlineRegionsFromSpan } from './linkAffordance';
+import {
+	decideHoverUnderline,
+	decideLinkClick,
+	osc8UnderlineRegions,
+	underlineRegionsFromSpan,
+} from './linkAffordance';
 import {
 	buildOpenPlanFromHit,
 	encodeUnderlineDataset,
@@ -1350,30 +1355,6 @@ export class TerminalManager {
 		this._positionLinkHint(entry);
 	}
 
-	private _osc8UnderlineRegion(
-		entry: PaneEntry,
-		row: number,
-		col: number,
-		uri: string | null,
-	): LinkUnderlineRegion {
-		if (!uri) return { row, c0: col, c1: col + 1 };
-		const same = (candidate: number): boolean => {
-			try {
-				const hit = entry.kernel.hyperlinkAt(row, candidate) as { uri?: unknown } | null;
-				return hit?.uri === uri;
-			} catch {
-				return false;
-			}
-		};
-		let c0 = col;
-		let c1 = col + 1;
-		let cols = 0;
-		try { cols = entry.kernel.cols(); } catch { /* keep one cell */ }
-		while (c0 > 0 && same(c0 - 1)) c0--;
-		while (c1 < cols && same(c1)) c1++;
-		return { row, c0, c1 };
-	}
-
 	/**
 	 * §4a workspace keep-alive (2026-05-08): true when the entry's pane
 	 * container has 0 width or 0 height — the diagnostic for "this pane
@@ -1838,9 +1819,12 @@ export class TerminalManager {
 					}
 				} else if (dec.showUnderline && link) {
 					const uri = (link as { uri?: string }).uri ?? null;
-					const r = this._osc8UnderlineRegion(ent, hoverCell.row, hoverCell.col, uri);
-					ent.container.dataset.linkUnderline = encodeUnderlineDataset(r.row, r.c0, r.c1);
-					this._showLinkUnderlines(ent, [r]);
+					const regions = osc8UnderlineRegions(ent.kernel, hoverCell.row, hoverCell.col, uri);
+					const r = regions[0];
+					if (r) {
+						ent.container.dataset.linkUnderline = encodeUnderlineDataset(r.row, r.c0, r.c1);
+						this._showLinkUnderlines(ent, regions);
+					}
 				} else if (dec.showHint && span) {
 					delete ent.container.dataset.linkUnderline;
 					this._clearLinkUnderline(ent);
@@ -1848,7 +1832,13 @@ export class TerminalManager {
 				} else if (dec.showHint && link) {
 					delete ent.container.dataset.linkUnderline;
 					this._clearLinkUnderline(ent);
-					this._showLinkHint(ent, this._osc8UnderlineRegion(ent, hoverCell.row, hoverCell.col, (link as { uri?: string }).uri ?? null));
+					const hintRegion = osc8UnderlineRegions(
+						ent.kernel,
+						hoverCell.row,
+						hoverCell.col,
+						(link as { uri?: string }).uri ?? null,
+					)[0];
+					if (hintRegion) this._showLinkHint(ent, hintRegion);
 				} else {
 					delete ent.container.dataset.linkUnderline;
 					delete ent.container.dataset.linkUnderlineClass;
