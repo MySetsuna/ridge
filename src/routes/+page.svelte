@@ -370,6 +370,15 @@
 
   type SidebarTab = 'git' | 'files' | 'search' | 'claude' | 'remote' | 'agents' | 'hosts';
   let sidebarTab = $state<SidebarTab>('files');
+  // Keep the first paint cheap: hidden sidebar panels must not mount their
+  // queries, listeners, or terminal projections until the user visits them.
+  // Once visited, retain the instance so switching tabs preserves drafts and
+  // query snapshots instead of rebuilding the panel.
+  let sidebarVisited = $state<Set<SidebarTab>>(new Set(['files']));
+  $effect(() => {
+    const tab = sidebarTab;
+    if (!sidebarVisited.has(tab)) sidebarVisited = new Set([...sidebarVisited, tab]);
+  });
   // 智能体协同总开关（设置面板「智能体」分区）：关闭时隐藏指挥部 Tab 入口。
   const teammateEnabled = $derived($settingsStore.teammateEnabled);
   // 守卫：总开关被关掉时若正停在指挥部 Tab，回退到文件 Tab（避免空白侧栏）。
@@ -1762,6 +1771,7 @@ function expandSidebar(minWidth = 0) {
              flex flow after this container, not underneath it. -->
         <div class="relative flex-1 min-h-0 rg-scroll overflow-y-auto">
         <!-- Git tab -->
+        {#if sidebarVisited.has('git')}
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'git' ? '' : 'hidden'}">
           <div
             data-tauri-drag-region
@@ -1777,8 +1787,10 @@ function expandSidebar(minWidth = 0) {
             {/if}
           </div>
         </div>
+        {/if}
 
         <!-- Search tab -->
+        {#if sidebarVisited.has('search')}
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'search' ? '' : 'hidden'}">
           <div class="flex-1 min-h-0 overflow-hidden">
             {#if $activeSharedWorkspaceProjection}
@@ -1788,16 +1800,17 @@ function expandSidebar(minWidth = 0) {
             {/if}
           </div>
         </div>
+        {/if}
 
         <!-- Remote tab -->
-        {#if !webRemote}
+        {#if !webRemote && sidebarVisited.has('remote')}
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'remote' ? '' : 'hidden'}">
           <RemotePanel />
         </div>
         {/if}
 
         <!-- Agents tab（智能体指挥部）：总开关开启时才挂载 -->
-        {#if teammateEnabled || $activeSharedWorkspaceProjection}
+        {#if (teammateEnabled || $activeSharedWorkspaceProjection) && sidebarVisited.has('agents')}
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'agents' ? '' : 'hidden'}">
           {#if $activeSharedWorkspaceProjection}
             <SharedWorkspaceResourcePanel mode="team" />
@@ -1808,11 +1821,14 @@ function expandSidebar(minWidth = 0) {
         {/if}
 
         <!-- 接入 tab：本机无头、远端 ridge/rdg、跨账号共享工作区。 -->
+        {#if sidebarVisited.has('hosts')}
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'hosts' ? '' : 'hidden'}">
           <HostsPanel />
         </div>
+        {/if}
 
         <!-- Files tab (default) -->
+        {#if sidebarVisited.has('files')}
         <div class="absolute inset-0 flex flex-col {sidebarTab === 'files' ? '' : 'hidden'}">
           <div
             data-tauri-drag-region
@@ -1834,6 +1850,7 @@ function expandSidebar(minWidth = 0) {
             {/if}
           </div>
         </div>
+        {/if}
 
         </div>
         <!-- Global-scope plugin region — mounted once at the sidebar footer,

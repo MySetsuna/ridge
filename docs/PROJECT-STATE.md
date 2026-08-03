@@ -5,6 +5,17 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 159, 2026-08-04)
+
+- Desktop sidebar panels are now first-visit mounted: Git, Search, Remote,
+  Agents, Hosts, and Files are guarded by `sidebarVisited`. Hidden panels no
+  longer start their queries/listeners/remote projections during first paint;
+  visited instances stay alive across tab switches to preserve state.
+- Focused sidebar mount contract: 2 passed; `pnpm check`: 0 errors / 0
+  warnings. No version bump or release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-159-sidebar-lazy-mount.md`.
+
 ## Current snapshot (iteration 158, 2026-08-04)
 
 - `SettingsPanel` is no longer statically imported by the desktop route. The
