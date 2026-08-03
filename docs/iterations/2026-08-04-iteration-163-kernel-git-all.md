@@ -39,6 +39,10 @@ the UI or remote adapters.
 - `pnpm e2e:rdg-mobile-keyboard`: passed for keyboard viewport convergence,
   touch selection, copy visibility, and clean Console under a fresh Chromium
   mobile context. This is emulation evidence, not physical-device proof.
+- `scripts/kernel-host-smoke.ps1`: passed on Windows with a fresh kernel
+  process; dual `rdg kernel ensure` reused one PID, filesystem-root denial,
+  Git status, remote-hosts, and MCP tools/list all passed, then the kernel was
+  stopped by the bounded cleanup path.
 - Added the missing Tauri `custom-protocol` feature and rebuilt with
   `cargo build --release -p ridge --features custom-protocol`: passed. A
   fresh isolated WebView2 CDP launch reported `http://tauri.localhost/` with
