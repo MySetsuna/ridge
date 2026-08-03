@@ -29,6 +29,7 @@ import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 import { enqueuePtyWrite } from '$lib/terminal/ptyWriteQueue';
+import { enqueuePaneInput } from '@ridge/remote/shared/terminal/paneInputGate';
 import { activateRemotePaneBinding, remotePaneBinding } from '$lib/hosts/remotePaneBindings';
 import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '@ridge/remote/shared/terminal/tuiGate';
 import {
@@ -385,11 +386,10 @@ function moveHistorySelection(delta: number): void {
 // `inputBufferTracker` state machine so `currentInputBuffer` stays in
 // sync with the real shell line for all common operations
 // (Ctrl+U / Ctrl+W / Ctrl+K kills, paste, printable chars, backspace).
-function pasteIntoPane(text: string): void {
+function notePaste(text: string): void {
 	// §1.32 Wave F: paste is "input started" too — mark before writing
 	// so the snapshot has a valid baseline. markInputStart is idempotent.
 	manager.markInputStart(paneId);
-	manager.paste(paneId, text);
 	currentInputBuffer = updateInputBuffer(currentInputBuffer, { type: 'paste', text });
 	// §TUI (2026-06-01): keep the TUI gate alive after a paste so the
 	// sticky-window doesn't decay while the user was interacting with
@@ -405,34 +405,74 @@ function pasteIntoPane(text: string): void {
 	(imeHelper ?? container)?.focus();
 }
 
+function pasteIntoPane(text: string): void {
+	if (!text) return;
+	notePaste(text);
+	manager.paste(paneId, text);
+}
+
+function encodePasteForPty(text: string): string | null {
+	const bytes = manager.getKernel(paneId)?.encodePaste(text) ?? new Uint8Array(0);
+	return bytes.length > 0 ? new TextDecoder().decode(bytes) : null;
+}
+
 // §clipboard-image: 主动粘贴入口——先尝试剪贴板里的图片（落盘成临时 PNG，把绝对路径作为文本
 // 粘入；终端里的 TUI 如 Claude Code 会把图片路径识别为图片附件），没有图片再 fallback 到文本
 // 粘贴。所有「host 主动粘贴」入口（Ctrl+Shift+V / Cmd+V / Win Ctrl+V / 右键菜单）都走这里。
 // 背景见 $lib/terminal/clipboardImage 与 src-tauri 的 commands/clipboard_image.rs。
-async function pasteFromClipboard(): Promise<void> {
+async function readClipboardPasteText(): Promise<string | null> {
 	try {
 		const imgPath = await acquireClipboardImagePath();
-		if (imgPath) {
-			pasteIntoPane(imgPath);
-			return;
-		}
+		if (imgPath) return imgPath;
 	} catch (err) {
 		console.error('[clipboard-image] image paste failed, falling back to text', err);
 	}
 	const text = await readText().catch(() => null);
-	if (!text) return;
+	if (!text) return null;
 	// §clipboard-image:「复制为路径 / Copy as path」场景——文本可能是带引号的图片文件路径。
 	// 若它确实指向一个存在的图片文件，去引号后粘**裸**路径（CLI 才识别为图片）；否则普通粘文本。
 	try {
 		const imgPath = await invoke<string | null>('resolve_pasted_image_path', { text });
-		if (imgPath) {
-			pasteIntoPane(imgPath);
-			return;
-		}
+		if (imgPath) return imgPath;
 	} catch (err) {
 		console.error('[clipboard-image] resolve pasted path failed', err);
 	}
-	pasteIntoPane(text);
+	return text;
+}
+
+/** Reserve the pane input slot before any clipboard/image await. */
+function enqueuePasteTextTask(read: () => Promise<string | null>): void {
+	const remote = remotePaneBinding(paneId);
+	const remotePane = remote
+		? { workspaceId: remote.workspaceId, paneId: remote.remotePaneId }
+		: null;
+	if (remote && remotePane && remote.link.enqueueStdinTask) {
+		const accepted = remote.link.enqueueStdinTask(remotePane, async () => {
+			const text = await read();
+			if (!text) return null;
+			notePaste(text);
+			return encodePasteForPty(text);
+		});
+		if (!accepted) reportRepeatedError('write_to_pty', new Error('input intent queue full'));
+		return;
+	}
+	const key = `${workspaceId}:${paneId}`;
+	void enqueuePaneInput(key, async () => {
+		const text = await read();
+		if (!text) return;
+		notePaste(text);
+		const data = encodePasteForPty(text);
+		if (!data) return;
+		await enqueuePtyWrite(key, () => invoke('write_to_pty', {
+			workspaceId,
+			paneId,
+			data,
+		}));
+	}).catch((err) => reportRepeatedError('write_to_pty', err));
+}
+
+function pasteFromClipboard(): void {
+	enqueuePasteTextTask(readClipboardPasteText);
 }
 
 /** Refresh the TUI sticky timestamp when any signal suggests the TUI
@@ -931,9 +971,13 @@ function onCompositionStart() {
 		}
 		if (hasImage) {
 			e.preventDefault();
-			void imagePathFromClipboardEvent(e)
-				.then((path) => { if (path) pasteIntoPane(path); })
-				.catch((err) => console.error('[clipboard-image] paste-event image failed', err));
+			// Capture File synchronously while ClipboardEvent is alive; the queued
+			// promise only waits for the image path conversion.
+			const imagePath = imagePathFromClipboardEvent(e).catch((err) => {
+				console.error('[clipboard-image] paste-event image failed', err);
+				return null;
+			});
+			enqueuePasteTextTask(() => imagePath);
 			return;
 		}
 		const text = e.clipboardData?.getData('text');
@@ -1091,7 +1135,8 @@ function onPtyData(bytes: Uint8Array) {
 	// Tauri invokes are asynchronous. Keep their completion FIFO per pane: one
 	// clipboard paste remains one atomic payload, and no later key/input can
 	// overtake any byte of it while ConPTY is back-pressured.
-	void enqueuePtyWrite(`${workspaceId}:${paneId}`, () => invoke('write_to_pty', { workspaceId, paneId, data: s })).catch((err) => {
+	const key = `${workspaceId}:${paneId}`;
+	void enqueuePaneInput(key, () => enqueuePtyWrite(key, () => invoke('write_to_pty', { workspaceId, paneId, data: s }))).catch((err) => {
 		reportRepeatedError('write_to_pty', err);
 	});
 }

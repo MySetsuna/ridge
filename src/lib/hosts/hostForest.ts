@@ -43,6 +43,7 @@ export interface HostTopologyLink extends HostForestLink {
   onRawBytes(fn: (pane: PaneRef, bytes: Uint8Array) => void): () => void;
   subscribePane(pane: PaneRef): void;
   sendStdin(pane: PaneRef, data: string): void;
+  enqueueStdinTask?: RemoteLink['enqueueStdinTask'];
   refreshPane(
     pane: PaneRef,
     rows: number,

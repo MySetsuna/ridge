@@ -56,6 +56,7 @@ import {
   type HitlResolveOutcome,
   type RemoteShellInfo,
 } from '@ridge/remote';
+import { tryEnqueuePaneInput, retirePaneInput } from '@ridge/remote/shared/terminal/paneInputGate';
 
 /** Backend `list_workspaces` row (subset we use). */
 interface BackendWorkspace {
@@ -285,6 +286,7 @@ export class CloudRemoteConnection implements RemoteLink {
   private _deactivatePane(key: string, scopeAlreadyRetired = false): void {
     this.deadPaneKeys.add(key);
     this.closingPaneKeys.delete(key);
+    retirePaneInput(key);
     if (!scopeAlreadyRetired) this.paneScheduler.retireScope(key);
     this.subscribing.delete(key);
     this.fetchingOlder.delete(key);
@@ -727,7 +729,19 @@ export class CloudRemoteConnection implements RemoteLink {
     if (!pane.paneId || !data) return false;
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return false;
-    return this.paneScheduler.enqueueInput(pane, data);
+    return tryEnqueuePaneInput(key, () => {
+      this.paneScheduler.enqueueInput(pane, data);
+    });
+  }
+
+  enqueueStdinTask(pane: PaneRef, task: () => Promise<string | null> | string | null): boolean {
+    if (!pane.paneId) return false;
+    const key = paneRefKey(pane);
+    if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return false;
+    return tryEnqueuePaneInput(key, async () => {
+      const data = await task();
+      if (data) this.paneScheduler.enqueueInput(pane, data);
+    });
   }
 
   refreshPane(pane: PaneRef, rows: number, cols: number, _pixelWidth?: number, _pixelHeight?: number): void {
@@ -1060,6 +1074,11 @@ export class CloudRemoteConnection implements RemoteLink {
 
   disconnect(): void {
     if (this.disposed) return;
+    for (const key of new Set([
+      ...this.paneRpcControllers.keys(),
+      ...this.scrollbackCursor.keys(),
+      ...this.ptyUnlisten.keys(),
+    ])) retirePaneInput(key);
     this.disposed = true;
     this._failure = null; // 主动断开，清掉失败分级
     this.setState('disconnected');
