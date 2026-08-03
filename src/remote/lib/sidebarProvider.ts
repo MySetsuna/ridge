@@ -38,6 +38,36 @@ export interface WsSidebarProviderOptions {
   staleTime?: number;
 }
 
+/**
+ * A confirmed non-Git root is negative for the lifetime of the remote
+ * transport session.  Keeping this outside the provider instance matters:
+ * the drawer deliberately remounts its panel on tab/pane changes, and a
+ * component-local flag would make every remount run git discovery again.
+ * Session ids isolate hosts and the cap prevents a long-lived mobile session
+ * that visits many directories from retaining paths forever.
+ */
+const nonGitRemoteRoots = new Map<string, true>();
+const MAX_NON_GIT_REMOTE_ROOTS = 128;
+
+function nonGitRootKey(sessionId: number, root: string): string {
+  return `${sessionId}\0${normalizeRemotePath(root)}`;
+}
+
+function rememberNonGitRoot(key: string): void {
+  nonGitRemoteRoots.delete(key);
+  nonGitRemoteRoots.set(key, true);
+  while (nonGitRemoteRoots.size > MAX_NON_GIT_REMOTE_ROOTS) {
+    const oldest = nonGitRemoteRoots.keys().next().value as string | undefined;
+    if (!oldest) break;
+    nonGitRemoteRoots.delete(oldest);
+  }
+}
+
+/** Test/HMR reset; active transport requests are not cancelled. */
+export function clearRemoteNonGitRoots(): void {
+  nonGitRemoteRoots.clear();
+}
+
 function parentOf(path: string): string | null {
   const norm = path.replace(/[\\/]+$/, '');
   const idx = Math.max(norm.lastIndexOf('/'), norm.lastIndexOf('\\'));
@@ -82,9 +112,14 @@ export function createWsSidebarProvider(
     branch: options.scope?.branch ?? options.branch,
   };
   const staleTime = options.staleTime ?? REMOTE_SIDEBAR_STALE_TIME_MS;
+  const nonGitKey = nonGitRootKey(sessionId, root);
+  // The legacy desktop adapter does not provide a stable transport/session
+  // identity; keep its negative result provider-local to avoid cross-host
+  // false positives when two hosts expose the same path.
+  const hasPersistentSessionScope = options.queryClient !== undefined || options.sessionId !== undefined;
   // A confirmed non-Git cwd stays negative until this provider's root changes.
   // Query's normal stale window must not restart SCM probes for that cwd.
-  let nonGitRepoConfirmed = false;
+  let nonGitRepoConfirmed = hasPersistentSessionScope && nonGitRemoteRoots.has(nonGitKey);
   const run = <T>(
     key: readonly unknown[],
     query: (signal?: AbortSignal) => Promise<T>,
@@ -228,6 +263,7 @@ export function createWsSidebarProvider(
           // result. Transport, timeout, and cancellation errors stay visible.
           if (!isNotGitRepositoryError(error)) throw error;
           nonGitRepoConfirmed = true;
+          if (hasPersistentSessionScope) rememberNonGitRoot(nonGitKey);
           return emptyGitInfo();
         }
           const staged = (s.staged ?? []).map((f) => ({
@@ -270,7 +306,10 @@ export function createWsSidebarProvider(
             untracked,
             commits,
           };
-          if (!info.isGitRepo) nonGitRepoConfirmed = true;
+          if (!info.isGitRepo) {
+            nonGitRepoConfirmed = true;
+            if (hasPersistentSessionScope) rememberNonGitRoot(nonGitKey);
+          }
           return info;
       }, signal);
     },

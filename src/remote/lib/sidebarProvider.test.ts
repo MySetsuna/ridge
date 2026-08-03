@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DataProvider } from '$lib/transport';
-import { createWsSidebarProvider } from './sidebarProvider';
+import { clearRemoteNonGitRoots, createWsSidebarProvider } from './sidebarProvider';
 import {
   fetchRemoteAgentHistory,
   fetchRemoteTeamRoster,
@@ -75,7 +75,10 @@ class TestQueryClient {
   }
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  clearRemoteNonGitRoots();
+  vi.restoreAllMocks();
+});
 
 describe('remote sidebar query contract', () => {
   it('uses stable, session- and cwd-scoped keys', () => {
@@ -243,6 +246,36 @@ describe('remote sidebar query contract', () => {
     await expect(sidebar.gitStatus()).resolves.toMatchObject({ isGitRepo: false });
     await expect(sidebar.gitStatus()).resolves.toMatchObject({ isGitRepo: false });
     expect(gitStatus).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a non-Git result across sidebar provider remounts in one session', async () => {
+    const gitStatus = vi.fn(async () => { throw new Error('fatal: not a git repository'); });
+    const dp = makeProvider({ gitStatus });
+    const first = createWsSidebarProvider('/tmp/no-repo', dp, {
+      queryClient: new TestQueryClient(),
+      sessionId: 41,
+      staleTime: 0,
+    });
+    await expect(first.gitStatus()).resolves.toMatchObject({ isGitRepo: false });
+
+    // Drawer tab changes create a new provider and may use a fresh QueryClient
+    // in a test/host boundary; the session-level negative result still fences
+    // the second call until the root changes.
+    const remounted = createWsSidebarProvider('/tmp/no-repo', dp, {
+      queryClient: new TestQueryClient(),
+      sessionId: 41,
+      staleTime: 0,
+    });
+    await expect(remounted.gitStatus()).resolves.toMatchObject({ isGitRepo: false });
+    expect(gitStatus).toHaveBeenCalledOnce();
+
+    const otherRoot = createWsSidebarProvider('/tmp/other-dir', dp, {
+      queryClient: new TestQueryClient(),
+      sessionId: 41,
+      staleTime: 0,
+    });
+    await expect(otherRoot.gitStatus()).resolves.toMatchObject({ isGitRepo: false });
+    expect(gitStatus).toHaveBeenCalledTimes(2);
   });
 
   it('does not turn transport failures into a cached non-Git result', async () => {
