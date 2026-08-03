@@ -309,20 +309,51 @@ impl HostRegistry {
     /// Detach local foreign view. Keep the host connection while another pane from that host is
     /// attached; disconnect it after the last pane. Never kills the remote PTY.
     pub fn detach_foreign(&self, pane_id: uuid::Uuid) -> Result<RemoteRef, String> {
+        self.detach_foreign_with(pane_id, |host_id, session_id, attached| {
+            self.set_session_attached_checked(host_id, session_id, attached)
+        })
+    }
+
+    /// Apply the kernel session transition before removing the local foreign
+    /// attachment. The callback is injectable so the ordering and rollback
+    /// contract stay deterministic in unit tests without a live kernel.
+    fn detach_foreign_with<F>(
+        &self,
+        pane_id: uuid::Uuid,
+        set_attached: F,
+    ) -> Result<RemoteRef, String>
+    where
+        F: FnOnce(&str, &str, bool) -> Result<(), String>,
+    {
+        let _session_transaction = self.begin_attach_transaction();
         let att = self
             .foreign_by_pane
-            .write()
-            .remove(&pane_id)
+            .read()
+            .get(&pane_id)
+            .cloned()
             .ok_or_else(|| format!("pane {pane_id} is not foreign"))?;
         let remote = att.remote;
         let remaining = self.foreign_by_pane.read();
         let remote_still_attached = remaining.values().any(|f| {
-            f.remote.host_id == remote.host_id && f.remote.remote_pane_id == remote.remote_pane_id
+            f.pane_id != pane_id
+                && f.remote.host_id == remote.host_id
+                && f.remote.remote_pane_id == remote.remote_pane_id
         });
         let host_still_attached = remaining
             .values()
-            .any(|f| f.remote.host_id == remote.host_id);
+            .any(|f| f.pane_id != pane_id && f.remote.host_id == remote.host_id);
         drop(remaining);
+
+        // A failed kernel transition must leave every local side effect in
+        // place so the caller can retry instead of creating split-brain state.
+        if !remote_still_attached {
+            set_attached(&remote.host_id, &remote.remote_pane_id, false)?;
+        }
+
+        let removed = self.foreign_by_pane.write().remove(&pane_id);
+        if removed.is_none() {
+            return Err(format!("foreign pane disappeared during detach: {pane_id}"));
+        }
 
         if let Some(client) = self.outbound.get(&remote.host_id) {
             if !remote_still_attached {
@@ -342,7 +373,6 @@ impl HostRegistry {
                 .remove(&(remote.host_id.clone(), remote.remote_pane_id.clone()));
             self.live_bp
                 .clear_session(&remote.host_id, &remote.remote_pane_id);
-            self.set_session_attached(&remote.host_id, &remote.remote_pane_id, false);
         }
         if !host_still_attached {
             self.reconnect.cancel(&remote.host_id);
@@ -488,10 +518,10 @@ impl HostRegistry {
         }
     }
 
-    /// Checked variant used by attach transactions.  The legacy setter is
-    /// intentionally kept for reconnect/detach paths where a missing host is
-    /// already an expected no-op; attach must not report success for a session
-    /// that disappeared between validation and commit.
+    /// Checked variant used by attach/detach transactions. The legacy setter
+    /// remains only for reconnect/disconnect paths where a missing host is an
+    /// expected best-effort no-op; user-visible attach/detach must not report
+    /// success for a session that disappeared between validation and commit.
     pub fn set_session_attached_checked(
         &self,
         host_id: &str,
@@ -1729,7 +1759,12 @@ mod tests {
         );
         reg.set_session_attached("lan:h", "second", true);
 
-        let detached = reg.detach_foreign(pane).unwrap();
+        let detached = reg
+            .detach_foreign_with(pane, |host_id, session_id, attached| {
+                reg.set_session_attached(host_id, session_id, attached);
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(detached.remote_pane_id, "main");
         assert!(reg.foreign_for_pane(pane).is_none());
         assert!(!client.is_subscribed("main"));
@@ -1737,9 +1772,99 @@ mod tests {
         assert_eq!(client.state(), outbound::OutboundState::Subscribed);
         assert_eq!(reg.get("lan:h").unwrap().status, HostStatus::Connected);
 
-        reg.detach_foreign(second_pane).unwrap();
+        reg.detach_foreign_with(second_pane, |host_id, session_id, attached| {
+            reg.set_session_attached(host_id, session_id, attached);
+            Ok(())
+        })
+        .unwrap();
         assert_eq!(client.state(), outbound::OutboundState::Disconnected);
         assert_eq!(reg.get("lan:h").unwrap().status, HostStatus::Disconnected);
+    }
+
+    #[test]
+    fn detach_foreign_kernel_failure_keeps_local_attachment() {
+        let reg = HostRegistry::default();
+        let pane = uuid::Uuid::new_v4();
+        reg.upsert(HostRecord {
+            id: "lan:detach-failure".into(),
+            kind: HostKind::Remote,
+            label: "detach-failure".into(),
+            addr: "127.0.0.1:1".into(),
+            status: HostStatus::Connected,
+            detail: "test".into(),
+            sessions: vec![HostSessionMeta {
+                id: "main".into(),
+                title: "shell".into(),
+                attached: true,
+            }],
+        });
+        reg.register_foreign(
+            pane,
+            RemoteRef {
+                host_id: "lan:detach-failure".into(),
+                host_label: "detach-failure".into(),
+                remote_pane_id: "main".into(),
+                kind: HostKind::Remote,
+            },
+        );
+
+        let error = reg
+            .detach_foreign_with(pane, |_host_id, _session_id, _attached| {
+                Err("kernel detach rejected".into())
+            })
+            .expect_err("kernel failure must abort before local cleanup");
+        assert!(error.contains("kernel detach rejected"));
+        assert!(reg.foreign_for_pane(pane).is_some());
+        assert!(reg.get("lan:detach-failure").unwrap().sessions[0].attached);
+    }
+
+    #[test]
+    fn detach_foreign_transitions_kernel_before_removing_local_attachment() {
+        let reg = HostRegistry::default();
+        let pane = uuid::Uuid::new_v4();
+        reg.upsert(HostRecord {
+            id: "lan:detach-order".into(),
+            kind: HostKind::Remote,
+            label: "detach-order".into(),
+            addr: "127.0.0.1:1".into(),
+            status: HostStatus::Connected,
+            detail: "test".into(),
+            sessions: vec![HostSessionMeta {
+                id: "main".into(),
+                title: "shell".into(),
+                attached: true,
+            }],
+        });
+        reg.register_foreign(
+            pane,
+            RemoteRef {
+                host_id: "lan:detach-order".into(),
+                host_label: "detach-order".into(),
+                remote_pane_id: "main".into(),
+                kind: HostKind::Remote,
+            },
+        );
+
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let observed_c = observed.clone();
+        reg.detach_foreign_with(pane, |host_id, session_id, attached| {
+            assert!(reg.foreign_for_pane(pane).is_some());
+            *observed_c.lock().unwrap() = Some((
+                host_id.to_string(),
+                session_id.to_string(),
+                attached,
+            ));
+            reg.set_session_attached(host_id, session_id, attached);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            *observed.lock().unwrap(),
+            Some(("lan:detach-order".into(), "main".into(), false))
+        );
+        assert!(reg.foreign_for_pane(pane).is_none());
+        assert!(!reg.get("lan:detach-order").unwrap().sessions[0].attached);
     }
 
     #[test]
