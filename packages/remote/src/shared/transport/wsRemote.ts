@@ -121,7 +121,8 @@ export interface PaneInfo {
  * `Promise.all([topology, hitlPending, health])` 三连发，于是恒定失败、只显示一个「—」，
  * 而后端数据一直是对的（数据面直测 roster 完好）。
  *
- * 无 `_reqId` 的老式请求（list-workspaces 等）保持按类型作键，行为逐字不变。
+ * 无 `_reqId` 的老式请求（list-workspaces 等）保持按类型作键；相同 payload 在途时
+ * 共享既有 Promise，不同 payload 则串行等待（旧协议没有相关性字段，不能安全并发）。
  */
 export function pendingKey(responseType: string, reqId: unknown): string {
   return typeof reqId === 'number' ? `${responseType}#${reqId}` : responseType;
@@ -134,6 +135,11 @@ interface PendingRequest {
   method?: string;
   /** Best-effort host cancellation for a legacy invoke request. */
   cancel?: () => void;
+}
+
+interface LegacyPendingRequest {
+  signature: string;
+  promise: Promise<unknown>;
 }
 
 /** host `detect_available_shells` 的一条（与桌面 `ShellInfo` 同形）。 */
@@ -510,6 +516,9 @@ export class RemoteConnection implements RemoteLink {
   private paneOutputs: Map<string, string[]> = new Map();
   private _pendingRequests: Map<string, PendingRequest> = new Map();
   private _pendingByScope: Map<string, Set<string>> = new Map();
+  /** Legacy response frames omit `_reqId`; share one in-flight request per
+   * response type instead of replacing the previous pending resolver. */
+  private _legacyRequests: Map<string, LegacyPendingRequest> = new Map();
   private _reqCounter = 0;
   private _refreshSeq = 0;
   private readonly paneScheduler = new PaneRpcScheduler(
@@ -1107,7 +1116,23 @@ export class RemoteConnection implements RemoteLink {
     options: { scope?: string; method?: string; signal?: AbortSignal } = {},
   ): Promise<unknown> {
     const key = pendingKey(responseType, request._reqId);
-    return new Promise((resolve, reject) => {
+    const legacy = typeof request._reqId !== 'number';
+    if (legacy) {
+      const existing = this._legacyRequests.get(key);
+      if (existing) {
+        const signature = JSON.stringify(request);
+        // Identical old-protocol calls can safely share one response. If the
+        // payload differs, serialize behind the active request: without a
+        // wire correlation id, concurrent responses cannot be routed safely.
+        if (existing.signature === signature) return existing.promise;
+        return existing.promise.then(
+          () => this._sendAndWait(request, responseType, timeoutMs, options),
+          () => this._sendAndWait(request, responseType, timeoutMs, options),
+        );
+      }
+    }
+    const signature = legacy ? JSON.stringify(request) : '';
+    const result = new Promise((resolve, reject) => {
       let cancelSent = false;
       const cancelHostRequest = () => {
         if (cancelSent || request.type !== 'invoke-request') return;
@@ -1170,6 +1195,17 @@ export class RemoteConnection implements RemoteLink {
         current?.reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
+    if (legacy) {
+      const entry = { signature, promise: result } satisfies LegacyPendingRequest;
+      this._legacyRequests.set(key, entry);
+      // Remove only our own entry: a future request may have replaced it after
+      // this one settled (e.g. a synchronous send failure).
+      void result.then(
+        () => { if (this._legacyRequests.get(key) === entry) this._legacyRequests.delete(key); },
+        () => { if (this._legacyRequests.get(key) === entry) this._legacyRequests.delete(key); },
+      );
+    }
+    return result;
   }
 
   listPanes() { this.send({ type: 'list-panes' }); }
@@ -1209,6 +1245,10 @@ export class RemoteConnection implements RemoteLink {
           workspaceId: pane.workspaceId,
           beforeSeq: cursor.oldestSeq,
           maxBytes: 64 * 1024,
+          // The host echoes this id. Without it, simultaneous history pulls
+          // for two panes would share the legacy response-type slot and one
+          // pane could consume the other pane's page.
+          _reqId: ++this._reqCounter,
         },
         'scrollback-before-result',
       ) as { bytes?: string; startSeq?: number; endSeq?: number; atOldest?: boolean };
@@ -1635,6 +1675,7 @@ export class RemoteConnection implements RemoteLink {
     }
     this._pendingRequests.clear();
     this._pendingByScope.clear();
+    this._legacyRequests.clear();
     // §history-pull: drop per-pane seq cursors + in-flight flags so a fresh
     // transport re-seeds from the host's next `scrollback-meta`.
     this.scrollbackCursor.clear();

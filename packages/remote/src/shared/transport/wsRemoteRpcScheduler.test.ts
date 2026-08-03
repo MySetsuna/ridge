@@ -80,6 +80,76 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
     vi.useRealTimers();
   });
 
+  it('shares legacy list-workspaces requests instead of overwriting the first pending', async () => {
+    const { conn, ws } = connect();
+
+    const first = conn.listWorkspaces();
+    const second = conn.listWorkspaces();
+    expect(ws.sent.filter((frame) => frame.type === 'list-workspaces')).toHaveLength(1);
+
+    ws.receive({ type: 'workspaces', workspaces: [] });
+    await expect(first).resolves.toEqual({ workspaces: [] });
+    await expect(second).resolves.toEqual({ workspaces: [] });
+    conn.disconnect();
+  });
+
+  it('releases the legacy coalescing slot after timeout', async () => {
+    const { conn, ws } = connect();
+
+    const first = conn.listWorkspaces();
+    const firstRejected = expect(first).rejects.toThrow('WS request workspaces timed out');
+    await vi.advanceTimersByTimeAsync(5_000);
+    await firstRejected;
+
+    const second = conn.listWorkspaces();
+    expect(ws.sent.filter((frame) => frame.type === 'list-workspaces')).toHaveLength(2);
+    ws.receive({ type: 'workspaces', workspaces: [] });
+    await expect(second).resolves.toEqual({ workspaces: [] });
+    conn.disconnect();
+  });
+
+  it('correlates concurrent scrollback pages by request id across panes', async () => {
+    const { conn, ws } = connect();
+    const paneB = { workspaceId: 'workspace-b', paneId: 'pane-b' };
+    conn.subscribePane(pane, { active: false });
+    conn.subscribePane(paneB, { active: false });
+    ws.receive({ type: 'scrollback-meta', workspaceId: pane.workspaceId, paneId: pane.paneId, startSeq: 10, atOldest: false });
+    ws.receive({ type: 'scrollback-meta', workspaceId: paneB.workspaceId, paneId: paneB.paneId, startSeq: 20, atOldest: false });
+
+    const first = conn.fetchOlderScrollback(pane);
+    const second = conn.fetchOlderScrollback(paneB);
+    const pages = ws.sent.filter((frame) => frame.type === 'scrollback-before');
+    expect(pages).toHaveLength(2);
+    expect(pages[0]._reqId).not.toBe(pages[1]._reqId);
+
+    ws.receive({ type: 'scrollback-before-result', _reqId: pages[1]._reqId, bytes: 'b', startSeq: 11, endSeq: 20, atOldest: true });
+    ws.receive({ type: 'scrollback-before-result', _reqId: pages[0]._reqId, bytes: 'a', startSeq: 1, endSeq: 10, atOldest: true });
+    const pageA = await first;
+    const pageB = await second;
+    expect(pageA?.bytes).toEqual(new TextEncoder().encode('a'));
+    expect(pageB?.bytes).toEqual(new TextEncoder().encode('b'));
+    expect(pageA?.commit()).toBe(true);
+    expect(pageB?.commit()).toBe(true);
+    conn.disconnect();
+  });
+
+  it('serializes different legacy payloads instead of sharing the wrong reply', async () => {
+    const { conn, ws } = connect();
+
+    const first = conn.listWorkspacePanes('workspace-a');
+    const second = conn.listWorkspacePanes('workspace-b');
+    const requests = () => ws.sent.filter((frame) => frame.type === 'list-workspace-panes');
+    expect(requests()).toHaveLength(1);
+
+    ws.receive({ type: 'workspace-panes', workspaceId: 'workspace-a', panes: [] });
+    await expect(first).resolves.toEqual([]);
+    await Promise.resolve();
+    expect(requests()).toHaveLength(2);
+    ws.receive({ type: 'workspace-panes', workspaceId: 'workspace-b', panes: [] });
+    await expect(second).resolves.toEqual([]);
+    conn.disconnect();
+  });
+
   it('keeps input ordered behind one acknowledged invoke request', async () => {
     const { conn, ws } = connect();
 
