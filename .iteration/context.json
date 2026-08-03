@@ -33,7 +33,8 @@
     "src-tauri/src/commands/terminal.rs",
     "src-tauri/src/lib.rs",
     "src/routes/+page.svelte",
-    "docs/iterations/2026-08-03-iteration-136-startup-kernel-bootstrap.md"
+      "docs/iterations/2026-08-03-iteration-136-startup-kernel-bootstrap.md",
+      "docs/iterations/2026-08-03-iteration-137-agent-attention-and-live-title.md"
   ],
   "tests": [
     "packages/remote/src/shared/terminal/manager.test.ts",

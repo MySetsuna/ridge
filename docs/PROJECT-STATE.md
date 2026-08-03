@@ -1,13 +1,22 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-08-03（iteration 134 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-03（iteration 137 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
-## Current snapshot (iteration 136, 2026-08-03)
+## Current snapshot (iteration 137, 2026-08-03)
 
-- `wind` `main` is at `e50083c`; startup kernel bootstrap is now asynchronous;
+- `wind` `main` is at `cd4f22f`; Agent Commune now consumes the same live
+  `terminalTitles`, foreground-process, and workspace-scoped CWD stores as
+  `PaneHeader`. Agent identity remains stable while displayed titles follow
+  OSC/process/CWD changes in real time.
+- Agent Pane attention now emits `idle` only on a working-to-idle transition;
+  initial idle is neutral. Waiting approval and stopped attention persist until
+  the target Pane is focused. A newer higher-priority event can upgrade an
+  unacknowledged idle event, never downgrade it. Pane border, Agent button, and
+  Commune card use the same attention value.
+- Startup kernel bootstrap is asynchronous;
   setup no longer blocks
   the WebView on kernel detect-or-spawn, health polling, or host-topology I/O.
   Settings remain lazy and idle-bound;
@@ -26,7 +35,21 @@
   iteration gates pass. No release or publication was made because `v0.1.54`
   consumed today's allowance.
 
-Archive: `docs/iterations/2026-08-03-iteration-136-startup-kernel-bootstrap.md`.
+Focused Agent tests: 2 files / 12 passed; `pnpm check`: 0 errors / 0 warnings.
+No version bump, release, Remote cloud publish, or public deployment was made;
+`v0.1.54` consumed today's publication allowance.
+
+Archive: `docs/iterations/2026-08-03-iteration-137-agent-attention-and-live-title.md`.
+
+## Iteration 137 update (2026-08-03)
+
+The Commune card title is a live projection of the PaneHeader title source.
+Attention is transition-based and identity-scoped (`workspaceId:paneId`): idle
+is armed only after working becomes idle; waiting approval and stopped remain
+visible until focus/activation clears them. Static source contracts and pure
+view-model tests guard the shared state and priority rules.
+
+Archive: `docs/iterations/2026-08-03-iteration-137-agent-attention-and-live-title.md`.
 
 ## Iteration 133 update (2026-08-03)
 
