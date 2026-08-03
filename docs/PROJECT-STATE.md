@@ -5,7 +5,23 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
-## Current snapshot (iteration 139, 2026-08-03)
+## Current snapshot (iteration 140, 2026-08-03)
+
+- `rdg` LAN now serves the filesystem/search capabilities it advertises:
+  `get_file_tree`, `read_file`, `text_search`, `get_directory_children`,
+  canonical `search`, and legacy `search_files` all pass through the shared
+  `ridge-core`/`fs_reuse` boundary with serving-root sandboxing. The focused
+  `rdg` suite is 127/127 and the real-process Kernel PTY lifecycle suite is
+  3/3. Runtime fix: `d5da7c2`.
+- No version bump, release, Remote cloud publication, or public deployment was
+  made. `v0.1.54` consumed today's publication allowance.
+- Physical phone/public Remote attribution, WebView2 memory soak,
+  dual-window/dual-host evidence, and full Kernel authority migration remain
+  external or larger-scope gates; this iteration does not claim them closed.
+
+Archive: `docs/iterations/2026-08-03-iteration-140-rdg-lan-fs-search.md`.
+
+## Previous snapshot (iteration 139, 2026-08-03)
 
 - `wind` now includes the tab-switch black-frame guard and a real ordinary-shell
   PTY reattach path. `ridge-kernel` owns stable pane-keyed PTYs, bounded output
