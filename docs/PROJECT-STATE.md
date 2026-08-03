@@ -16,8 +16,9 @@ cleanup covers detach/park. The parser-to-mirror regression, 397 ridge-term
 tests, 23 parser tests, full Vitest (142 files / 1475 passed / 1 skipped), and
 `pnpm check` (0/0) pass. Archive:
 `docs/iterations/2026-08-03-iteration-98-terminal-link-delta.md`.
-Release publication is pending the clean-gate commit and matching desktop,
-Remote, and Cloud publish checks; no physical WebView2 evidence is inferred.
+Release `v0.1.52` is formal with 12 matching assets (workflow
+`30775237388`); Remote/Cloud workflow `30775243878` succeeded and public
+health is HTTP 200 / `ok=true`. No physical WebView2 evidence is inferred.
 
 ## Iteration 96 update (2026-08-03)
 
