@@ -796,6 +796,7 @@ fn reattach_kernel_ptys_inner(state: &AppState) -> Result<usize, String> {
     };
     let infos = ridge_kernel::client::list_domain_ptys(&endpoint)?;
     let mut attached = 0usize;
+    let mut orphaned = 0usize;
     for info in infos {
         let pane_id = info.pty_id;
         let target = {
@@ -807,16 +808,27 @@ fn reattach_kernel_ptys_inner(state: &AppState) -> Result<usize, String> {
             })
         };
         let Some((workspace_id, pane_id)) = target else {
+            orphaned += 1;
             continue;
         };
         let reference = KernelPtyRef {
             endpoint: endpoint.clone(),
             id: info.pty_id,
-            after_seq: Some(info.next_seq.saturating_sub(1)),
+            // A desktop restart has no parser state. Replay the kernel's
+            // bounded retained window so the restored pane reconstructs its
+            // visible history before consuming future output.
+            after_seq: None,
         };
         if install_kernel_pty(state, workspace_id, pane_id, reference, info.cols, info.rows)? {
             attached += 1;
         }
+    }
+    if orphaned > 0 {
+        tracing::warn!(
+            target: "ridge::kernel_pty",
+            orphaned,
+            "kernel PTYs have no restored desktop pane; leaving them alive for explicit recovery"
+        );
     }
     Ok(attached)
 }
@@ -2627,6 +2639,23 @@ mod pty_lifecycle_contract_tests {
         assert!(
             production.contains("#[cfg(not(test))]"),
             "local pending-spawn seam must stay test-only"
+        );
+    }
+
+    #[test]
+    fn restart_reattach_replays_bounded_kernel_history_and_reports_orphans() {
+        let source = include_str!("terminal.rs");
+        let production = source
+            .split("mod pty_lifecycle_contract_tests")
+            .next()
+            .unwrap_or(source);
+        assert!(
+            production.contains("after_seq: None"),
+            "restart reattach must replay the kernel retained window"
+        );
+        assert!(
+            production.contains("orphaned += 1"),
+            "unmatched kernel PTYs must be observable instead of silently discarded"
         );
     }
 

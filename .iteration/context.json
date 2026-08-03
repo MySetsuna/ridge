@@ -1,36 +1,34 @@
 {
   "schema_version": 1,
-  "task": "Route desktop Git branch reads through the authenticated kernel domain and preserve non-Git fail-closed behavior",
+  "task": "Make desktop kernel PTY restart reattach replay bounded history and expose unmatched orphan PTYs",
   "symbols": [
-    "git_list_branches",
-    "domain_git_branches",
-    "read_domain_git_branches",
-    "BranchInfo",
-    "git_list_branches_sync"
+    "reattach_kernel_ptys_inner",
+    "install_kernel_pty",
+    "KernelPtyRef",
+    "list_domain_ptys",
+    "attach_domain_pty_output"
   ],
   "files": [
     "docs/PROJECT-STATE.md",
     "docs/REQUIREMENTS-SPEC.md",
     "docs/archive/events-2026-08.jsonl",
-    "src-tauri/src/commands/git.rs",
-    "packages/ridge-core/src/commands/git.rs",
+    "src-tauri/src/commands/terminal.rs",
+    "src-tauri/src/engine/kernel_pty.rs",
     "packages/ridge-kernel/src/client.rs",
-    "packages/ridge-kernel/src/domain.rs",
-    "packages/ridge-kernel/src/server.rs",
-    "docs/iterations/2026-08-04-iteration-155-kernel-git-branches.md"
+    "packages/ridge-kernel/src/pty.rs",
+    "docs/iterations/2026-08-04-iteration-156-kernel-reattach-history.md"
   ],
   "tests": [
-    "packages/ridge-kernel/src/client.rs (branch decode tests)",
-    "packages/ridge-kernel/src/domain.rs (non-Git branch test)",
-    "src-tauri/src/commands/git.rs (kernel adapter)",
+    "src-tauri/src/commands/terminal.rs (reattach contract tests)",
+    "src-tauri/src/engine/kernel_pty.rs (bounded replay reader)",
     "cargo test -p ridge --lib",
     "cargo test -p ridge-kernel --lib",
     "cargo check -p ridge --lib"
   ],
   "constraints": [
     "NotebookLM is strategy input only; runtime, tests, and source remain factual authority",
-    "Desktop production pane PTYs, SCM status reads, branch reads, and kernel bootstrap are kernel-owned",
-    "Branch reads must share the kernel Git process guard and never poll confirmed non-Git roots",
+    "Desktop production pane PTYs, SCM status reads, and kernel bootstrap are kernel-owned",
+    "Restart reattach must replay only the kernel bounded window and never silently resurrect unmatched panes",
     "No hidden local fallback after kernel bootstrap/domain request failure",
     "Do not scan generated or minified artifacts as source evidence"
   ],
@@ -111,6 +109,7 @@
       "docs/iterations/2026-08-04-iteration-153-kernel-git-status.md",
       "docs/iterations/2026-08-04-iteration-154-kernel-boot-single-flight.md",
       "docs/iterations/2026-08-04-iteration-155-kernel-git-branches.md",
+      "docs/iterations/2026-08-04-iteration-156-kernel-reattach-history.md",
       "docs/iterations/CONTRACT-iteration-76.md",
       "docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md",
       "docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md",

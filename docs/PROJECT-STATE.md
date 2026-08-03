@@ -5,6 +5,17 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 156, 2026-08-04)
+
+- Desktop restart reattach now opens kernel output leases from the bounded
+  retained window (`after_seq: None`) instead of dropping all pre-restart
+  output. Unmatched kernel PTYs are counted and warned, but not guessed-away
+  or destroyed.
+- Focused PTY lifecycle contracts: 3 passed. Physical exit/restart, orphan
+  recovery UX, and cross-host evidence remain open; no release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-156-kernel-reattach-history.md`.
+
 ## Current snapshot (iteration 155, 2026-08-04)
 
 - Desktop branch-list reads now use authenticated kernel
