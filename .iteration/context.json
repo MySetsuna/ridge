@@ -15,11 +15,14 @@
     "packages/remote/src/shared/terminal/manager.ts",
     "src-tauri/src/remote_host_impl.rs",
     "src/lib/components/RidgePane.svelte",
+    "src/lib/components/SettingsPanel.svelte",
+    "src/lib/components/SettingsPanel.test.ts",
     "src/lib/components/hosts/HostsPanel.svelte",
     "src/lib/stores/hosts.ts",
     "src/lib/teammate/AgentCenterPanel.svelte",
     "src/remote/MainApp.svelte",
     "src/remote/lib/cloudRemote.ts",
+    "src/lib/terminal/hostPorts.ts",
     "src/routes/+page.svelte"
   ],
   "tests": [
@@ -102,6 +105,12 @@
       "docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md",
       "docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md",
       "docs/iterations/2026-08-03-iteration-132-desktop-terminal-performance-and-link-hover.md",
+      "docs/iterations/2026-08-03-iteration-133-osc8-link-and-lan-evidence.md",
+      "docs/iterations/2026-08-03-iteration-134-settings-performance-and-race-guards.md",
+      "src/lib/components/SettingsPanel.svelte",
+      "src/lib/components/SettingsPanel.test.ts",
+      "src/lib/terminal/hostPorts.ts",
+      "src/routes/+page.svelte",
       "docs/archive/events-2026-08.jsonl"
     ],
     "deny_unlisted": true

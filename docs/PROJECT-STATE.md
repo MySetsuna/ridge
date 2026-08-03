@@ -1,11 +1,49 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-08-03（iteration 131 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-03（iteration 134 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
-## Current snapshot (iteration 132, 2026-08-03)
+## Current snapshot (iteration 134, 2026-08-03)
+
+- `wind` `main` is pushed at `a3d6e81`. Settings now defers shell/WSL/VS
+  discovery until the Terminal tab is selected and the first paint is idle;
+  Agent preview and wallpaper URL work use the same cancelable idle boundary
+  and generation guards.
+- The settings overlay no longer applies a full-window backdrop blur over live
+  terminal surfaces. Wallpaper cards use lazy asynchronous image decoding;
+  preview derivation is linear in the theme count.
+- Default-CWD synchronization is latest-value, trailing-debounced, and
+  lifecycle-aware. Terminal host settings subscriptions ignore unrelated
+  setting writes, so theme/scrollback changes do not schedule redundant theme
+  bridge work or RPC calls.
+- Focused settings guard tests: 3 passed; `pnpm check`: 0 errors / 0 warnings;
+  full Vitest: 147 files / 1515 passed / 1 skipped. No release or publication
+  was made because `v0.1.54` consumed today's allowance.
+
+Archive: `docs/iterations/2026-08-03-iteration-134-settings-performance-and-race-guards.md`.
+
+## Iteration 133 update (2026-08-03)
+
+- `wind` `main` is pushed at `e466812`. The OSC-8 link grid now joins only
+  proven soft-wrapped visual rows, so Ctrl-hover underlines the complete target
+  without joining equal-URI links separated by a hard break.
+- Controlled LAN desktop/mobile E2E passed (`canvas/tree/ws=true`, desktop and
+  mobile input/resize sent, `browserErrors=[]`); Chromium mobile keyboard and
+  touch-selection checks also passed. The browser run used an isolated,
+  extension-disabled context.
+- Focused link tests: 17 passed; `pnpm check`: 0 errors / 0 warnings. The
+  clean-profile runtime.lastError probe is attribution-incomplete by design;
+  no project Chrome-extension messaging source was found.
+- No version bump, release, Remote cloud publish, or public deployment was
+  made: `v0.1.54` consumed today's publication allowance. Physical phone,
+  public path, WebView2/GPU-adapter, and long-running memory evidence remain
+  external gates.
+
+Archive: `docs/iterations/2026-08-03-iteration-133-osc8-link-and-lan-evidence.md`.
+
+## Iteration 132 update (2026-08-03)
 
 - `wind` `main` is pushed (code commits `2079685`, `c9bc7c0`,
   `26b4f42`, `afbfa11`). Desktop terminal now defaults to the main-thread
