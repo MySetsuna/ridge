@@ -1123,7 +1123,10 @@
   /* iter-61: 终端区叠放层——WebGPU host 画布垫底，终端容器（host 模式透明）在上。 */
   .term-stage{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;transition:transform .12s ease-out;will-change:transform}
   .host-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:0;display:block;pointer-events:none}
-  .conn-banner{flex-shrink:0;padding:6px 12px;text-align:center;font-size:12px;font-weight:600;color:#fff;background:var(--rg-ansi-yellow,#bb8009);z-index:50;display:flex;align-items:center;justify-content:center;gap:10px}
+  /* The fixed app root starts under the notch in standalone PWA. Reserve the
+     top inset on both reconnect and failure banners so their text/actions stay
+     visible and tappable before the mobile header paints. */
+  .conn-banner{flex-shrink:0;padding:calc(6px + env(safe-area-inset-top,0px)) 12px 6px;min-height:calc(30px + env(safe-area-inset-top,0px));box-sizing:border-box;text-align:center;font-size:12px;font-weight:600;color:#fff;background:var(--rg-ansi-yellow,#bb8009);z-index:50;display:flex;align-items:center;justify-content:center;gap:10px}
   .conn-banner.lost{background:var(--rg-ansi-red,#cf222e)}
   .conn-msg{flex:0 1 auto}
   .conn-action{flex-shrink:0;border:1px solid rgba(255,255,255,.7);background:rgba(255,255,255,.15);color:#fff;font-size:12px;font-weight:600;border-radius:6px;padding:3px 10px;cursor:pointer}
