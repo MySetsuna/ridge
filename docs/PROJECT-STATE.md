@@ -7,8 +7,8 @@
 
 ## Current snapshot (iteration 134, 2026-08-03)
 
-- `wind` `main` is pushed at `599a1d1` (settings implementation `a3d6e81`,
-  settings-port guard `042e30b`).
+- `wind` `main` is pushed at `bbd0bc5` (settings implementation `a3d6e81`,
+  settings-port guard `042e30b`, theme frame guard `599a1d1`).
   Settings now defers shell/WSL/VS
   discovery until the Terminal tab is selected and the first paint is idle;
   Agent preview and wallpaper URL work use the same cancelable idle boundary
@@ -20,6 +20,9 @@
   lifecycle-aware. Terminal host settings subscriptions ignore unrelated
   setting writes, while theme changes retain propagation and coalesce to one
   animation-frame bridge push.
+- WSL/VS shell probes now run off the Tauri command thread and use the shared
+  2-second process-tree timeout guard; a slow or broken shell installation
+  cannot hold the settings UI hostage.
 - Focused settings guard tests: 4 passed; `pnpm check`: 0 errors / 0 warnings;
   full Vitest: 147 files / 1515 passed / 1 skipped. No release or publication
   was made because `v0.1.54` consumed today's allowance.

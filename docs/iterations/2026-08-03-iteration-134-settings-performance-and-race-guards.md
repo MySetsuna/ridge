@@ -32,6 +32,8 @@ notified the theme bridge for fields that had not changed.
   tuple before notifying the terminal theme bridge; the active theme id remains
   in the snapshot so theme changes still propagate. The bridge coalesces rapid
   theme notifications into one animation-frame push.
+- The Tauri shell-discovery command now uses `spawn_blocking`; WSL and
+  `vswhere` probes use the shared 2-second wall-clock/process-tree guard.
 - `SettingsPanel.test.ts` guards the lazy boundary, no-blur contract,
   generation checks, image loading policy, and default-CWD deduplication.
 
@@ -41,8 +43,11 @@ notified the theme bridge for fields that had not changed.
   1 file / 4 passed.
 - `pnpm exec vitest run --reporter=dot`: 147 files / 1515 passed / 1 skipped.
 - `pnpm check`: 0 errors / 0 warnings.
+- `cargo test -p ridge-core commands::shell --lib --quiet`: 3 passed.
+- `cargo check --manifest-path src-tauri/Cargo.toml --lib --quiet`: passed
+  (pre-existing unused/dead-code warnings only).
 - `git diff --check`: clean.
-- Pushed commits: `a3d6e81`, `042e30b`, `599a1d1` to `origin/main`.
+- Pushed commits: `a3d6e81`, `042e30b`, `599a1d1`, `bbd0bc5` to `origin/main`.
 
 ## Boundaries
 
