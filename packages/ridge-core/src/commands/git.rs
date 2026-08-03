@@ -1329,7 +1329,28 @@ pub async fn get_scm_status(
     spawn_git_blocking_slotted(slot, move || get_scm_status_sync(repo_root)).await
 }
 
+/// Fast SCM snapshot for latency-sensitive Remote first paint. It intentionally
+/// omits the two `diff --numstat` children; Remote maps counts to zero and loads
+/// graph/history separately, so spawning those children only delays the drawer.
+pub async fn get_scm_status_fast(
+    repo_root: String,
+    slot: Option<String>,
+) -> Result<ScmRepoStatus, String> {
+    spawn_git_blocking_slotted(slot, move || get_scm_status_sync_with_numstat(repo_root, false)).await
+}
+
 pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
+    get_scm_status_sync_with_numstat(repo_root, true)
+}
+
+pub fn get_scm_status_fast_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
+    get_scm_status_sync_with_numstat(repo_root, false)
+}
+
+fn get_scm_status_sync_with_numstat(
+    repo_root: String,
+    include_numstat: bool,
+) -> Result<ScmRepoStatus, String> {
     with_git_sync_guard(|| {
         let path = Path::new(&repo_root);
         let repo_path = path
@@ -1349,50 +1370,37 @@ pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
             parse_porcelain_v1(&stdout);
         let branch = branch_from_status.or_else(|| get_current_branch(repo_path));
 
-        // Two parallel-style numstat calls: working-tree (index ↔ tree) for the
-        // unstaged "更改" group, and `--cached` (HEAD ↔ index) for the staged
-        // group. They're separate because staged and unstaged hunks don't share
-        // a base — staging a partial change should still let the staged column
-        // show its own +N/-N. Each is one process spawn; an order of magnitude
-        // cheaper than the per-file path the modal used to take.
-        let unstaged_counts = git_cmd()
-            .args(["--no-pager", "diff", "--numstat", "--"])
-            .current_dir(repo_path)
-            .git_output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    Some(o.stdout)
-                } else {
-                    None
+        if include_numstat {
+            // Two numstat calls: working-tree and index. They remain on the
+            // desktop/full path, while Remote first paint deliberately skips
+            // them because its compact list does not render line counts.
+            let unstaged_counts = git_cmd()
+                .args(["--no-pager", "diff", "--numstat", "--"])
+                .current_dir(repo_path)
+                .git_output()
+                .ok()
+                .and_then(|o| o.status.success().then_some(o.stdout))
+                .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
+                .unwrap_or_default();
+            let staged_counts = git_cmd()
+                .args(["--no-pager", "diff", "--cached", "--numstat", "--"])
+                .current_dir(repo_path)
+                .git_output()
+                .ok()
+                .and_then(|o| o.status.success().then_some(o.stdout))
+                .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
+                .unwrap_or_default();
+            for f in &mut changes {
+                if let Some(&(a, d)) = unstaged_counts.get(&f.path) {
+                    f.additions = a;
+                    f.deletions = d;
                 }
-            })
-            .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
-            .unwrap_or_default();
-        let staged_counts = git_cmd()
-            .args(["--no-pager", "diff", "--cached", "--numstat", "--"])
-            .current_dir(repo_path)
-            .git_output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    Some(o.stdout)
-                } else {
-                    None
-                }
-            })
-            .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
-            .unwrap_or_default();
-        for f in &mut changes {
-            if let Some(&(a, d)) = unstaged_counts.get(&f.path) {
-                f.additions = a;
-                f.deletions = d;
             }
-        }
-        for f in &mut staged {
-            if let Some(&(a, d)) = staged_counts.get(&f.path) {
-                f.additions = a;
-                f.deletions = d;
+            for f in &mut staged {
+                if let Some(&(a, d)) = staged_counts.get(&f.path) {
+                    f.additions = a;
+                    f.deletions = d;
+                }
             }
         }
 
@@ -3320,9 +3328,12 @@ mod guard_tests {
 
         git_reset_peak_active_for_test();
         let root = dir.to_string_lossy().to_string();
-        let status = get_scm_status(root, None).await.expect("get_scm_status");
+        let status = get_scm_status(root.clone(), None).await.expect("get_scm_status");
         assert!(!status.repo_root.is_empty(), "expected resolved repo root");
         assert!(git_peak_active_child_count() >= 1 || git_active_child_count() == 0);
+        let fast = get_scm_status_fast(root, None).await.expect("get_scm_status_fast");
+        assert_eq!(fast.repo_root, status.repo_root);
+        assert_eq!(fast.current_branch, status.current_branch);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
