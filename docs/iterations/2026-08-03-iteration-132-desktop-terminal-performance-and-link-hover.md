@@ -34,7 +34,7 @@ Date: 2026-08-03
 - `cargo test -p ridge-kernel --lib --quiet`: 30 passed.
 - `cargo check -p ridge-kernel --bin ridge-kernel --quiet`: passed.
 - Focused link/renderer/SCM tests: 32 passed; `git diff --check`: clean.
-- Pushed commits: `2079685`, `c9bc7c0`, `26b4f42`, `afbfa11` to
+- Pushed commits: `2079685`, `c9bc7c0`, `26b4f42`, `afbfa11`, `aeb5d2a` to
   `origin/main`.
 
 ## Boundaries and follow-up
