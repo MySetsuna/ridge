@@ -1,9 +1,21 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-08-03（iteration 150 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-03（iteration 151 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
+
+## Current snapshot (iteration 151, 2026-08-03)
+
+- Remote WorkspaceTree now keeps the last good non-active workspace peek
+  snapshot but renders a per-workspace error when listWorkspacePanes fails;
+  transport failures no longer look like a healthy empty terminal list.
+- Focused Host/Cloud/WorkspaceTree tests: 50 passed. pnpm check reports 0
+  errors and 0 warnings. No release or version bump was made; physical/public
+  Remote, WebView2 heap soak, dual-window/dual-host, and full Kernel authority
+  evidence remain open.
+
+Archive: docs/iterations/2026-08-03-iteration-151-remote-peek-error-feedback.md.
 
 ## Current snapshot (iteration 150, 2026-08-03)
 

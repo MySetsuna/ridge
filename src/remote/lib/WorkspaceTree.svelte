@@ -55,6 +55,7 @@
   // into `peekedPanes` (kept transient/live — never persisted) so you can browse
   // another workspace's terminals WITHOUT switching to it.
   let peekedPanes = $state(new Map<string, PaneInfo[]>());
+  let peekErrors = $state(new Map<string, string>());
 
   const activePane = $derived(panes.find((p) => p.id === activePaneId));
 
@@ -149,17 +150,26 @@
   let peekChain: Promise<void> = Promise.resolve();
 
   /** Fetch a non-active workspace's panes into the peek cache (host read-only).
-   *  Always records an entry (even []), so the "loading" hint resolves to
-   *  "no terminals" after the first attempt rather than spinning forever. */
+   *  Keep the last good snapshot on failure, but expose the failure beside the
+   *  affected workspace instead of turning a transport error into an empty tree. */
   function fetchPeek(id: string): Promise<void> {
     if (!ws || id === activeWorkspaceId) return peekChain;
     peekChain = peekChain.then(async () => {
       if (!ws || id === activeWorkspaceId) return;
       let list: PaneInfo[] | null = null;
-      try { list = await ws.listWorkspacePanes(id); } catch { /* keep prior snapshot */ }
+      let failure: string | null = null;
+      try {
+        list = await ws.listWorkspacePanes(id);
+      } catch (e) {
+        failure = e instanceof Error ? e.message : String(e);
+      }
       const next = new Map(peekedPanes);
       next.set(id, list ?? peekedPanes.get(id) ?? []);
       peekedPanes = next;
+      const errors = new Map(peekErrors);
+      if (failure) errors.set(id, failure);
+      else errors.delete(id);
+      peekErrors = errors;
     });
     return peekChain;
   }
@@ -526,7 +536,13 @@
                   </div>
                 {/each}
                 {#if wsPanes.length === 0}
-                  <div class="pane-empty">{loadingPeek ? $t('mobile.loading') : $t('mobile.treeNoTerminal')}</div>
+                  {#if !isActiveWs && peekErrors.get(wsp.id)}
+                    <div class="pane-error" role="alert">{peekErrors.get(wsp.id)}</div>
+                  {:else}
+                    <div class="pane-empty">{loadingPeek ? $t('mobile.loading') : $t('mobile.treeNoTerminal')}</div>
+                  {/if}
+                {:else if !isActiveWs && peekErrors.get(wsp.id)}
+                  <div class="pane-error" role="alert">{peekErrors.get(wsp.id)}</div>
                 {/if}
                 {#if canManagePanes && isActiveWs}
                   <button class="pane-new" onclick={newPane} disabled={busy}>
@@ -679,6 +695,7 @@
     .tree-popup,.saved-popup{bottom:calc(56px + env(safe-area-inset-bottom,0px) + 8px)}
   }
   .pane-empty{padding:8px;font-size:11px;color:var(--rg-fg-muted)}
+  .pane-error{padding:8px;font-size:10px;line-height:1.35;color:var(--rg-danger,#f87171);overflow-wrap:anywhere}
   .pane-new{display:flex;align-items:center;gap:6px;width:100%;padding:7px 8px;border:1px dashed var(--rg-border-bright);border-radius:6px;background:none;color:var(--rg-fg-muted);font-size:12px;cursor:pointer;margin-top:2px}
   .pane-new:active{color:var(--rg-accent);border-color:color-mix(in srgb,var(--rg-accent) 40%,transparent)}
   .pane-new:disabled{opacity:.4}
