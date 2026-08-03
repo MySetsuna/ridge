@@ -2542,7 +2542,11 @@ async fn git_status_result(
     git_slot: Option<String>,
     include_details: bool,
 ) -> serde_json::Value {
-    let scm = match crate::commands::git::get_scm_status(repo_root.clone(), git_slot).await {
+    let scm = match if include_details {
+        crate::commands::git::get_scm_status(repo_root.clone(), git_slot).await
+    } else {
+        crate::commands::git::get_scm_status_fast(repo_root.clone(), git_slot).await
+    } {
         Ok(status) => status,
         Err(e) => return serde_json::json!({ "_error": e }),
     };

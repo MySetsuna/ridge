@@ -57,6 +57,15 @@ pub async fn get_scm_status(
     ridge_core::commands::git::get_scm_status(repo_root, slot).await
 }
 
+/// Remote first-paint variant; skips line-count subprocesses that the compact
+/// mobile Git panel does not render.
+pub async fn get_scm_status_fast(
+    repo_root: String,
+    slot: Option<String>,
+) -> Result<ScmRepoStatus, String> {
+    ridge_core::commands::git::get_scm_status_fast(repo_root, slot).await
+}
+
 #[tauri::command]
 pub async fn git_stage(repo_root: String, paths: Vec<String>) -> Result<(), String> {
     ridge_core::commands::git::git_stage(repo_root, paths).await

@@ -5,6 +5,18 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 116 update (2026-08-03)
+
+Remote `git_status` first paint now uses a fast shared-core snapshot when the
+client requests `includeDetails:false`: one porcelain status child, with the
+same Git semaphore/timeout/process guard, and no discarded `diff --numstat`
+children. Full desktop/compatibility status keeps line counts; Graph/history
+remains lazy. Core tests (315/315) and host tests (59/59) pass. Physical/public
+latency evidence remains pending and this follow-up remains unreleased because
+the daily publication window is frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-116-remote-git-first-paint.md`.
+
 ## Iteration 115 update (2026-08-03)
 
 Remote PWA reconnect/failure notices now reserve top and landscape side
