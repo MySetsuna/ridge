@@ -277,8 +277,10 @@ pub use ridge_core::commands::shell::ShellInfo;
 /// PATHEXT scan, same id/label/program triples). The headless host reuses the
 /// same discovery.
 #[tauri::command]
-pub fn detect_available_shells() -> Vec<ShellInfo> {
-    ridge_core::commands::shell::detect_available_shells()
+pub async fn detect_available_shells() -> Vec<ShellInfo> {
+    tokio::task::spawn_blocking(ridge_core::commands::shell::detect_available_shells)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
