@@ -179,6 +179,13 @@ pub fn spawn_pty_reader(
             let mut carryover: String = String::new();
             let read_result = catch_unwind(AssertUnwindSafe(|| {
                 loop {
+                    // App teardown drops the event receiver while this
+                    // thread still owns an AppState clone. Stop before the
+                    // next blocking read so kernel output leases detach
+                    // instead of surviving every desktop restart.
+                    if state.event_tx.is_closed() {
+                        break;
+                    }
                     match reader.read(&mut buf) {
                         Ok(0) => {
                             let tail = flush_pending_eof(&mut utf8_pending);
