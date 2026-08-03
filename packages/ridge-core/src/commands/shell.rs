@@ -9,6 +9,9 @@
 //! that delegate here.
 
 use std::path::PathBuf;
+use std::time::Duration;
+
+const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// One discovered shell: a stable `id` (settings key), a human `label`, and the
 /// resolved executable `program` path.
@@ -192,11 +195,11 @@ fn list_wsl_distros() -> Vec<String> {
     use std::os::windows::process::CommandExt;
     use std::process::Command;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    match Command::new("wsl.exe")
+    let mut command = Command::new("wsl.exe");
+    command
         .args(["-l", "-q"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-    {
+        .creation_flags(CREATE_NO_WINDOW);
+    match crate::process_guard::run_command_with_timeout(&mut command, SHELL_PROBE_TIMEOUT) {
         Ok(o) if o.status.success() => parse_wsl_list(&o.stdout),
         _ => Vec::new(),
     }
@@ -224,11 +227,14 @@ fn detect_vs_dev_shells() -> Vec<ShellInfo> {
     if !vswhere.is_file() {
         return out;
     }
-    let install_path = match Command::new(&vswhere)
+    let mut command = Command::new(&vswhere);
+    command
         .args(["-latest", "-property", "installationPath"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-    {
+        .creation_flags(CREATE_NO_WINDOW);
+    let install_path = match crate::process_guard::run_command_with_timeout(
+        &mut command,
+        SHELL_PROBE_TIMEOUT,
+    ) {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => return out,
     };

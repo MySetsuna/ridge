@@ -2915,7 +2915,7 @@ async fn dispatch_invoke_request(
             }
             unit(result)
         }
-        "detect_available_shells" => plain(terminal::detect_available_shells()),
+        "detect_available_shells" => plain(terminal::detect_available_shells().await),
         "get_shell_history" => val(terminal::get_shell_history(s(args, "shellKind")).await),
 
         // ── Native (headless) tmux session discovery ──
