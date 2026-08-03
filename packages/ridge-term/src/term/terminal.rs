@@ -213,7 +213,12 @@ impl Terminal {
         use super::modes::CursorShape as KernelCursorShape;
         use crate::term::delta::{CursorShape as DeltaCursorShape, GridDelta};
         match delta {
-            GridDelta::Cells { row, col, cells } => {
+            GridDelta::Cells {
+                row,
+                col,
+                wrapped,
+                cells,
+            } => {
                 // §emoji-cluster — carry `cluster` alongside (ch, attrs,
                 // width) so `write_delta_cells` can restore the row's
                 // cluster sidecar; without it skin-tone/ZWJ/flag clusters
@@ -234,7 +239,7 @@ impl Terminal {
                     })
                     .collect();
                 self.grid
-                    .write_delta_cells(*row as usize, *col as usize, &quads);
+                    .write_delta_cells(*row as usize, *col as usize, &quads, *wrapped);
             }
             GridDelta::Cursor {
                 row,
@@ -335,7 +340,8 @@ impl Terminal {
                 let cols = self.grid.cols();
                 for line in lines {
                     let mut row = Row::new(cols);
-                    for (i, dc) in line.iter().take(cols).enumerate() {
+                    row.wrapped = line.wrapped;
+                    for (i, dc) in line.cells.iter().take(cols).enumerate() {
                         let attr_id = self.grid.attrs.intern(Attrs {
                             fg: dc.fg,
                             bg: dc.bg,
@@ -767,7 +773,7 @@ mod tests {
     #[test]
     fn apply_delta_scrollback_append_pushes_lines_and_preserves_visible_grid() {
         use crate::term::attrs::{Color, Flags};
-        use crate::term::delta::{DeltaCell, GridDelta};
+        use crate::term::delta::{DeltaCell, DeltaLine, GridDelta};
         let mut t = Terminal::new(2, 5, 100);
         // Establish some visible-grid content to make sure apply doesn't
         // disturb it. 'XX' lives on row 0; row 1 is blank.
@@ -799,7 +805,16 @@ mod tests {
             })
             .collect();
         t.apply_delta(&GridDelta::ScrollbackAppend {
-            lines: vec![line_a, line_b],
+            lines: vec![
+                DeltaLine {
+                    cells: line_a,
+                    wrapped: true,
+                },
+                DeltaLine {
+                    cells: line_b,
+                    wrapped: false,
+                },
+            ],
         });
         assert_eq!(
             t.scrollback_len(),
@@ -945,6 +960,7 @@ mod tests {
         t.apply_delta(&GridDelta::Cells {
             row: 1,
             col: 0,
+            wrapped: false,
             cells: ghost,
         });
         assert_eq!(

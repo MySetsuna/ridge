@@ -997,7 +997,7 @@ mod delta_selection_tests {
     //! re-reported on 2026-05-21.
     use super::*;
     use crate::term::delta::{
-        encode_frame, CursorShape as DeltaCursorShape, DeltaCell, DeltaFrame, GridDelta,
+        encode_frame, CursorShape as DeltaCursorShape, DeltaCell, DeltaFrame, DeltaLine, GridDelta,
     };
 
     /// Drive a typical TUI repaint into a fresh kernel, set a host
@@ -1032,6 +1032,7 @@ mod delta_selection_tests {
             vec![GridDelta::Cells {
                 row: 1,
                 col: 0,
+                wrapped: false,
                 cells: (b"redraw-line".iter())
                     .map(|&b| {
                         let mut c = DeltaCell::blank();
@@ -1093,13 +1094,16 @@ mod delta_selection_tests {
         let evictions_before = t.inner.scrollback_eviction_count();
 
         // Append more lines than capacity → at least one eviction.
-        let lines: Vec<Vec<DeltaCell>> = (0..4)
+        let lines: Vec<DeltaLine> = (0..4)
             .map(|_| {
                 let mut row = Vec::new();
                 for _ in 0..4 {
                     row.push(DeltaCell::blank());
                 }
-                row
+                DeltaLine {
+                    cells: row,
+                    wrapped: false,
+                }
             })
             .collect();
         let frame = encode_frame(&DeltaFrame::new(

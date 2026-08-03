@@ -301,6 +301,16 @@ interface PaneEntry {
 	pointerMoveListener: (e: PointerEvent) => void;
 	pointerUpListener: (e: PointerEvent) => void;
 	pointerLeaveListener: (e: PointerEvent) => void;
+	modifierKeyListener: (e: KeyboardEvent) => void;
+	lastPointerPoint: {
+		clientX: number;
+		clientY: number;
+		buttons: number;
+		shiftKey: boolean;
+		altKey: boolean;
+		ctrlKey: boolean;
+		metaKey: boolean;
+	} | null;
 	/** Last `clamped` value passed to `setPadding`. Used to short-circuit
 	 *  no-op calls (RidgePane wires setPadding into a $effect that fires
 	 *  on every settings store update — without this, every font-size /
@@ -1939,6 +1949,19 @@ export class TerminalManager {
 			if (isInScrollbar(e)) return;
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
+			// Keep only geometry/modifier state, not the DOM event itself. A
+			// modifier key can change while the pointer is stationary; the
+			// key listener below re-runs the same hover hit-test so Ctrl-hover
+			// becomes visible without requiring an extra mouse nudge.
+			ent.lastPointerPoint = {
+				clientX: e.clientX,
+				clientY: e.clientY,
+				buttons: e.buttons,
+				shiftKey: e.shiftKey,
+				altKey: e.altKey,
+				ctrlKey: e.ctrlKey,
+				metaKey: e.metaKey,
+			};
 			ent.pendingMouseMove = e;
 			if (ent.mouseMoveRaf == null) {
 				ent.mouseMoveRaf = requestAnimationFrame(flushPointerMove);
@@ -1947,6 +1970,25 @@ export class TerminalManager {
 			// — coupling it to the rAF tick would make the initial
 			// cross-into-edge feel laggy by up to 16ms.
 			updateAutoScrollFromEdge(ent, e);
+		};
+		const modifierKeyListener = (e: KeyboardEvent) => {
+			if (e.key !== 'Control' && e.key !== 'Meta') return;
+			const ent = this.panes.get(paneId);
+			const point = ent?.lastPointerPoint;
+			if (!ent || !point) return;
+			const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+			const modifierHeld = e.ctrlKey || (isMac && e.metaKey);
+			// `flushPointerMove` consumes only these PointerEvent fields. A
+			// small plain object avoids constructing a browser event (which
+			// older WebView2 builds reject outside a trusted dispatch).
+			ent.pendingMouseMove = {
+				...point,
+				ctrlKey: isMac ? (modifierHeld || e.metaKey) : modifierHeld,
+				metaKey: e.metaKey,
+			} as PointerEvent;
+			if (ent.mouseMoveRaf == null) {
+				ent.mouseMoveRaf = requestAnimationFrame(flushPointerMove);
+			}
 		};
 		const pointerUpListener = (e: PointerEvent) => {
 			if (isInScrollbar(e)) return;
@@ -1983,6 +2025,7 @@ export class TerminalManager {
 		const pointerLeaveListener = (_e: PointerEvent) => {
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
+			ent.lastPointerPoint = null;
 			ent.container.style.cursor = '';
 			delete ent.container.dataset.linkUnderline;
 			delete ent.container.dataset.linkUnderlineClass;
@@ -1992,6 +2035,8 @@ export class TerminalManager {
 		container.addEventListener('pointermove', pointerMoveListener);
 		container.addEventListener('pointerup', pointerUpListener);
 		container.addEventListener('pointerleave', pointerLeaveListener);
+		container.addEventListener('keydown', modifierKeyListener);
+		container.addEventListener('keyup', modifierKeyListener);
 		const linkUnderlineEl = createLinkUnderlineOverlay(container);
 
 		const entry: PaneEntry = {
@@ -2026,6 +2071,8 @@ export class TerminalManager {
 			pointerMoveListener,
 			pointerUpListener,
 			pointerLeaveListener,
+			modifierKeyListener,
+			lastPointerPoint: null,
 			parked: false,
 			parkReason: null,
 			lastForegroundAt: Date.now(),
@@ -2459,6 +2506,8 @@ export class TerminalManager {
 			entry.container.removeEventListener('pointermove', entry.pointerMoveListener);
 			entry.container.removeEventListener('pointerup', entry.pointerUpListener);
 			entry.container.removeEventListener('pointerleave', entry.pointerLeaveListener);
+			entry.container.removeEventListener('keydown', entry.modifierKeyListener);
+			entry.container.removeEventListener('keyup', entry.modifierKeyListener);
 			// pointermove batches on rAF; cancel any in-flight tick so the
 			// flush callback doesn't reach into a freed kernel via
 			// kernel.encodeMouse / dataHandler.
@@ -2569,6 +2618,8 @@ export class TerminalManager {
 		entry.container.removeEventListener('pointermove', entry.pointerMoveListener);
 		entry.container.removeEventListener('pointerup', entry.pointerUpListener);
 		entry.container.removeEventListener('pointerleave', entry.pointerLeaveListener);
+		entry.container.removeEventListener('keydown', entry.modifierKeyListener);
+		entry.container.removeEventListener('keyup', entry.modifierKeyListener);
 		this._clearLinkUnderline(entry);
 		try { entry.linkUnderlineEl?.remove(); } catch { /* already detached */ }
 		entry.linkUnderlineEl = null;
@@ -2768,6 +2819,8 @@ export class TerminalManager {
 		container.addEventListener('pointermove', entry.pointerMoveListener);
 		container.addEventListener('pointerup', entry.pointerUpListener);
 		container.addEventListener('pointerleave', entry.pointerLeaveListener);
+		container.addEventListener('keydown', entry.modifierKeyListener);
+		container.addEventListener('keyup', entry.modifierKeyListener);
 		entry.resizeObserver = new ResizeObserver(() => this.viewportChanged(paneId));
 		entry.resizeObserver.observe(container);
 

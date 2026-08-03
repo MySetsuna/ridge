@@ -721,7 +721,8 @@ impl Grid {
     }
 
     /// Write a span of `(ch, attrs, width)` cells starting at
-    /// `(row, col)`. Used by the P3.4 delta-apply path; the AttrTable
+    /// `(row, col)`, and update the row's soft-wrap metadata. Used by the
+    /// P3.4 delta-apply path; the AttrTable
     /// re-interns each cell's attrs to a local AttrId before writing
     /// so the resulting cell is comparable with the rest of this
     /// grid's cells (interned ids are per-AttrTable, not portable).
@@ -732,6 +733,7 @@ impl Grid {
         row: usize,
         col: usize,
         cells: &[(char, Attrs, u8, Option<Box<str>>)],
+        wrapped: bool,
     ) {
         // Intern attrs in a first pass so we don't hold &mut self.attrs
         // and &mut self.screen at the same time (the borrow checker
@@ -744,6 +746,7 @@ impl Grid {
             Some(r) => r,
             None => return,
         };
+        target.wrapped = wrapped;
         for (i, (ch, _attrs, width, cluster)) in cells.iter().enumerate() {
             let target_col = col + i;
             // Write the cell scalar fields, then end that borrow before

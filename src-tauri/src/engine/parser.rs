@@ -13,7 +13,7 @@
 //! Keep one snapshot per pane: `Vec<Vec<DeltaCell>>` mirroring the live
 //! visible grid (NOT scrollback). After every `feed()`:
 //!   1. Compare each new row to the snapshot row.
-//!   2. If different, emit `GridDelta::Cells { row, col: 0, cells: full_row }`
+//!   2. If different, emit `GridDelta::Cells { row, col: 0, wrapped, cells }`
 //!      and update the snapshot row to match.
 //!   3. Compare cursor (row, col, visible, blink, shape); emit `Cursor` if
 //!      anything changed.
@@ -49,7 +49,9 @@
 // remain dead-code (e.g. resize until P3.9.r wires it) keep targeted
 // #[allow] annotations at their definition site.
 
-use ridge_term::term::delta::{CursorShape as DeltaCursorShape, DeltaCell, DeltaFrame, GridDelta};
+use ridge_term::term::delta::{
+    CursorShape as DeltaCursorShape, DeltaCell, DeltaFrame, DeltaLine, GridDelta,
+};
 use ridge_term::term::modes::{CursorShape as KernelCursorShape, Modes};
 use ridge_term::term::terminal::{KernelEvent, Terminal};
 
@@ -71,6 +73,8 @@ pub struct PaneParser {
     /// resized in lockstep with `Terminal::resize`. Reads from
     /// `terminal.grid().row(r)`; writes happen here.
     snapshot: Vec<Vec<DeltaCell>>,
+    /// Per-live-row soft-wrap metadata paired with `snapshot`.
+    snapshot_wrapped: Vec<bool>,
     /// Cursor as we last reported it. `None` only on the very first
     /// feed — forces a `Cursor` delta in the initial frame.
     cursor: Option<CursorSnap>,
@@ -112,9 +116,11 @@ impl PaneParser {
     pub fn new(rows: u16, cols: u16, scrollback_lines: usize) -> Self {
         let terminal = Terminal::new(rows as usize, cols as usize, scrollback_lines);
         let snapshot = vec![vec![DeltaCell::blank(); cols as usize]; rows as usize];
+        let snapshot_wrapped = vec![false; rows as usize];
         Self {
             terminal,
             snapshot,
+            snapshot_wrapped,
             cursor: None,
             is_alt: None,
             last_scrollback_len: 0,
@@ -228,6 +234,7 @@ impl PaneParser {
         let rows = self.terminal.rows();
         let cols = self.terminal.cols();
         self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
+        self.snapshot_wrapped = vec![false; rows];
         self.cursor = None;
         self.is_alt = None;
         // P3.11 — scrollback growth baseline. The mirror's wasm
@@ -264,6 +271,7 @@ impl PaneParser {
         // mismatched widths. Re-initialize blank; the next diff will
         // emit the actual new content as Cells deltas.
         self.snapshot = vec![vec![DeltaCell::blank(); cols as usize]; rows as usize];
+        self.snapshot_wrapped = vec![false; rows as usize];
         // Cursor / alt-state must also be re-emitted because the
         // frontend's mirror just resized too.
         self.cursor = None;
@@ -301,6 +309,7 @@ impl PaneParser {
             let cols = self.terminal.cols();
             let rows = self.terminal.rows();
             self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
+            self.snapshot_wrapped = vec![false; rows];
             self.cursor = None;
             self.is_alt = None;
             // P3.12 — the parser's RIS handler set modes back to default;
@@ -326,6 +335,7 @@ impl PaneParser {
             let cols = self.terminal.cols();
             let rows = self.terminal.rows();
             self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
+            self.snapshot_wrapped = vec![false; rows];
         }
 
         // 1b. Scrollback growth. Compare today's `scrollback_len()` +
@@ -357,7 +367,7 @@ impl PaneParser {
             .saturating_sub(evicted_since as usize);
         if now_len > last_logical_len {
             let new_n = now_len - last_logical_len;
-            let mut lines: Vec<Vec<DeltaCell>> = Vec::with_capacity(new_n);
+            let mut lines: Vec<DeltaLine> = Vec::with_capacity(new_n);
             let start = now_len - new_n;
             for i in start..now_len {
                 if let Some(row) = self.terminal.grid().scrollback.get(i) {
@@ -376,7 +386,10 @@ impl PaneParser {
                             cluster: row.cluster_at(ci).map(|cs| cs.text.clone()),
                         });
                     }
-                    lines.push(row_cells);
+                    lines.push(DeltaLine {
+                        cells: row_cells,
+                        wrapped: row.wrapped,
+                    });
                 }
             }
             if !lines.is_empty() {
@@ -446,20 +459,38 @@ impl PaneParser {
                         last_diff = c;
                     }
                 }
-                if let Some(first) = first_diff {
-                    let slice = now_row[first..=last_diff].to_vec();
+                let wrapped_now = live_row.wrapped;
+                let wrapped_changed = self
+                    .snapshot_wrapped
+                    .get(r)
+                    .copied()
+                    .map_or(true, |previous| previous != wrapped_now);
+                if first_diff.is_some() || wrapped_changed {
+                    // A wrap-only transition carries an empty cell span;
+                    // the mirror still applies the row metadata without
+                    // retransmitting an unchanged full row.
+                    let (first, slice) = match first_diff {
+                        Some(first) => (first, now_row[first..=last_diff].to_vec()),
+                        None => (0, Vec::new()),
+                    };
                     deltas.push(GridDelta::Cells {
                         row: r as u16,
                         col: first as u16,
+                        wrapped: wrapped_now,
                         cells: slice,
                     });
                     // Write the new state into the snapshot for the
                     // changed range only — unchanged cells already
                     // match.
-                    for c in first..=last_diff {
-                        snap_row[c] = now_row[c].clone();
+                    if first_diff.is_some() {
+                        for c in first..=last_diff {
+                            snap_row[c] = now_row[c].clone();
+                        }
                     }
                 }
+            }
+            if let Some(previous) = self.snapshot_wrapped.get_mut(r) {
+                *previous = live_row.wrapped;
             }
         }
 
@@ -607,6 +638,36 @@ mod tests {
     }
 
     #[test]
+    fn soft_wrap_metadata_survives_delta_mirror_for_copy() {
+        use ridge_term::selection::Selection;
+        use ridge_term::term::terminal::Terminal;
+
+        let url = "https://example.com/long/path";
+        let mut producer = make_parser(3, 12);
+        let mut mirror = Terminal::new(3, 12, 1_000);
+        mirror
+            .apply_frame(&producer.feed_and_diff(b""))
+            .expect("initial frame");
+        let frame = producer.feed_and_diff(url.as_bytes());
+        let row_zero = frame.deltas.iter().find_map(|delta| match delta {
+            GridDelta::Cells {
+                row,
+                wrapped,
+                cells,
+                ..
+            } if *row == 0 && !cells.is_empty() => Some(*wrapped),
+            _ => None,
+        });
+        assert_eq!(row_zero, Some(true), "producer must mark the URL head wrapped");
+        mirror.apply_frame(&frame).expect("URL frame");
+        assert!(mirror.grid().row(0).unwrap().wrapped);
+
+        let mut selection = Selection::default();
+        selection.select_all(&mirror);
+        assert_eq!(selection.text(&mirror), url);
+    }
+
+    #[test]
     fn single_char_change_emits_one_cell_range() {
         // P3.13 — col-range diff. Print one char, then overwrite one
         // mid-row cell with a different char. The resulting Cells
@@ -629,7 +690,7 @@ mod tests {
             frame.deltas
         );
         match cell_deltas[0] {
-            GridDelta::Cells { row, col, cells } => {
+            GridDelta::Cells { row, col, cells, .. } => {
                 assert_eq!(*row, 0);
                 assert_eq!(*col, 2, "diff must start at the column of the changed cell");
                 assert_eq!(
@@ -664,7 +725,12 @@ mod tests {
             frame.deltas
         );
         match cell_deltas[0] {
-            GridDelta::Cells { row: _, col, cells } => {
+            GridDelta::Cells {
+                row: _,
+                col,
+                cells,
+                ..
+            } => {
                 assert_eq!(*col, 2, "span starts at first changed col");
                 assert_eq!(
                     cells.len(),
@@ -867,7 +933,7 @@ mod tests {
         let mut p = make_parser(2, 5);
         let _ = p.feed_and_diff(b"");
         let frame = p.feed_and_diff(b"AB\r\nCD\r\nEF");
-        let appends: Vec<&Vec<Vec<DeltaCell>>> = frame
+        let appends: Vec<&Vec<DeltaLine>> = frame
             .deltas
             .iter()
             .filter_map(|d| match d {
@@ -884,8 +950,9 @@ mod tests {
         let lines = appends[0];
         // 'AB' is the first row pushed into scrollback.
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0][0].ch, 'A');
-        assert_eq!(lines[0][1].ch, 'B');
+        assert_eq!(lines[0].cells[0].ch, 'A');
+        assert_eq!(lines[0].cells[1].ch, 'B');
+        assert!(!lines[0].wrapped, "hard newline must not be marked soft-wrapped");
     }
 
     #[test]
