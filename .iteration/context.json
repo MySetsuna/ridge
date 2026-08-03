@@ -1,31 +1,32 @@
 {
   "schema_version": 1,
-  "task": "Make desktop SettingsPanel a cold lazy-loaded surface so startup and tab switching avoid loading settings and theme controls",
+  "task": "Make desktop sidebar panels lazy-mounted and retained so startup and tab switching avoid eager Explorer/Git/Host/Agent/Remote work",
   "symbols": [
-    "SettingsPanelComp",
-    "ensureSettingsPanel",
-    "settingsPanelOpen",
-    "SettingsPanel"
+    "sidebarVisited",
+    "sidebarTab",
+    "SourceControl",
+    "HostsPanel",
+    "AgentCenterPanel",
+    "RemotePanel"
   ],
   "files": [
     "docs/PROJECT-STATE.md",
     "docs/REQUIREMENTS-SPEC.md",
     "docs/archive/events-2026-08.jsonl",
     "src/routes/+page.svelte",
-    "src/lib/components/SettingsPanel.test.ts",
-    "src/lib/components/SettingsPanel.svelte",
-    "docs/iterations/2026-08-04-iteration-158-settings-lazy-load.md"
+    "src/lib/components/SidebarLazyMount.test.ts",
+    "docs/iterations/2026-08-04-iteration-159-sidebar-lazy-mount.md"
   ],
   "tests": [
-    "src/lib/components/SettingsPanel.test.ts (lazy module graph contract)",
-    "pnpm exec vitest run src/lib/components/SettingsPanel.test.ts --reporter=dot",
+    "src/lib/components/SidebarLazyMount.test.ts (first-visit mount contract)",
+    "pnpm exec vitest run src/lib/components/SidebarLazyMount.test.ts --reporter=dot",
     "pnpm check"
   ],
   "constraints": [
     "NotebookLM is strategy input only; runtime, tests, and source remain factual authority",
     "Desktop production pane PTYs, SCM status reads, and kernel bootstrap are kernel-owned",
     "Kernel watcher tolerates transient health failures but exits after a bounded consecutive threshold",
-    "SettingsPanel is loaded only after first open and stays mounted after resolution",
+    "Sidebar panels mount only after first visit and remain mounted across tab switches",
     "No hidden local fallback after kernel bootstrap/domain request failure",
     "Do not scan generated or minified artifacts as source evidence"
   ],
@@ -109,6 +110,7 @@
       "docs/iterations/2026-08-04-iteration-156-kernel-reattach-history.md",
       "docs/iterations/2026-08-04-iteration-157-kernel-watcher-health.md",
       "docs/iterations/2026-08-04-iteration-158-settings-lazy-load.md",
+      "docs/iterations/2026-08-04-iteration-159-sidebar-lazy-mount.md",
       "docs/iterations/CONTRACT-iteration-76.md",
       "docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md",
       "docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md",
@@ -131,6 +133,7 @@
       "packages/remote/src/shared/terminal/manager.ts",
       "src/lib/components/SettingsPanel.svelte",
       "src/lib/components/SettingsPanel.test.ts",
+      "src/lib/components/SidebarLazyMount.test.ts",
       "src/lib/terminal/hostPorts.ts",
       "src/lib/stores/themes.ts",
       "src/lib/stores/themes.slug.test.ts",
