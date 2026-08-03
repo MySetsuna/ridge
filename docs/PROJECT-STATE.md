@@ -5,6 +5,22 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 141, 2026-08-03)
+
+- `rdg` production TUI/LAN-host sessions now use the long-lived
+  `ridge-kernel` domain PTY instead of the in-process registry. Stable PaneTree
+  UUIDs are assigned before PTY creation; output leases are bounded and
+  cancellable, shell proxy drop detaches without destroying the child, and a
+  failed first attach cleans up only the newly-created PTY.
+- CLI unit tests (127/127), detached Kernel lifecycle tests (3/3),
+  `pnpm check` (0 errors/0 warnings), and `git diff --check` pass. No release or
+  publication was made because `v0.1.54` consumed today's allowance.
+- Physical tray-exit/restart, WebView2 memory soak, public Remote/Cloud, and
+  full Kernel domain migration remain evidence gates; desktop startup already
+  calls `reattach_kernel_ptys` after workspace restore.
+
+Archive: `docs/iterations/2026-08-03-iteration-141-rdg-kernel-pty-session.md`.
+
 ## Current snapshot (iteration 140, 2026-08-03)
 
 - `rdg` LAN now serves the filesystem/search capabilities it advertises:
