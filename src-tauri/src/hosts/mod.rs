@@ -657,7 +657,10 @@ pub fn ensure_host_status_connected(status: HostStatus, detail: &str) -> Result<
 /// Kept public for attach command surface; unit-tested via status helper + registry.
 #[allow(dead_code)] // attach wire-up reuses this; not yet on a Tauri command.
 pub fn ensure_host_connected(state: &AppState, host_id: &str) -> Result<(), String> {
-    let snap = state.hosts.snapshot();
+    // Attach is a host-side mutation boundary: refresh from the kernel before
+    // accepting a session so a stale shell projection cannot route bytes to a
+    // removed or disconnected host.
+    let snap = project_kernel_host_snapshot(&state.hosts, kernel_host_snapshot())?;
     let Some(h) = snap.iter().find(|h| h.id == host_id) else {
         return Err(format!("未知主机: {host_id}"));
     };
