@@ -5,6 +5,19 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 108 update (2026-08-03)
+
+`detach_foreign` now uses the same atomic ridge-kernel session transition as
+attach. The kernel detach succeeds before the local foreign mapping, PTY sink,
+live buffer, backpressure state, or outbound subscription is removed; a kernel
+failure leaves the attachment intact for retry. Attach/detach are serialized
+by one session transaction lock, and deterministic tests cover failure and
+ordering. Host tests are 18/18, ridge-kernel tests 24/24, and `pnpm check` is
+0/0. This follow-up is pushed unreleased because the daily publication window
+remains frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-108-kernel-host-session-detach-transaction.md`.
+
 ## Iteration 107 update (2026-08-03)
 
 Remote session attachment flags now use atomic kernel transitions instead of
