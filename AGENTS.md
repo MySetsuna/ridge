@@ -59,6 +59,17 @@
 
 发 **versioned GitHub Release**（`vX.Y.Z`）时，**必须**带上与该版本号一致的安装包/CLI 产物，形态对齐历史 Release（如 `v0.0.16` / `v0.0.17`），**禁止**只建空 tag + 文字说明、无 asset。
 
+### 发版频率与合并窗口
+
+- 需求与修复须先汇总为一个可验证批次，再发 versioned Release、Remote artifact
+  或 Cloud artifact；不得为单个零散修复连续发版。
+- 任一自然日最多 3 次发布事件（versioned Release、Remote artifact、Cloud
+  artifact 依同一计数）；失败重试、补资产与重跑 workflow 不得借机开启新版本。
+- 本次 `v0.1.53` 已占用当前发布窗口；本日后续禁止再次发版或重复发布。若需
+  新需求，继续落地、测试、提交、推送并归档，待下一发布窗口合并后一次发布。
+- 每次发布前仍须通过工作区洁净闸、版本/资产一致性闸与全量回归；未满足则只修复
+  代码或记录阻塞，不以降级/空 Release 绕过。
+
 ### 期望产物（与 `.github/workflows/release.yml` 矩阵一致）
 
 | 平台 | 资产名示例（版本号随 release） |
