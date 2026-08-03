@@ -10,10 +10,10 @@
 - Remote WorkspaceTree now keeps the last good non-active workspace peek
   snapshot but renders a per-workspace error when listWorkspacePanes fails;
   transport failures no longer look like a healthy empty terminal list.
-- Focused Host/Cloud/WorkspaceTree tests: 50 passed. pnpm check reports 0
-  errors and 0 warnings. No release or version bump was made; physical/public
-  Remote, WebView2 heap soak, dual-window/dual-host, and full Kernel authority
-  evidence remain open.
+- Focused Host/Cloud/WorkspaceTree tests: 50 passed. Full Vitest: 147 files,
+  1538 passed, 1 skipped; pnpm check reports 0 errors and 0 warnings. No
+  release or version bump was made; physical/public Remote, WebView2 heap soak,
+  dual-window/dual-host, and full Kernel authority evidence remain open.
 
 Archive: docs/iterations/2026-08-03-iteration-151-remote-peek-error-feedback.md.
 

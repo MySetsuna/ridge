@@ -22,6 +22,8 @@ empty list.
 - pnpm exec vitest run src/remote/lib/WorkspaceTree.test.ts src/remote/lib/cloudRemote.test.ts src/lib/hosts/hostForest.test.ts --reporter=dot:
   3 files, 50 passed.
 - pnpm check: 0 errors and 0 warnings.
+- cmd /c "pnpm exec vitest run --reporter=dot": 147 files, 1538 passed,
+  1 skipped, exit code 0.
 - Source regression guard asserts error capture and visible role=alert
   feedback.
 
