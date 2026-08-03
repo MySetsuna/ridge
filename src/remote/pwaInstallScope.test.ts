@@ -31,13 +31,13 @@ describe('Remote PWA installation scope', () => {
 
   it('keeps notch and home-indicator controls inside browser and standalone PWA safe areas', () => {
     expect(mainSource).toContain('env(safe-area-inset-top');
+    expect(mainSource).toContain('.conn-banner-safe{');
     expect(mainSource).toContain('.conn-banner{');
-    expect(mainSource).toContain('min-height:calc(30px + env(safe-area-inset-top,0px))');
     expect(mainSource).toContain('max(12px,env(safe-area-inset-right,0px))');
     expect(mainSource).toContain('constant(safe-area-inset-top)');
     expect(mainSource).toContain('flex-wrap:wrap');
     expect(mainSource).toContain('@media (display-mode:standalone) and (orientation:portrait)');
-    expect(mainSource).toContain('max(44px,calc(6px + env(safe-area-inset-top,0px)))');
+    expect(mainSource).toContain('max(44px,env(safe-area-inset-top,0px))');
     expect(mainSource).toContain('data-ridge-pwa="standalone"');
     expect(mainSource).toContain('height:100dvh');
     expect(bottomBarSource).toContain('env(safe-area-inset-bottom');
@@ -61,6 +61,7 @@ describe('Remote PWA installation scope', () => {
       expect(source).toContain('constant(safe-area-inset-top)');
       expect(source).toContain('@media (display-mode:standalone) and (orientation:portrait)');
       expect(source).toContain('max(44px,calc(24px + env(safe-area-inset-top,0px)))');
+      expect(source).toContain('data-ridge-pwa="standalone"');
       expect(source).toContain('overflow-y:auto');
       expect(source).toContain('box-sizing:border-box');
       expect(source).toContain('justify-content:safe center');

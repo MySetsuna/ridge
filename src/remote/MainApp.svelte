@@ -920,25 +920,27 @@
            parked 设备停用需去控制台启用或升级），绝不再无限 pending。
          - error + channel（含无分级兜底）: 通道异常（信令/WebRTC/网络/并发超限）→ 标红，
            给「重试」动作，让用户主动全量重连而不是一直转圈。 -->
-    {#if wsState === 'error'}
-      <div class="conn-banner lost">
-        {#if failure?.category === 'user'}
-          <span class="conn-msg">{$t('mobile.connectFail')}</span>
-          <button class="conn-action" onclick={handleBackToLogin}>{$t('mobile.verifyAndConnect')}</button>
-        {:else if failure?.category === 'parked'}
-          <span class="conn-msg">{$t('mobile.connectionLost')}</span>
-          <button class="conn-action" onclick={handleBackToLogin}>{$t('mobile.refresh')}</button>
-        {:else}
-          <!-- channel 异常 -->
-          <span class="conn-msg">{$t('mobile.connectionLost')}</span>
-          <button class="conn-action" onclick={handleRetry}>{$t('mobile.refresh')}</button>
-        {/if}
-      </div>
-    {:else}
-      <div class="conn-banner">
-        {$t('mobile.reconnecting')}
-      </div>
-    {/if}
+    <div class="conn-banner-safe">
+      {#if wsState === 'error'}
+        <div class="conn-banner lost">
+          {#if failure?.category === 'user'}
+            <span class="conn-msg">{$t('mobile.connectFail')}</span>
+            <button class="conn-action" onclick={handleBackToLogin}>{$t('mobile.verifyAndConnect')}</button>
+          {:else if failure?.category === 'parked'}
+            <span class="conn-msg">{$t('mobile.connectionLost')}</span>
+            <button class="conn-action" onclick={handleBackToLogin}>{$t('mobile.refresh')}</button>
+          {:else}
+            <!-- channel 异常 -->
+            <span class="conn-msg">{$t('mobile.connectionLost')}</span>
+            <button class="conn-action" onclick={handleRetry}>{$t('mobile.refresh')}</button>
+          {/if}
+        </div>
+      {:else}
+        <div class="conn-banner">
+          {$t('mobile.reconnecting')}
+        </div>
+      {/if}
+    </div>
   {/if}
   {#if panes.length === 0}
     <div class="empty">
@@ -1123,38 +1125,36 @@
   /* iter-61: 终端区叠放层——WebGPU host 画布垫底，终端容器（host 模式透明）在上。 */
   .term-stage{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;transition:transform .12s ease-out;will-change:transform}
   .host-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:0;display:block;pointer-events:none}
-  /* The fixed app root starts under the notch in standalone PWA. Reserve the
-     top inset on both reconnect and failure banners so their text/actions stay
-     visible and tappable before the mobile header paints. */
-  .conn-banner{flex-shrink:0;padding:6px max(12px,env(safe-area-inset-right,0px)) 6px max(12px,env(safe-area-inset-left,0px));min-height:30px;box-sizing:border-box;text-align:center;font-size:12px;font-weight:600;color:#fff;background:var(--rg-ansi-yellow,#bb8009);z-index:50;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
-  /* Older standalone WebKit exposes the cutout through constant(); keep this
-     fallback before env() so a PWA never places the reconnect action under a
-     notch when its browser has not migrated the safe-area API yet. */
+  /* Keep the notice itself below the cutout.  Some standalone WebViews paint a
+     fixed/flex child at y=0 even when padding on that child is ignored, so the
+     safe-area offset lives in a separate flex item rather than in the text box. */
+  .conn-banner-safe{flex-shrink:0;padding-top:env(safe-area-inset-top,0px);box-sizing:border-box;background:var(--rg-bg);z-index:50}
+  /* Older standalone WebKit exposes the cutout through constant(). */
   @supports (padding-top:constant(safe-area-inset-top)) {
-    .conn-banner{padding-top:calc(6px + constant(safe-area-inset-top));min-height:calc(30px + constant(safe-area-inset-top))}
+    .conn-banner-safe{padding-top:constant(safe-area-inset-top)}
   }
   @supports (padding-top:env(safe-area-inset-top)) {
-    .conn-banner{padding-top:calc(6px + env(safe-area-inset-top,0px));min-height:calc(30px + env(safe-area-inset-top,0px))}
+    .conn-banner-safe{padding-top:env(safe-area-inset-top,0px)}
   }
-  /* A few standalone Android/WebView shells expose a cutout but report a zero
-     env() value. Keep the notice below the portrait status/cutout belt there;
-     modern engines still use the larger physical inset when available. */
+  .conn-banner{flex-shrink:0;padding:6px max(12px,env(safe-area-inset-right,0px));min-height:30px;box-sizing:border-box;text-align:center;font-size:12px;font-weight:600;color:#fff;background:var(--rg-ansi-yellow,#bb8009);display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
+  /* A few standalone Android/WebView shells expose a cutout but report zero
+     for env(). Keep both reconnect and failure content below the belt. */
   @media (display-mode:standalone) and (orientation:portrait) {
-    .conn-banner{padding-top:44px;min-height:68px}
+    .conn-banner-safe{padding-top:44px}
     @supports (padding-top:constant(safe-area-inset-top)) {
-      .conn-banner{padding-top:max(44px,calc(6px + constant(safe-area-inset-top)));min-height:max(68px,calc(30px + constant(safe-area-inset-top)))}
+      .conn-banner-safe{padding-top:max(44px,constant(safe-area-inset-top))}
     }
     @supports (padding-top:env(safe-area-inset-top)) {
-      .conn-banner{padding-top:max(44px,calc(6px + env(safe-area-inset-top,0px)));min-height:max(68px,calc(30px + env(safe-area-inset-top,0px)))}
+      .conn-banner-safe{padding-top:max(44px,env(safe-area-inset-top,0px))}
     }
   }
   /* iOS standalone may expose only navigator.standalone (not display-mode). */
-  :global(html[data-ridge-pwa="standalone"]) .conn-banner{padding-top:44px;min-height:68px}
+  :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{padding-top:44px}
   @supports (padding-top:constant(safe-area-inset-top)) {
-    :global(html[data-ridge-pwa="standalone"]) .conn-banner{padding-top:max(44px,calc(6px + constant(safe-area-inset-top)));min-height:max(68px,calc(30px + constant(safe-area-inset-top)))}
+    :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{padding-top:max(44px,constant(safe-area-inset-top))}
   }
   @supports (padding-top:env(safe-area-inset-top)) {
-    :global(html[data-ridge-pwa="standalone"]) .conn-banner{padding-top:max(44px,calc(6px + env(safe-area-inset-top,0px)));min-height:max(68px,calc(30px + env(safe-area-inset-top,0px)))}
+    :global(html[data-ridge-pwa="standalone"]) .conn-banner-safe{padding-top:max(44px,env(safe-area-inset-top,0px))}
   }
   .conn-banner.lost{background:var(--rg-ansi-red,#cf222e)}
   .conn-msg{flex:0 1 auto}

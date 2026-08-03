@@ -252,6 +252,15 @@
       .screen{padding-top:max(44px,calc(24px + env(safe-area-inset-top,0px)))}
     }
   }
+  /* iOS standalone exposes navigator.standalone without matching the media
+     query; main.ts marks the document before this screen first paints. */
+  :global(html[data-ridge-pwa="standalone"]) .screen{padding-top:44px}
+  @supports (padding-top:constant(safe-area-inset-top)) {
+    :global(html[data-ridge-pwa="standalone"]) .screen{padding-top:max(44px,calc(24px + constant(safe-area-inset-top)))}
+  }
+  @supports (padding-top:env(safe-area-inset-top)) {
+    :global(html[data-ridge-pwa="standalone"]) .screen{padding-top:max(44px,calc(24px + env(safe-area-inset-top,0px)))}
+  }
   .logo{display:block;width:64px;height:64px;margin:0 auto 16px}
   h1{font-size:20px;font-weight:600;margin-bottom:4px;color:var(--rg-fg)}
   .sub{color:var(--rg-fg-muted);font-size:14px;margin-bottom:24px;text-align:center;line-height:1.5}
