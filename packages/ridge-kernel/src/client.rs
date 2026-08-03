@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::registry::{clear_registry, read_endpoint, KernelEndpoint};
-use ridge_core::commands::git::{BranchInfo, GitDiffSummary, ScmRepoStatus};
+use ridge_core::commands::git::{BranchInfo, GitDiffSummary, ScmRepoStatus, StashEntry};
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct KernelPtyInfo {
@@ -276,6 +276,29 @@ fn decode_domain_git_branches(value: Value) -> Result<Option<Vec<BranchInfo>>, S
         .map_err(|error| format!("decode kernel Git branches response: {error}"))
 }
 
+fn decode_domain_git_stashes(value: Value) -> Result<Option<Vec<StashEntry>>, String> {
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("kernel Git stashes request failed")
+            .to_string());
+    }
+    if value.get("source").and_then(Value::as_str) != Some("ridge-kernel") {
+        return Err("kernel Git stashes response has unexpected source".to_string());
+    }
+    if value.get("is_repo").and_then(Value::as_bool) != Some(true) {
+        return Ok(None);
+    }
+    let stashes = value
+        .get("stashes")
+        .cloned()
+        .ok_or_else(|| "kernel Git stashes response omitted stashes".to_string())?;
+    serde_json::from_value(stashes)
+        .map(Some)
+        .map_err(|error| format!("decode kernel Git stashes response: {error}"))
+}
+
 fn decode_domain_git_diff_summary(value: Value) -> Result<Option<GitDiffSummary>, String> {
     if value.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(value
@@ -413,6 +436,24 @@ pub fn read_domain_git_branches(
         None,
     )?;
     decode_domain_git_branches(value)
+}
+
+/// Read the kernel-owned stash projection. `None` means the path was
+/// confirmed non-Git; no local Git fallback is permitted.
+pub fn read_domain_git_stashes(
+    endpoint: &KernelEndpoint,
+    path: &str,
+) -> Result<Option<Vec<StashEntry>>, String> {
+    let value = request_json(
+        endpoint,
+        "GET",
+        &format!(
+            "/v1/domain/git/stashes?path={}",
+            encode_query_component(path)
+        ),
+        None,
+    )?;
+    decode_domain_git_stashes(value)
 }
 
 /// Read the aggregated diff line counts used by the desktop pane pill. A
@@ -1159,6 +1200,38 @@ mod tests {
             git_status_path(r"C:\work dir?x#1", true),
             "/v1/domain/git/status?path=C%3A%5Cwork%20dir%3Fx%231&fast=1"
         );
+    }
+
+    #[test]
+    fn domain_git_stashes_contract_preserves_non_git_and_entries() {
+        assert!(decode_domain_git_stashes(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": false,
+            "stashes": []
+        }))
+        .unwrap()
+        .is_none());
+
+        let stashes = decode_domain_git_stashes(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "stashes": [{"reference": "stash@{0}", "message": "wip"}]
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(stashes, vec![StashEntry {
+            reference: "stash@{0}".to_string(),
+            message: "wip".to_string(),
+        }]);
+        assert!(decode_domain_git_stashes(json!({
+            "ok": true,
+            "source": "tauri",
+            "is_repo": true,
+            "stashes": []
+        }))
+        .is_err());
     }
 
     #[test]

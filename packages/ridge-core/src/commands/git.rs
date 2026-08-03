@@ -1777,7 +1777,7 @@ pub async fn git_push_tag(repo_root: String, name: String) -> Result<String, Str
 // ── Stash（贮藏，对标 VSCode Git Graph）──────────────────────────────────────
 
 /// 一条 stash。`reference` 如 `stash@{0}`；`message` 为描述。
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StashEntry {
     pub reference: String,
     pub message: String,

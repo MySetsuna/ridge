@@ -1262,6 +1262,50 @@ pub async fn domain_git_branches(
     }
 }
 
+/// Read the kernel-owned stash projection. Repository detection happens before
+/// `git stash list`, so confirmed non-Git roots never spawn a stash process.
+pub async fn domain_git_stashes(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<GitQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let path = q.path;
+    let detect_path = path.clone();
+    let is_repo = tokio::task::spawn_blocking(move || {
+        ridge_core::commands::git::find_git_repo_root(detect_path).is_some()
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !is_repo {
+        return Ok(Json(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": false,
+            "path": path,
+            "stashes": [],
+        })));
+    }
+    match ridge_core::commands::git::git_stash_list(path.clone()).await {
+        Ok(stashes) => Ok(Json(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "path": path,
+            "stashes": stashes,
+        }))),
+        Err(error) => Ok(Json(json!({
+            "ok": false,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "path": path,
+            "error": error,
+        }))),
+    }
+}
+
 /// Read the aggregated diff counts used by desktop PaneGitStatus. Repository
 /// discovery happens before `git diff`, so confirmed non-Git roots return a
 /// healthy negative result and do not emit repeated Git errors.
@@ -1512,6 +1556,28 @@ mod tests {
         assert_eq!(response["source"], "ridge-kernel");
         assert_eq!(response["is_repo"], false);
         assert_eq!(response["branches"], json!([]));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn git_stashes_confirms_non_repository_without_spawning_stash() {
+        let root = std::env::temp_dir().join(format!("ridge-kernel-non-git-stash-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let response = domain_git_stashes(
+            State(test_state()),
+            test_headers(),
+            Query(GitQuery {
+                path: root.to_string_lossy().into_owned(),
+                fast: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["source"], "ridge-kernel");
+        assert_eq!(response["is_repo"], false);
+        assert_eq!(response["stashes"], json!([]));
         let _ = std::fs::remove_dir_all(root);
     }
 
