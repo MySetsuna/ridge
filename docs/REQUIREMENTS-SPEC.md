@@ -23,8 +23,10 @@
 - 类型：`FIX`
 - 关联：`CONTRACT-iteration-65.md` 目标 7。
 - 原始意图：ridge 粘贴多行时，行序不得颠倒、交错或错乱。
-- 当前证据：`RidgePane.pasteIntoPane` 将文本编码为单一 bracketed-paste payload，并以
-  `(workspaceId,paneId)` FIFO 队列投递；该代码已随 `v0.1.9` 发布，但现场仍失败。
+- 当前证据：`RidgePane`、LAN/Cloud `RemoteLink` 现先以
+  `paneInputGate` 占位异步 clipboard/image 读取，再以单一 bracketed-paste payload
+  投递；键入、拖放、Agent/MCP 与既有 PTY/RPC FIFO 共用复合 `(workspaceId,paneId)` 出口。
+  gate、PTY FIFO、Pane RPC、LAN/Cloud 与 host-topology 定向测已绿；真实 ConPTY/手机现场仍待补。
 - 目标行为：本机、接入 pane、Remote pane 的一次粘贴皆保持源字符与行序；同 pane 后续键入、
   MCP 注入、拖放路径不得越过粘贴 payload。
 - 范围：桌面/Remote 终端粘贴入口、每 pane 写队列、PTY stdin 与 delta mirror 测试。
