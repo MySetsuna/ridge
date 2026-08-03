@@ -1,15 +1,14 @@
 # Iteration 100 — Remote sidebar Query and Agent Commune parity
 
 Date: 2026-08-03  
-Status: implementation complete; release intentionally deferred by the daily
-publication cap
+Status: implementation complete; formal release `v0.1.54` published
 
 ## Scope
 
 This slice carried forward the approved mobile Remote/PWA and Agent Commune
-requirements without creating a new version. It closes the deterministic code
-gaps while keeping physical-device, public-network, and installed-PWA evidence
-as explicit external gates.
+requirements and used the one user-authorized publication exception for the
+day. It closes the deterministic code gaps while keeping physical-device,
+public-network, and installed-PWA evidence as explicit external gates.
 
 ## Delivered
 
@@ -42,11 +41,14 @@ as explicit external gates.
   part of the commit.
 - Commits: `1045165` (Remote Query/PWA), `89cfeae` (Agent Commune parity), both
   pushed to `origin/main`; worktree clean.
+- Release workflow `30780114578` completed all five jobs successfully. Release
+  `v0.1.54` is published with 12 matching desktop/CLI assets:
+  `https://github.com/MySetsuna/ridge/releases/tag/v0.1.54`.
+- Remote/Cloud workflow `30780128512` completed successfully for `v0.1.54`.
 
 ## Remaining gates
 
 Physical notch-device/PWA-installed interaction, public Cloud/WebRTC four-path
 Remote evidence, WebView2 heap soak, branch-authoritative Query key population,
 and full dual-window/dual-Host proof remain pending. They are not inferred from
-local tests or the formal `v0.1.53` release.
-
+local tests or the formal `v0.1.54` release.

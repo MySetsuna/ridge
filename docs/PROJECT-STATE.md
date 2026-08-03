@@ -29,7 +29,8 @@ Remote groups support serialized optimistic CRUD, leader, color, and ordering
 controls. Full Vitest is 144 files / 1486 passed / 1 skipped; `pnpm check` is
 0/0; Rust teammate tests are 8/8; desktop/mobile builds and LAN E2E pass.
 Archive: `docs/iterations/2026-08-03-iteration-100-remote-sidebar-agent-parity.md`.
-No new release was created under the daily publication cap; physical-device,
+Release `v0.1.54` is formal with 12 matching assets (workflow
+`30780114578`); Remote/Cloud workflow `30780128512` succeeded. Physical-device,
 public Cloud/WebRTC, WebView2 heap, and dual-window/dual-Host gates remain.
 
 ## Iteration 99 update (2026-08-03)
