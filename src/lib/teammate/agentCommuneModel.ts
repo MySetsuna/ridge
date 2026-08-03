@@ -101,12 +101,30 @@ export function agentCardStatus(
  * state so border/highlight and card status never drift independently. */
 export type AgentPaneStatus = Exclude<AgentCardStatus, 'completed'>;
 
+export type AgentAttention = 'waiting' | 'idle' | 'stopped';
+
 export function agentPaneStatus(
   profile: AgentStatusProfile,
   pendingApproval: boolean,
 ): AgentPaneStatus {
   const status = agentCardStatus(profile, pendingApproval);
   return status === 'completed' ? 'idle' : status;
+}
+
+/** Attention is emitted only on a meaningful transition; initial idle is neutral. */
+export function agentAttentionForTransition(
+  previousStatus: AgentPaneStatus | null | undefined,
+  currentStatus: AgentPaneStatus,
+  pendingApproval: boolean,
+  profileStatus?: string,
+): AgentAttention | null {
+  if (pendingApproval) return 'waiting';
+  if (profileStatus === 'Disappeared') return 'stopped';
+  return previousStatus === 'working' && currentStatus === 'idle' ? 'idle' : null;
+}
+
+export function agentAttentionPriority(attention: AgentAttention): number {
+  return attention === 'waiting' ? 3 : attention === 'stopped' ? 2 : 1;
 }
 
 const STATUS_PRIORITY: readonly AgentCardStatus[] = ['waiting', 'working', 'stopped', 'idle', 'completed'];

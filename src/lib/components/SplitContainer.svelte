@@ -561,6 +561,8 @@ import {
             ? 'ring-2 ring-inset ring-amber-400/75'
             : paneAttention === 'stopped'
                 ? 'ring-2 ring-inset ring-red-400/75'
+                : paneAttention === 'idle'
+                    ? 'ring-2 ring-inset ring-sky-400/75'
                 : ''}"
         >
           {#if $paneDragSourceId && $paneDragSourceId !== node.id}
@@ -659,6 +661,8 @@ import {
                     ? '智能体等待审批（点击取消标记）'
                     : attention === 'stopped'
                       ? '智能体已停止（点击重新标记）'
+                      : attention === 'idle'
+                        ? '智能体已空闲（点击取消标记）'
                       : grp
                         ? `编组「${grp.name}」${isAgent ? ' · 运行中' : ''}（点击取消标记智能体）`
                         : isAgent
@@ -670,6 +674,8 @@ import {
                     ? '智能体等待审批'
                     : attention === 'stopped'
                       ? '智能体已停止'
+                      : attention === 'idle'
+                        ? '智能体已空闲'
                       : grp
                         ? `编组「${grp.name}」${isAgent ? ' · 运行中' : ''}（点击取消标记智能体）`
                         : isAgent
@@ -684,6 +690,8 @@ import {
                     ? 'border-amber-400/70 bg-amber-500/15 text-amber-300'
                     : attention === 'stopped'
                       ? 'border-red-400/70 bg-red-500/15 text-red-300'
+                      : attention === 'idle'
+                        ? 'border-sky-400/70 bg-sky-500/15 text-sky-300'
                       : grp
                         ? ''
                         : isAgent

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_HISTORY_REFRESH_INTERVAL_MS,
+  agentAttentionForTransition,
+  agentAttentionPriority,
   agentCardStatus,
   agentPaneStatus,
   agentStatusLabel,
@@ -41,6 +43,14 @@ describe('agent commune view model', () => {
     expect(agentPaneStatus({ status: 'Suspended', activity: 'idle' }, false)).toBe('stopped');
     expect(agentPaneStatus({ status: 'Idle', activity: 'idle' }, false)).toBe('idle');
     expect(aggregateAgentCardStatus(['completed', 'working', 'waiting'])).toBe('waiting');
+  });
+
+  it('emits idle attention only after working-to-idle and keeps approval priority', () => {
+    expect(agentAttentionForTransition(undefined, 'idle', false, 'Idle')).toBeNull();
+    expect(agentAttentionForTransition('working', 'idle', false, 'Idle')).toBe('idle');
+    expect(agentAttentionForTransition('working', 'waiting', true, 'Working')).toBe('waiting');
+    expect(agentAttentionForTransition('working', 'stopped', false, 'Disappeared')).toBe('stopped');
+    expect(agentAttentionPriority('waiting')).toBeGreaterThan(agentAttentionPriority('idle'));
   });
 
   it('refreshes host-wide history on a five-minute cadence, not every roster poll', () => {
