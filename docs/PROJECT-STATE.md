@@ -7,7 +7,8 @@
 
 ## Current snapshot (iteration 134, 2026-08-03)
 
-- `wind` `main` is pushed at `042e30b` (settings implementation `a3d6e81`).
+- `wind` `main` is pushed at `599a1d1` (settings implementation `a3d6e81`,
+  settings-port guard `042e30b`).
   Settings now defers shell/WSL/VS
   discovery until the Terminal tab is selected and the first paint is idle;
   Agent preview and wallpaper URL work use the same cancelable idle boundary
@@ -17,8 +18,8 @@
   preview derivation is linear in the theme count.
 - Default-CWD synchronization is latest-value, trailing-debounced, and
   lifecycle-aware. Terminal host settings subscriptions ignore unrelated
-  setting writes, so theme/scrollback changes do not schedule redundant theme
-  bridge work or RPC calls.
+  setting writes, while theme changes retain propagation and coalesce to one
+  animation-frame bridge push.
 - Focused settings guard tests: 4 passed; `pnpm check`: 0 errors / 0 warnings;
   full Vitest: 147 files / 1515 passed / 1 skipped. No release or publication
   was made because `v0.1.54` consumed today's allowance.

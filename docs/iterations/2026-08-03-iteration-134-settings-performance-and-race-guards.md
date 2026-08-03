@@ -29,7 +29,9 @@ notified the theme bridge for fields that had not changed.
   coalesces rapid text input to the latest value, and clears timers when the
   page is destroyed. Failed sends do not repeat on unrelated setting changes.
 - `hostPorts.ts` deduplicates the `(scrollback, font family, default shell)`
-  tuple before notifying the terminal theme bridge.
+  tuple before notifying the terminal theme bridge; the active theme id remains
+  in the snapshot so theme changes still propagate. The bridge coalesces rapid
+  theme notifications into one animation-frame push.
 - `SettingsPanel.test.ts` guards the lazy boundary, no-blur contract,
   generation checks, image loading policy, and default-CWD deduplication.
 
@@ -40,7 +42,7 @@ notified the theme bridge for fields that had not changed.
 - `pnpm exec vitest run --reporter=dot`: 147 files / 1515 passed / 1 skipped.
 - `pnpm check`: 0 errors / 0 warnings.
 - `git diff --check`: clean.
-- Pushed commits: `a3d6e81`, `042e30b` to `origin/main`.
+- Pushed commits: `a3d6e81`, `042e30b`, `599a1d1` to `origin/main`.
 
 ## Boundaries
 
