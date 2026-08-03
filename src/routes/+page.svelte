@@ -1262,10 +1262,16 @@ function expandSidebar(minWidth = 0) {
     let unsubDefaultCwd: (() => void) | undefined;
     let unlistenDrop: (() => void) | undefined;
     let appReadyTimeout: ReturnType<typeof setTimeout> | undefined;
+    let appReadySignaled = false;
+    const signalAppReady = () => {
+      if (appReadySignaled) return;
+      appReadySignaled = true;
+      window.dispatchEvent(new CustomEvent('ridge:app-ready'));
+    };
     // Register before workspace restore IPC; otherwise the one-shot pane
     // event can be lost and the splash waits for the 5s fallback timeout.
     const onFirstPaneAttached = () => {
-      window.dispatchEvent(new CustomEvent('ridge:app-ready'));
+      signalAppReady();
     };
     window.addEventListener('ridge:pane-attached', onFirstPaneAttached, { once: true });
 
@@ -1388,6 +1394,9 @@ function expandSidebar(minWidth = 0) {
       // 工作区就绪后强制 fit 一次：web-remote/cloud-controller 连接后若漏了这次
       // fit，pane 终端不铺满（容器尺寸已定但 PTY cols/rows 未跟随）。
       scheduleForceFitActivePanes();
+      // ensureActiveWorkspace is the readiness boundary even if a child Pane
+      // emitted its mount event before this parent listener was installed.
+      signalAppReady();
       // Saved-workspace metadata is not needed to paint the first terminal.
       // Keep it off the critical path so slow disk/kernel IPC cannot hold the
       // desktop splash after the first pane is already interactive.
@@ -1397,7 +1406,7 @@ function expandSidebar(minWidth = 0) {
       // 等待首个终端面板就绪后关闭 loader
       // 兜底：5秒后无论如何关闭 loader，避免异常阻塞
       appReadyTimeout = setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('ridge:app-ready'));
+        signalAppReady();
       }, 5000);
 
       // 检查初始最大化状态
