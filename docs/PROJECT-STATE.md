@@ -18,6 +18,12 @@ Cloud、host-topology Remote 共用，既有 PTY/RPC 队列仍负责字节上限
 `docs/iterations/2026-08-03-iteration-99-paste-intent-order.md`。
 真实 Windows ConPTY、手机与公网 timing 仍待用户轨，不冒充完成。
 
+Release `v0.1.53` is formal with 12 matching assets (workflow
+`30777692897`); Remote/Cloud workflow `30777703101` succeeded. Worktree is
+clean and `origin/main` is synchronized. Physical Windows ConPTY, phone,
+public Remote timing, WebView2 heap, and dual-window/dual-Host evidence remain
+external gates.
+
 ## Iteration 98 update (2026-08-03)
 
 Desktop terminal link fidelity is now fixed at the native-parser delta boundary.
