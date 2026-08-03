@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Check, Crown, History, Send, ShieldAlert, X } from 'lucide-svelte';
+  import { ArrowDown, ArrowUp, Check, Crown, History, Palette, Send, ShieldAlert, X } from 'lucide-svelte';
   import type {
     HitlPendingItem,
     OrchestrationHealth,
@@ -18,7 +18,9 @@
   } from './teamRosterScope';
   import {
     buildAgentHistoryGroups,
+    reorderAgentGroups,
     shouldRefreshAgentHistory,
+    toggleAgentGroupLeader,
   } from '$lib/teammate/agentCommuneModel';
   import {
     fetchRemoteAgentHistory,
@@ -64,6 +66,10 @@
   let newGroupName = $state('');
   let groupBusy = $state(false);
   let groupNote = $state('');
+  /** Keep an optimistic mutation alive until the host confirms it. */
+  let pendingGroups: { workspaceId: string; groups: TeammateGroup[] } | null = null;
+  let confirmedGroups: TeammateGroup[] = [];
+  let groupWrite: Promise<void> | null = null;
   const historyGroups = $derived(buildAgentHistoryGroups(history));
   const scopeGuard = createTeamRosterScopeGuard();
   let currentScopeKey = '';
@@ -92,28 +98,48 @@
     return `remote-${Date.now().toString(36)}`;
   }
 
-  async function invalidateRosterQuery(): Promise<void> {
-    const rosterWorkspaceId = normalizeTeamRosterWorkspaceId(workspaceId);
+  async function invalidateRosterQuery(scopeWorkspaceId = workspaceId): Promise<void> {
+    const rosterWorkspaceId = normalizeTeamRosterWorkspaceId(scopeWorkspaceId);
     if (!queryClient || !rosterWorkspaceId) return;
     await queryClient.invalidateQueries?.({
       queryKey: remoteQueryKeys.teamRoster(remoteSessionId(ws), rosterWorkspaceId),
     });
   }
 
-  async function persistGroups(next: TeammateGroup[]): Promise<void> {
-    if (!workspaceId || groupBusy) return;
-    groupBusy = true;
-    groupNote = '';
-    try {
-      await ws.setTeammateGroups(workspaceId, next);
-      groups = next;
-      await invalidateRosterQuery();
-      groupNote = '编组已保存';
-    } catch (e) {
-      groupNote = `保存失败：${e instanceof Error ? e.message : String(e)}`;
-    } finally {
-      groupBusy = false;
-    }
+  async function flushGroups(): Promise<void> {
+    if (!workspaceId || groupWrite) return;
+    groupWrite = (async () => {
+      while (pendingGroups) {
+        const pending = pendingGroups;
+        pendingGroups = null;
+        groupBusy = true;
+        groupNote = '';
+        try {
+          await ws.setTeammateGroups(pending.workspaceId, pending.groups);
+          confirmedGroups = pending.groups;
+          await invalidateRosterQuery(pending.workspaceId);
+          groupNote = '编组已保存';
+        } catch (e) {
+          // Preserve a newer optimistic edit; only roll back when this was the
+          // last queued mutation and the host rejected it.
+          if (!pendingGroups) groups = confirmedGroups;
+          groupNote = `保存失败：${e instanceof Error ? e.message : String(e)}`;
+        } finally {
+          groupBusy = false;
+        }
+      }
+    })().finally(() => {
+      groupWrite = null;
+      if (pendingGroups) void flushGroups();
+    });
+    await groupWrite;
+  }
+
+  function persistGroups(next: TeammateGroup[]): void {
+    if (!workspaceId) return;
+    groups = next;
+    pendingGroups = { workspaceId, groups: next };
+    void flushGroups();
   }
 
   function createGroup(): void {
@@ -145,6 +171,16 @@
     void persistGroups(groups.map((g) => g.id === group.id ? { ...g, memberAgentIds } : g));
   }
 
+  function toggleLeader(group: TeammateGroup, agentId: string): void {
+    const next = toggleAgentGroupLeader(group, agentId);
+    if (next === group) return;
+    persistGroups(groups.map((g) => g.id === group.id ? next : g));
+  }
+
+  function moveGroup(group: TeammateGroup, direction: -1 | 1): void {
+    persistGroups(reorderAgentGroups(groups, group.id, direction));
+  }
+
   /** 组员 agent_id → 花名册条目（供编组视图渲染名字 / 状态 / 组长冠）。 */
   function memberOf(agentId: string) {
     return topo.roster.find((m) => m.id === agentId);
@@ -172,7 +208,7 @@
   }
 
   function cwdFor(m: TeammateRosterMember): string {
-    return panes.find((pane) => pane.id === m.paneId)?.cwd?.trim() ?? '';
+    return m.cwd?.trim() || panes.find((pane) => pane.id === m.paneId)?.cwd?.trim() || '';
   }
 
   async function resumeHistory(reply: AgentHistoryReply): Promise<void> {
@@ -238,9 +274,12 @@
       topo = t;
       // groups 随 topology 快照下发（TeammateTopology 类型未含，运行时扩展读取）。
       const rawGroups = (t as TeammateTopology & { groups?: unknown }).groups;
-      groups = Array.isArray(rawGroups)
-        ? rawGroups.map(parseRemoteGroup).filter((g): g is TeammateGroup => g !== null)
-        : [];
+      if (!pendingGroups && !groupWrite) {
+        groups = Array.isArray(rawGroups)
+          ? rawGroups.map(parseRemoteGroup).filter((g): g is TeammateGroup => g !== null)
+          : [];
+        confirmedGroups = groups;
+      }
       pending = p;
       health = h;
       onAttentionChange?.(t.roster
@@ -364,7 +403,7 @@
     {#if groups.length === 0}
       <p class="empty">暂无编组（在桌面端「编组」里创建）</p>
     {:else}
-      {#each groups as g (g.id)}
+      {#each groups as g, groupIndex (g.id)}
         <div class="group">
           <div class="group-bar" style="background:{g.color}"></div>
           <div class="group-head">
@@ -375,6 +414,26 @@
               onchange={(e) => renameGroup(g, e.currentTarget.value)}
             />
             <span class="role">{g.memberAgentIds.length}</span>
+            <label class="group-color" title="Change group color" aria-label={`Change color for ${g.name}`}>
+              <Palette class="w-3 h-3" />
+              <input type="color" value={g.color} onchange={(e) => persistGroups(groups.map((item) => item.id === g.id ? { ...item, color: e.currentTarget.value } : item))} />
+            </label>
+            <button
+              class="group-move"
+              type="button"
+              title="Move group up"
+              aria-label={`Move ${g.name} up`}
+              disabled={groupBusy || groupIndex === 0}
+              onclick={() => moveGroup(g, -1)}
+            ><ArrowUp class="w-3 h-3" /></button>
+            <button
+              class="group-move"
+              type="button"
+              title="Move group down"
+              aria-label={`Move ${g.name} down`}
+              disabled={groupBusy || groupIndex === groups.length - 1}
+              onclick={() => moveGroup(g, 1)}
+            ><ArrowDown class="w-3 h-3" /></button>
             <button
               class="group-delete"
               type="button"
@@ -394,7 +453,12 @@
               {#if m}
                 <div class="group-member">
                   {@render memberCard(m, g.leaderAgentId === aid)}
-                  <button class="member-remove" title="移出编组" onclick={() => toggleMember(g, aid)}>−</button>
+                  <div class="member-actions">
+                    <button class:leader-active={g.leaderAgentId === aid} class="member-leader" title={g.leaderAgentId === aid ? 'Clear group leader' : 'Set group leader'} aria-label={g.leaderAgentId === aid ? `Clear ${m.name} as group leader` : `Set ${m.name} as group leader`} onclick={() => toggleLeader(g, aid)}>
+                      <Crown class="w-3 h-3" />
+                    </button>
+                    <button class="member-remove" title="Remove from group" aria-label={`Remove ${m.name} from group`} onclick={() => toggleMember(g, aid)}>−</button>
+                  </div>
                 </div>
               {:else}
                 <div class="member-card offline">
@@ -571,6 +635,11 @@
   .group-bar{height:3px}
   .group-head{display:flex;align-items:center;gap:8px;padding:6px 10px}
   .group-head .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;font-size:12px}
+  .group-color{position:relative;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;color:var(--rg-fg-muted);cursor:pointer;flex-shrink:0}
+  .group-color input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
+  .group-move{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--rg-fg-muted);cursor:pointer;line-height:1}
+  .group-move:disabled{opacity:.3;cursor:default}
+  .group-move:not(:disabled):active{color:var(--rg-accent);border-color:var(--rg-border)}
   .group-delete{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border:1px solid var(--rg-border);border-radius:5px;background:transparent;color:var(--rg-fg-muted);cursor:pointer;line-height:1}
   .group-delete:disabled{opacity:.45;cursor:default}
   .group-delete:not(:disabled):active{color:var(--rg-ansi-red)}
@@ -578,9 +647,11 @@
   .group-name{flex:1;min-width:0;border:1px solid transparent;background:transparent;color:var(--rg-fg);font-size:12px;font-weight:600;outline:none}
   .group-name:focus{border-color:var(--rg-border);border-radius:4px;padding:1px 4px}
   .group-member{position:relative}
-  .member-remove{position:absolute;right:8px;bottom:8px;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border:1px solid var(--rg-border);border-radius:5px;background:var(--rg-bg);color:var(--rg-fg-muted);cursor:pointer;line-height:1}
+  .member-actions{position:absolute;right:8px;bottom:8px;display:flex;align-items:center;gap:3px}
+  .member-leader,.member-remove{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border:1px solid var(--rg-border);border-radius:5px;background:var(--rg-bg);color:var(--rg-fg-muted);cursor:pointer;line-height:1}
+  .member-leader.leader-active{color:#f5c242;border-color:#f5c242}
   .member-add{display:block;width:calc(100% - 16px);margin:4px 8px 7px;padding:3px 6px;border:1px dashed var(--rg-border);border-radius:5px;background:transparent;color:var(--rg-fg-muted);font-size:10px;text-align:left;cursor:pointer}
-  .member-add:active,.member-remove:active{color:var(--rg-accent)}
+  .member-add:active,.member-leader:active,.member-remove:active{color:var(--rg-accent)}
   .history-group{border:1px solid var(--rg-border);border-radius:8px;overflow:hidden;margin:2px 0}
   .history-item{padding:7px 9px;border-top:1px solid var(--rg-border);font-size:11px;line-height:1.35}
   .history-head{display:flex;align-items:center;gap:6px;min-width:0}

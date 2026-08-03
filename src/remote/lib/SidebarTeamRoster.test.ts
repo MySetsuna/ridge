@@ -17,6 +17,7 @@ describe('remote Agent drawer alignment contract', () => {
   });
 
   it('maps each Agent card to its live pane CWD and truncates safely', () => {
+    expect(source).toContain("m.cwd?.trim() || panes.find((pane) => pane.id === m.paneId)?.cwd?.trim() || ''");
     expect(source).toContain('panes.find((pane) => pane.id === m.paneId)?.cwd?.trim()');
     expect(source).toContain('<span class="member-cwd" title={cwd}>{cwd}</span>');
     expect(source).toContain('.member-cwd{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap');
@@ -48,5 +49,17 @@ describe('remote Agent drawer alignment contract', () => {
     expect(source).toContain('globalThis.confirm(`Delete Agent group "${group.name}"?`)');
     expect(source).toContain('persistGroups(groups.filter((g) => g.id !== group.id))');
     expect(source).toContain('title="Delete group"');
+  });
+
+  it('keeps group mutations ordered and exposes leader/order/color controls', () => {
+    expect(source).toContain('pendingGroups: { workspaceId: string; groups: TeammateGroup[] } | null');
+    expect(source).toContain('while (pendingGroups)');
+    expect(source).toContain('reorderAgentGroups(groups, group.id, direction)');
+    expect(source).toContain('toggleAgentGroupLeader(group, agentId)');
+    expect(source).toContain('Move group up');
+    expect(source).toContain('Move group down');
+    expect(source).toContain('type="color"');
+    expect(source).toContain('class:leader-active={g.leaderAgentId === aid}');
+    expect(source).toContain('.member-actions{position:absolute');
   });
 });

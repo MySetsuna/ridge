@@ -6,7 +6,9 @@ import {
   aggregateAgentCardStatus,
   buildAgentHistoryGroups,
   normalizeAgentIdentity,
+  reorderAgentGroups,
   shouldRefreshAgentHistory,
+  toggleAgentGroupLeader,
 } from './agentCommuneModel';
 
 describe('agent commune view model', () => {
@@ -39,5 +41,20 @@ describe('agent commune view model', () => {
     expect(shouldRefreshAgentHistory(0, 100)).toBe(true);
     expect(shouldRefreshAgentHistory(100, 100 + AGENT_HISTORY_REFRESH_INTERVAL_MS - 1)).toBe(false);
     expect(shouldRefreshAgentHistory(100, 100 + AGENT_HISTORY_REFRESH_INTERVAL_MS)).toBe(true);
+  });
+
+  it('reorders groups immutably and keeps boundary taps no-op', () => {
+    const groups = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+    expect(reorderAgentGroups(groups, 'b', -1).map((g) => g.id)).toEqual(['b', 'a', 'c']);
+    expect(reorderAgentGroups(groups, 'b', 1).map((g) => g.id)).toEqual(['a', 'c', 'b']);
+    expect(reorderAgentGroups(groups, 'a', -1).map((g) => g.id)).toEqual(['a', 'b', 'c']);
+    expect(groups.map((g) => g.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('toggles only a real group member as leader', () => {
+    const group = { id: 'g', memberAgentIds: ['a', 'b'], leaderAgentId: 'a' };
+    expect(toggleAgentGroupLeader(group, 'a').leaderAgentId).toBeUndefined();
+    expect(toggleAgentGroupLeader(group, 'b').leaderAgentId).toBe('b');
+    expect(toggleAgentGroupLeader(group, 'ghost')).toBe(group);
   });
 });

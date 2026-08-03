@@ -21,6 +21,36 @@ export interface AgentHistoryGroup<T extends AgentHistoryReplyLike = AgentHistor
   replies: T[];
 }
 
+/**
+ * Reorder the persisted group list without mutating the live topology.
+ * Remote controls use this same pure operation as the desktop store so an
+ * optimistic tap cannot accidentally reorder a stale array in place.
+ */
+export function reorderAgentGroups<T extends { id: string }>(
+  groups: readonly T[],
+  groupId: string,
+  direction: -1 | 1,
+): T[] {
+  const index = groups.findIndex((group) => group.id === groupId);
+  const target = index + direction;
+  if (index < 0 || target < 0 || target >= groups.length) return [...groups];
+  const next = [...groups];
+  [next[index], next[target]] = [next[target], next[index]];
+  return next;
+}
+
+/** Toggle a group leader, refusing identities that are not members. */
+export function toggleAgentGroupLeader<T extends { memberAgentIds: readonly string[]; leaderAgentId?: string }>(
+  group: T,
+  agentId: string,
+): T {
+  if (!group.memberAgentIds.includes(agentId)) return group;
+  return {
+    ...group,
+    leaderAgentId: group.leaderAgentId === agentId ? undefined : agentId,
+  };
+}
+
 /** Stable identity: history grouping must not depend on cwd or display casing. */
 export function normalizeAgentIdentity(agent: string): string {
   const normalized = agent.trim().toLocaleLowerCase();
