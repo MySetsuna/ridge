@@ -12,6 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::registry::{clear_registry, read_endpoint, KernelEndpoint};
+use ridge_core::commands::git::ScmRepoStatus;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct KernelPtyInfo {
@@ -229,6 +230,44 @@ fn decode_domain_snapshot<T: DeserializeOwned>(value: Value) -> Result<T, String
     serde_json::from_value(value).map_err(|error| format!("decode kernel domain response: {error}"))
 }
 
+fn decode_domain_git_status(value: Value) -> Result<Option<ScmRepoStatus>, String> {
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("kernel Git status request failed")
+            .to_string());
+    }
+    if value.get("source").and_then(Value::as_str) != Some("ridge-kernel") {
+        return Err("kernel Git status response has unexpected source".to_string());
+    }
+    if value.get("is_repo").and_then(Value::as_bool) != Some(true) {
+        return Ok(None);
+    }
+    let status = value
+        .get("status")
+        .cloned()
+        .ok_or_else(|| "kernel Git status response omitted status".to_string())?;
+    serde_json::from_value(status)
+        .map(Some)
+        .map_err(|error| format!("decode kernel Git status response: {error}"))
+}
+
+fn encode_query_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0F) as usize] as char);
+        }
+    }
+    encoded
+}
+
 /// Read the kernel-owned workspace identity/topology projection.
 pub fn read_domain_workspaces(
     endpoint: &KernelEndpoint,
@@ -252,6 +291,26 @@ pub fn read_domain_remote_hosts(
 ) -> Result<KernelRemoteHostsSnapshot, String> {
     let value = request_json(endpoint, "GET", "/v1/domain/remote-hosts", None)?;
     decode_domain_snapshot(value)
+}
+
+/// Read one Git status snapshot from the kernel-owned Git domain. A `None`
+/// result is a confirmed non-Git path; transport, auth, malformed payload, and
+/// kernel Git failures remain visible errors so callers cannot turn a broken
+/// kernel into a healthy empty SCM panel.
+pub fn read_domain_git_status(
+    endpoint: &KernelEndpoint,
+    path: &str,
+) -> Result<Option<ScmRepoStatus>, String> {
+    let value = request_json(
+        endpoint,
+        "GET",
+        &format!(
+            "/v1/domain/git/status?path={}",
+            encode_query_component(path)
+        ),
+        None,
+    )?;
+    decode_domain_git_status(value)
 }
 
 /// Discover PTYs owned by the long-lived kernel process.
@@ -910,6 +969,58 @@ mod tests {
         }))
         .unwrap_err();
         assert_eq!(source, "kernel domain response has unexpected source");
+    }
+
+    #[test]
+    fn domain_git_status_contract_preserves_non_git_and_status_shape() {
+        assert!(decode_domain_git_status(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": false,
+            "path": "C:/tmp"
+        }))
+        .unwrap()
+        .is_none());
+
+        let status = decode_domain_git_status(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "path": "C:/repo",
+            "status": {
+                "repo_root": "C:/repo",
+                "is_git_repo": true,
+                "current_branch": "main",
+                "ahead": 1,
+                "behind": 2,
+                "staged": [],
+                "changes": [],
+                "untracked": [],
+                "has_upstream": true
+            }
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(status.repo_root, "C:/repo");
+        assert_eq!(status.current_branch.as_deref(), Some("main"));
+        assert_eq!(status.ahead, 1);
+        assert_eq!(status.behind, 2);
+        assert!(status.has_upstream);
+
+        assert!(decode_domain_git_status(json!({
+            "ok": true,
+            "source": "tauri",
+            "is_repo": true
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn domain_git_status_query_component_is_url_encoded() {
+        assert_eq!(
+            encode_query_component(r"C:\work dir?x#1"),
+            "C%3A%5Cwork%20dir%3Fx%231"
+        );
     }
 
     #[test]

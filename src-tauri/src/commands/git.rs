@@ -52,9 +52,16 @@ pub async fn find_git_repos_below(path: String, max_depth: Option<usize>) -> Vec
 #[tauri::command]
 pub async fn get_scm_status(
     repo_root: String,
-    slot: Option<String>,
+    _slot: Option<String>,
 ) -> Result<ScmRepoStatus, String> {
-    ridge_core::commands::git::get_scm_status(repo_root, slot).await
+    tokio::task::spawn_blocking(move || {
+        let endpoint = crate::kernel_lifecycle::ensure_kernel_running()?;
+        ridge_kernel::client::read_domain_git_status(&endpoint, &repo_root)?.ok_or_else(|| {
+            format!("Not a git repo: {repo_root}")
+        })
+    })
+    .await
+    .map_err(|error| format!("kernel Git status task failed: {error}"))?
 }
 
 /// Remote first-paint variant; skips line-count subprocesses that the compact

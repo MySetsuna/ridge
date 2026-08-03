@@ -14,7 +14,7 @@
 //! - per-child timeout with **process-tree kill** (not just drop future);
 //! - acquire timeout so stale fan-out cannot queue forever under a hung git.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -1138,7 +1138,7 @@ fn canonicalize_cwd(p: &Path) -> String {
 }
 
 /// VSCode-风格的 Source Control 文件条目：既能表示已暂存，也能表示未暂存/未跟踪。
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScmFile {
     /// 工作区相对路径
     pub path: String,
@@ -1159,7 +1159,7 @@ pub struct ScmFile {
 }
 
 /// VSCode-风格的 repo 级状态摘要
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScmRepoStatus {
     pub repo_root: String,
     /// True when status collection reached a valid repository. A successful
