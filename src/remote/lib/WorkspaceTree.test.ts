@@ -19,4 +19,10 @@ describe('remote workspace popup safe-area contract', () => {
   it('shows an error when workspace creation returns no id', () => {
     expect(source).toContain("err = tr('mobile.workspaceSwitchFail');");
   });
+
+  it('keeps peek failures visible instead of converting them to an empty tree', () => {
+    expect(source).toContain('let peekErrors = $state(new Map<string, string>());');
+    expect(source).toContain('failure = e instanceof Error ? e.message : String(e);');
+    expect(source).toContain('<div class="pane-error" role="alert">{peekErrors.get(wsp.id)}</div>');
+  });
 });
