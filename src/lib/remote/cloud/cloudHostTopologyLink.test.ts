@@ -8,6 +8,7 @@ class FakeRpc {
   cancelledScopes: string[] = [];
   rejectClose = false;
   rejectWorkspaceClose = false;
+  rejectWorkspaceCreate = false;
   paneLayout: PaneNode | null = null;
   reconnectHooks = new Set<() => void>();
 
@@ -20,6 +21,11 @@ class FakeRpc {
       return this.rejectWorkspaceClose
         ? Promise.reject(new Error('workspace close failed'))
         : Promise.resolve(null);
+    }
+    if (method === 'create_workspace') {
+      return this.rejectWorkspaceCreate
+        ? Promise.reject(new Error('workspace create failed'))
+        : Promise.resolve('workspace-new');
     }
     if (method === 'get_pane_layout_for') return Promise.resolve(this.paneLayout);
     return new Promise(() => {});
@@ -74,6 +80,14 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
       { id: 'agent-pane', title: 'Agent', cwd: 'C:\\work\\agent', isAgent: true, agentState: 'busy', agentId: 'agent-1' },
       { id: 'idle-pane', title: undefined, cwd: '/tmp', isAgent: true, agentState: 'idle' },
     ]);
+  });
+
+  it('surfaces workspace create failures to the Host operation layer', async () => {
+    const rpc = new FakeRpc();
+    rpc.rejectWorkspaceCreate = true;
+    const link = linkWith(rpc);
+
+    await expect(link.createWorkspace('new')).rejects.toThrow('workspace create failed');
   });
 
   it('cancels one pane scope before close and blocks stale input/resize only for that pane', async () => {

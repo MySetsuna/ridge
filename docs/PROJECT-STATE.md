@@ -5,6 +5,17 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 149, 2026-08-03)
+
+- Remote workspace creation now surfaces Cloud Host and mobile Cloud RPC/auth
+  failures; an empty returned ID also renders an explicit failure instead of a
+  silent no-op. Successful creation keeps the existing switch/refresh path.
+- Focused Host/Cloud/WorkspaceTree tests: 44 passed. No release or version bump
+  was made; physical/public Remote, WebView2 heap soak, dual-window/dual-host,
+  and full Kernel authority evidence remain open.
+
+Archive: `docs/iterations/2026-08-03-iteration-149-remote-workspace-create-feedback.md`.
+
 ## Current snapshot (iteration 148, 2026-08-03)
 
 - Cloud Host and mobile Cloud pane projections now retain `isAgent` whenever
