@@ -30,12 +30,21 @@ the UI or remote adapters.
 - `cargo test -p ridge-core --lib`, Vitest, and `pnpm check`: full matrix
   recorded in the archive.
 - `git diff --check` and the requirements/iteration gates pass.
+- `pnpm build:remote:mobile`: passed; generated mobile PWA bundle and service
+  worker.
+- `pnpm verify:pwa`: passed (`standalone`, root scope, icons, service worker,
+  safe-area CSS, and no in-app install hook).
+- `pnpm e2e:rdg-lan`: passed for LAN desktop and mobile Remote paths with no
+  browser errors.
+- `pnpm e2e:rdg-mobile-keyboard`: passed for keyboard viewport convergence,
+  touch selection, copy visibility, and clean Console under a fresh Chromium
+  mobile context. This is emulation evidence, not physical-device proof.
 
 ## Remaining external gates
 
 Physical/public Remote, WebView2 heap soak, dual-window workspace singleton,
 remote Host attach/resize, and real mobile clean-profile extension attribution
 still require their respective runtime environments. They are not claimed by
-the source-level kernel migration.
+the source-level kernel migration or browser emulation.
 
 No version bump or release is made in this iteration.
