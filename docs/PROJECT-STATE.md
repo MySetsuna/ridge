@@ -5,9 +5,12 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
-## Current snapshot (iteration 135, 2026-08-03)
+## Current snapshot (iteration 136, 2026-08-03)
 
-- `wind` `main` is pushed at `f19b4e5`. Settings remain lazy and idle-bound;
+- `wind` `main` is at `e50083c`; startup kernel bootstrap is now asynchronous;
+  setup no longer blocks
+  the WebView on kernel detect-or-spawn, health polling, or host-topology I/O.
+  Settings remain lazy and idle-bound;
   the overlay has no full-window blur, default-CWD sync is latest-value and
   lifecycle-aware, terminal settings notifications deduplicate without
   dropping theme propagation, and theme bridge work coalesces to one frame.
@@ -23,7 +26,7 @@
   iteration gates pass. No release or publication was made because `v0.1.54`
   consumed today's allowance.
 
-Archive: `docs/iterations/2026-08-03-iteration-135-settings-blocking-offload.md`.
+Archive: `docs/iterations/2026-08-03-iteration-136-startup-kernel-bootstrap.md`.
 
 ## Iteration 133 update (2026-08-03)
 
