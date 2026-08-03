@@ -266,3 +266,98 @@ fn detached_kernel_survives_client_process_exit_and_second_attach() {
     assert_eq!(reattached.pid, endpoint.pid);
     assert!(ridge_kernel::client::health_ok(&reattached));
 }
+
+fn wait_for_kernel_marker(
+    endpoint: &KernelEndpoint,
+    pty_id: uuid::Uuid,
+    lease_id: uuid::Uuid,
+    marker: &str,
+) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut captured = Vec::new();
+    loop {
+        match ridge_kernel::client::poll_domain_pty_output(endpoint, pty_id, lease_id, 250, 32)
+            .expect("kernel PTY output poll")
+        {
+            ridge_kernel::client::KernelPtyOutput::Data(bytes) => {
+                captured.extend(bytes);
+                if String::from_utf8_lossy(&captured).contains(marker) {
+                    return captured;
+                }
+            }
+            ridge_kernel::client::KernelPtyOutput::Lagged => {
+                ridge_kernel::client::resync_domain_pty_output(endpoint, pty_id, lease_id)
+                    .expect("kernel PTY output resync");
+            }
+            ridge_kernel::client::KernelPtyOutput::Timeout => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "kernel PTY never produced marker {marker:?}; captured={:?}",
+            String::from_utf8_lossy(&captured)
+        );
+    }
+}
+
+#[test]
+fn kernel_pty_survives_client_detach_and_replays_after_cursor() {
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rdg"));
+    let data_dir = isolated_data_dir();
+    fs::create_dir_all(&data_dir).unwrap();
+    let _cleanup = KernelCleanup {
+        binary: binary.clone(),
+        data_dir: data_dir.clone(),
+    };
+    assert!(ensure_rdg(&binary, &data_dir).success());
+    let endpoint = wait_for_endpoint(&data_dir, Duration::from_secs(8));
+    let pty_id = uuid::Uuid::new_v4();
+
+    ridge_kernel::client::create_domain_pty(
+        &endpoint,
+        pty_id,
+        None,
+        Some(data_dir.to_string_lossy().as_ref()),
+        None,
+        "shell",
+        Some("ridge-interactive"),
+    )
+    .expect("create stable kernel PTY");
+
+    let first_lease = ridge_kernel::client::attach_domain_pty_output(&endpoint, pty_id, None)
+        .expect("attach first output lease");
+    ridge_kernel::client::write_domain_pty(
+        &endpoint,
+        pty_id,
+        b"echo RIDGE_KERNEL_REATTACH_ONE\r\n",
+    )
+    .expect("write first marker");
+    let _ = wait_for_kernel_marker(&endpoint, pty_id, first_lease, "RIDGE_KERNEL_REATTACH_ONE");
+
+    let latest_seq = ridge_kernel::client::list_domain_ptys(&endpoint)
+        .expect("list kernel PTYs")
+        .into_iter()
+        .find(|info| info.pty_id == pty_id)
+        .expect("stable PTY remains registered")
+        .next_seq
+        .saturating_sub(1);
+    ridge_kernel::client::detach_domain_pty_output(&endpoint, pty_id, first_lease)
+        .expect("detach desktop-side output lease");
+
+    // Simulate the desktop shell being gone: the kernel-owned child remains
+    // writable, and a replacement proxy resumes after the last consumed frame.
+    ridge_kernel::client::write_domain_pty(
+        &endpoint,
+        pty_id,
+        b"echo RIDGE_KERNEL_REATTACH_TWO\r\n",
+    )
+    .expect("write while desktop proxy is detached");
+    let second_lease =
+        ridge_kernel::client::attach_domain_pty_output(&endpoint, pty_id, Some(latest_seq))
+            .expect("reattach output lease after desktop restart");
+    let replayed =
+        wait_for_kernel_marker(&endpoint, pty_id, second_lease, "RIDGE_KERNEL_REATTACH_TWO");
+    assert!(String::from_utf8_lossy(&replayed).contains("RIDGE_KERNEL_REATTACH_TWO"));
+    ridge_kernel::client::detach_domain_pty_output(&endpoint, pty_id, second_lease)
+        .expect("detach replacement output lease");
+    ridge_kernel::client::destroy_domain_pty(&endpoint, pty_id).expect("destroy test PTY");
+}
