@@ -1,13 +1,26 @@
-//! 交互式 TUI 的会话抽象：把"输入回送 + 尺寸同步"与具体传输解耦。
+//! 交互式 TUI 的会话抽象：把输入、尺寸同步与具体传输解耦。
 //!
-//! 本轮提供 [`LocalPtySession`]（本地 shell，passthrough 验证 + 自用终端）。
-//! 后续（设计文档 §E4）将新增 `LanControllerSession`（连桌面 LAN host 的 WS 客户端）
-//! 与 `CloudControllerSession`（公网 WebRTC offerer），二者实现同一 [`Session`] trait，
-//! TUI 主循环 [`super::run_session`] 完全复用、无需改动。
+//! TUI shell 会话只连接长期运行的 `ridge-kernel` PTY。输出通过可取消的
+//! output lease 读取；外壳退出不会销毁 Kernel 子进程，后续可按稳定 pane
+//! UUID 重新接入。
+
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread;
 
 use anyhow::Result;
+use ridge_kernel::client::{
+    attach_domain_pty_output, create_domain_pty, destroy_domain_pty, detach_domain_pty_output,
+    list_domain_ptys, poll_domain_pty_output, resize_domain_pty, resync_domain_pty_output,
+    write_domain_pty, KernelPtyOutput,
+};
+use ridge_kernel::registry::KernelEndpoint;
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
+#[cfg(test)]
 use crate::pty::PtyBridge;
 
 /// 一个可交互的远端/本地终端会话：回送输入、同步尺寸。
@@ -21,28 +34,157 @@ pub trait Session {
     fn resize(&self, cols: u16, rows: u16) -> Result<()>;
 }
 
-/// 本地 shell 会话：直接复用 [`PtyBridge`]。
+/// TUI shell 会话：只持有外部 `ridge-kernel` 的稳定 PTY 引用。
 pub struct LocalPtySession {
-    bridge: PtyBridge,
+    backend: SessionBackend,
+}
+
+enum SessionBackend {
+    Kernel {
+        endpoint: KernelEndpoint,
+        id: Uuid,
+        stop: Arc<AtomicBool>,
+    },
+    #[cfg(test)]
+    Local(PtyBridge),
 }
 
 impl LocalPtySession {
-    /// 拉起本地 shell，返回会话 + 输出字节流。
+    /// 创建或复接外部 Kernel PTY，返回会话 + 输出字节流。
     pub fn spawn(
         shell: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
-        let (bridge, rx) = PtyBridge::spawn(shell, cwd)?;
-        Ok((Self { bridge }, rx))
+        Self::spawn_with_id(Uuid::new_v4(), shell, cwd)
+    }
+
+    /// 使用调用方拥有的稳定 pane UUID 创建或复接 PTY。
+    pub fn spawn_with_id(
+        id: Uuid,
+        shell: Option<&str>,
+        cwd: Option<&str>,
+    ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
+        let endpoint = match crate::kernel_ctl::ensure_kernel_running() {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                #[cfg(test)]
+                {
+                    let (bridge, rx) = PtyBridge::spawn(shell, cwd)?;
+                    return Ok((
+                        Self {
+                            backend: SessionBackend::Local(bridge),
+                        },
+                        rx,
+                    ));
+                }
+                #[cfg(not(test))]
+                return Err(anyhow::Error::msg(error));
+            }
+        };
+        let existing = list_domain_ptys(&endpoint)
+            .map_err(anyhow::Error::msg)?
+            .into_iter()
+            .find(|info| info.pty_id == id || info.id == id);
+        let created = existing.is_none();
+        let (pty_id, after_seq) = if let Some(info) = existing {
+            (info.pty_id, Some(info.next_seq.saturating_sub(1)))
+        } else {
+            let pty_id = create_domain_pty(
+                &endpoint,
+                id,
+                shell,
+                cwd,
+                None,
+                "shell",
+                Some("ridge-interactive"),
+            )
+            .map_err(anyhow::Error::msg)?;
+            (pty_id, None)
+        };
+        let lease_id = match attach_domain_pty_output(&endpoint, pty_id, after_seq) {
+            Ok(lease_id) => lease_id,
+            Err(error) => {
+                if created {
+                    let _ = destroy_domain_pty(&endpoint, pty_id);
+                }
+                return Err(anyhow::Error::msg(error));
+            }
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel(256);
+        spawn_output_pump(endpoint.clone(), pty_id, lease_id, stop.clone(), tx);
+        Ok((
+            Self {
+                backend: SessionBackend::Kernel {
+                    endpoint,
+                    id: pty_id,
+                    stop,
+                },
+            },
+            rx,
+        ))
     }
 }
 
 impl Session for LocalPtySession {
     fn send_input(&self, data: &[u8]) -> Result<()> {
-        self.bridge.write_input(data)
+        match &self.backend {
+            SessionBackend::Kernel { endpoint, id, .. } => {
+                write_domain_pty(endpoint, *id, data).map_err(anyhow::Error::msg)
+            }
+            #[cfg(test)]
+            SessionBackend::Local(bridge) => bridge.write_input(data),
+        }
     }
 
     fn resize(&self, cols: u16, rows: u16) -> Result<()> {
-        self.bridge.resize(cols, rows)
+        match &self.backend {
+            SessionBackend::Kernel { endpoint, id, .. } => {
+                resize_domain_pty(endpoint, *id, cols, rows).map_err(anyhow::Error::msg)
+            }
+            #[cfg(test)]
+            SessionBackend::Local(bridge) => bridge.resize(cols, rows),
+        }
     }
+}
+
+impl Drop for LocalPtySession {
+    fn drop(&mut self) {
+        if let SessionBackend::Kernel { stop, .. } = &self.backend {
+            // Kernel owns the child process. Stop only this shell's output
+            // lease; the PTY remains available for a later pane reattach.
+            stop.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn spawn_output_pump(
+    endpoint: KernelEndpoint,
+    pty_id: Uuid,
+    lease_id: Uuid,
+    stop: Arc<AtomicBool>,
+    tx: mpsc::Sender<Vec<u8>>,
+) {
+    thread::spawn(move || {
+        loop {
+            if stop.load(Ordering::Acquire) {
+                break;
+            }
+            match poll_domain_pty_output(&endpoint, pty_id, lease_id, 500, 64) {
+                Ok(KernelPtyOutput::Data(bytes)) if !bytes.is_empty() => {
+                    if tx.blocking_send(bytes).is_err() {
+                        break;
+                    }
+                }
+                Ok(KernelPtyOutput::Data(_)) | Ok(KernelPtyOutput::Timeout) => {}
+                Ok(KernelPtyOutput::Lagged) => {
+                    if resync_domain_pty_output(&endpoint, pty_id, lease_id).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = detach_domain_pty_output(&endpoint, pty_id, lease_id);
+    });
 }
