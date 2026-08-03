@@ -35,10 +35,15 @@ not interchangeable with a plain shell.
 - If the first pane wins the asynchronous kernel bootstrap race, the ordinary
   shell path enters the same singleton lifecycle helper before falling back;
   unit tests remain local and never spawn an external kernel.
-- Startup invokes `reattach_kernel_ptys` after saved workspace restore. It finds
-  the same pane UUID across a restored workspace (even if the workspace UUID was
-  regenerated), attaches the proxy, resumes after the kernel's latest output
-  sequence, and leaves the PTY process alive.
+- Startup invokes `reattach_kernel_ptys` after workspace restore. Both explicitly
+  saved `.ridge` files and unsaved tabs are represented in the close-time restore
+  manifest (unsaved tabs use private `session-workspaces/session-<workspace>.ridge`
+  snapshots). The same pane UUID is found across a restored workspace (even if
+  the workspace UUID was regenerated), the proxy resumes after the kernel's
+  latest output sequence, and the PTY process stays alive.
+- Kernel PTY creation carries the `ridge-interactive` launch profile. PowerShell,
+  Bash, and Zsh emit the same OSC 7/OSC 133 markers as the local desktop path,
+  preserving live CWD/PaneHeader updates after a reconnect.
 - Kernel-owned scrollback is used as the desktop tail fallback, so a restarted
   desktop can paint retained output before new bytes arrive.
 

@@ -378,7 +378,7 @@ impl PtyRegistry {
         if self.contains(id) {
             anyhow::bail!("PTY already exists: {id}");
         }
-        let (bridge, output) = PtyBridge::spawn_command(program, args, cwd)?;
+        let (bridge, output) = PtyBridge::spawn_command(program, args, cwd, launch_profile)?;
         let bridge = Arc::new(bridge);
         let scrollback = Arc::new(Mutex::new(Vec::new()));
         let renderer = Arc::new(Mutex::new(Terminal::new(
@@ -680,13 +680,14 @@ impl PtyBridge {
         shell: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
-        Self::spawn_command(shell, &[], cwd)
+        Self::spawn_command(shell, &[], cwd, None)
     }
 
     pub fn spawn_command(
         program: Option<&str>,
         args: &[String],
         cwd: Option<&str>,
+        launch_profile: Option<&str>,
     ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -703,6 +704,7 @@ impl PtyBridge {
             command.cwd(dir);
         }
         command.env("TERM", "xterm-256color");
+        apply_shell_integration(&mut command, &program, launch_profile);
         let child = pair
             .slave
             .spawn_command(command)
@@ -774,6 +776,107 @@ impl PtyBridge {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
+}
+
+/// The desktop parser derives live cwd/title state from shell OSC markers.
+/// Kernel-owned shells must emit the same markers or a reattached pane would
+/// silently regress to its spawn cwd. Keep this opt-in: structured launches
+/// and callers outside the desktop contract retain their original argv/env.
+fn apply_shell_integration(
+    command: &mut CommandBuilder,
+    program: &str,
+    launch_profile: Option<&str>,
+) {
+    if launch_profile != Some("ridge-interactive") {
+        return;
+    }
+    let name = std::path::Path::new(program)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    match name.as_str() {
+        #[cfg(windows)]
+        "powershell" | "pwsh" => {
+            // -EncodedCommand is UTF-16LE base64, so PowerShell receives a
+            // shell-safe prompt wrapper even when the user's cwd has spaces.
+            let script = r#"$Global:__ridge_origPrompt = (Get-Item function:prompt).ScriptBlock; function global:prompt { $r = & $Global:__ridge_origPrompt; try { $c = $PWD.ProviderPath } catch { $c = (Get-Location).Path }; try { [Console]::Write(([string][char]27) + ']7;file:///' + $c + ([string][char]7)) } catch {}; try { [Console]::Write(([string][char]27) + ']133;A' + ([string][char]7)) } catch {}; $r }"#;
+            command.arg("-NoLogo");
+            command.arg("-NoExit");
+            command.arg("-EncodedCommand");
+            command.arg(encode_powershell_utf16le_base64(script));
+        }
+        "bash" => {
+            let existing = std::env::var("PROMPT_COMMAND").unwrap_or_default();
+            let marker = r#"printf '\033]7;file://%s\a\033]133;A\a' "$PWD""#;
+            let value = if existing.trim().is_empty() {
+                marker.to_string()
+            } else {
+                format!("{existing}; {marker}")
+            };
+            command.env("PROMPT_COMMAND", value);
+        }
+        #[cfg(unix)]
+        "zsh" => {
+            let user_zdotdir = std::env::var_os("ZDOTDIR")
+                .filter(|value| !value.is_empty())
+                .or_else(|| std::env::var_os("HOME").filter(|value| !value.is_empty()));
+            if let Some(user_zdotdir) = user_zdotdir {
+                if let Ok(zdotdir) = prepare_zsh_zdotdir() {
+                    command.env("USER_ZDOTDIR", user_zdotdir);
+                    command.env("ZDOTDIR", zdotdir);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(windows)]
+fn encode_powershell_utf16le_base64(script: &str) -> String {
+    use base64::Engine as _;
+    let bytes = script
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[cfg(unix)]
+const RIDGE_ZSH_ZSHENV: &str = r#"if [[ -f "$USER_ZDOTDIR/.zshenv" ]]; then RIDGE_ZDOTDIR=$ZDOTDIR; ZDOTDIR=$USER_ZDOTDIR; . "$USER_ZDOTDIR/.zshenv"; [[ $ZDOTDIR == $USER_ZDOTDIR ]] && ZDOTDIR=$RIDGE_ZDOTDIR; fi
+"#;
+
+#[cfg(unix)]
+const RIDGE_ZSH_ZPROFILE: &str = r#"if [[ -f "$USER_ZDOTDIR/.zprofile" ]]; then RIDGE_ZDOTDIR=$ZDOTDIR; ZDOTDIR=$USER_ZDOTDIR; . "$USER_ZDOTDIR/.zprofile"; [[ $ZDOTDIR == $USER_ZDOTDIR ]] && ZDOTDIR=$RIDGE_ZDOTDIR; fi
+"#;
+
+#[cfg(unix)]
+const RIDGE_ZSH_ZSHRC: &str = r#"if [[ -f "$USER_ZDOTDIR/.zshrc" ]]; then RIDGE_ZDOTDIR=$ZDOTDIR; ZDOTDIR=$USER_ZDOTDIR; . "$USER_ZDOTDIR/.zshrc"; [[ $ZDOTDIR == $USER_ZDOTDIR ]] && ZDOTDIR=$RIDGE_ZDOTDIR; fi
+__ridge_emit_cwd() { printf '\033]7;file://%s\a\033]133;A\a' "$PWD"; }
+autoload -Uz add-zsh-hook 2>/dev/null
+if (( ${+functions[add-zsh-hook]} )); then add-zsh-hook precmd __ridge_emit_cwd; elif [[ -z ${precmd_functions[(r)__ridge_emit_cwd]} ]]; then precmd_functions+=(__ridge_emit_cwd); fi
+[[ $options[login] == off ]] && ZDOTDIR=$USER_ZDOTDIR
+"#;
+
+#[cfg(unix)]
+const RIDGE_ZSH_ZLOGIN: &str = r#"if [[ -f "$USER_ZDOTDIR/.zlogin" ]]; then RIDGE_ZDOTDIR=$ZDOTDIR; ZDOTDIR=$USER_ZDOTDIR; . "$USER_ZDOTDIR/.zlogin"; [[ $ZDOTDIR == $USER_ZDOTDIR ]] && ZDOTDIR=$RIDGE_ZDOTDIR; fi
+ZDOTDIR=$USER_ZDOTDIR
+"#;
+
+#[cfg(unix)]
+fn prepare_zsh_zdotdir() -> std::io::Result<std::path::PathBuf> {
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "default".to_string());
+    let dir = std::env::temp_dir()
+        .join(format!("ridge-shell-integration-{user}"))
+        .join("zsh");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(".zshenv"), RIDGE_ZSH_ZSHENV)?;
+    std::fs::write(dir.join(".zprofile"), RIDGE_ZSH_ZPROFILE)?;
+    std::fs::write(dir.join(".zshrc"), RIDGE_ZSH_ZSHRC)?;
+    std::fs::write(dir.join(".zlogin"), RIDGE_ZSH_ZLOGIN)?;
+    Ok(dir)
 }
 
 impl Drop for PtyBridge {
