@@ -255,6 +255,14 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
             "/v1/domain/remote-hosts/:host_id",
             delete(domain::domain_remote_host_remove),
         )
+        .route(
+            "/v1/domain/remote-host-sessions/attach",
+            post(domain::domain_remote_host_session_attach),
+        )
+        .route(
+            "/v1/domain/remote-host-sessions/detach",
+            post(domain::domain_remote_host_session_detach),
+        )
         .route("/v1/domain/ptys", post(domain::domain_pty_create))
         .route(
             "/v1/domain/ptys/:pty_id/write",
