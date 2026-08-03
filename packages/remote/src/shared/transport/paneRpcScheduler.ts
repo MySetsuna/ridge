@@ -288,7 +288,12 @@ export class PaneRpcScheduler {
       };
       this.resizeLanes.set(key, lane);
     }
-    const signature = resizeSignature(normalized);
+    // Include the PTY mode context in the identity before comparing with the
+    // active/latest value. Omitting it here makes an identical contextual
+    // resize look different from the in-flight signature and sends a
+    // duplicate request after the first one settles.
+    const next = { ...normalized, params };
+    const signature = resizeSignature(next);
     if (waiter) lane.waiters.push(waiter);
     if (
       resizeSignature(lane.latest) === signature ||
@@ -302,7 +307,7 @@ export class PaneRpcScheduler {
       }
       return false;
     }
-    lane.latest = { ...normalized, params };
+    lane.latest = next;
     this.scheduleResizeDrain(key, lane, this.resizeDebounceMs);
     return true;
   }

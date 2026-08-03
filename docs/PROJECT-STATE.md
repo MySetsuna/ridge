@@ -52,6 +52,16 @@ from leaving a stuck drag state. The real EventTarget regression test passes;
 
 Archive: `docs/iterations/2026-08-03-iteration-125-host-drag-cancel.md`.
 
+## Iteration 126 update (2026-08-03)
+
+Resize deduplication now compares the full normalized dimensions plus PTY mode
+context (`isAlt`/`isInlineTui`) before queueing. Identical contextual Resize
+requests coalesce while one is active; real mode changes remain deliverable.
+The focused scheduler suite passes 15/15 and `pnpm check` remains clean. No
+version bump or publication was made.
+
+Archive: `docs/iterations/2026-08-03-iteration-126-rpc-contextual-resize-dedupe.md`.
+
 ## Iteration 121 update (2026-08-03)
 
 Installed/Desktop terminal links now preserve a URL when the first visual
