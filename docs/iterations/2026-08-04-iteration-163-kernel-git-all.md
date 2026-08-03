@@ -39,9 +39,14 @@ the UI or remote adapters.
 - `pnpm e2e:rdg-mobile-keyboard`: passed for keyboard viewport convergence,
   touch selection, copy visibility, and clean Console under a fresh Chromium
   mobile context. This is emulation evidence, not physical-device proof.
-- Tauri shell E2E was attempted against a freshly rebuilt release binary, but
-  `tauri-driver` failed before any app assertion with `session not created:
-  Chrome instance exited`; desktop WebView2 shell evidence remains open.
+- Added the missing Tauri `custom-protocol` feature and rebuilt with
+  `cargo build --release -p ridge --features custom-protocol`: passed. A
+  fresh isolated WebView2 CDP launch reported `http://tauri.localhost/` with
+  title `Ridge`, proving release startup no longer depends on Vite port 5173.
+- Tauri shell E2E was retried with `RIDGE_DISABLE_SINGLE_INSTANCE=1` and the
+  matching EdgeDriver 151 binary. The app process starts, but tauri-driver's
+  WebDriver context remains `about:blank` before app assertions; this is still
+  an automation-shell evidence gap, not a product startup assertion.
 
 ## Remaining external gates
 
