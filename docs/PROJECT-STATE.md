@@ -1,9 +1,22 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-08-02（iteration 84 已完成代码与三线发布；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-03（iteration 99 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
+
+## Iteration 99 update (2026-08-03)
+
+`REQ-TERMINAL-PASTE-ORDER-02` 的现场缺口定位为异步剪贴板读期间未占位：
+原 PTY/RPC FIFO 只约束已生成字节，后续键入或 Agent/MCP 写入可先入队。新增
+`packages/remote/src/shared/terminal/paneInputGate.ts`，按复合
+`(workspaceId,paneId)` 先锁定输入意图，再执行 clipboard/image promise；桌面、LAN、
+Cloud、host-topology Remote 共用，既有 PTY/RPC 队列仍负责字节上限、批处理、重试、超时。
+关 Pane、裁剪、断连时退休 generation，避免迟到写入复用 Pane。新增 gate 并发、失败续行、
+退休与上限测；Agent 成员/编组写入亦汇入同闸。`pnpm check` 0/0，Vitest 143 文件
+1479 通过/1 跳过，Remote mobile/PWA 与桌面 production build 绿。归档：
+`docs/iterations/2026-08-03-iteration-99-paste-intent-order.md`。
+真实 Windows ConPTY、手机与公网 timing 仍待用户轨，不冒充完成。
 
 ## Iteration 98 update (2026-08-03)
 
