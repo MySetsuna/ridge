@@ -1,7 +1,7 @@
 # Iteration 98 — desktop terminal link fidelity
 
 Date: 2026-08-03  
-Status: code closed; release gate pending
+Status: code and release closed
 
 ## User-visible defects
 
@@ -47,7 +47,16 @@ changes alone left stale affordance state.
 
 ## Release gate
 
-The code must be committed and pushed, then published as a versioned release
-with the normal 12 desktop assets. Remote and cloud publication remain
-separate checks. Physical WebView2 install verification should confirm the
-three reported interactions against the new artifact.
+The code was committed and pushed, then published as a versioned release with
+the normal 12 desktop assets. Remote and cloud publication remain separate
+checks. Physical WebView2 install verification should confirm the three
+reported interactions against the new artifact.
+
+## Publication evidence
+
+- Main commits: `4525d73`, `1ccb7f6`, `5ab6aa2`.
+- Desktop workflow `30775237388`: completed / success.
+- Release `v0.1.52`: formal, 12 matching assets:
+  <https://github.com/MySetsuna/ridge/releases/tag/v0.1.52>.
+- Remote/Cloud workflow `30775243878`: completed / success.
+- Public health: HTTP 200, `ok=true` at `https://9527127.xyz/api/v1/health`.
