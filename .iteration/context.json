@@ -1,26 +1,26 @@
 {
   "schema_version": 1,
-  "task": "Make desktop kernel PTY restart reattach replay bounded history and expose unmatched orphan PTYs",
+  "task": "Make desktop kernel death watching health-aware and serialize tray kernel shutdown with quitting state",
   "symbols": [
-    "reattach_kernel_ptys_inner",
-    "install_kernel_pty",
-    "KernelPtyRef",
-    "list_domain_ptys",
-    "attach_domain_pty_output"
+    "spawn_kernel_death_watcher",
+    "watcher_health_step",
+    "shutdown_kernel",
+    "MENU_ID_QUIT_KERNEL",
+    "quitting"
   ],
   "files": [
     "docs/PROJECT-STATE.md",
     "docs/REQUIREMENTS-SPEC.md",
     "docs/archive/events-2026-08.jsonl",
-    "src-tauri/src/commands/terminal.rs",
-    "src-tauri/src/engine/kernel_pty.rs",
+    "src-tauri/src/kernel_lifecycle.rs",
+    "src-tauri/src/tray.rs",
+    "src-tauri/src/lib.rs",
     "packages/ridge-kernel/src/client.rs",
-    "packages/ridge-kernel/src/pty.rs",
-    "docs/iterations/2026-08-04-iteration-156-kernel-reattach-history.md"
+    "docs/iterations/2026-08-04-iteration-157-kernel-watcher-health.md"
   ],
   "tests": [
-    "src-tauri/src/commands/terminal.rs (reattach contract tests)",
-    "src-tauri/src/engine/kernel_pty.rs (bounded replay reader)",
+    "src-tauri/src/kernel_lifecycle.rs (health threshold and watcher tests)",
+    "src-tauri/src/tray.rs (quitting-before-shutdown adapter)",
     "cargo test -p ridge --lib",
     "cargo test -p ridge-kernel --lib",
     "cargo check -p ridge --lib"
@@ -28,7 +28,8 @@
   "constraints": [
     "NotebookLM is strategy input only; runtime, tests, and source remain factual authority",
     "Desktop production pane PTYs, SCM status reads, and kernel bootstrap are kernel-owned",
-    "Restart reattach must replay only the kernel bounded window and never silently resurrect unmatched panes",
+    "Kernel watcher tolerates transient health failures but exits after a bounded consecutive threshold",
+    "Tray kernel shutdown sets quitting before shutdown and restores state on failure",
     "No hidden local fallback after kernel bootstrap/domain request failure",
     "Do not scan generated or minified artifacts as source evidence"
   ],
@@ -110,6 +111,7 @@
       "docs/iterations/2026-08-04-iteration-154-kernel-boot-single-flight.md",
       "docs/iterations/2026-08-04-iteration-155-kernel-git-branches.md",
       "docs/iterations/2026-08-04-iteration-156-kernel-reattach-history.md",
+      "docs/iterations/2026-08-04-iteration-157-kernel-watcher-health.md",
       "docs/iterations/CONTRACT-iteration-76.md",
       "docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md",
       "docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md",
@@ -136,6 +138,8 @@
       "src/lib/stores/themes.ts",
       "src/lib/stores/themes.slug.test.ts",
       "src-tauri/src/commands/terminal.rs",
+      "src-tauri/src/kernel_lifecycle.rs",
+      "src-tauri/src/tray.rs",
       "src-tauri/src/commands/git.rs",
       "src-tauri/src/engine/kernel_pty.rs",
       "packages/ridge-core/src/commands/git.rs",

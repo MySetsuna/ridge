@@ -34,7 +34,8 @@ pub fn read_kernel_pid() -> Option<u32> {
 }
 
 use ridge_kernel::client::{
-    is_process_alive, running_endpoint, shutdown_endpoint, spawn_detached, wait_for_running,
+    health_ok, is_process_alive, running_endpoint, shutdown_endpoint, spawn_detached,
+    wait_for_running,
 };
 
 static KERNEL_BOOT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -127,28 +128,59 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
 /// 且进程在 watcher 首轮前死亡仍会触发外壳退出（验收④）。
 /// `should_stop` 为 true 时停止监视（本进程主动彻底退出途中）。
 pub fn spawn_kernel_death_watcher(
-    kernel_pid: u32,
+    kernel_endpoint: KernelEndpoint,
     mut on_death: impl FnMut() + Send + 'static,
     should_stop: impl Fn() -> bool + Send + 'static,
 ) -> Result<std::thread::JoinHandle<()>, String> {
+    let kernel_pid = kernel_endpoint.pid;
     std::thread::Builder::new()
         .name("ridge-kernel-watch".into())
-        .spawn(move || loop {
-            if should_stop() {
-                break;
+        .spawn(move || {
+            let mut health_failures = 0u32;
+            loop {
+                if should_stop() {
+                    break;
+                }
+                let process_alive = is_process_alive(kernel_pid);
+                let healthy = process_alive && health_ok(&kernel_endpoint);
+                let (next_failures, should_exit) =
+                    watcher_health_step(health_failures, process_alive, healthy);
+                health_failures = next_failures;
+                if should_exit {
+                    if !process_alive {
+                        tracing::warn!(
+                            target: "ridge::kernel_lifecycle",
+                            kernel_pid,
+                            "ridge-kernel gone; shell will exit"
+                        );
+                    } else {
+                        tracing::warn!(
+                            target: "ridge::kernel_lifecycle",
+                            kernel_pid,
+                            health_failures,
+                            "ridge-kernel health failed repeatedly; shell will exit"
+                        );
+                    }
+                    on_death();
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1500));
             }
-            if !is_process_alive(kernel_pid) {
-                tracing::warn!(
-                    target: "ridge::kernel_lifecycle",
-                    kernel_pid,
-                    "ridge-kernel gone; shell will exit"
-                );
-                on_death();
-                break;
-            }
-            thread::sleep(Duration::from_millis(1500));
         })
         .map_err(|error| format!("spawn ridge-kernel watcher: {error}"))
+}
+
+fn watcher_health_step(
+    previous_failures: u32,
+    process_alive: bool,
+    healthy: bool,
+) -> (u32, bool) {
+    const HEALTH_FAILURE_LIMIT: u32 = 3;
+    if !process_alive || healthy {
+        return (0, !process_alive);
+    }
+    let failures = previous_failures.saturating_add(1);
+    (failures, failures >= HEALTH_FAILURE_LIMIT)
 }
 
 /// 彻底退出：请求内核 shutdown（不杀本桌面进程之外的逻辑由调用方 exit）。
@@ -200,7 +232,12 @@ mod tests {
         let observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let callback_observed = std::sync::Arc::clone(&observed);
         let watcher = spawn_kernel_death_watcher(
-            u32::MAX,
+            KernelEndpoint {
+                pid: u32::MAX,
+                port: 0,
+                token: String::new(),
+                started_at_unix: 0,
+            },
             move || callback_observed.store(true, std::sync::atomic::Ordering::Release),
             || false,
         )
@@ -209,6 +246,15 @@ mod tests {
         assert!(observed.load(std::sync::atomic::Ordering::Acquire));
         // 无登记时必 false；有本机存活 kernel 时 true——仅断言不 panic。
         let _ = is_kernel_running();
+    }
+
+    #[test]
+    fn watcher_health_requires_consecutive_failures_and_resets_on_recovery() {
+        assert_eq!(watcher_health_step(0, true, false), (1, false));
+        assert_eq!(watcher_health_step(1, true, false), (2, false));
+        assert_eq!(watcher_health_step(2, true, false), (3, true));
+        assert_eq!(watcher_health_step(3, true, true), (0, false));
+        assert_eq!(watcher_health_step(0, false, false), (0, true));
     }
 
     #[test]
