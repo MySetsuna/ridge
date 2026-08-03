@@ -22,7 +22,7 @@
 
 Archive: `docs/iterations/2026-08-03-iteration-138-tab-switch-and-pty-reattach.md`.
 
-- `wind` `main` is at `cd4f22f`; Agent Commune now consumes the same live
+- `wind` `main` is at `7918cba`; Agent Commune now consumes the same live
   `terminalTitles`, foreground-process, and workspace-scoped CWD stores as
   `PaneHeader`. Agent identity remains stable while displayed titles follow
   OSC/process/CWD changes in real time.
