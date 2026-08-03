@@ -5,6 +5,16 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 114 update (2026-08-03)
+
+Foreign-pane unsubscribe now cancels queued pane-scoped LAN
+`write_to_pty`/`resize_pane` work under the per-host RPC gate before sending
+unsubscribe. Other panes' requests remain queued; 59 host tests pass. This
+follow-up remains unreleased because the daily publication window is frozen
+after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-114-pane-rpc-cancellation.md`.
+
 ## Iteration 113 update (2026-08-03)
 
 Successful host resubscribe now restores `HostStatus::Connected` through the

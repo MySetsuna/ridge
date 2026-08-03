@@ -144,6 +144,17 @@ impl LanOutboundTransport {
         self.pending_rpc.lock().len()
     }
 
+    pub fn cancel_pending_for_pane(&self, remote_pane_id: &str) -> usize {
+        let mut pending = self.pending_rpc.lock();
+        let before = pending.len();
+        pending.retain(|(method, params)| {
+            let pane = params.get("paneId").and_then(Value::as_str);
+            !(pane == Some(remote_pane_id)
+                && matches!(method.as_str(), "write_to_pty" | "resize_pane"))
+        });
+        before.saturating_sub(pending.len())
+    }
+
     fn remove_pending_rpc(&self, method: &str, params: &Value) {
         let mut pending = self.pending_rpc.lock();
         if let Some(index) = pending
@@ -212,6 +223,10 @@ impl OutboundTransport for LanOutboundTransport {
             return Err("empty frame".into());
         }
         Ok(())
+    }
+
+    fn cancel_pending_for_pane(&self, remote_pane_id: &str) -> usize {
+        LanOutboundTransport::cancel_pending_for_pane(self, remote_pane_id)
     }
 
     fn drain_pane_raw(&self) -> Vec<(String, Vec<u8>)> {
@@ -290,6 +305,30 @@ mod tests {
         assert!(error.is_err());
         assert_eq!(t.pending_rpc_len(), 0);
         assert_eq!(t.stats.rpc_err.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn pane_destroy_cancels_only_its_pending_input_and_resize() {
+        let t = LanOutboundTransport::new(LanTransportConfig::default());
+        t.pending_rpc
+            .lock()
+            .push_back(("write_to_pty".into(), json!({ "paneId": "p1" })));
+        t.pending_rpc
+            .lock()
+            .push_back(("resize_pane".into(), json!({ "paneId": "p1" })));
+        t.pending_rpc
+            .lock()
+            .push_back(("write_to_pty".into(), json!({ "paneId": "p2" })));
+
+        assert_eq!(t.cancel_pending_for_pane("p1"), 2);
+        assert_eq!(t.pending_rpc_len(), 1);
+        assert_eq!(
+            t.pending_rpc.lock().front().map(|(method, params)| (
+                method.clone(),
+                params["paneId"].as_str().unwrap().to_string()
+            )),
+            Some(("write_to_pty".into(), "p2".into()))
+        );
     }
 
     #[test]

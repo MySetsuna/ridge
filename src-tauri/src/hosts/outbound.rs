@@ -35,6 +35,11 @@ pub struct RemoteSessionInfo {
 pub trait OutboundTransport: Send + Sync {
     fn send_json_rpc(&self, method: &str, params: Value) -> Result<Value, String>;
     fn send_raw(&self, frame: &[u8]) -> Result<(), String>;
+    /// Cancel queued pane-scoped work before a local pane is destroyed.
+    /// Transports without an asynchronous queue keep the no-op default.
+    fn cancel_pending_for_pane(&self, _remote_pane_id: &str) -> usize {
+        0
+    }
     /// 拉取已缓冲的入站 pane raw 帧（host→controller 0x10）。
     fn drain_pane_raw(&self) -> Vec<(String, Vec<u8>)>;
     /// 关闭底层连接。无状态测试传输可用默认空实现。
@@ -287,6 +292,10 @@ impl OutboundClient {
     /// detach: unsubscribe，保留 host 连接
     pub fn unsubscribe(&self, remote_pane_id: &str) -> Result<(), String> {
         let _gate = self.rpc_gate.lock();
+        // Remove stale write/resize work before the unsubscribe can be
+        // rejected by a full transport queue. The queue hook is a no-op for
+        // synchronous test transports.
+        self.transport.cancel_pending_for_pane(remote_pane_id);
         self.transport
             .send_json_rpc("unsubscribe-pane", json!({ "paneId": remote_pane_id }))?;
         self.subscriptions.lock().remove(remote_pane_id);
