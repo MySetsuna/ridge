@@ -5,6 +5,19 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 153, 2026-08-04)
+
+- Desktop `get_scm_status` now reads the authenticated kernel Git domain;
+  desktop SCM status no longer starts the local `ridge-core` Git path directly.
+- Kernel response decoding is source-checked and typed, distinguishes confirmed
+  non-Git roots from failures, and URL-encodes Windows paths. Query/slot callers
+  keep their existing contract while the domain remains the single read seam.
+- Focused kernel Git adapter tests: 2 passed; `cargo check -p ridge --lib` exit 0.
+  Full regression and physical/public evidence remain open; no version bump or
+  release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-153-kernel-git-status.md`.
+
 ## Current snapshot (iteration 152, 2026-08-04)
 
 - Desktop pane PTY creation is now kernel-authoritative in production. Kernel

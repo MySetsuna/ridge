@@ -1,35 +1,39 @@
 {
   "schema_version": 1,
-  "task": "Make desktop pane PTY creation fail-closed on the kernel authority; preserve test-only local seam and verify kernel lifecycle",
+  "task": "Route desktop SCM status reads through the authenticated kernel Git domain; preserve Query/slot callers and fail closed",
   "symbols": [
-    "ensure_pane_pty_workspace",
-    "kernel_endpoint_for_shell",
-    "attach_or_spawn_kernel_command",
-    "install_kernel_pty",
-    "activate_pane_pty_state"
+    "get_scm_status",
+    "domain_git_status",
+    "read_domain_git_status",
+    "ScmRepoStatus",
+    "request_json"
   ],
   "files": [
     "docs/PROJECT-STATE.md",
     "docs/REQUIREMENTS-SPEC.md",
     "docs/archive/events-2026-08.jsonl",
     "src-tauri/src/commands/terminal.rs",
-    "src-tauri/src/engine/kernel_pty.rs",
+    "src-tauri/src/commands/git.rs",
+    "packages/ridge-core/src/commands/git.rs",
     "packages/ridge-kernel/src/client.rs",
     "packages/ridge-kernel/src/domain.rs",
     "packages/ridge-kernel/src/pty.rs",
     "packages/ridge-kernel/src/server.rs",
-    "docs/iterations/2026-08-04-iteration-152-kernel-pty-authority.md"
+    "docs/iterations/2026-08-04-iteration-152-kernel-pty-authority.md",
+    "docs/iterations/2026-08-04-iteration-153-kernel-git-status.md"
   ],
   "tests": [
-    "src-tauri/src/commands/terminal.rs (pty_lifecycle_contract_tests)",
-    "packages/ridge-kernel/src/pty.rs (unit tests)",
+    "packages/ridge-kernel/src/client.rs (domain decode tests)",
+    "packages/ridge-kernel/src/domain.rs (git domain tests)",
+    "packages/ridge-core/src/commands/git.rs (status tests)",
+    "src-tauri/src/commands/git.rs (kernel adapter)",
     "cargo test -p ridge --lib",
     "cargo check -p ridge --lib"
   ],
   "constraints": [
     "NotebookLM is strategy input only; runtime, tests, and source remain factual authority",
-    "Desktop production pane PTYs are kernel-owned; local PTY fallback may exist only under cfg(test)",
-    "No hidden local fallback after kernel bootstrap/create failure",
+    "Desktop production pane PTYs and SCM status reads are kernel-owned",
+    "No hidden local fallback after kernel bootstrap/domain request failure",
     "Do not scan generated or minified artifacts as source evidence"
   ],
   "failed_knowledge": [],
@@ -37,9 +41,7 @@
     "source": "docs/REQUIREMENTS-SPEC.md",
     "ids": [
       "REQ-20260730-01",
-      "REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01",
-      "REQ-RIDGE-KERNEL-HOST-01",
-      "REQ-RIDGE-KERNEL-DOMAIN-01"
+      "REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01"
     ],
     "records": [
       {
@@ -108,6 +110,7 @@
       "docs/PROJECT-STATE.md",
       "docs/REQUIREMENTS-SPEC.md",
       "docs/iterations/2026-08-04-iteration-152-kernel-pty-authority.md",
+      "docs/iterations/2026-08-04-iteration-153-kernel-git-status.md",
       "docs/iterations/CONTRACT-iteration-76.md",
       "docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md",
       "docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md",
@@ -134,7 +137,9 @@
       "src/lib/stores/themes.ts",
       "src/lib/stores/themes.slug.test.ts",
       "src-tauri/src/commands/terminal.rs",
+      "src-tauri/src/commands/git.rs",
       "src-tauri/src/engine/kernel_pty.rs",
+      "packages/ridge-core/src/commands/git.rs",
       "src-tauri/src/engine/pty.rs",
       "src-tauri/src/hosts/mod.rs",
       "src-tauri/src/teammate/server.rs",
