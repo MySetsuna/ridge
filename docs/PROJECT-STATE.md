@@ -5,6 +5,17 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 111 update (2026-08-03)
+
+Outbound list ingress now commits sessions plus Connected status/detail in one
+kernel-authoritative HostRecord write before the transport is bound. Existing
+foreign panes retain `attached=true` across reconnect/list refreshes. A test
+seam keeps unit tests local without adding a production fallback, and host
+tests are 19/19. This follow-up remains unreleased because the daily
+publication window is frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-111-host-outbound-snapshot.md`.
+
 ## Iteration 110 update (2026-08-03)
 
 LAN outbound RPC failures now remove their exact request from `pending_rpc` on
