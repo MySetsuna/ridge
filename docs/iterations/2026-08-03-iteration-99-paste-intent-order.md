@@ -1,7 +1,7 @@
 # Iteration 99 — ordered asynchronous terminal input
 
 Date: 2026-08-03  
-Status: implementation complete; release gate pending
+Status: implementation complete; v0.1.53 released
 
 ## Requirement
 
@@ -47,8 +47,12 @@ reserved an input slot.
 - Physical Windows ConPTY and real phone/public Remote timing evidence remain
   external user-track gates; no field proof is inferred from local tests.
 
-## Release gate
+## Release evidence
 
-The code must be committed and pushed with a clean worktree before publishing a
-new version. If released, attach the normal matching desktop assets and publish
-Remote/Cloud through `publish-remote.yml`; do not claim physical-device closure.
+- Annotated tag `v0.1.53` is formal and public:
+  https://github.com/MySetsuna/ridge/releases/tag/v0.1.53
+- Release workflow `30777692897` completed successfully; all test and four
+  platform matrix jobs passed and 12 matching assets are attached.
+- Remote/Cloud workflow `30777703101` completed successfully.
+- Physical Windows ConPTY and real phone/public Remote timing evidence remain
+  external user-track gates; no field closure is inferred from CI.
