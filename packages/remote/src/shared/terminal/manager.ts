@@ -654,6 +654,14 @@ export class TerminalManager {
 	private visibilityListener: (() => void) | null = null;
 	private _lastMemorySweepAt = 0;
 	private _memoryRestorePending = new Set<string>();
+	/**
+	 * Defer shared-surface invalidation while memory-parked panes are being
+	 * restored. `unpark()` creates the renderer asynchronously; invalidating
+	 * before it is attached makes the host clear with no active draw region,
+	 * which presents as a black frame during workspace-tab switches.
+	 */
+	private _hostInvalidateSuspendDepth = 0;
+	private _deferredHostInvalidate = false;
 	/** Document-level `pointerup` / `pointercancel` listener installed
 	 *  lazily on first viewportChanged (= start of any drag session).
 	 *  Triggers `_flushPendingFits`, so the moment the user releases the
@@ -1071,8 +1079,24 @@ export class TerminalManager {
 	 *  `_globalHostHandle()?.invalidate()` calls bypass the flag and
 	 *  resurrect the "blank pane until next dirty event" symptom. */
 	private _invalidateHost(): void {
-		this._globalHostHandle()?.invalidate();
 		this._hostInvalidatePending = true;
+		if (this._hostInvalidateSuspendDepth > 0) {
+			this._deferredHostInvalidate = true;
+			return;
+		}
+		this._globalHostHandle()?.invalidate();
+	}
+
+	private _beginHostInvalidateBatch(): void {
+		this._hostInvalidateSuspendDepth += 1;
+	}
+
+	private _endHostInvalidateBatch(): void {
+		if (this._hostInvalidateSuspendDepth === 0) return;
+		this._hostInvalidateSuspendDepth -= 1;
+		if (this._hostInvalidateSuspendDepth !== 0 || !this._deferredHostInvalidate) return;
+		this._deferredHostInvalidate = false;
+		this._globalHostHandle()?.invalidate();
 	}
 
 	/** §A.9 — internal: global canvas lookup. */
@@ -1155,38 +1179,49 @@ export class TerminalManager {
 	 */
 	public onActiveWorkspaceChanged(workspaceId: string): void {
 		this._activeWorkspaceId = workspaceId;
-		if (typeof document === 'undefined' || !document.hidden) {
-			this._restoreMemoryParked(workspaceId);
+		const shouldRestore = typeof document === 'undefined' || !document.hidden;
+		if (!this.globalHost) {
+			if (shouldRestore) void this._restoreMemoryParked(workspaceId);
+			return;
 		}
-		if (!this.globalHost) return;
-		for (const e of this.panes.values()) {
-			if (e.parked) continue;
-			if (e.workspaceId !== workspaceId) continue;
-			// Sync the host-canvas-relative scissor to the now-visible
-			// pane container. Don't touch `wasHiddenLastTick` — the RAF
-			// loop already sets it to true while the pane was hidden,
-			// and §A.9 deliberately avoids the legacy "skip render this
-			// tick" branch. Keeping the flag as-is means the next tick
-			// runs a one-shot fitPane (idempotent if size unchanged) AND
-			// renders this tick — no black flash, no missed kernel resize.
-			this._recomputeViewport(e);
-		}
-		this._invalidateHost();
-		this.wake();
+
+		if (shouldRestore) this._beginHostInvalidateBatch();
+		const restore = shouldRestore
+			? this._restoreMemoryParked(workspaceId)
+			: Promise.resolve();
+		const paint = () => {
+			if (shouldRestore) this._endHostInvalidateBatch();
+			// A newer tab selection owns the shared host. The stale restore may
+			// finish later, but it must not recompute or wake the old workspace.
+			if (!this.globalHost || this._activeWorkspaceId !== workspaceId) return;
+			for (const e of this.panes.values()) {
+				if (e.parked) continue;
+				if (e.workspaceId !== workspaceId) continue;
+				// Sync the host-canvas-relative scissor to the now-visible pane
+				// container. Keeping wasHiddenLastTick lets this frame fit and
+				// render without the legacy one-tick black gap.
+				this._recomputeViewport(e);
+			}
+			this._invalidateHost();
+			this.wake();
+		};
+		void restore.then(paint, paint);
 	}
 
-	private _restoreMemoryParked(workspaceId: string | null): void {
+	private _restoreMemoryParked(workspaceId: string | null): Promise<void> {
+		const pending: Promise<void>[] = [];
 		for (const entry of this.panes.values()) {
 			if (!entry.parked || entry.parkReason !== 'memory') continue;
 			if (workspaceId !== null && entry.workspaceId !== workspaceId) continue;
 			if (!entry.container.isConnected || this._memoryRestorePending.has(entry.paneId)) continue;
 			this._memoryRestorePending.add(entry.paneId);
-			void this.unpark(entry.paneId, entry.container)
+			pending.push(this.unpark(entry.paneId, entry.container)
 				.catch((error) => {
 					console.warn('[ridge-term] memory-park restore failed', entry.paneId, error);
 				})
-				.finally(() => this._memoryRestorePending.delete(entry.paneId));
+				.finally(() => this._memoryRestorePending.delete(entry.paneId)));
 		}
+		return Promise.all(pending).then(() => undefined);
 	}
 
 	/**
