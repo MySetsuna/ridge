@@ -51,6 +51,9 @@ the UI or remote adapters.
   matching EdgeDriver 151 binary. The app process starts, but tauri-driver's
   WebDriver context remains `about:blank` before app assertions; this is still
   an automation-shell evidence gap, not a product startup assertion.
+- The shell harness now accepts `TAURI_NATIVE_DRIVER` and passes it explicitly
+  to tauri-driver. A bounded retry with the matching 151.0.4129.59 driver still
+  did not leave `about:blank`; no product result was inferred from that runner.
 
 ## Remaining external gates
 

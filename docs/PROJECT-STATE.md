@@ -22,8 +22,9 @@
 - Release desktop now declares Tauri `custom-protocol`; a rebuilt binary
   launches through `http://tauri.localhost/` in an isolated WebView2 CDP smoke
   check instead of falling back to Vite port 5173. Shell E2E still cannot
-  leave `about:blank` under tauri-driver before app assertions, so WebDriver
-  shell/performance evidence remains external.
+  leave `about:blank` under tauri-driver (including an explicit matching
+  EdgeDriver path) before app assertions, so WebDriver shell/performance
+  evidence remains external.
 - Full Rust/TypeScript matrix and requirements gates are recorded in the
   iteration archive. Physical/public Remote, WebView2, dual-window, Host,
   and mobile clean-profile evidence remain external gates; no release was
