@@ -1378,6 +1378,11 @@ pub fn step_host_reconnect(
             sup.phase(&host_id),
             Some(reconnect_supervisor::SupervisorPhase::Succeeded)
         ) {
+            state.hosts.set_status_kernel_authoritative(
+                &host_id,
+                HostStatus::Connected,
+                "outbound reconnected",
+            )?;
             sup.mark_idle(&host_id);
             return Ok("phase=Idle attempt=0 cancelled=0 terminal".into());
         }
@@ -1387,6 +1392,19 @@ pub fn step_host_reconnect(
         .outbound_client(&host_id)
         .ok_or_else(|| format!("no outbound for {host_id}"))?;
     let delay = sup.step_once(&host_id, &client, host_reachable);
+    if matches!(
+        sup.phase(&host_id),
+        Some(reconnect_supervisor::SupervisorPhase::Succeeded)
+    ) {
+        // The transport is live again, but the kernel remains the durable
+        // status source. If this write fails, leave Succeeded untouched so
+        // the next command retries the projection instead of hiding it.
+        state.hosts.set_status_kernel_authoritative(
+            &host_id,
+            HostStatus::Connected,
+            "outbound reconnected",
+        )?;
+    }
     let phase = sup.phase_str(&host_id).unwrap_or("None");
     let attempt = sup.attempt(&host_id).unwrap_or(0);
     let cancelled = if sup.is_cancelled(&host_id) { 1 } else { 0 };
