@@ -5,6 +5,20 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 100 update (2026-08-03)
+
+Remote Query/PWA and Agent Commune parity deterministic slice is complete and
+pushed (`1045165`, `89cfeae`). Query-backed Git/File reads now single-flight
+with scoped invalidation and explicit refresh; Remote Git/File failures do not
+auto-retry. Browser/PWA layout owns dynamic viewport and safe-area insets, with
+browser-native installation only. Agent roster carries host-authoritative CWD;
+Remote groups support serialized optimistic CRUD, leader, color, and ordering
+controls. Full Vitest is 144 files / 1486 passed / 1 skipped; `pnpm check` is
+0/0; Rust teammate tests are 8/8; desktop/mobile builds and LAN E2E pass.
+Archive: `docs/iterations/2026-08-03-iteration-100-remote-sidebar-agent-parity.md`.
+No new release was created under the daily publication cap; physical-device,
+public Cloud/WebRTC, WebView2 heap, and dual-window/dual-Host gates remain.
+
 ## Iteration 99 update (2026-08-03)
 
 `REQ-TERMINAL-PASTE-ORDER-02` 的现场缺口定位为异步剪贴板读期间未占位：
