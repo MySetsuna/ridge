@@ -32,8 +32,7 @@ Status: implementation complete; release deferred by the daily publication freez
 - Full Vitest: 144 files, 1489 passed, 1 skipped.
 - `pnpm check`: 0 errors, 0 warnings.
 - Targeted transport/sidebar/PWA tests: 26 passed.
-- `cargo test -p ridge --lib remote_host_impl::tests --quiet`: build passed;
-  this module has no tests selected by that filter.
+- `cargo test -p ridge --lib remote_host_impl --quiet`: 12 tests passed.
 - `pnpm build:remote:mobile`: production PWA build succeeded; service worker
   generated with 36 precache entries.
 - Commits pushed to `origin/main`: `16a34bf`, `d8ae245`.
