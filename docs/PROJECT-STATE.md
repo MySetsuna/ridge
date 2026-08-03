@@ -5,6 +5,20 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 98 update (2026-08-03)
+
+Desktop terminal link fidelity is now fixed at the native-parser delta boundary.
+The delta protocol is version 4 and carries live/scrollback row `wrapped`
+metadata, so the WASM mirror preserves logical URLs for copy and Ctrl+click;
+wrap-only changes use an empty cell span. Ctrl/Meta keydown and keyup now
+refresh the hover hit-test even when the pointer is stationary, and listener
+cleanup covers detach/park. The parser-to-mirror regression, 397 ridge-term
+tests, 23 parser tests, full Vitest (142 files / 1475 passed / 1 skipped), and
+`pnpm check` (0/0) pass. Archive:
+`docs/iterations/2026-08-03-iteration-98-terminal-link-delta.md`.
+Release publication is pending the clean-gate commit and matching desktop,
+Remote, and Cloud publish checks; no physical WebView2 evidence is inferred.
+
 ## Iteration 96 update (2026-08-03)
 
 Git 请求槽生命周期审计发现一处长期稳定性缺口：远程请求所有权已释放后
