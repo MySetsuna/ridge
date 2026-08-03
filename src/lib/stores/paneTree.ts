@@ -134,7 +134,7 @@ export function forgetWorkspaceTree(wsId: string): void {
 /** 最近一次点�?聚焦的终端窗格；分屏针对�?id（与 layout �?leaf id 一致）�?*/
 export const activePaneId = writable<string>('');
 
-export type AgentPaneAttention = 'waiting' | 'stopped';
+export type AgentPaneAttention = 'waiting' | 'idle' | 'stopped';
 export const agentPaneAttentionStore = writable<Record<string, AgentPaneAttention>>({});
 
 /** Stable Agent status projection used by Pane chrome and the Commune cards. */

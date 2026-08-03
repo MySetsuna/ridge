@@ -10,6 +10,7 @@
   // 完整开关在设置面板「智能体」分区。
 
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { emit, listen } from '@tauri-apps/api/event';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
@@ -23,11 +24,17 @@
     refreshWorkspaceSaveInfo,
     workspacesList,
     activePaneId,
+    agentPaneAttentionStore,
     splitPane,
     closePane,
     setAgentPaneAttention,
     setAgentPaneStatus,
     type AgentPaneAttention,
+    type AgentPaneStatus,
+    terminalTitles,
+    paneForegroundProcessStore,
+    paneCwdStore,
+    collapseCwd,
   } from '$lib/stores/paneTree';
   import {
     hostsStore,
@@ -64,6 +71,8 @@
   import type { HitlAuditItem } from '../../../packages/remote/src/shared/teammate/hitlAuditRemote';
   import {
     agentCardStatus,
+    agentAttentionForTransition,
+    agentAttentionPriority,
     agentPaneStatus,
     agentStatusLabel,
     aggregateAgentCardStatus,
@@ -136,6 +145,7 @@
   /** 恢复时以 YOLO 模式启动（按 agent 配置表注入 yolo 参数）。 */
   let resumeYolo = $state(false);
   let observedAgentSignals = new Map<string, AgentPaneAttention | null>();
+  let observedAgentStatuses = new Map<string, AgentPaneStatus | null>();
   const recentReplyGroups = $derived(buildAgentHistoryGroups(recentReplies));
   const agentProfilesByIdentity = $derived.by(() => {
     const profiles = new Map<string, TeammateProfile>();
@@ -150,6 +160,26 @@
       (session) => !recentReplies.some((history) => history.sessionId === session.name)
     )
   );
+
+  /** Same live title projection as PaneHeader; identity/name remains stable for actions. */
+  const livePaneTitles = $derived.by(() => {
+    const titles = new Map<string, string>();
+    for (const member of allMembers) {
+      const paneId = member.profile.paneId;
+      if (!paneId) {
+        titles.set(`${member.workspaceId}:${member.profile.id}`, member.profile.name);
+        continue;
+      }
+      const proc = $terminalTitles[paneId] || $paneForegroundProcessStore[paneId] || '';
+      const rawCwd = $paneCwdStore[`${member.workspaceId}:${paneId}`];
+      const displayCwd = rawCwd ? collapseCwd(rawCwd) : '';
+      const paneTitle = proc && displayCwd
+        ? `${proc} · ${displayCwd}`
+        : proc || displayCwd || member.profile.name;
+      titles.set(`${member.workspaceId}:${member.profile.id}`, paneTitle);
+    }
+    return titles;
+  });
 
   function toggleHistoryGroup(key: string): void {
     historyExpanded = { ...historyExpanded, [key]: !(historyExpanded[key] ?? true) };
@@ -166,25 +196,35 @@
 
   function syncAgentAttention(): void {
     const next = new Map<string, AgentPaneAttention | null>();
+    const nextStatuses = new Map<string, AgentPaneStatus | null>();
     for (const member of allMembers) {
       const profile = member.profile;
       if (!profile.paneId) continue;
       const key = `${member.workspaceId}:${profile.paneId}`;
-      const signal: AgentPaneAttention | null = pendingFor(profile).length > 0
-        ? 'waiting'
-        : profile.status === 'Disappeared'
-          ? 'stopped'
-          : null;
-      const paneStatus = agentPaneStatus(profile, pendingFor(profile).length > 0);
+      const pending = pendingFor(profile).length > 0;
+      const paneStatus = agentPaneStatus(profile, pending);
+      const previousStatus = observedAgentStatuses.get(key);
+      const signal: AgentPaneAttention | null = agentAttentionForTransition(
+        previousStatus,
+        paneStatus,
+        pending,
+        profile.status,
+      );
       const previous = observedAgentSignals.get(key);
       // A transient stays visible until the target pane actually receives focus.
       // Returning to a neutral backend state only arms the next transition; it
       // must not acknowledge an event the user has not inspected.
       if (signal !== null && signal !== previous) {
-        setAgentPaneAttention(member.workspaceId, profile.paneId, signal);
+        const current = get(agentPaneAttentionStore)[key];
+        // Never downgrade an unacknowledged event; a new waiting/stopped event
+        // may upgrade an existing idle highlight. Focus remains the only clear.
+        if (!current || agentAttentionPriority(signal) > agentAttentionPriority(current)) {
+          setAgentPaneAttention(member.workspaceId, profile.paneId, signal);
+        }
       }
       setAgentPaneStatus(member.workspaceId, profile.paneId, paneStatus);
       next.set(key, signal);
+      nextStatuses.set(key, paneStatus);
     }
     for (const key of observedAgentSignals.keys()) {
       if (next.has(key)) continue;
@@ -196,6 +236,7 @@
       setAgentPaneStatus(oldWorkspaceId, oldPaneId, null);
     }
     observedAgentSignals = next;
+    observedAgentStatuses = nextStatuses;
   }
 
   function canResume(reply: AgentRecentReply): boolean {
@@ -902,6 +943,7 @@
               profile={m}
               agentId={m.id}
               name={m.name}
+              displayTitle={livePaneTitles.get(`${member.workspaceId}:${m.id}`) ?? m.name}
               workspaceId={member.workspaceId}
               sourceLabel={member.workspaceName}
               pending={pendingFor(m)}

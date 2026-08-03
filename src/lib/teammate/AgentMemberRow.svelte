@@ -31,6 +31,8 @@
     agentId: string;
     /** 显示名（失联时用编组里记的旧名）。 */
     name: string;
+    /** PaneHeader 同源的实时标题；name 仍作为稳定身份用于操作和历史。 */
+    displayTitle?: string;
     workspaceId?: string;
     sourceLabel?: string;
     /** 该成员的待审批项（可为空）。 */
@@ -46,6 +48,7 @@
     profile,
     agentId,
     name,
+    displayTitle = name,
     workspaceId,
     sourceLabel,
     pending = [],
@@ -139,12 +142,16 @@
 </script>
 
 <li
-  aria-label="{name} · {status.text}"
+  aria-label="{displayTitle} · {status.text}"
+  data-agent-title={displayTitle}
+  data-agent-attention={attention ?? ''}
   class="group/mem rounded border border-l-2 px-1.5 py-1 hover:bg-[var(--rg-surface)]/60
     {attention === 'waiting'
       ? 'border-amber-400/70 bg-amber-500/10'
       : attention === 'stopped'
         ? 'border-red-400/70 bg-red-500/10'
+        : attention === 'idle'
+          ? 'border-sky-400/70 bg-sky-500/10'
         : `border-transparent ${status.rail}`}
     {present ? '' : 'opacity-60'}"
 >
@@ -158,11 +165,11 @@
     <button
       type="button"
       class="min-w-0 flex-1 truncate text-left text-[12px] hover:text-[var(--rg-accent)] disabled:cursor-default"
-      title={paneId ? `定位到 ${name}` : name}
-      aria-label={paneId ? `定位到 ${name} 的终端` : name}
+      title={paneId ? `定位到 ${displayTitle}` : displayTitle}
+      aria-label={paneId ? `定位到 ${displayTitle} 的终端` : displayTitle}
       disabled={!paneId || !workspaceId}
       onclick={() => void activatePane()}
-    >{name}</button>
+    >{displayTitle}</button>
     {#if sourceLabel}
       <span class="max-w-24 shrink-0 truncate text-[9px] text-[var(--rg-fg-muted)]" title={sourceLabel}>
         {sourceLabel}
