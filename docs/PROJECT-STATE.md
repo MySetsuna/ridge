@@ -1,17 +1,38 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-08-03（iteration 129 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-03（iteration 131 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
 ## Current snapshot (2026-08-03)
 
-- `wind` `main` 已推送至 `aa02e60`（代码闭环基线 `d765ba8`）；最近闭环为 PTY 子进程树回收、Host 拖拽取消、上下文 Resize 去重、Remote Agent 状态投影统一。
+- `wind` `main` 已推送至 `b304ea7`（含 `e22c450` PWA 连接提示安全区隔离、`b304ea7` Kernel PTY 有界输出租约）；最近闭环为 PTY 子进程树回收、Host 拖拽取消、上下文 Resize 去重、Remote Agent 状态投影统一。
 - 全量 Vitest：145 files / 1,499 passed / 1 skipped；`pnpm check` 0 errors / 0 warnings；Remote mobile PWA build verifier 全部通过。
 - LAN Remote desktop/mobile E2E 均通过（`canvas/tree/ws=true`、输入/Resize 可发送、`browserErrors=[]`，浏览器隔离扩展）；证据日志见 `.iteration/artifacts/rdg-remote-e2e-20260803.log`。
 - `ridge-cloud` `main` 已推送至 `e6d5715`；admin session duration 对账完成，前端 check/build 通过；Cargo 回归因本机缺 `aws-lc-sys v0.41.0` 且离线无法下载，联网下载仍属环境证据，非代码失败。
 - 今日版本发布窗口已由 `v0.1.54` 消耗，后续不得再 bump/release/publish；未完成的公网、真机/WebView2、双窗口/双 Host、Agent 真链与完整 Kernel authority 仍不得宣称完成。
+
+## Iteration 130 update (2026-08-03)
+
+Remote reconnect and failure notices now reserve a separate top safe-area flex
+item before their content. `env()`/`constant()` plus the standalone 44px
+fallback cover Android WebView and iOS `navigator.standalone`; auth/cloud gate
+fallbacks consume the same iOS marker. Source tests, `pnpm check`, mobile PWA
+build and verifier pass. Physical notch/WebView2 evidence remains open.
+
+Archive: `docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md`.
+
+## Iteration 131 update (2026-08-03)
+
+Kernel domain PTYs now publish monotonic frames into a bounded 256-frame /
+256KiB replay hub. Leases support cursor attach, timeout long-poll, lag and
+explicit resync, detach, and fail-closed begin/finish/cancel destroy semantics;
+the existing CLI mpsc output path is preserved. Kernel and CLI tests pass.
+This is an internal seam only: HTTP lease routes, composite identity,
+persistence, Tauri adapter migration, and pure-shell authority remain open.
+
+Archive: `docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md`.
 
 ## Iteration 122 update (2026-08-03)
 
