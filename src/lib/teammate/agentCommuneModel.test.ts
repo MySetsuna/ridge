@@ -3,6 +3,7 @@ import {
   AGENT_HISTORY_REFRESH_INTERVAL_MS,
   agentCardStatus,
   agentPaneStatus,
+  agentStatusLabel,
   aggregateAgentCardStatus,
   buildAgentHistoryGroups,
   normalizeAgentIdentity,
@@ -32,6 +33,11 @@ describe('agent commune view model', () => {
     expect(agentCardStatus({ status: 'Idle', activity: 'idle' }, false)).toBe('idle');
     expect(agentCardStatus({ status: 'Working', activity: 'working' }, false)).toBe('working');
     expect(agentCardStatus({ status: 'Idle', activity: 'idle' }, true)).toBe('waiting');
+    // Remote roster DTOs carry the same string status shape; stopped states
+    // must not drift into a yellow/silent idle rail on mobile.
+    expect(agentCardStatus({ status: 'Suspended', activity: 'idle' }, false)).toBe('stopped');
+    expect(agentCardStatus({ status: 'Disappeared', activity: 'idle' }, false)).toBe('stopped');
+    expect(agentStatusLabel('stopped')).toBe('Stopped');
     expect(agentPaneStatus({ status: 'Suspended', activity: 'idle' }, false)).toBe('stopped');
     expect(agentPaneStatus({ status: 'Idle', activity: 'idle' }, false)).toBe('idle');
     expect(aggregateAgentCardStatus(['completed', 'working', 'waiting'])).toBe('waiting');

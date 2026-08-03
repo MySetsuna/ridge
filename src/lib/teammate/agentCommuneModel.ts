@@ -1,6 +1,10 @@
-import type { TeammateProfile } from './teammateModel';
-
 export type AgentCardStatus = 'working' | 'waiting' | 'idle' | 'completed' | 'stopped';
+
+/** Minimal status shape shared by desktop profiles and Remote roster DTOs. */
+export interface AgentStatusProfile {
+  status?: string;
+  activity?: string;
+}
 
 /** History is a cold, host-wide scan; never couple it to the live roster poll. */
 export const AGENT_HISTORY_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -82,7 +86,7 @@ export function buildAgentHistoryGroups<T extends AgentHistoryReplyLike>(
 }
 
 export function agentCardStatus(
-  profile: Pick<TeammateProfile, 'status' | 'activity'> | undefined,
+  profile: AgentStatusProfile | undefined,
   pendingApproval: boolean,
 ): AgentCardStatus {
   if (pendingApproval) return 'waiting';
@@ -98,7 +102,7 @@ export function agentCardStatus(
 export type AgentPaneStatus = Exclude<AgentCardStatus, 'completed'>;
 
 export function agentPaneStatus(
-  profile: Pick<TeammateProfile, 'status' | 'activity'>,
+  profile: AgentStatusProfile,
   pendingApproval: boolean,
 ): AgentPaneStatus {
   const status = agentCardStatus(profile, pendingApproval);

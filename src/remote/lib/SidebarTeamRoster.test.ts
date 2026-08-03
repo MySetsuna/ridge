@@ -11,8 +11,11 @@ describe('remote Agent drawer alignment contract', () => {
   });
 
   it('keeps agent state visible as a left color rail', () => {
+    expect(source).toContain("agentCardStatus,");
+    expect(source).toContain("const key = agentCardStatus(m, pendingFor(m).length > 0);");
     expect(source).toContain('class:status-working={st.key === \'working\'}');
-    expect(source).toContain('.member-card.status-pending{border-left-color:var(--rg-ansi-yellow,#d29922)}');
+    expect(source).toContain('.member-card.status-waiting{border-left-color:var(--rg-ansi-yellow,#d29922)}');
+    expect(source).toContain('.member-card.status-stopped{border-left-color:var(--rg-ansi-red,#f85149)}');
     expect(source).toContain('.member-card.status-idle{border-left-color:var(--rg-fg-muted)}');
   });
 
