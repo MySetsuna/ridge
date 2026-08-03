@@ -277,6 +277,10 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
             axum::routing::post(domain::domain_git_mutate),
         )
         .route(
+            "/v1/domain/git/read",
+            axum::routing::post(domain::domain_git_read),
+        )
+        .route(
             "/v1/domain/remote-hosts",
             get(domain::domain_remote_hosts).post(domain::domain_remote_host_upsert),
         )
