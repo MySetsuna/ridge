@@ -5,7 +5,28 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
-## Current snapshot (2026-08-03)
+## Current snapshot (iteration 132, 2026-08-03)
+
+- `wind` `main` is pushed at `9c8e1f3` (code commits `2079685`, `c9bc7c0`,
+  `26b4f42`, `afbfa11`). Desktop terminal now defaults to the main-thread
+  WebGPU host; worker Canvas2D is explicit opt-in. Startup listener timing,
+  inactive-workspace SCM polling, theme decode/invalidation, duplicate caret,
+  and multiline link hover affordance are guarded by source/unit tests.
+- Regression evidence: full Vitest 146 files / 1510 passed / 1 skipped;
+  `pnpm check` 0/0; ridge-term 398 and ridge-kernel 30 Rust tests passed;
+  ridge-kernel binary check passed. Remote RPC coalescing, cached Git panels,
+  and PWA safe-area changes are included.
+- Kernel HTTP PTY output leases are bounded by a 256-frame/256KiB replay window
+  and a 1024-handle map cap. Existing Tauri shell authority is not claimed as
+  migrated.
+- No version bump, release, Remote cloud publish, or public deployment was
+  made: `v0.1.54` consumed today's publication allowance. Physical WebView2,
+  GPU-adapter, phone-notch, memory-soak, and public Remote/Cloud evidence remain
+  external gates.
+
+Archive: `docs/iterations/2026-08-03-iteration-132-desktop-terminal-performance-and-link-hover.md`.
+
+## Previous snapshot (iteration 131)
 
 - `wind` `main` 已推送至 `43f6c39`（代码基线 `b304ea7`；含 `e22c450` PWA 连接提示安全区隔离与 Kernel PTY 有界输出租约归档）；最近闭环为 PTY 子进程树回收、Host 拖拽取消、上下文 Resize 去重、Remote Agent 状态投影统一。
 - 全量 Vitest：145 files / 1,499 passed / 1 skipped；`pnpm check` 0 errors / 0 warnings；Remote mobile PWA build verifier 全部通过。
