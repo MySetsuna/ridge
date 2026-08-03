@@ -16,6 +16,9 @@
 - Remote mobile bundle, PWA manifest/service-worker/safe-area checks, LAN
   desktop/mobile E2E, and Chromium mobile keyboard/touch-selection E2E are
   green; the latter is explicitly browser-emulation evidence.
+- Fresh Tauri shell E2E is not green: `tauri-driver` exits before app
+  assertions with `session not created: Chrome instance exited`; WebView2
+  shell/performance evidence remains external.
 - Full Rust/TypeScript matrix and requirements gates are recorded in the
   iteration archive. Physical/public Remote, WebView2, dual-window, Host,
   and mobile clean-profile evidence remain external gates; no release was
