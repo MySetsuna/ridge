@@ -17,7 +17,7 @@
   let requestGeneration = 0;
   let requestController: AbortController | null = null;
 
-  async function load() {
+  async function load(force = false) {
     requestController?.abort();
     const controller = new AbortController();
     requestController = controller;
@@ -25,7 +25,9 @@
     loading = true;
     error = null;
     try {
-      const next = await provider.gitStatus(controller.signal);
+      const next = force && provider.refreshGit
+        ? await provider.refreshGit(controller.signal)
+        : await provider.gitStatus(controller.signal);
       if (controller.signal.aborted || generation !== requestGeneration) return;
       info = next;
     } catch (e) {
@@ -59,7 +61,7 @@
       <GitBranch class="w-4 h-4 shrink-0" />
       <span class="branch-name">{info.currentBranch || (info.isGitRepo ? 'detached' : $t('scm.notGitRepo'))}</span>
     </span>
-    <button class="icon-btn" onclick={load} title={$t('scm.refresh')}><RefreshCw class="w-4 h-4" /></button>
+    <button class="icon-btn" onclick={() => void load(true)} title={$t('scm.refresh')}><RefreshCw class="w-4 h-4" /></button>
   </div>
 
   <div class="git-body">

@@ -29,6 +29,7 @@ describe('Remote PWA installation scope', () => {
 
   it('keeps notch and home-indicator controls inside browser and standalone PWA safe areas', () => {
     expect(mainSource).toContain('env(safe-area-inset-top');
+    expect(mainSource).toContain('height:100dvh');
     expect(bottomBarSource).toContain('env(safe-area-inset-bottom');
     expect(bottomBarSource).toContain('margin-top:auto');
     expect(bottomBarSource).toContain('box-sizing:border-box');

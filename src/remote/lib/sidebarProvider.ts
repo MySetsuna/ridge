@@ -87,13 +87,21 @@ export function createWsSidebarProvider(
     key: readonly unknown[],
     query: (signal?: AbortSignal) => Promise<T>,
     observerSignal?: AbortSignal,
+    queryStaleTime = staleTime,
   ): Promise<T> => fetchRemoteQuery(
     options.queryClient,
     key,
     ({ signal } = {}) => query(signal),
-    staleTime,
+    queryStaleTime,
     observerSignal,
   );
+  // A user-triggered refresh bypasses a still-fresh snapshot, but continues
+  // through the same Query key so concurrent refreshes remain single-flight.
+  const runFresh = <T>(
+    key: readonly unknown[],
+    query: (signal?: AbortSignal) => Promise<T>,
+    observerSignal?: AbortSignal,
+  ): Promise<T> => run(key, query, observerSignal, 0);
 
   return {
     async listDir(path: string, signal?: AbortSignal): Promise<DirListing> {
@@ -111,6 +119,30 @@ export function createWsSidebarProvider(
           child_count: c.child_count ?? null,
         }));
         // Directories first, then case-insensitive name — matches the desktop tree.
+        entries.sort((a, b) =>
+          a.is_dir === b.is_dir
+            ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+            : a.is_dir ? -1 : 1,
+        );
+        const resolved = tree.path ?? target;
+        return { path: resolved, parent: parentOf(resolved), entries };
+      }, signal);
+    },
+
+    async refreshDir(path: string, signal?: AbortSignal): Promise<DirListing> {
+      const target = path || root;
+      return runFresh(remoteQueryKeys.sidebarFiles(sessionId, root, target, 1, scope), async (signal) => {
+        const tree = (await dp.getFileTree(target, 1, signal)) as {
+          path?: string;
+          children?: Array<{ name: string; path: string; is_dir: boolean; is_ignored?: boolean; child_count?: number }>;
+        };
+        const entries: FileEntry[] = (tree.children ?? []).map((c) => ({
+          name: c.name,
+          path: c.path,
+          is_dir: c.is_dir,
+          is_ignored: c.is_ignored ?? null,
+          child_count: c.child_count ?? null,
+        }));
         entries.sort((a, b) =>
           a.is_dir === b.is_dir
             ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
@@ -185,6 +217,58 @@ export function createWsSidebarProvider(
           };
           if (!info.isGitRepo) nonGitRepoConfirmed = true;
           return info;
+      }, signal);
+    },
+
+    async refreshGit(signal?: AbortSignal): Promise<GitInfo> {
+      if (nonGitRepoConfirmed) return emptyGitInfo();
+      return runFresh(remoteQueryKeys.sidebarGit(sessionId, root, scope), async (querySignal) => {
+        let s: {
+          is_git_repo?: boolean;
+          staged?: Array<{ name: string; status: string }>;
+          unstaged?: Array<{ name: string; status: string }>;
+          untracked?: string[];
+          current_branch?: string | null;
+          has_upstream?: boolean;
+          branches?: string[];
+          commits?: Array<{ hash: string; msg: string; time: string; author?: string; parents?: string[]; refs?: string[] }>;
+        };
+        try {
+          s = (await dp.gitStatus(root, querySignal)) as typeof s;
+        } catch (error) {
+          if (!isNotGitRepositoryError(error)) throw error;
+          nonGitRepoConfirmed = true;
+          return emptyGitInfo();
+        }
+        const staged = (s.staged ?? []).map((f) => ({ path: f.name, additions: 0, deletions: 0, status: f.status }));
+        const unstaged = (s.unstaged ?? []).map((f) => ({ path: f.name, additions: 0, deletions: 0, status: f.status }));
+        const untracked = s.untracked ?? [];
+        const files = [
+          ...staged,
+          ...unstaged,
+          ...untracked.map((path) => ({ path, additions: 0, deletions: 0, status: '??' })),
+        ];
+        const commits = (s.commits ?? []).map((c) => ({
+          hash: c.hash,
+          subject: c.msg,
+          author: c.author ?? '',
+          date: c.time,
+          parents: c.parents,
+          refs: c.refs,
+        }));
+        const info: GitInfo = {
+          isGitRepo: s.is_git_repo ?? true,
+          currentBranch: s.current_branch ?? null,
+          hasUpstream: s.has_upstream ?? false,
+          branches: s.branches ?? [],
+          files,
+          staged,
+          unstaged,
+          untracked,
+          commits,
+        };
+        if (!info.isGitRepo) nonGitRepoConfirmed = true;
+        return info;
       }, signal);
     },
 

@@ -17,7 +17,7 @@
   let requestGeneration = 0;
   let requestController: AbortController | null = null;
 
-  async function load(target: string) {
+  async function load(target: string, force = false) {
     requestController?.abort();
     const controller = new AbortController();
     requestController = controller;
@@ -25,7 +25,9 @@
     loading = true;
     error = null;
     try {
-      const listing = await provider.listDir(target, controller.signal);
+      const listing = force && provider.refreshDir
+        ? await provider.refreshDir(target, controller.signal)
+        : await provider.listDir(target, controller.signal);
       if (controller.signal.aborted || generation !== requestGeneration) return;
       path = listing.path;
       parent = listing.parent ?? null;
@@ -61,7 +63,7 @@
       <ChevronUp class="w-4 h-4" />
     </button>
     <span class="ft-path" title={path}>{path || '/'}</span>
-    <button class="icon-btn" onclick={() => load(path)} title={$t('mobile.refresh')}>
+    <button class="icon-btn" onclick={() => void load(path, true)} title={$t('mobile.refresh')}>
       <RefreshCw class="w-4 h-4" />
     </button>
   </div>

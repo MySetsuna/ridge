@@ -7,6 +7,7 @@ const remote = readFileSync(new URL('../../remote/lib/RemoteGitPanel.svelte', im
 describe('git sidebar request lifecycle guards', () => {
   it('fences shared Git status responses and aborts on destroy', () => {
     expect(shared).toContain('provider.gitStatus(controller.signal)');
+    expect(shared).toContain('provider.refreshGit(controller.signal)');
     expect(shared).toContain('generation !== requestGeneration');
     expect(shared).toContain('requestController?.abort()');
     expect(shared).toContain('onDestroy');
@@ -14,6 +15,7 @@ describe('git sidebar request lifecycle guards', () => {
 
   it('fences Remote Git status responses and cancels action on destroy', () => {
     expect(remote).toContain('provider.gitStatus(controller.signal)');
+    expect(remote).toContain('provider.refreshGit(controller.signal)');
     expect(remote).toContain('generation !== loadGeneration');
     expect(remote).toContain('loadController?.abort()');
     expect(remote).toContain('actionController?.abort()');

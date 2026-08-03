@@ -44,7 +44,7 @@ function makeProvider(overrides: Partial<DataProvider> = {}): DataProvider {
 
 /** Small QueryClient-shaped test double; production uses TanStack Query. */
 class TestQueryClient {
-  private readonly cache = new Map<string, { promise: Promise<unknown>; expiresAt: number }>();
+  private readonly cache = new Map<string, { promise: Promise<unknown>; expiresAt: number; staleTime: number }>();
   readonly invalidations: unknown[][] = [];
 
   fetchQuery<T>({
@@ -58,9 +58,12 @@ class TestQueryClient {
   }): Promise<T> {
     const key = JSON.stringify(queryKey);
     const hit = this.cache.get(key);
-    if (hit && hit.expiresAt > Date.now()) return hit.promise as Promise<T>;
+    // TanStack Query evaluates the current fetch's staleTime, not only the
+    // value used by the request that populated the cache. An explicit refresh
+    // passes staleTime=0 and must therefore bypass a previously fresh entry.
+    if (hit && staleTime > 0 && hit.expiresAt > Date.now()) return hit.promise as Promise<T>;
     const promise = Promise.resolve().then(queryFn);
-    this.cache.set(key, { promise, expiresAt: Date.now() + staleTime });
+    this.cache.set(key, { promise, expiresAt: Date.now() + staleTime, staleTime });
     void promise.catch(() => {
       if (this.cache.get(key)?.promise === promise) this.cache.delete(key);
     });
@@ -140,6 +143,53 @@ describe('remote sidebar query contract', () => {
     expect(gitStatus).toHaveBeenCalledTimes(2);
     expect(gitStatus).toHaveBeenNthCalledWith(1, '/repo-a', undefined);
     expect(gitStatus).toHaveBeenNthCalledWith(2, '/repo-b', undefined);
+  });
+
+  it('explicitly refreshes a cached directory without changing its Query key', async () => {
+    const client = new TestQueryClient();
+    const getFileTree = vi.fn(async (path: string) => ({
+      name: 'repo',
+      path,
+      is_dir: true,
+      children: [],
+    }));
+    const sidebar = createWsSidebarProvider('/repo', makeProvider({ getFileTree }), {
+      queryClient: client,
+      sessionId: 8,
+      staleTime: 60_000,
+    });
+
+    await sidebar.listDir('');
+    expect(getFileTree).toHaveBeenCalledOnce();
+    await sidebar.listDir('');
+    expect(getFileTree).toHaveBeenCalledOnce();
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await sidebar.refreshDir?.('');
+    expect(getFileTree).toHaveBeenCalledTimes(2);
+  });
+
+  it('explicitly refreshes cached Git status while retaining non-Git fencing', async () => {
+    const client = new TestQueryClient();
+    const gitStatus = vi.fn(async () => ({
+      is_git_repo: true,
+      current_branch: 'main',
+      staged: [],
+      unstaged: [],
+      untracked: [],
+      commits: [],
+    }));
+    const sidebar = createWsSidebarProvider('/repo', makeProvider({ gitStatus }), {
+      queryClient: client,
+      sessionId: 8,
+      staleTime: 60_000,
+    });
+
+    await sidebar.gitStatus();
+    await sidebar.gitStatus();
+    expect(gitStatus).toHaveBeenCalledOnce();
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await sidebar.refreshGit?.();
+    expect(gitStatus).toHaveBeenCalledTimes(2);
   });
 
   it('keeps a clean Git repository visible when status has no files or commits', async () => {
