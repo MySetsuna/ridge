@@ -281,7 +281,10 @@
 {/if}
 
 <style>
-  .screen{position:fixed;inset:0;background:var(--rg-bg);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
+  /* Cloud gate renders the initial connect/reconnect failure state before
+     MainApp exists.  Reserve all display cutout insets and allow diagnostics
+     to scroll on short PWA viewports rather than hiding them under a notch. */
+  .screen{position:fixed;inset:0;background:var(--rg-bg);display:flex;flex-direction:column;align-items:center;justify-content:safe center;padding:calc(24px + env(safe-area-inset-top,0px)) max(24px,env(safe-area-inset-right,0px)) calc(24px + env(safe-area-inset-bottom,0px)) max(24px,env(safe-area-inset-left,0px));box-sizing:border-box;overflow-y:auto;overscroll-behavior:contain}
   .logo{display:block;width:64px;height:64px;margin:0 auto 16px}
   h1{font-size:20px;font-weight:600;margin-bottom:4px;color:var(--rg-fg)}
   .sub{color:var(--rg-fg-muted);font-size:14px;margin-bottom:24px;text-align:center;line-height:1.5}
