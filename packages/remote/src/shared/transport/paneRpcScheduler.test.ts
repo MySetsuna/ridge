@@ -321,6 +321,24 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
     });
   });
 
+  it('suppresses an identical contextual resize while the request is active', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc, { resizeDebounceMs: 0 });
+    const context = { isAlt: true, isInlineTui: false };
+
+    expect(scheduler.scheduleResize(pane, 24, 80, context)).toBe(true);
+    await vi.runOnlyPendingTimersAsync();
+    expect(rpc.calls).toHaveLength(1);
+
+    expect(scheduler.scheduleResize(pane, 24, 80, { ...context })).toBe(false);
+    rpc.calls[0].resolve(undefined);
+    await flushPromises();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(rpc.calls).toHaveLength(1);
+    expect(scheduler.diagnostics.resizeSuppressed).toBe(1);
+  });
+
   it('retires the lane, cancels its scope, and prevents delayed work from resurrecting', async () => {
     const rpc = new FakeRpc();
     const scheduler = createScheduler(rpc, { resizeDebounceMs: 40 });
