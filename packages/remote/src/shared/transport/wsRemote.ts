@@ -133,6 +133,8 @@ interface PendingRequest {
   reject: (error: Error) => void;
   scope?: string;
   method?: string;
+  /** Optional payload guard for legacy responses without a request id. */
+  matches?: (value: unknown) => boolean;
   /** Best-effort host cancellation for a legacy invoke request. */
   cancel?: () => void;
 }
@@ -839,6 +841,11 @@ export class RemoteConnection implements RemoteLink {
           const key = pendingKey(type, (msg as { _reqId?: unknown })._reqId);
           const pending = this._pendingRequests.get(key);
           if (pending) {
+            // Legacy responses have no correlation id. A late reply for an
+            // earlier workspace must not settle the current request (and
+            // erase its tree as an empty snapshot); leave it pending until
+            // the response matching its payload arrives or the timeout fires.
+            if (pending.matches && !pending.matches(msg)) return;
             this._removePending(key);
             pending.resolve(msg);
             return;
@@ -1115,7 +1122,12 @@ export class RemoteConnection implements RemoteLink {
     request: Record<string, unknown>,
     responseType: string,
     timeoutMs = 5000,
-    options: { scope?: string; method?: string; signal?: AbortSignal } = {},
+    options: {
+      scope?: string;
+      method?: string;
+      signal?: AbortSignal;
+      matches?: (value: unknown) => boolean;
+    } = {},
   ): Promise<unknown> {
     const key = pendingKey(responseType, request._reqId);
     const legacy = typeof request._reqId !== 'number';
@@ -1161,6 +1173,7 @@ export class RemoteConnection implements RemoteLink {
         reject: (e) => { clearTimeout(timer); reject(e); },
         scope: options.scope,
         method: options.method,
+        matches: options.matches,
         cancel: cancelHostRequest,
       };
       this._pendingRequests.set(key, pending);
@@ -1638,10 +1651,19 @@ export class RemoteConnection implements RemoteLink {
     const data = await this._sendAndWait(
       { type: 'list-workspace-panes', workspaceId },
       'workspace-panes',
+      5000,
+      {
+        matches: (value) => {
+          const response = value as { workspaceId?: unknown };
+          return response.workspaceId === undefined
+            || response.workspaceId === workspaceId;
+        },
+      },
     ) as { workspaceId?: string; panes?: PaneInfo[] };
-    // Guard against a stale reply for a different workspace (the response type
-    // is shared across workspaces, so a fast double-tap could cross wires).
-    if (data.workspaceId && data.workspaceId !== workspaceId) return [];
+    // Keep a defensive invariant for transports that bypass the matcher.
+    if (data.workspaceId && data.workspaceId !== workspaceId) {
+      throw new Error(`stale workspace-panes response for ${data.workspaceId}`);
+    }
     return data.panes || [];
   }
 

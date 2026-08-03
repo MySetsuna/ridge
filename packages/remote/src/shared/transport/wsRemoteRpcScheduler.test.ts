@@ -150,6 +150,30 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
     conn.disconnect();
   });
 
+  it('ignores a late workspace reply for another workspace', async () => {
+    const { conn, ws } = connect();
+
+    const first = conn.listWorkspacePanes('workspace-a');
+    const second = conn.listWorkspacePanes('workspace-b');
+    const requests = () => ws.sent.filter((frame) => frame.type === 'list-workspace-panes');
+    expect(requests()).toHaveLength(1);
+
+    // A delayed response from a previous workspace must not settle the
+    // current legacy slot. The second request remains queued until A settles.
+    ws.receive({ type: 'workspace-panes', workspaceId: 'workspace-b', panes: [{ id: 'wrong' }] });
+    await flushPromises();
+    expect(requests()).toHaveLength(1);
+
+    ws.receive({ type: 'workspace-panes', workspaceId: 'workspace-a', panes: [{ id: 'pane-a' }] });
+    await expect(first).resolves.toEqual([{ id: 'pane-a' }]);
+    await flushPromises();
+    expect(requests()).toHaveLength(2);
+
+    ws.receive({ type: 'workspace-panes', workspaceId: 'workspace-b', panes: [{ id: 'pane-b' }] });
+    await expect(second).resolves.toEqual([{ id: 'pane-b' }]);
+    conn.disconnect();
+  });
+
   it('keeps input ordered behind one acknowledged invoke request', async () => {
     const { conn, ws } = connect();
 
