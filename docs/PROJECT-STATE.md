@@ -5,6 +5,18 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 109 update (2026-08-03)
+
+The outbound host client now uses one per-host `rpc_gate` for connect/list,
+subscribe/unsubscribe, terminal input, Resize, reconnect reset, and disconnect.
+Subscription state is rechecked while the gate is held, preventing writes or
+Resize calls from racing pane teardown. A concurrent transport guard proves
+the in-flight RPC peak stays at one while all input writes are preserved. The
+outbound host tests are 11/11; this follow-up remains unreleased because the
+daily publication window is frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-109-outbound-rpc-gate.md`.
+
 ## Iteration 108 update (2026-08-03)
 
 `detach_foreign` now uses the same atomic ridge-kernel session transition as

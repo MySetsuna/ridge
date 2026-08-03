@@ -167,10 +167,10 @@ pub struct OutboundClient {
     sessions: Mutex<Vec<RemoteSessionInfo>>,
     /// remote_pane_id → subscribed
     subscriptions: Mutex<HashMap<String, bool>>,
-    /// One resize per host transport at a time. The transport call is
-    /// synchronous, so holding this gate also closes the check/send race when
-    /// two ResizeObservers report the same dimensions concurrently.
-    resize_gate: Mutex<()>,
+    /// One synchronous RPC per host transport at a time. Holding this gate
+    /// closes check/send races between input, resize, subscription, and
+    /// disconnect lifecycles before they can grow a remote queue.
+    rpc_gate: Mutex<()>,
     /// Last dimensions acknowledged by the remote pane. Cleared on detach or
     /// reconnect so the first resize after a new subscription is never lost.
     resize_last_applied: Mutex<HashMap<String, (u16, u16)>>,
@@ -207,7 +207,7 @@ impl OutboundClient {
             transport,
             sessions: Mutex::new(Vec::new()),
             subscriptions: Mutex::new(HashMap::new()),
-            resize_gate: Mutex::new(()),
+            rpc_gate: Mutex::new(()),
             resize_last_applied: Mutex::new(HashMap::new()),
             stats: OutboundStats::default(),
         }
@@ -232,6 +232,7 @@ impl OutboundClient {
 
     /// T1: hello + list_panes
     pub fn connect_and_list(&self) -> Result<Vec<RemoteSessionInfo>, String> {
+        let _gate = self.rpc_gate.lock();
         *self.state.lock() = OutboundState::Connecting;
         match self
             .transport
@@ -271,7 +272,7 @@ impl OutboundClient {
         ) {
             return Err(format!("cannot subscribe in state {st:?}"));
         }
-        let _gate = self.resize_gate.lock();
+        let _gate = self.rpc_gate.lock();
         self.transport
             .send_json_rpc("subscribe-pane", json!({ "paneId": remote_pane_id }))?;
         self.subscriptions
@@ -285,7 +286,7 @@ impl OutboundClient {
 
     /// detach: unsubscribe，保留 host 连接
     pub fn unsubscribe(&self, remote_pane_id: &str) -> Result<(), String> {
-        let _gate = self.resize_gate.lock();
+        let _gate = self.rpc_gate.lock();
         self.transport
             .send_json_rpc("unsubscribe-pane", json!({ "paneId": remote_pane_id }))?;
         self.subscriptions.lock().remove(remote_pane_id);
@@ -299,6 +300,7 @@ impl OutboundClient {
 
     /// T3: write_to_pty
     pub fn write_pty(&self, remote_pane_id: &str, data: &[u8]) -> Result<(), String> {
+        let _gate = self.rpc_gate.lock();
         if !self.is_subscribed(remote_pane_id) {
             return Err(format!("not subscribed: {remote_pane_id}"));
         }
@@ -320,7 +322,7 @@ impl OutboundClient {
         // Serialize the check and the wire call. Without this gate two
         // concurrent layout observers can both miss the cache and enqueue the
         // same resize before either response returns.
-        let _gate = self.resize_gate.lock();
+        let _gate = self.rpc_gate.lock();
         if !self.is_subscribed(remote_pane_id) {
             return Err(format!("not subscribed: {remote_pane_id}"));
         }
@@ -352,7 +354,7 @@ impl OutboundClient {
         self.stats.reconnect_attempts.fetch_add(1, Ordering::SeqCst);
         *self.state.lock() = OutboundState::Connecting;
         {
-            let _gate = self.resize_gate.lock();
+            let _gate = self.rpc_gate.lock();
             self.resize_last_applied.lock().clear();
         }
         self.connect_and_list()?;
@@ -375,7 +377,7 @@ impl OutboundClient {
     }
 
     pub fn mark_disconnected(&self) {
-        let _gate = self.resize_gate.lock();
+        let _gate = self.rpc_gate.lock();
         *self.state.lock() = OutboundState::Disconnected;
         self.subscriptions.lock().clear();
         self.resize_last_applied.lock().clear();
@@ -479,6 +481,40 @@ mod tests {
         ]);
         let client = Arc::new(OutboundClient::new("lan:127.0.0.1:7522", mock.clone()));
         (mock, client)
+    }
+
+    struct ConcurrentWriteTransport {
+        active: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ConcurrentWriteTransport {
+        fn new() -> Self {
+            Self {
+                active: std::sync::atomic::AtomicUsize::new(0),
+                peak: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl OutboundTransport for ConcurrentWriteTransport {
+        fn send_json_rpc(&self, method: &str, _params: Value) -> Result<Value, String> {
+            if method == "write_to_pty" {
+                let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak.fetch_max(active, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                self.active.fetch_sub(1, Ordering::SeqCst);
+            }
+            Ok(json!({ "ok": true }))
+        }
+
+        fn send_raw(&self, _frame: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn drain_pane_raw(&self) -> Vec<(String, Vec<u8>)> {
+            Vec::new()
+        }
     }
 
     #[test]
@@ -589,6 +625,30 @@ mod tests {
         let (_mock, client) = mock_client();
         client.connect_and_list().unwrap();
         assert!(client.write_pty("main", b"x").is_err());
+    }
+
+    #[test]
+    fn write_rpc_is_serialized_per_host() {
+        let transport = Arc::new(ConcurrentWriteTransport::new());
+        let client = Arc::new(OutboundClient::new("lan:serialized", transport.clone()));
+        *client.state.lock() = OutboundState::Subscribed;
+        client
+            .subscriptions
+            .lock()
+            .insert("main".into(), true);
+
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let client = client.clone();
+                std::thread::spawn(move || client.write_pty("main", b"x"))
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("write worker").expect("write RPC");
+        }
+
+        assert_eq!(transport.peak.load(Ordering::SeqCst), 1);
+        assert_eq!(client.stats.write_ok.load(Ordering::SeqCst), 8);
     }
 
     #[test]
