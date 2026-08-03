@@ -12,6 +12,11 @@
   payload shapes, use the same serving-root sandbox as canonical FS methods,
   and run disk/Git work in `spawn_blocking` before asynchronous WS delivery.
   Focused legacy-frame tests pass 12/12.
+- Controlled LAN Remote E2E also passes from the current binary: desktop and
+  mobile WebSocket sessions connect, input and Resize are sent, and both
+  browser runs report no errors (`desktop canvas=true tree=false ws=true`,
+  `mobile canvas=true tree=true ws=true`). This is LAN evidence only, not
+  public/physical-phone/WebView2 soak evidence.
 - No version bump or publication was made because `v0.1.54` consumed today's
   allowance. Physical phone/public Remote, WebView2 heap soak, dual-window /
   dual-host, and full Kernel-domain authority migration remain evidence gates.
