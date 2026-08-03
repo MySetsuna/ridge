@@ -454,6 +454,19 @@ mod tests {
     }
 
     #[test]
+    fn partial_soft_wrapped_url_copy_has_no_visual_newline() {
+        let mut t = Terminal::new(3, 12, 0);
+        t.feed(b"https://example.com/long/path");
+        let mut s = Selection::default();
+        // Start/end inside the first/last visual rows to model a drag over a
+        // wrapped URL rather than the select-all shortcut.
+        s.set(&t, vp_range(0, 8, 2, 5));
+        let text = s.text(&t);
+        assert!(!text.contains('\n'), "soft-wrap copy must not insert a newline: {text:?}");
+        assert_eq!(text, "example.com/long/path");
+    }
+
+    #[test]
     fn range_is_empty_when_start_equals_end() {
         let r = Range {
             start: Pos { row: 1, col: 5 },
