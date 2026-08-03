@@ -5,6 +5,18 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 155, 2026-08-04)
+
+- Desktop branch-list reads now use authenticated kernel
+  `/v1/domain/git/branches`; confirmed non-Git roots are detected before any
+  `git branch` child is started. Existing five-minute UI caches and Tauri
+  signatures remain unchanged.
+- Typed kernel decoding covers source, malformed payload, non-Git, and Windows
+  path cases. Focused branch tests: 2 passed; desktop compile: exit 0. Full
+  regression and physical/public evidence remain open; no release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-155-kernel-git-branches.md`.
+
 ## Current snapshot (iteration 154, 2026-08-04)
 
 - Desktop `ensure_kernel_running` now uses a process-local single-flight gate

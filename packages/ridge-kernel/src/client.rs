@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::registry::{clear_registry, read_endpoint, KernelEndpoint};
-use ridge_core::commands::git::ScmRepoStatus;
+use ridge_core::commands::git::{BranchInfo, ScmRepoStatus};
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct KernelPtyInfo {
@@ -253,6 +253,29 @@ fn decode_domain_git_status(value: Value) -> Result<Option<ScmRepoStatus>, Strin
         .map_err(|error| format!("decode kernel Git status response: {error}"))
 }
 
+fn decode_domain_git_branches(value: Value) -> Result<Option<Vec<BranchInfo>>, String> {
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("kernel Git branches request failed")
+            .to_string());
+    }
+    if value.get("source").and_then(Value::as_str) != Some("ridge-kernel") {
+        return Err("kernel Git branches response has unexpected source".to_string());
+    }
+    if value.get("is_repo").and_then(Value::as_bool) != Some(true) {
+        return Ok(None);
+    }
+    let branches = value
+        .get("branches")
+        .cloned()
+        .ok_or_else(|| "kernel Git branches response omitted branches".to_string())?;
+    serde_json::from_value(branches)
+        .map(Some)
+        .map_err(|error| format!("decode kernel Git branches response: {error}"))
+}
+
 fn encode_query_component(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut encoded = String::with_capacity(value.len());
@@ -311,6 +334,25 @@ pub fn read_domain_git_status(
         None,
     )?;
     decode_domain_git_status(value)
+}
+
+/// Read the kernel-owned branch projection. `None` means the path was
+/// confirmed non-Git; transport, auth, malformed payload, and Git failures
+/// remain visible errors.
+pub fn read_domain_git_branches(
+    endpoint: &KernelEndpoint,
+    path: &str,
+) -> Result<Option<Vec<BranchInfo>>, String> {
+    let value = request_json(
+        endpoint,
+        "GET",
+        &format!(
+            "/v1/domain/git/branches?path={}",
+            encode_query_component(path)
+        ),
+        None,
+    )?;
+    decode_domain_git_branches(value)
 }
 
 /// Discover PTYs owned by the long-lived kernel process.
@@ -1021,6 +1063,44 @@ mod tests {
             encode_query_component(r"C:\work dir?x#1"),
             "C%3A%5Cwork%20dir%3Fx%231"
         );
+    }
+
+    #[test]
+    fn domain_git_branches_contract_preserves_non_git_and_branch_shape() {
+        assert!(decode_domain_git_branches(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": false,
+            "branches": []
+        }))
+        .unwrap()
+        .is_none());
+
+        let branches = decode_domain_git_branches(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "branches": [{
+                "name": "main",
+                "is_current": true,
+                "is_remote": false,
+                "upstream": "origin/main"
+            }]
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].name, "main");
+        assert!(branches[0].is_current);
+        assert_eq!(branches[0].upstream.as_deref(), Some("origin/main"));
+
+        assert!(decode_domain_git_branches(json!({
+            "ok": true,
+            "source": "tauri",
+            "is_repo": true,
+            "branches": []
+        }))
+        .is_err());
     }
 
     #[test]
