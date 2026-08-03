@@ -27,6 +27,11 @@ sidebar could remain blank while the terminal stayed connected.
   passed, 0 failed (including asynchronous legacy file/search/Git frames).
 - `rustfmt --edition 2021 --check packages/ridge-cli/src/tui/lan_host_impl.rs`:
   passed.
+- `node scripts/rdg-remote-e2e.mjs --skip-build`: passed; isolated Chromium
+  desktop `canvas=true tree=false ws=true`, mobile `canvas=true tree=true
+  ws=true`, input/resize sent, and `browserErrors=[]`.
+- Evidence: `.iteration/artifacts/rdg-remote-e2e/last-result.json` and the
+  corresponding desktop/mobile screenshots.
 
 ## Not claimed
 
