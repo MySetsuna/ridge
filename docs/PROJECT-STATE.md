@@ -5,6 +5,18 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 154, 2026-08-04)
+
+- Desktop `ensure_kernel_running` now uses a process-local single-flight gate
+  across detection, spawn, and readiness. Setup and first-Pane startup cannot
+  launch duplicate kernels or observe a half-written registry.
+- An existing live PID receives the same bounded readiness wait before attach;
+  transient kernel health publication no longer becomes an immediate Pane
+  failure. Focused lifecycle tests: 6 passed. No version bump or release was
+  made.
+
+Archive: `docs/iterations/2026-08-04-iteration-154-kernel-boot-single-flight.md`.
+
 ## Current snapshot (iteration 153, 2026-08-04)
 
 - Desktop `get_scm_status` now reads the authenticated kernel Git domain;
