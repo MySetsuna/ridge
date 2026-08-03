@@ -184,7 +184,7 @@ describe('CloudRemoteConnection panes', () => {
     // show the same working/idle cue as the desktop pane.
     expect(panesMsg).toEqual({ type: 'panes', workspaceId: 'ws1', panes: [
       { id: 'pane-a', title: 'A', cwd: '/a', isAgent: true, agentState: 'busy', agentId: 'agent-a' },
-      { id: 'pane-b', title: undefined, cwd: undefined, isAgent: false, agentState: 'idle' },
+      { id: 'pane-b', title: undefined, cwd: undefined, isAgent: true, agentState: 'idle' },
     ] });
     expect(metas).toContainEqual([{ workspaceId: 'ws1', paneId: 'pane-a' }, 'A', '/a']);
     expect(metas).toContainEqual([{ workspaceId: 'ws1', paneId: 'pane-b' }, null, null]);

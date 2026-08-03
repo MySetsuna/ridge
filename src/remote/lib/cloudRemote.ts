@@ -120,7 +120,9 @@ function flattenLeaves(node: PaneNode | null | undefined): PaneInfo[] {
       id: node.id,
       title: node.title,
       cwd: node.cwd,
-      isAgent: node.agent_state === 'busy',
+      // Agent identity persists while runtime state changes between idle,
+      // starting, and busy. Do not make the card disappear when it is idle.
+      isAgent: node.agent_state !== undefined || node.agent_id !== undefined,
       ...(node.agent_state ? { agentState: node.agent_state } : {}),
       ...(node.agent_id ? { agentId: node.agent_id } : {}),
     }];
