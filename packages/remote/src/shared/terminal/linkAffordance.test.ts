@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   decideHoverUnderline,
   decideLinkClick,
+  osc8UnderlineRegions,
   parsePathWithLocation,
   resolveOpenTarget,
   resolvePathAgainstCwd,
@@ -149,5 +150,33 @@ describe('underlineRegionsFromSpan', () => {
       c0: 1,
       c1: 8,
     });
+  });
+});
+
+describe('osc8UnderlineRegions', () => {
+  function grid(lines: string[], wrapped: Set<number>) {
+    const width = Math.max(...lines.map((line) => line.length), 1);
+    return {
+      rows: () => lines.length,
+      cols: () => width,
+      rowWrapped: (row: number) => wrapped.has(row),
+      hyperlinkAt: (row: number, col: number) => {
+        const ch = lines[row]?.[col];
+        return ch && ch !== ' ' ? { uri: 'https://example.test/long' } : null;
+      },
+    };
+  }
+
+  it('joins OSC-8 segments across a verified soft wrap', () => {
+    expect(osc8UnderlineRegions(grid(['https://example.test/', 'long'], new Set([0])), 1, 2, 'https://example.test/long')).toEqual([
+      { row: 0, c0: 0, c1: 21 },
+      { row: 1, c0: 0, c1: 4 },
+    ]);
+  });
+
+  it('does not join repeated URI on a hard line break', () => {
+    expect(osc8UnderlineRegions(grid(['same', 'same'], new Set()), 1, 1, 'https://example.test/long')).toEqual([
+      { row: 1, c0: 0, c1: 4 },
+    ]);
   });
 });
