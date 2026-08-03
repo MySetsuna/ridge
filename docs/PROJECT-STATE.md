@@ -9,6 +9,7 @@
 
 - `wind` `main` 已推送至 `d765ba8`；最近闭环为 PTY 子进程树回收、Host 拖拽取消、上下文 Resize 去重、Remote Agent 状态投影统一。
 - 全量 Vitest：145 files / 1,499 passed / 1 skipped；`pnpm check` 0 errors / 0 warnings；Remote mobile PWA build verifier 全部通过。
+- LAN Remote desktop/mobile E2E 均通过（`canvas/tree/ws=true`、输入/Resize 可发送、`browserErrors=[]`，浏览器隔离扩展）；证据日志见 `.iteration/artifacts/rdg-remote-e2e-20260803.log`。
 - `ridge-cloud` `main` 已推送至 `e6d5715`；admin session duration 对账完成，前端 check/build 通过；Cargo 回归因本机缺 `aws-lc-sys v0.41.0` 且离线无法下载，联网下载仍属环境证据，非代码失败。
 - 今日版本发布窗口已由 `v0.1.54` 消耗，后续不得再 bump/release/publish；未完成的公网、真机/WebView2、双窗口/双 Host、Agent 真链与完整 Kernel authority 仍不得宣称完成。
 
