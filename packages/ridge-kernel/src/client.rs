@@ -13,6 +13,43 @@ use std::time::Duration;
 
 use crate::registry::{clear_registry, read_endpoint, KernelEndpoint};
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct KernelPtyInfo {
+    pub id: uuid::Uuid,
+    pub pty_id: uuid::Uuid,
+    pub workspace_id: Option<uuid::Uuid>,
+    pub role: String,
+    pub launch_profile: Option<String>,
+    pub cwd: Option<String>,
+    pub status: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub oldest_seq: u64,
+    pub next_seq: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct KernelPtyListResponse {
+    ptys: Vec<KernelPtyInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct KernelPtyLeaseResponse {
+    lease_id: uuid::Uuid,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct KernelPtyCreateResponse {
+    pty_id: uuid::Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KernelPtyOutput {
+    Data(Vec<u8>),
+    Timeout,
+    Lagged,
+}
+
 pub const KERNEL_HOST_ARG: &str = "--ridge-kernel-host";
 pub const KERNEL_PROTOCOL_VERSION: u64 = 1;
 
@@ -215,6 +252,204 @@ pub fn read_domain_remote_hosts(
 ) -> Result<KernelRemoteHostsSnapshot, String> {
     let value = request_json(endpoint, "GET", "/v1/domain/remote-hosts", None)?;
     decode_domain_snapshot(value)
+}
+
+/// Discover PTYs owned by the long-lived kernel process.
+pub fn list_domain_ptys(endpoint: &KernelEndpoint) -> Result<Vec<KernelPtyInfo>, String> {
+    let value = request_json(endpoint, "GET", "/v1/domain/ptys", None)?;
+    let response: KernelPtyListResponse = decode_domain_snapshot(value)?;
+    Ok(response.ptys)
+}
+
+/// Create a PTY with a caller-owned stable identity. The pane UUID is the
+/// reconnect key; it must not be regenerated during a normal shell rebuild.
+pub fn create_domain_pty(
+    endpoint: &KernelEndpoint,
+    pty_id: uuid::Uuid,
+    shell: Option<&str>,
+    cwd: Option<&str>,
+    workspace_id: Option<uuid::Uuid>,
+    role: &str,
+) -> Result<uuid::Uuid, String> {
+    let body = serde_json::json!({
+        "pty_id": pty_id,
+        "shell": shell,
+        "cwd": cwd,
+        "workspace_id": workspace_id,
+        "role": role,
+    });
+    let value = request_json(endpoint, "POST", "/v1/domain/ptys", Some(&body))?;
+    let response: KernelPtyCreateResponse = decode_domain_snapshot(value)?;
+    Ok(response.pty_id)
+}
+
+fn require_ok(value: Value) -> Result<Value, String> {
+    if value.get("ok").and_then(Value::as_bool) == Some(true) {
+        Ok(value)
+    } else {
+        Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("kernel PTY request failed")
+            .to_string())
+    }
+}
+
+pub fn write_domain_pty(
+    endpoint: &KernelEndpoint,
+    pty_id: uuid::Uuid,
+    data: &[u8],
+) -> Result<(), String> {
+    let body = serde_json::json!({
+        "data_b64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, data),
+    });
+    let _ = require_ok(request_json(
+        endpoint,
+        "POST",
+        &format!("/v1/domain/ptys/{pty_id}/write"),
+        Some(&body),
+    )?)?;
+    Ok(())
+}
+
+pub fn resize_domain_pty(
+    endpoint: &KernelEndpoint,
+    pty_id: uuid::Uuid,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let body = serde_json::json!({ "cols": cols, "rows": rows });
+    let _ = require_ok(request_json(
+        endpoint,
+        "POST",
+        &format!("/v1/domain/ptys/{pty_id}/resize"),
+        Some(&body),
+    )?)?;
+    Ok(())
+}
+
+pub fn clear_domain_pty(endpoint: &KernelEndpoint, pty_id: uuid::Uuid) -> Result<(), String> {
+    let _ = require_ok(request_json(
+        endpoint,
+        "POST",
+        &format!("/v1/domain/ptys/{pty_id}/clear"),
+        Some(&serde_json::json!({})),
+    )?)?;
+    Ok(())
+}
+
+pub fn destroy_domain_pty(endpoint: &KernelEndpoint, pty_id: uuid::Uuid) -> Result<(), String> {
+    let _ = require_ok(request_json(
+        endpoint,
+        "DELETE",
+        &format!("/v1/domain/ptys/{pty_id}"),
+        None,
+    )?)?;
+    Ok(())
+}
+
+pub fn scrollback_domain_pty(
+    endpoint: &KernelEndpoint,
+    pty_id: uuid::Uuid,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let value = require_ok(request_json(
+        endpoint,
+        "GET",
+        &format!("/v1/domain/ptys/{pty_id}?max_bytes={}", max_bytes.min(1024 * 1024)),
+        None,
+    )?)?;
+    let encoded = value
+        .get("data_b64")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "kernel PTY scrollback response missing data_b64".to_string())?;
+    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+        .map_err(|error| format!("decode kernel PTY scrollback: {error}"))
+}
+
+pub fn attach_domain_pty_output(
+    endpoint: &KernelEndpoint,
+    pty_id: uuid::Uuid,
+    after_seq: Option<u64>,
+) -> Result<uuid::Uuid, String> {
+    let path = match after_seq {
+        Some(seq) => format!("/v1/domain/ptys/{pty_id}/output?after_seq={seq}"),
+        None => format!("/v1/domain/ptys/{pty_id}/output"),
+    };
+    let value = request_json(endpoint, "POST", &path, None)?;
+    let response: KernelPtyLeaseResponse = decode_domain_snapshot(value)?;
+    Ok(response.lease_id)
+}
+
+pub fn poll_domain_pty_output(
+    endpoint: &KernelEndpoint,
+    pty_id: uuid::Uuid,
+    lease_id: uuid::Uuid,
+    timeout_ms: u64,
+    max_frames: usize,
+) -> Result<KernelPtyOutput, String> {
+    let value = require_ok(request_json(
+        endpoint,
+        "GET",
+        &format!(
+            "/v1/domain/ptys/{pty_id}/output/{lease_id}?timeout_ms={}&max_frames={}",
+            timeout_ms.min(1000),
+            max_frames.clamp(1, 128)
+        ),
+        None,
+    )?)?;
+    match value.get("kind").and_then(Value::as_str) {
+        Some("timeout") => Ok(KernelPtyOutput::Timeout),
+        Some("lagged") => Ok(KernelPtyOutput::Lagged),
+        Some("data") => {
+            let mut data = Vec::new();
+            for frame in value
+                .get("frames")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "kernel PTY output missing frames".to_string())?
+            {
+                let encoded = frame
+                    .get("data_b64")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "kernel PTY output frame missing data_b64".to_string())?;
+                data.extend(
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+                        .map_err(|error| format!("decode kernel PTY output: {error}"))?,
+                );
+            }
+            Ok(KernelPtyOutput::Data(data))
+        }
+        Some(kind) => Err(format!("unknown kernel PTY output kind: {kind}")),
+        None => Err("kernel PTY output missing kind".to_string()),
+    }
+}
+
+pub fn resync_domain_pty_output(
+    endpoint: &KernelEndpoint,
+    pty_id: uuid::Uuid,
+    lease_id: uuid::Uuid,
+) -> Result<(), String> {
+    let _ = require_ok(request_json(
+        endpoint,
+        "POST",
+        &format!("/v1/domain/ptys/{pty_id}/output/{lease_id}/resync"),
+        None,
+    )?)?;
+    Ok(())
+}
+
+pub fn detach_domain_pty_output(
+    endpoint: &KernelEndpoint,
+    pty_id: uuid::Uuid,
+    lease_id: uuid::Uuid,
+) -> Result<(), String> {
+    let _ = require_ok(request_json(
+        endpoint,
+        "DELETE",
+        &format!("/v1/domain/ptys/{pty_id}/output/{lease_id}"),
+        None,
+    )?)?;
+    Ok(())
 }
 
 fn mutate_domain_remote_host_session(

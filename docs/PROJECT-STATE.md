@@ -1,11 +1,26 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-08-03（iteration 137 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-03（iteration 138 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
-## Current snapshot (iteration 137, 2026-08-03)
+## Current snapshot (iteration 138, 2026-08-03)
+
+- `wind` now includes the tab-switch black-frame guard and a real ordinary-shell
+  PTY reattach path. `ridge-kernel` owns stable pane-keyed PTYs, bounded output
+  leases and write/resize/clear/destroy; Tauri proxies them and rebinds them
+  after saved workspace restore. Structured Agent launches remain local because
+  their environment/TMUX contract is process-specific.
+- Tray `退出桌面端` drops only the desktop proxy; `彻底退出` remains the
+  explicit kernel shutdown boundary. Older-build local ConPTY sessions are not
+  claimed as retroactively recoverable.
+- Full Vitest: 147 files / 1524 passed / 1 skipped; Tauri library tests: 251
+  passed; ridge-kernel tests: 31 passed; `pnpm check`: 0 errors / 0 warnings.
+  No release or publication was made because `v0.1.54` consumed today's
+  allowance.
+
+Archive: `docs/iterations/2026-08-03-iteration-138-tab-switch-and-pty-reattach.md`.
 
 - `wind` `main` is at `cd4f22f`; Agent Commune now consumes the same live
   `terminalTitles`, foreground-process, and workspace-scoped CWD stores as

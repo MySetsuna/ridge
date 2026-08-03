@@ -17,6 +17,7 @@ use uuid::Uuid;
 const MAX_SCROLLBACK_RPC_BYTES: usize = 512 * 1024;
 
 use crate::engine::parser::PaneParser;
+use crate::engine::kernel_pty::{make_master, make_writer, KernelPtyRef};
 use crate::engine::pty::{spawn_pty_reader, PtyHandle, RESIZE_SILENCE_WINDOW_MS};
 use crate::state::{AppState, PaneDeltaSender};
 use crate::teammate::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
@@ -537,6 +538,12 @@ fn tmux_env_value(pane_slot: usize, cwd: Option<&Path>, state: &AppState) -> Str
 /// Kill a local PTY child and its descendants. `Child::kill` alone only stops
 /// the shell process, leaving tool runners behind after pane teardown.
 fn kill_pty_process_tree(handle: &mut PtyHandle) {
+    if let Some(kernel) = handle.kernel_ref.take() {
+        if let Err(error) = kernel.destroy() {
+            tracing::warn!(target: "ridge::kernel_pty", %error, "kernel PTY destroy failed");
+        }
+        return;
+    }
     let child_pid = handle.child_pid;
     if let Some(child) = handle._child.as_mut() {
         let _ = child.kill();
@@ -580,6 +587,160 @@ fn teardown_pane_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: U
 /// `tmux_pane_index`：teammate 子窗格与 `TMUX_PANE` / `TMUX` 尾缀对齐。
 ///
 /// 若带 `initial_command` 时该 pane 已有 PTY（常见：前端 `Pane` onMount 先 `create_pane`），会先拆掉再按命令重起，避免误走 `create_skip`。
+fn install_kernel_pty(
+    state: &AppState,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    reference: KernelPtyRef,
+    cols: u16,
+    rows: u16,
+) -> Result<bool, String> {
+    let master = make_master(reference.clone(), cols, rows);
+    let reader = master
+        .lock()
+        .try_clone_reader()
+        .map_err(|error| error.to_string())?;
+    let writer = make_writer(reference.clone());
+    let parser = Arc::new(Mutex::new(PaneParser::new(rows.max(1), cols.max(1), 2000)));
+    let handle = PtyHandle {
+        master,
+        writer,
+        _child: None,
+        native_ref: None,
+        native_cancel: None,
+        remote_ref: None,
+        kernel_ref: Some(reference.clone()),
+        job: None,
+        child_pid: None,
+        resize_silence_deadline: Arc::new(AtomicI64::new(0)),
+        parser,
+        delta_mode: Arc::new(AtomicBool::new(false)),
+    };
+    {
+        let mut map = state.workspaces.write();
+        let ws = map
+            .get_mut(&workspace_id)
+            .ok_or_else(|| "workspace not found while attaching kernel PTY".to_string())?;
+        if ws.terminals.contains_key(&pane_id) {
+            return Ok(false);
+        }
+        ws.terminals.insert(pane_id, handle);
+    }
+    spawn_pty_reader(state.clone(), workspace_id, pane_id, reader);
+    Ok(true)
+}
+
+/// Resolve the singleton kernel for ordinary shell PTYs. Setup starts the
+/// kernel off the UI path, so the first pane can race that bootstrap. Waiting
+/// through the lifecycle helper preserves the non-blocking setup while making
+/// the restart contract deterministic; the helper's process lock coalesces
+/// concurrent desktop/host attempts. Unit tests keep the old local seam.
+fn kernel_endpoint_for_shell() -> Option<ridge_kernel::registry::KernelEndpoint> {
+    if let Some(endpoint) = ridge_kernel::client::running_endpoint() {
+        return Some(endpoint);
+    }
+    #[cfg(test)]
+    {
+        return None;
+    }
+    #[cfg(not(test))]
+    match crate::kernel_lifecycle::ensure_kernel_running() {
+        Ok(endpoint) => Some(endpoint),
+        Err(error) => {
+            tracing::warn!(
+                target: "ridge::kernel_pty",
+                %error,
+                "kernel bootstrap unavailable for ordinary shell"
+            );
+            None
+        }
+    }
+}
+
+fn attach_or_spawn_kernel_pty(
+    state: &AppState,
+    endpoint: ridge_kernel::registry::KernelEndpoint,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    shell: Option<&str>,
+    cwd: Option<&Path>,
+) -> Result<bool, String> {
+    let info = ridge_kernel::client::list_domain_ptys(&endpoint)?
+        .into_iter()
+        .find(|entry| entry.pty_id == pane_id || entry.id == pane_id);
+    let cwd_string = cwd.map(|path| path.to_string_lossy().into_owned());
+    let (pty_id, after_seq, cols, rows) = if let Some(info) = info {
+        (
+            info.pty_id,
+            Some(info.next_seq.saturating_sub(1)),
+            info.cols,
+            info.rows,
+        )
+    } else {
+        let pty_id = ridge_kernel::client::create_domain_pty(
+            &endpoint,
+            pane_id,
+            shell,
+            cwd_string.as_deref(),
+            Some(workspace_id),
+            "shell",
+        )?;
+        (pty_id, None, 80, 24)
+    };
+    let reference = KernelPtyRef {
+        endpoint,
+        id: pty_id,
+        after_seq,
+    };
+    let installed = install_kernel_pty(state, workspace_id, pane_id, reference.clone(), cols, rows)?;
+    if !installed && after_seq.is_none() {
+        let _ = reference.destroy();
+    }
+    Ok(true)
+}
+
+/// Rebind kernel-owned PTYs to the restored pane tree. Pane UUIDs are the
+/// stable key, so restoring a `.ridge` workspace into a new workspace UUID
+/// still reconnects the original terminal instead of spawning a replacement.
+#[tauri::command]
+pub async fn reattach_kernel_ptys(state: State<'_, AppState>) -> Result<usize, String> {
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || reattach_kernel_ptys_inner(&st))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn reattach_kernel_ptys_inner(state: &AppState) -> Result<usize, String> {
+    let Some(endpoint) = ridge_kernel::client::running_endpoint() else {
+        return Ok(0);
+    };
+    let infos = ridge_kernel::client::list_domain_ptys(&endpoint)?;
+    let mut attached = 0usize;
+    for info in infos {
+        let pane_id = info.pty_id;
+        let target = {
+            let map = state.workspaces.read();
+            map.iter().find_map(|(workspace_id, workspace)| {
+                (workspace.pane_tree.get_all_leaves().contains(&pane_id)
+                    && !workspace.terminals.contains_key(&pane_id))
+                    .then_some((*workspace_id, pane_id))
+            })
+        };
+        let Some((workspace_id, pane_id)) = target else {
+            continue;
+        };
+        let reference = KernelPtyRef {
+            endpoint: endpoint.clone(),
+            id: info.pty_id,
+            after_seq: Some(info.next_seq.saturating_sub(1)),
+        };
+        if install_kernel_pty(state, workspace_id, pane_id, reference, info.cols, info.rows)? {
+            attached += 1;
+        }
+    }
+    Ok(attached)
+}
+
 pub fn ensure_pane_pty_workspace(
     state: &AppState,
     workspace_id: Uuid,
@@ -592,9 +753,10 @@ pub fn ensure_pane_pty_workspace(
     ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
     trace_id: Option<String>,
 ) -> Result<(), AppError> {
+    let kernel_candidate = initial_command.is_none()
+        && structured_command.is_none();
     // 按需启动 teammate HTTP server（幂等）：必须在下方注入 RIDGE_TEAMMATE_* 之前完成，
     // 保证 shell 启动时 env 已就绪。已在运行则立即返回（agent 自身 PTY 里再 split 走此快路径）。
-    crate::teammate::ensure_teammate_started(state);
     let ic = initial_command.map(str::trim).filter(|s| !s.is_empty());
     let sc = structured_command
         .map(|s| StructuredPtyCommand {
@@ -631,6 +793,34 @@ pub fn ensure_pane_pty_workspace(
             }
         }
     }
+
+    if kernel_candidate && !has_explicit_launch {
+        if let Some(endpoint) = kernel_endpoint_for_shell() {
+            match attach_or_spawn_kernel_pty(
+                state,
+                endpoint,
+                workspace_id,
+                pane_id,
+                shell.as_deref(),
+                cwd,
+            ) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(
+                    target: "ridge::kernel_pty",
+                    %workspace_id,
+                    %pane_id,
+                    error = %error,
+                    "kernel PTY unavailable; falling back to local PTY"
+                ),
+            }
+        }
+    }
+
+    // Local/structured launches still need the teammate server binding before
+    // their shell process is spawned. Kernel-owned ordinary shells do not need
+    // this per-desktop binding and can therefore survive the shell exit.
+    crate::teammate::ensure_teammate_started(state);
 
     let pty_system = native_pty_system();
     // 记录 shell 类型，后续决定是否注入 OSC 7 shell integration。
@@ -1004,6 +1194,18 @@ pub(crate) fn activate_pane_pty_state(
         let map = state.workspaces.read();
         if let Some(ws) = map.get(&workspace_id) {
             if ws.terminals.contains_key(&pane_id) {
+                if let (Some(rows), Some(cols)) = (rows, cols) {
+                    if let Some(handle) = ws.terminals.get(&pane_id) {
+                        if handle.kernel_ref.is_some() {
+                            let _ = handle.master.lock().resize(PtySize {
+                                rows: rows.clamp(1, 500),
+                                cols: cols.clamp(1, 500),
+                                pixel_width: 0,
+                                pixel_height: 0,
+                            });
+                        }
+                    }
+                }
                 return Ok(());
             }
         }
@@ -1122,6 +1324,7 @@ pub(crate) fn activate_pane_pty_state(
         native_ref: None,
         native_cancel: None,
         remote_ref: None,
+        kernel_ref: None,
         job,
         child_pid,
         resize_silence_deadline: Arc::new(AtomicI64::new(0)),
@@ -1743,6 +1946,17 @@ fn clear_pane_terminal_inner(
         let mut parser = parser.lock();
         parser.clear_terminal()
     };
+    if let Some(kernel) = state
+        .workspaces
+        .read()
+        .get(&workspace_id)
+        .and_then(|ws| ws.terminals.get(&pane_id))
+        .and_then(|handle| handle.kernel_ref.clone())
+    {
+        kernel
+            .clear()
+            .map_err(|error| AppError::PtyError(format!("kernel clear failed: {error}")))?;
+    }
     state.clear_pty_scrollback(workspace_id, pane_id);
 
     let bytes = encode_frame(&frame)
@@ -2281,7 +2495,36 @@ pub async fn get_pane_scrollback_tail(
     let st = state.inner().clone();
     let max_bytes = max_bytes.min(MAX_SCROLLBACK_RPC_BYTES);
     tokio::task::spawn_blocking(move || {
-        st.get_pty_scrollback_tail(workspace_id, pane_id, max_bytes)
+        let local = st.get_pty_scrollback_tail(workspace_id, pane_id, max_bytes);
+        if !local.bytes.is_empty() {
+            return local;
+        }
+        let kernel = st
+            .workspaces
+            .read()
+            .get(&workspace_id)
+            .and_then(|ws| ws.terminals.get(&pane_id))
+            .and_then(|handle| handle.kernel_ref.clone());
+        let Some(kernel) = kernel else {
+            return local;
+        };
+        match kernel.scrollback(max_bytes) {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                let head_seq = bytes.len() as u64;
+                crate::state::ScrollbackChunk {
+                    bytes: text,
+                    start_seq: 0,
+                    end_seq: head_seq,
+                    at_oldest: true,
+                    head_seq,
+                }
+            }
+            Err(error) => {
+                tracing::debug!(target: "ridge::kernel_pty", %error, "kernel scrollback fallback failed");
+                local
+            }
+        }
     })
     .await
     .map_err(|e| e.to_string())
@@ -2343,7 +2586,30 @@ pub async fn get_pane_resync_frame(
     let st = state.inner().clone();
     let max_bytes = max_bytes.min(MAX_SCROLLBACK_RPC_BYTES);
     tokio::task::spawn_blocking(move || {
-        let chunk = st.get_pty_scrollback_tail(workspace_id, pane_id, max_bytes);
+        let local = st.get_pty_scrollback_tail(workspace_id, pane_id, max_bytes);
+        let chunk = if !local.bytes.is_empty() {
+            local
+        } else {
+            let kernel = st
+                .workspaces
+                .read()
+                .get(&workspace_id)
+                .and_then(|ws| ws.terminals.get(&pane_id))
+                .and_then(|handle| handle.kernel_ref.clone());
+            match kernel.and_then(|kernel| kernel.scrollback(max_bytes).ok()) {
+                Some(bytes) => {
+                    let head_seq = bytes.len() as u64;
+                    crate::state::ScrollbackChunk {
+                        bytes: String::from_utf8_lossy(&bytes).into_owned(),
+                        start_seq: 0,
+                        end_seq: head_seq,
+                        at_oldest: true,
+                        head_seq,
+                    }
+                }
+                None => local,
+            }
+        };
         let (modes, alt) = st.get_pane_modes(workspace_id, pane_id);
         let frame =
             ridge_term::term::modes::build_resync_frame(chunk.bytes.as_bytes(), &modes, alt);

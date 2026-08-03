@@ -36,6 +36,10 @@ pub struct PtyHandle {
     /// `Some(..)` 表示这是一台远端 ridge / rdg 主机上某 pane 的本地 foreign 视图
     /// （P3/P4 基础层字段）。live 传输里程会据此把前端 I/O 路由到对应 host 连接。
     pub remote_ref: Option<crate::hosts::RemoteRef>,
+    /// PTY owned by the long-lived ridge-kernel process. Dropping this handle
+    /// detaches the desktop proxy but intentionally does not kill the child;
+    /// explicit pane close calls the kernel destroy endpoint.
+    pub kernel_ref: Option<crate::engine::kernel_pty::KernelPtyRef>,
     /// Windows Job Object holding the PTY child (V-G1-JOB)。非 Windows 恒 None。
     /// 生命周期随 PtyHandle；`suspend_agent` / `resume_agent` 经此冻结/解冻进程树。
     pub job: Option<crate::teammate::job_object::JobHandle>,

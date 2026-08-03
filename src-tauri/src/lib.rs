@@ -880,6 +880,7 @@ pub fn run() {
             clipboard_files::write_clipboard_file_paths,
             clipboard_files::read_clipboard_sequence,
             terminal::resize_pane,
+            terminal::reattach_kernel_ptys,
             terminal::clear_pane_terminal,
             terminal::set_pane_delta_mode,
             terminal::register_pane_delta_channel,
