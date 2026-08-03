@@ -34,6 +34,23 @@ fn mirror_kernel_host(method: &str, path: &str, body: Option<serde_json::Value>)
     }
 }
 
+/// Persist a topology mutation through the kernel domain API.
+///
+/// Reads already fail closed when the kernel is unavailable. Command-originated
+/// writes must have the same ownership rule: never publish a shell-only host
+/// record that will disappear on the next kernel restore.
+fn write_kernel_host(
+    method: &str,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let endpoint = ridge_kernel::client::running_endpoint()
+        .ok_or_else(|| "ridge-kernel domain endpoint unavailable".to_string())?;
+    ridge_kernel::client::request_json(&endpoint, method, path, body)
+        .map(|_| ())
+        .map_err(|error| format!("ridge-kernel remote-host write failed: {error}"))
+}
+
 pub(crate) fn kernel_host_snapshot() -> Result<Vec<HostRecord>, String> {
     let endpoint = ridge_kernel::client::running_endpoint()
         .ok_or_else(|| "ridge-kernel domain endpoint unavailable".to_string())?;
@@ -162,13 +179,29 @@ impl HostRegistry {
         self.hosts.write().upsert(rec);
     }
 
-    pub fn remove(&self, id: &str) -> bool {
-        self.live_sinks.write().retain(|(hid, _), _| hid != id);
-        let removed = self.hosts.write().remove(id);
-        if removed {
-            mirror_kernel_host("DELETE", &format!("/v1/domain/remote-hosts/{id}"), None);
+    /// Kernel-authoritative mutation used by frontend/command entry points.
+    /// The shell projection is updated only after the kernel accepts the write.
+    pub fn upsert_kernel_authoritative(&self, rec: HostRecord) -> Result<(), String> {
+        if self.hosts.read().get(&rec.id).as_ref() == Some(&rec) {
+            return Ok(());
         }
-        removed
+        let body = serde_json::to_value(&rec)
+            .map_err(|error| format!("serialize remote-host topology: {error}"))?;
+        apply_kernel_host_update(self, rec, |record| {
+            write_kernel_host("POST", "/v1/domain/remote-hosts", Some(&body))
+                .map_err(|error| format!("{error} ({})", record.id))
+        })
+    }
+
+    /// Remove a host from the kernel first, then drop the process-local view.
+    pub fn remove_kernel_authoritative(&self, id: &str) -> Result<bool, String> {
+        write_kernel_host(
+            "DELETE",
+            &format!("/v1/domain/remote-hosts/{id}"),
+            None,
+        )?;
+        self.live_sinks.write().retain(|(host_id, _), _| host_id != id);
+        Ok(self.hosts.write().remove(id))
     }
 
     pub fn set_status(&self, id: &str, status: HostStatus, detail: impl Into<String>) {
@@ -487,6 +520,22 @@ fn project_kernel_host_snapshot(
     Ok(records)
 }
 
+/// Apply a kernel-accepted host write to the shell projection.
+/// Kept as a small injectable seam so failure tests prove the shell is not
+/// mutated when the authoritative write rejects or cannot be reached.
+fn apply_kernel_host_update<F>(
+    state: &HostRegistry,
+    record: HostRecord,
+    write: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&HostRecord) -> Result<(), String>,
+{
+    write(&record)?;
+    state.hosts.write().upsert(record);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn host_list_snapshot(state: State<'_, AppState>) -> Result<Vec<HostRecord>, String> {
     project_kernel_host_snapshot(&state.hosts, kernel_host_snapshot())
@@ -501,7 +550,7 @@ pub fn register_frontend_host(
     kind: HostKind,
     label: String,
     sessions: Vec<FrontendHostSession>,
-) {
+) -> Result<(), String> {
     let rows = sessions
         .into_iter()
         .map(|session| HostSessionMeta {
@@ -513,7 +562,7 @@ pub fn register_frontend_host(
             title: session.title,
         })
         .collect();
-    state.hosts.upsert(HostRecord {
+    state.hosts.upsert_kernel_authoritative(HostRecord {
         id: host_id,
         kind,
         label,
@@ -521,7 +570,7 @@ pub fn register_frontend_host(
         status: HostStatus::Connected,
         detail: "RemoteLink topology".into(),
         sessions: rows,
-    });
+    })
 }
 
 /// 登记并探测一台远端主机（V-H1：TCP 可达 → Connected，否则 Error）。
@@ -554,7 +603,7 @@ pub fn connect_host(
         .unwrap_or_else(|| addr.clone());
 
     let (host, port) = parse_host_port(&addr, kind)?;
-    state.hosts.upsert(HostRecord {
+    state.hosts.upsert_kernel_authoritative(HostRecord {
         id: id.clone(),
         kind,
         label: label.clone(),
@@ -562,11 +611,11 @@ pub fn connect_host(
         status: HostStatus::Connecting,
         detail: format!("探测 {host}:{port} …"),
         sessions: Vec::new(),
-    });
+    })?;
 
     match probe_tcp(&host, port, 1500) {
         Ok(()) => {
-            state.hosts.upsert(HostRecord {
+            state.hosts.upsert_kernel_authoritative(HostRecord {
                 id: id.clone(),
                 kind,
                 label,
@@ -578,10 +627,10 @@ pub fn connect_host(
                     title: "reachability-ok".into(),
                     attached: false,
                 }],
-            });
+            })?;
         }
         Err(e) => {
-            state.hosts.upsert(HostRecord {
+            state.hosts.upsert_kernel_authoritative(HostRecord {
                 id: id.clone(),
                 kind,
                 label,
@@ -589,7 +638,7 @@ pub fn connect_host(
                 status: HostStatus::Error,
                 detail: e,
                 sessions: Vec::new(),
-            });
+            })?;
         }
     }
     Ok(id)
@@ -626,7 +675,7 @@ pub fn disconnect_host(state: State<'_, AppState>, host_id: String) -> Result<()
 #[tauri::command]
 pub fn forget_host(state: State<'_, AppState>, host_id: String) -> Result<(), String> {
     state.hosts.remove_outbound(&host_id);
-    state.hosts.remove(&host_id);
+    state.hosts.remove_kernel_authoritative(&host_id)?;
     Ok(())
 }
 
@@ -1132,6 +1181,28 @@ mod tests {
         .expect_err("kernel failure must be visible to the caller");
         assert!(error.contains("ridge-kernel"));
         assert_eq!(reg.snapshot()[0].id, "stale-shell-only");
+    }
+
+    #[test]
+    fn kernel_host_write_failure_does_not_publish_shell_only_record() {
+        let reg = HostRegistry::default();
+        let record = HostRecord {
+            id: "kernel-required".into(),
+            kind: HostKind::Remote,
+            label: "kernel-required".into(),
+            addr: "127.0.0.1:9900".into(),
+            status: HostStatus::Connecting,
+            detail: "pending".into(),
+            sessions: vec![],
+        };
+
+        let error = apply_kernel_host_update(&reg, record, |_| {
+            Err("ridge-kernel domain endpoint unavailable".into())
+        })
+        .expect_err("rejected kernel write must be visible to the caller");
+
+        assert!(error.contains("ridge-kernel"));
+        assert!(reg.snapshot().is_empty());
     }
 
     #[test]
