@@ -5,6 +5,19 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 161, 2026-08-04)
+
+- Remote `get_scm_status_fast` no longer invokes the Tauri/core Git path
+  directly. It now uses authenticated kernel `/v1/domain/git/status?path=…&fast=1`;
+  kernel repository detection and the no-numstat fast contract remain intact.
+- The normal desktop status query remains unchanged, while the fast route is
+  source-checked and guarded against non-Git roots before any Git child.
+- Full Rust/TypeScript matrix: ridge 256, ridge-kernel 42, ridge-core 315;
+  Vitest 148 files / 1541 passed / 1 skipped; `pnpm check` 0 errors / 0
+  warnings. No version bump or release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-161-kernel-git-fast-status.md`.
+
 ## Current snapshot (iteration 160, 2026-08-04)
 
 - Desktop `git_diff_summary` now uses authenticated kernel

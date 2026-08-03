@@ -87,9 +87,16 @@ pub async fn get_scm_status(
 /// mobile Git panel does not render.
 pub async fn get_scm_status_fast(
     repo_root: String,
-    slot: Option<String>,
+    _slot: Option<String>,
 ) -> Result<ScmRepoStatus, String> {
-    ridge_core::commands::git::get_scm_status_fast(repo_root, slot).await
+    tokio::task::spawn_blocking(move || {
+        let endpoint = crate::kernel_lifecycle::ensure_kernel_running()?;
+        ridge_kernel::client::read_domain_git_status_fast(&endpoint, &repo_root)?.ok_or_else(|| {
+            format!("Not a git repo: {repo_root}")
+        })
+    })
+    .await
+    .map_err(|error| format!("kernel fast Git status task failed: {error}"))?
 }
 
 #[tauri::command]
