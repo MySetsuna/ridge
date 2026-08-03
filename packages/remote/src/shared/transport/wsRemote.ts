@@ -2,6 +2,10 @@ import { getRemoteDeviceId } from './deviceId';
 import { PaneRpcScheduler } from './paneRpcScheduler';
 import { paneRefKey, type PaneRef } from './paneRef';
 import {
+  tryEnqueuePaneInput,
+  retirePaneInput,
+} from '../terminal/paneInputGate';
+import {
   RpcCancelledError,
   RpcReconnectError,
   RpcTimeoutError,
@@ -408,6 +412,8 @@ export interface RemoteLink {
   /** 原地换 shell：拆该 pane 的 PTY → 按新 program/args 重建 → 重新激活。 */
   changePaneShell?(workspaceId: string, paneId: string, shell: RemoteShellInfo): Promise<void>;
   sendStdin(pane: PaneRef, data: string): void;
+  /** Reserve input order before an asynchronous source resolves. */
+  enqueueStdinTask?(pane: PaneRef, task: () => Promise<string | null> | string | null): boolean;
   refreshPane(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
   claimPane(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
   lastRefreshSeq(): number;
@@ -1004,7 +1010,8 @@ export class RemoteConnection implements RemoteLink {
    *  long-running session can't accumulate per-pane buffers for closed panes
    *  (unbounded memory growth → OOM on mobile). */
   pruneOutputs(liveIds: Set<string>) {
-    this.paneScheduler.prune(liveIds);
+    const retired = this.paneScheduler.prune(liveIds);
+    for (const key of retired) retirePaneInput(key);
     for (const id of [...this.paneOutputs.keys()]) {
       if (!liveIds.has(id)) this.paneOutputs.delete(id);
     }
@@ -1242,7 +1249,19 @@ export class RemoteConnection implements RemoteLink {
   listGitStatus() { this.send({ type: 'list-git-status' }); }
   sendStdin(pane: PaneRef, data: string): boolean {
     if (!pane.paneId || !data) return false;
-    return this.paneScheduler.enqueueInput(pane, data);
+    const key = paneRefKey(pane);
+    return tryEnqueuePaneInput(key, () => {
+      this.paneScheduler.enqueueInput(pane, data);
+    });
+  }
+
+  enqueueStdinTask(pane: PaneRef, task: () => Promise<string | null> | string | null): boolean {
+    if (!pane.paneId) return false;
+    const key = paneRefKey(pane);
+    return tryEnqueuePaneInput(key, async () => {
+      const data = await task();
+      if (data) this.paneScheduler.enqueueInput(pane, data);
+    });
   }
   /** @deprecated Host-side bookkeeping only — records a fallback size but never
    *  reflows the shared PTY (no `pty-resized` broadcast), so the remote stays
@@ -1547,6 +1566,7 @@ export class RemoteConnection implements RemoteLink {
     // being torn down, producing `Pane not found` and a retry storm.
     this.paneScheduler.retire(pane);
     const key = paneRefKey(pane);
+    retirePaneInput(key);
     const data = await this._sendAndWait({
       type: 'close-pane',
       paneId: pane.paneId,
@@ -1588,6 +1608,7 @@ export class RemoteConnection implements RemoteLink {
   // ───────────────────────────────────────────────────────────────────
 
   disconnect() {
+    for (const pane of this.paneRefs.values()) retirePaneInput(paneRefKey(pane));
     this._intentionalClose = true;
     this._clearReconnectTimer();
     this._stopHeartbeat();

@@ -33,7 +33,7 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onResize: onPaneResize, onFocus: onPaneFocus, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
+  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onInputTask: onPaneInputTask, onResize: onPaneResize, onFocus: onPaneFocus, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
     /** Host teammate state; retained for diagnostics, never a persistent pane border. */
@@ -41,6 +41,8 @@
     /** Short-lived HITL/user-intervention highlight; cleared on focus/claim. */
     agentNeedsAttention?: boolean;
     onStdin: (pane: PaneRef, data: string) => void;
+    /** Reserve input order before an asynchronous clipboard/image read. */
+    onInputTask?: (pane: PaneRef, task: () => Promise<string | null>) => boolean;
     /** Fired when this pane's input surface actually receives focus. */
     onFocus?: (pane: PaneRef) => void;
     /** iter-60：句级输入缓冲开关（语音/高频改写场景；alt-screen/TUI 鼠标态自动旁路）。 */
@@ -448,6 +450,12 @@
     sendPaste(text);
   }
 
+  /** Read clipboard under the caller's user gesture while reserving the pane's
+   * input slot before the asynchronous read resolves. */
+  export function pasteClipboard() {
+    void pasteFromClipboard();
+  }
+
   function handleTouchStart(e: TouchEvent) {
     if (!attached) return;
     if (e.touches.length !== 1) return;
@@ -828,6 +836,22 @@
   /** Read the system clipboard and paste it (Ctrl/Cmd+V is the user gesture). */
   async function pasteFromClipboard() {
     if (!attached) return;
+    const pane = ownPaneRef();
+    if (pane && onPaneInputTask) {
+      if (!sbuf.empty) sbufFlush();
+      pendingWord = '';
+      onPaneInputTask(pane, async () => {
+        try {
+          const text = await navigator.clipboard.readText();
+          if (!text) return null;
+          const bytes = kEncodePaste(text);
+          return bytes.length > 0 ? td.decode(bytes) : null;
+        } catch {
+          return null;
+        }
+      });
+      return;
+    }
     try {
       const text = await navigator.clipboard.readText();
       if (text) sendPaste(text);

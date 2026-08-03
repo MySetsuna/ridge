@@ -13,6 +13,7 @@
   import { Crown, Pause, Play, Send, X, Ghost } from 'lucide-svelte';
   import { autoGrow } from '$lib/actions/autoGrow';
   import { enqueuePtyWrite } from '$lib/terminal/ptyWriteQueue';
+  import { enqueuePaneInput } from '@ridge/remote/shared/terminal/paneInputGate';
   import { memberTasksStore, recordMemberTask } from './memberTasks';
   import { showToast } from '$lib/stores/toast';
   import {
@@ -102,9 +103,10 @@
     const text = input.trim();
     if (!text || !paneId) return;
     try {
-      await enqueuePtyWrite(`${workspaceId}:${paneId}`, () =>
+      const key = `${workspaceId}:${paneId}`;
+      await enqueuePaneInput(key, () => enqueuePtyWrite(key, () =>
         invoke('write_to_pty', { workspaceId, paneId, data: `${text}\r` }),
-      );
+      ));
       recordMemberTask(agentId, text);
       input = '';
     } catch (e) {

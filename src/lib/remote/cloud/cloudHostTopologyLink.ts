@@ -15,6 +15,7 @@ import { snapshot as authSnapshot } from '@ridge/remote/shared/cloud/auth';
 import type { HostTopologyLink } from '$lib/hosts/hostForest';
 import type { PaneNode } from '$lib/types';
 import { verifyTotpOverControl } from './cloudControllerBoot';
+import { tryEnqueuePaneInput, retirePaneInput } from '@ridge/remote/shared/terminal/paneInputGate';
 
 interface BackendWorkspace {
   id: string;
@@ -57,6 +58,8 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   }
 
   disconnect(): void {
+    for (const key of this.livePanes) retirePaneInput(key);
+    this.livePanes.clear();
     this.stopReconnectResume();
     this.scheduler.dispose();
     this.rpc.dispose();
@@ -230,7 +233,19 @@ export class CloudHostTopologyLink implements HostTopologyLink {
 
   sendStdin(pane: PaneRef, data: string): boolean {
     if (!this.livePanes.has(paneRefKey(pane))) return false;
-    return this.scheduler.enqueueInput(pane, data);
+    const key = paneRefKey(pane);
+    return tryEnqueuePaneInput(key, () => {
+      this.scheduler.enqueueInput(pane, data);
+    });
+  }
+
+  enqueueStdinTask(pane: PaneRef, task: () => Promise<string | null> | string | null): boolean {
+    const key = paneRefKey(pane);
+    if (!this.livePanes.has(key)) return false;
+    return tryEnqueuePaneInput(key, async () => {
+      const data = await task();
+      if (data) this.scheduler.enqueueInput(pane, data);
+    });
   }
 
   refreshPane(
@@ -262,6 +277,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     const key = paneRefKey(pane);
     this.livePanes.delete(key);
     this.scheduler.retire(pane);
+    retirePaneInput(key);
   }
 }
 

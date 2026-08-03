@@ -283,10 +283,7 @@
   async function handlePaste() {
     const target = canvasRef;
     if (!activePaneRef() || !target) return;
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) target.pasteText(text);
-    } catch { /* clipboard blocked: no permission / insecure context */ }
+    target.pasteClipboard?.();
   }
 
   // §history-pull（2026-07-02）: the host no longer dumps full scrollback on
@@ -456,6 +453,11 @@
   function onStdin(pane: PaneRef, data: string) {
     clearAgentAttention(pane);
     ws.sendStdin(pane, data);
+  }
+
+  function onInputTask(pane: PaneRef, task: () => Promise<string | null>): boolean {
+    clearAgentAttention(pane);
+    return ws.enqueueStdinTask?.(pane, task) ?? false;
   }
 
   function onPaneFocus(pane: PaneRef): void {
@@ -1038,6 +1040,7 @@
             agentState={activePane?.agentState ?? (activePane?.isAgent ? 'busy' : undefined)}
             agentNeedsAttention={paneNeedsAttention(activePane)}
             {onStdin}
+            {onInputTask}
             onFocus={onPaneFocus}
             {onResize}
             onHostClipboard={(text) => ws.setHostClipboard(text)}
