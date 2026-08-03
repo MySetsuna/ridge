@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 const source = readFileSync(new URL('./SettingsPanel.svelte', import.meta.url), 'utf8');
 const pageSource = readFileSync(new URL('../../routes/+page.svelte', import.meta.url), 'utf8');
+const hostPortsSource = readFileSync(new URL('../terminal/hostPorts.ts', import.meta.url), 'utf8');
 
 describe('settings panel performance guards', () => {
   it('does not start shell discovery on panel open or blur the terminal surface', () => {
@@ -24,5 +25,10 @@ describe('settings panel performance guards', () => {
     expect(pageSource).toContain('queueDefaultCwdSync');
     expect(pageSource).toContain('defaultCwdSyncLastQueued');
     expect(pageSource).not.toContain("void invoke('set_user_default_cwd'");
+  });
+
+  it('keeps theme propagation while filtering unrelated terminal settings', () => {
+    expect(hostPortsSource).toContain('themeId: s.theme');
+    expect(hostPortsSource).toContain('`${s.theme}');
   });
 });

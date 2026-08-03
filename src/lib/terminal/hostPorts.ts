@@ -23,6 +23,7 @@ export function makeHostPorts(): HostPorts {
 			get() {
 				const s = get(settingsStore);
 				return {
+					themeId: s.theme,
 					terminalScrollbackLines: s.terminalScrollbackLines,
 					terminalFontFamily: s.terminalFontFamily,
 					defaultShell: s.defaultShell,
@@ -32,10 +33,11 @@ export function makeHostPorts(): HostPorts {
 				// Svelte store：订阅即同步触发一次，themeBridge 依赖此初次推送。
 				let lastKey: string | undefined;
 				return settingsStore.subscribe((s) => {
-					const key = `${s.terminalScrollbackLines}\u0000${s.terminalFontFamily}\u0000${s.defaultShell}`;
+					const key = `${s.theme}\u0000${s.terminalScrollbackLines}\u0000${s.terminalFontFamily}\u0000${s.defaultShell}`;
 					if (key === lastKey) return;
 					lastKey = key;
 					cb({
+						themeId: s.theme,
 						terminalScrollbackLines: s.terminalScrollbackLines,
 						terminalFontFamily: s.terminalFontFamily,
 						defaultShell: s.defaultShell,

@@ -11,6 +11,8 @@
 
 /** manager / themeBridge 读取的终端相关设置子集。SSOT: src/lib/stores/settings.ts。 */
 export interface TerminalSettingsSnapshot {
+	/** Active theme id; used only to trigger a theme bridge push. */
+	themeId?: string;
   /** 新 pane attach 时按此设 kernel scrollback 容量（SettingsPanel 滑块 100..10000）。 */
   terminalScrollbackLines: number;
   /** 终端字体族（themeBridge pushFont 用）。 */
