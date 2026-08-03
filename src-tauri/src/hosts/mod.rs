@@ -34,11 +34,12 @@ fn mirror_kernel_host(method: &str, path: &str, body: Option<serde_json::Value>)
     }
 }
 
-pub(crate) fn kernel_host_snapshot() -> Option<Vec<HostRecord>> {
-    let endpoint = ridge_kernel::client::running_endpoint()?;
+pub(crate) fn kernel_host_snapshot() -> Result<Vec<HostRecord>, String> {
+    let endpoint = ridge_kernel::client::running_endpoint()
+        .ok_or_else(|| "ridge-kernel domain endpoint unavailable".to_string())?;
     ridge_kernel::client::read_domain_remote_hosts(&endpoint)
         .map(|snapshot| snapshot.hosts)
-        .ok()
+        .map_err(|error| format!("ridge-kernel remote-host snapshot failed: {error}"))
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -477,14 +478,18 @@ pub fn probe_tcp(host: &str, port: u16, timeout_ms: u64) -> Result<(), String> {
 }
 
 /// 快照所有已登记远端主机（读，供前端 Hosts 面板与 headless 会话合并展示）。
+fn project_kernel_host_snapshot(
+    state: &HostRegistry,
+    result: Result<Vec<HostRecord>, String>,
+) -> Result<Vec<HostRecord>, String> {
+    let records = result?;
+    state.restore_topology(records.clone());
+    Ok(records)
+}
+
 #[tauri::command]
-pub fn host_list_snapshot(state: State<'_, AppState>) -> Vec<HostRecord> {
-    if let Some(records) = kernel_host_snapshot() {
-        state.hosts.restore_topology(records.clone());
-        records
-    } else {
-        state.hosts.snapshot()
-    }
+pub fn host_list_snapshot(state: State<'_, AppState>) -> Result<Vec<HostRecord>, String> {
+    project_kernel_host_snapshot(&state.hosts, kernel_host_snapshot())
 }
 
 /// Register topology discovered by a desktop-owned RemoteLink. Desktop-only: never admitted
@@ -1105,6 +1110,28 @@ mod tests {
         let hosts = reg.snapshot();
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].id, "kernel");
+    }
+
+    #[test]
+    fn kernel_host_snapshot_failure_is_fail_closed() {
+        let reg = HostRegistry::default();
+        reg.upsert(HostRecord {
+            id: "stale-shell-only".into(),
+            kind: HostKind::Remote,
+            label: "stale".into(),
+            addr: "stale".into(),
+            status: HostStatus::Connected,
+            detail: "shell cache".into(),
+            sessions: vec![],
+        });
+
+        let error = project_kernel_host_snapshot(
+            &reg,
+            Err("ridge-kernel domain endpoint unavailable".into()),
+        )
+        .expect_err("kernel failure must be visible to the caller");
+        assert!(error.contains("ridge-kernel"));
+        assert_eq!(reg.snapshot()[0].id, "stale-shell-only");
     }
 
     #[test]

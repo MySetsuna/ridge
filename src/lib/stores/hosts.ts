@@ -574,7 +574,8 @@ export async function refreshHosts(): Promise<void> {
   } catch (e) {
     err = e instanceof Error ? e.message : String(e);
   }
-  // ② 远端 ridge / rdg 主机（桌面本地命令；web-remote 无此授权 → 忽略，仅显示 headless）。
+  // ② 远端 ridge / rdg 主机。拓扑读由 ridge-kernel 作为唯一权威；读取失败
+  // 不再静默沿用外壳缓存，避免显示已经失效或未经内核确认的主机。
   try {
     const recs = await invoke<HostRecord[]>('host_list_snapshot');
     for (const r of recs ?? []) {
@@ -603,8 +604,9 @@ export async function refreshHosts(): Promise<void> {
         }] : [],
       });
     }
-  } catch {
-    /* host_list_snapshot 不可用（如 web-remote 未授权）：仅忽略远端主机 */
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    err = err || `远端主机拓扑不可用：${detail}`;
   }
   // ③ 跨账号分享：按 owner host 聚合，每个 grant 是其下单独工作区。
   const auth = cloudAuth.snapshot();

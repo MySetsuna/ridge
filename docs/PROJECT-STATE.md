@@ -5,6 +5,19 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 103 update (2026-08-03)
+
+Kernel domain SSOT hardening removed a stale-shell fallback from the desktop
+remote-host read path. `host_list_snapshot` now returns an explicit error when
+the authenticated `ridge-kernel` endpoint is unavailable or rejects the domain
+snapshot; it never rehydrates the UI from the process-local `HostRegistry`.
+Hosts refresh surfaces that error instead of silently hiding the failure. A
+regression proves an unavailable kernel cannot turn a stale shell cache into a
+successful projection. `cargo test -p ridge --lib hosts::tests` is 13/13 and
+`pnpm check` is 0/0. This is pushed as the next unreleased follow-up; the daily
+publication window remains frozen.
+Archive: `docs/iterations/2026-08-03-iteration-103-kernel-host-read-fail-closed.md`.
+
 ## Iteration 102 update (2026-08-03)
 
 The remaining PWA notch gap was in the pre-`MainApp` reconnect fallback: LAN

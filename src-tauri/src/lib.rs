@@ -292,10 +292,16 @@ pub fn run() {
                             port = ep.port,
                             "ridge-kernel ready"
                         );
-                        if let Some(records) = crate::hosts::kernel_host_snapshot() {
-                            app.state::<crate::state::AppState>()
+                        match crate::hosts::kernel_host_snapshot() {
+                            Ok(records) => app
+                                .state::<crate::state::AppState>()
                                 .hosts
-                                .restore_topology(records);
+                                .restore_topology(records),
+                            Err(error) => tracing::warn!(
+                                target: "ridge::kernel_lifecycle",
+                                %error,
+                                "kernel host topology restore unavailable; shell will fail closed"
+                            ),
                         }
                         // 验收④：内核被 CLI/rdg 杀掉后桌面外壳自退。
                         let exit_handle = app.handle().clone();
