@@ -62,6 +62,11 @@ process.env.NO_PROXY = [process.env.NO_PROXY, 'localhost,127.0.0.1,::1']
 // then hangs the test ridge at boot (about:blank). Same pattern as
 // `scripts/tauri-dev-cdp.mjs`. `.webview2-*` is gitignored.
 process.env.WEBVIEW2_USER_DATA_FOLDER = path.resolve('.webview2-e2e');
+// The installed Ridge instance may still hold the bundle-level
+// single-instance mutex while shell tests run.  Keep the test process
+// independent; production builds leave this unset and retain single-instance
+// behavior.
+process.env.RIDGE_DISABLE_SINGLE_INSTANCE = '1';
 
 const DRIVER_PORT = 4444;
 let driverProc: ChildProcess | null = null;
