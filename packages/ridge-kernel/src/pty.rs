@@ -1,16 +1,16 @@
 //! Shell-independent local PTY primitive shared by kernel hosts.
 
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use ridge_term::term::terminal::Terminal;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use uuid::Uuid;
 
 const READ_BUF: usize = 8192;
@@ -18,6 +18,308 @@ const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
 const SCROLLBACK_CAP: usize = 1024 * 1024;
 const RENDER_SCROLLBACK_ROWS: usize = 4096;
+// The lease is a bounded replay seam, not a second unbounded scrollback.
+// Keep this cap small enough for reconnects while preserving backpressure.
+const OUTPUT_REPLAY_CAP_BYTES: usize = 256 * 1024;
+const OUTPUT_REPLAY_CAP_FRAMES: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PtyOutputFrame {
+    pub seq: u64,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PtyOutputRead {
+    Data(Vec<PtyOutputFrame>),
+    /// The caller's cursor fell behind the bounded replay window. It must
+    /// explicitly call [`PtyOutputLease::resync`] before reading again.
+    Lagged {
+        requested_seq: u64,
+        oldest_seq: u64,
+        latest_seq: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PtyOutputLeaseError {
+    Detached,
+    Closing,
+    Closed,
+    TimedOut,
+    InvalidBatchSize,
+}
+
+impl std::fmt::Display for PtyOutputLeaseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Detached => "PTY output lease detached",
+            Self::Closing => "PTY output is closing",
+            Self::Closed => "PTY output is closed",
+            Self::TimedOut => "PTY output read timed out",
+            Self::InvalidBatchSize => "PTY output batch size must be greater than zero",
+        })
+    }
+}
+
+impl std::error::Error for PtyOutputLeaseError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputLifecycle {
+    Open,
+    Closing,
+    Closed,
+}
+
+struct OutputState {
+    lifecycle: OutputLifecycle,
+    next_seq: u64,
+    bytes: usize,
+    frames: VecDeque<PtyOutputFrame>,
+    leases: HashMap<Uuid, u64>,
+}
+
+/// In-memory, bounded output protocol for PTYs created through the domain
+/// registry. The HTTP layer can later expose the same lease operations without
+/// changing PTY ownership or introducing another output queue.
+struct PtyOutputHub {
+    state: Mutex<OutputState>,
+    notify: Notify,
+}
+
+impl PtyOutputHub {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(OutputState {
+                lifecycle: OutputLifecycle::Open,
+                next_seq: 1,
+                bytes: 0,
+                frames: VecDeque::new(),
+                leases: HashMap::new(),
+            }),
+            notify: Notify::new(),
+        }
+    }
+
+    fn publish(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let mut state = self.state.lock();
+        if state.lifecycle != OutputLifecycle::Open {
+            return;
+        }
+        let mut data = bytes.to_vec();
+        if data.len() > OUTPUT_REPLAY_CAP_BYTES {
+            data = data[data.len() - OUTPUT_REPLAY_CAP_BYTES..].to_vec();
+        }
+        let frame = PtyOutputFrame {
+            seq: state.next_seq,
+            data,
+        };
+        state.next_seq = state.next_seq.saturating_add(1);
+        state.bytes += frame.data.len();
+        state.frames.push_back(frame);
+        while state.frames.len() > OUTPUT_REPLAY_CAP_FRAMES || state.bytes > OUTPUT_REPLAY_CAP_BYTES
+        {
+            if let Some(oldest) = state.frames.pop_front() {
+                state.bytes = state.bytes.saturating_sub(oldest.data.len());
+            } else {
+                break;
+            }
+        }
+        drop(state);
+        self.notify.notify_waiters();
+    }
+
+    fn attach(
+        self: &Arc<Self>,
+        after_seq: Option<u64>,
+    ) -> Result<PtyOutputLease, PtyOutputLeaseError> {
+        let mut state = self.state.lock();
+        match state.lifecycle {
+            OutputLifecycle::Closing => return Err(PtyOutputLeaseError::Closing),
+            OutputLifecycle::Closed => return Err(PtyOutputLeaseError::Closed),
+            OutputLifecycle::Open => {}
+        }
+        let oldest = state
+            .frames
+            .front()
+            .map(|frame| frame.seq)
+            .unwrap_or(state.next_seq);
+        let cursor = after_seq.map(|seq| seq.saturating_add(1)).unwrap_or(oldest);
+        let id = Uuid::new_v4();
+        state.leases.insert(id, cursor);
+        Ok(PtyOutputLease {
+            hub: Arc::clone(self),
+            id,
+        })
+    }
+
+    fn detach(&self, id: Uuid) -> bool {
+        let removed = self.state.lock().leases.remove(&id).is_some();
+        if removed {
+            self.notify.notify_waiters();
+        }
+        removed
+    }
+
+    fn lifecycle_error(lifecycle: OutputLifecycle) -> PtyOutputLeaseError {
+        match lifecycle {
+            OutputLifecycle::Open => PtyOutputLeaseError::Detached,
+            OutputLifecycle::Closing => PtyOutputLeaseError::Closing,
+            OutputLifecycle::Closed => PtyOutputLeaseError::Closed,
+        }
+    }
+
+    fn probe(&self, id: Uuid, max_frames: usize) -> ProbeResult {
+        let mut state = self.state.lock();
+        if state.lifecycle != OutputLifecycle::Open {
+            return ProbeResult::Ready(Err(Self::lifecycle_error(state.lifecycle)));
+        }
+        let Some(cursor) = state.leases.get(&id).copied() else {
+            return ProbeResult::Ready(Err(PtyOutputLeaseError::Detached));
+        };
+        let oldest = state
+            .frames
+            .front()
+            .map(|frame| frame.seq)
+            .unwrap_or(state.next_seq);
+        let latest = state.next_seq.saturating_sub(1);
+        if cursor < oldest {
+            return ProbeResult::Ready(Ok(PtyOutputRead::Lagged {
+                requested_seq: cursor,
+                oldest_seq: oldest,
+                latest_seq: latest,
+            }));
+        }
+        let frames = state
+            .frames
+            .iter()
+            .filter(|frame| frame.seq >= cursor)
+            .take(max_frames)
+            .cloned()
+            .collect::<Vec<_>>();
+        if frames.is_empty() {
+            return ProbeResult::Pending;
+        }
+        let next_seq = frames
+            .last()
+            .map(|frame| frame.seq.saturating_add(1))
+            .unwrap_or(cursor);
+        if let Some(cursor) = state.leases.get_mut(&id) {
+            *cursor = next_seq;
+        }
+        ProbeResult::Ready(Ok(PtyOutputRead::Data(frames)))
+    }
+
+    fn resync(&self, id: Uuid) -> Result<u64, PtyOutputLeaseError> {
+        let mut state = self.state.lock();
+        if state.lifecycle != OutputLifecycle::Open {
+            return Err(Self::lifecycle_error(state.lifecycle));
+        }
+        let oldest = state
+            .frames
+            .front()
+            .map(|frame| frame.seq)
+            .unwrap_or(state.next_seq);
+        let cursor = state
+            .leases
+            .get_mut(&id)
+            .ok_or(PtyOutputLeaseError::Detached)?;
+        *cursor = oldest;
+        Ok(oldest)
+    }
+
+    fn close(&self) {
+        let mut state = self.state.lock();
+        state.lifecycle = OutputLifecycle::Closed;
+        state.leases.clear();
+        drop(state);
+        self.notify.notify_waiters();
+    }
+
+    fn begin_closing(&self) {
+        let mut state = self.state.lock();
+        if state.lifecycle == OutputLifecycle::Open {
+            state.lifecycle = OutputLifecycle::Closing;
+            state.leases.clear();
+        }
+        drop(state);
+        self.notify.notify_waiters();
+    }
+
+    fn cancel_closing(&self) {
+        let mut state = self.state.lock();
+        if state.lifecycle == OutputLifecycle::Closing {
+            state.lifecycle = OutputLifecycle::Open;
+        }
+    }
+}
+
+enum ProbeResult {
+    Ready(Result<PtyOutputRead, PtyOutputLeaseError>),
+    Pending,
+}
+
+pub struct PtyOutputLease {
+    hub: Arc<PtyOutputHub>,
+    id: Uuid,
+}
+
+impl PtyOutputLease {
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+
+    pub async fn next(
+        &mut self,
+        timeout: Duration,
+        max_frames: usize,
+    ) -> Result<PtyOutputRead, PtyOutputLeaseError> {
+        if max_frames == 0 {
+            return Err(PtyOutputLeaseError::InvalidBatchSize);
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let notified = self.hub.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            match self.hub.probe(self.id, max_frames) {
+                ProbeResult::Ready(result) => return result,
+                ProbeResult::Pending => {}
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(PtyOutputLeaseError::TimedOut);
+            }
+            if tokio::time::timeout(remaining, &mut notified)
+                .await
+                .is_err()
+            {
+                return Err(PtyOutputLeaseError::TimedOut);
+            }
+        }
+    }
+
+    pub fn resync(&mut self) -> Result<u64, PtyOutputLeaseError> {
+        self.hub.resync(self.id)
+    }
+
+    pub fn detach(&mut self) -> Result<(), PtyOutputLeaseError> {
+        if self.hub.detach(self.id) {
+            Ok(())
+        } else {
+            Err(PtyOutputLeaseError::Detached)
+        }
+    }
+}
+
+impl Drop for PtyOutputLease {
+    fn drop(&mut self) {
+        self.hub.detach(self.id);
+    }
+}
 
 /// A PTY's process handles and ordered output stream. It has no UI, RPC, or
 /// Tauri dependency; lifecycle owners decide how to route its output.
@@ -39,6 +341,7 @@ struct ManagedPty {
     bridge: Arc<PtyBridge>,
     scrollback: Arc<Mutex<Vec<u8>>>,
     renderer: Arc<Mutex<Terminal>>,
+    output: Option<Arc<PtyOutputHub>>,
     closing: std::sync::atomic::AtomicBool,
     info: PtyInfo,
 }
@@ -57,11 +360,7 @@ pub struct PtyInfo {
 }
 
 impl PtyRegistry {
-    pub fn spawn(
-        &self,
-        shell: Option<&str>,
-        cwd: Option<&str>,
-    ) -> Result<Uuid> {
+    pub fn spawn(&self, shell: Option<&str>, cwd: Option<&str>) -> Result<Uuid> {
         let id = Uuid::new_v4();
         self.spawn_command_for(id, shell, &[], cwd, None, "shell", None)
     }
@@ -87,8 +386,10 @@ impl PtyRegistry {
             DEFAULT_COLS as usize,
             RENDER_SCROLLBACK_ROWS,
         )));
+        let output_hub = Arc::new(PtyOutputHub::new());
         let sink = scrollback.clone();
         let screen = renderer.clone();
+        let hub = output_hub.clone();
         tokio::spawn(async move {
             let mut output = output;
             while let Some(bytes) = output.recv().await {
@@ -99,7 +400,9 @@ impl PtyRegistry {
                     let drop_count = retained.len() - SCROLLBACK_CAP;
                     retained.drain(..drop_count);
                 }
+                hub.publish(&bytes);
             }
+            hub.close();
         });
         let info = PtyInfo {
             id,
@@ -118,6 +421,7 @@ impl PtyRegistry {
                 bridge,
                 scrollback,
                 renderer,
+                output: Some(output_hub),
                 closing: std::sync::atomic::AtomicBool::new(false),
                 info,
             },
@@ -144,6 +448,7 @@ impl PtyRegistry {
                     DEFAULT_COLS as usize,
                     RENDER_SCROLLBACK_ROWS,
                 ))),
+                output: None,
                 closing: std::sync::atomic::AtomicBool::new(false),
                 info: PtyInfo {
                     id,
@@ -159,6 +464,21 @@ impl PtyRegistry {
             },
         );
         Ok((id, output))
+    }
+
+    /// Attach a bounded output lease to a PTY created through the domain
+    /// registry. `after_seq` is inclusive replay's predecessor; `None` starts
+    /// at the oldest frame still retained by the bounded window.
+    pub fn attach_output(&self, id: Uuid, after_seq: Option<u64>) -> Result<PtyOutputLease> {
+        let hub = self
+            .ptys
+            .lock()
+            .get(&id)
+            .filter(|managed| !managed.closing.load(Ordering::Acquire))
+            .and_then(|managed| managed.output.clone())
+            .ok_or_else(|| anyhow::anyhow!("PTY output not available: {id}"))?;
+        hub.attach(after_seq)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
     }
 
     pub fn write(&self, id: Uuid, data: &[u8]) -> Result<()> {
@@ -203,13 +523,20 @@ impl PtyRegistry {
         {
             anyhow::bail!("PTY is already closing: {id}");
         }
+        if let Some(output) = &managed.output {
+            output.begin_closing();
+        }
         Ok(managed.bridge.clone())
     }
 
     pub fn finish_destroy(&self, id: Uuid) -> Result<()> {
-        let removed = self.ptys.lock().remove(&id);
-        if removed.is_none() {
-            anyhow::bail!("PTY not found: {id}");
+        let removed = self
+            .ptys
+            .lock()
+            .remove(&id)
+            .ok_or_else(|| anyhow::anyhow!("PTY not found: {id}"))?;
+        if let Some(output) = removed.output {
+            output.close();
         }
         Ok(())
     }
@@ -217,6 +544,9 @@ impl PtyRegistry {
     pub fn cancel_destroy(&self, id: Uuid) {
         if let Some(managed) = self.ptys.lock().get(&id) {
             managed.closing.store(false, Ordering::Release);
+            if let Some(output) = &managed.output {
+                output.cancel_closing();
+            }
         }
     }
 
@@ -311,6 +641,9 @@ impl Drop for PtyRegistry {
     fn drop(&mut self) {
         let bridges = std::mem::take(self.ptys.get_mut());
         for managed in bridges.into_values() {
+            if let Some(output) = managed.output {
+                output.close();
+            }
             let _ = managed.bridge.destroy();
         }
     }
@@ -402,7 +735,11 @@ impl PtyBridge {
         }
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            if child.try_wait().context("PTY reap status failed")?.is_some() {
+            if child
+                .try_wait()
+                .context("PTY reap status failed")?
+                .is_some()
+            {
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -496,5 +833,88 @@ mod tests {
         assert_eq!(registry.len(), 0);
         assert!(!registry.contains(Uuid::new_v4()));
         assert!(registry.clear_scrollback(Uuid::new_v4()).is_err());
+    }
+
+    #[tokio::test]
+    async fn output_lease_sequences_and_reports_lag_for_bounded_replay() {
+        let hub = Arc::new(PtyOutputHub::new());
+        for seq in 0..(OUTPUT_REPLAY_CAP_FRAMES + 4) {
+            hub.publish(&[(seq % 256) as u8]);
+        }
+        let mut lease = hub.attach(Some(0)).expect("attach open output");
+        assert_eq!(
+            lease.next(Duration::ZERO, 8).await,
+            Ok(PtyOutputRead::Lagged {
+                requested_seq: 1,
+                oldest_seq: 5,
+                latest_seq: 260,
+            })
+        );
+        assert_eq!(lease.resync(), Ok(5));
+        let read = lease.next(Duration::ZERO, 2).await.expect("replay");
+        assert_eq!(
+            read,
+            PtyOutputRead::Data(vec![
+                PtyOutputFrame {
+                    seq: 5,
+                    data: vec![4]
+                },
+                PtyOutputFrame {
+                    seq: 6,
+                    data: vec![5]
+                },
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn output_lease_timeout_detach_and_close_fail_closed() {
+        let hub = Arc::new(PtyOutputHub::new());
+        let mut lease = hub.attach(None).expect("attach open output");
+        assert_eq!(
+            lease.next(Duration::from_millis(1), 1).await,
+            Err(PtyOutputLeaseError::TimedOut)
+        );
+        lease.detach().expect("detach lease");
+        assert_eq!(
+            lease.next(Duration::ZERO, 1).await,
+            Err(PtyOutputLeaseError::Detached)
+        );
+
+        let mut pending = hub.attach(None).expect("second lease");
+        let closer = hub.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            closer.close();
+        });
+        assert_eq!(
+            pending.next(Duration::from_millis(100), 1).await,
+            Err(PtyOutputLeaseError::Closed)
+        );
+    }
+
+    #[tokio::test]
+    async fn output_lease_closing_rejects_attach_then_cancel_reopens_for_new_lease() {
+        let hub = Arc::new(PtyOutputHub::new());
+        let mut old = hub.attach(None).expect("attach open output");
+        hub.begin_closing();
+        assert_eq!(
+            old.next(Duration::ZERO, 1).await,
+            Err(PtyOutputLeaseError::Closing)
+        );
+        assert!(matches!(
+            hub.attach(None),
+            Err(PtyOutputLeaseError::Closing)
+        ));
+        hub.cancel_closing();
+        let mut fresh = hub.attach(None).expect("cancel reopens output");
+        hub.publish(b"ok");
+        assert_eq!(
+            fresh.next(Duration::ZERO, 1).await,
+            Ok(PtyOutputRead::Data(vec![PtyOutputFrame {
+                seq: 1,
+                data: b"ok".to_vec(),
+            }]))
+        );
     }
 }
