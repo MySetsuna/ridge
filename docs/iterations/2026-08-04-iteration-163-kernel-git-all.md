@@ -39,6 +39,9 @@ the UI or remote adapters.
 - `pnpm e2e:rdg-mobile-keyboard`: passed for keyboard viewport convergence,
   touch selection, copy visibility, and clean Console under a fresh Chromium
   mobile context. This is emulation evidence, not physical-device proof.
+- Tauri shell E2E was attempted against a freshly rebuilt release binary, but
+  `tauri-driver` failed before any app assertion with `session not created:
+  Chrome instance exited`; desktop WebView2 shell evidence remains open.
 
 ## Remaining external gates
 
