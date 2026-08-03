@@ -321,7 +321,7 @@ pub fn run() {
                             let watcher_stop = kernel_stop.clone();
                             if let Err(error) =
                                 crate::kernel_lifecycle::spawn_kernel_death_watcher(
-                                    ep.pid,
+                                    ep.clone(),
                                     move || {
                                         exit_handle
                                             .state::<crate::state::AppState>()

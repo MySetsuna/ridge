@@ -5,6 +5,17 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 157, 2026-08-04)
+
+- Kernel death watching now captures the authenticated endpoint, tolerates
+  transient health failures, and exits after three consecutive failures or
+  immediate process death. Tray kernel shutdown marks `quitting` first and
+  rolls it back if shutdown fails, preventing watcher double-exit races.
+- Focused lifecycle tests: 7 passed. Physical tray/restart and health-fault
+  evidence remain open; no release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-157-kernel-watcher-health.md`.
+
 ## Current snapshot (iteration 156, 2026-08-04)
 
 - Desktop restart reattach now opens kernel output leases from the bounded

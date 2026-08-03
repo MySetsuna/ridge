@@ -84,13 +84,15 @@ fn on_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, event: MenuEvent) {
         }
         MENU_ID_QUIT_KERNEL => {
             // 先停独立内核（rdg 轮询 health/pid 后自退），再退出桌面外壳。
-            if let Err(e) = kernel_lifecycle::shutdown_kernel() {
-                tracing::warn!(target: "ridge::tray", error = %e, "kernel shutdown failed");
+            let quitting = app.state::<AppState>().quitting.clone();
+            if quitting.swap(true, std::sync::atomic::Ordering::AcqRel) {
                 return;
             }
-            app.state::<AppState>()
-                .quitting
-                .store(true, std::sync::atomic::Ordering::Release);
+            if let Err(e) = kernel_lifecycle::shutdown_kernel() {
+                tracing::warn!(target: "ridge::tray", error = %e, "kernel shutdown failed");
+                quitting.store(false, std::sync::atomic::Ordering::Release);
+                return;
+            }
             app.exit(0);
         }
         _ => {}
