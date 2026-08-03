@@ -12,7 +12,7 @@
 //!   pane、close=拒绝（最后一个工作区不可关）。保存文件接口返回当前工作区的可重开句柄。
 
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -27,6 +27,7 @@ use ridge_remote::auth::SessionStore;
 use ridge_remote::host::{HostAuth, HostError, HostMeta, RemoteHost, WorkspaceProvider, WsConn};
 use ridge_remote::serve::UaServeConfig;
 
+use crate::fs_reuse;
 use crate::totp::RemoteTotp;
 
 use super::workspace::SharedWorkspace;
@@ -46,6 +47,25 @@ fn current_workspace_file(ws_id: Uuid) -> Value {
         "path": rdg_workspace_uri(ws_id),
         "mtime_secs": 0,
     })
+}
+
+/// Resolve the same serving roots for every LAN filesystem request.  Keeping
+/// this at the host boundary makes the `RdgHost` trait implementation and the
+/// JSON-RPC/invoke paths share one sandbox definition instead of silently
+/// widening one of them to the whole process filesystem.
+fn rdg_allowed_file_roots(workspace: &SharedWorkspace) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(w) = workspace.lock() {
+        for session in &w.sessions {
+            if let Some(cwd) = session.cwd.as_ref() {
+                roots.push(PathBuf::from(cwd));
+            }
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
+    roots
 }
 
 fn ensure_current_workspace(requested: &str, ws_id: Uuid) -> Result<(), String> {
@@ -178,18 +198,7 @@ impl WorkspaceProvider for RdgHost {
     }
 
     fn allowed_file_roots(&self) -> Vec<PathBuf> {
-        let mut roots: Vec<PathBuf> = Vec::new();
-        if let Ok(w) = self.workspace.lock() {
-            for s in &w.sessions {
-                if let Some(cwd) = s.cwd.as_ref() {
-                    roots.push(PathBuf::from(cwd));
-                }
-            }
-        }
-        if let Ok(cd) = std::env::current_dir() {
-            roots.push(cd);
-        }
-        roots
+        rdg_allowed_file_roots(&self.workspace)
     }
 }
 
@@ -404,6 +413,70 @@ fn dispatch_lan_invoke(
         }
         "get_active_workspace_id" => Ok(Value::String(ws_id.to_string())),
         "list_workspaces" => Ok(list_workspaces_value(ws_id)),
+        "search" => {
+            let root = args.get("root").and_then(Value::as_str).unwrap_or("");
+            let query = args.get("query").and_then(Value::as_str).unwrap_or("");
+            let use_regex = args
+                .get("useRegex")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let case_sensitive = args
+                .get("caseSensitive")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let roots = rdg_allowed_file_roots(workspace);
+            serde_json::to_value(fs_reuse::search(
+                &roots,
+                root,
+                query,
+                use_regex,
+                case_sensitive,
+            ))
+            .map_err(|e| format!("cannot encode search result: {e}"))
+        }
+        "search_files" => {
+            let query = args.get("query").and_then(Value::as_str).unwrap_or("");
+            if query.trim().is_empty() {
+                return Ok(json!([]));
+            }
+            let root = args
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|path| !path.trim().is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    std::env::current_dir()
+                        .ok()
+                        .map(|path| path.to_string_lossy().into_owned())
+                })
+                .unwrap_or_default();
+            let roots = rdg_allowed_file_roots(workspace);
+            let results = fs_reuse::search(&roots, &root, query, false, false)
+                .into_iter()
+                .map(|hit| {
+                    json!({
+                        "path": hit.file,
+                        "line": hit.line,
+                        "column": hit.column,
+                        "snippet": hit.content,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!(results))
+        }
+        "get_directory_children" => {
+            let path = args.get("path").and_then(Value::as_str).unwrap_or("");
+            let roots = rdg_allowed_file_roots(workspace);
+            let entries = fs_reuse::list_dir(&roots, Path::new(path))
+                .map_err(|e| format!("cannot list directory: {}", e.kind()))?;
+            serde_json::to_value(entries)
+                .map_err(|e| format!("cannot encode directory result: {e}"))
+        }
+        "get_file_tree" | "read_file" | "text_search" => {
+            let roots = rdg_allowed_file_roots(workspace);
+            let ctx = crate::core_host::headless_ctx(&roots);
+            ridge_core::dispatch(cmd, args.clone(), &ctx).map_err(|e| e.to_command_string())
+        }
         "switch_workspace" => {
             let requested = args
                 .get("workspaceId")
@@ -872,6 +945,89 @@ mod tests {
     }
 
     #[test]
+    fn fs_methods_are_served_through_json_rpc_and_sandboxed_core() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::current_dir().unwrap().join(format!(
+            ".ridge-lan-fs-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(root.join("needle.txt"), "needle from lan host\n").unwrap();
+
+        let workspace = super::super::workspace::new_shared();
+        let ws_id = Uuid::parse_str("abababab-abab-abab-abab-abababababab").unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let tree_reply = handle_text(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 21,
+                "method": "get_file_tree",
+                "params": { "path": root.to_string_lossy(), "depth": 1 },
+            }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .expect("file-tree reply");
+        let tree: Value = serde_json::from_str(&tree_reply).unwrap();
+        assert_eq!(tree["id"], 21);
+        assert!(tree["result"]["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "needle.txt"));
+
+        let children = dispatch_lan_invoke(
+            "get_directory_children",
+            &json!({ "path": root.to_string_lossy() }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .expect("directory children");
+        assert!(children
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "nested"));
+
+        let search = dispatch_lan_invoke(
+            "search",
+            &json!({
+                "root": root.to_string_lossy(),
+                "query": "needle",
+                "useRegex": false,
+                "caseSensitive": false,
+            }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .expect("search result");
+        assert_eq!(search.as_array().unwrap().len(), 1);
+
+        let legacy_search = dispatch_lan_invoke(
+            "search_files",
+            &json!({ "path": root.to_string_lossy(), "query": "needle" }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .expect("legacy search result");
+        assert_eq!(
+            legacy_search[0]["path"],
+            root.join("needle.txt").to_string_lossy().to_string()
+        );
+
+        drop(workspace);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn single_workspace_create_result_explicitly_reports_pane_fallback() {
         let ws_id = Uuid::parse_str("88888888-8888-8888-8888-888888888888").unwrap();
         let pane_id = Uuid::parse_str("99999999-9999-9999-9999-999999999999").unwrap();
@@ -922,7 +1078,9 @@ mod tests {
         .expect("resize pane");
 
         let frame = rx.try_recv().expect("resize event");
-        let Message::Text(text) = frame else { panic!("expected text resize event") };
+        let Message::Text(text) = frame else {
+            panic!("expected text resize event")
+        };
         let value: Value = serde_json::from_str(&text).expect("json resize event");
         assert_eq!(value["type"], "pty-resized");
         assert_eq!(value["workspaceId"], ws_id.to_string());
