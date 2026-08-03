@@ -5,6 +5,18 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 117 update (2026-08-03)
+
+Some standalone Android/WebView shells expose a portrait cutout while returning
+zero for `env(safe-area-inset-top)`. Remote reconnect/failure banners and both
+LAN/Cloud auth fallback screens now reserve a 44px standalone top belt, while
+`max()` keeps larger real `env()`/`constant()` insets authoritative. Targeted
+PWA tests (7/7), `pnpm check`, mobile production build, and generated CSS/PWA
+evidence pass. Physical notch-device proof remains pending; no release after
+`v0.1.54` due the daily publication freeze.
+
+Archive: `docs/iterations/2026-08-03-iteration-117-pwa-standalone-top-belt.md`.
+
 ## Iteration 116 update (2026-08-03)
 
 Remote `git_status` first paint now uses a fast shared-core snapshot when the
