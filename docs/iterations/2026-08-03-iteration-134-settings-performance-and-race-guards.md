@@ -41,7 +41,7 @@ notified the theme bridge for fields that had not changed.
 
 - `pnpm exec vitest run src/lib/components/SettingsPanel.test.ts --reporter=dot`:
   1 file / 4 passed.
-- `pnpm exec vitest run --reporter=dot`: 147 files / 1515 passed / 1 skipped.
+- `pnpm exec vitest run --reporter=dot`: 147 files / 1516 passed / 1 skipped.
 - `pnpm check`: 0 errors / 0 warnings.
 - `cargo test -p ridge-core commands::shell --lib --quiet`: 3 passed.
 - `cargo check --manifest-path src-tauri/Cargo.toml --lib --quiet`: passed
