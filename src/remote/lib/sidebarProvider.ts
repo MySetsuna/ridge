@@ -17,6 +17,7 @@ import {
   fetchRemoteQuery,
   remoteQueryKeys,
   remoteSidebarQueryPrefix,
+  normalizeRemotePath,
   REMOTE_SIDEBAR_STALE_TIME_MS,
   type RemoteSidebarScope,
   type RemoteQueryClientLike,
@@ -103,6 +104,28 @@ export function createWsSidebarProvider(
     query: (signal?: AbortSignal) => Promise<T>,
     observerSignal?: AbortSignal,
   ): Promise<T> => run(key, query, observerSignal, 0);
+
+  /**
+   * Mutations invalidate only the server snapshots they can change.  Passing
+   * a query key (rather than the whole sidebar prefix) keeps unrelated file,
+   * search, and graph requests warm when a small Git/file mutation completes.
+   */
+  const invalidate = async (...keys: readonly (readonly unknown[])[]): Promise<void> => {
+    if (!options.queryClient?.invalidateQueries) return;
+    await Promise.all(keys.map((queryKey) => options.queryClient?.invalidateQueries?.({ queryKey })));
+  };
+
+  const diffPrefix = (): readonly unknown[] => [
+    ...remoteSidebarQueryPrefix(sessionId, scope),
+    'diff',
+    normalizeRemotePath(root),
+  ];
+
+  const searchPrefix = (): readonly unknown[] => [
+    ...remoteSidebarQueryPrefix(sessionId, scope),
+    'search',
+    normalizeRemotePath(root),
+  ];
 
   const readGraph = async (signal?: AbortSignal): Promise<GitGraph> => {
     if (dp.gitGraph) {
@@ -330,44 +353,50 @@ export function createWsSidebarProvider(
 
     async writeFile(path: string, content: string): Promise<void> {
       await dp.writeFile(path, content);
-      // A successful write invalidates sidebar reads for this remote session;
-      // the next panel open gets fresh tree/Git/file content without turning
-      // ordinary tab opens into unconditional network requests.
-      await options.queryClient?.invalidateQueries?.({
-        queryKey: remoteSidebarQueryPrefix(sessionId, scope),
-      });
+      // A file write changes its read/diff snapshots, Git status, and any
+      // search result rooted at this repository. Keep unrelated directories
+      // and Graph history cached.
+      await invalidate(
+        remoteQueryKeys.sidebarFile(sessionId, root, path, scope),
+        remoteQueryKeys.sidebarDiff(sessionId, root, path, scope),
+        remoteQueryKeys.sidebarGit(sessionId, root, scope),
+        searchPrefix(),
+      );
     },
 
     async gitStage(paths: string[], signal?: AbortSignal): Promise<void> {
       if (signal) await dp.gitStage(root, paths, signal);
       else await dp.gitStage(root, paths);
-      await options.queryClient?.invalidateQueries?.({
-        queryKey: remoteSidebarQueryPrefix(sessionId, scope),
-      });
+      await invalidate(remoteQueryKeys.sidebarGit(sessionId, root, scope));
     },
 
     async gitUnstage(paths: string[], signal?: AbortSignal): Promise<void> {
       if (signal) await dp.gitUnstage(root, paths, signal);
       else await dp.gitUnstage(root, paths);
-      await options.queryClient?.invalidateQueries?.({
-        queryKey: remoteSidebarQueryPrefix(sessionId, scope),
-      });
+      await invalidate(remoteQueryKeys.sidebarGit(sessionId, root, scope));
     },
 
     async gitCommit(message: string, amend = false, signal?: AbortSignal): Promise<void> {
       if (signal) await dp.gitCommit(root, message, amend, signal);
       else await dp.gitCommit(root, message, amend);
-      await options.queryClient?.invalidateQueries?.({
-        queryKey: remoteSidebarQueryPrefix(sessionId, scope),
-      });
+      // Commit changes status, history, and every cached diff under this
+      // repository; unrelated search/file snapshots remain valid.
+      await invalidate(
+        remoteQueryKeys.sidebarGit(sessionId, root, scope),
+        remoteQueryKeys.sidebarGitGraph(sessionId, root, scope),
+        diffPrefix(),
+      );
     },
 
     async gitPush(setUpstream = false, signal?: AbortSignal): Promise<void> {
       if (signal) await dp.gitPush(root, setUpstream, signal);
       else await dp.gitPush(root, setUpstream);
-      await options.queryClient?.invalidateQueries?.({
-        queryKey: remoteSidebarQueryPrefix(sessionId, scope),
-      });
+      // Push can update upstream/ref decorations and remote HEAD visibility;
+      // local file and diff snapshots do not change.
+      await invalidate(
+        remoteQueryKeys.sidebarGit(sessionId, root, scope),
+        remoteQueryKeys.sidebarGitGraph(sessionId, root, scope),
+      );
     },
 
     async gitDiff(path: string, signal?: AbortSignal): Promise<string> {

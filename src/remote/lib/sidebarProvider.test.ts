@@ -284,7 +284,7 @@ describe('remote sidebar query contract', () => {
     expect(link.getTeammateTopology).toHaveBeenCalledTimes(2);
   });
 
-  it('delegates Git mutations and invalidates only the scoped sidebar prefix', async () => {
+  it('delegates Git mutations and invalidates only affected Query keys', async () => {
     const client = new TestQueryClient();
     const gitCommit = vi.fn(async () => undefined);
     const gitPush = vi.fn(async () => undefined);
@@ -302,8 +302,32 @@ describe('remote sidebar query contract', () => {
     expect(gitCommit).toHaveBeenCalledWith('/repo', 'message', false);
     expect(gitPush).toHaveBeenCalledWith('/repo', true);
     expect(client.invalidations).toEqual([
-      ['remote', 9, 'sidebar', 'ws-1', 'pane-1', 'main'],
-      ['remote', 9, 'sidebar', 'ws-1', 'pane-1', 'main'],
+      ['remote', 9, 'sidebar', 'ws-1', 'pane-1', 'main', 'git', '/repo'],
+      ['remote', 9, 'sidebar', 'ws-1', 'pane-1', 'main', 'git-graph', '/repo'],
+      ['remote', 9, 'sidebar', 'ws-1', 'pane-1', 'main', 'diff', '/repo'],
+      ['remote', 9, 'sidebar', 'ws-1', 'pane-1', 'main', 'git', '/repo'],
+      ['remote', 9, 'sidebar', 'ws-1', 'pane-1', 'main', 'git-graph', '/repo'],
+    ]);
+  });
+
+  it('file writes invalidate file/diff/git/search snapshots without evicting unrelated keys', async () => {
+    const client = new TestQueryClient();
+    const dp = makeProvider({ writeFile: vi.fn(async () => undefined) });
+    const sidebar = createWsSidebarProvider('/repo', dp, {
+      queryClient: client,
+      sessionId: 10,
+      workspaceId: 'ws-1',
+      paneId: 'pane-1',
+      branch: 'main',
+    });
+
+    await sidebar.writeFile('/repo/src/app.ts', 'next');
+
+    expect(client.invalidations).toEqual([
+      ['remote', 10, 'sidebar', 'ws-1', 'pane-1', 'main', 'file', '/repo', '/repo/src/app.ts'],
+      ['remote', 10, 'sidebar', 'ws-1', 'pane-1', 'main', 'diff', '/repo', '/repo/src/app.ts'],
+      ['remote', 10, 'sidebar', 'ws-1', 'pane-1', 'main', 'git', '/repo'],
+      ['remote', 10, 'sidebar', 'ws-1', 'pane-1', 'main', 'search', '/repo'],
     ]);
   });
 });

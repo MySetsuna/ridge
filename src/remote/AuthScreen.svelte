@@ -244,22 +244,22 @@
      returning zero for env(). Keep the retry/login card below a conservative
      portrait top belt; a real inset still wins through max(). */
   @media (display-mode:standalone) and (orientation:portrait) {
-    .screen{padding-top:44px}
+    .screen{padding-top:64px}
     @supports (padding-top:constant(safe-area-inset-top)) {
-      .screen{padding-top:max(44px,calc(24px + constant(safe-area-inset-top)))}
+      .screen{padding-top:max(64px,calc(24px + constant(safe-area-inset-top)))}
     }
     @supports (padding-top:env(safe-area-inset-top)) {
-      .screen{padding-top:max(44px,calc(24px + env(safe-area-inset-top,0px)))}
+      .screen{padding-top:max(64px,calc(24px + env(safe-area-inset-top,0px)))}
     }
   }
   /* iOS standalone exposes navigator.standalone without matching the media
      query; main.ts marks the document before this screen first paints. */
-  :global(html[data-ridge-pwa="standalone"]) .screen{padding-top:44px}
+  :global(html[data-ridge-pwa="standalone"]) .screen{padding-top:64px}
   @supports (padding-top:constant(safe-area-inset-top)) {
-    :global(html[data-ridge-pwa="standalone"]) .screen{padding-top:max(44px,calc(24px + constant(safe-area-inset-top)))}
+    :global(html[data-ridge-pwa="standalone"]) .screen{padding-top:max(64px,calc(24px + constant(safe-area-inset-top)))}
   }
   @supports (padding-top:env(safe-area-inset-top)) {
-    :global(html[data-ridge-pwa="standalone"]) .screen{padding-top:max(44px,calc(24px + env(safe-area-inset-top,0px)))}
+    :global(html[data-ridge-pwa="standalone"]) .screen{padding-top:max(64px,calc(24px + env(safe-area-inset-top,0px)))}
   }
   .logo{display:block;width:64px;height:64px;margin:0 auto 16px}
   h1{font-size:20px;font-weight:600;margin-bottom:4px;color:var(--rg-fg)}

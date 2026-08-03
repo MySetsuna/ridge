@@ -23,6 +23,9 @@
     untracked: [],
     commits: [],
   });
+  // Keep the last successful Query snapshot visible when a reconnect or
+  // refresh fails; the error banner marks it stale without blanking the pane.
+  let hasSnapshot = $state(false);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let graphLoading = $state(false);
@@ -88,6 +91,7 @@
           : await provider.gitStatus(controller.signal);
         if (controller.signal.aborted || generation !== loadGeneration) return;
         info = next;
+        hasSnapshot = true;
       } catch (e) {
         if (controller.signal.aborted || generation !== loadGeneration) return;
         error = e instanceof Error ? e.message : String(e);
@@ -280,16 +284,17 @@
   {/if}
 
   {#if error}
-    <span class="msg err" role="alert">{error}</span>
-  {:else if loading && info.files.length === 0 && info.commits.length === 0}
+    <span class="msg err" role="alert">{error}{#if hasSnapshot} · Showing cached snapshot{/if}</span>
+  {/if}
+  {#if !hasSnapshot && !error}
     <span class="msg">{$t('scm.loading')}</span>
-  {:else if !info.isGitRepo}
+  {:else if hasSnapshot && !info.isGitRepo}
     <span class="msg">{$t('scm.notGitRepoMsg')}</span>
-  {:else if view === 'graph' && graphError}
+  {:else if hasSnapshot && view === 'graph' && graphError && graphCommits.length === 0}
     <span class="msg err" role="alert">{graphError}</span>
-  {:else if view === 'graph' && graphLoading && info.commits.length === 0}
+  {:else if hasSnapshot && view === 'graph' && graphLoading && info.commits.length === 0}
     <span class="msg">{$t('scm.loading')}</span>
-  {:else if view === 'graph'}
+  {:else if hasSnapshot && view === 'graph'}
     <div class="graph-body">
       {#if graphCommits.length === 0}
         <span class="msg">{$t('scm.noRepoToShow')}</span>
@@ -325,7 +330,7 @@
         <span>{selectedCommit.parents?.length ?? 0} parent(s)</span>
       </div>
     {/if}
-  {:else}
+  {:else if hasSnapshot}
     <div class="git-body">
       {#if canWrite}
         <div class="write-box">
