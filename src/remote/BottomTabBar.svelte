@@ -108,4 +108,14 @@
     .actionbar{min-height:calc(56px + env(safe-area-inset-bottom,0px))}
     .ctrl-btn{width:44px;height:44px}
   }
+  :global(html[data-ridge-pwa="standalone"]) .actionbar{padding-bottom:20px;min-height:68px}
+  @supports (padding-bottom:env(safe-area-inset-bottom)) {
+    :global(html[data-ridge-pwa="standalone"]) .actionbar{padding-bottom:max(20px,env(safe-area-inset-bottom,0px));min-height:max(68px,calc(48px + env(safe-area-inset-bottom,0px)))}
+  }
+  @media (pointer: coarse) {
+    :global(html[data-ridge-pwa="standalone"]) .actionbar{min-height:max(76px,calc(56px + 20px))}
+    @supports (padding-bottom:env(safe-area-inset-bottom)) {
+      :global(html[data-ridge-pwa="standalone"]) .actionbar{min-height:max(76px,calc(56px + env(safe-area-inset-bottom,0px)))}
+    }
+  }
 </style>

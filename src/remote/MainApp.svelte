@@ -1148,6 +1148,14 @@
       .conn-banner{padding-top:max(44px,calc(6px + env(safe-area-inset-top,0px)));min-height:max(68px,calc(30px + env(safe-area-inset-top,0px)))}
     }
   }
+  /* iOS standalone may expose only navigator.standalone (not display-mode). */
+  :global(html[data-ridge-pwa="standalone"]) .conn-banner{padding-top:44px;min-height:68px}
+  @supports (padding-top:constant(safe-area-inset-top)) {
+    :global(html[data-ridge-pwa="standalone"]) .conn-banner{padding-top:max(44px,calc(6px + constant(safe-area-inset-top)));min-height:max(68px,calc(30px + constant(safe-area-inset-top)))}
+  }
+  @supports (padding-top:env(safe-area-inset-top)) {
+    :global(html[data-ridge-pwa="standalone"]) .conn-banner{padding-top:max(44px,calc(6px + env(safe-area-inset-top,0px)));min-height:max(68px,calc(30px + env(safe-area-inset-top,0px)))}
+  }
   .conn-banner.lost{background:var(--rg-ansi-red,#cf222e)}
   .conn-msg{flex:0 1 auto}
   .conn-action{flex-shrink:0;border:1px solid rgba(255,255,255,.7);background:rgba(255,255,255,.15);color:#fff;font-size:12px;font-weight:600;border-radius:6px;padding:3px 10px;cursor:pointer}
@@ -1159,6 +1167,10 @@
   .create-error{font-size:12px;color:var(--rg-ansi-red)}
   .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;touch-action:none}
   .mobile-header{position:sticky;top:0;display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 0 0;background:var(--rg-bg);border-bottom:1px solid color-mix(in srgb,var(--rg-fg) 12%,transparent);z-index:30;min-height:calc(44px + env(safe-area-inset-top))}
+  :global(html[data-ridge-pwa="standalone"]) .mobile-header{padding-top:44px;min-height:88px}
+  @supports (padding-top:env(safe-area-inset-top)) {
+    :global(html[data-ridge-pwa="standalone"]) .mobile-header{padding-top:max(44px,env(safe-area-inset-top,0px));min-height:max(88px,calc(44px + env(safe-area-inset-top,0px)))}
+  }
   .header-row{display:flex;align-items:center;height:44px;padding:0 8px;gap:4px}
   .header-nav{display:flex;gap:2px}
   .header-breadcrumb{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;min-width:0;overflow:hidden}

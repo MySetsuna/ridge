@@ -5,6 +5,19 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 119 update (2026-08-03)
+
+Standalone PWA detection now runs before Svelte mounts and covers iOS's
+`navigator.standalone` path, which may not satisfy `(display-mode: standalone)`.
+The reconnect/failure banner and mobile header reserve a conservative 44px
+portrait top belt (or the larger real safe-area inset); the Remote drawer and
+bottom action bar receive matching standalone top/bottom fallbacks. PWA scope
+tests (5/5), `pnpm check`, mobile production build, and generated PWA evidence
+pass. Physical notch-device proof remains external; no release after `v0.1.54`
+due the daily publication freeze.
+
+Archive: `docs/iterations/2026-08-03-iteration-119-pwa-standalone-shell-safe-area.md`.
+
 ## Iteration 118 update (2026-08-03)
 
 Source Control passive remounts and filesystem watcher bursts now share a
