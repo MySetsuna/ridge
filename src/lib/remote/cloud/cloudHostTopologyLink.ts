@@ -30,7 +30,10 @@ function flattenPanes(node: PaneNode | null | undefined): PaneInfo[] {
           id: node.id,
           title: node.title,
           cwd: node.cwd,
-          isAgent: node.agent_state === 'busy',
+          // `idle` and `starting` are still Agent panes; `busy` is only the
+          // runtime state, not the identity marker. Keep the marker true when
+          // a host sends either field so Agent cards and Pane state stay aligned.
+          isAgent: node.agent_state !== undefined || node.agent_id !== undefined,
           ...(node.agent_state ? { agentState: node.agent_state } : {}),
           ...(node.agent_id ? { agentId: node.agent_id } : {}),
         }]

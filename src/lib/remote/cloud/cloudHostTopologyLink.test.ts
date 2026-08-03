@@ -72,7 +72,7 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
 
     await expect(link.listWorkspacePanes('w1')).resolves.toEqual([
       { id: 'agent-pane', title: 'Agent', cwd: 'C:\\work\\agent', isAgent: true, agentState: 'busy', agentId: 'agent-1' },
-      { id: 'idle-pane', title: undefined, cwd: '/tmp', isAgent: false, agentState: 'idle' },
+      { id: 'idle-pane', title: undefined, cwd: '/tmp', isAgent: true, agentState: 'idle' },
     ]);
   });
 

@@ -5,6 +5,17 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 148, 2026-08-03)
+
+- Cloud Host and mobile Cloud pane projections now retain `isAgent` whenever
+  `agent_state` or `agent_id` exists, so idle/starting Agents remain visible
+  after runtime-state transitions. Busy remains a state, not identity.
+- Focused Cloud topology/Remote tests: 39 passed. No release or version bump
+  was made; physical/public Remote, WebView2 heap soak, dual-window/dual-host,
+  and full Kernel authority evidence remain open.
+
+Archive: `docs/iterations/2026-08-03-iteration-148-agent-idle-identity.md`.
+
 ## Current snapshot (iteration 147, 2026-08-03)
 
 - Cloud Remote Host workspace and pane discovery now preserve RPC failures;
