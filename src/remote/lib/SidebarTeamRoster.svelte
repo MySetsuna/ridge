@@ -17,10 +17,13 @@
     teamRosterScopeKey,
   } from './teamRosterScope';
   import {
+    agentCardStatus,
+    agentStatusLabel,
     buildAgentHistoryGroups,
     reorderAgentGroups,
     shouldRefreshAgentHistory,
     toggleAgentGroupLeader,
+    type AgentCardStatus,
   } from '$lib/teammate/agentCommuneModel';
   import {
     fetchRemoteAgentHistory,
@@ -191,13 +194,10 @@
   let msgInput = $state<Record<string, string>>({});
   let openReply = $state<Record<string, boolean>>({});
 
-  /** 状态徽标：待审批 > 已暂停 > 运行中（终端还在吐字）> 空闲 / 失联。 */
-  function statusOf(m: TeammateRosterMember): { key: string; text: string } {
-    if (pendingFor(m).length > 0) return { key: 'pending', text: '等待审批' };
-    if (m.status === 'Suspended') return { key: 'suspended', text: '已暂停' };
-    if (m.status === 'Disappeared') return { key: 'gone', text: '失联' };
-    if (m.activity === 'working') return { key: 'working', text: '运行中' };
-    return { key: 'idle', text: '空闲' };
+  /** Shared status projection keeps Remote and desktop card rails in lockstep. */
+  function statusOf(m: TeammateRosterMember): { key: AgentCardStatus; text: string } {
+    const key = agentCardStatus(m, pendingFor(m).length > 0);
+    return { key, text: agentStatusLabel(key) };
   }
 
   /** 该成员名下的待审批项（initiator 可能是 paneId / agent 名 / agent id）。 */
@@ -521,14 +521,13 @@
   <div
     class="member-card"
     class:status-working={st.key === 'working'}
-    class:status-pending={st.key === 'pending'}
-    class:status-suspended={st.key === 'suspended'}
-    class:status-gone={st.key === 'gone'}
+    class:status-waiting={st.key === 'waiting'}
+    class:status-stopped={st.key === 'stopped'}
     class:status-idle={st.key === 'idle'}
   >
     <div class="member-head">
       <button class="head-main" onclick={() => m.paneId && onSelectPane?.(m.paneId)} tabindex="-1">
-        <span class="dot" class:working={st.key === 'working'} class:suspended={st.key === 'suspended'}></span>
+        <span class="dot" class:working={st.key === 'working'} class:waiting={st.key === 'waiting'} class:stopped={st.key === 'stopped'}></span>
         <span class="name" title={m.id}>{m.name}</span>
       </button>
       {#if isLeader}<Crown class="w-3 h-3 crown" />{/if}
@@ -598,7 +597,6 @@
   .subtabs button{display:inline-flex;align-items:center;justify-content:center;gap:4px;flex:1;min-width:0;font-size:11px;line-height:1.2;padding:4px 8px;border:1px solid var(--rg-border);border-radius:6px;background:none;color:var(--rg-fg-muted);cursor:pointer}
   .subtabs :global(svg),.approval :global(svg),.member-head :global(svg),.act :global(svg),.msg-row :global(svg){display:block;flex:0 0 auto}
   .subtabs button.active{color:var(--rg-fg);border-color:color-mix(in srgb,var(--rg-accent) 50%,transparent);background:color-mix(in srgb,var(--rg-accent) 12%,transparent)}
-  .dot.suspended{background:#f59e0b}
   .approval{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:var(--rg-surface-2);font-size:13px;line-height:1.2}
   .approval :global(.risk){color:var(--rg-accent);flex-shrink:0}
   .note{margin:0 2px 4px;font-size:11px;color:var(--rg-fg-muted)}
@@ -612,9 +610,8 @@
   .member-card{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border:1px solid transparent;border-left-width:3px;border-radius:8px;background:var(--rg-surface-2);margin:2px 0}
   /* Keep the state signal visible even when text is truncated on a phone. */
   .member-card.status-working{border-left-color:var(--rg-ansi-green,#3fb950)}
-  .member-card.status-pending{border-left-color:var(--rg-ansi-yellow,#d29922)}
-  .member-card.status-suspended{border-left-color:var(--rg-ansi-yellow,#d29922)}
-  .member-card.status-gone{border-left-color:var(--rg-ansi-red,#f85149)}
+  .member-card.status-waiting{border-left-color:var(--rg-ansi-yellow,#d29922)}
+  .member-card.status-stopped{border-left-color:var(--rg-ansi-red,#f85149)}
   .member-card.status-idle{border-left-color:var(--rg-fg-muted)}
   .member-card.offline{opacity:.55}
   .member-head{display:flex;align-items:center;gap:6px;min-height:24px;font-size:13px;line-height:1.2}
@@ -663,6 +660,8 @@
   .history-item p{margin:4px 0 0;color:var(--rg-fg-muted);white-space:pre-wrap;word-break:break-word;max-height:80px;overflow:auto}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--rg-fg-muted);flex-shrink:0}
   .dot.working{background:var(--rg-accent)}
+  .dot.waiting{background:var(--rg-ansi-yellow,#d29922)}
+  .dot.stopped{background:var(--rg-ansi-red,#f85149)}
   .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .role{font-size:11px;line-height:1.2;color:var(--rg-fg-muted)}
 </style>

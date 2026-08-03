@@ -62,6 +62,16 @@ version bump or publication was made.
 
 Archive: `docs/iterations/2026-08-03-iteration-126-rpc-contextual-resize-dedupe.md`.
 
+## Iteration 127 update (2026-08-03)
+
+Remote Agent cards now use the same shared status projection and labels as the
+desktop Commune cards. `Suspended`/`Disappeared` map to the red stopped rail,
+pending approval to yellow waiting, and working/idle remain consistent. The
+focused Agent model and Remote roster suites pass 14/14; no version bump or
+publication was made.
+
+Archive: `docs/iterations/2026-08-03-iteration-127-remote-agent-status-parity.md`.
+
 ## Iteration 121 update (2026-08-03)
 
 Installed/Desktop terminal links now preserve a URL when the first visual
