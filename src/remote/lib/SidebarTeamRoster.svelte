@@ -211,6 +211,10 @@
     return m.cwd?.trim() || panes.find((pane) => pane.id === m.paneId)?.cwd?.trim() || '';
   }
 
+  function titleFor(m: TeammateRosterMember): string {
+    return m.title?.trim() || m.name;
+  }
+
   async function resumeHistory(reply: AgentHistoryReply): Promise<void> {
     const spec = reply.resume;
     if (!spec || !workspaceId || resumeBusy) return;
@@ -518,6 +522,7 @@
 {#snippet memberCard(m: TeammateRosterMember, isLeader: boolean)}
   {@const st = statusOf(m)}
   {@const cwd = cwdFor(m)}
+  {@const title = titleFor(m)}
   <div
     class="member-card"
     class:status-working={st.key === 'working'}
@@ -528,7 +533,7 @@
     <div class="member-head">
       <button class="head-main" onclick={() => m.paneId && onSelectPane?.(m.paneId)} tabindex="-1">
         <span class="dot" class:working={st.key === 'working'} class:waiting={st.key === 'waiting'} class:stopped={st.key === 'stopped'}></span>
-        <span class="name" title={m.id}>{m.name}</span>
+        <span class="name" title={m.id}>{title}</span>
       </button>
       {#if isLeader}<Crown class="w-3 h-3 crown" />{/if}
       {#if m.isAuto}<span class="tag">自动</span>{/if}

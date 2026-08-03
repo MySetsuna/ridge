@@ -272,6 +272,8 @@ export interface TeammateRosterMember {
   name: string;
   paneId: string;
   paneIndex: number | null;
+  /** Live PaneHeader/OSC title; identity `name` remains stable for actions. */
+  title?: string;
   /** Host-authoritative PTY CWD; UI may fall back to the live pane snapshot. */
   cwd?: string;
   role: string;
