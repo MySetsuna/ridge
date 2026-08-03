@@ -127,12 +127,15 @@ export function setupTerminalThemeBridge(): () => void {
 	_subscribed = true;
 
 	const manager = TerminalManager.instance();
+	let pendingPushFrame: number | null = null;
 
 	const push = () => {
+		if (pendingPushFrame !== null) return;
 		// Delay reading CSS vars by one frame — the browser needs a
 		// paint cycle to compute new values after `data-rg-theme` changes.
 		// Without this delay, getComputedStyle returns stale values.
-		requestAnimationFrame(() => {
+		pendingPushFrame = requestAnimationFrame(() => {
+			pendingPushFrame = null;
 			const theme = readRidgeTheme();
 			// Skip if nothing changed since the last push — avoids walking
 			// every pane's handle on unrelated settings updates (font size,
@@ -209,6 +212,8 @@ export function setupTerminalThemeBridge(): () => void {
 	}) ?? (() => {});
 
 	return () => {
+		if (pendingPushFrame !== null) cancelAnimationFrame(pendingPushFrame);
+		pendingPushFrame = null;
 		unsubscribeTheme();
 		unsubscribeFont();
 		unsubscribeBgImage();
