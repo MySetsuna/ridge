@@ -1067,6 +1067,8 @@ pub struct GitQuery {
 pub enum GitMutationRequest {
     Stage { repo_root: String, paths: Vec<String> },
     Unstage { repo_root: String, paths: Vec<String> },
+    Discard { repo_root: String, paths: Vec<String> },
+    CleanUntracked { repo_root: String, paths: Vec<String> },
     Commit { repo_root: String, message: String, amend: Option<bool> },
     Checkout {
         repo_root: String,
@@ -1076,6 +1078,35 @@ pub enum GitMutationRequest {
     },
     Push { repo_root: String, set_upstream: Option<bool> },
     PushBranch { repo_root: String, branch: String },
+    MergeBranch { repo_root: String, branch: String },
+    DeleteBranch { repo_root: String, branch: String, force: Option<bool> },
+    RenameBranch { repo_root: String, old_name: String, new_name: String },
+    Rebase { repo_root: String, onto: String },
+    DeleteTag { repo_root: String, name: String },
+    PushTag { repo_root: String, name: String },
+    StashPush {
+        repo_root: String,
+        message: Option<String>,
+        include_untracked: Option<bool>,
+    },
+    StashApply { repo_root: String, reference: String },
+    StashPop { repo_root: String, reference: String },
+    StashDrop { repo_root: String, reference: String },
+    StashBranch { repo_root: String, branch: String, reference: String },
+    Fetch { repo_root: String },
+    Pull { repo_root: String },
+    Sync { repo_root: String },
+    CherryPickAbort { repo_root: String },
+    RevertAbort { repo_root: String },
+    CherryPick { repo_root: String, hash: String },
+    Revert { repo_root: String, hash: String },
+    CreateTag {
+        repo_root: String,
+        name: String,
+        hash: Option<String>,
+        message: Option<String>,
+    },
+    Reset { repo_root: String, hash: String, mode: String },
 }
 
 impl GitMutationRequest {
@@ -1083,10 +1114,67 @@ impl GitMutationRequest {
         match self {
             Self::Stage { repo_root, .. }
             | Self::Unstage { repo_root, .. }
+            | Self::Discard { repo_root, .. }
+            | Self::CleanUntracked { repo_root, .. }
             | Self::Commit { repo_root, .. }
             | Self::Checkout { repo_root, .. }
             | Self::Push { repo_root, .. }
-            | Self::PushBranch { repo_root, .. } => repo_root,
+            | Self::PushBranch { repo_root, .. }
+            | Self::MergeBranch { repo_root, .. }
+            | Self::DeleteBranch { repo_root, .. }
+            | Self::RenameBranch { repo_root, .. }
+            | Self::Rebase { repo_root, .. }
+            | Self::DeleteTag { repo_root, .. }
+            | Self::PushTag { repo_root, .. }
+            | Self::StashPush { repo_root, .. }
+            | Self::StashApply { repo_root, .. }
+            | Self::StashPop { repo_root, .. }
+            | Self::StashDrop { repo_root, .. }
+            | Self::StashBranch { repo_root, .. }
+            | Self::Fetch { repo_root }
+            | Self::Pull { repo_root }
+            | Self::Sync { repo_root }
+            | Self::CherryPickAbort { repo_root }
+            | Self::RevertAbort { repo_root }
+            | Self::CherryPick { repo_root, .. }
+            | Self::Revert { repo_root, .. }
+            | Self::CreateTag { repo_root, .. }
+            | Self::Reset { repo_root, .. } => repo_root,
+        }
+    }
+}
+
+/// Typed Git reads owned by the kernel. Keeping graph/history arguments in a
+/// tagged request prevents the Tauri shell from reintroducing direct Git
+/// subprocess calls as new UI features are added.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "operation", rename_all = "kebab-case")]
+pub enum GitReadRequest {
+    Info { repo_root: String },
+    Commits { repo_root: String, offset: u32, limit: u32 },
+    FileVersions { repo_root: String, path: String, cached: Option<bool> },
+    CommitFiles { repo_root: String, hash: String },
+    FileVersionsAtCommit { repo_root: String, path: String, hash: String },
+    FileVersionsBetween { repo_root: String, path: String, from: String, to: String },
+    CompareCommits { repo_root: String, from: String, to: String },
+    DiffFile { repo_root: String, path: String, cached: Option<bool> },
+    Blame { repo_root: String, path: String },
+    FileLog { repo_root: String, path: String, limit: Option<u32> },
+}
+
+impl GitReadRequest {
+    fn repo_root(&self) -> &str {
+        match self {
+            Self::Info { repo_root }
+            | Self::Commits { repo_root, .. }
+            | Self::FileVersions { repo_root, .. }
+            | Self::CommitFiles { repo_root, .. }
+            | Self::FileVersionsAtCommit { repo_root, .. }
+            | Self::FileVersionsBetween { repo_root, .. }
+            | Self::CompareCommits { repo_root, .. }
+            | Self::DiffFile { repo_root, .. }
+            | Self::Blame { repo_root, .. }
+            | Self::FileLog { repo_root, .. } => repo_root,
         }
     }
 }
@@ -1121,6 +1209,16 @@ pub async fn domain_git_mutate(
                 .await
                 .map(|_| None)
         }
+        GitMutationRequest::Discard { repo_root, paths } => {
+            ridge_core::commands::git::git_discard(repo_root, paths)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::CleanUntracked { repo_root, paths } => {
+            ridge_core::commands::git::git_clean_untracked(repo_root, paths)
+                .await
+                .map(|_| None)
+        }
         GitMutationRequest::Commit { repo_root, message, amend } => {
             ridge_core::commands::git::git_commit(repo_root, message, amend)
                 .await
@@ -1141,6 +1239,106 @@ pub async fn domain_git_mutate(
                 .await
                 .map(Some)
         }
+        GitMutationRequest::MergeBranch { repo_root, branch } => {
+            ridge_core::commands::git::git_merge_branch(repo_root, branch)
+                .await
+                .map(Some)
+        }
+        GitMutationRequest::DeleteBranch { repo_root, branch, force } => {
+            ridge_core::commands::git::git_delete_branch(repo_root, branch, force)
+                .await
+                .map(Some)
+        }
+        GitMutationRequest::RenameBranch { repo_root, old_name, new_name } => {
+            ridge_core::commands::git::git_rename_branch(repo_root, old_name, new_name)
+                .await
+                .map(Some)
+        }
+        GitMutationRequest::Rebase { repo_root, onto } => {
+            ridge_core::commands::git::git_rebase(repo_root, onto)
+                .await
+                .map(Some)
+        }
+        GitMutationRequest::DeleteTag { repo_root, name } => {
+            ridge_core::commands::git::git_delete_tag(repo_root, name)
+                .await
+                .map(Some)
+        }
+        GitMutationRequest::PushTag { repo_root, name } => {
+            ridge_core::commands::git::git_push_tag(repo_root, name)
+                .await
+                .map(Some)
+        }
+        GitMutationRequest::StashPush { repo_root, message, include_untracked } => {
+            ridge_core::commands::git::git_stash_push(repo_root, message, include_untracked)
+                .await
+                .map(Some)
+        }
+        GitMutationRequest::StashApply { repo_root, reference } => {
+            ridge_core::commands::git::git_stash_apply(repo_root, reference)
+                .await
+                .map(Some)
+        }
+        GitMutationRequest::StashPop { repo_root, reference } => {
+            ridge_core::commands::git::git_stash_pop(repo_root, reference)
+                .await
+                .map(Some)
+        }
+        GitMutationRequest::StashDrop { repo_root, reference } => {
+            ridge_core::commands::git::git_stash_drop(repo_root, reference)
+                .await
+                .map(Some)
+        }
+        GitMutationRequest::StashBranch { repo_root, branch, reference } => {
+            ridge_core::commands::git::git_stash_branch(repo_root, branch, reference)
+                .await
+                .map(Some)
+        }
+        GitMutationRequest::Fetch { repo_root } => {
+            ridge_core::commands::git::git_fetch(repo_root)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::Pull { repo_root } => {
+            ridge_core::commands::git::git_pull(repo_root)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::Sync { repo_root } => {
+            ridge_core::commands::git::git_sync(repo_root)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::CherryPickAbort { repo_root } => {
+            ridge_core::commands::git::git_cherry_pick_abort(repo_root)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::RevertAbort { repo_root } => {
+            ridge_core::commands::git::git_revert_abort(repo_root)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::CherryPick { repo_root, hash } => {
+            ridge_core::commands::git::git_cherry_pick(repo_root, hash)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::Revert { repo_root, hash } => {
+            ridge_core::commands::git::git_revert(repo_root, hash)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::CreateTag { repo_root, name, hash, message } => {
+            ridge_core::commands::git::git_create_tag(repo_root, name, hash, message)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::Reset { repo_root, hash, mode } => {
+            ridge_core::commands::git::git_reset(repo_root, hash, mode)
+                .await
+                .map(|_| None)
+        }
     };
 
     match result {
@@ -1150,6 +1348,100 @@ pub async fn domain_git_mutate(
             "is_repo": true,
             "repo_root": repo_root,
             "output": output,
+        }))),
+        Err(error) => Ok(Json(json!({
+            "ok": false,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "repo_root": repo_root,
+            "error": error,
+        }))),
+    }
+}
+
+pub async fn domain_git_read(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<GitReadRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let repo_root = request.repo_root().to_string();
+    let detect_path = repo_root.clone();
+    let is_repo = tokio::task::spawn_blocking(move || {
+        ridge_core::commands::git::find_git_repo_root(detect_path).is_some()
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !is_repo {
+        return Ok(Json(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": false,
+            "repo_root": repo_root,
+            "value": null,
+        })));
+    }
+
+    let result: Result<Value, String> = match request {
+        GitReadRequest::Info { repo_root } => ridge_core::commands::git::get_git_info_with_cwd(repo_root)
+            .await
+            .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
+        GitReadRequest::Commits { repo_root, offset, limit } => {
+            ridge_core::commands::git::get_git_commits_paginated(repo_root, offset, limit)
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        GitReadRequest::FileVersions { repo_root, path, cached } => {
+            ridge_core::commands::git::git_get_file_versions(repo_root, path, cached)
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        GitReadRequest::CommitFiles { repo_root, hash } => {
+            ridge_core::commands::git::git_get_commit_files(repo_root, hash)
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        GitReadRequest::FileVersionsAtCommit { repo_root, path, hash } => {
+            ridge_core::commands::git::git_get_file_versions_at_commit(repo_root, path, hash)
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        GitReadRequest::FileVersionsBetween { repo_root, path, from, to } => {
+            ridge_core::commands::git::git_get_file_versions_between(repo_root, path, from, to)
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        GitReadRequest::CompareCommits { repo_root, from, to } => {
+            ridge_core::commands::git::git_compare_commits(repo_root, from, to)
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        GitReadRequest::DiffFile { repo_root, path, cached } => {
+            ridge_core::commands::git::git_diff_file(repo_root, path, cached)
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        GitReadRequest::Blame { repo_root, path } => {
+            ridge_core::commands::git::git_blame(repo_root, path)
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        GitReadRequest::FileLog { repo_root, path, limit } => {
+            ridge_core::commands::git::git_file_log(repo_root, path, limit)
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+    };
+
+    match result {
+        Ok(value) => Ok(Json(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "repo_root": repo_root,
+            "value": value,
         }))),
         Err(error) => Ok(Json(json!({
             "ok": false,
@@ -1622,6 +1914,29 @@ mod tests {
         assert_eq!(response["source"], "ridge-kernel");
         assert_eq!(response["is_repo"], false);
         assert!(response["error"].as_str().unwrap().contains("Not a git repo"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn git_read_rejects_non_repository_before_spawning_history_command() {
+        let root = std::env::temp_dir().join(format!("ridge-kernel-non-git-read-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let response = domain_git_read(
+            State(test_state()),
+            test_headers(),
+            Json(GitReadRequest::Commits {
+                repo_root: root.to_string_lossy().into_owned(),
+                offset: 0,
+                limit: 50,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["source"], "ridge-kernel");
+        assert_eq!(response["is_repo"], false);
+        assert!(response["value"].is_null());
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -1,13 +1,20 @@
 {
   "schema_version": 1,
-  "task": "Route Remote SCM stash-list reads through the authenticated ridge-kernel Git domain with non-Git preflight",
+  "task": "Route every desktop Git mutation and graph/history read through the authenticated ridge-kernel Git domain",
   "symbols": [
-    "domain_git_stashes",
-    "read_domain_git_stashes",
-    "git_stash_list",
-    "decode_domain_git_stashes",
-    "StashEntry",
-    "GitQuery"
+    "GitMutationRequest",
+    "domain_git_mutate",
+    "GitReadRequest",
+    "domain_git_read",
+    "read_domain_git",
+    "read_domain_git_info",
+    "read_domain_git_commits",
+    "get_git_info_with_cwd",
+    "get_git_commits_paginated",
+    "git_get_file_versions",
+    "git_compare_commits",
+    "git_blame",
+    "git_file_log"
   ],
   "files": [
     "docs/PROJECT-STATE.md",
@@ -20,11 +27,13 @@
     "src-tauri/src/commands/git.rs",
     "docs/iterations/2026-08-04-iteration-160-kernel-git-diff-summary.md",
     "docs/iterations/2026-08-04-iteration-161-kernel-git-fast-status.md",
-    "docs/iterations/2026-08-04-iteration-162-kernel-git-stashes.md"
+    "docs/iterations/2026-08-04-iteration-162-kernel-git-stashes.md",
+    "docs/iterations/2026-08-04-iteration-163-kernel-git-all.md"
   ],
   "tests": [
-    "packages/ridge-kernel/src/client.rs (stash-list decoder contract)",
-    "packages/ridge-kernel/src/domain.rs (non-Git stash-list domain guard)",
+    "packages/ridge-kernel/src/client.rs (Git read and mutation decoder contracts)",
+    "packages/ridge-kernel/src/domain.rs (non-Git Git-read and mutation domain guards)",
+    "src-tauri/src/commands/git.rs (compile contract: no direct graph/history Git calls)",
     "cargo test -p ridge-kernel --lib",
     "cargo test -p ridge --lib",
     "cargo test -p ridge-core --lib",
@@ -35,7 +44,7 @@
     "NotebookLM is strategy input only; runtime, tests, and source remain factual authority",
     "Desktop production pane PTYs, SCM status reads, and kernel bootstrap are kernel-owned",
     "Kernel watcher tolerates transient health failures but exits after a bounded consecutive threshold",
-    "Remote SCM stash-list reads use the authenticated kernel Git domain after non-Git preflight",
+    "All desktop Git writes and graph/history reads use authenticated tagged kernel Git domains after non-Git preflight",
     "No hidden local fallback after kernel bootstrap/domain request failure",
     "Do not scan generated or minified artifacts as source evidence"
   ],
@@ -123,6 +132,7 @@
       "docs/iterations/2026-08-04-iteration-160-kernel-git-diff-summary.md",
       "docs/iterations/2026-08-04-iteration-161-kernel-git-fast-status.md",
       "docs/iterations/2026-08-04-iteration-162-kernel-git-stashes.md",
+      "docs/iterations/2026-08-04-iteration-163-kernel-git-all.md",
       "docs/iterations/CONTRACT-iteration-76.md",
       "docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md",
       "docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md",

@@ -5,6 +5,21 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 163, 2026-08-04)
+
+- All desktop Git mutations and graph/history reads now cross the authenticated
+  ridge-kernel Git domain. The Tauri layer retains command compatibility but no
+  longer starts these Git children directly.
+- Kernel requests are tagged and source-checked; non-Git roots return an
+  explicit negative result before a Git child is started. Decoder and domain
+  guard tests cover malformed source, success, and non-Git behavior.
+- Full Rust/TypeScript matrix and requirements gates are recorded in the
+  iteration archive. Physical/public Remote, WebView2, dual-window, Host,
+  and mobile clean-profile evidence remain external gates; no release was
+  made.
+
+Archive: `docs/iterations/2026-08-04-iteration-163-kernel-git-all.md`.
+
 ## Current snapshot (iteration 162, 2026-08-04)
 
 - Remote `git_stash_list` now uses authenticated kernel

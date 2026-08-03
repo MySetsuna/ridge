@@ -12,7 +12,10 @@ use std::thread;
 use std::time::Duration;
 
 use crate::registry::{clear_registry, read_endpoint, KernelEndpoint};
-use ridge_core::commands::git::{BranchInfo, GitDiffSummary, ScmRepoStatus, StashEntry};
+use ridge_core::commands::git::{
+    BlameLine, BranchInfo, CommitFileEntry, CommitNode, FileCommit, GitDiffSummary,
+    GitFileVersions, GitRepoInfo, ScmRepoStatus, StashEntry,
+};
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct KernelPtyInfo {
@@ -336,6 +339,29 @@ fn decode_domain_git_mutation(value: Value) -> Result<Value, String> {
     Ok(value)
 }
 
+fn decode_domain_git_read<T: DeserializeOwned>(value: Value) -> Result<Option<T>, String> {
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("kernel Git read failed")
+            .to_string());
+    }
+    if value.get("source").and_then(Value::as_str) != Some("ridge-kernel") {
+        return Err("kernel Git read response has unexpected source".to_string());
+    }
+    if value.get("is_repo").and_then(Value::as_bool) != Some(true) {
+        return Ok(None);
+    }
+    let payload = value
+        .get("value")
+        .cloned()
+        .ok_or_else(|| "kernel Git read response omitted value".to_string())?;
+    serde_json::from_value(payload)
+        .map(Some)
+        .map_err(|error| format!("decode kernel Git read response: {error}"))
+}
+
 fn encode_query_component(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut encoded = String::with_capacity(value.len());
@@ -486,6 +512,156 @@ pub fn mutate_domain_git(endpoint: &KernelEndpoint, request: &Value) -> Result<V
         Some(request),
     )?;
     decode_domain_git_mutation(value)
+}
+
+/// Execute one typed Git read in the kernel-owned domain. Read operations use
+/// the same authenticated seam as mutations so graph/history cannot re-open a
+/// second Tauri Git scheduler.
+pub fn read_domain_git<T: DeserializeOwned>(
+    endpoint: &KernelEndpoint,
+    request: &Value,
+) -> Result<Option<T>, String> {
+    let value = request_json(
+        endpoint,
+        "POST",
+        "/v1/domain/git/read",
+        Some(request),
+    )?;
+    decode_domain_git_read(value)
+}
+
+pub fn read_domain_git_info(
+    endpoint: &KernelEndpoint,
+    path: &str,
+) -> Result<Option<GitRepoInfo>, String> {
+    read_domain_git(endpoint, &serde_json::json!({
+        "operation": "info",
+        "repo_root": path,
+    }))
+}
+
+pub fn read_domain_git_commits(
+    endpoint: &KernelEndpoint,
+    path: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<Option<Vec<CommitNode>>, String> {
+    read_domain_git(endpoint, &serde_json::json!({
+        "operation": "commits",
+        "repo_root": path,
+        "offset": offset,
+        "limit": limit,
+    }))
+}
+
+pub fn read_domain_git_file_versions(
+    endpoint: &KernelEndpoint,
+    repo_root: &str,
+    path: &str,
+    cached: Option<bool>,
+) -> Result<Option<GitFileVersions>, String> {
+    read_domain_git(endpoint, &serde_json::json!({
+        "operation": "file-versions",
+        "repo_root": repo_root,
+        "path": path,
+        "cached": cached,
+    }))
+}
+
+pub fn read_domain_git_commit_files(
+    endpoint: &KernelEndpoint,
+    repo_root: &str,
+    hash: &str,
+) -> Result<Option<Vec<CommitFileEntry>>, String> {
+    read_domain_git(endpoint, &serde_json::json!({
+        "operation": "commit-files",
+        "repo_root": repo_root,
+        "hash": hash,
+    }))
+}
+
+pub fn read_domain_git_file_versions_at_commit(
+    endpoint: &KernelEndpoint,
+    repo_root: &str,
+    path: &str,
+    hash: &str,
+) -> Result<Option<GitFileVersions>, String> {
+    read_domain_git(endpoint, &serde_json::json!({
+        "operation": "file-versions-at-commit",
+        "repo_root": repo_root,
+        "path": path,
+        "hash": hash,
+    }))
+}
+
+pub fn read_domain_git_file_versions_between(
+    endpoint: &KernelEndpoint,
+    repo_root: &str,
+    path: &str,
+    from: &str,
+    to: &str,
+) -> Result<Option<GitFileVersions>, String> {
+    read_domain_git(endpoint, &serde_json::json!({
+        "operation": "file-versions-between",
+        "repo_root": repo_root,
+        "path": path,
+        "from": from,
+        "to": to,
+    }))
+}
+
+pub fn read_domain_git_compare_commits(
+    endpoint: &KernelEndpoint,
+    repo_root: &str,
+    from: &str,
+    to: &str,
+) -> Result<Option<Vec<CommitFileEntry>>, String> {
+    read_domain_git(endpoint, &serde_json::json!({
+        "operation": "compare-commits",
+        "repo_root": repo_root,
+        "from": from,
+        "to": to,
+    }))
+}
+
+pub fn read_domain_git_diff_file(
+    endpoint: &KernelEndpoint,
+    repo_root: &str,
+    path: &str,
+    cached: Option<bool>,
+) -> Result<Option<String>, String> {
+    read_domain_git(endpoint, &serde_json::json!({
+        "operation": "diff-file",
+        "repo_root": repo_root,
+        "path": path,
+        "cached": cached,
+    }))
+}
+
+pub fn read_domain_git_blame(
+    endpoint: &KernelEndpoint,
+    repo_root: &str,
+    path: &str,
+) -> Result<Option<Vec<BlameLine>>, String> {
+    read_domain_git(endpoint, &serde_json::json!({
+        "operation": "blame",
+        "repo_root": repo_root,
+        "path": path,
+    }))
+}
+
+pub fn read_domain_git_file_log(
+    endpoint: &KernelEndpoint,
+    repo_root: &str,
+    path: &str,
+    limit: Option<u32>,
+) -> Result<Option<Vec<FileCommit>>, String> {
+    read_domain_git(endpoint, &serde_json::json!({
+        "operation": "file-log",
+        "repo_root": repo_root,
+        "path": path,
+        "limit": limit,
+    }))
 }
 
 /// Discover PTYs owned by the long-lived kernel process.
@@ -1321,6 +1497,43 @@ mod tests {
             "ok": false,
             "source": "ridge-kernel",
             "error": "Not a git repo"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn domain_git_read_contract_requires_kernel_source_and_preserves_non_git() {
+        assert!(decode_domain_git_read::<GitRepoInfo>(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": false,
+            "value": null,
+        }))
+        .unwrap()
+        .is_none());
+
+        let info = decode_domain_git_read::<GitRepoInfo>(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "value": {
+                "is_git_repo": true,
+                "current_branch": "main",
+                "branches": [],
+                "commits": [],
+                "diff": {"files": [], "total_additions": 0, "total_deletions": 0, "is_git_repo": true}
+            }
+        }))
+        .unwrap()
+        .unwrap();
+        assert!(info.is_git_repo);
+        assert_eq!(info.current_branch.as_deref(), Some("main"));
+
+        assert!(decode_domain_git_read::<GitRepoInfo>(json!({
+            "ok": true,
+            "source": "tauri",
+            "is_repo": true,
+            "value": {}
         }))
         .is_err());
     }

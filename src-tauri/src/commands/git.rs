@@ -27,6 +27,7 @@ pub use ridge_core::commands::git::{
     StashEntry,
 };
 
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 async fn run_kernel_git_mutation(request: Value) -> Result<Value, String> {
@@ -44,6 +45,23 @@ fn mutation_output(value: Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+async fn run_kernel_git_read(request: Value) -> Result<Option<Value>, String> {
+    tokio::task::spawn_blocking(move || {
+        let endpoint = crate::kernel_lifecycle::ensure_kernel_running()?;
+        ridge_kernel::client::read_domain_git::<Value>(&endpoint, &request)
+    })
+    .await
+    .map_err(|error| format!("kernel Git read task failed: {error}"))?
+}
+
+fn decode_kernel_git_read<T: DeserializeOwned>(
+    value: Option<Value>,
+    repo_root: &str,
+) -> Result<T, String> {
+    let value = value.ok_or_else(|| format!("Not a git repo: {repo_root}"))?;
+    serde_json::from_value(value).map_err(|error| format!("decode kernel Git read response: {error}"))
 }
 
 // ── `#[tauri::command]` registration wrappers (delegate to ridge-core) ──
@@ -124,12 +142,24 @@ pub async fn git_unstage(repo_root: String, paths: Vec<String>) -> Result<(), St
 
 #[tauri::command]
 pub async fn git_discard(repo_root: String, paths: Vec<String>) -> Result<(), String> {
-    ridge_core::commands::git::git_discard(repo_root, paths).await
+    run_kernel_git_mutation(json!({
+        "operation": "discard",
+        "repo_root": repo_root,
+        "paths": paths,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
 pub async fn git_clean_untracked(repo_root: String, paths: Vec<String>) -> Result<(), String> {
-    ridge_core::commands::git::git_clean_untracked(repo_root, paths).await
+    run_kernel_git_mutation(json!({
+        "operation": "clean-untracked",
+        "repo_root": repo_root,
+        "paths": paths,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
@@ -180,7 +210,13 @@ pub async fn git_checkout(
 /// 分支：合并进当前分支（SCM 图谱分支右键菜单）。
 #[tauri::command]
 pub async fn git_merge_branch(repo_root: String, branch: String) -> Result<String, String> {
-    ridge_core::commands::git::git_merge_branch(repo_root, branch).await
+    let response = run_kernel_git_mutation(json!({
+        "operation": "merge-branch",
+        "repo_root": repo_root,
+        "branch": branch,
+    }))
+    .await?;
+    Ok(mutation_output(response))
 }
 
 /// 分支：删除本地分支（force=true → -D）。
@@ -190,7 +226,14 @@ pub async fn git_delete_branch(
     branch: String,
     force: Option<bool>,
 ) -> Result<String, String> {
-    ridge_core::commands::git::git_delete_branch(repo_root, branch, force).await
+    let response = run_kernel_git_mutation(json!({
+        "operation": "delete-branch",
+        "repo_root": repo_root,
+        "branch": branch,
+        "force": force,
+    }))
+    .await?;
+    Ok(mutation_output(response))
 }
 
 /// 分支：重命名本地分支。
@@ -200,7 +243,14 @@ pub async fn git_rename_branch(
     old_name: String,
     new_name: String,
 ) -> Result<String, String> {
-    ridge_core::commands::git::git_rename_branch(repo_root, old_name, new_name).await
+    let response = run_kernel_git_mutation(json!({
+        "operation": "rename-branch",
+        "repo_root": repo_root,
+        "old_name": old_name,
+        "new_name": new_name,
+    }))
+    .await?;
+    Ok(mutation_output(response))
 }
 
 /// 分支：推送到 origin 并设上游。
@@ -218,19 +268,37 @@ pub async fn git_push_branch(repo_root: String, branch: String) -> Result<String
 /// 变基：当前分支变基到 onto（分支/commit）。
 #[tauri::command]
 pub async fn git_rebase(repo_root: String, onto: String) -> Result<String, String> {
-    ridge_core::commands::git::git_rebase(repo_root, onto).await
+    let response = run_kernel_git_mutation(json!({
+        "operation": "rebase",
+        "repo_root": repo_root,
+        "onto": onto,
+    }))
+    .await?;
+    Ok(mutation_output(response))
 }
 
 /// 标签：删除本地标签。
 #[tauri::command]
 pub async fn git_delete_tag(repo_root: String, name: String) -> Result<String, String> {
-    ridge_core::commands::git::git_delete_tag(repo_root, name).await
+    let response = run_kernel_git_mutation(json!({
+        "operation": "delete-tag",
+        "repo_root": repo_root,
+        "name": name,
+    }))
+    .await?;
+    Ok(mutation_output(response))
 }
 
 /// 标签：推送到 origin。
 #[tauri::command]
 pub async fn git_push_tag(repo_root: String, name: String) -> Result<String, String> {
-    ridge_core::commands::git::git_push_tag(repo_root, name).await
+    let response = run_kernel_git_mutation(json!({
+        "operation": "push-tag",
+        "repo_root": repo_root,
+        "name": name,
+    }))
+    .await?;
+    Ok(mutation_output(response))
 }
 
 // ── Stash ────────────────────────────────────────────────────────────────────
@@ -254,22 +322,47 @@ pub async fn git_stash_push(
     message: Option<String>,
     include_untracked: Option<bool>,
 ) -> Result<String, String> {
-    ridge_core::commands::git::git_stash_push(repo_root, message, include_untracked).await
+    let response = run_kernel_git_mutation(json!({
+        "operation": "stash-push",
+        "repo_root": repo_root,
+        "message": message,
+        "include_untracked": include_untracked,
+    }))
+    .await?;
+    Ok(mutation_output(response))
 }
 
 #[tauri::command]
 pub async fn git_stash_apply(repo_root: String, reference: String) -> Result<String, String> {
-    ridge_core::commands::git::git_stash_apply(repo_root, reference).await
+    let response = run_kernel_git_mutation(json!({
+        "operation": "stash-apply",
+        "repo_root": repo_root,
+        "reference": reference,
+    }))
+    .await?;
+    Ok(mutation_output(response))
 }
 
 #[tauri::command]
 pub async fn git_stash_pop(repo_root: String, reference: String) -> Result<String, String> {
-    ridge_core::commands::git::git_stash_pop(repo_root, reference).await
+    let response = run_kernel_git_mutation(json!({
+        "operation": "stash-pop",
+        "repo_root": repo_root,
+        "reference": reference,
+    }))
+    .await?;
+    Ok(mutation_output(response))
 }
 
 #[tauri::command]
 pub async fn git_stash_drop(repo_root: String, reference: String) -> Result<String, String> {
-    ridge_core::commands::git::git_stash_drop(repo_root, reference).await
+    let response = run_kernel_git_mutation(json!({
+        "operation": "stash-drop",
+        "repo_root": repo_root,
+        "reference": reference,
+    }))
+    .await?;
+    Ok(mutation_output(response))
 }
 
 #[tauri::command]
@@ -278,17 +371,34 @@ pub async fn git_stash_branch(
     branch: String,
     reference: String,
 ) -> Result<String, String> {
-    ridge_core::commands::git::git_stash_branch(repo_root, branch, reference).await
+    let response = run_kernel_git_mutation(json!({
+        "operation": "stash-branch",
+        "repo_root": repo_root,
+        "branch": branch,
+        "reference": reference,
+    }))
+    .await?;
+    Ok(mutation_output(response))
 }
 
 #[tauri::command]
 pub async fn git_fetch(repo_root: String) -> Result<(), String> {
-    ridge_core::commands::git::git_fetch(repo_root).await
+    run_kernel_git_mutation(json!({
+        "operation": "fetch",
+        "repo_root": repo_root,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
 pub async fn git_pull(repo_root: String) -> Result<(), String> {
-    ridge_core::commands::git::git_pull(repo_root).await
+    run_kernel_git_mutation(json!({
+        "operation": "pull",
+        "repo_root": repo_root,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
@@ -304,7 +414,12 @@ pub async fn git_push(repo_root: String, set_upstream: Option<bool>) -> Result<(
 
 #[tauri::command]
 pub async fn git_sync(repo_root: String) -> Result<(), String> {
-    ridge_core::commands::git::git_sync(repo_root).await
+    run_kernel_git_mutation(json!({
+        "operation": "sync",
+        "repo_root": repo_root,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
@@ -314,22 +429,44 @@ pub fn git_op_in_progress(repo_root: String) -> GitOpInProgress {
 
 #[tauri::command]
 pub async fn git_cherry_pick_abort(repo_root: String) -> Result<(), String> {
-    ridge_core::commands::git::git_cherry_pick_abort(repo_root).await
+    run_kernel_git_mutation(json!({
+        "operation": "cherry-pick-abort",
+        "repo_root": repo_root,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
 pub async fn git_revert_abort(repo_root: String) -> Result<(), String> {
-    ridge_core::commands::git::git_revert_abort(repo_root).await
+    run_kernel_git_mutation(json!({
+        "operation": "revert-abort",
+        "repo_root": repo_root,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
 pub async fn git_cherry_pick(repo_root: String, hash: String) -> Result<(), String> {
-    ridge_core::commands::git::git_cherry_pick(repo_root, hash).await
+    run_kernel_git_mutation(json!({
+        "operation": "cherry-pick",
+        "repo_root": repo_root,
+        "hash": hash,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
 pub async fn git_revert(repo_root: String, hash: String) -> Result<(), String> {
-    ridge_core::commands::git::git_revert(repo_root, hash).await
+    run_kernel_git_mutation(json!({
+        "operation": "revert",
+        "repo_root": repo_root,
+        "hash": hash,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
@@ -353,7 +490,14 @@ pub async fn git_get_file_versions(
     path: String,
     cached: Option<bool>,
 ) -> Result<GitFileVersions, String> {
-    ridge_core::commands::git::git_get_file_versions(repo_root, path, cached).await
+    let request = json!({
+        "operation": "file-versions",
+        "repo_root": repo_root,
+        "path": path,
+        "cached": cached,
+    });
+    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
 #[tauri::command]
@@ -361,7 +505,13 @@ pub async fn git_get_commit_files(
     repo_root: String,
     hash: String,
 ) -> Result<Vec<CommitFileEntry>, String> {
-    ridge_core::commands::git::git_get_commit_files(repo_root, hash).await
+    let request = json!({
+        "operation": "commit-files",
+        "repo_root": repo_root,
+        "hash": hash,
+    });
+    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
 #[tauri::command]
@@ -370,7 +520,14 @@ pub async fn git_get_file_versions_at_commit(
     path: String,
     hash: String,
 ) -> Result<GitFileVersions, String> {
-    ridge_core::commands::git::git_get_file_versions_at_commit(repo_root, path, hash).await
+    let request = json!({
+        "operation": "file-versions-at-commit",
+        "repo_root": repo_root,
+        "path": path,
+        "hash": hash,
+    });
+    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
 /// 提交对比：两提交间某文件的版本对（图谱 Ctrl+Click 两提交点击文件的 diff）。
@@ -381,7 +538,15 @@ pub async fn git_get_file_versions_between(
     from: String,
     to: String,
 ) -> Result<GitFileVersions, String> {
-    ridge_core::commands::git::git_get_file_versions_between(repo_root, path, from, to).await
+    let request = json!({
+        "operation": "file-versions-between",
+        "repo_root": repo_root,
+        "path": path,
+        "from": from,
+        "to": to,
+    });
+    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
 /// 提交对比：两提交间的变更文件列表。
@@ -391,7 +556,14 @@ pub async fn git_compare_commits(
     from: String,
     to: String,
 ) -> Result<Vec<ridge_core::commands::git::CommitFileEntry>, String> {
-    ridge_core::commands::git::git_compare_commits(repo_root, from, to).await
+    let request = json!({
+        "operation": "compare-commits",
+        "repo_root": repo_root,
+        "from": from,
+        "to": to,
+    });
+    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
 #[tauri::command]
@@ -401,12 +573,27 @@ pub async fn git_create_tag(
     hash: Option<String>,
     message: Option<String>,
 ) -> Result<(), String> {
-    ridge_core::commands::git::git_create_tag(repo_root, name, hash, message).await
+    run_kernel_git_mutation(json!({
+        "operation": "create-tag",
+        "repo_root": repo_root,
+        "name": name,
+        "hash": hash,
+        "message": message,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
 pub async fn git_reset(repo_root: String, hash: String, mode: String) -> Result<(), String> {
-    ridge_core::commands::git::git_reset(repo_root, hash, mode).await
+    run_kernel_git_mutation(json!({
+        "operation": "reset",
+        "repo_root": repo_root,
+        "hash": hash,
+        "mode": mode,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
@@ -415,7 +602,14 @@ pub async fn git_diff_file(
     path: String,
     cached: Option<bool>,
 ) -> Result<String, String> {
-    ridge_core::commands::git::git_diff_file(repo_root, path, cached).await
+    let request = json!({
+        "operation": "diff-file",
+        "repo_root": repo_root,
+        "path": path,
+        "cached": cached,
+    });
+    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
 /// 行级 blame：文件每行的最近提交信息（IDE FileEditor gutter/hover 用）。
@@ -424,7 +618,13 @@ pub async fn git_blame(
     repo_root: String,
     path: String,
 ) -> Result<Vec<ridge_core::commands::git::BlameLine>, String> {
-    ridge_core::commands::git::git_blame(repo_root, path).await
+    let request = json!({
+        "operation": "blame",
+        "repo_root": repo_root,
+        "path": path,
+    });
+    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
 /// 文件提交历史（IDE「查看本文件/本行历史」用，选中后复用 git_diff_file 看 diff）。
@@ -434,7 +634,14 @@ pub async fn git_file_log(
     path: String,
     limit: Option<u32>,
 ) -> Result<Vec<ridge_core::commands::git::FileCommit>, String> {
-    ridge_core::commands::git::git_file_log(repo_root, path, limit).await
+    let request = json!({
+        "operation": "file-log",
+        "repo_root": repo_root,
+        "path": path,
+        "limit": limit,
+    });
+    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
 /// Stub retained for compatibility — see `ridge_core::commands::git`. Param
@@ -447,7 +654,15 @@ pub fn get_git_graph(_workspace_id: String, _pane_id: String) -> Result<GitRepoI
 
 #[tauri::command]
 pub async fn get_git_info_with_cwd(cwd: String) -> Result<GitRepoInfo, String> {
-    ridge_core::commands::git::get_git_info_with_cwd(cwd).await
+    let request = json!({
+        "operation": "info",
+        "repo_root": cwd,
+    });
+    match run_kernel_git_read(request).await? {
+        Some(value) => serde_json::from_value(value)
+            .map_err(|error| format!("decode kernel Git read response: {error}")),
+        None => Ok(GitRepoInfo::default()),
+    }
 }
 
 #[tauri::command]
@@ -456,7 +671,17 @@ pub async fn get_git_commits_paginated(
     offset: u32,
     limit: u32,
 ) -> Result<Vec<CommitNode>, String> {
-    ridge_core::commands::git::get_git_commits_paginated(repo_root, offset, limit).await
+    let request = json!({
+        "operation": "commits",
+        "repo_root": repo_root,
+        "offset": offset,
+        "limit": limit,
+    });
+    match run_kernel_git_read(request).await? {
+        Some(value) => serde_json::from_value(value)
+            .map_err(|error| format!("decode kernel Git read response: {error}")),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// Stub retained for compatibility — see `ridge_core::commands::git`.

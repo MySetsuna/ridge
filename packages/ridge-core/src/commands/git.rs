@@ -751,7 +751,7 @@ where
 }
 
 /// 与前端 GitGraph 约定一致
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommitNode {
     pub hash: String,
     pub subject: String,
@@ -769,7 +769,7 @@ pub struct CommitNode {
 }
 
 /// Git diff 文件变更信息
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiffFile {
     pub path: String,
     pub additions: i32,
@@ -778,7 +778,7 @@ pub struct DiffFile {
 }
 
 /// Git diff 跟踪状态
-#[derive(Clone, Debug, Serialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct GitDiffStatus {
     pub files: Vec<DiffFile>,
     pub total_additions: i32,
@@ -787,7 +787,7 @@ pub struct GitDiffStatus {
 }
 
 /// Git 仓库信息（包含 graph 和 status）
-#[derive(Clone, Debug, Serialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct GitRepoInfo {
     pub is_git_repo: bool,
     pub commits: Vec<CommitNode>,
@@ -2170,7 +2170,7 @@ pub fn git_diff_summary_sync(repo_root: String) -> Result<GitDiffSummary, String
 /// (new files have no HEAD/index blob; deleted files have no working tree).
 /// We never error for "file missing" — the modal renders the empty side
 /// as an additions-only / deletions-only view, the same as VS Code.
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct GitFileVersions {
     pub original: String,
     pub modified: String,
@@ -2188,7 +2188,7 @@ pub async fn git_get_file_versions(
 
 /// 给定 commit hash，返回该 commit 涉及的文件清单（status: A/M/D/R...）。
 /// 用于 GitGraph 单击 commit 时的 inline 详情面板。
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CommitFileEntry {
     pub path: String,
     pub status: String,
@@ -2544,7 +2544,7 @@ pub fn git_diff_file_sync(
 // ── 行级 Git blame（IDE 能力：FileEditor gutter/hover 显示每行的提交信息）────────
 
 /// 一行的 blame 信息。字段均为单词小写 → 前端直接拿（无需 serde rename）。
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlameLine {
     /// 文件内最终行号（1-based）。
     pub line: u32,
@@ -2637,7 +2637,7 @@ pub async fn git_file_log(
 }
 
 /// 文件历史里的一条提交。
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FileCommit {
     pub sha: String,
     pub author: String,
