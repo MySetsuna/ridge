@@ -70,6 +70,17 @@ export function hostSessionDrag(node: HTMLElement, params: HostSessionDragParams
     document.body.style.cursor = '';
     window.removeEventListener('pointermove', onWinMove);
     window.removeEventListener('pointerup', onWinUp);
+    window.removeEventListener('pointercancel', onCancel);
+    window.removeEventListener('blur', onCancel);
+  }
+
+  /**
+   * A touch gesture can be cancelled without a final pointerup (system
+   * gesture, browser navigation, or the window losing focus). Treat that as
+   * an aborted drag so the sentinel/preview and global listeners never leak.
+   */
+  function onCancel(): void {
+    endDrag();
   }
 
   function onWinMove(e: PointerEvent): void {
@@ -112,6 +123,8 @@ export function hostSessionDrag(node: HTMLElement, params: HostSessionDragParams
     dragging = false;
     window.addEventListener('pointermove', onWinMove);
     window.addEventListener('pointerup', onWinUp);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('blur', onCancel);
   }
 
   node.addEventListener('pointerdown', onDown);
