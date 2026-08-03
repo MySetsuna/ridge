@@ -38,6 +38,7 @@ function makeRig(opts: {
   totpVerifier?: (code: string) => Promise<boolean>;
   totpBindVerifier?: (tag: Uint8Array) => Promise<boolean>;
   bindTranscript?: Uint8Array | null;
+  log?: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
 } = {}) {
   const sent: Uint8Array[] = [];
   const invoke =
@@ -49,7 +50,7 @@ function makeRig(opts: {
     totpVerifier: opts.totpVerifier,
     totpBindVerifier: opts.totpBindVerifier,
     bindTranscript: opts.bindTranscript,
-    log: () => {}, // silence diagnostics in tests
+    log: opts.log ?? (() => {}), // silence diagnostics in tests
   });
 
   /** Push a JSON-RPC control frame as the controller would (0x11). */
@@ -316,6 +317,20 @@ describe('CloudHostBridge — pane stream (D-GM-7 layout)', () => {
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'p' } });
     // No frames sent (no real source), no throw.
     expect(rig.sent).toHaveLength(0);
+  });
+
+  it('contains a pane source failure without escaping the notification handler', () => {
+    const log = vi.fn();
+    const paneOutputSource = vi.fn(() => {
+      throw new Error('source closed');
+    });
+    const rig = makeRig({ paneOutputSource, log });
+    expect(() => rig.sendJson({
+      jsonrpc: '2.0',
+      method: 'subscribe-pane',
+      params: { paneId: 'p' },
+    })).not.toThrow();
+    expect(log).toHaveBeenCalledWith('warn', expect.stringContaining('paneOutputSource(p) failed'), expect.any(Error));
   });
 });
 

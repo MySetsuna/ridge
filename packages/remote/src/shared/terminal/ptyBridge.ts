@@ -54,6 +54,10 @@ interface Bridge {
 }
 
 const bridges = new Map<string, Bridge>();
+/** Attach is asynchronous; keep one in-flight operation per stable pane key. */
+const pendingBridges = new Map<string, Promise<void>>();
+/** A real close may race the two Tauri listener registrations. */
+const teardownRequested = new Set<string>();
 
 function isPaneNotFoundError(error: unknown): boolean {
 	return /\bpane\s+not\s+found\b/i.test(String(error));
@@ -73,8 +77,21 @@ function isPaneNotFoundError(error: unknown): boolean {
  * rebuild fires correctly even when the Svelte component is currently
  * unmounted (e.g. split happened mid-shell-exit).
  */
-export async function ensurePtyBridge(paneId: string, workspaceId: string): Promise<void> {
-	if (bridges.has(paneId)) return;
+export function ensurePtyBridge(paneId: string, workspaceId: string): Promise<void> {
+	if (bridges.has(paneId)) return Promise.resolve();
+	const pending = pendingBridges.get(paneId);
+	if (pending) return pending;
+	teardownRequested.delete(paneId);
+	const attach = attachPtyBridge(paneId, workspaceId).finally(() => {
+		if (pendingBridges.get(paneId) === attach) pendingBridges.delete(paneId);
+		teardownRequested.delete(paneId);
+	});
+	pendingBridges.set(paneId, attach);
+	return attach;
+}
+
+async function attachPtyBridge(paneId: string, workspaceId: string): Promise<void> {
+	if (bridges.has(paneId) || teardownRequested.has(paneId)) return;
 
 	const manager = TerminalManager.instance();
 
@@ -119,6 +136,10 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 			// every shell prompt redraw and async background output.
 		},
 	);
+	if (teardownRequested.has(paneId)) {
+		try { outUnlisten(); } catch { /* already unsubscribed */ }
+		return;
+	}
 
 	const closedUnlisten = await listen<{ workspaceId: string; paneId: string }>(
 		'pane-pty-closed',
@@ -160,7 +181,15 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 				}
 			}
 		},
-	);
+	).catch((error) => {
+		try { outUnlisten(); } catch { /* already unsubscribed */ }
+		throw error;
+	});
+	if (teardownRequested.has(paneId)) {
+		try { outUnlisten(); } catch { /* already unsubscribed */ }
+		try { closedUnlisten(); } catch { /* already unsubscribed */ }
+		return;
+	}
 
 	// P4.3 — pty-delta channel. Replaces the P3.9 `listen('pty-delta-...')`
 	// path. The Rust backend (P4.1 `register_pane_delta_channel`) wraps the
@@ -223,6 +252,11 @@ export async function ensurePtyBridge(paneId: string, workspaceId: string): Prom
 			'[ridge-term] register_pane_delta_channel failed; pane will use legacy pty-output path',
 			{ paneId, workspaceId, error: String(err) },
 		);
+	}
+	if (teardownRequested.has(paneId)) {
+		try { outUnlisten(); } catch { /* already unsubscribed */ }
+		try { closedUnlisten(); } catch { /* already unsubscribed */ }
+		return;
 	}
 
 	bridges.set(paneId, { outUnlisten, closedUnlisten, workspaceId, deltaChannel });
@@ -292,6 +326,7 @@ export async function enableDeltaModeThenFit(
  * split / reparent, where we want the bridge to survive.
  */
 export function teardownPtyBridge(paneId: string): void {
+	if (pendingBridges.has(paneId)) teardownRequested.add(paneId);
 	const b = bridges.get(paneId);
 	if (!b) return;
 	try { b.outUnlisten(); } catch { /* already unsubscribed */ }

@@ -262,6 +262,19 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		).length;
 		expect(registerCallsAfterSecond).toBe(registerCallsAfterFirst);
 	});
+
+	it('single-flights concurrent attaches for the same pane', async () => {
+		const { ensurePtyBridge } = await freshBridge();
+		const first = ensurePtyBridge(PANE, WS);
+		const second = ensurePtyBridge(PANE, WS);
+		expect(second).toBe(first);
+		await Promise.all([first, second]);
+
+		expect(channels).toHaveLength(1);
+		expect(listenMock).toHaveBeenCalledTimes(2);
+		expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'register_pane_delta_channel'))
+			.toHaveLength(1);
+	});
 });
 
 describe('ptyBridge.teardownPtyBridge', () => {
@@ -278,6 +291,37 @@ describe('ptyBridge.teardownPtyBridge', () => {
 		const { teardownPtyBridge } = await freshBridge();
 		// Should not throw.
 		expect(() => teardownPtyBridge('unknown-pane')).not.toThrow();
+	});
+
+	it('cancels an attach that is still waiting for listener registration', async () => {
+		const { ensurePtyBridge, teardownPtyBridge, hasPtyBridge } = await freshBridge();
+		let resolveListen!: (unlisten: () => void) => void;
+		const unlisten = vi.fn();
+		listenMock.mockImplementationOnce(() => new Promise((resolve) => {
+			resolveListen = resolve;
+		}));
+
+		const pending = ensurePtyBridge(PANE, WS);
+		teardownPtyBridge(PANE);
+		resolveListen(unlisten);
+		await pending;
+
+		expect(hasPtyBridge(PANE)).toBe(false);
+		expect(unlisten).toHaveBeenCalledOnce();
+		expect(invokeMock.mock.calls.some(([cmd]) => cmd === 'register_pane_delta_channel'))
+			.toBe(false);
+	});
+
+	it('releases the output listener when the close listener fails', async () => {
+		const { ensurePtyBridge, hasPtyBridge } = await freshBridge();
+		const outUnlisten = vi.fn();
+		listenMock
+			.mockImplementationOnce(async () => outUnlisten)
+			.mockImplementationOnce(async () => { throw new Error('event bus closed'); });
+
+		await expect(ensurePtyBridge(PANE, WS)).rejects.toThrow('event bus closed');
+		expect(outUnlisten).toHaveBeenCalledOnce();
+		expect(hasPtyBridge(PANE)).toBe(false);
 	});
 });
 

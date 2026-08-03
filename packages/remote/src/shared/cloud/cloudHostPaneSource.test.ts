@@ -37,6 +37,7 @@ describe('makeCloudHostPaneSource', () => {
     source('pane-7', 'workspace-3', (raw) => got.push(raw));
 
     expect(listen).toHaveBeenCalledWith('pane-raw-workspace-3-pane-7', expect.any(Function));
+    await Promise.resolve(); // listener resolves before host subscription starts
     expect(invoke).toHaveBeenCalledWith('subscribe_pane_raw', {
       paneId: 'pane-7',
       workspaceId: 'workspace-3',
@@ -71,6 +72,8 @@ describe('makeCloudHostPaneSource', () => {
     await Promise.resolve(); // listen resolves, unlisten stored
 
     unsub();
+    await Promise.resolve(); // serialized stop follows subscribe
+    await Promise.resolve();
     expect(unlisten).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith('unsubscribe_pane_raw', {
       paneId: 'p',
@@ -89,6 +92,28 @@ describe('makeCloudHostPaneSource', () => {
     resolveListen(unlisten); // listen finally resolves
     await Promise.resolve();
     expect(unlisten).toHaveBeenCalledTimes(1); // immediately detached, not leaked
+  });
+
+  it('serializes unsubscribe after an in-flight subscribe', async () => {
+    let resolveSubscribe!: () => void;
+    const invoke = vi.fn((cmd: string) =>
+      cmd === 'subscribe_pane_raw'
+        ? new Promise<void>((resolve) => { resolveSubscribe = resolve; })
+        : Promise.resolve(),
+    );
+    const listen: ListenFn = vi.fn(async () => () => {});
+    const stop = makeCloudHostPaneSource({ invoke, listen })('p', undefined, () => {});
+    await Promise.resolve();
+    stop();
+    expect(invoke.mock.calls.map(([cmd]) => cmd)).toEqual(['subscribe_pane_raw']);
+
+    resolveSubscribe();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(invoke.mock.calls.map(([cmd]) => cmd)).toEqual([
+      'subscribe_pane_raw',
+      'unsubscribe_pane_raw',
+    ]);
   });
 
   it('swallows invoke failures (no stream must not crash the host)', async () => {
