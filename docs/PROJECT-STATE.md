@@ -13,6 +13,9 @@
 - Kernel requests are tagged and source-checked; non-Git roots return an
   explicit negative result before a Git child is started. Decoder and domain
   guard tests cover malformed source, success, and non-Git behavior.
+- Remote mobile bundle, PWA manifest/service-worker/safe-area checks, LAN
+  desktop/mobile E2E, and Chromium mobile keyboard/touch-selection E2E are
+  green; the latter is explicitly browser-emulation evidence.
 - Full Rust/TypeScript matrix and requirements gates are recorded in the
   iteration archive. Physical/public Remote, WebView2, dual-window, Host,
   and mobile clean-profile evidence remain external gates; no release was

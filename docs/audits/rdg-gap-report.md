@@ -16,7 +16,7 @@
 | git | 3 | get_scm_status, get_git_info_with_cwd, git_diff_file | 补路由候选（ridge-core dispatch 已共享实现，待真实 rdg 场景需求触发接线） |
 | workspace | 3 | list_workspaces, get_active_workspace_id, get_workspace_snapshot | 补路由候选（同上；接线时须过 A2 宣告纪律与合同测试） |
 | theme | 1 | get_theme_data | 永久缺口（rdg 无 UI 宿主，无主题渲染面；不宣告即语义完备） |
-| teammate | 2 | get_teammate_topology, list_hitl_pending | 刻意排除（无头环境无 Agent Center 宿主；重开需 D6 安全评审） |
+| teammate | 8 | get_teammate_topology, list_hitl_pending, list_hitl_audit_remote, resolve_hitl_remote, get_orchestration_health, read_agent_recent_replies, set_teammate_groups, resume_agent_session | 刻意排除（无头环境无 Agent Center 宿主；重开需 D6 安全评审） |
 
 
 
