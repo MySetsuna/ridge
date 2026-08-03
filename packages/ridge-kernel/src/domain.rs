@@ -1152,6 +1152,53 @@ pub async fn domain_git_branches(
     }
 }
 
+/// Read the aggregated diff counts used by desktop PaneGitStatus. Repository
+/// discovery happens before `git diff`, so confirmed non-Git roots return a
+/// healthy negative result and do not emit repeated Git errors.
+pub async fn domain_git_diff_summary(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<GitQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let path = q.path;
+    let diff_path = path.clone();
+    let (is_repo, summary) = tokio::task::spawn_blocking(move || {
+        let is_repo = ridge_core::commands::git::find_git_repo_root(diff_path.clone()).is_some();
+        let summary = is_repo.then(|| ridge_core::commands::git::git_diff_summary_sync(diff_path));
+        (is_repo, summary)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !is_repo {
+        return Ok(Json(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": false,
+            "path": path,
+            "summary": {"added": 0, "removed": 0},
+        })));
+    }
+    match summary.ok_or(StatusCode::INTERNAL_SERVER_ERROR)? {
+        Ok(summary) => Ok(Json(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "path": path,
+            "summary": summary,
+        }))),
+        Err(error) => Ok(Json(json!({
+            "ok": false,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "path": path,
+            "error": error,
+        }))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1332,6 +1379,27 @@ mod tests {
         assert_eq!(response["source"], "ridge-kernel");
         assert_eq!(response["is_repo"], false);
         assert_eq!(response["branches"], json!([]));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn git_diff_summary_confirms_non_repository_without_spawning_diff() {
+        let root = std::env::temp_dir().join(format!("ridge-kernel-non-git-diff-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let response = domain_git_diff_summary(
+            State(test_state()),
+            test_headers(),
+            Query(GitQuery {
+                path: root.to_string_lossy().into_owned(),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["source"], "ridge-kernel");
+        assert_eq!(response["is_repo"], false);
+        assert_eq!(response["summary"], json!({"added": 0, "removed": 0}));
         let _ = std::fs::remove_dir_all(root);
     }
 

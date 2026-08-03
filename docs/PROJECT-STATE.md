@@ -5,6 +5,18 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 160, 2026-08-04)
+
+- Desktop `git_diff_summary` now uses authenticated kernel
+  `/v1/domain/git/diff-summary`; PaneGitStatus no longer starts this high-
+  frequency Git child in the Tauri shell. Kernel detects non-Git roots before
+  spawning `git diff` and returns a typed, source-checked summary.
+- Full Rust/TypeScript matrix: ridge 256, ridge-kernel 39, ridge-core 315;
+  Vitest 148 files / 1541 passed / 1 skipped; `pnpm check` 0 errors / 0
+  warnings. No version bump or release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-160-kernel-git-diff-summary.md`.
+
 ## Current snapshot (iteration 159, 2026-08-04)
 
 - Desktop sidebar panels are now first-visit mounted: Git, Search, Remote,
