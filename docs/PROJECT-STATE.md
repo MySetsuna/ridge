@@ -11,7 +11,11 @@
   `/v1/domain/git/diff-summary`; PaneGitStatus no longer starts this high-
   frequency Git child in the Tauri shell. Kernel detects non-Git roots before
   spawning `git diff` and returns a typed, source-checked summary.
-- Full Rust/TypeScript matrix: ridge 256, ridge-kernel 39, ridge-core 315;
+- Desktop stage, unstage, commit, checkout, push, and push-branch commands now
+  use the authenticated, tagged `/v1/domain/git/mutate` kernel route. The
+  route rejects non-Git roots before any write and never accepts arbitrary Git
+  argv; remaining Git writes and graph/history reads stay explicitly open.
+- Full Rust/TypeScript matrix: ridge 256, ridge-kernel 41, ridge-core 315;
   Vitest 148 files / 1541 passed / 1 skipped; `pnpm check` 0 errors / 0
   warnings. No version bump or release was made.
 

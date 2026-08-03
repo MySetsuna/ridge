@@ -1057,6 +1057,108 @@ pub struct GitQuery {
     pub path: String,
 }
 
+/// Explicit Git write operations owned by the kernel. The tagged request keeps
+/// the mutation surface finite and typed; arbitrary Git argv never crosses the
+/// domain boundary.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "operation", rename_all = "kebab-case")]
+pub enum GitMutationRequest {
+    Stage { repo_root: String, paths: Vec<String> },
+    Unstage { repo_root: String, paths: Vec<String> },
+    Commit { repo_root: String, message: String, amend: Option<bool> },
+    Checkout {
+        repo_root: String,
+        branch: String,
+        create: Option<bool>,
+        base: Option<String>,
+    },
+    Push { repo_root: String, set_upstream: Option<bool> },
+    PushBranch { repo_root: String, branch: String },
+}
+
+impl GitMutationRequest {
+    fn repo_root(&self) -> &str {
+        match self {
+            Self::Stage { repo_root, .. }
+            | Self::Unstage { repo_root, .. }
+            | Self::Commit { repo_root, .. }
+            | Self::Checkout { repo_root, .. }
+            | Self::Push { repo_root, .. }
+            | Self::PushBranch { repo_root, .. } => repo_root,
+        }
+    }
+}
+
+pub async fn domain_git_mutate(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<GitMutationRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let repo_root = request.repo_root().to_string();
+    if ridge_core::commands::git::find_git_repo_root(repo_root.clone()).is_none() {
+        return Ok(Json(json!({
+            "ok": false,
+            "source": "ridge-kernel",
+            "is_repo": false,
+            "repo_root": repo_root,
+            "error": format!("Not a git repo: {repo_root}"),
+        })));
+    }
+
+    let result: Result<Option<String>, String> = match request {
+        GitMutationRequest::Stage { repo_root, paths } => {
+            ridge_core::commands::git::git_stage(repo_root, paths)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::Unstage { repo_root, paths } => {
+            ridge_core::commands::git::git_unstage(repo_root, paths)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::Commit { repo_root, message, amend } => {
+            ridge_core::commands::git::git_commit(repo_root, message, amend)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::Checkout { repo_root, branch, create, base } => {
+            ridge_core::commands::git::git_checkout(repo_root, branch, create, base)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::Push { repo_root, set_upstream } => {
+            ridge_core::commands::git::git_push(repo_root, set_upstream)
+                .await
+                .map(|_| None)
+        }
+        GitMutationRequest::PushBranch { repo_root, branch } => {
+            ridge_core::commands::git::git_push_branch(repo_root, branch)
+                .await
+                .map(Some)
+        }
+    };
+
+    match result {
+        Ok(output) => Ok(Json(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "repo_root": repo_root,
+            "output": output,
+        }))),
+        Err(error) => Ok(Json(json!({
+            "ok": false,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "repo_root": repo_root,
+            "error": error,
+        }))),
+    }
+}
+
 pub async fn domain_git_status(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -1400,6 +1502,28 @@ mod tests {
         assert_eq!(response["source"], "ridge-kernel");
         assert_eq!(response["is_repo"], false);
         assert_eq!(response["summary"], json!({"added": 0, "removed": 0}));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn git_mutation_rejects_non_repository_before_write() {
+        let root = std::env::temp_dir().join(format!("ridge-kernel-non-git-mutate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let response = domain_git_mutate(
+            State(test_state()),
+            test_headers(),
+            Json(GitMutationRequest::Stage {
+                repo_root: root.to_string_lossy().into_owned(),
+                paths: Vec::new(),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["source"], "ridge-kernel");
+        assert_eq!(response["is_repo"], false);
+        assert!(response["error"].as_str().unwrap().contains("Not a git repo"));
         let _ = std::fs::remove_dir_all(root);
     }
 
