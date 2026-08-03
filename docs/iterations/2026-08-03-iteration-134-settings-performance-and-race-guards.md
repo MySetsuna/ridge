@@ -36,11 +36,11 @@ notified the theme bridge for fields that had not changed.
 ## Evidence
 
 - `pnpm exec vitest run src/lib/components/SettingsPanel.test.ts --reporter=dot`:
-  1 file / 3 passed.
+  1 file / 4 passed.
 - `pnpm exec vitest run --reporter=dot`: 147 files / 1515 passed / 1 skipped.
 - `pnpm check`: 0 errors / 0 warnings.
 - `git diff --check`: clean.
-- Pushed commit: `a3d6e81` to `origin/main`.
+- Pushed commits: `a3d6e81`, `042e30b` to `origin/main`.
 
 ## Boundaries
 
