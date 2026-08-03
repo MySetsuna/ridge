@@ -75,6 +75,8 @@ export interface ScmCacheState {
   repoRoots: string[];
   /** Per-repo last-known status snapshot. Key = repo root. */
   statuses: Record<string, ScmRepoStatus>;
+  /** Wall-clock millis when each status snapshot was successfully fetched. */
+  lastStatusLoadAt: Record<string, number>;
   /** Per-repo last-known git graph info. Key = repo root. */
   graphInfos: Record<string, GitRepoInfo>;
   /** Wall-clock millis when each graphInfo was last fetched. Key = repo root. */
@@ -104,6 +106,7 @@ export interface ScmCacheState {
 const _store = writable<ScmCacheState>({
   repoRoots: [],
   statuses: {},
+  lastStatusLoadAt: {},
   graphInfos: {},
   lastGraphLoadAt: {},
   selectedCommitHashByRepo: {},
@@ -148,6 +151,8 @@ const DEFAULT_SCM_QUERY_TTL_MS: Record<ScmQueryKind, number> = {
   branches: 30_000,
   stashes: 30_000,
 };
+/** Passive SCM polling cadence. Explicit user mutations/refreshes bypass it. */
+export const SCM_STATUS_POLL_INTERVAL_MS = 5 * 60 * 1000;
 const directoryContextsByOwner = new Map<string, Set<string>>();
 const queryCounters = { calls: 0, started: 0, joined: 0, cacheHits: 0, completed: 0, failed: 0 };
 
@@ -339,6 +344,9 @@ export function setScmRepoRoots(
       statuses: Object.fromEntries(
         Object.entries(s.statuses).filter(([root]) => acceptedRoots.includes(root))
       ),
+      lastStatusLoadAt: Object.fromEntries(
+        Object.entries(s.lastStatusLoadAt).filter(([root]) => acceptedRoots.includes(root))
+      ),
       graphInfos: Object.fromEntries(
         Object.entries(s.graphInfos).filter(([root]) => acceptedRoots.includes(root))
       ),
@@ -356,16 +364,37 @@ export function setScmRepoStatus(repoRoot: string, status: ScmRepoStatus): void 
   _store.update((s) =>
     s.nonGitRepoRoots[normalizeDirectory(repoRoot)]
       ? s
-      : { ...s, statuses: { ...s.statuses, [repoRoot]: status } }
+      : {
+          ...s,
+          statuses: { ...s.statuses, [repoRoot]: status },
+          lastStatusLoadAt: { ...s.lastStatusLoadAt, [repoRoot]: Date.now() },
+        }
   );
 }
 
 export function clearScmRepoStatus(repoRoot: string): void {
   _store.update((s) => {
     const next = { ...s.statuses };
+    const lastStatusLoadAt = { ...s.lastStatusLoadAt };
     delete next[repoRoot];
-    return { ...s, statuses: next };
+    delete lastStatusLoadAt[repoRoot];
+    return { ...s, statuses: next, lastStatusLoadAt };
   });
+}
+
+/** Return whether a passive status poll is due for this repository. */
+export function shouldRefreshScmStatus(
+  repoRoot: string,
+  maxAgeMs = SCM_STATUS_POLL_INTERVAL_MS,
+): boolean {
+  const normalized = normalizeDirectory(repoRoot);
+  const cache = get(_store);
+  const statusKey = Object.keys(cache.statuses).find(
+    (root) => normalizeDirectory(root) === normalized,
+  );
+  if (!statusKey) return true;
+  const loadedAt = cache.lastStatusLoadAt[statusKey] ?? 0;
+  return loadedAt <= 0 || Date.now() - loadedAt >= Math.max(0, maxAgeMs);
 }
 
 /** True only for Git's explicit "not a repository" family. Busy, timeout,
@@ -398,11 +427,15 @@ export function markScmRepoNonGit(repoRoot: string): void {
       (root) => normalizeDirectory(root) !== normalizedRoot,
     );
     const statuses = { ...s.statuses };
+    const lastStatusLoadAt = { ...s.lastStatusLoadAt };
     const graphInfos = { ...s.graphInfos };
     const lastGraphLoadAt = { ...s.lastGraphLoadAt };
     const selectedCommitHashByRepo = { ...s.selectedCommitHashByRepo };
     for (const root of Object.keys(statuses)) {
       if (normalizeDirectory(root) === normalizedRoot) delete statuses[root];
+    }
+    for (const root of Object.keys(lastStatusLoadAt)) {
+      if (normalizeDirectory(root) === normalizedRoot) delete lastStatusLoadAt[root];
     }
     for (const root of Object.keys(graphInfos)) {
       if (normalizeDirectory(root) === normalizedRoot) delete graphInfos[root];
@@ -417,6 +450,7 @@ export function markScmRepoNonGit(repoRoot: string): void {
       ...s,
       repoRoots,
       statuses,
+      lastStatusLoadAt,
       graphInfos,
       lastGraphLoadAt,
       selectedCommitHashByRepo,

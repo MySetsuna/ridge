@@ -5,6 +5,20 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 118 update (2026-08-03)
+
+Source Control passive remounts and filesystem watcher bursts now share a
+per-repository successful-status timestamp. Fresh snapshots are not re-polled;
+passive status reads are bounded to one per five minutes, with normalized
+Windows roots sharing the same gate. Explicit Git actions still refresh
+immediately, and status/snapshot timestamps are reclaimed on cwd/non-Git
+transitions. `scmCache`/pane Git tests pass 39/39; `pnpm check` is clean.
+Current LAN Remote desktop/mobile browser smoke and Chromium mobile keyboard /
+selection probe both pass with zero browser errors. Physical/public/heap gates
+remain external; no release after `v0.1.54` due the daily publication freeze.
+
+Archive: `docs/iterations/2026-08-03-iteration-118-scm-passive-poll-and-lan-e2e.md`.
+
 ## Iteration 117 update (2026-08-03)
 
 Some standalone Android/WebView shells expose a portrait cutout while returning

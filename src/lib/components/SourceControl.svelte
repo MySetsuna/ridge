@@ -52,7 +52,8 @@
     getScmCache,
     setScmRepoRoots,
     setScmRepoStatus,
-    shouldRefreshOnMount,
+    shouldRefreshScmStatus,
+    SCM_STATUS_POLL_INTERVAL_MS,
     setScmGraphInfo,
     shouldRefreshGraphOnMount,
     setScmSelectedCommit,
@@ -148,8 +149,11 @@
   const statusInFlight = new Map<string, Promise<void>>();
   const WATCHER_MIN_INTERVAL_MS = 2000;
 
-  /** watcher 触发的刷新统一入口：250ms 合并突发 + 每 repo ≥2s 最小间隔。 */
+  /** watcher 触发的刷新统一入口：250ms 合并突发 + 被动查询每 repo ≥5min。 */
   function scheduleWatcherRefresh(root: string): void {
+    // Watcher events are passive signals. A commit can touch many .git files;
+    // do not turn that burst into a status poll more often than five minutes.
+    if (!shouldRefreshScmStatus(root)) return;
     const prev = watcherDebounce.get(root);
     if (prev) clearTimeout(prev);
     const since = Date.now() - (lastWatcherRefreshAt.get(root) ?? 0);
@@ -159,7 +163,7 @@
       setTimeout(() => {
         watcherDebounce.delete(root);
         lastWatcherRefreshAt.set(root, Date.now());
-        void refreshStatus(root);
+        void refreshStatus(root, { passive: true });
       }, delay)
     );
   }
@@ -303,14 +307,16 @@
     }
   }
 
-  function refreshStatus(root: string): Promise<void> {
+  function refreshStatus(root: string, options: { passive?: boolean } = {}): Promise<void> {
     if (isScmRepoKnownNonGit(root)) return Promise.resolve();
-    // A status refresh is an explicit watcher/user signal; bypass the short
-    // read cache so writes become visible immediately. Other consumers (pane
-    // pills and remote panels) still benefit from the shared TTL snapshot.
-    invalidateScmQuery('status', root);
     const existing = statusInFlight.get(root);
     if (existing) return existing;
+    if (options.passive && !shouldRefreshScmStatus(root, SCM_STATUS_POLL_INTERVAL_MS)) {
+      return Promise.resolve();
+    }
+    // Explicit user actions bypass the passive five-minute cadence. Other
+    // consumers (pane pills and remote panels) still share the short TTL.
+    if (!options.passive) invalidateScmQuery('status', root);
     const request = (async () => {
       try {
         const s = await runScmQuerySingleFlight('status', root, () =>
@@ -1728,7 +1734,7 @@ onMount(() => {
     // 不设 loading flag、不显示 spinner —— 数据替换由 setScmRepoStatus 直接生效。
     // 并发同样受 GIT_FANOUT_CONCURRENCY 约束，避免多仓库 SCM tab remount
     // 触发 N 个 get_scm_status 同时启动 ~3N 个 git.exe。
-    void mapLimit(cache.repoRoots, GIT_FANOUT_CONCURRENCY, (r) => refreshStatus(r));
+    void mapLimit(cache.repoRoots, GIT_FANOUT_CONCURRENCY, (r) => refreshStatus(r, { passive: true }));
   }
 
   // 监听 paneCwdStore：cwd 集合变化（新增/移除/cd 切换）时重新发现仓库。

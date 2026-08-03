@@ -6,6 +6,8 @@ import {
   setScmRepoStatus,
   clearScmRepoStatus,
   getScmCache,
+  shouldRefreshScmStatus,
+  SCM_STATUS_POLL_INTERVAL_MS,
   shouldRefreshOnMount,
   setScmGraphInfo,
   clearScmGraphInfo,
@@ -84,6 +86,31 @@ describe('scmCacheStore', () => {
     const c = getScmCache();
     expect(c.repoRoots).toEqual(['/a', '/b']);
     expect(Object.keys(c.statuses)).toEqual(['/b']);
+  });
+
+  it('keeps passive status polling quiet for five minutes after a successful read', () => {
+    setScmRepoRoots(['/repo'], 'cwd', 'repo');
+    expect(shouldRefreshScmStatus('/repo')).toBe(true);
+    setScmRepoStatus('/repo', fixtureStatus('/repo'));
+    expect(shouldRefreshScmStatus('/repo')).toBe(false);
+    expect(shouldRefreshScmStatus('/repo', SCM_STATUS_POLL_INTERVAL_MS + 1)).toBe(false);
+    // A zero-age override proves the timestamp is the polling gate; explicit
+    // callers can still bypass the passive cadence.
+    expect(shouldRefreshScmStatus('/repo', 0)).toBe(true);
+  });
+
+  it('drops status timestamps when a root leaves the active directory set', () => {
+    setScmRepoRoots(['/repo'], 'cwd', 'repo');
+    setScmRepoStatus('/repo', fixtureStatus('/repo'));
+    expect(getScmCache().lastStatusLoadAt['/repo']).toBeGreaterThan(0);
+    setScmRepoRoots([], 'other-cwd', '');
+    expect(getScmCache().lastStatusLoadAt['/repo']).toBeUndefined();
+  });
+
+  it('uses normalized Windows roots for the passive status gate', () => {
+    setScmRepoRoots(['C:\\Repo\\'], 'cwd', 'repo');
+    setScmRepoStatus('C:\\Repo\\', fixtureStatus('C:\\Repo\\'));
+    expect(shouldRefreshScmStatus('c:/repo')).toBe(false);
   });
 
   it('shouldRefreshOnMount: empty cache → true', () => {
