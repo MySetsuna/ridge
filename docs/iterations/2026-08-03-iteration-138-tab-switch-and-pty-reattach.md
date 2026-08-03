@@ -50,13 +50,15 @@ not interchangeable with a plain shell.
 ## Verification
 
 - `pnpm check` - 0 errors, 0 warnings.
-- Full Vitest - 147 files, 1524 passed, 1 skipped.
+- Full Vitest - 147 files, 1524 passed, 1 skipped (last TypeScript change set).
 - `cargo test -p ridge-kernel --lib` - 31 passed, including stable pane
   identity/list discovery.
-- `cargo test -p ridge --lib` - 251 passed.
+- `cargo test -p ridge --lib` - 252 passed.
 - `cargo check -p ridge-kernel -p ridge --lib` - exit 0; existing unrelated
   dead-code warnings remain.
 - `git diff --check` - passed.
+- Commit `f0ed195` pushed to `origin/main`; it adds the interactive shell launch
+  profile and private unsaved-workspace session snapshots.
 
 ## Acceptance and limits
 
