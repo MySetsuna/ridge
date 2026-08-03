@@ -1,6 +1,6 @@
 # Iteration 153 - Kernel-owned desktop Git status
 
-Date: 2026-08-04  
+Date: 2026-08-04
 Status: code green; physical and cross-host gates remain open.
 
 ## Scope
