@@ -5,8 +5,11 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
-## Current snapshot (iteration 145, 2026-08-03)
+## Current snapshot (iteration 146, 2026-08-03)
 
+- Remote Agent cards now consume the host topology's live PaneHeader/OSC
+  `title` while retaining stable Agent identity for actions/history and the
+  real CWD for context.
 - Remote/mobile Git sidebar now remembers confirmed non-Git roots for the
   lifetime of the transport session, so tab/provider remounts do not restart
   `git status` and repeat `not a git repository` errors. Keys include the
@@ -18,7 +21,8 @@
   made; physical/public Remote, WebView2 heap soak, dual-window/dual-host,
   and full Kernel authority evidence remain open.
 
-Archive: `docs/iterations/2026-08-03-iteration-145-remote-git-negative-cache.md`.
+Archive: `docs/iterations/2026-08-03-iteration-146-remote-agent-live-title.md`;
+`docs/iterations/2026-08-03-iteration-145-remote-git-negative-cache.md`.
 
 ## Current snapshot (iteration 144, 2026-08-03)
 

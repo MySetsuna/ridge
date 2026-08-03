@@ -26,6 +26,12 @@ describe('remote Agent drawer alignment contract', () => {
     expect(source).toContain('.member-cwd{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap');
   });
 
+  it('renders the live PaneHeader title while preserving stable Agent identity', () => {
+    expect(source).toContain('function titleFor(m: TeammateRosterMember): string');
+    expect(source).toContain("m.title?.trim() || m.name");
+    expect(source).toContain('<span class="name" title={m.id}>{title}</span>');
+  });
+
   it('keeps roster polling at the five-minute contract interval', () => {
     expect(source).toContain('const ROSTER_POLL_INTERVAL_MS = 5 * 60 * 1000;');
     expect(source).toContain('setInterval(() => void startRefresh(), ROSTER_POLL_INTERVAL_MS)');
