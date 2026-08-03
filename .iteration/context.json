@@ -1,35 +1,31 @@
 {
   "schema_version": 1,
-  "task": "Make desktop kernel death watching health-aware and serialize tray kernel shutdown with quitting state",
+  "task": "Make desktop SettingsPanel a cold lazy-loaded surface so startup and tab switching avoid loading settings and theme controls",
   "symbols": [
-    "spawn_kernel_death_watcher",
-    "watcher_health_step",
-    "shutdown_kernel",
-    "MENU_ID_QUIT_KERNEL",
-    "quitting"
+    "SettingsPanelComp",
+    "ensureSettingsPanel",
+    "settingsPanelOpen",
+    "SettingsPanel"
   ],
   "files": [
     "docs/PROJECT-STATE.md",
     "docs/REQUIREMENTS-SPEC.md",
     "docs/archive/events-2026-08.jsonl",
-    "src-tauri/src/kernel_lifecycle.rs",
-    "src-tauri/src/tray.rs",
-    "src-tauri/src/lib.rs",
-    "packages/ridge-kernel/src/client.rs",
-    "docs/iterations/2026-08-04-iteration-157-kernel-watcher-health.md"
+    "src/routes/+page.svelte",
+    "src/lib/components/SettingsPanel.test.ts",
+    "src/lib/components/SettingsPanel.svelte",
+    "docs/iterations/2026-08-04-iteration-158-settings-lazy-load.md"
   ],
   "tests": [
-    "src-tauri/src/kernel_lifecycle.rs (health threshold and watcher tests)",
-    "src-tauri/src/tray.rs (quitting-before-shutdown adapter)",
-    "cargo test -p ridge --lib",
-    "cargo test -p ridge-kernel --lib",
-    "cargo check -p ridge --lib"
+    "src/lib/components/SettingsPanel.test.ts (lazy module graph contract)",
+    "pnpm exec vitest run src/lib/components/SettingsPanel.test.ts --reporter=dot",
+    "pnpm check"
   ],
   "constraints": [
     "NotebookLM is strategy input only; runtime, tests, and source remain factual authority",
     "Desktop production pane PTYs, SCM status reads, and kernel bootstrap are kernel-owned",
     "Kernel watcher tolerates transient health failures but exits after a bounded consecutive threshold",
-    "Tray kernel shutdown sets quitting before shutdown and restores state on failure",
+    "SettingsPanel is loaded only after first open and stays mounted after resolution",
     "No hidden local fallback after kernel bootstrap/domain request failure",
     "Do not scan generated or minified artifacts as source evidence"
   ],
@@ -112,6 +108,7 @@
       "docs/iterations/2026-08-04-iteration-155-kernel-git-branches.md",
       "docs/iterations/2026-08-04-iteration-156-kernel-reattach-history.md",
       "docs/iterations/2026-08-04-iteration-157-kernel-watcher-health.md",
+      "docs/iterations/2026-08-04-iteration-158-settings-lazy-load.md",
       "docs/iterations/CONTRACT-iteration-76.md",
       "docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md",
       "docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md",

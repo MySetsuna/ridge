@@ -5,6 +5,18 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 158, 2026-08-04)
+
+- `SettingsPanel` is no longer statically imported by the desktop route. The
+  panel module is loaded on first open, then retained for subsequent opens so
+  settings drafts and section state are not recreated.
+- This removes the settings/theme/icon module graph from the first-load path;
+  theme switching remains generation-guarded and wallpaper decode remains
+  deferred. Focused settings contract: 5 passed; `pnpm check`: 0 errors / 0
+  warnings. No version bump or release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-158-settings-lazy-load.md`.
+
 ## Current snapshot (iteration 157, 2026-08-04)
 
 - Kernel death watching now captures the authenticated endpoint, tolerates

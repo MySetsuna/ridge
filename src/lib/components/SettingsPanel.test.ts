@@ -28,6 +28,13 @@ describe('settings panel performance guards', () => {
     expect(pageSource).not.toContain("void invoke('set_user_default_cwd'");
   });
 
+  it('keeps the settings surface out of the first-load module graph', () => {
+    expect(pageSource).not.toContain("import SettingsPanel from '$lib/components/SettingsPanel.svelte'");
+    expect(pageSource).toContain("import('$lib/components/SettingsPanel.svelte')");
+    expect(pageSource).toContain('let SettingsPanelComp');
+    expect(pageSource).toContain('<SettingsPanelComp open={settingsPanelOpen}');
+  });
+
   it('keeps theme propagation while filtering unrelated terminal settings', () => {
     expect(hostPortsSource).toContain('themeId: s.theme');
     expect(hostPortsSource).toContain('`${s.theme}');

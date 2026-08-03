@@ -12,7 +12,6 @@
   import WindDialog from '$lib/components/RidgeDialog.svelte';
   import WindToast from '$lib/components/WindToast.svelte';
   import { settingsStore, initSettingsBoot, setSetting } from '$lib/stores/settings';
-  import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import RemotePanel from '$lib/remote/RemotePanel.svelte';
   import AgentCenterPanel from '$lib/teammate/AgentCenterPanel.svelte';
   import HostsPanel from '$lib/components/hosts/HostsPanel.svelte';
@@ -117,6 +116,26 @@
       });
     }
   });
+
+  // §perf SettingsPanel is a cold surface: keep its theme/editor/agent
+  // controls out of the desktop first-load chunk and instantiate it only after
+  // the user asks for settings. The resolved component stays mounted between
+  // opens, so switching sections does not reload the module or lose drafts.
+  let SettingsPanelComp = $state<import('svelte').Component<{
+    open: boolean;
+    onClose: () => void;
+  }> | null>(null);
+  let settingsPanelImport: Promise<import('svelte').Component<{
+    open: boolean;
+    onClose: () => void;
+  }>> | null = null;
+  function ensureSettingsPanel(): void {
+    if (SettingsPanelComp || settingsPanelImport) return;
+    settingsPanelImport = import('$lib/components/SettingsPanel.svelte').then((module) => {
+      SettingsPanelComp = module.default;
+      return module.default;
+    });
+  }
   import { initFileWatcherSync } from '$lib/stores/fileWatcherSync';
   import { getScmSelectedRepo } from '$lib/stores/scmCache';
   import {
@@ -383,6 +402,9 @@
   // 设置面板开关。Settings 按钮打开后，所有可配置项（主题、字体、搜索、扩展）
   // 都集中在 SettingsPanel 内 —— 鼠标无需在多个角落寻找各自的入口。
   let settingsPanelOpen = $state(false);
+  $effect(() => {
+    if (settingsPanelOpen) ensureSettingsPanel();
+  });
 
   // 账户头像气泡（云端登录态）。头像在活动栏设置按钮上方，仅登录后显示。
   // UserDto 无 avatar 字段 → 一律用 username/email 首字母占位。
@@ -1711,13 +1733,17 @@ function expandSidebar(minWidth = 0) {
         type="button"
         class={actBtn}
         title={$t('main.navSettings')}
+        onmouseenter={ensureSettingsPanel}
+        onfocus={ensureSettingsPanel}
         onclick={() => (settingsPanelOpen = true)}
       >
         <Settings class="h-4 w-4" />
       </button>
     </div>
   </aside>
-  <SettingsPanel open={settingsPanelOpen} onClose={() => (settingsPanelOpen = false)} />
+  {#if SettingsPanelComp}
+    <SettingsPanelComp open={settingsPanelOpen} onClose={() => (settingsPanelOpen = false)} />
+  {/if}
 
   <!-- 侧边栏区域：wrapper 始终渲染，toggle 按钮始终可见 -->
   <div
