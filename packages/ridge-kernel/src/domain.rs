@@ -126,6 +126,94 @@ pub async fn domain_remote_hosts(
     Ok(Json(json!({ "ok": true, "source": "ridge-kernel", "hosts": hosts })))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RemoteHostSessionMutation {
+    pub host_id: String,
+    pub session_id: String,
+}
+
+/// Apply one remote-session attachment transition to a topology clone.
+///
+/// The caller persists and swaps the clone only after this validation succeeds,
+/// so a rejected duplicate/unknown transition cannot partially mutate the
+/// kernel-owned record. Keeping this operation separate from the HTTP handlers
+/// also makes the state-machine contract deterministic to test.
+fn mutate_remote_host_session(
+    hosts: &mut ridge_core::remote::RemoteHostTopology,
+    host_id: &str,
+    session_id: &str,
+    attached: bool,
+) -> Result<(), String> {
+    if host_id.trim().is_empty() || session_id.trim().is_empty() {
+        return Err("host_id and session_id are required".into());
+    }
+    let mut host = hosts
+        .get(host_id)
+        .ok_or_else(|| format!("unknown remote host: {host_id}"))?;
+    let session = host
+        .sessions
+        .iter_mut()
+        .find(|session| session.id == session_id)
+        .ok_or_else(|| format!("unknown remote session: {session_id}"))?;
+    if session.attached == attached {
+        return Err(if attached {
+            format!("remote session already attached: {session_id}")
+        } else {
+            format!("remote session already detached: {session_id}")
+        });
+    }
+    session.attached = attached;
+    hosts.upsert(host);
+    Ok(())
+}
+
+async fn mutate_remote_host_session_endpoint(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<RemoteHostSessionMutation>,
+    attached: bool,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let mut hosts = st.remote_hosts.lock().expect("remote host lock");
+    let mut next = hosts.clone();
+    if let Err(error) = mutate_remote_host_session(
+        &mut next,
+        &request.host_id,
+        &request.session_id,
+        attached,
+    ) {
+        return Ok(bad_request(error));
+    }
+    save_remote_hosts_at(&st.remote_hosts_path, next.records())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    *hosts = next;
+    Ok(Json(json!({
+        "ok": true,
+        "source": "ridge-kernel",
+        "host_id": request.host_id,
+        "session_id": request.session_id,
+        "attached": attached,
+    })))
+}
+
+pub async fn domain_remote_host_session_attach(
+    state: State<AppState>,
+    headers: HeaderMap,
+    request: Json<RemoteHostSessionMutation>,
+) -> Result<Json<Value>, StatusCode> {
+    mutate_remote_host_session_endpoint(state, headers, request, true).await
+}
+
+pub async fn domain_remote_host_session_detach(
+    state: State<AppState>,
+    headers: HeaderMap,
+    request: Json<RemoteHostSessionMutation>,
+) -> Result<Json<Value>, StatusCode> {
+    mutate_remote_host_session_endpoint(state, headers, request, false).await
+}
+
 pub async fn domain_remote_host_upsert(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -759,6 +847,70 @@ mod tests {
         assert_eq!(restored["remote-a"].label, "A");
         let removed = domain_remote_host_remove(State(state), test_headers(), Path("remote-a".into())).await.unwrap().0;
         assert_eq!(removed["removed"], true);
+        let _ = std::fs::remove_file(persisted);
+    }
+
+    #[tokio::test]
+    async fn remote_host_session_attach_detach_is_atomic_and_idempotence_fails_closed() {
+        let state = test_state();
+        let persisted = state.remote_hosts_path.clone();
+        let host = ridge_core::remote::HostRecord {
+            id: "remote-session".into(),
+            kind: ridge_core::remote::HostKind::Remote,
+            label: "Session host".into(),
+            addr: "127.0.0.1:9901".into(),
+            status: ridge_core::remote::HostStatus::Connected,
+            detail: "live".into(),
+            sessions: vec![ridge_core::remote::HostSessionMeta {
+                id: "session-a".into(),
+                title: "shell".into(),
+                attached: false,
+            }],
+        };
+        let _ = domain_remote_host_upsert(State(state.clone()), test_headers(), Json(host))
+            .await
+            .unwrap();
+
+        let request = || {
+            Json(RemoteHostSessionMutation {
+                host_id: "remote-session".into(),
+                session_id: "session-a".into(),
+            })
+        };
+        let attached = domain_remote_host_session_attach(
+            State(state.clone()),
+            test_headers(),
+            request(),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(attached["ok"], true);
+        assert_eq!(attached["attached"], true);
+
+        let duplicate = domain_remote_host_session_attach(
+            State(state.clone()),
+            test_headers(),
+            request(),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(duplicate["ok"], false);
+
+        let detached = domain_remote_host_session_detach(
+            State(state.clone()),
+            test_headers(),
+            request(),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(detached["ok"], true);
+        assert_eq!(detached["attached"], false);
+
+        let listed = domain_remote_hosts(State(state), test_headers()).await.unwrap().0;
+        assert_eq!(listed["hosts"][0]["sessions"][0]["attached"], false);
         let _ = std::fs::remove_file(persisted);
     }
 

@@ -498,18 +498,49 @@ impl HostRegistry {
         session_id: &str,
         attached: bool,
     ) -> Result<(), String> {
-        let hosts = self.hosts.write();
+        // Hold the shell projection lock across the kernel transition. This
+        // serializes attach/detach with local host updates so the response is
+        // projected onto the same record that was validated before the call.
+        let mut hosts = self.hosts.write();
         let mut host = hosts
             .get(host_id)
             .ok_or_else(|| format!("未知主机: {host_id}"))?;
+        host.sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .ok_or_else(|| format!("未知会话: {session_id}"))?;
+
+        let endpoint = ridge_kernel::client::running_endpoint()
+            .ok_or_else(|| "ridge-kernel domain endpoint unavailable".to_string())?;
+        let mutation = if attached {
+            ridge_kernel::client::attach_domain_remote_host_session(
+                &endpoint,
+                host_id,
+                session_id,
+            )?
+        } else {
+            ridge_kernel::client::detach_domain_remote_host_session(
+                &endpoint,
+                host_id,
+                session_id,
+            )?
+        };
+        if mutation.host_id != host_id
+            || mutation.session_id != session_id
+            || mutation.attached != attached
+        {
+            return Err("ridge-kernel remote-session mutation response mismatch".into());
+        }
         let session = host
             .sessions
             .iter_mut()
             .find(|s| s.id == session_id)
-            .ok_or_else(|| format!("未知会话: {session_id}"))?;
+            .expect("session validated before kernel mutation");
         session.attached = attached;
+        hosts.upsert(host);
         drop(hosts);
-        self.upsert_kernel_authoritative(host)
+        self.publish_control_plane();
+        Ok(())
     }
 }
 

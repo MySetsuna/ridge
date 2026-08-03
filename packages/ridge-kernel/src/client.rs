@@ -46,6 +46,14 @@ pub struct KernelRemoteHostsSnapshot {
     pub hosts: Vec<ridge_core::remote::HostRecord>,
 }
 
+/// Result of one kernel-validated remote-session attachment transition.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct KernelRemoteHostSessionMutation {
+    pub host_id: String,
+    pub session_id: String,
+    pub attached: bool,
+}
+
 /// Exact identity-set comparison between the kernel projection and a shell's
 /// visible projection. No names, ordering, or UI-only decorations participate.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -207,6 +215,43 @@ pub fn read_domain_remote_hosts(
 ) -> Result<KernelRemoteHostsSnapshot, String> {
     let value = request_json(endpoint, "GET", "/v1/domain/remote-hosts", None)?;
     decode_domain_snapshot(value)
+}
+
+fn mutate_domain_remote_host_session(
+    endpoint: &KernelEndpoint,
+    host_id: &str,
+    session_id: &str,
+    attached: bool,
+) -> Result<KernelRemoteHostSessionMutation, String> {
+    let path = if attached {
+        "/v1/domain/remote-host-sessions/attach"
+    } else {
+        "/v1/domain/remote-host-sessions/detach"
+    };
+    let body = serde_json::json!({
+        "host_id": host_id,
+        "session_id": session_id,
+    });
+    let value = request_json(endpoint, "POST", path, Some(&body))?;
+    decode_domain_snapshot(value)
+}
+
+/// Atomically validate and attach a session in the kernel-owned host domain.
+pub fn attach_domain_remote_host_session(
+    endpoint: &KernelEndpoint,
+    host_id: &str,
+    session_id: &str,
+) -> Result<KernelRemoteHostSessionMutation, String> {
+    mutate_domain_remote_host_session(endpoint, host_id, session_id, true)
+}
+
+/// Atomically validate and detach a session in the kernel-owned host domain.
+pub fn detach_domain_remote_host_session(
+    endpoint: &KernelEndpoint,
+    host_id: &str,
+    session_id: &str,
+) -> Result<KernelRemoteHostSessionMutation, String> {
+    mutate_domain_remote_host_session(endpoint, host_id, session_id, false)
 }
 
 pub fn kernel_host_requested() -> bool {
@@ -567,6 +612,18 @@ mod tests {
         .unwrap();
         assert_eq!(hosts.hosts[0].id, "host-a");
         assert_eq!(hosts.hosts[0].kind, ridge_core::remote::HostKind::Remote);
+
+        let mutation: KernelRemoteHostSessionMutation = decode_domain_snapshot(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "host_id": "host-a",
+            "session_id": "session-a",
+            "attached": true,
+        }))
+        .unwrap();
+        assert_eq!(mutation.host_id, "host-a");
+        assert_eq!(mutation.session_id, "session-a");
+        assert!(mutation.attached);
     }
 
     #[test]

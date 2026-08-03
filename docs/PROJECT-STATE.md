@@ -5,6 +5,18 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 107 update (2026-08-03)
+
+Remote session attachment flags now use atomic kernel transitions instead of
+full `HostRecord` writes. Authenticated attach/detach endpoints validate the
+host/session state under the kernel topology lock, persist before swap, and
+reject duplicate or unknown transitions without mutation. The desktop checked
+path projects only a matching kernel result. Kernel tests are 24/24 and Ridge
+host tests are 16/16; this follow-up is pushed unreleased because the daily
+publication window remains frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-107-kernel-host-session-transaction.md`.
+
 ## Iteration 106 update (2026-08-03)
 
 Remote host session attach is now a fail-closed transaction. The local foreign
