@@ -861,21 +861,20 @@ export class CloudRemoteConnection implements RemoteLink {
 
   // ── workspaces ───────────────────────────────────────────────────────────────
   async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {
-    try {
-      const [list, activeId] = await Promise.all([
-        this.bridge.invoke<BackendWorkspace[]>('list_workspaces'),
-        this.bridge.invoke<string>('get_active_workspace_id').catch(() => this._activeWorkspaceId),
-      ]);
-      if (activeId) this._activeWorkspaceId = activeId;
-      const workspaces = (list ?? []).map((w) => ({
-        id: w.id,
-        name: w.name ?? undefined,
-        active: w.id === activeId,
-      }));
-      return { workspaces };
-    } catch {
-      return { workspaces: [] };
-    }
+    const [list, activeId] = await Promise.all([
+      // Preserve discovery failures. Returning [] makes a disconnected host
+      // look like a healthy host with no workspaces and prevents Query/Hosts
+      // from showing actionable progress or retry state.
+      this.bridge.invoke<BackendWorkspace[]>('list_workspaces'),
+      this.bridge.invoke<string>('get_active_workspace_id').catch(() => this._activeWorkspaceId),
+    ]);
+    if (activeId) this._activeWorkspaceId = activeId;
+    const workspaces = (list ?? []).map((w) => ({
+      id: w.id,
+      name: w.name ?? undefined,
+      active: w.id === activeId,
+    }));
+    return { workspaces };
   }
 
   // P1 roster：cloud 侧经 tauriShim invoke → bridge.invoke → allowlist 门控。
@@ -1006,12 +1005,10 @@ export class CloudRemoteConnection implements RemoteLink {
   }
 
   async listWorkspacePanes(workspaceId: string): Promise<PaneInfo[]> {
-    try {
-      const layout = await this.bridge.invoke<PaneNode>('get_pane_layout_for', { workspaceId });
-      return flattenLeaves(layout);
-    } catch {
-      return [];
-    }
+    // Keep pane discovery failures observable. Callers retain the last good
+    // snapshot on failure; silently returning [] erases a real remote tree.
+    const layout = await this.bridge.invoke<PaneNode>('get_pane_layout_for', { workspaceId });
+    return flattenLeaves(layout);
   }
 
   // ── theme ───────────────────────────────────────────────────────────────────

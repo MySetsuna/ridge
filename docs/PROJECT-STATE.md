@@ -5,6 +5,17 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 147, 2026-08-03)
+
+- Cloud Remote Host workspace and pane discovery now preserve RPC failures;
+  callers can show loading/error/retry state instead of mistaking a failed
+  Host for a healthy empty Host. Regression tests cover both discovery paths.
+- Focused Cloud Remote tests: 35 passed. No release or version bump was made;
+  physical/public Remote, WebView2 heap soak, dual-window/dual-host, and full
+  Kernel authority evidence remain open.
+
+Archive: `docs/iterations/2026-08-03-iteration-147-remote-host-error-visibility.md`.
+
 ## Current snapshot (iteration 146, 2026-08-03)
 
 - Remote Agent cards now consume the host topology's live PaneHeader/OSC
