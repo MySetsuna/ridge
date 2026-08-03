@@ -11,8 +11,10 @@ The remote-session attach gate now refreshes the kernel-owned host topology
 before accepting a session. `ensure_host_connected` projects only a successful
 kernel snapshot and rejects missing/disconnected hosts or an unavailable
 kernel, preventing stale shell state from routing bytes to an invalid Host.
-Host tests remain 14/14. This follow-up is pushed but unreleased; the remaining
-kernel slice is transactional session flags/live PTY status with local rollback.
+`forget_host` also retains the outbound transport until the kernel delete
+succeeds. Host tests remain 14/14. This follow-up is pushed but unreleased; the
+remaining kernel slice is transactional session flags/live PTY status with
+local rollback.
 
 Archive: `docs/iterations/2026-08-03-iteration-105-kernel-host-attach-read.md`.
 
