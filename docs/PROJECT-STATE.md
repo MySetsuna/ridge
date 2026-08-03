@@ -24,7 +24,7 @@
   2-second process-tree timeout guard; a slow or broken shell installation
   cannot hold the settings UI hostage.
 - Focused settings guard tests: 4 passed; `pnpm check`: 0 errors / 0 warnings;
-  full Vitest: 147 files / 1515 passed / 1 skipped. No release or publication
+  full Vitest: 147 files / 1516 passed / 1 skipped. No release or publication
   was made because `v0.1.54` consumed today's allowance.
 
 Archive: `docs/iterations/2026-08-03-iteration-134-settings-performance-and-race-guards.md`.
