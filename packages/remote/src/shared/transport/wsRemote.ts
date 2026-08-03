@@ -266,6 +266,8 @@ export interface TeammateRosterMember {
   name: string;
   paneId: string;
   paneIndex: number | null;
+  /** Host-authoritative PTY CWD; UI may fall back to the live pane snapshot. */
+  cwd?: string;
   role: string;
   status: string;
   capability?: unknown;

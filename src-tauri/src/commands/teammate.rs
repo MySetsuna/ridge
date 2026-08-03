@@ -236,6 +236,7 @@ pub(crate) fn topology_snapshot(state: &AppState, wid: Uuid) -> Result<Value, St
         } else {
             topology_json(ws, wid)
         };
+        inject_roster_cwds(&mut topo, ws);
         inject_roster_titles(&mut topo, ws);
         topo
     };
@@ -403,6 +404,38 @@ pub fn inject_roster_titles(topology: &mut Value, ws: &crate::state::Workspace) 
             if let Some(obj) = entry.as_object_mut() {
                 obj.insert("title".into(), json!(t));
             }
+        }
+    }
+}
+
+/// Keep Agent cards independent from the controller's pane-list timing. The
+/// topology host already owns the authoritative `PaneTree` metadata, so copy
+/// each matched pane's recorded OSC 7 CWD into the roster projection. The
+/// mobile UI still accepts an optional live `PaneInfo.cwd` fallback for older
+/// hosts, but new hosts no longer make a card wait for a second RPC.
+pub fn inject_roster_cwds(topology: &mut Value, ws: &crate::state::Workspace) {
+    let Some(roster) = topology.get_mut("roster").and_then(|r| r.as_array_mut()) else {
+        return;
+    };
+    for entry in roster {
+        let Some(pid) = entry
+            .get("paneId")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+        else {
+            continue;
+        };
+        let Some(cwd) = ws
+            .pane_tree
+            .panes
+            .get(&pid)
+            .and_then(|pane| pane.cwd.as_ref())
+            .filter(|cwd| !cwd.as_os_str().is_empty())
+        else {
+            continue;
+        };
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("cwd".into(), json!(cwd.to_string_lossy()));
         }
     }
 }
@@ -778,6 +811,7 @@ mod tests {
                     "name",
                     "paneId",
                     "paneIndex",
+                    "cwd",
                     "role",
                     "status",
                     "capability",
@@ -788,6 +822,20 @@ mod tests {
                 "unexpected roster field `{key}`"
             );
         }
+    }
+
+    #[test]
+    fn roster_projection_carries_authoritative_pane_cwd() {
+        let mut ws = ws_with_agent();
+        let pane = ws.pane_tree.get_all_leaves()[0];
+        ws.teammate_agent_pane_map.clear();
+        ws.teammate_agent_pane_map.insert("claude-a".into(), pane);
+        ws.pane_tree.panes.get_mut(&pane).unwrap().cwd = Some(std::path::PathBuf::from("C:/repo/agent"));
+        let mut topology = serde_json::json!({
+            "roster": [{ "id": "claude-a", "paneId": pane.to_string() }]
+        });
+        inject_roster_cwds(&mut topology, &ws);
+        assert_eq!(topology["roster"][0]["cwd"], "C:/repo/agent");
     }
 
     /// iter-62：自动入册前缀的展示名兜底——`auto:claude:1a2b3c4d` 不该原样露给用户。
