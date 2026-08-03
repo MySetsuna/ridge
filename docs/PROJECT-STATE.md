@@ -30,6 +30,18 @@ claim that full Kernel authority is complete.
 
 Archive: `docs/iterations/2026-08-03-iteration-123-kernel-pty-migration-audit.md`.
 
+## Iteration 124 update (2026-08-03)
+
+Tauri Pane replacement and explicit close/reap now share a process-tree kill
+guard. The previous `Child::kill()`-only paths could leave descendants such as
+tool runners or language servers alive after a Pane disappeared. The guard
+captures the recorded child PID, kills the shell, and invokes the shared
+`ridge_core::process_guard::kill_process_tree`. Contract and process-guard
+tests pass; this closes the internal lifecycle gap without pretending that
+full Kernel PTY authority is complete.
+
+Archive: `docs/iterations/2026-08-03-iteration-124-tauri-pty-tree-kill.md`.
+
 ## Iteration 121 update (2026-08-03)
 
 Installed/Desktop terminal links now preserve a URL when the first visual

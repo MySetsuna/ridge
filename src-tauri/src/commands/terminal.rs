@@ -516,6 +516,18 @@ fn tmux_env_value(pane_slot: usize, cwd: Option<&Path>, state: &AppState) -> Str
 }
 
 /// 拆掉已有 PTY（不发 `PaneClosed` 全局事件，避免前端 `recoverPtySession` 与 teammate 重起打架）。
+/// Kill a local PTY child and its descendants. `Child::kill` alone only stops
+/// the shell process, leaving tool runners behind after pane teardown.
+fn kill_pty_process_tree(handle: &mut PtyHandle) {
+    let child_pid = handle.child_pid;
+    if let Some(child) = handle._child.as_mut() {
+        let _ = child.kill();
+    }
+    if let Some(pid) = child_pid {
+        ridge_core::process_guard::kill_process_tree(pid);
+    }
+}
+
 fn teardown_pane_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
     let handle = {
         let mut map = state.workspaces.write();
@@ -538,9 +550,7 @@ fn teardown_pane_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: U
         pty_log::teammate_replace_pty(workspace_id, pane_id);
     }
     if let Some(mut handle) = handle {
-        if let Some(c) = handle._child.as_mut() {
-            let _ = c.kill();
-        }
+        kill_pty_process_tree(&mut handle);
     }
     state.clear_pty_scrollback(workspace_id, pane_id);
 }
@@ -1888,9 +1898,7 @@ pub async fn kill_pty_if_present(
             .lock()
             .write_all(b"\x1b[?1049l\x1b[?1l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?25h");
         let _ = handle.writer.lock().write_all(b"exit\n");
-        if let Some(c) = handle._child.as_mut() {
-            let _ = c.kill();
-        }
+        kill_pty_process_tree(&mut handle);
         // §reap: an orphan reap passes emit_pane_closed=false. Emitting PaneClosed
         // makes the desktop frontend rebuild a shell for the pane; for a non-leaf
         // orphan that rebuild re-creates the orphan (pending) → reap never converges.
@@ -2176,6 +2184,31 @@ mod write_scope_tests {
         assert!(validate_input_identity(Some("controller_1".into()), Some(1)).is_ok());
         assert!(validate_input_identity(Some("bad source".into()), Some(1)).is_err());
         assert!(validate_input_identity(Some("controller".into()), None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod pty_lifecycle_contract_tests {
+    #[test]
+    fn both_local_teardown_paths_use_tree_kill_helper() {
+        // Keep the two production teardown paths (replacement and explicit
+        // close/reap) on one process-lifecycle guard. The process_guard crate
+        // owns the real OS-level tree-kill behavior and has its own hanging
+        // child test; this contract prevents either Tauri path regressing to
+        // `Child::kill()` only.
+        let source = include_str!("terminal.rs");
+        let production = source
+            .split("mod pty_lifecycle_contract_tests")
+            .next()
+            .unwrap_or(source);
+        assert_eq!(
+            production
+                .matches("kill_pty_process_tree(&mut handle);")
+                .count(),
+            2,
+            "replacement and explicit PTY teardown must share tree-kill guard",
+        );
+        assert!(source.contains("ridge_core::process_guard::kill_process_tree(pid);"));
     }
 }
 
