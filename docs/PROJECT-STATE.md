@@ -16,6 +16,20 @@ authenticated Git push evidence remain external; no release after `v0.1.54`.
 
 Archive: `docs/iterations/2026-08-03-iteration-122-cross-cutting-regression.md`.
 
+## Iteration 123 update (2026-08-03)
+
+The remaining desktop PTY/kernel convergence was audited against the live
+Tauri paths. Tauri still owns the AppState PTY handles, parser, output sink,
+resize, clear, kill, and scrollback; the kernel PTY domain is an isolated
+registry without a shell-visible output stream, lease/attach protocol, or
+stable composite-pane mapping. No command was redirected: doing so now would
+split PTY identity or drop live output. The next safe work is a versioned lease
+plus output/backpressure/cancellation adapter, followed by one-family
+migration and lifecycle tests. This audit is an explicit boundary, not a
+claim that full Kernel authority is complete.
+
+Archive: `docs/iterations/2026-08-03-iteration-123-kernel-pty-migration-audit.md`.
+
 ## Iteration 121 update (2026-08-03)
 
 Installed/Desktop terminal links now preserve a URL when the first visual
