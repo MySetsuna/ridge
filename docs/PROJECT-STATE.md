@@ -5,7 +5,20 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
-## Current snapshot (iteration 141, 2026-08-03)
+## Current snapshot (iteration 142, 2026-08-03)
+
+- rdg now answers the legacy Remote sidebar frames `list-files`,
+  `list-git-status`, and `search-files`. Responses preserve the historical
+  payload shapes, use the same serving-root sandbox as canonical FS methods,
+  and run disk/Git work in `spawn_blocking` before asynchronous WS delivery.
+  Focused legacy-frame tests pass 12/12.
+- No version bump or publication was made because `v0.1.54` consumed today's
+  allowance. Physical phone/public Remote, WebView2 heap soak, dual-window /
+  dual-host, and full Kernel-domain authority migration remain evidence gates.
+
+Archive: `docs/iterations/2026-08-03-iteration-142-rdg-legacy-sidebar-frames.md`.
+
+## Snapshot (iteration 141, 2026-08-03)
 
 - `rdg` production TUI/LAN-host sessions now use the long-lived
   `ridge-kernel` domain PTY instead of the in-process registry. Stable PaneTree
