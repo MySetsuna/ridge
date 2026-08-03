@@ -144,6 +144,18 @@ impl LanOutboundTransport {
         self.pending_rpc.lock().len()
     }
 
+    fn remove_pending_rpc(&self, method: &str, params: &Value) {
+        let mut pending = self.pending_rpc.lock();
+        if let Some(index) = pending
+            .iter()
+            .position(|(queued_method, queued_params)| {
+                queued_method == method && queued_params == params
+            })
+        {
+            let _ = pending.remove(index);
+        }
+    }
+
     fn ensure_ready(&self) -> Result<(), String> {
         match self.phase() {
             LanConnPhase::Ready | LanConnPhase::Reconnecting => Ok(()),
@@ -179,12 +191,15 @@ impl OutboundTransport for LanOutboundTransport {
         match self.peer_results.lock().get(method).cloned() {
             Some(v) => {
                 self.stats.rpc_ok.fetch_add(1, Ordering::SeqCst);
-                // pop matching pending
-                let _ = self.pending_rpc.lock().pop_front();
+                self.remove_pending_rpc(method, &params);
                 Ok(v)
             }
             None => {
                 self.stats.rpc_err.fetch_add(1, Ordering::SeqCst);
+                // A failed synchronous send is no longer in flight. Keeping
+                // it queued would turn repeated transport errors into a fake
+                // backpressure storm and hide the real failure.
+                self.remove_pending_rpc(method, &params);
                 Err(format!("lan: no peer result for {method} (socket not wired)"))
             }
         }
@@ -260,12 +275,21 @@ mod tests {
         // No peer result → rpc stays? actually we pop only on success.
         // First call without preset → err but may still queue
         let _ = t.send_json_rpc("x", json!({}));
-        // Force fill: push without pop by using method without result repeatedly
-        // after clearing peer and manually filling queue:
         t.pending_rpc.lock().push_back(("a".into(), json!({})));
         let err = t.send_json_rpc("y", json!({})).unwrap_err();
         assert!(err.contains("backpressure"));
         assert!(t.stats.backpressure_rejects.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn failed_rpc_is_removed_from_pending_queue() {
+        let t = LanOutboundTransport::new(LanTransportConfig::default());
+        t.inject_socket_ready();
+
+        let error = t.send_json_rpc("write_to_pty", json!({ "paneId": "p1" }));
+        assert!(error.is_err());
+        assert_eq!(t.pending_rpc_len(), 0);
+        assert_eq!(t.stats.rpc_err.load(Ordering::SeqCst), 1);
     }
 
     #[test]
