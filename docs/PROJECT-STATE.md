@@ -16,6 +16,9 @@
 - Remote mobile bundle, PWA manifest/service-worker/safe-area checks, LAN
   desktop/mobile E2E, and Chromium mobile keyboard/touch-selection E2E are
   green; the latter is explicitly browser-emulation evidence.
+- Windows headless kernel/rdg smoke is green: single-PID ensure/reattach,
+  filesystem-root denial, Git status, remote-hosts, MCP discovery, and
+  bounded kernel stop all passed.
 - Release desktop now declares Tauri `custom-protocol`; a rebuilt binary
   launches through `http://tauri.localhost/` in an isolated WebView2 CDP smoke
   check instead of falling back to Vite port 5173. Shell E2E still cannot
