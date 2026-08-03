@@ -601,8 +601,52 @@ fn start_pane_subscription(
     }
 }
 
-/// 处理一条文本控制帧。返回 `Some(text)` 需回送客户端的响应；`None` 表示无需响应
-/// （或已通过 `out_tx` 异步转发）。内部对 `SharedWorkspace` 的加锁均不跨 await。
+/// rdg 旧版 Remote flat 帧异步回送；返回 `Some(text)` 的控制帧仍由调用方直接回写。
+/// 所有文件/Git/搜索操作均移入 blocking 池，避免阻塞 WebSocket 主循环。
+fn rdg_workspace_base_dir(workspace: &SharedWorkspace) -> PathBuf {
+    workspace
+        .lock()
+        .ok()
+        .and_then(|w| {
+            w.sessions
+                .get(w.default_session_index)
+                .and_then(|session| session.cwd.clone())
+        })
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn rdg_resolve_legacy_path(workspace: &SharedWorkspace, raw: &str) -> PathBuf {
+    let base = rdg_workspace_base_dir(workspace);
+    if raw.is_empty() || raw == "/" {
+        return base;
+    }
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    }
+}
+
+fn spawn_legacy_frame<F>(out_tx: &mpsc::UnboundedSender<Message>, operation: &'static str, work: F)
+where
+    F: FnOnce() -> Value + Send + 'static,
+{
+    let tx = out_tx.clone();
+    tokio::spawn(async move {
+        match tokio::task::spawn_blocking(work).await {
+            Ok(payload) => {
+                let _ = tx.send(Message::Text(payload.to_string()));
+            }
+            Err(error) => {
+                tracing::warn!(target: "ridge_cli::remote", operation, %error, "legacy remote request failed");
+            }
+        }
+    });
+}
+
 fn handle_text(
     v: &Value,
     workspace: &SharedWorkspace,
@@ -818,8 +862,73 @@ fn handle_text(
             Some(json!({ "type": "current-project", "path": path }).to_string())
         }
 
-        // 其余帧（list-files / list-git-status / search-files / cycle-theme …）：
-        // rdg headless 暂不实现，静默忽略（客户端相应面板留空，不影响终端主链路）。
+        // 旧版 Remote 的 sidebar flat 帧：保持协议兼容，但不在 WS 任务内同步跑磁盘/Git。
+        "list-files" => {
+            let target = rdg_resolve_legacy_path(
+                workspace,
+                v.get("path").and_then(Value::as_str).unwrap_or(""),
+            );
+            let roots = rdg_allowed_file_roots(workspace);
+            spawn_legacy_frame(out_tx, "list-files", move || {
+                let entries = fs_reuse::list_dir(&roots, &target).unwrap_or_default();
+                let parent = target
+                    .parent()
+                    .map(|path| path.to_string_lossy().into_owned());
+                json!({
+                    "type": "files",
+                    "path": target.to_string_lossy(),
+                    "parent": parent,
+                    "entries": entries,
+                })
+            });
+            None
+        }
+
+        "list-git-status" => {
+            let root = rdg_workspace_base_dir(workspace);
+            spawn_legacy_frame(out_tx, "list-git-status", move || {
+                let info = ridge_core::commands::git::git_info_for_path(&root);
+                json!({
+                    "type": "git-status",
+                    "isGitRepo": info.is_git_repo,
+                    "currentBranch": info.current_branch,
+                    "branches": info.branches,
+                    "files": info.diff.files,
+                    "commits": info.commits,
+                })
+            });
+            None
+        }
+
+        "search-files" => {
+            let query = v
+                .get("query")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let root = rdg_workspace_base_dir(workspace);
+            let roots = rdg_allowed_file_roots(workspace);
+            spawn_legacy_frame(out_tx, "search-files", move || {
+                let results = if query.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    fs_reuse::search(&roots, &root.to_string_lossy(), &query, false, false)
+                        .into_iter()
+                        .map(|hit| {
+                            json!({
+                                "path": hit.file,
+                                "line": hit.line,
+                                "column": hit.column,
+                                "snippet": hit.content,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                };
+                json!({ "type": "search-results", "query": query, "results": results })
+            });
+            None
+        }
+
         _ => None,
     }
 }
@@ -1025,6 +1134,95 @@ mod tests {
 
         drop(workspace);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_list_files_is_async_and_returns_compatible_frame() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::current_dir().unwrap().join(format!(
+            ".ridge-lan-legacy-files-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(root.join("needle.txt"), "needle\n").unwrap();
+
+        let workspace = super::super::workspace::new_shared();
+        let ws_id = Uuid::parse_str("cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd").unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        assert!(handle_text(
+            &json!({ "type": "list-files", "path": root.to_string_lossy() }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .is_none());
+
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("legacy file listing should not block the websocket loop")
+            .expect("legacy file listing frame");
+        let Message::Text(text) = frame else {
+            panic!("expected text sidebar frame")
+        };
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["type"], "files");
+        assert_eq!(value["path"], root.to_string_lossy().to_string());
+        assert!(value["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "needle.txt"));
+
+        drop(workspace);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_search_and_git_status_return_frames() {
+        let workspace = super::super::workspace::new_shared();
+        let ws_id = Uuid::parse_str("dededede-dede-dede-dede-dededededede").unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        assert!(handle_text(
+            &json!({ "type": "search-files", "query": "" }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .is_none());
+        let search_frame = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("legacy search timeout")
+            .expect("legacy search frame");
+        let Message::Text(search_text) = search_frame else {
+            panic!("expected search text frame")
+        };
+        let search: Value = serde_json::from_str(&search_text).unwrap();
+        assert_eq!(search["type"], "search-results");
+        assert_eq!(search["results"].as_array().unwrap().len(), 0);
+
+        assert!(handle_text(
+            &json!({ "type": "list-git-status" }),
+            &workspace,
+            ws_id,
+            &tx,
+        )
+        .is_none());
+        let git_frame = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("legacy git status timeout")
+            .expect("legacy git status frame");
+        let Message::Text(git_text) = git_frame else {
+            panic!("expected git status text frame")
+        };
+        let git: Value = serde_json::from_str(&git_text).unwrap();
+        assert_eq!(git["type"], "git-status");
+        assert!(git["branches"].is_array());
+        assert!(git["files"].is_array());
+        assert!(git["commits"].is_array());
     }
 
     #[test]
