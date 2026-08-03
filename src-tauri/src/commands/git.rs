@@ -104,7 +104,13 @@ pub async fn git_commit(
 
 #[tauri::command]
 pub async fn git_list_branches(repo_root: String) -> Result<Vec<BranchInfo>, String> {
-    ridge_core::commands::git::git_list_branches(repo_root).await
+    tokio::task::spawn_blocking(move || {
+        let endpoint = crate::kernel_lifecycle::ensure_kernel_running()?;
+        ridge_kernel::client::read_domain_git_branches(&endpoint, &repo_root)?
+            .ok_or_else(|| format!("Not a git repo: {repo_root}"))
+    })
+    .await
+    .map_err(|error| format!("kernel Git branches task failed: {error}"))?
 }
 
 #[tauri::command]

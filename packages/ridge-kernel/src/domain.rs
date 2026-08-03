@@ -1104,6 +1104,54 @@ pub async fn domain_git_status(
     }
 }
 
+/// Read the kernel-owned local/remote branch projection. Repository discovery
+/// happens before `git branch` so confirmed non-Git roots never emit repeated
+/// subprocess errors from the SCM sidebar.
+pub async fn domain_git_branches(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<GitQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let path = q.path;
+    let branch_path = path.clone();
+    let (is_repo, branches) = tokio::task::spawn_blocking(move || {
+        let is_repo = ridge_core::commands::git::find_git_repo_root(branch_path.clone()).is_some();
+        let branches =
+            is_repo.then(|| ridge_core::commands::git::git_list_branches_sync(branch_path));
+        (is_repo, branches)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !is_repo {
+        return Ok(Json(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": false,
+            "path": path,
+            "branches": [],
+        })));
+    }
+    match branches.ok_or(StatusCode::INTERNAL_SERVER_ERROR)? {
+        Ok(branches) => Ok(Json(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "path": path,
+            "branches": branches,
+        }))),
+        Err(error) => Ok(Json(json!({
+            "ok": false,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "path": path,
+            "error": error,
+        }))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1263,6 +1311,27 @@ mod tests {
         assert_eq!(response["ok"], false);
         assert_eq!(response["source"], "ridge-kernel");
         assert_eq!(response["error"], "path outside kernel filesystem root");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn git_branches_confirms_non_repository_without_spawning_branch() {
+        let root = std::env::temp_dir().join(format!("ridge-kernel-non-git-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let response = domain_git_branches(
+            State(test_state()),
+            test_headers(),
+            Query(GitQuery {
+                path: root.to_string_lossy().into_owned(),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["source"], "ridge-kernel");
+        assert_eq!(response["is_repo"], false);
+        assert_eq!(response["branches"], json!([]));
         let _ = std::fs::remove_dir_all(root);
     }
 

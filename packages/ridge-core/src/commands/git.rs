@@ -1576,7 +1576,7 @@ fn git_commit_sync(repo_root: String, message: String, amend: Option<bool>) -> R
 
 // ─── VSCode-parity: 分支 / 远端同步 / 文件 diff ────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct BranchInfo {
     pub name: String,
     pub is_current: bool,

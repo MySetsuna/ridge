@@ -1,33 +1,36 @@
 {
   "schema_version": 1,
-  "task": "Make desktop kernel bootstrap single-flight and wait for an existing kernel to become ready before attaching",
+  "task": "Route desktop Git branch reads through the authenticated kernel domain and preserve non-Git fail-closed behavior",
   "symbols": [
-    "ensure_kernel_running",
-    "kernel_boot_lock",
-    "wait_for_running",
-    "spawn_detached",
-    "KernelBootDecision"
+    "git_list_branches",
+    "domain_git_branches",
+    "read_domain_git_branches",
+    "BranchInfo",
+    "git_list_branches_sync"
   ],
   "files": [
     "docs/PROJECT-STATE.md",
     "docs/REQUIREMENTS-SPEC.md",
     "docs/archive/events-2026-08.jsonl",
-    "src-tauri/src/kernel_lifecycle.rs",
+    "src-tauri/src/commands/git.rs",
+    "packages/ridge-core/src/commands/git.rs",
     "packages/ridge-kernel/src/client.rs",
+    "packages/ridge-kernel/src/domain.rs",
     "packages/ridge-kernel/src/server.rs",
-    "docs/iterations/2026-08-04-iteration-154-kernel-boot-single-flight.md"
+    "docs/iterations/2026-08-04-iteration-155-kernel-git-branches.md"
   ],
   "tests": [
-    "src-tauri/src/kernel_lifecycle.rs (boot lock and decision tests)",
-    "packages/ridge-kernel/src/client.rs (health/wait tests)",
+    "packages/ridge-kernel/src/client.rs (branch decode tests)",
+    "packages/ridge-kernel/src/domain.rs (non-Git branch test)",
+    "src-tauri/src/commands/git.rs (kernel adapter)",
     "cargo test -p ridge --lib",
     "cargo test -p ridge-kernel --lib",
     "cargo check -p ridge --lib"
   ],
   "constraints": [
     "NotebookLM is strategy input only; runtime, tests, and source remain factual authority",
-    "Desktop production pane PTYs, SCM status reads, and kernel bootstrap are kernel-owned",
-    "Concurrent ensure calls must share one process-local boot gate",
+    "Desktop production pane PTYs, SCM status reads, branch reads, and kernel bootstrap are kernel-owned",
+    "Branch reads must share the kernel Git process guard and never poll confirmed non-Git roots",
     "No hidden local fallback after kernel bootstrap/domain request failure",
     "Do not scan generated or minified artifacts as source evidence"
   ],
@@ -107,6 +110,7 @@
       "docs/iterations/2026-08-04-iteration-152-kernel-pty-authority.md",
       "docs/iterations/2026-08-04-iteration-153-kernel-git-status.md",
       "docs/iterations/2026-08-04-iteration-154-kernel-boot-single-flight.md",
+      "docs/iterations/2026-08-04-iteration-155-kernel-git-branches.md",
       "docs/iterations/CONTRACT-iteration-76.md",
       "docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md",
       "docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md",
@@ -133,7 +137,6 @@
       "src/lib/stores/themes.ts",
       "src/lib/stores/themes.slug.test.ts",
       "src-tauri/src/commands/terminal.rs",
-      "src-tauri/src/kernel_lifecycle.rs",
       "src-tauri/src/commands/git.rs",
       "src-tauri/src/engine/kernel_pty.rs",
       "packages/ridge-core/src/commands/git.rs",
