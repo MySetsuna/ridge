@@ -960,12 +960,10 @@ export class CloudRemoteConnection implements RemoteLink {
   }
 
   async createWorkspace(name?: string): Promise<string | null> {
-    try {
-      const id = await this.bridge.invoke<string>('create_workspace', name ? { name } : {});
-      return id || null;
-    } catch {
-      return null;
-    }
+    // Preserve RPC failures so WorkspaceTree can show the real error instead
+    // of silently leaving the create action with no response.
+    const id = await this.bridge.invoke<string>('create_workspace', name ? { name } : {});
+    return id || null;
   }
 
   async listSavedWorkspaceFiles(): Promise<

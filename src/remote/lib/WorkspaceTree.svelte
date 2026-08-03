@@ -231,6 +231,9 @@
         }
         activeWorkspaceId = id;
         activePaneId = null;
+      } else {
+        // A rejected/empty create must never look like a no-op to the user.
+        err = tr('mobile.workspaceSwitchFail');
       }
     } catch (e) {
       err = e instanceof Error ? e.message : String(e);

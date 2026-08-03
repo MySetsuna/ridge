@@ -627,6 +627,16 @@ describe('CloudRemoteConnection workspaces', () => {
     await expect(conn.listWorkspacePanes('ws1')).rejects.toThrow('pane discovery failed');
   });
 
+  it('surfaces workspace create failures instead of turning them into a no-op', async () => {
+    const conn = await connected();
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'create_workspace') throw new Error('workspace create failed');
+      return undefined;
+    });
+
+    await expect(conn.createWorkspace('new')).rejects.toThrow('workspace create failed');
+  });
+
   it('switchWorkspace updates the active ws used for pane events', async () => {
     const conn = await connected();
     expect(await conn.switchWorkspace('ws2')).toBe(true);

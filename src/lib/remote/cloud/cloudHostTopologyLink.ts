@@ -127,11 +127,9 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   }
 
   async createWorkspace(name?: string): Promise<string | null> {
-    try {
-      return await this.rpc.request<string>('create_workspace', name ? { name } : {});
-    } catch {
-      return null;
-    }
+    // Let the Host operation surface transport/auth failures. Returning null
+    // here made a failed create indistinguishable from a valid empty result.
+    return await this.rpc.request<string>('create_workspace', name ? { name } : {});
   }
 
   async renameWorkspace(workspaceId: string, name: string): Promise<boolean> {

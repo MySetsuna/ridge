@@ -15,4 +15,8 @@ describe('remote workspace popup safe-area contract', () => {
     expect(source).toContain("class:agent-starting={pane.agentState === 'starting'}");
     expect(source).toContain('.pane-row.agent-idle .pane-dot');
   });
+
+  it('shows an error when workspace creation returns no id', () => {
+    expect(source).toContain("err = tr('mobile.workspaceSwitchFail');");
+  });
 });
