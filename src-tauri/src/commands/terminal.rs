@@ -12,6 +12,10 @@ use tauri::ipc::Channel;
 use tauri::State;
 use uuid::Uuid;
 
+/// Bound one scrollback IPC response so a stale/hostile caller cannot force a
+/// multi-megabyte UTF-8 copy onto the async command worker.
+const MAX_SCROLLBACK_RPC_BYTES: usize = 512 * 1024;
+
 use crate::engine::parser::PaneParser;
 use crate::engine::pty::{spawn_pty_reader, PtyHandle, RESIZE_SILENCE_WINDOW_MS};
 use crate::state::{AppState, PaneDeltaSender};
@@ -290,9 +294,22 @@ pub async fn change_pane_shell(
     shell: String,
     args: Vec<String>,
 ) -> Result<(), String> {
-    let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
-    let workspace_id = workspace_containing_pane(&state, pane_id)
-        .ok_or_else(|| AppError::PaneNotFound(pane_id).to_string())?;
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || change_pane_shell_inner(&st, pane_id, shell, args))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+fn change_pane_shell_inner(
+    state: &AppState,
+    pane_id: String,
+    shell: String,
+    args: Vec<String>,
+) -> Result<(), AppError> {
+    let pane_id = parse_pane_id(&pane_id)?;
+    let workspace_id = workspace_containing_pane(state, pane_id)
+        .ok_or(AppError::PaneNotFound(pane_id))?;
     let cwd = {
         let map = state.workspaces.read();
         map.get(&workspace_id)
@@ -300,7 +317,7 @@ pub async fn change_pane_shell(
             .and_then(|p| p.cwd.clone())
     };
 
-    teardown_pane_pty_if_present(&state, workspace_id, pane_id);
+    teardown_pane_pty_if_present(state, workspace_id, pane_id);
     state.clear_pty_scrollback(workspace_id, pane_id);
 
     // 持久化本 pane 的 shell（program）——对齐 create_pane_inner，使标题/恢复一致。
@@ -329,7 +346,7 @@ pub async fn change_pane_shell(
     };
 
     ensure_pane_pty_workspace(
-        &*state,
+        state,
         workspace_id,
         pane_id,
         shell_opt,
@@ -340,7 +357,6 @@ pub async fn change_pane_shell(
         None,
         None,
     )
-    .map_err(|e| e.to_string())
 }
 
 /// create_pane 的核心（不带 Tauri wrapper）：为既有 pane 起 shell PTY。`&AppState` 便于
@@ -1148,7 +1164,9 @@ pub async fn get_shell_history(_shell_kind: String) -> Result<Vec<String>, Strin
     // §S1+: delegate to `ridge_core::commands::shell::get_shell_history` (same
     // PSReadLine / bash / zsh paths, same dedup + 1000-line cap). The legacy
     // `_shell_kind` arg was always unused and is preserved for the IPC contract.
-    ridge_core::commands::shell::get_shell_history()
+    tokio::task::spawn_blocking(ridge_core::commands::shell::get_shell_history)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1357,17 +1375,22 @@ pub async fn resize_pane(
     #[allow(non_snake_case)] isAlt: Option<bool>,
     #[allow(non_snake_case)] isInlineTui: Option<bool>,
 ) -> Result<(), String> {
-    resize_pane_inner(
-        &state,
-        &app,
-        workspace_id,
-        pane_id,
-        rows,
-        cols,
-        isAlt.unwrap_or(false),
-        isInlineTui.unwrap_or(false),
-        true,
-    )
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        resize_pane_inner(
+            &st,
+            &app,
+            workspace_id,
+            pane_id,
+            rows,
+            cols,
+            isAlt.unwrap_or(false),
+            isInlineTui.unwrap_or(false),
+            true,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
 }
 
@@ -1385,17 +1408,22 @@ pub async fn resize_pane_remote(
     is_alt: Option<bool>,
     is_inline_tui: Option<bool>,
 ) -> Result<(), String> {
-    resize_pane_inner(
-        state,
-        &app,
-        workspace_id,
-        pane_id,
-        rows,
-        cols,
-        is_alt.unwrap_or(false),
-        is_inline_tui.unwrap_or(false),
-        false,
-    )
+    let st = state.clone();
+    tokio::task::spawn_blocking(move || {
+        resize_pane_inner(
+            &st,
+            &app,
+            workspace_id,
+            pane_id,
+            rows,
+            cols,
+            is_alt.unwrap_or(false),
+            is_inline_tui.unwrap_or(false),
+            false,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
 }
 
@@ -1679,24 +1707,36 @@ pub fn resize_pane_inner(
 /// No bytes are written to PTY input, so shells never interpret ANSI clear
 /// sequences as keystrokes.
 #[tauri::command]
-pub fn clear_pane_terminal(
+pub async fn clear_pane_terminal(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
     workspace_id: String,
     pane_id: String,
 ) -> Result<(), String> {
-    use ridge_term::term::delta::encode_frame;
-    use tauri::Emitter;
-
     let workspace_id =
         Uuid::parse_str(&workspace_id).map_err(|_| "invalid workspace_id".to_string())?;
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || clear_pane_terminal_inner(&st, &app, workspace_id, pane_id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+fn clear_pane_terminal_inner(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+) -> Result<(), AppError> {
+    use ridge_term::term::delta::encode_frame;
+    use tauri::Emitter;
     let parser = {
         let map = state.workspaces.read();
         map.get(&workspace_id)
             .and_then(|ws| ws.terminals.get(&pane_id))
             .map(|handle| handle.parser.clone())
-            .ok_or_else(|| AppError::PaneNotFound(pane_id).to_string())?
+            .ok_or(AppError::PaneNotFound(pane_id))?
     };
 
     let frame = {
@@ -1705,13 +1745,14 @@ pub fn clear_pane_terminal(
     };
     state.clear_pty_scrollback(workspace_id, pane_id);
 
-    let bytes = encode_frame(&frame).map_err(|e| format!("delta encode failed: {e}"))?;
+    let bytes = encode_frame(&frame)
+        .map_err(|e| AppError::PtyError(format!("delta encode failed: {e}")))?;
     if let Some(sender) = state.get_pane_delta_channel(workspace_id, pane_id) {
         sender(bytes);
     } else {
         let label = pane_id.to_string();
         app.emit(&format!("pty-delta-{workspace_id}-{label}"), bytes)
-            .map_err(|e| format!("clear delta emit failed: {e}"))?;
+            .map_err(|e| AppError::PtyError(format!("clear delta emit failed: {e}")))?;
     }
     Ok(())
 }
@@ -1948,12 +1989,26 @@ pub async fn set_pane_delta_mode(
     pane_id: String,
     enabled: bool,
 ) -> Result<(), String> {
-    use ridge_term::term::delta::encode_frame;
-    use tauri::Emitter;
-
     let workspace_id =
         Uuid::parse_str(&workspace_id).map_err(|_| "invalid workspace_id".to_string())?;
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        set_pane_delta_mode_inner(&st, &app, workspace_id, pane_id, enabled)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn set_pane_delta_mode_inner(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    enabled: bool,
+) -> Result<(), String> {
+    use ridge_term::term::delta::encode_frame;
+    use tauri::Emitter;
 
     // Snapshot the handles we need under a single workspace read-lock,
     // then drop the lock before any I/O — feed_and_diff / encode_frame
@@ -2223,14 +2278,20 @@ pub async fn get_pane_scrollback_tail(
 ) -> Result<crate::state::ScrollbackChunk, String> {
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
     let workspace_id = resolve_pane_workspace(&state, workspace_id.as_deref(), pane_id)?;
-    Ok(state.get_pty_scrollback_tail(workspace_id, pane_id, max_bytes))
+    let st = state.inner().clone();
+    let max_bytes = max_bytes.min(MAX_SCROLLBACK_RPC_BYTES);
+    tokio::task::spawn_blocking(move || {
+        st.get_pty_scrollback_tail(workspace_id, pane_id, max_bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Return up-to `max_bytes` preceding (exclusive) `before_seq`. Use for
 /// "scroll up to load older" paging. `start_seq` of the returned chunk is
 /// the next `before_seq` to feed back in; when `at_oldest=true`, stop.
 #[tauri::command]
-pub fn get_pane_scrollback_before(
+pub async fn get_pane_scrollback_before(
     state: State<'_, AppState>,
     pane_id: String,
     workspace_id: Option<String>,
@@ -2239,7 +2300,13 @@ pub fn get_pane_scrollback_before(
 ) -> Result<crate::state::ScrollbackChunk, String> {
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
     let workspace_id = resolve_pane_workspace(&state, workspace_id.as_deref(), pane_id)?;
-    Ok(state.get_pty_scrollback_before(workspace_id, pane_id, before_seq, max_bytes))
+    let st = state.inner().clone();
+    let max_bytes = max_bytes.min(MAX_SCROLLBACK_RPC_BYTES);
+    tokio::task::spawn_blocking(move || {
+        st.get_pty_scrollback_before(workspace_id, pane_id, before_seq, max_bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// `get_pane_resync_frame` 的返回：一份 host 构建的**完整**重连帧 + scroll-up 懒加载游标。
@@ -2265,7 +2332,7 @@ pub struct PaneResyncFrame {
 /// `get_pane_resync_preamble` 从未进真正的能力门 `REMOTE_ALLOWLIST` → 云路径被拒 → 空转）。
 /// 只读，远程可达（须列入 `capability.rs::REMOTE_ALLOWLIST` 及其 TS 镜像 `remoteAllowlist.ts`）。
 #[tauri::command]
-pub fn get_pane_resync_frame(
+pub async fn get_pane_resync_frame(
     state: State<'_, AppState>,
     pane_id: String,
     workspace_id: Option<String>,
@@ -2273,15 +2340,22 @@ pub fn get_pane_resync_frame(
 ) -> Result<PaneResyncFrame, String> {
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
     let workspace_id = resolve_pane_workspace(&state, workspace_id.as_deref(), pane_id)?;
-    let chunk = state.get_pty_scrollback_tail(workspace_id, pane_id, max_bytes);
-    let (modes, alt) = state.get_pane_modes(workspace_id, pane_id);
-    let frame = ridge_term::term::modes::build_resync_frame(chunk.bytes.as_bytes(), &modes, alt);
-    Ok(PaneResyncFrame {
-        frame: String::from_utf8_lossy(&frame).into_owned(),
-        start_seq: chunk.start_seq,
-        at_oldest: chunk.at_oldest,
-        head_seq: chunk.head_seq,
+    let st = state.inner().clone();
+    let max_bytes = max_bytes.min(MAX_SCROLLBACK_RPC_BYTES);
+    tokio::task::spawn_blocking(move || {
+        let chunk = st.get_pty_scrollback_tail(workspace_id, pane_id, max_bytes);
+        let (modes, alt) = st.get_pane_modes(workspace_id, pane_id);
+        let frame =
+            ridge_term::term::modes::build_resync_frame(chunk.bytes.as_bytes(), &modes, alt);
+        PaneResyncFrame {
+            frame: String::from_utf8_lossy(&frame).into_owned(),
+            start_seq: chunk.start_seq,
+            at_oldest: chunk.at_oldest,
+            head_seq: chunk.head_seq,
+        }
     })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// 列出所有 native tmux 会话，供「全局状态」面板的后台会话发现入口展示。

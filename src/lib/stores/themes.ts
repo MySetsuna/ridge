@@ -187,6 +187,41 @@ export async function resolveThemeBgUrl(t: ThemeEntry | undefined): Promise<stri
  */
 const _inflightBgDecodes = new Map<string, Promise<ActiveWallpaperGpu | null>>();
 
+// Bound user-provided wallpaper decode/upload. Native-size camera images can
+// briefly duplicate tens or hundreds of MB in WebView2 during getImageData().
+export const WALLPAPER_MAX_EDGE = 4096;
+export const WALLPAPER_MAX_PIXELS = 16_000_000;
+
+export function constrainWallpaperSize(width: number, height: number): { width: number; height: number } {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { width: 0, height: 0 };
+  }
+  const scale = Math.min(
+    1,
+    WALLPAPER_MAX_EDGE / width,
+    WALLPAPER_MAX_EDGE / height,
+    Math.sqrt(WALLPAPER_MAX_PIXELS / (width * height)),
+  );
+  return {
+    width: Math.max(1, Math.floor(width * scale)),
+    height: Math.max(1, Math.floor(height * scale)),
+  };
+}
+
+function deferWallpaperDecode(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve();
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+  };
+  return new Promise((resolve) => {
+    if (idleWindow.requestIdleCallback) {
+      idleWindow.requestIdleCallback(() => resolve(), { timeout: 1000 });
+    } else {
+      globalThis.setTimeout(resolve, 0);
+    }
+  });
+}
+
 async function decodeThemeBgRgba(
   t: ThemeEntry | undefined,
   resolvedUrl?: string | null,
@@ -228,17 +263,18 @@ async function decodeThemeBgRgbaImpl(
     const width = img.naturalWidth;
     const height = img.naturalHeight;
     if (!width || !height) return null;
+    const { width: targetWidth, height: targetHeight } = constrainWallpaperSize(width, height);
     const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
     const ctx2d = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx2d) return null;
-    ctx2d.drawImage(img, 0, 0);
-    const imageData = ctx2d.getImageData(0, 0, width, height);
+    ctx2d.drawImage(img, 0, 0, targetWidth, targetHeight);
+    const imageData = ctx2d.getImageData(0, 0, targetWidth, targetHeight);
     return {
       rgba: new Uint8Array(imageData.data.buffer),
-      width,
-      height,
+      width: targetWidth,
+      height: targetHeight,
       opacity: t.bgImageOpacity ?? 1,
     };
   } catch (e) {
@@ -258,6 +294,10 @@ export async function setActiveBgImage(themeId: string): Promise<void> {
   // overwrite the current wallpaper or keep repainting the host surface.
   if (generation !== _bgGeneration) return;
   bgImageStore.set({ url, opacity });
+  // Let the first frame of a theme switch paint before image decode and
+  // getImageData() consume the main thread. A newer theme still wins below.
+  await deferWallpaperDecode();
+  if (generation !== _bgGeneration) return;
   // GPU 路径：解码经 URL 去重，且只提交最新主题结果。
   const gpu = await decodeThemeBgRgba(t, url);
   if (generation !== _bgGeneration) return;

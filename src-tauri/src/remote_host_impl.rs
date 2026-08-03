@@ -2756,15 +2756,6 @@ async fn dispatch_invoke_request(
     // conformance suite). This LEGACY leg stays message-only on purpose: old
     // browser Remote clients consume the bare `_error` string and
     // must not change. Paired anchor: `lanWsAdapter.handleInbound`.
-    fn core_result_to_envelope(
-        r: Result<serde_json::Value, ridge_core::CoreError>,
-    ) -> serde_json::Value {
-        match r {
-            Ok(v) => serde_json::json!({ "_result": v }),
-            Err(e) => serde_json::json!({ "_error": e.to_command_string() }),
-        }
-    }
-
     // Most commands need a real Tauri context. The stashed handle gives us both
     // a managed `State<AppState>` (same Arcs as `state`) and an `AppHandle`.
     let handle = match state.app_handle.get() {
@@ -2791,7 +2782,7 @@ async fn dispatch_invoke_request(
         | "read_file"
         | "read_file_for_editor" => {
             let ctx = crate::remote_bridge::remote_ctx(&handle, state, "remote");
-            core_result_to_envelope(ridge_core::dispatch(cmd, args.clone(), &ctx))
+            dispatch_core_envelope(cmd.to_string(), args.clone(), ctx).await
         }
         "write_file" => unit(project::write_file(s(args, "path"), s(args, "content")).await),
         "apply_file_edits" => match from_arg::<Vec<project::TextEdit>>(args, "edits") {
@@ -3137,7 +3128,7 @@ async fn dispatch_invoke_request(
         // `{_result|_error}` WS envelope below — wire behaviour is unchanged.
         "get_theme_data" | "set_active_theme" | "set_user_default_cwd" => {
             let ctx = crate::remote_bridge::remote_ctx(&handle, state, "remote");
-            core_result_to_envelope(ridge_core::dispatch(cmd, args.clone(), &ctx))
+            dispatch_core_envelope(cmd.to_string(), args.clone(), ctx).await
         }
 
         // ── Search ── (S5: `text_search` migrated into ridge-core)
@@ -3145,7 +3136,7 @@ async fn dispatch_invoke_request(
         // same handler). camelCase arg keys are read by the core directly.
         "text_search" => {
             let ctx = crate::remote_bridge::remote_ctx(&handle, state, "remote");
-            core_result_to_envelope(ridge_core::dispatch(cmd, args.clone(), &ctx))
+            dispatch_core_envelope(cmd.to_string(), args.clone(), ctx).await
         }
         "filename_search" => {
             val(project::filename_search(s(args, "root"), s(args, "pattern")).await)
@@ -3378,23 +3369,47 @@ fn is_core_git_dispatch_method(method: &str) -> bool {
     CORE_GIT_DISPATCH_METHODS.contains(&method)
 }
 
+/// `ridge_core::dispatch` is synchronous by contract. Keep every migrated
+/// command off the remote WebSocket executor, not only Git: workspace/PTY and
+/// filesystem handlers may still copy buffers, walk directories, or touch a
+/// native process.
+async fn dispatch_core_offloaded(
+    method: String,
+    args: serde_json::Value,
+    ctx: ridge_core::Ctx,
+) -> Result<Result<serde_json::Value, ridge_core::CoreError>, tokio::task::JoinError> {
+    tokio::task::spawn_blocking(move || ridge_core::dispatch(&method, args, &ctx)).await
+}
+
+async fn dispatch_core_envelope(
+    method: String,
+    args: serde_json::Value,
+    ctx: ridge_core::Ctx,
+) -> serde_json::Value {
+    match dispatch_core_offloaded(method, args, ctx).await {
+        Ok(result) => match result {
+            Ok(value) => serde_json::json!({ "_result": value }),
+            Err(error) => serde_json::json!({ "_error": error.to_command_string() }),
+        },
+        Err(error) => {
+            serde_json::json!({ "_error": format!("core dispatch task failed: {error}") })
+        }
+    }
+}
+
 async fn dispatch_core_git_offloaded(
     method: String,
     args: serde_json::Value,
     ctx: ridge_core::Ctx,
     git_slot: Option<(String, u64)>,
 ) -> Result<Result<serde_json::Value, ridge_core::CoreError>, tokio::task::JoinError> {
-    tokio::task::spawn_blocking(move || {
-        match git_slot {
-            Some((slot, generation)) => {
-                ridge_core::commands::git::with_git_sync_request_generation(
-                    slot,
-                    generation,
-                    || ridge_core::dispatch(&method, args, &ctx),
-                )
-            }
-            None => ridge_core::dispatch(&method, args, &ctx),
+    tokio::task::spawn_blocking(move || match git_slot {
+        Some((slot, generation)) => {
+            ridge_core::commands::git::with_git_sync_request_generation(slot, generation, || {
+                ridge_core::dispatch(&method, args, &ctx)
+            })
         }
+        None => ridge_core::dispatch(&method, args, &ctx),
     })
     .await
 }
@@ -3446,7 +3461,14 @@ async fn dispatch_invoke_jsonrpc(
                 })),
             };
         }
-        return ridge_core::dispatch(cmd, args.clone(), &ctx).map_err(|e| e.to_json_rpc());
+        return match dispatch_core_offloaded(cmd.to_string(), args.clone(), ctx).await {
+            Ok(result) => result.map_err(|e| e.to_json_rpc()),
+            Err(error) => Err(serde_json::json!({
+                "code": JSON_RPC_INTERNAL_ERROR,
+                "message": format!("core dispatch task failed: {error}"),
+                "data": { "kind": "internal" },
+            })),
+        };
     }
 
     // Legacy methods: reuse the single source of command routing
