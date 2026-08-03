@@ -551,8 +551,16 @@ pub async fn domain_agent_roster_remove(
 
 #[derive(Deserialize)]
 pub struct PtyCreateRequest {
+    /// Stable pane identity supplied by a shell. When omitted, the kernel
+    /// generates a UUID for backwards-compatible callers.
+    pub pty_id: Option<Uuid>,
     pub shell: Option<String>,
     pub cwd: Option<String>,
+    pub workspace_id: Option<Uuid>,
+    pub role: Option<String>,
+    pub launch_profile: Option<String>,
+    pub cols: Option<u16>,
+    pub rows: Option<u16>,
 }
 
 pub async fn domain_pty_create(
@@ -563,10 +571,68 @@ pub async fn domain_pty_create(
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    match st.ptys.spawn(request.shell.as_deref(), request.cwd.as_deref()) {
-        Ok(pty_id) => Ok(Json(json!({ "ok": true, "pty_id": pty_id }))),
+    let pty_id = request.pty_id.unwrap_or_else(Uuid::new_v4);
+    let role = request.role.as_deref().unwrap_or("shell");
+    match st.ptys.spawn_command_for(
+        pty_id,
+        request.shell.as_deref(),
+        &[],
+        request.cwd.as_deref(),
+        request.workspace_id,
+        role,
+        request.launch_profile.as_deref(),
+    ) {
+        Ok(pty_id) => {
+            if let (Some(cols), Some(rows)) = (request.cols, request.rows) {
+                if let Err(error) = st.ptys.resize(pty_id, cols, rows) {
+                    let _ = st.ptys.destroy(pty_id);
+                    return Ok(bad_request(error.to_string()));
+                }
+            }
+            Ok(Json(json!({ "ok": true, "source": "ridge-kernel", "pty_id": pty_id })))
+        }
         Err(error) => Ok(bad_request(error.to_string())),
     }
+}
+
+/// Discover PTYs that outlived a desktop shell. The kernel is the lifecycle
+/// owner, so this endpoint intentionally exposes stable pane/workspace
+/// identity and bounded output sequence metadata to an authenticated local
+/// shell during restart reattachment.
+pub async fn domain_pty_list(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let ptys = st
+        .ptys
+        .list()
+        .into_iter()
+        .map(|info| {
+            let (oldest_seq, next_seq) = st.ptys.output_bounds(info.id).unwrap_or((0, 0));
+            json!({
+                "id": info.id,
+                "pty_id": info.id,
+                "pane_index": info.pane_index,
+                "workspace_id": info.workspace_id,
+                "role": info.role,
+                "launch_profile": info.launch_profile,
+                "cwd": info.cwd,
+                "status": info.status,
+                "cols": info.cols,
+                "rows": info.rows,
+                "oldest_seq": oldest_seq,
+                "next_seq": next_seq,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(json!({
+        "ok": true,
+        "source": "ridge-kernel",
+        "ptys": ptys,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -778,6 +844,7 @@ pub async fn domain_pty_output_attach(
             leases.insert(lease_id, slot);
             Ok(Json(json!({
                 "ok": true,
+                "source": "ridge-kernel",
                 "pty_id": pty_id,
                 "lease_id": lease_id,
                 "protocol": "bounded-seq-v1",
@@ -1055,6 +1122,39 @@ mod tests {
             HeaderValue::from_static("test-token"),
         );
         headers
+    }
+
+    #[tokio::test]
+    async fn pty_create_preserves_stable_pane_identity_for_reconnect() {
+        let state = test_state();
+        let pane_id = Uuid::new_v4();
+        let response = domain_pty_create(
+            State(state.clone()),
+            test_headers(),
+            Json(PtyCreateRequest {
+                pty_id: Some(pane_id),
+                shell: None,
+                cwd: None,
+                workspace_id: Some(Uuid::new_v4()),
+                role: Some("shell".into()),
+                launch_profile: None,
+                cols: Some(80),
+                rows: Some(24),
+            }),
+        )
+        .await
+        .expect("stable PTY create")
+        .0;
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["pty_id"], pane_id.to_string());
+
+        let listed = domain_pty_list(State(state.clone()), test_headers())
+            .await
+            .expect("PTY list")
+            .0;
+        assert_eq!(listed["source"], "ridge-kernel");
+        assert_eq!(listed["ptys"][0]["pty_id"], pane_id.to_string());
+        state.ptys.destroy(pane_id).expect("destroy test PTY");
     }
 
     #[test]

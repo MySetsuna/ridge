@@ -1431,6 +1431,16 @@ function expandSidebar(minWidth = 0) {
       // activeWorkspaceId 仍为空，这里主动恢复：优先切到列表里的第一个工作区
       // （即采用 host 当前工作区），列表为空才新建一个，确保用户可立即操作。
       await ensureActiveWorkspace();
+      // The kernel survives a tray exit. Rebind its stable pane-owned PTYs
+      // after saved workspaces are restored, before Pane onMount can issue a
+      // duplicate create/activate pair.
+      if (!webRemote) {
+        try {
+          await invoke<number>('reattach_kernel_ptys');
+        } catch (e) {
+          console.warn('kernel PTY reattach unavailable', e);
+        }
+      }
       // 工作区就绪后强制 fit 一次：web-remote/cloud-controller 连接后若漏了这次
       // fit，pane 终端不铺满（容器尺寸已定但 PTY cols/rows 未跟随）。
       scheduleForceFitActivePanes();

@@ -282,7 +282,10 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
             "/v1/domain/remote-host-sessions/detach",
             post(domain::domain_remote_host_session_detach),
         )
-        .route("/v1/domain/ptys", post(domain::domain_pty_create))
+        .route(
+            "/v1/domain/ptys",
+            get(domain::domain_pty_list).post(domain::domain_pty_create),
+        )
         .route(
             "/v1/domain/ptys/:pty_id/write",
             post(domain::domain_pty_write),

@@ -577,6 +577,25 @@ impl PtyRegistry {
         entries
     }
 
+    /// Return the bounded output window for a live PTY. The second value is
+    /// the next sequence number, so a reconnect can resume after `next - 1`.
+    pub fn output_bounds(&self, id: Uuid) -> Result<(u64, u64)> {
+        let hub = self
+            .ptys
+            .lock()
+            .get(&id)
+            .filter(|managed| !managed.closing.load(Ordering::Acquire))
+            .and_then(|managed| managed.output.clone())
+            .ok_or_else(|| anyhow::anyhow!("PTY output not available: {id}"))?;
+        let state = hub.state.lock();
+        let oldest = state
+            .frames
+            .front()
+            .map(|frame| frame.seq)
+            .unwrap_or(state.next_seq);
+        Ok((oldest, state.next_seq))
+    }
+
     pub fn set_status(&self, id: Uuid, status: &str) -> Result<()> {
         let mut ptys = self.ptys.lock();
         let managed = ptys
