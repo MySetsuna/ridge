@@ -150,7 +150,16 @@ export const config: WebdriverIO.Config = {
     const logFile = path.join(os.tmpdir(), 'tauri-driver.log');
     const out = openSync(logFile, 'a');
     const err = openSync(logFile, 'a');
-    driverProc = spawn(driverBin, ['--port', String(DRIVER_PORT)], {
+    const nativeDriver = process.env.TAURI_NATIVE_DRIVER?.trim();
+    const driverArgs = ['--port', String(DRIVER_PORT)];
+    // tauri-driver otherwise resolves msedgedriver from PATH. That is easy
+    // to get wrong on Windows when WebView2 auto-updates independently; an
+    // explicit path lets CI/local runs pin the driver to the actual runtime.
+    if (nativeDriver && existsSync(nativeDriver)) {
+      driverArgs.push('--native-driver', nativeDriver);
+      console.log(`tauri-driver native driver=${nativeDriver}`);
+    }
+    driverProc = spawn(driverBin, driverArgs, {
       stdio: ['ignore', out, err],
       shell: false,
       windowsHide: true,
