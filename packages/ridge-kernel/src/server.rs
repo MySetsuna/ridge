@@ -26,7 +26,20 @@ use crate::registry::{
     clear_registry, load_remote_hosts, load_roster, load_workspace_graph, remote_hosts_path,
     roster_path, workspace_graph_path, write_registry, KernelEndpoint, KernelInstanceGuard,
 };
-use crate::{domain, kernel_mcp::KernelMcpHost, pty::PtyRegistry};
+use crate::{
+    domain,
+    kernel_mcp::KernelMcpHost,
+    pty::{PtyOutputLease, PtyRegistry},
+};
+
+/// HTTP projection of one bounded PTY output lease. The lease itself owns the
+/// cursor; the per-lease poll lock prevents two concurrent long-polls from
+/// advancing that cursor twice. The registry remains the PTY lifecycle owner.
+pub(crate) struct OutputLeaseSlot {
+    pub(crate) pty_id: Uuid,
+    pub(crate) lease: PtyOutputLease,
+    pub(crate) poll_lock: tokio::sync::Mutex<()>,
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -50,6 +63,9 @@ pub struct AppState {
     pub remote_hosts_path: std::path::PathBuf,
     /// PTY process lifetime belongs to the kernel, not an API shell.
     pub ptys: Arc<PtyRegistry>,
+    /// HTTP output leases are short-lived handles into the bounded PTY replay
+    /// hub. This map contains no output bytes and is safe to reap on destroy.
+    pub(crate) output_leases: Arc<std::sync::Mutex<HashMap<Uuid, Arc<OutputLeaseSlot>>>>,
     /// Optional host-granted filesystem roots for kernel domain reads. An
     /// empty scope preserves the desktop migration window (unrestricted).
     pub fs_scope: ridge_core::sandbox::RootScope,
@@ -105,6 +121,7 @@ async fn health(State(st): State<AppState>) -> Json<HealthBody> {
             "agents.roster",
             "git.status",
             "ptys.lifecycle",
+            "ptys.output-lease",
             "remote.hosts",
             "workspaces",
             "mcp",
@@ -134,6 +151,7 @@ async fn status(
             "agents.roster",
             "git.status",
             "ptys.lifecycle",
+            "ptys.output-lease",
             "remote.hosts",
             "workspaces",
             "mcp",
@@ -227,6 +245,7 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         )),
         remote_hosts_path: remote_hosts_path(),
         ptys: Arc::new(PtyRegistry::default()),
+        output_leases: Arc::new(std::sync::Mutex::new(HashMap::new())),
         fs_scope: domain::fs_scope_from_env(),
     };
 
@@ -275,6 +294,18 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         .route(
             "/v1/domain/ptys/:pty_id/clear",
             post(domain::domain_pty_clear),
+        )
+        .route(
+            "/v1/domain/ptys/:pty_id/output",
+            post(domain::domain_pty_output_attach),
+        )
+        .route(
+            "/v1/domain/ptys/:pty_id/output/:lease_id",
+            get(domain::domain_pty_output_poll).delete(domain::domain_pty_output_detach),
+        )
+        .route(
+            "/v1/domain/ptys/:pty_id/output/:lease_id/resync",
+            post(domain::domain_pty_output_resync),
         )
         .route(
             "/v1/domain/ptys/:pty_id",
