@@ -5,6 +5,17 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 105 update (2026-08-03)
+
+The remote-session attach gate now refreshes the kernel-owned host topology
+before accepting a session. `ensure_host_connected` projects only a successful
+kernel snapshot and rejects missing/disconnected hosts or an unavailable
+kernel, preventing stale shell state from routing bytes to an invalid Host.
+Host tests remain 14/14. This follow-up is pushed but unreleased; the remaining
+kernel slice is transactional session flags/live PTY status with local rollback.
+
+Archive: `docs/iterations/2026-08-03-iteration-105-kernel-host-attach-read.md`.
+
 ## Iteration 104 update (2026-08-03)
 
 Remote-host command mutations now use the kernel as the authority before the
