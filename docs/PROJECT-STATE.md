@@ -42,6 +42,16 @@ full Kernel PTY authority is complete.
 
 Archive: `docs/iterations/2026-08-03-iteration-124-tauri-pty-tree-kill.md`.
 
+## Iteration 125 update (2026-08-03)
+
+Host-session drag now funnels `pointercancel` and window `blur` through one
+cleanup path. The drag sentinel, pane hover preview, cursor, and global
+listeners are all released, preventing a mobile system gesture or focus loss
+from leaving a stuck drag state. The real EventTarget regression test passes;
+`871b251` is pushed. No version bump or publication was made.
+
+Archive: `docs/iterations/2026-08-03-iteration-125-host-drag-cancel.md`.
+
 ## Iteration 121 update (2026-08-03)
 
 Installed/Desktop terminal links now preserve a URL when the first visual
