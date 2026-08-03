@@ -2113,7 +2113,7 @@ fn git_revert_sync(repo_root: String, hash: String) -> Result<(), String> {
 /// output; we clamp those to 0 so the pill stays numeric. Returns `(0, 0)`
 /// for a clean tree or when `git` isn't reachable — the frontend just shows
 /// no counter in that case, matching "nothing to report".
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GitDiffSummary {
     pub added: u32,
     pub removed: u32,

@@ -262,9 +262,16 @@ pub async fn git_revert(repo_root: String, hash: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn git_diff_summary(
     repo_root: String,
-    slot: Option<String>,
+    _slot: Option<String>,
 ) -> Result<GitDiffSummary, String> {
-    ridge_core::commands::git::git_diff_summary(repo_root, slot).await
+    tokio::task::spawn_blocking(move || {
+        let endpoint = crate::kernel_lifecycle::ensure_kernel_running()?;
+        ridge_kernel::client::read_domain_git_diff_summary(&endpoint, &repo_root)?.ok_or_else(|| {
+            format!("Not a git repo: {repo_root}")
+        })
+    })
+    .await
+    .map_err(|error| format!("kernel Git diff summary task failed: {error}"))?
 }
 
 #[tauri::command]

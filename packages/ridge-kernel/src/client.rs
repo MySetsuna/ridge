@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::registry::{clear_registry, read_endpoint, KernelEndpoint};
-use ridge_core::commands::git::{BranchInfo, ScmRepoStatus};
+use ridge_core::commands::git::{BranchInfo, GitDiffSummary, ScmRepoStatus};
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct KernelPtyInfo {
@@ -276,6 +276,29 @@ fn decode_domain_git_branches(value: Value) -> Result<Option<Vec<BranchInfo>>, S
         .map_err(|error| format!("decode kernel Git branches response: {error}"))
 }
 
+fn decode_domain_git_diff_summary(value: Value) -> Result<Option<GitDiffSummary>, String> {
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("kernel Git diff summary request failed")
+            .to_string());
+    }
+    if value.get("source").and_then(Value::as_str) != Some("ridge-kernel") {
+        return Err("kernel Git diff summary response has unexpected source".to_string());
+    }
+    if value.get("is_repo").and_then(Value::as_bool) != Some(true) {
+        return Ok(None);
+    }
+    let summary = value
+        .get("summary")
+        .cloned()
+        .ok_or_else(|| "kernel Git diff summary response omitted summary".to_string())?;
+    serde_json::from_value(summary)
+        .map(Some)
+        .map_err(|error| format!("decode kernel Git diff summary response: {error}"))
+}
+
 fn encode_query_component(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut encoded = String::with_capacity(value.len());
@@ -353,6 +376,25 @@ pub fn read_domain_git_branches(
         None,
     )?;
     decode_domain_git_branches(value)
+}
+
+/// Read the aggregated diff line counts used by the desktop pane pill. A
+/// `None` result is a confirmed non-Git path; transport, auth, malformed
+/// payload, and kernel Git failures remain visible errors.
+pub fn read_domain_git_diff_summary(
+    endpoint: &KernelEndpoint,
+    path: &str,
+) -> Result<Option<GitDiffSummary>, String> {
+    let value = request_json(
+        endpoint,
+        "GET",
+        &format!(
+            "/v1/domain/git/diff-summary?path={}",
+            encode_query_component(path)
+        ),
+        None,
+    )?;
+    decode_domain_git_diff_summary(value)
 }
 
 /// Discover PTYs owned by the long-lived kernel process.
@@ -1099,6 +1141,36 @@ mod tests {
             "source": "tauri",
             "is_repo": true,
             "branches": []
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn domain_git_diff_summary_contract_preserves_non_git_and_counts() {
+        assert!(decode_domain_git_diff_summary(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": false,
+            "summary": {"added": 0, "removed": 0}
+        }))
+        .unwrap()
+        .is_none());
+
+        let summary = decode_domain_git_diff_summary(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "summary": {"added": 12, "removed": 4}
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(summary, GitDiffSummary { added: 12, removed: 4 });
+
+        assert!(decode_domain_git_diff_summary(json!({
+            "ok": true,
+            "source": "tauri",
+            "is_repo": true,
+            "summary": {"added": 1, "removed": 1}
         }))
         .is_err());
     }

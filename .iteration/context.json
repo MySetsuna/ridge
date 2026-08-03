@@ -1,32 +1,38 @@
 {
   "schema_version": 1,
-  "task": "Make desktop sidebar panels lazy-mounted and retained so startup and tab switching avoid eager Explorer/Git/Host/Agent/Remote work",
+  "task": "Move high-frequency desktop git_diff_summary reads behind the authenticated ridge-kernel Git domain",
   "symbols": [
-    "sidebarVisited",
-    "sidebarTab",
-    "SourceControl",
-    "HostsPanel",
-    "AgentCenterPanel",
-    "RemotePanel"
+    "domain_git_diff_summary",
+    "read_domain_git_diff_summary",
+    "git_diff_summary",
+    "GitDiffSummary",
+    "git_diff_summary_sync"
   ],
   "files": [
     "docs/PROJECT-STATE.md",
     "docs/REQUIREMENTS-SPEC.md",
     "docs/archive/events-2026-08.jsonl",
-    "src/routes/+page.svelte",
-    "src/lib/components/SidebarLazyMount.test.ts",
-    "docs/iterations/2026-08-04-iteration-159-sidebar-lazy-mount.md"
+    "packages/ridge-core/src/commands/git.rs",
+    "packages/ridge-kernel/src/client.rs",
+    "packages/ridge-kernel/src/domain.rs",
+    "packages/ridge-kernel/src/server.rs",
+    "src-tauri/src/commands/git.rs",
+    "docs/iterations/2026-08-04-iteration-160-kernel-git-diff-summary.md"
   ],
   "tests": [
-    "src/lib/components/SidebarLazyMount.test.ts (first-visit mount contract)",
-    "pnpm exec vitest run src/lib/components/SidebarLazyMount.test.ts --reporter=dot",
+    "packages/ridge-kernel/src/client.rs (typed diff-summary decoder contract)",
+    "packages/ridge-kernel/src/domain.rs (non-Git diff-summary domain test)",
+    "cargo test -p ridge-kernel --lib",
+    "cargo test -p ridge --lib",
+    "cargo test -p ridge-core --lib",
+    "pnpm exec vitest run --reporter=dot",
     "pnpm check"
   ],
   "constraints": [
     "NotebookLM is strategy input only; runtime, tests, and source remain factual authority",
     "Desktop production pane PTYs, SCM status reads, and kernel bootstrap are kernel-owned",
     "Kernel watcher tolerates transient health failures but exits after a bounded consecutive threshold",
-    "Sidebar panels mount only after first visit and remain mounted across tab switches",
+    "Desktop high-frequency Git diff-summary reads use the authenticated kernel domain",
     "No hidden local fallback after kernel bootstrap/domain request failure",
     "Do not scan generated or minified artifacts as source evidence"
   ],
@@ -111,6 +117,7 @@
       "docs/iterations/2026-08-04-iteration-157-kernel-watcher-health.md",
       "docs/iterations/2026-08-04-iteration-158-settings-lazy-load.md",
       "docs/iterations/2026-08-04-iteration-159-sidebar-lazy-mount.md",
+      "docs/iterations/2026-08-04-iteration-160-kernel-git-diff-summary.md",
       "docs/iterations/CONTRACT-iteration-76.md",
       "docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md",
       "docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md",
