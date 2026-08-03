@@ -396,6 +396,24 @@ impl HostRegistry {
         }
     }
 
+    /// Publish one outbound connection snapshot to the kernel, keeping the
+    /// session list and connected status in a single authoritative write.
+    pub fn set_outbound_snapshot_kernel_authoritative(
+        &self,
+        host_id: &str,
+        sessions: Vec<HostSessionMeta>,
+    ) -> Result<(), String> {
+        let mut host = self
+            .hosts
+            .read()
+            .get(host_id)
+            .ok_or_else(|| format!("鏈煡涓绘満: {host_id}"))?;
+        host.sessions = sessions;
+        host.status = HostStatus::Connected;
+        host.detail = format!("outbound listed {} session(s)", host.sessions.len());
+        self.upsert_kernel_authoritative(host)
+    }
+
     /// Pane ids registered as foreign for this remote session.
     pub fn panes_for_remote(&self, host_id: &str, remote_pane_id: &str) -> Vec<uuid::Uuid> {
         self.foreign_by_pane
@@ -803,23 +821,37 @@ pub fn bind_outbound_and_list(
     host_id: &str,
     transport: Arc<dyn OutboundTransport>,
 ) -> Result<Vec<HostSessionMeta>, String> {
+    bind_outbound_and_list_with(hosts, host_id, transport, |hosts, sessions| {
+        hosts.set_outbound_snapshot_kernel_authoritative(host_id, sessions)
+    })
+}
+
+fn bind_outbound_and_list_with<F>(
+    hosts: &HostRegistry,
+    host_id: &str,
+    transport: Arc<dyn OutboundTransport>,
+    commit: F,
+) -> Result<Vec<HostSessionMeta>, String>
+where
+    F: FnOnce(&HostRegistry, Vec<HostSessionMeta>) -> Result<(), String>,
+{
     let client = Arc::new(OutboundClient::new(host_id, transport));
     let list = client.connect_and_list()?;
     let sessions: Vec<HostSessionMeta> = list
         .into_iter()
-        .map(|s: RemoteSessionInfo| HostSessionMeta {
-            id: s.id,
-            title: s.title,
-            attached: false,
+        .map(|s: RemoteSessionInfo| {
+            let attached = !hosts.panes_for_remote(host_id, &s.id).is_empty();
+            HostSessionMeta {
+                id: s.id,
+                title: s.title,
+                // A reconnect/list refresh must not clear an already-rendered
+                // foreign pane's ownership flag while rebuilding the remote list.
+                attached,
+            }
         })
         .collect();
-    hosts.replace_sessions(host_id, sessions.clone());
+    commit(hosts, sessions.clone())?;
     hosts.bind_outbound(client);
-    hosts.set_status(
-        host_id,
-        HostStatus::Connected,
-        format!("outbound listed {} session(s)", sessions.len()),
-    );
     hosts.publish_control_plane();
     Ok(sessions)
 }
@@ -1690,6 +1722,39 @@ mod tests {
     }
 
     #[test]
+    fn outbound_list_preserves_existing_foreign_attachment_flag() {
+        let reg = HostRegistry::default();
+        reg.upsert(HostRecord {
+            id: "lan:preserve".into(),
+            kind: HostKind::Remote,
+            label: "preserve".into(),
+            addr: "x".into(),
+            status: HostStatus::Connected,
+            detail: "ok".into(),
+            sessions: vec![],
+        });
+        reg.register_foreign(
+            uuid::Uuid::new_v4(),
+            RemoteRef {
+                host_id: "lan:preserve".into(),
+                host_label: "preserve".into(),
+                remote_pane_id: "main".into(),
+                kind: HostKind::Remote,
+            },
+        );
+        let mock = Arc::new(MockOutboundTransport::new());
+        mock.preset_list(&[RemoteSessionInfo {
+            id: "main".into(),
+            title: "shell".into(),
+        }]);
+        bind_outbound_and_list_with(&reg, "lan:preserve", mock, |_, sessions| {
+            assert!(sessions[0].attached);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn bind_outbound_lists_and_attach_subscribes_write() {
         let reg = HostRegistry::default();
         reg.upsert(HostRecord {
@@ -1712,7 +1777,17 @@ mod tests {
                 title: "shell-2".into(),
             },
         ]);
-        let sessions = bind_outbound_and_list(&reg, "lan:h", mock.clone()).unwrap();
+        let sessions = bind_outbound_and_list_with(
+            &reg,
+            "lan:h",
+            mock.clone(),
+            |hosts, sessions| {
+                hosts.replace_sessions("lan:h", sessions);
+                hosts.set_status("lan:h", HostStatus::Connected, "test");
+                Ok(())
+            },
+        )
+        .unwrap();
         assert_eq!(sessions.len(), 2);
         assert_eq!(reg.get("lan:h").unwrap().status, HostStatus::Connected);
 
@@ -1900,7 +1975,17 @@ mod tests {
             detail: "ok".into(),
             sessions: vec![],
         });
-        bind_outbound_and_list(&state.hosts, "lan:h", mock.clone()).unwrap();
+        bind_outbound_and_list_with(
+            &state.hosts,
+            "lan:h",
+            mock.clone(),
+            |hosts, sessions| {
+                hosts.replace_sessions("lan:h", sessions);
+                hosts.set_status("lan:h", HostStatus::Connected, "test");
+                Ok(())
+            },
+        )
+        .unwrap();
         let client = state.hosts.outbound_client("lan:h").unwrap();
         client.subscribe("main").unwrap();
         let remote = RemoteRef {
@@ -1969,7 +2054,12 @@ mod tests {
             id: "main".into(),
             title: "t".into(),
         }]);
-        bind_outbound_and_list(&reg, "lan:h", mock).unwrap();
+        bind_outbound_and_list_with(&reg, "lan:h", mock, |hosts, sessions| {
+            hosts.replace_sessions("lan:h", sessions);
+            hosts.set_status("lan:h", HostStatus::Connected, "test");
+            Ok(())
+        })
+        .unwrap();
         let c = reg.outbound_client("lan:h").unwrap();
         c.subscribe("main").unwrap();
         disconnect_host_outbound(&reg, "lan:h");
