@@ -50,7 +50,12 @@
     defaultOptions: {
       queries: {
         refetchOnWindowFocus: false,
-        retry: 1,
+        // Remote owns reconnect/backoff at the transport layer. Retrying a
+        // failed Git/File query here would duplicate an RPC while the socket
+        // is already recovering; explicit refresh remains available in the
+        // sidebar and uses the same Query key/single-flight path.
+        retry: false,
+        refetchOnReconnect: false,
       },
     },
   });

@@ -11,6 +11,8 @@ describe('shared sidebar request lifecycle guards', () => {
     expect(fileTree).toContain('provider.listDir(target, controller.signal)');
     expect(fileTree).toContain('generation !== requestGeneration');
     expect(fileTree).toContain('onDestroy');
+    expect(fileTree).toContain('provider.refreshDir(target, controller.signal)');
+    expect(fileTree).toContain('load(path, true)');
   });
 
   it('cancels and fences search responses', () => {

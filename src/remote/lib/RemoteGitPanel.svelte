@@ -75,7 +75,9 @@
     loading = true;
     error = null;
     try {
-      const next = await provider.gitStatus(controller.signal);
+      const next = force && provider.refreshGit
+        ? await provider.refreshGit(controller.signal)
+        : await provider.gitStatus(controller.signal);
       if (controller.signal.aborted || generation !== loadGeneration) return;
       info = next;
     } catch (e) {
@@ -188,7 +190,7 @@
     </span>
     <button class="view-btn" class:active={view === 'changes'} type="button" onclick={() => view = 'changes'}>{$t('scm.changesSection')}</button>
     <button class="view-btn" class:active={view === 'graph'} type="button" onclick={() => view = 'graph'}>{$t('scm.graphSection')}</button>
-    <button class="icon-btn" type="button" onclick={() => void load()} disabled={!!action} title={$t('scm.refresh')} aria-label={$t('scm.refresh')}><RefreshCw class="w-4 h-4" /></button>
+    <button class="icon-btn" type="button" onclick={() => void load(true)} disabled={!!action} title={$t('scm.refresh')} aria-label={$t('scm.refresh')}><RefreshCw class="w-4 h-4" /></button>
   </div>
 
   {#if action}
