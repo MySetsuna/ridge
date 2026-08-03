@@ -5,6 +5,20 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 106 update (2026-08-03)
+
+Remote host session attach is now a fail-closed transaction. The local foreign
+PTY is created before layout/host mutation; subscription happens before split;
+split, terminal install, sink, foreign metadata, and outbound subscription are
+rolled back together on later failure. Missing workspaces no longer receive a
+random pane id; concurrent attaches are serialized and duplicate sessions are
+rejected. `session.attached` commits through the kernel-authoritative host
+mutation path. Rust host tests are 16/16 and `cargo check -p ridge --lib`
+passes with only existing warnings. This follow-up is pushed but unreleased;
+the daily publication window remains frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-106-host-attach-transaction.md`.
+
 ## Iteration 105 update (2026-08-03)
 
 The remote-session attach gate now refreshes the kernel-owned host topology
