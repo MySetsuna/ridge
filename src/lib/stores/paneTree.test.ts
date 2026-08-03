@@ -1285,3 +1285,69 @@ describe('closeWorkspace runtime cleanup', () => {
     expect(get(paneTreeModule.workspacePaneTrees).has('ws-closing')).toBe(false);
   });
 });
+
+describe('workspace switch responsiveness', () => {
+  beforeEach(() => {
+    globalEventListeners.clear();
+    paneTreeModule.activeWorkspaceId.set('ws-current');
+    paneTreeModule.paneTreeStore.set({ type: 'leaf', id: 'pane-current' });
+    paneTreeModule.workspacePaneTrees.set(
+      new Map([
+        ['ws-current', { type: 'leaf', id: 'pane-current' }],
+        ['ws-cached', { type: 'leaf', id: 'pane-cached', cwd: '/cached' }],
+      ])
+    );
+    paneTreeModule.paneCwdStore.set({});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    globalEventListeners.clear();
+  });
+
+  it('activates a cached tab before slow backend switch/layout IPC resolves', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const invokeMock = invoke as ReturnType<typeof vi.fn>;
+    let releaseSwitch!: () => void;
+    const switchBlocked = new Promise<void>((resolve) => {
+      releaseSwitch = resolve;
+    });
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'claim_workspace_window') return { claimed: true, ownerWindowLabel: 'main' };
+      if (cmd === 'switch_window_workspace') {
+        await switchBlocked;
+        return undefined;
+      }
+      if (cmd === 'get_pane_layout_for') {
+        return { type: 'leaf', id: 'pane-cached', cwd: '/cached' };
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    const pending = paneTreeModule.switchWorkspace('ws-cached');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(get(paneTreeModule.activeWorkspaceId)).toBe('ws-cached');
+    expect(get(paneTreeModule.paneTreeStore)).toEqual({
+      type: 'leaf',
+      id: 'pane-cached',
+      cwd: '/cached',
+    });
+
+    releaseSwitch();
+    await expect(pending).resolves.toBe(true);
+  });
+
+  it('uses the supplied workspace tree for listener registration', async () => {
+    await paneTreeModule.setupPaneCwdListeners('ws-cached', {
+      type: 'leaf',
+      id: 'pane-cached',
+    });
+
+    emitBackendEvent<{ cwd: string }>('pane-cwd-changed-ws-cached-pane-cached', {
+      cwd: '/from-cached-pane',
+    });
+    expect(paneTreeModule.getPaneCwd('ws-cached', 'pane-cached')).toBe('/from-cached-pane');
+    expect(paneTreeModule.getPaneCwd('ws-cached', 'pane-current')).toBeUndefined();
+  });
+});

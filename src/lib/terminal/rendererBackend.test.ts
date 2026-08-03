@@ -26,6 +26,14 @@ describe('terminal renderer bootstrap contracts', () => {
 		expect(paneSource).not.toContain('caret-color: var(--rg-accent, currentColor);');
 	});
 
+	it('defers shared-host invalidation until parked panes finish restoring', () => {
+		expect(managerSource).toContain('private _hostInvalidateSuspendDepth = 0;');
+		expect(managerSource).toContain('private _deferredHostInvalidate = false;');
+		expect(managerSource).toContain('const restore = shouldRestore');
+		expect(managerSource).toContain('void restore.then(paint, paint);');
+		expect(managerSource).toContain('return Promise.all(pending).then(() => undefined);');
+	});
+
 	it('keeps link hover affordance continuous and thin', () => {
 		expect(managerSource).toContain("'height:1px'");
 		expect(managerSource).toContain('regionsForSpan(ent.kernel, span)');

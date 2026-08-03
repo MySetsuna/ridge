@@ -394,6 +394,10 @@ export const splitResizeUiState = writable<SplitResizeUiState>({
 
 export const activeWorkspaceId = writable<string>('');
 
+// Latest-wins guard for rapid tab clicks. Backend IPC remains authoritative,
+// but stale layout replies must never repaint a newer selection.
+let workspaceSwitchGeneration = 0;
+
 export const workspacesList = writable<
   { id: string; index: number; name?: string; displaySeq: number }[]
 >([]);
@@ -1418,20 +1422,55 @@ export async function createWorkspace() {
 
 export async function switchWorkspace(workspaceId: string): Promise<boolean> {
   if (!isTauri()) return false;
+  const generation = ++workspaceSwitchGeneration;
+  const previousWorkspaceId = get(activeWorkspaceId);
+  const previousTree = get(paneTreeStore);
+  let optimisticallyActivated = false;
   try {
     if (!(await claimWorkspaceForThisWindow(workspaceId))) return false;
+    if (generation !== workspaceSwitchGeneration) return false;
+
+    // Keep-alive tabs already have a complete tree. Flip the local view before
+    // the backend round-trip so a slow IPC/layout fetch cannot freeze the tab.
+    // The authoritative layout below still replaces the cache when it differs.
+    const cached = get(workspacePaneTrees).get(workspaceId);
+    if (cached && get(activeWorkspaceId) !== workspaceId) {
+      setActiveTree(workspaceId, cached);
+      activeWorkspaceId.set(workspaceId);
+      reconcileActivePaneId(cached);
+      paneCwdStore.update((store) =>
+        mergePaneCwds(store, extractCwdsFromLayout(cached, workspaceId))
+      );
+      optimisticallyActivated = true;
+    }
+
     await invoke(switchWorkspaceCommand, { workspaceId });
+    if (generation !== workspaceSwitchGeneration) return false;
     const layout = await invoke<PaneNode>('get_pane_layout_for', {
       workspaceId,
     });
-    setActiveTree(workspaceId, layout);
+    if (generation !== workspaceSwitchGeneration) return false;
+    const cachedLayout = get(workspacePaneTrees).get(workspaceId);
+    if (!cachedLayout || !paneLayoutsEquivalent(cachedLayout, layout)) {
+      setActiveTree(workspaceId, layout);
+    }
     activeWorkspaceId.set(workspaceId);
     reconcileActivePaneId(layout);
     const cwds = extractCwdsFromLayout(layout, workspaceId);
     paneCwdStore.update((store) => mergePaneCwds(store, cwds));
-    await setupPaneCwdListeners(workspaceId);
+    await setupPaneCwdListeners(workspaceId, layout);
     return true;
   } catch (e) {
+    if (
+      optimisticallyActivated &&
+      generation === workspaceSwitchGeneration &&
+      previousWorkspaceId &&
+      get(activeWorkspaceId) === workspaceId
+    ) {
+      setActiveTree(previousWorkspaceId, previousTree);
+      activeWorkspaceId.set(previousWorkspaceId);
+      reconcileActivePaneId(previousTree);
+    }
     console.error('switchWorkspace', workspaceId, e);
     reportDevIssue({
       title: 'Workspace switch failed',
@@ -2159,8 +2198,12 @@ export function extractCwdsFromLayout(
  * Listeners are tracked so they can be torn down on workspace switch.
  */
 const activeCwdListeners = new Map<string, () => void>();
+const cwdListenerGenerations = new Map<string, number>();
 
-export async function setupPaneCwdListeners(workspaceId: string): Promise<void> {
+export async function setupPaneCwdListeners(
+  workspaceId: string,
+  treeOverride?: PaneNode
+): Promise<void> {
   if (!isTauri()) return;
 
   // Tear down any existing listeners for this workspace
@@ -2170,22 +2213,32 @@ export async function setupPaneCwdListeners(workspaceId: string): Promise<void> 
     activeCwdListeners.delete(workspaceId);
   }
 
-  // Collect all pane IDs in the current tree
-  const tree = get(paneTreeStore);
+  const generation = (cwdListenerGenerations.get(workspaceId) ?? 0) + 1;
+  cwdListenerGenerations.set(workspaceId, generation);
+  // An explicit tree lets a background workspace switch register listeners
+  // without accidentally reading the pane tree of a newer active workspace.
+  const tree = treeOverride ?? get(workspacePaneTrees).get(workspaceId) ?? get(paneTreeStore);
   const paneIds = getAllPaneIds(tree);
 
-  const unlisteners: Array<() => void> = [];
-  for (const paneId of paneIds) {
-    if (!paneId) continue; // skip empty IDs (e.g., pre-hydration default leaf)
-    const ch = `pane-cwd-changed-${workspaceId}-${paneId}`;
-    const unlisten = await listen<{ cwd: string | null }>(ch, (e) => {
-      setPaneCwd(workspaceId, paneId, e.payload.cwd);
-    });
-    unlisteners.push(unlisten);
+  const registrations = await Promise.all(
+    paneIds.filter(Boolean).map(async (paneId) => {
+      const ch = `pane-cwd-changed-${workspaceId}-${paneId}`;
+      const unlisten = await listen<{ cwd: string | null }>(ch, (e) => {
+        setPaneCwd(workspaceId, paneId, e.payload.cwd);
+      });
+      return unlisten;
+    })
+  );
+
+  // A newer refresh for the same workspace may have completed while the
+  // listeners above were registering. Retire this stale batch immediately.
+  if (cwdListenerGenerations.get(workspaceId) !== generation) {
+    registrations.forEach((unlisten) => unlisten());
+    return;
   }
 
   activeCwdListeners.set(workspaceId, () => {
-    unlisteners.forEach((u) => u());
+    registrations.forEach((unlisten) => unlisten());
   });
 }
 
