@@ -26,6 +26,25 @@ pub use ridge_core::commands::git::{
     GitFileVersions, GitGuardStats, GitOpInProgress, GitRepoInfo, ScmFile, ScmRepoStatus,
 };
 
+use serde_json::{json, Value};
+
+async fn run_kernel_git_mutation(request: Value) -> Result<Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let endpoint = crate::kernel_lifecycle::ensure_kernel_running()?;
+        ridge_kernel::client::mutate_domain_git(&endpoint, &request)
+    })
+    .await
+    .map_err(|error| format!("kernel Git mutation task failed: {error}"))?
+}
+
+fn mutation_output(value: Value) -> String {
+    value
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
 // ── `#[tauri::command]` registration wrappers (delegate to ridge-core) ──
 
 /// OP-GIT-BYPASS: desktop diagnostics for timeout kills / acquire timeouts / caps.
@@ -75,12 +94,24 @@ pub async fn get_scm_status_fast(
 
 #[tauri::command]
 pub async fn git_stage(repo_root: String, paths: Vec<String>) -> Result<(), String> {
-    ridge_core::commands::git::git_stage(repo_root, paths).await
+    run_kernel_git_mutation(json!({
+        "operation": "stage",
+        "repo_root": repo_root,
+        "paths": paths,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
 pub async fn git_unstage(repo_root: String, paths: Vec<String>) -> Result<(), String> {
-    ridge_core::commands::git::git_unstage(repo_root, paths).await
+    run_kernel_git_mutation(json!({
+        "operation": "unstage",
+        "repo_root": repo_root,
+        "paths": paths,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
@@ -99,7 +130,14 @@ pub async fn git_commit(
     message: String,
     amend: Option<bool>,
 ) -> Result<(), String> {
-    ridge_core::commands::git::git_commit(repo_root, message, amend).await
+    run_kernel_git_mutation(json!({
+        "operation": "commit",
+        "repo_root": repo_root,
+        "message": message,
+        "amend": amend,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]
@@ -120,7 +158,15 @@ pub async fn git_checkout(
     create: Option<bool>,
     base: Option<String>,
 ) -> Result<(), String> {
-    ridge_core::commands::git::git_checkout(repo_root, branch, create, base).await
+    run_kernel_git_mutation(json!({
+        "operation": "checkout",
+        "repo_root": repo_root,
+        "branch": branch,
+        "create": create,
+        "base": base,
+    }))
+    .await
+    .map(|_| ())
 }
 
 /// 分支：合并进当前分支（SCM 图谱分支右键菜单）。
@@ -152,7 +198,13 @@ pub async fn git_rename_branch(
 /// 分支：推送到 origin 并设上游。
 #[tauri::command]
 pub async fn git_push_branch(repo_root: String, branch: String) -> Result<String, String> {
-    ridge_core::commands::git::git_push_branch(repo_root, branch).await
+    let response = run_kernel_git_mutation(json!({
+        "operation": "push-branch",
+        "repo_root": repo_root,
+        "branch": branch,
+    }))
+    .await?;
+    Ok(mutation_output(response))
 }
 
 /// 变基：当前分支变基到 onto（分支/commit）。
@@ -226,7 +278,13 @@ pub async fn git_pull(repo_root: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn git_push(repo_root: String, set_upstream: Option<bool>) -> Result<(), String> {
-    ridge_core::commands::git::git_push(repo_root, set_upstream).await
+    run_kernel_git_mutation(json!({
+        "operation": "push",
+        "repo_root": repo_root,
+        "set_upstream": set_upstream,
+    }))
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]

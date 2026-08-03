@@ -299,6 +299,20 @@ fn decode_domain_git_diff_summary(value: Value) -> Result<Option<GitDiffSummary>
         .map_err(|error| format!("decode kernel Git diff summary response: {error}"))
 }
 
+fn decode_domain_git_mutation(value: Value) -> Result<Value, String> {
+    if value.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("kernel Git mutation failed")
+            .to_string());
+    }
+    if value.get("source").and_then(Value::as_str) != Some("ridge-kernel") {
+        return Err("kernel Git mutation response has unexpected source".to_string());
+    }
+    Ok(value)
+}
+
 fn encode_query_component(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut encoded = String::with_capacity(value.len());
@@ -395,6 +409,19 @@ pub fn read_domain_git_diff_summary(
         None,
     )?;
     decode_domain_git_diff_summary(value)
+}
+
+/// Execute one allowlisted Git mutation in the kernel-owned domain. The
+/// operation is encoded in the typed request body; this helper never accepts
+/// arbitrary argv and never retries a write.
+pub fn mutate_domain_git(endpoint: &KernelEndpoint, request: &Value) -> Result<Value, String> {
+    let value = request_json(
+        endpoint,
+        "POST",
+        "/v1/domain/git/mutate",
+        Some(request),
+    )?;
+    decode_domain_git_mutation(value)
 }
 
 /// Discover PTYs owned by the long-lived kernel process.
@@ -1171,6 +1198,29 @@ mod tests {
             "source": "tauri",
             "is_repo": true,
             "summary": {"added": 1, "removed": 1}
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn domain_git_mutation_contract_requires_kernel_source() {
+        let response = decode_domain_git_mutation(json!({
+            "ok": true,
+            "source": "ridge-kernel",
+            "is_repo": true,
+            "output": null
+        }))
+        .unwrap();
+        assert_eq!(response["ok"], true);
+        assert!(decode_domain_git_mutation(json!({
+            "ok": true,
+            "source": "tauri"
+        }))
+        .is_err());
+        assert!(decode_domain_git_mutation(json!({
+            "ok": false,
+            "source": "ridge-kernel",
+            "error": "Not a git repo"
         }))
         .is_err());
     }

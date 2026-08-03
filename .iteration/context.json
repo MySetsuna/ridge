@@ -1,9 +1,12 @@
 {
   "schema_version": 1,
-  "task": "Move high-frequency desktop git_diff_summary reads behind the authenticated ridge-kernel Git domain",
+  "task": "Move high-frequency desktop Git reads and allowlisted mutations behind the authenticated ridge-kernel Git domain",
   "symbols": [
     "domain_git_diff_summary",
     "read_domain_git_diff_summary",
+    "domain_git_mutate",
+    "mutate_domain_git",
+    "GitMutationRequest",
     "git_diff_summary",
     "GitDiffSummary",
     "git_diff_summary_sync"
@@ -20,8 +23,8 @@
     "docs/iterations/2026-08-04-iteration-160-kernel-git-diff-summary.md"
   ],
   "tests": [
-    "packages/ridge-kernel/src/client.rs (typed diff-summary decoder contract)",
-    "packages/ridge-kernel/src/domain.rs (non-Git diff-summary domain test)",
+    "packages/ridge-kernel/src/client.rs (typed diff-summary and mutation decoder contracts)",
+    "packages/ridge-kernel/src/domain.rs (non-Git diff-summary and mutation guard tests)",
     "cargo test -p ridge-kernel --lib",
     "cargo test -p ridge --lib",
     "cargo test -p ridge-core --lib",
@@ -32,7 +35,7 @@
     "NotebookLM is strategy input only; runtime, tests, and source remain factual authority",
     "Desktop production pane PTYs, SCM status reads, and kernel bootstrap are kernel-owned",
     "Kernel watcher tolerates transient health failures but exits after a bounded consecutive threshold",
-    "Desktop high-frequency Git diff-summary reads use the authenticated kernel domain",
+    "Desktop high-frequency Git reads and allowlisted stage/unstage/commit/checkout/push mutations use the authenticated kernel domain",
     "No hidden local fallback after kernel bootstrap/domain request failure",
     "Do not scan generated or minified artifacts as source evidence"
   ],
