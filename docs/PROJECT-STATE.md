@@ -5,6 +5,19 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Iteration 102 update (2026-08-03)
+
+The remaining PWA notch gap was in the pre-`MainApp` reconnect fallback: LAN
+`AuthScreen` and cloud `CloudAuthScreen` both render connecting/failure detail in
+a fixed full-viewport screen that previously used only `padding:24px`. Both
+screens now reserve top, bottom, left, and right display-cutout insets and allow
+long diagnostics to scroll. The existing `MainApp` reconnect/failure banner
+safe-area contract remains unchanged. Targeted PWA tests (4), full Vitest
+(144 files / 1490 passed / 1 skipped), `pnpm check`, remote mobile PWA build,
+and LAN desktop/mobile E2E all pass. This follow-up is committed and pushed;
+the daily publication window remains frozen after `v0.1.54`.
+Archive: `docs/iterations/2026-08-03-iteration-102-pwa-auth-safe-area.md`.
+
 ## Iteration 101 update (2026-08-03)
 
 Remote mobile Git first paint is now asynchronous: `git_status` returns only

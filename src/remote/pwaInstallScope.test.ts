@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 
 const mainSource = readFileSync(new URL('./MainApp.svelte', import.meta.url), 'utf8');
 const indexSource = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+const authSource = readFileSync(new URL('./AuthScreen.svelte', import.meta.url), 'utf8');
+const cloudAuthSource = readFileSync(new URL('./CloudAuthScreen.svelte', import.meta.url), 'utf8');
 const bottomBarSource = readFileSync(new URL('./BottomTabBar.svelte', import.meta.url), 'utf8');
 const sidebarSource = readFileSync(new URL('./lib/RemoteSidebar.svelte', import.meta.url), 'utf8');
 const bootstrapSource = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
@@ -37,5 +39,15 @@ describe('Remote PWA installation scope', () => {
     expect(bottomBarSource).toContain('box-sizing:border-box');
     expect(sidebarSource).toContain('env(safe-area-inset-top');
     expect(sidebarSource).toContain('env(safe-area-inset-bottom');
+  });
+
+  it('keeps reconnect and failure diagnostics visible on auth fallback screens', () => {
+    for (const source of [authSource, cloudAuthSource]) {
+      expect(source).toContain('env(safe-area-inset-top,0px)');
+      expect(source).toContain('env(safe-area-inset-bottom,0px)');
+      expect(source).toContain('overflow-y:auto');
+      expect(source).toContain('box-sizing:border-box');
+      expect(source).toContain('justify-content:safe center');
+    }
   });
 });
