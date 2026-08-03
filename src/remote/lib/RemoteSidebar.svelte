@@ -97,6 +97,10 @@
   @keyframes slideIn{from{transform:translateX(-100%)}to{transform:translateX(0)}}
   /* Keep drawer controls outside the notch/Dynamic Island and home indicator. */
   .sb-header{display:flex;align-items:center;gap:8px;padding:calc(8px + env(safe-area-inset-top,0px)) 10px 8px;border-bottom:1px solid var(--rg-border-bright);min-height:calc(48px + env(safe-area-inset-top,0px));box-sizing:border-box}
+  :global(html[data-ridge-pwa="standalone"]) .sb-header{padding-top:44px;min-height:84px}
+  @supports (padding-top:env(safe-area-inset-top)) {
+    :global(html[data-ridge-pwa="standalone"]) .sb-header{padding-top:max(44px,calc(8px + env(safe-area-inset-top,0px)));min-height:max(84px,calc(48px + env(safe-area-inset-top,0px)))}
+  }
   .tabs{display:flex;gap:4px}
   .tab{display:flex;align-items:center;justify-content:center;width:34px;height:32px;border:none;border-radius:8px;background:none;color:var(--rg-fg-muted);cursor:pointer;transition:all .12s}
   .tab.active{color:var(--rg-accent);background:color-mix(in srgb, var(--rg-accent) 14%, transparent)}
@@ -104,4 +108,8 @@
   .close{display:flex;align-items:center;justify-content:center;width:32px;height:32px;background:none;border:none;color:var(--rg-fg-muted);border-radius:8px;cursor:pointer}
   .close:active{background:var(--rg-surface-2)}
   .sb-body{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}
+  :global(html[data-ridge-pwa="standalone"]) .sb-body{padding-bottom:20px}
+  @supports (padding-bottom:env(safe-area-inset-bottom)) {
+    :global(html[data-ridge-pwa="standalone"]) .sb-body{padding-bottom:max(20px,env(safe-area-inset-bottom,0px))}
+  }
 </style>

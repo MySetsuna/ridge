@@ -38,12 +38,20 @@ describe('Remote PWA installation scope', () => {
     expect(mainSource).toContain('flex-wrap:wrap');
     expect(mainSource).toContain('@media (display-mode:standalone) and (orientation:portrait)');
     expect(mainSource).toContain('max(44px,calc(6px + env(safe-area-inset-top,0px)))');
+    expect(mainSource).toContain('data-ridge-pwa="standalone"');
     expect(mainSource).toContain('height:100dvh');
     expect(bottomBarSource).toContain('env(safe-area-inset-bottom');
     expect(bottomBarSource).toContain('margin-top:auto');
     expect(bottomBarSource).toContain('box-sizing:border-box');
+    expect(bottomBarSource).toContain('data-ridge-pwa="standalone"');
     expect(sidebarSource).toContain('env(safe-area-inset-top');
     expect(sidebarSource).toContain('env(safe-area-inset-bottom');
+    expect(sidebarSource).toContain('data-ridge-pwa="standalone"');
+  });
+
+  it('detects iOS standalone mode before the first Svelte paint', () => {
+    expect(bootstrapSource).toContain("navigator as Navigator & { standalone?: boolean }");
+    expect(bootstrapSource).toContain("document.documentElement.dataset.ridgePwa = 'standalone'");
   });
 
   it('keeps reconnect and failure diagnostics visible on auth fallback screens', () => {

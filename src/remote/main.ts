@@ -26,6 +26,15 @@ void import('@ridge/remote/shared/terminal/manager').then(({ TerminalManager }) 
   });
 });
 
+// iOS standalone historically exposed `navigator.standalone` without making
+// `(display-mode: standalone)` match. Mark the document before Svelte mounts
+// so safe-area fallbacks apply on the first paint, including reconnect banners.
+const standalonePwa =
+  window.matchMedia?.('(display-mode: standalone)').matches === true ||
+  window.matchMedia?.('(display-mode: fullscreen)').matches === true ||
+  (navigator as Navigator & { standalone?: boolean }).standalone === true;
+if (standalonePwa) document.documentElement.dataset.ridgePwa = 'standalone';
+
 const app = mount(App, { target: document.getElementById('app')! });
 
 // PWA service worker: precache the app shell for offline use and apply new
