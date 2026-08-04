@@ -19,11 +19,11 @@ describe('clampBodyHeight — free follow past former lower header', () => {
 		expect(lowerRegionHeight(col, after)).toBeLessThan(197);
 	});
 
-	it('clamps so below keeps min height', () => {
-		const col = 400;
-		const max = col - BODY_SEP_H - MIN_BELOW_H;
-		expect(clampBodyHeight(9999, { columnInnerH: col })).toBe(max);
-		expect(lowerRegionHeight(col, max)).toBe(MIN_BELOW_H);
+  it('allows the body to consume the complete free span', () => {
+    const col = 400;
+    const max = col - BODY_SEP_H - MIN_BELOW_H;
+    expect(clampBodyHeight(9999, { columnInnerH: col })).toBe(max);
+    expect(lowerRegionHeight(col, max)).toBe(0);
 	});
 
 	it('clamps to min body', () => {

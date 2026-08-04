@@ -30,4 +30,18 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain('export function resizeKernel(_rows: number, _cols: number)');
     expect(source).not.toContain('manager.getKernel(paneId)?.resize(rows, cols);');
   });
+
+  it('does not drop mobile spaces reported as insertCompositionText', () => {
+    expect(source).toContain('Some mobile keyboards');
+    expect(source).toContain('if (text === imeCommitExpect && Date.now() - imeCommitExpectTime < IME_DUP_WINDOW_MS)');
+    expect(source).not.toContain("if (inputType === 'insertCompositionText') return;");
+  });
+
+  it('forwards touch press-drag-release to mouse-reporting TUIs', () => {
+    expect(source).toContain('let touchMouseDragging = false;');
+    expect(source).toContain("decideTouchMouseGesture('press')");
+    expect(source).toContain("decideTouchMouseGesture('drag')");
+    expect(source).toContain("decideTouchMouseGesture('release')");
+    expect(source).toContain('ontouchcancel={handleTouchCancel}');
+  });
 });

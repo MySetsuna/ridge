@@ -568,6 +568,9 @@ let bellFlash = $state(false);
 let bellFlashTimer: ReturnType<typeof setTimeout> | null = null;
 let compositionEndTimer: ReturnType<typeof setTimeout> | null = null;
 let imeFollowRaf: number | null = null;
+const IME_INPUT_DEDUP_WINDOW_MS = 200;
+let imeCommitExpect = '';
+let imeCommitExpectAt = 0;
 function triggerBellFlash() {
 	bellFlash = true;
 	if (bellFlashTimer !== null) clearTimeout(bellFlashTimer);
@@ -986,6 +989,24 @@ function onCompositionStart() {
 			e.preventDefault();
 		}
 	}
+
+	/**
+	 * Some desktop IMEs commit punctuation through a plain `input` event after
+	 * compositionend (e.data can be empty). The old helper only listened to
+	 * composition events, so quotes and other CJK punctuation disappeared.
+	 * Consume the value once, while suppressing the browser's duplicate commit.
+	 */
+	function onImeHelperInput(e: Event) {
+		if (isComposing || (e as InputEvent).isComposing || !imeHelper) return;
+		const text = imeHelper.value;
+		imeHelper.value = '';
+		if (!text) return;
+		if (text === imeCommitExpect && Date.now() - imeCommitExpectAt < IME_INPUT_DEDUP_WINDOW_MS) {
+			imeCommitExpect = '';
+			return;
+		}
+		manager.write(paneId, text);
+	}
 	function onCompositionEnd(e: CompositionEvent) {
 		isComposing = false;
 		composingAnchor = null;
@@ -999,6 +1020,8 @@ function onCompositionStart() {
 		preeditSentToPty = '';
 		if (data.length > 0) {
 			manager.write(paneId, data);
+			imeCommitExpect = data;
+			imeCommitExpectAt = Date.now();
 		}
 		if (imeHelper) {
 			imeHelper.value = '';
@@ -2171,6 +2194,7 @@ function captureBackspace(node: HTMLElement) {
 			onfocus={onImeHelperFocus}
 			onblur={onImeHelperBlur}
 			onpaste={onImeHelperPaste}
+			oninput={onImeHelperInput}
 		></textarea>
 	{/if}
 

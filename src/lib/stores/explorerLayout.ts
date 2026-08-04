@@ -19,7 +19,7 @@ export const MIN_BODY_H = 40;
  * 分隔条以下「其余布局」最小保留高度（后续 cwd 头 / 有内容 lower 的底线）。
  * 允许越过原 lower header 上沿，只留一条可辨识余量。
  */
-export const MIN_BELOW_H = 28;
+export const MIN_BELOW_H = 0;
 /** 分隔条厚度（px），与 Explorer `h-[3px]` 对齐。 */
 export const BODY_SEP_H = 3;
 

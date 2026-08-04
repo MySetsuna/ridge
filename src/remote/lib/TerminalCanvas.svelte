@@ -112,10 +112,13 @@
   let touchStartY = 0;
   let touchStartX = 0;
   let touchScrollAccum = 0;
+  let touchLastX = 0;
   let touchLastY = 0;
   let touchStartTime = 0;
   const TOUCH_DRAG_THRESHOLD_PX = 8;
   const TOUCH_TAP_MAX_MS = 250;
+  let touchMouseDragging = false;
+  let suppressMouseUntil = 0;
 
   let hasSelectionState = $state(false);    // drives the floating copy pill
   let selDragging = false;                  // selection drag in progress
@@ -475,9 +478,11 @@
     const t = e.touches[0];
     touchStartY = t.clientY;
     touchStartX = t.clientX;
+    touchLastX = t.clientX;
     touchLastY = t.clientY;
     touchScrollAccum = 0;
     touchStartTime = Date.now();
+    suppressMouseUntil = touchStartTime + 500;
     // §select-as-mouse (R5): the select toggle SIMULATES A MOUSE — emit mouse
     // signals and let the receiving terminal decide (parity with desktop). When
     // the app captures the mouse (mouse-reporting TUI) we forward a press and the
@@ -494,6 +499,16 @@
           startSelection(cell.row, cell.col);
         }
       }
+    } else if (isMouseReporting()) {
+      const cell = clientToCell(t.clientX, t.clientY);
+      if (cell) {
+        const g = decideTouchMouseGesture('press');
+        const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
+        if (bytes.length > 0) {
+          onStdin(td.decode(bytes));
+          touchMouseDragging = true;
+        }
+      }
     }
   }
 
@@ -503,6 +518,17 @@
     const moved = Math.abs(t.clientY - touchStartY) + Math.abs(t.clientX - touchStartX);
     if (moved < TOUCH_DRAG_THRESHOLD_PX) return;
     e.preventDefault();
+    if (touchMouseDragging) {
+      const cell = clientToCell(t.clientX, t.clientY);
+      if (cell) {
+        const g = decideTouchMouseGesture('drag');
+        const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
+        if (bytes.length > 0) onStdin(td.decode(bytes));
+      }
+      touchLastX = t.clientX;
+      touchLastY = t.clientY;
+      return;
+    }
     if (selectionMode) {
       selDragging = true;
       const cell = clientToCell(t.clientX, t.clientY);
@@ -520,6 +546,7 @@
       return;
     }
     touchScrollAccum += touchLastY - t.clientY;
+    touchLastX = t.clientX;
     touchLastY = t.clientY;
     if (Math.abs(touchScrollAccum) > 24) {
       touchWheel(touchScrollAccum, t.clientX, t.clientY);
@@ -531,6 +558,18 @@
     if (e.changedTouches.length !== 1) return;
     const touch = e.changedTouches[0];
     if (!attached) return;
+    const elapsed = Date.now() - touchStartTime;
+    if (touchMouseDragging) {
+      const cell = touch ? clientToCell(touch.clientX, touch.clientY) : null;
+      if (cell) {
+        const g = decideTouchMouseGesture('release');
+        const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
+        if (bytes.length > 0) onStdin(td.decode(bytes));
+      }
+      touchMouseDragging = false;
+      if (elapsed < TOUCH_TAP_MAX_MS) openSoftKeyboard();
+      return;
+    }
     if (selectionMode) {
       const wasDragging = selDragging;
       selDragging = false;
@@ -558,7 +597,6 @@
       if (!wasDragging) openSoftKeyboard();
       return;
     }
-    const elapsed = Date.now() - touchStartTime;
     if (elapsed >= TOUCH_TAP_MAX_MS) return;
     // Light tap clears an existing selection (and re-raises the keyboard).
     if (hasSelectionState || hasSelection()) {
@@ -584,6 +622,17 @@
       }
     }
     openSoftKeyboard();
+  }
+
+  function handleTouchCancel() {
+    if (!touchMouseDragging || !attached) return;
+    const cell = clientToCell(touchLastX, touchLastY);
+    if (cell) {
+      const g = decideTouchMouseGesture('release');
+      const bytes = kEncodeMouse(cell.row, cell.col, g.button, g.action, false, false, false);
+      if (bytes.length > 0) onStdin(td.decode(bytes));
+    }
+    touchMouseDragging = false;
   }
 
   // ── Composition (IME) + plain text input, both via the hidden textarea ──
@@ -711,12 +760,11 @@
     const text = ta.value;
     ta.value = '';
     if (!text) return;
-    const inputType = (e as InputEvent).inputType || '';
-    // §1 Robust IME-commit dedup: the browser re-inserts committed text as a
-    // non-composing `input` with inputType `insertCompositionText`; already
-    // sent via manager.paste in handleCompositionEnd → swallow by TYPE.
-    if (inputType === 'insertCompositionText') return;
-    // Fallback content/time window for IMEs that report a plain inputType.
+    // §1 Robust IME-commit dedup: browsers may re-insert committed text as a
+    // non-composing `input` with inputType `insertCompositionText`. Swallow
+    // only when it matches the commit we already sent. Some mobile keyboards
+    // (notably space/punctuation on iOS and Android) use the same inputType
+    // without a compositionend; an unconditional type check dropped spaces.
     if (text === imeCommitExpect && Date.now() - imeCommitExpectTime < IME_DUP_WINDOW_MS) {
       imeCommitExpect = '';
       return;
@@ -724,6 +772,7 @@
     // §1 Autocorrect / predictive replacement：旧行为是整帧丢弃（保字面），用户
     // 点的修正词就此丢失。iter-60 G11 改为差量应用：与已发词段求公共前缀，退格
     // 删多余尾巴再补差量——修正生效且不重复。无已发词段上下文时仍丢弃防误发。
+    const inputType = (e as InputEvent).inputType || '';
     if (inputType === 'insertReplacementText') {
       // 句级缓冲：回改在缓冲内整词替换（跨词回改也不丢，语音主收益点）。
       if (sbufActive() && sbuf.replaceTrailing(text)) {
@@ -902,7 +951,7 @@
   }
 
   function handleMouseDown(e: MouseEvent) {
-    if (!attached) return;
+    if (!attached || Date.now() < suppressMouseUntil) return;
     focusInput();
     const cell = clientToCell(e.clientX, e.clientY);
     if (!cell) return;
@@ -918,7 +967,7 @@
   }
 
   function handleMouseMove(e: MouseEvent) {
-    if (!attached) return;
+    if (!attached || Date.now() < suppressMouseUntil) return;
     if (mouseSelecting) {
       const cell = clientToCell(e.clientX, e.clientY);
       if (cell) extendSelection(cell.row, cell.col);
@@ -935,7 +984,7 @@
   }
 
   function handleMouseUp(e: MouseEvent) {
-    if (!attached) return;
+    if (!attached || Date.now() < suppressMouseUntil) return;
     if (isMouseReporting()) {
       const cell = clientToCell(e.clientX, e.clientY);
       if (!cell) return;
@@ -1109,6 +1158,7 @@
   onmousemove={handleMouseMove}
   onmouseup={handleMouseUp}
   oncontextmenu={handleContextMenu}
+  ontouchcancel={handleTouchCancel}
 >
   {#if scrollbackLoading}
     <div class="scrollback-loading" role="progressbar" aria-label="Loading older terminal output"></div>
