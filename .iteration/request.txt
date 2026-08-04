@@ -4,3 +4,6 @@ Approved addendum: Mobile Remote must keep the live PTY tail authoritative; seed
 Approved addendum: Pane content-box geometry is the terminal-grid authority; stale host resize dimensions must trigger a local refit/claim, and a manual Pane Resize action must force recovery when shell and pane sizes diverge.
 Current closure request: 还有遗留吗，没有就把改动都发了吧
 New pending request: 要有一个地方登记记录Agent，在Agent创建和销毁的时候进行记录。并且必须是确定的结果才记录，避免失败的情况也登记进来，导致无法通信或者丢失通信。Agent在准备发起通信时，需要查一遍通讯录里都有谁，谁是自己的通信目标，他是否还在线等，避免丢失通讯，反复启动等错误。
+New iteration request: 本次迭代添加需求，接入 tab，分享工作区接入、在工作区tab右键增加添加“分享工作区”选项。打通整个接入tab面板功能，进行完善。remote手机端无法输入空格；桌面端部分中文标点（例如引号）无法输入。在 Grok 等某类 agent TUI 中，拖拽、点击等鼠标能力没有转发并被 TUI 接受。资源管理器拖拽 resize 需上下两个方向完全自由，拖拽一个区域不影响另一区域高度，所有高度和总高度自适应填满空余空间，交互达到 VS Code 基本水平。Remote 手机端 Agent 数据须与桌面端一致，包括历史 Tab；历史 Tab 去掉 icon。Remote 手机端 icon、pending、间隔等尺寸规范统一。Remote 手机端文件/图片查看须适配手机屏幕，不横向扩展、不出现横向滚动条，便于查看代码和文档。先基于正确 NotebookLM 笔记本“Ridge 项目现状、愿景与规划基线（2026-07-21）”调研，再由我授权自行审批并通过现有 pending 需求。
+Approval evidence: 进行nlm调研后，然后你自行予审批。通过现有pending需求。
+Approval evidence (canonical): User explicitly authorized self-approval after NotebookLM research and approval of existing pending requirements.

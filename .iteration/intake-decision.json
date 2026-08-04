@@ -1,27 +1,23 @@
 {
   "schema_version": 1,
-  "intake_id": "INTAKE-20260805-AGENT-COMMUNICATION-REGISTRY-01",
-  "classification": "pending",
-  "summary": "Register Agent lifecycle only after confirmed create/destroy results and validate a fresh online communication roster before sending.",
-  "requirement_ids": [],
+  "intake_id": "INTAKE-20260805-INTERACTION-PARITY-01",
+  "classification": "approved",
+  "summary": "Access/share onboarding, terminal input fidelity, TUI mouse forwarding, Explorer resize, and Remote mobile Agent/viewer parity.",
+  "requirement_ids": [
+    "REQ-INTERACTION-PARITY-01",
+    "REQ-AGENT-COMMUNICATION-REGISTRY-01"
+  ],
   "pending_ids": [
-    "PENDING-REQ-20260805-AGENT-COMMUNICATION-REGISTRY-01"
+    "PENDING-REQ-20260805-INTERACTION-PARITY-01"
   ],
-  "approval_reasons": [
-    "New lifecycle authority and communication-directory contract is not fully covered by the active Agent UI/domain requirements."
-  ],
-  "open_questions": [
-    "Destroy-failure state, roster TTL, generation invalidation event, and exact kernel endpoint require approval/design confirmation."
-  ],
-  "approval_evidence": "Awaiting explicit user approval of the Pending draft.",
-  "request_sha256": "1ddc9570d1319891394d141e83a9eb69035e66118ec1f16d095aa8405f38c3ed",
-  "requirements_sha256": "7584865233a0b7bdce302e7c9fff721ea36a5138d8af2e5c0ccc099b91e5b3db",
-  "pending_sha256": "d20b5c7bdba45785e2bca898740320d4a13db775417fdf71649c160c7e125d3e",
-  "draft_sha256": "31696dd3641ec1294d4343c127de4fd4edf4bd7e69d558c7822987a10030ccdd",
-  "previous_intake_sha256": "",
-  "executable": false,
-  "reasons": [
-    "approval_required",
-    "pending_approval_evidence_forbidden"
-  ]
+  "approval_reasons": [],
+  "open_questions": [],
+  "approval_evidence": "User explicitly authorized self-approval after NotebookLM research and approval of existing pending requirements.",
+  "request_sha256": "eebaca3c855bb510e780d36639c0de4161e35abf1a77b7650426a730b40fe091",
+  "requirements_sha256": "9fdb1f72975fb0cdae4b6d52a40604c325895e51c55ae170e3e98db240646353",
+  "pending_sha256": "675f4c14be11356f2a6dd653abee7e066cff45c96270b80854f136a42bc3e1db",
+  "draft_sha256": "02db595b2fcc5c45296a6706ee23451fcd7df3664227168d70f90111ac0729c8",
+  "previous_intake_sha256": "499302ebc53c4fff76e96801c44c2da0bda8467fdda09e41054dede4cc58173c",
+  "executable": true,
+  "reasons": []
 }
