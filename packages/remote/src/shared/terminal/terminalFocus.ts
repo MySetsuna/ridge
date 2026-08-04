@@ -61,8 +61,23 @@ export function focusActiveTerminal(): boolean {
 	const pane =
 		document.querySelector<HTMLElement>('[data-rg-pane-active="true"]') ??
 		document.querySelector<HTMLElement>('[data-rg-pane-id]');
-	if (!pane) return false;
+	return focusPaneElement(pane);
+}
 
+/** Focus one exact pane after a drag/drop or other pane-targeted action. */
+export function focusTerminalPane(paneId: string): boolean {
+	if (typeof document === 'undefined' || !paneId.trim()) return false;
+	// Pane ids are UUIDs in the desktop/remote protocol. Escaping the two
+	// selector metacharacters we could receive keeps this helper safe if a host
+	// supplies a different opaque id in the future.
+	const escaped = paneId.replace(/["\\]/g, '\\$&');
+	const pane = document.querySelector<HTMLElement>(`[data-rg-pane-id="${escaped}"]`);
+	return focusPaneElement(pane);
+}
+
+
+function focusPaneElement(pane: HTMLElement | null): boolean {
+	if (!pane) return false;
 	const ime = pane.querySelector<HTMLTextAreaElement>('textarea.rg-ime-helper');
 	(ime ?? pane).focus();
 	return true;

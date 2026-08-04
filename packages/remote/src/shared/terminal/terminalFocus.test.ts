@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { focusActiveTerminal, ownsTabKey } from './terminalFocus';
+import { focusActiveTerminal, focusTerminalPane, ownsTabKey } from './terminalFocus';
 
 /**
  * `ownsTabKey` decides whether a Tab keystroke should keep native browser
@@ -59,7 +59,11 @@ describe('focusActiveTerminal', () => {
 		if (pane) pane.querySelector = () => ime;
 		(globalThis as { document?: unknown }).document = {
 			querySelector: (sel: string) =>
-				sel === '[data-rg-pane-active="true"]' || sel === '[data-rg-pane-id]' ? pane : null,
+				sel === '[data-rg-pane-active="true"]' ||
+				sel === '[data-rg-pane-id]' ||
+				sel.startsWith('[data-rg-pane-id="')
+					? pane
+					: null,
 		};
 	}
 
@@ -89,5 +93,14 @@ describe('focusActiveTerminal', () => {
 	it('returns false when no terminal pane exists', () => {
 		installDoc(null, null);
 		expect(focusActiveTerminal()).toBe(false);
+	});
+
+	it('focuses the exact pane requested by a drag/drop target', () => {
+		const ime = { focus: vi.fn() };
+		const pane = { focus: vi.fn() };
+		installDoc(pane, ime);
+
+		expect(focusTerminalPane('pane-target')).toBe(true);
+		expect(ime.focus).toHaveBeenCalledTimes(1);
 	});
 });

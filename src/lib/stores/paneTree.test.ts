@@ -682,6 +682,29 @@ describe('cwd listeners refreshed after pane mutations (Issue #2)', () => {
     ).toHaveLength(0);
     expect(get(paneTreeModule.activeWorkspaceId)).toBe('ws-window');
   });
+
+  it('opening a saved workspace keeps the backend-selected id instead of reacquiring the old tab', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const invokeMock = invoke as ReturnType<typeof vi.fn>;
+    invokeMock.mockReset();
+    const restoredLayout: import('./paneTree').PaneNode = { type: 'leaf', id: 'restored-pane' };
+    invokeMock.mockImplementation(async (cmd: string, args?: { workspaceId?: string }) => {
+      if (cmd === 'open_workspace_from_file') return 'ws-restored';
+      if (cmd === 'list_workspaces') {
+        return [
+          { id: 'ws-default', index: 0, displaySeq: 1 },
+          { id: 'ws-restored', index: 1, displaySeq: 2 },
+        ];
+      }
+      if (cmd === 'get_pane_layout_for' && args?.workspaceId === 'ws-restored') return restoredLayout;
+      if (cmd === 'list_workspace_save_info') return [];
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    await expect(paneTreeModule.openWorkspaceFromFile('C:/tmp/restored.ridge')).resolves.toBe('ws-restored');
+    expect(get(paneTreeModule.activeWorkspaceId)).toBe('ws-restored');
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === 'acquire_window_workspace')).toBe(false);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

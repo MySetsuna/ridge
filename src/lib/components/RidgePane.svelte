@@ -19,7 +19,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '@ridge/remote/shared/terminal/clipboardImage';
 import { t, tr } from '$lib/i18n';
-import { activePaneId, activeWorkspaceId, clearAgentPaneAttention, setPaneCwd, paneOscTitleStore, paneForegroundProcessStore, terminalTitles, splitPane, closePane } from '$lib/stores/paneTree';
+import { activePaneId, activeWorkspaceId, clearAgentPaneAttention, setPaneCwd, paneOscTitleStore, paneForegroundProcessStore, terminalTitles, splitPane, closePane, waitForDesktopKernelReattach } from '$lib/stores/paneTree';
 import type { KernelEvent } from '@ridge/remote/shared/terminal/manager';
 import { ensurePtyBridge, enableDeltaModeThenFit } from '@ridge/remote/shared/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '@ridge/remote/shared/terminal/themeBridge';
@@ -1242,6 +1242,13 @@ onMount(() => {
 	});
 
 	void (async () => {
+		// Desktop restart can leave the kernel process alive.  Wait for the
+		// parent startup sequence to restore all workspace trees and rebind
+		// stable pane-owned PTYs before this pane is allowed to create a shell;
+		// otherwise the cold mount races `reattach_kernel_ptys` and replaces a
+		// live terminal with a duplicate.
+		await waitForDesktopKernelReattach();
+		if (!alive) return;
 		await manager.ready();
 		if (!alive) return;
 

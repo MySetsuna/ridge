@@ -324,6 +324,11 @@ pub fn close_workspace_core(state: &AppState, id: Uuid) -> Result<(), String> {
     if state.workspace_order.read().len() <= 1 {
         return Err("无法关闭最后一个工作区".into());
     }
+    let closed_file = state
+        .workspaces
+        .read()
+        .get(&id)
+        .and_then(|workspace| workspace.associated_file_path.clone());
     {
         let mut order = state.workspace_order.write();
         if let Some(pos) = order.iter().position(|&x| x == id) {
@@ -340,6 +345,10 @@ pub fn close_workspace_core(state: &AppState, id: Uuid) -> Result<(), String> {
         if let Some(&first) = state.workspace_order.read().first() {
             *state.active_workspace.write() = first;
         }
+    }
+    if let (Some(app), Some(path)) = (state.app_handle.get(), closed_file.as_deref()) {
+        crate::commands::ridge_file::record_recent_workspace_path(app, path);
+        crate::taskbar::refresh_jump_list_async(app.clone());
     }
     broadcast_workspace_list_changed(state);
     Ok(())

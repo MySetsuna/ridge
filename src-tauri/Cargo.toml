@@ -167,6 +167,9 @@ postcard = { version = "1", features = ["alloc"] }
 # 剪贴板「复制图片文件」(CF_HDROP) 读取：arboard 只读位图/文本、读不到文件列表；
 # clipboard-win 已是 arboard 的传递依赖（同为 5.x），加为 Windows-only 直接依赖不引入新传递依赖。
 clipboard-win = "5"
+# Windows taskbar Jump List（最近关闭工作区 / 新窗口任务）。仅 Windows 编译，
+# 直接调用 Shell Link + Custom Destination List，非 Windows 不引入平台代码。
+windows = { version = "0.61.3", features = ["Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
 
 [[bin]]
 name = "tmux"
