@@ -269,6 +269,25 @@ describe('CloudRemoteConnection panes', () => {
     expect(got.map((bytes) => new TextDecoder().decode(bytes))).toEqual(['LIVE', '\x1bcSEED', 'LIVE']);
   });
 
+  it('requests host resync without replacing the live listener', async () => {
+    const conn = await connected();
+    conn.subscribePane(PANE);
+    await flush();
+    const listener = handlers['pty-output-ws1-pane-a'];
+    expect(listener).toBeTypeOf('function');
+    invokeMock.mockClear();
+
+    conn.resyncPane(PANE);
+    await flush();
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      'resync_pane_raw',
+      { paneId: PANE.paneId, workspaceId: PANE.workspaceId },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(handlers['pty-output-ws1-pane-a']).toBe(listener);
+  });
+
   it('§R-CLOUD-CONVERGE version-skew: falls back to RIS + tail when the host lacks get_pane_resync_frame', async () => {
     const conn = await connected();
     const got: Array<[PaneRef, Uint8Array]> = [];
