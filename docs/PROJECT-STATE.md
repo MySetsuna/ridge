@@ -1,6 +1,6 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-08-04（iteration 167 已完成稳定 Cloud Pane 绑定代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补；正式 release 待本轮代码推送后执行）
+状态日期：2026-08-05（iteration 167 已完成稳定 Cloud Pane 绑定、Remote 尾流与 Pane 尺寸代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补；正式 release 正在等待修复后的 CI 闸验证）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
@@ -28,6 +28,9 @@
   back at `0.1.56`; no failed tag/release is claimed. Remote/cloud activation
   `0.1.57+g7ce4386` succeeded and is recorded separately in the iteration
   archive.
+- Release workflow now builds the target `rdg` sidecar before the Linux Tauri
+  compile check, closing the deterministic failure above; a new versioned
+  release is not claimed until the complete matrix and asset audit pass.
 
 - Cloud Remote pane binding is now persistent and deterministic. `PtyBridge`
   reads `remote-cloud-pane.json` (or the explicit

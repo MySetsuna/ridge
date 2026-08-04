@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "task": "Close the approved Remote Cloud stable pane binding residual, add bounded Mobile Remote backpressure, keep the live PTY tail authoritative, and enforce the Pane-to-terminal grid invariant.",
+  "task": "Close the approved Remote Cloud stable pane binding residual, add bounded Mobile Remote backpressure, keep the live PTY tail authoritative, enforce the Pane-to-terminal grid invariant, and repair the release test gate before publishing.",
   "symbols": [
     "PtyBridge::spawn",
     "PtyBridge::spawn_kernel",
@@ -37,6 +37,7 @@
     "src/remote/lib/TerminalCanvas.svelte",
     "src/remote/lib/TerminalCanvas.test.ts",
     "src/remote/MainApp.svelte",
+    ".github/workflows/release.yml",
     "docs/REQUIREMENTS-SPEC.md",
     "docs/PROJECT-STATE.md",
     "docs/iterations/2026-08-04-iteration-167-cloud-pane-binding.md"
@@ -61,7 +62,8 @@
     "Pane destruction, clear, reclaim, and reconnect must release pending render chunks and timers without Infinity synchronous drains.",
     "Live PTY listener attaches before the bounded visual seed; live bytes render immediately with a bounded replay copy for seed reset, overflow skips stale seed, and older scrollback stays an incremental scroll-up query.",
     "Pane content-box geometry is the mobile local grid authority; host pty-resized notifications trigger refit/claim and never inject stale rows/cols.",
-    "Release only after clean worktree, pushed HEAD, version contract, matrix assets, and Remote artifact gates."
+    "Release only after clean worktree, pushed HEAD, version contract, matrix assets, and Remote artifact gates.",
+    "Release test gate must build the target rdg sidecar before Tauri compile checks; never publish a tag with a known missing externalBin."
   ],
   "failed_knowledge": [],
   "requirements": {
@@ -138,6 +140,7 @@
       "src/remote/lib/TerminalCanvas.svelte",
       "src/remote/lib/TerminalCanvas.test.ts",
       "src/remote/MainApp.svelte",
+      ".github/workflows/release.yml",
       "docs/REQUIREMENTS-SPEC.md",
       "docs/PROJECT-STATE.md",
       "docs/iterations/2026-08-04-iteration-166-remote-process-boundary.md",
