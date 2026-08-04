@@ -78,6 +78,8 @@ jobs:
         run: cargo test -p ridge-core --lib -- commands::git process_guard
       - name: Build ridge-mcp Linux sidecar (Tauri check prerequisite)
         run: node scripts/build-ridge-mcp-sidecar.mjs
+      - name: Build rdg Linux sidecar (Tauri check prerequisite)
+        run: node scripts/build-rdg-sidecar.mjs
       - name: Linux native Tauri compile check
         run: cargo check --manifest-path src-tauri/Cargo.toml --lib
       - name: ridge-mcp companion tests and bundle contract
