@@ -166,7 +166,7 @@ jobs:
       - name: Build rdg CLI for Intel macOS
         if: matrix.label == 'macos-x64'
         shell: bash
-        run: cargo build --release -p ridge-cli --target x86_64-apple-darwin
+        run: node scripts/build-rdg-sidecar.mjs --target x86_64-apple-darwin
 
       - name: Build & publish (Tauri)
         uses: tauri-apps/tauri-action@v0
