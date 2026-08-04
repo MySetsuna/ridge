@@ -11,7 +11,7 @@
 //! re-copying `taskkill /T`.
 
 use std::io;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -59,6 +59,26 @@ pub(crate) fn configure_process_group(command: &mut Command) {
 
 #[cfg(not(unix))]
 pub(crate) fn configure_process_group(_command: &mut Command) {}
+
+/// ETXTBSY/EBUSY can briefly surface while a freshly-created executable is
+/// becoming runnable on CI filesystems. Retry only that transient spawn error;
+/// all other errors remain immediate and the child still owns the timeout path.
+fn spawn_with_busy_retry(command: &mut Command) -> io::Result<Child> {
+    let mut last_busy = None;
+    for delay in [0, 10, 25, 50] {
+        if delay != 0 {
+            std::thread::sleep(Duration::from_millis(delay));
+        }
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                last_busy = Some(error);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_busy.expect("busy retry must capture an error"))
+}
 
 /// Kill a process tree. Windows: `taskkill /T`; Unix: TERM then KILL to the
 /// dedicated process group (with a PID fallback for callers that predate the
@@ -124,7 +144,7 @@ pub fn run_command_with_timeout(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     configure_process_group(cmd);
-    let child = cmd.spawn()?;
+    let child = spawn_with_busy_retry(cmd)?;
     let pid = child.id();
 
     let (tx, rx) = mpsc::channel();
@@ -165,7 +185,7 @@ pub fn run_command_status_with_timeout(
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
     configure_process_group(cmd);
-    let mut child = cmd.spawn()?;
+    let mut child = spawn_with_busy_retry(cmd)?;
     let pid = child.id();
     let started = Instant::now();
     loop {
