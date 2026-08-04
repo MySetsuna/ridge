@@ -1,9 +1,1037 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-07-30（iteration 77 三日走查进行中；NLM live 已恢复，手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-05（iteration 167 已完成稳定 Cloud Pane 绑定、Remote 尾流与 Pane 尺寸代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补；正式 release 正在等待修复后的 CI 闸验证）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
+
+## Current snapshot (iteration 167, 2026-08-04)
+
+- New pre-approved `REQ-MOBILE-REMOTE-BACKPRESSURE-01` is active for this
+  iteration. The mobile render feed now uses a bounded per-pane FIFO chunk
+  queue, a frame-time budget, overflow counters, and teardown cleanup; input
+  and control RPC scheduling remain separate and higher priority.
+- The former deferred-feed `Infinity` synchronous catch-up and O(n²) backlog
+  concatenation path are removed. Focused feed-policy tests pass; full
+  TypeScript/Svelte checks remain green.
+- New active `REQ-MOBILE-REMOTE-LIVE-TAIL-01` makes the live PTY stream
+  authoritative: Cloud Remote wires the listener before a bounded visual seed,
+  renders live bytes immediately, retains only a bounded FIFO replay copy for a
+  late seed reset, and pages older scrollback only on upward scroll without
+  blocking input.
+- New active `REQ-REMOTE-PANE-GRID-INVARIANT-01` makes the current pane box the
+  local grid source of truth. Stale host `pty-resized` dimensions trigger a
+  local refit/claim; manual refresh uses `fitPaneNow` and no longer injects a
+  stale smaller shell grid.
+- Desktop `v0.1.57` first attempt failed because the Linux Tauri test gate did
+  not stage `binaries/rdg-x86_64-unknown-linux-gnu`; the retry then exposed the
+  analogous Intel macOS target sidecar gap. Both workflow paths are now fixed:
+  Linux test gate builds its target and the macOS x64 job explicitly stages
+  `rdg-x86_64-apple-darwin`. The current tag is being retried; no release is
+  claimed until the complete matrix and asset audit pass. Remote/cloud
+  activation `0.1.57+g7ce4386` remains a prior hash and is recorded separately.
+
+- Cloud Remote pane binding is now persistent and deterministic. `PtyBridge`
+  reads `remote-cloud-pane.json` (or the explicit
+  `RIDGE_REMOTE_PTY_BINDING_FILE` path), verifies the live PTY/workspace, and
+  writes the binding only after its output lease attaches.
+- Reconnect selection is exact persisted identity, then the
+  `cloud-remote` launch profile, then deterministic same-CWD matching. There
+  is no first-live-PTY fallback, so a detached Cloud session cannot steal an
+  unrelated pane. A failed binding write detaches the just-created lease.
+- Tauri passes the binding path to `rdg remote --daemon`; PTY ownership and
+  scrollback remain in the detached kernel. This closes the code portion of
+  the previous multi-pane/Cloud binding residual.
+- Verification: `cargo test -p ridge-cli --tests --quiet` (134 unit + 3
+  integration), `cargo test -p ridge-kernel --lib --quiet` (46), Tauri
+  `cargo check --lib`, `pnpm check` (0/0), and `git diff --check` passed.
+- Historical entries 165 and 166 remain append-only evidence and are
+  superseded, not duplicated as open work. Physical force-kill/phone
+  reconnect, public four-path Remote, WebView2 soak, dual-window/Host, and
+  full Kernel authority remain external gates.
+
+Archive: `docs/iterations/2026-08-04-iteration-167-cloud-pane-binding.md`.
+
+## Current snapshot (iteration 166, 2026-08-04)
+
+- Remote/WebRTC transport is now process-owned, not merely hidden with the
+  Tauri UI. Detached `rdg host` and `rdg remote --daemon` use the
+  kernel-owned PTY/workspace domain and survive a force-killed desktop shell.
+- Tauri only supervises sidecars, synchronizes credentials, and exposes
+  explicit lifecycle commands. Restart reuses live registries; explicit full
+  quit stops sidecars before kernel shutdown.
+- Kernel PTY leases detach without destroying PTYs. Cross-process boot locking
+  prevents desktop/host duplicate kernel launches.
+- Verification: `pnpm check` 0/0; focused Vitest 66/66; ridge-kernel 46 tests;
+  ridge-cli 130 unit + 3 integration tests; ridge-cli and Tauri `cargo check`
+  passed. Packaged Windows force-kill plus
+  phone reconnect remains a physical release gate, not yet claimed.
+
+Archive: `docs/iterations/2026-08-04-iteration-166-remote-process-boundary.md`.
+
+## Current snapshot (iteration 165, 2026-08-04)
+
+- Rapid desktop tab switches now serialize backend workspace ownership/switch
+  IPC, while cached panes still activate optimistically; stale failures are
+  dropped instead of repainting a newer tab or spamming Console.
+- Tray `退出桌面端` is Deep Root UI-only hide: kernel PTYs, Remote server,
+  teammate control plane, and WebView session remain alive. `彻底退出` remains
+  the explicit kernel/process shutdown path. Hide also writes the restore set.
+- Desktop restart can reuse the same teammate loopback port/token from app data;
+  endpoint sidecars are refreshed by token after a process restart, preserving
+  surviving Agent pane negotiation when the kernel remains alive.
+- Verification: full Vitest 148 files / 1545 passed / 1 skipped; teammate
+  endpoint Tauri tests 3 passed; `cargo check --manifest-path
+  src-tauri/Cargo.toml` passed with only pre-existing warnings; `pnpm check`
+  passed with 0 errors / 0 warnings. Version `0.1.56` is released with the
+  full desktop/CLI matrix. Remote workflow `30892178165` activated
+  `0.1.56+g415ee64` and its authenticated status gate confirmed desktop/mobile
+  indexes; local shell remains intentionally free of the production secret.
+
+Archive: `docs/iterations/2026-08-04-iteration-165-tab-kernel-deep-root.md`.
+
+## Current snapshot (iteration 163, 2026-08-04)
+
+- All desktop Git mutations and graph/history reads now cross the authenticated
+  ridge-kernel Git domain. The Tauri layer retains command compatibility but no
+  longer starts these Git children directly.
+- Kernel requests are tagged and source-checked; non-Git roots return an
+  explicit negative result before a Git child is started. Decoder and domain
+  guard tests cover malformed source, success, and non-Git behavior.
+- Remote mobile bundle, PWA manifest/service-worker/safe-area checks, LAN
+  desktop/mobile E2E, and Chromium mobile keyboard/touch-selection E2E are
+  green; the latter is explicitly browser-emulation evidence.
+- Windows headless kernel/rdg smoke is green: single-PID ensure/reattach,
+  filesystem-root denial, Git status, remote-hosts, MCP discovery, and
+  bounded kernel stop all passed.
+- Release desktop now declares Tauri `custom-protocol`; a rebuilt binary
+  launches through `http://tauri.localhost/` in an isolated WebView2 CDP smoke
+  check instead of falling back to Vite port 5173. Shell E2E still cannot
+  leave `about:blank` under tauri-driver (including an explicit matching
+  EdgeDriver path) before app assertions, so WebDriver shell/performance
+  evidence remains external.
+- Full Rust/TypeScript matrix and requirements gates are recorded in the
+  iteration archive. Physical/public Remote, WebView2, dual-window, Host,
+  and mobile clean-profile evidence remain external gates; no release was
+  made.
+
+Archive: `docs/iterations/2026-08-04-iteration-163-kernel-git-all.md`.
+
+## Current snapshot (iteration 162, 2026-08-04)
+
+- Remote `git_stash_list` now uses authenticated kernel
+  `/v1/domain/git/stashes`; the kernel confirms repository identity before
+  starting `git stash list`, returning a typed non-Git negative result.
+- Tauri keeps the existing command signature while becoming a bounded kernel
+  adapter. `StashEntry` is now a shared serde contract for the response.
+- Full Rust/TypeScript matrix: ridge 256, ridge-kernel 44, ridge-core 315;
+  Vitest 148 files / 1541 passed / 1 skipped; `pnpm check` 0 errors / 0
+  warnings. No version bump or release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-162-kernel-git-stashes.md`.
+
+## Current snapshot (iteration 161, 2026-08-04)
+
+- Remote `get_scm_status_fast` no longer invokes the Tauri/core Git path
+  directly. It now uses authenticated kernel `/v1/domain/git/status?path=…&fast=1`;
+  kernel repository detection and the no-numstat fast contract remain intact.
+- The normal desktop status query remains unchanged, while the fast route is
+  source-checked and guarded against non-Git roots before any Git child.
+- Full Rust/TypeScript matrix: ridge 256, ridge-kernel 42, ridge-core 315;
+  Vitest 148 files / 1541 passed / 1 skipped; `pnpm check` 0 errors / 0
+  warnings. No version bump or release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-161-kernel-git-fast-status.md`.
+
+## Current snapshot (iteration 160, 2026-08-04)
+
+- Desktop `git_diff_summary` now uses authenticated kernel
+  `/v1/domain/git/diff-summary`; PaneGitStatus no longer starts this high-
+  frequency Git child in the Tauri shell. Kernel detects non-Git roots before
+  spawning `git diff` and returns a typed, source-checked summary.
+- Desktop stage, unstage, commit, checkout, push, and push-branch commands now
+  use the authenticated, tagged `/v1/domain/git/mutate` kernel route. The
+  route rejects non-Git roots before any write and never accepts arbitrary Git
+  argv; remaining Git writes and graph/history reads stay explicitly open.
+- Full Rust/TypeScript matrix: ridge 256, ridge-kernel 41, ridge-core 315;
+  Vitest 148 files / 1541 passed / 1 skipped; `pnpm check` 0 errors / 0
+  warnings. No version bump or release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-160-kernel-git-diff-summary.md`.
+
+## Current snapshot (iteration 159, 2026-08-04)
+
+- Desktop sidebar panels are now first-visit mounted: Git, Search, Remote,
+  Agents, Hosts, and Files are guarded by `sidebarVisited`. Hidden panels no
+  longer start their queries/listeners/remote projections during first paint;
+  visited instances stay alive across tab switches to preserve state.
+- Focused sidebar mount contract: 2 passed; `pnpm check`: 0 errors / 0
+  warnings. No version bump or release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-159-sidebar-lazy-mount.md`.
+
+## Current snapshot (iteration 158, 2026-08-04)
+
+- `SettingsPanel` is no longer statically imported by the desktop route. The
+  panel module is loaded on first open, then retained for subsequent opens so
+  settings drafts and section state are not recreated.
+- This removes the settings/theme/icon module graph from the first-load path;
+  theme switching remains generation-guarded and wallpaper decode remains
+  deferred. Focused settings contract: 5 passed; `pnpm check`: 0 errors / 0
+  warnings. No version bump or release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-158-settings-lazy-load.md`.
+
+## Current snapshot (iteration 157, 2026-08-04)
+
+- Kernel death watching now captures the authenticated endpoint, tolerates
+  transient health failures, and exits after three consecutive failures or
+  immediate process death. Tray kernel shutdown marks `quitting` first and
+  rolls it back if shutdown fails, preventing watcher double-exit races.
+- Focused lifecycle tests: 7 passed. Physical tray/restart and health-fault
+  evidence remain open; no release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-157-kernel-watcher-health.md`.
+
+## Current snapshot (iteration 156, 2026-08-04)
+
+- Desktop restart reattach now opens kernel output leases from the bounded
+  retained window (`after_seq: None`) instead of dropping all pre-restart
+  output. Unmatched kernel PTYs are counted and warned, but not guessed-away
+  or destroyed.
+- Focused PTY lifecycle contracts: 3 passed. Physical exit/restart, orphan
+  recovery UX, and cross-host evidence remain open; no release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-156-kernel-reattach-history.md`.
+
+## Current snapshot (iteration 155, 2026-08-04)
+
+- Desktop branch-list reads now use authenticated kernel
+  `/v1/domain/git/branches`; confirmed non-Git roots are detected before any
+  `git branch` child is started. Existing five-minute UI caches and Tauri
+  signatures remain unchanged.
+- Typed kernel decoding covers source, malformed payload, non-Git, and Windows
+  path cases. Focused branch tests: 2 passed; desktop compile: exit 0. Full
+  regression and physical/public evidence remain open; no release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-155-kernel-git-branches.md`.
+
+## Current snapshot (iteration 154, 2026-08-04)
+
+- Desktop `ensure_kernel_running` now uses a process-local single-flight gate
+  across detection, spawn, and readiness. Setup and first-Pane startup cannot
+  launch duplicate kernels or observe a half-written registry.
+- An existing live PID receives the same bounded readiness wait before attach;
+  transient kernel health publication no longer becomes an immediate Pane
+  failure. Focused lifecycle tests: 6 passed. No version bump or release was
+  made.
+
+Archive: `docs/iterations/2026-08-04-iteration-154-kernel-boot-single-flight.md`.
+
+## Current snapshot (iteration 153, 2026-08-04)
+
+- Desktop `get_scm_status` now reads the authenticated kernel Git domain;
+  desktop SCM status no longer starts the local `ridge-core` Git path directly.
+- Kernel response decoding is source-checked and typed, distinguishes confirmed
+  non-Git roots from failures, and URL-encodes Windows paths. Query/slot callers
+  keep their existing contract while the domain remains the single read seam.
+- Focused kernel Git adapter tests: 2 passed; `cargo check -p ridge --lib` exit 0.
+  Full regression and physical/public evidence remain open; no version bump or
+  release was made.
+
+Archive: `docs/iterations/2026-08-04-iteration-153-kernel-git-status.md`.
+
+## Current snapshot (iteration 152, 2026-08-04)
+
+- Desktop pane PTY creation is now kernel-authoritative in production. Kernel
+  bootstrap/list/create/attach failures surface as errors; no local Tauri PTY
+  fallback can hide a split lifecycle or leave an orphan child process.
+- The legacy `initial_command` launch is rejected explicitly; structured Agent
+  launches must use `StructuredPtyCommand` so argv/env remain bounded and
+  restart-safe. The native pending-spawn path is test-only.
+- Rust verification: `cargo test -p ridge --lib` 253 passed; focused PTY
+  lifecycle contract 2 passed; `cargo check -p ridge --lib` exit 0. No version
+  bump or release was made. Physical restart/reattach, public/physical Remote,
+  WebView2 heap soak, dual-window/Host, and full Kernel-domain evidence remain
+  open.
+
+Archive: `docs/iterations/2026-08-04-iteration-152-kernel-pty-authority.md`.
+
+## Current snapshot (iteration 151, 2026-08-03)
+
+- Remote WorkspaceTree now keeps the last good non-active workspace peek
+  snapshot but renders a per-workspace error when listWorkspacePanes fails;
+  transport failures no longer look like a healthy empty terminal list.
+- Focused Host/Cloud/WorkspaceTree tests: 50 passed. Full Vitest: 147 files,
+  1538 passed, 1 skipped; pnpm check reports 0 errors and 0 warnings. No
+  release or version bump was made; physical/public Remote, WebView2 heap soak,
+  dual-window/dual-host, and full Kernel authority evidence remain open.
+
+Archive: docs/iterations/2026-08-03-iteration-151-remote-peek-error-feedback.md.
+
+## Current snapshot (iteration 150, 2026-08-03)
+
+- LAN legacy `workspace-panes` responses now carry a payload guard. A late
+  response for another workspace is ignored instead of resolving the active
+  request as an empty list; the pending request waits for its matching reply or
+  its bounded timeout.
+- Focused LAN scheduler tests: 11 passed. Full Vitest: 147 files, 1537 passed,
+  1 skipped; `pnpm check` reports 0 errors and 0 warnings. No release or version
+  bump was made; physical/public Remote, WebView2 heap soak, dual-window/dual-host,
+  and full Kernel authority evidence remain open.
+
+Archive: `docs/iterations/2026-08-03-iteration-150-remote-legacy-response-guard.md`.
+
+## Current snapshot (iteration 149, 2026-08-03)
+
+- Remote workspace creation now surfaces Cloud Host and mobile Cloud RPC/auth
+  failures; an empty returned ID also renders an explicit failure instead of a
+  silent no-op. Successful creation keeps the existing switch/refresh path.
+- Focused Host/Cloud/WorkspaceTree tests: 44 passed. No release or version bump
+  was made; physical/public Remote, WebView2 heap soak, dual-window/dual-host,
+  and full Kernel authority evidence remain open.
+
+Archive: `docs/iterations/2026-08-03-iteration-149-remote-workspace-create-feedback.md`.
+
+## Current snapshot (iteration 148, 2026-08-03)
+
+- Cloud Host and mobile Cloud pane projections now retain `isAgent` whenever
+  `agent_state` or `agent_id` exists, so idle/starting Agents remain visible
+  after runtime-state transitions. Busy remains a state, not identity.
+- Focused Cloud topology/Remote tests: 39 passed. No release or version bump
+  was made; physical/public Remote, WebView2 heap soak, dual-window/dual-host,
+  and full Kernel authority evidence remain open.
+
+Archive: `docs/iterations/2026-08-03-iteration-148-agent-idle-identity.md`.
+
+## Current snapshot (iteration 147, 2026-08-03)
+
+- Cloud Remote Host workspace and pane discovery now preserve RPC failures;
+  callers can show loading/error/retry state instead of mistaking a failed
+  Host for a healthy empty Host. Regression tests cover both discovery paths.
+- Focused Cloud Remote tests: 35 passed. No release or version bump was made;
+  physical/public Remote, WebView2 heap soak, dual-window/dual-host, and full
+  Kernel authority evidence remain open.
+
+Archive: `docs/iterations/2026-08-03-iteration-147-remote-host-error-visibility.md`.
+
+## Current snapshot (iteration 146, 2026-08-03)
+
+- Remote Agent cards now consume the host topology's live PaneHeader/OSC
+  `title` while retaining stable Agent identity for actions/history and the
+  real CWD for context.
+- Remote/mobile Git sidebar now remembers confirmed non-Git roots for the
+  lifetime of the transport session, so tab/provider remounts do not restart
+  `git status` and repeat `not a git repository` errors. Keys include the
+  normalized root and remote session; the cache is bounded to 128 roots.
+- A different CWD still performs fresh detection. Legacy desktop adapters
+  without a stable session identity keep provider-local negative state to
+  prevent cross-host false positives.
+- Focused Remote sidebar tests: 15 passed. No release or version bump was
+  made; physical/public Remote, WebView2 heap soak, dual-window/dual-host,
+  and full Kernel authority evidence remain open.
+
+Archive: `docs/iterations/2026-08-03-iteration-146-remote-agent-live-title.md`;
+`docs/iterations/2026-08-03-iteration-145-remote-git-negative-cache.md`.
+
+## Current snapshot (iteration 144, 2026-08-03)
+
+- Structured Agent launches now try the authenticated `ridge-kernel` PTY
+  domain with explicit argv/environment, stable Pane identity, teammate/TMUX
+  metadata, and the existing resize-after-real-dimensions contract. Kernel
+  success resolves teammate split readiness immediately.
+- Kernel launch payloads are bounded (argument count, environment count and
+  bytes) before child creation. If Kernel bootstrap or attach fails, the
+  existing local pending-spawn path remains available.
+- Kernel 33 tests, Tauri 252 tests, full Vitest 1529 passed/1 skipped, and
+  `pnpm check` 0/0 are green. No release or version bump was made because
+  `v0.1.54` consumed today's allowance.
+- Physical tray restart, public/physical Remote, WebView2 heap soak,
+  dual-window/dual-host, and full external Kernel authority evidence remain
+  open gates.
+
+Archive: `docs/iterations/2026-08-03-iteration-144-kernel-agent-launch.md`.
+
+## Current snapshot (iteration 143, 2026-08-03)
+
+- PTY bridge attach is now single-flight per stable Pane key. A close racing
+  asynchronous Tauri listener registration cancels the attach and removes any
+  listener already acquired, preventing duplicate Channels and post-destroy
+  output callbacks.
+- Cloud host raw-pane streaming now registers the Tauri event listener before
+  sending `subscribe_pane_raw`; unsubscribe is serialized after an in-flight
+  subscribe, and output callbacks/source failures are contained and logged.
+- Focused lifecycle tests pass; no version bump or publication was made because
+  `v0.1.54` consumed today's allowance. Physical phone/public Remote, WebView2
+  heap soak, dual-window/dual-host, and full Kernel-domain authority remain
+  external or larger-scope evidence gates.
+
+Archive: `docs/iterations/2026-08-03-iteration-143-pty-cloud-lifecycle.md`.
+
+## Current snapshot (iteration 142, 2026-08-03)
+
+- rdg now answers the legacy Remote sidebar frames `list-files`,
+  `list-git-status`, and `search-files`. Responses preserve the historical
+  payload shapes, use the same serving-root sandbox as canonical FS methods,
+  and run disk/Git work in `spawn_blocking` before asynchronous WS delivery.
+  Focused legacy-frame tests pass 12/12.
+- Controlled LAN Remote E2E also passes from the current binary: desktop and
+  mobile WebSocket sessions connect, input and Resize are sent, and both
+  browser runs report no errors (`desktop canvas=true tree=false ws=true`,
+  `mobile canvas=true tree=true ws=true`). This is LAN evidence only, not
+  public/physical-phone/WebView2 soak evidence.
+- No version bump or publication was made because `v0.1.54` consumed today's
+  allowance. Physical phone/public Remote, WebView2 heap soak, dual-window /
+  dual-host, and full Kernel-domain authority migration remain evidence gates.
+
+Archive: `docs/iterations/2026-08-03-iteration-142-rdg-legacy-sidebar-frames.md`.
+
+## Snapshot (iteration 141, 2026-08-03)
+
+- `rdg` production TUI/LAN-host sessions now use the long-lived
+  `ridge-kernel` domain PTY instead of the in-process registry. Stable PaneTree
+  UUIDs are assigned before PTY creation; output leases are bounded and
+  cancellable, shell proxy drop detaches without destroying the child, and a
+  failed first attach cleans up only the newly-created PTY.
+- CLI unit tests (127/127), detached Kernel lifecycle tests (3/3),
+  `pnpm check` (0 errors/0 warnings), and `git diff --check` pass. No release or
+  publication was made because `v0.1.54` consumed today's allowance.
+- Physical tray-exit/restart, WebView2 memory soak, public Remote/Cloud, and
+  full Kernel domain migration remain evidence gates; desktop startup already
+  calls `reattach_kernel_ptys` after workspace restore.
+
+Archive: `docs/iterations/2026-08-03-iteration-141-rdg-kernel-pty-session.md`.
+
+## Current snapshot (iteration 140, 2026-08-03)
+
+- `rdg` LAN now serves the filesystem/search capabilities it advertises:
+  `get_file_tree`, `read_file`, `text_search`, `get_directory_children`,
+  canonical `search`, and legacy `search_files` all pass through the shared
+  `ridge-core`/`fs_reuse` boundary with serving-root sandboxing. The focused
+  `rdg` suite is 127/127 and the real-process Kernel PTY lifecycle suite is
+  3/3. Runtime fix: `d5da7c2`.
+- No version bump, release, Remote cloud publication, or public deployment was
+  made. `v0.1.54` consumed today's publication allowance.
+- Physical phone/public Remote attribution, WebView2 memory soak,
+  dual-window/dual-host evidence, and full Kernel authority migration remain
+  external or larger-scope gates; this iteration does not claim them closed.
+
+Archive: `docs/iterations/2026-08-03-iteration-140-rdg-lan-fs-search.md`.
+
+## Previous snapshot (iteration 139, 2026-08-03)
+
+- `wind` now includes the tab-switch black-frame guard and a real ordinary-shell
+  PTY reattach path. `ridge-kernel` owns stable pane-keyed PTYs, bounded output
+  leases and write/resize/clear/destroy; Tauri proxies them and rebinds them
+  after saved or private unsaved workspace restore. The interactive shell launch
+  profile restores CWD/title markers after restart. Structured Agent launches remain local because
+  their environment/TMUX contract is process-specific.
+- Tray `退出桌面端` drops only the desktop proxy; `彻底退出` remains the
+  explicit kernel shutdown boundary. Older-build local ConPTY sessions are not
+  claimed as retroactively recoverable.
+- A real detached Kernel integration test now proves the missing lifecycle
+  fact: after the client output lease is detached, the stable PTY still accepts
+  input and a replacement lease resumes after the last consumed sequence.
+  `cargo test -p ridge-cli --test kernel_lifecycle_e2e --quiet` passes 3/3.
+- Full Vitest: 147 files / 1524 passed / 1 skipped; Tauri library tests: 252
+  passed; ridge-kernel tests: 31 passed; `pnpm check`: 0 errors / 0 warnings.
+  No release or publication was made because `v0.1.54` consumed today's
+  allowance.
+
+Archive: `docs/iterations/2026-08-03-iteration-139-kernel-pty-real-process-reattach.md`.
+
+- `wind` `main` is at `6035dc9`; Agent Commune now consumes the same live
+  `terminalTitles`, foreground-process, and workspace-scoped CWD stores as
+  `PaneHeader`. Agent identity remains stable while displayed titles follow
+  OSC/process/CWD changes in real time.
+- Agent Pane attention now emits `idle` only on a working-to-idle transition;
+  initial idle is neutral. Waiting approval and stopped attention persist until
+  the target Pane is focused. A newer higher-priority event can upgrade an
+  unacknowledged idle event, never downgrade it. Pane border, Agent button, and
+  Commune card use the same attention value.
+- Startup kernel bootstrap is asynchronous;
+  setup no longer blocks
+  the WebView on kernel detect-or-spawn, health polling, or host-topology I/O.
+  Settings remain lazy and idle-bound;
+  the overlay has no full-window blur, default-CWD sync is latest-value and
+  lifecycle-aware, terminal settings notifications deduplicate without
+  dropping theme propagation, and theme bridge work coalesces to one frame.
+- PTY creation/replacement, resize, clear, delta-mode reframe, shell history,
+  scrollback paging, and resync-frame construction now leave the Tauri async
+  worker through `spawn_blocking`. Remote migrated core dispatch uses the same
+  boundary, including non-Git workspace/filesystem commands.
+- Shell/WSL/VS probes retain the shared 2-second process-tree timeout. Wallpaper
+  decode is idle-deferred, generation-guarded, and bounded to 4096 px per edge
+  / 16 MP to limit WebView2 transient memory.
+- Full Vitest: 147 files / 1518 passed / 1 skipped; Tauri library tests: 251
+  passed; `pnpm check`: 0 errors / 0 warnings; preflight, requirements, and
+  iteration gates pass. No release or publication was made because `v0.1.54`
+  consumed today's allowance.
+
+Focused Agent tests: 2 files / 12 passed; `pnpm check`: 0 errors / 0 warnings.
+No version bump, release, Remote cloud publish, or public deployment was made;
+`v0.1.54` consumed today's publication allowance.
+
+Archive: `docs/iterations/2026-08-03-iteration-137-agent-attention-and-live-title.md`.
+
+## Iteration 137 update (2026-08-03)
+
+The Commune card title is a live projection of the PaneHeader title source.
+Attention is transition-based and identity-scoped (`workspaceId:paneId`): idle
+is armed only after working becomes idle; waiting approval and stopped remain
+visible until focus/activation clears them. Static source contracts and pure
+view-model tests guard the shared state and priority rules.
+
+Archive: `docs/iterations/2026-08-03-iteration-137-agent-attention-and-live-title.md`.
+
+## Iteration 133 update (2026-08-03)
+
+- `wind` `main` is pushed at `e466812`. The OSC-8 link grid now joins only
+  proven soft-wrapped visual rows, so Ctrl-hover underlines the complete target
+  without joining equal-URI links separated by a hard break.
+- Controlled LAN desktop/mobile E2E passed (`canvas/tree/ws=true`, desktop and
+  mobile input/resize sent, `browserErrors=[]`); Chromium mobile keyboard and
+  touch-selection checks also passed. The browser run used an isolated,
+  extension-disabled context.
+- Focused link tests: 17 passed; `pnpm check`: 0 errors / 0 warnings. The
+  clean-profile runtime.lastError probe is attribution-incomplete by design;
+  no project Chrome-extension messaging source was found.
+- No version bump, release, Remote cloud publish, or public deployment was
+  made: `v0.1.54` consumed today's publication allowance. Physical phone,
+  public path, WebView2/GPU-adapter, and long-running memory evidence remain
+  external gates.
+
+Archive: `docs/iterations/2026-08-03-iteration-133-osc8-link-and-lan-evidence.md`.
+
+## Iteration 132 update (2026-08-03)
+
+- `wind` `main` is pushed (code commits `2079685`, `c9bc7c0`,
+  `26b4f42`, `afbfa11`). Desktop terminal now defaults to the main-thread
+  WebGPU host; worker Canvas2D is explicit opt-in. Startup listener timing,
+  inactive-workspace SCM polling, theme decode/invalidation, duplicate caret,
+  and multiline link hover affordance are guarded by source/unit tests.
+- Regression evidence: full Vitest 146 files / 1510 passed / 1 skipped;
+  `pnpm check` 0/0; ridge-term 398 and ridge-kernel 30 Rust tests passed;
+  ridge-kernel binary check passed. Remote RPC coalescing, cached Git panels,
+  and PWA safe-area changes are included.
+- Kernel HTTP PTY output leases are bounded by a 256-frame/256KiB replay window
+  and a 1024-handle map cap. Existing Tauri shell authority is not claimed as
+  migrated.
+- No version bump, release, Remote cloud publish, or public deployment was
+  made: `v0.1.54` consumed today's publication allowance. Physical WebView2,
+  GPU-adapter, phone-notch, memory-soak, and public Remote/Cloud evidence remain
+  external gates.
+
+Archive: `docs/iterations/2026-08-03-iteration-132-desktop-terminal-performance-and-link-hover.md`.
+
+## Previous snapshot (iteration 131)
+
+- `wind` `main` 已推送至 `43f6c39`（代码基线 `b304ea7`；含 `e22c450` PWA 连接提示安全区隔离与 Kernel PTY 有界输出租约归档）；最近闭环为 PTY 子进程树回收、Host 拖拽取消、上下文 Resize 去重、Remote Agent 状态投影统一。
+- 全量 Vitest：145 files / 1,499 passed / 1 skipped；`pnpm check` 0 errors / 0 warnings；Remote mobile PWA build verifier 全部通过。
+- LAN Remote desktop/mobile E2E 均通过（`canvas/tree/ws=true`、输入/Resize 可发送、`browserErrors=[]`，浏览器隔离扩展）；证据日志见 `.iteration/artifacts/rdg-remote-e2e-20260803.log`。
+- `ridge-cloud` `main` 已推送至 `e6d5715`；admin session duration 对账完成，前端 check/build 通过；Cargo 回归因本机缺 `aws-lc-sys v0.41.0` 且离线无法下载，联网下载仍属环境证据，非代码失败。
+- 今日版本发布窗口已由 `v0.1.54` 消耗，后续不得再 bump/release/publish；未完成的公网、真机/WebView2、双窗口/双 Host、Agent 真链与完整 Kernel authority 仍不得宣称完成。
+
+## Iteration 130 update (2026-08-03)
+
+Remote reconnect and failure notices now reserve a separate top safe-area flex
+item before their content. `env()`/`constant()` plus the standalone 44px
+fallback cover Android WebView and iOS `navigator.standalone`; auth/cloud gate
+fallbacks consume the same iOS marker. Source tests, `pnpm check`, mobile PWA
+build and verifier pass. Physical notch/WebView2 evidence remains open.
+
+Archive: `docs/iterations/2026-08-03-iteration-130-pwa-connection-safe-area.md`.
+
+## Iteration 131 update (2026-08-03)
+
+Kernel domain PTYs now publish monotonic frames into a bounded 256-frame /
+256KiB replay hub. Leases support cursor attach, timeout long-poll, lag and
+explicit resync, detach, and fail-closed begin/finish/cancel destroy semantics;
+the existing CLI mpsc output path is preserved. Kernel and CLI tests pass.
+This is an internal seam only: HTTP lease routes, composite identity,
+persistence, Tauri adapter migration, and pure-shell authority remain open.
+
+Archive: `docs/iterations/2026-08-03-iteration-131-kernel-pty-output-lease.md`.
+
+## Iteration 122 update (2026-08-03)
+
+Cross-cutting regression after the PWA safe-area, Host topology refresh, and
+terminal-link slices is green: full Vitest 145 files / 1,497 passed / 1 skipped;
+Rust Host 59 and ridge-term 398; `pnpm check` 0/0; Remote mobile build and PWA
+artifact checks; LAN desktop/mobile smoke; and Chromium mobile keyboard/touch
+selection with `browserErrors=[]`. Physical/public/WebView2/dual-window and
+authenticated Git push evidence remain external; no release after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-122-cross-cutting-regression.md`.
+
+## Iteration 123 update (2026-08-03)
+
+The remaining desktop PTY/kernel convergence was audited against the live
+Tauri paths. Tauri still owns the AppState PTY handles, parser, output sink,
+resize, clear, kill, and scrollback; the kernel PTY domain is an isolated
+registry without a shell-visible output stream, lease/attach protocol, or
+stable composite-pane mapping. No command was redirected: doing so now would
+split PTY identity or drop live output. The next safe work is a versioned lease
+plus output/backpressure/cancellation adapter, followed by one-family
+migration and lifecycle tests. This audit is an explicit boundary, not a
+claim that full Kernel authority is complete.
+
+Archive: `docs/iterations/2026-08-03-iteration-123-kernel-pty-migration-audit.md`.
+
+## Iteration 124 update (2026-08-03)
+
+Tauri Pane replacement and explicit close/reap now share a process-tree kill
+guard. The previous `Child::kill()`-only paths could leave descendants such as
+tool runners or language servers alive after a Pane disappeared. The guard
+captures the recorded child PID, kills the shell, and invokes the shared
+`ridge_core::process_guard::kill_process_tree`. Contract and process-guard
+tests pass; this closes the internal lifecycle gap without pretending that
+full Kernel PTY authority is complete.
+
+Archive: `docs/iterations/2026-08-03-iteration-124-tauri-pty-tree-kill.md`.
+
+## Iteration 125 update (2026-08-03)
+
+Host-session drag now funnels `pointercancel` and window `blur` through one
+cleanup path. The drag sentinel, pane hover preview, cursor, and global
+listeners are all released, preventing a mobile system gesture or focus loss
+from leaving a stuck drag state. The real EventTarget regression test passes;
+`871b251` is pushed. No version bump or publication was made.
+
+Archive: `docs/iterations/2026-08-03-iteration-125-host-drag-cancel.md`.
+
+## Iteration 126 update (2026-08-03)
+
+Resize deduplication now compares the full normalized dimensions plus PTY mode
+context (`isAlt`/`isInlineTui`) before queueing. Identical contextual Resize
+requests coalesce while one is active; real mode changes remain deliverable.
+The focused scheduler suite passes 15/15 and `pnpm check` remains clean. No
+version bump or publication was made.
+
+Archive: `docs/iterations/2026-08-03-iteration-126-rpc-contextual-resize-dedupe.md`.
+
+## Iteration 127 update (2026-08-03)
+
+Remote Agent cards now use the same shared status projection and labels as the
+desktop Commune cards. `Suspended`/`Disappeared` map to the red stopped rail,
+pending approval to yellow waiting, and working/idle remain consistent. The
+focused Agent model and Remote roster suites pass 14/14; no version bump or
+publication was made.
+
+Archive: `docs/iterations/2026-08-03-iteration-127-remote-agent-status-parity.md`.
+
+## Iteration 121 update (2026-08-03)
+
+Installed/Desktop terminal links now preserve a URL when the first visual
+row ends in punctuation that the scanner trims. The logical target restores
+that punctuation only when the suffix is punctuation-only and the kernel
+confirms a soft wrap; hard breaks and ordinary trailing text remain separate.
+The existing Rust selection implementation already joins soft-wrapped rows;
+new partial-selection coverage proves copy emits no visual newline. The
+merged target is exercised through hover underline, Ctrl-click arbitration,
+and host-open planning. Link tests pass 23/23, `cargo test -p ridge-term
+--lib` passes 398/398, and `pnpm check` is clean. Physical installed-WebView2
+evidence remains external; no release after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-121-terminal-link-wrap-guards.md`.
+
+## Iteration 120 update (2026-08-03)
+
+Remote host workspace save now refreshes the linked topology after the remote
+mutation succeeds, so updated names and workspace lists appear immediately in
+Hosts instead of waiting for an unrelated poll/reconnect. A deterministic
+source contract test guards the ordering. Targeted Vitest passes; this
+follow-up remains unreleased because the daily publication window is frozen
+after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-120-host-workspace-save-refresh.md`.
+
+## Iteration 119 update (2026-08-03)
+
+Standalone PWA detection now runs before Svelte mounts and covers iOS's
+`navigator.standalone` path, which may not satisfy `(display-mode: standalone)`.
+The reconnect/failure banner and mobile header reserve a conservative 44px
+portrait top belt (or the larger real safe-area inset); the Remote drawer and
+bottom action bar receive matching standalone top/bottom fallbacks. PWA scope
+tests (5/5), `pnpm check`, mobile production build, and generated PWA evidence
+pass. Physical notch-device proof remains external; no release after `v0.1.54`
+due the daily publication freeze.
+
+Archive: `docs/iterations/2026-08-03-iteration-119-pwa-standalone-shell-safe-area.md`.
+
+## Iteration 118 update (2026-08-03)
+
+Source Control passive remounts and filesystem watcher bursts now share a
+per-repository successful-status timestamp. Fresh snapshots are not re-polled;
+passive status reads are bounded to one per five minutes, with normalized
+Windows roots sharing the same gate. Explicit Git actions still refresh
+immediately, and status/snapshot timestamps are reclaimed on cwd/non-Git
+transitions. `scmCache`/pane Git tests pass 39/39; `pnpm check` is clean.
+Current LAN Remote desktop/mobile browser smoke and Chromium mobile keyboard /
+selection probe both pass with zero browser errors. Physical/public/heap gates
+remain external; no release after `v0.1.54` due the daily publication freeze.
+
+Archive: `docs/iterations/2026-08-03-iteration-118-scm-passive-poll-and-lan-e2e.md`.
+
+## Iteration 117 update (2026-08-03)
+
+Some standalone Android/WebView shells expose a portrait cutout while returning
+zero for `env(safe-area-inset-top)`. Remote reconnect/failure banners and both
+LAN/Cloud auth fallback screens now reserve a 44px standalone top belt, while
+`max()` keeps larger real `env()`/`constant()` insets authoritative. Targeted
+PWA tests (7/7), `pnpm check`, mobile production build, and generated CSS/PWA
+evidence pass. Physical notch-device proof remains pending; no release after
+`v0.1.54` due the daily publication freeze.
+
+Archive: `docs/iterations/2026-08-03-iteration-117-pwa-standalone-top-belt.md`.
+
+## Iteration 116 update (2026-08-03)
+
+Remote `git_status` first paint now uses a fast shared-core snapshot when the
+client requests `includeDetails:false`: one porcelain status child, with the
+same Git semaphore/timeout/process guard, and no discarded `diff --numstat`
+children. Full desktop/compatibility status keeps line counts; Graph/history
+remains lazy. Core tests (315/315) and host tests (59/59) pass. Physical/public
+latency evidence remains pending and this follow-up remains unreleased because
+the daily publication window is frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-116-remote-git-first-paint.md`.
+
+## Iteration 115 update (2026-08-03)
+
+Remote PWA reconnect/failure notices now reserve top and landscape side
+safe-areas, wrap narrow action rows, and carry a legacy WebKit `constant()`
+fallback before the modern `env()` path. Auth fallback screens use the same
+contract. Target tests (7/7), `pnpm check`, and the mobile PWA build pass;
+physical notch-device evidence remains pending. This follow-up remains
+unreleased because the daily publication window is frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-115-pwa-safe-area-compat.md`.
+
+## Iteration 114 update (2026-08-03)
+
+Foreign-pane unsubscribe now cancels queued pane-scoped LAN
+`write_to_pty`/`resize_pane` work under the per-host RPC gate before sending
+unsubscribe. Other panes' requests remain queued; 59 host tests pass. This
+follow-up remains unreleased because the daily publication window is frozen
+after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-114-pane-rpc-cancellation.md`.
+
+## Iteration 113 update (2026-08-03)
+
+Successful host resubscribe now restores `HostStatus::Connected` through the
+kernel-authoritative writer before the reconnect supervisor returns to Idle.
+If that write fails, Succeeded remains retryable so the UI cannot hide a stale
+Disconnected topology. Host tests remain 20/20; this follow-up remains
+unreleased because the daily publication window is frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-113-host-reconnect-status.md`.
+
+## Iteration 112 update (2026-08-03)
+
+User-visible host disconnect now commits `HostStatus::Disconnected` through
+the kernel before marking the outbound transport disconnected or clearing live
+buffers. Kernel failure leaves the client and Connected projection retryable;
+the local test seam is explicit. Host tests are 20/20. This follow-up remains
+unreleased because the daily publication window is frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-112-host-disconnect-kernel-first.md`.
+
+## Iteration 111 update (2026-08-03)
+
+Outbound list ingress now commits sessions plus Connected status/detail in one
+kernel-authoritative HostRecord write before the transport is bound. Existing
+foreign panes retain `attached=true` across reconnect/list refreshes. A test
+seam keeps unit tests local without adding a production fallback, and host
+tests are 19/19. This follow-up remains unreleased because the daily
+publication window is frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-111-host-outbound-snapshot.md`.
+
+## Iteration 110 update (2026-08-03)
+
+LAN outbound RPC failures now remove their exact request from `pending_rpc` on
+both success and error. Repeated failed `write_to_pty`/Resize/list calls no
+longer accumulate as fake backpressure; the bounded queue and counter remain
+in force. The LAN transport tests are 6/6, with a regression asserting a
+failed write leaves no pending entry. This follow-up remains unreleased
+because the daily publication window is frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-110-lan-rpc-failure-queue-cleanup.md`.
+
+## Iteration 109 update (2026-08-03)
+
+The outbound host client now uses one per-host `rpc_gate` for connect/list,
+subscribe/unsubscribe, terminal input, Resize, reconnect reset, and disconnect.
+Subscription state is rechecked while the gate is held, preventing writes or
+Resize calls from racing pane teardown. A concurrent transport guard proves
+the in-flight RPC peak stays at one while all input writes are preserved. The
+outbound host tests are 11/11; this follow-up remains unreleased because the
+daily publication window is frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-109-outbound-rpc-gate.md`.
+
+## Iteration 108 update (2026-08-03)
+
+`detach_foreign` now uses the same atomic ridge-kernel session transition as
+attach. The kernel detach succeeds before the local foreign mapping, PTY sink,
+live buffer, backpressure state, or outbound subscription is removed; a kernel
+failure leaves the attachment intact for retry. Attach/detach are serialized
+by one session transaction lock, and deterministic tests cover failure and
+ordering. Host tests are 18/18, ridge-kernel tests 24/24, and `pnpm check` is
+0/0. This follow-up is pushed unreleased because the daily publication window
+remains frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-108-kernel-host-session-detach-transaction.md`.
+
+## Iteration 107 update (2026-08-03)
+
+Remote session attachment flags now use atomic kernel transitions instead of
+full `HostRecord` writes. Authenticated attach/detach endpoints validate the
+host/session state under the kernel topology lock, persist before swap, and
+reject duplicate or unknown transitions without mutation. The desktop checked
+path projects only a matching kernel result. Kernel tests are 24/24 and Ridge
+host tests are 16/16; this follow-up is pushed unreleased because the daily
+publication window remains frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-107-kernel-host-session-transaction.md`.
+
+## Iteration 106 update (2026-08-03)
+
+Remote host session attach is now a fail-closed transaction. The local foreign
+PTY is created before layout/host mutation; subscription happens before split;
+split, terminal install, sink, foreign metadata, and outbound subscription are
+rolled back together on later failure. Missing workspaces no longer receive a
+random pane id; concurrent attaches are serialized and duplicate sessions are
+rejected. `session.attached` commits through the kernel-authoritative host
+mutation path. Rust host tests are 16/16 and `cargo check -p ridge --lib`
+passes with only existing warnings. This follow-up is pushed but unreleased;
+the daily publication window remains frozen after `v0.1.54`.
+
+Archive: `docs/iterations/2026-08-03-iteration-106-host-attach-transaction.md`.
+
+## Iteration 105 update (2026-08-03)
+
+The remote-session attach gate now refreshes the kernel-owned host topology
+before accepting a session. `ensure_host_connected` projects only a successful
+kernel snapshot and rejects missing/disconnected hosts or an unavailable
+kernel, preventing stale shell state from routing bytes to an invalid Host.
+`forget_host` also retains the outbound transport until the kernel delete
+succeeds. Host tests remain 14/14. This follow-up is pushed but unreleased; the
+remaining kernel slice is transactional session flags/live PTY status with
+local rollback.
+
+Archive: `docs/iterations/2026-08-03-iteration-105-kernel-host-attach-read.md`.
+
+## Iteration 104 update (2026-08-03)
+
+Remote-host command mutations now use the kernel as the authority before the
+desktop shell updates its projection. Frontend host registration and TCP probe
+states fail closed when the domain endpoint is unavailable; `forget_host` also
+deletes kernel-first. Identical records skip duplicate domain writes. A
+regression proves a rejected kernel write cannot publish a shell-only host.
+`cargo test -p ridge --lib hosts::tests` is 14/14 and `pnpm check` is 0/0.
+This follow-up is pushed but unreleased because `v0.1.54` consumed today's
+publication allowance. Live-session/status mutation remains the next kernel
+authority slice.
+
+Archive: `docs/iterations/2026-08-03-iteration-104-kernel-host-write-first.md`.
+
+## Iteration 103 update (2026-08-03)
+
+Kernel domain SSOT hardening removed a stale-shell fallback from the desktop
+remote-host read path. `host_list_snapshot` now returns an explicit error when
+the authenticated `ridge-kernel` endpoint is unavailable or rejects the domain
+snapshot; it never rehydrates the UI from the process-local `HostRegistry`.
+Hosts refresh surfaces that error instead of silently hiding the failure. A
+regression proves an unavailable kernel cannot turn a stale shell cache into a
+successful projection. `cargo test -p ridge --lib hosts::tests` is 13/13 and
+`pnpm check` is 0/0. This is pushed as the next unreleased follow-up; the daily
+publication window remains frozen.
+Archive: `docs/iterations/2026-08-03-iteration-103-kernel-host-read-fail-closed.md`.
+
+## Iteration 102 update (2026-08-03)
+
+The remaining PWA notch gap was in the pre-`MainApp` reconnect fallback: LAN
+`AuthScreen` and cloud `CloudAuthScreen` both render connecting/failure detail in
+a fixed full-viewport screen that previously used only `padding:24px`. Both
+screens now reserve top, bottom, left, and right display-cutout insets and allow
+long diagnostics to scroll. The existing `MainApp` reconnect/failure banner
+safe-area contract remains unchanged. Targeted PWA tests (4), full Vitest
+(144 files / 1490 passed / 1 skipped), `pnpm check`, remote mobile PWA build,
+and LAN desktop/mobile E2E all pass. This follow-up is committed and pushed;
+the daily publication window remains frozen after `v0.1.54`.
+Archive: `docs/iterations/2026-08-03-iteration-102-pwa-auth-safe-area.md`.
+
+## Iteration 101 update (2026-08-03)
+
+Remote mobile Git first paint is now asynchronous: `git_status` returns only
+working-tree state, while branch/history use a separate cancellable Query on
+Graph selection. Host data-request dispatch exposes both lazy reads, with
+single-flight caching, teardown fencing, and legacy-host fallback. Reconnect and
+failure banners reserve the PWA top safe area for notch devices. Full Vitest is
+144 files / 1489 passed / 1 skipped; `pnpm check` is 0/0; remote mobile PWA
+build passes; Rust Remote Host tests are 12/12. Commits `16a34bf` and `d8ae245` are pushed. The daily publication
+window was already consumed by `v0.1.54`, so this follow-up is queued for the
+next release; no second artifact publication was attempted.
+Archive: `docs/iterations/2026-08-03-iteration-101-remote-git-async-pwa-safe-area.md`.
+
+## Iteration 100 update (2026-08-03)
+
+Remote Query/PWA and Agent Commune parity deterministic slice is complete and
+pushed (`1045165`, `89cfeae`). Query-backed Git/File reads now single-flight
+with scoped invalidation and explicit refresh; Remote Git/File failures do not
+auto-retry. Browser/PWA layout owns dynamic viewport and safe-area insets, with
+browser-native installation only. Agent roster carries host-authoritative CWD;
+Remote groups support serialized optimistic CRUD, leader, color, and ordering
+controls. Full Vitest is 144 files / 1486 passed / 1 skipped; `pnpm check` is
+0/0; Rust teammate tests are 8/8; desktop/mobile builds and LAN E2E pass.
+Archive: `docs/iterations/2026-08-03-iteration-100-remote-sidebar-agent-parity.md`.
+Release `v0.1.54` is formal with 12 matching assets (workflow
+`30780114578`); Remote/Cloud workflow `30780128512` succeeded. Physical-device,
+public Cloud/WebRTC, WebView2 heap, and dual-window/dual-Host gates remain.
+
+## Iteration 99 update (2026-08-03)
+
+`REQ-TERMINAL-PASTE-ORDER-02` 的现场缺口定位为异步剪贴板读期间未占位：
+原 PTY/RPC FIFO 只约束已生成字节，后续键入或 Agent/MCP 写入可先入队。新增
+`packages/remote/src/shared/terminal/paneInputGate.ts`，按复合
+`(workspaceId,paneId)` 先锁定输入意图，再执行 clipboard/image promise；桌面、LAN、
+Cloud、host-topology Remote 共用，既有 PTY/RPC 队列仍负责字节上限、批处理、重试、超时。
+关 Pane、裁剪、断连时退休 generation，避免迟到写入复用 Pane。新增 gate 并发、失败续行、
+退休与上限测；Agent 成员/编组写入亦汇入同闸。`pnpm check` 0/0，Vitest 143 文件
+1479 通过/1 跳过，Remote mobile/PWA 与桌面 production build 绿。归档：
+`docs/iterations/2026-08-03-iteration-99-paste-intent-order.md`。
+真实 Windows ConPTY、手机与公网 timing 仍待用户轨，不冒充完成。
+
+Release `v0.1.53` is formal with 12 matching assets (workflow
+`30777692897`); Remote/Cloud workflow `30777703101` succeeded. Worktree is
+clean and `origin/main` is synchronized. Physical Windows ConPTY, phone,
+public Remote timing, WebView2 heap, and dual-window/dual-Host evidence remain
+external gates.
+
+## Iteration 98 update (2026-08-03)
+
+Desktop terminal link fidelity is now fixed at the native-parser delta boundary.
+The delta protocol is version 4 and carries live/scrollback row `wrapped`
+metadata, so the WASM mirror preserves logical URLs for copy and Ctrl+click;
+wrap-only changes use an empty cell span. Ctrl/Meta keydown and keyup now
+refresh the hover hit-test even when the pointer is stationary, and listener
+cleanup covers detach/park. The parser-to-mirror regression, 397 ridge-term
+tests, 23 parser tests, full Vitest (142 files / 1475 passed / 1 skipped), and
+`pnpm check` (0/0) pass. Archive:
+`docs/iterations/2026-08-03-iteration-98-terminal-link-delta.md`.
+Release `v0.1.52` is formal with 12 matching assets (workflow
+`30775237388`); Remote/Cloud workflow `30775243878` succeeded and public
+health is HTTP 200 / `ok=true`. No physical WebView2 evidence is inferred.
+
+## Iteration 96 update (2026-08-03)
+
+Git 请求槽生命周期审计发现一处长期稳定性缺口：远程请求所有权已释放后
+若仍收到重复取消，旧实现会新建空槽并永久保留；嵌套 Git helper 还会重开
+generation，令复合操作的取消身份不一致。`packages/ridge-core/src/commands/git.rs`
+现以原子存在性检查处理取消，未知/重复取消不分配槽；同槽嵌套 scope 复用
+ambient `(slot, generation)`。新增 128 次重复取消与嵌套 generation 回归。
+`cargo test -p ridge-core commands::git --lib` 39/39、`pnpm check` 0/0 通过。
+归档见 `docs/iterations/2026-08-03-iteration-96-git-slot-lifecycle.md`。
+该切片不替代手机、公网、WebView2、双窗口及完整 Kernel 迁移外部闸门。
+
+## Iteration 97 update (2026-08-03)
+
+继续审计外部进程生命周期：共享 process guard 虽已具 Unix process-group
+TERM/KILL，Git 自有 spawn 出口此前未先建立独立 process group，shell/helper
+后代可能在超时或 latest-win 取消后残留。现由
+`packages/ridge-core/src/commands/git.rs` 在每次 guarded Git spawn 前接入同一
+护栏；Windows 仍走 `taskkill /T`。新增 Unix Git 路径 descendant timeout 守卫。
+`cargo test -p ridge-core commands::git --lib` 39/39，`process_guard` 3/3。
+归档见 `docs/iterations/2026-08-03-iteration-97-git-process-group.md`。
+
+## Iteration 85 update (2026-08-02)
+
+The mobile Remote worker cold-start/lifecycle slice is locally closed. The
+worker now installs its control-plane listener before WASM loading, answers
+health pings immediately, and returns a bounded structured fallback while the
+adapter is loading. The manager suppresses resize during init/bind, cancels
+pending handshakes on park/destroy, and rejects stale callbacks after worker
+replacement. Targeted tests (63), full Vitest (120 files / 1381 passed /
+1 skipped), `pnpm check` (0 errors/0 warnings), direct CDP ping, the isolated
+desktop/mobile LAN matrix, and mobile keyboard emulation passed; the probe now
+fails on worker timeouts, `resize before init`, and project
+`Unchecked runtime.lastError`.
+
+The mobile Remote touch-selection mapping now tracks the stage visual offset
+captured with pane geometry. A resize/re-fit while the soft keyboard is open
+therefore applies only the offset delta; the new captured/current offset guard
+is covered by `paneGeometry.test.ts` (`11` passed). Full Vitest is now `120`
+files / `1381` passed / `1` skipped; `pnpm check` remains `0` errors / `0`
+warnings, and the LAN desktop/mobile matrix remains green after the change.
+The keyboard probe also dispatches a real mobile `TouchEvent` drag after
+recovery; `selectionTouch.ok=true` and the copy affordance appeared for the
+target rows. Physical-device attribution remains separate.
+
+Follow-up hardening is pushed: `9020bdd` converts workspace-qualified mobile
+pane refs to bare `paneId` before `TerminalManager.detach`, preventing closed
+Pane kernels/workers from remaining parked; `778bb06` offloads synchronous
+Remote JSON-RPC Git reads from the WebSocket executor; `fc2c597` preserves
+unknown-Agent history and keeps Claude/Codex discovery caps independent. The
+focused guards pass (`paneLifecycle`: 3, `jsonrpc_tests`: 10,
+`commands::project::tests`: 24).
+The latest full rerun is `pnpm test`: 121 files / 1383 passed / 1 skipped;
+the complete Rust library suite is 229 passed.
+
+Iteration-85 evidence is archived in
+`docs/iterations/CONTRACT-iteration-85.md`. Release `v0.1.33` is formal with 12
+assets (`30726725069`), Remote artifact `0.1.33+gc03675b` is active
+(`30729993458`), and ridge-cloud deploy `30727590385` plus health `ok=true`
+are green. Physical-phone, public-soak, WebView2-heap, and dual-window /
+dual-Host gates remain pending; no external proof is inferred from local CDP.
+LAN matrix evidence is `.iteration/artifacts/rdg-remote-e2e/last-result.json`;
+keyboard emulation evidence is `.iteration/artifacts/rdg-remote-e2e/mobile-keyboard.json`.
+
+## Iteration 86 intake (2026-08-02)
+
+`INTAKE-20260802-REMOTE-PWA-GIT-AGENT-01` is executable with no Pending
+records. Next scope: `REQ-MOBILE-REMOTE-PWA-SAFE-AREA-01` (PWA/browser notch-safe
+drawer), `REQ-REMOTE-QUERY-CACHE-01` (Git/File Query single-flight/cache),
+`REQ-GIT-INTERACTIVE-PUBLISH-GRAPH-01` (safe commit/push + GitGraph), and
+`REQ-AGENT-COMMUNE-REMOTE-PARITY-01` (mobile Agent groups + history Tab and
+desktop parity), plus `REQ-MOBILE-REMOTE-PWA-INSTALL-01` (real install prompt,
+manifest/service-worker eligibility and accurate installed/unsupported states).
+Contract: `docs/iterations/CONTRACT-iteration-86.md`. Order is P0 PWA
+installability/safe-area → Query contracts, then P1 Git workflow/Graph → Agent
+groups/history parity; release failure must not trigger another version bump.
+
+Iteration 86 P0 progress: `src/remote/lib/pwaInstall.ts` captures and consumes
+the browser one-shot install prompt before mount, `PwaInstallAction.svelte`
+renders the available/iOS entry, and `RemoteSidebar.svelte` applies top/bottom
+safe-area insets. Deterministic PWA/controller tests are green (6), `pnpm check`
+is green, and the production mobile artifact contains the manifest, service worker
+and install handler. Sidebar File/Git/Search reads now use session/CWD-scoped
+Query keys with single-flight/cache and write invalidation; targeted Query tests
+are green (6). HTTPS browser install/standalone and real notch-device evidence
+remain unverified; Git mutation/Graph and Agent parity packages are not marked done.
+
+Release evidence: `v0.1.34` tag `1901eb0` passed workflow `30730231317`, was
+published (not draft) with 12 Windows/Linux/macOS assets. Remote workflow
+`30731241075` built latest `main` `b62d94b` and activated
+`0.1.34+gb62d94b`; ridge-cloud deploy workflow `30731408697` completed for
+`67f7126`, and `https://9527127.xyz/api/v1/health` is `ok=true` (`0.0.7`
+cloud service). Artifact status endpoint needs its deployment token; the
+Remote workflow log is the retained activation evidence.
+
+### Iteration 83 update (2026-08-02)
+
+Mobile Remote IME-anchor boundary is fixed and pushed as `16d2861`; version
+contract `0.1.29` is staged on `b58815e` and published by the completed release
+workflow.
+`clearInputStart()` clears the stale pre-submit anchor; physical and virtual
+Enter share the reset; focused IME geometry is refreshed after keyboard-shift
+updates. Deterministic LAN/PTy mobile probe, full Vitest, Svelte check, and
+desktop/mobile LAN matrix are green. See
+`docs/iterations/CONTRACT-iteration-83.md`. Physical phone clean-profile A/B,
+WebView2 heap soak, public long-run, and dual-window/dual-host evidence remain
+explicitly unverified.
 
 证据等级：
 - **代码事实**：由 2026-07-28 CodeGraph（895 文件 / 37,969 节点 / 177,401 边）与当前源码确认。
@@ -13,10 +1041,34 @@
 
 ---
 
+## Iteration 84 update (2026-08-02)
+
+Agent history discovery now runs with an independent bounded pass per source;
+Claude session volume can no longer starve Codex history. The new filesystem
+fixture proves both sources, recorded CWD, latest assistant text, structured
+resume arguments, and child-path filtering. Code commit `b88b679` is pushed;
+see `docs/iterations/CONTRACT-iteration-84.md`. Worker renderer identity is
+now reconciled on restart so stale pane bindings cannot issue resize/bind before
+the replacement worker receives init. Commit `859b396` is pushed. Version
+`0.1.32` is committed as `ac0a4b1` and formally published with 12 assets.
+Release run `30723870060` and Remote run `30723873999` passed; artifact current
+activated `0.1.32+gac0a4b1`, and cloud production health returned `ok=true`.
+The prior ridge-cloud source deployment remains healthy. Isolated WebView2/CDP
+Agent panel, auto-discovery/recovery, and LAN mobile roster/data-plane probes
+also passed; the probe emitted no `runtime.lastError`. A separate first-start
+attempt failed only because the Rust debug archive exhausted disk (`OS error
+112`); after reclaiming rebuildable Cargo package artifacts, the CDP run
+completed. Physical phone clean-profile A/B, public long-run, WebView2 heap
+soak, and dual-window/dual-host evidence remain unverified.
+
+---
+
 ## 当前迭代目标
 
 - `REQ-20260730-01`：按 `CONTRACT-iteration-76.md` 与 `CONTRACT-iteration-77.md` 推进 Remote/桌面稳定性；RPC/输入/Resize、SCM、Pane 生命周期、日志、真清空、Host、Commune、多窗口所有权及窗级 active 核心已落地；仅外部运行证据待补。
 - `REQ-MOBILE-REMOTE-RUNTIME-LASTERROR-01`：项目源码无 Chrome Extension Messaging；保持业务零 diff，待受影响手机 clean-profile/扩展 A/B 终局归因。
+- `REQ-MOBILE-REMOTE-KEYBOARD-QOS-02` / `REQ-REMOTE-RUNTIME-PERF-MEMORY-02`：键盘视觉偏移稳定、Remote listener/worker/pending/timer 回收；代码与确定性测试已落，真机/WebView2 heap soak 待补。
+- 当前发布收敛：Release/Remote 取源 `58c2cb7`（Agent history fairness 与 `0.1.30` 版本合同）；当前 `main` 另含归档提交 `1fe1e69`。Remote run `30719562705` 成功，ridge-cloud run `30719573795` 成功并通过生产健康检查；`v0.1.30` Release run `30719551852` 全矩阵成功，12 个资产已核验并正式发布，URL `https://github.com/MySetsuna/ridge/releases/tag/v0.1.30`。
 
 ## 已验证代码事实
 
@@ -31,11 +1083,18 @@
 - Host 接入弹窗即时关闭，面板显示阶段进度；foreign pane attach 后按实测尺寸立即 Resize（`7b7daee`、`c290143`）。
 - Host topology 逐 Host settled 发布，慢源不再阻塞快源；代际/Abort/last-good 与拖拽统一入口已落（`0d273c3`）。
 - Agent's Commune 入口不再受隐式 setting 隐藏（`2b53650`）。
+- Agent history discovery now bounds Claude/Codex sources independently and
+  preserves cross-CWD structured resume (`b88b679`; iteration-84 fixture).
 - 普通二次启动现创建独立 WebView；原子工作区认领、冲突聚焦、关闭/销毁/删除释放已落（`5723828`）。
 - 每个桌面窗口现有独立 selected-workspace SSOT；native active/layout/ratio 按窗口解析，Pane/Terminal 关键变更按唯一 pane id 定位，Remote/CLI 保留全局语义（`a9023f3`）。
 - 1,000 RPC/input/resize burst、100 次非 Git/共享 repo、126 次重复日志均已有量化回归钉（`3e967a1`）。
 - owned Node localStorage 与 Vite chunk 配置告警已修（`74cb80d`）。
 - 手机 Remote 项目源码及构建输入无 Chrome Extension Messaging；`service-worker.ts` 的 PWA `Client.postMessage` 非 Extension Messaging。项目归属已排除，环境注入器/第三方扩展仍待真机隔离。
+- `MainApp` transport unsubscribe、Cloud late-callback guard、workspace generation guard 与 Worker pane pending cancellation 已落；Pane destroy 会拒绝 pending 并忽略有界 late reply（`367c053`、`0207319`、`b402f75`）。
+- kernel Git discovery/status 已移出 async executor 且支持 ancestor repo；MCP bridge 默认仅接当前 kernel、无 kernel fail-closed（`66d51f0`、`1475abc`）。
+- Windows kernel host smoke 已真实验证 detect-or-spawn、二次 attach、FS/Agent/Git/MCP、stop；脚本现具墙钟超时、精确进程树回收与 finally 清理（`5a67044`）。
+- Scrollback worker 已补 Pane-scoped cancel 回归：销毁 Pane 只取消目标 decode，其他 Pane 保持 pending，dispose 后全部归零（`bce506a`，5/5）。
+- Release workflow 已补 Intel macOS `ridge-cli --target x86_64-apple-darwin` 构建与上传，避免跨平台 CLI 资产缺失（`c06cff0`）。
 
 ## 相关模块与 symbol
 
@@ -46,8 +1105,8 @@
 
 ## 最近完成与当前 diff
 
-- 最近完成:`74cb80d` owned warning 清理；`3e967a1` 稳定性量化回归；`a9023f3` 窗级 active 隔离。
-- 当前 diff:iteration 77 走查合同与本状态文档；`.iteration` 和既有本地生成目录保持未跟踪。
+- 最近完成:`367c053`/`0207319`/`b402f75` Remote 生命周期与 Pane pending；`66d51f0`/`1475abc` kernel/MCP；`5a67044` smoke 进程护栏；`bce506a` Scrollback Pane cancel 测试；`c06cff0` Release CLI 资产护栏。
+- 当前 diff:本状态与迭代合同更新；`.iteration` 和既有本地生成目录保持未跟踪。
 
 ## 验证状态
 
@@ -62,10 +1121,13 @@
 - iteration 77 复核：关键 Remote/SCM/Host/Worker/RPC 测试 12 files / 253 tests 通过；`pnpm build:remote` exit `0`（140.4 s）；构建仅保留既有动态导入、chunk-size 与空 PWA glob 非阻塞警告。
 - 2026-07-31 只读公网 health：`https://9527127.xyz/api/v1/health` HTTP `200`，服务自报版本 `0.0.7`；缺 `RIDGE_ARTIFACT_TOKEN`，Remote artifact current 未验证。此证据不证明公网 WebRTC/TURN、产物新鲜度或用户链路。
 - 公网、手机真机、WebView2 长时性能 A/B、双窗口与双 Host 物理 E2E 尚未运行；不得宣称总体目标完成。
+- 本轮新增验证：定向 Remote/Worker 48/48；完整 Vitest 120 files / 1374 passed / 1 skipped；`pnpm check` 0 errors / 0 warnings；`cargo test -p ridge-kernel --lib` 15 passed；`cargo test -p ridge-mcp-bridge --lib` 8 passed；kernel-host-smoke 全绿。
+- 发布验证：`30714934091` completed/success；`v0.1.28` `draft=false`、`prerelease=false`、`publishedAt=2026-08-01T20:15:54Z`，12 个资产齐全（Windows setup/MSI/CLI、Linux deb/AppImage/CLI、macOS arm/x64 dmg/app tar/CLI）。
 
 ## 当前失败信号与风险
 
 - 失败信号:手机 `runtime.lastError` 尚无首条 warning script URL/Frame/注入器 owner；公网/WebView2/物理设备证据尚未采集；公网服务健康但 Remote artifact current 未获授权核验。
+- 发布风险：`v0.1.28` 已完成正式发布并通过资产核验；后续版本仍须保持 macOS x64 CLI 资产检查。
 - 风险:自动测试不替代双窗口桌面、双 Host、手机、公网 Remote 与 WebView2 长跑；Remote build 尚有既存 dynamic-import 警告。
 
 ## 架构边界
@@ -90,6 +1152,7 @@
 ## 下一项已批准工作
 
 - 执行 iteration 77 清单：手机 clean-profile/禁注入器归因、公网 Remote/双 Host、WebView2 长跑、双窗口桌面、Agent/Headless、Explorer 跨卷权限、原生 PowerShell/PTY 录制。未获这些外部证据前不宣称总体运行验收完成。
+- `v0.1.28` 四平台资产与 Remote/cloud SHA 对账已完成；下一步仅补手机 clean-profile/WebView2/公网/双窗口/Agent 真链证据，仍以代码、测试、运行事实三者闭环。
 
 ## 本轮 delta
 
@@ -146,7 +1209,7 @@ Svelte 页面/组件 → Tauri invoke/事件 → src-tauri commands / ridge-core
 - `packages/ridge-core` 承接 workspace/pane/Git 命令与异步 dispatch；Tauri 保留宿主状态、平台资源与事件桥。
 - `packages/ridge-cli/src/main.rs`：`tui` / `login` / `remote`（公网 host daemon）/ `connect`（LAN controller）/ `tmux`。
 - Teammate/MCP：tmux shim + Ridge MCP server → teammate server / ridge-tmux → 工作区变更 → `AgentCenterPanel.svelte`。iteration 61 后 Agent Center 跨全部工作区聚合 roster，并显示 Claude/Codex JSONL 最近助手回复与 Agent 所创 native 无头会话；OSC 标题优先、前台进程兜底自动登记/释放 pane Agent 状态。桌面有 `resolve_hitl_request`；该能力刻意不在 Remote allowlist。
-- Agent 当前状态：`rosterChanged` 已进入前端 DTO，并触发 roster/layout 刷新；Agent Tab 与 pane header 已共用运行态映射。`AgentCenterPanel.svelte` 已具备成员/编组/历史三 tab，控制、HITL、文档入口已移至内容底部；历史目前仅聚合后台终端与最近回复，按类型分组、折叠及结构化 resume 仍缺。
+- Agent 当前状态：`rosterChanged` 已进入前端 DTO，并触发 roster/layout 刷新；Agent Tab 与 pane header 已共用运行态映射。`AgentCenterPanel.svelte` 已具备成员/编组/历史三 tab，控制、HITL、文档入口已移至内容底部；历史按 Agent identity 跨 CWD 分组、按会话折叠，并以结构化 `executable+argv+cwd+sessionId` 恢复；真 CLI 接收仍属用户轨证据。
 
 ### 3.2 远控三入口
 
@@ -565,102 +1628,599 @@ sequenceDiagram
 - 未冒充完成：iOS/Android 真实键盘与 60Hz pane 手感、macOS/Linux/Windows clean-install
   包体矩阵仍待对应设备/CI 证据；本轮代码与 Dev 验收已闭合。
 
+## 2026-08-02 iteration 86 · Remote PWA/Git/Agent 收口
+
+- `75f53dd` 已推送 `main`。Remote Git 面板完成 Changes/Graph、受能力门保护的
+  stage/commit/push、确认/取消/进度及 Query 失效；Git commit parents 贯通远端 Graph。
+- Remote Agent Commune 增加成员/编组/历史三 Tab；编组写入 workspace-memory 并经
+  LAN/Cloud capability/workspace scope 门控；历史按 Agent 跨 CWD 聚合且保留
+  `sessionId`/`cwd`，旧 Host 不支持时停止重复请求。
+- PWA 保留 manifest、Service Worker、standalone 元数据与抽屉 safe-area；Remote 不渲染
+  “添加到主屏幕/安装”按钮，安装交由浏览器原生入口；仍待实体 standalone/刘海机证据。
+- 质量闸：Vitest `126 files / 1403 passed / 1 skipped`，`pnpm check` 0/0，Rust
+  编组校验 1 passed，`cargo check` passed（仅既有 warnings）。Remote workflow
+  `30732001054` 成功并激活 `0.1.34+g75f53dd`；桌面 `v0.1.34` 资产仍完整。
+- 未声明完成：公网长稳、WebView2 heap soak、双窗口/双 Host 实机、真实远端 Git
+  凭据推送及实体手机 PWA 安装。
+
+## 2026-08-02 iteration 86 post-checkpoint
+
+- `64eff8d`：Remote 手机 Agent roster/history 纳入共享 Query，按 session/workspace 隔离，30 秒 stale、single-flight、mutation 失效与旧响应取消；重开抽屉不在缓存窗内重复 RPC。
+- `c424fe2`：standalone/PWA 底部功能条按动态 viewport 与 safe-area 贴底；`d779f07`：主题变量原子应用并同步 html/body 与 PWA `theme-color`，消除边缘闪烁；`ae67e11`：Agent 抽屉图标/文案对齐守卫。
+- 本地验证：Vitest `128 files / 1402 passed / 1 skipped`，`pnpm check` 0/0。上述提交均已推送；Remote workflow `30732961345` 成功并激活 `0.1.34+g3d10a9c`，桌面 `v0.1.34` 不升版。
+
+## 2026-08-02 iteration 86 hardening checkpoint
+
+- `87abb3b` + `ea39897`：SCM 结果 TTL 缓存有界，status/diff/branches/stashes
+  跨组件 single-flight/失效，并以 generation fence 防旧响应回填。
+- `71678e3`：LAN `closePane` 先撤销 Pane 调度器，再销毁 PTY；确认关闭后清理
+  output/history，待发 write/resize RPC 不再回灌已销毁 Pane。
+- `86f0c29`：前端、process-spawn registry、ridge-core Git 并发上下限统一为
+  `2..12`，监控与实际 semaphore 策略一致。
+- `0d10e2c`：PTY 临时 feed 内存设 `8 KiB` 合并上限、`2 MiB` deferred 上限；
+  RAF 被节流时施加同步 backpressure，clear 时释放队列字节与 timer。
+- 验证：Vitest `129 files / 1409 passed / 1 skipped`；`pnpm check` 0 errors/0
+  warnings；RPC/SCM 定向 `47 + 36`、terminal feed `9`、ridge-core 外部进程守卫
+  `4` 测试通过。桌面 `v0.1.34` 不升版；Remote 须从 `0d10e2c`（或后续文档提交）
+  重建并原子激活。真机 PWA/刘海、公网长稳、WebView2 heap、双窗口/双 Host、真实
+  Remote Git push、扩展归因仍待外部证据。
+## 2026-08-02 iteration 86 publish checkpoint
+
+- Remote workflow `30733546603` succeeded from `12662ac`; artifact
+  `0.1.34+g12662ac` was uploaded and atomically activated. `remote-dist` built
+  both desktop/mobile bundles and PWA assets; desktop `v0.1.34` remains unchanged.
+- Workflow warnings are non-blocking: PWA optional font/media globs are empty and
+  GitHub reports Node 20 action deprecation. No build, upload, or activation step
+  failed. Cloud health remains `ok=true`; no cloud source changed, so no version
+  bump or separate cloud release was fabricated.
+
+## Iteration 86 final Remote Agent/cursor checkpoint (2026-08-02)
+
+See [`docs/iterations/2026-08-02-iteration-86-final-remote-agent-cursor.md`](iterations/2026-08-02-iteration-86-final-remote-agent-cursor.md).
+The final Remote artifact is `0.1.35+g2bce084` from workflow `30736163197`;
+GitHub Release `v0.1.35` is formal with 12 assets. Local checks are green:
+`pnpm check` 0/0 and Vitest 131 files, 1,418 passed, 1 skipped. External
+physical-device, soak, dual-window/host and authenticated-push gates remain
+explicitly unclaimed.
+
+## Iteration 87 current audit (2026-08-02)
+
+See [`docs/iterations/2026-08-02-iteration-87-current-audit.md`](iterations/2026-08-02-iteration-87-current-audit.md).
+The latest user correction is authoritative: Remote renders no in-app PWA
+install control and does not own `beforeinstallprompt`; browser-native install
+UI remains outside business code. Remote Agent cards now expose true pane CWD
+through stable `paneId` mapping. `c692781` adds a cross-process
+`KernelInstanceGuard` probe; `0cbb636` guards browser-native PWA scope. The
+remaining phone attribution, physical-device, public soak, WebView2 heap,
+authenticated-push and no-Tauri deep-root gates remain unclaimed.
+
+### Iteration 87 correction — transient Agent intervention border
+
+The Pane border is now an ephemeral human-intervention hint only. Desktop
+`SplitContainer` reads `agentPaneAttentionStore` (`waiting`/`stopped`) for the
+inset ring; runtime `working`/`idle` status remains diagnostic and never paints
+a border. Remote follows the same rule through `agentNeedsAttention`; focus,
+Agent selection, stdin, resize or pane claim acknowledges and clears the hint.
+Remote GitGraph transport/selected-commit metadata is local-verified in
+`0e608b9` and `c421c83`; these commits require Remote artifact republish, not a
+desktop version bump (republish now satisfied below).
+
+Remote workflow `30737121593` subsequently built and atomically activated
+`0.1.35+g42b55dd`; `desktopIndex` and `mobileIndex` checks passed. The workflow
+emitted only existing Node 20/empty optional glob/submodule cleanup warnings.
+
+### Iteration 87 continuation — current local evidence
+
+`e41e733`/`cea02b9`/`ab01e66` release terminal Scrollback/link-span memory on
+clear and settle invalid or failed Worker decode requests immediately;
+`4c7fb4f` clears the transient Agent Pane border when the mobile terminal input
+actually receives focus. `b20ea58`/`144a467` isolate LAN probe ownership and
+exercise real browser `write_to_pty` plus `resize_pane` on desktop and mobile;
+the latest matrix and mobile-keyboard emulation both pass with no browser errors.
+Kernel deep-root evidence is recorded in
+`.iteration/agents/result-kernel-deep-root.json`; full desktop domain migration
+is intentionally still open. Public WebRTC four-path, physical-device, heap
+soak, authenticated Git push and affected-phone extension-attribution gates
+remain unclaimed.
+
+Final local rerun: full Vitest `137 files / 1,439 passed / 1 skipped`,
+`pnpm check` 0/0, ridge-term Scrollback 48, ridge-kernel 17,
+ridge-mcp-bridge 8, and `cargo check --manifest-path src-tauri/Cargo.toml`
+exit 0 (39 existing warnings).
+
+Remote artifact workflow `30738272039` then succeeded from `15b4063` and
+activated `0.1.35+g15b4063` with desktop/mobile indexes. Cloud health remained
+HTTP 200 (`version=0.0.7`); desktop Release `v0.1.35` stayed unchanged with
+its existing 12 assets.
+
+### Iteration 87 final release and Remote activation
+
+The first `v0.1.36` release attempt failed before the build matrix because of
+an invalid `tracing-core` lock resolution. The tag was removed, `Cargo.lock`
+was corrected in `f7ba0f5`, and the annotated tag was rebuilt. Release workflow
+`30738592676` passed the test gate and all four platform jobs; formal Release
+`v0.1.36` is published with 12 matching Windows/Linux/macOS assets.
+
+Remote workflow `30739703846` succeeded from `f7ba0f5` and atomically activated
+`0.1.36+gf7ba0f5`; both desktop and mobile indexes passed. Cloud health remains
+HTTP 200 (`version=0.0.7`), with no cloud source/version change in this slice.
+
+### Iteration 87 runtime warning isolation evidence
+
+`scripts/rdg-remote-e2e.mjs` now runs the controlled Chromium comparison with
+extensions and component-extension background pages disabled, and persists the
+isolation mode in `.iteration/artifacts/rdg-remote-e2e/last-result.json`. The
+latest desktop/mobile matrix passed with `browserErrors=[]`,
+`write_to_pty`/`resize_pane` observed on both clients, and
+`browserIsolation.extensionsDisabled=true`. Repository source still contains no
+Chrome Extension Messaging API; affected-phone source URL and one-by-one
+extension/injector A/B remain the only attribution evidence missing.
+
+`src/remote/runtimeMessagingScope.test.ts` is the deterministic source guard:
+Remote entrypoint and service worker contain no Chrome Extension Messaging API
+and keep one-way Service Worker `Client.postMessage` semantics. This guard does
+not replace the affected-phone source URL and clean-profile/one-extension A/B.
+
+### Iteration 87 kernel read seam
+
+`06bfcd2` adds typed, source-checked `read_domain_workspaces` and
+`read_domain_agent_roster` adapters in `packages/ridge-kernel/src/client.rs`;
+error and non-kernel-source responses fail closed. The seam does not replace
+desktop AppState reads: kernel workspace projections lack names/window claims,
+and kernel Agent roster identity is not the desktop `(workspaceId, UUID)` model.
+Full Tauri-shell domain migration remains open pending one canonical composite
+identity and persistence path.
+
+The attempted `v0.1.37` release was rolled back after CI caught a
+platform-dependent Git test assumption. The tag was deleted, the version bump
+reverted, and no failed release is treated as published. The temporary bare
+remote now explicitly denies non-fast-forward updates (`149d085`).
+
+Kernel convergence diagnostics: `087cfd8` adds a read-only,
+source-checked `DomainConvergenceReport` comparing exact workspace and Agent
+identity sets, with explicit stable-key mismatch records and fail-closed empty,
+duplicate, or malformed identities. It does not switch desktop AppState
+authority or persist a second projection; the current kernel and shell identity
+models still require a canonical composite key before migration.
+
+Release retry audit: workflow `30741669936` again failed only in the focused
+real Git push guard because the Linux bare-remote fixture accepted the stale
+push. The `v0.1.37` tag and version bump were deleted/reverted immediately.
+`f7ee232` makes the fixture deterministic with a temporary rejecting
+`pre-receive` hook and verifies the remote head is unchanged after the failed
+push. Version remains `0.1.36` until a full release gate succeeds.
+
+The following `v0.1.37` retry (`30742032341`) found a second fixture-only
+assumption: Linux clone did not guarantee the competing push targeted
+`refs/heads/main`. Tag and version were removed again; `8fa19b6` uses the
+explicit `HEAD:refs/heads/main` setup refspec, while the final stale push still
+uses the shared interactive handler. Version remains `0.1.36` pending a green
+full matrix.
+
+The fourth `v0.1.37` retry (`30742240439`) exposed the remaining clone-default
+assumption: the bare remote's missing default branch could produce a detached
+fixture unrelated to `main`. Tag and version were removed again; `cbada57`
+uses `git clone --branch main` plus explicit `HEAD:refs/heads/main` setup. The
+final stale push still exercises `git_push_sync`; version remains `0.1.36`.
+Release/Remote closure: `30742422090` passed test gate plus Windows/Linux/macOS
+arm64/x64 builds. Formal GitHub Release `v0.1.37` is published with 12
+matching installer/CLI assets. Remote workflow `30743623499` passed its build,
+upload and index checks and activated `0.1.37+ge4e0f91` for desktop/mobile;
+cloud health is HTTP 200 (`version=0.0.7`).
+
+Iteration 87 is archived with the remaining external gates carried forward;
+no physical-device, public-WebRTC, WebView2-soak, authenticated-push or full
+Kernel-domain-migration claim is implied by the successful release.
+Pane-border clarification (2026-08-02): border is transient HITL feedback only;
+normal `working`/`idle` panes stay border-free, and focus/claim/input clears the
+pending ring. Desktop and Remote focused regression slice: 16/16 passed.
+Iteration 87 performance/kernel continuation (2026-08-02): `b6d22df`,
+`1256d1d`, and `55af1e2` add real WebView2 heap/resource and worker-pending
+sampling plus fail-closed RSS/process guards; unavailable heap is `null`, never
+zero. `67e5b54` exposes read-only desktop `get_domain_convergence_report` over
+typed Kernel workspace/Agent reads. Local checks pass; sustained device/public
+soak and full domain migration remain external.
+Perf soak timeout continuation: `7c5fddc` derives the WebDriver timeout from
+`RIDGE_PERF_STRESS_SEC` plus bounded headroom (maximum 24 hours), so long runs
+are not truncated and detached drivers cannot hang indefinitely. Physical and
+public soak evidence remains external.
+Remote refresh closure (2026-08-02): workflow `30744331190` succeeded from
+main SHA `08919b675c62804d866b17a57110b2c1904baa56`; cloud health HTTP 200.
+Remote now tracks latest main artifact hash while desktop Release remains the
+verified `v0.1.37` package set.
+Runtime attribution continuation (2026-08-02): the Remote probe now performs
+clean-profile then one-extension-at-a-time runs, captures unsuppressed browser
+logs, and reports `attributionComplete:false` unless a complete A/B is proven.
+The clean data-URL smoke is intentionally `clean-profile-only`; a headed local
+installed-extension run loaded five of six candidates without the warning, one
+remained load-unverified, and a single Google Translate A/B completed cleanly.
+Physical-phone source attribution remains open. `3593a84` scans every shipped
+`src/remote` implementation file for Chrome extension messaging APIs. Kernel
+remote-host reads now use the typed, source-checked seam, and
+`scripts/kernel-host-smoke.ps1` passed the real no-Tauri ensure/attach/domain/MCP
+path.
+Remote/cloud refresh (2026-08-02): workflow `30745144695` published current
+`main` as `0.1.37+g8dfe261`; cloud health remained HTTP 200. Desktop `v0.1.37`
+was not version-bumped for docs-only changes.
+Remote/cloud refresh (2026-08-02): workflow `30745585264` rebuilt commit
+`166a575` and activated `0.1.37+g166a575`; build/upload/activation passed and
+cloud health stayed HTTP 200. Desktop `v0.1.37` remains unchanged.
+Kernel client-exit guard (2026-08-02):
+`detached_kernel_survives_client_process_exit_and_second_attach` now kills a
+real waiting `rdg` client after detached kernel health, then verifies a second
+client reattaches to the same PID; both `kernel_lifecycle_e2e` cases pass (2/2).
+This is local process-detachment evidence only; deep-root shell termination and
+public/physical host gates remain open.
+Kernel shell-adapter convergence (2026-08-02): `ef70b3c` routes rdg Agent,
+FS, Git, and MCP domain calls through shared authenticated
+`ridge_kernel::client::request_json`, removing duplicated raw socket clients;
+HTTP/JSON failures remain visible and Windows query paths are fully encoded.
+Focused CLI tests, lifecycle E2E, and `scripts/kernel-host-smoke.ps1` passed.
+Desktop AppState/PTY/window-claim/root-authority migration remains open.
+Kernel client HTTP guard (2026-08-02): `40fa39f` adds loopback assertions for
+non-2xx and malformed-JSON failures in shared `request_json`; `cargo test -p
+ridge-kernel --lib` passes 22/22. No desktop authority migration is implied.
+NLM refresh (2026-08-02): authenticated query confirms the latest live
+NotebookLM conversation is TUI-focused (PTY physical fidelity and
+Answer/Reasoning presentation). Its statement that Remote/PWA lacks active
+code and that Pane Border is only a TUI rail is stale/contradicted by local
+CodeGraph and tests; retained only as strategy input, with no duplicate TUI
+syntax-highlighting implementation.
+Remote/cloud latest-main refresh (2026-08-02): workflow `30746571058`
+activated `0.1.37+g26241f2` from the literal latest `main` SHA (233 files /
+21.78 MiB), with cloud health HTTP 200. Desktop `v0.1.37` remains unchanged;
+post-runtime commits are tests/docs only.
+Pane header Git-pill guard (2026-08-02): `a1d816a` asserts Repo/Branch/Diff
+pills each occur once at one sibling layer; desktop + Remote/mobile focused
+slice passes 17/17. This is a static layout guard, not physical-device proof.
+Remote/cloud refresh closure (2026-08-02): workflow `30746141772` published
+`ef70b3c` as artifact `0.1.37+gef70b3c` (233 files / 21.78 MiB), with cloud
+health HTTP 200. Desktop Release `v0.1.37` remains unchanged; subsequent
+`65700ea` is documentation-only.
+
+## 2026-08-02 iteration 88 — Foreign Host Resize coalescing
+
+`de001bb` adds a per-host Resize admission gate to `OutboundClient`. Identical
+acknowledged dimensions are suppressed and counted; subscribe/unsubscribe,
+reconnect, and disconnect clear the applied snapshot; failed transport calls
+remain retryable. A second subscription check after gate acquisition prevents
+stale Resize delivery after Pane detach. Tauri outbound tests pass 10/10.
+This is a runtime change, so Remote must be rebuilt from `de001bb`; desktop
+version stays `0.1.37` until a versioned Release is actually green.
+
+Remote publish closure: workflow `30747286348` built from `25d525b` and
+activated `0.1.37+g25d525b` after successful build/upload/index checks (233
+files, 21.78 MiB). Cloud health is HTTP 200. Desktop Release `v0.1.37` is
+formal with 12 assets; no version bump was made for this runtime fix.
+
+### Iteration 88 versioned release + Remote/cloud closure (2026-08-02)
+
+Commit `2346f5b` aligned the package, Tauri, Cargo, and lockfile versions at
+`0.1.38`. Release workflow `30747757222` passed the test gate and all four
+platform build jobs. `v0.1.38` is now a formal non-draft, non-prerelease
+release with the 12 matching Windows/Linux/macOS installer and `rdg` CLI
+assets; no empty tag was accepted.
+
+Remote workflow `30748970383` rebuilt that same commit and passed build,
+upload, activation, and desktop/mobile index checks. Current artifact is
+`0.1.38+g2346f5b` (233 files / 21.78 MiB); `https://9527127.xyz/api/v1/health`
+returned HTTP 200. Release and Remote/cloud publication are closed for this
+iteration. Physical phone/runtime attribution, device PWA geometry/keyboard/
+touch, public WebRTC soak, authenticated Git push, WebView2 long-run heap, and
+full deep-root Kernel authority migration remain external gates.
+
+## Current main continuation (2026-08-02)
+
+`81acf20` closes the deterministic Remote PWA build/verification gap: catch-all
+precache, manifest/service-worker/standalone/safe-area checks, and no in-app
+install prompt owner. `3fc0073` recursively guards shipped Remote sources
+against Chrome Extension Messaging APIs; clean-profile and LAN probes remain
+green, while physical-phone attribution is still open.
+
+`7199ead` adds `rdg kernel remote-hosts`, a no-Tauri authenticated read through
+the typed `source=ridge-kernel` seam; `kernel-host-smoke.ps1` passes. `08ffb50`
+propagates explicit `is_git_repo` through desktop and Remote Git status, so a
+clean repository is not mistaken for a non-Git directory; Remote provider 7/7
+and ridge-core Git 33/33 tests pass. The current formal release is `v0.1.39`
+and the latest published artifact is `0.1.39+gc772085`.
+
+Current deterministic gates: `pnpm check` 0/0, Remote Vitest 19 files/96
+tests, kernel CLI 3/3, kernel-host smoke green, and mobile keyboard LAN
+emulation with `browserErrors=[]`. WebView2 CDP was unavailable, so heap/RSS
+long-run evidence is not claimed. External gates remain physical phone
+`runtime.lastError` source attribution, physical PWA geometry/keyboard/touch,
+public WebRTC and authenticated Git push, dual-window/dual-Host device E2E,
+WebView2 heap/RSS soak, and full desktop AppState/PTY/filesystem-root Kernel
+authority migration.
+
+Versioned publication closure (2026-08-02): `c772085` prepared `v0.1.39`;
+release workflow `30749879814` passed test gate plus Windows/Linux/macOS
+arm64/x64 builds, and `gh release view v0.1.39` confirms 12 matching assets,
+`draft=false`, `prerelease=false`. Remote workflow `30749958058` activated
+`0.1.39+gc772085` (233 files / 21.78 MiB), and cloud health returned HTTP 200.
+This is the latest code publication; external physical/public/WebView2 and
+full Kernel authority gates remain open.
+
+## Latest continuation (2026-08-02)
+
+The formal desktop release is now `v0.1.40` (`c0d7bce`), with 12 matching
+assets; Remote activation `30752469369` succeeded at `0.1.40+gc0d7bce`, and
+Cloud health returned HTTP 200. The current main documentation head is
+`aac8cb1`; runtime changes below are the next publish candidate.
+
+This continuation closes a local Remote Query/Agent Commune slice:
+
+- sidebar keys carry session/host, workspace, pane, CWD/path, and optional
+  branch scope; mutations invalidate only that scope;
+- pane/workspace snapshots clean listeners on abort/error/success and bounded
+  timeout; `WsDataProvider` clears and rejects pending requests on transport
+  loss or send failure;
+- desktop history resume is single-flight, Agent rows show status rails, and
+  Remote Agent history scans occur every five minutes.
+
+Deterministic evidence: targeted Remote/Agent/transport tests 20/20 passed;
+`pnpm check` 0 errors/0 warnings; LAN desktop/mobile E2E passed with
+`browserErrors=[]`, input/resize true. These do not prove physical phone
+`runtime.lastError` attribution, public WebRTC, WebView2 heap soak, real
+authenticated Git push, dual-window/Host singleton, or full Kernel domain
+authority migration. Those remain active requirements and are not hidden by a
+successful local release.
+
+### Publication closure for the latest changes (2026-08-03)
+
+Commit `22e6e2933d9adfd8d413134052eff9cbac17e1d9` contains the continuation
+slice and version `0.1.41`. Release workflow `30755076173` completed
+successfully across test, Linux, macOS ARM/x64, and Windows jobs. Release
+`v0.1.41` is published (`draft=false`, `prerelease=false`) with 12 matching
+installer/CLI assets. Remote workflow `30755719992` completed successfully
+from the same commit; Cloud health returned HTTP 200 (`version=0.0.7`).
+
+Final release cleanliness check passed: `git diff`, `git diff --cached`, and
+non-ignored untracked-file checks are empty, and `HEAD` matches `origin/main`.
+Remaining external gates listed above are intentionally still open and are not
+claimed closed by this publication.
+
+### Post-v0.1.41 Agent resume guard (2026-08-03)
+
+Remote `resume_agent_session` now binds the request to an exact `(agent,
+sessionId)` row from host history, uses that recorded CWD, canonicalizes both
+paths, and rejects a mismatch before PTY creation. Authority lookup is not
+limited by the UI's 100-row history cap. Rust command tests pass (project
+25/25, pane 13/13) and `pnpm check` remains 0/0. This is the next versioned
+publish candidate; it is not represented as part of `v0.1.41`.
+
+### v0.1.42 publication closure (2026-08-03)
+
+The Agent resume CWD guard was released in commit
+`bd60f82c8d88ae0322708cc602ccfbb66f142cea`. Desktop workflow `30756926992`
+passed test, Linux, macOS ARM/x64, and Windows jobs. GitHub Release `v0.1.42`
+is published (`draft=false`, `prerelease=false`) with 12 matching assets.
+Remote workflow `30756944271` succeeded from the same commit; Cloud health
+returned HTTP 200 (`version=0.0.7`).
+
+The release cleanliness gate was satisfied before tagging; the follow-up
+archive change is docs-only and is pushed separately, so no version mismatch
+or empty Release exists.
+
+### Iteration 89 runtime closure candidate (2026-08-03)
+
+`d14c812` is pushed on `main` and contains the Remote roster scope/generation
+fence, Query abort observer, non-Git SCM negative cache/error classification,
+WebSocket Git mutation cancellation propagation, and the desktop shared-
+workspace QueryClient boundary. Full Vitest, `pnpm check`, LAN desktop/mobile
+E2E, and PWA verification are green. The detailed record is
+`docs/iterations/2026-08-03-iteration-89-remote-roster-scm-lifecycle.md`.
+
+Physical/public/WebView2/dual-window/full-Kernel authority gates remain open;
+the release notes must retain those limits. The next versioned release must
+pass the clean-worktree gate and include matching Desktop, Remote, and Cloud
+publication evidence.
+
+### Iteration 89 publication closure (2026-08-03)
+
+The first v0.1.43 tag was rejected by the release version contract because the
+root Cargo.lock remained at 0.1.42. That tag was removed and its version bump
+reverted. Corrected commit `6ca6f6d` aligned all four version sources and was
+retagged as `v0.1.43`.
+
+Release workflow `30759507144` passed test, Linux, macOS ARM/x64, and Windows;
+the formal GitHub Release has 12 matching installer/CLI assets. Remote workflow
+`30759691020` activated `0.1.43+g6ca6f6d` and passed desktop/mobile index checks.
+Cloud health returned HTTP 200 (`version=0.0.7`). Final clean-worktree and
+`HEAD == origin/main` gates passed. Physical/public/WebView2/dual-window and
+full Kernel-authority evidence remain open as documented residuals.
+
+### Iteration 90 sidebar request-lifecycle closure (2026-08-03)
+
+Commit `d7c614d` adds generation and AbortSignal fences to the shared file
+tree, search, and file/diff viewer. Remote Query observers now carry a signal
+without cancelling a shared QueryClient request needed by another observer;
+destroyed or superseded components cannot commit stale results. Focused tests
+passed 17/17, the full suite passed 1468 tests with one skip, and `pnpm check`
+reported 0 errors and 0 warnings.
+
+This is a new publish candidate after `v0.1.43`; it is not part of that
+release. Residual physical-phone, WebView2 heap, public WebRTC/authenticated
+Git, dual-window/Host singleton, production branch identity, protocol-level
+host cancellation, and full Kernel-authority evidence remain open.
+
+### Iteration 90 publication closure (2026-08-03)
+
+Version commit `24420a4` aligned package, Tauri, Cargo, and root lockfile to
+`0.1.44`; the clean release gate passed before the annotated `v0.1.44` tag.
+Release workflow `30761202858` passed test plus Linux, macOS ARM/x64, and
+Windows builds. GitHub Release `v0.1.44` is formal with 12 matching assets.
+Remote workflow `30762473570` completed successfully and activated the
+desktop/mobile artifact set. Cloud health returned HTTP 200
+(`version=0.0.7`). This follow-up is documentation-only and does not alter
+the released runtime.
+
+### Iteration 91 runtime closure candidate (2026-08-03)
+
+The next runtime slice adds Git status Abort/generation fences to shared and
+Remote panels, threads optional signals through the SidebarProvider contract,
+and makes kernel watcher thread-spawn failure observable. Deterministic
+evidence: frontend full suite 141 files / 1470 passed / 1 skipped, `pnpm check`
+0/0, and kernel lifecycle tests 5/5. The detailed record is
+`docs/iterations/2026-08-03-iteration-91-git-kernel-lifecycle.md`.
+
+Branch-aware Remote Query keys and true host-side cancellation remain
+protocol-level residuals; no local test reclassifies them as complete. This
+runtime candidate requires a new versioned release after the `v0.1.44` tag.
+
+### Iteration 91 publication closure (2026-08-03)
+
+Version commit `cd76e12` aligned package, Tauri, Cargo, and root lockfile to
+`0.1.45`; the clean release gate passed before the annotated tag. Release
+workflow `30762940271` passed test plus Linux, macOS ARM/x64, and Windows
+builds. GitHub Release `v0.1.45` is formal with 12 matching assets. Remote
+workflow `30764190990` completed successfully and activated the desktop/mobile
+artifact set. Cloud health returned HTTP 200 (`version=0.0.7`). This follow-up
+is documentation-only and does not alter the released runtime.
+
+### Iteration 92 runtime closure candidate (2026-08-03)
+
+Remote legacy `data-request` now runs behind a bounded per-connection task
+registry. Abort, timeout, provider disposal, and socket teardown send a
+`data-cancel` frame; the Host aborts the matching task, invalidates its Git
+latest-win slot, and drops a result that races with cancellation. The queue is
+capped at 32 and pre-cancelled IDs are bounded and one-shot. `git_status` thus
+reclaims a live Git child through the existing process-tree guard. Deterministic
+evidence: `ws.test.ts` 6/6, full frontend 1472 passed + 1 skipped, `pnpm check`
+0/0, Host registry 11 passed, and ridge-core Git 33 passed.
+
+This is a new runtime candidate after `v0.1.45`; it requires a new versioned
+release and Remote/Cloud publication. Git mutation methods using unslotted core
+APIs retain timeout/tree-kill protection and are not claimed as instant cancel.
+Physical/public/WebView2/dual-window/full-Kernel authority gates remain open.
+
+### Iteration 92 publication closure (2026-08-03)
+
+Version commit `fa3f4d3` aligned package, Tauri, Cargo, and root lockfile to
+`0.1.46`; the clean release gate passed before the annotated `v0.1.46` tag.
+Release workflow `30765004487` passed test, Linux, macOS ARM/x64, and Windows
+jobs. GitHub Release `v0.1.46` is formal (`draft=false`, `prerelease=false`)
+with 12 matching installer/CLI assets. Remote workflow `30766365105` rebuilt
+and activated `0.1.46+gfa3f4d3`; its desktop/mobile index checks passed. Cloud
+health returned HTTP 200 (`version=0.0.7`). This follow-up is documentation-only
+and does not alter the released runtime.
+
+### Iteration 93 runtime closure candidate (2026-08-03)
+
+Git cancellation context now propagates through every async Git helper used by
+legacy Remote `data-request`. One request owns one fixed `(slot, generation)`;
+later steps cannot reopen a canceled generation, and idle slot registry entries
+are released. Deterministic ridge-core tests now cover 36 cases, including a
+real hanging child, cancel/complete cleanup, and cancellation between
+sequential Git steps. Host JSON-RPC tests remain 11/11 green. The detailed
+record is `docs/iterations/2026-08-03-iteration-93-git-request-slot-propagation.md`.
+
+This is a new runtime candidate after `v0.1.46`; it requires a new versioned
+Desktop release plus Remote/Cloud publication. JSON-RPC invoke cancellation,
+physical/public/WebView2/dual-window/full-Kernel authority gates remain open.
+
+### Iteration 94 runtime closure candidate (2026-08-03)
+
+Unix guarded commands now create and kill a dedicated process group, proven by a
+real shell-plus-descendant test under WSL; Windows process-tree behavior stays
+on `taskkill /T`. Remote legacy `invoke-request` and native JSON-RPC now share a
+bounded task registry with `$/cancel`/`invoke-cancel`, stale-result suppression,
+disconnect cleanup, and one-shot browser cancellation on timeout/Abort/scope
+teardown. Native synchronous core Git dispatch preserves the outer request
+generation. Evidence: ridge-core Git 37/37, Host JSON-RPC 12/12, Remote 26/26,
+`pnpm check` 0/0. Detailed record:
+`docs/iterations/2026-08-03-iteration-94-process-and-invoke-cancellation.md`.
+
+This candidate follows `v0.1.46` and must publish as a new version with
+Desktop/Remote/Cloud evidence. Physical/public/WebView2/dual-window/branch-
+identity/full-Kernel authority gates remain open.
+
+### Iteration 94 publication closure (2026-08-03)
+
+Version commit `3106880` aligned package, Tauri, Cargo, and root lockfile to
+`0.1.48`; the clean release gate passed before the annotated `v0.1.48` tag.
+Release workflow `30768599304` passed test, Linux, macOS ARM/x64, and Windows;
+the formal GitHub Release has 12 matching assets. Remote/Cloud workflow
+`30770018373` succeeded from the exact tag; Cloud health returned HTTP 200
+(`version=0.0.7`). This closes Iteration 94. The terminal-link candidate below
+is newer runtime work and is not part of `v0.1.48`.
+
+### Iteration 95 runtime closure candidate (2026-08-03)
+
+Commit `06f5f74` fixes installed/Desktop terminal links: soft-wrapped URL and
+path spans now carry their full target across visual rows; Ctrl/Cmd-click opens
+that complete target; Ctrl/Cmd-hover paints a real DOM underline instead of
+writing an unconsumed dataset only. Rust selection keeps soft-wrap copies free
+of inserted newlines while preserving hard breaks. Evidence: full Vitest
+142 files / 1475 passed / 1 skipped, `pnpm check` 0/0, ridge-term 397/397,
+and a successful WASM rebuild. Detailed record:
+`docs/iterations/2026-08-03-iteration-95-terminal-link-navigation.md`.
+
+This candidate follows `v0.1.48` and requires a clean `v0.1.49` Desktop
+release plus Remote/Cloud publication. Physical/WebView2 visual confirmation
+and earlier public/dual-window/branch/Kernel residuals remain open.
+
+### Iteration 95 publication closure (2026-08-03)
+
+`v0.1.49` is formal with 12 matching Desktop installer/CLI assets; release
+workflow `30770188146` passed test, Linux, macOS ARM/x64, and Windows.
+Remote/Cloud workflow `30771421397` succeeded from exact tag commit
+`c163ed4`, and Cloud health returned HTTP 200 (`version=0.0.7`). The wrapped
+link/copy and Ctrl/Cmd-hover underline slice is closed. Physical WebView2
+visual confirmation and the previously listed public/dual-window/branch/
+Kernel residuals remain environment-gated and are not falsely marked done.
+
 <!-- PROJECT_STATE_RUNTIME -->
 ## 运行元数据
 
-- repository_head:`0825f002b7a1fce5a8bf3e3c1b2355335cd323d0`
+- repository_head:`d57f5c1ac8265925d3ff26cfaee7ea766c28017d`
 - requirements_version:`v1.1`
-- requirements_hash:`a1d9fcce3e2619c804a79445264c20b33c94cd4800a522a3cc112e688e37ca09`
-- pending_hash:`e2de753ae7da9a89df906ec66d743f53150a12adcddc2ef22563ff71da52733a`
-- decision_hash:`2cc929351ccce188274b4b95a9b60e99fc57627356b6366ca6dc1a78bf2e82bb`
-- generated_at:`2026-08-01T18:26:12+00:00`
-- current_git_diff:`.iteration/agent-commune-intake-decision.json,.iteration/agents/dispatch-plan.json,.iteration/agents/kernel-domain-audit.json,.iteration/agents/kernel-lifecycle-audit.json,.iteration/agents/kernel-mcp-audit.json,.iteration/agents/kernel-mcp-engine-audit.json,.iteration/agents/kernel-packaging-audit.json,.iteration/agents/result-kernel-domain-audit.json,.iteration/agents/result-kernel-lifecycle-audit.json,.iteration/agents/result-kernel-mcp-engine-audit.json,.iteration/agents/result-kernel-packaging-audit.json,.iteration/agents/result-scm-nongit-log-review.json,.iteration/agents/rpc-pane-lifecycle-review.json,.iteration/agents/scm-nongit-log-review.json,.iteration/approve-agent-commune-intake-decision.json,.iteration/approve-agent-commune-operation.json,.iteration/approve-remote-mobile-intake-decision.json,.iteration/approve-remote-mobile-operation.json,.iteration/artifacts/desktop-kernel-e2e/kernel.lock,.iteration/artifacts/kernel-debug-1.err,.iteration/artifacts/kernel-debug-1.out,.iteration/artifacts/kernel-debug-2.err,.iteration/artifacts/kernel-debug-2.out,.iteration/artifacts/kernel-debug/kernel.lock,.iteration/artifacts/rdg-remote-e2e/desktop.png,.iteration/artifacts/rdg-remote-e2e/last-result.json,.iteration/artifacts/rdg-remote-e2e/mobile.png,.iteration/context.json,.iteration/decision-agent-commune-remote.json,.iteration/decision.json,.iteration/dispatch.json,.iteration/intake-decision.json,.iteration/intakes/INTAKE-20260801-AGENT-COMMUNE-UI-01.json,.iteration/intakes/INTAKE-20260801-GOAL-CONTINUE-01.json,.iteration/intakes/INTAKE-20260802-AGENT-COMMUNE-UI-01-A.json,.iteration/intakes/INTAKE-20260802-REMOTE-MOBILE-QOS-01-A.json,.iteration/nlm-iteration79-response.json,.iteration/nlm-iteration80-agent-commune-response.json,.iteration/pending-agent-commune.json,.iteration/request.txt,.pw-remote-profile-backup-20260801-224302/Default/Cache/Cache_Data/data_0,.pw-remote-profile-backup-20260801-224302/Default/Cache/Cache_Data/data_1,.pw-remote-profile-backup-20260801-224302/Default/Cache/Cache_Data/data_2,.pw-remote-profile-backup-20260801-224302/Default/Cache/Cache_Data/data_3,.pw-remote-profile-backup-20260801-224302/Default/Cache/Cache_Data/f_000001,.pw-remote-profile-backup-20260801-224302/Default/Cache/Cache_Data/f_000002,.pw-remote-profile-backup-20260801-224302/Default/Cache/Cache_Data/f_000003,.pw-remote-profile-backup-20260801-224302/Default/Cache/Cache_Data/f_000004,.pw-remote-profile-backup-20260801-224302/Default/Cache/Cache_Data/f_000005,.pw-remote-profile-backup-20260801-224302/Default/Cache/Cache_Data/f_000006,.pw-remote-profile-backup-20260801-224302/Default/Cache/Cache_Data/index,.pw-remote-profile-backup-20260801-224302/Default/Cache/No_Vary_Search/journal.baj,.pw-remote-profile-backup-20260801-224302/Default/Cache/No_Vary_Search/snapshot.baf,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/10b34b10f2d9a3a7_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/1b21ee4d4a2eecdd_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/1ef3c7bcc2372e9f_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/22217d5f25752fbb_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/2a50ea7b051271f6_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/2bba704640e4fc33_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/2dddeb4cec800dab_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/45f005bf3d8ada08_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/496b4ddb53fa1cae_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/4d8841a223078e70_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/514c70a379ab9b2c_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/5def6469b971ed4a_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/5def88c49587fd43_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/619452bd6d06e80c_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/636309962346c8be_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/641d67cffa568cd7_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/65bc96de7e9a4a29_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/70ab06a3f2553310_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/7d56a2df33c66d5e_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/7f5140064b6a5590_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/827fb3fbee3074a3_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/a21ecb641d74cc07_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/a8a0da87896d6a6f_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/b1a512a6bc5bdbec_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/b64c2f69c675d0d5_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/bac3c463317eed81_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/bd31cfc19d676288_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/d2918ca278c14741_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/d5404a212324c10f_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/d901cde539261856_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/dedb079a88bda918_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/e1ca8dbbc83c2e00_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/ebc11eb2c0a279c1_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/ed3bd005b8c606e0_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/index,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/js/index-dir/the-real-index,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/wasm/696cc477473c9ac0_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/wasm/6b3f893253a8b36b_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/wasm/bc7f9a44c6619437_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/wasm/f639708060397ae3_0,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/wasm/index,.pw-remote-profile-backup-20260801-224302/Default/Code Cache/wasm/index-dir/the-real-index,.pw-remote-profile-backup-20260801-224302/Default/DIPS,.pw-remote-profile-backup-20260801-224302/Default/DIPS-wal,.pw-remote-profile-backup-20260801-224302/Default/DawnGraphiteCache/data_0,.pw-remote-profile-backup-20260801-224302/Default/DawnGraphiteCache/data_1,.pw-remote-profile-backup-20260801-224302/Default/DawnGraphiteCache/data_2,.pw-remote-profile-backup-20260801-224302/Default/DawnGraphiteCache/data_3,.pw-remote-profile-backup-20260801-224302/Default/DawnGraphiteCache/index,.pw-remote-profile-backup-20260801-224302/Default/DawnWebGPUCache/data_0,.pw-remote-profile-backup-20260801-224302/Default/DawnWebGPUCache/data_1,.pw-remote-profile-backup-20260801-224302/Default/DawnWebGPUCache/data_2,.pw-remote-profile-backup-20260801-224302/Default/DawnWebGPUCache/data_3,.pw-remote-profile-backup-20260801-224302/Default/DawnWebGPUCache/index,.pw-remote-profile-backup-20260801-224302/Default/GPUCache/data_0,.pw-remote-profile-backup-20260801-224302/Default/GPUCache/data_1,.pw-remote-profile-backup-20260801-224302/Default/GPUCache/data_2,.pw-remote-profile-backup-20260801-224302/Default/GPUCache/data_3,.pw-remote-profile-backup-20260801-224302/Default/GPUCache/index,.pw-remote-profile-backup-20260801-224302/Default/Local Storage/leveldb/CURRENT,.pw-remote-profile-backup-20260801-224302/Default/Local Storage/leveldb/LOCK,.pw-remote-profile-backup-20260801-224302/Default/Local Storage/leveldb/LOG,.pw-remote-profile-backup-20260801-224302/Default/Local Storage/leveldb/LOG.old,.pw-remote-profile-backup-20260801-224302/Default/Local Storage/leveldb/MANIFEST-000001,.pw-remote-profile-backup-20260801-224302/Default/Network/Cookies,.pw-remote-profile-backup-20260801-224302/Default/Network/Cookies-journal,.pw-remote-profile-backup-20260801-224302/Default/Network/NetworkDataMigrated,.pw-remote-profile-backup-20260801-224302/Default/PersistentOriginTrials/LOCK,.pw-remote-profile-backup-20260801-224302/Default/PersistentOriginTrials/LOG,.pw-remote-profile-backup-20260801-224302/Default/PersistentOriginTrials/LOG.old,.pw-remote-profile-backup-20260801-224302/Default/Session Storage/CURRENT,.pw-remote-profile-backup-20260801-224302/Default/Session Storage/LOCK,.pw-remote-profile-backup-20260801-224302/Default/Session Storage/LOG,.pw-remote-profile-backup-20260801-224302/Default/Session Storage/LOG.old,.pw-remote-profile-backup-20260801-224302/Default/Session Storage/MANIFEST-000001,.pw-remote-profile-backup-20260801-224302/Default/Shared Dictionary/cache/index,.pw-remote-profile-backup-20260801-224302/Default/Shared Dictionary/cache/index-dir/the-real-index,.pw-remote-profile-backup-20260801-224302/Default/Shared Dictionary/db,.pw-remote-profile-backup-20260801-224302/Default/Shared Dictionary/db-journal,.pw-remote-profile-backup-20260801-224302/Default/shared_proto_db/CURRENT,.pw-remote-profile-backup-20260801-224302/Default/shared_proto_db/LOCK,.pw-remote-profile-backup-20260801-224302/Default/shared_proto_db/LOG,.pw-remote-profile-backup-20260801-224302/Default/shared_proto_db/LOG.old,.pw-remote-profile-backup-20260801-224302/Default/shared_proto_db/MANIFEST-000001,.pw-remote-profile-backup-20260801-224302/Default/shared_proto_db/metadata/CURRENT,.pw-remote-profile-backup-20260801-224302/Default/shared_proto_db/metadata/LOCK,.pw-remote-profile-backup-20260801-224302/Default/shared_proto_db/metadata/LOG,.pw-remote-profile-backup-20260801-224302/Default/shared_proto_db/metadata/LOG.old,.pw-remote-profile-backup-20260801-224302/Default/shared_proto_db/metadata/MANIFEST-000001,.ridge/lan-host-status.json,.ridge/signals/file-write-permission-is-3f3eda93.md,.ridge/signals/skill-creation-permissio-4721f912.md,ridge-code/,scripts/cdp-enable-remote.mjs,scripts/remote-leak-trace.mjs,src-tauri/src/bin/tmux.rs,src-tauri/src/commands/clipboard_files.rs,src-tauri/src/commands/clipboard_image.rs,src-tauri/src/commands/cloud_pane.rs,src-tauri/src/commands/pane.rs,src-tauri/src/commands/project.rs,src-tauri/src/commands/remote.rs,src-tauri/src/commands/teammate.rs,src-tauri/src/commands/theme.rs,src-tauri/src/commands/workspace.rs,src-tauri/src/hosts/foreign_history.rs,src-tauri/src/hosts/history_commands.rs,src-tauri/src/hosts/lan_transport.rs,src-tauri/src/hosts/mod.rs,src-tauri/src/hosts/outbound.rs,src-tauri/src/hosts/reconnect_supervisor.rs,src-tauri/src/lsp/mod.rs,src-tauri/src/remote_bridge.rs,src-tauri/src/state.rs,src-tauri/src/teammate/agent_catalog.rs,src-tauri/src/teammate/autodiscover.rs,src-tauri/src/teammate/hitl.rs,src-tauri/src/teammate/hitl_audit.rs,src-tauri/src/teammate/job_object.rs,src-tauri/src/teammate/mcp.rs,src-tauri/src/teammate/memory.rs,src-tauri/src/teammate/mod.rs,src-tauri/src/teammate/orch_health.rs,src-tauri/src/teammate/profiles.rs,src-tauri/src/teammate/server.rs,src-tauri/src/teammate/suspend.rs,static/remote/apple-touch-icon.png,static/remote/assets/FileViewer-3ykc4fMm.css,static/remote/assets/FileViewer-CksJZWr4.js,static/remote/assets/RemoteSidebar-B1CAylDa.js,static/remote/assets/RemoteSidebar-BJooGDgy.css,static/remote/assets/apiClient-BQX7K5xq.js,static/remote/assets/auth-ZizFlmyv.js,static/remote/assets/cloudControllerBoot-D83shs3g.js,static/remote/assets/icons-Ci1uyIAu.js,static/remote/assets/index-C_LTL4nY.js,static/remote/assets/index-Dnc_099S.css,static/remote/assets/opener-B6qRWUbR.js,static/remote/assets/renderWorker-CNNc63I6.js,static/remote/assets/ridge_term-PFbEKm0t.js,static/remote/assets/ridge_term_bg-DdpHaQVr.wasm,static/remote/assets/term-wasm-C7dZPLPa.js,static/remote/assets/terminal-canvas-DsZjdH4x.js,static/remote/assets/terminal-canvas-czh0V7k7.css,static/remote/assets/virtual-keyboard-DYPB9DdC.js,static/remote/assets/virtual-keyboard-DzOuMW8j.css,static/remote/assets/workbox-window.prod.es5-BBnX5xw4.js,static/remote/assets/workspace-tree-CrRfXSHx.css,static/remote/assets/workspace-tree-DLKiN2Ty.js,static/remote/favicon.png,static/remote/fonts/flags.woff2,static/remote/icon-192.png,static/remote/icon-512.png,static/remote/icon-maskable-512.png,static/remote/index.html,static/remote/manifest.webmanifest,static/remote/sw.js,web-remote-dist/1.jpg,web-remote-dist/2.jpg,web-remote-dist/_app/env.js,web-remote-dist/_app/immutable/assets/0.PdEsabnx.css,web-remote-dist/_app/immutable/assets/2.Xi7Qq_n_.css,web-remote-dist/_app/immutable/assets/FileEditor.DU7veS4a.css,web-remote-dist/_app/immutable/assets/auth.Bz5vcUzJ.css,web-remote-dist/_app/immutable/assets/codicon.ngg6Pgfi.ttf,web-remote-dist/_app/immutable/assets/editor.L9lOLV7P.css,web-remote-dist/_app/immutable/assets/ridge_term_bg.DdpHaQVr.wasm,web-remote-dist/_app/immutable/chunks/5pQ7XXKn.js,web-remote-dist/_app/immutable/chunks/7HyzMojI.js,web-remote-dist/_app/immutable/chunks/82gDEm5a.js,web-remote-dist/_app/immutable/chunks/8SOpv6rk.js,web-remote-dist/_app/immutable/chunks/8Vk0Xw8I.js,web-remote-dist/_app/immutable/chunks/9HpZscsL.js,web-remote-dist/_app/immutable/chunks/Azv5sj3w.js,web-remote-dist/_app/immutable/chunks/B6UwbCRO.js,web-remote-dist/_app/immutable/chunks/B7qRdkXA.js,web-remote-dist/_app/immutable/chunks/B8OfTtLu.js,web-remote-dist/_app/immutable/chunks/BBUBE1dy.js,web-remote-dist/_app/immutable/chunks/BBc9UKZt.js,web-remote-dist/_app/immutable/chunks/BC_7yeDz.js,web-remote-dist/_app/immutable/chunks/BDVooUAY.js,web-remote-dist/_app/immutable/chunks/BDtDVThU.js,web-remote-dist/_app/immutable/chunks/BEgZUVRK.js,web-remote-dist/_app/immutable/chunks/BFxVWTOG.js,web-remote-dist/_app/immutable/chunks/BG73LgW2.js,web-remote-dist/_app/immutable/chunks/BOtBlQCF.js,web-remote-dist/_app/immutable/chunks/BPhDTwHR.js,web-remote-dist/_app/immutable/chunks/BPso9Um6.js,web-remote-dist/_app/immutable/chunks/BVqYh8kM.js,web-remote-dist/_app/immutable/chunks/B_28-bgn.js,web-remote-dist/_app/immutable/chunks/B_MfibMP.js,web-remote-dist/_app/immutable/chunks/BbWJElDN.js,web-remote-dist/_app/immutable/chunks/Bd8akH9Z.js,web-remote-dist/_app/immutable/chunks/BeJ5waoc.js,web-remote-dist/_app/immutable/chunks/Bf6VGUru.js,web-remote-dist/_app/immutable/chunks/Bf8OOCnO.js,web-remote-dist/_app/immutable/chunks/BgPX-4hW.js,web-remote-dist/_app/immutable/chunks/BjLd4Iou.js,web-remote-dist/_app/immutable/chunks/BkW5O-1t.js,web-remote-dist/_app/immutable/chunks/BlNEE0v7.js,web-remote-dist/_app/immutable/chunks/Bls46M7h.js,web-remote-dist/_app/immutable/chunks/BmdyHQAg.js,web-remote-dist/_app/immutable/chunks/Bqt4WxQ4.js,web-remote-dist/_app/immutable/chunks/Brw8urJB.js,web-remote-dist/_app/immutable/chunks/Bs9aos_-.js,web-remote-dist/_app/immutable/chunks/Bs9z6M-B.js,web-remote-dist/_app/immutable/chunks/Btyra-wh.js,web-remote-dist/_app/immutable/chunks/Bu5POkcn.js,web-remote-dist/_app/immutable/chunks/Bw9ernYp.js,web-remote-dist/_app/immutable/chunks/BwHxbl9M.js,web-remote-dist/_app/immutable/chunks/BxJiqAUM.js,web-remote-dist/_app/immutable/chunks/Bz8F4PNa.js,web-remote-dist/_app/immutable/chunks/BzKRNQWT.js,web-remote-dist/_app/immutable/chunks/C3VeiJmG.js,web-remote-dist/_app/immutable/chunks/C8lAE7p8.js,web-remote-dist/_app/immutable/chunks/C9QNqyly.js,web-remote-dist/_app/immutable/chunks/CBJaRo0y.js,web-remote-dist/_app/immutable/chunks/CDY3ST_h.js,web-remote-dist/_app/immutable/chunks/CFznDFnq.js,web-remote-dist/_app/immutable/chunks/CGTiadMN.js,web-remote-dist/_app/immutable/chunks/CHwy0fLd.js,web-remote-dist/_app/immutable/chunks/CJmd_6j2.js,web-remote-dist/_app/immutable/chunks/CL0ZJSta.js,web-remote-dist/_app/immutable/chunks/COWaemsV.js,web-remote-dist/_app/immutable/chunks/CXBNlu9o.js,web-remote-dist/_app/immutable/chunks/CZ3pcjtx.js,web-remote-dist/_app/immutable/chunks/CZTg31h4.js,web-remote-dist/_app/immutable/chunks/C_tMU-Nz.js,web-remote-dist/_app/immutable/chunks/Ca9aHndA.js,web-remote-dist/_app/immutable/chunks/CbMCvHxA.js,web-remote-dist/_app/immutable/chunks/Ceq9J045.js,web-remote-dist/_app/immutable/chunks/Cf1Puhdu.js,web-remote-dist/_app/immutable/chunks/Ch_5Mbyl.js,web-remote-dist/_app/immutable/chunks/Cht8GWPf.js,web-remote-dist/_app/immutable/chunks/CigD6eQO.js,web-remote-dist/_app/immutable/chunks/CiqrrVzr.js,web-remote-dist/_app/immutable/chunks/ClbrONkA.js,web-remote-dist/_app/immutable/chunks/ClhHkBeG.js,web-remote-dist/_app/immutable/chunks/CmKTTxBW.js,web-remote-dist/_app/immutable/chunks/CnS9iZB_.js,web-remote-dist/_app/immutable/chunks/Co3qMtFm.js,web-remote-dist/_app/immutable/chunks/CocnycG-.js,web-remote-dist/_app/immutable/chunks/CqXO7rUv.js,web-remote-dist/_app/immutable/chunks/CrlqqNRI.js,web-remote-dist/_app/immutable/chunks/CsWZWU46.js,web-remote-dist/_app/immutable/chunks/Csy3S7wG.js,web-remote-dist/_app/immutable/chunks/Cx2FdSCt.js,web-remote-dist/_app/immutable/chunks/Cx2_Xq1z.js,web-remote-dist/_app/immutable/chunks/Cyyb5UIc.js,web-remote-dist/_app/immutable/chunks/D-4FJmMZ.js,web-remote-dist/_app/immutable/chunks/D3bNHtNS.js,web-remote-dist/_app/immutable/chunks/D5hb7-TF.js,web-remote-dist/_app/immutable/chunks/D7QnfCsX.js,web-remote-dist/_app/immutable/chunks/D9hQfWCl.js,web-remote-dist/_app/immutable/chunks/DC7gzdj0.js,web-remote-dist/_app/immutable/chunks/DH7oHFUr.js,web-remote-dist/_app/immutable/chunks/DHMw6HUq.js,web-remote-dist/_app/immutable/chunks/DI9j1VEt.js,web-remote-dist/_app/immutable/chunks/DIpn1YAi.js,web-remote-dist/_app/immutable/chunks/DK9kqab3.js,web-remote-dist/_app/immutable/chunks/DLDM7-KI.js,web-remote-dist/_app/immutable/chunks/DMWL8ShR.js,web-remote-dist/_app/immutable/chunks/DNDY2TF8.js,web-remote-dist/_app/immutable/chunks/DP6snAQz.js,web-remote-dist/_app/immutable/chunks/DRYOjv5o.js,web-remote-dist/_app/immutable/chunks/DSRZtIWk.js,web-remote-dist/_app/immutable/chunks/DSh2-awV.js,web-remote-dist/_app/immutable/chunks/DX6XiGOO.js,web-remote-dist/_app/immutable/chunks/DXqtx-Cq.js,web-remote-dist/_app/immutable/chunks/Db0IVjzk.js,web-remote-dist/_app/immutable/chunks/Db0cS2oM.js,web-remote-dist/_app/immutable/chunks/DdJfP1eB.js,web-remote-dist/_app/immutable/chunks/De89q0c-.js,web-remote-dist/_app/immutable/chunks/DfW0FOcv.js,web-remote-dist/_app/immutable/chunks/DiJ1NA_G.js,web-remote-dist/_app/immutable/chunks/Dkf24Pai.js,web-remote-dist/_app/immutable/chunks/Dlr1lCKL.js,web-remote-dist/_app/immutable/chunks/Dm--PCyI.js,web-remote-dist/_app/immutable/chunks/Dm6ycUr_.js,web-remote-dist/_app/immutable/chunks/DmeGPVcC.js,web-remote-dist/_app/immutable/chunks/Dnu-v4kV.js,web-remote-dist/_app/immutable/chunks/DsDyCDDs.js,web-remote-dist/_app/immutable/chunks/DtV1sZF8.js,web-remote-dist/_app/immutable/chunks/DtZ0uQbO.js,web-remote-dist/_app/immutable/chunks/DtarPBKw.js,web-remote-dist/_app/immutable/chunks/DuKMVjHB.js,web-remote-dist/_app/immutable/chunks/DumH7NcR.js,web-remote-dist/_app/immutable/chunks/Dx9DZHxQ.js,web-remote-dist/_app/immutable/chunks/DyGI-c2J.js,web-remote-dist/_app/immutable/chunks/DyVAp5Ww.js,web-remote-dist/_app/immutable/chunks/GVOX4ufb.js,web-remote-dist/_app/immutable/chunks/Gi6I4Gst.js,web-remote-dist/_app/immutable/chunks/Hp3pqbor.js,web-remote-dist/_app/immutable/chunks/HuHCVOjO.js,web-remote-dist/_app/immutable/chunks/Kd9XrMLS.js,web-remote-dist/_app/immutable/chunks/OrD6JF1K.js,web-remote-dist/_app/immutable/chunks/OzZa8PXs.js,web-remote-dist/_app/immutable/chunks/PahG7c26.js,web-remote-dist/_app/immutable/chunks/Ub6l9XKa.js,web-remote-dist/_app/immutable/chunks/Y6nb8tq_.js,web-remote-dist/_app/immutable/chunks/acbASCJo.js,web-remote-dist/_app/immutable/chunks/cTPe9QuQ.js,web-remote-dist/_app/immutable/chunks/cl7-CwDS.js,web-remote-dist/_app/immutable/chunks/daPTLOpA.js,web-remote-dist/_app/immutable/chunks/dk6Y_aHp.js,web-remote-dist/_app/immutable/chunks/fsJWJRtQ.js,web-remote-dist/_app/immutable/chunks/iACwCXWV.js,web-remote-dist/_app/immutable/chunks/iDTAxaGy.js,web-remote-dist/_app/immutable/chunks/iTtGhM4C.js,web-remote-dist/_app/immutable/chunks/j7ic8hl3.js,web-remote-dist/_app/immutable/chunks/kCz9YkyD.js,web-remote-dist/_app/immutable/chunks/mD1r08XR.js,web-remote-dist/_app/immutable/chunks/pPCLQ6uM.js,web-remote-dist/_app/immutable/chunks/s7OhZKlX.js,web-remote-dist/_app/immutable/chunks/tScXyioY.js,web-remote-dist/_app/immutable/chunks/vHIfCaH5.js,web-remote-dist/_app/immutable/chunks/vodvu71e.js,web-remote-dist/_app/immutable/chunks/vyMiPnyQ.js,web-remote-dist/_app/immutable/chunks/wib4qpPw.js,web-remote-dist/_app/immutable/chunks/x_6Des_7.js,web-remote-dist/_app/immutable/chunks/zBfavPgS.js,web-remote-dist/_app/immutable/entry/app.DuoAgSS0.js,web-remote-dist/_app/immutable/entry/start.DeIEv6bo.js,web-remote-dist/_app/immutable/nodes/0.CzJiOvdx.js,web-remote-dist/_app/immutable/nodes/1.gtf_BRt5.js,web-remote-dist/_app/immutable/nodes/2.CIp1PsLY.js,web-remote-dist/_app/immutable/workers/assets/ridge_term_bg-DdpHaQVr.wasm,web-remote-dist/_app/immutable/workers/chunks/BFHcXoal.js,web-remote-dist/_app/immutable/workers/css.worker-uch7pA5g.js,web-remote-dist/_app/immutable/workers/editor.worker-h19R126F.js,web-remote-dist/_app/immutable/workers/html.worker-C8KWqYYR.js,web-remote-dist/_app/immutable/workers/json.worker-MyEhrfQg.js,web-remote-dist/_app/immutable/workers/renderWorker-Cwr-1n5S.js,web-remote-dist/_app/immutable/workers/ts.worker-BjWGAzqc.js,web-remote-dist/_app/version.json,web-remote-dist/docs/mcp-integration.md,web-remote-dist/favicon.png,web-remote-dist/fonts/flags.woff2,web-remote-dist/index.html,web-remote-dist/mobile/assets/index-BPfF1vzx.css,web-remote-dist/mobile/assets/index-Cm2sAwTC.js,web-remote-dist/mobile/assets/ridge_term_bg-qYsB2L3X.wasm,web-remote-dist/remote/apple-touch-icon.png,web-remote-dist/remote/assets/FileViewer-3ykc4fMm.css,web-remote-dist/remote/assets/FileViewer-DhjI4Huh.js,web-remote-dist/remote/assets/RemoteSidebar-BBBICYYY.js,web-remote-dist/remote/assets/RemoteSidebar-BJooGDgy.css,web-remote-dist/remote/assets/apiClient-Ci8kp8eN.js,web-remote-dist/remote/assets/auth-BUNve0zH.js,web-remote-dist/remote/assets/cloudControllerBoot-pdujiuVY.js,web-remote-dist/remote/assets/icons-CA6Y3Ya8.js,web-remote-dist/remote/assets/index-CFBLvNQu.js,web-remote-dist/remote/assets/index-Dnc_099S.css,web-remote-dist/remote/assets/opener-B6qRWUbR.js,web-remote-dist/remote/assets/renderWorker-CNNc63I6.js,web-remote-dist/remote/assets/ridge_term-PFbEKm0t.js,web-remote-dist/remote/assets/ridge_term_bg-DdpHaQVr.wasm,web-remote-dist/remote/assets/term-wasm-C7dZPLPa.js,web-remote-dist/remote/assets/terminal-canvas-DBHrM5mP.js,web-remote-dist/remote/assets/terminal-canvas-RG-44TB6.css,web-remote-dist/remote/assets/virtual-keyboard-DllK0SPX.js,web-remote-dist/remote/assets/virtual-keyboard-DzOuMW8j.css,web-remote-dist/remote/assets/workbox-window.prod.es5-BBnX5xw4.js,web-remote-dist/remote/assets/workspace-tree-BgAnH4qG.js,web-remote-dist/remote/assets/workspace-tree-Dq0je0jB.css,web-remote-dist/remote/favicon.png,web-remote-dist/remote/fonts/flags.woff2,web-remote-dist/remote/icon-192.png,web-remote-dist/remote/icon-512.png,web-remote-dist/remote/icon-maskable-512.png,web-remote-dist/remote/index.html,web-remote-dist/remote/manifest.webmanifest,web-remote-dist/remote/sw.js,web-remote-dist/ridge-mark.svg,web-remote-dist/service-worker.js,web-remote-dist/svelte.svg,web-remote-dist/tauri.svg,web-remote-dist/vite.svg`
+- requirements_hash:`7584865233a0b7bdce302e7c9fff721ea36a5138d8af2e5c0ccc099b91e5b3db`
+- pending_hash:`d20b5c7bdba45785e2bca898740320d4a13db775417fdf71649c160c7e125d3e`
+- decision_hash:`921323c078340ec8198c535494074d8636368b1575330734e6ce61a1022d5aa9`
+- generated_at:`2026-08-04T22:49:47+00:00`
+- current_git_diff:`.iteration/decision.json`
 
 ## 非权威 Pending 索引
 
-- _无_
+- `PENDING-REQ-20260805-AGENT-COMMUNICATION-REGISTRY-01` · Deterministic Agent lifecycle and communication registry · `pending`；冻结：Existing PTY, pane, workspace-singleton, Remote, and MCP transport contracts remain authoritative; this request adds lifecycle/communication truth and adapters only after approval.
 
 ## 当前决策包
 
 ```json
 {
   "approved_constraints": [
-    "ridge-kernel is a user-session process independent from desktop and rdg, not a system service",
-    "desktop-only exit must terminate desktop while preserving the kernel",
-    "full kernel exit terminates every attached shell",
-    "concurrent shell startup must never leave two healthy kernels",
-    "filesystem, Git/process guard, Remote Host, Agent roster/history, workspaces, PTY, and runtime settings authority belongs in the kernel",
-    "ridge-mcp must work without Tauri and fail closed after kernel shutdown",
-    "reuse shared production implementations; do not fork a second teammate/MCP protocol",
-    "all external process exits require bounded waits and process-tree cleanup"
+    "Keep existing kernel and Remote transport authority; do not create a second UI-local source of truth.",
+    "Preserve bounded queues, cancellation, lifecycle cleanup, and release/worktree gates.",
+    "Do not hide errors with console suppression; use deterministic tests and explicit feedback."
   ],
   "attempts": [],
-  "candidate_solutions": [
-    {
-      "name": "Lifecycle root first, then mount the existing shared teammate/domain engines in ridge-kernel",
-      "summary": "Add a process-lifetime file lock and one shared shutdown primitive; make desktop and rdg consume it. Replace mcp_min with an adapter over the existing shared teammate engine, then migrate shell domain adapters endpoint by endpoint with contract tests."
-    },
-    {
-      "name": "Expand mcp_min and domain endpoints in place",
-      "summary": "Add collaboration tools directly to mcp_min and keep shell-specific adapters until later. Smaller initial diff, but risks protocol duplication and two authorities."
-    },
-    {
-      "name": "Kernel proxies the desktop teammate sidecar",
-      "summary": "Keep existing desktop authority and proxy from kernel. This conflicts with no-Tauri deep-root requirements and is included only for explicit rejection analysis."
-    }
-  ],
-  "failure_signals": [
-    "No deterministic concurrent-start test",
-    "No test proving Exit Desktop ends the desktop process while the kernel remains attachable",
-    "No real no-Tauri kernel plus rdg plus ridge-mcp collaboration run",
-    "Several kernel domain handlers have no direct tests and are not the shell production path"
-  ],
-  "hypotheses": [
-    "The dependency root is lifecycle/single-instance correctness because all later domain and MCP availability claims depend on one stable kernel identity.",
-    "The existing shared teammate HTTP/MCP engine can be hosted by ridge-kernel with less duplication than growing mcp_min."
-  ],
+  "candidate_solutions": [],
+  "failure_signals": [],
+  "hypotheses": [],
   "prohibitions": [
-    "Do not treat endpoint existence as shell migration proof",
-    "Do not retain a desktop-only backend behind a kernel proxy",
-    "Do not expand mcp_min into a competing protocol implementation",
-    "Do not clear registry state until process death is proven",
-    "Do not claim physical or public-network validation from unit tests"
+    "No implementation based solely on NotebookLM output.",
+    "No unbounded retry, duplicated state store, or silent fallback that loses Agent/Pane identity."
   ],
-  "question": "For the approved Kernel-First requirements, what dependency-ordered architecture closes process lifecycle, domain authority, and MCP collaboration without creating a second protocol or leaving Tauri as hidden authority?",
+  "question": "After the latest Remote and desktop iteration, what architecture and validation order best closes shared-workspace attach, mobile/desktop input fidelity, TUI mouse forwarding, unconstrained Explorer split resizing, cross-client Agent synchronization, and mobile icon/file-view consistency?",
   "questions": [
-    "What is the minimal dependency-ordered slice that makes later migration safe?",
-    "Which existing teammate/domain implementation should be mounted in ridge-kernel to avoid duplicate ownership?",
-    "What stop conditions and deterministic runtime tests prove each boundary before continuing?"
+    "Should shared-workspace attach use the existing workspace/Host capability path or a new kernel domain endpoint?",
+    "Which terminal input and mouse event paths currently drop spaces, Unicode punctuation, drag, or click sequences?",
+    "Which resize container owns the vertical budget when both Explorer regions are dragged?"
   ],
-  "target": "Select the next cohesive implementation sequence for REQ-RIDGE-KERNEL-HOST-01, REQ-RIDGE-KERNEL-DOMAIN-01, and REQ-RIDGE-MCP-AS-KERNEL-API-01.",
+  "target": "Next iteration design and approval; implementation remains bounded by approved requirements and current kernel/Remote contracts.",
   "verified_facts": [
     {
-      "evidence": "packages/ridge-kernel/src/main.rs:164-286 and packages/ridge-kernel/src/registry.rs:100-122 at 83d2ea6",
-      "fact": "ridge-kernel main binds an ephemeral port and writes kernel.json but holds no cross-process instance lock, so concurrent starts can both remain alive and race the registry."
+      "evidence": "git status --short --branch; gh release view v0.1.57 --json tagName,isDraft,assets; workflow 30942946619 log",
+      "fact": "The repository is clean on main at d57f5c1; v0.1.57 desktop Release has 12 assets and Remote/cloud activated 0.1.57+g8896038."
     },
     {
-      "evidence": "src-tauri/src/tray.rs:80-88 at 83d2ea6",
-      "fact": "The tray action labelled Exit Desktop only hides the main window; it does not terminate the desktop shell process."
+      "evidence": "docs/PENDING-REQUIREMENTS.md:7; .iteration/intake-decision.json; requirements_intake.py check reports classification pending and reasons approval_required",
+      "fact": "The new Agent communication registry remains pending and is not an approved business contract yet; existing Agent UI/kernel requirements are related but do not specify deterministic lifecycle registration and pre-send roster validation."
     },
     {
-      "evidence": "packages/ridge-cli/src/kernel_ctl.rs:253-291 at 83d2ea6",
-      "fact": "rdg stop_kernel duplicates OS-specific termination and removes registry files after two seconds even when process death was not proven."
-    },
-    {
-      "evidence": "packages/ridge-kernel/src/main.rs:212-278 plus CodeGraph TauriDataProvider callers at 83d2ea6",
-      "fact": "ridge-kernel exposes FS list, Git status, Agent profiles/roster, Remote Host records, workspace topology, and PTY endpoints, but current desktop DataProvider still owns broad FS/Git operations through Tauri commands."
-    },
-    {
-      "evidence": "packages/ridge-kernel/src/mcp_min.rs:29-128 at 83d2ea6",
-      "fact": "The kernel MCP implementation exposes only ridge_kernel_list_agents and ridge_kernel_fs_list; it does not expose split/launch, roster addressing, messaging, or delegation."
-    },
-    {
-      "evidence": "packages/ridge-mcp-bridge/src/lib.rs:87-123 at 83d2ea6",
-      "fact": "ridge-mcp discovery prefers explicit parameters and RIDGE_TEAMMATE environment endpoints before the kernel, then falls back to a desktop teammate sidecar."
-    },
-    {
-      "evidence": "rustc 1.97.1 local compile probe exited 0",
-      "fact": "Current Rust supports std::fs::File::try_lock, allowing a dependency-free cross-process kernel lock whose lifetime follows the process handle."
+      "evidence": "CodeGraph availability check plus targeted rg symbol inventory in the next local exploration round",
+      "fact": "Current code already contains separate Remote/desktop transport, Agent roster, workspace/Host, terminal input, Explorer resize, and mobile file-view surfaces that must be traced before changes."
     }
   ]
 }

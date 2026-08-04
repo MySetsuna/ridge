@@ -5,6 +5,26 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 168, 2026-08-05)
+
+- NotebookLM research used the exact notebook `Ridge 项目现状、愿景与规划基线（2026-07-21）`
+  (`66919cb9-1329-4ddf-955c-f426d15a9fe6`) and transcript
+  `a47d3199-c1f9-47f1-927c-ff2c4875b77d`. NLM was resource-limited after the
+  transcript fetch; local CodeGraph/source/tests remain authoritative.
+- `REQ-INTERACTION-PARITY-01` and `REQ-AGENT-COMMUNICATION-REGISTRY-01` are
+  approved and executable. Pending requirements are empty. The iteration adds
+  access/share contract coverage, IME input fallback, mobile TUI touch mouse
+  forwarding, free Explorer resize, Agent parity/spacing, narrow file/image
+  viewing, and confirmed Agent lifecycle communication preflight.
+- Verification: `pnpm check` 0/0; full Vitest 149 files/1560 passed/1 skipped;
+  focused interaction Vitest 4 files/33 passed and shared terminal helper
+  tests 5 files/46 passed; `cargo check -p ridge --lib`
+  passed; teammate profile tests 2 passed; `cargo test -p ridge-term input
+  --quiet` 36 passed; `git diff --check` passed. Physical/PWA, public WebRTC,
+  WebView2, and multi-window/Host gates remain explicitly external.
+
+Archive: `docs/iterations/2026-08-05-iteration-168-interaction-parity.md`.
+
 ## Current snapshot (iteration 167, 2026-08-04)
 
 - New pre-approved `REQ-MOBILE-REMOTE-BACKPRESSURE-01` is active for this
