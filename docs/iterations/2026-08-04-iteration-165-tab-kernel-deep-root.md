@@ -39,10 +39,11 @@ across a desktop process restart where the kernel endpoint remains alive.
 - `git diff --check`: passed.
 - Release `v0.1.56`: GitHub Actions test gate and all four platform jobs passed;
   the published Release contains 12 installer/CLI assets (all expected
-  Windows/Linux/macOS installer and CLI classes). Remote bundle
-  `0.1.56+g64817b9` dry-run produced 268 files (24.83 MiB). Cloud upload was
-  not attempted beyond the credential check because
-  `RIDGE_CLOUD_ARTIFACT_URL` / `RIDGE_ARTIFACT_TOKEN` are absent locally.
+  Windows/Linux/macOS installer and CLI classes). Remote workflow run
+  `30892178165` built and activated artifact `0.1.56+g415ee64` (237 files,
+  22.03 MiB); its authenticated `/status` check confirmed both desktop and
+  mobile indexes, and the public favicon probe passed. The URL variable and
+  upload secret are intentionally injected only inside GitHub Actions.
 
 ## Boundary / external evidence
 
