@@ -18,29 +18,84 @@ struct ProfileEntry {
     pane_uuid: Uuid,
 }
 
+/// Stable communication-directory projection.  The registry is the only
+/// source used by agent write paths to decide whether a target is online.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentContact {
+    pub agent_id: String,
+    pub name: String,
+    pub pane_uuid: Uuid,
+    pub status: TeammateStatus,
+}
+
 /// `workspace_id → (agent_id → 画像项)`。
 static PROFILES: LazyLock<Mutex<HashMap<Uuid, HashMap<String, ProfileEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// register-agent 落花名册条目（名 + 能力档 + Working 态）。
-pub fn upsert(wid: Uuid, agent_id: &str, pane_uuid: Uuid, name: Option<String>, capability: AgentTier) {
+pub fn upsert(
+    wid: Uuid,
+    agent_id: &str,
+    pane_uuid: Uuid,
+    name: Option<String>,
+    capability: AgentTier,
+) -> Result<(), &'static str> {
+    if agent_id.trim().is_empty() {
+        return Err("agent id is required");
+    }
     let mut t = Teammate::new(agent_id, name.unwrap_or_else(|| agent_id.to_string()), 0)
         .with_capability(capability);
     t.status = TeammateStatus::Working;
-    if let Ok(mut g) = PROFILES.lock() {
-        g.entry(wid)
-            .or_default()
-            .insert(agent_id.to_string(), ProfileEntry { teammate: t, pane_uuid });
-    }
+    let mut g = PROFILES.lock().map_err(|_| "agent registry lock poisoned")?;
+    g.entry(wid)
+        .or_default()
+        .insert(agent_id.to_string(), ProfileEntry { teammate: t, pane_uuid });
+    Ok(())
 }
 
 /// 按 pane 移除（release_pane / pane 关闭时，调用方只有 pane_uuid）。
-pub fn remove_by_pane(wid: Uuid, pane_uuid: Uuid) {
-    if let Ok(mut g) = PROFILES.lock() {
-        if let Some(m) = g.get_mut(&wid) {
-            m.retain(|_, e| e.pane_uuid != pane_uuid);
-        }
-    }
+pub fn remove_by_pane(wid: Uuid, pane_uuid: Uuid) -> Vec<String> {
+    let Ok(mut g) = PROFILES.lock() else { return Vec::new(); };
+    let Some(m) = g.get_mut(&wid) else { return Vec::new(); };
+    let removed = m
+        .iter()
+        .filter(|(_, entry)| entry.pane_uuid == pane_uuid)
+        .map(|(agent_id, _)| agent_id.clone())
+        .collect::<Vec<_>>();
+    m.retain(|_, e| e.pane_uuid != pane_uuid);
+    removed
+}
+
+/// Resolve the target immediately before a communication write.  A missing
+/// contact means the pane was never confirmed as an Agent or has already been
+/// destroyed; callers must fail closed instead of retrying a stale pane.
+pub fn target_for_pane(wid: Uuid, pane_uuid: Uuid) -> Option<AgentContact> {
+    let g = PROFILES.lock().ok()?;
+    let entry = g.get(&wid)?.values().find(|e| e.pane_uuid == pane_uuid)?;
+    Some(AgentContact {
+        agent_id: entry.teammate.id.clone(),
+        name: entry.teammate.name.clone(),
+        pane_uuid: entry.pane_uuid,
+        status: entry.teammate.status,
+    })
+}
+
+/// Snapshot the communication directory for diagnostics and preflight checks.
+pub fn contacts(wid: Uuid) -> Vec<AgentContact> {
+    let Ok(g) = PROFILES.lock() else { return Vec::new(); };
+    let mut out = g
+        .get(&wid)
+        .into_iter()
+        .flat_map(|entries| entries.values())
+        .map(|entry| AgentContact {
+            agent_id: entry.teammate.id.clone(),
+            name: entry.teammate.name.clone(),
+            pane_uuid: entry.pane_uuid,
+            status: entry.teammate.status,
+        })
+        .collect::<Vec<_>>();
+    out.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+    out
 }
 
 /// 某工作区是否有画像数据（调用方据此决定用本表还是回退侧表）。
@@ -161,5 +216,40 @@ fn tier_str(t: AgentTier) -> &'static str {
         AgentTier::Base => "Base",
         AgentTier::Skilled => "Skilled",
         AgentTier::Expert => "Expert",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confirmed_registry_resolves_and_removes_targets() {
+        let workspace = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        upsert(
+            workspace,
+            "agent-a",
+            pane,
+            Some("Claude".into()),
+            AgentTier::Expert,
+        )
+        .unwrap();
+        assert_eq!(contacts(workspace).len(), 1);
+        assert_eq!(target_for_pane(workspace, pane).unwrap().agent_id, "agent-a");
+        assert_eq!(remove_by_pane(workspace, pane), vec!["agent-a"]);
+        assert!(target_for_pane(workspace, pane).is_none());
+    }
+
+    #[test]
+    fn empty_agent_id_never_enters_registry() {
+        let result = upsert(
+            Uuid::new_v4(),
+            "  ",
+            Uuid::new_v4(),
+            None,
+            AgentTier::Base,
+        );
+        assert!(result.is_err());
     }
 }

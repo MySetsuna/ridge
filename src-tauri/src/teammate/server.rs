@@ -444,31 +444,88 @@ fn find_idle_pane_uuid(state: &AppState, wid: uuid::Uuid) -> Option<uuid::Uuid> 
 }
 
 /// 注册 agent 到 pane
-fn register_agent_to_pane(state: &AppState, wid: uuid::Uuid, agent_id: &str, pane_id: uuid::Uuid) {
-    let mut map = state.workspaces.write();
-    if let Some(ws) = map.get_mut(&wid) {
-        ws.teammate_agent_pane_map
-            .insert(agent_id.to_string(), pane_id);
-        ws.teammate_pane_states
-            .insert(pane_id, crate::state::PaneState::Busy);
+fn register_agent_to_pane(
+    state: &AppState,
+    wid: uuid::Uuid,
+    agent_id: &str,
+    pane_id: uuid::Uuid,
+) -> Result<(), String> {
+    let agent_id = agent_id.trim();
+    if agent_id.is_empty() {
+        return Err("agent id is required".into());
     }
+    let mut map = state.workspaces.write();
+    let ws = map
+        .get_mut(&wid)
+        .ok_or_else(|| format!("workspace {wid} not found"))?;
+    if !ws.pane_tree.panes.contains_key(&pane_id) {
+        return Err(format!("pane {pane_id} not in workspace {wid}"));
+    }
+    if let Some((existing, _)) = ws
+        .teammate_agent_pane_map
+        .iter()
+        .find(|(existing, mapped)| **mapped == pane_id && existing.as_str() != agent_id)
+    {
+        return Err(format!("pane {pane_id} already owned by agent {existing}"));
+    }
+    ws.teammate_agent_pane_map
+        .insert(agent_id.to_string(), pane_id);
+    ws.teammate_pane_states
+        .insert(pane_id, crate::state::PaneState::Busy);
+    Ok(())
+}
+
+/// Commit the workspace mapping and communication-directory record together.
+/// Call only after PTY creation/activation has returned success.
+fn register_confirmed_agent(
+    state: &AppState,
+    wid: uuid::Uuid,
+    agent_id: &str,
+    pane_id: uuid::Uuid,
+    name: Option<String>,
+    program: Option<&str>,
+) -> Result<(), String> {
+    register_agent_to_pane(state, wid, agent_id, pane_id)?;
+    let display_name = name.or_else(|| Some(agent_id.trim().to_string()));
+    let capability = ridge_core::recognize_capability(
+        display_name.as_deref().unwrap_or(agent_id),
+        program,
+    );
+    if let Err(error) = super::profiles::upsert(
+        wid,
+        agent_id,
+        pane_id,
+        display_name,
+        capability,
+    ) {
+        let _ = release_pane(state, wid, pane_id);
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 /// 释放 pane（标记为空闲）
-fn release_pane(state: &AppState, wid: uuid::Uuid, pane_id: uuid::Uuid) {
-    {
+fn release_pane(state: &AppState, wid: uuid::Uuid, pane_id: uuid::Uuid) -> bool {
+    let released = {
         let mut map = state.workspaces.write();
         if let Some(ws) = map.get_mut(&wid) {
             ws.teammate_pane_states
                 .insert(pane_id, crate::state::PaneState::Idle);
             // 清理 agent 映射
             ws.teammate_agent_pane_map.retain(|_, v| *v != pane_id);
+            true
+        } else {
+            false
         }
+    };
+    if !released {
+        return false;
     }
     // Domain B1：同步清理 typed 画像（按 pane）。
     super::profiles::remove_by_pane(wid, pane_id);
     // Domain D3：清理该 pane 的循环熔断器状态。
     super::circuit::forget_pane(wid, pane_id);
+    true
 }
 
 /// 通过 agent_id 查找 pane
@@ -528,12 +585,18 @@ async fn route_register_agent(
         }
     };
 
-    register_agent_to_pane(&ctx.state, wid, &body.agent_id, pane_id);
+    if let Err(error) = register_confirmed_agent(
+        &ctx.state,
+        wid,
+        &body.agent_id,
+        pane_id,
+        body.name.clone(),
+        body.program.as_deref(),
+    ) {
+        return (StatusCode::CONFLICT, error).into_response();
+    }
     // Domain B1：落花名册条目（名 + 能力档 + Working 态）。能力档由 agent 名 / 可选启动
     // 程序名被动识别（无重量级探测）；据此在 topology_for 里跑极简组长竞选。
-    let cap_name = body.name.as_deref().unwrap_or(&body.agent_id);
-    let capability = ridge_core::recognize_capability(cap_name, body.program.as_deref());
-    super::profiles::upsert(wid, &body.agent_id, pane_id, body.name.clone(), capability);
     // Emit so the frontend re-fetches layout and renders the "busy" indicator
     // on the newly-claimed pane.
     let _ = ctx
@@ -608,6 +671,39 @@ async fn route_delegate_task(
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
+    // Communication directory preflight: resolve the target immediately before
+    // writing.  A pane that disappeared or was never confirmed as an Agent is
+    // rejected once, instead of receiving retries that pile up on a stale PTY.
+    let Some(contact) = super::profiles::target_for_pane(wid, pid) else {
+        let known = super::profiles::contacts(wid)
+            .into_iter()
+            .map(|entry| entry.agent_id)
+            .collect::<Vec<_>>();
+        return (
+            StatusCode::CONFLICT,
+            format!(
+                "agent communication target is offline or unregistered (pane={pid}, known={known:?})"
+            ),
+        )
+            .into_response();
+    };
+    let target_alive = ctx
+        .state
+        .workspaces
+        .read()
+        .get(&wid)
+        .is_some_and(|ws| {
+            ws.pane_tree.panes.contains_key(&pid)
+                && (ws.terminals.contains_key(&pid) || ws.pending_spawns.contains_key(&pid))
+        });
+    if !target_alive {
+        super::profiles::remove_by_pane(wid, pid);
+        return (
+            StatusCode::CONFLICT,
+            format!("agent {} is no longer online", contact.agent_id),
+        )
+            .into_response();
+    }
     let prompt = ridge_mcp::server::enter_terminated(&body.objective);
     // G1：delegate 提示注入同属 agent 写路径，走 suspend 收口。
     if let Err(e) = super::suspend::agent_pty_write(&ctx.state, wid, pid, prompt.as_bytes()) {
@@ -711,12 +807,16 @@ async fn route_release_pane(
         return (StatusCode::BAD_REQUEST, "need pane_index or pane_id").into_response();
     };
 
-    release_pane(&ctx.state, wid, pane_id);
+    let released = release_pane(&ctx.state, wid, pane_id);
     // Emit layout-changed so the frontend drops the "busy" indicator.
     let _ = ctx
         .handle
         .emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
-    (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "ok": true, "released": released })),
+    )
+        .into_response()
 }
 
 async fn route_find_idle_pane(
@@ -843,14 +943,6 @@ async fn route_split(
                         if body.is_agent || body.program.is_some() {
                             ws.teammate_pane_states
                                 .insert(pane_id, crate::state::PaneState::Busy);
-                            if let Some(aid) = body
-                                .agent_id
-                                .as_ref()
-                                .map(|s| s.trim())
-                                .filter(|s| !s.is_empty())
-                            {
-                                ws.teammate_agent_pane_map.insert(aid.to_string(), pane_id);
-                            }
                         }
                         ws.teammate_tmux_pane_cursor = idle_idx;
                         if let Some(name) = body
@@ -881,7 +973,7 @@ async fn route_split(
                         .as_ref()
                         .map(|s| std::path::PathBuf::from(s.trim()))
                         .filter(|p| !p.as_os_str().is_empty());
-                    let _ = terminal::ensure_pane_pty_workspace(
+                    if let Err(error) = terminal::ensure_pane_pty_workspace(
                         &ctx.state,
                         wid,
                         pane_id,
@@ -892,7 +984,14 @@ async fn route_split(
                         Some(idle_idx),
                         None,
                         None,
-                    );
+                    ) {
+                        let _ = release_pane(&ctx.state, wid, pane_id);
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("reused pane PTY init failed: {error}"),
+                        )
+                            .into_response();
+                    }
                 } else if let Some(cmd) = body
                     .command
                     .as_deref()
@@ -901,7 +1000,32 @@ async fn route_split(
                 {
                     let data = ridge_mcp::server::enter_terminated(&cmd);
                     // G1：exec 命令注入同属 agent 写路径，走 suspend 收口。
-                    let _ = super::suspend::agent_pty_write(&ctx.state, wid, pane_id, data.as_bytes());
+                    if let Err(error) = super::suspend::agent_pty_write(
+                        &ctx.state,
+                        wid,
+                        pane_id,
+                        data.as_bytes(),
+                    ) {
+                        let _ = release_pane(&ctx.state, wid, pane_id);
+                        return (StatusCode::BAD_REQUEST, error).into_response();
+                    }
+                }
+                if let Some(agent_id) = body
+                    .agent_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    if let Err(error) = register_confirmed_agent(
+                        &ctx.state,
+                        wid,
+                        agent_id,
+                        pane_id,
+                        body.window_name.clone(),
+                        body.program.as_deref(),
+                    ) {
+                        return (StatusCode::CONFLICT, error).into_response();
+                    }
                 }
                 let _ = ctx.handle.emit(
                     TEAMMATE_LAYOUT_CHANGED,
@@ -1095,14 +1219,6 @@ async fn route_split(
                         ws.teammate_pane_states
                             .insert(new_id, PaneState::Busy);
                     }
-                    if let Some(aid) = body
-                        .agent_id
-                        .as_ref()
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                    {
-                        ws.teammate_agent_pane_map.insert(aid.to_string(), new_id);
-                    }
                     ws.pane_sizes.insert(new_id, (80, 120));
                     if let Some(name) = body
                         .window_name
@@ -1159,6 +1275,7 @@ async fn route_split(
                     }
                 };
                 if cleaned {
+                    super::profiles::remove_by_pane(watch_wid, watch_pid);
                     let _ = watch_handle.emit(
                         TEAMMATE_LAYOUT_CHANGED,
                         LayoutChange::removed_with_trace(watch_pid.to_string(), watch_trace),
@@ -1180,6 +1297,24 @@ async fn route_split(
             tracing::info!(target: "ridge::teammate", "route_split: await ready_rx(3s) trace={trace_id}");
             match tokio::time::timeout(std::time::Duration::from_secs(3), ready_rx).await {
                 Ok(Ok(Ok(()))) => {
+                    if let Some(agent_id) = body
+                        .agent_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                    {
+                        if let Err(error) = register_confirmed_agent(
+                            &ctx.state,
+                            wid,
+                            agent_id,
+                            new_id,
+                            body.window_name.clone(),
+                            body.program.as_deref(),
+                        ) {
+                            let _ = release_pane(&ctx.state, wid, new_id);
+                            return (StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
+                        }
+                    }
                     {
                         let mut map = ctx.state.workspaces.write();
                         if let Some(ws) = map.get_mut(&wid) {
@@ -1445,6 +1580,7 @@ async fn route_spawn_process(
         .as_ref()
         .map(|s| std::path::PathBuf::from(s.trim()))
         .filter(|p| !p.as_os_str().is_empty());
+    let agent_program = body.program.clone();
     let mut command = terminal::StructuredPtyCommand {
         program: body.program,
         args: body.args,
@@ -1525,15 +1661,25 @@ async fn route_spawn_process(
             // 立即提升为 Busy（启动即 Busy）。有 agent_id 则写映射，供 badge/退出清理。
             if body.is_agent {
                 ws.teammate_pane_states.insert(pid, PaneState::Busy);
-                if let Some(aid) = body
-                    .agent_id
-                    .as_ref()
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                {
-                    ws.teammate_agent_pane_map.insert(aid.to_string(), pid);
-                }
             }
+        }
+    }
+    if let Some(agent_id) = body
+        .agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if let Err(error) = register_confirmed_agent(
+            &ctx.state,
+            wid,
+            agent_id,
+            pid,
+            Some(agent_id.to_string()),
+            Some(agent_program.as_str()),
+        ) {
+            let _ = release_pane(&ctx.state, wid, pid);
+            return (StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
         }
     }
     // 提升后 emit，让前端 re-sync 渲染 AGENT badge（T0 封套 generic state）。
@@ -1798,6 +1944,7 @@ async fn route_kill_pane(
                         let _ = ws.pane_tree.close(pid);
                     }
                 }
+                super::profiles::remove_by_pane(wid, pid);
                 let _ = ctx.handle.emit(
                     TEAMMATE_LAYOUT_CHANGED,
                     LayoutChange::removed(pid.to_string()),
