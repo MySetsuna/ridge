@@ -37,6 +37,11 @@ across a desktop process restart where the kernel endpoint remains alive.
   set only.
 - `pnpm check`: passed, 0 errors / 0 warnings.
 - `git diff --check`: passed.
+- Release `v0.1.56`: GitHub Actions test gate and all four platform jobs passed;
+  the published Release contains 13 installer/CLI assets. Remote bundle
+  `0.1.56+g64817b9` dry-run produced 268 files (24.83 MiB). Cloud upload was
+  not attempted beyond the credential check because
+  `RIDGE_CLOUD_ARTIFACT_URL` / `RIDGE_ARTIFACT_TOKEN` are absent locally.
 
 ## Boundary / external evidence
 
