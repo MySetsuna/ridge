@@ -15,7 +15,7 @@
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
   import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-  import { Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Users, MonitorUp, History } from 'lucide-svelte';
+  import { Bot, ZapOff, ShieldCheck, BookOpen, ClipboardCopy, Users, MonitorUp } from 'lucide-svelte';
   import AgentMemberRow from './AgentMemberRow.svelte';
   import { settingsStore } from '$lib/stores/settings';
   import { fileEditorStore } from '$lib/stores/fileEditor';
@@ -926,7 +926,7 @@
             ? 'bg-[var(--rg-accent)]/15 text-[var(--rg-fg)]'
             : 'text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]'}"
         >
-          <History class="h-3.5 w-3.5" /> 历史
+          历史
           <span class="font-mono text-[10px] opacity-70">{unmatchedHeadlessSessions.length + recentReplies.length}</span>
         </button>
       </div>

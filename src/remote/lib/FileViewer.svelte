@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { X, FileText, GitBranch, Copy, Pencil, Eye, Save } from 'lucide-svelte';
+  import { X, FileText, GitBranch, Image as ImageIcon, Copy, Pencil, Eye, Save } from 'lucide-svelte';
+  import { convertFileSrc } from '@tauri-apps/api/core';
   import { onDestroy } from 'svelte';
   import { t, tr } from '$lib/i18n';
   import type { SidebarProvider } from '../../shared/sidebar/types';
@@ -32,7 +33,9 @@
   let loadGeneration = 0;
   let loadController: AbortController | null = null;
 
-  const canEdit = $derived(kind === 'file' && !loading && !error);
+  const imagePreview = $derived(kind === 'file' && /\.(?:png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(path));
+  const imageUrl = $derived(imagePreview ? convertFileSrc(path) : '');
+  const canEdit = $derived(kind === 'file' && !imagePreview && !loading && !error);
 
   function basename(p: string): string {
     const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
@@ -83,6 +86,12 @@
     dirty = false;
     saveError = null;
     try {
+      if (imagePreview) {
+        content = '';
+        lines = [];
+        truncated = false;
+        return;
+      }
       const text = kind === 'diff'
         ? await provider.gitDiff(path, controller.signal)
         : await provider.readFile(path, controller.signal);
@@ -160,7 +169,7 @@
 <div class="viewer" role="dialog" aria-label={basename(path)}>
   <div class="v-header">
     <span class="v-ico">
-      {#if kind === 'diff'}<GitBranch class="w-4 h-4" />{:else}<FileText class="w-4 h-4" />{/if}
+      {#if kind === 'diff'}<GitBranch class="w-4 h-4" />{:else if imagePreview}<ImageIcon class="w-4 h-4" />{:else}<FileText class="w-4 h-4" />{/if}
     </span>
     <span class="v-title" title={path}>{basename(path)}{#if dirty}<span class="dirty-dot" title={tr('mobile.viewerUnsaved')}>●</span>{/if}</span>
     {#if canEdit}
@@ -192,6 +201,17 @@
         <div class="v-msg">{$t('mobile.loading')}</div>
       {:else if error}
         <div class="v-msg err">{error}</div>
+      {:else if imagePreview}
+        <div class="image-body">
+          <img
+            class="image-preview"
+            src={imageUrl}
+            alt={basename(path)}
+            loading="lazy"
+            decoding="async"
+            onerror={() => (error = 'Image failed to load')}
+          />
+        </div>
       {:else if lines.length === 0}
         <div class="v-msg">{kind === 'diff' ? $t('mobile.viewerNoChanges') : $t('mobile.viewerEmpty')}</div>
       {:else if kind === 'diff'}
@@ -227,24 +247,26 @@
 
   .v-saveerr { padding: 6px 12px; font-size: 11px; color: var(--rg-ansi-red); background: color-mix(in srgb, var(--rg-ansi-red) 10%, transparent); white-space: pre-wrap; word-break: break-word; }
 
-  .v-body { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; padding: 6px 0 calc(6px + env(safe-area-inset-bottom, 0px)); }
+  .v-body { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 6px 0 calc(6px + env(safe-area-inset-bottom, 0px)); }
   .v-msg { color: var(--rg-fg-muted); font-size: 12px; padding: 16px; }
   .v-msg.err { color: var(--rg-ansi-red); white-space: pre-wrap; word-break: break-word; }
   .v-trunc { color: var(--rg-fg-muted); font-size: 10px; padding: 10px 14px; border-top: 1px dashed var(--rg-border-bright); }
+  .image-body { display: flex; align-items: center; justify-content: center; min-height: 100%; width: 100%; box-sizing: border-box; padding: 8px; overflow: hidden; }
+  .image-preview { display: block; max-width: min(100%, calc(100vw - 16px)); max-height: calc(100dvh - 112px); width: auto; height: auto; object-fit: contain; border-radius: 6px; }
 
-  /* File read view: gutter + code, horizontally scrollable lines. Compact font. */
-  .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.5px; line-height: 1.45; min-width: max-content; }
-  .code-row { display: flex; align-items: flex-start; }
+  /* File read view: gutter + wrapped code. Never widen the mobile viewport. */
+  .code { width: 100%; min-width: 0; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.5px; line-height: 1.45; }
+  .code-row { display: flex; width: 100%; min-width: 0; box-sizing: border-box; align-items: flex-start; }
   .code-row.hit { background: color-mix(in srgb, var(--rg-accent) 16%, transparent); }
   .ln { flex-shrink: 0; width: 38px; padding: 0 8px; text-align: right; color: var(--rg-fg-muted); opacity: .55; user-select: none; position: sticky; left: 0; background: var(--rg-bg); }
-  .lc { white-space: pre; color: var(--rg-fg); padding-right: 16px; }
+  .lc { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; color: var(--rg-fg); padding-right: 16px; }
 
   /* Editable textarea: monospace, compact, soft-wrapped for phone editing. */
   .editor { flex: 1; min-height: 0; width: 100%; box-sizing: border-box; resize: none; border: none; outline: none; background: var(--rg-bg); color: var(--rg-fg); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.5; padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px)); -webkit-overflow-scrolling: touch; tab-size: 2; }
 
   /* Diff view: prefix-coloured unified diff. Compact font. */
-  .diff-pre { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.5px; line-height: 1.45; min-width: max-content; }
-  .d-line { display: block; white-space: pre; padding: 0 12px; }
+  .diff-pre { width: 100%; min-width: 0; box-sizing: border-box; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.5px; line-height: 1.45; }
+  .d-line { display: block; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; padding: 0 12px; }
   .d-add { color: var(--rg-ansi-green); background: color-mix(in srgb, var(--rg-ansi-green) 10%, transparent); }
   .d-del { color: var(--rg-ansi-red); background: color-mix(in srgb, var(--rg-ansi-red) 10%, transparent); }
   .d-hunk { color: var(--rg-accent); background: color-mix(in srgb, var(--rg-accent) 8%, transparent); }

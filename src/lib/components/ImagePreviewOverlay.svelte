@@ -153,8 +153,8 @@
     overflow: hidden;
   }
   .ip-img {
-    max-width: 92vw;
-    max-height: 92vh;
+    max-width: min(92vw, calc(100vw - 16px));
+    max-height: min(92vh, calc(100dvh - 96px));
     object-fit: contain;
     user-select: none;
     -webkit-user-drag: none;
@@ -171,7 +171,7 @@
   }
   .ip-toolbar {
     position: fixed;
-    bottom: 22px;
+    bottom: max(12px, calc(12px + env(safe-area-inset-bottom, 0px)));
     left: 50%;
     transform: translateX(-50%);
     display: flex;
@@ -183,6 +183,8 @@
     border: 1px solid var(--rg-border, #333);
     backdrop-filter: blur(10px);
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    max-width: calc(100vw - 16px);
+    overflow-x: auto;
   }
   .ip-toolbar button {
     min-width: 30px;

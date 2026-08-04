@@ -331,6 +331,7 @@ interface PaneEntry {
 	pointerDownListener: (e: PointerEvent) => void;
 	pointerMoveListener: (e: PointerEvent) => void;
 	pointerUpListener: (e: PointerEvent) => void;
+	pointerCancelListener: (e: PointerEvent) => void;
 	pointerLeaveListener: (e: PointerEvent) => void;
 	modifierKeyListener: (e: KeyboardEvent) => void;
 	lastPointerPoint: {
@@ -2227,6 +2228,10 @@ export class TerminalManager {
 			stopAutoScroll(ent);
 			try { (e.target as Element | null)?.releasePointerCapture?.(e.pointerId); } catch {}
 		};
+		// Touch cancellation (OS gesture, tab switch, or a lost capture) must
+		// release the TUI button just like pointerup, otherwise applications such
+		// as Grok/Claude can remain stuck in a pressed/dragging state.
+		const pointerCancelListener = (e: PointerEvent) => pointerUpListener(e);
 		const pointerLeaveListener = (_e: PointerEvent) => {
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
@@ -2239,6 +2244,7 @@ export class TerminalManager {
 		container.addEventListener('pointerdown', pointerDownListener);
 		container.addEventListener('pointermove', pointerMoveListener);
 		container.addEventListener('pointerup', pointerUpListener);
+		container.addEventListener('pointercancel', pointerCancelListener);
 		container.addEventListener('pointerleave', pointerLeaveListener);
 		container.addEventListener('keydown', modifierKeyListener);
 		container.addEventListener('keyup', modifierKeyListener);
@@ -2275,6 +2281,7 @@ export class TerminalManager {
 			pointerDownListener,
 			pointerMoveListener,
 			pointerUpListener,
+			pointerCancelListener,
 			pointerLeaveListener,
 			modifierKeyListener,
 			lastPointerPoint: null,
@@ -2721,6 +2728,7 @@ export class TerminalManager {
 			entry.container.removeEventListener('pointerdown', entry.pointerDownListener);
 			entry.container.removeEventListener('pointermove', entry.pointerMoveListener);
 			entry.container.removeEventListener('pointerup', entry.pointerUpListener);
+			entry.container.removeEventListener('pointercancel', entry.pointerCancelListener);
 			entry.container.removeEventListener('pointerleave', entry.pointerLeaveListener);
 			entry.container.removeEventListener('keydown', entry.modifierKeyListener);
 			entry.container.removeEventListener('keyup', entry.modifierKeyListener);
@@ -2817,6 +2825,7 @@ export class TerminalManager {
 		entry.container.removeEventListener('pointerdown', entry.pointerDownListener);
 		entry.container.removeEventListener('pointermove', entry.pointerMoveListener);
 		entry.container.removeEventListener('pointerup', entry.pointerUpListener);
+		entry.container.removeEventListener('pointercancel', entry.pointerCancelListener);
 		entry.container.removeEventListener('pointerleave', entry.pointerLeaveListener);
 		entry.container.removeEventListener('keydown', entry.modifierKeyListener);
 		entry.container.removeEventListener('keyup', entry.modifierKeyListener);
@@ -3025,6 +3034,7 @@ export class TerminalManager {
 		container.addEventListener('pointerdown', entry.pointerDownListener);
 		container.addEventListener('pointermove', entry.pointerMoveListener);
 		container.addEventListener('pointerup', entry.pointerUpListener);
+		container.addEventListener('pointercancel', entry.pointerCancelListener);
 		container.addEventListener('pointerleave', entry.pointerLeaveListener);
 		container.addEventListener('keydown', entry.modifierKeyListener);
 		container.addEventListener('keyup', entry.modifierKeyListener);

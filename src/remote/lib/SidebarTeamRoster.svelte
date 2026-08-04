@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { ArrowDown, ArrowUp, Check, Crown, History, Palette, Send, ShieldAlert, X } from 'lucide-svelte';
+  import { ArrowDown, ArrowUp, Check, Crown, Palette, Send, ShieldAlert, X } from 'lucide-svelte';
   import type {
     HitlPendingItem,
     OrchestrationHealth,
@@ -377,7 +377,7 @@
       编组 {groups.length}
     </button>
     <button class:active={subTab === 'history'} onclick={() => (subTab = 'history')}>
-      <History class="w-3 h-3" /> History {history.length}
+      History {history.length}
     </button>
   </div>
 
@@ -592,20 +592,22 @@
 {/snippet}
 
 <style>
-  .roster{display:flex;flex-direction:column;gap:2px;padding:8px;overflow-y:auto}
-  .badges{display:flex;flex-wrap:wrap;gap:6px;padding:4px 2px 6px}
-  .badge{font-size:10px;font-weight:600;border-radius:999px;padding:2px 8px;border:1px solid var(--rg-border);color:var(--rg-fg-muted)}
+  .roster{display:flex;flex-direction:column;gap:4px;padding:8px;overflow-y:auto;min-width:0}
+  .badges{display:flex;flex-wrap:wrap;gap:4px;padding:2px 2px 4px;min-width:0}
+  .badge{display:inline-flex;align-items:center;min-height:22px;box-sizing:border-box;font-size:10px;font-weight:600;border-radius:999px;padding:3px 8px;border:1px solid var(--rg-border);color:var(--rg-fg-muted);white-space:nowrap}
   .badge.hitl{border-color:color-mix(in srgb,var(--rg-accent) 50%,transparent);color:var(--rg-accent)}
   .badge.sus{opacity:.9}
   .section{margin:4px 2px;font-size:11px;color:var(--rg-fg-muted);text-transform:uppercase;letter-spacing:.04em}
-  .subtabs{display:flex;align-items:stretch;gap:4px;padding:4px 2px 6px}
-  .subtabs button{display:inline-flex;align-items:center;justify-content:center;gap:4px;flex:1;min-width:0;font-size:11px;line-height:1.2;padding:4px 8px;border:1px solid var(--rg-border);border-radius:6px;background:none;color:var(--rg-fg-muted);cursor:pointer}
+  .subtabs{display:flex;align-items:stretch;gap:4px;padding:4px 2px 6px;min-width:0}
+  .subtabs button{display:inline-flex;align-items:center;justify-content:center;gap:4px;flex:1;min-width:0;min-height:32px;font-size:11px;line-height:1.2;padding:5px 6px;border:1px solid var(--rg-border);border-radius:6px;background:none;color:var(--rg-fg-muted);cursor:pointer;white-space:nowrap}
   .subtabs :global(svg),.approval :global(svg),.member-head :global(svg),.act :global(svg),.msg-row :global(svg){display:block;flex:0 0 auto}
   .subtabs button.active{color:var(--rg-fg);border-color:color-mix(in srgb,var(--rg-accent) 50%,transparent);background:color-mix(in srgb,var(--rg-accent) 12%,transparent)}
-  .approval{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:var(--rg-surface-2);font-size:13px;line-height:1.2}
+  .approval{display:flex;align-items:center;gap:6px;min-width:0;min-height:40px;padding:6px 8px;border-radius:8px;background:var(--rg-surface-2);font-size:13px;line-height:1.2}
+  .approval .name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .approval .role{max-width:28%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .approval :global(.risk){color:var(--rg-accent);flex-shrink:0}
   .note{margin:0 2px 4px;font-size:11px;color:var(--rg-fg-muted)}
-  .act{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;border-radius:6px;background:var(--rg-surface);color:var(--rg-fg-muted);cursor:pointer;flex-shrink:0;line-height:1}
+  .act{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border:none;border-radius:7px;background:var(--rg-surface);color:var(--rg-fg-muted);cursor:pointer;flex-shrink:0;line-height:1}
   .act.approve:active{color:#34d399}
   .act.reject:active{color:#f87171}
   .empty{margin:12px;font-size:12px;color:var(--rg-fg-muted);text-align:center}
