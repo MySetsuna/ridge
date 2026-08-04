@@ -54,3 +54,8 @@ kill of the desktop process would require moving that server/provider into the
 kernel host and is not claimed by this iteration. Physical restart, public
 Remote, WebView2 heap soak, and dual-window visual evidence remain external
 gates.
+
+This boundary note is historical for iteration 165. Iteration 166 moves the
+LAN host and cloud/WebRTC daemon into detached `rdg` sidecars, with the kernel
+remaining the PTY/workspace owner; physical force-kill and reconnect smoke
+testing remain release-environment gates.
