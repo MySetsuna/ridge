@@ -426,6 +426,7 @@ pub fn spawn_pty_reader(
                         ws.pty_generation.remove(&pane_id);
                     }
                 }
+                crate::teammate::profiles::remove_by_pane(workspace_id, pane_id);
                 if let Some(app) = state.app_handle.get() {
                     use tauri::Emitter;
                     let _ = app.emit(
@@ -488,6 +489,7 @@ pub fn spawn_pty_reader(
                     }
                 };
                 if flipped_to_idle {
+                    crate::teammate::profiles::remove_by_pane(workspace_id, pane_id);
                     if let Some(app) = state.app_handle.get() {
                         use tauri::Emitter;
                         let _ = app.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());

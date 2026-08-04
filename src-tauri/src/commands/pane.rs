@@ -618,6 +618,10 @@ pub(crate) fn register_teammate_agent_in(
     pane_uuid: Uuid,
     agent_id: String,
 ) -> Result<(), String> {
+    let agent_id = agent_id.trim().to_string();
+    if agent_id.is_empty() {
+        return Err("agent id is required".into());
+    }
     let mut map = state.workspaces.write();
     let ws = map
         .get_mut(&wid)
@@ -625,9 +629,34 @@ pub(crate) fn register_teammate_agent_in(
     if !ws.pane_tree.panes.contains_key(&pane_uuid) {
         return Err(format!("pane {pane_uuid} not in workspace {wid}"));
     }
-    ws.teammate_agent_pane_map.insert(agent_id, pane_uuid);
+    if let Some((existing, _)) = ws
+        .teammate_agent_pane_map
+        .iter()
+        .find(|(existing, mapped)| **mapped == pane_uuid && existing.as_str() != agent_id)
+    {
+        return Err(format!("pane {pane_uuid} already owned by agent {existing}"));
+    }
+    ws.teammate_agent_pane_map
+        .insert(agent_id.clone(), pane_uuid);
     ws.teammate_pane_states
         .insert(pane_uuid, crate::state::PaneState::Busy);
+    drop(map);
+    if let Err(error) = crate::teammate::profiles::upsert(
+        wid,
+        &agent_id,
+        pane_uuid,
+        Some(agent_id.clone()),
+        ridge_core::recognize_capability(&agent_id, None),
+    ) {
+        let mut map = state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            ws.teammate_agent_pane_map
+                .retain(|id, pane| !(id == &agent_id && *pane == pane_uuid));
+            ws.teammate_pane_states
+                .insert(pane_uuid, crate::state::PaneState::Idle);
+        }
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -663,6 +692,8 @@ pub(crate) fn release_teammate_agent_in(
     ws.teammate_pane_states
         .insert(pane_uuid, crate::state::PaneState::Idle);
     ws.teammate_agent_pane_map.retain(|_, v| *v != pane_uuid);
+    drop(map);
+    crate::teammate::profiles::remove_by_pane(wid, pane_uuid);
     crate::teammate::suspend::clear_pane(wid, pane_uuid);
     crate::teammate::suspend::persist_for(wid);
     Ok(())
