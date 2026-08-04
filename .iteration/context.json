@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "task": "Close the approved Remote Cloud stable pane binding residual, reconcile historical requirement records, then prepare the verified release.",
+  "task": "Close the approved Remote Cloud stable pane binding residual, add bounded Mobile Remote backpressure, keep the live PTY tail authoritative, and enforce the Pane-to-terminal grid invariant.",
   "symbols": [
     "PtyBridge::spawn",
     "PtyBridge::spawn_kernel",
@@ -8,7 +8,18 @@
     "KernelPtyInfo",
     "ensure_cloud_host",
     "REQ-REMOTE-SMOOTH-STATE-02",
-    "REQ-RDG-REMOTE-CONNECT-01"
+    "REQ-RDG-REMOTE-CONNECT-01",
+    "TerminalManager.feed",
+    "TerminalManager._feedNow",
+    "enqueueDeferredFeed",
+    "takeDeferredFeed",
+    "REQ-MOBILE-REMOTE-BACKPRESSURE-01",
+    "REQ-MOBILE-REMOTE-LIVE-TAIL-01",
+    "REQ-REMOTE-PANE-GRID-INVARIANT-01",
+    "CloudRemoteConnection._subscribe",
+    "TerminalManager.fitPane",
+    "TerminalManager.fitPaneNow",
+    "TerminalManager.claimPaneSize"
   ],
   "files": [
     "packages/ridge-cli/src/pty.rs",
@@ -16,9 +27,19 @@
     "packages/ridge-cli/src/daemon.rs",
     "packages/ridge-kernel/src/client.rs",
     "src-tauri/src/remote_host_supervisor.rs",
+    "packages/remote/src/shared/terminal/manager.ts",
+    "packages/remote/src/shared/terminal/terminalFeedPolicy.ts",
+    "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts",
+    "packages/remote/src/shared/terminal/paneGeometry.ts",
+    "packages/remote/src/shared/terminal/paneGeometry.test.ts",
+    "src/remote/lib/cloudRemote.ts",
+    "src/remote/lib/cloudRemote.test.ts",
+    "src/remote/lib/TerminalCanvas.svelte",
+    "src/remote/lib/TerminalCanvas.test.ts",
+    "src/remote/MainApp.svelte",
     "docs/REQUIREMENTS-SPEC.md",
     "docs/PROJECT-STATE.md",
-    "docs/iterations/2026-08-04-iteration-166-remote-process-boundary.md"
+    "docs/iterations/2026-08-04-iteration-167-cloud-pane-binding.md"
   ],
   "tests": [
     "packages/ridge-cli/src/pty.rs binding selection tests",
@@ -26,6 +47,8 @@
     "cargo test -p ridge-cli --tests --quiet",
     "cargo check --manifest-path src-tauri/Cargo.toml --lib --quiet",
     "pnpm check",
+    "pnpm exec vitest run packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts --reporter=dot",
+    "pnpm exec vitest run packages/remote/src/shared/terminal/paneGeometry.test.ts src/remote/lib/cloudRemote.test.ts src/remote/lib/TerminalCanvas.test.ts --reporter=dot",
     "pnpm exec vitest run src/lib/remote/totpIdentitySync.test.ts src/lib/stores/paneTree.test.ts --reporter=dot"
   ],
   "constraints": [
@@ -34,6 +57,10 @@
     "Kernel remains PTY/workspace authority; detached cloud daemon owns transport only.",
     "Use existing protocol fixed CLI workspace/pane IDs without introducing a second UI identity source.",
     "Historical records must be reconciled as archive/state evidence, not silently deleted.",
+    "Render queue is bounded and frame-budgeted; output shedding is observable and never blocks input/RPC lanes.",
+    "Pane destruction, clear, reclaim, and reconnect must release pending render chunks and timers without Infinity synchronous drains.",
+    "Live PTY listener attaches before the bounded visual seed; live bytes render immediately with a bounded replay copy for seed reset, overflow skips stale seed, and older scrollback stays an incremental scroll-up query.",
+    "Pane content-box geometry is the mobile local grid authority; host pty-resized notifications trigger refit/claim and never inject stale rows/cols.",
     "Release only after clean worktree, pushed HEAD, version contract, matrix assets, and Remote artifact gates."
   ],
   "failed_knowledge": [],
@@ -47,7 +74,10 @@
       "REQ-RIDGE-KERNEL-HOST-01",
       "REQ-RIDGE-KERNEL-DOMAIN-01",
       "REQ-REMOTE-RUNTIME-PERF-MEMORY-02",
-      "REQ-AGENT-COMMUNE-UI-02"
+      "REQ-AGENT-COMMUNE-UI-02",
+      "REQ-MOBILE-REMOTE-BACKPRESSURE-01",
+      "REQ-MOBILE-REMOTE-LIVE-TAIL-01",
+      "REQ-REMOTE-PANE-GRID-INVARIANT-01"
     ]
   },
   "codegraph": {
@@ -69,11 +99,23 @@
       "packages/ridge-kernel/src/domain.rs",
       "src-tauri/src/remote_host_supervisor.rs",
       "docs/REQUIREMENTS-SPEC.md",
+      "packages/remote/src/shared/terminal/manager.ts",
+      "packages/remote/src/shared/transport/wsRemote.ts",
+      "packages/remote/src/shared/terminal/terminalFeedPolicy.ts",
+      "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts",
+      "packages/remote/src/shared/terminal/paneGeometry.ts",
+      "packages/remote/src/shared/terminal/paneGeometry.test.ts",
+    "src/remote/lib/cloudRemote.ts",
+    "src/remote/lib/cloudRemote.test.ts",
+    "src/remote/lib/TerminalCanvas.svelte",
+    "src/remote/lib/TerminalCanvas.test.ts",
+    "src/remote/MainApp.svelte",
+      "docs/REQUIREMENTS-SPEC.md",
       "docs/PROJECT-STATE.md",
-      "docs/iterations/2026-08-04-iteration-166-remote-process-boundary.md"
+      "docs/iterations/2026-08-04-iteration-167-cloud-pane-binding.md"
     ],
     "deny_unlisted": true,
-    "max_files": 12
+    "max_files": 30
   },
   "write_policy": {
     "allowed_paths": [
@@ -86,6 +128,17 @@
       "packages/ridge-cli/src/session.rs",
       "packages/ridge-cli/src/daemon.rs",
       "src-tauri/src/remote_host_supervisor.rs",
+      "packages/remote/src/shared/terminal/manager.ts",
+      "packages/remote/src/shared/transport/wsRemote.ts",
+      "packages/remote/src/shared/terminal/terminalFeedPolicy.ts",
+      "packages/remote/src/shared/terminal/terminalFeedPolicy.test.ts",
+      "packages/remote/src/shared/terminal/paneGeometry.test.ts",
+      "src/remote/lib/cloudRemote.ts",
+      "src/remote/lib/cloudRemote.test.ts",
+      "src/remote/lib/TerminalCanvas.svelte",
+      "src/remote/lib/TerminalCanvas.test.ts",
+      "src/remote/MainApp.svelte",
+      "docs/REQUIREMENTS-SPEC.md",
       "docs/PROJECT-STATE.md",
       "docs/iterations/2026-08-04-iteration-166-remote-process-boundary.md",
       "docs/iterations/2026-08-04-iteration-167-cloud-pane-binding.md",

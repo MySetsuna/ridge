@@ -64,3 +64,39 @@ Item 3 is code-complete and pushed before release preparation. Formal versioned
 release (item 2) starts only from a clean, pushed worktree and must pass the
 existing asset matrix; a failed workflow must not be represented as a version
 bump or completed release.
+
+## Iteration addendum: Mobile Remote backpressure
+
+The user pre-approved `REQ-MOBILE-REMOTE-BACKPRESSURE-01` for this same
+iteration after reporting intermittent mobile Remote freezes. The active
+requirement covers a bounded per-pane render queue, frame-time budgeting,
+input/control priority, overflow telemetry, and complete queue/timer cleanup on
+clear, reconnect, or pane destruction. The existing `PaneRpcScheduler` and
+`paneInputGate` remain the input/RPC authority; this addendum closes the render
+feed path that still performed an unbounded synchronous deferred drain.
+
+The desktop tag attempt `v0.1.57` was rolled back after the release test gate
+failed because the Linux Tauri check lacked the generated resource
+`binaries/rdg-x86_64-unknown-linux-gnu`. Version remains `0.1.56`; no failed tag
+or empty release is claimed. The Remote/cloud workflow did activate
+`0.1.57+g7ce4386` successfully, so its exact artifact/version asymmetry is
+recorded as an external release-state fact rather than a desktop-release claim.
+
+## Iteration addendum: Mobile Remote live tail and pane-grid invariant
+
+The user also approved two Remote correctness requirements for this iteration:
+
+- `REQ-MOBILE-REMOTE-LIVE-TAIL-01`: the live PTY listener is attached before the
+  bounded visual seed. Bytes arriving during the seed render immediately and a
+  bounded FIFO replay copy is retained for a late seed reset; if that copy fills,
+  the stale seed is skipped. Older history is a separate, incremental scroll-up
+  query and cannot block the live tail or input lane.
+- `REQ-REMOTE-PANE-GRID-INVARIANT-01`: the current pane content box is the only
+  local geometry authority. A host `pty-resized` event now triggers a local fit
+  instead of injecting its possibly stale rows/cols, and the refresh action
+  bypasses debounce through `fitPaneNow` so a smaller shell grid can be repaired.
+
+Deterministic coverage includes live-before-seed visibility, bounded seed/replay
+size, seed-reset ordering, pane geometry capacity, and stale-grid local
+authority. Physical mobile/PWA and cross-host soak evidence remains an external
+gate; no release closure is claimed from unit tests alone.

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "intake_id": "INTAKE-20260804-REMOTE-BIND-01",
   "classification": "active",
-  "summary": "Clean historical iteration records, close stable Remote Cloud pane binding residual, then publish the verified release.",
+  "summary": "Clean historical iteration records, close stable Remote Cloud pane binding residual, add bounded Mobile Remote backpressure, preserve the live PTY tail, and enforce the Pane-to-terminal grid invariant.",
   "requirement_ids": [
     "REQ-20260730-01",
     "REQ-REMOTE-SMOOTH-STATE-02",
@@ -11,10 +11,20 @@
     "REQ-RIDGE-KERNEL-HOST-01",
     "REQ-RIDGE-KERNEL-DOMAIN-01",
     "REQ-REMOTE-RUNTIME-PERF-MEMORY-02",
-    "REQ-AGENT-COMMUNE-UI-02"
+    "REQ-AGENT-COMMUNE-UI-02",
+    "REQ-MOBILE-REMOTE-BACKPRESSURE-01",
+    "REQ-MOBILE-REMOTE-LIVE-TAIL-01",
+    "REQ-REMOTE-PANE-GRID-INVARIANT-01"
   ],
   "pending_ids": [],
   "approval_reasons": [],
   "open_questions": [],
-  "approval_evidence": ""
+  "approval_evidence": "",
+  "request_sha256": "a9efed2ab175a3c0b523fa86bd2b3478b00d567c75f8cfb8d171e685617eb49d",
+  "requirements_sha256": "a24535bf66d1f28c80b2efc4c933151c0351e2f0e6dbb0167483287757367eb3",
+  "pending_sha256": "e2de753ae7da9a89df906ec66d743f53150a12adcddc2ef22563ff71da52733a",
+  "draft_sha256": "",
+  "previous_intake_sha256": "",
+  "executable": true,
+  "reasons": []
 }
