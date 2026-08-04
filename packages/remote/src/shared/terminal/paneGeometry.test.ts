@@ -80,6 +80,20 @@ it('rejects zero content or invalid cell metrics', () => {
 	})).toBeNull();
 });
 
+it('uses the pane box as the local grid authority after a stale shared grid', () => {
+	const local = computePaneGeometry({
+		container: { left: 0, top: 0, width: 640, height: 320 },
+		host: { left: 0, top: 0, width: 640, height: 320 },
+		padding: { left: 0, top: 0, right: 0, bottom: 0 },
+		cellWidthCss: 8,
+		cellHeightCss: 16,
+		dpr: 1,
+	});
+	// A prior host claim may have been 20x60; a local refit must derive the
+	// current pane capacity (40x80), never retain that smaller injected grid.
+	expect(local).toMatchObject({ rows: 20, cols: 80 });
+});
+
 it('maps touch against the geometry snapshot without double-applying a stage transform', () => {
 	// Geometry was captured while the stage was shifted -40px. The user then
 	// drags after the keyboard settles at -60px; row 2 centre is visually y=90.

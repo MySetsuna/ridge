@@ -245,6 +245,30 @@ describe('CloudRemoteConnection panes', () => {
     expect(new TextDecoder().decode(got[1][1])).toBe('hi');
   });
 
+  it('keeps live bytes ordered while the bounded visual seed RPC is pending', async () => {
+    const conn = await connected();
+    const got: Uint8Array[] = [];
+    conn.onRawBytes((_pane, bytes) => got.push(bytes));
+    let releaseSeed!: (frame: { frame: string; start_seq: number; at_oldest: boolean; head_seq: number }) => void;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_pane_resync_frame') {
+        return new Promise((resolve) => { releaseSeed = resolve; });
+      }
+      return undefined;
+    });
+
+    conn.subscribePane(PANE);
+    for (let i = 0; i < 20 && !releaseSeed; i += 1) await Promise.resolve();
+    expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
+    expect(releaseSeed).toBeTypeOf('function');
+    handlers['pty-output-ws1-pane-a']({ payload: { data: 'LIVE' } });
+    expect(got.map((bytes) => new TextDecoder().decode(bytes))).toEqual(['LIVE']);
+
+    releaseSeed({ frame: '\x1bcSEED', start_seq: 10, at_oldest: false, head_seq: 14 });
+    await flush();
+    expect(got.map((bytes) => new TextDecoder().decode(bytes))).toEqual(['LIVE', '\x1bcSEED', 'LIVE']);
+  });
+
   it('§R-CLOUD-CONVERGE version-skew: falls back to RIS + tail when the host lacks get_pane_resync_frame', async () => {
     const conn = await connected();
     const got: Array<[PaneRef, Uint8Array]> = [];

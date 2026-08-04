@@ -64,8 +64,10 @@ import {
 import {
 	MAX_FEED_BUFFER_BYTES,
 	dropPendingFeedBuffers,
-	shouldDrainDeferredFeed,
+	enqueueDeferredFeed,
+	hasDeferredFeed,
 	shouldFlushFeedBuffer,
+	takeDeferredFeed,
 } from './terminalFeedPolicy';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
@@ -489,6 +491,15 @@ interface PaneEntry {
 	 *  of milliseconds. `null` when no bytes are deferred — the steady
 	 *  state for an idle pane. */
 	feedDeferred: Uint8Array | null;
+	/** FIFO chunks queued behind `feedDeferred`; avoids O(n²) concat growth. */
+	feedDeferredChunks: Uint8Array[];
+	/** Total bytes retained by `feedDeferred` plus `feedDeferredChunks`. */
+	feedDeferredBytes: number;
+	/** Cumulative render-only bytes shed after the bounded queue filled. */
+	feedDroppedBytes: number;
+	feedDropCount: number;
+	/** True until the owner re-subscribes / otherwise repairs the render gap. */
+	feedNeedsResync: boolean;
 	/** §1.32 Wave F (2026-05-20): row/col where the user's current
 	 *  shell input started. Captured the first time the user types a
 	 *  printable / paste / Tab event after a fresh prompt, cleared on
@@ -2283,6 +2294,11 @@ export class TerminalManager {
 			lastScrollTotal: -1,
 			scrollStateHandler: null,
 			feedDeferred: null,
+			feedDeferredChunks: [],
+			feedDeferredBytes: 0,
+			feedDroppedBytes: 0,
+			feedDropCount: 0,
+			feedNeedsResync: false,
 			inputStartRow: null,
 			inputStartCol: null,
 		};
@@ -2752,27 +2768,11 @@ export class TerminalManager {
 			cancelAnimationFrame(entry.imeAnchorRaf);
 			entry.imeAnchorRaf = null;
 		}
-		// §A.4: flush any pending coalesced PTY bytes to the kernel BEFORE
-		// `kernel.free()` so we don't drop end-of-stream bytes on a tab
-		// close. After flush, drop the timer/buffer so no setTimeout
-		// callback fires against a freed kernel.
-		if (entry.feedFlushTimer !== null) {
-			clearTimeout(entry.feedFlushTimer);
-			entry.feedFlushTimer = null;
-		}
-		if (entry.feedBuffer !== null && entry.feedBuffer.length > 0) {
-			try { entry.kernel.feed(entry.feedBuffer); } catch { /* kernel already freed elsewhere */ }
-		}
-		entry.feedBuffer = null;
-		// P2.1 (2026-05-20): also drain any time-budget-deferred bytes
-		// into the kernel before it's freed, so a tab-close that races
-		// a high-output burst doesn't drop the trailing chunk. Best-
-		// effort: the kernel may already be wedged if free() was called
-		// elsewhere — swallow to keep the close path idempotent.
-		if (entry.feedDeferred !== null && entry.feedDeferred.length > 0) {
-			try { entry.kernel.feed(entry.feedDeferred); } catch { /* kernel already freed elsewhere */ }
-		}
-		entry.feedDeferred = null;
+		// Pane destruction is a cancellation boundary: queued render bytes must
+		// not be synchronously replayed into a kernel that is about to be freed.
+		// Drop the timer and every pending chunk so no stale callback can retain
+		// the pane or monopolize the mobile main thread during teardown.
+		dropPendingFeedBuffers(entry);
 		// Kernel always alive while in the map (parked or not).
 		try { entry.kernel.free(); } catch { /* ignore */ }
 		// P4.6 Part B (2026-05-22) — mirror teardown into the render
@@ -3174,6 +3174,29 @@ export class TerminalManager {
 		this._feedNow(entry, bytes);
 	}
 
+	/** Read bounded render-queue diagnostics without exposing kernel internals. */
+	feedStats(paneId: string): {
+		queuedBytes: number;
+		droppedBytes: number;
+		dropCount: number;
+		needsResync: boolean;
+	} | null {
+		const entry = this.panes.get(paneId);
+		if (!entry) return null;
+		return {
+			queuedBytes: entry.feedDeferredBytes,
+			droppedBytes: entry.feedDroppedBytes,
+			dropCount: entry.feedDropCount,
+			needsResync: entry.feedNeedsResync,
+		};
+	}
+
+	/** Cancel queued render bytes before a transport-level full resync. */
+	clearPendingFeed(paneId: string): number {
+		const entry = this.panes.get(paneId);
+		return entry ? dropPendingFeedBuffers(entry) : 0;
+	}
+
 	/** §A.4 — feed bytes to the kernel synchronously, including PTY trace,
 	 *  reply / event drain, and rAF wake. Extracted from `feed()` so the
 	 *  inline-TUI coalescer can call it once per flush instead of once per
@@ -3193,7 +3216,6 @@ export class TerminalManager {
 		entry: PaneEntry,
 		bytes: Uint8Array,
 		budgetMs = FEED_PER_CALL_BUDGET_MS,
-		enforceDeferredCap = true,
 	): void {
 		// §1.24 PTY trace (Phase 1.2): when `localStorage.RIDGE_PTY_TRACE === '1'`,
 		// log every PTY-to-wasm byte chunk with a high-res timestamp so a live
@@ -3213,11 +3235,11 @@ export class TerminalManager {
 		// P2.1: if a previous _feedNow already deferred bytes for this
 		// pane, the new arrivals MUST queue behind them — otherwise vte
 		// would see them in shuffled order and emit garbage. Append and
-		// let the next RAF tick drain (which calls _feedNow with the
-		// whole queue, no overflow check needed for the queued half).
-		if (entry.feedDeferred) {
-			entry.feedDeferred = concatU8(entry.feedDeferred, bytes);
-			if (enforceDeferredCap) this._enforceDeferredFeedCap(entry);
+		// let the next RAF tick drain one bounded chunk at a time.
+		if (hasDeferredFeed(entry)) {
+			// Keep arrivals behind every older chunk. The policy owns the byte cap
+			// and records render-only shedding; never block the input/RPC lane.
+			enqueueDeferredFeed(entry, bytes.slice());
 			this.wake();
 			return;
 		}
@@ -3250,12 +3272,10 @@ export class TerminalManager {
 			console.debug(`[cursor-trace][${ts}ms] feed paneId=${entry.paneId.slice(0,8)} bytes=${bytes.length} consumed=${offset} cursor ${pre}→(${k.cursorRow()},${k.cursorCol()})`);
 		}
 		if (offset < bytes.length) {
-			// Copy via `slice` so the deferred queue doesn't pin the
-			// possibly-much-larger original ArrayBuffer through its
-			// subarray view (would waste memory on every spill).
-			entry.feedDeferred = bytes.slice(offset);
+			// Copy via `slice` so a deferred chunk never pins the source
+			// ArrayBuffer. Admission is bounded by the feed policy.
+			enqueueDeferredFeed(entry, bytes.slice(offset));
 		}
-		if (enforceDeferredCap) this._enforceDeferredFeedCap(entry);
 
 		// 屏幕内容变化 → 链接索引失效，下次 ctrl+hover/click 时再 lazy 重建。
 		entry.linkSpans.markDirty();
@@ -3343,21 +3363,6 @@ export class TerminalManager {
 		this.wake();
 	}
 
-	/** Keep transient PTY backlog bounded when RAF is throttled or stopped.
-	 *
-	 * We never drop bytes (doing so could split a CSI/OSC sequence and corrupt
-	 * the terminal parser). Once the deferred queue crosses its cap, drain the
-	 * queued bytes synchronously with no frame budget. This applies backpressure
-	 * to the producer while keeping retained ArrayBuffers bounded.
-	 */
-	private _enforceDeferredFeedCap(entry: PaneEntry): void {
-		while (entry.feedDeferred && shouldDrainDeferredFeed(entry.feedDeferred.byteLength)) {
-			const pending = entry.feedDeferred;
-			entry.feedDeferred = null;
-			this._feedNow(entry, pending, Infinity, false);
-		}
-	}
-
 	/** P2.1 (2026-05-20): drain any per-pane bytes that prior `_feedNow`
 	 *  calls spilled out of when their time budget ran out. Called at
 	 *  the top of every RAF tick BEFORE the dirty-detection pre-pass,
@@ -3373,11 +3378,10 @@ export class TerminalManager {
 	 *  the rotation. */
 	private _drainDeferredFeeds(order: readonly PaneEntry[]): void {
 		for (const entry of order) {
-			if (!entry.feedDeferred) continue;
-			const buf = entry.feedDeferred;
-			// Clear BEFORE _feedNow — the call will re-set it if the new
-			// budget runs out before consuming the whole queue.
-			entry.feedDeferred = null;
+			const buf = takeDeferredFeed(entry);
+			if (!buf) continue;
+			// Remove one chunk BEFORE _feedNow — the call re-enqueues only
+			// the unconsumed remainder, preserving order behind older chunks.
 			this._feedNow(entry, buf);
 		}
 	}
@@ -3837,16 +3841,11 @@ export class TerminalManager {
 		if (dropPendingFeed) {
 			dropPendingFeedBuffers(entry);
 		} else {
-			// Automatic memory reclaim must not lose PTY output which arrived
-			// just before the sweep. Parse pending fragments first, then clear
-			// only the retained history. The hard deferred cap keeps this
-			// synchronous catch-up bounded in memory.
+			// Automatic memory reclaim must not turn a scrollback sweep into a
+			// synchronous catch-up. Flush the short coalescer, leave the bounded
+			// deferred FIFO for the next frame, and clear only retained history.
 			this._flushFeedBuffer(entry);
-			while (entry.feedDeferred) {
-				const pending = entry.feedDeferred;
-				entry.feedDeferred = null;
-				this._feedNow(entry, pending, Infinity, false);
-			}
+			this.wake();
 		}
 		entry.kernel.clearScrollback();
 		this._clearLinkUnderline(entry);
@@ -5246,10 +5245,12 @@ export class TerminalManager {
 			entry.lastConfiguredDpr = dpr;
 		}
 
-		// Shared mode keeps immediate visual-only recomputes separate from the
-		// bounded settled claim. Callers pass `claim=true` only on attach,
-		// trailing-edge/pointerup fit, font/DPR settle, or manual refresh.
-		if (this._sharedRemoteMode && !claim) {
+		// A mobile raw-byte pane owns its local grid. Never let shared-mode
+		// letterboxing or an externally supplied grid bypass a settled fit;
+		// every local authority fit must derive rows/cols from the pane box.
+		// Desktop multi-viewer entries without local authority retain the
+		// visual-only path until an explicit claim.
+		if (this._sharedRemoteMode && !claim && !entry.localGridAuthority) {
 			this._recomputeViewport(entry);
 			return;
 		}

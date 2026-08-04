@@ -403,6 +403,8 @@ export interface RemoteLink {
       active?: boolean;
     },
   ): void;
+  /** Re-seed one pane after local render backpressure shed output. */
+  resyncPane?(pane: PaneRef): void;
   /**
    * §history-pull（cloud-only）: fetch the next older batch of a pane's scrollback
    * (seq-cursor paging via get_pane_scrollback_before) to PREPEND above the current
@@ -1236,6 +1238,10 @@ export class RemoteConnection implements RemoteLink {
     if (opts?.sinceSeq !== undefined) msg.sinceSeq = opts.sinceSeq;
     if (opts?.active !== undefined) msg.active = opts.active;
     this.send(msg);
+  }
+
+  resyncPane(pane: PaneRef) {
+    this.subscribePane(pane, { active: true });
   }
 
   /**

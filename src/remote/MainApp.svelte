@@ -83,6 +83,9 @@
     }
     stopConnection?.();
     stopConnection = null;
+    for (const timer of feedResyncTimers.values()) clearTimeout(timer);
+    feedResyncTimers.clear();
+    feedResyncPending.clear();
     scrollbackDecoder.dispose();
   });
   const workspacesQuery = createQuery(() => ({
@@ -340,6 +343,10 @@
   // full resync. Cleared on reconnect (a disconnect leaves every mirror gapped →
   // force a full resync); a truly-closed pane is removed when its kernel is detached.
   const replayedPanes = new Set<string>();
+  // A render overflow can arrive as a burst of raw frames. Collapse it to one
+  // full-pane resync so the recovery path cannot itself become an RPC storm.
+  const feedResyncPending = new Set<string>();
+  const feedResyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   // Free the kernels of truly-closed panes. Dynamic import keeps the (large)
   // manager out of the mobile entry bundle — the lazy TerminalCanvas already
@@ -478,9 +485,10 @@
 
   function handleRefresh() {
     if (ui.activePaneId && canvasRef) {
-      const d = canvasRef.getDims();
-      const pane = activePaneRef();
-      if (d && pane) ws.refreshPane(pane, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
+      // Pane box is the sole geometry authority. Let TerminalCanvas measure
+      // the settled box and issue the deduped claim; do not reuse a stale grid
+      // snapshot from before orientation/safe-area/keyboard layout settled.
+      canvasRef.fitPaneNow();
     }
     ws.listPanes();
     refreshWorkspaces();
@@ -491,8 +499,6 @@
   function refreshActivePane() {
     if (!ui.activePaneId || !canvasRef) return;
     const pid = ui.activePaneId;
-    const d = canvasRef.getDims();
-    if (!d) return;
     // Debounce: coalesce rapid calls
     if (_refreshTimer !== null) clearTimeout(_refreshTimer);
     _refreshTimer = setTimeout(() => {
@@ -502,7 +508,7 @@
       _refreshSeq = cur;
       const pane = activePaneRef();
       if (pane && pane.paneId === pid) {
-        ws.refreshPane(pane, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
+        canvasRef?.fitPaneNow();
       }
     }, 100);
   }
@@ -720,7 +726,23 @@
       // active pane; a straggler for a just-unsubscribed pane is dropped (it
       // isn't the mounted TerminalCanvas). No cache, no reconcile, no wipe — the
       // host's on-subscribe replay is absorbed by the alive kernel.
-      canvasRef?.feedPane(paneRefKey(pane), data);
+      const key = paneRefKey(pane);
+      const stats = canvasRef?.feedPane(key, data);
+      if (stats?.needsResync && !feedResyncPending.has(key)) {
+        feedResyncPending.add(key);
+        canvasRef?.clearPendingFeed(key);
+        queueMicrotask(() => {
+          try {
+            if (wsState === 'connected') ws.resyncPane?.(pane);
+          } finally {
+            const timer = setTimeout(() => {
+              feedResyncPending.delete(key);
+              feedResyncTimers.delete(key);
+            }, 250);
+            feedResyncTimers.set(key, timer);
+          }
+        });
+      }
     }));
     stops.push(ws.onMetadata((pane, title, cwd) => {
       const { paneId, workspaceId } = pane;
@@ -804,8 +826,7 @@
         // The new server socket has no knowledge of our viewport size.
         // Claim it immediately so the PTY is reflowed and the terminal
         // doesn't stay stuck at the 80x24 default.
-        const d = canvasRef?.getDims();
-        if (d) ws.claimPane(pane, d.rows, d.cols, d.pixelWidth, d.pixelHeight);
+        canvasRef?.fitPaneNow();
       }
       ws.listPanes();
       refreshWorkspaces();
