@@ -36,6 +36,10 @@ pub fn kernel_lock_path() -> PathBuf {
     ridge_data_dir().join("kernel.lock")
 }
 
+pub fn kernel_boot_lock_path() -> PathBuf {
+    ridge_data_dir().join("kernel.boot.lock")
+}
+
 /// Process-lifetime cross-shell singleton guard. The lock file may persist,
 /// but the OS releases its lock when the owning process exits or crashes.
 pub struct KernelInstanceGuard {
@@ -48,6 +52,24 @@ impl KernelInstanceGuard {
     }
 
     fn try_acquire_at(path: &Path) -> Result<Option<Self>> {
+        Ok(try_lock_file(path)?.map(|file| Self { _file: file }))
+    }
+}
+
+/// Cross-process boot slot. Unlike [`KernelInstanceGuard`], this lock is only
+/// held while a shell is spawning/waiting for the kernel endpoint; the kernel
+/// process itself owns `kernel.lock` and never contends with this file.
+pub struct KernelBootGuard {
+    _file: File,
+}
+
+impl KernelBootGuard {
+    pub fn try_acquire() -> Result<Option<Self>> {
+        Ok(try_lock_file(&kernel_boot_lock_path())?.map(|file| Self { _file: file }))
+    }
+}
+
+fn try_lock_file(path: &Path) -> Result<Option<File>> {
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let file = OpenOptions::new()
@@ -57,14 +79,13 @@ impl KernelInstanceGuard {
             .open(path)
             .with_context(|| format!("open {}", path.display()))?;
         match file.try_lock() {
-            Ok(()) => Ok(Some(Self { _file: file })),
+            Ok(()) => Ok(Some(file)),
             Err(std::fs::TryLockError::WouldBlock) => Ok(None),
             Err(std::fs::TryLockError::Error(error)) => {
                 Err(error).with_context(|| format!("lock {}", path.display()))
             }
         }
     }
-}
 
 /// Kernel-owned remote topology. Records intentionally exclude credentials.
 pub fn remote_hosts_path() -> PathBuf {

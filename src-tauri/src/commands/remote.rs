@@ -1,19 +1,30 @@
 use std::sync::atomic::Ordering;
 use base64::Engine as _;
 use sysinfo::System;
+#[cfg(any())]
+use ridge_remote::mdns;
 use tauri::{AppHandle, Emitter, State};
 
-use ridge_remote::mdns;
 use crate::state::AppState;
 
 #[tauri::command]
 pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, String> {
-    let port = *state.remote_port.read();
+    let host_status = state
+        .app_handle
+        .get()
+        .and_then(crate::remote_host_supervisor::lan_host_status);
+    let port = host_status
+        .as_ref()
+        .map(|status| status.port)
+        .unwrap_or_else(|| *state.remote_port.read());
     let lan_ip = ridge_remote::net::detect_lan_ip();
     let lan_ips = ridge_remote::net::detect_lan_ips();
     let machine_name = System::host_name().unwrap_or_else(|| "unknown".to_string());
     let (totp_code, otpauth_uri) = state.remote_auth.code_and_uri(&machine_name);
-    let enabled = state.remote_enabled.load(Ordering::Relaxed);
+    let enabled = host_status
+        .as_ref()
+        .map(|status| status.enabled)
+        .unwrap_or_else(|| state.remote_enabled.load(Ordering::Relaxed));
 
     // §leak-trace (temporary diagnostic): per-workspace pane_tree leaves vs the
     // terminals / pending_spawns maps. An orphan PTY shows up as terminals or
@@ -152,6 +163,42 @@ pub fn remote_set_totp_identity(
     Ok(())
 }
 
+/// Mirror the browser cloud device credentials into the independent `rdg
+/// remote --daemon` sidecar.  The token never enters a URL or log; it is
+/// stored only in the app-data credential file used by the detached daemon.
+#[tauri::command]
+pub fn sync_cloud_remote_credentials(
+    app: AppHandle,
+    device_token: Option<String>,
+    device_name: Option<String>,
+    username: Option<String>,
+) -> Result<(), String> {
+    crate::remote_host_supervisor::sync_cloud_credentials(
+        &app,
+        device_token.as_deref(),
+        device_name.as_deref(),
+        username.as_deref(),
+    )
+}
+
+/// Start the independent cloud/WebRTC sidecar after the user explicitly
+/// enables public Remote. Tauri only hands off credentials and lifecycle
+/// intent; the sidecar owns all WebRTC sessions and survives shell death.
+#[tauri::command]
+pub fn ensure_cloud_remote_host(app: AppHandle) -> Result<(), String> {
+    crate::remote_host_supervisor::set_cloud_enabled(&app, true)?;
+    crate::remote_host_supervisor::ensure_cloud_host(&app)
+}
+
+/// Persist the cloud Remote disabled state. Existing detached sessions are not
+/// tied to the WebView lifetime; the daemon will not be reattached on the next
+/// desktop launch until the user enables it again.
+#[tauri::command]
+pub fn disable_cloud_remote_host(app: AppHandle) -> Result<(), String> {
+    crate::remote_host_supervisor::set_cloud_enabled(&app, false)?;
+    crate::remote_host_supervisor::stop_cloud_host(&app)
+}
+
 // ── TOTP 信任授权（grant_store，§totp-trust）──────────────────────────────────
 
 /// §totp-trust-check：查询 `(当前身份, ctrl_pub_b64)` 是否持有 24h 内的信任授权。
@@ -193,7 +240,7 @@ pub fn totp_trust_revoke_all(state: State<AppState>) {
 
 #[tauri::command]
 pub fn set_remote_enabled(state: State<AppState>, enabled: bool) -> Result<(), String> {
-    let prev = state.remote_enabled.swap(enabled, Ordering::Relaxed);
+    let prev = state.remote_enabled.load(Ordering::Relaxed);
     if prev == enabled {
         return Ok(());
     }
@@ -201,8 +248,15 @@ pub fn set_remote_enabled(state: State<AppState>, enabled: bool) -> Result<(), S
     if enabled {
         start_remote_server(&state)?;
     } else {
-        stop_remote_server(&state);
+        let app = state
+            .app_handle
+            .get()
+            .ok_or_else(|| "desktop app handle is not ready".to_string())?;
+        crate::remote_host_supervisor::set_lan_enabled(app, false)?;
+        crate::remote_host_supervisor::stop_lan_host(app)?;
+        *state.remote_port.write() = 0;
     }
+    state.remote_enabled.store(enabled, Ordering::Relaxed);
 
     tracing::info!(target: "ridge::remote", enabled, "Remote control toggle changed");
     Ok(())
@@ -210,6 +264,11 @@ pub fn set_remote_enabled(state: State<AppState>, enabled: bool) -> Result<(), S
 
 #[tauri::command]
 pub fn get_remote_enabled(state: State<AppState>) -> Result<bool, String> {
+    if let Some(app) = state.app_handle.get() {
+        if let Some(status) = crate::remote_host_supervisor::lan_host_status(app) {
+            return Ok(status.enabled);
+        }
+    }
     Ok(state.remote_enabled.load(Ordering::Relaxed))
 }
 
@@ -311,6 +370,37 @@ pub fn remove_from_blacklist(state: State<AppState>, id: String) -> bool {
 }
 
 fn start_remote_server(state: &AppState) -> Result<(), String> {
+    let app = state
+        .app_handle
+        .get()
+        .ok_or_else(|| "desktop app handle is not ready".to_string())?;
+    let status = crate::remote_host_supervisor::ensure_lan_host(app)?;
+    crate::remote_host_supervisor::set_lan_enabled(app, true)?;
+    *state.remote_port.write() = status.port;
+    Ok(())
+}
+
+/// Stop detached transports only on the explicit full-quit path. A force kill
+/// never reaches this function, so the sidecars remain alive and reconnectable
+/// while the kernel continues to own PTYs.
+pub fn stop_remote_server(state: &AppState) {
+    if let Some(app) = state.app_handle.get() {
+        if let Err(error) = crate::remote_host_supervisor::stop_lan_host(app) {
+            tracing::warn!(target: "ridge::remote", %error, "detached LAN host stop failed");
+        }
+        if let Err(error) = crate::remote_host_supervisor::set_cloud_enabled(app, false) {
+            tracing::warn!(target: "ridge::remote", %error, "detached cloud disable failed");
+        }
+        if let Err(error) = crate::remote_host_supervisor::stop_cloud_host(app) {
+            tracing::warn!(target: "ridge::remote", %error, "detached cloud host stop failed");
+        }
+        *state.remote_port.write() = 0;
+    }
+    tracing::info!(target: "ridge::remote", "explicit full quit stopped detached Remote transports");
+}
+
+#[cfg(any())]
+fn start_legacy_remote_server(state: &AppState) -> Result<(), String> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
     let auth = state.remote_auth.clone();
@@ -363,7 +453,8 @@ fn start_remote_server(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-pub fn stop_remote_server(state: &AppState) {
+#[cfg(any())]
+fn stop_legacy_remote_server(state: &AppState) {
     if let Some(tx) = state.remote_shutdown.lock().take() {
         let _ = tx.send(());
     }

@@ -596,6 +596,38 @@ pub async fn domain_pty_create(
     if env_bytes > 64 * 1024 {
         return Ok(bad_request("PTY launch environment is too large"));
     }
+    // A desktop shell may create the first PTY before it has persisted the
+    // corresponding graph entry.  Seed that stable workspace identity here so
+    // a detached LAN/WebRTC host can expose a real layout after a hard kill.
+    let mut inserted_workspace = None;
+    if let Some(workspace_id) = request.workspace_id {
+        let mut graph = st.workspaces.lock().expect("workspace graph lock");
+        if graph.workspace(workspace_id).is_none() {
+            let mut panes = HashMap::new();
+            panes.insert(
+                pty_id,
+                ridge_core::workspace::pane_tree::Pane {
+                    id: pty_id,
+                    mode: ridge_core::workspace::mode::PaneMode::Terminal,
+                    cwd: request.cwd.clone().map(std::path::PathBuf::from),
+                    shell_kind: request.shell.clone().or(request.program.clone()),
+                },
+            );
+            graph.insert_workspace(
+                workspace_id,
+                ridge_core::workspace::graph::WorkspaceMeta {
+                    pane_tree: ridge_core::workspace::pane_tree::PaneTree {
+                        root: ridge_core::workspace::pane_tree::PaneNode::Leaf(pty_id),
+                        panes,
+                    },
+                    name: None,
+                    locked_sizes: HashMap::new(),
+                },
+            );
+            persist_workspaces(&st, &graph)?;
+            inserted_workspace = Some(workspace_id);
+        }
+    }
     match st.ptys.spawn_command_for_with_env(
         pty_id,
         program,
@@ -615,7 +647,14 @@ pub async fn domain_pty_create(
             }
             Ok(Json(json!({ "ok": true, "source": "ridge-kernel", "pty_id": pty_id })))
         }
-        Err(error) => Ok(bad_request(error.to_string())),
+        Err(error) => {
+            if let Some(workspace_id) = inserted_workspace {
+                let mut graph = st.workspaces.lock().expect("workspace graph lock");
+                graph.remove_workspace(workspace_id);
+                let _ = persist_workspaces(&st, &graph);
+            }
+            Ok(bad_request(error.to_string()))
+        }
     }
 }
 

@@ -52,6 +52,13 @@ pub async fn run(shell: Option<String>, cwd: Option<String>, root: Option<String
         .context("failed to load credentials")?
         .context("本机尚未激活云端设备：先跑 `rdg login`（或 `rdg login --browser`）绑定本机，再启动公网远控")?;
 
+    // WebRTC is a detached shell adapter over the long-lived kernel.  Ensure
+    // the kernel exists before a controller can create its first PTY; this
+    // prevents a startup race from falling back to a daemon-local PTY.
+    if let Err(error) = crate::kernel_ctl::ensure_kernel_running() {
+        tracing::warn!(target: "ridge_cli::daemon", %error, "kernel bootstrap unavailable; session may retry");
+    }
+
     tracing::info!(
         target: "ridge_cli::daemon",
         device = %auth.device_name,

@@ -112,6 +112,34 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
         KernelBootDecision::BecomeHost => {}
     }
 
+    // The desktop and a detached `rdg host` may bootstrap concurrently. A
+    // process-local mutex cannot serialize that case; reserve a separate
+    // cross-process boot slot until the new kernel publishes a healthy
+    // endpoint. The kernel's own instance lock remains independent.
+    let boot_guard = if matches!(
+        decision,
+        KernelBootDecision::BecomeHost | KernelBootDecision::StalePidClearAndBecomeHost { .. }
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        loop {
+            if let Some(ep) = running_endpoint() {
+                return Ok(ep);
+            }
+            match ridge_kernel::registry::KernelBootGuard::try_acquire() {
+                Ok(Some(guard)) => break Some(guard),
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(80));
+                }
+                Ok(None) => {
+                    return Err("another ridge-kernel is booting but did not become healthy in time".into());
+                }
+                Err(error) => return Err(format!("acquire ridge-kernel boot slot: {error}")),
+            }
+        }
+    } else {
+        None
+    };
+
     if let Some(ep) = running_endpoint() {
         return Ok(ep);
     }
@@ -119,7 +147,9 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
     let bin = std::env::current_exe().map_err(|error| format!("locate ridge desktop: {error}"))?;
     tracing::info!(target: "ridge::kernel_lifecycle", path = %bin.display(), "spawning embedded ridge-kernel host");
     spawn_detached(&bin, &[ridge_kernel::client::KERNEL_HOST_ARG])?;
-    wait_for_running(Duration::from_secs(8)).ok_or_else(|| {
+    let endpoint = wait_for_running(Duration::from_secs(8));
+    drop(boot_guard);
+    endpoint.ok_or_else(|| {
         "ridge-kernel did not become healthy in time (check kernel.json / logs)".to_string()
     })
 }

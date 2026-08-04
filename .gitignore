@@ -33,6 +33,7 @@ plotforge.db
 # repo root (`src-tauri/.gitignore` still covers the old path).
 /target
 /src-tauri/binaries/ridge-mcp-*
+/src-tauri/binaries/rdg-*
 
 # CDP dev-test artifacts
 .cdp-shots/

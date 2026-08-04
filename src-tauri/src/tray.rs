@@ -93,6 +93,7 @@ fn on_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, event: MenuEvent) {
             if quitting.swap(true, std::sync::atomic::Ordering::AcqRel) {
                 return;
             }
+            crate::commands::remote::stop_remote_server(&app.state::<AppState>());
             if let Err(e) = kernel_lifecycle::shutdown_kernel() {
                 tracing::warn!(target: "ridge::tray", error = %e, "kernel shutdown failed");
                 quitting.store(false, std::sync::atomic::Ordering::Release);

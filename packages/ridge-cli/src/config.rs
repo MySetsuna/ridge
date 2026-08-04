@@ -102,6 +102,9 @@ fn config_dir() -> Result<PathBuf> {
 
 /// `auth.json` 完整路径。
 pub fn auth_path() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("RIDGE_AUTH_FILE") {
+        return Ok(PathBuf::from(path));
+    }
     Ok(config_dir()?.join("auth.json"))
 }
 

@@ -6,8 +6,8 @@
   "build": {
     "beforeDevCommand": "node packages/ridge-term/build.mjs --dev && node scripts/ensure-teammate-shim.mjs && node scripts/start-vite-dev.mjs",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "node packages/ridge-term/build.mjs && pnpm run build && pnpm build:remote && node scripts/build-ridge-mcp-sidecar.mjs",
-    "beforeBundleCommand": "node scripts/build-ridge-mcp-sidecar.mjs && node -e \"setTimeout(()=>process.exit(0),3000)\" && cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml && pnpm build:cli",
+    "beforeBuildCommand": "node packages/ridge-term/build.mjs && pnpm run build && pnpm build:remote && node scripts/build-ridge-mcp-sidecar.mjs && node scripts/build-rdg-sidecar.mjs",
+    "beforeBundleCommand": "node scripts/build-ridge-mcp-sidecar.mjs && node scripts/build-rdg-sidecar.mjs && node -e \"setTimeout(()=>process.exit(0),3000)\" && cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml && pnpm build:cli",
     "frontendDist": "../build"
   },
   "app": {
@@ -30,7 +30,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
-    "externalBin": ["binaries/ridge-mcp"],
+    "externalBin": ["binaries/ridge-mcp", "binaries/rdg"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
