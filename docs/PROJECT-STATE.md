@@ -20,8 +20,9 @@
   endpoint Tauri tests 3 passed; `cargo check --manifest-path
   src-tauri/Cargo.toml` passed with only pre-existing warnings; `pnpm check`
   passed with 0 errors / 0 warnings. Version `0.1.56` is released with the
-  full desktop/CLI matrix; Remote bundle dry-run succeeded, while cloud upload
-  remains pending because this machine has no artifact URL/token.
+  full desktop/CLI matrix. Remote workflow `30892178165` activated
+  `0.1.56+g415ee64` and its authenticated status gate confirmed desktop/mobile
+  indexes; local shell remains intentionally free of the production secret.
 
 Archive: `docs/iterations/2026-08-04-iteration-165-tab-kernel-deep-root.md`.
 
