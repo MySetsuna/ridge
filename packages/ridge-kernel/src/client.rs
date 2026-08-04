@@ -1085,11 +1085,16 @@ pub fn spawn_detached_with_env(
     configure_detached_with_breakaway(&mut command, true);
     match command.spawn() {
         Ok(child) => Ok(child.id()),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            // Some test runners and enterprise launchers forbid
-            // CREATE_BREAKAWAY_FROM_JOB. Retry with the ordinary detached
-            // flags; production Tauri launches normally take the stronger
-            // path, while this fallback remains detached and observable.
+        Err(error)
+            if error.kind() == std::io::ErrorKind::PermissionDenied
+                && (cfg!(test)
+                    || std::env::var_os("RIDGE_TEST_ALLOW_NON_BREAKAWAY").is_some()) =>
+        {
+            // Constrained unit-test runners can reject
+            // CREATE_BREAKAWAY_FROM_JOB even though the test only needs to
+            // exercise cleanup. Keep this fallback test-only: production must
+            // fail closed instead of claiming force-kill survival without a
+            // real Job breakaway.
             let mut retry = Command::new(binary);
             retry.args(args);
             retry.envs(envs.iter().copied());
@@ -1099,6 +1104,9 @@ pub fn spawn_detached_with_env(
                 .map(|child| child.id())
                 .map_err(|retry_error| format!("spawn detached process: {retry_error}"))
         }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Err(format!(
+            "spawn detached process requires CREATE_BREAKAWAY_FROM_JOB for force-kill survival: {error}"
+        )),
         Err(error) => Err(format!("spawn detached process: {error}")),
     }
 }
