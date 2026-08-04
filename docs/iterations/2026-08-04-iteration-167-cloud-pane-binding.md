@@ -112,3 +112,9 @@ sidecar in the test gate and explicitly stages
 deterministic CI blockers; the versioned release still requires a clean pushed
 tree, successful test gate, all matrix assets, and the separate Remote/cloud
 artifact audit.
+
+The subsequent release test gate also caught a transient Unix
+`ExecutableFileBusy` spawn result in the process-tree guard test. The single
+external-process entrance now retries that error for a bounded 85 ms window;
+timeouts, cancellation, and process-tree cleanup remain unchanged. Local
+`ridge-core` guard tests, full Vitest, and `svelte-check` pass after the fix.
