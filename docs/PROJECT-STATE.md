@@ -23,14 +23,13 @@
   local grid source of truth. Stale host `pty-resized` dimensions trigger a
   local refit/claim; manual refresh uses `fitPaneNow` and no longer injects a
   stale smaller shell grid.
-- Desktop `v0.1.57` release attempt was rolled back: Linux Tauri test gate
-  failed because `binaries/rdg-x86_64-unknown-linux-gnu` was absent. Version is
-  back at `0.1.56`; no failed tag/release is claimed. Remote/cloud activation
-  `0.1.57+g7ce4386` succeeded and is recorded separately in the iteration
-  archive.
-- Release workflow now builds the target `rdg` sidecar before the Linux Tauri
-  compile check, closing the deterministic failure above; a new versioned
-  release is not claimed until the complete matrix and asset audit pass.
+- Desktop `v0.1.57` first attempt failed because the Linux Tauri test gate did
+  not stage `binaries/rdg-x86_64-unknown-linux-gnu`; the retry then exposed the
+  analogous Intel macOS target sidecar gap. Both workflow paths are now fixed:
+  Linux test gate builds its target and the macOS x64 job explicitly stages
+  `rdg-x86_64-apple-darwin`. The current tag is being retried; no release is
+  claimed until the complete matrix and asset audit pass. Remote/cloud
+  activation `0.1.57+g7ce4386` remains a prior hash and is recorded separately.
 
 - Cloud Remote pane binding is now persistent and deterministic. `PtyBridge`
   reads `remote-cloud-pane.json` (or the explicit

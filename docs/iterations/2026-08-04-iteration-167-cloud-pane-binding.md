@@ -105,8 +105,10 @@ gate; no release closure is claimed from unit tests alone.
 
 The prior `v0.1.57` desktop attempt failed before the matrix build because the
 Linux Tauri compile check referenced `binaries/rdg-x86_64-unknown-linux-gnu`
-without generating it. `.github/workflows/release.yml` now runs
-`node scripts/build-rdg-sidecar.mjs` in the test gate before `cargo check`.
-This closes the known deterministic CI blocker; the next versioned release
-still requires a clean pushed tree, successful test gate, all matrix assets, and
-the separate Remote/cloud artifact audit.
+without generating it. A second matrix attempt exposed the same missing target
+sidecar for Intel macOS. `.github/workflows/release.yml` now builds the Linux
+sidecar in the test gate and explicitly stages
+`rdg-x86_64-apple-darwin` before the Intel Tauri build. This closes the known
+deterministic CI blockers; the versioned release still requires a clean pushed
+tree, successful test gate, all matrix assets, and the separate Remote/cloud
+artifact audit.
