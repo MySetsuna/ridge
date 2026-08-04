@@ -201,10 +201,25 @@ impl SearchEngine {
         (results, bad_globs)
     }
 
-    /// Search for filenames matching a pattern
+    /// Search for files matching a case-insensitive substring of either the
+    /// basename or the root-relative path.  Including the relative path is
+    /// important for Quick Open: `src/lib/term` and `lib/term` now narrow the
+    /// result set instead of being treated as an impossible filename.
     pub fn search_files(root: &Path, pattern: &str) -> Vec<String> {
-        let mut matches = Vec::new();
-        let pattern_lower = pattern.to_lowercase();
+        let pattern_lower = pattern
+            .trim()
+            .replace('\\', "/")
+            .trim_matches('/')
+            .to_lowercase();
+        let pattern_lower = pattern_lower
+            .strip_prefix("./")
+            .unwrap_or(&pattern_lower)
+            .to_string();
+        if pattern_lower.is_empty() {
+            return Vec::new();
+        }
+
+        let mut matches: Vec<(String, String, String)> = Vec::new();
 
         for entry in WalkBuilder::new(root)
             .follow_links(false)
@@ -223,40 +238,59 @@ impl SearchEngine {
             if FileTree::should_ignore(path) {
                 continue;
             }
+            if !path.is_file() {
+                continue;
+            }
 
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/")
+                .trim_start_matches("./")
+                .to_lowercase();
+            let absolute = path.to_string_lossy().replace('\\', "/").to_lowercase();
 
-            // Simple fuzzy matching
-            if name.contains(&pattern_lower) {
-                matches.push(path.to_string_lossy().to_string());
+            if name.contains(&pattern_lower)
+                || relative.contains(&pattern_lower)
+                || absolute.contains(&pattern_lower)
+            {
+                matches.push((
+                    path.to_string_lossy().to_string(),
+                    name,
+                    relative,
+                ));
             }
         }
 
-        // Sort by relevance (exact match > starts with > contains)
+        // Sort by relevance (exact filename > filename prefix > path prefix >
+        // path substring), then by the shorter relative path for stability.
         matches.sort_by(|a, b| {
-            let a_name = a.to_lowercase();
-            let b_name = b.to_lowercase();
-            let a_exact = a_name == pattern_lower;
-            let b_exact = b_name == pattern_lower;
-            let a_starts = a_name.starts_with(&pattern_lower);
-            let b_starts = b_name.starts_with(&pattern_lower);
-
-            match (a_exact, b_exact) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => match (a_starts, b_starts) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => a_name.len().cmp(&b_name.len()),
-                },
-            }
+            let score = |item: &(String, String, String)| {
+                if item.1 == pattern_lower {
+                    0
+                } else if item.1.starts_with(&pattern_lower) {
+                    1
+                } else if item.2 == pattern_lower {
+                    2
+                } else if item.2.starts_with(&pattern_lower) {
+                    3
+                } else {
+                    4
+                }
+            };
+            score(a)
+                .cmp(&score(b))
+                .then_with(|| a.2.len().cmp(&b.2.len()))
+                .then_with(|| a.0.cmp(&b.0))
         });
 
         matches.truncate(100); // Limit results
-        matches
+        matches.into_iter().map(|(path, _, _)| path).collect()
     }
 
     /// Replace text in files

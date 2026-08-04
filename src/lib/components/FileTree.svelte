@@ -34,6 +34,7 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 	import FileTree from './FileTree.svelte';
 	import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 	import { formatDroppedPathsForPaste } from '@ridge/remote/shared/terminal/dropPaste';
+	import { focusTerminalPane } from '@ridge/remote/shared/terminal/terminalFocus';
 
 	interface Props {
 		columnId: string;
@@ -439,7 +440,11 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 		const text = formatDroppedPathsForPaste(paths);
 		if (!text) return;
 		activePaneId.set(paneId);
-		TerminalManager.instance().paste(paneId, text);
+		try {
+			TerminalManager.instance().paste(paneId, text);
+		} finally {
+			focusTerminalPane(paneId);
+		}
 	}
 
 	onDestroy(() => {

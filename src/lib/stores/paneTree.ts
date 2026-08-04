@@ -394,6 +394,42 @@ export const splitResizeUiState = writable<SplitResizeUiState>({
 
 export const activeWorkspaceId = writable<string>('');
 
+/**
+ * Desktop startup gate for kernel-owned PTY reattachment.
+ *
+ * The first workspace tree is rendered before the parent `onMount` callback
+ * can finish its startup sequence.  Without a gate, RidgePane mounts can
+ * race `reattach_kernel_ptys` and create replacement shells for PTYs that are
+ * still alive in the kernel.  The gate is deliberately module-scoped so every
+ * pane in this WebView observes the same one-shot barrier.
+ */
+let desktopKernelReattachReady: Promise<void> = Promise.resolve();
+let releaseDesktopKernelReattach: (() => void) | null = null;
+let desktopKernelReattachStarted = false;
+
+export function beginDesktopKernelReattachGate(): () => void {
+  if (desktopKernelReattachStarted && !releaseDesktopKernelReattach) return () => {};
+  if (releaseDesktopKernelReattach) return releaseDesktopKernelReattach;
+  desktopKernelReattachStarted = true;
+  let release!: () => void;
+  desktopKernelReattachReady = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let released = false;
+  releaseDesktopKernelReattach = () => {
+    if (released) return;
+    released = true;
+    release();
+    releaseDesktopKernelReattach = null;
+    desktopKernelReattachReady = Promise.resolve();
+  };
+  return releaseDesktopKernelReattach;
+}
+
+export function waitForDesktopKernelReattach(): Promise<void> {
+  return desktopKernelReattachReady;
+}
+
 // Latest-wins guard for rapid tab clicks. Backend IPC remains authoritative,
 // but stale layout replies must never repaint a newer selection.
 let workspaceSwitchGeneration = 0;
@@ -1358,15 +1394,38 @@ export async function syncPaneLayoutFromBackend() {
   }
 }
 
-export async function refreshWorkspaces() {
+export interface RefreshWorkspacesOptions {
+  /** Use this workspace instead of reacquiring the desktop window owner. */
+  workspaceId?: string;
+  /** Desktop callers normally acquire atomically; restore/open flows must not. */
+  acquireWindow?: boolean;
+}
+
+export async function refreshWorkspaces(options: RefreshWorkspacesOptions = {}) {
   if (!isTauri()) return;
   try {
     let list = await invoke<
       { id: string; index: number; name?: string; displaySeq: number }[]
     >('list_workspaces');
-    const active = webRemote
-      ? await invoke<string>(activeWorkspaceCommand)
-      : await invoke<string>('acquire_window_workspace');
+    let active: string;
+    if (options.workspaceId) {
+      active = options.workspaceId;
+    } else if (webRemote) {
+      active = await invoke<string>(activeWorkspaceCommand);
+    } else if (options.acquireWindow !== false) {
+      active = await invoke<string>('acquire_window_workspace');
+    } else {
+      active = get(activeWorkspaceId) || list[0]?.id || '';
+    }
+    if (!active) {
+      // A close can briefly leave the backend with an empty list while the
+      // replacement workspace event is still in flight.  Keep the list
+      // coherent and let the existing startup/ensure path create or select
+      // the replacement instead of rejecting the whole refresh.
+      workspacesList.set(list);
+      await refreshWorkspaceSaveInfo();
+      return;
+    }
     // The atomic desktop acquisition creates a workspace only when every
     // existing one is owned by another window. Refresh the snapshot exactly
     // once in that uncommon path so the new tab is present immediately.
@@ -1959,7 +2018,12 @@ export async function saveWorkspaceToFile(
 
 export async function openWorkspaceFromFile(path: string): Promise<string> {
   const id = await invoke<string>('open_workspace_from_file', { path });
-  await refreshWorkspaces();
+  // `open_workspace_from_file` already selects/claims the returned workspace.
+  // Re-running desktop `acquire_window_workspace` here can select the old
+  // default tab (or create another one when a second window is present),
+  // which made restore-on-restart appear to lose tabs.  Refresh the list while
+  // preserving the authoritative id returned by the backend.
+  await refreshWorkspaces({ workspaceId: id, acquireWindow: false });
   await refreshWorkspaceSaveInfo();
   return id;
 }
@@ -1992,6 +2056,8 @@ export async function getLastOpenedWorkspacePath(): Promise<string | null> {
 export interface StartupContext {
   cwd: string;
   wind_file_in_cwd: string | null;
+  /** Path delivered by a taskbar recent-workspace activation. */
+  workspace_file_arg?: string | null;
   /** "cli" �?process inherited a real working dir from a terminal.
    *  "menu" �?process current_dir equals ridge.exe parent (双击 / 开始菜�?.
    *  Used to gate auto-restore: cli launch should NOT auto-open the saved

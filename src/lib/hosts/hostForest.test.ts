@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   hostTopologyErrorKind,
+  HOST_FOREST_REQUEST_TIMEOUT_MS,
   loadHostForest,
   retainHostForest,
   settleHostTopologyRefreshes,
@@ -211,6 +212,31 @@ describe('loadHostForest', () => {
     expect(result.workspaces[1].panes).toEqual([]);
     expect(result.warning).toContain('pane list timed out');
     expect(result.error).toBeUndefined();
+  });
+
+  it('settles a stalled pane listing at the bounded topology timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = loadHostForest([{
+        hostId: 'stalled',
+        link: {
+          listWorkspaces: vi.fn(async () => ({
+            workspaces: [{ id: 'workspace-a', name: 'A', active: true }],
+          })),
+          listWorkspacePanes: vi.fn(
+            () => new Promise<Array<{ id: string; title?: string; cwd?: string; isAgent?: boolean }>>(() => {}),
+          ),
+        },
+      }]);
+      await vi.advanceTimersByTimeAsync(HOST_FOREST_REQUEST_TIMEOUT_MS);
+      await expect(pending).resolves.toMatchObject([{
+        hostId: 'stalled',
+        workspaces: [{ id: 'workspace-a', panes: [] }],
+        warning: expect.stringContaining('remote topology timeout'),
+      }]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('publishes a fast host without waiting for a slow sibling', async () => {

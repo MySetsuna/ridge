@@ -227,6 +227,9 @@ pub fn save_restore_set(app: &tauri::AppHandle, state: &AppState) {
             .filter(|path| !is_session_restore_path(path, &session_dir))
         {
             paths.push(path.to_string_lossy().to_string());
+            // Keep the taskbar's "recently closed" category useful even when
+            // the workspace was already saved before this process exited.
+            push_recent(app, path);
             continue;
         }
         let target =
@@ -238,6 +241,7 @@ pub fn save_restore_set(app: &tauri::AppHandle, state: &AppState) {
             Ok(()) => {
                 live_session_files.insert(target.clone());
                 paths.push(target.to_string_lossy().to_string());
+                push_recent(app, &target);
             }
             Err(error) => {
                 tracing::warn!(
@@ -439,6 +443,15 @@ fn push_recent(app: &tauri::AppHandle, path: &Path) {
     list.insert(0, canonical);
     list.truncate(RECENT_MAX);
     save_recent(app, &list);
+}
+
+/// Record a workspace that the user explicitly closed while Ridge remains
+/// running.  The taskbar Jump List reads the same bounded file, so there is no
+/// second history store to drift from the workspace picker.
+pub fn record_recent_workspace_path(app: &tauri::AppHandle, path: &Path) {
+    if path.is_file() {
+        push_recent(app, path);
+    }
 }
 
 fn set_last_opened(app: &tauri::AppHandle, path: &Path) {
@@ -743,6 +756,7 @@ pub fn open_workspace_from_file(
 /// 启动上下文：当前进程 cwd + cwd 顶层第一个 `.ridge` 文件（若存在）。
 ///
 /// 前端在 `onMount` 里读它来决定启动行为：
+/// - `workspace_file_arg` 非空：来自任务栏最近工作区入口，优先打开该文件；
 /// - `wind_file_in_cwd` 非空：打开该 .ridge 工作区（取代 last-opened 自动恢复）；
 /// - 为空：默认工作区第一颗 pane 的 cwd 已在 `AppState::new` 中种为此 `cwd`，
 ///   直接沿用即可，前端无需额外动作。
@@ -750,6 +764,9 @@ pub fn open_workspace_from_file(
 pub struct StartupContext {
     pub cwd: String,
     pub wind_file_in_cwd: Option<String>,
+    /// A taskbar recent-workspace activation.  This wins over cwd/restore-set
+    /// selection and is consumed once by the newly created WebView.
+    pub workspace_file_arg: Option<String>,
     /// "cli" — process inherited a real working dir from a terminal.
     /// "menu" — process current_dir equals ridge.exe parent (双击启动).
     /// Frontend uses this to gate the restore-set logic: cli launch should not
@@ -760,6 +777,10 @@ pub struct StartupContext {
 #[tauri::command]
 pub fn get_startup_context(state: State<'_, AppState>) -> Result<StartupContext, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let workspace_file_arg = crate::taskbar::take_pending_workspace_path().or_else(|| {
+        let args = std::env::args().collect::<Vec<_>>();
+        crate::taskbar::workspace_path_from_args(&args)
+    });
     // 只扫一层：避免在用户主目录 / 大型项目根下做深度遍历，也匹配用户预期
     // “cwd 内是否直接放着 .ridge”。
     let mut wind_files: Vec<PathBuf> = Vec::new();
@@ -789,6 +810,7 @@ pub fn get_startup_context(state: State<'_, AppState>) -> Result<StartupContext,
     Ok(StartupContext {
         cwd: cwd.to_string_lossy().to_string(),
         wind_file_in_cwd,
+        workspace_file_arg,
         kind,
     })
 }

@@ -218,6 +218,7 @@ const topologyInFlight = new Map<string, Promise<HostForestResult | null>>();
 const topologyAbortByHost = new Map<string, AbortController>();
 const topologyGenerationByHost = new Map<string, number>();
 let hostsRefreshGeneration = 0;
+let hostConnectGeneration = 0;
 
 function supersedeHostTopology(hostId: string): number {
   topologyAbortByHost.get(hostId)?.abort();
@@ -868,9 +869,15 @@ export async function connectHost(
   token?: string,
   channel: 'lan' | 'public' = 'lan',
 ): Promise<void> {
+  const generation = ++hostConnectGeneration;
+  const publishProgress = (value: HostConnectProgress | null): void => {
+    // A second click/attempt owns the banner.  A stale failure must not
+    // replace the newer attempt's loading state.
+    if (generation === hostConnectGeneration) hostConnectProgress.set(value);
+  };
   const progressLabel = label.trim() || addr.trim();
   let connectedHostId = '';
-  hostConnectProgress.set({
+  publishProgress({
     phase: 'connecting',
     label: progressLabel,
     detail: channel === 'lan' ? '正在连接局域网主机…' : '正在建立公网加密通道…',
@@ -931,13 +938,13 @@ export async function connectHost(
         link,
       });
     }
-    hostConnectProgress.set({
+    publishProgress({
       phase: 'loading-workspaces',
       label: progressLabel,
       detail: '连接成功，正在读取远端工作区…',
     });
     const topology = await refreshLinkedHost(connectedHostId, (progress) => {
-      hostConnectProgress.set({
+      publishProgress({
         phase: 'loading-workspaces',
         label: progressLabel,
         detail: progress.totalWorkspaces
@@ -947,9 +954,9 @@ export async function connectHost(
     });
     if (!topology) throw new Error('主机连接已失效');
     if (topology.error) throw new Error(topology.error);
-    hostConnectProgress.set(null);
+    publishProgress(null);
   } catch (error) {
-    hostConnectProgress.set({
+    publishProgress({
       phase: 'error',
       label: progressLabel,
       detail: error instanceof Error ? error.message : String(error),

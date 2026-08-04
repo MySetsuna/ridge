@@ -100,6 +100,49 @@ function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   });
 }
 
+export const HOST_FOREST_REQUEST_TIMEOUT_MS = 15_000;
+
+/** Timeout wrapper for a single host topology request. */
+function abortableWithTimeout<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal,
+  timeoutMs = HOST_FOREST_REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const finishResolve = (value: T) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const finishReject = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+    const onAbort = () => finishReject(new Error('request aborted'));
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (timeoutMs > 0) {
+      timer = setTimeout(
+        () => finishReject(new Error(`remote topology timeout (${timeoutMs}ms)`)),
+        timeoutMs,
+      );
+    }
+    promise.then(finishResolve, finishReject);
+  });
+}
+
 /** Failure keeps the last successful tree visible; success replaces it. */
 export function retainHostForest(
   previous: HostForestResult | undefined,
@@ -139,7 +182,7 @@ async function workspaceNode(
   workspace: WorkspaceInfo,
   signal?: AbortSignal,
 ): Promise<HostForestWorkspace> {
-  const panes = await abortable(link.listWorkspacePanes(workspace.id), signal);
+  const panes = await abortableWithTimeout(link.listWorkspacePanes(workspace.id), signal);
   return {
     id: workspace.id,
     name: workspace.name?.trim() || `工作区 ${workspace.id.slice(0, 8)}`,

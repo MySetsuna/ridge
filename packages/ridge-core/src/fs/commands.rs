@@ -680,4 +680,20 @@ mod tests {
         let err = search(&td.p("nope"), "x", &TextSearchArgs::default()).unwrap_err();
         assert!(err.to_command_string().contains("Root path does not exist"));
     }
+
+    #[test]
+    fn filename_search_matches_partial_relative_paths() {
+        let td = TempDir::new("filename-path");
+        std::fs::create_dir_all(td.path.join("src/lib/terminal")).unwrap();
+        std::fs::create_dir_all(td.path.join("src/lib/editor")).unwrap();
+        std::fs::write(td.path.join("src/lib/terminal/manager.ts"), b"").unwrap();
+        std::fs::write(td.path.join("src/lib/editor/manager.ts"), b"").unwrap();
+
+        let hits = filename_search(&td.p(""), "lib/term").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].replace('\\', "/").ends_with("src/lib/terminal/manager.ts"));
+
+        let partial = filename_search(&td.p(""), "terminal/man").unwrap();
+        assert_eq!(partial, hits);
+    }
 }

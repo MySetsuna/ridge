@@ -655,6 +655,17 @@ export class TerminalManager {
 	private _lastMemorySweepAt = 0;
 	private _memoryRestorePending = new Set<string>();
 	/**
+	 * WebGPU SurfaceHost is shared by every pane.  Adapter/device creation is
+	 * asynchronous and the browser can deadlock when several RenderHandles are
+	 * constructed against that canvas in the same turn.  Keep renderer creation
+	 * single-file even when several workspace panes mount/unpark together.
+	 */
+	private _rendererCreateQueue: Promise<void> = Promise.resolve();
+	/** Latest active-workspace notification. Older paint/restore work must not
+	 * wake the renderer after a newer tab selection. */
+	private _activeWorkspaceChangeGeneration = 0;
+	private _memoryRestoreQueue: Promise<void> = Promise.resolve();
+	/**
 	 * Defer shared-surface invalidation while memory-parked panes are being
 	 * restored. `unpark()` creates the renderer asynchronously; invalidating
 	 * before it is attached makes the host clear with no active draw region,
@@ -962,6 +973,23 @@ export class TerminalManager {
 		return new RenderHandle(canvas);
 	}
 
+	private async _makeHandleSerialized(
+		canvas: HTMLCanvasElement,
+		surfaceHost?: SurfaceHostHandle,
+	): Promise<RenderHandle> {
+		const predecessor = this._rendererCreateQueue;
+		let release!: () => void;
+		this._rendererCreateQueue = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		await predecessor;
+		try {
+			return await this._makeHandle(canvas, surfaceHost);
+		} finally {
+			release();
+		}
+	}
+
 	/**
 	 * §A.8 (2026-05-08) — bind one `wgpu::Surface` to `canvas` for the
 	 * given workspace tab. Each workspace tab owns its own canvas so
@@ -1179,6 +1207,7 @@ export class TerminalManager {
 	 */
 	public onActiveWorkspaceChanged(workspaceId: string): void {
 		this._activeWorkspaceId = workspaceId;
+		const generation = ++this._activeWorkspaceChangeGeneration;
 		const shouldRestore = typeof document === 'undefined' || !document.hidden;
 		if (!this.globalHost) {
 			if (shouldRestore) void this._restoreMemoryParked(workspaceId);
@@ -1193,7 +1222,11 @@ export class TerminalManager {
 			if (shouldRestore) this._endHostInvalidateBatch();
 			// A newer tab selection owns the shared host. The stale restore may
 			// finish later, but it must not recompute or wake the old workspace.
-			if (!this.globalHost || this._activeWorkspaceId !== workspaceId) return;
+			if (
+				generation !== this._activeWorkspaceChangeGeneration ||
+				!this.globalHost ||
+				this._activeWorkspaceId !== workspaceId
+			) return;
 			for (const e of this.panes.values()) {
 				if (e.parked) continue;
 				if (e.workspaceId !== workspaceId) continue;
@@ -1209,19 +1242,36 @@ export class TerminalManager {
 	}
 
 	private _restoreMemoryParked(workspaceId: string | null): Promise<void> {
-		const pending: Promise<void>[] = [];
-		for (const entry of this.panes.values()) {
-			if (!entry.parked || entry.parkReason !== 'memory') continue;
-			if (workspaceId !== null && entry.workspaceId !== workspaceId) continue;
-			if (!entry.container.isConnected || this._memoryRestorePending.has(entry.paneId)) continue;
-			this._memoryRestorePending.add(entry.paneId);
-			pending.push(this.unpark(entry.paneId, entry.container)
-				.catch((error) => {
+		// Do not fan out N WebGPU adapter/device creations from one tab click.
+		// A serial queue also lets a newer active workspace supersede a stale
+		// restore before the next pane is touched.
+		const run = async (): Promise<void> => {
+			const entries = [...this.panes.values()].filter((entry) =>
+				entry.parked &&
+				entry.parkReason === 'memory' &&
+				(workspaceId === null || entry.workspaceId === workspaceId) &&
+				entry.container.isConnected &&
+				!this._memoryRestorePending.has(entry.paneId),
+			);
+			for (const entry of entries) {
+				if (
+					workspaceId !== null &&
+					this._activeWorkspaceId !== workspaceId
+				) break;
+				if (!entry.container.isConnected || !entry.parked) continue;
+				this._memoryRestorePending.add(entry.paneId);
+				try {
+					await this.unpark(entry.paneId, entry.container);
+				} catch (error) {
 					console.warn('[ridge-term] memory-park restore failed', entry.paneId, error);
-				})
-				.finally(() => this._memoryRestorePending.delete(entry.paneId)));
-		}
-		return Promise.all(pending).then(() => undefined);
+				} finally {
+					this._memoryRestorePending.delete(entry.paneId);
+				}
+			}
+		};
+		const queued = this._memoryRestoreQueue.then(run, run);
+		this._memoryRestoreQueue = queued.then(() => undefined, () => undefined);
+		return queued;
 	}
 
 	/**
@@ -1647,7 +1697,7 @@ export class TerminalManager {
 		// which is acceptable for an opt-in flag-gated path.
 		const handle: RenderHandle | null = usingWorker
 			? null
-			: await this._makeHandle(canvas, hostHandle);
+			: await this._makeHandleSerialized(canvas, hostHandle);
 		const dpr = window.devicePixelRatio || 1;
 
 		// configure() returns [cellW, cellH] in CSS pixels at the supplied DPR.
@@ -2883,7 +2933,7 @@ export class TerminalManager {
 
 		const handle: RenderHandle | null = usingWorker
 			? null
-			: await this._makeHandle(canvas, hostHandle);
+			: await this._makeHandleSerialized(canvas, hostHandle);
 		// Detach or a competing restore may win while renderer creation awaits.
 		// Free only our fresh resources; never mutate the retired/replaced entry.
 		if (this.panes.get(paneId) !== entry || !entry.parked) {
@@ -4367,7 +4417,7 @@ export class TerminalManager {
 			entry.container.appendChild(canvas);
 		}
 		entry.canvas = canvas;
-		const handle = await this._makeHandle(canvas);
+		const handle = await this._makeHandleSerialized(canvas);
 		if (this.panes.get(entry.paneId) !== entry || entry.parked || entry.handle) {
 			try { handle.free(); } catch { /* stale fallback */ }
 			canvas.remove();

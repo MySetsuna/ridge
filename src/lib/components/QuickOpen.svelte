@@ -9,19 +9,25 @@
   let selectedIndex = 0;
   let inputEl: HTMLInputElement;
   let isLoading = false;
+  let searchGeneration = 0;
 
   onMount(() => {
     inputEl?.focus();
   });
 
   async function handleInput() {
+    const generation = ++searchGeneration;
     if (!query.trim()) {
       results = [];
+      isLoading = false;
       return;
     }
 
     isLoading = true;
-    results = await filenameSearch(query);
+    const nextResults = await filenameSearch(query);
+    // A slower walk for an older query must not overwrite the latest input.
+    if (generation !== searchGeneration) return;
+    results = nextResults;
     selectedIndex = 0;
     isLoading = false;
   }
@@ -67,7 +73,7 @@
         type="text"
         bind:value={query}
         on:input={handleInput}
-        placeholder="Search files..."
+        placeholder="Search files or path…"
         class="search-input"
       />
     </div>

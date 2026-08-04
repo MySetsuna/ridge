@@ -1,7 +1,7 @@
 <!-- src/routes/+page.svelte -->
 <script lang="ts">
   import { t, tr } from '$lib/i18n';
-  import { focusActiveTerminal, ownsTabKey } from '@ridge/remote/shared/terminal/terminalFocus';
+  import { focusActiveTerminal, focusTerminalPane, ownsTabKey } from '@ridge/remote/shared/terminal/terminalFocus';
   import SplitContainer from '$lib/components/SplitContainer.svelte';
   import SourceControl from '$lib/components/SourceControl.svelte';
   import WorkspaceTabs from '$lib/components/WorkspaceTabs.svelte';
@@ -98,6 +98,7 @@
     closePane,
     paneCwdStore,
     scheduleForceFitActivePanes,
+    beginDesktopKernelReattachGate,
   } from '$lib/stores/paneTree';
   import { fileEditorStore } from '$lib/stores/fileEditor';
   // §独立窗口：主窗口侧监听独立编辑器窗口的关闭（交还标签）。
@@ -235,6 +236,13 @@
   import { isTuiActive, snapshotLiveSignals } from '@ridge/remote/shared/terminal/tuiGate';
   import { formatDroppedPathsForPaste } from '@ridge/remote/shared/terminal/dropPaste';
   import { makeHostPorts } from '$lib/terminal/hostPorts';
+
+  // Hold every RidgePane mount until restart recovery has had a chance to
+  // bind stable pane IDs to the still-running kernel.  This is a one-shot
+  // per-WebView barrier; browser/remote builds release it immediately below.
+  const releaseDesktopKernelReattachGate = !webRemote && isTauri()
+    ? beginDesktopKernelReattachGate()
+    : () => {};
 
   // §P2：app 启动即注入 manager 的 HostPorts（settings/cwd/链接路由）。置于模块顶层，
   // 早于任何 RidgePane 子组件 onMount 的 pane attach（读 scrollback 设置）与全局 canvas
@@ -1254,7 +1262,11 @@ function expandSidebar(minWidth = 0) {
     if (!text) return;
     activePaneId.set(pid);
     // 走 bracketed-paste（而非 write_to_pty 原样写）：TUI 据此把图片路径识别为附件。
-    TerminalManager.instance().paste(pid, text);
+    try {
+      TerminalManager.instance().paste(pid, text);
+    } finally {
+      focusTerminalPane(pid);
+    }
   }
 
   onMount(() => {
@@ -1431,8 +1443,11 @@ function expandSidebar(minWidth = 0) {
       try {
         const ctx = await getStartupContext();
         const priorDefaultId = get(activeWorkspaceId);
+        const taskbarWorkspace = ctx?.workspace_file_arg ?? null;
         const cwdRidge = ctx?.wind_file_in_cwd ?? null;
-        if (cwdRidge) {
+        if (taskbarWorkspace) {
+          await openWorkspaceFromFile(taskbarWorkspace);
+        } else if (cwdRidge) {
           await openWorkspaceFromFile(cwdRidge);
         } else if (ctx?.kind === 'menu') {
           const restorePaths = await getRestoreSet();
@@ -1470,7 +1485,11 @@ function expandSidebar(minWidth = 0) {
           await invoke<number>('reattach_kernel_ptys');
         } catch (e) {
           console.warn('kernel PTY reattach unavailable', e);
+        } finally {
+          releaseDesktopKernelReattachGate();
         }
+      } else {
+        releaseDesktopKernelReattachGate();
       }
       // 工作区就绪后强制 fit 一次：web-remote/cloud-controller 连接后若漏了这次
       // fit，pane 终端不铺满（容器尺寸已定但 PTY cols/rows 未跟随）。
@@ -1610,6 +1629,9 @@ function expandSidebar(minWidth = 0) {
       };
       } catch (err) {
         console.error('[boot] init failed', err);
+        // Never leave panes waiting forever if an unrelated startup step
+        // fails before the reattach command is reached.
+        releaseDesktopKernelReattachGate();
       }
     })();
 

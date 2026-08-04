@@ -13,6 +13,7 @@ mod remote_bridge;
 /// 桌面 `RemoteHost` 实现（`DesktopHost` 包装 `AppState`）。
 mod remote_host_impl;
 mod state;
+mod taskbar;
 mod teammate;
 mod tray;
 mod types;
@@ -146,6 +147,9 @@ pub fn run() {
             if is_auth_focus_launch(&argv) {
                 crate::deep_root::focus_main_window(app);
             } else {
+                if let Some(path) = crate::taskbar::workspace_path_from_args(&argv) {
+                    crate::taskbar::enqueue_workspace_path(path);
+                }
                 open_secondary_window(app);
             }
         }));
@@ -359,6 +363,10 @@ pub fn run() {
                 if let Err(e) = crate::tray::build_tray(app) {
                     tracing::error!(target: "ridge::tray", error = %e, "tray init failed");
                 }
+                // Jump List I/O and COM activation are outside the first-paint
+                // path.  Refresh once after setup so a taskbar right-click sees
+                // the latest recent-workspace snapshot without delaying boot.
+                crate::taskbar::refresh_jump_list_async(app.handle().clone());
 
                 // 公网登录授权（契约 §1/§2.3）：注册 `ridge://` 运行时处理器。
                 //   - register_all()：Linux/Windows 运行时绑定 scheme（dev 下尤其必要）。
