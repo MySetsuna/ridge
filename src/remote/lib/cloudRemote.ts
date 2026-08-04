@@ -587,20 +587,20 @@ export class CloudRemoteConnection implements RemoteLink {
     void this._subscribe(pane, opts?.resume ?? false, opts?.active);
   }
 
-  /** Re-seed the local mirror with a complete RIS/history frame after the
-   * bounded render queue had to shed output. */
+  /** Tell the host's existing raw fan-out to emit one bounded canonical
+   * resync after local render backpressure shed output. Keep the listener and
+   * subscription alive; tearing them down/re-registering would create a second
+   * fan-out and could replay stale bytes twice. */
   resyncPane(pane: PaneRef): void {
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
-    const unlisten = this.ptyUnlisten.get(key);
-    if (unlisten) {
-      this.ptyUnlisten.delete(key);
-      try { unlisten(); } catch { /* already gone */ }
-    }
-    this.scrollbackCursor.delete(key);
-    if (this.subscribing.has(key)) return;
-    this.subscribing.add(key);
-    void this._subscribe(pane, false, true);
+    void this._invokePane<void>(pane, 'resync_pane_raw', {
+      paneId: pane.paneId,
+      workspaceId: pane.workspaceId,
+    }).catch(() => {
+      // Older hosts may lack the command; keep the live subscription intact.
+      // The next reconnect/explicit subscribe remains the safe recovery path.
+    });
   }
 
   /**
