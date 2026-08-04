@@ -215,10 +215,17 @@ pub fn ensure_cloud_host(app: &AppHandle) -> Result<(), String> {
     let auth = auth_path
         .to_str()
         .ok_or_else(|| "cloud auth path is not valid UTF-8".to_string())?;
+    let binding_path = auth_path.with_file_name("remote-cloud-pane.json");
+    let binding = binding_path
+        .to_str()
+        .ok_or_else(|| "cloud PTY binding path is not valid UTF-8".to_string())?;
     let pid = ridge_kernel::client::spawn_detached_with_env(
         &binary,
         &["remote", "--daemon"],
-        &[("RIDGE_AUTH_FILE", auth)],
+        &[
+            ("RIDGE_AUTH_FILE", auth),
+            ("RIDGE_REMOTE_PTY_BINDING_FILE", binding),
+        ],
     )?;
     let record = CloudRegistry {
         schema: 1,
