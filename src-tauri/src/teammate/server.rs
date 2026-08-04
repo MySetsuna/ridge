@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::commands::{pane, terminal};
 use crate::state::{AppState, PaneState, Workspace};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use super::hitl;
 use super::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
@@ -259,8 +259,21 @@ async fn run_server(
     app_state: AppState,
     ready: Option<std::sync::mpsc::Sender<()>>,
 ) {
-    let token = uuid::Uuid::new_v4().to_string();
-    let listener = match TcpListener::bind("127.0.0.1:0").await {
+    let app_data_dir = handle.path().app_data_dir().ok();
+    let persisted = app_data_dir
+        .as_deref()
+        .and_then(crate::teammate::endpoint::read_binding);
+    let token = persisted
+        .as_ref()
+        .map(|(_, token)| token.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let preferred_port = persisted.as_ref().and_then(|(base_url, _)| {
+        base_url
+            .strip_prefix("http://127.0.0.1:")
+            .and_then(|port| port.parse::<u16>().ok())
+            .filter(|port| *port != 0)
+    });
+    let listener = match bind_teammate_listener(preferred_port).await {
         Ok(l) => l,
         Err(e) => {
             eprintln!("[ridge] teammate bind failed: {e}");
@@ -272,6 +285,11 @@ async fn run_server(
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let base_url = format!("http://127.0.0.1:{port}");
+    if let Some(dir) = app_data_dir.as_deref() {
+        if let Err(e) = crate::teammate::endpoint::write_binding(dir, &base_url, &token) {
+            tracing::warn!(target: "ridge::teammate", error = %e, "persist teammate binding failed");
+        }
+    }
     {
         let mut b = app_state.teammate_binding.write();
         *b = Some(crate::state::TeammateBinding {
@@ -348,6 +366,23 @@ async fn run_server(
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("[ridge] teammate server stopped: {e}");
     }
+}
+
+async fn bind_teammate_listener(preferred_port: Option<u16>) -> std::io::Result<TcpListener> {
+    if let Some(port) = preferred_port {
+        match TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(listener) => return Ok(listener),
+            Err(error) => {
+                tracing::debug!(
+                    target: "ridge::teammate",
+                    port,
+                    %error,
+                    "preferred teammate port unavailable; using an ephemeral port"
+                );
+            }
+        }
+    }
+    TcpListener::bind("127.0.0.1:0").await
 }
 
 // ========== Agent-Pane Management Helpers ==========

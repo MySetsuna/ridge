@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, State};
+use tauri::{Manager, Runtime, State};
 use uuid::Uuid;
 
 use crate::engine::pane_tree::PaneTree;
@@ -153,7 +153,7 @@ fn last_opened_pointer_path(app: &tauri::AppHandle) -> PathBuf {
     dir.join("last_workspace.txt")
 }
 
-fn recent_workspaces_path(app: &tauri::AppHandle) -> PathBuf {
+fn recent_workspaces_path<R: Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
     let dir = app
         .path()
         .app_data_dir()
@@ -165,7 +165,7 @@ fn recent_workspaces_path(app: &tauri::AppHandle) -> PathBuf {
 /// `restore_workspaces.json` 路径：close 时把当前工作区的 .ridge 路径列表写到这里；
 /// 下次非 cli 启动时回读用于自动恢复 tab。未显式保存的工作区使用下方 session 目录
 /// 中的应用私有临时快照，因此普通终端也能跨 Ridge 重启重接。
-fn restore_workspaces_path(app: &tauri::AppHandle) -> PathBuf {
+fn restore_workspaces_path<R: Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
     let dir = app
         .path()
         .app_data_dir()
@@ -174,7 +174,7 @@ fn restore_workspaces_path(app: &tauri::AppHandle) -> PathBuf {
     dir.join("restore_workspaces.json")
 }
 
-fn session_restore_dir(app: &tauri::AppHandle) -> PathBuf {
+fn session_restore_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
     let dir = app
         .path()
         .app_data_dir()
@@ -199,7 +199,7 @@ fn is_session_restore_path(path: &Path, dir: &Path) -> bool {
 /// 收集当前所有工作区路径，按 workspace_order 顺序写出。已保存工作区复用用户文件；
 /// 未保存工作区同步写入应用私有 session 快照。仅在窗口关闭事件里调用（进程即将退出，
 /// 不能 spawn 异步），故所有快照写入均有界且失败可见但不阻止退出。
-pub fn save_restore_set(app: &tauri::AppHandle, state: &AppState) {
+pub fn save_restore_set<R: Runtime>(app: &tauri::AppHandle<R>, state: &AppState) {
     let order = state.workspace_order.read().clone();
     let names = state.workspace_names.read().clone();
     let map = state.workspaces.read();
@@ -415,7 +415,7 @@ pub fn get_restore_set(app_handle: tauri::AppHandle) -> Result<Vec<String>, Stri
 
 const RECENT_MAX: usize = 10;
 
-fn load_recent(app: &tauri::AppHandle) -> Vec<String> {
+fn load_recent<R: Runtime>(app: &tauri::AppHandle<R>) -> Vec<String> {
     let p = recent_workspaces_path(app);
     if !p.is_file() {
         return Vec::new();
@@ -429,14 +429,14 @@ fn load_recent(app: &tauri::AppHandle) -> Vec<String> {
     }
 }
 
-fn save_recent(app: &tauri::AppHandle, list: &[String]) {
+fn save_recent<R: Runtime>(app: &tauri::AppHandle<R>, list: &[String]) {
     if let Ok(s) = serde_json::to_string_pretty(list) {
         let _ = std::fs::write(recent_workspaces_path(app), s);
     }
 }
 
 /// 推入最近打开列表顶部并去重；截断到 `RECENT_MAX`。
-fn push_recent(app: &tauri::AppHandle, path: &Path) {
+fn push_recent<R: Runtime>(app: &tauri::AppHandle<R>, path: &Path) {
     let canonical = path.to_string_lossy().to_string();
     let mut list = load_recent(app);
     list.retain(|p| p != &canonical);

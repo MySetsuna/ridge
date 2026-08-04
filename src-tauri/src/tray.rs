@@ -11,7 +11,7 @@ use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, Manager, Runtime};
 
-use crate::deep_root::restore_window;
+use crate::deep_root::{prepare_for_hide, restore_window};
 use crate::kernel_lifecycle;
 use crate::state::AppState;
 
@@ -75,12 +75,17 @@ fn on_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, event: MenuEvent) {
             }
         }
         MENU_ID_EXIT_DESKTOP => {
-            // Deep Root：退出整个桌面 shell，独立 kernel 不受影响。
-            app.state::<AppState>()
-                .quitting
-                .store(true, std::sync::atomic::Ordering::Release);
-            tracing::info!(target: "ridge::tray", "exiting desktop shell; kernel remains running");
-            app.exit(0);
+            // Deep Root v1：隐藏桌面 UI，不退出宿主进程。这样内核、PTY、
+            // Remote 与 teammate server 都继续服务，托盘恢复仍可复用同一 WebView。
+            if let Some(window) = app.get_webview_window("main") {
+                crate::commands::ridge_file::save_restore_set(app, &app.state::<AppState>());
+                prepare_for_hide(&window);
+                if let Err(e) = window.hide() {
+                    tracing::warn!(target: "ridge::tray", error = %e, "hide desktop shell failed");
+                } else {
+                    tracing::info!(target: "ridge::tray", "desktop UI hidden; kernel and remote remain running");
+                }
+            }
         }
         MENU_ID_QUIT_KERNEL => {
             // 先停独立内核（rdg 轮询 health/pid 后自退），再退出桌面外壳。
