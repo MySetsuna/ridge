@@ -5,6 +5,23 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 166, 2026-08-04)
+
+- Remote/WebRTC transport is now process-owned, not merely hidden with the
+  Tauri UI. Detached `rdg host` and `rdg remote --daemon` use the
+  kernel-owned PTY/workspace domain and survive a force-killed desktop shell.
+- Tauri only supervises sidecars, synchronizes credentials, and exposes
+  explicit lifecycle commands. Restart reuses live registries; explicit full
+  quit stops sidecars before kernel shutdown.
+- Kernel PTY leases detach without destroying PTYs. Cross-process boot locking
+  prevents desktop/host duplicate kernel launches.
+- Verification: `pnpm check` 0/0; focused Vitest 66/66; ridge-kernel 46 tests;
+  ridge-cli 130 unit + 3 integration tests; ridge-cli and Tauri `cargo check`
+  passed. Packaged Windows force-kill plus
+  phone reconnect remains a physical release gate, not yet claimed.
+
+Archive: `docs/iterations/2026-08-04-iteration-166-remote-process-boundary.md`.
+
 ## Current snapshot (iteration 165, 2026-08-04)
 
 - Rapid desktop tab switches now serialize backend workspace ownership/switch
