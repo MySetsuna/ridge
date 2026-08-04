@@ -241,7 +241,16 @@ pub fn totp_trust_revoke_all(state: State<AppState>) {
 #[tauri::command]
 pub fn set_remote_enabled(state: State<AppState>, enabled: bool) -> Result<(), String> {
     let prev = state.remote_enabled.load(Ordering::Relaxed);
-    if prev == enabled {
+    // The detached host is the source of truth after a desktop restart.  The
+    // in-process flag starts at its default, so comparing it alone would make
+    // the first "disable" click a no-op while the sidecar kept serving.
+    let current = state
+        .app_handle
+        .get()
+        .and_then(crate::remote_host_supervisor::lan_host_status)
+        .map(|status| status.enabled)
+        .unwrap_or(prev);
+    if current == enabled {
         return Ok(());
     }
 
