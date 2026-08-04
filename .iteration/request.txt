@@ -2,3 +2,4 @@
 Pre-approved addendum: Mobile Remote intermittently freezes; add bounded render/input queueing and backpressure so output floods cannot block rendering or terminal input.
 Approved addendum: Mobile Remote must keep the live PTY tail authoritative; seed only a bounded latest visual frame, page older scrollback incrementally on upward scroll, and never block live rendering or input.
 Approved addendum: Pane content-box geometry is the terminal-grid authority; stale host resize dimensions must trigger a local refit/claim, and a manual Pane Resize action must force recovery when shell and pane sizes diverge.
+Current closure request: 还有遗留吗，没有就把改动都发了吧

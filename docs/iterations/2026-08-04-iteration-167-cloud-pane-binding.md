@@ -100,3 +100,13 @@ Deterministic coverage includes live-before-seed visibility, bounded seed/replay
 size, seed-reset ordering, pane geometry capacity, and stale-grid local
 authority. Physical mobile/PWA and cross-host soak evidence remains an external
 gate; no release closure is claimed from unit tests alone.
+
+## Iteration addendum: release gate remediation
+
+The prior `v0.1.57` desktop attempt failed before the matrix build because the
+Linux Tauri compile check referenced `binaries/rdg-x86_64-unknown-linux-gnu`
+without generating it. `.github/workflows/release.yml` now runs
+`node scripts/build-rdg-sidecar.mjs` in the test gate before `cargo check`.
+This closes the known deterministic CI blocker; the next versioned release
+still requires a clean pushed tree, successful test gate, all matrix assets, and
+the separate Remote/cloud artifact audit.
