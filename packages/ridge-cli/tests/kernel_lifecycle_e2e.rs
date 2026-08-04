@@ -23,7 +23,11 @@ fn rdg_command(binary: &Path, data_dir: &Path, args: &[&str]) -> Command {
     command
         .args(args)
         .env("RIDGE_KERNEL_DATA_DIR", data_dir)
-        .env("RIDGE_CONFIRM_QUIT_KERNEL", "1");
+        .env("RIDGE_CONFIRM_QUIT_KERNEL", "1")
+        // The hosted Windows test runner can reject CREATE_BREAKAWAY_FROM_JOB.
+        // Production never sets this opt-in; it exists only to keep the
+        // lifecycle assertions deterministic under that constrained runner.
+        .env("RIDGE_TEST_ALLOW_NON_BREAKAWAY", "1");
     command
 }
 

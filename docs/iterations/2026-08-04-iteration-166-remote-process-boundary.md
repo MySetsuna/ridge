@@ -22,10 +22,12 @@ second local transport or PTY owner.
   the kernel PTY on WebRTC disconnect. Existing PTYs are selected by CWD when
   available; reconnect leases start at the current output head to avoid replay
   storms.
-- Windows detached spawn uses `CREATE_BREAKAWAY_FROM_JOB` when permitted, with
-  a constrained detached fallback for runners that reject the flag. Kernel boot
-  now has a separate cross-process boot lock, preventing desktop/host startup
-  races and duplicate kernel launches.
+- Windows detached spawn requires `CREATE_BREAKAWAY_FROM_JOB` in production;
+  only constrained test runners that explicitly set
+  `RIDGE_TEST_ALLOW_NON_BREAKAWAY=1` may use a test-only detached fallback.
+  This fails closed instead of claiming force-kill survival without a real Job
+  breakaway. Kernel boot now has a separate cross-process boot lock, preventing
+  desktop/host startup races and duplicate kernel launches.
 - Explicit full quit stops detached transports before kernel shutdown. A crash,
   force kill, or normal desktop restart never runs that cleanup path.
 
