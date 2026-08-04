@@ -344,12 +344,22 @@
       pixelHeight: Math.round(containerEl?.clientHeight ?? 0),
     };
   }
+  /** Force one pane-box measurement and a latest-wins host claim. This is the
+   * recovery path for a stale/letterboxed remote grid after orientation, PWA
+   * safe-area, keyboard, or an external pty-resized event. */
+  export function fitPaneNow() {
+    if (attached) manager.fitPaneNow(paneId);
+  }
   /** Feed raw PTY bytes into THIS pane's kernel (MainApp routes the active
    *  pane's stream here; the manager holds each pane's history). */
   export function feedUtf8(bytes: Uint8Array) { manager.feed(paneId, bytes); }
   /** Route bytes to any live/parked pane kernel, not only this mounted surface. */
   export function feedPane(targetPaneId: string, bytes: Uint8Array) {
     manager.feed(targetPaneId, bytes);
+    return manager.feedStats(targetPaneId);
+  }
+  export function clearPendingFeed(targetPaneId: string) {
+    return manager.clearPendingFeed(targetPaneId);
   }
   /** §history-pull: prepend older PTY history at the oldest end of the ring. */
   export function prependScrollback(bytes: Uint8Array) { manager.prependScrollback(paneId, bytes); }
@@ -358,9 +368,12 @@
   }
   /** Theme is GLOBAL on the manager (all panes); fine for mobile (one theme). */
   export function applyTheme(theme: Record<string, string>) { manager.setTheme(theme); }
-  /** Host told us the PTY resized → resize this pane's kernel grid + repaint. */
-  export function resizeKernel(rows: number, cols: number) {
-    manager.getKernel(paneId)?.resize(rows, cols);
+  /** Host told us the PTY resized → remeasure this pane and repaint locally. */
+  export function resizeKernel(_rows: number, _cols: number) {
+    // Host dimensions are a notification, not a geometry authority. Re-measure
+    // this pane and claim its actual box instead of injecting a possibly stale
+    // remote grid that could leave the shell smaller than the pane.
+    manager.fitPaneNow(paneId);
     manager.forceFullRedraw(paneId);
   }
 

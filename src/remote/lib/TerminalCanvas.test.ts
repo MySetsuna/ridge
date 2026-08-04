@@ -23,4 +23,11 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).not.toContain('onblur={() => manager.setFocused(paneId, false)}');
     expect(source).toContain('caret-color:var(--rg-accent,#58a6ff)');
   });
+
+  it('keeps pane geometry authoritative for host resize recovery', () => {
+    expect(source).toContain('export function fitPaneNow()');
+    expect(source).toContain('if (attached) manager.fitPaneNow(paneId);');
+    expect(source).toContain('export function resizeKernel(_rows: number, _cols: number)');
+    expect(source).not.toContain('manager.getKernel(paneId)?.resize(rows, cols);');
+  });
 });

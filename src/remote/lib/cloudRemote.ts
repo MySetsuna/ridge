@@ -79,13 +79,24 @@ const INPUT_BATCH_WINDOW_MS = 4;
 /**
  * §history-pull（2026-07-02）: 首屏拉取的 scrollback 上限（约 1.5 屏）。host 不再推
  * `RIS + 256KiB` 全量回放；controller 订阅时自己拉这么多作首屏（RIS + tail），再挂 live，
- * 用户向上滚动时才经 `get_pane_scrollback_before` 分批拉更旧历史。16KiB 足够填满移动端
- * 视口 1.5 屏、又小到不会卡死解析器。
+ * 用户向上滚动时才经 `get_pane_scrollback_before` 分批拉更旧历史。初始种子保持 8KiB
+ * 上限，优先保证实时尾流与输入，不把 Host 历史当作首屏权威。
  */
-const REMOTE_INITIAL_SCROLLBACK_BYTES = 16 * 1024;
+// Initial subscribe is a live-screen seed, not a history replay. Older output
+// is paged only by the scroll-up path; keep this seed bounded to the latest
+// visual tail so it cannot delay the live render/input lane.
+const REMOTE_INITIAL_SCROLLBACK_BYTES = 8 * 1024;
 
 /** 滚顶懒加载每批拉取的 scrollback 上限。 */
 const REMOTE_OLDER_SCROLLBACK_BYTES = 64 * 1024;
+
+/**
+ * Bound the live bytes retained while a first-screen seed RPC is in flight.
+ * Live bytes are rendered immediately; this copy only lets a late seed reset
+ * and replay the already-rendered tail in order. If it overflows, the seed is
+ * discarded as stale instead of retaining unbounded output or blocking input.
+ */
+const REMOTE_SEED_REPLAY_MAX_BYTES = 2 * 1024 * 1024;
 
 /** One page of scrollback bytes returned by `get_pane_scrollback_tail` / `_before`. */
 interface ScrollbackChunk {
@@ -576,6 +587,22 @@ export class CloudRemoteConnection implements RemoteLink {
     void this._subscribe(pane, opts?.resume ?? false, opts?.active);
   }
 
+  /** Re-seed the local mirror with a complete RIS/history frame after the
+   * bounded render queue had to shed output. */
+  resyncPane(pane: PaneRef): void {
+    const key = paneRefKey(pane);
+    if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
+    const unlisten = this.ptyUnlisten.get(key);
+    if (unlisten) {
+      this.ptyUnlisten.delete(key);
+      try { unlisten(); } catch { /* already gone */ }
+    }
+    this.scrollbackCursor.delete(key);
+    if (this.subscribing.has(key)) return;
+    this.subscribing.add(key);
+    void this._subscribe(pane, false, true);
+  }
+
   /**
    * §history-pull lazy paging: fetch the next older batch of this pane's scrollback
    * (bytes with `seq < cursor`), advancing the seq cursor. Returns the raw bytes to
@@ -642,20 +669,53 @@ export class CloudRemoteConnection implements RemoteLink {
   ): Promise<void> {
     const { paneId, workspaceId } = pane;
     const key = paneRefKey(pane);
+    let seeding = !resume;
+    const pendingLive: Uint8Array[] = [];
+    let pendingLiveBytes = 0;
+    let seedReplayOverflow = false;
+    const emitLive = (bytes: Uint8Array) => {
+      // Never hold the live lane behind the initial visual seed. A first-load
+      // RPC may be slow on mobile; the latest PTY bytes must still reach the
+      // terminal and input remains on its independent RPC path.
+      this.emitRaw(pane, bytes);
+      if (!seeding || seedReplayOverflow) return;
+      if (pendingLiveBytes + bytes.byteLength <= REMOTE_SEED_REPLAY_MAX_BYTES) {
+        pendingLive.push(bytes.slice());
+        pendingLiveBytes += bytes.byteLength;
+      } else {
+        // The bytes were already rendered, so dropping this replay copy is
+        // safe. Applying a partial stale seed later would rewind the screen;
+        // mark it unusable and free every retained copy immediately.
+        seedReplayOverflow = true;
+        pendingLive.length = 0;
+        pendingLiveBytes = 0;
+      }
+    };
+    let liveUnlisten: UnlistenFn | null = null;
+    let subscribed = false;
     try {
-      // §history-pull（2026-07-02）: the host no longer pushes an on-subscribe
-      // `RIS + 256KiB` replay. Pull our own ~1.5-screen tail FIRST and hand it to
-      // the kernel (RIS + mode-reattach preamble + tail), THEN wire the live
-      // listener. Tail-first (not concurrent) guarantees history is the first chunk
-      // the kernel sees and that an idle pane still paints its last screen; the only
-      // cost is a tiny gap if the pane is spewing output at the subscribe instant
-      // (self-heals on the next redraw). Seed the seq cursor for lazy "scroll up to
-      // load older" paging (get_pane_scrollback_before).
-      //
-      // §keep-alive resume (P4): when the controller kept this pane's mirror kernel
-      // ALIVE across a switch, `resume` is true → SKIP the RIS replay entirely (RIS
-      // would wipe the surviving kernel down to the tail). The alive kernel keeps its
-      // full history and just resumes the live stream below.
+      // Live-tail authority: the listener above is attached before the bounded
+      // visual seed. Bytes arriving while the seed RPC is in flight render
+      // immediately; a bounded copy lets a completed seed reset and replay
+      // them in FIFO order without ever blocking the live/input lanes.
+      // Older scrollback is a separate upward-scroll query. Keep-alive resume skips
+      // the RIS seed so the surviving kernel is not wiped.
+      liveUnlisten = await this.bridge.listen<{ data: string }>(
+        `pty-output-${workspaceId}-${paneId}`,
+        (e) => {
+          const bytes = this.encoder.encode(e.payload?.data ?? '');
+          if (bytes.length) emitLive(bytes);
+        },
+      );
+      if (!this.subscribing.has(key)) {
+        liveUnlisten?.();
+        liveUnlisten = null;
+        return;
+      }
+      this.ptyUnlisten.set(key, liveUnlisten);
+      await this.bridge.subscribePane(paneId, workspaceId, active);
+      subscribed = true;
+
       if (!resume) {
         // §R-CLOUD-CONVERGE: the host builds ONE complete resync frame (RIS + active-
         // mode preamble + scrollback tail) via the shared build_resync_frame SSOT — we
@@ -672,7 +732,12 @@ export class CloudRemoteConnection implements RemoteLink {
           });
           if (!this.subscribing.has(key)) return; // torn down during the fetch
           this.scrollbackCursor.set(key, { oldestSeq: rf.start_seq, atOldest: rf.at_oldest });
-          this.emitRaw(pane, this.encoder.encode(rf.frame));
+          if (!seedReplayOverflow) {
+            this.emitRaw(pane, this.encoder.encode(rf.frame));
+            for (const bytes of pendingLive) this.emitRaw(pane, bytes);
+          }
+          pendingLive.length = 0;
+          pendingLiveBytes = 0;
           seeded = true;
         } catch {
           /* older host (§two-version-line skew: the cloud PWA can ship ahead of the
@@ -692,7 +757,12 @@ export class CloudRemoteConnection implements RemoteLink {
               oldestSeq: chunk.start_seq,
               atOldest: chunk.at_oldest,
             });
-            this.emitRaw(pane, this.encoder.encode('\x1bc' + (chunk.bytes ?? '')));
+            if (!seedReplayOverflow) {
+              this.emitRaw(pane, this.encoder.encode('\x1bc' + (chunk.bytes ?? '')));
+              for (const bytes of pendingLive) this.emitRaw(pane, bytes);
+            }
+            pendingLive.length = 0;
+            pendingLiveBytes = 0;
           } catch {
             // Older host / command rejected: no seeded history — degrade to "first live
             // frame acts as the replay".
@@ -701,28 +771,25 @@ export class CloudRemoteConnection implements RemoteLink {
         if (!this.subscribing.has(key)) return;
       }
 
-      // Per-pane `pty-output-{ws}-{pane}` event. The bridge keys its dispatch on the
-      // trailing pane UUID only, so the ws segment is cosmetic — but we use the real
-      // active ws for fidelity. Payload arrives as decoded `{data}`; re-encode to bytes.
-      const unlisten = await this.bridge.listen<{ data: string }>(
-        `pty-output-${workspaceId}-${paneId}`,
-        (e) => {
-          const bytes = this.encoder.encode(e.payload?.data ?? '');
-          if (bytes.length) this.emitRaw(pane, bytes);
-        },
-      );
-      // Idempotency guard: a teardown between listen() awaiting and resolving.
-      if (!this.subscribing.has(key)) {
-        unlisten();
-        return;
-      }
-      this.ptyUnlisten.set(key, unlisten);
-      // Tell the host to start streaming (core.ts maps this to bridge.subscribePane →
-      // 'subscribe-pane' notify; the Channel arg is ignored in the browser shim).
-      await this.bridge.subscribePane(paneId, workspaceId, active);
+      // Seed is complete. Subsequent events bypass the replay copy and enter
+      // the bounded render queue directly. When the copy overflowed, the
+      // already-rendered live tail remains authoritative and the stale seed is
+      // intentionally skipped.
+      seeding = false;
+      pendingLive.length = 0;
     } catch {
       /* subscribe failed — pane stays blank; a later refresh/re-subscribe retries */
     } finally {
+      // Failed subscribe must not leave a listener/map entry that blocks retry.
+      if (!subscribed) {
+        const registered = this.ptyUnlisten.get(key);
+        if (registered && registered === liveUnlisten) {
+          this.ptyUnlisten.delete(key);
+          try { registered(); } catch { /* transport already closed */ }
+        } else if (liveUnlisten) {
+          try { liveUnlisten(); } catch { /* transport already closed */ }
+        }
+      }
       this.subscribing.delete(key);
     }
   }
