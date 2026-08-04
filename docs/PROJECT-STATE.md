@@ -1,27 +1,28 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-08-04（iteration 164 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-04（iteration 165 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
-## Current snapshot (iteration 164, 2026-08-04)
+## Current snapshot (iteration 165, 2026-08-04)
 
-- Desktop workspace switching now serializes shared WebGPU renderer creation;
-  stale tab invalidation and memory-pane restores cannot repaint a newer tab.
-- Desktop restart restores the backend-selected `.ridge` workspace IDs and
-  gates Pane mounts until surviving kernel PTYs have been reattached.
-- Remote Host pane topology has a 15-second bound, last-good-tree retention,
-  and latest-attempt-only connection progress publication.
-- Windows taskbar Jump List now exposes `最近关闭的工作区` and `打开新窗口`;
-  recent activation passes the workspace path through cold and single-instance
-  startup. Quick Open accepts partial relative paths, and file drag/drop
-  returns focus to the exact target terminal.
-- Verification: focused Vitest 99 passed; `cargo test -p ridge-core` 316 + 1
-  doctest passed; taskbar argument test passed; `cargo check` and `pnpm check`
-  both passed with no new diagnostics. No version bump or release.
+- Rapid desktop tab switches now serialize backend workspace ownership/switch
+  IPC, while cached panes still activate optimistically; stale failures are
+  dropped instead of repainting a newer tab or spamming Console.
+- Tray `退出桌面端` is Deep Root UI-only hide: kernel PTYs, Remote server,
+  teammate control plane, and WebView session remain alive. `彻底退出` remains
+  the explicit kernel/process shutdown path. Hide also writes the restore set.
+- Desktop restart can reuse the same teammate loopback port/token from app data;
+  endpoint sidecars are refreshed by token after a process restart, preserving
+  surviving Agent pane negotiation when the kernel remains alive.
+- Verification: full Vitest 148 files / 1545 passed / 1 skipped; teammate
+  endpoint Tauri tests 3 passed; `cargo check --manifest-path
+  src-tauri/Cargo.toml` passed with only pre-existing warnings; `pnpm check`
+  passed with 0 errors / 0 warnings. No version bump or release before the
+  next clean release gate.
 
-Archive: `docs/iterations/2026-08-04-iteration-164-recovery-taskbar-quickopen.md`.
+Archive: `docs/iterations/2026-08-04-iteration-165-tab-kernel-deep-root.md`.
 
 ## Current snapshot (iteration 163, 2026-08-04)
 

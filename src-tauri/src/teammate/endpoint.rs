@@ -21,6 +21,12 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+#[derive(serde::Deserialize, serde::Serialize)]
+struct PersistedBinding {
+    base_url: String,
+    token: String,
+}
+
 /// 进程级：所有已写过 sidecar 的 socket 路径，供 server (re)bind 时整体刷新。
 fn known_sockets() -> &'static Mutex<HashSet<String>> {
     static SET: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -44,11 +50,80 @@ pub fn sidecar_path(socket_path: &str) -> PathBuf {
     ))
 }
 
-fn write_one(socket_path: &str, url: &str, token: &str) {
+/// Stable desktop teammate binding. Existing Agent processes keep the
+/// `RIDGE_TEAMMATE_*` values injected at spawn time; persisting the loopback
+/// endpoint lets a restarted desktop rebind the same control plane and token.
+pub fn binding_path(app_data_dir: &std::path::Path) -> PathBuf {
+    app_data_dir.join("teammate-binding.json")
+}
+
+fn loopback_port(base_url: &str) -> Option<u16> {
+    let port = base_url.strip_prefix("http://127.0.0.1:")?.parse().ok()?;
+    (port != 0).then_some(port)
+}
+
+/// Read only loopback bindings written by Ridge itself. Invalid or stale files
+/// are ignored so a damaged app-data file never blocks desktop startup.
+pub fn read_binding(app_data_dir: &std::path::Path) -> Option<(String, String)> {
+    let path = binding_path(app_data_dir);
+    let binding: PersistedBinding = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    loopback_port(&binding.base_url)?;
+    if binding.token.trim().is_empty() {
+        return None;
+    }
+    Some((binding.base_url, binding.token))
+}
+
+/// Persist the binding with a fully-written temporary file before replacing
+/// the old value. The token never enters logs; app-data ACLs protect it on
+/// Windows and Unix mode 0600 is applied where available.
+pub fn write_binding(
+    app_data_dir: &std::path::Path,
+    base_url: &str,
+    token: &str,
+) -> std::io::Result<()> {
+    if loopback_port(base_url).is_none() || token.trim().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid loopback teammate binding",
+        ));
+    }
+    std::fs::create_dir_all(app_data_dir)?;
+    let path = binding_path(app_data_dir);
+    let tmp = app_data_dir.join(format!(".teammate-binding-{}.tmp", uuid::Uuid::new_v4()));
+    let body = serde_json::to_vec(&PersistedBinding {
+        base_url: base_url.to_string(),
+        token: token.to_string(),
+    })
+    .map_err(std::io::Error::other)?;
+    let write_result = (|| {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        file.write_all(&body)?;
+        file.sync_all()?;
+        drop(file);
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        std::fs::rename(&tmp, &path)
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    write_result
+}
+
+fn write_at_path(path: &std::path::Path, url: &str, token: &str) {
     use std::io::Write;
 
     let body = serde_json::json!({ "url": url, "token": token }).to_string();
-    let path = sidecar_path(socket_path);
     let mut options = std::fs::OpenOptions::new();
     options.create(true).truncate(true).write(true);
     #[cfg(unix)]
@@ -62,6 +137,10 @@ fn write_one(socket_path: &str, url: &str, token: &str) {
     {
         tracing::warn!(target: "ridge::teammate", "sidecar write failed {}: {e}", path.display());
     }
+}
+
+fn write_one(socket_path: &str, url: &str, token: &str) {
+    write_at_path(&sidecar_path(socket_path), url, token);
 }
 
 /// PTY spawn 时调用：按该 socket 路径写当前端点 + 记下供日后刷新。
@@ -85,6 +164,31 @@ pub fn refresh_all(url: &str, token: &str) {
     for s in sockets {
         write_one(&s, url, token);
     }
+
+    // A desktop restart starts with an empty in-process socket registry. Scan
+    // only Ridge endpoint sidecars whose current token matches ours so an
+    // unrelated dev/release instance is never redirected. This covers the
+    // rare preferred-port collision where a surviving Agent needs the new URL.
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("ridge-teammate-endpoint-") || !name.ends_with(".json") {
+            continue;
+        }
+        let Ok(value) =
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).unwrap_or_default())
+        else {
+            continue;
+        };
+        if value.get("token").and_then(|v| v.as_str()) == Some(token) {
+            write_at_path(&path, url, token);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -103,5 +207,38 @@ mod tests {
             "_ridge_teammate_sock"
         );
         assert_eq!(sanitize_socket("abc123"), "abc123");
+    }
+
+    #[test]
+    fn persists_only_valid_loopback_binding() {
+        let dir =
+            std::env::temp_dir().join(format!("ridge-endpoint-test-{}", uuid::Uuid::new_v4()));
+        write_binding(&dir, "http://127.0.0.1:43123", "test-token").unwrap();
+        assert_eq!(
+            read_binding(&dir),
+            Some((
+                "http://127.0.0.1:43123".to_string(),
+                "test-token".to_string()
+            ))
+        );
+        std::fs::write(
+            binding_path(&dir),
+            r#"{"base_url":"http://0.0.0.0:43123","token":"bad"}"#,
+        )
+        .unwrap();
+        assert!(read_binding(&dir).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn refreshes_sidecar_after_process_restart_when_token_matches() {
+        let socket = format!("ridge-endpoint-restart-{}.sock", uuid::Uuid::new_v4());
+        let path = sidecar_path(&socket);
+        write_at_path(&path, "http://127.0.0.1:41000", "restart-token");
+        refresh_all("http://127.0.0.1:41001", "restart-token");
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["url"], "http://127.0.0.1:41001");
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -199,6 +199,10 @@ pub fn run() {
                     if let Err(e) = app.save_window_state(window_state_flags()) {
                         tracing::warn!(target: "ridge::init", error = %e, "save window state on hide-to-tray failed");
                     }
+                    // Persist the pane/workspace graph at the hide boundary too.
+                    // The kernel intentionally survives desktop UI teardown; a
+                    // later desktop restart must reopen the same stable pane IDs.
+                    ridge_file::save_restore_set(app, &state);
                     api.prevent_close();
                     crate::deep_root::prepare_for_hide(window);
                     if let Err(e) = window.hide() {
