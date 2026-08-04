@@ -1,21 +1,20 @@
 {
-    "schema_version":  1,
-    "pending_ids":  [
-
-                    ],
-    "requirement_ids":  [
-                            "REQ-RIDGE-KERNEL-HOST-01",
-                            "REQ-RIDGE-KERNEL-DOMAIN-01",
-                            "REQ-RIDGE-MCP-AS-KERNEL-API-01"
-                        ],
-    "classification":  "active",
-    "summary":  "Independent ridge-kernel process host architecture",
-    "open_questions":  [
-
-                       ],
-    "intake_id":  "INTAKE-20260731-KERNEL-BEST-01",
-    "approval_evidence":  "",
-    "approval_reasons":  [
-
-                         ]
+  "schema_version": 1,
+  "intake_id": "INTAKE-20260804-REMOTE-BIND-01",
+  "classification": "active",
+  "summary": "Clean historical iteration records, close stable Remote Cloud pane binding residual, then publish the verified release.",
+  "requirement_ids": [
+    "REQ-20260730-01",
+    "REQ-REMOTE-SMOOTH-STATE-02",
+    "REQ-MOBILE-REMOTE-STATE-01",
+    "REQ-RDG-REMOTE-CONNECT-01",
+    "REQ-RIDGE-KERNEL-HOST-01",
+    "REQ-RIDGE-KERNEL-DOMAIN-01",
+    "REQ-REMOTE-RUNTIME-PERF-MEMORY-02",
+    "REQ-AGENT-COMMUNE-UI-02"
+  ],
+  "pending_ids": [],
+  "approval_reasons": [],
+  "open_questions": [],
+  "approval_evidence": ""
 }

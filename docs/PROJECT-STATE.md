@@ -1,9 +1,32 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
-状态日期：2026-08-04（iteration 165 已完成代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补）
+状态日期：2026-08-04（iteration 167 已完成稳定 Cloud Pane 绑定代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补；正式 release 待本轮代码推送后执行）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
+
+## Current snapshot (iteration 167, 2026-08-04)
+
+- Cloud Remote pane binding is now persistent and deterministic. `PtyBridge`
+  reads `remote-cloud-pane.json` (or the explicit
+  `RIDGE_REMOTE_PTY_BINDING_FILE` path), verifies the live PTY/workspace, and
+  writes the binding only after its output lease attaches.
+- Reconnect selection is exact persisted identity, then the
+  `cloud-remote` launch profile, then deterministic same-CWD matching. There
+  is no first-live-PTY fallback, so a detached Cloud session cannot steal an
+  unrelated pane. A failed binding write detaches the just-created lease.
+- Tauri passes the binding path to `rdg remote --daemon`; PTY ownership and
+  scrollback remain in the detached kernel. This closes the code portion of
+  the previous multi-pane/Cloud binding residual.
+- Verification: `cargo test -p ridge-cli --tests --quiet` (134 unit + 3
+  integration), `cargo test -p ridge-kernel --lib --quiet` (46), Tauri
+  `cargo check --lib`, `pnpm check` (0/0), and `git diff --check` passed.
+- Historical entries 165 and 166 remain append-only evidence and are
+  superseded, not duplicated as open work. Physical force-kill/phone
+  reconnect, public four-path Remote, WebView2 soak, dual-window/Host, and
+  full Kernel authority remain external gates.
+
+Archive: `docs/iterations/2026-08-04-iteration-167-cloud-pane-binding.md`.
 
 ## Current snapshot (iteration 166, 2026-08-04)
 
