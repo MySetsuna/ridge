@@ -9,6 +9,9 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
+#[cfg(unix)]
+use std::os::fd::RawFd;
+
 use anyhow::Error as AnyhowError;
 use parking_lot::Mutex;
 use portable_pty::{MasterPty, PtySize};
@@ -96,7 +99,7 @@ impl MasterPty for KernelPtyMaster {
     }
 
     #[cfg(unix)]
-    fn as_raw_fd(&self) -> Option<std::os::unix::RawFd> {
+    fn as_raw_fd(&self) -> Option<RawFd> {
         None
     }
 }
