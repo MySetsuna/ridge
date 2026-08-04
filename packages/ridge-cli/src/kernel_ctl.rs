@@ -62,22 +62,48 @@ pub fn status_line() -> String {
 
 /// rdg 启动：内核不在则拉起（与桌面 detect-or-spawn 同契约）。
 pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
+    // `rdg host`, `rdg remote --daemon`, the desktop shell and the first pane
+      // can all bootstrap at once. The kernel boot lock is cross-process;
+      // use it as a short boot slot so only one caller can spawn while the
+    // kernel has not published a healthy endpoint yet.
+    if let Some(ep) = running_endpoint() {
+        return Ok(ep);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let boot_guard = loop {
+        if let Some(ep) = running_endpoint() {
+            return Ok(ep);
+        }
+        match ridge_kernel::registry::KernelBootGuard::try_acquire() {
+            Ok(Some(guard)) => break guard,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(80));
+            }
+            Ok(None) => {
+                return Err("another ridge-kernel is booting but did not become healthy in time".into());
+            }
+            Err(error) => return Err(format!("acquire ridge-kernel boot slot: {error}")),
+        }
+    };
     if let Some(ep) = read_endpoint() {
         if is_process_alive(ep.pid) {
             if ridge_kernel::client::health_ok(&ep) {
+                drop(boot_guard);
                 return Ok(ep);
             }
+            drop(boot_guard);
             return Err(format!(
                 "live ridge-kernel PID {} is unhealthy or protocol-incompatible; refusing a second instance",
                 ep.pid
             ));
-        }
-        // stale
+    }
+    // stale
         let _ = fs::remove_file(kernel_pid_path());
         let _ = fs::remove_file(kernel_json_path());
     }
     let bin = std::env::current_exe().map_err(|error| format!("定位 rdg: {error}"))?;
     spawn_detached(&bin, &[ridge_kernel::client::KERNEL_HOST_ARG])?;
+    drop(boot_guard);
     wait_for_running(Duration::from_secs(8)).ok_or_else(|| "ridge-kernel 未在时限内就绪".into())
 }
 

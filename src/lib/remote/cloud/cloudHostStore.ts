@@ -11,7 +11,7 @@
  * 签名 / TOTP 校验注入）原样搬过来，行为不变。
  */
 import { writable, get } from 'svelte/store';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { tr } from '$lib/i18n';
 import { cloudHostOnline } from '$lib/stores/remoteStatus';
@@ -197,6 +197,32 @@ function buildHost(): RidgeCloudHost | null {
 export async function goOnline(): Promise<void> {
   hostError.set('');
   const s = cloudAuth.snapshot();
+  if (isTauri()) {
+    if (!s.deviceToken || !s.deviceName || !s.user?.username) {
+      hostError.set(tr('cloud.errDeviceNotActivated'));
+      return;
+    }
+    // Native desktop owns no WebRTC transport in its WebView. Hand
+    // credentials to the detached daemon so a force-killed Tauri shell
+    // cannot disconnect Remote. Browser/PWA uses the fallback below.
+    hostState.set('connecting');
+    cloudHostOnline.set(false);
+    try {
+      await invoke('sync_cloud_remote_credentials', {
+        deviceToken: s.deviceToken,
+        deviceName: s.deviceName,
+        username: s.user?.username ?? null,
+      });
+      await invoke('ensure_cloud_remote_host');
+      hostState.set('online');
+      cloudHostOnline.set(true);
+    } catch (e) {
+      hostState.set('error');
+      cloudHostOnline.set(false);
+      hostError.set(e instanceof Error ? e.message : tr('cloud.errConnectFailed'));
+    }
+    return;
+  }
   if (!s.deviceToken || !s.deviceName || !s.user?.username) {
     hostError.set(tr('cloud.errDeviceNotActivated'));
     return;
@@ -225,6 +251,16 @@ export async function goOnline(): Promise<void> {
 
 /** 下线公网远控。只有用户显式调用（或 kick/blacklist 不涉及）才会断开。 */
 export async function goOffline(): Promise<void> {
+  if (isTauri()) {
+    try {
+      await invoke('disable_cloud_remote_host');
+    } catch (e) {
+      hostError.set(e instanceof Error ? e.message : tr('cloud.errConnectFailed'));
+    }
+    hostState.set('offline');
+    cloudHostOnline.set(false);
+    return;
+  }
   host?.goOffline();
   cloudHostOnline.set(false);
   await notifyCloudActive(false);

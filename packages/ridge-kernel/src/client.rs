@@ -1021,6 +1021,10 @@ pub fn running_endpoint() -> Option<KernelEndpoint> {
 }
 
 fn configure_detached(command: &mut Command) {
+    configure_detached_with_breakaway(command, false);
+}
+
+fn configure_detached_with_breakaway(command: &mut Command, breakaway: bool) {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1028,8 +1032,18 @@ fn configure_detached(command: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const FLAGS: u32 = 0x0000_0008 | 0x0000_0200 | 0x0800_0000;
-        command.creation_flags(FLAGS);
+        // CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB |
+        // CREATE_NO_WINDOW.  The breakaway flag is essential when the desktop
+        // is launched under a Windows Job: force-killing Tauri must not reap
+        // the kernel/Remote/WebRTC sidecars with it.
+        const BASE_FLAGS: u32 = 0x0000_0008 | 0x0000_0200 | 0x0800_0000;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        let flags = if breakaway {
+            BASE_FLAGS | CREATE_BREAKAWAY_FROM_JOB
+        } else {
+            BASE_FLAGS
+        };
+        command.creation_flags(flags);
     }
     #[cfg(not(windows))]
     unsafe {
@@ -1045,13 +1059,48 @@ fn configure_detached(command: &mut Command) {
 }
 
 pub fn spawn_detached(binary: &Path, args: &[&str]) -> Result<(), String> {
+    spawn_detached_with_pid(binary, args).map(|_| ())
+}
+
+/// Spawn a process outside the desktop process tree and return its PID.
+///
+/// The returned child handle is deliberately dropped after the OS has created
+/// the detached process.  Callers use the PID only for liveness/diagnostic
+/// registries; process ownership is not transferred to the Tauri parent.
+pub fn spawn_detached_with_pid(binary: &Path, args: &[&str]) -> Result<u32, String> {
+    spawn_detached_with_env(binary, args, &[])
+}
+
+/// Detached spawn with a small, explicit environment overlay.  Keeping this
+/// beside the kernel launcher makes Windows process-tree flags identical for
+/// the kernel, LAN host and cloud/WebRTC sidecars.
+pub fn spawn_detached_with_env(
+    binary: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> Result<u32, String> {
     let mut command = Command::new(binary);
     command.args(args);
-    configure_detached(&mut command);
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("spawn ridge-kernel: {error}"))
+    command.envs(envs.iter().copied());
+    configure_detached_with_breakaway(&mut command, true);
+    match command.spawn() {
+        Ok(child) => Ok(child.id()),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            // Some test runners and enterprise launchers forbid
+            // CREATE_BREAKAWAY_FROM_JOB. Retry with the ordinary detached
+            // flags; production Tauri launches normally take the stronger
+            // path, while this fallback remains detached and observable.
+            let mut retry = Command::new(binary);
+            retry.args(args);
+            retry.envs(envs.iter().copied());
+            configure_detached(&mut retry);
+            retry
+                .spawn()
+                .map(|child| child.id())
+                .map_err(|retry_error| format!("spawn detached process: {retry_error}"))
+        }
+        Err(error) => Err(format!("spawn detached process: {error}")),
+    }
 }
 
 pub fn wait_for_running(timeout: Duration) -> Option<KernelEndpoint> {

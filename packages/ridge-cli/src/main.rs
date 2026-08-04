@@ -25,8 +25,10 @@ mod device_flow;
 mod e2ee;
 mod envelope;
 mod fs_reuse;
+mod host;
 mod ice;
 mod kernel_ctl;
+mod kernel_host_impl;
 mod key_binding;
 mod login_flow;
 mod mux;
@@ -84,6 +86,9 @@ enum Command {
     /// 在本机托管无头 tmux 会话引擎（teammate 协议子集，复用桌面同款 `ridge-tmux`），
     /// 供 PATH 上的 `tmux` shim 连接——让无头会话直接在本 host 运行。
     Tmux(TmuxArgs),
+
+    /// Start the kernel-backed LAN Remote host as an independent process.
+    Host(HostArgs),
 
     /// 兼容别名：把本机 Ridge MCP 以 stdio 暴露给客户端。桌面 Ridge 请优先使用独立
     /// `ridge-mcp` companion；`rdg mcp` 仅为既有无头脚本保留，端点发现实现相同。
@@ -223,6 +228,13 @@ struct ConnectArgs {
 }
 
 #[derive(Args)]
+struct HostArgs {
+    /// LAN HTTPS listen port; 0 uses Ridge's configured default.
+    #[arg(long, env = "RIDGE_HOST_PORT", default_value_t = 0)]
+    port: u16,
+}
+
+#[derive(Args)]
 struct TmuxArgs {
     /// 监听端口（默认 0 = 由系统分配，启动后打印实际端口）。
     /// 可由 RIDGE_TMUX_PORT 提供（命令行 > 环境变量 > 默认）。
@@ -272,6 +284,7 @@ async fn main() -> Result<()> {
             }
         }
         Some(Command::Tmux(args)) => run_tmux(args).await,
+        Some(Command::Host(args)) => host::run(args.port).await,
         Some(Command::Mcp(args)) => ridge_mcp_bridge::run(args.url, args.token).await,
         Some(Command::Kernel(args)) => match args.command {
             KernelCommand::Status => {

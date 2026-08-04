@@ -10,6 +10,7 @@ pub mod reconnect_policy;
 /// 桌面进程与共享远控层之间的 Tauri 胶水层（`forward_event` + `ridge-core` 桥
 /// + `spawn_remote_server` 启动壳）——归并自已删除的 `remote/{mod,core_bridge,server}.rs`。
 mod remote_bridge;
+mod remote_host_supervisor;
 /// 桌面 `RemoteHost` 实现（`DesktopHost` 包装 `AppState`）。
 mod remote_host_impl;
 mod state;
@@ -364,6 +365,19 @@ pub fn run() {
                 });
                 // 托盘：恢复工作台 / 退出桌面端 / 彻底退出（内核）。
                 // 失败不应阻断启动 —— 没有托盘时窗口仍可正常使用，只是少了深根入口。
+                // Transport processes are detached from Tauri.  On restart,
+                // discover the existing LAN host and resume the independent
+                // cloud/WebRTC daemon without blocking first paint.
+                let transport_handle = app.handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Some(status) = crate::remote_host_supervisor::lan_host_status(&transport_handle) {
+                        tracing::info!(target: "ridge::remote", pid = status.pid, port = status.port, "reattached detached Remote host");
+                    }
+                    if let Err(error) = crate::remote_host_supervisor::reattach_cloud_host(&transport_handle) {
+                        tracing::warn!(target: "ridge::remote", %error, "cloud sidecar reattach unavailable");
+                    }
+                });
+
                 if let Err(e) = crate::tray::build_tray(app) {
                     tracing::error!(target: "ridge::tray", error = %e, "tray init failed");
                 }
@@ -1014,6 +1028,9 @@ pub fn run() {
             commands::remote::verify_remote_totp_bind,
             commands::remote::remote_reset_totp,
             commands::remote::remote_set_totp_identity,
+            commands::remote::sync_cloud_remote_credentials,
+            commands::remote::ensure_cloud_remote_host,
+            commands::remote::disable_cloud_remote_host,
             commands::remote::totp_trust_check,
             commands::remote::totp_trust_record,
             commands::remote::totp_trust_revoke_all,
