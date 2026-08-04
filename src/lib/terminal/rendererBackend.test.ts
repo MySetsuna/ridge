@@ -31,7 +31,11 @@ describe('terminal renderer bootstrap contracts', () => {
 		expect(managerSource).toContain('private _deferredHostInvalidate = false;');
 		expect(managerSource).toContain('const restore = shouldRestore');
 		expect(managerSource).toContain('void restore.then(paint, paint);');
-		expect(managerSource).toContain('return Promise.all(pending).then(() => undefined);');
+		// Memory restores are serialized now; one tab switch must not fan out
+		// concurrent WebGPU unpark/device work across parked panes.
+		expect(managerSource).toContain(
+			'this._memoryRestoreQueue = queued.then(() => undefined, () => undefined);',
+		);
 	});
 
 	it('keeps link hover affordance continuous and thin', () => {

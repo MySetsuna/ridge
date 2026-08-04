@@ -1361,6 +1361,51 @@ describe('workspace switch responsiveness', () => {
     await expect(pending).resolves.toBe(true);
   });
 
+  it('serializes an in-flight backend switch before the next tab request', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const invokeMock = invoke as ReturnType<typeof vi.fn>;
+    const switchCalls: string[] = [];
+    let firstEntered!: () => void;
+    const firstSwitchEntered = new Promise<void>((resolve) => {
+      firstEntered = resolve;
+    });
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    invokeMock.mockImplementation(async (cmd: string, args?: { workspaceId?: string }) => {
+      if (cmd === 'claim_workspace_window') return { claimed: true, ownerWindowLabel: 'main' };
+      if (cmd === 'switch_window_workspace') {
+        switchCalls.push(args?.workspaceId ?? '');
+        if (switchCalls.length === 1) {
+          firstEntered();
+          await firstBlocked;
+        }
+        return undefined;
+      }
+      if (cmd === 'get_pane_layout_for') {
+        return {
+          type: 'leaf',
+          id: args?.workspaceId === 'ws-cached' ? 'pane-cached' : 'pane-current',
+        };
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    const first = paneTreeModule.switchWorkspace('ws-cached');
+    // Let the first request enter its backend IPC before issuing the second click.
+    await firstSwitchEntered;
+    const second = paneTreeModule.switchWorkspace('ws-current');
+    await Promise.resolve();
+    expect(switchCalls).toEqual(['ws-cached']);
+
+    releaseFirst();
+    await expect(first).resolves.toBe(false);
+    await expect(second).resolves.toBe(true);
+    expect(switchCalls).toEqual(['ws-cached', 'ws-current']);
+    expect(get(paneTreeModule.activeWorkspaceId)).toBe('ws-current');
+  });
+
   it('uses the supplied workspace tree for listener registration', async () => {
     await paneTreeModule.setupPaneCwdListeners('ws-cached', {
       type: 'leaf',

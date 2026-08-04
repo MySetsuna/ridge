@@ -433,6 +433,19 @@ export function waitForDesktopKernelReattach(): Promise<void> {
 // Latest-wins guard for rapid tab clicks. Backend IPC remains authoritative,
 // but stale layout replies must never repaint a newer selection.
 let workspaceSwitchGeneration = 0;
+// Keep backend workspace ownership/switch transitions in order. The generation
+// guard protects the UI from stale replies, but without a queue a delayed first
+// IPC can still complete after a newer click and move the backend window back.
+let workspaceSwitchQueue: Promise<void> = Promise.resolve();
+
+function enqueueWorkspaceSwitch<T>(task: () => Promise<T>): Promise<T> {
+  const run = workspaceSwitchQueue.then(task, task);
+  workspaceSwitchQueue = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
 
 export const workspacesList = writable<
   { id: string; index: number; name?: string; displaySeq: number }[]
@@ -1485,59 +1498,65 @@ export async function switchWorkspace(workspaceId: string): Promise<boolean> {
   const previousWorkspaceId = get(activeWorkspaceId);
   const previousTree = get(paneTreeStore);
   let optimisticallyActivated = false;
-  try {
-    if (!(await claimWorkspaceForThisWindow(workspaceId))) return false;
-    if (generation !== workspaceSwitchGeneration) return false;
-
-    // Keep-alive tabs already have a complete tree. Flip the local view before
-    // the backend round-trip so a slow IPC/layout fetch cannot freeze the tab.
-    // The authoritative layout below still replaces the cache when it differs.
-    const cached = get(workspacePaneTrees).get(workspaceId);
-    if (cached && get(activeWorkspaceId) !== workspaceId) {
-      setActiveTree(workspaceId, cached);
-      activeWorkspaceId.set(workspaceId);
-      reconcileActivePaneId(cached);
-      paneCwdStore.update((store) =>
-        mergePaneCwds(store, extractCwdsFromLayout(cached, workspaceId))
-      );
-      optimisticallyActivated = true;
-    }
-
-    await invoke(switchWorkspaceCommand, { workspaceId });
-    if (generation !== workspaceSwitchGeneration) return false;
-    const layout = await invoke<PaneNode>('get_pane_layout_for', {
-      workspaceId,
-    });
-    if (generation !== workspaceSwitchGeneration) return false;
-    const cachedLayout = get(workspacePaneTrees).get(workspaceId);
-    if (!cachedLayout || !paneLayoutsEquivalent(cachedLayout, layout)) {
-      setActiveTree(workspaceId, layout);
-    }
+  // Keep-alive tabs already have a complete tree. Flip the local view before
+  // entering the serialized backend transition so a slow IPC/layout fetch
+  // cannot freeze the tab.
+  const cached = get(workspacePaneTrees).get(workspaceId);
+  if (cached && get(activeWorkspaceId) !== workspaceId) {
+    setActiveTree(workspaceId, cached);
     activeWorkspaceId.set(workspaceId);
-    reconcileActivePaneId(layout);
-    const cwds = extractCwdsFromLayout(layout, workspaceId);
-    paneCwdStore.update((store) => mergePaneCwds(store, cwds));
-    await setupPaneCwdListeners(workspaceId, layout);
-    return true;
-  } catch (e) {
-    if (
-      optimisticallyActivated &&
-      generation === workspaceSwitchGeneration &&
-      previousWorkspaceId &&
-      get(activeWorkspaceId) === workspaceId
-    ) {
-      setActiveTree(previousWorkspaceId, previousTree);
-      activeWorkspaceId.set(previousWorkspaceId);
-      reconcileActivePaneId(previousTree);
-    }
-    console.error('switchWorkspace', workspaceId, e);
-    reportDevIssue({
-      title: 'Workspace switch failed',
-      message: String(e),
-      stack: e instanceof Error ? e.stack : undefined,
-    });
-    throw e;
+    reconcileActivePaneId(cached);
+    paneCwdStore.update((store) =>
+      mergePaneCwds(store, extractCwdsFromLayout(cached, workspaceId))
+    );
+    optimisticallyActivated = true;
   }
+
+  return enqueueWorkspaceSwitch(async () => {
+    try {
+      if (generation !== workspaceSwitchGeneration) return false;
+      if (!(await claimWorkspaceForThisWindow(workspaceId))) return false;
+      if (generation !== workspaceSwitchGeneration) return false;
+
+      // The authoritative layout below still replaces the cache when it differs.
+      await invoke(switchWorkspaceCommand, { workspaceId });
+      if (generation !== workspaceSwitchGeneration) return false;
+      const layout = await invoke<PaneNode>('get_pane_layout_for', {
+        workspaceId,
+      });
+      if (generation !== workspaceSwitchGeneration) return false;
+      const cachedLayout = get(workspacePaneTrees).get(workspaceId);
+      if (!cachedLayout || !paneLayoutsEquivalent(cachedLayout, layout)) {
+        setActiveTree(workspaceId, layout);
+      }
+      activeWorkspaceId.set(workspaceId);
+      reconcileActivePaneId(layout);
+      const cwds = extractCwdsFromLayout(layout, workspaceId);
+      paneCwdStore.update((store) => mergePaneCwds(store, cwds));
+      await setupPaneCwdListeners(workspaceId, layout);
+      return true;
+    } catch (e) {
+      // A newer click superseded this request. Its failure is no longer
+      // actionable and must not become console noise or a rejected UI task.
+      if (generation !== workspaceSwitchGeneration) return false;
+      if (
+        optimisticallyActivated &&
+        previousWorkspaceId &&
+        get(activeWorkspaceId) === workspaceId
+      ) {
+        setActiveTree(previousWorkspaceId, previousTree);
+        activeWorkspaceId.set(previousWorkspaceId);
+        reconcileActivePaneId(previousTree);
+      }
+      console.error('switchWorkspace', workspaceId, e);
+      reportDevIssue({
+        title: 'Workspace switch failed',
+        message: String(e),
+        stack: e instanceof Error ? e.stack : undefined,
+      });
+      throw e;
+    }
+  });
 }
 
 export async function splitPane(
