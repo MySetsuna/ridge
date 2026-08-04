@@ -7,6 +7,28 @@
 
 ## Current snapshot (iteration 167, 2026-08-04)
 
+- New pre-approved `REQ-MOBILE-REMOTE-BACKPRESSURE-01` is active for this
+  iteration. The mobile render feed now uses a bounded per-pane FIFO chunk
+  queue, a frame-time budget, overflow counters, and teardown cleanup; input
+  and control RPC scheduling remain separate and higher priority.
+- The former deferred-feed `Infinity` synchronous catch-up and O(n²) backlog
+  concatenation path are removed. Focused feed-policy tests pass; full
+  TypeScript/Svelte checks remain green.
+- New active `REQ-MOBILE-REMOTE-LIVE-TAIL-01` makes the live PTY stream
+  authoritative: Cloud Remote wires the listener before a bounded visual seed,
+  renders live bytes immediately, retains only a bounded FIFO replay copy for a
+  late seed reset, and pages older scrollback only on upward scroll without
+  blocking input.
+- New active `REQ-REMOTE-PANE-GRID-INVARIANT-01` makes the current pane box the
+  local grid source of truth. Stale host `pty-resized` dimensions trigger a
+  local refit/claim; manual refresh uses `fitPaneNow` and no longer injects a
+  stale smaller shell grid.
+- Desktop `v0.1.57` release attempt was rolled back: Linux Tauri test gate
+  failed because `binaries/rdg-x86_64-unknown-linux-gnu` was absent. Version is
+  back at `0.1.56`; no failed tag/release is claimed. Remote/cloud activation
+  `0.1.57+g7ce4386` succeeded and is recorded separately in the iteration
+  archive.
+
 - Cloud Remote pane binding is now persistent and deterministic. `PtyBridge`
   reads `remote-cloud-pane.json` (or the explicit
   `RIDGE_REMOTE_PTY_BINDING_FILE` path), verifies the live PTY/workspace, and
