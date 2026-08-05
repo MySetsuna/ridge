@@ -49,6 +49,10 @@ function flattenPanes(node: PaneNode | null | undefined): PaneInfo[] {
 export class CloudHostTopologyLink implements HostTopologyLink {
   private readonly workspaceByPane = new Map<string, string>();
   private readonly livePanes = new Set<string>();
+  /** Panes actually attached to a foreign Host. `livePanes` also contains
+   * panes discovered while projecting a workspace, so it is not a safe
+   * subscription list to replay after the Host bridge is recreated. */
+  private readonly subscribedPanes = new Map<string, PaneRef>();
   private activePaneKey: string | null = null;
   private readonly scheduler: PaneRpcScheduler;
   private readonly stopReconnectResume: () => void;
@@ -59,9 +63,21 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   ) {
     this.scheduler = new PaneRpcScheduler(rpc);
     this.stopReconnectResume = rpc.onReconnected(() => {
-      // A reconnect creates a fresh Host bridge with no active-pane QoS state;
-      // force the next focus/attach promotion to cross the new control lane.
+      // A reconnect creates a fresh Host bridge: its pane subscriptions and
+      // active-pane QoS state are gone. Replay only panes that were actually
+      // attached (not every pane discovered by listWorkspacePanes), preserving
+      // the focused pane as the latency-critical stream.
+      const activeKey = this.activePaneKey;
       this.activePaneKey = null;
+      for (const [key, pane] of this.subscribedPanes) {
+        const active = key === activeKey;
+        this.rpc.notify('subscribe-pane', {
+          workspaceId: pane.workspaceId,
+          paneId: pane.paneId,
+          active,
+        });
+        if (active) this.activePaneKey = key;
+      }
       this.scheduler.resumeAll();
     });
   }
@@ -73,6 +89,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   disconnect(): void {
     for (const key of this.livePanes) retirePaneInput(key);
     this.livePanes.clear();
+    this.subscribedPanes.clear();
     this.activePaneKey = null;
     this.stopReconnectResume();
     this.scheduler.dispose();
@@ -237,6 +254,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
 
   subscribePane(pane: PaneRef): void {
     this.activatePane(pane);
+    this.subscribedPanes.set(paneRefKey(pane), pane);
     this.rpc.notify('subscribe-pane', {
       workspaceId: pane.workspaceId,
       paneId: pane.paneId,
@@ -304,6 +322,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
 
   private retirePane(pane: PaneRef): void {
     const key = paneRefKey(pane);
+    this.subscribedPanes.delete(key);
     this.livePanes.delete(key);
     this.scheduler.retire(pane);
     retirePaneInput(key);
