@@ -33,6 +33,7 @@ import {
 import type { CloudHostBridgeLike } from './ridgeCloudProvider';
 import type { WorkspaceScopeAssertion } from './workspaceScope';
 import { ChunkReassembler } from '@ridge/remote';
+import { CHANNEL } from '@ridge/remote';
 
 /** 传输层分片测试帮手：从 host 发出的（单条）线消息还原出密文（剥掉 SINGLE tag）。 */
 function unwrapSingle(wire: Uint8Array): Uint8Array {
@@ -115,6 +116,12 @@ class FakePeerConnection {
   /** 模拟 controller 创建 DataChannel(label="ridge") → host ondatachannel。 */
   attachControllerChannel(): FakeDataChannel {
     const dc = new FakeDataChannel('ridge');
+    this.ondatachannel?.({ channel: dc });
+    return dc;
+  }
+
+  attachControllerPaneChannel(): FakeDataChannel {
+    const dc = new FakeDataChannel('ridge-pane');
     this.ondatachannel?.({ channel: dc });
     return dc;
   }
@@ -301,6 +308,30 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     expect(bridges[0].bindTranscript).not.toBeNull();
     expect(Array.from(bridges[0].bindTranscript!)).toEqual(Array.from(expected));
 
+    host.goOffline();
+  });
+
+  it('pane raw output uses ridge-pane bulk lane after handshake', async () => {
+    const { host, bridges } = await makeHost({ signContext, identityPub: ID_PUB });
+    const { ws, dc, pc } = await driveToOpenChannel(host);
+    const paneDc = pc.attachControllerPaneChannel();
+    paneDc.fireOpen();
+
+    const ctrlEph = generateEphemeralKeyPair();
+    ws.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(ctrlEph.publicKey), cid: CID });
+    await flush();
+    dc.deliver(encodeHandshakeFrame(ctrlEph.publicKey));
+    await flush();
+
+    const signed = decodeSignedHandshakeFrame(dc.lastSent());
+    const key = deriveSessionKey(ctrlEph.privateKey, ctrlEph.publicKey, signed.ephPub);
+    const controllerReceive = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
+    bridges[0].send(new Uint8Array([CHANNEL.PANE_RAW, 1, 2, 3]));
+
+    expect(paneDc.sent.length).toBeGreaterThan(0);
+    expect(dc.sent.length).toBe(1); // handshake only; raw pane frame stays off control lane
+    const plaintext = controllerReceive.open(unwrapSingle(paneDc.lastSent()));
+    expect(Array.from(plaintext)).toEqual([CHANNEL.PANE_RAW, 1, 2, 3]);
     host.goOffline();
   });
 

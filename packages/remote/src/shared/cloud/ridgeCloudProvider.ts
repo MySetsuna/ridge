@@ -41,7 +41,7 @@ import {
 import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
-import { MAX_PANE_FRAME_BYTES } from '@ridge/remote';
+import { CHANNEL, MAX_PANE_FRAME_BYTES } from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import type { ChannelBackpressure } from './cloudHostBridge';
 import {
@@ -57,6 +57,8 @@ const KEY_BIND_GRACE_MS = 3000;
 
 /** DataChannel 标签与参数（契约 §7）。 */
 const DC_LABEL = 'ridge';
+/** Optional controller-created bulk lane; legacy controllers use DC_LABEL only. */
+const DC_PANE_LABEL = 'ridge-pane';
 
 // ── 信令断线自动重连（R17-RECONN：shared reconnectPolicy）──
 
@@ -151,8 +153,10 @@ interface ControllerConn {
   cid: string;
   pc: RTCPeerConnection;
   dc: RTCDataChannel | null;
+  paneDc: RTCDataChannel | null;
   ephemeral: EphemeralKeyPair | null;
   session: E2eeSession | null;
+  paneSession: E2eeSession | null;
   handshakeDone: boolean;
   bridge: CloudHostBridgeLike | null;
   state: CloudConnectionState;
@@ -180,6 +184,8 @@ interface ControllerConn {
   sendMsgId: number;
   /** 入站分片重组器（按序拼回完整密文再 open）。 */
   reassembler: ChunkReassembler;
+  paneSendMsgId: number;
+  paneReassembler: ChunkReassembler;
   /** Present only for cross-account single-workspace controllers. */
   workspaceScopePromise: Promise<WorkspaceScopeAssertion | null> | null;
 }
@@ -320,8 +326,10 @@ export class RidgeCloudHost {
       cid,
       pc,
       dc: null,
+      paneDc: null,
       ephemeral: null,
       session: null,
+      paneSession: null,
       handshakeDone: false,
       bridge: null,
       state: 'connecting',
@@ -335,10 +343,12 @@ export class RidgeCloudHost {
       onDrained: null,
       outbound: new PriorityFrameQueue({
         send: (frame) => this.sealAndSend(conn!, frame),
-        canSendPane: () => (conn?.dc?.bufferedAmount ?? 0) < BUFFERED_HIGH_WATERMARK,
+        canSendPane: () => ((conn?.paneDc ?? conn?.dc)?.bufferedAmount ?? 0) < BUFFERED_HIGH_WATERMARK,
       }),
       sendMsgId: 0,
       reassembler: new ChunkReassembler(),
+      paneSendMsgId: 0,
+      paneReassembler: new ChunkReassembler(),
       workspaceScopePromise: null,
     };
     this.conns.set(cid, conn);
@@ -361,8 +371,8 @@ export class RidgeCloudHost {
     };
     // host 是 answerer：DataChannel 由 controller 创建 → 被动接收。
     pc.ondatachannel = (ev) => {
-      if (ev.channel.label !== DC_LABEL) return;
-      this.attachDataChannel(conn!, ev.channel);
+      if (ev.channel.label === DC_LABEL) this.attachDataChannel(conn!, ev.channel);
+      else if (ev.channel.label === DC_PANE_LABEL) this.attachPaneDataChannel(conn!, ev.channel);
     };
     this.emitSessions();
     return conn;
@@ -391,8 +401,22 @@ export class RidgeCloudHost {
       if (!this.closed) this.teardownConn(conn.cid, false);
     };
     dc.onmessage = (ev) => {
-      this.onDataChannelMessage(conn, ev.data);
+      this.onDataChannelMessage(conn, ev.data, 'control');
     };
+  }
+
+  private attachPaneDataChannel(conn: ControllerConn, dc: RTCDataChannel): void {
+    conn.paneDc = dc;
+    dc.binaryType = 'arraybuffer';
+    dc.bufferedAmountLowThreshold = BUFFERED_LOW_WATERMARK;
+    dc.onbufferedamountlow = () => {
+      conn.outbound.resume();
+      conn.onDrained?.();
+    };
+    dc.onclose = () => {
+      if (conn.paneDc === dc) conn.paneDc = null;
+    };
+    dc.onmessage = (ev) => this.onDataChannelMessage(conn, ev.data, 'pane');
   }
 
   /**
@@ -408,8 +432,12 @@ export class RidgeCloudHost {
     conn.ephemeral = generateEphemeralKeyPair();
     conn.handshakeDone = false;
     conn.session = null;
+    conn.paneSession = null;
     conn.outbound.clear();
     conn.reassembler.reset(); // 新会话：清掉上一会话遗留的在途分片
+    conn.paneReassembler.reset();
+    conn.sendMsgId = 0;
+    conn.paneSendMsgId = 0;
     // B3：把本端临时公钥经**已认证信令**旁路定向上报给该 cid 的 controller，供其比对
     // DataChannel 握手公钥（两条独立通道，网络 MITM 无法同时篡改）。host 回落 0x01 时该旁路
     // 生效；host 发 0x02 时 controller 走更强的设备签名验证（忽略旁路），此上报无害。
@@ -480,7 +508,7 @@ export class RidgeCloudHost {
     return !this.closed && this.conns.get(conn.cid) === conn && conn.dc?.readyState === 'open';
   }
 
-  private onDataChannelMessage(conn: ControllerConn, data: unknown): void {
+  private onDataChannelMessage(conn: ControllerConn, data: unknown, lane: 'control' | 'pane' = 'control'): void {
     const bytes = toBytes(data);
     if (!bytes) return;
 
@@ -488,6 +516,7 @@ export class RidgeCloudHost {
     // 先收后发（概念 4-桌面）：收到 controller 临时公钥后才派生会话 + 发本端握手响应（0x02
     // 签名 / 回落 0x01）。
     if (!conn.handshakeDone) {
+      if (lane !== 'control') return;
       try {
         const controllerPub = decodeHandshakeFrame(bytes);
         if (!conn.ephemeral) throw new Error('本端临时密钥缺失');
@@ -495,6 +524,7 @@ export class RidgeCloudHost {
         const key = deriveSessionKey(hostEph.privateKey, hostEph.publicKey, controllerPub);
         // host 端发出方向为 host→controller(dir=0)。
         conn.session = new E2eeSession(key, DIR_HOST_TO_CONTROLLER);
+        conn.paneSession = new E2eeSession(key, DIR_HOST_TO_CONTROLLER);
         conn.handshakeDone = true;
         // 零信任 #1（概念 5）：本会话信道绑定 transcript（host 用本机 TOTP 种子验
         // controller 的 totp-bind）。两端独立计算（字典序排序）得同一值。
@@ -514,11 +544,13 @@ export class RidgeCloudHost {
     }
 
     // 业务帧：先经传输层重组（分片→完整密文），再解密交给该 cid 的桥。
-    if (!conn.session || !conn.bridge) return;
-    const ciphertext = conn.reassembler.push(bytes);
+    const session = lane === 'pane' ? conn.paneSession : conn.session;
+    const reassembler = lane === 'pane' ? conn.paneReassembler : conn.reassembler;
+    if (!session || !conn.bridge) return;
+    const ciphertext = reassembler.push(bytes);
     if (!ciphertext) return; // 半帧（继续等后续片）或坏帧（已丢弃）
     try {
-      const plaintext = conn.session.open(ciphertext);
+      const plaintext = session.open(ciphertext);
       // SECURITY (audit #4): drop oversized decrypted frames before demux/JSON.parse
       // so a connected peer can't OOM/stall the UI thread (match "drop bad frame").
       if (plaintext.length > MAX_PANE_FRAME_BYTES) return;
@@ -601,7 +633,7 @@ export class RidgeCloudHost {
     // §背压（弱网 P1）：注入 DataChannel 流控（bufferedAmount 读取 + drain 订阅）。bridge 在
     // bufferedAmount 过高时丢 pane 帧、回落后请求 host 重放 RIS+scrollback。
     bridge.attachChannelControl?.({
-      bufferedAmount: () => conn.dc?.bufferedAmount ?? 0,
+      bufferedAmount: () => (conn.paneDc ?? conn.dc)?.bufferedAmount ?? 0,
       onDrained: (cb) => {
         conn.onDrained = cb;
         return () => {
@@ -620,20 +652,27 @@ export class RidgeCloudHost {
   }
 
   private sealAndSend(conn: ControllerConn, plaintext: Uint8Array): void {
-    if (conn.state !== 'connected' || !conn.session || conn.dc?.readyState !== 'open') return;
+    if (conn.state !== 'connected') return;
+    const wantsPane = plaintext[0] === CHANNEL.PANE_RAW;
+    const usePane = wantsPane && conn.paneSession !== null && conn.paneDc?.readyState === 'open';
+    const session = usePane ? conn.paneSession : conn.session;
+    const lane = usePane ? 'pane' : 'control';
+    const dc = usePane ? conn.paneDc : conn.dc;
+    if (!session || dc?.readyState !== 'open') return;
     try {
-      const sealed = conn.session.seal(plaintext);
-      const msgId = conn.sendMsgId++;
+      const sealed = session.seal(plaintext);
+      const msgId = usePane ? conn.paneSendMsgId++ : conn.sendMsgId++;
       // 密文 ≤ 单条上限走单条 SINGLE；否则切成多条 ≤16KiB 的 CHUNK，接收端按序重组。
-      for (const wire of encodeChunks(sealed, msgId)) this.rawSend(conn, wire);
+      for (const wire of encodeChunks(sealed, msgId)) this.rawSend(conn, wire, lane);
     } catch (e: unknown) {
       this.fail(e instanceof Error ? e.message : '加密发送失败', 'INTERNAL');
     }
   }
 
-  private rawSend(conn: ControllerConn, bytes: Uint8Array): void {
-    if (conn.dc && conn.dc.readyState === 'open') {
-      conn.dc.send(
+  private rawSend(conn: ControllerConn, bytes: Uint8Array, lane: 'control' | 'pane' = 'control'): void {
+    const dc = lane === 'pane' ? conn.paneDc : conn.dc;
+    if (dc && dc.readyState === 'open') {
+      dc.send(
         bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
       );
     }
@@ -651,12 +690,20 @@ export class RidgeCloudHost {
       conn.dc.onbufferedamountlow = null;
       try { conn.dc.close(); } catch { /* ignore */ }
     }
+    if (conn.paneDc) {
+      conn.paneDc.onopen = conn.paneDc.onclose = conn.paneDc.onmessage = null;
+      conn.paneDc.onbufferedamountlow = null;
+      try { conn.paneDc.close(); } catch { /* ignore */ }
+      conn.paneDc = null;
+    }
     conn.onDrained = null;
     conn.pc.onicecandidate = conn.pc.ondatachannel = conn.pc.onconnectionstatechange = null;
     try { conn.pc.close(); } catch { /* ignore */ }
     conn.ephemeral = null;
     conn.outbound.clear();
     conn.session = null;
+    conn.paneSession = null;
+    conn.paneReassembler.reset();
     if (notify) this.emitSessions();
   }
 

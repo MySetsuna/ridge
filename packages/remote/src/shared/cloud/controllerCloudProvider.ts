@@ -49,7 +49,7 @@ import { checkOrPinDeviceIdentity } from './deviceTrust';
 import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
-import { MAX_PANE_FRAME_BYTES, encodeJsonFrame } from '@ridge/remote';
+import { CHANNEL, MAX_PANE_FRAME_BYTES, encodeJsonFrame } from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import { getOrCreateCli } from './controllerInstanceId';
 import { backoffMs } from '../reconnectPolicy';
@@ -65,6 +65,8 @@ const KEY_BIND_GRACE_MS = 3000;
 
 /** DataChannel 标签（契约 §1.1 / §7：label="ridge"）。 */
 const DC_LABEL = 'ridge';
+/** Optional bulk lane; old hosts ignore it and controller falls back to ridge. */
+const DC_PANE_LABEL = 'ridge-pane';
 
 // ── 断线自动重连参数（R17-RECONN：shared reconnectPolicy，parity with Rust）──
 /** 'disconnected'（ICE 抖动）自愈宽限（ms）：超时仍未回 connected 才重连。 */
@@ -134,17 +136,19 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private ws: WebSocket | null = null;
   private pc: RTCPeerConnection | null = null;
   private dc: RTCDataChannel | null = null;
+  private paneDc: RTCDataChannel | null = null;
 
   private ephemeral: EphemeralKeyPair | null = null;
   private session: E2eeSession | null = null;
+  private paneSession: E2eeSession | null = null;
   /** Keep future control/input ahead of queued pane frames before sealing. */
   private readonly outbound = new PriorityFrameQueue({
     send: (frame) => this.sealAndSend(frame),
-    canSendPane: () => (this.dc?.bufferedAmount ?? 0) < BUFFERED_HIGH_WATERMARK,
+    canSendPane: () => ((this.paneDc ?? this.dc)?.bufferedAmount ?? 0) < BUFFERED_HIGH_WATERMARK,
     onPaneDrop: () =>
       remotePerfMark('transport-send', {
         transport: 'cloud-webrtc-pane-drop',
-        queueBytes: this.dc?.bufferedAmount ?? 0,
+        queueBytes: (this.paneDc ?? this.dc)?.bufferedAmount ?? 0,
       }),
   });
   private handshakeDone = false;
@@ -153,8 +157,11 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   // ── 传输层分片（修 RTCDataChannel max-message-size，见 cloudChunk.ts）──
   /** 发送帧计数器（每帧一个 msgId，供接收端重组）。 */
   private sendMsgId = 0;
+  /** Pane bulk lane has an independent chunk id space and E2EE counter. */
+  private paneSendMsgId = 0;
   /** 入站分片重组器（按序拼回完整密文再 open）。 */
   private reassembler = new ChunkReassembler();
+  private paneReassembler = new ChunkReassembler();
 
   private state: CloudConnectionState = 'disconnected';
   private closed = false;
@@ -326,6 +333,11 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     // controller 是 offerer：**主动创建** DataChannel（host 端 ondatachannel 被动接收）。
     const dc = pc.createDataChannel(DC_LABEL, { ordered: true });
     this.attachDataChannel(dc);
+    // Keep control/input isolated from PTY bulk when the peer supports the
+    // optional lane. Legacy hosts simply ignore this channel and continue on
+    // the authenticated `ridge` channel.
+    const paneDc = pc.createDataChannel(DC_PANE_LABEL, { ordered: true });
+    this.attachPaneDataChannel(paneDc);
   }
 
   private attachDataChannel(dc: RTCDataChannel): void {
@@ -342,8 +354,19 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       if (!this.closed) this.scheduleReconnect('数据通道已关闭');
     };
     dc.onmessage = (ev) => {
-      this.onDataChannelMessage(ev.data);
+      this.onDataChannelMessage(ev.data, 'control');
     };
+  }
+
+  private attachPaneDataChannel(dc: RTCDataChannel): void {
+    this.paneDc = dc;
+    dc.binaryType = 'arraybuffer';
+    dc.bufferedAmountLowThreshold = BUFFERED_LOW_WATERMARK;
+    dc.onbufferedamountlow = () => this.outbound.resume();
+    dc.onclose = () => {
+      if (this.paneDc === dc) this.paneDc = null;
+    };
+    dc.onmessage = (ev) => this.onDataChannelMessage(ev.data, 'pane');
   }
 
   /** 发起 E2EE 握手：本端生成临时密钥对并发送 0x01||pub32（契约 §7.1）。 */
@@ -351,26 +374,31 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.ephemeral = generateEphemeralKeyPair();
     this.handshakeDone = false;
     this.session = null;
+    this.paneSession = null;
+    this.sendMsgId = 0;
+    this.paneSendMsgId = 0;
     this.outbound.clear();
     this.reassembler.reset(); // 新会话：清掉上一会话遗留的在途分片
+    this.paneReassembler.reset();
     this.rawSend(encodeHandshakeFrame(this.ephemeral.publicKey));
     // B3：把本端临时公钥经**已认证信令**旁路上报，供 host 比对 DataChannel 握手公钥
     // （走与 DataChannel 不同的 TLS 信令通道，网络 MITM 无法同时篡改两者）。
     this.sendSignal({ t: 'e2ee-pubkey', pubkey: bytesToBase64(this.ephemeral.publicKey) });
   }
 
-  private onDataChannelMessage(data: unknown): void {
+  private onDataChannelMessage(data: unknown, lane: 'control' | 'pane' = 'control'): void {
     const bytes = toBytes(data);
     if (!bytes) return;
     remotePerfMark('raw-receive', {
       bytes: bytes.byteLength,
       transport: 'cloud-webrtc-wire',
-      queueBytes: this.dc?.bufferedAmount ?? 0,
+      queueBytes: (lane === 'pane' ? this.paneDc : this.dc)?.bufferedAmount ?? 0,
     });
     if (this.pc) void remotePerfSamplePeerConnection(this.pc);
 
     // 握手完成前，首帧必须是对端握手帧；否则断开（契约 §7.1）。
     if (!this.handshakeDone) {
+      if (lane !== 'control') return;
       try {
         // 按首字节分派：0x01 旧裸公钥 / 0x02 带设备身份签名（方案 X，零信任 #2）。
         const hs = decodeAnyHandshakeFrame(bytes);
@@ -380,6 +408,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
         const key = deriveSessionKey(this.ephemeral.privateKey, myPub, hs.ephPub);
         // controller 端发出方向为 controller→host(dir=1)；与 host provider 严格镜像。
         this.session = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
+        this.paneSession = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
         this.handshakeDone = true;
         // 握手用完即焚临时私钥引用（公钥已在 startE2eeHandshake 经信令上报）。
         this.ephemeral = null;
@@ -398,13 +427,15 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     }
 
     // 业务帧：先经传输层重组（分片→完整密文），再解密上抛明文 mux 帧字节。
-    if (!this.session) return;
+    const session = lane === 'pane' ? this.paneSession : this.session;
+    const reassembler = lane === 'pane' ? this.paneReassembler : this.reassembler;
+    if (!session) return;
     // B3：绑定判定通过前不放行任何业务帧（防绑定未决期处理对端数据）。
     if (!this.bindingAccepted) return;
-    const ciphertext = this.reassembler.push(bytes);
+    const ciphertext = reassembler.push(bytes);
     if (!ciphertext) return; // 半帧（继续等后续片）或坏帧（已丢弃）
     try {
-      const plaintext = this.session.open(ciphertext);
+      const plaintext = session.open(ciphertext);
       // SECURITY (audit #4): drop oversized decrypted frames before they reach the
       // adapter's demux/JSON.parse so a peer can't OOM/stall the UI thread.
       if (plaintext.length > MAX_PANE_FRAME_BYTES) return;
@@ -540,9 +571,15 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   }
 
   private sealAndSend(plaintext: Uint8Array): void {
-    if (this.state !== 'connected' || !this.session || this.dc?.readyState !== 'open') return;
+    if (this.state !== 'connected') return;
+    const wantsPane = plaintext[0] === CHANNEL.PANE_RAW;
+    const usePane = wantsPane && this.paneSession !== null && this.paneDc?.readyState === 'open';
+    const session = usePane ? this.paneSession : this.session;
+    const lane = usePane ? 'pane' : 'control';
+    const dc = usePane ? this.paneDc : this.dc;
+    if (!session || dc?.readyState !== 'open') return;
     try {
-      this.sendSealed(this.session.seal(plaintext));
+      this.sendSealed(session.seal(plaintext), lane);
     } catch (e: unknown) {
       // counter 接近上限等 → 触发重建。
       this.fail(e instanceof Error ? e.message : '加密发送失败', 'INTERNAL');
@@ -553,20 +590,21 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
    * 把一帧已 seal 的密文经传输层分片后发出（修 RTCDataChannel max-message-size）。
    * 每帧一个 msgId；密文 ≤ 单条上限走单条 SINGLE，否则切成多条 ≤16KiB 的 CHUNK。
    */
-  private sendSealed(ciphertext: Uint8Array): void {
-    const msgId = this.sendMsgId++;
-    for (const wire of encodeChunks(ciphertext, msgId)) this.rawSend(wire);
+  private sendSealed(ciphertext: Uint8Array, lane: 'control' | 'pane' = 'control'): void {
+    const msgId = lane === 'pane' ? this.paneSendMsgId++ : this.sendMsgId++;
+    for (const wire of encodeChunks(ciphertext, msgId)) this.rawSend(wire, lane);
   }
 
-  private rawSend(bytes: Uint8Array): void {
-    if (this.dc && this.dc.readyState === 'open') {
+  private rawSend(bytes: Uint8Array, lane: 'control' | 'pane' = 'control'): void {
+    const dc = lane === 'pane' ? this.paneDc : this.dc;
+    if (dc && dc.readyState === 'open') {
       remotePerfMark('transport-send', {
         bytes: bytes.byteLength,
         transport: 'cloud-webrtc-wire',
-        queueBytes: this.dc.bufferedAmount,
+        queueBytes: dc.bufferedAmount,
       });
       // 拷贝出独立 ArrayBuffer，避免发送共享底层 buffer 的视图。
-      this.dc.send(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+      dc.send(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
     }
   }
 
@@ -856,6 +894,12 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       try { this.dc.close(); } catch { /* ignore */ }
       this.dc = null;
     }
+    if (this.paneDc) {
+      this.paneDc.onopen = this.paneDc.onclose = this.paneDc.onmessage = null;
+      this.paneDc.onbufferedamountlow = null;
+      try { this.paneDc.close(); } catch { /* ignore */ }
+      this.paneDc = null;
+    }
     if (this.pc) {
       this.pc.onicecandidate = this.pc.ondatachannel = this.pc.onconnectionstatechange = null;
       try { this.pc.close(); } catch { /* ignore */ }
@@ -869,6 +913,10 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.outbound.clear();
     this.ephemeral = null;
     this.session = null;
+    this.paneSession = null;
+    this.paneReassembler.reset();
+    this.sendMsgId = 0;
+    this.paneSendMsgId = 0;
     this.handshakeDone = false;
   }
 
@@ -913,6 +961,12 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       try { this.dc.close(); } catch { /* ignore */ }
       this.dc = null;
     }
+    if (this.paneDc) {
+      this.paneDc.onopen = this.paneDc.onclose = this.paneDc.onmessage = null;
+      this.paneDc.onbufferedamountlow = null;
+      try { this.paneDc.close(); } catch { /* ignore */ }
+      this.paneDc = null;
+    }
     if (this.pc) {
       this.pc.onicecandidate = this.pc.ondatachannel = this.pc.onconnectionstatechange = null;
       try { this.pc.close(); } catch { /* ignore */ }
@@ -926,6 +980,10 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.outbound.clear();
     this.ephemeral = null;
     this.session = null;
+    this.paneSession = null;
+    this.paneReassembler.reset();
+    this.sendMsgId = 0;
+    this.paneSendMsgId = 0;
     this.handshakeDone = false;
     this.offerStarted = false;
     // B3：清宽限计时防泄漏（bindingMode 保留供断开后诊断读取，下次 connect 再整体重置）。

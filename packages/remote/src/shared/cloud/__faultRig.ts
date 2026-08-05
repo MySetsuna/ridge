@@ -121,13 +121,16 @@ export class FaultPeerConnection {
   remoteDescription: RTCSessionDescriptionInit | null = null;
   readonly offers: Array<RTCOfferOptions | undefined> = [];
   channel: FaultDataChannel | null = null;
+  paneChannel: FaultDataChannel | null = null;
 
   constructor(readonly config?: RTCConfiguration) {
     FaultPeerConnection.instances.push(this);
   }
   createDataChannel(label: string, init?: RTCDataChannelInit): FaultDataChannel {
-    this.channel = new FaultDataChannel(label, init);
-    return this.channel;
+    const channel = new FaultDataChannel(label, init);
+    if (label === 'ridge') this.channel = channel;
+    else if (label === 'ridge-pane') this.paneChannel = channel;
+    return channel;
   }
   async createOffer(options?: RTCOfferOptions): Promise<RTCSessionDescriptionInit> {
     this.offers.push(options);
