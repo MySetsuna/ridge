@@ -85,6 +85,21 @@ jobs:
               "${RIDGE_CLOUD_ARTIFACT_URL%/}/status"
           )"
           jq -e '.data.desktopIndex == true and .data.mobileIndex == true' <<<"$status"
+          expected_sha="$(git rev-parse --short HEAD)"
+          expected_version="$(node -p "require('./package.json').version")"
+          public_url='https://s4host-s4test.9527127.xyz'
+          desktop_meta="$(curl --fail --silent --show-error --retry 5 --retry-delay 2 \
+            -H 'Cache-Control: no-cache' \
+            -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126 Safari/537.36' \
+            "${public_url}/artifact.json?probe=${expected_sha}")"
+          mobile_meta="$(curl --fail --silent --show-error --retry 5 --retry-delay 2 \
+            -H 'Cache-Control: no-cache' \
+            -A 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1' \
+            "${public_url}/artifact.json?probe=${expected_sha}")"
+          jq -e --arg sha "$expected_sha" --arg version "$expected_version" \
+            '.artifactSchema == 1 and .gitSha == $sha and .version == $version' <<<"$desktop_meta"
+          jq -e --arg sha "$expected_sha" --arg version "$expected_version" \
+            '.artifactSchema == 1 and .gitSha == $sha and .version == $version' <<<"$mobile_meta"
           curl --fail --silent --show-error --retry 5 --retry-delay 2 \
             --output /dev/null \
             'https://s4host-s4test.9527127.xyz/favicon.png'

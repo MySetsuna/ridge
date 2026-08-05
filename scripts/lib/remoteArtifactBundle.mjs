@@ -13,6 +13,42 @@ export function buildManifest({ version, gitSha, builtAt }) {
 }
 
 /**
+ * Write a public, payload-free artifact fingerprint into one publish root.
+ * The static host UA-splits desktop/mobile roots, so each root needs its own
+ * copy. Keep the file tiny and identical to the upload manifest fields so a
+ * post-activation probe can prove which Git commit is actually being served.
+ */
+export function writeArtifactMetadata(dir, manifest) {
+  const file = path.join(dir, 'artifact.json');
+  fs.writeFileSync(
+    file,
+    `${JSON.stringify({ artifactSchema: 1, ...manifest }, null, 2)}\n`,
+    'utf8',
+  );
+  return file;
+}
+
+/** Read and validate a previously built root fingerprint for --no-build. */
+export function readArtifactMetadata(dir) {
+  try {
+    const value = JSON.parse(fs.readFileSync(path.join(dir, 'artifact.json'), 'utf8'));
+    if (
+      value?.artifactSchema !== 1
+      || typeof value.version !== 'string'
+      || typeof value.gitSha !== 'string'
+      || typeof value.builtAt !== 'string'
+    ) return null;
+    return {
+      version: value.version,
+      gitSha: value.gitSha,
+      builtAt: value.builtAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 递归收集 dir 下所有文件，path = `<prefix>/<相对路径>`（正斜杠）。
  * 返回 [{ path, abs }]，abs 供 packBundle 读字节。
  */
