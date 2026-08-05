@@ -16,7 +16,12 @@
 // peers (they literally share encode/demux via cloudMux).
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { CloudHostBridge, negotiateHello, toJsonRpcError } from './cloudHostBridge';
+import {
+  CloudHostBridge,
+  PANE_OUTPUT_FRAME_BYTES,
+  negotiateHello,
+  toJsonRpcError,
+} from './cloudHostBridge';
 import {
   CHANNEL,
   demuxFrame,
@@ -594,6 +599,18 @@ describe('CloudHostBridge — §4 TOTP brute-force lockout (audit #3)', () => {
     expect(rig.sentPane()).toHaveLength(1);
   });
 
+  it('splits a burst before sealing so control frames can interleave', () => {
+    const rig = makeRig();
+    const raw = new Uint8Array(PANE_OUTPUT_FRAME_BYTES + 1);
+    raw.forEach((_, index) => raw[index] = index & 0xff);
+    rig.bridge.pushPaneOutput('pane-1', raw);
+    const frames = rig.sentPane();
+    expect(frames).toHaveLength(2);
+    expect(frames[0].bytes).toHaveLength(PANE_OUTPUT_FRAME_BYTES);
+    expect(frames[1].bytes).toHaveLength(1);
+    expect([...frames[0].bytes, ...frames[1].bytes]).toEqual([...raw]);
+  });
+
   // ── 零信任 #1：totp-bind（信道绑定 HMAC tag，明文码不上线）── 概念 5 ────────────
   // controller 在收到 host 0x02 后改发 `{t:'totp-bind', tag:base64(HMAC)}` 替代明文
   // `{t:'totp-verify', code}`。host 经注入的 totpBindVerifier（= verify_remote_totp_bind，
@@ -686,14 +703,14 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
     };
   }
 
-  it('bufferedAmount 高于上水位(8MiB) → 丢 pane 帧；回落后仅向当前控制端发私有快照', async () => {
+  it('bufferedAmount 高于上水位(256KiB) → 丢 pane 帧；回落后仅向当前控制端发私有快照', async () => {
     const invoke = vi.fn(async () => ({ frame: '\x1bcRECOVERED' }));
     const rig = makeRig({ invoke });
     const ch = fakeChannel();
     rig.bridge.attachChannelControl(ch.ctrl);
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'pane-1', active: true } });
 
-    // 高水位（>8 MiB）→ 丢帧，未发出 pane 帧。
+    // 高水位（>256 KiB）→ 丢帧，未发出 pane 帧。
     ch.setBuffered(9 * 1024 * 1024);
     rig.bridge.pushPaneOutput('pane-1', new Uint8Array([1, 2, 3]));
     expect(rig.sentPane()).toHaveLength(0);
@@ -728,13 +745,13 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
     expect([...panes[0].bytes]).toEqual([9, 9]);
   });
 
-  it('background stops at the existing low watermark while active uses reserved capacity', () => {
+  it('background stops at zero while active stays within the input latency budget', () => {
     const rig = makeRig();
     const ch = fakeChannel();
     rig.bridge.attachChannelControl(ch.ctrl);
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'active', active: true } });
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'background' } });
-    ch.setBuffered(2 * 1024 * 1024);
+    ch.setBuffered(128 * 1024);
     rig.bridge.pushPaneOutput('background', new Uint8Array([1]));
     rig.bridge.pushPaneOutput('active', new Uint8Array([2]));
     expect(rig.sentPane().map((p) => p.paneId)).toEqual(['active']);

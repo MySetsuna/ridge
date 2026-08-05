@@ -9,6 +9,7 @@ export type RemotePerfStage =
   | 'input-rpc'
   | 'resize-rpc'
   | 'transport-send'
+  | 'transport-stats'
   | 'raw-receive'
   | 'raw-feed'
   | 'pane-switch'
@@ -22,6 +23,12 @@ export interface RemotePerfSample {
   queueBytes?: number;
   paneKey?: string;
   transport?: string;
+  candidateType?: string;
+  rttMs?: number;
+  availableOutgoingBitrate?: number;
+  bytesSent?: number;
+  bytesReceived?: number;
+  packetsLost?: number;
 }
 
 export interface RemotePerfSnapshot {
@@ -37,6 +44,7 @@ export interface RemotePerfToken {
 
 const MAX_SAMPLES = 256;
 const samples: RemotePerfSample[] = [];
+const lastStatsAt = new WeakMap<object, number>();
 
 function enabled(): boolean {
   return (globalThis as unknown as { __RIDGE_REMOTE_PERF_TRACE?: boolean })
@@ -85,6 +93,64 @@ export function remotePerfSnapshot(): RemotePerfSnapshot {
 
 export function resetRemotePerfTrace(): void {
   samples.length = 0;
+}
+
+/** Sample WebRTC path facts without retaining the stats report or payloads. */
+export async function remotePerfSamplePeerConnection(
+  pc: Pick<RTCPeerConnection, 'getStats'>,
+): Promise<void> {
+  if (!enabled()) return;
+  const nowMs = now();
+  const key = pc as object;
+  const previous = lastStatsAt.get(key);
+  if (previous !== undefined && nowMs - previous < 1000) return;
+  lastStatsAt.set(key, nowMs);
+  try {
+    const report = await pc.getStats();
+    let selected: Record<string, unknown> | undefined;
+    let localCandidate: Record<string, unknown> | undefined;
+    let inbound: Record<string, unknown> | undefined;
+    let outbound: Record<string, unknown> | undefined;
+    let dataChannel: Record<string, unknown> | undefined;
+    const records: Record<string, unknown>[] = [];
+    report.forEach((raw) => {
+      const value = raw as unknown as Record<string, unknown>;
+      records.push(value);
+      if (value.type === 'candidate-pair' && (value.selected || value.nominated)) selected = value;
+      if (value.type === 'inbound-rtp' && value.kind === 'application') inbound = value;
+      if (value.type === 'outbound-rtp' && value.kind === 'application') outbound = value;
+      if (value.type === 'data-channel') dataChannel = value;
+    });
+    if (selected) {
+      localCandidate = records.find(
+        (value) => value.type === 'local-candidate' && value.id === selected?.localCandidateId,
+      );
+    }
+    append({
+      stage: 'transport-stats',
+      at: nowMs,
+      transport: 'cloud-webrtc',
+      candidateType: typeof localCandidate?.candidateType === 'string' ? localCandidate.candidateType : undefined,
+      rttMs: typeof selected?.currentRoundTripTime === 'number' ? selected.currentRoundTripTime * 1000 : undefined,
+      availableOutgoingBitrate:
+        typeof selected?.availableOutgoingBitrate === 'number' ? selected.availableOutgoingBitrate : undefined,
+      bytesSent:
+        typeof outbound?.bytesSent === 'number'
+          ? outbound.bytesSent
+          : typeof dataChannel?.bytesSent === 'number'
+            ? dataChannel.bytesSent
+            : undefined,
+      bytesReceived:
+        typeof inbound?.bytesReceived === 'number'
+          ? inbound.bytesReceived
+          : typeof dataChannel?.bytesReceived === 'number'
+            ? dataChannel.bytesReceived
+            : undefined,
+      packetsLost: typeof inbound?.packetsLost === 'number' ? inbound.packetsLost : undefined,
+    });
+  } catch {
+    // getStats is optional on older WebViews; tracing must never affect input.
+  }
 }
 
 if (typeof globalThis !== 'undefined') {

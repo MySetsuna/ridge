@@ -37,6 +37,14 @@ import { base64ToBytes, bytesToBase64 } from './e2ee';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { isRemoteAllowed } from './remoteAllowlist';
 import { decideRemoteInvoke } from '../transport/remoteInvokeAdmit';
+import {
+  BUFFERED_HIGH_WATERMARK,
+  BUFFERED_LOW_WATERMARK,
+} from './cloudTransportLimits';
+export {
+  BUFFERED_HIGH_WATERMARK,
+  BUFFERED_LOW_WATERMARK,
+} from './cloudTransportLimits';
 
 /** §7.3 D9：本 host 实现的协议版本（与 server.rs `REMOTE_PROTOCOL_VERSION` 对齐）。 */
 export const HOST_PROTOCOL_VERSION = 1;
@@ -89,11 +97,11 @@ export interface ChannelBackpressure {
 
 /**
  * DataChannel 背压上水位：`bufferedAmount` 超过即丢 pane 帧（防 SCTP 发送缓冲无界增长
- * → OOM/卡死）。8 MiB 远低于 libwebrtc ~16 MiB 硬上限，留余量给在途帧。低水位（1 MiB）
- * 在 provider 侧设 `bufferedAmountLowThreshold`，回落经 onDrained 通知。
+ * → OOM/卡死）。单一 ordered channel 必须给控制/输入留出低延迟预算，故上水位为 256 KiB，
+ * 低水位为 64 KiB；provider 回落经 `bufferedamountlow` 触发 onDrained。
  */
-export const BUFFERED_LOW_WATERMARK = 1 * 1024 * 1024;
-export const BUFFERED_HIGH_WATERMARK = 8 * 1024 * 1024;
+/** Split pane bursts so a queued control frame can run between output frames. */
+export const PANE_OUTPUT_FRAME_BYTES = 32 * 1024;
 
 /**
  * 执行本地命令的注入点。生产环境为 `@tauri-apps/api/core` 的 `invoke`。
@@ -811,7 +819,7 @@ export class CloudHostBridge {
     // 记录待重同步；缓冲回落后 onChannelDrained 请求 host 重放 RIS+scrollback 修复空洞。
     // Ordered SCTP cannot overtake bytes already queued. Background therefore
     // admits only when the channel is empty: at most one low frame can precede
-    // a newly-active frame. Active retains the existing 1–8 MiB reserve.
+    // a newly-active frame. Active retains only the 256 KiB latency reserve.
     const limit = paneId === this.activePaneId ? BUFFERED_HIGH_WATERMARK : 0;
     if (this.channel && this.channel.bufferedAmount() > limit) {
       this.backpressuredPanes.add(paneId);
@@ -822,7 +830,21 @@ export class CloudHostBridge {
       return;
     }
     try {
-      this.sendFrame(encodePaneFrame(paneId, raw));
+      // Split before E2EE sealing. Counters remain frame-ordered, while the
+      // provider can schedule control/input between bounded pane frames.
+      for (let offset = 0; offset < raw.byteLength; offset += PANE_OUTPUT_FRAME_BYTES) {
+        if (this.channel && this.channel.bufferedAmount() > limit) {
+          this.backpressuredPanes.add(paneId);
+          break;
+        }
+        this.sendFrame(
+          encodePaneFrame(
+            paneId,
+            raw.subarray(offset, Math.min(raw.byteLength, offset + PANE_OUTPUT_FRAME_BYTES)),
+          ),
+        );
+      }
+      if (raw.byteLength === 0) this.sendFrame(encodePaneFrame(paneId, raw));
     } catch (e) {
       // paneId 过长等编码错误：丢弃该帧但不断连。
       this.log('error', `failed to encode pane frame for ${paneId}; dropped`, e);
@@ -859,7 +881,16 @@ export class CloudHostBridge {
         maxBytes: 256 * 1024,
       }) as { frame?: unknown };
       if (this.activePaneId !== paneId || typeof frame?.frame !== 'string') return;
-      this.sendFrame(encodePaneFrame(paneId, new TextEncoder().encode(frame.frame)));
+      const bytes = new TextEncoder().encode(frame.frame);
+      for (let offset = 0; offset < bytes.byteLength; offset += PANE_OUTPUT_FRAME_BYTES) {
+        this.sendFrame(
+          encodePaneFrame(
+            paneId,
+            bytes.subarray(offset, Math.min(bytes.byteLength, offset + PANE_OUTPUT_FRAME_BYTES)),
+          ),
+        );
+      }
+      if (bytes.byteLength === 0) this.sendFrame(encodePaneFrame(paneId, bytes));
       this.backpressuredPanes.delete(paneId);
     } catch (e) {
       this.log('warn', `private pane recovery(${paneId}) failed`, e);

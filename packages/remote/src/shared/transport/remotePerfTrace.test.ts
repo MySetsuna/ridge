@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   remotePerfEnd,
   remotePerfMark,
+  remotePerfSamplePeerConnection,
   remotePerfSnapshot,
   remotePerfStart,
   resetRemotePerfTrace,
@@ -27,5 +28,37 @@ describe('remotePerfTrace', () => {
       expect.objectContaining({ stage: 'pane-switch', paneKey: 'ws:pane', bytes: 4 }),
       expect.objectContaining({ stage: 'raw-feed', paneKey: 'ws:pane', bytes: 4 }),
     ]);
+  });
+
+  it('records WebRTC path facts without retaining the stats report', async () => {
+    const report = [
+      {
+        type: 'candidate-pair',
+        selected: true,
+        localCandidateId: 'local',
+        currentRoundTripTime: 0.042,
+        availableOutgoingBitrate: 240_000,
+      },
+      { type: 'local-candidate', id: 'local', candidateType: 'relay' },
+      { type: 'inbound-rtp', kind: 'application', bytesReceived: 1234, packetsLost: 2 },
+      { type: 'outbound-rtp', kind: 'application', bytesSent: 5678 },
+    ];
+    let called = false;
+    await remotePerfSamplePeerConnection({
+      getStats: async () => {
+        called = true;
+        return { forEach: (visit: (value: unknown) => void) => report.forEach(visit) } as never;
+      },
+    });
+    expect(called).toBe(true);
+    expect(remotePerfSnapshot().samples).toContainEqual(expect.objectContaining({
+      stage: 'transport-stats',
+      candidateType: 'relay',
+      rttMs: 42,
+      availableOutgoingBitrate: 240_000,
+      bytesSent: 5678,
+      bytesReceived: 1234,
+      packetsLost: 2,
+    }));
   });
 });
