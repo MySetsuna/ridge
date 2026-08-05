@@ -72,6 +72,11 @@ removes transport head-of-line blocking without adding a second connection.
   and reconnect state reset (`f5e9c2b0`). This closes the Host-topology path
   that could otherwise classify the focused pane as background and shed its
   live tail.
+- Desktop foreign-pane bindings now retain an explicit attached-pane set and
+  replay only that set after reconnect. A full WebRTC reconnect creates a new
+  Host bridge, so replaying only the previous active promotion could leave
+  live output unsubscribed; the focused pane is restored as `active:true`,
+  while discovered-but-never-attached panes stay unsubscribed (`7bbcae00`).
 - The transport slice is implemented locally (not yet published due today's
   release cap): Pane output is split into 32 KiB plaintext frames and routed
   to `ridge-pane` when available; control/input stays on `ridge`. The bounded
@@ -96,6 +101,8 @@ removes transport head-of-line blocking without adding a second connection.
 - `git diff --check` — passed (only expected LF/CRLF normalization notices).
 - Full Vitest — 154 files, 1585 passed, 1 skipped, exit code 0 (including the
   priority transport and WebRTC stats guards).
+- Reconnect subscription replay follow-up: full Vitest 154 files, 1586
+  passed, 1 skipped; `pnpm check` 0 errors / 0 warnings.
 - `pnpm build:remote:mobile` — production/PWA build passed; the desktop build
   also wrote `remote-dist/desktop` successfully (Vite emitted existing chunk
   split warnings through the PowerShell stderr wrapper).
@@ -119,6 +126,8 @@ the next allowed artifact publish. The dual-lane implementation is pushed as
 `7109c26` (superseding `67417a9`); controller outbound coverage and explicit
 probe/ready legacy fallback are added in `321a5d3` and `150272a`; the focused
 foreign-pane QoS promotion follows in `f5e9c2b0`.
+Reconnect subscription replay follows in `7bbcae00`; it is also not online
+until the next allowed artifact publish.
 
 No Desktop version number was advanced: the formal Desktop release remains
 `v0.1.60`. The requirement stays active until physical phone/PWA soak records
@@ -127,7 +136,7 @@ real network.
 
 The priority transport change is deliberately not a Remote/Cloud artifact
 today: the daily release cap is already exhausted. Online JavaScript therefore
-remains `e94d8c5`; the next artifact must contain `f5e9c2b0` (including the
+remains `e94d8c5`; the next artifact must contain `7bbcae00` (including the
 dual-lane `150272a` fix) and run the physical phone/PWA soak.
 
 ## NLM note
