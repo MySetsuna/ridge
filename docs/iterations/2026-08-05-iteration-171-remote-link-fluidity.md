@@ -104,6 +104,12 @@ removes transport head-of-line blocking without adding a second connection.
   high/low watermarks prevent a multi-megabyte PTY burst from holding a later
   keystroke behind ordered bulk traffic. Legacy peers transparently use the
   original lane.
+- `MainApp` now hands incoming Pane bytes to a bounded `PaneFeedScheduler`
+  (`b9459686`): 512 KiB per-pane cap, 32 KiB delivery steps, 64 KiB/frame
+  ceiling, active-pane-first plus one background turn, and a 4 ms wall-clock
+  budget. Overflow/parse failure requests one full resync; reconnect and Pane
+  teardown clear queued bytes. The keyed-surface gap still uses the existing
+  128 KiB hand-off buffer.
 - `remotePerfTrace` records bounded, payload-free `input-rpc`, `resize-rpc`,
   `transport-send`, `transport-stats`, `raw-receive`, `raw-feed`, `pane-switch`,
   and `pane-first-paint` samples. WebRTC stats include candidate type, RTT,
@@ -146,6 +152,17 @@ LAN evidence, not a physical public WebRTC/PWA soak.
   is recorded as-is rather than presented as a tree-pass.
 - Public phone/PWA soak remains an external acceptance gate.
 
+- Latest post-change LAN run at `2026-08-05T11:36:29Z` also passed Desktop
+  `canvas=true tree=false ws=true` and Mobile `canvas=true tree=true ws=true`,
+  with `browserErrors=[]` and real input/resize traffic. Evidence remains
+  `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
+
+- New output-scheduler follow-up (`b9459686`): full Vitest reports 155 files,
+  1594 passed, 1 skipped; `pnpm check` reports 0 errors/0 warnings. Mobile
+  build transformed 3933 modules with 38 PWA precache entries; desktop build
+  wrote `remote-dist/desktop` (the PowerShell wrapper still surfaces existing
+  Vite chunk-split warnings as stderr).
+
 ## Release status
 
 Commit `e94d8c5` is the online artifact. Remote/Cloud workflow `30987238096`
@@ -163,6 +180,8 @@ Rejected-close subscription rollback follows in `c9b8540d`; it is also not
 online until the next allowed artifact publish.
 Mobile subscription retry follows in `e8316548`; it is also not online until
 the next allowed artifact publish.
+Frame-budgeted Pane delivery follows in `b9459686`; it is also not online
+until the next allowed artifact publish.
 
 No Desktop version number was advanced: the formal Desktop release remains
 `v0.1.60`. The requirement stays active until physical phone/PWA soak records
@@ -171,8 +190,9 @@ real network.
 
 The priority transport change is deliberately not a Remote/Cloud artifact
 today: the daily release cap is already exhausted. Online JavaScript therefore
-remains `e94d8c5`; the next artifact must contain `e8316548` (including the
-dual-lane `150272a` fix) and run the physical phone/PWA soak.
+remains `e94d8c5`; the next artifact must contain `b9459686` (including the
+dual-lane `150272a` fix and frame-budgeted output) and run the physical
+phone/PWA soak.
 
 Live public fingerprint checked 2026-08-05: `/_app/version.json` still reports
 `1785916897644`, and scanning the entrypoint's JavaScript assets finds no
