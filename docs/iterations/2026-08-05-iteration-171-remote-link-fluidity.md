@@ -241,3 +241,8 @@ The approved NotebookLM notebook was queried, but Google returned
 `RESOURCE_EXHAUSTED` for this run. No new NLM note was created or marked as
 complete; local CodeGraph/source/tests remain the authority for this code
 slice.
+
+Post-audit evidence: removed the stale `/_app/immutable/entry/startup.js`
+preload from the mobile shell; the production build emits no such file and the
+PWA guard test now prevents its return. LAN E2E at `2026-08-05T12:23:20Z`
+passed desktop/mobile input, resize, WebSocket, and browser-error gates.

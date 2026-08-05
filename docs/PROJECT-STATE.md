@@ -2307,3 +2307,8 @@ watermark. This bounds single-channel head-of-line delay while preserving E2EE
 counter ordering. It is not in today's online artifact because the daily
 release cap is exhausted; the next Remote/Cloud artifact must include it and
 pass the physical phone/PWA soak.
+
+Post-audit: the mobile shell no longer preloads the nonexistent
+`/_app/immutable/entry/startup.js`; source guard and production PWA verification
+pass. LAN E2E at `2026-08-05T12:23:20Z` again passed desktop/mobile input,
+resize, WebSocket, and `browserErrors=[]` gates.
