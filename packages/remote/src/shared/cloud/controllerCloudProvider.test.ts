@@ -326,7 +326,10 @@ describe('ControllerCloudProvider', () => {
     await provider.connect(HOST_DEVICE);
     await flush();
 
-    const dc = FakePeerConnection.instances[0].channel!;
+    const pc = FakePeerConnection.instances[0];
+    const dc = pc.channel!;
+    const paneDc = pc.paneChannel!;
+    paneDc.fireOpen();
     dc.fireOpen();
 
     // 1) controller 首帧 = 0x01 || ephemeral_pub(32)。
@@ -336,7 +339,7 @@ describe('ControllerCloudProvider', () => {
     const ctrlPub = decodeHandshakeFrame(handshakeFrame);
 
     // 2) 模拟 host：用 dir=0 建 session，回自己的握手帧。
-    const { hostSession } = handshakeAsHost(ctrlPub, dc);
+    const { hostSession, hostKp } = handshakeAsHost(ctrlPub, dc);
     expect(provider.getState()).toBe('connected');
 
     // 3) host → controller（dir=0）：provider 先重组分片再 open，经 onFrame 上抛明文。
@@ -352,6 +355,16 @@ describe('ControllerCloudProvider', () => {
     // 密文首字节 = nonce[0] = dir，controller 发出方向必须是 dir=1（DIR_CONTROLLER_TO_HOST）。
     expect(onWire[0]).toBe(1);
     expect(hostSession.open(onWire)).toEqual(ctrlPlain);
+
+    const panePlain = new Uint8Array([0x10, 0x01, 0x70, 0x6f, 0x6e, 0x65]);
+    provider.sendFrame(panePlain);
+    expect(paneDc.sent.length).toBe(1);
+    expect(dc.sent.length).toBe(2); // handshake + control frame only
+    const paneWire = unwrapSingle(paneDc.lastSent());
+    expect(paneWire[0]).toBe(1);
+    const paneHostKey = deriveSessionKey(hostKp.privateKey, hostKp.publicKey, ctrlPub);
+    const paneHostSession = new E2eeSession(paneHostKey, DIR_HOST_TO_CONTROLLER);
+    expect(paneHostSession.open(paneWire)).toEqual(panePlain);
   });
 
   it('B3：信令公钥与握手公钥一致 → 绑定模式 enforced + connected', async () => {

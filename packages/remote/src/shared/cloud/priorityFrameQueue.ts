@@ -1,9 +1,9 @@
 import { CHANNEL } from '../transport/cloudMux';
 
 /**
- * Keeps control/input frames ahead of pane output while the authenticated
- * transport still uses one ordered DataChannel. Frames are queued before E2EE
- * sealing so the receive-side counter remains strictly monotonic.
+ * Keeps control/input frames ahead of pane output while preserving a bounded
+ * legacy single-lane fallback. Frames are queued before E2EE sealing so each
+ * lane's receive-side counter remains strictly monotonic.
  */
 export interface PriorityFrameQueueOptions {
   send: (frame: Uint8Array) => void;
