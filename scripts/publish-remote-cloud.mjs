@@ -116,8 +116,8 @@ async function main() {
     }
     if (first.version !== expectedVersion || first.gitSha !== expectedSha) {
       die(
-        `--no-build artifact mismatch: roots=${first.version}+g${first.gitSha}, `
-        `checkout=${expectedVersion}+g${expectedSha}`,
+        `--no-build artifact mismatch: roots=${first.version}+g${first.gitSha}, ` +
+          `checkout=${expectedVersion}+g${expectedSha}`,
       );
     }
     manifest = first;
