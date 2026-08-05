@@ -433,7 +433,7 @@ describe('CloudRemoteConnection panes', () => {
     }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
 
-  it('batches and serializes terminal input without reordering', async () => {
+  it('sends the first key immediately and coalesces later input without reordering', async () => {
     const conn = await connected();
     invokeMock.mockClear();
     let releaseFirst!: () => void;
@@ -444,6 +444,8 @@ describe('CloudRemoteConnection panes', () => {
     });
 
     conn.sendStdin(PANE, 'a');
+    // Zero input window: the first byte is admitted in the same turn.
+    expect(invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty')).toHaveLength(1);
     conn.sendStdin(PANE, 'b');
     await new Promise((resolve) => setTimeout(resolve, 10));
     conn.sendStdin(PANE, 'c');
@@ -455,29 +457,33 @@ describe('CloudRemoteConnection panes', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     const writes = invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty');
     expect(writes).toHaveLength(2);
-    expect(writes[0][1]).toMatchObject({ data: 'ab', inputSequence: 1 });
+    expect(writes[0][1]).toMatchObject({ data: 'a', inputSequence: 1 });
     expect(writes[1][1]).toMatchObject({
-      data: 'cd',
+      data: 'bcd',
       inputSourceId: writes[0][1].inputSourceId,
       inputSequence: 2,
     });
   });
 
-  it('collapses a 1,000-event input burst into one ordered RPC batch', async () => {
+  it('keeps a 1,000-event input burst bounded after the immediate first RPC', async () => {
     const conn = await connected();
     invokeMock.mockClear();
     vi.useFakeTimers();
     try {
       for (let i = 0; i < 1_000; i += 1) conn.sendStdin(PANE, 'x');
 
-      expect(invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty')).toHaveLength(0);
-      await vi.advanceTimersByTimeAsync(4);
+      expect(invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty')).toHaveLength(1);
+      await vi.runAllTicks();
 
       const writes = invokeMock.mock.calls.filter((call) => call[0] === 'write_to_pty');
-      expect(writes).toHaveLength(1);
+      expect(writes).toHaveLength(2);
       expect(writes[0][1]).toMatchObject({
-        data: 'x'.repeat(1_000),
+        data: 'x',
         inputSequence: 1,
+      });
+      expect(writes[1][1]).toMatchObject({
+        data: 'x'.repeat(999),
+        inputSequence: 2,
       });
     } finally {
       conn.disconnect();
@@ -499,7 +505,10 @@ describe('CloudRemoteConnection panes', () => {
     vi.useFakeTimers();
     try {
       conn.sendStdin(PANE, 'x');
-      await vi.advanceTimersByTimeAsync(4);
+      // The first request is immediate; let its rejection schedule the 100 ms
+      // exponential-backoff timer before advancing the fake clock.
+      await Promise.resolve();
+      await Promise.resolve();
       expect(attempts).toBe(1);
       await vi.advanceTimersByTimeAsync(99);
       expect(attempts).toBe(1);
