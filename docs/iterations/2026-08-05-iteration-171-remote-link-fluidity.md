@@ -162,6 +162,9 @@ LAN evidence, not a physical public WebRTC/PWA soak.
   build transformed 3933 modules with 38 PWA precache entries; desktop build
   wrote `remote-dist/desktop` (the PowerShell wrapper still surfaces existing
   Vite chunk-split warnings as stderr).
+- `f243e61d` adds the scheduler backlog to the opt-in `raw-feed` trace, so a
+  physical phone run can distinguish render-queue pressure from WebRTC RTT or
+  available bitrate without retaining PTY payloads.
 
 ## Release status
 
@@ -180,7 +183,7 @@ Rejected-close subscription rollback follows in `c9b8540d`; it is also not
 online until the next allowed artifact publish.
 Mobile subscription retry follows in `e8316548`; it is also not online until
 the next allowed artifact publish.
-Frame-budgeted Pane delivery follows in `b9459686`; it is also not online
+Frame-budgeted Pane delivery follows in `f243e61d`; it is also not online
 until the next allowed artifact publish.
 
 No Desktop version number was advanced: the formal Desktop release remains
@@ -190,7 +193,7 @@ real network.
 
 The priority transport change is deliberately not a Remote/Cloud artifact
 today: the daily release cap is already exhausted. Online JavaScript therefore
-remains `e94d8c5`; the next artifact must contain `b9459686` (including the
+remains `e94d8c5`; the next artifact must contain `f243e61d` (including the
 dual-lane `150272a` fix and frame-budgeted output) and run the physical
 phone/PWA soak.
 
