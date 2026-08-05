@@ -13,7 +13,8 @@
   legacy peers fall back to `ridge` without a second connection.
 - Host/controller routing, pane backpressure, teardown, legacy fallback, and
   focused foreign-pane QoS promotion are covered by deterministic tests. Local
-  code is pushed at `b9459686`; foreign-pane subscriptions now replay after a
+  code is pushed at `f243e61d` (frame backlog tracing follows `b9459686`);
+  foreign-pane subscriptions now replay after a
   full WebRTC reconnect, while discovered-only panes remain unsubscribed;
   mobile transient subscribe failures use bounded exponential retry.
 - `MainApp` now frame-budgets incoming Pane bytes: 512 KiB per-pane cap, 32 KiB
@@ -24,7 +25,7 @@
   1594 passed / 1 skipped; `pnpm check` 0 errors / 0 warnings; mobile PWA and
   desktop Remote builds wrote their output directories. Online artifact remains
   `e94d8c5` because the 2026-08-05 publication cap is exhausted; next artifact
-  must contain `b9459686` (including the dual-lane `150272a` fix).
+  must contain `f243e61d` (including the dual-lane `150272a` fix).
 - Public HTTP startup remains route/proxy-sensitive (direct fetch is much
   faster than the configured proxy). This is not evidence about WebRTC data
   channel latency. Cloud source confirms business E2EE DataChannel traffic
