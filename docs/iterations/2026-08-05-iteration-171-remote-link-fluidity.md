@@ -29,6 +29,17 @@ available to attribute remaining latency to public bandwidth, relay, host CPU,
 or the phone GPU; the new trace is deliberately required before making that
 claim.
 
+## Public path baseline (2026-08-05)
+
+From this host, five HTTPS fetches of the public Remote root through the
+configured HTTP proxy showed `1.58–34.63s` TTFB. Three direct (`--noproxy '*'`)
+fetches showed `1.25–1.35s` TTFB. The deployed 531 KiB application chunk took
+`2.05–2.65s` direct (`200–259 KB/s`) but `50.59–57.38s` through the proxy
+(`9.3–10.5 KB/s`). This is strong evidence of a proxy/route bottleneck on this
+machine, not proof of the Remote WebRTC media path: signaling may use the
+proxy while the DataChannel may be direct, TURN-relayed, or host-limited. The
+in-app `bufferedAmount` and stage trace remain authoritative for that split.
+
 ## Implementation
 
 - Bare primary clicks on validated URL/path hits open directly; non-link clicks

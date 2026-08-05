@@ -2227,3 +2227,10 @@ Commit `e94d8c5` is pushed; Remote/Cloud workflow `30987238096` succeeded from
 that exact SHA and the public bundle now contains `openLinkAt` plus the new
 direct-link hint. Desktop remains formally `v0.1.60`; physical phone/PWA soak
 with the stage trace is the remaining performance evidence gate.
+
+Public-path baseline: direct HTTPS fetches of the deployed 531 KiB Remote
+chunk measured `200–259 KB/s` and `2.05–2.65s`; the configured HTTP proxy
+measured only `9.3–10.5 KB/s` and `50.59–57.38s`. This identifies a severe
+proxy/route bottleneck on the test host, but does not by itself classify the
+WebRTC DataChannel; its `bufferedAmount`/stage trace and real phone soak remain
+the authority for relay versus device attribution.
