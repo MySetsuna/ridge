@@ -359,6 +359,67 @@ describe('CloudRemoteConnection panes', () => {
     expect(regCalls).toHaveLength(1);
   });
 
+  it('retries a transient subscribe failure with bounded backoff', async () => {
+    const conn = await connected();
+    vi.useFakeTimers();
+    let attempts = 0;
+    listenMock.mockImplementation(async (name: string, handler: (e: { payload: unknown }) => void) => {
+      if (name === 'pty-output-ws1-pane-a') {
+        attempts += 1;
+        if (attempts === 1) throw new Error('transient subscribe failure');
+      }
+      handlers[name] = handler;
+      return () => { delete handlers[name]; };
+    });
+    try {
+      conn.subscribePane(PANE);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(attempts).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(attempts).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(attempts).toBe(2);
+      expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
+    } finally {
+      conn.disconnect();
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops subscribe retries after the bounded attempt cap', async () => {
+    const conn = await connected();
+    vi.useFakeTimers();
+    let attempts = 0;
+    listenMock.mockImplementation(async (name: string) => {
+      if (name === 'pty-output-ws1-pane-a') {
+        attempts += 1;
+        throw new Error('persistent subscribe failure');
+      }
+      return () => {};
+    });
+    try {
+      conn.subscribePane(PANE);
+      await Promise.resolve();
+      await Promise.resolve();
+      for (const delay of [100, 200, 400, 800]) {
+        await vi.advanceTimersByTimeAsync(delay);
+        await Promise.resolve();
+        await Promise.resolve();
+      }
+      expect(attempts).toBe(5); // initial attempt + four retries
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(attempts).toBe(5);
+    } finally {
+      conn.disconnect();
+      vi.useRealTimers();
+    }
+  });
+
   it('sendStdin writes to the pty', async () => {
     const conn = await connected();
     conn.sendStdin(PANE, 'ls\n');
