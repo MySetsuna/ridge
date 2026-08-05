@@ -174,6 +174,14 @@ today: the daily release cap is already exhausted. Online JavaScript therefore
 remains `e94d8c5`; the next artifact must contain `e8316548` (including the
 dual-lane `150272a` fix) and run the physical phone/PWA soak.
 
+Live public fingerprint checked 2026-08-05: `/_app/version.json` still reports
+`1785916897644`, and scanning the entrypoint's JavaScript assets finds no
+`ridge-pane-probe`/`ridge-pane-ready` marker. The local `remote-dist/mobile`
+build does contain those markers. Therefore the public Remote still uses the
+legacy single ordered DataChannel, where a pane-output burst can hold later
+input behind SCTP ordering; this is an artifact-activation gap, not evidence
+against the dual-lane source implementation.
+
 ## NLM note
 
 The approved NotebookLM notebook was queried, but Google returned

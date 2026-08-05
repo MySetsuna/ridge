@@ -27,6 +27,11 @@
   bypasses signaling relay; only a `relay` candidate makes TURN/server egress
   a likely bottleneck. Physical phone/PWA pane-switch and input soak remains
   open.
+- Live public fingerprint (2026-08-05) still reports `/_app/version.json` =
+  `1785916897644`; its JavaScript assets have no `ridge-pane-probe` or
+  `ridge-pane-ready`, while the local mobile build does. Public Remote is
+  therefore still on the legacy single ordered lane and cannot yet exercise
+  the current input-first dual-lane fix.
 - Controlled LAN browser smoke on 2026-08-05 passed for desktop and mobile:
   `canvas/tree/ws` gates, real `write_to_pty` and `resize_pane`, and no browser
   errors. Evidence: `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
