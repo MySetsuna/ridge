@@ -2236,4 +2236,8 @@ WebRTC DataChannel; its `bufferedAmount`/stage trace and real phone soak remain
 the authority for relay versus device attribution.
 With browser gzip enabled, the chunk is 163,215 bytes; direct fetch was `1.72s`
 versus `16.60s` through the proxy at `9.8 KB/s`, confirming compression is not
-the bottleneck.
+the bottleneck. A remaining protocol risk is that Cloud control/input and pane
+output share one ordered `ridge` DataChannel; the active output guard admits up
+to 8 MiB, so a slow route can still delay a later keystroke behind bytes already
+queued. A true control-priority lane is next transport work; it was not
+published today because the daily release cap is exhausted.
