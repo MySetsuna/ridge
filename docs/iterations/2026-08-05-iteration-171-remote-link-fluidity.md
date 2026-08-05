@@ -110,6 +110,10 @@ removes transport head-of-line blocking without adding a second connection.
   budget. Overflow/parse failure requests one full resync; reconnect and Pane
   teardown clear queued bytes. The keyed-surface gap still uses the existing
   128 KiB hand-off buffer.
+- Cloud Mobile input batching now uses a zero-width admission window: the first
+  key enters `write_to_pty` in the same turn, while the per-pane scheduler still
+  serializes one in-flight request and coalesces bytes queued behind it. This
+  removes an artificial 4 ms delay without reopening duplicate-RPC storms.
 - `remotePerfTrace` records bounded, payload-free `input-rpc`, `resize-rpc`,
   `transport-send`, `transport-stats`, `raw-receive`, `raw-feed`, `pane-switch`,
   and `pane-first-paint` samples. WebRTC stats include candidate type, RTT,
@@ -157,6 +161,12 @@ LAN evidence, not a physical public WebRTC/PWA soak.
   with `browserErrors=[]` and real input/resize traffic. Evidence remains
   `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
 
+- After the zero-window input change, LAN rerun at `2026-08-05T11:56:42Z`
+  again passed Desktop `canvas=true tree=false ws=true` and Mobile
+  `canvas=true tree=true ws=true`, with `browserErrors=[]` and real input /
+  resize traffic. Desktop sent 21 `write_to_pty` frames and Mobile sent 4;
+  this remains controlled LAN evidence, not the physical public WebRTC gate.
+
 - New output-scheduler follow-up (`b9459686`): full Vitest reports 155 files,
   1594 passed, 1 skipped; `pnpm check` reports 0 errors/0 warnings. Mobile
   build transformed 3933 modules with 38 PWA precache entries; desktop build
@@ -165,6 +175,8 @@ LAN evidence, not a physical public WebRTC/PWA soak.
 - `f243e61d` adds the scheduler backlog to the opt-in `raw-feed` trace, so a
   physical phone run can distinguish render-queue pressure from WebRTC RTT or
   available bitrate without retaining PTY payloads.
+- Cloud input latency guard: `src/remote/lib/cloudRemote.test.ts` now covers
+  immediate first-byte admission plus bounded coalescing; 40/40 tests pass.
 
 ## Release status
 

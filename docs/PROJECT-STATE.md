@@ -21,6 +21,9 @@
   steps, 64 KiB/frame ceiling, active-pane-first plus one background turn, and
   a 4 ms wall-clock budget. Overflow/parse failure triggers one resync; Pane
   teardown and reconnect clear queued bytes.
+- Cloud Mobile input admission has no artificial batch delay: the first key is
+  sent immediately, while the per-pane RPC scheduler still serializes and
+  coalesces later bytes behind the single in-flight request.
 - Verification after the output scheduler follow-up: full Vitest 155 files /
   1594 passed / 1 skipped; `pnpm check` 0 errors / 0 warnings; mobile PWA and
   desktop Remote builds wrote their output directories. A local dry-run bundle
@@ -49,7 +52,7 @@
   Latest rerun records Desktop `tree=false` in raw detail while the script's
   acceptance gate still passes; no tree-pass is claimed. This does not close
   the physical public WebRTC/PWA gate.
-- Post-change LAN rerun at `2026-08-05T11:36:29Z` also passed with
+- Post-change LAN rerun at `2026-08-05T11:56:42Z` also passed with
   `browserErrors=[]`, real input/resize traffic, Desktop `canvas=true tree=false
   ws=true`, and Mobile `canvas=true tree=true ws=true`.
 
