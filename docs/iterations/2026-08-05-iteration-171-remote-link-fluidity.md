@@ -65,11 +65,15 @@ claim.
 
 ## Release status
 
-This iteration is a local runtime candidate only. No version number was
-advanced and no Remote/Cloud artifact was published from these changes, so the
-online service remains `0.1.60+g42680ca` until a separately approved release
-passes the clean-worktree and asset gates. The requirement remains active until
-that public/mobile validation is complete.
+Commit `e94d8c5` was pushed to `main`. Remote/Cloud workflow `30987238096`
+completed successfully from that exact SHA, and the public entrypoint now
+serves the new bundle (`openLinkAt` and `点击可跳转` are present; the old Ctrl-only
+hint is absent). `/_app/version.json` reports `1785916897644`.
+
+No Desktop version number was advanced: the formal Desktop release remains
+`v0.1.60`. The requirement stays active until physical phone/PWA soak records
+input latency, Pane-switch first paint, and the stage trace under the user's
+real network.
 
 ## NLM note
 
