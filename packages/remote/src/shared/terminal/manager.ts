@@ -2196,8 +2196,11 @@ export class TerminalManager {
 				ent.mouseMoveRaf = requestAnimationFrame(flushPointerMove);
 			}
 		};
-		const pointerUpListener = (e: PointerEvent) => {
-			if (isInScrollbar(e)) return;
+		const pointerUpListener = (e: PointerEvent, force = false) => {
+			// A normal release on the custom scrollbar is intentionally ignored;
+			// cancellation is different: it must always clear selection/capture,
+			// even when the OS reports the final coordinates over that scrollbar.
+			if (!force && isInScrollbar(e)) return;
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
 
@@ -2231,7 +2234,7 @@ export class TerminalManager {
 		// Touch cancellation (OS gesture, tab switch, or a lost capture) must
 		// release the TUI button just like pointerup, otherwise applications such
 		// as Grok/Claude can remain stuck in a pressed/dragging state.
-		const pointerCancelListener = (e: PointerEvent) => pointerUpListener(e);
+		const pointerCancelListener = (e: PointerEvent) => pointerUpListener(e, true);
 		const pointerLeaveListener = (_e: PointerEvent) => {
 			const ent = this.panes.get(paneId);
 			if (!ent) return;
