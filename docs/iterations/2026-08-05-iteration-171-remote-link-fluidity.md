@@ -45,6 +45,19 @@ With the browser's `Accept-Encoding: gzip`, the same chunk compressed to
 Compression is working; the slow proxy route remains the dominant HTTP startup
 cost.
 
+## Remaining transport risk
+
+Cloud currently creates one `ordered` DataChannel (`ridge`) and both control/
+input JSON-RPC and pane output ultimately call the same `sendFrame` path. The
+host active high-water guard is 8 MiB. At a slow route, bytes already admitted
+to that ordered channel can still delay a later keystroke even though new pane
+frames are dropped. This is a separate, protocol-level latency ceiling not
+proved by the HTTP probe. The next transport slice should reserve a real
+control/input lane (two logical priority queues at minimum; preferably separate
+DataChannels within the same authenticated PeerConnection) and cap output
+admission to the measured input-latency budget. It is intentionally not
+published in Iteration 171 because the three-release daily cap is exhausted.
+
 ## Implementation
 
 - Bare primary clicks on validated URL/path hits open directly; non-link clicks
