@@ -225,6 +225,16 @@ run prepared the next artifact as `0.1.60+g36a53dee` (270 files, both desktop
 and mobile indexes); it was not uploaded because the daily publication cap is
 exhausted.
 
+### Release-status correction (2026-08-05)
+
+The paragraph above describing the public entrypoint as current is superseded
+by the fresh UA probe: the online artifact remains `e94d8c5` and the public
+desktop/mobile bundles do not contain the current dual-lane scheduler. Commit
+`acfdd952` adds a tiny `artifact.json` fingerprint to each UA root and makes
+`--no-build` reject stale or mismatched roots instead of stamping a false SHA.
+Its full local dry-run produced a matching 272-file, 24.84 MiB bundle; upload
+and physical phone/PWA soak remain pending the next publication window.
+
 ## NLM note
 
 The approved NotebookLM notebook was queried, but Google returned

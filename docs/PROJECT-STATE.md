@@ -46,6 +46,12 @@
   (112352 bytes) with neither `ridge-pane` nor `PaneFeedScheduler`; this
   confirms the mobile PWA route is also the old artifact, not merely a desktop
   UA/cache mismatch.
+- Commit `acfdd952` adds a tiny `artifact.json` fingerprint to each desktop /
+  mobile publish root, verifies matching `version`/`gitSha` in `--no-build`,
+  and makes the publish workflow probe both public UA paths after activation.
+  The current checkout's full local dry-run produced a 272-file, 24.84 MiB
+  bundle; online activation remains intentionally pending the next publish
+  window.
 - Controlled LAN browser smoke on 2026-08-05 passed for desktop and mobile:
   `canvas/tree/ws` gates, real `write_to_pty` and `resize_pane`, and no browser
   errors. Evidence: `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
