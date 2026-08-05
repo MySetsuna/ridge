@@ -2209,7 +2209,7 @@ Remote/Cloud workflow `30977176806` succeeded and atomically activated
 `0.1.60+g42680ca`; its Desktop/Mobile index health checks passed. The public
 Remote entrypoint returns the new build. Worktree and origin are clean.
 
-### Iteration 171 runtime candidate (2026-08-05)
+### Iteration 171 publication closure (2026-08-05)
 
 Remote direct-link activation now bypasses keyboard focus on validated URL/path
 hits, including mobile touch/mouse. Pane switching caps synchronous catch-up at
@@ -2221,7 +2221,9 @@ raw feed, pane switch, and first paint; scheduler diagnostics expose p50/p95
 latency and input queue high-water bytes. Details:
 `docs/iterations/2026-08-05-iteration-171-remote-link-fluidity.md`.
 
-Focused Remote tests (8 files/53 tests) and `pnpm check` (0 errors/0 warnings)
-pass. The public artifact remains `0.1.60+g42680ca`; this candidate is not
-published until a physical/public soak records the new trace and the clean
-release gate is explicitly run.
+Focused Remote tests (8 files/53 tests), full Vitest (153 files/1577 passed/1
+skipped), `pnpm check` (0 errors/0 warnings), and Remote production builds pass.
+Commit `e94d8c5` is pushed; Remote/Cloud workflow `30987238096` succeeded from
+that exact SHA and the public bundle now contains `openLinkAt` plus the new
+direct-link hint. Desktop remains formally `v0.1.60`; physical phone/PWA soak
+with the stage trace is the remaining performance evidence gate.
