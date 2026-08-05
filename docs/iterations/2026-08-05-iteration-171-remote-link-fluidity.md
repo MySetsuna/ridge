@@ -205,9 +205,9 @@ real network.
 
 The priority transport change is deliberately not a Remote/Cloud artifact
 today: the daily release cap is already exhausted. Online JavaScript therefore
-remains `e94d8c5`; the next artifact must contain `f243e61d` (including the
-dual-lane `150272a` fix and frame-budgeted output) and run the physical
-phone/PWA soak.
+remains `e94d8c5`; the next artifact must contain `36a53dee` (including the
+dual-lane `150272a`, frame-budgeted output, and zero-window input fix) and run
+the physical phone/PWA soak.
 
 Live public fingerprint checked 2026-08-05: `/_app/version.json` still reports
 `1785916897644`, and scanning the entrypoint's JavaScript assets finds no
@@ -221,7 +221,7 @@ A fresh iPhone user-agent check reached the mobile route and served
 `/assets/index-CvZWGRf2.js` (112352 bytes), with neither `ridge-pane` nor
 `PaneFeedScheduler`. This rules out a desktop-only UA split or ordinary browser
 cache as the explanation for the stale mobile behavior. A local no-build dry
-run prepared the next artifact as `0.1.60+g298b6062` (270 files, both desktop
+run prepared the next artifact as `0.1.60+g36a53dee` (270 files, both desktop
 and mobile indexes); it was not uploaded because the daily publication cap is
 exhausted.
 

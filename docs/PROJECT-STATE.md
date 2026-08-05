@@ -27,10 +27,10 @@
 - Verification after the output scheduler follow-up: full Vitest 155 files /
   1594 passed / 1 skipped; `pnpm check` 0 errors / 0 warnings; mobile PWA and
   desktop Remote builds wrote their output directories. A local dry-run bundle
-  was prepared as `0.1.60+g298b6062` (270 files, desktop + mobile indexes), but
+  was prepared as `0.1.60+g36a53dee` (270 files, desktop + mobile indexes), but
   online artifact remains `e94d8c5` because the 2026-08-05 publication cap is
-  exhausted; next publish must activate `298b6062` (including the dual-lane
-  `150272a` and frame-budget `f243e61d` fixes).
+  exhausted; next publish must activate `36a53dee` (including the dual-lane
+  `150272a`, frame-budget `f243e61d`, and zero-window input fix `9881a3e5`).
 - Public HTTP startup remains route/proxy-sensitive (direct fetch is much
   faster than the configured proxy). This is not evidence about WebRTC data
   channel latency. Cloud source confirms business E2EE DataChannel traffic
