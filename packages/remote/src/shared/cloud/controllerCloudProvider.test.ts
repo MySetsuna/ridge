@@ -22,7 +22,7 @@ import {
   BYE_REASON_SIGNATURE_INVALID,
   type EphemeralKeyPair,
 } from './e2ee';
-import { demuxFrame } from '@ridge/remote';
+import { demuxFrame, encodePaneLaneReadyFrame } from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import type { CloudConnectionState } from '@ridge/remote';
 
@@ -342,6 +342,18 @@ describe('ControllerCloudProvider', () => {
     const { hostSession, hostKp } = handshakeAsHost(ctrlPub, dc);
     expect(provider.getState()).toBe('connected');
 
+    // Old hosts may expose an open-but-unwired ridge-pane channel. The
+    // controller must keep pane output on ridge until an authenticated ready
+    // marker arrives.
+    const panePlain = new Uint8Array([0x10, 0x01, 0x70, 0x6f, 0x6e, 0x65]);
+    provider.sendFrame(panePlain);
+    expect(paneDc.sent.length).toBe(0);
+    expect(dc.sent.length).toBe(3); // handshake + probe + pane fallback
+    hostSession.open(unwrapSingle(new Uint8Array(dc.sent[1]))); // consume the probe counter
+    expect(hostSession.open(unwrapSingle(dc.lastSent()))).toEqual(panePlain);
+
+    dc.deliver(wrapSingle(hostSession.seal(encodePaneLaneReadyFrame())));
+
     // 3) host → controller（dir=0）：provider 先重组分片再 open，经 onFrame 上抛明文。
     const hostPlain = new TextEncoder().encode('\x11{"jsonrpc":"2.0","method":"$/hello"}');
     dc.deliver(wrapSingle(hostSession.seal(hostPlain)));
@@ -356,10 +368,9 @@ describe('ControllerCloudProvider', () => {
     expect(onWire[0]).toBe(1);
     expect(hostSession.open(onWire)).toEqual(ctrlPlain);
 
-    const panePlain = new Uint8Array([0x10, 0x01, 0x70, 0x6f, 0x6e, 0x65]);
     provider.sendFrame(panePlain);
     expect(paneDc.sent.length).toBe(1);
-    expect(dc.sent.length).toBe(2); // handshake + control frame only
+    expect(dc.sent.length).toBe(4); // handshake + probe + fallback pane + control
     const paneWire = unwrapSingle(paneDc.lastSent());
     expect(paneWire[0]).toBe(1);
     const paneHostKey = deriveSessionKey(hostKp.privateKey, hostKp.publicKey, ctrlPub);

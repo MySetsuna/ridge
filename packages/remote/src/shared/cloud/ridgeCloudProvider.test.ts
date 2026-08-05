@@ -32,14 +32,17 @@ import {
 } from './e2ee';
 import type { CloudHostBridgeLike } from './ridgeCloudProvider';
 import type { WorkspaceScopeAssertion } from './workspaceScope';
-import { ChunkReassembler } from '@ridge/remote';
-import { CHANNEL } from '@ridge/remote';
+import { ChunkReassembler, encodeChunks } from '@ridge/remote';
+import { CHANNEL, encodePaneLaneProbeFrame } from '@ridge/remote';
 
 /** 传输层分片测试帮手：从 host 发出的（单条）线消息还原出密文（剥掉 SINGLE tag）。 */
 function unwrapSingle(wire: Uint8Array): Uint8Array {
   const ct = new ChunkReassembler().push(wire);
   if (!ct) throw new Error('test: failed to reassemble single wire frame');
   return ct;
+}
+function wrapSingle(ciphertext: Uint8Array): Uint8Array {
+  return encodeChunks(ciphertext, 0)[0];
 }
 
 vi.mock('./apiClient', async (importOriginal) => {
@@ -325,12 +328,19 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
 
     const signed = decodeSignedHandshakeFrame(dc.lastSent());
     const key = deriveSessionKey(ctrlEph.privateKey, ctrlEph.publicKey, signed.ephPub);
-    const controllerReceive = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
+    const controllerMainReceive = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
+    const controllerPaneReceive = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
+    const controllerSend = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
+    // New controllers probe on the control lane. Only after this authenticated
+    // marker does the host advertise ridge-pane as usable.
+    dc.deliver(wrapSingle(controllerSend.seal(encodePaneLaneProbeFrame())));
+    expect(dc.sent.length).toBe(2); // signed handshake + pane-lane ready marker
+    expect(controllerMainReceive.open(unwrapSingle(dc.lastSent()))[0]).toBe(CHANNEL.CONTROL);
     bridges[0].send(new Uint8Array([CHANNEL.PANE_RAW, 1, 2, 3]));
 
     expect(paneDc.sent.length).toBeGreaterThan(0);
-    expect(dc.sent.length).toBe(1); // handshake only; raw pane frame stays off control lane
-    const plaintext = controllerReceive.open(unwrapSingle(paneDc.lastSent()));
+    expect(dc.sent.length).toBe(2); // signed handshake + pane-lane ready marker
+    const plaintext = controllerPaneReceive.open(unwrapSingle(paneDc.lastSent()));
     expect(Array.from(plaintext)).toEqual([CHANNEL.PANE_RAW, 1, 2, 3]);
     host.goOffline();
   });

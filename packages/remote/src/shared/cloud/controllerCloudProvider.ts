@@ -49,7 +49,13 @@ import { checkOrPinDeviceIdentity } from './deviceTrust';
 import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
-import { CHANNEL, MAX_PANE_FRAME_BYTES, encodeJsonFrame } from '@ridge/remote';
+import {
+  CHANNEL,
+  MAX_PANE_FRAME_BYTES,
+  encodeJsonFrame,
+  encodePaneLaneProbeFrame,
+  isPaneLaneReadyFrame,
+} from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import { getOrCreateCli } from './controllerInstanceId';
 import { backoffMs } from '../reconnectPolicy';
@@ -141,14 +147,20 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private ephemeral: EphemeralKeyPair | null = null;
   private session: E2eeSession | null = null;
   private paneSession: E2eeSession | null = null;
+  /** True only after the host explicitly confirms its pane lane is wired. */
+  private paneLaneReady = false;
+  private paneLaneProbeSent = false;
   /** Keep future control/input ahead of queued pane frames before sealing. */
   private readonly outbound = new PriorityFrameQueue({
     send: (frame) => this.sealAndSend(frame),
-    canSendPane: () => ((this.paneDc ?? this.dc)?.bufferedAmount ?? 0) < BUFFERED_HIGH_WATERMARK,
+    canSendPane: () => {
+      const dc = this.paneLaneReady ? this.paneDc : this.dc;
+      return (dc?.bufferedAmount ?? 0) < BUFFERED_HIGH_WATERMARK;
+    },
     onPaneDrop: () =>
       remotePerfMark('transport-send', {
         transport: 'cloud-webrtc-pane-drop',
-        queueBytes: (this.paneDc ?? this.dc)?.bufferedAmount ?? 0,
+        queueBytes: (this.paneLaneReady ? this.paneDc : this.dc)?.bufferedAmount ?? 0,
       }),
   });
   private handshakeDone = false;
@@ -364,7 +376,10 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     dc.bufferedAmountLowThreshold = BUFFERED_LOW_WATERMARK;
     dc.onbufferedamountlow = () => this.outbound.resume();
     dc.onclose = () => {
-      if (this.paneDc === dc) this.paneDc = null;
+      if (this.paneDc === dc) {
+        this.paneDc = null;
+        this.paneLaneReady = false;
+      }
     };
     dc.onmessage = (ev) => this.onDataChannelMessage(ev.data, 'pane');
   }
@@ -375,6 +390,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.handshakeDone = false;
     this.session = null;
     this.paneSession = null;
+    this.paneLaneReady = false;
+    this.paneLaneProbeSent = false;
     this.sendMsgId = 0;
     this.paneSendMsgId = 0;
     this.outbound.clear();
@@ -430,8 +447,6 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     const session = lane === 'pane' ? this.paneSession : this.session;
     const reassembler = lane === 'pane' ? this.paneReassembler : this.reassembler;
     if (!session) return;
-    // B3：绑定判定通过前不放行任何业务帧（防绑定未决期处理对端数据）。
-    if (!this.bindingAccepted) return;
     const ciphertext = reassembler.push(bytes);
     if (!ciphertext) return; // 半帧（继续等后续片）或坏帧（已丢弃）
     try {
@@ -439,6 +454,15 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       // SECURITY (audit #4): drop oversized decrypted frames before they reach the
       // adapter's demux/JSON.parse so a peer can't OOM/stall the UI thread.
       if (plaintext.length > MAX_PANE_FRAME_BYTES) return;
+      // Transport capability frames are consumed inside the provider so old
+      // adapters never see or misinterpret the optional-lane negotiation.
+      if (lane === 'control' && isPaneLaneReadyFrame(plaintext)) {
+        if (this.paneDc?.readyState === 'open') this.paneLaneReady = true;
+        this.outbound.resume();
+        return;
+      }
+      // B3: binding判定通过前不放行任何业务帧（防绑定未决期处理对端数据）。
+      if (!this.bindingAccepted) return;
       this.cb.onFrame?.(plaintext);
     } catch (e: unknown) {
       // 解密/重放失败：丢弃该帧但不一定断连（契约要求拒绝该帧）。
@@ -567,13 +591,14 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
 
   sendFrame(plaintext: Uint8Array): void {
     if (this.state !== 'connected' || !this.session) return;
+    if (plaintext[0] === CHANNEL.PANE_RAW) this.sendPaneLaneProbe();
     this.outbound.enqueue(plaintext);
   }
 
   private sealAndSend(plaintext: Uint8Array): void {
     if (this.state !== 'connected') return;
     const wantsPane = plaintext[0] === CHANNEL.PANE_RAW;
-    const usePane = wantsPane && this.paneSession !== null && this.paneDc?.readyState === 'open';
+    const usePane = wantsPane && this.paneLaneReady && this.paneSession !== null && this.paneDc?.readyState === 'open';
     const session = usePane ? this.paneSession : this.session;
     const lane = usePane ? 'pane' : 'control';
     const dc = usePane ? this.paneDc : this.dc;
@@ -584,6 +609,13 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       // counter 接近上限等 → 触发重建。
       this.fail(e instanceof Error ? e.message : '加密发送失败', 'INTERNAL');
     }
+  }
+
+  /** Probe only after the authenticated control lane is connected. */
+  private sendPaneLaneProbe(): void {
+    if (this.paneLaneProbeSent || !this.paneDc || this.state !== 'connected') return;
+    this.paneLaneProbeSent = true;
+    this.sendFrame(encodePaneLaneProbeFrame());
   }
 
   /**
@@ -914,6 +946,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.ephemeral = null;
     this.session = null;
     this.paneSession = null;
+    this.paneLaneReady = false;
+    this.paneLaneProbeSent = false;
     this.paneReassembler.reset();
     this.sendMsgId = 0;
     this.paneSendMsgId = 0;
@@ -981,6 +1015,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.ephemeral = null;
     this.session = null;
     this.paneSession = null;
+    this.paneLaneReady = false;
+    this.paneLaneProbeSent = false;
     this.paneReassembler.reset();
     this.sendMsgId = 0;
     this.paneSendMsgId = 0;
