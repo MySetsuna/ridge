@@ -1,23 +1,23 @@
 {
   "ok": true,
-  "at": "2026-08-03T13:58:30.794Z",
+  "at": "2026-08-05T10:12:09.360Z",
   "browserIsolation": {
     "extensionsDisabled": true,
     "isolatedContext": true
   },
-  "port": 28856,
-  "url": "https://127.0.0.1:28856",
+  "port": 27060,
+  "url": "https://127.0.0.1:27060",
   "status": {
     "lan_ip": "192.168.1.11",
     "period_secs": 30,
-    "pid": 50848,
-    "port": 28856,
+    "pid": 96236,
+    "port": 27060,
     "ready": true,
     "schema_version": 1,
     "totp": "<redacted>",
-    "updated_at_unix": 1785765431,
-    "url_lan": "https://192.168.1.11:28856",
-    "url_loopback": "https://127.0.0.1:28856"
+    "updated_at_unix": 1785924649,
+    "url_lan": "https://192.168.1.11:27060",
+    "url_loopback": "https://127.0.0.1:27060"
   },
   "results": [
     {
@@ -26,7 +26,7 @@
       "detail": "canvas=true tree=false ws=true",
       "browserErrors": [],
       "wsUrls": [
-        "wss://127.0.0.1:28856/ws?token=<redacted>&device=06e503e8-8f14-4896-8191-ee4d90314901"
+        "wss://127.0.0.1:27060/ws?token=<redacted>&device=fcc04200-67fc-4e59-969b-cad085250a59"
       ],
       "rpc": {
         "inputAvailable": true,
@@ -39,37 +39,28 @@
         "received": {},
         "frameMethodsSent": {
           "$/hello": 1,
-          "list_workspace_save_info": 4,
-          "list_native_sessions": 16,
+          "list_native_sessions": 7,
           "get_theme_data": 1,
-          "get_orchestration_health": 5,
-          "host_list_snapshot": 9,
           "set_hitl_enabled": 1,
           "set_user_default_cwd": 1,
           "list_workspaces": 1,
-          "get_pending_hitl_count": 5,
           "get_active_workspace_id": 1,
-          "list_hitl_pending": 5,
           "get_pane_layout_for": 1,
-          "get_git_guard_stats": 2,
           "get_file_tree": 1,
+          "list_workspace_save_info": 3,
           "detect_available_shells": 1,
           "get_shell_history": 1,
           "get_pane_foreground_process": 33,
-          "list_hitl_audit_remote": 2,
+          "create_pane": 1,
+          "start_watching_paths": 1,
           "set_teammate_groups": 1,
           "get_startup_context": 1,
-          "read_agent_recent_replies": 2,
-          "start_watching_paths": 1,
-          "list_saved_workspaces": 1,
-          "find_git_repos_below": 2,
-          "create_pane": 1,
           "resize_pane": 2,
+          "find_git_repos_below": 1,
           "subscribe-pane": 1,
           "get_pane_scrollback_tail": 1,
+          "list_saved_workspaces": 1,
           "activate_pane_pty": 1,
-          "get_teammate_topology": 4,
-          "list_hitl_decisions": 1,
           "write_to_pty": 21
         },
         "frameMethodsReceived": {
@@ -84,7 +75,7 @@
       "detail": "canvas=true tree=true ws=true",
       "browserErrors": [],
       "wsUrls": [
-        "wss://127.0.0.1:28856/ws?token=<redacted>&device=18300048-48ad-4bd0-850c-deaea711d51d"
+        "wss://127.0.0.1:27060/ws?token=<redacted>&device=e031ae54-e52f-48aa-acda-62a91401d348"
       ],
       "rpc": {
         "inputAvailable": true,
@@ -92,17 +83,21 @@
         "resizeSent": true,
         "sent": {
           "resize_pane": 2,
-          "write_to_pty": 2
+          "write_to_pty": 3
         },
         "received": {},
         "frameMethodsSent": {
+          "get_teammate_topology": 11,
+          "list_hitl_pending": 11,
+          "get_orchestration_health": 11,
+          "read_agent_recent_replies": 1,
           "resize_pane": 2,
-          "write_to_pty": 2
+          "write_to_pty": 3
         },
         "frameMethodsReceived": {}
       },
       "screenshot": "C:\\code\\wind\\.iteration\\artifacts\\rdg-remote-e2e\\mobile.png"
     }
   ],
-  "hostLogTail": "rdg LAN Remote host (headless)\n  本机打开: https://127.0.0.1:28856   ← 优先用这个\n  局域网  : https://192.168.1.11:28856   （他机；本机若开了系统代理会失败）\n  TOTP: <redacted> (every 30s)\n  证书自签：浏览器选「高级 → 继续访问」；不要用 http://\n  警告: 检测到 https_proxy/ALL_PROXY。本机请用 127.0.0.1，或把 192.168.1.11 加入 no_proxy。\n  Ctrl+C to stop\n  ready: listening on 28856\n  TOTP: <redacted>\n  TOTP: <redacted>\n  TOTP: <redacted>\n"
+  "hostLogTail": "rdg LAN Remote host (headless)\n  本机打开: https://127.0.0.1:27060   ← 优先用这个\n  局域网  : https://192.168.1.11:27060   （他机；本机若开了系统代理会失败）\n  TOTP: <redacted> (every 30s)\n  证书自签：浏览器选「高级 → 继续访问」；不要用 http://\n  警告: 检测到 https_proxy/ALL_PROXY。本机请用 127.0.0.1，或把 192.168.1.11 加入 no_proxy。\n  Ctrl+C to stop\n  ready: listening on 27060\n  TOTP: <redacted>\n  TOTP: <redacted>\n  TOTP: <redacted>\n"
 }
