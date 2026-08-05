@@ -178,6 +178,29 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
       params: { workspaceId: 'w1', paneId: 'p1', data: 'retry' },
       options: { scope: 'w1:p1' },
     });
+    for (const reconnect of rpc.reconnectHooks) reconnect();
+    expect(rpc.notifications).toEqual([
+      { method: 'subscribe-pane', params: { workspaceId: 'w1', paneId: 'p1', active: true } },
+      { method: 'subscribe-pane', params: { workspaceId: 'w1', paneId: 'p1', active: true } },
+    ]);
+  });
+
+  it('restores every attached subscription when workspace close is rejected', async () => {
+    const rpc = new FakeRpc();
+    rpc.rejectWorkspaceClose = true;
+    const link = linkWith(rpc);
+    link.subscribePane(paneA);
+    link.subscribePane(paneB);
+
+    await expect(link.closeWorkspace('w1')).resolves.toBe(false);
+    for (const reconnect of rpc.reconnectHooks) reconnect();
+
+    expect(rpc.notifications).toEqual([
+      { method: 'subscribe-pane', params: { workspaceId: 'w1', paneId: 'p1', active: true } },
+      { method: 'subscribe-pane', params: { workspaceId: 'w1', paneId: 'p2', active: true } },
+      { method: 'subscribe-pane', params: { workspaceId: 'w1', paneId: 'p1', active: false } },
+      { method: 'subscribe-pane', params: { workspaceId: 'w1', paneId: 'p2', active: true } },
+    ]);
   });
 
   it('retires every pane in a closed workspace without touching another workspace', async () => {

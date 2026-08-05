@@ -129,6 +129,9 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   }
 
   async closePane(pane: PaneRef): Promise<boolean> {
+    const key = paneRefKey(pane);
+    const subscribed = this.subscribedPanes.get(key);
+    const wasActive = this.activePaneKey === key;
     this.retirePane(pane);
     try {
       await this.rpc.request('close_pane', {
@@ -141,6 +144,8 @@ export class CloudHostTopologyLink implements HostTopologyLink {
       return true;
     } catch {
       this.activatePane(pane);
+      if (subscribed) this.subscribedPanes.set(key, subscribed);
+      if (wasActive) this.activePaneKey = key;
       return false;
     }
   }
@@ -197,6 +202,12 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     const panes = [...this.workspaceByPane]
       .filter(([, ownerWorkspaceId]) => ownerWorkspaceId === workspaceId)
       .map(([paneId]) => ({ workspaceId, paneId }));
+    const subscriptions = new Map(
+      panes
+        .map((pane) => [paneRefKey(pane), this.subscribedPanes.get(paneRefKey(pane))] as const)
+        .filter((entry): entry is [string, PaneRef] => entry[1] !== undefined),
+    );
+    const activeKey = this.activePaneKey;
     for (const pane of panes) this.retirePane(pane);
     try {
       await this.rpc.request('close_workspace', { workspaceId });
@@ -204,6 +215,8 @@ export class CloudHostTopologyLink implements HostTopologyLink {
       return true;
     } catch {
       for (const pane of panes) this.activatePane(pane);
+      for (const [key, pane] of subscriptions) this.subscribedPanes.set(key, pane);
+      if (activeKey && subscriptions.has(activeKey)) this.activePaneKey = activeKey;
       return false;
     }
   }
@@ -324,6 +337,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     const key = paneRefKey(pane);
     this.subscribedPanes.delete(key);
     this.livePanes.delete(key);
+    if (this.activePaneKey === key) this.activePaneKey = null;
     this.scheduler.retire(pane);
     retirePaneInput(key);
   }
