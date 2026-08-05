@@ -67,6 +67,11 @@ removes transport head-of-line blocking without adding a second connection.
 - Cloud active-pane promotion is serialized as latest-wins: one request in
   flight plus one pending target; stale fire-and-forget promotion storms are
   removed.
+- Desktop foreign-pane bindings now mark the initial subscription active and
+  promote the pane again on local focus, with duplicate promotions suppressed
+  and reconnect state reset (`f5e9c2b0`). This closes the Host-topology path
+  that could otherwise classify the focused pane as background and shed its
+  live tail.
 - The transport slice is implemented locally (not yet published due today's
   release cap): Pane output is split into 32 KiB plaintext frames and routed
   to `ridge-pane` when available; control/input stays on `ridge`. The bounded
@@ -89,7 +94,7 @@ removes transport head-of-line blocking without adding a second connection.
 - `pnpm check` — 0 errors, 0 warnings.
 - Focused Cloud/transport suite — 6 files, 102 tests passed.
 - `git diff --check` — passed (only expected LF/CRLF normalization notices).
-- Full Vitest — 154 files, 1584 passed, 1 skipped, exit code 0 (including the
+- Full Vitest — 154 files, 1585 passed, 1 skipped, exit code 0 (including the
   priority transport and WebRTC stats guards).
 - `pnpm build:remote:mobile` — production/PWA build passed; the desktop build
   also wrote `remote-dist/desktop` successfully (Vite emitted existing chunk
@@ -112,7 +117,8 @@ hint is absent). `/_app/version.json` reports `1785916897644`. The local
 priority transport follow-up is pushed as `67417a9` but is not online until
 the next allowed artifact publish. The dual-lane implementation is pushed as
 `7109c26` (superseding `67417a9`); controller outbound coverage and explicit
-probe/ready legacy fallback are added in `321a5d3` and `150272a`.
+probe/ready legacy fallback are added in `321a5d3` and `150272a`; the focused
+foreign-pane QoS promotion follows in `f5e9c2b0`.
 
 No Desktop version number was advanced: the formal Desktop release remains
 `v0.1.60`. The requirement stays active until physical phone/PWA soak records

@@ -11,10 +11,11 @@
   PeerConnection: `ridge` for control/input and optional `ridge-pane` for PTY
   bulk output. Lane sessions use independent E2EE counters and chunk IDs;
   legacy peers fall back to `ridge` without a second connection.
-- Host/controller routing, pane backpressure, teardown, and legacy fallback
-  are covered by deterministic tests. Local code is pushed at `150272a`.
-- Verification after the dual-lane change: full Vitest 154 files / 1584
-  passed / 1 skipped; `pnpm check` 0 errors / 0 warnings; mobile PWA and
+- Host/controller routing, pane backpressure, teardown, legacy fallback, and
+  focused foreign-pane QoS promotion are covered by deterministic tests. Local
+  code is pushed at `f5e9c2b0`.
+- Verification after the dual-lane and focus-promotion changes: full Vitest
+  154 files / 1585 passed / 1 skipped; `pnpm check` 0 errors / 0 warnings; mobile PWA and
   desktop Remote builds passed. Online artifact remains `e94d8c5` because the
   2026-08-05 publication cap is exhausted; next artifact must contain
   `150272a`.
