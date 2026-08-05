@@ -13,12 +13,13 @@
   legacy peers fall back to `ridge` without a second connection.
 - Host/controller routing, pane backpressure, teardown, legacy fallback, and
   focused foreign-pane QoS promotion are covered by deterministic tests. Local
-  code is pushed at `f5e9c2b0`.
-- Verification after the dual-lane and focus-promotion changes: full Vitest
-  154 files / 1585 passed / 1 skipped; `pnpm check` 0 errors / 0 warnings; mobile PWA and
+  code is pushed at `7bbcae00`; foreign-pane subscriptions now replay after a
+  full WebRTC reconnect, while discovered-only panes remain unsubscribed.
+- Verification after the dual-lane, focus-promotion, and reconnect-replay
+  changes: full Vitest 154 files / 1586 passed / 1 skipped; `pnpm check` 0 errors / 0 warnings; mobile PWA and
   desktop Remote builds passed. Online artifact remains `e94d8c5` because the
   2026-08-05 publication cap is exhausted; next artifact must contain
-  `f5e9c2b0` (including the dual-lane `150272a` fix).
+  `7bbcae00` (including the dual-lane `150272a` fix).
 - Public HTTP startup remains route/proxy-sensitive (direct fetch is much
   faster than the configured proxy). This is not evidence about WebRTC data
   channel latency. Physical phone/PWA pane-switch and input soak remains open.
