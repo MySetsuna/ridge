@@ -92,6 +92,11 @@ removes transport head-of-line blocking without adding a second connection.
   Host bridge, so replaying only the previous active promotion could leave
   live output unsubscribed; the focused pane is restored as `active:true`,
   while discovered-but-never-attached panes stay unsubscribed (`7bbcae00`).
+- Mobile Cloud subscriptions now retry transient listener/registration
+  failures with 100/200/400/800 ms backoff and a four-retry cap. Retry timers
+  and intent state are cancelled on Pane destruction, disconnect, or reconnect;
+  duplicate active requests still collapse into the existing promotion gate
+  (`e8316548`).
 - The transport slice is implemented locally (not yet published due today's
   release cap): Pane output is split into 32 KiB plaintext frames and routed
   to `ridge-pane` when available; control/input stays on `ridge`. The bounded
@@ -121,6 +126,9 @@ removes transport head-of-line blocking without adding a second connection.
 - Rejected close rollback follow-up: full Vitest 154 files, 1587 passed, 1
   skipped; `pnpm check` 0 errors / 0 warnings. The subscription snapshot is
   restored when `closePane` or `closeWorkspace` fails.
+- Mobile subscription retry follow-up: full Vitest 154 files, 1589 passed, 1
+  skipped; `pnpm check` 0 errors / 0 warnings; `pnpm build:remote:mobile`
+  passed with PWA precache 38 entries and `ridge-pane` probe/ready markers.
 - `pnpm build:remote:mobile` — production/PWA build passed; the desktop build
   also wrote `remote-dist/desktop` successfully (Vite emitted existing chunk
   split warnings through the PowerShell stderr wrapper).
@@ -148,6 +156,8 @@ Reconnect subscription replay follows in `7bbcae00`; it is also not online
 until the next allowed artifact publish.
 Rejected-close subscription rollback follows in `c9b8540d`; it is also not
 online until the next allowed artifact publish.
+Mobile subscription retry follows in `e8316548`; it is also not online until
+the next allowed artifact publish.
 
 No Desktop version number was advanced: the formal Desktop release remains
 `v0.1.60`. The requirement stays active until physical phone/PWA soak records
@@ -156,7 +166,7 @@ real network.
 
 The priority transport change is deliberately not a Remote/Cloud artifact
 today: the daily release cap is already exhausted. Online JavaScript therefore
-remains `e94d8c5`; the next artifact must contain `c9b8540d` (including the
+remains `e94d8c5`; the next artifact must contain `e8316548` (including the
 dual-lane `150272a` fix) and run the physical phone/PWA soak.
 
 ## NLM note
