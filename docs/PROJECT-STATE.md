@@ -23,9 +23,11 @@
   teardown and reconnect clear queued bytes.
 - Verification after the output scheduler follow-up: full Vitest 155 files /
   1594 passed / 1 skipped; `pnpm check` 0 errors / 0 warnings; mobile PWA and
-  desktop Remote builds wrote their output directories. Online artifact remains
-  `e94d8c5` because the 2026-08-05 publication cap is exhausted; next artifact
-  must contain `f243e61d` (including the dual-lane `150272a` fix).
+  desktop Remote builds wrote their output directories. A local dry-run bundle
+  was prepared as `0.1.60+g298b6062` (270 files, desktop + mobile indexes), but
+  online artifact remains `e94d8c5` because the 2026-08-05 publication cap is
+  exhausted; next publish must activate `298b6062` (including the dual-lane
+  `150272a` and frame-budget `f243e61d` fixes).
 - Public HTTP startup remains route/proxy-sensitive (direct fetch is much
   faster than the configured proxy). This is not evidence about WebRTC data
   channel latency. Cloud source confirms business E2EE DataChannel traffic
@@ -37,6 +39,10 @@
   `ridge-pane-ready`, while the local mobile build does. Public Remote is
   therefore still on the legacy single ordered lane and cannot yet exercise
   the current input-first dual-lane fix.
+- A fresh iPhone UA fetch (2026-08-05) serves `/assets/index-CvZWGRf2.js`
+  (112352 bytes) with neither `ridge-pane` nor `PaneFeedScheduler`; this
+  confirms the mobile PWA route is also the old artifact, not merely a desktop
+  UA/cache mismatch.
 - Controlled LAN browser smoke on 2026-08-05 passed for desktop and mobile:
   `canvas/tree/ws` gates, real `write_to_pty` and `resize_pane`, and no browser
   errors. Evidence: `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
