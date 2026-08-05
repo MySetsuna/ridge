@@ -66,6 +66,19 @@ pub fn remove_by_pane(wid: Uuid, pane_uuid: Uuid) -> Vec<String> {
     removed
 }
 
+/// Remove one confirmed identity without disturbing another Agent sharing a
+/// pane during an auto-discovery replacement.  Pane teardown still uses
+/// `remove_by_pane` to clear every identity owned by the destroyed pane.
+pub fn remove_agent(wid: Uuid, agent_id: &str) -> bool {
+    let Ok(mut g) = PROFILES.lock() else { return false; };
+    let Some(entries) = g.get_mut(&wid) else { return false; };
+    let removed = entries.remove(agent_id).is_some();
+    if entries.is_empty() {
+        g.remove(&wid);
+    }
+    removed
+}
+
 /// Resolve the target immediately before a communication write.  A missing
 /// contact means the pane was never confirmed as an Agent or has already been
 /// destroyed; callers must fail closed instead of retrying a stale pane.
@@ -251,5 +264,18 @@ mod tests {
             AgentTier::Base,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn exact_remove_does_not_drop_other_contacts() {
+        let workspace = Uuid::new_v4();
+        let pane_a = Uuid::new_v4();
+        let pane_b = Uuid::new_v4();
+        upsert(workspace, "agent-a", pane_a, None, AgentTier::Base).unwrap();
+        upsert(workspace, "agent-b", pane_b, None, AgentTier::Base).unwrap();
+        assert!(remove_agent(workspace, "agent-a"));
+        assert!(!contains_agent(workspace, "agent-a"));
+        assert!(contains_agent(workspace, "agent-b"));
+        remove_by_pane(workspace, pane_b);
     }
 }

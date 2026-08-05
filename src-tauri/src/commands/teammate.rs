@@ -157,7 +157,7 @@ pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
         })
         .collect();
     let live_panes: std::collections::HashSet<Uuid> = panes.iter().map(|(p, _)| *p).collect();
-    let (stale, missing) = {
+    let (stale, missing, unregistered) = {
         let map = state.workspaces.read();
         let Some(ws) = map.get(&wid) else {
             return false;
@@ -179,9 +179,19 @@ pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
             .filter(|(pane, _)| !ws.teammate_agent_pane_map.values().any(|p| p == *pane))
             .map(|(pane, id)| (*pane, id.clone()))
             .collect();
-        (stale, missing)
+        // Auto-discovery predates the typed registry in older sessions.  The
+        // process scan is already a live-pane/child-process confirmation, so
+        // repair only the corresponding auto contacts before communication
+        // preflight; never synthesize entries for stale or manually-owned panes.
+        let unregistered: Vec<(Uuid, String)> = desired
+            .iter()
+            .filter(|(pane, id)| ws.teammate_agent_pane_map.get(*id) == Some(*pane))
+            .filter(|(_, id)| !crate::teammate::profiles::contains_agent(wid, id))
+            .map(|(pane, id)| (*pane, id.clone()))
+            .collect();
+        (stale, missing, unregistered)
     };
-    if stale.is_empty() && missing.is_empty() {
+    if stale.is_empty() && missing.is_empty() && unregistered.is_empty() {
         return false;
     }
 
@@ -201,6 +211,35 @@ pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
         // `inject_roster_runtime` 按输出流水号变化另判，不与此混淆。
         ws.teammate_pane_states
             .insert(*pane, crate::state::PaneState::Busy);
+    }
+    // Include newly discovered entries after they are committed to the live
+    // workspace map; otherwise the first confirmed scan would never seed the
+    // communication directory for a new Agent.
+    let confirmed_auto: Vec<(Uuid, String)> = desired
+        .iter()
+        .filter(|(pane, id)| ws.teammate_agent_pane_map.get(*id) == Some(*pane))
+        .map(|(pane, id)| (*pane, id.clone()))
+        .collect();
+
+    // Do not hold the workspace lock while taking the process-local registry
+    // lock.  A failed lock leaves the map intact and the next confirmed scan
+    // retries registration instead of exposing a half-registered target.
+    drop(map);
+    for id in stale {
+        crate::teammate::profiles::remove_agent(wid, &id);
+    }
+    for (pane, id) in confirmed_auto {
+        if !crate::teammate::profiles::contains_agent(wid, &id) {
+            let name = pretty_agent_name(&id);
+            let capability = ridge_core::recognize_capability(&name, None);
+            let _ = crate::teammate::profiles::upsert(
+                wid,
+                &id,
+                pane,
+                Some(name),
+                capability,
+            );
+        }
     }
     true
 }
