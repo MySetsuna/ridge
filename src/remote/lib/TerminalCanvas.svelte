@@ -33,7 +33,7 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onInputTask: onPaneInputTask, onResize: onPaneResize, onFocus: onPaneFocus, onDrainPending, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
+  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onInputTask: onPaneInputTask, onResize: onPaneResize, onFocus: onPaneFocus, onDrainPending, onFirstPaint, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
     /** Host teammate state; retained for diagnostics, never a persistent pane border. */
@@ -47,6 +47,8 @@
     onFocus?: (pane: PaneRef) => void;
     /** Drain raw frames captured during a keyed pane-switch mount gap. */
     onDrainPending?: (paneKey: string) => Uint8Array[];
+    /** Performance probe callback after the first post-switch browser frame. */
+    onFirstPaint?: (paneKey: string) => void;
     /** iter-60：句级输入缓冲开关（语音/高频改写场景；alt-screen/TUI 鼠标态自动旁路）。 */
     sentenceBuffer?: boolean;
     onResize?: (pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
@@ -146,6 +148,7 @@
   const TOUCH_TAP_MAX_MS = 250;
   let touchMouseDragging = false;
   let suppressMouseUntil = 0;
+  let touchLinkCell: { row: number; col: number } | null = null;
 
   let hasSelectionState = $state(false);    // drives the floating copy pill
   let selDragging = false;                  // selection drag in progress
@@ -288,6 +291,9 @@
       // ResizeObserver's debounce, so first paint is correctly sized.
       manager.fitPaneNow(paneId);
       focusInput();
+      requestAnimationFrame(() => {
+        if (alive) onFirstPaint?.(paneId);
+      });
     })();
 
     return () => {
@@ -522,12 +528,14 @@
     touchScrollAccum = 0;
     touchStartTime = Date.now();
     suppressMouseUntil = touchStartTime + 500;
+    const startCell = clientToCell(t.clientX, t.clientY);
+    touchLinkCell = startCell ? { row: startCell.row, col: startCell.col } : null;
     // §select-as-mouse (R5): the select toggle SIMULATES A MOUSE — emit mouse
     // signals and let the receiving terminal decide (parity with desktop). When
     // the app captures the mouse (mouse-reporting TUI) we forward a press and the
     // TUI owns the gesture/selection/scroll. ONLY a plain shell falls back to
     // LOCAL text selection + copy pill.
-    if (selectionMode) {
+    if (selectionMode && !touchLinkCell) {
       const cell = clientToCell(t.clientX, t.clientY);
       if (cell) {
         if (isMouseReporting()) {
@@ -538,7 +546,7 @@
           startSelection(cell.row, cell.col);
         }
       }
-    } else if (isMouseReporting()) {
+    } else if (isMouseReporting() && !touchLinkCell) {
       const cell = clientToCell(t.clientX, t.clientY);
       if (cell) {
         const g = decideTouchMouseGesture('press');
@@ -556,6 +564,7 @@
     const t = e.touches[0];
     const moved = Math.abs(t.clientY - touchStartY) + Math.abs(t.clientX - touchStartX);
     if (moved < TOUCH_DRAG_THRESHOLD_PX) return;
+    touchLinkCell = null;
     e.preventDefault();
     if (touchMouseDragging) {
       const cell = clientToCell(t.clientX, t.clientY);
@@ -598,6 +607,12 @@
     const touch = e.changedTouches[0];
     if (!attached) return;
     const elapsed = Date.now() - touchStartTime;
+    const linkCell = touchLinkCell;
+    touchLinkCell = null;
+    if (linkCell && elapsed < TOUCH_TAP_MAX_MS && manager.openLinkAt(paneId, linkCell.row, linkCell.col)) {
+      e.preventDefault();
+      return;
+    }
     if (touchMouseDragging) {
       const cell = touch ? clientToCell(touch.clientX, touch.clientY) : null;
       if (cell) {
@@ -664,6 +679,7 @@
   }
 
   function handleTouchCancel() {
+    touchLinkCell = null;
     if (!touchMouseDragging || !attached) return;
     const cell = clientToCell(touchLastX, touchLastY);
     if (cell) {
@@ -1015,9 +1031,13 @@
 
   function handleMouseDown(e: MouseEvent) {
     if (!attached || Date.now() < suppressMouseUntil) return;
-    focusInput();
     const cell = clientToCell(e.clientX, e.clientY);
     if (!cell) return;
+    if (e.button === 0 && manager.openLinkAt(paneId, cell.row, cell.col)) {
+      e.preventDefault();
+      return;
+    }
+    focusInput();
     if (isMouseReporting()) {
       e.preventDefault();
       const bytes = kEncodeMouse(cell.row, cell.col, mouseButton(e), 0, e.shiftKey, e.altKey, e.ctrlKey);

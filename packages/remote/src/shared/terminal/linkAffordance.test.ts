@@ -10,7 +10,7 @@ import {
 } from './linkAffordance';
 
 describe('decideHoverUnderline', () => {
-	it('shows underline with modifier and a hint on bare hover', () => {
+	it('keeps direct-click affordance visible with or without modifier', () => {
     expect(
       decideHoverUnderline({ hasLinkHit: true, modifierHeld: true, spanText: 'https://x' }),
     ).toEqual({
@@ -21,10 +21,10 @@ describe('decideHoverUnderline', () => {
       spanText: 'https://x',
     });
     expect(decideHoverUnderline({ hasLinkHit: true, modifierHeld: false })).toEqual({
-		showUnderline: false,
+		showUnderline: true,
 		showHint: true,
-		hintText: '按 Ctrl 可跳转',
-		cursor: '',
+		hintText: '点击可跳转',
+		cursor: 'pointer',
       spanText: null,
     });
     expect(decideHoverUnderline({ hasLinkHit: false, modifierHeld: true })).toEqual({
@@ -38,7 +38,7 @@ describe('decideHoverUnderline', () => {
 });
 
 describe('decideLinkClick', () => {
-  it('TUI mouse on: bare click forwards to program, no open', () => {
+  it('TUI mouse on: direct link click opens without forwarding', () => {
     expect(
       decideLinkClick({
         mouseReportingOn: true,
@@ -47,13 +47,13 @@ describe('decideLinkClick', () => {
         primaryButton: true,
       }),
     ).toEqual({
-      forwardToProgram: true,
-      openLink: false,
+      forwardToProgram: false,
+      openLink: true,
       startHostSelection: false,
     });
   });
 
-  it('TUI mouse on: Ctrl+click opens link, no program', () => {
+  it('TUI mouse on: modifier remains compatible with direct open', () => {
     expect(
       decideLinkClick({
         mouseReportingOn: true,
@@ -68,7 +68,7 @@ describe('decideLinkClick', () => {
     });
   });
 
-  it('TUI mouse off: Ctrl+click opens; bare click starts selection', () => {
+  it('TUI mouse off: direct link opens; non-link click selects', () => {
     expect(
       decideLinkClick({
         mouseReportingOn: false,
@@ -86,6 +86,18 @@ describe('decideLinkClick', () => {
         mouseReportingOn: false,
         modifierHeld: false,
         hasLinkHit: true,
+        primaryButton: true,
+      }),
+    ).toEqual({
+      forwardToProgram: false,
+      openLink: true,
+      startHostSelection: false,
+    });
+    expect(
+      decideLinkClick({
+        mouseReportingOn: false,
+        modifierHeld: false,
+        hasLinkHit: false,
         primaryButton: true,
       }),
     ).toEqual({

@@ -61,6 +61,7 @@ import {
   tryEnqueuePaneInputImmediate,
   retirePaneInput,
 } from '@ridge/remote/shared/terminal/paneInputGate';
+import { remotePerfMark } from '@ridge/remote/shared/transport/remotePerfTrace';
 
 /** Backend `list_workspaces` row (subset we use). */
 interface BackendWorkspace {
@@ -206,6 +207,11 @@ export class CloudRemoteConnection implements RemoteLink {
   private ptyUnlisten = new Map<string, UnlistenFn>();
   // Panes whose subscribe is in flight (so concurrent subscribe calls stay idempotent).
   private subscribing = new Set<string>();
+  // Active QoS promotion is latest-wins and serialized. Rapid A→B→A switches
+  // must not enqueue one Tauri Channel registration per tap.
+  private activePaneKey: string | null = null;
+  private activePromotionInFlight = false;
+  private pendingActivePromotion: PaneRef | null = null;
   // §history-pull: per-pane seq cursor for lazy "scroll up to load older". Seeded
   // from the initial tail read; advanced by each get_pane_scrollback_before page.
   private scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
@@ -306,6 +312,10 @@ export class CloudRemoteConnection implements RemoteLink {
     retirePaneInput(key);
     if (!scopeAlreadyRetired) this.paneScheduler.retireScope(key);
     this.subscribing.delete(key);
+    if (this.activePaneKey === key) this.activePaneKey = null;
+    if (this.pendingActivePromotion && paneRefKey(this.pendingActivePromotion) === key) {
+      this.pendingActivePromotion = null;
+    }
     this.fetchingOlder.delete(key);
     this.scrollbackCursor.delete(key);
     const unlisten = this.ptyUnlisten.get(key);
@@ -431,6 +441,9 @@ export class CloudRemoteConnection implements RemoteLink {
     }
     this.ptyUnlisten.clear();
     this.subscribing.clear();
+    this.activePaneKey = null;
+    this.activePromotionInFlight = false;
+    this.pendingActivePromotion = null;
     this.scrollbackCursor.clear();
     this.fetchingOlder.clear();
   }
@@ -581,14 +594,33 @@ export class CloudRemoteConnection implements RemoteLink {
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
     this.paneScheduler.resume(pane);
     if (this.ptyUnlisten.has(key)) {
-      if (opts?.active !== undefined) {
-        void this.bridge.subscribePane(paneId, workspaceId, opts.active);
-      }
+      if (opts?.active === true) this.queueActivePromotion(pane);
       return;
     }
     if (this.subscribing.has(key)) return;
     this.subscribing.add(key);
     void this._subscribe(pane, opts?.resume ?? false, opts?.active);
+  }
+
+  private queueActivePromotion(pane: PaneRef): void {
+    const key = paneRefKey(pane);
+    if (this.activePaneKey === key && !this.pendingActivePromotion && !this.activePromotionInFlight) return;
+    this.activePaneKey = key;
+    this.pendingActivePromotion = pane;
+    this.flushActivePromotion();
+  }
+
+  private flushActivePromotion(): void {
+    if (this.activePromotionInFlight || !this.pendingActivePromotion) return;
+    const pane = this.pendingActivePromotion;
+    this.pendingActivePromotion = null;
+    this.activePromotionInFlight = true;
+    void Promise.resolve(this.bridge.subscribePane(pane.paneId, pane.workspaceId, true))
+      .catch(() => undefined)
+      .finally(() => {
+        this.activePromotionInFlight = false;
+        this.flushActivePromotion();
+      });
   }
 
   /** Tell the host's existing raw fan-out to emit one bounded canonical
@@ -681,6 +713,11 @@ export class CloudRemoteConnection implements RemoteLink {
       // Never hold the live lane behind the initial visual seed. A first-load
       // RPC may be slow on mobile; the latest PTY bytes must still reach the
       // terminal and input remains on its independent RPC path.
+      remotePerfMark('raw-receive', {
+        paneKey: key,
+        bytes: bytes.byteLength,
+        transport: 'cloud-webrtc',
+      });
       this.emitRaw(pane, bytes);
       if (!seeding || seedReplayOverflow) return;
       if (pendingLiveBytes + bytes.byteLength <= REMOTE_SEED_REPLAY_MAX_BYTES) {
@@ -717,8 +754,13 @@ export class CloudRemoteConnection implements RemoteLink {
         return;
       }
       this.ptyUnlisten.set(key, liveUnlisten);
-      await this.bridge.subscribePane(paneId, workspaceId, active);
+      // Register every listener as background first. Active QoS is promoted
+      // through the same latest-wins gate used by already-subscribed panes;
+      // passing `active` directly here lets rapid first visits enqueue one
+      // channel registration per Pane before the switch settles.
+      await this.bridge.subscribePane(paneId, workspaceId, false);
       subscribed = true;
+      if (active) this.queueActivePromotion(pane);
 
       if (!resume) {
         // §R-CLOUD-CONVERGE: the host builds ONE complete resync frame (RIS + active-

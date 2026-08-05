@@ -1,5 +1,6 @@
 import { getRemoteDeviceId } from './deviceId';
 import { PaneRpcScheduler } from './paneRpcScheduler';
+import { remotePerfMark } from './remotePerfTrace';
 import { paneRefKey, type PaneRef } from './paneRef';
 import {
   tryEnqueuePaneInput,
@@ -750,6 +751,11 @@ export class RemoteConnection implements RemoteLink {
       const buf = new Uint8Array(event.data);
       const paneId = uuidFromBytes(buf, 0);
       const rawBytes = buf.subarray(16);
+      remotePerfMark('raw-receive', {
+        paneKey: paneId,
+        bytes: rawBytes.byteLength,
+        transport: 'lan-ws',
+      });
       // §perf: first PTY bytes reaching the client — record once and log all
       // three segments (each relative to connectStart) for the slow-link triage.
       if (this._perf.firstPtyBytes == null) {

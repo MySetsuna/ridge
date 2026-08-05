@@ -10,4 +10,11 @@ describe('remote Agent attention monitor', () => {
     expect(source).toContain('class="agent-attention-monitor"');
     expect(source).toContain('onAttentionChange={updateAgentAttention}');
   });
+
+  it('routes mobile terminal paths through the file viewer without opening the keyboard', () => {
+    expect(source).toContain("ridge:remote-open-text-link");
+    expect(source).toContain('openFileViewer(path, line);');
+    expect(source).toContain('remotePerfStart(\'pane-switch\'');
+    expect(source).toContain('onFirstPaint={markPaneFirstPaint}');
+  });
 });

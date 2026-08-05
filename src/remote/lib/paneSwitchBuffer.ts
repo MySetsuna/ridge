@@ -10,7 +10,9 @@ export interface DrainedPaneFrames {
   needsResync: boolean;
 }
 
-export const DEFAULT_PANE_SWITCH_BUFFER_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_PANE_SWITCH_BUFFER_BYTES = 2 * 1024 * 1024;
+/** Never synchronously parse more than this on the first frame after a switch. */
+export const MAX_PANE_SWITCH_DRAIN_BYTES = 128 * 1024;
 
 export class PaneSwitchBuffer {
   private readonly frames = new Map<string, Uint8Array[]>();
@@ -43,6 +45,14 @@ export class PaneSwitchBuffer {
 
   drain(key: string): DrainedPaneFrames {
     const frames = this.frames.get(key) ?? [];
+    let bytes = frames.reduce((total, frame) => total + frame.byteLength, 0);
+    while (bytes > MAX_PANE_SWITCH_DRAIN_BYTES && frames.length > 0) {
+      const dropped = frames.shift();
+      if (!dropped) break;
+      bytes -= dropped.byteLength;
+      this.retainedBytes -= dropped.byteLength;
+      this.overflowed.add(key);
+    }
     this.frames.delete(key);
     for (const frame of frames) this.retainedBytes -= frame.byteLength;
     return { frames, needsResync: this.overflowed.delete(key) };

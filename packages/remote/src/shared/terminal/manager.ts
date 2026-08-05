@@ -145,7 +145,7 @@ function createLinkHintOverlay(container: HTMLElement): HTMLDivElement {
 	const el = document.createElement('div');
 	el.setAttribute('aria-hidden', 'true');
 	el.dataset.ridgeLinkHint = 'true';
-	el.textContent = '按 Ctrl 可跳转';
+	el.textContent = '点击可跳转';
 	el.style.cssText = [
 		'position:absolute',
 		'display:none',
@@ -793,10 +793,10 @@ export class TerminalManager {
 		plan: HostOpenAction,
 		entry: PaneEntry,
 		fallbackText: string,
-	): void {
+	): boolean {
 		if (plan.type === 'noop') {
 			console.warn('[ridge-term] open plan noop', plan.reason, fallbackText);
-			return;
+			return false;
 		}
 		if (plan.type === 'open_url') {
 			const uri = plan.href;
@@ -810,7 +810,7 @@ export class TerminalManager {
 			} else if (typeof window !== 'undefined') {
 				window.open(uri, '_blank', 'noopener,noreferrer');
 			}
-			return;
+			return true;
 		}
 		// open_file | reveal_in_tree → host port (editor / explorer)
 		const text =
@@ -821,7 +821,9 @@ export class TerminalManager {
 				: plan.path;
 		const cwd = TerminalManager._currentPaneCwd(entry);
 		const known = TerminalManager._knownCwds();
-		_hostPorts?.openTextLink?.(text, { cwd, knownCwds: known });
+		if (!_hostPorts?.openTextLink) return false;
+		_hostPorts.openTextLink(text, { cwd, knownCwds: known });
+		return true;
 	}
 
 	static instance(opts?: ManagerOptions): TerminalManager {
@@ -1907,8 +1909,9 @@ export class TerminalManager {
 				}
 			}
 
-			// Hover over OSC 8 or pure-text link. Ctrl/Cmd paints the actionable
-			// underline; bare hover only shows a non-blocking hint. The link index
+			// Hover over OSC 8 or pure-text link. Every validated hit paints the
+			// thin actionable underline; bare hover also shows a non-blocking hint.
+			// The link index
 			// is lazy and cached, so this does not rescan terminal text per move.
 			const isMacUA2 = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 			const mod2 = pending.ctrlKey || (isMacUA2 && pending.metaKey);
@@ -1942,6 +1945,7 @@ export class TerminalManager {
 					if (r) {
 						ent.container.dataset.linkUnderline = encodeUnderlineDataset(r.row, r.c0, r.c1);
 						this._showLinkUnderlines(ent, regions);
+						if (dec.showHint) this._showLinkHint(ent, r);
 					}
 				} else if (dec.showUnderline && link) {
 					const uri = (link as { uri?: string }).uri ?? null;
@@ -1950,6 +1954,7 @@ export class TerminalManager {
 					if (r) {
 						ent.container.dataset.linkUnderline = encodeUnderlineDataset(r.row, r.c0, r.c1);
 						this._showLinkUnderlines(ent, regions);
+						if (dec.showHint) this._showLinkHint(ent, r);
 					}
 				} else if (dec.showHint && span) {
 					delete ent.container.dataset.linkUnderline;
@@ -2024,33 +2029,12 @@ export class TerminalManager {
 				primaryButton: e.button === 0,
 			});
 
-			// OP-TERM-LINK / C51: Ctrl+click open via linkOpenHost product plan
-			// (safe URL, path:line:col, file-url → host ports). Shipped manager path.
-			if (clickDec.openLink) {
-				const cwd = TerminalManager._currentPaneCwd(ent);
-				const roots = TerminalManager._knownCwds();
-				const workspaceRoot = roots[0] ?? null;
-				if (oscLink?.uri) {
-					const plan = planHostOpen(oscLink.uri, 'osc8', {
-						paneCwd: cwd,
-						workspaceRoot,
-						preferEditor: true,
-					});
-					TerminalManager._executeOpenPlan(plan, ent, oscLink.uri);
-					e.preventDefault();
-					return;
-				}
-				if (textSpan) {
-					const plan = buildOpenPlanFromHit({
-						text: textSpan.text,
-						kind: textSpan.kind,
-						paneCwd: cwd,
-						workspaceRoot,
-					});
-					TerminalManager._executeOpenPlan(plan, ent, textSpan.text);
-					e.preventDefault();
-					return;
-				}
+			// OP-TERM-LINK / C51: validated links open directly. If a path has no
+			// host route (for example a mobile-only partial injection), leave the
+			// event available to normal selection instead of swallowing it.
+			if (clickDec.openLink && this.openLinkAt(paneId, cell.row, cell.col)) {
+				e.preventDefault();
+				return;
 			}
 
 			// ★ TUI mouse reporting: bare clicks forward to the application.
@@ -4430,6 +4414,36 @@ export class TerminalManager {
 		} catch {
 			return false;
 		}
+	}
+
+	/**
+	 * Open the validated link under a viewport cell without touching focus or
+	 * keyboard state. Remote's capture-phase pointer guard calls this directly;
+	 * desktop's shared pointer listener keeps the same plan/arbitration path.
+	 */
+	openLinkAt(paneId: string, row: number, col: number): boolean {
+		const entry = this.panes.get(paneId);
+		if (!entry) return false;
+		const oscLink = entry.kernel.hyperlinkAt(row, col) as { uri?: string } | null;
+		const textSpan = oscLink
+			? null
+			: entry.linkSpans.hitTest(entry.kernel, row, col);
+		if (!oscLink?.uri && !textSpan) return false;
+		const cwd = TerminalManager._currentPaneCwd(entry);
+		const workspaceRoot = TerminalManager._knownCwds()[0] ?? null;
+		const plan = oscLink?.uri
+			? planHostOpen(oscLink.uri, 'osc8', {
+				paneCwd: cwd,
+				workspaceRoot,
+				preferEditor: true,
+			})
+			: buildOpenPlanFromHit({
+				text: textSpan!.text,
+				kind: textSpan!.kind,
+				paneCwd: cwd,
+				workspaceRoot,
+			});
+		return TerminalManager._executeOpenPlan(plan, entry, oscLink?.uri ?? textSpan!.text);
 	}
 
 	/** Forward a pointerdown event to the TUI application when DEC mouse

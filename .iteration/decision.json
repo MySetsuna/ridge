@@ -1,36 +1,41 @@
 {
-  "question": "After the latest Remote and desktop iteration, what architecture and validation order best closes shared-workspace attach, mobile/desktop input fidelity, TUI mouse forwarding, unconstrained Explorer split resizing, cross-client Agent synchronization, and mobile icon/file-view consistency?",
-  "target": "Next iteration design and approval; implementation remains bounded by approved requirements and current kernel/Remote contracts.",
+  "trigger": "new_requirement_or_debt_candidate",
+  "question": "What structure is actually limiting Remote latency, and what is the safest design for bare link activation plus local-feeling input and pane switching?",
+  "target": "Remote mobile and desktop web clients over LAN/public Cloud, with shared terminal renderer and RPC scheduler.",
   "approved_constraints": [
-    "Keep existing kernel and Remote transport authority; do not create a second UI-local source of truth.",
-    "Preserve bounded queues, cancellation, lifecycle cleanup, and release/worktree gates.",
-    "Do not hide errors with console suppression; use deterministic tests and explicit feedback."
+    "One authenticated transport; no second WebSocket/WebRTC connection.",
+    "All queues and retained resources bounded, cancellable, and observable.",
+    "Input/control and active live tail must preempt render/history work.",
+    "Direct link open only for validated link/path hit; non-link/TUI/selection semantics preserved."
   ],
   "verified_facts": [
-    {
-      "fact": "The repository is clean on main at d57f5c1; v0.1.57 desktop Release has 12 assets and Remote/cloud activated 0.1.57+g8896038.",
-      "evidence": "git status --short --branch; gh release view v0.1.57 --json tagName,isDraft,assets; workflow 30942946619 log"
-    },
-    {
-      "fact": "The Agent communication registry and interaction-parity intake are approved after NotebookLM research and explicit user authorization; deterministic lifecycle and pre-send roster validation are now executable requirements.",
-      "evidence": "docs/REQUIREMENTS-SPEC.md; docs/PENDING-REQUIREMENTS.md (empty); .iteration/intake-decision.json; requirements_gate.py assert-task-executable"
-    },
-    {
-      "fact": "Current code already contains separate Remote/desktop transport, Agent roster, workspace/Host, terminal input, Explorer resize, and mobile file-view surfaces that must be traced before changes.",
-      "evidence": "CodeGraph availability check plus targeted rg symbol inventory in the next local exploration round"
-    }
+    {"fact":"Current link arbitration requires Ctrl/Cmd for opening and uses bare click for TUI forwarding or selection.","evidence":"packages/remote/src/shared/terminal/linkAffordance.ts:188-236 via CodeGraph"},
+    {"fact":"Current code already has bounded pane-switch FIFO, synchronous input admission, renderer retention, and bounded feed catch-up.","evidence":"f01ff9d / v0.1.60 implementation and tests; public bundle contains flushPaneFeed"},
+    {"fact":"Remote artifact 0.1.60+g42680ca is active and Desktop/Mobile health checks passed.","evidence":"publish-remote workflow 30977176806 success"}
   ],
-  "failure_signals": [],
+  "failure_signals": [
+    "User reports freeze after pane switching, stale tail, and no input despite v0.1.60 changes.",
+    "No per-stage public trace yet separates relay bandwidth, host CPU, device render, or queue delay."
+  ],
   "attempts": [],
-  "candidate_solutions": [],
-  "hypotheses": [],
+  "candidate_solutions": [
+    {"core":"Direct link precedence plus existing TUI/selection fallback","constraints":["validated hit only","drag/secondary unchanged"],"risks":"accidental open on TUI output","reversibility":"small decision-function change","scope":["linkAffordance","manager click path"],"validation":["matrix tests","mobile click fixture"]},
+    {"core":"Instrument and prioritize active path end-to-end","constraints":["single transport","bounded queues"],"risks":"diagnostic overhead","reversibility":"feature-gated counters","scope":["scheduler","transport","manager","Remote UI"],"validation":["stage latency trace","flood and pane-switch tests","public soak"]},
+    {"core":"Infrastructure scaling or device upgrade","constraints":["only after attribution"],"risks":"cost without fixing queue/renderer defect","reversibility":"external","scope":["relay/host/device"],"validation":["A/B trace with same build"]}
+  ],
+  "hypotheses": [
+    "The dominant current symptom is structural active-path starvation or stale subscription/replay ordering, not raw server bandwidth alone.",
+    "A relay/host bottleneck remains possible and must be separated by wire and CPU timings.",
+    "Mobile device decode/render pressure may amplify a queue delay after pane switch."
+  ],
   "prohibitions": [
-    "No implementation based solely on NotebookLM output.",
-    "No unbounded retry, duplicated state store, or silent fallback that loses Agent/Pane identity."
+    "Do not claim root cause from absence of errors.",
+    "Do not add a second physical connection or unbounded replay.",
+    "Do not mask freezes by dropping input or hiding Console errors."
   ],
   "questions": [
-    "Should shared-workspace attach use the existing workspace/Host capability path or a new kernel domain endpoint?",
-    "Which terminal input and mouse event paths currently drop spaces, Unicode punctuation, drag, or click sequences?",
-    "Which resize container owns the vertical budget when both Explorer regions are dragged?"
+    "Which stage dominates p50/p95 input acknowledgement and pane first-live-frame latency under output flood?",
+    "Does public relay buffered amount or host CPU correlate with the observed freeze?",
+    "Can direct link precedence preserve TUI mouse behavior through a validated-hit gate?"
   ]
 }

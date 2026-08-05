@@ -52,4 +52,16 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain("decideTouchMouseGesture('release')");
     expect(source).toContain('ontouchcancel={handleTouchCancel}');
   });
+
+  it('opens links before focus/keyboard on mouse and touch', () => {
+    expect(source).toContain('manager.openLinkAt(paneId, cell.row, cell.col)');
+    expect(source).toContain('const linkCell = touchLinkCell;');
+    expect(source).toContain('e.preventDefault();\n      return;');
+  });
+
+  it('reports the first post-switch frame without retaining payloads', () => {
+    expect(source).toContain('onFirstPaint?: (paneKey: string) => void;');
+    expect(source).toContain('requestAnimationFrame(() => {');
+    expect(source).toContain('onFirstPaint?.(paneId);');
+  });
 });

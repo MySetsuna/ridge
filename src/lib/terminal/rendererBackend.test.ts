@@ -42,6 +42,6 @@ describe('terminal renderer bootstrap contracts', () => {
 		expect(managerSource).toContain("'height:1px'");
 		expect(managerSource).toContain('regionsForSpan(ent.kernel, span)');
 		expect(managerSource).toContain('createLinkHintOverlay');
-		expect(managerSource).toContain('按 Ctrl 可跳转');
+		expect(managerSource).toContain('点击可跳转');
 	});
 });
