@@ -103,6 +103,13 @@ const REMOTE_OLDER_SCROLLBACK_BYTES = 64 * 1024;
  */
 const REMOTE_SEED_REPLAY_MAX_BYTES = 2 * 1024 * 1024;
 
+// A transient listen/subscribe failure must not strand a Pane after the UI has
+// recorded its subscription intent. Keep retries bounded and cancel them on
+// reconnect/close so a dead transport cannot create a retry storm.
+const SUBSCRIBE_RETRY_BASE_MS = 100;
+const SUBSCRIBE_RETRY_MAX_MS = 2_000;
+const SUBSCRIBE_MAX_RETRIES = 4;
+
 /** One page of scrollback bytes returned by `get_pane_scrollback_tail` / `_before`. */
 interface ScrollbackChunk {
   bytes: string;
@@ -124,6 +131,13 @@ interface PaneResyncFrame {
   start_seq: number;
   at_oldest: boolean;
   head_seq: number;
+}
+
+interface SubscribeRetryIntent {
+  pane: PaneRef;
+  resume: boolean;
+  active: boolean;
+  attempts: number;
 }
 
 /** Flatten a host pane-tree to the mobile's flat leaf list (server.rs's downgrade). */
@@ -207,6 +221,10 @@ export class CloudRemoteConnection implements RemoteLink {
   private ptyUnlisten = new Map<string, UnlistenFn>();
   // Panes whose subscribe is in flight (so concurrent subscribe calls stay idempotent).
   private subscribing = new Set<string>();
+  // Subscription intent survives one transient failure, but never beyond a
+  // bounded retry window. The UI need not issue a second subscribe call.
+  private subscribeRetryIntents = new Map<string, SubscribeRetryIntent>();
+  private subscribeRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   // Active QoS promotion is latest-wins and serialized. Rapid A→B→A switches
   // must not enqueue one Tauri Channel registration per tap.
   private activePaneKey: string | null = null;
@@ -312,6 +330,10 @@ export class CloudRemoteConnection implements RemoteLink {
     retirePaneInput(key);
     if (!scopeAlreadyRetired) this.paneScheduler.retireScope(key);
     this.subscribing.delete(key);
+    const retryTimer = this.subscribeRetryTimers.get(key);
+    if (retryTimer) clearTimeout(retryTimer);
+    this.subscribeRetryTimers.delete(key);
+    this.subscribeRetryIntents.delete(key);
     if (this.activePaneKey === key) this.activePaneKey = null;
     if (this.pendingActivePromotion && paneRefKey(this.pendingActivePromotion) === key) {
       this.pendingActivePromotion = null;
@@ -434,6 +456,9 @@ export class CloudRemoteConnection implements RemoteLink {
    *  and the reconnect path so a fresh transport re-subscribes from a clean slate. */
   private _teardownSubscriptions(): void {
     this._abortAllPaneRpcs();
+    for (const timer of this.subscribeRetryTimers.values()) clearTimeout(timer);
+    this.subscribeRetryTimers.clear();
+    this.subscribeRetryIntents.clear();
     this.closingPaneKeys.clear();
     this.deadPaneKeys.clear();
     for (const [, unlisten] of this.ptyUnlisten) {
@@ -592,14 +617,23 @@ export class CloudRemoteConnection implements RemoteLink {
     if (!paneId || !workspaceId) return;
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
+    const previous = this.subscribeRetryIntents.get(key);
+    this.subscribeRetryIntents.set(key, {
+      pane,
+      resume: opts?.resume ?? previous?.resume ?? false,
+      active: opts?.active === true || previous?.active === true,
+      attempts: previous?.attempts ?? 0,
+    });
     this.paneScheduler.resume(pane);
     if (this.ptyUnlisten.has(key)) {
+      this.subscribeRetryIntents.delete(key);
       if (opts?.active === true) this.queueActivePromotion(pane);
       return;
     }
-    if (this.subscribing.has(key)) return;
+    if (this.subscribing.has(key) || this.subscribeRetryTimers.has(key)) return;
     this.subscribing.add(key);
-    void this._subscribe(pane, opts?.resume ?? false, opts?.active);
+    const intent = this.subscribeRetryIntents.get(key)!;
+    void this._subscribe(pane, intent.resume, intent.active);
   }
 
   private queueActivePromotion(pane: PaneRef): void {
@@ -734,6 +768,7 @@ export class CloudRemoteConnection implements RemoteLink {
     };
     let liveUnlisten: UnlistenFn | null = null;
     let subscribed = false;
+    let failed = false;
     try {
       // Live-tail authority: the listener above is attached before the bounded
       // visual seed. Bytes arriving while the seed RPC is in flight render
@@ -760,7 +795,8 @@ export class CloudRemoteConnection implements RemoteLink {
       // channel registration per Pane before the switch settles.
       await this.bridge.subscribePane(paneId, workspaceId, false);
       subscribed = true;
-      if (active) this.queueActivePromotion(pane);
+      const intent = this.subscribeRetryIntents.get(key);
+      if (active || intent?.active) this.queueActivePromotion(pane);
 
       if (!resume) {
         // §R-CLOUD-CONVERGE: the host builds ONE complete resync frame (RIS + active-
@@ -824,6 +860,7 @@ export class CloudRemoteConnection implements RemoteLink {
       seeding = false;
       pendingLive.length = 0;
     } catch {
+      failed = true;
       /* subscribe failed — pane stays blank; a later refresh/re-subscribe retries */
     } finally {
       // Failed subscribe must not leave a listener/map entry that blocks retry.
@@ -837,7 +874,56 @@ export class CloudRemoteConnection implements RemoteLink {
         }
       }
       this.subscribing.delete(key);
+      if (subscribed) {
+        this.subscribeRetryIntents.delete(key);
+      } else if (failed) {
+        const intent = this.subscribeRetryIntents.get(key);
+        if (intent) this.scheduleSubscribeRetry(intent);
+      }
     }
+  }
+
+  private scheduleSubscribeRetry(intent: SubscribeRetryIntent): void {
+    const key = paneRefKey(intent.pane);
+    if (
+      this.disposed
+      || this._state !== 'connected'
+      || this.closingPaneKeys.has(key)
+      || this.deadPaneKeys.has(key)
+      || this.ptyUnlisten.has(key)
+    ) {
+      this.subscribeRetryIntents.delete(key);
+      return;
+    }
+    if (intent.attempts >= SUBSCRIBE_MAX_RETRIES) {
+      this.subscribeRetryIntents.delete(key);
+      return;
+    }
+    const next: SubscribeRetryIntent = {
+      ...intent,
+      attempts: intent.attempts + 1,
+    };
+    this.subscribeRetryIntents.set(key, next);
+    const delay = Math.min(
+      SUBSCRIBE_RETRY_MAX_MS,
+      SUBSCRIBE_RETRY_BASE_MS * 2 ** (next.attempts - 1),
+    );
+    const timer = setTimeout(() => {
+      this.subscribeRetryTimers.delete(key);
+      if (
+        this.disposed
+        || this._state !== 'connected'
+        || this.closingPaneKeys.has(key)
+        || this.deadPaneKeys.has(key)
+        || this.ptyUnlisten.has(key)
+        || this.subscribing.has(key)
+      ) return;
+      const current = this.subscribeRetryIntents.get(key);
+      if (!current) return;
+      this.subscribing.add(key);
+      void this._subscribe(current.pane, current.resume, current.active);
+    }, delay);
+    this.subscribeRetryTimers.set(key, timer);
   }
 
   sendStdin(pane: PaneRef, data: string): boolean {
