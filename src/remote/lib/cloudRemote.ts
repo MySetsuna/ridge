@@ -79,7 +79,11 @@ interface ThemeEntryLite {
 /** Default PTY grid for a freshly-activated pane until the canvas claims its real size. */
 const DEFAULT_ROWS = 24;
 const DEFAULT_COLS = 80;
-const INPUT_BATCH_WINDOW_MS = 4;
+// Input is latency-critical: admit the first byte immediately. The per-pane
+// scheduler still keeps one request in flight and coalesces later bytes while
+// that request is pending, so removing this artificial window does not create
+// one RPC per keystroke under a burst.
+const INPUT_BATCH_WINDOW_MS = 0;
 
 /**
  * §history-pull（2026-07-02）: 首屏拉取的 scrollback 上限（约 1.5 屏）。host 不再推
