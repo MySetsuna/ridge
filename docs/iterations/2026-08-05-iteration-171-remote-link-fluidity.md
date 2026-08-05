@@ -40,6 +40,11 @@ machine, not proof of the Remote WebRTC media path: signaling may use the
 proxy while the DataChannel may be direct, TURN-relayed, or host-limited. The
 in-app `bufferedAmount` and stage trace remain authoritative for that split.
 
+With the browser's `Accept-Encoding: gzip`, the same chunk compressed to
+163,215 bytes: direct fetch `1.72s`; proxy fetch `16.60s` at `9.8 KB/s`.
+Compression is working; the slow proxy route remains the dominant HTTP startup
+cost.
+
 ## Implementation
 
 - Bare primary clicks on validated URL/path hits open directly; non-link clicks

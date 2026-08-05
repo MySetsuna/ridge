@@ -2234,3 +2234,6 @@ measured only `9.3–10.5 KB/s` and `50.59–57.38s`. This identifies a severe
 proxy/route bottleneck on the test host, but does not by itself classify the
 WebRTC DataChannel; its `bufferedAmount`/stage trace and real phone soak remain
 the authority for relay versus device attribution.
+With browser gzip enabled, the chunk is 163,215 bytes; direct fetch was `1.72s`
+versus `16.60s` through the proxy at `9.8 KB/s`, confirming compression is not
+the bottleneck.
