@@ -89,6 +89,37 @@ export function encodeControlFrame(value: unknown): Uint8Array {
   return out;
 }
 
+/** Transport-level probe used to negotiate the optional PTY bulk lane. */
+export function encodePaneLaneProbeFrame(): Uint8Array {
+  return encodeControlFrame({ t: 'ridge-pane-probe', version: 1 });
+}
+
+/** Host acknowledgement that the optional PTY bulk lane is actually wired. */
+export function encodePaneLaneReadyFrame(): Uint8Array {
+  return encodeControlFrame({ t: 'ridge-pane-ready', version: 1 });
+}
+
+function isTransportControlFrame(frame: Uint8Array, type: string): boolean {
+  if (frame[0] !== CHANNEL.CONTROL) return false;
+  try {
+    const value = JSON.parse(textDecoder.decode(frame.subarray(1))) as {
+      t?: unknown;
+      version?: unknown;
+    };
+    return value?.t === type && value.version === 1;
+  } catch {
+    return false;
+  }
+}
+
+export function isPaneLaneProbeFrame(frame: Uint8Array): boolean {
+  return isTransportControlFrame(frame, 'ridge-pane-probe');
+}
+
+export function isPaneLaneReadyFrame(frame: Uint8Array): boolean {
+  return isTransportControlFrame(frame, 'ridge-pane-ready');
+}
+
 /**
  * Encode a pane-bytes frame:
  *   `0x10 || paneIdLen(1) || paneId(UTF-8) || rawBytes`.

@@ -41,7 +41,12 @@ import {
 import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
-import { CHANNEL, MAX_PANE_FRAME_BYTES } from '@ridge/remote';
+import {
+  CHANNEL,
+  MAX_PANE_FRAME_BYTES,
+  encodePaneLaneReadyFrame,
+  isPaneLaneProbeFrame,
+} from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import type { ChannelBackpressure } from './cloudHostBridge';
 import {
@@ -179,6 +184,9 @@ interface ControllerConn {
   onDrained: (() => void) | null;
   /** Control/input frames are sent ahead of queued pane output. */
   outbound: PriorityFrameQueue;
+  /** Set only after the controller probes and the optional lane is open. */
+  paneLaneReady: boolean;
+  paneLaneProbeReceived: boolean;
   // ── 传输层分片（修 RTCDataChannel max-message-size，见 cloudChunk.ts）──
   /** 发送帧计数器（每帧一个 msgId，供接收端重组）。 */
   sendMsgId: number;
@@ -341,9 +349,14 @@ export class RidgeCloudHost {
       bindingMode: 'pending',
       bindTranscript: null,
       onDrained: null,
+      paneLaneReady: false,
+      paneLaneProbeReceived: false,
       outbound: new PriorityFrameQueue({
         send: (frame) => this.sealAndSend(conn!, frame),
-        canSendPane: () => ((conn?.paneDc ?? conn?.dc)?.bufferedAmount ?? 0) < BUFFERED_HIGH_WATERMARK,
+        canSendPane: () => {
+          const dc = conn?.paneLaneReady ? conn.paneDc : conn?.dc;
+          return (dc?.bufferedAmount ?? 0) < BUFFERED_HIGH_WATERMARK;
+        },
       }),
       sendMsgId: 0,
       reassembler: new ChunkReassembler(),
@@ -414,9 +427,13 @@ export class RidgeCloudHost {
       conn.onDrained?.();
     };
     dc.onclose = () => {
-      if (conn.paneDc === dc) conn.paneDc = null;
+      if (conn.paneDc === dc) {
+        conn.paneDc = null;
+        conn.paneLaneReady = false;
+      }
     };
     dc.onmessage = (ev) => this.onDataChannelMessage(conn, ev.data, 'pane');
+    dc.onopen = () => this.maybeAnnouncePaneLane(conn);
   }
 
   /**
@@ -433,6 +450,8 @@ export class RidgeCloudHost {
     conn.handshakeDone = false;
     conn.session = null;
     conn.paneSession = null;
+    conn.paneLaneReady = false;
+    conn.paneLaneProbeReceived = false;
     conn.outbound.clear();
     conn.reassembler.reset(); // 新会话：清掉上一会话遗留的在途分片
     conn.paneReassembler.reset();
@@ -546,7 +565,7 @@ export class RidgeCloudHost {
     // 业务帧：先经传输层重组（分片→完整密文），再解密交给该 cid 的桥。
     const session = lane === 'pane' ? conn.paneSession : conn.session;
     const reassembler = lane === 'pane' ? conn.paneReassembler : conn.reassembler;
-    if (!session || !conn.bridge) return;
+    if (!session) return;
     const ciphertext = reassembler.push(bytes);
     if (!ciphertext) return; // 半帧（继续等后续片）或坏帧（已丢弃）
     try {
@@ -554,6 +573,12 @@ export class RidgeCloudHost {
       // SECURITY (audit #4): drop oversized decrypted frames before demux/JSON.parse
       // so a connected peer can't OOM/stall the UI thread (match "drop bad frame").
       if (plaintext.length > MAX_PANE_FRAME_BYTES) return;
+      if (lane === 'control' && isPaneLaneProbeFrame(plaintext)) {
+        conn.paneLaneProbeReceived = true;
+        this.maybeAnnouncePaneLane(conn);
+        return;
+      }
+      if (!conn.bridge) return;
       conn.bridge.handleFrame(plaintext);
     } catch (e: unknown) {
       this.fail(e instanceof Error ? e.message : '收到无法解密的帧（已丢弃）', 'FORBIDDEN');
@@ -633,7 +658,7 @@ export class RidgeCloudHost {
     // §背压（弱网 P1）：注入 DataChannel 流控（bufferedAmount 读取 + drain 订阅）。bridge 在
     // bufferedAmount 过高时丢 pane 帧、回落后请求 host 重放 RIS+scrollback。
     bridge.attachChannelControl?.({
-      bufferedAmount: () => (conn.paneDc ?? conn.dc)?.bufferedAmount ?? 0,
+      bufferedAmount: () => (conn.paneLaneReady ? conn.paneDc : conn.dc)?.bufferedAmount ?? 0,
       onDrained: (cb) => {
         conn.onDrained = cb;
         return () => {
@@ -643,6 +668,7 @@ export class RidgeCloudHost {
     });
     this.setConnState(conn, 'connected');
     bridge.onConnected?.();
+    this.maybeAnnouncePaneLane(conn);
   }
 
   /** 把一帧明文加密经某连接的 DataChannel 发回 controller（传输层分片，修 max-message-size）。 */
@@ -654,7 +680,7 @@ export class RidgeCloudHost {
   private sealAndSend(conn: ControllerConn, plaintext: Uint8Array): void {
     if (conn.state !== 'connected') return;
     const wantsPane = plaintext[0] === CHANNEL.PANE_RAW;
-    const usePane = wantsPane && conn.paneSession !== null && conn.paneDc?.readyState === 'open';
+    const usePane = wantsPane && conn.paneLaneReady && conn.paneSession !== null && conn.paneDc?.readyState === 'open';
     const session = usePane ? conn.paneSession : conn.session;
     const lane = usePane ? 'pane' : 'control';
     const dc = usePane ? conn.paneDc : conn.dc;
@@ -676,6 +702,18 @@ export class RidgeCloudHost {
         bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
       );
     }
+  }
+
+  /** Reply only when the controller explicitly supports the optional lane. */
+  private maybeAnnouncePaneLane(conn: ControllerConn): void {
+    if (
+      conn.paneLaneReady ||
+      !conn.paneLaneProbeReceived ||
+      conn.state !== 'connected' ||
+      conn.paneDc?.readyState !== 'open'
+    ) return;
+    conn.paneLaneReady = true;
+    this.sendFrame(conn, encodePaneLaneReadyFrame());
   }
 
   /** 拆除某 cid 的连接并释放资源。`notify` 仅控制是否触发 onSessions（批量清理时关）。 */
@@ -703,6 +741,8 @@ export class RidgeCloudHost {
     conn.outbound.clear();
     conn.session = null;
     conn.paneSession = null;
+    conn.paneLaneReady = false;
+    conn.paneLaneProbeReceived = false;
     conn.paneReassembler.reset();
     if (notify) this.emitSessions();
   }

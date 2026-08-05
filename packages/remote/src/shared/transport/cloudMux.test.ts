@@ -10,8 +10,12 @@ import {
   MAX_PANE_FRAME_BYTES,
   demuxFrame,
   encodeControlFrame,
+  encodePaneLaneProbeFrame,
+  encodePaneLaneReadyFrame,
   encodeJsonFrame,
   encodePaneFrame,
+  isPaneLaneProbeFrame,
+  isPaneLaneReadyFrame,
 } from './cloudMux';
 
 describe('cloudMux — JSON (0x11) framing', () => {
@@ -50,6 +54,16 @@ describe('cloudMux — CONTROL (0x12) framing (§4 TOTP)', () => {
     const payload = { t: 'totp-verify', code: '000000' };
     expect(demuxFrame(encodeControlFrame(payload)).kind).toBe('control');
     expect(demuxFrame(encodeJsonFrame(payload)).kind).toBe('json');
+  });
+
+  it('round-trips the optional pane-lane probe/ready markers and rejects lookalikes', () => {
+    const probe = encodePaneLaneProbeFrame();
+    const ready = encodePaneLaneReadyFrame();
+    expect(isPaneLaneProbeFrame(probe)).toBe(true);
+    expect(isPaneLaneReadyFrame(ready)).toBe(true);
+    expect(isPaneLaneProbeFrame(ready)).toBe(false);
+    expect(isPaneLaneReadyFrame(encodeControlFrame({ t: 'ridge-pane-ready', version: 2 }))).toBe(false);
+    expect(isPaneLaneProbeFrame(encodeJsonFrame({ t: 'ridge-pane-probe', version: 1 }))).toBe(false);
   });
 });
 
