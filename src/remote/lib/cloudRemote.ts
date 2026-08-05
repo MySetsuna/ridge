@@ -56,7 +56,11 @@ import {
   type HitlResolveOutcome,
   type RemoteShellInfo,
 } from '@ridge/remote';
-import { tryEnqueuePaneInput, retirePaneInput } from '@ridge/remote/shared/terminal/paneInputGate';
+import {
+  tryEnqueuePaneInput,
+  tryEnqueuePaneInputImmediate,
+  retirePaneInput,
+} from '@ridge/remote/shared/terminal/paneInputGate';
 
 /** Backend `list_workspaces` row (subset we use). */
 interface BackendWorkspace {
@@ -798,7 +802,7 @@ export class CloudRemoteConnection implements RemoteLink {
     if (!pane.paneId || !data) return false;
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return false;
-    return tryEnqueuePaneInput(key, () => {
+    return tryEnqueuePaneInputImmediate(key, () => {
       this.paneScheduler.enqueueInput(pane, data);
     });
   }

@@ -189,9 +189,7 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
 
     resolveInvoke(ws, writes[0]);
     await flushPromises();
-    expect(invokeFrames(ws, 'write_to_pty')).toHaveLength(1);
-
-    await vi.advanceTimersByTimeAsync(8);
+    await flushPromises();
     const retried = invokeFrames(ws, 'write_to_pty');
     expect(retried).toHaveLength(2);
     expect(retried[1]).toMatchObject({

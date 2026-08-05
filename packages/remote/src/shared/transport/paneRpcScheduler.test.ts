@@ -81,8 +81,6 @@ describe('PaneRpcScheduler input admission', () => {
 
     rpc.calls[0].resolve(undefined);
     await flushPromises();
-    expect(rpc.calls).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(8);
     expect(rpc.calls).toHaveLength(2);
     expect(rpc.calls[1].params).toMatchObject({
       data: 'bc',

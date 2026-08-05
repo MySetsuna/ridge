@@ -15,7 +15,11 @@ import { snapshot as authSnapshot } from '@ridge/remote/shared/cloud/auth';
 import type { HostTopologyLink } from '$lib/hosts/hostForest';
 import type { PaneNode } from '$lib/types';
 import { verifyTotpOverControl } from './cloudControllerBoot';
-import { tryEnqueuePaneInput, retirePaneInput } from '@ridge/remote/shared/terminal/paneInputGate';
+import {
+  tryEnqueuePaneInput,
+  tryEnqueuePaneInputImmediate,
+  retirePaneInput,
+} from '@ridge/remote/shared/terminal/paneInputGate';
 
 interface BackendWorkspace {
   id: string;
@@ -235,7 +239,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   sendStdin(pane: PaneRef, data: string): boolean {
     if (!this.livePanes.has(paneRefKey(pane))) return false;
     const key = paneRefKey(pane);
-    return tryEnqueuePaneInput(key, () => {
+    return tryEnqueuePaneInputImmediate(key, () => {
       this.scheduler.enqueueInput(pane, data);
     });
   }

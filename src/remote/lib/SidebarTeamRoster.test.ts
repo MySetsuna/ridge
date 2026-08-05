@@ -32,9 +32,17 @@ describe('remote Agent drawer alignment contract', () => {
     expect(source).toContain('<span class="name" title={m.id}>{title}</span>');
   });
 
-  it('keeps roster polling at the five-minute contract interval', () => {
-    expect(source).toContain('const ROSTER_POLL_INTERVAL_MS = 5 * 60 * 1000;');
+  it('keeps live roster polling short while history remains five-minute cached', () => {
+    expect(source).toContain('const ROSTER_POLL_INTERVAL_MS = 3_000;');
     expect(source).toContain('setInterval(() => void startRefresh(), ROSTER_POLL_INTERVAL_MS)');
+  });
+
+  it('raises pane attention on completion/approval edges and projects sticky card state', () => {
+    expect(source).toContain('function attentionEvents(');
+    expect(source).toContain('agentAttentionForTransition(previous, current, hasPending, member.status)');
+    expect(source).toContain('onAttentionChange?.(attentionEvents(t.roster, p))');
+    expect(source).toContain('class:agent-attention={attentionPaneIds.includes(m.paneId)}');
+    expect(source).toContain('data-agent-attention={attentionPaneIds.includes(m.paneId) ? \'true\' : \'\'}');
   });
 
   it('fences refreshes by full Remote scope and cancels on teardown', () => {

@@ -13,6 +13,9 @@
   const VirtualKeyboard = import('./lib/VirtualKeyboard.svelte');
   // RemoteSidebar (file tree, git, search) loaded when sidebar is opened.
   const RemoteSidebar = import('./lib/RemoteSidebar.svelte');
+  // Agent roster attention must keep running while the drawer is closed; the
+  // visible drawer reuses the same component when its Team tab is open.
+  const RemoteTeamRoster = import('./lib/SidebarTeamRoster.svelte');
   // FileViewer (read-only file / git-diff overlay) loaded on first open.
   const FileViewer = import('./lib/FileViewer.svelte');
   import BottomTabBar from './BottomTabBar.svelte';
@@ -33,6 +36,7 @@
   import { onceCleanup } from './lib/listenerCleanup';
   import { createGenerationGuard } from './lib/generationGuard';
   import { detachPaneRefs } from './lib/paneLifecycle';
+  import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
   import type { DataProvider } from '$lib/transport';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
@@ -86,6 +90,7 @@
     for (const timer of feedResyncTimers.values()) clearTimeout(timer);
     feedResyncTimers.clear();
     feedResyncPending.clear();
+    pendingRawFrames.clear();
     scrollbackDecoder.dispose();
   });
   const workspacesQuery = createQuery(() => ({
@@ -105,10 +110,11 @@
   // for the active cwd below.
   let activePane = $derived(panes.find((p) => p.id === ui.activePaneId));
 
-  // Pane borders are a transient HITL affordance, never a permanent Agent
-  // status rail. Acknowledging/focusing/claiming a pane suppresses the rail
-  // until the pending item disappears; the next distinct pending item may
-  // raise it again.
+  // Pane borders are a sticky HITL affordance, never a permanent Agent status
+  // rail. Completion/approval events are edge-triggered by the roster, then
+  // remain visible until the terminal input surface actually receives focus.
+  // Input/resize traffic is deliberately NOT an acknowledgement: a background
+  // RPC or a stale resize must never hide an intervention request.
   let attentionPaneKeys = $state<string[]>([]);
   const acknowledgedAttention = new Set<string>();
   function updateAgentAttention(paneIds: string[]): void {
@@ -116,10 +122,14 @@
       workspaceId: ui.activeWorkspaceId,
       paneId,
     })));
+    const sticky = new Set(attentionPaneKeys);
+    for (const key of incoming) {
+      if (!acknowledgedAttention.has(key)) sticky.add(key);
+    }
     for (const key of acknowledgedAttention) {
       if (!incoming.has(key)) acknowledgedAttention.delete(key);
     }
-    attentionPaneKeys = [...incoming].filter((key) => !acknowledgedAttention.has(key));
+    attentionPaneKeys = [...sticky].filter((key) => !acknowledgedAttention.has(key));
   }
   function clearAgentAttention(pane: PaneRef | null): void {
     if (!pane) return;
@@ -134,15 +144,15 @@
     }));
   }
   function selectAgentPane(paneId: string): void {
-    clearAgentAttention({ workspaceId: ui.activeWorkspaceId, paneId });
     ui.activePaneId = paneId;
     ui.sidebarTab = null;
   }
-  $effect(() => {
-    // Any existing focus/claim wins over a pending visual hint.
-    const pane = activePaneRef();
-    if (pane && attentionPaneKeys.includes(paneRefKey(pane))) clearAgentAttention(pane);
-  });
+  function activeAttentionPaneIds(): string[] {
+    const prefix = `${ui.activeWorkspaceId}:`;
+    return attentionPaneKeys
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => key.slice(prefix.length));
+  }
   // §fail-grading（任务 A 问题1）：最近一次失败分级。驱动顶部 banner 的差异化处置——
   // 'user'（账户/权限不匹配）退回登录、'parked'（设备停用）提示去控制台、'channel'
   // （信令/网络/并发）显示「通道异常」并允许重试。
@@ -334,6 +344,28 @@
   // workspace's list (mobile can only close panes in the active workspace), so a
   // cross-workspace switch-back keeps the other workspaces' kernels alive.
   const attachedPanes = new Map<string, PaneRef>();
+  /**
+   * Raw PTY frames can arrive during the one-tick gap between parking the old
+   * TerminalCanvas and attaching the newly selected pane. Keep that gap lossless
+   * so a fast pane switch never rewinds the visible input/output tail.
+   */
+  const pendingRawFrames = new PaneSwitchBuffer();
+
+  function enqueuePendingRawFrame(key: string, data: Uint8Array): void {
+    pendingRawFrames.enqueue(key, data);
+  }
+
+  function drainPendingRawFrames(key: string): Uint8Array[] {
+    const { frames, needsResync } = pendingRawFrames.drain(key);
+    if (needsResync) {
+      const separator = key.indexOf(':');
+      const pane = separator > 0
+        ? { workspaceId: key.slice(0, separator), paneId: key.slice(separator + 1) }
+        : null;
+      if (pane && wsState === 'connected') queueMicrotask(() => ws.resyncPane?.(pane));
+    }
+    return frames;
+  }
 
   // §keep-alive resume: panes whose mirror kernel has ALREADY received its full
   // RIS resync (scrollback + mode reattach) this session and is in-sync. On a
@@ -458,12 +490,10 @@
   }
 
   function onStdin(pane: PaneRef, data: string) {
-    clearAgentAttention(pane);
     ws.sendStdin(pane, data);
   }
 
   function onInputTask(pane: PaneRef, task: () => Promise<string | null>): boolean {
-    clearAgentAttention(pane);
     return ws.enqueueStdinTask?.(pane, task) ?? false;
   }
 
@@ -479,7 +509,6 @@
   // button (resize real PTY + parser, broadcast `pty-resized`), giving automatic
   // 自适应全屏 reflow without the manual tap.
   function onResize(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) {
-    clearAgentAttention(pane);
     ws.claimPane(pane, rows, cols, pixelWidth, pixelHeight);
   }
 
@@ -728,6 +757,10 @@
       // host's on-subscribe replay is absorbed by the alive kernel.
       const key = paneRefKey(pane);
       const stats = canvasRef?.feedPane(key, data);
+      // During a keyed pane switch the old canvas may already be parked and
+      // the new one not yet attached. Do not drop this frame: the next canvas
+      // drains it into the same keep-alive kernel before its first paint.
+      if (!stats) enqueuePendingRawFrame(key, data);
       if (stats?.needsResync && !feedResyncPending.has(key)) {
         feedResyncPending.add(key);
         canvasRef?.clearPendingFeed(key);
@@ -1066,6 +1099,7 @@
             {onInputTask}
             onFocus={onPaneFocus}
             {onResize}
+            onDrainPending={drainPendingRawFrames}
             onHostClipboard={(text) => ws.setHostClipboard(text)}
             onNearTop={loadOlderScrollback}
             onKeyboardShift={(shift: number) => ui.keyboardShift = shift}
@@ -1093,6 +1127,7 @@
         paneId={ui.activePaneId ?? undefined}
         {ws}
         {panes}
+        attentionPaneIds={activeAttentionPaneIds()}
         {dataProvider}
         onClose={() => ui.sidebarTab = null}
         onTabChange={selectSidebarTab}
@@ -1102,6 +1137,22 @@
         onAttentionChange={updateAgentAttention}
       />
     {/await}
+  {/if}
+
+  {#if panelAvailability.team && wsState === 'connected' && ui.sidebarTab !== 'team'}
+    <div class="agent-attention-monitor" aria-hidden="true">
+      {#await RemoteTeamRoster then module}
+        <module.default
+          {ws}
+          workspaceId={ui.activeWorkspaceId}
+          {queryClient}
+          {panes}
+          attentionPaneIds={activeAttentionPaneIds()}
+          onSelectPane={selectAgentPane}
+          onAttentionChange={updateAgentAttention}
+        />
+      {/await}
+    </div>
   {/if}
 
   {#if ui.viewer}
@@ -1187,6 +1238,9 @@
   .create-btn:disabled{opacity:.5;cursor:not-allowed}
   .create-error{font-size:12px;color:var(--rg-ansi-red)}
   .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;touch-action:none}
+  /* Keep the live Agent attention poll mounted without adding a second visible
+     drawer or layout work while the Team tab is closed. */
+  .agent-attention-monitor{position:fixed;left:-1px;top:-1px;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;contain:strict}
   .mobile-header{position:sticky;top:0;display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 0 0;background:var(--rg-bg);border-bottom:1px solid color-mix(in srgb,var(--rg-fg) 12%,transparent);z-index:30;min-height:calc(44px + env(safe-area-inset-top))}
   :global(html[data-ridge-pwa="standalone"]) .mobile-header{padding-top:64px;min-height:108px}
   @supports (padding-top:env(safe-area-inset-top)) {

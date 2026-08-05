@@ -9,7 +9,10 @@ import { paneRefKey, type PaneRef } from './paneRef';
 
 export const DEFAULT_MAX_QUEUED_INPUT_BYTES = 256 * 1024;
 export const DEFAULT_INPUT_BATCH_WINDOW_MS = 0;
-export const DEFAULT_INPUT_THROTTLE_MS = 8;
+// Input is latency-critical. Keep one in-flight request and bounded batching,
+// but do not add an artificial inter-key delay; the queue itself still
+// coalesces bytes while the previous write is in flight.
+export const DEFAULT_INPUT_THROTTLE_MS = 0;
 export const DEFAULT_RESIZE_DEBOUNCE_MS = 40;
 /** Keep pane input/resize from occupying the shared RPC queue indefinitely. */
 export const DEFAULT_PANE_RPC_TIMEOUT_MS = 5_000;

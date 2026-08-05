@@ -2193,3 +2193,16 @@ Remote/Cloud workflow `30771421397` succeeded from exact tag commit
 link/copy and Ctrl/Cmd-hover underline slice is closed. Physical WebView2
 visual confirmation and the previously listed public/dual-window/branch/
 Kernel residuals remain environment-gated and are not falsely marked done.
+
+### Iteration 170 runtime closure candidate (2026-08-05)
+
+Remote mobile input and Pane switching now use a bounded switch-gap FIFO,
+pre-attach input admission, renderer retention with pressure reclamation, and
+an input-first RPC path. Agent attention is edge-triggered and sticky until
+real terminal focus on both desktop and Remote; a hidden live roster monitor
+keeps the Remote Pane rail current while the drawer is closed. The detailed
+record is `docs/iterations/2026-08-05-iteration-170-remote-fluidity-attention.md`.
+
+Current verification is in progress; no versioned release closure is claimed
+until the full frontend suite, clean-worktree gate, and the next desktop asset
+matrix complete.

@@ -11,7 +11,7 @@
   import type { DataProvider } from '$lib/transport';
   import { useQueryClient } from '@tanstack/svelte-query';
 
-  let { tab = 'files', cwd = '', workspaceId = '', paneId = '', available, ws, panes = [], dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane, onAttentionChange }: {
+  let { tab = 'files', cwd = '', workspaceId = '', paneId = '', available, ws, panes = [], attentionPaneIds = [], dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane, onAttentionChange }: {
     tab?: RemotePanel;
     cwd?: string;
     workspaceId?: string;
@@ -21,6 +21,8 @@
     ws?: RemoteLink;
     /** Active workspace pane snapshot; maps Agent cards to their live CWD. */
     panes?: PaneInfo[];
+    /** Sticky Agent attention projection used by the card rail. */
+    attentionPaneIds?: readonly string[];
     dataProvider?: DataProvider;
     onClose: () => void;
     onTabChange?: (t: RemotePanel) => void;
@@ -84,7 +86,7 @@
       {:else if tab === 'git'}
         <RemoteGitPanel {provider} {onOpenDiff} />
       {:else if tab === 'team' && ws}
-        <SidebarTeamRoster {ws} {workspaceId} {queryClient} {panes} {onSelectPane} {onAttentionChange} />
+        <SidebarTeamRoster {ws} {workspaceId} {queryClient} {panes} {attentionPaneIds} {onSelectPane} {onAttentionChange} />
       {:else}
         <SidebarSearch {provider} {onOpenFile} />
       {/if}

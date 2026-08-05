@@ -33,7 +33,7 @@
   // + scrollback preserved across pane switches). All touch / soft-keyboard /
   // IME / selection-as-mouse / copy-pill logic is retargeted from `ctrl.*` to
   // `manager.*(paneId)` / `manager.getKernel(paneId)?.*`.
-  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onInputTask: onPaneInputTask, onResize: onPaneResize, onFocus: onPaneFocus, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
+  let { paneId: remotePaneId, workspaceId, agentState, agentNeedsAttention = false, onStdin: onPaneStdin, onInputTask: onPaneInputTask, onResize: onPaneResize, onFocus: onPaneFocus, onDrainPending, onHostClipboard, onNearTop: onPaneNearTop, onRetryScrollback, onKeyboardShift, scrollbackLoading = false, scrollbackError = false, selectionMode = $bindable(false), backendName = $bindable('Canvas2D'), sentenceBuffer = false }: {
     paneId: string;
     workspaceId: string;
     /** Host teammate state; retained for diagnostics, never a persistent pane border. */
@@ -45,6 +45,8 @@
     onInputTask?: (pane: PaneRef, task: () => Promise<string | null>) => boolean;
     /** Fired when this pane's input surface actually receives focus. */
     onFocus?: (pane: PaneRef) => void;
+    /** Drain raw frames captured during a keyed pane-switch mount gap. */
+    onDrainPending?: (paneKey: string) => Uint8Array[];
     /** iter-60：句级输入缓冲开关（语音/高频改写场景；alt-screen/TUI 鼠标态自动旁路）。 */
     sentenceBuffer?: boolean;
     onResize?: (pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number) => void;
@@ -72,7 +74,20 @@
 
   function onStdin(data: string): void {
     const pane = ownPaneRef();
-    if (pane) onPaneStdin(pane, data);
+    if (!pane || !data) return;
+    if (!attached) {
+      // Focus is established before the asynchronous unpark/attach completes
+      // so the first keystrokes after a pane switch are never lost. Keep only
+      // a bounded local tail; the normal per-pane RPC queue still owns retry
+      // and ordering once the kernel is live.
+      const bytes = new TextEncoder().encode(data).byteLength;
+      if (pendingStdinBytes + bytes <= MAX_PENDING_STDIN_BYTES) {
+        pendingStdin.push(data);
+        pendingStdinBytes += bytes;
+      }
+      return;
+    }
+    onPaneStdin(pane, data);
   }
 
   /** Scroll-up rows-from-top threshold that triggers a lazy older-history fetch.
@@ -92,6 +107,18 @@
   let hiddenInput: HTMLTextAreaElement | undefined = $state();
   // true once this pane's kernel is attached (or unparked) into the container.
   let attached = $state(false);
+  const MAX_PENDING_STDIN_BYTES = 64 * 1024;
+  const pendingStdin: string[] = [];
+  let pendingStdinBytes = 0;
+
+  function flushPendingStdin(): void {
+    if (!attached) return;
+    const pane = ownPaneRef();
+    if (!pane || pendingStdin.length === 0) return;
+    const queued = pendingStdin.splice(0);
+    pendingStdinBytes = 0;
+    for (const data of queued) onPaneStdin(pane, data);
+  }
   // Lifetime flag: false the moment the component starts tearing down, so the
   // async attach IIFE bails and (if attach already landed) parks the pane.
   let alive = true;
@@ -211,6 +238,11 @@
     }
     document.addEventListener('visibilitychange', onVisibility);
 
+    // Take focus synchronously on a keyed pane switch. The renderer may still
+    // be restoring its parked kernel, but the input surface can already accept
+    // and queue keystrokes instead of making the user wait for WebGPU/wasm.
+    focusInput();
+
     void (async () => {
       await manager.ready();
       if (!alive || !containerEl) return;
@@ -244,6 +276,13 @@
           onPaneResize(pane, rows, cols, Math.round(containerEl.clientWidth), Math.round(containerEl.clientHeight));
         }
       });
+      // Replay frames captured while this component was between keyed mounts
+      // before the first fit/render. The host replay and live stream then join
+      // the same kernel FIFO, so the switch never shows a stale tail.
+      const pendingFrames = onDrainPending?.(paneId) ?? [];
+      for (const frame of pendingFrames) manager.feed(paneId, frame);
+      manager.flushPaneFeed(paneId);
+      flushPendingStdin();
       manager.setFocused(paneId, true);
       // Immediate fit (kernel grid + host claim) instead of waiting out the
       // ResizeObserver's debounce, so first paint is correctly sized.
@@ -754,12 +793,15 @@
   // Fires for plain typed / predicted / autocorrected text that isn't an IME
   // composition.
   function handleInput(e: Event) {
-    if (!attached) return;
     if (isComposing || (e as InputEvent).isComposing) return;
     const ta = e.target as HTMLTextAreaElement;
     const text = ta.value;
     ta.value = '';
     if (!text) return;
+    if (!attached) {
+      onStdin(text);
+      return;
+    }
     // §1 Robust IME-commit dedup: browsers may re-insert committed text as a
     // non-composing `input` with inputType `insertCompositionText`. Swallow
     // only when it matches the commit we already sent. Some mobile keyboards
@@ -819,9 +861,30 @@
   }
 
   // ── Keyboard ──
+  function encodeEarlyKey(e: KeyboardEvent): string | null {
+    const special: Record<string, string> = {
+      Enter: '\r', Escape: '\x1b', Tab: e.shiftKey ? '\x1b[Z' : '\t',
+      Backspace: '\x7f', Delete: '\x1b[3~', ArrowUp: '\x1b[A', ArrowDown: '\x1b[B',
+      ArrowLeft: '\x1b[D', ArrowRight: '\x1b[C', Home: '\x1b[H', End: '\x1b[F',
+    };
+    if (special[e.key]) return special[e.key];
+    if ((e.ctrlKey || e.metaKey) && e.key.length === 1) {
+      const code = e.key.toUpperCase().charCodeAt(0) - 64;
+      if (code >= 1 && code <= 26) return String.fromCharCode(code);
+    }
+    return null;
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (isComposing || e.isComposing) return;
-    if (!attached) return;
+    if (!attached) {
+      const raw = encodeEarlyKey(e);
+      if (raw) {
+        e.preventDefault();
+        onStdin(raw);
+      }
+      return;
+    }
     // Unmodified printable keys flow into the hidden textarea; its `input` event
     // emits them (keeps IME + mobile prediction working, avoids double-send).
     if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) return;

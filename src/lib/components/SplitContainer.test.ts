@@ -22,7 +22,8 @@ describe('desktop Pane Agent border contract', () => {
     expect(source).toContain('data-agent-attention={paneAttention ?? \'\'}');
     expect(paneSource).toContain('clearAgentPaneAttention(workspaceId, paneId)');
     expect(paneSource).toContain('if (container?.contains(document.activeElement))');
-    expect(paneSource).toContain('if (isActive) clearAgentPaneAttention(workspaceId, paneId);');
+    expect(paneSource).toContain('function onImeHelperFocus()');
+    expect(paneSource).not.toContain('if (isActive) clearAgentPaneAttention(workspaceId, paneId);');
   });
 
   it('keeps PaneHeader Git pill at one sibling layer', () => {

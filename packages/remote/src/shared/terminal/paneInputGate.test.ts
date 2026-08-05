@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   enqueuePaneInput,
   tryEnqueuePaneInput,
+  tryEnqueuePaneInputImmediate,
   retirePaneInput,
   PaneInputGateRetiredError,
 } from './paneInputGate';
@@ -54,5 +55,28 @@ describe('paneInputGate', () => {
     expect(tryEnqueuePaneInput('gate:bounded', () => undefined, { maxPending: 2 })).toBe(false);
     release();
     await Promise.all([first, second]);
+  });
+
+  it('runs a synchronous burst in the same turn when no async intent is pending', () => {
+    const sent: string[] = [];
+    expect(tryEnqueuePaneInputImmediate('gate:immediate', () => { sent.push('a'); })).toBe(true);
+    expect(tryEnqueuePaneInputImmediate('gate:immediate', () => { sent.push('b'); })).toBe(true);
+    expect(sent).toEqual(['a', 'b']);
+  });
+
+  it('keeps synchronous input behind an async intent', async () => {
+    const sent: string[] = [];
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const paste = enqueuePaneInput('gate:immediate-order', async () => {
+      await wait;
+      sent.push('paste');
+    });
+    expect(tryEnqueuePaneInputImmediate('gate:immediate-order', () => { sent.push('key'); })).toBe(true);
+    expect(sent).toEqual([]);
+    release();
+    await paste;
+    await Promise.resolve();
+    expect(sent).toEqual(['paste', 'key']);
   });
 });
