@@ -21,6 +21,10 @@
 - Public HTTP startup remains route/proxy-sensitive (direct fetch is much
   faster than the configured proxy). This is not evidence about WebRTC data
   channel latency. Physical phone/PWA pane-switch and input soak remains open.
+- Controlled LAN browser smoke on 2026-08-05 passed for desktop and mobile:
+  `canvas/tree/ws` gates, real `write_to_pty` and `resize_pane`, and no browser
+  errors. Evidence: `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
+  This does not close the physical public WebRTC/PWA gate.
 
 Archive: `docs/iterations/2026-08-05-iteration-171-remote-link-fluidity.md`.
 

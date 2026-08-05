@@ -96,6 +96,11 @@ removes transport head-of-line blocking without adding a second connection.
   split warnings through the PowerShell stderr wrapper).
 - `pnpm check` — 0 errors, 0 warnings; iteration gate and requirements gate
   both report `ok: true`/`executable: true`.
+- `pnpm e2e:rdg-lan` (2026-08-05) — desktop and mobile browser clients both
+  passed with `browserErrors=[]`; real WebSocket traffic included input and
+  resize (`desktop write_to_pty=21`, `mobile write_to_pty=3`). Evidence:
+  `.iteration/artifacts/rdg-remote-e2e/last-result.json`. This is controlled
+  LAN evidence, not a physical public WebRTC/PWA soak.
 - Public phone/PWA soak remains an external acceptance gate.
 
 ## Release status
