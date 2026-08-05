@@ -10,6 +10,7 @@ class FakeRpc {
   rejectWorkspaceClose = false;
   rejectWorkspaceCreate = false;
   paneLayout: PaneNode | null = null;
+  notifications: Array<{ method: string; params: unknown }> = [];
   reconnectHooks = new Set<() => void>();
 
   request(method: string, params?: unknown, options?: RpcRequestOptions): Promise<unknown> {
@@ -31,7 +32,9 @@ class FakeRpc {
     return new Promise(() => {});
   }
 
-  notify(): void {}
+  notify(method: string, params?: unknown): void {
+    this.notifications.push({ method, params });
+  }
   dispose(): void {}
   onReconnected(hook: () => void): () => void {
     this.reconnectHooks.add(hook);
@@ -109,6 +112,36 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
     expect(rpc.requests.filter(({ method }) => method === 'write_to_pty')).toHaveLength(2);
     expect(rpc.requests.filter(({ method }) => method === 'resize_pane')).toHaveLength(1);
     expect(rpc.requests.at(-1)?.params).toMatchObject({ paneId: 'p2', data: 'live' });
+  });
+
+  it('promotes the focused foreign pane without creating a second subscription', () => {
+    const rpc = new FakeRpc();
+    const link = linkWith(rpc);
+    link.subscribePane(paneA);
+    link.subscribePane(paneB);
+    link.promotePane(paneA);
+    link.promotePane(paneA);
+    for (const reconnect of rpc.reconnectHooks) reconnect();
+    link.promotePane(paneA);
+
+    expect(rpc.notifications).toEqual([
+      {
+        method: 'subscribe-pane',
+        params: { workspaceId: 'w1', paneId: 'p1', active: true },
+      },
+      {
+        method: 'subscribe-pane',
+        params: { workspaceId: 'w1', paneId: 'p2', active: true },
+      },
+      {
+        method: 'subscribe-pane',
+        params: { workspaceId: 'w1', paneId: 'p1', active: true },
+      },
+      {
+        method: 'subscribe-pane',
+        params: { workspaceId: 'w1', paneId: 'p1', active: true },
+      },
+    ]);
   });
 
   it('reactivates the pane when the host rejects close', async () => {

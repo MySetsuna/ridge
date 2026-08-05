@@ -30,7 +30,7 @@ import { get } from 'svelte/store';
 import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 import { enqueuePtyWrite } from '$lib/terminal/ptyWriteQueue';
 import { enqueuePaneInput } from '@ridge/remote/shared/terminal/paneInputGate';
-import { activateRemotePaneBinding, remotePaneBinding } from '$lib/hosts/remotePaneBindings';
+import { activateRemotePaneBinding, promoteRemotePaneBinding, remotePaneBinding } from '$lib/hosts/remotePaneBindings';
 import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '@ridge/remote/shared/terminal/tuiGate';
 import {
 	deriveBufferEvent,
@@ -2100,6 +2100,7 @@ function onScrollbarTrackClick(e: MouseEvent) {
 
 function onContainerPointerDown(e: PointerEvent) {
 	activePaneId.set(paneId);
+	promoteRemotePaneBinding(paneId);
 	// §TUI: refresh sticky timestamp when the user clicks back into
 	// the pane (e.g., after closing a context menu or interacting with
 	// chrome). Without this, the inline-TUI heuristic may have expired
