@@ -13,14 +13,18 @@
   legacy peers fall back to `ridge` without a second connection.
 - Host/controller routing, pane backpressure, teardown, legacy fallback, and
   focused foreign-pane QoS promotion are covered by deterministic tests. Local
-  code is pushed at `e8316548`; foreign-pane subscriptions now replay after a
+  code is pushed at `b9459686`; foreign-pane subscriptions now replay after a
   full WebRTC reconnect, while discovered-only panes remain unsubscribed;
   mobile transient subscribe failures use bounded exponential retry.
-- Verification after the dual-lane, focus-promotion, and reconnect-replay
-  changes (including rejected-close rollback and mobile retry): full Vitest 154 files / 1589 passed / 1 skipped; `pnpm check` 0 errors / 0 warnings; mobile PWA and
-  desktop Remote builds passed. Online artifact remains `e94d8c5` because the
-  2026-08-05 publication cap is exhausted; next artifact must contain
-  `e8316548` (including the dual-lane `150272a` fix).
+- `MainApp` now frame-budgets incoming Pane bytes: 512 KiB per-pane cap, 32 KiB
+  steps, 64 KiB/frame ceiling, active-pane-first plus one background turn, and
+  a 4 ms wall-clock budget. Overflow/parse failure triggers one resync; Pane
+  teardown and reconnect clear queued bytes.
+- Verification after the output scheduler follow-up: full Vitest 155 files /
+  1594 passed / 1 skipped; `pnpm check` 0 errors / 0 warnings; mobile PWA and
+  desktop Remote builds wrote their output directories. Online artifact remains
+  `e94d8c5` because the 2026-08-05 publication cap is exhausted; next artifact
+  must contain `b9459686` (including the dual-lane `150272a` fix).
 - Public HTTP startup remains route/proxy-sensitive (direct fetch is much
   faster than the configured proxy). This is not evidence about WebRTC data
   channel latency. Cloud source confirms business E2EE DataChannel traffic
@@ -38,6 +42,9 @@
   Latest rerun records Desktop `tree=false` in raw detail while the script's
   acceptance gate still passes; no tree-pass is claimed. This does not close
   the physical public WebRTC/PWA gate.
+- Post-change LAN rerun at `2026-08-05T11:36:29Z` also passed with
+  `browserErrors=[]`, real input/resize traffic, Desktop `canvas=true tree=false
+  ws=true`, and Mobile `canvas=true tree=true ws=true`.
 
 Archive: `docs/iterations/2026-08-05-iteration-171-remote-link-fluidity.md`.
 
