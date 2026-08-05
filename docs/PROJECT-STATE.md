@@ -2208,3 +2208,20 @@ workflow `30974528483` passed test, Linux, macOS ARM/x64, and Windows.
 Remote/Cloud workflow `30977176806` succeeded and atomically activated
 `0.1.60+g42680ca`; its Desktop/Mobile index health checks passed. The public
 Remote entrypoint returns the new build. Worktree and origin are clean.
+
+### Iteration 171 runtime candidate (2026-08-05)
+
+Remote direct-link activation now bypasses keyboard focus on validated URL/path
+hits, including mobile touch/mouse. Pane switching caps synchronous catch-up at
+128 KiB, requests a bounded resync after overflow, and retains the latest live
+tail/input path. Cloud subscriptions register in the background first, then
+promote through a latest-wins serialized active lane.
+Bounded stage telemetry now separates input/resize RPC, transport send/receive,
+raw feed, pane switch, and first paint; scheduler diagnostics expose p50/p95
+latency and input queue high-water bytes. Details:
+`docs/iterations/2026-08-05-iteration-171-remote-link-fluidity.md`.
+
+Focused Remote tests (8 files/53 tests) and `pnpm check` (0 errors/0 warnings)
+pass. The public artifact remains `0.1.60+g42680ca`; this candidate is not
+published until a physical/public soak records the new trace and the clean
+release gate is explicitly run.

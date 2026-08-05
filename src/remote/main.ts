@@ -23,6 +23,11 @@ void import('@ridge/remote/shared/terminal/manager').then(({ TerminalManager }) 
       get: () => snapshot,
       subscribe: (cb) => { cb(snapshot); return () => {}; },
     },
+    openTextLink: (spanText, ctx) => {
+      window.dispatchEvent(new CustomEvent('ridge:remote-open-text-link', {
+        detail: { spanText, cwd: ctx.cwd, knownCwds: ctx.knownCwds },
+      }));
+    },
   });
 });
 

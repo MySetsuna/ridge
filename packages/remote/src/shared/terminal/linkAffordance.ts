@@ -2,10 +2,9 @@
  * Terminal link hover / click arbitration (OP-TERM-LINK).
  *
  * Pure functions — no DOM. Manager wires these into pointer handlers so:
- * - Ctrl/Cmd-hover on a link → show underline + pointer (affordance)
- * - Bare hover on a link → show a hint that Ctrl/Cmd enables navigation
- * - TUI mouse reporting on → click goes to program only; open link needs Ctrl+click
- * - TUI mouse off → Ctrl+click opens; bare click never opens (avoids accidental nav)
+ * - Hover on a validated link → show a thin underline, pointer, and a direct-click hint
+ * - Primary click on a validated link → open without requiring a keyboard modifier
+ * - Non-link clicks retain TUI forwarding / host selection semantics
  */
 
 import type { LinkSpan, LinkSpanKind } from './linkSpans';
@@ -18,7 +17,7 @@ export type LinkOpenTarget =
 export interface HoverUnderlineDecision {
   /** Whether renderer/DOM should paint underline under the span. */
   showUnderline: boolean;
-  /** Whether a non-blocking hint should tell the user to hold Ctrl/Cmd. */
+  /** Whether a non-blocking hint should tell the user that a direct click opens. */
   showHint: boolean;
   hintText: string | null;
   /** CSS cursor value (`pointer` | ``). */
@@ -101,8 +100,8 @@ export function resolvePathAgainstCwd(
 }
 
 /**
- * Hover affordance: Ctrl/Cmd shows the actionable underline; bare hover shows
- * a small hint instead of making a click look immediately navigable.
+ * Hover affordance: a validated link is actionable with a primary click on
+ * both desktop and mobile, so keep the underline/cursor stable while hovering.
  */
 export function decideHoverUnderline(opts: {
   hasLinkHit: boolean;
@@ -111,10 +110,10 @@ export function decideHoverUnderline(opts: {
 }): HoverUnderlineDecision {
   if (opts.hasLinkHit) {
     return {
-      showUnderline: opts.modifierHeld,
+      showUnderline: true,
       showHint: !opts.modifierHeld,
-      hintText: opts.modifierHeld ? null : '按 Ctrl 可跳转',
-      cursor: opts.modifierHeld ? 'pointer' : '',
+      hintText: opts.modifierHeld ? null : '点击可跳转',
+      cursor: 'pointer',
       spanText: opts.spanText ?? null,
     };
   }
@@ -205,26 +204,19 @@ export function decideLinkClick(opts: {
       startHostSelection: false,
     };
   }
-  if (opts.mouseReportingOn) {
-    // TUI owns clicks; open only with modifier+link
-    if (opts.modifierHeld && opts.hasLinkHit) {
-      return {
-        forwardToProgram: false,
-        openLink: true,
-        startHostSelection: false,
-      };
-    }
-    return {
-      forwardToProgram: true,
-      openLink: false,
-      startHostSelection: false,
-    };
-  }
-  // Host path: Ctrl+click opens; bare click starts selection
-  if (opts.modifierHeld && opts.hasLinkHit) {
+  // A validated link owns the primary click even when a TUI has enabled mouse
+  // reporting. This is the only exception to the TUI forwarding contract.
+  if (opts.hasLinkHit) {
     return {
       forwardToProgram: false,
       openLink: true,
+      startHostSelection: false,
+    };
+  }
+  if (opts.mouseReportingOn) {
+    return {
+      forwardToProgram: true,
+      openLink: false,
       startHostSelection: false,
     };
   }

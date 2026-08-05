@@ -5,6 +5,30 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 168, 2026-08-05)
+
+- NotebookLM research used the exact notebook `Ridge 项目现状、愿景与规划基线（2026-07-21）`
+  (`66919cb9-1329-4ddf-955c-f426d15a9fe6`) and transcript
+  `a47d3199-c1f9-47f1-927c-ff2c4875b77d`. NLM was resource-limited after the
+  transcript fetch; local CodeGraph/source/tests remain authoritative.
+- `REQ-INTERACTION-PARITY-01` and `REQ-AGENT-COMMUNICATION-REGISTRY-01` are
+  approved and executable. Pending requirements are empty. The iteration adds
+  access/share contract coverage, IME input fallback, mobile TUI touch mouse
+  forwarding, free Explorer resize, Agent parity/spacing, narrow file/image
+  viewing, and confirmed Agent lifecycle communication preflight. Registry
+  entries require a live PTY handle; confirmed auto-discovery repairs the same
+  directory and teardown removes the identity.
+- Verification: `pnpm check` 0/0; full Vitest 149 files/1560 passed/1 skipped;
+  focused interaction Vitest 4 files/33 passed and shared terminal helper
+  tests 5 files/46 passed; `cargo check -p ridge --lib` passed; teammate
+  profile tests 3 passed and teammate projection tests 8 passed; `cargo test
+  -p ridge-term input --quiet` 36 passed; PWA build verification and LAN
+  desktop/mobile E2E passed; `git diff --check` passed. Physical notch/PWA,
+  public WebRTC, WebView2, and multi-window/Host gates remain explicitly
+  external.
+
+Archive: `docs/iterations/2026-08-05-iteration-168-interaction-parity.md`.
+
 ## Current snapshot (iteration 167, 2026-08-04)
 
 - New pre-approved `REQ-MOBILE-REMOTE-BACKPRESSURE-01` is active for this
@@ -2170,57 +2194,134 @@ link/copy and Ctrl/Cmd-hover underline slice is closed. Physical WebView2
 visual confirmation and the previously listed public/dual-window/branch/
 Kernel residuals remain environment-gated and are not falsely marked done.
 
+### Iteration 170 publication closure (2026-08-05)
+
+Remote mobile input and Pane switching now use a bounded switch-gap FIFO,
+pre-attach input admission, renderer retention with pressure reclamation, and
+an input-first RPC path. Agent attention is edge-triggered and sticky until
+real terminal focus on both desktop and Remote; a hidden live roster monitor
+keeps the Remote Pane rail current while the drawer is closed. The detailed
+record is `docs/iterations/2026-08-05-iteration-170-remote-fluidity-attention.md`.
+
+`v0.1.60` is formal with 12 matching Desktop installer/CLI assets; release
+workflow `30974528483` passed test, Linux, macOS ARM/x64, and Windows.
+Remote/Cloud workflow `30977176806` succeeded and atomically activated
+`0.1.60+g42680ca`; its Desktop/Mobile index health checks passed. The public
+Remote entrypoint returns the new build. Worktree and origin are clean.
+
 <!-- PROJECT_STATE_RUNTIME -->
 ## 运行元数据
 
-- repository_head:`d57f5c1ac8265925d3ff26cfaee7ea766c28017d`
+- repository_head:`9efaa226d8d46f94abd0521b25d35e41eaf1bfac`
 - requirements_version:`v1.1`
-- requirements_hash:`7584865233a0b7bdce302e7c9fff721ea36a5138d8af2e5c0ccc099b91e5b3db`
-- pending_hash:`d20b5c7bdba45785e2bca898740320d4a13db775417fdf71649c160c7e125d3e`
-- decision_hash:`921323c078340ec8198c535494074d8636368b1575330734e6ce61a1022d5aa9`
-- generated_at:`2026-08-04T22:49:47+00:00`
-- current_git_diff:`.iteration/decision.json`
+- requirements_hash:`d2b7e90e8347212fcbe826031023cbcddb94d67a60651da5b78619811dcceca5`
+- pending_hash:`675f4c14be11356f2a6dd653abee7e066cff45c96270b80854f136a42bc3e1db`
+- decision_hash:`47d86551d3468bde9d3ae5f9961593d989421f93e2ed6e8670436f416a7993e9`
+- generated_at:`2026-08-05T07:15:00+00:00`
+- current_git_diff:`.iteration/context.json,.iteration/decision.json,.iteration/intake-decision.json,.iteration/request.txt,docs/REQUIREMENTS-SPEC.md`
 
 ## 非权威 Pending 索引
 
-- `PENDING-REQ-20260805-AGENT-COMMUNICATION-REGISTRY-01` · Deterministic Agent lifecycle and communication registry · `pending`；冻结：Existing PTY, pane, workspace-singleton, Remote, and MCP transport contracts remain authoritative; this request adds lifecycle/communication truth and adapters only after approval.
+- _无_
 
 ## 当前决策包
 
 ```json
 {
   "approved_constraints": [
-    "Keep existing kernel and Remote transport authority; do not create a second UI-local source of truth.",
-    "Preserve bounded queues, cancellation, lifecycle cleanup, and release/worktree gates.",
-    "Do not hide errors with console suppression; use deterministic tests and explicit feedback."
+    "One authenticated transport; no second WebSocket/WebRTC connection.",
+    "All queues and retained resources bounded, cancellable, and observable.",
+    "Input/control and active live tail must preempt render/history work.",
+    "Direct link open only for validated link/path hit; non-link/TUI/selection semantics preserved."
   ],
   "attempts": [],
-  "candidate_solutions": [],
-  "failure_signals": [],
-  "hypotheses": [],
+  "candidate_solutions": [
+    {
+      "constraints": [
+        "validated hit only",
+        "drag/secondary unchanged"
+      ],
+      "core": "Direct link precedence plus existing TUI/selection fallback",
+      "reversibility": "small decision-function change",
+      "risks": "accidental open on TUI output",
+      "scope": [
+        "linkAffordance",
+        "manager click path"
+      ],
+      "validation": [
+        "matrix tests",
+        "mobile click fixture"
+      ]
+    },
+    {
+      "constraints": [
+        "single transport",
+        "bounded queues"
+      ],
+      "core": "Instrument and prioritize active path end-to-end",
+      "reversibility": "feature-gated counters",
+      "risks": "diagnostic overhead",
+      "scope": [
+        "scheduler",
+        "transport",
+        "manager",
+        "Remote UI"
+      ],
+      "validation": [
+        "stage latency trace",
+        "flood and pane-switch tests",
+        "public soak"
+      ]
+    },
+    {
+      "constraints": [
+        "only after attribution"
+      ],
+      "core": "Infrastructure scaling or device upgrade",
+      "reversibility": "external",
+      "risks": "cost without fixing queue/renderer defect",
+      "scope": [
+        "relay/host/device"
+      ],
+      "validation": [
+        "A/B trace with same build"
+      ]
+    }
+  ],
+  "failure_signals": [
+    "User reports freeze after pane switching, stale tail, and no input despite v0.1.60 changes.",
+    "No per-stage public trace yet separates relay bandwidth, host CPU, device render, or queue delay."
+  ],
+  "hypotheses": [
+    "The dominant current symptom is structural active-path starvation or stale subscription/replay ordering, not raw server bandwidth alone.",
+    "A relay/host bottleneck remains possible and must be separated by wire and CPU timings.",
+    "Mobile device decode/render pressure may amplify a queue delay after pane switch."
+  ],
   "prohibitions": [
-    "No implementation based solely on NotebookLM output.",
-    "No unbounded retry, duplicated state store, or silent fallback that loses Agent/Pane identity."
+    "Do not claim root cause from absence of errors.",
+    "Do not add a second physical connection or unbounded replay.",
+    "Do not mask freezes by dropping input or hiding Console errors."
   ],
-  "question": "After the latest Remote and desktop iteration, what architecture and validation order best closes shared-workspace attach, mobile/desktop input fidelity, TUI mouse forwarding, unconstrained Explorer split resizing, cross-client Agent synchronization, and mobile icon/file-view consistency?",
+  "question": "What structure is actually limiting Remote latency, and what is the safest design for bare link activation plus local-feeling input and pane switching?",
   "questions": [
-    "Should shared-workspace attach use the existing workspace/Host capability path or a new kernel domain endpoint?",
-    "Which terminal input and mouse event paths currently drop spaces, Unicode punctuation, drag, or click sequences?",
-    "Which resize container owns the vertical budget when both Explorer regions are dragged?"
+    "Which stage dominates p50/p95 input acknowledgement and pane first-live-frame latency under output flood?",
+    "Does public relay buffered amount or host CPU correlate with the observed freeze?",
+    "Can direct link precedence preserve TUI mouse behavior through a validated-hit gate?"
   ],
-  "target": "Next iteration design and approval; implementation remains bounded by approved requirements and current kernel/Remote contracts.",
+  "target": "Remote mobile and desktop web clients over LAN/public Cloud, with shared terminal renderer and RPC scheduler.",
+  "trigger": "new_requirement_or_debt_candidate",
   "verified_facts": [
     {
-      "evidence": "git status --short --branch; gh release view v0.1.57 --json tagName,isDraft,assets; workflow 30942946619 log",
-      "fact": "The repository is clean on main at d57f5c1; v0.1.57 desktop Release has 12 assets and Remote/cloud activated 0.1.57+g8896038."
+      "evidence": "packages/remote/src/shared/terminal/linkAffordance.ts:188-236 via CodeGraph",
+      "fact": "Current link arbitration requires Ctrl/Cmd for opening and uses bare click for TUI forwarding or selection."
     },
     {
-      "evidence": "docs/PENDING-REQUIREMENTS.md:7; .iteration/intake-decision.json; requirements_intake.py check reports classification pending and reasons approval_required",
-      "fact": "The new Agent communication registry remains pending and is not an approved business contract yet; existing Agent UI/kernel requirements are related but do not specify deterministic lifecycle registration and pre-send roster validation."
+      "evidence": "f01ff9d / v0.1.60 implementation and tests; public bundle contains flushPaneFeed",
+      "fact": "Current code already has bounded pane-switch FIFO, synchronous input admission, renderer retention, and bounded feed catch-up."
     },
     {
-      "evidence": "CodeGraph availability check plus targeted rg symbol inventory in the next local exploration round",
-      "fact": "Current code already contains separate Remote/desktop transport, Agent roster, workspace/Host, terminal input, Explorer resize, and mobile file-view surfaces that must be traced before changes."
+      "evidence": "publish-remote workflow 30977176806 success",
+      "fact": "Remote artifact 0.1.60+g42680ca is active and Desktop/Mobile health checks passed."
     }
   ]
 }

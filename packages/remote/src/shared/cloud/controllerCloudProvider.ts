@@ -53,6 +53,7 @@ import { MAX_PANE_FRAME_BYTES, encodeJsonFrame } from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import { getOrCreateCli } from './controllerInstanceId';
 import { backoffMs } from '../reconnectPolicy';
+import { remotePerfMark } from '../transport/remotePerfTrace';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
@@ -342,6 +343,11 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private onDataChannelMessage(data: unknown): void {
     const bytes = toBytes(data);
     if (!bytes) return;
+    remotePerfMark('raw-receive', {
+      bytes: bytes.byteLength,
+      transport: 'cloud-webrtc-wire',
+      queueBytes: this.dc?.bufferedAmount ?? 0,
+    });
 
     // 握手完成前，首帧必须是对端握手帧；否则断开（契约 §7.1）。
     if (!this.handshakeDone) {
@@ -529,6 +535,11 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
 
   private rawSend(bytes: Uint8Array): void {
     if (this.dc && this.dc.readyState === 'open') {
+      remotePerfMark('transport-send', {
+        bytes: bytes.byteLength,
+        transport: 'cloud-webrtc-wire',
+        queueBytes: this.dc.bufferedAmount,
+      });
       // 拷贝出独立 ArrayBuffer，避免发送共享底层 buffer 的视图。
       this.dc.send(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
     }

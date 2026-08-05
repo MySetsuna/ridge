@@ -1,23 +1,20 @@
 {
   "schema_version": 1,
-  "intake_id": "INTAKE-20260805-INTERACTION-PARITY-01",
+  "intake_id": "INTAKE-20260805-REMOTE-LINK-FLUIDITY-01",
   "classification": "approved",
-  "summary": "Access/share onboarding, terminal input fidelity, TUI mouse forwarding, Explorer resize, and Remote mobile Agent/viewer parity.",
+  "summary": "Remote direct link activation and measured low-latency input/pane interaction.",
   "requirement_ids": [
-    "REQ-INTERACTION-PARITY-01",
-    "REQ-AGENT-COMMUNICATION-REGISTRY-01"
+    "REQ-REMOTE-SMOOTH-STATE-02",
+    "REQ-REMOTE-RUNTIME-PERF-MEMORY-02",
+    "REQ-MOBILE-REMOTE-BACKPRESSURE-01",
+    "REQ-MOBILE-REMOTE-LIVE-TAIL-01",
+    "REQ-REMOTE-LINK-FLUIDITY-01"
   ],
   "pending_ids": [
-    "PENDING-REQ-20260805-INTERACTION-PARITY-01"
+    "PENDING-REQ-20260805-REMOTE-LINK-FLUIDITY-01"
   ],
   "approval_reasons": [],
   "open_questions": [],
-  "approval_evidence": "User explicitly authorized self-approval after NotebookLM research and approval of existing pending requirements.",
-  "request_sha256": "eebaca3c855bb510e780d36639c0de4161e35abf1a77b7650426a730b40fe091",
-  "requirements_sha256": "9fdb1f72975fb0cdae4b6d52a40604c325895e51c55ae170e3e98db240646353",
-  "pending_sha256": "675f4c14be11356f2a6dd653abee7e066cff45c96270b80854f136a42bc3e1db",
-  "draft_sha256": "02db595b2fcc5c45296a6706ee23451fcd7df3664227168d70f90111ac0729c8",
-  "previous_intake_sha256": "499302ebc53c4fff76e96801c44c2da0bda8467fdda09e41054dede4cc58173c",
-  "executable": true,
-  "reasons": []
+  "approval_evidence": "我都接受方案",
+  "executable": true
 }

@@ -6,6 +6,7 @@ import {
   type RpcRequestOptions,
 } from './types';
 import { paneRefKey, type PaneRef } from './paneRef';
+import { remotePerfEnd, remotePerfStart } from './remotePerfTrace';
 
 export const DEFAULT_MAX_QUEUED_INPUT_BYTES = 256 * 1024;
 export const DEFAULT_INPUT_BATCH_WINDOW_MS = 0;
@@ -97,6 +98,12 @@ export interface PaneRpcSchedulerDiagnostics {
   retries: number;
   pausedLanes: number;
   queuedInputBytes: number;
+  /** Bounded request timing samples (client admission → RPC settle). */
+  inputLatencyP50Ms: number;
+  inputLatencyP95Ms: number;
+  resizeLatencyP50Ms: number;
+  resizeLatencyP95Ms: number;
+  inputQueueHighWaterBytes: number;
 }
 
 export class PaneInputQueueFullError extends Error {
@@ -156,6 +163,9 @@ export class PaneRpcScheduler {
   private readonly pauseAfterFailures: number;
   private readonly onError: NonNullable<PaneRpcSchedulerOptions['onError']>;
   private laneSequence = 0;
+  private readonly inputLatencySamples: number[] = [];
+  private readonly resizeLatencySamples: number[] = [];
+  private static readonly MAX_LATENCY_SAMPLES = 64;
   private counters = {
     inputCalls: 0,
     inputRequests: 0,
@@ -169,6 +179,7 @@ export class PaneRpcScheduler {
     resizeFailures: 0,
     timeoutFailures: 0,
     retries: 0,
+    inputQueueHighWaterBytes: 0,
   };
 
   constructor(private readonly rpc: RpcPort, options: PaneRpcSchedulerOptions = {}) {
@@ -222,6 +233,10 @@ export class PaneRpcScheduler {
     lane.queued += data;
     lane.queuedBytes += bytes;
     this.counters.inputBytesAccepted += bytes;
+    this.counters.inputQueueHighWaterBytes = Math.max(
+      this.counters.inputQueueHighWaterBytes,
+      lane.queuedBytes + (lane.active?.bytes ?? 0),
+    );
     if (
       this.inputBatchWindowMs > 0 &&
       !lane.active &&
@@ -386,7 +401,15 @@ export class PaneRpcScheduler {
       if (lane.paused) pausedLanes += 1;
     }
     for (const lane of this.resizeLanes.values()) if (lane.paused) pausedLanes += 1;
-    return { ...this.counters, pausedLanes, queuedInputBytes };
+    return {
+      ...this.counters,
+      pausedLanes,
+      queuedInputBytes,
+      inputLatencyP50Ms: percentile(this.inputLatencySamples, 0.5),
+      inputLatencyP95Ms: percentile(this.inputLatencySamples, 0.95),
+      resizeLatencyP50Ms: percentile(this.resizeLatencySamples, 0.5),
+      resizeLatencyP95Ms: percentile(this.resizeLatencySamples, 0.95),
+    };
   }
 
   private inputLane(pane: PaneRef): InputLane {
@@ -443,6 +466,12 @@ export class PaneRpcScheduler {
     lane.inFlight = true;
     lane.nextSendAt = Date.now() + this.inputThrottleMs;
     this.counters.inputRequests += 1;
+    const startedAt = Date.now();
+    const trace = remotePerfStart('input-rpc', {
+      paneKey: key,
+      bytes: batch.bytes,
+      queueBytes: lane.queuedBytes + batch.bytes,
+    });
     void this.rpc.request('write_to_pty', {
       workspaceId: lane.pane.workspaceId,
       paneId: lane.pane.paneId,
@@ -452,6 +481,8 @@ export class PaneRpcScheduler {
     }, { scope: key, timeoutMs: this.rpcTimeoutMs }).then(
       () => {
         if (this.inputLanes.get(key) !== lane) return;
+        this.recordLatency(this.inputLatencySamples, Date.now() - startedAt);
+        remotePerfEnd(trace, { queueBytes: lane.queuedBytes });
         lane.inFlight = false;
         lane.active = null;
         lane.nextSequence += 1;
@@ -461,6 +492,8 @@ export class PaneRpcScheduler {
       },
       (error: unknown) => {
         if (this.inputLanes.get(key) !== lane) return;
+        this.recordLatency(this.inputLatencySamples, Date.now() - startedAt);
+        remotePerfEnd(trace, { queueBytes: lane.queuedBytes + batch.bytes });
         lane.inFlight = false;
         this.failLane(error, 'input', lane.pane, lane, () => this.drainInput(key, lane));
       },
@@ -488,6 +521,11 @@ export class PaneRpcScheduler {
     lane.inFlight = true;
     lane.activeSignature = resizeSignature(value);
     this.counters.resizeRequests += 1;
+    const startedAt = Date.now();
+    const trace = remotePerfStart('resize-rpc', {
+      paneKey: key,
+      queueBytes: 0,
+    });
     void this.rpc.request('resize_pane', {
       ...value.params,
       workspaceId: lane.pane.workspaceId,
@@ -497,6 +535,8 @@ export class PaneRpcScheduler {
     }, { scope: key, timeoutMs: this.rpcTimeoutMs }).then(
       () => {
         if (this.resizeLanes.get(key) !== lane) return;
+        this.recordLatency(this.resizeLatencySamples, Date.now() - startedAt);
+        remotePerfEnd(trace);
         lane.inFlight = false;
         lane.lastAppliedSignature = resizeSignature(value);
         lane.activeSignature = null;
@@ -510,6 +550,8 @@ export class PaneRpcScheduler {
       },
       (error: unknown) => {
         if (this.resizeLanes.get(key) !== lane) return;
+        this.recordLatency(this.resizeLatencySamples, Date.now() - startedAt);
+        remotePerfEnd(trace);
         lane.inFlight = false;
         lane.activeSignature = null;
         if (!lane.latest) lane.latest = value;
@@ -565,4 +607,15 @@ export class PaneRpcScheduler {
       // Observability hooks must not corrupt admission or retry state.
     }
   }
+
+  private recordLatency(samples: number[], value: number): void {
+    samples.push(Math.max(0, value));
+    if (samples.length > PaneRpcScheduler.MAX_LATENCY_SAMPLES) samples.shift();
+  }
+}
+
+function percentile(samples: readonly number[], ratio: number): number {
+  if (samples.length === 0) return 0;
+  const ordered = [...samples].sort((a, b) => a - b);
+  return ordered[Math.min(ordered.length - 1, Math.floor((ordered.length - 1) * ratio))] ?? 0;
 }

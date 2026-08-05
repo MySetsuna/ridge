@@ -36,7 +36,12 @@
   import { onceCleanup } from './lib/listenerCleanup';
   import { createGenerationGuard } from './lib/generationGuard';
   import { detachPaneRefs } from './lib/paneLifecycle';
-  import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
+import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
+  import {
+    remotePerfEnd,
+    remotePerfMark,
+    remotePerfStart,
+  } from '@ridge/remote/shared/transport/remotePerfTrace';
   import type { DataProvider } from '$lib/transport';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
@@ -209,6 +214,20 @@
     ui.sidebarTab = viewerReturnTab;
     viewerReturnTab = null;
   }
+
+  function handleRemoteTextLink(event: Event): void {
+    const detail = (event as CustomEvent<{ spanText?: unknown }>).detail;
+    if (typeof detail?.spanText !== 'string' || !detail.spanText) return;
+    const match = detail.spanText.match(/^(.*?)(?::(\d+))(?::(\d+))?$/);
+    const path = match?.[1] || detail.spanText;
+    const line = match?.[2] ? Number(match[2]) : undefined;
+    openFileViewer(path, line);
+  }
+
+  onMount(() => {
+    window.addEventListener('ridge:remote-open-text-link', handleRemoteTextLink);
+    return () => window.removeEventListener('ridge:remote-open-text-link', handleRemoteTextLink);
+  });
   // §remote 新建终端：空状态下让远程端自行创建终端，不再依赖桌面端先开一个。
   let creatingPane = $state(false);
   let createError = $state('');
@@ -350,6 +369,14 @@
    * so a fast pane switch never rewinds the visible input/output tail.
    */
   const pendingRawFrames = new PaneSwitchBuffer();
+  const paneSwitchPerf = new Map<string, ReturnType<typeof remotePerfStart>>();
+
+  function markPaneFirstPaint(paneKey: string): void {
+    const token = paneSwitchPerf.get(paneKey) ?? null;
+    paneSwitchPerf.delete(paneKey);
+    remotePerfEnd(token, { paneKey });
+    remotePerfMark('pane-first-paint', { paneKey });
+  }
 
   function enqueuePendingRawFrame(key: string, data: Uint8Array): void {
     pendingRawFrames.enqueue(key, data);
@@ -757,6 +784,11 @@
       // host's on-subscribe replay is absorbed by the alive kernel.
       const key = paneRefKey(pane);
       const stats = canvasRef?.feedPane(key, data);
+      remotePerfMark('raw-feed', {
+        paneKey: key,
+        bytes: data.byteLength,
+        queueBytes: stats?.queuedBytes ?? 0,
+      });
       // During a keyed pane switch the old canvas may already be parked and
       // the new one not yet attached. Do not drop this frame: the next canvas
       // drains it into the same keep-alive kernel before its first paint.
@@ -897,6 +929,9 @@
       const subscriptionKey = paneRefKey(pane);
       if (subscriptionKey === subscribedPaneId) return;
       subscribedPaneId = subscriptionKey;
+      paneSwitchPerf.set(subscriptionKey, remotePerfStart('pane-switch', {
+        paneKey: subscriptionKey,
+      }));
       // Remember this pane as the last active for the current workspace, and
       // persist it so a refresh restores the same ws + pane (§persist-state).
       if (workspaceId) {
@@ -1100,6 +1135,7 @@
             onFocus={onPaneFocus}
             {onResize}
             onDrainPending={drainPendingRawFrames}
+            onFirstPaint={markPaneFirstPaint}
             onHostClipboard={(text) => ws.setHostClipboard(text)}
             onNearTop={loadOlderScrollback}
             onKeyboardShift={(shift: number) => ui.keyboardShift = shift}

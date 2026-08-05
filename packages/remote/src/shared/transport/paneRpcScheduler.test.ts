@@ -99,6 +99,21 @@ describe('PaneRpcScheduler input admission', () => {
     });
   });
 
+  it('exposes bounded input latency and queue high-water diagnostics', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc);
+    scheduler.enqueueInput(pane, 'abc');
+    expect(scheduler.diagnostics.inputQueueHighWaterBytes).toBe(3);
+    await vi.advanceTimersByTimeAsync(12);
+    rpc.calls[0].resolve(undefined);
+    await flushPromises();
+    expect(scheduler.diagnostics).toMatchObject({
+      inputLatencyP50Ms: 12,
+      inputLatencyP95Ms: 12,
+      queuedInputBytes: 0,
+    });
+  });
+
   it('optionally batches a synchronous input burst before the first wire send', async () => {
     const rpc = new FakeRpc();
     const scheduler = createScheduler(rpc, { inputBatchWindowMs: 4 });
