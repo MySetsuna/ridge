@@ -69,6 +69,11 @@ import {
 	shouldFlushFeedBuffer,
 	takeDeferredFeed,
 } from './terminalFeedPolicy';
+import {
+	INITIAL_FIT_RETRY_DELAYS_MS,
+	needsInitialPaneFit,
+	type InitialFitMeasurement,
+} from './initialPaneFit';
 
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
@@ -285,6 +290,11 @@ interface PaneEntry {
 	 *  on the bottom row" bug. We debounce ~120ms: while the container
 	 *  is animating, we don't resize at all; once it settles, fit once. */
 	pendingFitTimer: ReturnType<typeof setTimeout> | null;
+	/** Bounded cold-mount fit retries. Layout/font/WebGPU setup can briefly
+	 * report 0×0 or stale metrics; keep retry state cancellable so a parked or
+	 * destroyed pane cannot retain a timer or re-enter a freed kernel. */
+	initialFitTimer: ReturnType<typeof setTimeout> | null;
+	initialFitAttempt: number;
 	/** Optional callback for typed kernel events (title, cwd, hyperlinks,
 	 *  bell). Called once per event after each `feed()`. RidgePane wires
 	 *  this to the relevant Svelte stores. */
@@ -529,6 +539,10 @@ const SYNC_OUTPUT_TIMEOUT_MS = 150;
  *  is just the safety net when the release is missed. */
 const RESIZE_SETTLE_MS = 500;
 const FEED_PER_CALL_BUDGET_MS = 4;
+/** Keep render back-pressure bounded without allowing one burst to monopolize
+ * a frame. A focused pane may drain two chunks, then siblings get a turn. */
+const FEED_FRAME_BUDGET_MS = 6;
+const MAX_DEFERRED_CHUNKS_PER_FRAME = 2;
 
 /**
  * Singleton. Created lazily on first `instance()` call. Held by the
@@ -1246,6 +1260,10 @@ export class TerminalManager {
 				// container. Keeping wasHiddenLastTick lets this frame fit and
 				// render without the legacy one-tick black gap.
 				this._recomputeViewport(e);
+				// A display:none→flex transition does not reliably emit ResizeObserver.
+				// Re-run the kernel fit as well as the visual scissor projection; this
+				// is what moves a cold pane off its 80×24 attach seed immediately.
+				this._scheduleInitialFit(e);
 			}
 			this._invalidateHost();
 			this.wake();
@@ -2269,6 +2287,8 @@ export class TerminalManager {
 			lastViewportKernelRows: -1,
 			lastViewportKernelCols: -1,
 			pendingFitTimer: null,
+			initialFitTimer: null,
+			initialFitAttempt: 0,
 			syncStart: null,
 			syncTimeoutRendered: false,
 			focusListener,
@@ -2410,9 +2430,7 @@ export class TerminalManager {
 		// fit CLAIMS the PTY at this viewer's size — without this the pane
 		// letterboxes the host's grid forever ("shell 渲染区不填满 pane" bug).
 		// Passive fits afterwards still only re-letterbox (multi-viewer safe).
-		requestAnimationFrame(() => {
-			if (this.panes.has(paneId)) void this.fitPane(entry, this._sharedRemoteMode);
-		});
+		this._scheduleInitialFit(entry);
 		// Expose a debug-dump entry point on `window` so we can inspect
 		// what characters a TUI actually wrote into a row from DevTools
 		// console — no module import required. Read-only beyond a brief
@@ -2756,6 +2774,7 @@ export class TerminalManager {
 				clearTimeout(entry.pendingFitTimer);
 				entry.pendingFitTimer = null;
 			}
+			this._cancelInitialFit(entry);
 			// §4.3 Phase B: only Canvas2D-mode panes own a per-pane DOM
 			// canvas to remove. Host-mode panes share the global host
 			// canvas; tearing down their entry leaves the host canvas
@@ -2843,6 +2862,7 @@ export class TerminalManager {
 			clearTimeout(entry.pendingFitTimer);
 			entry.pendingFitTimer = null;
 		}
+		this._cancelInitialFit(entry);
 		// Clear transient pointer drag state — if the user was mid-drag
 		// when the unmount fired, the next attach should start fresh.
 		entry.selecting = false;
@@ -3048,11 +3068,7 @@ export class TerminalManager {
 		entry.parkReason = null;
 		entry.lastForegroundAt = Date.now();
 
-		requestAnimationFrame(() => {
-			const e = this.panes.get(paneId);
-			// iter-60 G2: same initial-claim rule as attach() — see comment there.
-			if (e && !e.parked) void this.fitPane(e, this._sharedRemoteMode);
-		});
+		this._scheduleInitialFit(entry);
 		this.startRafLoop();
 	}
 
@@ -3390,12 +3406,21 @@ export class TerminalManager {
 	 *  while non-focused panes still see progress every frame via
 	 *  the rotation. */
 	private _drainDeferredFeeds(order: readonly PaneEntry[]): void {
+		const started = performance.now();
 		for (const entry of order) {
-			const buf = takeDeferredFeed(entry);
-			if (!buf) continue;
-			// Remove one chunk BEFORE _feedNow — the call re-enqueues only
-			// the unconsumed remainder, preserving order behind older chunks.
-			this._feedNow(entry, buf);
+			let drained = 0;
+			while (hasDeferredFeed(entry) && drained < MAX_DEFERRED_CHUNKS_PER_FRAME) {
+				// Preserve a small frame budget for paint/input and rotate to the
+				// next pane once it is spent; this catches up ordinary bursts without
+				// letting one noisy PTY monopolise the Remote main thread.
+				if (performance.now() - started >= FEED_FRAME_BUDGET_MS) return;
+				const buf = takeDeferredFeed(entry);
+				if (!buf) break;
+				// Remove one chunk BEFORE _feedNow — the call re-enqueues only
+				// the unconsumed remainder, preserving order behind older chunks.
+				this._feedNow(entry, buf);
+				drained += 1;
+			}
 		}
 	}
 
@@ -4119,7 +4144,9 @@ export class TerminalManager {
 	 *  幂等；park/unpark 间存续。 */
 	setLocalGridAuthority(paneId: string, on: boolean): void {
 		const entry = this.panes.get(paneId);
-		if (entry) entry.localGridAuthority = on;
+		if (!entry) return;
+		entry.localGridAuthority = on;
+		if (on) this._scheduleInitialFit(entry);
 	}
 
 	/** iter-60 G4: actual render backend of this pane's handle ("WebGPU" /
@@ -5041,7 +5068,10 @@ export class TerminalManager {
 			clearTimeout(entry.pendingFitTimer);
 			entry.pendingFitTimer = null;
 		}
-		void this.fitPane(entry, this._sharedRemoteMode);
+		this._cancelInitialFit(entry);
+		void this.fitPane(entry, this._sharedRemoteMode).finally(() => {
+			if (this._initialFitNeedsRetry(entry)) this._scheduleInitialFit(entry);
+		});
 	}
 
 	/** Toggle shared-grid + centered-letterbox mode. Enabled on the browser
@@ -5201,6 +5231,69 @@ export class TerminalManager {
 			if (entry.parked) continue;
 			void this.fitPane(entry, this._sharedRemoteMode);
 		}
+	}
+
+	private _cancelInitialFit(entry: PaneEntry): void {
+		if (entry.initialFitTimer !== null) {
+			clearTimeout(entry.initialFitTimer);
+			entry.initialFitTimer = null;
+		}
+		entry.initialFitAttempt = 0;
+	}
+
+	/** Return true while a cold pane still needs a real layout fit. The shared
+	 * viewer intentionally follows the host grid, so only local-grid panes and
+	 * normal desktop panes use the container-vs-kernel comparison. */
+	private _initialFitNeedsRetry(entry: PaneEntry): boolean {
+		if (entry.parked) return false;
+		try {
+			const rect = entry.container.getBoundingClientRect();
+			const cs = window.getComputedStyle(entry.container);
+			const measurement: InitialFitMeasurement = {
+				containerWidth: rect.width,
+				containerHeight: rect.height,
+				paddingLeft: parseFloat(cs.paddingLeft) || 0,
+				paddingRight: parseFloat(cs.paddingRight) || 0,
+				paddingTop: parseFloat(cs.paddingTop) || 0,
+				paddingBottom: parseFloat(cs.paddingBottom) || 0,
+				cellWidth: entry.cellW,
+				cellHeight: entry.cellH,
+				kernelRows: entry.kernel.rows(),
+				kernelCols: entry.kernel.cols(),
+				sharedRemoteMode: this._sharedRemoteMode,
+				localGridAuthority: entry.localGridAuthority === true,
+			};
+			return needsInitialPaneFit(measurement);
+		} catch {
+			return true;
+		}
+	}
+
+	/** Fit after cold mount/visibility transitions with a small, bounded retry
+	 * window. ResizeObserver is not guaranteed to fire for display:none→flex or
+	 * late font metrics, so relying on it alone leaves a pane at 80×24 forever. */
+	private _scheduleInitialFit(entry: PaneEntry): void {
+		if (entry.parked || entry.initialFitTimer !== null) return;
+		const attempt = entry.initialFitAttempt;
+		const delay = INITIAL_FIT_RETRY_DELAYS_MS[Math.min(attempt, INITIAL_FIT_RETRY_DELAYS_MS.length - 1)]!;
+		const run = () => {
+			entry.initialFitTimer = null;
+			const current = this.panes.get(entry.paneId);
+			if (!current || current !== entry || current.parked) return;
+			void this.fitPane(current, this._sharedRemoteMode).finally(() => {
+				const live = this.panes.get(entry.paneId);
+				if (!live || live !== entry || live.parked) return;
+				if (!this._initialFitNeedsRetry(live) || attempt >= INITIAL_FIT_RETRY_DELAYS_MS.length - 1) {
+					live.initialFitAttempt = 0;
+					return;
+				}
+				live.initialFitAttempt = attempt + 1;
+				this._scheduleInitialFit(live);
+			});
+		};
+		// A zero-delay task runs after the current Svelte/flex commit and, unlike
+		// a bare rAF callback, can be cancelled during park/detach.
+		entry.initialFitTimer = setTimeout(run, delay);
 	}
 
 	private async fitPane(entry: PaneEntry, claim = false): Promise<void> {
