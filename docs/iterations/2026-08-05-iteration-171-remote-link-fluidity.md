@@ -262,3 +262,10 @@ not current and the reported pane-switch/input freeze remains expected until
 the next allowed artifact activation. The next release gate is: publish this
 exact SHA, require the workflow's desktop/mobile fingerprint probes to match,
 then run a real phone/PWA WebRTC soak with the opt-in performance trace.
+
+The strict no-build probe was also exercised against the intentionally stale
+local roots after the documentation commit. Its mismatch branch had a missing
+template-string concatenation and surfaced an internal `TypeError`; this is now
+fixed so stale roots fail with the actionable expected/actual fingerprint.
+`scripts/lib/remoteArtifactBundle.test.mjs` remains green (5/5), and no stale
+artifact is eligible for upload.

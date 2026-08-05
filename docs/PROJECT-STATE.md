@@ -2322,3 +2322,6 @@ no-cache iPhone-UA request still serves public asset `CvZWGRf2` without
 Hence public Remote is not current. Next allowed publication must activate this
 exact SHA, pass both public fingerprint probes, then undergo physical phone/PWA
 WebRTC soak before the online freeze claim can close.
+The strict no-build mismatch branch was audited against stale local roots and
+now reports an actionable expected/actual fingerprint instead of an internal
+`TypeError`; the artifact metadata tests remain green (5/5).
