@@ -461,6 +461,13 @@ fn register_agent_to_pane(
     if !ws.pane_tree.panes.contains_key(&pane_id) {
         return Err(format!("pane {pane_id} not in workspace {wid}"));
     }
+    // A pane-tree entry alone is not a communication endpoint.  Persist the
+    // contact only after a live PTY handle exists; this closes the race where
+    // a failed/unfinished spawn leaves a directory entry that can never be
+    // reached by the write preflight.
+    if !ws.terminals.contains_key(&pane_id) {
+        return Err(format!("pane {pane_id} has no active PTY"));
+    }
     if let Some((existing, _)) = ws
         .teammate_agent_pane_map
         .iter()
