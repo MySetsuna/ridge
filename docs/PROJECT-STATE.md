@@ -2312,3 +2312,13 @@ Post-audit: the mobile shell no longer preloads the nonexistent
 `/_app/immutable/entry/startup.js`; source guard and production PWA verification
 pass. LAN E2E at `2026-08-05T12:23:20Z` again passed desktop/mobile input,
 resize, WebSocket, and `browserErrors=[]` gates.
+
+Current activation audit (`2026-08-05T12:43Z`): pushed `main` is `5f295ab7`.
+The unified local Remote dry-run rebuilt matching desktop/mobile fingerprints
+`0.1.60+g5f295ab7` (272 files, 24.84 MiB), and strict no-build validation passed.
+No upload was attempted because the daily publication cap is exhausted. A fresh
+no-cache iPhone-UA request still serves public asset `CvZWGRf2` without
+`PaneFeedScheduler`/`ridge-pane`; public `artifact.json` remains SPA HTML.
+Hence public Remote is not current. Next allowed publication must activate this
+exact SHA, pass both public fingerprint probes, then undergo physical phone/PWA
+WebRTC soak before the online freeze claim can close.

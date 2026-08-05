@@ -246,3 +246,19 @@ Post-audit evidence: removed the stale `/_app/immutable/entry/startup.js`
 preload from the mobile shell; the production build emits no such file and the
 PWA guard test now prevents its return. LAN E2E at `2026-08-05T12:23:20Z`
 passed desktop/mobile input, resize, WebSocket, and browser-error gates.
+
+### Current activation check (2026-08-05T12:43Z)
+
+The pushed checkout is now `5f295ab7`. A fresh unified dry-run rebuilt both UA
+roots and produced `0.1.60+g5f295ab7` (272 files, 24.84 MiB); strict
+`--no-build --dry-run` accepted matching desktop/mobile `artifact.json`
+fingerprints. This is local readiness only: today's Remote publication quota is
+already exhausted, so no upload was attempted.
+
+Fresh no-cache iPhone-UA fetch of the public entrypoint still serves asset
+`CvZWGRf2`, with neither `PaneFeedScheduler` nor `ridge-pane`; public
+`/artifact.json` still falls back to the SPA HTML. Therefore online Remote is
+not current and the reported pane-switch/input freeze remains expected until
+the next allowed artifact activation. The next release gate is: publish this
+exact SHA, require the workflow's desktop/mobile fingerprint probes to match,
+then run a real phone/PWA WebRTC soak with the opt-in performance trace.
