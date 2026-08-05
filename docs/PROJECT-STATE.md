@@ -22,7 +22,10 @@
   `c9b8540d` (including the dual-lane `150272a` fix).
 - Public HTTP startup remains route/proxy-sensitive (direct fetch is much
   faster than the configured proxy). This is not evidence about WebRTC data
-  channel latency. Physical phone/PWA pane-switch and input soak remains open.
+  channel latency. Cloud source confirms business E2EE DataChannel traffic
+  bypasses signaling relay; only a `relay` candidate makes TURN/server egress
+  a likely bottleneck. Physical phone/PWA pane-switch and input soak remains
+  open.
 - Controlled LAN browser smoke on 2026-08-05 passed for desktop and mobile:
   `canvas/tree/ws` gates, real `write_to_pty` and `resize_pane`, and no browser
   errors. Evidence: `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
