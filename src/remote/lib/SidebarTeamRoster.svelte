@@ -18,12 +18,15 @@
   } from './teamRosterScope';
   import {
     agentCardStatus,
+    agentAttentionForTransition,
+    agentPaneStatus,
     agentStatusLabel,
     buildAgentHistoryGroups,
     reorderAgentGroups,
     shouldRefreshAgentHistory,
     toggleAgentGroupLeader,
     type AgentCardStatus,
+    type AgentPaneStatus,
   } from '$lib/teammate/agentCommuneModel';
   import {
     fetchRemoteAgentHistory,
@@ -33,22 +36,27 @@
     type RemoteQueryClientLike,
   } from './remoteQueries';
 
-  let { ws, workspaceId, queryClient, panes = [], onSelectPane, onAttentionChange }: {
+  let { ws, workspaceId, queryClient, panes = [], attentionPaneIds = [], onSelectPane, onAttentionChange }: {
     ws: RemoteLink;
     workspaceId: string;
     /** Current workspace panes; Agent paneId is the authoritative CWD mapping. */
     panes?: PaneInfo[];
+    /** Sticky attention projection owned by MainApp; used for Agent-card rail. */
+    attentionPaneIds?: readonly string[];
     /** Remote mobile supplies the shared QueryClient; desktop keeps direct reads. */
     queryClient?: RemoteQueryClientLike;
     /** 点击成员 → 切到其 pane（MVP：拓扑取自活动工作区，pane 即当前工作区内）。 */
     onSelectPane?: (paneId: string) => void;
-    /** Pending HITL panes only; normal Agent activity never paints a pane border. */
+    /** Completion/approval event pane ids; MainApp keeps them sticky until focus. */
     onAttentionChange?: (paneIds: string[]) => void;
   } = $props();
 
   // P1 MVP：轮询取数（合同明确不建订阅流）。Query cache handles drawer
   // remounts; this timer is only a slow liveness refresh.
-  const ROSTER_POLL_INTERVAL_MS = 5 * 60 * 1000;
+  // Live roster state drives pane attention, so converge within one short
+  // cadence. Agent history is still independently throttled to five minutes;
+  // the live query is tiny and remains single-flight through QueryClient.
+  const ROSTER_POLL_INTERVAL_MS = 3_000;
   let topo = $state<TeammateTopology>({ roster: [], leaderId: null, edges: [] });
   let pending = $state<HitlPendingItem[]>([]);
   let health = $state<OrchestrationHealth>({ suspendedAgents: 0, pendingHitl: 0 });
@@ -77,6 +85,8 @@
   const scopeGuard = createTeamRosterScopeGuard();
   let currentScopeKey = '';
   let disposed = false;
+  /** Previous live status; completion attention is a working→idle edge. */
+  let observedAgentStatuses = new Map<string, AgentPaneStatus>();
 
   /** 防御式解析后端下发的编组条目（外部数据不信任；无 id 则丢弃）。 */
   function parseRemoteGroup(v: unknown): TeammateGroup | null {
@@ -207,6 +217,29 @@
     );
   }
 
+  function attentionEvents(
+    roster: readonly TeammateRosterMember[],
+    pendingItems: readonly HitlPendingItem[],
+  ): string[] {
+    const events = new Set<string>();
+    const next = new Map<string, AgentPaneStatus>();
+    for (const member of roster) {
+      if (!member.paneId) continue;
+      const hasPending = pendingItems.some(
+        (item) => item.initiator === member.id
+          || item.initiator === member.paneId
+          || item.initiator === member.name,
+      );
+      const current = agentPaneStatus(member, hasPending);
+      const previous = observedAgentStatuses.get(member.paneId);
+      const signal = agentAttentionForTransition(previous, current, hasPending, member.status);
+      if (signal !== null) events.add(member.paneId);
+      next.set(member.paneId, current);
+    }
+    observedAgentStatuses = next;
+    return [...events];
+  }
+
   function cwdFor(m: TeammateRosterMember): string {
     return m.cwd?.trim() || panes.find((pane) => pane.id === m.paneId)?.cwd?.trim() || '';
   }
@@ -286,10 +319,7 @@
       }
       pending = p;
       health = h;
-      onAttentionChange?.(t.roster
-        .filter((m) => m.status === 'Disappeared'
-          || p.some((item) => item.initiator === m.id || item.initiator === m.paneId || item.initiator === m.name))
-        .map((m) => m.paneId));
+      onAttentionChange?.(attentionEvents(t.roster, p));
       if (recent) {
         history = recent;
         historyLoadedAt = Date.now();
@@ -310,6 +340,7 @@
     if (resetScope) {
       historyLoadedAt = 0;
       historyUnavailable = false;
+      observedAgentStatuses.clear();
       onAttentionChange?.([]);
     }
     const run = scopeGuard.begin();
@@ -525,6 +556,8 @@
   {@const title = titleFor(m)}
   <div
     class="member-card"
+    class:agent-attention={attentionPaneIds.includes(m.paneId)}
+    data-agent-attention={attentionPaneIds.includes(m.paneId) ? 'true' : ''}
     class:status-working={st.key === 'working'}
     class:status-waiting={st.key === 'waiting'}
     class:status-stopped={st.key === 'stopped'}
@@ -620,6 +653,7 @@
   .member-card.status-waiting{border-left-color:var(--rg-ansi-yellow,#d29922)}
   .member-card.status-stopped{border-left-color:var(--rg-ansi-red,#f85149)}
   .member-card.status-idle{border-left-color:var(--rg-fg-muted)}
+  .member-card.agent-attention{border-color:color-mix(in srgb,var(--rg-ansi-yellow,#d29922) 68%,var(--rg-border));box-shadow:0 0 0 1px color-mix(in srgb,var(--rg-ansi-yellow,#d29922) 30%,transparent),inset 0 0 14px color-mix(in srgb,var(--rg-ansi-yellow,#d29922) 10%,transparent)}
   .member-card.offline{opacity:.55}
   .member-head{display:flex;align-items:center;gap:6px;min-height:24px;font-size:13px;line-height:1.2}
   .member-cwd{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-left:14px;color:var(--rg-fg-muted);font:10px ui-monospace,SFMono-Regular,Consolas,monospace;opacity:.8}

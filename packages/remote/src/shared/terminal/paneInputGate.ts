@@ -100,6 +100,29 @@ export function tryEnqueuePaneInput(
   return true;
 }
 
+/**
+ * Admit a synchronous keystroke without a promise turn when no async intent
+ * owns the pane. The RPC scheduler already serializes/coalesces these bytes;
+ * routing every key through the async intent chain otherwise splits a burst
+ * into one request per microtask and adds round-trip latency. If a paste or
+ * other async intent is pending, fall back to the normal gate so ordering is
+ * preserved behind it.
+ */
+export function tryEnqueuePaneInputImmediate(
+  key: string,
+  operation: () => void,
+  options: { maxPending?: number } = {},
+): boolean {
+  const lane = lanes.get(key);
+  if (lane && lane.pending > 0) return tryEnqueuePaneInput(key, operation, options);
+  try {
+    operation();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Drop pending intents when the corresponding PTY/pane is destroyed. */
 export function retirePaneInput(key: string): void {
   const lane = lanes.get(key);

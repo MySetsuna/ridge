@@ -391,6 +391,9 @@ interface PaneEntry {
 	 *  `detach(paneId)` works regardless of parked state — both code paths
 	 *  release wasm resources at the end. */
 	parked: boolean;
+	/** Component switches retain a ready renderer for instant rebind. Memory
+	 * parks and final detach still free it, so this is not an unbounded leak. */
+	rendererRetained: boolean;
 	/** Why the renderer is parked. Component parks protect a transient DOM
 	 * unmount; memory parks may be restored automatically when visible again. */
 	parkReason: 'component' | 'memory' | null;
@@ -1343,10 +1346,19 @@ export class TerminalManager {
 			const entry = this.panes.get(paneId);
 			if (entry) this._releaseScrollback(entry);
 		}
-		for (const paneId of plan.parkRendererPaneIds) this.park(paneId, 'memory');
+		const parkedRendererIds = new Set(plan.parkRendererPaneIds);
+		// Component switches keep a renderer warm, but that cache must yield to
+		// an explicit background/heap-pressure reclaim even though the pane is
+		// already marked parked and has no connected DOM container.
+		if (documentHidden || heapPressure) {
+			for (const entry of this.panes.values()) {
+				if (entry.parked && entry.rendererRetained) parkedRendererIds.add(entry.paneId);
+			}
+		}
+		for (const paneId of parkedRendererIds) this.park(paneId, 'memory');
 		return {
 			clearedPaneIds: plan.clearScrollbackPaneIds,
-			parkedPaneIds: plan.parkRendererPaneIds,
+			parkedPaneIds: [...parkedRendererIds],
 			retainedRowsBefore: plan.retainedRowsBefore,
 			retainedRowsAfter: plan.retainedRowsAfter,
 			heapPressure: plan.heapPressure,
@@ -1697,7 +1709,6 @@ export class TerminalManager {
 			canvas.setAttribute('aria-hidden', 'true');
 			container.appendChild(canvas);
 		}
-
 		// Apply initial padding to the container. In legacy mode this
 		// inset the per-pane canvas; in host mode the pane's scissor
 		// reads `getComputedStyle().padding*` (see `_recomputeViewport`)
@@ -2309,6 +2320,7 @@ export class TerminalManager {
 			modifierKeyListener,
 			lastPointerPoint: null,
 			parked: false,
+			rendererRetained: false,
 			parkReason: null,
 			lastForegroundAt: Date.now(),
 			imeAnchor: null,
@@ -2725,8 +2737,8 @@ export class TerminalManager {
 	 * handle, removes the canvas, and drops the entry from the map.
 	 *
 	 * Idempotent against parking state: if the pane is currently parked,
-	 * `entry.handle` and `entry.canvas` are already gone, so we just free
-	 * the kernel and remove the entry. Caller must use `detach` for
+	 * its kernel stays alive and a component switch may still retain the
+	 * renderer; both are released here. Caller must use `detach` for
 	 * "the pane is permanently gone" (e.g. removed from paneTree) and
 	 * `park` for "transient unmount across split / reparent" — see §5.1.
 	 */
@@ -2789,7 +2801,20 @@ export class TerminalManager {
 					/* canvas already detached */
 				}
 			}
-			try { entry.handle?.free(); } catch { /* ignore */ }
+			const handle = entry.handle;
+			entry.handle = null;
+			try { handle?.free(); } catch { /* ignore */ }
+		} else if (entry.rendererRetained) {
+			// A component park keeps the renderer only for a possible keyed
+			// remount. Permanent detach is the terminal lifetime boundary.
+			if (this._isHostMode(entry)) this._invalidateHost();
+			else {
+				try { entry.canvas.remove(); } catch { /* already detached */ }
+			}
+			const handle = entry.handle;
+			entry.handle = null;
+			try { handle?.free(); } catch { /* ignore */ }
+			entry.rendererRetained = false;
 		}
 		// §1.27: cancel any pending IME-anchor rAF before freeing the
 		// kernel — the rAF body would otherwise call cursorRow() on a
@@ -2837,7 +2862,24 @@ export class TerminalManager {
 		if (entry.parked) {
 			// A real component unmount outranks an earlier automatic memory park;
 			// never auto-restore into a container that Svelte has removed.
-			if (reason === 'component') entry.parkReason = 'component';
+			if (reason === 'component') {
+				entry.parkReason = 'component';
+				return;
+			}
+			// Component parking retains the renderer for a fast keyed switch.
+			// A later heap-pressure pass must still be able to reclaim it; an
+			// early return here would turn that optimization into a leak.
+			if (reason === 'memory' && entry.rendererRetained) {
+				if (this._isHostMode(entry)) this._invalidateHost();
+				else {
+					try { entry.canvas.remove(); } catch { /* already detached */ }
+				}
+				const handle = entry.handle;
+				entry.handle = null;
+				try { handle?.free(); } catch { /* best effort */ }
+				entry.rendererRetained = false;
+				entry.parkReason = 'memory';
+			}
 			return;
 		}
 
@@ -2887,18 +2929,26 @@ export class TerminalManager {
 		// §A.9: host-mode panes share the global canvas; just mark for
 		// clear so departed pixels don't linger. Canvas2D mode owns its
 		// per-pane DOM canvas — clean up.
+		const retainRenderer = reason === 'component'
+			&& entry.handle !== null
+			&& !this.workerAttached.has(paneId)
+			&& !this.workerInitializing.has(paneId);
 		if (this._isHostMode(entry)) {
 			this._invalidateHost();
 		} else {
 			try { entry.canvas.remove(); } catch { /* already detached */ }
 		}
-		try { entry.handle?.free(); } catch { /* ignore */ }
-		if (this.workerInitializing.has(paneId)) {
+		if (!retainRenderer) {
+			const handle = entry.handle;
+			entry.handle = null;
+			try { handle?.free(); } catch { /* ignore */ }
+		}
+		if (!retainRenderer && this.workerInitializing.has(paneId)) {
 			// Cancel an in-flight init/bind handshake instead of retaining an
 			// OffscreenCanvas until its timeout. Unpark will use the safe
 			// main-thread path unless a later attach explicitly reclaims it.
 			workerRendererBridge.destroy(paneId);
-		} else if (this.isWorkerPaneReady(paneId)) {
+		} else if (!retainRenderer && this.isWorkerPaneReady(paneId)) {
 			workerRendererBridge.releaseCanvas(paneId);
 		}
 
@@ -2907,7 +2957,14 @@ export class TerminalManager {
 		// directly into the live kernel so background PTY output that
 		// arrives during the parked window doesn't get lost.
 		this._flushFeedBuffer(entry);
+		if (reason === 'component' && typeof document !== 'undefined') {
+			// Svelte has removed (or is about to remove) the old subtree. Keep a
+			// tiny detached sentinel instead of retaining the whole hidden input /
+			// overlay tree through PaneEntry until the next remount.
+			entry.container = document.createElement('div');
+		}
 
+		entry.rendererRetained = retainRenderer;
 		entry.parked = true;
 		entry.parkReason = reason;
 		// Don't stopRafLoop here — other panes may still need rendering.
@@ -2946,9 +3003,25 @@ export class TerminalManager {
 		const usingWorker = this.usingWorkerRenderer() && this.isWorkerPaneReady(paneId);
 		const gh = this.globalHost;
 		const useHost = gh !== null && this.opts.preferWebgpu && !usingWorker;
+		const retainedHost = entry.rendererRetained
+			&& !usingWorker
+			&& entry.handle !== null
+			&& gh !== null
+			&& entry.canvas === gh.canvas;
+		const retainedCanvas = entry.rendererRetained
+			&& !usingWorker
+			&& entry.handle !== null
+			&& !retainedHost
+			&& !useHost;
 		let canvas: HTMLCanvasElement;
 		let hostHandle: SurfaceHostHandle | undefined;
-		if (useHost && gh) {
+		if (retainedHost && gh) {
+			canvas = entry.canvas;
+			hostHandle = gh.host;
+		} else if (retainedCanvas) {
+			canvas = entry.canvas;
+			container.appendChild(canvas);
+		} else if (useHost && gh) {
 			canvas = gh.canvas;
 			hostHandle = gh.host;
 			container.style.background = 'transparent';
@@ -2963,9 +3036,17 @@ export class TerminalManager {
 			container.style.padding = `${this.opts.paddingPx}px`;
 		}
 
+		if (entry.rendererRetained && !retainedHost && !retainedCanvas) {
+			const handle = entry.handle;
+			entry.handle = null;
+			try { handle?.free(); } catch { /* stale retained renderer */ }
+			entry.rendererRetained = false;
+		}
 		const handle: RenderHandle | null = usingWorker
 			? null
-			: await this._makeHandleSerialized(canvas, hostHandle);
+			: (retainedHost || retainedCanvas)
+				? entry.handle
+				: await this._makeHandleSerialized(canvas, hostHandle);
 		// Detach or a competing restore may win while renderer creation awaits.
 		// Free only our fresh resources; never mutate the retired/replaced entry.
 		if (this.panes.get(paneId) !== entry || !entry.parked) {
@@ -2989,6 +3070,7 @@ export class TerminalManager {
 		entry.container = container;
 		entry.canvas = canvas;
 		entry.handle = handle;
+		entry.rendererRetained = false;
 		entry.linkUnderlineEls = [];
 		entry.linkUnderlineRegions = [];
 		entry.linkHintEl = linkHintEl;
@@ -3218,6 +3300,27 @@ export class TerminalManager {
 			dropCount: entry.feedDropCount,
 			needsResync: entry.feedNeedsResync,
 		};
+	}
+
+	/**
+	 * Fast-path a pane that just became visible. Normal PTY back-pressure drains
+	 * deferred chunks over RAF ticks so a noisy pane cannot monopolise the UI;
+	 * after a user switch, however, showing the latest tail is more important
+	 * than preserving that background fairness. Spend one bounded slice now,
+	 * then let the regular rotated drain finish the remainder.
+	 */
+	flushPaneFeed(paneId: string, budgetMs = 8): void {
+		const entry = this.panes.get(paneId);
+		if (!entry || entry.parked || !hasDeferredFeed(entry)) return;
+		const start = performance.now();
+		while (hasDeferredFeed(entry)) {
+			const elapsed = performance.now() - start;
+			if (elapsed >= budgetMs) break;
+			const chunk = takeDeferredFeed(entry);
+			if (!chunk) break;
+			this._feedNow(entry, chunk, Math.max(1, budgetMs - elapsed));
+		}
+		this.wake();
 	}
 
 	/** Cancel queued render bytes before a transport-level full resync. */

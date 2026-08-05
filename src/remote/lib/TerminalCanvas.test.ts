@@ -18,6 +18,14 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain('manager.setFocused(paneId, true)');
   });
 
+  it('keeps switch-gap frames and first keystrokes instead of dropping them', () => {
+    expect(source).toContain('onDrainPending');
+    expect(source).toContain('const pendingFrames = onDrainPending?.(paneId) ?? []');
+    expect(source).toContain('const MAX_PENDING_STDIN_BYTES = 64 * 1024;');
+    expect(source).toContain('focusInput();');
+    expect(source).toContain('if (!attached) {\n      onStdin(text);');
+  });
+
   it('keeps renderer cursor ownership when the mobile IME sink blurs', () => {
     expect(source).toContain('manager.setFocused(paneId, true);');
     expect(source).not.toContain('onblur={() => manager.setFocused(paneId, false)}');

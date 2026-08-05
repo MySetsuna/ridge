@@ -79,6 +79,8 @@ function scopePart(value: string | undefined): string {
  * same directory/Git snapshot on every open.
  */
 export const REMOTE_SIDEBAR_STALE_TIME_MS = 30_000;
+/** Live roster attention must converge quickly; history remains five-minute. */
+export const REMOTE_ROSTER_STALE_TIME_MS = 3_000;
 export const REMOTE_QUERY_TIMEOUT_MS = 15_000;
 
 export interface RemoteQueryClientLike {
@@ -136,7 +138,7 @@ export function fetchRemoteTeamRoster(
       ]).then(([topology, pending, health]) => ({ topology, pending, health })),
       [signal, context?.signal],
     ),
-    REMOTE_SIDEBAR_STALE_TIME_MS,
+    REMOTE_ROSTER_STALE_TIME_MS,
   );
 }
 

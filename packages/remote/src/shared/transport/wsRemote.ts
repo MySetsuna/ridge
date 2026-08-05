@@ -3,6 +3,7 @@ import { PaneRpcScheduler } from './paneRpcScheduler';
 import { paneRefKey, type PaneRef } from './paneRef';
 import {
   tryEnqueuePaneInput,
+  tryEnqueuePaneInputImmediate,
   retirePaneInput,
 } from '../terminal/paneInputGate';
 import {
@@ -1313,7 +1314,7 @@ export class RemoteConnection implements RemoteLink {
   sendStdin(pane: PaneRef, data: string): boolean {
     if (!pane.paneId || !data) return false;
     const key = paneRefKey(pane);
-    return tryEnqueuePaneInput(key, () => {
+    return tryEnqueuePaneInputImmediate(key, () => {
       this.paneScheduler.enqueueInput(pane, data);
     });
   }

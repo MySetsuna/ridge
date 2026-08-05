@@ -944,6 +944,10 @@ function onCompositionStart() {
 	}
 
 	function onImeHelperFocus() {
+		// A real focusin on the pane's input surface is the only implicit
+		// acknowledgement for Agent completion/approval attention. PTY output,
+		// resize claims, and active-pane bookkeeping are not user takeover.
+		clearAgentPaneAttention(workspaceId, paneId);
 		// Anchor on focus too, in case the user clicked into the pane and
 		// expects the next IME composition to appear near the current cursor.
 		repositionImeHelper();
@@ -1532,10 +1536,6 @@ $effect(() => {
 	if (!container) return;
 	const isActive = $activePaneId === paneId;
 	container.dataset.rgPaneActive = String(isActive);
-	// Active/focused takeover is an acknowledgement even when focus arrived
-	// through keyboard navigation, workspace restore, or Agent-card selection.
-	// Keep the outer Pane attention ring strictly transient and intervention-only.
-	if (isActive) clearAgentPaneAttention(workspaceId, paneId);
 	if (attached) {
 		manager.setFocused(paneId, isActive);
 	}
