@@ -127,8 +127,8 @@ real network.
 
 The priority transport change is deliberately not a Remote/Cloud artifact
 today: the daily release cap is already exhausted. Online JavaScript therefore
-remains `e94d8c5`; the next artifact must contain `150272a` and run the
-physical phone/PWA soak.
+remains `e94d8c5`; the next artifact must contain `f5e9c2b0` (including the
+dual-lane `150272a` fix) and run the physical phone/PWA soak.
 
 ## NLM note
 
