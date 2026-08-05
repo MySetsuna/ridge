@@ -33,7 +33,7 @@
 1. 在途 RPC 遇显式 RTC failure 后立即以 `RpcReconnectError` settle；旧连接迟到响应不能完成新请求。
 2. 信令存活路径只触发一次 ICE restart，不重建 peer connection；恢复后 `$/hello` 与每个活动 pane 的订阅各执行一次。
 3. 信令失效路径重建 PC/DC，重新完成 E2EE/授权门控后才恢复业务订阅；验证前业务帧保持拒绝。
-4. `bufferedAmount` 超过 8 MiB 时 pane 增量被丢弃；drain 后每个受影响 pane 恰好一次 `resync_pane_raw`，未受影响 pane 为零次，禁止串 pane。
+4. `bufferedAmount` 超过 256 KiB 时 pane 增量被丢弃；drain 后每个受影响 pane 恰好一次 `resync_pane_raw`，未受影响 pane 为零次，禁止串 pane。
 5. fake timers 下固定 100 个失败/恢复周期后：所有 Promise settled、pending request 为 0、无重复订阅、无残留重连 timer、发送/重建计数与周期数精确线性。
 6. 以下命令均 exit 0：
    - `pnpm exec vitest run packages/remote/src/shared/cloud/faultInjection.test.ts --reporter=verbose`
