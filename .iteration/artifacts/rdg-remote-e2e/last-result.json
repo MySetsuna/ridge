@@ -1,23 +1,23 @@
 {
   "ok": true,
-  "at": "2026-08-05T11:36:29.558Z",
+  "at": "2026-08-05T11:56:42.250Z",
   "browserIsolation": {
     "extensionsDisabled": true,
     "isolatedContext": true
   },
-  "port": 29426,
-  "url": "https://127.0.0.1:29426",
+  "port": 21030,
+  "url": "https://127.0.0.1:21030",
   "status": {
     "lan_ip": "192.168.1.11",
     "period_secs": 30,
-    "pid": 87888,
-    "port": 29426,
+    "pid": 85344,
+    "port": 21030,
     "ready": true,
     "schema_version": 1,
     "totp": "<redacted>",
-    "updated_at_unix": 1785929718,
-    "url_lan": "https://192.168.1.11:29426",
-    "url_loopback": "https://127.0.0.1:29426"
+    "updated_at_unix": 1785930930,
+    "url_lan": "https://192.168.1.11:21030",
+    "url_loopback": "https://127.0.0.1:21030"
   },
   "results": [
     {
@@ -26,7 +26,7 @@
       "detail": "canvas=true tree=false ws=true",
       "browserErrors": [],
       "wsUrls": [
-        "wss://127.0.0.1:29426/ws?token=<redacted>&device=78c504a2-48a5-4010-9f6f-62d0c268dc02"
+        "wss://127.0.0.1:21030/ws?token=<redacted>&device=c0008f29-8da6-4661-9523-e8430ea45fbb"
       ],
       "rpc": {
         "inputAvailable": true,
@@ -53,8 +53,8 @@
           "get_pane_foreground_process": 33,
           "create_pane": 1,
           "get_startup_context": 1,
-          "set_teammate_groups": 1,
           "start_watching_paths": 1,
+          "set_teammate_groups": 1,
           "resize_pane": 2,
           "find_git_repos_below": 1,
           "subscribe-pane": 1,
@@ -75,7 +75,7 @@
       "detail": "canvas=true tree=true ws=true",
       "browserErrors": [],
       "wsUrls": [
-        "wss://127.0.0.1:29426/ws?token=<redacted>&device=1d442b77-a6b1-421d-9468-69e9ef0fb19e"
+        "wss://127.0.0.1:21030/ws?token=<redacted>&device=ec1cee51-0a4d-4445-bd28-ad616f780a6a"
       ],
       "rpc": {
         "inputAvailable": true,
@@ -83,7 +83,7 @@
         "resizeSent": true,
         "sent": {
           "resize_pane": 2,
-          "write_to_pty": 3
+          "write_to_pty": 4
         },
         "received": {},
         "frameMethodsSent": {
@@ -92,12 +92,12 @@
           "get_orchestration_health": 11,
           "read_agent_recent_replies": 1,
           "resize_pane": 2,
-          "write_to_pty": 3
+          "write_to_pty": 4
         },
         "frameMethodsReceived": {}
       },
       "screenshot": "C:\\code\\wind\\.iteration\\artifacts\\rdg-remote-e2e\\mobile.png"
     }
   ],
-  "hostLogTail": "rdg LAN Remote host (headless)\n  本机打开: https://127.0.0.1:29426   ← 优先用这个\n  局域网  : https://192.168.1.11:29426   （他机；本机若开了系统代理会失败）\n  TOTP: <redacted> (every 30s)\n  证书自签：浏览器选「高级 → 继续访问」；不要用 http://\n  警告: 检测到 https_proxy/ALL_PROXY。本机请用 127.0.0.1，或把 192.168.1.11 加入 no_proxy。\n  Ctrl+C to stop\n  ready: listening on 29426\n  TOTP: <redacted>\n  TOTP: <redacted>\n"
+  "hostLogTail": "rdg LAN Remote host (headless)\n  本机打开: https://127.0.0.1:21030   ← 优先用这个\n  局域网  : https://192.168.1.11:21030   （他机；本机若开了系统代理会失败）\n  TOTP: <redacted> (every 30s)\n  证书自签：浏览器选「高级 → 继续访问」；不要用 http://\n  警告: 检测到 https_proxy/ALL_PROXY。本机请用 127.0.0.1，或把 192.168.1.11 加入 no_proxy。\n  Ctrl+C to stop\n  ready: listening on 21030\n  TOTP: <redacted>\n  TOTP: <redacted>\n"
 }
