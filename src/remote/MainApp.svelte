@@ -430,7 +430,7 @@
     remotePerfMark('raw-feed', {
       paneKey: key,
       bytes: data.byteLength,
-      queueBytes: stats?.queuedBytes ?? 0,
+      queueBytes: (stats?.queuedBytes ?? 0) + paneFeedScheduler.queuedBytes(key),
     });
     if (!stats) {
       // The keyed surface may be between mounts. Keep this short gap in the
