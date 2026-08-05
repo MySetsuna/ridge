@@ -5,6 +5,25 @@
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
 
+## Current snapshot (iteration 171, 2026-08-05)
+
+- Remote cloud transport now has two ordered lanes on one authenticated
+  PeerConnection: `ridge` for control/input and optional `ridge-pane` for PTY
+  bulk output. Lane sessions use independent E2EE counters and chunk IDs;
+  legacy peers fall back to `ridge` without a second connection.
+- Host/controller routing, pane backpressure, teardown, and legacy fallback
+  are covered by deterministic tests. Local code is pushed at `7109c26`.
+- Verification after the dual-lane change: full Vitest 154 files / 1583
+  passed / 1 skipped; `pnpm check` 0 errors / 0 warnings; mobile PWA and
+  desktop Remote builds passed. Online artifact remains `e94d8c5` because the
+  2026-08-05 publication cap is exhausted; next artifact must contain
+  `7109c26`.
+- Public HTTP startup remains route/proxy-sensitive (direct fetch is much
+  faster than the configured proxy). This is not evidence about WebRTC data
+  channel latency. Physical phone/PWA pane-switch and input soak remains open.
+
+Archive: `docs/iterations/2026-08-05-iteration-171-remote-link-fluidity.md`.
+
 ## Current snapshot (iteration 168, 2026-08-05)
 
 - NotebookLM research used the exact notebook `Ridge 项目现状、愿景与规划基线（2026-07-21）`

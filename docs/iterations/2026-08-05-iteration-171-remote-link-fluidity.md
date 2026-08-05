@@ -47,15 +47,12 @@ cost.
 
 ## Remaining transport risk
 
-Cloud currently creates one `ordered` DataChannel (`ridge`) and both control/
-input JSON-RPC and pane output ultimately call the same `sendFrame` path. The
-old host active high-water guard was 8 MiB; bytes admitted there could delay a
-later keystroke despite dropping new pane frames. The local follow-up now caps
-that shared queue at 256 KiB, splits pane bursts into 32 KiB frames, and runs a
-control-first logical queue. This bounds the remaining single-channel
-head-of-line delay without changing E2EE counter ordering. A physically
-separate control DataChannel remains the next escalation if real-device traces
-still show head-of-line delay after this cap.
+The original `ordered` `ridge` DataChannel carried control/input JSON-RPC and
+Pane output together. The local follow-up keeps `ridge` as the authenticated
+control lane and adds an optional `ordered` `ridge-pane` bulk lane on the same
+PeerConnection. Each lane has its own E2EE session, chunk-id space, and
+backpressure watermark; old hosts/controllers fall back to `ridge`. This
+removes transport head-of-line blocking without adding a second connection.
 
 ## Implementation
 
@@ -70,12 +67,13 @@ still show head-of-line delay after this cap.
 - Cloud active-pane promotion is serialized as latest-wins: one request in
   flight plus one pending target; stale fire-and-forget promotion storms are
   removed.
-- The next transport slice is now implemented locally (not yet published due
-  today's release cap): pane output is split into 32 KiB plaintext frames;
-  control/input frames use a priority queue; pending pane bytes are bounded;
-  and the ordered DataChannel high/low watermarks are 256 KiB/64 KiB. This
-  prevents a multi-megabyte PTY burst from holding a later keystroke behind
-  one sealed frame while preserving E2EE counter ordering.
+- The transport slice is implemented locally (not yet published due today's
+  release cap): Pane output is split into 32 KiB plaintext frames and routed
+  to `ridge-pane` when available; control/input stays on `ridge`. The bounded
+  priority queue, independent E2EE counters/chunk IDs, and 256 KiB/64 KiB
+  high/low watermarks prevent a multi-megabyte PTY burst from holding a later
+  keystroke behind ordered bulk traffic. Legacy peers transparently use the
+  original lane.
 - `remotePerfTrace` records bounded, payload-free `input-rpc`, `resize-rpc`,
   `transport-send`, `transport-stats`, `raw-receive`, `raw-feed`, `pane-switch`,
   and `pane-first-paint` samples. WebRTC stats include candidate type, RTT,
@@ -107,7 +105,9 @@ completed successfully from that exact SHA, and the public entrypoint serves
 the new bundle (`openLinkAt` and `点击可跳转` are present; the old Ctrl-only
 hint is absent). `/_app/version.json` reports `1785916897644`. The local
 priority transport follow-up is pushed as `67417a9` but is not online until
-the next allowed artifact publish.
+the next allowed artifact publish. The dual-lane follow-up is now pushed as
+`7109c26` (superseding `67417a9`) and includes deterministic legacy-fallback and
+`ridge-pane` routing tests.
 
 No Desktop version number was advanced: the formal Desktop release remains
 `v0.1.60`. The requirement stays active until physical phone/PWA soak records
@@ -116,7 +116,7 @@ real network.
 
 The priority transport change is deliberately not a Remote/Cloud artifact
 today: the daily release cap is already exhausted. Online JavaScript therefore
-remains `e94d8c5`; the next artifact must contain `67417a9` and run the
+remains `e94d8c5`; the next artifact must contain `7109c26` and run the
 physical phone/PWA soak.
 
 ## NLM note
