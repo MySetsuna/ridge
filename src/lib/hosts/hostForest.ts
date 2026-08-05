@@ -42,6 +42,8 @@ export interface HostTopologyLink extends HostForestLink {
   closeWorkspace(workspaceId: string): Promise<boolean>;
   onRawBytes(fn: (pane: PaneRef, bytes: Uint8Array) => void): () => void;
   subscribePane(pane: PaneRef): void;
+  /** Promote a subscribed pane to the host's latency-priority stream. */
+  promotePane?(pane: PaneRef): void;
   sendStdin(pane: PaneRef, data: string): void;
   enqueueStdinTask?: RemoteLink['enqueueStdinTask'];
   refreshPane(

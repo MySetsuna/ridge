@@ -49,6 +49,7 @@ function flattenPanes(node: PaneNode | null | undefined): PaneInfo[] {
 export class CloudHostTopologyLink implements HostTopologyLink {
   private readonly workspaceByPane = new Map<string, string>();
   private readonly livePanes = new Set<string>();
+  private activePaneKey: string | null = null;
   private readonly scheduler: PaneRpcScheduler;
   private readonly stopReconnectResume: () => void;
 
@@ -57,7 +58,12 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     private readonly rpc: RpcClient,
   ) {
     this.scheduler = new PaneRpcScheduler(rpc);
-    this.stopReconnectResume = rpc.onReconnected(() => this.scheduler.resumeAll());
+    this.stopReconnectResume = rpc.onReconnected(() => {
+      // A reconnect creates a fresh Host bridge with no active-pane QoS state;
+      // force the next focus/attach promotion to cross the new control lane.
+      this.activePaneKey = null;
+      this.scheduler.resumeAll();
+    });
   }
 
   state() {
@@ -67,6 +73,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   disconnect(): void {
     for (const key of this.livePanes) retirePaneInput(key);
     this.livePanes.clear();
+    this.activePaneKey = null;
     this.stopReconnectResume();
     this.scheduler.dispose();
     this.rpc.dispose();
@@ -233,6 +240,23 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     this.rpc.notify('subscribe-pane', {
       workspaceId: pane.workspaceId,
       paneId: pane.paneId,
+      // A newly-bound foreign pane must receive its initial live tail while
+      // the local component attaches. Focus changes are promoted below.
+      active: true,
+    });
+    this.activePaneKey = paneRefKey(pane);
+  }
+
+  promotePane(pane: PaneRef): void {
+    const key = paneRefKey(pane);
+    if (!this.livePanes.has(key) || this.activePaneKey === key) return;
+    this.activePaneKey = key;
+    // Host treats a duplicate subscribe as an idempotent QoS promotion; no
+    // second PTY fan-out is created for an already-registered pane.
+    this.rpc.notify('subscribe-pane', {
+      workspaceId: pane.workspaceId,
+      paneId: pane.paneId,
+      active: true,
     });
   }
 

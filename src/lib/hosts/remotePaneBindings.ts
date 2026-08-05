@@ -89,10 +89,21 @@ export function activateRemotePaneBinding(localPaneId: string): void {
   const live = bindings.get(localPaneId);
   if (!live) return;
   live.active = true;
+  promoteRemotePaneBinding(localPaneId);
   const manager = TerminalManager.instance();
   for (const bytes of live.pending) manager.feed(localPaneId, bytes);
   live.pending = [];
   live.pendingBytes = 0;
+}
+
+/** Promote a mounted foreign pane when the user takes focus. */
+export function promoteRemotePaneBinding(localPaneId: string): void {
+  const live = bindings.get(localPaneId);
+  if (!live) return;
+  live.link.promotePane?.({
+    workspaceId: live.workspaceId,
+    paneId: live.remotePaneId,
+  });
 }
 
 export function unbindRemotePane(localPaneId: string): void {
