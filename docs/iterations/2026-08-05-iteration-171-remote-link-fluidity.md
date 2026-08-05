@@ -205,6 +205,14 @@ legacy single ordered DataChannel, where a pane-output burst can hold later
 input behind SCTP ordering; this is an artifact-activation gap, not evidence
 against the dual-lane source implementation.
 
+A fresh iPhone user-agent check reached the mobile route and served
+`/assets/index-CvZWGRf2.js` (112352 bytes), with neither `ridge-pane` nor
+`PaneFeedScheduler`. This rules out a desktop-only UA split or ordinary browser
+cache as the explanation for the stale mobile behavior. A local no-build dry
+run prepared the next artifact as `0.1.60+g298b6062` (270 files, both desktop
+and mobile indexes); it was not uploaded because the daily publication cap is
+exhausted.
+
 ## NLM note
 
 The approved NotebookLM notebook was queried, but Google returned
