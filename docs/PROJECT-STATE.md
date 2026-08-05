@@ -2217,16 +2217,20 @@ hits, including mobile touch/mouse. Pane switching caps synchronous catch-up at
 tail/input path. Cloud subscriptions register in the background first, then
 promote through a latest-wins serialized active lane.
 Bounded stage telemetry now separates input/resize RPC, transport send/receive,
-raw feed, pane switch, and first paint; scheduler diagnostics expose p50/p95
-latency and input queue high-water bytes. Details:
+WebRTC candidate/RTT/bitrate/loss stats, raw feed, pane switch, and first paint;
+scheduler diagnostics expose p50/p95 latency and input queue high-water bytes.
+Details:
 `docs/iterations/2026-08-05-iteration-171-remote-link-fluidity.md`.
 
-Focused Remote tests (8 files/53 tests), full Vitest (153 files/1577 passed/1
-skipped), `pnpm check` (0 errors/0 warnings), and Remote production builds pass.
-Commit `e94d8c5` is pushed; Remote/Cloud workflow `30987238096` succeeded from
-that exact SHA and the public bundle now contains `openLinkAt` plus the new
-direct-link hint. Desktop remains formally `v0.1.60`; physical phone/PWA soak
-with the stage trace is the remaining performance evidence gate.
+Focused Remote tests (now 102 transport/cloud tests), full Vitest (154 files/
+1582 passed/1 skipped), `pnpm check` (0 errors/0 warnings), and Remote
+production builds pass.
+Online artifact commit `e94d8c5` is active: Remote/Cloud workflow `30987238096`
+succeeded from that exact SHA and the public bundle contains `openLinkAt` plus
+the new direct-link hint. The unshipped priority transport follow-up is pushed
+as `67417a9`; it is not online until the next allowed artifact publish.
+Desktop remains formally `v0.1.60`; physical phone/PWA soak with the stage
+trace is the remaining performance evidence gate.
 
 Public-path baseline: direct HTTPS fetches of the deployed 531 KiB Remote
 chunk measured `200–259 KB/s` and `2.05–2.65s`; the configured HTTP proxy
@@ -2237,7 +2241,10 @@ the authority for relay versus device attribution.
 With browser gzip enabled, the chunk is 163,215 bytes; direct fetch was `1.72s`
 versus `16.60s` through the proxy at `9.8 KB/s`, confirming compression is not
 the bottleneck. A remaining protocol risk is that Cloud control/input and pane
-output share one ordered `ridge` DataChannel; the active output guard admits up
-to 8 MiB, so a slow route can still delay a later keystroke behind bytes already
-queued. A true control-priority lane is next transport work; it was not
-published today because the daily release cap is exhausted.
+output share one ordered `ridge` DataChannel. The follow-up is now implemented
+locally: pane bursts split into 32 KiB frames, control/input frames use a
+priority queue, and the active output guard is 256 KiB with a 64 KiB drain
+watermark. This bounds single-channel head-of-line delay while preserving E2EE
+counter ordering. It is not in today's online artifact because the daily
+release cap is exhausted; the next Remote/Cloud artifact must include it and
+pass the physical phone/PWA soak.

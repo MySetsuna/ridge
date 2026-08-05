@@ -49,14 +49,13 @@ cost.
 
 Cloud currently creates one `ordered` DataChannel (`ridge`) and both control/
 input JSON-RPC and pane output ultimately call the same `sendFrame` path. The
-host active high-water guard is 8 MiB. At a slow route, bytes already admitted
-to that ordered channel can still delay a later keystroke even though new pane
-frames are dropped. This is a separate, protocol-level latency ceiling not
-proved by the HTTP probe. The next transport slice should reserve a real
-control/input lane (two logical priority queues at minimum; preferably separate
-DataChannels within the same authenticated PeerConnection) and cap output
-admission to the measured input-latency budget. It is intentionally not
-published in Iteration 171 because the three-release daily cap is exhausted.
+old host active high-water guard was 8 MiB; bytes admitted there could delay a
+later keystroke despite dropping new pane frames. The local follow-up now caps
+that shared queue at 256 KiB, splits pane bursts into 32 KiB frames, and runs a
+control-first logical queue. This bounds the remaining single-channel
+head-of-line delay without changing E2EE counter ordering. A physically
+separate control DataChannel remains the next escalation if real-device traces
+still show head-of-line delay after this cap.
 
 ## Implementation
 
@@ -71,9 +70,17 @@ published in Iteration 171 because the three-release daily cap is exhausted.
 - Cloud active-pane promotion is serialized as latest-wins: one request in
   flight plus one pending target; stale fire-and-forget promotion storms are
   removed.
+- The next transport slice is now implemented locally (not yet published due
+  today's release cap): pane output is split into 32 KiB plaintext frames;
+  control/input frames use a priority queue; pending pane bytes are bounded;
+  and the ordered DataChannel high/low watermarks are 256 KiB/64 KiB. This
+  prevents a multi-megabyte PTY burst from holding a later keystroke behind
+  one sealed frame while preserving E2EE counter ordering.
 - `remotePerfTrace` records bounded, payload-free `input-rpc`, `resize-rpc`,
-  `transport-send`, `raw-receive`, `raw-feed`, `pane-switch`, and
-  `pane-first-paint` samples. It is off by default and can be enabled with
+  `transport-send`, `transport-stats`, `raw-receive`, `raw-feed`, `pane-switch`,
+  and `pane-first-paint` samples. WebRTC stats include candidate type, RTT,
+  available bitrate, bytes, and packet loss, with a one-second sample floor.
+  It is off by default and can be enabled with
   `globalThis.__RIDGE_REMOTE_PERF_TRACE = true`, then inspected through
   `globalThis.__RIDGE_REMOTE_PERF.snapshot()`.
 - Scheduler diagnostics now expose input/resize p50/p95 latency and input
@@ -82,9 +89,10 @@ published in Iteration 171 because the three-release daily cap is exhausted.
 ## Verification
 
 - `pnpm check` — 0 errors, 0 warnings.
-- Focused Remote/terminal suite — 8 files, 53 tests passed.
+- Focused Cloud/transport suite — 6 files, 102 tests passed.
 - `git diff --check` — passed (only expected LF/CRLF normalization notices).
-- Full Vitest JSON reporter — 153 files, 1577 passed, 1 skipped, exit code 0.
+- Full Vitest — 154 files, 1582 passed, 1 skipped, exit code 0 (including the
+  priority transport and WebRTC stats guards).
 - `pnpm build:remote:mobile` — production/PWA build passed; the desktop build
   also wrote `remote-dist/desktop` successfully (Vite emitted existing chunk
   split warnings through the PowerShell stderr wrapper).
@@ -94,15 +102,22 @@ published in Iteration 171 because the three-release daily cap is exhausted.
 
 ## Release status
 
-Commit `e94d8c5` was pushed to `main`. Remote/Cloud workflow `30987238096`
-completed successfully from that exact SHA, and the public entrypoint now
-serves the new bundle (`openLinkAt` and `点击可跳转` are present; the old Ctrl-only
-hint is absent). `/_app/version.json` reports `1785916897644`.
+Commit `e94d8c5` is the online artifact. Remote/Cloud workflow `30987238096`
+completed successfully from that exact SHA, and the public entrypoint serves
+the new bundle (`openLinkAt` and `点击可跳转` are present; the old Ctrl-only
+hint is absent). `/_app/version.json` reports `1785916897644`. The local
+priority transport follow-up is pushed as `67417a9` but is not online until
+the next allowed artifact publish.
 
 No Desktop version number was advanced: the formal Desktop release remains
 `v0.1.60`. The requirement stays active until physical phone/PWA soak records
 input latency, Pane-switch first paint, and the stage trace under the user's
 real network.
+
+The priority transport change is deliberately not a Remote/Cloud artifact
+today: the daily release cap is already exhausted. Online JavaScript therefore
+remains `e94d8c5`; the next artifact must contain `67417a9` and run the
+physical phone/PWA soak.
 
 ## NLM note
 
