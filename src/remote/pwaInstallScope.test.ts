@@ -27,6 +27,9 @@ describe('Remote PWA installation scope', () => {
     expect(configSource).toContain("scope: '/'");
     expect(configSource).toContain("globPatterns: ['**/*']");
     expect(indexSource).toContain('viewport-fit=cover');
+    // The Vite mobile build has no `/_app/immutable/entry/startup.js`; a stale
+    // preload would waste a request (and a round trip on weak mobile links).
+    expect(indexSource).not.toContain('/_app/immutable/entry/startup.js');
   });
 
   it('keeps notch and home-indicator controls inside browser and standalone PWA safe areas', () => {
