@@ -8,7 +8,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CloudHostBridge } from './cloudHostBridge';
+import { BUFFERED_HIGH_WATERMARK, CloudHostBridge } from './cloudHostBridge';
 import { encodeJsonFrame } from '../transport/cloudMux';
 import {
   authorize,
@@ -165,10 +165,10 @@ describe('弱网实验室 — A. disconnected 脉冲时长扫描（15s watchdog 
   }
 });
 
-describe('弱网实验室 — B. DataChannel 背压水位扫描（8MiB 上水位邻域）', () => {
+describe('弱网实验室 — B. DataChannel 背压水位扫描（输入延迟预算邻域）', () => {
   const MIB = 1024 * 1024;
-  for (const buffered of [1 * MIB, 8 * MIB + 1, 12 * MIB]) {
-    const overHigh = buffered > 8 * MIB;
+  for (const buffered of [64 * 1024, BUFFERED_HIGH_WATERMARK + 1, 1 * MIB]) {
+    const overHigh = buffered > BUFFERED_HIGH_WATERMARK;
     it(`buffered=${(buffered / MIB).toFixed(0)}MiB → ${overHigh ? '丢帧并在 drain 后每 pane 恰一次 resync' : '直发不丢'}`, async () => {
       const invoke = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({
         frame: '\x1bcRECOVERED',
@@ -192,15 +192,6 @@ describe('弱网实验室 — B. DataChannel 背压水位扫描（8MiB 上水位
       }));
       for (const paneId of panes) bridge.pushPaneOutput(paneId, new Uint8Array([1, 2, 3]));
 
-      if (buffered <= MIB) {
-        expect(sent).toHaveLength(1);
-        metrics.push({
-          family: 'backpressure',
-          params: { bufferedMiB: buffered / MIB, panes: panes.length },
-          observed: { dropped: panes.length - 1, resyncs: 0 },
-        });
-        return;
-      }
       if (!overHigh) {
         expect(sent).toHaveLength(1);
         metrics.push({

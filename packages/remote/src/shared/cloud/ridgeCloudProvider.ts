@@ -43,10 +43,12 @@ import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
 import { MAX_PANE_FRAME_BYTES } from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
+import type { ChannelBackpressure } from './cloudHostBridge';
 import {
   BUFFERED_LOW_WATERMARK,
-  type ChannelBackpressure,
-} from './cloudHostBridge';
+  BUFFERED_HIGH_WATERMARK,
+} from './cloudTransportLimits';
+import { PriorityFrameQueue } from './priorityFrameQueue';
 import type { WorkspaceScopeAssertion } from './workspaceScope';
 import { backoffMs } from '../reconnectPolicy';
 
@@ -61,7 +63,7 @@ const DC_LABEL = 'ridge';
 /**
  * DataChannel 背压下水位（弱网 P1）：设为每条 conn DataChannel 的 `bufferedAmountLowThreshold`，
  * 缓冲回落到此即触发 `bufferedamountlow` → 通知 bridge 重同步。与 cloudHostBridge 的
- * 上水位（8 MiB）配对。
+ * 上水位（256 KiB）配对；控制/输入优先队列在同一 ordered channel 内先行发送。
  */
 /** host 端信令 WS 在线状态（与 per-controller 的 CloudConnectionState 区分）。 */
 export type HostSignalState = 'offline' | 'connecting' | 'online' | 'error';
@@ -171,6 +173,8 @@ interface ControllerConn {
   bindTranscript: Uint8Array | null;
   /** 弱网 P1：DataChannel 缓冲回落（bufferedamountlow）时由 bridge 注册的 drain 回调。 */
   onDrained: (() => void) | null;
+  /** Control/input frames are sent ahead of queued pane output. */
+  outbound: PriorityFrameQueue;
   // ── 传输层分片（修 RTCDataChannel max-message-size，见 cloudChunk.ts）──
   /** 发送帧计数器（每帧一个 msgId，供接收端重组）。 */
   sendMsgId: number;
@@ -329,6 +333,10 @@ export class RidgeCloudHost {
       bindingMode: 'pending',
       bindTranscript: null,
       onDrained: null,
+      outbound: new PriorityFrameQueue({
+        send: (frame) => this.sealAndSend(conn!, frame),
+        canSendPane: () => (conn?.dc?.bufferedAmount ?? 0) < BUFFERED_HIGH_WATERMARK,
+      }),
       sendMsgId: 0,
       reassembler: new ChunkReassembler(),
       workspaceScopePromise: null,
@@ -371,7 +379,10 @@ export class RidgeCloudHost {
     dc.binaryType = 'arraybuffer';
     // §背压（弱网 P1）：缓冲回落到低水位即 bufferedamountlow → 通知 bridge 触发重同步。
     dc.bufferedAmountLowThreshold = BUFFERED_LOW_WATERMARK;
-    dc.onbufferedamountlow = () => conn.onDrained?.();
+    dc.onbufferedamountlow = () => {
+      conn.outbound.resume();
+      conn.onDrained?.();
+    };
     dc.onopen = () => {
       this.setConnState(conn, 'handshaking');
       this.prepareE2eeHandshake(conn);
@@ -397,6 +408,7 @@ export class RidgeCloudHost {
     conn.ephemeral = generateEphemeralKeyPair();
     conn.handshakeDone = false;
     conn.session = null;
+    conn.outbound.clear();
     conn.reassembler.reset(); // 新会话：清掉上一会话遗留的在途分片
     // B3：把本端临时公钥经**已认证信令**旁路定向上报给该 cid 的 controller，供其比对
     // DataChannel 握手公钥（两条独立通道，网络 MITM 无法同时篡改）。host 回落 0x01 时该旁路
@@ -603,7 +615,12 @@ export class RidgeCloudHost {
 
   /** 把一帧明文加密经某连接的 DataChannel 发回 controller（传输层分片，修 max-message-size）。 */
   private sendFrame(conn: ControllerConn, plaintext: Uint8Array): void {
-    if (conn.state !== 'connected' || !conn.session) return; // 握手前静默丢弃
+    if (conn.state !== 'connected' || !conn.session) return;
+    conn.outbound.enqueue(plaintext);
+  }
+
+  private sealAndSend(conn: ControllerConn, plaintext: Uint8Array): void {
+    if (conn.state !== 'connected' || !conn.session || conn.dc?.readyState !== 'open') return;
     try {
       const sealed = conn.session.seal(plaintext);
       const msgId = conn.sendMsgId++;
@@ -638,6 +655,7 @@ export class RidgeCloudHost {
     conn.pc.onicecandidate = conn.pc.ondatachannel = conn.pc.onconnectionstatechange = null;
     try { conn.pc.close(); } catch { /* ignore */ }
     conn.ephemeral = null;
+    conn.outbound.clear();
     conn.session = null;
     if (notify) this.emitSessions();
   }

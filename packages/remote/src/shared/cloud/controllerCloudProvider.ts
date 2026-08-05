@@ -53,7 +53,12 @@ import { MAX_PANE_FRAME_BYTES, encodeJsonFrame } from '@ridge/remote';
 import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import { getOrCreateCli } from './controllerInstanceId';
 import { backoffMs } from '../reconnectPolicy';
-import { remotePerfMark } from '../transport/remotePerfTrace';
+import {
+  remotePerfMark,
+  remotePerfSamplePeerConnection,
+} from '../transport/remotePerfTrace';
+import { BUFFERED_HIGH_WATERMARK, BUFFERED_LOW_WATERMARK } from './cloudTransportLimits';
+import { PriorityFrameQueue } from './priorityFrameQueue';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
@@ -132,6 +137,16 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
 
   private ephemeral: EphemeralKeyPair | null = null;
   private session: E2eeSession | null = null;
+  /** Keep future control/input ahead of queued pane frames before sealing. */
+  private readonly outbound = new PriorityFrameQueue({
+    send: (frame) => this.sealAndSend(frame),
+    canSendPane: () => (this.dc?.bufferedAmount ?? 0) < BUFFERED_HIGH_WATERMARK,
+    onPaneDrop: () =>
+      remotePerfMark('transport-send', {
+        transport: 'cloud-webrtc-pane-drop',
+        queueBytes: this.dc?.bufferedAmount ?? 0,
+      }),
+  });
   private handshakeDone = false;
   /** offer 是否已发起（防 welcome+peer-join 双触发重复 createOffer）。 */
   private offerStarted = false;
@@ -292,6 +307,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     pc.onconnectionstatechange = () => {
       const cs = pc.connectionState;
       if (cs === 'connected') {
+        void remotePerfSamplePeerConnection(pc);
         // 连接恢复：重置退避 + 清看门狗。ICE restart 恢复时 E2EE 会话存活、无需重握手，
         // 直接恢复业务态（驱动 L2 'connected' 边沿 → 重订阅 pane / 重发 $/hello）。
         this.reconnectAttempts = 0;
@@ -315,6 +331,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   private attachDataChannel(dc: RTCDataChannel): void {
     this.dc = dc;
     dc.binaryType = 'arraybuffer';
+    dc.bufferedAmountLowThreshold = BUFFERED_LOW_WATERMARK;
+    dc.onbufferedamountlow = () => this.outbound.resume();
 
     dc.onopen = () => {
       this.setState('handshaking');
@@ -333,6 +351,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.ephemeral = generateEphemeralKeyPair();
     this.handshakeDone = false;
     this.session = null;
+    this.outbound.clear();
     this.reassembler.reset(); // 新会话：清掉上一会话遗留的在途分片
     this.rawSend(encodeHandshakeFrame(this.ephemeral.publicKey));
     // B3：把本端临时公钥经**已认证信令**旁路上报，供 host 比对 DataChannel 握手公钥
@@ -348,6 +367,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       transport: 'cloud-webrtc-wire',
       queueBytes: this.dc?.bufferedAmount ?? 0,
     });
+    if (this.pc) void remotePerfSamplePeerConnection(this.pc);
 
     // 握手完成前，首帧必须是对端握手帧；否则断开（契约 §7.1）。
     if (!this.handshakeDone) {
@@ -515,7 +535,12 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   }
 
   sendFrame(plaintext: Uint8Array): void {
-    if (this.state !== 'connected' || !this.session) return; // 握手前静默丢弃
+    if (this.state !== 'connected' || !this.session) return;
+    this.outbound.enqueue(plaintext);
+  }
+
+  private sealAndSend(plaintext: Uint8Array): void {
+    if (this.state !== 'connected' || !this.session || this.dc?.readyState !== 'open') return;
     try {
       this.sendSealed(this.session.seal(plaintext));
     } catch (e: unknown) {
@@ -841,6 +866,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       try { this.ws.close(); } catch { /* ignore */ }
       this.ws = null;
     }
+    this.outbound.clear();
     this.ephemeral = null;
     this.session = null;
     this.handshakeDone = false;
@@ -897,6 +923,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       try { this.ws.close(); } catch { /* ignore */ }
       this.ws = null;
     }
+    this.outbound.clear();
     this.ephemeral = null;
     this.session = null;
     this.handshakeDone = false;
