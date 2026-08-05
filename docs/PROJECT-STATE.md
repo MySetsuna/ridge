@@ -15,13 +15,17 @@
   approved and executable. Pending requirements are empty. The iteration adds
   access/share contract coverage, IME input fallback, mobile TUI touch mouse
   forwarding, free Explorer resize, Agent parity/spacing, narrow file/image
-  viewing, and confirmed Agent lifecycle communication preflight.
+  viewing, and confirmed Agent lifecycle communication preflight. Registry
+  entries require a live PTY handle; confirmed auto-discovery repairs the same
+  directory and teardown removes the identity.
 - Verification: `pnpm check` 0/0; full Vitest 149 files/1560 passed/1 skipped;
   focused interaction Vitest 4 files/33 passed and shared terminal helper
-  tests 5 files/46 passed; `cargo check -p ridge --lib`
-  passed; teammate profile tests 2 passed; `cargo test -p ridge-term input
-  --quiet` 36 passed; `git diff --check` passed. Physical/PWA, public WebRTC,
-  WebView2, and multi-window/Host gates remain explicitly external.
+  tests 5 files/46 passed; `cargo check -p ridge --lib` passed; teammate
+  profile tests 3 passed and teammate projection tests 8 passed; `cargo test
+  -p ridge-term input --quiet` 36 passed; PWA build verification and LAN
+  desktop/mobile E2E passed; `git diff --check` passed. Physical notch/PWA,
+  public WebRTC, WebView2, and multi-window/Host gates remain explicitly
+  external.
 
 Archive: `docs/iterations/2026-08-05-iteration-168-interaction-parity.md`.
 
