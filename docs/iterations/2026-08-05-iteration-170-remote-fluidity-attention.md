@@ -49,11 +49,11 @@ memory, but every retained resource remains bounded and reclaimable.
 - Iteration gate — `write_scope_exceeded` resolved; current context reports
   `ok: true` with no pending requirements.
 
-## Release boundary
+## Publication closure
 
-This is runtime work after `v0.1.59` was tagged. The tag's workflow must not be
-called complete for these changes; after verification, commit/push the code,
-align the next version, tag once, and wait for the full desktop asset matrix.
-Remote/Cloud publication remains a separate post-release gate. If CI fails,
-rerun/fix the same tag and do not increment the version merely to bypass a
-failed build.
+Code commit `f01ff9d` and version commit `42680ca` are pushed. Annotated tag
+`v0.1.60` has 12 matching Desktop installer/CLI assets; release workflow
+`30974528483` passed the complete matrix. Remote/Cloud workflow `30977176806`
+passed artifact upload and Desktop/Mobile index health checks, activating
+`0.1.60+g42680ca`. No second version bump was used for a failed build; the
+iteration is archived as complete.

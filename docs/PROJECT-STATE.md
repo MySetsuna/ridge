@@ -2194,7 +2194,7 @@ link/copy and Ctrl/Cmd-hover underline slice is closed. Physical WebView2
 visual confirmation and the previously listed public/dual-window/branch/
 Kernel residuals remain environment-gated and are not falsely marked done.
 
-### Iteration 170 runtime closure candidate (2026-08-05)
+### Iteration 170 publication closure (2026-08-05)
 
 Remote mobile input and Pane switching now use a bounded switch-gap FIFO,
 pre-attach input admission, renderer retention with pressure reclamation, and
@@ -2203,6 +2203,8 @@ real terminal focus on both desktop and Remote; a hidden live roster monitor
 keeps the Remote Pane rail current while the drawer is closed. The detailed
 record is `docs/iterations/2026-08-05-iteration-170-remote-fluidity-attention.md`.
 
-Current verification is in progress; no versioned release closure is claimed
-until the full frontend suite, clean-worktree gate, and the next desktop asset
-matrix complete.
+`v0.1.60` is formal with 12 matching Desktop installer/CLI assets; release
+workflow `30974528483` passed test, Linux, macOS ARM/x64, and Windows.
+Remote/Cloud workflow `30977176806` succeeded and atomically activated
+`0.1.60+g42680ca`; its Desktop/Mobile index health checks passed. The public
+Remote entrypoint returns the new build. Worktree and origin are clean.
