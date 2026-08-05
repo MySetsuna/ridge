@@ -32,10 +32,15 @@
 6. Remote FileViewer wraps long file/diff lines and now renders image files via
    the authenticated `convertFileSrc` path with contained, safe-area-aware sizing.
    Desktop image overlay sizing also stays inside a narrow viewport.
-7. Agent lifecycle communication now commits the registry only after confirmed
-   pane/PTY activation, removes records on release/EOF/kill, rejects duplicate
-   pane ownership, and performs a fresh online target preflight before writes.
+7. Agent lifecycle communication now commits the registry only after a live
+   PTY handle/activation is confirmed, repairs confirmed auto-discovered agents
+   into the same directory, removes records on release/EOF/kill, rejects
+   duplicate pane ownership, and performs a fresh online target preflight
+   before writes.
    Failed registration rolls back the workspace map.
+8. Desktop TUI pointer cancellation now force-cleans even when the cancellation
+   coordinate lands on the custom scrollbar, so a Grok/Claude-style pressed
+   state cannot survive a lost capture.
 
 ## Verification
 
@@ -44,7 +49,10 @@
 - Focused Vitest: 4 files, 33 tests passed; terminal input/mouse support slice
   adds a further 5 files/46 tests passed in the shared terminal helpers.
 - `cargo check -p ridge --lib`: passed; existing dead-code/linker warnings only.
-- `cargo test -p ridge --lib teammate::profiles --quiet`: 2 passed.
+- `cargo test -p ridge --lib teammate::profiles --quiet`: 3 passed.
+- `cargo test -p ridge --lib commands::teammate --quiet`: 8 passed.
+- Combined `cargo test -p ridge --lib teammate:: --quiet`: 75 passed after
+  the live-PTY gate and auto-discovery repair.
 - `cargo test -p ridge-term input --quiet`: 36 passed.
 - `git diff --check`: passed.
 - Physical notch/PWA, real Grok/TUI behavior, public WebRTC, WebView2 heap soak,
