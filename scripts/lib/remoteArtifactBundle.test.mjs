@@ -2,7 +2,14 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { packBundle, buildManifest, resolveConfig, collectFiles } from './remoteArtifactBundle.mjs';
+import {
+  packBundle,
+  buildManifest,
+  resolveConfig,
+  collectFiles,
+  writeArtifactMetadata,
+  readArtifactMetadata,
+} from './remoteArtifactBundle.mjs';
 
 describe('packBundle（线格式须与 ridge-cloud parse_header 逐字节一致）', () => {
   it('frames u32 BE 头长 + JSON 头 + 文件体拼接', () => {
@@ -43,6 +50,22 @@ describe('collectFiles', () => {
     fs.writeFileSync(path.join(dir, 'sub', 'a.js'), 'y');
     const files = collectFiles(dir, 'remote-app').map((f) => f.path).sort();
     expect(files).toEqual(['remote-app/index.html', 'remote-app/sub/a.js']);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('writeArtifactMetadata', () => {
+  it('writes a stable public fingerprint matching the upload manifest', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ram-'));
+    const manifest = { version: '0.1.60', gitSha: 'abc1234', builtAt: '2026-08-05T00:00:00Z' };
+    expect(writeArtifactMetadata(dir, manifest)).toBe(path.join(dir, 'artifact.json'));
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'artifact.json'), 'utf8'))).toEqual({
+      artifactSchema: 1,
+      ...manifest,
+    });
+    expect(readArtifactMetadata(dir)).toEqual(manifest);
+    fs.writeFileSync(path.join(dir, 'artifact.json'), '{"artifactSchema":1,"version":1}', 'utf8');
+    expect(readArtifactMetadata(dir)).toBeNull();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

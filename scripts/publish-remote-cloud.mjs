@@ -20,6 +20,8 @@ import {
   collectFiles,
   packBundle,
   buildManifest,
+  writeArtifactMetadata,
+  readArtifactMetadata,
   resolveConfig,
 } from './lib/remoteArtifactBundle.mjs';
 
@@ -86,11 +88,40 @@ async function main() {
   }
 
   // ── 打包 ──
-  const manifest = buildManifest({
-    version: pkgVersion(),
-    gitSha: gitSha(),
-    builtAt: new Date().toISOString(),
-  });
+  const roots = ['desktop', 'mobile'].map((kind) => path.join(REMOTE_DIST, kind));
+  const expectedVersion = pkgVersion();
+  const expectedSha = gitSha();
+  let manifest;
+  if (cfg.build) {
+    manifest = buildManifest({
+      version: expectedVersion,
+      gitSha: expectedSha,
+      builtAt: new Date().toISOString(),
+    });
+    // Publish a tiny public fingerprint beside each UA-specific root. The
+    // cloud API manifest proves what was uploaded; this file proves what the
+    // static desktop/mobile entrypoint is actually serving after activation.
+    for (const dist of roots) writeArtifactMetadata(dist, manifest);
+  } else {
+    // --no-build is intentionally strict: never stamp the current SHA onto a
+    // stale directory and call it a fresh artifact. Both UA roots must carry
+    // the same fingerprint and it must match this checkout.
+    const metadata = roots.map(readArtifactMetadata);
+    if (metadata.some((value) => !value)) {
+      die('--no-build requires artifact.json in both desktop and mobile roots');
+    }
+    const first = metadata[0];
+    if (metadata.some((value) => JSON.stringify(value) !== JSON.stringify(first))) {
+      die('--no-build requires matching desktop/mobile artifact.json fingerprints');
+    }
+    if (first.version !== expectedVersion || first.gitSha !== expectedSha) {
+      die(
+        `--no-build artifact mismatch: roots=${first.version}+g${first.gitSha}, `
+        `checkout=${expectedVersion}+g${expectedSha}`,
+      );
+    }
+    manifest = first;
+  }
   const files = collectFiles(REMOTE_DIST, 'remote-app');
   const bundle = packBundle(manifest, files);
   const ver = `${manifest.version}+g${manifest.gitSha}`;
