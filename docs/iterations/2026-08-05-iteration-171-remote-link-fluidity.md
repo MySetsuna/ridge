@@ -138,7 +138,12 @@ removes transport head-of-line blocking without adding a second connection.
   passed with `browserErrors=[]`; real WebSocket traffic included input and
   resize (`desktop write_to_pty=21`, `mobile write_to_pty=3`). Evidence:
   `.iteration/artifacts/rdg-remote-e2e/last-result.json`. This is controlled
-  LAN evidence, not a physical public WebRTC/PWA soak.
+LAN evidence, not a physical public WebRTC/PWA soak.
+- Latest rerun at `2026-08-05T11:02:26Z` (evidence commit `4b8c76d2`) passed
+  the same input/resize and browser-error gates. Raw detail records
+  `desktop canvas=true tree=false ws=true` and `mobile canvas=true tree=true
+  ws=true`; the acceptance gate does not require the Desktop tree flag, so this
+  is recorded as-is rather than presented as a tree-pass.
 - Public phone/PWA soak remains an external acceptance gate.
 
 ## Release status
