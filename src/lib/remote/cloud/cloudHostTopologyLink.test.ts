@@ -141,6 +141,26 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
         method: 'subscribe-pane',
         params: { workspaceId: 'w1', paneId: 'p1', active: true },
       },
+      {
+        method: 'subscribe-pane',
+        params: { workspaceId: 'w1', paneId: 'p2', active: false },
+      },
+    ]);
+  });
+
+  it('replays only attached panes after reconnect and preserves focused QoS', async () => {
+    const rpc = new FakeRpc();
+    rpc.paneLayout = { type: 'leaf', id: 'discovered' };
+    const link = linkWith(rpc);
+    // Discovering a pane populates live state in production; attaching only A
+    // must keep the replay set precise.
+    await link.listWorkspacePanes('w1');
+    link.subscribePane(paneA);
+    for (const reconnect of rpc.reconnectHooks) reconnect();
+
+    expect(rpc.notifications).toEqual([
+      { method: 'subscribe-pane', params: { workspaceId: 'w1', paneId: 'p1', active: true } },
+      { method: 'subscribe-pane', params: { workspaceId: 'w1', paneId: 'p1', active: true } },
     ]);
   });
 
