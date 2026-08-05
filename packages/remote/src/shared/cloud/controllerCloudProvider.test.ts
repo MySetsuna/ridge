@@ -100,6 +100,7 @@ class FakePeerConnection {
   remoteDescription: RTCSessionDescriptionInit | null = null;
   addedCandidates: RTCIceCandidateInit[] = [];
   channel: FakeDataChannel | null = null;
+  paneChannel: FakeDataChannel | null = null;
 
   constructor(readonly config?: RTCConfiguration) {
     FakePeerConnection.instances.push(this);
@@ -107,8 +108,10 @@ class FakePeerConnection {
   static instances: FakePeerConnection[] = [];
 
   createDataChannel(label: string, init?: RTCDataChannelInit): FakeDataChannel {
-    this.channel = new FakeDataChannel(label, init);
-    return this.channel;
+    const channel = new FakeDataChannel(label, init);
+    if (label === 'ridge') this.channel = channel;
+    else if (label === 'ridge-pane') this.paneChannel = channel;
+    return channel;
   }
   async createOffer(): Promise<RTCSessionDescriptionInit> {
     return { type: 'offer', sdp: 'fake-offer-sdp' };
@@ -224,6 +227,8 @@ describe('ControllerCloudProvider', () => {
     expect(pc.channel).not.toBeNull();
     expect(pc.channel!.label).toBe('ridge');
     expect(pc.channel!.init?.ordered).toBe(true);
+    expect(pc.paneChannel?.label).toBe('ridge-pane');
+    expect(pc.paneChannel?.init?.ordered).toBe(true);
 
     // host 已在房 → welcome(peerPresent:true) → controller 发 offer。
     const ws = FakeWebSocket.instances[0];
