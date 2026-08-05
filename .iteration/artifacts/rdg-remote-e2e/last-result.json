@@ -1,23 +1,23 @@
 {
   "ok": true,
-  "at": "2026-08-05T10:12:09.360Z",
+  "at": "2026-08-05T11:02:26.336Z",
   "browserIsolation": {
     "extensionsDisabled": true,
     "isolatedContext": true
   },
-  "port": 27060,
-  "url": "https://127.0.0.1:27060",
+  "port": 23670,
+  "url": "https://127.0.0.1:23670",
   "status": {
     "lan_ip": "192.168.1.11",
     "period_secs": 30,
-    "pid": 96236,
-    "port": 27060,
+    "pid": 96656,
+    "port": 23670,
     "ready": true,
     "schema_version": 1,
     "totp": "<redacted>",
-    "updated_at_unix": 1785924649,
-    "url_lan": "https://192.168.1.11:27060",
-    "url_loopback": "https://127.0.0.1:27060"
+    "updated_at_unix": 1785927667,
+    "url_lan": "https://192.168.1.11:23670",
+    "url_loopback": "https://127.0.0.1:23670"
   },
   "results": [
     {
@@ -26,7 +26,7 @@
       "detail": "canvas=true tree=false ws=true",
       "browserErrors": [],
       "wsUrls": [
-        "wss://127.0.0.1:27060/ws?token=<redacted>&device=fcc04200-67fc-4e59-969b-cad085250a59"
+        "wss://127.0.0.1:23670/ws?token=<redacted>&device=1840fa55-8bbd-4d24-bca4-24bade265bda"
       ],
       "rpc": {
         "inputAvailable": true,
@@ -52,9 +52,9 @@
           "get_shell_history": 1,
           "get_pane_foreground_process": 33,
           "create_pane": 1,
+          "get_startup_context": 1,
           "start_watching_paths": 1,
           "set_teammate_groups": 1,
-          "get_startup_context": 1,
           "resize_pane": 2,
           "find_git_repos_below": 1,
           "subscribe-pane": 1,
@@ -75,7 +75,7 @@
       "detail": "canvas=true tree=true ws=true",
       "browserErrors": [],
       "wsUrls": [
-        "wss://127.0.0.1:27060/ws?token=<redacted>&device=e031ae54-e52f-48aa-acda-62a91401d348"
+        "wss://127.0.0.1:23670/ws?token=<redacted>&device=9020421c-1737-468e-9283-3c2e34cc21d7"
       ],
       "rpc": {
         "inputAvailable": true,
@@ -99,5 +99,5 @@
       "screenshot": "C:\\code\\wind\\.iteration\\artifacts\\rdg-remote-e2e\\mobile.png"
     }
   ],
-  "hostLogTail": "rdg LAN Remote host (headless)\n  本机打开: https://127.0.0.1:27060   ← 优先用这个\n  局域网  : https://192.168.1.11:27060   （他机；本机若开了系统代理会失败）\n  TOTP: <redacted> (every 30s)\n  证书自签：浏览器选「高级 → 继续访问」；不要用 http://\n  警告: 检测到 https_proxy/ALL_PROXY。本机请用 127.0.0.1，或把 192.168.1.11 加入 no_proxy。\n  Ctrl+C to stop\n  ready: listening on 27060\n  TOTP: <redacted>\n  TOTP: <redacted>\n  TOTP: <redacted>\n"
+  "hostLogTail": "rdg LAN Remote host (headless)\n  本机打开: https://127.0.0.1:23670   ← 优先用这个\n  局域网  : https://192.168.1.11:23670   （他机；本机若开了系统代理会失败）\n  TOTP: <redacted> (every 30s)\n  证书自签：浏览器选「高级 → 继续访问」；不要用 http://\n  警告: 检测到 https_proxy/ALL_PROXY。本机请用 127.0.0.1，或把 192.168.1.11 加入 no_proxy。\n  Ctrl+C to stop\n  ready: listening on 23670\n  TOTP: <redacted>\n  TOTP: <redacted>\n"
 }
