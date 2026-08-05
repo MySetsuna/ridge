@@ -103,6 +103,9 @@ removes transport head-of-line blocking without adding a second connection.
   priority transport and WebRTC stats guards).
 - Reconnect subscription replay follow-up: full Vitest 154 files, 1586
   passed, 1 skipped; `pnpm check` 0 errors / 0 warnings.
+- Rejected close rollback follow-up: full Vitest 154 files, 1587 passed, 1
+  skipped; `pnpm check` 0 errors / 0 warnings. The subscription snapshot is
+  restored when `closePane` or `closeWorkspace` fails.
 - `pnpm build:remote:mobile` — production/PWA build passed; the desktop build
   also wrote `remote-dist/desktop` successfully (Vite emitted existing chunk
   split warnings through the PowerShell stderr wrapper).
@@ -128,6 +131,8 @@ probe/ready legacy fallback are added in `321a5d3` and `150272a`; the focused
 foreign-pane QoS promotion follows in `f5e9c2b0`.
 Reconnect subscription replay follows in `7bbcae00`; it is also not online
 until the next allowed artifact publish.
+Rejected-close subscription rollback follows in `c9b8540d`; it is also not
+online until the next allowed artifact publish.
 
 No Desktop version number was advanced: the formal Desktop release remains
 `v0.1.60`. The requirement stays active until physical phone/PWA soak records
@@ -136,7 +141,7 @@ real network.
 
 The priority transport change is deliberately not a Remote/Cloud artifact
 today: the daily release cap is already exhausted. Online JavaScript therefore
-remains `e94d8c5`; the next artifact must contain `7bbcae00` (including the
+remains `e94d8c5`; the next artifact must contain `c9b8540d` (including the
 dual-lane `150272a` fix) and run the physical phone/PWA soak.
 
 ## NLM note
