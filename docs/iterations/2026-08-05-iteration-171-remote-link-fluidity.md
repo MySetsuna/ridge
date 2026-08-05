@@ -89,7 +89,7 @@ removes transport head-of-line blocking without adding a second connection.
 - `pnpm check` — 0 errors, 0 warnings.
 - Focused Cloud/transport suite — 6 files, 102 tests passed.
 - `git diff --check` — passed (only expected LF/CRLF normalization notices).
-- Full Vitest — 154 files, 1583 passed, 1 skipped, exit code 0 (including the
+- Full Vitest — 154 files, 1584 passed, 1 skipped, exit code 0 (including the
   priority transport and WebRTC stats guards).
 - `pnpm build:remote:mobile` — production/PWA build passed; the desktop build
   also wrote `remote-dist/desktop` successfully (Vite emitted existing chunk
@@ -106,8 +106,8 @@ the new bundle (`openLinkAt` and `点击可跳转` are present; the old Ctrl-onl
 hint is absent). `/_app/version.json` reports `1785916897644`. The local
 priority transport follow-up is pushed as `67417a9` but is not online until
 the next allowed artifact publish. The dual-lane implementation is pushed as
-`7109c26` (superseding `67417a9`); controller outbound lane coverage is added
-in `321a5d3`.
+`7109c26` (superseding `67417a9`); controller outbound coverage and explicit
+probe/ready legacy fallback are added in `321a5d3` and `150272a`.
 
 No Desktop version number was advanced: the formal Desktop release remains
 `v0.1.60`. The requirement stays active until physical phone/PWA soak records
@@ -116,7 +116,7 @@ real network.
 
 The priority transport change is deliberately not a Remote/Cloud artifact
 today: the daily release cap is already exhausted. Online JavaScript therefore
-remains `e94d8c5`; the next artifact must contain `321a5d3` and run the
+remains `e94d8c5`; the next artifact must contain `150272a` and run the
 physical phone/PWA soak.
 
 ## NLM note
