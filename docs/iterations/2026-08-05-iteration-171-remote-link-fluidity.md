@@ -45,6 +45,21 @@ With the browser's `Accept-Encoding: gzip`, the same chunk compressed to
 Compression is working; the slow proxy route remains the dominant HTTP startup
 cost.
 
+## Network attribution from the cloud source
+
+- `ridge-cloud/src/ws/handler.rs` routes signaling text (`offer`/`answer`/ICE)
+  only; its own handler comment states that E2EE business payloads travel over
+  WebRTC DataChannel and do not pass through the relay.
+- `ridge-cloud/src/config.rs` enables TURN only when both `TURN_HOST` and
+  `TURN_STATIC_AUTH_SECRET` exist; otherwise `/ice-servers` returns STUN only.
+- The public asset response is `Server: nginx` with `Content-Encoding: gzip`
+  and immutable cache headers. The measured 9.3–20.5 KB/s path is therefore
+  not evidence of an application-side PTY bandwidth cap. The remaining
+  authoritative split is the trace's WebRTC `candidateType`: `host`/`srflx`
+  indicates a direct path, while `relay` makes TURN/server egress a possible
+  bottleneck. Physical phone/PWA trace is still required before changing TURN
+  capacity or buying device hardware.
+
 ## Remaining transport risk
 
 The original `ordered` `ridge` DataChannel carried control/input JSON-RPC and
