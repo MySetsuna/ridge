@@ -36,7 +36,8 @@
   import { onceCleanup } from './lib/listenerCleanup';
   import { createGenerationGuard } from './lib/generationGuard';
   import { detachPaneRefs } from './lib/paneLifecycle';
-import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
+  import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
+  import { PaneFeedScheduler } from './lib/paneFeedScheduler';
   import {
     remotePerfEnd,
     remotePerfMark,
@@ -95,6 +96,7 @@ import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
     for (const timer of feedResyncTimers.values()) clearTimeout(timer);
     feedResyncTimers.clear();
     feedResyncPending.clear();
+    paneFeedScheduler.dispose();
     pendingRawFrames.clear();
     scrollbackDecoder.dispose();
   });
@@ -378,19 +380,9 @@ import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
     remotePerfMark('pane-first-paint', { paneKey });
   }
 
-  function enqueuePendingRawFrame(key: string, data: Uint8Array): void {
-    pendingRawFrames.enqueue(key, data);
-  }
-
   function drainPendingRawFrames(key: string): Uint8Array[] {
     const { frames, needsResync } = pendingRawFrames.drain(key);
-    if (needsResync) {
-      const separator = key.indexOf(':');
-      const pane = separator > 0
-        ? { workspaceId: key.slice(0, separator), paneId: key.slice(separator + 1) }
-        : null;
-      if (pane && wsState === 'connected') queueMicrotask(() => ws.resyncPane?.(pane));
-    }
+    if (needsResync) requestFeedResync(key);
     return frames;
   }
 
@@ -406,6 +398,54 @@ import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
   // full-pane resync so the recovery path cannot itself become an RPC storm.
   const feedResyncPending = new Set<string>();
   const feedResyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function requestFeedResync(key: string): void {
+    if (feedResyncPending.has(key)) return;
+    const separator = key.indexOf(':');
+    const pane = separator > 0
+      ? { workspaceId: key.slice(0, separator), paneId: key.slice(separator + 1) }
+      : null;
+    if (!pane || wsState !== 'connected') return;
+    feedResyncPending.add(key);
+    queueMicrotask(() => {
+      try {
+        ws.resyncPane?.(pane);
+      } finally {
+        const timer = setTimeout(() => {
+          feedResyncPending.delete(key);
+          feedResyncTimers.delete(key);
+        }, 250);
+        feedResyncTimers.set(key, timer);
+      }
+    });
+  }
+
+  /**
+   * Keep WebRTC/WS pane callbacks cheap: terminal parsing runs in a bounded
+   * frame slice, with the focused pane first. This prevents a PTY burst from
+   * monopolising the browser task queue and starving keyboard events.
+   */
+  const paneFeedScheduler = new PaneFeedScheduler((key, data) => {
+    const stats = canvasRef?.feedPane(key, data);
+    remotePerfMark('raw-feed', {
+      paneKey: key,
+      bytes: data.byteLength,
+      queueBytes: stats?.queuedBytes ?? 0,
+    });
+    if (!stats) {
+      // The keyed surface may be between mounts. Keep this short gap in the
+      // existing bounded hand-off buffer; the next surface drains it once.
+      pendingRawFrames.enqueue(key, data);
+      return { accepted: true };
+    }
+    if (stats.needsResync) {
+      canvasRef?.clearPendingFeed(key);
+      requestFeedResync(key);
+    }
+    return { accepted: true, stats };
+  }, {
+    onDrop: (key) => requestFeedResync(key),
+  });
 
   // Free the kernels of truly-closed panes. Dynamic import keeps the (large)
   // manager out of the mobile entry bundle — the lazy TerminalCanvas already
@@ -477,6 +517,7 @@ import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
       }
     }
     if (dead.length > 0) {
+      for (const pane of dead) paneFeedScheduler.clear(paneRefKey(pane));
       void detachPaneKernels(dead);
       ws.pruneOutputs(new Set(attachedPanes.keys()));
     }
@@ -495,6 +536,7 @@ import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
       }
     }
     if (dead.length > 0) {
+      for (const pane of dead) paneFeedScheduler.clear(paneRefKey(pane));
       void detachPaneKernels(dead);
       ws.pruneOutputs(new Set(attachedPanes.keys()));
     }
@@ -777,37 +819,18 @@ import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
       }
     }));
     stops.push(ws.onRawBytes((pane, data) => {
+      // The frame-budgeted scheduler below owns terminal parsing; this callback
+      // only copies bytes into its bounded queue.
       // §keep-alive (P4): feed the frame into its pane's alive kernel via the
       // active pane's TerminalCanvas. The host single-subscribes so this is the
       // active pane; a straggler for a just-unsubscribed pane is dropped (it
       // isn't the mounted TerminalCanvas). No cache, no reconcile, no wipe — the
       // host's on-subscribe replay is absorbed by the alive kernel.
       const key = paneRefKey(pane);
-      const stats = canvasRef?.feedPane(key, data);
-      remotePerfMark('raw-feed', {
-        paneKey: key,
-        bytes: data.byteLength,
-        queueBytes: stats?.queuedBytes ?? 0,
-      });
+      paneFeedScheduler.enqueue(key, data);
       // During a keyed pane switch the old canvas may already be parked and
       // the new one not yet attached. Do not drop this frame: the next canvas
       // drains it into the same keep-alive kernel before its first paint.
-      if (!stats) enqueuePendingRawFrame(key, data);
-      if (stats?.needsResync && !feedResyncPending.has(key)) {
-        feedResyncPending.add(key);
-        canvasRef?.clearPendingFeed(key);
-        queueMicrotask(() => {
-          try {
-            if (wsState === 'connected') ws.resyncPane?.(pane);
-          } finally {
-            const timer = setTimeout(() => {
-              feedResyncPending.delete(key);
-              feedResyncTimers.delete(key);
-            }, 250);
-            feedResyncTimers.set(key, timer);
-          }
-        });
-      }
     }));
     stops.push(ws.onMetadata((pane, title, cwd) => {
       const { paneId, workspaceId } = pane;
@@ -872,6 +895,8 @@ import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
     // at the 80x24 default. The host's replay is absorbed by the alive kernel.
     stops.push(ws.onReconnect(() => {
       const pid = ui.activePaneId;
+      paneFeedScheduler.clearAll();
+      pendingRawFrames.clear();
       // §keep-alive after reconnect: a disconnect leaves a gap in every mirror kernel,
       // so force a full RIS resync on the next visit to each pane (clear the replayed
       // set). The active pane is full-resynced now (subscribePane below, resume=false).
@@ -923,12 +948,14 @@ import { PaneSwitchBuffer } from './lib/paneSwitchBuffer';
   $effect(() => {
     const pid = ui.activePaneId;
     const workspaceId = ui.activeWorkspaceId;
+    if (!pid || !workspaceId) paneFeedScheduler.setActive(null);
     if (!pid || !workspaceId) { subscribedPaneId = null; return; } // null gap → force re-subscribe next
     untrack(() => {
       const pane = { workspaceId, paneId: pid };
       const subscriptionKey = paneRefKey(pane);
       if (subscriptionKey === subscribedPaneId) return;
       subscribedPaneId = subscriptionKey;
+      paneFeedScheduler.setActive(subscriptionKey);
       paneSwitchPerf.set(subscriptionKey, remotePerfStart('pane-switch', {
         paneKey: subscriptionKey,
       }));

@@ -17,4 +17,11 @@ describe('remote Agent attention monitor', () => {
     expect(source).toContain('remotePerfStart(\'pane-switch\'');
     expect(source).toContain('onFirstPaint={markPaneFirstPaint}');
   });
+
+  it('frame-budgets pane output so input events keep the main thread turn', () => {
+    expect(source).toContain("import { PaneFeedScheduler } from './lib/paneFeedScheduler';");
+    expect(source).toContain('paneFeedScheduler.enqueue(key, data);');
+    expect(source).toContain('paneFeedScheduler.setActive(subscriptionKey);');
+    expect(source).toContain('paneFeedScheduler.clearAll();');
+  });
 });
