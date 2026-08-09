@@ -189,3 +189,21 @@ The OSC 2 delivery path was isolated from raw PTY backpressure: `RemotePaneSub` 
 ## NLM next-iteration candidates (2026-08-10)
 
 The read-only query completed through the configured proxy. It returned the existing conversation ID `a47d3199-c1f9-47f1-927c-ff2c4875b77d`, so this is a new query rather than a newly created chat session. Candidates, ordered by evidence risk: native PowerShell/WebView2 DPR pixel matrix; Codex monotonic frame/old-row replay; trusted-HTTPS mobile PWA and background recovery; explicit Agent message delivery with PTY as guarded fallback; Explorer cross-volume refresh; quota/manual park-cause recovery. Source facts and inferences remain separate; none is marked closed by NLM output alone.
+
+## New rerun findings (2026-08-10)
+
+### BUG-CLOUD-SEED-DB-MISMATCH-01
+
+Status: closed in fixture. `cdp-cloud-seed.mjs` now defaults to `ridge_cloud_e2e` and verifies `RETURNING username`; a wrong database can no longer silently mint a non-premium token. Full Cloud/Postgres plus pane PTY E2E passed.
+
+### BUG-E2E-DPR-STARTUP-RACE-02
+
+Status: open, cold-start evidence. At forced WebView2 `dpr=2`, the first probe waited `120s` and saw `canvases=[]`; after the pane had mounted, the same probe passed with `dpr=2` and `3/3` backing canvases. Next iteration must measure app-ready → pane attach → first canvas and make the acceptance probe distinguish slow readiness from renderer failure.
+
+### BUG-MOBILE-PWA-TRUSTED-HTTPS-01
+
+Status: external-environment gap. LAN mobile protocol and shell flow passed; self-signed `https://127.0.0.1:9527` caused Service Worker registration `SecurityError`. Trusted certificate/public-host or physical-device evidence remains required; no business-code workaround is justified.
+
+### BUG-MOBILE-RUNTIME-LASTERROR-ATTRIBUTION-01
+
+Status: evidence incomplete. Clean Chromium profile produced zero `runtime.lastError` entries, but no extension A/B or physical mobile run exists. Keep the source attribution open and do not modify listeners merely to suppress the warning.
