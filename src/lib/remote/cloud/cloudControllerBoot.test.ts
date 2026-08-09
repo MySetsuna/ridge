@@ -1,11 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	activeCloudController,
 	bootCloudControllerFromUrl,
+	performTrustHandshake,
 	parseCloudControllerHostname,
 	parseCloudControllerUrl,
 	verifyTotpOverControl,
 } from './cloudControllerBoot';
+import { bytesToBase64 } from '@ridge/remote/shared/cloud/e2ee';
+
+afterEach(() => vi.useRealTimers());
 
 describe('cloud controller tenant URL parsing', () => {
   it('prefers explicit query parameters and preserves encoded values', () => {
@@ -64,5 +68,42 @@ describe('cloud controller tenant URL parsing', () => {
 		await vi.advanceTimersByTimeAsync(20);
 		await rejected;
 		vi.useRealTimers();
+	});
+
+	it('completes the trust grant handshake only after a valid challenge and result', async () => {
+		let receive: ((frame: { t: string; nonce?: string; trusted?: boolean }) => void) | undefined;
+		const adapter = {
+			onSessionControl: (cb: typeof receive) => { receive = cb; return vi.fn(); },
+			sendSessionControl: vi.fn(),
+			getBindTranscript: () => Uint8Array.from([4, 5, 6]),
+		};
+		const pending = performTrustHandshake(adapter as never, 1000);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(adapter.sendSessionControl).toHaveBeenCalledWith(expect.objectContaining({ t: 'totp-trust-hello' }));
+		receive?.({ t: 'totp-trust-challenge', nonce: bytesToBase64(new Uint8Array(32).fill(7)) });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(adapter.sendSessionControl).toHaveBeenCalledWith(expect.objectContaining({ t: 'totp-trust-proof' }));
+		receive?.({ t: 'totp-trust-result', trusted: true });
+		expect(await pending).toBe(true);
+	});
+
+	it('fails closed for malformed trust challenges and timeout', async () => {
+		let receive: ((frame: { t: string; nonce?: string; trusted?: boolean }) => void) | undefined;
+		const adapter = {
+			onSessionControl: (cb: typeof receive) => { receive = cb; return vi.fn(); },
+			sendSessionControl: vi.fn(),
+		};
+		const malformed = performTrustHandshake(adapter as never, 1000);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		receive?.({ t: 'totp-trust-challenge', nonce: 'bad' });
+		expect(await malformed).toBe(false);
+
+		vi.useFakeTimers();
+		const timedOut = performTrustHandshake(adapter as never, 25);
+		await Promise.resolve();
+		await Promise.resolve();
+		await vi.advanceTimersByTimeAsync(25);
+		expect(await timedOut).toBe(false);
 	});
 });
