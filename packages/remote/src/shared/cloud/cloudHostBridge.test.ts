@@ -435,6 +435,23 @@ describe('CloudHostBridge — inbound demux edge cases', () => {
     rig.sendJson({ jsonrpc: '2.0', id: 1, result: 'unexpected' });
     expect(rig.sentJson()).toHaveLength(0);
   });
+
+  it('fails closed for non-object channels and gates request/notification routes', async () => {
+    const invoke = vi.fn(async () => { throw new Error('notification failed'); });
+    const rig = makeRig({ invoke });
+    rig.bridge.handleFrame(encodeControlFrame(null));
+    rig.bridge.handleFrame(encodeJsonFrame('not-an-object'));
+    rig.bridge.handleFrame(new Uint8Array([0x7f, 0x01]));
+
+    rig.sendJson({ jsonrpc: '2.0', id: 10, method: '$/hello', params: { protocolVersion: 1 } });
+    rig.sendJson({ jsonrpc: '2.0', id: 11, method: '$/cancel', params: {} });
+    rig.sendJson({ jsonrpc: '2.0', id: 12, method: 'get_remote_info' });
+    rig.sendJson({ jsonrpc: '2.0', id: 13, method: 'not-allowlisted' });
+    rig.sendJson({ jsonrpc: '2.0', method: 'switch_workspace', params: { workspaceId: 'ws-1' } });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('switch_workspace', { workspaceId: 'ws-1' }));
+    expect(rig.sentJson()).toContainEqual(expect.objectContaining({ id: 10, result: null }));
+    expect(rig.sentJson().filter((frame) => frame.id === 12 || frame.id === 13)).toHaveLength(2);
+  });
 });
 
 // §5.5 keyBindingVerifier 钩子已删（S1-F5 退役，生产从未接线）；0x11 bye 拒帧语义保留如下。
@@ -1016,6 +1033,44 @@ describe('CloudHostBridge — §7.4 TOTP trust-grant handshake', () => {
     const results = sentControl().filter((f) => f.t === 'totp-trust-result');
     expect(results).toHaveLength(0);
     void pubKey; // suppress unused warning
+  });
+
+  it('rejects malformed/locked trust proofs and tolerates trust-record invoke failure', async () => {
+    const { secretKey, publicKey } = ed25519.keygen();
+    const logs: Array<[string, string]> = [];
+    const invoke = vi.fn(async () => { throw new Error('trust store offline'); });
+    const rig = makeRig({
+      invoke,
+      totpVerifier: async () => true,
+      log: (level, message) => logs.push([level, message]),
+    });
+    rig.sendControl({ t: 'totp-trust-hello', pub: 'bad' });
+    await Promise.resolve();
+    expect(rig.sentControl()).toHaveLength(0);
+
+    rig.sendControl({ t: 'totp-trust-hello', pub: bytesToBase64(publicKey) });
+    await Promise.resolve();
+    const nonceB64 = rig.sentControl().find((f) => f.t === 'totp-trust-challenge')?.nonce as string;
+    const nonce = Uint8Array.from(atob(nonceB64), (c) => c.charCodeAt(0));
+    const sig = ed25519.sign(buildTrustMsg(nonce, new Uint8Array(0)), secretKey);
+    rig.sendControl({ t: 'totp-trust-proof', sig: bytesToBase64(sig) });
+    await Promise.resolve();
+    expect(rig.sentControl()).toContainEqual({ t: 'totp-trust-result', trusted: false });
+
+    // Manual verification records the known controller, but a persistence error is non-fatal.
+    rig.sendControl({ t: 'totp-verify', code: '123456' });
+    await vi.waitFor(() => expect(rig.sentControl()).toContainEqual({ t: 'totp-result', ok: true }));
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledWith('totp_trust_record', expect.anything());
+    expect(logs.some(([level, message]) => level === 'error' && message.includes('totp_trust_record'))).toBe(true);
+
+    const locked = makeRig({ totpVerifier: async () => true });
+    locked.sendControl({ t: 'totp-trust-hello', pub: bytesToBase64(publicKey) });
+    await Promise.resolve();
+    (locked.bridge as any).totpFailures = 5;
+    locked.sendControl({ t: 'totp-trust-proof', sig: bytesToBase64(sig) });
+    await Promise.resolve();
+    expect(locked.sentControl()).toContainEqual({ t: 'totp-trust-result', trusted: false });
   });
 });
 
