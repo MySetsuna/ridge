@@ -1506,6 +1506,13 @@
 - 聚焦 `manager.test.ts` 与 `manager.attach.test.ts` 为 `22/22`；未改生产语义，未向 Codex 之外 CLI、Agent 或 teammate 发消息。
 - 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13185/18608 = 70.85%`、branches `7250/11610 = 62.44%`、functions `2558/3536 = 72.34%`、lines `11887/15895 = 74.78%`，距 statements 80% 尚缺 `1702` 条；`pnpm check` 为 `0 errors / 0 warnings`。
 - Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
+
+## Wave63 CloudRemote 降级与滚动历史边界
+
+- `src/remote/lib/cloudRemote.test.ts` 新增可选 Cloud parity 命令失败回归：workspace 查询、Agent message/session、保存/打开/关闭 workspace、theme catalog、layout 查询的 fail-safe 或错误保留语义；新增 resync-frame → bounded tail 回退、实时 PTY 顺序、scrollback cursor commit/at-oldest 及无 cursor 短路回归。
+- 聚焦 `cloudRemote.test.ts` 为 `52/52`；未改生产语义，未向 Codex 之外 CLI、Agent 或 teammate 发消息。
+- 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13203/18608 = 70.95%`、branches `7258/11610 = 62.51%`、functions `2568/3536 = 72.62%`、lines `11902/15895 = 74.87%`，距 statements 80% 尚缺 `1684` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+- Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
 - Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据、第三方 Runtime/A2A 兼容性及其余 Cloud/Postgres/物理 DPR/跨卷权限/移动端现场证据仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
 
 ## Wave42 Host transport onboarding coverage
