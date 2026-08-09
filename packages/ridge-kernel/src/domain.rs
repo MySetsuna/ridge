@@ -202,6 +202,8 @@ pub(crate) fn remove_agent_identity_for_pty(st: &AppState, pane_id: Uuid) -> Res
             &identity.lease,
         )?;
     }
+    st.mcp_state
+        .unregister_pty_safety(&identity.agent_id, identity.generation, &identity.lease)?;
     Ok(true)
 }
 

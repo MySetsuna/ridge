@@ -137,3 +137,11 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - 全量 `pnpm test:coverage:sonar` 通过；相较 Wave36 新增 `4` 个测试。最新本地 V8/LCOV：statements `11603/18537 = 62.59%`、branches `6453/11542 = 55.91%`、functions `2247/3527 = 63.71%`、lines `10471/15831 = 66.14%`；距 80% 尚缺 `3227` 条 covered statements。
 - `.mjs` `PARSE_ERROR`、本机缺 `SONAR_TOKEN`/`SONAR_HOST_URL` 与真实 Sonar CE/Gate 仍阻塞正式闭环；`REQ-SONAR-COVERAGE-80-01` 保持 ACTIVE。PTY 五条件仍 fail-closed，因宿主尚无完整可验证运行时快照，未擅自放行。
 - 质量门：`pnpm check`、`cargo fmt --all -- --check`、`git diff --check` 应复核通过；`coverage/*` 与 `.iteration/*` 运行态变更不纳入提交。
+
+## Wave38 Agent 通信架构：PTY proof fencing
+
+- `packages/ridge-mcp/src/delivery.rs` 新增 host-owned PTY safety proof 注册表；proof 绑定 `agent_id/generation/lease`，同代换 lease、旧代注册、旧代注销均拒绝，同代刷新原子替换。
+- proof 新增 `PTY_SAFETY_MAX_AGE=3s` 新鲜度闸；过期或 identity 不匹配即清空 PTY probe，选择器不能走 PTY，MCP pull 保留。
+- `McpSessionState` 提供注册/注销入口；Kernel PTY destroy 的 identity teardown 同时撤销 Runtime API、A2A 与 PTY proof，避免旧代 proof 残留。
+- 证据：`cargo test --target-dir target/codex-delivery-test -p ridge-mcp --features axum-transport --lib` 为 `92 passed / 0 failed`；`cargo test --target-dir target/codex-kernel-agent-comm -p ridge-kernel --lib` 为 `49 passed / 0 failed`；`cargo fmt --all -- --check` 通过。
+- 本波仅补齐 proof 存储、刷新、过期与销毁 fencing 基础设施；宿主五条件尚无完整原子运行时快照，故 PTY 生产放行继续 fail-closed。Sonar 仍为本地 `62.59%`，无 scanner/token/host，不能宣称 80% 或 Quality Gate 通过。
