@@ -106,6 +106,58 @@ describe('RemoteConnection LAN pane RPC scheduler', () => {
     expect(FakeWebSocket.latest?.readyState).toBe(FakeWebSocket.CLOSED);
   });
 
+  it('fails closed on an authenticated authorization rejection without reconnecting', async () => {
+    const { conn, ws } = connect();
+    ws.receive({ t: 'error', code: 'DEVICE_PARKED', message: 'device parked' });
+    ws.onclose?.({ code: 4403 });
+
+    expect(conn.state()).toBe('error');
+    expect(conn.lastFailure()).toEqual({
+      category: 'parked', code: 'DEVICE_PARKED', message: 'device parked',
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(FakeWebSocket.latest).toBe(ws);
+    conn.disconnect();
+  });
+
+  it('retries pane RPCs after a transport drop and reconnects after bounded backoff', async () => {
+    const { conn, ws } = connect();
+    const reconnects: number[] = [];
+    conn.onReconnect(() => reconnects.push(1));
+    expect(conn.sendStdin(pane, 'during-drop')).toBe(true);
+    expect(invokeFrames(ws, 'write_to_pty')).toHaveLength(1);
+
+    ws.close();
+    await flushPromises();
+    await flushPromises();
+    expect(conn.rpcSchedulingDiagnostics).toMatchObject({
+      inputFailures: 1,
+      retries: 1,
+      queuedInputBytes: 11,
+    });
+    expect(conn.state()).toBe('disconnected');
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    const replacement = FakeWebSocket.latest;
+    expect(replacement).not.toBe(ws);
+    replacement?.open();
+    await flushPromises();
+    expect(conn.state()).toBe('connected');
+    expect(reconnects).toHaveLength(1);
+    conn.disconnect();
+  });
+
+  it('drops a half-open socket when heartbeat receives no pong', async () => {
+    const { conn, ws } = connect();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(ws.sent).toContainEqual({ type: 'ping' });
+    expect(conn.state()).toBe('connected');
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(conn.state()).toBe('disconnected');
+    conn.disconnect();
+  });
+
   it('allows slow shell discovery to outlive the generic RPC timeout', async () => {
     const { conn, ws } = connect();
     const promise = conn.listShells();

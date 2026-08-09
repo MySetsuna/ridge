@@ -79,3 +79,10 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - 全量 `pnpm test:coverage:sonar`：187 files；1753 passed；1 skipped；statements `11194/18527 = 60.41%`、branches `6221/11534 = 53.93%`、functions `2180/3527 = 61.80%`、lines `10122/15822 = 63.97%`。日志：`.iteration/artifacts/vitest-coverage-wave29.log`。
 - 相比 Wave28：statements `+0.34` 个百分点、branches `+0.30`、functions `+0.19`、lines `+0.38`；距 Sonar 全项目 80% 仍有 `7333` 条语句未覆盖。
 - 覆盖率 provider 仍对部分 `.mjs` 脚本报 `PARSE_ERROR` 并排除；`node --check` 可通过不等于覆盖率可计入，Sonar 真实扫描/Gate 仍未完成。
+
+## Wave30 远程传输护栏
+
+- `packages/remote/src/shared/transport/wsRemoteRpcScheduler.test.ts` 新增 3 条确定性测试：鉴权拒绝进入终态且不重连；传输断开后 pane RPC 保留、失败计数/退避重试并重连；心跳无 pong 时主动断开半开连接。聚焦回归 `21/21` 通过，日志：`.iteration/artifacts/wsremote-wave30.log`。
+- 全量 `pnpm test:coverage:sonar`：`187` 个测试文件，`1756 passed / 1 skipped`；日志：`.iteration/artifacts/vitest-coverage-wave30.log`。
+- 当前覆盖率：statements `11265/18527 = 60.80%`，branches `6255/11534 = 54.23%`，functions `2195/3527 = 62.23%`，lines `10179/15822 = 64.33%`。相较 Wave29：`+0.39 / +0.30 / +0.43 / +0.36` 个百分点；距 80% 仍缺 `7262` 条 statements。
+- `wsRemote.ts` 提升至 statements `78.64%`、branches `63.95%`、functions `77.62%`、lines `85.92%`。覆盖报告仍对部分 `.mjs` 报 `PARSE_ERROR` 并排除；故仅记本地证据，不宣称 Sonar Quality Gate 通过。
