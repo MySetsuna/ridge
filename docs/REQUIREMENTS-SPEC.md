@@ -1452,6 +1452,12 @@
 - 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `12774/18608 = 68.64%`、branches `7066/11610 = 60.86%`、functions `2492/3536 = 70.47%`、lines `11514/15895 = 72.43%`，距 statements 80% 尚缺 `2113` 条；`pnpm check` 为 `0 errors / 0 warnings`。
 - Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据及第三方 Runtime/A2A 兼容性仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
 
+## Wave54 Cloud E2E harness 分页、能力与资源回收覆盖
+
+- 新增 `packages/remote/src/shared/cloud/__cloudE2eHarness.test.ts`，覆盖连接成功/失败、分页局部失败、HELLO 能力协商、exploit、pane 原始字节流、tamper 标记清理及 host/controller 资源回收；聚焦回归 `2/2`，Cloud 通信组合回归 `106/106`。
+- 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `12858/18608 = 69.09%`、branches `7090/11610 = 61.06%`、functions `2501/3536 = 70.72%`、lines `11594/15895 = 72.94%`，距 statements 80% 尚缺 `2029` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+- Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据及第三方 Runtime/A2A 兼容性仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
