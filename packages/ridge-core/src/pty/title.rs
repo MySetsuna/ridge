@@ -18,21 +18,30 @@ const OSC_PREFIXES: &[&[u8]] = &[b"\x1b]0;", b"\x1b]1;", b"\x1b]2;"];
 /// 找到 `haystack` 中 OSC 0/1/2 标题序列的**最后一个**完整 payload（解码为字符串）。
 /// 终结符同时支持 BEL (`\x07`) 和 ST (`\x1b\`)。返回 `None` 表示本次 chunk 不含。
 pub fn parse_title_from_output(haystack: &[u8]) -> Option<String> {
-    let mut best: Option<String> = None;
+    let mut candidates = Vec::new();
     for prefix in OSC_PREFIXES {
         let mut search_from: usize = 0;
         while let Some(idx) = find_subsequence(haystack, prefix, search_from) {
-            let body_start = idx + prefix.len();
-            let body = &haystack[body_start..];
-            // 寻找 BEL 或 ST 终结。
-            let term = find_terminator(body)?;
-            let title_bytes = &body[..term.position];
+            candidates.push(idx);
+            search_from = idx + prefix.len();
+        }
+    }
+    candidates.sort_unstable();
+
+    let mut best = None;
+    for idx in candidates {
+        let prefix = OSC_PREFIXES
+            .iter()
+            .find(|prefix| haystack[idx..].starts_with(prefix))?;
+        let body_start = idx + prefix.len();
+        // 未闭合序列可能跨 chunk；跳过它，保留同一 buffer 内后续完整序列。
+        if let Some(term) = find_terminator(&haystack[body_start..]) {
             // 转 UTF-8（lossy）；非法字节用 U+FFFD 替代避免崩。
+            let title_bytes = &haystack[body_start..body_start + term.position];
             let title = String::from_utf8_lossy(title_bytes).trim().to_string();
             if !title.is_empty() {
                 best = Some(title);
             }
-            search_from = body_start + term.position + term.len;
         }
     }
     best
@@ -40,22 +49,15 @@ pub fn parse_title_from_output(haystack: &[u8]) -> Option<String> {
 
 struct Terminator {
     position: usize,
-    len: usize,
 }
 
 fn find_terminator(body: &[u8]) -> Option<Terminator> {
     for (i, &b) in body.iter().enumerate() {
         if b == 0x07 {
-            return Some(Terminator {
-                position: i,
-                len: 1,
-            });
+            return Some(Terminator { position: i });
         }
         if b == 0x1b && body.get(i + 1).copied() == Some(b'\\') {
-            return Some(Terminator {
-                position: i,
-                len: 2,
-            });
+            return Some(Terminator { position: i });
         }
     }
     None
@@ -94,6 +96,12 @@ mod tests {
     fn picks_last_when_multiple() {
         let s = b"\x1b]0;first\x07middle\x1b]2;last\x07";
         assert_eq!(parse_title_from_output(s).as_deref(), Some("last"));
+    }
+
+    #[test]
+    fn picks_last_title_by_stream_position_across_osc_kinds() {
+        let s = b"\x1b]2;new\x07middle\x1b]0;latest\x07";
+        assert_eq!(parse_title_from_output(s).as_deref(), Some("latest"));
     }
 
     #[test]
