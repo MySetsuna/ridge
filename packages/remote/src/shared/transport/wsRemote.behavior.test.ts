@@ -306,4 +306,37 @@ describe('RemoteConnection public communication contract', () => {
 		expect(page.commit()).toBe(false);
 		conn.disconnect();
 	});
+
+	it('handles capability downgrades, invalid inputs, queued messages, and auth close', async () => {
+		const { conn, ws } = connect();
+		const capabilityChanges = vi.fn();
+		conn.onCapabilitiesChanged(capabilityChanges);
+		conn.subscribePane({ workspaceId: '', paneId: '' });
+		expect(conn.sendStdin({ workspaceId: 'workspace-a', paneId: '' }, 'x')).toBe(false);
+		expect(conn.sendStdin(pane, '')).toBe(false);
+		expect(conn.enqueueStdinTask({ workspaceId: 'workspace-a', paneId: '' }, 'x')).toBe(false);
+		ws.receive({ type: 'hello', capabilities: ['pane', 'pane', 7] });
+		expect(conn.hasCapability('pane')).toBe(true);
+		expect(conn.hasCapability('teammate')).toBe(false);
+
+		ws.receive({ type: 'pty-meta', paneId: 'pane-a', title: 'missing workspace', cwd: null });
+		ws.receive({ type: 'pty-resized', workspaceId: 'workspace-a', rows: 24, cols: 80 });
+		ws.receive({ type: 'scrollback-meta', workspaceId: 'workspace-a', paneId: 'pane-a', startSeq: 1 });
+		const unsupported = conn.getTeammateTopology('workspace-a');
+		invoke(ws, 'get_teammate_topology', undefined, 'method not supported');
+		await expect(unsupported).rejects.toThrow('method not supported');
+		expect(conn.hasCapability('teammate')).toBe(false);
+
+		conn.disconnect();
+		const disconnected = conn.listWorkspaces();
+		const disconnectedExpectation = expect(disconnected).rejects.toThrow();
+		await vi.advanceTimersByTimeAsync(6_000);
+		await disconnectedExpectation;
+
+		const auth = connect();
+		auth.ws.receive({ t: 'error', code: 'DEVICE_PARKED', message: 'device parked' });
+		auth.ws.onclose?.({ code: 4403 });
+		expect(auth.conn.state()).toBe('error');
+		expect(auth.conn.lastFailure()).toMatchObject({ category: 'parked', message: 'device parked' });
+	});
 });
