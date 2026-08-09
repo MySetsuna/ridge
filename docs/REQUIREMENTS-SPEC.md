@@ -1530,6 +1530,13 @@
 - 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13238/18608 = 71.14%`、branches `7286/11610 = 62.75%`、functions `2573/3536 = 72.76%`、lines `11925/15895 = 75.02%`，距 statements 80% 尚缺 `1649` 条；`pnpm check` 为 `0 errors / 0 warnings`。
 - Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
 
+## Wave66 ridgeCloudProvider 会话与信令生命周期覆盖
+
+- `packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts` 新增会话快照与 `onSessions` 投影、ICE candidate、控制通道排空回调、Pane 通道拆除、坏业务帧、握手等待信令公钥、信令重连退避及 WebSocket 构造失败回归。
+- 聚焦 `ridgeCloudProvider.test.ts` 为 `19/19`；未改生产语义，未向 Codex 之外 CLI、Agent 或 teammate 发消息。
+- 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13270/18608 = 71.31%`、branches `7305/11610 = 62.91%`、functions `2582/3536 = 73.02%`、lines `11953/15895 = 75.19%`，距 statements 80% 尚缺 `1617` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+- Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
