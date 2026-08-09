@@ -1381,6 +1381,13 @@
 - 通信底座回归：`cargo test --target-dir target/codex-wave41-mcp -p ridge-mcp --features axum-transport --lib` 测试汇总 `93 passed / 0 failed`；`cargo test --target-dir target/codex-wave41-kernel -p ridge-kernel --lib` `49 passed / 0 failed`；`cargo fmt --all -- --check` 通过。
 - 本波只证明 Remote 适配器消费统一通信契约的更多边界；Kernel PTY 五条件原子运行时快照、第三方 Runtime/A2A 真实兼容性、Sonar `>=80%`/Gate 仍未闭环。coverage 与 `.iteration` 运行态变更不纳入提交。
 
+## Wave44 Agent/Cloud 通信边界与编组持久化覆盖
+
+- `packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts` 新增 ICE 失败、重复上线/信令断线、封禁 controller、握手/信令公钥拒绝、workspace scope 拒绝、bridge 公钥拒绝、offer 异常七类边界回归。
+- `src/lib/teammate/teammateGroups.test.ts` 新增持久化字段防御解析、循环数据 fail-closed，以及真实 `TeammateGroupStore` 工作区切换、localStorage 回读、编组变更、成员事件桥与任务记录路径。
+- 焦点回归 `45/45`；全量 `pnpm test:coverage:sonar` 为 `199` files、`1835 passed / 1 skipped`；statements `12539/18603 = 67.40%`，branches `6903/11608 = 59.46%`，functions `2448/3536 = 69.23%`，lines `11322/15891 = 71.24%`。
+- 本地 statements 80% 仍缺 `2344` 条；部分 `.mjs` 仍有 `PARSE_ERROR/Expected ident`，Sonar project `>=80%`/Quality Gate 与 PTY 真实五条件原子注入、第三方 Runtime/A2A 兼容性仍 `ACTIVE`，不作闭环宣称。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。

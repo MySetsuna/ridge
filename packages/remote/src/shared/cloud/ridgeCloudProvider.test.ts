@@ -32,6 +32,7 @@ import {
 } from './e2ee';
 import type { CloudHostBridgeLike } from './ridgeCloudProvider';
 import type { WorkspaceScopeAssertion } from './workspaceScope';
+import { getIceServers } from './apiClient';
 import { ChunkReassembler, encodeChunks } from '@ridge/remote';
 import { CHANNEL, encodePaneLaneProbeFrame } from '@ridge/remote';
 
@@ -51,6 +52,141 @@ vi.mock('./apiClient', async (importOriginal) => {
     ...actual,
     getIceServers: vi.fn(async () => ({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] })),
   };
+});
+
+describe('RidgeCloudHost boundary failures', () => {
+  beforeEach(() => {
+    FakePeerConnection.instances = [];
+    FakeWebSocket.instances = [];
+    installGlobals();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('ICE 鑾峰彇澶辫触鎶ュ憡 NETWORK 骞堕檺瀹氬湪 error', async () => {
+    vi.mocked(getIceServers).mockImplementationOnce(async () => {
+      throw new Error('ice unavailable');
+    });
+    const { host, errors } = await makeHost({});
+
+    await host.goOnline(DEVICE);
+
+    expect(host.getHostState()).toBe('error');
+    expect(errors).toContain('ice unavailable');
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('重复上线不重复建立信令连接，断线后进入重连态并可安全下线', async () => {
+    const { host, errors } = await makeHost({});
+    await host.goOnline(DEVICE);
+    const ws = FakeWebSocket.instances[0];
+
+    await host.goOnline(DEVICE);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    ws.onerror?.();
+    ws.onclose?.();
+
+    expect(host.getHostState()).toBe('connecting');
+    expect(errors).toContain('信令 WebSocket 错误');
+    host.goOffline();
+    expect(host.getHostState()).toBe('offline');
+  });
+
+  it('封禁 controller 后收到 peer-join 立即回送 kick 且不建会话', async () => {
+    const { host } = await makeHost({});
+    await host.goOnline(DEVICE);
+    const ws = FakeWebSocket.instances[0];
+    host.blacklist('blocked-cid');
+
+    ws.deliver({ t: 'peer-join', role: 'controller', cid: 'blocked-cid' });
+    await flush();
+
+    expect(host.isBanned('blocked-cid')).toBe(true);
+    expect(ws.sentParsed()).toContainEqual({ t: 'kick', cid: 'blocked-cid' });
+    expect(host.getSessions()).toEqual([]);
+    host.goOffline();
+  });
+
+  it('握手公钥与信令公钥不一致时拒绝并拆除连接', async () => {
+    const { host, errors } = await makeHost({ signContext, identityPub: ID_PUB });
+    const { ws, dc } = await driveToOpenChannel(host);
+    const ctrlEph = generateEphemeralKeyPair();
+
+    ws.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(new Uint8Array(32).fill(9)), cid: CID });
+    await flush();
+    dc.deliver(encodeHandshakeFrame(ctrlEph.publicKey));
+    await flush();
+
+    expect(host.getSessions()).toEqual([]);
+    expect(errors.some((message) => message.includes('MITM'))).toBe(true);
+    host.goOffline();
+  });
+
+  it('workspace scope 校验失败时不创建 bridge 并拆除连接', async () => {
+    const { host, bridges, errors } = await makeHost({
+      signContext,
+      identityPub: ID_PUB,
+      verifyWorkspaceScope: vi.fn(async () => null),
+    });
+    await host.goOnline(DEVICE);
+    await flush();
+    const ws = FakeWebSocket.instances[0];
+    ws.deliver({ t: 'welcome', room: `${DEVICE}-alice`, role: 'host', peerPresent: false });
+    ws.deliver({ t: 'peer-join', role: 'controller', cid: CID });
+    ws.deliver({ t: 'workspace-scope', cid: CID, token: 'scope-token' });
+    ws.deliver({ t: 'offer', sdp: 'controller-offer', cid: CID });
+    await flush();
+    const dc = FakePeerConnection.instances[0].attachControllerChannel();
+    dc.fireOpen();
+    const ctrlEph = generateEphemeralKeyPair();
+    ws.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(ctrlEph.publicKey), cid: CID });
+    await flush();
+    dc.deliver(encodeHandshakeFrame(ctrlEph.publicKey));
+    await flush();
+
+    expect(bridges).toHaveLength(0);
+    expect(errors).toContain('工作区分享授权无效或已撤销');
+    expect(host.getSessions()).toEqual([]);
+    host.goOffline();
+  });
+
+  it('bridge verifyPeerKey 拒绝时不保留已建立会话', async () => {
+    const { host, bridges } = await makeHost({
+      signContext,
+      identityPub: ID_PUB,
+      verifyPeerKey: () => false,
+    });
+    const { ws, dc } = await driveToOpenChannel(host);
+    const ctrlEph = generateEphemeralKeyPair();
+    ws.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(ctrlEph.publicKey), cid: CID });
+    await flush();
+    dc.deliver(encodeHandshakeFrame(ctrlEph.publicKey));
+    await flush();
+
+    expect(bridges).toHaveLength(1);
+    expect(host.getSessions()).toEqual([]);
+    host.goOffline();
+  });
+
+  it('offer 处理失败时报告 INTERNAL 并拆除 controller', async () => {
+    const { host, errors } = await makeHost({});
+    await host.goOnline(DEVICE);
+    await flush();
+    const ws = FakeWebSocket.instances[0];
+    ws.deliver({ t: 'peer-join', role: 'controller', cid: CID });
+    await flush();
+    const pc = FakePeerConnection.instances[0];
+    pc.setRemoteDescription = async () => {
+      throw new Error('bad offer');
+    };
+    ws.deliver({ t: 'offer', sdp: 'bad', cid: CID });
+    await flush();
+
+    expect(errors).toContain('bad offer');
+    expect(host.getSessions()).toEqual([]);
+    host.goOffline();
+  });
 });
 
 // ── Fake WebRTC / WebSocket harness ──────────────────────────────────────────
@@ -197,6 +333,7 @@ async function makeHost(opts: {
   signContext?: (c: Uint8Array) => Promise<Uint8Array>;
   identityPub?: Uint8Array;
   verifyWorkspaceScope?: (token: string) => Promise<WorkspaceScopeAssertion | null>;
+  verifyPeerKey?: (peerPublicKey: Uint8Array) => boolean;
 }) {
   const { RidgeCloudHost } = await loadHost();
   const bridges: BridgeRecord[] = [];
@@ -211,6 +348,7 @@ async function makeHost(opts: {
         return {
           handleFrame: () => {},
           reset: () => {},
+          verifyPeerKey: opts.verifyPeerKey,
         };
       },
     },
