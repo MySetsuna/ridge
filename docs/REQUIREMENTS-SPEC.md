@@ -1394,6 +1394,15 @@
 - 全量 `pnpm test:coverage:sonar`：`199` files、`1837 passed / 1 skipped`；statements `12591/18603 = 67.68%`，branches `6937/11608 = 59.76%`，functions `2462/3536 = 69.62%`，lines `11364/15891 = 71.51%`；距本地 statements 80% 缺 `2292` 条。
 - `.mjs` `PARSE_ERROR/Expected ident`、Sonar project `>=80%`/Quality Gate、PTY 真实五条件原子注入与第三方 Runtime/A2A 兼容性仍 `ACTIVE`。
 
+## Wave46 通信 topology、终端背压与 pane 投影覆盖
+
+- `src/lib/remote/cloud/cloudHostTopologyLink.test.ts` 覆盖多 workspace/shell 查询、workspace mutation 失败闭环、断连资源释放、空 pane、Agent 注册/注销与 scoped shell activation；聚焦 `15/15`。
+- `packages/remote/src/shared/terminal/manager.test.ts` 覆盖 inline-TUI 分片合并、非 inline 顺序、bounded deferred feed、输入 ownership、Mac Cmd、wheel 上限、空响应与未知 pane；聚焦 `20/20`。
+- `src/lib/stores/paneTree.coverage.test.ts` 覆盖 Agent status、pane/CWD 投影、ratio anchor、junction registry、reattach gate 与 CWD listeners；聚焦 `10/10`。
+- 全量 `pnpm test`：`199` files，`1844 passed / 1 skipped`。
+- 全量 `pnpm test:coverage:sonar` 本地 V8/LCOV：statements `12651/18603 = 68.00%`、branches `6972/11608 = 60.06%`、functions `2475/3536 = 69.99%`、lines `11412/15891 = 71.81%`；距 statements 80% 尚缺 `2232` 条。
+- `.mjs` coverage 仍报 `PARSE_ERROR/Expected ident`；Sonar project/Quality Gate 未以本地 LCOV 冒充闭环，`REQ-SONAR-COVERAGE-80-01` 与 PTY/第三方 Runtime-A2A 现场证据继续 `ACTIVE`。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。

@@ -641,6 +641,84 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		clock.mockRestore();
 	});
 
+	it('preserves feed ordering across inline fragments and bounded deferred chunks', () => {
+		const { manager, fixture } = makeManager();
+		const sent: Uint8Array[] = [];
+		manager.onData(PANE, (bytes) => sent.push(bytes));
+
+		fixture.kernel.isInlineTuiMode.mockImplementationOnce(() => { throw new Error('old wasm'); });
+		manager.feed(PANE, new Uint8Array([1]));
+		fixture.kernel.isInlineTuiMode.mockReturnValue(true);
+		manager.feed(PANE, new Uint8Array([0x1b, 0x41]));
+		manager.feed(PANE, new Uint8Array([0x1b, 0x42]));
+		expect(fixture.pane.feedBuffer).toEqual(new Uint8Array([0x1b, 0x42]));
+		manager.feed(PANE, 'echo');
+		expect(fixture.pane.feedBuffer).toBeNull();
+		expect(fixture.kernel.feed.mock.calls.at(-1)?.[0]).toEqual(new TextEncoder().encode('echo'));
+
+		fixture.kernel.isInlineTuiMode.mockReturnValue(false);
+		fixture.pane.feedBuffer = new Uint8Array([9]);
+		manager.feed(PANE, new Uint8Array([10]));
+		expect(fixture.kernel.feed.mock.calls.at(-2)?.[0]).toEqual(new Uint8Array([9]));
+		expect(fixture.kernel.feed.mock.calls.at(-1)?.[0]).toEqual(new Uint8Array([10]));
+
+		const clock = vi.spyOn(performance, 'now');
+		clock.mockReturnValueOnce(0).mockReturnValue(10);
+		manager.feed(PANE, new Uint8Array(20_000).fill(7));
+		expect(fixture.pane.feedDeferredBytes).toBeGreaterThan(0);
+		manager.feed(PANE, new Uint8Array([8]));
+		expect(fixture.pane.feedDeferredBytes).toBeGreaterThan(0);
+		manager.flushPaneFeed(PANE, Infinity);
+		manager.clearPendingFeed(PANE);
+		expect(manager.feedStats(PANE)).toEqual({ queuedBytes: 0, droppedBytes: 0, dropCount: 0, needsResync: false });
+		clock.mockRestore();
+		expect(sent).toEqual([]);
+	});
+
+	it('covers input ownership, wheel limits, and empty protocol responses', () => {
+		const { manager, fixture, internal } = makeManager();
+		const sent: Uint8Array[] = [];
+		manager.onData(PANE, (bytes) => sent.push(bytes));
+		vi.stubGlobal('navigator', { platform: 'MacIntel', clipboard: { writeText: vi.fn() } });
+
+		fixture.kernel.getSelectionText.mockReturnValue('copy me');
+		expect(manager.handleKeyDown(PANE, {
+			key: 'c', ctrlKey: false, metaKey: true, altKey: false, shiftKey: false,
+		} as KeyboardEvent)).toBe(true);
+		expect((navigator.clipboard.writeText as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('copy me');
+		fixture.kernel.getSelectionText.mockReturnValue('');
+		fixture.kernel.encodeKey.mockReturnValueOnce(new Uint8Array());
+		expect(manager.handleKeyDown(PANE, {
+			key: 'x', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false,
+		} as KeyboardEvent)).toBe(false);
+
+		fixture.setMouseModes(1);
+		fixture.kernel.encodeMouse.mockReturnValueOnce(new Uint8Array());
+		expect(manager.handleWheel(PANE, { deltaY: -10, clientX: 35, clientY: 65 } as WheelEvent)).toBe(false);
+		fixture.setMouseModes(0);
+		fixture.setAltScreen(true);
+		fixture.kernel.encodeKey.mockReturnValue(new Uint8Array([0x41]));
+		expect(manager.wheelAltScroll(PANE, { deltaY: 1000, deltaMode: 0 } as WheelEvent)).toBe(true);
+		expect(sent.at(-1)).toHaveLength(5);
+		fixture.kernel.encodeKey.mockReturnValueOnce(new Uint8Array());
+		expect(manager.wheelAltScroll(PANE, { deltaY: 1, deltaMode: 1 } as WheelEvent)).toBe(false);
+
+		fixture.kernel.takePendingResponse.mockReturnValueOnce(new Uint8Array([0x52]));
+		manager.resetInputModes(PANE);
+		expect(sent.at(-1)).toEqual(new Uint8Array([0x52]));
+		fixture.kernel.rows.mockReturnValueOnce(0);
+		expect(manager.cellFromEvent(PANE, { clientX: 1, clientY: 1 })).toBeNull();
+		manager.updateSelection(PANE, { row: 1, col: 1 });
+		manager.clearScrollback(PANE);
+		manager.setFocused(PANE, true);
+		manager.setFocused(PANE, false);
+		internal.panes.delete(PANE);
+		manager.onData(PANE, vi.fn());
+		manager.onEvent(PANE, vi.fn());
+		manager.onResize(PANE, vi.fn());
+		manager.write(PANE, 'ignored');
+	});
+
 	it('covers shared-host resize boundaries and workspace invalidation', async () => {
 		const { manager, fixture, internal } = makeManager();
 		internal.panes.clear();
