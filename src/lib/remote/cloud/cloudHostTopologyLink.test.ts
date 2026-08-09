@@ -9,6 +9,9 @@ class FakeRpc {
   rejectClose = false;
   rejectWorkspaceClose = false;
   rejectWorkspaceCreate = false;
+  rejectSwitch = false;
+  rejectRename = false;
+  rejectSave = false;
   paneLayout: PaneNode | null = null;
   notifications: Array<{ method: string; params: unknown }> = [];
   reconnectHooks = new Set<() => void>();
@@ -28,7 +31,19 @@ class FakeRpc {
         ? Promise.reject(new Error('workspace create failed'))
         : Promise.resolve('workspace-new');
     }
-    if (method === 'switch_workspace') return Promise.resolve(null);
+    if (method === 'list_workspaces') return Promise.resolve([{ id: 'w1', name: 'One' }, { id: 'w2' }]);
+    if (method === 'get_active_workspace_id') return Promise.resolve('w1');
+    if (method === 'detect_available_shells') return Promise.resolve([{ id: 'bash', label: 'Bash', program: 'bash' }]);
+    if (method === 'rename_workspace') {
+      return this.rejectRename ? Promise.reject(new Error('rename failed')) : Promise.resolve(null);
+    }
+    if (method === 'save_workspace_to_file') {
+      return this.rejectSave ? Promise.reject(new Error('save failed')) : Promise.resolve(null);
+    }
+    if (method === 'switch_workspace') {
+      return this.rejectSwitch ? Promise.reject(new Error('switch failed')) : Promise.resolve(null);
+    }
+    if (method === 'register_teammate_agent' || method === 'release_teammate_agent') return Promise.resolve(null);
     if (method === 'split_pane') return Promise.resolve({ pane_id: 'pane-new' });
     if (method === 'change_pane_shell' || method === 'activate_pane_pty') return Promise.resolve(null);
     if (method === 'get_pane_layout_for') return Promise.resolve(this.paneLayout);
@@ -327,5 +342,67 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
       paneId: 'p3',
       data: 'live',
     });
+  });
+
+  it('lists workspaces/shells, forwards workspace mutations, and disconnects transport', async () => {
+    const rpc = new FakeRpc();
+    const transport = adapter();
+    const link = linkWith(rpc, transport);
+
+    expect(link.state()).toBe('connected');
+    await expect(link.listWorkspaces()).resolves.toEqual({
+      workspaces: [
+        { id: 'w1', name: 'One', active: true },
+        { id: 'w2', name: undefined, active: false },
+      ],
+    });
+    await expect(link.listShells()).resolves.toEqual([{ id: 'bash', label: 'Bash', program: 'bash' }]);
+    await expect(link.switchWorkspace('w2')).resolves.toBe(true);
+    await expect(link.renameWorkspace('w2', 'Two')).resolves.toBe(true);
+    await expect(link.saveWorkspace('w2', 'Two')).resolves.toBe(true);
+    expect(link.getPaneOutput(paneA)).toEqual([]);
+    expect(link.rpcSchedulingDiagnostics).toEqual(expect.any(Object));
+    link.disconnect();
+    expect(transport.close).toHaveBeenCalledOnce();
+    expect(transport.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed for workspace mutations and empty pane creation', async () => {
+    const rpc = new FakeRpc();
+    rpc.rejectSwitch = true;
+    rpc.rejectRename = true;
+    rpc.rejectSave = true;
+    const link = linkWith(rpc);
+
+    await expect(link.switchWorkspace('w2')).resolves.toBe(false);
+    await expect(link.renameWorkspace('w2', 'Two')).resolves.toBe(false);
+    await expect(link.saveWorkspace('w2', 'Two')).resolves.toBe(false);
+    await expect(link.createPane()).resolves.toBeNull();
+    await expect(link.markPaneAgent('w2', 'missing', true)).rejects.toThrow('Pane not active');
+    await expect(link.changePaneShell('w2', 'missing', { id: 'x', label: 'x', program: 'x' })).rejects.toThrow('Pane not active');
+  });
+
+  it('routes agent registration and shell activation through the pane scope', async () => {
+    const rpc = new FakeRpc();
+    const link = linkWith(rpc);
+    link.subscribePane(paneA);
+
+    await link.markPaneAgent('w1', 'p1', true, 'agent-1');
+    await link.markPaneAgent('w1', 'p1', false);
+    await link.changePaneShell('w1', 'p1', { id: 'pwsh', label: 'PowerShell', program: 'pwsh' });
+
+    expect(rpc.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        method: 'register_teammate_agent',
+        params: { workspaceId: 'w1', paneId: 'p1', agentId: 'agent-1' },
+        options: { scope: 'w1:p1' },
+      }),
+      expect.objectContaining({
+        method: 'release_teammate_agent',
+        params: { workspaceId: 'w1', paneId: 'p1' },
+        options: { scope: 'w1:p1' },
+      }),
+      expect.objectContaining({ method: 'activate_pane_pty', options: { scope: 'w1:p1' } }),
+    ]));
   });
 });

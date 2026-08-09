@@ -35,6 +35,10 @@ beforeEach(() => {
   paneTree.workspacesList.set([]);
   paneTree.workspaceSaveInfoStore.set({});
   paneTree.workspaceNames.set({});
+  paneTree.agentPaneAttentionStore.set({});
+  paneTree.agentPaneStatusStore.set({});
+  paneTree.paneCwdStore.set({});
+  paneTree.savedWorkspacesList.set([]);
 });
 
 function mockRefreshCommands(active = 'ws-a') {
@@ -175,5 +179,109 @@ describe('paneTree workspace mutation branches', () => {
     expect(core.invoke).toHaveBeenCalledWith('save_workspace_to_file', {
       workspaceId: 'ws-a', name: 'Name', path: null,
     });
+  });
+
+  it('covers pane projections, ratio anchors, junction registry, and cwd normalization', async () => {
+    paneTree.setAgentPaneAttention('ws-a', 'pane-a', 'waiting');
+    paneTree.setAgentPaneAttention('ws-a', 'pane-a', 'waiting');
+    paneTree.setAgentPaneStatus('ws-a', 'pane-a', 'working');
+    expect(get(paneTree.agentPaneAttentionStore)).toEqual({ 'ws-a:pane-a': 'waiting' });
+    expect(get(paneTree.agentPaneStatusStore)).toEqual({ 'ws-a:pane-a': 'working' });
+    paneTree.clearAgentPaneAttention('ws-a', 'pane-a');
+    paneTree.setAgentPaneStatus('ws-a', 'pane-a', null);
+    paneTree.setAgentPaneAttention('', 'pane-a', 'idle');
+    expect(get(paneTree.agentPaneAttentionStore)).toEqual({});
+    expect(get(paneTree.agentPaneStatusStore)).toEqual({});
+
+    const tree = {
+      type: 'split' as const,
+      id: 'root',
+      direction: 'horizontal' as const,
+      ratios: [50, 50],
+      children: [
+        {
+          type: 'split' as const,
+          id: 'nested',
+          direction: 'horizontal' as const,
+          ratios: [40, 60],
+          children: [
+            { type: 'leaf' as const, id: 'a', cwd: '/home/alice/' },
+            { type: 'leaf' as const, id: 'b', cwd: 'C:\\work\\' },
+          ],
+        },
+        { type: 'leaf' as const, id: 'c' },
+      ],
+    };
+    expect(paneTree.getAllPaneIds(tree)).toEqual(['a', 'b', 'c']);
+    expect(paneTree.paneIdsFromRatioUpdates(tree, [{ path: [0], ratios: [30, 70] }]))
+      .toEqual(['a', 'b']);
+    expect(paneTree.paneIdsFromRatioUpdates(tree, [{ path: [9], ratios: [30, 70] }]))
+      .toEqual(['a', 'b', 'c']);
+    expect(paneTree.extractCwdsFromLayout(tree, 'ws-a')).toEqual({
+      'ws-a:a': '/home/alice',
+      'ws-a:b': 'C:/work',
+    });
+    paneTree.setPaneCwd('ws-a', 'a', '/C:/work\\');
+    paneTree.setPaneCwd('ws-a', 'a', '/C:/work/');
+    paneTree.setPaneCwd('ws-a', 'b', null);
+    expect(paneTree.getPaneCwd('ws-a', 'a')).toBe('C:/work');
+    expect(paneTree.collapseCwd('/home/alice/project')).toBe('~/project');
+    expect(paneTree.collapseCwd('C:\\Users\\alice\\project')).toBe('~/alice/project');
+    expect(paneTree.collapseCwd('C:/')).toBe('C:/');
+    expect(paneTree.collapseCwd('')).toBe('');
+
+    paneTree.clearJunctionRegistry();
+    const junction = {
+      id: 'j1', positionPx: { x: 100, y: 50 }, axis: 'x' as const, splitters: [],
+    };
+    paneTree.registerJunction(junction);
+    paneTree.registerJunction(junction);
+    expect(paneTree.findJunctionsNearPosition('x', 104, 5)).toEqual([junction]);
+    expect(paneTree.findJunctionsNearPosition('y', 104, 1)).toEqual([]);
+    paneTree.clearJunctionRegistry();
+
+    const release = paneTree.beginDesktopKernelReattachGate();
+    let released = false;
+    const waiting = paneTree.waitForDesktopKernelReattach().then(() => { released = true; });
+    await Promise.resolve();
+    expect(released).toBe(false);
+    release();
+    await waiting;
+    expect(released).toBe(true);
+    paneTree.beginDesktopKernelReattachGate()();
+
+    const plans = paneTree.buildPxAnchorPlans(tree, {
+      splitPath: [], splitterIndex: 0, axis: 'x', basisPx: 1000,
+    }, 1000);
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({ absorberIndex: 1, primaryAdjacentSide: 'before' });
+    expect(paneTree.pxAnchorRatios(plans[0]!, 500)[1]).toBeGreaterThanOrEqual(80);
+    expect(paneTree.pxAnchorRatios(plans[0]!, -500)[0]).toBeGreaterThanOrEqual(6);
+    expect(paneTree.buildPxAnchorPlans({ type: 'leaf', id: 'x' }, {
+      splitPath: [], splitterIndex: 0, axis: 'x', basisPx: 1,
+    }, 1)).toEqual([]);
+  });
+
+  it('tracks pane cwd listeners and retires previous subscriptions', async () => {
+    const firstUnlisten = vi.fn();
+    const secondUnlisten = vi.fn();
+    event.listen.mockResolvedValueOnce(firstUnlisten).mockResolvedValueOnce(secondUnlisten);
+    const tree = {
+      type: 'split' as const,
+      id: 'root',
+      direction: 'vertical' as const,
+      ratios: [50, 50],
+      children: [{ type: 'leaf' as const, id: 'a' }, { type: 'leaf' as const, id: 'b' }],
+    };
+    await paneTree.setupPaneCwdListeners('ws-a', tree);
+    expect(event.listen).toHaveBeenCalledTimes(2);
+    await paneTree.setupPaneCwdListeners('ws-a', tree);
+    expect(firstUnlisten).toHaveBeenCalledOnce();
+    const callback = event.listen.mock.calls.at(-1)?.[1] as ((event: { payload: { cwd: string } }) => void);
+    callback({ payload: { cwd: '/home/bob/project/' } });
+    expect(paneTree.getPaneCwd('ws-a', 'b')).toBe('/home/bob/project');
+    core.isTauri.mockReturnValue(false);
+    await paneTree.setupPaneCwdListeners('ws-b', tree);
+    expect(event.listen).toHaveBeenCalledTimes(4);
   });
 });
