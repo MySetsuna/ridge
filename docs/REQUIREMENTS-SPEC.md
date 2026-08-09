@@ -1432,6 +1432,13 @@
 - `pnpm check` 复核为 `0 errors / 0 warnings`；本波仅增确定性测试，不改生产运行语义。
 - `.mjs` coverage 仍报 `PARSE_ERROR/Expected ident`；Sonar project/Quality Gate 未以本地 LCOV 冒充闭环，`REQ-SONAR-COVERAGE-80-01` 与 PTY/第三方 Runtime-A2A 现场证据继续 `ACTIVE`。
 
+## Wave51 Cloud Host bridge pane 订阅与背压恢复边界
+
+- `packages/remote/src/shared/cloud/cloudHostBridge.test.ts` 覆盖无效 pane 订阅、pane source 缺失退订句柄、超长 pane id 编码失败、背压后切换 active 的私有 resync 恢复；聚焦 `62/62`。
+- 全量 `pnpm test:coverage:sonar` exit `0`；本地 V8/LCOV statements `12743/18606 = 68.48%`、branches `7044/11608 = 60.68%`、functions `2490/3536 = 70.41%`、lines `11486/15894 = 72.26%`；距 statements 80% 尚缺 `2142` 条。
+- `pnpm check` 复核为 `0 errors / 0 warnings`；本波仅增确定性测试，不改生产运行语义。
+- `.mjs` coverage 仍报 `PARSE_ERROR/Expected ident`；Sonar project/Quality Gate 未以本地 LCOV 冒充闭环，`REQ-SONAR-COVERAGE-80-01` 与 PTY/第三方 Runtime-A2A 现场证据继续 `ACTIVE`。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。

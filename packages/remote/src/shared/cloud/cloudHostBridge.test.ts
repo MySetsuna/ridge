@@ -385,6 +385,25 @@ describe('CloudHostBridge — pane stream (D-GM-7 layout)', () => {
     })).not.toThrow();
     expect(log).toHaveBeenCalledWith('warn', expect.stringContaining('paneOutputSource(p) failed'), expect.any(Error));
   });
+
+  it('rejects malformed pane subscriptions, missing unsubs, and oversized pane ids', () => {
+    const log = vi.fn();
+    const rig = makeRig({ log });
+    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: '' } });
+    expect(log).toHaveBeenCalledWith('warn', expect.stringContaining('without a valid paneId'));
+
+    const noUnsubscribe = vi.fn(() => undefined as never);
+    const noUnsubscribeRig = makeRig({
+      paneOutputSource: noUnsubscribe,
+      log,
+    });
+    noUnsubscribeRig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'p' } });
+    expect(log).toHaveBeenCalledWith('warn', expect.stringContaining('returned no unsubscribe'));
+
+    const longPane = makeRig({ log });
+    expect(() => longPane.bridge.pushPaneOutput('p'.repeat(256), new Uint8Array([1]))).not.toThrow();
+    expect(log).toHaveBeenCalledWith('error', expect.stringContaining('failed to encode pane frame'), expect.any(Error));
+  });
 });
 
 describe('CloudHostBridge — inbound demux edge cases', () => {
@@ -803,6 +822,23 @@ describe('CloudHostBridge — DataChannel 背压 + 丢帧重同步 (弱网 P1)',
     rig.bridge.pushPaneOutput('background', new Uint8Array([1]));
     rig.bridge.pushPaneOutput('active', new Uint8Array([2]));
     expect(rig.sentPane().map((p) => p.paneId)).toEqual(['active']);
+  });
+
+  it('recovers a pane when it becomes active after backpressure', async () => {
+    const invoke = vi.fn(async () => ({ frame: 'recovered' }));
+    const rig = makeRig({ invoke });
+    const ch = fakeChannel();
+    rig.bridge.attachChannelControl(ch.ctrl);
+    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'pane-1', active: false } });
+    ch.setBuffered(1);
+    rig.bridge.pushPaneOutput('pane-1', new Uint8Array([1]));
+    expect(rig.sentPane()).toHaveLength(0);
+
+    rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'pane-1', active: true } });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('get_pane_resync_frame', {
+      paneId: 'pane-1', workspaceId: undefined, maxBytes: 256 * 1024,
+    }));
+    expect(new TextDecoder().decode(rig.sentPane()[0].bytes)).toBe('recovered');
   });
 
   it('ordered channel admits at most one background frame before active traffic', () => {
