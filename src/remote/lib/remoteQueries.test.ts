@@ -109,7 +109,10 @@ describe('remoteQueries', () => {
 	});
 
 	it('deduplicates incoming collections and confirms workspace targets', async () => {
-		expect(mergeRemoteItems([{ id: 'a', title: 'old' }], [{ id: 'a', cwd: '/repo' }, { id: 'b' }])).toEqual([
+		expect(mergeRemoteItems<{ id: string; title?: string; cwd?: string }>(
+			[{ id: 'a', title: 'old' }],
+			[{ id: 'a', cwd: '/repo' }, { id: 'b' }],
+		)).toEqual([
 			{ id: 'a', title: 'old', cwd: '/repo' }, { id: 'b' },
 		]);
 		expect(await confirmedWorkspaceTarget(async () => true, 'ws', null)).toEqual({ workspaceId: 'ws', paneId: null });

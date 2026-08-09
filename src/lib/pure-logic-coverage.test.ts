@@ -110,14 +110,17 @@ describe('DOM-light actions and color normalization', () => {
 	it('moves portal nodes to a selector target and removes them on destroy', () => {
 		class FakeElement {}
 		const body = { appendChild: vi.fn(), removeChild: vi.fn() };
-		const host = { parentElement: null, dataset: {}, remove: vi.fn() } as never;
+		const host = { parentElement: null, dataset: {}, remove: vi.fn() } as unknown as HTMLElement;
 		const target = Object.assign(new FakeElement(), { appendChild: vi.fn() });
 		vi.stubGlobal('HTMLElement', FakeElement);
 		vi.stubGlobal('document', {
 			body,
 			querySelector: vi.fn(() => target),
 		});
-		const action = portal(host, { target: '.overlay', id: 'coverage' });
+		const action = portal(host, { target: '.overlay', id: 'coverage' }) as {
+			update(options: { target?: HTMLElement | string; id?: string }): void;
+			destroy(): void;
+		};
 		expect(target.appendChild).toHaveBeenCalledWith(host);
 		expect(host.dataset.rgPortalId).toBe('coverage');
 		action.update({ target: body as never });
