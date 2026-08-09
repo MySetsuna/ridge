@@ -1388,6 +1388,12 @@
 - 焦点回归 `45/45`；全量 `pnpm test:coverage:sonar` 为 `199` files、`1835 passed / 1 skipped`；statements `12539/18603 = 67.40%`，branches `6903/11608 = 59.46%`，functions `2448/3536 = 69.23%`，lines `11322/15891 = 71.24%`。
 - 本地 statements 80% 仍缺 `2344` 条；部分 `.mjs` 仍有 `PARSE_ERROR/Expected ident`，Sonar project `>=80%`/Quality Gate 与 PTY 真实五条件原子注入、第三方 Runtime/A2A 兼容性仍 `ACTIVE`，不作闭环宣称。
 
+## Wave45 Cloud Host store scope 与事件投影覆盖
+
+- `src/lib/remote/cloud/cloudHostStore.test.ts` 新增浏览器凭据/启动失败、host 回调、普通与共享 workspace bridge、scope deny、pane 事件过滤与 unsubscribe 回归。
+- 全量 `pnpm test:coverage:sonar`：`199` files、`1837 passed / 1 skipped`；statements `12591/18603 = 67.68%`，branches `6937/11608 = 59.76%`，functions `2462/3536 = 69.62%`，lines `11364/15891 = 71.51%`；距本地 statements 80% 缺 `2292` 条。
+- `.mjs` `PARSE_ERROR/Expected ident`、Sonar project `>=80%`/Quality Gate、PTY 真实五条件原子注入与第三方 Runtime/A2A 兼容性仍 `ACTIVE`。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
