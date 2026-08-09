@@ -114,3 +114,10 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - Hub envelope 原样经 WebSocket 投递；Agent 回 `type=ack` 后由 durable receipt 更新 `agentAcknowledged/ack`，ACK 同样校验 receipt 的目标身份 fence；不记录 token/cookie。
 - 隔离 `target\\codex-delivery-test` 实测 `cargo test -p ridge-mcp --features axum-transport --lib`：`89 passed / 0 failed`，含实际 TCP/WebSocket 鉴权、注册、Hub `ridge_send_message`、投递、ACK、断连注销 E2E。共享默认 target 曾被外部运行态清理，未触碰其进程；隔离 target 通过。
 - 该 bridge 是 Ridge-owned 等价 Runtime/A2A adapter，不宣称兼容第三方 CLI 私有协议；第三方协议验证、PTY 五条件原子运行时证据、Sonar 80%/Gate、物理现场项仍 ACTIVE。
+
+## Wave35 覆盖率补测与最终质量门
+
+- `src/lib/stores/paneTree.test.ts` 新增 3 组确定性测试：无 DOM/空叶节点退化、splitter 几何与同轴吸附、junction 去重/定时器/拖拽更新/释放清理；聚焦文件 `81/81` 通过，未改 coverage include/exclude。
+- 全量 `pnpm test:coverage:sonar` 通过：`187` 个测试文件，`1759 passed / 1 skipped`；`svelte-check` 仍为 `0 errors / 0 warnings`（前序证据），`cargo fmt --all -- --check` 通过。
+- 最新本地 V8/LCOV：statements `11495/18537 = 62.01%`、branches `6373/11542 = 55.21%`、functions `2233/3527 = 63.31%`、lines `10386/15831 = 65.60%`；相对 Wave33 statements 增加 `230` 条、`+1.24` 个百分点；达到 80% 尚缺 `3335` 条已覆盖 statements（当前未覆盖 `7042` 条）。
+- `.mjs` coverage provider `PARSE_ERROR` 排除告警仍存在；本机仍无 `SONAR_TOKEN`/`SONAR_HOST_URL` 与 scanner，故没有伪造 Sonar project metric 或 Quality Gate 结论。`REQ-SONAR-COVERAGE-80-01` 继续作为下一迭代 ACTIVE 目标。

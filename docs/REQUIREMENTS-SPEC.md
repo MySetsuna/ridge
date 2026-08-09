@@ -1227,6 +1227,12 @@
 - Acceptance:`(1) CodeGraph trace 覆盖 Kernel registry/lifecycle → ridge-mcp/rdg adapters → desktop/Remote projections → tests；(2) deterministic tests 证明成功 create/destroy 各一次、spawn/attach/destroy 失败不产生错误 active entry、旧 generation/lease/离线目标在发送前拒绝、一次 refresh 不重复 spawn、相同 idempotency_key 并发发送只产生一条消息、取消/销毁后 pending/timer/listener/worker/queue 归零；(3) 多 Agent、多 workspace、多 CWD、多 session 的 desktop/Remote/headless fixture 证明 identity 不依赖标题/CWD，group CRUD、leader、顺序、history tab 与 status/aria-label 同源；(4) history cold scan 不阻塞 live roster/input，损坏超大 JSONL 局部失败且可诊断，resume 结构化恢复在当前 workspace 创建唯一 pane，重复操作单飞；(5) ridge-mcp 在无 Tauri 桌面时可 initialize/tools/list 并执行至少一种 roster/communication 工具，Kernel 退出后返回可观察 typed failure；(6) 实际或等价 multi-Agent E2E 覆盖 create→communicate→ack→reconnect generation→destroy，证明无重复、无旧消息投递、无 pending 泄漏；(7) 全量测试/check、相关 Rust/TypeScript/Remote 回归与 Sonar 质量闸通过，新增问题为 0，失败原因与运行产物留档。`
 - Current iteration evidence:`Kernel/Teammate SSOT、typed envelope、generation/lease fencing、SQLite Hub、MCP tools、adapter probe/priority/outcome、desktop/Remote projections 与 lifecycle E2E 已有确定性证据；Kernel/桌面/headless 已接入容量 256、try_send、generation/lease fencing 的 host-owned Runtime API/A2A registry。共享 `GET /api/v1/agent-events/ws` bridge 现已支持 token + 当前 roster 身份授权、跨进程注册、真实 Hub envelope 投递、ACK 与断连注销，等价 multi-Agent TCP E2E 已通过；第三方 CLI 私有 Runtime/A2A 协议仍未冒充或宣称兼容。Kernel PTY destroy 会注销被移除 identity 的路由；PTY 五条件原子运行时证明及 Sonar 80%/Gate 仍未闭环。最新测试与差距见 docs/iterations/2026-08-09-agent-communication-qa-handoff.md 与 docs/iterations/2026-08-09-agent-communication-wave15-handoff.md。`
 - Traceability:`REQ-AGENT-COMMUNICATION-ARCH-REBUILD-01 → NLM source 9516749e-c317-4f13-9cda-b64b00cec465 → Kernel/Teammate SSOT → typed envelope/lifecycle/registry → ridge-mcp/rdg/desktop/Remote/headless adapters → deterministic unit/integration/multi-Agent E2E → Sonar/iteration archive`
+## 本轮质量证据补充（2026-08-10 Wave35）
+
+- `src/lib/stores/paneTree.test.ts` 新增 DOM 几何、同轴吸附、junction 去重、拖拽更新与释放清理的确定性测试；聚焦测试 `81/81` 通过。
+- 全量 `pnpm test:coverage:sonar`：`187` 个测试文件，`1759 passed / 1 skipped`；本地 V8/LCOV statements `11495/18537 = 62.01%`、branches `6373/11542 = 55.21%`、functions `2233/3527 = 63.31%`、lines `10386/15831 = 65.60%`。
+- 该结果距 80% 尚缺 `3335` 条已覆盖 statements；`.mjs` 解析告警、本机无 Sonar scanner/token/host 仍阻塞真实 project metric 与 Quality Gate。故 `REQ-SONAR-COVERAGE-80-01` 仍 ACTIVE，不宣称达标。
+
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
