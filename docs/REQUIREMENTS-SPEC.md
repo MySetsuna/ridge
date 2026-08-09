@@ -1355,6 +1355,14 @@
 | v0.3.45 | 2026-08-02 | `<ITERATION-88-CURRENT-MAIN-CODE-GUARDS>` | `81acf20` makes the Remote PWA build/verification deterministic; `3fc0073` recursively guards shipped Remote sources against Chrome Extension Messaging; `7199ead` adds no-Tauri `rdg kernel remote-hosts`; `08ffb50` carries explicit Git repository identity so clean repositories render correctly. | Advances PWA/runtime attribution, Kernel shell-adapter, and GitGraph/non-Git correctness; does not close physical phone, physical PWA, public WebRTC/authenticated push, WebView2 long-run, or full Kernel authority gates. | `pnpm build:remote:mobile`; `pnpm verify:pwa` 7/7; `pnpm check` 0/0; Remote Vitest 19 files/96 tests; `cargo test -p ridge-core commands::git --lib` 33 passed; `cargo test -p ridge-cli --bin rdg kernel_ctl --quiet` 3 passed; `kernel-host-smoke.ps1` green |
 | v0.3.46 | 2026-08-02 | `<ITERATION-88-VERSIONED-RELEASE-039>` | Versioned `v0.1.39` built from `c772085` passed the test gate and all four platform jobs; 12 matching assets were verified before promotion to formal Release. Remote workflow rebuilt the same versioned main commit and activated `0.1.39+gc772085`; Cloud health returned HTTP 200. | Closes current code publication across desktop/Remote/cloud; physical phone/PWA, public WebRTC/authenticated Git push, WebView2 long-run heap, dual-window/Host device E2E, and full Kernel authority migration remain external. | `gh run view 30749879814`: success; `gh release view v0.1.39`: `draft=false`, `prerelease=false`, `assets=12`; `gh run view 30749958058`: success; activation log; health HTTP 200 |
 
+## Wave40 build-ridge 构建入口可测化与覆盖率复核
+
+- `scripts/build-ridge.mjs` 保持直接 CLI 行为不变，新增 ESM 入口保护并导出版本解析、Cargo/WiX 重写、Tauri 配置及子进程契约；测试不再因导入脚本而启动真实构建。
+- `scripts/build-ridge.test.mjs` 覆盖 release 参数解析、语义版本校验、稳定 GUID、元数据定向重写、Tauri 参数契约、子进程成功/失败，以及前端双构建、临时文件清理、Cargo/WiX 成功/失败恢复；定向 `7/7` 通过。
+- 全量 `pnpm test:coverage:sonar` exit `0`；本地 V8/LCOV statements `11988/18538 = 64.66%`、branches `6629/11546 = 57.41%`、functions `2310/3527 = 65.49%`、lines `10830/15832 = 68.40%`。较 Wave39 statements `+97`，距本地 80% 还需覆盖 `2843` 条 statements。
+- `pnpm check` 为 `0 errors / 0 warnings`；`cargo fmt --all -- --check`、`node --check scripts/build-ridge.mjs`、`git diff --check` 通过。coverage 与 `.iteration` 运行态产物不纳入提交。
+- V8 对部分既有 `.mjs` 仍报 `PARSE_ERROR/Expected ident` 并排除；本机仍无 `SONAR_TOKEN`、`SONAR_HOST_URL`、scanner/CE，故不得将本地 LCOV 宣称为 Sonar project coverage 或 Quality Gate，`REQ-SONAR-COVERAGE-80-01` 继续 `ACTIVE`。
+
 ## Wave39 覆盖率与通信边界回归
 
 - `packages/remote/src/shared/terminal/manager.attach.test.ts` 新增隔离 wasm/DOM 生命周期测试：未 ready 拒绝、Canvas/scrollback/theme 注入、重复 attach fencing、focus in/out、TUI mouse press/release、double/triple click、ResizeObserver 与 detach 清理；聚焦 `2/2` 通过。既有 `manager.test.ts` 与 `controllerIdentity.test.ts` 合计 `25/25` 通过。
