@@ -1499,6 +1499,13 @@
 - 聚焦 `paneTree.coverage.test.ts` 为 `13/13`；未改生产语义，未向 Codex 之外 CLI、Agent 或 teammate 发消息。
 - 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13090/18608 = 70.34%`、branches `7192/11610 = 61.94%`、functions `2550/3536 = 72.11%`、lines `11799/15895 = 74.23%`，距 statements 80% 尚缺 `1797` 条；`pnpm check` 为 `0 errors / 0 warnings`。
 - Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
+
+## Wave62 TerminalManager 渲染顺序与尺寸调度覆盖
+
+- `packages/remote/src/shared/terminal/manager.test.ts` 新增多 pane RAF 渲染顺序回归：focused pane 优先、非 focused pane 轮转、公平性及 parked pane 过滤；新增 viewport resize trailing-fit 的重复 resize 合并、settle 后单次 fit、parked/missing pane fail-safe 回归。
+- 聚焦 `manager.test.ts` 与 `manager.attach.test.ts` 为 `22/22`；未改生产语义，未向 Codex 之外 CLI、Agent 或 teammate 发消息。
+- 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13185/18608 = 70.85%`、branches `7250/11610 = 62.44%`、functions `2558/3536 = 72.34%`、lines `11887/15895 = 74.78%`，距 statements 80% 尚缺 `1702` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+- Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
 - Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据、第三方 Runtime/A2A 兼容性及其余 Cloud/Postgres/物理 DPR/跨卷权限/移动端现场证据仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
 
 ## Wave42 Host transport onboarding coverage
