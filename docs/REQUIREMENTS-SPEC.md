@@ -1386,3 +1386,10 @@
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
 - `pnpm check` 为 `0 errors / 0 warnings`；全量 `pnpm test:coverage:sonar` exit `0`，本地 V8/LCOV statements `12337/18538 = 66.54%`、branches `6790/11546 = 58.80%`、functions `2402/3527 = 68.10%`、lines `11147/15832 = 70.40%`。距本地 statements `80%` 尚缺 `2494` 条；Sonar 项目指标与 Quality Gate 未因本地运行改变。
 - 既有 `.mjs` remap `PARSE_ERROR/Expected ident` 保留为待修质量债；不改 coverage include/exclude，不宣称 Sonar `>=80%` 或 Gate 完成。PTY 五条件原子运行时快照仍 fail-closed。
+
+## Wave43 原子 PTY runtime snapshot 与脚本契约覆盖
+
+- `packages/ridge-mcp/src/delivery.rs` 将 PTY fallback 注册模型收敛为 `HubPtyRuntimeSnapshot`：五项安全条件须随同一快照提交，并要求非零 `state_revision/input_epoch`；generation/lease/3 秒新鲜度/旧代注销围栏继续 fail-closed。`McpSessionState` 与 Kernel destroy teardown 已迁移至新 API。
+- `scripts/build-ridge-mcp-sidecar.mjs`、`scripts/build-rdg-sidecar.mjs`、`scripts/check-release-version.mjs` 增加 ESM main guard 与可测导出；新增 3 个测试文件，聚焦回归 `12/12` 通过。未改变直接 CLI 构建/版本校验行为。
+- Rust 定向回归：`ridge-mcp 93/93`、`ridge-kernel 49/49`；全量 `pnpm test:coverage:sonar`：`199` files，`1825 passed / 1 skipped`；statements `12440/18603 = 66.87%`、branches `6869/11608 = 59.17%`、functions `2420/3536 = 68.43%`、lines `11239/15891 = 70.72%`。较 Wave42 新增 covered statements `103`，距本地 80% 尚缺 `2443`。
+- `.mjs` remap `PARSE_ERROR`、Sonar project `>=80%`/Quality Gate、真实宿主五条件快照注入与第三方 Runtime/A2A 兼容性仍 ACTIVE；本波不宣称闭环。coverage/`.iteration` 运行产物不纳入提交。
