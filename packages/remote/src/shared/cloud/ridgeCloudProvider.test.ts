@@ -338,10 +338,16 @@ async function makeHost(opts: {
   const { RidgeCloudHost } = await loadHost();
   const bridges: BridgeRecord[] = [];
   const errors: string[] = [];
+  const channelControls: Array<{
+    bufferedAmount: () => number;
+    onDrained: (cb: () => void) => () => void;
+  }> = [];
+  const sessionEvents: unknown[][] = [];
   const host = new RidgeCloudHost(
     { ...CONFIG, signContext: opts.signContext, identityPub: opts.identityPub },
     {
       onError: (m) => errors.push(m),
+      onSessions: (sessions) => sessionEvents.push(sessions),
       verifyWorkspaceScope: opts.verifyWorkspaceScope,
       createBridge: (cid, send, bindTranscript, workspaceScope): CloudHostBridgeLike => {
         bridges.push({ cid, bindTranscript, workspaceScope, send });
@@ -349,11 +355,12 @@ async function makeHost(opts: {
           handleFrame: () => {},
           reset: () => {},
           verifyPeerKey: opts.verifyPeerKey,
+          attachChannelControl: (control) => channelControls.push(control),
         };
       },
     },
   );
-  return { host, bridges, errors };
+  return { host, bridges, errors, channelControls, sessionEvents };
 }
 
 /**
@@ -588,6 +595,69 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     host.goOffline();
   });
 
+  it('publishes session snapshots and owns control/pane channel teardown', async () => {
+    const { host, bridges, channelControls, sessionEvents, errors } = await makeHost({
+      signContext,
+      identityPub: ID_PUB,
+    });
+    const { ws, dc, pc } = await driveToOpenChannel(host);
+    pc.onicecandidate?.({ candidate: { toJSON: () => ({ candidate: 'candidate:fixture' }) } });
+    expect(ws.sentParsed()).toContainEqual({
+      t: 'ice', cid: CID, candidate: { candidate: 'candidate:fixture' },
+    });
+    expect(host.getSessions()[0]).toMatchObject({ cid: CID, state: 'handshaking' });
+
+    const ctrlEph = generateEphemeralKeyPair();
+    ws.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(ctrlEph.publicKey), cid: CID });
+    await flush();
+    dc.deliver(encodeHandshakeFrame(ctrlEph.publicKey));
+    await flush();
+
+    expect(bridges).toHaveLength(1);
+    expect(host.getSessions()[0]).toMatchObject({ cid: CID, state: 'connected' });
+    expect(sessionEvents.at(-1)?.[0]).toMatchObject({ cid: CID, state: 'connected' });
+    expect(channelControls).toHaveLength(1);
+    dc.bufferedAmount = 42;
+    expect(channelControls[0].bufferedAmount()).toBe(42);
+    const drained = vi.fn();
+    const unsubscribe = channelControls[0].onDrained(drained);
+    dc.onbufferedamountlow?.();
+    expect(drained).toHaveBeenCalledOnce();
+    unsubscribe();
+    dc.onbufferedamountlow?.();
+    expect(drained).toHaveBeenCalledOnce();
+
+    dc.onmessage?.({ data: 'malformed' });
+    dc.onmessage?.({ data: new Uint8Array([1, 2, 3]) });
+    dc.deliver(wrapSingle(new Uint8Array([99])));
+    await flush();
+    expect(errors.length).toBeGreaterThan(0);
+
+    const paneDc = pc.attachControllerPaneChannel();
+    paneDc.fireOpen();
+    paneDc.onclose?.();
+    expect(paneDc.readyState).toBe('open');
+    host.kick(CID);
+    expect(host.getSessions()).toEqual([]);
+    host.goOffline();
+  });
+
+  it('waits for the signaling key before accepting a completed handshake', async () => {
+    const { host, bridges } = await makeHost({});
+    const { ws, dc } = await driveToOpenChannel(host);
+    const ctrlEph = generateEphemeralKeyPair();
+    dc.deliver(encodeHandshakeFrame(ctrlEph.publicKey));
+    await flush();
+    expect(bridges).toHaveLength(0);
+    expect(host.getSessions()[0].state).toBe('handshaking');
+
+    ws.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(ctrlEph.publicKey), cid: CID });
+    await flush();
+    expect(bridges).toHaveLength(1);
+    expect(host.getSessions()[0].state).toBe('connected');
+    host.goOffline();
+  });
+
   it('ignores malformed/unsupported signaling and tears down failed peers safely', async () => {
     const { host, errors } = await makeHost({});
     await host.goOnline(DEVICE);
@@ -616,5 +686,30 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     expect(host.isBanned('blocked-peer')).toBe(true);
     expect(ws.sentParsed()).toContainEqual({ t: 'kick', cid: 'blocked-peer' });
     host.goOffline();
+  });
+
+  it('reconnects signaling with bounded backoff and fails closed on constructor errors', async () => {
+    vi.useFakeTimers();
+    const { host } = await makeHost({});
+    await host.goOnline(DEVICE);
+    const ws = FakeWebSocket.instances[0];
+    ws.onclose?.();
+    expect(host.getHostState()).toBe('connecting');
+    vi.advanceTimersByTime(2_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    host.goOffline();
+    vi.useRealTimers();
+
+    const OriginalWebSocket = globalThis.WebSocket;
+    (globalThis as unknown as { WebSocket: unknown }).WebSocket = class {
+      constructor() {
+        throw new Error('socket constructor failed');
+      }
+    };
+    const { host: failedHost, errors } = await makeHost({});
+    await failedHost.goOnline(DEVICE);
+    expect(failedHost.getHostState()).toBe('error');
+    expect(errors).toContain('socket constructor failed');
+    (globalThis as unknown as { WebSocket: unknown }).WebSocket = OriginalWebSocket;
   });
 });
