@@ -530,5 +530,16 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		fixture.pane.feedDeferredBytes = 3;
 		expect(manager.clearPendingFeed(PANE)).toBe(5);
 		expect(manager.feedStats(PANE)).toEqual({ queuedBytes: 0, droppedBytes: 0, dropCount: 0, needsResync: false });
+
+		const clock = vi.spyOn(performance, 'now');
+		let calls = 0;
+		clock.mockImplementation(() => (calls++ < 3 ? 0 : 2));
+		fixture.pane.feedDeferred = new Uint8Array(32768).fill(1);
+		fixture.pane.feedDeferredChunks = [new Uint8Array([9])];
+		fixture.pane.feedDeferredBytes = 32769;
+		manager.flushPaneFeed(PANE, 1);
+		expect(fixture.pane.feedDeferred?.byteLength).toBe(16384);
+		expect(fixture.pane.feedDeferredChunks).toEqual([new Uint8Array([9])]);
+		clock.mockRestore();
 	});
 });
