@@ -172,3 +172,12 @@ nlm login --check
 - Current frontend regression: `174` test files, `1684` passed, `1` skipped. The direct `pnpm exec svelte-check --tsconfig ./tsconfig.json` attempt exceeded the tool wall-clock limit with an empty log; no clean svelte-check pass is claimed for this run.
 - `pnpm check` wrapper likewise exceeded its host limit without diagnostics. The previous clean svelte-check evidence remains historical; this run is recorded as timeout, not pass.
 - Generated coverage and `.iteration` runtime artifacts remain outside the commit and are intentionally left for local inspection.
+
+## Latest Cloud / DPR / mobile rerun (2026-08-10)
+
+- Cloud/Postgres full E2E：`ridge_cloud_e2e` seed、premium DB gate、ICE/WS/WebRTC/E2EE、JSON-RPC directory pages 与真实 pane PTY stream 均通过；`connected=true`，offset `0/3/6` 各返回 `3` entries，`paneStream.frames=3`、`bytes=100`。Token 仅留单次进程内，未写入证据。
+- Seed 根因已修：旧脚本默认更新 `ridge_cloud`，而本地 `:5050` 读取 `ridge_cloud_e2e`，曾出现 `UPDATE 0` 后仍输出 token 的假阳性；现默认 `ridge_cloud_e2e`，并用 `RETURNING username` fail-closed。
+- WebView2 DPR：`1`、`1.25`、`1.5` 均通过；`2` 首次冷启动在 `120s` 内未挂载 canvas，随后 pane/Cloud 流触发挂载，重试通过 `dpr=2`、`canvasCount=3`、`backingCanvasCount=3`，截图 `.iteration/artifacts/dpr/scale-2-retry.png`。故登记启动竞态，未把冷启动超时伪装成稳定绿。
+- LAN mobile agent：真实 HTTPS WS、TOTP、workspace/pane、shell picker（9 项）、Git Bash 切换与终端线协议通过；headless host 无 `teammate` 能力时 Team 正确隐藏。自签名证书下 PWA SW 报 `SecurityError`，属可信 HTTPS 外部环境缺口。
+- `runtime.lastError` clean profile：`extensionCount=0`、`runtimeLastErrorCount=0`，结果 `clean-profile-only`、`attributionComplete=false`；无扩展 A/B 与真机证据，业务代码不作遮掩性修改。
+- 现仍未闭环：原生 PowerShell 对照像素矩阵、可信 HTTPS/实体手机 PWA、扩展 A/B、Sonar `>=80%` 与 Quality Gate；当前权威 Sonar 仍为 coverage `48.5%`、Quality Gate `ERROR`。

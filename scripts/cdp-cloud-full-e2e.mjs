@@ -4,6 +4,8 @@
 // Required environment:
 //   RIDGE_CDP_PORT, RIDGE_CLOUD_USER_TOKEN, RIDGE_CLOUD_DEVICE_TOKEN,
 //   RIDGE_CLOUD_USERNAME, RIDGE_CLOUD_DEVICE
+// For the checked-in local relay, start dev:cdp with
+//   RIDGE_CLOUD_BASE_DOMAIN=localhost:5050 RIDGE_CLOUD_DEV_PLAINTEXT=1
 // Optional: RIDGE_CLOUD_E2E_PATH, RIDGE_CLOUD_PANE_ID, RIDGE_CLOUD_PANE_WRITE.
 // Tokens stay in process memory and are never printed or written to evidence.
 

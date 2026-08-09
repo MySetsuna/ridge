@@ -54,20 +54,24 @@ console.error(`[seed] username = ${username}`);
 const dbUrl = process.env.RIDGE_CLOUD_DB_URL;
 const dbPassword = process.env.RIDGE_CLOUD_DB_PASSWORD;
 const psql = process.env.RIDGE_CLOUD_PSQL ?? 'psql';
-const dbName = process.env.RIDGE_CLOUD_DB_NAME ?? 'ridge_cloud';
+// The checked-in local Cloud E2E service points at this database. Keep an
+// override for other dev stacks instead of silently promoting a different DB.
+const dbName = process.env.RIDGE_CLOUD_DB_NAME ?? 'ridge_cloud_e2e';
 const escapedUsername = username.replaceAll("'", "''");
-const promoteSql = `UPDATE users SET plan='premium', premium_expires_at=NULL WHERE username='${escapedUsername}';`;
+const promoteSql = `UPDATE users SET plan='premium', premium_expires_at=NULL WHERE username='${escapedUsername}' RETURNING username;`;
+let promoteOutput = '';
 if (dbUrl) {
-  execFileSync(
+  promoteOutput = execFileSync(
     psql,
     ['--dbname', dbUrl, '-v', 'ON_ERROR_STOP=1', '-c', promoteSql],
     {
-      stdio: 'inherit',
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'inherit'],
       env: { ...process.env, ...(dbPassword ? { PGPASSWORD: dbPassword } : {}) },
     },
   );
 } else {
-  execFileSync(
+  promoteOutput = execFileSync(
     'docker',
     [
       'exec',
@@ -81,8 +85,11 @@ if (dbUrl) {
       '-c',
       promoteSql,
     ],
-    { stdio: 'inherit' },
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] },
   );
+}
+if (!promoteOutput.split(/\r?\n/).some((line) => line.trim() === username)) {
+  die('premium grant updated no matching user', { dbName, username, output: promoteOutput.trim() });
 }
 console.error('[seed] premium granted');
 
