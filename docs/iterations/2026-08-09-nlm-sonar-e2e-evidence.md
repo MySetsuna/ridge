@@ -169,6 +169,6 @@ nlm login --check
 ## Post-commit verification (2026-08-10)
 
 - Commit `d67247ef` contains the related source, tests, scripts, configuration, and handoff/evidence documents; no push or release was performed.
-- Current frontend regression: `174` test files, `1684` passed, `1` skipped. Direct `pnpm exec svelte-check --tsconfig ./tsconfig.json` reports `0 errors and 0 warnings`.
-- `pnpm check` wrapper exceeded its 180-second host limit without diagnostics; the underlying `svelte-check` completed successfully. This wrapper timeout remains an environment/workflow issue, not a clean full wrapper pass.
+- Current frontend regression: `174` test files, `1684` passed, `1` skipped. The direct `pnpm exec svelte-check --tsconfig ./tsconfig.json` attempt exceeded the tool wall-clock limit with an empty log; no clean svelte-check pass is claimed for this run.
+- `pnpm check` wrapper likewise exceeded its host limit without diagnostics. The previous clean svelte-check evidence remains historical; this run is recorded as timeout, not pass.
 - Generated coverage and `.iteration` runtime artifacts remain outside the commit and are intentionally left for local inspection.
