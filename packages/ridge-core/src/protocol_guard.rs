@@ -186,7 +186,10 @@ mod tests {
         assert_eq!(batch[1], "write_to_pty");
         assert!(admit_remote_batch(&["connect_host"]).is_err());
         assert_eq!(method_category("connect_host"), MethodCategory::DesktopHost);
-        assert_eq!(method_category("list_hitl_pending"), MethodCategory::Teammate);
+        assert_eq!(
+            method_category("list_hitl_pending"),
+            MethodCategory::Teammate
+        );
         assert_eq!(method_category("write_to_pty"), MethodCategory::Terminal);
         assert!(admit_desktop_method("connect_host").is_ok());
         assert!(admit_desktop_method("").is_err());

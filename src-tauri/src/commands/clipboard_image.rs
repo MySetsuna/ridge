@@ -117,8 +117,7 @@ pub fn cleanup_old_temp_images(max_age: Duration) {
 /// 返回第一个存在的图片文件绝对路径。剪贴板没有文件列表时 get_clipboard 返回 Err → None。
 #[cfg(windows)]
 fn first_clipboard_image_file() -> Option<String> {
-    let files: Vec<String> =
-        clipboard_win::get_clipboard(clipboard_win::formats::FileList).ok()?;
+    let files: Vec<String> = clipboard_win::get_clipboard(clipboard_win::formats::FileList).ok()?;
     ridge_core::clipboard::pick_image_file(files)
 }
 

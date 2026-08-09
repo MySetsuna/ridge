@@ -53,7 +53,9 @@ impl RemoteAuth {
 
     /// 切换活动种子到指定云身份（`None` → `"default"`）。登录/登出时调用。
     pub fn switch_identity(&self, username: Option<&str>) {
-        self.totp.write().switch_identity(username.unwrap_or("default"));
+        self.totp
+            .write()
+            .switch_identity(username.unwrap_or("default"));
     }
 
     /// 返回当前 TOTP 归属身份（`"default"` 或云账号 username）。
@@ -452,7 +454,9 @@ mod tests {
         let token = generate_session_token();
         assert_eq!(token.len(), 64, "256-bit token = 64 hex chars");
         assert!(
-            token.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            token
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "token must be lowercase hex"
         );
     }
@@ -470,7 +474,10 @@ mod tests {
         let auth = RemoteAuth::ephemeral();
         let (code, uri) = auth.code_and_uri("My Machine");
         assert!(auth.verify(&code), "RemoteAuth 须能校验自己当前的 code");
-        assert!(uri.starts_with("otpauth://totp/Ridge:"), "otpauth URI 形状正确");
+        assert!(
+            uri.starts_with("otpauth://totp/Ridge:"),
+            "otpauth URI 形状正确"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@
 // Usage: node scripts/cdp-cloud-seed.mjs   (requires :5050 up + docker ridge-pg up)
 // Output: a JSON blob on the last line with { userToken, deviceToken, username, device }.
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 const BASE = process.env.RIDGE_CLOUD_LOCAL ?? 'http://localhost:5050/api/v1';
 const PASS = 'RidgeLocalDev_123';
@@ -49,11 +49,41 @@ const su = await post('/auth/set-username', { username }, userToken);
 if (!su.j.ok) die('set-username', su.j);
 console.error(`[seed] username = ${username}`);
 
-// premium via docker postgres (DB-authoritative; WS controller gate reads the DB).
-execSync(
-  `docker exec ridge-pg psql -U postgres -d ridge_cloud -c "UPDATE users SET plan='premium', premium_expires_at=NULL WHERE username='${username}';"`,
-  { stdio: 'inherit' },
-);
+// premium via the configured Postgres (DB-authoritative; WS controller gate reads the DB).
+// Prefer a host URL for native/local Postgres. Docker remains the default fallback.
+const dbUrl = process.env.RIDGE_CLOUD_DB_URL;
+const dbPassword = process.env.RIDGE_CLOUD_DB_PASSWORD;
+const psql = process.env.RIDGE_CLOUD_PSQL ?? 'psql';
+const dbName = process.env.RIDGE_CLOUD_DB_NAME ?? 'ridge_cloud';
+const escapedUsername = username.replaceAll("'", "''");
+const promoteSql = `UPDATE users SET plan='premium', premium_expires_at=NULL WHERE username='${escapedUsername}';`;
+if (dbUrl) {
+  execFileSync(
+    psql,
+    ['--dbname', dbUrl, '-v', 'ON_ERROR_STOP=1', '-c', promoteSql],
+    {
+      stdio: 'inherit',
+      env: { ...process.env, ...(dbPassword ? { PGPASSWORD: dbPassword } : {}) },
+    },
+  );
+} else {
+  execFileSync(
+    'docker',
+    [
+      'exec',
+      ...(dbPassword ? ['-e', `PGPASSWORD=${dbPassword}`] : []),
+      'ridge-pg',
+      'psql',
+      '-U',
+      'postgres',
+      '-d',
+      dbName,
+      '-c',
+      promoteSql,
+    ],
+    { stdio: 'inherit' },
+  );
+}
 console.error('[seed] premium granted');
 
 // fresh login → token now carries username + premium plan.

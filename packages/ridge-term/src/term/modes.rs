@@ -139,21 +139,51 @@ impl Modes {
     /// with the way some xterm forks identify the bit).
     pub fn diff(&self, prev: &Self) -> Vec<(u32, bool)> {
         let mut out: Vec<(u32, bool)> = Vec::new();
-        if self.autowrap != prev.autowrap { out.push((7, self.autowrap)); }
-        if self.origin != prev.origin { out.push((6, self.origin)); }
-        if self.insert != prev.insert { out.push((4, self.insert)); }
-        if self.linefeed_newline != prev.linefeed_newline { out.push((20, self.linefeed_newline)); }
-        if self.mouse_x10 != prev.mouse_x10 { out.push((9, self.mouse_x10)); }
-        if self.mouse_normal != prev.mouse_normal { out.push((1000, self.mouse_normal)); }
-        if self.mouse_button_event != prev.mouse_button_event { out.push((1002, self.mouse_button_event)); }
-        if self.mouse_any_event != prev.mouse_any_event { out.push((1003, self.mouse_any_event)); }
-        if self.mouse_sgr != prev.mouse_sgr { out.push((1006, self.mouse_sgr)); }
-        if self.mouse_focus != prev.mouse_focus { out.push((1004, self.mouse_focus)); }
-        if self.bracketed_paste != prev.bracketed_paste { out.push((2004, self.bracketed_paste)); }
-        if self.app_cursor_keys != prev.app_cursor_keys { out.push((1, self.app_cursor_keys)); }
-        if self.app_keypad != prev.app_keypad { out.push((1066, self.app_keypad)); }
-        if self.sync_output != prev.sync_output { out.push((2026, self.sync_output)); }
-        if self.unicode_core_2027 != prev.unicode_core_2027 { out.push((2027, self.unicode_core_2027)); }
+        if self.autowrap != prev.autowrap {
+            out.push((7, self.autowrap));
+        }
+        if self.origin != prev.origin {
+            out.push((6, self.origin));
+        }
+        if self.insert != prev.insert {
+            out.push((4, self.insert));
+        }
+        if self.linefeed_newline != prev.linefeed_newline {
+            out.push((20, self.linefeed_newline));
+        }
+        if self.mouse_x10 != prev.mouse_x10 {
+            out.push((9, self.mouse_x10));
+        }
+        if self.mouse_normal != prev.mouse_normal {
+            out.push((1000, self.mouse_normal));
+        }
+        if self.mouse_button_event != prev.mouse_button_event {
+            out.push((1002, self.mouse_button_event));
+        }
+        if self.mouse_any_event != prev.mouse_any_event {
+            out.push((1003, self.mouse_any_event));
+        }
+        if self.mouse_sgr != prev.mouse_sgr {
+            out.push((1006, self.mouse_sgr));
+        }
+        if self.mouse_focus != prev.mouse_focus {
+            out.push((1004, self.mouse_focus));
+        }
+        if self.bracketed_paste != prev.bracketed_paste {
+            out.push((2004, self.bracketed_paste));
+        }
+        if self.app_cursor_keys != prev.app_cursor_keys {
+            out.push((1, self.app_cursor_keys));
+        }
+        if self.app_keypad != prev.app_keypad {
+            out.push((1066, self.app_keypad));
+        }
+        if self.sync_output != prev.sync_output {
+            out.push((2026, self.sync_output));
+        }
+        if self.unicode_core_2027 != prev.unicode_core_2027 {
+            out.push((2027, self.unicode_core_2027));
+        }
         out
     }
 

@@ -16,8 +16,8 @@ use anyhow::Error as AnyhowError;
 use parking_lot::Mutex;
 use portable_pty::{MasterPty, PtySize};
 use ridge_kernel::client::{
-    attach_domain_pty_output, detach_domain_pty_output, poll_domain_pty_output,
-    resync_domain_pty_output, resize_domain_pty, write_domain_pty, KernelPtyOutput,
+    attach_domain_pty_output, detach_domain_pty_output, poll_domain_pty_output, resize_domain_pty,
+    resync_domain_pty_output, write_domain_pty, KernelPtyOutput,
 };
 use ridge_kernel::registry::KernelEndpoint;
 use uuid::Uuid;
@@ -61,11 +61,16 @@ impl KernelPtyMaster {
 
 impl MasterPty for KernelPtyMaster {
     fn resize(&self, size: PtySize) -> Result<(), AnyhowError> {
-        resize_domain_pty(&self.reference.endpoint, self.reference.id, size.cols, size.rows)
-            .map_err(pty_error)
-            .map(|_| {
-                *self.size.lock() = size;
-            })
+        resize_domain_pty(
+            &self.reference.endpoint,
+            self.reference.id,
+            size.cols,
+            size.rows,
+        )
+        .map_err(pty_error)
+        .map(|_| {
+            *self.size.lock() = size;
+        })
     }
 
     fn get_size(&self) -> Result<PtySize, AnyhowError> {
@@ -187,7 +192,11 @@ fn pty_error(error: String) -> AnyhowError {
     io_error(error).into()
 }
 
-pub fn make_master(reference: KernelPtyRef, cols: u16, rows: u16) -> Arc<Mutex<Box<dyn MasterPty + Send>>> {
+pub fn make_master(
+    reference: KernelPtyRef,
+    cols: u16,
+    rows: u16,
+) -> Arc<Mutex<Box<dyn MasterPty + Send>>> {
     Arc::new(Mutex::new(Box::new(KernelPtyMaster::new(
         reference,
         PtySize {

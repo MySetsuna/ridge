@@ -272,11 +272,22 @@
 
   /** 给该成员发消息：写其 pane stdin。
    *  `\r`（CR = 回车键真实字节）结尾——`\n` 只会在 TUI 输入框里插一个换行、不提交。 */
-  function sendTo(m: TeammateRosterMember) {
+  async function sendTo(m: TeammateRosterMember) {
     const text = (msgInput[m.id] ?? '').trim();
     if (!text || !m.paneId) return;
-    ws.sendStdin({ workspaceId, paneId: m.paneId }, `${text}\r`);
-    msgInput = { ...msgInput, [m.id]: '' };
+    try {
+      await ws.sendAgentMessage({
+        workspaceId,
+        paneId: m.paneId,
+        agentId: m.agentId ?? m.id,
+        generation: m.generation,
+        lease: m.lease,
+      }, text);
+      msgInput = { ...msgInput, [m.id]: '' };
+      resolveNote = `#${m.id}: queued`;
+    } catch (error) {
+      resolveNote = `#${m.id}: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   async function decide(p: HitlPendingItem, verdict: 'approve' | 'reject') {
@@ -291,6 +302,7 @@
   }
 
   async function refresh(generation: number, signal: AbortSignal) {
+    if (!ws.hasCapability('teammate')) return;
     const token = ++refreshToken;
     const rosterWorkspaceId = normalizeTeamRosterWorkspaceId(workspaceId);
     const sessionId = remoteSessionId(ws);

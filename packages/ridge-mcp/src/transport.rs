@@ -92,12 +92,9 @@ async fn serve_ws(mut socket: WebSocket, ctx: McpTransportCtx) {
             _ => continue,
         };
         // 通知（无 id）没有响应体：静默即正确。
-        let Some(reply) = handle_message_with_state(
-            &text,
-            ctx.host.as_ref(),
-            &ctx.version,
-            ctx.state.as_ref(),
-        ) else {
+        let Some(reply) =
+            handle_message_with_state(&text, ctx.host.as_ref(), &ctx.version, ctx.state.as_ref())
+        else {
             continue;
         };
         if socket.send(Message::Text(reply)).await.is_err() {

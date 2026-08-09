@@ -119,10 +119,7 @@ mod tests {
         let base_sus = before["suspendedAgents"].as_u64().unwrap_or(0);
         super::super::suspend::suspend(wid, pane);
         let mid = orchestration_health();
-        assert_eq!(
-            mid["suspendedAgents"].as_u64().unwrap(),
-            base_sus + 1
-        );
+        assert_eq!(mid["suspendedAgents"].as_u64().unwrap(), base_sus + 1);
         assert!(mid["pendingHitl"].as_u64().is_some());
         assert!(mid.get("hitlEnabled").is_some());
         assert_eq!(mid["degraded"], json!(true));

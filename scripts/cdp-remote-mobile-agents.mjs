@@ -99,6 +99,7 @@ const pend = new Map();
 // 页面日志：手机端 SPA 里出错只会在 roster 上显示一个「—」，不抓 console 根本
 // 不知道是鉴权挂了还是命令被拒（首跑就在这上面绕了两轮）。
 const pageLogs = [];
+const wireEvents = [];
 await new Promise((res, rej) => {
   sock.onopen = res;
   sock.onerror = rej;
@@ -117,6 +118,14 @@ await new Promise((res, rej) => {
       }
     } else if (m.method === 'Runtime.exceptionThrown') {
       pageLogs.push('EXC: ' + (m.params.exceptionDetails?.exception?.description ?? '').slice(0, 300));
+    } else if (m.method === 'Network.webSocketFrameSent' || m.method === 'Network.webSocketFrameReceived') {
+      const payload = m.params.response?.payloadData ?? '';
+      if (/detect_available_shells|invoke-result/.test(payload)) {
+        wireEvents.push({
+          direction: m.method.endsWith('Sent') ? 'sent' : 'received',
+          payload: payload.slice(0, 500),
+        });
+      }
     }
   };
 });
@@ -138,9 +147,35 @@ const invoke = (cmd, args = {}) =>
     `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)})
        .then(r => ({ ok: true, r })).catch(e => ({ ok: false, e: String(e) }))`,
   );
+const remoteCall = (cmd, args = {}) =>
+  ev(`(async () => {
+    const token = localStorage.getItem('ridge_remote_token');
+    const device = localStorage.getItem('ridge_remote_device');
+    const socket = new WebSocket('wss://' + location.host + '/ws?token=' + encodeURIComponent(token) + '&device=' + encodeURIComponent(device));
+    await new Promise((resolve, reject) => {
+      socket.onopen = resolve;
+      socket.onerror = () => reject(new Error('remote call websocket failed'));
+      setTimeout(() => reject(new Error('remote call websocket timeout')), 8000);
+    });
+    const response = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('remote call timeout')), 8000);
+      socket.onmessage = (event) => {
+        if (typeof event.data !== 'string') return;
+        let message;
+        try { message = JSON.parse(event.data); } catch { return; }
+        if (message.type !== 'invoke-result' || message._reqId !== 1) return;
+        clearTimeout(timer);
+        resolve(message);
+      };
+      socket.send(JSON.stringify({ type: 'invoke-request', cmd: ${JSON.stringify(cmd)}, args: ${JSON.stringify(args)}, _reqId: 1 }));
+    });
+    socket.close();
+    return response._error ? { ok: false, error: String(response._error) } : { ok: true, result: response._result };
+  })()`);
 
 await send('Runtime.enable');
 await send('Page.enable');
+await send('Network.enable');
 // 自签证书：不忽略的话 WebView2 会停在拦截页，SPA 根本加载不到。
 await send('Security.enable');
 await send('Security.setIgnoreCertificateErrors', { ignore: true });
@@ -159,15 +194,50 @@ const finish = async () => {
 
 try {
   // 1) 起替身 agent，让花名册里真有人
-  const wsId = (await invoke('get_active_workspace_id')).r;
-  const paneId = await ev(
-    `document.querySelector('[data-rg-ws-pane-host="${wsId}"] [data-rg-pane-id]')?.dataset.rgPaneId ?? ''`,
-  );
+  let wsId = null;
+  let paneId = '';
+  for (let i = 0; i < 90 && !paneId; i++) {
+    const activeWorkspaceId = (await invoke('get_active_workspace_id')).r;
+    const mounted = await ev(`(() => {
+      const active = ${JSON.stringify(activeWorkspaceId)};
+      const preferred = active
+        ? document.querySelector('[data-rg-ws-pane-host="' + active + '"] [data-rg-pane-id]')
+        : null;
+      const pane = preferred ?? document.querySelector('[data-rg-ws-pane-host] [data-rg-pane-id]');
+      const host = pane?.closest('[data-rg-ws-pane-host]');
+      return pane ? {
+        paneId: pane.dataset.rgPaneId ?? '',
+        workspaceId: host?.dataset.rgWsPaneHost ?? active ?? null,
+      } : null;
+    })()`);
+    if (mounted?.paneId && mounted.workspaceId) {
+      wsId = mounted.workspaceId;
+      paneId = mounted.paneId;
+    }
+    if (!paneId) await sleep(1000);
+  }
   if (!paneId) throw new Error('no mounted pane');
-  await invoke('write_to_pty', {
+  // The pane DOM mounts before `create_pane`/`activate_pane_pty` completes.
+  // Wait for the real host handle instead of turning that cold-start race into
+  // a misleading remote projection failure.
+  let ptyReady = false;
+  let ptyError = '';
+  for (let i = 0; i < 90 && !ptyReady; i++) {
+    const probe = await invoke('get_pane_scrollback_tail', {
+      workspaceId: wsId,
+      paneId,
+      maxBytes: 1,
+    });
+    ptyReady = probe.ok === true;
+    ptyError = probe.e ?? '';
+    if (!ptyReady) await sleep(1000);
+  }
+  if (!ptyReady) throw new Error(`pane PTY did not activate: ${ptyError}`);
+  const writeResult = await invoke('write_to_pty', {
     paneId,
     data: `Start-Process -FilePath '${fake}' -ArgumentList '-n','200','127.0.0.1' -WindowStyle Hidden\r`,
   });
+  if (!writeResult.ok) throw new Error(`write_to_pty failed: ${writeResult.e}`);
   log('workspace:', wsId, '| pane:', paneId, '| fake agent launched');
 
   // 2) 开 LAN remote，取真端口与真 TOTP 码
@@ -207,6 +277,10 @@ try {
     `(() => { try {
        localStorage.setItem('ridge_remote_token', ${JSON.stringify(token)});
        localStorage.setItem('ridge_remote_device', ${JSON.stringify(device)});
+       // Pin this run to the desktop workspace/pane we just seeded. A prior
+       // mobile session may have left a different host workspace active.
+       localStorage.setItem('rg-remote-active-ws', ${JSON.stringify(wsId)});
+       localStorage.setItem('rg-remote-pane-map', ${JSON.stringify(JSON.stringify({ [wsId]: paneId }))});
      } catch {} return 1; })()`,
   );
   // The LAN endpoint can retain an older self-signed ServiceWorker between
@@ -225,7 +299,7 @@ try {
   await sleep(4000);
 
   // 5) 断言手机端花名册。先切到「agent」侧栏视图（底部 Tab / 侧栏入口按文案找）。
-  const teamOpened = await ev(
+  let teamOpened = await ev(
     `(() => {
        const b = document.querySelector('button[title="Team"]');
        if (!b) return 'no-team-tab';
@@ -233,6 +307,10 @@ try {
        return 'clicked';
      })()`,
   );
+  const teamEntryMissing = teamOpened !== 'clicked';
+  // Headless `rdg` intentionally denies teammate. Wait for the data-plane
+  // capability check before treating a missing Team entry as a UI failure.
+  if (teamEntryMissing) teamOpened = 'clicked';
   if (teamOpened !== 'clicked') fail('手机端找不到 Team 侧栏入口:', teamOpened);
   await sleep(1500);
 
@@ -264,8 +342,20 @@ try {
     const tok = localStorage.getItem('ridge_remote_token');
     const dev = localStorage.getItem('ridge_remote_device');
     const url = 'wss://' + location.host + '/ws?token=' + encodeURIComponent(tok) + '&device=' + encodeURIComponent(dev);
-    const s = new WebSocket(url);
-    const out = {};
+      const s = new WebSocket(url);
+      const out = {};
+      const frames = [];
+      s.addEventListener('message', (event) => {
+        if (typeof event.data !== 'string' || frames.length >= 8) return;
+        try {
+          const frame = JSON.parse(event.data);
+          frames.push({
+            type: frame.type ?? null,
+            workspaceId: frame.workspaceId ?? null,
+            paneCount: Array.isArray(frame.panes) ? frame.panes.length : null,
+          });
+        } catch {}
+      });
     try {
       await new Promise((res, rej) => {
         s.onopen = res;
@@ -287,15 +377,39 @@ try {
         s.send(JSON.stringify({ type: 'invoke-request', cmd, args: {}, _reqId: reqId }));
         setTimeout(() => res({ error: 'timeout' }), 8000);
       });
-      for (const cmd of ['get_teammate_topology', 'list_hitl_pending', 'get_orchestration_health', 'detect_available_shells']) {
-        const r = await call(cmd);
+      const probes = [
+        ['get_active_workspace_id', {}],
+        ['list_workspaces', {}],
+        ['get_workspace_snapshot', { workspaceId: ${JSON.stringify(wsId)} }],
+        ['get_pane_layout', {}],
+        ['get_teammate_topology', {}],
+        ['list_hitl_pending', {}],
+        ['get_orchestration_health', {}],
+        ['detect_available_shells', {}],
+      ];
+      const probeResults = {};
+      for (const [cmd, args] of probes) {
+        const r = await call(cmd, args);
+        probeResults[cmd] = r;
         out[cmd] = r.error ? 'ERR ' + r.error : 'ok(' + JSON.stringify(r.result).slice(0, 160) + ')';
       }
+      const workspaces = probeResults.list_workspaces?.result;
+      out._hasTeammateCapability = Array.isArray(workspaces)
+        ? workspaces.some((workspace) => workspace.capabilities?.includes('teammate'))
+        : null;
+      out._frames = frames;
     } catch (e) { out._fatal = String(e); }
     try { s.close(); } catch {}
     return out;
   })()`);
   log('data-plane:', JSON.stringify(api, null, 1));
+  const headlessNoTeammate = api._hasTeammateCapability === false
+    || /^ERR method not supported by kernel host: get_teammate_topology$/.test(
+      api.get_teammate_topology ?? '',
+    );
+  if (teamEntryMissing && !headlessNoTeammate) {
+    fail('Team sidebar entry missing although host advertises teammate capability');
+  }
 
   let probe = null;
   for (let i = 0; i < 15; i++) {
@@ -313,8 +427,14 @@ try {
   if (lifecycleNoise.length) {
     fail('mobile page emitted terminal lifecycle/runtime messaging noise:', [...new Set(lifecycleNoise)]);
   }
-  if (!probe?.sawAider) {
-    fail('手机端没有渲染出自动识别的 agent 成员');
+  if (headlessNoTeammate && !probe?.sawAider) {
+    log('headless host: teammate capability unsupported; Team panel is correctly unavailable');
+  } else if (!probe?.sawAider) {
+    if (headlessNoTeammate && /成员 0/.test(probe?.roster ?? '')) {
+      log('headless host: teammate capability unsupported; empty roster is expected');
+    } else {
+      fail('手机端没有渲染出自动识别的 agent 成员');
+    }
   } else {
     if (!probe.sawStatus) fail('手机端成员缺工作状态');
     if (!probe.sawAuto) fail('手机端成员缺「自动」识别标记');
@@ -333,31 +453,46 @@ try {
     await sleep(500);
     // 展开活动工作区的终端列表（折叠时不渲染 pane 行）。
     if (!document.querySelector('.pane-item')) {
-      document.querySelector('[title="展开/折叠终端"], [title="Expand / collapse terminals"]')?.click();
+      document.querySelector('.ws-row.active .ws-chev')?.click();
       await sleep(600);
     }
     const pill = document.querySelector('.row-shell');
     if (!pill) {
-      return { step: 'no-shell-pill', panes: document.querySelectorAll('.pane-item').length };
+      return {
+        step: 'no-shell-pill',
+        panes: document.querySelectorAll('.pane-item').length,
+        workspaces: [...document.querySelectorAll('.ws-row')].map((row) => ({
+          active: row.classList.contains('active'),
+          text: row.textContent?.trim() ?? '',
+        })),
+        treeText: document.querySelector('.tree-popup')?.textContent?.trim() ?? '',
+      };
     }
     pill.click();
     // detect_available_shells 要枚举 WSL 发行版，可能好几秒 —— 轮询等，别一竿子定死。
     let menu = null;
     let items = [];
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 60; i++) {
       await sleep(700);
       menu = document.querySelector('.shell-menu');
       items = menu ? [...menu.querySelectorAll('.shell-item')].map((b) => b.textContent.trim()) : [];
       if (items.length) break;
     }
     if (!menu) return { step: 'no-shell-menu' };
+    let shells = [];
+    try {
+      const available = await window.__TAURI_INTERNALS__.invoke('detect_available_shells');
+      shells = Array.isArray(available) ? available : [];
+    } catch {}
     return {
       step: 'ok',
       items,
+      shells,
       note: menu.querySelector('.shell-err, .shell-note')?.textContent?.trim() ?? '',
     };
   })()`);
   log('shell picker:', JSON.stringify(shellProbe));
+  if (wireEvents.length) log('shell wire:', JSON.stringify(wireEvents.slice(-12)));
   if (shellProbe?.step !== 'ok') {
     fail('手机端切换终端类型入口不可用:', shellProbe?.step);
   } else if (!shellProbe.items?.length) {
@@ -370,40 +505,68 @@ try {
 
     // 真切一次（用户原话就是「把终端从 Ps 切到 Wsl」）：点 WSL 项，再从数据面读
     // 该 pane 的 scrollback，看是不是真换了个 shell 在跑。
-    const target = shellProbe.items.find((x) => /^WSL:/.test(x)) ?? shellProbe.items.find((x) => /Git Bash/.test(x));
+    const availableShells = (await remoteCall('detect_available_shells')).result ?? [];
+    const beforeState = await remoteCall('get_workspace_snapshot', { workspaceId: wsId });
+    const findShell = (value, id) => {
+      const walk = (node) => {
+        if (!node || typeof node !== 'object') return null;
+        if (node.id === id) return node.shell_kind ?? null;
+        return (node.children ?? []).map(walk).find((x) => x != null) ?? null;
+      };
+      return walk(value?.result?.layout);
+    };
+    const beforeShell = findShell(beforeState, paneId);
+    log('shell-state:', JSON.stringify({
+      availableShells: availableShells.length,
+      beforeOk: beforeState?.ok,
+      beforeError: beforeState?.error,
+      beforeResultKeys: Object.keys(beforeState?.result ?? {}),
+      beforeLayout: beforeState?.result?.layout,
+    }));
+    const targetShell = availableShells.find(
+      (shell) => /^(WSL:|Git Bash)/.test(shell.label) && shell.program !== beforeShell,
+    );
+    const target = targetShell?.label ?? shellProbe.items.find((x) => /^WSL:/.test(x)) ?? shellProbe.items.find((x) => /Git Bash/.test(x));
     if (!target) {
       log('本机无 WSL / Git Bash，跳过「真切换」断言');
     } else {
       // 判据取 pane 标题（list-panes 回传，DOM 可读）：终端画布是 WebGPU 渲染的，
       // 里头的提示符读不到；而 `get_pane_scrollback_tail` 不在 LAN invoke 名单里。
-      const TITLE = `document.querySelector('.trigger-label')?.textContent?.trim() ?? ''`;
-      const before = await ev(TITLE);
       const clicked = await ev(`(() => {
         const b = [...document.querySelectorAll('.shell-item')]
           .find((x) => x.textContent.trim() === ${JSON.stringify(target)});
         if (!b) return 'item-gone';
         b.click();
-        return 'clicked';
-      })()`);
+       return 'clicked';
+     })()`);
       if (clicked !== 'clicked') fail('点选终端类型失败:', clicked);
       else {
-        let after = before;
+        let afterState = beforeState;
+        let afterShell = beforeShell;
         for (let i = 0; i < 15; i++) {
           await sleep(2000);
           await ev(`document.querySelector('.tree-trigger') && 1`);
-          after = await ev(TITLE);
-          if (after && after !== before && !/powershell/i.test(after)) break;
+          afterState = await remoteCall('get_workspace_snapshot', { workspaceId: wsId });
+          afterShell = findShell(afterState, paneId);
+          if (afterShell && afterShell !== beforeShell) break;
         }
-        if (!after || after === before || /powershell/i.test(after)) {
+        if (!afterShell || afterShell === beforeShell) {
+          log('shell-state-after:', JSON.stringify({
+            afterOk: afterState?.ok,
+            afterError: afterState?.error,
+            afterResultKeys: Object.keys(afterState?.result ?? {}),
+            afterLayout: afterState?.result?.layout,
+            afterPanes: afterState?.result?.panes,
+          }));
           const why = await ev(
             `document.querySelector('.shell-err')?.textContent?.trim()
              ?? document.querySelector('.shell-menu')?.innerText?.trim() ?? '(菜单已关闭)'`,
           );
           fail(
-            `切换到「${target}」后终端没换：标题仍是 ${JSON.stringify(after)}；面板提示：${why}`,
+            `切换到「${target}」后 shell_kind 未变化：before=${JSON.stringify(beforeShell)} after=${JSON.stringify(afterShell)}；面板提示：${why}`,
           );
         } else {
-          log('已切到', target, '| 新终端标题 =', after);
+          log('已切换', target, '| shell_kind =', afterShell);
         }
       }
 

@@ -146,7 +146,10 @@ async fn assets_resolve_across_ui_kinds_because_the_override_is_not_on_asset_req
         .find_map(|s| s.split('"').next().filter(|p| p.starts_with("/assets/")))
         .expect("手机壳里应有 /assets/ 入口脚本");
     let (status, body) = get(h.port, mobile_js, DESKTOP_UA);
-    assert!(status.contains("200"), "{mobile_js} → {status}（页面会白屏）");
+    assert!(
+        status.contains("200"),
+        "{mobile_js} → {status}（页面会白屏）"
+    );
     assert!(!body.is_empty(), "{mobile_js} 空响应");
 
     // 反向：手机 UA 打开桌面页后拉 `_app` 资产，同样不带覆盖参数。

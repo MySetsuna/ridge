@@ -79,9 +79,10 @@ pub fn remote_audit_allowed() -> bool {
 pub fn redact_reason_summary(raw: &str, max_len: usize) -> String {
     let mut s: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     // api_key=... / token: ...
-    let re_pairs = [
-        (r"(?i)(api[_-]?key|token|secret|password|authorization)\s*[:=]\s*\S+", "$1=***"),
-    ];
+    let re_pairs = [(
+        r"(?i)(api[_-]?key|token|secret|password|authorization)\s*[:=]\s*\S+",
+        "$1=***",
+    )];
     for (pat, rep) in re_pairs {
         if let Ok(re) = regex_lite_replace(pat, &s, rep) {
             s = re;
@@ -116,7 +117,14 @@ fn strip_long_tokens(s: &str) -> String {
 /// Minimal replace without full regex crate dependency: simple substring heuristics.
 fn regex_lite_replace(_pat: &str, s: &str, _rep: &str) -> Result<String, ()> {
     let lower = s.to_ascii_lowercase();
-    let keys = ["api_key", "apikey", "token", "secret", "password", "authorization"];
+    let keys = [
+        "api_key",
+        "apikey",
+        "token",
+        "secret",
+        "password",
+        "authorization",
+    ];
     let mut out = s.to_string();
     for k in keys {
         if let Some(idx) = lower.find(k) {
@@ -146,11 +154,7 @@ fn redact_reason_summary_simple(s: &str) -> String {
 }
 
 /// Filter projection by verdict/source (newest first).
-pub fn list_audit_filtered(
-    limit: usize,
-    verdict: Option<&str>,
-    source: Option<&str>,
-) -> Value {
+pub fn list_audit_filtered(limit: usize, verdict: Option<&str>, source: Option<&str>) -> Value {
     let lim = limit.clamp(1, AUDIT_CAP);
     let g = AUDIT.lock();
     let items: Vec<Value> = g

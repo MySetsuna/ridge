@@ -37,9 +37,13 @@ const FATAL_SIGNAL_CODES: &[&str] = &[
 /// 终态错误码 → 人话 + 下一步动作。
 fn fatal_hint(code: &str) -> &'static str {
     match code {
-        "USERNAME_MISMATCH" => "设备令牌所属账号与租户域名不符：请用该设备所属账号重新 `rdg login`。",
+        "USERNAME_MISMATCH" => {
+            "设备令牌所属账号与租户域名不符：请用该设备所属账号重新 `rdg login`。"
+        }
         "DEVICE_TOKEN_MISMATCH" => "设备令牌与当前设备不匹配：请重新激活本机 `rdg login`。",
-        "DEVICE_NOT_OWNED" => "该设备不属于当前账号：请在云端控制台确认设备归属，或重新 `rdg login`。",
+        "DEVICE_NOT_OWNED" => {
+            "该设备不属于当前账号：请在云端控制台确认设备归属，或重新 `rdg login`。"
+        }
         "DEVICE_PARKED" => "该设备已被停用：请在云端控制台恢复后重试。",
         _ => "请检查云端账号/设备状态后重试。",
     }
@@ -83,8 +87,15 @@ pub async fn run(shell: Option<String>, cwd: Option<String>, root: Option<String
 
     let mut backoff = MIN_BACKOFF;
     loop {
-        match serve_once(&http, &auth, &device_identity, shell.clone(), cwd.clone(), root.clone())
-            .await
+        match serve_once(
+            &http,
+            &auth,
+            &device_identity,
+            shell.clone(),
+            cwd.clone(),
+            root.clone(),
+        )
+        .await
         {
             Ok(()) => {
                 // 信令正常断开：重置退避后立即重连。

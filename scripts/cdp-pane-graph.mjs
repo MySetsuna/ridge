@@ -160,6 +160,11 @@ const invoke = (cdp, cmd, args) =>
   let lanPanes = 0;
   let observedWorkspaceId = null;
   let observedPaneId = null;
+  let resolveInitialFrame = () => {};
+  const initialFrame = new Promise((resolve) => {
+    resolveInitialFrame = resolve;
+  });
+  const panesWaiters = new Set();
   const ws = new WebSocket(`wss://127.0.0.1:${info.port}/ws?code=${info.totpCode}&device=cdp-pane-graph`);
   await new Promise((res, rej) => {
     ws.onopen = res;
@@ -175,13 +180,20 @@ const invoke = (cdp, cmd, args) =>
       return;
     }
     if (m.type === 'panes') {
+      const wasReady = Boolean(observedWorkspaceId && observedPaneId);
       lanPanes++;
       observedWorkspaceId = m.workspaceId;
       observedPaneId = m.panes?.[0]?.id ?? null;
+      if (!wasReady && observedWorkspaceId && observedPaneId) resolveInitialFrame(true);
+      for (const resolve of [...panesWaiters]) resolve(true);
     }
   };
   ws.send(JSON.stringify({ type: 'list-panes' }));
-  await sleep(500); // let the initial panes frame land
+  const refreshTimer = setInterval(() => {
+    if (!observedWorkspaceId || !observedPaneId) ws.send(JSON.stringify({ type: 'list-panes' }));
+  }, 250);
+  await Promise.race([initialFrame, sleep(10_000)]);
+  clearInterval(refreshTimer);
   if (!observedWorkspaceId || !observedPaneId) fail('LAN observer found no workspace pane');
   ws.send(JSON.stringify({
     type: 'subscribe-pane',
@@ -222,6 +234,19 @@ const invoke = (cdp, cmd, args) =>
     console.log('\nRESULT:', pass ? 'PASS ✅ (pane CRUD behaviour characterized)' : 'FAIL ❌');
     process.exit(pass ? 0 : 2);
   };
+  const waitForPanesFrame = (timeoutMs = 3000) => new Promise((resolve) => {
+    let waiter;
+    const timer = setTimeout(() => {
+      panesWaiters.delete(waiter);
+      resolve(false);
+    }, timeoutMs);
+    waiter = (ok) => {
+      clearTimeout(timer);
+      panesWaiters.delete(waiter);
+      resolve(ok);
+    };
+    panesWaiters.add(waiter);
+  });
 
   try {
     const layout0 = await invoke(cdp, 'get_pane_layout');
@@ -235,6 +260,7 @@ const invoke = (cdp, cmd, args) =>
 
     // ── split ──
     const before = lanPanes;
+    const splitFrame = waitForPanesFrame();
     const r = await invoke(cdp, 'split_pane', { paneId: target, direction: 'horizontal' });
     summary.newPane = r && r.pane_id;
     const layout1 = await invoke(cdp, 'get_pane_layout');
@@ -242,8 +268,9 @@ const invoke = (cdp, cmd, args) =>
     summary.treeSplitOk = summary.afterSplitLeaves === summary.baselineLeaves + 1;
     if (!summary.treeSplitOk)
       summary.errors.push(`split leaves ${summary.baselineLeaves}->${summary.afterSplitLeaves} (want +1)`);
-    await sleep(700); // let the PanesChanged broadcast land on the LAN sub
-    summary.splitBroadcastOk = lanPanes > before;
+    // Topology sync is a bounded kernel RPC; wait for the remote poll rather
+    // than assuming one 250ms tick also includes the sync round trip.
+    summary.splitBroadcastOk = await splitFrame;
     if (!summary.splitBroadcastOk)
       summary.errors.push('no LAN panes frame after split (broadcast missing)');
     log(`after split: leaves=${summary.afterSplitLeaves}, lanFrames+${lanPanes - before}`);
@@ -255,14 +282,14 @@ const invoke = (cdp, cmd, args) =>
 
     // ── close ──
     const before2 = lanPanes;
+    const closeFrame = waitForPanesFrame();
     await invoke(cdp, 'close_pane', { paneId: summary.newPane });
     const layout2 = await invoke(cdp, 'get_pane_layout');
     summary.afterCloseLeaves = countLeaves(layout2);
     summary.treeCloseOk = summary.afterCloseLeaves === summary.baselineLeaves;
     if (!summary.treeCloseOk)
       summary.errors.push(`close leaves ${summary.afterSplitLeaves}->${summary.afterCloseLeaves} (want ${summary.baselineLeaves})`);
-    await sleep(700);
-    summary.closeBroadcastOk = lanPanes > before2;
+    summary.closeBroadcastOk = await closeFrame;
     if (!summary.closeBroadcastOk)
       summary.errors.push('no LAN panes frame after close (broadcast missing)');
     log(`after close: leaves=${summary.afterCloseLeaves}, lanFrames+${lanPanes - before2}`);

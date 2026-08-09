@@ -1,17 +1,12 @@
 // src/lib/stores/paneGitStatus.ts
 //
-// Per-pane git summary (branch + diff counts). Fed by `find_git_repos_below`
-// (depth=1: cwd self + immediate children) + `get_scm_status`, cached per
+// Per-pane git summary (branch + diff counts). Fed by `find_git_repo_root`
+// + `get_scm_status`, cached per
 // repo root so multiple panes inside the same repo share a single fetch.
 //
-// **Round 40 semantics change**: previously walked UP the directory tree
-// via `find_git_repo_root`, which is git's standard "you're in a repo if
-// any ancestor has .git" rule. The user explicitly wanted "cwd is the
-// container" — only repos discovered at cwd or directly under it count.
-// Net effect: if the user opens Ridge in `~/Downloads` (non-git, no .git
-// children), no pill renders even if `~/.git` happens to exist somewhere
-// far above. If they open it in `~/code` and `~/code/{a,b,c}` are each
-// repos, all three are surfaced and a switcher renders next to the pill.
+// A pane pill belongs to the cwd's Git root (itself or an ancestor). A
+// non-Git container that merely has descendant repositories stays pill-free;
+// SourceControl retains its separate workspace-wide discovery behavior.
 //
 // Refresh strategy: debounced on cwd change; lazy — the caller opts in by
 // calling `trackPaneGitStatus(paneId, cwd)`. An explicit `invalidate()` hook
@@ -50,11 +45,8 @@ export interface PaneGitInfo {
    */
   hasUpstream: boolean;
   /**
-   * Every git repo found at the pane's cwd or directly under it (depth=1
-   * `find_git_repos_below` scan). When length > 1, the UI renders a
-   * `PaneRepoSwitcher` left of the branch pill so the user can pick which
-   * repo's data the rest of the pills reflect. `repoRoot` above is always
-   * one of these.
+   * Compatibility DTO for the repo switcher. Pane root ownership exposes at
+   * most one entry; SourceControl's workspace-wide discovery is independent.
    */
   availableRepos: string[];
 }
@@ -104,6 +96,8 @@ const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** User-chosen repo per pane when the pane's cwd hosts >1 repo. Cleared
  *  when the pane stops tracking. Survives across cwd changes as long as
  *  the chosen repo still appears in the new availableRepos list. */
+/** Legacy selection slot kept for the switcher API. Root-owned pane resolution
+ * clears it on every cwd resolution, so a descendant choice cannot persist. */
 const selectedRepoByPane = new Map<string, string>();
 
 interface GitDiffSummary {
@@ -112,7 +106,9 @@ interface GitDiffSummary {
 }
 
 /** A single repo's resolved git data — common cache key, then merged with
- *  per-pane `availableRepos` when emitted to the store. */
+ *  root-owned `availableRepos` when emitted to the store. */
+// Root-owned pane DTO keeps this list at most one entry; SourceControl has
+// separate workspace-wide discovery semantics.
 type RepoSnapshot = Omit<PaneGitInfo, 'availableRepos'>;
 
 async function resolveRepoSnapshot(
@@ -188,39 +184,30 @@ async function resolveRepoSnapshot(
 
 async function resolveInfoForPane(paneId: string, cwd: string): Promise<PaneGitInfo | null> {
   if (!isTauri() || !cwd) return null;
-  // **Round 40 — cwd-down semantics**: scan cwd self + depth-1 children
-  // for any `.git/` markers. If empty, this pane is genuinely "outside
-  // any git repo" from the user's mental model and the pill must hide.
-  let repos: string[] = [];
+  // Pane branch ownership follows the cwd's Git ancestor. A workspace folder
+  // that merely contains child repositories is not itself a repository, so
+  // it must not surface a descendant branch pill.
+  let repoRoot: string | null = null;
   try {
-    repos = await invoke<string[]>('find_git_repos_below', {
-      path: cwd,
-      maxDepth: 1,
-    });
+    repoRoot = await invoke<string | null>('find_git_repo_root', { path: cwd });
   } catch {
     return null;
   }
-  repos = repos.filter((root) => !isScmRepoKnownNonGit(root));
-  if (repos.length === 0) return null;
+  if (!repoRoot || isScmRepoKnownNonGit(repoRoot)) return null;
 
-  // Pick which repo this pane should currently surface. User selection
-  // (via PaneRepoSwitcher) wins if it's still in the discovered list;
-  // otherwise default to the first (alphabetical, since the backend
-  // already sort+deduped).
-  const userPick = selectedRepoByPane.get(paneId);
-  const repoRoot = userPick && repos.includes(userPick) ? userPick : repos[0];
-  if (userPick && !repos.includes(userPick)) {
-    selectedRepoByPane.delete(paneId);
-  }
+  // A previous cwd-down selection must never leak into the new root-owned
+  // contract. Keep the map clean so a later re-entry cannot resurrect it.
+  selectedRepoByPane.delete(paneId);
 
   const snap = await resolveRepoSnapshot(repoRoot, `pane:${paneId}`);
   if (!snap) return null;
-  return { ...snap, availableRepos: repos };
+  return { ...snap, availableRepos: [repoRoot] };
 }
 
-/** UI hook: switch which repo a pane's pill reflects. Triggers a re-resolve
- *  using the cached snapshot for the picked repo (no backend roundtrip
- *  needed if it was cached during the same window). */
+/** Legacy switcher hook; root ownership remains backend-authoritative.
+ *  and re-resolves the backend-owned root. */
+/** Compatibility UI hook. Backend root remains authoritative, so a
+ * descendant selection cannot replace the pane's cwd-owned pill. */
 export async function setPaneSelectedRepo(paneId: string, repoRoot: string): Promise<void> {
   selectedRepoByPane.set(paneId, repoRoot);
   const cwd = lastCwdByPane.get(paneId);
@@ -283,10 +270,8 @@ export async function invalidatePaneGitStatusForRepo(repoRoot: string): Promise<
   invalidateScmQuery('diff-summary', repoRoot);
   const all = get(_store);
   for (const [paneId, info] of Object.entries(all)) {
-    // After round 40 a pane has `availableRepos` — invalidate any pane
-    // whose currently-selected repo OR any of its discovered repos
-    // matches (a stage in repo B might also be visible from a pane
-    // showing repo A if both are siblings under the same cwd).
+    // Invalidate panes whose root-owned repo matches. `availableRepos` remains
+    // in the DTO for compatibility but contains at most that one root.
     if (
       info?.repoRoot === repoRoot ||
       info?.availableRepos?.includes(repoRoot)

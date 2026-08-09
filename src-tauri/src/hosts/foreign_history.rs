@@ -83,7 +83,9 @@ impl ForeignHistoryStore {
 /// Decide how many bytes of history to request from host (protocol hint).
 pub fn history_pull_budget(want_lines: u16, cols: u16) -> usize {
     // Rough: lines * cols * 2 (UTF-8/SGR slack), capped by DEFAULT_HISTORY_TAIL_CAP.
-    let raw = (want_lines as usize).saturating_mul(cols as usize).saturating_mul(2);
+    let raw = (want_lines as usize)
+        .saturating_mul(cols as usize)
+        .saturating_mul(2);
     raw.min(DEFAULT_HISTORY_TAIL_CAP).max(1024)
 }
 

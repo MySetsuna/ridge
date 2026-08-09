@@ -32,23 +32,23 @@
 pub mod capability;
 pub mod capability_matrix_guard;
 pub mod clipboard;
-pub mod protocol_guard;
 pub mod commands;
 pub mod ctx;
 pub mod device_identity;
 pub mod dispatch;
 pub mod error;
 pub mod fs;
+pub mod protocol_guard;
 /// MCP 已独立成 `ridge-mcp` crate（桌面与 rdg 共用同一份实现）。这里保留再导出，
 /// 历史调用点 `ridge_core::mcp::…` 无需改动。
 pub use ridge_mcp as mcp;
-pub mod process_guard;
 pub mod external_spawn_registry;
+pub mod grant_store;
+pub mod process_guard;
 pub mod pty;
 pub mod remote;
 pub mod sandbox;
 mod seed_store;
-pub mod grant_store;
 pub mod teammate;
 pub mod totp;
 pub mod workspace;
@@ -66,8 +66,14 @@ pub use totp::RemoteTotp;
 // 运行时接线（server 路由 / PTY 注入 / Tauri 事件）在 src-tauri 复用这些纯类型。
 pub use mcp::registry::{ToolRegistry, ToolSpec};
 pub use mcp::resource::{RidgeUri, StashStore};
-pub use teammate::model::{recognize_capability, AgentRole, AgentTier, Teammate, TeammateStatus};
 pub use teammate::circuit_breaker::{LoopBreaker, LoopSignal};
+pub use teammate::communication::{
+    choose_delivery_adapter, validate_target, AckState, AgentEnvelope, AgentIdentity,
+    AgentLifecycle, AgentRef, AgentTarget, CommunicationError, DeliveryAdapter,
+    DeliveryCapabilities, DeliveryDecision, DeliveryReliability, MessageKind, MessagePriority,
+    PtySafety, TypedError,
+};
+pub use teammate::model::{recognize_capability, AgentRole, AgentTier, Teammate, TeammateStatus};
 pub use teammate::risk::{classify_method, classify_shell_command, RiskAssessment, RiskLevel};
-pub use teammate::write_lock::{LockOutcome, WriteLockRegistry};
 pub use teammate::topology::{elect_leader, TaskEdge, TopologyError, TopologyGraph};
+pub use teammate::write_lock::{LockOutcome, WriteLockRegistry};

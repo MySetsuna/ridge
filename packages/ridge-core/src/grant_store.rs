@@ -105,10 +105,14 @@ fn write_grants_in(dir: &Path, identity: &str, map: &HashMap<String, i64>) {
     }
 }
 
-fn write_grants_in_inner(dir: &Path, identity: &str, map: &HashMap<String, i64>) -> std::io::Result<()> {
+fn write_grants_in_inner(
+    dir: &Path,
+    identity: &str,
+    map: &HashMap<String, i64>,
+) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let json = serde_json::to_vec(map)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let json =
+        serde_json::to_vec(map).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let blob = encrypt(&json)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "DPAPI 加密失败"))?;
     let path = dir.join(grants_filename(identity));
@@ -140,7 +144,9 @@ fn set_owner_only_perms(_path: &Path) {
 /// 返回 `true` 当且仅当：该 controller 曾被记录，且 `now - last_verified_at < TRUST_TTL_SECS`。
 /// 任何 I/O / 解密 / 解析失败均返回 `false`（降级）。
 pub fn check(identity: &str, ctrl_pub: &[u8]) -> bool {
-    let Some(dir) = grants_dir() else { return false };
+    let Some(dir) = grants_dir() else {
+        return false;
+    };
     check_in(&dir, identity, ctrl_pub)
 }
 
@@ -168,7 +174,9 @@ pub fn revoke_all(identity: &str) {
 fn check_in(dir: &Path, identity: &str, ctrl_pub: &[u8]) -> bool {
     let map = load_grants_in(dir, identity);
     let key = ctrl_pub_hash_hex(ctrl_pub);
-    let Some(&ts) = map.get(&key) else { return false };
+    let Some(&ts) = map.get(&key) else {
+        return false;
+    };
     let now = now_unix_i64();
     now - ts < TRUST_TTL_SECS
 }
@@ -261,7 +269,8 @@ mod dpapi {
         if ok == 0 || out.pb_data.is_null() {
             return None;
         }
-        let result = unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
+        let result =
+            unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
         unsafe { LocalFree(out.pb_data as *mut c_void) };
         Some(result)
     }
@@ -289,7 +298,8 @@ mod dpapi {
         if ok == 0 || out.pb_data.is_null() {
             return None;
         }
-        let result = unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
+        let result =
+            unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
         unsafe { LocalFree(out.pb_data as *mut c_void) };
         Some(result)
     }
@@ -302,8 +312,7 @@ mod tests {
 
     /// 每个测试独立临时目录（不碰真实 AppData；按测试名+进程 ID 隔离，可并行）。
     fn temp_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("ridge-grants-{}-{}", std::process::id(), tag));
+        let dir = std::env::temp_dir().join(format!("ridge-grants-{}-{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

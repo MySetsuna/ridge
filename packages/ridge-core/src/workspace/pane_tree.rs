@@ -584,15 +584,15 @@ impl PaneTree {
         self.root.clone()
     }
 
-    /// 查找某个 Pane 的完整路径（Fiber return 指针模拟，用于调试/快捷键）
+    /// 查找某个 Pane 从根节点开始的 child-index 路径（用于调试/快捷键）。
     #[allow(dead_code)] // path-style helpers planned for future keyboard-driven pane jumps
-    pub fn find_path(&self, pane_id: Uuid) -> Option<Vec<Uuid>> {
-        fn recurse(node: &PaneNode, pane_id: Uuid, path: &mut Vec<Uuid>) -> bool {
+    pub fn find_path(&self, pane_id: Uuid) -> Option<Vec<usize>> {
+        fn recurse(node: &PaneNode, pane_id: Uuid, path: &mut Vec<usize>) -> bool {
             match node {
                 PaneNode::Leaf(id) if *id == pane_id => true,
                 PaneNode::Split { children, .. } => {
-                    for child in children {
-                        path.push(pane_id); // 记录父节点
+                    for (index, child) in children.iter().enumerate() {
+                        path.push(index);
                         if recurse(child, pane_id, path) {
                             return true;
                         }
@@ -700,7 +700,12 @@ impl PaneTree {
 
                 let neighbor_node = &children[neighbor_idx];
                 let mut pos = 0;
-                return Some(Self::aligned_descend(neighbor_node, dir, &align_indices, &mut pos));
+                return Some(Self::aligned_descend(
+                    neighbor_node,
+                    dir,
+                    &align_indices,
+                    &mut pos,
+                ));
             }
         }
 
@@ -709,10 +714,19 @@ impl PaneTree {
 
     /// 导航至目标子树，保持与源的垂直/水平对齐。
     /// `dir` 是导航方向；`align_indices` 是从源收集的垂直（Left/Right）或水平（Up/Down）对齐索引。
-    fn aligned_descend(node: &PaneNode, dir: Direction, align_indices: &[usize], pos: &mut usize) -> Uuid {
+    fn aligned_descend(
+        node: &PaneNode,
+        dir: Direction,
+        align_indices: &[usize],
+        pos: &mut usize,
+    ) -> Uuid {
         match node {
             PaneNode::Leaf(id) => *id,
-            PaneNode::Split { direction, children, .. } => {
+            PaneNode::Split {
+                direction,
+                children,
+                ..
+            } => {
                 let is_perp = match dir {
                     Direction::Left | Direction::Right => *direction == SplitDirection::Vertical,
                     Direction::Up | Direction::Down => *direction == SplitDirection::Horizontal,
@@ -930,7 +944,12 @@ mod tests {
     fn neighbor_none_on_single_leaf() {
         let tree = PaneTree::new();
         let id = tree.get_all_leaves()[0];
-        for dir in &[Direction::Left, Direction::Right, Direction::Up, Direction::Down] {
+        for dir in &[
+            Direction::Left,
+            Direction::Right,
+            Direction::Up,
+            Direction::Down,
+        ] {
             assert_eq!(tree.neighbor(id, *dir), None);
         }
     }
@@ -1008,5 +1027,17 @@ mod tests {
         assert_eq!(tree.neighbor(d_id, Direction::Down), None);
         assert_eq!(tree.neighbor(d_id, Direction::Right), None);
     }
-}
 
+    #[test]
+    fn find_path_returns_child_indices_from_root() {
+        let mut tree = PaneTree::new();
+        let root = tree.get_all_leaves()[0];
+        let right = tree.split(root, SplitDirection::Horizontal).unwrap();
+        let nested = tree.split(right, SplitDirection::Vertical).unwrap();
+
+        assert_eq!(tree.find_path(root), Some(vec![0]));
+        assert_eq!(tree.find_path(right), Some(vec![1, 0]));
+        assert_eq!(tree.find_path(nested), Some(vec![1, 1]));
+        assert_eq!(tree.find_path(Uuid::new_v4()), None);
+    }
+}

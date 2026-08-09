@@ -93,7 +93,8 @@ pub fn wcwidth(cp: u32) -> u8 {
     // set restricted to this block.
     if matches!(
         cp,
-        0x2614 | 0x2615
+        0x2614
+            | 0x2615
             | 0x26a1
             | 0x26aa
             | 0x26ab
@@ -338,7 +339,7 @@ pub fn is_color_emoji_codepoint(cp: u32) -> bool {
         || (0x1F1E6..=0x1F1FF).contains(&cp)  // Regional Indicators (flag halves)
         || (0x1F200..=0x1F251).contains(&cp)  // Enclosed CJK
         || (0x1F300..=0x1FBFF).contains(&cp)  // Symbols + emoticons + Supplemental Symbols
-        || (0x2600..=0x27BF).contains(&cp)    // Misc symbols + Dingbats (✅ ☀ ⚡ etc.)
+        || (0x2600..=0x27BF).contains(&cp) // Misc symbols + Dingbats (✅ ☀ ⚡ etc.)
 }
 
 /// §A.6 (2026-05-08) — `true` when a width=1 codepoint should still be
@@ -471,7 +472,11 @@ mod tests {
         assert_eq!(wcwidth(0x2699), 1, "⚙ GEAR");
         assert_eq!(wcwidth(0x26A0), 1, "⚠ WARNING SIGN");
         assert_eq!(wcwidth(0x23F8), 1, "⏸ DOUBLE VERTICAL BAR (PAUSE)");
-        assert_eq!(wcwidth(0x276F), 1, "❯ HEAVY RIGHT-POINTING ANGLE QUOTATION MARK");
+        assert_eq!(
+            wcwidth(0x276F),
+            1,
+            "❯ HEAVY RIGHT-POINTING ANGLE QUOTATION MARK"
+        );
     }
 
     #[test]
@@ -587,7 +592,11 @@ mod tests {
         assert_eq!(wcwidth(0x2500), 1, "─ BOX DRAWINGS LIGHT HORIZONTAL");
         assert_eq!(wcwidth(0x2502), 1, "│ BOX DRAWINGS LIGHT VERTICAL");
         assert_eq!(wcwidth(0x2514), 1, "└ BOX DRAWINGS LIGHT UP AND RIGHT");
-        assert_eq!(wcwidth(0x276F), 1, "❯ HEAVY RIGHT-POINTING ANGLE QUOTATION MARK");
+        assert_eq!(
+            wcwidth(0x276F),
+            1,
+            "❯ HEAVY RIGHT-POINTING ANGLE QUOTATION MARK"
+        );
     }
 
     #[test]

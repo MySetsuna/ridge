@@ -157,12 +157,9 @@ impl LanOutboundTransport {
 
     fn remove_pending_rpc(&self, method: &str, params: &Value) {
         let mut pending = self.pending_rpc.lock();
-        if let Some(index) = pending
-            .iter()
-            .position(|(queued_method, queued_params)| {
-                queued_method == method && queued_params == params
-            })
-        {
+        if let Some(index) = pending.iter().position(|(queued_method, queued_params)| {
+            queued_method == method && queued_params == params
+        }) {
             let _ = pending.remove(index);
         }
     }
@@ -211,7 +208,9 @@ impl OutboundTransport for LanOutboundTransport {
                 // it queued would turn repeated transport errors into a fake
                 // backpressure storm and hide the real failure.
                 self.remove_pending_rpc(method, &params);
-                Err(format!("lan: no peer result for {method} (socket not wired)"))
+                Err(format!(
+                    "lan: no peer result for {method} (socket not wired)"
+                ))
             }
         }
     }

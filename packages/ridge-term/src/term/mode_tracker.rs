@@ -83,7 +83,10 @@ mod tests {
         t.feed(b"\x1b[?1049h\x1b[?1002h\x1b[?1006h");
         let (m, alt) = t.snapshot();
         assert!(alt, "alt screen should be active");
-        assert!(m.mouse_button_event, "button-event mouse tracking should be on");
+        assert!(
+            m.mouse_button_event,
+            "button-event mouse tracking should be on"
+        );
         assert!(m.mouse_sgr, "SGR mouse encoding should be on");
     }
 

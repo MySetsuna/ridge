@@ -1,8 +1,8 @@
-use std::sync::atomic::Ordering;
 use base64::Engine as _;
-use sysinfo::System;
 #[cfg(any())]
 use ridge_remote::mdns;
+use std::sync::atomic::Ordering;
+use sysinfo::System;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::state::AppState;
@@ -13,18 +13,11 @@ pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, Stri
         .app_handle
         .get()
         .and_then(crate::remote_host_supervisor::lan_host_status);
-    let port = host_status
-        .as_ref()
-        .map(|status| status.port)
-        .unwrap_or_else(|| *state.remote_port.read());
+    let (port, enabled) = remote_transport_state(host_status.as_ref());
     let lan_ip = ridge_remote::net::detect_lan_ip();
     let lan_ips = ridge_remote::net::detect_lan_ips();
     let machine_name = System::host_name().unwrap_or_else(|| "unknown".to_string());
     let (totp_code, otpauth_uri) = state.remote_auth.code_and_uri(&machine_name);
-    let enabled = host_status
-        .as_ref()
-        .map(|status| status.enabled)
-        .unwrap_or_else(|| state.remote_enabled.load(Ordering::Relaxed));
 
     // §leak-trace (temporary diagnostic): per-workspace pane_tree leaves vs the
     // terminals / pending_spawns maps. An orphan PTY shows up as terminals or
@@ -240,17 +233,19 @@ pub fn totp_trust_revoke_all(state: State<AppState>) {
 
 #[tauri::command]
 pub fn set_remote_enabled(state: State<AppState>, enabled: bool) -> Result<(), String> {
-    let prev = state.remote_enabled.load(Ordering::Relaxed);
     // The detached host is the source of truth after a desktop restart.  The
-    // in-process flag starts at its default, so comparing it alone would make
-    // the first "disable" click a no-op while the sidecar kept serving.
-    let current = state
+    // in-process flag is only a cache: if the sidecar died, enabling Remote
+    // must repair it instead of returning early on a stale `true` value.
+    let host_status = state
         .app_handle
         .get()
-        .and_then(crate::remote_host_supervisor::lan_host_status)
-        .map(|status| status.enabled)
-        .unwrap_or(prev);
-    if current == enabled {
+        .and_then(crate::remote_host_supervisor::lan_host_status);
+    let current = remote_transport_state(host_status.as_ref()).1;
+    if current == enabled && !(enabled && host_status.is_none()) {
+        state.remote_enabled.store(enabled, Ordering::Relaxed);
+        if !enabled {
+            *state.remote_port.write() = 0;
+        }
         return Ok(());
     }
 
@@ -280,7 +275,6 @@ pub fn get_remote_enabled(state: State<AppState>) -> Result<bool, String> {
     }
     Ok(state.remote_enabled.load(Ordering::Relaxed))
 }
-
 
 /// §sessions: list the currently-connected remote control sessions for the
 /// desktop RemotePanel (IP + device id + connected duration).
@@ -387,6 +381,14 @@ fn start_remote_server(state: &AppState) -> Result<(), String> {
     crate::remote_host_supervisor::set_lan_enabled(app, true)?;
     *state.remote_port.write() = status.port;
     Ok(())
+}
+
+fn remote_transport_state(
+    status: Option<&crate::remote_host_supervisor::LanHostStatus>,
+) -> (u16, bool) {
+    status
+        .map(|status| (status.port, status.enabled))
+        .unwrap_or((0, false))
 }
 
 /// Stop detached transports only on the explicit full-quit path. A force kill
@@ -503,4 +505,30 @@ fn stop_legacy_remote_server(state: &AppState) {
     }
     *state.remote_port.write() = 0;
     tracing::info!(target: "ridge::remote", "Remote control server stopped");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(enabled: bool) -> crate::remote_host_supervisor::LanHostStatus {
+        crate::remote_host_supervisor::LanHostStatus {
+            pid: 7,
+            port: 9527,
+            lan_ip: "127.0.0.1".into(),
+            tls: true,
+            enabled,
+        }
+    }
+
+    #[test]
+    fn dead_or_missing_host_cannot_report_ready_from_cached_state() {
+        assert_eq!(remote_transport_state(None), (0, false));
+    }
+
+    #[test]
+    fn live_host_state_is_used_for_port_and_enabled_flag() {
+        assert_eq!(remote_transport_state(Some(&status(true))), (9527, true));
+        assert_eq!(remote_transport_state(Some(&status(false))), (9527, false));
+    }
 }

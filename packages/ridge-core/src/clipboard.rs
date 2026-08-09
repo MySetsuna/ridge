@@ -63,9 +63,15 @@ mod tests {
         std::fs::write(&img, b"\x89PNG").unwrap();
         let p = img.to_string_lossy().to_string();
 
-        assert_eq!(resolve_pasted_image_path(&format!("\"{p}\"")), Some(p.clone()));
+        assert_eq!(
+            resolve_pasted_image_path(&format!("\"{p}\"")),
+            Some(p.clone())
+        );
         assert_eq!(resolve_pasted_image_path(&p), Some(p.clone()));
-        assert_eq!(resolve_pasted_image_path(&format!("  {p}  ")), Some(p.clone()));
+        assert_eq!(
+            resolve_pasted_image_path(&format!("  {p}  ")),
+            Some(p.clone())
+        );
 
         let _ = std::fs::remove_file(&img);
     }

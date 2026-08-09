@@ -13,6 +13,7 @@ import {
   RpcTimeoutError,
   type RpcRequestOptions,
 } from './types';
+import { capabilityForRemoteMethod } from './capabilityContract';
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -102,6 +103,14 @@ const PONG_TIMEOUT_MS = 10_000;
 const LIVENESS_PROBE_TIMEOUT_MS = 4_000;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 15_000;
+/**
+ * A first connection that never reaches `onopen` must become actionable.
+ * Reconnect backoff is useful after a live session drops, but an untouched
+ * remote gate must not remain in an infinite loading state.
+ */
+export const FIRST_CONNECT_TIMEOUT_MS = 10_000;
+/** Shell discovery may enumerate WSL distributions; it is slower than a normal RPC. */
+export const SHELL_DISCOVERY_TIMEOUT_MS = 30_000;
 
 export interface PaneInfo {
   id: string;
@@ -158,6 +167,10 @@ export interface WorkspaceInfo {
   id: string;
   name?: string;
   active: boolean;
+  /** Optional host snapshot fallback while the active-pane query hydrates. */
+  panes?: PaneInfo[];
+  /** Optional LAN host capability hint; absent means legacy full-surface host. */
+  capabilities?: string[];
 }
 
 export interface FileEntry {
@@ -292,6 +305,34 @@ export interface TeammateRosterMember {
   /** iter-62：近期回复——pane 尾部输出剥 ANSI 的最后几行，随快照下发，
    *  手机端因此不必为每个成员各发一次 RPC。 */
   recentOutput?: string;
+  /** Kernel-owned fencing identity; absent only for legacy hosts. */
+  agentId?: string;
+  sessionId?: string;
+  workspaceId?: string;
+  generation?: number;
+  lease?: string;
+  lifecycle?: string;
+  online?: boolean;
+  capabilities?: string[];
+}
+
+export interface AgentMessageTarget {
+  workspaceId: string;
+  paneId: string;
+  agentId?: string;
+  generation?: number;
+  lease?: string;
+}
+
+export interface AgentMessageReceipt {
+  messageId: string;
+  deliveryId: string;
+  targetKey: string;
+  status: string;
+  deliveryAdapter: string;
+  deliveryReliability: string;
+  terminalAccepted: boolean;
+  agentAcknowledged: boolean;
 }
 
 /** Durable Agent history row shared by desktop and Remote.
@@ -428,6 +469,8 @@ export interface RemoteLink {
   /** 原地换 shell：拆该 pane 的 PTY → 按新 program/args 重建 → 重新激活。 */
   changePaneShell?(workspaceId: string, paneId: string, shell: RemoteShellInfo): Promise<void>;
   sendStdin(pane: PaneRef, data: string): void;
+  /** Queue a structured Hub message; PTY remains a separate compatibility path. */
+  sendAgentMessage(target: AgentMessageTarget, message: string): Promise<AgentMessageReceipt>;
   /** Reserve input order before an asynchronous source resolves. */
   enqueueStdinTask?(pane: PaneRef, task: () => Promise<string | null> | string | null): boolean;
   refreshPane(pane: PaneRef, rows: number, cols: number, pixelWidth: number, pixelHeight: number): void;
@@ -527,6 +570,11 @@ export class RemoteConnection implements RemoteLink {
   /** Legacy response frames omit `_reqId`; share one in-flight request per
    * response type instead of replacing the previous pending resolver. */
   private _legacyRequests: Map<string, LegacyPendingRequest> = new Map();
+  /** Null preserves the legacy LAN contract until a host advertises a hint. */
+  private _capabilities: Set<string> | null = null;
+  /** Runtime breaker for older hosts that reject a coarse capability method. */
+  private readonly _unsupportedCapabilities = new Set<string>();
+  private readonly capabilityListeners: Set<() => void> = new Set();
   private _reqCounter = 0;
   private _refreshSeq = 0;
   private readonly paneScheduler = new PaneRpcScheduler(
@@ -547,6 +595,7 @@ export class RemoteConnection implements RemoteLink {
   private _intentionalClose = false;
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _reconnectAttempts = 0;
+  private _initialConnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private _pongDeadline: ReturnType<typeof setTimeout> | null = null;
   private _hasConnectedOnce = false;
@@ -564,7 +613,7 @@ export class RemoteConnection implements RemoteLink {
   // 每 pane 的 seq 游标：订阅时由 host 的 `scrollback-meta` 帧播种（首屏 tail 的最旧字节），
   // 用户滚顶时经 `scrollback-before` 分批向更旧推进。atOldest 后停止分页。
   private scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
-  /** Binary pane frames carry paneId; bind it to the explicit subscription ref. */
+  /** Binary pane frames carry paneId; bind them to an explicit composite ref. */
   private paneRefs = new Map<string, PaneRef>();
   // 正在拉取更旧历史的 pane（去重快速连续的滚顶加载）。
   private fetchingOlder = new Set<string>();
@@ -582,14 +631,45 @@ export class RemoteConnection implements RemoteLink {
 
   state() { return this._state; }
   lastFailure() { return this._failure; }
-  hasCapability(_capability: string) { return true; }
+  hasCapability(capability: string) {
+    return (this._capabilities === null || this._capabilities.has(capability))
+      && !this._unsupportedCapabilities.has(capability);
+  }
   onCapabilitiesChanged(fn: () => void) {
+    this.capabilityListeners.add(fn);
     fn();
-    return () => {};
+    return () => this.capabilityListeners.delete(fn);
+  }
+
+  private notifyCapabilitiesChanged() {
+    for (const fn of [...this.capabilityListeners]) {
+      try { fn(); } catch { /* listener owns its errors */ }
+    }
+  }
+
+  private applyAdvertisedCapabilities(capabilities: readonly string[]) {
+    const next = new Set(capabilities.filter((capability): capability is string => typeof capability === 'string'));
+    const changed = this._capabilities === null
+      || next.size !== this._capabilities.size
+      || [...next].some((capability) => !this._capabilities?.has(capability));
+    this._capabilities = next;
+    this._unsupportedCapabilities.clear();
+    if (changed) this.notifyCapabilitiesChanged();
+  }
+
+  private noteUnsupportedMethod(request: Record<string, unknown>, value: unknown) {
+    const method = typeof request.cmd === 'string' ? request.cmd : undefined;
+    const error = (value as { _error?: unknown } | null)?._error;
+    if (!method || typeof error !== 'string' || !error.includes('method not supported')) return;
+    const capability = capabilityForRemoteMethod(method);
+    if (!capability || this._unsupportedCapabilities.has(capability)) return;
+    this._unsupportedCapabilities.add(capability);
+    this.notifyCapabilitiesChanged();
   }
 
   /** 进入 'error' 终态并记录失败分级（供 UI 区分用户问题 / 通道异常 / 设备停用）。 */
   private failWith(failure: ConnectionFailure) {
+    this._clearInitialConnectTimer();
     this._failure = failure;
     this.setState('error');
   }
@@ -669,6 +749,8 @@ export class RemoteConnection implements RemoteLink {
     secure?: boolean,
   ) {
     if (!auth) { this.failWith({ category: 'channel', message: 'missing credential' }); return; }
+    this._capabilities = null;
+    this._unsupportedCapabilities.clear();
     this._clearReconnectTimer();
     this._intentionalClose = false;
     this._reconnectAttempts = 0;
@@ -677,6 +759,22 @@ export class RemoteConnection implements RemoteLink {
     this._token = auth;
     this._authType = authType;
     this._secure = secure ?? null;
+    this._clearInitialConnectTimer();
+    if (!this._hasConnectedOnce) {
+      this._initialConnectTimer = setTimeout(() => {
+        this._initialConnectTimer = null;
+        if (this._hasConnectedOnce || this._intentionalClose || this._state === 'connected') return;
+        this._intentionalClose = true;
+        this._clearReconnectTimer();
+        this._stopHeartbeat();
+        if (this.ws) {
+          this.ws.onopen = this.ws.onclose = this.ws.onerror = this.ws.onmessage = null;
+          try { this.ws.close(); } catch { /* already closing */ }
+          this.ws = null;
+        }
+        this.failWith({ category: 'channel', message: 'initial remote connection timed out' });
+      }, FIRST_CONNECT_TIMEOUT_MS);
+    }
     this._attachWindowListeners();
     this._open();
   }
@@ -715,6 +813,7 @@ export class RemoteConnection implements RemoteLink {
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
+      this._clearInitialConnectTimer();
       // §perf: onopen ≈ server-side ws_upgrade — stamp it and log the client's
       // view of the connect/upgrade latency (connectStart → onopen).
       this._perf.upgradeStart = performance.now();
@@ -768,8 +867,11 @@ export class RemoteConnection implements RemoteLink {
           firstPtyBytesMs: p.connectStart != null ? Math.round(now - p.connectStart) : null,
         });
       }
-      const pane = this.paneRefs.get(paneId);
-      if (!pane) return;
+      const matches = [...this.paneRefs.values()].filter((pane) => pane.paneId === paneId);
+      // Legacy binary frames omit workspaceId. Refuse ambiguous routing rather
+      // than delivering bytes to a same-named pane in the wrong workspace.
+      if (matches.length !== 1) return;
+      const pane = matches[0];
       this.rawByteListeners.forEach(fn => fn(pane, rawBytes));
       return;
     }
@@ -800,6 +902,13 @@ export class RemoteConnection implements RemoteLink {
 
         // Heartbeat reply — liveness already recorded above, nothing else to do.
         if (type === 'pong') return;
+
+        // Kernel hosts advertise their narrower direct-WS surface before the
+        // first pane frame. This prevents optional sidebar monitors from
+        // issuing a speculative unsupported RPC during cold mobile boot.
+        if (type === 'hello' && Array.isArray(rec.capabilities)) {
+          this.applyAdvertisedCapabilities(rec.capabilities);
+        }
 
         // New remote event types — dispatch before result routing.
         if (type === 'pty-meta') {
@@ -1044,8 +1153,8 @@ export class RemoteConnection implements RemoteLink {
     for (const id of [...this.paneOutputs.keys()]) {
       if (!liveIds.has(id)) this.paneOutputs.delete(id);
     }
-    for (const [paneId, pane] of [...this.paneRefs]) {
-      if (!liveIds.has(paneRefKey(pane))) this.paneRefs.delete(paneId);
+    for (const [key, pane] of [...this.paneRefs]) {
+      if (!liveIds.has(paneRefKey(pane))) this.paneRefs.delete(key);
     }
   }
 
@@ -1178,7 +1287,11 @@ export class RemoteConnection implements RemoteLink {
         );
       }, timeoutMs);
       const pending: PendingRequest = {
-        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        resolve: (v) => {
+          clearTimeout(timer);
+          this.noteUnsupportedMethod(request, v);
+          resolve(v);
+        },
         reject: (e) => { clearTimeout(timer); reject(e); },
         scope: options.scope,
         method: options.method,
@@ -1240,7 +1353,7 @@ export class RemoteConnection implements RemoteLink {
     const { paneId, workspaceId } = pane;
     if (!paneId || !workspaceId) return;
     const msg: Record<string, unknown> = { type: 'subscribe-pane', paneId, workspaceId };
-    this.paneRefs.set(paneId, pane);
+    this.paneRefs.set(paneRefKey(pane), pane);
     if (opts?.resume) msg.resume = true;
     if (opts?.sinceSeq !== undefined) msg.sinceSeq = opts.sinceSeq;
     if (opts?.active !== undefined) msg.active = opts.active;
@@ -1369,7 +1482,10 @@ export class RemoteConnection implements RemoteLink {
   // ── Workspace operations via WS ───────────────────────────────────
   async listWorkspaces(): Promise<{ workspaces: WorkspaceInfo[] }> {
     const data = await this._sendAndWait({ type: 'list-workspaces' }, 'workspaces') as Record<string, unknown>;
-    return { workspaces: (data as { workspaces: WorkspaceInfo[] }).workspaces || [] };
+    const workspaces = (data as { workspaces: WorkspaceInfo[] }).workspaces || [];
+    const hinted = workspaces.find((workspace) => Array.isArray(workspace.capabilities))?.capabilities;
+    if (hinted) this.applyAdvertisedCapabilities(hinted);
+    return { workspaces };
   }
 
   // P1 roster：经 `invoke-request` 走 dispatch_invoke_request 的显式白名单边界
@@ -1386,6 +1502,40 @@ export class RemoteConnection implements RemoteLink {
     )) as { _result?: TeammateTopology; _error?: unknown };
     if (data._error) throw new Error(String(data._error));
     return data._result ?? { roster: [], leaderId: null, edges: [] };
+  }
+
+  async sendAgentMessage(
+    target: AgentMessageTarget,
+    message: string,
+  ): Promise<AgentMessageReceipt> {
+    const data = (await this._sendAndWait(
+      {
+        type: 'invoke-request',
+        cmd: 'send_agent_message',
+        args: {
+          target_pane_id: target.paneId,
+          workspace_id: target.workspaceId,
+          agent_id: target.agentId,
+          generation: target.generation,
+          lease: target.lease,
+          message,
+          from: 'remote-ui',
+          idempotency_key: crypto.randomUUID(),
+        },
+        _reqId: ++this._reqCounter,
+      },
+      'invoke-result',
+    )) as { _result?: unknown; _error?: unknown };
+    if (data._error) {
+      const message = typeof data._error === 'string'
+        ? data._error
+        : JSON.stringify(data._error) ?? String(data._error);
+      throw new Error(message);
+    }
+    if (!data._result || typeof data._result !== 'object') {
+      throw new Error('Agent Hub returned an invalid receipt');
+    }
+    return data._result as AgentMessageReceipt;
   }
 
   async listAgentHistory(limit = 24): Promise<AgentHistoryReply[]> {
@@ -1516,6 +1666,7 @@ export class RemoteConnection implements RemoteLink {
         _reqId: ++this._reqCounter,
       },
       'invoke-result',
+      SHELL_DISCOVERY_TIMEOUT_MS,
     )) as { _result?: RemoteShellInfo[]; _error?: unknown };
     if (data._error) throw new Error(String(data._error));
     return Array.isArray(data._result) ? data._result : [];
@@ -1531,7 +1682,7 @@ export class RemoteConnection implements RemoteLink {
       {
         type: 'invoke-request',
         cmd: 'change_pane_shell',
-        args: { paneId, shell: shell.program, args: shell.args ?? [] },
+        args: { workspaceId, paneId, shell: shell.program, args: shell.args ?? [] },
         _reqId: ++this._reqCounter,
       },
       'invoke-result',
@@ -1645,7 +1796,7 @@ export class RemoteConnection implements RemoteLink {
     const closed = (data as Record<string, unknown>).success === true;
     if (closed) {
       this.paneOutputs.delete(key);
-      this.paneRefs.delete(pane.paneId);
+      this.paneRefs.delete(key);
       this.scrollbackCursor.delete(key);
       this.fetchingOlder.delete(key);
     }
@@ -1687,6 +1838,7 @@ export class RemoteConnection implements RemoteLink {
   // ───────────────────────────────────────────────────────────────────
 
   disconnect() {
+    this._clearInitialConnectTimer();
     for (const pane of this.paneRefs.values()) retirePaneInput(paneRefKey(pane));
     this._intentionalClose = true;
     this._clearReconnectTimer();
@@ -1725,5 +1877,12 @@ export class RemoteConnection implements RemoteLink {
     if (s === 'connected' || s === 'connecting') this._failure = null;
     this._state = s;
     this.stateListeners.forEach(fn => fn(s));
+  }
+
+  private _clearInitialConnectTimer() {
+    if (this._initialConnectTimer) {
+      clearTimeout(this._initialConnectTimer);
+      this._initialConnectTimer = null;
+    }
   }
 }

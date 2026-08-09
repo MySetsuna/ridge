@@ -127,11 +127,7 @@ impl ReconnectSupervisor {
             {
                 return None;
             }
-            (
-                st.cancelled.clone(),
-                st.attempt,
-                st.attached_panes.clone(),
-            )
+            (st.cancelled.clone(), st.attempt, st.attached_panes.clone())
         };
 
         if cancelled.load(Ordering::SeqCst) {
@@ -243,9 +239,7 @@ pub fn check_pane_isolation(tasks: &[(String, Vec<String>)]) -> Result<(), Strin
         for p in panes {
             if let Some(prev) = owner.get(p) {
                 if prev != host {
-                    return Err(format!(
-                        "pane {p} claimed by {prev} and {host}"
-                    ));
+                    return Err(format!("pane {p} claimed by {prev} and {host}"));
                 }
             } else {
                 owner.insert(p.clone(), host.clone());

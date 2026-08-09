@@ -41,6 +41,10 @@ plotforge.db
 
 # Playwright remote-GC e2e artifacts (throwaway)
 .pw-remote-profile/
+.pw-remote-profile-iteration/
+.pw-remote-profile-iteration*/
+.pw-remote-createws-iter*/
+.pw-remote-leak-iter/
 gc-e2e-*.png
 
 # Local env / tooling artifacts
@@ -57,6 +61,8 @@ scripts/tmp-*.mjs
 # 本机工具目录（iter-60 顺手）：pnpm 独立 store 与 NLM MCP 虚拟环境
 .pnpm-store/
 .venv-notebooklm/
+/.tools/
+/.scannerwork/
 
 # Local iteration runtime state. Authoritative requirements, decisions and
 # release evidence live under docs/; transient intake/agent/artifact files

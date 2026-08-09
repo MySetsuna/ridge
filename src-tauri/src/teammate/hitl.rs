@@ -259,7 +259,10 @@ pub fn report_external_rejection(
     reason: &str,
     next_step: &str,
 ) -> String {
-    let id = format!("external_rejection_{}", COUNTER.fetch_add(1, Ordering::Relaxed));
+    let id = format!(
+        "external_rejection_{}",
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
     let report = serde_json::json!({
         "id": id,
         "kind": "external_rejection",
@@ -349,8 +352,12 @@ pub fn resolve_remote(id: &str, nonce: &str, verdict: &str) -> &'static str {
         "reject" => HitlResolution::Reject,
         _ => return OUTCOME_BAD_VERDICT,
     };
-    let Ok(mut g) = PENDING.lock() else { return OUTCOME_ALREADY_RESOLVED };
-    let Some(entry) = g.get(id) else { return OUTCOME_ALREADY_RESOLVED };
+    let Ok(mut g) = PENDING.lock() else {
+        return OUTCOME_ALREADY_RESOLVED;
+    };
+    let Some(entry) = g.get(id) else {
+        return OUTCOME_ALREADY_RESOLVED;
+    };
     if !constant_time_eq(&entry.nonce, nonce) {
         tracing::warn!(target: "ridge::hitl", %id, "远端裁决 nonce 不匹配（拒）");
         // M1 切片二：败者尝试亦入审计（条目存活，仅记录）。
@@ -394,7 +401,14 @@ mod tests {
     fn list_pending_projection_is_sanitized_and_cleared_on_resolve() {
         let id = "hitl_test_sanitized_0".to_string();
         let (tx, mut rx) = oneshot::channel();
-        insert_pending(id.clone(), None, "claude-a", "rm -rf ./scratch", "递归删除目录", tx);
+        insert_pending(
+            id.clone(),
+            None,
+            "claude-a",
+            "rm -rf ./scratch",
+            "递归删除目录",
+            tx,
+        );
 
         let mine: Vec<_> = list_pending()
             .into_iter()
@@ -404,15 +418,27 @@ mod tests {
         let item = mine[0].as_object().expect("pending item object");
         for key in item.keys() {
             assert!(
-                ["id", "initiator", "level", "reason", "createdAt", "resolutionNonce"]
-                    .contains(&key.as_str()),
+                [
+                    "id",
+                    "initiator",
+                    "level",
+                    "reason",
+                    "createdAt",
+                    "resolutionNonce"
+                ]
+                .contains(&key.as_str()),
                 "unexpected pending field `{key}`"
             );
         }
-        assert!(item.get("action").is_none(), "projection must never carry action");
+        assert!(
+            item.get("action").is_none(),
+            "projection must never carry action"
+        );
         assert_eq!(item["level"], "Dangerous");
         assert_eq!(item["initiator"], "claude-a");
-        assert!(item["resolutionNonce"].as_str().is_some_and(|n| n.len() >= 32));
+        assert!(item["resolutionNonce"]
+            .as_str()
+            .is_some_and(|n| n.len() >= 32));
 
         let local = list_pending_local()
             .into_iter()
@@ -432,7 +458,14 @@ mod tests {
     fn resolve_remote_single_consume_nonce_and_verdict_gates() {
         let id = "hitl_test_remote_0".to_string();
         let (tx, mut rx) = oneshot::channel();
-        insert_pending(id.clone(), None, "claude-b", "git push --force", "强制推送", tx);
+        insert_pending(
+            id.clone(),
+            None,
+            "claude-b",
+            "git push --force",
+            "强制推送",
+            tx,
+        );
         let nonce = list_pending()
             .into_iter()
             .find(|v| v["id"] == id.as_str())
@@ -440,7 +473,10 @@ mod tests {
             .expect("nonce in projection");
 
         assert_eq!(resolve_remote(&id, &nonce, "modify"), OUTCOME_BAD_VERDICT);
-        assert_eq!(resolve_remote(&id, "wrong-nonce", "approve"), OUTCOME_NONCE_MISMATCH);
+        assert_eq!(
+            resolve_remote(&id, "wrong-nonce", "approve"),
+            OUTCOME_NONCE_MISMATCH
+        );
         assert!(
             list_pending().iter().any(|v| v["id"] == id.as_str()),
             "错 nonce 后条目必须存活"
@@ -448,7 +484,10 @@ mod tests {
 
         assert_eq!(resolve_remote(&id, &nonce, "approve"), OUTCOME_CONSUMED);
         assert!(matches!(rx.try_recv(), Ok(HitlResolution::Approve)));
-        assert_eq!(resolve_remote(&id, &nonce, "approve"), OUTCOME_ALREADY_RESOLVED);
+        assert_eq!(
+            resolve_remote(&id, &nonce, "approve"),
+            OUTCOME_ALREADY_RESOLVED
+        );
         assert!(list_pending().iter().all(|v| v["id"] != id.as_str()));
     }
 
@@ -456,14 +495,24 @@ mod tests {
     /// 含归因 initiator、来源与结局，**绝不含命令全文**。
     #[test]
     fn remote_consume_records_sanitized_decision() {
-        let dir = std::env::temp_dir().join(format!("ridge-hitl-decisions-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("ridge-hitl-decisions-{}", uuid::Uuid::new_v4()));
         super::super::memory::init_dir(dir);
-        let dir = super::super::memory::dir().expect("dir injected").to_path_buf();
+        let dir = super::super::memory::dir()
+            .expect("dir injected")
+            .to_path_buf();
         let wid = uuid::Uuid::new_v4();
 
         let id = "hitl_test_decision_0".to_string();
         let (tx, _rx) = oneshot::channel();
-        insert_pending(id.clone(), Some(wid), "claude-c", "rm -rf ./scratch", "递归删除目录", tx);
+        insert_pending(
+            id.clone(),
+            Some(wid),
+            "claude-c",
+            "rm -rf ./scratch",
+            "递归删除目录",
+            tx,
+        );
         let nonce = list_pending()
             .into_iter()
             .find(|v| v["id"] == id.as_str())

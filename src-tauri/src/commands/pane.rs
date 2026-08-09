@@ -23,17 +23,13 @@ fn workspace_for_window(
 }
 
 fn workspace_containing_pane(state: &AppState, pane_id: Uuid) -> Option<Uuid> {
-    state
-        .workspaces
-        .read()
-        .iter()
-        .find_map(|(wid, workspace)| {
-            workspace
-                .pane_tree
-                .panes
-                .contains_key(&pane_id)
-                .then_some(*wid)
-        })
+    state.workspaces.read().iter().find_map(|(wid, workspace)| {
+        workspace
+            .pane_tree
+            .panes
+            .contains_key(&pane_id)
+            .then_some(*wid)
+    })
 }
 
 /// Returned by `split_pane` so the frontend can immediately seed `paneCwdStore`
@@ -173,8 +169,7 @@ fn engine_node_to_layout(
             LayoutNode::Leaf {
                 id: id.to_string(),
                 title,
-                cwd: pane
-                    .and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned())),
+                cwd: pane.and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned())),
                 shell_kind: panes.get(id).and_then(|p| p.shell_kind.clone()),
                 agent_state,
                 agent_id: agent_by_pane.get(id).cloned(),
@@ -317,6 +312,7 @@ fn set_split_ratios_at_path_in(
         .set_split_ratios_at_path(&path, ratios)
         .map_err(|e| e.to_string())?;
     drop(map);
+    crate::commands::workspace::sync_kernel_workspace_topology(state, wid);
     crate::commands::ridge_file::schedule_auto_save(&*state, wid);
     Ok(())
 }
@@ -542,6 +538,7 @@ fn split_pane_in_workspace(
         }
     }
     drop(map);
+    crate::commands::workspace::sync_kernel_workspace_topology(state, wid);
     crate::commands::ridge_file::schedule_auto_save(&*state, wid);
     // Broadcast pane tree change to remote clients and desktop frontend.
     let _ = state
@@ -634,7 +631,9 @@ pub(crate) fn register_teammate_agent_in(
         .iter()
         .find(|(existing, mapped)| **mapped == pane_uuid && existing.as_str() != agent_id)
     {
-        return Err(format!("pane {pane_uuid} already owned by agent {existing}"));
+        return Err(format!(
+            "pane {pane_uuid} already owned by agent {existing}"
+        ));
     }
     ws.teammate_agent_pane_map
         .insert(agent_id.clone(), pane_uuid);
@@ -738,10 +737,7 @@ pub(crate) fn teammate_split_pane(
 
 /// 关闭指定窗格：结束 PTY、从 PaneTree 移除。至少保留一个窗格。
 #[tauri::command]
-pub async fn close_pane(
-    state: State<'_, AppState>,
-    pane_id: String,
-) -> Result<(), String> {
+pub async fn close_pane(state: State<'_, AppState>, pane_id: String) -> Result<(), String> {
     let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
     let wid = workspace_containing_pane(&state, pane_id)
         .ok_or_else(|| AppError::PaneNotFound(pane_id).to_string())?;
@@ -787,6 +783,7 @@ pub async fn close_pane(
             Err(e) => return Err(e.to_string()),
         }
     }
+    crate::commands::workspace::sync_kernel_workspace_topology(&*state, wid);
     crate::commands::ridge_file::schedule_auto_save(&*state, wid);
     // Broadcast pane tree change to remote clients and desktop frontend.
     let _ = state
@@ -1162,12 +1159,13 @@ mod balanced_split_tests {
         let host = Uuid::new_v4();
         let teammate = Uuid::new_v4();
         let owned: HashSet<Uuid> = [teammate].into_iter().collect();
-        let (chosen, _) = balanced_split_decision_owned_first(
-            &[(host, 60, 200), (teammate, 24, 80)],
-            &owned,
-        )
-        .unwrap();
-        assert_eq!(chosen, teammate, "受保护的宿主 pane 绝不能被选为 split 目标");
+        let (chosen, _) =
+            balanced_split_decision_owned_first(&[(host, 60, 200), (teammate, 24, 80)], &owned)
+                .unwrap();
+        assert_eq!(
+            chosen, teammate,
+            "受保护的宿主 pane 绝不能被选为 split 目标"
+        );
     }
 
     #[test]
@@ -1190,8 +1188,7 @@ mod balanced_split_tests {
         // 首个 teammate 分屏：尚无任何自有面板 → 回退全体叶子，唯一候选（宿主）被切分。
         let host = Uuid::new_v4();
         let owned: HashSet<Uuid> = HashSet::new();
-        let (chosen, dir) =
-            balanced_split_decision_owned_first(&[(host, 24, 80)], &owned).unwrap();
+        let (chosen, dir) = balanced_split_decision_owned_first(&[(host, 24, 80)], &owned).unwrap();
         assert_eq!(chosen, host, "无自有面板时回退到宿主（唯一候选）");
         // 80 cols × 24 rows → 宽 80 vs 高 48 → 宽 → Horizontal，方向仍按真实尺寸推断。
         assert!(matches!(dir, SplitDirection::Horizontal));
@@ -1284,6 +1281,9 @@ mod remote_resume_path_tests {
     #[test]
     fn canonical_path_match_is_exact() {
         assert!(same_canonical_path(Path::new("/repo"), Path::new("/repo")));
-        assert!(!same_canonical_path(Path::new("/repo"), Path::new("/repo-other")));
+        assert!(!same_canonical_path(
+            Path::new("/repo"),
+            Path::new("/repo-other")
+        ));
     }
 }

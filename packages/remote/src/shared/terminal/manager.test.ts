@@ -1,0 +1,451 @@
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { TerminalManager } from './manager';
+
+const PANE = 'manager-test-pane';
+
+function makeContainer() {
+	return {
+		style: {} as Record<string, string>,
+		dataset: {} as Record<string, string>,
+		addEventListener: vi.fn(),
+		removeEventListener: vi.fn(),
+		appendChild: vi.fn(),
+		removeChild: vi.fn(),
+		contains: vi.fn(() => true),
+		closest: vi.fn(() => null),
+		getBoundingClientRect: vi.fn(() => ({
+			x: 10,
+			y: 20,
+			left: 10,
+			top: 20,
+			right: 810,
+			bottom: 420,
+			width: 800,
+			height: 400,
+		})),
+	} as unknown as HTMLElement;
+}
+
+function makePane() {
+	let rows = 24;
+	let cols = 80;
+	let offset = 0;
+	let altScreen = false;
+	let mouseModes = 0;
+	const kernel = {
+		rows: vi.fn(() => rows),
+		cols: vi.fn(() => cols),
+		feed: vi.fn(),
+		applyDeltaFrame: vi.fn(),
+		resize: vi.fn(),
+		prependScrollback: vi.fn(),
+		takePendingResponse: vi.fn(() => new Uint8Array()),
+		takePendingEvents: vi.fn(() => []),
+		isInlineTuiMode: vi.fn(() => false),
+		isSyncOutput: vi.fn(() => false),
+		isAltScreen: vi.fn(() => altScreen),
+		backendName: vi.fn(() => 'canvas2d'),
+		shouldAllowShellHistory: vi.fn(() => true),
+		isMouseReporting: vi.fn(() => mouseModes !== 0),
+		isAppCursorKeys: vi.fn(() => false),
+		isCursorVisible: vi.fn(() => true),
+		leaveAltScreen: vi.fn(),
+		hyperlinkAt: vi.fn(() => null),
+		lastAbsCsiPosition: vi.fn(() => null),
+		cursorRow: vi.fn(() => 3),
+		cursorCol: vi.fn(() => 4),
+		scrollbackLen: vi.fn(() => 12),
+		scrollOffset: vi.fn(() => offset),
+		scrollToBottom: vi.fn(() => { offset = 0; }),
+		scrollUp: vi.fn((n: number) => { offset += n; }),
+		scrollDown: vi.fn((n: number) => { offset = Math.max(0, offset - n); }),
+		encodeKey: vi.fn(() => new Uint8Array([0x41])),
+		encodePaste: vi.fn(() => new Uint8Array([0x50])),
+		encodeMouse: vi.fn(() => new Uint8Array([0x4d])),
+		mouseReportingModes: vi.fn(() => mouseModes),
+		appCursorKeys: vi.fn(() => false),
+		getSelectionText: vi.fn(() => 'selected text'),
+		clearSelection: vi.fn(),
+		selectAll: vi.fn(),
+		setSelectionAbs: vi.fn(),
+		clearScrollback: vi.fn(),
+		setPreedit: vi.fn(),
+		searchSetQuery: vi.fn(() => 2),
+		searchNext: vi.fn(() => 1),
+		searchPrev: vi.fn(() => 0),
+		searchClear: vi.fn(),
+		searchActiveIndex: vi.fn(() => 0),
+		searchMatchCount: vi.fn(() => 2),
+		cellsAt: vi.fn((_row: number, _col: number, count: number) =>
+			Array.from({ length: count }, (_, col) => ({
+				col,
+				ch: col === 0 ? 'A' : ' ',
+				codepoint: col === 0 ? 0x41 : 0x20,
+				width: 1,
+				attrId: 0,
+				dim: false,
+				bold: false,
+				italic: false,
+				underline: false,
+				inverse: false,
+				hidden: false,
+				fg: 'default',
+				bg: 'default',
+			}))),
+	};
+	const handle = {
+		setFocused: vi.fn(),
+		setPreedit: vi.fn(),
+		clearPreedit: vi.fn(),
+		setHistoryOverlay: vi.fn(),
+		clearHistoryOverlay: vi.fn(),
+		backendName: vi.fn(() => 'canvas2d'),
+		setFont: vi.fn(),
+		setTheme: vi.fn(),
+		applyDefaultTheme: vi.fn(),
+		applyTheme: vi.fn(),
+		configure: vi.fn(() => [10, 20]),
+		forceFullRedraw: vi.fn(),
+		invalidateAll: vi.fn(),
+		setPadding: vi.fn(),
+		setViewportOffset: vi.fn(),
+		resize: vi.fn(),
+		render: vi.fn(),
+		free: vi.fn(),
+	};
+	const container = makeContainer();
+	const canvas = {
+		width: 800,
+		height: 400,
+		style: {} as Record<string, string>,
+		getBoundingClientRect: container.getBoundingClientRect,
+	} as unknown as HTMLCanvasElement;
+	const pane = {
+		paneId: PANE,
+		workspaceId: 'workspace-a',
+		container,
+		canvas,
+		kernel,
+		handle,
+		cellW: 10,
+		cellH: 20,
+		lastConfiguredDpr: 1,
+		resizeObserver: { disconnect: vi.fn(), observe: vi.fn() },
+		lastReportedRows: -1,
+		lastReportedCols: -1,
+		pendingFitTimer: null,
+		initialFitTimer: null,
+		initialFitAttempt: 0,
+		syncStart: null,
+		syncTimeoutRendered: false,
+		focusListener: vi.fn(),
+		blurListener: vi.fn(),
+		selecting: false,
+		selectionStartAbs: null,
+		selectionEndAbs: null,
+		lastMouseSent: null,
+		pendingMouseMove: null,
+		mouseMoveRaf: null,
+		autoScrollTimer: null,
+		autoScrollDirection: null,
+		pointerDownListener: vi.fn(),
+		pointerMoveListener: vi.fn(),
+		pointerUpListener: vi.fn(),
+		pointerCancelListener: vi.fn(),
+		pointerLeaveListener: vi.fn(),
+		modifierKeyListener: vi.fn(),
+		lastPointerPoint: null,
+		parked: false,
+		rendererRetained: false,
+		parkReason: null,
+		lastForegroundAt: 0,
+		imeAnchor: null,
+		imeAnchorRaf: null,
+		feedBuffer: null,
+		feedFlushTimer: null,
+		viewport: undefined,
+		geometry: undefined,
+		geometryVisualOffsetY: 0,
+		visualOffsetY: 0,
+		lastViewportKernelRows: -1,
+		lastViewportKernelCols: -1,
+	linkSpans: { markDirty: vi.fn(), clear: vi.fn(), hitTest: vi.fn(() => null) },
+		linkUnderlineEls: [],
+		linkUnderlineRegions: [],
+		linkHintEl: null,
+		linkHintRegion: null,
+		lastScrollOffset: -1,
+		lastScrollTotal: -1,
+		scrollStateHandler: null,
+		feedDeferred: null,
+		feedDeferredChunks: [],
+		feedDeferredBytes: 0,
+		feedDroppedBytes: 0,
+		feedDropCount: 0,
+		feedNeedsResync: false,
+		inputStartRow: null,
+		inputStartCol: null,
+	} as any;
+	return {
+		pane,
+		kernel,
+		handle,
+		setRows: (value: number) => { rows = value; },
+		setCols: (value: number) => { cols = value; },
+		setOffset: (value: number) => { offset = value; },
+		setAltScreen: (value: boolean) => { altScreen = value; },
+		setMouseModes: (value: number) => { mouseModes = value; },
+	};
+}
+
+function makeManager() {
+	(TerminalManager as any)._instance = null;
+	TerminalManager.setHostPorts(null);
+	const manager = TerminalManager.instance({
+		fontFamily: 'monospace',
+		fontSizePx: 14,
+		scrollbackLines: 200,
+		preferWebgpu: false,
+	});
+	const internal = manager as any;
+	internal.wasmReady = true;
+	const fixture = makePane();
+	internal.panes.set(PANE, fixture.pane);
+	return { manager, fixture, internal };
+}
+
+beforeEach(() => {
+	vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+		void cb;
+		return 1;
+	});
+	vi.stubGlobal('cancelAnimationFrame', vi.fn());
+	vi.stubGlobal('localStorage', {
+		getItem: vi.fn(() => null),
+		setItem: vi.fn(),
+		removeItem: vi.fn(),
+	});
+	vi.stubGlobal('window', {
+		devicePixelRatio: 1,
+		open: vi.fn(),
+		getComputedStyle: vi.fn(() => ({
+			paddingLeft: '0px', paddingRight: '0px', paddingTop: '0px', paddingBottom: '0px',
+		})),
+	});
+	if (globalThis.navigator && !('clipboard' in globalThis.navigator)) {
+		Object.defineProperty(globalThis.navigator, 'clipboard', {
+			configurable: true,
+			value: { writeText: vi.fn() },
+		});
+	}
+});
+
+afterEach(() => {
+	vi.unstubAllGlobals();
+	(TerminalManager as any)._instance = null;
+});
+
+describe('TerminalManager public kernel and delivery surfaces', () => {
+	it('forwards feed, delta, write, paste, callbacks, and scroll state', () => {
+		const { manager, fixture } = makeManager();
+		const sent: Uint8Array[] = [];
+		const events: unknown[] = [];
+		manager.onData(PANE, (bytes) => sent.push(bytes));
+		manager.onEvent(PANE, (event) => events.push(event));
+		manager.onResize(PANE, vi.fn());
+		manager.feed(PANE, 'hello');
+		manager.applyDeltaFrame(PANE, new Uint8Array([1, 2]));
+		manager.write(PANE, 'typed');
+		manager.paste(PANE, 'paste');
+		manager.sendData(PANE, new Uint8Array([9]));
+		manager.prependScrollback(PANE, 'older');
+		manager.selectAll(PANE);
+		manager.clearSelection(PANE);
+		manager.scrollUp(PANE, 2);
+		manager.scrollDown(PANE, 1);
+		manager.scrollToBottom(PANE);
+		manager.clearScrollback(PANE);
+		const unsubscribe = manager.onScrollState(PANE, (state) => events.push(state));
+		(manager as any)._emitScrollStateChanges();
+		unsubscribe();
+		manager.resetInputModes(PANE);
+
+		expect(fixture.kernel.feed).toHaveBeenCalled();
+		expect(fixture.kernel.applyDeltaFrame).toHaveBeenCalledWith(new Uint8Array([1, 2]));
+		expect(fixture.kernel.prependScrollback).toHaveBeenCalled();
+		expect(fixture.kernel.selectAll).toHaveBeenCalledOnce();
+		expect(sent.length).toBeGreaterThanOrEqual(3);
+		expect(manager.getSelectionText(PANE)).toBe('selected text');
+		expect(events).toEqual(expect.arrayContaining([{ offset: 0, total: 12 }]));
+	});
+
+	it('handles key, mouse, wheel, search, selection, and overlay APIs', () => {
+		const { manager, fixture } = makeManager();
+		const sent: Uint8Array[] = [];
+		manager.onData(PANE, (bytes) => sent.push(bytes));
+		const key = {
+			key: 'a', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false,
+		} as KeyboardEvent;
+		expect(manager.handleKeyDown(PANE, key)).toBe(true);
+		fixture.setMouseModes(1);
+		expect(manager.handleWheel(PANE, {
+			deltaY: -10, ctrlKey: false, shiftKey: false, altKey: false,
+			clientX: 35, clientY: 65,
+		} as WheelEvent)).toBe(true);
+		fixture.setMouseModes(0);
+		fixture.setAltScreen(true);
+		expect(manager.wheelAltScroll(PANE, {
+			deltaY: 240, ctrlKey: false, shiftKey: false, altKey: false,
+			clientX: 35, clientY: 65,
+		} as WheelEvent)).toBe(true);
+
+		expect(manager.cellFromEvent(PANE, { clientX: 35, clientY: 65 })).toEqual({ row: 2, col: 2 });
+		manager.updateSelection(PANE, { row: 8, col: 9 });
+		manager.setPreedit(PANE, '拼', 3, 4);
+		expect(manager.lastPreeditCall(PANE)).toEqual({ text: '拼', row: 3, col: 4 });
+		manager.setHistoryOverlay(PANE, ['one', 'two'], 1, 2, 3, false, 2, 0);
+		manager.clearHistoryOverlay(PANE);
+		manager.clearPreedit(PANE);
+		expect(manager.lastPreeditCall(PANE)).toBeNull();
+
+		expect(manager.searchSetQuery(PANE, 'needle', true)).toBe(2);
+		expect(manager.searchNext(PANE)).toBe(1);
+		expect(manager.searchPrev(PANE)).toBe(0);
+		expect(manager.searchInfo(PANE)).toEqual({ count: 2, activeIndex: 0 });
+		manager.searchClear(PANE);
+		manager.setFocused(PANE, true);
+		manager.setFocused(PANE, false);
+		manager.setVisualOffsetY(PANE, 12);
+		manager.setLocalGridAuthority(PANE, false);
+		manager.setPadding(PANE, 12);
+
+		expect(sent.length).toBeGreaterThan(1);
+		expect(fixture.kernel.encodeKey).toHaveBeenCalled();
+		expect(fixture.kernel.encodeMouse).toHaveBeenCalled();
+		expect(fixture.handle.setPreedit).toHaveBeenCalledWith('拼', 3, 4);
+		expect(fixture.handle.clearHistoryOverlay).toHaveBeenCalledOnce();
+	});
+
+	it('reports bounded diagnostics and safe unknown-pane defaults', () => {
+		const { manager, fixture } = makeManager();
+		fixture.pane.feedDeferred = new Uint8Array([1, 2]);
+		fixture.pane.feedDeferredBytes = 2;
+		fixture.pane.feedDroppedBytes = 3;
+		fixture.pane.feedDropCount = 1;
+		fixture.pane.feedNeedsResync = true;
+		expect(manager.feedStats(PANE)).toEqual({
+			queuedBytes: 2,
+			droppedBytes: 3,
+			dropCount: 1,
+			needsResync: true,
+		});
+		expect(manager.feedStats('missing')).toBeNull();
+		expect(manager.rows('missing')).toBe(0);
+		expect(manager.cols('missing')).toBe(0);
+		expect(manager.getKernel('missing')).toBeNull();
+		expect(manager.searchInfo('missing')).toEqual({ count: 0, activeIndex: -1 });
+		expect(manager.scrollState('missing')).toEqual({ offset: 0, total: 0 });
+		expect(manager.isSelecting('missing')).toBe(false);
+		expect(manager.getMousePosition('missing')).toEqual({ row: 0, col: 0 });
+		expect(manager.backendName(PANE)).toBe('canvas2d');
+		expect(manager.backendName('missing')).toBeNull();
+		expect(manager.isAltScreen(PANE)).toBe(false);
+		expect(manager.debugDumpRows(PANE, 0, 0)[0]?.nonSpace[0]?.ch).toBe('A');
+		expect(manager.debugGeometry()).toHaveLength(1);
+	});
+
+	it('keeps TUI gates, IME anchors, redraw invalidation, and theme state coherent', () => {
+		const { manager, fixture } = makeManager();
+		manager.markInputStart(PANE);
+		expect(manager.readShellInputSnapshot(PANE)).toEqual(expect.objectContaining({ text: 'A', cursorCol: 0 }));
+		expect(manager.inputAnchorCell(PANE)).toEqual({ row: 3, col: 4 });
+		expect(manager.inputAnchorResolved(PANE)).toMatchObject({ row: 3, col: 4, x: 40, y: 60 });
+		expect(manager.pixelPositionFromCell(PANE, 2, 3)).toMatchObject({ x: 30, y: 40 });
+		expect(manager.cursorPixelPosition(PANE)).toMatchObject({ x: 40, y: 60, fontSizePx: 14 });
+		manager.clearInputStart(PANE);
+		expect(manager.readShellInputSnapshot(PANE)).toBeNull();
+
+		expect(manager.shouldAllowShellHistory(PANE)).toBe(true);
+		expect(manager.isMouseReporting(PANE)).toBe(false);
+		expect(manager.isInlineTuiActive(PANE)).toBe(false);
+		expect(manager.isAppCursorKeys(PANE)).toBe(false);
+		expect(manager.isCursorVisible(PANE)).toBe(true);
+		manager.leaveAltScreen(PANE);
+		expect(fixture.kernel.leaveAltScreen).toHaveBeenCalledOnce();
+
+		manager.forceFullRedraw(PANE);
+		manager.forceFullRedrawFor([PANE, 'missing']);
+		manager.invalidateWorkspace('workspace-a');
+		manager.invalidateAllPanes();
+		expect(fixture.handle.invalidateAll).toHaveBeenCalled();
+		manager.setFont('new-font', 16);
+		expect(fixture.handle.configure).toHaveBeenCalledWith('new-font', 16, 1);
+		manager.setTheme({ background: '#101010', foreground: '#f0f0f0' });
+		expect(fixture.handle.applyDefaultTheme).toHaveBeenCalled();
+		expect(fixture.handle.applyTheme).toHaveBeenCalledWith({ background: '#101010', foreground: '#f0f0f0' });
+		manager.setSharedRemoteMode(true);
+		manager.setSharedRemoteMode(false);
+		manager.reclaimTerminalMemory({ forceHeapPressure: true });
+		manager.restoreTerminalMemory();
+
+		expect(manager.usingWorkerRenderer()).toBe(false);
+		expect(manager.lastPreeditCall('missing')).toBeNull();
+	});
+
+	it('covers pointer/link routing, scroll subscriptions, padding, and lifecycle defaults', () => {
+		const { manager, fixture } = makeManager();
+		const sent: Uint8Array[] = [];
+		manager.onData(PANE, (bytes) => sent.push(bytes));
+		fixture.setMouseModes(1);
+		const target = { closest: vi.fn(() => null), setPointerCapture: vi.fn() };
+		expect(manager.handlePointerDown(PANE, {
+			clientX: 35, clientY: 65, button: 0, buttons: 1, pointerId: 2,
+			ctrlKey: false, metaKey: false, shiftKey: false, altKey: false,
+			target,
+		} as unknown as PointerEvent)).toBe(true);
+		expect(target.setPointerCapture).toHaveBeenCalledWith(2);
+		const scrollbarTarget = { closest: vi.fn(() => '.rg-scrollbar-track') };
+		expect(manager.handlePointerDown(PANE, {
+			clientX: 35, clientY: 65, button: 0, buttons: 1, pointerId: 3,
+			target: scrollbarTarget,
+		} as unknown as PointerEvent)).toBe(false);
+
+		TerminalManager.setHostPorts({
+			cwd: { current: () => '/repo', all: () => ['/repo'] },
+			openTextLink: vi.fn(),
+		});
+		fixture.kernel.hyperlinkAt.mockReturnValueOnce({ uri: 'https://example.com' });
+		expect(manager.openLinkAt(PANE, 1, 2)).toBe(true);
+		expect((window as any).open).toHaveBeenCalledWith('https://example.com', '_blank', 'noopener,noreferrer');
+		fixture.kernel.hyperlinkAt.mockReturnValueOnce(null);
+		fixture.pane.linkSpans.hitTest.mockReturnValueOnce({ text: 'src/main.ts:4', kind: 'path' });
+		const ports = TerminalManager.hostPorts()!;
+		expect(manager.openLinkAt(PANE, 1, 2)).toBe(true);
+		expect(ports.openTextLink).toHaveBeenCalledWith('/repo/src/main.ts:4', { cwd: '/repo', knownCwds: ['/repo'] });
+
+		const scrollEvents: Array<{ offset: number; total: number }> = [];
+		const off = manager.onScrollState(PANE, (state) => scrollEvents.push(state));
+		fixture.setOffset(5);
+		(manager as any)._emitScrollStateChanges();
+		expect(scrollEvents.at(-1)).toEqual({ offset: 5, total: 12 });
+		off();
+		manager.setPadding(PANE, 70);
+		expect(fixture.pane.lastAppliedPaddingPx).toBe(64);
+		expect(manager.ready()).resolves.toBeUndefined();
+		expect(manager.isParked('missing')).toBe(false);
+		expect(manager.clearPendingFeed('missing')).toBe(0);
+		expect(manager.prependScrollback('missing', 'x')).toBe(false);
+		expect(sent.length).toBeGreaterThan(0);
+	});
+
+	it('parks and reclaims a pane without reviving renderer state', () => {
+		const { manager, fixture } = makeManager();
+		manager.park(PANE, 'memory');
+		expect(manager.isParked(PANE)).toBe(true);
+		expect(fixture.handle.free).toHaveBeenCalledOnce();
+		expect(manager.feedStats(PANE)).toEqual({ queuedBytes: 0, droppedBytes: 0, dropCount: 0, needsResync: false });
+		const reclaimed = manager.reclaimTerminalMemory({ forceHeapPressure: true });
+		expect(reclaimed).toEqual(expect.objectContaining({ heapPressure: true, parkedPaneIds: [] }));
+		manager.restoreTerminalMemory();
+	});
+});

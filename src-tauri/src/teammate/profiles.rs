@@ -46,17 +46,27 @@ pub fn upsert(
     let mut t = Teammate::new(agent_id, name.unwrap_or_else(|| agent_id.to_string()), 0)
         .with_capability(capability);
     t.status = TeammateStatus::Working;
-    let mut g = PROFILES.lock().map_err(|_| "agent registry lock poisoned")?;
-    g.entry(wid)
-        .or_default()
-        .insert(agent_id.to_string(), ProfileEntry { teammate: t, pane_uuid });
+    let mut g = PROFILES
+        .lock()
+        .map_err(|_| "agent registry lock poisoned")?;
+    g.entry(wid).or_default().insert(
+        agent_id.to_string(),
+        ProfileEntry {
+            teammate: t,
+            pane_uuid,
+        },
+    );
     Ok(())
 }
 
 /// 按 pane 移除（release_pane / pane 关闭时，调用方只有 pane_uuid）。
 pub fn remove_by_pane(wid: Uuid, pane_uuid: Uuid) -> Vec<String> {
-    let Ok(mut g) = PROFILES.lock() else { return Vec::new(); };
-    let Some(m) = g.get_mut(&wid) else { return Vec::new(); };
+    let Ok(mut g) = PROFILES.lock() else {
+        return Vec::new();
+    };
+    let Some(m) = g.get_mut(&wid) else {
+        return Vec::new();
+    };
     let removed = m
         .iter()
         .filter(|(_, entry)| entry.pane_uuid == pane_uuid)
@@ -70,8 +80,12 @@ pub fn remove_by_pane(wid: Uuid, pane_uuid: Uuid) -> Vec<String> {
 /// pane during an auto-discovery replacement.  Pane teardown still uses
 /// `remove_by_pane` to clear every identity owned by the destroyed pane.
 pub fn remove_agent(wid: Uuid, agent_id: &str) -> bool {
-    let Ok(mut g) = PROFILES.lock() else { return false; };
-    let Some(entries) = g.get_mut(&wid) else { return false; };
+    let Ok(mut g) = PROFILES.lock() else {
+        return false;
+    };
+    let Some(entries) = g.get_mut(&wid) else {
+        return false;
+    };
     let removed = entries.remove(agent_id).is_some();
     if entries.is_empty() {
         g.remove(&wid);
@@ -95,7 +109,9 @@ pub fn target_for_pane(wid: Uuid, pane_uuid: Uuid) -> Option<AgentContact> {
 
 /// Snapshot the communication directory for diagnostics and preflight checks.
 pub fn contacts(wid: Uuid) -> Vec<AgentContact> {
-    let Ok(g) = PROFILES.lock() else { return Vec::new(); };
+    let Ok(g) = PROFILES.lock() else {
+        return Vec::new();
+    };
     let mut out = g
         .get(&wid)
         .into_iter()
@@ -249,20 +265,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(contacts(workspace).len(), 1);
-        assert_eq!(target_for_pane(workspace, pane).unwrap().agent_id, "agent-a");
+        assert_eq!(
+            target_for_pane(workspace, pane).unwrap().agent_id,
+            "agent-a"
+        );
         assert_eq!(remove_by_pane(workspace, pane), vec!["agent-a"]);
         assert!(target_for_pane(workspace, pane).is_none());
     }
 
     #[test]
     fn empty_agent_id_never_enters_registry() {
-        let result = upsert(
-            Uuid::new_v4(),
-            "  ",
-            Uuid::new_v4(),
-            None,
-            AgentTier::Base,
-        );
+        let result = upsert(Uuid::new_v4(), "  ", Uuid::new_v4(), None, AgentTier::Base);
         assert!(result.is_err());
     }
 

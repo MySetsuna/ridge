@@ -28,6 +28,16 @@ export const REMOTE_CAPABILITY_METHODS = {
 export type RemoteCapability = keyof typeof REMOTE_CAPABILITY_METHODS;
 export type RemotePanel = 'files' | 'git' | 'search' | 'team';
 
+/** Return the coarse capability that owns a controller RPC method. */
+export function capabilityForRemoteMethod(method: string): RemoteCapability | undefined {
+  for (const [capability, methods] of Object.entries(REMOTE_CAPABILITY_METHODS)) {
+    if ((methods as readonly string[]).includes(method)) {
+      return capability as RemoteCapability;
+    }
+  }
+  return undefined;
+}
+
 export const REMOTE_PANEL_CAPABILITY: Readonly<Record<RemotePanel, RemoteCapability>> = {
   files: 'fs',
   git: 'git',

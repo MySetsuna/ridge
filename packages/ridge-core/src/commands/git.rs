@@ -292,8 +292,8 @@ where
     // call another helper that enters a request slot. Reusing the ambient
     // generation keeps one cancellation/supersede identity across every
     // child instead of opening a new generation mid-operation.
-    if let Some((ambient_slot, generation)) = current_git_request_slot()
-        .filter(|(ambient_slot, _)| ambient_slot == &slot)
+    if let Some((ambient_slot, generation)) =
+        current_git_request_slot().filter(|(ambient_slot, _)| ambient_slot == &slot)
     {
         return GIT_REQUEST_SLOT
             .scope(Some((ambient_slot, generation)), future)
@@ -1031,7 +1031,7 @@ pub fn find_git_repo_root(path: String) -> Option<String> {
 
 /// 向下（从 `path` 起的子目录里）扫描所有 git 仓库根。
 /// 规则：
-///   - 广度优先，`max_depth` 限制递归深度（默认 4 层，避免 node_modules 级爆炸）；
+///   - 广度优先，`max_depth` 仅作兼容参数，实际扫描深度硬封顶为 1；
 ///   - 命中 `.git` 后不再进入其子目录，避免 submodule/嵌套仓库的假阳性；
 ///   - 跳过典型的大型非源码目录（node_modules / target / dist / .venv 等），大幅加速；
 ///   - `path` 本身若带 `.git` 也会算作结果（即 path 就是仓库根）。
@@ -1089,7 +1089,13 @@ pub fn find_git_repos_below_sync(path: String, max_depth: Option<usize>) -> Vec<
     if !root.is_dir() {
         return Vec::new();
     }
-    let limit = max_depth.unwrap_or(4);
+    // SCM discovery must never deep-scan a workspace. Keep the public
+    // parameter for protocol compatibility, but make the safety boundary
+    // impossible for callers to widen.
+    const MAX_DISCOVERY_DEPTH: usize = 1;
+    let limit = max_depth
+        .unwrap_or(MAX_DISCOVERY_DEPTH)
+        .min(MAX_DISCOVERY_DEPTH);
     let mut out: Vec<String> = Vec::new();
     let mut stack: Vec<(PathBuf, usize)> = vec![(root, 0)];
     while let Some((dir, depth)) = stack.pop() {
@@ -1336,7 +1342,10 @@ pub async fn get_scm_status_fast(
     repo_root: String,
     slot: Option<String>,
 ) -> Result<ScmRepoStatus, String> {
-    spawn_git_blocking_slotted(slot, move || get_scm_status_sync_with_numstat(repo_root, false)).await
+    spawn_git_blocking_slotted(slot, move || {
+        get_scm_status_sync_with_numstat(repo_root, false)
+    })
+    .await
 }
 
 pub fn get_scm_status_sync(repo_root: String) -> Result<ScmRepoStatus, String> {
@@ -3328,10 +3337,14 @@ mod guard_tests {
 
         git_reset_peak_active_for_test();
         let root = dir.to_string_lossy().to_string();
-        let status = get_scm_status(root.clone(), None).await.expect("get_scm_status");
+        let status = get_scm_status(root.clone(), None)
+            .await
+            .expect("get_scm_status");
         assert!(!status.repo_root.is_empty(), "expected resolved repo root");
         assert!(git_peak_active_child_count() >= 1 || git_active_child_count() == 0);
-        let fast = get_scm_status_fast(root, None).await.expect("get_scm_status_fast");
+        let fast = get_scm_status_fast(root, None)
+            .await
+            .expect("get_scm_status_fast");
         assert_eq!(fast.repo_root, status.repo_root);
         assert_eq!(fast.current_branch, status.current_branch);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3502,7 +3515,11 @@ mod supersede_tests {
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        assert_ne!(unsafe { libc::kill(child_pid, 0) }, 0, "descendant survived Git timeout");
+        assert_ne!(
+            unsafe { libc::kill(child_pid, 0) },
+            0,
+            "descendant survived Git timeout"
+        );
         let _ = std::fs::remove_dir_all(script.parent().unwrap());
     }
 
@@ -3653,10 +3670,8 @@ mod supersede_tests {
     #[tokio::test]
     async fn ambient_request_slot_releases_registry_after_complete() {
         let slot = format!("t:ambient-complete:{}", uuid::Uuid::new_v4());
-        let result = with_git_request_slot(slot.clone(), async {
-            spawn_git_blocking(|| 7).await
-        })
-        .await;
+        let result =
+            with_git_request_slot(slot.clone(), async { spawn_git_blocking(|| 7).await }).await;
         assert_eq!(result.unwrap(), 7);
         assert!(!git_slots().lock().unwrap().contains_key(&slot));
     }
@@ -3665,9 +3680,7 @@ mod supersede_tests {
     async fn nested_request_slot_reuses_ambient_generation() {
         let slot = format!("t:nested:{}", uuid::Uuid::new_v4());
         let outer = with_git_request_slot(slot.clone(), async {
-            let outer_generation = current_git_request_slot()
-                .expect("outer slot")
-                .1;
+            let outer_generation = current_git_request_slot().expect("outer slot").1;
             with_git_request_slot(slot.clone(), async {
                 assert_eq!(
                     current_git_request_slot().expect("nested slot").1,
@@ -3775,15 +3788,12 @@ mod scan_tests {
     }
 
     #[tokio::test]
-    async fn finds_nested_repos_up_to_max_depth() {
+    async fn finds_only_direct_child_repos() {
         let td = TempDir::new("nested");
         let a = td.mkrepo("a");
-        let b = td.mkrepo("sub/b");
-        let mut out = find_git_repos_below(td.path.to_string_lossy().into(), Some(4)).await;
-        out.sort();
-        let mut expected = vec![norm(&a), norm(&b)];
-        expected.sort();
-        assert_eq!(out, expected);
+        td.mkrepo("sub/b");
+        let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(99)).await;
+        assert_eq!(out, vec![norm(&a)]);
     }
 
     #[tokio::test]
@@ -3794,7 +3804,7 @@ mod scan_tests {
         let outer = td.mkrepo("outer");
         // Nested `.git` inside `outer/sub` — scanner should NOT report it.
         std::fs::create_dir_all(outer.join("sub/.git")).unwrap();
-        let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(4)).await;
+        let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(99)).await;
         assert_eq!(out, vec![norm(&outer)]);
     }
 
@@ -3808,21 +3818,24 @@ mod scan_tests {
         td.mkrepo(".idea/inline-git");
         // …but a real repo alongside should still show up.
         let real = td.mkrepo("app");
-        let mut out = find_git_repos_below(td.path.to_string_lossy().into(), Some(4)).await;
+        let mut out = find_git_repos_below(td.path.to_string_lossy().into(), Some(99)).await;
         out.sort();
         assert_eq!(out, vec![norm(&real)]);
     }
 
     #[tokio::test]
-    async fn respects_max_depth() {
+    async fn caps_scan_depth_at_one() {
         let td = TempDir::new("depth");
+        let direct = td.mkrepo("direct");
         let deep = td.mkrepo("l1/l2/l3/l4/l5");
-        // Depth 2 means we can descend 2 levels from root; repo at L5 is out of reach.
+        // Callers cannot widen the one-level safety boundary.
         let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(2)).await;
-        assert!(out.is_empty(), "expected empty, got {out:?}");
-        // Depth 5 finds it.
+        assert_eq!(out, vec![norm(&direct)]);
         let out = find_git_repos_below(td.path.to_string_lossy().into(), Some(5)).await;
-        assert_eq!(out, vec![norm(&deep)]);
+        assert_eq!(out, vec![norm(&direct)]);
+        let out = find_git_repos_below(td.path.to_string_lossy().into(), None).await;
+        assert_eq!(out, vec![norm(&direct)]);
+        assert!(!out.contains(&norm(&deep)));
     }
 
     #[test]

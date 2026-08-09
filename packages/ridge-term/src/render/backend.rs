@@ -66,7 +66,6 @@ pub struct CursorDraw {
     /// and size the cursor block to match the visual extent. `None` for
     /// simple single-codepoint cells.
     pub cluster_text: Option<String>,
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,9 +338,17 @@ pub trait RenderBackend {
     ///      to save fill calls — caller doesn't optimize this).
     ///   2. Paint each cell's glyph.
     /// `attrs_table` resolves `AttrId` to colors and flags.
-    fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable);
+    fn draw_row_backgrounds(
+        &mut self,
+        row: &RowDraw<'_>,
+        attrs_table: &crate::term::attr_table::AttrTable,
+    );
 
-    fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable);
+    fn draw_row_texts(
+        &mut self,
+        row: &RowDraw<'_>,
+        attrs_table: &crate::term::attr_table::AttrTable,
+    );
 
     /// Draw the cursor on top of any existing cell content. Coordinates
     /// are in cell units (0..cols, 0..rows).
@@ -373,14 +380,7 @@ pub trait RenderBackend {
     ///      standard convention for in-progress IME text on every OS.
     /// Cell content is NOT modified. Default no-op so backends can
     /// add this incrementally.
-    fn draw_preedit_overlay(
-        &mut self,
-        _text: &str,
-        _row: usize,
-        _col: usize,
-        _theme: &Theme,
-    ) {
-    }
+    fn draw_preedit_overlay(&mut self, _text: &str, _row: usize, _col: usize, _theme: &Theme) {}
 
     /// §1.34 (2026-05-22) — paint the shell-history popup on top of
     /// the cell grid as a final pass. The backend should:
@@ -430,12 +430,12 @@ pub fn draw_frame<B: RenderBackend>(
     if full_redraw {
         backend.clear();
     }
-    
+
     // Pass 1: Backgrounds
     for row in rows {
         backend.draw_row_backgrounds(row, attrs_table);
     }
-    
+
     // Selection overlay sits between row content and cursor — translucent
     // so glyphs underneath remain readable; cursor on top so it's still
     // distinguishable inside a selected region.
@@ -443,17 +443,17 @@ pub fn draw_frame<B: RenderBackend>(
     if !selection_rects.is_empty() {
         backend.draw_selection_overlay(selection_rects);
     }
-    
+
     // Pass 2: Texts
     for row in rows {
         backend.draw_row_texts(row, attrs_table);
     }
-    
+
     // Hyperlink underlines
     if !hyperlink_rects.is_empty() {
         backend.draw_hyperlink_underlines(hyperlink_rects);
     }
-    
+
     // Pass 3: Cursor
     if let Some(c) = cursor {
         backend.draw_cursor(c, attrs_table);

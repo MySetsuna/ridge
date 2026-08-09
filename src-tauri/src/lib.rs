@@ -10,9 +10,9 @@ pub mod reconnect_policy;
 /// 桌面进程与共享远控层之间的 Tauri 胶水层（`forward_event` + `ridge-core` 桥
 /// + `spawn_remote_server` 启动壳）——归并自已删除的 `remote/{mod,core_bridge,server}.rs`。
 mod remote_bridge;
-mod remote_host_supervisor;
 /// 桌面 `RemoteHost` 实现（`DesktopHost` 包装 `AppState`）。
 mod remote_host_impl;
+mod remote_host_supervisor;
 mod state;
 mod taskbar;
 mod teammate;
@@ -315,6 +315,9 @@ pub fn run() {
                                 pid = ep.pid,
                                 port = ep.port,
                                 "ridge-kernel ready"
+                            );
+                            crate::commands::workspace::sync_kernel_workspace_topologies(
+                                &*kernel_handle.state::<crate::state::AppState>(),
                             );
                             match host_snapshot {
                                 Ok(records) => kernel_hosts.restore_topology(records),
@@ -1050,6 +1053,7 @@ pub fn run() {
             commands::cloud_http::cloud_http,
             // Domain Zero 端侧多智能体协同（teammate）：D1 拓扑快照 + D2 HITL 网关/风险分级
             commands::teammate::get_teammate_topology,
+            commands::teammate::send_agent_message,
             commands::teammate::list_hitl_pending,
             commands::teammate::resolve_hitl_remote,
             commands::teammate::list_hitl_pending_local,

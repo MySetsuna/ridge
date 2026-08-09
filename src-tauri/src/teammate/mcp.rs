@@ -3,13 +3,14 @@
 //! 协议分发、工具语义、WS/HTTP 传输都在 `ridge-mcp` crate 里，与 rdg 无头 host
 //! 共用同一份；本文件只回答「怎么动桌面工作区的 pane」。
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde_json::{json, Value};
 use tauri::Emitter;
 use uuid::Uuid;
 
 use ridge_mcp::addressing::{parse_pane_target, PaneTarget};
+use ridge_mcp::delivery::{DeliveryOutcome, DeliveryProbe, HubDeliveryAdapter};
 use ridge_mcp::resource::{git_branch, git_root, RidgeUri};
 use ridge_mcp::server::{
     ExternalExecutionRejection, HostError, HostResult, InputDispatch, LaunchCapabilities,
@@ -25,10 +26,11 @@ use crate::state::PaneState;
 /// 把共享的 MCP 路由（`/api/v1/mcp/ws` + `POST /api/v1/mcp`）接到桌面工作区上。
 pub(crate) fn router(ctx: TeammateCtx) -> axum::Router {
     let token = ctx.token.clone();
-    mcp_router(McpTransportCtx::new(
+    mcp_router(McpTransportCtx::with_state(
         Arc::new(DesktopMcpHost { ctx }),
         token,
         env!("CARGO_PKG_VERSION"),
+        desktop_hub_state(),
     ))
 }
 
@@ -36,6 +38,60 @@ pub(crate) fn router(ctx: TeammateCtx) -> axum::Router {
 
 struct DesktopMcpHost {
     ctx: TeammateCtx,
+}
+
+pub(crate) fn desktop_hub_state() -> Arc<ridge_mcp::server::McpSessionState> {
+    static STATE: OnceLock<Arc<ridge_mcp::server::McpSessionState>> = OnceLock::new();
+    STATE
+        .get_or_init(|| {
+            Arc::new(
+                ridge_mcp::server::McpSessionState::with_sqlite(
+                    ridge_kernel::registry::agent_hub_path(),
+                )
+                .expect("open persistent Agent Hub"),
+            )
+        })
+        .clone()
+}
+
+/// Desktop IPC entrypoint for the shared Hub. It intentionally calls the
+/// public MCP tool adapter rather than writing PTY bytes; agents may consume
+/// the resulting inbox through `ridge_fetch_inbox`.
+pub(crate) fn send_hub_message(
+    state: &crate::state::AppState,
+    handle: tauri::AppHandle,
+    arguments: Value,
+) -> Result<Value, String> {
+    let token = state
+        .teammate_binding
+        .read()
+        .as_ref()
+        .map(|binding| binding.token.clone())
+        .unwrap_or_default();
+    let host = DesktopMcpHost {
+        ctx: TeammateCtx {
+            state: state.clone(),
+            token: Arc::new(token),
+            handle,
+        },
+    };
+    let response = ridge_mcp::server::call_tool_rpc(
+        "ridge_send_message",
+        arguments,
+        &host,
+        &desktop_hub_state(),
+    );
+    if let Some(error) = response.get("error") {
+        return Err(error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Agent Hub rejected message")
+            .to_string());
+    }
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| "Agent Hub returned an invalid response".to_string())?;
+    serde_json::from_str(text).map_err(|error| format!("decode Agent Hub receipt: {error}"))
 }
 
 impl DesktopMcpHost {
@@ -334,6 +390,24 @@ impl McpHost for DesktopMcpHost {
         team_profile_snapshot(&self.ctx, self.wid())
     }
 
+    fn probe_delivery(&self, _target: &Value) -> HostResult<DeliveryProbe> {
+        let mut probe = desktop_hub_state().delivery_probe(_target);
+        probe.mcp_pull = true;
+        Ok(probe)
+    }
+
+    fn deliver_runtime_api(&self, target: &Value, entry: &Value) -> HostResult<DeliveryOutcome> {
+        desktop_hub_state()
+            .deliver_registered_endpoint(HubDeliveryAdapter::RuntimeApi, target, entry)
+            .map_err(HostError::Internal)
+    }
+
+    fn deliver_a2a(&self, target: &Value, entry: &Value) -> HostResult<DeliveryOutcome> {
+        desktop_hub_state()
+            .deliver_registered_endpoint(HubDeliveryAdapter::A2a, target, entry)
+            .map_err(HostError::Internal)
+    }
+
     fn list_workspaces(&self) -> HostResult<Value> {
         let active = self.wid();
         let map = self.ctx.state.workspaces.read();
@@ -539,13 +613,9 @@ impl McpHost for DesktopMcpHost {
                     HostError::InvalidParams("需提供 agent_id 或 target_pane_id".into())
                 })?;
                 let (wid, pid) = self.resolve(t)?;
-                let id = self
-                    .agent_id_for_pane_any(wid, pid)
-                    .ok_or_else(|| {
-                        HostError::InvalidParams(format!(
-                            "pane {pid} 未注册为 teammate（无 agent_id）"
-                        ))
-                    })?;
+                let id = self.agent_id_for_pane_any(wid, pid).ok_or_else(|| {
+                    HostError::InvalidParams(format!("pane {pid} 未注册为 teammate（无 agent_id）"))
+                })?;
                 (wid, id)
             }
         };

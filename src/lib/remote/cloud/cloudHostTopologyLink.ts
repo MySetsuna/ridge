@@ -47,8 +47,10 @@ function flattenPanes(node: PaneNode | null | undefined): PaneInfo[] {
 }
 
 export class CloudHostTopologyLink implements HostTopologyLink {
-  private readonly workspaceByPane = new Map<string, string>();
+  /** Composite pane identity registry. Raw frames remain legacy paneId-only. */
+  private readonly workspaceByPane = new Map<string, PaneRef>();
   private readonly livePanes = new Set<string>();
+  private activeWorkspaceId: string | null = null;
   /** Panes actually attached to a foreign Host. `livePanes` also contains
    * panes discovered while projecting a workspace, so it is not a safe
    * subscription list to replay after the Host bridge is recreated. */
@@ -90,6 +92,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     for (const key of this.livePanes) retirePaneInput(key);
     this.livePanes.clear();
     this.subscribedPanes.clear();
+    this.workspaceByPane.clear();
     this.activePaneKey = null;
     this.stopReconnectResume();
     this.scheduler.dispose();
@@ -103,6 +106,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
       this.rpc.request<BackendWorkspace[]>('list_workspaces'),
       this.rpc.request<string>('get_active_workspace_id'),
     ]);
+    this.activeWorkspaceId = activeId || null;
     return {
       workspaces: rows.map((workspace) => ({
         id: workspace.id,
@@ -116,10 +120,10 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     const tree = await this.rpc.request<PaneNode>('get_pane_layout_for', { workspaceId });
     const panes = flattenPanes(tree);
     const liveIds = new Set(panes.map((pane) => pane.id));
-    for (const [paneId, ownerWorkspaceId] of this.workspaceByPane) {
-      if (ownerWorkspaceId === workspaceId && !liveIds.has(paneId)) {
-        this.retirePane({ workspaceId, paneId });
-        this.workspaceByPane.delete(paneId);
+    for (const [key, pane] of this.workspaceByPane) {
+      if (pane.workspaceId === workspaceId && !liveIds.has(pane.paneId)) {
+        this.retirePane(pane);
+        this.workspaceByPane.delete(key);
       }
     }
     for (const pane of panes) {
@@ -138,9 +142,6 @@ export class CloudHostTopologyLink implements HostTopologyLink {
         workspaceId: pane.workspaceId,
         paneId: pane.paneId,
       });
-      if (this.workspaceByPane.get(pane.paneId) === pane.workspaceId) {
-        this.workspaceByPane.delete(pane.paneId);
-      }
       return true;
     } catch {
       this.activatePane(pane);
@@ -153,6 +154,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   async switchWorkspace(workspaceId: string): Promise<boolean> {
     try {
       await this.rpc.request('switch_workspace', { workspaceId });
+      this.activeWorkspaceId = workspaceId;
       return true;
     } catch {
       return false;
@@ -162,7 +164,9 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   async createWorkspace(name?: string): Promise<string | null> {
     // Let the Host operation surface transport/auth failures. Returning null
     // here made a failed create indistinguishable from a valid empty result.
-    return await this.rpc.request<string>('create_workspace', name ? { name } : {});
+    const workspaceId = await this.rpc.request<string>('create_workspace', name ? { name } : {});
+    this.activeWorkspaceId = workspaceId || this.activeWorkspaceId;
+    return workspaceId;
   }
 
   async renameWorkspace(workspaceId: string, name: string): Promise<boolean> {
@@ -185,10 +189,13 @@ export class CloudHostTopologyLink implements HostTopologyLink {
 
   async createPane(): Promise<string | null> {
     try {
-      const tree = await this.rpc.request<PaneNode>('get_pane_layout');
+      const workspaceId = this.activeWorkspaceId;
+      if (!workspaceId) return null;
+      const tree = await this.rpc.request<PaneNode>('get_pane_layout_for', { workspaceId });
       const first = flattenPanes(tree)[0];
       if (!first) return null;
       const result = await this.rpc.request<{ pane_id: string }>('split_pane', {
+        workspaceId,
         paneId: first.id,
         direction: 'horizontal',
       });
@@ -199,9 +206,8 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   }
 
   async closeWorkspace(workspaceId: string): Promise<boolean> {
-    const panes = [...this.workspaceByPane]
-      .filter(([, ownerWorkspaceId]) => ownerWorkspaceId === workspaceId)
-      .map(([paneId]) => ({ workspaceId, paneId }));
+    const panes = [...this.workspaceByPane.values()]
+      .filter((pane) => pane.workspaceId === workspaceId);
     const subscriptions = new Map(
       panes
         .map((pane) => [paneRefKey(pane), this.subscribedPanes.get(paneRefKey(pane))] as const)
@@ -211,7 +217,6 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     for (const pane of panes) this.retirePane(pane);
     try {
       await this.rpc.request('close_workspace', { workspaceId });
-      for (const pane of panes) this.workspaceByPane.delete(pane.paneId);
       return true;
     } catch {
       for (const pane of panes) this.activatePane(pane);
@@ -251,6 +256,7 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     const scope = paneRefKey(pane);
     if (!this.livePanes.has(scope)) throw new Error(`Pane not active: ${paneId}`);
     await this.rpc.request('change_pane_shell', {
+      workspaceId,
       paneId,
       shell: shell.program,
       args: shell.args ?? [],
@@ -260,8 +266,11 @@ export class CloudHostTopologyLink implements HostTopologyLink {
 
   onRawBytes(fn: (pane: PaneRef, bytes: Uint8Array) => void): () => void {
     return this.adapter.onPaneBytes((paneId, bytes) => {
-      const workspaceId = this.workspaceByPane.get(paneId);
-      if (workspaceId) fn({ workspaceId, paneId }, bytes);
+      const matches = [...this.workspaceByPane.values()]
+        .filter((pane) => pane.paneId === paneId);
+      // Legacy cloud raw frames carry no workspaceId. Never guess when the
+      // same pane id is live in more than one workspace.
+      if (matches.length === 1) fn(matches[0], bytes);
     });
   }
 
@@ -328,13 +337,14 @@ export class CloudHostTopologyLink implements HostTopologyLink {
   }
 
   private activatePane(pane: PaneRef): void {
-    this.workspaceByPane.set(pane.paneId, pane.workspaceId);
+    this.workspaceByPane.set(paneRefKey(pane), pane);
     this.livePanes.add(paneRefKey(pane));
     this.scheduler.resume(pane);
   }
 
   private retirePane(pane: PaneRef): void {
     const key = paneRefKey(pane);
+    this.workspaceByPane.delete(key);
     this.subscribedPanes.delete(key);
     this.livePanes.delete(key);
     if (this.activePaneKey === key) this.activePaneKey = null;

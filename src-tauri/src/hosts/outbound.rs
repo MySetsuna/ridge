@@ -641,10 +641,7 @@ mod tests {
         let transport = Arc::new(ConcurrentWriteTransport::new());
         let client = Arc::new(OutboundClient::new("lan:serialized", transport.clone()));
         *client.state.lock() = OutboundState::Subscribed;
-        client
-            .subscriptions
-            .lock()
-            .insert("main".into(), true);
+        client.subscriptions.lock().insert("main".into(), true);
 
         let workers: Vec<_> = (0..8)
             .map(|_| {

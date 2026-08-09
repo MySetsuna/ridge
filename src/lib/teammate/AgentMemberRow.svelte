@@ -12,8 +12,6 @@
   import { tick } from 'svelte';
   import { Crown, Pause, Play, Send, X, Ghost } from 'lucide-svelte';
   import { autoGrow } from '$lib/actions/autoGrow';
-  import { enqueuePtyWrite } from '$lib/terminal/ptyWriteQueue';
-  import { enqueuePaneInput } from '@ridge/remote/shared/terminal/paneInputGate';
   import { memberTasksStore, recordMemberTask } from './memberTasks';
   import { showToast } from '$lib/stores/toast';
   import {
@@ -106,10 +104,16 @@
     const text = input.trim();
     if (!text || !paneId) return;
     try {
-      const key = `${workspaceId}:${paneId}`;
-      await enqueuePaneInput(key, () => enqueuePtyWrite(key, () =>
-        invoke('write_to_pty', { workspaceId, paneId, data: `${text}\r` }),
-      ));
+      await invoke('send_agent_message', {
+        workspaceId,
+        paneId,
+        agentId,
+        generation: profile?.generation,
+        lease: profile?.lease,
+        message: text,
+        from: 'desktop-ui',
+        idempotency_key: crypto.randomUUID(),
+      });
       recordMemberTask(agentId, text);
       input = '';
     } catch (e) {

@@ -3,17 +3,15 @@ import { get } from 'svelte/store';
 
 /**
  * Lock the contract that has been the source of repeated user reports
- * ("pane git pill shows on non-git cwd / shows mock data" + round 40
- * "must scan cwd-down, not cwd-up + multi-repo switcher"):
+ * ("pane git pill shows on non-git cwd / shows mock data" + SCM root
+ * ownership):
  *
  *   1. trackPaneGitStatus(pane, null) → store entry deleted
  *   2. trackPaneGitStatus(pane, non-git cwd) → backend returns []
  *      → store entry becomes null
- *   3. trackPaneGitStatus(pane, single-repo cwd) → store entry has
- *      branch + diff fields, availableRepos has 1 entry
- *   4. trackPaneGitStatus(pane, multi-repo cwd) → store entry has
- *      availableRepos with N entries, repoRoot defaults to first
- *   5. setPaneSelectedRepo switches repoRoot, availableRepos preserved
+ *   3. trackPaneGitStatus(pane, cwd inside a repo) → ancestor root owns pill
+ *   4. trackPaneGitStatus(pane, parent of child repos) → no pill
+ *   5. stale repo selections never cross a cwd/root boundary
  *
  * If any of these break, the pills will misrepresent state.
  */
@@ -38,11 +36,16 @@ beforeEach(() => {
   vi.useFakeTimers();
 });
 
-/** Mock backend so any `find_git_repos_below(path)` returns the
- *  configured repos list for that path; get_scm_status / git_diff_summary
- *  return canonical fixture data per repo root. */
-function mockBackend(reposByPath: Record<string, string[]>): void {
+/** Mock backend for root ownership plus the legacy sidebar discovery call;
+ * get_scm_status / git_diff_summary return canonical fixture data per root. */
+function mockBackend(
+  reposByPath: Record<string, string[]>,
+  repoRootsByPath: Record<string, string | null> = {},
+): void {
   mockInvoke.mockImplementation((cmd: string, args: unknown) => {
+    if (cmd === 'find_git_repo_root') {
+      return Promise.resolve(repoRootsByPath[(args as { path: string }).path] ?? null);
+    }
     if (cmd === 'find_git_repos_below') {
       return Promise.resolve(reposByPath[(args as { path: string }).path] ?? []);
     }
@@ -68,7 +71,7 @@ function mockBackend(reposByPath: Record<string, string[]>): void {
 
 describe('trackPaneGitStatus null-cwd path', () => {
   it('clears the store entry when cwd is null', async () => {
-    mockBackend({ '/repo/sub': ['/repo'] });
+    mockBackend({}, { '/repo/sub': '/repo' });
     mod.trackPaneGitStatus('p1', '/repo/sub');
     await vi.advanceTimersByTimeAsync(260);
     expect(get(mod.paneGitStatusStore).p1?.branch).toBe('repo');
@@ -87,10 +90,10 @@ describe('trackPaneGitStatus null-cwd path', () => {
   it('debounces rapid cwd bounces — only the last cwd resolves', async () => {
     let calls = 0;
     mockInvoke.mockImplementation((cmd: string, args: unknown) => {
-      if (cmd === 'find_git_repos_below') {
+      if (cmd === 'find_git_repo_root') {
         calls++;
         const path = (args as { path: string }).path;
-        return Promise.resolve(path === '/code' ? ['/code/repo'] : []);
+        return Promise.resolve(path === '/code' ? '/code/repo' : null);
       }
       if (cmd === 'get_scm_status')
         return Promise.resolve({
@@ -115,58 +118,41 @@ describe('trackPaneGitStatus null-cwd path', () => {
   });
 });
 
-describe('cwd-down semantics + multi-repo switcher', () => {
-  it('exposes single repo via availableRepos when cwd hosts exactly one', async () => {
-    mockBackend({ '/code': ['/code/ridge'] });
-    mod.trackPaneGitStatus('p4', '/code');
+describe('pane Git root ownership', () => {
+  it('hides descendant repos when cwd is not inside a Git repo', async () => {
+    mockBackend({ '/projects': ['/projects/a', '/projects/b'] }, { '/projects': null });
+    mod.trackPaneGitStatus('p4', '/projects');
     await vi.advanceTimersByTimeAsync(260);
-    const info = get(mod.paneGitStatusStore).p4;
-    expect(info?.repoRoot).toBe('/code/ridge');
-    expect(info?.availableRepos).toEqual(['/code/ridge']);
+    expect(get(mod.paneGitStatusStore).p4).toBeNull();
   });
 
-  it('exposes all repos and defaults to the first when cwd hosts multiple', async () => {
-    mockBackend({ '/projects': ['/projects/a', '/projects/b', '/projects/c'] });
-    mod.trackPaneGitStatus('p5', '/projects');
+  it('resolves the ancestor Git root and exposes only it', async () => {
+    mockBackend({}, { '/repo/src': '/repo' });
+    mod.trackPaneGitStatus('p5', '/repo/src');
     await vi.advanceTimersByTimeAsync(260);
     const info = get(mod.paneGitStatusStore).p5;
-    expect(info?.availableRepos).toEqual(['/projects/a', '/projects/b', '/projects/c']);
-    expect(info?.repoRoot).toBe('/projects/a');
-    expect(info?.branch).toBe('a');
+    expect(info?.availableRepos).toEqual(['/repo']);
+    expect(info?.repoRoot).toBe('/repo');
+    expect(info?.branch).toBe('repo');
   });
 
-  it('setPaneSelectedRepo switches the active repo without losing availableRepos', async () => {
-    mockBackend({ '/projects': ['/projects/a', '/projects/b'] });
-    mod.trackPaneGitStatus('p6', '/projects');
+  it('resolves a Git-root cwd directly', async () => {
+    mockBackend({}, { '/repo': '/repo' });
+    mod.trackPaneGitStatus('p6', '/repo');
     await vi.advanceTimersByTimeAsync(260);
-    expect(get(mod.paneGitStatusStore).p6?.repoRoot).toBe('/projects/a');
-
-    await mod.setPaneSelectedRepo('p6', '/projects/b');
     const info = get(mod.paneGitStatusStore).p6;
-    expect(info?.repoRoot).toBe('/projects/b');
-    expect(info?.branch).toBe('b');
-    expect(info?.availableRepos).toEqual(['/projects/a', '/projects/b']);
+    expect(info?.repoRoot).toBe('/repo');
+    expect(info?.availableRepos).toEqual(['/repo']);
   });
 
-  it('drops a stale user pick when the underlying repos list changes', async () => {
-    // Pane starts in /projects with [a, b]; user picks b. Then cwd
-    // changes to /elsewhere where only [c] exists — the picked b is no
-    // longer available, so we fall back to the first (c) without
-    // surfacing a "missing repo" error.
-    mockBackend({
-      '/projects': ['/projects/a', '/projects/b'],
-      '/elsewhere': ['/elsewhere/c'],
-    });
-    mod.trackPaneGitStatus('p7', '/projects');
+  it('clears the pane when cwd leaves the repository', async () => {
+    mockBackend({}, { '/repo/src': '/repo', '/workspace': null });
+    mod.trackPaneGitStatus('p7', '/repo/src');
     await vi.advanceTimersByTimeAsync(260);
-    await mod.setPaneSelectedRepo('p7', '/projects/b');
-    expect(get(mod.paneGitStatusStore).p7?.repoRoot).toBe('/projects/b');
-
-    mod.trackPaneGitStatus('p7', '/elsewhere');
+    expect(get(mod.paneGitStatusStore).p7?.repoRoot).toBe('/repo');
+    mod.trackPaneGitStatus('p7', '/workspace');
     await vi.advanceTimersByTimeAsync(260);
-    const info = get(mod.paneGitStatusStore).p7;
-    expect(info?.repoRoot).toBe('/elsewhere/c');
-    expect(info?.availableRepos).toEqual(['/elsewhere/c']);
+    expect(get(mod.paneGitStatusStore).p7).toBeNull();
   });
 });
 
@@ -174,7 +160,7 @@ describe('non-Git repository detection cache', () => {
   it('stops 100 status invalidations after the first explicit non-repository failure', async () => {
     let scmCalls = 0;
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'find_git_repos_below') return Promise.resolve(['/stale/repo']);
+      if (cmd === 'find_git_repo_root') return Promise.resolve('/stale/repo');
       if (cmd === 'get_scm_status') {
         scmCalls++;
         return Promise.reject(new Error('fatal: not a git repository'));
@@ -198,7 +184,7 @@ describe('non-Git repository detection cache', () => {
   it('re-probes a rejected root after that pane switches directory', async () => {
     let scmCalls = 0;
     mockInvoke.mockImplementation((cmd: string, args: unknown) => {
-      if (cmd === 'find_git_repos_below') return Promise.resolve(['/shared/repo']);
+      if (cmd === 'find_git_repo_root') return Promise.resolve('/shared/repo');
       if (cmd === 'get_scm_status') {
         scmCalls++;
         if (scmCalls === 1) {
@@ -232,9 +218,9 @@ describe('non-Git repository detection cache', () => {
   it('keeps two panes suppressed until the final owner leaves the rejected root', async () => {
     let scmCalls = 0;
     mockInvoke.mockImplementation((cmd: string, args: unknown) => {
-      if (cmd === 'find_git_repos_below') {
+      if (cmd === 'find_git_repo_root') {
         return Promise.resolve(
-          (args as { path: string }).path.startsWith('/owned') ? ['/owned/repo'] : [],
+          (args as { path: string }).path.startsWith('/owned') ? '/owned/repo' : null,
         );
       }
       if (cmd === 'get_scm_status') {
@@ -279,7 +265,7 @@ describe('non-Git repository detection cache', () => {
   it('keeps diff fallback usable while reporting its failure through aggregation', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     mockInvoke.mockImplementation((cmd: string, args: unknown) => {
-      if (cmd === 'find_git_repos_below') return Promise.resolve(['/diff/repo']);
+      if (cmd === 'find_git_repo_root') return Promise.resolve('/diff/repo');
       if (cmd === 'get_scm_status') {
         return Promise.resolve({
           repo_root: (args as { repoRoot: string }).repoRoot,
@@ -316,8 +302,8 @@ describe('多 pane / 多工作区 git 放大器（2026-07-26 卡死回归钉）'
   it('同一 repo 的多个 pane 在窗口内只跑一次 git（每 repo 一次，而非每 pane 一次）', async () => {
     let scmCalls = 0;
     mockInvoke.mockImplementation((cmd: string, args: unknown) => {
-      if (cmd === 'find_git_repos_below') {
-        return Promise.resolve(['/code/ridge']);
+      if (cmd === 'find_git_repo_root') {
+        return Promise.resolve('/code/ridge');
       }
       if (cmd === 'get_scm_status') {
         scmCalls++;
@@ -355,7 +341,7 @@ describe('多 pane / 多工作区 git 放大器（2026-07-26 卡死回归钉）'
   it('显式失效后重新取（缓存不阻断手动/watcher 刷新）', async () => {
     let scmCalls = 0;
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'find_git_repos_below') return Promise.resolve(['/code/ridge']);
+      if (cmd === 'find_git_repo_root') return Promise.resolve('/code/ridge');
       if (cmd === 'get_scm_status') {
         scmCalls++;
         return Promise.resolve({

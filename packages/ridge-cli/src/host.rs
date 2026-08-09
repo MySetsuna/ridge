@@ -142,8 +142,12 @@ fn write_registry(path: &Path, value: &HostRegistry) -> Result<()> {
 }
 
 fn clear_registry(path: &Path, pid: u32) {
-    let Ok(raw) = fs::read(path) else { return; };
-    let Ok(current) = serde_json::from_slice::<HostRegistry>(&raw) else { return; };
+    let Ok(raw) = fs::read(path) else {
+        return;
+    };
+    let Ok(current) = serde_json::from_slice::<HostRegistry>(&raw) else {
+        return;
+    };
     if current.pid == pid {
         let _ = fs::remove_file(path);
     }

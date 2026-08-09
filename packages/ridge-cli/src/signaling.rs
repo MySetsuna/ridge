@@ -58,8 +58,8 @@ impl Signaling {
                 target: "ridge_cli::signaling",
                 "dev 模式：信令 WS 接受自签 TLS（仅本地 ridge-cloud；生产走公共 CA 严格校验）"
             );
-            let connector = crate::tui::lan_session::tls_connector()
-                .context("dev 自签 TLS 连接器构造失败")?;
+            let connector =
+                crate::tui::lan_session::tls_connector().context("dev 自签 TLS 连接器构造失败")?;
             tokio_tungstenite::connect_async_tls_with_config(ws_url, None, false, Some(connector))
                 .await
         } else {

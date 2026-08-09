@@ -200,7 +200,7 @@ mod tests {
     fn since_before_head_is_gapped_and_starts_at_head() {
         let mut r = ScrollbackRing::new(4);
         r.append(b"abcdef"); // 保留 "cdef"，head_seq = 2
-        // 请求 seq 0（早于 head=2）→ 从最旧保留 "cdef" 起给，且标 gapped。
+                             // 请求 seq 0（早于 head=2）→ 从最旧保留 "cdef" 起给，且标 gapped。
         let b = r.since(0);
         assert_eq!(b.bytes, b"cdef");
         assert_eq!(b.next_seq, 6);

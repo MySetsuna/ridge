@@ -10,18 +10,18 @@ use std::io::Write;
 
 use anyhow::{Context, Result};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::terminal::ClearType;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use crossterm::terminal::ClearType;
 use crossterm::{execute, terminal};
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use ridge_core::workspace::pane_tree::Direction;
 use super::keymap;
 use super::workspace::WorkspaceManager;
+use ridge_core::workspace::pane_tree::Direction;
 
 /// 顶部占用行数（状态栏 + 分隔线）。
 const STATUS_LINES: u16 = 2;

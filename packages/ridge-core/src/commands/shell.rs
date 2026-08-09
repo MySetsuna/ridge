@@ -147,7 +147,12 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        try_add(&mut found, "zsh", "Zsh", &["zsh", "/bin/zsh", "/usr/bin/zsh"]);
+        try_add(
+            &mut found,
+            "zsh",
+            "Zsh",
+            &["zsh", "/bin/zsh", "/usr/bin/zsh"],
+        );
         try_add(
             &mut found,
             "bash",
@@ -155,14 +160,24 @@ pub fn detect_available_shells() -> Vec<ShellInfo> {
             &["bash", "/bin/bash", "/usr/bin/bash"],
         );
         try_add(&mut found, "fish", "Fish", &["fish", "/usr/bin/fish"]);
-        try_add(&mut found, "sh", "POSIX sh", &["sh", "/bin/sh", "/usr/bin/sh"]);
+        try_add(
+            &mut found,
+            "sh",
+            "POSIX sh",
+            &["sh", "/bin/sh", "/usr/bin/sh"],
+        );
         try_add(
             &mut found,
             "dash",
             "Dash",
             &["dash", "/bin/dash", "/usr/bin/dash"],
         );
-        try_add(&mut found, "nu", "Nushell", &["nu", "/bin/nu", "/usr/bin/nu"]);
+        try_add(
+            &mut found,
+            "nu",
+            "Nushell",
+            &["nu", "/bin/nu", "/usr/bin/nu"],
+        );
         try_add(
             &mut found,
             "elvish",
@@ -196,9 +211,7 @@ fn list_wsl_distros() -> Vec<String> {
     use std::process::Command;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut command = Command::new("wsl.exe");
-    command
-        .args(["-l", "-q"])
-        .creation_flags(CREATE_NO_WINDOW);
+    command.args(["-l", "-q"]).creation_flags(CREATE_NO_WINDOW);
     match crate::process_guard::run_command_with_timeout(&mut command, SHELL_PROBE_TIMEOUT) {
         Ok(o) if o.status.success() => parse_wsl_list(&o.stdout),
         _ => Vec::new(),
@@ -231,13 +244,11 @@ fn detect_vs_dev_shells() -> Vec<ShellInfo> {
     command
         .args(["-latest", "-property", "installationPath"])
         .creation_flags(CREATE_NO_WINDOW);
-    let install_path = match crate::process_guard::run_command_with_timeout(
-        &mut command,
-        SHELL_PROBE_TIMEOUT,
-    ) {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => return out,
-    };
+    let install_path =
+        match crate::process_guard::run_command_with_timeout(&mut command, SHELL_PROBE_TIMEOUT) {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            _ => return out,
+        };
     if install_path.is_empty() {
         return out;
     }
@@ -394,7 +405,10 @@ mod tests {
     fn parse_wsl_list_decodes_utf16le_and_trims() {
         // `wsl -l -q` 输出 UTF-16LE，每行一个发行版，可能带 CR / 尾随空行。
         let bytes = utf16le("Ubuntu\r\nDebian\r\n\r\n");
-        assert_eq!(parse_wsl_list(&bytes), vec!["Ubuntu".to_string(), "Debian".to_string()]);
+        assert_eq!(
+            parse_wsl_list(&bytes),
+            vec!["Ubuntu".to_string(), "Debian".to_string()]
+        );
     }
 
     #[test]

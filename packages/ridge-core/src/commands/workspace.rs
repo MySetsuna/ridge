@@ -246,7 +246,10 @@ pub fn rename_workspace(ctx: &Ctx, workspace_id: &str, name: &str) -> CoreResult
 /// 端口写，返回新工作区 id 串。
 pub fn create_workspace(ctx: &Ctx, name: Option<&str>) -> CoreResult<Value> {
     let writer = ctx.state::<super::settings::HostStateAccessor>()?;
-    let id = writer.0.create_workspace(name).map_err(CoreError::internal)?;
+    let id = writer
+        .0
+        .create_workspace(name)
+        .map_err(CoreError::internal)?;
     Ok(Value::String(id))
 }
 
@@ -623,8 +626,7 @@ mod tests {
     #[test]
     fn switch_workspace_sets_active_via_writer() {
         let writer = fake_writer(true);
-        let accessor: Arc<dyn crate::ctx::CoreState> =
-            Arc::new(HostStateAccessor(writer.clone()));
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer.clone()));
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         switch_workspace(&ctx, "ws-42").unwrap();
         assert_eq!(*writer.switched.lock().unwrap(), Some("ws-42".to_string()));
@@ -642,8 +644,7 @@ mod tests {
     #[test]
     fn reorder_workspaces_forwards_indices_via_writer() {
         let writer = fake_writer(true);
-        let accessor: Arc<dyn crate::ctx::CoreState> =
-            Arc::new(HostStateAccessor(writer.clone()));
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer.clone()));
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         reorder_workspaces(&ctx, 2, 0).unwrap();
         assert_eq!(*writer.reordered.lock().unwrap(), Some((2, 0)));
@@ -661,8 +662,7 @@ mod tests {
     #[test]
     fn rename_workspace_forwards_id_and_name_via_writer() {
         let writer = fake_writer(true);
-        let accessor: Arc<dyn crate::ctx::CoreState> =
-            Arc::new(HostStateAccessor(writer.clone()));
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer.clone()));
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         rename_workspace(&ctx, "ws-7", "新名字").unwrap();
         assert_eq!(
@@ -718,8 +718,7 @@ mod tests {
     #[test]
     fn save_workspace_to_file_returns_path_and_rejects_empty_name() {
         let writer = fake_writer(true);
-        let accessor: Arc<dyn crate::ctx::CoreState> =
-            Arc::new(HostStateAccessor(writer.clone()));
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer.clone()));
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         let out = save_workspace_to_file(&ctx, "ws-1", "proj", None).unwrap();
         assert_eq!(out, Value::String("/saved/proj.ridge".to_string()));
@@ -774,8 +773,7 @@ mod tests {
     #[test]
     fn resize_pane_ok_and_pane_missing_is_invalid_args() {
         let writer = fake_writer(true);
-        let accessor: Arc<dyn crate::ctx::CoreState> =
-            Arc::new(HostStateAccessor(writer.clone()));
+        let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer.clone()));
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         resize_pane(&ctx, "ws-1", "p-1", 40, 120, false, false).unwrap();
         // pane 不存在（FakeWriter.exists=false）→ InvalidArgs。
@@ -806,7 +804,10 @@ mod tests {
         let accessor: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(writer));
         let (ctx, _s) = ctx_with_state(accessor, CapabilitySet::allow_all());
         let out = split_pane(&ctx, "p-1", "horizontal").unwrap();
-        assert_eq!(out, serde_json::json!({ "split": "p-1", "dir": "horizontal" }));
+        assert_eq!(
+            out,
+            serde_json::json!({ "split": "p-1", "dir": "horizontal" })
+        );
         let w2 = fake_writer(false);
         let acc2: Arc<dyn crate::ctx::CoreState> = Arc::new(HostStateAccessor(w2));
         let (ctx2, _s2) = ctx_with_state(acc2, CapabilitySet::allow_all());

@@ -237,12 +237,10 @@ pub async fn connect_lan(
                                     .and_then(|p| p["id"].as_str())
                                     .map(String::from);
                                 match first {
-                                    Some(pid) => {
-                                        subscribe(&to_host, &pane, &last_size, &seq, pid)
-                                    }
+                                    Some(pid) => subscribe(&to_host, &pane, &last_size, &seq, pid),
                                     None => {
-                                        let _ = to_host
-                                            .send(Message::Text(lan_proto::create_pane()));
+                                        let _ =
+                                            to_host.send(Message::Text(lan_proto::create_pane()));
                                     }
                                 }
                             }

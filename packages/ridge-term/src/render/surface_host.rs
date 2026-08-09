@@ -334,9 +334,9 @@ impl SurfaceHost {
                 //    bytes 16..28  bg_rgb   : vec3<f32>  (12 bytes)
                 //    bytes 28..32  opacity  : f32        (4-byte std140 pad is satisfied)
                 let mut bytes = [0u8; WALLPAPER_UNIFORM_SIZE as usize];
-                bytes[ 0.. 4].copy_from_slice(&uv.scale[0].to_le_bytes());
-                bytes[ 4.. 8].copy_from_slice(&uv.scale[1].to_le_bytes());
-                bytes[ 8..12].copy_from_slice(&uv.offset[0].to_le_bytes());
+                bytes[0..4].copy_from_slice(&uv.scale[0].to_le_bytes());
+                bytes[4..8].copy_from_slice(&uv.scale[1].to_le_bytes());
+                bytes[8..12].copy_from_slice(&uv.offset[0].to_le_bytes());
                 bytes[12..16].copy_from_slice(&uv.offset[1].to_le_bytes());
                 let bg = self.frame_clear_color;
                 bytes[16..20].copy_from_slice(&(bg.r as f32).to_le_bytes());
@@ -467,7 +467,6 @@ impl SurfaceHost {
             pass.set_pipeline(pipeline);
             record(&mut pass);
         }
-
     }
 
     /// Upload a new wallpaper image and enable the wallpaper path in

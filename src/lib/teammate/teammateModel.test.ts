@@ -64,6 +64,31 @@ describe('parseTopologySnapshot', () => {
     expect(snap.roster[2].capability).toBeUndefined();
   });
 
+  it('keeps Kernel fencing fields separate from display name and CWD', () => {
+    const snap = parseTopologySnapshot({
+      roster: [{
+        id: 'agent-stable',
+        name: 'title is not identity',
+        paneId: 'pane-1',
+        cwd: 'C:/context-only',
+        sessionId: 'session-1',
+        workspaceId: 'workspace-1',
+        generation: 3,
+        lease: 'lease-3',
+        lifecycle: 'Online',
+        online: true,
+        capabilities: ['messages'],
+      }],
+    });
+    expect(snap.roster[0]).toMatchObject({
+      id: 'agent-stable',
+      name: 'title is not identity',
+      generation: 3,
+      lease: 'lease-3',
+      sessionId: 'session-1',
+    });
+  });
+
   it('degrades to EMPTY_TOPOLOGY on garbage', () => {
     expect(parseTopologySnapshot(null)).toEqual(EMPTY_TOPOLOGY);
     expect(parseTopologySnapshot('nope')).toEqual(EMPTY_TOPOLOGY);

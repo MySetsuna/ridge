@@ -27,6 +27,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{GuiSession, NativeError, NewSessionReq};
+use ridge_mcp::server::McpSessionState;
 
 // ===================== host seam =====================
 
@@ -60,6 +61,10 @@ impl GuiSessionSource for NoGuiSessions {
 pub struct NativeHttpCtx {
     pub token: Arc<String>,
     pub gui: Arc<dyn GuiSessionSource>,
+    /// Host-owned Hub state. The MCP router must not silently fall back to a
+    /// process-global queue when the headless host is embedded in another
+    /// Ridge process.
+    pub mcp_state: Arc<McpSessionState>,
 }
 
 impl NativeHttpCtx {
@@ -68,7 +73,13 @@ impl NativeHttpCtx {
         Self {
             token: Arc::new(token.into()),
             gui: Arc::new(NoGuiSessions),
+            mcp_state: Arc::new(McpSessionState::default()),
         }
+    }
+
+    pub fn with_mcp_state(mut self, mcp_state: Arc<McpSessionState>) -> Self {
+        self.mcp_state = mcp_state;
+        self
     }
 }
 
@@ -89,7 +100,10 @@ pub fn native_router(ctx: NativeHttpCtx) -> Router {
         .route("/api/v1/tmux/send-keys", post(route_send_keys))
         .route("/api/v1/tmux/select", post(route_select))
         .route("/api/v1/tmux/kill", post(route_kill))
-        .route("/api/v1/tmux/list-all-sessions", get(route_list_all_sessions))
+        .route(
+            "/api/v1/tmux/list-all-sessions",
+            get(route_list_all_sessions),
+        )
         .with_state(ctx)
 }
 

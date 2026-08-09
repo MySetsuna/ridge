@@ -56,16 +56,20 @@ impl PtyBridge {
         // tests available when needed.
         let use_kernel = !cfg!(test) || std::env::var_os("RIDGE_TEST_USE_KERNEL").is_some();
         if use_kernel {
-            let endpoint = ridge_kernel::client::running_endpoint().or_else(|| {
-                crate::kernel_ctl::ensure_kernel_running().ok()
-            });
+            let endpoint = ridge_kernel::client::running_endpoint()
+                .or_else(|| crate::kernel_ctl::ensure_kernel_running().ok());
             if let Some(endpoint) = endpoint {
                 return Self::spawn_kernel(endpoint, shell, cwd);
             }
         }
         let registry = Arc::new(PtyRegistry::default());
         let (id, output) = registry.spawn_with_output(shell, cwd)?;
-        Ok((Self { backend: PtyBackend::Local { registry, id } }, output))
+        Ok((
+            Self {
+                backend: PtyBackend::Local { registry, id },
+            },
+            output,
+        ))
     }
 
     fn spawn_kernel(
@@ -98,9 +102,7 @@ impl PtyBridge {
         // WebRTC session. The kernel remains the history owner; this lease
         // starts at the newest frame and only forwards output produced after
         // the detached host attached.
-        let after_seq = selected
-            .as_ref()
-            .map(|pty| pty.next_seq.saturating_sub(1));
+        let after_seq = selected.as_ref().map(|pty| pty.next_seq.saturating_sub(1));
         let lease_id = ridge_kernel::client::attach_domain_pty_output(&endpoint, id, after_seq)
             .map_err(|error| anyhow::anyhow!("attach kernel PTY output: {error}"))?;
         if let Err(error) = write_remote_pty_binding(
@@ -124,16 +126,28 @@ impl PtyBridge {
             loop {
                 let result = tokio::task::spawn_blocking({
                     let endpoint = poll_endpoint.clone();
-                    move || ridge_kernel::client::poll_domain_pty_output(&endpoint, id, lease_id, 1000, 64)
+                    move || {
+                        ridge_kernel::client::poll_domain_pty_output(
+                            &endpoint, id, lease_id, 1000, 64,
+                        )
+                    }
                 })
                 .await;
                 match result {
-                    Ok(Ok(ridge_kernel::client::KernelPtyOutput::Data(bytes))) if !bytes.is_empty() => {
-                        if tx.send(bytes).await.is_err() { break; }
+                    Ok(Ok(ridge_kernel::client::KernelPtyOutput::Data(bytes)))
+                        if !bytes.is_empty() =>
+                    {
+                        if tx.send(bytes).await.is_err() {
+                            break;
+                        }
                     }
                     Ok(Ok(ridge_kernel::client::KernelPtyOutput::Timeout)) => {}
                     Ok(Ok(ridge_kernel::client::KernelPtyOutput::Lagged)) => {
-                        let _ = ridge_kernel::client::resync_domain_pty_output(&poll_endpoint, id, lease_id);
+                        let _ = ridge_kernel::client::resync_domain_pty_output(
+                            &poll_endpoint,
+                            id,
+                            lease_id,
+                        );
                     }
                     Ok(Err(error)) => {
                         tracing::debug!(target: "ridge_cli::pty", %error, "kernel output lease ended");
@@ -147,22 +161,35 @@ impl PtyBridge {
                 }
             }
         });
-        Ok((Self { backend: PtyBackend::Kernel { endpoint, id, lease_id } }, rx))
+        Ok((
+            Self {
+                backend: PtyBackend::Kernel {
+                    endpoint,
+                    id,
+                    lease_id,
+                },
+            },
+            rx,
+        ))
     }
 
     pub fn write_input(&self, data: &[u8]) -> Result<()> {
         match &self.backend {
             PtyBackend::Local { registry, id } => registry.write(*id, data),
-            PtyBackend::Kernel { endpoint, id, .. } => ridge_kernel::client::write_domain_pty(endpoint, *id, data)
-                .map_err(|error| anyhow::anyhow!(error)),
+            PtyBackend::Kernel { endpoint, id, .. } => {
+                ridge_kernel::client::write_domain_pty(endpoint, *id, data)
+                    .map_err(|error| anyhow::anyhow!(error))
+            }
         }
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         match &self.backend {
             PtyBackend::Local { registry, id } => registry.resize(*id, cols, rows),
-            PtyBackend::Kernel { endpoint, id, .. } => ridge_kernel::client::resize_domain_pty(endpoint, *id, cols, rows)
-                .map_err(|error| anyhow::anyhow!(error)),
+            PtyBackend::Kernel { endpoint, id, .. } => {
+                ridge_kernel::client::resize_domain_pty(endpoint, *id, cols, rows)
+                    .map_err(|error| anyhow::anyhow!(error))
+            }
         }
     }
 }
@@ -221,8 +248,7 @@ fn select_kernel_pty<'a>(
                 && binding
                     .workspace_id
                     .map_or(true, |workspace_id| pty.workspace_id == Some(workspace_id))
-        })
-        {
+        }) {
             return Some(pty.clone());
         }
     }
@@ -241,7 +267,12 @@ fn select_kernel_pty<'a>(
 
 impl Drop for PtyBridge {
     fn drop(&mut self) {
-        if let PtyBackend::Kernel { endpoint, id, lease_id } = &self.backend {
+        if let PtyBackend::Kernel {
+            endpoint,
+            id,
+            lease_id,
+        } = &self.backend
+        {
             let _ = ridge_kernel::client::detach_domain_pty_output(endpoint, *id, *lease_id);
         } else if let PtyBackend::Local { registry, id } = &self.backend {
             let _ = registry.destroy(*id);
@@ -263,6 +294,7 @@ mod tests {
             pty_id: id,
             workspace_id: None,
             role: "shell".into(),
+            program: None,
             launch_profile: profile.map(str::to_owned),
             cwd: cwd.map(str::to_owned),
             status: "running".into(),
@@ -276,7 +308,11 @@ mod tests {
     #[test]
     fn persisted_binding_wins_over_cwd_and_profile() {
         let exact = Uuid::from_u128(2);
-        let profile = info(Uuid::from_u128(1), Some(REMOTE_PTY_PROFILE), Some("C:\\work"));
+        let profile = info(
+            Uuid::from_u128(1),
+            Some(REMOTE_PTY_PROFILE),
+            Some("C:\\work"),
+        );
         let exact_info = info(exact, None, Some("C:\\other"));
         let binding = RemotePtyBinding {
             schema: REMOTE_PTY_BINDING_SCHEMA,
@@ -284,7 +320,11 @@ mod tests {
             workspace_id: None,
             cwd: Some("C:\\other".into()),
         };
-        let selected = select_kernel_pty(&[profile, exact_info.clone()], Some(&binding), Some("C:\\work"));
+        let selected = select_kernel_pty(
+            &[profile, exact_info.clone()],
+            Some(&binding),
+            Some("C:\\work"),
+        );
         assert_eq!(selected.map(|pty| pty.pty_id), Some(exact));
     }
 

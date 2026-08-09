@@ -118,7 +118,6 @@ beforeEach(() => {
   invokeMock.mockImplementation(async (cmd: string) => {
     switch (cmd) {
       case 'get_active_workspace_id': return 'ws1';
-      case 'get_pane_layout': return LAYOUT;
       case 'get_pane_layout_for': return LAYOUT;
       case 'list_workspaces': return [{ id: 'ws1', name: 'One' }, { id: 'ws2', name: 'Two' }];
       case 'split_pane': return { pane_id: 'pane-new', initial_cwd: null };
@@ -195,7 +194,7 @@ describe('CloudRemoteConnection panes', () => {
     const msgs: WsMessage[] = [];
     let resolveLayout!: (layout: PaneNode) => void;
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'get_pane_layout') {
+      if (cmd === 'get_pane_layout_for') {
         return await new Promise<PaneNode>((resolve) => { resolveLayout = resolve; });
       }
       if (cmd === 'switch_workspace') return undefined;
@@ -681,8 +680,12 @@ describe('CloudRemoteConnection panes', () => {
     const conn = await connected();
     const id = await conn.createPane();
     expect(invokeMock).toHaveBeenCalledWith(
+      'get_pane_layout_for',
+      { workspaceId: 'ws1' },
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
       'split_pane',
-      { paneId: 'pane-a', direction: 'horizontal' },
+      { workspaceId: 'ws1', paneId: 'pane-a', direction: 'horizontal' },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(id).toBe('pane-new');

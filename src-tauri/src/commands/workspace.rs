@@ -91,12 +91,64 @@ pub fn get_active_workspace_id(state: State<'_, AppState>) -> Result<String, Str
     Ok(state.active_workspace_id().to_string())
 }
 
+/// Keep the kernel's active workspace aligned with the desktop projection.
+/// The kernel remains authoritative for detached Remote, while the desktop
+/// owns window-local selection; this bridge is idempotent and best-effort
+/// during early startup before the kernel endpoint exists.
+pub(crate) fn sync_kernel_active_workspace(workspace_id: Uuid) {
+    let Some(endpoint) = ridge_kernel::client::running_endpoint() else {
+        return;
+    };
+    if let Err(error) = ridge_kernel::client::request_json(
+        &endpoint,
+        "POST",
+        &format!("/v1/domain/workspaces/{workspace_id}/activate"),
+        None,
+    ) {
+        tracing::debug!(target: "ridge::workspace", %workspace_id, %error, "kernel active workspace sync deferred");
+    }
+}
+
+/// Keep the detached kernel Remote projection aligned with the desktop pane
+/// tree. This is best-effort during startup, but failures stay visible in logs
+/// rather than silently changing the desktop's local topology.
+pub(crate) fn sync_kernel_workspace_topology(state: &AppState, workspace_id: Uuid) {
+    let Some(endpoint) = ridge_kernel::client::running_endpoint() else {
+        return;
+    };
+    let pane_tree = state
+        .workspaces
+        .read()
+        .get(&workspace_id)
+        .map(|workspace| workspace.pane_tree.clone());
+    let Some(pane_tree) = pane_tree else {
+        return;
+    };
+    if let Err(error) =
+        ridge_kernel::client::sync_domain_workspace_topology(&endpoint, workspace_id, &pane_tree)
+    {
+        tracing::warn!(target: "ridge::workspace", %workspace_id, %error, "kernel workspace topology sync failed");
+    }
+}
+
+/// Kernel bootstrap runs after the first window is built. Reconcile every
+/// restored workspace once the endpoint is healthy so a startup race cannot
+/// leave Remote projecting an old single-leaf topology.
+pub(crate) fn sync_kernel_workspace_topologies(state: &AppState) {
+    let workspace_ids = state.workspaces.read().keys().copied().collect::<Vec<_>>();
+    for workspace_id in workspace_ids {
+        sync_kernel_workspace_topology(state, workspace_id);
+    }
+}
+
 #[tauri::command]
 pub fn get_window_active_workspace_id(
     state: State<'_, AppState>,
     window: WebviewWindow,
 ) -> Result<String, String> {
-    Ok(state.active_workspace_for_window(window.label()).to_string())
+    Ok(state
+        .active_workspace_for_window(window.label())
+        .to_string())
 }
 
 /// Resolve one desktop window's initial workspace in one backend round-trip.
@@ -118,11 +170,10 @@ pub fn acquire_window_workspace(
         .into_iter()
         .filter(|id| workspaces.contains_key(id))
         .collect();
-    let acquired = state.workspace_window_claims.acquire_available(
-        window.label(),
-        preferred,
-        &candidates,
-    );
+    let acquired =
+        state
+            .workspace_window_claims
+            .acquire_available(window.label(), preferred, &candidates);
     drop(workspaces);
     if let Some(id) = acquired {
         return Ok(id.to_string());
@@ -157,9 +208,7 @@ pub fn claim_workspace_window(
     let requester = window.label().to_owned();
     match state.workspace_window_claims.claim(id, &requester) {
         WorkspaceWindowClaim::Acquired | WorkspaceWindowClaim::AlreadyOwned => {
-            state
-                .workspace_window_claims
-                .select_owned(id, &requester);
+            state.workspace_window_claims.select_owned(id, &requester);
             Ok(WorkspaceWindowClaimResult {
                 claimed: true,
                 owner_window_label: requester,
@@ -187,9 +236,7 @@ pub fn claim_workspace_window(
                     state.workspace_window_claims.claim(id, &requester),
                     WorkspaceWindowClaim::Acquired | WorkspaceWindowClaim::AlreadyOwned
                 ) {
-                    state
-                        .workspace_window_claims
-                        .select_owned(id, &requester);
+                    state.workspace_window_claims.select_owned(id, &requester);
                     return Ok(WorkspaceWindowClaimResult {
                         claimed: true,
                         owner_window_label: requester,
@@ -211,6 +258,8 @@ pub fn switch_workspace(state: State<'_, AppState>, workspace_id: String) -> Res
         return Err("工作区不存在".into());
     }
     *state.active_workspace.write() = id;
+    sync_kernel_workspace_topology(&state, id);
+    sync_kernel_active_workspace(id);
     Ok(())
 }
 
@@ -235,6 +284,8 @@ pub fn switch_window_workspace(
     // Keep legacy observers in sync; desktop commands still resolve through the
     // per-window selection, while Remote/CLI continue using the global command.
     *state.active_workspace.write() = id;
+    sync_kernel_workspace_topology(&state, id);
+    sync_kernel_active_workspace(id);
     Ok(())
 }
 
@@ -272,6 +323,7 @@ pub fn insert_new_workspace(state: &AppState, pane_tree: PaneTree, name: Option<
     if let Some(name) = name.filter(|n| !n.is_empty()) {
         state.workspace_names.write().insert(id, name.to_string());
     }
+    sync_kernel_workspace_topology(state, id);
     id.to_string()
 }
 
@@ -490,7 +542,10 @@ pub fn save_workspace_core(
                 let pane_tree_json = serde_json::to_string(&ws.pane_tree).unwrap_or_default();
                 let workspace_name = name.map(|n| n.to_string()).unwrap_or_else(|| {
                     names.get(&active_id).cloned().unwrap_or_else(|| {
-                        format!("Saved Workspace {}", chrono::Utc::now().format("%Y-%m-%d %H:%M"))
+                        format!(
+                            "Saved Workspace {}",
+                            chrono::Utc::now().format("%Y-%m-%d %H:%M")
+                        )
                     })
                 });
                 (pane_tree_json, pane_count, workspace_name)
@@ -661,7 +716,10 @@ mod tests {
         let mut rx = state.remote_structural_tx.subscribe();
 
         rename_workspace_core(&state, wid, "新名".to_string()).unwrap();
-        assert_eq!(state.workspace_names.read().get(&wid).map(String::as_str), Some("新名"));
+        assert_eq!(
+            state.workspace_names.read().get(&wid).map(String::as_str),
+            Some("新名")
+        );
         match rx.try_recv() {
             Ok(crate::types::RemoteStructuralEvent::WorkspaceRenamed { workspace_id, name }) => {
                 assert_eq!(workspace_id, wid);
@@ -673,5 +731,45 @@ mod tests {
             rx.try_recv(),
             Ok(crate::types::RemoteStructuralEvent::WorkspacesChanged)
         ));
+    }
+
+    #[test]
+    fn insert_workspace_preserves_tree_and_only_stores_non_empty_name() {
+        let state = test_state();
+        let mut tree = PaneTree::new();
+        let root = tree.get_all_leaves()[0];
+        let split = tree
+            .split(
+                root,
+                ridge_core::workspace::pane_tree::SplitDirection::Horizontal,
+            )
+            .unwrap();
+
+        let named =
+            Uuid::parse_str(&insert_new_workspace(&state, tree.clone(), Some("remote"))).unwrap();
+        assert_eq!(state.active_workspace_id(), named);
+        let stored_tree = {
+            let workspaces = state.workspaces.read();
+            serde_json::to_value(&workspaces.get(&named).unwrap().pane_tree).unwrap()
+        };
+        assert_eq!(stored_tree, serde_json::to_value(&tree).unwrap());
+        assert_eq!(
+            state.workspace_names.read().get(&named).map(String::as_str),
+            Some("remote")
+        );
+        assert!(state.workspace_order.read().contains(&named));
+
+        let unnamed =
+            Uuid::parse_str(&insert_new_workspace(&state, PaneTree::new(), Some(""))).unwrap();
+        assert!(!state.workspace_names.read().contains_key(&unnamed));
+        assert_ne!(named, unnamed);
+        assert!(state
+            .workspaces
+            .read()
+            .get(&named)
+            .unwrap()
+            .pane_tree
+            .panes
+            .contains_key(&split));
     }
 }

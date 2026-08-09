@@ -3,10 +3,10 @@
 //! This crate deliberately contains no Tauri, CLI, or web dependency. The
 //! `ridge-kernel` binary owns the process; shells consume this small contract.
 
-pub mod registry;
-pub mod client;
 pub mod agent_profiles;
-pub mod pty;
+pub mod client;
 mod domain;
 mod kernel_mcp;
+pub mod pty;
+pub mod registry;
 pub mod server;

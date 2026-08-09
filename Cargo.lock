@@ -5513,6 +5513,7 @@ dependencies = [
  "reqwest 0.12.28",
  "ridge-core",
  "ridge-kernel",
+ "ridge-mcp",
  "ridge-mcp-bridge",
  "ridge-remote",
  "ridge-signaling",
@@ -5584,6 +5585,7 @@ name = "ridge-mcp"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "rusqlite",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

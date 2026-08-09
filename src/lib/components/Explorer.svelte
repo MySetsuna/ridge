@@ -50,6 +50,7 @@
 
 	import { t, tr } from '$lib/i18n';
 	import { showContextMenu } from '$lib/stores/contextMenu';
+	import { summarizeExplorerPaste, type ExplorerPasteOutcome } from './explorerPaste';
 
 	interface Props {
 		workspaceId: string;
@@ -567,8 +568,7 @@
 		for (const p of findDirChildren(col.tree) ?? []) existingInTarget.add(p);
 
 		const cmd = clip.mode === 'copy' ? 'copy_path' : 'move_path';
-		const errors: string[] = [];
-		const failedPaths: string[] = [];
+		const outcomes: ExplorerPasteOutcome[] = [];
 		for (const from of clip.paths) {
 			const name = from.split(/[\\/]/).pop() || 'untitled';
 			const unique = uniqueChildName(targetDir, name, existingInTarget);
@@ -577,14 +577,15 @@
 			existingInTarget.add(to);
 			try {
 				await invoke(cmd, { from, to });
+				outcomes.push({ status: 'succeeded', source: from, target: to });
 			} catch (e) {
-				failedPaths.push(from);
-				errors.push(`${from}: ${e}`);
+				outcomes.push({ status: 'failed', source: from, target: to, error: String(e) });
 			}
 		}
+		const summary = summarizeExplorerPaste(outcomes);
 		// Partial cut keeps only failed paths armed for retry; successful paths must not move twice.
 		if (clip.mode === 'cut') {
-			setExplorerClipboard(remainingCutClipboard(clip, failedPaths));
+			setExplorerClipboard(remainingCutClipboard(clip, summary.failedPaths));
 		}
 		// Refresh every column that had the target dir in its cached tree —
 		// fixes the "two panes at same cwd see stale tree after paste" case.
@@ -597,8 +598,9 @@
 			);
 			for (const d of sourceDirs) await refreshColumnsCovering(d);
 		}
-		if (errors.length > 0) {
-			await alertDialog({ title: tr('explorer.pasteFailed'), message: tr('explorer.pasteFailedMessage', { count: errors.length, details: errors.join('\n') }), danger: true });
+		if (summary.failed > 0) {
+			const details = summary.failures.map(({ source, target, error }) => `${source} → ${target}: ${error}`);
+			await alertDialog({ title: tr('explorer.pasteFailed'), message: tr('explorer.pasteFailedMessage', { count: summary.failed, details: details.join('\n') }), danger: true });
 		}
 		} finally {
 			pasting = false;

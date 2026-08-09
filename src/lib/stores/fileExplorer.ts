@@ -81,25 +81,43 @@ const initialState: FileExplorerState = {
 	activeColumnId: null,
 };
 
+function normalizeSlashes(path: string): string {
+	return path.replaceAll('\\', '/');
+}
+
+function trimTrailingSlashes(path: string): string {
+	let end = path.length;
+	while (end > 0 && (path[end - 1] === '/' || path[end - 1] === '\\')) end -= 1;
+	return path.slice(0, end);
+}
+
+function normalizedPath(path: string): string {
+	return trimTrailingSlashes(normalizeSlashes(path));
+}
+
+function pathPrefix(path: string): string {
+	return `${normalizedPath(path)}/`;
+}
+
 function cwdColumnId(workspaceId: string, cwd: string): string {
 	return `${workspaceId}:${cwd}`;
 }
 
 function normalizedPathKey(path: string): string {
-	const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+	const normalized = normalizedPath(path) || '/';
 	return /^[A-Za-z]:\//.test(normalized) || normalized.startsWith('//')
 		? normalized.toLowerCase()
 		: normalized;
 }
 
 export function parentDirectory(path: string): string {
-	const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
+	const normalized = normalizedPath(path);
 	const splitAt = normalized.lastIndexOf('/');
 	if (splitAt < 0) return '.';
 	if (splitAt === 0) return '/';
 	if (splitAt === 2 && /^[A-Za-z]:/.test(normalized)) return normalized.slice(0, 3);
 	const parent = normalized.slice(0, splitAt);
-	return path.includes('\\') ? parent.replace(/\//g, '\\') : parent;
+	return path.includes('\\') ? parent.replaceAll('/', '\\') : parent;
 }
 
 // ─── Per-column persistence (expandedPaths + selectedPath) ───────────────────
@@ -190,7 +208,7 @@ function createFileExplorerStore() {
 					const existing = existingById.get(colId);
 					// Merge incoming titles with any previously stored titles
 					const mergedTitles: Record<string, string> = {
-						...(existing?.paneTitles ?? {}),
+						...existing?.paneTitles,
 						...paneTitles,
 					};
 					if (existing) {
@@ -404,7 +422,7 @@ function createFileExplorerStore() {
 				// didn't fetch that deep. Stale deep paths are cleaned up by the
 				// separate `pruneStaleExpandedPaths` idle task (which calls the
 				// lightweight `path_exists` IPC).
-				const cwdPrefix = column.cwd.replace(/\\/g, '/').replace(/\/+$/, '') + '/';
+				const cwdPrefix = pathPrefix(column.cwd);
 				update((s) => ({
 					...s,
 					columns: s.columns.map((c) => {
@@ -412,7 +430,7 @@ function createFileExplorerStore() {
 						const pruned = new Set<string>();
 						for (const p of c.expandedPaths) {
 							if (seen.has(p)) { pruned.add(p); continue; }
-							const normalized = p.replace(/\\/g, '/');
+							const normalized = normalizeSlashes(p);
 							if (normalized.startsWith(cwdPrefix)) {
 								const relative = normalized.slice(cwdPrefix.length);
 								const depth = relative.split('/').filter(Boolean).length;
@@ -440,6 +458,26 @@ function createFileExplorerStore() {
 				// 只 console.warn，不再给标题追加"· 目录不存在"文案 —— 避免用户在目录实际存在但
 				// 路径传递有误（如正反斜杠 Windows 混用）的情况下被误导。
 				const isMissing = /not exist|No such file|path is not a directory/i.test(msg);
+				if (isMissing) {
+					// Workspace restore/split may publish a pane CWD one tick before
+					// the host filesystem view settles. Revalidate once before exposing
+					// a placeholder; old hosts without path_exists fall through.
+					try {
+						const stillExists = await invoke<boolean>('path_exists', { path: column.cwd });
+						if (stillExists) {
+							const tree = await invoke<FileNode>('get_file_tree', { path: column.cwd, depth });
+							update((s) => ({
+								...s,
+								columns: s.columns.map((c) => c.id === columnId
+									? { ...c, tree, loading: false, refreshNonce: (c.refreshNonce ?? 0) + 1 }
+									: c),
+							}));
+							return;
+						}
+					} catch {
+						// Keep the original missing-path diagnostic below.
+					}
+				}
 				if (!isMissing) {
 					reportDevIssue({ message: `Failed to load file tree: ${e}` });
 				} else {
@@ -677,12 +715,13 @@ function createFileExplorerStore() {
 					if (c.id !== columnId) return c;
 					const paths = new Set<string>(selection.paths);
 					if (selection.primary) paths.add(selection.primary);
+					let anchorPath = c.anchorPath;
+					if (selection.anchor !== undefined) anchorPath = selection.anchor;
 					const next: ExplorerColumn = {
 						...c,
 						selectedPath: selection.primary,
 						selectedPaths: paths,
-						anchorPath:
-							selection.anchor === undefined ? c.anchorPath : selection.anchor,
+						anchorPath,
 					};
 					savePersistedColumn(next);
 					return next;
@@ -715,15 +754,18 @@ function createFileExplorerStore() {
 		 * Remove column.
 		 */
 		removeColumn(columnId: string): void {
-			update((state) => ({
-				...state,
-				columns: state.columns.filter((c) => c.id !== columnId),
-				columnOrder: state.columnOrder.filter((id) => id !== columnId),
-				activeColumnId:
-					state.activeColumnId === columnId
-						? state.columns[0]?.id || null
-						: state.activeColumnId,
-			}));
+			update((state) => {
+				const columns = state.columns.filter((c) => c.id !== columnId);
+				return {
+					...state,
+					columns,
+					columnOrder: state.columnOrder.filter((id) => id !== columnId),
+					activeColumnId:
+						state.activeColumnId === columnId
+							? columns[0]?.id ?? null
+							: state.activeColumnId,
+				};
+			});
 		},
 
 		/**
@@ -931,7 +973,7 @@ export function uniqueChildName(
 	existingAbsolute: Set<string>
 ): string {
 	const sep = dirPath.includes('\\') && !dirPath.includes('/') ? '\\' : '/';
-	const clean = dirPath.replace(/[\\/]+$/, '');
+	const clean = trimTrailingSlashes(dirPath);
 	const dotIdx = desired.lastIndexOf('.');
 	const base = dotIdx > 0 ? desired.slice(0, dotIdx) : desired;
 	const ext = dotIdx > 0 ? desired.slice(dotIdx) : '';
@@ -957,7 +999,7 @@ export async function refreshColumnsCovering(dirPath: string): Promise<void> {
 	// fs-changed payload paths and `col.cwd` are normalised to FORWARD slashes.
 	// Without this normalization, every fs-changed event silently no-oped on
 	// Windows because `node.path === dirPath` could never be true.
-	const norm = (p: string): string => p.replace(/\\/g, '/').replace(/\/+$/, '');
+	const norm = normalizedPath;
 	const target = norm(dirPath);
 	// A column "covers" `dirPath` iff the changed dir is the column's cwd
 	// itself or a descendant. Walking only `col.tree` (depth=1 cache) misses
@@ -1030,36 +1072,39 @@ export function initFileExplorer(
 
 const PRUNE_BATCH_SIZE = 20;
 
-export async function pruneStaleExpandedPaths(): Promise<void> {
-	if (!isTauri()) return;
-	const state = get(fileExplorerStore);
-	for (const col of state.columns) {
-		const toCheck: string[] = [];
-		const cwdPrefix = col.cwd.replace(/\\/g, '/').replace(/\/+$/, '') + '/';
-		for (const p of col.expandedPaths) {
-			const normalized = p.replace(/\\/g, '/');
-			if (normalized.startsWith(cwdPrefix)) {
-				const relative = normalized.slice(cwdPrefix.length);
-				const depth = relative.split('/').filter(Boolean).length;
-				if (depth > 1) toCheck.push(p);
-			}
-		}
-		if (toCheck.length === 0) continue;
+function staleExpandedPaths(column: ExplorerColumn): string[] {
+	const cwdPrefix = pathPrefix(column.cwd);
+	return [...column.expandedPaths].filter((path) => {
+		const normalized = normalizeSlashes(path);
+		if (!normalized.startsWith(cwdPrefix)) return false;
+		const relative = normalized.slice(cwdPrefix.length);
+		return relative.split('/').filter(Boolean).length > 1;
+	});
+}
 
-		// Batch-parallel verification — each IPC is a single metadata call (~50μs).
-		const gone: string[] = [];
-		for (let i = 0; i < toCheck.length; i += PRUNE_BATCH_SIZE) {
-			const batch = toCheck.slice(i, i + PRUNE_BATCH_SIZE);
-			const results = await Promise.all(
-				batch.map((p) =>
-					invoke<boolean>('path_exists', { path: p }).catch(() => true)
-				)
-			);
-			for (let j = 0; j < batch.length; j++) {
-				if (!results[j]) gone.push(batch[j]);
-			}
+async function missingPaths(paths: string[]): Promise<string[]> {
+	const gone: string[] = [];
+	for (let i = 0; i < paths.length; i += PRUNE_BATCH_SIZE) {
+		const batch = paths.slice(i, i + PRUNE_BATCH_SIZE);
+		const results = await Promise.all(
+			batch.map((path) => invoke<boolean>('path_exists', { path }).catch(() => true))
+		);
+		for (let j = 0; j < batch.length; j += 1) {
+			if (!results[j]) gone.push(batch[j]);
 		}
-		if (gone.length === 0) continue;
-		fileExplorerStore.removeExpandedPaths(col.id, gone);
+	}
+	return gone;
+}
+
+export async function pruneStaleExpandedPaths(): Promise<void> {
+	if (!isTauri()) {
+		return;
+	}
+	const state = get(fileExplorerStore);
+	for (const column of state.columns) {
+		const toCheck = staleExpandedPaths(column);
+		if (toCheck.length === 0) continue;
+		const gone = await missingPaths(toCheck);
+		if (gone.length > 0) fileExplorerStore.removeExpandedPaths(column.id, gone);
 	}
 }

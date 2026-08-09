@@ -93,7 +93,10 @@ pub fn thaw_job_primary(job: &JobHandle, primary_pid: u32) -> Result<(), String>
 ///   Creating a throwaway job on this path was a regression: CreateJobObject failure
 ///   blocked freezes that OS APIs would accept, and the matching thaw path could
 ///   fail to unfreeze if create_job failed on resume.
-pub fn try_freeze_primary(job: Option<&JobHandle>, pid: Option<u32>) -> Result<Option<u32>, String> {
+pub fn try_freeze_primary(
+    job: Option<&JobHandle>,
+    pid: Option<u32>,
+) -> Result<Option<u32>, String> {
     let Some(pid) = pid else {
         return Ok(None);
     };

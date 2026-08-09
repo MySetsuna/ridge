@@ -32,6 +32,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:coverage:sonar": "vitest run --coverage --coverage.processingConcurrency=1 --no-file-parallelism && node scripts/normalize-lcov.mjs",
     "e2e": "playwright test",
     "e2e:install": "playwright install chromium",
     "e2e:rdg-lan": "node scripts/rdg-remote-e2e.mjs",

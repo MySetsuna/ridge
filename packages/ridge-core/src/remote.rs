@@ -49,9 +49,13 @@ pub struct RemoteHostTopology {
 }
 
 impl RemoteHostTopology {
-    pub fn from_records(hosts: HashMap<String, HostRecord>) -> Self { Self { hosts } }
+    pub fn from_records(hosts: HashMap<String, HostRecord>) -> Self {
+        Self { hosts }
+    }
 
-    pub fn records(&self) -> &HashMap<String, HostRecord> { &self.hosts }
+    pub fn records(&self) -> &HashMap<String, HostRecord> {
+        &self.hosts
+    }
 
     pub fn snapshot(&self) -> Vec<HostRecord> {
         let mut hosts = self.hosts.values().cloned().collect::<Vec<_>>();
@@ -59,11 +63,17 @@ impl RemoteHostTopology {
         hosts
     }
 
-    pub fn get(&self, id: &str) -> Option<HostRecord> { self.hosts.get(id).cloned() }
+    pub fn get(&self, id: &str) -> Option<HostRecord> {
+        self.hosts.get(id).cloned()
+    }
 
-    pub fn upsert(&mut self, host: HostRecord) { self.hosts.insert(host.id.clone(), host); }
+    pub fn upsert(&mut self, host: HostRecord) {
+        self.hosts.insert(host.id.clone(), host);
+    }
 
-    pub fn remove(&mut self, id: &str) -> bool { self.hosts.remove(id).is_some() }
+    pub fn remove(&mut self, id: &str) -> bool {
+        self.hosts.remove(id).is_some()
+    }
 }
 
 #[cfg(test)]
@@ -89,8 +99,13 @@ mod tests {
         let mut topology = RemoteHostTopology::default();
         for label in ["B", "A"] {
             topology.upsert(HostRecord {
-                id: label.into(), kind: HostKind::Remote, label: label.into(), addr: String::new(),
-                status: HostStatus::Disconnected, detail: String::new(), sessions: vec![],
+                id: label.into(),
+                kind: HostKind::Remote,
+                label: label.into(),
+                addr: String::new(),
+                status: HostStatus::Disconnected,
+                detail: String::new(),
+                sessions: vec![],
             });
         }
         assert_eq!(topology.snapshot()[0].label, "A");

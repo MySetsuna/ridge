@@ -259,11 +259,7 @@ impl SearchEngine {
                 || relative.contains(&pattern_lower)
                 || absolute.contains(&pattern_lower)
             {
-                matches.push((
-                    path.to_string_lossy().to_string(),
-                    name,
-                    relative,
-                ));
+                matches.push((path.to_string_lossy().to_string(), name, relative));
             }
         }
 

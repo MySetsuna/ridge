@@ -1,4 +1,4 @@
-// PTY-leak trace: drive the mobile remote (Playwright/9528) through each pane &
+// PTY-leak trace: drive the mobile remote (Playwright/9527) through each pane &
 // workspace operation, reading per-workspace pane_tree leaves vs terminals vs
 // pending_spawns (via get_remote_info over CDP/9222) after each step. The op
 // after which terminals/pending > leaves for a workspace is the orphan source.
@@ -7,8 +7,8 @@ import http from 'node:http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROFILE_DIR = path.resolve(__dirname, '..', '.pw-remote-profile');
-const URL = process.env.RIDGE_URL || 'https://127.0.0.1:9528';
+const PROFILE_DIR = process.env.RIDGE_PROFILE_DIR || path.resolve(__dirname, '..', '.pw-remote-profile');
+const URL = process.env.RIDGE_URL || 'https://127.0.0.1:9527';
 const CODE = (process.env.RIDGE_CODE || '').replace(/\D/g, '').slice(0, 6);
 const CDP = process.env.CDP_PORT || '9222';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -60,8 +60,8 @@ await step('0 baseline');
 for (let i = 0; i < 2; i++) { await openTree(); const n = await page.locator('.pane-row').count(); await page.locator('.pane-new').first().evaluate((el) => el.click()); for (let k = 0; k < 25 && (await page.locator('.pane-row').count()) <= n; k++) await sleep(200); await step(`1.${i + 1} create-pane`); }
 // close active pane
 await openTree(); await page.locator('.pane-row.active .row-close').first().evaluate((el) => el.click()).catch(() => {}); await step('2 close-pane');
-// create workspace
-await openTree(); const origWs = (await wsActive())?.trim(); await page.locator('.tree-add').first().evaluate((el) => el.click()); await sleep(1500); await step('3 create-workspace');
+// create workspace (the first action opens saved workspaces; the second creates one)
+await openTree(); const origWs = (await wsActive())?.trim(); await page.locator('.tree-add:not([data-testid="tree-open-saved"])').first().click(); await sleep(1500); await step('3 create-workspace');
 // switch back to original
 await openTree(); await page.locator('.ws-row', { hasText: origWs }).first().evaluate((el) => el.click()); await sleep(1200); await step('4 switch-ws-back');
 // close the created workspace

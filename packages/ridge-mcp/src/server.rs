@@ -10,12 +10,19 @@
 //! 派活、抓对方屏幕、收件箱异步回话、Stash 传大块产物。
 
 use std::collections::{HashMap, VecDeque};
+use std::fs;
+use std::path::Path;
 use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::delivery::{
+    choose_delivery_adapter, DeliveryOutcome, DeliveryProbe, DeliveryRegistry, HubDeliveryAdapter,
+};
 use crate::protocol as proto;
 use crate::registry::ToolRegistry;
 use crate::resource::{RidgeUri, StashStore};
@@ -137,6 +144,50 @@ pub trait McpHost: Send + Sync {
         Ok(LaunchCapabilities::default())
     }
 
+    /// Probe the target's real delivery surface. Hosts must override this for
+    /// Runtime API/A2A/PTY; MCP pull is the only safe default because the Hub
+    /// itself owns that queue.
+    fn probe_delivery(&self, _target: &Value) -> HostResult<DeliveryProbe> {
+        Ok(DeliveryProbe {
+            mcp_pull: true,
+            ..DeliveryProbe::default()
+        })
+    }
+
+    fn deliver_runtime_api(&self, _target: &Value, _entry: &Value) -> HostResult<DeliveryOutcome> {
+        Err(HostError::Unsupported(
+            "本宿主未提供经过探测的 Runtime API adapter".into(),
+        ))
+    }
+
+    fn deliver_a2a(&self, _target: &Value, _entry: &Value) -> HostResult<DeliveryOutcome> {
+        Err(HostError::Unsupported(
+            "本宿主未提供经过探测的 A2A adapter".into(),
+        ))
+    }
+
+    /// The default PTY adapter is deliberately behind the host's probe. A
+    /// host that cannot prove all five conditions must leave the entry in Hub.
+    fn deliver_pty_fallback(&self, target: &Value, entry: &Value) -> HostResult<DeliveryOutcome> {
+        let payload = entry
+            .get("payload")
+            .and_then(|value| value.get("text").or_else(|| value.get("objective")))
+            .and_then(Value::as_str)
+            .ok_or_else(|| HostError::InvalidParams("PTY fallback payload must be text".into()))?;
+        let submit = entry
+            .get("payload")
+            .and_then(|value| value.get("submitRequested"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let dispatch = self.send_text(target, payload, submit, true)?;
+        Ok(DeliveryOutcome {
+            adapter: HubDeliveryAdapter::PtyFallback,
+            accepted: dispatch.terminal_accepted,
+            remote_id: None,
+            acknowledged: false,
+        })
+    }
+
     /// Validate and normalize a pane target. Legacy hosts receive the original
     /// target only when workspace is omitted; explicit workspace never degrades
     /// silently to their current workspace.
@@ -248,10 +299,25 @@ pub struct McpSessionState {
     stash: Mutex<StashStore>,
     inbox: Mutex<HashMap<String, Vec<Value>>>,
     receipts: Mutex<ReceiptStore>,
+    idempotency: Mutex<IdempotencyStore>,
+    /// Serialize the check → durable reservation → in-memory insert sequence.
+    /// Separate mutexes protect each store, but cannot make that compound
+    /// operation atomic; without this gate concurrent identical sends could
+    /// each allocate a message before either one records its idempotency key.
+    enqueue_lock: Mutex<()>,
+    sequences: Mutex<HashMap<String, u64>>,
+    delivery_registry: DeliveryRegistry,
+    persistence: Option<HubPersistence>,
 }
 
 impl Default for McpSessionState {
     fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl McpSessionState {
+    fn empty() -> Self {
         Self {
             stash: Mutex::new(StashStore::with_defaults()),
             inbox: Mutex::new(HashMap::new()),
@@ -259,14 +325,65 @@ impl Default for McpSessionState {
                 by_id: HashMap::new(),
                 order: VecDeque::new(),
             }),
+            idempotency: Mutex::new(IdempotencyStore {
+                by_key: HashMap::new(),
+                order: VecDeque::new(),
+            }),
+            enqueue_lock: Mutex::new(()),
+            sequences: Mutex::new(HashMap::new()),
+            delivery_registry: DeliveryRegistry::default(),
+            persistence: None,
         }
     }
-}
 
-impl McpSessionState {
+    /// Open the durable Hub used by production Kernel/Desktop hosts.
+    ///
+    /// Tests and explicitly ephemeral embedders keep using `Default`; a
+    /// production caller must not silently fall back to volatile delivery
+    /// state when SQLite cannot be opened.
+    pub fn with_sqlite(path: impl AsRef<Path>) -> Result<Self, String> {
+        let persistence = HubPersistence::open(path.as_ref())?;
+        let mut state = Self {
+            persistence: Some(persistence),
+            ..Self::empty()
+        };
+        let loaded = state
+            .persistence
+            .as_ref()
+            .expect("SQLite persistence installed")
+            .load()?;
+        state.apply_loaded(loaded);
+        Ok(state)
+    }
+
+    fn apply_loaded(&mut self, loaded: PersistedHubState) {
+        for (target_key, entry) in loaded.messages {
+            let queue = self.inbox.get_mut().expect("inbox lock not poisoned");
+            let entries = queue.entry(target_key).or_default();
+            entries.push(entry);
+            if entries.len() > INBOX_CAP {
+                let drop_n = entries.len() - INBOX_CAP;
+                entries.drain(0..drop_n);
+            }
+        }
+        for (id, entry) in loaded.receipts {
+            receipt_insert_memory(&self.receipts, id, entry);
+        }
+        for (key, entry) in loaded.idempotency {
+            dedupe_insert_memory(&self.idempotency, key, entry);
+        }
+        *self
+            .sequences
+            .get_mut()
+            .expect("sequence lock not poisoned") = loaded.sequences;
+    }
+
     /// Drop all delivery state for a pane after its generation is destroyed.
     /// Stash remains host-scoped and is independently bounded/evicted.
-    pub fn purge_pane(&self, key: &str) {
+    pub fn purge_pane(&self, key: &str) -> Result<(), String> {
+        if let Some(persistence) = &self.persistence {
+            persistence.purge(key)?;
+        }
         self.inbox.lock().unwrap().remove(key);
         let mut receipts = self.receipts.lock().unwrap();
         let expired = receipts
@@ -277,6 +394,57 @@ impl McpSessionState {
             .collect::<std::collections::HashSet<_>>();
         receipts.by_id.retain(|id, _| !expired.contains(id));
         receipts.order.retain(|id| !expired.contains(id));
+        let mut idempotency = self.idempotency.lock().unwrap();
+        let expired_keys = idempotency
+            .by_key
+            .iter()
+            .filter(|(_, value)| value.get("targetKey").and_then(Value::as_str) == Some(key))
+            .map(|(id, _)| id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        idempotency
+            .by_key
+            .retain(|id, _| !expired_keys.contains(id));
+        idempotency.order.retain(|id| !expired_keys.contains(id));
+        self.sequences.lock().unwrap().remove(key);
+        Ok(())
+    }
+
+    /// Register a bounded in-process Runtime API/A2A receiver. The caller is
+    /// responsible for tying the receiver lifetime to the current Agent
+    /// session; stale generation/lease routes cannot be selected.
+    pub fn register_delivery_endpoint(
+        &self,
+        adapter: HubDeliveryAdapter,
+        agent_id: impl Into<String>,
+        generation: u64,
+        lease: impl Into<String>,
+    ) -> Result<std::sync::mpsc::Receiver<Value>, String> {
+        self.delivery_registry
+            .register(adapter, agent_id, generation, lease)
+    }
+
+    pub fn unregister_delivery_endpoint(
+        &self,
+        adapter: HubDeliveryAdapter,
+        agent_id: &str,
+        generation: u64,
+        lease: &str,
+    ) -> Result<bool, String> {
+        self.delivery_registry
+            .unregister(adapter, agent_id, generation, lease)
+    }
+
+    pub fn delivery_probe(&self, target: &Value) -> DeliveryProbe {
+        self.delivery_registry.probe(target)
+    }
+
+    pub fn deliver_registered_endpoint(
+        &self,
+        adapter: HubDeliveryAdapter,
+        target: &Value,
+        entry: &Value,
+    ) -> Result<DeliveryOutcome, String> {
+        self.delivery_registry.deliver(adapter, target, entry)
     }
 }
 
@@ -285,7 +453,7 @@ fn default_state() -> &'static McpSessionState {
     STATE.get_or_init(McpSessionState::default)
 }
 
-/// 每个 pane 一个内存收件箱（FIFO，上限 200 条）。
+/// 每个 pane 一个有界收件箱（FIFO，上限 200 条；生产 Hub 由 SQLite 持久化）。
 ///
 /// 为什么要它：stdin 注入是「打断式」的——对方正在跑命令时消息会被 shell 吃掉，
 /// 且非同源 agent 没有回信通道。收件箱让任意 MCP 客户端**异步**收发：发送侧照旧
@@ -297,8 +465,377 @@ struct ReceiptStore {
     order: VecDeque<String>,
 }
 
-fn receipt_insert(state: &McpSessionState, id: String, value: Value) {
-    let mut store = state.receipts.lock().unwrap();
+struct IdempotencyStore {
+    by_key: HashMap<String, Value>,
+    order: VecDeque<String>,
+}
+
+struct HubPersistence {
+    connection: Mutex<Connection>,
+}
+
+struct PersistedHubState {
+    messages: Vec<(String, Value)>,
+    receipts: Vec<(String, Value)>,
+    idempotency: Vec<(String, Value)>,
+    sequences: HashMap<String, u64>,
+}
+
+impl HubPersistence {
+    fn open(path: &Path) -> Result<Self, String> {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("create Hub directory {}: {error}", parent.display()))?;
+        }
+        let connection = Connection::open(path)
+            .map_err(|error| format!("open Hub database {}: {error}", path.display()))?;
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|error| format!("configure Hub database timeout: {error}"))?;
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA synchronous = NORMAL;
+                 CREATE TABLE IF NOT EXISTS hub_messages (
+                     delivery_id TEXT PRIMARY KEY,
+                     target_key TEXT NOT NULL,
+                     entry_json TEXT NOT NULL,
+                     consumed INTEGER NOT NULL DEFAULT 0,
+                     created_at INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS hub_messages_target_order
+                     ON hub_messages(target_key, created_at);
+                 CREATE TABLE IF NOT EXISTS hub_receipts (
+                     delivery_id TEXT PRIMARY KEY,
+                     target_key TEXT NOT NULL,
+                     entry_json TEXT NOT NULL,
+                     created_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS hub_idempotency (
+                     idempotency_key TEXT PRIMARY KEY,
+                     target_key TEXT NOT NULL,
+                     entry_json TEXT NOT NULL,
+                     created_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS hub_sequences (
+                     target_key TEXT PRIMARY KEY,
+                     sequence INTEGER NOT NULL
+                 );",
+            )
+            .map_err(|error| format!("initialize Hub schema: {error}"))?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
+    }
+
+    fn load(&self) -> Result<PersistedHubState, String> {
+        let connection = self.connection.lock().unwrap();
+        let mut messages = Vec::new();
+        let mut statement = connection
+            .prepare(
+                "SELECT target_key, entry_json
+                 FROM hub_messages
+                 WHERE consumed = 0
+                 ORDER BY rowid ASC",
+            )
+            .map_err(|error| format!("prepare Hub messages: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| format!("read Hub messages: {error}"))?;
+        for row in rows {
+            let (target_key, raw) =
+                row.map_err(|error| format!("decode Hub message row: {error}"))?;
+            let entry = serde_json::from_str(&raw)
+                .map_err(|error| format!("parse Hub message JSON: {error}"))?;
+            messages.push((target_key, entry));
+        }
+
+        let receipts = load_json_rows(&connection, "hub_receipts", "delivery_id")?;
+        let idempotency = load_json_rows(&connection, "hub_idempotency", "idempotency_key")?;
+        let mut sequences = HashMap::new();
+        let mut statement = connection
+            .prepare("SELECT target_key, sequence FROM hub_sequences")
+            .map_err(|error| format!("prepare Hub sequences: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+            })
+            .map_err(|error| format!("read Hub sequences: {error}"))?;
+        for row in rows {
+            let (key, sequence) =
+                row.map_err(|error| format!("decode Hub sequence row: {error}"))?;
+            sequences.insert(key, sequence);
+        }
+        Ok(PersistedHubState {
+            messages,
+            receipts,
+            idempotency,
+            sequences,
+        })
+    }
+
+    fn lookup_idempotency(&self, key: &str) -> Result<Option<Value>, String> {
+        let connection = self.connection.lock().unwrap();
+        let raw = connection
+            .query_row(
+                "SELECT entry_json FROM hub_idempotency WHERE idempotency_key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("read Hub idempotency: {error}"))?;
+        raw.map(|raw| {
+            serde_json::from_str(&raw).map_err(|error| format!("parse Hub idempotency: {error}"))
+        })
+        .transpose()
+    }
+
+    fn next_sequence(&self, target_key: &str) -> Result<u64, String> {
+        let connection = self.connection.lock().unwrap();
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| format!("begin Hub sequence: {error}"))?;
+        let current = transaction
+            .query_row(
+                "SELECT sequence FROM hub_sequences WHERE target_key = ?1",
+                params![target_key],
+                |row| row.get::<_, u64>(0),
+            )
+            .optional()
+            .map_err(|error| format!("read Hub sequence: {error}"))?
+            .unwrap_or_default();
+        let next = current.saturating_add(1);
+        transaction
+            .execute(
+                "INSERT INTO hub_sequences(target_key, sequence) VALUES (?1, ?2)
+                 ON CONFLICT(target_key) DO UPDATE SET sequence = excluded.sequence",
+                params![target_key, next],
+            )
+            .map_err(|error| format!("reserve Hub sequence: {error}"))?;
+        transaction
+            .commit()
+            .map(|()| next)
+            .map_err(|error| format!("commit Hub sequence: {error}"))
+    }
+
+    fn persist_enqueue(
+        &self,
+        target_key: &str,
+        entry: &Value,
+        idempotency_key: &str,
+    ) -> Result<Option<Value>, String> {
+        let delivery_id = entry
+            .get("deliveryId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Hub entry missing deliveryId".to_string())?;
+        let raw =
+            serde_json::to_string(entry).map_err(|error| format!("encode Hub entry: {error}"))?;
+        let now = unix_millis();
+        let connection = self.connection.lock().unwrap();
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| format!("begin Hub transaction: {error}"))?;
+        let existing = transaction
+            .query_row(
+                "SELECT entry_json FROM hub_idempotency WHERE idempotency_key = ?1",
+                params![idempotency_key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("read Hub idempotency: {error}"))?;
+        if let Some(raw) = existing {
+            let entry = serde_json::from_str(&raw)
+                .map_err(|error| format!("parse existing Hub idempotency: {error}"))?;
+            return Ok(Some(entry));
+        }
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO hub_messages
+                 (delivery_id, target_key, entry_json, consumed, created_at)
+                 VALUES (?1, ?2, ?3, 0, ?4)",
+                params![delivery_id, target_key, raw, now],
+            )
+            .map_err(|error| format!("persist Hub message: {error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM hub_messages
+                 WHERE target_key = ?1
+                   AND rowid NOT IN (
+                       SELECT rowid FROM hub_messages
+                       WHERE target_key = ?1 ORDER BY rowid DESC LIMIT ?2
+                   )",
+                params![target_key, INBOX_CAP as i64],
+            )
+            .map_err(|error| format!("trim Hub inbox: {error}"))?;
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO hub_receipts
+                 (delivery_id, target_key, entry_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![delivery_id, target_key, raw, now],
+            )
+            .map_err(|error| format!("persist Hub receipt: {error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM hub_receipts
+                 WHERE rowid NOT IN (
+                     SELECT rowid FROM hub_receipts ORDER BY rowid DESC LIMIT ?1
+                 )",
+                params![INBOX_CAP as i64],
+            )
+            .map_err(|error| format!("trim Hub receipts: {error}"))?;
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO hub_idempotency
+                 (idempotency_key, target_key, entry_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![idempotency_key, target_key, raw, now],
+            )
+            .map_err(|error| format!("persist Hub idempotency: {error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM hub_idempotency
+                 WHERE rowid NOT IN (
+                     SELECT rowid FROM hub_idempotency ORDER BY rowid DESC LIMIT ?1
+                 )",
+                params![INBOX_CAP as i64],
+            )
+            .map_err(|error| format!("trim Hub idempotency: {error}"))?;
+        transaction
+            .commit()
+            .map(|()| None)
+            .map_err(|error| format!("commit Hub enqueue: {error}"))
+    }
+
+    fn update_entry(&self, key: &str, delivery_id: &str, entry: &Value) -> Result<(), String> {
+        let raw =
+            serde_json::to_string(entry).map_err(|error| format!("encode Hub update: {error}"))?;
+        let connection = self.connection.lock().unwrap();
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| format!("begin Hub update: {error}"))?;
+        let changed = transaction
+            .execute(
+                "UPDATE hub_receipts SET entry_json = ?1
+                 WHERE delivery_id = ?2 AND target_key = ?3",
+                params![raw, delivery_id, key],
+            )
+            .map_err(|error| format!("update Hub receipt: {error}"))?;
+        if changed == 0 {
+            return Err("Hub receipt disappeared during update".into());
+        }
+        transaction
+            .execute(
+                "UPDATE hub_messages SET entry_json = ?1
+                 WHERE delivery_id = ?2 AND target_key = ?3",
+                params![raw, delivery_id, key],
+            )
+            .map_err(|error| format!("update Hub message: {error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("commit Hub update: {error}"))
+    }
+
+    fn update_idempotency(&self, key: &str, entry: &Value) -> Result<(), String> {
+        let raw = serde_json::to_string(entry)
+            .map_err(|error| format!("encode Hub dedupe update: {error}"))?;
+        let connection = self.connection.lock().unwrap();
+        connection
+            .execute(
+                "UPDATE hub_idempotency SET entry_json = ?1 WHERE idempotency_key = ?2",
+                params![raw, key],
+            )
+            .map(|_| ())
+            .map_err(|error| format!("update Hub idempotency: {error}"))
+    }
+
+    fn consume(&self, key: &str, delivery_ids: &[String]) -> Result<(), String> {
+        if delivery_ids.is_empty() {
+            return Ok(());
+        }
+        let connection = self.connection.lock().unwrap();
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| format!("begin Hub consume: {error}"))?;
+        for delivery_id in delivery_ids {
+            transaction
+                .execute(
+                    "UPDATE hub_messages SET consumed = 1
+                     WHERE target_key = ?1 AND delivery_id = ?2",
+                    params![key, delivery_id],
+                )
+                .map_err(|error| format!("consume Hub message: {error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("commit Hub consume: {error}"))
+    }
+
+    fn purge(&self, key: &str) -> Result<(), String> {
+        let connection = self.connection.lock().unwrap();
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| format!("begin Hub purge: {error}"))?;
+        for table in [
+            "hub_messages",
+            "hub_receipts",
+            "hub_idempotency",
+            "hub_sequences",
+        ] {
+            let sql = format!("DELETE FROM {table} WHERE target_key = ?1");
+            transaction
+                .execute(&sql, params![key])
+                .map_err(|error| format!("purge Hub {table}: {error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("commit Hub purge: {error}"))
+    }
+}
+
+fn load_json_rows(
+    connection: &Connection,
+    table: &str,
+    key_column: &str,
+) -> Result<Vec<(String, Value)>, String> {
+    let sql = format!("SELECT {key_column}, entry_json FROM {table} ORDER BY rowid ASC");
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| format!("prepare Hub {table}: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("read Hub {table}: {error}"))?;
+    let mut values = Vec::new();
+    for row in rows {
+        let (key, raw) = row.map_err(|error| format!("decode Hub {table} row: {error}"))?;
+        let value = serde_json::from_str(&raw)
+            .map_err(|error| format!("parse Hub {table} JSON: {error}"))?;
+        values.push((key, value));
+    }
+    Ok(values)
+}
+
+fn unix_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
+
+fn deadline_expired(deadline_unix_ms: Option<u64>) -> bool {
+    deadline_unix_ms.is_some_and(|deadline| deadline <= unix_millis().max(0) as u64)
+}
+
+fn receipt_insert_memory(store: &Mutex<ReceiptStore>, id: String, value: Value) {
+    let mut store = store.lock().unwrap();
     store.order.push_back(id.clone());
     store.by_id.insert(id, value);
     while store.order.len() > INBOX_CAP {
@@ -306,6 +843,21 @@ fn receipt_insert(state: &McpSessionState, id: String, value: Value) {
             store.by_id.remove(&expired);
         }
     }
+}
+
+fn dedupe_insert_memory(store: &Mutex<IdempotencyStore>, key: String, entry: Value) {
+    let mut store = store.lock().unwrap();
+    store.order.push_back(key.clone());
+    store.by_key.insert(key, entry);
+    while store.order.len() > INBOX_CAP {
+        if let Some(expired) = store.order.pop_front() {
+            store.by_key.remove(&expired);
+        }
+    }
+}
+
+fn receipt_insert(state: &McpSessionState, id: String, value: Value) {
+    receipt_insert_memory(&state.receipts, id, value);
 }
 
 fn receipt_get(state: &McpSessionState, key: &str, id: &str) -> HostResult<Value> {
@@ -329,27 +881,61 @@ fn receipt_ack(
     status: &str,
     detail: Option<&str>,
 ) -> HostResult<Value> {
-    if !matches!(status, "agent_acknowledged" | "agent_rejected") {
+    if !matches!(
+        status,
+        "agent_received"
+            | "agent_accepted"
+            | "agent_acknowledged"
+            | "agent_completed"
+            | "agent_rejected"
+    ) {
         return Err(HostError::InvalidParams(
-            "status 只能是 agent_acknowledged 或 agent_rejected".into(),
+            "status must be a supported Agent acknowledgement state".into(),
         ));
     }
-    let mut store = state.receipts.lock().unwrap();
-    let value = store
-        .by_id
-        .get_mut(id)
-        .ok_or_else(|| HostError::InvalidParams("receipt 不存在或已过期".into()))?;
-    if value.get("targetKey").and_then(Value::as_str) != Some(key) {
-        return Err(HostError::InvalidParams(
-            "receipt 不属于该 target pane".into(),
-        ));
-    }
-    value["status"] = Value::String(status.to_string());
-    value["agentAcknowledged"] = Value::Bool(status == "agent_acknowledged");
-    if let Some(detail) = detail.filter(|v| !v.is_empty()) {
-        value["detail"] = Value::String(detail.to_string());
-    }
-    Ok(value.clone())
+    let value = {
+        let mut store = state.receipts.lock().unwrap();
+        let value = store
+            .by_id
+            .get_mut(id)
+            .ok_or_else(|| HostError::InvalidParams("receipt 不存在或已过期".into()))?;
+        if value.get("targetKey").and_then(Value::as_str) != Some(key) {
+            return Err(HostError::InvalidParams(
+                "receipt 不属于该 target pane".into(),
+            ));
+        }
+        if matches!(
+            value.get("status").and_then(Value::as_str),
+            Some("cancelled" | "expired")
+        ) {
+            return Err(hub_error(
+                "delivery_terminal",
+                "cancelled or expired delivery cannot be acknowledged",
+            ));
+        }
+        value["status"] = Value::String(status.to_string());
+        value["agentAcknowledged"] = Value::Bool(status != "agent_received");
+        value["ack"] = json!({
+            "state": if status == "agent_rejected" { "nacked" } else { "acked" },
+            "status": status,
+            "detail": detail.filter(|item| !item.is_empty()),
+        });
+        if let Some(detail) = detail.filter(|v| !v.is_empty()) {
+            value["detail"] = Value::String(detail.to_string());
+        }
+        value.clone()
+    };
+    sync_inbox_entry(
+        state,
+        key,
+        value
+            .get("deliveryId")
+            .and_then(Value::as_str)
+            .unwrap_or(id),
+        &value,
+    )
+    .map_err(HostError::Internal)?;
+    Ok(value)
 }
 
 fn inbox_push(state: &McpSessionState, key: &str, entry: Value) {
@@ -363,13 +949,576 @@ fn inbox_push(state: &McpSessionState, key: &str, entry: Value) {
 }
 
 /// 取走（默认）或窥视收件箱。取走后消息不再重复投递，避免 agent 反复处理旧消息。
-fn inbox_take(state: &McpSessionState, key: &str, peek: bool) -> Vec<Value> {
-    let mut map = state.inbox.lock().unwrap();
-    match map.get_mut(key) {
-        None => Vec::new(),
-        Some(q) if peek => q.clone(),
-        Some(q) => std::mem::take(q),
+fn inbox_take(state: &McpSessionState, key: &str, peek: bool) -> Result<Vec<Value>, String> {
+    expire_queued_entries(state, key)?;
+    let selected = {
+        let mut map = state.inbox.lock().unwrap();
+        match map.get_mut(key) {
+            None => Vec::new(),
+            Some(q) if peek => q.clone(),
+            Some(q) => q.clone(),
+        }
+    };
+    if !peek {
+        let delivery_ids = selected_delivery_ids(&selected);
+        if let Some(persistence) = &state.persistence {
+            persistence.consume(key, &delivery_ids)?;
+        }
+        let mut map = state.inbox.lock().unwrap();
+        if let Some(queue) = map.get_mut(key) {
+            remove_selected_entries(queue, &selected, &delivery_ids);
+        }
     }
+    Ok(selected)
+}
+
+fn sync_inbox_entry(
+    state: &McpSessionState,
+    key: &str,
+    delivery_id: &str,
+    entry: &Value,
+) -> Result<(), String> {
+    if let Some(persistence) = &state.persistence {
+        persistence.update_entry(key, delivery_id, entry)?;
+    }
+    let mut map = state.inbox.lock().unwrap();
+    if let Some(queue) = map.get_mut(key) {
+        if let Some(current) = queue
+            .iter_mut()
+            .find(|item| item.get("deliveryId").and_then(Value::as_str) == Some(delivery_id))
+        {
+            *current = entry.clone();
+        }
+    }
+    drop(map);
+    sync_idempotency_entry(state, entry)?;
+    Ok(())
+}
+
+fn sync_idempotency_entry(state: &McpSessionState, entry: &Value) -> Result<(), String> {
+    let Some(from) = entry.get("from").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let Some(key) = entry.get("idempotencyKey").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let key = idempotency_key(from, key);
+    if let Some(persistence) = &state.persistence {
+        persistence.update_idempotency(&key, entry)?;
+    }
+    if let Some(value) = state.idempotency.lock().unwrap().by_key.get_mut(&key) {
+        *value = entry.clone();
+    }
+    Ok(())
+}
+
+fn inbox_fetch(
+    state: &McpSessionState,
+    key: &str,
+    peek: bool,
+    consume: bool,
+    limit: usize,
+    cursor: Option<&str>,
+) -> Result<Vec<Value>, String> {
+    expire_queued_entries(state, key)?;
+    let selected = {
+        let mut map = state.inbox.lock().unwrap();
+        let Some(queue) = map.get_mut(key) else {
+            return Ok(Vec::new());
+        };
+        let start = match cursor {
+            None => 0,
+            Some(value) => queue
+                .iter()
+                .position(|entry| entry.get("deliveryId").and_then(Value::as_str) == Some(value))
+                .map(|index| index.saturating_add(1))
+                .or_else(|| {
+                    value.parse::<u64>().ok().map(|sequence| {
+                        queue
+                            .iter()
+                            .position(|entry| {
+                                entry.get("sequence").and_then(Value::as_u64) > Some(sequence)
+                            })
+                            .unwrap_or(queue.len())
+                    })
+                })
+                .ok_or_else(|| "Hub cursor is not a delivery id or sequence".to_string())?
+                .min(queue.len()),
+        };
+        let end = start.saturating_add(limit).min(queue.len());
+        queue[start..end].to_vec()
+    };
+    if consume && !peek {
+        let delivery_ids = selected_delivery_ids(&selected);
+        if let Some(persistence) = &state.persistence {
+            persistence.consume(key, &delivery_ids)?;
+        }
+        let mut map = state.inbox.lock().unwrap();
+        if let Some(queue) = map.get_mut(key) {
+            remove_selected_entries(queue, &selected, &delivery_ids);
+        }
+    }
+    Ok(selected)
+}
+
+fn expire_queued_entries(state: &McpSessionState, key: &str) -> Result<(), String> {
+    let expired = {
+        let map = state.inbox.lock().unwrap();
+        map.get(key)
+            .into_iter()
+            .flatten()
+            .filter(|entry| {
+                entry.get("status").and_then(Value::as_str) == Some("queued")
+                    && deadline_expired(entry.get("deadlineUnixMs").and_then(Value::as_u64))
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    if expired.is_empty() {
+        return Ok(());
+    }
+    let mut delivery_ids = Vec::with_capacity(expired.len());
+    for entry in expired {
+        let Some(delivery_id) = entry
+            .get("deliveryId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let mut updated = entry;
+        updated["status"] = Value::String("expired".into());
+        updated["expiredAtUnixMs"] = json!(unix_millis());
+        if updated.get("kind").and_then(Value::as_str) == Some("task") {
+            updated["taskStatus"] = Value::String("expired".into());
+        }
+        replace_receipt_entry(state, key, &delivery_id, &updated)?;
+        delivery_ids.push(delivery_id);
+    }
+    if let Some(persistence) = &state.persistence {
+        persistence.consume(key, &delivery_ids)?;
+    }
+    let mut map = state.inbox.lock().unwrap();
+    if let Some(queue) = map.get_mut(key) {
+        remove_selected_entries(queue, &[], &delivery_ids);
+    }
+    Ok(())
+}
+
+fn cancel_hub_entry(
+    state: &McpSessionState,
+    key: &str,
+    delivery_id: Option<&str>,
+    cancellation_id: Option<&str>,
+    reason: Option<&str>,
+) -> HostResult<Value> {
+    let (receipt_id, mut entry) = {
+        let receipts = state.receipts.lock().unwrap();
+        receipts
+            .by_id
+            .iter()
+            .find(|(_, value)| {
+                value.get("targetKey").and_then(Value::as_str) == Some(key)
+                    && delivery_id
+                        .map(|id| value.get("deliveryId").and_then(Value::as_str) == Some(id))
+                        .unwrap_or(true)
+                    && cancellation_id
+                        .map(|id| value.get("cancellationId").and_then(Value::as_str) == Some(id))
+                        .unwrap_or(true)
+            })
+            .map(|(id, value)| (id.clone(), value.clone()))
+            .ok_or_else(|| HostError::InvalidParams("delivery 不存在或已过期".into()))?
+    };
+    let status = entry
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("queued");
+    if status == "cancelled" {
+        return Ok(entry);
+    }
+    if matches!(
+        status,
+        "completed" | "expired" | "failed" | "delivery_rejected" | "adapter_accepted"
+    ) {
+        return Err(hub_error(
+            "delivery_terminal",
+            "delivery is already terminal and cannot be cancelled",
+        ));
+    }
+    let detail = reason.filter(|value| !value.trim().is_empty());
+    entry["status"] = Value::String("cancelled".into());
+    entry["cancellationRequested"] = Value::Bool(true);
+    entry["agentAcknowledged"] = Value::Bool(false);
+    entry["ack"] = json!({
+        "state": "nacked",
+        "status": "cancelled",
+        "detail": detail,
+    });
+    if entry.get("kind").and_then(Value::as_str) == Some("task") {
+        entry["taskStatus"] = Value::String("cancelled".into());
+    }
+    replace_receipt_entry(state, key, &receipt_id, &entry).map_err(HostError::Internal)?;
+    if let Some(persistence) = &state.persistence {
+        persistence
+            .consume(key, &[receipt_id.clone()])
+            .map_err(HostError::Internal)?;
+    }
+    let mut inbox = state.inbox.lock().unwrap();
+    if let Some(queue) = inbox.get_mut(key) {
+        remove_selected_entries(queue, &[], &[receipt_id]);
+    }
+    Ok(entry)
+}
+
+fn selected_delivery_ids(entries: &[Value]) -> Vec<String> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("deliveryId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .collect()
+}
+
+fn remove_selected_entries(queue: &mut Vec<Value>, selected: &[Value], delivery_ids: &[String]) {
+    let mut legacy_remaining = selected
+        .iter()
+        .filter(|entry| entry.get("deliveryId").and_then(Value::as_str).is_none())
+        .count();
+    queue.retain(|entry| {
+        if let Some(id) = entry.get("deliveryId").and_then(Value::as_str) {
+            return !delivery_ids.iter().any(|candidate| candidate == id);
+        }
+        if legacy_remaining > 0 {
+            legacy_remaining -= 1;
+            return false;
+        }
+        true
+    });
+}
+
+fn next_sequence(state: &McpSessionState, target_key: &str) -> HostResult<u64> {
+    if let Some(persistence) = &state.persistence {
+        let sequence = persistence
+            .next_sequence(target_key)
+            .map_err(HostError::Internal)?;
+        state
+            .sequences
+            .lock()
+            .unwrap()
+            .insert(target_key.to_string(), sequence);
+        return Ok(sequence);
+    }
+    let mut sequences = state.sequences.lock().unwrap();
+    let sequence = sequences.entry(target_key.to_string()).or_insert(0);
+    *sequence = sequence.saturating_add(1);
+    Ok(*sequence)
+}
+
+fn idempotency_key(from: &str, key: &str) -> String {
+    format!("{from}:{key}")
+}
+
+fn dedupe_lookup(state: &McpSessionState, key: &str) -> Option<Value> {
+    if let Some(value) = state.idempotency.lock().unwrap().by_key.get(key).cloned() {
+        return Some(value);
+    }
+    let persistence = state.persistence.as_ref()?;
+    let value = persistence.lookup_idempotency(key).ok().flatten();
+    if let Some(entry) = value.clone() {
+        dedupe_insert_memory(&state.idempotency, key.to_string(), entry);
+    }
+    value
+}
+
+fn dedupe_insert(state: &McpSessionState, key: String, entry: Value) {
+    dedupe_insert_memory(&state.idempotency, key, entry);
+}
+
+struct HubEntryMeta<'a> {
+    idempotency_key: &'a str,
+    correlation_id: Option<&'a str>,
+    causation_id: Option<&'a str>,
+    conversation_id: Option<&'a str>,
+    priority: &'a str,
+    deadline_unix_ms: Option<u64>,
+    cancellation_id: Option<&'a str>,
+    topic: Option<&'a str>,
+}
+
+fn enqueue_hub_entry(
+    host: &dyn McpHost,
+    state: &McpSessionState,
+    target: &HubTarget,
+    from: &str,
+    kind: &str,
+    payload: Value,
+    meta: HubEntryMeta<'_>,
+) -> HostResult<Value> {
+    // Idempotency is a compound operation. Hold one short process-local gate
+    // across lookup, SQLite reservation, and memory publication so concurrent
+    // calls cannot allocate two logical messages for one key.
+    let _enqueue_guard = state.enqueue_lock.lock().unwrap();
+    expire_queued_entries(state, &target.target_key).map_err(HostError::Internal)?;
+    if deadline_expired(meta.deadline_unix_ms) {
+        return Err(hub_error(
+            "deadline_exceeded",
+            "delivery deadline has already elapsed",
+        ));
+    }
+    let dedupe_key = idempotency_key(from, meta.idempotency_key);
+    if let Some(existing) = dedupe_lookup(state, &dedupe_key) {
+        if existing.get("targetKey").and_then(Value::as_str) != Some(target.target_key.as_str())
+            || existing.get("kind").and_then(Value::as_str) != Some(kind)
+            || existing.get("payload") != Some(&payload)
+        {
+            return Err(hub_error(
+                "idempotency_conflict",
+                "key already belongs to another target, message kind, or payload",
+            ));
+        }
+        let mut replay = existing;
+        replay["deduplicated"] = Value::Bool(true);
+        return Ok(replay);
+    }
+    let target_value = target.as_value();
+    let adapter =
+        choose_delivery_adapter(host.probe_delivery(&target_value)?).ok_or_else(|| {
+            hub_error(
+                "delivery_unavailable",
+                "target has no proven Runtime API, A2A, MCP pull, or safe PTY adapter",
+            )
+        })?;
+    let message_id = Uuid::new_v4().to_string();
+    let delivery_id = Uuid::new_v4().to_string();
+    let task_id = (kind == "task").then(|| message_id.clone());
+    let sequence = next_sequence(state, &target.target_key)?;
+    let entry = json!({
+        "messageId": message_id,
+        "deliveryId": delivery_id,
+        "taskId": task_id,
+        "targetKey": target.target_key,
+        "from": from,
+        "to": {
+            "agentId": target.agent_id,
+            "sessionId": target.session_id,
+            "workspaceId": target.workspace_id,
+            "paneId": target.pane_id,
+            "generation": target.generation,
+            "lease": target.lease,
+        },
+        "kind": kind,
+        "sequence": sequence,
+        "idempotencyKey": meta.idempotency_key,
+        "correlationId": meta.correlation_id,
+        "causationId": meta.causation_id,
+        "conversationId": meta.conversation_id,
+        "priority": meta.priority,
+        "deadlineUnixMs": meta.deadline_unix_ms,
+        "cancellationId": meta.cancellation_id,
+        "topic": meta.topic,
+        "status": "queued",
+        "taskStatus": (kind == "task").then_some("created"),
+        "deliveryAdapter": adapter.as_str(),
+        "deliveryReliability": adapter.reliability(),
+        "deliveryAttempts": 0,
+        "deliveryLastAttemptAtUnixMs": Value::Null,
+        "terminalAccepted": false,
+        "agentAcknowledged": false,
+        "ack": { "state": "pending" },
+        "workspaceId": target.workspace_id,
+        "payload": payload,
+    });
+    let persistent_existing = state
+        .persistence
+        .as_ref()
+        .map(|persistence| persistence.persist_enqueue(&target.target_key, &entry, &dedupe_key))
+        .transpose()
+        .map_err(HostError::Internal)?
+        .flatten();
+    if let Some(existing) = persistent_existing {
+        if existing.get("targetKey").and_then(Value::as_str) != Some(target.target_key.as_str())
+            || existing.get("kind").and_then(Value::as_str) != Some(kind)
+            || existing.get("payload") != Some(&payload)
+        {
+            return Err(hub_error(
+                "idempotency_conflict",
+                "key already belongs to another target, message kind, or payload",
+            ));
+        }
+        dedupe_insert(state, dedupe_key, existing.clone());
+        let mut replay = existing;
+        replay["deduplicated"] = Value::Bool(true);
+        return Ok(replay);
+    }
+    receipt_insert(state, delivery_id.clone(), entry.clone());
+    inbox_push(state, &target.target_key, entry.clone());
+    dedupe_insert(state, dedupe_key, entry.clone());
+    if adapter == HubDeliveryAdapter::McpPull {
+        return Ok(entry);
+    }
+    let mut attempted = entry.clone();
+    attempted["deliveryAttempts"] = json!(1);
+    attempted["deliveryLastAttemptAtUnixMs"] = json!(unix_millis());
+    replace_receipt_entry(state, &target.target_key, &delivery_id, &attempted)
+        .map_err(HostError::Internal)?;
+    let outcome = match adapter {
+        HubDeliveryAdapter::RuntimeApi => host.deliver_runtime_api(&target_value, &attempted),
+        HubDeliveryAdapter::A2a => host.deliver_a2a(&target_value, &attempted),
+        HubDeliveryAdapter::PtyFallback => host.deliver_pty_fallback(&target_value, &attempted),
+        HubDeliveryAdapter::McpPull => unreachable!("MCP pull returned above"),
+    };
+    match outcome {
+        Ok(outcome) => {
+            if outcome.adapter != adapter {
+                return Err(HostError::Internal(
+                    "delivery adapter returned a mismatched outcome".into(),
+                ));
+            }
+            let mut updated = attempted;
+            updated["adapterAccepted"] = Value::Bool(outcome.accepted);
+            updated["agentAcknowledged"] = Value::Bool(outcome.acknowledged);
+            updated["status"] = Value::String(
+                if outcome.accepted {
+                    "adapter_accepted"
+                } else {
+                    "delivery_rejected"
+                }
+                .into(),
+            );
+            if let Some(remote_id) = outcome.remote_id {
+                updated["adapterRemoteId"] = Value::String(remote_id);
+            }
+            replace_receipt_entry(state, &target.target_key, &delivery_id, &updated)
+                .map_err(HostError::Internal)?;
+            Ok(updated)
+        }
+        Err(error) => {
+            let mut failed = attempted;
+            failed["status"] = Value::String("delivery_failed".into());
+            failed["deliveryError"] = Value::String(error.message());
+            replace_receipt_entry(state, &target.target_key, &delivery_id, &failed)
+                .map_err(HostError::Internal)?;
+            Err(error)
+        }
+    }
+}
+
+fn replace_receipt_entry(
+    state: &McpSessionState,
+    key: &str,
+    delivery_id: &str,
+    entry: &Value,
+) -> Result<(), String> {
+    if let Some(persistence) = &state.persistence {
+        persistence.update_entry(key, delivery_id, entry)?;
+    }
+    if let Some(value) = state.receipts.lock().unwrap().by_id.get_mut(delivery_id) {
+        *value = entry.clone();
+    }
+    let mut inbox = state.inbox.lock().unwrap();
+    if let Some(queue) = inbox.get_mut(key) {
+        if let Some(value) = queue
+            .iter_mut()
+            .find(|value| value.get("deliveryId").and_then(Value::as_str) == Some(delivery_id))
+        {
+            *value = entry.clone();
+        }
+    }
+    drop(inbox);
+    sync_idempotency_entry(state, entry)?;
+    Ok(())
+}
+
+fn valid_task_transition(from: &str, to: &str) -> bool {
+    if from == to {
+        return true;
+    }
+    match from {
+        "created" => matches!(
+            to,
+            "assigned" | "accepted" | "running" | "cancelled" | "expired" | "failed"
+        ),
+        "assigned" => matches!(
+            to,
+            "accepted" | "running" | "cancelled" | "expired" | "failed"
+        ),
+        "accepted" => matches!(
+            to,
+            "running" | "waiting" | "blocked" | "cancelled" | "failed"
+        ),
+        "running" => matches!(
+            to,
+            "waiting" | "blocked" | "completed" | "cancelled" | "failed"
+        ),
+        "waiting" | "blocked" => matches!(to, "running" | "completed" | "cancelled" | "failed"),
+        "completed" | "cancelled" | "failed" | "expired" => false,
+        _ => false,
+    }
+}
+
+fn task_update(
+    state: &McpSessionState,
+    target_key: &str,
+    task_id: &str,
+    status: &str,
+    detail: Option<&str>,
+) -> HostResult<Value> {
+    if status.trim().is_empty() {
+        return Err(HostError::InvalidParams("status must not be empty".into()));
+    }
+    let status = status.trim();
+    let value = {
+        let mut receipts = state.receipts.lock().unwrap();
+        let receipt_id = receipts
+            .by_id
+            .iter()
+            .find(|(_, value)| value.get("taskId").and_then(Value::as_str) == Some(task_id))
+            .map(|(receipt_id, _)| receipt_id.clone())
+            .ok_or_else(|| HostError::InvalidParams("task_id does not exist or expired".into()))?;
+        let value = receipts
+            .by_id
+            .get_mut(&receipt_id)
+            .expect("receipt found in the same locked store");
+        if value.get("targetKey").and_then(Value::as_str) != Some(target_key)
+            || value.get("kind").and_then(Value::as_str) != Some("task")
+        {
+            return Err(HostError::InvalidParams(
+                "task_id does not belong to target task inbox".into(),
+            ));
+        }
+        let current = value
+            .get("taskStatus")
+            .and_then(Value::as_str)
+            .unwrap_or("created");
+        if !valid_task_transition(current, status) {
+            return Err(hub_error(
+                "invalid_task_transition",
+                format!("{current} -> {status}"),
+            ));
+        }
+        value["taskStatus"] = Value::String(status.to_string());
+        if matches!(status, "completed" | "failed" | "cancelled" | "expired") {
+            value["status"] = Value::String(status.to_string());
+        }
+        if let Some(detail) = detail.filter(|item| !item.is_empty()) {
+            value["detail"] = Value::String(detail.to_string());
+        }
+        value.clone()
+    };
+    sync_inbox_entry(
+        state,
+        target_key,
+        value
+            .get("deliveryId")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        &value,
+    )
+    .map_err(HostError::Internal)?;
+    Ok(value)
 }
 
 // ─── 分发 ────────────────────────────────────────────────────────────────────
@@ -460,12 +1609,7 @@ fn resources_list() -> Value {
     ] })
 }
 
-fn resources_read(
-    id: Value,
-    params: &Value,
-    host: &dyn McpHost,
-    state: &McpSessionState,
-) -> Value {
+fn resources_read(id: Value, params: &Value, host: &dyn McpHost, state: &McpSessionState) -> Value {
     let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
     match RidgeUri::parse(uri) {
         Ok(RidgeUri::Cache(cache_id)) => {
@@ -513,6 +1657,172 @@ fn scoped_target(args: &Value, host: &dyn McpHost) -> HostResult<Value> {
         arg_str(args, "workspace_id"),
         args.get("target_pane_id").unwrap_or(&Value::Null),
     )
+}
+
+fn arg_u64(args: &Value, key: &str) -> Option<u64> {
+    args.get(key)
+        .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+}
+
+fn value_string(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| match value.get(*key) {
+        Some(Value::String(item)) if !item.trim().is_empty() => Some(item.trim().to_string()),
+        Some(Value::Number(item)) => Some(item.to_string()),
+        _ => None,
+    })
+}
+
+fn scalar_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(item) if !item.trim().is_empty() => Some(item.trim().to_string()),
+        Value::Number(item) => Some(item.to_string()),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HubTarget {
+    target_key: String,
+    agent_id: String,
+    session_id: String,
+    workspace_id: String,
+    pane_id: String,
+    generation: u64,
+    lease: String,
+}
+
+impl HubTarget {
+    fn as_value(&self) -> Value {
+        json!({
+            "agentId": self.agent_id,
+            "sessionId": self.session_id,
+            "workspaceId": self.workspace_id,
+            "paneId": self.pane_id,
+            "generation": self.generation,
+            "lease": self.lease,
+        })
+    }
+}
+
+fn hub_error(code: &str, detail: impl Into<String>) -> HostError {
+    HostError::InvalidParams(format!("{code}: {}", detail.into()))
+}
+
+/// Resolve one bounded roster snapshot and fence the target before a Hub
+/// entry is created. Legacy roster entries without lease/generation fail
+/// closed instead of silently degrading to PTY delivery.
+fn resolve_hub_target(
+    args: &Value,
+    host: &dyn McpHost,
+    required_capability: &str,
+) -> HostResult<HubTarget> {
+    let target = scoped_target(args, host)?;
+    let target_pane = value_string(&target, &["paneId", "pane_id"])
+        .or_else(|| args.get("target_pane_id").and_then(scalar_string))
+        .ok_or_else(|| hub_error("target_missing", "target pane is not addressable"))?;
+    let requested_workspace = arg_str(args, "workspace_id")
+        .map(str::to_string)
+        .or_else(|| value_string(&target, &["workspaceId", "workspace_id"]));
+    let profile = host.team_profile_for(requested_workspace.as_deref())?;
+    let requested_agent = arg_str(args, "agent_id");
+    let entries = ["agent_identities", "roster"]
+        .into_iter()
+        .filter_map(|key| profile.get(key).and_then(Value::as_array))
+        .flatten();
+    let identity = entries
+        .filter(|entry| {
+            let id_matches = requested_agent
+                .map(|id| {
+                    value_string(entry, &["agentId", "agent_id", "id"]).as_deref() == Some(id)
+                })
+                .unwrap_or(true);
+            let pane_matches = value_string(entry, &["paneId", "pane_id"]).as_deref()
+                == Some(target_pane.as_str());
+            id_matches && pane_matches
+        })
+        .next()
+        .ok_or_else(|| {
+            hub_error(
+                "target_missing",
+                "Agent identity is absent from Kernel roster",
+            )
+        })?;
+
+    let agent_id = value_string(identity, &["agentId", "agent_id", "id"])
+        .ok_or_else(|| hub_error("target_missing", "identity has no agent_id"))?;
+    let session_id = value_string(identity, &["sessionId", "session_id"])
+        .ok_or_else(|| hub_error("target_missing", "identity has no session_id"))?;
+    let workspace_id = value_string(identity, &["workspaceId", "workspace_id"])
+        .ok_or_else(|| hub_error("workspace_mismatch", "identity has no workspace_id"))?;
+    if requested_workspace
+        .as_deref()
+        .is_some_and(|value| value != workspace_id)
+    {
+        return Err(hub_error(
+            "workspace_mismatch",
+            "target belongs to another workspace",
+        ));
+    }
+    let pane_id = value_string(identity, &["paneId", "pane_id"])
+        .ok_or_else(|| hub_error("target_missing", "identity has no pane_id"))?;
+    let generation = identity
+        .get("generation")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| hub_error("generation_mismatch", "identity has no generation"))?;
+    if arg_u64(args, "generation").is_some_and(|value| value != generation) {
+        return Err(hub_error(
+            "generation_mismatch",
+            "target generation is stale",
+        ));
+    }
+    let lease = value_string(identity, &["lease"])
+        .ok_or_else(|| hub_error("stale_lease", "identity has no lease"))?;
+    if arg_str(args, "lease").is_some_and(|value| value != lease) {
+        return Err(hub_error("stale_lease", "target lease is stale"));
+    }
+    let online = identity
+        .get("online")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let lifecycle = value_string(identity, &["lifecycle"]).unwrap_or_default();
+    if !online
+        || !matches!(
+            lifecycle.as_str(),
+            "Online" | "Working" | "Waiting" | "Attention"
+        )
+    {
+        return Err(hub_error(
+            "target_offline",
+            "target Agent is not receivable",
+        ));
+    }
+    let capabilities = identity
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let capability_allowed = if required_capability == "delivery" {
+        capabilities
+            .iter()
+            .any(|item| matches!(*item, "messages" | "tasks" | "events" | "control"))
+    } else {
+        capabilities.iter().any(|item| *item == required_capability)
+    };
+    if !capability_allowed {
+        return Err(hub_error(
+            "capability_denied",
+            format!("target lacks capability {required_capability}"),
+        ));
+    }
+    Ok(HubTarget {
+        target_key: host.pane_key(&target)?,
+        agent_id,
+        session_id,
+        workspace_id,
+        pane_id,
+        generation,
+        lease,
+    })
 }
 
 fn split_request(args: &Value) -> HostResult<SplitPaneRequest> {
@@ -658,65 +1968,155 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost, state: &McpSessionS
         "ridge_get_team_profile" => host
             .team_profile_for(arg_str(&args, "workspace_id"))
             .map(|profile| profile.to_string()),
+        "ridge_list_agents" => host
+            .team_profile_for(arg_str(&args, "workspace_id"))
+            .map(|profile| profile.to_string()),
         "ridge_list_workspaces" => host.list_workspaces().map(|items| items.to_string()),
         "ridge_get_launch_capabilities" => host.launch_capabilities().and_then(|capabilities| {
             serde_json::to_string(&capabilities)
                 .map_err(|error| HostError::Internal(error.to_string()))
         }),
 
-        "ridge_send_to_teammate" | "ridge_send_and_submit" | "ridge_delegate_task" => {
-            let text = arg_str(&args, "message")
-                .or_else(|| arg_str(&args, "objective"))
-                .unwrap_or("");
-            if text.is_empty() {
-                Err(HostError::InvalidParams(
-                    "message/objective 不能为空".into(),
-                ))
-            } else {
-                let delegate = name == "ridge_delegate_task";
-                let submit = if name == "ridge_send_to_teammate" {
-                    args.get("submit").and_then(Value::as_bool).unwrap_or(true)
-                } else {
-                    true
+        "ridge_send_message" | "ridge_create_task" | "ridge_publish_event" => {
+            (|| -> HostResult<String> {
+                let (kind, required_capability, payload, topic) = match name {
+                    "ridge_send_message" => (
+                        "message",
+                        "messages",
+                        arg_str(&args, "message")
+                            .map(|text| json!({ "text": text }))
+                            .ok_or_else(|| {
+                                HostError::InvalidParams("message must not be empty".into())
+                            }),
+                        None,
+                    ),
+                    "ridge_create_task" => (
+                        "task",
+                        "tasks",
+                        arg_str(&args, "objective")
+                            .map(|objective| json!({ "objective": objective }))
+                            .ok_or_else(|| {
+                                HostError::InvalidParams("objective must not be empty".into())
+                            }),
+                        None,
+                    ),
+                    _ => (
+                        "event",
+                        "events",
+                        arg_str(&args, "topic")
+                            .map(|topic| {
+                                json!({
+                                    "topic": topic,
+                                    "payload": args.get("payload").cloned().unwrap_or(Value::Null),
+                                })
+                            })
+                            .ok_or_else(|| {
+                                HostError::InvalidParams("topic must not be empty".into())
+                            }),
+                        arg_str(&args, "topic"),
+                    ),
                 };
-                target().and_then(|t| host.pane_key(&t).map(|key| (t, key))).and_then(|(t, key)| {
-                    let workspace_id = t
-                        .get("workspaceId")
-                        .or_else(|| t.get("workspace_id"))
-                        .cloned()
-                        .or_else(|| arg_str(&args, "workspace_id").map(|id| json!(id)))
-                        .unwrap_or(Value::Null);
-                    host.send_text(&t, text, submit, delegate).map(|dispatch| {
-                        let status = if submit { "submit_dispatched" } else { "draft_injected" };
-                        let receipt_id = Uuid::new_v4().to_string();
-                        let receipt = json!({
-                            "receiptId": receipt_id,
-                            "targetKey": key,
-                            "from": arg_str(&args, "from").unwrap_or("mcp-client"),
-                            "kind": if delegate { "task" } else { "message" },
-                            "status": status,
-                            "terminalAccepted": dispatch.terminal_accepted,
-                            "agentAcknowledged": false,
-                            "workspaceId": workspace_id.clone(),
-                            "text": text,
+                match payload {
+                    Err(error) => Err(error),
+                    Ok(payload) => {
+                        let from = arg_str(&args, "from").unwrap_or("mcp-client");
+                        let idempotency_key =
+                            arg_str(&args, "idempotency_key").ok_or_else(|| {
+                                HostError::InvalidParams("idempotency_key must not be empty".into())
+                            })?;
+                        let priority = arg_str(&args, "priority").unwrap_or(match kind {
+                            "task" => "task",
+                            "event" => "event",
+                            _ => "input",
                         });
-                        receipt_insert(state, receipt_id.clone(), receipt.clone());
-                        inbox_push(
+                        if !matches!(priority, "control" | "input" | "task" | "event" | "history") {
+                            return Err(hub_error(
+                                "invalid_priority",
+                                "unsupported message priority",
+                            ));
+                        }
+                        let target = resolve_hub_target(&args, host, required_capability)?;
+                        enqueue_hub_entry(
+                            host,
                             state,
-                            &key,
-                            receipt,
-                        );
-                        json!({
-                            "receiptId": receipt_id,
-                            "status": status,
-                            "terminalAccepted": dispatch.terminal_accepted,
-                            "agentAcknowledged": false,
-                            "workspaceId": workspace_id,
-                            "next": if submit { "call ridge_delivery_status; target agent may call ridge_acknowledge_receipt" } else { "call ridge_send_and_submit to dispatch Enter" },
-                        }).to_string()
-                    })
-                })
-            }
+                            &target,
+                            from,
+                            kind,
+                            payload,
+                            HubEntryMeta {
+                                idempotency_key,
+                                correlation_id: arg_str(&args, "correlation_id"),
+                                causation_id: arg_str(&args, "causation_id"),
+                                conversation_id: arg_str(&args, "conversation_id"),
+                                priority,
+                                deadline_unix_ms: arg_u64(&args, "deadline_unix_ms"),
+                                cancellation_id: arg_str(&args, "cancellation_id"),
+                                topic,
+                            },
+                        )
+                        .map(|entry| entry.to_string())
+                    }
+                }
+            })()
+        }
+
+        "ridge_send_to_teammate" | "ridge_send_and_submit" | "ridge_delegate_task" => {
+            (|| -> HostResult<String> {
+                // Compatibility names remain discoverable, but must not bypass the
+                // Hub and inject bytes into a user-facing PTY. The old route has no
+                // proof of prompt mode, foreground ownership, approval state, or
+                // keyboard exclusivity. Queue the same structured envelope as the
+                // first-class tools; an explicit submit flag is payload metadata.
+                let text = arg_str(&args, "message")
+                    .or_else(|| arg_str(&args, "objective"))
+                    .unwrap_or("");
+                if text.is_empty() {
+                    Err(HostError::InvalidParams(
+                        "message/objective 不能为空".into(),
+                    ))
+                } else {
+                    let delegate = name == "ridge_delegate_task";
+                    let submit = if name == "ridge_send_to_teammate" {
+                        args.get("submit").and_then(Value::as_bool).unwrap_or(true)
+                    } else {
+                        true
+                    };
+                    let target = resolve_hub_target(
+                        &args,
+                        host,
+                        if delegate { "tasks" } else { "messages" },
+                    )?;
+                    let generated_key = format!("legacy:{name}:{}", Uuid::new_v4());
+                    let idempotency_key =
+                        arg_str(&args, "idempotency_key").unwrap_or(&generated_key);
+                    let payload = if delegate {
+                        json!({ "objective": text, "submitRequested": submit })
+                    } else {
+                        json!({ "text": text, "submitRequested": submit })
+                    };
+                    let mut entry = enqueue_hub_entry(
+                        host,
+                        state,
+                        &target,
+                        arg_str(&args, "from").unwrap_or("mcp-client"),
+                        if delegate { "task" } else { "message" },
+                        payload,
+                        HubEntryMeta {
+                            idempotency_key,
+                            correlation_id: arg_str(&args, "correlation_id"),
+                            causation_id: arg_str(&args, "causation_id"),
+                            conversation_id: arg_str(&args, "conversation_id"),
+                            priority: if delegate { "task" } else { "input" },
+                            deadline_unix_ms: arg_u64(&args, "deadline_unix_ms"),
+                            cancellation_id: arg_str(&args, "cancellation_id"),
+                            topic: None,
+                        },
+                    )?;
+                    entry["legacyTool"] = Value::String(name.to_string());
+                    entry["submitRequested"] = Value::Bool(submit);
+                    Ok(entry.to_string())
+                }
+            })()
         }
 
         "ridge_capture_pane" => {
@@ -753,9 +2153,8 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost, state: &McpSessionS
                     }),
                     (Some(agent), false) => {
                         // workspace-only optional target for multi-ws; no pane resolve.
-                        let synthetic = arg_str(&args, "workspace_id").map(|ws| {
-                            json!({ "workspaceId": ws })
-                        });
+                        let synthetic =
+                            arg_str(&args, "workspace_id").map(|ws| json!({ "workspaceId": ws }));
                         host.join_group(g, Some(agent), synthetic.as_ref())
                             .map(|()| "dispatched".to_string())
                     }
@@ -772,15 +2171,55 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost, state: &McpSessionS
             })
         }
 
-        // 收发同一份内存队列：任何 MCP 客户端都能异步取走发给某 pane 的消息，
-        // 不必依赖 stdin 注入被对方 shell 正确读到。
+        // 收发同一份有界收件箱：默认是内存态，生产宿主通过 SQLite 恢复同一份队列。
+        // 任何 MCP 客户端都能异步取走发给某 pane 的消息，不必依赖 stdin 注入被对方 shell 正确读到。
         "ridge_inbox_read" => {
             let peek = args.get("peek").and_then(|v| v.as_bool()).unwrap_or(false);
             target().and_then(|target| {
-                host.pane_key(&target)
-                        .map(|key| Value::Array(inbox_take(state, &key, peek)).to_string())
+                host.pane_key(&target).and_then(|key| {
+                    inbox_take(state, &key, peek)
+                        .map(|entries| Value::Array(entries).to_string())
+                        .map_err(HostError::Internal)
+                })
             })
         }
+
+        "ridge_fetch_inbox" => (|| -> HostResult<String> {
+            let target = resolve_hub_target(&args, host, "messages")?;
+            let consume = args.get("consume").and_then(Value::as_bool).unwrap_or(true);
+            let peek = args
+                .get("peek")
+                .and_then(Value::as_bool)
+                .unwrap_or(!consume);
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(INBOX_CAP as u64)
+                .clamp(1, INBOX_CAP as u64) as usize;
+            let cursor = arg_str(&args, "cursor");
+            inbox_fetch(state, &target.target_key, peek, consume, limit, cursor)
+                .map(|entries| Value::Array(entries).to_string())
+                .map_err(HostError::Internal)
+        })(),
+
+        "ridge_cancel_delivery" => (|| -> HostResult<String> {
+            let target = resolve_hub_target(&args, host, "delivery")?;
+            let delivery_id = arg_str(&args, "delivery_id");
+            let cancellation_id = arg_str(&args, "cancellation_id");
+            if delivery_id.is_none() && cancellation_id.is_none() {
+                return Err(HostError::InvalidParams(
+                    "delivery_id or cancellation_id must be provided".into(),
+                ));
+            }
+            cancel_hub_entry(
+                state,
+                &target.target_key,
+                delivery_id,
+                cancellation_id,
+                arg_str(&args, "reason"),
+            )
+            .map(|entry| entry.to_string())
+        })(),
 
         "ridge_delivery_status" => {
             let receipt_id = arg_str(&args, "receipt_id")
@@ -793,6 +2232,27 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost, state: &McpSessionS
                 })
             })
         }
+
+        "ridge_task_update" => (|| -> HostResult<String> {
+            let task_id = arg_str(&args, "task_id")
+                .ok_or_else(|| HostError::InvalidParams("task_id must not be empty".into()));
+            let status = arg_str(&args, "status")
+                .ok_or_else(|| HostError::InvalidParams("status must not be empty".into()));
+            match (task_id, status) {
+                (Ok(task_id), Ok(status)) => {
+                    let target = resolve_hub_target(&args, host, "tasks")?;
+                    task_update(
+                        state,
+                        &target.target_key,
+                        task_id,
+                        status,
+                        arg_str(&args, "detail"),
+                    )
+                    .map(|value| value.to_string())
+                }
+                (Err(error), _) | (_, Err(error)) => Err(error),
+            }
+        })(),
 
         "ridge_acknowledge_receipt" => {
             let receipt_id = arg_str(&args, "receipt_id")
@@ -882,6 +2342,26 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost, state: &McpSessionS
     }
 }
 
+/// Invoke one MCP tool through the same Hub/host path used by HTTP and WS
+/// transports. Desktop IPC uses this small adapter so UI actions do not grow a
+/// second message protocol.
+pub fn call_tool_rpc(
+    name: &str,
+    arguments: Value,
+    host: &dyn McpHost,
+    state: &McpSessionState,
+) -> Value {
+    tools_call(
+        json!(1),
+        &json!({
+            "name": name,
+            "arguments": arguments,
+        }),
+        host,
+        state,
+    )
+}
+
 // ─── tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -892,21 +2372,33 @@ mod tests {
 
     impl McpHost for FakeHost {
         fn team_profile(&self) -> Value {
-            json!({ "roster": [] })
+            let roster = ["7", "8", "91"]
+                .into_iter()
+                .map(|pane_id| {
+                    json!({
+                        "id": format!("agent-{pane_id}"),
+                        "agentId": format!("agent-{pane_id}"),
+                        "sessionId": format!("session-{pane_id}"),
+                        "workspaceId": "ws-test",
+                        "paneId": pane_id,
+                        "generation": 1,
+                        "lease": format!("lease-{pane_id}"),
+                        "lifecycle": "Online",
+                        "online": true,
+                        "capabilities": ["messages", "tasks", "events"]
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({ "workspaceId": "ws-test", "roster": roster })
         }
         fn send_text(
             &self,
-            target: &Value,
+            _target: &Value,
             _text: &str,
             _submit: bool,
             _busy: bool,
         ) -> HostResult<InputDispatch> {
-            if target.is_null() {
-                return Err(HostError::InvalidParams("no target".into()));
-            }
-            Ok(InputDispatch {
-                terminal_accepted: true,
-            })
+            panic!("legacy compatibility route must not write PTY bytes")
         }
         fn report_execution_rejection(
             &self,
@@ -946,7 +2438,21 @@ mod tests {
             if !matches!(workspace_id, "current" | "ws-a" | "ws-b") {
                 return Err(HostError::InvalidParams("workspace 不存在".into()));
             }
-            Ok(json!({ "workspaceId": workspace_id, "roster": [] }))
+            Ok(json!({
+                "workspaceId": workspace_id,
+                "roster": [{
+                    "id": "capable-agent",
+                    "agentId": "capable-agent",
+                    "sessionId": "capable-session",
+                    "workspaceId": workspace_id,
+                    "paneId": 8,
+                    "generation": 1,
+                    "lease": "capable-lease",
+                    "lifecycle": "Online",
+                    "online": true,
+                    "capabilities": ["messages", "tasks", "events"]
+                }]
+            }))
         }
         fn launch_capabilities(&self) -> HostResult<LaunchCapabilities> {
             Ok(LaunchCapabilities {
@@ -971,17 +2477,12 @@ mod tests {
         }
         fn send_text(
             &self,
-            target: &Value,
+            _target: &Value,
             _text: &str,
             _submit: bool,
             _busy: bool,
         ) -> HostResult<InputDispatch> {
-            if target.get("workspaceId").is_none() || target.get("paneId").is_none() {
-                return Err(HostError::InvalidParams("target 未复合寻址".into()));
-            }
-            Ok(InputDispatch {
-                terminal_accepted: true,
-            })
+            panic!("legacy compatibility route must not write PTY bytes")
         }
         fn capture_pane(&self, target: &Value, _lines: usize) -> HostResult<String> {
             Ok(target.to_string())
@@ -1035,6 +2536,97 @@ mod tests {
         }
     }
 
+    struct AdapterHost {
+        adapter: HubDeliveryAdapter,
+    }
+
+    impl McpHost for AdapterHost {
+        fn team_profile(&self) -> Value {
+            Value::Null
+        }
+
+        fn send_text(
+            &self,
+            _target: &Value,
+            _text: &str,
+            _submit: bool,
+            _busy: bool,
+        ) -> HostResult<InputDispatch> {
+            Ok(InputDispatch {
+                terminal_accepted: true,
+            })
+        }
+
+        fn capture_pane(&self, _target: &Value, _lines: usize) -> HostResult<String> {
+            Ok(String::new())
+        }
+
+        fn split_pane(
+            &self,
+            _direction: &str,
+            _role: &str,
+            _initial_cmd: Option<&str>,
+        ) -> HostResult<Value> {
+            Ok(Value::Null)
+        }
+
+        fn read_resource(&self, _uri: &RidgeUri) -> HostResult<(String, String)> {
+            Ok(("text/plain".into(), String::new()))
+        }
+
+        fn pane_key(&self, target: &Value) -> HostResult<String> {
+            Ok(target.to_string())
+        }
+
+        fn probe_delivery(&self, _target: &Value) -> HostResult<DeliveryProbe> {
+            Ok(match self.adapter {
+                HubDeliveryAdapter::RuntimeApi => DeliveryProbe {
+                    runtime_api: true,
+                    ..Default::default()
+                },
+                HubDeliveryAdapter::A2a => DeliveryProbe {
+                    a2a: true,
+                    ..Default::default()
+                },
+                HubDeliveryAdapter::PtyFallback => DeliveryProbe {
+                    pty: crate::delivery::HubPtySafety {
+                        agent_idle: true,
+                        terminal_mode_agent_prompt: true,
+                        foreground_is_target_agent: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                HubDeliveryAdapter::McpPull => DeliveryProbe {
+                    mcp_pull: true,
+                    ..Default::default()
+                },
+            })
+        }
+
+        fn deliver_runtime_api(
+            &self,
+            _target: &Value,
+            _entry: &Value,
+        ) -> HostResult<DeliveryOutcome> {
+            Ok(DeliveryOutcome {
+                adapter: HubDeliveryAdapter::RuntimeApi,
+                accepted: true,
+                remote_id: Some("runtime-1".into()),
+                acknowledged: true,
+            })
+        }
+
+        fn deliver_a2a(&self, _target: &Value, _entry: &Value) -> HostResult<DeliveryOutcome> {
+            Ok(DeliveryOutcome {
+                adapter: HubDeliveryAdapter::A2a,
+                accepted: true,
+                remote_id: Some("a2a-1".into()),
+                acknowledged: false,
+            })
+        }
+    }
+
     fn call_with(msg: &str, host: &dyn McpHost) -> Value {
         let out = handle_message(msg, host, "test").expect("expected a response");
         serde_json::from_str(&out).unwrap()
@@ -1068,27 +2660,291 @@ mod tests {
         })
         .to_string();
         let sent = call_with_state(&send, &FakeHost, &first);
-        let receipt: Value = serde_json::from_str(
-            sent["result"]["content"][0]["text"].as_str().unwrap(),
-        )
-        .unwrap();
+        let receipt: Value =
+            serde_json::from_str(sent["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         let read = json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
             "params":{"name":"ridge_inbox_read","arguments":{"target_pane_id":7}}
         })
         .to_string();
-        assert_ne!(call_with_state(&read, &FakeHost, &first)["result"]["content"][0]["text"], "[]");
-        assert_eq!(call_with_state(&read, &FakeHost, &second)["result"]["content"][0]["text"], "[]");
-        first.purge_pane("7");
+        assert_ne!(
+            call_with_state(&read, &FakeHost, &first)["result"]["content"][0]["text"],
+            "[]"
+        );
+        assert_eq!(
+            call_with_state(&read, &FakeHost, &second)["result"]["content"][0]["text"],
+            "[]"
+        );
+        first.purge_pane("7").expect("purge in-memory Hub state");
         let status = json!({
             "jsonrpc":"2.0","id":3,"method":"tools/call",
-            "params":{"name":"ridge_delivery_status","arguments":{"target_pane_id":7,"receipt_id":receipt["receiptId"]}}
+            "params":{"name":"ridge_delivery_status","arguments":{"target_pane_id":7,"receipt_id":receipt["deliveryId"]}}
         })
         .to_string();
-        assert!(call_with_state(&status, &FakeHost, &first)["error"]["message"]
+        assert!(
+            call_with_state(&status, &FakeHost, &first)["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("不存在")
+        );
+    }
+
+    #[test]
+    fn typed_hub_tools_queue_ids_and_update_task_without_claiming_terminal_delivery() {
+        let state = McpSessionState::default();
+        let send = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_send_message","arguments":{
+                "target_pane_id":7,"message":"hello","from":"agent-a",
+                "idempotency_key":"message-1"
+            }}
+        })
+        .to_string();
+        let sent = call_with_state(&send, &FakeHost, &state);
+        let message: Value = serde_json::from_str(
+            sent["result"]["content"][0]["text"]
+                .as_str()
+                .expect("message result"),
+        )
+        .unwrap();
+        assert_eq!(message["status"], "queued");
+        assert_eq!(message["deliveryAdapter"], "mcp_pull");
+        assert_eq!(message["deliveryReliability"], "at_least_once");
+        assert_eq!(message["terminalAccepted"], false);
+        assert!(message["messageId"].as_str().is_some());
+        assert!(message["deliveryId"].as_str().is_some());
+
+        let task = json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"ridge_create_task","arguments":{
+                "target_pane_id":7,"objective":"review","idempotency_key":"task-1"
+            }}
+        })
+        .to_string();
+        let task: Value = serde_json::from_str(
+            call_with_state(&task, &FakeHost, &state)["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let task_id = task["taskId"].as_str().unwrap();
+        let update = json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"ridge_task_update","arguments":{
+                "target_pane_id":7,"task_id":task_id,"status":"accepted"
+            }}
+        })
+        .to_string();
+        let updated: Value = serde_json::from_str(
+            call_with_state(&update, &FakeHost, &state)["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated["taskStatus"], "accepted");
+
+        let fetch = json!({
+            "jsonrpc":"2.0","id":4,"method":"tools/call",
+            "params":{"name":"ridge_fetch_inbox","arguments":{"target_pane_id":7,"consume":true}}
+        })
+        .to_string();
+        let fetched: Value = serde_json::from_str(
+            call_with_state(&fetch, &FakeHost, &state)["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(fetched.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn hub_fences_target_and_deduplicates_idempotent_messages() {
+        let state = McpSessionState::default();
+        let request = |id: u64, key: &str, generation: Option<u64>| {
+            let mut arguments = json!({
+                "target_pane_id": 7,
+                "message": "once",
+                "from": "agent-a",
+                "idempotency_key": key
+            });
+            if let Some(generation) = generation {
+                arguments["generation"] = json!(generation);
+            }
+            json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":"ridge_send_message","arguments":arguments}
+            })
+            .to_string()
+        };
+
+        let first: Value = serde_json::from_str(
+            call_with_state(&request(1, "once-1", None), &FakeHost, &state)["result"]["content"][0]
+                ["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let duplicate: Value = serde_json::from_str(
+            call_with_state(&request(2, "once-1", None), &FakeHost, &state)["result"]["content"][0]
+                ["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(duplicate["deduplicated"], true);
+        assert_eq!(duplicate["messageId"], first["messageId"]);
+        assert_eq!(duplicate["deliveryId"], first["deliveryId"]);
+
+        let mut conflict = json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"ridge_send_message","arguments":{
+                "target_pane_id":7,"message":"changed","from":"agent-a",
+                "idempotency_key":"once-1"
+            }}
+        });
+        conflict["params"]["arguments"]["message"] = json!("changed");
+        let conflict = call_with_state(&conflict.to_string(), &FakeHost, &state);
+        assert!(conflict["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("不存在"));
+            .contains("idempotency_conflict"));
+
+        let stale = call_with_state(&request(4, "once-2", Some(0)), &FakeHost, &state);
+        assert!(stale["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("generation_mismatch"));
+    }
+
+    #[test]
+    fn hub_rejects_expired_deadlines_and_cancellation_removes_pending_delivery() {
+        let state = McpSessionState::default();
+        let expired = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_send_message","arguments":{
+                "target_pane_id":7,"message":"late","from":"agent-a",
+                "idempotency_key":"expired-1","deadline_unix_ms":1
+            }}
+        })
+        .to_string();
+        let expired = call_with_state(&expired, &FakeHost, &state);
+        assert!(expired["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("deadline_exceeded"));
+
+        let send = json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"ridge_send_message","arguments":{
+                "target_pane_id":7,"message":"cancel me","from":"agent-a",
+                "idempotency_key":"cancel-1","cancellation_id":"cancel-token-1"
+            }}
+        })
+        .to_string();
+        let sent: Value = serde_json::from_str(
+            call_with_state(&send, &FakeHost, &state)["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let cancel = json!({
+            "jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"ridge_cancel_delivery","arguments":{
+                "target_pane_id":7,"delivery_id":sent["deliveryId"],"reason":"user stopped"
+            }}
+        })
+        .to_string();
+        let cancelled: Value = serde_json::from_str(
+            call_with_state(&cancel, &FakeHost, &state)["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cancelled["status"], "cancelled");
+        assert_eq!(cancelled["cancellationRequested"], true);
+
+        let ack_after_cancel = json!({
+            "jsonrpc":"2.0","id":31,"method":"tools/call",
+            "params":{"name":"ridge_acknowledge_receipt","arguments":{
+                "target_pane_id":7,"receipt_id":sent["deliveryId"],"status":"agent_received"
+            }}
+        })
+        .to_string();
+        assert!(
+            call_with_state(&ack_after_cancel, &FakeHost, &state)["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("delivery_terminal")
+        );
+
+        let fetch = json!({
+            "jsonrpc":"2.0","id":4,"method":"tools/call",
+            "params":{"name":"ridge_fetch_inbox","arguments":{"target_pane_id":7}}
+        })
+        .to_string();
+        assert_eq!(
+            call_with_state(&fetch, &FakeHost, &state)["result"]["content"][0]["text"],
+            "[]"
+        );
+
+        let replay: Value = serde_json::from_str(
+            call_with_state(&send, &FakeHost, &state)["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(replay["deduplicated"], true);
+        assert_eq!(replay["status"], "cancelled");
+    }
+
+    #[test]
+    fn task_update_rejects_invalid_transition_and_syncs_consumed_receipt() {
+        let state = McpSessionState::default();
+        let create = json!({
+            "jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"ridge_create_task","arguments":{
+                "target_pane_id":7,"objective":"review","idempotency_key":"task-transition"
+            }}
+        })
+        .to_string();
+        let task: Value = serde_json::from_str(
+            call_with_state(&create, &FakeHost, &state)["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let task_id = task["taskId"].as_str().unwrap();
+        let update = |id: u64, status: &str| {
+            json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":"ridge_task_update","arguments":{
+                    "target_pane_id":7,"task_id":task_id,"status":status
+                }}
+            })
+            .to_string()
+        };
+        let accepted = call_with_state(&update(2, "accepted"), &FakeHost, &state);
+        assert_eq!(
+            accepted["result"]["content"][0]["text"].as_str().is_some(),
+            true
+        );
+        let invalid = call_with_state(&update(3, "created"), &FakeHost, &state);
+        assert!(invalid["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid_task_transition"));
+        let fetched = json!({
+            "jsonrpc":"2.0","id":4,"method":"tools/call",
+            "params":{"name":"ridge_fetch_inbox","arguments":{"target_pane_id":7,"peek":true}}
+        })
+        .to_string();
+        let inbox: Value = serde_json::from_str(
+            call_with_state(&fetched, &FakeHost, &state)["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(inbox[0]["taskStatus"], "accepted");
     }
 
     #[test]
@@ -1181,10 +3037,11 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        assert!(default_text.contains("submit_dispatched"));
-        assert!(draft_text.contains("draft_injected"));
-        assert!(submit_text.contains("submit_dispatched"));
-        assert!(submit_text.contains("\"terminalAccepted\":true"));
+        assert!(default_text.contains("\"status\":\"queued\""));
+        assert!(draft_text.contains("\"submitRequested\":false"));
+        assert!(submit_text.contains("\"submitRequested\":true"));
+        assert!(submit_text.contains("\"deliveryAdapter\":\"mcp_pull\""));
+        assert!(submit_text.contains("\"terminalAccepted\":false"));
         assert!(submit_text.contains("\"agentAcknowledged\":false"));
     }
 
@@ -1219,7 +3076,8 @@ mod tests {
             serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
                 .unwrap();
         assert_eq!(receipt["workspaceId"], "ws-b");
-        assert_eq!(receipt["status"], "submit_dispatched");
+        assert_eq!(receipt["status"], "queued");
+        assert_eq!(receipt["deliveryAdapter"], "mcp_pull");
         assert_eq!(receipt["agentAcknowledged"], false);
     }
 
@@ -1386,7 +3244,10 @@ mod tests {
                 .expect("send receipt"),
         )
         .expect("receipt JSON");
-        let receipt_id = sent["receiptId"].as_str().expect("receipt id").to_string();
+        let receipt_id = sent["deliveryId"]
+            .as_str()
+            .expect("delivery id")
+            .to_string();
 
         let status = json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
@@ -1399,8 +3260,8 @@ mod tests {
                 .expect("status JSON"),
         )
         .expect("status receipt");
-        assert_eq!(before["status"], "submit_dispatched");
-        assert_eq!(before["terminalAccepted"], true);
+        assert_eq!(before["status"], "queued");
+        assert_eq!(before["terminalAccepted"], false);
         assert_eq!(before["agentAcknowledged"], false);
 
         let ack = json!({
@@ -1479,5 +3340,394 @@ mod tests {
         })
         .to_string();
         assert_eq!(call(&msg)["error"]["code"], proto::METHOD_NOT_FOUND);
+    }
+
+    fn adapter_test_target() -> HubTarget {
+        HubTarget {
+            target_key: "adapter-pane".into(),
+            agent_id: "adapter-agent".into(),
+            session_id: "adapter-session".into(),
+            workspace_id: "adapter-workspace".into(),
+            pane_id: "adapter-pane".into(),
+            generation: 1,
+            lease: "adapter-lease".into(),
+        }
+    }
+
+    fn adapter_test_meta() -> HubEntryMeta<'static> {
+        HubEntryMeta {
+            idempotency_key: "adapter-key",
+            correlation_id: None,
+            causation_id: None,
+            conversation_id: None,
+            priority: "input",
+            deadline_unix_ms: None,
+            cancellation_id: None,
+            topic: None,
+        }
+    }
+
+    #[test]
+    fn hub_dispatches_probed_runtime_a2a_and_guarded_pty_adapters() {
+        for adapter in [
+            HubDeliveryAdapter::RuntimeApi,
+            HubDeliveryAdapter::A2a,
+            HubDeliveryAdapter::PtyFallback,
+        ] {
+            let state = McpSessionState::default();
+            let entry = enqueue_hub_entry(
+                &AdapterHost { adapter },
+                &state,
+                &adapter_test_target(),
+                "sender",
+                "message",
+                json!({ "text": "adapter" }),
+                adapter_test_meta(),
+            )
+            .expect("adapter delivery");
+            assert_eq!(entry["deliveryAdapter"], adapter.as_str());
+            assert_eq!(entry["deliveryReliability"], adapter.reliability());
+            assert_eq!(entry["status"], "adapter_accepted");
+            assert_eq!(entry["adapterAccepted"], true);
+            assert_eq!(entry["deliveryAttempts"], 1);
+            assert!(entry["deliveryLastAttemptAtUnixMs"].as_i64().is_some());
+        }
+    }
+
+    #[test]
+    fn concurrent_identical_sends_create_one_logical_message() {
+        let state = std::sync::Arc::new(McpSessionState::default());
+        let target = adapter_test_target();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let state = std::sync::Arc::clone(&state);
+            let target = target.clone();
+            let start = std::sync::Arc::clone(&start);
+            workers.push(std::thread::spawn(move || {
+                start.wait();
+                enqueue_hub_entry(
+                    &FakeHost,
+                    &state,
+                    &target,
+                    "concurrent-sender",
+                    "message",
+                    json!({ "text": "once" }),
+                    HubEntryMeta {
+                        idempotency_key: "same-key",
+                        correlation_id: None,
+                        causation_id: None,
+                        conversation_id: None,
+                        priority: "input",
+                        deadline_unix_ms: None,
+                        cancellation_id: None,
+                        topic: None,
+                    },
+                )
+                .expect("concurrent enqueue")
+            }));
+        }
+
+        let entries = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("enqueue worker must finish"))
+            .collect::<Vec<_>>();
+        let message_ids = entries
+            .iter()
+            .filter_map(|entry| entry.get("messageId").and_then(Value::as_str))
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(message_ids.len(), 1);
+        assert_eq!(
+            inbox_fetch(&state, "adapter-pane", true, false, 20, None)
+                .expect("read concurrent inbox")
+                .len(),
+            1
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.get("deduplicated") == Some(&Value::Bool(true)))
+                .count(),
+            7
+        );
+    }
+
+    #[test]
+    fn inbox_cursor_can_resume_by_sequence_and_rejects_unknown_text() {
+        let state = McpSessionState::default();
+        let target = adapter_test_target();
+        for key in ["cursor-1", "cursor-2", "cursor-3"] {
+            enqueue_hub_entry(
+                &FakeHost,
+                &state,
+                &target,
+                "cursor-sender",
+                "message",
+                json!({ "text": key }),
+                HubEntryMeta {
+                    idempotency_key: key,
+                    correlation_id: None,
+                    causation_id: None,
+                    conversation_id: None,
+                    priority: "input",
+                    deadline_unix_ms: None,
+                    cancellation_id: None,
+                    topic: None,
+                },
+            )
+            .expect("enqueue cursor message");
+        }
+
+        let first = inbox_fetch(&state, "adapter-pane", true, false, 1, None)
+            .expect("fetch first cursor page");
+        let cursor = first[0]["sequence"].as_u64().unwrap().to_string();
+        let resumed = inbox_fetch(&state, "adapter-pane", true, false, 10, Some(&cursor))
+            .expect("resume by sequence cursor");
+        assert_eq!(
+            resumed
+                .iter()
+                .map(|entry| entry["sequence"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert!(
+            inbox_fetch(&state, "adapter-pane", true, false, 10, Some("bad-cursor"))
+                .expect_err("unknown cursor must fail closed")
+                .contains("cursor")
+        );
+    }
+
+    #[test]
+    fn sqlite_hub_rehydrates_and_persists_ack_and_consume() {
+        let path = std::env::temp_dir().join(format!("ridge-mcp-hub-{}.sqlite3", Uuid::new_v4()));
+        let entry = json!({
+            "deliveryId": "delivery-1",
+            "messageId": "message-1",
+            "targetKey": "pane-1",
+            "kind": "message",
+            "status": "queued",
+            "agentAcknowledged": false,
+            "payload": {"text": "durable"}
+        });
+        {
+            let state = McpSessionState::with_sqlite(&path).expect("create SQLite Hub");
+            state
+                .persistence
+                .as_ref()
+                .expect("persistent backend")
+                .persist_enqueue("pane-1", &entry, "sender:key-1")
+                .expect("persist message");
+            receipt_insert(&state, "delivery-1".into(), entry.clone());
+            inbox_push(&state, "pane-1", entry.clone());
+            dedupe_insert(&state, "sender:key-1".into(), entry);
+        }
+
+        {
+            let state = McpSessionState::with_sqlite(&path).expect("reopen SQLite Hub");
+            let fetched = inbox_fetch(&state, "pane-1", true, false, 10, None)
+                .expect("fetch rehydrated message");
+            assert_eq!(fetched.len(), 1);
+            assert_eq!(fetched[0]["payload"]["text"], "durable");
+            assert!(dedupe_lookup(&state, "sender:key-1").is_some());
+
+            let acknowledged = receipt_ack(
+                &state,
+                "pane-1",
+                "delivery-1",
+                "agent_acknowledged",
+                Some("received"),
+            )
+            .expect("ack durable message");
+            assert_eq!(acknowledged["status"], "agent_acknowledged");
+        }
+
+        {
+            let state = McpSessionState::with_sqlite(&path).expect("reopen acknowledged Hub");
+            let acknowledged =
+                receipt_get(&state, "pane-1", "delivery-1").expect("read acknowledged receipt");
+            assert_eq!(acknowledged["status"], "agent_acknowledged");
+            let consumed = inbox_fetch(&state, "pane-1", false, true, 10, None)
+                .expect("consume durable message");
+            assert_eq!(consumed.len(), 1);
+        }
+
+        {
+            let state = McpSessionState::with_sqlite(&path).expect("reopen consumed Hub");
+            assert!(inbox_fetch(&state, "pane-1", true, false, 10, None)
+                .expect("read consumed inbox")
+                .is_empty());
+        }
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+    }
+
+    #[test]
+    fn sqlite_hub_idempotency_is_shared_between_state_instances() {
+        let path = std::env::temp_dir().join(format!("ridge-mcp-hub-{}.sqlite3", Uuid::new_v4()));
+        let target = HubTarget {
+            target_key: "pane-2".into(),
+            agent_id: "agent-2".into(),
+            session_id: "session-2".into(),
+            workspace_id: "workspace-2".into(),
+            pane_id: "pane-2".into(),
+            generation: 2,
+            lease: "lease-2".into(),
+        };
+        let first = {
+            let state = McpSessionState::with_sqlite(&path).expect("create SQLite Hub");
+            enqueue_hub_entry(
+                &FakeHost,
+                &state,
+                &target,
+                "sender-2",
+                "message",
+                json!({"text":"once"}),
+                HubEntryMeta {
+                    idempotency_key: "same-key",
+                    correlation_id: None,
+                    causation_id: None,
+                    conversation_id: None,
+                    priority: "normal",
+                    deadline_unix_ms: None,
+                    cancellation_id: None,
+                    topic: None,
+                },
+            )
+            .expect("enqueue first message")
+        };
+        let second = {
+            let state = McpSessionState::with_sqlite(&path).expect("reopen SQLite Hub");
+            enqueue_hub_entry(
+                &FakeHost,
+                &state,
+                &target,
+                "sender-2",
+                "message",
+                json!({"text":"once"}),
+                HubEntryMeta {
+                    idempotency_key: "same-key",
+                    correlation_id: None,
+                    causation_id: None,
+                    conversation_id: None,
+                    priority: "normal",
+                    deadline_unix_ms: None,
+                    cancellation_id: None,
+                    topic: None,
+                },
+            )
+            .expect("deduplicate second message")
+        };
+        assert_eq!(first["messageId"], second["messageId"]);
+        assert_eq!(second["deduplicated"], true);
+
+        let third = {
+            let state = McpSessionState::with_sqlite(&path).expect("reopen sequenced Hub");
+            enqueue_hub_entry(
+                &AdapterHost {
+                    adapter: HubDeliveryAdapter::McpPull,
+                },
+                &state,
+                &target,
+                "sender-2",
+                "message",
+                json!({"text":"twice"}),
+                HubEntryMeta {
+                    idempotency_key: "different-key",
+                    ..adapter_test_meta()
+                },
+            )
+            .expect("allocate next sequence")
+        };
+        assert_eq!(first["sequence"], 1);
+        assert_eq!(third["sequence"], 2);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+    }
+
+    #[test]
+    fn sqlite_hub_persists_cancellation_and_removes_pending_message() {
+        let path = std::env::temp_dir().join(format!("ridge-mcp-hub-{}.sqlite3", Uuid::new_v4()));
+        let target = adapter_test_target();
+        let entry = {
+            let state = McpSessionState::with_sqlite(&path).expect("create SQLite Hub");
+            enqueue_hub_entry(
+                &FakeHost,
+                &state,
+                &target,
+                "persistent-sender",
+                "message",
+                json!({"text":"cancel me"}),
+                HubEntryMeta {
+                    idempotency_key: "persistent-cancel",
+                    cancellation_id: Some("persistent-cancel-token"),
+                    ..adapter_test_meta()
+                },
+            )
+            .expect("enqueue persistent message")
+        };
+        {
+            let state = McpSessionState::with_sqlite(&path).expect("reopen SQLite Hub");
+            let cancelled = cancel_hub_entry(
+                &state,
+                &target.target_key,
+                entry["deliveryId"].as_str(),
+                None,
+                Some("shutdown"),
+            )
+            .expect("cancel persistent message");
+            assert_eq!(cancelled["status"], "cancelled");
+        }
+        {
+            let state = McpSessionState::with_sqlite(&path).expect("reopen cancelled Hub");
+            assert_eq!(
+                dedupe_lookup(&state, "persistent-sender:persistent-cancel").unwrap()["status"],
+                "cancelled"
+            );
+            assert_eq!(
+                receipt_get(
+                    &state,
+                    &target.target_key,
+                    entry["deliveryId"].as_str().unwrap()
+                )
+                .unwrap()["status"],
+                "cancelled"
+            );
+            assert!(
+                inbox_fetch(&state, &target.target_key, true, false, 10, None)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+    }
+
+    #[test]
+    fn session_state_routes_registered_runtime_without_blocking() {
+        let state = McpSessionState::default();
+        let receiver = state
+            .register_delivery_endpoint(HubDeliveryAdapter::RuntimeApi, "agent-a", 2, "lease-2")
+            .expect("register runtime route");
+        let target = json!({
+            "agentId": "agent-a",
+            "generation": 2,
+            "lease": "lease-2"
+        });
+        assert!(state.delivery_probe(&target).runtime_api);
+        let entry = json!({"messageId":"message-1"});
+        let outcome = state
+            .deliver_registered_endpoint(HubDeliveryAdapter::RuntimeApi, &target, &entry)
+            .expect("deliver runtime route");
+        assert!(outcome.accepted);
+        assert_eq!(receiver.recv().unwrap(), entry);
+        assert!(state
+            .unregister_delivery_endpoint(HubDeliveryAdapter::RuntimeApi, "agent-a", 2, "lease-2")
+            .unwrap());
+        assert!(!state.delivery_probe(&target).runtime_api);
     }
 }

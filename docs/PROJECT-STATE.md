@@ -1,5 +1,27 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
+## Current snapshot (iteration 172, 2026-08-08) — NLM authentication workflow repair
+
+- NotebookLM external-CDP authentication is restored through the fixed local
+  proxy `http://127.0.0.1:51081`. The dedicated Chrome page may resolve to
+  `https://notebook.google.com/`; this is accepted as a valid signed-in landing
+  page for the extraction path.
+- Non-secret verification passed: `login_check_exit=0`,
+  `notebook_list_exit=0`, `notebook_count=22`. No Cookie value, storage,
+  password, or token is recorded here.
+- `notebook_get` still reports three sources (`Agent 通信架构重构`,
+  `PROJECT-STATE.md`, `REQUIREMENTS-SPEC.md`), so the single-source invariant
+  is not closed. No irreversible source deletion was performed in this pass.
+- The local auth helper now waits for `/json/version` and `/json/list` after
+  launching Chrome and reports `cdp_ready`; extraction uses the CLI's Python
+  environment with the no-false-wait path. Failures are classified as CDP,
+  browser login, extraction, CLI network/wrapper, or NotebookLM API failures.
+- The next NotebookLM loop must update this single state source, replace the
+  previous notebook source only after the new one is indexed, and treat
+  CodeGraph/source/tests/runtime evidence as authoritative over suggestions.
+
+Archive: `docs/iterations/2026-08-08-nlm-auth-workflow-repair.md`.
+
 状态日期：2026-08-05（iteration 167 已完成稳定 Cloud Pane 绑定、Remote 尾流与 Pane 尺寸代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补；正式 release 正在等待修复后的 CI 闸验证）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
@@ -2325,3 +2347,33 @@ WebRTC soak before the online freeze claim can close.
 The strict no-build mismatch branch was audited against stale local roots and
 now reports an actionable expected/actual fingerprint instead of an internal
 `TypeError`; the artifact metadata tests remain green (5/5).
+
+## Iteration 172 / Remote E2E 与 NLM 下一迭代（2026-08-08）
+
+本轮本地修复、CodeGraph 复核、Sonar 扫描及 dev:cdp E2E 已完成；Vitest 为
+155 files / 1606 passed / 1 skipped，`pnpm check` 为 0 errors / 0 warnings。
+Remote/Cloud 未上传，生产未激活，发布仍须用户明确授权。
+
+NLM 已重新认证并通过 `nlm login --check` 与 notebook list。主笔记近期痛点
+已并入本轮：kernel-first/Tauri 解耦后的 topology 漂移、复合
+`(workspaceId,paneId)` 身份、Remote 重试与移动端连续性、geometry/DPR/PTY/render
+稳定性。未删除或上传 NotebookLM source。
+
+本轮 E2E 收口及下轮问题登记见
+`docs/iterations/2026-08-08-remote-e2e-nlm-next-iteration.md`。其中已登记
+`create_pane (rebuild) failed` console 异常、detached theme 缺帧、orphan PTY
+清理、实体手机/PWA soak 缺口及 runner 时长问题；下轮先经 NLM 只读对抗提问，
+再形成 contract 后修复。
+## Iteration 172 final addendum (2026-08-08)
+
+本轮最终状态以 `docs/iterations/2026-08-08-remote-e2e-nlm-next-iteration.md` 为准：NLM 已重新认证，`nlm login --check`、22 本笔记列表、主笔记近期对话仅读抽取通过；未改动 NotebookLM source/note。NLM 近期痛点已映射至 kernel-first/双 SSOT、复合 pane 身份、Remote reconnect/reap、theme、multitab、mobile geometry/DPR 与 PTY/render 连续性。
+
+代码已补 KernelHost legacy workspace/pane result、空 workspace 首 pane、tree reconnect persistence、共享 theme wire frame、kernel bootstrap 全 workspace topology sync；`pane-pty-closed` 的 late-close `Pane not found` 重建竞态已按合法销毁收敛，非该错误仍报错。
+
+验证：Vitest 155 files / 1610 passed / 1 skipped；`pnpm check` 0 errors / 0 warnings；KernelHost 12/12；ridge-core theme 18/18；`cargo fmt --check` 通过；dev:cdp LAN/theme、pane split/close broadcast、multitab、PTY、teammate、`rdg-remote-e2e` desktop/mobile、mobile keyboard 均通过。移动证据仍为 Chromium emulation，非物理设备/PWA soak。
+
+Sonar 本地受限四文件扫描质量门 `OK`：new coverage 80.0、new duplication 1.05125、new violations 0；全项目 TypeScript analyzer 超时，日志保留于 `.iteration/artifacts/sonar-final-2.log` / `.iteration/artifacts/sonar-post-bug001.log`，不得据此宣称全项目质量门通过。未发布、未上传 Remote/Cloud、未激活生产；发布必须用户明确授权。
+
+最终复跑补充：CodeGraph `sync` 完成；LAN、pane graph、multitab、PTY parser、term input、teammate、`rdg-remote-e2e` 均通过；Vitest 155/1610（1 skipped）、`pnpm check` 0/0、fmt、KernelHost 12/12 通过。Sonar 复扫因本地服务 HTTP 401 未取得新快照，故受限旧 gate 不覆盖最终 ptyBridge 变更；监控页面因无可用 App Browser 未打开。multitab 仍观测一次可恢复的 `Explorer loadTree: missing path C:/code/wind/src-tauri` warning，下一轮处理重试与证据化。发布/Remote 云激活仍待用户授权。
+
+资源回收补验：`cdp-reap-test` PASS；`remote-leak-trace` 在 CDP 10486 下通过 pane/workspace/reconnect/reap 全流程，`reap pass1=0`、`pass2=0`，未复现 orphan/re-creation cycle。

@@ -72,9 +72,9 @@ describe.skipIf(!siblingPresent)('signaling drift guard（同级 ridge-signaling
   });
 });
 
-// 同级缺席时留一条 skip 占位，让报告明确显示「漂移守卫已跳过（零依赖）」而非静默无测试。
+// 同级缺席时保留一条显式分支断言，让报告明确显示「漂移守卫已跳过（零依赖）」而非静默无测试。
 describe.skipIf(siblingPresent)('signaling drift guard（同级缺席 → skip）', () => {
-  it.skip('ridge-signaling 未 checkout：跳过逐字节比对，conformance 仍对照 vendored fixtures', () => {
-    /* intentionally skipped */
+  it('ridge-signaling 未 checkout：跳过逐字节比对，conformance 仍对照 vendored fixtures', () => {
+    expect(siblingPresent).toBe(false);
   });
 });

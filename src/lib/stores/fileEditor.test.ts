@@ -23,6 +23,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
+import type { ChoiceResult, DialogOptions } from '$lib/components/RidgeDialog.svelte';
 
 // ── Mocks installed before the dynamic import of the store ──────────────────
 
@@ -31,9 +32,15 @@ import { get } from 'svelte/store';
 // first read open while a second openFile() starts — reproducing the TOCTOU
 // window the fix closes.
 const mockInvoke = vi.fn();
+const mockIsTauri = vi.fn(() => true);
+const mockAlertDialog = vi.fn<(opts: DialogOptions) => Promise<void>>(async () => undefined);
+const mockChoiceDialog = vi.fn<(opts: DialogOptions & { secondaryLabel: string }) => Promise<ChoiceResult>>(
+  async () => 'cancel',
+);
+const mockConfirmDialog = vi.fn<(opts: DialogOptions) => Promise<boolean>>(async () => true);
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
-  isTauri: vi.fn(() => true),
+  isTauri: () => mockIsTauri(),
   // openFile only calls convertFileSrc for image paths; the tests below use
   // text paths, but the import must resolve.
   convertFileSrc: (p: string) => `asset://${p}`,
@@ -58,13 +65,20 @@ vi.mock('monaco-editor', () => ({
 // tests never trigger a dialog (no read failures, no dirty conflicts); the
 // stubs simply keep the import graph resolvable.
 vi.mock('$lib/components/RidgeDialog.svelte', () => ({
-  alertDialog: vi.fn(async () => undefined),
-  choiceDialog: vi.fn(async () => 'cancel'),
-  confirmDialog: vi.fn(async () => true),
+  alertDialog: (opts: DialogOptions) => mockAlertDialog(opts),
+  choiceDialog: (opts: DialogOptions & { secondaryLabel: string }) => mockChoiceDialog(opts),
+  confirmDialog: (opts: DialogOptions) => mockConfirmDialog(opts),
 }));
 
 beforeEach(() => {
   mockInvoke.mockReset();
+  mockIsTauri.mockReset();
+  mockIsTauri.mockReturnValue(true);
+  mockAlertDialog.mockReset();
+  mockChoiceDialog.mockReset();
+  mockChoiceDialog.mockResolvedValue('cancel');
+  mockConfirmDialog.mockReset();
+  mockConfirmDialog.mockResolvedValue(true);
   // localStorage shim — the store reads/writes prefs on construction + persist.
   const store: Record<string, string> = {};
   (globalThis as unknown as { localStorage: Storage }).localStorage = {
@@ -85,7 +99,7 @@ beforeEach(() => {
   };
 });
 
-const { fileEditorStore } = await import('./fileEditor');
+const { fileEditorStore, langFromPath, clampRectToViewport } = await import('./fileEditor');
 
 /** Drain all currently-open tabs so each test starts from a known-empty store. */
 async function resetEditor(): Promise<void> {
@@ -224,5 +238,174 @@ describe('fileEditorStore.openFile — same-basename distinct-path tab keys', ()
     const names = state.openFiles.map((f) => f.name);
     expect(names).toEqual(['index.ts', 'index.ts']); // same basename, by design
     expect(state.activePath).toBe('/proj/b/index.ts');
+  });
+});
+
+describe('fileEditorStore public state and lifecycle APIs', () => {
+  beforeEach(async () => {
+    await resetEditor();
+    mockInvoke.mockResolvedValue({ content: 'initial\n', is_binary: false, size: 8 });
+  });
+
+  it('maps common languages, clamps floating bounds, and persists display preferences', () => {
+    expect(langFromPath('Dockerfile')).toBe('dockerfile');
+    expect(langFromPath('src/main.tsx')).toBe('typescript');
+    expect(langFromPath('notes.unknown')).toBe('plaintext');
+
+    vi.stubGlobal('window', { innerWidth: 1000, innerHeight: 700 });
+    expect(clampRectToViewport({ x: -20, y: -20, w: 10, h: 10 })).toEqual({
+      x: 52, y: 44, w: 320, h: 240,
+    });
+    expect(clampRectToViewport({ x: 9999, y: 9999, w: 900, h: 800 })).toEqual({
+      x: 100, y: 48, w: 900, h: 652,
+    });
+
+    fileEditorStore.setDisplayMode('floating');
+    fileEditorStore.setDrawerWidth(100);
+    fileEditorStore.setFloatingRect({ x: 0, y: 0, w: 400, h: 300 });
+    fileEditorStore.toggleVisibility();
+    const state = get(fileEditorStore);
+    expect(state.displayMode).toBe('floating');
+    expect(state.drawerWidth).toBe(280);
+    expect(state.floatingRect).toEqual({ x: 52, y: 44, w: 400, h: 300 });
+    expect(state.isVisible).toBe(true);
+  });
+
+  it('supports snapshots, handoff, ordering, reveal, search, and interceptors', async () => {
+    await fileEditorStore.openFile('/p/a.ts', { line: 3, column: 0, matchLength: 2 });
+    await fileEditorStore.openFile('/p/b.md');
+    await fileEditorStore.openFile('/p/c.rs');
+    fileEditorStore.updateContent('/p/a.ts', 'changed');
+    fileEditorStore.setViewMode('/p/a.ts', 'preview');
+    fileEditorStore.setSearchHits([{ path: '/p/a.ts', line: 3, column: 1, matchLength: 2 }]);
+    expect(fileEditorStore.consumePendingReveal('/p/b.md')).toBeNull();
+    expect(fileEditorStore.consumePendingReveal('/p/a.ts')).toMatchObject({ line: 3, column: 1 });
+    fileEditorStore.reorder(2, 0);
+    fileEditorStore.setOrder(['/p/b.md', '/p/a.ts', '/p/c.rs']);
+    expect(get(fileEditorStore).openFiles.map((f) => f.path)).toEqual(['/p/b.md', '/p/a.ts', '/p/c.rs']);
+    fileEditorStore.setActive('/p/a.ts');
+    expect(fileEditorStore.snapshot().active).toBe('/p/a.ts');
+    fileEditorStore.clearSearchHits();
+    expect(get(fileEditorStore).searchHits).toEqual([]);
+
+    const snapshot = fileEditorStore.snapshot();
+    fileEditorStore.clearForHandoff();
+    expect(get(fileEditorStore).openFiles).toHaveLength(0);
+    fileEditorStore.loadFiles(snapshot.files, snapshot.active);
+    expect(get(fileEditorStore).openFiles.map((f) => f.path)).toEqual(['/p/b.md', '/p/a.ts', '/p/c.rs']);
+
+    const interceptor = vi.fn(() => true);
+    fileEditorStore.setOpenInterceptor(interceptor);
+    await fileEditorStore.openFile('/p/intercepted.ts');
+    fileEditorStore.openDiffTab({ repoRoot: 'C:\\repo', path: 'src/a.ts', cached: true });
+    expect(interceptor).toHaveBeenCalledTimes(2);
+    expect(get(fileEditorStore).openFiles.some((f) => f.path.includes('intercepted'))).toBe(false);
+    fileEditorStore.setOpenInterceptor(null);
+  });
+
+  it('closes tabs with dirty confirmation, preserves active selection, and closes saved tabs', async () => {
+    await fileEditorStore.openFile('/p/a.ts');
+    await fileEditorStore.openFile('/p/b.ts');
+    await fileEditorStore.openFile('/p/c.ts');
+    fileEditorStore.updateContent('/p/a.ts', 'dirty-a');
+    fileEditorStore.updateContent('/p/b.ts', 'dirty-b');
+    fileEditorStore.setActive('/p/b.ts');
+
+    mockConfirmDialog.mockResolvedValueOnce(false);
+    expect(await fileEditorStore.closeFile('/p/b.ts')).toBe(false);
+    expect(get(fileEditorStore).openFiles).toHaveLength(3);
+    mockConfirmDialog.mockResolvedValueOnce(true);
+    expect(await fileEditorStore.closeFile('/p/b.ts')).toBe(true);
+    expect(get(fileEditorStore).activePath).toBe('/p/c.ts');
+
+    mockConfirmDialog.mockResolvedValueOnce(false);
+    await fileEditorStore.closeOthers('/p/c.ts');
+    expect(get(fileEditorStore).openFiles.map((f) => f.path)).toEqual(['/p/a.ts', '/p/c.ts']);
+    mockConfirmDialog.mockResolvedValueOnce(true);
+    await fileEditorStore.closeOthers('/p/c.ts');
+    expect(get(fileEditorStore).openFiles.map((f) => f.path)).toEqual(['/p/c.ts']);
+
+    await fileEditorStore.openFile('/p/d.ts');
+    await fileEditorStore.openFile('/p/e.ts');
+    fileEditorStore.updateContent('/p/d.ts', 'dirty-d');
+    fileEditorStore.setActive('/p/e.ts');
+    mockConfirmDialog.mockResolvedValueOnce(true);
+    await fileEditorStore.closeToRight('/p/d.ts');
+    expect(get(fileEditorStore).openFiles.map((f) => f.path)).toEqual(['/p/c.ts', '/p/d.ts']);
+    fileEditorStore.closeSaved();
+    expect(get(fileEditorStore).openFiles.map((f) => f.path)).toEqual(['/p/d.ts']);
+  });
+
+  it('opens image, markdown, binary, and diff tabs through their distinct paths', async () => {
+    await fileEditorStore.openFile('C:\\work\\photo.PNG');
+    expect(get(fileEditorStore).openFiles[0]).toMatchObject({
+      language: 'image', imageUrl: 'asset://C:/work/photo.PNG', imageVersion: 0,
+    });
+    await fileEditorStore.openFile('/p/readme.md');
+    expect(get(fileEditorStore).openFiles.find((f) => f.path === '/p/readme.md')?.viewMode).toBe('preview');
+
+    mockInvoke.mockResolvedValueOnce({ content: '', is_binary: true, size: 4 });
+    await fileEditorStore.openFile('/p/archive.bin');
+    expect(mockAlertDialog).toHaveBeenCalledWith(expect.objectContaining({ title: '无法打开' }));
+    expect(get(fileEditorStore).openFiles.some((f) => f.path.endsWith('archive.bin'))).toBe(false);
+
+    fileEditorStore.openDiffTab({ repoRoot: 'C:\\repo', path: 'src/a.ts', cached: true });
+    fileEditorStore.openDiffTab({ repoRoot: 'C:\\repo', path: 'src/a.ts', cached: false, commit: 'abcdef123456' });
+    fileEditorStore.openDiffTab({ repoRoot: 'C:\\repo', path: 'src/a.ts', cached: false, commit: 'abcdef123456', compareBase: '123456789' });
+    const diffs = get(fileEditorStore).openFiles.filter((f) => f.diffArgs);
+    expect(diffs).toHaveLength(3);
+    fileEditorStore.openDiffTab({ repoRoot: 'C:\\repo', path: 'src/a.ts', cached: true });
+    expect(get(fileEditorStore).openFiles.filter((f) => f.diffArgs)).toHaveLength(3);
+  });
+
+  it('saves, reverts, and handles external clean, dirty, deleted, image, and diff changes', async () => {
+    await fileEditorStore.openFile('/p/a.ts');
+    fileEditorStore.updateContent('/p/a.ts', 'local');
+    mockInvoke.mockClear();
+    await fileEditorStore.saveFile('/p/a.ts');
+    expect(mockInvoke).toHaveBeenCalledWith('write_file', { path: '/p/a.ts', content: 'local' });
+    expect(get(fileEditorStore).openFiles[0].isDirty).toBe(false);
+
+    await fileEditorStore.openFile('/p/external.ts');
+    mockInvoke.mockResolvedValueOnce({ content: 'disk', is_binary: false, size: 4 });
+    await fileEditorStore.handleExternalChange('/p/external.ts');
+    expect(get(fileEditorStore).openFiles.find((f) => f.path === '/p/external.ts')?.content).toBe('disk');
+    fileEditorStore.updateContent('/p/external.ts', 'local-again');
+    mockInvoke.mockResolvedValueOnce({ content: 'new-disk', is_binary: false, size: 8 });
+    mockChoiceDialog.mockResolvedValueOnce('primary');
+    await fileEditorStore.handleExternalChange('/p/external.ts');
+    expect(get(fileEditorStore).openFiles.find((f) => f.path === '/p/external.ts')).toMatchObject({ content: 'new-disk', originalContent: 'new-disk', isDirty: false });
+
+    fileEditorStore.updateContent('/p/external.ts', 'keep-edit');
+    mockInvoke.mockResolvedValueOnce({ content: 'other-disk', is_binary: false, size: 10 });
+    mockChoiceDialog.mockResolvedValueOnce('secondary');
+    await fileEditorStore.handleExternalChange('/p/external.ts');
+    expect(get(fileEditorStore).openFiles.find((f) => f.path === '/p/external.ts')).toMatchObject({ content: 'keep-edit', originalContent: 'other-disk', isDirty: true });
+
+    mockInvoke.mockRejectedValueOnce(new Error('gone'));
+    await fileEditorStore.handleExternalChange('/p/external.ts');
+    expect(get(fileEditorStore).openFiles.find((f) => f.path === '/p/external.ts')?.external).toBe('deleted');
+
+    await fileEditorStore.openFile('/p/photo.png');
+    await fileEditorStore.handleExternalChange('/p/photo.png');
+    expect(get(fileEditorStore).openFiles.find((f) => f.path === '/p/photo.png')?.imageVersion).toBe(1);
+    fileEditorStore.openDiffTab({ repoRoot: '/repo', path: 'a.ts', cached: false });
+    const callsBeforeDiffChange = mockInvoke.mock.calls.length;
+    await fileEditorStore.handleExternalChange('__diff__:working:/repo:a.ts');
+    expect(mockInvoke).toHaveBeenCalledTimes(callsBeforeDiffChange);
+  });
+
+  it('uses local browser save/revert paths without Tauri commands', async () => {
+    mockIsTauri.mockReturnValue(false);
+    await fileEditorStore.openFile('/p/browser.ts');
+    fileEditorStore.updateContent('/p/browser.ts', 'browser-edit');
+    await fileEditorStore.saveFile('/p/browser.ts');
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(get(fileEditorStore).openFiles[0]).toMatchObject({ originalContent: 'browser-edit', isDirty: false });
+    fileEditorStore.updateContent('/p/browser.ts', 'again');
+    await fileEditorStore.revertActive();
+    expect(get(fileEditorStore).openFiles[0]).toMatchObject({ content: 'browser-edit', isDirty: false });
+    await fileEditorStore.openFile('relative.txt');
+    expect(get(fileEditorStore).openFiles.find((f) => f.path === 'relative.txt')?.content).toBe('');
   });
 });

@@ -59,8 +59,8 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 // TerminalManager singleton mock — capture feed / applyDeltaFrame / rows /
 // cols calls so tests can assert dispatch. `hostPorts` returns null: the
-// `pane-pty-closed` rebuild branch reads `defaultShell` via it, but no test
-// fires that branch — null degrades gracefully through `?.`.
+// `pane-pty-closed` rebuild branch reads `defaultShell` via it; null degrades
+// gracefully through `?.`.
 const managerStub = {
 	feed: vi.fn(),
 	applyDeltaFrame: vi.fn(),
@@ -77,6 +77,7 @@ vi.mock('./manager', () => ({
 // ---------------------------------------------------------------------------
 
 const WS = '00000000-0000-0000-0000-0000000000aa';
+const WS2 = '00000000-0000-0000-0000-0000000000cc';
 const PANE = '00000000-0000-0000-0000-0000000000bb';
 
 async function freshBridge() {
@@ -213,6 +214,47 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		errorSpy.mockRestore();
 	});
 
+	it('does not log a late rebuild when the pane was already destroyed', async () => {
+		const { ensurePtyBridge } = await freshBridge();
+		invokeMock.mockImplementation(async (cmd: string) => {
+			if (cmd === 'create_pane') throw new Error('Pane not found: closed');
+			return undefined;
+		});
+		await ensurePtyBridge(PANE, WS);
+		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed');
+		expect(closed).toBeTruthy();
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		await (closed![1] as (event: unknown) => Promise<void>)({
+			payload: { workspaceId: WS, paneId: PANE },
+		});
+		expect(errorSpy).not.toHaveBeenCalledWith(
+			'create_pane (rebuild) failed',
+			expect.anything(),
+		);
+		errorSpy.mockRestore();
+	});
+
+	it('rebuilds a closed pane within its composite workspace identity', async () => {
+		const { ensurePtyBridge } = await freshBridge();
+		await ensurePtyBridge(PANE, WS);
+		const closed = listenMock.mock.calls.find(([name]) => name === 'pane-pty-closed');
+		expect(closed).toBeTruthy();
+
+		await (closed![1] as (event: unknown) => Promise<void>)({
+			payload: { workspaceId: WS, paneId: PANE },
+		});
+
+		expect(invokeMock).toHaveBeenCalledWith('create_pane', {
+			workspaceId: WS,
+			paneId: PANE,
+			shell: null,
+		});
+		expect(invokeMock).toHaveBeenCalledWith('activate_pane_pty', expect.objectContaining({
+			workspaceId: WS,
+			paneId: PANE,
+		}));
+	});
+
 	it('still installs listeners when register_pane_delta_channel fails', async () => {
 		// freshBridge() resets the invoke mock, so the rejection has to be
 		// configured AFTER the module is loaded.
@@ -274,6 +316,20 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		expect(listenMock).toHaveBeenCalledTimes(2);
 		expect(invokeMock.mock.calls.filter(([cmd]) => cmd === 'register_pane_delta_channel'))
 			.toHaveLength(1);
+	});
+
+	it('keeps same-named panes independent across workspaces', async () => {
+		const { ensurePtyBridge, teardownPtyBridge, hasPtyBridge } = await freshBridge();
+		await ensurePtyBridge(PANE, WS);
+		await ensurePtyBridge(PANE, WS2);
+
+		expect(channels).toHaveLength(2);
+		expect(hasPtyBridge(PANE, WS)).toBe(true);
+		expect(hasPtyBridge(PANE, WS2)).toBe(true);
+
+		teardownPtyBridge(PANE, WS);
+		expect(hasPtyBridge(PANE, WS)).toBe(false);
+		expect(hasPtyBridge(PANE, WS2)).toBe(true);
 	});
 });
 

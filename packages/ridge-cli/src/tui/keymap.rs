@@ -59,10 +59,10 @@ fn char_bytes(c: char) -> Vec<u8> {
 /// Ctrl+<字符> → 控制字节（C0）。无对应者返回 None。
 fn ctrl_byte(c: char) -> Option<Vec<u8>> {
     let b = match c {
-        'a'..='z' => (c as u8 - b'a') + 1,        // Ctrl+A..Z → 0x01..0x1a
+        'a'..='z' => (c as u8 - b'a') + 1, // Ctrl+A..Z → 0x01..0x1a
         'A'..='Z' => (c as u8 - b'A') + 1,
-        '@' | ' ' => 0x00,                         // Ctrl+@ / Ctrl+Space → NUL
-        '[' => 0x1b,                               // Ctrl+[ → ESC
+        '@' | ' ' => 0x00, // Ctrl+@ / Ctrl+Space → NUL
+        '[' => 0x1b,       // Ctrl+[ → ESC
         '\\' => 0x1c,
         ']' => 0x1d,
         '^' => 0x1e,
@@ -144,42 +144,78 @@ mod tests {
 
     #[test]
     fn plain_char() {
-        assert_eq!(encode_key(&key(KeyCode::Char('a'), KeyModifiers::NONE)), Some(vec![b'a']));
-        assert_eq!(encode_key(&key(KeyCode::Char('A'), KeyModifiers::SHIFT)), Some(vec![b'A']));
+        assert_eq!(
+            encode_key(&key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            Some(vec![b'a'])
+        );
+        assert_eq!(
+            encode_key(&key(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            Some(vec![b'A'])
+        );
     }
 
     #[test]
     fn ctrl_letters() {
-        assert_eq!(encode_key(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)), Some(vec![0x03]));
-        assert_eq!(encode_key(&key(KeyCode::Char('d'), KeyModifiers::CONTROL)), Some(vec![0x04]));
+        assert_eq!(
+            encode_key(&key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(vec![0x03])
+        );
+        assert_eq!(
+            encode_key(&key(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Some(vec![0x04])
+        );
         // Ctrl+] = 0x1d（也是 TUI 退出热键，由循环在编码前拦截）。
-        assert_eq!(encode_key(&key(KeyCode::Char(']'), KeyModifiers::CONTROL)), Some(vec![0x1d]));
+        assert_eq!(
+            encode_key(&key(KeyCode::Char(']'), KeyModifiers::CONTROL)),
+            Some(vec![0x1d])
+        );
     }
 
     #[test]
     fn editing_and_arrows() {
-        assert_eq!(encode_key(&key(KeyCode::Enter, KeyModifiers::NONE)), Some(vec![b'\r']));
-        assert_eq!(encode_key(&key(KeyCode::Backspace, KeyModifiers::NONE)), Some(vec![0x7f]));
-        assert_eq!(encode_key(&key(KeyCode::Up, KeyModifiers::NONE)), Some(vec![ESC, b'[', b'A']));
-        assert_eq!(encode_key(&key(KeyCode::Delete, KeyModifiers::NONE)), Some(vec![ESC, b'[', b'3', b'~']));
+        assert_eq!(
+            encode_key(&key(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(vec![b'\r'])
+        );
+        assert_eq!(
+            encode_key(&key(KeyCode::Backspace, KeyModifiers::NONE)),
+            Some(vec![0x7f])
+        );
+        assert_eq!(
+            encode_key(&key(KeyCode::Up, KeyModifiers::NONE)),
+            Some(vec![ESC, b'[', b'A'])
+        );
+        assert_eq!(
+            encode_key(&key(KeyCode::Delete, KeyModifiers::NONE)),
+            Some(vec![ESC, b'[', b'3', b'~'])
+        );
     }
 
     #[test]
     fn alt_prefixes_esc() {
-        assert_eq!(encode_key(&key(KeyCode::Char('x'), KeyModifiers::ALT)), Some(vec![ESC, b'x']));
+        assert_eq!(
+            encode_key(&key(KeyCode::Char('x'), KeyModifiers::ALT)),
+            Some(vec![ESC, b'x'])
+        );
     }
 
     #[test]
     fn utf8_char() {
         // 中文字符按 UTF-8 多字节透传。
-        assert_eq!(encode_key(&key(KeyCode::Char('好'), KeyModifiers::NONE)), Some("好".as_bytes().to_vec()));
+        assert_eq!(
+            encode_key(&key(KeyCode::Char('好'), KeyModifiers::NONE)),
+            Some("好".as_bytes().to_vec())
+        );
     }
 
     #[test]
     fn ctrl_shift_arrows_are_shortcuts() {
         for dir in &[KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
             let ev = key(*dir, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-            assert!(is_control_shortcut(&ev), "Ctrl+Shift+{dir:?} should be shortcut");
+            assert!(
+                is_control_shortcut(&ev),
+                "Ctrl+Shift+{dir:?} should be shortcut"
+            );
         }
     }
 
@@ -190,7 +226,10 @@ mod tests {
         let ev = key(KeyCode::Right, KeyModifiers::SHIFT);
         assert!(!is_control_shortcut(&ev));
         let ev = key(KeyCode::Up, KeyModifiers::CONTROL);
-        assert!(!is_control_shortcut(&ev), "Ctrl+Up alone should NOT be shortcut");
+        assert!(
+            !is_control_shortcut(&ev),
+            "Ctrl+Up alone should NOT be shortcut"
+        );
     }
 
     #[test]

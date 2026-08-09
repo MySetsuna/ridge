@@ -12,6 +12,7 @@
 //! `ridge_core::mcp` 以 `pub use ridge_mcp as mcp;` 再导出，历史调用点无需改动。
 
 pub mod addressing;
+pub mod delivery;
 pub mod protocol;
 pub mod registry;
 pub mod resource;

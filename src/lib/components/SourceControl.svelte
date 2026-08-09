@@ -243,7 +243,7 @@
         async (cwd) => {
           if (signal?.aborted) return;
           try {
-            const roots = await invoke<string[]>('find_git_repos_below', { path: cwd, maxDepth: 4 });
+            const roots = await invoke<string[]>('find_git_repos_below', { path: cwd, maxDepth: 1 });
             if (signal?.aborted) return;
             for (const r of roots) {
               found.set(r, (found.get(r) ?? 0) + 1);

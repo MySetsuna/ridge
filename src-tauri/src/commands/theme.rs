@@ -14,7 +14,7 @@ use tauri::{AppHandle, Manager};
 // of this module (the desktop file exported them); they're re-exported here so
 // that surface is preserved even though src-tauri has no internal caller today.
 #[allow(unused_imports)]
-pub use ridge_core::commands::theme::{ACTIVE_THEME_FILE, LoaderConfig};
+pub use ridge_core::commands::theme::{LoaderConfig, ACTIVE_THEME_FILE};
 pub use ridge_core::commands::theme::{ThemeEntry, ThemeFile};
 
 /// Resolve `ridge.theme` via Tauri's `BaseDirectory::Resource`. The
@@ -137,7 +137,8 @@ pub fn save_theme_bg_image(bytes: Vec<u8>, ext: String) -> Result<String, String
 /// 从磁盘路径读取并写入背景图，返回文件名（前端无 fs 插件时用 dialog 选路径走此命令）。
 #[tauri::command]
 pub fn save_theme_bg_image_from_path(path: String) -> Result<String, String> {
-    ridge_core::commands::theme::save_theme_bg_image_from_path(&path).map_err(|e| e.to_command_string())
+    ridge_core::commands::theme::save_theme_bg_image_from_path(&path)
+        .map_err(|e| e.to_command_string())
 }
 
 /// 返回 theme-assets 目录绝对路径（前端 convertFileSrc 用）。
@@ -280,9 +281,13 @@ mod tests {
         // Each defineProperty call should be properly closed.
         let opens: Vec<_> = js.match_indices("Object.defineProperty").collect();
         let closes: Vec<_> = js.match_indices("});").collect();
-        assert_eq!(opens.len(), closes.len(),
+        assert_eq!(
+            opens.len(),
+            closes.len(),
             "number of Object.defineProperty opens ({}) must match number of close parens ({})",
-            opens.len(), closes.len());
+            opens.len(),
+            closes.len()
+        );
     }
 
     #[test]

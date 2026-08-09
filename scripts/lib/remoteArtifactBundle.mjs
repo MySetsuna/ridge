@@ -82,6 +82,7 @@ export function packBundle(manifest, files) {
 export function resolveConfig(env, argv) {
   const has = (f) => argv.includes(f);
   const rbIdx = argv.indexOf('--rollback');
+  /** @type {boolean | string} */
   let rollback = false;
   if (rbIdx >= 0) {
     const next = argv[rbIdx + 1];

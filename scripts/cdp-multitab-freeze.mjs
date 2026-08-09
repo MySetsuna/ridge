@@ -138,6 +138,35 @@ const PROBE = `(() => {
   return { mountedWorkspaces: tabs, mountedPanes: panes, canvases };
 })()`;
 
+async function waitForMounted(cdp, maxMs = 30_000) {
+  const deadline = Date.now() + maxMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await cdp.ev(PROBE);
+    if (last?.mountedWorkspaces > 0 && last.mountedPanes > 0 && last.canvases > 0) return last;
+    await sleep(250);
+  }
+  throw new Error(`Ridge page did not mount a workspace: ${JSON.stringify(last)}`);
+}
+
+async function clickNewWorkspace(cdp, maxMs = 20_000) {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    const clicked = await cdp.ev(
+      `(() => {
+         const b = [...document.querySelectorAll('button')]
+           .find((x) => x.textContent.trim() === '+' && x.className.includes('border-dashed'));
+         if (!b) return 'no-button';
+         b.click();
+         return 'clicked';
+       })()`,
+    );
+    if (clicked === 'clicked') return clicked;
+    await sleep(250);
+  }
+  return 'no-button';
+}
+
 /** 把 CPU profile 归并成「谁在烧主线程」——按**调用链**看，而非只看叶子。
  *  叶子往往是 `get_stack` 这类通用 helper，真正的责任人在上游几帧。 */
 function hotPaths(profile, topN = 12) {
@@ -185,7 +214,7 @@ const main = async () => {
   const errorsSeen = [];
 
   log('instrument:', await cdp.ev(INSTRUMENT));
-  const base = await cdp.ev(PROBE);
+  const base = await waitForMounted(cdp);
   wsCounts.push(base.mountedWorkspaces);
   log('baseline probe:', JSON.stringify(base));
 
@@ -193,19 +222,14 @@ const main = async () => {
   log('BASELINE lag:', JSON.stringify(await cdp.ev('window.__rgLag.read()')));
 
   for (let i = 2; i <= TABS; i++) {
+    await cdp.ev(INSTRUMENT);
     await cdp.ev('window.__rgLag.reset()');
     await cdp.send('Profiler.start');
-    const clicked = await cdp.ev(
-      `(() => {
-         const b = [...document.querySelectorAll('button')]
-           .find((x) => x.textContent.trim() === '+' && x.className.includes('border-dashed'));
-         if (!b) return 'no-button';
-         b.click();
-         return 'clicked';
-       })()`,
-    );
+    const clicked = await clickNewWorkspace(cdp);
     log(`tab ${i}: ${clicked}`);
     await sleep(6000);
+    // Dev HMR/navigation can replace the page global while the new tab mounts.
+    await cdp.ev(INSTRUMENT);
     const prof = await cdp.send('Profiler.stop');
     const lag = await cdp.ev('window.__rgLag.read()');
     const probe = await cdp.ev(PROBE);
@@ -230,9 +254,11 @@ const main = async () => {
     cdp.events.length = 0;
     const tally = new Map();
     for (const m of msgs) {
-      const head = (m.params.args?.[0]?.value ?? m.params.args?.[0]?.description ?? '')
+      const head = (m.params.args ?? [])
+        .map((arg) => arg.value ?? arg.description ?? '')
+        .join(' ')
         .toString()
-        .slice(0, 140);
+        .slice(0, 240);
       const k = `${m.params.type}: ${head}`;
       tally.set(k, (tally.get(k) ?? 0) + 1);
     }
@@ -243,6 +269,7 @@ const main = async () => {
   }
 
   // 卡顿是否持续：不再操作，静置观察。
+  await cdp.ev(INSTRUMENT);
   await cdp.ev('window.__rgLag.reset()');
   await sleep(8000);
   log('IDLE-after lag:', JSON.stringify(await cdp.ev('window.__rgLag.read()')));

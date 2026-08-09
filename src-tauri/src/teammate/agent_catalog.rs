@@ -7,7 +7,6 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-
 /// 进程内覆盖缓存。`None` = 尚未从磁盘 hydrate。
 static PROFILE_OVERRIDES: Mutex<Option<Vec<AgentProfile>>> = Mutex::new(None);
 
@@ -102,9 +101,7 @@ fn read_overrides_disk() -> Vec<AgentProfile> {
 
 /// 当前用户覆盖（懒加载磁盘）。autodiscover / scan 走此入口。
 pub fn load_profile_overrides() -> Vec<AgentProfile> {
-    let mut guard = PROFILE_OVERRIDES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut guard = PROFILE_OVERRIDES.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(cached) = guard.as_ref() {
         return cached.clone();
     }
@@ -115,9 +112,7 @@ pub fn load_profile_overrides() -> Vec<AgentProfile> {
 
 /// 仅内存（单测 / 热更新）。不写盘。
 pub fn set_profile_overrides_in_memory(overrides: Vec<AgentProfile>) {
-    let mut guard = PROFILE_OVERRIDES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut guard = PROFILE_OVERRIDES.lock().unwrap_or_else(|e| e.into_inner());
     *guard = Some(overrides);
 }
 

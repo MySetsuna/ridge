@@ -1,9 +1,9 @@
 <script lang="ts">
   // src/lib/components/PaneRepoSwitcher.svelte
   //
-  // Sibling-left of `PaneGitPill` — only renders when the pane's cwd
-  // hosts MORE THAN ONE git repo (round 40 cwd-down semantics:
-  // `find_git_repos_below(cwd, max_depth=1)` returns N>1).
+  // Sibling-left of `PaneGitPill` — only renders when the pane reports
+  // multiple explicitly-owned repositories. Pane Git ownership itself is
+  // resolved from the cwd's ancestor root, never from descendants.
   //
   // Click → dropdown lists each repo's basename (full path in tooltip);
   // pick → `setPaneSelectedRepo(paneId, repoRoot)` rewires the pill

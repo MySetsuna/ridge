@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::Serialize;
 use tokio::sync::oneshot;
@@ -234,7 +234,10 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         ))),
         roster_path: roster_path(),
         groups: Arc::new(std::sync::Mutex::new(HashMap::new())),
-        mcp_state: Arc::new(ridge_mcp::server::McpSessionState::default()),
+        mcp_state: Arc::new(
+            ridge_mcp::server::McpSessionState::with_sqlite(crate::registry::agent_hub_path())
+                .map_err(|error| anyhow::anyhow!("open persistent Agent Hub: {error}"))?,
+        ),
         remote_hosts: Arc::new(std::sync::Mutex::new(
             ridge_core::remote::RemoteHostTopology::from_records(
                 load_remote_hosts().unwrap_or_else(|error| {
@@ -259,6 +262,10 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         .route(
             "/v1/domain/agents/roster",
             get(domain::domain_agent_roster).post(domain::domain_agent_roster_add),
+        )
+        .route(
+            "/v1/domain/agents/identities/commit",
+            post(domain::domain_agent_identity_commit),
         )
         .route(
             "/v1/domain/agents/roster/:agent_id",
@@ -339,6 +346,10 @@ pub async fn run(host: &str, requested_port: u16) -> Result<()> {
         .route(
             "/v1/domain/workspaces/:workspace_id/activate",
             post(domain::domain_workspace_activate),
+        )
+        .route(
+            "/v1/domain/workspaces/:workspace_id/topology",
+            put(domain::domain_workspace_topology),
         )
         .route(
             "/v1/domain/workspaces/:workspace_id/split",

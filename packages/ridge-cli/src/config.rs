@@ -45,7 +45,11 @@ pub fn activate_url() -> String {
 
 /// LAN 远程服务端口：dev 模式用 5002（避免与本机桌面端 9527 冲突），生产用 9527。
 pub fn lan_port() -> u16 {
-    if is_dev_mode() { 5002 } else { 9527 }
+    if is_dev_mode() {
+        5002
+    } else {
+        9527
+    }
 }
 
 /// 检测本机 LAN IP（通过 UDP 连接获取主接口地址）。
@@ -176,10 +180,7 @@ mod tests {
             username: "alice".to_string(),
         };
         assert_eq!(auth.tenant_host(), "my-laptop-alice.9527127.xyz");
-        assert_eq!(
-            auth.public_entry(),
-            "https://my-laptop-alice.9527127.xyz"
-        );
+        assert_eq!(auth.public_entry(), "https://my-laptop-alice.9527127.xyz");
         assert_eq!(
             auth.signaling_ws_url(),
             "wss://my-laptop-alice.9527127.xyz/ws?token=JWT123&role=host"

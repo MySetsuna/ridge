@@ -260,6 +260,9 @@ pub type PaneDeltaSender = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 pub struct RemotePaneSub {
     pub id: u64,
     pub raw_tx: mpsc::Sender<RemotePtyEvent>,
+    /// Metadata/control events use a separate lane so title/cwd/resize cannot
+    /// be dropped behind a saturated raw PTY byte queue.
+    pub metadata_tx: mpsc::Sender<RemotePtyEvent>,
     /// Set by the PTY fan-out (lib.rs) when a `raw_tx.try_send` is dropped
     /// because this sub's channel is full. The WS task observes it on the
     /// next forwarded frame and emits a terminal hard-reset (RIS) + fresh
@@ -1221,7 +1224,7 @@ impl AppState {
         let reg = self.pty_pane_registry.read();
         if let Some(entry) = reg.get(&(ws, pane)) {
             for sub in &entry.remote_subs {
-                let _ = sub.raw_tx.try_send(event.clone());
+                let _ = sub.metadata_tx.try_send(event.clone());
             }
         }
     }
@@ -1651,10 +1654,7 @@ mod pty_delta_channel_tests {
         claims.claim(second, "secondary");
 
         assert_eq!(claims.release_window("secondary"), 2);
-        assert_eq!(
-            claims.claim(first, "other"),
-            WorkspaceWindowClaim::Acquired
-        );
+        assert_eq!(claims.claim(first, "other"), WorkspaceWindowClaim::Acquired);
         assert_eq!(
             claims.claim(second, "other"),
             WorkspaceWindowClaim::Acquired
@@ -1761,10 +1761,7 @@ mod pty_delta_channel_tests {
         let only = Uuid::new_v4();
         claims.claim(only, "main");
 
-        assert_eq!(
-            claims.acquire_available("secondary", only, &[only]),
-            None
-        );
+        assert_eq!(claims.acquire_available("secondary", only, &[only]), None);
         assert_eq!(claims.selected_workspace("secondary"), None);
         assert_eq!(
             claims.claim(only, "secondary"),
@@ -1798,5 +1795,50 @@ mod pty_delta_channel_tests {
         let mut expected = vec![first, second];
         expected.sort();
         assert_eq!(results, expected);
+    }
+
+    #[test]
+    fn metadata_broadcast_survives_a_full_raw_lane() {
+        let (tx, _rx) = mpsc::channel::<GlobalEvent>(1);
+        let state = AppState::new(tx);
+        let workspace_id = Uuid::new_v4();
+        let pane_id = Uuid::new_v4();
+        let (raw_tx, mut raw_rx) = mpsc::channel::<RemotePtyEvent>(1);
+        let (metadata_tx, mut metadata_rx) = mpsc::channel::<RemotePtyEvent>(1);
+
+        raw_tx
+            .try_send(RemotePtyEvent::RawBytes {
+                workspace_id,
+                pane_id,
+                bytes: Arc::new(vec![1]),
+            })
+            .expect("raw lane fixture should fill");
+        state.register_remote_sub(
+            workspace_id,
+            pane_id,
+            RemotePaneSub {
+                id: RemoteSubId::next(),
+                raw_tx,
+                metadata_tx,
+                desync: Arc::new(AtomicBool::new(false)),
+            },
+        );
+
+        state.broadcast_remote_event(
+            workspace_id,
+            pane_id,
+            RemotePtyEvent::Metadata {
+                workspace_id,
+                pane_id,
+                title: Some("OSC2 title".into()),
+                cwd: None,
+            },
+        );
+
+        assert!(matches!(
+            metadata_rx.try_recv().expect("metadata lane must receive title"),
+            RemotePtyEvent::Metadata { title: Some(title), .. } if title == "OSC2 title"
+        ));
+        assert!(raw_rx.try_recv().is_ok(), "raw fixture remains isolated");
     }
 }

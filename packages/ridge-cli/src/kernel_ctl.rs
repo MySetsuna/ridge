@@ -63,8 +63,8 @@ pub fn status_line() -> String {
 /// rdg 启动：内核不在则拉起（与桌面 detect-or-spawn 同契约）。
 pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
     // `rdg host`, `rdg remote --daemon`, the desktop shell and the first pane
-      // can all bootstrap at once. The kernel boot lock is cross-process;
-      // use it as a short boot slot so only one caller can spawn while the
+    // can all bootstrap at once. The kernel boot lock is cross-process;
+    // use it as a short boot slot so only one caller can spawn while the
     // kernel has not published a healthy endpoint yet.
     if let Some(ep) = running_endpoint() {
         return Ok(ep);
@@ -80,7 +80,9 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
                 std::thread::sleep(Duration::from_millis(80));
             }
             Ok(None) => {
-                return Err("another ridge-kernel is booting but did not become healthy in time".into());
+                return Err(
+                    "another ridge-kernel is booting but did not become healthy in time".into(),
+                );
             }
             Err(error) => return Err(format!("acquire ridge-kernel boot slot: {error}")),
         }
@@ -96,8 +98,8 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
                 "live ridge-kernel PID {} is unhealthy or protocol-incompatible; refusing a second instance",
                 ep.pid
             ));
-    }
-    // stale
+        }
+        // stale
         let _ = fs::remove_file(kernel_pid_path());
         let _ = fs::remove_file(kernel_json_path());
     }
@@ -114,8 +116,11 @@ pub fn domain_agents() -> Result<String, String> {
 
 /// 经内核领域 API 列目录。
 pub fn domain_fs_list(path: &str) -> Result<String, String> {
-    kernel_get_json(&format!("/v1/domain/fs/list?path={}", encode_query_component(path)))
-        .map(|value| value.to_string())
+    kernel_get_json(&format!(
+        "/v1/domain/fs/list?path={}",
+        encode_query_component(path)
+    ))
+    .map(|value| value.to_string())
 }
 
 /// 经内核 Git status（DOMAIN）。

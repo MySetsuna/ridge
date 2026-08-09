@@ -318,14 +318,18 @@ const requestsBeforeScroll = sent.filter(({ value }) => value.type === 'scrollba
 const loadingSeen = await page.evaluate(async () => {
   const container = document.querySelector('.container');
   if (!(container instanceof HTMLElement)) return false;
-  let seen = !!document.querySelector('.scrollback-loading');
+  const initiallySeen = !!document.querySelector('.scrollback-loading');
+  let resolveSeen = () => {};
+  const seenPromise = new Promise((resolve) => {
+    resolveSeen = resolve;
+  });
   const observer = new MutationObserver((records) => {
-    if (records.some((record) =>
+    if (!initiallySeen && records.some((record) =>
       (record.type === 'attributes' && record.target.getAttribute?.('aria-busy') === 'true')
       || [...record.addedNodes].some((node) =>
         node instanceof Element
         && (node.matches('.scrollback-loading') || node.querySelector('.scrollback-loading')))
-    )) seen = true;
+    )) resolveSeen(true);
   });
   observer.observe(document.body, {
     childList: true,
@@ -333,15 +337,22 @@ const loadingSeen = await page.evaluate(async () => {
     attributes: true,
     attributeFilter: ['aria-busy'],
   });
-  for (let batch = 0; batch < 160 && !seen; batch += 1) {
+  for (let batch = 0; batch < 160; batch += 1) {
     for (let i = 0; i < 8; i += 1) {
       container.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }));
     }
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    const observed = await Promise.race([
+      seenPromise.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 10)),
+    ]);
+    if (observed) break;
   }
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  const observed = initiallySeen || await Promise.race([
+    seenPromise.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 500)),
+  ]);
   observer.disconnect();
-  return seen;
+  return observed;
 });
 assert(loadingSeen, 'scrollback fetch exposes the shell-top loading bar');
 const scrollRequest = sent

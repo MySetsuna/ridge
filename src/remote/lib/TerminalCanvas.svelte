@@ -535,7 +535,7 @@
     // the app captures the mouse (mouse-reporting TUI) we forward a press and the
     // TUI owns the gesture/selection/scroll. ONLY a plain shell falls back to
     // LOCAL text selection + copy pill.
-    if (selectionMode && !touchLinkCell) {
+    if (selectionMode) {
       const cell = clientToCell(t.clientX, t.clientY);
       if (cell) {
         if (isMouseReporting()) {

@@ -8,12 +8,12 @@
 
 pub mod dashboard;
 mod keymap;
-pub mod pager;
-pub mod qr_display;
-mod lan_proto;
-pub(crate) mod lan_session;
 pub mod lan_host;
 mod lan_host_impl;
+mod lan_proto;
+pub(crate) mod lan_session;
+pub mod pager;
+pub mod qr_display;
 mod scrollback;
 mod session;
 mod workspace;
@@ -46,7 +46,11 @@ pub async fn run_local(shell: Option<String>, cwd: Option<String>) -> Result<()>
 
 /// 无头仅启 LAN Remote（无仪表盘）：起 workspace + PTY + HTTPS host，打印根 URL/TOTP，
 /// Ctrl+C 退出。供 9527 冒烟与自动化（REQ-RDG-REMOTE-CONNECT-01）。
-pub async fn run_lan_host_only(port: u16, shell: Option<String>, cwd: Option<String>) -> Result<()> {
+pub async fn run_lan_host_only(
+    port: u16,
+    shell: Option<String>,
+    cwd: Option<String>,
+) -> Result<()> {
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -57,9 +61,16 @@ pub async fn run_lan_host_only(port: u16, shell: Option<String>, cwd: Option<Str
     let lan_ip = config::detect_lan_ip();
     let workspace = workspace::new_shared();
     {
-        let mut w = workspace.lock().map_err(|e| anyhow!("workspace lock: {e}"))?;
-        w.create_session(shell.as_deref(), cwd.as_deref(), None, SplitDirection::Horizontal)
-            .context("create initial pane")?;
+        let mut w = workspace
+            .lock()
+            .map_err(|e| anyhow!("workspace lock: {e}"))?;
+        w.create_session(
+            shell.as_deref(),
+            cwd.as_deref(),
+            None,
+            SplitDirection::Horizontal,
+        )
+        .context("create initial pane")?;
     }
     let totp = Arc::new(RemoteTotp::new());
     let totp_ui = totp.clone();
@@ -102,7 +113,13 @@ pub async fn run_lan_host_only(port: u16, shell: Option<String>, cwd: Option<Str
             "LAN host failed to listen on port {port} (busy, TLS error, or early exit)"
         ));
     }
-    write_lan_host_status(port, &lan_ip, &totp_ui.current_code(), std::process::id(), true);
+    write_lan_host_status(
+        port,
+        &lan_ip,
+        &totp_ui.current_code(),
+        std::process::id(),
+        true,
+    );
     eprintln!("  ready: listening on {port}");
 
     let mut last_code = totp_ui.current_code();
@@ -192,18 +209,20 @@ pub async fn run_local_pager(
     {
         let mut ws = mgr.active_workspace_mut();
         let label = cwd.as_deref().unwrap_or("shell").to_string();
-        ws.create_session(shell.as_deref(), cwd.as_deref(), None, SplitDirection::Horizontal)?;
+        ws.create_session(
+            shell.as_deref(),
+            cwd.as_deref(),
+            None,
+            SplitDirection::Horizontal,
+        )?;
         if let Some(s) = ws.sessions.last_mut() {
             s.title = label;
         }
     }
     // 后续 session：依次 split 前一个
     for _ in 1..count {
-        let id = mgr.split_active_session(
-            shell.as_deref(),
-            cwd.as_deref(),
-            SplitDirection::Horizontal,
-        )?;
+        let id =
+            mgr.split_active_session(shell.as_deref(), cwd.as_deref(), SplitDirection::Horizontal)?;
         let idx = {
             let ws = mgr.active_workspace_mut();
             ws.sessions.iter().position(|s| s.id == id)

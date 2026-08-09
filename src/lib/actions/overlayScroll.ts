@@ -59,7 +59,7 @@ export interface OverlayScrollOptions {
 }
 
 /** Sidebar: uses OverlayScrollbars for vertical scroll */
-const PRESETS: Record<OverlayScrollPreset, PartialOptions> = {
+export const PRESETS: Record<OverlayScrollPreset, PartialOptions> = {
 	sidebar: {
 		scrollbars: {
 			theme: 'rg-os-theme',
@@ -88,24 +88,24 @@ const PRESETS: Record<OverlayScrollPreset, PartialOptions> = {
 	},
 };
 
-const PRESET_DEFAULT_LAYOUTS: Partial<Record<OverlayScrollPreset, OverlayScrollLayout>> = {
+export const PRESET_DEFAULT_LAYOUTS: Partial<Record<OverlayScrollPreset, OverlayScrollLayout>> = {
 	'horizontal-tabs': { direction: 'row', align: 'center', gap: 4 },
 };
 
 function mergeOptions(preset: PartialOptions, override: PartialOptions | undefined): PartialOptions {
 	if (!override) return preset;
 	return {
-		...preset,
-		...override,
-		scrollbars: {
-			...(preset.scrollbars ?? {}),
-			...(override.scrollbars ?? {}),
-		},
-		overflow: {
-			...(preset.overflow ?? {}),
-			...(override.overflow ?? {}),
-		},
-	};
+			...preset,
+			...override,
+			scrollbars: {
+				...preset.scrollbars,
+				...override.scrollbars,
+			},
+			overflow: {
+				...preset.overflow,
+				...override.overflow,
+			},
+		};
 }
 
 function resolveOptions(params: OverlayScrollOptions | undefined): PartialOptions {
@@ -136,12 +136,12 @@ function applyLayout(node: HTMLElement, params: OverlayScrollOptions | undefined
 		return;
 	}
 
-	const layout: OverlayScrollLayout | false | undefined =
-		params?.layout !== undefined
-			? params.layout
-			: params?.preset
-			? PRESET_DEFAULT_LAYOUTS[params.preset]
-			: undefined;
+	let layout: OverlayScrollLayout | false | undefined;
+	if (params?.layout !== undefined) {
+		layout = params.layout;
+	} else if (params?.preset) {
+		layout = PRESET_DEFAULT_LAYOUTS[params.preset];
+	}
 
 	if (!layout) return;
 

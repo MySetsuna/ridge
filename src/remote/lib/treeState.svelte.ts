@@ -84,6 +84,10 @@ export function seedActiveWorkspace(id: string): void {
 /** Drop expanded/seen ids for workspaces that no longer exist, so the persisted
  *  sets stay bounded and can't resurrect a closed workspace's row. */
 export function pruneExpanded(liveIds: Set<string>): void {
+  // An empty list is the transient pre-hydration state, not proof that every
+  // persisted workspace was closed. Pruning here races seedActiveWorkspace on
+  // reload and leaves the active tree collapsed forever.
+  if (liveIds.size === 0) return;
   const keep = (src: Set<string>): { next: Set<string>; changed: boolean } => {
     let changed = false;
     const next = new Set<string>();
