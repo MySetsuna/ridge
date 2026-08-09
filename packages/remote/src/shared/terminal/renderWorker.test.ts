@@ -368,6 +368,59 @@ describe('renderWorker.handleRequest — wasm KernelAdapter wiring', () => {
 		expect(adapter.kernel.applyDeltaFrame).toHaveBeenCalledWith(bytes);
 	});
 
+	it('accepts increasing frame ids and ignores stale replays', () => {
+		const adapter = makeMockAdapter();
+		const state = makeWorkerState();
+		handleRequest(state, {
+			type: 'init',
+			paneId: PANE,
+			dims: { rows: 24, cols: 80, dpr: 1 },
+			backend: 'canvas2d',
+			scrollbackLines: 2000,
+		}, adapter);
+		const accepted = handleRequest(state, {
+			type: 'applyDelta',
+			paneId: PANE,
+			bytes: new Uint8Array([1]),
+			frameId: 2,
+		}, adapter);
+		const callsAfterAccepted = adapter.kernel.applyDeltaFrame.mock.calls.length;
+		const stale = handleRequest(state, {
+			type: 'applyDelta',
+			paneId: PANE,
+			bytes: new Uint8Array([0]),
+			frameId: 1,
+		}, adapter);
+		expect(accepted).toMatchObject({ type: 'ready', paneId: PANE });
+		expect(stale).toMatchObject({ type: 'ready', paneId: PANE });
+		expect(adapter.kernel.applyDeltaFrame).toHaveBeenCalledTimes(callsAfterAccepted);
+		expect(getPaneState(state, PANE)?.lastAppliedFrameId).toBe(2);
+	});
+
+	it('rejects invalid frame ids before touching the kernel', () => {
+		const adapter = makeMockAdapter();
+		const state = makeWorkerState();
+		handleRequest(state, {
+			type: 'init',
+			paneId: PANE,
+			dims: { rows: 24, cols: 80, dpr: 1 },
+			backend: 'canvas2d',
+			scrollbackLines: 2000,
+		}, adapter);
+		const ack = handleRequest(state, {
+			type: 'applyDelta',
+			paneId: PANE,
+			bytes: new Uint8Array([1]),
+			frameId: 0,
+		}, adapter);
+		expect(ack).toMatchObject({
+			type: 'error',
+			paneId: PANE,
+			code: 'apply_delta_failed',
+		});
+		expect(adapter.kernel.applyDeltaFrame).not.toHaveBeenCalled();
+	});
+
 	it('feed forwards raw PTY bytes and renders the bound canvas', () => {
 		const adapter = makeMockAdapter();
 		const renderer = {
@@ -641,6 +694,29 @@ describe('renderWorker.handleRequest — Renderer adapter wiring (p4.8)', () => 
 		const kernelOrder = mocks.kernel.applyDeltaFrame.mock.invocationCallOrder[0];
 		const rendererOrder = mocks.renderer.render.mock.invocationCallOrder[0];
 		expect(kernelOrder).toBeLessThan(rendererOrder);
+	});
+
+	it('does not repaint a replayed frame after a newer frame was accepted', () => {
+		const { state, mocks } = initAndBind();
+		mocks.renderer.render.mockClear();
+		const accepted = handleRequest(state, {
+			type: 'applyDelta',
+			paneId: PANE,
+			bytes: new Uint8Array([2]),
+			frameId: 2,
+		}, mocks.adapter);
+		const renderCallsAfterAccepted = mocks.renderer.render.mock.calls.length;
+		const stale = handleRequest(state, {
+			type: 'applyDelta',
+			paneId: PANE,
+			bytes: new Uint8Array([1]),
+			frameId: 1,
+		}, mocks.adapter);
+		expect(accepted).toMatchObject({ type: 'ready', paneId: PANE });
+		expect(stale).toMatchObject({ type: 'ready', paneId: PANE });
+		expect(mocks.renderer.render).toHaveBeenCalledTimes(renderCallsAfterAccepted);
+		expect(mocks.kernel.applyDeltaFrame).toHaveBeenCalledTimes(1);
+		expect(getPaneState(state, PANE)?.lastAppliedFrameId).toBe(2);
 	});
 
 	it('bind configures real metrics; resize drives kernel, surface, then render', () => {

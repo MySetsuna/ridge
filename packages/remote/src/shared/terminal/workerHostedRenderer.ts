@@ -194,13 +194,16 @@ export class WorkerHostedRenderer {
 	 * Uint8Array per call (the Channel path in `ptyBridge.ts` already
 	 * does this — each message creates a new Uint8Array view).
 	 */
-	applyDelta(paneId: string, bytes: Uint8Array): Promise<RenderWorkerResponse> {
+	applyDelta(paneId: string, bytes: Uint8Array, frameId?: number): Promise<RenderWorkerResponse> {
 		// Some test environments may pass a Uint8Array backed by a
 		// SharedArrayBuffer (can't be transferred). Detect and skip
 		// transferList when that's the case.
 		const transferable =
 			bytes.buffer instanceof ArrayBuffer ? [bytes.buffer] : undefined;
-		return this.send({ type: 'applyDelta', paneId, bytes }, transferable);
+		return this.send(
+			{ type: 'applyDelta', paneId, bytes, ...(frameId === undefined ? {} : { frameId }) },
+			transferable,
+		);
 	}
 
 	feed(paneId: string, bytes: Uint8Array): Promise<RenderWorkerResponse> {

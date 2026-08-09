@@ -105,6 +105,8 @@ export interface PaneWorkerState {
 	 *  the adapter exposed `createRenderer`. Drawn from on every
 	 *  successful `applyDelta`. */
 	renderer?: RendererHandle;
+	/** Last accepted delta generation. Replayed/late frames must not revive old rows. */
+	lastAppliedFrameId: number;
 }
 
 /** The whole worker's state is a Map keyed by paneId. Stays in JS
@@ -180,6 +182,7 @@ export function handleRequest(
 				scrollbackLines: request.scrollbackLines,
 				canvasBound: false,
 				kernel,
+				lastAppliedFrameId: 0,
 			});
 			return {
 				type: 'ready',
@@ -268,6 +271,20 @@ export function handleRequest(
 					message: `applyDelta before init for pane ${request.paneId}`,
 				};
 			}
+			if (request.frameId !== undefined) {
+				if (!Number.isSafeInteger(request.frameId) || request.frameId <= 0) {
+					return {
+						type: 'error',
+						paneId: request.paneId,
+						code: 'apply_delta_failed',
+						message: `invalid frameId: ${request.frameId}`,
+					};
+				}
+				if (request.frameId <= pane.lastAppliedFrameId) {
+					// A late worker message must never repaint an older grid snapshot.
+					return { type: 'ready', paneId: request.paneId, backend: pane.backend };
+				}
+			}
 			// P4.7 (2026-05-22): when the wasm kernel adapter loaded
 			// successfully at bootstrap, drive the per-pane kernel here.
 			// When it failed to load (or the adapter wasn't provided,
@@ -304,6 +321,7 @@ export function handleRequest(
 					};
 				}
 			}
+			if (request.frameId !== undefined) pane.lastAppliedFrameId = request.frameId;
 			return {
 				type: 'ready',
 				paneId: request.paneId,

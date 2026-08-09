@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const REQUIRED_SCENARIOS = new Set([
   'baseline',
@@ -139,28 +140,31 @@ function selfTest() {
   process.stdout.write('remote smoke evidence validator self-test passed\n');
 }
 
-const input = process.argv[2];
-if (input === '--self-test') {
-  selfTest();
-} else if (!input) {
-  process.stderr.write('usage: node scripts/validate-remote-smoke-evidence.mjs <evidence.json>\n');
-  process.exitCode = 2;
-} else {
-  const evidencePath = resolve(input);
-  let evidence;
-  try {
-    evidence = JSON.parse(readFileSync(evidencePath, 'utf8'));
-  } catch (error) {
-    process.stderr.write(`failed to read evidence: ${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
-  }
-  if (evidence) {
-    const errors = validateEvidence(evidence, evidencePath);
-    if (errors.length > 0) {
-      process.stderr.write(`${errors.join('\n')}\n`);
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  const input = process.argv[2];
+  if (input === '--self-test') {
+    selfTest();
+  } else if (!input) {
+    process.stderr.write('usage: node scripts/validate-remote-smoke-evidence.mjs <evidence.json>\n');
+    process.exitCode = 2;
+  } else {
+    const evidencePath = resolve(input);
+    let evidence;
+    try {
+      evidence = JSON.parse(readFileSync(evidencePath, 'utf8'));
+    } catch (error) {
+      process.stderr.write(`failed to read evidence: ${error instanceof Error ? error.message : String(error)}\n`);
       process.exitCode = 1;
-    } else {
-      process.stdout.write(`valid remote smoke evidence: ${evidencePath}\n`);
+    }
+    if (evidence) {
+      const errors = validateEvidence(evidence, evidencePath);
+      if (errors.length > 0) {
+        process.stderr.write(`${errors.join('\n')}\n`);
+        process.exitCode = 1;
+      } else {
+        process.stdout.write(`valid remote smoke evidence: ${evidencePath}\n`);
+      }
     }
   }
 }

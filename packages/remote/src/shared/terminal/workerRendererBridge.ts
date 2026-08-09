@@ -105,7 +105,7 @@ export interface WorkerRendererBridge {
 	/** Mirror a postcard delta frame. Sends a `.slice()` copy so the
 	 *  main-thread kernel keeps the original bytes intact (see the
 	 *  module-level note). */
-	applyDelta(paneId: string, bytes: Uint8Array): void;
+	applyDelta(paneId: string, bytes: Uint8Array, frameId?: number): void;
 	/** Mirror raw PTY bytes consumed by the main-thread semantic kernel. */
 	feed(paneId: string, bytes: Uint8Array): void;
 	/** Release only the parked pane's paint surface; keep its worker kernel. */
@@ -218,7 +218,7 @@ export const workerRendererBridge: WorkerRendererBridge = {
 			});
 	},
 
-	applyDelta(paneId, bytes): void {
+	applyDelta(paneId, bytes, frameId): void {
 		const r = active();
 		if (!r) return;
 		// Iter 16 (2026-05-22) — guard the entire body. `bytes.slice()`
@@ -232,7 +232,7 @@ export const workerRendererBridge: WorkerRendererBridge = {
 		try {
 			// .slice() so the kernel can still consume the original bytes.
 			// Cheap because the buffer is typically ≤ tens of KB per frame.
-			r.applyDelta(paneId, bytes.slice()).catch((err) =>
+			r.applyDelta(paneId, bytes.slice(), frameId).catch((err) =>
 				fail(`applyDelta ${paneId}`, err),
 			);
 		} catch (err) {

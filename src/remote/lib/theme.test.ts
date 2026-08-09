@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { applyThemeVars, themeChromeColor } from './theme';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { applyThemeVars, buildKernelTheme, themeChromeColor } from './theme';
 
 class FakeStyle {
   private _cssText = '';
@@ -68,5 +68,93 @@ describe('applyThemeVars', () => {
     } finally {
       (globalThis as { document?: unknown }).document = previous;
     }
+  });
+
+  it('is safe without a document and supports the minimal style fallback', () => {
+    const previous = (globalThis as { document?: unknown }).document;
+    try {
+      (globalThis as { document?: unknown }).document = undefined;
+      expect(() => applyThemeVars({ bg: '#000' })).not.toThrow();
+
+      const root = { style: { setProperty: vi.fn(), backgroundColor: '' } };
+      const body = { style: { backgroundColor: '' } };
+      const meta = { content: '' };
+      (globalThis as { document?: unknown }).document = {
+        documentElement: root,
+        body,
+        createElement: () => { throw new Error('minimal shim'); },
+        querySelector: () => meta,
+      };
+      applyThemeVars({ bg: '#101010', '': 'ignored', accent: 7 as unknown as string });
+      expect(root.style.setProperty).toHaveBeenCalledWith('--rg-bg', '#101010');
+      expect(root.style.setProperty).not.toHaveBeenCalledWith('--rg-', expect.anything());
+      expect(root.style.backgroundColor).toBe('#101010');
+      expect(body.style.backgroundColor).toBe('#101010');
+      expect(meta.content).toBe('#101010');
+    } finally {
+      (globalThis as { document?: unknown }).document = previous;
+    }
+  });
+});
+
+describe('buildKernelTheme', () => {
+  function installColorDocument() {
+    const ctx = {
+      value: '#000000',
+      get fillStyle(): string { return this.value; },
+      set fillStyle(value: string) {
+        const hex = value.trim().toLowerCase();
+        if (/^#[0-9a-f]{3}$/.test(hex)) {
+          this.value = `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`;
+        } else if (/^#[0-9a-f]{6}$/.test(hex)) {
+          this.value = hex;
+        } else if (/^#[0-9a-f]{8}$/.test(hex)) {
+          const r = parseInt(hex.slice(1, 3), 16);
+          const g = parseInt(hex.slice(3, 5), 16);
+          const b = parseInt(hex.slice(5, 7), 16);
+          const a = parseInt(hex.slice(7, 9), 16) / 255;
+          this.value = `rgba(${r}, ${g}, ${b}, ${a})`;
+        } else {
+          this.value = value;
+        }
+      },
+    };
+    vi.stubGlobal('document', {
+      createElement: () => ({ getContext: () => ctx }),
+    });
+  }
+
+  it('normalizes terminal, cursor, selection, and ANSI palette colors', () => {
+    installColorDocument();
+    const result = buildKernelTheme({
+      bg: '#101010',
+      'term-bg': 'rgba(20, 30, 40, .5)',
+      fg: '#f0f0f0',
+      accent: '#58a6ff',
+      'selection-bg': '#30363d',
+      'ansi-red': '#ff0000',
+      'ansi-brightWhite': '#fff',
+    });
+
+    expect(result).toMatchObject({
+      background: '#141e2880',
+      foreground: '#f0f0f0ff',
+      cursor: '#58a6ffff',
+      cursorAccent: '#141e2880',
+      hyperlinkColor: '#58a6ffff',
+      selectionBackground: '#30363dff',
+      red: '#ff0000ff',
+      brightWhite: '#ffffffff',
+    });
+  });
+
+  it('uses the accent alpha fallback and omits incomplete fields', () => {
+    installColorDocument();
+    const result = buildKernelTheme({ accent: '#12345678', 'ansi-blue': '  ' });
+    expect(result).toEqual({
+      cursor: '#12345678',
+      hyperlinkColor: '#12345678',
+      selectionBackground: '#1234563d',
+    });
   });
 });

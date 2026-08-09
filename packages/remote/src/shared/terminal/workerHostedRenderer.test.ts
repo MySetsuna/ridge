@@ -144,9 +144,9 @@ describe('WorkerHostedRenderer — basic dispatch', () => {
 		const renderer = new WorkerHostedRenderer(worker);
 		const bytes = new Uint8Array([1, 2, 3, 4]);
 
-		const promise = renderer.applyDelta(PANE, bytes);
+		const promise = renderer.applyDelta(PANE, bytes, 7);
 		expect(worker.calls[0].transfer).toEqual([bytes.buffer]);
-		expect(worker.calls[0].message.type).toBe('applyDelta');
+		expect(worker.calls[0].message).toMatchObject({ type: 'applyDelta', frameId: 7 });
 
 		worker.deliverResponseFor(0, {
 			type: 'ready',

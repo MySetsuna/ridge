@@ -138,6 +138,7 @@ function makePane() {
 		initialFitAttempt: 0,
 		syncStart: null,
 		syncTimeoutRendered: false,
+		deltaFrameId: 0,
 		focusListener: vi.fn(),
 		blurListener: vi.fn(),
 		selecting: false,
@@ -272,6 +273,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 
 		expect(fixture.kernel.feed).toHaveBeenCalled();
 		expect(fixture.kernel.applyDeltaFrame).toHaveBeenCalledWith(new Uint8Array([1, 2]));
+		expect((fixture.pane as { deltaFrameId: number }).deltaFrameId).toBe(1);
 		expect(fixture.kernel.prependScrollback).toHaveBeenCalled();
 		expect(fixture.kernel.selectAll).toHaveBeenCalledOnce();
 		expect(sent.length).toBeGreaterThanOrEqual(3);
