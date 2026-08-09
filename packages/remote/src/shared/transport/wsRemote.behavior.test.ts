@@ -235,4 +235,28 @@ describe('RemoteConnection public communication contract', () => {
 		expect(active.conn.state()).toBe('disconnected');
 		expect(states).toContain('error');
 	});
+
+	it('probes on foreground events, detaches listeners, and bounds output caches', () => {
+		const { conn, ws } = connect();
+		const messages: Record<string, unknown>[] = [];
+		conn.onMessage((message) => messages.push(message));
+		const output = Array.from({ length: 5_001 }, () => 'line').join('\n');
+		ws.receive({ type: 'output', workspaceId: pane.workspaceId, paneId: pane.paneId, data: output });
+		expect(conn.getPaneOutput(pane)).toHaveLength(5_000);
+		ws.onmessage?.({ data: '{not-json' } as MessageEvent);
+		ws.receive({ type: 'output', paneId: pane.paneId, data: 'ignored' });
+		expect(messages).toHaveLength(1);
+
+		const documentStub = document as unknown as { hidden: boolean; addEventListener: ReturnType<typeof vi.fn> };
+		const visibility = documentStub.addEventListener.mock.calls.find(([name]) => name === 'visibilitychange')?.[1] as () => void;
+		documentStub.hidden = true;
+		visibility();
+		const beforeProbe = ws.sent.length;
+		documentStub.hidden = false;
+		visibility();
+		expect(ws.sent.slice(beforeProbe)).toContainEqual({ type: 'ping' });
+		conn.disconnect();
+		expect((document as unknown as { removeEventListener: ReturnType<typeof vi.fn> }).removeEventListener).toHaveBeenCalled();
+		expect((window as unknown as { removeEventListener: ReturnType<typeof vi.fn> }).removeEventListener).toHaveBeenCalled();
+	});
 });

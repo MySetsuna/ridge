@@ -1425,6 +1425,13 @@
 - `pnpm check` 复核为 `0 errors / 0 warnings`；本波包含一处重连生命周期清理修复。
 - `.mjs` coverage 仍报 `PARSE_ERROR/Expected ident`；Sonar project/Quality Gate 未以本地 LCOV 冒充闭环，`REQ-SONAR-COVERAGE-80-01` 与 PTY/第三方 Runtime-A2A 现场证据继续 `ACTIVE`。
 
+## Wave50 LAN RemoteConnection 前台与缓存边界覆盖
+
+- `packages/remote/src/shared/transport/wsRemote.behavior.test.ts` 覆盖坏 JSON fail-closed、缺 workspace 输出丢弃、5000 行输出缓存上限、visibility 前台 liveness probe 与 disconnect listener 清理；聚焦及 scheduler 回归 `25/25`。
+- 全量 `pnpm test:coverage:sonar` exit `0`；本地 V8/LCOV statements `12735/18606 = 68.44%`、branches `7041/11608 = 60.65%`、functions `2488/3536 = 70.36%`、lines `11480/15894 = 72.22%`；距 statements 80% 尚缺 `2150` 条。
+- `pnpm check` 复核为 `0 errors / 0 warnings`；本波仅增确定性测试，不改生产运行语义。
+- `.mjs` coverage 仍报 `PARSE_ERROR/Expected ident`；Sonar project/Quality Gate 未以本地 LCOV 冒充闭环，`REQ-SONAR-COVERAGE-80-01` 与 PTY/第三方 Runtime-A2A 现场证据继续 `ACTIVE`。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
