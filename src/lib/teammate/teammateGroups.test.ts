@@ -4,7 +4,7 @@
  * 只测**纯函数**（建组/改名/解散/移除成员/持久化往返/失联对齐/组任务历史）；runes store
  * 类经惰性单例不在此触发，故可在 node 环境（vitest 无 svelte 插件）安全运行。
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   GROUP_COLORS,
   stableWorkspaceKey,
@@ -26,6 +26,7 @@ import {
   parsePersisted,
   serializePersisted,
   persistedEquals,
+  teammateGroupStore,
 } from './teammateGroups.svelte';
 import type { TeammateProfile } from './teammateModel';
 
@@ -263,6 +264,38 @@ describe('persistence round-trip', () => {
     expect(parsed.groups.map((g) => g.id)).toEqual(['ok']);
     expect(parsed.tasks.map((t) => t.objective)).toEqual(['keep']);
   });
+
+  it('parsePersisted applies field defaults and filters non-string members/targets', () => {
+    const parsed = parsePersisted(JSON.stringify({
+      groups: [
+        {
+          id: 'g',
+          name: 42,
+          color: null,
+          memberAgentIds: ['agent-a', 7],
+          leaderAgentId: 'ghost',
+          createdAt: 'now',
+        },
+        null,
+      ],
+      tasks: [
+        { groupId: 'g', objective: 42, ts: 'now', targets: ['agent-a', 7] },
+        null,
+      ],
+    }));
+
+    expect(parsed.groups[0]).toMatchObject({
+      id: 'g',
+      name: 'g',
+      color: GROUP_COLORS[0],
+      memberAgentIds: ['agent-a'],
+    });
+    expect(parsed.groups[0].leaderAgentId).toBeUndefined();
+    expect(parsed.groups[0].createdAt).toEqual(expect.any(Number));
+    expect(parsed.tasks).toEqual([
+      { groupId: 'g', objective: '', ts: 0, targets: ['agent-a'] },
+    ]);
+  });
 });
 
 // ── iter-62 回归钉：多工作区并存时不得反复重写 $state ──────────────────────
@@ -288,5 +321,54 @@ describe('persistedEquals（多 tab 卡死的第二道防线）', () => {
     const g = buildGroup('A', GROUP_COLORS[0], ['agent-a']);
     expect(persistedEquals([g], [])).toBe(false);
     expect(persistedEquals([g], [{ ...g, name: 'B' }])).toBe(false);
+  });
+
+  it('JSON.stringify 失败时 fail closed', () => {
+    const circular: { self?: unknown } = {};
+    circular.self = circular;
+    expect(persistedEquals(circular, circular)).toBe(false);
+  });
+});
+
+describe('TeammateGroupStore runtime bridge', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('persists mutations, reloads by workspace key, and records group tasks', async () => {
+    vi.stubGlobal('$state', <T>(value: T) => value);
+    const backing = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => backing.get(key) ?? null,
+      setItem: (key: string, value: string) => backing.set(key, value),
+    } as unknown as Storage);
+
+    const store = teammateGroupStore();
+    store.setWorkspace('store-test-a', 'C:/workspace-a.ridge');
+    const group = store.create('Agents', GROUP_COLORS[0], ['agent-a']);
+    store.rename(group.id, 'Agents Renamed');
+    store.addMemberByGroupName('Agents Renamed', 'agent-b');
+    store.setLeader(group.id, 'agent-a');
+    store.recolor(group.id, '#123456');
+    const task = store.recordTask(group.id, '  ship bridge  ', ['agent-a', 'agent-b']);
+
+    expect(store.groups[0]).toMatchObject({
+      id: group.id,
+      name: 'Agents Renamed',
+      color: '#123456',
+      memberAgentIds: ['agent-a', 'agent-b'],
+      leaderAgentId: 'agent-a',
+    });
+    expect(store.tasksFor(group.id)).toEqual([task]);
+    expect(store.addMemberByGroupName('missing', 'agent-c')).toBe(false);
+
+    store.setWorkspace('store-test-b', 'C:/workspace-b.ridge');
+    expect(store.groups).toEqual([]);
+    store.setWorkspace('store-test-a', 'C:/workspace-a.ridge');
+    expect(store.groups[0]).toMatchObject({ name: 'Agents Renamed', memberAgentIds: ['agent-a', 'agent-b'] });
+    expect(store.tasksFor(group.id)).toHaveLength(1);
+
+    store.removeMember(group.id, 'agent-b');
+    store.dissolve(group.id);
+    expect(store.groups).toEqual([]);
+    await Promise.resolve();
   });
 });
