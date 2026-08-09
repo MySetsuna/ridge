@@ -25,6 +25,7 @@
 - 全量 `pnpm test:coverage:sonar`：exit `0`，`normalize-lcov.mjs` `ok=true`。
 - 最新本地 V8/LCOV：statements `13284/18608 = 71.38%`；branches `7318/11610 = 63.03%`；functions `2585/3536 = 73.10%`；lines `11960/15895 = 75.24%`；距本地 statements 80% 尚缺 `1603` 条。
 - `pnpm check`：`0 errors / 0 warnings`。
+- Rust 质量闸：`cargo fmt --all -- --check` 通过；`cargo test -p ridge-mcp --lib` 为 `90 passed / 0 failed`；`cargo test -p ridge-kernel --lib` 为 `49 passed / 0 failed`。仅见 Windows linker informational warning。
 - 全量覆盖仍记录多个 `.mjs` `PARSE_ERROR/Expected ident`；未扩大排除范围、未以局部覆盖冒充 Sonar。
 
 ## 未闭环硬闸
