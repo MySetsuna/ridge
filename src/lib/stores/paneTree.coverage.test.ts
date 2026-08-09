@@ -284,4 +284,54 @@ describe('paneTree workspace mutation branches', () => {
     await paneTree.setupPaneCwdListeners('ws-b', tree);
     expect(event.listen).toHaveBeenCalledTimes(4);
   });
+
+  it('syncs host-authoritative layout, prunes stale cwd entries, and falls back on host id errors', async () => {
+    const layoutFromHost = {
+      type: 'split' as const,
+      id: 'root-host',
+      direction: 'horizontal' as const,
+      ratios: [50, 50],
+      children: [
+        { type: 'leaf' as const, id: 'live', cwd: '/repo/live/' },
+        { type: 'leaf' as const, id: 'new', cwd: 'C:\\repo\\new\\' },
+      ],
+    };
+    paneTree.activeWorkspaceId.set('ws-local');
+    paneTree.activePaneId.set('missing');
+    paneTree.workspacePaneTrees.set(new Map([
+      ['ws-host', { type: 'leaf', id: 'old' }],
+    ]));
+    paneTree.paneCwdStore.set({
+      'ws-host:live': '/previous',
+      'ws-host:dead': '/gone',
+      'ws-other:keep': '/untouched',
+    });
+    core.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_window_pane_layout') return layoutFromHost;
+      if (command === 'get_window_active_workspace_id') return 'ws-host';
+      return undefined;
+    });
+
+    await paneTree.syncPaneLayoutFromBackend();
+
+    expect(get(paneTree.activeWorkspaceId)).toBe('ws-host');
+    expect(get(paneTree.activePaneId)).toBe('live');
+    expect(get(paneTree.paneTreeStore)).toEqual(layoutFromHost);
+    expect(get(paneTree.workspacePaneTrees).get('ws-host')).toEqual(layoutFromHost);
+    expect(get(paneTree.paneCwdStore)).toEqual({
+      'ws-host:live': '/previous',
+      'ws-host:new': 'C:/repo/new',
+      'ws-other:keep': '/untouched',
+    });
+    expect(event.listen).toHaveBeenCalledWith('pane-cwd-changed-ws-host-live', expect.any(Function));
+    expect(event.listen).toHaveBeenCalledWith('pane-cwd-changed-ws-host-new', expect.any(Function));
+
+    core.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_window_pane_layout') return layoutFromHost;
+      if (command === 'get_window_active_workspace_id') throw new Error('host id unavailable');
+      return undefined;
+    });
+    await paneTree.syncPaneLayoutFromBackend();
+    expect(get(paneTree.activeWorkspaceId)).toBe('ws-host');
+  });
 });
