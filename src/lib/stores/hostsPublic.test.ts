@@ -101,6 +101,35 @@ describe('hosts store public helper projections', () => {
     expect(mockInvoke).toHaveBeenCalledWith('terminate_native_session', { socket: 'tmux', target: 'shell' });
   });
 
+  it('attaches and detaches a remote session without confusing view lifecycle with PTY termination', async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === 'get_foreign_history_tail') {
+        return { hostId: 'remote-attach', sessionId: 'session-1', bytes: 0, cap: 128, dataB64: '' };
+      }
+      if (command === 'attach_host_session') return 'local-foreign-pane';
+      if (command === 'list_native_sessions' || command === 'host_list_snapshot') return [];
+      return undefined;
+    });
+
+    await expect(hosts.attachRemoteHostSession('remote-attach', 'session-1')).resolves.toBe('local-foreign-pane');
+    expect(mockInvoke).toHaveBeenCalledWith('attach_host_session', {
+      hostId: 'remote-attach', sessionId: 'session-1', workspaceId: '',
+    });
+    expect(get(hosts.outboundLifecycleByKey)['remote-attach\0session-1']?.subscribed).toBe(true);
+
+    hosts.hostsStore.set([{
+      id: 'remote-attach', kind: 'remote', label: 'Remote', status: 'connected', sessions: [{
+        socket: 'remote-attach', name: 'Agent', remoteSessionId: 'session-1',
+        windows: 0, panes: 1, width: 80, height: 24, attached: true,
+      }], workspaces: [],
+    }]);
+    await hosts.detachRemoteHostSession('local-foreign-pane');
+    expect(mockInvoke).toHaveBeenCalledWith('detach_host_session', {
+      paneId: 'local-foreign-pane', workspaceId: '',
+    });
+    expect(get(hosts.outboundLifecycleByKey)['remote-attach\0session-1']?.subscribed).toBe(false);
+  });
+
   it('publishes linked topology and performs remote workspace mutations', async () => {
     const { link, calls } = fakeLink();
     const remove = hosts.registerHostTopologyLink({

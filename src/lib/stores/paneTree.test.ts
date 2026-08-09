@@ -1631,7 +1631,37 @@ describe('pane tree pure projections', () => {
 });
 
 describe('startup and saved-workspace projections', () => {
-  it('maps desktop startup, restore, recent, and saved-workspace commands', async () => {
+	it('persists workspace save metadata and saved-workspace lifecycle commands', async () => {
+		const { invoke, isTauri } = await import('@tauri-apps/api/core');
+		const invokeMock = invoke as ReturnType<typeof vi.fn>;
+		const isTauriMock = isTauri as ReturnType<typeof vi.fn>;
+		isTauriMock.mockReturnValue(true);
+		invokeMock.mockReset();
+		invokeMock.mockImplementation(async (cmd: string) => {
+			if (cmd === 'list_workspace_save_info') return [
+				{ workspace_id: 'ws-a', file_path: 'C:/work/a.ridge', name: 'A' },
+				{ workspace_id: 'ws-b', file_path: null, name: 'B' },
+			];
+			if (cmd === 'list_saved_workspaces') return [];
+			return undefined;
+		});
+
+		await paneTreeModule.refreshWorkspaceSaveInfo();
+		expect(get(paneTreeModule.workspaceSaveInfoStore)).toEqual({
+			'ws-a': { workspace_id: 'ws-a', file_path: 'C:/work/a.ridge', name: 'A' },
+			'ws-b': { workspace_id: 'ws-b', file_path: null, name: 'B' },
+		});
+		await paneTreeModule.loadSavedWorkspaces();
+		await paneTreeModule.saveCurrentWorkspace();
+		await paneTreeModule.deleteSavedWorkspace('saved-a');
+		await paneTreeModule.renameSavedWorkspace('saved-a', 'Renamed');
+		expect(invokeMock.mock.calls.map(([cmd]) => cmd)).toEqual(expect.arrayContaining([
+			'list_workspace_save_info', 'list_saved_workspaces', 'save_workspace',
+			'delete_saved_workspace', 'rename_saved_workspace',
+		]));
+	});
+
+	it('maps desktop startup, restore, recent, and saved-workspace commands', async () => {
     const { invoke, isTauri } = await import('@tauri-apps/api/core');
     const invokeMock = invoke as ReturnType<typeof vi.fn>;
     const isTauriMock = isTauri as ReturnType<typeof vi.fn>;
