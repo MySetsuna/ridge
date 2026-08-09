@@ -112,6 +112,13 @@ Invoke-RestMethod `
 - 本轮按浏览器控制规范尝试连接本机监控页 `http://127.0.0.1:9000`；连接器返回 `No browser is available`，可用浏览器列表为空，故未声称已打开 UI、截图或完成视觉监控验收。
 - 手动接管：浏览器打开上述地址，登录 `admin` / `admin`；登录后进入项目 `Ridge`（project key `MySetsuna_ridge`）查看 Dashboard、Issues、Measures、Quality Gate。生产/联网前必须立即改掉默认密码。
 
+## Host disk / scanner incident (2026-08-10)
+
+- A fresh authenticated upload failed in CE task `5c57440f-6f4b-40a7-8568-dec11c91e6af`: Elasticsearch flood-stage watermark made `projectmeasures` read-only. Server `es.log` confirmed the local data path reached about `4.1%` free.
+- Generated `C:\code\wind\target\debug` was moved in recoverable portions to `D:\wind-target-debug-archive-20260810`; once free space crossed the watermark, Elasticsearch logged that it released the read-only blocks. This archive is build cache, not source.
+- Keep `sonar.typescript.tsconfigPaths=tsconfig.json` in project config to avoid transient `.claude/worktrees` TSConfig discovery. A complete retry after disk recovery still exceeded the host bound in Rust analysis after cache relocation; exact scanner trees and temporary tokens were cleaned.
+- Do not treat the failed CE task or local V8/Rust LCOV percentages as a passed Gate. Accepted server baseline remains coverage `48.5%`, line `49.4%`, branch `47.0%`, violations `835`, Quality Gate `ERROR`; target `>=80%` remains open.
+
 ## Latest authenticated scan (2026-08-09)
 
 - Scanner exit `0`；CE task `5418a229-2bc5-4b7f-941e-b6f9bbf59672` 最终 `SUCCESS`，analysis `3ee09772-8826-4b77-8a44-a1f53227a2ad`。

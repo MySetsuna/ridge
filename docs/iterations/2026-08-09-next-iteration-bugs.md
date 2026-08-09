@@ -216,3 +216,12 @@ Status: deterministic local guard closed; physical replay evidence remains open.
 - The worker rejects invalid frame ids and ACK-drops stale/replayed generations before `kernel.applyDeltaFrame` or `renderer.render`; no-frame legacy messages remain compatible.
 - Tests cover increasing, stale, invalid, manager counter, bridge wire propagation, and renderer non-repaint branches. Full Vitest and `svelte-check` are green as recorded above.
 - Remaining proof: recorded PTY/JSONL replay and physical ConPTY/Agent latency trace. These are not inferred from the local unit guard.
+
+## BUG-SONAR-ES-DISK-WATERMARK-01
+
+Status: host state repaired; accepted coverage gate remains open.
+
+- CE task `5c57440f-6f4b-40a7-8568-dec11c91e6af` failed because Elasticsearch marked `projectmeasures` read-only at the flood-stage watermark. Local logs show the data path at about `4.1%` free.
+- Generated Rust build cache was moved to the recoverable D: archive `D:\wind-target-debug-archive-20260810`; Elasticsearch later logged that the high watermark cleared and read-only blocks were released.
+- Follow-up scans were bounded and exact scanner trees were cleaned. The full Rust analyzer still exceeded the host bound after cache relocation; no false green was recorded.
+- Reopen with a warmed Rust build cache or an explicitly bounded Sonar Rust strategy, then obtain a new scanner exit `0`, CE `SUCCESS`, project metrics, and Quality Gate. Current accepted baseline remains `48.5%` coverage and Gate `ERROR`; target `>=80%` is not closed.

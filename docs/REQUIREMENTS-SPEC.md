@@ -1233,6 +1233,13 @@
 - 全量 `pnpm test:coverage:sonar`：`187` 个测试文件，`1759 passed / 1 skipped`；本地 V8/LCOV statements `11495/18537 = 62.01%`、branches `6373/11542 = 55.21%`、functions `2233/3527 = 63.31%`、lines `10386/15831 = 65.60%`。
 - 该结果距 80% 尚缺 `3335` 条已覆盖 statements；`.mjs` 解析告警、本机无 Sonar scanner/token/host 仍阻塞真实 project metric 与 Quality Gate。故 `REQ-SONAR-COVERAGE-80-01` 仍 ACTIVE，不宣称达标。
 
+## 本轮质量证据补充（2026-08-10 Wave36）
+
+- `src/remote/lib/cloudRemote.test.ts` 新增 7 个确定性状态机测试，覆盖初始化降级、metadata payload 校验、双 seed 失败后的 live 保活、订阅注册失败重试、resume seed 跳过、历史页异常/at-oldest 与历史 RPC 恢复；聚焦 `47/47` 通过。
+- 全量 `pnpm test:coverage:sonar`：`187` 个测试文件，`1766 passed / 1 skipped`；本地 V8/LCOV statements `11507/18537 = 62.07%`、branches `6391/11542 = 55.37%`、functions `2232/3527 = 63.28%`、lines `10398/15831 = 65.68%`。
+- 相较 Wave35，covered statements 增加 `12`；距 80% 尚缺 `3323` 条。`.mjs` `PARSE_ERROR` 及本机缺 `SONAR_TOKEN`/`SONAR_HOST_URL`、真实 Sonar CE/Gate 证据仍未闭合，故 `REQ-SONAR-COVERAGE-80-01` 继续 ACTIVE，不宣称达标。
+- 质量门：`pnpm check` 0 errors / 0 warnings；`cargo fmt --all -- --check`、`git diff --check` 通过；coverage 与 `.iteration` 运行态产物保留 dirty，不纳入提交。
+
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |

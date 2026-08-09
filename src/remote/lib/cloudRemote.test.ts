@@ -165,6 +165,42 @@ describe('CloudRemoteConnection.init', () => {
     // Subscribes to host-side layout changes.
     expect(handlers['pane-tree-changed']).toBeTypeOf('function');
   });
+
+  it('keeps the connection usable when optional bootstrap probes fail', async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_active_workspace_id' || cmd === 'get_active_theme_entry') {
+        throw new Error(`${cmd} unavailable`);
+      }
+      return undefined;
+    });
+    listenMock.mockImplementation(async (name: string) => {
+      if (name === 'pane-tree-changed' || name === 'pane-meta-changed') {
+        throw new Error(`${name} unavailable`);
+      }
+      return () => {};
+    });
+
+    const conn = new CloudRemoteConnection(fakeHandle() as never);
+    await conn.init();
+
+    expect(conn.state()).toBe('connected');
+    expect(conn.lastTheme()).toBeNull();
+    conn.listPanes();
+    await flush();
+    expect(invokeMock).not.toHaveBeenCalledWith('get_pane_layout_for', expect.anything());
+  });
+
+  it('forwards only well-formed pane metadata events', async () => {
+    const conn = await connected();
+    const seen: Array<[PaneRef, string | null, string | null]> = [];
+    conn.onMetadata((pane, title, cwd) => seen.push([pane, title, cwd]));
+
+    handlers['pane-meta-changed']({ payload: null });
+    handlers['pane-meta-changed']({ payload: { paneId: 42, title: 'bad' } });
+    handlers['pane-meta-changed']({ payload: { paneId: 'pane-a', title: 'new', cwd: '/new' } });
+
+    expect(seen).toEqual([[{ workspaceId: 'ws1', paneId: 'pane-a' }, 'new', '/new']]);
+  });
 });
 
 describe('CloudRemoteConnection panes', () => {
@@ -320,6 +356,65 @@ describe('CloudRemoteConnection panes', () => {
     expect(new TextDecoder().decode(got[0][1])).toBe('\x1bcHIST');
   });
 
+  it('keeps the live subscription when both visual seed commands are unavailable', async () => {
+    const conn = await connected();
+    const got: string[] = [];
+    conn.onRawBytes((_pane, bytes) => got.push(new TextDecoder().decode(bytes)));
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_pane_resync_frame' || cmd === 'get_pane_scrollback_tail') {
+        throw new Error('seed command unavailable');
+      }
+      return undefined;
+    });
+
+    conn.subscribePane(PANE);
+    await flush();
+    handlers['pty-output-ws1-pane-a']({ payload: { data: 'LIVE' } });
+    expect(got).toEqual(['LIVE']);
+    expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
+  });
+
+  it('retries when listener registration succeeds but host subscription fails', async () => {
+    const conn = await connected();
+    vi.useFakeTimers();
+    let registrations = 0;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'register_pane_delta_channel') {
+        registrations += 1;
+        if (registrations === 1) throw new Error('registration unavailable');
+      }
+      return undefined;
+    });
+
+    try {
+      conn.subscribePane(PANE);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(registrations).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(100);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(registrations).toBe(2);
+      expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
+    } finally {
+      conn.disconnect();
+      vi.useRealTimers();
+    }
+  });
+
+  it('resume subscriptions skip the destructive visual seed', async () => {
+    const conn = await connected();
+    invokeMock.mockClear();
+
+    conn.subscribePane(PANE, { resume: true });
+    await flush();
+
+    expect(invokeMock).not.toHaveBeenCalledWith('get_pane_resync_frame', expect.anything(), expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith('get_pane_scrollback_tail', expect.anything(), expect.anything());
+    expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
+  });
+
   it('fetchOlderScrollback pages one older batch, advances the cursor, then stops at oldest', async () => {
     const conn = await connected();
     conn.subscribePane(PANE);
@@ -346,6 +441,50 @@ describe('CloudRemoteConnection panes', () => {
   it('fetchOlderScrollback returns null when the pane was never subscribed (no cursor)', async () => {
     const conn = await connected();
     expect(await conn.fetchOlderScrollback({ workspaceId: 'ws1', paneId: 'pane-z' })).toBeNull();
+  });
+
+  it('rejects malformed older pages and records an empty oldest page', async () => {
+    const conn = await connected();
+    conn.subscribePane(PANE);
+    await flush();
+    let mode: 'malformed' | 'empty' = 'malformed';
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_pane_scrollback_before') {
+        return mode === 'malformed'
+          ? { bytes: 'BAD', start_seq: 100, end_seq: 100, at_oldest: false }
+          : { bytes: '', start_seq: 0, end_seq: 100, at_oldest: true };
+      }
+      return undefined;
+    });
+
+    expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
+    mode = 'empty';
+    expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
+    const calls = invokeMock.mock.calls.filter((call) => call[0] === 'get_pane_scrollback_before');
+    expect(calls).toHaveLength(2);
+    expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
+    expect(invokeMock.mock.calls.filter((call) => call[0] === 'get_pane_scrollback_before')).toHaveLength(2);
+  });
+
+  it('clears the older-page flight after a host rejection so a later fetch can recover', async () => {
+    const conn = await connected();
+    conn.subscribePane(PANE);
+    await flush();
+    let attempts = 0;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_pane_scrollback_before') {
+        attempts += 1;
+        if (attempts === 1) throw new Error('history temporarily unavailable');
+        return { bytes: 'OLDER', start_seq: 60, end_seq: 100, at_oldest: false };
+      }
+      return undefined;
+    });
+
+    expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
+    const page = await conn.fetchOlderScrollback(PANE);
+    expect(page && new TextDecoder().decode(page.bytes)).toBe('OLDER');
+    expect(page?.discard()).toBeUndefined();
+    expect(attempts).toBe(2);
   });
 
   it('subscribePane is idempotent per pane', async () => {

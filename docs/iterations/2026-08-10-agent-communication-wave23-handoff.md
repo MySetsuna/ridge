@@ -121,3 +121,11 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - 全量 `pnpm test:coverage:sonar` 通过：`187` 个测试文件，`1759 passed / 1 skipped`；`svelte-check` 仍为 `0 errors / 0 warnings`（前序证据），`cargo fmt --all -- --check` 通过。
 - 最新本地 V8/LCOV：statements `11495/18537 = 62.01%`、branches `6373/11542 = 55.21%`、functions `2233/3527 = 63.31%`、lines `10386/15831 = 65.60%`；相对 Wave33 statements 增加 `230` 条、`+1.24` 个百分点；达到 80% 尚缺 `3335` 条已覆盖 statements（当前未覆盖 `7042` 条）。
 - `.mjs` coverage provider `PARSE_ERROR` 排除告警仍存在；本机仍无 `SONAR_TOKEN`/`SONAR_HOST_URL` 与 scanner，故没有伪造 Sonar project metric 或 Quality Gate 结论。`REQ-SONAR-COVERAGE-80-01` 继续作为下一迭代 ACTIVE 目标。
+
+## Wave36 Cloud Remote 状态机补测
+
+- `src/remote/lib/cloudRemote.test.ts` 新增 7 个确定性测试，覆盖：初始化可选探针失败仍保持可用、`pane-meta-changed` payload 校验、resync/tail 双种子失败后的 live 保活、PTY listener 成功但 host 注册失败后的有界重试、resume 跳过破坏性 seed、历史页 malformed/at-oldest，以及历史 RPC 拒绝后的恢复。
+- 聚焦回归：`cloudRemote.test.ts` `47/47` 通过。
+- 全量 `pnpm test:coverage:sonar` 通过：`187` 个测试文件，`1766 passed / 1 skipped`；本地 V8/LCOV statements `11507/18537 = 62.07%`、branches `6391/11542 = 55.37%`、functions `2232/3527 = 63.28%`、lines `10398/15831 = 65.68%`。
+- 相较 Wave35，covered statements 增加 `12`；达到 80% 仍缺 `3323` 条 covered statements。`.mjs` `PARSE_ERROR`、本机缺 `SONAR_TOKEN`/`SONAR_HOST_URL` 与真实 CE/Gate 证据仍属阻塞，故 `REQ-SONAR-COVERAGE-80-01` 保持 ACTIVE。
+- 质量门：`pnpm check` 0 errors / 0 warnings；`cargo fmt --all -- --check` 通过；`git diff --check` 通过。生成的 `coverage/*` 与 `.iteration/*` 运行态变更不纳入本次提交。
