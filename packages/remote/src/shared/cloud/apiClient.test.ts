@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import * as api from './apiClient';
 import { isInsecureCloudDomain, cloudHttpScheme, cloudWsScheme } from './apiClient';
 
 // 这些是 cloud 连接 scheme 选择的依据：base 域指向本机回环时走明文 http/ws
@@ -59,5 +60,70 @@ describe('cloudHttpScheme / cloudWsScheme', () => {
   it('keeps public bases on TLS even with plaintext flag (never downgrade prod)', () => {
     expect(cloudHttpScheme('9527127.xyz', true)).toBe('https');
     expect(cloudWsScheme('9527127.xyz', true)).toBe('wss');
+  });
+});
+
+describe('cloud API envelope, retry, and public request boundaries', () => {
+  afterEach(() => {
+    api.setUnauthorizedHandler(null);
+    vi.unstubAllGlobals();
+  });
+
+  it('routes the public API surface through JSON envelopes with auth and cookie headers', async () => {
+    const fetchMock = vi.fn(async () => ({
+      status: 200,
+      json: async () => ({ ok: true, data: {} }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    await Promise.all([
+      api.login('a@example.com', 'pw'),
+      api.register('a@example.com', 'pw'),
+      api.getMe('user-token'),
+      api.setUsername('user-token', 'alice'),
+      api.createWorkspaceShare('user-token', { deviceName: 'host', workspaceId: 'ws', grantee: 'bob' }),
+      api.listWorkspaceShares('user-token'),
+      api.listSharedWithMe('user-token'),
+      api.acceptWorkspaceShare('user-token', 'grant/1'),
+      api.declineWorkspaceShare('user-token', 'grant/1'),
+      api.revokeWorkspaceShare('user-token', 'grant/1'),
+      api.getWorkspaceShareToken('user-token', 'grant/1'),
+      api.verifyWorkspaceShareAccess('device-token', 'share-token'),
+      api.session(),
+      api.checkin('user-token'),
+      api.activateKey('user-token', 'KEY', 'alice'),
+      api.authRequest('desktop'),
+      api.authPoll('poll-token'),
+      api.deviceCode(),
+      api.devicePoll('poll-token'),
+      api.deviceActivate('user-token', 'PAIR', 'host'),
+      api.listDevices('user-token'),
+      api.deleteDevice('user-token', 'host/name'),
+      api.forgotPassword('a@example.com'),
+      api.resetPassword('a@example.com', '123', 'new-pw'),
+      api.getIceServers('user-token'),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(25);
+    expect(fetchMock.mock.calls[2][1]).toMatchObject({
+      headers: { Authorization: 'Bearer user-token' },
+    });
+    expect(fetchMock.mock.calls[12][1]).toMatchObject({ credentials: 'include' });
+    expect(fetchMock.mock.calls[7][0]).toContain('/workspace-shares/grant%2F1/accept');
+  });
+
+  it('retries one unauthorized bearer request, then fails closed on network and bad envelopes', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ status: 401, json: async () => ({ ok: false, error: { code: 'UNAUTHORIZED', message: 'expired' } }) })
+      .mockResolvedValueOnce({ status: 200, json: async () => ({ ok: true, data: { user: {} } }) });
+    vi.stubGlobal('fetch', fetchMock);
+    api.setUnauthorizedHandler(async () => 'fresh-token');
+    await expect(api.getMe('old-token')).resolves.toEqual({ user: {} });
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ headers: { Authorization: 'Bearer fresh-token' } });
+
+    fetchMock.mockRejectedValueOnce(new Error('offline'));
+    await expect(api.getMe('fresh-token')).rejects.toMatchObject({ code: 'NETWORK' });
+    fetchMock.mockResolvedValueOnce({ status: 502, json: async () => ({ ok: false, error: { code: 'UNKNOWN', message: 'bad gateway' } }) });
+    await expect(api.getMe('fresh-token')).rejects.toMatchObject({ code: 'INTERNAL', message: 'bad gateway' });
+    fetchMock.mockResolvedValueOnce({ status: 200, json: async () => { throw new Error('not json'); } });
+    await expect(api.getMe('fresh-token')).rejects.toMatchObject({ code: 'BAD_RESPONSE' });
   });
 });

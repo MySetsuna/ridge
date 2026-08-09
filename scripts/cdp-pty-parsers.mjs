@@ -98,7 +98,7 @@ async function waitForRidgeTarget(maxMs = 90000) {
   while (Date.now() - start < maxMs) {
     try {
       const list = await httpJson('/json/list');
-      const t = list.find((x) => x.type === 'page' && (x.title === 'Ridge' || /127\.0\.0\.1:517\d|tauri\.localhost/.test(x.url || '')));
+      const t = list.find((x) => x.type === 'page' && (x.title === 'Ridge' || /127\.0\.0\.1:\d+|tauri\.localhost/.test(x.url || '')));
       if (t) return t;
       lastErr = 'no Ridge page target yet (' + list.length + ' targets)';
     } catch (e) { lastErr = e.code || e.message; }
@@ -164,8 +164,11 @@ async function waitForRidgeTarget(maxMs = 90000) {
     log('subscribe-pane', paneId);
     ws.send(JSON.stringify({ type: 'subscribe-pane', workspaceId, paneId }));
     setTimeout(() => { log('stdin → marker command'); ws.send(JSON.stringify({ type: 'stdin', workspaceId, paneId, data: CMD + '\r' })); }, 800);
-    // Collect for a window long enough for the shell to echo + run + emit.
-    setTimeout(evaluateAndFinish, 6500);
+    // Windows PowerShell may echo a long UTF-8 marker line through ConPTY in
+    // several reads before executing it. Keep the bounded hard timeout as the
+    // failure gate, but do not stop collection while the input is still being
+    // echoed.
+    setTimeout(evaluateAndFinish, 15000);
   }
 
   ws.onopen = () => { log('WS open → list-panes'); ws.send(JSON.stringify({ type: 'list-panes' })); };
@@ -176,6 +179,10 @@ async function waitForRidgeTarget(maxMs = 90000) {
     if (typeof ev.data === 'string') {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if (m.type === 'panes') {
+        // The host may replay a snapshot after subscribe/PTY state changes.
+        // Drive one pane per run; resubscribing on every snapshot races the
+        // marker command against the next pane and drops the binary stream.
+        if (summary.pane) return;
         if (m.panes.length) drive(m.workspaceId, m.panes[0].id);
         else { log('no panes → create-pane'); ws.send(JSON.stringify({ type: 'create-pane' })); }
       } else if (m.type === 'create-pane-result') {

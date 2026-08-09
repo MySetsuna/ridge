@@ -20,6 +20,8 @@ import path from 'node:path';
 import { resolveCdpPort } from './cdp-port.mjs';
 
 const CDP_PORT = Number(process.env.CDP_PORT ?? resolveCdpPort());
+const MOBILE_CDP_PORT = Number(process.env.MOBILE_CDP_PORT ?? 0);
+const MOBILE_CDP_TIMEOUT_MS = 60000;
 const log = (...a) => console.log('[remote-mobile]', ...a);
 const fail = (...a) => {
   console.error('[remote-mobile] FAIL:', ...a);
@@ -93,7 +95,8 @@ const list = await httpJson('/json/list');
 const t = list.find((x) => x.type === 'page' && !/devtools/.test(x.url || ''));
 if (!t) throw new Error('no page target on :' + CDP_PORT);
 const DEV_URL = process.env.RIDGE_DEV_URL ?? t.url;
-const sock = new WebSocket(t.webSocketDebuggerUrl);
+let sock = new WebSocket(t.webSocketDebuggerUrl);
+const desktopSock = sock;
 let id = 0;
 const pend = new Map();
 // 页面日志：手机端 SPA 里出错只会在 roster 上显示一个「—」，不抓 console 根本
@@ -129,19 +132,75 @@ await new Promise((res, rej) => {
     }
   };
 });
-const send = (method, params = {}) =>
-  new Promise((res) => {
+let send = (method, params = {}) =>
+  new Promise((res, rej) => {
     const i = ++id;
-    pend.set(i, res);
+    const timer = setTimeout(() => {
+      pend.delete(i);
+      rej(new Error(`CDP command timed out: ${method}`));
+    }, 15000);
+    pend.set(i, (message) => {
+      clearTimeout(timer);
+      res(message);
+    });
     sock.send(JSON.stringify({ id: i, method, params }));
   });
-const ev = async (expression) => {
+let ev = async (expression) => {
   const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
   if (r.result?.exceptionDetails) {
     throw new Error('eval threw: ' + JSON.stringify(r.result.exceptionDetails).slice(0, 500));
   }
   return r.result?.result?.value;
 };
+
+async function attachMobileTarget(port) {
+  const targets = await httpJson('/json/list', port);
+  const pages = targets.filter((x) => x.type === 'page' && !/devtools/.test(x.url || ''));
+  const target = pages.find((x) => x.url === 'about:blank') ?? pages[0];
+  if (!target) throw new Error('no external mobile page target on:' + port);
+  const mobileSock = new WebSocket(target.webSocketDebuggerUrl);
+  let mobileId = 0;
+  const mobilePend = new Map();
+  await new Promise((res, rej) => {
+    mobileSock.onopen = res;
+    mobileSock.onerror = rej;
+    mobileSock.onmessage = (e) => {
+      const m = JSON.parse(e.data);
+      if (m.id && mobilePend.has(m.id)) {
+        mobilePend.get(m.id)(m);
+        mobilePend.delete(m.id);
+      } else if (m.method === 'Runtime.consoleAPICalled') {
+        const txt = (m.params.args ?? []).map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 300);
+        if (/error|warn/i.test(m.params.type) || /fail|denied|error/i.test(txt)) pageLogs.push(`${m.params.type}: ${txt}`);
+      } else if (m.method === 'Runtime.exceptionThrown') {
+        pageLogs.push('EXC: ' + (m.params.exceptionDetails?.exception?.description ?? '').slice(0, 300));
+      } else if (m.method === 'Network.webSocketFrameSent' || m.method === 'Network.webSocketFrameReceived') {
+        const payload = m.params.response?.payloadData ?? '';
+        if (/detect_available_shells|invoke-result/.test(payload)) {
+          wireEvents.push({ direction: m.method.endsWith('Sent') ? 'sent' : 'received', payload: payload.slice(0, 500) });
+        }
+      }
+    };
+  });
+  const mobileSend = (method, params = {}) => new Promise((res, rej) => {
+    const i = ++mobileId;
+    const timer = setTimeout(() => {
+      mobilePend.delete(i);
+      rej(new Error(`mobile CDP command timed out: ${method}`));
+    }, MOBILE_CDP_TIMEOUT_MS);
+    mobilePend.set(i, (message) => {
+      clearTimeout(timer);
+      res(message);
+    });
+    mobileSock.send(JSON.stringify({ id: i, method, params }));
+  });
+  const mobileEv = async (expression) => {
+    const r = await mobileSend('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    if (r.result?.exceptionDetails) throw new Error('mobile eval threw: ' + JSON.stringify(r.result.exceptionDetails).slice(0, 500));
+    return r.result?.result?.value;
+  };
+  return { sock: mobileSock, send: mobileSend, ev: mobileEv };
+}
 const invoke = (cmd, args = {}) =>
   ev(
     `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)})
@@ -190,6 +249,7 @@ const finish = async () => {
   }
   if (!process.exitCode) log('GATE: PASS');
   sock.close();
+  if (desktopSock !== sock) desktopSock.close();
 };
 
 try {
@@ -198,6 +258,20 @@ try {
   let paneId = '';
   for (let i = 0; i < 90 && !paneId; i++) {
     const activeWorkspaceId = (await invoke('get_active_workspace_id')).r;
+    const layout = await invoke('get_pane_layout', { workspaceId: activeWorkspaceId });
+    const layoutPane = (() => {
+      const walk = (node) => {
+        if (!node || typeof node !== 'object') return '';
+        if (node.type === 'leaf' && typeof node.id === 'string') return node.id;
+        return (node.children ?? []).map(walk).find(Boolean) ?? '';
+      };
+      return walk(layout.r);
+    })();
+    if (activeWorkspaceId && layoutPane) {
+      wsId = activeWorkspaceId;
+      paneId = layoutPane;
+      break;
+    }
     const mounted = await ev(`(() => {
       const active = ${JSON.stringify(activeWorkspaceId)};
       const preferred = active
@@ -233,10 +307,20 @@ try {
     if (!ptyReady) await sleep(1000);
   }
   if (!ptyReady) throw new Error(`pane PTY did not activate: ${ptyError}`);
-  const writeResult = await invoke('write_to_pty', {
-    paneId,
-    data: `Start-Process -FilePath '${fake}' -ArgumentList '-n','200','127.0.0.1' -WindowStyle Hidden\r`,
-  });
+  // Scrollback can become readable before the live writer handle is inserted
+  // into the workspace terminal map. Retry the real write across that narrow
+  // activation window instead of treating a transient PaneNotFound as a
+  // remote/mobile failure.
+  let writeResult = { ok: false, e: '' };
+  for (let i = 0; i < 30 && !writeResult.ok; i++) {
+    writeResult = await invoke('write_to_pty', {
+      workspaceId: wsId,
+      paneId,
+      data: `Start-Process -FilePath '${fake}' -ArgumentList '-n','200','127.0.0.1' -WindowStyle Hidden\r`,
+    });
+    if (!writeResult.ok && !/pane not found/i.test(writeResult.e ?? '')) break;
+    if (!writeResult.ok) await sleep(1000);
+  }
   if (!writeResult.ok) throw new Error(`write_to_pty failed: ${writeResult.e}`);
   log('workspace:', wsId, '| pane:', paneId, '| fake agent launched');
 
@@ -269,10 +353,25 @@ try {
 
   // 4) 导航到**手机 SPA 本体**并注入 token（`?ui=mobile` 压过桌面 UA 分流）
   const mobileUrl = `https://127.0.0.1:${info.port}/?ui=mobile`;
+  if (MOBILE_CDP_PORT) {
+    const mobile = await attachMobileTarget(MOBILE_CDP_PORT);
+    sock = mobile.sock;
+    send = mobile.send;
+    ev = mobile.ev;
+    await send('Runtime.enable');
+    await send('Page.enable');
+    await send('Network.enable');
+    await send('Security.enable');
+    await send('Security.setIgnoreCertificateErrors', { ignore: true });
+    log('mobile browser target:', `127.0.0.1:${MOBILE_CDP_PORT}`);
+  }
+  log('mobile navigate:', mobileUrl);
   await send('Page.navigate', { url: mobileUrl });
+  log('mobile navigation accepted');
   await sleep(1500);
   // token 与 **device id** 必须成对：host 按 (token, device) 校验会话，
   // 只塞 token 而让 SPA 自己随机生成 device 会被直接拒（首跑就是这么红的）。
+  log('mobile storage seed');
   await ev(
     `(() => { try {
        localStorage.setItem('ridge_remote_token', ${JSON.stringify(token)});
@@ -283,6 +382,7 @@ try {
        localStorage.setItem('rg-remote-pane-map', ${JSON.stringify(JSON.stringify({ [wsId]: paneId }))});
      } catch {} return 1; })()`,
   );
+  log('mobile storage seeded');
   // The LAN endpoint can retain an older self-signed ServiceWorker between
   // runs. Unregister it before the second navigation so this probe exercises
   // the freshly built mobile assets instead of a stale precache revision.
@@ -296,7 +396,10 @@ try {
     return 1;
   })()`);
   await send('Page.navigate', { url: mobileUrl });
-  await sleep(4000);
+  log('mobile second navigation accepted');
+  // The external browser must finish the HTTPS document/ServiceWorker swap
+  // before Runtime.evaluate is reliable; 4s was a cold-cache race.
+  await sleep(10000);
 
   // 5) 断言手机端花名册。先切到「agent」侧栏视图（底部 Tab / 侧栏入口按文案找）。
   let teamOpened = await ev(
@@ -586,6 +689,11 @@ try {
   }
 } catch (e) {
   fail(e.message);
+  await killFake();
+  try { sock.close(); } catch {}
+  if (desktopSock !== sock) {
+    try { desktopSock.close(); } catch {}
+  }
 }
 
 await finish();
