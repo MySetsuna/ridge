@@ -569,4 +569,52 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     await flush();
     expect(dc.sent.length).toBe(sentBefore); // 无新增帧
   });
+
+  it('设备签名失败时回落裸握手并记录可诊断错误', async () => {
+    const { host, errors } = await makeHost({
+      signContext: async () => { throw new Error('sign unavailable'); },
+      identityPub: ID_PUB,
+    });
+    const { ws, dc } = await driveToOpenChannel(host);
+    const ctrlEph = generateEphemeralKeyPair();
+    ws.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(ctrlEph.publicKey), cid: CID });
+    await flush();
+    dc.deliver(encodeHandshakeFrame(ctrlEph.publicKey));
+    await flush();
+
+    expect(dc.lastSent()[0]).toBe(HANDSHAKE_TAG);
+    expect(host.bindingCounters.fallback0x01).toBe(1);
+    expect(errors).toContain('设备签名失败，回落明文握手：sign unavailable');
+    host.goOffline();
+  });
+
+  it('ignores malformed/unsupported signaling and tears down failed peers safely', async () => {
+    const { host, errors } = await makeHost({});
+    await host.goOnline(DEVICE);
+    await flush();
+    const ws = FakeWebSocket.instances[0];
+    ws.deliver('{malformed');
+    ws.deliver({ t: 'unknown', cid: CID });
+    ws.deliver({ t: 'workspace-scope', cid: CID, token: '' });
+    ws.deliver({ t: 'error', code: 'RELAY', message: 'relay unavailable' });
+    ws.deliver({ t: 'peer-join', role: 'controller', cid: 'failed-peer' });
+    await flush();
+    const failedPeer = FakePeerConnection.instances[0];
+    failedPeer.connectionState = 'failed';
+    failedPeer.onconnectionstatechange?.();
+    expect(host.getSessions()).toEqual([]);
+    expect(errors).toContain('relay unavailable');
+
+    ws.deliver({ t: 'peer-join', role: 'controller', cid: 'ice-peer' });
+    await flush();
+    ws.deliver({ t: 'ice', cid: 'ice-peer', candidate: { candidate: 'candidate:fixture' } });
+    ws.deliver({ t: 'ice', cid: 'missing-peer', candidate: { candidate: 'ignored' } });
+    await flush();
+    host.blacklist('blocked-peer');
+    ws.deliver({ t: 'peer-join', role: 'controller', cid: 'blocked-peer' });
+    await flush();
+    expect(host.isBanned('blocked-peer')).toBe(true);
+    expect(ws.sentParsed()).toContainEqual({ t: 'kick', cid: 'blocked-peer' });
+    host.goOffline();
+  });
 });

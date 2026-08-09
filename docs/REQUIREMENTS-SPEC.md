@@ -1458,6 +1458,12 @@
 - 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `12858/18608 = 69.09%`、branches `7090/11610 = 61.06%`、functions `2501/3536 = 70.72%`、lines `11594/15895 = 72.94%`，距 statements 80% 尚缺 `2029` 条；`pnpm check` 为 `0 errors / 0 warnings`。
 - Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据及第三方 Runtime/A2A 兼容性仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
 
+## Wave55 Cloud signaling 失败边界与诊断覆盖
+
+- `packages/remote/src/shared/cloud/ridgeCloudProvider.test.ts` 新增设备签名失败回落裸握手、malformed/unsupported/workspace-scope 信令丢弃、失败 peer 安全拆除、ICE 目标缺失及 blacklist/kick 回归；聚焦 `16/16`。
+- 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `12877/18608 = 69.20%`、branches `7106/11610 = 61.20%`、functions `2502/3536 = 70.75%`、lines `11610/15895 = 73.04%`，距 statements 80% 尚缺 `2010` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+- Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据、第三方 Runtime/A2A 兼容性及其余 Cloud/Postgres/物理 DPR/跨卷权限/移动端现场证据仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
