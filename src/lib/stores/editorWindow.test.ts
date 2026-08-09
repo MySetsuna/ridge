@@ -18,6 +18,11 @@ const windows = vi.hoisted(() => ({
   instances: [] as any[],
 }));
 
+async function loadEditorWindow() {
+  vi.resetModules();
+  return import('./editorWindow');
+}
+
 vi.mock('@tauri-apps/api/core', () => ({ isTauri: tauri.isTauri }));
 vi.mock('@tauri-apps/api/event', () => eventApi);
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
@@ -48,7 +53,7 @@ describe('independent editor window handoff', () => {
   });
 
   it('falls back to floating mode outside Tauri and rejects empty snapshots', async () => {
-    const module = await import('./editorWindow');
+    const module = await loadEditorWindow();
     await module.popOutEditor();
     expect(store.setDisplayMode).toHaveBeenCalledWith('floating');
 
@@ -62,7 +67,7 @@ describe('independent editor window handoff', () => {
   });
 
   it('focuses an existing window and transfers a non-empty snapshot on create', async () => {
-    const module = await import('./editorWindow?create-test');
+    const module = await loadEditorWindow();
     tauri.isTauri.mockReturnValue(true);
     const existing = { setFocus: vi.fn(async () => {}) };
     windows.getByLabel.mockResolvedValueOnce(existing);
@@ -70,7 +75,7 @@ describe('independent editor window handoff', () => {
     expect(existing.setFocus).toHaveBeenCalled();
 
     windows.getByLabel.mockResolvedValue(null);
-    store.snapshot.mockReturnValue({ files: [{ path: '/repo/a.ts', content: 'x' }], active: '/repo/a.ts' });
+    store.snapshot.mockReturnValue({ files: [{ path: '/repo/a.ts', content: 'x' }], active: '/repo/a.ts' } as any);
     await module.popOutEditor();
     expect(windows.instances).toHaveLength(1);
     const win = windows.instances[0];
@@ -79,13 +84,13 @@ describe('independent editor window handoff', () => {
     expect(store.clearForHandoff).toHaveBeenCalled();
     expect(get(module.editorPoppedOut)).toBe(true);
 
-    const interceptor = store.setOpenInterceptor.mock.calls.at(-1)[0];
+    const interceptor = store.setOpenInterceptor.mock.calls.at(-1)?.[0] as (request: any) => boolean;
     expect(interceptor({ path: '/repo/b.ts' })).toBe(true);
     expect(eventApi.emitTo).toHaveBeenCalledWith('editor', 'editor-window-open-file', { path: '/repo/b.ts' });
   });
 
   it('restores files when the editor window closes', async () => {
-    const module = await import('./editorWindow?close-test');
+    const module = await loadEditorWindow();
     tauri.isTauri.mockReturnValue(true);
     const unlisten = vi.fn();
     eventApi.listen.mockResolvedValue(unlisten);

@@ -121,7 +121,8 @@ describe('Remote bootstrap and service-worker recovery', () => {
     vi.stubGlobal('localStorage', { clear: state.clearLocal });
     vi.stubGlobal('sessionStorage', { clear: state.clearSession });
     vi.stubGlobal('indexedDB', { databases: vi.fn(async () => [{ name: 'ridge' }]), deleteDatabase: state.deleteDatabase });
-    await import('./main?message-test');
+    vi.resetModules();
+    await import('./main');
     state.messageHandler?.({ data: { type: 'CLEAR_STORAGE', version: 'next' } });
     await Promise.resolve();
     expect(state.clearLocal).toHaveBeenCalled();
