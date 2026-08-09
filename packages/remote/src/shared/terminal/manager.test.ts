@@ -247,6 +247,46 @@ afterEach(() => {
 });
 
 describe('TerminalManager public kernel and delivery surfaces', () => {
+	it('projects host links and shared surface state through safe static boundaries', () => {
+		const { manager, fixture } = makeManager();
+		const openTextLink = vi.fn();
+		TerminalManager.setHostPorts({
+			cwd: { current: () => '/repo', all: () => ['/repo', '/repo/packages'] },
+			openTextLink,
+		});
+		expect(TerminalManager.tryInstance()).toBe(manager);
+		expect(TerminalManager.hostPorts()?.cwd?.all()).toEqual(['/repo', '/repo/packages']);
+		expect(TerminalManager._currentPaneCwd(fixture.pane)).toBe('/repo');
+		expect(TerminalManager._knownCwds()).toEqual(['/repo', '/repo/packages']);
+
+		expect(TerminalManager._executeOpenPlan({ type: 'noop', reason: 'unsupported' }, fixture.pane, 'x'))
+			.toBe(false);
+		expect(TerminalManager._executeOpenPlan({ type: 'open_file', path: 'src/main.ts', line: 4, col: 2 }, fixture.pane, 'x'))
+			.toBe(true);
+		expect(openTextLink).toHaveBeenCalledWith('src/main.ts:4:2', {
+			cwd: '/repo',
+			knownCwds: ['/repo', '/repo/packages'],
+		});
+		expect(TerminalManager._executeOpenPlan({ type: 'reveal_in_tree', path: '/repo/src/main.ts' }, fixture.pane, 'x'))
+			.toBe(true);
+		expect(openTextLink).toHaveBeenLastCalledWith('/repo/src/main.ts', {
+			cwd: '/repo',
+			knownCwds: ['/repo', '/repo/packages'],
+		});
+
+		const host = {
+			setWallpaper: vi.fn(),
+			clearWallpaper: vi.fn(),
+			invalidate: vi.fn(),
+		};
+		(manager as any).globalHost = { canvas: fixture.pane.canvas, host };
+		manager.applyWallpaperGpu({ rgba: new Uint8Array([1, 2, 3, 4]), width: 2, height: 2, opacity: 0.5 });
+		manager.applyWallpaperGpu(null);
+		expect(host.setWallpaper).toHaveBeenCalledWith(new Uint8Array([1, 2, 3, 4]), 2, 2, 0.5);
+		expect(host.clearWallpaper).toHaveBeenCalledOnce();
+		TerminalManager.setHostPorts(null);
+	});
+
 	it('forwards feed, delta, write, paste, callbacks, and scroll state', () => {
 		const { manager, fixture } = makeManager();
 		const sent: Uint8Array[] = [];
