@@ -1370,3 +1370,11 @@
 - 全量 `pnpm test:coverage:sonar`：`188` 个测试文件，`1779 passed / 1 skipped`；本地 V8/LCOV statements `11891/18537 = 64.14%`、branches `6599/11542 = 57.17%`、functions `2298/3527 = 65.15%`、lines `10739/15831 = 67.83%`。相较 Wave38 covered statements 增加 `288`，距本地 80% 尚缺 `2939` 条；该 LCOV 仍不替代 Sonar project metric。
 - `node --check scripts/*.mjs` 全部通过，但 V8 remap 仍对部分 `.mjs` 报 `PARSE_ERROR/Expected ident` 并排除；本机仍无 `SONAR_TOKEN`/`SONAR_HOST_URL`、scanner 与 Quality Gate 证据，故 `REQ-SONAR-COVERAGE-80-01` 保持 ACTIVE，不宣称 80%/Gate 完成。
 - 质量证据：全量 coverage 命令退出 `0`；`cargo fmt --all -- --check`、`git diff --check` 应随提交前复核；`pnpm check` 本波未重跑（既有 Node/dev 进程竞争曾导致超时）。coverage 与 `.iteration` 运行态产物不纳入提交。
+
+## Wave41 Remote 通信契约覆盖与 Sonar 差距复核
+
+- `packages/remote/src/shared/terminal/manager.attach.test.ts` 新增开发诊断面真实调用：PTY feed/write、可见网格、主题/光标探针、selection/delta、PTY write spy、worker 状态及 detach；聚焦 `3/3` 通过。
+- 新增 `packages/remote/src/shared/transport/wsRemote.behavior.test.ts`，覆盖 LAN 消息/二进制 PTY 路由、capability/theme/meta/resize、Agent typed envelope、HITL、history/resume、workspace/shell API、saved workspace、断开取消；与既有 scheduler/attach 回归合计 `27/27` 通过。
+- 全量 `pnpm test:coverage:sonar` exit `0`；当前本地 V8/LCOV statements `12307/18538 = 66.38%`、branches `6772/11546 = 58.65%`、functions `2399/3527 = 68.01%`、lines `11118/15832 = 70.22%`。按 statements 目标需覆盖 `14831` 条，尚缺 `2524` 条；`.mjs` `PARSE_ERROR/Expected ident` 仍为既有诊断。
+- `pnpm check` 为 `0 errors / 0 warnings`；当前 Sonar monitor 仍为 coverage `56.7%`、Quality Gate `ERROR`，本波未取得新 scanner/CE 成功证据，故 `REQ-SONAR-COVERAGE-80-01` 继续 `ACTIVE`。
+- 本波只证明 Remote 适配器消费统一通信契约的更多边界；Kernel PTY 五条件原子运行时快照、第三方 Runtime/A2A 真实兼容性、Sonar `>=80%`/Gate 仍未闭环。coverage 与 `.iteration` 运行态变更不纳入提交。

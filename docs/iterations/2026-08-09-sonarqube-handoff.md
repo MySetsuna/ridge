@@ -127,6 +127,12 @@ Invoke-RestMethod `
 - Local V8 single-worker coverage is now Lines `67.83%`, still below the explicit `>=80%` project target. Historical Rust LCOV is not treated as current evidence.
 - After the final bootstrap/CDP test additions, the single-worker local run is Statements `65.49%`, Branches `57.95%`, Functions `66.74%`, Lines `69.23%`; full Vitest is `193` files / `1798` passed / `1` skipped. Sonar server metrics are unchanged by this local-only run.
 
+## Remote communication coverage recheck (2026-08-10)
+
+- `manager.attach.test.ts` and the new `wsRemote.behavior.test.ts` focused regression passed `27/27`; `pnpm check` passed `0 errors / 0 warnings`.
+- Latest single-worker local V8 run: statements `66.38%` (`12307/18538`), branches `58.65%` (`6772/11546`), functions `68.01%` (`2399/3527`), lines `70.22%` (`11118/15832`). Statements need `2524` more covered entries to reach local `80%`.
+- This is local evidence only. Sonar project remains `56.7%` coverage with Quality Gate `ERROR`; no new scanner/CE success was observed. Existing `.mjs` remap parse warnings remain open.
+
 ## Latest authenticated scan (2026-08-09)
 
 - Scanner exit `0`；CE task `5418a229-2bc5-4b7f-941e-b6f9bbf59672` 最终 `SUCCESS`，analysis `3ee09772-8826-4b77-8a44-a1f53227a2ad`。

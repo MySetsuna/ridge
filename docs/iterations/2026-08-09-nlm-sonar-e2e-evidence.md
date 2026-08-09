@@ -238,3 +238,9 @@ nlm login --check
 - Full Vitest: `193` test files, `1798` passed, `1` skipped; `svelte-check` remains `0 errors / 0 warnings`.
 - Single-worker V8 coverage completed without the prior `.tmp` writer race: Statements `65.49%` (`12141/18538`), Branches `57.95%` (`6692/11546`), Functions `66.74%` (`2354/3527`), Lines `69.23%` (`10962/15832`). LCOV normalization returned `{"ok":true}`.
 - Existing harness `.mjs` parse exclusions remain explicit diagnostics; this local LCOV still does not satisfy Sonar project coverage `>=80%` and was not uploaded as a Gate result.
+
+## Remote communication coverage wave (2026-08-10)
+
+- Added deterministic coverage for `TerminalManager` development diagnostics and `RemoteConnection` typed communication APIs; focused attach/scheduler/behavior regression passed `27/27`.
+- Full local V8 rerun: statements `66.38%` (`12307/18538`), branches `58.65%` (`6772/11546`), functions `68.01%` (`2399/3527`), lines `70.22%` (`11118/15832`). Local statements remain `2524` covered entries short of `80%`.
+- Sonar project metrics were not changed by this local-only run: monitor remains coverage `56.7%`, Quality Gate `ERROR`. No Sonar completion claim is made.
