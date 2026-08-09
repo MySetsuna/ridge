@@ -48,7 +48,7 @@ impl HostError {
             HostError::Unsupported(_) => proto::METHOD_NOT_FOUND,
         }
     }
-    fn message(&self) -> String {
+    pub(crate) fn message(&self) -> String {
         match self {
             HostError::InvalidParams(m) | HostError::Internal(m) => m.clone(),
             HostError::Unsupported(m) => m.clone(),
@@ -152,6 +152,48 @@ pub trait McpHost: Send + Sync {
             mcp_pull: true,
             ..DeliveryProbe::default()
         })
+    }
+
+    /// Authorize a cross-process delivery stream against the host's current
+    /// roster before a route is registered. Legacy roster entries without a
+    /// complete fenced identity fail closed instead of becoming impersonable.
+    fn authorize_delivery_endpoint(
+        &self,
+        agent_id: &str,
+        generation: u64,
+        lease: &str,
+    ) -> HostResult<()> {
+        let profile = self.team_profile_for(None)?;
+        let identity = ["agent_identities", "roster"]
+            .into_iter()
+            .filter_map(|key| profile.get(key).and_then(Value::as_array))
+            .flatten()
+            .find(|entry| {
+                value_string(entry, &["agentId", "agent_id", "id"]).as_deref() == Some(agent_id)
+            })
+            .ok_or_else(|| {
+                HostError::InvalidParams("delivery Agent identity is not registered".into())
+            })?;
+        let current_generation = identity.get("generation").and_then(Value::as_u64);
+        let current_lease = value_string(identity, &["lease"]);
+        let lifecycle = value_string(identity, &["lifecycle"]).unwrap_or_default();
+        let online = identity
+            .get("online")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if current_generation != Some(generation)
+            || current_lease.as_deref() != Some(lease)
+            || !online
+            || !matches!(
+                lifecycle.as_str(),
+                "Online" | "Working" | "Waiting" | "Attention"
+            )
+        {
+            return Err(HostError::InvalidParams(
+                "delivery Agent identity is stale or offline".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn deliver_runtime_api(&self, _target: &Value, _entry: &Value) -> HostResult<DeliveryOutcome> {
@@ -445,6 +487,45 @@ impl McpSessionState {
         entry: &Value,
     ) -> Result<DeliveryOutcome, String> {
         self.delivery_registry.deliver(adapter, target, entry)
+    }
+
+    /// Acknowledge a delivery received through the cross-process stream.
+    /// The stream derives the target key from the durable receipt and fences
+    /// the acknowledgement against Agent identity, generation, and lease.
+    pub fn acknowledge_delivery(
+        &self,
+        agent_id: &str,
+        generation: u64,
+        lease: &str,
+        delivery_id: &str,
+        status: &str,
+        detail: Option<&str>,
+    ) -> Result<Value, String> {
+        let target_key = {
+            let receipts = self
+                .receipts
+                .lock()
+                .map_err(|_| "Hub receipt lock poisoned".to_string())?;
+            let entry = receipts
+                .by_id
+                .get(delivery_id)
+                .ok_or_else(|| "delivery receipt does not exist or expired".to_string())?;
+            let target = entry
+                .get("to")
+                .ok_or_else(|| "delivery receipt has no target identity".to_string())?;
+            let matches = target.get("agentId").and_then(Value::as_str) == Some(agent_id)
+                && target.get("generation").and_then(Value::as_u64) == Some(generation)
+                && target.get("lease").and_then(Value::as_str) == Some(lease);
+            if !matches {
+                return Err("delivery acknowledgement identity fence mismatch".into());
+            }
+            entry
+                .get("targetKey")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "delivery receipt has no target key".to_string())?
+                .to_string()
+        };
+        receipt_ack(self, &target_key, delivery_id, status, detail).map_err(|error| error.message())
     }
 }
 
@@ -3729,5 +3810,46 @@ mod tests {
             .unregister_delivery_endpoint(HubDeliveryAdapter::RuntimeApi, "agent-a", 2, "lease-2")
             .unwrap());
         assert!(!state.delivery_probe(&target).runtime_api);
+    }
+
+    #[test]
+    fn stream_ack_is_fenced_by_receipt_identity_generation_and_lease() {
+        let state = McpSessionState::default();
+        let target = adapter_test_target();
+        let entry = enqueue_hub_entry(
+            &AdapterHost {
+                adapter: HubDeliveryAdapter::RuntimeApi,
+            },
+            &state,
+            &target,
+            "sender",
+            "message",
+            json!({"text":"cross-process"}),
+            adapter_test_meta(),
+        )
+        .expect("enqueue delivery");
+        let delivery_id = entry["deliveryId"].as_str().expect("delivery id");
+        assert!(state
+            .acknowledge_delivery(
+                "adapter-agent",
+                0,
+                "adapter-lease",
+                delivery_id,
+                "agent_received",
+                None,
+            )
+            .is_err());
+        let acknowledged = state
+            .acknowledge_delivery(
+                "adapter-agent",
+                1,
+                "adapter-lease",
+                delivery_id,
+                "agent_acknowledged",
+                Some("received over stream"),
+            )
+            .expect("acknowledge delivery");
+        assert_eq!(acknowledged["agentAcknowledged"], true);
+        assert_eq!(acknowledged["ack"]["state"], "acked");
     }
 }
