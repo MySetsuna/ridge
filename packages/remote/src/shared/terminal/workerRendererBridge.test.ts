@@ -124,11 +124,12 @@ describe('workerRendererBridge', () => {
 
 		it('applyDelta posts a COPY of the bytes (kernel can still read original)', () => {
 			const original = new Uint8Array([10, 20, 30, 40]);
-			workerRendererBridge.applyDelta('pane-a', original);
+			workerRendererBridge.applyDelta('pane-a', original, 7);
 			expect(fake.posted).toHaveLength(1);
 			const sent = fake.posted[0].wire.bytes as Uint8Array;
 			expect(sent).toBeInstanceOf(Uint8Array);
 			expect(Array.from(sent)).toEqual([10, 20, 30, 40]);
+			expect(fake.posted[0].wire.frameId).toBe(7);
 			// Critical: the wire bytes must be a DIFFERENT buffer than the
 			// kernel's original, otherwise the transferList would detach
 			// what the kernel is about to consume.

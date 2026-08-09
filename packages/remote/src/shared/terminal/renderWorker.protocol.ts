@@ -81,7 +81,9 @@ export type RenderWorkerRequest =
 			type: 'applyDelta';
 			paneId: string;
 			bytes: Uint8Array;
-	  }
+			/** Monotonic per-pane generation; stale/replayed frames are ignored. */
+			frameId?: number;
+		}
 	| {
 			type: 'releaseCanvas';
 			paneId: string;

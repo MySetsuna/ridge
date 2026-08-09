@@ -313,6 +313,8 @@ interface PaneEntry {
 	 *  burning CPU while the TUI is misbehaving. Cleared together with
 	 *  `syncStart` when sync mode clears (TASKS §1.4). */
 	syncTimeoutRendered: boolean;
+	/** Monotonic delta generation mirrored into the worker renderer. */
+	deltaFrameId: number;
 	/** focusin listener bound to `container`. Held so detach() can remove
 	 *  it cleanly. Emits `\x1b[I` to PTY when kernel.isFocusReporting(). */
 	focusListener: (e: FocusEvent) => void;
@@ -2286,6 +2288,7 @@ export class TerminalManager {
 			initialFitAttempt: 0,
 			syncStart: null,
 			syncTimeoutRendered: false,
+			deltaFrameId: 0,
 			focusListener,
 			blurListener,
 			selecting: false,
@@ -3463,6 +3466,7 @@ export class TerminalManager {
 		const k = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
 		const pre = traceCursor ? `(${k.cursorRow()},${k.cursorCol()})` : '';
 		entry.kernel.applyDeltaFrame(bytes);
+		entry.deltaFrameId += 1;
 		if (traceCursor) {
 			const ts = performance.now().toFixed(1);
 			// eslint-disable-next-line no-console
@@ -3473,7 +3477,7 @@ export class TerminalManager {
 		// been attached over there. Bridge handles the .slice() copy so
 		// the kernel call above still owns the original bytes.
 		if (this.isWorkerPaneReady(paneId)) {
-			workerRendererBridge.applyDelta(paneId, bytes);
+			workerRendererBridge.applyDelta(paneId, bytes, entry.deltaFrameId);
 		}
 		// Pump DSR/DA replies the mirror produced via apply_delta back to
 		// the PTY. Symmetric with feed()'s take_pending_response drain.

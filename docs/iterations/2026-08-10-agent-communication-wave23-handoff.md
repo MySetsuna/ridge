@@ -55,3 +55,13 @@ Rust 独立输入仍以 Wave19 为准：workspace all-targets exit `0`，line `5
 - `src/remote/lib/remoteQueries.test.ts` 新增 query 去重、abort、timeout、错误传播与 workspace target 测试，10/10 通过；提交 `1ad63c4a`。
 - 全量 `pnpm test:coverage:sonar`：185 files；1727 passed；1 skipped；statements `10758/18511 = 58.11%`、branches `51.37%`、functions `60.92%`、lines `61.59%`。日志：`.iteration/artifacts/vitest-coverage-wave24.log`。
 - 覆盖率较 Wave23 再升 statements `+0.35` 个百分点；距离 80% 仍有 `7753` 条语句未覆盖，Sonar 项目级 80%/Gate 仍不可宣称完成。
+
+## Wave26 终端队列修复与复核
+
+- 修复 `packages/remote/src/shared/terminal/manager.ts` 延迟 feed 排空的真实死循环：排空队列时不再把刚取出的 chunk 重新视作待排空队列；有界 drain 分片时，余量置于后续 chunk 之前，保证字节顺序不乱。
+- 新增并通过 manager 生命周期、内联 TUI feed/reply/event、ESC 大包、renderer park/unpark、延迟队列顺序测试：9/9，日志 `.iteration/artifacts/manager-lifecycle-wave25.log`。
+- 全量 `pnpm test:coverage:sonar`：185 files；1734 passed；1 skipped；statements `10931/18517 = 59.03%`、branches `52.32%`、functions `61.01%`、lines `62.62%`。日志 `.iteration/artifacts/vitest-coverage-wave26.log`。
+- 本波提交：`01f25db9 fix: drain deferred terminal feeds safely`、`cb093503 fix: preserve deferred terminal feed order`。
+- 当前需求 gate 已按最新 `docs/REQUIREMENTS-SPEC.md` 重建并通过：`executable=true`、`pending_ids=[]`；运行态 intake 文件仍不纳入提交。
+
+Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条件生产运行证据及 Rust workspace 全量回归仍为 ACTIVE；覆盖率数字不得等同于 Sonar Quality Gate 通过。
