@@ -1377,4 +1377,5 @@
 - 新增 `packages/remote/src/shared/transport/wsRemote.behavior.test.ts`，覆盖 LAN 消息/二进制 PTY 路由、capability/theme/meta/resize、Agent typed envelope、HITL、history/resume、workspace/shell API、saved workspace、断开取消；与既有 scheduler/attach 回归合计 `27/27` 通过。
 - 全量 `pnpm test:coverage:sonar` exit `0`；当前本地 V8/LCOV statements `12307/18538 = 66.38%`、branches `6772/11546 = 58.65%`、functions `2399/3527 = 68.01%`、lines `11118/15832 = 70.22%`。按 statements 目标需覆盖 `14831` 条，尚缺 `2524` 条；`.mjs` `PARSE_ERROR/Expected ident` 仍为既有诊断。
 - `pnpm check` 为 `0 errors / 0 warnings`；当前 Sonar monitor 仍为 coverage `56.7%`、Quality Gate `ERROR`，本波未取得新 scanner/CE 成功证据，故 `REQ-SONAR-COVERAGE-80-01` 继续 `ACTIVE`。
+- 通信底座回归：`cargo test --target-dir target/codex-wave41-mcp -p ridge-mcp --features axum-transport --lib` 测试汇总 `93 passed / 0 failed`；`cargo test --target-dir target/codex-wave41-kernel -p ridge-kernel --lib` `49 passed / 0 failed`；`cargo fmt --all -- --check` 通过。
 - 本波只证明 Remote 适配器消费统一通信契约的更多边界；Kernel PTY 五条件原子运行时快照、第三方 Runtime/A2A 真实兼容性、Sonar `>=80%`/Gate 仍未闭环。coverage 与 `.iteration` 运行态变更不纳入提交。
