@@ -1380,3 +1380,9 @@
 - `pnpm check` 为 `0 errors / 0 warnings`；当前 Sonar monitor 仍为 coverage `56.7%`、Quality Gate `ERROR`，本波未取得新 scanner/CE 成功证据，故 `REQ-SONAR-COVERAGE-80-01` 继续 `ACTIVE`。
 - 通信底座回归：`cargo test --target-dir target/codex-wave41-mcp -p ridge-mcp --features axum-transport --lib` 测试汇总 `93 passed / 0 failed`；`cargo test --target-dir target/codex-wave41-kernel -p ridge-kernel --lib` `49 passed / 0 failed`；`cargo fmt --all -- --check` 通过。
 - 本波只证明 Remote 适配器消费统一通信契约的更多边界；Kernel PTY 五条件原子运行时快照、第三方 Runtime/A2A 真实兼容性、Sonar `>=80%`/Gate 仍未闭环。coverage 与 `.iteration` 运行态变更不纳入提交。
+
+## Wave42 Host transport onboarding coverage
+
+- 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
+- `pnpm check` 为 `0 errors / 0 warnings`；全量 `pnpm test:coverage:sonar` exit `0`，本地 V8/LCOV statements `12337/18538 = 66.54%`、branches `6790/11546 = 58.80%`、functions `2402/3527 = 68.10%`、lines `11147/15832 = 70.40%`。距本地 statements `80%` 尚缺 `2494` 条；Sonar 项目指标与 Quality Gate 未因本地运行改变。
+- 既有 `.mjs` remap `PARSE_ERROR/Expected ident` 保留为待修质量债；不改 coverage include/exclude，不宣称 Sonar `>=80%` 或 Gate 完成。PTY 五条件原子运行时快照仍 fail-closed。
