@@ -1361,7 +1361,7 @@
 - `scripts/build-ridge.test.mjs` 覆盖 release 参数解析、语义版本校验、稳定 GUID、元数据定向重写、Tauri 参数契约、子进程成功/失败，以及前端双构建、临时文件清理、Cargo/WiX 成功/失败恢复；定向 `7/7` 通过。
 - 全量 `pnpm test:coverage:sonar` exit `0`；本地 V8/LCOV statements `11988/18538 = 64.66%`、branches `6629/11546 = 57.41%`、functions `2310/3527 = 65.49%`、lines `10830/15832 = 68.40%`。较 Wave39 statements `+97`，距本地 80% 还需覆盖 `2843` 条 statements。
 - `pnpm check` 为 `0 errors / 0 warnings`；`cargo fmt --all -- --check`、`node --check scripts/build-ridge.mjs`、`git diff --check` 通过。coverage 与 `.iteration` 运行态产物不纳入提交。
-- V8 对部分既有 `.mjs` 仍报 `PARSE_ERROR/Expected ident` 并排除；本机仍无 `SONAR_TOKEN`、`SONAR_HOST_URL`、scanner/CE，故不得将本地 LCOV 宣称为 Sonar project coverage 或 Quality Gate，`REQ-SONAR-COVERAGE-80-01` 继续 `ACTIVE`。
+- V8 对部分既有 `.mjs` 仍报 `PARSE_ERROR/Expected ident` 并排除；本机 SonarQube `26.7.0.124771` 与 scanner 均已安装，监控 API 为 `UP`，但当前项目 coverage `56.7%`、Quality Gate `ERROR`，故不得将本地 LCOV 宣称为 Sonar 80% 或 Gate 通过，`REQ-SONAR-COVERAGE-80-01` 继续 `ACTIVE`。
 
 ## Wave39 覆盖率与通信边界回归
 
