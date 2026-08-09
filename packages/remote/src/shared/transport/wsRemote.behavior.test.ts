@@ -259,4 +259,51 @@ describe('RemoteConnection public communication contract', () => {
 		expect((document as unknown as { removeEventListener: ReturnType<typeof vi.fn> }).removeEventListener).toHaveBeenCalled();
 		expect((window as unknown as { removeEventListener: ReturnType<typeof vi.fn> }).removeEventListener).toHaveBeenCalled();
 	});
+
+	it('rejects malformed Agent Hub receipts and propagates structured errors', async () => {
+		const { conn, ws } = connect();
+		const invalid = conn.sendAgentMessage(pane, 'hello');
+		invoke(ws, 'send_agent_message', null);
+		await expect(invalid).rejects.toThrow('invalid receipt');
+
+		const denied = conn.sendAgentMessage(pane, 'hello');
+		invoke(ws, 'send_agent_message', null, { code: 'STALE_LEASE', message: 'lease changed' });
+		await expect(denied).rejects.toThrow('STALE_LEASE');
+
+		const topology = conn.getTeammateTopology('workspace-a');
+		invoke(ws, 'get_teammate_topology', null, 'method not supported');
+		await expect(topology).rejects.toThrow('method not supported');
+		conn.disconnect();
+	});
+
+	it('fails closed on malformed scrollback pages and stale page commits', async () => {
+		const { conn, ws } = connect();
+		expect(await conn.fetchOlderScrollback(pane)).toBeNull();
+		ws.receive({ type: 'scrollback-meta', workspaceId: pane.workspaceId, paneId: pane.paneId, startSeq: 10, atOldest: false });
+
+		const empty = conn.fetchOlderScrollback(pane);
+		const emptyFrame = [...ws.sent].reverse().find((item) => item.type === 'scrollback-before');
+		if (!emptyFrame) throw new Error('missing empty scrollback request');
+		ws.receive({ type: 'scrollback-before-result', _reqId: emptyFrame._reqId, bytes: '', startSeq: 10, endSeq: 10, atOldest: true });
+		expect(await empty).toBeNull();
+		expect(await conn.fetchOlderScrollback(pane)).toBeNull();
+
+		ws.receive({ type: 'scrollback-meta', workspaceId: pane.workspaceId, paneId: pane.paneId, startSeq: 10, atOldest: false });
+		const stale = conn.fetchOlderScrollback(pane);
+		const staleFrame = [...ws.sent].reverse().find((item) => item.type === 'scrollback-before');
+		if (!staleFrame) throw new Error('missing stale scrollback request');
+		ws.receive({ type: 'scrollback-before-result', _reqId: staleFrame._reqId, bytes: 'old', startSeq: 1, endSeq: 9, atOldest: false });
+		expect(await stale).toBeNull();
+
+		ws.receive({ type: 'scrollback-meta', workspaceId: pane.workspaceId, paneId: pane.paneId, startSeq: 10, atOldest: false });
+		const pagePromise = conn.fetchOlderScrollback(pane);
+		const pageFrame = [...ws.sent].reverse().find((item) => item.type === 'scrollback-before');
+		if (!pageFrame) throw new Error('missing valid scrollback request');
+		ws.receive({ type: 'scrollback-before-result', _reqId: pageFrame._reqId, bytes: 'old', startSeq: 1, endSeq: 10, atOldest: false });
+		const page = await pagePromise;
+		if (!page) throw new Error('missing scrollback page');
+		page.discard();
+		expect(page.commit()).toBe(false);
+		conn.disconnect();
+	});
 });
