@@ -827,4 +827,80 @@ describe('ControllerCloudProvider additional failure boundaries', () => {
     expect(answerProvider.getState()).toBe('error');
     expect(errors.at(-1)).toEqual(['bad answer', 'INTERNAL']);
   });
+
+  it('covers signaling error/close, offer failure, and pane-lane teardown', async () => {
+    const errors: Array<[string, string | undefined]> = [];
+    const { ControllerCloudProvider } = await loadProvider();
+    const provider = new ControllerCloudProvider(CONFIG, {
+      onError: (message, code) => errors.push([message, code]),
+    });
+    await provider.connect(HOST_DEVICE);
+    await flush();
+    const ws = FakeWebSocket.instances[0];
+    ws.onerror?.();
+    expect(errors.at(-1)).toEqual(['信令 WebSocket 错误', 'NETWORK']);
+    (ws.onclose as unknown as (ev: { code: number; reason: string; wasClean: boolean }) => void)({
+      code: 1006, reason: 'network', wasClean: false,
+    });
+    expect(provider.getState()).toBe('disconnected');
+    provider.disconnect();
+
+    const failedErrors: Array<[string, string | undefined]> = [];
+    const failed = new ControllerCloudProvider(CONFIG, {
+      onError: (message, code) => failedErrors.push([message, code]),
+    });
+    await failed.connect(HOST_DEVICE);
+    await flush();
+    const failedPc = FakePeerConnection.instances.at(-1)!;
+    failedPc.createOffer = vi.fn(async () => { throw new Error('offer unavailable'); });
+    FakeWebSocket.instances.at(-1)!.deliver({ t: 'welcome', room: 'room', role: 'controller', peerPresent: true });
+    await flush();
+    expect(failed.getState()).toBe('error');
+    expect(failedErrors.at(-1)).toEqual(['offer unavailable', 'INTERNAL']);
+    failed.disconnect();
+
+    // An authenticated pane channel closing must clear the pane lane and fall back to control.
+    const paneProvider = new ControllerCloudProvider(CONFIG);
+    await paneProvider.connect(HOST_DEVICE);
+    await flush();
+    const panePc = FakePeerConnection.instances.at(-1)!;
+    const paneDc = panePc.paneChannel!;
+    paneDc.fireOpen();
+    const ctrlDc = panePc.channel!;
+    ctrlDc.fireOpen();
+    const hostKp = generateEphemeralKeyPair();
+    FakeWebSocket.instances.at(-1)!.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(hostKp.publicKey) });
+    ctrlDc.deliver(encodeHandshakeFrame(hostKp.publicKey));
+    await flush();
+    expect(paneProvider.getState()).toBe('connected');
+    paneDc.onclose?.();
+    paneProvider.sendFrame(new Uint8Array([0x10, 0x01]));
+    expect(ctrlDc.sent.length).toBeGreaterThan(1);
+    ctrlDc.onmessage?.({ data: new Uint8Array([0xff]) });
+    paneProvider.disconnect();
+  });
+
+  it('falls back to relay-trust after the binding grace window', async () => {
+    vi.useFakeTimers();
+    try {
+      const { ControllerCloudProvider } = await loadProvider();
+      const provider = new ControllerCloudProvider(CONFIG);
+      await provider.connect(HOST_DEVICE);
+      await vi.advanceTimersByTimeAsync(0);
+      const dc = FakePeerConnection.instances[0].channel!;
+      dc.fireOpen();
+      const ctrlPub = decodeHandshakeFrame(dc.lastSent());
+      const hostKp = generateEphemeralKeyPair();
+      dc.deliver(encodeHandshakeFrame(hostKp.publicKey));
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(provider.getState()).toBe('connected');
+      expect(provider.getKeyBindingMode()).toBe('relay-trust');
+      expect(provider.bindingCounters.relayTrust).toBe(1);
+      expect(ctrlPub).toHaveLength(32);
+      provider.disconnect();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
