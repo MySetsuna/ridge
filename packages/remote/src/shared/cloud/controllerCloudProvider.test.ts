@@ -754,3 +754,77 @@ function completeHandshakeFromHost(dc: FakeDataChannel): void {
   const ctrlPub = decodeHandshakeFrame(dc.lastSent());
   handshakeAsHost(ctrlPub, dc);
 }
+
+describe('ControllerCloudProvider additional failure boundaries', () => {
+  beforeEach(() => {
+    FakePeerConnection.instances = [];
+    FakeWebSocket.instances = [];
+    installGlobals();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('fails closed for ICE lookup and signaling construction errors', async () => {
+    const api = await import('./apiClient');
+    vi.mocked(api.getIceServers).mockRejectedValueOnce(new Error('ice unavailable'));
+    const errors: Array<[string, string | undefined]> = [];
+    const { ControllerCloudProvider } = await loadProvider();
+    const failedIce = new ControllerCloudProvider(CONFIG, {
+      onError: (message, code) => errors.push([message, code]),
+    });
+    await failedIce.connect(HOST_DEVICE);
+    expect(failedIce.getState()).toBe('error');
+    expect(errors.at(-1)).toEqual(['ice unavailable', 'NETWORK']);
+
+    vi.mocked(api.getIceServers).mockResolvedValueOnce({ iceServers: [] });
+    vi.stubGlobal('WebSocket', class {
+      constructor() { throw new Error('signaling unavailable'); }
+    });
+    const failedSignal = new ControllerCloudProvider(CONFIG, {
+      onError: (message, code) => errors.push([message, code]),
+    });
+    await failedSignal.connect(HOST_DEVICE);
+    expect(failedSignal.getState()).toBe('error');
+    expect(errors.at(-1)).toEqual(['signaling unavailable', 'NETWORK']);
+  });
+
+  it('contains malformed signaling, answer failures, and recoverable errors', async () => {
+    const errors: Array<[string, string | undefined]> = [];
+    const { ControllerCloudProvider } = await loadProvider();
+    const provider = new ControllerCloudProvider(CONFIG, {
+      onError: (message, code) => errors.push([message, code]),
+    });
+    await provider.connect(HOST_DEVICE);
+    await flush();
+    const ws = FakeWebSocket.instances[0];
+    const pc = FakePeerConnection.instances[0];
+    ws.deliver({ t: 'not-a-signal' });
+    pc.addIceCandidate = vi.fn(async () => { throw new Error('candidate rejected'); });
+    ws.deliver({ t: 'ice', candidate: { candidate: 'bad' } });
+    await flush();
+    expect(provider.getState()).toBe('connecting');
+
+    ws.deliver({ t: 'error', message: 'temporary', code: 'TRANSIENT' });
+    expect(errors.at(-1)).toEqual(['temporary', 'TRANSIENT']);
+    ws.deliver({ t: 'peer-leave', role: 'host' });
+    await flush();
+    expect(provider.getState()).toBe('error');
+    expect(errors.at(-1)).toEqual(expect.arrayContaining(['NETWORK']));
+    provider.disconnect();
+
+    const answerProvider = new ControllerCloudProvider(CONFIG, {
+      onError: (message, code) => errors.push([message, code]),
+    });
+    await answerProvider.connect(HOST_DEVICE);
+    await flush();
+    const answerWs = FakeWebSocket.instances.at(-1)!;
+    const answerPc = FakePeerConnection.instances.at(-1)!;
+    answerPc.setRemoteDescription = vi.fn(async () => { throw new Error('bad answer'); });
+    answerWs.deliver({ t: 'answer', sdp: 'bad' });
+    await flush();
+    expect(answerProvider.getState()).toBe('error');
+    expect(errors.at(-1)).toEqual(['bad answer', 'INTERNAL']);
+  });
+});

@@ -379,7 +379,7 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
     await expect(link.saveWorkspace('w2', 'Two')).resolves.toBe(false);
     await expect(link.createPane()).resolves.toBeNull();
     await expect(link.markPaneAgent('w2', 'missing', true)).rejects.toThrow('Pane not active');
-    await expect(link.changePaneShell('w2', 'missing', { id: 'x', label: 'x', program: 'x' })).rejects.toThrow('Pane not active');
+    await expect(link.changePaneShell('w2', 'missing', { id: 'x', label: 'x', program: 'x', args: [] })).rejects.toThrow('Pane not active');
   });
 
   it('routes agent registration and shell activation through the pane scope', async () => {
@@ -389,7 +389,7 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
 
     await link.markPaneAgent('w1', 'p1', true, 'agent-1');
     await link.markPaneAgent('w1', 'p1', false);
-    await link.changePaneShell('w1', 'p1', { id: 'pwsh', label: 'PowerShell', program: 'pwsh' });
+    await link.changePaneShell('w1', 'p1', { id: 'pwsh', label: 'PowerShell', program: 'pwsh', args: [] });
 
     expect(rpc.requests).toEqual(expect.arrayContaining([
       expect.objectContaining({
