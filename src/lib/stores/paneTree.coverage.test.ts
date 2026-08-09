@@ -285,6 +285,120 @@ describe('paneTree workspace mutation branches', () => {
     expect(event.listen).toHaveBeenCalledTimes(4);
   });
 
+  it('runs the split resize state machine through pending, drag, and release', () => {
+    vi.useFakeTimers();
+    try {
+      const tree = {
+        type: 'split' as const,
+        id: 'root',
+        direction: 'horizontal' as const,
+        ratios: [50, 50],
+        children: [
+          { type: 'leaf' as const, id: 'left' },
+          { type: 'leaf' as const, id: 'right' },
+        ],
+      };
+      const primary = { splitPath: [], splitterIndex: 0, axis: 'x' as const, basisPx: 100 };
+      paneTree.paneTreeStore.set(tree);
+      paneTree.activeWorkspaceId.set('ws-a');
+
+      paneTree.queueSplitResizeJunction(
+        primary,
+        [primary, primary],
+        { x: 50, y: 20 },
+        [primary, primary],
+      );
+      expect(get(paneTree.splitResizeUiState)).toMatchObject({
+        phase: 'pending',
+        orthogonals: [],
+        sameAxisCandidates: [],
+      });
+      paneTree.startSplitResizeDrag({ x: 50, y: 20 });
+      expect(get(paneTree.splitResizeUiState).phase).toBe('drag');
+
+      paneTree.updateSplitResizeDrag({ x: 80, y: 20 });
+      const dragging = get(paneTree.splitResizeUiState);
+      expect(dragging.phase).toBe('drag');
+      if (dragging.phase === 'drag') {
+        expect(dragging.pendingUpdates).toEqual([
+          { path: [], ratios: [80, 20] },
+        ]);
+      }
+      expect(get(paneTree.paneTreeStore)).toMatchObject({ ratios: [80, 20] });
+      expect(paneTree.finishSplitResizeDrag()).toEqual([
+        { path: [], ratios: [80, 20] },
+      ]);
+      expect(get(paneTree.splitResizeUiState)).toEqual({ phase: 'idle' });
+      expect(paneTree.finishSplitResizeDrag()).toEqual([]);
+      paneTree.clearSplitResizeUi();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('covers non-desktop persistence and startup fallbacks', async () => {
+    core.isTauri.mockReturnValue(false);
+    expect(await paneTree.refreshWorkspaceSaveInfo()).toBeUndefined();
+    expect(await paneTree.getLastOpenedWorkspacePath()).toBeNull();
+    expect(await paneTree.getStartupContext()).toBeNull();
+    expect(await paneTree.listRecentWorkspaces()).toEqual([]);
+    expect(await paneTree.getRestoreSet()).toEqual([]);
+    expect(await paneTree.listSavedWorkspaceFiles()).toEqual([]);
+    await paneTree.clearRecentWorkspaces();
+    await paneTree.loadSavedWorkspaces();
+    await paneTree.saveCurrentWorkspace();
+    await paneTree.deleteSavedWorkspace('missing');
+    await paneTree.renameSavedWorkspace('missing', 'ignored');
+
+    core.isTauri.mockReturnValue(true);
+    const saved = {
+      id: 'saved',
+      name: 'Saved',
+      paneTree: layout,
+      paneCwds: {},
+      savedAt: '2026-08-10T00:00:00.000Z',
+    };
+    core.invoke.mockImplementation(async (command: string) => {
+      if (command === 'list_workspace_save_info') {
+        return [{ workspace_id: 'ws-a', file_path: null, name: 'A' }];
+      }
+      if (command === 'list_saved_workspaces') return [saved];
+      if (command === 'get_last_opened_workspace_path') return 'C:/last.ridge';
+      if (command === 'get_startup_context') {
+        return { cwd: 'C:/repo', wind_file_in_cwd: null, kind: 'menu' };
+      }
+      if (command === 'list_recent_workspaces') return ['C:/recent.ridge'];
+      if (command === 'get_restore_set') return ['C:/restore.ridge'];
+      if (command === 'list_saved_workspace_files') {
+        return [{ name: 'Saved', path: 'C:/Saved.ridge', mtime_secs: 1 }];
+      }
+      return undefined;
+    });
+    await paneTree.refreshWorkspaceSaveInfo();
+    expect(get(paneTree.workspaceSaveInfoStore)).toEqual({
+      'ws-a': { workspace_id: 'ws-a', file_path: null, name: 'A' },
+    });
+    await paneTree.loadSavedWorkspaces();
+    expect(get(paneTree.savedWorkspacesList)).toEqual([saved]);
+    await expect(paneTree.getLastOpenedWorkspacePath()).resolves.toBe('C:/last.ridge');
+    await expect(paneTree.getStartupContext()).resolves.toMatchObject({ kind: 'menu' });
+    await expect(paneTree.listRecentWorkspaces()).resolves.toEqual(['C:/recent.ridge']);
+    await expect(paneTree.getRestoreSet()).resolves.toEqual(['C:/restore.ridge']);
+    await expect(paneTree.listSavedWorkspaceFiles()).resolves.toEqual([
+      { name: 'Saved', path: 'C:/Saved.ridge', mtime_secs: 1 },
+    ]);
+    await paneTree.clearRecentWorkspaces();
+
+    core.invoke.mockRejectedValue(new Error('optional startup unavailable'));
+    await expect(paneTree.getLastOpenedWorkspacePath()).resolves.toBeNull();
+    await expect(paneTree.getStartupContext()).resolves.toBeNull();
+    await expect(paneTree.listRecentWorkspaces()).resolves.toEqual([]);
+    await expect(paneTree.getRestoreSet()).resolves.toEqual([]);
+    await expect(paneTree.listSavedWorkspaceFiles()).resolves.toEqual([]);
+    await paneTree.clearRecentWorkspaces();
+    await paneTree.refreshWorkspaceSaveInfo();
+  });
+
   it('syncs host-authoritative layout, prunes stale cwd entries, and falls back on host id errors', async () => {
     const layoutFromHost = {
       type: 'split' as const,
