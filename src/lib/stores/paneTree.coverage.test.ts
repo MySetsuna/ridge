@@ -277,7 +277,7 @@ describe('paneTree workspace mutation branches', () => {
     expect(event.listen).toHaveBeenCalledTimes(2);
     await paneTree.setupPaneCwdListeners('ws-a', tree);
     expect(firstUnlisten).toHaveBeenCalledOnce();
-    const callback = event.listen.mock.calls.at(-1)?.[1] as ((event: { payload: { cwd: string } }) => void);
+    const callback = (event.listen.mock.calls.at(-1) as unknown as [string, (event: { payload: { cwd: string } }) => void])[1];
     callback({ payload: { cwd: '/home/bob/project/' } });
     expect(paneTree.getPaneCwd('ws-a', 'b')).toBe('/home/bob/project');
     core.isTauri.mockReturnValue(false);

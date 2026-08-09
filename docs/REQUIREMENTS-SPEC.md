@@ -1403,6 +1403,13 @@
 - 全量 `pnpm test:coverage:sonar` 本地 V8/LCOV：statements `12651/18603 = 68.00%`、branches `6972/11608 = 60.06%`、functions `2475/3536 = 69.99%`、lines `11412/15891 = 71.81%`；距 statements 80% 尚缺 `2232` 条。
 - `.mjs` coverage 仍报 `PARSE_ERROR/Expected ident`；Sonar project/Quality Gate 未以本地 LCOV 冒充闭环，`REQ-SONAR-COVERAGE-80-01` 与 PTY/第三方 Runtime-A2A 现场证据继续 `ACTIVE`。
 
+## Wave47 Cloud controller provider 错误边界覆盖
+
+- `packages/remote/src/shared/cloud/controllerCloudProvider.test.ts` 新增 ICE 获取失败、WebSocket 构造失败、畸形信令、ICE candidate 失败、可恢复 error、peer leave 与 answer 应答失败回归；聚焦 `26/26`。
+- 全量 `pnpm test:coverage:sonar` exit `0`；本地 V8/LCOV statements `12664/18603 = 68.07%`、branches `6982/11608 = 60.14%`、functions `2475/3536 = 69.99%`、lines `11423/15891 = 71.88%`；距 statements 80% 尚缺 `2219` 条。
+- `pnpm check` 复核为 `0 errors / 0 warnings`；本波仅修正测试 fixture 类型，不改生产运行语义。
+- `.mjs` coverage 仍报 `PARSE_ERROR/Expected ident`；Sonar project/Quality Gate 未以本地 LCOV 冒充闭环，`REQ-SONAR-COVERAGE-80-01` 与 PTY/第三方 Runtime-A2A 现场证据继续 `ACTIVE`。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
