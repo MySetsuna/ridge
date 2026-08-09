@@ -211,3 +211,12 @@ nlm login --check
 - The extracted next-batch candidates were Message Hub kernelization, ridge-term frame/DPR replay stability, deep-root kernel lifecycle, trusted-HTTPS mobile PWA continuity, and Sonar project coverage. Local code facts were rechecked before implementation; NLM output remains hypothesis/candidate material.
 - `packages/ridge-mcp` now stores a generation/lease-fenced, five-condition PTY safety proof with a bounded `3s` freshness window. Expired, stale-generation, stale-lease, invalid-identity, refresh, and teardown paths are covered; an unsafe proof falls back to MCP pull.
 - `cargo test -p ridge-mcp --lib --quiet` passed `90/90`; `cargo fmt --manifest-path packages/ridge-mcp/Cargo.toml -- --check` passed. The proof closes the local runtime-gating branch only; no live Agent interruption/replay or physical PTY evidence is claimed.
+
+## Post-commit dev:cdp and regression rerun (2026-08-10)
+
+- Commit `06378c09` contains the PTY safety proof, expiry/fencing tests, and the related evidence/bug records. No push, tag, Release, or publish was performed.
+- Hot-cache `tauri:dev:cdp` reached real WebView2 CDP `8690`; `cdp-smoke` passed. The current DPR probe returned `dpr=1`, `canvasCount=2`, `backingCanvasCount=2`; the previously recorded `1/1.25/1.5/2` matrix remains the broader evidence, with the DPR-2 cold-start race still open.
+- Physical Windows C:→D: ACL sequence passed again: copy completed, source deletion was rejected with Windows `os error 5`, ACL restoration succeeded, destination remained present, and source remained preserved.
+- LAN mobile agent E2E passed `GATE: PASS`: real HTTPS/WS/TOTP, workspace/pane, shell picker, Git Bash switch, and headless Team-hide behavior. Self-signed HTTPS still prevents Service Worker registration; this is not trusted-HTTPS physical-PWA evidence.
+- Clean-profile `runtime.lastError` probe returned `status=clean-profile-only`, `attributionComplete=false`; no extension A/B or physical-device attribution is claimed.
+- Post-commit TypeScript regression passed `187` files, `1772` passed, `1` skipped; `svelte-check` passed `0 errors / 0 warnings`. Rust `ridge-mcp` passed `90/90`; `ridge-cli` debug build finished successfully with existing warnings.
