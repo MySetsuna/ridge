@@ -119,6 +119,13 @@ Invoke-RestMethod `
 - Keep `sonar.typescript.tsconfigPaths=tsconfig.json` in project config to avoid transient `.claude/worktrees` TSConfig discovery. A complete retry after disk recovery still exceeded the host bound in Rust analysis after cache relocation; exact scanner trees and temporary tokens were cleaned.
 - Do not treat the failed CE task or local V8/Rust LCOV percentages as a passed Gate. Accepted server baseline remains coverage `48.5%`, line `49.4%`, branch `47.0%`, violations `835`, Quality Gate `ERROR`; target `>=80%` remains open.
 
+## Current monitor recheck (2026-08-10)
+
+- SonarQube `http://127.0.0.1:9000` remains healthy: version `26.7.0.124771`, status `UP`.
+- The current project API reports coverage `56.7%`, line coverage `57.0%`, branch coverage `54.2%`, violations `835`; Quality Gate `ERROR`, with `new_coverage=64.9%` and `new_violations=130`.
+- Latest analysis record observed by API: `3c585f9e-554f-4a4e-81e8-2e21a387c707`, `2026-08-10T02:05:52+0800`. No scanner exit or CE task was inferred from this monitor-only recheck.
+- Local V8 single-worker coverage is now Lines `67.83%`, still below the explicit `>=80%` project target. Historical Rust LCOV is not treated as current evidence.
+
 ## Latest authenticated scan (2026-08-09)
 
 - Scanner exit `0`；CE task `5418a229-2bc5-4b7f-941e-b6f9bbf59672` 最终 `SUCCESS`，analysis `3ee09772-8826-4b77-8a44-a1f53227a2ad`。
