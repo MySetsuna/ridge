@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -94,10 +95,21 @@ pub struct DeliveryOutcome {
 /// route fails visibly and leaves the durable Hub receipt available for pull.
 pub const DELIVERY_ROUTE_CAP: usize = 256;
 
+/// A PTY proof is a short-lived observation, not a permanent capability.
+/// Hosts must refresh it before this bound or delivery falls back to MCP pull.
+pub const PTY_SAFETY_MAX_AGE: Duration = Duration::from_secs(3);
+
 struct DeliveryRoute {
     generation: u64,
     lease: String,
     sender: SyncSender<Value>,
+}
+
+struct PtySafetyRoute {
+    generation: u64,
+    lease: String,
+    safety: HubPtySafety,
+    observed_at: Instant,
 }
 
 /// Host-owned delivery endpoints for runtimes that live in the same process.
@@ -108,12 +120,14 @@ struct DeliveryRoute {
 /// match, so reconnects cannot inherit an old subscription.
 pub struct DeliveryRegistry {
     routes: Mutex<HashMap<(HubDeliveryAdapter, String), DeliveryRoute>>,
+    pty_safety: Mutex<HashMap<String, PtySafetyRoute>>,
 }
 
 impl Default for DeliveryRegistry {
     fn default() -> Self {
         Self {
             routes: Mutex::new(HashMap::new()),
+            pty_safety: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -189,6 +203,71 @@ impl DeliveryRegistry {
         Ok(true)
     }
 
+    /// Publish the complete PTY safety proof for one live Agent generation.
+    ///
+    /// This is deliberately separate from Runtime API/A2A route registration:
+    /// a host may prove that PTY input is safe without exposing an in-process
+    /// receiver, and a receiver teardown must never leave an old PTY proof
+    /// available for a later generation. Same-generation refresh is
+    /// idempotent and replaces the snapshot atomically.
+    pub fn register_pty_safety(
+        &self,
+        agent_id: impl Into<String>,
+        generation: u64,
+        lease: impl Into<String>,
+        safety: HubPtySafety,
+    ) -> Result<(), String> {
+        let agent_id = agent_id.into();
+        let lease = lease.into();
+        if agent_id.trim().is_empty() || lease.trim().is_empty() || generation == 0 {
+            return Err("PTY safety proof requires agent_id, generation, and lease".into());
+        }
+        let mut proofs = self
+            .pty_safety
+            .lock()
+            .map_err(|_| "PTY safety registry lock poisoned".to_string())?;
+        if let Some(current) = proofs.get(&agent_id) {
+            if current.generation > generation {
+                return Err("stale PTY safety proof rejected".into());
+            }
+            if current.generation == generation && current.lease != lease {
+                return Err("PTY safety proof lease mismatch".into());
+            }
+        }
+        proofs.insert(
+            agent_id,
+            PtySafetyRoute {
+                generation,
+                lease,
+                safety,
+                observed_at: Instant::now(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Remove a PTY proof only with the current generation/lease. A stale
+    /// teardown must not erase a newer proof.
+    pub fn unregister_pty_safety(
+        &self,
+        agent_id: &str,
+        generation: u64,
+        lease: &str,
+    ) -> Result<bool, String> {
+        let mut proofs = self
+            .pty_safety
+            .lock()
+            .map_err(|_| "PTY safety registry lock poisoned".to_string())?;
+        let Some(current) = proofs.get(agent_id) else {
+            return Ok(false);
+        };
+        if current.generation != generation || current.lease != lease {
+            return Err("stale PTY safety teardown rejected".into());
+        }
+        proofs.remove(agent_id);
+        Ok(true)
+    }
+
     pub fn probe(&self, target: &Value) -> DeliveryProbe {
         let Some((agent_id, generation, lease)) = target_identity(target) else {
             return DeliveryProbe::default();
@@ -201,9 +280,23 @@ impl DeliveryRegistry {
                 .get(&(adapter, agent_id.to_string()))
                 .is_some_and(|route| route.generation == generation && route.lease == lease)
         };
+        let pty = self
+            .pty_safety
+            .lock()
+            .ok()
+            .and_then(|proofs| {
+                proofs.get(agent_id).and_then(|proof| {
+                    (proof.generation == generation
+                        && proof.lease == lease
+                        && proof.observed_at.elapsed() <= PTY_SAFETY_MAX_AGE)
+                        .then_some(proof.safety)
+                })
+            })
+            .unwrap_or_default();
         DeliveryProbe {
             runtime_api: matches(HubDeliveryAdapter::RuntimeApi),
             a2a: matches(HubDeliveryAdapter::A2a),
+            pty,
             ..DeliveryProbe::default()
         }
     }
@@ -384,6 +477,143 @@ mod tests {
         assert!(registry
             .unregister(HubDeliveryAdapter::A2a, "agent-a", 3, "lease-3")
             .unwrap());
+    }
+
+    #[test]
+    fn pty_safety_proof_is_generation_and_lease_fenced() {
+        let registry = DeliveryRegistry::default();
+        let safe = HubPtySafety {
+            agent_idle: true,
+            terminal_mode_agent_prompt: true,
+            foreground_is_target_agent: true,
+            ..Default::default()
+        };
+        let current = serde_json::json!({
+            "agentId": "agent-a",
+            "generation": 2,
+            "lease": "lease-2"
+        });
+        assert_eq!(registry.probe(&current).pty, HubPtySafety::default());
+        assert_eq!(choose_delivery_adapter(registry.probe(&current)), None);
+
+        registry
+            .register_pty_safety("agent-a", 2, "lease-2", safe)
+            .unwrap();
+        assert_eq!(registry.probe(&current).pty, safe);
+        assert_eq!(
+            choose_delivery_adapter(registry.probe(&current)),
+            Some(HubDeliveryAdapter::PtyFallback)
+        );
+
+        let stale = serde_json::json!({
+            "agentId": "agent-a",
+            "generation": 1,
+            "lease": "lease-1"
+        });
+        assert_eq!(registry.probe(&stale).pty, HubPtySafety::default());
+        assert_eq!(choose_delivery_adapter(registry.probe(&stale)), None);
+        assert!(registry
+            .register_pty_safety("agent-a", 2, "other-lease", safe)
+            .is_err());
+
+        registry
+            .register_pty_safety("agent-a", 3, "lease-3", safe)
+            .unwrap();
+        assert!(registry
+            .register_pty_safety("agent-a", 2, "lease-2", safe)
+            .is_err());
+        assert!(registry
+            .unregister_pty_safety("agent-a", 2, "lease-2")
+            .is_err());
+        assert!(registry
+            .unregister_pty_safety("agent-a", 3, "lease-3")
+            .unwrap());
+        assert_eq!(
+            registry
+                .probe(&serde_json::json!({
+                    "agentId": "agent-a",
+                    "generation": 3,
+                    "lease": "lease-3"
+                }))
+                .pty,
+            HubPtySafety::default()
+        );
+    }
+
+    #[test]
+    fn pty_safety_proof_rejects_invalid_identity_and_refreshes_current_snapshot() {
+        let registry = DeliveryRegistry::default();
+        let safe = HubPtySafety {
+            agent_idle: true,
+            terminal_mode_agent_prompt: true,
+            foreground_is_target_agent: true,
+            ..Default::default()
+        };
+        assert!(registry
+            .register_pty_safety("", 1, "lease-1", safe)
+            .is_err());
+        assert!(registry
+            .register_pty_safety("agent-a", 0, "lease-1", safe)
+            .is_err());
+        assert!(registry
+            .register_pty_safety("agent-a", 1, "", safe)
+            .is_err());
+
+        registry
+            .register_pty_safety("agent-a", 1, "lease-1", safe)
+            .unwrap();
+        let unsafe_snapshot = HubPtySafety {
+            user_input_competing: true,
+            ..safe
+        };
+        registry
+            .register_pty_safety("agent-a", 1, "lease-1", unsafe_snapshot)
+            .unwrap();
+        assert_eq!(
+            registry
+                .probe(&serde_json::json!({
+                    "agentId": "agent-a",
+                    "generation": 1,
+                    "lease": "lease-1"
+                }))
+                .pty,
+            unsafe_snapshot
+        );
+        assert_eq!(
+            registry.unregister_pty_safety("agent-a", 1, "lease-1"),
+            Ok(true)
+        );
+        assert_eq!(
+            registry.unregister_pty_safety("agent-a", 1, "lease-1"),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn expired_pty_safety_proof_falls_back_to_pull() {
+        let registry = DeliveryRegistry::default();
+        registry.pty_safety.lock().unwrap().insert(
+            "agent-a".into(),
+            PtySafetyRoute {
+                generation: 1,
+                lease: "lease-1".into(),
+                safety: HubPtySafety {
+                    agent_idle: true,
+                    terminal_mode_agent_prompt: true,
+                    foreground_is_target_agent: true,
+                    ..Default::default()
+                },
+                observed_at: Instant::now() - PTY_SAFETY_MAX_AGE - Duration::from_millis(1),
+            },
+        );
+        let target = serde_json::json!({
+            "agentId": "agent-a",
+            "generation": 1,
+            "lease": "lease-1"
+        });
+        let probe = registry.probe(&target);
+        assert_eq!(probe.pty, HubPtySafety::default());
+        assert_eq!(choose_delivery_adapter(probe), None);
     }
 
     #[test]
