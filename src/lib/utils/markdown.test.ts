@@ -15,10 +15,21 @@ vi.mock('monaco-editor', () => ({
   },
 }));
 
+const mermaid = vi.hoisted(() => ({
+  initialize: vi.fn(),
+  render: vi.fn(async (_id: string, source: string) => ({ svg: `<svg data-source="${source}"></svg>` })),
+}));
+vi.mock('mermaid', () => ({ default: mermaid }));
+
 // Import after mock is in place.
-const { renderMarkdown, toggleTaskAtLine, isMarkdownPath, stripFrontMatter } = await import(
-  './markdown'
-);
+const {
+  renderMarkdown,
+  toggleTaskAtLine,
+  isMarkdownPath,
+  stripFrontMatter,
+  highlightCodeBlocks,
+  renderMermaidBlocks,
+} = await import('./markdown');
 
 describe('renderMarkdown — source-line stamping', () => {
   it('stamps data-rg-md-src-line on paragraphs in source order', () => {
@@ -126,6 +137,75 @@ describe('renderMarkdown — image renderer (lazy load)', () => {
   it('preserves and escapes the title attribute when present', () => {
     const html = renderMarkdown('![logo](logo.svg "Brand & Co")');
     expect(html).toMatch(/title="Brand &amp; Co"/);
+  });
+
+  it('normalizes Windows local links, preserves URL/code backslashes, and stamps task items', () => {
+    const html = renderMarkdown([
+      '- [ ] unchecked',
+      '- [x] checked',
+      '[local](docs\\sub\\file.md)',
+      '[web](https://example.com/a\\b)',
+      '`like\\this`',
+    ].join('\n'));
+    expect(html).toContain('data-rg-md-task="0"');
+    expect(html).toContain('data-rg-md-task="1"');
+    expect(html).toContain('href="docs/sub/file.md"');
+    expect(html).toContain('href="https://example.com/a%5Cb"');
+    expect(html).toContain('like\\this');
+  });
+
+  it('renders mermaid and inline-formatted image placeholders without losing source text', () => {
+    const html = renderMarkdown('```mermaid\ngraph TD; A-->B\n```\n\n![**bold**](pic.png)');
+    expect(html).toContain('class="rg-md-mermaid"');
+    expect(html).toContain('rg-md-mermaid-fallback');
+    expect(html).toContain('alt="bold"');
+  });
+});
+
+describe('markdown async enhancement passes', () => {
+  it('highlights code blocks and keeps plain fallback after colorize failure', async () => {
+    const monaco = await import('monaco-editor');
+    const pre = {
+      dataset: { rgMdCode: btoa('const x = 1'), rgMdLang: 'js' },
+      innerHTML: '<code>plain</code>',
+    };
+    const container = { querySelectorAll: vi.fn(() => [pre]) } as unknown as HTMLElement;
+    await highlightCodeBlocks(container);
+    expect(pre.innerHTML).toContain('language-js');
+    expect(monaco.editor.colorize).toHaveBeenCalledWith('const x = 1', 'js', { tabSize: 2 });
+
+    vi.mocked(monaco.editor.colorize).mockRejectedValueOnce(new Error('worker failed'));
+    pre.innerHTML = '<code>fallback</code>';
+    await highlightCodeBlocks(container);
+    expect(pre.innerHTML).toBe('<code>fallback</code>');
+    await highlightCodeBlocks({ querySelectorAll: () => [] } as unknown as HTMLElement);
+  });
+
+  it('renders Mermaid SVG and keeps fallback with a diagnostic banner on failure', async () => {
+    const rendered = {
+      dataset: { rgMdMermaid: btoa('graph TD; A-->B') },
+      innerHTML: '<pre>fallback</pre>',
+      classList: { add: vi.fn() },
+      prepend: vi.fn(),
+    };
+    const container = { querySelectorAll: vi.fn(() => [rendered]) } as unknown as HTMLElement;
+    await renderMermaidBlocks(container);
+    expect(mermaid.initialize).toHaveBeenCalled();
+    expect(rendered.innerHTML).toContain('<svg');
+    expect(rendered.classList.add).toHaveBeenCalledWith('rg-md-mermaid-rendered');
+
+    vi.stubGlobal('document', {
+      createElement: vi.fn(() => ({ className: '', textContent: '' })),
+    });
+    mermaid.render.mockRejectedValueOnce(new Error('syntax error'));
+    rendered.innerHTML = '<pre>fallback</pre>';
+    await renderMermaidBlocks(container);
+    expect(rendered.prepend).toHaveBeenCalledWith(expect.objectContaining({
+      className: 'rg-md-mermaid-error',
+      textContent: 'mermaid 渲染失败：syntax error',
+    }));
+    vi.unstubAllGlobals();
+    await renderMermaidBlocks({ querySelectorAll: () => [] } as unknown as HTMLElement);
   });
 });
 
