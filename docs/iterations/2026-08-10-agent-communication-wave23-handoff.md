@@ -49,3 +49,9 @@ Rust 独立输入仍以 Wave19 为准：workspace all-targets exit `0`，line `5
 4. full workspace regression 需在无冲突的独立构建窗口重跑；不得杀掉既有 `cargo run --no-default-features`，不得清理用户运行态产物。
 
 交接原则：上述未闭环项保持 ACTIVE；本波已提交代码与测试，但不宣称“全部验收完成”或“Sonar 80% 已达标”。
+
+## Wave24 收口复核
+
+- `src/remote/lib/remoteQueries.test.ts` 新增 query 去重、abort、timeout、错误传播与 workspace target 测试，10/10 通过；提交 `1ad63c4a`。
+- 全量 `pnpm test:coverage:sonar`：185 files；1727 passed；1 skipped；statements `10758/18511 = 58.11%`、branches `51.37%`、functions `60.92%`、lines `61.59%`。日志：`.iteration/artifacts/vitest-coverage-wave24.log`。
+- 覆盖率较 Wave23 再升 statements `+0.35` 个百分点；距离 80% 仍有 `7753` 条语句未覆盖，Sonar 项目级 80%/Gate 仍不可宣称完成。
