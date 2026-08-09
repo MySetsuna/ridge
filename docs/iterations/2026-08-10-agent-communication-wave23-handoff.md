@@ -65,3 +65,10 @@ Rust 独立输入仍以 Wave19 为准：workspace all-targets exit `0`，line `5
 - 当前需求 gate 已按最新 `docs/REQUIREMENTS-SPEC.md` 重建并通过：`executable=true`、`pending_ids=[]`；运行态 intake 文件仍不纳入提交。
 
 Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条件生产运行证据及 Rust workspace 全量回归仍为 ACTIVE；覆盖率数字不得等同于 Sonar Quality Gate 通过。
+
+## Wave28 质量增量
+
+- manager 新增选择、输入、滚动、清空、鼠标与安全默认值边界测，10/10；Cloud controller 新增 trust grant 合法/非法/超时测，7/7。
+- 全量 `pnpm test:coverage:sonar`：187 files；1750 passed；1 skipped；statements `11130/18527 = 60.07%`、branches `53.63%`、functions `61.61%`、lines `63.59%`。日志 `.iteration/artifacts/vitest-coverage-wave28.log`。
+- 当前仍有 coverage provider 对部分 `.mjs` 脚本的 parse warning；这些脚本未凭空计入覆盖率，需另行修复/验证，不能视作质量门通过。
+- 本波提交：`988761a0 test: cover terminal manager edge projections`、`7cf52e2e test: cover cloud controller trust handshake`。
