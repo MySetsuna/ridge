@@ -132,6 +132,7 @@ Invoke-RestMethod `
 - `manager.attach.test.ts` and the new `wsRemote.behavior.test.ts` focused regression passed `27/27`; `pnpm check` passed `0 errors / 0 warnings`.
 - Latest single-worker local V8 run: statements `66.38%` (`12307/18538`), branches `58.65%` (`6772/11546`), functions `68.01%` (`2399/3527`), lines `70.22%` (`11118/15832`). Statements need `2524` more covered entries to reach local `80%`.
 - This is local evidence only. Sonar project remains `56.7%` coverage with Quality Gate `ERROR`; no new scanner/CE success was observed. Existing `.mjs` remap parse warnings remain open.
+- Final non-coverage regression passed: `pnpm test` reported `195` files, `1810 passed / 1 skipped`; `node --check scripts/*.mjs` passed for every script.
 
 ## Latest authenticated scan (2026-08-09)
 
