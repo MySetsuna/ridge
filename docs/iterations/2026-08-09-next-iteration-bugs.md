@@ -271,13 +271,32 @@ Status: closed as harness defect. The script now supports a separate external Ch
 
 Status: closed by external rerun. The prior run hit the 30-second `ws.listShells()` timeout while the host response arrived late. With the external clean-browser target and corrected lifecycle/activation harness, the UI rendered all 9 shell items; the same host-side `detect_available_shells` response was correlated and Git Bash switching was verified through the snapshot. No production transport change was justified.
 
-Remaining acceptance gaps: physical multi-DPR matrix, mid-operation cross-volume ACL injection, and desktop-shell exit with kernel reattach.
+Remaining acceptance gaps: non-integer/physical multi-DPR matrix beyond the verified DPR=2 run, mid-operation cross-volume ACL injection, and desktop-shell exit with kernel reattach.
+
+## Physical DPR=2 rerun (2026-08-10)
+
+- Fresh isolated `tauri:dev:cdp` launched with `RIDGE_CDP_DEVICE_SCALE_FACTOR=2`; WebView2 process command line carried `--force-device-scale-factor=2` and `--device-scale-factor=2`.
+- After the app-ready marker became true, `scripts/cdp-dpr-e2e.mjs` passed: `dpr=2`, `innerWidth=1720`, `innerHeight=696`, `canvasCount=3`, `backingCanvasCount=3`; screenshot: `.iteration/artifacts/dpr/desktop-dpr2-shot.png`.
+- The first cold probe timed out before mount and reported zero canvases; a direct readiness probe then observed the normal Ridge workspace and the bounded DPR probe passed. This closes the physical DPR=2 gate, while the harness cold-start timing classification remains tracked by `BUG-E2E-DPR-STARTUP-RACE-02`.
+
+## Kernel reattach boundary (2026-08-10)
+
+- `cargo test -p ridge-cli --test kernel_lifecycle_e2e -- --nocapture` completed the three integration cases: `3 passed; 0 failed`.
+- Evidence covers detached kernel survival after the disposable `rdg` client exits, second-client attach to the same kernel PID, and PTY output-lease detach/reattach with cursor replay. It does not claim a Tauri WebView2 shell process kill and restart; that physical desktop-shell boundary remains open.
+
+## NLM next query after auth refresh (2026-08-10)
+
+- NLM auth was refreshed through the configured proxy `http://127.0.0.1:51081` and external CDP; verification returned `login_check_exit=0`, `notebook_list_exit=0`, `notebook_count=22`.
+- Read-only query `ef19cdb84765` reused conversation `a47d3199-c1f9-47f1-927c-ff2c4875b77d` and returned three candidates: Codex high-rate frame replay, Explorer cross-volume partial-failure DTO/refresh, and mobile PWA recovery/keyboard anchoring. No note/source mutation occurred.
+- CodeGraph recheck shows the Codex monotonic guard and replay branches already exist: `TerminalManager.applyDeltaFrame` increments per-pane `deltaFrameId`; worker `handleRequest` rejects invalid/stale `frameId`; `renderWorker.test.ts` covers accepted-then-replayed frames and renderer/kernel non-repaint. NLM's suggestion to add that guard is therefore stale against the current tree; no duplicate rewrite is justified.
+- The remaining implementable gaps are evidence-bound: a recorded Codex/Claude PTY replay trace, physical cross-volume mid-operation ACL injection, and physical mobile PWA background/IME proof. The current iteration adds no speculative production behavior for these external gaps.
 
 ## Sonar final monitor / scan evidence (2026-08-10)
 
 - Local SonarQube `26.7.0.124771` remains `UP`; session-authenticated monitor reports project coverage `56.7%`, line `57.0%`, branch `54.2%`, violations `835`, Quality Gate `ERROR` (`new_coverage=64.9%`, `new_violations=130`). These are server metrics, not local LCOV.
 - Fresh authenticated scanner submission created CE task `5c57440f-6f4b-40a7-8568-dec11c91e6af`, but CE failed while indexing `projectmeasures`: Elasticsearch flood-stage watermark set the index read-only; server logs reported only about `6.8%` free disk. Scanner child processes were explicitly reaped; no token was stored.
 - Serialized local V8 run passed with normalized LCOV: statements `12774/18608 = 68.65%`, branches `7066/11610 = 60.86%`, functions `2492/3536 = 70.48%`, lines `11514/15895 = 72.44%`. The Sonar project `>=80%`/Quality Gate target remains open; local coverage does not substitute for a successful CE analysis.
+- Post-build monitor refresh remains consistent: Sonar `UP`, `coverage=56.7`, `line_coverage=57.0`, `branch_coverage=54.2`, `violations=835`, Quality Gate `ERROR`; the current C: free space is about `63.26 GB`, so no unbounded index/cache deletion was attempted.
 
 ## Final deterministic gates (2026-08-10)
 
