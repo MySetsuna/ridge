@@ -1492,6 +1492,13 @@
 
 - `src/lib/utils/markdown.test.ts` 新增 Windows 链接、URL/代码反斜杠、task-list、Mermaid 占位符、Monaco highlight 成功/失败、Mermaid render 成功/失败及空容器边界；聚焦 `34/34`。
 - 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13072/18608 = 70.24%`、branches `7178/11610 = 61.82%`、functions `2548/3536 = 72.05%`、lines `11792/15895 = 74.18%`，距 statements 80% 尚缺 `1815` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+
+## Wave61 paneTree 分屏状态机与保存回退覆盖
+
+- `src/lib/stores/paneTree.coverage.test.ts` 新增分屏拖拽 `pending -> drag -> idle`、重复 splitter 引用去重、ratio 更新、release 返回值与空闲释放回归；新增 Tauri 不可用、成功及可选 startup/persistence 命令失败回退回归。
+- 聚焦 `paneTree.coverage.test.ts` 为 `13/13`；未改生产语义，未向 Codex 之外 CLI、Agent 或 teammate 发消息。
+- 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13090/18608 = 70.34%`、branches `7192/11610 = 61.94%`、functions `2550/3536 = 72.11%`、lines `11799/15895 = 74.23%`，距 statements 80% 尚缺 `1797` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+- Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
 - Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据、第三方 Runtime/A2A 兼容性及其余 Cloud/Postgres/物理 DPR/跨卷权限/移动端现场证据仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
 
 ## Wave42 Host transport onboarding coverage
