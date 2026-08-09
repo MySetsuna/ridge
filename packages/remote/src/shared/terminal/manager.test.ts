@@ -816,4 +816,54 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(fixture.handle.applyTheme).toHaveBeenCalledWith(theme);
 		expect(other.handle.applyTheme).not.toHaveBeenCalled();
 	});
+
+	it('orders live panes by focus and rotates non-focused work fairly', () => {
+		const { manager, internal } = makeManager();
+		const other = makePane();
+		other.pane.paneId = 'other-pane';
+		const third = makePane();
+		third.pane.paneId = 'third-pane';
+		internal.panes.set(other.pane.paneId, other.pane);
+		internal.panes.set(third.pane.paneId, third.pane);
+
+		const order = () => (manager as any)._renderOrder().map((entry: { paneId: string }) => entry.paneId);
+		expect(order()).toEqual([PANE, 'other-pane', 'third-pane']);
+		manager.setFocused('third-pane', true);
+		expect(order()).toEqual(['third-pane', PANE, 'other-pane']);
+		internal._rafRotationIndex = 1;
+		expect(order()).toEqual(['third-pane', 'other-pane', PANE]);
+
+		manager.park('other-pane', 'coverage');
+		expect(order()).toEqual(['third-pane', PANE]);
+		manager.setFocused('third-pane', false);
+		expect(order()).toEqual(['third-pane', PANE]);
+	});
+
+	it('debounces viewport fitting and skips parked or missing panes', async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, fixture, internal } = makeManager();
+			const fitPane = vi.spyOn(manager as any, 'fitPane').mockResolvedValue(undefined);
+			(manager as any)._recomputeViewport = vi.fn();
+			(manager as any)._invalidateHost = vi.fn();
+			(manager as any)._ensureResizeReleaseListener = vi.fn();
+
+			manager.viewportChanged(PANE);
+			manager.viewportChanged(PANE);
+			expect((manager as any)._recomputeViewport).toHaveBeenCalledTimes(2);
+			expect(fixture.pane.pendingFitTimer).not.toBeNull();
+			await vi.advanceTimersByTimeAsync(500);
+			expect(fitPane).toHaveBeenCalledWith(fixture.pane, false);
+
+			manager.park(PANE, 'coverage');
+			manager.viewportChanged(PANE);
+			manager.viewportChanged('missing');
+			internal.panes.delete(PANE);
+			manager.fitPaneNow(PANE);
+			manager.fitPaneNow('missing');
+			expect(fitPane).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
