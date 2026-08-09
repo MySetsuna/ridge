@@ -225,3 +225,11 @@ Status: host state repaired; accepted coverage gate remains open.
 - Generated Rust build cache was moved to the recoverable D: archive `D:\wind-target-debug-archive-20260810`; Elasticsearch later logged that the high watermark cleared and read-only blocks were released.
 - Follow-up scans were bounded and exact scanner trees were cleaned. The full Rust analyzer still exceeded the host bound after cache relocation; no false green was recorded.
 - Reopen with a warmed Rust build cache or an explicitly bounded Sonar Rust strategy, then obtain a new scanner exit `0`, CE `SUCCESS`, project metrics, and Quality Gate. Current accepted baseline remains `48.5%` coverage and Gate `ERROR`; target `>=80%` is not closed.
+
+## BUG-AGENT-PTY-FALLBACK-CONTRACT-01
+
+Status: local contract branch closed; live Agent delivery evidence remains open.
+
+- NLM's next-batch audit proposed replacing PTY-as-message with Message Hub routing and retaining PTY only as a guarded fallback. CodeGraph found the Hub/Inbox/receipt/adapter path already present in `packages/ridge-mcp`; no speculative architecture rewrite was justified.
+- Added deterministic coverage for `objective` payload alias, `submitRequested=false`, and non-text payload rejection. `cargo test -p ridge-mcp --lib`: `87 passed; 0 failed`.
+- Remaining proof: a live Agent/runtime interruption or recorded old-frame replay showing Message Hub delivery while a target CLI is busy, with PTY fallback only after all five safety predicates pass.
