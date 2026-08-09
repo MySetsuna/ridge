@@ -181,3 +181,10 @@ nlm login --check
 - LAN mobile agent：真实 HTTPS WS、TOTP、workspace/pane、shell picker（9 项）、Git Bash 切换与终端线协议通过；headless host 无 `teammate` 能力时 Team 正确隐藏。自签名证书下 PWA SW 报 `SecurityError`，属可信 HTTPS 外部环境缺口。
 - `runtime.lastError` clean profile：`extensionCount=0`、`runtimeLastErrorCount=0`，结果 `clean-profile-only`、`attributionComplete=false`；无扩展 A/B 与真机证据，业务代码不作遮掩性修改。
 - 现仍未闭环：原生 PowerShell 对照像素矩阵、可信 HTTPS/实体手机 PWA、扩展 A/B、Sonar `>=80%` 与 Quality Gate；当前权威 Sonar 仍为 coverage `48.5%`、Quality Gate `ERROR`。
+
+## NLM frame-replay iteration implementation (2026-08-10)
+
+- Read-only NLM query `43268d567cb5` used the authenticated proxy path; conversation `a47d3199-c1f9-47f1-927c-ff2c4875b77d`, sources `be660734-15ce-4e2e-8843-5430302c3a29` and `15441f90-cb8e-4cbe-b644-80ac68984653`. The selected locally-closable candidate was Codex/ridge-term old-frame resurrection.
+- `TerminalManager.applyDeltaFrame` now increments a per-pane monotonic generation. The worker protocol carries optional `frameId`; the worker rejects non-positive/non-safe integers and ACK-drops frames at or below the last accepted generation before kernel/render calls. Legacy messages without `frameId` remain accepted for compatibility.
+- Coverage for the new branches: manager generation, bridge/host propagation, increasing acceptance, stale replay drop, invalid input rejection, and renderer non-repaint. Final full Vitest: `187` files, `1747` passed, `1` skipped. `svelte-check`: `0` errors, `0` warnings.
+- This closes the deterministic local protocol guard only. Physical ConPTY latency, recorded live replay, and external Agent/network timing remain evidence gaps; no claim is made that those environments are closed.

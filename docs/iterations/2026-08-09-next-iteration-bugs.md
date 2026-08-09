@@ -207,3 +207,12 @@ Status: external-environment gap. LAN mobile protocol and shell flow passed; sel
 ### BUG-MOBILE-RUNTIME-LASTERROR-ATTRIBUTION-01
 
 Status: evidence incomplete. Clean Chromium profile produced zero `runtime.lastError` entries, but no extension A/B or physical mobile run exists. Keep the source attribution open and do not modify listeners merely to suppress the warning.
+
+## BUG-CODEX-FRAME-REPLAY-01
+
+Status: deterministic local guard closed; physical replay evidence remains open.
+
+- NLM query `43268d567cb5` selected the Codex/ridge-term old-frame resurrection candidate. The implementation adds a per-pane monotonic `frameId` from `TerminalManager` through `workerRendererBridge` and `WorkerHostedRenderer` into the render-worker protocol.
+- The worker rejects invalid frame ids and ACK-drops stale/replayed generations before `kernel.applyDeltaFrame` or `renderer.render`; no-frame legacy messages remain compatible.
+- Tests cover increasing, stale, invalid, manager counter, bridge wire propagation, and renderer non-repaint branches. Full Vitest and `svelte-check` are green as recorded above.
+- Remaining proof: recorded PTY/JSONL replay and physical ConPTY/Agent latency trace. These are not inferred from the local unit guard.

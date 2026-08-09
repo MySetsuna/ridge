@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => {
-	const state = { userToken: 'user-token', adapterState: 'connected', authState: 'authorized' };
+	const state: {
+		userToken: string | null;
+		adapterState: string;
+		authState: string;
+	} = { userToken: 'user-token', adapterState: 'connected', authState: 'authorized' };
 	let stateHandler: (() => void) | undefined;
 	let authHandler: (() => void) | undefined;
 	let messageHandler: ((message: unknown) => void) | undefined;
