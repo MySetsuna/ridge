@@ -12,8 +12,9 @@
 //                                              device:'mylaptop', path:'C:\\code\\wind' });
 //   // r.results = 各 offset 的分页结果；r.log = 状态轨迹
 //
-// 前置：dev:cdp 以 RIDGE_CLOUD_BASE_DOMAIN=localhost:5050 启动（apiClient BASE_DOMAIN →
-// 本地，scheme → http/ws）；ridge-cloud 跑在 :5050；DB 里有 premium 用户 + 该 device。
+// 前置：dev:cdp 以 RIDGE_CLOUD_BASE_DOMAIN=localhost:5050 RIDGE_CLOUD_DEV_PLAINTEXT=1
+// 启动（apiClient BASE_DOMAIN →本地，scheme → http/ws）；ridge-cloud 跑在 :5050；DB 里有
+// premium 用户 + 该 device。
 
 import { RidgeCloudHost } from './ridgeCloudProvider';
 import { ControllerCloudProvider } from './controllerCloudProvider';
