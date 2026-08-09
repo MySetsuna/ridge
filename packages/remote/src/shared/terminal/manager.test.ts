@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { SurfaceHostHandle } from '@ridge/term-wasm';
 import { TerminalManager } from './manager';
 
 const PANE = 'manager-test-pane';
@@ -683,5 +684,58 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		fixture.setAltScreen(true);
 		expect(manager.inputAnchorCell(PANE)).toEqual({ row: 5, col: 6 });
 		expect(manager.inputAnchorPixelPosition(PANE)).toMatchObject({ x: 60, y: 100 });
+	});
+
+	it('covers shared host attach idempotence, wallpaper, and initialization failure', async () => {
+		const { manager, fixture, internal } = makeManager();
+		const ctor = SurfaceHostHandle as any;
+		const originalInit = ctor.init;
+		const host = {
+			resize: vi.fn(),
+			invalidate: vi.fn(),
+			setWallpaper: vi.fn(),
+			clearWallpaper: vi.fn(),
+		};
+		ctor.init = vi.fn(async () => host);
+		try {
+			await manager.attachHost(fixture.pane.canvas);
+			await manager.attachHost(fixture.pane.canvas);
+			await manager.attachHost({} as HTMLCanvasElement);
+			expect(ctor.init).toHaveBeenCalledOnce();
+			expect(internal.globalHost.host).toBe(host);
+			manager.applyWallpaperGpu({
+				rgba: new Uint8Array([1, 2, 3, 4]),
+				width: 1,
+				height: 1,
+				opacity: 1,
+			});
+			manager.applyWallpaperGpu(null);
+			expect(host.setWallpaper).toHaveBeenCalledOnce();
+			expect(host.clearWallpaper).toHaveBeenCalledOnce();
+
+			manager.detachHost();
+			ctor.init = vi.fn(async () => { throw new Error('adapter unavailable'); });
+			await manager.attachHost(fixture.pane.canvas);
+			expect(internal.globalHost).toBeNull();
+		} finally {
+			ctor.init = originalInit;
+			manager.detachHost();
+		}
+	});
+
+	it('defers inactive workspace theme work and skips parked panes', async () => {
+		const { manager, fixture, internal } = makeManager();
+		const other = makePane();
+		other.pane.paneId = 'other-pane';
+		other.pane.workspaceId = 'workspace-b';
+		internal.panes.set(other.pane.paneId, other.pane);
+		internal._activeWorkspaceId = 'workspace-b';
+		manager.park(other.pane.paneId, 'component');
+
+		const theme = { background: '#000', foreground: '#fff' };
+		manager.setTheme(theme);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(fixture.handle.applyTheme).toHaveBeenCalledWith(theme);
+		expect(other.handle.applyTheme).not.toHaveBeenCalled();
 	});
 });

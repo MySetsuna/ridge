@@ -1,6 +1,6 @@
 // controllerIdentity 单元测试（契约 §7.4）
 // 依赖 SSR 降级路径（Node 无 IndexedDB），无需 idb stub。
-import { describe, test, expect, beforeEach } from 'vitest';
+import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import {
   getControllerPub,
@@ -14,6 +14,68 @@ import {
 beforeEach(() => {
   _resetCacheForTest();
 });
+
+function fakeIndexedDb() {
+  const values = new Map<string, Uint8Array>();
+  let hasStore = false;
+  const db: any = {
+    objectStoreNames: { contains: () => hasStore },
+    createObjectStore: vi.fn(() => {
+      hasStore = true;
+      return {};
+    }),
+    transaction: vi.fn(() => {
+      const tx: any = {
+        oncomplete: null,
+        onerror: null,
+        error: null,
+      };
+      const complete = () => queueMicrotask(() => tx.oncomplete?.());
+      tx.objectStore = () => ({
+        get: (key: string) => {
+          const request: any = { result: undefined, error: null, onsuccess: null, onerror: null };
+          queueMicrotask(() => {
+            request.result = values.get(key);
+            request.onsuccess?.({ target: request });
+            complete();
+          });
+          return request;
+        },
+        put: (value: Uint8Array, key: string) => {
+          const request: any = { result: undefined, error: null, onsuccess: null, onerror: null };
+          queueMicrotask(() => {
+            values.set(key, value);
+            request.onsuccess?.({ target: request });
+            complete();
+          });
+          return request;
+        },
+        delete: (key: string) => {
+          const request: any = { result: undefined, error: null, onsuccess: null, onerror: null };
+          queueMicrotask(() => {
+            values.delete(key);
+            request.onsuccess?.({ target: request });
+            complete();
+          });
+          return request;
+        },
+      });
+      return tx;
+    }),
+    close: vi.fn(),
+  };
+  const indexedDB = {
+    open: vi.fn(() => {
+      const request: any = { result: db, error: null, onupgradeneeded: null, onsuccess: null, onerror: null };
+      queueMicrotask(() => {
+        if (!hasStore) request.onupgradeneeded?.({ target: request });
+        request.onsuccess?.({ target: request });
+      });
+      return request;
+    }),
+  };
+  return { indexedDB, db, values };
+}
 
 describe('getControllerPub', () => {
   test('返回 32 字节公钥', async () => {
@@ -66,5 +128,34 @@ describe('clearControllerIdentity', () => {
     const pub2 = await getControllerPub();
     // 因为 Node 环境每次都重新随机生成，所以两个公钥不相等
     expect(pub1).not.toEqual(pub2);
+  });
+});
+
+describe('IndexedDB persistence and failure fallback', () => {
+  test('loads, saves, and deletes the durable private key', async () => {
+    const fake = fakeIndexedDb();
+    vi.stubGlobal('indexedDB', fake.indexedDB);
+
+    const first = await getControllerPub();
+    _resetCacheForTest();
+    expect(await getControllerPub()).toEqual(first);
+    await clearControllerIdentity();
+    _resetCacheForTest();
+    expect(await getControllerPub()).not.toEqual(first);
+    expect(fake.db.close).toHaveBeenCalled();
+  });
+
+  test('falls back to memory when IndexedDB open fails', async () => {
+    const open = vi.fn(() => {
+      const request: any = { error: new Error('blocked'), onerror: null };
+      queueMicrotask(() => request.onerror?.());
+      return request;
+    });
+    vi.stubGlobal('indexedDB', { open });
+
+    const pub = await getControllerPub();
+    expect(pub).toHaveLength(32);
+    await clearControllerIdentity();
+    expect(open).toHaveBeenCalledTimes(2);
   });
 });
