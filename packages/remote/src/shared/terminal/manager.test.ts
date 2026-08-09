@@ -392,7 +392,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(manager.lastPreeditCall('missing')).toBeNull();
 	});
 
-	it('covers pointer/link routing, scroll subscriptions, padding, and lifecycle defaults', () => {
+	it('covers pointer/link routing, scroll subscriptions, padding, and lifecycle defaults', async () => {
 		const { manager, fixture } = makeManager();
 		const sent: Uint8Array[] = [];
 		manager.onData(PANE, (bytes) => sent.push(bytes));
@@ -431,7 +431,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		off();
 		manager.setPadding(PANE, 70);
 		expect(fixture.pane.lastAppliedPaddingPx).toBe(64);
-		expect(manager.ready()).resolves.toBeUndefined();
+		await expect(manager.ready()).resolves.toBeUndefined();
 		expect(manager.isParked('missing')).toBe(false);
 		expect(manager.clearPendingFeed('missing')).toBe(0);
 		expect(manager.prependScrollback('missing', 'x')).toBe(false);
@@ -447,5 +447,88 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		const reclaimed = manager.reclaimTerminalMemory({ forceHeapPressure: true });
 		expect(reclaimed).toEqual(expect.objectContaining({ heapPressure: true, parkedPaneIds: [] }));
 		manager.restoreTerminalMemory();
+	});
+
+	it('unparks a retained renderer and rejects invalid lifecycle transitions', async () => {
+		const makeDomElement = () => ({
+			style: {} as Record<string, string>,
+			dataset: {} as Record<string, string>,
+			setAttribute: vi.fn(),
+			appendChild: vi.fn(),
+			remove: vi.fn(),
+			addEventListener: vi.fn(),
+			removeEventListener: vi.fn(),
+			getBoundingClientRect: vi.fn(() => ({ x: 0, y: 0, left: 0, top: 0, right: 800, bottom: 400, width: 800, height: 400 })),
+			contains: vi.fn(() => true),
+			closest: vi.fn(() => null),
+		});
+		vi.stubGlobal('document', {
+			createElement: vi.fn(makeDomElement),
+			documentElement: {},
+			addEventListener: vi.fn(),
+			removeEventListener: vi.fn(),
+		});
+		vi.stubGlobal('ResizeObserver', class {
+			observe = vi.fn();
+			disconnect = vi.fn();
+		});
+		const { manager, fixture } = makeManager();
+		const container = makeDomElement();
+		await expect(manager.unpark('missing', container as unknown as HTMLElement)).rejects.toThrow('not parked');
+		manager.park(PANE);
+		expect(manager.isParked(PANE)).toBe(true);
+		await manager.unpark(PANE, container as unknown as HTMLElement);
+		expect(manager.isParked(PANE)).toBe(false);
+		expect(container.appendChild).toHaveBeenCalledWith(fixture.pane.canvas);
+		expect(fixture.handle.configure).toHaveBeenCalled();
+		await expect(manager.unpark(PANE, container as unknown as HTMLElement)).rejects.toThrow('already attached');
+		manager.detach(PANE);
+	});
+
+	it('preserves inline-TUI feed order, drains replies/events, and flushes deferred bytes', () => {
+		const { manager, fixture } = makeManager();
+		const sent: Uint8Array[] = [];
+		const events: unknown[] = [];
+		manager.onData(PANE, (bytes) => sent.push(bytes));
+		manager.onEvent(PANE, (event) => events.push(event));
+		fixture.kernel.isInlineTuiMode.mockReturnValue(true);
+		fixture.kernel.takePendingResponse.mockReturnValueOnce(new Uint8Array([0x52]));
+		fixture.kernel.takePendingEvents.mockReturnValueOnce([{ type: 'Bell' }]);
+		manager.feed(PANE, '\x1b[A');
+		expect(fixture.kernel.feed).toHaveBeenCalledWith(new TextEncoder().encode('\x1b[A'));
+		expect(sent).toEqual([new Uint8Array([0x52])]);
+		expect(events).toEqual([{ type: 'Bell' }]);
+
+		manager.feed(PANE, '\x1b[B');
+		expect(fixture.pane.feedBuffer).toEqual(new TextEncoder().encode('\x1b[B'));
+		manager.feed(PANE, 'echo');
+		expect(fixture.pane.feedBuffer).toBeNull();
+		expect(fixture.kernel.feed).toHaveBeenLastCalledWith(new TextEncoder().encode('echo'));
+
+		fixture.pane.feedDeferred = new Uint8Array([1, 2]);
+		fixture.pane.feedDeferredBytes = 2;
+		manager.feed(PANE, new Uint8Array([3, 4]));
+		expect(fixture.pane.feedDeferredChunks).toHaveLength(1);
+		manager.flushPaneFeed(PANE, Infinity);
+		expect(fixture.pane.feedDeferredBytes).toBe(0);
+		manager.clearPendingFeed(PANE);
+	});
+
+	it('flushes an inline buffer before a large escape packet and clears all pending bytes', () => {
+		const { manager, fixture } = makeManager();
+		fixture.kernel.isInlineTuiMode.mockReturnValue(true);
+		manager.feed(PANE, '\x1b[1m');
+		const older = new TextEncoder().encode('older');
+		fixture.pane.feedBuffer = older;
+		manager.feed(PANE, new Uint8Array(8192).fill(0x1b));
+		expect(fixture.kernel.feed).toHaveBeenCalledWith(older);
+		expect(fixture.kernel.feed.mock.calls.at(-1)?.[0]).toHaveLength(8192);
+
+		fixture.pane.feedBuffer = new Uint8Array([1, 2]);
+		fixture.pane.feedDeferred = new Uint8Array([3]);
+		fixture.pane.feedDeferredChunks = [new Uint8Array([4, 5])];
+		fixture.pane.feedDeferredBytes = 3;
+		expect(manager.clearPendingFeed(PANE)).toBe(5);
+		expect(manager.feedStats(PANE)).toEqual({ queuedBytes: 0, droppedBytes: 0, dropCount: 0, needsResync: false });
 	});
 });

@@ -3302,7 +3302,7 @@ export class TerminalManager {
 			if (elapsed >= budgetMs) break;
 			const chunk = takeDeferredFeed(entry);
 			if (!chunk) break;
-			this._feedNow(entry, chunk, Math.max(1, budgetMs - elapsed));
+			this._feedNow(entry, chunk, Math.max(1, budgetMs - elapsed), true);
 		}
 		this.wake();
 	}
@@ -3328,11 +3328,12 @@ export class TerminalManager {
 	 *  the next frame (after preserving order with any later arrivals).
 	 *  vte::Parser carries its own state across feed calls so byte-level
 	 *  chunking is safe — even mid-CSI / mid-OSC. */
-	private _feedNow(
-		entry: PaneEntry,
-		bytes: Uint8Array,
-		budgetMs = FEED_PER_CALL_BUDGET_MS,
-	): void {
+		private _feedNow(
+			entry: PaneEntry,
+			bytes: Uint8Array,
+			budgetMs = FEED_PER_CALL_BUDGET_MS,
+			drainingDeferred = false,
+		): void {
 		// §1.24 PTY trace (Phase 1.2): when `localStorage.RIDGE_PTY_TRACE === '1'`,
 		// log every PTY-to-wasm byte chunk with a high-res timestamp so a live
 		// resize-while-claude repro can be replayed in devtools to confirm
@@ -3352,7 +3353,7 @@ export class TerminalManager {
 		// pane, the new arrivals MUST queue behind them — otherwise vte
 		// would see them in shuffled order and emit garbage. Append and
 		// let the next RAF tick drain one bounded chunk at a time.
-		if (hasDeferredFeed(entry)) {
+			if (!drainingDeferred && hasDeferredFeed(entry)) {
 			// Keep arrivals behind every older chunk. The policy owns the byte cap
 			// and records render-only shedding; never block the input/RPC lane.
 			enqueueDeferredFeed(entry, bytes.slice());
