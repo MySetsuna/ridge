@@ -173,7 +173,7 @@ Status: partial. The first authenticated scan succeeded; the scan-time root caus
 
 ## BUG-PTY-OSC2-TITLE-01
 
-Status: open, E2E-confirmed. 本轮新 CDP 实例中，PTY 原始字节与 OSC 7 CWD 均可观测，但 OSC 2 标题事件未回流（`titleOk=false`）。需下一轮沿 shell integration → PTY parser → `pty-meta` 广播链定位；当前不改动无关标题逻辑。
+Status: partial. Root cause fixed locally: the Kernel/rdg metadata path now parses all OSC 0/1/2 candidates by stream position, so a stale OSC 0 cannot mask a later OSC 2. `ridge-core` title tests pass `6/6`; `ridge-cli` metadata tests pass `2/2`. Stable physical/CDP rerun remains required to close the field evidence gap.
 ## BUG-EXPLORER-CROSS-VOLUME-ACL-PARTIAL-01
 
 Status: physical sequence verified; direct `move_path` mid-operation injection remains environment-limited.

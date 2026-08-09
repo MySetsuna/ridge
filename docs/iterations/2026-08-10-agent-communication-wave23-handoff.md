@@ -86,3 +86,9 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - 全量 `pnpm test:coverage:sonar`：`187` 个测试文件，`1756 passed / 1 skipped`；日志：`.iteration/artifacts/vitest-coverage-wave30.log`。
 - 当前覆盖率：statements `11265/18527 = 60.80%`，branches `6255/11534 = 54.23%`，functions `2195/3527 = 62.23%`，lines `10179/15822 = 64.33%`。相较 Wave29：`+0.39 / +0.30 / +0.43 / +0.36` 个百分点；距 80% 仍缺 `7262` 条 statements。
 - `wsRemote.ts` 提升至 statements `78.64%`、branches `63.95%`、functions `77.62%`、lines `85.92%`。覆盖报告仍对部分 `.mjs` 报 `PARSE_ERROR` 并排除；故仅记本地证据，不宣称 Sonar Quality Gate 通过。
+
+## Wave31 PTY 元数据回流修复
+
+- 定位并修复 `packages/ridge-cli/src/kernel_host_impl.rs` 的标题选择缺口：此前按 OSC 0/1/2 类型固定优先，旧 OSC 0 会遮蔽同一缓冲区中较新的 OSC 2；现统一交给 `ridge-core::pty::title::parse_title_from_output`，按字节位置取最后一个完整标题。
+- `packages/ridge-core/src/pty/title.rs` 改为跨 OSC 类型按流位置解析，并保留未闭合序列的容错；新增逆序覆盖测试。
+- 证据：`cargo test -p ridge-core --lib pty::title` 为 `6 passed`；`cargo test -p ridge-cli pty_metadata_frame -- --nocapture` 为 `2 passed`。物理/WebView2 稳定重跑尚未完成，故 BUG-PTY-OSC2-TITLE-01 保持 partial，不宣称现场闭环。

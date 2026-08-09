@@ -1046,10 +1046,7 @@ fn subscription_target(args: &Value, snapshot: &KernelSnapshot) -> Option<(Uuid,
 }
 
 fn pty_metadata_frame(workspace_id: Uuid, pane_id: Uuid, bytes: &[u8]) -> Option<Value> {
-    let title = last_osc_sequence(bytes, &[b'\x1b', b']', b'0', b';'])
-        .or_else(|| last_osc_sequence(bytes, &[b'\x1b', b']', b'1', b';']))
-        .or_else(|| last_osc_sequence(bytes, &[b'\x1b', b']', b'2', b';']))
-        .and_then(ridge_core::pty::title::parse_title_from_output);
+    let title = ridge_core::pty::title::parse_title_from_output(bytes);
     let cwd = last_osc_sequence(bytes, &[b'\x1b', b']', b'7', b';'])
         .and_then(|sequence| {
             ridge_core::pty::cwd::parse_cwd_from_output(&String::from_utf8_lossy(sequence))
@@ -1421,5 +1418,18 @@ mod tests {
         assert_eq!(frame["title"], "title");
         assert_eq!(frame["cwd"], "C:/workspace");
         assert!(pty_metadata_frame(workspace_id, pane_id, b"plain output").is_none());
+    }
+
+    #[test]
+    fn pty_metadata_frame_keeps_latest_osc2_after_osc0() {
+        let workspace_id = Uuid::new_v4();
+        let pane_id = Uuid::new_v4();
+        let frame = pty_metadata_frame(
+            workspace_id,
+            pane_id,
+            b"\x1b]0;prompt\x07\x1b]2;Codex working\x07",
+        )
+        .expect("OSC title should produce a frame");
+        assert_eq!(frame["title"], "Codex working");
     }
 }
