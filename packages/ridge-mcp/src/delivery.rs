@@ -58,6 +58,30 @@ impl HubPtySafety {
     }
 }
 
+/// One host-observed PTY state transition. The five safety fields must be
+/// sampled together by the host; the revision/epoch pair prevents a caller
+/// from reusing a partial or older observation as a fresh capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HubPtyRuntimeSnapshot {
+    pub safety: HubPtySafety,
+    pub state_revision: u64,
+    pub input_epoch: u64,
+}
+
+impl HubPtyRuntimeSnapshot {
+    pub const fn new(safety: HubPtySafety, state_revision: u64, input_epoch: u64) -> Self {
+        Self {
+            safety,
+            state_revision,
+            input_epoch,
+        }
+    }
+
+    pub const fn is_well_formed(self) -> bool {
+        self.state_revision != 0 && self.input_epoch != 0
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeliveryProbe {
     pub runtime_api: bool,
@@ -105,10 +129,10 @@ struct DeliveryRoute {
     sender: SyncSender<Value>,
 }
 
-struct PtySafetyRoute {
+struct PtyRuntimeRoute {
     generation: u64,
     lease: String,
-    safety: HubPtySafety,
+    snapshot: HubPtyRuntimeSnapshot,
     observed_at: Instant,
 }
 
@@ -120,14 +144,14 @@ struct PtySafetyRoute {
 /// match, so reconnects cannot inherit an old subscription.
 pub struct DeliveryRegistry {
     routes: Mutex<HashMap<(HubDeliveryAdapter, String), DeliveryRoute>>,
-    pty_safety: Mutex<HashMap<String, PtySafetyRoute>>,
+    pty_runtime: Mutex<HashMap<String, PtyRuntimeRoute>>,
 }
 
 impl Default for DeliveryRegistry {
     fn default() -> Self {
         Self {
             routes: Mutex::new(HashMap::new()),
-            pty_safety: Mutex::new(HashMap::new()),
+            pty_runtime: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -203,66 +227,72 @@ impl DeliveryRegistry {
         Ok(true)
     }
 
-    /// Publish the complete PTY safety proof for one live Agent generation.
+    /// Publish one complete, atomically sampled PTY runtime snapshot for a
+    /// live Agent generation.
     ///
     /// This is deliberately separate from Runtime API/A2A route registration:
     /// a host may prove that PTY input is safe without exposing an in-process
     /// receiver, and a receiver teardown must never leave an old PTY proof
     /// available for a later generation. Same-generation refresh is
     /// idempotent and replaces the snapshot atomically.
-    pub fn register_pty_safety(
+    pub fn register_pty_runtime_snapshot(
         &self,
         agent_id: impl Into<String>,
         generation: u64,
         lease: impl Into<String>,
-        safety: HubPtySafety,
+        snapshot: HubPtyRuntimeSnapshot,
     ) -> Result<(), String> {
         let agent_id = agent_id.into();
         let lease = lease.into();
         if agent_id.trim().is_empty() || lease.trim().is_empty() || generation == 0 {
-            return Err("PTY safety proof requires agent_id, generation, and lease".into());
+            return Err("PTY runtime snapshot requires agent_id, generation, and lease".into());
+        }
+        if !snapshot.is_well_formed() {
+            return Err(
+                "PTY runtime snapshot requires non-zero state revision and input epoch".into(),
+            );
         }
         let mut proofs = self
-            .pty_safety
+            .pty_runtime
             .lock()
             .map_err(|_| "PTY safety registry lock poisoned".to_string())?;
         if let Some(current) = proofs.get(&agent_id) {
             if current.generation > generation {
-                return Err("stale PTY safety proof rejected".into());
+                return Err("stale PTY runtime snapshot rejected".into());
             }
             if current.generation == generation && current.lease != lease {
-                return Err("PTY safety proof lease mismatch".into());
+                return Err("PTY runtime snapshot lease mismatch".into());
             }
         }
         proofs.insert(
             agent_id,
-            PtySafetyRoute {
+            PtyRuntimeRoute {
                 generation,
                 lease,
-                safety,
+                snapshot,
                 observed_at: Instant::now(),
             },
         );
         Ok(())
     }
 
-    /// Remove a PTY proof only with the current generation/lease. A stale
-    /// teardown must not erase a newer proof.
-    pub fn unregister_pty_safety(
+    /// Remove a PTY runtime snapshot only with the current generation/lease.
+    /// A stale teardown must not erase a newer snapshot.
+    pub fn unregister_pty_runtime_snapshot(
         &self,
         agent_id: &str,
         generation: u64,
         lease: &str,
     ) -> Result<bool, String> {
         let mut proofs = self
-            .pty_safety
+            .pty_runtime
             .lock()
             .map_err(|_| "PTY safety registry lock poisoned".to_string())?;
         let Some(current) = proofs.get(agent_id) else {
             return Ok(false);
         };
         if current.generation != generation || current.lease != lease {
-            return Err("stale PTY safety teardown rejected".into());
+            return Err("stale PTY runtime snapshot teardown rejected".into());
         }
         proofs.remove(agent_id);
         Ok(true)
@@ -281,7 +311,7 @@ impl DeliveryRegistry {
                 .is_some_and(|route| route.generation == generation && route.lease == lease)
         };
         let pty = self
-            .pty_safety
+            .pty_runtime
             .lock()
             .ok()
             .and_then(|proofs| {
@@ -289,7 +319,7 @@ impl DeliveryRegistry {
                     (proof.generation == generation
                         && proof.lease == lease
                         && proof.observed_at.elapsed() <= PTY_SAFETY_MAX_AGE)
-                        .then_some(proof.safety)
+                        .then_some(proof.snapshot.safety)
                 })
             })
             .unwrap_or_default();
@@ -353,6 +383,10 @@ mod tests {
     use std::sync::mpsc::TryRecvError;
 
     use super::*;
+
+    fn snapshot(safety: HubPtySafety) -> HubPtyRuntimeSnapshot {
+        HubPtyRuntimeSnapshot::new(safety, 1, 1)
+    }
 
     #[test]
     fn selection_is_strictly_ordered_and_pty_is_five_condition_gated() {
@@ -497,7 +531,7 @@ mod tests {
         assert_eq!(choose_delivery_adapter(registry.probe(&current)), None);
 
         registry
-            .register_pty_safety("agent-a", 2, "lease-2", safe)
+            .register_pty_runtime_snapshot("agent-a", 2, "lease-2", snapshot(safe))
             .unwrap();
         assert_eq!(registry.probe(&current).pty, safe);
         assert_eq!(
@@ -513,20 +547,20 @@ mod tests {
         assert_eq!(registry.probe(&stale).pty, HubPtySafety::default());
         assert_eq!(choose_delivery_adapter(registry.probe(&stale)), None);
         assert!(registry
-            .register_pty_safety("agent-a", 2, "other-lease", safe)
+            .register_pty_runtime_snapshot("agent-a", 2, "other-lease", snapshot(safe))
             .is_err());
 
         registry
-            .register_pty_safety("agent-a", 3, "lease-3", safe)
+            .register_pty_runtime_snapshot("agent-a", 3, "lease-3", snapshot(safe))
             .unwrap();
         assert!(registry
-            .register_pty_safety("agent-a", 2, "lease-2", safe)
+            .register_pty_runtime_snapshot("agent-a", 2, "lease-2", snapshot(safe))
             .is_err());
         assert!(registry
-            .unregister_pty_safety("agent-a", 2, "lease-2")
+            .unregister_pty_runtime_snapshot("agent-a", 2, "lease-2")
             .is_err());
         assert!(registry
-            .unregister_pty_safety("agent-a", 3, "lease-3")
+            .unregister_pty_runtime_snapshot("agent-a", 3, "lease-3")
             .unwrap());
         assert_eq!(
             registry
@@ -550,24 +584,32 @@ mod tests {
             ..Default::default()
         };
         assert!(registry
-            .register_pty_safety("", 1, "lease-1", safe)
+            .register_pty_runtime_snapshot("", 1, "lease-1", snapshot(safe))
             .is_err());
         assert!(registry
-            .register_pty_safety("agent-a", 0, "lease-1", safe)
+            .register_pty_runtime_snapshot("agent-a", 0, "lease-1", snapshot(safe))
             .is_err());
         assert!(registry
-            .register_pty_safety("agent-a", 1, "", safe)
+            .register_pty_runtime_snapshot("agent-a", 1, "", snapshot(safe))
+            .is_err());
+        assert!(registry
+            .register_pty_runtime_snapshot(
+                "agent-a",
+                1,
+                "lease-1",
+                HubPtyRuntimeSnapshot::new(safe, 0, 1),
+            )
             .is_err());
 
         registry
-            .register_pty_safety("agent-a", 1, "lease-1", safe)
+            .register_pty_runtime_snapshot("agent-a", 1, "lease-1", snapshot(safe))
             .unwrap();
         let unsafe_snapshot = HubPtySafety {
             user_input_competing: true,
             ..safe
         };
         registry
-            .register_pty_safety("agent-a", 1, "lease-1", unsafe_snapshot)
+            .register_pty_runtime_snapshot("agent-a", 1, "lease-1", snapshot(unsafe_snapshot))
             .unwrap();
         assert_eq!(
             registry
@@ -580,11 +622,11 @@ mod tests {
             unsafe_snapshot
         );
         assert_eq!(
-            registry.unregister_pty_safety("agent-a", 1, "lease-1"),
+            registry.unregister_pty_runtime_snapshot("agent-a", 1, "lease-1"),
             Ok(true)
         );
         assert_eq!(
-            registry.unregister_pty_safety("agent-a", 1, "lease-1"),
+            registry.unregister_pty_runtime_snapshot("agent-a", 1, "lease-1"),
             Ok(false)
         );
     }
@@ -592,17 +634,17 @@ mod tests {
     #[test]
     fn expired_pty_safety_proof_falls_back_to_pull() {
         let registry = DeliveryRegistry::default();
-        registry.pty_safety.lock().unwrap().insert(
+        registry.pty_runtime.lock().unwrap().insert(
             "agent-a".into(),
-            PtySafetyRoute {
+            PtyRuntimeRoute {
                 generation: 1,
                 lease: "lease-1".into(),
-                safety: HubPtySafety {
+                snapshot: snapshot(HubPtySafety {
                     agent_idle: true,
                     terminal_mode_agent_prompt: true,
                     foreground_is_target_agent: true,
                     ..Default::default()
-                },
+                }),
                 observed_at: Instant::now() - PTY_SAFETY_MAX_AGE - Duration::from_millis(1),
             },
         );
