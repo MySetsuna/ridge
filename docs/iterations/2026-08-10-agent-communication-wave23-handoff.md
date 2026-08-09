@@ -92,3 +92,10 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - 定位并修复 `packages/ridge-cli/src/kernel_host_impl.rs` 的标题选择缺口：此前按 OSC 0/1/2 类型固定优先，旧 OSC 0 会遮蔽同一缓冲区中较新的 OSC 2；现统一交给 `ridge-core::pty::title::parse_title_from_output`，按字节位置取最后一个完整标题。
 - `packages/ridge-core/src/pty/title.rs` 改为跨 OSC 类型按流位置解析，并保留未闭合序列的容错；新增逆序覆盖测试。
 - 证据：`cargo test -p ridge-core --lib pty::title` 为 `6 passed`；`cargo test -p ridge-cli pty_metadata_frame -- --nocapture` 为 `2 passed`。物理/WebView2 稳定重跑尚未完成，故 BUG-PTY-OSC2-TITLE-01 保持 partial，不宣称现场闭环。
+
+## Wave32 DPR 冷启动判定护栏
+
+- `src/routes/+page.svelte` 在既有 `ridge:app-ready` 边界写入持久 `window.__ridgeAppReady` 标记；保留原事件语义，供晚到的 CDP 探针读取。
+- `scripts/cdp-dpr-e2e.mjs` 拆分 app-ready 与 renderer 两段有界等待，分别记录 readiness timeout 与 backing-canvas timeout；默认各 `60s`，可由 `RIDGE_DPR_APP_READY_TIMEOUT_MS`、`RIDGE_DPR_RENDERER_TIMEOUT_MS` 调整。
+- 本波只改变失败分类与探针观测，不把无 canvas 判为通过；真实 WebView2 `dpr=2` 冷启动复跑仍未执行，BUG-E2E-DPR-STARTUP-RACE-02 保持 partial。
+- 受控复跑：读取现存 CDP 端口 `2393` 后，`/json/list` 无 Ridge page，探针在找页阶段 exit `1`（日志：`.iteration/artifacts/cdp-dpr-wave32.log`），未生成截图；这是 stale/no-page 运行态阻塞，不作为 DPR 通过或产品失败证据。

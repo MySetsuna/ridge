@@ -9,6 +9,8 @@ import { resolveCdpPort } from './cdp-port.mjs';
 
 const port = resolveCdpPort();
 const artifact = process.env.RIDGE_DPR_ARTIFACT || '.iteration/artifacts/dpr/desktop-shot.png';
+const appReadyTimeoutMs = Number.parseInt(process.env.RIDGE_DPR_APP_READY_TIMEOUT_MS || '60000', 10);
+const rendererTimeoutMs = Number.parseInt(process.env.RIDGE_DPR_RENDERER_TIMEOUT_MS || '60000', 10);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function listTargets() {
@@ -82,10 +84,34 @@ class Cdp {
 }
 
 async function waitForRenderer(cdp) {
-  const deadline = Date.now() + 120_000;
+  const appReadyDeadline = Date.now() + appReadyTimeoutMs;
   let last = null;
-  while (Date.now() < deadline) {
+  while (Date.now() < appReadyDeadline) {
     last = await cdp.evaluate(`({
+      appReady: Boolean(window.__ridgeAppReady),
+      readyState: document.readyState,
+      dpr: window.devicePixelRatio,
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      canvases: [...document.querySelectorAll('canvas')].map((canvas) => ({
+        cssWidth: canvas.getBoundingClientRect().width,
+        cssHeight: canvas.getBoundingClientRect().height,
+        width: canvas.width,
+        height: canvas.height,
+      })),
+    })`);
+    if (last?.appReady) break;
+    await sleep(250);
+  }
+  if (!last?.appReady) {
+    throw new Error(`app did not signal ridge:app-ready within ${appReadyTimeoutMs}ms: ${JSON.stringify(last)}`);
+  }
+
+  const rendererDeadline = Date.now() + rendererTimeoutMs;
+  while (Date.now() < rendererDeadline) {
+    last = await cdp.evaluate(`({
+      appReady: Boolean(window.__ridgeAppReady),
+      readyState: document.readyState,
       dpr: window.devicePixelRatio,
       innerWidth: window.innerWidth,
       innerHeight: window.innerHeight,
@@ -100,7 +126,7 @@ async function waitForRenderer(cdp) {
     if (last?.canvases?.length > 0 && backing > 0) return last;
     await sleep(250);
   }
-  throw new Error(`renderer did not mount a backing canvas within 120s: ${JSON.stringify(last)}`);
+  throw new Error(`renderer did not mount a backing canvas within ${rendererTimeoutMs}ms after app-ready: ${JSON.stringify(last)}`);
 }
 
 const target = await findTarget();

@@ -1316,6 +1316,10 @@ function expandSidebar(minWidth = 0) {
     const signalAppReady = () => {
       if (appReadySignaled) return;
       appReadySignaled = true;
+      // Keep readiness observable for bounded CDP acceptance probes. The
+      // event is edge-triggered; this marker makes late probes distinguish a
+      // slow renderer from an app that never reached its workspace boundary.
+      (window as Window & { __ridgeAppReady?: boolean }).__ridgeAppReady = true;
       window.dispatchEvent(new CustomEvent('ridge:app-ready'));
     };
     // Register before workspace restore IPC; otherwise the one-shot pane
