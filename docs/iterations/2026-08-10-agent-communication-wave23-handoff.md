@@ -172,3 +172,9 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - `pnpm check` `0 errors / 0 warnings`。Sonar monitor 仍为 coverage `56.7%`、Quality Gate `ERROR`；本波无新 scanner/CE 成功证据，`REQ-SONAR-COVERAGE-80-01` 继续 ACTIVE。
 - 通信底座回归：`ridge-mcp` `93 passed / 0 failed`，`ridge-kernel` `49 passed / 0 failed`；`cargo fmt --all -- --check` 通过。PowerShell 对 Rust 编译 stderr 的异常标记不改变测试汇总。
 - 未闭环：PTY 五条件原子运行时快照、第三方 Runtime/A2A 真实兼容性、Sonar `>=80%`/Gate；coverage 与 `.iteration` 运行态产物不纳入提交。未向 Codex 外 CLI/agent 派发消息，未 push/tag/release。
+
+## Wave42 Host transport onboarding coverage
+
+- 新增 `src/lib/stores/hosts.connect.test.ts`：隔离 fake transport 覆盖 LAN 成功接入、LAN 错误进度、Cloud E2EE 接入、统一 topology 投影；聚焦 `3/3` 通过。
+- `pnpm check` `0 errors / 0 warnings`；全量 coverage exit `0`，V8/LCOV statements `12337/18538 = 66.54%`、branches `6790/11546 = 58.80%`、functions `2402/3527 = 68.10%`、lines `11147/15832 = 70.40%`；距本地 statements 80% 尚缺 `2494` 条。
+- `.mjs` remap 解析告警、Sonar project `>=80%`/Quality Gate、PTY 五条件原子运行时快照仍未闭环；不改变 coverage include/exclude，不作达标宣称。

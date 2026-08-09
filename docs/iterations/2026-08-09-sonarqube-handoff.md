@@ -134,6 +134,12 @@ Invoke-RestMethod `
 - This is local evidence only. Sonar project remains `56.7%` coverage with Quality Gate `ERROR`; no new scanner/CE success was observed. Existing `.mjs` remap parse warnings remain open.
 - Final non-coverage regression passed: `pnpm test` reported `195` files, `1810 passed / 1 skipped`; `node --check scripts/*.mjs` passed for every script.
 
+## Host onboarding coverage wave (2026-08-10)
+
+- Added deterministic LAN/Cloud host connection coverage; focused `hosts.connect.test.ts` passed `3/3`, including success, transport error, progress, and topology projection paths.
+- Latest local V8: statements `66.54%` (`12337/18538`), branches `58.80%` (`6790/11546`), functions `68.10%` (`2402/3527`), lines `70.40%` (`11147/15832`). Local statements remain `2494` short of `80%`.
+- Sonar project status remains unchanged; no new scanner/CE success or Quality Gate pass is claimed.
+
 ## Latest authenticated scan (2026-08-09)
 
 - Scanner exit `0`；CE task `5418a229-2bc5-4b7f-941e-b6f9bbf59672` 最终 `SUCCESS`，analysis `3ee09772-8826-4b77-8a44-a1f53227a2ad`。
