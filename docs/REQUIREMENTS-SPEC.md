@@ -1439,6 +1439,13 @@
 - `pnpm check` 复核为 `0 errors / 0 warnings`；本波仅增确定性测试，不改生产运行语义。
 - `.mjs` coverage 仍报 `PARSE_ERROR/Expected ident`；Sonar project/Quality Gate 未以本地 LCOV 冒充闭环，`REQ-SONAR-COVERAGE-80-01` 与 PTY/第三方 Runtime-A2A 现场证据继续 `ACTIVE`。
 
+## Wave52 Hosts 快照与跨账号共享聚合边界
+
+- 新增 `src/lib/stores/hosts.refresh.test.ts`，覆盖 native 枚举失败仍保留远端快照、跨账号 incoming share 聚合、active/pending 状态投影、outgoing share 过滤及 refresh generation 围栏。
+- 修复 `src/lib/stores/hosts.ts`：同一设备聚合内只要存在 active share，host 状态即升级为 `connected`，避免首条 pending share 错误遮蔽可用连接。
+- 聚焦 hosts 回归 `15/15`；全量 `pnpm test:coverage:sonar` exit `0`，本地 V8/LCOV statements `12773/18608 = 68.64%`、branches `7064/11610 = 60.84%`、functions `2492/3536 = 70.47%`、lines `11514/15895 = 72.43%`，距 statements 80% 尚缺 `2114` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+- Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据及第三方 Runtime/A2A 兼容性仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。

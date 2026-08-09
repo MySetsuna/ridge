@@ -633,6 +633,7 @@ export async function refreshHosts(): Promise<void> {
           };
           grouped.set(key, host);
         }
+        if (share.status === 'active') host.status = 'connected';
         const baseSession = {
           socket: key,
           workspaceId: share.workspaceId,
