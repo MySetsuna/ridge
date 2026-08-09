@@ -67,6 +67,8 @@ const {
   pruneStaleExpandedPaths,
 } = await import('./fileExplorer');
 
+const coreIsTauri = vi.mocked((await import('@tauri-apps/api/core')).isTauri);
+
 describe('first-open freshness', () => {
   it('derives POSIX and Windows parent directories', () => {
     expect(parentDirectory('/repo/src/a.ts')).toBe('/repo/src');
@@ -388,6 +390,83 @@ describe('fileExplorerStore.loadTree — ghost-path filter', () => {
 		);
 		warn.mockRestore();
 	});
+});
+
+describe('fileExplorerStore pagination and stale-path boundaries', () => {
+  beforeEach(() => {
+    fileExplorerStore.reset();
+    mockInvoke.mockReset();
+    coreIsTauri.mockReturnValue(true);
+  });
+
+  it('uses browser fixtures, optional limits, paginated loading, and fail-safe errors', async () => {
+    fileExplorerStore.syncWithPaneCwds('ws', { p1: '/r' });
+    coreIsTauri.mockReturnValue(false);
+    await fileExplorerStore.loadTree('ws:/r');
+    expect(get(fileExplorerStore).columns[0].tree?.children).toHaveLength(3);
+    await expect(fileExplorerStore.loadChildrenPage('ws:/r', '/r', 0)).resolves.toMatchObject({
+      entries: expect.arrayContaining([expect.objectContaining({ name: 'file1.ts' })]),
+      has_more: false,
+    });
+    await expect(fileExplorerStore.loadChildrenPage('ws:/r', '/r', 1)).resolves.toMatchObject({
+      entries: [], offset: 1,
+    });
+
+    coreIsTauri.mockReturnValue(true);
+    mockInvoke.mockResolvedValueOnce({
+      entries: [{ name: 'a.ts', path: '/r/a.ts', is_dir: false }],
+      total: 1, offset: 0, has_more: false,
+    });
+    await expect(fileExplorerStore.loadChildrenPage('ws:/r', '/r', 0, 10)).resolves.toMatchObject({
+      total: 1,
+    });
+    expect(mockInvoke).toHaveBeenCalledWith('get_directory_children', {
+      path: '/r', offset: 0, limit: 10,
+    });
+
+    mockInvoke.mockRejectedValueOnce(new Error('directory unavailable'));
+    await expect(fileExplorerStore.loadChildrenPage('ws:/r', '/r')).resolves.toEqual({
+      entries: [], total: 0, offset: 0, has_more: false,
+    });
+
+    let page = 0;
+    mockInvoke.mockImplementation(async (command: string) => {
+      expect(command).toBe('get_directory_children');
+      page += 1;
+      return page === 1
+        ? { entries: [{ name: 'a', path: '/r/a', is_dir: false }], total: 2, offset: 0, has_more: true }
+        : { entries: [{ name: 'b', path: '/r/b', is_dir: false }], total: 2, offset: 1, has_more: false };
+    });
+    await expect(fileExplorerStore.loadChildren('ws:/r', '/r')).resolves.toHaveLength(2);
+  });
+
+  it('prunes missing deep paths and projects workspace/column collapse state', async () => {
+    fileExplorerStore.syncWithPaneCwds('ws', { p1: '/r' });
+    fileExplorerStore.expandMany('ws:/r', ['/r/keep/deep', '/r/gone/deep', '/r/direct']);
+    mockInvoke.mockImplementation(async (command: string, args: { path: string }) => {
+      if (command !== 'path_exists') throw new Error(`unexpected ${command}`);
+      if (args.path === '/r/gone/deep') return false;
+      if (args.path === '/r/keep/deep') return true;
+      throw new Error('probe unavailable');
+    });
+    await pruneStaleExpandedPaths();
+    expect(get(fileExplorerStore).columns[0].expandedPaths).toEqual(
+      new Set(['/r/keep/deep', '/r/direct']),
+    );
+
+    updateWorkspaceNames([
+      { id: 'ws', name: '', index: 0, displaySeq: 3 },
+      { id: 'other', name: 'Other', index: 1, displaySeq: 4 },
+    ]);
+    expect(get(explorerWorkspaceGroups).find((group) => group.workspaceId === 'ws')?.workspaceName)
+      .toBe('工作区 3');
+    toggleWorkspaceCollapsed('ws');
+    toggleWorkspaceCollapsed('ws');
+    toggleColumnCollapsed('ws:/r');
+    expect(get(collapsedColumns).has('ws:/r')).toBe(true);
+    toggleColumnCollapsed('ws:/r');
+    expect(get(collapsedColumns).has('ws:/r')).toBe(false);
+  });
 });
 
 describe('refreshColumnsCovering', () => {
