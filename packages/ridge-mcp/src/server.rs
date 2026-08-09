@@ -2619,6 +2619,16 @@ mod tests {
 
     struct AdapterHost {
         adapter: HubDeliveryAdapter,
+        sent: std::sync::Arc<std::sync::Mutex<Vec<(String, bool, bool)>>>,
+    }
+
+    impl AdapterHost {
+        fn new(adapter: HubDeliveryAdapter) -> Self {
+            Self {
+                adapter,
+                sent: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
     }
 
     impl McpHost for AdapterHost {
@@ -2633,6 +2643,10 @@ mod tests {
             _submit: bool,
             _busy: bool,
         ) -> HostResult<InputDispatch> {
+            self.sent
+                .lock()
+                .unwrap()
+                .push((_text.to_string(), _submit, _busy));
             Ok(InputDispatch {
                 terminal_accepted: true,
             })
@@ -3457,7 +3471,7 @@ mod tests {
         ] {
             let state = McpSessionState::default();
             let entry = enqueue_hub_entry(
-                &AdapterHost { adapter },
+                &AdapterHost::new(adapter),
                 &state,
                 &adapter_test_target(),
                 "sender",
@@ -3473,6 +3487,32 @@ mod tests {
             assert_eq!(entry["deliveryAttempts"], 1);
             assert!(entry["deliveryLastAttemptAtUnixMs"].as_i64().is_some());
         }
+    }
+
+    #[test]
+    fn pty_fallback_accepts_objective_without_submit_and_rejects_non_text_payload() {
+        let host = AdapterHost::new(HubDeliveryAdapter::PtyFallback);
+        let target = json!({ "paneId": "adapter-pane" });
+        let outcome = host
+            .deliver_pty_fallback(
+                &target,
+                &json!({
+                    "payload": { "objective": "inspect", "submitRequested": false }
+                }),
+            )
+            .expect("objective should use the guarded PTY fallback");
+
+        assert_eq!(outcome.adapter, HubDeliveryAdapter::PtyFallback);
+        assert!(outcome.accepted);
+        assert_eq!(
+            host.sent.lock().unwrap().as_slice(),
+            [("inspect".to_string(), false, true)]
+        );
+
+        let error = host
+            .deliver_pty_fallback(&target, &json!({ "payload": { "text": 42 } }))
+            .expect_err("non-text PTY payload must fail closed");
+        assert!(error.message().contains("payload must be text"));
     }
 
     #[test]
@@ -3706,9 +3746,7 @@ mod tests {
         let third = {
             let state = McpSessionState::with_sqlite(&path).expect("reopen sequenced Hub");
             enqueue_hub_entry(
-                &AdapterHost {
-                    adapter: HubDeliveryAdapter::McpPull,
-                },
+                &AdapterHost::new(HubDeliveryAdapter::McpPull),
                 &state,
                 &target,
                 "sender-2",
@@ -3817,9 +3855,7 @@ mod tests {
         let state = McpSessionState::default();
         let target = adapter_test_target();
         let entry = enqueue_hub_entry(
-            &AdapterHost {
-                adapter: HubDeliveryAdapter::RuntimeApi,
-            },
+            &AdapterHost::new(HubDeliveryAdapter::RuntimeApi),
             &state,
             &target,
             "sender",
