@@ -167,4 +167,18 @@ describe('cloud auth state predicates and persistence', () => {
       user: { username: 'bound-user' },
     });
   });
+
+  it('fails device activation on an expired code or an already-aborted signal', async () => {
+    auth.cloudAuth.set({ userToken: 'u', user, deviceToken: null, deviceName: null });
+    storage['ridge.cloud.userToken'] = 'u';
+    mockApi.deviceCode.mockResolvedValue({ pairing_code: 'PAIR', poll_token: 'POLL', expires_in: 60 });
+    mockApi.deviceActivate.mockResolvedValue(undefined);
+    mockApi.devicePoll.mockResolvedValue({ status: 'expired' });
+    await expect(auth.activateThisDevice('laptop')).rejects.toMatchObject({ code: 'PAIRING_EXPIRED' });
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(auth.activateThisDevice('laptop', undefined, controller.signal))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
 });
