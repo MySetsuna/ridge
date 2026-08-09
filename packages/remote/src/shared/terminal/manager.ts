@@ -3388,11 +3388,23 @@ export class TerminalManager {
 			// eslint-disable-next-line no-console
 			console.debug(`[cursor-trace][${ts}ms] feed paneId=${entry.paneId.slice(0,8)} bytes=${bytes.length} consumed=${offset} cursor ${pre}→(${k.cursorRow()},${k.cursorCol()})`);
 		}
-		if (offset < bytes.length) {
-			// Copy via `slice` so a deferred chunk never pins the source
-			// ArrayBuffer. Admission is bounded by the feed policy.
-			enqueueDeferredFeed(entry, bytes.slice(offset));
-		}
+			if (offset < bytes.length) {
+				// Copy via `slice` so a deferred chunk never pins the source
+				// ArrayBuffer. Admission is bounded by the feed policy.
+				const remainder = bytes.slice(offset);
+				if (drainingDeferred) {
+					// The remainder belongs before every chunk that arrived later.
+					// Keep it at the deferred head instead of appending it behind
+					// newer PTY bytes when a bounded flush yields mid-chunk.
+					if (entry.feedDeferred !== null) {
+						entry.feedDeferredChunks.unshift(entry.feedDeferred);
+					}
+					entry.feedDeferred = remainder;
+					entry.feedDeferredBytes += remainder.byteLength;
+				} else {
+					enqueueDeferredFeed(entry, remainder);
+				}
+			}
 
 		// 屏幕内容变化 → 链接索引失效，下次 ctrl+hover/click 时再 lazy 重建。
 		entry.linkSpans.markDirty();
