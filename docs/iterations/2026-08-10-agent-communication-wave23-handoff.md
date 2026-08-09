@@ -7,7 +7,7 @@
 - 主笔记：`Ridge 项目现状、愿景与规划基线（2026-07-21）`。
 - 深化来源：Notebook `66919cb9-1329-4ddf-955c-f426d15a9fe6` 的 `Agent 通信架构重构`（source `9516749e-c317-4f13-9cda-b64b00cec465`）。
 - 临时对话来源：Notebook `f6ffd900-708d-44ee-9818-1a3269c533fc` / source `df4d5dcc-9813-4c61-ae9f-1e9199cb7555`，已纳入约束审计；未向 Codex 之外 CLI 派发消息。
-- 需求清单已获用户批准；`requirements_gate.py assert-task-executable` 最近一次结果为 `executable=true`、`pending=0`。
+- 需求清单已获用户批准；历史 Wave20 gate 记录为 `executable=true`、`pending=0`。本次复核发现现有 intake 的 `requirements_sha256` 与 `docs/REQUIREMENTS-SPEC.md` 不一致，当前 gate 返回 `executable=false`（`requirements_sha256_mismatch`）；未擅自改写审批链。
 
 ## 本波落地
 
