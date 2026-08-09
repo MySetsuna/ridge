@@ -1446,6 +1446,12 @@
 - 聚焦 hosts 回归 `15/15`；全量 `pnpm test:coverage:sonar` exit `0`，本地 V8/LCOV statements `12773/18608 = 68.64%`、branches `7064/11610 = 60.84%`、functions `2492/3536 = 70.47%`、lines `11514/15895 = 72.43%`，距 statements 80% 尚缺 `2114` 条；`pnpm check` 为 `0 errors / 0 warnings`。
 - Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据及第三方 Runtime/A2A 兼容性仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
 
+## Wave53 Host 权威布局同步与 CWD 围栏覆盖
+
+- `src/lib/stores/paneTree.coverage.test.ts` 新增 Host 权威 workspace id、active pane 重选、stale CWD prune、new pane CWD seed、跨 workspace 保留及 Host id 查询失败回退回归；聚焦 `11/11`。
+- 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `12774/18608 = 68.64%`、branches `7066/11610 = 60.86%`、functions `2492/3536 = 70.47%`、lines `11514/15895 = 72.43%`，距 statements 80% 尚缺 `2113` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+- Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据及第三方 Runtime/A2A 兼容性仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
