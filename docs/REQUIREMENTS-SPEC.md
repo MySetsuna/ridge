@@ -1247,6 +1247,14 @@
 - 全量 `pnpm test:coverage:sonar` 通过；最新本地 V8/LCOV statements `11603/18537 = 62.59%`、branches `6453/11542 = 55.91%`、functions `2247/3527 = 63.71%`、lines `10471/15831 = 66.14%`；相较 Wave36 新增 `4` 个测试，距 80% 尚缺 `3227` 条 covered statements。
 - `.mjs` `PARSE_ERROR`、本机缺 `SONAR_TOKEN`/`SONAR_HOST_URL` 与真实 Sonar CE/Gate 仍未闭合，故 `REQ-SONAR-COVERAGE-80-01` 继续 ACTIVE，不宣称达标。PTY 五条件保持 fail-closed，宿主完整运行时快照仍待补齐。
 
+## 本轮架构证据补充（2026-08-10 Wave38）
+
+- `packages/ridge-mcp/src/delivery.rs` 新增 host-owned PTY safety proof 注册表：proof 同时绑定 `agent_id/generation/lease`，同代换 lease、旧代注册、旧代注销均拒绝；同代刷新原子替换安全快照。
+- proof 设有 `PTY_SAFETY_MAX_AGE=3s` 新鲜度闸；过期或 identity 不匹配即恢复默认空 probe，不能选择 PTY，MCP pull 仍为可恢复路径。
+- `McpSessionState` 暴露注册/注销入口；Kernel `remove_agent_identity_for_pty` 在 PTY destroy 成功后同时撤销 Runtime API、A2A 与 PTY proof，避免旧代安全证明残留。
+- 确定性证据：`ridge-mcp` `92/92`；`ridge-kernel` `49/49`；`cargo fmt --all -- --check` 通过。该波仅补齐“证明存储、刷新与销毁 fencing”基础设施，未伪造宿主五条件的原子运行时快照，PTY 生产放行仍保持 fail-closed。
+- Sonar 80% 与 Quality Gate 仍未闭合：本机缺 scanner/token/host，且当前本地 coverage 仅 `62.59%`；不得以本地 LCOV 代替 Sonar project metric。
+
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
