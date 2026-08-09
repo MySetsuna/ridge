@@ -173,7 +173,18 @@ function spawnTauriBuild(configPath, extraArgs) {
   });
 }
 
-async function main() {
+export {
+  parseCliArgs,
+  resolveVersion,
+  versionSlug,
+  deterministicGuid,
+  rewriteCargoTomlVersion,
+  rewriteWxs,
+  buildTauriConfigOverride,
+  spawnTauriBuild,
+};
+
+export async function main() {
   const { release, extraTauriArgs } = parseCliArgs();
   const version = resolveVersion(release);
   const slug = versionSlug(version);
@@ -230,7 +241,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('[build-ridge] FAILED:', err.message);
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('[build-ridge] FAILED:', err.message);
+    process.exit(1);
+  });
+}
