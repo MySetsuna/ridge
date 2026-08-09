@@ -168,6 +168,7 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - `manager.attach.test.ts` 新增开发诊断面真实调用，覆盖 PTY feed/write、可见网格、主题/光标探针、selection/delta、PTY write spy、worker 状态与 detach；聚焦 `3/3` 通过。
 - 新增 `wsRemote.behavior.test.ts`，覆盖 LAN 消息/二进制 PTY 路由、capability/theme/meta/resize、Agent typed envelope、HITL、history/resume、workspace/shell、saved workspace 与断开取消；与既有 scheduler/attach 回归合计 `27/27` 通过。
 - 全量 `pnpm test:coverage:sonar` exit `0`；本地 V8/LCOV statements `12307/18538 = 66.38%`、branches `6772/11546 = 58.65%`、functions `2399/3527 = 68.01%`、lines `11118/15832 = 70.22%`。statements 目标 `14831`，尚缺 `2524` 条；既有 `.mjs` `PARSE_ERROR/Expected ident` 仍有记录。
+- 最终非 coverage 回归：`pnpm test` `195` files，`1810 passed / 1 skipped`；`node --check scripts/*.mjs` 全部通过。
 - `pnpm check` `0 errors / 0 warnings`。Sonar monitor 仍为 coverage `56.7%`、Quality Gate `ERROR`；本波无新 scanner/CE 成功证据，`REQ-SONAR-COVERAGE-80-01` 继续 ACTIVE。
 - 通信底座回归：`ridge-mcp` `93 passed / 0 failed`，`ridge-kernel` `49 passed / 0 failed`；`cargo fmt --all -- --check` 通过。PowerShell 对 Rust 编译 stderr 的异常标记不改变测试汇总。
 - 未闭环：PTY 五条件原子运行时快照、第三方 Runtime/A2A 真实兼容性、Sonar `>=80%`/Gate；coverage 与 `.iteration` 运行态产物不纳入提交。未向 Codex 外 CLI/agent 派发消息，未 push/tag/release。
