@@ -23,6 +23,8 @@ pub struct KernelPtyInfo {
     pub pty_id: uuid::Uuid,
     pub workspace_id: Option<uuid::Uuid>,
     pub role: String,
+    #[serde(default)]
+    pub program: Option<String>,
     pub launch_profile: Option<String>,
     pub cwd: Option<String>,
     pub status: String,
@@ -56,6 +58,9 @@ pub enum KernelPtyOutput {
 
 pub const KERNEL_HOST_ARG: &str = "--ridge-kernel-host";
 pub const KERNEL_PROTOCOL_VERSION: u64 = 1;
+/// Bound request handlers that may spawn or configure a PTY without turning
+/// a stalled kernel into an unbounded caller wait.
+pub const KERNEL_REQUEST_TIMEOUT_MS: u64 = 5_000;
 
 /// Read-only domain projections shared by desktop and headless shells.
 ///
@@ -76,6 +81,8 @@ pub struct KernelAgentRosterSnapshot {
     pub leader_id: Option<String>,
     #[serde(default)]
     pub roster: Vec<ridge_core::teammate::model::Teammate>,
+    #[serde(default)]
+    pub agent_identities: Vec<ridge_core::teammate::communication::AgentIdentity>,
 }
 
 /// Kernel-owned registered remote-host topology. Credentials and live
@@ -393,12 +400,47 @@ pub fn read_domain_workspaces(
     decode_domain_snapshot(value)
 }
 
+/// Replace one kernel workspace's pane topology with the desktop's stable
+/// pane tree. The shell owns PTY handles; the kernel owns the detached Remote
+/// projection, so this bridge keeps both views aligned without regenerating
+/// pane UUIDs.
+pub fn sync_domain_workspace_topology(
+    endpoint: &KernelEndpoint,
+    workspace_id: uuid::Uuid,
+    pane_tree: &ridge_core::workspace::pane_tree::PaneTree,
+) -> Result<(), String> {
+    let body = serde_json::json!({ "pane_tree": pane_tree });
+    let value = request_json(
+        endpoint,
+        "PUT",
+        &format!("/v1/domain/workspaces/{workspace_id}/topology"),
+        Some(&body),
+    )?;
+    require_ok(value).map(|_| ())
+}
+
 /// Read the kernel-owned Agent roster projection.
 pub fn read_domain_agent_roster(
     endpoint: &KernelEndpoint,
 ) -> Result<KernelAgentRosterSnapshot, String> {
     let value = request_json(endpoint, "GET", "/v1/domain/agents/roster", None)?;
     decode_domain_snapshot(value)
+}
+
+/// Commit a fenced Agent identity through the kernel-owned topology seam.
+/// PTY-backed shells call this only after spawn/attach succeeds.
+pub fn commit_domain_agent_identity(
+    endpoint: &KernelEndpoint,
+    identity: &ridge_core::teammate::communication::AgentIdentity,
+) -> Result<(), String> {
+    let body = serde_json::to_value(identity).map_err(|error| error.to_string())?;
+    let value = request_json(
+        endpoint,
+        "POST",
+        "/v1/domain/agents/identities/commit",
+        Some(&body),
+    )?;
+    require_ok(value).map(|_| ())
 }
 
 /// Read the kernel-owned registered remote-host topology through the same
@@ -436,12 +478,7 @@ fn read_domain_git_status_mode(
     path: &str,
     fast: bool,
 ) -> Result<Option<ScmRepoStatus>, String> {
-    let value = request_json(
-        endpoint,
-        "GET",
-        &git_status_path(path, fast),
-        None,
-    )?;
+    let value = request_json(endpoint, "GET", &git_status_path(path, fast), None)?;
     decode_domain_git_status(value)
 }
 
@@ -505,12 +542,7 @@ pub fn read_domain_git_diff_summary(
 /// operation is encoded in the typed request body; this helper never accepts
 /// arbitrary argv and never retries a write.
 pub fn mutate_domain_git(endpoint: &KernelEndpoint, request: &Value) -> Result<Value, String> {
-    let value = request_json(
-        endpoint,
-        "POST",
-        "/v1/domain/git/mutate",
-        Some(request),
-    )?;
+    let value = request_json(endpoint, "POST", "/v1/domain/git/mutate", Some(request))?;
     decode_domain_git_mutation(value)
 }
 
@@ -521,12 +553,7 @@ pub fn read_domain_git<T: DeserializeOwned>(
     endpoint: &KernelEndpoint,
     request: &Value,
 ) -> Result<Option<T>, String> {
-    let value = request_json(
-        endpoint,
-        "POST",
-        "/v1/domain/git/read",
-        Some(request),
-    )?;
+    let value = request_json(endpoint, "POST", "/v1/domain/git/read", Some(request))?;
     decode_domain_git_read(value)
 }
 
@@ -534,10 +561,13 @@ pub fn read_domain_git_info(
     endpoint: &KernelEndpoint,
     path: &str,
 ) -> Result<Option<GitRepoInfo>, String> {
-    read_domain_git(endpoint, &serde_json::json!({
-        "operation": "info",
-        "repo_root": path,
-    }))
+    read_domain_git(
+        endpoint,
+        &serde_json::json!({
+            "operation": "info",
+            "repo_root": path,
+        }),
+    )
 }
 
 pub fn read_domain_git_commits(
@@ -546,12 +576,15 @@ pub fn read_domain_git_commits(
     offset: u32,
     limit: u32,
 ) -> Result<Option<Vec<CommitNode>>, String> {
-    read_domain_git(endpoint, &serde_json::json!({
-        "operation": "commits",
-        "repo_root": path,
-        "offset": offset,
-        "limit": limit,
-    }))
+    read_domain_git(
+        endpoint,
+        &serde_json::json!({
+            "operation": "commits",
+            "repo_root": path,
+            "offset": offset,
+            "limit": limit,
+        }),
+    )
 }
 
 pub fn read_domain_git_file_versions(
@@ -560,12 +593,15 @@ pub fn read_domain_git_file_versions(
     path: &str,
     cached: Option<bool>,
 ) -> Result<Option<GitFileVersions>, String> {
-    read_domain_git(endpoint, &serde_json::json!({
-        "operation": "file-versions",
-        "repo_root": repo_root,
-        "path": path,
-        "cached": cached,
-    }))
+    read_domain_git(
+        endpoint,
+        &serde_json::json!({
+            "operation": "file-versions",
+            "repo_root": repo_root,
+            "path": path,
+            "cached": cached,
+        }),
+    )
 }
 
 pub fn read_domain_git_commit_files(
@@ -573,11 +609,14 @@ pub fn read_domain_git_commit_files(
     repo_root: &str,
     hash: &str,
 ) -> Result<Option<Vec<CommitFileEntry>>, String> {
-    read_domain_git(endpoint, &serde_json::json!({
-        "operation": "commit-files",
-        "repo_root": repo_root,
-        "hash": hash,
-    }))
+    read_domain_git(
+        endpoint,
+        &serde_json::json!({
+            "operation": "commit-files",
+            "repo_root": repo_root,
+            "hash": hash,
+        }),
+    )
 }
 
 pub fn read_domain_git_file_versions_at_commit(
@@ -586,12 +625,15 @@ pub fn read_domain_git_file_versions_at_commit(
     path: &str,
     hash: &str,
 ) -> Result<Option<GitFileVersions>, String> {
-    read_domain_git(endpoint, &serde_json::json!({
-        "operation": "file-versions-at-commit",
-        "repo_root": repo_root,
-        "path": path,
-        "hash": hash,
-    }))
+    read_domain_git(
+        endpoint,
+        &serde_json::json!({
+            "operation": "file-versions-at-commit",
+            "repo_root": repo_root,
+            "path": path,
+            "hash": hash,
+        }),
+    )
 }
 
 pub fn read_domain_git_file_versions_between(
@@ -601,13 +643,16 @@ pub fn read_domain_git_file_versions_between(
     from: &str,
     to: &str,
 ) -> Result<Option<GitFileVersions>, String> {
-    read_domain_git(endpoint, &serde_json::json!({
-        "operation": "file-versions-between",
-        "repo_root": repo_root,
-        "path": path,
-        "from": from,
-        "to": to,
-    }))
+    read_domain_git(
+        endpoint,
+        &serde_json::json!({
+            "operation": "file-versions-between",
+            "repo_root": repo_root,
+            "path": path,
+            "from": from,
+            "to": to,
+        }),
+    )
 }
 
 pub fn read_domain_git_compare_commits(
@@ -616,12 +661,15 @@ pub fn read_domain_git_compare_commits(
     from: &str,
     to: &str,
 ) -> Result<Option<Vec<CommitFileEntry>>, String> {
-    read_domain_git(endpoint, &serde_json::json!({
-        "operation": "compare-commits",
-        "repo_root": repo_root,
-        "from": from,
-        "to": to,
-    }))
+    read_domain_git(
+        endpoint,
+        &serde_json::json!({
+            "operation": "compare-commits",
+            "repo_root": repo_root,
+            "from": from,
+            "to": to,
+        }),
+    )
 }
 
 pub fn read_domain_git_diff_file(
@@ -630,12 +678,15 @@ pub fn read_domain_git_diff_file(
     path: &str,
     cached: Option<bool>,
 ) -> Result<Option<String>, String> {
-    read_domain_git(endpoint, &serde_json::json!({
-        "operation": "diff-file",
-        "repo_root": repo_root,
-        "path": path,
-        "cached": cached,
-    }))
+    read_domain_git(
+        endpoint,
+        &serde_json::json!({
+            "operation": "diff-file",
+            "repo_root": repo_root,
+            "path": path,
+            "cached": cached,
+        }),
+    )
 }
 
 pub fn read_domain_git_blame(
@@ -643,11 +694,14 @@ pub fn read_domain_git_blame(
     repo_root: &str,
     path: &str,
 ) -> Result<Option<Vec<BlameLine>>, String> {
-    read_domain_git(endpoint, &serde_json::json!({
-        "operation": "blame",
-        "repo_root": repo_root,
-        "path": path,
-    }))
+    read_domain_git(
+        endpoint,
+        &serde_json::json!({
+            "operation": "blame",
+            "repo_root": repo_root,
+            "path": path,
+        }),
+    )
 }
 
 pub fn read_domain_git_file_log(
@@ -656,12 +710,15 @@ pub fn read_domain_git_file_log(
     path: &str,
     limit: Option<u32>,
 ) -> Result<Option<Vec<FileCommit>>, String> {
-    read_domain_git(endpoint, &serde_json::json!({
-        "operation": "file-log",
-        "repo_root": repo_root,
-        "path": path,
-        "limit": limit,
-    }))
+    read_domain_git(
+        endpoint,
+        &serde_json::json!({
+            "operation": "file-log",
+            "repo_root": repo_root,
+            "path": path,
+            "limit": limit,
+        }),
+    )
 }
 
 /// Discover PTYs owned by the long-lived kernel process.
@@ -797,7 +854,10 @@ pub fn scrollback_domain_pty(
     let value = require_ok(request_json(
         endpoint,
         "GET",
-        &format!("/v1/domain/ptys/{pty_id}?max_bytes={}", max_bytes.min(1024 * 1024)),
+        &format!(
+            "/v1/domain/ptys/{pty_id}?max_bytes={}",
+            max_bytes.min(1024 * 1024)
+        ),
         None,
     )?)?;
     let encoded = value
@@ -1179,10 +1239,10 @@ pub fn request_json(
     let mut stream = TcpStream::connect(("127.0.0.1", endpoint.port))
         .map_err(|error| format!("connect kernel: {error}"))?;
     stream
-        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .set_read_timeout(Some(Duration::from_millis(KERNEL_REQUEST_TIMEOUT_MS)))
         .map_err(|e| e.to_string())?;
     stream
-        .set_write_timeout(Some(Duration::from_millis(1500)))
+        .set_write_timeout(Some(Duration::from_millis(KERNEL_REQUEST_TIMEOUT_MS)))
         .map_err(|e| e.to_string())?;
     let payload = body
         .map(serde_json::to_string)
@@ -1322,12 +1382,29 @@ mod tests {
                 "role": "Worker",
                 "status": "Idle",
                 "capability": "Skilled"
+            }],
+            "agent_identities": [{
+                "agent_id": "kernel:pty-1",
+                "session_id": "session-1",
+                "workspace_id": "workspace-a",
+                "pane_id": "7",
+                "cwd": "C:/repo",
+                "executable": "agent.exe",
+                "argv": ["--worker"],
+                "generation": 2,
+                "lease": "lease-1",
+                "lifecycle": "Online",
+                "online": true,
+                "last_seen_unix_ms": 10,
+                "capabilities": ["messages"]
             }]
         }))
         .unwrap();
         assert_eq!(roster.leader_id.as_deref(), Some("codex-1"));
         assert_eq!(roster.roster[0].id, "codex-1");
         assert_eq!(roster.roster[0].pane_id, 7);
+        assert_eq!(roster.agent_identities[0].agent_id, "kernel:pty-1");
+        assert_eq!(roster.agent_identities[0].generation, 2);
 
         let hosts: KernelRemoteHostsSnapshot = decode_domain_snapshot(json!({
             "ok": true,
@@ -1454,10 +1531,13 @@ mod tests {
         }))
         .unwrap()
         .unwrap();
-        assert_eq!(stashes, vec![StashEntry {
-            reference: "stash@{0}".to_string(),
-            message: "wip".to_string(),
-        }]);
+        assert_eq!(
+            stashes,
+            vec![StashEntry {
+                reference: "stash@{0}".to_string(),
+                message: "wip".to_string(),
+            }]
+        );
         assert!(decode_domain_git_stashes(json!({
             "ok": true,
             "source": "tauri",
@@ -1524,7 +1604,13 @@ mod tests {
         }))
         .unwrap()
         .unwrap();
-        assert_eq!(summary, GitDiffSummary { added: 12, removed: 4 });
+        assert_eq!(
+            summary,
+            GitDiffSummary {
+                added: 12,
+                removed: 4
+            }
+        );
 
         assert!(decode_domain_git_diff_summary(json!({
             "ok": true,

@@ -52,10 +52,7 @@ fn desync_flags() -> &'static Mutex<HashMap<(Uuid, Uuid), (u64, Arc<AtomicBool>)
 /// 仅当 `pane` 的 desync 条目仍归属 `sub_id`（未被更晚的重订阅顶替）时移除。
 fn remove_desync_if_owner(ws: Uuid, pane: Uuid, sub_id: u64) {
     let mut flags = desync_flags().lock().unwrap();
-    if flags
-        .get(&(ws, pane))
-        .is_some_and(|(id, _)| *id == sub_id)
-    {
+    if flags.get(&(ws, pane)).is_some_and(|(id, _)| *id == sub_id) {
         flags.remove(&(ws, pane));
     }
 }
@@ -119,6 +116,7 @@ pub fn subscribe_pane_raw(
                     pane,
                     RemotePaneSub {
                         id: sub_id,
+                        metadata_tx: raw_tx.clone(),
                         raw_tx,
                         desync: Arc::clone(&desync),
                     },
@@ -169,8 +167,8 @@ pub fn subscribe_pane_raw(
                                     let resync = ridge_term::term::modes::build_resync_frame(
                                         &history, &modes, alt,
                                     );
-                                    let b64 = base64::engine::general_purpose::STANDARD
-                                        .encode(&resync);
+                                    let b64 =
+                                        base64::engine::general_purpose::STANDARD.encode(&resync);
                                     let _ =
                                         app.emit(&event_name, serde_json::json!({ "b64": b64 }));
                                 }

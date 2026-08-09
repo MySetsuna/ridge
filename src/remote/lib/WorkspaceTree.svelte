@@ -4,7 +4,7 @@
   import { t, tr } from '$lib/i18n';
   import { portal } from '$lib/actions/portal';
   import type { PaneInfo, WorkspaceInfo, RemoteLink, SavedWorkspaceFile } from '@ridge/remote';
-  import { treeState, toggleWsExpanded, seedActiveWorkspace, pruneExpanded } from './treeState.svelte';
+  import { treeState, toggleWsExpanded, seedActiveWorkspace } from './treeState.svelte';
   import { confirmedWorkspaceTarget } from './remoteQueries';
   import PaneShellPicker from './PaneShellPicker.svelte';
 
@@ -62,7 +62,10 @@
   // The panes to render under a workspace row: the live prop for the active ws,
   // else the peeked snapshot (empty until the first fetch returns).
   function panesFor(wsId: string): PaneInfo[] {
-    return wsId === activeWorkspaceId ? panes : (peekedPanes.get(wsId) ?? []);
+    if (wsId !== activeWorkspaceId) return peekedPanes.get(wsId) ?? [];
+    return panes.length > 0
+      ? panes
+      : workspaces.find((workspace) => workspace.id === wsId)?.panes ?? [];
   }
   function isExpanded(wsId: string): boolean {
     return treeState.expanded.has(wsId);
@@ -137,10 +140,11 @@
   // §tree-persist prune: when the workspace list changes, drop persisted
   // expanded/seen ids for workspaces that no longer exist (bounds the store, and
   // stops a reopened id from resurrecting stale state).
-  $effect(() => {
-    const live = new Set(workspaces.map((w) => w.id));
-    untrack(() => pruneExpanded(live));
-  });
+  // Do not prune persisted tree preferences from this render path. Remote
+  // reconnects can expose a partial/previous workspace snapshot; treating it
+  // as authoritative loses the active row's expansion before hydration. IDs
+  // absent from the current list render nothing, so retaining the preference
+  // is safe until an explicit authoritative lifecycle can prune it.
 
   // Serialize ALL list-workspace-panes round-trips. wsRemote._sendAndWait keys
   // pending requests by response TYPE ('workspace-panes'), so two concurrent

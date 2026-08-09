@@ -57,7 +57,14 @@ const {
   explorerClipboard,
   setExplorerClipboard,
   remainingCutClipboard,
+  resolveActiveClipboard,
   parentDirectory,
+  updateWorkspaceNames,
+  toggleWorkspaceCollapsed,
+  explorerWorkspaceGroups,
+  toggleColumnCollapsed,
+  collapsedColumns,
+  pruneStaleExpandedPaths,
 } = await import('./fileExplorer');
 
 describe('first-open freshness', () => {
@@ -322,8 +329,8 @@ describe('fileExplorerStore.loadTree — ghost-path filter', () => {
     mockInvoke.mockReset();
   });
 
-  it('drops expandedPaths that the fresh tree no longer contains', async () => {
-    fileExplorerStore.syncWithPaneCwds('ws', { p1: '/r' });
+	it('drops expandedPaths that the fresh tree no longer contains', async () => {
+		fileExplorerStore.syncWithPaneCwds('ws', { p1: '/r' });
     // Expand a path that will NOT exist in the next tree payload.
     fileExplorerStore.expandMany('ws:/r', ['/r/gone', '/r/kept']);
     mockInvoke.mockImplementation(async (cmd: string) => {
@@ -340,8 +347,47 @@ describe('fileExplorerStore.loadTree — ghost-path filter', () => {
     await fileExplorerStore.loadTree('ws:/r');
     const col = get(fileExplorerStore).columns[0];
     expect(col.expandedPaths.has('/r/gone')).toBe(false);
-    expect(col.expandedPaths.has('/r/kept')).toBe(true);
-  });
+		expect(col.expandedPaths.has('/r/kept')).toBe(true);
+	});
+
+	it('retries a transient missing path after host revalidation', async () => {
+		fileExplorerStore.syncWithPaneCwds('ws', { p1: '/r' });
+		let treeCalls = 0;
+		mockInvoke.mockImplementation(async (cmd: string) => {
+			if (cmd === 'get_file_tree') {
+				treeCalls += 1;
+				if (treeCalls === 1) throw new Error('Path does not exist: /r');
+				return { name: 'r', path: '/r', is_dir: true, children: [] };
+			}
+			if (cmd === 'path_exists') return true;
+			throw new Error(`unexpected invoke ${cmd}`);
+		});
+
+		await fileExplorerStore.loadTree('ws:/r');
+
+		expect(treeCalls).toBe(2);
+		expect(get(fileExplorerStore).columns[0].tree?.path).toBe('/r');
+	});
+
+	it('keeps the missing-path placeholder when revalidation is false', async () => {
+		fileExplorerStore.syncWithPaneCwds('ws', { p1: '/gone' });
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		mockInvoke.mockImplementation(async (cmd: string) => {
+			if (cmd === 'get_file_tree') throw new Error('Path does not exist: /gone');
+			if (cmd === 'path_exists') return false;
+			throw new Error(`unexpected invoke ${cmd}`);
+		});
+
+		await fileExplorerStore.loadTree('ws:/gone');
+
+		expect(get(fileExplorerStore).columns[0].tree?.children).toEqual([]);
+		expect(warn).toHaveBeenCalledWith(
+			'Explorer loadTree: missing path',
+			'/gone',
+			expect.stringContaining('Path does not exist'),
+		);
+		warn.mockRestore();
+	});
 });
 
 describe('refreshColumnsCovering', () => {
@@ -374,6 +420,28 @@ describe('refreshColumnsCovering', () => {
     // Both columns contain /r/sub in their cached tree → both reload.
     const calls = mockInvoke.mock.calls.filter((c) => c[0] === 'get_file_tree');
     expect(calls.length).toBe(2);
+  });
+
+  it('normalizes Windows separators when refreshing descendant paths', async () => {
+    const cwd = 'C:/project';
+    const descendant = ['C:', 'project', 'src'].join('\\');
+    fileExplorerStore.syncWithPaneCwds('wsA', { p1: cwd });
+    fileExplorerStore.syncWithPaneCwds('wsB', { p2: cwd });
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_file_tree') {
+        return { name: 'project', path: cwd, is_dir: true, children: [] };
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    await fileExplorerStore.loadTree(`wsA:${cwd}`);
+    await fileExplorerStore.loadTree(`wsB:${cwd}`);
+    mockInvoke.mockClear();
+
+    await refreshColumnsCovering(descendant);
+
+    const calls = mockInvoke.mock.calls.filter((c) => c[0] === 'get_file_tree');
+    expect(calls).toHaveLength(2);
   });
 });
 
@@ -540,5 +608,96 @@ describe('syncAllWorkspaces — multi-workspace routing (E7–E9)', () => {
     expect(colsFor('ws2')).toHaveLength(1);
     expect(colsFor('ws1')[0].id).toBe('ws1:/shared');
     expect(colsFor('ws2')[0].id).toBe('ws2:/shared');
+  });
+});
+
+describe('fileExplorer remaining store branches', () => {
+  beforeEach(() => fileExplorerStore.reset());
+
+  it('updates pane titles without changing cwd columns', () => {
+    fileExplorerStore.syncWithPaneCwds('ws', { p1: '/code' });
+    fileExplorerStore.updatePaneTitles('ws', { p1: 'shell' });
+    expect(get(fileExplorerStore).columns[0].paneTitles).toEqual({ p1: 'shell' });
+    fileExplorerStore.updatePaneTitles('other', { p1: 'ignored' });
+    expect(get(fileExplorerStore).columns[0].paneTitles).toEqual({ p1: 'shell' });
+  });
+
+  it('toggles, reorders, removes, and clears columns', () => {
+    fileExplorerStore.syncWithPaneCwds('ws', { a: '/a', b: '/b' });
+    fileExplorerStore.toggleExpanded('ws:/a', '/a/deep');
+    fileExplorerStore.toggleExpanded('ws:/a', '/a/deep');
+    fileExplorerStore.toggleExpanded('ws:/a', '/a/kept');
+    fileExplorerStore.setActiveColumn('ws:/b');
+    fileExplorerStore.reorderColumns(0, 1);
+    expect(get(fileExplorerStore).columnOrder).toEqual(['ws:/b', 'ws:/a']);
+    fileExplorerStore.removeColumn('ws:/b');
+    expect(get(fileExplorerStore).activeColumnId).toBe('ws:/a');
+    fileExplorerStore.clearWorkspace('ws');
+    expect(get(fileExplorerStore).columns).toHaveLength(0);
+  });
+
+  it('loads paginated children and returns an empty page on IPC failure', async () => {
+    mockInvoke
+      .mockResolvedValueOnce({ entries: [{ name: 'a', path: '/r/a', is_dir: false }], has_more: true })
+      .mockResolvedValueOnce({ entries: [{ name: 'b', path: '/r/b', is_dir: false }], has_more: false });
+    await expect(fileExplorerStore.loadChildren('ws:/r', '/r')).resolves.toHaveLength(2);
+    mockInvoke.mockRejectedValueOnce(new Error('offline'));
+    await expect(fileExplorerStore.loadChildrenPage('ws:/r', '/r', 0)).resolves.toEqual({
+      entries: [],
+      total: 0,
+      offset: 0,
+      has_more: false,
+    });
+  });
+
+  it('prunes only missing deep expanded paths and tolerates probe failure', async () => {
+    fileExplorerStore.syncWithPaneCwds('ws', { p1: '/r' });
+    fileExplorerStore.expandMany('ws:/r', ['/r/keep/deep', '/r/gone/deep', '/outside']);
+    mockInvoke.mockImplementation(async (cmd: string, args: { path?: string }) => {
+      if (cmd !== 'path_exists') throw new Error(`unexpected ${cmd}`);
+      if (args.path === '/r/gone/deep') return false;
+      if (args.path === '/outside') throw new Error('probe failed');
+      return true;
+    });
+    await pruneStaleExpandedPaths();
+    const expanded = get(fileExplorerStore).columns[0].expandedPaths;
+    expect(expanded.has('/r/gone/deep')).toBe(false);
+    expect(expanded.has('/r/keep/deep')).toBe(true);
+    expect(expanded.has('/outside')).toBe(true);
+  });
+
+  it('groups workspace columns and persists collapse toggles', () => {
+    updateWorkspaceNames([{ id: 'ws', name: '', index: 0, displaySeq: 3 }]);
+    fileExplorerStore.syncWithPaneCwds('ws', { p1: '/r' });
+    toggleWorkspaceCollapsed('ws');
+    expect(get(explorerWorkspaceGroups)[0]).toMatchObject({
+      workspaceId: 'ws',
+      workspaceName: '工作区 3',
+      collapsed: true,
+    });
+    toggleWorkspaceCollapsed('ws');
+    toggleColumnCollapsed('ws:/r');
+    expect(get(collapsedColumns)).toContain('ws:/r');
+    toggleColumnCollapsed('ws:/r');
+    expect(get(collapsedColumns)).not.toContain('ws:/r');
+  });
+});
+
+describe('resolveActiveClipboard', () => {
+  const internal = { paths: ['/internal'], mode: 'cut' as const, seq: 4 };
+
+  it('prefers a matching internal clipboard', () => {
+    expect(resolveActiveClipboard(internal, 4, [])).toBe(internal);
+  });
+
+  it('prefers trimmed system files when present', () => {
+    expect(resolveActiveClipboard(internal, 9, [' ', '/external'])).toEqual({
+      paths: ['/external'], mode: 'copy', seq: 9,
+    });
+  });
+
+  it('uses internal clipboard when system sequence is unavailable', () => {
+    expect(resolveActiveClipboard(internal, 0, [])).toBe(internal);
+    expect(resolveActiveClipboard(internal, 9, [])).toBeNull();
   });
 });

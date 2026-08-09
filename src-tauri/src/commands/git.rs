@@ -61,7 +61,8 @@ fn decode_kernel_git_read<T: DeserializeOwned>(
     repo_root: &str,
 ) -> Result<T, String> {
     let value = value.ok_or_else(|| format!("Not a git repo: {repo_root}"))?;
-    serde_json::from_value(value).map_err(|error| format!("decode kernel Git read response: {error}"))
+    serde_json::from_value(value)
+        .map_err(|error| format!("decode kernel Git read response: {error}"))
 }
 
 // ── `#[tauri::command]` registration wrappers (delegate to ridge-core) ──
@@ -94,9 +95,8 @@ pub async fn get_scm_status(
 ) -> Result<ScmRepoStatus, String> {
     tokio::task::spawn_blocking(move || {
         let endpoint = crate::kernel_lifecycle::ensure_kernel_running()?;
-        ridge_kernel::client::read_domain_git_status(&endpoint, &repo_root)?.ok_or_else(|| {
-            format!("Not a git repo: {repo_root}")
-        })
+        ridge_kernel::client::read_domain_git_status(&endpoint, &repo_root)?
+            .ok_or_else(|| format!("Not a git repo: {repo_root}"))
     })
     .await
     .map_err(|error| format!("kernel Git status task failed: {error}"))?
@@ -110,9 +110,8 @@ pub async fn get_scm_status_fast(
 ) -> Result<ScmRepoStatus, String> {
     tokio::task::spawn_blocking(move || {
         let endpoint = crate::kernel_lifecycle::ensure_kernel_running()?;
-        ridge_kernel::client::read_domain_git_status_fast(&endpoint, &repo_root)?.ok_or_else(|| {
-            format!("Not a git repo: {repo_root}")
-        })
+        ridge_kernel::client::read_domain_git_status_fast(&endpoint, &repo_root)?
+            .ok_or_else(|| format!("Not a git repo: {repo_root}"))
     })
     .await
     .map_err(|error| format!("kernel fast Git status task failed: {error}"))?
@@ -303,14 +302,11 @@ pub async fn git_push_tag(repo_root: String, name: String) -> Result<String, Str
 
 // ── Stash ────────────────────────────────────────────────────────────────────
 #[tauri::command]
-pub async fn git_stash_list(
-    repo_root: String,
-) -> Result<Vec<StashEntry>, String> {
+pub async fn git_stash_list(repo_root: String) -> Result<Vec<StashEntry>, String> {
     tokio::task::spawn_blocking(move || {
         let endpoint = crate::kernel_lifecycle::ensure_kernel_running()?;
-        ridge_kernel::client::read_domain_git_stashes(&endpoint, &repo_root)?.ok_or_else(|| {
-            format!("Not a git repo: {repo_root}")
-        })
+        ridge_kernel::client::read_domain_git_stashes(&endpoint, &repo_root)?
+            .ok_or_else(|| format!("Not a git repo: {repo_root}"))
     })
     .await
     .map_err(|error| format!("kernel Git stashes task failed: {error}"))?
@@ -476,9 +472,8 @@ pub async fn git_diff_summary(
 ) -> Result<GitDiffSummary, String> {
     tokio::task::spawn_blocking(move || {
         let endpoint = crate::kernel_lifecycle::ensure_kernel_running()?;
-        ridge_kernel::client::read_domain_git_diff_summary(&endpoint, &repo_root)?.ok_or_else(|| {
-            format!("Not a git repo: {repo_root}")
-        })
+        ridge_kernel::client::read_domain_git_diff_summary(&endpoint, &repo_root)?
+            .ok_or_else(|| format!("Not a git repo: {repo_root}"))
     })
     .await
     .map_err(|error| format!("kernel Git diff summary task failed: {error}"))?
@@ -496,7 +491,10 @@ pub async fn git_get_file_versions(
         "path": path,
         "cached": cached,
     });
-    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    let repo_root = request["repo_root"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
@@ -510,7 +508,10 @@ pub async fn git_get_commit_files(
         "repo_root": repo_root,
         "hash": hash,
     });
-    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    let repo_root = request["repo_root"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
@@ -526,7 +527,10 @@ pub async fn git_get_file_versions_at_commit(
         "path": path,
         "hash": hash,
     });
-    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    let repo_root = request["repo_root"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
@@ -545,7 +549,10 @@ pub async fn git_get_file_versions_between(
         "from": from,
         "to": to,
     });
-    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    let repo_root = request["repo_root"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
@@ -562,7 +569,10 @@ pub async fn git_compare_commits(
         "from": from,
         "to": to,
     });
-    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    let repo_root = request["repo_root"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
@@ -608,7 +618,10 @@ pub async fn git_diff_file(
         "path": path,
         "cached": cached,
     });
-    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    let repo_root = request["repo_root"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
@@ -623,7 +636,10 @@ pub async fn git_blame(
         "repo_root": repo_root,
         "path": path,
     });
-    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    let repo_root = request["repo_root"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 
@@ -640,7 +656,10 @@ pub async fn git_file_log(
         "path": path,
         "limit": limit,
     });
-    let repo_root = request["repo_root"].as_str().unwrap_or_default().to_string();
+    let repo_root = request["repo_root"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     decode_kernel_git_read(run_kernel_git_read(request).await?, &repo_root)
 }
 

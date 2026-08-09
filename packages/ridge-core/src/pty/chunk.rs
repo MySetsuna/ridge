@@ -118,7 +118,10 @@ mod tests {
     fn silenced_without_prompt_is_dropped() {
         // deadline in the future, now before it → silenced; no prompt OSC → drop.
         let out = process("reflow storm bytes".to_string(), 1000, 500);
-        assert!(out.emit.is_none(), "silenced chunk without prompt is dropped");
+        assert!(
+            out.emit.is_none(),
+            "silenced chunk without prompt is dropped"
+        );
         assert!(!out.clear_silence, "drop must NOT clear the deadline");
     }
 

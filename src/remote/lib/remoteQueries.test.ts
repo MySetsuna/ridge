@@ -1,94 +1,106 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PaneInfo, RemoteLink, WsMessage } from '@ridge/remote';
+import type { RemoteLink } from '@ridge/remote';
 import {
-  confirmedWorkspaceTarget,
-  dedupeRemoteItems,
+  REMOTE_ROSTER_STALE_TIME_MS,
   fetchRemoteAgentHistory,
+  fetchRemoteQuery,
   fetchRemoteTeamRoster,
-  mergeRemoteItems,
-  requestPaneSnapshot,
-  requestWorkspaceSnapshot,
+  remoteQueryKeys,
+  remoteSessionId,
+  remoteSidebarQueryPrefix,
 } from './remoteQueries';
 
-describe('remote query snapshots', () => {
-  it('commits a composite target only after the host switch succeeds', async () => {
-    await expect(confirmedWorkspaceTarget(async () => false, 'ws-b', 'pane-b'))
-      .resolves.toBeNull();
-    await expect(confirmedWorkspaceTarget(async () => true, 'ws-b', 'pane-b'))
-      .resolves.toEqual({ workspaceId: 'ws-b', paneId: 'pane-b' });
+type FetchQuery = <T>(options: {
+  queryKey: readonly unknown[];
+  queryFn: (context?: { signal?: AbortSignal }) => Promise<T>;
+  staleTime?: number;
+}) => Promise<T>;
+
+function makeFetchQuery() {
+  const mock = vi.fn(({ queryFn }: {
+    queryFn: (context?: { signal?: AbortSignal }) => Promise<unknown>;
+  }) => queryFn());
+  return mock as unknown as FetchQuery;
+}
+
+function link(): RemoteLink {
+  return {
+    getTeammateTopology: vi.fn(async () => ({ agents: [] })),
+    listHitlPending: vi.fn(async () => []),
+    getOrchestrationHealth: vi.fn(async () => ({ suspendedAgents: 0, pendingHitl: 0 })),
+    listAgentHistory: vi.fn(async () => []),
+  } as unknown as RemoteLink;
+}
+
+describe('remoteQueries', () => {
+  it('keeps session ids stable per transport object', () => {
+    const first = link();
+    const second = link();
+    expect(remoteSessionId(first)).toBe(remoteSessionId(first));
+    expect(remoteSessionId(first)).not.toBe(remoteSessionId(second));
   });
 
-  it('dedupes canonical ids and lets the newest push win', () => {
-    expect(dedupeRemoteItems([{ id: 'a', title: 'old' }, { id: 'a', title: 'new' }]))
-      .toEqual([{ id: 'a', title: 'new' }]);
-    expect(mergeRemoteItems([{ id: 'a', title: 'old' }], [
-      { id: 'a', title: 'new' },
-      { id: 'b', title: 'b' },
-    ])).toEqual([{ id: 'a', title: 'new' }, { id: 'b', title: 'b' }]);
+  it('scopes sidebar keys by session, workspace, pane, branch, and normalized paths', () => {
+    expect(remoteQueryKeys.sidebarFiles(3, 'C:\\Repo\\', 'C:\\Repo\\src', 2, {
+      workspaceId: 'ws',
+      paneId: 'pane',
+      branch: 'main',
+    })).toEqual([
+      'remote', 3, 'sidebar', 'ws', 'pane', 'main', 'files', 'c:/repo', 'c:/repo/src', 2,
+    ]);
+    expect(remoteSidebarQueryPrefix(3, { workspaceId: 'ws' })).toEqual([
+      'remote', 3, 'sidebar', 'ws', '', '',
+    ]);
   });
 
-  it('resolves only the requested workspace snapshot and detaches its listener', async () => {
-    let listener!: (message: WsMessage) => void;
-    const stop = vi.fn();
-    const link = {
-      onMessage(fn: (message: WsMessage) => void) {
-        listener = fn;
-        return stop;
-      },
-      listPanes: vi.fn(),
-    } as unknown as RemoteLink;
-    const pending = requestPaneSnapshot(link, 'ws-2');
-    listener({ type: 'panes', workspaceId: 'ws-1', panes: [] });
-    listener({ type: 'panes', panes: [{ id: 'unscoped', title: 'wrong' }] as PaneInfo[] });
-    const expected = [{ id: 'p-2', title: 'two' }] as PaneInfo[];
-    listener({ type: 'panes', workspaceId: 'ws-2', panes: expected });
-    await expect(pending).resolves.toEqual(expected);
-    expect(link.listPanes).toHaveBeenCalledOnce();
-    expect(stop).toHaveBeenCalledOnce();
+  it('uses the query client and forwards the stale window', async () => {
+    const fetchQuery = makeFetchQuery();
+    const query = vi.fn(async () => 'fresh');
+    await expect(fetchRemoteQuery({ fetchQuery }, ['key'], query, 1234)).resolves.toBe('fresh');
+    expect(fetchQuery).toHaveBeenCalledWith(expect.objectContaining({
+      queryKey: ['key'],
+      staleTime: 1234,
+    }));
+    expect(query).toHaveBeenCalledOnce();
   });
 
-  it('rejects and detaches when pane snapshot is aborted', async () => {
-    const stop = vi.fn();
-    const link = {
-      onMessage: vi.fn(() => stop),
-      listPanes: vi.fn(),
-    } as unknown as RemoteLink;
+  it('cancels one observer without cancelling the shared query work', async () => {
+    let resolve!: (value: string) => void;
+    const work = new Promise<string>((done) => { resolve = done; });
     const controller = new AbortController();
-    const pending = requestPaneSnapshot(link, 'ws-abort', controller.signal, 100);
-    controller.abort();
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-    expect(stop).toHaveBeenCalledOnce();
+    const observed = fetchRemoteQuery(undefined, ['key'], () => work, 0, controller.signal);
+    controller.abort('view destroyed');
+    await expect(observed).rejects.toBe('view destroyed');
+    resolve('late result');
+    await expect(work).resolves.toBe('late result');
   });
 
-  it('bounds pane and workspace snapshots when the transport never replies', async () => {
-    const paneLink = {
-      onMessage: vi.fn(() => vi.fn()),
-      listPanes: vi.fn(),
-    } as unknown as RemoteLink;
-    await expect(requestPaneSnapshot(paneLink, 'ws-timeout', undefined, 1))
-      .rejects.toThrow('list panes timed out');
-
-    const workspaceLink = {
-      listWorkspaces: vi.fn(() => new Promise<never>(() => undefined)),
-    } as unknown as RemoteLink;
-    await expect(requestWorkspaceSnapshot(workspaceLink, undefined, 1))
-      .rejects.toThrow('list workspaces timed out');
+  it('keeps roster results typed when health RPC is unavailable', async () => {
+    const remote = link();
+    vi.mocked(remote.getOrchestrationHealth).mockRejectedValueOnce(new Error('old host'));
+    const fetchQuery = makeFetchQuery();
+    await expect(fetchRemoteTeamRoster(remote, {
+      fetchQuery,
+    }, 7, 'workspace-a')).resolves.toEqual({
+      topology: { agents: [] },
+      pending: [],
+      health: { suspendedAgents: 0, pendingHitl: 0 },
+    });
+    expect(fetchQuery).toHaveBeenCalledWith(expect.objectContaining({
+      queryKey: remoteQueryKeys.teamRoster(7, 'workspace-a'),
+      staleTime: REMOTE_ROSTER_STALE_TIME_MS,
+    }));
   });
 
-  it('rejects late Agent snapshots when the active scope is aborted', async () => {
-    const controller = new AbortController();
-    const link = {
-      listAgentHistory: vi.fn(() => new Promise<never>(() => undefined)),
-      getTeammateTopology: vi.fn(() => new Promise<never>(() => undefined)),
-      listHitlPending: vi.fn(() => new Promise<never>(() => undefined)),
-      getOrchestrationHealth: vi.fn(() => new Promise<never>(() => undefined)),
-    } as unknown as RemoteLink;
-
-    const history = fetchRemoteAgentHistory(link, undefined, 1, 24, controller.signal);
-    const roster = fetchRemoteTeamRoster(link, undefined, 1, 'ws-a', controller.signal);
-    controller.abort();
-
-    await expect(history).rejects.toMatchObject({ name: 'AbortError' });
-    await expect(roster).rejects.toMatchObject({ name: 'AbortError' });
+  it('routes history through the host-wide query key and limit', async () => {
+    const remote = link();
+    const history = [{ agent: 'Codex', sessionId: 's1' }];
+    vi.mocked(remote.listAgentHistory).mockResolvedValueOnce(history as never);
+    const fetchQuery = makeFetchQuery();
+    await expect(fetchRemoteAgentHistory(remote, { fetchQuery }, 9, 12)).resolves.toEqual(history);
+    expect(remote.listAgentHistory).toHaveBeenCalledWith(12);
+    expect(fetchQuery).toHaveBeenCalledWith(expect.objectContaining({
+      queryKey: remoteQueryKeys.agentHistory(9, 12),
+    }));
   });
 });

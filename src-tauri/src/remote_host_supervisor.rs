@@ -86,11 +86,7 @@ pub fn ensure_lan_host(app: &AppHandle) -> Result<LanHostStatus, String> {
     if let Some(root) = ui_root_text.as_deref() {
         envs.push(("RIDGE_REMOTE_UI_ROOT", root));
     }
-    ridge_kernel::client::spawn_detached_with_env(
-        &binary,
-        &["host"],
-        &envs,
-    )?;
+    ridge_kernel::client::spawn_detached_with_env(&binary, &["host"], &envs)?;
 
     let deadline = Instant::now() + Duration::from_secs(12);
     while Instant::now() < deadline {
@@ -143,9 +139,7 @@ pub fn sync_cloud_credentials(
     let path = cloud_auth_path(app)?;
     match (device_token, device_name, username) {
         (Some(token), Some(device), Some(user))
-            if !token.trim().is_empty()
-                && !device.trim().is_empty()
-                && !user.trim().is_empty() =>
+            if !token.trim().is_empty() && !device.trim().is_empty() && !user.trim().is_empty() =>
         {
             let parent = path
                 .parent()
@@ -157,8 +151,11 @@ pub fn sync_cloud_credentials(
                 "username": user,
             });
             let tmp = path.with_extension("json.tmp");
-            fs::write(&tmp, serde_json::to_vec(&body).map_err(|error| error.to_string())?)
-                .map_err(|error| error.to_string())?;
+            fs::write(
+                &tmp,
+                serde_json::to_vec(&body).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
             fs::rename(&tmp, &path).map_err(|error| error.to_string())?;
             let enabled_path = app_data_dir(app)?.join(CLOUD_ENABLED);
             if read_enabled_flag(&enabled_path, false) {
@@ -276,7 +273,10 @@ fn tcp_ready(port: u16) -> bool {
 }
 
 fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let path = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     fs::create_dir_all(&path).map_err(|error| error.to_string())?;
     Ok(path)
 }
@@ -292,8 +292,11 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         .ok_or_else(|| "registry path has no parent".to_string())?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
+    fs::write(
+        &tmp,
+        serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
     fs::rename(&tmp, path).map_err(|error| error.to_string())
 }
 
@@ -315,7 +318,9 @@ fn locate_rdg_binary(app: &AppHandle) -> Result<PathBuf, String> {
             candidates.extend(entries.flatten().map(|entry| entry.path()).filter(|path| {
                 path.file_stem()
                     .and_then(|value| value.to_str())
-                    .is_some_and(|value| value.eq_ignore_ascii_case("rdg") || value.starts_with("rdg-"))
+                    .is_some_and(|value| {
+                        value.eq_ignore_ascii_case("rdg") || value.starts_with("rdg-")
+                    })
             }));
         }
     }
@@ -324,7 +329,12 @@ fn locate_rdg_binary(app: &AppHandle) -> Result<PathBuf, String> {
             candidates.push(parent.join(exe_name("rdg")));
             for ancestor in parent.ancestors().take(4) {
                 candidates.push(ancestor.join("target").join("debug").join(exe_name("rdg")));
-                candidates.push(ancestor.join("target").join("release").join(exe_name("rdg")));
+                candidates.push(
+                    ancestor
+                        .join("target")
+                        .join("release")
+                        .join(exe_name("rdg")),
+                );
             }
         }
     }

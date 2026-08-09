@@ -106,8 +106,7 @@ fn mcp_tool(endpoint: &KernelEndpoint, id: u64, name: &str, arguments: Value) ->
         "MCP tool {name} failed: {response}"
     );
     assert_ne!(
-        response["result"]["isError"],
-        true,
+        response["result"]["isError"], true,
         "MCP tool {name} returned an error: {response}"
     );
     response["result"]["content"][0]["text"]
@@ -153,6 +152,21 @@ fn standalone_rdg_converges_to_one_kernel_and_serves_domain_and_mcp() {
     );
     assert!(String::from_utf8_lossy(&fs_list.stdout).contains("kernel.json"));
 
+    let initialized = mcp_request(
+        &endpoint,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": { "name": "ridge-e2e", "version": "test" } },
+        }),
+    );
+    assert_eq!(initialized["result"]["protocolVersion"], "2024-11-05");
+    assert_eq!(
+        initialized["result"]["serverInfo"]["name"],
+        "agents-commune"
+    );
+
     let mcp = run_rdg(&binary, &data_dir, &["kernel", "mcp-smoke"]);
     assert!(
         mcp.status.success(),
@@ -173,6 +187,7 @@ fn standalone_rdg_converges_to_one_kernel_and_serves_domain_and_mcp() {
     ))
     .unwrap();
     let pane_id = split["paneId"].as_str().expect("split pane id");
+    let workspace_id = split["workspaceId"].as_str().expect("split workspace id");
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let capture = mcp_tool(
@@ -191,6 +206,30 @@ fn standalone_rdg_converges_to_one_kernel_and_serves_domain_and_mcp() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
+    let identity = json!({
+        "agent_id": "e2e-agent",
+        "session_id": "e2e-session",
+        "workspace_id": workspace_id,
+        "pane_id": pane_id,
+        "cwd": data_dir.to_string_lossy(),
+        "executable": "ridge-cli-e2e",
+        "argv": ["--e2e"],
+        "generation": 1,
+        "lease": "e2e-lease",
+        "lifecycle": "Online",
+        "online": true,
+        "last_seen_unix_ms": 1,
+        "capabilities": ["messages", "tasks", "events"]
+    });
+    let committed = ridge_kernel::client::request_json(
+        &endpoint,
+        "POST",
+        "/v1/domain/agents/identities/commit",
+        Some(&identity),
+    )
+    .expect("commit e2e agent identity");
+    assert_eq!(committed["ok"], true, "identity commit failed: {committed}");
+
     let receipt: Value = serde_json::from_str(&mcp_tool(
         &endpoint,
         4,
@@ -201,8 +240,9 @@ fn standalone_rdg_converges_to_one_kernel_and_serves_domain_and_mcp() {
         }),
     ))
     .unwrap();
-    assert_eq!(receipt["status"], "submit_dispatched");
-    assert_eq!(receipt["terminalAccepted"], true);
+    assert_eq!(receipt["status"], "queued");
+    assert_eq!(receipt["deliveryAdapter"], "mcp_pull");
+    assert_eq!(receipt["terminalAccepted"], false);
     let inbox: Value = serde_json::from_str(&mcp_tool(
         &endpoint,
         5,
@@ -211,11 +251,9 @@ fn standalone_rdg_converges_to_one_kernel_and_serves_domain_and_mcp() {
     ))
     .unwrap();
     assert!(
-        inbox
-            .as_array()
-            .is_some_and(|messages| messages.iter().any(|message| {
-                message["text"] == "RIDGE_KERNEL_DELEGATION_E2E"
-            })),
+        inbox.as_array().is_some_and(|messages| messages
+            .iter()
+            .any(|message| { message["payload"]["objective"] == "RIDGE_KERNEL_DELEGATION_E2E" })),
         "delegation was not retained in the shared inbox: {inbox}"
     );
 

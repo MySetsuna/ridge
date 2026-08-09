@@ -322,6 +322,7 @@ async fn run_server(
         gui: Arc::new(DesktopGuiSessions {
             state: ctx.state.clone(),
         }),
+        mcp_state: super::mcp::desktop_hub_state(),
     };
 
     let app = Router::new()
@@ -494,17 +495,9 @@ fn register_confirmed_agent(
 ) -> Result<(), String> {
     register_agent_to_pane(state, wid, agent_id, pane_id)?;
     let display_name = name.or_else(|| Some(agent_id.trim().to_string()));
-    let capability = ridge_core::recognize_capability(
-        display_name.as_deref().unwrap_or(agent_id),
-        program,
-    );
-    if let Err(error) = super::profiles::upsert(
-        wid,
-        agent_id,
-        pane_id,
-        display_name,
-        capability,
-    ) {
+    let capability =
+        ridge_core::recognize_capability(display_name.as_deref().unwrap_or(agent_id), program);
+    if let Err(error) = super::profiles::upsert(wid, agent_id, pane_id, display_name, capability) {
         let _ = release_pane(state, wid, pane_id);
         return Err(error.into());
     }
@@ -694,15 +687,10 @@ async fn route_delegate_task(
         )
             .into_response();
     };
-    let target_alive = ctx
-        .state
-        .workspaces
-        .read()
-        .get(&wid)
-        .is_some_and(|ws| {
-            ws.pane_tree.panes.contains_key(&pid)
-                && (ws.terminals.contains_key(&pid) || ws.pending_spawns.contains_key(&pid))
-        });
+    let target_alive = ctx.state.workspaces.read().get(&wid).is_some_and(|ws| {
+        ws.pane_tree.panes.contains_key(&pid)
+            && (ws.terminals.contains_key(&pid) || ws.pending_spawns.contains_key(&pid))
+    });
     if !target_alive {
         super::profiles::remove_by_pane(wid, pid);
         return (
@@ -729,12 +717,15 @@ async fn route_delegate_task(
         format!("tsk_{}", pid.simple()),
         body.target_pane as u32,
     );
-    let mut payload =
-        serde_json::to_value(&ticket).unwrap_or_else(|_| serde_json::json!({ "status": "dispatched" }));
+    let mut payload = serde_json::to_value(&ticket)
+        .unwrap_or_else(|_| serde_json::json!({ "status": "dispatched" }));
     // P3 审计：带 group_id 时把投递范围标注回显进响应（不改变「写目标 pane stdin」的投递语义）。
     if let Some(gid) = body.group_id.as_deref() {
         if let serde_json::Value::Object(map) = &mut payload {
-            map.insert("groupId".to_string(), serde_json::Value::String(gid.to_string()));
+            map.insert(
+                "groupId".to_string(),
+                serde_json::Value::String(gid.to_string()),
+            );
         }
     }
     (StatusCode::OK, Json(payload)).into_response()
@@ -772,7 +763,14 @@ async fn route_report_progress(
         if let Ok(wid) = caller_workspace_id_strict(&ctx, &headers) {
             if let Ok(pid) = pane::teammate_pane_uuid_at_index(&ctx.state, wid, idx) {
                 let key = body.key.clone().unwrap_or_else(|| body.status.clone());
-                super::circuit::record(&ctx.handle, &ctx.state, wid, pid, &key, body.exit_code != 0);
+                super::circuit::record(
+                    &ctx.handle,
+                    &ctx.state,
+                    wid,
+                    pid,
+                    &key,
+                    body.exit_code != 0,
+                );
             }
         }
     }
@@ -1007,12 +1005,9 @@ async fn route_split(
                 {
                     let data = ridge_mcp::server::enter_terminated(&cmd);
                     // G1：exec 命令注入同属 agent 写路径，走 suspend 收口。
-                    if let Err(error) = super::suspend::agent_pty_write(
-                        &ctx.state,
-                        wid,
-                        pane_id,
-                        data.as_bytes(),
-                    ) {
+                    if let Err(error) =
+                        super::suspend::agent_pty_write(&ctx.state, wid, pane_id, data.as_bytes())
+                    {
                         let _ = release_pane(&ctx.state, wid, pane_id);
                         return (StatusCode::BAD_REQUEST, error).into_response();
                     }
@@ -1223,8 +1218,7 @@ async fn route_split(
                     // harness 主路径 split→spawn-process(is_agent) 由 spawn-process 适时标 Busy。
                     // （用户需求 2026-06-11：tmux 拉起但未运行 agent 的 pane 不要 agent 标。）
                     if body.is_agent || is_structured {
-                        ws.teammate_pane_states
-                            .insert(new_id, PaneState::Busy);
+                        ws.teammate_pane_states.insert(new_id, PaneState::Busy);
                     }
                     ws.pane_sizes.insert(new_id, (80, 120));
                     if let Some(name) = body
@@ -1507,9 +1501,7 @@ async fn route_send_keys(
     // G1 阶段一：agent 写路径统一收口（suspended → 403，人类桌面输入不受限）。
     match super::suspend::agent_pty_write(&ctx.state, wid, pid, text_to_write.as_bytes()) {
         Ok(()) => (StatusCode::OK, "ok").into_response(),
-        Err(e) if e.starts_with("agent suspended") => {
-            (StatusCode::FORBIDDEN, e).into_response()
-        }
+        Err(e) if e.starts_with("agent suspended") => (StatusCode::FORBIDDEN, e).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
     }
 }
@@ -1603,12 +1595,7 @@ async fn route_spawn_process(
                     .workspaces
                     .read()
                     .get(&wid)
-                    .and_then(|ws| {
-                        ws.pane_tree
-                            .panes
-                            .get(&pid)
-                            .and_then(|p| p.cwd.clone())
-                    })
+                    .and_then(|ws| ws.pane_tree.panes.get(&pid).and_then(|p| p.cwd.clone()))
             })
             .unwrap_or_else(|| {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))

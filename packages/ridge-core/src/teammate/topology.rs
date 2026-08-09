@@ -13,6 +13,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::communication::{validate_target, AgentIdentity, AgentTarget, CommunicationError};
 use super::model::{AgentRole, Teammate, TeammateStatus};
 
 /// 极简 Leader 竞选：能力档（[`AgentTier::rank`](super::model::AgentTier::rank)）最高者当选，
@@ -62,6 +63,13 @@ pub enum TopologyError {
 pub struct TopologyGraph {
     /// 节点：以 Teammate id 为键。
     nodes: HashMap<String, Teammate>,
+    /// 同一 Kernel roster 中的稳定 Agent identity；旧 roster 文件可缺省。
+    #[serde(default)]
+    identities: HashMap<String, AgentIdentity>,
+    /// Last committed generation per stable Agent id. Tombstones survive
+    /// teardown so pane/session reuse cannot accept an old generation.
+    #[serde(default)]
+    generations: HashMap<String, u64>,
     /// 边：`(from_id, to_id, edge)`。
     edges: Vec<(String, String, TaskEdge)>,
     /// 当前 Leader 的 id。
@@ -86,10 +94,22 @@ impl TopologyGraph {
     /// 移除节点，并丢弃所有关联边；若它是 Leader 则清空 leader。
     pub fn remove_teammate(&mut self, id: &str) {
         self.nodes.remove(id);
+        self.identities.remove(id);
         self.edges.retain(|(f, t, _)| f != id && t != id);
         if self.leader.as_deref() == Some(id) {
             self.leader = None;
         }
+    }
+
+    /// Remove only the live identity after a PTY destroy/lease closure has
+    /// succeeded; the generation tombstone remains for future fencing.
+    pub fn remove_agent_identity_by_pane(&mut self, pane_id: &str) -> Option<AgentIdentity> {
+        let agent_id = self
+            .identities
+            .iter()
+            .find(|(_, identity)| identity.pane_id == pane_id)
+            .map(|(agent_id, _)| agent_id.clone())?;
+        self.identities.remove(&agent_id)
     }
 
     /// 按物理 Pane ID 移除（Pane 关闭场景）。
@@ -119,6 +139,86 @@ impl TopologyGraph {
 
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    /// Commit an Agent only after its spawn/attach path has proved it online.
+    /// Same generation + lease is idempotent; older generations and leases
+    /// cannot replace the active identity.
+    pub fn commit_online_agent(
+        &mut self,
+        identity: AgentIdentity,
+    ) -> Result<(), CommunicationError> {
+        if identity.agent_id.trim().is_empty()
+            || identity.session_id.trim().is_empty()
+            || identity.workspace_id.trim().is_empty()
+            || identity.pane_id.trim().is_empty()
+            || identity.lease.trim().is_empty()
+        {
+            return Err(CommunicationError::InvalidEnvelope(
+                "Agent identity fields must not be empty".into(),
+            ));
+        }
+        if !identity.online || !identity.lifecycle.can_receive() {
+            return Err(CommunicationError::TargetOffline(identity.agent_id));
+        }
+        if let Some(current) = self.identities.get(&identity.agent_id) {
+            if identity.generation < current.generation {
+                return Err(CommunicationError::GenerationMismatch {
+                    expected: current.generation,
+                    actual: identity.generation,
+                });
+            }
+            if identity.generation == current.generation && identity.lease != current.lease {
+                return Err(CommunicationError::StaleLease);
+            }
+        } else if let Some(previous) = self.generations.get(&identity.agent_id) {
+            if identity.generation <= *previous {
+                return Err(CommunicationError::GenerationMismatch {
+                    expected: previous.saturating_add(1),
+                    actual: identity.generation,
+                });
+            }
+        }
+        let agent_id = identity.agent_id.clone();
+        self.generations
+            .insert(agent_id.clone(), identity.generation);
+        self.identities.insert(agent_id, identity);
+        Ok(())
+    }
+
+    pub fn agent_identity(&self, agent_id: &str) -> Option<&AgentIdentity> {
+        self.identities.get(agent_id)
+    }
+
+    /// Next generation accepted for a stable Agent id, including after its
+    /// live identity has been torn down.
+    pub fn next_agent_generation(&self, agent_id: &str) -> u64 {
+        self.generations
+            .get(agent_id)
+            .copied()
+            .or_else(|| self.identities.get(agent_id).map(|item| item.generation))
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
+    /// Validate against the current bounded Kernel roster snapshot.
+    pub fn validate_agent_target(
+        &self,
+        target: &AgentTarget,
+        required_capability: Option<&str>,
+    ) -> Result<(), CommunicationError> {
+        validate_target(
+            target,
+            self.identities.get(&target.agent_id),
+            required_capability,
+        )
+    }
+
+    /// Deterministic identity projection for adapters and diagnostics.
+    pub fn agent_identities(&self) -> Vec<&AgentIdentity> {
+        let mut identities = self.identities.values().collect::<Vec<_>>();
+        identities.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        identities
     }
 
     // ── 边 / 委派 ──
@@ -196,6 +296,7 @@ impl TopologyGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::teammate::communication::{AgentIdentity, AgentLifecycle};
     use crate::teammate::model::AgentTier;
 
     fn mate(id: &str) -> Teammate {
@@ -204,6 +305,24 @@ mod tests {
 
     fn tiered(id: &str, tier: AgentTier) -> Teammate {
         mate(id).with_capability(tier)
+    }
+
+    fn identity(generation: u64, lease: &str) -> AgentIdentity {
+        AgentIdentity {
+            agent_id: "agent-a".into(),
+            session_id: "session-a".into(),
+            workspace_id: "workspace-a".into(),
+            pane_id: "pane-a".into(),
+            cwd: "C:/work".into(),
+            executable: "codex".into(),
+            argv: vec!["--resume".into()],
+            generation,
+            lease: lease.into(),
+            lifecycle: AgentLifecycle::Online,
+            online: true,
+            last_seen_unix_ms: generation,
+            capabilities: vec!["messages".into()],
+        }
     }
 
     #[test]
@@ -322,7 +441,69 @@ mod tests {
     fn topology_round_trips_for_kernel_persistence() {
         let mut g = TopologyGraph::new();
         g.add_teammate(mate("lead").with_role(AgentRole::Leader));
-        let restored: TopologyGraph = serde_json::from_str(&serde_json::to_string(&g).unwrap()).unwrap();
+        let restored: TopologyGraph =
+            serde_json::from_str(&serde_json::to_string(&g).unwrap()).unwrap();
         assert_eq!(restored.leader_id(), Some("lead"));
+    }
+
+    #[test]
+    fn online_identity_commit_is_idempotent_and_teardown_removes_it() {
+        let mut graph = TopologyGraph::new();
+        graph.commit_online_agent(identity(1, "lease-1")).unwrap();
+        graph.commit_online_agent(identity(1, "lease-1")).unwrap();
+        assert_eq!(graph.agent_identities().len(), 1);
+        assert_eq!(graph.agent_identity("agent-a").unwrap().generation, 1);
+        graph.remove_teammate("agent-a");
+        assert!(graph.agent_identity("agent-a").is_none());
+    }
+
+    #[test]
+    fn failed_or_stale_identity_commit_never_replaces_active_entry() {
+        let mut graph = TopologyGraph::new();
+        graph.commit_online_agent(identity(2, "lease-2")).unwrap();
+        let mut failed = identity(3, "lease-3");
+        failed.online = false;
+        assert!(matches!(
+            graph.commit_online_agent(failed),
+            Err(CommunicationError::TargetOffline(_))
+        ));
+        assert_eq!(graph.agent_identity("agent-a").unwrap().generation, 2);
+        assert!(matches!(
+            graph.commit_online_agent(identity(1, "lease-1")),
+            Err(CommunicationError::GenerationMismatch { .. })
+        ));
+        assert_eq!(graph.agent_identity("agent-a").unwrap().lease, "lease-2");
+    }
+
+    #[test]
+    fn target_validation_uses_the_same_kernel_roster_snapshot() {
+        let mut graph = TopologyGraph::new();
+        let current = identity(4, "lease-4");
+        let target = current.target();
+        graph.commit_online_agent(current).unwrap();
+        assert_eq!(
+            graph.validate_agent_target(&target, Some("messages")),
+            Ok(())
+        );
+        let mut old = target;
+        old.generation = 3;
+        assert!(matches!(
+            graph.validate_agent_target(&old, None),
+            Err(CommunicationError::GenerationMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn pane_teardown_keeps_generation_tombstone_for_reconnect() {
+        let mut graph = TopologyGraph::new();
+        graph.commit_online_agent(identity(1, "lease-1")).unwrap();
+        assert!(graph.remove_agent_identity_by_pane("pane-a").is_some());
+        assert!(graph.agent_identity("agent-a").is_none());
+        assert!(matches!(
+            graph.commit_online_agent(identity(1, "lease-reused")),
+            Err(CommunicationError::GenerationMismatch { .. })
+        ));
+        graph.commit_online_agent(identity(2, "lease-2")).unwrap();
+        assert_eq!(graph.agent_identity("agent-a").unwrap().generation, 2);
     }
 }

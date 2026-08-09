@@ -40,8 +40,7 @@ let inflight: Promise<ShellInfo[]> | null = null;
 export async function getShells(): Promise<ShellInfo[]> {
   if (cache) return cache;
   if (!isTauri()) return [];
-  if (!inflight) {
-    inflight = invoke<ShellInfo[]>('detect_available_shells')
+  inflight ??= invoke<ShellInfo[]>('detect_available_shells')
       .then((s) => {
         cache = s;
         return s;
@@ -53,7 +52,6 @@ export async function getShells(): Promise<ShellInfo[]> {
       .finally(() => {
         inflight = null;
       });
-  }
   return inflight;
 }
 

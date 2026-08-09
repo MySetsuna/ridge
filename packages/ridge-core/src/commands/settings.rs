@@ -125,7 +125,11 @@ mod tests {
         fn pane_layout(&self, _id: &str) -> Result<serde_json::Value, String> {
             Ok(serde_json::Value::Null)
         }
-        fn pane_scrollback_tail(&self, _pane: &str, _max: usize) -> Result<serde_json::Value, String> {
+        fn pane_scrollback_tail(
+            &self,
+            _pane: &str,
+            _max: usize,
+        ) -> Result<serde_json::Value, String> {
             Ok(serde_json::Value::Null)
         }
         fn pane_scrollback_before(

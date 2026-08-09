@@ -170,7 +170,10 @@ impl Server {
             .write_all(frame.as_bytes())
             .await
             .map_err(|e| format!("LSP 写入失败: {e}"))?;
-        stdin.flush().await.map_err(|e| format!("LSP flush 失败: {e}"))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|e| format!("LSP flush 失败: {e}"))?;
         Ok(())
     }
 }
@@ -248,10 +251,12 @@ enum ServerKind {
 impl ServerKind {
     /// 由文件 URI/路径扩展名判定语言服务器；不支持的语言返回 None。
     fn from_uri(uri: &str) -> Option<Self> {
-        let name = uri.rsplit(['/', '\\']).next().unwrap_or(uri).to_ascii_lowercase();
-        const TS: [&str; 8] = [
-            ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
-        ];
+        let name = uri
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(uri)
+            .to_ascii_lowercase();
+        const TS: [&str; 8] = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
         if TS.iter().any(|e| name.ends_with(e)) {
             Some(Self::TypeScript)
         } else if name.ends_with(".rs") {
@@ -292,7 +297,9 @@ impl ServerKind {
     fn install_hint(&self) -> &'static str {
         match self {
             Self::TypeScript => "请全局安装：npm i -g typescript-language-server typescript",
-            Self::Rust => "请安装 rust-analyzer（rustup component add rust-analyzer 或下载二进制并加入 PATH）",
+            Self::Rust => {
+                "请安装 rust-analyzer（rustup component add rust-analyzer 或下载二进制并加入 PATH）"
+            }
         }
     }
 }

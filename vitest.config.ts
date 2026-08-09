@@ -18,12 +18,15 @@ export default defineConfig({
     globals: true,
     coverage: {
       provider: 'v8',
-      include: ['src/lib/stores/paneTree.ts'],
-      // paneTree.ts is 782 lines; new cwd-related code (~90 lines) has 100%
-      // coverage. The remaining lines are existing split/resize/workspace
-      // functions that are not in scope for this task. Set thresholds at the
-      // current measured level so CI passes; new code coverage is verified
-      // independently by the test count (26 tests, all pass).
+      reporter: ['text', 'html', 'clover', 'json', 'lcov'],
+      include: [
+        'src/**/*.{ts,js}',
+        'packages/remote/src/**/*.ts',
+        'scripts/**/*.mjs',
+      ],
+      exclude: ['**/*.test.*', '**/*.spec.*', '**/*.d.ts', '**/node_modules/**'],
+      // Sonar consumes this report for the project baseline. Keep the source
+      // set broad; targeted coverage must not masquerade as project coverage.
       thresholds: {
         lines: 10,
         functions: 10,

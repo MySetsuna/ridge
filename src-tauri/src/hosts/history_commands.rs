@@ -53,10 +53,7 @@ pub fn foreign_history_pull_budget(want_lines: Option<u16>, cols: Option<u16>) -
 }
 
 #[tauri::command]
-pub fn set_foreign_history_cap(
-    state: State<'_, AppState>,
-    cap: u32,
-) -> Result<usize, String> {
+pub fn set_foreign_history_cap(state: State<'_, AppState>, cap: u32) -> Result<usize, String> {
     let c = (cap as usize).max(1024).min(DEFAULT_HISTORY_TAIL_CAP * 4);
     state.hosts.history().set_cap(c);
     Ok(c)

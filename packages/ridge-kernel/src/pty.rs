@@ -352,6 +352,7 @@ pub struct PtyInfo {
     pub pane_index: usize,
     pub workspace_id: Option<Uuid>,
     pub role: String,
+    pub program: Option<String>,
     pub launch_profile: Option<String>,
     pub cwd: Option<String>,
     pub status: String,
@@ -436,6 +437,7 @@ impl PtyRegistry {
             pane_index: self.next_index.fetch_add(1, Ordering::Relaxed),
             workspace_id,
             role: role.to_string(),
+            program: program.map(str::to_string),
             launch_profile: launch_profile.map(str::to_string),
             cwd: cwd.map(str::to_string),
             status: "Idle".to_string(),
@@ -482,6 +484,7 @@ impl PtyRegistry {
                     pane_index: self.next_index.fetch_add(1, Ordering::Relaxed),
                     workspace_id: None,
                     role: "shell".to_string(),
+                    program: shell.map(str::to_string),
                     launch_profile: None,
                     cwd: cwd.map(str::to_string),
                     status: "Idle".to_string(),
@@ -716,13 +719,7 @@ impl PtyBridge {
         cwd: Option<&str>,
         launch_profile: Option<&str>,
     ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
-        Self::spawn_command_with_env(
-            program,
-            args,
-            cwd,
-            launch_profile,
-            &HashMap::new(),
-        )
+        Self::spawn_command_with_env(program, args, cwd, launch_profile, &HashMap::new())
     }
 
     pub fn spawn_command_with_env(
@@ -1017,7 +1014,11 @@ mod tests {
         #[cfg(windows)]
         let (program, args) = (
             Some("cmd.exe"),
-            vec!["/d".to_string(), "/c".to_string(), "echo %RIDGE_KERNEL_TEST_ENV%".to_string()],
+            vec![
+                "/d".to_string(),
+                "/c".to_string(),
+                "echo %RIDGE_KERNEL_TEST_ENV%".to_string(),
+            ],
         );
         #[cfg(not(windows))]
         let (program, args) = (
@@ -1027,14 +1028,9 @@ mod tests {
                 "printf '%s' \"$RIDGE_KERNEL_TEST_ENV\"".to_string(),
             ],
         );
-        let (bridge, mut output) = PtyBridge::spawn_command_with_env(
-            program,
-            &args,
-            None,
-            None,
-            &env,
-        )
-        .expect("spawn explicit environment child");
+        let (bridge, mut output) =
+            PtyBridge::spawn_command_with_env(program, &args, None, None, &env)
+                .expect("spawn explicit environment child");
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut data = Vec::new();
         while Instant::now() < deadline {

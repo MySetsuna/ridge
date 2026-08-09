@@ -315,7 +315,8 @@ mod tests {
         let workspace = graph.create_workspace();
         let pane = graph.leaves(workspace).unwrap()[0];
         graph.set_locked_size(workspace, pane, 120, 40).unwrap();
-        let restored: WorkspaceGraph = serde_json::from_str(&serde_json::to_string(&graph).unwrap()).unwrap();
+        let restored: WorkspaceGraph =
+            serde_json::from_str(&serde_json::to_string(&graph).unwrap()).unwrap();
         assert_eq!(restored.active(), Some(workspace));
         assert_eq!(restored.locked_size(workspace, pane), Some((120, 40)));
     }

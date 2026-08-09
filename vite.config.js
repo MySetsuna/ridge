@@ -16,6 +16,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // src/lib/transport/tauriShim so the desktop code runs untouched outside Tauri.
 // In the normal Tauri build the flag is unset and none of this applies.
 const WEB_REMOTE = !!process.env.RIDGE_WEB_REMOTE;
+const TAURI_DEV_PORT = Number(process.env.RIDGE_DEV_SERVER_PORT || 5173);
+const TAURI_DEV_CDP = !!process.env.RIDGE_DEV_SERVER_PORT;
 /** @param {string} f */
 const shim = (f) => path.resolve(__dirname, 'src/lib/transport/tauriShim', f);
 /** @type {Record<string, string>} */
@@ -57,17 +59,20 @@ export default defineConfig({
 
   // Tauri dev 端口配置
   server: {
-    host: '0.0.0.0',
-    port: 5173,
-    strictPort: false,
+    // CDP mode supplies a dynamic loopback port. Keep the HTTP and HMR
+    // listeners on that same IPv4 endpoint; `localhost` resolves to ::1 on
+    // this host, where WebView2 dev startup can fail with EACCES.
+    host: TAURI_DEV_CDP ? '127.0.0.1' : '0.0.0.0',
+    port: TAURI_DEV_PORT,
+    strictPort: TAURI_DEV_CDP,
     hmr: {
       // 浏览器侧 WebSocket 连接目标必须是可达地址。`0.0.0.0` 只能用于
       // 服务端 bind（监听全部接口），把它透传给 client 会被浏览器拒为
       // ERR_ADDRESS_INVALID，HMR 死循环重连。Tauri WebView 与本机浏览
       // 器都通过 localhost 访问 dev server，写死 localhost 即可。
       protocol: 'ws',
-      host: 'localhost',
-      port: 5173,
+      host: TAURI_DEV_CDP ? '127.0.0.1' : 'localhost',
+      port: TAURI_DEV_PORT,
     },
     // 允许 Tauri 的 WebView 访问
     fs: {

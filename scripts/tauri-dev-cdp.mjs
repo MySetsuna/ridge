@@ -29,13 +29,15 @@
 //   CDP_PORT=<N> pnpm cdp:smoke         # or just `pnpm cdp:smoke` (auto-discovers)
 //
 // The env vars only live for this child process; no shell side effects.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { DEV_USER_DATA_DIR, readDevToolsActivePort } from './cdp-port.mjs';
 
 const userDataDir = DEV_USER_DATA_DIR;
+const root = path.resolve(import.meta.dirname, '..');
+const devKernelDataDir = path.join(root, '.iteration', 'dev-kernel-isolated-cdp');
 const portFile = path.join(userDataDir, 'cdp-port.txt');
 const activePortFile = path.join(userDataDir, 'EBWebView', 'DevToolsActivePort');
 const configFile = path.join(userDataDir, 'tauri-dev-cdp.config.json');
@@ -56,20 +58,63 @@ try { fs.rmSync(portFile, { force: true }); } catch { /* ignore */ }
 // port is silently ignored. `--remote-allow-origins=*` is REQUIRED for
 // chrome-devtools-mcp (and any CDP client sending an Origin header) to attach on
 // Chromium 111+; without it the DevTools websocket handshake is rejected (403).
+const scaleFactor = process.env.RIDGE_CDP_DEVICE_SCALE_FACTOR?.trim();
+const forcedScaleArg = scaleFactor && /^\d+(?:\.\d+)?$/.test(scaleFactor)
+  ? ` --force-device-scale-factor=${scaleFactor}`
+  : '';
 process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS =
-  `--remote-debugging-port=0 --remote-debugging-address=127.0.0.1 --remote-allow-origins=*`;
+  `--remote-debugging-port=0 --remote-debugging-address=127.0.0.1 --remote-allow-origins=*${forcedScaleArg}`;
 process.env.WEBVIEW2_USER_DATA_FOLDER = userDataDir;
+// Keep loopback IPC/Remote traffic off any workspace-wide proxy (NLM uses the
+// same proxy for Google traffic, but the local WSS host must never tunnel).
+const appendLoopbackNoProxy = (value) => [...new Set(
+  `${value ?? ''},localhost,127.0.0.1`.split(',').map((item) => item.trim()).filter(Boolean),
+)].join(',');
+process.env.NO_PROXY = appendLoopbackNoProxy(process.env.NO_PROXY);
+process.env.no_proxy = appendLoopbackNoProxy(process.env.no_proxy);
 // Let this debug instance coexist with an already-running installed Ridge:
 // the installed app holds the single-instance lock, so without this the dev
 // instance would be focused-and-exited on launch. Gated entirely in lib.rs by
 // this env var; the installed/release app never sets it. (See docs/CDP_TESTING.md.)
 process.env.RIDGE_DISABLE_SINGLE_INSTANCE = '1';
 process.env.RIDGE_DEV_SERVER_PORT = String(vitePort);
+// Do not attach dev:cdp to the installed Ridge kernel. The desktop and its
+// `rdg host` sidecar must share this project-local registry/data graph.
+process.env.RIDGE_KERNEL_DATA_DIR = devKernelDataDir;
+// Some desktop test hosts run inside a Windows Job that rejects
+// CREATE_BREAKAWAY_FROM_JOB. The kernel launcher keeps production fail-closed;
+// this explicit dev harness opt-in permits the bounded same-job fallback so
+// CDP can still exercise the desktop in that constrained host.
+process.env.RIDGE_TEST_ALLOW_NON_BREAKAWAY = '1';
 fs.mkdirSync(userDataDir, { recursive: true });
+fs.mkdirSync(devKernelDataDir, { recursive: true });
 fs.writeFileSync(configFile, JSON.stringify({ build: { devUrl: `http://127.0.0.1:${vitePort}` } }));
+
+// The LAN host is a detached `rdg` sidecar, not part of the Tauri crate. Keep
+// the debug sidecar in lockstep with this checkout before launching WebView2;
+// otherwise desktop code can be new while Remote still runs yesterday's CLI.
+const cliBuild = spawnSync('cargo', ['build', '-p', 'ridge-cli'], {
+  cwd: path.resolve(import.meta.dirname, '..'),
+  env: process.env,
+  stdio: 'inherit',
+  shell: process.platform === 'win32',
+});
+if (cliBuild.status !== 0) {
+  console.error(`[tauri-dev-cdp] ridge-cli debug build failed (exit ${cliBuild.status ?? 'unknown'})`);
+  process.exit(cliBuild.status ?? 1);
+}
+const rdgSource = path.join(root, 'target', 'debug', process.platform === 'win32' ? 'rdg.exe' : 'rdg');
+const rdgCopy = path.join(
+  userDataDir,
+  `rdg-dev-${process.pid}${process.platform === 'win32' ? '.exe' : ''}`,
+);
+fs.copyFileSync(rdgSource, rdgCopy);
+process.env.RIDGE_RDG_BINARY = rdgCopy;
+console.log(`[tauri-dev-cdp] debug rdg sidecar: ${rdgCopy}`);
 
 console.log(`[tauri-dev-cdp] WebView2 CDP   : dynamic port (Chromium 136+ blocks fixed ports)`);
 console.log(`[tauri-dev-cdp] user-data-dir : ${userDataDir}`);
+console.log(`[tauri-dev-cdp] kernel-data-dir: ${devKernelDataDir}`);
 console.log(`[tauri-dev-cdp] Ridge Vite URL : http://127.0.0.1:${vitePort}`);
 console.log(`[tauri-dev-cdp] waiting for DevToolsActivePort after the Ridge window opens…`);
 

@@ -241,7 +241,8 @@ mod dpapi {
         if ok == 0 || out.pb_data.is_null() {
             return None;
         }
-        let result = unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
+        let result =
+            unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
         unsafe { LocalFree(out.pb_data as *mut c_void) };
         Some(result)
     }
@@ -269,7 +270,8 @@ mod dpapi {
         if ok == 0 || out.pb_data.is_null() {
             return None;
         }
-        let result = unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
+        let result =
+            unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
         unsafe { LocalFree(out.pb_data as *mut c_void) };
         Some(result)
     }
@@ -347,7 +349,10 @@ mod tests {
     fn fingerprint_golden_matches_browser() {
         // 跨实现 conformance：与浏览器 deviceTrust.test.ts 'golden' 同公钥同指纹
         // （id_pub = 0x11*32）。host(Rust) 与 controller(TS) 显示同一指纹，用户方能带外核对。
-        assert_eq!(fingerprint_of(&[0x11u8; PUBLIC_KEY_LEN]), "02D4-49A3-1FBB-267C");
+        assert_eq!(
+            fingerprint_of(&[0x11u8; PUBLIC_KEY_LEN]),
+            "02D4-49A3-1FBB-267C"
+        );
     }
 
     #[test]

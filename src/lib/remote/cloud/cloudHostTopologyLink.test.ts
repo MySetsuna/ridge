@@ -28,6 +28,9 @@ class FakeRpc {
         ? Promise.reject(new Error('workspace create failed'))
         : Promise.resolve('workspace-new');
     }
+    if (method === 'switch_workspace') return Promise.resolve(null);
+    if (method === 'split_pane') return Promise.resolve({ pane_id: 'pane-new' });
+    if (method === 'change_pane_shell' || method === 'activate_pane_pty') return Promise.resolve(null);
     if (method === 'get_pane_layout_for') return Promise.resolve(this.paneLayout);
     return new Promise(() => {});
   }
@@ -46,16 +49,32 @@ class FakeRpc {
   }
 }
 
-function adapter(): CloudWebrtcAdapter {
+interface FakeAdapter {
+  state: () => 'connected';
+  close: () => void;
+  dispose: () => void;
+  onPaneBytes: (fn: (paneId: string, bytes: Uint8Array) => void) => () => boolean;
+  emitPaneBytes(paneId: string, bytes: Uint8Array): void;
+}
+
+function adapter(): FakeAdapter {
+  const paneListeners = new Set<(paneId: string, bytes: Uint8Array) => void>();
   return {
     state: () => 'connected',
     close: vi.fn(),
     dispose: vi.fn(),
-  } as unknown as CloudWebrtcAdapter;
+    onPaneBytes: (fn: (paneId: string, bytes: Uint8Array) => void) => {
+      paneListeners.add(fn);
+      return () => paneListeners.delete(fn);
+    },
+    emitPaneBytes: (paneId: string, bytes: Uint8Array) => {
+      for (const fn of paneListeners) fn(paneId, bytes);
+    },
+  };
 }
 
-function linkWith(rpc: FakeRpc): CloudHostTopologyLink {
-  return new CloudHostTopologyLink(adapter(), rpc as unknown as RpcClient);
+function linkWith(rpc: FakeRpc, transport: FakeAdapter = adapter()): CloudHostTopologyLink {
+  return new CloudHostTopologyLink(transport as unknown as CloudWebrtcAdapter, rpc as unknown as RpcClient);
 }
 
 describe('CloudHostTopologyLink pane lifecycle', () => {
@@ -91,6 +110,57 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
     const link = linkWith(rpc);
 
     await expect(link.createWorkspace('new')).rejects.toThrow('workspace create failed');
+  });
+
+  it('creates a pane from the explicitly switched workspace layout', async () => {
+    const rpc = new FakeRpc();
+    rpc.paneLayout = { type: 'leaf', id: 'p1' };
+    const link = linkWith(rpc);
+
+    await expect(link.switchWorkspace('w2')).resolves.toBe(true);
+    await expect(link.createPane()).resolves.toBe('pane-new');
+
+    expect(rpc.requests).toContainEqual({
+      method: 'get_pane_layout_for',
+      params: { workspaceId: 'w2' },
+      options: undefined,
+    });
+    expect(rpc.requests).toContainEqual({
+      method: 'split_pane',
+      params: { workspaceId: 'w2', paneId: 'p1', direction: 'horizontal' },
+      options: undefined,
+    });
+  });
+
+  it('passes the selected workspace when rebuilding a remote shell', async () => {
+    const rpc = new FakeRpc();
+    const link = linkWith(rpc);
+    link.subscribePane(paneA);
+
+    await link.changePaneShell('w1', 'p1', {
+      id: 'git-bash',
+      label: 'Git Bash',
+      program: 'C:\\Program Files\\Git\\bin\\bash.exe',
+      args: [],
+    });
+
+    expect(rpc.requests).toEqual([
+      expect.objectContaining({
+        method: 'change_pane_shell',
+        params: {
+          workspaceId: 'w1',
+          paneId: 'p1',
+          shell: 'C:\\Program Files\\Git\\bin\\bash.exe',
+          args: [],
+        },
+        options: { scope: 'w1:p1' },
+      }),
+      expect.objectContaining({
+        method: 'activate_pane_pty',
+        params: { workspaceId: 'w1', paneId: 'p1' },
+        options: { scope: 'w1:p1' },
+      }),
+    ]);
   });
 
   it('cancels one pane scope before close and blocks stale input/resize only for that pane', async () => {
@@ -201,6 +271,41 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
       { method: 'subscribe-pane', params: { workspaceId: 'w1', paneId: 'p1', active: false } },
       { method: 'subscribe-pane', params: { workspaceId: 'w1', paneId: 'p2', active: true } },
     ]);
+  });
+
+  it('keeps same-named panes isolated during discovery cleanup', async () => {
+    const rpc = new FakeRpc();
+    const link = linkWith(rpc);
+    const sameInOtherWorkspace: PaneRef = { workspaceId: 'w2', paneId: 'p1' };
+    link.subscribePane(paneA);
+    link.subscribePane(sameInOtherWorkspace);
+
+    rpc.paneLayout = null;
+    await expect(link.listWorkspacePanes('w1')).resolves.toEqual([]);
+
+    expect(link.sendStdin(paneA, 'stale')).toBe(false);
+    expect(link.sendStdin(sameInOtherWorkspace, 'live')).toBe(true);
+  });
+
+  it('routes legacy cloud raw bytes only when paneId identifies one workspace', async () => {
+    const rpc = new FakeRpc();
+    const transport = adapter();
+    const link = linkWith(rpc, transport);
+    const received: PaneRef[] = [];
+    link.onRawBytes((pane) => received.push(pane));
+
+    link.subscribePane(paneA);
+    transport.emitPaneBytes('p1', new Uint8Array([1]));
+    expect(received).toEqual([paneA]);
+
+    const sameInOtherWorkspace: PaneRef = { workspaceId: 'w2', paneId: 'p1' };
+    link.subscribePane(sameInOtherWorkspace);
+    transport.emitPaneBytes('p1', new Uint8Array([2]));
+    expect(received).toEqual([paneA]);
+
+    await expect(link.closePane(paneA)).resolves.toBe(true);
+    transport.emitPaneBytes('p1', new Uint8Array([3]));
+    expect(received).toEqual([paneA, sameInOtherWorkspace]);
   });
 
   it('retires every pane in a closed workspace without touching another workspace', async () => {

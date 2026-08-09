@@ -16,18 +16,27 @@ pub struct CoverUv {
 /// 画布）。另一维 `scale = 1, offset = 0`（整段铺满，不裁）。
 pub fn cover_uv_transform(canvas_w: u32, canvas_h: u32, img_w: u32, img_h: u32) -> CoverUv {
     if img_w == 0 || img_h == 0 || canvas_w == 0 || canvas_h == 0 {
-        return CoverUv { scale: [1.0, 1.0], offset: [0.0, 0.0] };
+        return CoverUv {
+            scale: [1.0, 1.0],
+            offset: [0.0, 0.0],
+        };
     }
     let canvas_aspect = canvas_w as f32 / canvas_h as f32;
     let img_aspect = img_w as f32 / img_h as f32;
     if canvas_aspect > img_aspect {
         // 画布更宽：横向铺满，纵向裁切。可见高度比例 = img_aspect / canvas_aspect。
         let visible = img_aspect / canvas_aspect; // < 1
-        CoverUv { scale: [1.0, visible], offset: [0.0, (1.0 - visible) * 0.5] }
+        CoverUv {
+            scale: [1.0, visible],
+            offset: [0.0, (1.0 - visible) * 0.5],
+        }
     } else {
         // 画布更高（或等比）：纵向铺满，横向裁切。
         let visible = canvas_aspect / img_aspect; // <= 1
-        CoverUv { scale: [visible, 1.0], offset: [(1.0 - visible) * 0.5, 0.0] }
+        CoverUv {
+            scale: [visible, 1.0],
+            offset: [(1.0 - visible) * 0.5, 0.0],
+        }
     }
 }
 
@@ -44,8 +53,7 @@ pub fn pack_rows_to_alignment(rgba: &[u8], width: u32, height: u32) -> (Vec<u8>,
     for row in 0..height as usize {
         let src = row * unpadded as usize;
         let dst = row * padded as usize;
-        out[dst..dst + unpadded as usize]
-            .copy_from_slice(&rgba[src..src + unpadded as usize]);
+        out[dst..dst + unpadded as usize].copy_from_slice(&rgba[src..src + unpadded as usize]);
     }
     (out, padded)
 }
@@ -80,13 +88,25 @@ mod tests {
     #[test]
     fn cover_zero_image_is_identity() {
         let uv = cover_uv_transform(100, 100, 0, 0);
-        assert_eq!(uv, CoverUv { scale: [1.0, 1.0], offset: [0.0, 0.0] });
+        assert_eq!(
+            uv,
+            CoverUv {
+                scale: [1.0, 1.0],
+                offset: [0.0, 0.0]
+            }
+        );
     }
 
     #[test]
     fn cover_zero_canvas_is_identity() {
         let uv = cover_uv_transform(0, 0, 100, 100);
-        assert_eq!(uv, CoverUv { scale: [1.0, 1.0], offset: [0.0, 0.0] });
+        assert_eq!(
+            uv,
+            CoverUv {
+                scale: [1.0, 1.0],
+                offset: [0.0, 0.0]
+            }
+        );
     }
 
     #[test]

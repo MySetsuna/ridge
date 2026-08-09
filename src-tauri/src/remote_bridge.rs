@@ -161,7 +161,9 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
 
     fn create_workspace(&self, name: Option<&str>) -> Result<String, String> {
         // 复用桌面命令核心（DRY：Workspace 字面量只在 create_workspace_core 一处）。
-        Ok(crate::commands::workspace::create_workspace_core(self, name))
+        Ok(crate::commands::workspace::create_workspace_core(
+            self, name,
+        ))
     }
 
     fn close_workspace(&self, workspace_id: &str) -> Result<(), String> {
@@ -189,7 +191,13 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
             .app_handle
             .get()
             .ok_or_else(|| "app handle 未就绪".to_string())?;
-        crate::commands::ridge_file::save_workspace_to_file_core(app, self, workspace_id, name, path)
+        crate::commands::ridge_file::save_workspace_to_file_core(
+            app,
+            self,
+            workspace_id,
+            name,
+            path,
+        )
     }
 
     fn delete_workspace_file(&self, workspace_id: &str) -> Result<(), String> {

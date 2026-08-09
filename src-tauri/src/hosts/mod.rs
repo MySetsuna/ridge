@@ -203,12 +203,10 @@ impl HostRegistry {
 
     /// Remove a host from the kernel first, then drop the process-local view.
     pub fn remove_kernel_authoritative(&self, id: &str) -> Result<bool, String> {
-        write_kernel_host(
-            "DELETE",
-            &format!("/v1/domain/remote-hosts/{id}"),
-            None,
-        )?;
-        self.live_sinks.write().retain(|(host_id, _), _| host_id != id);
+        write_kernel_host("DELETE", &format!("/v1/domain/remote-hosts/{id}"), None)?;
+        self.live_sinks
+            .write()
+            .retain(|(host_id, _), _| host_id != id);
         Ok(self.hosts.write().remove(id))
     }
 
@@ -579,17 +577,9 @@ impl HostRegistry {
         let endpoint = ridge_kernel::client::running_endpoint()
             .ok_or_else(|| "ridge-kernel domain endpoint unavailable".to_string())?;
         let mutation = if attached {
-            ridge_kernel::client::attach_domain_remote_host_session(
-                &endpoint,
-                host_id,
-                session_id,
-            )?
+            ridge_kernel::client::attach_domain_remote_host_session(&endpoint, host_id, session_id)?
         } else {
-            ridge_kernel::client::detach_domain_remote_host_session(
-                &endpoint,
-                host_id,
-                session_id,
-            )?
+            ridge_kernel::client::detach_domain_remote_host_session(&endpoint, host_id, session_id)?
         };
         if mutation.host_id != host_id
             || mutation.session_id != session_id
@@ -1828,17 +1818,13 @@ mod tests {
                 title: "shell-2".into(),
             },
         ]);
-        let sessions = bind_outbound_and_list_with(
-            &reg,
-            "lan:h",
-            mock.clone(),
-            |hosts, sessions| {
+        let sessions =
+            bind_outbound_and_list_with(&reg, "lan:h", mock.clone(), |hosts, sessions| {
                 hosts.replace_sessions("lan:h", sessions);
                 hosts.set_status("lan:h", HostStatus::Connected, "test");
                 Ok(())
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         assert_eq!(sessions.len(), 2);
         assert_eq!(reg.get("lan:h").unwrap().status, HostStatus::Connected);
 
@@ -1975,11 +1961,8 @@ mod tests {
         let observed_c = observed.clone();
         reg.detach_foreign_with(pane, |host_id, session_id, attached| {
             assert!(reg.foreign_for_pane(pane).is_some());
-            *observed_c.lock().unwrap() = Some((
-                host_id.to_string(),
-                session_id.to_string(),
-                attached,
-            ));
+            *observed_c.lock().unwrap() =
+                Some((host_id.to_string(), session_id.to_string(), attached));
             reg.set_session_attached(host_id, session_id, attached);
             Ok(())
         })
@@ -2026,16 +2009,11 @@ mod tests {
             detail: "ok".into(),
             sessions: vec![],
         });
-        bind_outbound_and_list_with(
-            &state.hosts,
-            "lan:h",
-            mock.clone(),
-            |hosts, sessions| {
-                hosts.replace_sessions("lan:h", sessions);
-                hosts.set_status("lan:h", HostStatus::Connected, "test");
-                Ok(())
-            },
-        )
+        bind_outbound_and_list_with(&state.hosts, "lan:h", mock.clone(), |hosts, sessions| {
+            hosts.replace_sessions("lan:h", sessions);
+            hosts.set_status("lan:h", HostStatus::Connected, "test");
+            Ok(())
+        })
         .unwrap();
         let client = state.hosts.outbound_client("lan:h").unwrap();
         client.subscribe("main").unwrap();
@@ -2137,23 +2115,28 @@ mod tests {
         });
         let mock = Arc::new(MockOutboundTransport::new());
         mock.preset_list(&[]);
-        bind_outbound_and_list_with(
-            &reg,
-            "lan:disconnect-failure",
-            mock,
-            |hosts, sessions| {
-                hosts.replace_sessions("lan:disconnect-failure", sessions);
-                hosts.set_status("lan:disconnect-failure", HostStatus::Connected, "test");
-                Ok(())
-            },
-        )
+        bind_outbound_and_list_with(&reg, "lan:disconnect-failure", mock, |hosts, sessions| {
+            hosts.replace_sessions("lan:disconnect-failure", sessions);
+            hosts.set_status("lan:disconnect-failure", HostStatus::Connected, "test");
+            Ok(())
+        })
         .unwrap();
         let client = reg.outbound_client("lan:disconnect-failure").unwrap();
 
-        let error = disconnect_host_outbound(&reg, "lan:disconnect-failure")
+        // Inject the kernel projection failure at the seam. The real helper
+        // must not depend on whichever kernel happens to be running in the
+        // developer session; otherwise this regression test is environment
+        // dependent and can silently exercise the success path.
+        let error =
+            disconnect_host_outbound_with(&reg, "lan:disconnect-failure", |_hosts, _host_id| {
+                Err("ridge-kernel unavailable".into())
+            })
             .expect_err("kernel-unavailable disconnect must fail closed");
         assert!(error.contains("ridge-kernel"));
         assert_eq!(client.state(), outbound::OutboundState::Listed);
-        assert_eq!(reg.get("lan:disconnect-failure").unwrap().status, HostStatus::Connected);
+        assert_eq!(
+            reg.get("lan:disconnect-failure").unwrap().status,
+            HostStatus::Connected
+        );
     }
 }

@@ -236,6 +236,7 @@
   import { isTuiActive, snapshotLiveSignals } from '@ridge/remote/shared/terminal/tuiGate';
   import { formatDroppedPathsForPaste } from '@ridge/remote/shared/terminal/dropPaste';
   import { makeHostPorts } from '$lib/terminal/hostPorts';
+  import { withTimeout } from '$lib/utils/withTimeout';
 
   // Hold every RidgePane mount until restart recovery has had a chance to
   // bind stable pane IDs to the still-running kernel.  This is a one-shot
@@ -1482,7 +1483,11 @@ function expandSidebar(minWidth = 0) {
       // duplicate create/activate pair.
       if (!webRemote) {
         try {
-          await invoke<number>('reattach_kernel_ptys');
+          await withTimeout(
+            invoke<number>('reattach_kernel_ptys'),
+            15_000,
+            'kernel PTY reattach timed out after 15s',
+          );
         } catch (e) {
           console.warn('kernel PTY reattach unavailable', e);
         } finally {

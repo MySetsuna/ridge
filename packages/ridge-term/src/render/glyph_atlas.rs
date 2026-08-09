@@ -30,8 +30,8 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
-/// Cache key. Identifies a glyph variant by (font, size, codepoint
-/// or font-internal id, weight/slant flags).
+/// Cache key. Identifies a glyph variant by (font, size, raster density,
+/// codepoint or font-internal id, weight/slant flags).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
     /// Hash of the resolved font family (after fallback chain). Two
@@ -46,11 +46,36 @@ pub struct GlyphKey {
     /// Weight + slant flags packed into a u8.
     /// Bit 0 = bold, bit 1 = italic, bits 2-7 reserved.
     pub style_flags: u8,
+    /// Rasterizer device density in 1/1000 units. The atlas is shared by
+    /// panes, so DPR must participate in identity or a high-DPR pane can
+    /// reuse a low-DPR bitmap admitted by a sibling pane.
+    pub raster_dpr_q: u16,
 }
 
 impl GlyphKey {
     pub const STYLE_BOLD: u8 = 0b01;
     pub const STYLE_ITALIC: u8 = 0b10;
+
+    pub fn new(
+        font_family_hash: u64,
+        font_size_q: u16,
+        glyph_id: u32,
+        style_flags: u8,
+        raster_dpr: f32,
+    ) -> Self {
+        let dpr = if raster_dpr.is_finite() && raster_dpr > 0.0 {
+            raster_dpr
+        } else {
+            1.0
+        };
+        Self {
+            font_family_hash,
+            font_size_q,
+            glyph_id,
+            style_flags,
+            raster_dpr_q: (dpr * 1000.0).round().clamp(1.0, u16::MAX as f32) as u16,
+        }
+    }
 }
 
 /// Cached entry — where the bitmap lives in the texture array and how
@@ -261,12 +286,7 @@ mod tests {
     use super::*;
 
     fn key(id: u32) -> GlyphKey {
-        GlyphKey {
-            font_family_hash: 0xabc,
-            font_size_q: 1400,
-            glyph_id: id,
-            style_flags: 0,
-        }
+        GlyphKey::new(0xabc, 1400, id, 0, 1.0)
     }
 
     fn entry(layer: u16) -> GlyphEntry {
@@ -293,6 +313,15 @@ mod tests {
         assert_eq!(a.insert(key(1), entry(0)), None);
         assert_eq!(a.lookup(&key(1)), Some(entry(0)));
         assert_eq!(a.len(), 1);
+    }
+
+    #[test]
+    fn raster_density_is_part_of_cache_identity() {
+        let low = GlyphKey::new(0xabc, 1400, 65, 0, 1.0);
+        let high = GlyphKey::new(0xabc, 1400, 65, 0, 2.0);
+        assert_ne!(low, high);
+        assert_eq!(low.raster_dpr_q, 1000);
+        assert_eq!(high.raster_dpr_q, 2000);
     }
 
     #[test]

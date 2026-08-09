@@ -36,6 +36,7 @@ const MAX_PRE_CANCELLED_DATA_REQUESTS: usize = 1024;
 /// command cannot block `$/cancel`, PTY input, or health checks.
 const MAX_IN_FLIGHT_INVOKE_REQUESTS: usize = 32;
 const MAX_PRE_CANCELLED_INVOKE_REQUESTS: usize = 1024;
+const REMOTE_METADATA_CHAN_CAP: usize = 64;
 
 struct PendingDataRequest {
     handle: tokio::task::JoinHandle<()>,
@@ -545,11 +546,14 @@ fn build_remote_pane_list(ws: &crate::state::Workspace) -> Vec<serde_json::Value
                 .teammate_agent_pane_map
                 .iter()
                 .find_map(|(agent, owner)| (*owner == pane_id).then(|| agent.clone()));
-            let agent_state = ws.teammate_pane_states.get(&pane_id).map(|state| match state {
-                crate::state::PaneState::Idle => "idle",
-                crate::state::PaneState::Busy => "busy",
-                crate::state::PaneState::Starting => "starting",
-            });
+            let agent_state = ws
+                .teammate_pane_states
+                .get(&pane_id)
+                .map(|state| match state {
+                    crate::state::PaneState::Idle => "idle",
+                    crate::state::PaneState::Busy => "busy",
+                    crate::state::PaneState::Starting => "starting",
+                });
             serde_json::json!({
                 "id": pane_id.to_string(),
                 "title": title,
@@ -568,6 +572,17 @@ fn build_remote_pane_list(ws: &crate::state::Workspace) -> Vec<serde_json::Value
         .collect();
     list.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     list
+}
+
+fn should_push_panes_update(
+    active_workspace_id: Uuid,
+    subscribed_panes: &std::collections::HashSet<(Uuid, Uuid)>,
+    workspace_id: Uuid,
+) -> bool {
+    active_workspace_id == workspace_id
+        || subscribed_panes
+            .iter()
+            .any(|(subscribed_workspace_id, _)| *subscribed_workspace_id == workspace_id)
 }
 
 /// Resize a pane's PTY and canonical parser, broadcast the resulting
@@ -708,7 +723,9 @@ async fn handle_ws(
                 message = low_tx_rx.recv() => message,
             };
             let Some(message) = next else { return };
-            if socket_tx.send(message).await.is_err() { return; }
+            if socket_tx.send(message).await.is_err() {
+                return;
+            }
         }
     });
 
@@ -732,22 +749,20 @@ async fn handle_ws(
     // Per-client active/background lanes. The one-slot merge means a low frame
     // can be in flight, but a low backlog can never sit ahead of a new active frame.
     let cap = ridge_remote::pane::RAW_CHAN_CAP;
-    let (active_raw_tx, background_raw_tx, mut raw_rx) =
-        spawn_remote_lane_scheduler(cap);
+    let (active_raw_tx, background_raw_tx, mut raw_rx) = spawn_remote_lane_scheduler(cap);
+    let (metadata_tx, mut metadata_rx) = mpsc::channel(REMOTE_METADATA_CHAN_CAP);
     let sub_id = RemoteSubId::next();
 
     // Gap and throttle state is per pane; one noisy background pane must never
     // dirty or throttle the foreground pane.
-    let mut desync_by_pane:
-        std::collections::HashMap<(Uuid, Uuid), Arc<AtomicBool>> =
+    let mut desync_by_pane: std::collections::HashMap<(Uuid, Uuid), Arc<AtomicBool>> =
         std::collections::HashMap::new();
     // §resync-throttle: a resync replays up to 64 KiB of scrollback, so under a
     // sustained-overload feedback loop (slow client → drops → resync → slower)
     // we cap it to at most once per interval. The desync flag is only CONSUMED
     // when we actually resync — if throttled, it stays set so a later frame
     // (after the interval) performs the recovery instead of losing the signal.
-    let mut last_resync_by_pane:
-        std::collections::HashMap<(Uuid, Uuid), Instant> =
+    let mut last_resync_by_pane: std::collections::HashMap<(Uuid, Uuid), Instant> =
         std::collections::HashMap::new();
     const RESYNC_MIN_INTERVAL: Duration = ridge_remote::pane::RESYNC_MIN_INTERVAL;
 
@@ -1102,6 +1117,7 @@ async fn handle_ws(
                                                         RemotePaneSub {
                                                             id: sub_id,
                                                             raw_tx: background_raw_tx.clone(),
+                                                            metadata_tx: metadata_tx.clone(),
                                                             desync: Arc::clone(flag),
                                                         },
                                                     );
@@ -1123,6 +1139,7 @@ async fn handle_ws(
                                                     RemotePaneSub {
                                                         id: sub_id,
                                                         raw_tx: active_raw_tx.clone(),
+                                                        metadata_tx: metadata_tx.clone(),
                                                         desync: Arc::clone(flag),
                                                     },
                                                 );
@@ -1154,6 +1171,7 @@ async fn handle_ws(
                                             } else {
                                                 background_raw_tx.clone()
                                             },
+                                            metadata_tx: metadata_tx.clone(),
                                             desync: desync.clone(),
                                         },
                                     );
@@ -2018,6 +2036,49 @@ async fn handle_ws(
                             }
                         }
                     }
+                    metadata_event = metadata_rx.recv() => {
+                        match metadata_event {
+                            Some(crate::types::RemotePtyEvent::Metadata {
+                                workspace_id,
+                                pane_id,
+                                title,
+                                cwd,
+                            }) => {
+                                if subscribed_panes.contains(&(workspace_id, pane_id)) {
+                                    let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                        "type": "pty-meta",
+                                        "workspaceId": workspace_id.to_string(),
+                                        "paneId": pane_id.to_string(),
+                                        "title": title,
+                                        "cwd": cwd.clone(),
+                                    }).to_string())).await;
+                                    if let Some(cwd) = &cwd {
+                                        let _ = ws_tx.send(Message::Text(serde_json::json!({
+                                            "type": "event",
+                                            "name": format!("pane-cwd-changed-{}-{}", workspace_id, pane_id),
+                                            "payload": { "cwd": cwd },
+                                        }).to_string())).await;
+                                    }
+                                }
+                            }
+                            Some(crate::types::RemotePtyEvent::PtyResized {
+                                workspace_id,
+                                pane_id,
+                                rows,
+                                cols,
+                            }) => {
+                                if subscribed_panes.contains(&(workspace_id, pane_id)) {
+                                    let _ = ws_tx
+                                        .send(Message::Text(pty_resized_message(
+                                            workspace_id, pane_id, rows, cols,
+                                        )))
+                                        .await;
+                                }
+                            }
+                            Some(crate::types::RemotePtyEvent::RawBytes { .. }) => {}
+                            None => break,
+                        }
+                    }
                     event = raw_rx.recv() => {
                         match event {
                             Some((foreground, crate::types::RemotePtyEvent::RawBytes { workspace_id, pane_id, bytes })) => {
@@ -2126,7 +2187,7 @@ async fn handle_ws(
                     structural = structural_rx.recv() => {
                         match structural {
                             Ok(crate::types::RemoteStructuralEvent::PanesChanged { workspace_id }) => {
-                                if subscribed_panes.iter().any(|(ws, _)| *ws == workspace_id) {
+                                if should_push_panes_update(active_ws_id, &subscribed_panes, workspace_id) {
                                     // Self-heal orphaned PTYs/pending before re-enumerating.
                                     crate::commands::terminal::reap_orphan_panes_all(&state).await;
                                     // Re-enumerate panes for this workspace and push to client.
@@ -2447,18 +2508,20 @@ async fn dispatch_data_request(
         "move_path" => unit(project::move_path(s(params, "from"), s(params, "to")).await),
 
         // ── Git ── (all async; offload internally)
-        "git_status" => git_status_result(
-            s(params, "repoRoot"),
-            git_slot,
-            // Older controllers omit the flag and still receive the original
-            // combined payload. Current Remote sends false to keep first paint
-            // limited to working-tree state.
-            params
-                .get("includeDetails")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(true),
-        )
-        .await,
+        "git_status" => {
+            git_status_result(
+                s(params, "repoRoot"),
+                git_slot,
+                // Older controllers omit the flag and still receive the original
+                // combined payload. Current Remote sends false to keep first paint
+                // limited to working-tree state.
+                params
+                    .get("includeDetails")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true),
+            )
+            .await
+        }
         "git_list_branches" => val(git::git_list_branches(s(params, "repoRoot")).await),
         "get_git_commits_paginated" => val(git::get_git_commits_paginated(
             s(params, "repoRoot"),
@@ -2517,14 +2580,12 @@ async fn dispatch_data_request(
             unit(git::git_clean_untracked(s(params, "repoRoot"), Vec::new()).await)
         }
         // Read-only: unified diff of one file vs HEAD (or the index when cached).
-        "git_diff_file" => val(
-            git::git_diff_file(
-                s(params, "repoRoot"),
-                s(params, "path"),
-                params["cached"].as_bool(),
-            )
-            .await,
-        ),
+        "git_diff_file" => val(git::git_diff_file(
+            s(params, "repoRoot"),
+            s(params, "path"),
+            params["cached"].as_bool(),
+        )
+        .await),
         "git_stash_list" => val(git::git_stash_list(s(params, "repoRoot")).await),
 
         // ── Search ──
@@ -2557,14 +2618,16 @@ async fn git_status_result(
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|c| serde_json::json!({
-                "hash": c.hash,
-                "msg": c.subject,
-                "time": c.date,
-                "author": c.author,
-                "parents": c.parents,
-                "refs": c.refs,
-            }))
+            .map(|c| {
+                serde_json::json!({
+                    "hash": c.hash,
+                    "msg": c.subject,
+                    "time": c.date,
+                    "author": c.author,
+                    "parents": c.parents,
+                    "refs": c.refs,
+                })
+            })
             .collect::<Vec<_>>();
         let branches = crate::commands::git::git_list_branches(repo_root)
             .await
@@ -2643,7 +2706,11 @@ async fn search_files_result(state: &AppState, query: String, path: String) -> s
 /// Remote sessions are always read-write (there is no read-only session mode),
 /// so this is purely a mutation-audit predicate, not an access gate.
 fn is_mutating_invoke(cmd: &str) -> bool {
-    is_mutating_method(cmd) || matches!(cmd, "replace_in_files" | "apply_file_edits")
+    is_mutating_method(cmd)
+        || matches!(
+            cmd,
+            "replace_in_files" | "apply_file_edits" | "send_agent_message"
+        )
 }
 
 /// Dispatches one browser `invoke-request` to the matching desktop command. The
@@ -2867,24 +2934,26 @@ async fn dispatch_invoke_request(
                 s(args, "shell"),
                 args.get("args")
                     .and_then(|x| x.as_array())
-                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default(),
             )
             .await,
         ),
-        "write_to_pty" => {
-            unit(
-                terminal::write_to_pty(
+        "write_to_pty" => unit(
+            terminal::write_to_pty(
                 handle.state(),
                 s(args, "paneId"),
                 s(args, "data"),
                 opt_s(args, "workspaceId"),
                 opt_s(args, "inputSourceId"),
                 args.get("inputSequence").and_then(|value| value.as_u64()),
-                )
-                .await,
             )
-        }
+            .await,
+        ),
         "resize_pane" => {
             let workspace_id = s(args, "workspaceId");
             let pane_id = s(args, "paneId");
@@ -3020,20 +3089,15 @@ async fn dispatch_invoke_request(
                 .unwrap_or_else(|| format!("remote denied: {cmd}"));
             val::<()>(Err(err))
         }
-        "get_teammate_topology" => val(
-            crate::commands::teammate::get_teammate_topology(
-                opt_s(args, "workspaceId"),
-                handle.state(),
-            )
-            .await,
-        ),
+        "get_teammate_topology" => val(crate::commands::teammate::get_teammate_topology(
+            opt_s(args, "workspaceId"),
+            handle.state(),
+        )
+        .await),
         // P2 阶段 1：脱敏待审批快照（无 action 全文）。
         "list_hitl_pending" => val(crate::commands::teammate::list_hitl_pending()),
         "list_hitl_audit_remote" => {
-            let limit = args
-                .get("limit")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as u32);
+            let limit = args.get("limit").and_then(|v| v.as_u64()).map(|n| n as u32);
             val(Ok(crate::commands::teammate::list_hitl_audit_remote(limit)))
         }
         // P2 阶段 2：远端裁决（nonce 单次消费；桌面版 resolve_hitl_request 仍不路由）。
@@ -3043,7 +3107,9 @@ async fn dispatch_invoke_request(
             s(args, "verdict"),
         )),
         // R19：只读编排健康（suspended / pending）——与桌面 Agent Center badge 同源。
-        "get_orchestration_health" => val(Ok(crate::commands::teammate::get_orchestration_health())),
+        "get_orchestration_health" => {
+            val(Ok(crate::commands::teammate::get_orchestration_health()))
+        }
         // Resume a recorded Agent session without shell interpolation. The
         // host resolves the registered profile, validates CWD, creates the
         // pane, and activates the structured PTY before returning its id.
@@ -3073,12 +3139,12 @@ async fn dispatch_invoke_request(
                 });
             match result {
                 Ok((workspace_id, pane_id)) => {
-                    let _ = state.remote_structural_tx.send(
-                        crate::types::RemoteStructuralEvent::PanesChanged { workspace_id },
-                    );
-                    let _ = state.event_tx.try_send(
-                        crate::types::GlobalEvent::PaneTreeChanged { workspace_id },
-                    );
+                    let _ = state
+                        .remote_structural_tx
+                        .send(crate::types::RemoteStructuralEvent::PanesChanged { workspace_id });
+                    let _ = state
+                        .event_tx
+                        .try_send(crate::types::GlobalEvent::PaneTreeChanged { workspace_id });
                     val(Ok(serde_json::json!({ "paneId": pane_id.to_string() })))
                 }
                 Err(e) => val::<serde_json::Value>(Err(e)),
@@ -3100,6 +3166,11 @@ async fn dispatch_invoke_request(
         },
         // iter-61：远端把某 pane 标记/取消标记为 agent（工作区弹层「标记」按钮）。
         // 与桌面 SplitContainer 同一对命令；只改 teammate 侧表，不 spawn 进程。
+        "send_agent_message" => val(crate::commands::teammate::send_agent_message_in(
+            state,
+            handle.clone(),
+            args.clone(),
+        )),
         "register_teammate_agent" => unit(
             crate::commands::pane::register_teammate_agent(
                 handle.state(),
@@ -3160,7 +3231,9 @@ async fn dispatch_invoke_request(
         "find_git_repos_below" => {
             plain(git::find_git_repos_below(s(args, "path"), usize_opt(args, "maxDepth")).await)
         }
-        "get_scm_status" => val(git::get_scm_status(s(args, "repoRoot"), opt_s(args, "slot")).await),
+        "get_scm_status" => {
+            val(git::get_scm_status(s(args, "repoRoot"), opt_s(args, "slot")).await)
+        }
         "get_git_info_with_cwd" => val(git::get_git_info_with_cwd(s(args, "cwd")).await),
         "get_git_commits_paginated" => val(git::get_git_commits_paginated(
             s(args, "repoRoot"),
@@ -3169,7 +3242,9 @@ async fn dispatch_invoke_request(
         )
         .await),
         "git_list_branches" => val(git::git_list_branches(s(args, "repoRoot")).await),
-        "git_diff_summary" => val(git::git_diff_summary(s(args, "repoRoot"), opt_s(args, "slot")).await),
+        "git_diff_summary" => {
+            val(git::git_diff_summary(s(args, "repoRoot"), opt_s(args, "slot")).await)
+        }
         "git_stash_list" => val(git::git_stash_list(s(args, "repoRoot")).await),
         "git_get_file_versions" => val(git::git_get_file_versions(
             s(args, "repoRoot"),
@@ -3632,10 +3707,9 @@ mod jsonrpc_tests {
 
     fn pane_id(event: ScheduledPtyEvent) -> (bool, Uuid) {
         match event {
-            (
-                foreground,
-                crate::types::RemotePtyEvent::RawBytes { pane_id, .. },
-            ) => (foreground, pane_id),
+            (foreground, crate::types::RemotePtyEvent::RawBytes { pane_id, .. }) => {
+                (foreground, pane_id)
+            }
             _ => panic!("expected raw bytes"),
         }
     }
@@ -3652,9 +3726,15 @@ mod jsonrpc_tests {
         background.send(raw(low_backlog)).await.unwrap();
         active.send(raw(high)).await.unwrap();
 
-        assert_eq!(pane_id(scheduled.recv().await.unwrap()), (false, low_in_flight));
+        assert_eq!(
+            pane_id(scheduled.recv().await.unwrap()),
+            (false, low_in_flight)
+        );
         assert_eq!(pane_id(scheduled.recv().await.unwrap()), (true, high));
-        assert_eq!(pane_id(scheduled.recv().await.unwrap()), (false, low_backlog));
+        assert_eq!(
+            pane_id(scheduled.recv().await.unwrap()),
+            (false, low_backlog)
+        );
     }
 
     #[tokio::test]
@@ -3671,7 +3751,10 @@ mod jsonrpc_tests {
             },
         ));
         assert_eq!(registry.cancel(7).as_deref(), Some("remote:test:7"));
-        assert!(!registry.complete(7), "cancelled request cannot complete twice");
+        assert!(
+            !registry.complete(7),
+            "cancelled request cannot complete twice"
+        );
 
         // Cancellation may arrive before the request frame; it is consumed
         // exactly once when that frame eventually arrives.
@@ -3705,7 +3788,10 @@ mod jsonrpc_tests {
             registry.cancel(&key).as_deref(),
             Some("remote:test:invoke:7")
         );
-        assert!(!registry.complete(&key), "cancelled invoke cannot complete twice");
+        assert!(
+            !registry.complete(&key),
+            "cancelled invoke cannot complete twice"
+        );
 
         let raced = InvokeRequestKey::JsonRpc("8".into());
         assert!(registry.cancel(&raced).is_none());
@@ -3804,7 +3890,10 @@ mod jsonrpc_tests {
             "get_git_info_with_cwd",
             "get_git_commits_paginated",
         ] {
-            assert!(is_core_git_dispatch_method(method), "{method} must be offloaded");
+            assert!(
+                is_core_git_dispatch_method(method),
+                "{method} must be offloaded"
+            );
         }
         assert!(!is_core_git_dispatch_method("get_theme_data"));
     }
@@ -3832,7 +3921,10 @@ mod jsonrpc_tests {
         .await
         .expect("blocking task should join")
         .expect_err("non-Git path must return a core error");
-        assert!(result.to_command_string().to_ascii_lowercase().contains("git"));
+        assert!(result
+            .to_command_string()
+            .to_ascii_lowercase()
+            .contains("git"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3863,5 +3955,25 @@ mod jsonrpc_tests {
         assert_eq!(value["paneId"], pane_id.to_string());
         assert_eq!(value["rows"], 40);
         assert_eq!(value["cols"], 120);
+    }
+
+    #[test]
+    fn panes_update_targets_active_workspace_after_last_pane_closes() {
+        let active = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let subscribed = std::collections::HashSet::from([(other, pane)]);
+
+        assert!(should_push_panes_update(
+            active,
+            &std::collections::HashSet::new(),
+            active
+        ));
+        assert!(should_push_panes_update(active, &subscribed, other));
+        assert!(!should_push_panes_update(
+            active,
+            &std::collections::HashSet::new(),
+            other
+        ));
     }
 }

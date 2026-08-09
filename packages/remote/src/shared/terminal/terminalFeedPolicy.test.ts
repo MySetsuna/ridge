@@ -1,91 +1,81 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-	MAX_FEED_BUFFER_BYTES,
-	MAX_FEED_DEFERRED_BYTES,
 	dropPendingFeedBuffers,
 	enqueueDeferredFeed,
 	hasDeferredFeed,
 	shouldDrainDeferredFeed,
 	shouldFlushFeedBuffer,
 	takeDeferredFeed,
+	type PendingFeedBuffers,
 } from './terminalFeedPolicy';
 
-describe('terminal feed memory bounds', () => {
-	it('flushes the inline coalescing buffer at its hard cap', () => {
-		expect(shouldFlushFeedBuffer(MAX_FEED_BUFFER_BYTES - 1)).toBe(false);
-		expect(shouldFlushFeedBuffer(MAX_FEED_BUFFER_BYTES)).toBe(true);
-		expect(shouldFlushFeedBuffer(MAX_FEED_BUFFER_BYTES + 1)).toBe(true);
-	});
+function buffers(): PendingFeedBuffers {
+	return {
+		feedBuffer: null,
+		feedDeferred: null,
+		feedDeferredChunks: [],
+		feedDeferredBytes: 0,
+		feedDroppedBytes: 0,
+		feedDropCount: 0,
+		feedNeedsResync: false,
+		feedFlushTimer: null,
+	};
+}
 
-	it('signals when deferred output would exceed its cap', () => {
-		expect(shouldDrainDeferredFeed(MAX_FEED_DEFERRED_BYTES)).toBe(false);
-		expect(shouldDrainDeferredFeed(MAX_FEED_DEFERRED_BYTES + 1)).toBe(true);
-	});
+describe('terminalFeedPolicy', () => {
+	it('keeps deferred chunks ordered and reports overflow for resync', () => {
+		const entry = buffers();
 
-	it('queues chunks in order without repeatedly concatenating the backlog', () => {
-		const entry = {
-			feedBuffer: null,
-			feedDeferred: null,
-			feedDeferredChunks: [],
-			feedDeferredBytes: 0,
-			feedDroppedBytes: 0,
-			feedDropCount: 0,
-			feedNeedsResync: false,
-			feedFlushTimer: null,
-		};
-		enqueueDeferredFeed(entry, new Uint8Array([1, 2]));
-		enqueueDeferredFeed(entry, new Uint8Array([3, 4]));
-		expect(hasDeferredFeed(entry)).toBe(true);
-		expect(Array.from(takeDeferredFeed(entry)!)).toEqual([1, 2]);
-		expect(Array.from(takeDeferredFeed(entry)!)).toEqual([3, 4]);
-		expect(takeDeferredFeed(entry)).toBeNull();
-		expect(entry.feedDeferredBytes).toBe(0);
-	});
+		expect(enqueueDeferredFeed(entry, new Uint8Array(0))).toMatchObject({
+			acceptedBytes: 0,
+			droppedBytes: 0,
+		});
+		expect(enqueueDeferredFeed(entry, new Uint8Array([1, 2]))).toMatchObject({
+			acceptedBytes: 2,
+			droppedBytes: 0,
+		});
+		expect(enqueueDeferredFeed(entry, new Uint8Array([3, 4]))).toMatchObject({
+			acceptedBytes: 2,
+			droppedBytes: 0,
+		});
+		const overflow = enqueueDeferredFeed(entry, new Uint8Array(2 * 1024 * 1024));
 
-	it('hard-caps render backlog and records shed output for resync', () => {
-		const entry = {
-			feedBuffer: null,
-			feedDeferred: null,
-			feedDeferredChunks: [],
-			feedDeferredBytes: 0,
-			feedDroppedBytes: 0,
-			feedDropCount: 0,
-			feedNeedsResync: false,
-			feedFlushTimer: null,
-		};
-		const first = enqueueDeferredFeed(entry, new Uint8Array(MAX_FEED_DEFERRED_BYTES));
-		const second = enqueueDeferredFeed(entry, new Uint8Array(9));
-		expect(first.droppedBytes).toBe(0);
-		expect(second.acceptedBytes).toBe(0);
-		expect(second.droppedBytes).toBe(9);
-		expect(second.queuedBytes).toBe(MAX_FEED_DEFERRED_BYTES);
-		expect(entry.feedDroppedBytes).toBe(9);
-		expect(entry.feedDropCount).toBe(1);
+		expect(overflow.acceptedBytes).toBe(2 * 1024 * 1024 - 4);
+		expect(overflow.droppedBytes).toBe(4);
 		expect(entry.feedNeedsResync).toBe(true);
+		expect(entry.feedDropCount).toBe(1);
+		expect([...takeDeferredFeed(entry)!]).toEqual([1, 2]);
+		expect([...takeDeferredFeed(entry)!].slice(0, 2)).toEqual([3, 4]);
+		expect(hasDeferredFeed(entry)).toBe(true);
 	});
 
-	it('cancels the flush timer and releases both pending byte buffers', () => {
+	it('cancels and clears every pending render buffer at a stream cut', () => {
+		const entry = buffers();
 		const cancelTimer = vi.fn();
-		const timer = setTimeout(() => {}, 10_000);
-		const entry = {
-			feedBuffer: new Uint8Array(7),
-			feedDeferred: new Uint8Array(11),
-			feedDeferredChunks: [new Uint8Array(13)],
-			feedDeferredBytes: 24,
-			feedDroppedBytes: 4,
-			feedDropCount: 1,
-			feedNeedsResync: true,
-			feedFlushTimer: timer,
-		};
+		entry.feedBuffer = new Uint8Array([1]);
+		entry.feedDeferred = new Uint8Array([2, 3]);
+		entry.feedDeferredChunks.push(new Uint8Array([4, 5, 6]));
+		entry.feedDeferredBytes = 5;
+		entry.feedNeedsResync = true;
+		entry.feedFlushTimer = 42 as unknown as ReturnType<typeof setTimeout>;
 
-		expect(dropPendingFeedBuffers(entry, cancelTimer)).toBe(31);
-		expect(cancelTimer).toHaveBeenCalledWith(timer);
+		expect(dropPendingFeedBuffers(entry, cancelTimer)).toBe(6);
+		expect(cancelTimer).toHaveBeenCalledWith(42);
 		expect(entry.feedBuffer).toBeNull();
 		expect(entry.feedDeferred).toBeNull();
 		expect(entry.feedDeferredChunks).toHaveLength(0);
 		expect(entry.feedDeferredBytes).toBe(0);
 		expect(entry.feedNeedsResync).toBe(false);
-		expect(entry.feedFlushTimer).toBeNull();
-		clearTimeout(timer);
+		expect(hasDeferredFeed(entry)).toBe(false);
+		expect(dropPendingFeedBuffers(entry, cancelTimer)).toBe(0);
+	});
+
+	it('uses finite thresholds and rejects invalid measurements', () => {
+		expect(shouldFlushFeedBuffer(8 * 1024)).toBe(true);
+		expect(shouldFlushFeedBuffer(8 * 1024 - 1)).toBe(false);
+		expect(shouldFlushFeedBuffer(Number.NaN)).toBe(false);
+		expect(shouldDrainDeferredFeed(2 * 1024 * 1024 + 1)).toBe(true);
+		expect(shouldDrainDeferredFeed(2 * 1024 * 1024)).toBe(false);
+		expect(shouldDrainDeferredFeed(Infinity)).toBe(false);
 	});
 });

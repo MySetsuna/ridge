@@ -306,7 +306,11 @@ fn retry_backoff_ms(is_connect_err: bool, attempt: usize) -> Option<u64> {
     if attempt >= 3 {
         return None;
     }
-    Some(ridge_lib::reconnect_policy::backoff_ms(attempt as u32, 150, 600))
+    Some(ridge_lib::reconnect_policy::backoff_ms(
+        attempt as u32,
+        150,
+        600,
+    ))
 }
 
 /// 发送 HTTP 请求，连接错误时按 `retry_backoff_ms` 有界重试——桥接后端「按需启动 /
@@ -368,7 +372,8 @@ fn command_timeout(sub: &str) -> std::time::Duration {
 /// 用户看到的样子。`detail` 是 `reqwest::Error` 的 Display 兜底文本。
 fn backend_error_message(is_timeout: bool, is_connect: bool, detail: &str) -> String {
     if is_timeout {
-        "tmux: Ridge teammate backend unresponsive (request timed out); pane not created".to_string()
+        "tmux: Ridge teammate backend unresponsive (request timed out); pane not created"
+            .to_string()
     } else if is_connect {
         "tmux: cannot reach Ridge teammate backend (connection failed)".to_string()
     } else {
@@ -1449,8 +1454,8 @@ fn post_spawn_process(
     let body = build_spawn_process_body(target, launch);
     let u = format!("{}/api/v1/spawn-process", url.trim_end_matches('/'));
     log_to_file(&format!("spawn-process: posting to {}", u));
-    let res = send_retry(client().post(u).headers(auth_headers(token)).json(&body))
-        .map_err(|e| {
+    let res =
+        send_retry(client().post(u).headers(auth_headers(token)).json(&body)).map_err(|e| {
             log_to_file(&format!("spawn-process: HTTP error: {e}"));
             eprintln!(
                 "{}",
@@ -1765,8 +1770,8 @@ fn cmd_kill_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         Some(idx) => serde_json::json!({ "pane_index": idx }),
         None => serde_json::json!({}),
     };
-    let res = send_retry(client().post(&u).headers(auth_headers(token)).json(&body))
-        .map_err(|e| {
+    let res =
+        send_retry(client().post(&u).headers(auth_headers(token)).json(&body)).map_err(|e| {
             log_to_file(&format!("kill-pane HTTP error: {e}"));
         })?;
     if !res.status().is_success() {
@@ -3149,7 +3154,10 @@ mod tests {
             sanitize_socket("C:/code/wind/teammate.sock"),
             "C__code_wind_teammate_sock"
         );
-        assert_eq!(sanitize_socket("/ridge/teammate.sock"), "_ridge_teammate_sock");
+        assert_eq!(
+            sanitize_socket("/ridge/teammate.sock"),
+            "_ridge_teammate_sock"
+        );
         assert_eq!(sanitize_socket("abc123"), "abc123");
     }
 

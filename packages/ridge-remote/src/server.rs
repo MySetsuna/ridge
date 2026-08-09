@@ -30,7 +30,10 @@ pub fn bind_tcp(port: u16) -> Result<(std::net::TcpListener, u16)> {
             .context("invalid bind address")?;
         match std::net::TcpListener::bind(addr) {
             Ok(listener) => {
-                let actual = listener.local_addr().map(|a| a.port()).unwrap_or(base + offset);
+                let actual = listener
+                    .local_addr()
+                    .map(|a| a.port())
+                    .unwrap_or(base + offset);
                 listener.set_nonblocking(true)?;
                 return Ok((listener, actual));
             }
@@ -38,7 +41,8 @@ pub fn bind_tcp(port: u16) -> Result<(std::net::TcpListener, u16)> {
             Err(e) => {
                 return Err(anyhow::anyhow!(
                     "failed to bind port {} (tried {}+10): {e}",
-                    base, base
+                    base,
+                    base
                 ));
             }
         }
@@ -144,8 +148,7 @@ pub async fn serve(
     hostname: &str,
     shutdown_rx: oneshot::Receiver<()>,
     require_tls: bool,
-) -> Result<u16>
-{
+) -> Result<u16> {
     let (std_listener, _actual_port) = bind_tcp(port)?;
     let tls_config = resolve_tls(lan_ip, hostname).await;
     serve_on(std_listener, router, tls_config, shutdown_rx, require_tls).await

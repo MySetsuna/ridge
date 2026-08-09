@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const source = readFileSync(new URL('./WorkspaceTree.svelte', import.meta.url), 'utf8');
+const treeStateSource = readFileSync(new URL('./treeState.svelte.ts', import.meta.url), 'utf8');
 
 describe('remote workspace popup safe-area contract', () => {
   it('clears the larger coarse-pointer action bar', () => {
@@ -24,5 +25,18 @@ describe('remote workspace popup safe-area contract', () => {
     expect(source).toContain('let peekErrors = $state(new Map<string, string>());');
     expect(source).toContain('failure = e instanceof Error ? e.message : String(e);');
     expect(source).toContain('<div class="pane-error" role="alert">{peekErrors.get(wsp.id)}</div>');
+  });
+
+  it('keeps the active pane visible during the dedicated snapshot hydration gap', () => {
+    expect(source).toContain("workspaces.find((workspace) => workspace.id === wsId)?.panes");
+  });
+
+  it('does not prune tree state during the empty pre-hydration snapshot', () => {
+    expect(treeStateSource).toContain('if (liveIds.size === 0) return;');
+  });
+
+  it('does not prune persisted preferences from a partial reconnect snapshot', () => {
+    expect(source).toContain('Do not prune persisted tree preferences from this render path.');
+    expect(source).not.toContain('pruneExpanded(live)');
   });
 });

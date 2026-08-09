@@ -18,8 +18,13 @@
 import { RidgeCloudHost } from './ridgeCloudProvider';
 import { ControllerCloudProvider } from './controllerCloudProvider';
 import { CloudHostBridge } from './cloudHostBridge';
-import { createCloudWebrtcTransportWith } from '@ridge/remote';
-import { RpcClient } from '@ridge/remote';
+import {
+  CLIENT_CAPABILITIES,
+  CLIENT_PROTOCOL_VERSION,
+  HELLO_METHOD,
+  RpcClient,
+  createCloudWebrtcTransportWith,
+} from '@ridge/remote';
 import type { KeyBindingMode } from './keyBinding';
 import { makeCloudHostPaneSource } from './cloudHostPaneSource';
 import { invoke } from '@tauri-apps/api/core';
@@ -133,6 +138,9 @@ export async function runCloudDirChildrenE2E(opts: CloudE2eOptions): Promise<Clo
     controllerProvider = new ControllerCloudProvider({ userToken, username }, cb);
     return controllerProvider;
   });
+  const offControllerError = adapter.onError((message, code) =>
+    push(`ctrl-err:${code ?? ''}:${message}`),
+  );
   const rpc = new RpcClient(adapter, { defaultTimeoutMs: timeoutMs });
 
   // B3 验证 seam：让 host 发错误信令公钥（仅本 dev harness 置位此 global，生产永不设）。
@@ -171,7 +179,26 @@ export async function runCloudDirChildrenE2E(opts: CloudE2eOptions): Promise<Clo
     let capabilities: string[] | null = null;
 
     if (connected) {
-      rpc.hello(); // D9 $/hello
+      const negotiatedCapabilities = await new Promise<string[] | null>((resolve) => {
+        let unsubscribe = () => {};
+        const timer = setTimeout(() => {
+          unsubscribe();
+          resolve(null);
+        }, timeoutMs);
+        unsubscribe = rpc.onNegotiated((protocol) => {
+          clearTimeout(timer);
+          unsubscribe();
+          resolve([...protocol.capabilities]);
+        });
+        // The real controller boot keeps RpcClient.hello() behind its TOTP
+        // readiness gate. This harness intentionally probes D9 immediately
+        // after E2EE connected, because the local cloud fixture has no TOTP
+        // UI and the host's business RPC path is already ungated.
+        rpc.notify(HELLO_METHOD, {
+          protocolVersion: CLIENT_PROTOCOL_VERSION,
+          capabilities: [...CLIENT_CAPABILITIES],
+        });
+      });
       for (const offset of offsets) {
         try {
           const page = (await rpc.request('get_directory_children', {
@@ -191,7 +218,7 @@ export async function runCloudDirChildrenE2E(opts: CloudE2eOptions): Promise<Clo
           results.push({ offset, ok: false, error: e instanceof Error ? e.message : String(e) });
         }
       }
-      capabilities = rpc.protocol ? [...rpc.protocol.capabilities] : null;
+      capabilities = negotiatedCapabilities;
     }
 
     let exploitResult: CloudE2eResult['exploitResult'] = null;
@@ -247,6 +274,7 @@ export async function runCloudDirChildrenE2E(opts: CloudE2eOptions): Promise<Clo
     } catch {
       /* ignore */
     }
+    offControllerError();
     try {
       host.goOffline();
     } catch {

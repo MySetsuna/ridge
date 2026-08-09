@@ -30,6 +30,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { TerminalManager } from './manager';
 import { perfMark } from './perfTrace';
+import { paneRefKey } from '../transport/paneRef';
 
 /**
  * P4.3 — pty-delta byte payload as received on the frontend. Tauri 2's
@@ -43,6 +44,7 @@ type DeltaPayload = ArrayBuffer | Uint8Array | number[];
 interface Bridge {
 	outUnlisten: UnlistenFn;
 	closedUnlisten: UnlistenFn;
+	paneId: string;
 	workspaceId: string;
 	/// P4.3 — strong reference to the Tauri Channel for delta bytes.
 	/// Replaces the P3.9 `pty-delta-*` event listener: deltas now arrive
@@ -78,20 +80,22 @@ function isPaneNotFoundError(error: unknown): boolean {
  * unmounted (e.g. split happened mid-shell-exit).
  */
 export function ensurePtyBridge(paneId: string, workspaceId: string): Promise<void> {
-	if (bridges.has(paneId)) return Promise.resolve();
-	const pending = pendingBridges.get(paneId);
+	const key = paneRefKey({ paneId, workspaceId });
+	if (bridges.has(key)) return Promise.resolve();
+	const pending = pendingBridges.get(key);
 	if (pending) return pending;
-	teardownRequested.delete(paneId);
+	teardownRequested.delete(key);
 	const attach = attachPtyBridge(paneId, workspaceId).finally(() => {
-		if (pendingBridges.get(paneId) === attach) pendingBridges.delete(paneId);
-		teardownRequested.delete(paneId);
+		if (pendingBridges.get(key) === attach) pendingBridges.delete(key);
+		teardownRequested.delete(key);
 	});
-	pendingBridges.set(paneId, attach);
+	pendingBridges.set(key, attach);
 	return attach;
 }
 
 async function attachPtyBridge(paneId: string, workspaceId: string): Promise<void> {
-	if (bridges.has(paneId) || teardownRequested.has(paneId)) return;
+	const key = paneRefKey({ paneId, workspaceId });
+	if (bridges.has(key) || teardownRequested.has(key)) return;
 
 	const manager = TerminalManager.instance();
 
@@ -136,7 +140,7 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 			// every shell prompt redraw and async background output.
 		},
 	);
-	if (teardownRequested.has(paneId)) {
+	if (teardownRequested.has(key)) {
 		try { outUnlisten(); } catch { /* already unsubscribed */ }
 		return;
 	}
@@ -148,7 +152,7 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 			// If the bridge has been torn down between event dispatch and
 			// our handler running, bail out — the pane is being closed
 			// for real and we shouldn't resurrect the PTY.
-			if (!bridges.has(paneId)) return;
+			if (!bridges.has(key)) return;
 
 			// §1.35 — force-leave alt screen before spawning a new shell.
 			// If the previous process was in alt screen mode (TUI crashed
@@ -157,16 +161,19 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 			// and giving the user the impression the screen was cleared.
 			manager.leaveAltScreen(paneId);
 
-			try {
-				await invoke('create_pane', {
-					paneId,
-					shell: TerminalManager.hostPorts()?.settings?.get()?.defaultShell || null,
-				});
+				try {
+					await invoke('create_pane', {
+						workspaceId,
+						paneId,
+						shell: TerminalManager.hostPorts()?.settings?.get()?.defaultShell || null,
+					});
 			} catch (err) {
-				console.error('create_pane (rebuild) failed', err);
+				if (!isPaneNotFoundError(err)) {
+					console.error('create_pane (rebuild) failed', err);
+				}
 				return;
 			}
-			if (!bridges.has(paneId)) return;
+			if (!bridges.has(key)) return;
 			try {
 				await invoke('activate_pane_pty', {
 					workspaceId,
@@ -185,7 +192,7 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 		try { outUnlisten(); } catch { /* already unsubscribed */ }
 		throw error;
 	});
-	if (teardownRequested.has(paneId)) {
+	if (teardownRequested.has(key)) {
 		try { outUnlisten(); } catch { /* already unsubscribed */ }
 		try { closedUnlisten(); } catch { /* already unsubscribed */ }
 		return;
@@ -207,12 +214,12 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 		// `Uint8Array` instances pass through; ArrayBuffer is wrapped; a
 		// plain number[] gets copied into a fresh array (the slow path —
 		// happens only on older Tauri runtime configurations).
-		const bytes =
-			payload instanceof Uint8Array
-				? payload
-				: payload instanceof ArrayBuffer
-				? new Uint8Array(payload)
-				: new Uint8Array(payload);
+		let bytes: Uint8Array;
+		if (payload instanceof Uint8Array) {
+			bytes = payload;
+		} else {
+			bytes = new Uint8Array(payload);
+		}
 		try {
 			// §P4 attribution — the binary Channel path is the optimized
 			// path; this measure proves how much cheaper it is per frame
@@ -253,13 +260,28 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 			{ paneId, workspaceId, error: String(err) },
 		);
 	}
-	if (teardownRequested.has(paneId)) {
+	if (teardownRequested.has(key)) {
 		try { outUnlisten(); } catch { /* already unsubscribed */ }
 		try { closedUnlisten(); } catch { /* already unsubscribed */ }
 		return;
 	}
 
-	bridges.set(paneId, { outUnlisten, closedUnlisten, workspaceId, deltaChannel });
+	bridges.set(key, { outUnlisten, closedUnlisten, paneId, workspaceId, deltaChannel });
+}
+
+function findBridgeKey(paneId: string, workspaceId?: string): string | null {
+	if (workspaceId) {
+		const key = paneRefKey({ paneId, workspaceId });
+		return bridges.has(key) || pendingBridges.has(key) ? key : null;
+	}
+	const matches = [
+		...[...bridges.entries()]
+		.filter(([, bridge]) => bridge.paneId === paneId)
+		.map(([key]) => key),
+		...[...pendingBridges.keys()].filter((key) => key.endsWith(`:${paneId}`)),
+	];
+	const unique = [...new Set(matches)];
+	return unique.length === 1 ? unique[0] : null;
 }
 
 /**
@@ -269,8 +291,13 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
  * forces a full reframe on enable so the mirror catches up without
  * a visible blank — see `set_pane_delta_mode` in src-tauri.
  */
-export async function setPaneDeltaMode(paneId: string, enabled: boolean): Promise<void> {
-	const bridge = bridges.get(paneId);
+export async function setPaneDeltaMode(
+	paneId: string,
+	enabled: boolean,
+	workspaceId?: string,
+): Promise<void> {
+	const key = findBridgeKey(paneId, workspaceId);
+	const bridge = key ? bridges.get(key) : undefined;
 	if (!bridge) return;
 	try {
 		await invoke('set_pane_delta_mode', { workspaceId: bridge.workspaceId, paneId, enabled });
@@ -306,8 +333,9 @@ export async function setPaneDeltaMode(paneId: string, enabled: boolean): Promis
 export async function enableDeltaModeThenFit(
 	paneId: string,
 	fit: () => void,
+	workspaceId?: string,
 ): Promise<void> {
-	if (!hasPtyBridge(paneId)) {
+	if (!hasPtyBridge(paneId, workspaceId)) {
 		console.warn(
 			'[ridge-term] enableDeltaModeThenFit called before ensurePtyBridge — ' +
 				'pty-delta Channel not registered; deterministic fit degraded to ' +
@@ -315,7 +343,7 @@ export async function enableDeltaModeThenFit(
 			{ paneId },
 		);
 	}
-	await setPaneDeltaMode(paneId, true);
+	await setPaneDeltaMode(paneId, true, workspaceId);
 	fit();
 }
 
@@ -325,21 +353,23 @@ export async function enableDeltaModeThenFit(
  * **NOT** from RidgePane's onDestroy — onDestroy fires on every
  * split / reparent, where we want the bridge to survive.
  */
-export function teardownPtyBridge(paneId: string): void {
-	if (pendingBridges.has(paneId)) teardownRequested.add(paneId);
-	const b = bridges.get(paneId);
+export function teardownPtyBridge(paneId: string, workspaceId?: string): void {
+	const key = findBridgeKey(paneId, workspaceId);
+	if (key && pendingBridges.has(key)) teardownRequested.add(key);
+	const b = key ? bridges.get(key) : undefined;
 	if (!b) return;
 	try { b.outUnlisten(); } catch { /* already unsubscribed */ }
 	try { b.closedUnlisten(); } catch { /* already unsubscribed */ }
 	// P4.3 — the Channel has no explicit unlisten; dropping the bridge
 	// reference releases JS ownership and the backend already unregistered
 	// the channel in `kill_pty_if_present` before this teardown runs.
-	bridges.delete(paneId);
+	if (key) bridges.delete(key);
 }
 
 /** True if a PTY bridge is currently registered for this pane.
  *  Useful for tests / diagnostics; RidgePane usually relies on
  *  `ensurePtyBridge` being idempotent rather than checking first. */
-export function hasPtyBridge(paneId: string): boolean {
-	return bridges.has(paneId);
+export function hasPtyBridge(paneId: string, workspaceId?: string): boolean {
+	const key = findBridgeKey(paneId, workspaceId);
+	return key !== null && bridges.has(key);
 }

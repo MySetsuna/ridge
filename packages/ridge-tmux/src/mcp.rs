@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
+use ridge_mcp::delivery::{DeliveryOutcome, DeliveryProbe, HubDeliveryAdapter};
 use ridge_mcp::resource::{git_branch, git_root, RidgeUri};
-use ridge_mcp::server::{HostError, HostResult, InputDispatch, McpHost};
+use ridge_mcp::server::{HostError, HostResult, InputDispatch, McpHost, McpSessionState};
 use ridge_mcp::transport::{mcp_router, McpTransportCtx};
 
 use crate::http::{GuiSessionSource, NativeHttpCtx};
@@ -17,10 +18,11 @@ use crate::NativeError;
 
 /// 把共享的 MCP 路由（`/api/v1/mcp/ws` + `POST /api/v1/mcp`）接到本引擎上。
 pub fn router(ctx: NativeHttpCtx) -> axum::Router {
-    mcp_router(McpTransportCtx::new(
+    mcp_router(McpTransportCtx::with_state(
         Arc::new(TmuxMcpHost::new(&ctx)),
         ctx.token.clone(),
         env!("CARGO_PKG_VERSION"),
+        ctx.mcp_state.clone(),
     ))
 }
 
@@ -29,6 +31,7 @@ pub fn router(ctx: NativeHttpCtx) -> axum::Router {
 struct TmuxMcpHost {
     socket: String,
     gui: Arc<dyn GuiSessionSource>,
+    mcp_state: Arc<McpSessionState>,
 }
 
 impl TmuxMcpHost {
@@ -36,6 +39,7 @@ impl TmuxMcpHost {
         Self {
             socket: "default".to_string(),
             gui: ctx.gui.clone(),
+            mcp_state: ctx.mcp_state.clone(),
         }
     }
 
@@ -102,6 +106,24 @@ impl McpHost for TmuxMcpHost {
         json!({ "roster": roster, "leaderId": null, "edges": [], "groups": [] })
     }
 
+    fn probe_delivery(&self, target: &Value) -> HostResult<DeliveryProbe> {
+        let mut probe = self.mcp_state.delivery_probe(target);
+        probe.mcp_pull = true;
+        Ok(probe)
+    }
+
+    fn deliver_runtime_api(&self, target: &Value, entry: &Value) -> HostResult<DeliveryOutcome> {
+        self.mcp_state
+            .deliver_registered_endpoint(HubDeliveryAdapter::RuntimeApi, target, entry)
+            .map_err(HostError::Internal)
+    }
+
+    fn deliver_a2a(&self, target: &Value, entry: &Value) -> HostResult<DeliveryOutcome> {
+        self.mcp_state
+            .deliver_registered_endpoint(HubDeliveryAdapter::A2a, target, entry)
+            .map_err(HostError::Internal)
+    }
+
     fn send_text(
         &self,
         target: &Value,
@@ -115,7 +137,11 @@ impl McpHost for TmuxMcpHost {
             &self.socket,
             &t,
             &self.gui.sessions_for(&self.socket),
-            &if submit { ridge_mcp::server::enter_terminated(text) } else { text.to_string() },
+            &if submit {
+                ridge_mcp::server::enter_terminated(text)
+            } else {
+                text.to_string()
+            },
         )
         .map(|_| InputDispatch {
             // tmux accepted the control command, but exposes no receipt that
@@ -197,7 +223,10 @@ impl McpHost for TmuxMcpHost {
                         "branch": git_branch(&root),
                     }));
                 }
-                Ok(("application/json".into(), json!({ "repos": repos }).to_string()))
+                Ok((
+                    "application/json".into(),
+                    json!({ "repos": repos }).to_string(),
+                ))
             }
             RidgeUri::WorkspaceEditorContext => {
                 let panes: Vec<Value> = crate::roster_panes(&self.socket)
@@ -212,7 +241,10 @@ impl McpHost for TmuxMcpHost {
                         })
                     })
                     .collect();
-                Ok(("application/json".into(), json!({ "panes": panes }).to_string()))
+                Ok((
+                    "application/json".into(),
+                    json!({ "panes": panes }).to_string(),
+                ))
             }
             RidgeUri::Cache(_) => Err(HostError::Internal("cache 由协议内核处理".into())),
         }
@@ -231,5 +263,34 @@ mod tests {
     fn index_to_id_reports_out_of_range() {
         let e = index_to_id(&[], 3).unwrap_err();
         assert!(matches!(e, HostError::InvalidParams(_)));
+    }
+
+    #[test]
+    fn headless_host_dispatches_registered_runtime_route() {
+        let ctx = NativeHttpCtx::headless("test-token");
+        let host = TmuxMcpHost::new(&ctx);
+        let target = json!({
+            "agentId": "agent-headless",
+            "generation": 4,
+            "lease": "lease-headless"
+        });
+        let receiver = ctx
+            .mcp_state
+            .register_delivery_endpoint(
+                HubDeliveryAdapter::RuntimeApi,
+                "agent-headless",
+                4,
+                "lease-headless",
+            )
+            .unwrap();
+
+        let probe = host.probe_delivery(&target).unwrap();
+        assert!(probe.runtime_api);
+        assert!(probe.mcp_pull);
+
+        let entry = json!({ "messageId": "headless-message" });
+        let outcome = host.deliver_runtime_api(&target, &entry).unwrap();
+        assert!(outcome.accepted);
+        assert_eq!(receiver.recv().unwrap(), entry);
     }
 }

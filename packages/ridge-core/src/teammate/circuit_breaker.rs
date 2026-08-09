@@ -110,12 +110,7 @@ impl LoopBreaker {
     fn trailing_repeat(&self) -> usize {
         match self.recent.back() {
             None => 0,
-            Some(last) => self
-                .recent
-                .iter()
-                .rev()
-                .take_while(|k| *k == last)
-                .count(),
+            Some(last) => self.recent.iter().rev().take_while(|k| *k == last).count(),
         }
     }
 }

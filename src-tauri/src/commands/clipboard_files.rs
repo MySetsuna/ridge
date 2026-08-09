@@ -52,8 +52,7 @@ fn write_clipboard_file_paths_impl(paths: &[String]) -> Result<bool, String> {
     // 文本镜像用换行分隔，沿用既有「复制路径」格式。
     let text = paths.join("\n");
 
-    let _clip =
-        Clipboard::new_attempts(10).map_err(|e| format!("open clipboard failed: {e}"))?;
+    let _clip = Clipboard::new_attempts(10).map_err(|e| format!("open clipboard failed: {e}"))?;
     // 顺序不可换：先写文本（`set_string` 内部 DoClear——清空剪贴板取得所有权并置
     // CF_UNICODETEXT），再写文件列表（`set_file_list` 内部 NoClear——仅追加 CF_HDROP，
     // 不会清掉上一步的文本）。若反过来，写文本时的 DoClear 会把 CF_HDROP 清掉。

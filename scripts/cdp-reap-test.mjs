@@ -2,7 +2,8 @@
 // remote_reap_orphans, read again. Isolates "does reap_all actually remove
 // orphans" from WS triggers / Playwright / the other session. dev-only.
 import http from 'node:http';
-const CDP = process.env.CDP_PORT || '9222';
+import { resolveCdpPort } from './cdp-port.mjs';
+const CDP = process.env.CDP_PORT || String(resolveCdpPort());
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fj = (p) => new Promise((res, rej) => { const r = http.get({ host: '127.0.0.1', port: CDP, path: p, timeout: 3000 }, (x) => { let b = ''; x.on('data', (c) => (b += c)); x.on('end', () => { try { res(JSON.parse(b)); } catch (e) { rej(e); } }); }); r.on('timeout', () => r.destroy(new Error('t'))); r.on('error', rej); });
 

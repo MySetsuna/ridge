@@ -360,8 +360,7 @@ mod tests {
         let tag = bind_tag_at("123456", &transcript);
         let hex: String = tag.iter().map(|b| format!("{:02x}", b)).collect();
         assert_eq!(
-            hex,
-            "d694a5285b3e8eaff2a0e53216ac003f6e79fbab207fbaf4db605efa6ffdaa64",
+            hex, "d694a5285b3e8eaff2a0e53216ac003f6e79fbab207fbaf4db605efa6ffdaa64",
             "Rust 绑定 tag 必须与浏览器 e2ee.ts computeBindTag 字节对齐"
         );
     }

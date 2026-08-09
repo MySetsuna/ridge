@@ -796,6 +796,7 @@ async function fetchOlderScrollback(): Promise<void> {
 			at_oldest: boolean;
 		}>('get_pane_scrollback_before', {
 			paneId,
+			workspaceId,
 			beforeSeq: oldestSeq,
 			maxBytes: SCROLLBACK_OLDER_BYTES,
 		});
@@ -1386,7 +1387,7 @@ onMount(() => {
 				bytes: string;
 				start_seq: number;
 				at_oldest: boolean;
-			}>('get_pane_scrollback_tail', { paneId, maxBytes: SCROLLBACK_TAIL_BYTES });
+			}>('get_pane_scrollback_tail', { paneId, workspaceId, maxBytes: SCROLLBACK_TAIL_BYTES });
 			if (alive && chunk.bytes) {
 				manager.feed(paneId, chunk.bytes);
 			}
@@ -1438,7 +1439,7 @@ onMount(() => {
 		if (alive) {
 			void enableDeltaModeThenFit(paneId, () => {
 				if (alive) manager.fitPaneNow(paneId);
-			});
+			}, workspaceId);
 		}
 
 		// `pane-pty-closed` rebuild now lives in ptyBridge and persists

@@ -172,6 +172,17 @@ export function planWorkspaceInvoke(
   const foreign = containsForeignResource(params, access);
   if (foreign) return { kind: 'deny', reason: foreign };
 
+  // Pane RPCs must carry the grant's workspace explicitly. Without this
+  // normalization, a valid pane allowlist check can still reach a host API
+  // that resolves the bare paneId against its active workspace after the
+  // host/controller has switched workspaces.
+  if (
+    params.workspaceId === undefined &&
+    [...PANE_KEYS].some((key) => typeof params[key] === 'string')
+  ) {
+    params.workspaceId = access.workspaceId;
+  }
+
   // Workspace-scoped commands must not inherit the host's currently active workspace.
   if (
     method.includes('workspace') ||

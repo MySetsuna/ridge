@@ -50,6 +50,8 @@ import {
   type ThemeListener,
   type ThemeSnapshot,
   type TeammateTopology,
+  type AgentMessageTarget,
+  type AgentMessageReceipt,
   type AgentHistoryReply,
   type TeammateGroup,
   type HitlPendingItem,
@@ -593,9 +595,10 @@ export class CloudRemoteConnection implements RemoteLink {
 
   private async _refreshPanes(): Promise<void> {
     const workspaceId = this._activeWorkspaceId;
+    if (!workspaceId) return;
     let leaves: PaneInfo[];
     try {
-      const layout = await this.bridge.invoke<PaneNode>('get_pane_layout');
+      const layout = await this.bridge.invoke<PaneNode>('get_pane_layout_for', { workspaceId });
       leaves = flattenLeaves(layout);
     } catch {
       return; // host not ready / transient — leave the UI as-is
@@ -972,22 +975,29 @@ export class CloudRemoteConnection implements RemoteLink {
 
   async createPane(): Promise<string | null> {
     try {
-      const layout = await this.bridge.invoke<PaneNode>('get_pane_layout');
+      const workspaceId = this._activeWorkspaceId;
+      if (!workspaceId) return null;
+      const layout = await this.bridge.invoke<PaneNode>('get_pane_layout_for', { workspaceId });
       const leaves = flattenLeaves(layout);
       if (leaves.length > 0) {
         // Add a terminal to the current workspace by splitting the first leaf — the
         // desktop's own "new terminal" primitive. The mobile renders one pane at a
         // time, so it just shows the new pane; the host sees a split (shared reality).
-        const target = { workspaceId: this._activeWorkspaceId, paneId: leaves[0].id };
+        const target = { workspaceId, paneId: leaves[0].id };
         const result = await this._invokePane<{ pane_id: string }>(target, 'split_pane', {
+          workspaceId,
           paneId: leaves[0].id,
           direction: 'horizontal',
         });
         return result.pane_id || null;
       }
       // Empty workspace: spin up a fresh one and surface its first pane.
-      await this.bridge.invoke<string>('create_workspace');
-      const after = flattenLeaves(await this.bridge.invoke<PaneNode>('get_pane_layout'));
+      const createdWorkspaceId = await this.bridge.invoke<string>('create_workspace');
+      if (!createdWorkspaceId) return null;
+      this._activeWorkspaceId = createdWorkspaceId;
+      const after = flattenLeaves(await this.bridge.invoke<PaneNode>('get_pane_layout_for', {
+        workspaceId: createdWorkspaceId,
+      }));
       return after[0]?.id ?? null;
     } catch {
       return null;
@@ -1088,6 +1098,22 @@ export class CloudRemoteConnection implements RemoteLink {
       'get_teammate_topology',
       workspaceId ? { workspaceId } : {},
     );
+  }
+
+  async sendAgentMessage(
+    target: AgentMessageTarget,
+    message: string,
+  ): Promise<AgentMessageReceipt> {
+    return this.bridge.invoke<AgentMessageReceipt>('send_agent_message', {
+      target_pane_id: target.paneId,
+      workspace_id: target.workspaceId,
+      agent_id: target.agentId,
+      generation: target.generation,
+      lease: target.lease,
+      message,
+      from: 'remote-ui',
+      idempotency_key: crypto.randomUUID(),
+    });
   }
 
   async listAgentHistory(limit = 24): Promise<AgentHistoryReply[]> {

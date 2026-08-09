@@ -90,7 +90,10 @@ mod tests {
         assert!(contains(b"\x1b[?1049h"), "alt screen reattach");
         assert!(contains(b"\x1b[?1002h"), "button-event mouse reattach");
         assert!(contains(b"\x1b[?1006h"), "SGR mouse-encoding reattach");
-        assert!(body.ends_with(b"scrollback-tail"), "scrollback rides at the tail");
+        assert!(
+            body.ends_with(b"scrollback-tail"),
+            "scrollback rides at the tail"
+        );
     }
 
     #[test]
@@ -98,6 +101,9 @@ mod tests {
         let id = Uuid::from_u128(3);
         let f = pane_resync_frame(id, b"$ ", &Modes::default(), false);
         let body = &f[16..];
-        assert_eq!(body, b"\x1bc$ ", "RIS + scrollback, empty preamble for a plain shell");
+        assert_eq!(
+            body, b"\x1bc$ ",
+            "RIS + scrollback, empty preamble for a plain shell"
+        );
     }
 }

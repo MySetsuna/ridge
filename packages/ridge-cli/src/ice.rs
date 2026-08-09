@@ -49,7 +49,10 @@ struct IceServersData {
 
 /// 取 iceServers 列表（含 STUN/TURN 地址和时效凭证）。
 /// 失败 / 为空时回退到公共 STUN（无凭证）。
-pub async fn fetch_ice_servers(client: &reqwest::Client, device_token: &str) -> Vec<IceServerConfig> {
+pub async fn fetch_ice_servers(
+    client: &reqwest::Client,
+    device_token: &str,
+) -> Vec<IceServerConfig> {
     match try_fetch(client, device_token).await {
         Ok(servers) if !servers.is_empty() => servers,
         Ok(_) => {

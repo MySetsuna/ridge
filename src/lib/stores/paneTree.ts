@@ -10,7 +10,7 @@ export type { PaneNode };
 import { reportDevIssue } from '$lib/devIssue';
 import { fileExplorerStore } from '$lib/stores/fileExplorer';
 import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
-import { teardownPtyBridge } from '@ridge/remote/shared/terminal/ptyBridge';
+import { ensurePtyBridge, teardownPtyBridge } from '@ridge/remote/shared/terminal/ptyBridge';
 import { retirePtyWriteQueuesForPane } from '$lib/terminal/ptyWriteQueue';
 import { retirePaneInputsForPane } from '@ridge/remote/shared/terminal/paneInputGate';
 
@@ -1781,13 +1781,13 @@ function findLeafOrigin(
   return null;
 }
 
-function cleanupPaneRuntime(paneId: string): void {
+function cleanupPaneRuntime(paneId: string, workspaceId?: string): void {
   // Cancel queued native writes before dropping the PTY/kernel. A queued
   // invoke cannot be withdrawn from Tauri, but the queue generation guard
   // prevents later callbacks from targeting a reused pane UUID.
   retirePtyWriteQueuesForPane(paneId);
   retirePaneInputsForPane(paneId);
-  teardownPtyBridge(paneId);
+  teardownPtyBridge(paneId, workspaceId);
   TerminalManager.instance().detach(paneId);
   paneOscTitleStore.update((s) => {
     if (!(paneId in s)) return s;
@@ -1825,9 +1825,20 @@ export async function closePane(paneId: string) {
   } catch {
     /* local pane or already detached */
   }
-  await invoke('close_pane', {
-    paneId,
-  });
+  const closingWorkspaceId = get(activeWorkspaceId) || undefined;
+  teardownPtyBridge(paneId, closingWorkspaceId);
+  try {
+    await invoke('close_pane', {
+      paneId,
+    });
+  } catch (error) {
+    // Backend close can reject (last pane, stale id, or a race). Restore the
+    // bridge so a failed close does not leave a live pane without PTY output.
+    if (closingWorkspaceId) {
+      await ensurePtyBridge(paneId, closingWorkspaceId);
+    }
+    throw error;
+  }
   const { unbindRemotePane } = await import('$lib/hosts/remotePaneBindings');
   unbindRemotePane(paneId);
   // Real-close cleanup (TASKS §5.1). Manager.park stays mounted across
@@ -1840,7 +1851,7 @@ export async function closePane(paneId: string) {
   //   2. Manager.detach — frees wasm kernel + render handle.
   //   3. Drop title-store entries so SplitContainer / Explorer don't
   //      keep showing a label for a pane that no longer exists.
-  cleanupPaneRuntime(paneId);
+  cleanupPaneRuntime(paneId, get(activeWorkspaceId) || undefined);
   await syncPaneLayoutFromBackend();
 }
 
@@ -1866,7 +1877,7 @@ export async function closeWorkspace(workspaceId: string) {
     // Workspace close unmounts every RidgePane. Without genuine-close cleanup,
     // their kernels remain parked; reopening the same .ridge file reuses its
     // pane UUIDs and incorrectly unparks stale kernels instead of creating PTYs.
-    for (const paneId of closingPaneIds) cleanupPaneRuntime(paneId);
+    for (const paneId of closingPaneIds) cleanupPaneRuntime(paneId, workspaceId);
     // 在拉取新的工作区快照之前就清理本地资源，避免残留�?
     // 1) 拆除该工作区�?pane-cwd 监听�?
     // 2) �?paneCwdStore 删除所�?`${workspaceId}:*` 键；
@@ -2186,6 +2197,12 @@ export function collapseCwd(cwd: string): string {
  */
 function normalizeCwd(cwd: string): string {
   let out = cwd.replace(/\\/g, '/');
+  // Shell integrations may concatenate the next prompt marker onto the CWD
+  // payload when BEL terminates OSC 7 and OSC 133;A follows in the same
+  // metadata frame. Control bytes cannot be part of a usable cwd, so discard
+  // that suffix before path canonicalization reaches Explorer/SCM.
+  const control = out.search(/[\u0000-\u001F\u007F]/);
+  if (control >= 0) out = out.slice(0, control);
   // Drop leading "/" before a Windows drive letter ("/C:/..." �?"C:/...").
   // The check is positional: only the very first three chars of "/X:"
   // where X is alphabetic count.

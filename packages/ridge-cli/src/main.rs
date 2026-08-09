@@ -385,7 +385,12 @@ async fn run_tmux(args: TmuxArgs) -> Result<()> {
     eprintln!();
     eprintln!("将 `tmux` shim 放入 PATH 后，本 host 上的 agent 即可创建无头 tmux 会话。");
 
-    let ctx = ridge_tmux::http::NativeHttpCtx::headless(token);
+    let mcp_state =
+        ridge_mcp::server::McpSessionState::with_sqlite(ridge_kernel::registry::agent_hub_path())
+            .map_err(anyhow::Error::msg)
+            .map(std::sync::Arc::new)
+            .context("open persistent Agent Hub")?;
+    let ctx = ridge_tmux::http::NativeHttpCtx::headless(token).with_mcp_state(mcp_state);
     ridge_tmux::http::serve(listener, ctx)
         .await
         .context("tmux engine server stopped")?;

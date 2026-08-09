@@ -59,15 +59,7 @@ pub trait Canvas2dCtxLike {
     fn set_font(&self, font: &str);
     fn set_text_baseline(&self, value: &str);
     fn measure_text(&self, text: &str) -> Result<TextMetrics, JsValue>;
-    fn set_transform(
-        &self,
-        a: f64,
-        b: f64,
-        c: f64,
-        d: f64,
-        e: f64,
-        f: f64,
-    ) -> Result<(), JsValue>;
+    fn set_transform(&self, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64) -> Result<(), JsValue>;
     fn clear_rect(&self, x: f64, y: f64, w: f64, h: f64);
     fn fill_rect(&self, x: f64, y: f64, w: f64, h: f64);
     fn fill_text(&self, text: &str, x: f64, y: f64) -> Result<(), JsValue>;
@@ -90,15 +82,7 @@ impl Canvas2dCtxLike for CanvasRenderingContext2d {
     fn measure_text(&self, text: &str) -> Result<TextMetrics, JsValue> {
         CanvasRenderingContext2d::measure_text(self, text)
     }
-    fn set_transform(
-        &self,
-        a: f64,
-        b: f64,
-        c: f64,
-        d: f64,
-        e: f64,
-        f: f64,
-    ) -> Result<(), JsValue> {
+    fn set_transform(&self, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64) -> Result<(), JsValue> {
         CanvasRenderingContext2d::set_transform(self, a, b, c, d, e, f)
     }
     fn clear_rect(&self, x: f64, y: f64, w: f64, h: f64) {
@@ -131,15 +115,7 @@ impl Canvas2dCtxLike for OffscreenCanvasRenderingContext2d {
     fn measure_text(&self, text: &str) -> Result<TextMetrics, JsValue> {
         OffscreenCanvasRenderingContext2d::measure_text(self, text)
     }
-    fn set_transform(
-        &self,
-        a: f64,
-        b: f64,
-        c: f64,
-        d: f64,
-        e: f64,
-        f: f64,
-    ) -> Result<(), JsValue> {
+    fn set_transform(&self, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64) -> Result<(), JsValue> {
         OffscreenCanvasRenderingContext2d::set_transform(self, a, b, c, d, e, f)
     }
     fn clear_rect(&self, x: f64, y: f64, w: f64, h: f64) {
@@ -255,10 +231,7 @@ impl Canvas2dBackend {
 
     /// Shared post-context init. Both constructors funnel here so the
     /// default metrics / theme / font_css live in one place.
-    fn from_handles(
-        canvas: Box<dyn Canvas2dSurfaceLike>,
-        ctx: Box<dyn Canvas2dCtxLike>,
-    ) -> Self {
+    fn from_handles(canvas: Box<dyn Canvas2dSurfaceLike>, ctx: Box<dyn Canvas2dCtxLike>) -> Self {
         Self {
             canvas,
             ctx,
@@ -384,11 +357,14 @@ impl RenderBackend for Canvas2dBackend {
         // scale uniformly to both calls).
         self.ctx
             .clear_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
-        
-        let clear_bg = if self.metrics.tui_mode { self.theme.tui_bg } else { [0, 0, 0, 0] };
+
+        let clear_bg = if self.metrics.tui_mode {
+            self.theme.tui_bg
+        } else {
+            [0, 0, 0, 0]
+        };
         if clear_bg[3] != 0 {
-            self.ctx
-                .set_fill_style_str(&Self::rgba_to_css(clear_bg));
+            self.ctx.set_fill_style_str(&Self::rgba_to_css(clear_bg));
             self.ctx
                 .fill_rect(0.0, 0.0, self.css_w as f64, self.css_h as f64);
         }
@@ -407,7 +383,8 @@ impl RenderBackend for Canvas2dBackend {
                 continue;
             }
 
-            let (_attrs, _fg, bg) = resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
+            let (_attrs, _fg, bg) =
+                resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
 
             let x_left = (col as f64 * cell_w).round();
             let x_right = ((col as f64 + cell.width as f64) * cell_w).round();
@@ -441,7 +418,8 @@ impl RenderBackend for Canvas2dBackend {
             if cell.ch == ' ' && cell.attr == crate::term::attr_table::AttrId::DEFAULT {
                 continue;
             }
-            let (attrs, fg, _bg) = resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
+            let (attrs, fg, _bg) =
+                resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
             self.ctx.set_fill_style_str(&Self::rgba_to_css(fg));
 
             if attrs.flags.contains(Flags::BOLD) || attrs.flags.contains(Flags::ITALIC) {
@@ -487,9 +465,16 @@ impl RenderBackend for Canvas2dBackend {
             let mut drawn_procedurally = false;
 
             if let Some(ch) = first_char {
-                if let Some(rects) = procedural_box(ch, grid_x_left as f32, y_top as f32, grid_span_w as f32, h as f32) {
+                if let Some(rects) = procedural_box(
+                    ch,
+                    grid_x_left as f32,
+                    y_top as f32,
+                    grid_span_w as f32,
+                    h as f32,
+                ) {
                     for r in rects {
-                        self.ctx.fill_rect(r.x as f64, r.y as f64, r.w as f64, r.h as f64);
+                        self.ctx
+                            .fill_rect(r.x as f64, r.y as f64, r.w as f64, r.h as f64);
                     }
                     drawn_procedurally = true;
                 }
@@ -619,13 +604,9 @@ impl RenderBackend for Canvas2dBackend {
             .map(|item| history_text_width(item))
             .max()
             .unwrap_or(0);
-        let Some(geometry) = history_overlay_geometry(
-            overlay,
-            widest_cells,
-            requested_visible,
-            cell_w,
-            cell_h,
-        ) else {
+        let Some(geometry) =
+            history_overlay_geometry(overlay, widest_cells, requested_visible, cell_w, cell_h)
+        else {
             return;
         };
 
@@ -640,8 +621,7 @@ impl RenderBackend for Canvas2dBackend {
         self.ctx.set_fill_style_str(&Self::rgba_to_css(theme.bg));
         self.ctx.fill_rect(panel_x, panel_y, panel_w, panel_h);
 
-        if overlay.selected_index >= 0
-            && (overlay.selected_index as usize) < geometry.visible_count
+        if overlay.selected_index >= 0 && (overlay.selected_index as usize) < geometry.visible_count
         {
             self.ctx.set_fill_style_str(&Self::rgba_to_css(theme.fg));
             self.ctx.fill_rect(
@@ -654,13 +634,8 @@ impl RenderBackend for Canvas2dBackend {
 
         self.ctx.set_font(&self.font_css);
         self.ctx.set_text_baseline("top");
-        for (row, item) in normalised
-            .iter()
-            .take(geometry.visible_count)
-            .enumerate()
-        {
-            let selected =
-                overlay.selected_index >= 0 && row == overlay.selected_index as usize;
+        for (row, item) in normalised.iter().take(geometry.visible_count).enumerate() {
+            let selected = overlay.selected_index >= 0 && row == overlay.selected_index as usize;
             self.ctx.set_fill_style_str(&Self::rgba_to_css(if selected {
                 theme.bg
             } else {
@@ -690,9 +665,8 @@ impl RenderBackend for Canvas2dBackend {
             let mix = |t: f32| {
                 let mut color = [0u8; 4];
                 for index in 0..3 {
-                    color[index] =
-                        (theme.bg[index] as f32 * (1.0 - t) + theme.fg[index] as f32 * t)
-                            .round() as u8;
+                    color[index] = (theme.bg[index] as f32 * (1.0 - t) + theme.fg[index] as f32 * t)
+                        .round() as u8;
                 }
                 color[3] = 255;
                 color
@@ -703,12 +677,10 @@ impl RenderBackend for Canvas2dBackend {
             let track_h = (panel_h - 2.0 * border).max(1.0);
             let total = overlay.total_items as f64;
             let fraction_start = (overlay.first_visible as f64 / total).clamp(0.0, 1.0);
-            let fraction_len =
-                (geometry.visible_count as f64 / total).clamp(0.0, 1.0);
+            let fraction_len = (geometry.visible_count as f64 / total).clamp(0.0, 1.0);
             let min_thumb = (track_h * 0.10).clamp(10.0, track_h);
             let thumb_h = (fraction_len * track_h).max(min_thumb).min(track_h);
-            let thumb_y =
-                (track_y + fraction_start * track_h).min(track_y + track_h - thumb_h);
+            let thumb_y = (track_y + fraction_start * track_h).min(track_y + track_h - thumb_h);
             self.ctx.set_fill_style_str(&Self::rgba_to_css(mix(0.18)));
             self.ctx
                 .fill_rect(scrollbar_x, track_y, scrollbar_w, track_h);

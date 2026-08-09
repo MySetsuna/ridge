@@ -61,6 +61,9 @@ class FakeCloudProvider implements RemoteConnectionProvider {
     this._state = s;
     this.cb.onState?.(s);
   }
+  emitError(message: string, code?: string): void {
+    this.cb.onError?.(message, code);
+  }
   /** Push an already-demuxable plaintext frame inbound (as the provider would
    *  after decrypting a DataChannel message). */
   deliverFrame(frame: Uint8Array): void {
@@ -209,6 +212,16 @@ describe('CloudWebrtcAdapter — state mapping', () => {
     const { provider, adapter } = wire();
     adapter.close();
     expect(provider.disconnected).toBe(true);
+  });
+
+  it('forwards provider error details to adapter subscribers', () => {
+    const { provider, adapter } = wire();
+    const errors: Array<[string, string | undefined]> = [];
+    const off = adapter.onError((message, code) => errors.push([message, code]));
+    provider.emitError('ICE request failed', 'NETWORK');
+    off();
+    provider.emitError('ignored after unsubscribe', 'INTERNAL');
+    expect(errors).toEqual([['ICE request failed', 'NETWORK']]);
   });
 });
 

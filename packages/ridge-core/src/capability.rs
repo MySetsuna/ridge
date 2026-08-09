@@ -413,11 +413,23 @@ mod tests {
     #[test]
     fn mutating_set_mirrors_the_desktop_pre_check() {
         // Sample fs + git mutations are flagged…
-        for m in ["write_file", "apply_file_edits", "replace_in_files", "git_commit", "git_reset"] {
+        for m in [
+            "write_file",
+            "apply_file_edits",
+            "replace_in_files",
+            "git_commit",
+            "git_reset",
+        ] {
             assert!(is_mutating(m), "{m} should be mutating");
         }
         // …and read-only / non-mutating methods are not.
-        for m in ["read_file", "get_file_tree", "search", "get_scm_status", "git_list_branches"] {
+        for m in [
+            "read_file",
+            "get_file_tree",
+            "search",
+            "get_scm_status",
+            "git_list_branches",
+        ] {
             assert!(!is_mutating(m), "{m} should NOT be mutating");
         }
     }

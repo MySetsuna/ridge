@@ -171,7 +171,8 @@ mod dpapi {
         if ok == 0 || out.pb_data.is_null() {
             return None;
         }
-        let result = unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
+        let result =
+            unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
         unsafe { LocalFree(out.pb_data as *mut c_void) };
         Some(result)
     }
@@ -199,7 +200,8 @@ mod dpapi {
         if ok == 0 || out.pb_data.is_null() {
             return None;
         }
-        let result = unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
+        let result =
+            unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
         unsafe { LocalFree(out.pb_data as *mut c_void) };
         Some(result)
     }
@@ -268,9 +270,17 @@ mod tests {
         let secret = [5u8; SECRET_LEN];
         save_in(&dir, "alice", &secret).unwrap();
         let raw = std::fs::read(dir.join(seed_filename("alice"))).unwrap();
-        assert_ne!(raw.as_slice(), &secret[..], "DPAPI blob 不得等于明文 secret");
+        assert_ne!(
+            raw.as_slice(),
+            &secret[..],
+            "DPAPI blob 不得等于明文 secret"
+        );
         assert!(raw.len() > SECRET_LEN, "DPAPI blob 比明文更长");
-        assert_eq!(load_in(&dir, "alice").as_deref(), Some(&secret[..]), "须能解回");
+        assert_eq!(
+            load_in(&dir, "alice").as_deref(),
+            Some(&secret[..]),
+            "须能解回"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

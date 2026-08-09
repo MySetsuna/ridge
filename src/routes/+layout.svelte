@@ -35,6 +35,7 @@
   // 不再无限回跳（apex⇄子域死循环的客户端一端）。connected 时清零。
   const TENANT_BOUNCE_KEY = 'ridge_tenant_login_bounce';
   const TOTP_CACHE_KEY = 'ridge_totp_code';
+  const WEB_REMOTE_READY_TIMEOUT_MS = 10_000;
 
   // Auth/connect state for the web-remote gate. `ready` blocks the page outlet
   // until the bridge is attached, so the desktop UI never calls `invoke()`
@@ -112,7 +113,7 @@
     // Transport selection happens before any request. A desktop bundle served
     // by rdg/LAN must not wait for the public cookie bootstrap before opening
     // its same-origin TOTP/session WebSocket.
-    if (remoteBootMode(location.hostname, location.search, BASE_DOMAIN) === 'lan') {
+    if (remoteBootMode(location.host, location.search, BASE_DOMAIN) === 'lan') {
       void startWebRemoteBoot();
     } else {
       void startCloudControllerBootMode();
@@ -254,29 +255,67 @@
     const { createLanWsTransport } = await import('@ridge/remote');
     const TOKEN_KEY = 'ridge_remote_token';
     const conn = new RemoteConnection();
+    let connectAttempt = 0;
 
     const host = location.hostname;
     const port = parseInt(location.port) || (location.protocol === 'https:' ? 443 : 80);
 
-    const finish = () => {
+    const finish = async (attempt: number) => {
+      if (attempt !== connectAttempt) return;
       // Wrap the authenticated RemoteConnection in the L1 LAN-WS adapter; the
       // bridge depends on the transport interface (L2 RPC + L1 pane bytes), not
       // on RemoteConnection directly (handoff plan §5.3, D6/D7).
       bridge.attach(createLanWsTransport(conn));
       // DataProvider consumers (FS/git/search) ride the same shimmed invoke.
       setTransport(new TauriDataProvider());
-      ready = true;
+      try {
+        // WebSocket `connected` only proves the upgrade/auth boundary. Verify
+        // the first workspace snapshot before releasing the page gate, otherwise
+        // +page can race bridge `$/hello` and render an empty shell.
+        const workspaces = await bridge.invoke<Array<{ id?: string }>>(
+          'list_workspaces',
+          {},
+          { timeoutMs: WEB_REMOTE_READY_TIMEOUT_MS },
+        );
+        if (attempt !== connectAttempt) return;
+        const activeWorkspaceId = await bridge.invoke<string>(
+          'get_active_workspace_id',
+          {},
+          { timeoutMs: WEB_REMOTE_READY_TIMEOUT_MS },
+        );
+        if (attempt !== connectAttempt) return;
+        const workspaceId = activeWorkspaceId || workspaces.find((workspace) => workspace.id)?.id;
+        if (!workspaceId) throw new Error('remote host returned no workspace');
+        await bridge.invoke(
+          'get_pane_layout_for',
+          { workspaceId },
+          { timeoutMs: WEB_REMOTE_READY_TIMEOUT_MS },
+        );
+        if (attempt !== connectAttempt) return;
+        ready = true;
+      } catch {
+        if (attempt !== connectAttempt) return;
+        bridge.detach();
+        conn.disconnect();
+        loading = false;
+        try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+        phase = 'need-code';
+        errorMsg = tr('main.remoteGateErrReconnect');
+      }
     };
 
     const connectWith = (token: string) => {
+      const attempt = ++connectAttempt;
       loading = true;
       errorMsg = '';
       const unsub = conn.onStateChange((s) => {
         if (s === 'connected') {
+          if (attempt !== connectAttempt) return;
           loading = false;
           unsub();
-          finish();
+          void finish(attempt);
         } else if (s === 'error') {
+          if (attempt !== connectAttempt) return;
           loading = false;
           unsub();
           try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }

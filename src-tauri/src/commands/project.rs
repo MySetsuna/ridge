@@ -871,10 +871,7 @@ fn read_agent_recent_replies_sync(
 /// session id to the CWD recorded in the host's history files before creating
 /// a PTY.  Exact `(agent, session_id)` matching is intentional: CWD/title
 /// guesses would let a stale card resume a different project.
-pub(crate) fn recorded_agent_session_cwd(
-    agent: &str,
-    session_id: &str,
-) -> Result<PathBuf, String> {
+pub(crate) fn recorded_agent_session_cwd(agent: &str, session_id: &str) -> Result<PathBuf, String> {
     let agent = agent.trim();
     let session_id = session_id.trim();
     if agent.is_empty() || session_id.is_empty() {
@@ -898,9 +895,7 @@ fn find_recorded_agent_session_cwd(
 ) -> Option<String> {
     replies
         .iter()
-        .find(|reply| {
-            reply.agent.eq_ignore_ascii_case(agent) && reply.session_id == session_id
-        })
+        .find(|reply| reply.agent.eq_ignore_ascii_case(agent) && reply.session_id == session_id)
         .map(|reply| reply.cwd.trim().to_string())
         .filter(|cwd| !cwd.is_empty())
 }
@@ -1539,7 +1534,10 @@ mod tests {
         assert_eq!(claude_reply.cwd, r"C:\one");
         assert_eq!(claude_reply.text, "from Claude");
         assert_eq!(
-            claude_reply.resume.as_ref().map(|resume| resume.cwd.as_str()),
+            claude_reply
+                .resume
+                .as_ref()
+                .map(|resume| resume.cwd.as_str()),
             Some(r"C:\one")
         );
         let codex_reply = replies
@@ -1549,15 +1547,14 @@ mod tests {
         assert_eq!(codex_reply.cwd, r"D:\two");
         assert_eq!(codex_reply.text, "from Codex");
         assert_eq!(
-            codex_reply.resume.as_ref().map(|resume| resume.argv.clone()),
+            codex_reply
+                .resume
+                .as_ref()
+                .map(|resume| resume.argv.clone()),
             Some(vec!["resume".into(), "codex-b".into()])
         );
 
-        let filtered = read_agent_recent_replies_sync(
-            &td.path,
-            vec!["d:/two/project".into()],
-            40,
-        );
+        let filtered = read_agent_recent_replies_sync(&td.path, vec!["d:/two/project".into()], 40);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].agent, "Codex");
     }

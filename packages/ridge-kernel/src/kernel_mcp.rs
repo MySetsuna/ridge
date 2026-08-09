@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use ridge_mcp::delivery::{DeliveryOutcome, DeliveryProbe, HubDeliveryAdapter};
 use ridge_mcp::resource::{git_branch, git_root, RidgeUri};
 use ridge_mcp::server::{
     HostError, HostResult, InputDispatch, LaunchCapabilities, LaunchProfile, McpHost,
@@ -11,7 +12,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::agent_profiles::{builtin_profiles, AgentProfile};
-use crate::registry::save_workspace_graph_at;
+use crate::registry::{save_roster_at, save_workspace_graph_at};
 use crate::server::AppState;
 
 #[derive(Clone)]
@@ -38,8 +39,9 @@ impl KernelMcpHost {
         let graph = self.state.workspaces.lock().expect("workspace graph lock");
         match requested {
             Some(raw) => {
-                let id = Uuid::parse_str(raw)
-                    .map_err(|_| HostError::InvalidParams(format!("invalid workspace id: {raw}")))?;
+                let id = Uuid::parse_str(raw).map_err(|_| {
+                    HostError::InvalidParams(format!("invalid workspace id: {raw}"))
+                })?;
                 if graph.workspace_ids().any(|candidate| *candidate == id) {
                     Ok(id)
                 } else {
@@ -58,9 +60,8 @@ impl KernelMcpHost {
         let candidate = match target {
             Value::Object(object) => {
                 if let Some(id) = object.get("paneId").and_then(Value::as_str) {
-                    Uuid::parse_str(id).map_err(|_| {
-                        HostError::InvalidParams(format!("invalid pane id: {id}"))
-                    })?
+                    Uuid::parse_str(id)
+                        .map_err(|_| HostError::InvalidParams(format!("invalid pane id: {id}")))?
                 } else if let Some(index) = object.get("paneIndex").and_then(Value::as_u64) {
                     self.pane_at(index as usize)?
                 } else {
@@ -80,12 +81,11 @@ impl KernelMcpHost {
                     }
                 },
             },
-            Value::Number(number) => self.pane_at(
-                number
-                    .as_u64()
-                    .ok_or_else(|| HostError::InvalidParams("pane index must be non-negative".into()))?
-                    as usize,
-            )?,
+            Value::Number(number) => {
+                self.pane_at(number.as_u64().ok_or_else(|| {
+                    HostError::InvalidParams("pane index must be non-negative".into())
+                })? as usize)?
+            }
             _ => {
                 return Err(HostError::InvalidParams(
                     "pane target must be UUID, index, or object".into(),
@@ -110,26 +110,62 @@ impl KernelMcpHost {
     }
 
     fn team_profile_snapshot(&self, workspace_id: Option<Uuid>) -> Value {
-        let roster = self
-            .state
-            .ptys
-            .list()
-            .into_iter()
-            .filter(|info| workspace_id.is_none() || info.workspace_id == workspace_id)
-            .map(|info| {
-                json!({
-                    "id": format!("kernel:{}", info.id),
-                    "name": info.launch_profile.as_deref().unwrap_or(&info.role),
-                    "paneId": info.id,
-                    "paneIndex": info.pane_index,
-                    "workspaceId": info.workspace_id,
-                    "role": info.role,
-                    "status": info.status,
-                    "cwd": info.cwd,
-                    "launchProfile": info.launch_profile,
+        let identities = {
+            let roster = self.state.roster.lock().expect("roster lock");
+            roster
+                .agent_identities()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let roster = if identities.is_empty() {
+            self.state
+                .ptys
+                .list()
+                .into_iter()
+                .filter(|info| workspace_id.is_none() || info.workspace_id == workspace_id)
+                .map(|info| {
+                    json!({
+                        "id": format!("kernel:{}", info.id),
+                        "name": info.launch_profile.as_deref().unwrap_or(&info.role),
+                        "paneId": info.id,
+                        "paneIndex": info.pane_index,
+                        "workspaceId": info.workspace_id,
+                        "role": info.role,
+                        "status": info.status,
+                        "cwd": info.cwd,
+                        "launchProfile": info.launch_profile,
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>()
+        } else {
+            identities
+                .clone()
+                .into_iter()
+                .filter(|identity| {
+                    workspace_id.is_none()
+                        || identity.workspace_id == workspace_id.unwrap().to_string()
+                })
+                .map(|identity| {
+                    json!({
+                        "id": identity.agent_id,
+                        "agentId": identity.agent_id,
+                        "sessionId": identity.session_id,
+                        "paneId": identity.pane_id,
+                        "workspaceId": identity.workspace_id,
+                        "cwd": identity.cwd,
+                        "executable": identity.executable,
+                        "argv": identity.argv,
+                        "generation": identity.generation,
+                        "lease": identity.lease,
+                        "lifecycle": identity.lifecycle,
+                        "online": identity.online,
+                        "lastSeenUnixMs": identity.last_seen_unix_ms,
+                        "capabilities": identity.capabilities,
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
         let groups = self
             .state
             .groups
@@ -139,7 +175,13 @@ impl KernelMcpHost {
             .map(|(name, members)| {
                 json!({
                     "name": name,
-                    "members": members.iter().map(|id| format!("kernel:{id}")).collect::<Vec<_>>()
+                    "members": members.iter().map(|id| {
+                        identities
+                            .iter()
+                            .find(|identity| identity.pane_id == id.to_string())
+                            .map(|identity| identity.agent_id.clone())
+                            .unwrap_or_else(|| format!("kernel:{id}"))
+                    }).collect::<Vec<_>>()
                 })
             })
             .collect::<Vec<_>>();
@@ -299,11 +341,40 @@ impl KernelMcpHost {
             return Err(HostError::Internal(error.to_string()));
         }
 
+        let previous_roster = if request.role.trim().eq_ignore_ascii_case("shell") {
+            None
+        } else {
+            Some(self.state.roster.lock().expect("roster lock").clone())
+        };
+        if !request.role.trim().eq_ignore_ascii_case("shell") {
+            let executable = program.as_deref().unwrap_or("agent");
+            if let Err(error) = crate::domain::commit_agent_identity_for_pty(
+                &self.state,
+                pane_id,
+                &request.role,
+                executable,
+                args.clone(),
+            ) {
+                let _ = self.state.ptys.destroy(pane_id);
+                if let Some(old_id) = replace_id {
+                    self.state.ptys.cancel_destroy(old_id);
+                }
+                let _ = save_workspace_graph_at(&self.state.workspaces_path, &previous);
+                return Err(HostError::Internal(format!(
+                    "Agent identity commit failed; graph rolled back: {error}"
+                )));
+            }
+        }
+
         if let (Some(old_id), Some(bridge)) = (replace_id, old_bridge) {
             if let Err(error) = bridge.destroy() {
                 self.state.ptys.cancel_destroy(old_id);
                 let _ = save_workspace_graph_at(&self.state.workspaces_path, &previous);
                 let _ = self.state.ptys.destroy(pane_id);
+                if let Some(roster) = previous_roster.as_ref() {
+                    let _ = save_roster_at(&self.state.roster_path, roster);
+                    *self.state.roster.lock().expect("roster lock") = roster.clone();
+                }
                 return Err(HostError::Internal(format!(
                     "replacement PTY could not be destroyed; graph rolled back: {error}"
                 )));
@@ -311,11 +382,23 @@ impl KernelMcpHost {
             if let Err(error) = self.state.ptys.finish_destroy(old_id) {
                 let _ = save_workspace_graph_at(&self.state.workspaces_path, &previous);
                 let _ = self.state.ptys.destroy(pane_id);
+                if let Some(roster) = previous_roster.as_ref() {
+                    let _ = save_roster_at(&self.state.roster_path, roster);
+                    *self.state.roster.lock().expect("roster lock") = roster.clone();
+                }
                 return Err(HostError::Internal(format!(
                     "replacement PTY registry commit failed; graph rolled back: {error}"
                 )));
             }
-            self.state.mcp_state.purge_pane(&old_id.to_string());
+            if let Err(error) = crate::domain::remove_agent_identity_for_pty(&self.state, old_id) {
+                return Err(HostError::Internal(format!(
+                    "replacement PTY destroyed but old Agent identity teardown failed: {error}"
+                )));
+            }
+            self.state
+                .mcp_state
+                .purge_pane(&old_id.to_string())
+                .map_err(HostError::Internal)?;
         }
         *graph = next;
         drop(graph);
@@ -336,6 +419,28 @@ impl KernelMcpHost {
 impl McpHost for KernelMcpHost {
     fn team_profile(&self) -> Value {
         self.team_profile_snapshot(None)
+    }
+
+    fn probe_delivery(&self, _target: &Value) -> HostResult<DeliveryProbe> {
+        let mut probe = self.state.mcp_state.delivery_probe(_target);
+        // MCP pull remains available for every fenced target. Runtime/A2A is
+        // advertised only when a current host-owned route is registered.
+        probe.mcp_pull = true;
+        Ok(probe)
+    }
+
+    fn deliver_runtime_api(&self, target: &Value, entry: &Value) -> HostResult<DeliveryOutcome> {
+        self.state
+            .mcp_state
+            .deliver_registered_endpoint(HubDeliveryAdapter::RuntimeApi, target, entry)
+            .map_err(HostError::Internal)
+    }
+
+    fn deliver_a2a(&self, target: &Value, entry: &Value) -> HostResult<DeliveryOutcome> {
+        self.state
+            .mcp_state
+            .deliver_registered_endpoint(HubDeliveryAdapter::A2a, target, entry)
+            .map_err(HostError::Internal)
     }
 
     fn list_workspaces(&self) -> HostResult<Value> {
@@ -499,7 +604,8 @@ impl McpHost for KernelMcpHost {
                     "paneIndex": info.pane_index,
                     "cwd": info.cwd,
                     "status": info.status,
-                })).collect::<Vec<_>>() }).to_string(),
+                })).collect::<Vec<_>>() })
+                .to_string(),
             )),
             RidgeUri::WorkspaceGitStatus => {
                 let mut roots = Vec::new();
@@ -518,7 +624,10 @@ impl McpHost for KernelMcpHost {
                         "branch": git_branch(&root),
                     }));
                 }
-                Ok(("application/json".into(), json!({ "repos": roots }).to_string()))
+                Ok((
+                    "application/json".into(),
+                    json!({ "repos": roots }).to_string(),
+                ))
             }
             RidgeUri::Cache(_) => Err(HostError::Internal(
                 "cache resources are handled by the shared MCP engine".into(),
@@ -528,5 +637,61 @@ impl McpHost for KernelMcpHost {
 
     fn pane_key(&self, target: &Value) -> HostResult<String> {
         Ok(self.pane_id(target)?.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+    use tokio::sync::oneshot;
+
+    fn test_state() -> AppState {
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel();
+        AppState {
+            token: "test-token".into(),
+            pid: 1,
+            port: 0,
+            started_at_unix: 0,
+            shutdown_tx: Arc::new(std::sync::Mutex::new(Some(shutdown_tx))),
+            shutting_down: Arc::new(AtomicBool::new(false)),
+            workspaces: Arc::new(std::sync::Mutex::new(
+                ridge_core::workspace::graph::WorkspaceGraph::new(),
+            )),
+            workspaces_path: std::env::temp_dir().join("ridge-kernel-kernel-mcp-workspaces.json"),
+            roster: Arc::new(std::sync::Mutex::new(
+                ridge_core::teammate::topology::TopologyGraph::new(),
+            )),
+            roster_path: std::env::temp_dir().join("ridge-kernel-kernel-mcp-roster.json"),
+            groups: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            mcp_state: Arc::new(ridge_mcp::server::McpSessionState::default()),
+            remote_hosts: Arc::new(std::sync::Mutex::new(
+                ridge_core::remote::RemoteHostTopology::default(),
+            )),
+            remote_hosts_path: std::env::temp_dir().join("ridge-kernel-kernel-mcp-remote.json"),
+            ptys: Arc::new(crate::pty::PtyRegistry::default()),
+            output_leases: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            fs_scope: ridge_core::sandbox::RootScope::unrestricted(),
+        }
+    }
+
+    #[test]
+    fn production_kernel_host_dispatches_registered_runtime_route() {
+        let state = test_state();
+        let receiver = state
+            .mcp_state
+            .register_delivery_endpoint(HubDeliveryAdapter::RuntimeApi, "agent-a", 2, "lease-2")
+            .unwrap();
+        let host = KernelMcpHost::new(state);
+        let target = json!({
+            "agentId": "agent-a",
+            "generation": 2,
+            "lease": "lease-2"
+        });
+        assert!(host.probe_delivery(&target).unwrap().runtime_api);
+        let entry = json!({"messageId":"kernel-runtime-1"});
+        let outcome = host.deliver_runtime_api(&target, &entry).unwrap();
+        assert!(outcome.accepted);
+        assert_eq!(receiver.recv().unwrap(), entry);
     }
 }

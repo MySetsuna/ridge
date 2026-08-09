@@ -5,6 +5,7 @@
 //! （TML 线协议 / PTY 流净化 / Leader 竞选已退场。）
 
 pub mod circuit_breaker;
+pub mod communication;
 pub mod model;
 pub mod risk;
 pub mod topology;

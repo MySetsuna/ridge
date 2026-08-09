@@ -1479,7 +1479,7 @@ export class TerminalManager {
 	}
 
 	private _showLinkHint(entry: PaneEntry, region: LinkUnderlineRegion): void {
-		if (!entry.linkHintEl) entry.linkHintEl = createLinkHintOverlay(entry.container);
+		entry.linkHintEl ??= createLinkHintOverlay(entry.container);
 		entry.linkHintRegion = region;
 		this._positionLinkHint(entry);
 	}

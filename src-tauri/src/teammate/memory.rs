@@ -30,7 +30,11 @@ fn path_of(dir: &Path, wid: Uuid) -> PathBuf {
 
 /// doc 级读改写：读现 doc（无/损坏 → 空对象）→ `f` 就地改 → 空 doc 删文件，
 /// 否则原子写。互斥内完成。
-pub fn update(dir: &Path, wid: Uuid, f: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) {
+pub fn update(
+    dir: &Path,
+    wid: Uuid,
+    f: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+) {
     let _guard = FILE_MUTEX.lock();
     let path = path_of(dir, wid);
     let mut doc = std::fs::read_to_string(&path)
@@ -146,9 +150,7 @@ pub fn read_summary(dir: &Path, wid: Uuid) -> serde_json::Value {
 /// 桌面编组投影：写入 `teammateGroups` 节（remote 经 topology.groups 只读）。
 pub fn set_teammate_groups(dir: &Path, wid: Uuid, groups: &serde_json::Value) {
     update(dir, wid, |doc| {
-        if groups.is_null()
-            || groups.as_array().map(|a| a.is_empty()).unwrap_or(false)
-        {
+        if groups.is_null() || groups.as_array().map(|a| a.is_empty()).unwrap_or(false) {
             doc.remove("teammateGroups");
         } else {
             doc.insert("teammateGroups".into(), groups.clone());
@@ -176,14 +178,22 @@ mod tests {
         update(&dir, wid, |doc| {
             doc.insert("suspendedPanes".into(), serde_json::json!(["p1"]));
         });
-        append_decision(&dir, wid, serde_json::json!({ "verdict": "reject", "n": 0 }));
+        append_decision(
+            &dir,
+            wid,
+            serde_json::json!({ "verdict": "reject", "n": 0 }),
+        );
         let doc = read(&dir, wid).expect("doc exists");
         assert_eq!(doc["suspendedPanes"][0], "p1");
         assert_eq!(doc["decisions"].as_array().unwrap().len(), 1);
 
         // cap：塞满溢出去头留尾。
         for n in 1..=(DECISIONS_CAP + 5) {
-            append_decision(&dir, wid, serde_json::json!({ "verdict": "approve", "n": n }));
+            append_decision(
+                &dir,
+                wid,
+                serde_json::json!({ "verdict": "approve", "n": n }),
+            );
         }
         let doc = read(&dir, wid).unwrap();
         let list = doc["decisions"].as_array().unwrap();

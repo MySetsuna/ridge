@@ -8,12 +8,17 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-use crate::registry::{save_remote_hosts_at, save_roster_at, save_workspace_graph_at};
 use crate::pty::{PtyOutputLeaseError, PtyOutputRead};
+use crate::registry::{save_remote_hosts_at, save_roster_at, save_workspace_graph_at};
 use crate::server::{AppState, OutputLeaseSlot};
+
+use ridge_core::teammate::communication::{AgentIdentity, CommunicationError};
+use ridge_core::workspace::graph::WorkspaceMeta;
+use ridge_core::workspace::pane_tree::PaneTree;
+use ridge_mcp::delivery::HubDeliveryAdapter;
 
 /// Bound HTTP lease handles even when clients disappear without DELETE. The
 /// PTY replay bytes remain bounded separately by `PtyOutputHub`.
@@ -120,12 +125,84 @@ fn workspace_detail(
     }))
 }
 
-fn persist_workspaces(st: &AppState, graph: &ridge_core::workspace::graph::WorkspaceGraph) -> Result<(), StatusCode> {
-    save_workspace_graph_at(&st.workspaces_path, graph).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+fn persist_workspaces(
+    st: &AppState,
+    graph: &ridge_core::workspace::graph::WorkspaceGraph,
+) -> Result<(), StatusCode> {
+    save_workspace_graph_at(&st.workspaces_path, graph)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-fn persist_roster(st: &AppState, roster: &ridge_core::teammate::topology::TopologyGraph) -> Result<(), StatusCode> {
+fn persist_roster(
+    st: &AppState,
+    roster: &ridge_core::teammate::topology::TopologyGraph,
+) -> Result<(), StatusCode> {
     save_roster_at(&st.roster_path, roster).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+/// Commit the stable Agent identity only after the PTY process has spawned.
+/// Ordinary shell panes remain diagnostic/runtime state, not Agent entries.
+pub(crate) fn commit_agent_identity_for_pty(
+    st: &AppState,
+    pane_id: Uuid,
+    role: &str,
+    executable: &str,
+    argv: Vec<String>,
+) -> Result<bool, String> {
+    if role.trim().is_empty() || role.eq_ignore_ascii_case("shell") {
+        return Ok(false);
+    }
+    let info = st.ptys.info(pane_id).map_err(|error| error.to_string())?;
+    let workspace_id = info
+        .workspace_id
+        .ok_or_else(|| "Agent PTY must belong to a workspace".to_string())?;
+    let agent_id = format!("kernel:{pane_id}");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or(0);
+    let mut roster = st.roster.lock().expect("roster lock");
+    let mut next = roster.clone();
+    let generation = next.next_agent_generation(&agent_id);
+    next.commit_online_agent(ridge_core::teammate::communication::AgentIdentity {
+        agent_id: agent_id.clone(),
+        session_id: format!("session:{}", Uuid::new_v4()),
+        workspace_id: workspace_id.to_string(),
+        pane_id: pane_id.to_string(),
+        cwd: info.cwd.unwrap_or_default(),
+        executable: executable.to_string(),
+        argv,
+        generation,
+        lease: Uuid::new_v4().to_string(),
+        lifecycle: ridge_core::teammate::communication::AgentLifecycle::Online,
+        online: true,
+        last_seen_unix_ms: timestamp,
+        capabilities: vec!["messages".into(), "tasks".into(), "events".into()],
+    })
+    .map_err(|error| error.to_string())?;
+    save_roster_at(&st.roster_path, &next).map_err(|error| error.to_string())?;
+    *roster = next;
+    Ok(true)
+}
+
+/// Remove a live identity only after the corresponding PTY destroy succeeded.
+pub(crate) fn remove_agent_identity_for_pty(st: &AppState, pane_id: Uuid) -> Result<bool, String> {
+    let mut roster = st.roster.lock().expect("roster lock");
+    let mut next = roster.clone();
+    let Some(identity) = next.remove_agent_identity_by_pane(&pane_id.to_string()) else {
+        return Ok(false);
+    };
+    save_roster_at(&st.roster_path, &next).map_err(|error| error.to_string())?;
+    *roster = next;
+    for adapter in [HubDeliveryAdapter::RuntimeApi, HubDeliveryAdapter::A2a] {
+        st.mcp_state.unregister_delivery_endpoint(
+            adapter,
+            &identity.agent_id,
+            identity.generation,
+            &identity.lease,
+        )?;
+    }
+    Ok(true)
 }
 
 /// Kernel-owned remote host topology. Transport connection remains a shell adapter.
@@ -133,9 +210,13 @@ pub async fn domain_remote_hosts(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, StatusCode> {
-    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let hosts = st.remote_hosts.lock().expect("remote host lock").snapshot();
-    Ok(Json(json!({ "ok": true, "source": "ridge-kernel", "hosts": hosts })))
+    Ok(Json(
+        json!({ "ok": true, "source": "ridge-kernel", "hosts": hosts }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,12 +271,9 @@ async fn mutate_remote_host_session_endpoint(
     }
     let mut hosts = st.remote_hosts.lock().expect("remote host lock");
     let mut next = hosts.clone();
-    if let Err(error) = mutate_remote_host_session(
-        &mut next,
-        &request.host_id,
-        &request.session_id,
-        attached,
-    ) {
+    if let Err(error) =
+        mutate_remote_host_session(&mut next, &request.host_id, &request.session_id, attached)
+    {
         return Ok(bad_request(error));
     }
     save_remote_hosts_at(&st.remote_hosts_path, next.records())
@@ -231,13 +309,18 @@ pub async fn domain_remote_host_upsert(
     headers: HeaderMap,
     Json(host): Json<ridge_core::remote::HostRecord>,
 ) -> Result<Json<Value>, StatusCode> {
-    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
-    if host.id.trim().is_empty() { return Ok(bad_request("remote host id is required")); }
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    if host.id.trim().is_empty() {
+        return Ok(bad_request("remote host id is required"));
+    }
     let id = host.id.clone();
     let mut hosts = st.remote_hosts.lock().expect("remote host lock");
     let mut next = hosts.clone();
     next.upsert(host);
-    save_remote_hosts_at(&st.remote_hosts_path, next.records()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    save_remote_hosts_at(&st.remote_hosts_path, next.records())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     *hosts = next;
     Ok(Json(json!({ "ok": true, "host_id": id })))
 }
@@ -247,13 +330,18 @@ pub async fn domain_remote_host_remove(
     headers: HeaderMap,
     Path(host_id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let mut hosts = st.remote_hosts.lock().expect("remote host lock");
     let mut next = hosts.clone();
     let removed = next.remove(&host_id);
-    save_remote_hosts_at(&st.remote_hosts_path, next.records()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    save_remote_hosts_at(&st.remote_hosts_path, next.records())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     *hosts = next;
-    Ok(Json(json!({ "ok": true, "removed": removed, "host_id": host_id })))
+    Ok(Json(
+        json!({ "ok": true, "removed": removed, "host_id": host_id }),
+    ))
 }
 
 /// Kernel-owned workspace topology. Existing shell migration remains explicit.
@@ -323,7 +411,11 @@ pub async fn domain_workspace_activate(
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
     let mut next = graph.clone();
     match next.set_active(workspace_id) {
-        Ok(()) => { persist_workspaces(&st, &next)?; *graph = next; Ok(Json(json!({ "ok": true, "workspace_id": workspace_id }))) },
+        Ok(()) => {
+            persist_workspaces(&st, &next)?;
+            *graph = next;
+            Ok(Json(json!({ "ok": true, "workspace_id": workspace_id })))
+        }
         Err(e) => Ok(bad_request(e.to_string())),
     }
 }
@@ -369,7 +461,11 @@ pub async fn domain_workspace_split(
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
     let mut next = graph.clone();
     match next.split(workspace_id, pane_id, direction) {
-        Ok(new_pane_id) => { persist_workspaces(&st, &next)?; *graph = next; Ok(Json(json!({ "ok": true, "pane_id": new_pane_id }))) },
+        Ok(new_pane_id) => {
+            persist_workspaces(&st, &next)?;
+            *graph = next;
+            Ok(Json(json!({ "ok": true, "pane_id": new_pane_id })))
+        }
         Err(e) => Ok(bad_request(e.to_string())),
     }
 }
@@ -396,7 +492,11 @@ pub async fn domain_workspace_pane_close(
     match next.close(workspace_id, pane_id) {
         Ok(()) => {
             let pty = if st.ptys.contains(pane_id) {
-                Some(st.ptys.begin_destroy(pane_id).map_err(|_| StatusCode::CONFLICT)?)
+                Some(
+                    st.ptys
+                        .begin_destroy(pane_id)
+                        .map_err(|_| StatusCode::CONFLICT)?,
+                )
             } else {
                 None
             };
@@ -420,11 +520,15 @@ pub async fn domain_workspace_pane_close(
                 st.ptys
                     .finish_destroy(pane_id)
                     .map_err(|_| StatusCode::CONFLICT)?;
-                st.mcp_state.purge_pane(&pane_id.to_string());
+                if let Err(error) = st.mcp_state.purge_pane(&pane_id.to_string()) {
+                    return Ok(bad_request(format!(
+                        "pane closed but Hub delivery state could not be purged: {error}"
+                    )));
+                }
             }
             *graph = next;
             Ok(Json(json!({ "ok": true })))
-        },
+        }
         Err(e) => Ok(bad_request(e.to_string())),
     }
 }
@@ -455,9 +559,13 @@ pub async fn domain_workspace_pane_locked_size(
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
     let mut next = graph.clone();
     match next.set_locked_size(workspace_id, pane_id, request.cols, request.rows) {
-        Ok(()) => { persist_workspaces(&st, &next)?; *graph = next; Ok(Json(
-            json!({ "ok": true, "cols": request.cols, "rows": request.rows }),
-        )) },
+        Ok(()) => {
+            persist_workspaces(&st, &next)?;
+            *graph = next;
+            Ok(Json(
+                json!({ "ok": true, "cols": request.cols, "rows": request.rows }),
+            ))
+        }
         Err(e) => Ok(bad_request(e.to_string())),
     }
 }
@@ -488,6 +596,7 @@ fn roster_snapshot(graph: &ridge_core::teammate::topology::TopologyGraph) -> Val
         "source": "ridge-kernel",
         "leader_id": graph.leader_id(),
         "roster": roster,
+        "agent_identities": graph.agent_identities(),
     })
 }
 
@@ -498,7 +607,9 @@ pub async fn domain_agent_roster(
     if !auth_ok(&headers, &st.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    Ok(Json(roster_snapshot(&st.roster.lock().expect("roster lock"))))
+    Ok(Json(roster_snapshot(
+        &st.roster.lock().expect("roster lock"),
+    )))
 }
 
 #[derive(Deserialize)]
@@ -506,6 +617,70 @@ pub struct AgentRosterAddRequest {
     pub id: String,
     pub name: String,
     pub pane_id: u32,
+}
+
+#[derive(Deserialize)]
+pub struct AgentIdentityCommitRequest {
+    pub agent_id: String,
+    pub session_id: String,
+    pub workspace_id: String,
+    pub pane_id: String,
+    pub cwd: String,
+    pub executable: String,
+    #[serde(default)]
+    pub argv: Vec<String>,
+    pub generation: u64,
+    pub lease: String,
+    pub lifecycle: ridge_core::teammate::communication::AgentLifecycle,
+    pub online: bool,
+    pub last_seen_unix_ms: u64,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+/// Commit one identity only after the caller has completed spawn/attach and
+/// proved the Agent is online. Teammate metadata remains a compatibility API.
+pub async fn domain_agent_identity_commit(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<AgentIdentityCommitRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let identity = AgentIdentity {
+        agent_id: request.agent_id,
+        session_id: request.session_id,
+        workspace_id: request.workspace_id,
+        pane_id: request.pane_id,
+        cwd: request.cwd,
+        executable: request.executable,
+        argv: request.argv,
+        generation: request.generation,
+        lease: request.lease,
+        lifecycle: request.lifecycle,
+        online: request.online,
+        last_seen_unix_ms: request.last_seen_unix_ms,
+        capabilities: request.capabilities,
+    };
+    let agent_id = identity.agent_id.clone();
+    let mut roster = st.roster.lock().expect("roster lock");
+    let mut next = roster.clone();
+    match next.commit_online_agent(identity) {
+        Ok(()) => {
+            persist_roster(&st, &next)?;
+            *roster = next;
+            Ok(Json(json!({ "ok": true, "agent_id": agent_id })))
+        }
+        Err(error @ CommunicationError::InvalidEnvelope(_))
+        | Err(error @ CommunicationError::TargetOffline(_))
+        | Err(error @ CommunicationError::GenerationMismatch { .. })
+        | Err(error @ CommunicationError::StaleLease) => Ok(Json(json!({
+            "ok": false,
+            "error": error,
+        }))),
+        Err(error) => Ok(Json(json!({ "ok": false, "error": error }))),
+    }
 }
 
 pub async fn domain_agent_roster_add(
@@ -520,8 +695,9 @@ pub async fn domain_agent_roster_add(
         return Ok(bad_request("agent id and name are required"));
     }
     let capability = ridge_core::teammate::model::recognize_capability(&request.name, None);
-    let teammate = ridge_core::teammate::model::Teammate::new(request.id, request.name, request.pane_id)
-        .with_capability(capability);
+    let teammate =
+        ridge_core::teammate::model::Teammate::new(request.id, request.name, request.pane_id)
+            .with_capability(capability);
     let agent_id = teammate.id.clone();
     let mut roster = st.roster.lock().expect("roster lock");
     let mut next = roster.clone();
@@ -569,6 +745,50 @@ pub struct PtyCreateRequest {
     pub launch_profile: Option<String>,
     pub cols: Option<u16>,
     pub rows: Option<u16>,
+}
+
+#[derive(Deserialize)]
+pub struct WorkspaceTopologySyncRequest {
+    pub pane_tree: PaneTree,
+}
+
+/// Synchronize a desktop-owned pane tree into the kernel projection. Missing
+/// workspace ids are inserted so a fresh desktop workspace can become the
+/// detached Remote source of truth before its first PTY attaches.
+pub async fn domain_workspace_topology(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(workspace_id): Path<String>,
+    Json(request): Json<WorkspaceTopologySyncRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let workspace_id = match parse_id(&workspace_id, "workspace") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
+    let mut graph = st.workspaces.lock().expect("workspace graph lock");
+    let mut next = graph.clone();
+    if let Some(meta) = next.workspace_mut(workspace_id) {
+        meta.pane_tree = request.pane_tree;
+    } else {
+        next.insert_workspace(
+            workspace_id,
+            WorkspaceMeta {
+                pane_tree: request.pane_tree,
+                name: None,
+                locked_sizes: HashMap::new(),
+            },
+        );
+    }
+    persist_workspaces(&st, &next)?;
+    *graph = next;
+    Ok(Json(json!({
+        "ok": true,
+        "source": "ridge-kernel",
+        "workspace_id": workspace_id,
+    })))
 }
 
 pub async fn domain_pty_create(
@@ -645,7 +865,25 @@ pub async fn domain_pty_create(
                     return Ok(bad_request(error.to_string()));
                 }
             }
-            Ok(Json(json!({ "ok": true, "source": "ridge-kernel", "pty_id": pty_id })))
+            let executable = request
+                .program
+                .as_deref()
+                .or(request.shell.as_deref())
+                .unwrap_or("shell");
+            if let Err(error) =
+                commit_agent_identity_for_pty(&st, pty_id, role, executable, request.args.clone())
+            {
+                let _ = st.ptys.destroy(pty_id);
+                if let Some(workspace_id) = inserted_workspace {
+                    let mut graph = st.workspaces.lock().expect("workspace graph lock");
+                    graph.remove_workspace(workspace_id);
+                    let _ = persist_workspaces(&st, &graph);
+                }
+                return Ok(bad_request(error));
+            }
+            Ok(Json(
+                json!({ "ok": true, "source": "ridge-kernel", "pty_id": pty_id }),
+            ))
         }
         Err(error) => {
             if let Some(workspace_id) = inserted_workspace {
@@ -681,6 +919,7 @@ pub async fn domain_pty_list(
                 "pane_index": info.pane_index,
                 "workspace_id": info.workspace_id,
                 "role": info.role,
+                "program": info.program,
                 "launch_profile": info.launch_profile,
                 "cwd": info.cwd,
                 "status": info.status,
@@ -709,8 +948,13 @@ pub async fn domain_pty_write(
     Path(pty_id): Path<String>,
     Json(request): Json<PtyWriteRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
-    let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pty_id = match parse_id(&pty_id, "pty") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
     let data = match base64::engine::general_purpose::STANDARD.decode(request.data_b64) {
         Ok(data) => data,
         Err(_) => return Ok(bad_request("data_b64 must be valid base64")),
@@ -722,7 +966,10 @@ pub async fn domain_pty_write(
 }
 
 #[derive(Deserialize)]
-pub struct PtyResizeRequest { pub cols: u16, pub rows: u16 }
+pub struct PtyResizeRequest {
+    pub cols: u16,
+    pub rows: u16,
+}
 
 pub async fn domain_pty_resize(
     State(st): State<AppState>,
@@ -730,8 +977,13 @@ pub async fn domain_pty_resize(
     Path(pty_id): Path<String>,
     Json(request): Json<PtyResizeRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
-    let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pty_id = match parse_id(&pty_id, "pty") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
     match st.ptys.resize(pty_id, request.cols, request.rows) {
         Ok(()) => Ok(Json(json!({ "ok": true }))),
         Err(error) => Ok(bad_request(error.to_string())),
@@ -743,17 +995,31 @@ pub async fn domain_pty_destroy(
     headers: HeaderMap,
     Path(pty_id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
-    let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pty_id = match parse_id(&pty_id, "pty") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
     let result = st.ptys.destroy(pty_id);
     // `destroy` closes the hub and wakes pending polls. Remove idle HTTP
     // handles as well; their Drop detaches from the bounded replay state.
     remove_output_leases_for_pty(&st, pty_id);
     match result {
         Ok(()) => {
-            st.mcp_state.purge_pane(&pty_id.to_string());
+            if let Err(error) = remove_agent_identity_for_pty(&st, pty_id) {
+                return Ok(bad_request(format!(
+                    "PTY destroyed but Agent identity teardown could not be persisted: {error}"
+                )));
+            }
+            if let Err(error) = st.mcp_state.purge_pane(&pty_id.to_string()) {
+                return Ok(bad_request(format!(
+                    "PTY destroyed but Hub delivery state could not be purged: {error}"
+                )));
+            }
             Ok(Json(json!({ "ok": true })))
-        },
+        }
         Err(error) => Ok(bad_request(error.to_string())),
     }
 }
@@ -763,14 +1029,25 @@ pub async fn domain_pty_clear(
     headers: HeaderMap,
     Path(pty_id): Path<String>,
 ) -> Result<Json<Value>, StatusCode> {
-    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
-    let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
-    st.ptys.clear_scrollback(pty_id).map_err(|_| StatusCode::NOT_FOUND)?;
-    Ok(Json(json!({ "ok": true, "pty_id": pty_id, "scrollback_cleared": true })))
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pty_id = match parse_id(&pty_id, "pty") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
+    st.ptys
+        .clear_scrollback(pty_id)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(
+        json!({ "ok": true, "pty_id": pty_id, "scrollback_cleared": true }),
+    ))
 }
 
 #[derive(Deserialize)]
-pub struct PtyScrollbackQuery { pub max_bytes: Option<usize> }
+pub struct PtyScrollbackQuery {
+    pub max_bytes: Option<usize>,
+}
 
 pub async fn domain_pty_scrollback(
     State(st): State<AppState>,
@@ -778,9 +1055,17 @@ pub async fn domain_pty_scrollback(
     Path(pty_id): Path<String>,
     Query(query): Query<PtyScrollbackQuery>,
 ) -> Result<Json<Value>, StatusCode> {
-    if !auth_ok(&headers, &st.token) { return Err(StatusCode::UNAUTHORIZED); }
-    let pty_id = match parse_id(&pty_id, "pty") { Ok(id) => id, Err(body) => return Ok(body) };
-    match st.ptys.scrollback(pty_id, query.max_bytes.unwrap_or(64 * 1024)) {
+    if !auth_ok(&headers, &st.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let pty_id = match parse_id(&pty_id, "pty") {
+        Ok(id) => id,
+        Err(body) => return Ok(body),
+    };
+    match st
+        .ptys
+        .scrollback(pty_id, query.max_bytes.unwrap_or(64 * 1024))
+    {
         Ok(bytes) => Ok(Json(json!({
             "ok": true,
             "pty_id": pty_id,
@@ -937,9 +1222,7 @@ pub async fn domain_pty_output_poll(
         Ok(id) => id,
         Err(body) => return Ok(body),
     };
-    let timeout_ms = query
-        .timeout_ms
-        .unwrap_or(DEFAULT_OUTPUT_POLL_TIMEOUT_MS);
+    let timeout_ms = query.timeout_ms.unwrap_or(DEFAULT_OUTPUT_POLL_TIMEOUT_MS);
     if timeout_ms > MAX_OUTPUT_POLL_TIMEOUT_MS {
         return Ok(bad_request(format!(
             "timeout_ms must be <= {MAX_OUTPUT_POLL_TIMEOUT_MS}"
@@ -969,9 +1252,11 @@ pub async fn domain_pty_output_poll(
             "lease_id": lease_id,
             "frames": [],
         }))),
-        Err(error @ (PtyOutputLeaseError::Detached
-        | PtyOutputLeaseError::Closing
-        | PtyOutputLeaseError::Closed)) => {
+        Err(
+            error @ (PtyOutputLeaseError::Detached
+            | PtyOutputLeaseError::Closing
+            | PtyOutputLeaseError::Closed),
+        ) => {
             remove_output_lease(&st, pty_id, lease_id);
             Ok(bad_request(error.to_string()))
         }
@@ -1104,48 +1389,123 @@ pub struct GitQuery {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case")]
 pub enum GitMutationRequest {
-    Stage { repo_root: String, paths: Vec<String> },
-    Unstage { repo_root: String, paths: Vec<String> },
-    Discard { repo_root: String, paths: Vec<String> },
-    CleanUntracked { repo_root: String, paths: Vec<String> },
-    Commit { repo_root: String, message: String, amend: Option<bool> },
+    Stage {
+        repo_root: String,
+        paths: Vec<String>,
+    },
+    Unstage {
+        repo_root: String,
+        paths: Vec<String>,
+    },
+    Discard {
+        repo_root: String,
+        paths: Vec<String>,
+    },
+    CleanUntracked {
+        repo_root: String,
+        paths: Vec<String>,
+    },
+    Commit {
+        repo_root: String,
+        message: String,
+        amend: Option<bool>,
+    },
     Checkout {
         repo_root: String,
         branch: String,
         create: Option<bool>,
         base: Option<String>,
     },
-    Push { repo_root: String, set_upstream: Option<bool> },
-    PushBranch { repo_root: String, branch: String },
-    MergeBranch { repo_root: String, branch: String },
-    DeleteBranch { repo_root: String, branch: String, force: Option<bool> },
-    RenameBranch { repo_root: String, old_name: String, new_name: String },
-    Rebase { repo_root: String, onto: String },
-    DeleteTag { repo_root: String, name: String },
-    PushTag { repo_root: String, name: String },
+    Push {
+        repo_root: String,
+        set_upstream: Option<bool>,
+    },
+    PushBranch {
+        repo_root: String,
+        branch: String,
+    },
+    MergeBranch {
+        repo_root: String,
+        branch: String,
+    },
+    DeleteBranch {
+        repo_root: String,
+        branch: String,
+        force: Option<bool>,
+    },
+    RenameBranch {
+        repo_root: String,
+        old_name: String,
+        new_name: String,
+    },
+    Rebase {
+        repo_root: String,
+        onto: String,
+    },
+    DeleteTag {
+        repo_root: String,
+        name: String,
+    },
+    PushTag {
+        repo_root: String,
+        name: String,
+    },
     StashPush {
         repo_root: String,
         message: Option<String>,
         include_untracked: Option<bool>,
     },
-    StashApply { repo_root: String, reference: String },
-    StashPop { repo_root: String, reference: String },
-    StashDrop { repo_root: String, reference: String },
-    StashBranch { repo_root: String, branch: String, reference: String },
-    Fetch { repo_root: String },
-    Pull { repo_root: String },
-    Sync { repo_root: String },
-    CherryPickAbort { repo_root: String },
-    RevertAbort { repo_root: String },
-    CherryPick { repo_root: String, hash: String },
-    Revert { repo_root: String, hash: String },
+    StashApply {
+        repo_root: String,
+        reference: String,
+    },
+    StashPop {
+        repo_root: String,
+        reference: String,
+    },
+    StashDrop {
+        repo_root: String,
+        reference: String,
+    },
+    StashBranch {
+        repo_root: String,
+        branch: String,
+        reference: String,
+    },
+    Fetch {
+        repo_root: String,
+    },
+    Pull {
+        repo_root: String,
+    },
+    Sync {
+        repo_root: String,
+    },
+    CherryPickAbort {
+        repo_root: String,
+    },
+    RevertAbort {
+        repo_root: String,
+    },
+    CherryPick {
+        repo_root: String,
+        hash: String,
+    },
+    Revert {
+        repo_root: String,
+        hash: String,
+    },
     CreateTag {
         repo_root: String,
         name: String,
         hash: Option<String>,
         message: Option<String>,
     },
-    Reset { repo_root: String, hash: String, mode: String },
+    Reset {
+        repo_root: String,
+        hash: String,
+        mode: String,
+    },
 }
 
 impl GitMutationRequest {
@@ -1189,16 +1549,53 @@ impl GitMutationRequest {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case")]
 pub enum GitReadRequest {
-    Info { repo_root: String },
-    Commits { repo_root: String, offset: u32, limit: u32 },
-    FileVersions { repo_root: String, path: String, cached: Option<bool> },
-    CommitFiles { repo_root: String, hash: String },
-    FileVersionsAtCommit { repo_root: String, path: String, hash: String },
-    FileVersionsBetween { repo_root: String, path: String, from: String, to: String },
-    CompareCommits { repo_root: String, from: String, to: String },
-    DiffFile { repo_root: String, path: String, cached: Option<bool> },
-    Blame { repo_root: String, path: String },
-    FileLog { repo_root: String, path: String, limit: Option<u32> },
+    Info {
+        repo_root: String,
+    },
+    Commits {
+        repo_root: String,
+        offset: u32,
+        limit: u32,
+    },
+    FileVersions {
+        repo_root: String,
+        path: String,
+        cached: Option<bool>,
+    },
+    CommitFiles {
+        repo_root: String,
+        hash: String,
+    },
+    FileVersionsAtCommit {
+        repo_root: String,
+        path: String,
+        hash: String,
+    },
+    FileVersionsBetween {
+        repo_root: String,
+        path: String,
+        from: String,
+        to: String,
+    },
+    CompareCommits {
+        repo_root: String,
+        from: String,
+        to: String,
+    },
+    DiffFile {
+        repo_root: String,
+        path: String,
+        cached: Option<bool>,
+    },
+    Blame {
+        repo_root: String,
+        path: String,
+    },
+    FileLog {
+        repo_root: String,
+        path: String,
+        limit: Option<u32>,
+    },
 }
 
 impl GitReadRequest {
@@ -1258,21 +1655,27 @@ pub async fn domain_git_mutate(
                 .await
                 .map(|_| None)
         }
-        GitMutationRequest::Commit { repo_root, message, amend } => {
-            ridge_core::commands::git::git_commit(repo_root, message, amend)
-                .await
-                .map(|_| None)
-        }
-        GitMutationRequest::Checkout { repo_root, branch, create, base } => {
-            ridge_core::commands::git::git_checkout(repo_root, branch, create, base)
-                .await
-                .map(|_| None)
-        }
-        GitMutationRequest::Push { repo_root, set_upstream } => {
-            ridge_core::commands::git::git_push(repo_root, set_upstream)
-                .await
-                .map(|_| None)
-        }
+        GitMutationRequest::Commit {
+            repo_root,
+            message,
+            amend,
+        } => ridge_core::commands::git::git_commit(repo_root, message, amend)
+            .await
+            .map(|_| None),
+        GitMutationRequest::Checkout {
+            repo_root,
+            branch,
+            create,
+            base,
+        } => ridge_core::commands::git::git_checkout(repo_root, branch, create, base)
+            .await
+            .map(|_| None),
+        GitMutationRequest::Push {
+            repo_root,
+            set_upstream,
+        } => ridge_core::commands::git::git_push(repo_root, set_upstream)
+            .await
+            .map(|_| None),
         GitMutationRequest::PushBranch { repo_root, branch } => {
             ridge_core::commands::git::git_push_branch(repo_root, branch)
                 .await
@@ -1283,16 +1686,20 @@ pub async fn domain_git_mutate(
                 .await
                 .map(Some)
         }
-        GitMutationRequest::DeleteBranch { repo_root, branch, force } => {
-            ridge_core::commands::git::git_delete_branch(repo_root, branch, force)
-                .await
-                .map(Some)
-        }
-        GitMutationRequest::RenameBranch { repo_root, old_name, new_name } => {
-            ridge_core::commands::git::git_rename_branch(repo_root, old_name, new_name)
-                .await
-                .map(Some)
-        }
+        GitMutationRequest::DeleteBranch {
+            repo_root,
+            branch,
+            force,
+        } => ridge_core::commands::git::git_delete_branch(repo_root, branch, force)
+            .await
+            .map(Some),
+        GitMutationRequest::RenameBranch {
+            repo_root,
+            old_name,
+            new_name,
+        } => ridge_core::commands::git::git_rename_branch(repo_root, old_name, new_name)
+            .await
+            .map(Some),
         GitMutationRequest::Rebase { repo_root, onto } => {
             ridge_core::commands::git::git_rebase(repo_root, onto)
                 .await
@@ -1308,46 +1715,47 @@ pub async fn domain_git_mutate(
                 .await
                 .map(Some)
         }
-        GitMutationRequest::StashPush { repo_root, message, include_untracked } => {
-            ridge_core::commands::git::git_stash_push(repo_root, message, include_untracked)
-                .await
-                .map(Some)
-        }
-        GitMutationRequest::StashApply { repo_root, reference } => {
-            ridge_core::commands::git::git_stash_apply(repo_root, reference)
-                .await
-                .map(Some)
-        }
-        GitMutationRequest::StashPop { repo_root, reference } => {
-            ridge_core::commands::git::git_stash_pop(repo_root, reference)
-                .await
-                .map(Some)
-        }
-        GitMutationRequest::StashDrop { repo_root, reference } => {
-            ridge_core::commands::git::git_stash_drop(repo_root, reference)
-                .await
-                .map(Some)
-        }
-        GitMutationRequest::StashBranch { repo_root, branch, reference } => {
-            ridge_core::commands::git::git_stash_branch(repo_root, branch, reference)
-                .await
-                .map(Some)
-        }
-        GitMutationRequest::Fetch { repo_root } => {
-            ridge_core::commands::git::git_fetch(repo_root)
-                .await
-                .map(|_| None)
-        }
-        GitMutationRequest::Pull { repo_root } => {
-            ridge_core::commands::git::git_pull(repo_root)
-                .await
-                .map(|_| None)
-        }
-        GitMutationRequest::Sync { repo_root } => {
-            ridge_core::commands::git::git_sync(repo_root)
-                .await
-                .map(|_| None)
-        }
+        GitMutationRequest::StashPush {
+            repo_root,
+            message,
+            include_untracked,
+        } => ridge_core::commands::git::git_stash_push(repo_root, message, include_untracked)
+            .await
+            .map(Some),
+        GitMutationRequest::StashApply {
+            repo_root,
+            reference,
+        } => ridge_core::commands::git::git_stash_apply(repo_root, reference)
+            .await
+            .map(Some),
+        GitMutationRequest::StashPop {
+            repo_root,
+            reference,
+        } => ridge_core::commands::git::git_stash_pop(repo_root, reference)
+            .await
+            .map(Some),
+        GitMutationRequest::StashDrop {
+            repo_root,
+            reference,
+        } => ridge_core::commands::git::git_stash_drop(repo_root, reference)
+            .await
+            .map(Some),
+        GitMutationRequest::StashBranch {
+            repo_root,
+            branch,
+            reference,
+        } => ridge_core::commands::git::git_stash_branch(repo_root, branch, reference)
+            .await
+            .map(Some),
+        GitMutationRequest::Fetch { repo_root } => ridge_core::commands::git::git_fetch(repo_root)
+            .await
+            .map(|_| None),
+        GitMutationRequest::Pull { repo_root } => ridge_core::commands::git::git_pull(repo_root)
+            .await
+            .map(|_| None),
+        GitMutationRequest::Sync { repo_root } => ridge_core::commands::git::git_sync(repo_root)
+            .await
+            .map(|_| None),
         GitMutationRequest::CherryPickAbort { repo_root } => {
             ridge_core::commands::git::git_cherry_pick_abort(repo_root)
                 .await
@@ -1368,16 +1776,21 @@ pub async fn domain_git_mutate(
                 .await
                 .map(|_| None)
         }
-        GitMutationRequest::CreateTag { repo_root, name, hash, message } => {
-            ridge_core::commands::git::git_create_tag(repo_root, name, hash, message)
-                .await
-                .map(|_| None)
-        }
-        GitMutationRequest::Reset { repo_root, hash, mode } => {
-            ridge_core::commands::git::git_reset(repo_root, hash, mode)
-                .await
-                .map(|_| None)
-        }
+        GitMutationRequest::CreateTag {
+            repo_root,
+            name,
+            hash,
+            message,
+        } => ridge_core::commands::git::git_create_tag(repo_root, name, hash, message)
+            .await
+            .map(|_| None),
+        GitMutationRequest::Reset {
+            repo_root,
+            hash,
+            mode,
+        } => ridge_core::commands::git::git_reset(repo_root, hash, mode)
+            .await
+            .map(|_| None),
     };
 
     match result {
@@ -1424,54 +1837,71 @@ pub async fn domain_git_read(
     }
 
     let result: Result<Value, String> = match request {
-        GitReadRequest::Info { repo_root } => ridge_core::commands::git::get_git_info_with_cwd(repo_root)
+        GitReadRequest::Info { repo_root } => {
+            ridge_core::commands::git::get_git_info_with_cwd(repo_root)
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
+        GitReadRequest::Commits {
+            repo_root,
+            offset,
+            limit,
+        } => ridge_core::commands::git::get_git_commits_paginated(repo_root, offset, limit)
             .await
             .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
-        GitReadRequest::Commits { repo_root, offset, limit } => {
-            ridge_core::commands::git::get_git_commits_paginated(repo_root, offset, limit)
-                .await
-                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
-        }
-        GitReadRequest::FileVersions { repo_root, path, cached } => {
-            ridge_core::commands::git::git_get_file_versions(repo_root, path, cached)
-                .await
-                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
-        }
+        GitReadRequest::FileVersions {
+            repo_root,
+            path,
+            cached,
+        } => ridge_core::commands::git::git_get_file_versions(repo_root, path, cached)
+            .await
+            .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
         GitReadRequest::CommitFiles { repo_root, hash } => {
             ridge_core::commands::git::git_get_commit_files(repo_root, hash)
                 .await
                 .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         }
-        GitReadRequest::FileVersionsAtCommit { repo_root, path, hash } => {
-            ridge_core::commands::git::git_get_file_versions_at_commit(repo_root, path, hash)
-                .await
-                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
-        }
-        GitReadRequest::FileVersionsBetween { repo_root, path, from, to } => {
-            ridge_core::commands::git::git_get_file_versions_between(repo_root, path, from, to)
-                .await
-                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
-        }
-        GitReadRequest::CompareCommits { repo_root, from, to } => {
-            ridge_core::commands::git::git_compare_commits(repo_root, from, to)
-                .await
-                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
-        }
-        GitReadRequest::DiffFile { repo_root, path, cached } => {
-            ridge_core::commands::git::git_diff_file(repo_root, path, cached)
-                .await
-                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
-        }
+        GitReadRequest::FileVersionsAtCommit {
+            repo_root,
+            path,
+            hash,
+        } => ridge_core::commands::git::git_get_file_versions_at_commit(repo_root, path, hash)
+            .await
+            .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
+        GitReadRequest::FileVersionsBetween {
+            repo_root,
+            path,
+            from,
+            to,
+        } => ridge_core::commands::git::git_get_file_versions_between(repo_root, path, from, to)
+            .await
+            .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
+        GitReadRequest::CompareCommits {
+            repo_root,
+            from,
+            to,
+        } => ridge_core::commands::git::git_compare_commits(repo_root, from, to)
+            .await
+            .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
+        GitReadRequest::DiffFile {
+            repo_root,
+            path,
+            cached,
+        } => ridge_core::commands::git::git_diff_file(repo_root, path, cached)
+            .await
+            .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
         GitReadRequest::Blame { repo_root, path } => {
             ridge_core::commands::git::git_blame(repo_root, path)
                 .await
                 .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         }
-        GitReadRequest::FileLog { repo_root, path, limit } => {
-            ridge_core::commands::git::git_file_log(repo_root, path, limit)
-                .await
-                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
-        }
+        GitReadRequest::FileLog {
+            repo_root,
+            path,
+            limit,
+        } => ridge_core::commands::git::git_file_log(repo_root, path, limit)
+            .await
+            .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string())),
     };
 
     match result {
@@ -1704,15 +2134,20 @@ mod tests {
             workspaces: Arc::new(std::sync::Mutex::new(
                 ridge_core::workspace::graph::WorkspaceGraph::new(),
             )),
-            workspaces_path: std::env::temp_dir().join(format!("ridge-kernel-workspaces-{}.json", Uuid::new_v4())),
+            workspaces_path: std::env::temp_dir()
+                .join(format!("ridge-kernel-workspaces-{}.json", Uuid::new_v4())),
             roster: Arc::new(std::sync::Mutex::new(
                 ridge_core::teammate::topology::TopologyGraph::new(),
             )),
-            roster_path: std::env::temp_dir().join(format!("ridge-kernel-roster-{}.json", Uuid::new_v4())),
+            roster_path: std::env::temp_dir()
+                .join(format!("ridge-kernel-roster-{}.json", Uuid::new_v4())),
             groups: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             mcp_state: Arc::new(ridge_mcp::server::McpSessionState::default()),
-            remote_hosts: Arc::new(std::sync::Mutex::new(ridge_core::remote::RemoteHostTopology::default())),
-            remote_hosts_path: std::env::temp_dir().join(format!("ridge-kernel-test-{}.json", Uuid::new_v4())),
+            remote_hosts: Arc::new(std::sync::Mutex::new(
+                ridge_core::remote::RemoteHostTopology::default(),
+            )),
+            remote_hosts_path: std::env::temp_dir()
+                .join(format!("ridge-kernel-test-{}.json", Uuid::new_v4())),
             ptys: Arc::new(crate::pty::PtyRegistry::default()),
             output_leases: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             fs_scope: ridge_core::sandbox::RootScope::unrestricted(),
@@ -1761,7 +2196,78 @@ mod tests {
             .0;
         assert_eq!(listed["source"], "ridge-kernel");
         assert_eq!(listed["ptys"][0]["pty_id"], pane_id.to_string());
+        assert_eq!(listed["ptys"][0]["program"], Value::Null);
         state.ptys.destroy(pane_id).expect("destroy test PTY");
+    }
+
+    #[tokio::test]
+    async fn agent_pty_lifecycle_commits_and_tears_down_kernel_identity() {
+        let state = test_state();
+        let pane_id = Uuid::new_v4();
+        let workspace_id = Uuid::new_v4();
+        let response = domain_pty_create(
+            State(state.clone()),
+            test_headers(),
+            Json(PtyCreateRequest {
+                pty_id: Some(pane_id),
+                program: None,
+                args: Vec::new(),
+                env: HashMap::new(),
+                shell: None,
+                cwd: None,
+                workspace_id: Some(workspace_id),
+                role: Some("worker".into()),
+                launch_profile: Some("codex".into()),
+                cols: None,
+                rows: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(response["ok"], true);
+        let roster = state.roster.lock().unwrap();
+        let identity = roster
+            .agent_identity(&format!("kernel:{pane_id}"))
+            .expect("spawned Agent identity");
+        assert_eq!(identity.workspace_id, workspace_id.to_string());
+        assert_eq!(
+            identity.lifecycle,
+            ridge_core::teammate::communication::AgentLifecycle::Online
+        );
+        let target = json!({
+            "agentId": identity.agent_id,
+            "generation": identity.generation,
+            "lease": identity.lease,
+        });
+        state
+            .mcp_state
+            .register_delivery_endpoint(
+                HubDeliveryAdapter::RuntimeApi,
+                target["agentId"].as_str().unwrap(),
+                target["generation"].as_u64().unwrap(),
+                target["lease"].as_str().unwrap(),
+            )
+            .expect("register runtime route");
+        assert!(state.mcp_state.delivery_probe(&target).runtime_api);
+        drop(roster);
+
+        let destroyed = domain_pty_destroy(
+            State(state.clone()),
+            test_headers(),
+            Path(pane_id.to_string()),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(destroyed["ok"], true);
+        assert!(state
+            .roster
+            .lock()
+            .unwrap()
+            .agent_identity(&format!("kernel:{pane_id}"))
+            .is_none());
+        assert!(!state.mcp_state.delivery_probe(&target).runtime_api);
     }
 
     #[tokio::test]
@@ -1849,7 +2355,8 @@ mod tests {
 
     #[tokio::test]
     async fn git_status_fast_confirms_non_repository_without_numstat() {
-        let root = std::env::temp_dir().join(format!("ridge-kernel-non-git-fast-{}", Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("ridge-kernel-non-git-fast-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let response = domain_git_status(
             State(test_state()),
@@ -1892,7 +2399,8 @@ mod tests {
 
     #[tokio::test]
     async fn git_stashes_confirms_non_repository_without_spawning_stash() {
-        let root = std::env::temp_dir().join(format!("ridge-kernel-non-git-stash-{}", Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("ridge-kernel-non-git-stash-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let response = domain_git_stashes(
             State(test_state()),
@@ -1914,7 +2422,8 @@ mod tests {
 
     #[tokio::test]
     async fn git_diff_summary_confirms_non_repository_without_spawning_diff() {
-        let root = std::env::temp_dir().join(format!("ridge-kernel-non-git-diff-{}", Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("ridge-kernel-non-git-diff-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let response = domain_git_diff_summary(
             State(test_state()),
@@ -1936,7 +2445,8 @@ mod tests {
 
     #[tokio::test]
     async fn git_mutation_rejects_non_repository_before_write() {
-        let root = std::env::temp_dir().join(format!("ridge-kernel-non-git-mutate-{}", Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("ridge-kernel-non-git-mutate-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let response = domain_git_mutate(
             State(test_state()),
@@ -1952,13 +2462,17 @@ mod tests {
         assert_eq!(response["ok"], false);
         assert_eq!(response["source"], "ridge-kernel");
         assert_eq!(response["is_repo"], false);
-        assert!(response["error"].as_str().unwrap().contains("Not a git repo"));
+        assert!(response["error"]
+            .as_str()
+            .unwrap()
+            .contains("Not a git repo"));
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
     async fn git_read_rejects_non_repository_before_spawning_history_command() {
-        let root = std::env::temp_dir().join(format!("ridge-kernel-non-git-read-{}", Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("ridge-kernel-non-git-read-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let response = domain_git_read(
             State(test_state()),
@@ -2099,17 +2613,28 @@ mod tests {
         let host = ridge_core::remote::HostRecord {
             id: "remote-a".into(),
             kind: ridge_core::remote::HostKind::Remote,
-            label: "A".into(), addr: "127.0.0.1:9900".into(),
+            label: "A".into(),
+            addr: "127.0.0.1:9900".into(),
             status: ridge_core::remote::HostStatus::Connected,
-            detail: "live".into(), sessions: vec![],
+            detail: "live".into(),
+            sessions: vec![],
         };
-        let _ = domain_remote_host_upsert(State(state.clone()), test_headers(), Json(host)).await.unwrap();
-        let listed = domain_remote_hosts(State(state.clone()), test_headers()).await.unwrap().0;
+        let _ = domain_remote_host_upsert(State(state.clone()), test_headers(), Json(host))
+            .await
+            .unwrap();
+        let listed = domain_remote_hosts(State(state.clone()), test_headers())
+            .await
+            .unwrap()
+            .0;
         assert_eq!(listed["hosts"][0]["id"], "remote-a");
         let restored: std::collections::HashMap<String, ridge_core::remote::HostRecord> =
             serde_json::from_slice(&std::fs::read(&persisted).unwrap()).unwrap();
         assert_eq!(restored["remote-a"].label, "A");
-        let removed = domain_remote_host_remove(State(state), test_headers(), Path("remote-a".into())).await.unwrap().0;
+        let removed =
+            domain_remote_host_remove(State(state), test_headers(), Path("remote-a".into()))
+                .await
+                .unwrap()
+                .0;
         assert_eq!(removed["removed"], true);
         let _ = std::fs::remove_file(persisted);
     }
@@ -2141,39 +2666,33 @@ mod tests {
                 session_id: "session-a".into(),
             })
         };
-        let attached = domain_remote_host_session_attach(
-            State(state.clone()),
-            test_headers(),
-            request(),
-        )
-        .await
-        .unwrap()
-        .0;
+        let attached =
+            domain_remote_host_session_attach(State(state.clone()), test_headers(), request())
+                .await
+                .unwrap()
+                .0;
         assert_eq!(attached["ok"], true);
         assert_eq!(attached["attached"], true);
 
-        let duplicate = domain_remote_host_session_attach(
-            State(state.clone()),
-            test_headers(),
-            request(),
-        )
-        .await
-        .unwrap()
-        .0;
+        let duplicate =
+            domain_remote_host_session_attach(State(state.clone()), test_headers(), request())
+                .await
+                .unwrap()
+                .0;
         assert_eq!(duplicate["ok"], false);
 
-        let detached = domain_remote_host_session_detach(
-            State(state.clone()),
-            test_headers(),
-            request(),
-        )
-        .await
-        .unwrap()
-        .0;
+        let detached =
+            domain_remote_host_session_detach(State(state.clone()), test_headers(), request())
+                .await
+                .unwrap()
+                .0;
         assert_eq!(detached["ok"], true);
         assert_eq!(detached["attached"], false);
 
-        let listed = domain_remote_hosts(State(state), test_headers()).await.unwrap().0;
+        let listed = domain_remote_hosts(State(state), test_headers())
+            .await
+            .unwrap()
+            .0;
         assert_eq!(listed["hosts"][0]["sessions"][0]["attached"], false);
         let _ = std::fs::remove_file(persisted);
     }
@@ -2230,11 +2749,14 @@ mod tests {
         let restored: ridge_core::workspace::graph::WorkspaceGraph =
             serde_json::from_slice(&std::fs::read(&persisted).unwrap()).unwrap();
         assert_eq!(restored.active().unwrap().to_string(), workspace_id);
-        assert_eq!(restored.leaves(restored.active().unwrap()).unwrap().len(), 2);
+        assert_eq!(
+            restored.leaves(restored.active().unwrap()).unwrap().len(),
+            2
+        );
         let listed = domain_workspaces(State(state), test_headers())
             .await
             .unwrap()
-        .0;
+            .0;
         assert_eq!(listed["active"], workspace_id);
         let _ = std::fs::remove_file(persisted);
     }
@@ -2275,5 +2797,73 @@ mod tests {
             .0;
         assert!(listed["roster"].as_array().unwrap().is_empty());
         let _ = std::fs::remove_file(persisted);
+    }
+
+    #[tokio::test]
+    async fn identity_commit_requires_online_and_fences_generation_and_lease() {
+        let state = test_state();
+        let request =
+            |generation: u64, lease: &str, online: bool, lifecycle| AgentIdentityCommitRequest {
+                agent_id: "agent-1".into(),
+                session_id: "session-1".into(),
+                workspace_id: "workspace-1".into(),
+                pane_id: "pane-1".into(),
+                cwd: "C:\\code\\wind".into(),
+                executable: "codex".into(),
+                argv: vec!["--full-auto".into()],
+                generation,
+                lease: lease.into(),
+                lifecycle,
+                online,
+                last_seen_unix_ms: 1,
+                capabilities: vec!["messages".into()],
+            };
+
+        let rejected = domain_agent_identity_commit(
+            State(state.clone()),
+            test_headers(),
+            Json(request(
+                1,
+                "lease-1",
+                false,
+                ridge_core::teammate::communication::AgentLifecycle::Failed,
+            )),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(rejected["ok"], false);
+
+        let committed = domain_agent_identity_commit(
+            State(state.clone()),
+            test_headers(),
+            Json(request(
+                1,
+                "lease-1",
+                true,
+                ridge_core::teammate::communication::AgentLifecycle::Online,
+            )),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(committed["ok"], true);
+
+        let stale = domain_agent_identity_commit(
+            State(state.clone()),
+            test_headers(),
+            Json(request(
+                1,
+                "lease-2",
+                true,
+                ridge_core::teammate::communication::AgentLifecycle::Online,
+            )),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(stale["ok"], false);
+        let roster = state.roster.lock().unwrap();
+        assert_eq!(roster.agent_identity("agent-1").unwrap().lease, "lease-1");
     }
 }

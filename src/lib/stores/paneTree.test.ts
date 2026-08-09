@@ -67,10 +67,11 @@ vi.mock('@ridge/remote/shared/terminal/manager', () => ({
 }));
 
 // ─── Mock @ridge/remote/shared/terminal/ptyBridge ────────────────────────────────────────────
-// Only `teardownPtyBridge` is imported by paneTree.ts; stubbing it keeps
+// Only `ensurePtyBridge`/`teardownPtyBridge` are imported by paneTree.ts; stubbing them keeps
 // closePane / detach from reaching into the real Tauri-only PTY bridge
 // during tests that exercise pane-mutation code paths.
 vi.mock('@ridge/remote/shared/terminal/ptyBridge', () => ({
+  ensurePtyBridge: vi.fn(async () => {}),
   teardownPtyBridge: vi.fn(),
 }));
 
@@ -202,6 +203,11 @@ describe('paneCwdStore', () => {
     // POSIX path NOT stripped (no colon at index 2).
     paneTreeModule.setPaneCwd('ws1', 'pane-c', '/home/user');
     expect(get(paneTreeModule.paneCwdStore)['ws1:pane-c']).toBe('/home/user');
+  });
+
+  it('drops prompt control-sequence residue appended after OSC 7 cwd', () => {
+    paneTreeModule.setPaneCwd('ws1', 'pane-a', 'C:/code/wind/src-tauri\x07\x1b]133;A');
+    expect(get(paneTreeModule.paneCwdStore)['ws1:pane-a']).toBe('C:/code/wind/src-tauri');
   });
 
   it('two writers (backend + wasm) for the same dir resolve to one identity', () => {
@@ -1300,12 +1306,59 @@ describe('closeWorkspace runtime cleanup', () => {
 
     expect(invokeMock).toHaveBeenCalledWith('close_workspace', { workspaceId: 'ws-closing' });
     expect(teardownMock).toHaveBeenCalledTimes(2);
-    expect(teardownMock).toHaveBeenCalledWith('saved-pane-a');
-    expect(teardownMock).toHaveBeenCalledWith('saved-pane-b');
+    expect(teardownMock).toHaveBeenCalledWith('saved-pane-a', 'ws-closing');
+    expect(teardownMock).toHaveBeenCalledWith('saved-pane-b', 'ws-closing');
     expect(__mockManagerSpies.detach).toHaveBeenCalledTimes(2);
     expect(__mockManagerSpies.detach).toHaveBeenCalledWith('saved-pane-a');
     expect(__mockManagerSpies.detach).toHaveBeenCalledWith('saved-pane-b');
     expect(get(paneTreeModule.workspacePaneTrees).has('ws-closing')).toBe(false);
+  });
+});
+
+describe('closePane bridge ordering', () => {
+  beforeEach(() => {
+    globalEventListeners.clear();
+    paneTreeModule.activeWorkspaceId.set('ws-close');
+    paneTreeModule.paneTreeStore.set({ type: 'leaf', id: 'pane-close' });
+    paneTreeModule.workspacePaneTrees.set(new Map([
+      ['ws-close', { type: 'leaf', id: 'pane-close' }],
+    ]));
+  });
+
+  it('tears down PTY bridge before backend close to suppress rebuild races', async () => {
+    const tauri = await import('@tauri-apps/api/core');
+    const bridge = await import('@ridge/remote/shared/terminal/ptyBridge');
+    const invokeMock = vi.mocked(tauri.invoke);
+    const teardownMock = vi.mocked(bridge.teardownPtyBridge);
+    invokeMock.mockReset();
+    teardownMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_window_pane_layout') return { type: 'leaf', id: 'pane-keep' };
+      if (cmd === 'get_active_workspace_id') return 'ws-close';
+      return null;
+    });
+
+    await paneTreeModule.closePane('pane-close');
+
+    expect(teardownMock).toHaveBeenCalledWith('pane-close', 'ws-close');
+    expect(teardownMock.mock.invocationCallOrder[0])
+      .toBeLessThan(invokeMock.mock.invocationCallOrder.find((_, i) => invokeMock.mock.calls[i][0] === 'close_pane')!);
+  });
+
+  it('restores PTY bridge when backend rejects a close', async () => {
+    const tauri = await import('@tauri-apps/api/core');
+    const bridge = await import('@ridge/remote/shared/terminal/ptyBridge');
+    const invokeMock = vi.mocked(tauri.invoke);
+    const ensureMock = vi.mocked(bridge.ensurePtyBridge);
+    invokeMock.mockReset();
+    ensureMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'close_pane') throw new Error('cannot close last pane');
+      return null;
+    });
+
+    await expect(paneTreeModule.closePane('pane-close')).rejects.toThrow('cannot close last pane');
+    expect(ensureMock).toHaveBeenCalledWith('pane-close', 'ws-close');
   });
 });
 
@@ -1417,5 +1470,215 @@ describe('workspace switch responsiveness', () => {
     });
     expect(paneTreeModule.getPaneCwd('ws-cached', 'pane-cached')).toBe('/from-cached-pane');
     expect(paneTreeModule.getPaneCwd('ws-cached', 'pane-current')).toBeUndefined();
+  });
+});
+
+describe('pane tree pure projections', () => {
+  beforeEach(() => {
+    paneTreeModule.activePaneId.set('');
+    paneTreeModule.agentPaneAttentionStore.set({});
+    paneTreeModule.agentPaneStatusStore.set({});
+    paneTreeModule.clearJunctionRegistry();
+  });
+
+  it('collects leaf ids and deduplicates ratio-update projections', () => {
+    const root = {
+      type: 'split' as const,
+      id: 'root',
+      direction: 'horizontal' as const,
+      children: [
+        { type: 'leaf' as const, id: 'a' },
+        {
+          type: 'split' as const,
+          id: 'nested',
+          direction: 'vertical' as const,
+          children: [
+            { type: 'leaf' as const, id: 'b' },
+            { type: 'leaf' as const, id: 'c' },
+          ],
+          ratios: [50, 50],
+        },
+      ],
+      ratios: [50, 50],
+    };
+    expect(paneTreeModule.getAllPaneIds(root)).toEqual(['a', 'b', 'c']);
+    expect(paneTreeModule.paneIdsFromRatioUpdates(root, [
+      { path: [], ratios: [40, 60] },
+      { path: [1], ratios: [60, 40] },
+      { path: [99], ratios: [50, 50] },
+    ])).toEqual(['a', 'b', 'c']);
+  });
+
+  it('projects agent attention/status and supports deletion', () => {
+    paneTreeModule.setAgentPaneAttention('ws', 'pane', 'waiting');
+    paneTreeModule.setAgentPaneStatus('ws', 'pane', 'working');
+    expect(get(paneTreeModule.agentPaneAttentionStore)).toEqual({ 'ws:pane': 'waiting' });
+    expect(get(paneTreeModule.agentPaneStatusStore)).toEqual({ 'ws:pane': 'working' });
+    paneTreeModule.clearAgentPaneAttention('ws', 'pane');
+    paneTreeModule.setAgentPaneStatus('ws', 'pane', null);
+    expect(get(paneTreeModule.agentPaneAttentionStore)).toEqual({});
+    expect(get(paneTreeModule.agentPaneStatusStore)).toEqual({});
+  });
+
+  it('normalizes CWD separators, roots, and home prefix', () => {
+    expect(paneTreeModule.collapseCwd('')).toBe('');
+    expect(paneTreeModule.collapseCwd('/a/b')).toBe('/a/b');
+    expect(paneTreeModule.collapseCwd('/home/alice/project')).toBe('~/project');
+    expect(paneTreeModule.collapseCwd('C:\\Users\\alice\\project')).toBe('~/alice/project');
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { __Ridge_HOME__: '/srv/alice' },
+    });
+    expect(paneTreeModule.collapseCwd('/srv/alice/project')).toBe('~/project');
+    paneTreeModule.setPaneCwd('ws', 'pane', '/C:/work\\');
+    expect(paneTreeModule.getPaneCwd('ws', 'pane')).toBe('C:/work');
+    paneTreeModule.setPaneCwd('ws', 'pane', null);
+    expect(paneTreeModule.getPaneCwd('ws', 'pane')).toBe('C:/work');
+  });
+
+  it('deduplicates junction registration and filters by distance', () => {
+    const junction = {
+      id: 'j1',
+      positionPx: { x: 100, y: 20 },
+      axis: 'x' as const,
+      splitters: [],
+    };
+    paneTreeModule.registerJunction(junction);
+    paneTreeModule.registerJunction(junction);
+    expect(paneTreeModule.findJunctionsNearPosition('x', 105, 10)).toEqual([junction]);
+    expect(paneTreeModule.findJunctionsNearPosition('x', 130, 10)).toEqual([]);
+  });
+
+  it('keeps px-anchor ratios normalized while clamping a tiny absorber', () => {
+    const ratios = paneTreeModule.pxAnchorRatios({
+      splitPath: [0],
+      absorberIndex: 1,
+      childPxAtMousedown: [80, 20],
+      outerPxAtMousedown: 100,
+      primaryAdjacentSide: 'before',
+    }, -95);
+    expect(ratios).toHaveLength(2);
+    expect(ratios[1]).toBeGreaterThanOrEqual(6);
+    expect(ratios[0] + ratios[1]).toBeCloseTo(100);
+  });
+
+  it('builds same-axis descendant anchors and skips perpendicular splits', () => {
+    const root = {
+      type: 'split' as const,
+      id: 'outer',
+      direction: 'horizontal' as const,
+      children: [
+        {
+          type: 'split' as const,
+          id: 'inner-same',
+          direction: 'horizontal' as const,
+          children: [
+            { type: 'leaf' as const, id: 'a' },
+            { type: 'leaf' as const, id: 'b' },
+          ],
+          ratios: [40, 60],
+        },
+        {
+          type: 'split' as const,
+          id: 'inner-perpendicular',
+          direction: 'vertical' as const,
+          children: [
+            { type: 'leaf' as const, id: 'c' },
+            { type: 'leaf' as const, id: 'd' },
+          ],
+          ratios: [50, 50],
+        },
+      ],
+      ratios: [60, 40],
+    };
+
+    expect(paneTreeModule.buildPxAnchorPlans(root, {
+      splitPath: [],
+      splitterIndex: 0,
+      axis: 'x',
+      basisPx: 1000,
+    }, 1000)).toEqual([{
+      splitPath: [0],
+      absorberIndex: 1,
+      childPxAtMousedown: [240, 360],
+      outerPxAtMousedown: 600,
+      primaryAdjacentSide: 'before',
+    }]);
+  });
+
+  it('handles px-anchor growth, shrink, and invalid primary paths', () => {
+    const plan = {
+      splitPath: [0],
+      absorberIndex: 0,
+      childPxAtMousedown: [60, 40],
+      outerPxAtMousedown: 100,
+      primaryAdjacentSide: 'after' as const,
+    };
+    expect(paneTreeModule.pxAnchorRatios(plan, 10)).toEqual([
+      55.55555555555556,
+      44.44444444444444,
+    ]);
+    const clamped = paneTreeModule.pxAnchorRatios(plan, 95);
+    expect(clamped[0]).toBeGreaterThanOrEqual(6);
+    expect(clamped[0] + clamped[1]).toBeCloseTo(100);
+    expect(paneTreeModule.buildPxAnchorPlans({ type: 'leaf', id: 'only' }, {
+      splitPath: [],
+      splitterIndex: 0,
+      axis: 'x',
+      basisPx: 1,
+    }, 1)).toEqual([]);
+  });
+});
+
+describe('startup and saved-workspace projections', () => {
+  it('maps desktop startup, restore, recent, and saved-workspace commands', async () => {
+    const { invoke, isTauri } = await import('@tauri-apps/api/core');
+    const invokeMock = invoke as ReturnType<typeof vi.fn>;
+    const isTauriMock = isTauri as ReturnType<typeof vi.fn>;
+    isTauriMock.mockReturnValue(true);
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_startup_context') return { cwd: '/repo', wind_file_in_cwd: null, kind: 'cli' };
+      if (cmd === 'list_recent_workspaces') return ['/one.ridge', '/two.ridge'];
+      if (cmd === 'get_restore_set') return ['/restore.ridge'];
+      if (cmd === 'list_saved_workspace_files') return [{ name: 'one', path: '/one.ridge', mtime_secs: 3 }];
+      if (cmd === 'clear_recent_workspaces') return undefined;
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    await expect(paneTreeModule.getStartupContext()).resolves.toEqual({
+      cwd: '/repo',
+      wind_file_in_cwd: null,
+      kind: 'cli',
+    });
+    await expect(paneTreeModule.listRecentWorkspaces()).resolves.toEqual(['/one.ridge', '/two.ridge']);
+    await expect(paneTreeModule.getRestoreSet()).resolves.toEqual(['/restore.ridge']);
+    await expect(paneTreeModule.listSavedWorkspaceFiles()).resolves.toEqual([
+      { name: 'one', path: '/one.ridge', mtime_secs: 3 },
+    ]);
+    await expect(paneTreeModule.clearRecentWorkspaces()).resolves.toBeUndefined();
+  });
+
+  it('fails closed outside Tauri, on IPC errors, and when collapsing cwd paths', async () => {
+    const { invoke, isTauri } = await import('@tauri-apps/api/core');
+    const invokeMock = invoke as ReturnType<typeof vi.fn>;
+    const isTauriMock = isTauri as ReturnType<typeof vi.fn>;
+    invokeMock.mockReset();
+    invokeMock.mockRejectedValue(new Error('desktop unavailable'));
+    isTauriMock.mockReturnValue(true);
+    await expect(paneTreeModule.getStartupContext()).resolves.toBeNull();
+    await expect(paneTreeModule.listRecentWorkspaces()).resolves.toEqual([]);
+    await expect(paneTreeModule.getRestoreSet()).resolves.toEqual([]);
+    await expect(paneTreeModule.listSavedWorkspaceFiles()).resolves.toEqual([]);
+    await expect(paneTreeModule.clearRecentWorkspaces()).resolves.toBeUndefined();
+
+    isTauriMock.mockReturnValue(false);
+    await expect(paneTreeModule.getStartupContext()).resolves.toBeNull();
+    await expect(paneTreeModule.listRecentWorkspaces()).resolves.toEqual([]);
+    expect(invokeMock).toHaveBeenCalledTimes(5);
+    expect(paneTreeModule.collapseCwd('')).toBe('');
+    expect(paneTreeModule.collapseCwd('/home/alice/project')).toBe('~/project');
+    expect(paneTreeModule.collapseCwd('C:/Users/alice/project')).toBe('~/alice/project');
+    expect(paneTreeModule.collapseCwd('/tmp')).toBe('/tmp');
   });
 });

@@ -131,7 +131,9 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
                     thread::sleep(Duration::from_millis(80));
                 }
                 Ok(None) => {
-                    return Err("another ridge-kernel is booting but did not become healthy in time".into());
+                    return Err(
+                        "another ridge-kernel is booting but did not become healthy in time".into(),
+                    );
                 }
                 Err(error) => return Err(format!("acquire ridge-kernel boot slot: {error}")),
             }
@@ -200,11 +202,7 @@ pub fn spawn_kernel_death_watcher(
         .map_err(|error| format!("spawn ridge-kernel watcher: {error}"))
 }
 
-fn watcher_health_step(
-    previous_failures: u32,
-    process_alive: bool,
-    healthy: bool,
-) -> (u32, bool) {
+fn watcher_health_step(previous_failures: u32, process_alive: bool, healthy: bool) -> (u32, bool) {
     const HEALTH_FAILURE_LIMIT: u32 = 3;
     if !process_alive || healthy {
         return (0, !process_alive);
@@ -291,13 +289,19 @@ mod tests {
     fn kernel_boot_lock_serializes_concurrent_bootstraps() {
         use std::sync::mpsc;
 
-        let first_guard = kernel_boot_lock().lock().expect("boot lock should be usable");
+        let first_guard = kernel_boot_lock()
+            .lock()
+            .expect("boot lock should be usable");
         let (attempted_tx, attempted_rx) = mpsc::channel();
         let (acquired_tx, acquired_rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             attempted_tx.send(()).expect("worker should start");
-            let _guard = kernel_boot_lock().lock().expect("worker should acquire lock");
-            acquired_tx.send(()).expect("worker should report acquisition");
+            let _guard = kernel_boot_lock()
+                .lock()
+                .expect("worker should acquire lock");
+            acquired_tx
+                .send(())
+                .expect("worker should report acquisition");
         });
 
         attempted_rx

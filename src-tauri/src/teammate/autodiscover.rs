@@ -57,7 +57,10 @@ pub fn match_agent_panes_with_names(
     let mut children: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
     for (pid, ppid, name) in procs {
         if let Some(ppid) = ppid {
-            children.entry(*ppid).or_default().push((*pid, name.as_str()));
+            children
+                .entry(*ppid)
+                .or_default()
+                .push((*pid, name.as_str()));
         }
     }
     let mut out = Vec::new();
@@ -255,9 +258,7 @@ mod tests {
     /// 运行时覆盖 store → `match_agent_panes` 实路径（非 with_names 旁路）。
     #[test]
     fn match_agent_panes_honors_in_memory_overrides() {
-        use super::super::agent_catalog::{
-            set_profile_overrides_in_memory, AgentProfile,
-        };
+        use super::super::agent_catalog::{set_profile_overrides_in_memory, AgentProfile};
         let pane = ws_pane(9);
         let procs = vec![
             (100, None, "pwsh.exe".to_string()),

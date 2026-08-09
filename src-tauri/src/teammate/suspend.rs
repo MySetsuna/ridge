@@ -97,7 +97,10 @@ pub fn resume(wid: Uuid, pane: Uuid) {
 }
 
 pub fn is_suspended(wid: Uuid, pane: Uuid) -> bool {
-    SUSPENDED.lock().map(|g| g.contains(&(wid, pane))).unwrap_or(false)
+    SUSPENDED
+        .lock()
+        .map(|g| g.contains(&(wid, pane)))
+        .unwrap_or(false)
 }
 
 /// R17-TEAM-HEALTH: number of suspended agent panes.
@@ -152,17 +155,27 @@ pub fn persist_to(dir: &Path, wid: Uuid) {
 
 /// 启动载入：读 `dir` 下全部 sidecar 重挂注册表。损坏/不可读逐文件跳过。
 pub fn load_from(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
-        let Ok(wid) = Uuid::parse_str(stem) else { continue };
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Ok(wid) = Uuid::parse_str(stem) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
             tracing::warn!(target: "ridge::suspend", %wid, "sidecar 损坏，跳过（失忆非致命）");
             continue;
         };
-        let Some(panes) = value.get("suspendedPanes").and_then(|v| v.as_array()) else { continue };
+        let Some(panes) = value.get("suspendedPanes").and_then(|v| v.as_array()) else {
+            continue;
+        };
         for p in panes.iter().filter_map(|v| v.as_str()) {
             if let Ok(pane) = Uuid::parse_str(p) {
                 suspend(wid, pane);
@@ -237,7 +250,10 @@ mod tests {
 
         resume(wid, pane);
         let passed = agent_pty_write(&state, wid, pane, b"echo hi\n").unwrap_err();
-        assert!(!passed.starts_with("agent suspended"), "still gated: {passed}");
+        assert!(
+            !passed.starts_with("agent suspended"),
+            "still gated: {passed}"
+        );
     }
 
     /// M1 切片一：持久化↔载入闭环 + 空集删文件 + 损坏容忍 + 关区清理（dir 注入，

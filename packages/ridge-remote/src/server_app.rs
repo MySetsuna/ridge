@@ -159,7 +159,10 @@ pub fn router(host: Arc<dyn RemoteHost>) -> Router<()> {
         ))
         .layer(crate::serve::compression_layer())
         // remote_enabled 门控（route_layer 不包裹 fallback）。
-        .route_layer(axum::middleware::from_fn_with_state(ctx.clone(), remote_gate))
+        .route_layer(axum::middleware::from_fn_with_state(
+            ctx.clone(),
+            remote_gate,
+        ))
         .with_state(ctx)
 }
 

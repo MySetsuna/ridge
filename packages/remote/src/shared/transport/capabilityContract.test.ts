@@ -5,6 +5,7 @@ import { HOST_CAPABILITIES as CLOUD_HOST_CAPABILITIES } from '../cloud/cloudHost
 import { MUTATING_METHODS, REMOTE_ALLOWLIST } from '../cloud/remoteAllowlist';
 import {
   REMOTE_CAPABILITY_METHODS,
+  capabilityForRemoteMethod,
   getRemotePanelAvailability,
   type RemoteCapability,
 } from './capabilityContract';
@@ -120,6 +121,11 @@ describe('cross-entry Remote capability contract', () => {
       search: true,
       team: true,
     });
+  });
+
+  it('maps rejected controller methods back to one coarse capability', () => {
+    expect(capabilityForRemoteMethod('get_teammate_topology')).toBe('teammate');
+    expect(capabilityForRemoteMethod('detect_available_shells')).toBeUndefined();
   });
 
   it('wires negotiated capabilities into the controller shell and sidebar', () => {

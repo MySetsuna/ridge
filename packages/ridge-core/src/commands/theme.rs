@@ -65,7 +65,11 @@ pub struct ThemeEntry {
     #[serde(rename = "bgImage", default, skip_serializing_if = "Option::is_none")]
     pub bg_image: Option<String>,
     /// 背景图透明度 0..1，缺省视为 1。
-    #[serde(rename = "bgImageOpacity", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "bgImageOpacity",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub bg_image_opacity: Option<f32>,
 }
 
@@ -191,7 +195,11 @@ fn make_custom_id(label: &str, existing: &[String]) -> String {
         }
     }
     let slug = slug.trim_matches('-').to_string();
-    let slug = if slug.is_empty() { "theme".to_string() } else { slug };
+    let slug = if slug.is_empty() {
+        "theme".to_string()
+    } else {
+        slug
+    };
     let base = format!("{CUSTOM_ID_PREFIX}{slug}");
     if !existing.iter().any(|e| e == &base) {
         return base;
@@ -224,7 +232,10 @@ pub fn read_user_themes(app_data_dir: &Path) -> Vec<ThemeEntry> {
 
 fn write_user_themes(app_data_dir: &Path, themes: &[ThemeEntry]) -> CoreResult<()> {
     std::fs::create_dir_all(app_data_dir).map_err(|e| CoreError::io(format!("create dir: {e}")))?;
-    let tf = ThemeFile { version: 1, themes: themes.to_vec() };
+    let tf = ThemeFile {
+        version: 1,
+        themes: themes.to_vec(),
+    };
     let json = serde_json::to_string_pretty(&tf)
         .map_err(|e| CoreError::internal(format!("serialize user themes: {e}")))?;
     std::fs::write(user_themes_path(app_data_dir), json)
@@ -272,15 +283,22 @@ const MAX_IMG_BYTES: usize = 20 * 1024 * 1024;
 pub fn save_theme_bg_image(bytes: Vec<u8>, ext: &str) -> CoreResult<String> {
     let ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
     if !ALLOWED_IMG_EXT.contains(&ext.as_str()) {
-        return Err(CoreError::internal(format!("unsupported image type: {ext}")));
+        return Err(CoreError::internal(format!(
+            "unsupported image type: {ext}"
+        )));
     }
     if bytes.is_empty() || bytes.len() > MAX_IMG_BYTES {
-        return Err(CoreError::internal(format!("image size out of range: {} bytes", bytes.len())));
+        return Err(CoreError::internal(format!(
+            "image size out of range: {} bytes",
+            bytes.len()
+        )));
     }
     let dir = theme_assets_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| CoreError::io(format!("create theme-assets: {e}")))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| CoreError::io(format!("create theme-assets: {e}")))?;
     let name = format!("{}.{}", uuid::Uuid::new_v4(), ext);
-    std::fs::write(dir.join(&name), &bytes).map_err(|e| CoreError::io(format!("write image: {e}")))?;
+    std::fs::write(dir.join(&name), &bytes)
+        .map_err(|e| CoreError::io(format!("write image: {e}")))?;
     Ok(name)
 }
 
@@ -372,6 +390,30 @@ pub fn active_theme_entry() -> Option<ThemeEntry> {
     }
     let idx = themes.iter().position(|t| t.id == theme_id).unwrap_or(0);
     Some(themes.swap_remove(idx))
+}
+
+/// Shared Remote wire representation so every host emits the same theme frame.
+pub fn theme_frame(
+    id: &str,
+    theme_type: &str,
+    colors: &std::collections::HashMap<String, String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "theme",
+        "id": id,
+        "themeType": theme_type,
+        "colors": colors,
+    })
+}
+
+pub fn default_theme_frame() -> serde_json::Value {
+    theme_frame("default", "dark", &std::collections::HashMap::new())
+}
+
+pub fn active_theme_frame() -> serde_json::Value {
+    active_theme_entry()
+        .map(|entry| theme_frame(&entry.id, &entry.theme_type, &entry.colors))
+        .unwrap_or_else(default_theme_frame)
 }
 
 /// Handler: `set_active_theme`. Persists the theme id so the next launch's
@@ -480,6 +522,19 @@ mod tests {
     }
 
     #[test]
+    fn remote_theme_frame_preserves_wire_shape_and_colors() {
+        let colors = HashMap::from([
+            ("bg".to_string(), "#000000".to_string()),
+            ("fg".to_string(), "#ffffff".to_string()),
+        ]);
+        let frame = theme_frame("dark", "dark", &colors);
+        assert_eq!(frame["type"], "theme");
+        assert_eq!(frame["id"], "dark");
+        assert_eq!(frame["themeType"], "dark");
+        assert_eq!(frame["colors"]["bg"], "#000000");
+    }
+
+    #[test]
     fn theme_file_rejects_invalid_version() {
         let json = r##"{"version":0,"themes":[{"id":"x","label":"X","type":"dark","loader":{"primary":"#fff","secondary":"#000"},"colors":{}}]}"##;
         let tf: ThemeFile = serde_json::from_str(json).unwrap();
@@ -525,10 +580,18 @@ mod tests {
             label: label.into(),
             theme_type: "dark".into(),
             loader: LoaderConfig {
-                primary: "#fff".into(), secondary: "#000".into(),
-                bg: None, accent_glow: None, stroke_width: None, corner_radius: None,
-                draw_duration_ms: None, breathe_duration_ms: None, cross_delay_ms: None,
-                fade_out_duration_ms: None, fill_opacity_primary: None, fill_opacity_secondary: None,
+                primary: "#fff".into(),
+                secondary: "#000".into(),
+                bg: None,
+                accent_glow: None,
+                stroke_width: None,
+                corner_radius: None,
+                draw_duration_ms: None,
+                breathe_duration_ms: None,
+                cross_delay_ms: None,
+                fade_out_duration_ms: None,
+                fill_opacity_primary: None,
+                fill_opacity_secondary: None,
             },
             colors: HashMap::new(),
             bg_image: None,
@@ -559,7 +622,10 @@ mod tests {
 
     #[test]
     fn merge_appends_user_themes_after_base() {
-        let mut base = ThemeFile { version: 1, themes: vec![sample_user_entry("Builtin")] };
+        let mut base = ThemeFile {
+            version: 1,
+            themes: vec![sample_user_entry("Builtin")],
+        };
         base.themes[0].id = "endless-dark".into();
         let user = vec![sample_user_entry("U1")];
         let merged = merge_user_theme_list(base, user);
@@ -623,7 +689,11 @@ impl SetEnvGuard {
         // Safety: called only inside tests; ENV_MUTEX serializes all callers so
         // no two threads touch env vars concurrently.
         unsafe { std::env::set_var(key, val) };
-        Self { key: key.into(), old, _lock: lock }
+        Self {
+            key: key.into(),
+            old,
+            _lock: lock,
+        }
     }
 }
 

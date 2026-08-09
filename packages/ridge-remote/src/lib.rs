@@ -13,9 +13,6 @@ pub mod embed_ui;
 /// + `serve_websocket` 钩子。让共享 `server_app` 路由用一份代码驱动桌面/rdg/云端，
 /// 零 Tauri 依赖。
 pub mod host;
-/// 泛型 LAN 远控应用路由（路由/门控/verify/ws 握手/workspace/file/session），
-/// 泛型于 `Arc<dyn RemoteHost>`。从桌面 `server.rs` 下沉，供三形态共用。
-pub mod server_app;
 /// RFC 6762 multicast DNS responder for `_ridge._tcp.local.`（纯 UDP 广播，无 Tauri
 /// 依赖）。从 src-tauri 迁入共享层，供桌面 LAN host 与 rdg 共用发现广播。
 pub mod mdns;
@@ -25,10 +22,13 @@ pub mod net;
 /// `RESYNC_MIN_INTERVAL`/`RAW_CHAN_CAP`/scrollback 尺寸）。桌面 LAN/cloud 与 rdg
 /// 三腿共用一份，消手抄漂移。
 pub mod pane;
-pub mod server;
 /// 前端静态资源 serve（UA 分流 + SPA fallback + CA 下载 + 安全头/压缩层）。
 /// 从桌面 `server.rs` 下沉，供 LAN 远控三形态共用，零 Tauri 依赖。
 pub mod serve;
+pub mod server;
+/// 泛型 LAN 远控应用路由（路由/门控/verify/ws 握手/workspace/file/session），
+/// 泛型于 `Arc<dyn RemoteHost>`。从桌面 `server.rs` 下沉，供三形态共用。
+pub mod server_app;
 pub mod tls;
 /// UA→UI 分叉判定（桌面 SPA vs 移动 SPA）的 SSOT，供局域网远控服务端与公网远控
 /// 中继共用，避免分叉规则漂移。

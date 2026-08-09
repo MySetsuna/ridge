@@ -554,7 +554,7 @@ export class PaneRpcScheduler {
         remotePerfEnd(trace);
         lane.inFlight = false;
         lane.activeSignature = null;
-        if (!lane.latest) lane.latest = value;
+        lane.latest ??= value;
         this.failLane(error, 'resize', lane.pane, lane, () => this.drainResize(key, lane));
         if (lane.paused) {
           const failure = error instanceof Error ? error : new Error(String(error));

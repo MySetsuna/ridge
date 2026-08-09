@@ -252,6 +252,15 @@ async fn run_ws(socket: WebSocket, workspace: SharedWorkspace, ws_id: Uuid) {
     if ws_tx.send(Message::Text(hello.to_string())).await.is_err() {
         return;
     }
+    if ws_tx
+        .send(Message::Text(
+            ridge_core::commands::theme::active_theme_frame().to_string(),
+        ))
+        .await
+        .is_err()
+    {
+        return;
+    }
     let panes = build_pane_list(&workspace);
     if ws_tx
         .send(Message::Text(panes_snapshot(ws_id, panes).to_string()))
@@ -945,6 +954,30 @@ mod tests {
         assert_eq!(snap["type"], "panes");
         assert_eq!(snap["workspaceId"], "11111111-1111-1111-1111-111111111111");
         assert_eq!(snap["panes"][0]["id"], "p1");
+    }
+
+    #[test]
+    fn theme_frame_matches_remote_wire_shape() {
+        let colors = std::collections::HashMap::from([
+            ("bg".to_string(), "#000000".to_string()),
+            ("fg".to_string(), "#ffffff".to_string()),
+        ]);
+        let frame = ridge_core::commands::theme::theme_frame("dark", "dark", &colors);
+        assert_eq!(frame["type"], "theme");
+        assert_eq!(frame["id"], "dark");
+        assert_eq!(frame["themeType"], "dark");
+        assert_eq!(frame["colors"]["bg"], "#000000");
+    }
+
+    #[test]
+    fn default_theme_frame_keeps_headless_clients_on_the_default_palette() {
+        let frame = ridge_core::commands::theme::default_theme_frame();
+        assert_eq!(frame["type"], "theme");
+        assert_eq!(frame["id"], "default");
+        assert_eq!(frame["themeType"], "dark");
+        assert!(frame["colors"]
+            .as_object()
+            .is_some_and(|colors| colors.is_empty()));
     }
 
     #[test]

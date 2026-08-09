@@ -110,8 +110,13 @@
     queryFn: ({ signal }) => requestPaneSnapshot(ws, ui.activeWorkspaceId, signal),
     enabled: wsState === 'connected' && ui.activeWorkspaceId.length > 0,
   }));
-  let panes = $derived(panesQuery.data ?? []);
   let workspaces = $derived(workspacesQuery.data ?? []);
+  // LAN/kernel hosts include panes in the workspace snapshot. Use that
+  // authoritative fallback until the dedicated active-pane query hydrates;
+  // otherwise a cold mobile boot can show a connected host with no terminal.
+  let panes = $derived(
+    panesQuery.data ?? workspaces.find((workspace) => workspace.id === ui.activeWorkspaceId)?.panes ?? [],
+  );
   // The active pane object (for its title in the header breadcrumb), derived
   // from the live `panes` list by id — mirrors the panes.find(...) lookup used
   // for the active cwd below.
@@ -646,6 +651,9 @@
           next = after;
           const a2 = after.find(w => w.active);
           ui.activeWorkspaceId = a2 ? a2.id : savedActiveWs;
+          if (a2?.panes && (!ui.activePaneId || !a2.panes.some((pane) => pane.id === ui.activePaneId))) {
+            ui.activePaneId = a2.panes[0]?.id ?? null;
+          }
           bootRestoreDone = true;
           return;
         }
@@ -654,7 +662,12 @@
         bootRestoreDone = true;
       }
       if (!isCurrent()) return;
-      if (hostActive) ui.activeWorkspaceId = hostActive.id;
+      if (hostActive) {
+        ui.activeWorkspaceId = hostActive.id;
+        if (hostActive.panes && (!ui.activePaneId || !hostActive.panes.some((pane) => pane.id === ui.activePaneId))) {
+          ui.activePaneId = hostActive.panes[0]?.id ?? null;
+        }
+      }
     } catch { /* ignore */ }
   }
 
@@ -799,7 +812,12 @@
         // Once the boot restore has run, follow the host's active workspace.
         // Before that, refreshWorkspaces() owns the restore decision, so a
         // proactive push must not clobber the workspace we're about to restore.
-        if (active && bootRestoreDone) ui.activeWorkspaceId = active.id;
+        if (active && bootRestoreDone) {
+          ui.activeWorkspaceId = active.id;
+          if (active.panes && (!ui.activePaneId || !active.panes.some((pane) => pane.id === ui.activePaneId))) {
+            ui.activePaneId = active.panes[0]?.id ?? null;
+          }
+        }
       }
       if (msg.type === 'switch-workspace-result') {
         if (msg.success && msg.workspaceId) {

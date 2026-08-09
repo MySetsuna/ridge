@@ -246,22 +246,19 @@ pub(crate) fn history_overlay_geometry(
     }
 
     let desired_cols = widest_cells.clamp(8, HISTORY_OVERLAY_COL_CAP);
-    let desired_w =
-        desired_cols as f32 * cell_w + 2.0 * pad_w + scrollbar_w + scrollbar_gap;
+    let desired_w = desired_cols as f32 * cell_w + 2.0 * pad_w + scrollbar_w + scrollbar_gap;
     let panel_w = desired_w.min(viewport_w);
     let content_cols = (((panel_w - 2.0 * pad_w - scrollbar_w - scrollbar_gap) / cell_w)
         .floor()
         .max(1.0) as usize)
         .min(desired_cols);
 
-    let anchor_row = overlay.anchor_row.min(overlay.viewport_rows.saturating_sub(1));
+    let anchor_row = overlay
+        .anchor_row
+        .min(overlay.viewport_rows.saturating_sub(1));
     let above_h = anchor_row as f32 * cell_h;
     let below_h = viewport_h - (anchor_row as f32 + 1.0) * cell_h;
-    let rows_that_fit = |height: f32| {
-        ((height - 2.0 * pad_h) / cell_h)
-            .floor()
-            .max(0.0) as usize
-    };
+    let rows_that_fit = |height: f32| ((height - 2.0 * pad_h) / cell_h).floor().max(0.0) as usize;
     let above_rows = rows_that_fit(above_h);
     let below_rows = rows_that_fit(below_h);
     let preferred_rows = if overlay.place_above {
@@ -290,7 +287,10 @@ pub(crate) fn history_overlay_geometry(
     let panel_x = if desired_w > viewport_w {
         ((viewport_w - panel_w) / 2.0).round()
     } else {
-        (overlay.anchor_col.min(overlay.viewport_cols.saturating_sub(1)) as f32 * cell_w)
+        (overlay
+            .anchor_col
+            .min(overlay.viewport_cols.saturating_sub(1)) as f32
+            * cell_w)
             .clamp(0.0, viewport_w - panel_w)
     };
     let wanted_y = if place_above {
@@ -718,10 +718,15 @@ impl<B: RenderBackend> Renderer<B> {
         // Potentially set tui_mode on the metrics so backends can avoid
         // forcing the theme background onto cells whose background hasn't
         // been explicitly set by the foreground program.
-        let tui_mode = terminal.grid().is_alt_screen() || terminal
-            .grid()
-            .is_inline_tui_active_at(crate::term::clock::now_ms(), terminal.modes().cursor_visible);
-        let tui_metrics = FrameMetrics { tui_mode, ..self.metrics };
+        let tui_mode = terminal.grid().is_alt_screen()
+            || terminal.grid().is_inline_tui_active_at(
+                crate::term::clock::now_ms(),
+                terminal.modes().cursor_visible,
+            );
+        let tui_metrics = FrameMetrics {
+            tui_mode,
+            ..self.metrics
+        };
         // Collect hyperlink rects from every visible row. Most rows have
         // empty `hyperlinks` so this is cheap. We always re-emit on full
         // redraw; partial draws still emit them so the underlines aren't
@@ -1030,8 +1035,7 @@ mod tests {
     fn history_overlay_flips_and_stays_inside_each_dpr_fixture() {
         for dpr in [1.0_f32, 1.25, 1.5, 2.0] {
             let o = overlay(23, 79, false, 24, 80);
-            let g = history_overlay_geometry(&o, 20, 8, 8.0 * dpr, 16.0 * dpr)
-                .expect("geometry");
+            let g = history_overlay_geometry(&o, 20, 8, 8.0 * dpr, 16.0 * dpr).expect("geometry");
             let viewport_w = 80.0 * 8.0 * dpr;
             let viewport_h = 24.0 * 16.0 * dpr;
             assert!(g.panel_x >= 0.0 && g.panel_y >= 0.0);

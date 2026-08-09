@@ -80,6 +80,7 @@ export class CloudWebrtcAdapter implements ChannelTransport {
   private controlListeners = new Set<ControlListener>();
   private paneListeners = new Set<PaneBytesListener>();
   private stateListeners = new Set<StateListener>();
+  private errorListeners = new Set<(message: string, code?: string) => void>();
   private authListeners = new Set<AuthListener>();
   // FIX-4/D3 transport-agnostic auth. E2EE `connected` is NOT yet business-ready
   // on the cloud leg — the 0x12 TOTP handshake must pass first — so this starts
@@ -123,6 +124,7 @@ export class CloudWebrtcAdapter implements ChannelTransport {
     CloudConnectionCallbacks {
     return {
       onState: (s) => this.handleProviderState(s),
+      onError: (message, code) => this.handleProviderError(message, code),
       onFrame: (plaintext) => this.handleInboundFrame(plaintext),
     };
   }
@@ -181,6 +183,11 @@ export class CloudWebrtcAdapter implements ChannelTransport {
   onStateChange(cb: StateListener): Unsubscribe {
     this.stateListeners.add(cb);
     return () => this.stateListeners.delete(cb);
+  }
+
+  onError(cb: (message: string, code?: string) => void): Unsubscribe {
+    this.errorListeners.add(cb);
+    return () => this.errorListeners.delete(cb);
   }
 
   // ── L1: auth readiness (FIX-4) ──────────────────────────────────────────────
@@ -283,6 +290,16 @@ export class CloudWebrtcAdapter implements ChannelTransport {
     }
   }
 
+  private handleProviderError(message: string, code?: string): void {
+    for (const cb of this.errorListeners) {
+      try {
+        cb(message, code);
+      } catch (e) {
+        console.error('[cloudWebrtcAdapter] error listener threw', e);
+      }
+    }
+  }
+
   private emitControl(frame: ControlFrame): void {
     for (const cb of this.controlListeners) {
       try {
@@ -318,6 +335,7 @@ export class CloudWebrtcAdapter implements ChannelTransport {
     this.controlListeners.clear();
     this.paneListeners.clear();
     this.stateListeners.clear();
+    this.errorListeners.clear();
     this.sessionControlListeners.clear();
     this.authListeners.clear();
   }
@@ -357,6 +375,7 @@ export function createCloudWebrtcTransportWith(
   let adapter: CloudWebrtcAdapter | null = null;
   const callbacks: CloudConnectionCallbacks = {
     onState: (s) => adapter?.callbacks.onState(s),
+    onError: (message, code) => adapter?.callbacks.onError?.(message, code),
     onFrame: (b) => adapter?.callbacks.onFrame(b),
   };
   const provider = makeProvider(callbacks);

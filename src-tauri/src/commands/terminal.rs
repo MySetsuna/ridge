@@ -16,8 +16,8 @@ use uuid::Uuid;
 /// multi-megabyte UTF-8 copy onto the async command worker.
 const MAX_SCROLLBACK_RPC_BYTES: usize = 512 * 1024;
 
-use crate::engine::parser::PaneParser;
 use crate::engine::kernel_pty::{make_master, make_writer, KernelPtyRef};
+use crate::engine::parser::PaneParser;
 use crate::engine::pty::{spawn_pty_reader, PtyHandle, RESIZE_SILENCE_WINDOW_MS};
 use crate::state::{AppState, PaneDeltaSender};
 use crate::teammate::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
@@ -309,8 +309,8 @@ fn change_pane_shell_inner(
     args: Vec<String>,
 ) -> Result<(), AppError> {
     let pane_id = parse_pane_id(&pane_id)?;
-    let workspace_id = workspace_containing_pane(state, pane_id)
-        .ok_or(AppError::PaneNotFound(pane_id))?;
+    let workspace_id =
+        workspace_containing_pane(state, pane_id).ok_or(AppError::PaneNotFound(pane_id))?;
     let cwd = {
         let map = state.workspaces.read();
         map.get(&workspace_id)
@@ -570,8 +570,14 @@ fn kernel_structured_env(
         .ok_or_else(|| "teammate server not ready; cannot spawn agent pane".to_string())?;
     let mut env = spec.env.clone();
     let _shim_dir = prepend_path_with_wind_tmux_shim_env(&mut env);
-    env.insert("RIDGE_TEAMMATE_URL".to_string(), binding.base_url.to_string());
-    env.insert("RIDGE_TEAMMATE_TOKEN".to_string(), binding.token.to_string());
+    env.insert(
+        "RIDGE_TEAMMATE_URL".to_string(),
+        binding.base_url.to_string(),
+    );
+    env.insert(
+        "RIDGE_TEAMMATE_TOKEN".to_string(),
+        binding.token.to_string(),
+    );
     env.insert("Ridge_TERMINAL".to_string(), "1".to_string());
 
     let pane_slot = tmux_pane_index.unwrap_or(0);
@@ -772,7 +778,12 @@ fn attach_or_spawn_kernel_command(
         id: pty_id,
         after_seq,
     };
-    let installed = install_kernel_pty(state, workspace_id, pane_id, reference.clone(), cols, rows)?;
+    let installed =
+        install_kernel_pty(state, workspace_id, pane_id, reference.clone(), cols, rows)?;
+    crate::commands::workspace::sync_kernel_workspace_topology(state, workspace_id);
+    if state.active_workspace_id() == workspace_id {
+        crate::commands::workspace::sync_kernel_active_workspace(workspace_id);
+    }
     if !installed && after_seq.is_none() {
         let _ = reference.destroy();
     }
@@ -804,7 +815,7 @@ fn reattach_kernel_ptys_inner(state: &AppState) -> Result<usize, String> {
             map.iter().find_map(|(workspace_id, workspace)| {
                 (workspace.pane_tree.get_all_leaves().contains(&pane_id)
                     && !workspace.terminals.contains_key(&pane_id))
-                    .then_some((*workspace_id, pane_id))
+                .then_some((*workspace_id, pane_id))
             })
         };
         let Some((workspace_id, pane_id)) = target else {
@@ -819,7 +830,14 @@ fn reattach_kernel_ptys_inner(state: &AppState) -> Result<usize, String> {
             // visible history before consuming future output.
             after_seq: None,
         };
-        if install_kernel_pty(state, workspace_id, pane_id, reference, info.cols, info.rows)? {
+        if install_kernel_pty(
+            state,
+            workspace_id,
+            pane_id,
+            reference,
+            info.cols,
+            info.rows,
+        )? {
             attached += 1;
         }
     }
@@ -845,8 +863,7 @@ pub fn ensure_pane_pty_workspace(
     mut ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
     trace_id: Option<String>,
 ) -> Result<(), AppError> {
-    let kernel_candidate = initial_command.is_none()
-        && structured_command.is_none();
+    let kernel_candidate = initial_command.is_none() && structured_command.is_none();
     // 按需启动 teammate HTTP server（幂等）：必须在下方注入 RIDGE_TEAMMATE_* 之前完成，
     // 保证 shell 启动时 env 已就绪。已在运行则立即返回（agent 自身 PTY 里再 split 走此快路径）。
     let ic = initial_command.map(str::trim).filter(|s| !s.is_empty());
@@ -896,15 +913,9 @@ pub fn ensure_pane_pty_workspace(
             let endpoint = kernel_endpoint_for_shell().map_err(|error| {
                 AppError::PtyError(format!("ridge-kernel unavailable for Agent PTY: {error}"))
             })?;
-            let env = kernel_structured_env(
-                state,
-                workspace_id,
-                pane_id,
-                cwd,
-                tmux_pane_index,
-                spec,
-            )
-            .map_err(AppError::PtyError)?;
+            let env =
+                kernel_structured_env(state, workspace_id, pane_id, cwd, tmux_pane_index, spec)
+                    .map_err(AppError::PtyError)?;
             match attach_or_spawn_kernel_command(
                 state,
                 endpoint,
@@ -963,8 +974,7 @@ pub fn ensure_pane_pty_workspace(
     // callers must provide `StructuredPtyCommand` so argv/env stay explicit.
     if ic.is_some() {
         return Err(AppError::PtyError(
-            "initial_command is unsupported for kernel-owned PTYs; use StructuredPtyCommand"
-                .into(),
+            "initial_command is unsupported for kernel-owned PTYs; use StructuredPtyCommand".into(),
         ));
     }
 

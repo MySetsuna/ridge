@@ -43,11 +43,15 @@ pub fn forbidden_present(allowlist: &[&str], forbidden: &[&str]) -> Vec<String> 
 pub fn validate_teammate_and_hosts_boundary(allowlist: &[&str]) -> Result<(), String> {
     let miss = missing_required(allowlist, TEAMMATE_REMOTE_REQUIRED);
     if !miss.is_empty() {
-        return Err(format!("REMOTE_ALLOWLIST missing teammate methods: {miss:?}"));
+        return Err(format!(
+            "REMOTE_ALLOWLIST missing teammate methods: {miss:?}"
+        ));
     }
     let bad = forbidden_present(allowlist, DESKTOP_HOST_FORBIDDEN_REMOTE);
     if !bad.is_empty() {
-        return Err(format!("REMOTE_ALLOWLIST leaks desktop host methods: {bad:?}"));
+        return Err(format!(
+            "REMOTE_ALLOWLIST leaks desktop host methods: {bad:?}"
+        ));
     }
     Ok(())
 }
@@ -94,7 +98,9 @@ pub fn validate_full_surface(allowlist: &[&str], matrix_json: &str) -> Result<()
     let refs: Vec<&str> = methods.iter().map(|s| s.as_str()).collect();
     let bad = forbidden_present(&refs, HOSTS_DESKTOP_ONLY_HINTS);
     if !bad.is_empty() {
-        return Err(format!("matrix teammate lists desktop host methods: {bad:?}"));
+        return Err(format!(
+            "matrix teammate lists desktop host methods: {bad:?}"
+        ));
     }
     Ok(())
 }

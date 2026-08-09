@@ -13,9 +13,9 @@ pub mod glyph_rasterizer;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod gpu_context;
 pub mod renderer;
-pub mod wallpaper;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod surface_host;
+pub mod wallpaper;
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 pub mod webgpu;
 
@@ -41,7 +41,13 @@ pub struct Rect {
 /// they need an alpha-modulated full-cell quad rather than opaque
 /// rectangles, so the caller (`webgpu::draw_row_texts`) special-cases them
 /// with a scaled fg alpha before falling through to this lookup.
-pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f32) -> Option<Vec<Rect>> {
+pub fn procedural_box(
+    c: char,
+    cell_x: f32,
+    cell_y: f32,
+    cell_w: f32,
+    cell_h: f32,
+) -> Option<Vec<Rect>> {
     let mut rects = Vec::with_capacity(2);
 
     // Procedural drawing: use the exact provided bounds.
@@ -77,50 +83,186 @@ pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f3
     // corners of the cell.
     let hw = cell_w * 0.5;
     let hh = cell_h * 0.5;
-    let q_tl = Rect { x: cell_x,      y: cell_y,      w: hw, h: hh }; // top-left
-    let q_tr = Rect { x: cell_x + hw, y: cell_y,      w: hw, h: hh }; // top-right
-    let q_bl = Rect { x: cell_x,      y: cell_y + hh, w: hw, h: hh }; // bottom-left
-    let q_br = Rect { x: cell_x + hw, y: cell_y + hh, w: hw, h: hh }; // bottom-right
+    let q_tl = Rect {
+        x: cell_x,
+        y: cell_y,
+        w: hw,
+        h: hh,
+    }; // top-left
+    let q_tr = Rect {
+        x: cell_x + hw,
+        y: cell_y,
+        w: hw,
+        h: hh,
+    }; // top-right
+    let q_bl = Rect {
+        x: cell_x,
+        y: cell_y + hh,
+        w: hw,
+        h: hh,
+    }; // bottom-left
+    let q_br = Rect {
+        x: cell_x + hw,
+        y: cell_y + hh,
+        w: hw,
+        h: hh,
+    }; // bottom-right
 
     match c {
         // --- Block Elements (U+2580 - U+259F) ---
-        '\u{2588}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w, h: cell_h }), // Full block
-        '\u{2580}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w, h: cell_h / 2.0 }), // Upper half block
-        '\u{2584}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h / 2.0, w: cell_w, h: cell_h / 2.0 }), // Lower half block
-        '\u{258C}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w / 2.0, h: cell_h }), // Left half block
-        '\u{2590}' => rects.push(Rect { x: cell_x + cell_w / 2.0, y: cell_y, w: cell_w / 2.0, h: cell_h }), // Right half block
-        '\u{2581}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.875, w: cell_w, h: cell_h * 0.125 }), // Lower one eighth
-        '\u{2582}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.75, w: cell_w, h: cell_h * 0.25 }), // Lower one quarter
-        '\u{2583}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.625, w: cell_w, h: cell_h * 0.375 }), // Lower three eighths
-        '\u{2585}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.375, w: cell_w, h: cell_h * 0.625 }), // Lower five eighths
-        '\u{2586}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.25, w: cell_w, h: cell_h * 0.75 }), // Lower three quarters
-        '\u{2587}' => rects.push(Rect { x: cell_x, y: cell_y + cell_h * 0.125, w: cell_w, h: cell_h * 0.875 }), // Lower seven eighths
+        '\u{2588}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y,
+            w: cell_w,
+            h: cell_h,
+        }), // Full block
+        '\u{2580}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y,
+            w: cell_w,
+            h: cell_h / 2.0,
+        }), // Upper half block
+        '\u{2584}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y + cell_h / 2.0,
+            w: cell_w,
+            h: cell_h / 2.0,
+        }), // Lower half block
+        '\u{258C}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y,
+            w: cell_w / 2.0,
+            h: cell_h,
+        }), // Left half block
+        '\u{2590}' => rects.push(Rect {
+            x: cell_x + cell_w / 2.0,
+            y: cell_y,
+            w: cell_w / 2.0,
+            h: cell_h,
+        }), // Right half block
+        '\u{2581}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y + cell_h * 0.875,
+            w: cell_w,
+            h: cell_h * 0.125,
+        }), // Lower one eighth
+        '\u{2582}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y + cell_h * 0.75,
+            w: cell_w,
+            h: cell_h * 0.25,
+        }), // Lower one quarter
+        '\u{2583}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y + cell_h * 0.625,
+            w: cell_w,
+            h: cell_h * 0.375,
+        }), // Lower three eighths
+        '\u{2585}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y + cell_h * 0.375,
+            w: cell_w,
+            h: cell_h * 0.625,
+        }), // Lower five eighths
+        '\u{2586}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y + cell_h * 0.25,
+            w: cell_w,
+            h: cell_h * 0.75,
+        }), // Lower three quarters
+        '\u{2587}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y + cell_h * 0.125,
+            w: cell_w,
+            h: cell_h * 0.875,
+        }), // Lower seven eighths
 
         // Left N/8 blocks — grow leftward as N increases. ▉ is 7/8 wide
         // (mirror of ▁), ▏ is 1/8 wide (mirror of ▔).
-        '\u{2589}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w * 0.875, h: cell_h }),
-        '\u{258A}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w * 0.75,  h: cell_h }),
-        '\u{258B}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w * 0.625, h: cell_h }),
-        '\u{258D}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w * 0.375, h: cell_h }),
-        '\u{258E}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w * 0.25,  h: cell_h }),
-        '\u{258F}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w * 0.125, h: cell_h }),
+        '\u{2589}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y,
+            w: cell_w * 0.875,
+            h: cell_h,
+        }),
+        '\u{258A}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y,
+            w: cell_w * 0.75,
+            h: cell_h,
+        }),
+        '\u{258B}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y,
+            w: cell_w * 0.625,
+            h: cell_h,
+        }),
+        '\u{258D}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y,
+            w: cell_w * 0.375,
+            h: cell_h,
+        }),
+        '\u{258E}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y,
+            w: cell_w * 0.25,
+            h: cell_h,
+        }),
+        '\u{258F}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y,
+            w: cell_w * 0.125,
+            h: cell_h,
+        }),
 
         // Upper 1/8 (▔) and right 1/8 (▕).
-        '\u{2594}' => rects.push(Rect { x: cell_x, y: cell_y, w: cell_w, h: cell_h * 0.125 }),
-        '\u{2595}' => rects.push(Rect { x: cell_x + cell_w * 0.875, y: cell_y, w: cell_w * 0.125, h: cell_h }),
+        '\u{2594}' => rects.push(Rect {
+            x: cell_x,
+            y: cell_y,
+            w: cell_w,
+            h: cell_h * 0.125,
+        }),
+        '\u{2595}' => rects.push(Rect {
+            x: cell_x + cell_w * 0.875,
+            y: cell_y,
+            w: cell_w * 0.125,
+            h: cell_h,
+        }),
 
         // Quadrant blocks (U+2596..=U+259F) — 1, 2 or 3 quarter-cell rects.
-        '\u{2596}' => rects.push(q_bl),                              // ▖ lower-left
-        '\u{2597}' => rects.push(q_br),                              // ▗ lower-right
-        '\u{2598}' => rects.push(q_tl),                              // ▘ upper-left
-        '\u{2599}' => { rects.push(q_tl); rects.push(q_bl); rects.push(q_br); } // ▙ all except upper-right
-        '\u{259A}' => { rects.push(q_tl); rects.push(q_br); }        // ▚ diagonal (TL+BR)
-        '\u{259B}' => { rects.push(q_tl); rects.push(q_tr); rects.push(q_bl); } // ▛ all except lower-right
-        '\u{259C}' => { rects.push(q_tl); rects.push(q_tr); rects.push(q_br); } // ▜ all except lower-left
-        '\u{259D}' => rects.push(q_tr),                              // ▝ upper-right
-        '\u{259E}' => { rects.push(q_tr); rects.push(q_bl); }        // ▞ diagonal (TR+BL)
-        '\u{259F}' => { rects.push(q_tr); rects.push(q_bl); rects.push(q_br); } // ▟ all except upper-left
-
+        '\u{2596}' => rects.push(q_bl), // ▖ lower-left
+        '\u{2597}' => rects.push(q_br), // ▗ lower-right
+        '\u{2598}' => rects.push(q_tl), // ▘ upper-left
+        '\u{2599}' => {
+            rects.push(q_tl);
+            rects.push(q_bl);
+            rects.push(q_br);
+        } // ▙ all except upper-right
+        '\u{259A}' => {
+            rects.push(q_tl);
+            rects.push(q_br);
+        } // ▚ diagonal (TL+BR)
+        '\u{259B}' => {
+            rects.push(q_tl);
+            rects.push(q_tr);
+            rects.push(q_bl);
+        } // ▛ all except lower-right
+        '\u{259C}' => {
+            rects.push(q_tl);
+            rects.push(q_tr);
+            rects.push(q_br);
+        } // ▜ all except lower-left
+        '\u{259D}' => rects.push(q_tr), // ▝ upper-right
+        '\u{259E}' => {
+            rects.push(q_tr);
+            rects.push(q_bl);
+        } // ▞ diagonal (TR+BL)
+        '\u{259F}' => {
+            rects.push(q_tr);
+            rects.push(q_bl);
+            rects.push(q_br);
+        } // ▟ all except upper-left
 
         // --- Box Drawing (U+2500 - U+257F) Core set ---
         // For straight horizontal / vertical lines we extend the rect by
@@ -134,10 +276,30 @@ pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f3
         // rasterised to no pixel coverage on neither row's quad. The
         // overlap is invisible (both quads paint the same fg color) and
         // restores seam-free vertical / horizontal runs.
-        '\u{2500}' => rects.push(Rect { x: cell_x, y: cy,       w: cell_w + 1.0, h: lh }),       // ─ LIGHT
-        '\u{2501}' => rects.push(Rect { x: cell_x, y: cy_heavy, w: cell_w + 1.0, h: lh_heavy }), // ━ HEAVY
-        '\u{2502}' => rects.push(Rect { x: cx,             y: cell_y, w: lw,           h: cell_h + 1.0 }), // │ LIGHT (centred)
-        '\u{2503}' => rects.push(Rect { x: cx_heavy, y: cell_y, w: lw_heavy, h: cell_h + 1.0 }), // ┃ HEAVY (centred)
+        '\u{2500}' => rects.push(Rect {
+            x: cell_x,
+            y: cy,
+            w: cell_w + 1.0,
+            h: lh,
+        }), // ─ LIGHT
+        '\u{2501}' => rects.push(Rect {
+            x: cell_x,
+            y: cy_heavy,
+            w: cell_w + 1.0,
+            h: lh_heavy,
+        }), // ━ HEAVY
+        '\u{2502}' => rects.push(Rect {
+            x: cx,
+            y: cell_y,
+            w: lw,
+            h: cell_h + 1.0,
+        }), // │ LIGHT (centred)
+        '\u{2503}' => rects.push(Rect {
+            x: cx_heavy,
+            y: cell_y,
+            w: lw_heavy,
+            h: cell_h + 1.0,
+        }), // ┃ HEAVY (centred)
 
         // Stub-ends (U+2574..U+257B) — single-direction half-cell lines.
         // LIGHT variants (╴╵╶╷) use the thin stroke, HEAVY variants
@@ -145,36 +307,120 @@ pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f3
         // toward the adjacent cell to overlap with whatever continues
         // the line (matches the ─/│ overlap).
         // LIGHT left/right (horizontal stub, thin)
-        '\u{2574}' => rects.push(Rect { x: cell_x,                 y: cy, w: cell_w / 2.0 + 1.0, h: lh }), // ╴
-        '\u{2576}' => rects.push(Rect { x: cell_x + cell_w / 2.0,  y: cy, w: cell_w / 2.0 + 1.0, h: lh }), // ╶
+        '\u{2574}' => rects.push(Rect {
+            x: cell_x,
+            y: cy,
+            w: cell_w / 2.0 + 1.0,
+            h: lh,
+        }), // ╴
+        '\u{2576}' => rects.push(Rect {
+            x: cell_x + cell_w / 2.0,
+            y: cy,
+            w: cell_w / 2.0 + 1.0,
+            h: lh,
+        }), // ╶
         // HEAVY left/right (horizontal stub, thick)
-        '\u{2578}' => rects.push(Rect { x: cell_x,                 y: cy_heavy, w: cell_w / 2.0 + 1.0, h: lh_heavy }), // ╸
-        '\u{257A}' => rects.push(Rect { x: cell_x + cell_w / 2.0,  y: cy_heavy, w: cell_w / 2.0 + 1.0, h: lh_heavy }), // ╺
+        '\u{2578}' => rects.push(Rect {
+            x: cell_x,
+            y: cy_heavy,
+            w: cell_w / 2.0 + 1.0,
+            h: lh_heavy,
+        }), // ╸
+        '\u{257A}' => rects.push(Rect {
+            x: cell_x + cell_w / 2.0,
+            y: cy_heavy,
+            w: cell_w / 2.0 + 1.0,
+            h: lh_heavy,
+        }), // ╺
         // LIGHT up/down (vertical stub, thin)
-        '\u{2575}' => rects.push(Rect { x: cx, y: cell_y,                 w: lw, h: cell_h / 2.0 + 1.0 }), // ╵
-        '\u{2577}' => rects.push(Rect { x: cx, y: cell_y + cell_h / 2.0,  w: lw, h: cell_h / 2.0 + 1.0 }), // ╷
+        '\u{2575}' => rects.push(Rect {
+            x: cx,
+            y: cell_y,
+            w: lw,
+            h: cell_h / 2.0 + 1.0,
+        }), // ╵
+        '\u{2577}' => rects.push(Rect {
+            x: cx,
+            y: cell_y + cell_h / 2.0,
+            w: lw,
+            h: cell_h / 2.0 + 1.0,
+        }), // ╷
         // HEAVY up/down (vertical stub, thick) — centred like ┃ so they
         // align with ┃ above/below in a vertical chain (opencode's
         // L-shape input box draws ╹ as the bottom-left corner attached
         // to a column of ┃; centred ╹ keeps the column straight).
-        '\u{2579}' => rects.push(Rect { x: cx_heavy, y: cell_y,                 w: lw_heavy, h: cell_h / 2.0 + 1.0 }), // ╹
-        '\u{257B}' => rects.push(Rect { x: cx_heavy, y: cell_y + cell_h / 2.0,  w: lw_heavy, h: cell_h / 2.0 + 1.0 }), // ╻
-        
-        '\u{250C}' | '\u{250D}' | '\u{250E}' | '\u{250F}' => { // Top-left
-            rects.push(Rect { x: cx, y: cy, w: cell_w - (cx - cell_x), h: lh });
-            rects.push(Rect { x: cx, y: cy, w: lw, h: cell_h - (cy - cell_y) });
+        '\u{2579}' => rects.push(Rect {
+            x: cx_heavy,
+            y: cell_y,
+            w: lw_heavy,
+            h: cell_h / 2.0 + 1.0,
+        }), // ╹
+        '\u{257B}' => rects.push(Rect {
+            x: cx_heavy,
+            y: cell_y + cell_h / 2.0,
+            w: lw_heavy,
+            h: cell_h / 2.0 + 1.0,
+        }), // ╻
+
+        '\u{250C}' | '\u{250D}' | '\u{250E}' | '\u{250F}' => {
+            // Top-left
+            rects.push(Rect {
+                x: cx,
+                y: cy,
+                w: cell_w - (cx - cell_x),
+                h: lh,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cy,
+                w: lw,
+                h: cell_h - (cy - cell_y),
+            });
         }
-        '\u{2510}' | '\u{2511}' | '\u{2512}' | '\u{2513}' => { // Top-right
-            rects.push(Rect { x: cell_x, y: cy, w: cx - cell_x + lw, h: lh });
-            rects.push(Rect { x: cx, y: cy, w: lw, h: cell_h - (cy - cell_y) });
+        '\u{2510}' | '\u{2511}' | '\u{2512}' | '\u{2513}' => {
+            // Top-right
+            rects.push(Rect {
+                x: cell_x,
+                y: cy,
+                w: cx - cell_x + lw,
+                h: lh,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cy,
+                w: lw,
+                h: cell_h - (cy - cell_y),
+            });
         }
-        '\u{2514}' | '\u{2515}' | '\u{2516}' | '\u{2517}' => { // Bottom-left
-            rects.push(Rect { x: cx, y: cy, w: cell_w - (cx - cell_x), h: lh });
-            rects.push(Rect { x: cx, y: cell_y, w: lw, h: cy - cell_y + lh });
+        '\u{2514}' | '\u{2515}' | '\u{2516}' | '\u{2517}' => {
+            // Bottom-left
+            rects.push(Rect {
+                x: cx,
+                y: cy,
+                w: cell_w - (cx - cell_x),
+                h: lh,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cell_y,
+                w: lw,
+                h: cy - cell_y + lh,
+            });
         }
-        '\u{2518}' | '\u{2519}' | '\u{251A}' | '\u{251B}' => { // Bottom-right
-            rects.push(Rect { x: cell_x, y: cy, w: cx - cell_x + lw, h: lh });
-            rects.push(Rect { x: cx, y: cell_y, w: lw, h: cy - cell_y + lh });
+        '\u{2518}' | '\u{2519}' | '\u{251A}' | '\u{251B}' => {
+            // Bottom-right
+            rects.push(Rect {
+                x: cell_x,
+                y: cy,
+                w: cx - cell_x + lw,
+                h: lh,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cell_y,
+                w: lw,
+                h: cy - cell_y + lh,
+            });
         }
         // Rounded corners ╭ ╮ ╯ ╰ (U+256D..U+2570) intentionally fall
         // through to atlas rendering: a procedural rect can't draw a true
@@ -184,29 +430,88 @@ pub fn procedural_box(c: char, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f3
         // design language. Atlas rendering preserves the radius; the
         // matching ┃/│ run terminates at the rounded corner with a +1 px
         // overlap (see 2500..2503 above) so the seam stays gap-free.
-        
-        '\u{251C}' | '\u{251D}' | '\u{251E}' | '\u{251F}' | '\u{2520}' | '\u{2521}' | '\u{2522}' | '\u{2523}' => { // Vertical-right
-            rects.push(Rect { x: cx, y: cell_y, w: lw, h: cell_h }); 
-            rects.push(Rect { x: cx, y: cy, w: cell_w - (cx - cell_x), h: lh });
+        '\u{251C}' | '\u{251D}' | '\u{251E}' | '\u{251F}' | '\u{2520}' | '\u{2521}'
+        | '\u{2522}' | '\u{2523}' => {
+            // Vertical-right
+            rects.push(Rect {
+                x: cx,
+                y: cell_y,
+                w: lw,
+                h: cell_h,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cy,
+                w: cell_w - (cx - cell_x),
+                h: lh,
+            });
         }
-        '\u{2524}' | '\u{2525}' | '\u{2526}' | '\u{2527}' | '\u{2528}' | '\u{2529}' | '\u{252A}' | '\u{252B}' => { // Vertical-left
-            rects.push(Rect { x: cx, y: cell_y, w: lw, h: cell_h }); 
-            rects.push(Rect { x: cell_x, y: cy, w: cx - cell_x + lw, h: lh });
+        '\u{2524}' | '\u{2525}' | '\u{2526}' | '\u{2527}' | '\u{2528}' | '\u{2529}'
+        | '\u{252A}' | '\u{252B}' => {
+            // Vertical-left
+            rects.push(Rect {
+                x: cx,
+                y: cell_y,
+                w: lw,
+                h: cell_h,
+            });
+            rects.push(Rect {
+                x: cell_x,
+                y: cy,
+                w: cx - cell_x + lw,
+                h: lh,
+            });
         }
-        '\u{252C}' | '\u{252D}' | '\u{252E}' | '\u{252F}' | '\u{2530}' | '\u{2531}' | '\u{2532}' | '\u{2533}' => { // Horizontal-down
-            rects.push(Rect { x: cell_x, y: cy, w: cell_w, h: lh }); 
-            rects.push(Rect { x: cx, y: cy, w: lw, h: cell_h - (cy - cell_y) });
+        '\u{252C}' | '\u{252D}' | '\u{252E}' | '\u{252F}' | '\u{2530}' | '\u{2531}'
+        | '\u{2532}' | '\u{2533}' => {
+            // Horizontal-down
+            rects.push(Rect {
+                x: cell_x,
+                y: cy,
+                w: cell_w,
+                h: lh,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cy,
+                w: lw,
+                h: cell_h - (cy - cell_y),
+            });
         }
-        '\u{2534}' | '\u{2535}' | '\u{2536}' | '\u{2537}' | '\u{2538}' | '\u{2539}' | '\u{253A}' | '\u{253B}' => { // Horizontal-up
-            rects.push(Rect { x: cell_x, y: cy, w: cell_w, h: lh }); 
-            rects.push(Rect { x: cx, y: cell_y, w: lw, h: cy - cell_y + lh });
+        '\u{2534}' | '\u{2535}' | '\u{2536}' | '\u{2537}' | '\u{2538}' | '\u{2539}'
+        | '\u{253A}' | '\u{253B}' => {
+            // Horizontal-up
+            rects.push(Rect {
+                x: cell_x,
+                y: cy,
+                w: cell_w,
+                h: lh,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cell_y,
+                w: lw,
+                h: cy - cell_y + lh,
+            });
         }
-        
-        '\u{253C}' | '\u{253D}' | '\u{253E}' | '\u{253F}' | '\u{2540}' | '\u{2541}' | '\u{2542}' | '\u{2543}' | '\u{2544}' | '\u{2545}' | '\u{2546}' | '\u{2547}' | '\u{2548}' | '\u{2549}' | '\u{254A}' | '\u{254B}' => {
-            rects.push(Rect { x: cell_x, y: cy, w: cell_w, h: lh }); 
-            rects.push(Rect { x: cx, y: cell_y, w: lw, h: cell_h });
+
+        '\u{253C}' | '\u{253D}' | '\u{253E}' | '\u{253F}' | '\u{2540}' | '\u{2541}'
+        | '\u{2542}' | '\u{2543}' | '\u{2544}' | '\u{2545}' | '\u{2546}' | '\u{2547}'
+        | '\u{2548}' | '\u{2549}' | '\u{254A}' | '\u{254B}' => {
+            rects.push(Rect {
+                x: cell_x,
+                y: cy,
+                w: cell_w,
+                h: lh,
+            });
+            rects.push(Rect {
+                x: cx,
+                y: cell_y,
+                w: lw,
+                h: cell_h,
+            });
         }
-        
+
         _ => return None,
     }
     Some(rects)
@@ -288,14 +593,20 @@ mod fit_glyph_box_tests {
     fn upscale_fills_box() {
         // Glyph 10×10 into a 20×20 box → s = 2.0 when upscaling allowed.
         let (_x, _y, w, h) = fit_glyph_box(10.0, 10.0, 20.0, 20.0, 0.0, 0.0, true);
-        assert!((w - 20.0).abs() < 1e-3 && (h - 20.0).abs() < 1e-3, "w={w} h={h}");
+        assert!(
+            (w - 20.0).abs() < 1e-3 && (h - 20.0).abs() < 1e-3,
+            "w={w} h={h}"
+        );
     }
 
     // Upscale disabled clamps s <= 1.0 (shrink-only).
     #[test]
     fn no_upscale_clamps() {
         let (x, y, w, h) = fit_glyph_box(10.0, 10.0, 20.0, 20.0, 0.0, 0.0, false);
-        assert!((w - 10.0).abs() < 1e-3 && (h - 10.0).abs() < 1e-3, "w={w} h={h}");
+        assert!(
+            (w - 10.0).abs() < 1e-3 && (h - 10.0).abs() < 1e-3,
+            "w={w} h={h}"
+        );
         // Centered: (20-10)/2 = 5 on both axes.
         assert!((x - 5.0).abs() < 1e-3 && (y - 5.0).abs() < 1e-3);
     }
@@ -313,19 +624,16 @@ mod fit_glyph_box_tests {
 // pipeline / atlas for the whole process. Per-pane WebGpuPaneBackend
 // borrows it via Rc<RefCell<>> instead of constructing its own copies.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-
 // Shared swap-chain host (Round 3 §4.3 Phase B): one wgpu::Surface
 // bound to the global host canvas in +page.svelte. Per-pane backends
 // each pane's draw clipped by its own scissor rect. Single submit +
 // present per frame regardless of pane count.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-
 // Glyph rasterizer (Round 3 §4.1.b). OffscreenCanvas-based — uses the
 // browser's font fallback chain for free, no extra wasm bundle weight.
 // Owned by future WebGpuBackend::draw_row cache-miss path; gated on
 // the same wasm32 + webgpu feature combination.
 #[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-
 pub use backend::{CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme};
 pub use renderer::Renderer;
 
@@ -546,7 +854,11 @@ impl RenderBackend for AnyBackend {
         }
     }
 
-    fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable) {
+    fn draw_row_backgrounds(
+        &mut self,
+        row: &RowDraw<'_>,
+        attrs_table: &crate::term::attr_table::AttrTable,
+    ) {
         match self {
             AnyBackend::Canvas2d(b) => b.draw_row_backgrounds(row, attrs_table),
             #[cfg(feature = "webgpu")]
@@ -554,7 +866,11 @@ impl RenderBackend for AnyBackend {
         }
     }
 
-    fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &crate::term::attr_table::AttrTable) {
+    fn draw_row_texts(
+        &mut self,
+        row: &RowDraw<'_>,
+        attrs_table: &crate::term::attr_table::AttrTable,
+    ) {
         match self {
             AnyBackend::Canvas2d(b) => b.draw_row_texts(row, attrs_table),
             #[cfg(feature = "webgpu")]
@@ -590,13 +906,7 @@ impl RenderBackend for AnyBackend {
         }
     }
 
-    fn draw_preedit_overlay(
-        &mut self,
-        text: &str,
-        row: usize,
-        col: usize,
-        theme: &Theme,
-    ) {
+    fn draw_preedit_overlay(&mut self, text: &str, row: usize, col: usize, theme: &Theme) {
         match self {
             AnyBackend::Canvas2d(b) => b.draw_preedit_overlay(text, row, col, theme),
             #[cfg(feature = "webgpu")]
@@ -637,7 +947,8 @@ mod procedural_box_tests {
     const CH: f32 = 16.0;
 
     fn box_for(c: char) -> Vec<Rect> {
-        procedural_box(c, CX, CY, CW, CH).unwrap_or_else(|| panic!("char {:?} should be procedurally drawn", c))
+        procedural_box(c, CX, CY, CW, CH)
+            .unwrap_or_else(|| panic!("char {:?} should be procedurally drawn", c))
     }
 
     /// Full block must paint a single cell-sized rect — the renderer
@@ -671,7 +982,13 @@ mod procedural_box_tests {
             let r = rects[0];
             assert_eq!(r.x, CX, "{:?} x", ch);
             assert_eq!(r.y, CY, "{:?} y", ch);
-            assert!((r.w - CW * fraction).abs() < 1e-3, "{:?} w expected {} got {}", ch, CW * fraction, r.w);
+            assert!(
+                (r.w - CW * fraction).abs() < 1e-3,
+                "{:?} w expected {} got {}",
+                ch,
+                CW * fraction,
+                r.w
+            );
             assert_eq!(r.h, CH, "{:?} h", ch);
         }
     }
@@ -701,16 +1018,48 @@ mod procedural_box_tests {
         let hh = CH * 0.5;
         // ▘ top-left
         let r = box_for('\u{2598}');
-        assert_eq!(r, vec![Rect { x: CX, y: CY, w: hw, h: hh }]);
+        assert_eq!(
+            r,
+            vec![Rect {
+                x: CX,
+                y: CY,
+                w: hw,
+                h: hh
+            }]
+        );
         // ▝ top-right
         let r = box_for('\u{259D}');
-        assert_eq!(r, vec![Rect { x: CX + hw, y: CY, w: hw, h: hh }]);
+        assert_eq!(
+            r,
+            vec![Rect {
+                x: CX + hw,
+                y: CY,
+                w: hw,
+                h: hh
+            }]
+        );
         // ▖ bottom-left
         let r = box_for('\u{2596}');
-        assert_eq!(r, vec![Rect { x: CX, y: CY + hh, w: hw, h: hh }]);
+        assert_eq!(
+            r,
+            vec![Rect {
+                x: CX,
+                y: CY + hh,
+                w: hw,
+                h: hh
+            }]
+        );
         // ▗ bottom-right
         let r = box_for('\u{2597}');
-        assert_eq!(r, vec![Rect { x: CX + hw, y: CY + hh, w: hw, h: hh }]);
+        assert_eq!(
+            r,
+            vec![Rect {
+                x: CX + hw,
+                y: CY + hh,
+                w: hw,
+                h: hh
+            }]
+        );
     }
 
     /// Diagonal quadrants (▚ TL+BR, ▞ TR+BL) emit exactly two rects
@@ -817,18 +1166,40 @@ mod procedural_box_tests {
     fn heavy_strokes_are_thicker_than_light() {
         let light_h = box_for('\u{2500}')[0].h; // ─
         let heavy_h = box_for('\u{2501}')[0].h; // ━
-        assert!(heavy_h > light_h, "━ ({}) must be thicker than ─ ({})", heavy_h, light_h);
+        assert!(
+            heavy_h > light_h,
+            "━ ({}) must be thicker than ─ ({})",
+            heavy_h,
+            light_h
+        );
 
         let light_w = box_for('\u{2502}')[0].w; // │
         let heavy_w = box_for('\u{2503}')[0].w; // ┃
-        assert!(heavy_w > light_w, "┃ ({}) must be thicker than │ ({})", heavy_w, light_w);
+        assert!(
+            heavy_w > light_w,
+            "┃ ({}) must be thicker than │ ({})",
+            heavy_w,
+            light_w
+        );
 
         // Heavy vertical stubs (╹╻) thicker than light (╵╷).
-        assert!(box_for('\u{2579}')[0].w > box_for('\u{2575}')[0].w, "╹ vs ╵");
-        assert!(box_for('\u{257B}')[0].w > box_for('\u{2577}')[0].w, "╻ vs ╷");
+        assert!(
+            box_for('\u{2579}')[0].w > box_for('\u{2575}')[0].w,
+            "╹ vs ╵"
+        );
+        assert!(
+            box_for('\u{257B}')[0].w > box_for('\u{2577}')[0].w,
+            "╻ vs ╷"
+        );
         // Heavy horizontal stubs (╸╺) thicker than light (╴╶).
-        assert!(box_for('\u{2578}')[0].h > box_for('\u{2574}')[0].h, "╸ vs ╴");
-        assert!(box_for('\u{257A}')[0].h > box_for('\u{2576}')[0].h, "╺ vs ╶");
+        assert!(
+            box_for('\u{2578}')[0].h > box_for('\u{2574}')[0].h,
+            "╸ vs ╴"
+        );
+        assert!(
+            box_for('\u{257A}')[0].h > box_for('\u{2576}')[0].h,
+            "╺ vs ╶"
+        );
     }
 
     /// Stub characters (U+2574..U+257B) — ╴╵╶╷╸╹╺╻ — must produce

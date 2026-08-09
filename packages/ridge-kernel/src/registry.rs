@@ -70,22 +70,22 @@ impl KernelBootGuard {
 }
 
 fn try_lock_file(path: &Path) -> Result<Option<File>> {
-        let dir = path.parent().unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(path)
-            .with_context(|| format!("open {}", path.display()))?;
-        match file.try_lock() {
-            Ok(()) => Ok(Some(file)),
-            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-            Err(std::fs::TryLockError::Error(error)) => {
-                Err(error).with_context(|| format!("lock {}", path.display()))
-            }
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => {
+            Err(error).with_context(|| format!("lock {}", path.display()))
         }
     }
+}
 
 /// Kernel-owned remote topology. Records intentionally exclude credentials.
 pub fn remote_hosts_path() -> PathBuf {
@@ -98,6 +98,10 @@ pub fn workspace_graph_path() -> PathBuf {
 
 pub fn roster_path() -> PathBuf {
     ridge_data_dir().join("agent-roster.json")
+}
+
+pub fn agent_hub_path() -> PathBuf {
+    ridge_data_dir().join("agent-hub.sqlite3")
 }
 
 pub fn load_roster() -> Result<ridge_core::teammate::topology::TopologyGraph> {

@@ -91,7 +91,7 @@ impl Default for ToolRegistry {
             ToolSpec {
                 name: "ridge_send_to_teammate".to_string(),
                 description:
-                    "向指定 pane 写入文本、默认派发 Enter，并留一份到收件箱；仅 submit=false 时注入草稿。"
+                    "兼容入口：向指定 Agent Hub Inbox 排队消息；submit 仅作为意图元数据，不绕过安全门直接写 PTY。"
                         .to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -116,7 +116,7 @@ impl Default for ToolRegistry {
             },
             ToolSpec {
                 name: "ridge_delegate_task".to_string(),
-                description: "将一个多步骤任务委派给指定 pane 并显式派发 Enter；返回 submit_dispatched，不代表 Agent 已执行。".to_string(),
+                description: "兼容入口：将多步骤任务排入指定 Agent Hub Inbox；不直接注入 PTY，回执不代表 Agent 已执行。".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -136,7 +136,7 @@ impl Default for ToolRegistry {
             },
             ToolSpec {
                 name: "ridge_send_and_submit".to_string(),
-                description: "向目标 pane 写入文本并显式派发 Enter。回执另列 terminalAccepted；二者均不代表 Agent 已执行。".to_string(),
+                description: "兼容入口：将消息排入目标 Agent Hub Inbox；terminalAccepted=false，明确不代表已写入 PTY 或 Agent 已执行。".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -170,7 +170,7 @@ impl Default for ToolRegistry {
                         "workspace_id": workspace_id_schema(),
                         "target_pane_id": pane_target_schema(),
                         "receipt_id": { "type": "string", "description": "收到消息中的 receiptId" },
-                        "status": { "type": "string", "enum": ["agent_acknowledged", "agent_rejected"] },
+                        "status": { "type": "string", "enum": ["agent_received", "agent_accepted", "agent_acknowledged", "agent_completed", "agent_rejected"] },
                         "detail": { "type": "string", "description": "可选的确认或拒绝原因" }
                     },
                     "required": ["target_pane_id", "receipt_id", "status"]
@@ -318,8 +318,162 @@ impl Default for ToolRegistry {
                 }),
             },
         ];
+        let mut tools = tools;
+        tools.extend(communication_tool_specs());
         Self { tools }
     }
+}
+
+/// Message Hub names. Production Kernel/Desktop states use the shared
+/// SQLite-backed bounded inbox/receipt store; ephemeral embedders may keep the
+/// same tool vocabulary with `McpSessionState::default()`.
+fn communication_tool_specs() -> Vec<ToolSpec> {
+    let target = pane_target_schema();
+    let workspace = workspace_id_schema();
+    vec![
+        ToolSpec {
+            name: "ridge_send_message".into(),
+            description: "Queue a typed Agent message and return message/task delivery IDs.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "workspace_id": workspace.clone(),
+                    "target_pane_id": target.clone(),
+                    "agent_id": { "type": "string" },
+                    "generation": { "type": "integer", "minimum": 1 },
+                    "lease": { "type": "string" },
+                    "message": { "type": "string" },
+                    "from": { "type": "string" },
+                    "idempotency_key": { "type": "string" },
+                    "correlation_id": { "type": "string" },
+                    "causation_id": { "type": "string" },
+                    "conversation_id": { "type": "string" },
+                    "priority": { "type": "string", "enum": ["control", "input", "task", "event", "history"] },
+                    "deadline_unix_ms": { "type": "integer" },
+                    "cancellation_id": { "type": "string" }
+                },
+                "required": ["target_pane_id", "message", "idempotency_key"]
+            }),
+        },
+        ToolSpec {
+            name: "ridge_create_task".into(),
+            description: "Queue a typed Agent task without claiming Agent consumption.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "workspace_id": workspace.clone(),
+                    "target_pane_id": target.clone(),
+                    "agent_id": { "type": "string" },
+                    "generation": { "type": "integer", "minimum": 1 },
+                    "lease": { "type": "string" },
+                    "objective": { "type": "string" },
+                    "from": { "type": "string" },
+                    "idempotency_key": { "type": "string" },
+                    "correlation_id": { "type": "string" },
+                    "causation_id": { "type": "string" },
+                    "conversation_id": { "type": "string" },
+                    "priority": { "type": "string", "enum": ["control", "input", "task", "event", "history"] },
+                    "deadline_unix_ms": { "type": "integer" },
+                    "cancellation_id": { "type": "string" }
+                },
+                "required": ["target_pane_id", "objective", "idempotency_key"]
+            }),
+        },
+        ToolSpec {
+            name: "ridge_publish_event".into(),
+            description: "Queue a typed event for the addressed Agent inbox.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "workspace_id": workspace.clone(),
+                    "target_pane_id": target.clone(),
+                    "agent_id": { "type": "string" },
+                    "generation": { "type": "integer", "minimum": 1 },
+                    "lease": { "type": "string" },
+                    "topic": { "type": "string" },
+                    "payload": {},
+                    "from": { "type": "string" },
+                    "idempotency_key": { "type": "string" },
+                    "correlation_id": { "type": "string" },
+                    "causation_id": { "type": "string" },
+                    "conversation_id": { "type": "string" },
+                    "priority": { "type": "string", "enum": ["control", "input", "task", "event", "history"] },
+                    "deadline_unix_ms": { "type": "integer" },
+                    "cancellation_id": { "type": "string" }
+                },
+                "required": ["target_pane_id", "topic", "idempotency_key"]
+            }),
+        },
+        ToolSpec {
+            name: "ridge_fetch_inbox".into(),
+            description: "Fetch bounded queued messages with explicit consume or peek semantics."
+                .into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "workspace_id": workspace.clone(),
+                    "target_pane_id": target.clone(),
+                    "agent_id": { "type": "string" },
+                    "generation": { "type": "integer", "minimum": 1 },
+                    "lease": { "type": "string" },
+                    "peek": { "type": "boolean" },
+                    "consume": { "type": "boolean" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                    "cursor": { "type": "string" }
+                },
+                "required": ["target_pane_id"]
+            }),
+        },
+        ToolSpec {
+            name: "ridge_cancel_delivery".into(),
+            description: "Cancel one queued Hub delivery by delivery or cancellation ID.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "workspace_id": workspace.clone(),
+                    "target_pane_id": target.clone(),
+                    "agent_id": { "type": "string" },
+                    "generation": { "type": "integer", "minimum": 1 },
+                    "lease": { "type": "string" },
+                    "delivery_id": { "type": "string" },
+                    "cancellation_id": { "type": "string" },
+                    "reason": { "type": "string" }
+                },
+                "required": ["target_pane_id"],
+                "anyOf": [
+                    { "required": ["delivery_id"] },
+                    { "required": ["cancellation_id"] }
+                ]
+            }),
+        },
+        ToolSpec {
+            name: "ridge_task_update".into(),
+            description: "Update a queued task receipt with typed status/result metadata.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "workspace_id": workspace.clone(),
+                    "target_pane_id": target.clone(),
+                    "agent_id": { "type": "string" },
+                    "generation": { "type": "integer", "minimum": 1 },
+                    "lease": { "type": "string" },
+                    "task_id": { "type": "string" },
+                    "status": { "type": "string", "enum": ["assigned", "accepted", "running", "waiting", "blocked", "completed", "failed", "cancelled", "expired"] },
+                    "detail": { "type": "string" }
+                },
+                "required": ["target_pane_id", "task_id", "status"]
+            }),
+        },
+        ToolSpec {
+            name: "ridge_list_agents".into(),
+            description: "List the Kernel/host Agent roster projection.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "workspace_id": workspace.clone() },
+                "required": []
+            }),
+        },
+    ]
 }
 
 impl ToolRegistry {
@@ -351,9 +505,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_registry_has_fifteen_tools() {
+    fn default_registry_has_communication_tools() {
         let reg = ToolRegistry::default();
-        assert_eq!(reg.tools().len(), 15);
+        assert_eq!(reg.tools().len(), 22);
     }
 
     #[test]
@@ -377,7 +531,7 @@ mod tests {
             description: "test".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
         });
-        assert_eq!(reg.tools().len(), 16);
+        assert_eq!(reg.tools().len(), 23);
         assert!(reg.get("custom_tool").is_some());
     }
 
@@ -386,7 +540,7 @@ mod tests {
         let reg = ToolRegistry::default();
         let v = reg.tools_list_result();
         assert!(v["tools"].is_array());
-        assert_eq!(v["tools"].as_array().unwrap().len(), 15);
+        assert_eq!(v["tools"].as_array().unwrap().len(), 22);
     }
 
     #[test]
@@ -438,6 +592,11 @@ mod tests {
             "ridge_inbox_read",
             "ridge_delivery_status",
             "ridge_acknowledge_receipt",
+            "ridge_send_message",
+            "ridge_create_task",
+            "ridge_publish_event",
+            "ridge_fetch_inbox",
+            "ridge_task_update",
         ] {
             let t = &reg.get(name).unwrap().input_schema["properties"]["target_pane_id"]["type"];
             let kinds: Vec<&str> = t
@@ -486,6 +645,12 @@ mod tests {
             "ridge_report_execution_rejection",
             "ridge_report_progress",
             "ridge_stash_data",
+            "ridge_send_message",
+            "ridge_create_task",
+            "ridge_publish_event",
+            "ridge_fetch_inbox",
+            "ridge_task_update",
+            "ridge_list_agents",
         ] {
             assert!(
                 reg.get(name).is_some(),

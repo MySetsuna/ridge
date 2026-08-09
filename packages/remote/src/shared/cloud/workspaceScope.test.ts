@@ -59,6 +59,24 @@ describe('workspace share scope', () => {
     }
   });
 
+  it('adds the granted workspace to pane RPCs before host dispatch', () => {
+    expect(planWorkspaceInvoke('write_to_pty', { paneId: 'pane-a', data: 'x' }, access)).toEqual({
+      kind: 'invoke',
+      method: 'write_to_pty',
+      params: { paneId: 'pane-a', data: 'x', workspaceId: 'ws-shared' },
+    });
+    expect(planWorkspaceInvoke('resize_pane', { paneId: 'pane-a', rows: 24, cols: 80 }, access)).toEqual({
+      kind: 'invoke',
+      method: 'resize_pane',
+      params: { paneId: 'pane-a', rows: 24, cols: 80, workspaceId: 'ws-shared' },
+    });
+    expect(planWorkspaceInvoke('write_to_pty', {
+      paneId: 'pane-a',
+      workspaceId: 'ws-other',
+      data: 'x',
+    }, access).kind).toBe('deny');
+  });
+
   it('projects host workspace enumeration to the single grant', () => {
     expect(
       filterWorkspaceResult(

@@ -754,7 +754,11 @@ impl GpuContext {
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ridge-wallpaper-tex"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -776,7 +780,11 @@ impl GpuContext {
                 bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(h),
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -797,7 +805,12 @@ impl GpuContext {
                 },
             ],
         });
-        self.wallpaper = Some(WallpaperTex { texture, view, img_w: w, img_h: h });
+        self.wallpaper = Some(WallpaperTex {
+            texture,
+            view,
+            img_w: w,
+            img_h: h,
+        });
         self.wallpaper_opacity = opacity.clamp(0.0, 1.0);
         self.wallpaper_bind_group = Some(bind_group);
     }
@@ -1031,8 +1044,11 @@ impl GpuContext {
             self.atlas_overwrite_after_cite = self.atlas_overwrite_after_cite.wrapping_add(1);
             if self.atlas_cite_log_budget > 0 {
                 self.atlas_cite_log_budget -= 1;
-                let was_written =
-                    self.frame_written.get(layer as usize).copied().unwrap_or(false);
+                let was_written = self
+                    .frame_written
+                    .get(layer as usize)
+                    .copied()
+                    .unwrap_or(false);
                 web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
                     "[ridge-term][atlas-race] OVERWRITE-AFTER-CITE layer={} new_glyph={:?} \
                      glyph_id=0x{:08x} frame_written={} evict_count={} total={} \
@@ -1207,12 +1223,7 @@ mod tests {
     }
 
     fn make_key(id: u32) -> GlyphKey {
-        GlyphKey {
-            font_family_hash: 0xdeadbeef,
-            font_size_q: 1500,
-            glyph_id: id,
-            style_flags: 0,
-        }
+        GlyphKey::new(0xdeadbeef, 1500, id, 0, 1.0)
     }
 
     fn make_entry(layer: u16) -> GlyphEntry {

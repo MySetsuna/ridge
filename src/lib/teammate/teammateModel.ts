@@ -61,6 +61,14 @@ export interface TeammateProfile {
   /** iter-62：近期回复——scrollback 末尾剥 ANSI 的最后几行，随快照下发
    *  （面板与手机端无需再为每个成员单独发一次 IPC）。 */
   readonly recentOutput: string;
+  /** Kernel-owned identity/fencing fields; absent for legacy projections. */
+  readonly sessionId?: string;
+  readonly workspaceId?: string;
+  readonly generation?: number;
+  readonly lease?: string;
+  readonly lifecycle?: string;
+  readonly online?: boolean;
+  readonly capabilities?: readonly string[];
 }
 
 export interface TopologyEdge {
@@ -185,6 +193,15 @@ function parseProfile(v: unknown): TeammateProfile | null {
     activity: rec.activity === 'working' ? 'working' : 'idle',
     outputSeq: typeof rec.outputSeq === 'number' ? rec.outputSeq : 0,
     recentOutput: asString(rec.recentOutput) ?? '',
+    sessionId: asString(rec.sessionId) ?? asString(rec.session_id),
+    workspaceId: asString(rec.workspaceId) ?? asString(rec.workspace_id),
+    generation: typeof rec.generation === 'number' ? rec.generation : undefined,
+    lease: asString(rec.lease),
+    lifecycle: asString(rec.lifecycle),
+    online: typeof rec.online === 'boolean' ? rec.online : undefined,
+    capabilities: Array.isArray(rec.capabilities)
+      ? rec.capabilities.filter((item): item is string => typeof item === 'string')
+      : undefined,
   };
 }
 

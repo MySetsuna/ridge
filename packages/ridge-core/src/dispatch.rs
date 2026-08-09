@@ -208,7 +208,10 @@ fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> 
             let rows = args.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
             let cols = args.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
             let is_alt = args.get("isAlt").and_then(|v| v.as_bool()).unwrap_or(false);
-            let is_inline_tui = args.get("isInlineTui").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_inline_tui = args
+                .get("isInlineTui")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             workspace::resize_pane(
                 ctx,
                 &s(&args, "workspaceId"),
@@ -220,9 +223,11 @@ fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> 
             )
         }
         // pane 写：为既有 pane 起 shell PTY（spawn 子进程，逻辑复用桌面 create_pane_inner）。
-        "create_pane" => {
-            workspace::create_pane(ctx, &s(&args, "paneId"), args.get("shell").and_then(|v| v.as_str()))
-        }
+        "create_pane" => workspace::create_pane(
+            ctx,
+            &s(&args, "paneId"),
+            args.get("shell").and_then(|v| v.as_str()),
+        ),
         "split_pane" => workspace::split_pane(ctx, &s(&args, "paneId"), &s(&args, "direction")),
         // 写：切换活动工作区（元数据写，不触 PTY）。经聚合 accessor 的 WorkspaceWriter
         // 端口。此前 allowlist 已放行但无 arm → 远端 controller 收 MethodNotFound；本 arm
@@ -249,9 +254,7 @@ fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> 
             &s(&args, "name"),
             args.get("path").and_then(|v| v.as_str()),
         ),
-        "delete_workspace_file" => {
-            workspace::delete_workspace_file(ctx, &s(&args, "workspaceId"))
-        }
+        "delete_workspace_file" => workspace::delete_workspace_file(ctx, &s(&args, "workspaceId")),
 
         // ── Read-only filesystem (S5) ──
         // `get_file_tree` / `get_directory_children` / `read_file` /
@@ -387,7 +390,8 @@ fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> 
             Ok(Value::String(diff))
         }
         "git_diff_summary" => {
-            let sum = git::git_diff_summary_sync(s(&args, "repoRoot")).map_err(CoreError::internal)?;
+            let sum =
+                git::git_diff_summary_sync(s(&args, "repoRoot")).map_err(CoreError::internal)?;
             serde_json::to_value(sum).map_err(CoreError::internal)
         }
         "git_get_file_versions" => {
@@ -442,12 +446,17 @@ fn dispatch_admitted(method: &str, args: Value, ctx: &Ctx) -> CoreResult<Value> 
             Ok(Value::Null)
         }
         "copy_path" => {
-            fs_commands::copy_path(s(&args, "from"), s(&args, "to"), opt_bool(&args, "overwrite"))
-                .map_err(CoreError::internal)?;
+            fs_commands::copy_path(
+                s(&args, "from"),
+                s(&args, "to"),
+                opt_bool(&args, "overwrite"),
+            )
+            .map_err(CoreError::internal)?;
             Ok(Value::Null)
         }
         "move_path" => {
-            fs_commands::move_path(s(&args, "from"), s(&args, "to")).map_err(CoreError::internal)?;
+            fs_commands::move_path(s(&args, "from"), s(&args, "to"))
+                .map_err(CoreError::internal)?;
             Ok(Value::Null)
         }
         "replace_in_files" => {
@@ -533,7 +542,11 @@ mod tests {
         fn pane_layout(&self, _id: &str) -> Result<serde_json::Value, String> {
             Ok(serde_json::Value::Null)
         }
-        fn pane_scrollback_tail(&self, _pane: &str, _max: usize) -> Result<serde_json::Value, String> {
+        fn pane_scrollback_tail(
+            &self,
+            _pane: &str,
+            _max: usize,
+        ) -> Result<serde_json::Value, String> {
             Ok(serde_json::Value::Null)
         }
         fn pane_scrollback_before(
@@ -698,9 +711,16 @@ mod tests {
 
     #[test]
     fn git_read_denied_when_not_in_caps() {
-        let (ctx, _s) = ctx_with_state(Arc::new(EmptyState), CapabilitySet::from_methods(["read_file"]));
-        let err = dispatch("git_op_in_progress", serde_json::json!({ "repoRoot": "." }), &ctx)
-            .unwrap_err();
+        let (ctx, _s) = ctx_with_state(
+            Arc::new(EmptyState),
+            CapabilitySet::from_methods(["read_file"]),
+        );
+        let err = dispatch(
+            "git_op_in_progress",
+            serde_json::json!({ "repoRoot": "." }),
+            &ctx,
+        )
+        .unwrap_err();
         assert_eq!(err.kind_tag(), "capability_denied");
     }
 
@@ -724,8 +744,11 @@ mod tests {
         let d = tmp_nonrepo("scm");
         // 非 git 目录：底层 git 可能 Ok(空) 或 Err(git 失败)；关键是**不是 MethodNotFound**（证明已路由）。
         for m in ["get_scm_status", "git_list_branches"] {
-            if let Err(e) = dispatch(m, serde_json::json!({ "repoRoot": d.to_string_lossy() }), &ctx)
-            {
+            if let Err(e) = dispatch(
+                m,
+                serde_json::json!({ "repoRoot": d.to_string_lossy() }),
+                &ctx,
+            ) {
                 assert_ne!(e.kind_tag(), "method_not_found", "{m} 应已路由");
             }
         }
@@ -908,13 +931,10 @@ mod tests {
         }
     }
 
-
     #[test]
     fn writable_session_runs_write_file_and_round_trips() {
-        let td = std::env::temp_dir().join(format!(
-            "ridge-core-dispatch-write-{}",
-            std::process::id()
-        ));
+        let td =
+            std::env::temp_dir().join(format!("ridge-core-dispatch-write-{}", std::process::id()));
         std::fs::create_dir_all(&td).unwrap();
         let file = td.join("w.txt").to_string_lossy().into_owned();
 
@@ -943,8 +963,12 @@ mod tests {
         // `browse_directory` on the (existing) temp dir returns a listing whose
         // `path`/`subdirs` are present — proving the arm is wired, not MethodNotFound.
         let td = std::env::temp_dir().to_string_lossy().into_owned();
-        let listing = dispatch("browse_directory", serde_json::json!({ "path": td }), &ctx).unwrap();
+        let listing =
+            dispatch("browse_directory", serde_json::json!({ "path": td }), &ctx).unwrap();
         assert!(listing.get("path").and_then(|v| v.as_str()).is_some());
-        assert!(listing.get("subdirs").map(|v| v.is_array()).unwrap_or(false));
+        assert!(listing
+            .get("subdirs")
+            .map(|v| v.is_array())
+            .unwrap_or(false));
     }
 }

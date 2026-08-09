@@ -14,6 +14,12 @@ const IDB_STORE = 'identity';
 const IDB_KEY = 'controller-ed25519-priv';
 const IDB_VERSION = 1;
 
+function asError(value: unknown, fallback: string): Error {
+  if (value instanceof Error) return value;
+  if (typeof value === 'string' && value.length > 0) return new Error(value);
+  return new Error(fallback);
+}
+
 // ── 模块级内存缓存（避免重复读库；SSR/Node 下也作唯一存储） ──────────────
 let cachedPriv: Uint8Array | null = null;
 
@@ -30,7 +36,7 @@ function openIdb(): Promise<IDBDatabase> {
       }
     };
     req.onsuccess = (e) => resolve((e.target as IDBOpenDBRequest).result);
-    req.onerror = () => reject(req.error);
+    req.onerror = () => reject(asError(req.error, 'IndexedDB open failed'));
   });
 }
 
@@ -44,7 +50,7 @@ async function idbLoad(): Promise<Uint8Array | null> {
       const val = req.result;
       resolve(val instanceof Uint8Array ? val : null);
     };
-    req.onerror = () => reject(req.error);
+    req.onerror = () => reject(asError(req.error, 'IndexedDB read failed'));
     tx.oncomplete = () => db.close();
   });
 }
@@ -55,9 +61,9 @@ async function idbSave(priv: Uint8Array): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, 'readwrite');
     const req = tx.objectStore(IDB_STORE).put(priv, IDB_KEY);
-    req.onerror = () => reject(req.error);
+    req.onerror = () => reject(asError(req.error, 'IndexedDB write failed'));
     tx.oncomplete = () => { db.close(); resolve(); };
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(asError(tx.error, 'IndexedDB write transaction failed'));
   });
 }
 
@@ -67,9 +73,9 @@ async function idbDelete(): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, 'readwrite');
     const req = tx.objectStore(IDB_STORE).delete(IDB_KEY);
-    req.onerror = () => reject(req.error);
+    req.onerror = () => reject(asError(req.error, 'IndexedDB delete failed'));
     tx.oncomplete = () => { db.close(); resolve(); };
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(asError(tx.error, 'IndexedDB delete transaction failed'));
   });
 }
 

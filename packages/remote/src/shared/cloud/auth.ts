@@ -148,11 +148,9 @@ export async function bootstrapFromCookie(): Promise<boolean> {
 // 单飞去重：多个并发 401 共享同一个 in-flight 刷新，避免刷新风暴。
 let refreshing: Promise<boolean> | null = null;
 export function refreshAccess(): Promise<boolean> {
-  if (!refreshing) {
-    refreshing = bootstrapFromCookie().finally(() => {
-      refreshing = null;
-    });
-  }
+  refreshing ??= bootstrapFromCookie().finally(() => {
+    refreshing = null;
+  });
   return refreshing;
 }
 

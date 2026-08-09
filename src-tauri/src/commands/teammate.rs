@@ -17,6 +17,52 @@ use uuid::Uuid;
 use crate::state::{AppState, PaneState, Workspace};
 use crate::teammate::hitl;
 
+/// Structured UI/Remote message entrypoint. The request is forwarded to the
+/// shared MCP Hub; it never writes PTY bytes directly.
+#[tauri::command]
+pub fn send_agent_message(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    request: Value,
+) -> Result<Value, String> {
+    send_agent_message_in(&state, app, request)
+}
+
+pub(crate) fn send_agent_message_in(
+    state: &AppState,
+    app: tauri::AppHandle,
+    request: Value,
+) -> Result<Value, String> {
+    let message = request
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "message must not be empty".to_string())?;
+    if request
+        .get("idempotency_key")
+        .and_then(Value::as_str)
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err("idempotency_key must not be empty".into());
+    }
+    let mut request = request;
+    request["message"] = json!(message);
+    for (source, target) in [
+        ("workspaceId", "workspace_id"),
+        ("paneId", "target_pane_id"),
+        ("agentId", "agent_id"),
+    ] {
+        if request.get(target).is_none() {
+            if let Some(value) = request.get(source).cloned() {
+                request[target] = value;
+            }
+        }
+    }
+    crate::teammate::mcp::send_hub_message(state, app, request)
+}
+
 /// 把一个工作区的 teammate 侧表映射为前端 `TopologySnapshot` JSON。
 /// `pub(crate)` 以便 teammate HTTP 路由 (`server.rs::route_get_team_profile`) 复用。
 /// `wid` 供 G1 暂停侧表查询（suspended pane 的 status 投影为 `Suspended`）。
@@ -232,13 +278,7 @@ pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
         if !crate::teammate::profiles::contains_agent(wid, &id) {
             let name = pretty_agent_name(&id);
             let capability = ridge_core::recognize_capability(&name, None);
-            let _ = crate::teammate::profiles::upsert(
-                wid,
-                &id,
-                pane,
-                Some(name),
-                capability,
-            );
+            let _ = crate::teammate::profiles::upsert(wid, &id, pane, Some(name), capability);
         }
     }
     true
@@ -279,11 +319,62 @@ pub(crate) fn topology_snapshot(state: &AppState, wid: Uuid) -> Result<Value, St
         inject_roster_titles(&mut topo, ws);
         topo
     };
+    inject_kernel_identity_fields(&mut topo, wid);
     inject_roster_runtime(&mut topo, state, wid);
     if let Some(obj) = topo.as_object_mut() {
         obj.insert("rosterChanged".into(), json!(changed));
     }
     Ok(topo)
+}
+
+/// Merge only Kernel-owned fencing fields into the shared desktop/Remote
+/// projection. Legacy roster names and pane decorations remain UI metadata;
+/// message routing must resolve against this identity seam instead.
+fn inject_kernel_identity_fields(topology: &mut Value, wid: Uuid) {
+    let Some(endpoint) = crate::kernel_lifecycle::read_endpoint() else {
+        return;
+    };
+    let Ok(snapshot) = ridge_kernel::client::read_domain_agent_roster(&endpoint) else {
+        return;
+    };
+    let identities = snapshot
+        .agent_identities
+        .into_iter()
+        .filter(|identity| identity.workspace_id == wid.to_string())
+        .collect::<Vec<_>>();
+    inject_identity_fields(topology, &identities);
+}
+
+fn inject_identity_fields(
+    topology: &mut Value,
+    identities: &[ridge_core::teammate::communication::AgentIdentity],
+) {
+    let Some(roster) = topology.get_mut("roster").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for entry in roster {
+        let Some(pane_id) = entry.get("paneId").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(identity) = identities.iter().find(|item| item.pane_id == pane_id) else {
+            continue;
+        };
+        let Some(object) = entry.as_object_mut() else {
+            continue;
+        };
+        object.insert("id".into(), json!(identity.agent_id));
+        object.insert("agentId".into(), json!(identity.agent_id));
+        object.insert("sessionId".into(), json!(identity.session_id));
+        object.insert("workspaceId".into(), json!(identity.workspace_id));
+        object.insert("generation".into(), json!(identity.generation));
+        object.insert("lease".into(), json!(identity.lease));
+        object.insert("lifecycle".into(), json!(identity.lifecycle));
+        object.insert("online".into(), json!(identity.online));
+        object.insert("lastSeenUnixMs".into(), json!(identity.last_seen_unix_ms));
+        object.insert("capabilities".into(), json!(identity.capabilities));
+        object.insert("executable".into(), json!(identity.executable));
+        object.insert("argv".into(), json!(identity.argv));
+    }
 }
 
 /// 近期回复的取样字节数（够覆盖十来行，远小于一次 scrollback tail 的 256 KiB）。
@@ -492,9 +583,7 @@ pub fn suspend_agent(
     let wid = Uuid::parse_str(&workspace_id).map_err(|e| e.to_string())?;
     let pane = Uuid::parse_str(&pane_id).map_err(|e| e.to_string())?;
     let workspaces = state.workspaces.read();
-    let handle = workspaces
-        .get(&wid)
-        .and_then(|ws| ws.terminals.get(&pane));
+    let handle = workspaces.get(&wid).and_then(|ws| ws.terminals.get(&pane));
     let pid = handle.and_then(|h| h.child_pid).or(pty_pid);
     let job = handle.and_then(|h| h.job.as_ref());
     crate::teammate::suspend::suspend_with_os(wid, pane, pid, job, false)?;
@@ -829,7 +918,8 @@ mod tests {
         assert!(validate_teammate_groups(&serde_json::json!({})).is_err());
         assert!(validate_teammate_groups(&serde_json::json!([{
             "id": "g1", "name": "Build", "color": "#60a5fa", "memberAgentIds": [1]
-        }])).is_err());
+        }]))
+        .is_err());
     }
 
     /// P1/S1 脱敏门禁：远程暴露的拓扑投影不得含敏感字段（get_teammate_topology 自
@@ -840,7 +930,10 @@ mod tests {
         let v = topology_json(&ws, Uuid::new_v4());
         let json = v.to_string().to_lowercase();
         for needle in ["token", "endpoint", "env_", "secret", "seed", "mcp"] {
-            assert!(!json.contains(needle), "topology projection leaks `{needle}`: {json}");
+            assert!(
+                !json.contains(needle),
+                "topology projection leaks `{needle}`: {json}"
+            );
         }
         let member = v["roster"][0].as_object().expect("roster member object");
         for key in member.keys() {
@@ -869,12 +962,45 @@ mod tests {
         let pane = ws.pane_tree.get_all_leaves()[0];
         ws.teammate_agent_pane_map.clear();
         ws.teammate_agent_pane_map.insert("claude-a".into(), pane);
-        ws.pane_tree.panes.get_mut(&pane).unwrap().cwd = Some(std::path::PathBuf::from("C:/repo/agent"));
+        ws.pane_tree.panes.get_mut(&pane).unwrap().cwd =
+            Some(std::path::PathBuf::from("C:/repo/agent"));
         let mut topology = serde_json::json!({
             "roster": [{ "id": "claude-a", "paneId": pane.to_string() }]
         });
         inject_roster_cwds(&mut topology, &ws);
         assert_eq!(topology["roster"][0]["cwd"], "C:/repo/agent");
+    }
+
+    #[test]
+    fn kernel_identity_projection_overrides_display_derived_identity() {
+        let pane = Uuid::new_v4();
+        let mut topology = serde_json::json!({
+            "roster": [{
+                "id": "title-derived",
+                "name": "Agent title",
+                "paneId": pane.to_string(),
+                "cwd": "C:/context-only"
+            }]
+        });
+        let identity = ridge_core::teammate::communication::AgentIdentity {
+            agent_id: "agent-stable".into(),
+            session_id: "session-1".into(),
+            workspace_id: Uuid::nil().to_string(),
+            pane_id: pane.to_string(),
+            cwd: "C:/context-only".into(),
+            executable: "agent.exe".into(),
+            argv: vec!["--worker".into()],
+            generation: 4,
+            lease: "lease-4".into(),
+            lifecycle: ridge_core::teammate::communication::AgentLifecycle::Online,
+            online: true,
+            last_seen_unix_ms: 9,
+            capabilities: vec!["messages".into()],
+        };
+        inject_identity_fields(&mut topology, &[identity]);
+        assert_eq!(topology["roster"][0]["id"], "agent-stable");
+        assert_eq!(topology["roster"][0]["generation"], 4);
+        assert_eq!(topology["roster"][0]["lease"], "lease-4");
     }
 
     /// iter-62：自动入册前缀的展示名兜底——`auto:claude:1a2b3c4d` 不该原样露给用户。
@@ -893,7 +1019,10 @@ mod tests {
             .insert(format!("{AUTO_AGENT_PREFIX}codex:deadbeef"), pane);
         let v = topology_json(&ws, Uuid::new_v4());
         let roster = v["roster"].as_array().unwrap();
-        let auto = roster.iter().find(|m| m["isAuto"] == true).expect("auto member");
+        let auto = roster
+            .iter()
+            .find(|m| m["isAuto"] == true)
+            .expect("auto member");
         assert_eq!(auto["name"], "codex");
         assert!(roster.iter().any(|m| m["isAuto"] == false));
     }

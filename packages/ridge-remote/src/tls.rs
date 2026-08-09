@@ -210,7 +210,10 @@ fn load_or_create_ca(dir: &Path) -> Option<(Certificate, KeyPair)> {
     let ca_key_path = dir.join("ca-key.pem");
 
     let ca_key = if ca_key_path.exists() {
-        match std::fs::read_to_string(&ca_key_path).ok().and_then(|p| KeyPair::from_pem(&p).ok()) {
+        match std::fs::read_to_string(&ca_key_path)
+            .ok()
+            .and_then(|p| KeyPair::from_pem(&p).ok())
+        {
             Some(kp) => kp,
             None => {
                 tracing::error!(target: "ridge::remote", "remote TLS: CA key unreadable; regenerating");
@@ -307,7 +310,11 @@ fn generate_leaf(
 }
 
 fn leaf_meta(lan_ips: &[String], hostname: &str) -> String {
-    format!("{}\n{hostname}\n{}", canon_ips(lan_ips).join(","), now_unix())
+    format!(
+        "{}\n{hostname}\n{}",
+        canon_ips(lan_ips).join(","),
+        now_unix()
+    )
 }
 
 fn leaf_should_reuse(dir: &Path, lan_ips: &[String], hostname: &str) -> bool {
@@ -317,7 +324,8 @@ fn leaf_should_reuse(dir: &Path, lan_ips: &[String], hostname: &str) -> bool {
     let lines: Vec<&str> = meta.lines().collect();
     // line 0 is the canonical (sorted, comma-joined) IP set; a changed set —
     // new/removed NIC, different Wi-Fi — re-mints the leaf with fresh SANs.
-    if lines.len() < 3 || lines[0] != canon_ips(lan_ips).join(",").as_str() || lines[1] != hostname {
+    if lines.len() < 3 || lines[0] != canon_ips(lan_ips).join(",").as_str() || lines[1] != hostname
+    {
         return false;
     }
     let created: u64 = lines[2].trim().parse().unwrap_or(0);

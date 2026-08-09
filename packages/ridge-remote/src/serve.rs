@@ -386,7 +386,10 @@ pub async fn serve_shell(target: UiTarget) -> Response {
 async fn ca_crt_handler() -> impl IntoResponse {
     match crate::tls::ca_cert_der() {
         Some(der) => axum::response::Response::builder()
-            .header(axum::http::header::CONTENT_TYPE, "application/x-x509-ca-cert")
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                "application/x-x509-ca-cert",
+            )
             .header(axum::http::header::CACHE_CONTROL, "no-store")
             .body(axum::body::Body::from(der))
             .unwrap(),

@@ -658,7 +658,11 @@ mod tests {
             } if *row == 0 && !cells.is_empty() => Some(*wrapped),
             _ => None,
         });
-        assert_eq!(row_zero, Some(true), "producer must mark the URL head wrapped");
+        assert_eq!(
+            row_zero,
+            Some(true),
+            "producer must mark the URL head wrapped"
+        );
         mirror.apply_frame(&frame).expect("URL frame");
         assert!(mirror.grid().row(0).unwrap().wrapped);
 
@@ -690,7 +694,9 @@ mod tests {
             frame.deltas
         );
         match cell_deltas[0] {
-            GridDelta::Cells { row, col, cells, .. } => {
+            GridDelta::Cells {
+                row, col, cells, ..
+            } => {
                 assert_eq!(*row, 0);
                 assert_eq!(*col, 2, "diff must start at the column of the changed cell");
                 assert_eq!(
@@ -726,10 +732,7 @@ mod tests {
         );
         match cell_deltas[0] {
             GridDelta::Cells {
-                row: _,
-                col,
-                cells,
-                ..
+                row: _, col, cells, ..
             } => {
                 assert_eq!(*col, 2, "span starts at first changed col");
                 assert_eq!(
@@ -952,7 +955,10 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].cells[0].ch, 'A');
         assert_eq!(lines[0].cells[1].ch, 'B');
-        assert!(!lines[0].wrapped, "hard newline must not be marked soft-wrapped");
+        assert!(
+            !lines[0].wrapped,
+            "hard newline must not be marked soft-wrapped"
+        );
     }
 
     #[test]

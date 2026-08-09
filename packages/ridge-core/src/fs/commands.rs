@@ -420,7 +420,8 @@ pub fn copy_path(from: String, to: String, overwrite: Option<bool>) -> Result<()
             std::fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
         }
     }
-    let meta = std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
+    let meta =
+        std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
     if meta.is_dir() {
         // Recursive copy via walkdir. Mirror the tree relative to `from_path`.
         std::fs::create_dir_all(&to_path).map_err(|e| format!("创建目标目录失败: {}", e))?;
@@ -473,7 +474,8 @@ pub fn move_path(from: String, to: String) -> Result<(), String> {
     }
     // Cross-device fallback: copy then delete source.
     copy_path(from.clone(), to.clone(), Some(false))?;
-    let meta = std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
+    let meta =
+        std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
     if meta.is_dir() {
         std::fs::remove_dir_all(&from_path).map_err(|e| format!("删除源目录失败: {}", e))?;
     } else {
@@ -691,7 +693,9 @@ mod tests {
 
         let hits = filename_search(&td.p(""), "lib/term").unwrap();
         assert_eq!(hits.len(), 1);
-        assert!(hits[0].replace('\\', "/").ends_with("src/lib/terminal/manager.ts"));
+        assert!(hits[0]
+            .replace('\\', "/")
+            .ends_with("src/lib/terminal/manager.ts"));
 
         let partial = filename_search(&td.p(""), "terminal/man").unwrap();
         assert_eq!(partial, hits);

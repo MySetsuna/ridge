@@ -462,7 +462,10 @@ mod tests {
         // wrapped URL rather than the select-all shortcut.
         s.set(&t, vp_range(0, 8, 2, 5));
         let text = s.text(&t);
-        assert!(!text.contains('\n'), "soft-wrap copy must not insert a newline: {text:?}");
+        assert!(
+            !text.contains('\n'),
+            "soft-wrap copy must not insert a newline: {text:?}"
+        );
         assert_eq!(text, "example.com/long/path");
     }
 

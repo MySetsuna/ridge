@@ -36,7 +36,8 @@ use crate::e2ee::{
     Session as CryptoSession, ID_BIND_DOMAIN,
 };
 use crate::fs_reuse;
-use ridge_core::DeviceIdentity;
+use crate::ice::IceServerConfig;
+use crate::key_binding::{decide_key_binding, KeyBindingDecision, KeyBindingMode};
 use crate::mux::{self, Inbound};
 use crate::protocol::SessionControl;
 use crate::pty::PtyBridge;
@@ -44,11 +45,10 @@ use crate::rpc::{
     self, Envelope, Method, RpcError, CANCEL_METHOD, HELLO_METHOD, JSON_RPC_INVALID_REQUEST,
     JSON_RPC_METHOD_NOT_FOUND,
 };
-use crate::key_binding::{decide_key_binding, KeyBindingDecision, KeyBindingMode};
-use crate::ice::IceServerConfig;
 use crate::rtc::{HostPeer, PeerInbound, PeerOutbound};
 use crate::signaling::{SignalMsg, SignalSender};
 use crate::totp::RemoteTotp;
+use ridge_core::DeviceIdentity;
 
 /// cli host 服务的固定 pane id。cli 是单 pane terminal host：controller 订阅这个
 /// 已知 paneId、对它 `write_to_pty`/`resize_pane`，host 用它给 PTY 字节打 0x10 帧。
@@ -1096,8 +1096,7 @@ mod tests {
         let roots = vec![dir.clone()];
 
         // controller 用 dir1 seal 一帧明文（已 mux 编码）。
-        let seal =
-            |ctrl: &mut CryptoSession, plaintext: Vec<u8>| ctrl.seal(&plaintext).unwrap();
+        let seal = |ctrl: &mut CryptoSession, plaintext: Vec<u8>| ctrl.seal(&plaintext).unwrap();
 
         // 1) $/hello（门控前放行）：host 应回一帧 0x11 $/hello，能力为 cli 子集。
         let hello = encode_json(&json!({
@@ -1338,14 +1337,20 @@ mod tests {
         let mut verified = true;
         let mut subscribed = false;
         let roots: Vec<PathBuf> = vec![];
-        let seal =
-            |ctrl: &mut CryptoSession, plaintext: Vec<u8>| ctrl.seal(&plaintext).unwrap();
+        let seal = |ctrl: &mut CryptoSession, plaintext: Vec<u8>| ctrl.seal(&plaintext).unwrap();
 
         // list_workspaces → 单条 {id:CLI_WORKSPACE_ID, index:0, name:null, displaySeq:0}
         let lw = encode_json(&json!({ "jsonrpc": "2.0", "id": 21, "method": "list_workspaces" }));
         let frame = seal(&mut ctrl_crypto, lw);
         RemoteSession::handle_inbound(
-            &frame, &mut host_crypto, &pty, &tx, &roots, &totp, &mut verified, &mut subscribed,
+            &frame,
+            &mut host_crypto,
+            &pty,
+            &tx,
+            &roots,
+            &totp,
+            &mut verified,
+            &mut subscribed,
             None,
         )
         .await
@@ -1356,7 +1361,9 @@ mod tests {
             Inbound::Json(b) => serde_json::from_slice(&b).unwrap(),
             other => panic!("expected Json result, got {other:?}"),
         };
-        let arr = lw_resp["result"].as_array().expect("list_workspaces 应回数组");
+        let arr = lw_resp["result"]
+            .as_array()
+            .expect("list_workspaces 应回数组");
         assert_eq!(arr.len(), 1, "cli 是单工作区 host");
         assert_eq!(arr[0]["id"], CLI_WORKSPACE_ID);
         assert_eq!(arr[0]["index"], 0);
@@ -1366,7 +1373,14 @@ mod tests {
         let gl = encode_json(&json!({ "jsonrpc": "2.0", "id": 22, "method": "get_pane_layout" }));
         let frame = seal(&mut ctrl_crypto, gl);
         RemoteSession::handle_inbound(
-            &frame, &mut host_crypto, &pty, &tx, &roots, &totp, &mut verified, &mut subscribed,
+            &frame,
+            &mut host_crypto,
+            &pty,
+            &tx,
+            &roots,
+            &totp,
+            &mut verified,
+            &mut subscribed,
             None,
         )
         .await
@@ -1407,7 +1421,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(verified, "valid totp-bind tag must unlock the control channel");
+        assert!(
+            verified,
+            "valid totp-bind tag must unlock the control channel"
+        );
         let out = drain(&mut rx);
         assert_eq!(out.len(), 1);
         match demux(&ctrl_crypto.open(&out[0]).unwrap()) {

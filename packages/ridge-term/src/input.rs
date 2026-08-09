@@ -350,7 +350,16 @@ pub fn wrap_paste(text: &str, bracketed_paste: bool) -> Vec<u8> {
 ///   - `M` for press/motion, `m` for release
 ///   - Modifier flags: +4 shift, +8 alt, +16 ctrl
 ///   - Motion flag: +32 (0x20) when `action == 2`
-pub fn encode_mouse(btn: u8, row: usize, col: usize, action: u8, shift: bool, ctrl: bool, alt: bool, _modes: &Modes) -> Vec<u8> {
+pub fn encode_mouse(
+    btn: u8,
+    row: usize,
+    col: usize,
+    action: u8,
+    shift: bool,
+    ctrl: bool,
+    alt: bool,
+    _modes: &Modes,
+) -> Vec<u8> {
     let mut b = btn;
     if shift {
         b |= 4;
@@ -531,8 +540,8 @@ mod tests {
         assert_eq!(encode(&key("Escape"), &modes()).bytes, vec![0x1b]);
     }
 
-#[test]
-fn unknown_key_returns_ignored() {
+    #[test]
+    fn unknown_key_returns_ignored() {
         let r = encode(&key("Process"), &modes()); // IME placeholder
         assert!(!r.consumed);
         assert!(r.bytes.is_empty());
@@ -642,7 +651,9 @@ fn unknown_key_returns_ignored() {
     #[test]
     fn mouse_sgr_col_precedes_row() {
         let m = Modes::default();
-        let bytes = encode_mouse(0, /*row=*/ 10, /*col=*/ 50, 0, false, false, false, &m);
+        let bytes = encode_mouse(
+            0, /*row=*/ 10, /*col=*/ 50, 0, false, false, false, &m,
+        );
         // Column 50 (+1=51) must appear before row 10 (+1=11).
         assert_eq!(bytes, b"\x1b[<0;51;11M");
     }

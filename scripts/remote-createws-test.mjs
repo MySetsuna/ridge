@@ -3,28 +3,14 @@
 // concurrent desktop on the shared workspace? switch-workspace is per-connection,
 // so a workspace this mobile client creates is NOT viewed by the other session.
 import { chromium, devices } from '@playwright/test';
-import http from 'node:http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROFILE_DIR = path.resolve(__dirname, '..', '.pw-remote-profile');
-const URL = process.env.RIDGE_URL || 'https://127.0.0.1:9528';
+const PROFILE_DIR = process.env.RIDGE_PROFILE_DIR || path.resolve(__dirname, '..', '.pw-remote-profile');
+const URL = process.env.RIDGE_URL || 'https://127.0.0.1:9527';
 const CODE = (process.env.RIDGE_CODE || '').replace(/\D/g, '').slice(0, 6);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log('[cws]', ...a);
-
-const fj = (p) => new Promise((res, rej) => { const r = http.get({ host: '127.0.0.1', port: '9222', path: p, timeout: 3000 }, (x) => { let b = ''; x.on('data', (c) => (b += c)); x.on('end', () => { try { res(JSON.parse(b)); } catch (e) { rej(e); } }); }); r.on('timeout', () => r.destroy(new Error('t'))); r.on('error', rej); });
-const targets = await fj('/json/list');
-const ridge = targets.find((t) => t.type === 'page' && typeof t.url === 'string' && (t.url.includes('tauri.localhost') || t.url.startsWith('tauri://') || t.title === 'Ridge' || t.url.includes(':1420') || t.url.includes(':5173')));
-const cdpWs = new WebSocket(ridge.webSocketDebuggerUrl);
-let cid = 0; const cwant = new Map();
-cdpWs.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (m.id && cwant.has(m.id)) { cwant.get(m.id)(m); cwant.delete(m.id); } });
-const cdpCall = (method, params) => new Promise((r) => { const i = ++cid; cwant.set(i, r); cdpWs.send(JSON.stringify({ id: i, method, params })); });
-await new Promise((r) => cdpWs.addEventListener('open', r));
-await cdpCall('Runtime.enable', {});
-const dbg = async () => (await cdpCall('Runtime.evaluate', { expression: "window.__TAURI__.core.invoke('get_remote_info')", awaitPromise: true, returnByValue: true }))?.result?.result?.value?.paneDebug || [];
-const wsOf = (pd, id) => pd.find((w) => w.ws === id);
-const ids = (pd) => pd.map((w) => w.ws);
 
 const { defaultBrowserType, ...iphone } = devices['iPhone 13'];
 const ctx = await chromium.launchPersistentContext(PROFILE_DIR, { headless: true, ignoreHTTPSErrors: true, serviceWorkers: 'block', ...iphone });
@@ -33,38 +19,71 @@ await page.goto(URL, { waitUntil: 'domcontentloaded' });
 await sleep(1500);
 if (await page.locator('input[inputmode="numeric"]').count()) { if (!CODE) { log('need RIDGE_CODE'); process.exit(3); } await page.locator('input[inputmode="numeric"]').fill(CODE); await page.locator('button').first().click(); }
 await page.waitForSelector('.app-root', { timeout: 20000 });
-await sleep(1200);
-const openTree = async () => { if (!(await page.locator('.tree-popup').count())) { await page.locator('.tree-trigger').click(); await page.waitForSelector('.tree-popup'); await sleep(150); } };
-const newWs = async () => { await openTree(); await page.locator('.tree-add').first().evaluate((el) => el.click()); await sleep(2500); };
-const newPane = async () => { await openTree(); const n = await page.locator('.pane-row').count(); await page.locator('.pane-new').first().evaluate((el) => el.click()); for (let k = 0; k < 25 && (await page.locator('.pane-row').count()) <= n; k++) await sleep(200); await sleep(800); };
+await page.waitForSelector('.tree-trigger', { state: 'visible', timeout: 20000 });
+await sleep(2500);
+const openTree = async () => {
+  const popup = page.locator('.tree-popup');
+  if (!(await popup.isVisible().catch(() => false))) {
+    await page.locator('.tree-trigger').click();
+    await popup.waitFor({ state: 'visible' });
+    await sleep(150);
+  }
+};
+const uiSnapshot = async () => {
+  await openTree();
+  return {
+    workspaceCount: await page.locator('.ws-row').count(),
+    activeIndex: await page.locator('.ws-row').evaluateAll((rows) => rows.findIndex((row) => row.classList.contains('active'))),
+    paneCount: await page.locator('.pane-row').count(),
+  };
+};
+const newWs = async () => {
+  await openTree();
+  const before = await uiSnapshot();
+  // The first action opens saved workspaces; the second creates a workspace.
+  const add = page.locator('.tree-add:not([data-testid="tree-open-saved"])');
+  await add.waitFor({ state: 'visible' });
+  await add.click();
+  for (let k = 0; k < 40 && (await page.locator('.ws-row').count()) <= before.workspaceCount; k++) await sleep(200);
+  const after = await uiSnapshot();
+  if (after.workspaceCount <= before.workspaceCount) throw new Error('create-workspace did not add a tree row');
+  if (after.activeIndex < 0) throw new Error('create-workspace did not expose an active workspace row');
+  await sleep(800);
+  return { index: after.activeIndex, before, after };
+};
+const newPane = async () => {
+  const before = await uiSnapshot();
+  if (!(await page.locator('.pane-new').count())) {
+    await page.locator('.ws-row.active .ws-chev').first().click();
+    await page.locator('.pane-new').first().waitFor({ state: 'visible' });
+  }
+  await page.locator('.pane-new').first().click();
+  for (let k = 0; k < 25 && (await page.locator('.pane-row').count()) <= before.paneCount; k++) await sleep(200);
+  const after = await uiSnapshot();
+  if (after.paneCount <= before.paneCount) throw new Error('create-pane did not add a pane row');
+  await sleep(800);
+  return { before, after };
+};
 
-// 1) create WS_A (mine, isolated) — switches this client to it
-const before = ids(await dbg());
-await newWs();
-const a = ids(await dbg()).find((x) => !before.includes(x));
-log(`WS_A=${a?.slice(0, 4)} after create: ${JSON.stringify(wsOf(await dbg(), a))}`);
-// 2) add a pane in WS_A
-await newPane();
-const aState1 = wsOf(await dbg(), a);
-log(`WS_A after +pane: L${aState1.leaves} T${aState1.terminals} orphanT=${JSON.stringify(aState1.orphanTerminals)}`);
-// 3) create WS_B → WS_A becomes the PREVIOUS workspace
-const beforeB = ids(await dbg());
-await newWs();
-const b = ids(await dbg()).find((x) => !beforeB.includes(x));
-await sleep(1500);
-const aState2 = wsOf(await dbg(), a);
-log(`WS_B=${b?.slice(0, 4)} created. WS_A (now prev): L${aState2.leaves} T${aState2.terminals} orphanT=${JSON.stringify(aState2.orphanTerminals)}`);
-const orphaned = (aState2.orphanTerminals?.length || 0) + (aState2.orphanPending?.length || 0) > 0;
-log(`RESULT: create-workspace ${orphaned ? 'DID ❌ orphan the previous (mine-only) workspace → real source bug' : 'did NOT ✅ orphan an isolated workspace → earlier orphan was the concurrent other session'}`);
+// 1) create WS_A (isolated browser session) — switches this client to it.
+const a = await newWs();
+log(`WS_A row=${a.index} after create: ${JSON.stringify(a.after)}`);
+// 2) add a pane in WS_A.
+const aPane = await newPane();
+log(`WS_A after +pane: ${JSON.stringify(aPane.after)}`);
+// 3) create WS_B, then switch back to WS_A and assert its pane remains.
+const b = await newWs();
+log(`WS_B row=${b.index} after create: ${JSON.stringify(b.after)}`);
+await page.locator('.ws-row').nth(a.index).click();
+await sleep(1200);
+const aReturned = await uiSnapshot();
+const orphaned = aReturned.paneCount < aPane.after.paneCount;
+log(`WS_A after switch-back: ${JSON.stringify(aReturned)}`);
+log(`RESULT: create-workspace ${orphaned ? 'DID ❌ lose the previous workspace pane' : 'did NOT ✅ lose the previous workspace pane'}`);
 
 // cleanup: close WS_A and WS_B (best effort)
 try {
   await openTree();
-  for (const w of [a, b]) {
-    const nm = wsOf(await dbg(), w);
-    if (!nm) continue;
-  }
 } catch {}
-await cdpWs.close?.();
 await ctx.close();
 process.exit(orphaned ? 1 : 0);

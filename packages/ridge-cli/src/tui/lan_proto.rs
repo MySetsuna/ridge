@@ -136,7 +136,13 @@ mod tests {
         assert_eq!(v["cols"], 80);
         assert_eq!(v["seq"], 3);
 
-        assert_eq!(serde_json::from_str::<Value>(&ping()).unwrap()["type"], "ping");
-        assert_eq!(serde_json::from_str::<Value>(&list_panes()).unwrap()["type"], "list-panes");
+        assert_eq!(
+            serde_json::from_str::<Value>(&ping()).unwrap()["type"],
+            "ping"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&list_panes()).unwrap()["type"],
+            "list-panes"
+        );
     }
 }

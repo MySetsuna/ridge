@@ -492,19 +492,97 @@ impl<'a> Perform for Performer<'a> {
                     let code = first_param(params, 0) as u16;
                     let ps: u8 = match code {
                         // Modes Wind models with mutable state
-                        7 => if self.modes.autowrap { 1 } else { 2 },
-                        25 => if self.modes.cursor_visible { 1 } else { 2 },
-                        12 => if self.modes.cursor_blink { 1 } else { 2 },
-                        6 => if self.modes.origin { 1 } else { 2 },
-                        1 => if self.modes.app_cursor_keys { 1 } else { 2 },
-                        9 => if self.modes.mouse_x10 { 1 } else { 2 },
-                        1000 => if self.modes.mouse_normal { 1 } else { 2 },
-                        1002 => if self.modes.mouse_button_event { 1 } else { 2 },
-                        1003 => if self.modes.mouse_any_event { 1 } else { 2 },
-                        1004 => if self.modes.mouse_focus { 1 } else { 2 },
-                        1006 => if self.modes.mouse_sgr { 1 } else { 2 },
-                        2004 => if self.modes.bracketed_paste { 1 } else { 2 },
-                        2026 => if self.modes.sync_output { 1 } else { 2 },
+                        7 => {
+                            if self.modes.autowrap {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        25 => {
+                            if self.modes.cursor_visible {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        12 => {
+                            if self.modes.cursor_blink {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        6 => {
+                            if self.modes.origin {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1 => {
+                            if self.modes.app_cursor_keys {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        9 => {
+                            if self.modes.mouse_x10 {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1000 => {
+                            if self.modes.mouse_normal {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1002 => {
+                            if self.modes.mouse_button_event {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1003 => {
+                            if self.modes.mouse_any_event {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1004 => {
+                            if self.modes.mouse_focus {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1006 => {
+                            if self.modes.mouse_sgr {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        2004 => {
+                            if self.modes.bracketed_paste {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        2026 => {
+                            if self.modes.sync_output {
+                                1
+                            } else {
+                                2
+                            }
+                        }
                         // §B.6 — Mode 2027 advertised PERMANENT-SET
                         // (Ps=3) so apps know they can rely on it for
                         // the lifetime of the connection. Even if some

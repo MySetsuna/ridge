@@ -1163,6 +1163,70 @@
 - Boundary: One authenticated transport remains the source of truth; no second WebSocket/WebRTC connection, unbounded output/history queue, protocol rewrite, global TUI mouse disable, or hidden error. Direct open applies only to a positively hit and validated link/path on primary click; non-link and secondary/drag gestures retain existing semantics. Active input/control preempts low-priority render/history work; all queues and retained resources remain bounded and cancellable.
 - Acceptance: Link decision tests prove bare primary click opens URL/path with and without keyboard focus while non-link/TUI/selection paths remain correct. Input tests prove same-turn enqueue, FIFO ordering, bounded queue, and no render-flood starvation. Pane-switch tests prove A→B→A shows the latest tail before or with first paint without full replay and accepts a keystroke. Diagnostics expose per-stage latency/bytes/queue depth and a reproducible report identifies the dominant limiter. Full Remote regression and `pnpm check` pass.
 - Traceability: `REQ-REMOTE-LINK-FLUIDITY-01` → `REQ-REMOTE-SMOOTH-STATE-02` / `REQ-REMOTE-RUNTIME-PERF-MEMORY-02` → link/input/pane transport changes → deterministic tests + public/mobile soak → iteration archive.
+
+### REQ-NLM-ITERATION-01 · NLM 愿景与未修复问题迭代闭环
+
+- Approval evidence:`批准`
+- Status:`ACTIVE`
+- Version:`v1`
+- Behavior:`从 NLM 对话/愿景提取候选项，经本地代码、CodeGraph、运行测试核验后，逐项完成已批准的实现与 bug 修复；当前范围覆盖 pane、ridge-term、workspace、Remote 接入及其测试/质量工作流。`
+- Boundary:`NLM transcript 仅作候选假设，不作需求或验收；保留当前 dirty worktree；不写入/删除/上传 NLM source/note；不执行 git push、tag、Release、Remote/Cloud 激活；不代替用户完成物理设备、公网 TURN、双真实窗口等用户轨验证；现有 Active REQ、协议/E2EE/TOTP 与发布授权闸不擅改。`
+- Acceptance:`request/intake 通过 requirements_gate；每个实现项有对应 CodeGraph trace、测试命令与退出码；全量测试/check、Sonar 新问题为 0/Quality Gate OK、适用 E2E 通过；未满足项进入本地下一轮证据清单。`
+- Traceability:`REQ-NLM-ITERATION-01 → NLM read-only candidate → local symbol/path → unit/integration/E2E evidence → iteration archive`
+
+### REQ-NLM-CLOSURE-20260809 · 现场验收与下一轮 NLM 愿景闭环
+
+- Approval evidence:`用户明确要求将 Sonar 测试覆盖率提升到 80% 以上并纳入下一迭代目标。`
+- Status:`ACTIVE`
+- Version:`v1`
+- Behavior:`闭环 Cloud/Postgres 真实 E2E、物理 DPR 验收、Windows 跨卷权限现场、移动端新 profile 问题与 Sonar 覆盖率基线；随后从 NotebookLM 来源、Note、近期及新发起对话提取下一批候选愿景/bug，经本地代码与运行证据核验后落地，并完成对应测试与质量流程。`
+- Boundary:`不执行 git push、tag、Release、Remote/Cloud 发布或激活；不向 NotebookLM 写入/删除/上传 source/note；保留用户既有 dirty worktree；真实现场项必须有运行产物或明确阻塞证据，不以单测替代物理验收。`
+- Acceptance:`request/intake 与 requirements_gate 通过；Cloud/Postgres、DPR、跨卷权限、mobile profile、Sonar baseline 各有匹配的运行/扫描证据；下一批 NLM 候选有来源或明确无来源记录、CodeGraph trace、实现 diff、目标测试；全量测试/check、CodeGraph 复核、Sonar 复扫与迭代归档完成。
+- Traceability:`REQ-NLM-CLOSURE-20260809 → local intake → NLM read-only candidate → runtime/CodeGraph evidence → implementation → test/quality evidence → iteration archive`
+
+### REQ-SCM-GIT-SCAN-DEPTH-01 · Git discovery hard cap
+
+- 批准依据:`用户预审批通过；NLM 对话 a47d3199-c1f9-47f1-927c-ff2c4875b77d 第 10 轮明确提出`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 行为:`find_git_repos_below` 保留协议参数兼容性，但实际向下扫描深度永远不超过 1；调用方传入更大值或省略值均不得触发 deep scan。
+- 边界:仅约束 SCM 仓库发现；不改变 Git 根向上解析、已命中仓库内部不递归、跳过大型目录及并发/超时/进程生命周期护栏。
+- 验收:直接子目录仓库可发现；二级及更深仓库在 `Some(2)`、`Some(99)`、`None` 下均不可发现；SourceControl 传入深度 1。
+- 追踪:`REQ-SCM-GIT-SCAN-DEPTH-01` → `find_git_repos_below_sync` → SourceControl → Rust/TS tests
+
+### REQ-SCM-PANE-ROOT-PILL-01 · Pane branch pill follows cwd Git root
+
+- 批准依据:`用户预审批通过；NLM 对话 a47d3199-c1f9-47f1-927c-ff2c4875b77d 第 10 轮明确提出`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 行为:pane 的 branch/diff pill 仅展示 `find_git_repo_root(cwd)` 返回的自身或祖先 Git 根；cwd 非 Git 仓库时，即使其子孙目录含仓库，也不得展示子孙分支 pill。
+- 边界:不改变 SourceControl 全局侧栏对工作区仓库的独立发现；不按 UI 本地猜测 Git 根；pane 选择状态不得跨 cwd/root 泄漏。
+- 验收:非 Git 父目录含多个子仓库时 pane store 为 `null`；Git 仓库子目录解析到祖先根且 `availableRepos` 仅含该根；离开仓库立即清空 pill；确定性 Vitest 覆盖上述分支。
+- 追踪:`REQ-SCM-PANE-ROOT-PILL-01` → `find_git_repo_root` → `resolveInfoForPane` → PaneGitPill/PaneDiffPill → Vitest
+
+### REQ-SONAR-COVERAGE-80-01 · Sonar 全项目测试覆盖率 ≥80%
+
+- Status:`ACTIVE`
+- Version:`v1`
+- Approval evidence:`用户明确要求将 Sonar 测试覆盖率提升到 80% 以上并纳入下一迭代目标。`
+- Behavior:`下一迭代建立可复现的 Sonar coverage 基线，补齐测试并使 Sonar 项目级测试覆盖率（非仅 new_coverage）达到至少 80%。`
+- Boundary:`覆盖率提升须由真实 Sonar 扫描与 Quality Gate/API 结果证明；不得以受限文件扫描、局部 new-code coverage、静态估算或排除未测代码冒充全项目达标；保留既有 dirty worktree，不借机改写历史基线。`
+- Acceptance:`扫描退出成功；Sonar project status 为 OK；coverage >= 80.0%；扫描输入、测试命令、覆盖率报告、项目级指标与失败原因均留有脱敏证据；若本轮受环境/基线阻塞，须记录差距分解，不得宣称完成。`
+- Current iteration evidence:`完整扫描 scanner/CE 均 SUCCESS，802 文件；Sonar coverage 40.3%、line 41.2%、branch 38.9%，Quality Gate ERROR（new_coverage 47.6%、new_violations 133）。证据：docs/iterations/2026-08-09-sonar-full-scan-evidence.md；故本需求仍 ACTIVE。`
+- Traceability:`REQ-SONAR-COVERAGE-80-01 → coverage baseline → uncovered-code test waves → Sonar scan/Quality Gate → iteration archive`
+
+### REQ-AGENT-COMMUNICATION-ARCH-REBUILD-01 · Agent 通信架构重构：Kernel/Teammate 权威、类型化消息与跨端一致投影
+
+- Status:`ACTIVE`
+- Version:`v1`
+- Approval evidence:`用户明确要求深化 NotebookLM 笔记“Ridge 项目现状、愿景与规划基线（2026-07-21）”中的来源“Agent 通信架构重构”，并将其归纳为一个详尽需求。`
+- Source evidence:`NotebookLM source 9516749e-c317-4f13-9cda-b64b00cec465（Agent 通信架构重构）；关联笔记 66919cb9-1329-4ddf-955c-f426d15a9fe6；临时对话 source df4d5dcc-9813-4c61-ae9f-1e9199cb7555，关联笔记 f6ffd900-708d-44ee-9818-1a3269c533fc，作为同等重点来源。临时来源补充 cookie/API 边界、MIME/大小/SHA256、轮询/重试上限、token/cookie 脱敏与取消穿透约束。NLM 仅作候选与架构假设，代码、测试、运行事实为最终依据。`
+- Behavior:`将 Agent 的身份、生命周期、通信、历史、恢复、编组与状态投影收敛为一个 Kernel/Teammate 权威的通信平面；桌面、Remote、rdg CLI、ridge-mcp 与 headless host 均通过同一契约访问，禁止 UI、CWD、pane 标题或单一 Tauri invoke 路径自行推断身份或维护第二份事实。Domain model：(1) 稳定 Agent identity 必须至少包含 agent_id、session_id、workspace_id、pane_id、CWD、executable/argv、lifecycle generation、lease、status、online、last_seen、capabilities；(2) 生命周期采用可观测状态机 discovered → spawning/attaching → online → working/waiting/attention → completed/stopped/failed，创建仅在 spawn/attach 成功后提交，销毁仅在 destroy/lease closure 成功后提交，部分失败保留 diagnostic-only 记录；(3) 每次重连/复用递增 generation 并以 lease fencing 拒绝旧 Agent 的迟到消息；(4) 编组成员、leader、顺序、加入/移除均以显式 group_id 与 agent_id 维护，不按标题/CWD 猜测；(5) 所有 task/event/control/artifact/reply 进入统一 envelope，至少包含 message_id、idempotency_key、conversation/task_id、from/to identity、workspace/pane、generation/lease、kind、sequence、timestamp、priority、deadline/cancellation、payload/artifact 引用、ack/nack 与 typed error；(6) 发送前取得有界 roster 快照并校验 target identity、generation、lease、online，过期时最多一次有界刷新，随后单次发送或返回 missing/offline/stale/generation_mismatch/capability_denied/timeout 等稳定错误；(7) Kernel/Teammate service 为 SSOT，ridge-mcp、rdg CLI、桌面 AgentCenter/Commune、Remote roster/history 与 headless API 均为适配器/投影，复用同一 identity/lifecycle/routing/ack/error/idempotency 语义；(8) 通信、恢复、历史、PTY/渲染回调均有界、可取消、可观测，输入/控制/HITL 优先于 history/render，恢复 single-flight，销毁取消 pending RPC/timer/listener/worker/queue，重连不得向旧 generation 交付；(9) 历史为独立 cold path，按稳定 identity/session_id 分组，失败局部可见；恢复使用结构化 executable/argv/CWD/session identity，不拼接未经转义 shell 字符串；(10) 桌面与 Remote 对同一状态显示相同 status/label/attention/aria-label/identity/history 语义，跨 workspace 必须携带 workspace_id；(11) 入口校验 workspace/agent/generation/lease、能力与权限，日志不得记录 cookie/token/浏览器存储或未脱敏敏感 payload，并暴露 trace_id/message_id、ack latency、queue depth、cancel、stale rejection、teardown residue 与恢复结果。`
+- Source-derived design details:`MCP 保留为通信控制面，不再直接写 PTY；Message Hub 负责 inbox/topic/task/event/artifact 与 delivery，第一阶段可采用 Rust + SQLite 持久化、内存事件总线/WebSocket，业务模型不得与具体 NATS 实现耦合。MCP 工具契约至少覆盖 ridge_send_message、ridge_create_task、ridge_publish_event、ridge_fetch_inbox、ridge_task_update、ridge_list_agents；工具返回 message/task/delivery ID 与 typed error，不返回“已写入终端”即算完成。投递优先级固定为 Runtime API/SDK/app-server/HTTP/ACP → A2A（跨系统/远程）→ MCP pull → PTY fallback；来源中对各 CLI 官方接口的判断须在本仓以 capability probe/运行证据复核，不得硬编码未经验证的能力。PTY 仅在 agent.status=idle、terminal.mode=agent_prompt、pending_approval=false、shell_foreground_process=target_agent 且无用户输入竞争时尝试，记录 delivery_adapter=pty、delivery_reliability=best_effort；否则保留 Inbox，取消/退避，不打断用户。消息进入 Hub 与 Agent 开始处理必须分离，UI 关闭后 Hub/任务/订阅仍可恢复；A2A 只作外部适配器，不替代内部高频事件总线。迁移分三阶段：先剥离 MCP→PTY 建立 Hub pipeline，再建立 Agent Runtime 状态矩阵与 Delivery Engine，最后接入 A2A/跨系统 Artifact。`
+- Boundary:`范围包括 packages/ridge-kernel、packages/ridge-mcp、src-tauri/src/teammate、rdg/teammate adapters、src/lib/teammate、AgentCenter/Commune、src/remote Agent roster/history/group surfaces、共享 DTO 与确定性测试；复用现有 PTY、pane、workspace-singleton、Remote transport、capability/process-guard、E2EE/TOTP 合同；不新增 UI-local identity directory，不按标题/CWD 猜测 Agent，不改变 Remote wire protocol，不绕过 Kernel/capability/process guard，不写回第三方 session 历史，不引入无界 retry、silent respawn 或第二持久化事实源。`
+- Acceptance:`(1) CodeGraph trace 覆盖 Kernel registry/lifecycle → ridge-mcp/rdg adapters → desktop/Remote projections → tests；(2) deterministic tests 证明成功 create/destroy 各一次、spawn/attach/destroy 失败不产生错误 active entry、旧 generation/lease/离线目标在发送前拒绝、一次 refresh 不重复 spawn、相同 idempotency_key 并发发送只产生一条消息、取消/销毁后 pending/timer/listener/worker/queue 归零；(3) 多 Agent、多 workspace、多 CWD、多 session 的 desktop/Remote/headless fixture 证明 identity 不依赖标题/CWD，group CRUD、leader、顺序、history tab 与 status/aria-label 同源；(4) history cold scan 不阻塞 live roster/input，损坏超大 JSONL 局部失败且可诊断，resume 结构化恢复在当前 workspace 创建唯一 pane，重复操作单飞；(5) ridge-mcp 在无 Tauri 桌面时可 initialize/tools/list 并执行至少一种 roster/communication 工具，Kernel 退出后返回可观察 typed failure；(6) 实际或等价 multi-Agent E2E 覆盖 create→communicate→ack→reconnect generation→destroy，证明无重复、无旧消息投递、无 pending 泄漏；(7) 全量测试/check、相关 Rust/TypeScript/Remote 回归与 Sonar 质量闸通过，新增问题为 0，失败原因与运行产物留档。`
+- Current iteration evidence:`Kernel/Teammate SSOT、typed envelope、generation/lease fencing、SQLite Hub、MCP tools、adapter probe/priority/outcome、desktop/Remote projections 与 lifecycle E2E 已有确定性证据；Kernel/桌面/headless 已接入容量 256、try_send、generation/lease fencing 的 host-owned Runtime API/A2A in-process delivery registry，Kernel PTY destroy 会注销被移除 identity 的路由；跨进程真实 A2A/Runtime endpoint、PTY 五条件原子运行时证明及 Sonar 80%/Gate 仍未闭环。最新测试与差距见 docs/iterations/2026-08-09-agent-communication-qa-handoff.md 与 docs/iterations/2026-08-09-agent-communication-wave15-handoff.md。`
+- Traceability:`REQ-AGENT-COMMUNICATION-ARCH-REBUILD-01 → NLM source 9516749e-c317-4f13-9cda-b64b00cec465 → Kernel/Teammate SSOT → typed envelope/lifecycle/registry → ridge-mcp/rdg/desktop/Remote/headless adapters → deterministic unit/integration/multi-Agent E2E → Sonar/iteration archive`
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
