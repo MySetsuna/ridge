@@ -395,6 +395,67 @@ describe('fileEditorStore public state and lifecycle APIs', () => {
     expect(mockInvoke).toHaveBeenCalledTimes(callsBeforeDiffChange);
   });
 
+  it('fails closed across reload, binary, external, save, and revert error paths', async () => {
+    await fileEditorStore.openFile('/p/reload.ts');
+    mockInvoke.mockResolvedValueOnce({ content: 'from-disk', is_binary: false, size: 9 });
+    await fileEditorStore.openFile('/p/reload.ts');
+    expect(get(fileEditorStore).openFiles[0]).toMatchObject({
+      content: 'from-disk', originalContent: 'from-disk', isDirty: false,
+    });
+
+    mockInvoke.mockResolvedValueOnce({ content: '', is_binary: true, size: 4 });
+    await fileEditorStore.openFile('/p/reload.ts');
+    expect(get(fileEditorStore).openFiles[0].content).toBe('from-disk');
+
+    mockInvoke.mockRejectedValueOnce(new Error('read denied'));
+    await fileEditorStore.openFile('/p/reload.ts');
+    expect(get(fileEditorStore).activePath).toBe('/p/reload.ts');
+
+    mockInvoke.mockRejectedValueOnce(new Error('open denied'));
+    await fileEditorStore.openFile('/p/fail.ts');
+    expect(mockAlertDialog).toHaveBeenCalledWith(expect.objectContaining({ title: '打开文件失败' }));
+
+    await fileEditorStore.openFile('/p/external-bin.ts');
+    mockInvoke.mockResolvedValueOnce({ content: '', is_binary: true, size: 1 });
+    await fileEditorStore.handleExternalChange('/p/external-bin.ts');
+    expect(get(fileEditorStore).openFiles.find((f) => f.path === '/p/external-bin.ts')?.external).toBeUndefined();
+
+    fileEditorStore.updateContent('/p/external-bin.ts', 'dirty');
+    mockInvoke.mockRejectedValueOnce(new Error('gone again'));
+    await fileEditorStore.revertActive();
+    expect(mockAlertDialog).toHaveBeenCalledWith(expect.objectContaining({ title: '重载失败' }));
+
+    fileEditorStore.setActive('/p/external-bin.ts');
+    fileEditorStore.updateContent('/p/external-bin.ts', 'dirty-save');
+    mockInvoke.mockRejectedValueOnce(new Error('write denied'));
+    await fileEditorStore.saveFile('/p/external-bin.ts');
+    expect(mockAlertDialog).toHaveBeenCalledWith(expect.objectContaining({ title: '保存失败' }));
+  });
+
+  it('covers browser image URLs and no-op/invalid lifecycle requests', async () => {
+    mockIsTauri.mockReturnValue(false);
+    await fileEditorStore.openFile('C:\\work\\preview.PNG');
+    expect(get(fileEditorStore).openFiles[0]).toMatchObject({
+      isImage: true, imageUrl: 'file:///C:/work/preview.PNG',
+    });
+    fileEditorStore.show();
+    fileEditorStore.hide();
+    fileEditorStore.setActive('/missing');
+    fileEditorStore.reorder(-1, 0);
+    fileEditorStore.setOrder(['/missing']);
+    await fileEditorStore.closeFile('/missing');
+    await fileEditorStore.closeOthers('C:\\work\\preview.PNG');
+    await fileEditorStore.closeToRight('C:\\work\\preview.PNG');
+    fileEditorStore.closeSaved();
+    expect(get(fileEditorStore).openFiles).toHaveLength(0);
+
+    await fileEditorStore.openFile('C:\\work\\preview.PNG');
+    fileEditorStore.updateContent('C:\\work\\preview.PNG', 'changed');
+    mockConfirmDialog.mockResolvedValueOnce(false);
+    await fileEditorStore.closeAll();
+    expect(get(fileEditorStore).openFiles).toHaveLength(1);
+  });
+
   it('uses local browser save/revert paths without Tauri commands', async () => {
     mockIsTauri.mockReturnValue(false);
     await fileEditorStore.openFile('/p/browser.ts');
