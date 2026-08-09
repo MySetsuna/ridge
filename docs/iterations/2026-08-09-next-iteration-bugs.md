@@ -198,7 +198,7 @@ Status: closed in fixture. `cdp-cloud-seed.mjs` now defaults to `ridge_cloud_e2e
 
 ### BUG-E2E-DPR-STARTUP-RACE-02
 
-Status: open, cold-start evidence. At forced WebView2 `dpr=2`, the first probe waited `120s` and saw `canvases=[]`; after the pane had mounted, the same probe passed with `dpr=2` and `3/3` backing canvases. Next iteration must measure app-ready → pane attach → first canvas and make the acceptance probe distinguish slow readiness from renderer failure.
+Status: partial, harness guard added. The desktop page now publishes a persistent `window.__ridgeAppReady` marker at the existing workspace readiness boundary; `scripts/cdp-dpr-e2e.mjs` waits for that marker before a separate bounded renderer wait, so a cold startup timeout is classified as app-readiness failure rather than renderer failure. Real WebView2 `dpr=2` cold-start evidence and app-ready → first-canvas timing remain required.
 
 ### BUG-MOBILE-PWA-TRUSTED-HTTPS-01
 
