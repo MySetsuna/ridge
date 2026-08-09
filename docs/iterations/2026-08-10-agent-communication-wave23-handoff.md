@@ -99,3 +99,10 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - `scripts/cdp-dpr-e2e.mjs` 拆分 app-ready 与 renderer 两段有界等待，分别记录 readiness timeout 与 backing-canvas timeout；默认各 `60s`，可由 `RIDGE_DPR_APP_READY_TIMEOUT_MS`、`RIDGE_DPR_RENDERER_TIMEOUT_MS` 调整。
 - 本波只改变失败分类与探针观测，不把无 canvas 判为通过；真实 WebView2 `dpr=2` 冷启动复跑仍未执行，BUG-E2E-DPR-STARTUP-RACE-02 保持 partial。
 - 受控复跑：读取现存 CDP 端口 `2393` 后，`/json/list` 无 Ridge page，探针在找页阶段 exit `1`（日志：`.iteration/artifacts/cdp-dpr-wave32.log`），未生成截图；这是 stale/no-page 运行态阻塞，不作为 DPR 通过或产品失败证据。
+
+## Wave33 覆盖率与 Sonar 环境复核
+
+- 重跑 `pnpm test:coverage:sonar` 成功：`187` 个测试文件，`1756 passed / 1 skipped`；日志输出含既有 `.mjs` `PARSE_ERROR`，这些脚本由 coverage provider 排除，不能等同 Sonar 扫描通过。
+- 当前本地 V8/LCOV：statements `11265/18537 = 60.77%`、branches `6255/11542 = 54.19%`、functions `2195/3527 = 62.23%`、lines `10179/15831 = 64.29%`；距 80% 尚缺 `7272` 条 statements。该数字仅作补测基线，不替代 Sonar project metric。
+- 本机复核：`SONAR_TOKEN_PRESENT=False`、`SONAR_HOST_URL_PRESENT=False`，未发现 `sonar-scanner` 或 `sonar` 命令；故本波无法执行真实 Sonar scan/CE/Quality Gate，也不宣称 `REQ-SONAR-COVERAGE-80-01` 完成。
+- 本波工作树另有既存运行态/coverage 产物及 `sonar-project.properties`、`tsconfig.json` 改动；未将其混入本波提交，按保留 dirty worktree 规则交还。
