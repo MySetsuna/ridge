@@ -699,24 +699,25 @@ describe('renderWorker.handleRequest — Renderer adapter wiring (p4.8)', () => 
 	it('does not repaint a replayed frame after a newer frame was accepted', () => {
 		const { state, mocks } = initAndBind();
 		mocks.renderer.render.mockClear();
-		const accepted = handleRequest(state, {
+		const trace = [
+			{ frameId: 1, byte: 1 },
+			{ frameId: 2, byte: 2 },
+			{ frameId: 4, byte: 4 },
+			{ frameId: 3, byte: 3 },
+			{ frameId: 4, byte: 4 },
+		];
+		const replies = trace.map(({ frameId, byte }) => handleRequest(state, {
 			type: 'applyDelta',
 			paneId: PANE,
-			bytes: new Uint8Array([2]),
-			frameId: 2,
-		}, mocks.adapter);
-		const renderCallsAfterAccepted = mocks.renderer.render.mock.calls.length;
-		const stale = handleRequest(state, {
-			type: 'applyDelta',
-			paneId: PANE,
-			bytes: new Uint8Array([1]),
-			frameId: 1,
-		}, mocks.adapter);
-		expect(accepted).toMatchObject({ type: 'ready', paneId: PANE });
-		expect(stale).toMatchObject({ type: 'ready', paneId: PANE });
-		expect(mocks.renderer.render).toHaveBeenCalledTimes(renderCallsAfterAccepted);
-		expect(mocks.kernel.applyDeltaFrame).toHaveBeenCalledTimes(1);
-		expect(getPaneState(state, PANE)?.lastAppliedFrameId).toBe(2);
+			bytes: new Uint8Array([byte]),
+			frameId,
+		}, mocks.adapter));
+		const renderCallsAfterTrace = mocks.renderer.render.mock.calls.length;
+		expect(replies).toHaveLength(trace.length);
+		expect(replies.every((reply) => reply.type === 'ready' && reply.paneId === PANE)).toBe(true);
+		expect(renderCallsAfterTrace).toBe(3);
+		expect(mocks.kernel.applyDeltaFrame).toHaveBeenCalledTimes(3);
+		expect(getPaneState(state, PANE)?.lastAppliedFrameId).toBe(4);
 	});
 
 	it('bind configures real metrics; resize drives kernel, surface, then render', () => {
