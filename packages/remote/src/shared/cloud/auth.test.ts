@@ -15,6 +15,8 @@ const mockApi = {
   deviceCode: vi.fn(),
   deviceActivate: vi.fn(),
   devicePoll: vi.fn(),
+  authRequest: vi.fn(),
+  authPoll: vi.fn(),
   ApiError: class ApiError extends Error {
     constructor(public code: string, message: string) { super(message); }
   },
@@ -53,6 +55,8 @@ beforeEach(() => {
   mockApi.deviceCode.mockReset();
   mockApi.deviceActivate.mockReset();
   mockApi.devicePoll.mockReset();
+  mockApi.authRequest.mockReset();
+  mockApi.authPoll.mockReset();
   auth.cloudAuth.set({ userToken: null, user: null, deviceToken: null, deviceName: null });
 });
 
@@ -123,5 +127,44 @@ describe('cloud auth state predicates and persistence', () => {
     expect(progress).toEqual([{ pairingCode: 'PAIR', expiresIn: 60 }]);
     expect(mockApi.deviceActivate).toHaveBeenCalledWith('u', 'PAIR', 'laptop');
     expect(get(auth.cloudAuth).deviceName).toBe('laptop');
+  });
+
+  it('completes browser login through a wake-up poll and rejects expired authorization', async () => {
+    mockApi.authRequest.mockResolvedValue({
+      request_code: 'REQ', poll_token: 'POLL', authorize_url: 'https://ridge.example/auth', expires_in: 60, interval: 1,
+    });
+    let wake!: () => void;
+    mockApi.authPoll
+      .mockImplementationOnce(async () => {
+        setTimeout(() => wake?.(), 0);
+        return { status: 'pending' };
+      })
+      .mockResolvedValueOnce({ status: 'approved', token: 'browser-token', user });
+    const progress: unknown[] = [];
+    await expect(auth.loginViaBrowser({
+      onProgress: (value) => progress.push(value),
+      onWake: (callback) => { wake = callback; return () => { wake = undefined!; }; },
+    })).resolves.toMatchObject({ userToken: 'browser-token' });
+    expect(progress).toEqual([{ authorizeUrl: 'https://ridge.example/auth', requestCode: 'REQ' }]);
+
+    mockApi.authRequest.mockResolvedValue({
+      request_code: 'REQ2', poll_token: 'POLL2', authorize_url: 'https://ridge.example/auth2', expires_in: 60, interval: 1,
+    });
+    mockApi.authPoll.mockResolvedValue({ status: 'expired' });
+    await expect(auth.loginViaBrowser()).rejects.toMatchObject({ code: 'AUTH_REQUEST_EXPIRED' });
+  });
+
+  it('fills a missing cached username from device binding and handles malformed persisted user data', async () => {
+    storage['ridge.cloud.user'] = '{malformed';
+    expect(auth.snapshot().user).toBeNull();
+    auth.cloudAuth.set({ userToken: 'u', user: { ...user, username: null }, deviceToken: null, deviceName: null });
+    storage['ridge.cloud.userToken'] = 'u';
+    mockApi.deviceCode.mockResolvedValue({ pairing_code: 'PAIR', poll_token: 'POLL', expires_in: 60 });
+    mockApi.deviceActivate.mockResolvedValue(undefined);
+    mockApi.devicePoll.mockResolvedValue({ status: 'bound', token: 'device-token', device_name: 'laptop', username: 'bound-user' });
+    await expect(auth.activateThisDevice('laptop')).resolves.toMatchObject({
+      deviceToken: 'device-token',
+      user: { username: 'bound-user' },
+    });
   });
 });

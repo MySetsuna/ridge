@@ -138,7 +138,10 @@ const PROBE = `(() => {
   return { mountedWorkspaces: tabs, mountedPanes: panes, canvases };
 })()`;
 
-async function waitForMounted(cdp, maxMs = 30_000) {
+// Cold Tauri + WebGPU startup can exceed 30s while the dev sidecar and Vite
+// graph warm up. Keep probing instead of turning a cold-start race into a
+// multitab regression.
+async function waitForMounted(cdp, maxMs = 90_000) {
   const deadline = Date.now() + maxMs;
   let last = null;
   while (Date.now() < deadline) {

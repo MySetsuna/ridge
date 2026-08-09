@@ -249,3 +249,38 @@ Status: local contracts already present; external lifecycle/field proof remains 
 - Async query `e172bd743e38` returned five candidates: deep-root kernel lifecycle, Message Hub delivery, structured Agent history/resume, cross-volume Explorer continuity, and kernel-owned domain SSOT. It reused the existing conversation ID; no new chat or note mutation is claimed.
 - CodeGraph found `AgentResumeSpec`, native session aggregation, exact identity/CWD binding, `KernelHost`, and `kernel_lifecycle_e2e`. The kernel lifecycle integration test passed `3/3`; the history parser and grouping tests are present. This iteration adds no speculative architecture rewrite.
 - Open acceptance remains: actual desktop-shell exit with kernel survival/reattach, live Message Hub delivery while a CLI is busy, physical cross-volume mid-operation ACL injection, and proof that every domain path is callable after the desktop shell exits.
+
+## 2026-08-10 real dev:cdp rerun
+
+- Fresh dev instance CDP `4515` / Vite `12865`: CDP smoke passed; physical WebView2 DPR was `1`, with `1` backing canvas; cross-volume copy-success/source-delete-denied preserved the source and copied the destination.
+- `scripts/cdp-pty-parsers.mjs` had two harness defects: repeated `panes` snapshots could resubscribe and move the marker command to another pane, and the target filter rejected the dynamic Vite port. The script now drives once and accepts any loopback port. A stable post-fix PTY parser rerun is still required.
+- Mobile E2E now passes `workspaceId` explicitly to `write_to_pty`; before this, a pane could pass scrollback readiness and then fail `Pane not found` on write. The next run reached real LAN verification, workspace/pane projection, headless capability rejection, and shell picker, but the in-app WebView2 target detached during the roster probe after navigating the Tauri page to the remote HTTPS page; no mobile UI pass is claimed.
+
+### BUG-MOBILE-CDP-NAV-LIFECYCLE-01
+
+Status: closed as harness defect. The script now supports a separate external Chrome CDP target with bounded commands and explicit socket cleanup. The fresh external-target rerun completed the authenticated mobile SPA/data-plane and reached the shell gate; the former Tauri-WebView2 detach is no longer the active path.
+
+## 2026-08-10 final dev:cdp evidence wave
+
+- Cloud/Postgres full E2E passed on the fresh dev instance: authenticated host, `pane/invoke/fs/git/search/workspace/theme/teammate` capabilities, three paged directory reads, enforced keybinding mode, and expected host offline cleanup.
+- Physical desktop gates passed: WebView2 DPR `1`, two backing canvases; cross-volume copy completed, source-delete ACL rejected with Windows error 5, destination preserved; pane tree split/close and LAN broadcasts passed; teammate E2E `7/7`; multitab freeze passed with workspace counts `1 → 2 → 3`, worst long task `13ms`.
+- Live PTY parser E2E passed after the harness waited for long PowerShell input echo: `10` binary frames, `4` `pty-meta` frames, UTF-8 decode, OSC 2 title, and OSC 7 CWD all passed. The earlier `6.5s` cutoff was a test harness race, not a parser loss.
+- Mobile harness now uses kernel layout as the pane source of truth, retries the writer through the scrollback/live-handle gap, supports a separate external Chrome CDP target, bounds CDP calls, and closes both desktop/mobile sockets. The fresh external Chrome rerun loaded the authenticated mobile SPA/data plane; headless host correctly advertised no teammate capability; shell picker rendered 9 items and Git Bash switching changed `shell_kind` to `C:\WINDOWS\system32\bash.exe`; `GATE: PASS`. The earlier empty-list run was a harness/slow-response observation, not retained as a product failure.
+
+### BUG-MOBILE-SHELL-RPC-TIMEOUT-01
+
+Status: closed by external rerun. The prior run hit the 30-second `ws.listShells()` timeout while the host response arrived late. With the external clean-browser target and corrected lifecycle/activation harness, the UI rendered all 9 shell items; the same host-side `detect_available_shells` response was correlated and Git Bash switching was verified through the snapshot. No production transport change was justified.
+
+Remaining acceptance gaps: physical multi-DPR matrix, mid-operation cross-volume ACL injection, and desktop-shell exit with kernel reattach.
+
+## Sonar final monitor / scan evidence (2026-08-10)
+
+- Local SonarQube `26.7.0.124771` remains `UP`; session-authenticated monitor reports project coverage `56.7%`, line `57.0%`, branch `54.2%`, violations `835`, Quality Gate `ERROR` (`new_coverage=64.9%`, `new_violations=130`). These are server metrics, not local LCOV.
+- Fresh authenticated scanner submission created CE task `5c57440f-6f4b-40a7-8568-dec11c91e6af`, but CE failed while indexing `projectmeasures`: Elasticsearch flood-stage watermark set the index read-only; server logs reported only about `6.8%` free disk. Scanner child processes were explicitly reaped; no token was stored.
+- Serialized local V8 run passed with normalized LCOV: statements `12774/18608 = 68.65%`, branches `7066/11610 = 60.86%`, functions `2492/3536 = 70.48%`, lines `11514/15895 = 72.44%`. The Sonar project `>=80%`/Quality Gate target remains open; local coverage does not substitute for a successful CE analysis.
+
+## Final deterministic gates (2026-08-10)
+
+- Full Vitest: `202` files, `1858 passed / 1 skipped`; focused remote/pane regressions: `36/36`.
+- `pnpm check`: `0 errors / 0 warnings`; `pnpm build`: exit `0` (Vite warnings only); `cargo fmt --all -- --check`: exit `0`; `cargo test -p ridge-mcp --lib --quiet`: `90/90`.
+- Changed CDP scripts pass `node --check`; CodeGraph final trace confirms shell discovery, pane selection/write, cloud host, and kernel command paths. No publish, push, tag, or Release was performed.

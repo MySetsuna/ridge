@@ -160,6 +160,7 @@ const invoke = (cdp, cmd, args) =>
   let lanPanes = 0;
   let observedWorkspaceId = null;
   let observedPaneId = null;
+  let createRequested = false;
   let resolveInitialFrame = () => {};
   const initialFrame = new Promise((resolve) => {
     resolveInitialFrame = resolve;
@@ -185,7 +186,13 @@ const invoke = (cdp, cmd, args) =>
       observedWorkspaceId = m.workspaceId;
       observedPaneId = m.panes?.[0]?.id ?? null;
       if (!wasReady && observedWorkspaceId && observedPaneId) resolveInitialFrame(true);
+      if (!observedPaneId && !createRequested) {
+        createRequested = true;
+        ws.send(JSON.stringify({ type: 'create-pane' }));
+      }
       for (const resolve of [...panesWaiters]) resolve(true);
+    } else if (m.type === 'create-pane-result' && m.success) {
+      ws.send(JSON.stringify({ type: 'list-panes' }));
     }
   };
   ws.send(JSON.stringify({ type: 'list-panes' }));
