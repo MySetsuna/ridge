@@ -232,3 +232,9 @@ nlm login --check
 - A new async NotebookLM query completed through the proxy-configured MCP. It returned the existing conversation ID `a47d3199-c1f9-47f1-927c-ff2c4875b77d`; this is a new query, not evidence of a newly created chat. Sources used were the existing Ridge requirements/architecture sources; no source or note mutation occurred.
 - The source-backed candidates were: deep-root kernel lifecycle, Message Hub semantic delivery with PTY as guarded fallback, structured Agent session history and resume, cross-volume Explorer continuity, and kernel-owned domain SSOT.
 - CodeGraph review found structured Agent history/session grouping, `AgentResumeSpec`, Grok/Codex/Claude parsing, exact `(agent, session_id)` CWD binding, `KernelHost`, and `kernel_lifecycle_e2e` already implemented locally. The history fixture/parser branches are covered in Rust; `cargo test -p ridge-cli --test kernel_lifecycle_e2e --quiet` passed `3/3`. No speculative daemon rewrite was added without a failing local contract.
+
+## Final coverage rerun after bootstrap tests (2026-08-10)
+
+- Full Vitest: `193` test files, `1798` passed, `1` skipped; `svelte-check` remains `0 errors / 0 warnings`.
+- Single-worker V8 coverage completed without the prior `.tmp` writer race: Statements `65.49%` (`12141/18538`), Branches `57.95%` (`6692/11546`), Functions `66.74%` (`2354/3527`), Lines `69.23%` (`10962/15832`). LCOV normalization returned `{"ok":true}`.
+- Existing harness `.mjs` parse exclusions remain explicit diagnostics; this local LCOV still does not satisfy Sonar project coverage `>=80%` and was not uploaded as a Gate result.
