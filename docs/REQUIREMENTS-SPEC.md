@@ -1515,6 +1515,14 @@
 - Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
 - Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据、第三方 Runtime/A2A 兼容性及其余 Cloud/Postgres/物理 DPR/跨卷权限/移动端现场证据仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
 
+## Wave64 wsRemote Agent Hub 与滚动提交失败边界
+
+- `packages/remote/src/shared/transport/wsRemote.behavior.test.ts` 新增 Agent Hub receipt 结构损坏、typed error（含 stale lease）传播、topology 错误保留，以及 scrollback 空页/`atOldest`/序列错配 fail-closed、成功页后的 stale discard 回归。
+- 聚焦 `wsRemote.behavior.test.ts` 为 `6/6`；未改生产语义，未向 Codex 之外 CLI、Agent 或 teammate 发消息。
+- 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13210/18608 = 70.99%`、branches `7268/11610 = 62.60%`、functions `2568/3536 = 72.62%`、lines `11907/15895 = 74.91%`，距 statements 80% 尚缺 `1677` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+- Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
+- `REQ-SONAR-COVERAGE-80-01`、PTY 五条件原子运行时证据、第三方 Runtime/A2A 兼容性及其余现场证据继续 `ACTIVE`；`.mjs` coverage `PARSE_ERROR/Expected ident` 继续记录，不以排除文件冒充达标。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
