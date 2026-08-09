@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
+import { activeSharedWorkspaceProjection } from '$lib/remote/cloud/sharedWorkspaceProjection';
 
 const mockInvoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({
@@ -215,6 +216,66 @@ describe('hosts store public helper projections', () => {
     expect(await hosts.refreshHostTopology('replace-me')).toBeNull();
     removeSecond();
     expect(hosts.hasHostTopologyLink('replace-me')).toBe(false);
+  });
+
+  it('projects the active shared workspace into its grouped host', () => {
+    hosts.hostsStore.set([{
+      id: 'shared:owner:device', kind: 'shared', label: 'Owner · device', status: 'connected',
+      sessions: [{
+        socket: 'shared:owner:device', name: 'old', workspaceId: 'workspace-1',
+        shareGrantId: 'grant-1', shareStatus: 'active', ownerUsername: 'owner',
+        deviceName: 'device', windows: 1, panes: 0, width: 0, height: 0, attached: false,
+      }],
+      workspaces: [{
+        id: 'workspace-1', name: 'Old', active: true, shareGrantId: 'grant-1',
+        shareStatus: 'active', role: 'operator', sessions: [],
+      }],
+    }]);
+
+    activeSharedWorkspaceProjection.set({
+      grantId: 'grant-1', workspaceId: 'workspace-1', name: 'Projected',
+      ownerUsername: 'owner', deviceName: 'device',
+      panes: [{ id: 'pane-1', title: '', cwd: '/repo', isAgent: true }],
+      link: {} as never,
+      dataProvider: {} as never,
+    });
+
+    const host = get(hosts.hostsStore)[0];
+    expect(host.sessions).toEqual([expect.objectContaining({
+      remoteSessionId: 'pane-1', name: 'pane-1', cwd: '/repo', isAgent: true, attached: true,
+    })]);
+    expect(host.workspaces[0]).toMatchObject({ name: 'Projected', sessions: host.sessions });
+    activeSharedWorkspaceProjection.set(null);
+  });
+
+  it('fails closed for unsupported or rejected remote mutations', async () => {
+    await expect(hosts.createHostWorkspace('missing', 'x')).rejects.toThrow();
+    const { link } = fakeLink();
+    const remove = hosts.registerHostTopologyLink({ hostId: 'mutation-errors', kind: 'remote', label: 'Errors', link });
+
+    link.switchWorkspace.mockResolvedValue(false);
+    await expect(hosts.openHostWorkspace('mutation-errors', 'w1')).rejects.toThrow();
+    await expect(hosts.createHostPane('mutation-errors', 'w1')).rejects.toThrow();
+    link.switchWorkspace.mockResolvedValue(true);
+    link.createPane.mockResolvedValue('');
+    await expect(hosts.createHostPane('mutation-errors', 'w1')).rejects.toThrow();
+
+    link.renameWorkspace.mockResolvedValue(false);
+    await expect(hosts.renameHostWorkspace('mutation-errors', 'w1', 'x')).rejects.toThrow();
+    link.saveWorkspace.mockResolvedValue(false);
+    await expect(hosts.saveHostWorkspace('mutation-errors', 'w1', 'x')).rejects.toThrow();
+    link.closeWorkspace.mockResolvedValue(false);
+    await expect(hosts.closeHostWorkspace('mutation-errors', 'w1')).rejects.toThrow();
+
+    link.listShells.mockResolvedValue([]);
+    await expect(hosts.changeHostPaneShell('mutation-errors', 'w1', 'p1', 'missing')).rejects.toThrow();
+    link.markPaneAgent = undefined as never;
+    await expect(hosts.markHostPaneAgent('mutation-errors', 'w1', 'p1', true)).rejects.toThrow();
+    link.listShells = undefined as never;
+    link.changePaneShell = undefined as never;
+    await expect(hosts.changeHostPaneShell('mutation-errors', 'w1', 'p1', 'bash')).rejects.toThrow();
+    await expect(hosts.hostShellChoices('mutation-errors')).resolves.toEqual([]);
+    remove();
   });
 
   it('pumps only connected unlinked hosts and projects lifecycle alerts', async () => {

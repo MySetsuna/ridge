@@ -1240,6 +1240,13 @@
 - 相较 Wave35，covered statements 增加 `12`；距 80% 尚缺 `3323` 条。`.mjs` `PARSE_ERROR` 及本机缺 `SONAR_TOKEN`/`SONAR_HOST_URL`、真实 Sonar CE/Gate 证据仍未闭合，故 `REQ-SONAR-COVERAGE-80-01` 继续 ACTIVE，不宣称达标。
 - 质量门：`pnpm check` 0 errors / 0 warnings；`cargo fmt --all -- --check`、`git diff --check` 通过；coverage 与 `.iteration` 运行态产物保留 dirty，不纳入提交。
 
+## 本轮质量证据补充（2026-08-10 Wave37）
+
+- `src/lib/stores/hostsPublic.test.ts` 新增共享工作区投影、远端 mutation 失败闭闸测试；聚焦 `10/10` 通过。
+- `packages/remote/src/shared/terminal/manager.test.ts` 新增 shared-host resize 边界、workspace invalidate、shell snapshot 异常与 TUI cursor anchor 测试；聚焦 `13/13` 通过。
+- 全量 `pnpm test:coverage:sonar` 通过；最新本地 V8/LCOV statements `11603/18537 = 62.59%`、branches `6453/11542 = 55.91%`、functions `2247/3527 = 63.71%`、lines `10471/15831 = 66.14%`；相较 Wave36 新增 `4` 个测试，距 80% 尚缺 `3227` 条 covered statements。
+- `.mjs` `PARSE_ERROR`、本机缺 `SONAR_TOKEN`/`SONAR_HOST_URL` 与真实 Sonar CE/Gate 仍未闭合，故 `REQ-SONAR-COVERAGE-80-01` 继续 ACTIVE，不宣称达标。PTY 五条件保持 fail-closed，宿主完整运行时快照仍待补齐。
+
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |

@@ -129,3 +129,11 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - 全量 `pnpm test:coverage:sonar` 通过：`187` 个测试文件，`1766 passed / 1 skipped`；本地 V8/LCOV statements `11507/18537 = 62.07%`、branches `6391/11542 = 55.37%`、functions `2232/3527 = 63.28%`、lines `10398/15831 = 65.68%`。
 - 相较 Wave35，covered statements 增加 `12`；达到 80% 仍缺 `3323` 条 covered statements。`.mjs` `PARSE_ERROR`、本机缺 `SONAR_TOKEN`/`SONAR_HOST_URL` 与真实 CE/Gate 证据仍属阻塞，故 `REQ-SONAR-COVERAGE-80-01` 保持 ACTIVE。
 - 质量门：`pnpm check` 0 errors / 0 warnings；`cargo fmt --all -- --check` 通过；`git diff --check` 通过。生成的 `coverage/*` 与 `.iteration/*` 运行态变更不纳入本次提交。
+
+## Wave37 Host/Terminal 覆盖补测
+
+- `src/lib/stores/hostsPublic.test.ts` 新增共享工作区投影与远端 mutation 失败闭闸测试；聚焦 `10/10` 通过。
+- `packages/remote/src/shared/terminal/manager.test.ts` 新增 shared-host resize 边界、workspace invalidate、shell snapshot 异常与 TUI cursor anchor 测试；聚焦 `13/13` 通过。
+- 全量 `pnpm test:coverage:sonar` 通过；相较 Wave36 新增 `4` 个测试。最新本地 V8/LCOV：statements `11603/18537 = 62.59%`、branches `6453/11542 = 55.91%`、functions `2247/3527 = 63.71%`、lines `10471/15831 = 66.14%`；距 80% 尚缺 `3227` 条 covered statements。
+- `.mjs` `PARSE_ERROR`、本机缺 `SONAR_TOKEN`/`SONAR_HOST_URL` 与真实 Sonar CE/Gate 仍阻塞正式闭环；`REQ-SONAR-COVERAGE-80-01` 保持 ACTIVE。PTY 五条件仍 fail-closed，因宿主尚无完整可验证运行时快照，未擅自放行。
+- 质量门：`pnpm check`、`cargo fmt --all -- --check`、`git diff --check` 应复核通过；`coverage/*` 与 `.iteration/*` 运行态变更不纳入提交。

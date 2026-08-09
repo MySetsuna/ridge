@@ -639,4 +639,49 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(fixture.pane.feedDeferredChunks).toEqual([new Uint8Array([9])]);
 		clock.mockRestore();
 	});
+
+	it('covers shared-host resize boundaries and workspace invalidation', async () => {
+		const { manager, fixture, internal } = makeManager();
+		internal.panes.clear();
+		const host = { resize: vi.fn(), invalidate: vi.fn() };
+		internal.globalHost = { canvas: fixture.pane.canvas, host };
+
+		manager.resizeHost({ wCss: 0, hCss: 20 });
+		manager.resizeHost({ wCss: 100.8, hCss: 50.2 });
+		expect(fixture.pane.canvas.width).toBe(100);
+		expect(fixture.pane.canvas.height).toBe(50);
+		expect(host.resize).toHaveBeenCalledWith(100, 50, 1);
+		const calls = host.resize.mock.calls.length;
+		manager.resizeHost({ wCss: 100.8, hCss: 50.2 });
+		expect(host.resize).toHaveBeenCalledTimes(calls);
+
+		manager.onActiveWorkspaceChanged('workspace-a');
+		await Promise.resolve();
+		expect(host.invalidate).toHaveBeenCalled();
+		manager.detachHost();
+		expect(internal.globalHost).toBeNull();
+	});
+
+	it('rejects invalid shell snapshots and resolves recent TUI cursor anchors', () => {
+		const { manager, fixture } = makeManager();
+		expect(manager.readShellInputSnapshot('missing')).toBeNull();
+		expect(manager.readShellInputSnapshot(PANE)).toBeNull();
+		fixture.pane.inputStartRow = 3;
+		fixture.pane.inputStartCol = 4;
+		fixture.kernel.cursorRow.mockReturnValueOnce(2);
+		expect(manager.readShellInputSnapshot(PANE)).toBeNull();
+		fixture.kernel.cursorRow.mockReturnValue(3);
+		fixture.kernel.cursorCol.mockReturnValueOnce(3);
+		expect(manager.readShellInputSnapshot(PANE)).toBeNull();
+		fixture.kernel.cursorCol.mockReturnValue(7);
+		fixture.kernel.cellsAt.mockReturnValue([
+			{ ch: 'a', width: 1 }, { ch: 'b', width: 1 }, { ch: 'c', width: 1 },
+		]);
+		expect(manager.readShellInputSnapshot(PANE)).toEqual(expect.objectContaining({ text: expect.any(String) }));
+
+		fixture.kernel.lastAbsCsiPosition.mockReturnValue({ row: 5, col: 6, atMs: Date.now() });
+		fixture.setAltScreen(true);
+		expect(manager.inputAnchorCell(PANE)).toEqual({ row: 5, col: 6 });
+		expect(manager.inputAnchorPixelPosition(PANE)).toMatchObject({ x: 60, y: 100 });
+	});
 });
