@@ -20,6 +20,9 @@
     "./src/service-worker/**/*.ts",
     "./src/service-worker.d.ts",
     "./src/service-worker/**/*.d.ts",
-    "./tests/e2e-shell/**"
+    "./tests/e2e-shell/**",
+    "./.claude/**",
+    "./.iteration/**",
+    "./coverage/**"
   ]
 }
