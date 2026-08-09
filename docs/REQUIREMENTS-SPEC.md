@@ -1410,6 +1410,13 @@
 - `pnpm check` 复核为 `0 errors / 0 warnings`；本波仅修正测试 fixture 类型，不改生产运行语义。
 - `.mjs` coverage 仍报 `PARSE_ERROR/Expected ident`；Sonar project/Quality Gate 未以本地 LCOV 冒充闭环，`REQ-SONAR-COVERAGE-80-01` 与 PTY/第三方 Runtime-A2A 现场证据继续 `ACTIVE`。
 
+## Wave48 Cloud controller 启动接线与生命周期覆盖
+
+- 新增 `src/lib/remote/cloud/cloudControllerBoot.integration.test.ts`，覆盖 bridge attach、全局 transport 安装、provider 回调组合、重复 boot 单例、token 定时刷新、前台唤醒、fixed-token isolated boot 与 disconnect 回收；聚焦 `9/9`。
+- 全量 `pnpm test:coverage:sonar` exit `0`；本地 V8/LCOV statements `12716/18603 = 68.35%`、branches `7022/11608 = 60.49%`、functions `2484/3536 = 70.24%`、lines `11466/15891 = 72.15%`；距 statements 80% 尚缺 `2167` 条。
+- `pnpm check` 复核为 `0 errors / 0 warnings`；本波仅增隔离测试，不改生产运行语义。
+- `.mjs` coverage 仍报 `PARSE_ERROR/Expected ident`；Sonar project/Quality Gate 未以本地 LCOV 冒充闭环，`REQ-SONAR-COVERAGE-80-01` 与 PTY/第三方 Runtime-A2A 现场证据继续 `ACTIVE`。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
