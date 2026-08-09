@@ -146,6 +146,15 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - 证据：`cargo test --target-dir target/codex-delivery-test -p ridge-mcp --features axum-transport --lib` 为 `92 passed / 0 failed`；`cargo test --target-dir target/codex-kernel-agent-comm -p ridge-kernel --lib` 为 `49 passed / 0 failed`；`cargo fmt --all -- --check` 通过。
 - 本波仅补齐 proof 存储、刷新、过期与销毁 fencing 基础设施；宿主五条件尚无完整原子运行时快照，故 PTY 生产放行继续 fail-closed。Sonar 仍为本地 `62.59%`，无 scanner/token/host，不能宣称 80% 或 Quality Gate 通过。
 
+## Wave40 交接：build-ridge 可测化与质量门复核
+
+- 代码：`scripts/build-ridge.mjs` 新增 ESM 入口保护和纯逻辑导出；直接执行仍走原构建流程，导入测试不会触发真实 Tauri 构建。
+- 测试：新增 `scripts/build-ridge.test.mjs`，覆盖参数/版本/GUID、Cargo/WiX/Tauri 配置、tauri 子进程成功与失败、双前端构建调用、临时目录清理及失败恢复；定向 `7/7` 通过。
+- 质量：全量 `pnpm test:coverage:sonar` exit `0`；V8/LCOV 为 statements `11988/18538=64.66%`、branches `6629/11546=57.41%`、functions `2310/3527=65.49%`、lines `10830/15832=68.40%`。距本地 statements 80% 尚差 `2843` 条；该数值不等价于 Sonar 项目指标。
+- 复核：`pnpm check` `0 errors / 0 warnings`；`cargo fmt --all -- --check`、`node --check scripts/build-ridge.mjs`、`git diff --check` 通过。
+- 未闭环：部分既有 `.mjs` 仍有 V8 remap `PARSE_ERROR/Expected ident`；本机无 Sonar scanner/token/host，故 `REQ-SONAR-COVERAGE-80-01` 仍为 `ACTIVE`，不得宣称 Sonar 80% 或 Quality Gate 完成。PTY 五条件生产原子快照、第三方 Runtime/A2A 真实兼容性及物理设备门仍按前波交接。
+- 工作区纪律：未向 Codex 外 CLI/agent 派发消息；未 push、tag、release；仅提交本波脚本/测试/交接文档，coverage 和 `.iteration` 运行态变更保留在工作区。
+
 ## Wave39 覆盖率与通信边界回归
 
 - `packages/remote/src/shared/terminal/manager.attach.test.ts` 新增隔离 wasm/DOM 生命周期测试：未 ready 拒绝、Canvas/scrollback/theme 注入、重复 attach fencing、focus in/out、TUI mouse press/release、double/triple click、ResizeObserver 与 detach 清理；聚焦 `2/2` 通过。既有 `manager.test.ts` 与 `controllerIdentity.test.ts` 合计 `25/25` 通过。
