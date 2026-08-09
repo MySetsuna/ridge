@@ -2,6 +2,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as api from './apiClient';
 import { isInsecureCloudDomain, cloudHttpScheme, cloudWsScheme } from './apiClient';
 
+const tauri = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => tauri);
+
 // 这些是 cloud 连接 scheme 选择的依据：base 域指向本机回环时走明文 http/ws
 // （本地自托管 ridge-cloud 无 TLS 反代），真实公网域名恒走 https/wss。
 
@@ -66,6 +69,7 @@ describe('cloudHttpScheme / cloudWsScheme', () => {
 describe('cloud API envelope, retry, and public request boundaries', () => {
   afterEach(() => {
     api.setUnauthorizedHandler(null);
+    tauri.invoke.mockReset();
     vi.unstubAllGlobals();
   });
 
@@ -125,5 +129,21 @@ describe('cloud API envelope, retry, and public request boundaries', () => {
     await expect(api.getMe('fresh-token')).rejects.toMatchObject({ code: 'INTERNAL', message: 'bad gateway' });
     fetchMock.mockResolvedValueOnce({ status: 200, json: async () => { throw new Error('not json'); } });
     await expect(api.getMe('fresh-token')).rejects.toMatchObject({ code: 'BAD_RESPONSE' });
+  });
+
+  it('uses the Tauri cloud_http proxy and rejects proxy transport or JSON failures', async () => {
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: {} });
+    tauri.invoke.mockResolvedValueOnce({ status: 200, body: JSON.stringify({ ok: true, data: { user: {} } }) });
+    await expect(api.getMe('desktop-token')).resolves.toEqual({ user: {} });
+    expect(tauri.invoke).toHaveBeenCalledWith('cloud_http', expect.objectContaining({
+      method: 'GET',
+      headers: { Authorization: 'Bearer desktop-token' },
+      body: null,
+    }));
+
+    tauri.invoke.mockRejectedValueOnce(new Error('proxy offline'));
+    await expect(api.getMe('desktop-token')).rejects.toMatchObject({ code: 'NETWORK', message: 'proxy offline' });
+    tauri.invoke.mockResolvedValueOnce({ status: 502, body: '{broken' });
+    await expect(api.getMe('desktop-token')).rejects.toMatchObject({ code: 'BAD_RESPONSE' });
   });
 });

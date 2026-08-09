@@ -1470,6 +1470,12 @@
 - 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `12947/18608 = 69.57%`、branches `7119/11610 = 61.31%`、functions `2533/3536 = 71.63%`、lines `11675/15895 = 73.45%`，距 statements 80% 尚缺 `1940` 条；`pnpm check` 为 `0 errors / 0 warnings`。
 - Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据、第三方 Runtime/A2A 兼容性及其余 Cloud/Postgres/物理 DPR/跨卷权限/移动端现场证据仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
 
+## Wave57 Cloud Tauri 代理与设备码终止边界
+
+- 扩展 `packages/remote/src/shared/cloud/apiClient.test.ts` 覆盖 Tauri `cloud_http` 代理成功、代理网络失败、代理坏 JSON；扩展 `packages/remote/src/shared/cloud/auth.test.ts` 覆盖 device-code `expired` 与已 abort 取消；聚焦 `18/18`。
+- 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `12961/18608 = 69.65%`、branches `7127/11610 = 61.38%`、functions `2533/3536 = 71.63%`、lines `11687/15895 = 73.52%`，距 statements 80% 尚缺 `1926` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+- Sonar project `>=80%`/Quality Gate、`.mjs` coverage `PARSE_ERROR/Expected ident`、PTY 五条件原子运行时证据、第三方 Runtime/A2A 兼容性及其余 Cloud/Postgres/物理 DPR/跨卷权限/移动端现场证据仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
