@@ -713,6 +713,140 @@ describe('cwd listeners refreshed after pane mutations (Issue #2)', () => {
   });
 });
 
+describe('pane tree splitter geometry and drag lifecycle', () => {
+  afterEach(() => {
+    paneTreeModule.clearSplitResizeUi();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('fails safely without DOM geometry and handles empty/id-less leaves', () => {
+    const ref = { splitPath: [], splitterIndex: 0, axis: 'x' as const, basisPx: 100 };
+    expect(paneTreeModule.getSplitterScreenCenter(ref)).toBeNull();
+    expect(paneTreeModule.getSplitterLineEndpoints(ref)).toBeNull();
+    expect(paneTreeModule.findSameAxisRefs(ref)).toEqual([]);
+    expect(paneTreeModule.pointerInCoupleZone(ref, ref, { x: 0, y: 0 })).toBe(false);
+    expect(paneTreeModule.getAllPaneIds({ type: 'leaf', id: '' })).toEqual([]);
+    expect(paneTreeModule.getAllPaneIds(null as never)).toEqual([]);
+  });
+
+  it('uses visible splitter geometry for centers, endpoints, coupling, and candidates', () => {
+    class FakeElement {
+      dataset: Record<string, string>;
+      children: FakeElement[] = [];
+      parentElement: FakeElement | null = null;
+      clientWidth = 500;
+      clientHeight = 300;
+      constructor(
+        dataset: Record<string, string>,
+        private readonly rect: { left: number; top: number; width: number; height: number },
+        private readonly visible = true
+      ) {
+        this.dataset = dataset;
+      }
+      checkVisibility() {
+        return this.visible;
+      }
+      getBoundingClientRect() {
+        return {
+          ...this.rect,
+          right: this.rect.left + this.rect.width,
+          bottom: this.rect.top + this.rect.height,
+        };
+      }
+      querySelectorAll() {
+        return this.children;
+      }
+    }
+
+    const root = new FakeElement(
+      { splitPath: '', splitAxis: 'x' },
+      { left: 0, top: 0, width: 500, height: 300 },
+      false
+    );
+    const primaryEl = new FakeElement({}, { left: 95, top: 0, width: 10, height: 200 });
+    const siblingEl = new FakeElement({}, { left: 115, top: 0, width: 10, height: 200 });
+    primaryEl.parentElement = root;
+    siblingEl.parentElement = root;
+    root.children = [primaryEl, siblingEl];
+
+    const otherRoot = new FakeElement(
+      { splitPath: '1', splitAxis: 'y' },
+      { left: 0, top: 0, width: 500, height: 300 }
+    );
+    const otherEl = new FakeElement({}, { left: 0, top: 45, width: 500, height: 10 });
+    otherEl.parentElement = otherRoot;
+    otherRoot.children = [otherEl];
+    const roots = [root, otherRoot];
+    const splitters = [primaryEl, siblingEl, otherEl];
+    vi.stubGlobal('HTMLElement', FakeElement);
+    vi.stubGlobal('document', {
+      querySelectorAll: (selector: string) => {
+        if (selector.includes('> .splitpanes__splitter')) return splitters;
+        const path = selector.match(/data-split-path="([^"]*)"/)?.[1];
+        const axis = selector.match(/data-split-axis="([^"]*)"/)?.[1];
+        return roots.filter((candidate) => candidate.dataset.splitPath === path && candidate.dataset.splitAxis === axis);
+      },
+      body: { classList: { add: vi.fn(), remove: vi.fn(), toggle: vi.fn() } },
+    });
+
+    const primary = { splitPath: [], splitterIndex: 0, axis: 'x' as const, basisPx: 500 };
+    const sibling = { splitPath: [], splitterIndex: 1, axis: 'x' as const, basisPx: 500 };
+    expect(paneTreeModule.getSplitterScreenCenter(primary)).toBe(100);
+    expect(paneTreeModule.getSplitterLineEndpoints(sibling)).toEqual({ start: 0, end: 200 });
+    expect(paneTreeModule.getSplitterScreenCenter({ ...primary, splitterIndex: 9 })).toBeNull();
+    expect(paneTreeModule.pointerInCoupleZone(primary, sibling, { x: 120, y: 5 })).toBe(true);
+    expect(paneTreeModule.pointerInCoupleZone(primary, sibling, { x: 120, y: 100 })).toBe(false);
+    expect(paneTreeModule.findSameAxisRefs(primary, 40)).toEqual([
+      { ref: sibling, center: 120, distance: 20 },
+    ]);
+  });
+
+  it('deduplicates pending junctions, enters drag, updates ratios, and cleans up', () => {
+    vi.useFakeTimers();
+    const primary = { splitPath: [], splitterIndex: 0, axis: 'x' as const, basisPx: 1000 };
+    const orthogonal = { splitPath: [], splitterIndex: 0, axis: 'y' as const, basisPx: 1000 };
+    paneTreeModule.activeWorkspaceId.set('ws-drag');
+    paneTreeModule.paneTreeStore.set({
+      type: 'split',
+      id: 'root',
+      direction: 'horizontal',
+      children: [{ type: 'leaf', id: 'a' }, { type: 'leaf', id: 'b' }],
+      ratios: [50, 50],
+    });
+
+    paneTreeModule.queueSplitResizeJunction(
+      primary,
+      [primary, orthogonal, orthogonal],
+      { x: 500, y: 500 },
+      [primary, orthogonal],
+      null
+    );
+    expect(paneTreeModule.splitResizeUiState).toBeDefined();
+    expect(get(paneTreeModule.splitResizeUiState)).toMatchObject({
+      phase: 'pending',
+      orthogonals: [orthogonal],
+      sameAxisCandidates: [],
+    });
+    vi.advanceTimersByTime(20);
+    expect(get(paneTreeModule.splitResizeUiState)).toMatchObject({ phase: 'junction' });
+
+    paneTreeModule.startSplitResizeDrag({ x: 500, y: 500 });
+    expect(get(paneTreeModule.splitResizeUiState)).toMatchObject({ phase: 'drag' });
+    paneTreeModule.updateSplitResizeDrag({ x: 600, y: 600 });
+    const updates = get(paneTreeModule.splitResizeUiState);
+    expect(updates.phase).toBe('drag');
+    if (updates.phase === 'drag') expect(updates.pendingUpdates).toHaveLength(1);
+    expect(paneTreeModule.finishSplitResizeDrag()).toHaveLength(1);
+    expect(get(paneTreeModule.splitResizeUiState)).toEqual({ phase: 'idle' });
+
+    paneTreeModule.queueSplitResizeJunction(primary, [], { x: 0, y: 0 });
+    paneTreeModule.clearSplitResizeUi();
+    vi.advanceTimersByTime(20);
+    expect(get(paneTreeModule.splitResizeUiState)).toEqual({ phase: 'idle' });
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEST SUITE: SavedWorkspace.paneCwds integration
 // ═══════════════════════════════════════════════════════════════════════════════
