@@ -125,6 +125,7 @@ Invoke-RestMethod `
 - The current project API reports coverage `56.7%`, line coverage `57.0%`, branch coverage `54.2%`, violations `835`; Quality Gate `ERROR`, with `new_coverage=64.9%` and `new_violations=130`.
 - Latest analysis record observed by API: `3c585f9e-554f-4a4e-81e8-2e21a387c707`, `2026-08-10T02:05:52+0800`. No scanner exit or CE task was inferred from this monitor-only recheck.
 - Local V8 single-worker coverage is now Lines `67.83%`, still below the explicit `>=80%` project target. Historical Rust LCOV is not treated as current evidence.
+- After the final bootstrap/CDP test additions, the single-worker local run is Statements `65.49%`, Branches `57.95%`, Functions `66.74%`, Lines `69.23%`; full Vitest is `193` files / `1798` passed / `1` skipped. Sonar server metrics are unchanged by this local-only run.
 
 ## Latest authenticated scan (2026-08-09)
 
