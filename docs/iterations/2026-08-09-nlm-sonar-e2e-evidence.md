@@ -165,3 +165,10 @@ nlm login --check
 - The query completed through the proxy-configured NotebookLM MCP without source or note mutation. The service returned the existing conversation ID `a47d3199-c1f9-47f1-927c-ff2c4875b77d`; the query was new, but the backend did not create a distinct chat session.
 - Source-backed candidates: native PowerShell/WebView2 DPR pixel matrix; Codex monotonic frame and old-row replay trace; trusted-HTTPS physical mobile PWA/background recovery; explicit Agent message delivery with PTY only as a guarded fallback; Explorer cross-volume refresh and quota/manual park-cause regression.
 - These remain candidates or evidence gaps, not closed bugs. The response explicitly distinguishes source facts from inference; no NotebookLM result was treated as proof of implementation or production readiness.
+
+## Post-commit verification (2026-08-10)
+
+- Commit `d67247ef` contains the related source, tests, scripts, configuration, and handoff/evidence documents; no push or release was performed.
+- Current frontend regression: `174` test files, `1684` passed, `1` skipped. Direct `pnpm exec svelte-check --tsconfig ./tsconfig.json` reports `0 errors and 0 warnings`.
+- `pnpm check` wrapper exceeded its 180-second host limit without diagnostics; the underlying `svelte-check` completed successfully. This wrapper timeout remains an environment/workflow issue, not a clean full wrapper pass.
+- Generated coverage and `.iteration` runtime artifacts remain outside the commit and are intentionally left for local inspection.
