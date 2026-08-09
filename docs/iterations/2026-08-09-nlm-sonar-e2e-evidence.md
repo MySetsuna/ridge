@@ -220,3 +220,15 @@ nlm login --check
 - LAN mobile agent E2E passed `GATE: PASS`: real HTTPS/WS/TOTP, workspace/pane, shell picker, Git Bash switch, and headless Team-hide behavior. Self-signed HTTPS still prevents Service Worker registration; this is not trusted-HTTPS physical-PWA evidence.
 - Clean-profile `runtime.lastError` probe returned `status=clean-profile-only`, `attributionComplete=false`; no extension A/B or physical-device attribution is claimed.
 - Post-commit TypeScript regression passed `187` files, `1772` passed, `1` skipped; `svelte-check` passed `0 errors / 0 warnings`. Rust `ridge-mcp` passed `90/90`; `ridge-cli` debug build finished successfully with existing warnings.
+
+## Current coverage and Sonar monitor recheck (2026-08-10)
+
+- The first full V8 coverage retry hit a Vitest worker race while writing `coverage/.tmp/coverage-181.json` (`ENOENT`). A single-worker rerun completed: `187` files, `1772` passed, `1` skipped; Statements `64.14%`, Branches `57.17%`, Functions `65.15%`, Lines `67.83%`. `scripts/normalize-lcov.mjs` returned `{"ok":true}`.
+- SonarQube monitor API is healthy: version `26.7.0.124771`, status `UP`. Current project measures are coverage `56.7%`, line `57.0%`, branch `54.2%`, violations `835`; Quality Gate is `ERROR` with `new_coverage=64.9%` and `new_violations=130`. The latest analysis record observed is `3c585f9e-554f-4a4e-81e8-2e21a387c707` at `2026-08-10T02:05:52+0800`; no scanner exit/CE task correlation was inferred from this API recheck.
+- Explicit project target `>=80%` remains open. The old Rust LCOV artifacts are dated 2026-08-09 and are not treated as current coverage. No coverage was narrowed or fabricated to force the Gate green.
+
+## NLM next-batch extraction (2026-08-10, async query `e172bd743e38`)
+
+- A new async NotebookLM query completed through the proxy-configured MCP. It returned the existing conversation ID `a47d3199-c1f9-47f1-927c-ff2c4875b77d`; this is a new query, not evidence of a newly created chat. Sources used were the existing Ridge requirements/architecture sources; no source or note mutation occurred.
+- The source-backed candidates were: deep-root kernel lifecycle, Message Hub semantic delivery with PTY as guarded fallback, structured Agent session history and resume, cross-volume Explorer continuity, and kernel-owned domain SSOT.
+- CodeGraph review found structured Agent history/session grouping, `AgentResumeSpec`, Grok/Codex/Claude parsing, exact `(agent, session_id)` CWD binding, `KernelHost`, and `kernel_lifecycle_e2e` already implemented locally. The history fixture/parser branches are covered in Rust; `cargo test -p ridge-cli --test kernel_lifecycle_e2e --quiet` passed `3/3`. No speculative daemon rewrite was added without a failing local contract.

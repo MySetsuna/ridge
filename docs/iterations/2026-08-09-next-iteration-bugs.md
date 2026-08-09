@@ -241,3 +241,11 @@ Status: local contract branch closed; live Agent delivery evidence remains open.
 - NLM's next-batch audit proposed replacing PTY-as-message with Message Hub routing and retaining PTY only as a guarded fallback. CodeGraph found the Hub/Inbox/receipt/adapter path already present in `packages/ridge-mcp`; no speculative architecture rewrite was justified.
 - Added deterministic coverage for `objective` payload alias, `submitRequested=false`, and non-text payload rejection. `cargo test -p ridge-mcp --lib`: `87 passed; 0 failed`.
 - Remaining proof: a live Agent/runtime interruption or recorded old-frame replay showing Message Hub delivery while a target CLI is busy, with PTY fallback only after all five safety predicates pass.
+
+## NLM next-batch audit (2026-08-10)
+
+Status: local contracts already present; external lifecycle/field proof remains open.
+
+- Async query `e172bd743e38` returned five candidates: deep-root kernel lifecycle, Message Hub delivery, structured Agent history/resume, cross-volume Explorer continuity, and kernel-owned domain SSOT. It reused the existing conversation ID; no new chat or note mutation is claimed.
+- CodeGraph found `AgentResumeSpec`, native session aggregation, exact identity/CWD binding, `KernelHost`, and `kernel_lifecycle_e2e`. The kernel lifecycle integration test passed `3/3`; the history parser and grouping tests are present. This iteration adds no speculative architecture rewrite.
+- Open acceptance remains: actual desktop-shell exit with kernel survival/reattach, live Message Hub delivery while a CLI is busy, physical cross-volume mid-operation ACL injection, and proof that every domain path is callable after the desktop shell exits.
