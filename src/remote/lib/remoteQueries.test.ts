@@ -5,6 +5,10 @@ import {
   fetchRemoteAgentHistory,
   fetchRemoteQuery,
   fetchRemoteTeamRoster,
+  confirmedWorkspaceTarget,
+  mergeRemoteItems,
+  requestPaneSnapshot,
+  requestWorkspaceSnapshot,
   remoteQueryKeys,
   remoteSessionId,
   remoteSidebarQueryPrefix,
@@ -92,15 +96,62 @@ describe('remoteQueries', () => {
     }));
   });
 
-  it('routes history through the host-wide query key and limit', async () => {
+	it('routes history through the host-wide query key and limit', async () => {
     const remote = link();
     const history = [{ agent: 'Codex', sessionId: 's1' }];
     vi.mocked(remote.listAgentHistory).mockResolvedValueOnce(history as never);
     const fetchQuery = makeFetchQuery();
     await expect(fetchRemoteAgentHistory(remote, { fetchQuery }, 9, 12)).resolves.toEqual(history);
     expect(remote.listAgentHistory).toHaveBeenCalledWith(12);
-    expect(fetchQuery).toHaveBeenCalledWith(expect.objectContaining({
-      queryKey: remoteQueryKeys.agentHistory(9, 12),
-    }));
-  });
+		expect(fetchQuery).toHaveBeenCalledWith(expect.objectContaining({
+			queryKey: remoteQueryKeys.agentHistory(9, 12),
+		}));
+	});
+
+	it('deduplicates incoming collections and confirms workspace targets', async () => {
+		expect(mergeRemoteItems([{ id: 'a', title: 'old' }], [{ id: 'a', cwd: '/repo' }, { id: 'b' }])).toEqual([
+			{ id: 'a', title: 'old', cwd: '/repo' }, { id: 'b' },
+		]);
+		expect(await confirmedWorkspaceTarget(async () => true, 'ws', null)).toEqual({ workspaceId: 'ws', paneId: null });
+		expect(await confirmedWorkspaceTarget(async () => false, 'ws', 'pane')).toBeNull();
+	});
+
+	it('waits for the matching pane push and deduplicates its snapshot', async () => {
+		let receive!: (message: unknown) => void;
+		const remote = {
+			onMessage: vi.fn((cb: (message: unknown) => void) => { receive = cb; return vi.fn(); }),
+			listPanes: vi.fn(),
+		} as unknown as RemoteLink;
+		const pending = requestPaneSnapshot(remote, 'ws');
+		expect(remote.listPanes).toHaveBeenCalledOnce();
+		receive({ type: 'panes', workspaceId: 'other', panes: [{ id: 'a' }] });
+		receive({ type: 'panes', workspaceId: 'ws', panes: [{ id: 'a', title: 'old' }, { id: 'a', title: 'new' }] });
+		await expect(pending).resolves.toEqual([{ id: 'a', title: 'new' }]);
+	});
+
+	it('rejects pane snapshot on abort and workspace snapshot on timeout', async () => {
+		vi.useFakeTimers();
+		const controller = new AbortController();
+		const remote = {
+			onMessage: vi.fn(() => vi.fn()),
+			listPanes: vi.fn(),
+			listWorkspaces: vi.fn(() => new Promise<{ workspaces: never[] }>(() => {})),
+		} as unknown as RemoteLink;
+		controller.abort('gone');
+		await expect(requestPaneSnapshot(remote, 'ws', controller.signal)).rejects.toBe('gone');
+		const timeout = requestWorkspaceSnapshot(remote, undefined, 10);
+		const rejected = expect(timeout).rejects.toThrow('10ms');
+		await vi.advanceTimersByTimeAsync(10);
+		await rejected;
+		vi.useRealTimers();
+	});
+
+	it('returns a canonical workspace snapshot and propagates list errors', async () => {
+		const remote = {
+			listWorkspaces: vi.fn(async () => ({ workspaces: [{ id: 'a', name: 'old' }, { id: 'a', name: 'new' }] })),
+		} as unknown as RemoteLink;
+		await expect(requestWorkspaceSnapshot(remote)).resolves.toEqual([{ id: 'a', name: 'new' }]);
+		vi.mocked(remote.listWorkspaces).mockRejectedValueOnce(new Error('offline'));
+		await expect(requestWorkspaceSnapshot(remote)).rejects.toThrow('offline');
+	});
 });
