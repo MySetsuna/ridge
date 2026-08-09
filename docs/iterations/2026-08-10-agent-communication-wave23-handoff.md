@@ -145,3 +145,11 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - `McpSessionState` 提供注册/注销入口；Kernel PTY destroy 的 identity teardown 同时撤销 Runtime API、A2A 与 PTY proof，避免旧代 proof 残留。
 - 证据：`cargo test --target-dir target/codex-delivery-test -p ridge-mcp --features axum-transport --lib` 为 `92 passed / 0 failed`；`cargo test --target-dir target/codex-kernel-agent-comm -p ridge-kernel --lib` 为 `49 passed / 0 failed`；`cargo fmt --all -- --check` 通过。
 - 本波仅补齐 proof 存储、刷新、过期与销毁 fencing 基础设施；宿主五条件尚无完整原子运行时快照，故 PTY 生产放行继续 fail-closed。Sonar 仍为本地 `62.59%`，无 scanner/token/host，不能宣称 80% 或 Quality Gate 通过。
+
+## Wave39 覆盖率与通信边界回归
+
+- `packages/remote/src/shared/terminal/manager.attach.test.ts` 新增隔离 wasm/DOM 生命周期测试：未 ready 拒绝、Canvas/scrollback/theme 注入、重复 attach fencing、focus in/out、TUI mouse press/release、double/triple click、ResizeObserver 与 detach 清理；聚焦 `2/2` 通过。既有 `manager.test.ts` 与 `controllerIdentity.test.ts` 合计 `25/25` 通过。
+- `src/remote/lib/cloudRemote.test.ts` 新增 3 组边界测试：空 pane/零尺寸输入 fail-closed、Agent/shell/HITL/health/workspace parity 命令、空 workspace 创建与 close 失败可重试；全文件 `50/50` 通过。
+- 全量 `pnpm test:coverage:sonar`：`188` 个测试文件，`1779 passed / 1 skipped`；本地 V8/LCOV statements `11891/18537 = 64.14%`、branches `6599/11542 = 57.17%`、functions `2298/3527 = 65.15%`、lines `10739/15831 = 67.83%`。相较 Wave38 covered statements 增加 `288`，距本地 80% 尚缺 `2939` 条；该 LCOV 仍不替代 Sonar project metric。
+- `node --check scripts/*.mjs` 全部通过，但 V8 remap 仍对部分 `.mjs` 报 `PARSE_ERROR/Expected ident` 并排除；本机仍无 `SONAR_TOKEN`/`SONAR_HOST_URL`、scanner 与 Quality Gate 证据，故 `REQ-SONAR-COVERAGE-80-01` 保持 ACTIVE，不宣称 80%/Gate 完成。
+- 质量证据：全量 coverage 命令退出 `0`；`cargo fmt --all -- --check`、`git diff --check` 应随提交前复核；`pnpm check` 本波未重跑（既有 Node/dev 进程竞争曾导致超时）。coverage 与 `.iteration` 运行态产物不纳入提交。

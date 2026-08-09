@@ -1076,3 +1076,69 @@ describe('CloudRemoteConnection lifecycle', () => {
     await expectPaneRpcCancellation((conn) => conn.disconnect());
   });
 });
+
+describe('CloudRemoteConnection bounded parity guards', () => {
+  it('keeps invalid pane input and resize requests local', async () => {
+    const conn = await connected();
+    expect(conn.sendStdin({ workspaceId: 'ws1', paneId: '' }, 'x')).toBe(false);
+    expect(conn.sendStdin(PANE, '')).toBe(false);
+    expect(conn.enqueueStdinTask({ workspaceId: 'ws1', paneId: '' }, () => 'x')).toBe(false);
+    expect(conn.enqueueStdinTask(PANE, () => null)).toBe(true);
+    conn.refreshPane(PANE, 0, 80);
+    conn.refreshPane(PANE, 24, 0);
+    expect(conn.lastRefreshSeq()).toBe(0);
+    await flush();
+    expect(invokeMock).not.toHaveBeenCalledWith('write_to_pty', expect.anything(), expect.anything());
+  });
+
+  it('covers cloud parity commands and bounded history normalization', async () => {
+    const conn = await connected();
+    const capabilityOff = conn.onCapabilitiesChanged(vi.fn());
+    capabilityOff();
+    expect(conn.hasCapability('agent-messages')).toBe(true);
+
+    await conn.markPaneAgent('ws1', 'pane-a', true, 'agent-42');
+    await conn.markPaneAgent('ws1', 'pane-a', false);
+    expect(await conn.listShells()).toEqual([]);
+    await conn.changePaneShell('ws1', 'pane-a', {
+      id: 'pwsh', label: 'PowerShell', program: 'pwsh', args: ['-NoLogo'],
+    });
+    expect(await conn.getTeammateTopology('ws1')).toBeUndefined();
+    expect(await conn.listAgentHistory(999)).toEqual([]);
+    expect(await conn.listHitlPending()).toBeUndefined();
+    expect(await conn.resolveHitlRemote('hitl-1', 'nonce-1', 'reject')).toBe('already-resolved');
+    expect(await conn.getOrchestrationHealth()).toEqual({ suspendedAgents: 0, pendingHitl: 0 });
+    expect(await conn.listSavedWorkspaceFiles()).toEqual([]);
+    expect(await conn.openWorkspaceFromFile('missing.ridge')).toBeNull();
+    expect(await conn.closeWorkspace('ws1')).toBe(true);
+    expect(await conn.createWorkspace()).toBe('ws-new');
+
+    expect(invokeMock).toHaveBeenCalledWith('register_teammate_agent', {
+      workspaceId: 'ws1', paneId: 'pane-a', agentId: 'agent-42',
+    }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(invokeMock).toHaveBeenCalledWith('change_pane_shell', {
+      paneId: 'pane-a', shell: 'pwsh', args: ['-NoLogo'],
+    }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  });
+
+  it('creates a pane for an empty workspace and does not hide close failures', async () => {
+    const conn = await connected();
+    let layoutCalls = 0;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_pane_layout_for') {
+        layoutCalls += 1;
+        return layoutCalls === 1 ? null : {
+          type: 'leaf', id: 'pane-created', title: 'created', cwd: '/tmp',
+        };
+      }
+      if (cmd === 'create_workspace') return 'ws-created';
+      if (cmd === 'close_pane') throw new Error('close rejected');
+      return undefined;
+    });
+
+    expect(await conn.createPane()).toBe('pane-created');
+    expect(await conn.closePane(PANE)).toBe(false);
+    expect(await conn.closePane(PANE)).toBe(false);
+    expect(layoutCalls).toBe(2);
+  });
+});
