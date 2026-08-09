@@ -1537,6 +1537,13 @@
 - 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13270/18608 = 71.31%`、branches `7305/11610 = 62.91%`、functions `2582/3536 = 73.02%`、lines `11953/15895 = 75.19%`，距 statements 80% 尚缺 `1617` 条；`pnpm check` 为 `0 errors / 0 warnings`。
 - Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
 
+## Wave67 fileExplorer 分页与 stale 路径边界覆盖
+
+- `src/lib/stores/fileExplorer.test.ts` 新增浏览器 tree/children fixture、Tauri children `limit` 参数、分页聚合、目录读取异常 fail-safe、深层 stale expanded path prune 与 workspace/column 折叠投影回归。
+- 聚焦 `fileExplorer.test.ts` 为 `46/46`；静态检查修正测试夹具 `WorkspaceDescriptor.index` 后 `pnpm check` 为 `0 errors / 0 warnings`；未改生产语义，未向 Codex 之外 CLI、Agent 或 teammate 发消息。
+- 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13278/18608 = 71.35%`、branches `7314/11610 = 62.99%`、functions `2584/3536 = 73.07%`、lines `11959/15895 = 75.23%`，距 statements 80% 尚缺 `1609` 条。
+- Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
