@@ -24,6 +24,11 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # ── `axum-transport` feature ── WS + HTTP 两条 JSON-RPC 路由。宿主开这个 feature
 # 就能 `merge(mcp_router(...))`；纯协议嵌入者（测试、其它传输）不必拉 axum。
 axum = { version = "0.7", features = ["ws"], optional = true }
+tokio = { version = "1", features = ["net", "rt", "sync", "time"], optional = true }
 
 [features]
-axum-transport = ["dep:axum"]
+axum-transport = ["dep:axum", "dep:tokio"]
+
+[dev-dependencies]
+futures-util = "0.3"
+tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }

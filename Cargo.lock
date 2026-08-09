@@ -5585,10 +5585,13 @@ name = "ridge-mcp"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures-util",
  "rusqlite",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
+ "tokio-tungstenite 0.23.1",
  "uuid",
 ]
 

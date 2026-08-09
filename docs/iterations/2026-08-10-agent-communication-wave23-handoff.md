@@ -106,3 +106,11 @@ Wave26 后 Sonar 全项目 ≥80%、跨进程 Runtime/A2A receipt、PTY 五条�
 - 当前本地 V8/LCOV：statements `11265/18537 = 60.77%`、branches `6255/11542 = 54.19%`、functions `2195/3527 = 62.23%`、lines `10179/15831 = 64.29%`；距 80% 尚缺 `7272` 条 statements。该数字仅作补测基线，不替代 Sonar project metric。
 - 本机复核：`SONAR_TOKEN_PRESENT=False`、`SONAR_HOST_URL_PRESENT=False`，未发现 `sonar-scanner` 或 `sonar` 命令；故本波无法执行真实 Sonar scan/CE/Quality Gate，也不宣称 `REQ-SONAR-COVERAGE-80-01` 完成。
 - 本波工作树另有既存运行态/coverage 产物及 `sonar-project.properties`、`tsconfig.json` 改动；未将其混入本波提交，按保留 dirty worktree 规则交还。
+
+## Wave34 跨进程 Agent delivery bridge
+
+- `packages/ridge-mcp` 新增共享 `GET /api/v1/agent-events/ws` bridge；桌面、Kernel、tmux 复用 `mcp_router`，不新增第二份 Hub/identity state。
+- 注册必须先通过 host token 与当前 roster 的 `agent_id/generation/lease/online/lifecycle` 校验；route 使用现有 `DELIVERY_ROUTE_CAP=256`，桥接转发另有 1 条待发槽；满载、旧 generation、旧 lease、断连均 fail-closed，MCP pull 仍可恢复。
+- Hub envelope 原样经 WebSocket 投递；Agent 回 `type=ack` 后由 durable receipt 更新 `agentAcknowledged/ack`，ACK 同样校验 receipt 的目标身份 fence；不记录 token/cookie。
+- 隔离 `target\\codex-delivery-test` 实测 `cargo test -p ridge-mcp --features axum-transport --lib`：`89 passed / 0 failed`，含实际 TCP/WebSocket 鉴权、注册、Hub `ridge_send_message`、投递、ACK、断连注销 E2E。共享默认 target 曾被外部运行态清理，未触碰其进程；隔离 target 通过。
+- 该 bridge 是 Ridge-owned 等价 Runtime/A2A adapter，不宣称兼容第三方 CLI 私有协议；第三方协议验证、PTY 五条件原子运行时证据、Sonar 80%/Gate、物理现场项仍 ACTIVE。
