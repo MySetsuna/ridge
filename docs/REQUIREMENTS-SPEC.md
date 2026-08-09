@@ -1523,6 +1523,13 @@
 - Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
 - `REQ-SONAR-COVERAGE-80-01`、PTY 五条件原子运行时证据、第三方 Runtime/A2A 兼容性及其余现场证据继续 `ACTIVE`；`.mjs` coverage `PARSE_ERROR/Expected ident` 继续记录，不以排除文件冒充达标。
 
+## Wave65 fileEditor Tauri/浏览器错误边界覆盖
+
+- `src/lib/stores/fileEditor.test.ts` 新增已打开文件重读成功、二进制/读取失败回退、新文件打开失败、外部二进制变更、保存失败、回滚失败、浏览器图片 URL 与无效关闭请求回归。
+- 聚焦 `fileEditor.test.ts` 为 `13/13`；未改生产语义，未向 Codex 之外 CLI、Agent 或 teammate 发消息。
+- 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13238/18608 = 71.14%`、branches `7286/11610 = 62.75%`、functions `2573/3536 = 72.76%`、lines `11925/15895 = 75.02%`，距 statements 80% 尚缺 `1649` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+- Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
