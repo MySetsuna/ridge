@@ -1544,6 +1544,13 @@
 - 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13278/18608 = 71.35%`、branches `7314/11610 = 62.99%`、functions `2584/3536 = 73.07%`、lines `11959/15895 = 75.23%`，距 statements 80% 尚缺 `1609` 条。
 - Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
 
+## Wave68 wsRemote 能力降级与鉴权关闭边界覆盖
+
+- `packages/remote/src/shared/transport/wsRemote.behavior.test.ts` 新增能力公告去重/无效项过滤、空 pane/空 stdin fail-safe、坏 meta/resize/scrollback 输入、unsupported method 能力降级、断开后请求超时与 `4403 DEVICE_PARKED` 鉴权关闭分级回归。
+- 聚焦 `wsRemote.behavior.test.ts` 为 `7/7`；未改生产语义，未向 Codex 之外 CLI、Agent 或 teammate 发消息。
+- 全量 `pnpm test:coverage:sonar` exit `0`，`scripts/normalize-lcov.mjs` 返回 `ok=true`；本地 V8/LCOV statements `13284/18608 = 71.38%`、branches `7318/11610 = 63.03%`、functions `2585/3536 = 73.10%`、lines `11960/15895 = 75.24%`，距 statements 80% 尚缺 `1603` 条；`pnpm check` 为 `0 errors / 0 warnings`。
+- Sonar project 实际 coverage `>=80%`、Quality Gate `OK`、PTY 五条件原子运行时、第三方 Runtime/A2A、Cloud/Postgres 真 E2E、物理 DPR、跨卷权限及移动 profile 仍需外部/现场证据；本地 LCOV 不冒充 Sonar 指标。
+
 ## Wave42 Host transport onboarding coverage
 
 - 新增 `src/lib/stores/hosts.connect.test.ts`，以隔离 fake transport 覆盖 LAN 成功接入、LAN 错误与进度保留、Cloud E2EE 接入、统一 topology 投影及清理；聚焦 `3/3` 通过。
