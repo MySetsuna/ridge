@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use crate::delivery::{
     choose_delivery_adapter, DeliveryOutcome, DeliveryProbe, DeliveryRegistry, HubDeliveryAdapter,
+    HubPtySafety,
 };
 use crate::protocol as proto;
 use crate::registry::ToolRegistry;
@@ -474,6 +475,30 @@ impl McpSessionState {
     ) -> Result<bool, String> {
         self.delivery_registry
             .unregister(adapter, agent_id, generation, lease)
+    }
+
+    /// Publish the complete, generation/lease-fenced proof required before
+    /// the Hub may fall back to PTY delivery.
+    pub fn register_pty_safety(
+        &self,
+        agent_id: impl Into<String>,
+        generation: u64,
+        lease: impl Into<String>,
+        safety: HubPtySafety,
+    ) -> Result<(), String> {
+        self.delivery_registry
+            .register_pty_safety(agent_id, generation, lease, safety)
+    }
+
+    /// Remove a PTY safety proof only from its owning Agent generation.
+    pub fn unregister_pty_safety(
+        &self,
+        agent_id: &str,
+        generation: u64,
+        lease: &str,
+    ) -> Result<bool, String> {
+        self.delivery_registry
+            .unregister_pty_safety(agent_id, generation, lease)
     }
 
     pub fn delivery_probe(&self, target: &Value) -> DeliveryProbe {
@@ -3838,6 +3863,16 @@ mod tests {
             "lease": "lease-2"
         });
         assert!(state.delivery_probe(&target).runtime_api);
+        let safe = HubPtySafety {
+            agent_idle: true,
+            terminal_mode_agent_prompt: true,
+            foreground_is_target_agent: true,
+            ..Default::default()
+        };
+        state
+            .register_pty_safety("agent-a", 2, "lease-2", safe)
+            .expect("register PTY safety proof");
+        assert_eq!(state.delivery_probe(&target).pty, safe);
         let entry = json!({"messageId":"message-1"});
         let outcome = state
             .deliver_registered_endpoint(HubDeliveryAdapter::RuntimeApi, &target, &entry)
@@ -3847,7 +3882,11 @@ mod tests {
         assert!(state
             .unregister_delivery_endpoint(HubDeliveryAdapter::RuntimeApi, "agent-a", 2, "lease-2")
             .unwrap());
+        assert!(state
+            .unregister_pty_safety("agent-a", 2, "lease-2")
+            .unwrap());
         assert!(!state.delivery_probe(&target).runtime_api);
+        assert_eq!(state.delivery_probe(&target).pty, HubPtySafety::default());
     }
 
     #[test]

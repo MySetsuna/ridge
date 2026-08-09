@@ -190,6 +190,14 @@ The OSC 2 delivery path was isolated from raw PTY backpressure: `RemotePaneSub` 
 
 The read-only query completed through the configured proxy. It returned the existing conversation ID `a47d3199-c1f9-47f1-927c-ff2c4875b77d`, so this is a new query rather than a newly created chat session. Candidates, ordered by evidence risk: native PowerShell/WebView2 DPR pixel matrix; Codex monotonic frame/old-row replay; trusted-HTTPS mobile PWA and background recovery; explicit Agent message delivery with PTY as guarded fallback; Explorer cross-volume refresh; quota/manual park-cause recovery. Source facts and inferences remain separate; none is marked closed by NLM output alone.
 
+## BUG-AGENT-PTY-SAFETY-PROOF-01
+
+Status: local runtime gate closed; live field evidence remains open.
+
+- `DeliveryRegistry` now records the complete five-condition PTY proof against Agent `generation`/`lease`, expires proof after `3s`, rejects stale teardown, and routes expired/unsafe proof to MCP pull.
+- Deterministic Rust coverage: invalid identity, same-generation refresh, generation/lease fencing, stale teardown, expiry, and safe/unsafe adapter selection; `cargo test -p ridge-mcp --lib` `90/90`.
+- Remaining proof: live Agent interruption/replay while the target CLI is busy; PTY remains best-effort fallback and is not claimed as a production Runtime API/A2A substitute.
+
 ## New rerun findings (2026-08-10)
 
 ### BUG-CLOUD-SEED-DB-MISMATCH-01

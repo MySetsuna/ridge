@@ -204,3 +204,10 @@ nlm login --check
 - NLM's next-batch audit identified seven open evidence risks: trusted-HTTPS/mobile background recovery, keyboard/viewport physical proof, extension A/B attribution, Sonar `>=80%`, Message Hub versus PTY fallback delivery, cross-volume ACL refresh, and the native PowerShell/WebView2 DPR matrix.
 - CodeGraph confirmed Message Hub/Inbox/delivery registry and five-condition PTY gating already exist in `packages/ridge-mcp`. The local implementation iteration therefore added only deterministic contract tests for objective alias, `submitRequested=false`, and non-text fail-closed PTY payloads; `cargo test -p ridge-mcp --lib` passed `87/87`.
 - This closes the local PTY fallback contract branch only. It does not close recorded live Agent interruption/replay, physical mobile, physical DPR, ACL, or Sonar evidence gaps.
+
+## NLM independent-query follow-up and PTY safety proof (2026-08-10)
+
+- A read-only NotebookLM query was issued without a prior `conversation_id`; the MCP still returned the existing conversation `a47d3199-c1f9-47f1-927c-ff2c4875b77d`. It is recorded as a new problem-set extraction, not as proof that NotebookLM created a new chat.
+- The extracted next-batch candidates were Message Hub kernelization, ridge-term frame/DPR replay stability, deep-root kernel lifecycle, trusted-HTTPS mobile PWA continuity, and Sonar project coverage. Local code facts were rechecked before implementation; NLM output remains hypothesis/candidate material.
+- `packages/ridge-mcp` now stores a generation/lease-fenced, five-condition PTY safety proof with a bounded `3s` freshness window. Expired, stale-generation, stale-lease, invalid-identity, refresh, and teardown paths are covered; an unsafe proof falls back to MCP pull.
+- `cargo test -p ridge-mcp --lib --quiet` passed `90/90`; `cargo fmt --manifest-path packages/ridge-mcp/Cargo.toml -- --check` passed. The proof closes the local runtime-gating branch only; no live Agent interruption/replay or physical PTY evidence is claimed.
