@@ -43,6 +43,8 @@ function makeRig(opts: {
   totpVerifier?: (code: string) => Promise<boolean>;
   totpBindVerifier?: (tag: Uint8Array) => Promise<boolean>;
   bindTranscript?: Uint8Array | null;
+  hostEventSource?: ConstructorParameters<typeof CloudHostBridge>[0]['hostEventSource'];
+  preauthorized?: boolean;
   log?: (level: 'warn' | 'error', message: string, detail?: unknown) => void;
 } = {}) {
   const sent: Uint8Array[] = [];
@@ -55,6 +57,8 @@ function makeRig(opts: {
     totpVerifier: opts.totpVerifier,
     totpBindVerifier: opts.totpBindVerifier,
     bindTranscript: opts.bindTranscript,
+    hostEventSource: opts.hostEventSource,
+    preauthorized: opts.preauthorized,
     log: opts.log ?? (() => {}), // silence diagnostics in tests
   });
 
@@ -82,6 +86,50 @@ function makeRig(opts: {
 
   return { bridge, sent, invoke, sendJson, sendControl, sentJson, sentControl, sentPane };
 }
+
+describe('CloudHostBridge — host lifecycle hooks', () => {
+  it('forwards verified host events, sends preauthorized receipt, and unsubscribes on reset', () => {
+    let emit: ((name: string, payload: unknown) => void) | undefined;
+    let eventLive = true;
+    const stop = vi.fn(() => { eventLive = false; });
+    const rig = makeRig({
+      preauthorized: true,
+      hostEventSource: (callback) => {
+        emit = callback;
+        return stop;
+      },
+    });
+
+    rig.bridge.onConnected();
+    expect(rig.sentJson()).toContainEqual({ t: 'totp-result', ok: true, source: 'workspace-share' });
+    const emitEvent = (name: string, payload: unknown) => {
+      if (eventLive) emit?.(name, payload);
+    };
+    emitEvent('pane-meta-changed', { paneId: 'p1' });
+    expect(rig.sentJson()).toContainEqual({ type: 'event', name: 'pane-meta-changed', payload: { paneId: 'p1' } });
+
+    const beforeReset = rig.sent.length;
+    rig.bridge.reset();
+    expect(stop).toHaveBeenCalledOnce();
+    emitEvent('pane-meta-changed', { paneId: 'p2' });
+    expect(rig.sent).toHaveLength(beforeReset);
+  });
+
+  it('replaces and clears channel backpressure subscriptions', () => {
+    const rig = makeRig();
+    const firstStop = vi.fn();
+    const secondStop = vi.fn();
+    const first = { bufferedAmount: () => 0, onDrained: vi.fn(() => firstStop) };
+    const second = { bufferedAmount: () => 0, onDrained: vi.fn(() => secondStop) };
+
+    rig.bridge.attachChannelControl(first);
+    rig.bridge.attachChannelControl(second);
+    expect(firstStop).toHaveBeenCalledOnce();
+    expect(second.onDrained).toHaveBeenCalledOnce();
+    rig.bridge.reset();
+    expect(secondStop).toHaveBeenCalledOnce();
+  });
+});
 
 describe('CloudHostBridge — JSON-RPC invoke routing', () => {
   it('routes a request to invoke and replies with the result (0x11 round-trip)', async () => {

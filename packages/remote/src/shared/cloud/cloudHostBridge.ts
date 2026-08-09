@@ -936,6 +936,9 @@ export class CloudHostBridge {
     this.backpressuredPanes.clear(); // 弱网 P1：清背压待重同步集
     this.paneWorkspaces.clear();
     this.recoveringPanes.clear();
+    this.channelUnsub?.();
+    this.channelUnsub = null;
+    this.channel = null;
     // iter-60 G9：断开/重连时退订 host 事件 tap（provider 每连接 createBridge 新桥）。
     this.hostEventStop?.();
     this.hostEventStop = null;
