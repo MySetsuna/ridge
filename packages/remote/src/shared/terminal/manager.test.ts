@@ -440,6 +440,61 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(sent.length).toBeGreaterThan(0);
 	});
 
+	it('covers selection, input, scroll, and safe public projection edges', () => {
+		const { manager, fixture } = makeManager();
+		const sent: Uint8Array[] = [];
+		manager.onData(PANE, (bytes) => sent.push(bytes));
+		fixture.pane.selecting = true;
+		fixture.pane.selectionStartAbs = { row: 2, col: 3 };
+		manager.updateSelection(PANE, { row: 4, col: 5 });
+		expect(fixture.kernel.setSelectionAbs).toHaveBeenCalledWith(2, 3, 4, 5);
+		expect(manager.isSelecting(PANE)).toBe(true);
+		expect(manager.getMousePosition(PANE)).toEqual({ row: 4, col: 5 });
+		manager.sendData(PANE, new Uint8Array([7]));
+		manager.write(PANE, new Uint8Array([8]));
+		manager.paste(PANE, '粘贴');
+		expect(sent.length).toBe(3);
+		expect(manager.getKernel(PANE)).toBe(fixture.kernel);
+		manager.setVisualOffsetY(PANE, Number.NaN);
+		expect(fixture.pane.visualOffsetY).toBe(0);
+
+		fixture.setMouseModes(0);
+		fixture.setAltScreen(false);
+		expect(manager.handleWheel(PANE, { deltaY: 0 } as WheelEvent)).toBe(false);
+		expect(manager.wheelAltScroll(PANE, { deltaY: 30, deltaMode: 1 } as WheelEvent)).toBe(false);
+		fixture.setAltScreen(true);
+		expect(manager.wheelAltScroll(PANE, { deltaY: 1, deltaMode: 1 } as WheelEvent)).toBe(true);
+		manager.scrollUp(PANE, 2);
+		manager.scrollDown(PANE, 1);
+		manager.clearScrollback(PANE);
+		expect(fixture.kernel.clearScrollback).toHaveBeenCalledOnce();
+		expect(fixture.pane.linkSpans.clear).toHaveBeenCalledOnce();
+
+		fixture.kernel.getSelectionText.mockReturnValue('copy me');
+		expect(manager.handleKeyDown(PANE, {
+			key: 'c', ctrlKey: true, metaKey: false, altKey: false, shiftKey: false,
+		} as KeyboardEvent)).toBe(true);
+		expect(fixture.kernel.clearSelection).toHaveBeenCalled();
+		fixture.kernel.getSelectionText.mockReturnValue('');
+		manager.onResize(PANE, vi.fn());
+		manager.setFocused(PANE, true);
+		manager.setFocused(PANE, false);
+		manager.leaveAltScreen(PANE);
+		expect(fixture.kernel.leaveAltScreen).toHaveBeenCalled();
+
+		fixture.handle.backendName.mockImplementationOnce(() => { throw new Error('renderer gone'); });
+		expect(manager.backendName(PANE)).toBeNull();
+		expect(manager.backendName('missing')).toBeNull();
+		expect(manager.isCursorVisible('missing')).toBe(true);
+		expect(manager.isMouseReporting('missing')).toBe(false);
+		expect(manager.isInlineTuiActive('missing')).toBe(false);
+		expect(manager.isAppCursorKeys('missing')).toBe(false);
+		manager.clearSelection('missing');
+		manager.clearScrollback('missing');
+		manager.updateSelection('missing', { row: 1, col: 1 });
+		expect(manager.getMousePosition('missing')).toEqual({ row: 0, col: 0 });
+	});
+
 	it('parks and reclaims a pane without reviving renderer state', () => {
 		const { manager, fixture } = makeManager();
 		manager.park(PANE, 'memory');
