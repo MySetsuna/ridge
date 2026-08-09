@@ -31,6 +31,13 @@ const wasm = vi.hoisted(() => {
 		isInlineTuiMode = vi.fn(() => false);
 		isAppCursorKeys = vi.fn(() => false);
 		isCursorVisible = vi.fn(() => true);
+		dumpVisibleText = vi.fn(() => ['visible line']);
+		cursorRow = vi.fn(() => 2);
+		cursorCol = vi.fn(() => 3);
+		getSelectionText = vi.fn(() => 'selected');
+		hasSelection = vi.fn(() => true);
+		e2eEncodeCursorDeltaFrame = vi.fn((seq: number, row: number, col: number) =>
+			new Uint8Array([seq, row, col]));
 		shouldAllowShellHistory = vi.fn(() => true);
 		isMouseReporting = vi.fn(() => this.mouseMode !== 0);
 		backendName = vi.fn(() => 'canvas2d');
@@ -45,6 +52,9 @@ const wasm = vi.hoisted(() => {
 		setFocused = vi.fn();
 		setPadding = vi.fn();
 		resize = vi.fn();
+		currentThemeProbe = vi.fn(() => new Uint8Array([
+			1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255,
+		]));
 	}
 
 	return {
@@ -54,6 +64,10 @@ const wasm = vi.hoisted(() => {
 		SurfaceHostHandle: { init: vi.fn() },
 	};
 });
+
+const tauri = vi.hoisted(() => ({ invoke: vi.fn(async () => undefined) }));
+
+vi.mock('@tauri-apps/api/core', () => tauri);
 
 vi.mock('@ridge/term-wasm', () => ({
 	default: wasm.init,
@@ -227,5 +241,51 @@ describe('TerminalManager attach lifecycle', () => {
 		expect(entry.resizeObserver.disconnect).toHaveBeenCalledOnce();
 		expect(container.removeEventListener).toHaveBeenCalledWith('focusin', entry.focusListener);
 		expect(container.removeEventListener).toHaveBeenCalledWith('pointermove', entry.pointerMoveListener);
+	});
+
+	it('exposes development diagnostics for PTY, kernel, theme, selection, and worker state', async () => {
+		const manager = TerminalManager.instance({
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: false,
+			theme: { background: '#010203', foreground: '#fefefe' },
+		});
+		(manager as any).wasmReady = true;
+		const container = makeContainer();
+		await manager.attach('pane-a', container as unknown as HTMLElement, 'workspace-a');
+		const hooks = (window as unknown as { __windE2E?: Record<string, any> }).__windE2E;
+		expect(hooks).toBeDefined();
+		if (!hooks) return;
+
+		manager.onData('pane-a', vi.fn());
+		hooks.feedPty('pane-a', 'output');
+		await hooks.writePty('pane-a', 'input');
+		expect(tauri.invoke).toHaveBeenCalledWith('write_to_pty', { paneId: 'pane-a', data: 'input' });
+		expect(hooks.visibleText('pane-a')).toEqual(['visible line']);
+		expect(hooks.rows('pane-a')).toBe(24);
+		expect(hooks.cols('pane-a')).toBe(80);
+		expect(hooks.scrollbackLen('pane-a')).toBe(10);
+		expect(hooks.themeSnapshot()).toEqual({ background: '#010203', foreground: '#fefefe' });
+		expect(hooks.kernelCursor('pane-a')).toEqual({ row: 2, col: 3 });
+		expect(hooks.kernelThemeProbe('pane-a')).toEqual({
+			bg: '#010203ff', fg: '#040506ff', cursor: '#070809ff', tuiBg: '#0a0b0cff',
+		});
+		hooks.setTheme({ background: '#111111', foreground: '#eeeeee' });
+		expect(hooks.sampleHostPixel()).toBeNull();
+		expect(hooks.inputAnchorResolved('pane-a')).toMatchObject({ row: 2, col: 3, cellW: 10, cellH: 20 });
+		expect(hooks.lastPreeditCall('pane-a')).toBeNull();
+		hooks.kernelDecState('pane-a');
+
+		hooks.setSelectionAbs('pane-a', 1, 2, 3, 4);
+		expect(hooks.getSelectionText('pane-a')).toBe('selected');
+		expect(hooks.hasSelection('pane-a')).toBe(true);
+		hooks.applyDeltaFrameRaw('pane-a', new Uint8Array([1, 2]));
+		expect(hooks.encodeCursorDeltaFrame('pane-a', 5, 6, 7)).toEqual(new Uint8Array([5, 6, 7]));
+
+		hooks.installPtyWriteSpy('pane-a');
+		manager.write('pane-a', 'echo');
+		expect(hooks.ptyWriteLog('pane-a')).toHaveLength(1);
+		hooks.clearPtyWriteLog('pane-a');
+		expect(hooks.ptyWriteLog('pane-a')).toEqual([]);
+		expect(hooks.workerBridge()).toEqual({ active: false, pending: 0 });
+		manager.detach('pane-a');
 	});
 });
