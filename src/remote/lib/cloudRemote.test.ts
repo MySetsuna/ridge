@@ -1141,4 +1141,78 @@ describe('CloudRemoteConnection bounded parity guards', () => {
     expect(await conn.closePane(PANE)).toBe(false);
     expect(layoutCalls).toBe(2);
   });
+
+  it('keeps cloud parity operations fail-safe when optional commands fail', async () => {
+    const conn = await connected();
+    const stateListener = vi.fn();
+    const offState = conn.onStateChange(stateListener);
+    offState();
+    conn.notifyState('connecting');
+    conn.notifyError('device parked', 'DEVICE_PARKED');
+    expect(conn.state()).toBe('error');
+    expect(conn.lastFailure()).toEqual({ category: 'parked', code: 'DEVICE_PARKED', message: 'device parked' });
+
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'list_workspaces') return undefined;
+      if (cmd === 'get_active_workspace_id') throw new Error('active unavailable');
+      if (cmd === 'send_agent_message') return { messageId: 'm', deliveryId: 'd' };
+      if (cmd === 'resume_agent_session') return { paneId: 42 };
+      if (cmd === 'list_saved_workspace_files') throw new Error('saved unavailable');
+      if (cmd === 'open_workspace_from_file') throw 'open unavailable';
+      if (cmd === 'close_workspace' || cmd === 'switch_workspace') throw new Error('mutation unavailable');
+      if (cmd === 'create_workspace') return '';
+      if (cmd === 'get_pane_layout_for') throw new Error('layout unavailable');
+      if (cmd === 'get_theme_data') return { themes: [] };
+      return undefined;
+    });
+
+    await expect(conn.listWorkspaces()).resolves.toEqual({ workspaces: [] });
+    await expect(conn.sendAgentMessage({ ...PANE, generation: 2, lease: 'lease' }, 'hello'))
+      .resolves.toMatchObject({ messageId: 'm' });
+    await expect(conn.setTeammateGroups('ws1', [])).resolves.toBeUndefined();
+    await expect(conn.resumeAgentSession('ws1', 'Codex', 's', '/repo')).resolves.toBeNull();
+    await expect(conn.listSavedWorkspaceFiles()).resolves.toEqual([]);
+    await expect(conn.openWorkspaceFromFile('missing.ridge')).rejects.toThrow('open unavailable');
+    await expect(conn.closeWorkspace('ws1')).resolves.toBe(false);
+    await expect(conn.switchWorkspace('ws2')).resolves.toBe(false);
+    await expect(conn.createWorkspace('')).resolves.toBeNull();
+    await expect(conn.listWorkspacePanes('ws1')).rejects.toThrow('layout unavailable');
+    conn.cycleTheme('missing');
+    await flush();
+    expect(conn.getPaneOutput(PANE)).toEqual([]);
+    conn.setHostClipboard('ignored');
+    conn.connect();
+    conn.send();
+    conn.pruneOutputs(new Set());
+  });
+
+  it('falls back from a resync frame to tail history and advances scrollback safely', async () => {
+    const conn = await connected();
+    const raw: string[] = [];
+    conn.onRawBytes((_pane, bytes) => raw.push(new TextDecoder().decode(bytes)));
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_pane_resync_frame') throw new Error('new resync unsupported');
+      if (cmd === 'get_pane_scrollback_tail') {
+        return { bytes: 'TAIL', start_seq: 10, at_oldest: false, head_seq: 20 };
+      }
+      if (cmd === 'get_pane_scrollback_before') {
+        return { bytes: 'OLDER', start_seq: 1, end_seq: 10, at_oldest: true, head_seq: 20 };
+      }
+      if (cmd === 'register_pane_delta_channel') return undefined;
+      return undefined;
+    });
+
+    conn.subscribePane(PANE);
+    await flush();
+    expect(handlers['pty-output-ws1-pane-a']).toBeTypeOf('function');
+    handlers['pty-output-ws1-pane-a']({ payload: { data: 'LIVE' } });
+    expect(raw).toEqual(['\x1bcTAIL', 'LIVE']);
+
+    const page = await conn.fetchOlderScrollback(PANE);
+    expect(page?.startSeq).toBe(1);
+    expect(page?.bytes).toEqual(new TextEncoder().encode('OLDER'));
+    expect(page?.commit()).toBe(true);
+    expect(await conn.fetchOlderScrollback(PANE)).toBeNull();
+    expect(await conn.fetchOlderScrollback({ workspaceId: 'ws1', paneId: 'missing' })).toBeNull();
+  });
 });
