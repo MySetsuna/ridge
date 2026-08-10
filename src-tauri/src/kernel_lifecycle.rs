@@ -44,6 +44,15 @@ fn kernel_boot_lock() -> &'static Mutex<()> {
     KERNEL_BOOT_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn select_kernel_host_binary(
+    override_path: Option<PathBuf>,
+    current_exe: Result<PathBuf, std::io::Error>,
+) -> Result<PathBuf, String> {
+    override_path
+        .or_else(|| current_exe.ok())
+        .ok_or_else(|| "locate ridge desktop: current executable unavailable".to_string())
+}
+
 pub fn is_kernel_running() -> bool {
     running_endpoint().is_some()
 }
@@ -146,7 +155,12 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
         return Ok(ep);
     }
 
-    let bin = std::env::current_exe().map_err(|error| format!("locate ridge desktop: {error}"))?;
+    let bin = select_kernel_host_binary(
+        std::env::var_os("RIDGE_KERNEL_HOST_BINARY")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from),
+        std::env::current_exe(),
+    )?;
     tracing::info!(target: "ridge::kernel_lifecycle", path = %bin.display(), "spawning embedded ridge-kernel host");
     spawn_detached(&bin, &[ridge_kernel::client::KERNEL_HOST_ARG])?;
     let endpoint = wait_for_running(Duration::from_secs(8));
@@ -222,6 +236,32 @@ pub fn shutdown_kernel() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kernel_host_binary_prefers_per_run_override() {
+        let selected = select_kernel_host_binary(
+            Some(PathBuf::from("C:/ridge-kernel-copy.exe")),
+            Ok(PathBuf::from("C:/ridge.exe")),
+        )
+        .unwrap();
+        assert_eq!(selected, PathBuf::from("C:/ridge-kernel-copy.exe"));
+    }
+
+    #[test]
+    fn kernel_host_binary_falls_back_to_current_exe() {
+        let selected = select_kernel_host_binary(None, Ok(PathBuf::from("C:/ridge.exe"))).unwrap();
+        assert_eq!(selected, PathBuf::from("C:/ridge.exe"));
+    }
+
+    #[test]
+    fn kernel_host_binary_reports_missing_current_exe() {
+        let error = select_kernel_host_binary(None, Err(std::io::Error::other("missing")))
+            .expect_err("missing executable should fail closed");
+        assert_eq!(
+            error,
+            "locate ridge desktop: current executable unavailable"
+        );
+    }
 
     #[test]
     fn decide_boot_no_file_becomes_host() {
