@@ -10,6 +10,10 @@
 // Tokens stay in process memory and are never printed or written to evidence.
 
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { resolveCdpModuleUrl } from './lib/cdpModuleUrl.mjs';
+import { isRidgeCdpTarget } from './lib/cdpTarget.mjs';
 
 const port = Number(process.env.RIDGE_CDP_PORT || 0);
 const required = {
@@ -92,7 +96,7 @@ async function findRidgeTarget() {
   while (Date.now() < deadline) {
     try {
       const targets = await httpJson('/json/list');
-      const target = targets.find((item) => item.type === 'page' && item.webSocketDebuggerUrl);
+      const target = targets.find(isRidgeCdpTarget);
       if (target) return target;
     } catch { /* CDP starts after the Tauri window */ }
     await sleep(1000);
@@ -129,7 +133,17 @@ if (process.env.RIDGE_CLOUD_PANE_ID) {
   };
 }
 
-const expression = `(async()=>{try{const m=await import('/packages/remote/src/shared/cloud/__cloudE2eHarness.ts?cdp=${Date.now()}');return await m.runCloudDirChildrenE2E(${JSON.stringify(options)})}catch(error){return {__cloudE2eImportError:{name:error?.name,message:error?.message,stack:error?.stack}}}})()`;
+let devUrl;
+try {
+  const configPath = path.resolve('.webview2-dev-cdp', 'tauri-dev-cdp.config.json');
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  devUrl = config?.build?.devUrl;
+} catch { /* standalone CDP targets may not have a launcher config */ }
+const moduleUrl = resolveCdpModuleUrl(
+  process.env.RIDGE_CLOUD_E2E_VITE_URL || devUrl,
+  `/packages/remote/src/shared/cloud/__cloudE2eHarness.ts?cdp=${Date.now()}`,
+);
+const expression = `(async()=>{try{const m=await import(${JSON.stringify(moduleUrl)});return await m.runCloudDirChildrenE2E(${JSON.stringify(options)})}catch(error){return {__cloudE2eImportError:{name:error?.name,message:error?.message,stack:error?.stack}}}})()`;
 const result = await cdp.evaluate(expression);
 cdp.close();
 

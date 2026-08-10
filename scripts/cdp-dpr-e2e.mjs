@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { resolveCdpPort } from './cdp-port.mjs';
+import { isRidgeCdpTarget } from './lib/cdpTarget.mjs';
 
 const port = resolveCdpPort();
 const artifact = process.env.RIDGE_DPR_ARTIFACT || '.iteration/artifacts/dpr/desktop-shot.png';
@@ -29,7 +30,7 @@ async function findTarget() {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     try {
-      const target = (await listTargets()).find((item) => item.type === 'page' && item.webSocketDebuggerUrl);
+      const target = (await listTargets()).find(isRidgeCdpTarget);
       if (target) return target;
     } catch { /* dev:cdp may still be starting */ }
     await sleep(500);

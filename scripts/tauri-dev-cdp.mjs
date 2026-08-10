@@ -33,8 +33,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { DEV_USER_DATA_DIR, readDevToolsActivePort } from './cdp-port.mjs';
+import { DEV_USER_DATA_DIR, readDevToolsActivePort, shouldAnnounceCdpPort } from './cdp-port.mjs';
 import { applyKernelBreakawayPolicy } from './tauri-dev-cdp-env.mjs';
+import { cargoTool, systemTool } from './lib/toolPath.mjs';
 
 const userDataDir = DEV_USER_DATA_DIR;
 const root = path.resolve(import.meta.dirname, '..');
@@ -95,7 +96,7 @@ fs.writeFileSync(configFile, JSON.stringify({ build: { devUrl: `http://127.0.0.1
 // The LAN host is a detached `rdg` sidecar, not part of the Tauri crate. Keep
 // the debug sidecar in lockstep with this checkout before launching WebView2;
 // otherwise desktop code can be new while Remote still runs yesterday's CLI.
-const cliBuild = spawnSync('cargo', ['build', '-p', 'ridge-cli'], {
+const cliBuild = spawnSync(cargoTool('cargo'), ['build', '-p', 'ridge-cli'], {
   cwd: path.resolve(import.meta.dirname, '..'),
   env: process.env,
   stdio: 'inherit',
@@ -109,7 +110,7 @@ if (cliBuild.status !== 0) {
 // The embedded Kernel must not keep Cargo's shared `target/debug/ridge.exe`
 // open across a desktop-shell restart. Build and copy a per-run host binary;
 // the Tauri shell may then be rebuilt while the previous Kernel remains alive.
-const desktopBuild = spawnSync('cargo', ['build', '-p', 'ridge'], {
+const desktopBuild = spawnSync(cargoTool('cargo'), ['build', '-p', 'ridge'], {
   cwd: path.resolve(import.meta.dirname, '..'),
   env: process.env,
   stdio: 'inherit',
@@ -143,19 +144,21 @@ console.log(`[tauri-dev-cdp] kernel-data-dir: ${devKernelDataDir}`);
 console.log(`[tauri-dev-cdp] Ridge Vite URL : http://127.0.0.1:${vitePort}`);
 console.log(`[tauri-dev-cdp] waiting for DevToolsActivePort after the Ridge window opens…`);
 
-// Poll for the dynamic port and surface it once the webview registers CDP.
-let announced = false;
+// Poll for the dynamic port and surface it whenever the webview registers a
+// new CDP endpoint. Tauri/Vite rebuilds can restart WebView2 in-place, which
+// replaces DevToolsActivePort while this launcher remains alive.
+let announcedPort = null;
 const poll = setInterval(() => {
   const port = readDevToolsActivePort();
-  if (port && !announced) {
-    announced = true;
+  if (shouldAnnounceCdpPort(port, announcedPort)) {
+    announcedPort = port;
     try { fs.writeFileSync(portFile, String(port)); } catch { /* ignore */ }
     console.log(`\n[tauri-dev-cdp] ✅ CDP ready on port ${port}  →  http://127.0.0.1:${port}/json/version`);
     console.log(`[tauri-dev-cdp]    attach: CDP_PORT=${port} pnpm cdp:smoke   (or just \`pnpm cdp:smoke\`)\n`);
   }
 }, 1000);
 
-const child = spawn('pnpm', [
+const child = spawn(systemTool('pnpm'), [
   'tauri',
   'dev',
   '--config',

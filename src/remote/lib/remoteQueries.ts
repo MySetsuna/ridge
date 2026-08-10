@@ -10,6 +10,7 @@ import type {
   WsMessage,
 } from '@ridge/remote';
 import { trimTrailingSeparators } from '$lib/utils/path';
+import { unknownText } from '@ridge/remote/shared/transport/unknownText';
 
 const sessionIds = new WeakMap<object, number>();
 let nextSessionId = 1;
@@ -116,6 +117,19 @@ export interface RemoteTeamRosterSnapshot {
   health: OrchestrationHealth;
 }
 
+const EMPTY_TEAM_TOPOLOGY: TeammateTopology = { roster: [], leaderId: null, edges: [] };
+
+function isUnsupportedHostMethod(error: unknown): boolean {
+  return /method not supported by kernel host/i.test(error instanceof Error ? error.message : unknownText(error));
+}
+
+function emptyOnUnsupported<T>(work: Promise<T>, fallback: T): Promise<T> {
+  return work.catch((error) => {
+    if (isUnsupportedHostMethod(error)) return fallback;
+    throw error;
+  });
+}
+
 /**
  * Query-backed Agent roster snapshot. Keeping this in the shared query layer
  * makes sidebar remounts single-flight and lets the QueryClient retain the
@@ -133,8 +147,8 @@ export function fetchRemoteTeamRoster(
     remoteQueryKeys.teamRoster(sessionId, workspaceId),
     (context) => abortable(
       Promise.all([
-        link.getTeammateTopology(workspaceId),
-        link.listHitlPending(),
+        emptyOnUnsupported(link.getTeammateTopology(workspaceId), EMPTY_TEAM_TOPOLOGY),
+        emptyOnUnsupported(link.listHitlPending(), []),
         link.getOrchestrationHealth().catch(() => ({ suspendedAgents: 0, pendingHitl: 0 })),
       ]).then(([topology, pending, health]) => ({ topology, pending, health })),
       [signal, context?.signal],
@@ -216,18 +230,18 @@ export function mergeRemoteItems<T extends { id: string }>(
 }
 
 /** One list-panes request → its next canonical snapshot. Pushes remain separately merged. */
-export function requestPaneSnapshot(
-  link: RemoteLink,
-  workspaceId: string,
-  signal?: AbortSignal,
-  timeoutMs = REMOTE_QUERY_TIMEOUT_MS,
-): Promise<PaneInfo[]> {
+function requestWithAbortTimeout<T>(
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  timeoutMessage: string,
+  start: (resolve: (value: T) => void, reject: (reason: unknown) => void) => (() => void),
+): Promise<T> {
   return new Promise((resolve, reject) => {
-    let stop = () => {};
+    let cleanupRequest = () => {};
     let timer: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
     const cleanup = () => {
-      stop();
+      cleanupRequest();
       signal?.removeEventListener('abort', abort);
       if (timer !== undefined) clearTimeout(timer);
     };
@@ -240,22 +254,36 @@ export function requestPaneSnapshot(
     const abort = () => {
       finish(() => reject(signal?.reason ?? new DOMException('Aborted', 'AbortError')));
     };
-    stop = link.onMessage((message: WsMessage) => {
-      if (message.type !== 'panes') return;
-      if (message.workspaceId !== workspaceId) return;
-      finish(() => resolve(dedupeRemoteItems(message.panes)));
-    });
     if (signal?.aborted) {
       abort();
       return;
     }
     signal?.addEventListener('abort', abort, { once: true });
-    timer = setTimeout(() => finish(() => reject(new Error(`list panes timed out after ${timeoutMs}ms`))), timeoutMs);
     try {
-      link.listPanes();
+      timer = setTimeout(() => finish(() => reject(new Error(`${timeoutMessage} timed out after ${timeoutMs}ms`))), timeoutMs);
+      cleanupRequest = start(
+        (value) => finish(() => resolve(value)),
+        (error) => finish(() => reject(error)),
+      );
     } catch (error) {
       finish(() => reject(error));
     }
+  });
+}
+
+export function requestPaneSnapshot(
+  link: RemoteLink,
+  workspaceId: string,
+  signal?: AbortSignal,
+  timeoutMs = REMOTE_QUERY_TIMEOUT_MS,
+): Promise<PaneInfo[]> {
+  return requestWithAbortTimeout(signal, timeoutMs, 'list panes', (resolve) => {
+    const stop = link.onMessage((message: WsMessage) => {
+      if (message.type !== 'panes' || message.workspaceId !== workspaceId) return;
+      resolve(dedupeRemoteItems(message.panes));
+    });
+    link.listPanes();
+    return stop;
   });
 }
 
@@ -264,34 +292,12 @@ export function requestWorkspaceSnapshot(
   signal?: AbortSignal,
   timeoutMs = REMOTE_QUERY_TIMEOUT_MS,
 ): Promise<WorkspaceInfo[]> {
-  return new Promise((resolve, reject) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let settled = false;
-    const cleanup = () => {
-      signal?.removeEventListener('abort', abort);
-      if (timer !== undefined) clearTimeout(timer);
-    };
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      fn();
-    };
-    const abort = () => {
-      finish(() => reject(signal?.reason ?? new DOMException('Aborted', 'AbortError')));
-    };
-    if (signal?.aborted) {
-      abort();
-      return;
-    }
-    signal?.addEventListener('abort', abort, { once: true });
-    timer = setTimeout(() => finish(() => reject(new Error(`list workspaces timed out after ${timeoutMs}ms`))), timeoutMs);
-    Promise.resolve()
-      .then(() => link.listWorkspaces())
-      .then(
-        (result) => finish(() => resolve(dedupeRemoteItems(result.workspaces ?? []))),
-        (error) => finish(() => reject(error)),
-      );
+  return requestWithAbortTimeout(signal, timeoutMs, 'list workspaces', (resolve, reject) => {
+    link.listWorkspaces().then(
+      (result) => resolve(dedupeRemoteItems(result.workspaces ?? [])),
+      reject,
+    );
+    return () => {};
   });
 }
 

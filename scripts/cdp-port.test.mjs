@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fileSystem = vi.hoisted(() => ({ readFileSync: vi.fn() }));
 vi.mock('node:fs', () => ({ default: fileSystem }));
 
-import { readDevToolsActivePort, resolveCdpPort } from './cdp-port.mjs';
+import { readDevToolsActivePort, resolveCdpPort, shouldAnnounceCdpPort } from './cdp-port.mjs';
 
 describe('dynamic WebView2 CDP port resolution', () => {
   beforeEach(() => {
@@ -32,5 +32,12 @@ describe('dynamic WebView2 CDP port resolution', () => {
     delete process.env.CDP_PORT;
     fileSystem.readFileSync.mockImplementation(() => { throw new Error('not running'); });
     expect(resolveCdpPort()).toBe(9222);
+  });
+
+  it('announces the first port and every replacement, but not the same port twice', () => {
+    expect(shouldAnnounceCdpPort(9333, null)).toBe(true);
+    expect(shouldAnnounceCdpPort(9333, 9333)).toBe(false);
+    expect(shouldAnnounceCdpPort(10112, 9333)).toBe(true);
+    expect(shouldAnnounceCdpPort(null, 9333)).toBe(false);
   });
 });

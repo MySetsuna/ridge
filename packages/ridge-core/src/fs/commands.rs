@@ -16,7 +16,7 @@
 //! message through `to_command_string`), so the LAN WS `{_error}` envelope is
 //! identical to before.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{CoreError, CoreResult};
 use crate::fs::search::{InvalidGlob, ReplaceStats, SearchEngine, SearchOptions, SearchResult};
@@ -403,6 +403,34 @@ pub fn create_directory(path: String) -> Result<(), String> {
     Ok(())
 }
 
+fn copy_directory(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(to).map_err(|e| format!("create target directory failed: {e}"))?;
+    for entry in walkdir::WalkDir::new(from).min_depth(1) {
+        let entry = entry.map_err(|e| format!("walk source failed: {e}"))?;
+        let rel = entry
+            .path()
+            .strip_prefix(from)
+            .map_err(|e| format!("strip_prefix: {e}"))?;
+        let target = to.join(rel);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&target).map_err(|e| {
+                format!("create child directory failed ({}): {e}", target.display())
+            })?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    format!("create target parent failed ({}): {e}", parent.display())
+                })?;
+            }
+        }
+        std::fs::copy(entry.path(), &target)
+            .map_err(|e| format!("copy file failed ({}): {e}", target.display()))?;
+    }
+    Ok(())
+}
+
 /// Copy `from` → `to` (files + recursive directories; refuses overwrite unless
 /// `overwrite=true`). Verbatim port of `project.rs::copy_path_sync`.
 pub fn copy_path(from: String, to: String, overwrite: Option<bool>) -> Result<(), String> {
@@ -423,30 +451,7 @@ pub fn copy_path(from: String, to: String, overwrite: Option<bool>) -> Result<()
     let meta =
         std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
     if meta.is_dir() {
-        // Recursive copy via walkdir. Mirror the tree relative to `from_path`.
-        std::fs::create_dir_all(&to_path).map_err(|e| format!("创建目标目录失败: {}", e))?;
-        for entry in walkdir::WalkDir::new(&from_path).min_depth(1) {
-            let entry = entry.map_err(|e| format!("遍历源目录失败: {}", e))?;
-            let rel = entry
-                .path()
-                .strip_prefix(&from_path)
-                .map_err(|e| format!("strip_prefix: {}", e))?;
-            let target = to_path.join(rel);
-            if entry.file_type().is_dir() {
-                std::fs::create_dir_all(&target)
-                    .map_err(|e| format!("创建子目录失败 ({}): {}", target.display(), e))?;
-            } else {
-                if let Some(parent) = target.parent() {
-                    if !parent.exists() {
-                        std::fs::create_dir_all(parent).map_err(|e| {
-                            format!("创建目标父目录失败 ({}): {}", parent.display(), e)
-                        })?;
-                    }
-                }
-                std::fs::copy(entry.path(), &target)
-                    .map_err(|e| format!("复制文件失败 ({}): {}", target.display(), e))?;
-            }
-        }
+        copy_directory(&from_path, &to_path)?;
     } else {
         std::fs::copy(&from_path, &to_path).map_err(|e| format!("复制失败: {}", e))?;
     }
@@ -594,6 +599,34 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn copy_path_copies_nested_directory_and_file() {
+        let td = TempDir::new("copy-tree");
+        std::fs::create_dir_all(td.path.join("source/nested")).unwrap();
+        std::fs::write(td.path.join("source/root.txt"), b"root").unwrap();
+        std::fs::write(td.path.join("source/nested/leaf.txt"), b"leaf").unwrap();
+
+        copy_path(td.p("source"), td.p("target"), None).unwrap();
+
+        assert_eq!(std::fs::read_to_string(td.path.join("target/root.txt")).unwrap(), "root");
+        assert_eq!(
+            std::fs::read_to_string(td.path.join("target/nested/leaf.txt")).unwrap(),
+            "leaf"
+        );
+    }
+
+    #[test]
+    fn copy_path_rejects_existing_target_without_overwrite() {
+        let td = TempDir::new("copy-existing");
+        std::fs::write(td.path.join("source.txt"), b"source").unwrap();
+        std::fs::write(td.path.join("target.txt"), b"target").unwrap();
+
+        let error = copy_path(td.p("source.txt"), td.p("target.txt"), None).unwrap_err();
+
+        assert!(error.contains("目标已存在"));
+        assert_eq!(std::fs::read_to_string(td.path.join("target.txt")).unwrap(), "target");
     }
 
     #[test]
