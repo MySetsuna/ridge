@@ -43,7 +43,7 @@ export function decideForeignPaneBadge(input: ForeignPaneStatusInput): ForeignPa
     return {
       kind: 'reconnecting',
       label: '订阅恢复中',
-      attempt: input.reconnectAttempt,
+      attempt: Math.max(0, input.reconnectAttempt),
     };
   }
   return { kind: 'live', label: `远端 · ${input.hostLabel}` };
