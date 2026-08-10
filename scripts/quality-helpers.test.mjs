@@ -19,6 +19,10 @@ import { main as viteDevMain, viteArgs } from './start-vite-dev.mjs';
 import { sourceError as signalingSourceError } from './sync-signaling.mjs';
 import { main as syncSignalingMain, sourceError } from './sync-signaling.mjs';
 import { buildGapReport, main as gapReportMain } from './rdg-gap-report.mjs';
+import { REQUIRED_DOCS, runGates } from './check-user-rail-gates.mjs';
+import { ICON_SPECS, main as iconMain } from './gen-remote-icons.mjs';
+import { collectCommits, main as reviewMain, renderReviewGuide } from './generate-review-pack.mjs';
+import { main as publishMain } from './publish-remote-cloud.mjs';
 
 const quietIo = () => ({ log: vi.fn(), error: vi.fn(), warn: vi.fn() });
 
@@ -274,5 +278,61 @@ describe('rdg capability gap report', () => {
     const writes = [];
     expect(gapReportMain({ rootDir: 'C:/repo', fsImpl: { readFileSync: () => JSON.stringify(matrix), mkdirSync: vi.fn(), writeFileSync: (_p, content) => writes.push(content) }, io: quietIo() }).denied).toBe(1);
     expect(writes[0]).toContain('unknown');
+  });
+});
+
+describe('user rail gate', () => {
+  it('fails closed for missing artifacts/live fake credentials and passes a complete fixture', () => {
+    const io = quietIo();
+    const fs = { existsSync: () => true, readFileSync: () => '{"ok":true}' };
+    expect(REQUIRED_DOCS.length).toBeGreaterThan(5);
+    expect(runGates({ rootDir: 'C:/repo', fsImpl: fs, env: {}, args: [], io })).toBe(0);
+    expect(runGates({ rootDir: 'C:/repo', fsImpl: { existsSync: () => false }, env: { RIDGE_ARTIFACT_TOKEN: 'fake' }, args: ['--live'], io })).toBe(REQUIRED_DOCS.length + 1);
+  });
+});
+
+describe('remote icon generator', () => {
+  it('renders every manifest icon through the injected sharp pipeline', async () => {
+    const calls = [];
+    const sharpImpl = (input) => {
+      calls.push(input);
+      const chain = {
+        resize: () => chain,
+        composite: () => chain,
+        png: () => chain,
+        toBuffer: async () => Buffer.from('mark'),
+        toFile: async () => undefined,
+      };
+      return chain;
+    };
+    expect(await iconMain({ rootDir: 'C:/repo', outDir: 'C:/repo/out', sharpImpl, fsImpl: { mkdirSync: vi.fn() }, io: quietIo() })).toBe(ICON_SPECS.length);
+    expect(calls).toHaveLength(ICON_SPECS.length * 2);
+  });
+});
+
+describe('review pack generator', () => {
+  it('groups conventional commits and tags protocol/security surfaces', () => {
+    const git = (...args) => {
+      if (args[0] === 'rev-list' && args[1] === '--count') return '2';
+      if (args[0] === 'rev-list') return 'abcdef123456\n123456abcdef';
+      if (args[0] === 'log') return args.at(-1).startsWith('abc') ? 'feat(auth): add auth' : 'fix: repair';
+      if (args[1] === '--stat') return ' 1 file changed | 2 +';
+      return args.at(-1).startsWith('abc') ? 'docs/capability-matrix.json\nsrc/auth.ts' : 'src/other.ts';
+    };
+    const commits = collectCommits(git);
+    expect(commits[0].tags).toEqual(['协议面', '安全面']);
+    const content = renderReviewGuide(commits, 'test-range');
+    expect(content).toContain('协议面提交（1）');
+    expect(content).toContain('## feat（1）');
+    const writes = [];
+    expect(reviewMain({ rootDir: 'C:/repo', execFileSyncImpl: (_file, args) => git(...args), fsImpl: { mkdirSync: vi.fn(), writeFileSync: (_p, value) => writes.push(value) }, io: quietIo() }).count).toBe(2);
+    expect(writes[0]).toContain('origin/main..HEAD');
+  });
+});
+
+describe('remote artifact publisher guard', () => {
+  it('fails closed before rollback/upload when credentials are absent', async () => {
+    await expect(publishMain({ env: {}, args: ['--rollback'] })).rejects.toThrow('缺 RIDGE_CLOUD_ARTIFACT_URL');
+    await expect(publishMain({ env: { RIDGE_CLOUD_ARTIFACT_URL: 'https://cloud' }, args: ['--rollback'] })).rejects.toThrow('缺 RIDGE_ARTIFACT_TOKEN');
   });
 });

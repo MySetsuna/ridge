@@ -13,10 +13,7 @@ import path from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(__dirname, '..');
-const outDir = path.resolve(root, 'src/remote/public');
-mkdirSync(outDir, { recursive: true });
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // Brand background (matches manifest background_color / app shell).
 const BG = { r: 0x0d, g: 0x11, b: 0x17, alpha: 1 };
@@ -36,27 +33,36 @@ const markSvg = `<svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2
  * @param {number} scale  fraction of `size` the mark occupies (safe zone for maskable)
  * @param {string} file   output filename
  */
-async function emit(size, scale, file) {
+export const ICON_SPECS = [
+  [192, 0.64, 'icon-192.png'], [512, 0.64, 'icon-512.png'],
+  [512, 0.54, 'icon-maskable-512.png'], [180, 0.66, 'apple-touch-icon.png'], [48, 0.72, 'favicon.png'],
+];
+
+export async function emit(size, scale, file, { outDir, sharpImpl = sharp, io = console } = {}) {
   const markPx = Math.round(size * scale);
-  const mark = await sharp(Buffer.from(markSvg))
+  const mark = await sharpImpl(Buffer.from(markSvg))
     .resize(markPx, markPx, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .png()
     .toBuffer();
-  await sharp({ create: { width: size, height: size, channels: 4, background: BG } })
+  await sharpImpl({ create: { width: size, height: size, channels: 4, background: BG } })
     .composite([{ input: mark, gravity: 'center' }])
     .png()
     .toFile(path.join(outDir, file));
-  console.log(`[icons] wrote ${file} (${size}px, mark ${markPx}px)`);
+  io.log(`[icons] wrote ${file} (${size}px, mark ${markPx}px)`);
 }
 
-await Promise.all([
-  emit(192, 0.64, 'icon-192.png'),
-  emit(512, 0.64, 'icon-512.png'),
-  // Maskable: keep the mark inside the ~80% safe zone so launchers can crop.
-  emit(512, 0.54, 'icon-maskable-512.png'),
-  // Apple touch icon (iOS rounds it for us) — slightly larger mark reads well.
-  emit(180, 0.66, 'apple-touch-icon.png'),
-  emit(48, 0.72, 'favicon.png'),
-]);
+export async function main({ rootDir = root, outDir = path.resolve(rootDir, 'src/remote/public'), sharpImpl = sharp, fsImpl = { mkdirSync }, io = console } = {}) {
+  fsImpl.mkdirSync(outDir, { recursive: true });
+  await Promise.all(ICON_SPECS.map(([size, scale, file]) => emit(size, scale, file, { outDir, sharpImpl, io })));
+  io.log('[icons] done →', path.relative(rootDir, outDir));
+  return ICON_SPECS.length;
+}
 
-console.log('[icons] done →', path.relative(root, outDir));
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  try {
+    await main();
+  } catch (error) {
+    console.error(error);
+    process.exit(1);
+  }
+}
