@@ -126,7 +126,10 @@ try {
     process.exit(pass ? 0 : 2);
   };
 
-  const hardTimeout = setTimeout(() => { summary.errors.push('hard timeout'); done(false); }, 45000);
+  // A freshly-created Windows ConPTY may need a few seconds before its shell
+  // consumes the first input. Keep this aligned with cdp-pty-parsers.mjs so
+  // cold-start latency does not masquerade as a broken live-output lane.
+  const hardTimeout = setTimeout(() => { summary.errors.push('hard timeout'); done(false); }, 90000);
   let driven = false;
   const maybeDone = () => {
     if (summary.echoSeen && summary.pong) setTimeout(() => done(true), 400);
@@ -138,7 +141,7 @@ try {
     summary.subscribedPane = paneId;
     log('subscribe-pane', paneId);
     ws.send(JSON.stringify({ type: 'subscribe-pane', workspaceId, paneId }));
-    setTimeout(() => { log('stdin echo →', ECHO); ws.send(JSON.stringify({ type: 'stdin', workspaceId, paneId, data: `echo ${ECHO}\r` })); }, 800);
+    setTimeout(() => { log('stdin echo →', ECHO); ws.send(JSON.stringify({ type: 'stdin', workspaceId, paneId, data: `echo ${ECHO}\r` })); }, 2500);
     setTimeout(() => ws.send(JSON.stringify({ type: 'claim-pane', workspaceId, paneId, rows: 30, cols: 100, pixelWidth: 0, pixelHeight: 0, seq: 1 })), 1500);
     setTimeout(() => ws.send(JSON.stringify({ type: 'ping' })), 2400);
   }
