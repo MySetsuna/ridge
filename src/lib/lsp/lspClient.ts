@@ -27,7 +27,7 @@ export function classifyLspError(err: unknown): { missingServer: boolean; hint: 
       ? err
       : JSON.stringify(err) ?? '';
   if (!msg.includes(LSP_SPAWN_FAIL_MARKER)) return { missingServer: false, hint: '' };
-  const m = msg.match(/启动语言服务器失败（([\s\S]*?)）：/);
+  const m = /启动语言服务器失败（([\s\S]*?)）：/.exec(msg);
   return { missingServer: true, hint: m?.[1] ?? msg };
 }
 

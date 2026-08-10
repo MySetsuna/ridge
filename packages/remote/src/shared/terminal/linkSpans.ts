@@ -54,15 +54,24 @@ const POSIX_ABS_RE = /(?<![A-Za-z0-9_/])(\/[A-Za-z0-9_.\-/]+(?:\.[A-Za-z0-9]{1,8
 const HOME_RE = /(?<![A-Za-z0-9_])(~\/[^\s<>"'`|?*]+)/g;
 const REL_RE = /(?<![A-Za-z0-9_])(\.{1,2}[\\/][^\s<>"'`|?*]+)/g;
 
+export function trimTrailingSeparators(s: string): string {
+  let end = s.length;
+  while (end > 0 && (s[end - 1] === '/' || s[end - 1] === '\\')) end -= 1;
+  return s.slice(0, end);
+}
+
 /** 把右侧常见的句末标点剥掉（不影响真实路径/URL）。 */
-function trimTrailingPunct(s: string): string {
-  return s.replace(/[.,;:!?)\]}>]+$/, '');
+export function trimTrailingPunct(s: string): string {
+	const punctuation = new Set(['.', ',', ';', ':', '!', '?', ')', ']', '}', '>']);
+	let end = s.length;
+	while (end > 0 && punctuation.has(s[end - 1])) end -= 1;
+	return s.slice(0, end);
 }
 
 /** 进一步过滤"看起来不像路径"的命中：要求至少包含一个分隔符，或末段含已知扩展名。 */
 function looksLikePath(s: string): boolean {
   if (s.includes('/') || s.includes('\\')) return true;
-  const m = s.match(/\.([A-Za-z0-9]{1,8})$/);
+  const m = /\.([A-Za-z0-9]{1,8})$/.exec(s);
   if (!m) return false;
   return KNOWN_EXTS.has(m[1].toLowerCase());
 }
@@ -116,8 +125,8 @@ const PATH_CONTINUATION_RE = /^[^\s<>"'`|?*]+/;
 /** Return the contiguous continuation at the start of a soft-wrapped row. */
 function continuationPrefix(line: string, kind: LinkSpanKind): string {
   const match = (kind === 'url' || kind === 'file-url')
-    ? line.match(URL_CONTINUATION_RE)
-    : line.match(PATH_CONTINUATION_RE);
+    ? URL_CONTINUATION_RE.exec(line)
+    : PATH_CONTINUATION_RE.exec(line);
   return match?.[0] ?? '';
 }
 

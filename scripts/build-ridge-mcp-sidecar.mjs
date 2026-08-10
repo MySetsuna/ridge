@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cargoTool } from './lib/toolPath.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -16,7 +17,7 @@ function valueAfter(args, name) {
 }
 
 export function hostTriple() {
-  const output = execFileSync('rustc', ['-vV'], {
+  const output = execFileSync(cargoTool('rustc'), ['-vV'], {
     cwd: root,
     encoding: 'utf8',
     timeout: 10_000,
@@ -64,7 +65,7 @@ export function main(args = process.argv.slice(2)) {
     for (const buildTarget of new Set([target, detectedHost])) {
       const paths = sidecarPaths(buildTarget);
       execFileSync(
-        'cargo',
+        cargoTool('cargo'),
         ['build', '--release', '--package', 'ridge-mcp-bridge', '--bin', 'ridge-mcp', '--target', buildTarget],
         {
           cwd: root,

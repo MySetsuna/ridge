@@ -20,6 +20,12 @@
 
 import {
   type CloudConnectionState,
+  CHANNEL,
+  MAX_PANE_FRAME_BYTES,
+  encodePaneLaneReadyFrame,
+  isPaneLaneProbeFrame,
+  encodeChunks,
+  ChunkReassembler,
 } from '@ridge/remote';
 import { parseSignal, isInboundSignal } from './signaling';
 import type { SignalMsg, SignalIn, Role, JsonValue } from './signaling';
@@ -42,13 +48,6 @@ import {
 import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
-import {
-  CHANNEL,
-  MAX_PANE_FRAME_BYTES,
-  encodePaneLaneReadyFrame,
-  isPaneLaneProbeFrame,
-} from '@ridge/remote';
-import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import type { ChannelBackpressure } from './cloudHostBridge';
 import {
   BUFFERED_LOW_WATERMARK,

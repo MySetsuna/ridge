@@ -22,6 +22,7 @@ import {
   type RemoteSidebarScope,
   type RemoteQueryClientLike,
 } from './remoteQueries';
+import { trimTrailingSeparators } from '$lib/utils/path';
 
 export interface WsSidebarProviderOptions {
   /** TanStack Query client supplied by the Remote app. */
@@ -69,7 +70,7 @@ export function clearRemoteNonGitRoots(): void {
 }
 
 function parentOf(path: string): string | null {
-  const norm = path.replace(/[\\/]+$/, '');
+  const norm = trimTrailingSeparators(path);
   const idx = Math.max(norm.lastIndexOf('/'), norm.lastIndexOf('\\'));
   if (idx <= 0) return null;
   return norm.slice(0, idx) || norm.slice(0, idx + 1);

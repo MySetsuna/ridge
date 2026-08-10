@@ -40,7 +40,6 @@ import { decideRemoteInvoke } from '../transport/remoteInvokeAdmit';
 import { unknownText } from '../transport/unknownText';
 import {
   BUFFERED_HIGH_WATERMARK,
-  BUFFERED_LOW_WATERMARK,
 } from './cloudTransportLimits';
 export {
   BUFFERED_HIGH_WATERMARK,

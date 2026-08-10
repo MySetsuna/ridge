@@ -15,6 +15,8 @@
 // attack surface across runs — a markdown file inside a freshly-cloned
 // untrusted repo could quietly point at a host you OK'd six months ago.
 
+import { trimTrailingSeparators } from './path';
+
 /**
  * Schemes we never prompt for. `mailto:` / `tel:` already trigger an OS app
  * picker; those flows have their own confirmation. `file:` is handled
@@ -28,7 +30,7 @@ const SKIP_PROMPT_SCHEMES = new Set(['mailto:', 'tel:']);
 const trustedByBase = new Map<string, Set<string>>();
 
 function normalizeBase(basePath: string | undefined): string {
-  return (basePath ?? '').replace(/[\\/]+$/, '').toLowerCase();
+  return trimTrailingSeparators(basePath ?? '').toLowerCase();
 }
 
 function getOrCreateSet(basePath: string | undefined): Set<string> {

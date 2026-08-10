@@ -1,5 +1,6 @@
 import { writable, get } from 'svelte/store';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { trimTrailingSeparators } from '$lib/utils/path';
 
 // Splash loader contract. `primary` / `secondary` are required and feed
 // the SVG stroke and accent fill. Everything else is optional — fields
@@ -98,7 +99,11 @@ export function slugifyThemeId(label: string): string {
       prevDash = true;
     }
   }
-  slug = slug.replace(/^-+|-+$/g, '');
+  let start = 0;
+  while (start < slug.length && slug[start] === '-') start += 1;
+  let end = slug.length;
+  while (end > start && slug[end - 1] === '-') end -= 1;
+  slug = slug.slice(start, end);
   return CUSTOM_ID_PREFIX + (slug || 'theme');
 }
 
@@ -176,7 +181,7 @@ export async function resolveThemeBgUrl(t: ThemeEntry | undefined): Promise<stri
   if (!t?.bgImage) return null;
   const dir = await assetsDir();
   if (!dir) return null;
-  const cleanDir = dir.replace(/[\\/]+$/, '');
+  const cleanDir = trimTrailingSeparators(dir);
   const sep = cleanDir.includes('\\') ? '\\' : '/';
   return convertFileSrc(`${cleanDir}${sep}${t.bgImage}`);
 }

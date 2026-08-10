@@ -51,7 +51,7 @@ function parseToRgba(css: string): { r: number; g: number; b: number; a: number 
 		const b = Number.parseInt(out.slice(5, 7), 16);
 		return { r, g, b, a: 255 };
 	}
-	const m = out.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/);
+	const m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/.exec(out);
 	if (!m) return null;
 	const r = Number.parseInt(m[1], 10);
 	const g = Number.parseInt(m[2], 10);

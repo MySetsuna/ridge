@@ -9,6 +9,7 @@ import type {
   WorkspaceInfo,
   WsMessage,
 } from '@ridge/remote';
+import { trimTrailingSeparators } from '$lib/utils/path';
 
 const sessionIds = new WeakMap<object, number>();
 let nextSessionId = 1;
@@ -65,7 +66,7 @@ export const remoteSidebarQueryPrefix = (sessionId: number, scope?: RemoteSideba
 
 /** Stable key identity for Windows/Unix paths without changing the RPC path. */
 export function normalizeRemotePath(value: string): string {
-  const normalized = value.replaceAll('\\', '/').replace(/\/+$/, '') || '/';
+  const normalized = trimTrailingSeparators(value.replaceAll('\\', '/')) || '/';
   return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 

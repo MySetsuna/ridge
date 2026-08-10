@@ -12,7 +12,7 @@ import { hostTriple, main, sidecarPaths } from './build-rdg-sidecar.mjs';
 
 beforeEach(() => {
   vi.clearAllMocks();
-  childProcess.execFileSync.mockImplementation((command) => command === 'rustc' ? 'host: x86_64-pc-windows-msvc\n' : '');
+  childProcess.execFileSync.mockImplementation((command) => String(command).toLowerCase().endsWith('rustc.exe') || String(command).endsWith('/rustc') ? 'host: x86_64-pc-windows-msvc\n' : '');
   fileSystem.statSync.mockReturnValue({ isFile: () => true, size: 1, mode: 0o755 });
   vi.spyOn(console, 'log').mockImplementation(() => {});
 });

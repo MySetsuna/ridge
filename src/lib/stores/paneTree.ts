@@ -13,6 +13,7 @@ import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 import { ensurePtyBridge, teardownPtyBridge } from '@ridge/remote/shared/terminal/ptyBridge';
 import { retirePtyWriteQueuesForPane } from '$lib/terminal/ptyWriteQueue';
 import { retirePaneInputsForPane } from '@ridge/remote/shared/terminal/paneInputGate';
+import { trimTrailingSeparators } from '$lib/utils/path';
 
 const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
 const activeWorkspaceCommand = webRemote
@@ -2208,7 +2209,7 @@ function normalizeCwd(cwd: string): string {
     // Don't strip a Windows drive root like "C:/" or POSIX root "/".
     const isWindowsRoot = /^[A-Z]:\/$/i.test(out);
     if (!isWindowsRoot) {
-      out = out.replace(/\/+$/, '');
+      out = trimTrailingSeparators(out);
     }
   }
   return out;

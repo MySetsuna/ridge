@@ -80,6 +80,6 @@ export function reconstructInputSnapshot(
 	// Trim only the post-cursor blank tail. The pre-cursor segment is
 	// preserved as-is so trailing whitespace the user actually typed
 	// (e.g., "ls   |") survives.
-	const trimmedAfter = textAfter.replace(/\s+$/, '');
+	const trimmedAfter = textAfter.trimEnd();
 	return { text: textBefore + trimmedAfter, cursorCol: textBefore.length };
 }

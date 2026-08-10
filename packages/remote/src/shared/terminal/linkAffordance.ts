@@ -7,7 +7,7 @@
  * - Non-link clicks retain TUI forwarding / host selection semantics
  */
 
-import type { LinkSpan, LinkSpanKind } from './linkSpans';
+import { trimTrailingSeparators, type LinkSpan, type LinkSpanKind } from './linkSpans';
 
 export type LinkOpenTarget =
   | { kind: 'url'; href: string }
@@ -42,7 +42,7 @@ export function parsePathWithLocation(text: string): {
   col?: number;
 } {
   // Windows drive: C:\foo\bar.rs:12:3 — only treat trailing :digits as loc
-  const m = text.match(/^(.*?)(?::(\d+))(?::(\d+))?$/);
+  const m = /^(.*?)(?::(\d+))(?::(\d+))?$/.exec(text);
   if (!m) return { path: text };
   const pathPart = m[1];
   // Avoid treating "C:" as path with line — require more path after drive
@@ -94,7 +94,7 @@ export function resolvePathAgainstCwd(
   const base = (paneCwd && paneCwd.length > 0 ? paneCwd : workspaceRoot) || '';
   if (!base) return path;
   const sep = base.includes('\\') || path.includes('\\') ? '\\' : '/';
-  const left = base.replace(/[\\/]+$/, '');
+  const left = trimTrailingSeparators(base);
   const right = path.replace(/^\.[\\/]/, '');
   return `${left}${sep}${right}`;
 }

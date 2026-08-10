@@ -20,8 +20,11 @@ const BACKSPACE = '\x7f';
 
 /** `recentTyped` 尾部的「当前词」：最后一个空白（空格/换行/Tab）之后的段。 */
 export function trailingWord(recentTyped: string): string {
-  const m = /[^\s]*$/.exec(recentTyped);
-  return m ? m[0] : '';
+	let end = recentTyped.length;
+	if (end > 0 && recentTyped[end - 1].trim() === '') return '';
+	let start = end;
+	while (start > 0 && recentTyped[start - 1].trim() !== '') start -= 1;
+	return recentTyped.slice(start, end);
 }
 
 /** 两串的最长公共前缀长度（按码元；补全场景均为 ASCII/BMP，够用且稳定）。 */

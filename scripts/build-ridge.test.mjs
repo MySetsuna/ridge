@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const childProcess = vi.hoisted(() => ({
-  execSync: vi.fn(),
+  execFileSync: vi.fn(),
   spawn: vi.fn(),
 }));
 const fileSystem = vi.hoisted(() => ({
@@ -107,7 +107,7 @@ describe('build-ridge pure build contract', () => {
     const original = process.argv;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     process.argv = ['node', 'build-ridge.mjs', '--release', '1.2.3'];
-    childProcess.execSync.mockReset();
+    childProcess.execFileSync.mockReset();
     childProcess.spawn.mockImplementationOnce(() => ({
       on(event, callback) {
         if (event === 'exit') queueMicrotask(() => callback(0));
@@ -119,8 +119,8 @@ describe('build-ridge pure build contract', () => {
 
     try {
       await main();
-      expect(childProcess.execSync).toHaveBeenCalledTimes(2);
-      expect(childProcess.execSync).toHaveBeenNthCalledWith(1, 'npx vite build', expect.objectContaining({
+      expect(childProcess.execFileSync).toHaveBeenCalledTimes(2);
+      expect(childProcess.execFileSync).toHaveBeenNthCalledWith(1, process.execPath, expect.arrayContaining(['build']), expect.objectContaining({
         env: expect.objectContaining({ RIDGE_BUILD_SKIP: '1' }),
       }));
       expect(fileSystem.writeFileSync).toHaveBeenCalledWith(
@@ -144,7 +144,7 @@ describe('build-ridge pure build contract', () => {
     const original = process.argv;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     process.argv = ['node', 'build-ridge.mjs', '-r', '1.2.4'];
-    childProcess.execSync.mockReset();
+    childProcess.execFileSync.mockReset();
     childProcess.spawn.mockImplementationOnce(() => ({
       on(event, callback) {
         if (event === 'exit') queueMicrotask(() => callback(7));

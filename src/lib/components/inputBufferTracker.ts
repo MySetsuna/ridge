@@ -14,8 +14,8 @@
  *
  *   1. Test each event without DOM / Svelte plumbing.
  *   2. Fix one event at a time without touching the component.
- *   3. Mark deferred events with `it.todo` against the same module
- *      so future work has a concrete promotion target.
+ *   3. Keep deferred events named beside the same module so future work has
+ *      a concrete promotion target.
  *
  * Current coverage (Wave C):
  *   - char insertion at the cursor
@@ -29,7 +29,7 @@
  *   - Ctrl+K kill-to-eol   → keeps prefix up to cursor, drops the rest
  *   - Enter / Escape / explicit reset → empty state, cursor 0
  *
- * Deferred (still `it.todo`):
+ * Deferred promotion items:
  *   - Tab completion echo sync (Wave E)
  *   - shell-line length validation before `\x08` replay (Wave D)
  *   - PTY-prompt-suffix snapshot as buffer source-of-truth (Wave F)
@@ -200,7 +200,7 @@ function killWordAtCursor(text: string, col: number): { text: string; cursorCol:
 	const before = text.slice(0, col);
 	const after = text.slice(col);
 	if (!before) return { text: after, cursorCol: 0 };
-	const trimmed = before.replace(/\s+$/, '');
+	const trimmed = before.trimEnd();
 	if (!trimmed) return { text: after, cursorCol: 0 };
 	// Find the last whitespace before the trailing word; keep
 	// everything up to and including it.
@@ -251,4 +251,3 @@ export function computeReplaySequence(state: InputBufferState): string {
 	const backspaces = '\x08'.repeat(state.text.length);
 	return cursorAtEnd ? backspaces : '\x05' + backspaces;
 }
-

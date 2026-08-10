@@ -7,7 +7,6 @@ import {
   formatBackpressureBadge,
   hostsLineAlert,
   snapshotFromOutboundStats,
-  type BackpressureSnapshot,
 } from '../../../packages/remote/src/shared/hosts/liveBackpressure';
 import {
   decideForeignPaneBadge,

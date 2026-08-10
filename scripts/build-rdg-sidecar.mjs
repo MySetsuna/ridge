@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, copyFileSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cargoTool } from './lib/toolPath.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -16,7 +17,7 @@ function valueAfter(args, name) {
 }
 
 export function hostTriple() {
-  const output = execFileSync('rustc', ['-vV'], { cwd: root, encoding: 'utf8', timeout: 10_000 });
+  const output = execFileSync(cargoTool('rustc'), ['-vV'], { cwd: root, encoding: 'utf8', timeout: 10_000 });
   const match = /^host:\s*(\S+)$/m.exec(output);
   if (!match) throw new Error('rustc -vV did not report a host triple');
   return match[1];
@@ -40,7 +41,7 @@ export function main(args = process.argv.slice(2)) {
   if (!check) {
     for (const buildTarget of new Set([target, detectedHost])) {
       const current = sidecarPaths(buildTarget);
-      execFileSync('cargo', ['build', '--release', '--package', 'ridge-cli', '--bin', 'rdg', '--target', buildTarget], {
+      execFileSync(cargoTool('cargo'), ['build', '--release', '--package', 'ridge-cli', '--bin', 'rdg', '--target', buildTarget], {
         cwd: root,
         stdio: 'inherit',
         timeout: 15 * 60_000,

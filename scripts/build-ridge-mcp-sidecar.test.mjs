@@ -19,7 +19,7 @@ const config = JSON.stringify({ version: '0.1.61', bundle: { externalBin: ['bina
 beforeEach(() => {
   vi.clearAllMocks();
   childProcess.execFileSync.mockImplementation((command, args) => {
-    if (command === 'rustc') return 'host: x86_64-pc-windows-msvc\n';
+    if (String(command).toLowerCase().endsWith('rustc.exe') || String(command).endsWith('/rustc')) return 'host: x86_64-pc-windows-msvc\n';
     if (Array.isArray(args) && args[0] === '--version') return 'ridge-mcp 0.1.61\n';
     return '';
   });
