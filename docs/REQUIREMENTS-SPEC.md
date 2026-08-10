@@ -1563,3 +1563,10 @@
 - `scripts/build-ridge-mcp-sidecar.mjs`、`scripts/build-rdg-sidecar.mjs`、`scripts/check-release-version.mjs` 增加 ESM main guard 与可测导出；新增 3 个测试文件，聚焦回归 `12/12` 通过。未改变直接 CLI 构建/版本校验行为。
 - Rust 定向回归：`ridge-mcp 93/93`、`ridge-kernel 49/49`；全量 `pnpm test:coverage:sonar`：`199` files，`1825 passed / 1 skipped`；statements `12440/18603 = 66.87%`、branches `6869/11608 = 59.17%`、functions `2420/3536 = 68.43%`、lines `11239/15891 = 70.72%`。较 Wave42 新增 covered statements `103`，距本地 80% 尚缺 `2443`。
 - `.mjs` remap `PARSE_ERROR`、Sonar project `>=80%`/Quality Gate、真实宿主五条件快照注入与第三方 Runtime/A2A 兼容性仍 ACTIVE；本波不宣称闭环。coverage/`.iteration` 运行产物不纳入提交。
+## Wave69 TerminalManager 生命周期与几何边界覆盖
+
+- `packages/remote/src/shared/terminal/manager.attach.test.ts` 新增 wasm `ready()` 幂等初始化、atlas/present-fast 诊断导出、WebGPU-first handle 成功路径及构造失败后 Canvas2D 回退测试。
+- `packages/remote/src/shared/terminal/manager.test.ts` 新增主题背景 RGBA 解析、active workspace 隐藏判断、共享 host/Canvas2D 视口投影、raw-byte 本地网格拟合、DPR 漂移重配置与 shared visual-only fit 测试。
+- 聚焦回归 `26/26`；全量 `pnpm test:coverage:sonar` 为 `202` 个测试文件、`1894 passed / 1 skipped`；`pnpm check` 为 `0 errors / 0 warnings`。
+- 本地 V8/LCOV：statements `13330/18608 = 71.63%`，branches `7366/11610 = 63.44%`，functions `2588/3536 = 73.19%`，lines `12003/15895 = 75.51%`；相较 Wave68 statements `+46`，距本地 80% 尚缺 `1557` 条。
+- 本波提交 `3d7981a6`，仅增确定性测试，不改生产通信语义。Sonar 真实扫描、Quality Gate、PTY 五条件原子运行时、第三方 Runtime/A2A 兼容性及现场 E2E 仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标，coverage/`.iteration` 运行产物不纳入提交。
