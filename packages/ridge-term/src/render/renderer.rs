@@ -205,7 +205,7 @@ pub(crate) fn history_overlay_geometry(
 
     let (pad_w, pad_h) = overlay_padding(viewport_w, viewport_h, cell_w, cell_h);
 
-    let mut visible_count = requested_visible
+    let visible_count = requested_visible
         .min(overlay.max_visible_rows)
         .min(((viewport_h - 2.0 * pad_h) / cell_h).floor().max(1.0) as usize);
     let (needs_scrollbar, scrollbar_w, scrollbar_gap) = overlay_scrollbar(
