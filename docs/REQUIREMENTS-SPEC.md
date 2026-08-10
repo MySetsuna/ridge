@@ -1212,7 +1212,7 @@
 - Behavior:`下一迭代建立可复现的 Sonar coverage 基线，补齐测试并使 Sonar 项目级测试覆盖率（非仅 new_coverage）达到至少 80%。`
 - Boundary:`覆盖率提升须由真实 Sonar 扫描与 Quality Gate/API 结果证明；不得以受限文件扫描、局部 new-code coverage、静态估算或排除未测代码冒充全项目达标；保留既有 dirty worktree，不借机改写历史基线。`
 - Acceptance:`扫描退出成功；Sonar project status 为 OK；coverage >= 80.0%；扫描输入、测试命令、覆盖率报告、项目级指标与失败原因均留有脱敏证据；若本轮受环境/基线阻塞，须记录差距分解，不得宣称完成。`
-- Current iteration evidence:`2026-08-10 全源扫描（`sonar.sources=src,packages,src-tauri/src,scripts`，脚本 harness 保留 source scan 接受静态质量检查）scanner/CE SUCCESS，project coverage 80.2%、line 86.4%、branch 71.6%；Quality Gate ERROR：new_coverage 81.7% OK、new_duplicated_lines_density 0.94426% OK、new_violations 152 ERROR。故覆盖率阈值已达，Quality Gate 与新问题为 0 尚未达标，需求仍 ACTIVE。扫描日志留存于本机临时 evidence 目录，脱敏指标同步于 docs/iterations/2026-08-10-iteration-handoff.md。`
+- Current iteration evidence:`最新成功分析为 `c271e74b-ac3f-4277-bbef-74418f48b822`：其产品源范围扫描 project coverage 80.4%、new_coverage 80.1% OK、new_duplicated_lines_density 0.84181% OK，但 Quality Gate ERROR，new_violations 1/0；开放问题仍含旧的 `rust:S3776` 与 `Web:PageWithoutTitleCheck`。前者已由 `254a98e3` 重构，当前源码已含 HTML title，尚待新分析确认关闭。完整源集纳入 `scripts` 的历史扫描 coverage 66.3%，不能以产品源范围结果冒充全项目达标。当前 Sonar API 认证返回 401，且后续扫描曾受 JS/TS Node bridge 环境故障阻断，故真实全项目 metric、Quality Gate OK 与新问题为 0 尚未闭合，需求仍 ACTIVE；详见 `docs/iterations/2026-08-11-wave83-sonar-stale-gate.md`。`
 - Traceability:`REQ-SONAR-COVERAGE-80-01 → coverage baseline → uncovered-code test waves → Sonar scan/Quality Gate → iteration archive`
 
 ### REQ-AGENT-COMMUNICATION-ARCH-REBUILD-01 · Agent 通信架构重构：Kernel/Teammate 权威、类型化消息与跨端一致投影
