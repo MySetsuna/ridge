@@ -27,9 +27,9 @@ describe('desktop Pane Agent border contract', () => {
   });
 
   it('keeps PaneHeader Git pill at one sibling layer', () => {
-    expect((source.match(/<PaneGitPill\b/g) ?? []).length).toBe(1);
-    expect((source.match(/<PaneDiffPill\b/g) ?? []).length).toBe(1);
-    expect((source.match(/<PaneRepoSwitcher\b/g) ?? []).length).toBe(1);
+    expect(source.match(/<PaneGitPill\b/g) ?? []).toHaveLength(1);
+    expect(source.match(/<PaneDiffPill\b/g) ?? []).toHaveLength(1);
+    expect(source.match(/<PaneRepoSwitcher\b/g) ?? []).toHaveLength(1);
     expect(source).toMatch(
       /<PaneRepoSwitcher paneId=\{node\.id\} \/>\r?\n\s+<PaneGitPill paneId=\{node\.id\} \/>\r?\n\s+<PaneDiffPill paneId=\{node\.id\} \/>/,
     );

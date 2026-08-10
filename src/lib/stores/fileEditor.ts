@@ -35,12 +35,12 @@ function computeSingleEdit(
   const newLen = newStr.length;
   let prefix = 0;
   const maxPrefix = Math.min(oldLen, newLen);
-  while (prefix < maxPrefix && oldStr.charCodeAt(prefix) === newStr.charCodeAt(prefix)) prefix++;
+  while (prefix < maxPrefix && oldStr.codePointAt(prefix) === newStr.codePointAt(prefix)) prefix++;
   let suffix = 0;
   const maxSuffix = maxPrefix - prefix;
   while (
     suffix < maxSuffix &&
-    oldStr.charCodeAt(oldLen - 1 - suffix) === newStr.charCodeAt(newLen - 1 - suffix)
+    oldStr.codePointAt(oldLen - 1 - suffix) === newStr.codePointAt(newLen - 1 - suffix)
   ) {
     suffix++;
   }
@@ -307,7 +307,7 @@ function isImagePath(path: string): boolean {
 }
 
 function createStore() {
-  const { subscribe, update, set } = writable<FileEditorState>(initial);
+  const { subscribe, update } = writable<FileEditorState>(initial);
 
   function persist() {
     savePrefs(get({ subscribe }));
@@ -442,11 +442,11 @@ function createStore() {
         // 解析成 `https://asset.localhost//C%3A%2Fxxx` 这种双斜杠形式
         // 导致中文 / 含空格 / 含特殊字符的文件名加载失败。
         if (isTauri()) {
-          const normalized = path.replace(/\\/g, '/');
+          const normalized = path.replaceAll(/\\/g, '/');
           imageUrl = convertFileSrc(normalized);
         } else {
           // 非 Tauri 环境（开发模式）使用 file:// 协议
-          imageUrl = path.replace(/\\/g, '/');
+          imageUrl = path.replaceAll(/\\/g, '/');
           if (!imageUrl.startsWith('/')) {
             imageUrl = '/' + imageUrl;
           }
@@ -977,7 +977,7 @@ function createStore() {
     }): void {
       // 独立窗口弹出期间：转发给 editor 窗口，主窗口不本地打开。
       if (openInterceptor && openInterceptor({ kind: 'diff', args })) return;
-      const repoNorm = args.repoRoot.replace(/\\/g, '/');
+      const repoNorm = args.repoRoot.replaceAll(/\\/g, '/');
       const tabPath =
         args.compareBase && args.commit
           ? `__diff__:compare:${args.compareBase.slice(0, 7)}..${args.commit.slice(0, 7)}:${repoNorm}:${args.path}`

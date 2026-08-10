@@ -4,14 +4,14 @@
 
 import type { HitlAuditItem } from '../../../packages/remote/src/shared/teammate/hitlAuditRemote';
 
-export type AuditVerdict = 'approve' | 'reject' | 'timeout' | 'modify' | string;
-export type AuditSource = 'desktop' | 'remote' | 'timeout' | string;
+export type AuditVerdict = string;
+export type AuditSource = string;
 
 export interface AuditFilter {
-  verdict?: AuditVerdict | 'all';
-  source?: AuditSource | 'all';
+  verdict?: AuditVerdict;
+  source?: AuditSource;
   initiatorSubstr?: string;
-  riskLevel?: string | 'all';
+  riskLevel?: string;
   limit: number;
 }
 

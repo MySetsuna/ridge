@@ -22,9 +22,9 @@ describe('hostKeyFromUrl', () => {
   });
 
   it('returns null for hostless or invalid URLs', () => {
-    expect(hostKeyFromUrl('mailto:a@b.com')).toBe(null);
-    expect(hostKeyFromUrl('tel:+15555550100')).toBe(null);
-    expect(hostKeyFromUrl('not-a-url')).toBe(null);
+    expect(hostKeyFromUrl('mailto:a@b.com')).toBeNull();
+    expect(hostKeyFromUrl('tel:+15555550100')).toBeNull();
+    expect(hostKeyFromUrl('not-a-url')).toBeNull();
   });
 });
 

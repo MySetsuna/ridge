@@ -76,7 +76,6 @@ export function convertFileSrc(filePath: string, _protocol = 'asset'): string {
 
 /** Tauri internals helper; unused by the WS event path but kept for import
  *  compatibility. Returns a callback id stub. */
-export function transformCallback(callback?: (response: unknown) => void): number {
-  void callback;
+export function transformCallback(_callback?: (response: unknown) => void): number {
   return 0;
 }

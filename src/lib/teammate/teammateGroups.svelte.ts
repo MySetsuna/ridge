@@ -90,6 +90,8 @@ export function groupsStorageKey(stableKey: string): string {
 
 // ── 纯模型操作（不可变） ──
 
+let fallbackGroupId = 0;
+
 function genId(): string {
   try {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -98,7 +100,7 @@ function genId(): string {
   } catch {
     /* crypto 不可用 → 回退 */
   }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${Date.now().toString(36)}-${fallbackGroupId++}`;
 }
 
 /** 构造一个新组（去重成员、过滤空白名）。 */
@@ -525,7 +527,7 @@ let singleton: TeammateGroupStore | null = null;
 
 /** 惰性单例访问器（仅在真实 svelte 运行时由组件调用）。 */
 export function teammateGroupStore(): TeammateGroupStore {
-  if (!singleton) singleton = new TeammateGroupStore();
+  singleton ??= new TeammateGroupStore();
   return singleton;
 }
 

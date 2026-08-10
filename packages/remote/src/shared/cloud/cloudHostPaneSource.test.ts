@@ -18,7 +18,7 @@ describe('base64ToBytes', () => {
     expect(Array.from(base64ToBytes(b64([0x1b, 0x5b, 0x41])))).toEqual([0x1b, 0x5b, 0x41]);
   });
   it('returns empty on garbage without throwing', () => {
-    expect(base64ToBytes('!!!not base64!!!').length).toBe(0);
+    expect(base64ToBytes('!!!not base64!!!')).toHaveLength(0);
   });
 });
 

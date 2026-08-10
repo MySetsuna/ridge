@@ -30,6 +30,7 @@ import {
 } from '@ridge/remote';
 import { parseSignal, isInboundSignal } from './signaling';
 import type { SignalMsg, SignalIn, JsonValue } from './signaling';
+import { secureRandomUnit } from '../transport/random';
 import {
   E2eeSession,
   DIR_CONTROLLER_TO_HOST,
@@ -831,7 +832,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.setState('disconnected');
     const n = this.reconnectAttempts++;
     const base = backoffMs(n); // R17-RECONN shipped path
-    const delay = Math.round(base + base * 0.3 * Math.random()); // ±30% 抖动
+    const delay = Math.round(base + base * 0.3 * secureRandomUnit()); // ±30% 抖动
     // §diagnostic: 记录重连调度
     console.log('[cloud-controller] scheduleReconnect', { reason, attempt: n, delayMs: delay });
     this.reconnectTimer = setTimeout(() => {

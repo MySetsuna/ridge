@@ -335,7 +335,7 @@ describe('ControllerCloudProvider', () => {
     // 1) controller 首帧 = 0x01 || ephemeral_pub(32)。
     const handshakeFrame = dc.lastSent();
     expect(handshakeFrame[0]).toBe(0x01);
-    expect(handshakeFrame.length).toBe(1 + 32);
+    expect(handshakeFrame).toHaveLength(1 + 32);
     const ctrlPub = decodeHandshakeFrame(handshakeFrame);
 
     // 2) 模拟 host：用 dir=0 建 session，回自己的握手帧。
@@ -347,8 +347,8 @@ describe('ControllerCloudProvider', () => {
     // marker arrives.
     const panePlain = new Uint8Array([0x10, 0x01, 0x70, 0x6f, 0x6e, 0x65]);
     provider.sendFrame(panePlain);
-    expect(paneDc.sent.length).toBe(0);
-    expect(dc.sent.length).toBe(3); // handshake + probe + pane fallback
+    expect(paneDc.sent).toHaveLength(0);
+    expect(dc.sent).toHaveLength(3); // handshake + probe + pane fallback
     hostSession.open(unwrapSingle(new Uint8Array(dc.sent[1]))); // consume the probe counter
     expect(hostSession.open(unwrapSingle(dc.lastSent()))).toEqual(panePlain);
 
@@ -369,8 +369,8 @@ describe('ControllerCloudProvider', () => {
     expect(hostSession.open(onWire)).toEqual(ctrlPlain);
 
     provider.sendFrame(panePlain);
-    expect(paneDc.sent.length).toBe(1);
-    expect(dc.sent.length).toBe(4); // handshake + probe + fallback pane + control
+    expect(paneDc.sent).toHaveLength(1);
+    expect(dc.sent).toHaveLength(4); // handshake + probe + fallback pane + control
     const paneWire = unwrapSingle(paneDc.lastSent());
     expect(paneWire[0]).toBe(1);
     const paneHostKey = deriveSessionKey(hostKp.privateKey, hostKp.publicKey, ctrlPub);
@@ -478,7 +478,7 @@ describe('ControllerCloudProvider', () => {
     expect(provider.getState()).toBe('disconnected');
 
     // 断开前 controller 在 DataChannel 上多发了一帧：重组+解密 → 0x11 $/bye{signature-invalid}。
-    expect(dc.sent.length).toBe(sentBefore + 1);
+    expect(dc.sent).toHaveLength(sentBefore + 1);
     const byePlain = hostSession.open(unwrapSingle(dc.lastSent()));
     const demuxed = demuxFrame(byePlain);
     expect(demuxed.kind).toBe('json');
@@ -496,7 +496,7 @@ describe('ControllerCloudProvider', () => {
     dc.fireOpen(); // handshaking，但握手未完成
     const before = dc.sent.length; // 仅握手帧
     expect(() => provider.sendFrame(new Uint8Array([1, 2, 3]))).not.toThrow();
-    expect(dc.sent.length).toBe(before); // 未额外发出
+    expect(dc.sent).toHaveLength(before); // 未额外发出
   });
 
   it('非握手首帧（首字节非 0x01）→ 握手失败 + error + 断开', async () => {
@@ -667,7 +667,7 @@ describe('ControllerCloudProvider 断线自动重连 (P1)', () => {
     // 退避（≤1.3s）后重连 → ICE restart：同一 pc 发新 offer，未重建 PeerConnection。
     await vi.advanceTimersByTimeAsync(1400);
     expect(FakePeerConnection.instances).toHaveLength(1);
-    expect(ws.sentParsed().filter((m) => m.t === 'offer').length).toBe(offersBefore + 1);
+    expect(ws.sentParsed().filter((m) => m.t === 'offer')).toHaveLength(offersBefore + 1);
     expect(provider.getState()).toBe('connecting');
 
     // ICE 恢复 → connected（E2EE 会话存活，无需重握手）。

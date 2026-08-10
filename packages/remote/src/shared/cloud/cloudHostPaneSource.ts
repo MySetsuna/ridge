@@ -24,7 +24,7 @@ export function base64ToBytes(b64: string): Uint8Array {
   try {
     const bin = atob(b64);
     const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.codePointAt(i) ?? 0;
     return out;
   } catch {
     return new Uint8Array(0);

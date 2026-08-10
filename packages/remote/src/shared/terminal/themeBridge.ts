@@ -193,17 +193,13 @@ export function setupTerminalThemeBridge(): () => void {
 		// 此刻 CSS 变量已随 applyTheme 生效，可同步 push。
 		push();
 		let size = _lastFontSize;
-		if (size === null) {
-			size = ports?.termSettings?.fontSize() ?? 15;
-		}
+		size ??= ports?.termSettings?.fontSize() ?? 15;
 		pushFont(settings.terminalFontFamily, size);
 	}) ?? (() => {});
 
 	const unsubscribeFont = ports?.termSettings?.subscribe((size) => {
 		let family = _lastFontFamily;
-		if (family === null) {
-			family = ports?.settings?.get().terminalFontFamily ?? '';
-		}
+		family ??= ports?.settings?.get().terminalFontFamily ?? '';
 		pushFont(family, size);
 	}) ?? (() => {});
 

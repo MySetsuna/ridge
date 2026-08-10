@@ -13,9 +13,9 @@ export function autoGrow(node: HTMLTextAreaElement, opts: AutoGrowOpts = {}) {
   const fit = () => {
     node.style.height = 'auto';
     const cs = getComputedStyle(node);
-    const line = parseFloat(cs.lineHeight) || 16;
-    const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-    const border = (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+    const line = Number.parseFloat(cs.lineHeight) || 16;
+    const pad = (Number.parseFloat(cs.paddingTop) || 0) + (Number.parseFloat(cs.paddingBottom) || 0);
+    const border = (Number.parseFloat(cs.borderTopWidth) || 0) + (Number.parseFloat(cs.borderBottomWidth) || 0);
     const max = Math.ceil(line * maxRows + pad + border);
     const want = node.scrollHeight + border;
     node.style.height = `${Math.min(want, max)}px`;

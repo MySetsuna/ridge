@@ -60,7 +60,7 @@ export interface LspTarget {
 
 /** 文件路径 → `file://` URI。Windows `C:\a\b` → `file:///C:/a/b`。 */
 export function pathToUri(path: string): string {
-  const p = path.replace(/\\/g, '/');
+  const p = path.replaceAll(/\\/g, '/');
   const encoded = p
     .split('/')
     // 盘符段 `C:` 的冒号不编码（保持 file:///C:/… 的常见形态）；其余段编码空格等。
@@ -83,7 +83,7 @@ export function uriToPath(uri: string): string {
   if (winDrive) {
     return p
       .slice(1)
-      .replace(/\//g, '\\')
+      .replaceAll(/\//g, '\\')
       .replace(/^[a-z]:/, (m) => m.toUpperCase());
   }
   return p;

@@ -9,6 +9,7 @@ const SS_KEY = 'ridge_cli';
 
 /** 模块级内存缓存：sessionStorage 不可用(SSR/隐私模式)时的唯一存储。 */
 let cached: string | null = null;
+let fallbackCounter = 0;
 
 /** 生成新的 cli：优先 crypto.randomUUID()，回退到时间+随机的 base36（仅在无 crypto 时）。 */
 function genCli(): string {
@@ -20,7 +21,7 @@ function genCli(): string {
     /* fallthrough */
   }
   // 极端回退：字符集仍落在 [A-Za-z0-9._-]，长度 ≤ 64。
-  return `c-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  return `c-${Date.now().toString(36)}-${fallbackCounter++}`;
 }
 
 /**
@@ -42,7 +43,7 @@ export function getOrCreateCli(): string {
     cached = fresh;
     return cached;
   } catch {
-    if (cached === null) cached = genCli();
+    cached ??= genCli();
     return cached;
   }
 }

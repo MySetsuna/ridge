@@ -14,6 +14,7 @@ import {
   type RpcRequestOptions,
 } from './types';
 import { capabilityForRemoteMethod } from './capabilityContract';
+import { secureRandomUnit } from './random';
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -843,7 +844,7 @@ export class RemoteConnection implements RemoteLink {
 
   private _handleMessage(event: MessageEvent) {
     // §perf: stamp the first inbound frame (text or binary) of this cycle.
-    if (this._perf.firstFrame == null) this._perf.firstFrame = performance.now();
+    this._perf.firstFrame ??= performance.now();
     // Any inbound byte proves the socket is alive — clear the pong watchdog.
     if (this._pongDeadline) { clearTimeout(this._pongDeadline); this._pongDeadline = null; }
     if (event.data instanceof ArrayBuffer) {
@@ -1046,7 +1047,7 @@ export class RemoteConnection implements RemoteLink {
     if (!this._host || !this._port || !this._token) return;
     const attempt = this._reconnectAttempts++;
     const base = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
-    const delay = Math.round(base + base * 0.3 * Math.random()); // jitter
+    const delay = Math.round(base + base * 0.3 * secureRandomUnit()); // jitter
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
       if (this._intentionalClose) return;

@@ -89,7 +89,7 @@ export interface RemoteQueryClientLike {
     queryFn: (context?: { signal?: AbortSignal }) => Promise<T>;
     staleTime?: number;
   }): Promise<T>;
-  invalidateQueries?: (options: { queryKey: readonly unknown[] }) => Promise<unknown> | unknown;
+  invalidateQueries?: (options: { queryKey: readonly unknown[] }) => unknown;
 }
 
 export function fetchRemoteQuery<T>(

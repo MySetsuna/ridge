@@ -268,9 +268,9 @@ describe('fileExplorerStore.setSelectedPath (single-select shortcut)', () => {
     fileExplorerStore.setSelectedPath('ws:/r', '/r/only');
     fileExplorerStore.setSelectedPath('ws:/r', null);
     const col = get(fileExplorerStore).columns[0];
-    expect(col.selectedPath).toBe(null);
+    expect(col.selectedPath).toBeNull();
     expect(col.selectedPaths.size).toBe(0);
-    expect(col.anchorPath).toBe(null);
+    expect(col.anchorPath).toBeNull();
   });
 });
 
@@ -498,7 +498,7 @@ describe('refreshColumnsCovering', () => {
     await refreshColumnsCovering('/r/sub');
     // Both columns contain /r/sub in their cached tree → both reload.
     const calls = mockInvoke.mock.calls.filter((c) => c[0] === 'get_file_tree');
-    expect(calls.length).toBe(2);
+    expect(calls).toHaveLength(2);
   });
 
   it('normalizes Windows separators when refreshing descendant paths', async () => {

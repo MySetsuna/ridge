@@ -120,7 +120,12 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 						const hex = Array.from(bytes)
 							.map((b) => b.toString(16).padStart(2, '0'))
 							.join(' ');
-						const printable = data.replace(/\x1b/g, '\\e').replace(/[\x00-\x1f]/g, (c) => '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+						const printable = data
+							.replaceAll(new RegExp(String.fromCharCode(0x1b), 'g'), '\\e')
+							.replace(
+								new RegExp(`[${String.fromCharCode(0)}-${String.fromCharCode(0x1f)}]`, 'g'),
+								(c) => '\\x' + (c.codePointAt(0) ?? 0).toString(16).padStart(2, '0'),
+							);
 						console.log(`[pty-trace ${paneId.slice(0, 6)}] ${printable.length} chars / ${bytes.length} bytes\n  text: ${JSON.stringify(printable)}\n  hex:  ${hex}`);
 					}
 				} catch {

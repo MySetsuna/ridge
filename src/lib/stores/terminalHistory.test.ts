@@ -252,7 +252,7 @@ describe('terminalHistoryStore', () => {
 			terminalHistoryStore.add(`cmd-${i}`);
 		}
 		const history = get(terminalHistoryStore);
-		expect(history.length).toBe(1000);
+		expect(history).toHaveLength(1000);
 		expect(history[0]).toBe('cmd-1099');
 		expect(history[999]).toBe('cmd-100');
 	});

@@ -46,17 +46,17 @@ function parseToRgba(css: string): { r: number; g: number; b: number; a: number 
 	if (out.startsWith('#')) {
 		// Browser returns #RRGGBB for opaque colors.
 		if (out.length !== 7) return null;
-		const r = parseInt(out.slice(1, 3), 16);
-		const g = parseInt(out.slice(3, 5), 16);
-		const b = parseInt(out.slice(5, 7), 16);
+		const r = Number.parseInt(out.slice(1, 3), 16);
+		const g = Number.parseInt(out.slice(3, 5), 16);
+		const b = Number.parseInt(out.slice(5, 7), 16);
 		return { r, g, b, a: 255 };
 	}
 	const m = out.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/);
 	if (!m) return null;
-	const r = parseInt(m[1], 10);
-	const g = parseInt(m[2], 10);
-	const b = parseInt(m[3], 10);
-	const a = m[4] !== undefined ? Math.round(parseFloat(m[4]) * 255) : 255;
+	const r = Number.parseInt(m[1], 10);
+	const g = Number.parseInt(m[2], 10);
+	const b = Number.parseInt(m[3], 10);
+	const a = m[4] !== undefined ? Math.round(Number.parseFloat(m[4]) * 255) : 255;
 	return { r, g, b, a };
 }
 

@@ -2163,7 +2163,7 @@ export function collapseCwd(cwd: string): string {
   } catch {
     /* ignore */
   }
-  const parts = cwd.replace(/\\/g, '/').split('/').filter(Boolean);
+  const parts = cwd.replaceAll(/\\/g, '/').split('/').filter(Boolean);
   if (parts.length <= 2) return cwd;
   if (parts[0] === 'home' || parts[0] === 'Users' || parts[0] === 'c:' || parts[0] === 'C:') {
     const tail = parts.slice(2);
@@ -2196,7 +2196,7 @@ export function collapseCwd(cwd: string): string {
  *    defeat. Trim except when it IS the root (POSIX "/", Windows "C:/").
  */
 function normalizeCwd(cwd: string): string {
-  let out = cwd.replace(/\\/g, '/');
+  let out = cwd.replaceAll(/\\/g, '/');
   // Shell integrations may concatenate the next prompt marker onto the CWD
   // payload when BEL terminates OSC 7 and OSC 133;A follows in the same
   // metadata frame. Control bytes cannot be part of a usable cwd, so discard

@@ -1548,11 +1548,11 @@ export class TerminalManager {
 	private _currentThemeBgRgba(): Uint8Array {
 		const bg = this.opts.theme?.background;
 		if (bg && bg.length >= 7 && bg.startsWith('#')) {
-			const r = parseInt(bg.slice(1, 3), 16);
-			const g = parseInt(bg.slice(3, 5), 16);
-			const b = parseInt(bg.slice(5, 7), 16);
-			const a = bg.length >= 9 ? parseInt(bg.slice(7, 9), 16) : 255;
-			if (!isNaN(r) && !isNaN(g) && !isNaN(b) && !isNaN(a)) {
+			const r = Number.parseInt(bg.slice(1, 3), 16);
+			const g = Number.parseInt(bg.slice(3, 5), 16);
+			const b = Number.parseInt(bg.slice(5, 7), 16);
+			const a = bg.length >= 9 ? Number.parseInt(bg.slice(7, 9), 16) : 255;
+			if (!Number.isNaN(r) && !Number.isNaN(g) && !Number.isNaN(b) && !Number.isNaN(a)) {
 				return new Uint8Array([r, g, b, a]);
 			}
 		}
@@ -1597,10 +1597,10 @@ export class TerminalManager {
 			? hostCanvas.getBoundingClientRect()
 			: cr;
 		const cs = window.getComputedStyle(entry.container);
-		const padL = parseFloat(cs.paddingLeft) || 0;
-		const padT = parseFloat(cs.paddingTop) || 0;
-		const padR = parseFloat(cs.paddingRight) || 0;
-		const padB = parseFloat(cs.paddingBottom) || 0;
+		const padL = Number.parseFloat(cs.paddingLeft) || 0;
+		const padT = Number.parseFloat(cs.paddingTop) || 0;
+		const padR = Number.parseFloat(cs.paddingRight) || 0;
+		const padB = Number.parseFloat(cs.paddingBottom) || 0;
 		const dpr = window.devicePixelRatio || 1;
 		const geometry = computePaneGeometry({
 			container: cr,
@@ -2184,9 +2184,7 @@ export class TerminalManager {
 				metaKey: e.metaKey,
 			};
 			ent.pendingMouseMove = e;
-			if (ent.mouseMoveRaf == null) {
-				ent.mouseMoveRaf = requestAnimationFrame(flushPointerMove);
-			}
+			ent.mouseMoveRaf ??= requestAnimationFrame(flushPointerMove);
 			// Edge auto-scroll runs synchronously off the raw move event
 			// — coupling it to the rAF tick would make the initial
 			// cross-into-edge feel laggy by up to 16ms.
@@ -2207,9 +2205,7 @@ export class TerminalManager {
 				ctrlKey: isMac ? (modifierHeld || e.metaKey) : modifierHeld,
 				metaKey: e.metaKey,
 			} as PointerEvent;
-			if (ent.mouseMoveRaf == null) {
-				ent.mouseMoveRaf = requestAnimationFrame(flushPointerMove);
-			}
+			ent.mouseMoveRaf ??= requestAnimationFrame(flushPointerMove);
 		};
 		const pointerUpListener = (e: PointerEvent, force = false) => {
 			// A normal release on the custom scrollbar is intentionally ignored;
@@ -4764,8 +4760,8 @@ export class TerminalManager {
 		const hr = gh.canvas.getBoundingClientRect();
 		if (cr.width <= 0 || cr.height <= 0) return null;
 		const cs = window.getComputedStyle(entry.container);
-		const padL = parseFloat(cs.paddingLeft) || 0;
-		const padT = parseFloat(cs.paddingTop) || 0;
+		const padL = Number.parseFloat(cs.paddingLeft) || 0;
+		const padT = Number.parseFloat(cs.paddingTop) || 0;
 		const dpr = window.devicePixelRatio || 1;
 		// `padL/padT` 与 scissor 同源：`_recomputeViewport` 用同样的
 		// `cssX = cr.left - hr.left + padL` → `floor(cssX*dpr)`，因此
@@ -5386,10 +5382,10 @@ export class TerminalManager {
 			const measurement: InitialFitMeasurement = {
 				containerWidth: rect.width,
 				containerHeight: rect.height,
-				paddingLeft: parseFloat(cs.paddingLeft) || 0,
-				paddingRight: parseFloat(cs.paddingRight) || 0,
-				paddingTop: parseFloat(cs.paddingTop) || 0,
-				paddingBottom: parseFloat(cs.paddingBottom) || 0,
+				paddingLeft: Number.parseFloat(cs.paddingLeft) || 0,
+				paddingRight: Number.parseFloat(cs.paddingRight) || 0,
+				paddingTop: Number.parseFloat(cs.paddingTop) || 0,
+				paddingBottom: Number.parseFloat(cs.paddingBottom) || 0,
 				cellWidth: entry.cellW,
 				cellHeight: entry.cellH,
 				kernelRows: entry.kernel.rows(),
@@ -5443,10 +5439,10 @@ export class TerminalManager {
 		if (this._isHostMode(entry)) {
 			const cr = entry.container.getBoundingClientRect();
 			const cs = window.getComputedStyle(entry.container);
-			const padL = parseFloat(cs.paddingLeft) || 0;
-			const padT = parseFloat(cs.paddingTop) || 0;
-			const padR = parseFloat(cs.paddingRight) || 0;
-			const padB = parseFloat(cs.paddingBottom) || 0;
+			const padL = Number.parseFloat(cs.paddingLeft) || 0;
+			const padT = Number.parseFloat(cs.paddingTop) || 0;
+			const padR = Number.parseFloat(cs.paddingRight) || 0;
+			const padB = Number.parseFloat(cs.paddingBottom) || 0;
 			wCss = Math.max(0, cr.width - padL - padR);
 			hCss = Math.max(0, cr.height - padT - padB);
 		} else {
@@ -5528,8 +5524,8 @@ export class TerminalManager {
 			// measure the pane so the first fit can grow the host PTY grid.
 			const rect = entry.container.getBoundingClientRect();
 			const cs = window.getComputedStyle(entry.container);
-			wCss = Math.floor(rect.width - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0));
-			hCss = Math.floor(rect.height - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0));
+			wCss = Math.floor(rect.width - (Number.parseFloat(cs.paddingLeft) || 0) - (Number.parseFloat(cs.paddingRight) || 0));
+			hCss = Math.floor(rect.height - (Number.parseFloat(cs.paddingTop) || 0) - (Number.parseFloat(cs.paddingBottom) || 0));
 			cols = Math.max(1, Math.floor(wCss / entry.cellW));
 			rows = Math.max(1, Math.floor(hCss / entry.cellH));
 		} else {
@@ -5902,7 +5898,7 @@ export class TerminalManager {
 				if (!this._isHostMode(entry)) continue;
 				if (this._isContainerHidden(entry)) continue;
 				// First visible host pane wins: pin to its workspace.
-				if (activeWsId === null) activeWsId = entry.workspaceId;
+				activeWsId ??= entry.workspaceId;
 				// Sanity: skip any pane from a different workspace that
 				// somehow has non-zero bbox (shouldn't happen in normal
 				// CSS toggle, but defensive against intermediate layout
@@ -6043,7 +6039,7 @@ export class TerminalManager {
 				// app from freezing the pane forever.
 				const sync = entry.kernel.isSyncOutput();
 				if (sync) {
-					if (entry.syncStart === null) entry.syncStart = perfNow;
+					entry.syncStart ??= perfNow;
 					const elapsed = perfNow - entry.syncStart;
 					if (elapsed < SYNC_OUTPUT_TIMEOUT_MS) {
 						// Hold the frame; schedule a wake at the timeout boundary.

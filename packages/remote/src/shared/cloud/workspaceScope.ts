@@ -65,7 +65,7 @@ const PATH_KEYS = new Set([
 ]);
 
 function normalizedAbsolutePath(raw: string): string | null {
-  const value = raw.trim().replace(/\\/g, '/');
+  const value = raw.trim().replaceAll(/\\/g, '/');
   const drive = /^([A-Za-z]:)(\/.*)?$/.exec(value);
   const unix = value.startsWith('/');
   if (!drive && !unix) return null;

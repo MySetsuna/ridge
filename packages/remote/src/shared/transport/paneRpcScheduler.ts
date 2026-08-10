@@ -114,6 +114,7 @@ export class PaneInputQueueFullError extends Error {
 }
 
 const utf8 = new TextEncoder();
+let fallbackSourceId = 0;
 
 function normalizeSourceId(value: string): string {
   const normalized = value.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 48);
@@ -121,7 +122,7 @@ function normalizeSourceId(value: string): string {
 }
 
 function defaultSourceId(): string {
-  const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+  const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${fallbackSourceId++}`;
   return normalizeSourceId(`ridge_remote_${random}`);
 }
 

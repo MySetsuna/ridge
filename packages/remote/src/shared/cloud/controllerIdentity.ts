@@ -118,9 +118,7 @@ async function getOrCreatePrivKey(): Promise<Uint8Array> {
   } catch (err) {
     // IndexedDB 打开/读写失败 → 内存降级
     console.warn('[controllerIdentity] IndexedDB 访问失败，使用仅内存临时密钥：', err);
-    if (cachedPriv === null) {
-      cachedPriv = ed25519.utils.randomSecretKey();
-    }
+    cachedPriv ??= ed25519.utils.randomSecretKey();
     return cachedPriv;
   }
 }

@@ -978,7 +978,7 @@ describe('CloudHostBridge — §7.4 TOTP trust-grant handshake', () => {
     expect(challenges).toHaveLength(1);
     const nonceB64 = challenges[0].nonce as string;
     const nonce = Uint8Array.from(atob(nonceB64), (c) => c.charCodeAt(0));
-    expect(nonce.length).toBe(32);
+    expect(nonce).toHaveLength(32);
 
     // Build a valid signature and send the proof
     const sig = ed25519.sign(buildTrustMsg(nonce, transcript), privKey);

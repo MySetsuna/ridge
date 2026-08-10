@@ -126,7 +126,7 @@ describe('workerRendererSingleton', () => {
 		expect(a).not.toBeNull();
 		expect(a).toBe(b);
 		// Factory must have been called exactly once.
-		expect(created.length).toBe(1);
+		expect(created).toHaveLength(1);
 	});
 
 	it('disposeWorkerRenderer terminates the worker and allows recreation', () => {
@@ -147,7 +147,7 @@ describe('workerRendererSingleton', () => {
 		const second = getWorkerRenderer();
 		expect(second).not.toBeNull();
 		expect(second).not.toBe(first);
-		expect(created.length).toBe(2);
+		expect(created).toHaveLength(2);
 	});
 
 	it('disposeWorkerRenderer is idempotent', () => {

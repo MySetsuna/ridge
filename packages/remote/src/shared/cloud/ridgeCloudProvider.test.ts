@@ -398,7 +398,7 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     const { ws, dc } = await driveToOpenChannel(host);
 
     // 关键：先收后发 —— 收到 controller 帧前，DataChannel 上零字节。
-    expect(dc.sent.length).toBe(0);
+    expect(dc.sent).toHaveLength(0);
     // 但 B3 旁路 e2ee-pubkey 仍经信令发出（带 cid）。
     const pk = ws.sentParsed().filter((m) => m.t === 'e2ee-pubkey' && m.cid === CID);
     expect(pk).toHaveLength(1);
@@ -421,7 +421,7 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     // host 在 DataChannel 上发出的应是 0x02 签名帧。
     const frame = dc.lastSent();
     expect(frame[0]).toBe(DEVICE_BOUND_TAG);
-    expect(frame.length).toBe(129);
+    expect(frame).toHaveLength(129);
     const signed = decodeSignedHandshakeFrame(frame);
 
     // id_pub == 注入的设备身份公钥。
@@ -479,12 +479,12 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     // New controllers probe on the control lane. Only after this authenticated
     // marker does the host advertise ridge-pane as usable.
     dc.deliver(wrapSingle(controllerSend.seal(encodePaneLaneProbeFrame())));
-    expect(dc.sent.length).toBe(2); // signed handshake + pane-lane ready marker
+    expect(dc.sent).toHaveLength(2); // signed handshake + pane-lane ready marker
     expect(controllerMainReceive.open(unwrapSingle(dc.lastSent()))[0]).toBe(CHANNEL.CONTROL);
     bridges[0].send(new Uint8Array([CHANNEL.PANE_RAW, 1, 2, 3]));
 
     expect(paneDc.sent.length).toBeGreaterThan(0);
-    expect(dc.sent.length).toBe(2); // signed handshake + pane-lane ready marker
+    expect(dc.sent).toHaveLength(2); // signed handshake + pane-lane ready marker
     const plaintext = controllerPaneReceive.open(unwrapSingle(paneDc.lastSent()));
     expect(Array.from(plaintext)).toEqual([CHANNEL.PANE_RAW, 1, 2, 3]);
     host.goOffline();
@@ -542,7 +542,7 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
 
     const frame = dc.lastSent();
     expect(frame[0]).toBe(HANDSHAKE_TAG); // 0x01 裸公钥
-    expect(frame.length).toBe(33);
+    expect(frame).toHaveLength(33);
     // S1-F4：无身份签名回落 0x01 恰好计一次（iteration 8 G4 回落面计数）。
     expect(host.bindingCounters.fallback0x01).toBe(1);
 
@@ -574,7 +574,7 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     // 现在签名「迟到」resolve：不应在已 teardown 的连接上发 0x02。
     resolveSig(new Uint8Array(64).fill(9));
     await flush();
-    expect(dc.sent.length).toBe(sentBefore); // 无新增帧
+    expect(dc.sent).toHaveLength(sentBefore); // 无新增帧
   });
 
   it('设备签名失败时回落裸握手并记录可诊断错误', async () => {

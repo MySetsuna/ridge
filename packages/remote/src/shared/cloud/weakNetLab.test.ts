@@ -27,6 +27,8 @@ vi.mock('./apiClient', async (importOriginal) => {
   };
 });
 
+vi.mock('../transport/random', () => ({ secureRandomUnit: () => 0 }));
+
 interface ScenarioMetric {
   family: string;
   params: Record<string, unknown>;

@@ -127,7 +127,7 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 			expect.objectContaining({ channel: expect.any(FakeChannel) }),
 		);
 		// Exactly one Channel must have been created for this pane.
-		expect(channels.length).toBe(1);
+		expect(channels).toHaveLength(1);
 	});
 
 	it('forwards Uint8Array payload to manager.applyDeltaFrame unchanged', async () => {
@@ -298,7 +298,7 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 
 		await ensurePtyBridge(PANE, WS);
 
-		expect(channels.length).toBe(channelsAfterFirst);
+		expect(channels).toHaveLength(channelsAfterFirst);
 		const registerCallsAfterSecond = invokeMock.mock.calls.filter(
 			([cmd]) => cmd === 'register_pane_delta_channel',
 		).length;

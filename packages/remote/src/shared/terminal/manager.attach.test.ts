@@ -317,7 +317,7 @@ describe('TerminalManager attach lifecycle', () => {
 		container.emit('pointermove', { ...pointer, buttons: 0 });
 		frame?.(1);
 		expect(kernel.encodeMouse).toHaveBeenCalledWith(10, 3, 0, 2, false, false, false);
-		expect(sent.length).toBe(1);
+		expect(sent).toHaveLength(1);
 		container.emit('pointerup', pointer);
 		expect(kernel.encodeMouse).toHaveBeenCalledWith(10, 3, 3, 1, false, false, false);
 

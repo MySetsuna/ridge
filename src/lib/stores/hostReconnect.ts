@@ -100,10 +100,7 @@ export async function stepHostReconnect(
   const parsed = parsePhaseMessage(msg);
   const prev = get(hostReconnectById)[hostId];
   // Prefer server attempt when present (uses reconnect_supervisor::attempt).
-  const attempt =
-    parsed.attempt != null
-      ? parsed.attempt
-      : phaseAttemptFallback(parsed.phase, prev?.attempt ?? 0);
+  const attempt = parsed.attempt ?? phaseAttemptFallback(parsed.phase, prev?.attempt ?? 0);
   const st: HostReconnectStatus = {
     hostId,
     phase: parsed.phase,
