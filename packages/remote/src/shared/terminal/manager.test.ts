@@ -866,4 +866,73 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it('covers theme parsing, hidden-workspace detection, and viewport projections', () => {
+		const { manager, fixture, internal } = makeManager();
+		internal.opts.theme = { background: '#12345678' };
+		expect((manager as any)._currentThemeBgRgba()).toEqual(new Uint8Array([0x12, 0x34, 0x56, 0x78]));
+		internal.opts.theme = { background: '#abcdef' };
+		expect((manager as any)._currentThemeBgRgba()).toEqual(new Uint8Array([0xab, 0xcd, 0xef, 0xff]));
+		internal.opts.theme = { background: '#nope00' };
+		expect((manager as any)._currentThemeBgRgba()).toEqual(new Uint8Array([0, 0, 0, 0]));
+		internal.opts.theme = undefined;
+		expect((manager as any)._currentThemeBgRgba()).toEqual(new Uint8Array([0, 0, 0, 0]));
+
+		internal._activeWorkspaceId = 'workspace-b';
+		expect((manager as any)._isContainerHidden(fixture.pane)).toBe(true);
+		internal._activeWorkspaceId = 'workspace-a';
+		expect((manager as any)._isContainerHidden(fixture.pane)).toBe(false);
+		internal._activeWorkspaceId = null;
+		(fixture.pane.container.getBoundingClientRect as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+			width: 0, height: 0,
+		});
+		expect((manager as any)._isContainerHidden(fixture.pane)).toBe(true);
+		(fixture.pane.container.getBoundingClientRect as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+			throw new Error('layout unavailable');
+		});
+		expect((manager as any)._isContainerHidden(fixture.pane)).toBe(false);
+
+		const host = { resize: vi.fn(), invalidate: vi.fn() };
+		internal.globalHost = { canvas: fixture.pane.canvas, host };
+		(manager as any)._recomputeViewport(fixture.pane);
+		expect(fixture.handle.setViewportOffset).toHaveBeenCalled();
+		expect(fixture.handle.resize).toHaveBeenCalledWith(800, 400, 1);
+
+		internal.globalHost = null;
+		internal._sharedRemoteMode = true;
+		(manager as any)._recomputeViewport(fixture.pane);
+		expect(fixture.pane.canvas.style.position).toBe('absolute');
+		(fixture.pane.container.getBoundingClientRect as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+			width: 0, height: 0,
+		});
+		(manager as any)._recomputeViewport(fixture.pane);
+	});
+
+	it('fits raw-byte panes, honors DPR drift, and skips visual-only shared fits', async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, fixture, internal } = makeManager();
+			fixture.pane.localGridAuthority = true;
+			fixture.pane.resizeHandler = vi.fn();
+			await (manager as any).fitPane(fixture.pane);
+			expect(fixture.kernel.resize).toHaveBeenCalledWith(20, 80);
+			expect(fixture.pane.resizeHandler).toHaveBeenCalledWith(20, 80, false, false);
+			expect(fixture.handle.invalidateAll).toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(150);
+			expect(fixture.handle.invalidateAll).toHaveBeenCalledTimes(2);
+
+			(fixture.handle.configure as ReturnType<typeof vi.fn>).mockReturnValue([11, 21]);
+			(window as any).devicePixelRatio = 2;
+			await (manager as any).fitPane(fixture.pane);
+			expect(fixture.handle.configure).toHaveBeenCalledWith('monospace', 14, 2);
+
+			internal._sharedRemoteMode = true;
+			fixture.pane.localGridAuthority = false;
+			const resizeCalls = fixture.kernel.resize.mock.calls.length;
+			await (manager as any).fitPane(fixture.pane, false);
+			expect(fixture.kernel.resize).toHaveBeenCalledTimes(resizeCalls);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

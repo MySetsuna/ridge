@@ -41,6 +41,7 @@ const wasm = vi.hoisted(() => {
 		shouldAllowShellHistory = vi.fn(() => true);
 		isMouseReporting = vi.fn(() => this.mouseMode !== 0);
 		backendName = vi.fn(() => 'canvas2d');
+		setPresentFast = vi.fn();
 	}
 
 	class FakeRenderHandle {
@@ -61,6 +62,9 @@ const wasm = vi.hoisted(() => {
 		FakeKernel,
 		FakeRenderHandle,
 		init: vi.fn(async () => undefined),
+		atlasOverwriteAfterCiteCount: vi.fn(() => 7),
+		staleReplayCount: vi.fn(() => 3),
+		setPresentFast: vi.fn(),
 		SurfaceHostHandle: { init: vi.fn() },
 	};
 });
@@ -74,6 +78,9 @@ vi.mock('@ridge/term-wasm', () => ({
 	TerminalKernel: wasm.FakeKernel,
 	RenderHandle: wasm.FakeRenderHandle,
 	SurfaceHostHandle: wasm.SurfaceHostHandle,
+	atlasOverwriteAfterCiteCount: wasm.atlasOverwriteAfterCiteCount,
+	staleReplayCount: wasm.staleReplayCount,
+	setPresentFast: wasm.setPresentFast,
 }));
 
 import { TerminalManager } from './manager';
@@ -161,6 +168,42 @@ afterEach(() => {
 });
 
 describe('TerminalManager attach lifecycle', () => {
+	it('initializes wasm once and exposes atlas/present-fast diagnostics', async () => {
+		const manager = TerminalManager.instance({
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: false,
+		});
+		const storage = localStorage as unknown as { getItem: ReturnType<typeof vi.fn> };
+		storage.getItem.mockImplementation((key: string) => key === 'RIDGE_PRESENT_FAST' ? '1' : null);
+
+		await manager.ready();
+		await manager.ready();
+
+		expect(wasm.init).toHaveBeenCalledOnce();
+		expect(wasm.setPresentFast).toHaveBeenCalledWith(true);
+		expect((window as any).__ridgeAtlasRace()).toEqual({ overwriteAfterCite: 7, staleReplay: 3 });
+	});
+
+	it('uses WebGPU-first handles and falls back to Canvas2D on constructor failure', async () => {
+		const manager = TerminalManager.instance({
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: true,
+		});
+		(manager as any).wasmReady = true;
+		const ctor = wasm.FakeRenderHandle as any;
+		const original = ctor.newWithWebgpuFirst;
+		try {
+			const preferred = new wasm.FakeRenderHandle();
+			ctor.newWithWebgpuFirst = vi.fn(async () => preferred);
+			await expect((manager as any)._makeHandle(new FakeCanvas())).resolves.toBe(preferred);
+
+			ctor.newWithWebgpuFirst = vi.fn(async () => { throw new Error('adapter unavailable'); });
+			const fallback = await (manager as any)._makeHandle(new FakeCanvas());
+			expect(fallback).toBeInstanceOf(wasm.FakeRenderHandle);
+			expect(ctor.newWithWebgpuFirst).toHaveBeenCalledOnce();
+		} finally {
+			ctor.newWithWebgpuFirst = original;
+		}
+	});
+
 	it('requires ready, attaches a configured pane, and fences duplicate ids', async () => {
 		const manager = TerminalManager.instance({
 			fontFamily: 'monospace',
