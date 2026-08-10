@@ -18,6 +18,7 @@ import { main as remoteDevMain, parseArgs as remoteDevArgs } from './start-remot
 import { main as viteDevMain, viteArgs } from './start-vite-dev.mjs';
 import { sourceError as signalingSourceError } from './sync-signaling.mjs';
 import { main as syncSignalingMain, sourceError } from './sync-signaling.mjs';
+import { buildGapReport, main as gapReportMain } from './rdg-gap-report.mjs';
 
 const quietIo = () => ({ log: vi.fn(), error: vi.fn(), warn: vi.fn() });
 
@@ -256,5 +257,22 @@ describe('signaling vendor guard', () => {
     expect(sourceError('C:/repo', (p) => p === 'C:/repo')).toContain('missing bindings');
     expect(sourceError('C:/repo', () => true)).toBeNull();
     expect(await syncSignalingMain({ repo: 'C:/missing', exists: () => false, io: quietIo() })).toBe(false);
+  });
+});
+
+describe('rdg capability gap report', () => {
+  it('derives supported, denied, and other capability sections from one matrix', () => {
+    const matrix = { guards: ['a'], capabilities: {
+      git: { methods: ['git_status'], cells: { rdgHost: 'supported', desktop: 'supported' } },
+      theme: { methods: ['theme'], cells: { rdgHost: 'denied', desktop: 'supported' } },
+      invoke: { methods: [], cells: { rdgHost: 'unknown', desktop: 'supported' } },
+    } };
+    const report = buildGapReport(matrix);
+    expect(report).toMatchObject({ supported: 1, denied: 1 });
+    expect(report.content).toContain('git_status');
+    expect(report.content).toContain('永久缺口');
+    const writes = [];
+    expect(gapReportMain({ rootDir: 'C:/repo', fsImpl: { readFileSync: () => JSON.stringify(matrix), mkdirSync: vi.fn(), writeFileSync: (_p, content) => writes.push(content) }, io: quietIo() }).denied).toBe(1);
+    expect(writes[0]).toContain('unknown');
   });
 });
