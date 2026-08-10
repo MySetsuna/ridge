@@ -42,7 +42,7 @@ export function invoke<T = unknown>(
   // register_pane_delta_channel carries a non-serializable Channel instance and
   // means "start streaming this pane". Map it onto the subscribe-pane fan-out.
   if (cmd === 'register_pane_delta_channel') {
-    const paneId = String(args.paneId ?? '');
+    const paneId = typeof args.paneId === 'string' ? args.paneId : '';
     const workspaceId = typeof args.workspaceId === 'string' ? args.workspaceId : undefined;
     const active = typeof args.active === 'boolean' ? args.active : undefined;
     if (paneId) bridge.subscribePane(paneId, workspaceId, active);

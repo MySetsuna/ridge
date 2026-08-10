@@ -21,7 +21,11 @@ const LSP_SPAWN_FAIL_MARKER = '启动语言服务器失败';
  *  纯函数、可离线测。提示自身可能含全角括号（rust-analyzer 的提示就有），故非贪婪
  *  锚定到收尾的 `）：` 提取，避免被内层括号截断；提取不到时回退整条消息。 */
 export function classifyLspError(err: unknown): { missingServer: boolean; hint: string } {
-  const msg = err instanceof Error ? err.message : String(err ?? '');
+  const msg = err instanceof Error
+    ? err.message
+    : typeof err === 'string'
+      ? err
+      : JSON.stringify(err) ?? '';
   if (!msg.includes(LSP_SPAWN_FAIL_MARKER)) return { missingServer: false, hint: '' };
   const m = msg.match(/启动语言服务器失败（([\s\S]*?)）：/);
   return { missingServer: true, hint: m?.[1] ?? msg };
