@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PaneFeedScheduler } from './paneFeedScheduler';
+import { MAX_PANE_FEED_FRAME_BUDGET_MS, PaneFeedScheduler } from './paneFeedScheduler';
 
 describe('PaneFeedScheduler', () => {
   it('schedules one frame for a burst and drains it through the callback', () => {
@@ -14,7 +14,7 @@ describe('PaneFeedScheduler', () => {
         scheduled += 1;
         run = callback;
       },
-      frameBudgetMs: Infinity,
+      frameBudgetMs: MAX_PANE_FEED_FRAME_BUDGET_MS,
     });
 
     scheduler.enqueue('pane', new Uint8Array([1, 2]));
@@ -28,17 +28,33 @@ describe('PaneFeedScheduler', () => {
 
   it('ignores a scheduled callback after disposal', () => {
     let run: (() => void) | undefined;
+    const cancel = vi.fn();
     const delivered: number[] = [];
     const scheduler = new PaneFeedScheduler((_key, bytes) => {
       delivered.push(...bytes);
       return { accepted: true };
-    }, { schedule: (callback) => { run = callback; } });
+    }, { schedule: (callback) => { run = callback; return 'frame-1'; }, cancel });
 
     scheduler.enqueue('pane', new Uint8Array([1]));
     scheduler.dispose();
+    expect(cancel).toHaveBeenCalledWith('frame-1');
     run?.();
 
     expect(delivered).toEqual([]);
+    expect(scheduler.queuedBytes()).toBe(0);
+  });
+
+  it('cancels the last scheduled frame when clearing its queue', () => {
+    const cancel = vi.fn();
+    const scheduler = new PaneFeedScheduler(() => ({ accepted: true }), {
+      schedule: () => 'frame-2',
+      cancel,
+    });
+
+    scheduler.enqueue('pane', new Uint8Array([1]));
+    scheduler.clear('pane');
+
+    expect(cancel).toHaveBeenCalledWith('frame-2');
     expect(scheduler.queuedBytes()).toBe(0);
   });
 
@@ -48,7 +64,7 @@ describe('PaneFeedScheduler', () => {
       delivered.push(`${key}:${bytes.length}`);
       return { accepted: true };
     }, {
-      frameBudgetMs: Infinity,
+      frameBudgetMs: MAX_PANE_FEED_FRAME_BUDGET_MS,
       maxBytesPerFrame: 4,
       stepBytes: 2,
       maxBytesPerPane: 8,
@@ -85,7 +101,7 @@ describe('PaneFeedScheduler', () => {
       if (!attached) return { accepted: false };
       delivered.push(...bytes);
       return { accepted: true };
-    }, { frameBudgetMs: Infinity, schedule: () => {} });
+    }, { frameBudgetMs: MAX_PANE_FEED_FRAME_BUDGET_MS, schedule: () => {} });
     scheduler.enqueue('pane', new Uint8Array([1, 2, 3]));
     scheduler.drainNow();
     expect(scheduler.queuedBytes('pane')).toBe(3);
@@ -117,5 +133,29 @@ describe('PaneFeedScheduler', () => {
 
     expect(delivered).toEqual([1, 2]);
     expect(scheduler.queuedBytes('pane')).toBe(2);
+  });
+
+  it('clamps non-finite queue settings to finite defaults', () => {
+    let clock = 0;
+    const delivered: Uint8Array[] = [];
+    const scheduler = new PaneFeedScheduler((_key, bytes) => {
+      delivered.push(bytes);
+      clock += 5;
+      return { accepted: true };
+    }, {
+      maxBytesPerPane: Infinity,
+      frameBudgetMs: Infinity,
+      maxBytesPerFrame: Infinity,
+      stepBytes: Infinity,
+      now: () => clock,
+      schedule: () => {},
+    });
+
+    scheduler.enqueue('pane', new Uint8Array(100_000));
+    scheduler.drainNow();
+
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toHaveLength(32 * 1024);
+    expect(scheduler.queuedBytes('pane')).toBe(100_000 - 32 * 1024);
   });
 });
