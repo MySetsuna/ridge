@@ -1594,3 +1594,10 @@
 - 证据：`pnpm check` 0/0；Vitest 215 files / 1975 passed / 1 skipped；`ridge-mcp` 90/90；Tauri `teammate::mcp::tests` 6/6；LAN、DPR 1.5、Remote mobile 均通过。PTY parser 冷启动 harness 仍有 settle/重复 pane 非幂等噪声，不能据此宣称实体 Agent 五条件现场验收完成。
 - 尚未闭合：第三方 Runtime/A2A 私有协议、公网/TURN、双真实窗口、实体手机 PWA/IME/后台恢复、物理 DPR/像素矩阵及真实 Agent CLI 五条件动态切换。Sonar 以本地最新 API 证据为准；发布、push、tag、Release 未执行。
 - 详见 `docs/iterations/2026-08-11-wave75-pty-sampler.md`。
+
+## Wave 76 Remote feed 背压与调度生命周期（2026-08-11）
+
+- `REQ-MOBILE-REMOTE-BACKPRESSURE-01`：`TerminalManager.flushPaneFeed` 与 `PaneFeedScheduler` 统一采用有限帧预算；非有限配置回退安全默认值，队列清空、立即 drain 与 dispose 均取消真实 RAF/timeout 句柄，防止旧回调在清空后继续消费或重生队列。
+- 新增有限预算、取消句柄、清空队列及非有限配置回归；定向 Remote feed `31/31`，全量 Vitest `215 files / 1978 passed / 1 skipped`，`pnpm check` `0 errors / 0 warnings`。
+- 本地 LCOV 为 statements `65.99%`、branches `60.16%`、functions `68.20%`、lines `70.09%`，仅作本地基线；本波未上传新 Sonar 分析。此前权威 Sonar API 分析仍为 coverage `80.4%`、Quality Gate `OK`、`new_violations=0`。
+- 本波构建在 180 秒 Vite SSR transforming 阶段超时并已清理进程树；不把超时写作构建通过。详见 `docs/iterations/2026-08-11-wave76-remote-backpressure.md`。
