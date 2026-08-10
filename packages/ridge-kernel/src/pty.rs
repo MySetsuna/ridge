@@ -360,53 +360,54 @@ pub struct PtyInfo {
     pub rows: u16,
 }
 
+#[derive(Clone, Copy)]
+pub struct PtyLaunch<'a> {
+    pub id: Uuid,
+    pub program: Option<&'a str>,
+    pub args: &'a [String],
+    pub cwd: Option<&'a str>,
+    pub workspace_id: Option<Uuid>,
+    pub role: &'a str,
+    pub launch_profile: Option<&'a str>,
+    pub env: Option<&'a HashMap<String, String>>,
+}
+
 impl PtyRegistry {
     pub fn spawn(&self, shell: Option<&str>, cwd: Option<&str>) -> Result<Uuid> {
         let id = Uuid::new_v4();
-        self.spawn_command_for(id, shell, &[], cwd, None, "shell", None)
+        self.spawn_command_for(PtyLaunch {
+            id,
+            program: shell,
+            args: &[],
+            cwd,
+            workspace_id: None,
+            role: "shell",
+            launch_profile: None,
+            env: None,
+        })
     }
 
-    pub fn spawn_command_for(
-        &self,
-        id: Uuid,
-        program: Option<&str>,
-        args: &[String],
-        cwd: Option<&str>,
-        workspace_id: Option<Uuid>,
-        role: &str,
-        launch_profile: Option<&str>,
-    ) -> Result<Uuid> {
-        self.spawn_command_for_with_env(
-            id,
-            program,
-            args,
-            cwd,
-            workspace_id,
-            role,
-            launch_profile,
-            &HashMap::new(),
-        )
+    pub fn spawn_command_for(&self, mut launch: PtyLaunch<'_>) -> Result<Uuid> {
+        launch.env = None;
+        self.spawn_command_for_with_env(launch)
     }
 
     /// Spawn a PTY with an explicit argv and bounded caller-provided
     /// environment. The kernel remains the child-process authority; callers
     /// only supply launch data and never receive native PTY handles.
-    pub fn spawn_command_for_with_env(
-        &self,
-        id: Uuid,
-        program: Option<&str>,
-        args: &[String],
-        cwd: Option<&str>,
-        workspace_id: Option<Uuid>,
-        role: &str,
-        launch_profile: Option<&str>,
-        env: &HashMap<String, String>,
-    ) -> Result<Uuid> {
-        if self.contains(id) {
-            anyhow::bail!("PTY already exists: {id}");
+    pub fn spawn_command_for_with_env(&self, launch: PtyLaunch<'_>) -> Result<Uuid> {
+        if self.contains(launch.id) {
+            anyhow::bail!("PTY already exists: {}", launch.id);
         }
-        let (bridge, output) =
-            PtyBridge::spawn_command_with_env(program, args, cwd, launch_profile, env)?;
+        let empty_env = HashMap::new();
+        let env = launch.env.unwrap_or(&empty_env);
+        let (bridge, output) = PtyBridge::spawn_command_with_env(
+            launch.program,
+            launch.args,
+            launch.cwd,
+            launch.launch_profile,
+            env,
+        )?;
         let bridge = Arc::new(bridge);
         let scrollback = Arc::new(Mutex::new(Vec::new()));
         let renderer = Arc::new(Mutex::new(Terminal::new(
@@ -433,19 +434,19 @@ impl PtyRegistry {
             hub.close();
         });
         let info = PtyInfo {
-            id,
+            id: launch.id,
             pane_index: self.next_index.fetch_add(1, Ordering::Relaxed),
-            workspace_id,
-            role: role.to_string(),
-            program: program.map(str::to_string),
-            launch_profile: launch_profile.map(str::to_string),
-            cwd: cwd.map(str::to_string),
+            workspace_id: launch.workspace_id,
+            role: launch.role.to_string(),
+            program: launch.program.map(str::to_string),
+            launch_profile: launch.launch_profile.map(str::to_string),
+            cwd: launch.cwd.map(str::to_string),
             status: "Idle".to_string(),
             cols: DEFAULT_COLS,
             rows: DEFAULT_ROWS,
         };
         self.ptys.lock().insert(
-            id,
+            launch.id,
             ManagedPty {
                 bridge,
                 scrollback,
@@ -455,7 +456,7 @@ impl PtyRegistry {
                 info,
             },
         );
-        Ok(id)
+        Ok(launch.id)
     }
 
     /// Create a managed PTY while handing its single lossless output stream to

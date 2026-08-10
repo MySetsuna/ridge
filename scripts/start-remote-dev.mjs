@@ -65,4 +65,6 @@ if (parseArgs(args).build) {
 }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) main().then((code) => process.exit(code));
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  process.exit(await main());
+}

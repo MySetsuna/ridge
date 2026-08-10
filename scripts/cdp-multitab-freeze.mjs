@@ -183,7 +183,8 @@ function hotPaths(profile, topN = 12) {
   const fmt = (id) => {
     const f = byId.get(id)?.callFrame ?? {};
     const file = (f.url || '').replace(/^.*\/(?=[^/]+$)/, '').split('?')[0];
-    return `${f.functionName || '(anon)'}${file ? ` @${file}:${(f.lineNumber ?? 0) + 1}` : ''}`;
+    const location = file ? ` @${file}:${(f.lineNumber ?? 0) + 1}` : '';
+    return `${f.functionName || '(anon)'}${location}`;
   };
   // 每个叶子往上取 6 层，形成一条可读的责任链。
   const chains = new Map();
@@ -201,6 +202,50 @@ function hotPaths(profile, topN = 12) {
     .map(([key, hits]) => ({ pct: (hits / total) * 100, key }))
     .sort((a, b) => b.pct - a.pct)
     .slice(0, topN);
+}
+
+async function inspectTab(cdp, index, wsCounts, longtaskMax, errorsSeen) {
+  await cdp.ev(INSTRUMENT);
+  await cdp.ev('window.__rgLag.reset()');
+  await cdp.send('Profiler.start');
+  const clicked = await clickNewWorkspace(cdp);
+  log(`tab ${index}: ${clicked}`);
+  await sleep(6000);
+  await cdp.ev(INSTRUMENT);
+  const prof = await cdp.send('Profiler.stop');
+  const lag = await cdp.ev('window.__rgLag.read()');
+  const probe = await cdp.ev(PROBE);
+  wsCounts.push(probe.mountedWorkspaces);
+  longtaskMax.push(lag.ltMax ?? 0, lag.max ?? 0);
+  log(`AFTER tab ${index} → lag ${JSON.stringify(lag)}`);
+  log(`AFTER tab ${index} → dom  ${JSON.stringify(probe)}`);
+  const rows = hotPaths(prof.result?.profile ?? { nodes: [], samples: [] });
+  log(`AFTER tab ${index} → hot call chains (leaf ← caller ← …):`);
+  for (const row of rows) {
+    if (row.pct >= 1.5) console.log(`         ${row.pct.toFixed(1).padStart(5)}%  ${row.key}`);
+  }
+  for (const event of cdp.events) {
+    if (event.method === 'Runtime.exceptionThrown') {
+      errorsSeen.push((event.params.exceptionDetails?.text ?? '') +
+        ' ' + (event.params.exceptionDetails?.exception?.description ?? '').slice(0, 200));
+    }
+  }
+  const messages = cdp.events.filter((event) => event.method === 'Runtime.consoleAPICalled');
+  cdp.events.length = 0;
+  const tally = new Map();
+  for (const message of messages) {
+    const head = (message.params.args ?? [])
+      .map((arg) => arg.value ?? arg.description ?? '')
+      .join(' ')
+      .toString()
+      .slice(0, 240);
+    const key = `${message.params.type}: ${head}`;
+    tally.set(key, (tally.get(key) ?? 0) + 1);
+  }
+  log(`AFTER tab ${index} → console messages: ${messages.length}`);
+  for (const [key, count] of [...tally.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)) {
+    console.log(`         ×${String(count).padStart(5)}  ${key}`);
+  }
 }
 
 const main = async () => {
@@ -224,52 +269,7 @@ const main = async () => {
   await sleep(3000);
   log('BASELINE lag:', JSON.stringify(await cdp.ev('window.__rgLag.read()')));
 
-  for (let i = 2; i <= TABS; i++) {
-    await cdp.ev(INSTRUMENT);
-    await cdp.ev('window.__rgLag.reset()');
-    await cdp.send('Profiler.start');
-    const clicked = await clickNewWorkspace(cdp);
-    log(`tab ${i}: ${clicked}`);
-    await sleep(6000);
-    // Dev HMR/navigation can replace the page global while the new tab mounts.
-    await cdp.ev(INSTRUMENT);
-    const prof = await cdp.send('Profiler.stop');
-    const lag = await cdp.ev('window.__rgLag.read()');
-    const probe = await cdp.ev(PROBE);
-    wsCounts.push(probe.mountedWorkspaces);
-    longtaskMax.push(lag.ltMax ?? 0, lag.max ?? 0);
-    log(`AFTER tab ${i} → lag ${JSON.stringify(lag)}`);
-    log(`AFTER tab ${i} → dom  ${JSON.stringify(probe)}`);
-    const rows = hotPaths(prof.result?.profile ?? { nodes: [], samples: [] });
-    log(`AFTER tab ${i} → hot call chains (leaf ← caller ← …):`);
-    for (const r of rows) {
-      if (r.pct < 1.5) continue;
-      console.log(`         ${r.pct.toFixed(1).padStart(5)}%  ${r.key}`);
-    }
-    // console 噪音：dev 版 Svelte 的每条告警都要抓一次栈，量大即是卡因。
-    for (const e of cdp.events) {
-      if (e.method === 'Runtime.exceptionThrown') {
-        errorsSeen.push((e.params.exceptionDetails?.text ?? '') +
-          ' ' + (e.params.exceptionDetails?.exception?.description ?? '').slice(0, 200));
-      }
-    }
-    const msgs = cdp.events.filter((e) => e.method === 'Runtime.consoleAPICalled');
-    cdp.events.length = 0;
-    const tally = new Map();
-    for (const m of msgs) {
-      const head = (m.params.args ?? [])
-        .map((arg) => arg.value ?? arg.description ?? '')
-        .join(' ')
-        .toString()
-        .slice(0, 240);
-      const k = `${m.params.type}: ${head}`;
-      tally.set(k, (tally.get(k) ?? 0) + 1);
-    }
-    log(`AFTER tab ${i} → console messages: ${msgs.length}`);
-    for (const [k, n] of [...tally.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)) {
-      console.log(`         ×${String(n).padStart(5)}  ${k}`);
-    }
-  }
+  for (let i = 2; i <= TABS; i++) await inspectTab(cdp, i, wsCounts, longtaskMax, errorsSeen);
 
   // 卡顿是否持续：不再操作，静置观察。
   await cdp.ev(INSTRUMENT);
@@ -302,7 +302,9 @@ const main = async () => {
   cdp.close();
 };
 
-main().catch((e) => {
+try {
+  await main();
+} catch (e) {
   console.error('[freeze] ERROR', e.message);
   process.exit(1);
-});
+}

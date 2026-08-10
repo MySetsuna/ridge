@@ -51,8 +51,8 @@ const KNOWN_EXTS = new Set([
 const URL_RE = /(?:https?:\/\/|file:\/\/\/?)[^\s<>"'`{}|\\^[\]]+/g;
 const WIN_ABS_RE = /(?<![A-Za-z0-9])([a-zA-Z]:[\\/][^\s<>"'`|?*]+)/g;
 const POSIX_ABS_RE = /(?<![A-Za-z0-9_/])(\/[A-Za-z0-9_.\-/]+(?:\.[A-Za-z0-9]{1,8})?)/g;
-const HOME_RE = /(?<![A-Za-z0-9_])(~\/[^\s<>"'`|?*]+)/g;
-const REL_RE = /(?<![A-Za-z0-9_])(\.{1,2}[\\/][^\s<>"'`|?*]+)/g;
+const HOME_RE = /(?<!\w)(~\/[^\s<>"'`|?*]+)/g;
+const REL_RE = /(?<!\w)(\.{1,2}[\\/][^\s<>"'`|?*]+)/g;
 
 export function trimTrailingSeparators(s: string): string {
   let end = s.length;

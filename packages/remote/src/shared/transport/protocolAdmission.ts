@@ -33,7 +33,7 @@ export const METHOD_ALIASES: Record<string, string> = {
 export function isValidMethodName(method: string): boolean {
   const m = method.trim();
   if (!m || m.length > 128) return false;
-  return /^[A-Za-z0-9_/$/-]+$/.test(m);
+  return /^[A-Za-z0-9_/$-]+$/.test(m);
 }
 
 export function canonicalizeMethod(method: string): string {

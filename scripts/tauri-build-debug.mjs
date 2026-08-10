@@ -23,10 +23,10 @@
 //   - CLI   ：RIDGE_BASE_DOMAIN 经 ridge-cli/src/config.rs 的 option_env!
 //     编译期烘焙。
 //   tauri 的 before{Build,Bundle}Command 子进程继承本进程 env。
-import { spawn, spawnSync } from 'child_process';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -51,28 +51,51 @@ export function buildDebugPlan(envSource = process.env, platform = process.platf
   return { base, profileDir, bundles, env, args, releaseProfile, sccache, lld };
 }
 
+function bundleExtension(folder) {
+  if (folder === 'nsis') return 'exe';
+  if (folder === 'msi') return 'msi';
+  return null;
+}
+
+function copyBundleFolder(folder, bundleDir, outputDir, version, safeBase, fsImpl, io) {
+  const folderPath = path.join(bundleDir, folder);
+  if (!fsImpl.existsSync(folderPath)) return 0;
+  const ext = bundleExtension(folder);
+  if (!ext) return 0;
+  let copied = 0;
+  for (const file of fsImpl.readdirSync(folderPath)) {
+    if (!file.endsWith(`.${ext}`)) continue;
+    const dest = path.join(outputDir, `ridge_${version}_x64-debug-${safeBase}-setup.${ext}`);
+    fsImpl.copyFileSync(path.join(folderPath, file), dest);
+    io.log(`[build-debug] → ${dest}`);
+    copied++;
+  }
+  return copied;
+}
+
 export function renameDebugArtifacts(baseDomain, profDir, bundleList, { rootDir = root, fsImpl = fs, io = console } = {}) {
   const version = JSON.parse(fsImpl.readFileSync(path.join(rootDir, 'package.json'), 'utf-8')).version;
   const bundleDir = path.join(rootDir, 'target', profDir, 'bundle');
   const outputDir = path.join(rootDir, 'release');
   if (!fsImpl.existsSync(outputDir)) fsImpl.mkdirSync(outputDir);
   const safeBase = baseDomain.replace(/[^a-zA-Z0-9]+/g, '-');
-  let copied = 0;
-  for (const folder of bundleList.split(',').map((b) => b.trim())) {
-    const folderPath = path.join(bundleDir, folder);
-    if (!fsImpl.existsSync(folderPath)) continue;
-    const ext = folder === 'nsis' ? 'exe' : folder === 'msi' ? 'msi' : null;
-    if (!ext) continue;
-    for (const file of fsImpl.readdirSync(folderPath)) {
-      if (!file.endsWith(`.${ext}`)) continue;
-      const dest = path.join(outputDir, `ridge_${version}_x64-debug-${safeBase}-setup.${ext}`);
-      fsImpl.copyFileSync(path.join(folderPath, file), dest);
-      io.log(`[build-debug] → ${dest}`);
-      copied++;
-    }
-  }
+  const copied = bundleList
+    .split(',')
+    .map((folder) => folder.trim())
+    .reduce((total, folder) => total + copyBundleFolder(folder, bundleDir, outputDir, version, safeBase, fsImpl, io), 0);
   if (copied === 0) io.warn(`[build-debug] WARN: no installer found under ${bundleDir} (folders: ${bundleList})`);
   return copied;
+}
+
+function completeBuild(code, plan, startedAt, { rootDir, fsImpl, io, now, resolve }) {
+  if (code !== 0) {
+    io.error(`[build-debug] tauri build failed (exit ${code})`);
+    resolve(code ?? 1);
+    return;
+  }
+  io.log(`[build-debug] build finished in ${((now() - startedAt) / 60000).toFixed(1)} min`);
+  renameDebugArtifacts(plan.base, plan.profileDir, plan.bundles, { rootDir, fsImpl, io });
+  resolve(0);
 }
 
 export function main({ envSource = process.env, platform = process.platform, spawnImpl = spawn, spawnSyncImpl = spawnSync, fsImpl = fs, rootDir = root, io = console, now = Date.now } = {}) {
@@ -82,15 +105,10 @@ export function main({ envSource = process.env, platform = process.platform, spa
   const startedAt = now();
   return new Promise((resolve) => {
     const child = spawnImpl('pnpm', plan.args, { cwd: root, env: plan.env, stdio: 'inherit', shell: true });
-    child.on('exit', (code) => {
-      if (code !== 0) { io.error(`[build-debug] tauri build failed (exit ${code})`); resolve(code ?? 1); return; }
-      io.log(`[build-debug] build finished in ${((now() - startedAt) / 60000).toFixed(1)} min`);
-      renameDebugArtifacts(plan.base, plan.profileDir, plan.bundles, { rootDir, fsImpl, io });
-      resolve(0);
-    });
+    child.on('exit', (code) => completeBuild(code, plan, startedAt, { rootDir, fsImpl, io, now, resolve }));
   });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
-  main().then((code) => process.exit(code));
+  process.exit(await main());
 }

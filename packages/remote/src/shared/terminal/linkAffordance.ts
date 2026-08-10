@@ -47,7 +47,7 @@ export function parsePathWithLocation(text: string): {
   const pathPart = m[1];
   // Avoid treating "C:" as path with line — require more path after drive
   if (/^[A-Za-z]:$/.test(pathPart)) return { path: text };
-  if (/^[A-Za-z]:$/.test(pathPart.replaceAll(/\\/g, ''))) return { path: text };
+  if (/^[A-Za-z]:$/.test(pathPart.replaceAll('\\', ''))) return { path: text };
   // "http://..." must not parse as path:line
   if (/^https?:\/\//i.test(text) || /^file:\/\//i.test(text)) {
     return { path: text };

@@ -68,123 +68,103 @@ fn lookup_program(name: &str) -> Option<PathBuf> {
 /// scans pwsh / powershell / cmd / git-bash / wsl / nu / clink; Unix scans
 /// zsh / bash / fish / sh / dash / nu / elvish. (Verbatim port of
 /// `terminal.rs::detect_available_shells`.)
-pub fn detect_available_shells() -> Vec<ShellInfo> {
-    let mut found: Vec<ShellInfo> = Vec::new();
-    let try_add = |list: &mut Vec<ShellInfo>, id: &str, label: &str, candidates: &[&str]| {
-        for c in candidates {
-            if let Some(p) = lookup_program(c) {
-                let prog = p.to_string_lossy().to_string();
-                if list.iter().any(|s| s.program == prog) {
-                    return;
-                }
-                list.push(ShellInfo {
-                    id: id.to_string(),
-                    label: label.to_string(),
-                    program: prog,
-                    args: vec![],
-                });
-                return;
-            }
+fn add_shell(list: &mut Vec<ShellInfo>, id: &str, label: &str, candidates: &[&str]) {
+    for candidate in candidates {
+        let Some(path) = lookup_program(candidate) else {
+            continue;
+        };
+        let program = path.to_string_lossy().to_string();
+        if list.iter().any(|shell| shell.program == program) {
+            return;
         }
-    };
+        list.push(ShellInfo {
+            id: id.to_string(),
+            label: label.to_string(),
+            program,
+            args: vec![],
+        });
+        return;
+    }
+}
 
-    #[cfg(target_os = "windows")]
-    {
-        try_add(
-            &mut found,
-            "pwsh",
-            "PowerShell 7+ (pwsh)",
-            &["pwsh.exe", "pwsh"],
-        );
-        try_add(
-            &mut found,
-            "powershell",
-            "Windows PowerShell 5.1",
-            &["powershell.exe", "powershell"],
-        );
-        try_add(&mut found, "cmd", "命令提示符 (CMD)", &["cmd.exe", "cmd"]);
-        try_add(
-            &mut found,
-            "git-bash",
-            "Git Bash",
-            &[
-                "bash.exe",
-                "C:\\Program Files\\Git\\bin\\bash.exe",
-                "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
-            ],
-        );
-        // WSL: enumerate each installed distro (each becomes `wsl -d <distro>`).
-        // Fall back to a single bare wsl entry if enumeration returns nothing.
-        if let Some(wsl) = lookup_program("wsl.exe").or_else(|| lookup_program("wsl")) {
-            let prog = wsl.to_string_lossy().to_string();
-            let distros = list_wsl_distros();
-            if distros.is_empty() {
-                found.push(ShellInfo {
-                    id: "wsl".to_string(),
-                    label: "WSL".to_string(),
-                    program: prog,
-                    args: vec![],
-                });
-            } else {
-                for d in distros {
-                    found.push(ShellInfo {
-                        id: format!("wsl-{d}"),
-                        label: format!("WSL: {d}"),
-                        program: prog.clone(),
-                        args: vec!["-d".to_string(), d],
-                    });
-                }
-            }
+#[cfg(target_os = "windows")]
+fn detect_platform_shells(found: &mut Vec<ShellInfo>) {
+    add_shell(found, "pwsh", "PowerShell 7+ (pwsh)", &["pwsh.exe", "pwsh"]);
+    add_shell(
+        found,
+        "powershell",
+        "Windows PowerShell 5.1",
+        &["powershell.exe", "powershell"],
+    );
+    add_shell(found, "cmd", "命令提示符 (CMD)", &["cmd.exe", "cmd"]);
+    add_shell(
+        found,
+        "git-bash",
+        "Git Bash",
+        &[
+            "bash.exe",
+            "C:\\Program Files\\Git\\bin\\bash.exe",
+            "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
+        ],
+    );
+    if let Some(wsl) = lookup_program("wsl.exe").or_else(|| lookup_program("wsl")) {
+        let program = wsl.to_string_lossy().to_string();
+        let distros = list_wsl_distros();
+        if distros.is_empty() {
+            found.push(ShellInfo {
+                id: "wsl".to_string(),
+                label: "WSL".to_string(),
+                program,
+                args: vec![],
+            });
+        } else {
+            found.extend(distros.into_iter().map(|distro| ShellInfo {
+                id: format!("wsl-{distro}"),
+                label: format!("WSL: {distro}"),
+                program: program.clone(),
+                args: vec!["-d".to_string(), distro],
+            }));
         }
-        try_add(&mut found, "nu", "Nushell", &["nu.exe", "nu"]);
-        try_add(
-            &mut found,
-            "clink",
-            "Clink (CMD 增强)",
-            &["clink.exe", "clink", "cmder.exe", "Cmder.exe"],
-        );
-        found.extend(detect_vs_dev_shells());
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        try_add(
-            &mut found,
-            "zsh",
-            "Zsh",
-            &["zsh", "/bin/zsh", "/usr/bin/zsh"],
-        );
-        try_add(
-            &mut found,
-            "bash",
-            "Bash",
-            &["bash", "/bin/bash", "/usr/bin/bash"],
-        );
-        try_add(&mut found, "fish", "Fish", &["fish", "/usr/bin/fish"]);
-        try_add(
-            &mut found,
-            "sh",
-            "POSIX sh",
-            &["sh", "/bin/sh", "/usr/bin/sh"],
-        );
-        try_add(
-            &mut found,
-            "dash",
-            "Dash",
-            &["dash", "/bin/dash", "/usr/bin/dash"],
-        );
-        try_add(
-            &mut found,
-            "nu",
-            "Nushell",
-            &["nu", "/bin/nu", "/usr/bin/nu"],
-        );
-        try_add(
-            &mut found,
-            "elvish",
-            "Elvish",
-            &["elvish", "/bin/elvish", "/usr/local/bin/elvish"],
-        );
-    }
+    add_shell(found, "nu", "Nushell", &["nu.exe", "nu"]);
+    add_shell(
+        found,
+        "clink",
+        "Clink (CMD 增强)",
+        &["clink.exe", "clink", "cmder.exe", "Cmder.exe"],
+    );
+    found.extend(detect_vs_dev_shells());
+}
+
+#[cfg(not(target_os = "windows"))]
+fn detect_platform_shells(found: &mut Vec<ShellInfo>) {
+    add_shell(found, "zsh", "Zsh", &["zsh", "/bin/zsh", "/usr/bin/zsh"]);
+    add_shell(
+        found,
+        "bash",
+        "Bash",
+        &["bash", "/bin/bash", "/usr/bin/bash"],
+    );
+    add_shell(found, "fish", "Fish", &["fish", "/usr/bin/fish"]);
+    add_shell(found, "sh", "POSIX sh", &["sh", "/bin/sh", "/usr/bin/sh"]);
+    add_shell(
+        found,
+        "dash",
+        "Dash",
+        &["dash", "/bin/dash", "/usr/bin/dash"],
+    );
+    add_shell(found, "nu", "Nushell", &["nu", "/bin/nu", "/usr/bin/nu"]);
+    add_shell(
+        found,
+        "elvish",
+        "Elvish",
+        &["elvish", "/bin/elvish", "/usr/local/bin/elvish"],
+    );
+}
+
+pub fn detect_available_shells() -> Vec<ShellInfo> {
+    let mut found = Vec::new();
+    detect_platform_shells(&mut found);
     found
 }
 

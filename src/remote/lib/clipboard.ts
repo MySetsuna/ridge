@@ -65,9 +65,10 @@ function legacyCopy(text: string): boolean {
       } catch {
         /* setSelectionRange unsupported on some engines — Range selection stands */
       }
-      return document.execCommand('copy');
+      const execCommand = Reflect.get(document, 'execCommand');
+      return typeof execCommand === 'function' && Reflect.apply(execCommand, document, ['copy']) === true;
     } finally {
-      document.body.removeChild(ta);
+      ta.remove();
     }
   } catch {
     return false; // clipboard truly unavailable — nothing more we can do

@@ -59,6 +59,53 @@ const DEFAULTS: UserSettings = {
 
 const LS_KEY = 'ridge-settings';
 
+function stringSetting(obj: Record<string, unknown>, key: string, fallback: string, required = false): string {
+  const value = obj[key];
+  return typeof value === 'string' && (!required || value.length > 0) ? value : fallback;
+}
+
+function numberSetting(
+  obj: Record<string, unknown>,
+  key: string,
+  fallback: number,
+  min: number,
+  max: number,
+  round = false,
+): number {
+  const value = obj[key];
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) return fallback;
+  return round ? Math.round(value) : value;
+}
+
+function choiceSetting<T extends string>(obj: Record<string, unknown>, key: string, options: readonly T[], fallback: T): T {
+  const value = obj[key];
+  return typeof value === 'string' && options.includes(value as T) ? value as T : fallback;
+}
+
+function booleanSetting(obj: Record<string, unknown>, key: string, fallback: boolean): boolean {
+  const value = obj[key];
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function parseSettings(obj: Record<string, unknown>): UserSettings {
+  return {
+    theme: stringSetting(obj, 'theme', DEFAULTS.theme, true),
+    editorFontSize: numberSetting(obj, 'editorFontSize', DEFAULTS.editorFontSize, 8, 32),
+    editorFontFamily: stringSetting(obj, 'editorFontFamily', DEFAULTS.editorFontFamily),
+    searchIncludeGlobs: stringSetting(obj, 'searchIncludeGlobs', DEFAULTS.searchIncludeGlobs),
+    searchExcludeGlobs: stringSetting(obj, 'searchExcludeGlobs', DEFAULTS.searchExcludeGlobs),
+    defaultShell: stringSetting(obj, 'defaultShell', DEFAULTS.defaultShell),
+    terminalFontFamily: stringSetting(obj, 'terminalFontFamily', DEFAULTS.terminalFontFamily),
+    defaultCwd: stringSetting(obj, 'defaultCwd', DEFAULTS.defaultCwd),
+    terminalPaddingPx: numberSetting(obj, 'terminalPaddingPx', DEFAULTS.terminalPaddingPx, 0, 64),
+    terminalScrollbackLines: numberSetting(obj, 'terminalScrollbackLines', DEFAULTS.terminalScrollbackLines, 100, 10000, true),
+    terminalImeMode: choiceSetting(obj, 'terminalImeMode', ['ime', 'direct'] as const, DEFAULTS.terminalImeMode),
+    remoteEnabled: booleanSetting(obj, 'remoteEnabled', DEFAULTS.remoteEnabled),
+    teammateEnabled: booleanSetting(obj, 'teammateEnabled', DEFAULTS.teammateEnabled),
+    teammateHitlEnabled: booleanSetting(obj, 'teammateHitlEnabled', DEFAULTS.teammateHitlEnabled),
+  };
+}
+
 function load(): UserSettings {
   if (typeof localStorage === 'undefined') return { ...DEFAULTS };
   const raw = (() => {
@@ -69,75 +116,14 @@ function load(): UserSettings {
     }
   })();
   if (!raw) return { ...DEFAULTS };
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object'
+      ? parseSettings(parsed as Record<string, unknown>)
+      : { ...DEFAULTS };
   } catch {
     return { ...DEFAULTS };
   }
-  if (!parsed || typeof parsed !== 'object') return { ...DEFAULTS };
-  const obj = parsed as Record<string, unknown>;
-  return {
-    theme:
-      typeof obj.theme === 'string' && obj.theme.length > 0
-        ? obj.theme
-        : DEFAULTS.theme,
-    editorFontSize:
-      typeof obj.editorFontSize === 'number' &&
-      Number.isFinite(obj.editorFontSize) &&
-      obj.editorFontSize >= 8 &&
-      obj.editorFontSize <= 32
-        ? obj.editorFontSize
-        : DEFAULTS.editorFontSize,
-    editorFontFamily:
-      typeof obj.editorFontFamily === 'string'
-        ? obj.editorFontFamily
-        : DEFAULTS.editorFontFamily,
-    searchIncludeGlobs:
-      typeof obj.searchIncludeGlobs === 'string'
-        ? obj.searchIncludeGlobs
-        : DEFAULTS.searchIncludeGlobs,
-    searchExcludeGlobs:
-      typeof obj.searchExcludeGlobs === 'string'
-        ? obj.searchExcludeGlobs
-        : DEFAULTS.searchExcludeGlobs,
-    defaultShell:
-      typeof obj.defaultShell === 'string' ? obj.defaultShell : DEFAULTS.defaultShell,
-    terminalFontFamily:
-      typeof obj.terminalFontFamily === 'string' ? obj.terminalFontFamily : DEFAULTS.terminalFontFamily,
-    defaultCwd:
-      typeof obj.defaultCwd === 'string' ? obj.defaultCwd : DEFAULTS.defaultCwd,
-    terminalPaddingPx:
-      typeof obj.terminalPaddingPx === 'number' &&
-      Number.isFinite(obj.terminalPaddingPx) &&
-      obj.terminalPaddingPx >= 0 &&
-      obj.terminalPaddingPx <= 64
-        ? obj.terminalPaddingPx
-        : DEFAULTS.terminalPaddingPx,
-    terminalScrollbackLines:
-      typeof obj.terminalScrollbackLines === 'number' &&
-      Number.isFinite(obj.terminalScrollbackLines) &&
-      obj.terminalScrollbackLines >= 100 &&
-      obj.terminalScrollbackLines <= 10000
-        ? Math.round(obj.terminalScrollbackLines)
-        : DEFAULTS.terminalScrollbackLines,
-    terminalImeMode:
-      obj.terminalImeMode === 'ime' || obj.terminalImeMode === 'direct'
-        ? obj.terminalImeMode
-        : DEFAULTS.terminalImeMode,
-    remoteEnabled:
-      typeof obj.remoteEnabled === 'boolean'
-        ? obj.remoteEnabled
-        : DEFAULTS.remoteEnabled,
-    teammateEnabled:
-      typeof obj.teammateEnabled === 'boolean'
-        ? obj.teammateEnabled
-        : DEFAULTS.teammateEnabled,
-    teammateHitlEnabled:
-      typeof obj.teammateHitlEnabled === 'boolean'
-        ? obj.teammateHitlEnabled
-        : DEFAULTS.teammateHitlEnabled,
-  };
 }
 
 function persist(s: UserSettings): void {

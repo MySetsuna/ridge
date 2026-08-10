@@ -108,7 +108,7 @@ fn build_mdns_packet(port: u16) -> Vec<u8> {
     p.push(0x0C);
     p.push(0x1C); // Compression pointer to name at offset 0x001C
     p.extend(&0x000Cu16.to_be_bytes()); // Type: PTR
-    p.extend(&0x8001u16.to_be_bytes()); // Class: IN + cache-flush
+    p.extend(&0x8001u16.to_be_bytes()); // Class IN, cache flush
     p.extend(&120u32.to_be_bytes()); // TTL: 120 seconds
                                      // PTR target name: Ridge Remote Control._ridge._tcp.local.
     let instance = b"Ridge Remote Control";

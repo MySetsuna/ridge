@@ -4,6 +4,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { systemTool } from './lib/toolPath.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -34,7 +35,7 @@ process.on('SIGTERM', cleanup);
 
 // 1. 启动 Main Vite (5173)
 console.log('🚀 启动 Main Vite dev server (5173)...');
-const mainVite = spawn('pnpm', ['exec', 'vite', 'dev'], {
+const mainVite = spawn(systemTool('pnpm'), ['exec', 'vite', 'dev'], {
     cwd: root,
     stdio: 'inherit',
     shell: true,
@@ -47,7 +48,7 @@ await new Promise(r => setTimeout(r, 2000));
 
 // 2. 启动 Remote Vite (5174)
 console.log('🚀 启动 Remote Vite dev server (5174)...');
-const remoteVite = spawn('pnpm', ['exec', 'vite', 'dev', '--config', 'vite.remote.config.js'], {
+const remoteVite = spawn(systemTool('pnpm'), ['exec', 'vite', 'dev', '--config', 'vite.remote.config.js'], {
     cwd: root,
     stdio: 'inherit',
     shell: true,
@@ -61,7 +62,7 @@ await new Promise(r => setTimeout(r, 2000));
 // 3. 运行 tauri dev (但不让它启动 Vite)
 // 通过设置 TAURI_SKIP_VITE_DEV=1
 console.log('🚀 启动 Tauri dev...');
-const tauri = spawn('pnpm', ['tauri', 'dev'], {
+const tauri = spawn(systemTool('pnpm'), ['tauri', 'dev'], {
     cwd: root,
     stdio: 'inherit',
     shell: true,

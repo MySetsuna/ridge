@@ -43,7 +43,7 @@ export async function save(options: { defaultPath?: string; title?: string } = {
       ? window.prompt(options.title ?? '输入远程主机上的保存路径', options.defaultPath ?? '')
       : null;
   const path = entered?.trim();
-  return path ? path : null;
+  return path ?? null;
 }
 
 export async function message(msg: string): Promise<void> {

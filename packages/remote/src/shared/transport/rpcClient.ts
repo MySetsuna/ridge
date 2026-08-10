@@ -150,9 +150,11 @@ export class RpcClient {
     this.prevState = transport.state();
     this.ready = this.prevState === 'connected' && transport.authState() === 'authorized';
 
-    this.disposers.push(transport.onControl((f) => this.handleControl(f)));
-    this.disposers.push(transport.onStateChange((s) => this.handleStateChange(s)));
-    this.disposers.push(transport.onAuthChange((auth) => this.handleAuthChange(auth)));
+    this.disposers.push(
+      transport.onControl((f) => this.handleControl(f)),
+      transport.onStateChange((s) => this.handleStateChange(s)),
+      transport.onAuthChange((auth) => this.handleAuthChange(auth)),
+    );
     // D9 handshake is initiated explicitly by the boot code via `hello()` (so
     // ordering vs. the initial control frames is well-defined), then re-run
     // automatically after each reconnect in `handleStateChange`.

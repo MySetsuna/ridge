@@ -23,4 +23,6 @@ export function main({ spawnImpl = spawn, prune = pruneOutputs, io = console } =
   });
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) main().then((code) => process.exit(code));
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  process.exit(await main());
+}

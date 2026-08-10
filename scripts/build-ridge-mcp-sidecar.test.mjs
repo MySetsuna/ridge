@@ -4,6 +4,7 @@ const childProcess = vi.hoisted(() => ({ execFileSync: vi.fn() }));
 const fileSystem = vi.hoisted(() => ({
   chmodSync: vi.fn(),
   copyFileSync: vi.fn(),
+  existsSync: vi.fn(() => false),
   mkdirSync: vi.fn(),
   readFileSync: vi.fn(),
   statSync: vi.fn(),

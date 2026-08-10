@@ -50,7 +50,7 @@ export function buildGapReport(matrix) {
   '',
   '能力必须先协商宣告，未宣告入口**显式拒绝**而非静默分叉（跨入口合同测试守卫）。rdg 对 denied 能力的正确行为 = 不宣告 + 拒绝对应方法调用；上表「收口判定」列指导后续是否补齐路由。',
   '',
-  ].filter((l) => l !== null && l !== undefined);
+  ].filter((l) => typeof l === 'string');
   return { content: lines.join('\n'), supported: supported.length, denied: denied.length };
 }
 

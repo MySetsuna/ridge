@@ -77,6 +77,88 @@ impl Default for SearchOptions {
 
 pub struct SearchEngine;
 
+fn compile_globs(patterns: &[String], field: &'static str) -> (Vec<Pattern>, Vec<InvalidGlob>) {
+    let mut compiled = Vec::with_capacity(patterns.len());
+    let mut invalid = Vec::new();
+    for pattern in patterns {
+        match Pattern::new(pattern) {
+            Ok(value) => compiled.push(value),
+            Err(error) => invalid.push(InvalidGlob {
+                pattern: pattern.clone(),
+                error: error.to_string(),
+                field: field.to_string(),
+            }),
+        }
+    }
+    (compiled, invalid)
+}
+
+fn matches_glob(path: &str, forward_path: &str, glob: &Pattern) -> bool {
+    glob.matches(path) || glob.matches(forward_path)
+}
+
+fn append_file_matches(
+    path: &Path,
+    pattern: &Regex,
+    max_results: usize,
+    results: &mut Vec<SearchResult>,
+) -> bool {
+    let Ok(content) = fs::read_to_string(path) else {
+        return false;
+    };
+    for (line_idx, line) in content.lines().enumerate() {
+        let Some(captures) = pattern.find(line) else {
+            continue;
+        };
+        results.push(SearchResult {
+            file: path.to_string_lossy().to_string(),
+            line: line_idx + 1,
+            column: captures.start() + 1,
+            content: line.to_string(),
+            match_text: Some(captures.as_str().to_string()),
+        });
+        if results.len() >= max_results {
+            return true;
+        }
+    }
+    false
+}
+
+fn search_file_candidate(
+    root: &Path,
+    path: &Path,
+    query: &str,
+) -> Option<(String, String, String)> {
+    if FileTree::should_ignore(path) || !path.is_file() {
+        return None;
+    }
+    let name = path.file_name()?.to_string_lossy().to_lowercase();
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_lowercase();
+    let absolute = path.to_string_lossy().replace('\\', "/").to_lowercase();
+    (name.contains(query) || relative.contains(query) || absolute.contains(query))
+        .then(|| (path.to_string_lossy().to_string(), name, relative))
+}
+
+fn search_relevance(item: &(String, String, String), query: &str) -> u8 {
+    if item.1 == query {
+        0
+    } else if item.1.starts_with(query) {
+        1
+    } else if item.2 == query {
+        2
+    } else if item.2.starts_with(query) {
+        3
+    } else {
+        4
+    }
+}
+
 impl SearchEngine {
     /// Search for text in all files under a root directory.
     ///
@@ -108,28 +190,10 @@ impl SearchEngine {
         // Compile include / exclude globs once. Bad patterns get dropped
         // from the active filter (so a typo doesn't strand the user with
         // zero results) but are collected for caller surfacing.
-        let mut includes: Vec<Pattern> = Vec::with_capacity(options.include_globs.len());
-        for s in &options.include_globs {
-            match Pattern::new(s) {
-                Ok(p) => includes.push(p),
-                Err(e) => bad_globs.push(InvalidGlob {
-                    pattern: s.clone(),
-                    error: e.to_string(),
-                    field: "include".to_string(),
-                }),
-            }
-        }
-        let mut excludes: Vec<Pattern> = Vec::with_capacity(options.exclude_globs.len());
-        for s in &options.exclude_globs {
-            match Pattern::new(s) {
-                Ok(p) => excludes.push(p),
-                Err(e) => bad_globs.push(InvalidGlob {
-                    pattern: s.clone(),
-                    error: e.to_string(),
-                    field: "exclude".to_string(),
-                }),
-            }
-        }
+        let (includes, mut invalid_includes) = compile_globs(&options.include_globs, "include");
+        let (excludes, mut invalid_excludes) = compile_globs(&options.exclude_globs, "exclude");
+        bad_globs.append(&mut invalid_includes);
+        bad_globs.append(&mut invalid_excludes);
 
         // Walk directory — respects .gitignore, .git/info/exclude, and .ignore files
         // via the `ignore` crate (same engine as ripgrep). FileTree::should_ignore
@@ -162,13 +226,13 @@ impl SearchEngine {
             if !includes.is_empty()
                 && !includes
                     .iter()
-                    .any(|g| g.matches(&path_str) || g.matches(&path_fwd))
+                    .any(|g| matches_glob(&path_str, &path_fwd, g))
             {
                 continue;
             }
             if excludes
                 .iter()
-                .any(|g| g.matches(&path_str) || g.matches(&path_fwd))
+                .any(|g| matches_glob(&path_str, &path_fwd, g))
             {
                 continue;
             }
@@ -179,22 +243,8 @@ impl SearchEngine {
             }
 
             // Search in file
-            if let Ok(content) = fs::read_to_string(path) {
-                for (line_idx, line) in content.lines().enumerate() {
-                    if let Some(captures) = pattern.find(line) {
-                        results.push(SearchResult {
-                            file: path.to_string_lossy().to_string(),
-                            line: line_idx + 1, // 1-indexed
-                            column: captures.start() + 1,
-                            content: line.to_string(),
-                            match_text: Some(captures.as_str().to_string()),
-                        });
-
-                        if results.len() >= options.max_results {
-                            return (results, bad_globs);
-                        }
-                    }
-                }
+            if append_file_matches(path, &pattern, options.max_results, &mut results) {
+                return (results, bad_globs);
             }
         }
 
@@ -233,54 +283,16 @@ impl SearchEngine {
             .build()
             .filter_map(|e| e.ok())
         {
-            let path = entry.path();
-
-            if FileTree::should_ignore(path) {
-                continue;
-            }
-            if !path.is_file() {
-                continue;
-            }
-
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            let relative = path
-                .strip_prefix(root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .replace('\\', "/")
-                .trim_start_matches("./")
-                .to_lowercase();
-            let absolute = path.to_string_lossy().replace('\\', "/").to_lowercase();
-
-            if name.contains(&pattern_lower)
-                || relative.contains(&pattern_lower)
-                || absolute.contains(&pattern_lower)
-            {
-                matches.push((path.to_string_lossy().to_string(), name, relative));
+            if let Some(candidate) = search_file_candidate(root, entry.path(), &pattern_lower) {
+                matches.push(candidate);
             }
         }
 
         // Sort by relevance (exact filename > filename prefix > path prefix >
         // path substring), then by the shorter relative path for stability.
         matches.sort_by(|a, b| {
-            let score = |item: &(String, String, String)| {
-                if item.1 == pattern_lower {
-                    0
-                } else if item.1.starts_with(&pattern_lower) {
-                    1
-                } else if item.2 == pattern_lower {
-                    2
-                } else if item.2.starts_with(&pattern_lower) {
-                    3
-                } else {
-                    4
-                }
-            };
-            score(a)
-                .cmp(&score(b))
+            search_relevance(a, &pattern_lower)
+                .cmp(&search_relevance(b, &pattern_lower))
                 .then_with(|| a.2.len().cmp(&b.2.len()))
                 .then_with(|| a.0.cmp(&b.0))
         });

@@ -26,7 +26,6 @@
 //   Terminal 1: pnpm tauri:dev:cdp     (wait for the Ridge window)
 //   Terminal 2: pnpm cdp:pty           (this script)
 // Exit 0 = all three parsers confirmed; non-zero = failure (see summary).
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import http from 'node:http';
 import { resolveCdpPort } from './cdp-port.mjs';
 
@@ -107,7 +106,8 @@ async function waitForRidgeTarget(maxMs = 90000) {
   fail('timed out waiting for Ridge CDP target on :' + CDP_PORT + ' — ' + lastErr);
 }
 
-(async () => {
+try {
+  await (async () => {
   log('waiting for Ridge CDP target on :' + CDP_PORT + ' …');
   const t = await waitForRidgeTarget();
   log('ridge target:', t.url);
@@ -120,10 +120,10 @@ async function waitForRidgeTarget(maxMs = 90000) {
   let info = null;
   for (let i = 0; i < 20; i++) {
     info = await cdp.evalAsync(`window.__TAURI__.core.invoke('get_remote_info')`);
-    if (info && info.port > 0 && info.ready) break;
+    if (info?.port > 0 && info.ready) break;
     await new Promise((r) => setTimeout(r, 500));
   }
-  if (!info || !info.port) fail('get_remote_info never reported a bound port');
+  if (!info?.port) fail('get_remote_info never reported a bound port');
   log('remote info:', JSON.stringify({ port: info.port, ready: info.ready }));
   cdp.close();
 
@@ -204,4 +204,7 @@ async function waitForRidgeTarget(maxMs = 90000) {
     summary.binaryFrames++;
     binConcat += Buffer.from(buf.subarray(16)).toString('utf8');
   };
-})().catch((e) => fail(e.stack || e.message || String(e)));
+  })();
+} catch (e) {
+  fail(e.stack || e.message || String(e));
+}

@@ -400,48 +400,59 @@ fn inject_roster_runtime(topology: &mut Value, state: &AppState, wid: Uuid) {
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     let seen = seen.get_or_insert_with(HashMap::new);
     for entry in roster.iter_mut() {
-        let Some(pane) = entry
-            .get("paneId")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok())
-        else {
-            continue;
-        };
-        let chunk = state.get_pty_scrollback_tail(wid, pane, RECENT_TAIL_BYTES);
-        let now = Instant::now();
-        let since = match seen.get(&pane) {
-            Some((prev_seq, at)) if *prev_seq == chunk.head_seq => at.elapsed().as_millis(),
-            _ => {
-                seen.insert(pane, (chunk.head_seq, now));
-                0
-            }
-        };
-        let Some(obj) = entry.as_object_mut() else {
-            continue;
-        };
-        obj.insert(
-            "activity".into(),
-            json!(if since < ACTIVE_WINDOW_MS {
-                "working"
-            } else {
-                "idle"
-            }),
-        );
-        obj.insert("outputSeq".into(), json!(chunk.head_seq));
-        obj.insert("recentOutput".into(), json!(tail_lines(&chunk.bytes, 6)));
+        update_runtime_entry(entry, state, wid, seen);
     }
     // 已消失的 pane 不再累积。
-    let live: std::collections::HashSet<Uuid> = topology
-        .get("roster")
-        .and_then(|r| r.as_array())
-        .map(|r| {
-            r.iter()
-                .filter_map(|e| e.get("paneId").and_then(|v| v.as_str()))
-                .filter_map(|s| Uuid::parse_str(s).ok())
-                .collect()
-        })
-        .unwrap_or_default();
+    let live = live_roster_panes(topology);
     seen.retain(|p, _| live.contains(p));
+}
+
+fn update_runtime_entry(
+    entry: &mut Value,
+    state: &AppState,
+    workspace_id: Uuid,
+    seen: &mut std::collections::HashMap<Uuid, (u64, std::time::Instant)>,
+) {
+    let Some(pane) = entry
+        .get("paneId")
+        .and_then(Value::as_str)
+        .and_then(|id| Uuid::parse_str(id).ok())
+    else {
+        return;
+    };
+    let chunk = state.get_pty_scrollback_tail(workspace_id, pane, RECENT_TAIL_BYTES);
+    let now = std::time::Instant::now();
+    let since = match seen.get(&pane) {
+        Some((sequence, at)) if *sequence == chunk.head_seq => at.elapsed().as_millis(),
+        _ => {
+            seen.insert(pane, (chunk.head_seq, now));
+            0
+        }
+    };
+    let Some(object) = entry.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "activity".into(),
+        json!(if since < ACTIVE_WINDOW_MS {
+            "working"
+        } else {
+            "idle"
+        }),
+    );
+    object.insert("outputSeq".into(), json!(chunk.head_seq));
+    object.insert("recentOutput".into(), json!(tail_lines(&chunk.bytes, 6)));
+}
+
+fn live_roster_panes(topology: &Value) -> std::collections::HashSet<Uuid> {
+    topology
+        .get("roster")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("paneId").and_then(Value::as_str))
+        .filter_map(|id| Uuid::parse_str(id).ok())
+        .collect()
 }
 
 /// 取一段终端输出的最后 `n` 个非空行（剥 ANSI / OSC，归一 `\r`）。
@@ -719,35 +730,57 @@ fn validate_teammate_groups(groups: &Value) -> Result<(), String> {
         return Err("too many groups".into());
     }
     for (index, item) in items.iter().enumerate() {
-        let Some(group) = item.as_object() else {
-            return Err(format!("group {index} must be an object"));
+        validate_teammate_group(item, index)?;
+    }
+    Ok(())
+}
+
+fn validate_teammate_group(item: &Value, index: usize) -> Result<(), String> {
+    let Some(group) = item.as_object() else {
+        return Err(format!("group {index} must be an object"));
+    };
+    validate_group_fields(group, index)?;
+    validate_group_members(group, index)?;
+    if group
+        .get("leaderAgentId")
+        .is_some_and(|leader| !leader.is_null() && leader.as_str().is_none())
+    {
+        return Err(format!("group {index} has invalid leaderAgentId"));
+    }
+    Ok(())
+}
+
+fn validate_group_fields(
+    group: &serde_json::Map<String, Value>,
+    index: usize,
+) -> Result<(), String> {
+    for key in ["id", "name", "color"] {
+        let Some(value) = group.get(key).and_then(Value::as_str) else {
+            return Err(format!("group {index} missing {key}"));
         };
-        for key in ["id", "name", "color"] {
-            let Some(value) = group.get(key).and_then(Value::as_str) else {
-                return Err(format!("group {index} missing {key}"));
-            };
-            if value.trim().is_empty() || value.len() > 128 {
-                return Err(format!("group {index} invalid {key}"));
-            }
+        if value.trim().is_empty() || value.len() > 128 {
+            return Err(format!("group {index} invalid {key}"));
         }
-        let Some(members) = group.get("memberAgentIds").and_then(Value::as_array) else {
-            return Err(format!("group {index} memberAgentIds must be an array"));
+    }
+    Ok(())
+}
+
+fn validate_group_members(
+    group: &serde_json::Map<String, Value>,
+    index: usize,
+) -> Result<(), String> {
+    let Some(members) = group.get("memberAgentIds").and_then(Value::as_array) else {
+        return Err(format!("group {index} memberAgentIds must be an array"));
+    };
+    if members.len() > 256 {
+        return Err(format!("group {index} has too many members"));
+    }
+    for member in members {
+        let Some(id) = member.as_str() else {
+            return Err(format!("group {index} has invalid member id"));
         };
-        if members.len() > 256 {
-            return Err(format!("group {index} has too many members"));
-        }
-        for member in members {
-            let Some(id) = member.as_str() else {
-                return Err(format!("group {index} has invalid member id"));
-            };
-            if id.trim().is_empty() || id.len() > 128 {
-                return Err(format!("group {index} has invalid member id"));
-            }
-        }
-        if let Some(leader) = group.get("leaderAgentId") {
-            if !leader.is_null() && leader.as_str().is_none() {
-                return Err(format!("group {index} has invalid leaderAgentId"));
-            }
+        if id.trim().is_empty() || id.len() > 128 {
+            return Err(format!("group {index} has invalid member id"));
         }
     }
     Ok(())

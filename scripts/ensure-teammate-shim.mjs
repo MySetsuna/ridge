@@ -6,10 +6,10 @@
  * 判定策略：shim 存在且不比 src-tauri/src/bin/tmux.rs 旧 → skip；
  * 否则重新构建并拷贝（复用 build:teammate-shim 的两步）。
  */
-import { existsSync, statSync } from 'fs';
-import { execSync } from 'child_process';
-import { join, dirname, resolve } from 'path';
-import { fileURLToPath } from 'url';
+import { existsSync, statSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 

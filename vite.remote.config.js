@@ -188,6 +188,14 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5174,
     strictPort: true,
+    // Keep the browser's HMR client on the same fixed port as this server.
+    // Without an explicit clientPort, a page that was first opened through a
+    // desktop Vite instance can retain that instance's stale port (for
+    // example 7734) and request old `/@fs/...` modules after Remote reloads.
+    hmr: {
+      protocol: 'ws',
+      clientPort: 5174,
+    },
     proxy: {
       '/ws': {
         target: 'ws://127.0.0.1:9527',

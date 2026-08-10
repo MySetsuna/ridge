@@ -27,43 +27,50 @@ export const SCAN_DIRS = [
 ].map((p) => join(root, p));
 
 /** @param {string} dir @param {string[]} out */
-export function walk(dir, out = [], fsImpl = { readdirSync }) {
+export function walk(dir, out, fsImpl) {
+  out ??= [];
+  const fs = fsImpl ?? { readdirSync };
   let entries;
   try {
-    entries = fsImpl.readdirSync(dir, { withFileTypes: true });
+    entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
     return out; // 目录不存在（未构建/未 stage）—— 跳过
   }
   for (const e of entries) {
     const p = join(dir, e.name);
-    if (e.isDirectory()) walk(p, out, fsImpl);
+    if (e.isDirectory()) walk(p, out, fs);
     else out.push(p);
   }
   return out;
 }
 
-export function pruneOutputs({ dirs = SCAN_DIRS, fsImpl = { readdirSync, statSync, rmSync }, io = console } = {}) {
+function pruneFont(file, fs, io) {
+  if (!FONT_RE.test(file)) return false;
+  let size = 0;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    return false;
+  }
+  if (size <= MAX_FONT_BYTES) return false;
+  try {
+    fs.rmSync(file);
+    io.log(
+      `[prune-stale-fonts] removed ${file} (${(size / 1024 / 1024).toFixed(2)}MB)`
+    );
+    return true;
+  } catch (e) {
+    io.warn(`[prune-stale-fonts] failed to remove ${file}:`, e.message);
+    return false;
+  }
+}
+
+export function pruneOutputs({ dirs = SCAN_DIRS, fsImpl, io = console } = {}) {
+  const fs = fsImpl ?? { readdirSync, statSync, rmSync };
   let pruned = 0;
   for (const dir of dirs) {
-    for (const file of walk(dir, [], fsImpl)) {
-      if (!FONT_RE.test(file)) continue;
-      let size = 0;
-      try {
-        size = fsImpl.statSync(file).size;
-      } catch {
-        continue;
-      }
-      if (size > MAX_FONT_BYTES) {
-        try {
-          fsImpl.rmSync(file);
-          pruned += 1;
-          io.log(
-            `[prune-stale-fonts] removed ${file} (${(size / 1024 / 1024).toFixed(2)}MB)`
-          );
-        } catch (e) {
-          io.warn(`[prune-stale-fonts] failed to remove ${file}:`, e.message);
-        }
-      }
+    for (const file of walk(dir, [], fs)) {
+      if (pruneFont(file, fs, io)) pruned += 1;
     }
   }
   if (pruned === 0) io.log('[prune-stale-fonts] no oversized fonts found (clean)');

@@ -45,12 +45,12 @@ const fake = path.join(dir, 'aider.exe');
 // 底座取 `ping.exe`，与另外两条 e2e 完全一致：三个脚本共用同一个文件名，
 // 「已存在就跳过拷贝」会把上一条脚本的二进制留下来，参数对不上即刻退出、整条链路假红。
 // 故一律**先收尸、再覆盖**。
-const src = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'PING.EXE');
+const src = path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'PING.EXE');
 {
   // 清掉上一轮残留的替身，否则「agent 退出 → 花名册回收」这一半永远测不到。
   // 只按**这个可执行文件的全路径**匹配 —— 绝不 `taskkill /IM`，那会误伤同名真进程。
   const { spawnSync } = await import('node:child_process');
-  const q = fake.replace(/'/g, "''");
+  const q = fake.replaceAll("'", "''");
   spawnSync('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',
@@ -138,7 +138,7 @@ if (!hit) {
   }
   // 显示名必须是识别出来的 agent，而不是 shell 自报的 `…\powershell.exe`
   // （iter-62 e2e 首跑就是被这个盖掉的）。
-  const shown = hit.title && hit.title.trim() ? hit.title : hit.name;
+  const shown = hit.title?.trim() || hit.name;
   if (/\.exe$/i.test(shown) || /[\\/]/.test(shown)) {
     console.error('[agent-e2e] FAIL: 成员显示名被 shell 自报标题盖掉:', shown);
     process.exitCode = 1;

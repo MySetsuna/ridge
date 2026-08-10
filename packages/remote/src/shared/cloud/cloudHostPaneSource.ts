@@ -54,18 +54,15 @@ export function makeCloudHostPaneSource(deps: CloudHostPaneSourceDeps): PaneOutp
       : `pane-raw-${paneId}`;
 
     const sendStop = () => {
-      if (stopSent || !subscribePromise) return;
+      if (stopSent || subscribePromise === null) return;
       stopSent = true;
-      try {
-        void Promise.resolve(deps.invoke('unsubscribe_pane_raw', { paneId, workspaceId }))
-          .catch((e) => log('unsubscribe_pane_raw failed', e));
-      } catch (e) {
-        log('unsubscribe_pane_raw failed', e);
-      }
+      void Promise.resolve()
+        .then(() => deps.invoke('unsubscribe_pane_raw', { paneId, workspaceId }))
+        .catch((e) => log('unsubscribe_pane_raw failed', e));
     };
     const requestStop = () => {
       stopRequested = true;
-      if (subscribePromise) void subscribePromise.then(sendStop);
+      if (subscribePromise !== null) void subscribePromise.then(sendStop);
     };
 
     void deps
@@ -87,12 +84,7 @@ export function makeCloudHostPaneSource(deps: CloudHostPaneSourceDeps): PaneOutp
           return;
         }
         unlisten = u;
-        let started: Promise<unknown>;
-        try {
-          started = deps.invoke('subscribe_pane_raw', { paneId, workspaceId });
-        } catch (e) {
-          started = Promise.reject(e);
-        }
+        const started = deps.invoke('subscribe_pane_raw', { paneId, workspaceId });
         // Always settle bookkeeping, even when the host rejects.
         subscribePromise = Promise.resolve(started).then(
           () => undefined,

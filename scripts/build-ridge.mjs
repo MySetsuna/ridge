@@ -117,17 +117,19 @@ function rewriteCargoTomlVersion(originalText, newVersion) {
 function rewriteWxs(originalText, slug, guid) {
   // Replace component Id, registry sub-key, registry value Name, Environment Id,
   // and Component Guid. Each one is uniquely matchable in this small file.
+  const slash = String.fromCodePoint(92);
+  const registryKey = `Key="Software${slash}tauri-app${slash}ridge"`;
   return originalText
-    .replace(/Id="RidgePathEnvVar"/g, `Id="RidgePathEnvVar_${slug}"`)
-    .replace(/Guid="[^"]+"/g, `Guid="${guid}"`)
-    .replace(/Key="Software\\tauri-app\\ridge"/g, `Key="Software\\tauri-app\\ridge_${slug}"`)
-    .replace(/Name="RidgePathEnv"/g, `Name="RidgePathEnv_${slug}"`)
-    .replace(/Id="RidgePathEnv"/g, `Id="RidgePathEnv_${slug}"`);
+    .replaceAll('Id="RidgePathEnvVar"', `Id="RidgePathEnvVar_${slug}"`)
+    .replaceAll(/Guid="[^"]+"/g, `Guid="${guid}"`)
+    .replaceAll(registryKey, `Key="Software${slash}tauri-app${slash}ridge_${slug}"`)
+    .replaceAll('Name="RidgePathEnv"', `Name="RidgePathEnv_${slug}"`)
+    .replaceAll('Id="RidgePathEnv"', `Id="RidgePathEnv_${slug}"`);
 }
 
 function buildTauriConfigOverride(version, slug) {
   // identifier must not contain underscores: replace with hyphens
-  const identifierSlug = slug.replace(/_/g, '-');
+  const identifierSlug = slug.replaceAll('_', '-');
   return {
     productName: `ridge ${version}`,
     version,
@@ -193,7 +195,7 @@ export async function main() {
 
   console.log(`[build-ridge] target version = ${version} (slug=${slug})`);
   console.log(`[build-ridge] productName = "ridge ${version}"`);
-  const identifierSlug = slug.replace(/_/g, '-');
+  const identifierSlug = slug.replaceAll('_', '-');
   console.log(`[build-ridge] identifier  = com.tauri-app.ridge.v${identifierSlug}`);
 
   // Build frontend first — tauri needs ../build to exist.
@@ -243,7 +245,7 @@ export async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((err) => {
+  await main().catch((err) => {
     console.error('[build-ridge] FAILED:', err.message);
     process.exit(1);
   });

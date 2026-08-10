@@ -133,58 +133,76 @@ pub fn subscribe_pane_raw(
                 tauri::async_runtime::spawn(async move {
                     let mut last_resync: Option<Instant> = None;
                     while let Some(ev) = raw_rx.recv().await {
-                        // 只转发本 pane 的裸字节；Metadata/Resize 等非字节事件忽略
-                        //（controller 端 wasm vte 从裸流解析 OSC 标题/cwd）。
-                        if let RemotePtyEvent::RawBytes {
-                            pane_id: pid,
-                            bytes,
-                            ..
-                        } = ev
-                        {
-                            if pid != pane {
-                                continue; // 防御：同一 sub 不应收到他 pane 的字节
-                            }
-                            // §desync 重同步（移植自 LAN server.rs 的 RawBytes 分支）：
-                            // 丢帧（fan-out 队列满 或 JS 背压经 resync_pane_raw）置位 desync →
-                            // 先补发 RIS + scrollback 修复 controller 端 vte 空洞，限频 1/s。
-                            // 仅在真正补发时才消费 desync；被限频则保留待下一帧补。
-                            if desync.load(Ordering::Acquire) {
-                                let now = Instant::now();
-                                let throttled = last_resync
-                                    .is_some_and(|t| now.duration_since(t) < RESYNC_MIN_INTERVAL);
-                                if !throttled {
-                                    desync.store(false, Ordering::Release);
-                                    last_resync = Some(now);
-                                    let history = app_state.get_recent_scrollback_for(
-                                        ws,
-                                        pane,
-                                        RESYNC_SCROLLBACK_BYTES,
-                                    );
-                                    // §mode-reattach: RIS + 活动模式前导 + scrollback（共享
-                                    // SSOT，与 LAN server.rs / rdg 逐字一致）。前导让控制端内核
-                                    // 重建鼠标上报/alt 屏等一次性开启态（早滑出 scrollback 尾）。
-                                    let (modes, alt) = app_state.get_pane_modes(ws, pane);
-                                    let resync = ridge_term::term::modes::build_resync_frame(
-                                        &history, &modes, alt,
-                                    );
-                                    let b64 =
-                                        base64::engine::general_purpose::STANDARD.encode(&resync);
-                                    let _ =
-                                        app.emit(&event_name, serde_json::json!({ "b64": b64 }));
-                                }
-                            }
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&**bytes);
-                            let _ = app.emit(&event_name, serde_json::json!({ "b64": b64 }));
-                        }
+                        let mut context = RawForwardContext {
+                            app: &app,
+                            state: &app_state,
+                            event_name: &event_name,
+                            workspace_id: ws,
+                            pane,
+                            desync: &desync,
+                            last_resync: &mut last_resync,
+                        };
+                        forward_raw_event(&mut context, ev);
                     }
-                    // 通道关闭（unsubscribe）：清理 desync 注册，防 map 随历史 pane 增长。
-                    // 仅当条目仍属本 sub 才移除——快速重订阅已换主则不误删新条目。
                     remove_desync_if_owner(ws, pane, sub_id);
                 });
             }
         }
     }
     Ok(())
+}
+
+struct RawForwardContext<'a> {
+    app: &'a AppHandle,
+    state: &'a AppState,
+    event_name: &'a str,
+    workspace_id: Uuid,
+    pane: Uuid,
+    desync: &'a Arc<AtomicBool>,
+    last_resync: &'a mut Option<Instant>,
+}
+
+fn forward_raw_event(context: &mut RawForwardContext<'_>, event: RemotePtyEvent) {
+    let RemotePtyEvent::RawBytes { pane_id, bytes, .. } = event else {
+        return;
+    };
+    if pane_id != context.pane {
+        return;
+    }
+    emit_raw_resync(context);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&**bytes);
+    let _ = context
+        .app
+        .emit(context.event_name, serde_json::json!({ "b64": b64 }));
+}
+
+fn emit_raw_resync(context: &mut RawForwardContext<'_>) {
+    if !context.desync.load(Ordering::Acquire) {
+        return;
+    }
+    let now = Instant::now();
+    if context
+        .last_resync
+        .as_ref()
+        .is_some_and(|time| now.duration_since(*time) < RESYNC_MIN_INTERVAL)
+    {
+        return;
+    }
+    context.desync.store(false, Ordering::Release);
+    *context.last_resync = Some(now);
+    let history = context.state.get_recent_scrollback_for(
+        context.workspace_id,
+        context.pane,
+        RESYNC_SCROLLBACK_BYTES,
+    );
+    let (modes, alt) = context
+        .state
+        .get_pane_modes(context.workspace_id, context.pane);
+    let resync = ridge_term::term::modes::build_resync_frame(&history, &modes, alt);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&resync);
+    let _ = context
+        .app
+        .emit(context.event_name, serde_json::json!({ "b64": b64 }));
 }
 
 /// `invoke('unsubscribe_pane_raw', { paneId })`：停止该 pane 的裸字节转发。幂等。

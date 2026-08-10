@@ -22,6 +22,32 @@ function isAborted(signal: AbortSignal | undefined): boolean {
   return !!signal?.aborted;
 }
 
+async function dispatchGitAction(options: RemoteGitActionOptions): Promise<void> {
+  const { provider, action, signal } = options;
+  const paths = [...options.paths ?? []];
+  switch (action) {
+    case 'stage':
+      if (signal) await provider.gitStage?.(paths, signal);
+      else await provider.gitStage?.(paths);
+      break;
+    case 'unstage':
+      if (signal) await provider.gitUnstage?.(paths, signal);
+      else await provider.gitUnstage?.(paths);
+      break;
+    case 'commit': {
+      const message = options.message?.trim() ?? '';
+      if (!message) throw new Error('Commit message cannot be empty');
+      if (signal) await provider.gitCommit?.(message, false, signal);
+      else await provider.gitCommit?.(message);
+      break;
+    }
+    case 'push':
+      if (signal) await provider.gitPush?.(options.setUpstream ?? false, signal);
+      else await provider.gitPush?.(options.setUpstream ?? false);
+      break;
+  }
+}
+
 /**
  * One guarded mutation path for the mobile Git panel. Capability is checked
  * before confirmation, confirmation is awaited before any RPC, and callers
@@ -40,27 +66,7 @@ export async function runRemoteGitAction(
   }
   if (isAborted(signal)) return { status: 'cancelled', reason: 'aborted' };
 
-  switch (action) {
-    case 'stage':
-      if (signal) await provider.gitStage?.([...options.paths ?? []], signal);
-      else await provider.gitStage?.([...options.paths ?? []]);
-      break;
-    case 'unstage':
-      if (signal) await provider.gitUnstage?.([...options.paths ?? []], signal);
-      else await provider.gitUnstage?.([...options.paths ?? []]);
-      break;
-    case 'commit': {
-      const message = options.message?.trim() ?? '';
-      if (!message) throw new Error('Commit message cannot be empty');
-      if (signal) await provider.gitCommit?.(message, false, signal);
-      else await provider.gitCommit?.(message);
-      break;
-    }
-    case 'push':
-      if (signal) await provider.gitPush?.(options.setUpstream ?? false, signal);
-      else await provider.gitPush?.(options.setUpstream ?? false);
-      break;
-  }
+  await dispatchGitAction(options);
   if (isAborted(signal)) return { status: 'cancelled', reason: 'aborted' };
   return { status: 'success' };
 }

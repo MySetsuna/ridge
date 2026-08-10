@@ -21,7 +21,6 @@
 //   Terminal 1: pnpm tauri:dev:cdp
 //   Terminal 2: pnpm cdp:pane-graph
 // Exit 0 = both characterized behaviours hold; non-zero = regression/failure.
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import http from 'node:http';
 import { resolveCdpPort } from './cdp-port.mjs';
 
@@ -139,7 +138,8 @@ const invoke = (cdp, cmd, args) =>
     `window.__TAURI__.core.invoke('${cmd}', ${args ? JSON.stringify(args) : '{}'})`,
   );
 
-(async () => {
+try {
+  await (async () => {
   const t = await waitForRidgeTarget();
   log('ridge target:', t.url);
   const cdp = new Cdp(t.webSocketDebuggerUrl);
@@ -150,10 +150,10 @@ const invoke = (cdp, cmd, args) =>
   let info = null;
   for (let i = 0; i < 20; i++) {
     info = await invoke(cdp, 'get_remote_info');
-    if (info && info.port > 0 && info.ready) break;
+    if (info?.port > 0 && info.ready) break;
     await sleep(500);
   }
-  if (!info || !info.port) fail('get_remote_info never reported a bound port');
+  if (!info?.port) fail('get_remote_info never reported a bound port');
   log('remote ready on port', info.port);
 
   // LAN-WS observer: count `panes` frames (the broadcast re-enumeration).
@@ -190,7 +190,7 @@ const invoke = (cdp, cmd, args) =>
         createRequested = true;
         ws.send(JSON.stringify({ type: 'create-pane' }));
       }
-      for (const resolve of [...panesWaiters]) resolve(true);
+      for (const resolve of panesWaiters) resolve(true);
     } else if (m.type === 'create-pane-result' && m.success) {
       ws.send(JSON.stringify({ type: 'list-panes' }));
     }
@@ -269,7 +269,7 @@ const invoke = (cdp, cmd, args) =>
     const before = lanPanes;
     const splitFrame = waitForPanesFrame();
     const r = await invoke(cdp, 'split_pane', { paneId: target, direction: 'horizontal' });
-    summary.newPane = r && r.pane_id;
+    summary.newPane = r?.pane_id;
     const layout1 = await invoke(cdp, 'get_pane_layout');
     summary.afterSplitLeaves = countLeaves(layout1);
     summary.treeSplitOk = summary.afterSplitLeaves === summary.baselineLeaves + 1;
@@ -306,4 +306,7 @@ const invoke = (cdp, cmd, args) =>
     summary.errors.push('driver threw: ' + (e.message || String(e)));
     finish();
   }
-})().catch((e) => fail(e.stack || e.message || String(e)));
+  })();
+} catch (e) {
+  fail(e.stack || e.message || String(e));
+}

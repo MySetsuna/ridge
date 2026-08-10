@@ -16,15 +16,15 @@
  *   intermediate    : 0x20–0x2F (`!`, `"`, …)
  *   final byte      : 0x40–0x7E (`@` through `~`)
  */
-const ESC = String.fromCharCode(0x1b);
-const CSI_RE = new RegExp(`${ESC}\\[[\\x30-\\x3F]*[\\x20-\\x2F]*[@-~]`, 'g');
+const ESC = String.fromCodePoint(0x1b);
+const CSI_RE = new RegExp(String.raw`${ESC}\[[\x30-\x3F]*[\x20-\x2F]*[@-~]`, 'g');
 
 /**
  * OSC sequence: ESC `]` …data… terminator (BEL or ESC `\`).
  * Used by OSC 0/2 (title), OSC 7 (cwd), OSC 8 (hyperlinks), OSC 633 (vscode).
  */
-const BEL = String.fromCharCode(0x07);
-const OSC_RE = new RegExp(`${ESC}\\][^${BEL}${ESC}]*(?:${BEL}|${ESC}\\\\)`, 'g');
+const BEL = String.fromCodePoint(0x07);
+const OSC_RE = new RegExp(String.raw`${ESC}\][^${BEL}${ESC}]*(?:${BEL}|${ESC}\\)`, 'g');
 
 /**
  * Two-byte ESC sequences: ESC + a single "final" byte in the 0x20–0x7E
@@ -38,7 +38,7 @@ const OSC_RE = new RegExp(`${ESC}\\][^${BEL}${ESC}]*(?:${BEL}|${ESC}\\\\)`, 'g')
  * `ESC ( B`) drop the first two bytes and leave the trailing `B` as text;
  * acceptable for a read-only history viewer.
  */
-const SS_RE = new RegExp(`${ESC}[\\x20-\\x7E]`, 'g');
+const SS_RE = new RegExp(String.raw`${ESC}[\x20-\x7E]`, 'g');
 
 /**
  * Bare control bytes (0x00–0x1F + DEL 0x7F) except the ones that carry

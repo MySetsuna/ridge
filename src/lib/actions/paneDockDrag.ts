@@ -63,7 +63,7 @@ export function paneDockDrag(node: HTMLElement, params: Params) {
 		}
 		const el = document.elementFromPoint(e.clientX, e.clientY);
 		const tab = (el as HTMLElement | null)?.closest('[data-ws-tab-id]') as HTMLElement | null;
-		const tabWsId = tab?.getAttribute('data-ws-tab-id') ?? null;
+		const tabWsId = tab?.dataset.wsTabId ?? null;
 		if (tabWsId && tabWsId !== get(activeWorkspaceId)) {
 			paneDockHover.set(null);
 			if (hoverTabWsId !== tabWsId) {

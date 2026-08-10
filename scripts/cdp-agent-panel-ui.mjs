@@ -47,10 +47,10 @@ fs.mkdirSync(dir, { recursive: true });
 // 回显**面板发来的消息，而 `timeout /nobreak` 会独占并吞掉键入。ping 不读 stdin，
 // 再配 `Start-Process` 放后台，shell 停在提示符上，干预链路才测得到。
 const fake = path.join(dir, 'aider.exe');
-const src = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'PING.EXE');
+const src = path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'PING.EXE');
 {
   const { spawnSync } = await import('node:child_process');
-  const q = fake.replace(/'/g, "''");
+  const q = fake.replaceAll("'", "''");
   spawnSync('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',
@@ -239,7 +239,7 @@ else {
 // 收尾：结束替身，别把它留给下一次跑。
 {
   const { spawnSync } = await import('node:child_process');
-  const q = fake.replace(/'/g, "''");
+  const q = fake.replaceAll("'", "''");
   spawnSync('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',

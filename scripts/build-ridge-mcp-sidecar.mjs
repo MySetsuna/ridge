@@ -37,6 +37,42 @@ export function sidecarPaths(forTarget) {
   };
 }
 
+function buildSidecar(target, detectedHost, version) {
+  for (const buildTarget of new Set([target, detectedHost])) {
+    const paths = sidecarPaths(buildTarget);
+    execFileSync(
+      cargoTool('cargo'),
+      ['build', '--release', '--package', 'ridge-mcp-bridge', '--bin', 'ridge-mcp', '--target', buildTarget],
+      {
+        cwd: root,
+        env: { ...process.env, RIDGE_MCP_BUNDLE_VERSION: version },
+        stdio: 'inherit',
+        timeout: 15 * 60_000,
+      },
+    );
+    mkdirSync(dirname(paths.destination), { recursive: true });
+    copyFileSync(paths.source, paths.destination);
+    if (!paths.windows) chmodSync(paths.destination, 0o755);
+  }
+}
+
+function verifySidecar(destination, windows, target, detectedHost, version) {
+  const stat = statSync(destination);
+  if (!stat.isFile() || stat.size === 0) throw new Error(`invalid sidecar: ${destination}`);
+  if (!windows && (stat.mode & 0o111) === 0) throw new Error(`sidecar is not executable: ${destination}`);
+  if (!readFileSync(destination).includes(Buffer.from(version))) {
+    throw new Error(`sidecar does not embed Ridge version ${version}: ${destination}`);
+  }
+  if (target !== detectedHost) return;
+  const reported = execFileSync(destination, ['--version'], {
+    encoding: 'utf8',
+    timeout: 10_000,
+  }).trim();
+  if (!reported.endsWith(` ${version}`)) {
+    throw new Error(`sidecar version mismatch: expected ${version}, got ${reported}`);
+  }
+}
+
 function loadBundleConfig() {
   const tauri = JSON.parse(readFileSync(join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
   const version = String(tauri.version ?? '').trim();
@@ -61,42 +97,8 @@ export function main(args = process.argv.slice(2)) {
   const { version, externalBin } = loadBundleConfig();
   const { windows, destination } = sidecarPaths(target);
 
-  if (!check) {
-    for (const buildTarget of new Set([target, detectedHost])) {
-      const paths = sidecarPaths(buildTarget);
-      execFileSync(
-        cargoTool('cargo'),
-        ['build', '--release', '--package', 'ridge-mcp-bridge', '--bin', 'ridge-mcp', '--target', buildTarget],
-        {
-          cwd: root,
-          env: { ...process.env, RIDGE_MCP_BUNDLE_VERSION: version },
-          stdio: 'inherit',
-          timeout: 15 * 60_000,
-        },
-      );
-      mkdirSync(dirname(paths.destination), { recursive: true });
-      copyFileSync(paths.source, paths.destination);
-      if (!paths.windows) chmodSync(paths.destination, 0o755);
-    }
-  }
-
-  if (requireBuilt) {
-    const stat = statSync(destination);
-    if (!stat.isFile() || stat.size === 0) throw new Error(`invalid sidecar: ${destination}`);
-    if (!windows && (stat.mode & 0o111) === 0) throw new Error(`sidecar is not executable: ${destination}`);
-    if (!readFileSync(destination).includes(Buffer.from(version))) {
-      throw new Error(`sidecar does not embed Ridge version ${version}: ${destination}`);
-    }
-    if (target === detectedHost) {
-      const reported = execFileSync(destination, ['--version'], {
-        encoding: 'utf8',
-        timeout: 10_000,
-      }).trim();
-      if (!reported.endsWith(` ${version}`)) {
-        throw new Error(`sidecar version mismatch: expected ${version}, got ${reported}`);
-      }
-    }
-  }
+  if (!check) buildSidecar(target, detectedHost, version);
+  if (requireBuilt) verifySidecar(destination, windows, target, detectedHost, version);
 
   console.log(JSON.stringify({ ok: true, mode: check ? 'check' : 'build', target, version, externalBin, destination, requireBuilt }));
 }

@@ -203,8 +203,10 @@ async function observeProfile({ url, durationMs, extensionPath, headed }) {
   const profileDir = mkdtempSync(join(tmpdir(), 'ridge-runtime-last-error-'));
   const args = ['--no-proxy-server', '--ignore-certificate-errors'];
   if (isExtension) {
-    args.push(`--disable-extensions-except=${extensionPath}`);
-    args.push(`--load-extension=${extensionPath}`);
+    args.push(
+      `--disable-extensions-except=${extensionPath}`,
+      `--load-extension=${extensionPath}`,
+    );
   } else {
     args.push('--disable-extensions', '--disable-component-extensions-with-background-pages');
   }
@@ -259,6 +261,11 @@ async function observeProfile({ url, durationMs, extensionPath, headed }) {
     ?.map((page) => redactText(page.url()))
     .filter((pageUrl) => pageUrl.startsWith('chrome-extension://')) || [];
   const runtimeLastErrors = logs.filter((entry) => isRuntimeLastError(entry.text));
+  let browserDescription = 'Chromium incognito clean profile';
+  if (isExtension) {
+    const mode = headed ? 'headed' : 'headless';
+    browserDescription = `Chromium persistent profile (${mode})`;
+  }
   const result = {
     kind: isExtension ? 'extension' : 'clean-profile',
     extensionPath: extensionPath || null,
@@ -267,7 +274,7 @@ async function observeProfile({ url, durationMs, extensionPath, headed }) {
     extensionWorkers,
     extensionPages,
     navigation,
-    browser: isExtension ? `Chromium persistent profile (${headed ? 'headed' : 'headless'})` : 'Chromium incognito clean profile',
+    browser: browserDescription,
     runtimeLastErrorCount: runtimeLastErrors.length,
     runtimeLastErrors,
     consoleEntries: logs,

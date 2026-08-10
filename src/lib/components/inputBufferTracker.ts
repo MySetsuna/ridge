@@ -84,6 +84,28 @@ export interface KeySpec {
 	readonly shiftKey: boolean;
 }
 
+const CONTROL_KEYS: Record<string, InputBufferEvent> = {
+	Backspace: { type: 'backspace' },
+	Delete: { type: 'delete' },
+	ArrowLeft: { type: 'arrowLeft' },
+	ArrowRight: { type: 'arrowRight' },
+	Home: { type: 'home' },
+	End: { type: 'end' },
+	Enter: { type: 'clear' },
+};
+const CONTROL_KILLS: Record<string, InputBufferEvent> = {
+	u: { type: 'killLine' },
+	U: { type: 'killLine' },
+	w: { type: 'killWord' },
+	W: { type: 'killWord' },
+	k: { type: 'killToEol' },
+	K: { type: 'killToEol' },
+};
+
+function controlKill(key: string): InputBufferEvent | null {
+	return CONTROL_KILLS[key] ?? null;
+}
+
 /**
  * Map a DOM keydown event to an `InputBufferEvent`, or `null` if the
  * key doesn't affect the mirror (modifier-only press, function keys
@@ -92,9 +114,8 @@ export interface KeySpec {
 export function deriveBufferEvent(spec: KeySpec): InputBufferEvent | null {
 	// Readline kills — Ctrl-prefixed letter, no other modifiers.
 	if (spec.ctrlKey && !spec.metaKey && !spec.altKey && !spec.shiftKey) {
-		if (spec.key === 'u' || spec.key === 'U') return { type: 'killLine' };
-		if (spec.key === 'w' || spec.key === 'W') return { type: 'killWord' };
-		if (spec.key === 'k' || spec.key === 'K') return { type: 'killToEol' };
+		const kill = controlKill(spec.key);
+		if (kill) return kill;
 	}
 	// Printable single-character key without Ctrl / Meta. Shift is
 	// allowed (Shift+a → 'A'); Alt is allowed (Alt+a on macOS emits
@@ -102,13 +123,8 @@ export function deriveBufferEvent(spec: KeySpec): InputBufferEvent | null {
 	if (spec.key.length === 1 && !spec.ctrlKey && !spec.metaKey) {
 		return { type: 'char', char: spec.key };
 	}
-	if (spec.key === 'Backspace') return { type: 'backspace' };
-	if (spec.key === 'Delete') return { type: 'delete' };
-	if (spec.key === 'ArrowLeft') return { type: 'arrowLeft' };
-	if (spec.key === 'ArrowRight') return { type: 'arrowRight' };
-	if (spec.key === 'Home') return { type: 'home' };
-	if (spec.key === 'End') return { type: 'end' };
-	if (spec.key === 'Enter') return { type: 'clear' };
+	const control = CONTROL_KEYS[spec.key];
+	if (control) return control;
 	// §1.32 Wave E: Tab triggers shell-side completion that echoes
 	// text we never see as keystrokes. Mark the mirror dirty so the
 	// `\x08` replay uses the kill-line shortcut (`\x05\x15`) instead

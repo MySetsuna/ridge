@@ -7,6 +7,7 @@ import {
 } from './types';
 import { paneRefKey, type PaneRef } from './paneRef';
 import { remotePerfEnd, remotePerfStart } from './remotePerfTrace';
+import { unknownText } from './unknownText';
 
 export const DEFAULT_MAX_QUEUED_INPUT_BYTES = 256 * 1024;
 export const DEFAULT_INPUT_BATCH_WINDOW_MS = 0;
@@ -143,7 +144,7 @@ function resizeSignature(value: ResizeValue | null): string | null {
   // Sort the flat context keys so callers that construct equivalent objects in
   // a different insertion order still coalesce deterministically.
   const context = Object.keys(params)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .map((key) => `${key}=${JSON.stringify(params[key])}`)
     .join('&');
   return `${value.rows}x${value.cols}|${context}`;
@@ -167,7 +168,7 @@ export class PaneRpcScheduler {
   private readonly inputLatencySamples: number[] = [];
   private readonly resizeLatencySamples: number[] = [];
   private static readonly MAX_LATENCY_SAMPLES = 64;
-  private counters = {
+  private readonly counters = {
     inputCalls: 0,
     inputRequests: 0,
     inputBytesAccepted: 0,
@@ -558,7 +559,7 @@ export class PaneRpcScheduler {
         lane.latest ??= value;
         this.failLane(error, 'resize', lane.pane, lane, () => this.drainResize(key, lane));
         if (lane.paused) {
-          const failure = error instanceof Error ? error : new Error(String(error));
+          const failure = error instanceof Error ? error : new Error(unknownText(error));
           for (const waiter of lane.waiters.splice(0)) waiter.reject(failure);
         }
       },
@@ -572,7 +573,7 @@ export class PaneRpcScheduler {
     lane: { failures: number; paused: boolean; retryTimer?: ReturnType<typeof setTimeout> | null; timer?: ReturnType<typeof setTimeout> | null },
     retry: () => void,
   ): void {
-    const failure = error instanceof Error ? error : new Error(String(error));
+    const failure = error instanceof Error ? error : new Error(unknownText(error));
     if (failure instanceof RpcCancelledError) return;
     if (operation === 'input') this.counters.inputFailures += 1;
     else this.counters.resizeFailures += 1;

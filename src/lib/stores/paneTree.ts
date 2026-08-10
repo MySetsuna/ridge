@@ -310,7 +310,7 @@ export function pointerInCoupleZone(
       ? endpoints.start
       : endpoints.end;
   const dyAlongLine = nearestEndpoint - alongLine;
-  return Math.sqrt(dxOnAxis * dxOnAxis + dyAlongLine * dyAlongLine) <=
+  return Math.hypot(dxOnAxis, dyAlongLine) <=
     INTERSECTION_PROXIMITY_PX;
 }
 
@@ -479,7 +479,7 @@ export function registerJunction(junction: JunctionRef) {
     junction.positionPx[junction.axis]
   )}`;
   const existing = junctionRegistry.get(key) || [];
-  if (!existing.find((j) => j.id === junction.id)) {
+  if (!existing.some((j) => j.id === junction.id)) {
     existing.push(junction);
     junctionRegistry.set(key, existing);
   }
@@ -663,7 +663,7 @@ export function findSameAxisRefs(
         ? []
         : pathRaw
             .split('/')
-            .map((s) => Number(s))
+            .map(Number)
             .filter((n) => Number.isFinite(n));
     const splitters = Array.from(
       splitRoot.querySelectorAll<HTMLElement>(':scope > .splitpanes__splitter')
@@ -996,7 +996,7 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
         ? endpoints.start
         : endpoints.end;
     const dyAlongLine = nearestEndpoint - pointerAlongLine;
-    const distToBC = Math.sqrt(dxOnAxis * dxOnAxis + dyAlongLine * dyAlongLine);
+    const distToBC = Math.hypot(dxOnAxis, dyAlongLine);
     const eligible =
       perpDistance <= SAME_AXIS_ALIGN_EPSILON_PX &&
       distToBC <= INTERSECTION_PROXIMITY_PX;
@@ -1042,9 +1042,7 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
           ? endpoints.start
           : endpoints.end;
       const dyAlongLine = nearestEndpoint - orthoPointerAlongLine;
-      const distToCD = Math.sqrt(
-        dxOnAxis * dxOnAxis + dyAlongLine * dyAlongLine
-      );
+      const distToCD = Math.hypot(dxOnAxis, dyAlongLine);
       if (
         perpDistance <= SAME_AXIS_ALIGN_EPSILON_PX &&
         distToCD <= INTERSECTION_PROXIMITY_PX
@@ -2159,7 +2157,7 @@ export function collapseCwd(cwd: string): string {
   } catch {
     /* ignore */
   }
-  const parts = cwd.replaceAll(/\\/g, '/').split('/').filter(Boolean);
+  const parts = cwd.replaceAll('\\', '/').split('/').filter(Boolean);
   if (parts.length <= 2) return cwd;
   if (parts[0] === 'home' || parts[0] === 'Users' || parts[0] === 'c:' || parts[0] === 'C:') {
     const tail = parts.slice(2);
@@ -2192,7 +2190,7 @@ export function collapseCwd(cwd: string): string {
  *    defeat. Trim except when it IS the root (POSIX "/", Windows "C:/").
  */
 function normalizeCwd(cwd: string): string {
-  let out = cwd.replaceAll(/\\/g, '/');
+  let out = cwd.replaceAll('\\', '/');
   // Shell integrations may concatenate the next prompt marker onto the CWD
   // payload when BEL terminates OSC 7 and OSC 133;A follows in the same
   // metadata frame. Control bytes cannot be part of a usable cwd, so discard
@@ -2202,7 +2200,7 @@ function normalizeCwd(cwd: string): string {
   // Drop leading "/" before a Windows drive letter ("/C:/..." �?"C:/...").
   // The check is positional: only the very first three chars of "/X:"
   // where X is alphabetic count.
-  if (out.length >= 3 && out[0] === '/' && /[A-Z]/i.test(out[1]) && out[2] === ':') {
+  if (out.length >= 3 && out.startsWith('/') && /[A-Z]/i.test(out[1]) && out[2] === ':') {
     out = out.slice(1);
   }
   if (out.length > 1 && out.endsWith('/')) {

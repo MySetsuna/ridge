@@ -31,6 +31,7 @@
  */
 
 import { WorkerHostedRenderer, type WorkerLike } from './workerHostedRenderer';
+import { unknownText } from '../transport/unknownText';
 
 /** Read the opt-in flag in a type-safe way. Checks (in order):
  *    1. `globalThis.__RIDGE_USE_WORKER === true` — easiest at the JS console.
@@ -77,7 +78,7 @@ export function onWorkerRendererFailure(listener: (error: Error) => void): () =>
 }
 
 export function failWorkerRenderer(error: unknown): void {
-	notifyFailure(error instanceof Error ? error : new Error(String(error)));
+	notifyFailure(error instanceof Error ? error : new Error(unknownText(error)));
 }
 
 /**

@@ -241,7 +241,8 @@ async function rpc(ws, method, params) {
   return msg;
 }
 
-(async () => {
+try {
+  await (async () => {
   const ep = discoverEndpoint();
   log(`endpoint: ${ep.url} (via ${ep.via})`);
 
@@ -249,7 +250,7 @@ async function rpc(ws, method, params) {
   const lp = await httpReq(ep.url, 'GET', '/api/v1/list-panes?json=1', { token: ep.token });
   if (lp.status !== 200) throw new Error(`list-panes failed: HTTP ${lp.status} ${lp.text}`);
   const panes = JSON.parse(lp.text).panes ?? [];
-  log(`panes: ${panes.map((p) => `${p.index}:${p.uuid.slice(0, 8)}`).join(' ')}`);
+  log(`panes: ${panes.map((p) => [p.index, p.uuid.slice(0, 8)].join(':')).join(' ')}`);
   const targetIndex = Number(arg('--target', '1'));
   const target = panes.find((p) => p.index === targetIndex);
   if (!target) {
@@ -342,7 +343,8 @@ async function rpc(ws, method, params) {
   ws.close();
   console.log(`\n==== MCP E2E: ${pass} passed, ${fail} failed ====`);
   process.exit(fail === 0 ? 0 : 1);
-})().catch((e) => {
+  })();
+} catch (e) {
   console.error('[mcp-e2e] FAIL:', e.message);
   process.exit(1);
-});
+}

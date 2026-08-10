@@ -9,6 +9,7 @@
 // Output: a JSON blob on the last line with { userToken, deviceToken, username, device }.
 
 import { execFileSync } from 'node:child_process';
+import { systemTool } from './lib/toolPath.mjs';
 
 const BASE = process.env.RIDGE_CLOUD_LOCAL ?? 'http://localhost:5050/api/v1';
 const PASS = 'RidgeLocalDev_123';
@@ -72,7 +73,7 @@ if (dbUrl) {
   );
 } else {
   promoteOutput = execFileSync(
-    'docker',
+    systemTool('docker'),
     [
       'exec',
       ...(dbPassword ? ['-e', `PGPASSWORD=${dbPassword}`] : []),

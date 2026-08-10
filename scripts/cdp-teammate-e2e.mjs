@@ -78,7 +78,8 @@ function check(name, cond, detail) {
   else { fail++; log(`❌ ${name} — ${detail}`); }
 }
 
-(async () => {
+try {
+  await (async () => {
   log(`CDP port: ${CDP_PORT}`);
   const t = await waitForRidge();
   log(`ridge target: ${t.url}`);
@@ -110,4 +111,8 @@ function check(name, cond, detail) {
   cdp.close();
   console.log(`\n==== TEAMMATE E2E: ${pass} passed, ${fail} failed ====`);
   process.exit(fail === 0 ? 0 : 1);
-})().catch((e) => { console.error('[teammate-e2e] FAIL:', e.message); process.exit(1); });
+  })();
+} catch (e) {
+  console.error('[teammate-e2e] FAIL:', e.message);
+  process.exit(1);
+}

@@ -20,6 +20,12 @@
  * 测试只导入纯函数、不触发类构造，故 `$state` 永不在 node 下执行。
  */
 import type { TeammateProfile } from './teammateModel';
+import {
+  emptyWorkspaceMemory,
+  loadWorkspaceMemory,
+  saveWorkspaceMemory,
+  type WorkspaceMemory,
+} from './workspaceMemory';
 
 // ── 数据模型 ──
 
@@ -415,15 +421,24 @@ class TeammateGroupStore {
   groups = $state<TeammateGroup[]>([]);
   /** 当前工作区的组任务历史（最新在前）。 */
   tasks = $state<GroupTask[]>([]);
+  /** 当前工作区的可恢复目标；后端 sidecar 是跨重启权威投影。 */
+  goal = $state('');
+  /** 当前工作区的可恢复约束列表。 */
+  constraints = $state<string[]>([]);
 
   /** 切到某工作区：解析稳定键 → 载入该工作区持久化的编组/任务。键不变则不动。 */
   setWorkspace(workspaceId: string | undefined, filePath: string | null | undefined): void {
     // runtime wid 总是刷新（供后端镜像双写），即便 storageKey 未变（同 .ridge 路径重启换 wid）。
     this.runtimeWorkspaceId = workspaceId ?? null;
     const key = groupsStorageKey(stableWorkspaceKey(workspaceId, filePath));
-    if (key === this.storageKey) return;
+    if (key === this.storageKey) {
+      void this.hydrateMemory(key, workspaceId);
+      return;
+    }
     this.storageKey = key;
     const loaded = loadPersisted(key);
+    this.goal = '';
+    this.constraints = [];
     // 只在**内容真的变了**时才写 `$state`（iter-62 硬护栏）。key 守卫防的是同一
     // 调用方重复调用；这一层防的是**两个调用方拿不同 key 互相打架**——那会让读
     // `groups` 的 effect 与写 `groups` 的 effect 互相失效，滚成
@@ -434,11 +449,42 @@ class TeammateGroupStore {
     if (!persistedEquals(loaded.tasks, this.tasks)) this.tasks = loaded.tasks;
     // 切入工作区即把本地编组推后端一次，保证镜像与本地一致（供 remote 只读同步）。
     this.syncBackend();
+    void this.hydrateMemory(key, workspaceId);
   }
 
   private persist(): void {
     savePersisted(this.storageKey, { groups: this.groups, tasks: this.tasks });
     this.syncBackend();
+    this.syncMemory();
+  }
+
+  /** 后端 memory 读回只可写入当前 key，避免慢 IPC 覆盖后续工作区。 */
+  private async hydrateMemory(storageKey: string, workspaceId: string | undefined): Promise<void> {
+    const memory = await loadWorkspaceMemory(workspaceId);
+    if (storageKey !== this.storageKey) return;
+    this.goal = memory.goal;
+    this.constraints = [...memory.constraints];
+
+    // localStorage 仍是组任务的首选；仅当本地没有历史时用 sidecar 恢复合法 GroupTask。
+    if (this.tasks.length === 0 && memory.tasks.length > 0) {
+      const restored = memory.tasks.map(parseTask).filter((task): task is GroupTask => task !== null);
+      if (restored.length > 0) {
+        this.tasks = restored.slice(0, TASK_CAP);
+        savePersisted(this.storageKey, { groups: this.groups, tasks: this.tasks });
+      }
+    }
+    // 读回后再投影一次，避免本地已有任务覆盖时 sidecar 留旧值。
+    this.syncMemory(memory);
+  }
+
+  private syncMemory(fallback: WorkspaceMemory = emptyWorkspaceMemory()): void {
+    const wid = this.runtimeWorkspaceId ?? undefined;
+    if (!wid) return;
+    void saveWorkspaceMemory(wid, {
+      goal: this.goal || fallback.goal,
+      constraints: this.constraints.length > 0 ? this.constraints : fallback.constraints,
+      tasks: this.tasks.length > 0 ? this.tasks : fallback.tasks,
+    });
   }
 
   /**
@@ -520,6 +566,18 @@ class TeammateGroupStore {
   /** 某组的任务历史（最新在前）。 */
   tasksFor(groupId: string): GroupTask[] {
     return this.tasks.filter((t) => t.groupId === groupId);
+  }
+
+  /** 设置可恢复目标；空白值清除 sidecar 节。 */
+  setGoal(goal: string): void {
+    this.goal = goal.trim();
+    this.persist();
+  }
+
+  /** 设置可恢复约束；空白项被丢弃，避免污染跨端投影。 */
+  setConstraints(constraints: readonly string[]): void {
+    this.constraints = constraints.map((item) => item.trim()).filter(Boolean);
+    this.persist();
   }
 }
 

@@ -857,55 +857,42 @@ fn get_current_branch(repo_path: &Path) -> Option<String> {
 ///   `tag:v1.0` for tags
 /// Order is preserved so the UI can paint HEAD-then-branches-then-tags
 /// in the same order git reported them.
+fn parse_decoration_piece(piece: &str) -> Vec<String> {
+    if let Some(rest) = piece.strip_prefix("HEAD -> ") {
+        let mut refs = vec!["head:".to_string()];
+        if let Some(name) = rest
+            .strip_prefix("refs/heads/")
+            .or_else(|| rest.strip_prefix("refs/remotes/"))
+        {
+            refs.push(format!("branch:{name}"));
+        }
+        return refs;
+    }
+    if piece == "HEAD" {
+        return vec!["head:".to_string()];
+    }
+    if let Some(name) = piece
+        .strip_prefix("tag: refs/tags/")
+        .or_else(|| piece.strip_prefix("tag: "))
+    {
+        return vec![format!("tag:{name}")];
+    }
+    if let Some(name) = piece
+        .strip_prefix("refs/heads/")
+        .or_else(|| piece.strip_prefix("refs/remotes/"))
+    {
+        return vec![format!("branch:{name}")];
+    }
+    vec![piece.to_string()]
+}
+
 fn parse_decorations(raw: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return out;
-    }
-    for part in trimmed.split(',') {
-        let p = part.trim();
-        if p.is_empty() {
-            continue;
-        }
-        // `HEAD -> refs/heads/main` and `HEAD` (detached) both start with
-        // HEAD; record the HEAD pointer first, then fall through to the
-        // branch ref on the rhs of `->` so both badges show up.
-        if let Some(rest) = p.strip_prefix("HEAD -> ") {
-            out.push("head:".to_string());
-            // rest is e.g. `refs/heads/main` — fall through to parse it
-            // as a branch ref.
-            if let Some(name) = rest.strip_prefix("refs/heads/") {
-                out.push(format!("branch:{}", name));
-            } else if let Some(name) = rest.strip_prefix("refs/remotes/") {
-                out.push(format!("branch:{}", name));
-            }
-            continue;
-        }
-        if p == "HEAD" {
-            out.push("head:".to_string());
-            continue;
-        }
-        if let Some(name) = p.strip_prefix("tag: refs/tags/") {
-            out.push(format!("tag:{}", name));
-            continue;
-        }
-        if let Some(name) = p.strip_prefix("tag: ") {
-            out.push(format!("tag:{}", name));
-            continue;
-        }
-        if let Some(name) = p.strip_prefix("refs/heads/") {
-            out.push(format!("branch:{}", name));
-            continue;
-        }
-        if let Some(name) = p.strip_prefix("refs/remotes/") {
-            out.push(format!("branch:{}", name));
-            continue;
-        }
-        // Unknown shape — keep the raw decoration so it's at least visible.
-        out.push(p.to_string());
-    }
-    out
+    raw.trim()
+        .split(',')
+        .map(str::trim)
+        .filter(|piece| !piece.is_empty())
+        .flat_map(parse_decoration_piece)
+        .collect()
 }
 
 // Field + record separators chosen from the ASCII control plane:
@@ -983,29 +970,32 @@ fn get_git_log(repo_path: &Path, limit: usize) -> Vec<CommitNode> {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let mut commits = parse_git_log(&stdout);
 
-            // 获取当前分支以标记属于当前分支的提交
-            if let Some(branch) = get_current_branch(repo_path) {
-                // 获取当前分支的最新提交 hash
-                let head_output = git_cmd()
-                    .args(["rev-parse", &format!("{}^{{commit}}", branch)])
-                    .current_dir(repo_path)
-                    .git_output();
-
-                if let Ok(head_output) = head_output {
-                    let head_hash = String::from_utf8_lossy(&head_output.stdout)
-                        .trim()
-                        .to_string();
-                    for commit in &mut commits {
-                        if commit.parents.contains(&head_hash) || commit.hash == head_hash {
-                            commit.branch = Some(branch.clone());
-                        }
-                    }
-                }
-            }
+            mark_current_branch(&mut commits, repo_path);
 
             commits
         }
         _ => vec![],
+    }
+}
+
+fn mark_current_branch(commits: &mut [CommitNode], repo_path: &Path) {
+    let Some(branch) = get_current_branch(repo_path) else {
+        return;
+    };
+    let Ok(head_output) = git_cmd()
+        .args(["rev-parse", &format!("{}^{{commit}}", branch)])
+        .current_dir(repo_path)
+        .git_output()
+    else {
+        return;
+    };
+    let head_hash = String::from_utf8_lossy(&head_output.stdout)
+        .trim()
+        .to_string();
+    for commit in commits {
+        if commit.parents.contains(&head_hash) || commit.hash == head_hash {
+            commit.branch = Some(branch.clone());
+        }
     }
 }
 
@@ -1043,6 +1033,42 @@ pub async fn find_git_repos_below(path: String, max_depth: Option<usize>) -> Vec
     spawn_git_blocking(move || find_git_repos_below_sync(path, max_depth))
         .await
         .unwrap_or_default()
+}
+
+fn scan_repo_directories(root: PathBuf, limit: usize, skip_dirs: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![(root, 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        if dir.join(".git").exists() {
+            out.push(canonicalize_cwd(&dir));
+            continue;
+        }
+        if depth >= limit {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if (name_str.starts_with('.') && name_str.as_ref() != ".git")
+                || skip_dirs.contains(&name_str.as_ref())
+            {
+                continue;
+            }
+            stack.push((entry.path(), depth + 1));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 pub fn find_git_repos_below_sync(path: String, max_depth: Option<usize>) -> Vec<String> {
@@ -1096,39 +1122,7 @@ pub fn find_git_repos_below_sync(path: String, max_depth: Option<usize>) -> Vec<
     let limit = max_depth
         .unwrap_or(MAX_DISCOVERY_DEPTH)
         .min(MAX_DISCOVERY_DEPTH);
-    let mut out: Vec<String> = Vec::new();
-    let mut stack: Vec<(PathBuf, usize)> = vec![(root, 0)];
-    while let Some((dir, depth)) = stack.pop() {
-        if dir.join(".git").exists() {
-            out.push(canonicalize_cwd(&dir));
-            continue; // 不进入仓库内部
-        }
-        if depth >= limit {
-            continue;
-        }
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(ft) = entry.file_type() else { continue };
-            if !ft.is_dir() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with('.') && name_str.as_ref() != ".git" {
-                // 跳过 .github / .vscode 等配置目录；`.git` 本身已在上方单独处理。
-                continue;
-            }
-            if SKIP_DIRS.contains(&name_str.as_ref()) {
-                continue;
-            }
-            stack.push((entry.path(), depth + 1));
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
+    scan_repo_directories(root, limit, SKIP_DIRS)
 }
 
 fn canonicalize_cwd(p: &Path) -> String {
@@ -1192,6 +1186,76 @@ pub struct ScmRepoStatus {
 /// has a non-empty upstream segment after `...` — e.g. `## main` (no `...`)
 /// and `## main...` (empty rhs) both mean "no upstream tracking ref", while
 /// `## main...origin/main` means "tracking origin/main".
+#[derive(Default)]
+struct PorcelainStatus {
+    branch: Option<String>,
+    ahead: u32,
+    behind: u32,
+    has_upstream: bool,
+    staged: Vec<ScmFile>,
+    changes: Vec<ScmFile>,
+    untracked: Vec<ScmFile>,
+}
+
+fn parse_status_branch(line: &str, status: &mut PorcelainStatus) {
+    let rest = line.trim_start_matches("##").trim();
+    let (head, tail) = rest.split_once(' ').unwrap_or((rest, ""));
+    let mut split = head.splitn(2, "...");
+    let head_branch = split.next().unwrap_or(head);
+    status.has_upstream = split.next().is_some_and(|up| !up.trim().is_empty());
+    if !head_branch.is_empty() && head_branch != "HEAD (no branch)" {
+        status.branch = Some(head_branch.to_string());
+    }
+    let Some(bracket) = tail.find('[') else {
+        return;
+    };
+    let inner = &tail[bracket + 1..tail.rfind(']').unwrap_or(tail.len())];
+    for segment in inner.split(',').map(str::trim) {
+        if let Some(value) = segment.strip_prefix("ahead ") {
+            status.ahead = value.parse().unwrap_or(0);
+        } else if let Some(value) = segment.strip_prefix("behind ") {
+            status.behind = value.parse().unwrap_or(0);
+        }
+    }
+}
+
+fn status_file(path: String, code: char, group: &str) -> ScmFile {
+    ScmFile {
+        path,
+        status: code.to_string(),
+        group: group.to_string(),
+        additions: 0,
+        deletions: 0,
+    }
+}
+
+fn parse_status_file(line: &str, status: &mut PorcelainStatus) {
+    if line.len() < 3 {
+        return;
+    }
+    let x = line.as_bytes()[0] as char;
+    let y = line.as_bytes()[1] as char;
+    let path_part = &line[3..];
+    let display_path = path_part
+        .find(" -> ")
+        .map(|index| path_part[index + 4..].to_string())
+        .unwrap_or_else(|| path_part.to_string());
+    if x == '?' && y == '?' {
+        status
+            .untracked
+            .push(status_file(display_path, '?', "untracked"));
+        return;
+    }
+    if x != ' ' && x != '?' {
+        status
+            .staged
+            .push(status_file(display_path.clone(), x, "staged"));
+    }
+    if y != ' ' && y != '?' {
+        status.changes.push(status_file(display_path, y, "changes"));
+    }
+}
+
 fn parse_porcelain_v1(
     stdout: &str,
 ) -> (
@@ -1203,99 +1267,22 @@ fn parse_porcelain_v1(
     Vec<ScmFile>,
     Vec<ScmFile>,
 ) {
-    let mut branch: Option<String> = None;
-    let mut ahead = 0u32;
-    let mut behind = 0u32;
-    let mut has_upstream = false;
-    let mut staged = Vec::<ScmFile>::new();
-    let mut changes = Vec::<ScmFile>::new();
-    let mut untracked = Vec::<ScmFile>::new();
-
+    let mut status = PorcelainStatus::default();
     for line in stdout.lines() {
         if line.starts_with("##") {
-            // e.g. "## main...origin/main [ahead 1, behind 2]"
-            let rest = line.trim_start_matches("##").trim();
-            let (head, tail) = rest.split_once(' ').unwrap_or((rest, ""));
-            let mut split = head.splitn(2, "...");
-            let head_branch = split.next().unwrap_or(head);
-            // Upstream segment after "..." — only counts when non-empty.
-            // `## main` → no split → no upstream.
-            // `## main...` → empty rhs → no upstream.
-            // `## main...origin/main` → tracking origin/main.
-            if let Some(up) = split.next() {
-                if !up.trim().is_empty() {
-                    has_upstream = true;
-                }
-            }
-            if !head_branch.is_empty() && head_branch != "HEAD (no branch)" {
-                branch = Some(head_branch.to_string());
-            }
-            if let Some(bracket) = tail.find('[') {
-                let inner = &tail[bracket + 1..tail.rfind(']').unwrap_or(tail.len())];
-                for seg in inner.split(',') {
-                    let seg = seg.trim();
-                    if let Some(n) = seg.strip_prefix("ahead ") {
-                        ahead = n.parse().unwrap_or(0);
-                    } else if let Some(n) = seg.strip_prefix("behind ") {
-                        behind = n.parse().unwrap_or(0);
-                    }
-                }
-            }
-            continue;
-        }
-        if line.len() < 3 {
-            continue;
-        }
-        let x = line.as_bytes()[0] as char;
-        let y = line.as_bytes()[1] as char;
-        let path_part = &line[3..];
-        // rename: "R  old -> new" 只保留 new
-        let display_path = if let Some(idx) = path_part.find(" -> ") {
-            path_part[idx + 4..].to_string()
+            parse_status_branch(line, &mut status);
         } else {
-            path_part.to_string()
-        };
-
-        if x == '?' && y == '?' {
-            untracked.push(ScmFile {
-                path: display_path,
-                status: "?".to_string(),
-                group: "untracked".to_string(),
-                additions: 0,
-                deletions: 0,
-            });
-            continue;
-        }
-        // Staged index column
-        if x != ' ' && x != '?' {
-            staged.push(ScmFile {
-                path: display_path.clone(),
-                status: x.to_string(),
-                group: "staged".to_string(),
-                additions: 0,
-                deletions: 0,
-            });
-        }
-        // Working-tree column
-        if y != ' ' && y != '?' {
-            changes.push(ScmFile {
-                path: display_path,
-                status: y.to_string(),
-                group: "changes".to_string(),
-                additions: 0,
-                deletions: 0,
-            });
+            parse_status_file(line, &mut status);
         }
     }
-
     (
-        branch,
-        ahead,
-        behind,
-        has_upstream,
-        staged,
-        changes,
-        untracked,
+        status.branch,
+        status.ahead,
+        status.behind,
+        status.has_upstream,
+        status.staged,
+        status.changes,
+        status.untracked,
     )
 }
 
@@ -1356,6 +1343,37 @@ pub fn get_scm_status_fast_sync(repo_root: String) -> Result<ScmRepoStatus, Stri
     get_scm_status_sync_with_numstat(repo_root, false)
 }
 
+fn numstat_for(repo_path: &Path, args: &[&str]) -> std::collections::HashMap<String, (u32, u32)> {
+    git_cmd()
+        .args(args)
+        .current_dir(repo_path)
+        .git_output()
+        .ok()
+        .and_then(|output| output.status.success().then_some(output.stdout))
+        .map(|bytes| parse_numstat(&String::from_utf8_lossy(&bytes)))
+        .unwrap_or_default()
+}
+
+fn apply_numstat(repo_path: &Path, staged: &mut [ScmFile], changes: &mut [ScmFile]) {
+    let changes_count = numstat_for(repo_path, &["--no-pager", "diff", "--numstat", "--"]);
+    let staged_count = numstat_for(
+        repo_path,
+        &["--no-pager", "diff", "--cached", "--numstat", "--"],
+    );
+    for file in changes {
+        if let Some(&(additions, deletions)) = changes_count.get(&file.path) {
+            file.additions = additions;
+            file.deletions = deletions;
+        }
+    }
+    for file in staged {
+        if let Some(&(additions, deletions)) = staged_count.get(&file.path) {
+            file.additions = additions;
+            file.deletions = deletions;
+        }
+    }
+}
+
 fn get_scm_status_sync_with_numstat(
     repo_root: String,
     include_numstat: bool,
@@ -1380,37 +1398,7 @@ fn get_scm_status_sync_with_numstat(
         let branch = branch_from_status.or_else(|| get_current_branch(repo_path));
 
         if include_numstat {
-            // Two numstat calls: working-tree and index. They remain on the
-            // desktop/full path, while Remote first paint deliberately skips
-            // them because its compact list does not render line counts.
-            let unstaged_counts = git_cmd()
-                .args(["--no-pager", "diff", "--numstat", "--"])
-                .current_dir(repo_path)
-                .git_output()
-                .ok()
-                .and_then(|o| o.status.success().then_some(o.stdout))
-                .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
-                .unwrap_or_default();
-            let staged_counts = git_cmd()
-                .args(["--no-pager", "diff", "--cached", "--numstat", "--"])
-                .current_dir(repo_path)
-                .git_output()
-                .ok()
-                .and_then(|o| o.status.success().then_some(o.stdout))
-                .map(|b| parse_numstat(&String::from_utf8_lossy(&b)))
-                .unwrap_or_default();
-            for f in &mut changes {
-                if let Some(&(a, d)) = unstaged_counts.get(&f.path) {
-                    f.additions = a;
-                    f.deletions = d;
-                }
-            }
-            for f in &mut staged {
-                if let Some(&(a, d)) = staged_counts.get(&f.path) {
-                    f.additions = a;
-                    f.deletions = d;
-                }
-            }
+            apply_numstat(repo_path, &mut staged, &mut changes);
         }
 
         Ok(ScmRepoStatus {
@@ -2571,42 +2559,56 @@ pub struct BlameLine {
 /// `--line-porcelain` 对每一行都重复完整的 commit 头：以
 /// `<sha> <orig> <final> [<num>]` 起，随后若干 `key value` 行，最后一行以 `\t`
 /// 起为源码内容。我们只取 author / author-time / summary + 最终行号。
-fn parse_blame_porcelain(stdout: &str) -> Vec<BlameLine> {
-    let mut out = Vec::new();
-    let (mut sha, mut author, mut summary) = (String::new(), String::new(), String::new());
-    let mut ts: i64 = 0;
-    let mut final_line: u32 = 0;
-    for raw in stdout.lines() {
-        if let Some(_content) = raw.strip_prefix('\t') {
-            // 内容行 → 该行 blame 收尾。
-            out.push(BlameLine {
-                line: final_line,
-                commit: sha.chars().take(8).collect(),
-                author: author.clone(),
-                timestamp: ts,
-                summary: summary.clone(),
-            });
-        } else if let Some(rest) = raw.strip_prefix("author ") {
-            author = rest.to_string();
-        } else if let Some(rest) = raw.strip_prefix("author-time ") {
-            ts = rest.trim().parse().unwrap_or(0);
-        } else if let Some(rest) = raw.strip_prefix("summary ") {
-            summary = rest.to_string();
-        } else {
-            // 可能是 `<sha> <orig> <final> [num]` 头行。
-            let mut it = raw.split(' ');
-            if let Some(first) = it.next() {
-                if first.len() >= 39 && first.chars().all(|c| c.is_ascii_hexdigit()) {
-                    sha = first.to_string();
-                    let _orig = it.next();
-                    if let Some(fin) = it.next() {
-                        if let Ok(n) = fin.parse::<u32>() {
-                            final_line = n;
-                        }
-                    }
-                }
+struct BlameParseState {
+    sha: String,
+    author: String,
+    summary: String,
+    timestamp: i64,
+    final_line: u32,
+}
+
+fn parse_blame_record(raw: &str, state: &mut BlameParseState, out: &mut Vec<BlameLine>) {
+    if let Some(_content) = raw.strip_prefix('\t') {
+        out.push(BlameLine {
+            line: state.final_line,
+            commit: state.sha.chars().take(8).collect(),
+            author: state.author.clone(),
+            timestamp: state.timestamp,
+            summary: state.summary.clone(),
+        });
+    } else if let Some(rest) = raw.strip_prefix("author ") {
+        state.author = rest.to_string();
+    } else if let Some(rest) = raw.strip_prefix("author-time ") {
+        state.timestamp = rest.trim().parse().unwrap_or(0);
+    } else if let Some(rest) = raw.strip_prefix("summary ") {
+        state.summary = rest.to_string();
+    } else {
+        let mut fields = raw.split(' ');
+        let Some(first) = fields.next() else { return };
+        if first.len() < 39 || !first.chars().all(|c| c.is_ascii_hexdigit()) {
+            return;
+        }
+        state.sha = first.to_string();
+        let _ = fields.next();
+        if let Some(fin) = fields.next() {
+            if let Ok(line) = fin.parse::<u32>() {
+                state.final_line = line;
             }
         }
+    }
+}
+
+fn parse_blame_porcelain(stdout: &str) -> Vec<BlameLine> {
+    let mut out = Vec::new();
+    let mut state = BlameParseState {
+        sha: String::new(),
+        author: String::new(),
+        summary: String::new(),
+        timestamp: 0,
+        final_line: 0,
+    };
+    for raw in stdout.lines() {
+        parse_blame_record(raw, &mut state, &mut out);
     }
     out
 }

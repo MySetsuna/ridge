@@ -238,7 +238,7 @@ async function decodeThemeBgRgba(
   // Theme toggles can arrive faster than an image decode. Share one decode
   // per URL so a rapid switch cannot queue duplicate Image + Canvas2D work.
   const existing = _inflightBgDecodes.get(url);
-  if (existing) return existing;
+  if (existing !== undefined) return existing;
 
   const pending = decodeThemeBgRgbaImpl(t, url);
   _inflightBgDecodes.set(url, pending);

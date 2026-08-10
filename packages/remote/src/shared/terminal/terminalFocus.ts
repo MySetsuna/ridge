@@ -70,7 +70,7 @@ export function focusTerminalPane(paneId: string): boolean {
 	// Pane ids are UUIDs in the desktop/remote protocol. Escaping the two
 	// selector metacharacters we could receive keeps this helper safe if a host
 	// supplies a different opaque id in the future.
-	const escaped = paneId.replace(/["\\]/g, '\\$&');
+	const escaped = paneId.replace(/["\\]/g, String.raw`\$&`);
 	const pane = document.querySelector<HTMLElement>(`[data-rg-pane-id="${escaped}"]`);
 	return focusPaneElement(pane);
 }

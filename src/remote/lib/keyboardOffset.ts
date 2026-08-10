@@ -112,7 +112,7 @@ export function terminalVisualShiftPx({
     || !Number.isFinite(visualOffsetTopPx)
     || !Number.isFinite(stageTopPx)
     || !Number.isFinite(cursorYPx)
-    || !(cellHeightPx > 0)
+     || cellHeightPx <= 0
   ) return previous ?? 0;
 
   const viewportKeyboardTop = Number.isFinite(keyboardTopPx)

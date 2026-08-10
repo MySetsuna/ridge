@@ -1,5 +1,5 @@
 import { writable, get } from 'svelte/store';
-import type { Component, ComponentType, SvelteComponent } from 'svelte';
+import type { Component, SvelteComponent } from 'svelte';
 import { splitResizeUiState } from './paneTree';
 
 /**
@@ -11,7 +11,7 @@ import { splitResizeUiState } from './paneTree';
  */
 export type IconComponent =
   | Component<any, any, any>
-  | ComponentType<SvelteComponent<any>>;
+  | (new (...args: any[]) => SvelteComponent<any>);
 
 export type ContextMenuTarget =
   | 'terminal'

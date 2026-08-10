@@ -47,6 +47,7 @@ import {
 	onWorkerRendererFailure,
 } from './workerRendererSingleton';
 import { perfMark } from './perfTrace';
+import { unknownText } from '../transport/unknownText';
 import { DEFAULT_TERM_FONT } from './fontStack';
 import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
 import {
@@ -89,7 +90,7 @@ function quantizeCellSize(raw: number, dpr: number): number {
 }
 
 function isExpectedWorkerLifecycleCancellation(error: unknown): boolean {
-	const message = error instanceof Error ? error.message : String(error);
+	const message = error instanceof Error ? error.message : unknownText(error);
 	return (
 		message === 'pane destroyed; request cancelled' ||
 		message === 'render worker terminated with pending requests'
@@ -559,6 +560,13 @@ const MAX_DEFERRED_CHUNKS_PER_FRAME = 2;
  *  方法共读；缺失（SSR / 手机未注入 / 预启动期）时 manager 优雅降级。 */
 let _hostPorts: HostPorts | null = null;
 
+function mouseButtonFromButtons(buttons: number): number {
+	if (buttons & 1) return 0;
+	if (buttons & 2) return 2;
+	if (buttons & 4) return 1;
+	return 0;
+}
+
 export class TerminalManager {
 	private static _instance: TerminalManager | null = null;
 
@@ -817,7 +825,7 @@ export class TerminalManager {
 		// open_file | reveal_in_tree → host port (editor / explorer)
 		let text = plan.path;
 		if (plan.type === 'open_file' && plan.line != null) {
-			text = `${plan.path}:${plan.line}${plan.col != null ? `:${plan.col}` : ''}`;
+			text = [plan.path, plan.line, plan.col].filter((part) => part != null).join(':');
 		}
 		const cwd = TerminalManager._currentPaneCwd(entry);
 		const known = TerminalManager._knownCwds();
@@ -895,7 +903,7 @@ export class TerminalManager {
 	 */
 	ready(): Promise<void> {
 		if (this.wasmReady) return Promise.resolve();
-		if (this.wasmReadyPromise) return this.wasmReadyPromise;
+		if (this.wasmReadyPromise !== null) return this.wasmReadyPromise;
 		this.wasmReadyPromise = (async () => {
 			await init(wasmUrl);
 			this.wasmReady = true;
@@ -1038,7 +1046,7 @@ export class TerminalManager {
 	 * `<canvas>` inside each pane container.
 	 */
 	public attachHost(canvas: HTMLCanvasElement): Promise<void> {
-		if (this.attachHostPromise) return this.attachHostPromise;
+		if (this.attachHostPromise !== null) return this.attachHostPromise;
 		if (this.globalHost) {
 			// Re-attaching the SAME canvas is a no-op. Swapping to a
 			// DIFFERENT canvas would require a full WebGPU surface
@@ -1118,7 +1126,7 @@ export class TerminalManager {
 	 * `newWithWebgpuFirst(canvas, null)` intentionally falls back to Canvas2D.
 	 */
 	private async _ensureDomHostStarted(): Promise<void> {
-		if (!this.opts.preferWebgpu || this.globalHost || this.attachHostPromise) return;
+		if (!this.opts.preferWebgpu || this.globalHost !== null || this.attachHostPromise !== null) return;
 		if (typeof document === 'undefined') return;
 		const hostCanvas = document.querySelector('canvas[data-rg-host]');
 		if (!(hostCanvas instanceof HTMLCanvasElement)) return;
@@ -1688,7 +1696,7 @@ export class TerminalManager {
 		// races RidgePane mounts). Single global init now, so no
 		// per-workspace lookup.
 		await this._ensureDomHostStarted();
-		if (this.attachHostPromise) {
+		if (this.attachHostPromise !== null) {
 			try { await this.attachHostPromise; } catch { /* attachHost handles errors internally */ }
 		}
 
@@ -1797,13 +1805,13 @@ export class TerminalManager {
 		// Captured into closures up-front so detach() can unbind cleanly.
 		const focusListener = (_e: FocusEvent) => {
 			const e = this.panes.get(paneId);
-			if (!e || !e.dataHandler) return;
+			if (!e?.dataHandler) return;
 			if (!e.kernel.isFocusReporting()) return;
 			e.dataHandler(new TextEncoder().encode('\x1b[I'));
 		};
 		const blurListener = (_e: FocusEvent) => {
 			const e = this.panes.get(paneId);
-			if (!e || !e.dataHandler) return;
+			if (!e?.dataHandler) return;
 			if (!e.kernel.isFocusReporting()) return;
 			e.dataHandler(new TextEncoder().encode('\x1b[O'));
 		};
@@ -1880,10 +1888,7 @@ export class TerminalManager {
 				if ((modes & MOUSE_ANY_EVT) !== 0 || pending.buttons !== 0) {
 					const isMacUA = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 					const mod = pending.ctrlKey || (isMacUA && pending.metaKey);
-					let btn = 0;
-					if (pending.buttons & 1) btn = 0;
-					else if (pending.buttons & 2) btn = 2;
-					else if (pending.buttons & 4) btn = 1;
+					const btn = mouseButtonFromButtons(pending.buttons);
 					const buttons = pending.buttons;
 					const action = 2; // motion
 					// Dedup: same cell + same buttons + same action → skip
@@ -1892,11 +1897,10 @@ export class TerminalManager {
 					// TUI only needs one motion per cell transition.
 					const last = ent.lastMouseSent;
 					if (
-						!last ||
-						last.row !== hoverCell.row ||
-						last.col !== hoverCell.col ||
-						last.buttons !== buttons ||
-						last.action !== action
+						last?.row !== hoverCell.row ||
+						last?.col !== hoverCell.col ||
+						last?.buttons !== buttons ||
+						last?.action !== action
 					) {
 						const bytes = ent.kernel.encodeMouse(hoverCell.row, hoverCell.col, btn, action, pending.shiftKey, mod, pending.altKey);
 						if (bytes.length > 0) {
@@ -2527,7 +2531,7 @@ export class TerminalManager {
 					const e = this.panes.get(paneId);
 					if (!e) return [];
 					// kernel.dumpVisibleText returns Vec<String> as JsValue[]
-					return (e.kernel.dumpVisibleText() as string[]).map((s) => String(s));
+					return (e.kernel.dumpVisibleText() as string[]).map(String);
 				},
 				rows: (paneId) => this.rows(paneId) ?? 0,
 				cols: (paneId) => this.cols(paneId) ?? 0,
@@ -2677,7 +2681,7 @@ export class TerminalManager {
 				// `installPtyWriteSpy` is idempotent per pane.
 				installPtyWriteSpy: (paneId) => {
 					const e = this.panes.get(paneId);
-					if (!e || !e.dataHandler) return;
+					if (!e?.dataHandler) return;
 					const ent = e as unknown as { _e2ePtyWriteLog?: Array<{ data: string; at: number }> };
 					if (ent._e2ePtyWriteLog) return;
 					const log: Array<{ data: string; at: number }> = [];
@@ -2978,7 +2982,7 @@ export class TerminalManager {
 			throw new Error(`TerminalManager.unpark: pane ${paneId} is already attached`);
 		}
 		await this._ensureDomHostStarted();
-		if (this.attachHostPromise) {
+		if (this.attachHostPromise !== null) {
 			try { await this.attachHostPromise; } catch { /* ignore */ }
 		}
 		if (this.panes.get(paneId) !== entry || !entry.parked) return;
@@ -3025,11 +3029,14 @@ export class TerminalManager {
 			try { handle?.free(); } catch { /* stale retained renderer */ }
 			entry.rendererRetained = false;
 		}
-		const handle: RenderHandle | null = usingWorker
-			? null
-			: (retainedHost || retainedCanvas)
-				? entry.handle
-				: await this._makeHandleSerialized(canvas, hostHandle);
+		let handle: RenderHandle | null;
+		if (usingWorker) {
+			handle = null;
+		} else if (retainedHost || retainedCanvas) {
+			handle = entry.handle;
+		} else {
+			handle = await this._makeHandleSerialized(canvas, hostHandle);
+		}
 		// Detach or a competing restore may win while renderer creation awaits.
 		// Free only our fresh resources; never mutate the retired/replaced entry.
 		if (this.panes.get(paneId) !== entry || !entry.parked) {
@@ -3141,7 +3148,7 @@ export class TerminalManager {
 	 *  Useful for the RidgePane onMount path to decide attach vs unpark. */
 	isParked(paneId: string): boolean {
 		const entry = this.panes.get(paneId);
-		return entry !== undefined && entry.parked;
+		return entry?.parked ?? false;
 	}
 
 	/** Feed PTY bytes into the pane's kernel. Accepts string or Uint8Array.
@@ -3172,17 +3179,6 @@ export class TerminalManager {
 			// Older wasm bundle without isInlineTuiMode export → bypass coalescing.
 			inlineTui = false;
 		}
-		// §A.4 — tick trace: correlate feed timing with rAF sampling.
-		if (typeof localStorage !== 'undefined' && localStorage.RIDGE_TICK_TRACE === '1') {
-			const ts = performance.now().toFixed(1);
-			const id = paneId.slice(0, 8);
-			const buffered = entry.feedBuffer ? entry.feedBuffer.length : 0;
-			const pending = entry.feedFlushTimer !== null ? 'pending' : 'idle';
-			// eslint-disable-next-line no-console
-			// console.debug(
-			// 	`[tick-trace][${ts}ms][${id}][feed +${bytes.length}B inlineTui=${inlineTui} buffered=${buffered}B flush=${pending}]`,
-			// );
-		}
 		if (inlineTui) {
 			// §4c (2026-05-08) — burst-only coalescing. The §A.4 8 ms
 			// gate was applied to ALL inline-TUI bytes, including the
@@ -3201,7 +3197,7 @@ export class TerminalManager {
 			// emitting echo + CHA reposition) take the buffer path —
 			// safe because the first byte before the ESC is implicitly
 			// fed in-order when the buffer flushes.
-			const hasEsc = bytes.indexOf(0x1b) !== -1;
+			const hasEsc = bytes.includes(0x1b);
 			if (hasEsc) {
 				// §4d (2026-05-19) — first-chunk-fast-path.
 				//
@@ -3586,7 +3582,7 @@ export class TerminalManager {
 	 *  as if typed. */
 	write(paneId: string, data: string | Uint8Array): void {
 		const entry = this.panes.get(paneId);
-		if (!entry || !entry.dataHandler) return;
+		if (!entry?.dataHandler) return;
 		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
 		if (bytes.length > 0) {
 			entry.dataHandler(bytes);
@@ -3628,7 +3624,7 @@ export class TerminalManager {
 	 */
 	handleKeyDown(paneId: string, ev: KeyboardEvent, isTui: boolean = false): boolean {
 		const entry = this.panes.get(paneId);
-		if (!entry || !entry.dataHandler) return false;
+		if (!entry?.dataHandler) return false;
 
 		// macOS: treat Cmd as Ctrl for terminal apps.
 		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
@@ -3684,7 +3680,7 @@ export class TerminalManager {
 	 */
 	handleWheel(paneId: string, ev: WheelEvent): boolean {
 		const entry = this.panes.get(paneId);
-		if (!entry || !entry.dataHandler) return false;
+		if (!entry?.dataHandler) return false;
 		if (entry.kernel.mouseReportingModes() === 0) return false;
 
 		const cell = this.cellFromEvent(paneId, ev);
@@ -3729,7 +3725,7 @@ export class TerminalManager {
 	 */
 	wheelAltScroll(paneId: string, ev: WheelEvent): boolean {
 		const entry = this.panes.get(paneId);
-		if (!entry || !entry.dataHandler) return false;
+		if (!entry?.dataHandler) return false;
 		if (!entry.kernel.isAltScreen()) return false;
 		if (entry.kernel.mouseReportingModes() !== 0) return false;
 		const delta = ev.deltaY;
@@ -3796,7 +3792,7 @@ export class TerminalManager {
 	 */
 	paste(paneId: string, text: string): void {
 		const entry = this.panes.get(paneId);
-		if (!entry || !entry.dataHandler) return;
+		if (!entry?.dataHandler) return;
 		const bytes = entry.kernel.encodePaste(text);
 		entry.dataHandler(bytes);
 		this.scheduleImeAnchorCapture(entry);
@@ -3905,7 +3901,7 @@ export class TerminalManager {
 	/** Write raw bytes to the pane's PTY via dataHandler. */
 	sendData(paneId: string, data: Uint8Array): void {
 		const ent = this.panes.get(paneId);
-		if (!ent || !ent.dataHandler) return;
+		if (!ent?.dataHandler) return;
 		ent.dataHandler(data);
 	}
 
@@ -3942,7 +3938,7 @@ export class TerminalManager {
     /** 滚动时扩展选择 */
     updateSelection(paneId: string, endAbs: { row: number, col: number }) {
         const ent = this.panes.get(paneId);
-        if (!ent || !ent.selectionStartAbs) return;
+        if (!ent?.selectionStartAbs) return;
         ent.selectionEndAbs = endAbs;
         this._syncSelection(ent);
     }
@@ -4183,7 +4179,7 @@ export class TerminalManager {
 		}
 		return () => {
 			const cur = this.panes.get(paneId);
-			if (cur && cur.scrollStateHandler === handler) cur.scrollStateHandler = null;
+			if (cur?.scrollStateHandler === handler) cur.scrollStateHandler = null;
 		};
 	}
 
@@ -4308,41 +4304,33 @@ export class TerminalManager {
 	 *  main-thread `entry.handle` only — the worker renderer mirror does
 	 *  not carry overlays, matching the preedit path. See
 	 *  `packages/ridge-term/src/render/renderer.rs::HistoryOverlay`. */
-	setHistoryOverlay(
-		paneId: string,
-		items: readonly string[],
-		selectedIndex: number,
-		anchorRow: number,
-		anchorCol: number,
-		placeAbove: boolean,
-		totalItems: number,
-		firstVisible: number,
-	): void {
+	setHistoryOverlay(paneId: string, overlay: {
+		items: readonly string[];
+		selectedIndex: number;
+		anchorRow: number;
+		anchorCol: number;
+		placeAbove: boolean;
+		totalItems: number;
+		firstVisible: number;
+	}): void {
 		const entry = this.panes.get(paneId);
 		if (!entry || entry.parked) return;
+		type HistoryOverlayArgs = [
+			string[], number, number, number, boolean, number, number, number, number,
+		];
 		const h = entry.handle as unknown as {
-			setHistoryOverlay?: (
-				items: string[],
-				selectedIndex: number,
-				anchorRow: number,
-				anchorCol: number,
-				placeAbove: boolean,
-				totalItems: number,
-				firstVisible: number,
-				viewportCols: number,
-				viewportRows: number,
-			) => void;
+			setHistoryOverlay?: (...args: HistoryOverlayArgs) => void;
 		};
 		// `items` is the JS-windowed VISIBLE slice; `selectedIndex` is
 		// slice-relative; `totalItems`/`firstVisible` drive the scrollbar.
 		h.setHistoryOverlay?.(
-			[...items],
-			selectedIndex,
-			anchorRow,
-			anchorCol,
-			placeAbove,
-			totalItems,
-			firstVisible,
+			[...overlay.items],
+			overlay.selectedIndex,
+			overlay.anchorRow,
+			overlay.anchorCol,
+			overlay.placeAbove,
+			overlay.totalItems,
+			overlay.firstVisible,
 			entry.kernel.cols(),
 			entry.kernel.rows(),
 		);
@@ -4467,7 +4455,7 @@ export class TerminalManager {
 	 *  container's addEventListener path. */
 	handlePointerDown(paneId: string, e: PointerEvent): boolean {
 		const ent = this.panes.get(paneId);
-		if (!ent || !ent.dataHandler) return false;
+		if (!ent?.dataHandler) return false;
 		const modes = ent.kernel.mouseReportingModes();
 		if (modes === 0) return false;
 		if (ent.cellW <= 0 || ent.cellH <= 0) return false;
@@ -5339,7 +5327,7 @@ export class TerminalManager {
 		if (typeof document === 'undefined') return;
 		this._resizeReleaseListener = (e?: Event) => {
 			const tgt = (e as PointerEvent | undefined)?.target as Element | null | undefined;
-			if (tgt && tgt.closest && tgt.closest('[data-rg-pane-id]')) {
+			if (tgt?.closest?.('[data-rg-pane-id]')) {
 				// Pane-internal release — leave the pane's own pointerup
 				// handler to do its TUI mouse-release forwarding without
 				// a concurrent grid resize racing it.
@@ -5720,7 +5708,7 @@ export class TerminalManager {
 		// iter-60 G3 例外：raw 字节模式 pane（localGridAuthority，手机 SPA）没有
 		// delta 回灌，本地网格在此直接改——否则 cloud 腿（无 pty-resized 回执）
 		// 的 kernel 永卡初始格。上面的 delta-race 顾虑仅适用于 Rust-delta 镜像。
-		void wipeBeforePty;
+	// The flag remains part of the diagnostic record above.
 		if (entry.localGridAuthority || this._sharedRemoteMode) {
 			entry.kernel.resize(rows, cols);
 		}
@@ -5938,7 +5926,6 @@ export class TerminalManager {
 					// tick regardless). `wasHiddenLastTick` is cleared in the
 					// render loop below, so this only forces the FIRST visible
 					// frame; steady-state cached replay is unaffected.
-					d = true;
 				} else if (entry.handle !== null && typeof handleAny.isDirty === 'function') {
 					try {
 						d = handleAny.isDirty(entry.kernel, dateNow);
@@ -5963,7 +5950,7 @@ export class TerminalManager {
 				// inside the pane loop, when we know at least one host
 				// pane is about to draw.
 			}
-			void anyDirty;
+	// anyDirty feeds the frame-order decision below.
 			const ensureHostFrame = (): boolean => {
 				if (hostFrameOpen) return true;
 				if (!activeHost) return false;
@@ -6116,44 +6103,7 @@ export class TerminalManager {
 				// answer "what does the kernel grid hold at the moment Canvas2D
 				// samples it" — if the cells are right but render is wrong, it's
 				// a render bug; if cells are wrong, it's a parser/feed bug.
-				if (
-					typeof localStorage !== 'undefined' &&
-					localStorage.RIDGE_TICK_TRACE === '1'
-				) {
-					try {
-						const kAny = entry.kernel as unknown as {
-							cursorRow?: () => number;
-							cursorCol?: () => number;
-							isInlineTuiMode?: () => boolean;
-							cellsAt?: (row: number, col: number, len: number) => Array<{
-								col: number;
-								ch: string;
-								width: number;
-							}>;
-						};
-						const cr = typeof kAny.cursorRow === 'function' ? kAny.cursorRow() : -1;
-						const cc = typeof kAny.cursorCol === 'function' ? kAny.cursorCol() : -1;
-						const inTui =
-							typeof kAny.isInlineTuiMode === 'function'
-								? kAny.isInlineTuiMode()
-								: false;
-						let rowDump = '';
-						if (cr >= 0 && typeof kAny.cellsAt === 'function') {
-							const cells = kAny.cellsAt(cr, 0, 80);
-							rowDump = cells
-								.map((c) => (c.ch === ' ' ? '·' : c.ch))
-								.join('');
-						}
-						const ts = performance.now().toFixed(1);
-						const id = entry.paneId.slice(0, 8);
-						// eslint-disable-next-line no-console
-						// console.debug(
-						// 	`[tick-trace][${ts}ms][${id}][cur=(${cr},${cc}) inlineTui=${inTui} dirty=${dirty} render=${shouldRender}] row${cr}="${rowDump}"`,
-						// );
-					} catch {
-						/* missing wasm export → skip the trace silently */
-					}
-				}
+				// Per-frame cursor tracing was removed; keep rendering side-effect free.
 				if (shouldRender) {
 					// §A.9: open the global host frame lazily, on the
 					// first host pane that's actually about to draw this

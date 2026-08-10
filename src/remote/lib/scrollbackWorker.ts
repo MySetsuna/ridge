@@ -86,7 +86,7 @@ type PendingDecode = {
 export class ScrollbackDecoder {
   private worker: Worker | null = null;
   private requestId = 0;
-  private pending = new Map<number, PendingDecode>();
+  private readonly pending = new Map<number, PendingDecode>();
   private disposed = false;
 
   constructor() {

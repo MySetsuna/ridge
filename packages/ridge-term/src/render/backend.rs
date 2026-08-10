@@ -413,19 +413,32 @@ pub trait RenderBackend {
 /// Default implementation that drives a backend through one frame using
 /// a list of dirty rows + cursor. Renderer state (snapshot, dirty calc)
 /// lives in `Renderer` (renderer.rs).
-pub fn draw_frame<B: RenderBackend>(
-    backend: &mut B,
-    metrics: FrameMetrics,
-    theme: &Theme,
-    rows: &[RowDraw<'_>],
-    cursor: Option<&CursorDraw>,
-    attrs_table: &crate::term::attr_table::AttrTable,
-    full_redraw: bool,
-    selection_rects: &[(usize, usize, usize)],
-    hyperlink_rects: &[(usize, usize, usize)],
-    preedit: Option<&crate::render::renderer::Preedit>,
-    history_overlay: Option<&crate::render::renderer::HistoryOverlay>,
-) {
+pub struct FrameDraw<'a> {
+    pub metrics: FrameMetrics,
+    pub theme: &'a Theme,
+    pub rows: &'a [RowDraw<'a>],
+    pub cursor: Option<&'a CursorDraw>,
+    pub attrs_table: &'a crate::term::attr_table::AttrTable,
+    pub full_redraw: bool,
+    pub selection_rects: &'a [(usize, usize, usize)],
+    pub hyperlink_rects: &'a [(usize, usize, usize)],
+    pub preedit: Option<&'a crate::render::renderer::Preedit>,
+    pub history_overlay: Option<&'a crate::render::renderer::HistoryOverlay>,
+}
+
+pub fn draw_frame<B: RenderBackend>(backend: &mut B, frame: FrameDraw<'_>) {
+    let FrameDraw {
+        metrics,
+        theme,
+        rows,
+        cursor,
+        attrs_table,
+        full_redraw,
+        selection_rects,
+        hyperlink_rects,
+        preedit,
+        history_overlay,
+    } = frame;
     backend.begin_frame(metrics, theme);
     if full_redraw {
         backend.clear();

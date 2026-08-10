@@ -238,17 +238,19 @@ pub async fn launch_agent_session(
             &st,
             workspace_id,
             pane_id,
-            None,
-            Some(&cwd),
-            None,
-            Some(StructuredPtyCommand {
-                program: executable,
-                args: argv,
-                env: HashMap::new(),
-            }),
-            None,
-            None,
-            None,
+            EnsurePtyOptions {
+                shell: None,
+                cwd: Some(&cwd),
+                initial_command: None,
+                structured_command: Some(StructuredPtyCommand {
+                    program: executable,
+                    args: argv,
+                    env: HashMap::new(),
+                }),
+                tmux_pane_index: None,
+                ready_tx: None,
+                trace_id: None,
+            },
         )
         .map_err(|e| e.to_string())?;
         crate::commands::git::set_pane_workdir(
@@ -350,13 +352,15 @@ fn change_pane_shell_inner(
         state,
         workspace_id,
         pane_id,
-        shell_opt,
-        cwd.as_deref(),
-        None,
-        sc,
-        None,
-        None,
-        None,
+        EnsurePtyOptions {
+            shell: shell_opt,
+            cwd: cwd.as_deref(),
+            initial_command: None,
+            structured_command: sc,
+            tmux_pane_index: None,
+            ready_tx: None,
+            trace_id: None,
+        },
     )
 }
 
@@ -421,13 +425,15 @@ fn create_pane_in_workspace(
         &*state,
         workspace_id,
         pane_id,
-        effective_shell,
-        Some(&cwd),
-        None,
-        None,
-        None,
-        None,
-        None,
+        EnsurePtyOptions {
+            shell: effective_shell,
+            cwd: Some(&cwd),
+            initial_command: None,
+            structured_command: None,
+            tmux_pane_index: None,
+            ready_tx: None,
+            trace_id: None,
+        },
     )?;
 
     // 设置 pane 的工作目录用于 git diff 跟踪
@@ -463,6 +469,16 @@ pub struct StructuredPtyCommand {
     pub program: String,
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
+}
+
+pub struct EnsurePtyOptions<'a> {
+    pub shell: Option<String>,
+    pub cwd: Option<&'a Path>,
+    pub initial_command: Option<&'a str>,
+    pub structured_command: Option<StructuredPtyCommand>,
+    pub tmux_pane_index: Option<usize>,
+    pub ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    pub trace_id: Option<String>,
 }
 
 /// Claude Code shells out to `tmux`, while Cargo places `tmux(.exe)` beside the main binary.
@@ -725,33 +741,39 @@ fn attach_or_spawn_kernel_pty(
     attach_or_spawn_kernel_command(
         state,
         endpoint,
-        workspace_id,
-        pane_id,
-        shell,
-        &[],
-        &HashMap::new(),
-        cwd,
-        "shell",
-        Some("ridge-interactive"),
+        KernelCommandLaunch {
+            workspace_id,
+            pane_id,
+            program: shell,
+            args: &[],
+            env: &HashMap::new(),
+            cwd,
+            role: "shell",
+            launch_profile: Some("ridge-interactive"),
+        },
     )
+}
+
+struct KernelCommandLaunch<'a> {
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    program: Option<&'a str>,
+    args: &'a [String],
+    env: &'a HashMap<String, String>,
+    cwd: Option<&'a Path>,
+    role: &'a str,
+    launch_profile: Option<&'a str>,
 }
 
 fn attach_or_spawn_kernel_command(
     state: &AppState,
     endpoint: ridge_kernel::registry::KernelEndpoint,
-    workspace_id: Uuid,
-    pane_id: Uuid,
-    program: Option<&str>,
-    args: &[String],
-    env: &HashMap<String, String>,
-    cwd: Option<&Path>,
-    role: &str,
-    launch_profile: Option<&str>,
+    launch: KernelCommandLaunch<'_>,
 ) -> Result<bool, String> {
     let info = ridge_kernel::client::list_domain_ptys(&endpoint)?
         .into_iter()
-        .find(|entry| entry.pty_id == pane_id || entry.id == pane_id);
-    let cwd_string = cwd.map(|path| path.to_string_lossy().into_owned());
+        .find(|entry| entry.pty_id == launch.pane_id || entry.id == launch.pane_id);
+    let cwd_string = launch.cwd.map(|path| path.to_string_lossy().into_owned());
     let (pty_id, after_seq, cols, rows) = if let Some(info) = info {
         (
             info.pty_id,
@@ -762,14 +784,16 @@ fn attach_or_spawn_kernel_command(
     } else {
         let pty_id = ridge_kernel::client::create_domain_pty_with_command(
             &endpoint,
-            pane_id,
-            program,
-            args,
-            cwd_string.as_deref(),
-            Some(workspace_id),
-            role,
-            launch_profile,
-            env,
+            ridge_kernel::client::DomainPtyLaunch {
+                pty_id: launch.pane_id,
+                program: launch.program,
+                args: launch.args,
+                cwd: cwd_string.as_deref(),
+                workspace_id: Some(launch.workspace_id),
+                role: launch.role,
+                launch_profile: launch.launch_profile,
+                env: Some(launch.env),
+            },
         )?;
         (pty_id, None, 80, 24)
     };
@@ -778,11 +802,17 @@ fn attach_or_spawn_kernel_command(
         id: pty_id,
         after_seq,
     };
-    let installed =
-        install_kernel_pty(state, workspace_id, pane_id, reference.clone(), cols, rows)?;
-    crate::commands::workspace::sync_kernel_workspace_topology(state, workspace_id);
-    if state.active_workspace_id() == workspace_id {
-        crate::commands::workspace::sync_kernel_active_workspace(workspace_id);
+    let installed = install_kernel_pty(
+        state,
+        launch.workspace_id,
+        launch.pane_id,
+        reference.clone(),
+        cols,
+        rows,
+    )?;
+    crate::commands::workspace::sync_kernel_workspace_topology(state, launch.workspace_id);
+    if state.active_workspace_id() == launch.workspace_id {
+        crate::commands::workspace::sync_kernel_active_workspace(launch.workspace_id);
     }
     if !installed && after_seq.is_none() {
         let _ = reference.destroy();
@@ -855,14 +885,17 @@ pub fn ensure_pane_pty_workspace(
     state: &AppState,
     workspace_id: Uuid,
     pane_id: Uuid,
-    shell: Option<String>,
-    cwd: Option<&Path>,
-    initial_command: Option<&str>,
-    structured_command: Option<StructuredPtyCommand>,
-    tmux_pane_index: Option<usize>,
-    mut ready_tx: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
-    trace_id: Option<String>,
+    options: EnsurePtyOptions<'_>,
 ) -> Result<(), AppError> {
+    let EnsurePtyOptions {
+        shell,
+        cwd,
+        initial_command,
+        structured_command,
+        tmux_pane_index,
+        mut ready_tx,
+        trace_id,
+    } = options;
     let kernel_candidate = initial_command.is_none() && structured_command.is_none();
     // 按需启动 teammate HTTP server（幂等）：必须在下方注入 RIDGE_TEAMMATE_* 之前完成，
     // 保证 shell 启动时 env 已就绪。已在运行则立即返回（agent 自身 PTY 里再 split 走此快路径）。
@@ -919,14 +952,16 @@ pub fn ensure_pane_pty_workspace(
             match attach_or_spawn_kernel_command(
                 state,
                 endpoint,
-                workspace_id,
-                pane_id,
-                Some(&spec.program),
-                &spec.args,
-                &env,
-                cwd,
-                "agent",
-                None,
+                KernelCommandLaunch {
+                    workspace_id,
+                    pane_id,
+                    program: Some(&spec.program),
+                    args: &spec.args,
+                    env: &env,
+                    cwd,
+                    role: "agent",
+                    launch_profile: None,
+                },
             ) {
                 Ok(true) | Ok(false) => {
                     if let Some(tx) = ready_tx.take() {
@@ -987,6 +1022,15 @@ pub fn ensure_pane_pty_workspace(
             "ridge-kernel did not install the requested PTY".into(),
         ));
     }
+
+    // The kernel path above is the only production PTY authority. The former
+    // local pending-spawn implementation is retained below as commented
+    // migration history until its obsolete test seam is removed.
+    #[allow(unreachable_code)]
+    return Err(AppError::PtyError(
+        "ridge-kernel did not install the requested PTY".into(),
+    ));
+    /*
 
     // Local/structured launches still need the teammate server binding before
     // their shell process is spawned. Kernel-owned ordinary shells do not need
@@ -1103,14 +1147,14 @@ pub fn ensure_pane_pty_workspace(
                 // portable-pty / CreateProcess 对 `$`、`&`、`{` 这类字符的引号处理 ——
                 // 之前用 `-Command "..."` 时在某些环境里脚本根本没被执行。
                 const PS_INIT: &str = "\
-					$Global:__wind_origPrompt = (Get-Item function:prompt).ScriptBlock; \
-					function global:prompt { \
-					  $r = & $Global:__wind_origPrompt; \
-					  try { $c = $PWD.ProviderPath } catch { $c = (Get-Location).Path }; \
-					  try { [Console]::Write(([string][char]27) + ']7;file:///' + $c + ([string][char]7)) } catch {}; \
-					  try { [Console]::Write(([string][char]27) + ']133;A' + ([string][char]7)) } catch {}; \
-					  $r \
-					}";
+                    $Global:__wind_origPrompt = (Get-Item function:prompt).ScriptBlock; \
+                    function global:prompt { \
+                      $r = & $Global:__wind_origPrompt; \
+                      try { $c = $PWD.ProviderPath } catch { $c = (Get-Location).Path }; \
+                      try { [Console]::Write(([string][char]27) + ']7;file:///' + $c + ([string][char]7)) } catch {}; \
+                      try { [Console]::Write(([string][char]27) + ']133;A' + ([string][char]7)) } catch {}; \
+                      $r \
+                    }";
                 let encoded = encode_powershell_utf16le_base64(PS_INIT);
                 cmd.arg("-NoExit");
                 cmd.arg("-EncodedCommand");
@@ -1304,6 +1348,7 @@ pub fn ensure_pane_pty_workspace(
     pty_log::create_pending(workspace_id, pane_id, &trace_id);
 
     Ok(())
+    */
 }
 
 /// Phase 2: turn a `PendingSpawn` into a live PTY. Idempotent — returns
@@ -1738,7 +1783,11 @@ async fn write_to_resolved_pty(
     Ok(())
 }
 
+// NOSONAR: Tauri's public command ABI intentionally keeps these flat names so
+// existing desktop and remote clients can invoke `resize_pane` unchanged.
 #[tauri::command]
+// NOSONAR: this public command preserves the existing flat IPC ABI consumed by
+// desktop and remote clients; changing it to a request object is breaking API.
 pub async fn resize_pane(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
@@ -1756,11 +1805,13 @@ pub async fn resize_pane(
             &app,
             workspace_id,
             pane_id,
-            rows,
-            cols,
-            isAlt.unwrap_or(false),
-            isInlineTui.unwrap_or(false),
-            true,
+            ResizeRequest {
+                rows,
+                cols,
+                is_alt: isAlt.unwrap_or(false),
+                is_inline_tui: isInlineTui.unwrap_or(false),
+                suppress_errors: true,
+            },
         )
     })
     .await
@@ -1772,28 +1823,34 @@ pub async fn resize_pane(
 /// it can cancel the lane or apply bounded retry/backoff. Desktop UI keeps the
 /// legacy best-effort wrapper above to avoid turning a transient native resize
 /// failure into a session-level error.
+pub struct ResizePaneRemoteRequest {
+    pub(crate) workspace_id: String,
+    pub(crate) pane_id: String,
+    pub(crate) rows: u16,
+    pub(crate) cols: u16,
+    pub(crate) is_alt: Option<bool>,
+    pub(crate) is_inline_tui: Option<bool>,
+}
+
 pub async fn resize_pane_remote(
     state: &AppState,
     app: tauri::AppHandle,
-    workspace_id: String,
-    pane_id: String,
-    rows: u16,
-    cols: u16,
-    is_alt: Option<bool>,
-    is_inline_tui: Option<bool>,
+    request: ResizePaneRemoteRequest,
 ) -> Result<(), String> {
     let st = state.clone();
     tokio::task::spawn_blocking(move || {
         resize_pane_inner(
             &st,
             &app,
-            workspace_id,
-            pane_id,
-            rows,
-            cols,
-            is_alt.unwrap_or(false),
-            is_inline_tui.unwrap_or(false),
-            false,
+            request.workspace_id,
+            request.pane_id,
+            ResizeRequest {
+                rows: request.rows,
+                cols: request.cols,
+                is_alt: request.is_alt.unwrap_or(false),
+                is_inline_tui: request.is_inline_tui.unwrap_or(false),
+                suppress_errors: false,
+            },
         )
     })
     .await
@@ -1804,17 +1861,158 @@ pub async fn resize_pane_remote(
 /// resize_pane 的核心（不带 Tauri wrapper）：resize **既有** PTY（非 spawn/kill）+ 解析器
 /// wipe/delta。`&AppState`/`&AppHandle` 便于 ridge-core `WorkspaceWriter` 端口直调（远端 resize
 /// 经 dispatch）。逻辑与原样一字未改——仅签名改（State→&，机械），行为保持。
+fn resize_parser(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    wid: Uuid,
+    pane_id: Uuid,
+    rows: u16,
+    cols: u16,
+) {
+    let parser = {
+        let map = state.workspaces.read();
+        map.get(&wid)
+            .and_then(|ws| ws.terminals.get(&pane_id))
+            .and_then(|handle| {
+                handle
+                    .delta_mode
+                    .load(Ordering::Acquire)
+                    .then(|| handle.parser.clone())
+            })
+    };
+    let Some(parser) = parser else {
+        return;
+    };
+    use ridge_term::term::delta::encode_frame;
+    use tauri::Emitter;
+    let frame = {
+        let mut parser = parser.lock();
+        parser.resize(rows, cols)
+    };
+    match encode_frame(&frame) {
+        Ok(bytes) => {
+            if let Some(sender) = state.get_pane_delta_channel(wid, pane_id) {
+                sender(bytes);
+            } else {
+                let label = pane_id.to_string();
+                let _ = app.emit(&format!("pty-delta-{wid}-{label}"), bytes);
+            }
+        }
+        Err(error) => tracing::warn!(
+            target: "ridge::pty_delta",
+            error = %error,
+            ws = %wid,
+            pane = %pane_id,
+            "resize delta encode failed; mirror may briefly desync until next chunk",
+        ),
+    }
+}
+
+fn resize_parser_flags(
+    state: &AppState,
+    wid: Uuid,
+    pane_id: Uuid,
+    flag_now_ms: i64,
+) -> (bool, bool, bool) {
+    let map = state.workspaces.read();
+    map.get(&wid)
+        .and_then(|ws| ws.terminals.get(&pane_id))
+        .filter(|handle| handle.delta_mode.load(Ordering::Acquire))
+        .map(|handle| {
+            let parser = handle.parser.lock();
+            (
+                parser.is_alt_screen(),
+                parser.is_inline_tui_resize_at(flag_now_ms),
+                parser.has_shell_integration(),
+            )
+        })
+        .unwrap_or((false, false, true))
+}
+
+fn resize_master(
+    state: &AppState,
+    wid: Uuid,
+    pane_id: Uuid,
+    rows: u16,
+    cols: u16,
+    skip_silence: bool,
+) -> Result<(), AppError> {
+    let map = state.workspaces.read();
+    let ws = map
+        .get(&wid)
+        .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
+    if let Some(handle) = ws.terminals.get(&pane_id) {
+        if let Some(ref remote_ref) = handle.remote_ref {
+            crate::hosts::route_foreign_resize(state, remote_ref, rows, cols)
+                .map_err(AppError::PtyError)?;
+        }
+        let master = handle.master.lock();
+        let result = master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|error| {
+                let message = error.to_string();
+                pty_log::resize_err(wid, pane_id, rows, cols, &message);
+                AppError::PtyError(message)
+            });
+        if result.is_ok() {
+            if skip_silence {
+                handle.resize_silence_deadline.store(0, Ordering::Release);
+            } else {
+                let deadline = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_millis() as i64)
+                    .unwrap_or(0)
+                    + RESIZE_SILENCE_WINDOW_MS;
+                handle
+                    .resize_silence_deadline
+                    .store(deadline, Ordering::Release);
+            }
+        }
+        result
+    } else if let Some(pending) = ws.pending_spawns.get(&pane_id) {
+        pending
+            .master
+            .lock()
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|error| AppError::PtyError(error.to_string()))
+    } else {
+        pty_log::pane_not_found("resize", wid, pane_id);
+        Err(AppError::PaneNotFound(pane_id))
+    }
+}
+
+pub struct ResizeRequest {
+    pub rows: u16,
+    pub cols: u16,
+    pub is_alt: bool,
+    pub is_inline_tui: bool,
+    pub suppress_errors: bool,
+}
+
 pub fn resize_pane_inner(
     state: &AppState,
     app: &tauri::AppHandle,
     workspace_id: String,
     pane_id: String,
-    rows: u16,
-    cols: u16,
-    is_alt: bool,
-    is_inline_tui: bool,
-    suppress_errors: bool,
+    request: ResizeRequest,
 ) -> Result<(), AppError> {
+    let ResizeRequest {
+        rows,
+        cols,
+        mut is_alt,
+        mut is_inline_tui,
+        suppress_errors,
+    } = request;
     let pane_id = parse_pane_id(&pane_id)?;
     // 解耦 active_workspace_id（T5）：resize 落在面板**所属**工作区（前端按 pane 传入），
     // 而非 GUI 当前聚焦工作区——保证非活动工作区/远程多工作区下也命中正确 pane。
@@ -1867,21 +2065,8 @@ pub fn resize_pane_inner(
     // explicit-launch）没有 prompt 标记去早释放 silence 窗口，那 80ms 窗口会吞掉它
     // SIGWINCH 重绘的字节（实测 ~25ms 落在窗口内）→ 画面冻在旧内容 + reflow 错位。
     // 默认 true：拿不到 parser（pending/legacy）时按"有集成"处理，保持既有 silence 行为。
-    let (parser_is_alt, parser_is_inline_tui, parser_has_integration) = {
-        let map = state.workspaces.read();
-        map.get(&wid)
-            .and_then(|ws| ws.terminals.get(&pane_id))
-            .filter(|h| h.delta_mode.load(Ordering::Acquire))
-            .map(|h| {
-                let p = h.parser.lock();
-                (
-                    p.is_alt_screen(),
-                    p.is_inline_tui_resize_at(flag_now_ms),
-                    p.has_shell_integration(),
-                )
-            })
-            .unwrap_or((false, false, true))
-    };
+    let (parser_is_alt, parser_is_inline_tui, parser_has_integration) =
+        resize_parser_flags(state, wid, pane_id, flag_now_ms);
     let is_alt = is_alt || parser_is_alt;
     let is_inline_tui = is_inline_tui || parser_is_inline_tui;
     let wipe_first = is_alt || is_inline_tui;
@@ -1889,95 +2074,15 @@ pub fn resize_pane_inner(
     // PTY `master.resize` → ConPTY resize → SIGWINCH. Also manages the
     // resize-silence window. Returns the pane-lookup result so the caller can
     // log / update pane_sizes.
-    let do_master_resize = || -> Result<(), AppError> {
-        let map = state.workspaces.read();
-        let ws = map
-            .get(&wid)
-            .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
-        if let Some(handle) = ws.terminals.get(&pane_id) {
-            // Foreign / outbound PTY: route resize over live client; still
-            // resize local stub master for consistency with local geometry.
-            if let Some(ref rr) = handle.remote_ref {
-                crate::hosts::route_foreign_resize(state, rr, rows, cols)
-                    .map_err(AppError::PtyError)?;
-            }
-            let master = handle.master.lock();
-            let res = master
-                .resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                })
-                .map_err(|e| {
-                    let msg = e.to_string();
-                    pty_log::resize_err(wid, pane_id, rows, cols, &msg);
-                    AppError::PtyError(msg)
-                });
-            // 成功 resize 后开启 ConPTY reflow 静默窗口：PTY reader 线程将丢弃
-            // 后续来自 ConPTY 的 viewport 重发字节，直到检测到 shell-integration
-            // prompt OSC（OSC 133;A / OSC 633;A 等）或硬超时（250ms）。
-            //
-            // §1.24 (2026-05-06): SKIP the silence window when the kernel is
-            // currently on alt screen. ConPTY's viewport replay only targets
-            // the primary screen, so on alt-screen panes there is nothing
-            // for the silence to legitimately suppress — and dropping bytes
-            // here actively swallows the alt-screen application's own
-            // SIGWINCH-driven redraw (Claude Code / Ink / lazygit don't emit
-            // FinalTerm or VS Code prompt OSCs, so the silence only releases
-            // on the 250ms hard timeout, by which point the redraw has
-            // already been dropped). Tradeoff: a tiny amount of ConPTY tail
-            // garbage may leak through during the resize moment, but the
-            // alt-screen app's redraw lands within tens of ms and overwrites
-            // it. The kernel's §1.22 alt-buffer wipe ran first (above, via
-            // `do_parser_resize` under §resize-order), so the visible canvas
-            // starts blank either way.
-            //
-            // §A.3 (2026-05-07): same skip when `is_inline_tui` is true.
-            // Claude Code's input box renders inline on primary (Ink-style:
-            // cursor hidden + CSI absolute positioning, no `?1049h`), so
-            // the §1.24 alt-screen guard wouldn't fire — but Ink emits no
-            // prompt OSC either, so 250ms silence drops Ink's SIGWINCH
-            // redraw bytes the same way it dropped lazygit's. The kernel's
-            // §A.3 primary-visible wipe ran first (above), so the canvas is
-            // blank when Ink's redraw lands.
-            // §wsl-resize-silence — 无 shell-integration 的 pane（WSL/cmd/explicit-launch）
-            // 也跳过 silence：它们的 SIGWINCH 重绘无 prompt OSC 早释放，会被窗口整段吞掉。
-            // 代价=ConPTY viewport replay 会漏进来（与 alt/inline-TUI 跳过 silence 同款权衡），
-            // 但重绘落在其后覆盖掉，远优于"冻在旧尺寸"。
-            let skip_silence = is_alt || is_inline_tui || !parser_has_integration;
-            if res.is_ok() && !skip_silence {
-                let deadline = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0)
-                    + RESIZE_SILENCE_WINDOW_MS;
-                handle
-                    .resize_silence_deadline
-                    .store(deadline, Ordering::Release);
-            } else if res.is_ok() && skip_silence {
-                // Defensively clear any stale deadline from a prior resize.
-                handle.resize_silence_deadline.store(0, Ordering::Release);
-            }
-            res
-        } else if let Some(pending) = ws.pending_spawns.get(&pane_id) {
-            // Pre-activate path: the user is dragging splitpanes before the
-            // shell has spawned. Resize the master so the eventual
-            // spawn_command inherits the correct dimensions instead of the
-            // 80×120 default; activate_pane_pty will not need to re-resize.
-            let master = pending.master.lock();
-            master
-                .resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                })
-                .map_err(|e| AppError::PtyError(e.to_string()))
-        } else {
-            pty_log::pane_not_found("resize", wid, pane_id);
-            Err(AppError::PaneNotFound(pane_id))
-        }
+    let do_master_resize = || {
+        resize_master(
+            state,
+            wid,
+            pane_id,
+            rows,
+            cols,
+            is_alt || is_inline_tui || !parser_has_integration,
+        )
     };
 
     // `PaneParser::resize` → `Terminal::resize` (the §1.22 / §A.3 wipe) +
@@ -1988,50 +2093,7 @@ pub fn resize_pane_inner(
     // resize: the mirror grid follows via `apply_delta(Resize)` inside the
     // emitted frame ("parser resizes FIRST, mirror catches up via the next
     // delta frame"); fitPane skips its own `kernel.resize(...)` in rust mode.
-    let do_parser_resize = || {
-        let parser_for_delta = {
-            let map = state.workspaces.read();
-            map.get(&wid)
-                .and_then(|ws| ws.terminals.get(&pane_id))
-                .and_then(|h| {
-                    if h.delta_mode.load(Ordering::Acquire) {
-                        Some(h.parser.clone())
-                    } else {
-                        None
-                    }
-                })
-        };
-        if let Some(parser) = parser_for_delta {
-            use ridge_term::term::delta::encode_frame;
-            use tauri::Emitter;
-            let frame = {
-                let mut p = parser.lock();
-                p.resize(rows, cols)
-            };
-            match encode_frame(&frame) {
-                Ok(bytes) => {
-                    // P4.2 — prefer the Tauri Channel; fall back to
-                    // app.emit when the frontend hasn't registered a
-                    // channel yet for this pane.
-                    if let Some(sender) = state.get_pane_delta_channel(wid, pane_id) {
-                        sender(bytes);
-                    } else {
-                        let label = pane_id.to_string();
-                        let _ = app.emit(&format!("pty-delta-{wid}-{label}"), bytes);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        target: "ridge::pty_delta",
-                        error = %e,
-                        ws = %wid,
-                        pane = %pane_id,
-                        "resize delta encode failed; mirror may briefly desync until next chunk",
-                    );
-                }
-            }
-        }
-    };
+    let do_parser_resize = || resize_parser(state, app, wid, pane_id, rows, cols);
 
     // §resize-order — TUI: wipe (parser) first so SIGWINCH lands on blanks;
     // shell: SIGWINCH (PTY) first so the prompt redraw drives the new size,

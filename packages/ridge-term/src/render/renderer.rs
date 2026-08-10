@@ -22,7 +22,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use crate::render::backend::{
-    draw_frame, CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme,
+    draw_frame, CursorDraw, CursorStyle, FrameDraw, FrameMetrics, RenderBackend, RowDraw, Theme,
 };
 use crate::selection::Range as SelRange;
 use crate::term::Terminal;
@@ -201,49 +201,20 @@ pub(crate) fn history_overlay_geometry(
     cell_w: f32,
     cell_h: f32,
 ) -> Option<HistoryOverlayGeometry> {
-    if requested_visible == 0
-        || overlay.viewport_cols == 0
-        || overlay.viewport_rows == 0
-        || cell_w <= 0.0
-        || cell_h <= 0.0
-    {
-        return None;
-    }
+    let (viewport_w, viewport_h) = overlay_viewport(overlay, requested_visible, cell_w, cell_h)?;
 
-    let viewport_w = overlay.viewport_cols as f32 * cell_w;
-    let viewport_h = overlay.viewport_rows as f32 * cell_h;
-    if viewport_w < cell_w || viewport_h < cell_h {
-        return None;
-    }
-
-    let mut pad_w = 0.6 * cell_w;
-    let mut pad_h = 0.35 * cell_h;
-    if viewport_w < cell_w + 2.0 * pad_w {
-        pad_w = ((viewport_w - cell_w) / 2.0).max(0.0);
-    }
-    if viewport_h < cell_h + 2.0 * pad_h {
-        pad_h = ((viewport_h - cell_h) / 2.0).max(0.0);
-    }
+    let (pad_w, pad_h) = overlay_padding(viewport_w, viewport_h, cell_w, cell_h);
 
     let mut visible_count = requested_visible
         .min(overlay.max_visible_rows)
         .min(((viewport_h - 2.0 * pad_h) / cell_h).floor().max(1.0) as usize);
-    let mut needs_scrollbar = overlay.total_items > visible_count;
-    let mut scrollbar_w = if needs_scrollbar {
-        (cell_w * 0.30).clamp(4.0, 10.0)
-    } else {
-        0.0
-    };
-    let mut scrollbar_gap = if needs_scrollbar {
-        (cell_w * 0.18).max(2.0)
-    } else {
-        0.0
-    };
-    if viewport_w < cell_w + 2.0 * pad_w + scrollbar_w + scrollbar_gap {
-        scrollbar_w = 0.0;
-        scrollbar_gap = 0.0;
-        needs_scrollbar = false;
-    }
+    let (needs_scrollbar, scrollbar_w, scrollbar_gap) = overlay_scrollbar(
+        viewport_w,
+        cell_w,
+        pad_w,
+        visible_count,
+        overlay.total_items,
+    );
 
     let desired_cols = widest_cells.clamp(8, HISTORY_OVERLAY_COL_CAP);
     let desired_w = desired_cols as f32 * cell_w + 2.0 * pad_w + scrollbar_w + scrollbar_gap;
@@ -261,27 +232,8 @@ pub(crate) fn history_overlay_geometry(
     let rows_that_fit = |height: f32| ((height - 2.0 * pad_h) / cell_h).floor().max(0.0) as usize;
     let above_rows = rows_that_fit(above_h);
     let below_rows = rows_that_fit(below_h);
-    let preferred_rows = if overlay.place_above {
-        above_rows
-    } else {
-        below_rows
-    };
-    let fallback_rows = if overlay.place_above {
-        below_rows
-    } else {
-        above_rows
-    };
-    let place_above = if preferred_rows >= visible_count {
-        overlay.place_above
-    } else if fallback_rows >= visible_count {
-        !overlay.place_above
-    } else if above_rows.max(below_rows) > 0 {
-        let use_above = above_rows >= below_rows;
-        visible_count = visible_count.min(if use_above { above_rows } else { below_rows });
-        use_above
-    } else {
-        overlay.place_above
-    };
+    let (place_above, visible_count) =
+        overlay_placement(overlay.place_above, visible_count, above_rows, below_rows);
 
     let panel_h = (visible_count as f32 * cell_h + 2.0 * pad_h).min(viewport_h);
     let panel_x = if desired_w > viewport_w {
@@ -311,6 +263,84 @@ pub(crate) fn history_overlay_geometry(
         visible_count,
         scrollbar_w: if needs_scrollbar { scrollbar_w } else { 0.0 },
     })
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn overlay_viewport(
+    overlay: &HistoryOverlay,
+    requested_visible: usize,
+    cell_w: f32,
+    cell_h: f32,
+) -> Option<(f32, f32)> {
+    if requested_visible == 0
+        || overlay.viewport_cols == 0
+        || overlay.viewport_rows == 0
+        || cell_w <= 0.0
+        || cell_h <= 0.0
+    {
+        return None;
+    }
+    let width = overlay.viewport_cols as f32 * cell_w;
+    let height = overlay.viewport_rows as f32 * cell_h;
+    (width >= cell_w && height >= cell_h).then_some((width, height))
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn overlay_padding(viewport_w: f32, viewport_h: f32, cell_w: f32, cell_h: f32) -> (f32, f32) {
+    let pad_w = (0.6 * cell_w).min(((viewport_w - cell_w) / 2.0).max(0.0));
+    let pad_h = (0.35 * cell_h).min(((viewport_h - cell_h) / 2.0).max(0.0));
+    (pad_w, pad_h)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn overlay_scrollbar(
+    viewport_w: f32,
+    cell_w: f32,
+    pad_w: f32,
+    visible_count: usize,
+    total_items: usize,
+) -> (bool, f32, f32) {
+    if total_items <= visible_count {
+        return (false, 0.0, 0.0);
+    }
+    let width = (cell_w * 0.30).clamp(4.0, 10.0);
+    let gap = (cell_w * 0.18).max(2.0);
+    if viewport_w < cell_w + 2.0 * pad_w + width + gap {
+        (false, 0.0, 0.0)
+    } else {
+        (true, width, gap)
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn overlay_placement(
+    requested_above: bool,
+    visible_count: usize,
+    above_rows: usize,
+    below_rows: usize,
+) -> (bool, usize) {
+    let preferred = if requested_above {
+        above_rows
+    } else {
+        below_rows
+    };
+    let fallback = if requested_above {
+        below_rows
+    } else {
+        above_rows
+    };
+    if preferred >= visible_count {
+        return (requested_above, visible_count);
+    }
+    if fallback >= visible_count {
+        return (!requested_above, visible_count);
+    }
+    if above_rows.max(below_rows) == 0 {
+        return (requested_above, visible_count);
+    }
+    let place_above = above_rows >= below_rows;
+    let visible = visible_count.min(if place_above { above_rows } else { below_rows });
+    (place_above, visible)
 }
 
 impl<B: RenderBackend> Renderer<B> {
@@ -494,29 +524,18 @@ impl<B: RenderBackend> Renderer<B> {
         // currently-active screen against an empty snapshot. The check
         // happens before sel/blink/resize so the post-invalidate state
         // captured below already reflects the post-switch screen.
-        let cur_is_alt = terminal.is_alt_screen();
-        if cur_is_alt != self.last_is_alt {
-            self.last_is_alt = cur_is_alt;
-            self.invalidate_all();
-        }
+        self.update_screen_state(terminal);
 
         // Selection changed → force redraw so old translucent overlay
         // doesn't linger on rows that left the selection.
-        let sel_changed = !selection_eq(selection, self.last_selection);
-        if sel_changed {
-            self.full_redraw_pending = true;
-            self.last_selection = selection;
-            // Notify backend so any preserved-content path (WebGPU
-            // `LoadOp::Load`) seeds bg this frame instead of compositing
-            // a new selection state over stale pixels.
-            self.backend.on_full_invalidate();
-        }
+        self.update_selection_state(selection);
 
         // Cursor blink phase: 500ms on / 500ms off, derived from now_ms
         // so all panes blink in unison and we don't need a wakeup timer.
         // Phase change → mark previous cursor row dirty (so the cursor
         // gets erased on the off-half).
-        let blink_active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
+        let blink_phase = self.update_blink_phase(terminal, now_ms);
+        /*
         let blink_phase = if blink_active {
             ((now_ms / 500.0) as i64).rem_euclid(2) == 1
         } else {
@@ -530,6 +549,7 @@ impl<B: RenderBackend> Renderer<B> {
             }
             self.last_blink_phase = blink_phase;
         }
+        */
 
         // Grow OR shrink the snapshot if the grid changed size. §A.3
         // (2026-05-07): previously this branch only fired on growth, so
@@ -543,6 +563,8 @@ impl<B: RenderBackend> Renderer<B> {
         // paints blanks over the stale pixels. WebGPU was already safe
         // because `requires_full_frame()` clears the swap-chain every
         // tick, but going through this path keeps both backends honest.
+        self.update_snapshot_size(rows_n);
+        /*
         if self.snapshot.len() != rows_n {
             self.snapshot.resize(rows_n, 0);
             self.full_redraw_pending = true;
@@ -551,15 +573,14 @@ impl<B: RenderBackend> Renderer<B> {
             // them.
             self.backend.on_full_invalidate();
         }
+        */
 
         // Backends that can't preserve content across frames (WebGPU
         // clears the swap-chain on every present) need every visible row
         // dirty every tick — otherwise non-dirty rows render only their
         // cleared bg and lose all glyphs. Canvas2D returns false here so
         // dirty-row diffing keeps its perf benefit.
-        if self.backend.requires_full_frame() {
-            self.full_redraw_pending = true;
-        }
+        self.update_backend_frame_policy();
 
         // §1.27 (2026-05-07): Ink/log-update walks the cursor up through
         // its previous frame via repeated CUU+EL2, then writes the new
@@ -579,17 +600,14 @@ impl<B: RenderBackend> Renderer<B> {
         // own `now_ms: f64` parameter is `performance.now()` (page-load
         // relative) and would always read as far in the past.
         let wall_ms = crate::term::clock::now_ms();
-        if terminal
-            .grid()
-            .is_inline_tui_active_at(wall_ms, terminal.modes().cursor_visible)
-        {
-            self.full_redraw_pending = true;
-        }
+        self.update_inline_tui_policy(terminal, wall_ms);
 
         // Viewport scroll offset change → full redraw. The row→content
         // mapping shifts when the user pages history, so per-row hashes
         // computed against last frame's mapping aren't valid.
         let offset = terminal.scroll_offset();
+        self.update_scroll_state(offset);
+        /*
         if offset != self.last_offset {
             self.full_redraw_pending = true;
             self.last_offset = offset;
@@ -598,6 +616,7 @@ impl<B: RenderBackend> Renderer<B> {
             // so `LoadOp::Load` doesn't carry over the prior mapping.
             self.backend.on_full_invalidate();
         }
+        */
 
         // Compute dirty rows by hashing each visible row's cells +
         // hyperlink span shape. Cell hash is keyed off (ch, attr_id,
@@ -616,32 +635,7 @@ impl<B: RenderBackend> Renderer<B> {
         // mutations is cheap (most rows have 0 spans). URI/id are NOT
         // hashed — the underline overlay only varies spatially, so
         // identical (col_start, col_end) → identical pixels. (TASKS §1.18.c.)
-        let mut dirty_rows = Vec::with_capacity(rows_n);
-        let mut dirty_flags = vec![false; rows_n];
-
-        for r in 0..rows_n {
-            let Some(row) = terminal.viewport_row(r) else {
-                continue;
-            };
-            let h = compute_row_hash(row);
-            if self.full_redraw_pending || r >= self.snapshot.len() || h != self.snapshot[r] {
-                if r < self.snapshot.len() {
-                    self.snapshot[r] = h;
-                } else {
-                    self.snapshot.push(h);
-                }
-                dirty_rows.push(r);
-                dirty_flags[r] = true;
-            }
-        }
-
-        // Expand dirty rows upwards to fix descender cutoff (Row N's background covers Row N-1's descenders).
-        for r in (1..rows_n).rev() {
-            if dirty_flags[r] && !dirty_flags[r - 1] {
-                dirty_rows.push(r - 1);
-                dirty_flags[r - 1] = true;
-            }
-        }
+        let mut dirty_rows = self.collect_dirty_rows(terminal, rows_n);
 
         // Cursor handling: show the cursor when (a) the surface is
         // focused and (b) we're on the visible half of the blink phase.
@@ -656,18 +650,7 @@ impl<B: RenderBackend> Renderer<B> {
             None
         };
 
-        if !cursor_eq(&self.last_cursor, &new_cursor) {
-            if let Some(ref prev) = self.last_cursor {
-                if !dirty_rows.contains(&prev.row) {
-                    dirty_rows.push(prev.row);
-                }
-            }
-            if let Some(ref cur) = new_cursor {
-                if !dirty_rows.contains(&cur.row) {
-                    dirty_rows.push(cur.row);
-                }
-            }
-        }
+        self.add_cursor_dirty_rows(&mut dirty_rows, &new_cursor);
         self.last_cursor = new_cursor;
 
         // Selection overlay anti-stacking: if a partial redraw is about to
@@ -685,14 +668,7 @@ impl<B: RenderBackend> Renderer<B> {
         // is redundant) and when no rows are otherwise dirty (return
         // false below — keeping the previous frame's pixels intact is
         // exactly what we want for an idle selected viewport).
-        if !self.full_redraw_pending && !dirty_rows.is_empty() && selection.is_some() {
-            let sel_rects = selection_to_rects(selection, terminal.cols(), terminal.rows());
-            for &(row, _, _) in &sel_rects {
-                if row < rows_n && !dirty_rows.contains(&row) {
-                    dirty_rows.push(row);
-                }
-            }
-        }
+        self.add_selection_dirty_rows(&mut dirty_rows, selection, terminal, rows_n);
 
         if dirty_rows.is_empty() && !self.full_redraw_pending {
             return false;
@@ -742,16 +718,18 @@ impl<B: RenderBackend> Renderer<B> {
         }
         draw_frame(
             &mut self.backend,
-            tui_metrics,
-            &self.theme,
-            &rows,
-            self.last_cursor.as_ref(),
-            &terminal.grid().attrs,
-            do_full,
-            &sel_rects,
-            &hl_rects,
-            self.preedit.as_ref(),
-            self.history_overlay.as_ref(),
+            FrameDraw {
+                metrics: tui_metrics,
+                theme: &self.theme,
+                rows: &rows,
+                cursor: self.last_cursor.as_ref(),
+                attrs_table: &terminal.grid().attrs,
+                full_redraw: do_full,
+                selection_rects: &sel_rects,
+                hyperlink_rects: &hl_rects,
+                preedit: self.preedit.as_ref(),
+                history_overlay: self.history_overlay.as_ref(),
+            },
         );
         self.first_frame = false;
         self.full_redraw_pending = false;
@@ -768,6 +746,136 @@ impl<B: RenderBackend> Renderer<B> {
     /// re-computed in `tick`; calling both back-to-back doubles that
     /// cost — still cheaper than one `draw_row` call by two orders of
     /// magnitude, and avoids tearing the snapshot.
+    fn update_screen_state(&mut self, terminal: &Terminal) {
+        let is_alt = terminal.is_alt_screen();
+        if is_alt != self.last_is_alt {
+            self.last_is_alt = is_alt;
+            self.invalidate_all();
+        }
+    }
+
+    fn update_selection_state(&mut self, selection: Option<SelRange>) {
+        if selection_eq(selection, self.last_selection) {
+            return;
+        }
+        self.full_redraw_pending = true;
+        self.last_selection = selection;
+        self.backend.on_full_invalidate();
+    }
+
+    fn update_blink_phase(&mut self, terminal: &Terminal, now_ms: f64) -> bool {
+        let active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
+        let phase = !active || ((now_ms / 500.0) as i64).rem_euclid(2) == 1;
+        if phase != self.last_blink_phase {
+            if let Some(previous) = self
+                .last_cursor
+                .as_ref()
+                .filter(|cursor| cursor.row < self.snapshot.len())
+            {
+                self.snapshot[previous.row] = self.snapshot[previous.row].wrapping_add(1);
+            }
+            self.last_blink_phase = phase;
+        }
+        phase
+    }
+
+    fn update_snapshot_size(&mut self, rows: usize) {
+        if self.snapshot.len() == rows {
+            return;
+        }
+        self.snapshot.resize(rows, 0);
+        self.full_redraw_pending = true;
+        self.backend.on_full_invalidate();
+    }
+
+    fn update_backend_frame_policy(&mut self) {
+        if self.backend.requires_full_frame() {
+            self.full_redraw_pending = true;
+        }
+    }
+
+    fn update_inline_tui_policy(&mut self, terminal: &Terminal, now_ms: i64) {
+        if terminal
+            .grid()
+            .is_inline_tui_active_at(now_ms, terminal.modes().cursor_visible)
+        {
+            self.full_redraw_pending = true;
+        }
+    }
+
+    fn update_scroll_state(&mut self, offset: usize) {
+        if offset == self.last_offset {
+            return;
+        }
+        self.full_redraw_pending = true;
+        self.last_offset = offset;
+        self.backend.on_full_invalidate();
+    }
+
+    fn collect_dirty_rows(&mut self, terminal: &Terminal, rows: usize) -> Vec<usize> {
+        let mut dirty = Vec::with_capacity(rows);
+        let mut flags = vec![false; rows];
+        for row_index in 0..rows {
+            let Some(row) = terminal.viewport_row(row_index) else {
+                continue;
+            };
+            let hash = compute_row_hash(row);
+            if self.full_redraw_pending
+                || row_index >= self.snapshot.len()
+                || hash != self.snapshot[row_index]
+            {
+                if row_index < self.snapshot.len() {
+                    self.snapshot[row_index] = hash;
+                } else {
+                    self.snapshot.push(hash);
+                }
+                dirty.push(row_index);
+                flags[row_index] = true;
+            }
+        }
+        for row_index in (1..rows).rev() {
+            if flags[row_index] && !flags[row_index - 1] {
+                dirty.push(row_index - 1);
+                flags[row_index - 1] = true;
+            }
+        }
+        dirty
+    }
+
+    fn add_cursor_dirty_rows(&mut self, dirty: &mut Vec<usize>, current: &Option<CursorDraw>) {
+        if cursor_eq(&self.last_cursor, current) {
+            return;
+        }
+        for row in [
+            self.last_cursor.as_ref().map(|cursor| cursor.row),
+            current.as_ref().map(|cursor| cursor.row),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !dirty.contains(&row) {
+                dirty.push(row);
+            }
+        }
+    }
+
+    fn add_selection_dirty_rows(
+        &self,
+        dirty: &mut Vec<usize>,
+        selection: Option<SelRange>,
+        terminal: &Terminal,
+        rows: usize,
+    ) {
+        if self.full_redraw_pending || dirty.is_empty() || selection.is_none() {
+            return;
+        }
+        for (row, _, _) in selection_to_rects(selection, terminal.cols(), terminal.rows()) {
+            if row < rows && !dirty.contains(&row) {
+                dirty.push(row);
+            }
+        }
+    }
+
     pub fn is_dirty(&self, terminal: &Terminal, selection: Option<SelRange>, now_ms: f64) -> bool {
         // Pending unconditional redraw — first frame or set by an
         // earlier mutation we haven't tick-consumed yet.

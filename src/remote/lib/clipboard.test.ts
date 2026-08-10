@@ -22,8 +22,9 @@ describe('remote clipboard fallback', () => {
 			focus: vi.fn(),
 			select: vi.fn(),
 			setSelectionRange: vi.fn(),
+			remove: vi.fn(),
 		};
-		const body = { appendChild: vi.fn(), removeChild: vi.fn() };
+		const body = { appendChild: vi.fn() };
 		const range = { selectNodeContents: vi.fn() };
 		const selection = { removeAllRanges: vi.fn(), addRange: vi.fn() };
 		vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockRejectedValue(new Error('insecure')) } });
@@ -40,7 +41,7 @@ describe('remote clipboard fallback', () => {
 		expect(textarea.contentEditable).toBe('true');
 		expect(textarea.readOnly).toBe(false);
 		expect(body.appendChild).toHaveBeenCalledWith(textarea);
-		expect(body.removeChild).toHaveBeenCalledWith(textarea);
+		expect(textarea.remove).toHaveBeenCalled();
 	});
 
 	it('fails closed when no clipboard or DOM fallback exists', async () => {

@@ -115,7 +115,7 @@ export function nextHistorySelection(current: number, total: number, delta: numb
 	const last = total - 1;
 	// No selection yet → land on the newest entry (top) regardless of direction.
 	if (current < 0) return 0;
-	const cur = current > last ? last : current;
+	const cur = Math.min(current, last);
 	if (delta < 0) {
 		// ArrowUp: move toward the top (newer). Clamp at the newest entry.
 		return cur <= 0 ? 0 : cur - 1;

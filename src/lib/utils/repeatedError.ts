@@ -1,3 +1,5 @@
+import { unknownText } from '@ridge/remote/shared/transport/unknownText';
+
 export type RepeatedErrorLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const DEFAULT_WINDOW_MS = 5_000;
@@ -15,11 +17,7 @@ const repeatedErrors = new Map<string, RepeatedErrorEntry>();
 function errorDetail(error: unknown): string {
   if (error instanceof Error) return `${error.name}: ${error.message}`;
   if (typeof error === 'string') return error;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
-  }
+  return unknownText(error);
 }
 
 function classifyLevel(detail: string, fallback: RepeatedErrorLevel): RepeatedErrorLevel {

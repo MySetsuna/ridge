@@ -294,8 +294,212 @@ impl PaneParser {
         frame
     }
 
+    fn apply_pending_reset(&mut self, deltas: &mut Vec<GridDelta>) {
+        if !self.terminal.take_pending_reset() {
+            return;
+        }
+        deltas.push(GridDelta::Reset);
+        let cols = self.terminal.cols();
+        let rows = self.terminal.rows();
+        self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
+        self.snapshot_wrapped = vec![false; rows];
+        self.cursor = None;
+        self.is_alt = None;
+        self.last_modes = Some(Modes::default());
+    }
+
+    fn append_screen_switch(&mut self, deltas: &mut Vec<GridDelta>) {
+        let is_alt = self.terminal.grid().is_alt_screen();
+        if self.is_alt == Some(is_alt) {
+            return;
+        }
+        deltas.push(GridDelta::ScreenSwitch { is_alt });
+        self.is_alt = Some(is_alt);
+        let cols = self.terminal.cols();
+        let rows = self.terminal.rows();
+        self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
+        self.snapshot_wrapped = vec![false; rows];
+    }
+
+    fn append_scrollback(&mut self, deltas: &mut Vec<GridDelta>) {
+        let now_len = self.terminal.scrollback_len();
+        let now_evictions = self.terminal.scrollback_eviction_count();
+        let now_clears = self.terminal.scrollback_clear_count();
+        if now_clears != self.last_scrollback_clears {
+            deltas.push(GridDelta::ScrollbackClear);
+            self.last_scrollback_len = 0;
+            self.last_scrollback_evictions = now_evictions;
+        }
+        let evicted_since = now_evictions.saturating_sub(self.last_scrollback_evictions);
+        let previous_len = self
+            .last_scrollback_len
+            .saturating_sub(evicted_since as usize);
+        if now_len > previous_len {
+            let lines = self.scrollback_lines(previous_len, now_len);
+            if !lines.is_empty() {
+                deltas.push(GridDelta::ScrollbackAppend { lines });
+            }
+        }
+        self.last_scrollback_len = now_len;
+        self.last_scrollback_evictions = now_evictions;
+        self.last_scrollback_clears = now_clears;
+    }
+
+    fn scrollback_lines(&self, previous_len: usize, now_len: usize) -> Vec<DeltaLine> {
+        let mut lines = Vec::with_capacity(now_len.saturating_sub(previous_len));
+        for index in previous_len..now_len {
+            let Some(row) = self.terminal.grid().scrollback.get(index) else {
+                continue;
+            };
+            let cells = row
+                .cells
+                .iter()
+                .enumerate()
+                .map(|(index, cell)| {
+                    let attrs = self.terminal.grid().attrs.get(cell.attr);
+                    DeltaCell {
+                        ch: cell.ch,
+                        fg: attrs.fg,
+                        bg: attrs.bg,
+                        flags: attrs.flags,
+                        width: cell.width,
+                        cluster: row.cluster_at(index).map(|cluster| cluster.text.clone()),
+                    }
+                })
+                .collect();
+            lines.push(DeltaLine {
+                cells,
+                wrapped: row.wrapped,
+            });
+        }
+        lines
+    }
+
+    fn append_rows(&mut self, deltas: &mut Vec<GridDelta>) {
+        let rows = self.terminal.rows();
+        let cols = self.terminal.cols();
+        for row in 0..rows {
+            self.append_row_delta(row, cols, deltas);
+        }
+    }
+
+    fn append_row_delta(&mut self, row_index: usize, cols: usize, deltas: &mut Vec<GridDelta>) {
+        let Some(live_row) = self.terminal.grid().row(row_index) else {
+            return;
+        };
+        let now_row = (0..cols)
+            .map(|col| {
+                let cell = live_row.cells.get(col).copied().unwrap_or_default();
+                let attrs = self.terminal.grid().attrs.get(cell.attr);
+                DeltaCell {
+                    ch: cell.ch,
+                    fg: attrs.fg,
+                    bg: attrs.bg,
+                    flags: attrs.flags,
+                    width: cell.width,
+                    cluster: live_row.cluster_at(col).map(|cluster| cluster.text.clone()),
+                }
+            })
+            .collect::<Vec<_>>();
+        let Some(snapshot) = self.snapshot.get_mut(row_index) else {
+            return;
+        };
+        snapshot.resize(cols, DeltaCell::blank());
+        let changed = (0..cols)
+            .filter(|&col| snapshot[col] != now_row[col])
+            .collect::<Vec<_>>();
+        let wrapped_changed = self
+            .snapshot_wrapped
+            .get(row_index)
+            .copied()
+            .map_or(true, |previous| previous != live_row.wrapped);
+        if let Some((&first, &last)) = changed.first().zip(changed.last()) {
+            deltas.push(GridDelta::Cells {
+                row: row_index as u16,
+                col: first as u16,
+                wrapped: live_row.wrapped,
+                cells: now_row[first..=last].to_vec(),
+            });
+            for col in first..=last {
+                snapshot[col] = now_row[col].clone();
+            }
+        } else if wrapped_changed {
+            deltas.push(GridDelta::Cells {
+                row: row_index as u16,
+                col: 0,
+                wrapped: live_row.wrapped,
+                cells: Vec::new(),
+            });
+        }
+        if let Some(previous) = self.snapshot_wrapped.get_mut(row_index) {
+            *previous = live_row.wrapped;
+        }
+    }
+
+    fn append_modes(&mut self, deltas: &mut Vec<GridDelta>) {
+        let current = *self.terminal.modes();
+        let previous = self.last_modes.unwrap_or_default();
+        deltas.extend(
+            current
+                .diff(&previous)
+                .into_iter()
+                .map(|(mode, on)| GridDelta::ModeChange { mode, on }),
+        );
+        self.last_modes = Some(current);
+    }
+
+    fn append_cursor(&mut self, deltas: &mut Vec<GridDelta>) {
+        let modes = *self.terminal.modes();
+        let cursor = *self.terminal.grid().cursor();
+        let current = CursorSnap {
+            row: cursor.row as u16,
+            col: cursor.col as u16,
+            visible: modes.cursor_visible,
+            blink: modes.cursor_blink,
+            shape: kernel_shape_to_delta(modes.cursor_shape),
+        };
+        if self.cursor == Some(current) {
+            return;
+        }
+        deltas.push(GridDelta::Cursor {
+            row: current.row,
+            col: current.col,
+            visible: current.visible,
+            blink: current.blink,
+            shape: current.shape,
+        });
+        self.cursor = Some(current);
+    }
+
+    fn append_events(&mut self, deltas: &mut Vec<GridDelta>) {
+        for event in self.terminal.take_pending_events() {
+            match event {
+                KernelEvent::TitleChanged(title) => {
+                    self.last_title = Some(title.clone());
+                    deltas.push(GridDelta::Title(title));
+                }
+                KernelEvent::CwdChanged(path) => deltas.push(GridDelta::Cwd(path)),
+                KernelEvent::Bell => deltas.push(GridDelta::Bell),
+                KernelEvent::IconNameChanged(_) => {}
+            }
+        }
+    }
+
     fn diff_into_frame(&mut self) -> DeltaFrame {
         let mut deltas: Vec<GridDelta> = Vec::new();
+
+        self.apply_pending_reset(&mut deltas);
+        self.append_screen_switch(&mut deltas);
+        self.append_scrollback(&mut deltas);
+        self.append_rows(&mut deltas);
+        self.append_modes(&mut deltas);
+        self.append_cursor(&mut deltas);
+        self.append_events(&mut deltas);
+        let frame = DeltaFrame::new(self.pane_seq, deltas);
+        self.pane_seq = self.pane_seq.saturating_add(1);
+        return frame;
+
+        /*
 
         // P3.10 — RIS observed since the last frame. Reset the mirror
         // first, then drop our diff baseline so the rest of this method
@@ -548,6 +752,7 @@ impl PaneParser {
         let frame = DeltaFrame::new(self.pane_seq, deltas);
         self.pane_seq = self.pane_seq.saturating_add(1);
         frame
+        */
     }
 }
 

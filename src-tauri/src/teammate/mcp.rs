@@ -330,13 +330,15 @@ impl DesktopMcpHost {
             state,
             wid,
             new_id,
-            None,
-            cwd.as_deref(),
-            initial_cmd,
-            structured,
-            Some(new_idx),
-            None,
-            Some(trace_id.clone()),
+            terminal::EnsurePtyOptions {
+                shell: None,
+                cwd: cwd.as_deref(),
+                initial_command: initial_cmd,
+                structured_command: structured,
+                tmux_pane_index: Some(new_idx),
+                ready_tx: None,
+                trace_id: Some(trace_id.clone()),
+            },
         ) {
             let mut map = state.workspaces.write();
             if let Some(ws) = map.get_mut(&wid) {
@@ -496,13 +498,7 @@ impl McpHost for DesktopMcpHost {
     fn report_execution_rejection(&self, report: ExternalExecutionRejection) -> HostResult<String> {
         Ok(super::hitl::report_external_rejection(
             &self.ctx.handle,
-            &report.initiator,
-            &report.action,
-            &report.executor,
-            &report.policy_source,
-            &report.request_id,
-            &report.reason,
-            &report.next_step,
+            &report,
         ))
     }
 

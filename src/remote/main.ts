@@ -12,7 +12,8 @@ import { REMOTE_TERM_FONT } from '@ridge/remote/shared/terminal/fontStack';
 // bundle — the lazy TerminalCanvas loads it on first pane attach; this just
 // primes the module-level ports it will read. Only `settings` is meaningful for
 // mobile (scrollback capacity at attach); the rest default gracefully.
-void import('@ridge/remote/shared/terminal/manager').then(({ TerminalManager }) => {
+try {
+  const { TerminalManager } = await import('@ridge/remote/shared/terminal/manager');
   const snapshot = {
     terminalScrollbackLines: 2000,
     terminalFontFamily: REMOTE_TERM_FONT,
@@ -29,7 +30,9 @@ void import('@ridge/remote/shared/terminal/manager').then(({ TerminalManager }) 
       }));
     },
   });
-});
+} catch (error) {
+  console.warn('[remote] terminal manager preload failed', error);
+}
 
 // iOS standalone historically exposed `navigator.standalone` without making
 // `(display-mode: standalone)` match. Mark the document before Svelte mounts
@@ -127,15 +130,14 @@ if ('serviceWorker' in navigator) {
       try { localStorage.clear(); } catch {}
       try { sessionStorage.clear(); } catch {}
       // IndexedDB clearing is async; best-effort for known DBs.
-      try {
-        indexedDB.databases?.().then((dbs) => {
-          for (const db of dbs) {
+      void Promise.resolve()
+        .then(() => indexedDB.databases?.())
+        .then((dbs) => {
+          for (const db of dbs ?? []) {
             if (db.name) indexedDB.deleteDatabase(db.name);
           }
-        }).catch((error) => console.warn('[remote] IndexedDB cleanup failed', error));
-      } catch (error) {
-        console.warn('[remote] IndexedDB cleanup unavailable', error);
-      }
+        })
+        .catch((error) => console.warn('[remote] IndexedDB cleanup failed', error));
       // Reload to start fresh with new build.
       window.location.reload();
     }

@@ -39,6 +39,17 @@ struct KernelPtyListResponse {
     ptys: Vec<KernelPtyInfo>,
 }
 
+pub struct DomainPtyLaunch<'a> {
+    pub pty_id: uuid::Uuid,
+    pub program: Option<&'a str>,
+    pub args: &'a [String],
+    pub cwd: Option<&'a str>,
+    pub workspace_id: Option<uuid::Uuid>,
+    pub role: &'a str,
+    pub launch_profile: Option<&'a str>,
+    pub env: Option<&'a HashMap<String, String>>,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct KernelPtyLeaseResponse {
     lease_id: uuid::Uuid,
@@ -739,16 +750,19 @@ pub fn create_domain_pty(
     role: &str,
     launch_profile: Option<&str>,
 ) -> Result<uuid::Uuid, String> {
+    let env = HashMap::new();
     create_domain_pty_with_command(
         endpoint,
-        pty_id,
-        shell,
-        &[],
-        cwd,
-        workspace_id,
-        role,
-        launch_profile,
-        &HashMap::new(),
+        DomainPtyLaunch {
+            pty_id,
+            program: shell,
+            args: &[],
+            cwd,
+            workspace_id,
+            role,
+            launch_profile,
+            env: Some(&env),
+        },
     )
 }
 
@@ -756,25 +770,18 @@ pub fn create_domain_pty(
 /// stable pane identity used for reconnect and replay.
 pub fn create_domain_pty_with_command(
     endpoint: &KernelEndpoint,
-    pty_id: uuid::Uuid,
-    program: Option<&str>,
-    args: &[String],
-    cwd: Option<&str>,
-    workspace_id: Option<uuid::Uuid>,
-    role: &str,
-    launch_profile: Option<&str>,
-    env: &HashMap<String, String>,
+    launch: DomainPtyLaunch<'_>,
 ) -> Result<uuid::Uuid, String> {
     let body = serde_json::json!({
-        "pty_id": pty_id,
-        "program": program,
-        "shell": program,
-        "args": args,
-        "env": env,
-        "cwd": cwd,
-        "workspace_id": workspace_id,
-        "role": role,
-        "launch_profile": launch_profile,
+        "pty_id": launch.pty_id,
+        "program": launch.program,
+        "shell": launch.program,
+        "args": launch.args,
+        "env": launch.env,
+        "cwd": launch.cwd,
+        "workspace_id": launch.workspace_id,
+        "role": launch.role,
+        "launch_profile": launch.launch_profile,
     });
     let value = request_json(endpoint, "POST", "/v1/domain/ptys", Some(&body))?;
     let response: KernelPtyCreateResponse = decode_domain_snapshot(value)?;

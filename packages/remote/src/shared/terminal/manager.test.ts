@@ -346,7 +346,15 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		manager.updateSelection(PANE, { row: 8, col: 9 });
 		manager.setPreedit(PANE, '拼', 3, 4);
 		expect(manager.lastPreeditCall(PANE)).toEqual({ text: '拼', row: 3, col: 4 });
-		manager.setHistoryOverlay(PANE, ['one', 'two'], 1, 2, 3, false, 2, 0);
+		manager.setHistoryOverlay(PANE, {
+			items: ['one', 'two'],
+			selectedIndex: 1,
+			anchorRow: 2,
+			anchorCol: 3,
+			placeAbove: false,
+			totalItems: 2,
+			firstVisible: 0,
+		});
 		manager.clearHistoryOverlay(PANE);
 		manager.clearPreedit(PANE);
 		expect(manager.lastPreeditCall(PANE)).toBeNull();

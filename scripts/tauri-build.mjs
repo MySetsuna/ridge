@@ -9,9 +9,9 @@
 // 的前提下加这三项可选提速。注意 [profile.release] 仍是 opt-z+fatLTO+cgu1（为
 // wasm 体积），故 lld 收益有限（瓶颈在 LTO 代码生成而非链接）；sccache 主要省
 // 重复/clean 构建的依赖重编。
-import { spawn, spawnSync } from 'child_process';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { spawn, spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -49,5 +49,5 @@ export function main({ envSource = process.env, platform = process.platform, spa
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
-  main().then((code) => process.exit(code));
+  process.exit(await main());
 }

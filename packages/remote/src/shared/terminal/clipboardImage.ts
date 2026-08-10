@@ -67,8 +67,7 @@ export async function imagePathFromClipboardEvent(e: ClipboardEvent): Promise<st
 	const items = e.clipboardData?.items;
 	if (!items) return null;
 	let file: File | null = null;
-	for (let i = 0; i < items.length; i++) {
-		const it = items[i];
+	for (const it of items) {
 		if (it.kind === 'file' && it.type.startsWith('image/')) {
 			file = it.getAsFile();
 			break;

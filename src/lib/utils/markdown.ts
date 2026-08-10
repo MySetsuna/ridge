@@ -25,13 +25,13 @@ function loadMonaco(): Promise<typeof import('monaco-editor')> {
 function encodeUtf8Base64(value: string): string {
   const bytes = new TextEncoder().encode(value);
   let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
+  for (const byte of bytes) binary += String.fromCodePoint(byte);
   return btoa(binary);
 }
 
 function decodeUtf8Base64(value: string): string {
   const binary = atob(value);
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  const bytes = Uint8Array.from(binary, (char) => char.codePointAt(0) ?? 0);
   return new TextDecoder().decode(bytes);
 }
 
@@ -42,11 +42,11 @@ function decodeUtf8Base64(value: string): string {
  */
 function escapeHtml(s: string): string {
   return s
-    .replaceAll(/&/g, '&amp;')
-    .replaceAll(/</g, '&lt;')
-    .replaceAll(/>/g, '&gt;')
-    .replaceAll(/"/g, '&quot;')
-    .replaceAll(/'/g, '&#39;');
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function stripMarkupTags(input: string): string {
@@ -114,7 +114,10 @@ function buildRenderer(source: string): Renderer {
       rawToLines.set(raw, list);
       // Number of newlines consumed by this token, matching what marked
       // already scanned from the source.
-      cursor += raw.length > 0 ? raw.split('\n').length - (raw.endsWith('\n') ? 1 : 0) : 0;
+      if (raw.length > 0) {
+        const lineCount = raw.split('\n').length;
+        cursor += raw.endsWith('\n') ? lineCount - 1 : lineCount;
+      }
     }
   } catch {
     // Lexer failures fall back to no line info — don't block the render.
@@ -312,7 +315,7 @@ function normaliseWindowsPathLinks(source: string): string {
         return full;
       }
       if (!target.includes('\\')) return full;
-      return open + target.replaceAll(/\\/g, '/') + close;
+      return open + target.replaceAll('\\', '/') + close;
     });
   }
   return parts.join('');
@@ -338,7 +341,7 @@ export function stripFrontMatter(source: string): string {
   // fence check (`lines[0] === '---'`) to silently fail on `'---\r'`.
   // The rest of the pipeline works with LF-normalised strings (marked.js
   // is LF-agnostic), so this normalisation is safe end-to-end.
-  source = source.replaceAll(/\r\n/g, '\n');
+  source = source.replaceAll('\r\n', '\n');
   const lines = source.split('\n');
   const first = lines[0];
   // Must be EXACTLY the fence on the first line (no leading whitespace, no

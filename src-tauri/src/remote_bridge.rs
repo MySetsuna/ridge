@@ -227,11 +227,13 @@ impl ridge_core::commands::workspace::WorkspaceWriter for AppState {
             app,
             workspace_id.to_string(),
             pane_id.to_string(),
-            rows,
-            cols,
-            is_alt,
-            is_inline_tui,
-            false,
+            crate::commands::terminal::ResizeRequest {
+                rows,
+                cols,
+                is_alt,
+                is_inline_tui,
+                suppress_errors: false,
+            },
         )
         .map_err(|e| e.to_string())
     }

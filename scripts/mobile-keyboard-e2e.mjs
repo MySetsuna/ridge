@@ -10,6 +10,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { randomInt } from 'node:crypto';
 import { createServer } from 'node:net';
 import {
   existsSync,
@@ -23,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { chromium } from '@playwright/test';
+import { systemTool } from './lib/toolPath.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 // Do not share the generic status file with another LAN probe.  A parallel
@@ -49,7 +51,7 @@ function readStatus() {
 
 async function findPort() {
   const width = PORT_MAX - PORT_MIN + 1;
-  const start = Math.floor(Math.random() * width);
+  const start = randomInt(width);
   for (let i = 0; i < width; i += 1) {
     const port = PORT_MIN + ((start + i) % width);
     const available = await new Promise((resolveAvailable) => {
@@ -84,7 +86,7 @@ async function waitReady(timeoutMs = 45_000, expectedPort = 0, expectedPid = 0) 
 function killTree(pid) {
   if (!pid) return Promise.resolve();
   return new Promise((resolveKill) => {
-    const child = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+    const child = spawn(systemTool('taskkill'), ['/PID', String(pid), '/T', '/F'], {
       stdio: 'ignore',
       windowsHide: true,
     });

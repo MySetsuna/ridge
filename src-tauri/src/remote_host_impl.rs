@@ -2962,12 +2962,14 @@ async fn dispatch_invoke_request(
             let result = terminal::resize_pane_remote(
                 handle.state::<AppState>().inner(),
                 handle.clone(),
-                workspace_id.clone(),
-                pane_id.clone(),
-                rows,
-                cols,
-                bool_opt(args, "isAlt"),
-                bool_opt(args, "isInlineTui"),
+                terminal::ResizePaneRemoteRequest {
+                    workspace_id: workspace_id.clone(),
+                    pane_id: pane_id.clone(),
+                    rows,
+                    cols,
+                    is_alt: bool_opt(args, "isAlt"),
+                    is_inline_tui: bool_opt(args, "isInlineTui"),
+                },
             )
             .await;
             if result.is_ok() {

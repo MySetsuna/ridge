@@ -67,11 +67,11 @@ async function invokeWorkspaceScoped(
   await refreshWorkspaceAccess(access);
   const plan = planWorkspaceInvoke(method, params, access);
   if (plan.kind === 'deny') {
-    throw {
+    const error = Object.assign(new Error(`workspace share denied: ${plan.reason}`), {
       code: -32003,
-      message: `workspace share denied: ${plan.reason}`,
       data: { kind: 'scope_denied', workspaceId: access.workspaceId },
-    };
+    });
+    throw error;
   }
   if (plan.kind === 'result') return plan.value;
   const result = await invoke<unknown>(plan.method, plan.params);

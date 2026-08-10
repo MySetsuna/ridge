@@ -610,7 +610,10 @@ mod tests {
 
         copy_path(td.p("source"), td.p("target"), None).unwrap();
 
-        assert_eq!(std::fs::read_to_string(td.path.join("target/root.txt")).unwrap(), "root");
+        assert_eq!(
+            std::fs::read_to_string(td.path.join("target/root.txt")).unwrap(),
+            "root"
+        );
         assert_eq!(
             std::fs::read_to_string(td.path.join("target/nested/leaf.txt")).unwrap(),
             "leaf"
@@ -626,7 +629,10 @@ mod tests {
         let error = copy_path(td.p("source.txt"), td.p("target.txt"), None).unwrap_err();
 
         assert!(error.contains("目标已存在"));
-        assert_eq!(std::fs::read_to_string(td.path.join("target.txt")).unwrap(), "target");
+        assert_eq!(
+            std::fs::read_to_string(td.path.join("target.txt")).unwrap(),
+            "target"
+        );
     }
 
     #[test]

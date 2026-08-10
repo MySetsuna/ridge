@@ -120,7 +120,7 @@ export interface HostWorkspace {
   active: boolean;
   sessions: HostSession[];
   shareGrantId?: string;
-  shareStatus?: HostSession['shareStatus'];
+  shareStatus?: NonNullable<HostSession['shareStatus']>;
   role?: 'operator';
 }
 
@@ -264,7 +264,7 @@ export async function refreshHostTopology(
   }
   if (options?.supersede) supersedeHostTopology(hostId);
   const current = topologyInFlight.get(hostId);
-  if (current) return current;
+  if (current !== undefined) return current;
   const generation = (topologyGenerationByHost.get(hostId) ?? 0) + 1;
   topologyGenerationByHost.set(hostId, generation);
   const controller = new AbortController();

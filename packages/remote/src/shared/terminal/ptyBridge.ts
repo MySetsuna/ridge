@@ -31,6 +31,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { TerminalManager } from './manager';
 import { perfMark } from './perfTrace';
 import { paneRefKey } from '../transport/paneRef';
+import { unknownText } from '../transport/unknownText';
 
 /**
  * P4.3 — pty-delta byte payload as received on the frontend. Tauri 2's
@@ -62,7 +63,7 @@ const pendingBridges = new Map<string, Promise<void>>();
 const teardownRequested = new Set<string>();
 
 function isPaneNotFoundError(error: unknown): boolean {
-	return /\bpane\s+not\s+found\b/i.test(String(error));
+	return /\bpane\s+not\s+found\b/i.test(unknownText(error));
 }
 
 /**
@@ -83,7 +84,7 @@ export function ensurePtyBridge(paneId: string, workspaceId: string): Promise<vo
 	const key = paneRefKey({ paneId, workspaceId });
 	if (bridges.has(key)) return Promise.resolve();
 	const pending = pendingBridges.get(key);
-	if (pending) return pending;
+	if (pending !== undefined) return pending;
 	teardownRequested.delete(key);
 	const attach = attachPtyBridge(paneId, workspaceId).finally(() => {
 		if (pendingBridges.get(key) === attach) pendingBridges.delete(key);
@@ -121,10 +122,10 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 							.map((b) => b.toString(16).padStart(2, '0'))
 							.join(' ');
 						const printable = data
-							.replaceAll(new RegExp(String.fromCharCode(0x1b), 'g'), '\\e')
+							.replaceAll(new RegExp(String.fromCodePoint(0x1b), 'g'), String.raw`\e`)
 							.replace(
-								new RegExp(`[${String.fromCharCode(0)}-${String.fromCharCode(0x1f)}]`, 'g'),
-								(c) => '\\x' + (c.codePointAt(0) ?? 0).toString(16).padStart(2, '0'),
+								new RegExp(`[${String.fromCodePoint(0)}-${String.fromCodePoint(0x1f)}]`, 'g'),
+								(c) => String.raw`\x${(c.codePointAt(0) ?? 0).toString(16).padStart(2, '0')}`,
 							);
 						console.log(`[pty-trace ${paneId.slice(0, 6)}] ${printable.length} chars / ${bytes.length} bytes\n  text: ${JSON.stringify(printable)}\n  hex:  ${hex}`);
 					}

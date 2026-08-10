@@ -3,8 +3,8 @@
 // concurrent desktop on the shared workspace? switch-workspace is per-connection,
 // so a workspace this mobile client creates is NOT viewed by the other session.
 import { chromium, devices } from '@playwright/test';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROFILE_DIR = process.env.RIDGE_PROFILE_DIR || path.resolve(__dirname, '..', '.pw-remote-profile');
 const URL = process.env.RIDGE_URL || 'https://127.0.0.1:9527';

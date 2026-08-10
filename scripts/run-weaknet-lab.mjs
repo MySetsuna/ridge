@@ -5,11 +5,12 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { systemTool } from './lib/toolPath.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 try {
   execFileSync(
-    'pnpm',
+    systemTool('pnpm'),
     ['exec', 'vitest', 'run', 'packages/remote/src/shared/cloud/weakNetLab.test.ts'],
     { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' },
   );

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const childProcess = vi.hoisted(() => ({ execFileSync: vi.fn() }));
 const fileSystem = vi.hoisted(() => ({
-  chmodSync: vi.fn(), copyFileSync: vi.fn(), mkdirSync: vi.fn(), statSync: vi.fn(),
+  chmodSync: vi.fn(), copyFileSync: vi.fn(), existsSync: vi.fn(() => false), mkdirSync: vi.fn(), statSync: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => childProcess);

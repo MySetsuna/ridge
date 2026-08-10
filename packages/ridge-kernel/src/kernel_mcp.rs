@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::agent_profiles::{builtin_profiles, AgentProfile};
+use crate::pty::{PtyBridge, PtyLaunch};
 use crate::registry::{save_roster_at, save_workspace_graph_at};
 use crate::server::AppState;
 
@@ -220,119 +221,255 @@ impl KernelMcpHost {
         Ok((Some(profile.executable), args, Some(profile.id)))
     }
 
-    fn split_impl(&self, request: &SplitPaneRequest) -> HostResult<Value> {
-        let (program, args, launch_profile) = Self::launch_plan(request)?;
-        let direction = match request.direction.as_str() {
-            "horizontal" => ridge_core::workspace::pane_tree::SplitDirection::Horizontal,
-            "vertical" => ridge_core::workspace::pane_tree::SplitDirection::Vertical,
-            _ => {
-                return Err(HostError::InvalidParams(
-                    "direction must be horizontal or vertical".into(),
-                ))
-            }
-        };
-
-        let mut graph = self.state.workspaces.lock().expect("workspace graph lock");
-        let previous = graph.clone();
-        let mut next = previous.clone();
-        let (workspace_id, pane_id) = match request.workspace_id.as_deref() {
+    fn split_workspace(
+        graph: &mut ridge_core::workspace::graph::WorkspaceGraph,
+        request: &SplitPaneRequest,
+        direction: ridge_core::workspace::pane_tree::SplitDirection,
+    ) -> HostResult<(Uuid, Uuid)> {
+        match request.workspace_id.as_deref() {
             Some(raw) => {
                 let workspace_id = Uuid::parse_str(raw).map_err(|_| {
                     HostError::InvalidParams(format!("invalid workspace id: {raw}"))
                 })?;
-                let anchor = next
+                let anchor = graph
                     .leaves(workspace_id)
                     .map_err(|error| HostError::InvalidParams(error.to_string()))?
                     .into_iter()
                     .last()
                     .ok_or_else(|| HostError::Internal("workspace has no pane".into()))?;
-                let pane_id = next
+                let pane_id = graph
                     .split(workspace_id, anchor, direction)
                     .map_err(|error| HostError::Internal(error.to_string()))?;
-                (workspace_id, pane_id)
+                Ok((workspace_id, pane_id))
             }
-            None => match next.active() {
+            None => match graph.active() {
                 Some(workspace_id) => {
-                    let anchor = next
+                    let anchor = graph
                         .leaves(workspace_id)
                         .map_err(|error| HostError::Internal(error.to_string()))?
                         .into_iter()
                         .last()
                         .ok_or_else(|| HostError::Internal("workspace has no pane".into()))?;
-                    let pane_id = next
+                    let pane_id = graph
                         .split(workspace_id, anchor, direction)
                         .map_err(|error| HostError::Internal(error.to_string()))?;
-                    (workspace_id, pane_id)
+                    Ok((workspace_id, pane_id))
                 }
                 None => {
-                    let workspace_id = next.create_workspace();
-                    let pane_id = next
+                    let workspace_id = graph.create_workspace();
+                    let pane_id = graph
                         .leaves(workspace_id)
                         .map_err(|error| HostError::Internal(error.to_string()))?
                         .into_iter()
                         .next()
                         .ok_or_else(|| HostError::Internal("new workspace has no pane".into()))?;
-                    (workspace_id, pane_id)
+                    Ok((workspace_id, pane_id))
                 }
             },
-        };
+        }
+    }
 
+    fn split_direction(raw: &str) -> HostResult<ridge_core::workspace::pane_tree::SplitDirection> {
+        match raw {
+            "horizontal" => Ok(ridge_core::workspace::pane_tree::SplitDirection::Horizontal),
+            "vertical" => Ok(ridge_core::workspace::pane_tree::SplitDirection::Vertical),
+            _ => Err(HostError::InvalidParams(
+                "direction must be horizontal or vertical".into(),
+            )),
+        }
+    }
+
+    fn prepare_replacement(
+        &self,
+        graph: &mut ridge_core::workspace::graph::WorkspaceGraph,
+        workspace_id: Uuid,
+        request: &SplitPaneRequest,
+    ) -> HostResult<(Option<Uuid>, Option<Arc<PtyBridge>>)> {
         let replace_id = request
             .replace_target
             .as_ref()
             .map(|target| self.pane_id(target))
             .transpose()?;
-        let mut old_bridge = None;
-        if let Some(old_id) = replace_id {
-            let old = self
-                .state
-                .ptys
-                .info(old_id)
-                .map_err(|error| HostError::InvalidParams(error.to_string()))?;
-            if old.workspace_id != Some(workspace_id) {
-                return Err(HostError::InvalidParams(
-                    "replacement pane belongs to a different workspace".into(),
-                ));
-            }
-            next.close(workspace_id, old_id)
-                .map_err(|error| HostError::InvalidParams(error.to_string()))?;
-            old_bridge = Some(
-                self.state
-                    .ptys
-                    .begin_destroy(old_id)
-                    .map_err(|error| HostError::InvalidParams(error.to_string()))?,
-            );
+        let Some(old_id) = replace_id else {
+            return Ok((None, None));
+        };
+        let old = self
+            .state
+            .ptys
+            .info(old_id)
+            .map_err(|error| HostError::InvalidParams(error.to_string()))?;
+        if old.workspace_id != Some(workspace_id) {
+            return Err(HostError::InvalidParams(
+                "replacement pane belongs to a different workspace".into(),
+            ));
         }
+        graph
+            .close(workspace_id, old_id)
+            .map_err(|error| HostError::InvalidParams(error.to_string()))?;
+        let bridge = self
+            .state
+            .ptys
+            .begin_destroy(old_id)
+            .map_err(|error| HostError::InvalidParams(error.to_string()))?;
+        Ok((Some(old_id), Some(bridge)))
+    }
 
+    fn spawn_split_pty(
+        &self,
+        request: &SplitPaneRequest,
+        pane_id: Uuid,
+        workspace_id: Uuid,
+        program: Option<&str>,
+        args: &[String],
+        launch_profile: Option<&str>,
+        replace_id: Option<Uuid>,
+    ) -> HostResult<()> {
         self.state
             .ptys
-            .spawn_command_for(
-                pane_id,
-                program.as_deref(),
-                &args,
-                None,
-                Some(workspace_id),
-                &request.role,
-                launch_profile.as_deref(),
-            )
+            .spawn_command_for(PtyLaunch {
+                id: pane_id,
+                program,
+                args,
+                cwd: None,
+                workspace_id: Some(workspace_id),
+                role: &request.role,
+                launch_profile,
+                env: None,
+            })
             .map_err(|error| {
                 if let Some(old_id) = replace_id {
                     self.state.ptys.cancel_destroy(old_id);
                 }
                 HostError::Internal(error.to_string())
-            })?;
-        if let Some(initial_cmd) = request.initial_cmd.as_deref() {
-            if let Err(error) = self.state.ptys.write(
+            })
+            .map(|_| ())
+    }
+
+    fn write_initial_command(
+        &self,
+        request: &SplitPaneRequest,
+        pane_id: Uuid,
+        replace_id: Option<Uuid>,
+    ) -> HostResult<()> {
+        let Some(initial_cmd) = request.initial_cmd.as_deref() else {
+            return Ok(());
+        };
+        self.state
+            .ptys
+            .write(
                 pane_id,
                 ridge_mcp::server::enter_terminated(initial_cmd).as_bytes(),
-            ) {
+            )
+            .map_err(|error| {
                 let _ = self.state.ptys.destroy(pane_id);
                 if let Some(old_id) = replace_id {
                     self.state.ptys.cancel_destroy(old_id);
                 }
-                return Err(HostError::Internal(error.to_string()));
-            }
+                HostError::Internal(error.to_string())
+            })
+    }
+
+    fn commit_split_identity(
+        &self,
+        request: &SplitPaneRequest,
+        pane_id: Uuid,
+        program: Option<&str>,
+        args: &[String],
+        replace_id: Option<Uuid>,
+        previous: &ridge_core::workspace::graph::WorkspaceGraph,
+    ) -> HostResult<Option<ridge_core::teammate::topology::TopologyGraph>> {
+        if request.role.trim().eq_ignore_ascii_case("shell") {
+            return Ok(None);
         }
+        let previous_roster = self.state.roster.lock().expect("roster lock").clone();
+        let executable = program.unwrap_or("agent");
+        if let Err(error) = crate::domain::commit_agent_identity_for_pty(
+            &self.state,
+            pane_id,
+            &request.role,
+            executable,
+            args.to_vec(),
+        ) {
+            let _ = self.state.ptys.destroy(pane_id);
+            if let Some(old_id) = replace_id {
+                self.state.ptys.cancel_destroy(old_id);
+            }
+            let _ = save_workspace_graph_at(&self.state.workspaces_path, previous);
+            return Err(HostError::Internal(format!(
+                "Agent identity commit failed; graph rolled back: {error}"
+            )));
+        }
+        Ok(Some(previous_roster))
+    }
+
+    fn restore_roster(&self, roster: Option<&ridge_core::teammate::topology::TopologyGraph>) {
+        if let Some(roster) = roster {
+            let _ = save_roster_at(&self.state.roster_path, roster);
+            *self.state.roster.lock().expect("roster lock") = roster.clone();
+        }
+    }
+
+    fn finalize_replacement(
+        &self,
+        replace_id: Option<Uuid>,
+        old_bridge: Option<Arc<PtyBridge>>,
+        pane_id: Uuid,
+        previous: &ridge_core::workspace::graph::WorkspaceGraph,
+        previous_roster: Option<&ridge_core::teammate::topology::TopologyGraph>,
+    ) -> HostResult<()> {
+        let (Some(old_id), Some(bridge)) = (replace_id, old_bridge) else {
+            return Ok(());
+        };
+        if let Err(error) = bridge.destroy() {
+            self.state.ptys.cancel_destroy(old_id);
+            let _ = save_workspace_graph_at(&self.state.workspaces_path, previous);
+            let _ = self.state.ptys.destroy(pane_id);
+            self.restore_roster(previous_roster);
+            return Err(HostError::Internal(format!(
+                "replacement PTY could not be destroyed; graph rolled back: {error}"
+            )));
+        }
+        if let Err(error) = self.state.ptys.finish_destroy(old_id) {
+            let _ = save_workspace_graph_at(&self.state.workspaces_path, previous);
+            let _ = self.state.ptys.destroy(pane_id);
+            self.restore_roster(previous_roster);
+            return Err(HostError::Internal(format!(
+                "replacement PTY registry commit failed; graph rolled back: {error}"
+            )));
+        }
+        crate::domain::remove_agent_identity_for_pty(&self.state, old_id).map_err(|error| {
+            HostError::Internal(format!(
+                "replacement PTY destroyed but old Agent identity teardown failed: {error}"
+            ))
+        })?;
+        self.state
+            .mcp_state
+            .purge_pane(&old_id.to_string())
+            .map_err(HostError::Internal)
+    }
+
+    fn split_impl(&self, request: &SplitPaneRequest) -> HostResult<Value> {
+        let (program, args, launch_profile) = Self::launch_plan(request)?;
+        let direction = Self::split_direction(&request.direction)?;
+
+        let mut graph = self.state.workspaces.lock().expect("workspace graph lock");
+        let previous = graph.clone();
+        let mut next = previous.clone();
+        let (workspace_id, pane_id) = Self::split_workspace(&mut next, request, direction)?;
+
+        let (replace_id, old_bridge) =
+            Self::prepare_replacement(self, &mut next, workspace_id, request)?;
+
+        self.spawn_split_pty(
+            request,
+            pane_id,
+            workspace_id,
+            program.as_deref(),
+            &args,
+            launch_profile.as_deref(),
+            replace_id,
+        )?;
+        self.write_initial_command(request, pane_id, replace_id)?;
         if let Err(error) = save_workspace_graph_at(&self.state.workspaces_path, &next) {
             let _ = self.state.ptys.destroy(pane_id);
             if let Some(old_id) = replace_id {
@@ -341,65 +478,21 @@ impl KernelMcpHost {
             return Err(HostError::Internal(error.to_string()));
         }
 
-        let previous_roster = if request.role.trim().eq_ignore_ascii_case("shell") {
-            None
-        } else {
-            Some(self.state.roster.lock().expect("roster lock").clone())
-        };
-        if !request.role.trim().eq_ignore_ascii_case("shell") {
-            let executable = program.as_deref().unwrap_or("agent");
-            if let Err(error) = crate::domain::commit_agent_identity_for_pty(
-                &self.state,
-                pane_id,
-                &request.role,
-                executable,
-                args.clone(),
-            ) {
-                let _ = self.state.ptys.destroy(pane_id);
-                if let Some(old_id) = replace_id {
-                    self.state.ptys.cancel_destroy(old_id);
-                }
-                let _ = save_workspace_graph_at(&self.state.workspaces_path, &previous);
-                return Err(HostError::Internal(format!(
-                    "Agent identity commit failed; graph rolled back: {error}"
-                )));
-            }
-        }
-
-        if let (Some(old_id), Some(bridge)) = (replace_id, old_bridge) {
-            if let Err(error) = bridge.destroy() {
-                self.state.ptys.cancel_destroy(old_id);
-                let _ = save_workspace_graph_at(&self.state.workspaces_path, &previous);
-                let _ = self.state.ptys.destroy(pane_id);
-                if let Some(roster) = previous_roster.as_ref() {
-                    let _ = save_roster_at(&self.state.roster_path, roster);
-                    *self.state.roster.lock().expect("roster lock") = roster.clone();
-                }
-                return Err(HostError::Internal(format!(
-                    "replacement PTY could not be destroyed; graph rolled back: {error}"
-                )));
-            }
-            if let Err(error) = self.state.ptys.finish_destroy(old_id) {
-                let _ = save_workspace_graph_at(&self.state.workspaces_path, &previous);
-                let _ = self.state.ptys.destroy(pane_id);
-                if let Some(roster) = previous_roster.as_ref() {
-                    let _ = save_roster_at(&self.state.roster_path, roster);
-                    *self.state.roster.lock().expect("roster lock") = roster.clone();
-                }
-                return Err(HostError::Internal(format!(
-                    "replacement PTY registry commit failed; graph rolled back: {error}"
-                )));
-            }
-            if let Err(error) = crate::domain::remove_agent_identity_for_pty(&self.state, old_id) {
-                return Err(HostError::Internal(format!(
-                    "replacement PTY destroyed but old Agent identity teardown failed: {error}"
-                )));
-            }
-            self.state
-                .mcp_state
-                .purge_pane(&old_id.to_string())
-                .map_err(HostError::Internal)?;
-        }
+        let previous_roster = self.commit_split_identity(
+            request,
+            pane_id,
+            program.as_deref(),
+            &args,
+            replace_id,
+            &previous,
+        )?;
+        self.finalize_replacement(
+            replace_id,
+            old_bridge,
+            pane_id,
+            &previous,
+            previous_roster.as_ref(),
+        )?;
         *graph = next;
         drop(graph);
         Ok(json!({

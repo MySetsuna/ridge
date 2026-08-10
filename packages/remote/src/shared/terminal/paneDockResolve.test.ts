@@ -29,7 +29,7 @@ describe('resolveDockTarget', () => {
       paneId == null
         ? null
         : {
-            getAttribute: (k: string) => (k === 'data-pane-id' ? paneId : null),
+            dataset: { paneId },
             getBoundingClientRect: () =>
               ({ left: 0, top: 0, width: 100, height: 100, right: 100, bottom: 100, x: 0, y: 0, toJSON() {} }) as DOMRect,
           };

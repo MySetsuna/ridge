@@ -4,8 +4,8 @@
 // closes extra WORKSPACES whose name matches the test pattern. Reuses the saved
 // token in .pw-remote-profile (no pairing code needed).
 import { chromium, devices } from '@playwright/test';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROFILE_DIR = path.resolve(__dirname, '..', '.pw-remote-profile');
@@ -35,8 +35,17 @@ const snap = () => page.evaluate(() => {
     panes: [...document.querySelectorAll('.pane-row')].map((r) => ({ name: txt(r, '.pane-name'), active: r.classList.contains('active') })),
   };
 });
-const openTree = async () => { if (!(await page.locator('.tree-popup').count())) { await page.locator('.tree-trigger').click(); await page.waitForSelector('.tree-popup', { timeout: 5000 }); await sleep(150); } };
-const domClick = async (loc) => { if (!(await loc.count())) return false; await loc.first().evaluate((el) => el.click()); return true; };
+const openTree = async () => {
+  if (await page.locator('.tree-popup').count()) return;
+  await page.locator('.tree-trigger').click();
+  await page.waitForSelector('.tree-popup', { timeout: 5000 });
+  await sleep(150);
+};
+const domClick = async (loc) => {
+  if (!(await loc.count())) return false;
+  await loc.first().evaluate((el) => el.click());
+  return true;
+};
 
 await openTree();
 const before = await snap();

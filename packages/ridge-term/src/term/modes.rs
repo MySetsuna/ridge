@@ -332,105 +332,113 @@ impl Modes {
     /// Returns the side effect (if any) the caller must enact.
     pub fn set(&mut self, code: u16, value: bool, is_private: bool) -> ModeEffect {
         if is_private {
-            match code {
-                7 => {
-                    self.autowrap = value;
-                    ModeEffect::None
-                }
-                25 => {
-                    self.cursor_visible = value;
-                    ModeEffect::None
-                }
-                12 => {
-                    self.cursor_blink = value;
-                    ModeEffect::None
-                }
-                6 => {
-                    self.origin = value;
-                    ModeEffect::JumpToOrigin
-                }
-                1 => {
-                    self.app_cursor_keys = value;
-                    ModeEffect::None
-                }
-
-                9 => {
-                    self.mouse_x10 = value;
-                    ModeEffect::None
-                }
-                1000 => {
-                    self.mouse_normal = value;
-                    ModeEffect::None
-                }
-                1002 => {
-                    self.mouse_button_event = value;
-                    ModeEffect::None
-                }
-                1003 => {
-                    self.mouse_any_event = value;
-                    ModeEffect::None
-                }
-                1004 => {
-                    self.mouse_focus = value;
-                    ModeEffect::None
-                }
-                1006 => {
-                    self.mouse_sgr = value;
-                    ModeEffect::None
-                }
-
-                2004 => {
-                    self.bracketed_paste = value;
-                    ModeEffect::None
-                }
-                2026 => {
-                    self.sync_output = value;
-                    ModeEffect::None
-                }
-                2027 => {
-                    // §B.6 — explicit set/reset is honoured even
-                    // though the default is ON; an app that wants to
-                    // assert legacy width behaviour can still opt out.
-                    self.unicode_core_2027 = value;
-                    ModeEffect::None
-                }
-
-                47 => {
-                    if value {
-                        ModeEffect::EnterAltScreen
-                    } else {
-                        ModeEffect::LeaveAltScreen
-                    }
-                }
-                1047 => {
-                    if value {
-                        ModeEffect::EnterAltScreenAndClear
-                    } else {
-                        ModeEffect::LeaveAltScreen
-                    }
-                }
-                1049 => {
-                    if value {
-                        ModeEffect::EnterAltScreenSaveCursor
-                    } else {
-                        ModeEffect::LeaveAltScreenRestoreCursor
-                    }
-                }
-
-                _ => ModeEffect::None, // unknown private mode — ignore
-            }
+            self.set_private(code, value)
         } else {
-            match code {
-                4 => {
-                    self.insert = value;
-                    ModeEffect::None
-                }
-                20 => {
-                    self.linefeed_newline = value;
-                    ModeEffect::None
-                }
-                _ => ModeEffect::None,
+            self.set_public(code, value)
+        }
+    }
+
+    fn set_private(&mut self, code: u16, value: bool) -> ModeEffect {
+        match code {
+            7 => {
+                self.autowrap = value;
+                ModeEffect::None
             }
+            25 => {
+                self.cursor_visible = value;
+                ModeEffect::None
+            }
+            12 => {
+                self.cursor_blink = value;
+                ModeEffect::None
+            }
+            6 => {
+                self.origin = value;
+                ModeEffect::JumpToOrigin
+            }
+            1 => {
+                self.app_cursor_keys = value;
+                ModeEffect::None
+            }
+
+            9 => {
+                self.mouse_x10 = value;
+                ModeEffect::None
+            }
+            1000 => {
+                self.mouse_normal = value;
+                ModeEffect::None
+            }
+            1002 => {
+                self.mouse_button_event = value;
+                ModeEffect::None
+            }
+            1003 => {
+                self.mouse_any_event = value;
+                ModeEffect::None
+            }
+            1004 => {
+                self.mouse_focus = value;
+                ModeEffect::None
+            }
+            1006 => {
+                self.mouse_sgr = value;
+                ModeEffect::None
+            }
+
+            2004 => {
+                self.bracketed_paste = value;
+                ModeEffect::None
+            }
+            2026 => {
+                self.sync_output = value;
+                ModeEffect::None
+            }
+            2027 => {
+                // §B.6 — explicit set/reset is honoured even
+                // though the default is ON; an app that wants to
+                // assert legacy width behaviour can still opt out.
+                self.unicode_core_2027 = value;
+                ModeEffect::None
+            }
+
+            47 => {
+                if value {
+                    ModeEffect::EnterAltScreen
+                } else {
+                    ModeEffect::LeaveAltScreen
+                }
+            }
+            1047 => {
+                if value {
+                    ModeEffect::EnterAltScreenAndClear
+                } else {
+                    ModeEffect::LeaveAltScreen
+                }
+            }
+            1049 => {
+                if value {
+                    ModeEffect::EnterAltScreenSaveCursor
+                } else {
+                    ModeEffect::LeaveAltScreenRestoreCursor
+                }
+            }
+
+            _ => ModeEffect::None, // unknown private mode — ignore
+        }
+    }
+
+    fn set_public(&mut self, code: u16, value: bool) -> ModeEffect {
+        match code {
+            4 => {
+                self.insert = value;
+                ModeEffect::None
+            }
+            20 => {
+                self.linefeed_newline = value;
+                ModeEffect::None
+            }
+            _ => ModeEffect::None,
         }
     }
 }

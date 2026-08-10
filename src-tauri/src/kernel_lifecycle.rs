@@ -79,6 +79,73 @@ pub fn decide_boot(
 }
 
 /// 桌面 setup：detect-or-spawn 独立 ridge-kernel。
+fn handle_boot_decision(
+    decision: KernelBootDecision,
+    file_pid: Option<u32>,
+    self_pid: u32,
+) -> Result<(), String> {
+    match decision {
+        KernelBootDecision::AttachExisting { pid } => {
+            if let Some(ep) = wait_for_running(Duration::from_secs(8)).filter(|e| e.pid == pid) {
+                tracing::info!(
+                    target: "ridge::kernel_lifecycle",
+                    pid,
+                    port = ep.port,
+                    "attached to existing ridge-kernel"
+                );
+                return Ok(());
+            }
+            Err(format!(
+                "live ridge-kernel PID {pid} is unhealthy or protocol-incompatible; refusing a second instance"
+            ))
+        }
+        KernelBootDecision::StalePidClearAndBecomeHost { stale_pid } => {
+            tracing::info!(target: "ridge::kernel_lifecycle", stale_pid, "clear stale kernel registry");
+            let _ = fs::remove_file(kernel_pid_path());
+            let _ = fs::remove_file(kernel_json_path());
+            Ok(())
+        }
+        KernelBootDecision::AlreadyHost => {
+            if file_pid == Some(self_pid) {
+                let _ = fs::remove_file(kernel_pid_path());
+                let _ = fs::remove_file(kernel_json_path());
+            }
+            Ok(())
+        }
+        KernelBootDecision::BecomeHost => Ok(()),
+    }
+}
+
+fn acquire_kernel_boot_slot(
+    decision: KernelBootDecision,
+) -> Result<Option<ridge_kernel::registry::KernelBootGuard>, String> {
+    if !matches!(
+        decision,
+        KernelBootDecision::BecomeHost | KernelBootDecision::StalePidClearAndBecomeHost { .. }
+    ) {
+        return Ok(None);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        if let Some(ep) = running_endpoint() {
+            tracing::debug!(target: "ridge::kernel_lifecycle", port = ep.port, "kernel became ready while acquiring boot slot");
+            return Ok(None);
+        }
+        match ridge_kernel::registry::KernelBootGuard::try_acquire() {
+            Ok(Some(guard)) => return Ok(Some(guard)),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(80));
+            }
+            Ok(None) => {
+                return Err(
+                    "another ridge-kernel is booting but did not become healthy in time".into(),
+                )
+            }
+            Err(error) => return Err(format!("acquire ridge-kernel boot slot: {error}")),
+        }
+    }
+}
+
 pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
     // Setup and the first Pane can arrive concurrently. Hold one process-local
     // gate across detect, spawn, and readiness so neither caller can launch a
@@ -91,65 +158,27 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
     let alive = file_pid.is_some_and(is_process_alive);
     let decision = decide_boot(self_pid, file_pid, alive);
 
-    match decision {
-        KernelBootDecision::AttachExisting { pid } => {
-            if let Some(ep) = wait_for_running(Duration::from_secs(8)).filter(|e| e.pid == pid) {
-                tracing::info!(
-                    target: "ridge::kernel_lifecycle",
-                    pid,
-                    port = ep.port,
-                    "attached to existing ridge-kernel"
-                );
-                return Ok(ep);
-            }
-            return Err(format!(
-                "live ridge-kernel PID {pid} is unhealthy or protocol-incompatible; refusing a second instance"
-            ));
+    if let KernelBootDecision::AttachExisting { pid } = decision {
+        if let Some(ep) = wait_for_running(Duration::from_secs(8)).filter(|e| e.pid == pid) {
+            tracing::info!(
+                target: "ridge::kernel_lifecycle",
+                pid,
+                port = ep.port,
+                "attached to existing ridge-kernel"
+            );
+            return Ok(ep);
         }
-        KernelBootDecision::StalePidClearAndBecomeHost { stale_pid } => {
-            tracing::info!(target: "ridge::kernel_lifecycle", stale_pid, "clear stale kernel registry");
-            let _ = fs::remove_file(kernel_pid_path());
-            let _ = fs::remove_file(kernel_json_path());
-        }
-        KernelBootDecision::AlreadyHost => {
-            // 桌面进程不应再写自己为 kernel（kernel 是独立二进制）。清掉误写的自 PID。
-            if file_pid == Some(self_pid) {
-                let _ = fs::remove_file(kernel_pid_path());
-                let _ = fs::remove_file(kernel_json_path());
-            }
-        }
-        KernelBootDecision::BecomeHost => {}
+        return Err(format!(
+            "live ridge-kernel PID {pid} is unhealthy or protocol-incompatible; refusing a second instance"
+        ));
     }
+    handle_boot_decision(decision, file_pid, self_pid)?;
 
     // The desktop and a detached `rdg host` may bootstrap concurrently. A
     // process-local mutex cannot serialize that case; reserve a separate
     // cross-process boot slot until the new kernel publishes a healthy
     // endpoint. The kernel's own instance lock remains independent.
-    let boot_guard = if matches!(
-        decision,
-        KernelBootDecision::BecomeHost | KernelBootDecision::StalePidClearAndBecomeHost { .. }
-    ) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(8);
-        loop {
-            if let Some(ep) = running_endpoint() {
-                return Ok(ep);
-            }
-            match ridge_kernel::registry::KernelBootGuard::try_acquire() {
-                Ok(Some(guard)) => break Some(guard),
-                Ok(None) if std::time::Instant::now() < deadline => {
-                    thread::sleep(Duration::from_millis(80));
-                }
-                Ok(None) => {
-                    return Err(
-                        "another ridge-kernel is booting but did not become healthy in time".into(),
-                    );
-                }
-                Err(error) => return Err(format!("acquire ridge-kernel boot slot: {error}")),
-            }
-        }
-    } else {
-        None
-    };
+    let boot_guard = acquire_kernel_boot_slot(decision)?;
 
     if let Some(ep) = running_endpoint() {
         return Ok(ep);

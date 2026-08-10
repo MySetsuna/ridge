@@ -380,25 +380,7 @@ pub async fn dock_pane(
     let source = parse_pane_id(&source_pane_id).map_err(|e| e.to_string())?;
     let target = parse_pane_id(&target_pane_id).map_err(|e| e.to_string())?;
 
-    // 找到 source / target 各自所属的 workspace（pane id 全局唯一，扫一遍即可）。
-    // 同 workspace → 走原有 PaneTree::dock_pane；跨 workspace → 走迁移路径。
-    let (source_wid, target_wid) = {
-        let map = state.workspaces.read();
-        let mut s = None;
-        let mut t = None;
-        for (wid, ws) in map.iter() {
-            if ws.pane_tree.panes.contains_key(&source) {
-                s = Some(*wid);
-            }
-            if ws.pane_tree.panes.contains_key(&target) {
-                t = Some(*wid);
-            }
-        }
-        (
-            s.ok_or_else(|| "source pane 不在任何工作区".to_string())?,
-            t.ok_or_else(|| "target pane 不在任何工作区".to_string())?,
-        )
-    };
+    let (source_wid, target_wid) = locate_pane_workspaces(&state, source, target)?;
 
     if source_wid == target_wid {
         let mut map = state.workspaces.write();
@@ -481,6 +463,28 @@ pub async fn dock_pane(
 
     crate::commands::ridge_file::schedule_auto_save(&*state, target_wid);
     Ok(())
+}
+
+fn locate_pane_workspaces(
+    state: &AppState,
+    source: Uuid,
+    target: Uuid,
+) -> Result<(Uuid, Uuid), String> {
+    let map = state.workspaces.read();
+    let mut source_wid = None;
+    let mut target_wid = None;
+    for (wid, ws) in map.iter() {
+        if ws.pane_tree.panes.contains_key(&source) {
+            source_wid = Some(*wid);
+        }
+        if ws.pane_tree.panes.contains_key(&target) {
+            target_wid = Some(*wid);
+        }
+    }
+    Ok((
+        source_wid.ok_or_else(|| "source pane 不在任何工作区".to_string())?,
+        target_wid.ok_or_else(|| "target pane 不在任何工作区".to_string())?,
+    ))
 }
 
 /// split_pane 的核心（不带 Tauri wrapper）：分裂既有 pane（改 pane 树 + 继承 cwd + 起新 PTY）。
@@ -878,38 +882,10 @@ pub(crate) fn remote_create_pane(
     cwd_override: Option<std::path::PathBuf>,
     structured_command: Option<terminal::StructuredPtyCommand>,
 ) -> Result<Uuid, AppError> {
-    // Decide: attach to the existing leaf (first terminal) or split the largest.
-    let (target_pane, split_dir) = {
-        let map = state.workspaces.read();
-        let ws = map
-            .get(&ws_id)
-            .ok_or_else(|| AppError::PtyError("workspace missing".into()))?;
-        if ws.terminals.is_empty() {
-            let leaf = *ws
-                .pane_tree
-                .get_all_leaves()
-                .first()
-                .ok_or_else(|| AppError::PtyError("workspace has no pane".into()))?;
-            (leaf, None)
-        } else {
-            let (target, dir) = choose_balanced_split(ws)
-                .ok_or_else(|| AppError::PtyError("workspace has no pane".into()))?;
-            (target, Some(dir))
-        }
-    };
+    let (target_pane, split_dir) = remote_target(state, ws_id)?;
 
     // Inherit cwd from the target pane (tree first, then live OS cwd) when splitting.
-    let parent_cwd: Option<String> = if split_dir.is_some() {
-        {
-            let map = state.workspaces.read();
-            map.get(&ws_id)
-                .and_then(|ws| ws.pane_tree.panes.get(&target_pane))
-                .and_then(|p| p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned()))
-        }
-        .or_else(|| crate::commands::process::current_pane_cwd_live(state, ws_id, target_pane))
-    } else {
-        None
-    };
+    let parent_cwd = remote_parent_cwd(state, ws_id, target_pane, split_dir.is_some());
 
     let new_pane_id = if let Some(dir) = split_dir {
         let mut map = state.workspaces.write();
@@ -947,16 +923,61 @@ pub(crate) fn remote_create_pane(
         state,
         ws_id,
         new_pane_id,
-        shell,
-        effective_cwd.as_deref(),
-        None,
-        structured_command,
-        None,
-        None,
-        None,
+        terminal::EnsurePtyOptions {
+            shell,
+            cwd: effective_cwd.as_deref(),
+            initial_command: None,
+            structured_command,
+            tmux_pane_index: None,
+            ready_tx: None,
+            trace_id: None,
+        },
     )?;
     crate::commands::ridge_file::schedule_auto_save(state, ws_id);
     Ok(new_pane_id)
+}
+
+fn remote_target(
+    state: &AppState,
+    ws_id: Uuid,
+) -> Result<(Uuid, Option<SplitDirection>), AppError> {
+    let map = state.workspaces.read();
+    let ws = map
+        .get(&ws_id)
+        .ok_or_else(|| AppError::PtyError("workspace missing".into()))?;
+    if ws.terminals.is_empty() {
+        let leaf = *ws
+            .pane_tree
+            .get_all_leaves()
+            .first()
+            .ok_or_else(|| AppError::PtyError("workspace has no pane".into()))?;
+        return Ok((leaf, None));
+    }
+    let (target, direction) = choose_balanced_split(ws)
+        .ok_or_else(|| AppError::PtyError("workspace has no pane".into()))?;
+    Ok((target, Some(direction)))
+}
+
+fn remote_parent_cwd(
+    state: &AppState,
+    ws_id: Uuid,
+    target_pane: Uuid,
+    should_inherit: bool,
+) -> Option<String> {
+    if !should_inherit {
+        return None;
+    }
+    let tree_cwd = state
+        .workspaces
+        .read()
+        .get(&ws_id)
+        .and_then(|ws| ws.pane_tree.panes.get(&target_pane))
+        .and_then(|pane| {
+            pane.cwd
+                .as_ref()
+                .map(|cwd| cwd.to_string_lossy().into_owned())
+        });
+    tree_cwd.or_else(|| crate::commands::process::current_pane_cwd_live(state, ws_id, target_pane))
 }
 
 /// Create a pane and launch a registered Agent session in its recorded CWD.

@@ -11,13 +11,11 @@
 // 故为安全降级（warn 后 no-op），不会抛错破坏页面。
 
 /** `openWith` 在浏览器里无意义（无法指定 OS 应用），忽略即可。 */
-type OpenWith = string;
-
 /**
  * 在浏览器新标签页打开外链。对应桌面 `openUrl`（OS 默认浏览器打开）。
  * `noopener` 切断 `window.opener` 引用，避免被打开页反向操纵本页（安全）。
  */
-export async function openUrl(url: string | URL, _openWith?: OpenWith): Promise<void> {
+export async function openUrl(url: string | URL, _openWith?: string): Promise<void> {
   const href = typeof url === 'string' ? url : url.toString();
   if (typeof window !== 'undefined') {
     window.open(href, '_blank', 'noopener');
