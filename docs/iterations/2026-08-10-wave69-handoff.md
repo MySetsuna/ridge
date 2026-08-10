@@ -67,3 +67,8 @@
 - CodeGraph 复核确认 CloudHostPaneSource、ControllerCloudProvider、PaneRpcScheduler、TerminalManager geometry、workspaceScope 与构建门禁仍有调用链；`paneFeedScheduler.schedule` 仅能从公开 API 间接关联，已补“单帧单次调度”与“dispose 后回调失效”两条确定性测试。
 - Sonar 当前项目指标仍为 coverage `80.2%`、line `86.4%`、branch `71.6%`、violations `730`，Quality Gate `ERROR`（`new_violations=152`）；不宣称质量门闭环。
 - Sonar admin 密码已由用户轮换并经 `/api/authentication/validate` 验证；密码不写入仓库、日志或交接文档，仅保留“当前用户管理密码”用法说明。
+
+## Wave72 CDP 复核：新增启动阻塞
+
+- 重新启动 `pnpm tauri:dev:cdp` 时，`ridge-cli` 与 desktop Rust 构建均完成；WebView2 未启动，`beforeDevCommand` 因 `scripts/start-vite-dev.mjs:19` 访问 `target._events` 时 `target` 为 `undefined` 而以 exit `1` 结束（Node `v25.9.0`）。
+- 已回收本次 CDP 进程树；未触碰已安装 Ridge。该问题登记为下一迭代 `BUG-CDP-START-VITE-TARGET-01`，暂不宣称本轮 CDP smoke 成功；上一轮历史 CDP 证据仍仅作历史证据。
