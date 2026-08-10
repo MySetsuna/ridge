@@ -40,3 +40,22 @@
 - CodeGraph/本地证据裁决：Message Hub、PTY safety、frameId 防旧帧、移动端复合身份/有界队列、Explorer DTO 与 Kernel lifecycle 已有代码和确定性测试；不重复造第二套实现。
 - 本轮可继续落地者只剩外部验收：真实 Tauri WebView2 退出重接、真机 PWA/IME、原生 PowerShell 像素矩阵、跨卷中窗 ACL 注入、全项目 Sonar `>=80%`。这些不以模拟测试冒充闭环，登记为下一轮 user-track。
 - 本次 NLM 只读复问仍返回同一活跃 `conversation_id=a47d3199-c1f9-47f1-927c-ff2c4875b77d`（当前 MCP 未暴露独立 `chat_start`）；其新增建议仍为 Message Hub、非整数 DPR、移动 PWA、跨卷 ACL、Sonar Gate 与 Kernel 深根，均已由本地 CodeGraph/测试裁决或登记为外部证据，不新增重复代码。
+
+## Wave71 质量复验（2026-08-10）
+
+- 标准 `pnpm test:coverage:sonar` 在并发覆盖率临时文件清理处失败：`ENOENT coverage/.tmp/coverage-196.json`；未将该半成品当作基线。
+- 串行隔离覆盖率复验通过：`pnpm exec vitest run --coverage --coverage.processingConcurrency=1 --no-file-parallelism --coverage.reportsDirectory=.iteration/artifacts/coverage-wave71`，Statements `74.52%`、Branches `66.63%`、Functions `76.10%`、Lines `78.73%`；LCOV 经 `scripts/normalize-lcov.mjs` 规范化成功。
+- 主项目 Sonar 扫描已真实上传并由 CE `SUCCESS` 处理：最新任务 `3c78dac8-13b1-41a8-a65e-cdce622ee4cd`。项目指标为 coverage `80.2%`、line `86.4%`、branch `71.6%`、violations `730`（bugs `17`、vulnerabilities `21`、code smells `692`）。Quality Gate 仍 `ERROR`，因 `new_violations=152` 未归零；不能宣称质量门通过。
+- 本次扫描在隔离快照中仍报告缺失 `.svelte-kit/tsconfig.json` 的解析告警及无 SCM provider；扫描器/CE 终态成功，不影响上述指标，但真实 Tauri WebView2 重接、真机 PWA/IME、原生像素矩阵、跨卷中窗 ACL 注入、Sonar 全项目质量门仍属外部未闭环项。
+- 根据 Sonar 低风险告警，故障注入 rig 已移除空方法：记录 pane 字节、生命周期状态与 ICE candidate，并新增确定性单测；`faultInjection.test.ts` 与质量 helper 定向合计 `33/33` 通过。远端 E2E harness 的高认知复杂度历史项未作 speculative 大重构。
+
+## NLM Wave71 只读复问
+
+- 仍复用同一 `conversation_id=a47d3199-c1f9-47f1-927c-ff2c4875b77d`，MCP 代理配置有效；未改 notebook、source 或 note。
+- 新批次优先级：P0 Message Hub/Inbox/Delivery Engine 取代 PTY 字符注入为主协议；P0 ridge-term 非整数 DPR 物理对照与 Codex 录制逐帧单调性；P0 移动 PWA 后台/换网/IME/SW 真机闭环；P1 Workspace/Explorer 跨卷部分失败原子性；P1 Sonar 服务端 Gate 闭环。
+- NLM 对 Sonar 覆盖率的旧引用仍为历史快照，已由本轮真实 CE `SUCCESS` 与项目 API 的 `80.2%` coverage / Gate `ERROR` 裁决；不重复实现 Message Hub 或虚构真机/物理证据。
+
+## 新发现：Kernel PTY E2E 瞬态失败
+
+- 一次并行 `cargo test -p ridge-cli --test kernel_lifecycle_e2e` 曾在 `kernel_pty_survives_client_detach_and_replays_after_cursor` 的 `poll_domain_pty_output` 处报 `malformed kernel response`；同一测试精确重跑、串行全量、随后并行全量均通过（分别 `1/1`、`3/3`、`3/3`）。
+- 当前判定为未能复现的 Windows kernel HTTP/进程时序 flaky，已登记下一轮；不以重跑绿灯抹去首次失败，也不在无根因证据时改协议解析。

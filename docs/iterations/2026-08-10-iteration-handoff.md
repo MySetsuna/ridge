@@ -62,7 +62,7 @@
 
 ## Wave71：全源脚本质量与 Sonar 复扫（2026-08-10）
 
-- 将 executable verification harness 与 product helper 分开归类：`sonar.sources` 保留 `scripts`，真实 `src/packages` 测试继续由 `sonar.tests` 管理，CDP/E2E/remote smoke/dev harness 由 `sonar.test.inclusions` 明确列出；未通过排除 `scripts` 获得覆盖率。
+- 将 executable verification harness 与 product helper 分开归类：`sonar.sources` 保留 `scripts`，真实 `src/packages` 测试继续由 `sonar.tests` 管理，测试文件由 `**/*.test.*` / `**/*.spec.*` 排除；脚本 harness 保留在 source scan 以接受静态质量检查，未通过排除 `scripts` 获得覆盖率。
 - 对 build/asset/dev/signaling/review/publish helper 增加可注入函数边界与 main guard；新增 `scripts/quality-helpers.test.mjs`，聚焦回归 `25 passed / 0 failed`。本轮额外修复 Sonar 报告的脚本认知复杂度、promise-chain、正则回溯、嵌套模板、默认对象参数及回滚/manifest 分支问题。
 - 最新全源 Sonar：scanner/CE `SUCCESS`，CE task `3c78dac8-13b1-41a8-a65e-cdce622ee4cd`；`coverage=80.2%`、`line_coverage=86.4%`、`branch_coverage=71.6%`、`lines_to_cover=15236`、`uncovered_lines=2074`。Quality Gate `ERROR`：`new_coverage=81.7% OK`、`new_duplicated_lines_density=0.94426% OK`、`new_violations=152 ERROR`；项目总计 `violations=730`、`bugs=17`、`vulnerabilities=21`、`code_smells=692`。故仅覆盖率目标已达，质量门未达，不宣称完成。
 - `new_violations=152` 的主因仍为 Rust `S3776=61`、Rust `S107=13`，其次为脚本/TS `S2933/S3735/S5906/S6582/S3358` 等；修复须逐项重构/断言，不以 `NOSONAR`、排除源集或改 Gate 绕过。

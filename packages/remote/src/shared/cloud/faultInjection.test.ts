@@ -22,6 +22,25 @@ vi.mock('./apiClient', async (importOriginal) => {
 });
 
 describe('Cloud Remote deterministic fault injection', () => {
+  it('records pane traffic and exposes lifecycle/candidate transitions in the rig', async () => {
+    const transport = new AuthGatedTransport();
+    const states: string[] = [];
+    const panes: Array<[string, Uint8Array]> = [];
+    transport.onStateChange((state) => states.push(state));
+    transport.onPaneBytes((paneId, bytes) => panes.push([paneId, bytes]));
+    transport.connect();
+    transport.sendPaneBytes('pane-a', new Uint8Array([1, 2]));
+    transport.close();
+    expect(states).toEqual(['connecting', 'closed']);
+    expect(transport.paneBytes[0]).toEqual({ paneId: 'pane-a', bytes: new Uint8Array([1, 2]) });
+    expect(panes).toHaveLength(1);
+    expect([...panes[0][1]]).toEqual([1, 2]);
+
+    const pc = new FaultPeerConnection();
+    await pc.addIceCandidate({ candidate: 'candidate:test' });
+    expect(pc.iceCandidates).toEqual([{ candidate: 'candidate:test' }]);
+  });
+
   it('defers hello and pane recovery until the reconnected transport is authorized', () => {
     const transport = new AuthGatedTransport();
     const rpc = new RpcClient(transport);
