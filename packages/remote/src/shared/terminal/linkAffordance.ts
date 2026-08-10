@@ -47,13 +47,13 @@ export function parsePathWithLocation(text: string): {
   const pathPart = m[1];
   // Avoid treating "C:" as path with line — require more path after drive
   if (/^[A-Za-z]:$/.test(pathPart)) return { path: text };
-  if (/^[A-Za-z]:$/.test(pathPart.replace(/\\/g, ''))) return { path: text };
+  if (/^[A-Za-z]:$/.test(pathPart.replaceAll(/\\/g, ''))) return { path: text };
   // "http://..." must not parse as path:line
   if (/^https?:\/\//i.test(text) || /^file:\/\//i.test(text)) {
     return { path: text };
   }
-  const line = m[2] ? parseInt(m[2], 10) : undefined;
-  const col = m[3] ? parseInt(m[3], 10) : undefined;
+  const line = m[2] ? Number.parseInt(m[2], 10) : undefined;
+  const col = m[3] ? Number.parseInt(m[3], 10) : undefined;
   // Reject if path looks empty
   if (!pathPart || pathPart.length < 1) return { path: text };
   return { path: pathPart, line, col };

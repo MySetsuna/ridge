@@ -23,6 +23,7 @@ import {
 } from '@ridge/remote';
 import { parseSignal, isInboundSignal } from './signaling';
 import type { SignalMsg, SignalIn, Role, JsonValue } from './signaling';
+import { secureRandomUnit } from '../transport/random';
 import {
   E2eeSession,
   DIR_HOST_TO_CONTROLLER,
@@ -757,7 +758,7 @@ export class RidgeCloudHost {
     if (this.closed || this.reconnectTimer) return;
     const n = this.reconnectAttempts++;
     const base = backoffMs(n); // R17-RECONN shipped path
-    const delay = Math.round(base + base * 0.3 * Math.random()); // ±30% 抖动
+    const delay = Math.round(base + base * 0.3 * secureRandomUnit()); // ±30% 抖动
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.closed) return;

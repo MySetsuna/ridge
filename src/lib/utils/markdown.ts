@@ -18,9 +18,7 @@ import { marked, Renderer, type Tokens } from 'marked';
 // 改为首次高亮时再 `import('monaco-editor')`，与下方 mermaid 的懒加载范式一致。
 let monacoLoadPromise: Promise<typeof import('monaco-editor')> | null = null;
 function loadMonaco(): Promise<typeof import('monaco-editor')> {
-  if (!monacoLoadPromise) {
-    monacoLoadPromise = import('monaco-editor');
-  }
+  monacoLoadPromise ??= import('monaco-editor');
   return monacoLoadPromise;
 }
 
@@ -31,11 +29,11 @@ function loadMonaco(): Promise<typeof import('monaco-editor')> {
  */
 function escapeHtml(s: string): string {
   return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    .replaceAll(/&/g, '&amp;')
+    .replaceAll(/</g, '&lt;')
+    .replaceAll(/>/g, '&gt;')
+    .replaceAll(/"/g, '&quot;')
+    .replaceAll(/'/g, '&#39;');
 }
 
 /**
@@ -129,10 +127,10 @@ function buildRenderer(source: string): Renderer {
     const base = text
       .toLowerCase()
       .trim()
-      .replace(/<[^>]*>/g, '')
-      .replace(/[!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/^-+|-+$/g, '');
+      .replaceAll(/<[^>]*>/g, '')
+      .replaceAll(/[!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~]/g, '')
+      .replaceAll(/\s+/g, '-')
+      .replaceAll(/^-+|-+$/g, '');
     const seen = slugCounts.get(base) ?? 0;
     slugCounts.set(base, seen + 1);
     return seen === 0 ? base : `${base}-${seen}`;
@@ -143,7 +141,7 @@ function buildRenderer(source: string): Renderer {
     const rawInlineText = tokens
       .map((t) => ('text' in t && typeof t.text === 'string' ? t.text : ''))
       .join('');
-    const id = slugify(rawInlineText || text.replace(/<[^>]*>/g, ''));
+    const id = slugify(rawInlineText || text.replaceAll(/<[^>]*>/g, ''));
     const line = popSrcLine(raw);
     return `<h${depth} id="${escapeHtml(id)}" data-rg-md-src-line="${line}">${text}</h${depth}>`;
   };
@@ -258,7 +256,7 @@ function normaliseWindowsPathLinks(source: string): string {
   const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
   const NON_PATH_SCHEME_RE = /^(?:mailto|tel|sms|data|javascript):/i;
   for (let i = 0; i < parts.length; i += 2) {
-    parts[i] = parts[i].replace(/(\]\()([^)\s][^)]*)(\))/g, (full, open, target, close) => {
+    parts[i] = parts[i].replaceAll(/(\]\()([^)\s][^)]*)(\))/g, (full, open, target, close) => {
       const trimmed = target.trim();
       if (
         URL_SCHEME_RE.test(trimmed) ||
@@ -269,7 +267,7 @@ function normaliseWindowsPathLinks(source: string): string {
         return full;
       }
       if (!target.includes('\\')) return full;
-      return open + target.replace(/\\/g, '/') + close;
+      return open + target.replaceAll(/\\/g, '/') + close;
     });
   }
   return parts.join('');
@@ -295,7 +293,7 @@ export function stripFrontMatter(source: string): string {
   // fence check (`lines[0] === '---'`) to silently fail on `'---\r'`.
   // The rest of the pipeline works with LF-normalised strings (marked.js
   // is LF-agnostic), so this normalisation is safe end-to-end.
-  source = source.replace(/\r\n/g, '\n');
+  source = source.replaceAll(/\r\n/g, '\n');
   const lines = source.split('\n');
   const first = lines[0];
   // Must be EXACTLY the fence on the first line (no leading whitespace, no
@@ -384,8 +382,7 @@ let mermaidLoadPromise: Promise<typeof import('mermaid').default> | null = null;
 
 /** 懒加载 mermaid 模块，避免冷启动开销；首次遇到 mermaid 块时再 import。 */
 async function loadMermaid(): Promise<typeof import('mermaid').default> {
-  if (!mermaidLoadPromise) {
-    mermaidLoadPromise = (async () => {
+  mermaidLoadPromise ??= (async () => {
       const mod = await import('mermaid');
       const m = mod.default;
       // 主题对齐 Ridge 暗色基调；themeVariables 取实时计算样式，所以即使后续
@@ -413,8 +410,7 @@ async function loadMermaid(): Promise<typeof import('mermaid').default> {
         },
       });
       return m;
-    })();
-  }
+  })();
   return mermaidLoadPromise;
 }
 

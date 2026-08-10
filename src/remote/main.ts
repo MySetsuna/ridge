@@ -128,12 +128,14 @@ if ('serviceWorker' in navigator) {
       try { sessionStorage.clear(); } catch {}
       // IndexedDB clearing is async; best-effort for known DBs.
       try {
-        indexedDB.databases?.().then(dbs => {
+        indexedDB.databases?.().then((dbs) => {
           for (const db of dbs) {
             if (db.name) indexedDB.deleteDatabase(db.name);
           }
-        });
-      } catch {}
+        }).catch((error) => console.warn('[remote] IndexedDB cleanup failed', error));
+      } catch (error) {
+        console.warn('[remote] IndexedDB cleanup unavailable', error);
+      }
       // Reload to start fresh with new build.
       window.location.reload();
     }

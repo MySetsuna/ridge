@@ -60,7 +60,7 @@ describe('E2EE 握手帧编解码', () => {
     // Act
     const frame = encodeHandshakeFrame(kp.publicKey);
     // Assert
-    expect(frame.length).toBe(1 + PUBKEY_LEN);
+    expect(frame).toHaveLength(1 + PUBKEY_LEN);
     expect(frame[0]).toBe(HANDSHAKE_TAG);
     expect(frame.slice(1)).toEqual(kp.publicKey);
   });
@@ -90,7 +90,7 @@ describe('E2EE 密钥派生', () => {
     const b = generateEphemeralKeyPair();
     const keyFromA = deriveSessionKey(a.privateKey, a.publicKey, b.publicKey);
     const keyFromB = deriveSessionKey(b.privateKey, b.publicKey, a.publicKey);
-    expect(keyFromA.length).toBe(KEY_LEN);
+    expect(keyFromA).toHaveLength(KEY_LEN);
     expect(keyFromA).toEqual(keyFromB);
   });
 
@@ -107,7 +107,7 @@ describe('E2EE 密钥派生', () => {
 describe('E2EE 方向 nonce（§7.2）', () => {
   test('nonce = [dir, 0,0,0, counter_u64_le]', () => {
     const nonce = buildNonce(DIR_CONTROLLER_TO_HOST, 0x0102030405060708n);
-    expect(nonce.length).toBe(NONCE_LEN);
+    expect(nonce).toHaveLength(NONCE_LEN);
     expect(nonce[0]).toBe(DIR_CONTROLLER_TO_HOST);
     expect(nonce[1]).toBe(0);
     expect(nonce[2]).toBe(0);
@@ -129,7 +129,7 @@ describe('E2EE seal/open 往返', () => {
     const msg = new TextEncoder().encode('postcard-frame-payload');
     const sealed = host.seal(msg);
     // 线上帧 = nonce(12) || ciphertext_with_tag
-    expect(sealed.length).toBe(NONCE_LEN + msg.length + 16);
+    expect(sealed).toHaveLength(NONCE_LEN + msg.length + 16);
     const opened = controller.open(sealed);
     expect(opened).toEqual(msg);
   });
@@ -226,8 +226,8 @@ describe('B 层 0x02 设备签名握手帧（零信任 #2）', () => {
     const eph = generateEphemeralKeyPair().publicKey;
     const sig = new Uint8Array(SIGNATURE_LEN).fill(9);
     const frame = encodeSignedHandshakeFrame(eph, idPub, sig);
-    expect(frame.length).toBe(SIGNED_HANDSHAKE_LEN);
-    expect(frame.length).toBe(129);
+    expect(frame).toHaveLength(SIGNED_HANDSHAKE_LEN);
+    expect(frame).toHaveLength(129);
     expect(frame[0]).toBe(DEVICE_BOUND_TAG);
     expect(frame.slice(1, 33)).toEqual(eph);
     expect(frame.slice(33, 65)).toEqual(idPub);
@@ -356,7 +356,7 @@ describe('C 层 TOTP 信道绑定 MAC（零信任 #1）', () => {
     const c = generateEphemeralKeyPair().publicKey;
     const t = buildBindTranscript(h, c);
     const domain = new TextEncoder().encode(BIND_TRANSCRIPT_DOMAIN);
-    expect(t.length).toBe(domain.length + 64);
+    expect(t).toHaveLength(domain.length + 64);
     expect(t.slice(0, domain.length)).toEqual(domain);
   });
 
@@ -367,7 +367,7 @@ describe('C 层 TOTP 信道绑定 MAC（零信任 #1）', () => {
     );
     const a = computeBindTag('123456', transcript);
     expect(a).toEqual(computeBindTag('123456', transcript));
-    expect(a.length).toBe(32);
+    expect(a).toHaveLength(32);
   });
 
   test('computeBindTag：错误 6 位码算出不同 tag（中继不知码无法伪造）', () => {

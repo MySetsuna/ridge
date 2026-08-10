@@ -170,7 +170,7 @@ describe('cloudMux — oversized frame DoS cap (audit #4)', () => {
     const overhead = 1 + '{"p":""}'.length; // tag + JSON minus the padding string
     const pad = 'x'.repeat(MAX_JSON_FRAME_BYTES - overhead);
     const frame = encodeJsonFrame({ p: pad });
-    expect(frame.length).toBe(MAX_JSON_FRAME_BYTES);
+    expect(frame).toHaveLength(MAX_JSON_FRAME_BYTES);
     expect(demuxFrame(frame)).toEqual({ kind: 'json', json: { p: pad } });
   });
 

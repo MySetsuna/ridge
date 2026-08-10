@@ -271,7 +271,6 @@ export async function performTrustHandshake(
   return new Promise<boolean>((resolve) => {
     let settled = false;
     let phase: 'hello' | 'proof' = 'hello';
-    let pendingNonce: Uint8Array | null = null;
 
     const timer = setTimeout(() => {
       if (settled) return;
@@ -301,7 +300,6 @@ export async function performTrustHandshake(
           return;
         }
         phase = 'proof';
-        pendingNonce = nonce;
 
         // 3. 构造签名消息：prefix ‖ nonce ‖ bindTranscript
         const prefix = new TextEncoder().encode('ridge-totp-trust-v1');
@@ -333,9 +331,6 @@ export async function performTrustHandshake(
 
       // 忽略其它 CONTROL 帧（如 totp-result 从属于另一流程）
     });
-
-    // 使用 void 消除 eslint no-floating-promises（unsub 已在内部异步回调中使用）
-    void pendingNonce;
 
     // 1b. 发 totp-trust-hello（在设置好监听后立即发）
     adapter.sendSessionControl({ t: 'totp-trust-hello', pub: bytesToBase64(ctrlPub) });

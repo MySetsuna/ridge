@@ -455,17 +455,13 @@ export function handleRequest(
 					message: `setFont before init for pane ${request.paneId}`,
 				};
 			}
-			let cellW: number | undefined;
-			let cellH: number | undefined;
 			if (pane.renderer?.configure) {
 				try {
-					const metrics = pane.renderer.configure(
+					pane.renderer.configure(
 						request.family,
 						request.sizePx,
 						request.dpr,
 					);
-					cellW = metrics.cellW;
-					cellH = metrics.cellH;
 				} catch {
 					// renderer.configure threw — surface as error but don't crash
 					return {

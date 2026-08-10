@@ -36,7 +36,7 @@ describe('encodeChunks', () => {
     const msgs = encodeChunks(ct, 0);
     expect(msgs).toHaveLength(1);
     expect(msgs[0][0]).toBe(CHUNK_TAG.SINGLE);
-    expect(msgs[0].length).toBe(101);
+    expect(msgs[0]).toHaveLength(101);
   });
 
   it('恰好填满单条上限仍是 SINGLE，多 1 字节即切片', () => {

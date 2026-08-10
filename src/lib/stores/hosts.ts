@@ -233,7 +233,7 @@ export function registerHostTopologyLink(source: RegisteredHostLink): () => void
   const previous = registeredHostLinks.get(source.hostId);
   if (previous && previous.link !== source.link) {
     supersedeHostTopology(source.hostId);
-    void previous.link.disconnect();
+    previous.link.disconnect();
   }
   registeredHostLinks.set(source.hostId, source);
   publishPendingHost(source);

@@ -8,6 +8,7 @@
 // localStorage except as the `device` auth parameter.
 
 const DEVICE_KEY = 'ridge_remote_device';
+let fallbackDeviceId = 0;
 
 /** Get (or lazily create + persist) this browser's stable device id. Returns an
  *  empty string when storage is unavailable (e.g. private mode); the server then
@@ -21,7 +22,7 @@ export function getRemoteDeviceId(): string {
       id =
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
-          : `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+          : `dev-${Date.now().toString(36)}-${fallbackDeviceId++}`;
       localStorage.setItem(DEVICE_KEY, id);
     }
     return id;

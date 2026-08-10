@@ -494,7 +494,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		manager.sendData(PANE, new Uint8Array([7]));
 		manager.write(PANE, new Uint8Array([8]));
 		manager.paste(PANE, '粘贴');
-		expect(sent.length).toBe(3);
+		expect(sent).toHaveLength(3);
 		expect(manager.getKernel(PANE)).toBe(fixture.kernel);
 		manager.setVisualOffsetY(PANE, Number.NaN);
 		expect(fixture.pane.visualOffsetY).toBe(0);

@@ -21,6 +21,8 @@ vi.mock('./apiClient', async (importOriginal) => {
   };
 });
 
+vi.mock('../transport/random', () => ({ secureRandomUnit: () => 0 }));
+
 describe('Cloud Remote deterministic fault injection', () => {
   it('records pane traffic and exposes lifecycle/candidate transitions in the rig', async () => {
     const transport = new AuthGatedTransport();

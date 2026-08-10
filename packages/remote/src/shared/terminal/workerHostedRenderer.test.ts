@@ -165,7 +165,7 @@ describe('WorkerHostedRenderer — concurrency', () => {
 		const pA = renderer.ping('A');
 		const pB = renderer.ping('B');
 
-		expect(worker.calls.length).toBe(2);
+		expect(worker.calls).toHaveLength(2);
 		expect(renderer.pendingCount()).toBe(2);
 
 		// Deliver out of order — B first, then A. Each must resolve to its
@@ -291,7 +291,7 @@ describe('WorkerHostedRenderer — error paths', () => {
 		await expect(renderer.ping()).rejects.toMatchObject({
 			name: 'WorkerRendererError',
 		});
-		expect(worker.calls.length).toBe(callsBefore);
+		expect(worker.calls).toHaveLength(callsBefore);
 	});
 
 	it('terminate is idempotent', async () => {

@@ -78,7 +78,7 @@ const recentlyWritten = new Map<string, ReturnType<typeof setTimeout>>();
 
 /** Normalize for compare (windows backslash → forward slash). */
 function normalizeKey(path: string): string {
-	return path.replace(/\\/g, '/');
+	return path.replaceAll(/\\/g, '/');
 }
 
 /**

@@ -11,14 +11,13 @@
 // 故为安全降级（warn 后 no-op），不会抛错破坏页面。
 
 /** `openWith` 在浏览器里无意义（无法指定 OS 应用），忽略即可。 */
-type OpenWith = 'inAppBrowser' | string;
+type OpenWith = string;
 
 /**
  * 在浏览器新标签页打开外链。对应桌面 `openUrl`（OS 默认浏览器打开）。
  * `noopener` 切断 `window.opener` 引用，避免被打开页反向操纵本页（安全）。
  */
 export async function openUrl(url: string | URL, _openWith?: OpenWith): Promise<void> {
-  void _openWith;
   const href = typeof url === 'string' ? url : url.toString();
   if (typeof window !== 'undefined') {
     window.open(href, '_blank', 'noopener');
@@ -31,7 +30,6 @@ export async function openUrl(url: string | URL, _openWith?: OpenWith): Promise<
  * 仅记录降级、不尝试把裸路径塞进 `window.open`（会被当作相对 URL，无意义）。
  */
 export async function openPath(path: string, _openWith?: string): Promise<void> {
-  void _openWith;
   console.warn('[tauriShim/opener] openPath is not supported in web-remote mode', path);
 }
 

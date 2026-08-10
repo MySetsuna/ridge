@@ -28,7 +28,6 @@ const sw = self as unknown as ServiceWorkerGlobalScope;
 // Check if the stored version matches the current build version.
 async function checkVersionAndNukeIfNeeded(): Promise<void> {
   try {
-    const stored = await sw.clients.matchAll({ includeUncontrolled: true });
     // We can't directly access localStorage from SW, so we use a cache key
     // as a version marker. If the marker cache doesn't exist or has a
     // different version, we nuke everything.

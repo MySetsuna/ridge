@@ -97,14 +97,14 @@ export function fileUrlToPath(href: string): string | null {
     let p = decodeURIComponent(u.pathname);
     // Windows file:///C:/...
     if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1);
-    return p.replace(/\//g, (m, offset) => (p.includes('\\') ? m : offset === 0 ? m : m));
+    return p;
   } catch {
     return null;
   }
 }
 
 export function looksOutsideWorkspace(path: string, root: string): boolean {
-  const norm = (s: string) => s.replace(/\\/g, '/').toLowerCase();
+  const norm = (s: string) => s.replaceAll(/\\/g, '/').toLowerCase();
   const p = norm(path);
   const r = norm(root).replace(/\/+$/, '');
   if (/^[a-z]:\//.test(p) || p.startsWith('/')) {
@@ -153,15 +153,15 @@ export function decodeUnderlineDataset(
 ): { row: number; c0: number; c1: number } | { row: number; osc8: true } | null {
   if (!value) return null;
   if (value.endsWith(':osc8')) {
-    const row = parseInt(value.split(':')[0]!, 10);
+    const row = Number.parseInt(value.split(':')[0]!, 10);
     if (Number.isNaN(row)) return null;
     return { row, osc8: true };
   }
   const parts = value.split(':');
   if (parts.length < 3) return null;
-  const row = parseInt(parts[0]!, 10);
-  const c0 = parseInt(parts[1]!, 10);
-  const c1 = parseInt(parts[2]!, 10);
+  const row = Number.parseInt(parts[0]!, 10);
+  const c0 = Number.parseInt(parts[1]!, 10);
+  const c1 = Number.parseInt(parts[2]!, 10);
   if ([row, c0, c1].some((n) => Number.isNaN(n))) return null;
   return { row, c0, c1 };
 }

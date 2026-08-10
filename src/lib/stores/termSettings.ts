@@ -9,8 +9,8 @@ function load(): number {
   if (typeof localStorage === 'undefined') return DEFAULT_FONT_SIZE;
   const raw = localStorage.getItem(FONT_SIZE_KEY);
   if (!raw) return DEFAULT_FONT_SIZE;
-  const n = parseInt(raw, 10);
-  return isNaN(n) ? DEFAULT_FONT_SIZE : Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, n));
+  const n = Number.parseInt(raw, 10);
+  return Number.isNaN(n) ? DEFAULT_FONT_SIZE : Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, n));
 }
 
 function persist(size: number): void {
