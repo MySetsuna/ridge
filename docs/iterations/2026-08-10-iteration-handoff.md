@@ -49,3 +49,13 @@
 - 聚焦回归为 `26/26`，全量回归 `202` 文件、`1894 passed / 1 skipped`；`pnpm check` 为 `0 errors / 0 warnings`。
 - 本波提交 `3d7981a6`，仅增测试，不改生产通信语义。
 - 本波使本地 V8 statements 从 `13284/18608` 提升至 `13330/18608`；Sonar `>=80%`、Quality Gate、PTY 五条件、第三方 Runtime/A2A 与现场 E2E 仍按上文保持 `ACTIVE`，不以本地 LCOV 替代。
+
+## Wave70 真实覆盖与适配边界（2026-08-10）
+
+- 新增确定性测试：`ridgeTheme` SSR/浏览器回退、`contextMenu` 焦点/resize、`TauriDataProvider` 文件/Git/搜索映射、`hostReconnect` IPC/取消/loop、Remote SidebarProvider 全适配出口、TerminalManager pointer motion/自动滚动/cancel。
+- 焦点回归：TerminalManager `27/27`、SidebarProvider `16/16`；全量 `pnpm test:coverage:sonar` exit `0`，`normalize-lcov.mjs` `ok=true`。
+- 最新本地 V8/LCOV：statements `13625/18608 = 73.22%`、branches `7600/11610 = 65.46%`、functions `2677/3536 = 75.70%`、lines `12271/15895 = 77.20%`。本地 LCOV 仍不替代 Sonar 项目指标。
+- 当前本地 SonarQube `26.7.0.124771` 与 scanner 均可用；产品源边界扫描（`src,packages,src-tauri/src`，沿用既有配置排除测试/构建物）scanner/CE 均 `SUCCESS`，CE task `bf37aa7a-d256-44a1-90e1-65bab8949092`，项目 coverage `80.2%`、line `86.5%`、branch `71.3%`，但 Quality Gate `ERROR`：`new_coverage=86.8% OK`、`new_duplicated_lines_density=1.06625% OK`、`new_violations=126 ERROR`；项目 violations `672`、bugs `15`、vulnerabilities `14`、code smells `643`。
+- 同日完整源集（额外纳入 `scripts`，不以排除脚本冒充全项目）扫描 scanner/CE 亦成功，但项目 coverage `66.3%`、line `67.5%`、branch `64.3%`，Quality Gate `ERROR`（`new_coverage=17.8%`、`new_violations=155`）。故 `REQ-SONAR-COVERAGE-80-01` 仍 `ACTIVE`：产品源口径已过 80%，全源口径与 Quality Gate 尚未闭环。
+- 新问题审计：当前 new-period 查询 `172` 条，主要规则为 Rust `S3776/S107`、TypeScript `S2933/S3735` 等复杂度/类型安全问题；本波未通过改 Quality Gate、排除未测代码或静态估算绕过，需下一轮逐项修复并重扫。
+- 扫描日志：`.tools/sonar-scan-codex-20260810-wave70-product.log`、`.tools/sonar-scan-codex-20260810-wave70.log`；临时副本仅用于规避 Windows Rust CRLF scanner 偏移，未改工作树源码。凭证为一次性本地 token，未写入仓库。

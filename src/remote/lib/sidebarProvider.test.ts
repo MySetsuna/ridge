@@ -363,4 +363,76 @@ describe('remote sidebar query contract', () => {
       ['remote', 10, 'sidebar', 'ws-1', 'pane-1', 'main', 'search', '/repo'],
     ]);
   });
+
+  it('projects directory, graph, search, reads, and every sidebar mutation', async () => {
+    const client = new TestQueryClient();
+    const getFileTree = vi.fn(async (path: string) => ({
+      name: 'repo',
+      path,
+      is_dir: true,
+      children: [
+        { name: 'z.txt', path: `${path}/z.txt`, is_dir: false },
+        { name: 'src', path: `${path}/src`, is_dir: true, is_ignored: true, child_count: 2 },
+        { name: 'A.txt', path: `${path}/A.txt`, is_dir: false, is_ignored: false, child_count: 0 },
+      ],
+    }));
+    const gitStatus = vi.fn(async () => ({
+      is_git_repo: true,
+      current_branch: 'main',
+      has_upstream: true,
+      branches: ['main'],
+      staged: [{ name: 'staged.ts', status: 'A' }],
+      unstaged: [{ name: 'changed.ts', status: 'M' }],
+      untracked: ['new.ts'],
+      commits: [{ hash: 'head', msg: 'head', time: 'now', author: 'dev' }],
+    }));
+    const searchFiles = vi.fn(async () => [{ path: '/repo/src/a.ts', line: 2, column: 4, snippet: 'match' }]);
+    const dp = makeProvider({ getFileTree, gitStatus, searchFiles });
+    const sidebar = createWsSidebarProvider('/repo', dp, {
+      queryClient: client,
+      sessionId: 13,
+      workspaceId: 'ws',
+      paneId: 'pane',
+      branch: 'main',
+    });
+
+    await expect(sidebar.listDir('/repo')).resolves.toEqual({
+      path: '/repo',
+      parent: null,
+      entries: [
+        { name: 'src', path: '/repo/src', is_dir: true, is_ignored: true, child_count: 2 },
+        { name: 'A.txt', path: '/repo/A.txt', is_dir: false, is_ignored: false, child_count: 0 },
+        { name: 'z.txt', path: '/repo/z.txt', is_dir: false, is_ignored: null, child_count: null },
+      ],
+    });
+    await sidebar.refreshDir?.('/repo/src');
+    await expect(sidebar.gitStatus()).resolves.toMatchObject({
+      isGitRepo: true,
+      files: expect.arrayContaining([
+        { path: 'staged.ts', additions: 0, deletions: 0, status: 'A' },
+        { path: 'new.ts', additions: 0, deletions: 0, status: '??' },
+      ]),
+    });
+    await expect(sidebar.refreshGit?.()).resolves.toMatchObject({ currentBranch: 'main' });
+    await expect(sidebar.gitGraph?.()).resolves.toEqual({
+      branches: ['main'],
+      commits: [{ hash: 'head', subject: 'head', author: 'dev', date: 'now' }],
+    });
+    await expect(sidebar.refreshGitGraph?.()).resolves.toEqual(expect.objectContaining({ branches: ['main'] }));
+    await expect(sidebar.search?.('needle')).resolves.toEqual([
+      { file: '/repo/src/a.ts', line: 2, column: 4, content: 'match' },
+    ]);
+    await expect(sidebar.readFile?.('/repo/a.ts')).resolves.toBe('content');
+
+    await sidebar.gitStage?.(['staged.ts']);
+    await sidebar.gitUnstage?.(['staged.ts']);
+    await sidebar.gitCommit?.('message', true);
+    await sidebar.gitPush?.(true);
+    await expect(sidebar.gitDiff?.('src/a.ts')).resolves.toBe('');
+    expect(dp.gitStage).toHaveBeenCalledWith('/repo', ['staged.ts']);
+    expect(dp.gitUnstage).toHaveBeenCalledWith('/repo', ['staged.ts']);
+    expect(dp.gitCommit).toHaveBeenCalledWith('/repo', 'message', true);
+    expect(dp.gitPush).toHaveBeenCalledWith('/repo', true);
+    expect(dp.gitDiffFile).toHaveBeenCalledWith('/repo', 'src/a.ts', false, undefined);
+  });
 });

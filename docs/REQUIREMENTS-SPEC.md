@@ -1570,3 +1570,12 @@
 - 聚焦回归 `26/26`；全量 `pnpm test:coverage:sonar` 为 `202` 个测试文件、`1894 passed / 1 skipped`；`pnpm check` 为 `0 errors / 0 warnings`。
 - 本地 V8/LCOV：statements `13330/18608 = 71.63%`，branches `7366/11610 = 63.44%`，functions `2588/3536 = 73.19%`，lines `12003/15895 = 75.51%`；相较 Wave68 statements `+46`，距本地 80% 尚缺 `1557` 条。
 - 本波提交 `3d7981a6`，仅增确定性测试，不改生产通信语义。Sonar 真实扫描、Quality Gate、PTY 五条件原子运行时、第三方 Runtime/A2A 兼容性及现场 E2E 仍 `ACTIVE`；本地 LCOV 不冒充 Sonar 项目指标，coverage/`.iteration` 运行产物不纳入提交。
+
+## Wave70 真实 Sonar 复核与适配覆盖（2026-08-10）
+
+- 新增测试覆盖 `ridgeTheme`、`contextMenu`、`TauriDataProvider`、`hostReconnect`、Remote `SidebarProvider` 与 TerminalManager pointer/auto-scroll/cancel 边界；焦点 TerminalManager `27/27`、SidebarProvider `16/16`，全量 `pnpm test:coverage:sonar` exit `0`，`normalize-lcov.mjs` `ok=true`。
+- 最新本地 V8/LCOV：statements `13625/18608 = 73.22%`、branches `7600/11610 = 65.46%`、functions `2677/3536 = 75.70%`、lines `12271/15895 = 77.20%`；仅作测试证据，不替代 Sonar project metric。
+- 本地 SonarQube `26.7.0.124771` 与 scanner 可用。产品源扫描（`src,packages,src-tauri/src`，沿用既有测试/构建物排除）scanner/CE 成功，CE task `bf37aa7a-d256-44a1-90e1-65bab8949092`，项目 coverage `80.2%`、line `86.5%`、branch `71.3%`；Quality Gate `ERROR`，仅 `new_violations=126` 失败（`new_coverage=86.8% OK`、`new_duplicated_lines_density=1.06625% OK`）。
+- 完整源集另行纳入 `scripts` 扫描，scanner/CE 成功但项目 coverage `66.3%`、line `67.5%`、branch `64.3%`，Gate `ERROR`（`new_coverage=17.8%`、`new_violations=155`）。此结果证明不能用排除 `scripts` 的产品口径冒充全项目达标。
+- 当前 new-period issues 查询 `172` 条，开放问题总数 `672`；主要规则为 Rust `S3776/S107`、TypeScript `S2933/S3735` 等。未改 Quality Gate、未扩大排除、未用静态估算；`REQ-SONAR-COVERAGE-80-01` 仍 `ACTIVE`，待修复新问题后重扫并取得 Gate `OK`。
+- 证据日志：`.tools/sonar-scan-codex-20260810-wave70-product.log`、`.tools/sonar-scan-codex-20260810-wave70.log`。一次性本地 Sonar token 未落盘/入库；临时扫描副本未改工作树。

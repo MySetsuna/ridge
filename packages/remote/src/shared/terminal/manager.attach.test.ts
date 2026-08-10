@@ -29,11 +29,14 @@ const wasm = vi.hoisted(() => {
 		free = vi.fn();
 		isAltScreen = vi.fn(() => false);
 		isInlineTuiMode = vi.fn(() => false);
+		scrollUp = vi.fn();
+		scrollDown = vi.fn();
 		isAppCursorKeys = vi.fn(() => false);
 		isCursorVisible = vi.fn(() => true);
 		dumpVisibleText = vi.fn(() => ['visible line']);
 		cursorRow = vi.fn(() => 2);
 		cursorCol = vi.fn(() => 3);
+		lastAbsCsiPosition = vi.fn(() => null);
 		getSelectionText = vi.fn(() => 'selected');
 		hasSelection = vi.fn(() => true);
 		e2eEncodeCursorDeltaFrame = vi.fn((seq: number, row: number, col: number) =>
@@ -284,6 +287,52 @@ describe('TerminalManager attach lifecycle', () => {
 		expect(entry.resizeObserver.disconnect).toHaveBeenCalledOnce();
 		expect(container.removeEventListener).toHaveBeenCalledWith('focusin', entry.focusListener);
 		expect(container.removeEventListener).toHaveBeenCalledWith('pointermove', entry.pointerMoveListener);
+	});
+
+	it('batches TUI motion, host drag auto-scroll, modifier hover, and cancellation', async () => {
+		const manager = TerminalManager.instance({
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: false,
+		});
+		(manager as any).wasmReady = true;
+		const container = makeContainer();
+		await manager.attach('pane-a', container as unknown as HTMLElement, 'workspace-a');
+		const kernel = wasm.FakeKernel.instances[0]!;
+		const target = new FakeElement();
+		const sent: Uint8Array[] = [];
+		manager.onData('pane-a', (bytes) => sent.push(bytes));
+
+		let frame: ((time: number) => void) | undefined;
+		vi.stubGlobal('requestAnimationFrame', vi.fn((callback: (time: number) => void) => {
+			frame = callback;
+			return 1;
+		}));
+		const pointer = {
+			clientX: 35, clientY: 200, button: 0, buttons: 1, pointerId: 7,
+			ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, target,
+		};
+
+		kernel.mouseMode = 4;
+		container.emit('pointermove', { ...pointer, buttons: 0 });
+		frame?.(0);
+		container.emit('pointermove', { ...pointer, buttons: 0 });
+		frame?.(1);
+		expect(kernel.encodeMouse).toHaveBeenCalledWith(10, 3, 0, 2, false, false, false);
+		expect(sent.length).toBe(1);
+		container.emit('pointerup', pointer);
+		expect(kernel.encodeMouse).toHaveBeenCalledWith(10, 3, 3, 1, false, false, false);
+
+		kernel.mouseMode = 0;
+		container.emit('pointerdown', pointer);
+		container.emit('pointermove', { ...pointer, clientY: 399 });
+		vi.advanceTimersByTime(30);
+		expect(kernel.scrollDown).toHaveBeenCalledWith(1);
+		frame?.(2);
+		container.emit('keydown', { key: 'Control', ctrlKey: true, metaKey: false });
+		frame?.(3);
+		container.emit('pointercancel', pointer);
+		expect(target.releasePointerCapture).toHaveBeenCalledWith(7);
+		container.emit('pointerleave');
+		expect(container.style.cursor).toBe('');
 	});
 
 	it('exposes development diagnostics for PTY, kernel, theme, selection, and worker state', async () => {
