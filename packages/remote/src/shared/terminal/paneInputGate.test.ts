@@ -57,6 +57,22 @@ describe('paneInputGate', () => {
     await Promise.all([first, second]);
   });
 
+  it('rejects enqueue when the intent limit is full', async () => {
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const first = enqueuePaneInput('gate:full-error', async () => { await wait; }, { maxPending: 1 });
+
+    await expect(
+      enqueuePaneInput('gate:full-error', () => undefined, { maxPending: 1 }),
+    ).rejects.toMatchObject({
+      name: 'PaneInputGateFullError',
+      key: 'gate:full-error',
+      limit: 1,
+    });
+    release();
+    await first;
+  });
+
   it('runs a synchronous burst in the same turn when no async intent is pending', () => {
     const sent: string[] = [];
     expect(tryEnqueuePaneInputImmediate('gate:immediate', () => { sent.push('a'); })).toBe(true);

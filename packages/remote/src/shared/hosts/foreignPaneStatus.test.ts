@@ -39,6 +39,23 @@ describe('decideForeignPaneBadge', () => {
     }
   });
 
+  it('reconnects while the host is connecting or the pane subscription is pending', () => {
+    expect(
+      decideForeignPaneBadge({ ...base, hostStatus: 'connecting' }),
+    ).toEqual({
+      kind: 'reconnecting',
+      label: '主机断开 · 重连中',
+      attempt: 0,
+    });
+    expect(
+      decideForeignPaneBadge({ ...base, subscribed: false, reconnectAttempt: -2 }),
+    ).toEqual({
+      kind: 'reconnecting',
+      label: '订阅恢复中',
+      attempt: 0,
+    });
+  });
+
   it('error surfaces detail', () => {
     expect(
       decideForeignPaneBadge({
