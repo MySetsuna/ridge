@@ -18,47 +18,51 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 
-const args = process.argv.slice(2);
+export function parseArgs(args = []) { return { build: args.includes('--build') || args.includes('-b') }; }
 
-if (args.includes('--build') || args.includes('-b')) {
+export async function main({ args = process.argv.slice(2), execSyncImpl = execSync, spawnImpl = spawn, io = console } = {}) {
+if (parseArgs(args).build) {
   // Build mode: build remote app then start standalone binary
   console.log('[ridge-remote] Building remote app...');
   try {
-    execSync('pnpm build:remote', { cwd: root, stdio: 'inherit' });
+    execSyncImpl('pnpm build:remote', { cwd: root, stdio: 'inherit' });
   } catch {
-    console.error('[ridge-remote] Remote build failed');
-    process.exit(1);
+    io.error('[ridge-remote] Remote build failed');
+    return 1;
   }
 
   console.log('[ridge-remote] Building standalone server binary...');
   try {
-    execSync('cargo build --bin remote-server --manifest-path src-tauri/Cargo.toml', {
+    execSyncImpl('cargo build --bin remote-server --manifest-path src-tauri/Cargo.toml', {
       cwd: root,
       stdio: 'inherit',
     });
   } catch {
-    console.error('[ridge-remote] Standalone server build failed');
-    process.exit(1);
+    io.error('[ridge-remote] Standalone server build failed');
+    return 1;
   }
 
   const binaryPath = path.resolve(root, 'src-tauri', 'target', 'debug', 'remote-server.exe');
   console.log(`[ridge-remote] Starting standalone server: ${binaryPath}`);
-  const child = spawn(binaryPath, [], {
+  const child = spawnImpl(binaryPath, [], {
     cwd: root,
     stdio: 'inherit',
     env: { ...process.env },
   });
-  child.on('exit', (code) => process.exit(code ?? 0));
+  return new Promise((resolveExit) => child.on('exit', (code) => resolveExit(code ?? 0)));
 } else {
   // Dev mode: start Vite dev server for the remote app
-  console.log('[ridge-remote] Starting remote Vite dev server on port 5174...');
-  console.log('[ridge-remote] Make sure `pnpm tauri dev` is running in another terminal for the backend.');
-  console.log();
-  const child = spawn('pnpm', ['exec', 'vite', 'dev', '--config', 'vite.remote.config.js'], {
+  io.log('[ridge-remote] Starting remote Vite dev server on port 5174...');
+  io.log('[ridge-remote] Make sure `pnpm tauri dev` is running in another terminal for the backend.');
+  io.log();
+  const child = spawnImpl('pnpm', ['exec', 'vite', 'dev', '--config', 'vite.remote.config.js'], {
     cwd: root,
     stdio: 'inherit',
     shell: true,
     env: { ...process.env },
   });
-  child.on('exit', (code) => process.exit(code ?? 0));
+  return new Promise((resolveExit) => child.on('exit', (code) => resolveExit(code ?? 0)));
 }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) main().then((code) => process.exit(code));
