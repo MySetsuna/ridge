@@ -20,51 +20,54 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MAX_FONT_BYTES = 1024 * 1024; // 1MB —— codicon/flags 远低于此
 const FONT_RE = /\.(ttf|otf|woff2?)$/i;
 
-const SCAN_DIRS = [
+export const SCAN_DIRS = [
   'remote-dist',
   'target/debug/remote-dist',
   'target/release/remote-dist',
 ].map((p) => join(root, p));
 
 /** @param {string} dir @param {string[]} out */
-function walk(dir, out = []) {
+export function walk(dir, out = [], fsImpl = { readdirSync }) {
   let entries;
   try {
-    entries = readdirSync(dir, { withFileTypes: true });
+    entries = fsImpl.readdirSync(dir, { withFileTypes: true });
   } catch {
     return out; // 目录不存在（未构建/未 stage）—— 跳过
   }
   for (const e of entries) {
     const p = join(dir, e.name);
-    if (e.isDirectory()) walk(p, out);
+    if (e.isDirectory()) walk(p, out, fsImpl);
     else out.push(p);
   }
   return out;
 }
 
-let pruned = 0;
-for (const dir of SCAN_DIRS) {
-  for (const file of walk(dir)) {
-    if (!FONT_RE.test(file)) continue;
-    let size = 0;
-    try {
-      size = statSync(file).size;
-    } catch {
-      continue;
-    }
-    if (size > MAX_FONT_BYTES) {
+export function pruneOutputs({ dirs = SCAN_DIRS, fsImpl = { readdirSync, statSync, rmSync }, io = console } = {}) {
+  let pruned = 0;
+  for (const dir of dirs) {
+    for (const file of walk(dir, [], fsImpl)) {
+      if (!FONT_RE.test(file)) continue;
+      let size = 0;
       try {
-        rmSync(file);
-        pruned += 1;
-        console.log(
-          `[prune-stale-fonts] removed ${file} (${(size / 1024 / 1024).toFixed(2)}MB)`
-        );
-      } catch (e) {
-        console.warn(`[prune-stale-fonts] failed to remove ${file}:`, e.message);
+        size = fsImpl.statSync(file).size;
+      } catch {
+        continue;
+      }
+      if (size > MAX_FONT_BYTES) {
+        try {
+          fsImpl.rmSync(file);
+          pruned += 1;
+          io.log(
+            `[prune-stale-fonts] removed ${file} (${(size / 1024 / 1024).toFixed(2)}MB)`
+          );
+        } catch (e) {
+          io.warn(`[prune-stale-fonts] failed to remove ${file}:`, e.message);
+        }
       }
     }
   }
+  if (pruned === 0) io.log('[prune-stale-fonts] no oversized fonts found (clean)');
+  return pruned;
 }
-if (pruned === 0) {
-  console.log('[prune-stale-fonts] no oversized fonts found (clean)');
-}
+
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) pruneOutputs();
