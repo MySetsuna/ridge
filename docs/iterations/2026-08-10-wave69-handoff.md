@@ -18,6 +18,8 @@
 
 ## 仍开放的现场证据
 
+- 新鲜 WebView2 `RIDGE_CDP_DEVICE_SCALE_FACTOR=1.5` 运行已通过：`dpr=1.5`、`canvasCount=3`、`backingCanvasCount=3`；截图产物为 `.iteration/artifacts/dpr/desktop-dpr15-shot.png`。首次冷启动探针曾在应用 ready 前超时，待应用实际挂载后重跑通过，记录为 harness 启动竞态，非业务断言失败。
+
 - Tauri WebView2 外壳真实退出后，Kernel 同 PID 重新接管；当前只有 kernel lifecycle `3/3` 的等价进程证据。
 - 跨卷 `move_path` 在真实 copy/delete 窗口内注入 ACL；当前已证明 copy 成功后真实 `delete_path` 收到 Windows `os error 5` 且源/目标保留，未宣称未改生产 `move_path` 的中窗注入已通过。
 - 真实物理 iOS/Android、可信 HTTPS PWA、后台恢复、IME/键盘锚点；外部 Chrome CDP shell/profile 流程已通过，不能替代真机。
@@ -35,3 +37,4 @@
 - 候选为：Message Hub/PTY fallback、DPR 1.25/1.5 原生 PowerShell 对照、Codex 录制帧单调性、移动 PWA 后台/IME、跨卷部分失败、Sonar 全项目质量门、桌面外壳退出后的 Kernel 接管。
 - CodeGraph/本地证据裁决：Message Hub、PTY safety、frameId 防旧帧、移动端复合身份/有界队列、Explorer DTO 与 Kernel lifecycle 已有代码和确定性测试；不重复造第二套实现。
 - 本轮可继续落地者只剩外部验收：真实 Tauri WebView2 退出重接、真机 PWA/IME、原生 PowerShell 像素矩阵、跨卷中窗 ACL 注入、全项目 Sonar `>=80%`。这些不以模拟测试冒充闭环，登记为下一轮 user-track。
+- 本次 NLM 只读复问仍返回同一活跃 `conversation_id=a47d3199-c1f9-47f1-927c-ff2c4875b77d`（当前 MCP 未暴露独立 `chat_start`）；其新增建议仍为 Message Hub、非整数 DPR、移动 PWA、跨卷 ACL、Sonar Gate 与 Kernel 深根，均已由本地 CodeGraph/测试裁决或登记为外部证据，不新增重复代码。
