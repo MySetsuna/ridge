@@ -63,6 +63,17 @@ pub(crate) fn send_agent_message_in(
     crate::teammate::mcp::send_hub_message(state, app, request)
 }
 
+/// Publish one complete PTY safety observation for the current Agent pane.
+/// The command is local-only; the Hub still validates pane identity, live PTY,
+/// generation and lease before a fallback proof becomes selectable.
+#[tauri::command]
+pub fn publish_pty_runtime_snapshot(
+    state: State<'_, AppState>,
+    snapshot: Value,
+) -> Result<(), String> {
+    crate::teammate::mcp::publish_pty_runtime_snapshot(&state, snapshot)
+}
+
 /// 把一个工作区的 teammate 侧表映射为前端 `TopologySnapshot` JSON。
 /// `pub(crate)` 以便 teammate HTTP 路由 (`server.rs::route_get_team_profile`) 复用。
 /// `wid` 供 G1 暂停侧表查询（suspended pane 的 status 投影为 `Suspended`）。

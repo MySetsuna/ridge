@@ -662,6 +662,7 @@ fn teardown_pane_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: U
         kill_pty_process_tree(&mut handle);
     }
     state.clear_pty_scrollback(workspace_id, pane_id);
+    crate::teammate::mcp::clear_pty_runtime_snapshot(workspace_id, pane_id);
 }
 
 /// 确保指定 workspace/pane 存在 PTY（已存在则跳过，幂等）。

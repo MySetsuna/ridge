@@ -696,6 +696,7 @@ pub(crate) fn release_teammate_agent_in(
         .insert(pane_uuid, crate::state::PaneState::Idle);
     ws.teammate_agent_pane_map.retain(|_, v| *v != pane_uuid);
     drop(map);
+    crate::teammate::mcp::clear_pty_runtime_snapshot(wid, pane_uuid);
     crate::teammate::profiles::remove_by_pane(wid, pane_uuid);
     crate::teammate::suspend::clear_pane(wid, pane_uuid);
     crate::teammate::suspend::persist_for(wid);
