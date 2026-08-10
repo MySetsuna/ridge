@@ -59,3 +59,11 @@
 
 - 一次并行 `cargo test -p ridge-cli --test kernel_lifecycle_e2e` 曾在 `kernel_pty_survives_client_detach_and_replays_after_cursor` 的 `poll_domain_pty_output` 处报 `malformed kernel response`；同一测试精确重跑、串行全量、随后并行全量均通过（分别 `1/1`、`3/3`、`3/3`）。
 - 当前判定为未能复现的 Windows kernel HTTP/进程时序 flaky，已登记下一轮；不以重跑绿灯抹去首次失败，也不在无根因证据时改协议解析。
+
+## Wave72：最终质量回归与 CodeGraph 复核（2026-08-10）
+
+- 质量提交：`08d8c1c6`，覆盖 remote/cloud、pane/terminal、workspace 路径的 Sonar 机械清理、随机回退护栏、异步清理与对应断言；未提交 `.iteration/*`、`coverage/*` 或运行时凭据。
+- 最终回归：`pnpm test` 为 `207` 个文件、`1943 passed / 1 skipped`；`pnpm check` 为 `0 errors / 0 warnings`；`pnpm build` exit `0`，Vite `4222 modules`，仅既有动态导入/包体警告。
+- CodeGraph 复核确认 CloudHostPaneSource、ControllerCloudProvider、PaneRpcScheduler、TerminalManager geometry、workspaceScope 与构建门禁仍有调用链；`paneFeedScheduler.schedule` 仅能从公开 API 间接关联，已补“单帧单次调度”与“dispose 后回调失效”两条确定性测试。
+- Sonar 当前项目指标仍为 coverage `80.2%`、line `86.4%`、branch `71.6%`、violations `730`，Quality Gate `ERROR`（`new_violations=152`）；不宣称质量门闭环。
+- Sonar admin 密码已由用户轮换并经 `/api/authentication/validate` 验证；密码不写入仓库、日志或交接文档，仅保留“当前用户管理密码”用法说明。

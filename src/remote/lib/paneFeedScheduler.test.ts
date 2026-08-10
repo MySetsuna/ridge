@@ -2,6 +2,46 @@ import { describe, expect, it, vi } from 'vitest';
 import { PaneFeedScheduler } from './paneFeedScheduler';
 
 describe('PaneFeedScheduler', () => {
+  it('schedules one frame for a burst and drains it through the callback', () => {
+    let run: (() => void) | undefined;
+    let scheduled = 0;
+    const delivered: number[] = [];
+    const scheduler = new PaneFeedScheduler((_key, bytes) => {
+      delivered.push(...bytes);
+      return { accepted: true };
+    }, {
+      schedule: (callback) => {
+        scheduled += 1;
+        run = callback;
+      },
+      frameBudgetMs: Infinity,
+    });
+
+    scheduler.enqueue('pane', new Uint8Array([1, 2]));
+    scheduler.enqueue('pane', new Uint8Array([3, 4]));
+
+    expect(scheduled).toBe(1);
+    run?.();
+    expect(delivered).toEqual([1, 2, 3, 4]);
+    expect(scheduler.queuedBytes()).toBe(0);
+  });
+
+  it('ignores a scheduled callback after disposal', () => {
+    let run: (() => void) | undefined;
+    const delivered: number[] = [];
+    const scheduler = new PaneFeedScheduler((_key, bytes) => {
+      delivered.push(...bytes);
+      return { accepted: true };
+    }, { schedule: (callback) => { run = callback; } });
+
+    scheduler.enqueue('pane', new Uint8Array([1]));
+    scheduler.dispose();
+    run?.();
+
+    expect(delivered).toEqual([]);
+    expect(scheduler.queuedBytes()).toBe(0);
+  });
+
   it('serves the active pane first and bounds one drain slice', () => {
     const delivered: string[] = [];
     const scheduler = new PaneFeedScheduler((key, bytes) => {

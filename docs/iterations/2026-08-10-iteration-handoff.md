@@ -68,3 +68,9 @@
 - `new_violations=152` 的主因仍为 Rust `S3776=61`、Rust `S107=13`，其次为脚本/TS `S2933/S3735/S5906/S6582/S3358` 等；修复须逐项重构/断言，不以 `NOSONAR`、排除源集或改 Gate 绕过。
 - Agent 通信架构审计结论：Hub 的 PTY 五条件、TTL、generation/lease fencing 与确定性测试存在；桌面 `DesktopMcpHost::probe_delivery` 生产路径只有 MCP pull 与已注册 Runtime/A2A probe，尚无一个同时读取 `agent_idle`、`terminal.mode=agent_prompt`、`pending_approval`、前台目标进程、用户输入竞争并以 revision/epoch 发布的运行时采样器，故 PTY 仍 fail-closed。第三方 CLI 私有 Runtime/A2A 实测未进行，亦未宣称兼容；本轮不向 Codex 外 CLI/Agent 发消息。
 - 本轮 `pnpm check`：`0 errors / 0 warnings`。既有 `coverage/*`、`.iteration/*`、E2E artifact 及 `packages/remote/src/shared/cloud/__faultRig.ts`、`faultInjection.test.ts` 脏改动均不纳入本轮提交。
+
+## Wave72 最终回归（2026-08-10）
+
+- 质量提交 `08d8c1c6`：remote/cloud、pane/terminal、workspace 质量路径与随机回退护栏；新增 `paneFeedScheduler` 调度/dispose 分支测试。
+- `pnpm test`：`207` files，`1943 passed / 1 skipped`；`pnpm check`：`0 errors / 0 warnings`；`pnpm build`：exit `0`，Vite `4222 modules`。
+- CodeGraph 复核未见 CloudHostPaneSource、ControllerCloudProvider、PaneRpcScheduler、TerminalManager geometry、workspaceScope 或构建门禁断链；外部 Tauri WebView2 重连、真机 PWA/IME、原生 DPR、跨卷 ACL 中窗、Sonar Gate 仍为开放外部证据项。
