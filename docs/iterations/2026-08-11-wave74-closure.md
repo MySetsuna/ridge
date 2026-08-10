@@ -47,3 +47,9 @@ NotebookLM 仅作候选来源。对基线笔记“Agent 通信架构重构”做
 - `node scripts/cdp-dpr-e2e.mjs`：通过；`dpr=1.5`，canvas/backing canvas 均存在。
 - `node scripts/cdp-remote-mobile-agents.mjs`：通过（114.7s）；真实 `/verify`、移动 SPA、数据面命令、Team/终端能力降级与 shell 入口均完成验证。
 - 早先移动命令行超时源于调用方等待上限，不是产品断言失败；残留 Playwright Chrome 已按精确 PID 树清理。`tauri-dev-cdp` 已固定 `CARGO_TARGET_DIR`、显式 `--bin rdg`，并拒绝时间戳早于 LAN host 源码的 stale sidecar。
+
+## Sonar 扫描环境诊断补充
+
+- 权威项目 API 仍为 analysis `9abdb231-3503-4f6e-b8ee-48d28f7086dc`：Quality Gate `OK`、coverage `80.4%`、line `86.7%`、branch `71.5%`、`new_violations=0`、开放 issue `1`。唯一开放项为历史 `Web:PageWithoutTitleCheck`；当前 `src/remote/index.html` 已有 `<title>`，需后续成功上传一次分析刷新旧 issue。
+- 为重扫清理出的环境首因：`scripts/perf-runs` 中 356MB 轨迹文件已纳入排除；Rust Clippy 开关实为 `sonar.rust.clippy.enabled`；JS/TS bridge 在 1.7GB heap 时明确 OOM，4GB 运行可完成 480 文件分析，但本机资源/计划任务回收使后续上传未稳定闭合。临时 token 均已撤销，未写入仓库。
+- 该环境诊断不改变 Quality Gate、不扩大产品源排除；不得把未上传 scanner 日志作为新的 Sonar 成功证据。

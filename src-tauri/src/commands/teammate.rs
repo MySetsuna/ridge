@@ -74,6 +74,17 @@ pub fn publish_pty_runtime_snapshot(
     crate::teammate::mcp::publish_pty_runtime_snapshot(&state, snapshot)
 }
 
+/// Return the current Kernel-owned Agent fencing identity for one live pane.
+/// Ordinary shell panes return `null`; no UI metadata is promoted to identity.
+#[tauri::command]
+pub fn get_pty_runtime_identity(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    pane_id: String,
+) -> Result<Value, String> {
+    crate::teammate::mcp::pty_runtime_identity(&state, &workspace_id, &pane_id)
+}
+
 /// 把一个工作区的 teammate 侧表映射为前端 `TopologySnapshot` JSON。
 /// `pub(crate)` 以便 teammate HTTP 路由 (`server.rs::route_get_team_profile`) 复用。
 /// `wid` 供 G1 暂停侧表查询（suspended pane 的 status 投影为 `Suspended`）。

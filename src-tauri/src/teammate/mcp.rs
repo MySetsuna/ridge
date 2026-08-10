@@ -51,6 +51,13 @@ struct DesktopPtyRuntimeRecord {
     snapshot: HubPtyRuntimeSnapshot,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PtyRuntimeIdentity {
+    pub agent_id: String,
+    pub generation: u64,
+    pub lease: String,
+}
+
 static DESKTOP_PTY_RUNTIME: OnceLock<Mutex<HashMap<(Uuid, Uuid), DesktopPtyRuntimeRecord>>> =
     OnceLock::new();
 
@@ -130,6 +137,79 @@ fn parse_pty_runtime_request(
     ))
 }
 
+/// Resolve the pane's current fencing identity from the Kernel roster. The
+/// desktop workspace map proves pane ownership; Kernel identity proves that
+/// the generation/lease belongs to the currently running Agent session.
+fn kernel_identity_for_pane(
+    identities: &[ridge_core::teammate::communication::AgentIdentity],
+    workspace_id: Uuid,
+    pane_id: Uuid,
+) -> Option<PtyRuntimeIdentity> {
+    identities
+        .iter()
+        .find(|identity| {
+            identity.workspace_id == workspace_id.to_string()
+                && identity.pane_id == pane_id.to_string()
+                && identity.online
+                && identity.generation != 0
+                && !identity.lease.trim().is_empty()
+        })
+        .map(|identity| PtyRuntimeIdentity {
+            agent_id: identity.agent_id.clone(),
+            generation: identity.generation,
+            lease: identity.lease.clone(),
+        })
+}
+
+fn current_pty_runtime_identity(
+    state: &crate::state::AppState,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+) -> Result<Option<PtyRuntimeIdentity>, String> {
+    {
+        let workspaces = state.workspaces.read();
+        let Some(workspace) = workspaces.get(&workspace_id) else {
+            return Err(format!("workspace {workspace_id} does not exist"));
+        };
+        if !workspace.pane_tree.panes.contains_key(&pane_id)
+            || !workspace.terminals.contains_key(&pane_id)
+        {
+            return Ok(None);
+        }
+    }
+    let Some(endpoint) = crate::kernel_lifecycle::read_endpoint() else {
+        return Ok(None);
+    };
+    let roster = ridge_kernel::client::read_domain_agent_roster(&endpoint)?;
+    Ok(kernel_identity_for_pane(
+        &roster.agent_identities,
+        workspace_id,
+        pane_id,
+    ))
+}
+
+/// Desktop-only identity read used by the production sampler. Returning null
+/// for an ordinary shell pane is intentional; the sampler must not invent an
+/// Agent identity from a pane title or process name.
+pub(crate) fn pty_runtime_identity(
+    state: &crate::state::AppState,
+    workspace_id: &str,
+    pane_id: &str,
+) -> Result<Value, String> {
+    let workspace_id = Uuid::parse_str(workspace_id).map_err(|_| "workspaceId must be a UUID")?;
+    let pane_id = Uuid::parse_str(pane_id).map_err(|_| "paneId must be a UUID")?;
+    let identity = current_pty_runtime_identity(state, workspace_id, pane_id)?;
+    Ok(identity
+        .map(|identity| {
+            json!({
+                "agentId": identity.agent_id,
+                "generation": identity.generation,
+                "lease": identity.lease,
+            })
+        })
+        .unwrap_or(Value::Null))
+}
+
 /// Accept a complete host-observed PTY sample only after checking the current
 /// pane identity and live PTY. The sample is then published to the same Hub
 /// registry used by delivery selection; no UI-local proof can bypass it.
@@ -143,15 +223,20 @@ pub(crate) fn publish_pty_runtime_snapshot(
         let Some(workspace) = workspaces.get(&workspace_id) else {
             return Err(format!("workspace {workspace_id} does not exist"));
         };
-        workspace
-            .teammate_agent_pane_map
-            .get(&record.agent_id)
-            .is_some_and(|mapped| *mapped == pane_id)
-            && workspace.pane_tree.panes.contains_key(&pane_id)
+        workspace.pane_tree.panes.contains_key(&pane_id)
             && workspace.terminals.contains_key(&pane_id)
     };
     if !live_and_owned {
         return Err("PTY runtime snapshot identity is not a live Agent pane".into());
+    }
+    let Some(identity) = current_pty_runtime_identity(state, workspace_id, pane_id)? else {
+        return Err("PTY runtime snapshot has no current Kernel Agent identity".into());
+    };
+    if identity.agent_id != record.agent_id
+        || identity.generation != record.generation
+        || identity.lease != record.lease
+    {
+        return Err("PTY runtime snapshot identity is stale".into());
     }
 
     let mut records = desktop_pty_runtime()
@@ -578,11 +663,7 @@ impl McpHost for DesktopMcpHost {
         let Some(workspace) = workspaces.get(&workspace_id) else {
             return Ok(None);
         };
-        let live_and_owned = workspace
-            .teammate_agent_pane_map
-            .get(agent_id)
-            .is_some_and(|mapped| *mapped == pane_id)
-            && workspace.pane_tree.panes.contains_key(&pane_id)
+        let live_and_owned = workspace.pane_tree.panes.contains_key(&pane_id)
             && workspace.terminals.contains_key(&pane_id);
         if !live_and_owned {
             return Ok(None);
@@ -1036,5 +1117,50 @@ mod tests {
         });
         let (_, _, record) = parse_pty_runtime_request(&args).expect("snake case sample");
         assert!(record.snapshot.safety.is_safe());
+    }
+
+    #[test]
+    fn kernel_identity_for_pane_is_fenced_without_ui_agent_mapping() {
+        let workspace_id = Uuid::new_v4();
+        let pane_id = Uuid::new_v4();
+        let identity = |workspace_id: Uuid,
+                        pane_id: Uuid,
+                        online: bool,
+                        generation: u64,
+                        lease: &str| {
+            ridge_core::teammate::communication::AgentIdentity {
+                agent_id: format!("kernel:{pane_id}"),
+                session_id: "session-1".into(),
+                workspace_id: workspace_id.to_string(),
+                pane_id: pane_id.to_string(),
+                cwd: "C:/workspace".into(),
+                executable: "codex".into(),
+                argv: Vec::new(),
+                generation,
+                lease: lease.into(),
+                lifecycle: ridge_core::teammate::communication::AgentLifecycle::Online,
+                online,
+                last_seen_unix_ms: 1,
+                capabilities: vec!["messages".into()],
+            }
+        };
+        let identities = vec![
+            identity(Uuid::new_v4(), pane_id, true, 2, "wrong-workspace"),
+            identity(workspace_id, Uuid::new_v4(), true, 2, "wrong-pane"),
+            identity(workspace_id, pane_id, false, 2, "offline"),
+            identity(workspace_id, pane_id, true, 0, "zero-generation"),
+            identity(workspace_id, pane_id, true, 2, " "),
+            identity(workspace_id, pane_id, true, 3, "lease-3"),
+        ];
+
+        assert_eq!(
+            kernel_identity_for_pane(&identities, workspace_id, pane_id),
+            Some(PtyRuntimeIdentity {
+                agent_id: format!("kernel:{pane_id}"),
+                generation: 3,
+                lease: "lease-3".into(),
+            })
+        );
+        assert!(kernel_identity_for_pane(&identities, workspace_id, Uuid::new_v4()).is_none());
     }
 }
