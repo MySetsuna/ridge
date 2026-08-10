@@ -4,9 +4,9 @@
  *
  * 注：工作区合并（S1）后产物目录在工作区根 target/，不再是 src-tauri/target/。
  */
-import { copyFileSync, mkdirSync, existsSync } from 'fs';
-import { join, dirname, resolve } from 'path';
-import { fileURLToPath } from 'url';
+import { copyFileSync, mkdirSync, existsSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 

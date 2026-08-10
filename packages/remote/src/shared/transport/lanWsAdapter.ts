@@ -78,16 +78,16 @@ export class LanWsAdapter implements ChannelTransport {
     this.lastAuth = this.deriveAuth(mapState(conn.state()));
     this.detachers.push(
       conn.onMessage((msg) => this.handleInbound(msg as ControlFrame)),
+      conn.onRawBytes((pane, bytes) => this.emitPaneBytes(
+        typeof pane === 'string' ? pane : pane.paneId,
+        bytes,
+      )),
+      conn.onStateChange((s: ConnectionState) => this.handleConnState(s)),
     );
-    this.detachers.push(conn.onRawBytes((pane, bytes) => this.emitPaneBytes(
-      typeof pane === 'string' ? pane : pane.paneId,
-      bytes,
-    )));
     // Single upstream state subscription fans out to BOTH state and auth
     // listeners (mirrors CloudWebrtcAdapter). Owning our own listener Sets means
     // several consumers (L2 RpcClient + the UI) can subscribe independently
     // rather than clobbering one upstream slot.
-    this.detachers.push(conn.onStateChange((s: ConnectionState) => this.handleConnState(s)));
   }
 
   /** LAN auth derivation: `connected` ⇒ authorized (token verified at upgrade),

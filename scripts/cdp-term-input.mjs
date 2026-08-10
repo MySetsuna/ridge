@@ -7,7 +7,6 @@
 //
 // Usage: node scripts/cdp-term-input.mjs            # default emoji test sheet
 //        node scripts/cdp-term-input.mjs "echo hi"  # custom command
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import http from 'node:http';
 import { resolveCdpPort } from './cdp-port.mjs';
 
@@ -50,13 +49,18 @@ async function cdpEnableRemote() {
   const ev = async (expr) => { const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); return r.result?.result?.value; };
   await ev(`window.__TAURI__.core.invoke("set_remote_enabled",{enabled:true})`);
   let info = null;
-  for (let i = 0; i < 20; i++) { info = await ev(`window.__TAURI__.core.invoke("get_remote_info")`); if (info && info.port > 0 && info.ready) break; await new Promise((r) => setTimeout(r, 500)); }
+  for (let i = 0; i < 20; i++) {
+    info = await ev(`window.__TAURI__.core.invoke("get_remote_info")`);
+    if (info?.port > 0 && info.ready) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
   ws.close();
-  if (!info || !info.port) throw new Error('remote not ready');
+  if (!info?.port) throw new Error('remote not ready');
   return info;
 }
 
-(async () => {
+try {
+  await (async () => {
   const info = await cdpEnableRemote();
   const url = `wss://127.0.0.1:${info.port}/ws?code=${info.totpCode}&device=cdp-input`;
   const ws = new WebSocket(url);
@@ -83,4 +87,8 @@ async function cdpEnableRemote() {
     setTimeout(() => { sendJson({ type: 'stdin', workspaceId: workspace, paneId: pane, data: cmd + '\r' }); }, 300);
     setTimeout(() => { clearTimeout(tmo); finish(true, 'injected ✓'); }, 1500);
   }
-})().catch((e) => { console.error('FAIL:', e.message); process.exit(1); });
+  })();
+} catch (e) {
+  console.error('FAIL:', e.message);
+  process.exit(1);
+}

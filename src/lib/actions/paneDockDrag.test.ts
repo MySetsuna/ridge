@@ -95,7 +95,7 @@ describe('paneDockDrag lifecycle', () => {
 
 	it('switches workspace after hovering a foreign workspace tab', async () => {
 		const node = nodeFixture();
-		const tab = { getAttribute: vi.fn(() => 'ws-2') };
+		const tab = { dataset: { wsTabId: 'ws-2' } };
 		const element = { closest: vi.fn(() => tab) };
 		(document.elementFromPoint as ReturnType<typeof vi.fn>).mockReturnValue(element);
 		const action = paneDockDrag(node, { paneId: 'pane-a' });

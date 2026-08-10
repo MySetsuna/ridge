@@ -10,5 +10,9 @@ export function unknownText(value: unknown, fallback = ''): string {
       return fallback;
     }
   }
-  return `${value}`;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return value.toString();
+  }
+  if (typeof value === 'symbol') return value.description ?? fallback;
+  return fallback;
 }

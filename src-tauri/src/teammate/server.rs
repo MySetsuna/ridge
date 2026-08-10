@@ -982,13 +982,15 @@ async fn route_split(
                         &ctx.state,
                         wid,
                         pane_id,
-                        None,
-                        spawn_cwd.as_deref(),
-                        None,
-                        Some(sc.clone()),
-                        Some(idle_idx),
-                        None,
-                        None,
+                        terminal::EnsurePtyOptions {
+                            shell: None,
+                            cwd: spawn_cwd.as_deref(),
+                            initial_command: None,
+                            structured_command: Some(sc.clone()),
+                            tmux_pane_index: Some(idle_idx),
+                            ready_tx: None,
+                            trace_id: None,
+                        },
                     ) {
                         let _ = release_pane(&ctx.state, wid, pane_id);
                         return (
@@ -1180,13 +1182,15 @@ async fn route_split(
                 &ctx.state,
                 wid,
                 new_id,
-                None,
-                cwd.as_deref(),
-                initial_cmd,
-                structured_cmd,
-                Some(new_idx),
-                Some(ready_tx),
-                Some(trace_id.clone()),
+                terminal::EnsurePtyOptions {
+                    shell: None,
+                    cwd: cwd.as_deref(),
+                    initial_command: initial_cmd,
+                    structured_command: structured_cmd,
+                    tmux_pane_index: Some(new_idx),
+                    ready_tx: Some(ready_tx),
+                    trace_id: Some(trace_id.clone()),
+                },
             ) {
                 {
                     let mut map = ctx.state.workspaces.write();
@@ -1394,30 +1398,31 @@ async fn route_capture(
     // `get_pty_scrollback_tail` now takes byte budget; pull generously and
     // trim to the requested line count here to preserve the old HTTP shape.
     let chunk = ctx.state.get_pty_scrollback_tail(wid, pid, 512 * 1024);
-    let text = if lines == 0 {
-        String::new()
-    } else {
-        // Walk from the end finding the Nth '\n'; return the tail after it.
-        let bytes = chunk.bytes.as_bytes();
-        let mut nl_seen = 0usize;
-        let mut cut = 0usize;
-        for i in (0..bytes.len()).rev() {
-            if bytes[i] == b'\n' {
-                nl_seen += 1;
-                if nl_seen == lines {
-                    cut = i + 1;
-                    break;
-                }
+    let text = tail_lines(chunk.bytes, lines);
+    (StatusCode::OK, text).into_response()
+}
+
+fn tail_lines(text: String, lines: usize) -> String {
+    if lines == 0 {
+        return String::new();
+    }
+    let bytes = text.as_bytes();
+    let mut newline_count = 0;
+    let mut cut = 0;
+    for index in (0..bytes.len()).rev() {
+        if bytes[index] == b'\n' {
+            newline_count += 1;
+            if newline_count == lines {
+                cut = index + 1;
+                break;
             }
         }
-        if nl_seen < lines {
-            chunk.bytes
-        } else {
-            // `cut` lands on a UTF-8 boundary (immediately after '\n').
-            chunk.bytes[cut..].to_string()
-        }
-    };
-    (StatusCode::OK, text).into_response()
+    }
+    if newline_count < lines {
+        text
+    } else {
+        text[cut..].to_string()
+    }
 }
 
 #[derive(Deserialize)]
@@ -1445,16 +1450,7 @@ async fn route_send_keys(
         Ok(w) => w,
         Err(r) => return workspace_reject_response(&ctx, r),
     };
-    let pane_idx = if body.use_tmux_current_pane {
-        ctx.state
-            .workspaces
-            .read()
-            .get(&wid)
-            .map(|ws| ws.teammate_tmux_pane_cursor)
-            .unwrap_or(0)
-    } else {
-        body.pane.unwrap_or(0)
-    };
+    let pane_idx = spawn_pane_index(&ctx.state, wid, body.pane, body.use_tmux_current_pane);
     let pid = match pane::teammate_pane_uuid_at_index(&ctx.state, wid, pane_idx) {
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
@@ -1527,6 +1523,80 @@ struct SpawnProcessBody {
     agent_id: Option<String>,
 }
 
+fn spawn_pane_index(
+    state: &AppState,
+    workspace_id: uuid::Uuid,
+    pane: Option<usize>,
+    use_current: bool,
+) -> usize {
+    if use_current {
+        state
+            .workspaces
+            .read()
+            .get(&workspace_id)
+            .map(|ws| ws.teammate_tmux_pane_cursor)
+            .unwrap_or(0)
+    } else {
+        pane.unwrap_or(0)
+    }
+}
+
+fn is_teammate_owned(state: &AppState, workspace_id: uuid::Uuid, pane_id: uuid::Uuid) -> bool {
+    state
+        .workspaces
+        .read()
+        .get(&workspace_id)
+        .is_some_and(|ws| ws.teammate_owned_panes.contains(&pane_id))
+}
+
+fn inject_workspace_context(
+    state: &AppState,
+    workspace_id: uuid::Uuid,
+    pane_id: uuid::Uuid,
+    cwd: Option<&std::path::Path>,
+    is_agent: bool,
+    command: &mut terminal::StructuredPtyCommand,
+) {
+    if !is_agent {
+        return;
+    }
+    let root = cwd
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| {
+            state
+                .workspaces
+                .read()
+                .get(&workspace_id)
+                .and_then(|ws| ws.pane_tree.panes.get(&pane_id).and_then(|p| p.cwd.clone()))
+        })
+        .unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
+    let files = crate::teammate::context_files::scan_context_files(&root);
+    if files.is_empty() {
+        return;
+    }
+    let block = crate::teammate::context_files::format_context_block(&files);
+    let truncated = if block.len() > 32 * 1024 {
+        format!("{}…\n", &block[..32 * 1024])
+    } else {
+        block
+    };
+    command
+        .env
+        .insert("RIDGE_WORKSPACE_CONVENTIONS".into(), truncated);
+    let names: Vec<&str> = files.iter().map(|file| file.name.as_str()).collect();
+    command
+        .env
+        .insert("RIDGE_CONTEXT_FILES".into(), names.join(","));
+    tracing::info!(
+        target: "ridge::teammate",
+        root = %root.display(),
+        files = ?names,
+        "R17-CTX injected workspace conventions into agent env"
+    );
+}
+
 async fn route_spawn_process(
     State(ctx): State<TeammateCtx>,
     headers: HeaderMap,
@@ -1559,20 +1629,12 @@ async fn route_spawn_process(
     // pane's PTY (ensure_pane_pty_workspace). If pane_idx (default 0 / stale
     // cursor) resolves to the originating host pane, that replacement kills the
     // parent agent. Only teammate-owned panes are valid spawn targets.
-    {
-        let owned = ctx
-            .state
-            .workspaces
-            .read()
-            .get(&wid)
-            .is_some_and(|ws| ws.teammate_owned_panes.contains(&pid));
-        if !owned {
-            return (
-                StatusCode::BAD_REQUEST,
-                "refusing to spawn onto a non-teammate pane",
-            )
-                .into_response();
-        }
+    if !is_teammate_owned(&ctx.state, wid, pid) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "refusing to spawn onto a non-teammate pane",
+        )
+            .into_response();
     }
     let cwd = body
         .cwd
@@ -1585,45 +1647,14 @@ async fn route_spawn_process(
         args: body.args,
         env: body.env,
     };
-    // R17-CTX: when launching an agent, inject workspace AGENTS.md/CLAUDE.md
-    // via env so the process (or wrapper) can prepend conventions.
-    if body.is_agent {
-        let root = cwd
-            .clone()
-            .or_else(|| {
-                ctx.state
-                    .workspaces
-                    .read()
-                    .get(&wid)
-                    .and_then(|ws| ws.pane_tree.panes.get(&pid).and_then(|p| p.cwd.clone()))
-            })
-            .unwrap_or_else(|| {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
-        let files = crate::teammate::context_files::scan_context_files(&root);
-        if !files.is_empty() {
-            let block = crate::teammate::context_files::format_context_block(&files);
-            // Cap env size (avoid ARG_MAX / huge env); 32 KiB is enough for conventions.
-            let truncated = if block.len() > 32 * 1024 {
-                format!("{}…\n", &block[..32 * 1024])
-            } else {
-                block
-            };
-            command
-                .env
-                .insert("RIDGE_WORKSPACE_CONVENTIONS".into(), truncated);
-            let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
-            command
-                .env
-                .insert("RIDGE_CONTEXT_FILES".into(), names.join(","));
-            tracing::info!(
-                target: "ridge::teammate",
-                root = %root.display(),
-                files = ?names,
-                "R17-CTX injected workspace conventions into agent env"
-            );
-        }
-    }
+    inject_workspace_context(
+        &ctx.state,
+        wid,
+        pid,
+        cwd.as_deref(),
+        body.is_agent,
+        &mut command,
+    );
     // On Windows, .js files must be run via node.exe — normalize before spawning.
     #[cfg(windows)]
     {
@@ -1633,13 +1664,15 @@ async fn route_spawn_process(
         &ctx.state,
         wid,
         pid,
-        None,
-        cwd.as_deref(),
-        None,
-        Some(command),
-        Some(pane_idx),
-        None,
-        None,
+        terminal::EnsurePtyOptions {
+            shell: None,
+            cwd: cwd.as_deref(),
+            initial_command: None,
+            structured_command: Some(command),
+            tmux_pane_index: Some(pane_idx),
+            ready_tx: None,
+            trace_id: None,
+        },
     ) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2032,13 +2065,15 @@ async fn route_new_window(
                 &ctx.state,
                 wid,
                 new_id,
-                None,
-                cwd.as_deref(),
-                cmd,
-                None,
-                Some(new_idx),
-                None,
-                None,
+                crate::commands::terminal::EnsurePtyOptions {
+                    shell: None,
+                    cwd: cwd.as_deref(),
+                    initial_command: cmd,
+                    structured_command: None,
+                    tmux_pane_index: Some(new_idx),
+                    ready_tx: None,
+                    trace_id: None,
+                },
             ) {
                 {
                     let mut map = ctx.state.workspaces.write();

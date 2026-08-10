@@ -60,8 +60,13 @@ pub trait HostPeer {
 
 #[cfg(feature = "rtc")]
 mod imp {
-    use super::*;
+    use super::{
+        DataChannelIo, HostPeer, PeerInbound, PeerOutbound, DATA_CHANNEL_LABEL, FALLBACK_STUN,
+    };
+    use crate::ice::IceServerConfig;
+    use anyhow::Result;
     use std::sync::Arc;
+    use tokio::sync::mpsc;
     use webrtc::api::APIBuilder;
     use webrtc::data_channel::data_channel_message::DataChannelMessage;
     use webrtc::data_channel::RTCDataChannel;

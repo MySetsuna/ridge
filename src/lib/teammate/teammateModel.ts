@@ -184,7 +184,7 @@ function parseProfile(v: unknown): TeammateProfile | null {
   const title = asString(rec.title);
   return {
     id,
-    name: title && title.trim() ? title : (asString(rec.name) ?? id),
+    name: title?.trim() ? title : (asString(rec.name) ?? id),
     paneId,
     role: asRole(rec.role),
     status: asStatus(rec.status),

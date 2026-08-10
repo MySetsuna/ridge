@@ -21,11 +21,14 @@ const LSP_SPAWN_FAIL_MARKER = '启动语言服务器失败';
  *  纯函数、可离线测。提示自身可能含全角括号（rust-analyzer 的提示就有），故非贪婪
  *  锚定到收尾的 `）：` 提取，避免被内层括号截断；提取不到时回退整条消息。 */
 export function classifyLspError(err: unknown): { missingServer: boolean; hint: string } {
-  const msg = err instanceof Error
-    ? err.message
-    : typeof err === 'string'
-      ? err
-      : JSON.stringify(err) ?? '';
+  let msg: string;
+  if (err instanceof Error) {
+    msg = err.message;
+  } else if (typeof err === 'string') {
+    msg = err;
+  } else {
+    msg = JSON.stringify(err) ?? '';
+  }
   if (!msg.includes(LSP_SPAWN_FAIL_MARKER)) return { missingServer: false, hint: '' };
   const m = /启动语言服务器失败（([\s\S]*?)）：/.exec(msg);
   return { missingServer: true, hint: m?.[1] ?? msg };
@@ -64,7 +67,7 @@ export interface LspTarget {
 
 /** 文件路径 → `file://` URI。Windows `C:\a\b` → `file:///C:/a/b`。 */
 export function pathToUri(path: string): string {
-  const p = path.replaceAll(/\\/g, '/');
+  const p = path.replaceAll('\\', '/');
   const encoded = p
     .split('/')
     // 盘符段 `C:` 的冒号不编码（保持 file:///C:/… 的常见形态）；其余段编码空格等。
@@ -87,7 +90,7 @@ export function uriToPath(uri: string): string {
   if (winDrive) {
     return p
       .slice(1)
-      .replaceAll(/\//g, '\\')
+      .replaceAll('/', '\\')
       .replace(/^[a-z]:/, (m) => m.toUpperCase());
   }
   return p;

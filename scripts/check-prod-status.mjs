@@ -54,6 +54,11 @@ export async function main(args = process.argv.slice(2), options = {}) {
   return result.exitCode;
 }
 
-if (process.argv[1] && process.argv[1].endsWith('check-prod-status.mjs')) {
-  main().then((code) => process.exit(code)).catch((error) => { console.error(error); process.exit(1); });
+if (process.argv[1]?.endsWith('check-prod-status.mjs')) {
+  try {
+    process.exit(await main());
+  } catch (error) {
+    console.error(error);
+    process.exit(1);
+  }
 }

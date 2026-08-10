@@ -85,6 +85,11 @@ export async function main({ repo = srcRepo, exists = existsSync, io = console }
   return true;
 }
 
-if (process.argv[1] && process.argv[1].endsWith('sync-signaling.mjs')) {
-  main().then((ok) => process.exit(ok ? 0 : 1)).catch((e) => { console.error('[sync-signaling] failed:', e instanceof Error ? e.message : e); process.exit(1); });
+if (process.argv[1]?.endsWith('sync-signaling.mjs')) {
+  try {
+    process.exit((await main()) ? 0 : 1);
+  } catch (e) {
+    console.error('[sync-signaling] failed:', e instanceof Error ? e.message : e);
+    process.exit(1);
+  }
 }

@@ -295,7 +295,7 @@ export class RidgeCloudHost {
   goOffline(): void {
     this.closed = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-    for (const cid of [...this.conns.keys()]) this.teardownConn(cid, false);
+    for (const cid of this.conns.keys()) this.teardownConn(cid, false);
     this.conns.clear();
     if (this.ws) {
       this.ws.onmessage = this.ws.onerror = this.ws.onclose = null;
@@ -631,10 +631,10 @@ export class RidgeCloudHost {
 
   /** 绑定通过：建应用层桥（含既有 verifyPeerKey 钩子）+ 标记 connected。 */
   private async acceptConn(conn: ControllerConn, peerPub: Uint8Array): Promise<void> {
-    const workspaceScope = conn.workspaceScopePromise
+    const workspaceScope = conn.workspaceScopePromise !== null
       ? await conn.workspaceScopePromise
       : null;
-    if (conn.workspaceScopePromise && workspaceScope === null) {
+    if (conn.workspaceScopePromise !== null && workspaceScope === null) {
       this.fail('工作区分享授权无效或已撤销', 'SCOPE_DENIED');
       this.teardownConn(conn.cid, true);
       return;

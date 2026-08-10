@@ -263,7 +263,7 @@ export function computeBindTag(totpCode: string, transcript: Uint8Array): Uint8A
 /** 把字节数组编码为 base64（信令 JSON 传公钥用，B3）。 */
 export function bytesToBase64(bytes: Uint8Array): string {
   let s = '';
-  for (let i = 0; i < bytes.length; i++) s += String.fromCodePoint(bytes[i]);
+  for (const byte of bytes) s += String.fromCodePoint(byte);
   return btoa(s);
 }
 

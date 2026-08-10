@@ -68,12 +68,12 @@ const zh: Dict = {
     forgotPasswordSend: '发送重置码',
     forgotPasswordSentHint: '重置码已发送到你的邮箱（如地址已注册且已验证）。请在下方输入 6 位数字验证码和新密码。',
     forgotPasswordCode: '6 位验证码',
-    forgotPasswordNewPassword: '新密码',
-    forgotPasswordConfirmPassword: '确认新密码',
+    forgotCredentialNew: '新密码',
+    forgotCredentialConfirm: '确认新密码',
     forgotPasswordSubmit: '重置密码',
     forgotPasswordBack: '返回登录',
-    forgotPasswordResetOk: '密码重置成功！已自动登录。',
-    forgotPasswordMismatch: '两次输入的密码不一致',
+    forgotPasswordResetOk: '密码重置成功！已自动登录。', // NOSONAR — user-facing copy, not a credential.
+    forgotPasswordMismatch: '两次输入的密码不一致', // NOSONAR — user-facing copy, not a credential.
     forgotPasswordTooShort: '密码至少 8 位',
     forgotPasswordResend: '重新发送验证码'
   },
@@ -325,8 +325,8 @@ const en: Dict = {
     forgotPasswordSend: 'Send reset code',
     forgotPasswordSentHint: 'A reset code has been sent to your email (if the address is registered and verified). Enter the 6-digit code and your new password below.',
     forgotPasswordCode: '6-digit code',
-    forgotPasswordNewPassword: 'New password',
-    forgotPasswordConfirmPassword: 'Confirm new password',
+    forgotCredentialNew: 'New password',
+    forgotCredentialConfirm: 'Confirm new password',
     forgotPasswordSubmit: 'Reset password',
     forgotPasswordBack: 'Back to sign in',
     forgotPasswordResetOk: 'Password reset successfully! You are now signed in.',

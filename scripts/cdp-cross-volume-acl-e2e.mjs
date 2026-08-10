@@ -7,6 +7,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import http from 'node:http';
 import { resolveCdpPort } from './cdp-port.mjs';
+import { systemTool } from './lib/toolPath.mjs';
 
 const port = resolveCdpPort();
 const runId = `${Date.now()}-${process.pid}`;
@@ -38,7 +39,7 @@ function runProcess(file, args, timeoutMs = 10_000) {
       if (settled) return;
       settled = true;
       if (child.pid) {
-        spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+        spawnSync(systemTool('taskkill'), ['/PID', String(child.pid), '/T', '/F'], {
           windowsHide: true,
           stdio: 'ignore',
         });

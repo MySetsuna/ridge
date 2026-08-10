@@ -295,7 +295,7 @@ export async function performTrustHandshake(
       if (phase === 'hello' && frame.t === 'totp-trust-challenge') {
         const nonceB64 = typeof frame.nonce === 'string' ? frame.nonce : '';
         const nonce = base64ToBytes(nonceB64);
-        if (!nonce || nonce.length !== 32) {
+        if (nonce?.length !== 32) {
           // 非法 challenge → 放弃，退化到 TOTP
           settle(false);
           return;
@@ -327,7 +327,6 @@ export async function performTrustHandshake(
       // 6. 等 host 回 totp-trust-result
       if (phase === 'proof' && frame.t === 'totp-trust-result') {
         settle(frame.trusted === true);
-        return;
       }
 
       // 忽略其它 CONTROL 帧（如 totp-result 从属于另一流程）
@@ -381,8 +380,6 @@ export function verifyTotpOverControl(
       setTimeout(() => {
         if (!settled) send();
       }, Math.floor(timeoutMs / 2)),
-    );
-    timers.push(
       setTimeout(() => {
         if (settled) return;
         settled = true;

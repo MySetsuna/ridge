@@ -64,7 +64,7 @@ export function colorForHash(hash: string): string {
   // keeping "same branch hash → same color" stability across renders.
   let n = 0;
   for (let i = 0; i < hash.length && i < 6; i++) {
-    n = (n * 31 + hash.charCodeAt(i)) >>> 0;
+    n = (n * 31 + (hash.codePointAt(i) ?? 0)) >>> 0;
   }
   return PALETTE[n % PALETTE.length];
 }
@@ -135,8 +135,7 @@ export function layoutGraph(
   // 这样 inline 详情面板撑高的 row 把后续 dot 自然下推，dot 与 commit-meta 永远对齐。
   let cy = padY;
   let lastDotCy = padY;
-  for (let row = 0; row < commits.length; row++) {
-    const c = commits[row];
+  for (const c of commits) {
     const thisRowHeight = dy + (c.hash === expandedHash ? expandedExtra : 0);
     const myLane = laneIndexFor(c.hash);
     const myColor = colorForLane(myLane);
@@ -187,7 +186,7 @@ export function layoutGraph(
 
     // GC trailing free lanes so width doesn't drift over time. Interior
     // nulls remain — the next allocator reuses them.
-    while (lanes.length > 0 && lanes[lanes.length - 1] === null) {
+    while (lanes.length > 0 && lanes.at(-1) === null) {
       lanes.pop();
     }
 

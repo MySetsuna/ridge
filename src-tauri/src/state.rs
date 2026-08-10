@@ -693,6 +693,89 @@ pub struct AppState {
     pub cloud_pane_raw_subs: Arc<Mutex<HashMap<(Uuid, Uuid), (u64, u32)>>>,
 }
 
+fn collect_tail_pieces(
+    snapshot: &[(u64, std::sync::Arc<Vec<u8>>)],
+    max_bytes: usize,
+) -> (Vec<&[u8]>, u64, usize, bool) {
+    let mut pieces = Vec::new();
+    let mut start_seq = 0;
+    let mut need = max_bytes;
+    let mut at_oldest = true;
+    for (sequence, block) in snapshot.iter().rev() {
+        if need == 0 {
+            at_oldest = false;
+            break;
+        }
+        if block.len() <= need {
+            pieces.push(&block[..]);
+            need -= block.len();
+            start_seq = *sequence;
+            continue;
+        }
+        let mut aligned = block.len() - need;
+        while aligned < block.len() && !is_utf8_char_boundary(block, aligned) {
+            aligned += 1;
+        }
+        if aligned < block.len() {
+            pieces.push(&block[aligned..]);
+            start_seq = *sequence + aligned as u64;
+            need = 0;
+        }
+        at_oldest = false;
+        break;
+    }
+    (pieces, start_seq, need, at_oldest)
+}
+
+fn collect_before_pieces(
+    snapshot: &[(u64, std::sync::Arc<Vec<u8>>)],
+    before_seq: u64,
+    max_bytes: usize,
+) -> (Vec<Vec<u8>>, u64, usize) {
+    let mut pieces = Vec::new();
+    let mut start_seq = before_seq;
+    let mut need = max_bytes;
+    for (sequence, block) in snapshot.iter().rev() {
+        if need == 0 || *sequence >= before_seq {
+            continue;
+        }
+        let end = (before_seq - *sequence).min(block.len() as u64) as usize;
+        let mut start = end.saturating_sub(need);
+        while start < end && !is_utf8_char_boundary(block, start) {
+            start += 1;
+        }
+        if start < end {
+            pieces.push(block[start..end].to_vec());
+            need -= end - start;
+            start_seq = *sequence + start as u64;
+        }
+    }
+    (pieces, start_seq, need)
+}
+
+fn collect_since_bytes(
+    snapshot: &[(u64, std::sync::Arc<Vec<u8>>)],
+    effective_start: u64,
+) -> (Vec<u8>, Option<u64>) {
+    let mut output = Vec::new();
+    let mut real_start = None;
+    for (sequence, block) in snapshot {
+        if *sequence + block.len() as u64 <= effective_start {
+            continue;
+        }
+        let mut offset = effective_start.saturating_sub(*sequence) as usize;
+        while offset < block.len() && !is_utf8_char_boundary(block, offset) {
+            offset += 1;
+        }
+        if offset >= block.len() {
+            continue;
+        }
+        real_start.get_or_insert(*sequence + offset as u64);
+        output.extend_from_slice(&block[offset..]);
+    }
+    (output, real_start)
+}
+
 impl AppState {
     pub fn new(event_tx: mpsc::Sender<GlobalEvent>) -> Self {
         let id = Uuid::new_v4();
@@ -879,37 +962,8 @@ impl AppState {
             };
         }
 
-        // Walk blocks from the end, collecting up to max_bytes. `need` tracks
-        // remaining capacity.
-        let mut rev_pieces: Vec<&[u8]> = Vec::new();
-        let mut start_seq = 0u64;
-        let mut need = max_bytes;
-        let mut at_oldest = true;
-        for (seq, block) in snapshot.iter().rev() {
-            if need == 0 {
-                at_oldest = false;
-                break;
-            }
-            if block.len() <= need {
-                rev_pieces.push(&block[..]);
-                need -= block.len();
-                start_seq = *seq;
-            } else {
-                // Partial: take the tail of this block. Align to UTF-8 boundary.
-                let take = block.len() - need;
-                let mut aligned = take;
-                while aligned < block.len() && !is_utf8_char_boundary(block, aligned) {
-                    aligned += 1;
-                }
-                if aligned < block.len() {
-                    rev_pieces.push(&block[aligned..]);
-                    start_seq = *seq + aligned as u64;
-                    need = 0;
-                }
-                at_oldest = false;
-                break;
-            }
-        }
+        let (rev_pieces, mut start_seq, need, at_oldest) =
+            collect_tail_pieces(&snapshot, max_bytes);
 
         let mut out: Vec<u8> = Vec::with_capacity(max_bytes - need);
         for piece in rev_pieces.iter().rev() {
@@ -984,27 +1038,7 @@ impl AppState {
         }
         let _ = span;
 
-        let mut out: Vec<u8> = Vec::new();
-        let mut real_start: Option<u64> = None;
-        for (seq, block) in snapshot.iter() {
-            let block_end = seq + block.len() as u64;
-            if block_end <= effective_start {
-                continue; // entirely before the window
-            }
-            // Byte offset within this block where our window begins.
-            let mut off = effective_start.saturating_sub(*seq) as usize;
-            // Align forward to a UTF-8 boundary so decode stays clean.
-            while off < block.len() && !is_utf8_char_boundary(block, off) {
-                off += 1;
-            }
-            if off >= block.len() {
-                continue;
-            }
-            if real_start.is_none() {
-                real_start = Some(*seq + off as u64);
-            }
-            out.extend_from_slice(&block[off..]);
-        }
+        let (out, real_start) = collect_since_bytes(&snapshot, effective_start);
         let start_seq = real_start.unwrap_or(effective_start);
         ScrollbackChunk {
             bytes: String::from_utf8_lossy(&out).into_owned(),
@@ -1049,40 +1083,8 @@ impl AppState {
             };
         }
 
-        // Collect bytes with `seq < before_seq`, newest-first, up to max_bytes.
-        let mut rev_pieces: Vec<Vec<u8>> = Vec::new();
-        let mut start_seq = before_seq;
-        let mut need = max_bytes;
-        for (block_seq, block) in snapshot.iter().rev() {
-            if need == 0 {
-                break;
-            }
-            let block_end = *block_seq + block.len() as u64;
-            if *block_seq >= before_seq {
-                // Entire block is too new.
-                continue;
-            }
-            // Take the portion with seq < before_seq.
-            let end_within_block = (before_seq - *block_seq).min(block.len() as u64) as usize;
-            let portion_start = if end_within_block <= need {
-                0usize
-            } else {
-                end_within_block - need
-            };
-            // Align portion_start to UTF-8 char boundary (forward).
-            let mut aligned = portion_start;
-            while aligned < end_within_block && !is_utf8_char_boundary(block, aligned) {
-                aligned += 1;
-            }
-            if aligned < end_within_block {
-                rev_pieces.push(block[aligned..end_within_block].to_vec());
-                let taken = end_within_block - aligned;
-                need -= taken;
-                start_seq = *block_seq + aligned as u64;
-            }
-            // Continue scanning older blocks if we still have capacity.
-            let _ = block_end;
-        }
+        let (rev_pieces, mut start_seq, need) =
+            collect_before_pieces(&snapshot, before_seq, max_bytes);
 
         let mut out: Vec<u8> = Vec::with_capacity(max_bytes - need);
         for piece in rev_pieces.iter().rev() {

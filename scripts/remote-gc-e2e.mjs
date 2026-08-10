@@ -14,8 +14,8 @@
 // the FIRST run needs a pairing code (TOTP, ~60s validity).
 
 import { chromium, devices } from '@playwright/test';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROFILE_DIR = path.resolve(__dirname, '..', '.pw-remote-profile');
@@ -35,9 +35,9 @@ const sbKeys = (page) =>
     const out = [];
     for (let i = 0; i < sessionStorage.length; i++) {
       const k = sessionStorage.key(i);
-      if (k && k.startsWith(p)) out.push(k);
+      if (k?.startsWith(p)) out.push(k);
     }
-    return out.sort();
+    return out.sort((a, b) => a.localeCompare(b));
   }, SB);
 
 // Dump every clickable control's text/title/aria/class so we can find the
@@ -131,11 +131,14 @@ async function main() {
         name: txt(r, '.pane-name'), active: r.classList.contains('active'), canClose: !!r.querySelector('.row-close'),
       }));
       const sb = [];
-      for (let i = 0; i < sessionStorage.length; i++) { const k = sessionStorage.key(i); if (k && k.startsWith('rg-remote-sb:')) sb.push(k); }
+       for (let i = 0; i < sessionStorage.length; i++) {
+         const k = sessionStorage.key(i);
+         if (k?.startsWith('rg-remote-sb:')) sb.push(k);
+       }
       const errEl = document.querySelector('.tree-err');
       return {
         treeOpen: !!document.querySelector('.tree-popup'),
-        wsRows, paneRows, sb: sb.sort(),
+        wsRows, paneRows, sb: [...sb].sort((a, b) => a.localeCompare(b)),
         err: errEl ? (errEl.textContent || '').trim() : '',
         hasCanvas: !!document.querySelector('canvas'),
       };
@@ -258,7 +261,7 @@ async function main() {
     const t5 = await snap();
     record('T5 close-workspace: created ws removed', closedWs && wsBack,
       `clicked=${closedWs} wsNow=${JSON.stringify(t5.wsRows.map((w) => w.name))}`);
-    record('T5 close-workspace: active ws still valid + canvas', !!t5.wsRows.find((w) => w.active) && t5.hasCanvas,
+    record('T5 close-workspace: active ws still valid + canvas', t5.wsRows.some((w) => w.active) && t5.hasCanvas,
       `activeWs=${t5.wsRows.find((w) => w.active)?.name} canvas=${t5.hasCanvas}`);
     if (t5.err) record('T5 close-workspace: no UI error', false, 'tree-err=' + t5.err);
 
@@ -281,7 +284,9 @@ async function main() {
   }
 }
 
-main().catch((e) => {
+try {
+  await main();
+} catch (e) {
   console.error('[gc-e2e] FATAL', e);
   process.exit(1);
-});
+}

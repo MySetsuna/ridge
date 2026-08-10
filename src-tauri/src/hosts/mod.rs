@@ -930,30 +930,33 @@ fn create_foreign_terminal(remote: RemoteRef) -> Result<crate::engine::pty::PtyH
 /// boundary without needing to know which later steps ran.  Dropping a removed
 /// terminal handle closes the local PTY; `close` removes the new leaf and
 /// restores the pre-split layout.
-fn rollback_host_attach(
-    state: &AppState,
+struct HostAttachRollback<'a> {
     workspace_id: uuid::Uuid,
     pane_id: uuid::Uuid,
-    host_id: &str,
-    session_id: &str,
-    client: Option<&Arc<OutboundClient>>,
+    host_id: &'a str,
+    session_id: &'a str,
+    client: Option<&'a Arc<OutboundClient>>,
     subscribed: bool,
     sink_installed: bool,
     foreign_registered: bool,
-) {
-    if let Some(ws) = state.workspaces.write().get_mut(&workspace_id) {
-        ws.terminals.remove(&pane_id);
-        let _ = ws.pane_tree.close(pane_id);
+}
+
+fn rollback_host_attach(state: &AppState, request: HostAttachRollback<'_>) {
+    if let Some(ws) = state.workspaces.write().get_mut(&request.workspace_id) {
+        ws.terminals.remove(&request.pane_id);
+        let _ = ws.pane_tree.close(request.pane_id);
     }
-    if foreign_registered {
-        state.hosts.unregister_foreign(pane_id);
+    if request.foreign_registered {
+        state.hosts.unregister_foreign(request.pane_id);
     }
-    if sink_installed {
-        state.hosts.remove_live_sink(host_id, session_id);
+    if request.sink_installed {
+        state
+            .hosts
+            .remove_live_sink(request.host_id, request.session_id);
     }
-    if subscribed {
-        if let Some(client) = client {
-            let _ = client.unsubscribe(session_id);
+    if request.subscribed {
+        if let Some(client) = request.client {
+            let _ = client.unsubscribe(request.session_id);
         }
     }
 }
@@ -1138,14 +1141,16 @@ fn attach_host_session_inner(
         if let Some(error) = terminal_error {
             rollback_host_attach(
                 state,
-                wid,
-                pane_id,
-                &host_id,
-                &session_id,
-                client.as_ref(),
-                subscribed,
-                sink_installed,
-                true,
+                HostAttachRollback {
+                    workspace_id: wid,
+                    pane_id,
+                    host_id: &host_id,
+                    session_id: &session_id,
+                    client: client.as_ref(),
+                    subscribed,
+                    sink_installed,
+                    foreign_registered: true,
+                },
             );
             return Err(error);
         }
@@ -1157,14 +1162,16 @@ fn attach_host_session_inner(
     {
         rollback_host_attach(
             state,
-            wid,
-            pane_id,
-            &host_id,
-            &session_id,
-            client.as_ref(),
-            subscribed,
-            sink_installed,
-            true,
+            HostAttachRollback {
+                workspace_id: wid,
+                pane_id,
+                host_id: &host_id,
+                session_id: &session_id,
+                client: client.as_ref(),
+                subscribed,
+                sink_installed,
+                foreign_registered: true,
+            },
         );
         return Err(error);
     }
@@ -1598,14 +1605,16 @@ mod tests {
 
         rollback_host_attach(
             &state,
-            wid,
-            pane_id,
-            host_id,
-            session_id,
-            Some(&client),
-            true,
-            true,
-            true,
+            HostAttachRollback {
+                workspace_id: wid,
+                pane_id,
+                host_id,
+                session_id,
+                client: Some(&client),
+                subscribed: true,
+                sink_installed: true,
+                foreign_registered: true,
+            },
         );
 
         let map = state.workspaces.read();

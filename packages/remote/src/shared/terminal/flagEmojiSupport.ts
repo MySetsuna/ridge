@@ -35,7 +35,7 @@ export const FLAG_CACHE_KEY = 'ridge.flagEmojiSupport';
 export function probeSystemFlagSupport(measure: (text: string) => number): boolean {
   const single = measure('\u{1F1EF}'); // 🇯 one Regional Indicator
   const pair = measure('\u{1F1EF}\u{1F1F5}'); // 🇯🇵 Japan flag OR "JP"
-  if (!(single > 0) || !(pair > 0)) return true; // can't measure either side → assume supported (also covers pair===0)
+  if (single <= 0 || pair <= 0) return true; // can't measure either side → assume supported (also covers pair===0)
   return pair < single * 1.5; // merged into one glyph → supported
 }
 

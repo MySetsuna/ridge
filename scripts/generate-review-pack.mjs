@@ -65,7 +65,10 @@ export function renderReviewGuide(commits, range = RANGE) {
     `2. **安全面提交（${securityTouches.length}）**：hitl/e2ee/totp/trust/suspend 路径。`,
     '3. 其余按类型抽查；docs 类可速览。', '',
     '## 协议面提交清单', '',
-    ...protocolTouches.map((c) => `- \`${c.sha}\` ${c.type}${c.scope ? `(${c.scope})` : ''}: ${c.title}`), '',
+    ...protocolTouches.map((c) => {
+      const scope = c.scope ? `(${c.scope})` : '';
+      return `- \`${c.sha}\` ${c.type}${scope}: ${c.title}`;
+    }), '',
     ...types.flatMap((type) => {
       const list = byType.get(type);
       return [`## ${type}（${list.length}）`, '', '| SHA | 标题 | 文件数 | 变更量 | 标注 |', '| --- | --- | --- | --- | --- |', ...list.map(guideLine), ''];

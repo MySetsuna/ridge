@@ -42,7 +42,7 @@ let syncTimer: ReturnType<typeof setTimeout> | null = null;
 const SYNC_COALESCE_MS = 100;
 
 function normalize(p: string): string {
-	return p.replaceAll(/\\/g, '/');
+	return p.replaceAll('\\', '/');
 }
 
 function isUnder(child: string, parent: string): boolean {
@@ -196,6 +196,17 @@ function runRefresh(root: string): void {
 	});
 }
 
+function scheduleStalePrune(): void {
+	setTimeout(() => {
+		idleRun(() => {
+			pruneStaleExpandedPaths().catch((error) => {
+				console.warn('[file-watcher] stale-path prune failed', error);
+			});
+			scheduleStalePrune();
+		});
+	}, 300_000);
+}
+
 // ─── Init ───────────────────────────────────────────────────────────────────
 
 /**
@@ -215,17 +226,5 @@ export function initFileWatcherSync(): void {
 	// the filesystem and remove those that no longer exist. This is a
 	// safety net — the primary cleanup path is collapseOnLoadError in
 	// FileTree (triggered when a user tries to expand a deleted directory).
-	const STALE_PRUNE_INTERVAL_MS = 300_000;
-	function schedulePrune(): void {
-		setTimeout(() => {
-			idleRun(() => {
-				pruneStaleExpandedPaths().catch((error) => {
-					console.warn('[file-watcher] stale-path prune failed', error);
-				});
-				schedulePrune();
-			});
-		}, STALE_PRUNE_INTERVAL_MS);
-	}
-
-	schedulePrune();
+	scheduleStalePrune();
 }

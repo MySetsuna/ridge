@@ -4,12 +4,9 @@
 
 import type { HitlAuditItem } from '../../../packages/remote/src/shared/teammate/hitlAuditRemote';
 
-export type AuditVerdict = string;
-export type AuditSource = string;
-
 export interface AuditFilter {
-  verdict?: AuditVerdict;
-  source?: AuditSource;
+  verdict?: string;
+  source?: string;
   initiatorSubstr?: string;
   riskLevel?: string;
   limit: number;

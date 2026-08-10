@@ -34,42 +34,43 @@ export const TWEMOJI_SHA256 =
   '6d90152ee0d29e82fe2a87793af5aa4b7ad13e6538360889e141e81ed299ee8e';
 
 // Download the source font into a build cache (re-used across runs).
-export function sha256(filePath, fsImpl = { readFileSync }) {
-  return createHash('sha256').update(fsImpl.readFileSync(filePath)).digest('hex');
+export function sha256(filePath, fsImpl) {
+  return createHash('sha256').update((fsImpl?.readFileSync ?? readFileSync)(filePath)).digest('hex');
 }
 
-export function buildFlagFont({ rootDir = root, fsImpl = { existsSync, statSync, mkdirSync, copyFileSync, readFileSync, rmSync }, execFileSyncImpl = execFileSync, hashFile = sha256, io = console } = {}) {
+export function buildFlagFont({ rootDir = root, fsImpl, execFileSyncImpl = execFileSync, hashFile = sha256, io = console } = {}) {
+  const fs = fsImpl ?? { existsSync, statSync, mkdirSync, copyFileSync, readFileSync, rmSync };
   const outRemote = resolve(rootDir, 'src/remote/public/fonts/flags.woff2');
   const outDesktop = resolve(rootDir, 'static/fonts/flags.woff2');
   const cacheDir = resolve(rootDir, 'node_modules/.cache/flag-font-dl');
   const srcFont = resolve(cacheDir, 'Twemoji.Mozilla.ttf');
-  fsImpl.mkdirSync(cacheDir, { recursive: true });
-  if (!fsImpl.existsSync(srcFont) || hashFile(srcFont, fsImpl) !== TWEMOJI_SHA256) {
+  fs.mkdirSync(cacheDir, { recursive: true });
+  if (!fs.existsSync(srcFont) || hashFile(srcFont, fs) !== TWEMOJI_SHA256) {
     io.log(`Downloading Twemoji (Mozilla COLRv0) from ${TWEMOJI_URL}`);
     execFileSyncImpl('curl', ['-sSL', '-o', srcFont, TWEMOJI_URL], { stdio: 'inherit' });
-    const got = hashFile(srcFont, fsImpl);
+    const got = hashFile(srcFont, fs);
     if (got !== TWEMOJI_SHA256) {
       io.error(`Source font hash mismatch.\n  expected ${TWEMOJI_SHA256}\n  got      ${got}`);
-      fsImpl.rmSync(srcFont, { force: true });
+      fs.rmSync(srcFont, { force: true });
       return false;
     }
   }
-  fsImpl.mkdirSync(dirname(outRemote), { recursive: true });
-  fsImpl.mkdirSync(dirname(outDesktop), { recursive: true });
+  fs.mkdirSync(dirname(outRemote), { recursive: true });
+  fs.mkdirSync(dirname(outDesktop), { recursive: true });
   try {
     execFileSyncImpl('pyftsubset', [srcFont, '--unicodes=U+1F1E6-1F1FF,U+1F3F4,U+E0020-E007F', '--layout-features=*', '--drop-tables=vmtx,vhea', '--flavor=woff2', `--output-file=${outRemote}`], { stdio: 'inherit' });
   } catch (err) {
     if (err?.code === 'ENOENT') io.error('pyftsubset not found. Install with: pip install fonttools brotli');
     return false;
   }
-  const bytes = fsImpl.statSync(outRemote).size;
+  const bytes = fs.statSync(outRemote).size;
   const kb = (bytes / 1024).toFixed(1);
   if (bytes > MAX_BYTES) {
     io.error(`flags.woff2 is ${kb} KB — exceeds the ${MAX_BYTES / 1024} KB red line. Re-evaluate subset configuration.`);
-    fsImpl.rmSync(outRemote, { force: true });
+    fs.rmSync(outRemote, { force: true });
     return false;
   }
-  fsImpl.copyFileSync(outRemote, outDesktop);
+  fs.copyFileSync(outRemote, outDesktop);
   io.log(`flags.woff2: ${kb} KB (<= ${MAX_BYTES / 1024} KB) OK → remote + desktop`);
   return true;
 }

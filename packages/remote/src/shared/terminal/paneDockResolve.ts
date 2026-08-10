@@ -27,7 +27,7 @@ export function resolveDockTarget(
 ): { paneId: string; region: DockRegion } | null {
   const wrapper = el?.closest('[data-pane-id]') as HTMLElement | null;
   if (!wrapper) return null;
-  const paneId = wrapper.getAttribute('data-pane-id');
+  const paneId = wrapper.dataset.paneId;
   if (!paneId || paneId === sourcePaneId) return null;
   return { paneId, region: regionAtPoint(clientX, clientY, wrapper) };
 }

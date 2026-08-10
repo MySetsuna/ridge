@@ -629,16 +629,5 @@ if (isInWorkerScope()) {
 	// P4.7 + Iter 15 (2026-05-22) — adapter failure remains explicit: an
 	// adapter of `null` makes `init` fail, causing the host to restore the
 	// live main-thread mirror. The listener above stays available throughout.
-	void loadKernelAdapter()
-		.then((a) => {
-			adapter = a;
-		})
-		.catch((err) => {
-			// eslint-disable-next-line no-console
-			console.warn(
-				'[ridge-term/worker] unexpected loadKernelAdapter rejection — continuing without an adapter',
-				err,
-			);
-			adapter = null;
-		});
+	adapter = await loadKernelAdapter();
 }

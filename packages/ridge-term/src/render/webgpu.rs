@@ -267,6 +267,85 @@ impl Drop for WebGpuPaneBackend {
     }
 }
 
+fn glyph_id_for(cluster_text: Option<&str>, character: char) -> u32 {
+    match cluster_text {
+        Some(text) => {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut hasher);
+            CLUSTER_TAG | (hasher.finish() as u32 & !CLUSTER_TAG)
+        }
+        None => character as u32,
+    }
+}
+
+fn append_procedural_glyph(
+    instances: &mut Vec<CellInstance>,
+    glyph_text: &str,
+    fg: [u8; 4],
+    pixel_x: f32,
+    pixel_y: f32,
+    cell_span: usize,
+    cell_w: f32,
+    row_h: f32,
+) -> bool {
+    let Some(character) = glyph_text.chars().next() else {
+        return false;
+    };
+    if let Some(alpha) = shade_alpha(character) {
+        let mut color = rgba_u8_to_f32(fg);
+        color[3] *= alpha;
+        instances.push(procedural_instance(
+            [pixel_x, pixel_y],
+            [cell_span as f32 * cell_w, row_h],
+            color,
+        ));
+        return true;
+    }
+    let Some(rects) = procedural_box(
+        character,
+        pixel_x,
+        pixel_y,
+        cell_span as f32 * cell_w,
+        row_h,
+    ) else {
+        return false;
+    };
+    for rect in rects {
+        let x = rect.x.round();
+        let y = rect.y.round();
+        let right = (rect.x + rect.w).round();
+        let bottom = (rect.y + rect.h).round();
+        instances.push(procedural_instance(
+            [x, y],
+            [(right - x).max(1.0), (bottom - y).max(1.0)],
+            rgba_u8_to_f32(fg),
+        ));
+    }
+    true
+}
+
+fn shade_alpha(character: char) -> Option<f32> {
+    match character {
+        '\u{2591}' => Some(0.25),
+        '\u{2592}' => Some(0.50),
+        '\u{2593}' => Some(0.75),
+        _ => None,
+    }
+}
+
+fn procedural_instance(position: [f32; 2], size: [f32; 2], color: [f32; 4]) -> CellInstance {
+    CellInstance {
+        cell_xy: position,
+        cell_size: size,
+        atlas_uv: [0.0, 0.0, 0.0, 0.0],
+        atlas_layer: 0,
+        fg_rgba: color,
+        bg_rgba: [0.0, 0.0, 0.0, 0.0],
+        is_color: INSTANCE_MODE_PROCEDURAL,
+    }
+}
+
 impl WebGpuPaneBackend {
     /// Acquire (or reuse) the shared `GpuContext` + `SurfaceHost`, then
     /// allocate this pane's per-pane buffers + bind group. Async
@@ -363,7 +442,37 @@ impl WebGpuPaneBackend {
     }
 }
 
-impl RenderBackend for WebGpuPaneBackend {
+fn cursor_glyph_id(cursor: &CursorDraw) -> u32 {
+    match &cursor.cluster_text {
+        Some(text) if !text.is_empty() => {
+            use std::hash::Hasher;
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            hasher.write(text.as_bytes());
+            let raw = hasher.finish() as u32;
+            CLUSTER_TAG | (raw & !CLUSTER_TAG)
+        }
+        _ => cursor.ch as u32,
+    }
+}
+
+fn cursor_geometry(
+    style: crate::render::backend::CursorStyle,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    thickness: f32,
+) -> (f32, f32, f32, f32) {
+    match style {
+        crate::render::backend::CursorStyle::Block => (x, y, width, height),
+        crate::render::backend::CursorStyle::Bar => (x, y, thickness, height),
+        crate::render::backend::CursorStyle::Underline => {
+            (x, y + height - thickness, width, thickness)
+        }
+    }
+}
+
+impl WebGpuPaneBackend {
     fn measure_font(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
         // Delegate to the shared rasterizer's OffscreenCanvas-backed
         // measure path. Bit-for-bit identical to Canvas2dBackend so
@@ -623,6 +732,34 @@ impl RenderBackend for WebGpuPaneBackend {
         self.pending_instances.append(&mut row_bg_instances);
     }
 
+    fn admit_glyph(
+        &mut self,
+        key: GlyphKey,
+        glyph_text: &str,
+        style_flags: u8,
+    ) -> Option<GlyphEntry> {
+        let mut ctx = self.ctx.borrow_mut();
+        let entry = match ctx.atlas.lookup(&key) {
+            Some(entry) => {
+                if (entry.layer as usize) < ctx.frame_written.len() {
+                    ctx.frame_written[entry.layer as usize] = true;
+                }
+                Some(entry)
+            }
+            None => ctx
+                .rasterize_and_admit(
+                    key,
+                    glyph_text,
+                    self.metrics.dpr,
+                    style_flags,
+                    &self.frame_pinned,
+                )
+                .ok(),
+        }?;
+        self.frame_pinned[entry.layer as usize] = true;
+        Some(entry)
+    }
+
     fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let row_idx = row.row_index;
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
@@ -686,60 +823,22 @@ impl RenderBackend for WebGpuPaneBackend {
                     (ctx.font_size_px * 100.0).round() as u16,
                 )
             };
-            let entry: Option<GlyphEntry> = {
-                let mut ctx = self.ctx.borrow_mut();
-
-                let mut style_flags = 0;
-                if attrs.flags.contains(crate::term::attrs::Flags::BOLD) {
-                    style_flags |= GlyphKey::STYLE_BOLD;
-                }
-                if attrs.flags.contains(crate::term::attrs::Flags::ITALIC) {
-                    style_flags |= GlyphKey::STYLE_ITALIC;
-                }
-
-                let glyph_id = match cluster_text {
-                    Some(text) => {
-                        use std::hash::Hasher;
-                        let mut h = std::collections::hash_map::DefaultHasher::new();
-                        h.write(text.as_bytes());
-                        let raw = std::hash::Hasher::finish(&h) as u32;
-                        CLUSTER_TAG | (raw & !CLUSTER_TAG)
-                    }
-                    None => cell.ch as u32,
-                };
-                let key = GlyphKey::new(
-                    font_family_hash,
-                    font_size_q,
-                    glyph_id,
-                    style_flags,
-                    self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
-                );
-
-                let lookup_hit = ctx.atlas.lookup(&key);
-                let entry_opt: Option<GlyphEntry> = match lookup_hit {
-                    Some(e) => {
-                        if (e.layer as usize) < ctx.frame_written.len() {
-                            ctx.frame_written[e.layer as usize] = true;
-                        }
-                        Some(e)
-                    }
-                    None => ctx
-                        .rasterize_and_admit(
-                            key,
-                            glyph_text,
-                            self.metrics.dpr,
-                            style_flags,
-                            &self.frame_pinned,
-                        )
-                        .ok(),
-                };
-                if let Some(e) = entry_opt {
-                    self.frame_pinned[e.layer as usize] = true;
-                    Some(e)
-                } else {
-                    None
-                }
-            };
+            let mut style_flags = 0;
+            if attrs.flags.contains(crate::term::attrs::Flags::BOLD) {
+                style_flags |= GlyphKey::STYLE_BOLD;
+            }
+            if attrs.flags.contains(crate::term::attrs::Flags::ITALIC) {
+                style_flags |= GlyphKey::STYLE_ITALIC;
+            }
+            let glyph_id = glyph_id_for(cluster_text, cell.ch);
+            let key = GlyphKey::new(
+                font_family_hash,
+                font_size_q,
+                glyph_id,
+                style_flags,
+                self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
+            );
+            let entry = self.admit_glyph(key, glyph_text, style_flags);
 
             let is_color_flag: u32 = if entry.map(|e| e.is_color).unwrap_or(false) {
                 1
@@ -748,6 +847,17 @@ impl RenderBackend for WebGpuPaneBackend {
             };
 
             // Procedural block/box-drawing chars
+            let drawn_procedurally = append_procedural_glyph(
+                &mut row_glyph_instances,
+                glyph_text,
+                fg,
+                pixel_x,
+                pixel_y,
+                cell_span,
+                cell_w,
+                row_h_int,
+            );
+            /*
             let first_char = glyph_text.chars().next();
             let mut drawn_procedurally = false;
 
@@ -816,6 +926,7 @@ impl RenderBackend for WebGpuPaneBackend {
                 }
             }
 
+            */
             if !drawn_procedurally {
                 if let Some(e) = entry {
                     let natural_w = (e.px_w as f32).max(1.0);
@@ -835,51 +946,13 @@ impl RenderBackend for WebGpuPaneBackend {
     }
 
     fn draw_cursor(&mut self, cursor: &CursorDraw, _attrs_table: &AttrTable) {
-        use crate::render::backend::CursorStyle;
-
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
         let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
         let effective_col = cursor.col as f64;
         let pixel_x = (effective_col as f32 * cell_w + 0.5).floor();
         let cursor_span = cursor.width.max(1) as usize;
 
-        // §B.9 — measure effective span via atlas lookup (px_w).
-        // Falls back to cell_span on cache miss (next frame catches up).
-        let effective_span = if cursor_span >= 2 {
-            let (font_family_hash, font_size_q) = {
-                let ctx = self.ctx.borrow();
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                std::hash::Hash::hash(&ctx.font_family, &mut h);
-                (
-                    std::hash::Hasher::finish(&h),
-                    (ctx.font_size_px * 100.0).round() as u16,
-                )
-            };
-            let glyph_id = match &cursor.cluster_text {
-                Some(text) if !text.is_empty() => {
-                    use std::hash::Hasher;
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    h.write(text.as_bytes());
-                    let raw = std::hash::Hasher::finish(&h) as u32;
-                    CLUSTER_TAG | (raw & !CLUSTER_TAG)
-                }
-                _ => cursor.ch as u32,
-            };
-            let key = GlyphKey::new(
-                font_family_hash,
-                font_size_q,
-                glyph_id,
-                0,
-                self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
-            );
-            let entry = self.ctx.borrow_mut().atlas.lookup(&key);
-            match entry {
-                Some(e) => ((e.px_w as f32).max(1.0) / cell_w).ceil() as usize,
-                None => cursor_span,
-            }
-        } else {
-            cursor_span
-        };
+        let effective_span = self.cursor_span(cursor, cursor_span, cell_w);
 
         let effective_span_f = effective_span as f64;
         let pixel_x_right = ((effective_col + effective_span_f) as f32 * cell_w + 0.5).floor();
@@ -890,16 +963,14 @@ impl RenderBackend for WebGpuPaneBackend {
         let cell_h_int = pixel_y_bot - pixel_y;
         let bar_thickness = (2.0 * self.metrics.dpr).round().max(1.0);
 
-        let (block_x, block_y, block_w, block_h) = match cursor.style {
-            CursorStyle::Block => (pixel_x, pixel_y, span_w, cell_h_int),
-            CursorStyle::Bar => (pixel_x, pixel_y, bar_thickness, cell_h_int),
-            CursorStyle::Underline => (
-                pixel_x,
-                pixel_y + cell_h_int - bar_thickness,
-                span_w,
-                bar_thickness,
-            ),
-        };
+        let (block_x, block_y, block_w, block_h) = cursor_geometry(
+            cursor.style,
+            pixel_x,
+            pixel_y,
+            span_w,
+            cell_h_int,
+            bar_thickness,
+        );
         let cursor_color = rgba_u8_to_f32(self.theme.cursor_color);
         self.pending_instances.push(CellInstance {
             cell_xy: [block_x, block_y],
@@ -911,76 +982,105 @@ impl RenderBackend for WebGpuPaneBackend {
             is_color: 0,
         });
 
-        // Inverted glyph (Block only). Atlas-hit-only — we don't
-        // rasterize-on-miss here. If the glyph isn't cached yet, the
-        // next draw_row tick will populate it; cursor renders as a
-        // solid block this frame, then inverts next frame.
-        if matches!(cursor.style, CursorStyle::Block) && cursor.ch != ' ' {
-            let (font_family_hash, font_size_q) = {
-                let ctx = self.ctx.borrow();
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                std::hash::Hash::hash(&ctx.font_family, &mut h);
-                (
-                    std::hash::Hasher::finish(&h),
-                    (ctx.font_size_px * 100.0).round() as u16,
-                )
-            };
-            let glyph_id = match &cursor.cluster_text {
-                Some(text) if !text.is_empty() => {
-                    use std::hash::Hasher;
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    h.write(text.as_bytes());
-                    let raw = std::hash::Hasher::finish(&h) as u32;
-                    CLUSTER_TAG | (raw & !CLUSTER_TAG)
-                }
-                _ => cursor.ch as u32,
-            };
-            let key = GlyphKey::new(
-                font_family_hash,
-                font_size_q,
-                glyph_id,
-                0,
-                self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
-            );
-            let entry: Option<GlyphEntry> = {
-                let mut ctx = self.ctx.borrow_mut();
-                let hit = ctx.atlas.lookup(&key);
-                // §atlas-race: the inverted-cursor glyph cites an atlas layer
-                // exactly like draw_row_texts does, so it MUST take the same
-                // frame_written guard. Without it a sibling pane that admits
-                // glyphs later in THIS host frame can pick this layer for LRU
-                // eviction (it isn't marked written), overwrite its pixels via
-                // `write_texture`, and our already-recorded cursor draw then
-                // samples a stranger glyph for one frame. Mirrors the hit path
-                // in draw_row_texts (frame_written here, frame_pinned below).
-                if let Some(e) = hit {
-                    if (e.layer as usize) < ctx.frame_written.len() {
-                        ctx.frame_written[e.layer as usize] = true;
-                    }
-                }
-                hit
-            };
-            if let Some(entry) = entry {
-                if (entry.layer as usize) < self.frame_pinned.len() {
-                    self.frame_pinned[entry.layer as usize] = true;
-                }
-                let cursor_text_color = rgba_u8_to_f32(self.theme.cursor_text_color);
-                let natural_w = (entry.px_w as f32).max(1.0);
-                // §B.9 — natural size at effective column, no aspect-fit.
-                let gx = (effective_col as f32 * cell_w + 0.5).floor();
-                self.pending_instances.push(CellInstance {
-                    cell_xy: [gx, pixel_y],
-                    cell_size: [natural_w, cell_h_int],
-                    atlas_uv: entry.uv,
-                    atlas_layer: entry.layer as u32,
-                    fg_rgba: cursor_text_color,
-                    bg_rgba: cursor_color,
-                    is_color: if entry.is_color { 1 } else { 0 },
-                });
-            }
+        self.draw_cursor_glyph(
+            cursor,
+            effective_col,
+            cell_w,
+            pixel_y,
+            cell_h_int,
+            cursor_color,
+        );
+    }
+}
+
+impl WebGpuPaneBackend {
+    fn cursor_span(&mut self, cursor: &CursorDraw, requested: usize, cell_w: f32) -> usize {
+        if requested < 2 {
+            return requested;
         }
+        let (font_family_hash, font_size_q) = self.font_key();
+        let key = GlyphKey::new(
+            font_family_hash,
+            font_size_q,
+            cursor_glyph_id(cursor),
+            0,
+            self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
+        );
+        self.ctx
+            .borrow_mut()
+            .atlas
+            .lookup(&key)
+            .map(|entry| ((entry.px_w as f32).max(1.0) / cell_w).ceil() as usize)
+            .unwrap_or(requested)
     }
 
+    fn draw_cursor_glyph(
+        &mut self,
+        cursor: &CursorDraw,
+        effective_col: f64,
+        cell_w: f32,
+        pixel_y: f32,
+        cell_h: f32,
+        cursor_color: [f32; 4],
+    ) {
+        use crate::render::backend::CursorStyle;
+
+        if !matches!(cursor.style, CursorStyle::Block) || cursor.ch == ' ' {
+            return;
+        }
+        let (font_family_hash, font_size_q) = self.font_key();
+        let glyph_id = cursor_glyph_id(cursor);
+        let key = GlyphKey::new(
+            font_family_hash,
+            font_size_q,
+            glyph_id,
+            0,
+            self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
+        );
+        let entry = self.lookup_cursor_glyph(&key);
+        let Some(entry) = entry else {
+            return;
+        };
+        if (entry.layer as usize) < self.frame_pinned.len() {
+            self.frame_pinned[entry.layer as usize] = true;
+        }
+        let gx = (effective_col as f32 * cell_w + 0.5).floor();
+        self.pending_instances.push(CellInstance {
+            cell_xy: [gx, pixel_y],
+            cell_size: [(entry.px_w as f32).max(1.0), cell_h],
+            atlas_uv: entry.uv,
+            atlas_layer: entry.layer as u32,
+            fg_rgba: rgba_u8_to_f32(self.theme.cursor_text_color),
+            bg_rgba: cursor_color,
+            is_color: if entry.is_color { 1 } else { 0 },
+        });
+    }
+
+    fn font_key(&self) -> (u64, u16) {
+        let ctx = self.ctx.borrow();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&ctx.font_family, &mut hasher);
+        (
+            std::hash::Hasher::finish(&hasher),
+            (ctx.font_size_px * 100.0).round() as u16,
+        )
+    }
+
+    fn lookup_cursor_glyph(&mut self, key: &GlyphKey) -> Option<GlyphEntry> {
+        let mut ctx = self.ctx.borrow_mut();
+        let entry = ctx.atlas.lookup(key);
+        if let Some(glyph) = entry {
+            if (glyph.layer as usize) < ctx.frame_written.len() {
+                ctx.frame_written[glyph.layer as usize] = true;
+            }
+            Some(glyph)
+        } else {
+            None
+        }
+    }
+}
+
+impl WebGpuPaneBackend {
     fn draw_selection_overlay(&mut self, rects: &[(usize, usize, usize)]) {
         if rects.is_empty() {
             return;
@@ -1063,55 +1163,16 @@ impl RenderBackend for WebGpuPaneBackend {
                 (ctx.font_size_px * 100.0).round() as u16,
             )
         };
-        let mut cell_offset = 0usize;
-        for (ch, width) in &char_widths {
-            let key = GlyphKey::new(
-                font_family_hash,
-                font_size_q,
-                *ch as u32,
-                0,
-                self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
-            );
-            let entry: Option<GlyphEntry> = {
-                let mut ctx = self.ctx.borrow_mut();
-                let glyph_str = ch.to_string();
-                match ctx.atlas.lookup(&key) {
-                    Some(e) => {
-                        if (e.layer as usize) < ctx.frame_written.len() {
-                            ctx.frame_written[e.layer as usize] = true;
-                        }
-                        Some(e)
-                    }
-                    None => ctx
-                        .rasterize_and_admit(
-                            key,
-                            &glyph_str,
-                            self.metrics.dpr,
-                            0,
-                            &self.frame_pinned,
-                        )
-                        .ok(),
-                }
-            };
-            if let Some(e) = entry {
-                if (e.layer as usize) < self.frame_pinned.len() {
-                    self.frame_pinned[e.layer as usize] = true;
-                }
-                let pixel_x = (col + cell_offset) as f32 * cell_w;
-                let natural_w = (e.px_w as f32).max(1.0);
-                // §B.9 — natural size, no aspect-fit
-                self.pending_instances.push(CellInstance {
-                    cell_xy: [pixel_x, pixel_y],
-                    cell_size: [natural_w, cell_h],
-                    atlas_uv: e.uv,
-                    atlas_layer: e.layer as u32,
-                    fg_rgba: fg_color,
-                    bg_rgba: [0.0, 0.0, 0.0, 0.0],
-                    is_color: if e.is_color { 1 } else { 0 },
-                });
-            }
-            cell_offset += *width as usize;
-        }
+        self.draw_preedit_glyphs(
+            &char_widths,
+            col,
+            cell_w,
+            pixel_y,
+            cell_h,
+            fg_color,
+            font_family_hash,
+            font_size_q,
+        );
 
         // 3) Underline — IME preedit convention. 1 device-px tall, bottom
         //    of the cell row.
@@ -1127,7 +1188,64 @@ impl RenderBackend for WebGpuPaneBackend {
             is_color: 0,
         });
     }
+}
 
+impl WebGpuPaneBackend {
+    fn draw_preedit_glyphs(
+        &mut self,
+        char_widths: &[(char, u8)],
+        col: usize,
+        cell_w: f32,
+        pixel_y: f32,
+        cell_h: f32,
+        fg_color: [f32; 4],
+        font_family_hash: u64,
+        font_size_q: u16,
+    ) {
+        let mut cell_offset = 0usize;
+        for (ch, width) in char_widths {
+            let key = GlyphKey::new(
+                font_family_hash,
+                font_size_q,
+                *ch as u32,
+                0,
+                self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
+            );
+            let glyph = ch.to_string();
+            let entry = {
+                let mut ctx = self.ctx.borrow_mut();
+                match ctx.atlas.lookup(&key) {
+                    Some(entry) => {
+                        if (entry.layer as usize) < ctx.frame_written.len() {
+                            ctx.frame_written[entry.layer as usize] = true;
+                        }
+                        Some(entry)
+                    }
+                    None => ctx
+                        .rasterize_and_admit(key, &glyph, self.metrics.dpr, 0, &self.frame_pinned)
+                        .ok(),
+                }
+            };
+            if let Some(entry) = entry {
+                if (entry.layer as usize) < self.frame_pinned.len() {
+                    self.frame_pinned[entry.layer as usize] = true;
+                }
+                self.pending_instances.push(CellInstance {
+                    cell_xy: [(col + cell_offset) as f32 * cell_w, pixel_y],
+                    cell_size: [(entry.px_w as f32).max(1.0), cell_h],
+                    atlas_uv: entry.uv,
+                    atlas_layer: entry.layer as u32,
+                    fg_rgba: fg_color,
+                    bg_rgba: [0.0, 0.0, 0.0, 0.0],
+                    is_color: if entry.is_color { 1 } else { 0 },
+                });
+            }
+            cell_offset += *width as usize;
+        }
+    }
+}
+
+impl WebGpuPaneBackend {
     fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]) {
         if rects.is_empty() {
             return;
@@ -1240,64 +1358,20 @@ impl RenderBackend for WebGpuPaneBackend {
                 (ctx.font_size_px * 100.0).round() as u16,
             )
         };
-        for (row_i, text) in normalised.iter().take(visible_count).enumerate() {
-            let row_y = inner_y + row_i as f32 * cell_h;
-            let selected = overlay.selected_index >= 0 && row_i == overlay.selected_index as usize;
-            let glyph_color = if selected { bg } else { fg };
-            let mut cell_offset = 0usize;
-            for ch in text.chars() {
-                let ch_w_cells = if (ch as u32) < 0x80 { 1usize } else { 2usize };
-                if cell_offset + ch_w_cells > panel_cells_w {
-                    break;
-                }
-                let key = GlyphKey::new(
-                    font_family_hash,
-                    font_size_q,
-                    ch as u32,
-                    0,
-                    self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
-                );
-                let entry: Option<GlyphEntry> = {
-                    let mut ctx = self.ctx.borrow_mut();
-                    let glyph_str = ch.to_string();
-                    match ctx.atlas.lookup(&key) {
-                        Some(e) => {
-                            if (e.layer as usize) < ctx.frame_written.len() {
-                                ctx.frame_written[e.layer as usize] = true;
-                            }
-                            Some(e)
-                        }
-                        None => ctx
-                            .rasterize_and_admit(
-                                key,
-                                &glyph_str,
-                                self.metrics.dpr,
-                                0,
-                                &self.frame_pinned,
-                            )
-                            .ok(),
-                    }
-                };
-                if let Some(e) = entry {
-                    if (e.layer as usize) < self.frame_pinned.len() {
-                        self.frame_pinned[e.layer as usize] = true;
-                    }
-                    let pixel_x = inner_x + (cell_offset as f32) * cell_w;
-                    let natural_w = (e.px_w as f32).max(1.0);
-                    // §B.9 — natural size, no aspect-fit
-                    self.pending_instances.push(CellInstance {
-                        cell_xy: [pixel_x, row_y],
-                        cell_size: [natural_w, cell_h],
-                        atlas_uv: e.uv,
-                        atlas_layer: e.layer as u32,
-                        fg_rgba: glyph_color,
-                        bg_rgba: [0.0, 0.0, 0.0, 0.0],
-                        is_color: if e.is_color { 1 } else { 0 },
-                    });
-                }
-                cell_offset += ch_w_cells;
-            }
-        }
+        self.draw_history_glyphs(
+            &normalised,
+            visible_count,
+            overlay.selected_index as isize,
+            inner_x,
+            inner_y,
+            panel_cells_w,
+            cell_w,
+            cell_h,
+            bg,
+            fg,
+            font_family_hash,
+            font_size_q,
+        );
 
         // 4) 1-device-px border.
         let bw = 1.0_f32;
@@ -1355,7 +1429,129 @@ impl RenderBackend for WebGpuPaneBackend {
             }
         }
     }
+}
 
+impl WebGpuPaneBackend {
+    fn draw_history_glyphs(
+        &mut self,
+        rows: &[String],
+        visible_count: usize,
+        selected_index: isize,
+        inner_x: f32,
+        inner_y: f32,
+        panel_cells_w: usize,
+        cell_w: f32,
+        cell_h: f32,
+        bg: [f32; 4],
+        fg: [f32; 4],
+        font_family_hash: u64,
+        font_size_q: u16,
+    ) {
+        for (row_index, text) in rows.iter().take(visible_count).enumerate() {
+            let row_y = inner_y + row_index as f32 * cell_h;
+            let glyph_color = if selected_index >= 0 && row_index == selected_index as usize {
+                bg
+            } else {
+                fg
+            };
+            self.draw_history_row(
+                text,
+                row_y,
+                inner_x,
+                panel_cells_w,
+                cell_w,
+                cell_h,
+                glyph_color,
+                font_family_hash,
+                font_size_q,
+            );
+        }
+    }
+
+    fn draw_history_row(
+        &mut self,
+        text: &str,
+        row_y: f32,
+        inner_x: f32,
+        panel_cells_w: usize,
+        cell_w: f32,
+        cell_h: f32,
+        glyph_color: [f32; 4],
+        font_family_hash: u64,
+        font_size_q: u16,
+    ) {
+        let mut cell_offset = 0usize;
+        for ch in text.chars() {
+            let ch_width = if (ch as u32) < 0x80 { 1 } else { 2 };
+            if cell_offset + ch_width > panel_cells_w {
+                break;
+            }
+            self.draw_history_char(
+                ch,
+                row_y,
+                inner_x + cell_offset as f32 * cell_w,
+                cell_w,
+                cell_h,
+                glyph_color,
+                font_family_hash,
+                font_size_q,
+            );
+            cell_offset += ch_width;
+        }
+    }
+
+    fn draw_history_char(
+        &mut self,
+        ch: char,
+        row_y: f32,
+        pixel_x: f32,
+        _cell_w: f32,
+        cell_h: f32,
+        glyph_color: [f32; 4],
+        font_family_hash: u64,
+        font_size_q: u16,
+    ) {
+        let key = GlyphKey::new(
+            font_family_hash,
+            font_size_q,
+            ch as u32,
+            0,
+            self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
+        );
+        let glyph = ch.to_string();
+        let entry = {
+            let mut ctx = self.ctx.borrow_mut();
+            match ctx.atlas.lookup(&key) {
+                Some(entry) => {
+                    if (entry.layer as usize) < ctx.frame_written.len() {
+                        ctx.frame_written[entry.layer as usize] = true;
+                    }
+                    Some(entry)
+                }
+                None => ctx
+                    .rasterize_and_admit(key, &glyph, self.metrics.dpr, 0, &self.frame_pinned)
+                    .ok(),
+            }
+        };
+        let Some(entry) = entry else {
+            return;
+        };
+        if (entry.layer as usize) < self.frame_pinned.len() {
+            self.frame_pinned[entry.layer as usize] = true;
+        }
+        self.pending_instances.push(CellInstance {
+            cell_xy: [pixel_x, row_y],
+            cell_size: [(entry.px_w as f32).max(1.0), cell_h],
+            atlas_uv: entry.uv,
+            atlas_layer: entry.layer as u32,
+            fg_rgba: glyph_color,
+            bg_rgba: [0.0, 0.0, 0.0, 0.0],
+            is_color: if entry.is_color { 1 } else { 0 },
+        });
+    }
+}
+
+impl WebGpuPaneBackend {
     fn end_frame(&mut self) {
         // Phase B per-frame protocol. Steps:
         //   1. Upload frame uniform (pane-local viewport size in pixels).
@@ -1499,6 +1695,72 @@ impl RenderBackend for WebGpuPaneBackend {
                 self.cached_layer_epochs.push(epoch);
             }
         }
+    }
+}
+
+impl RenderBackend for WebGpuPaneBackend {
+    fn measure_font(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
+        WebGpuPaneBackend::measure_font(self, font_family, font_size_px)
+    }
+
+    fn requires_full_frame(&self) -> bool {
+        WebGpuPaneBackend::requires_full_frame(self)
+    }
+
+    fn resize_surface(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), String> {
+        WebGpuPaneBackend::resize_surface(self, width_css, height_css, dpr)
+    }
+
+    fn invalidate_atlas(&mut self) {
+        WebGpuPaneBackend::invalidate_atlas(self)
+    }
+
+    fn on_full_invalidate(&mut self) {
+        WebGpuPaneBackend::on_full_invalidate(self)
+    }
+
+    fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme) {
+        WebGpuPaneBackend::begin_frame(self, metrics, theme)
+    }
+
+    fn clear(&mut self) {
+        WebGpuPaneBackend::clear(self)
+    }
+
+    fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
+        WebGpuPaneBackend::draw_row_backgrounds(self, row, attrs_table)
+    }
+
+    fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
+        WebGpuPaneBackend::draw_row_texts(self, row, attrs_table)
+    }
+
+    fn draw_cursor(&mut self, cursor: &CursorDraw, attrs_table: &AttrTable) {
+        WebGpuPaneBackend::draw_cursor(self, cursor, attrs_table)
+    }
+
+    fn draw_selection_overlay(&mut self, rects: &[(usize, usize, usize)]) {
+        WebGpuPaneBackend::draw_selection_overlay(self, rects)
+    }
+
+    fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]) {
+        WebGpuPaneBackend::draw_hyperlink_underlines(self, rects)
+    }
+
+    fn draw_preedit_overlay(&mut self, text: &str, row: usize, col: usize, theme: &Theme) {
+        WebGpuPaneBackend::draw_preedit_overlay(self, text, row, col, theme)
+    }
+
+    fn draw_history_overlay(
+        &mut self,
+        overlay: &crate::render::renderer::HistoryOverlay,
+        theme: &Theme,
+    ) {
+        WebGpuPaneBackend::draw_history_overlay(self, overlay, theme)
+    }
+
+    fn end_frame(&mut self) {
+        WebGpuPaneBackend::end_frame(self)
     }
 }
 

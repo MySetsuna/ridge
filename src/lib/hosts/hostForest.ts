@@ -4,6 +4,7 @@ import type {
   RemoteLink,
   WorkspaceInfo,
 } from '@ridge/remote';
+import { unknownText } from '@ridge/remote/shared/transport/unknownText';
 
 export interface HostForestPane {
   id: string;
@@ -45,7 +46,7 @@ export interface HostTopologyLink extends HostForestLink {
   /** Promote a subscribed pane to the host's latency-priority stream. */
   promotePane?(pane: PaneRef): void;
   sendStdin(pane: PaneRef, data: string): void;
-  enqueueStdinTask?: RemoteLink['enqueueStdinTask'];
+  enqueueStdinTask?: NonNullable<RemoteLink['enqueueStdinTask']>;
   refreshPane(
     pane: PaneRef,
     rows: number,
@@ -60,8 +61,8 @@ export interface HostTopologyLink extends HostForestLink {
     on: boolean,
     agentId?: string,
   ): Promise<void>;
-  listShells?: RemoteLink['listShells'];
-  changePaneShell?: RemoteLink['changePaneShell'];
+  listShells?: NonNullable<RemoteLink['listShells']>;
+  changePaneShell?: NonNullable<RemoteLink['changePaneShell']>;
 }
 
 export interface HostForestResult {
@@ -127,7 +128,7 @@ function abortableWithTimeout<T>(
       if (settled) return;
       settled = true;
       cleanup();
-      reject(error instanceof Error ? error : new Error(String(error)));
+      reject(error instanceof Error ? error : new Error(unknownText(error)));
     };
     const onAbort = () => finishReject(new Error('request aborted'));
     if (signal?.aborted) {
@@ -229,7 +230,7 @@ export async function loadHostForest(
           } catch (error) {
             failedWorkspaceIds.push(workspace.id);
             failures.push(
-              `${nodes[index].name}: ${error instanceof Error ? error.message : String(error)}`,
+              `${nodes[index].name}: ${error instanceof Error ? error.message : unknownText(error)}`,
             );
           } finally {
             loadedWorkspaces += 1;
@@ -259,7 +260,7 @@ export async function loadHostForest(
         return {
           hostId,
           workspaces: [],
-          error: error instanceof Error ? error.message : String(error),
+          error: error instanceof Error ? error.message : unknownText(error),
         };
       }
     }),
@@ -281,7 +282,7 @@ export async function settleHostTopologyRefreshes(
         result = {
           hostId,
           workspaces: [],
-          error: error instanceof Error ? error.message : String(error),
+          error: error instanceof Error ? error.message : unknownText(error),
         };
       }
       if (result) onSettled(result);

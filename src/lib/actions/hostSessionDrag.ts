@@ -57,7 +57,7 @@ export function hostSessionDrag(node: HTMLElement, params: HostSessionDragParams
     const el = document.elementFromPoint(clientX, clientY);
     const wrapper = el?.closest('[data-pane-id]') as HTMLElement | null;
     if (!wrapper) return null;
-    const paneId = wrapper.getAttribute('data-pane-id');
+    const paneId = wrapper.dataset.paneId;
     if (!paneId) return null;
     return { paneId, region: attachDirectionAt(clientX, clientY, wrapper) as AttachRegion };
   }

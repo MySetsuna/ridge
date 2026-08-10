@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
+use ridge_mcp::server::ExternalExecutionRejection;
 use tauri::Emitter;
 use tokio::sync::oneshot;
 
@@ -251,13 +252,7 @@ pub fn list_pending_local() -> Vec<serde_json::Value> {
 /// attribution. The report deliberately has no approve/retry resolution.
 pub fn report_external_rejection(
     handle: &tauri::AppHandle,
-    initiator: &str,
-    action: &str,
-    executor: &str,
-    policy_source: &str,
-    request_id: &str,
-    reason: &str,
-    next_step: &str,
+    rejection: &ExternalExecutionRejection,
 ) -> String {
     let id = format!(
         "external_rejection_{}",
@@ -266,14 +261,14 @@ pub fn report_external_rejection(
     let report = serde_json::json!({
         "id": id,
         "kind": "external_rejection",
-        "initiator": initiator,
-        "action": action,
+        "initiator": rejection.initiator,
+        "action": rejection.action,
         "level": "Dangerous",
-        "reason": reason,
-        "executor": executor,
-        "policySource": policy_source,
-        "requestId": request_id,
-        "nextStep": next_step,
+        "reason": rejection.reason,
+        "executor": rejection.executor,
+        "policySource": rejection.policy_source,
+        "requestId": rejection.request_id,
+        "nextStep": rejection.next_step,
     });
     if let Ok(mut reports) = EXTERNAL_REJECTIONS.lock() {
         reports.push_back(report.clone());
@@ -288,11 +283,14 @@ pub fn report_external_rejection(
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0),
         source: "external-execution-rejection".into(),
-        initiator: initiator.into(),
+        initiator: rejection.initiator.clone(),
         verdict: "rejected-before-ridge".into(),
         risk_level: "Unknown".into(),
-        reason_summary: reason.into(),
-        outcome: format!("executor={executor}; policy={policy_source}; request={request_id}"),
+        reason_summary: rejection.reason.clone(),
+        outcome: format!(
+            "executor={}; policy={}; request={}",
+            rejection.executor, rejection.policy_source, rejection.request_id
+        ),
     });
     let _ = handle.emit(HITL_EVENT, report);
     id

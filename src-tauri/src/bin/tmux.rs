@@ -76,34 +76,9 @@ fn log_file_append(line: &str) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let joined_args = args
-        .iter()
-        .map(|s| format!("{s:?}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let tmux_env = env::var("TMUX").unwrap_or_default();
-    let url_set = env::var("RIDGE_TEAMMATE_URL")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false);
-    let token_set = env::var("RIDGE_TEAMMATE_TOKEN")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false);
-    log_to_file(&format!(
-        "invoke args=[{joined_args}] tmux_env={tmux_env:?} teammate_url_set={url_set} teammate_token_set={token_set}"
-    ));
+    log_invocation(&args);
     // Claude Code 等会先跑 `tmux -V` 判断是否存在 tmux；此前落到 unsupported 会导致永远不启用 split。
-    for a in args.iter().skip(1) {
-        if a == "-V" || a == "--version" {
-            log_to_file("probe version -> tmux 3.4");
-            println!("tmux 3.4");
-            process::exit(0);
-        }
-        if a == "--help" {
-            log_to_file("probe help");
-            eprintln!("tmux shim: supports all tmux commands (needs Ridge_TEAMMATE_*)");
-            process::exit(0);
-        }
-    }
+    handle_probe_args(&args);
     let (socket_id, sub_idx) = parse_global_flags(&args);
     let _ = SOCKET.set(socket_id);
     if sub_idx >= args.len() {
@@ -123,20 +98,10 @@ fn main() {
     log_to_file(&format!("socket={} sub={sub}", socket()));
     // 按子命令设 HTTP 总超时：控制命令短超时，后端楔死时秒级失败而非干等满 60s。
     let _ = CLIENT_TIMEOUT.set(command_timeout(sub));
-    let mut r = dispatch(sub, rest, &url, &token);
+    let r = dispatch_with_rediscovery(sub, rest, &url, &token);
     // 端点重发现：首次以 env 端点失败且确实是**连接错误**（请求从未送达 → 重跑无重复副作用）
     // → 后端可能 panic 自重启换了 ephemeral 端口。从 `$TMUX` socket 旁的 sidecar 读当前端点，
     // 拿到**不同**的 url 就用它重跑一次该命令。无连接错误则此分支零开销、零探测。
-    if r.is_err() && LAST_CONNECT_ERR.load(std::sync::atomic::Ordering::Relaxed) {
-        if let Some((u2, t2)) = current_tmux_socket().and_then(|s| read_endpoint_sidecar(&s)) {
-            if u2 != url {
-                log_to_file(&format!(
-                    "rediscover: env {url} unreachable, retry via sidecar endpoint {u2}"
-                ));
-                r = dispatch(sub, rest, &u2, &t2);
-            }
-        }
-    }
     log_to_file(&format!(
         "exit subcommand={sub} status={}",
         if r.is_ok() { "ok" } else { "err" }
@@ -145,6 +110,56 @@ fn main() {
 }
 
 /// 把子命令分发到各 `cmd_*`。抽成独立函数，便于端点重发现时用**不同** url/token 重跑一次。
+fn log_invocation(args: &[String]) {
+    let joined_args = args
+        .iter()
+        .map(|s| format!("{s:?}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let tmux_env = env::var("TMUX").unwrap_or_default();
+    let url_set = env::var("RIDGE_TEAMMATE_URL").is_ok_and(|value| !value.is_empty());
+    let token_set = env::var("RIDGE_TEAMMATE_TOKEN").is_ok_and(|value| !value.is_empty());
+    log_to_file(&format!(
+        "invoke args=[{joined_args}] tmux_env={tmux_env:?} teammate_url_set={url_set} teammate_token_set={token_set}"
+    ));
+}
+
+fn handle_probe_args(args: &[String]) {
+    for arg in args.iter().skip(1) {
+        match arg.as_str() {
+            "-V" | "--version" => {
+                log_to_file("probe version -> tmux 3.4");
+                println!("tmux 3.4");
+                process::exit(0);
+            }
+            "--help" => {
+                log_to_file("probe help");
+                eprintln!("tmux shim: supports all tmux commands (needs Ridge_TEAMMATE_*)");
+                process::exit(0);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn dispatch_with_rediscovery(sub: &str, rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    let result = dispatch(sub, rest, url, token);
+    if result.is_ok() || !LAST_CONNECT_ERR.load(std::sync::atomic::Ordering::Relaxed) {
+        return result;
+    }
+    let Some((new_url, new_token)) = current_tmux_socket().and_then(|s| read_endpoint_sidecar(&s))
+    else {
+        return result;
+    };
+    if new_url == url {
+        return result;
+    }
+    log_to_file(&format!(
+        "rediscover: env {url} unreachable, retry via sidecar endpoint {new_url}"
+    ));
+    dispatch(sub, rest, &new_url, &new_token)
+}
+
 fn dispatch(sub: &str, rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     match sub {
         // ========== Pane Management ==========
@@ -789,40 +804,35 @@ fn rename_pane_http(url: &str, token: &str, pane_index: usize, name: &str) {
     }
 }
 
+fn parse_target_index(raw: &str) -> Option<usize> {
+    raw.parse::<usize>().ok().or_else(|| {
+        raw.rsplit_once('.')
+            .and_then(|(_, suffix)| suffix.parse::<usize>().ok())
+    })
+}
+
 fn resolve_named_pane_target(v: &str, url: &str, token: &str) -> SendTarget {
     let v = v.trim();
     if let Some(n) = v.strip_prefix('%') {
-        if let Ok(idx) = n.parse::<usize>() {
-            return SendTarget::Index(idx);
-        }
+        return parse_target_index(n)
+            .map(SendTarget::Index)
+            .unwrap_or(SendTarget::TmuxCurrent);
     }
     if let Some(colon) = v.find(':') {
         let after_colon = &v[colon + 1..];
-        if let Some(dot) = after_colon.rfind('.') {
-            if let Ok(idx) = after_colon[dot + 1..].parse::<usize>() {
-                return SendTarget::Index(idx);
-            }
-        }
-        if let Ok(idx) = after_colon.parse::<usize>() {
+        if let Some(idx) = parse_target_index(after_colon) {
             return SendTarget::Index(idx);
         }
         log_to_file(&format!(
             "resolve_named_pane_target: lookup name={after_colon:?}"
         ));
-        if let Some(idx) = find_pane_by_name(url, token, after_colon) {
-            return SendTarget::Index(idx);
-        }
-        return SendTarget::TmuxCurrent;
+        return find_pane_by_name(url, token, after_colon)
+            .map(SendTarget::Index)
+            .unwrap_or(SendTarget::TmuxCurrent);
     }
-    if let Ok(idx) = v.parse::<usize>() {
-        return SendTarget::Index(idx);
-    }
-    if let Some(dot) = v.rfind('.') {
-        if let Ok(idx) = v[dot + 1..].parse::<usize>() {
-            return SendTarget::Index(idx);
-        }
-    }
-    SendTarget::TmuxCurrent
+    parse_target_index(v)
+        .map(SendTarget::Index)
+        .unwrap_or(SendTarget::TmuxCurrent)
 }
 
 /// Minimal JSON shape returned by `/api/v1/list-panes?json=1`.
@@ -854,35 +864,89 @@ fn render_tmux_format_dynamic(fmt: &str, pane_index: usize, url: &str, token: &s
         return out;
     }
 
-    let u = format!("{}/api/v1/list-panes?json=1", url.trim_end_matches('/'));
-    let resp = send_retry(client().get(&u).headers(auth_headers(token)))
-        .ok()
-        .and_then(|r| {
-            if r.status().is_success() {
-                r.json::<ListPanesJson>().ok()
-            } else {
-                None
-            }
-        });
-
-    if let Some(data) = resp {
-        if needs_pane_count {
-            out = out.replace("#{window_panes}", &data.pane_count.to_string());
-        }
-        if needs_cwd {
-            let cwd = data
-                .panes
-                .iter()
-                .find(|p| p.index == pane_index)
-                .and_then(|p| p.cwd.clone())
-                .unwrap_or_default();
-            out = out.replace("#{pane_current_path}", &cwd);
-        }
+    if let Some(data) = fetch_list_panes(url, token) {
+        replace_dynamic_fields(&mut out, &data, pane_index, needs_pane_count, needs_cwd);
     }
     out
 }
 
+fn fetch_list_panes(url: &str, token: &str) -> Option<ListPanesJson> {
+    let u = format!("{}/api/v1/list-panes?json=1", url.trim_end_matches('/'));
+    send_retry(client().get(&u).headers(auth_headers(token)))
+        .ok()
+        .filter(|response| response.status().is_success())
+        .and_then(|response| response.json::<ListPanesJson>().ok())
+}
+
+fn replace_dynamic_fields(
+    output: &mut String,
+    data: &ListPanesJson,
+    pane_index: usize,
+    replace_count: bool,
+    replace_cwd: bool,
+) {
+    if replace_count {
+        *output = output.replace("#{window_panes}", &data.pane_count.to_string());
+    }
+    if replace_cwd {
+        let cwd = data
+            .panes
+            .iter()
+            .find(|pane| pane.index == pane_index)
+            .and_then(|pane| pane.cwd.clone())
+            .unwrap_or_default();
+        *output = output.replace("#{pane_current_path}", &cwd);
+    }
+}
+
 fn cmd_display_message(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    let mut pane_index = current_pane_index_from_env();
+    let mut format = "#{pane_id}".to_string();
+    let mut raw_target = None;
+    let mut index = 0;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "-t" if index + 1 < rest.len() => {
+                raw_target = Some(rest[index + 1].clone());
+                pane_index = parse_pane_target(&rest[index + 1]);
+                index += 1;
+            }
+            "-p" => {}
+            value if !value.starts_with('-') => format = value.to_string(),
+            _ => {}
+        }
+        index += 1;
+    }
+    if use_native(raw_target.as_deref()) {
+        let request = format!(
+            "{}?socket={}&target={}&format={}",
+            tmux_api(url, "display-message"),
+            q(socket()),
+            q(raw_target.as_deref().unwrap_or("")),
+            q(&format)
+        );
+        match http_get(request, token) {
+            Some((200, body)) => {
+                println!("{body}");
+                return Ok(());
+            }
+            Some((409, _)) => {}
+            Some((_, message)) => {
+                if !message.is_empty() {
+                    eprintln!("{message}");
+                }
+                return Err(());
+            }
+            None => return Err(()),
+        }
+    }
+    println!(
+        "{}",
+        render_tmux_format_dynamic(&format, pane_index, url, token)
+    );
+    Ok(())
+}
+/*
     let mut pane_index = current_pane_index_from_env();
     let mut format = "#{pane_id}".to_string();
     let mut raw_target: Option<String> = None;
@@ -936,6 +1000,8 @@ fn cmd_display_message(rest: &[String], url: &str, token: &str) -> Result<(), ()
 }
 
 /// tmux `cmd-split-window.c`：`split-window -P` 且未指定 `-F` 时的默认模板。
+*/
+
 const SPLIT_WINDOW_PRINT_DEFAULT: &str = "#{session_name}:#{window_index}.#{pane_index}";
 
 /// Parsed `split-window` flags (pure; no I/O) so routing + request-body shape
@@ -950,79 +1016,98 @@ struct SplitArgs {
     command: Option<String>,
 }
 
+fn split_option_has_value(rest: &[String], index: usize) -> bool {
+    rest.get(index + 1)
+        .is_some_and(|value| !value.starts_with('-'))
+}
+
+fn split_command_start(rest: &[String], index: usize) -> Option<usize> {
+    (index < rest.len()).then_some(index)
+}
+
+fn split_command(rest: &[String], start: Option<usize>) -> Option<String> {
+    start.and_then(|index| {
+        let command = rest[index..].join(" ");
+        (!command.is_empty()).then_some(command)
+    })
+}
+
 fn parse_split_args(rest: &[String]) -> SplitArgs {
-    let mut horizontal = false;
-    let mut pane_index: Option<usize> = None;
-    let mut raw_target: Option<String> = None;
-    let mut print_pane = false;
-    let mut output_format: Option<String> = None;
-    let mut cwd: Option<String> = None;
+    let mut args = SplitArgs {
+        horizontal: false,
+        pane_index: None,
+        raw_target: None,
+        print_pane: false,
+        output_format: None,
+        cwd: None,
+        command: None,
+    };
     let mut shell_start: Option<usize> = None;
-    let mut i = 0usize;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "-h" => horizontal = true,
-            "-v" => horizontal = false,
-            "-P" => print_pane = true,
-            "-F" if i + 1 < rest.len() => {
-                output_format = Some(rest[i + 1].clone());
-                i += 1;
-            }
-            "-t" if i + 1 < rest.len() => {
-                raw_target = Some(rest[i + 1].clone());
-                let t = rest[i + 1].trim();
-                if !t.is_empty() {
-                    pane_index = Some(parse_pane_target(t));
-                }
-                i += 1;
-            }
-            "-c" if i + 1 < rest.len() => {
-                cwd = Some(rest[i + 1].clone());
-                i += 1;
-            }
-            "-l" | "-p" => {
-                if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
-                    i += 1;
-                }
-            }
-            "-e" if i + 1 < rest.len() && !rest[i + 1].starts_with('-') => {
-                i += 1;
-            }
-            "-b" | "-f" | "-d" | "-Z" | "-I" => {}
-            "--" => {
-                i += 1;
-                if i < rest.len() {
-                    shell_start = Some(i);
-                }
-                break;
-            }
-            s if s.starts_with('-') => {}
-            _ => {
-                shell_start = Some(i);
-                break;
-            }
-        }
-        i += 1;
-    }
+    parse_split_flags(rest, &mut args, &mut shell_start);
+    args.command = split_command(rest, shell_start);
+    args
+}
 
-    let command = shell_start.and_then(|j| {
-        let s = rest[j..].join(" ");
-        if s.is_empty() {
-            None
-        } else {
-            Some(s)
-        }
-    });
-
-    SplitArgs {
-        horizontal,
-        pane_index,
-        raw_target,
-        print_pane,
-        output_format,
-        cwd,
-        command,
+fn parse_split_flags(rest: &[String], args: &mut SplitArgs, shell_start: &mut Option<usize>) {
+    let mut index = 0;
+    while index < rest.len() {
+        let Some(next) = consume_split_flag(rest, index, args, shell_start) else {
+            return;
+        };
+        index = next;
     }
+}
+
+fn consume_split_flag(
+    rest: &[String],
+    index: usize,
+    args: &mut SplitArgs,
+    shell_start: &mut Option<usize>,
+) -> Option<usize> {
+    match rest[index].as_str() {
+        "-h" => args.horizontal = true,
+        "-v" => args.horizontal = false,
+        "-P" => args.print_pane = true,
+        "-F" => args.output_format = split_value(rest, index),
+        "-t" => {
+            args.raw_target = split_value(rest, index);
+            args.pane_index = args
+                .raw_target
+                .as_deref()
+                .filter(|target| !target.trim().is_empty())
+                .map(parse_pane_target);
+        }
+        "-c" => args.cwd = split_value(rest, index),
+        "-l" | "-p" | "-e" if split_option_has_value(rest, index) => {}
+        "-b" | "-f" | "-d" | "-Z" | "-I" => {}
+        "--" => {
+            *shell_start = split_command_start(rest, index + 1);
+            return None;
+        }
+        value if value.starts_with('-') => {}
+        _ => {
+            *shell_start = Some(index);
+            return None;
+        }
+    }
+    Some(
+        index
+            + if expects_split_value(rest, index) {
+                2
+            } else {
+                1
+            },
+    )
+}
+
+fn split_value(rest: &[String], index: usize) -> Option<String> {
+    rest.get(index + 1).cloned()
+}
+
+fn expects_split_value(rest: &[String], index: usize) -> bool {
+    matches!(rest[index].as_str(), "-F" | "-t" | "-c")
+        || (matches!(rest[index].as_str(), "-l" | "-p" | "-e")
+            && split_option_has_value(rest, index))
 }
 
 /// Build the `/api/v1/split-window` request body (pure; no I/O).
@@ -1030,6 +1115,49 @@ fn parse_split_args(rest: &[String]) -> SplitArgs {
 /// `auto_place=true`（GUI 路径）发显式 `auto_place` 标志并**丢弃**样板 `-t`/`-h`
 /// （省略 `pane_index`、`horizontal` 置 false），避免后端 auto_place 分支被旁路。
 /// `auto_place=false`（native 回退 / new-window）如实转发 `pane_index`/`horizontal`。
+fn base_split_body(
+    auto_place: bool,
+    horizontal: bool,
+    pane_index: Option<usize>,
+) -> serde_json::Value {
+    if auto_place {
+        serde_json::json!({ "auto_place": true, "horizontal": false })
+    } else {
+        let mut body = serde_json::json!({ "horizontal": horizontal });
+        if let Some(pane) = pane_index {
+            body["pane_index"] = serde_json::json!(pane);
+        }
+        body
+    }
+}
+
+fn apply_launch_body(
+    body: &mut serde_json::Value,
+    launch: &StructuredLaunch,
+    command: Option<&str>,
+) {
+    body["is_agent"] = serde_json::json!(true);
+    body["program"] = serde_json::json!(launch.program);
+    body["args"] = serde_json::json!(launch.args);
+    if !launch.env.is_empty() {
+        body["env"] = serde_json::json!(launch.env);
+    }
+    if let Some(cwd) = launch.cwd.as_deref().filter(|value| !value.is_empty()) {
+        body["cwd"] = serde_json::json!(cwd);
+    }
+    if let Some(command) = command {
+        body["command"] = serde_json::json!(command);
+    }
+}
+
+fn apply_split_cwd(body: &mut serde_json::Value, cwd: Option<&str>) {
+    if body.get("cwd").is_none() {
+        if let Some(cwd) = cwd.filter(|value| !value.is_empty()) {
+            body["cwd"] = serde_json::json!(cwd);
+        }
+    }
+}
+
 fn build_split_body(
     auto_place: bool,
     horizontal: bool,
@@ -1038,43 +1166,59 @@ fn build_split_body(
     cwd: Option<&str>,
     structured: Option<&StructuredLaunch>,
 ) -> serde_json::Value {
-    let mut body = if auto_place {
-        // auto_place 下后端自行选择目标+方向：调用方传入的 `horizontal`/`pane_index`
-        // 是 harness 样板，此处**有意忽略**（不透传），只发显式 `auto_place` + 中性
-        // `horizontal:false`。
-        serde_json::json!({ "auto_place": true, "horizontal": false })
-    } else {
-        let mut b = serde_json::json!({ "horizontal": horizontal });
-        if let Some(p) = pane_index {
-            b["pane_index"] = serde_json::json!(p);
+    let mut body = base_split_body(auto_place, horizontal, pane_index);
+    /*
+        let mut body = if auto_place {
+            // auto_place 下后端自行选择目标+方向：调用方传入的 `horizontal`/`pane_index`
+            // 是 harness 样板，此处**有意忽略**（不透传），只发显式 `auto_place` + 中性
+            // `horizontal:false`。
+            serde_json::json!({ "auto_place": true, "horizontal": false })
+        } else {
+            let mut b = serde_json::json!({ "horizontal": horizontal });
+            if let Some(p) = pane_index {
+                b["pane_index"] = serde_json::json!(p);
+            }
+            b
+        };
         }
-        b
-    };
-    if let Some(launch) = structured {
-        // 结构化 launch（`env K=V program …`）= agent 启动意图（F1）：显式置 `is_agent`，
-        // 后端据此把面板提升为 Busy（启动即 Busy/id 可空）。裸 shell / 普通命令不置。
-        body["is_agent"] = serde_json::json!(true);
-        body["program"] = serde_json::json!(launch.program);
-        body["args"] = serde_json::json!(launch.args);
-        if !launch.env.is_empty() {
-            body["env"] = serde_json::json!(launch.env);
+    */
+    match structured {
+        Some(launch) => apply_launch_body(&mut body, launch, command),
+        None => {
+            if let Some(command) = command {
+                body["command"] = serde_json::json!(command);
+            }
         }
-        if let Some(ref c) = launch.cwd {
-            if !c.is_empty() {
+    }
+    /*
+        if let Some(launch) = structured {
+            // 结构化 launch（`env K=V program …`）= agent 启动意图（F1）：显式置 `is_agent`，
+            // 后端据此把面板提升为 Busy（启动即 Busy/id 可空）。裸 shell / 普通命令不置。
+            body["is_agent"] = serde_json::json!(true);
+            body["program"] = serde_json::json!(launch.program);
+            body["args"] = serde_json::json!(launch.args);
+            if !launch.env.is_empty() {
+                body["env"] = serde_json::json!(launch.env);
+            }
+            if let Some(ref c) = launch.cwd {
+                if !c.is_empty() {
+                    body["cwd"] = serde_json::json!(c);
+                }
+            }
+            if let Some(c) = command {
+                body["command"] = serde_json::json!(c);
+            }
+        } else if let Some(c) = command {
+            body["command"] = serde_json::json!(c);
+        }
+        if let Some(c) = cwd.filter(|s| !s.is_empty()) {
+            if body.get("cwd").is_none() {
                 body["cwd"] = serde_json::json!(c);
             }
         }
-        if let Some(c) = command {
-            body["command"] = serde_json::json!(c);
         }
-    } else if let Some(c) = command {
-        body["command"] = serde_json::json!(c);
-    }
-    if let Some(c) = cwd.filter(|s| !s.is_empty()) {
-        if body.get("cwd").is_none() {
-            body["cwd"] = serde_json::json!(c);
-        }
-    }
+    */
+    apply_split_cwd(&mut body, cwd);
     body
 }
 
@@ -1454,29 +1598,179 @@ fn post_spawn_process(
     let body = build_spawn_process_body(target, launch);
     let u = format!("{}/api/v1/spawn-process", url.trim_end_matches('/'));
     log_to_file(&format!("spawn-process: posting to {}", u));
-    let res =
-        send_retry(client().post(u).headers(auth_headers(token)).json(&body)).map_err(|e| {
-            log_to_file(&format!("spawn-process: HTTP error: {e}"));
-            eprintln!(
-                "{}",
-                backend_error_message(e.is_timeout(), e.is_connect(), &e.to_string())
-            );
-        })?;
-    if !res.status().is_success() {
-        let status = res.status();
-        let text = res.text().unwrap_or_default();
-        log_to_file(&format!(
-            "spawn-process: non-success status={} body={}",
-            status, text
-        ));
-        eprintln!("tmux: spawn-process {}", status);
-        return Err(());
-    }
+    let res = send_retry(client().post(u).headers(auth_headers(token)).json(&body))
+        .map_err(|e| log_spawn_error(e))?;
+    ensure_spawn_success(res)?;
     log_to_file("spawn-process: success");
     Ok(())
 }
 
+fn log_spawn_error(error: reqwest::Error) {
+    log_to_file(&format!("spawn-process: HTTP error: {error}"));
+    eprintln!(
+        "{}",
+        backend_error_message(error.is_timeout(), error.is_connect(), &error.to_string())
+    );
+}
+
+fn ensure_spawn_success(response: reqwest::blocking::Response) -> Result<(), ()> {
+    if response.status().is_success() {
+        return Ok(());
+    }
+    let status = response.status();
+    let text = response.text().unwrap_or_default();
+    log_to_file(&format!(
+        "spawn-process: non-success status={} body={}",
+        status, text
+    ));
+    eprintln!("tmux: spawn-process {}", status);
+    Err(())
+}
+
+fn parse_send_keys_target(
+    rest: &[String],
+    url: &str,
+    token: &str,
+) -> (SendTarget, Option<String>, usize) {
+    let mut target = SendTarget::TmuxCurrent;
+    let mut raw_target = None;
+    let mut index = 0;
+    while index < rest.len() {
+        if rest[index] == "-t" && index + 1 < rest.len() {
+            let value = rest[index + 1].trim();
+            raw_target = Some(value.to_string());
+            target = if value.is_empty() {
+                SendTarget::TmuxCurrent
+            } else {
+                resolve_named_pane_target(value, url, token)
+            };
+            index += 2;
+            continue;
+        }
+        if !rest[index].starts_with('-') {
+            break;
+        }
+        index += if rest[index] == "-N" && index + 1 < rest.len() {
+            2
+        } else {
+            1
+        };
+    }
+    (target, raw_target, index)
+}
+/*
+    let mut target = SendTarget::TmuxCurrent;
+    let mut raw_target = None;
+    let mut index = 0;
+    while index < rest.len() {
+        if rest[index] == "-t" && index + 1 < rest.len() {
+            let value = rest[index + 1].trim();
+            raw_target = Some(value.to_string());
+            target = if value.is_empty() {
+                SendTarget::TmuxCurrent
+            } else {
+                resolve_named_pane_target(value, url, token)
+            };
+            index += 2;
+            continue;
+        }
+        if !rest[index].starts_with('-') {
+            break;
+        }
+        index += if rest[index] == "-N" && index + 1 < rest.len() {
+            2
+        } else {
+            1
+        };
+    }
+    (target, raw_target, index)
+}
+
+*/
+fn send_native_keys(
+    raw_target: Option<&str>,
+    text: &str,
+    url: &str,
+    token: &str,
+) -> Option<Result<(), ()>> {
+    if !use_native(raw_target) {
+        return None;
+    }
+    let body = serde_json::json!({
+        "socket": socket(),
+        "target": raw_target.unwrap_or_default(),
+        "text": text,
+    });
+    native_key_result(http_post(tmux_api(url, "send-keys"), token, body))
+}
+
+fn native_key_result(response: Option<(u16, String)>) -> Option<Result<(), ()>> {
+    match response {
+        Some((200, _)) => Some(Ok(())),
+        Some((409, _)) => None,
+        Some((_, message)) => {
+            if !message.is_empty() {
+                eprintln!("{message}");
+            }
+            Some(Err(()))
+        }
+        None => Some(Err(())),
+    }
+}
+
+fn try_structured_send(text: &str, target: &SendTarget, url: &str, token: &str) -> bool {
+    let candidate = text.trim_end_matches(['\r', '\n']).trim();
+    let Some(launch) = parse_structured_launch(candidate) else {
+        return false;
+    };
+    if post_spawn_process(url, token, target, &launch).is_ok() {
+        return true;
+    }
+    log_to_file("spawn-process failed, falling back to send-keys");
+    false
+}
+
+fn send_keys_regular(target: &SendTarget, text: &str, url: &str, token: &str) -> Result<(), ()> {
+    let body = match target {
+        SendTarget::TmuxCurrent => serde_json::json!({
+            "use_tmux_current_pane": true,
+            "text": text,
+        }),
+        SendTarget::Index(pane) => serde_json::json!({
+            "pane": pane,
+            "use_tmux_current_pane": false,
+            "text": text,
+        }),
+    };
+    let url = format!("{}/api/v1/send-keys", url.trim_end_matches('/'));
+    let response = send_retry(client().post(url).headers(auth_headers(token)).json(&body))
+        .map_err(|error| eprintln!("tmux: {error}"))?;
+    if !response.status().is_success() {
+        eprintln!("tmux: send-keys {}", response.status());
+        return Err(());
+    }
+    Ok(())
+}
+
 fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    let (target, raw_target, start) = parse_send_keys_target(rest, url, token);
+    let text = rest
+        .iter()
+        .skip(start)
+        .flat_map(|word| tmux_key_to_bytes(word))
+        .collect::<Vec<_>>();
+    let text = String::from_utf8_lossy(&text).into_owned();
+    if let Some(result) = send_native_keys(raw_target.as_deref(), &text, url, token) {
+        return result;
+    }
+    if try_structured_send(&text, &target, url, token) {
+        return Ok(());
+    }
+    send_keys_regular(&target, &text, url, token)
+}
+
+/*
+fn cmd_send_keys_legacy(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     // `-t ""` 或未出现 `-t` 时与 tmux 一致：发往当前窗格（由 teammate HTTP 侧 `teammate_tmux_pane_cursor` 记录）。
     let mut target = SendTarget::TmuxCurrent;
     let mut raw_target: Option<String> = None;
@@ -1503,6 +1797,7 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
             continue;
         }
         break;
+    }
     }
     let mut buf: Vec<u8> = Vec::new();
     for w in rest.iter().skip(i) {
@@ -1566,7 +1861,102 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     Ok(())
 }
 
+}
+*/
+
+struct ListPanesArgs {
+    pane_index: usize,
+    format: Option<String>,
+    all_panes: bool,
+    raw_target: Option<String>,
+}
+
+fn parse_list_panes_args(rest: &[String]) -> ListPanesArgs {
+    let mut args = ListPanesArgs {
+        pane_index: current_pane_index_from_env(),
+        format: None,
+        all_panes: false,
+        raw_target: None,
+    };
+    let mut index = 0;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "-t" if index + 1 < rest.len() => {
+                args.raw_target = Some(rest[index + 1].clone());
+                args.pane_index = parse_pane_target(&rest[index + 1]);
+                index += 1;
+            }
+            "-F" if index + 1 < rest.len() => {
+                args.format = Some(rest[index + 1].clone());
+                index += 1;
+            }
+            "-a" | "-s" => args.all_panes = true,
+            _ => {}
+        }
+        index += 1;
+    }
+    args
+}
+
+fn native_list_panes(args: &ListPanesArgs, url: &str, token: &str) -> Option<Result<(), ()>> {
+    if !use_native(args.raw_target.as_deref()) {
+        return None;
+    }
+    let mut request = format!(
+        "{}?socket={}&target={}",
+        tmux_api(url, "list-panes"),
+        q(socket()),
+        q(args.raw_target.as_deref().unwrap_or(""))
+    );
+    if let Some(format) = &args.format {
+        request.push_str(&format!("&format={}", q(format)));
+    }
+    if args.all_panes {
+        request.push_str("&all=1");
+    }
+    match http_get(request, token) {
+        Some((200, body)) => {
+            println!("{body}");
+            Some(Ok(()))
+        }
+        Some((409, _)) => None,
+        Some((_, message)) => {
+            if !message.is_empty() {
+                eprintln!("{message}");
+            }
+            Some(Err(()))
+        }
+        None => Some(Err(())),
+    }
+}
+
 fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
+    let args = parse_list_panes_args(rest);
+    if let Some(result) = native_list_panes(&args, url, token) {
+        return result;
+    }
+    if let Some(format) = args.format.clone() {
+        let pane_index = if args.all_panes { 0 } else { args.pane_index };
+        println!(
+            "{}",
+            render_tmux_format_dynamic(&format, pane_index, url, token)
+        );
+        return Ok(());
+    }
+    let url = format!("{}/api/v1/list-panes", url.trim_end_matches('/'));
+    let response = send_retry(client().get(url).headers(auth_headers(token)))
+        .map_err(|error| eprintln!("tmux: {error}"))?;
+    if !response.status().is_success() {
+        eprintln!("tmux: list-panes {}", response.status());
+        return Err(());
+    }
+    let text = response
+        .text()
+        .map_err(|error| eprintln!("tmux: {error}"))?;
+    print!("{text}");
+    Ok(())
+}
+/*
     // Claude Code 常用 tmux `list-panes -F ...` 推断 pane/window；优先返回兼容格式。
     let mut pane_index = current_pane_index_from_env();
     let mut format: Option<String> = None;
@@ -1646,6 +2036,8 @@ fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     print!("{text}");
     Ok(())
 }
+
+*/
 
 // ========== Pane Management Commands ==========
 
@@ -1736,20 +2128,7 @@ fn cmd_kill_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
             return r;
         }
     }
-    let mut pane_index: Option<usize> = None;
-    let mut kill_all = false;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "-t" if i + 1 < rest.len() => {
-                pane_index = Some(parse_pane_target(&rest[i + 1]));
-                i += 1;
-            }
-            "-a" => kill_all = true,
-            _ => {}
-        }
-        i += 1;
-    }
+    let (pane_index, kill_all) = parse_kill_pane_args(rest);
 
     log_to_file(&format!(
         "kill-pane: pane={:?}, kill_all={}",
@@ -1765,19 +2144,49 @@ fn cmd_kill_pane(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     // Route the kill through the teammate HTTP API so Ridge removes the pane
     // from its layout, tears down the PTY, and emits teammate-layout-changed.
     // Without this the pane lingers as a zombie after the agent exits.
-    let u = format!("{}/api/v1/kill-pane", url.trim_end_matches('/'));
-    let body = match pane_index {
-        Some(idx) => serde_json::json!({ "pane_index": idx }),
-        None => serde_json::json!({}),
-    };
-    let res =
-        send_retry(client().post(&u).headers(auth_headers(token)).json(&body)).map_err(|e| {
-            log_to_file(&format!("kill-pane HTTP error: {e}"));
-        })?;
+    let res = post_kill_pane(pane_index, url, token)?;
     if !res.status().is_success() {
         log_to_file(&format!("kill-pane HTTP {} from server", res.status()));
     }
     Ok(())
+}
+
+fn parse_kill_pane_args(rest: &[String]) -> (Option<usize>, bool) {
+    let mut pane_index = None;
+    let mut kill_all = false;
+    let mut index = 0;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "-t" if index + 1 < rest.len() => {
+                pane_index = Some(parse_pane_target(&rest[index + 1]));
+                index += 1;
+            }
+            "-a" => kill_all = true,
+            _ => {}
+        }
+        index += 1;
+    }
+    (pane_index, kill_all)
+}
+
+fn post_kill_pane(
+    pane_index: Option<usize>,
+    url: &str,
+    token: &str,
+) -> Result<reqwest::blocking::Response, ()> {
+    let endpoint = format!("{}/api/v1/kill-pane", url.trim_end_matches('/'));
+    let body = pane_index
+        .map(|index| serde_json::json!({ "pane_index": index }))
+        .unwrap_or_else(|| serde_json::json!({}));
+    send_retry(
+        client()
+            .post(endpoint)
+            .headers(auth_headers(token))
+            .json(&body),
+    )
+    .map_err(|error| {
+        log_to_file(&format!("kill-pane HTTP error: {error}"));
+    })
 }
 
 fn cmd_resize_pane(rest: &[String], _url: &str, _token: &str) -> Result<(), ()> {

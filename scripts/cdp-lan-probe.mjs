@@ -18,7 +18,6 @@
 //      layout matches the paneId from list-panes (the core lan_proto.rs claim).
 //
 // Usage: node scripts/cdp-lan-probe.mjs   (with tauri:dev:cdp already running)
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import http from 'node:http';
 import { resolveCdpPort } from './cdp-port.mjs';
 
@@ -81,7 +80,8 @@ async function waitForRidgeTarget(maxMs = 90000) {
   fail('timed out waiting for Ridge CDP target on :' + CDP_PORT + ' — ' + lastErr);
 }
 
-(async () => {
+try {
+  await (async () => {
   // 1. Find the Ridge page target (self-wait so we can fire right after launch).
   log('waiting for Ridge CDP target on :' + CDP_PORT + ' …');
   const t = await waitForRidgeTarget();
@@ -96,10 +96,10 @@ async function waitForRidgeTarget(maxMs = 90000) {
   let info = null;
   for (let i = 0; i < 20; i++) {
     info = await cdp.evalAsync(`window.__TAURI__.core.invoke('get_remote_info')`);
-    if (info && info.port > 0 && info.ready) break;
+    if (info?.port > 0 && info.ready) break;
     await new Promise((r) => setTimeout(r, 500));
   }
-  if (!info || !info.port) fail('get_remote_info never reported a bound port');
+  if (!info?.port) fail('get_remote_info never reported a bound port');
   log('remote info:', JSON.stringify({ port: info.port, lanIp: info.lanIp, ready: info.ready, totp: info.totpCode }));
   cdp.close();
 
@@ -120,7 +120,7 @@ async function waitForRidgeTarget(maxMs = 90000) {
     console.log('\n==== PROTOCOL VALIDATION SUMMARY ====');
     console.log(JSON.stringify(summary, null, 2));
     const pass = ok && summary.hello && Array.isArray(summary.panes) && summary.subscribedPane &&
-      summary.scrollbackFrames + summary.liveFrames > 0 && summary.uuidMatch === true;
+      summary.scrollbackFrames + summary.liveFrames > 0 && summary.uuidMatch;
     console.log('\nRESULT:', pass ? 'PASS ✅ (lan_proto.rs format confirmed against live host)' : 'PARTIAL/FAIL ⚠');
     process.exit(pass ? 0 : 2);
   };
@@ -176,4 +176,7 @@ async function waitForRidgeTarget(maxMs = 90000) {
     // Heuristic: the very first binary frame after subscribe is scrollback.
     if (isScroll) summary.scrollbackFrames++; else summary.liveFrames++;
   };
-})().catch((e) => fail(e.stack || e.message || String(e)));
+  })();
+} catch (e) {
+  fail(e.stack || e.message || String(e));
+}

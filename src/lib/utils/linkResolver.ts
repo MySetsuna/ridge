@@ -123,20 +123,9 @@ export function resolveLink(href: string, ctx: ResolveCtx): LinkAction {
   const noQuery = stripQuery(noHash);
   let abs: string | null = null;
 
-  if (kind === 'file-url') {
-    abs = pathFromFileUrl(noQuery);
-  } else if (kind === 'absolute') {
-    abs = safeDecode(noQuery);
-  } else if (kind === 'relative') {
-    const base = ctx.basePath ?? ctx.cwd;
-    if (!base) return { kind: 'noop', reason: 'relative without base' };
-    abs = joinPath(base, safeDecode(noQuery));
-  } else {
-    // unknown：可能是裸文件名 `foo.md`，若有 base 也按相对处理
-    const base = ctx.basePath ?? ctx.cwd;
-    if (!base) return { kind: 'noop', reason: 'unknown without base' };
-    abs = joinPath(base, safeDecode(noQuery));
-  }
+  const resolved = resolveFilePath(kind, noQuery, ctx);
+  abs = resolved.path;
+  if (!abs && resolved.reason) return { kind: 'noop', reason: resolved.reason };
 
   if (!abs) return { kind: 'noop', reason: 'cannot resolve absolute path' };
 
@@ -151,6 +140,18 @@ export function resolveLink(href: string, ctx: ResolveCtx): LinkAction {
   if (looksLikeFile && owned) return { kind: 'open-file', path: abs };
   // 非 cwd 内的文件 / 目录 → 系统资源管理器；保留原地查看体验。
   return { kind: 'reveal', path: abs };
+}
+
+function resolveFilePath(
+  kind: LinkKind,
+  path: string,
+  ctx: ResolveCtx,
+): { path: string | null; reason?: string } {
+  if (kind === 'file-url') return { path: pathFromFileUrl(path) };
+  if (kind === 'absolute') return { path: safeDecode(path) };
+  const base = ctx.basePath ?? ctx.cwd;
+  if (!base) return { path: null, reason: `${kind} without base` };
+  return { path: joinPath(base, safeDecode(path)) };
 }
 
 /** 真正执行：打开编辑器 / 系统资源管理器 / 默认浏览器。

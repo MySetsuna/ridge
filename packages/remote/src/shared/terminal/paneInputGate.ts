@@ -95,7 +95,7 @@ export function tryEnqueuePaneInput(
 ): boolean {
   const limit = Math.max(1, Math.floor(options.maxPending ?? DEFAULT_MAX_PANE_INPUT_INTENTS));
   const promise = schedule(key, operation, limit);
-  if (!promise) return false;
+  if (promise === null || promise === undefined) return false;
   void promise.catch(() => undefined);
   return true;
 }

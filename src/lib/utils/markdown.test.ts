@@ -238,19 +238,12 @@ describe('stripFrontMatter', () => {
     expect(html).toContain('after');
   });
 
-  it('does not strip front-matter that is not on the very first line', () => {
-    const src = '\n---\ntitle: Foo\n---\n\n# After';
-    // Leading blank line → first line is empty, NOT `---`. So `---` here is
-    // a thematic break / setext heading marker; either way, it should not be
-    // treated as front-matter.
-    const out = stripFrontMatter(src);
-    expect(out).toBe(src);
-  });
-
-  it('does not strip when the closing fence is missing', () => {
-    const src = '---\ntitle: Foo\nno closing fence here\n\n# Body';
-    const out = stripFrontMatter(src);
-    expect(out).toBe(src);
+  it.each([
+    ['a later YAML fence', '\n---\ntitle: Foo\n---\n\n# After'],
+    ['a missing closing fence', '---\ntitle: Foo\nno closing fence here\n\n# Body'],
+    ['a later JSON fence', 'intro\n\n{\n"key": "value"\n}\n\nafter'],
+  ])('does not strip %s', (_caseName, src) => {
+    expect(stripFrontMatter(src)).toBe(src);
   });
 
   it('keeps source line numbers stable downstream (replaces with blank lines)', () => {
@@ -283,13 +276,6 @@ describe('stripFrontMatter', () => {
     expect(html).not.toContain('"date"');
   });
 
-  it('does NOT strip a { that is not on the very first line', () => {
-    // A `{` alone in the middle of the document (e.g. code example) must
-    // never be treated as front-matter.
-    const src = 'intro\n\n{\n"key": "value"\n}\n\nafter';
-    const out = stripFrontMatter(src);
-    expect(out).toBe(src);
-  });
 });
 
 describe('isMarkdownPath', () => {

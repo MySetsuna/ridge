@@ -150,104 +150,80 @@ fn ctrl_special(c: char) -> Option<u8> {
 /// Returns Some if the key name is recognized, including its full encoding.
 /// Returns None if it's a single printable character (caller continues).
 fn encode_named_key(key: &str, ev: &KeyEvent, modes: &Modes) -> Option<EncodeResult> {
-    // Cursor keys: branch on app_cursor_keys mode. With modifiers, we use
-    // the xterm "modifyCursorKeys=1" form: CSI 1 ; <mod> <letter>.
-    if let Some(letter) = arrow_letter(key) {
-        let modifier = encode_modifier(ev);
-        if let Some(m) = modifier {
-            // Modified arrows always use CSI form (not SS3), with explicit
-            // params. Pattern: ESC [ 1 ; <m> <letter>
-            return Some(EncodeResult::bytes(
-                format!("\x1b[1;{}{}", m, letter).into_bytes(),
-            ));
-        }
-        // Unmodified — depends on app mode.
-        return Some(if modes.app_cursor_keys {
-            EncodeResult::bytes(format!("\x1bO{}", letter).into_bytes())
-        } else {
-            EncodeResult::bytes(format!("\x1b[{}", letter).into_bytes())
-        });
+    if let Some(result) = encode_arrow(key, ev, modes) {
+        return Some(result);
     }
-
-    // Function keys F1..F4: SS3 form. F5..F12: CSI <num> ~.
     if let Some(seq) = function_key(key, ev) {
         return Some(EncodeResult::bytes(seq.into_bytes()));
     }
 
-    Some(match key {
-        "Enter" => {
-            // Ctrl+Enter → LF (0x0a, ^J). 这是 Claude Code 的 Ink TextInput、
-            // lazygit 提交框、以及其他区分"提交 vs. 行内换行"的 CLI 所识别
-            // 的换行字节。普通 Enter 仍然发 CR（被 Ink 视为"提交"），这样
-            // 用户在 Claude `claude` 等 inline TUI 中可用 Ctrl+Enter 插入
-            // 新行而不触发提交。
-            if ev.ctrl && !ev.alt && !ev.shift {
-                EncodeResult::bytes(vec![0x0a])
-            } else if modes.linefeed_newline {
-                // LNM mode: CR+LF.
-                EncodeResult::bytes(b"\r\n".to_vec())
-            } else {
-                // Default: CR only. (xterm default = CR.)
-                EncodeResult::bytes(b"\r".to_vec())
-            }
-        }
-        "Backspace" => {
-            // xterm default sends DEL (0x7f). If shell wants BS (0x08),
-            // it can be set via stty. Modern shells expect 0x7f.
-            // Ctrl+Backspace → 0x17 (^W) for word-erase, by convention.
-            if ev.ctrl && !ev.alt && !ev.shift {
-                EncodeResult::bytes(vec![0x17])
-            } else if ev.alt && !ev.ctrl {
-                // Alt+Backspace: ESC + DEL (also word-erase in many shells).
-                EncodeResult::bytes(vec![0x1b, 0x7f])
-            } else {
-                EncodeResult::bytes(vec![0x7f])
-            }
-        }
-        "Tab" => {
-            if ev.shift {
-                // Shift+Tab → CSI Z (back tab)
-                EncodeResult::bytes(b"\x1b[Z".to_vec())
-            } else {
-                EncodeResult::bytes(vec![0x09])
-            }
-        }
+    let result = match key {
+        "Enter" => encode_enter(ev, modes),
+        "Backspace" => encode_backspace(ev),
+        "Tab" => encode_tab(ev),
         "Escape" => EncodeResult::bytes(vec![0x1b]),
-
-        // Editing keys. xterm sequences:
-        //   Insert  → CSI 2 ~
-        //   Delete  → CSI 3 ~
-        //   Home    → SS3 H or CSI H (mode-dependent), with modifiers CSI 1;m H
-        //   End     → SS3 F or CSI F  (likewise)
-        //   PageUp  → CSI 5 ~
-        //   PageDn  → CSI 6 ~
         "Insert" => editing_seq("2", ev),
         "Delete" => editing_seq("3", ev),
         "PageUp" => editing_seq("5", ev),
         "PageDown" => editing_seq("6", ev),
-        "Home" => {
-            if let Some(m) = encode_modifier(ev) {
-                EncodeResult::bytes(format!("\x1b[1;{}H", m).into_bytes())
-            } else if modes.app_cursor_keys {
-                EncodeResult::bytes(b"\x1bOH".to_vec())
-            } else {
-                EncodeResult::bytes(b"\x1b[H".to_vec())
-            }
-        }
-        "End" => {
-            if let Some(m) = encode_modifier(ev) {
-                EncodeResult::bytes(format!("\x1b[1;{}F", m).into_bytes())
-            } else if modes.app_cursor_keys {
-                EncodeResult::bytes(b"\x1bOF".to_vec())
-            } else {
-                EncodeResult::bytes(b"\x1b[F".to_vec())
-            }
-        }
-
-        // Anything else (Fn keys named differently, IME composition keys,
-        // media keys, etc.) — let the caller decide.
+        "Home" | "End" => encode_home_end(key, ev, modes),
         _ => return None,
-    })
+    };
+    Some(result)
+}
+
+fn encode_arrow(key: &str, ev: &KeyEvent, modes: &Modes) -> Option<EncodeResult> {
+    let letter = arrow_letter(key)?;
+    if let Some(m) = encode_modifier(ev) {
+        return Some(EncodeResult::bytes(
+            format!("\x1b[1;{}{}", m, letter).into_bytes(),
+        ));
+    }
+    let sequence = if modes.app_cursor_keys {
+        format!("\x1bO{letter}")
+    } else {
+        format!("\x1b[{letter}")
+    };
+    Some(EncodeResult::bytes(sequence.into_bytes()))
+}
+
+fn encode_enter(ev: &KeyEvent, modes: &Modes) -> EncodeResult {
+    if ev.ctrl && !ev.alt && !ev.shift {
+        EncodeResult::bytes(vec![0x0a])
+    } else if modes.linefeed_newline {
+        EncodeResult::bytes(b"\r\n".to_vec())
+    } else {
+        EncodeResult::bytes(b"\r".to_vec())
+    }
+}
+
+fn encode_backspace(ev: &KeyEvent) -> EncodeResult {
+    if ev.ctrl && !ev.alt && !ev.shift {
+        EncodeResult::bytes(vec![0x17])
+    } else if ev.alt && !ev.ctrl {
+        EncodeResult::bytes(vec![0x1b, 0x7f])
+    } else {
+        EncodeResult::bytes(vec![0x7f])
+    }
+}
+
+fn encode_tab(ev: &KeyEvent) -> EncodeResult {
+    if ev.shift {
+        EncodeResult::bytes(b"\x1b[Z".to_vec())
+    } else {
+        EncodeResult::bytes(vec![0x09])
+    }
+}
+
+fn encode_home_end(key: &str, ev: &KeyEvent, modes: &Modes) -> EncodeResult {
+    let letter = if key == "Home" { "H" } else { "F" };
+    if let Some(m) = encode_modifier(ev) {
+        EncodeResult::bytes(format!("\x1b[1;{}{}", m, letter).into_bytes())
+    } else if modes.app_cursor_keys {
+        EncodeResult::bytes(format!("\x1bO{letter}").into_bytes())
+    } else {
+        EncodeResult::bytes(format!("\x1b[{letter}").into_bytes())
+    }
 }
 
 /// Map "ArrowUp"/"ArrowDown"/"ArrowLeft"/"ArrowRight" to their letter (A/B/D/C).
@@ -350,37 +326,62 @@ pub fn wrap_paste(text: &str, bracketed_paste: bool) -> Vec<u8> {
 ///   - `M` for press/motion, `m` for release
 ///   - Modifier flags: +4 shift, +8 alt, +16 ctrl
 ///   - Motion flag: +32 (0x20) when `action == 2`
-pub fn encode_mouse(
-    btn: u8,
-    row: usize,
-    col: usize,
-    action: u8,
-    shift: bool,
-    ctrl: bool,
-    alt: bool,
-    _modes: &Modes,
-) -> Vec<u8> {
-    let mut b = btn;
-    if shift {
+pub struct MouseInput {
+    pub btn: u8,
+    pub row: usize,
+    pub col: usize,
+    pub action: u8,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
+pub fn encode_mouse(input: MouseInput, _modes: &Modes) -> Vec<u8> {
+    let mut b = input.btn;
+    if input.shift {
         b |= 4;
     }
-    if alt {
+    if input.alt {
         b |= 8;
     }
-    if ctrl {
+    if input.ctrl {
         b |= 16;
     }
-    if action == 2 {
+    if input.action == 2 {
         b |= 32; // motion flag
     }
     // SGR: ESC [ < b > ; < col+1 > ; < row+1 > M (press/motion) / m (release)
-    let suffix = if action == 1 { 'm' } else { 'M' };
-    format!("\x1b[<{};{};{}{}", b, col + 1, row + 1, suffix).into_bytes()
+    let suffix = if input.action == 1 { 'm' } else { 'M' };
+    format!("\x1b[<{};{};{}{}", b, input.col + 1, input.row + 1, suffix).into_bytes()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encode_mouse(
+        btn: u8,
+        row: usize,
+        col: usize,
+        action: u8,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        modes: &Modes,
+    ) -> Vec<u8> {
+        super::encode_mouse(
+            MouseInput {
+                btn,
+                row,
+                col,
+                action,
+                shift,
+                ctrl,
+                alt,
+            },
+            modes,
+        )
+    }
 
     fn key(k: &str) -> KeyEvent {
         KeyEvent {

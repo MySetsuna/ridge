@@ -74,6 +74,7 @@ describe('makeCloudHostPaneSource', () => {
     unsub();
     await Promise.resolve(); // serialized stop follows subscribe
     await Promise.resolve();
+    await Promise.resolve();
     expect(unlisten).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith('unsubscribe_pane_raw', {
       paneId: 'p',
@@ -108,6 +109,7 @@ describe('makeCloudHostPaneSource', () => {
     expect(invoke.mock.calls.map(([cmd]) => cmd)).toEqual(['subscribe_pane_raw']);
 
     resolveSubscribe();
+    await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
     expect(invoke.mock.calls.map(([cmd]) => cmd)).toEqual([

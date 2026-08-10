@@ -60,7 +60,7 @@ export function normalizePath(p: string): string {
   for (const s of segs) {
     if (s === '.') continue;
     if (s === '..') {
-      if (stack.length > 0 && stack[stack.length - 1] !== '..') stack.pop();
+      if (stack.length > 0 && stack.at(-1) !== '..') stack.pop();
       else if (!isAbs) stack.push('..');
       continue;
     }
@@ -99,9 +99,7 @@ export function pathStartsWith(child: string, parent: string): boolean {
   const head = c.slice(0, p.length);
   if (isWin) {
     if (head.toLowerCase() !== p.toLowerCase()) return false;
-  } else {
-    if (head !== p) return false;
-  }
+  } else if (head !== p) return false;
   if (c.length === p.length) return true;
   const next = c[p.length];
   return next === '/' || next === '\\';

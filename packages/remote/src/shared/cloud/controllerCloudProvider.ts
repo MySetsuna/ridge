@@ -293,7 +293,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       // §diagnostic: 记录 ICE 服务器获取结果
       console.log('[cloud-controller] ice servers fetched', {
         count: iceServers.length,
-        urls: iceServers.map(s => s.urls).flat(),
+        urls: iceServers.flatMap((s) => s.urls),
       });
     } catch (e: unknown) {
       console.error('[cloud-controller] failed to fetch ICE servers', e);

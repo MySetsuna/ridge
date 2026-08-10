@@ -1,4 +1,4 @@
-//! Glyph rasterizer — Round 3 §4.1.b.
+//! Glyph rasterizer - Round 3 section 4.1.b.
 //!
 //! ## Why OffscreenCanvas instead of fontdue / cosmic-text
 //!
@@ -16,7 +16,7 @@
 //!    full system-font + user-configured fallback chain for free,
 //!    matches what Canvas2dBackend already does so visual consistency
 //!    is automatic. Cons: per-glyph rasterization is a sync browser
-//!    call; not ideal but fine since the GlyphAtlas (§4.2) caches
+//!    call; not ideal but fine since the GlyphAtlas (section 4.2) caches
 //!    every result.
 //!
 //! Ridge picks (2). The atlas's LRU + the renderer's per-row dirty
@@ -29,7 +29,7 @@
 //! sized to a single glyph slot. `rasterize(font, size_px, ch)` calls
 //! `set_font` + `fill_text` + `get_image_data`, yielding a
 //! `RasterizedGlyph` with RGBA pixel bytes, advance width, and
-//! ascent offset. The caller (future §4.1.c `WebGpuBackend::draw_row`
+//! ascent offset. The caller (future section 4.1.c `WebGpuBackend::draw_row`
 //! cache-miss path) uploads the bytes to a wgpu texture-array layer
 //! and stores the layer index in the matching `GlyphEntry`.
 //!
@@ -42,7 +42,7 @@
 //! must compile cleanly with the slot allocation in place.
 
 #![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-#![allow(dead_code)] // round-3 §4.1.b first slice; rasterize() body is stubbed.
+#![allow(dead_code)] // round-3 section 4.1.b first slice; rasterize() body is stubbed.
 
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{console, CanvasRenderingContext2d, HtmlCanvasElement};
@@ -99,7 +99,7 @@ pub struct RasterizedGlyph {
     /// than the white-on-transparent coverage mask the rasterizer
     /// requested via `fillStyle = "#ffffff"`. The renderer uses this to
     /// stretch the cell quad to the full 2-cell width for wide emoji
-    /// (their natural advance ≈ 1em is narrower than 2 latin cells and
+    /// (their natural advance is about 1em, narrower than 2 latin cells, and
     /// would otherwise leave a visible gap on the right).
     pub is_color: bool,
 }
@@ -108,7 +108,7 @@ pub struct RasterizedGlyph {
 ///
 /// Owns one DOM `HTMLCanvasElement` + 2D context, sized to fit any
 /// single glyph the terminal ever asks for. Slot is intentionally
-/// generous (square = max cell-height × 2) because the canvas backing
+/// generous (square = max cell-height x 2) because the canvas backing
 /// store is a one-time allocation per WebGpuBackend lifetime and
 /// resizing it mid-session would clear the in-flight rendering state.
 ///
@@ -118,10 +118,10 @@ pub struct RasterizedGlyph {
 /// that doesn't see system emoji fonts (Segoe UI Emoji) nor the
 /// document's `@font-face`-declared faces (the on-demand 'Flag Emoji'
 /// flag subset). Symptom
-/// captured 2026-05-08 via the §A.7 RIDGE_DIAG trace: every emoji
+/// captured 2026-05-08 via the section A.7 RIDGE_DIAG trace: every emoji
 /// codepoint reported `advance_dev > 0` AND `ascent_dev == font_size`
 /// (browser placeholder when no font matched) AND `non_zero_px == 0`
-/// (zero pixels actually painted) — `fillText` silently no-op'd. A
+/// (zero pixels actually painted) - `fillText` silently no-op'd. A
 /// detached-from-DOM `HTMLCanvasElement` exhibits the same gap on some
 /// Chromium versions, but a canvas inserted into `document.body` does
 /// inherit the document's full font-fallback chain reliably. We hide
@@ -135,7 +135,7 @@ pub struct GlyphRasterizer {
 }
 
 impl GlyphRasterizer {
-    /// Create a hidden DOM `<canvas>` of `slot_w × slot_h` device
+    /// Create a hidden DOM `<canvas>` of `slot_w x slot_h` device
     /// pixels + its 2D context. Returns Err if the browser can't
     /// supply a canvas or 2D rendering on it.
     pub fn new(slot_w: u16, slot_h: u16) -> Result<Self, String> {
@@ -154,8 +154,8 @@ impl GlyphRasterizer {
         // Chromium / WebView2 versions only resolve the document's
         // full font-fallback chain (system Segoe UI Emoji + the
         // @font-face 'Flag Emoji' flag subset) for canvases attached
-        // to the document tree — switching here from OffscreenCanvas
-        // was the §A.7 fix for "emoji rasterises blank" reports.
+        // to the document tree - switching here from OffscreenCanvas
+        // was the section A.7 fix for "emoji rasterises blank" reports.
         canvas
             .set_attribute(
                 "style",
@@ -184,15 +184,15 @@ impl GlyphRasterizer {
     /// Rasterize a single glyph to RGBA pixels via the browser's 2D
     /// canvas API. The pipeline:
     ///
-    ///   1. Set the CSS font string. `font-size font-family` form —
+    ///   1. Set the CSS font string. `font-size font-family` form -
     ///      family inherits the user's terminal font setting and the
     ///      browser supplies its full fallback chain.
     ///   2. Top-baseline so a glyph drawn at y=0 has its top edge
-    ///      flush with the slot's top — simplifies the future shader
+    ///      flush with the slot's top - simplifies the future shader
     ///      that places the bitmap at cell-top + ascent_offset.
     ///   3. Render in pure white so the shader can tint via the
     ///      cell's `fg_rgba` uniform without re-rasterizing per color.
-    ///   4. Clear the slot before each glyph — `fill_text` paints
+    ///   4. Clear the slot before each glyph - `fill_text` paints
     ///      additively.
     ///   5. Paint the glyph at (0, 0). Returns Err if the browser
     ///      throws (rare; usually CORS-tainted fonts but our canvas
@@ -203,12 +203,12 @@ impl GlyphRasterizer {
     ///   7. Capture the horizontal advance from `measure_text` so
     ///      the renderer can validate width-2 cells got an
     ///      appropriately wide glyph.
-    /// §4.7 (2026-05-07): `glyph_text` may be a single codepoint (the
+    /// section 4.7 (2026-05-07): `glyph_text` may be a single codepoint (the
     /// common path, ASCII / CJK / single emoji) OR a multi-codepoint
-    /// extended grapheme cluster (👨‍👩‍👧, 🏳️‍🌈, 🇺🇸). The browser's
+    /// extended grapheme cluster (family, rainbow flag, US flag). The browser's
     /// `fill_text` natively handles ZWJ / variation selectors / RIS
     /// pairs when the font stack includes color-emoji fonts, so the
-    /// rasterizer body is identical — only the input width is wider.
+    /// rasterizer body is identical - only the input width is wider.
     pub fn rasterize(
         &self,
         font_family: &str,
@@ -217,10 +217,10 @@ impl GlyphRasterizer {
         style_flags: u8,
         glyph_text: &str,
     ) -> Result<RasterizedGlyph, String> {
-        // The OffscreenCanvas backing store is `slot_w × slot_h` DEVICE
+        // The OffscreenCanvas backing store is `slot_w x slot_h` DEVICE
         // pixels. Painting at `{font_size_px}px` (CSS px) without DPR
         // scaling left the glyph occupying only `font_size / dpr` of
-        // those device pixels — visibly tiny / thin on HiDPI. Render
+        // those device pixels - visibly tiny / thin on HiDPI. Render
         // at `font_size_px * dpr` so the glyph fills DPR-scaled pixels.
         let dpr_eff = if dpr.is_finite() && dpr > 0.0 {
             dpr
@@ -232,7 +232,7 @@ impl GlyphRasterizer {
         // Build CSS font string with optional `bold ` / `italic ` prefix
         // so the browser actually applies the SGR weight/slant. Without
         // this, BOLD cells get a separate atlas slot (per GlyphKey
-        // discriminator) but the painted bitmap is identical to plain —
+        // discriminator) but the painted bitmap is identical to plain -
         // visible weight loss + cache thrash.
         let style_prefix = css_font_style_prefix(style_flags);
         let font_css = format!("{}{}px {}", style_prefix, device_size_px, font_family);
@@ -240,7 +240,7 @@ impl GlyphRasterizer {
         // Use the alphabetic baseline (default) and explicitly position it
         // at `ascent_dev` below the slot top. With `text_baseline = "top"`
         // the EM-box top is at y=0, but `font_bounding_box_ascent` may
-        // exceed the EM-box ascent — diacriticals or extreme caps in some
+        // exceed the EM-box ascent - diacriticals or extreme caps in some
         // fonts then extend ABOVE y=0 and get clipped at the slot top.
         // Anchoring on the alphabetic baseline `ascent_dev` below y=0
         // gives every glyph the full ascent room measureText reported,
@@ -269,13 +269,13 @@ impl GlyphRasterizer {
             ascent_dev + descent_dev
         } else {
             // Browser hasn't populated bbox metrics (rare cold-start).
-            // 1.2× line-height matches measure() above + Canvas2dBackend.
+            // 1.2x line-height matches measure() above + Canvas2dBackend.
             device_size_px * 1.2
         };
         // Baseline y inside the slot. With `text_baseline = "alphabetic"`,
         // `fill_text(text, x, y)` positions the alphabetic baseline at y.
         // Falling back to `device_size_px * 0.8` when the font hasn't
-        // populated bbox metrics yet (≈ typical ascent ratio).
+        // populated bbox metrics yet (about the typical ascent ratio).
         let baseline_y = if ascent_dev > 0.0 {
             ascent_dev as f64
         } else {
@@ -296,14 +296,14 @@ impl GlyphRasterizer {
         // slot. The caller crops `atlas_uv` to this rectangle so the
         // cell quad samples only the rendered glyph instead of the
         // entire mostly-empty slot.
-        //
+
         // Width must cover the glyph's ACTUAL painted right edge, not just the
-        // advance. Italic / synthetic-oblique glyphs — especially CJK, which
+        // advance. Italic / synthetic-oblique glyphs - especially CJK, which
         // usually lack a true italic face so the browser shears the upright
-        // glyph — lean their top-right PAST the advance. Cropping to `advance`
+        // glyph - lean their top-right PAST the advance. Cropping to `advance`
         // alone shaved that overhang off (the "italic CJK missing top-right
         // corner" report). `actualBoundingBoxRight` is the painted right edge;
-        // for upright glyphs it ≈ advance, so this is a no-op there.
+        // for upright glyphs it is about advance, so this is a no-op there.
         let actual_right_dev = metrics.actual_bounding_box_right() as f32;
         let bbox_w = advance_dev
             .max(actual_right_dev)
@@ -315,7 +315,7 @@ impl GlyphRasterizer {
         // RGB, or honoured the white fillStyle (monochrome glyph). Scan
         // pixels with non-trivial alpha; if any has at least one channel
         // below ~0.98 (= 250/255) the glyph carries native color. We
-        // bail on first hit — typical color emoji has thousands of color
+        // bail on first hit - typical color emoji has thousands of color
         // pixels so the loop costs ~10s of bytes in practice. Threshold
         // 250 matches the shader's 0.99 cutoff (decoded sRGB white at
         // boundary AA pixels lands ~0.992 = 253/255).
@@ -335,35 +335,35 @@ impl GlyphRasterizer {
             i += 4;
         }
 
-        // §B.4 (2026-05-08) — premultiply alpha. getImageData per spec
+        // section B.4 (2026-05-08) - premultiply alpha. getImageData per spec
         // returns NON-premultiplied (straight-alpha) bytes. Linear-
         // filter sampling of straight-alpha textures interpolates rgb
         // independently of alpha, so an AA fringe pixel between a
         // painted (R, G, B, alpha=255) texel and a transparent
         // (0, 0, 0, 0) neighbour samples as (R/2, G/2, B/2, 127). The
         // shader's previous `mix(bg, glyph_rgb, coverage)` formula
-        // then applied coverage = alpha/2 to glyph_rgb = R/2 — i.e.
+        // then applied coverage = alpha/2 to glyph_rgb = R/2 - i.e.
         // the color contribution at the AA fringe was (alpha/2)*(R/2)
         // = alpha*R/4 instead of the correct alpha*R/2. Color emoji
         // edges visibly darkened toward black; monochrome glyphs got
         // gray halos misclassified as "color" by the per-pixel
-        // heuristic (already replaced by §B.3's per-instance flag).
-        //
+        // heuristic (already replaced by section B.3's per-instance flag).
+
         // Premultiplying at upload time means Linear-filter samples
-        // interpolate (alpha*R, alpha*G, alpha*B, alpha) → midway
+        // interpolate (alpha*R, alpha*G, alpha*B, alpha) -> midway
         // = (alpha*R/2, alpha*G/2, alpha*B/2, alpha/2) which, with
         // a premultiplied composite formula in the shader (`bg*(1-a)
         // + sampled.rgb`) gives the correct alpha*R/2 contribution.
-        // No special case for monochrome — `(alpha, alpha, alpha)`
+        // No special case for monochrome - `(alpha, alpha, alpha)`
         // post-premult is fine because the shader's `is_color = false`
         // path discards `sampled.rgb` and rebuilds the contribution
-        // from `coverage * fg`.
+        // from `coverage * fg` safely.
         //
         // is_color detection happens BEFORE premult since the
         // threshold (`r < 250`) is calibrated against straight-alpha
         // bytes. After premult, every non-fully-opaque rgb value is
         // < 255 and the heuristic would (correctly) classify the
-        // mono glyph as mono — but only because the heuristic now
+        // mono glyph as mono - but only because the heuristic now
         // depends on the per-instance flag's pipeline, not on the
         // bytes. Keeping the order explicit anyway so future
         // refactors don't accidentally swap them.
@@ -372,7 +372,7 @@ impl GlyphRasterizer {
             if a == 0 {
                 // Fully transparent: rgb already (0,0,0) per the
                 // Canvas2D `clear_rect` we did before fill_text. Belt
-                // and braces — explicit zero so the GPU sees no
+                // and braces - explicit zero so the GPU sees no
                 // garbage if some browser path leaves residual bytes.
                 px[0] = 0;
                 px[1] = 0;
@@ -383,17 +383,17 @@ impl GlyphRasterizer {
                 px[1] = ((px[1] as u32 * a + 127) / 255) as u8;
                 px[2] = ((px[2] as u32 * a + 127) / 255) as u8;
             }
-            // a == 255 → unmultiplied rgb already equals premult rgb.
+            // a == 255 -> unmultiplied rgb already equals premult rgb.
         }
 
         // Emoji-rasterisation diagnostic. Gated on (a) leading codepoint
-        // ≥ U+2600 (covers Dingbats + every SMP emoji block, skips ASCII
+        // >= U+2600 (covers Dingbats + every SMP emoji block, skips ASCII
         // / CJK / Latin extension hot paths) and (b) RIDGE_DIAG=1, so
         // normal users pay nothing. When user reports "emoji blank", the
         // emitted line tells us in one shot whether the rasterizer
         // received any pixels at all (non_zero_px), whether color was
         // detected (is_color), and which font_css the OffscreenCanvas
-        // resolved against — three orthogonal failure modes.
+        // resolved against - three orthogonal failure modes.
         let first_cp = glyph_text.chars().next().map(|c| c as u32).unwrap_or(0);
         if first_cp >= 0x2600 && ridge_diag_enabled() {
             let total_px = rgba.len() / 4;
@@ -412,7 +412,7 @@ impl GlyphRasterizer {
             // Was: `self.slot_w / self.slot_h`. That was wrong per the
             // field's documented contract ("Bitmap dimensions in device
             // pixels"); it produced a [0,0,1,1] sample over the whole
-            // 32×32 slot and shrank the glyph into a corner of the cell.
+            // 32x32 slot and shrank the glyph into a corner of the cell.
             width: bbox_w,
             height: bbox_h,
             advance,
@@ -434,17 +434,17 @@ impl GlyphRasterizer {
     ///
     /// Mirrors `Canvas2dBackend::measure_font` bit-for-bit so the
     /// WebGPU and Canvas2D paths produce identical cellW/cellH numbers
-    /// for the same (family, size_px) — fitPane stays backend-agnostic.
+    /// for the same (family, size_px) - fitPane stays backend-agnostic.
     ///
     /// Algorithm (matches `Canvas2dBackend`):
-    /// - `cell_w = advance('M')` rounded to int CSS px (≥ 1).
+    /// - `cell_w = advance('M')` rounded to int CSS px (>= 1).
     /// - `cell_h = font_bounding_box_ascent + font_bounding_box_descent`
     ///   when both are available; falls back to `font_size_px * 1.2`
     ///   if the browser returns zeros (rare; some systems on first
-    ///   measurement before font is loaded). Rounded to int (≥ 1).
+    ///   measurement before font is loaded). Rounded to int (>= 1).
     ///
     /// Sub-pixel cell sizes cause boundary-alignment issues documented
-    /// in `canvas2d.rs`'s module header — rounding here is load-bearing.
+    /// in `canvas2d.rs`'s module header - rounding here is load-bearing.
     pub fn measure(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
         let font_css = format!("{}px {}", font_size_px, font_family);
         self.ctx.set_font(&font_css);

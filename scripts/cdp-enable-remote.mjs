@@ -51,7 +51,7 @@ ws.addEventListener('open', async () => {
   for (let i = 0; i < 30; i++) {
     const r = await evalExpr(invokeExpr('get_remote_info'));
     const v = r?.result?.result?.value;
-    if (v && v.ready && v.port > 0) { console.error(`[enable] ready port=${v.port} lanIp=${v.lanIp}`); console.log(JSON.stringify({ port: v.port, code: v.totpCode })); ws.close(); process.exit(0); }
+    if (v?.ready && v.port > 0) { console.error(`[enable] ready port=${v.port} lanIp=${v.lanIp}`); console.log(JSON.stringify({ port: v.port, code: v.totpCode })); ws.close(); process.exit(0); }
     await new Promise((s) => setTimeout(s, 1000));
   }
   console.error('[enable] timed out waiting for ready'); ws.close(); process.exit(2);

@@ -5,7 +5,7 @@ export function secureRandomUnit(): number {
   if (!cryptoApi?.getRandomValues) return 0.5;
   try {
     cryptoApi.getRandomValues(values);
-    return values[0] / 0x1_0000_0000;
+    return values[0] / (2 ** 32);
   } catch {
     return 0.5;
   }

@@ -27,7 +27,6 @@
 // 鉴权（auth.ts + provider），以及把 host WebRTC 迁到 Rust(webrtc-rs)（契约 §8 终态）。
 
 import {
-  CHANNEL,
   demuxFrame,
   encodeControlFrame,
   encodeJsonFrame,
@@ -1035,4 +1034,5 @@ function normalizeParams(params: unknown): Record<string, unknown> {
 }
 
 // 重新导出通道常量，便于消费者/测试断言字节布局与 cloudMux 同源。
-export { CHANNEL, JSON_RPC_INVALID_REQUEST };
+export { CHANNEL } from '@ridge/remote';
+export { JSON_RPC_INVALID_REQUEST };

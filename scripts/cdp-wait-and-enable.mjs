@@ -34,7 +34,7 @@ if (!ready) { console.error('[wait] timed out waiting for new binary'); process.
 // 2) enable remote + wait ready
 await rpc("window.__TAURI__.core.invoke('set_remote_enabled', { enabled: true }).catch(()=>{})");
 for (let i = 0; i < 30; i++) {
-  try { const info = await rpc("window.__TAURI__.core.invoke('get_remote_info')"); if (info && info.ready && info.port > 0) { console.error(`[wait] remote ready port=${info.port}`); console.log(JSON.stringify({ port: info.port, code: info.totpCode })); process.exit(0); } } catch {}
+  try { const info = await rpc("window.__TAURI__.core.invoke('get_remote_info')"); if (info?.ready && info.port > 0) { console.error(`[wait] remote ready port=${info.port}`); console.log(JSON.stringify({ port: info.port, code: info.totpCode })); process.exit(0); } } catch {}
   await sleep(1000);
 }
 console.error('[wait] remote did not become ready'); process.exit(2);

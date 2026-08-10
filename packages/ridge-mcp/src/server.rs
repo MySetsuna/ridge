@@ -1354,6 +1354,71 @@ struct HubEntryMeta<'a> {
     topic: Option<&'a str>,
 }
 
+fn same_hub_entry(entry: &Value, target: &HubTarget, kind: &str, payload: &Value) -> bool {
+    entry.get("targetKey").and_then(Value::as_str) == Some(target.target_key.as_str())
+        && entry.get("kind").and_then(Value::as_str) == Some(kind)
+        && entry.get("payload") == Some(payload)
+}
+
+fn deliver_hub_entry(
+    host: &dyn McpHost,
+    state: &McpSessionState,
+    target: &HubTarget,
+    target_value: &Value,
+    adapter: HubDeliveryAdapter,
+    delivery_id: &str,
+    entry: &Value,
+) -> HostResult<Value> {
+    if adapter == HubDeliveryAdapter::McpPull {
+        return Ok(entry.clone());
+    }
+    let mut attempted = entry.clone();
+    attempted["deliveryAttempts"] = json!(1);
+    attempted["deliveryLastAttemptAtUnixMs"] = json!(unix_millis());
+    replace_receipt_entry(state, &target.target_key, delivery_id, &attempted)
+        .map_err(HostError::Internal)?;
+    let outcome = match adapter {
+        HubDeliveryAdapter::RuntimeApi => host.deliver_runtime_api(target_value, &attempted),
+        HubDeliveryAdapter::A2a => host.deliver_a2a(target_value, &attempted),
+        HubDeliveryAdapter::PtyFallback => host.deliver_pty_fallback(target_value, &attempted),
+        HubDeliveryAdapter::McpPull => unreachable!("MCP pull returned above"),
+    };
+    match outcome {
+        Ok(outcome) => {
+            if outcome.adapter != adapter {
+                return Err(HostError::Internal(
+                    "delivery adapter returned a mismatched outcome".into(),
+                ));
+            }
+            let mut updated = attempted;
+            updated["adapterAccepted"] = Value::Bool(outcome.accepted);
+            updated["agentAcknowledged"] = Value::Bool(outcome.acknowledged);
+            updated["status"] = Value::String(
+                if outcome.accepted {
+                    "adapter_accepted"
+                } else {
+                    "delivery_rejected"
+                }
+                .into(),
+            );
+            if let Some(remote_id) = outcome.remote_id {
+                updated["adapterRemoteId"] = Value::String(remote_id);
+            }
+            replace_receipt_entry(state, &target.target_key, delivery_id, &updated)
+                .map_err(HostError::Internal)?;
+            Ok(updated)
+        }
+        Err(error) => {
+            let mut failed = attempted;
+            failed["status"] = Value::String("delivery_failed".into());
+            failed["deliveryError"] = Value::String(error.message());
+            replace_receipt_entry(state, &target.target_key, delivery_id, &failed)
+                .map_err(HostError::Internal)?;
+            Err(error)
+        }
+    }
+}
+
 fn enqueue_hub_entry(
     host: &dyn McpHost,
     state: &McpSessionState,
@@ -1376,10 +1441,7 @@ fn enqueue_hub_entry(
     }
     let dedupe_key = idempotency_key(from, meta.idempotency_key);
     if let Some(existing) = dedupe_lookup(state, &dedupe_key) {
-        if existing.get("targetKey").and_then(Value::as_str) != Some(target.target_key.as_str())
-            || existing.get("kind").and_then(Value::as_str) != Some(kind)
-            || existing.get("payload") != Some(&payload)
-        {
+        if !same_hub_entry(&existing, target, kind, &payload) {
             return Err(hub_error(
                 "idempotency_conflict",
                 "key already belongs to another target, message kind, or payload",
@@ -1445,10 +1507,7 @@ fn enqueue_hub_entry(
         .map_err(HostError::Internal)?
         .flatten();
     if let Some(existing) = persistent_existing {
-        if existing.get("targetKey").and_then(Value::as_str) != Some(target.target_key.as_str())
-            || existing.get("kind").and_then(Value::as_str) != Some(kind)
-            || existing.get("payload") != Some(&payload)
-        {
+        if !same_hub_entry(&existing, target, kind, &payload) {
             return Err(hub_error(
                 "idempotency_conflict",
                 "key already belongs to another target, message kind, or payload",
@@ -1462,54 +1521,15 @@ fn enqueue_hub_entry(
     receipt_insert(state, delivery_id.clone(), entry.clone());
     inbox_push(state, &target.target_key, entry.clone());
     dedupe_insert(state, dedupe_key, entry.clone());
-    if adapter == HubDeliveryAdapter::McpPull {
-        return Ok(entry);
-    }
-    let mut attempted = entry.clone();
-    attempted["deliveryAttempts"] = json!(1);
-    attempted["deliveryLastAttemptAtUnixMs"] = json!(unix_millis());
-    replace_receipt_entry(state, &target.target_key, &delivery_id, &attempted)
-        .map_err(HostError::Internal)?;
-    let outcome = match adapter {
-        HubDeliveryAdapter::RuntimeApi => host.deliver_runtime_api(&target_value, &attempted),
-        HubDeliveryAdapter::A2a => host.deliver_a2a(&target_value, &attempted),
-        HubDeliveryAdapter::PtyFallback => host.deliver_pty_fallback(&target_value, &attempted),
-        HubDeliveryAdapter::McpPull => unreachable!("MCP pull returned above"),
-    };
-    match outcome {
-        Ok(outcome) => {
-            if outcome.adapter != adapter {
-                return Err(HostError::Internal(
-                    "delivery adapter returned a mismatched outcome".into(),
-                ));
-            }
-            let mut updated = attempted;
-            updated["adapterAccepted"] = Value::Bool(outcome.accepted);
-            updated["agentAcknowledged"] = Value::Bool(outcome.acknowledged);
-            updated["status"] = Value::String(
-                if outcome.accepted {
-                    "adapter_accepted"
-                } else {
-                    "delivery_rejected"
-                }
-                .into(),
-            );
-            if let Some(remote_id) = outcome.remote_id {
-                updated["adapterRemoteId"] = Value::String(remote_id);
-            }
-            replace_receipt_entry(state, &target.target_key, &delivery_id, &updated)
-                .map_err(HostError::Internal)?;
-            Ok(updated)
-        }
-        Err(error) => {
-            let mut failed = attempted;
-            failed["status"] = Value::String("delivery_failed".into());
-            failed["deliveryError"] = Value::String(error.message());
-            replace_receipt_entry(state, &target.target_key, &delivery_id, &failed)
-                .map_err(HostError::Internal)?;
-            Err(error)
-        }
-    }
+    deliver_hub_entry(
+        host,
+        state,
+        target,
+        &target_value,
+        adapter,
+        &delivery_id,
+        &entry,
+    )
 }
 
 fn replace_receipt_entry(
@@ -2065,367 +2085,690 @@ fn split_result(mut value: Value, request: &SplitPaneRequest) -> Value {
     value
 }
 
-fn tools_call(id: Value, params: &Value, host: &dyn McpHost, state: &McpSessionState) -> Value {
-    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    let args = params.get("arguments").cloned().unwrap_or(Value::Null);
-    let target = || scoped_target(&args, host);
-
-    let out: HostResult<String> = match name {
-        "ridge_get_team_profile" => host
-            .team_profile_for(arg_str(&args, "workspace_id"))
-            .map(|profile| profile.to_string()),
-        "ridge_list_agents" => host
-            .team_profile_for(arg_str(&args, "workspace_id"))
+fn tool_workspace(name: &str, args: &Value, host: &dyn McpHost) -> HostResult<String> {
+    match name {
+        "ridge_get_team_profile" | "ridge_list_agents" => host
+            .team_profile_for(arg_str(args, "workspace_id"))
             .map(|profile| profile.to_string()),
         "ridge_list_workspaces" => host.list_workspaces().map(|items| items.to_string()),
-        "ridge_get_launch_capabilities" => host.launch_capabilities().and_then(|capabilities| {
+        _ => host.launch_capabilities().and_then(|capabilities| {
             serde_json::to_string(&capabilities)
                 .map_err(|error| HostError::Internal(error.to_string()))
         }),
+    }
+}
+
+fn tool_hub_message(
+    name: &str,
+    args: &Value,
+    host: &dyn McpHost,
+    state: &McpSessionState,
+) -> HostResult<String> {
+    let (kind, capability, payload, topic) = match name {
+        "ridge_send_message" => (
+            "message",
+            "messages",
+            arg_str(args, "message")
+                .map(|text| json!({ "text": text }))
+                .ok_or_else(|| HostError::InvalidParams("message must not be empty".into())),
+            None,
+        ),
+        "ridge_create_task" => (
+            "task",
+            "tasks",
+            arg_str(args, "objective")
+                .map(|objective| json!({ "objective": objective }))
+                .ok_or_else(|| HostError::InvalidParams("objective must not be empty".into())),
+            None,
+        ),
+        _ => (
+            "event",
+            "events",
+            arg_str(args, "topic")
+                .map(|topic| json!({ "topic": topic, "payload": args.get("payload").cloned().unwrap_or(Value::Null) }))
+                .ok_or_else(|| HostError::InvalidParams("topic must not be empty".into())),
+            arg_str(args, "topic"),
+        ),
+    };
+    let payload = payload?;
+    let idempotency_key = arg_str(args, "idempotency_key")
+        .ok_or_else(|| HostError::InvalidParams("idempotency_key must not be empty".into()))?;
+    let priority = arg_str(args, "priority").unwrap_or(match kind {
+        "task" => "task",
+        "event" => "event",
+        _ => "input",
+    });
+    if !matches!(priority, "control" | "input" | "task" | "event" | "history") {
+        return Err(hub_error(
+            "invalid_priority",
+            "unsupported message priority",
+        ));
+    }
+    let target = resolve_hub_target(args, host, capability)?;
+    enqueue_hub_entry(
+        host,
+        state,
+        &target,
+        arg_str(args, "from").unwrap_or("mcp-client"),
+        kind,
+        payload,
+        HubEntryMeta {
+            idempotency_key,
+            correlation_id: arg_str(args, "correlation_id"),
+            causation_id: arg_str(args, "causation_id"),
+            conversation_id: arg_str(args, "conversation_id"),
+            priority,
+            deadline_unix_ms: arg_u64(args, "deadline_unix_ms"),
+            cancellation_id: arg_str(args, "cancellation_id"),
+            topic,
+        },
+    )
+    .map(|entry| entry.to_string())
+}
+
+fn tool_legacy_message(
+    name: &str,
+    args: &Value,
+    host: &dyn McpHost,
+    state: &McpSessionState,
+) -> HostResult<String> {
+    let text = arg_str(args, "message")
+        .or_else(|| arg_str(args, "objective"))
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| HostError::InvalidParams("message/objective 涓嶈兘涓虹┖".into()))?;
+    let delegate = name == "ridge_delegate_task";
+    let submit = name != "ridge_send_to_teammate"
+        || args.get("submit").and_then(Value::as_bool).unwrap_or(true);
+    let target = resolve_hub_target(args, host, if delegate { "tasks" } else { "messages" })?;
+    let generated_key = format!("legacy:{name}:{}", Uuid::new_v4());
+    let idempotency_key = arg_str(args, "idempotency_key").unwrap_or(&generated_key);
+    let payload = if delegate {
+        json!({ "objective": text, "submitRequested": submit })
+    } else {
+        json!({ "text": text, "submitRequested": submit })
+    };
+    let mut entry = enqueue_hub_entry(
+        host,
+        state,
+        &target,
+        arg_str(args, "from").unwrap_or("mcp-client"),
+        if delegate { "task" } else { "message" },
+        payload,
+        HubEntryMeta {
+            idempotency_key,
+            correlation_id: arg_str(args, "correlation_id"),
+            causation_id: arg_str(args, "causation_id"),
+            conversation_id: arg_str(args, "conversation_id"),
+            priority: if delegate { "task" } else { "input" },
+            deadline_unix_ms: arg_u64(args, "deadline_unix_ms"),
+            cancellation_id: arg_str(args, "cancellation_id"),
+            topic: None,
+        },
+    )?;
+    entry["legacyTool"] = Value::String(name.to_string());
+    entry["submitRequested"] = Value::Bool(submit);
+    Ok(entry.to_string())
+}
+
+fn tool_capture(args: &Value, host: &dyn McpHost) -> HostResult<String> {
+    let lines = args
+        .get("lines")
+        .and_then(Value::as_u64)
+        .unwrap_or(80)
+        .clamp(1, 2000) as usize;
+    let target = scoped_target(args, host)?;
+    host.capture_pane(&target, lines)
+}
+
+fn tool_split(args: &Value, host: &dyn McpHost) -> HostResult<String> {
+    let request = split_request(args)?;
+    validate_launch_request(host, &request)?;
+    host.split_pane_with(&request)
+        .map(|value| split_result(value, &request).to_string())
+}
+
+fn tool_join(args: &Value, host: &dyn McpHost) -> HostResult<String> {
+    let group = arg_str(args, "group_name")
+        .ok_or_else(|| HostError::InvalidParams("group_name 涓嶈兘涓虹┖".into()))?;
+    let agent = arg_str(args, "agent_id");
+    let has_pane = args
+        .get("target_pane_id")
+        .is_some_and(|value| !value.is_null() && value != &Value::String(String::new()));
+    if agent.is_none() && !has_pane {
+        return Err(HostError::InvalidParams(
+            "闇€鎻愪緵 agent_id 鎴?target_pane_id".into(),
+        ));
+    }
+    let target = has_pane.then(|| scoped_target(args, host)).transpose()?;
+    let workspace_target =
+        (!has_pane).then(|| arg_str(args, "workspace_id").map(|id| json!({ "workspaceId": id })));
+    let target = target.or_else(|| workspace_target.flatten());
+    host.join_group(group, agent, target.as_ref())
+        .map(|()| "dispatched".to_string())
+}
+
+fn tool_progress(args: &Value, host: &dyn McpHost) -> HostResult<String> {
+    let target = scoped_target(args, host)?;
+    host.report_progress(
+        &target,
+        arg_str(args, "status").unwrap_or("update"),
+        arg_str(args, "detail").unwrap_or(""),
+    )
+    .map(|()| "reported".to_string())
+}
+
+fn tool_inbox_read(
+    args: &Value,
+    host: &dyn McpHost,
+    state: &McpSessionState,
+) -> HostResult<String> {
+    let target = scoped_target(args, host)?;
+    let key = host.pane_key(&target)?;
+    let peek = args.get("peek").and_then(Value::as_bool).unwrap_or(false);
+    inbox_take(state, &key, peek)
+        .map(|entries| Value::Array(entries).to_string())
+        .map_err(HostError::Internal)
+}
+
+fn tool_inbox_fetch(
+    args: &Value,
+    host: &dyn McpHost,
+    state: &McpSessionState,
+) -> HostResult<String> {
+    let target = resolve_hub_target(args, host, "messages")?;
+    let consume = args.get("consume").and_then(Value::as_bool).unwrap_or(true);
+    let peek = args
+        .get("peek")
+        .and_then(Value::as_bool)
+        .unwrap_or(!consume);
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(INBOX_CAP as u64)
+        .clamp(1, INBOX_CAP as u64) as usize;
+    inbox_fetch(
+        state,
+        &target.target_key,
+        peek,
+        consume,
+        limit,
+        arg_str(args, "cursor"),
+    )
+    .map(|entries| Value::Array(entries).to_string())
+    .map_err(HostError::Internal)
+}
+
+fn tool_cancel(args: &Value, host: &dyn McpHost, state: &McpSessionState) -> HostResult<String> {
+    let target = resolve_hub_target(args, host, "delivery")?;
+    let delivery_id = arg_str(args, "delivery_id");
+    let cancellation_id = arg_str(args, "cancellation_id");
+    if delivery_id.is_none() && cancellation_id.is_none() {
+        return Err(HostError::InvalidParams(
+            "delivery_id or cancellation_id must be provided".into(),
+        ));
+    }
+    cancel_hub_entry(
+        state,
+        &target.target_key,
+        delivery_id,
+        cancellation_id,
+        arg_str(args, "reason"),
+    )
+    .map(|entry| entry.to_string())
+}
+
+fn tool_delivery_status(
+    args: &Value,
+    host: &dyn McpHost,
+    state: &McpSessionState,
+) -> HostResult<String> {
+    let receipt_id = arg_str(args, "receipt_id")
+        .ok_or_else(|| HostError::InvalidParams("receipt_id 涓嶈兘涓虹┖".into()))?;
+    let target = scoped_target(args, host)?;
+    let key = host.pane_key(&target)?;
+    receipt_get(state, &key, receipt_id).map(|receipt| receipt.to_string())
+}
+
+fn tool_task_update(
+    args: &Value,
+    host: &dyn McpHost,
+    state: &McpSessionState,
+) -> HostResult<String> {
+    let task_id = arg_str(args, "task_id")
+        .ok_or_else(|| HostError::InvalidParams("task_id must not be empty".into()))?;
+    let status = arg_str(args, "status")
+        .ok_or_else(|| HostError::InvalidParams("status must not be empty".into()))?;
+    let target = resolve_hub_target(args, host, "tasks")?;
+    task_update(
+        state,
+        &target.target_key,
+        task_id,
+        status,
+        arg_str(args, "detail"),
+    )
+    .map(|value| value.to_string())
+}
+
+fn tool_ack(args: &Value, host: &dyn McpHost, state: &McpSessionState) -> HostResult<String> {
+    let receipt_id = arg_str(args, "receipt_id")
+        .ok_or_else(|| HostError::InvalidParams("receipt_id 涓嶈兘涓虹┖".into()))?;
+    let status = arg_str(args, "status")
+        .ok_or_else(|| HostError::InvalidParams("status 涓嶈兘涓虹┖".into()))?;
+    let target = scoped_target(args, host)?;
+    let key = host.pane_key(&target)?;
+    receipt_ack(state, &key, receipt_id, status, arg_str(args, "detail"))
+        .map(|receipt| receipt.to_string())
+}
+
+fn required_arg<'a>(args: &'a Value, key: &str) -> HostResult<&'a str> {
+    arg_str(args, key).ok_or_else(|| HostError::InvalidParams(format!("{key} 涓嶈兘涓虹┖")))
+}
+
+fn tool_rejection(args: &Value, host: &dyn McpHost) -> HostResult<String> {
+    let report = ExternalExecutionRejection {
+        initiator: arg_str(args, "initiator")
+            .unwrap_or("mcp-client")
+            .to_string(),
+        action: arg_str(args, "action").unwrap_or("").to_string(),
+        executor: required_arg(args, "executor")?.to_string(),
+        policy_source: required_arg(args, "policy_source")?.to_string(),
+        request_id: required_arg(args, "request_id")?.to_string(),
+        reason: required_arg(args, "reason")?.to_string(),
+        next_step: required_arg(args, "next_step")?.to_string(),
+    };
+    host.report_execution_rejection(report).map(|id| {
+        json!({
+            "reportId": id,
+            "status": "reported",
+            "retry": "not_available_from_ridge",
+        })
+        .to_string()
+    })
+}
+
+fn tool_stash(args: &Value, state: &McpSessionState) -> HostResult<String> {
+    let data = arg_str(args, "data")
+        .or_else(|| arg_str(args, "content_base64"))
+        .ok_or_else(|| HostError::InvalidParams("data 涓嶈兘涓虹┖".into()))?;
+    Ok(state
+        .stash
+        .lock()
+        .unwrap()
+        .stash_uri(data.as_bytes().to_vec()))
+}
+
+fn tools_call(id: Value, params: &Value, host: &dyn McpHost, state: &McpSessionState) -> Value {
+    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+    let out: HostResult<String> = match name {
+        "ridge_get_team_profile"
+        | "ridge_list_agents"
+        | "ridge_list_workspaces"
+        | "ridge_get_launch_capabilities" => tool_workspace(name, &args, host),
 
         "ridge_send_message" | "ridge_create_task" | "ridge_publish_event" => {
-            (|| -> HostResult<String> {
-                let (kind, required_capability, payload, topic) = match name {
-                    "ridge_send_message" => (
-                        "message",
-                        "messages",
-                        arg_str(&args, "message")
-                            .map(|text| json!({ "text": text }))
-                            .ok_or_else(|| {
-                                HostError::InvalidParams("message must not be empty".into())
-                            }),
-                        None,
-                    ),
-                    "ridge_create_task" => (
-                        "task",
-                        "tasks",
-                        arg_str(&args, "objective")
-                            .map(|objective| json!({ "objective": objective }))
-                            .ok_or_else(|| {
-                                HostError::InvalidParams("objective must not be empty".into())
-                            }),
-                        None,
-                    ),
-                    _ => (
-                        "event",
-                        "events",
-                        arg_str(&args, "topic")
-                            .map(|topic| {
-                                json!({
-                                    "topic": topic,
-                                    "payload": args.get("payload").cloned().unwrap_or(Value::Null),
-                                })
-                            })
-                            .ok_or_else(|| {
-                                HostError::InvalidParams("topic must not be empty".into())
-                            }),
-                        arg_str(&args, "topic"),
-                    ),
-                };
-                match payload {
-                    Err(error) => Err(error),
-                    Ok(payload) => {
-                        let from = arg_str(&args, "from").unwrap_or("mcp-client");
-                        let idempotency_key =
-                            arg_str(&args, "idempotency_key").ok_or_else(|| {
-                                HostError::InvalidParams("idempotency_key must not be empty".into())
-                            })?;
-                        let priority = arg_str(&args, "priority").unwrap_or(match kind {
-                            "task" => "task",
-                            "event" => "event",
-                            _ => "input",
-                        });
-                        if !matches!(priority, "control" | "input" | "task" | "event" | "history") {
-                            return Err(hub_error(
-                                "invalid_priority",
-                                "unsupported message priority",
-                            ));
+            tool_hub_message(name, &args, host, state)
+        }
+
+        /*
+                        let (kind, required_capability, payload, topic) = match name {
+                            "ridge_send_message" => (
+                                "message",
+                                "messages",
+                                arg_str(&args, "message")
+                                    .map(|text| json!({ "text": text }))
+                                    .ok_or_else(|| {
+                                        HostError::InvalidParams("message must not be empty".into())
+                                    }),
+                                None,
+                            ),
+                            "ridge_create_task" => (
+                                "task",
+                                "tasks",
+                                arg_str(&args, "objective")
+                                    .map(|objective| json!({ "objective": objective }))
+                                    .ok_or_else(|| {
+                                        HostError::InvalidParams("objective must not be empty".into())
+                                    }),
+                                None,
+                            ),
+                            _ => (
+                                "event",
+                                "events",
+                                arg_str(&args, "topic")
+                                    .map(|topic| {
+                                        json!({
+                                            "topic": topic,
+                                            "payload": args.get("payload").cloned().unwrap_or(Value::Null),
+                                        })
+                                    })
+                                    .ok_or_else(|| {
+                                        HostError::InvalidParams("topic must not be empty".into())
+                                    }),
+                                arg_str(&args, "topic"),
+                            ),
+                        };
+                        match payload {
+                            Err(error) => Err(error),
+                            Ok(payload) => {
+                                let from = arg_str(&args, "from").unwrap_or("mcp-client");
+                                let idempotency_key =
+                                    arg_str(&args, "idempotency_key").ok_or_else(|| {
+                                        HostError::InvalidParams("idempotency_key must not be empty".into())
+                                    })?;
+                                let priority = arg_str(&args, "priority").unwrap_or(match kind {
+                                    "task" => "task",
+                                    "event" => "event",
+                                    _ => "input",
+                                });
+                                if !matches!(priority, "control" | "input" | "task" | "event" | "history") {
+                                    return Err(hub_error(
+                                        "invalid_priority",
+                                        "unsupported message priority",
+                                    ));
+                                }
+                                let target = resolve_hub_target(&args, host, required_capability)?;
+                                enqueue_hub_entry(
+                                    host,
+                                    state,
+                                    &target,
+                                    from,
+                                    kind,
+                                    payload,
+                                    HubEntryMeta {
+                                        idempotency_key,
+                                        correlation_id: arg_str(&args, "correlation_id"),
+                                        causation_id: arg_str(&args, "causation_id"),
+                                        conversation_id: arg_str(&args, "conversation_id"),
+                                        priority,
+                                        deadline_unix_ms: arg_u64(&args, "deadline_unix_ms"),
+                                        cancellation_id: arg_str(&args, "cancellation_id"),
+                                        topic,
+                                    },
+                                )
+                                .map(|entry| entry.to_string())
+                            }
                         }
-                        let target = resolve_hub_target(&args, host, required_capability)?;
-                        enqueue_hub_entry(
-                            host,
-                            state,
-                            &target,
-                            from,
-                            kind,
-                            payload,
-                            HubEntryMeta {
-                                idempotency_key,
-                                correlation_id: arg_str(&args, "correlation_id"),
-                                causation_id: arg_str(&args, "causation_id"),
-                                conversation_id: arg_str(&args, "conversation_id"),
-                                priority,
-                                deadline_unix_ms: arg_u64(&args, "deadline_unix_ms"),
-                                cancellation_id: arg_str(&args, "cancellation_id"),
-                                topic,
-                            },
-                        )
-                        .map(|entry| entry.to_string())
-                    }
-                }
-            })()
-        }
-
+                    })()
+        */
         "ridge_send_to_teammate" | "ridge_send_and_submit" | "ridge_delegate_task" => {
-            (|| -> HostResult<String> {
-                // Compatibility names remain discoverable, but must not bypass the
-                // Hub and inject bytes into a user-facing PTY. The old route has no
-                // proof of prompt mode, foreground ownership, approval state, or
-                // keyboard exclusivity. Queue the same structured envelope as the
-                // first-class tools; an explicit submit flag is payload metadata.
-                let text = arg_str(&args, "message")
-                    .or_else(|| arg_str(&args, "objective"))
-                    .unwrap_or("");
-                if text.is_empty() {
-                    Err(HostError::InvalidParams(
-                        "message/objective 不能为空".into(),
-                    ))
-                } else {
-                    let delegate = name == "ridge_delegate_task";
-                    let submit = if name == "ridge_send_to_teammate" {
-                        args.get("submit").and_then(Value::as_bool).unwrap_or(true)
-                    } else {
-                        true
-                    };
-                    let target = resolve_hub_target(
-                        &args,
-                        host,
-                        if delegate { "tasks" } else { "messages" },
-                    )?;
-                    let generated_key = format!("legacy:{name}:{}", Uuid::new_v4());
-                    let idempotency_key =
-                        arg_str(&args, "idempotency_key").unwrap_or(&generated_key);
-                    let payload = if delegate {
-                        json!({ "objective": text, "submitRequested": submit })
-                    } else {
-                        json!({ "text": text, "submitRequested": submit })
-                    };
-                    let mut entry = enqueue_hub_entry(
-                        host,
-                        state,
-                        &target,
-                        arg_str(&args, "from").unwrap_or("mcp-client"),
-                        if delegate { "task" } else { "message" },
-                        payload,
-                        HubEntryMeta {
-                            idempotency_key,
-                            correlation_id: arg_str(&args, "correlation_id"),
-                            causation_id: arg_str(&args, "causation_id"),
-                            conversation_id: arg_str(&args, "conversation_id"),
-                            priority: if delegate { "task" } else { "input" },
-                            deadline_unix_ms: arg_u64(&args, "deadline_unix_ms"),
-                            cancellation_id: arg_str(&args, "cancellation_id"),
-                            topic: None,
-                        },
-                    )?;
-                    entry["legacyTool"] = Value::String(name.to_string());
-                    entry["submitRequested"] = Value::Bool(submit);
-                    Ok(entry.to_string())
+            tool_legacy_message(name, &args, host, state)
+        }
+
+        /*
+                    (|| -> HostResult<String> {
+                        // Compatibility names remain discoverable, but must not bypass the
+                        // Hub and inject bytes into a user-facing PTY. The old route has no
+                        // proof of prompt mode, foreground ownership, approval state, or
+                        // keyboard exclusivity. Queue the same structured envelope as the
+                        // first-class tools; an explicit submit flag is payload metadata.
+                        let text = arg_str(&args, "message")
+                            .or_else(|| arg_str(&args, "objective"))
+                            .unwrap_or("");
+                        if text.is_empty() {
+                            Err(HostError::InvalidParams(
+                                "message/objective 不能为空".into(),
+                            ))
+                        } else {
+                            let delegate = name == "ridge_delegate_task";
+                            let submit = if name == "ridge_send_to_teammate" {
+                                args.get("submit").and_then(Value::as_bool).unwrap_or(true)
+                            } else {
+                                true
+                            };
+                            let target = resolve_hub_target(
+                                &args,
+                                host,
+                                if delegate { "tasks" } else { "messages" },
+                            )?;
+                            let generated_key = format!("legacy:{name}:{}", Uuid::new_v4());
+                            let idempotency_key =
+                                arg_str(&args, "idempotency_key").unwrap_or(&generated_key);
+                            let payload = if delegate {
+                                json!({ "objective": text, "submitRequested": submit })
+                            } else {
+                                json!({ "text": text, "submitRequested": submit })
+                            };
+                            let mut entry = enqueue_hub_entry(
+                                host,
+                                state,
+                                &target,
+                                arg_str(&args, "from").unwrap_or("mcp-client"),
+                                if delegate { "task" } else { "message" },
+                                payload,
+                                HubEntryMeta {
+                                    idempotency_key,
+                                    correlation_id: arg_str(&args, "correlation_id"),
+                                    causation_id: arg_str(&args, "causation_id"),
+                                    conversation_id: arg_str(&args, "conversation_id"),
+                                    priority: if delegate { "task" } else { "input" },
+                                    deadline_unix_ms: arg_u64(&args, "deadline_unix_ms"),
+                                    cancellation_id: arg_str(&args, "cancellation_id"),
+                                    topic: None,
+                                },
+                            )?;
+                            entry["legacyTool"] = Value::String(name.to_string());
+                            entry["submitRequested"] = Value::Bool(submit);
+                            Ok(entry.to_string())
+                        }
+                    })()
+        */
+        "ridge_capture_pane" => tool_capture(&args, host),
+        /*
+                "ridge_capture_pane" => {
+                    let lines = args
+                        .get("lines")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(80)
+                        .clamp(1, 2000) as usize;
+                    scoped_target(&args, host).and_then(|target| host.capture_pane(&target, lines))
                 }
-            })()
-        }
-
-        "ridge_capture_pane" => {
-            let lines = args
-                .get("lines")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(80)
-                .clamp(1, 2000) as usize;
-            target().and_then(|target| host.capture_pane(&target, lines))
-        }
-
-        "ridge_split_pane" => split_request(&args).and_then(|request| {
-            validate_launch_request(host, &request)?;
-            host.split_pane_with(&request)
-                .map(|value| split_result(value, &request).to_string())
-        }),
-
+        */
+        "ridge_split_pane" => tool_split(&args, host),
+        /*
+                "ridge_split_pane" => split_request(&args).and_then(|request| {
+                    validate_launch_request(host, &request)?;
+                    host.split_pane_with(&request)
+                        .map(|value| split_result(value, &request).to_string())
+                }),
+        */
         // agent_id  alone must not force pane resolve — historically scoped_target(null)
         // always failed on desktop (-32602) even when agent_id was valid.
-        "ridge_join_group" => match arg_str(&args, "group_name") {
-            None => Err(HostError::InvalidParams("group_name 不能为空".into())),
-            Some(g) => {
-                let agent = arg_str(&args, "agent_id");
-                let has_pane = args
-                    .get("target_pane_id")
-                    .is_some_and(|v| !v.is_null() && v != &Value::String(String::new()));
-                match (agent, has_pane) {
-                    (None, false) => Err(HostError::InvalidParams(
-                        "需提供 agent_id 或 target_pane_id".into(),
-                    )),
-                    (agent, true) => target().and_then(|t| {
-                        host.join_group(g, agent, Some(&t))
-                            .map(|()| "dispatched".to_string())
-                    }),
-                    (Some(agent), false) => {
-                        // workspace-only optional target for multi-ws; no pane resolve.
-                        let synthetic =
-                            arg_str(&args, "workspace_id").map(|ws| json!({ "workspaceId": ws }));
-                        host.join_group(g, Some(agent), synthetic.as_ref())
-                            .map(|()| "dispatched".to_string())
+        "ridge_join_group" => tool_join(&args, host),
+        /*
+                "ridge_join_group" => match arg_str(&args, "group_name") {
+                    None => Err(HostError::InvalidParams("group_name 不能为空".into())),
+                    Some(g) => {
+                        let agent = arg_str(&args, "agent_id");
+                        let has_pane = args
+                            .get("target_pane_id")
+                            .is_some_and(|v| !v.is_null() && v != &Value::String(String::new()));
+                        match (agent, has_pane) {
+                            (None, false) => Err(HostError::InvalidParams(
+                                "需提供 agent_id 或 target_pane_id".into(),
+                            )),
+                            (agent, true) => scoped_target(&args, host).and_then(|t| {
+                                host.join_group(g, agent, Some(&t))
+                                    .map(|()| "dispatched".to_string())
+                            }),
+                            (Some(agent), false) => {
+                                // workspace-only optional target for multi-ws; no pane resolve.
+                                let synthetic =
+                                    arg_str(&args, "workspace_id").map(|ws| json!({ "workspaceId": ws }));
+                                host.join_group(g, Some(agent), synthetic.as_ref())
+                                    .map(|()| "dispatched".to_string())
+                            }
+                        }
                     }
-                }
-            }
-        },
-
-        "ridge_report_progress" => {
-            let status = arg_str(&args, "status").unwrap_or("update");
-            let detail = arg_str(&args, "detail").unwrap_or("");
-            target().and_then(|t| {
-                host.report_progress(&t, status, detail)
-                    .map(|()| "reported".to_string())
-            })
-        }
+                },
+        */
+        "ridge_report_progress" => tool_progress(&args, host),
 
         // 收发同一份有界收件箱：默认是内存态，生产宿主通过 SQLite 恢复同一份队列。
         // 任何 MCP 客户端都能异步取走发给某 pane 的消息，不必依赖 stdin 注入被对方 shell 正确读到。
-        "ridge_inbox_read" => {
-            let peek = args.get("peek").and_then(|v| v.as_bool()).unwrap_or(false);
-            target().and_then(|target| {
-                host.pane_key(&target).and_then(|key| {
-                    inbox_take(state, &key, peek)
+        "ridge_inbox_read" => tool_inbox_read(&args, host, state),
+        /*
+                "ridge_inbox_read" => {
+                    let peek = args.get("peek").and_then(|v| v.as_bool()).unwrap_or(false);
+                    scoped_target(&args, host).and_then(|target| {
+                        host.pane_key(&target).and_then(|key| {
+                            inbox_take(state, &key, peek)
+                                .map(|entries| Value::Array(entries).to_string())
+                                .map_err(HostError::Internal)
+                        })
+                    })
+                }
+        */
+        "ridge_fetch_inbox" => tool_inbox_fetch(&args, host, state),
+        /*
+                "ridge_fetch_inbox" => (|| -> HostResult<String> {
+                    let target = resolve_hub_target(&args, host, "messages")?;
+                    let consume = args.get("consume").and_then(Value::as_bool).unwrap_or(true);
+                    let peek = args
+                        .get("peek")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(!consume);
+                    let limit = args
+                        .get("limit")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(INBOX_CAP as u64)
+                        .clamp(1, INBOX_CAP as u64) as usize;
+                    let cursor = arg_str(&args, "cursor");
+                    inbox_fetch(state, &target.target_key, peek, consume, limit, cursor)
                         .map(|entries| Value::Array(entries).to_string())
                         .map_err(HostError::Internal)
-                })
-            })
-        }
-
-        "ridge_fetch_inbox" => (|| -> HostResult<String> {
-            let target = resolve_hub_target(&args, host, "messages")?;
-            let consume = args.get("consume").and_then(Value::as_bool).unwrap_or(true);
-            let peek = args
-                .get("peek")
-                .and_then(Value::as_bool)
-                .unwrap_or(!consume);
-            let limit = args
-                .get("limit")
-                .and_then(Value::as_u64)
-                .unwrap_or(INBOX_CAP as u64)
-                .clamp(1, INBOX_CAP as u64) as usize;
-            let cursor = arg_str(&args, "cursor");
-            inbox_fetch(state, &target.target_key, peek, consume, limit, cursor)
-                .map(|entries| Value::Array(entries).to_string())
-                .map_err(HostError::Internal)
-        })(),
-
-        "ridge_cancel_delivery" => (|| -> HostResult<String> {
-            let target = resolve_hub_target(&args, host, "delivery")?;
-            let delivery_id = arg_str(&args, "delivery_id");
-            let cancellation_id = arg_str(&args, "cancellation_id");
-            if delivery_id.is_none() && cancellation_id.is_none() {
-                return Err(HostError::InvalidParams(
-                    "delivery_id or cancellation_id must be provided".into(),
-                ));
-            }
-            cancel_hub_entry(
-                state,
-                &target.target_key,
-                delivery_id,
-                cancellation_id,
-                arg_str(&args, "reason"),
-            )
-            .map(|entry| entry.to_string())
-        })(),
-
-        "ridge_delivery_status" => {
-            let receipt_id = arg_str(&args, "receipt_id")
-                .ok_or_else(|| HostError::InvalidParams("receipt_id 不能为空".into()));
-            receipt_id.and_then(|receipt_id| {
-                target().and_then(|target| {
-                    host.pane_key(&target)
-                        .and_then(|key| receipt_get(state, &key, receipt_id))
-                        .map(|receipt| receipt.to_string())
-                })
-            })
-        }
-
-        "ridge_task_update" => (|| -> HostResult<String> {
-            let task_id = arg_str(&args, "task_id")
-                .ok_or_else(|| HostError::InvalidParams("task_id must not be empty".into()));
-            let status = arg_str(&args, "status")
-                .ok_or_else(|| HostError::InvalidParams("status must not be empty".into()));
-            match (task_id, status) {
-                (Ok(task_id), Ok(status)) => {
-                    let target = resolve_hub_target(&args, host, "tasks")?;
-                    task_update(
+                })(),
+        */
+        "ridge_cancel_delivery" => tool_cancel(&args, host, state),
+        /*
+                "ridge_cancel_delivery" => (|| -> HostResult<String> {
+                    let target = resolve_hub_target(&args, host, "delivery")?;
+                    let delivery_id = arg_str(&args, "delivery_id");
+                    let cancellation_id = arg_str(&args, "cancellation_id");
+                    if delivery_id.is_none() && cancellation_id.is_none() {
+                        return Err(HostError::InvalidParams(
+                            "delivery_id or cancellation_id must be provided".into(),
+                        ));
+                    }
+                    cancel_hub_entry(
                         state,
                         &target.target_key,
-                        task_id,
-                        status,
-                        arg_str(&args, "detail"),
+                        delivery_id,
+                        cancellation_id,
+                        arg_str(&args, "reason"),
                     )
-                    .map(|value| value.to_string())
-                }
-                (Err(error), _) | (_, Err(error)) => Err(error),
-            }
-        })(),
-
-        "ridge_acknowledge_receipt" => {
-            let receipt_id = arg_str(&args, "receipt_id")
-                .ok_or_else(|| HostError::InvalidParams("receipt_id 不能为空".into()));
-            let status = arg_str(&args, "status")
-                .ok_or_else(|| HostError::InvalidParams("status 不能为空".into()));
-            match (receipt_id, status) {
-                (Ok(receipt_id), Ok(status)) => target().and_then(|target| {
-                    host.pane_key(&target)
-                        .and_then(|key| {
-                            receipt_ack(state, &key, receipt_id, status, arg_str(&args, "detail"))
+                    .map(|entry| entry.to_string())
+                })(),
+        */
+        "ridge_delivery_status" => tool_delivery_status(&args, host, state),
+        /*
+                "ridge_delivery_status" => {
+                    let receipt_id = arg_str(&args, "receipt_id")
+                        .ok_or_else(|| HostError::InvalidParams("receipt_id 不能为空".into()));
+                    receipt_id.and_then(|receipt_id| {
+                        scoped_target(&args, host).and_then(|target| {
+                            host.pane_key(&target)
+                                .and_then(|key| receipt_get(state, &key, receipt_id))
+                                .map(|receipt| receipt.to_string())
                         })
-                        .map(|receipt| receipt.to_string())
-                }),
-                (Err(e), _) | (_, Err(e)) => Err(e),
-            }
-        }
-
-        "ridge_report_execution_rejection" => {
-            let required = |key| {
-                arg_str(&args, key)
-                    .ok_or_else(|| HostError::InvalidParams(format!("{key} 不能为空")))
-            };
-            match (
-                required("executor"),
-                required("policy_source"),
-                required("request_id"),
-                required("reason"),
-                required("next_step"),
-            ) {
-                (Ok(executor), Ok(policy_source), Ok(request_id), Ok(reason), Ok(next_step)) => {
-                    host.report_execution_rejection(ExternalExecutionRejection {
-                        initiator: arg_str(&args, "initiator")
-                            .unwrap_or("mcp-client")
-                            .to_string(),
-                        action: arg_str(&args, "action").unwrap_or("").to_string(),
-                        executor: executor.to_string(),
-                        policy_source: policy_source.to_string(),
-                        request_id: request_id.to_string(),
-                        reason: reason.to_string(),
-                        next_step: next_step.to_string(),
-                    })
-                    .map(|id| {
-                        json!({
-                            "reportId": id,
-                            "status": "reported",
-                            "retry": "not_available_from_ridge",
-                        })
-                        .to_string()
                     })
                 }
-                (Err(error), _, _, _, _)
-                | (_, Err(error), _, _, _)
-                | (_, _, Err(error), _, _)
-                | (_, _, _, Err(error), _)
-                | (_, _, _, _, Err(error)) => Err(error),
-            }
-        }
-
-        "ridge_stash_data" => {
-            // 规格历史写的是 content_base64、实现读的是 data —— 两个键都接，纯文本存。
-            match arg_str(&args, "data").or_else(|| arg_str(&args, "content_base64")) {
-                None => Err(HostError::InvalidParams("data 不能为空".into())),
-                Some(d) => Ok(state.stash.lock().unwrap().stash_uri(d.as_bytes().to_vec())),
-            }
-        }
-
+        */
+        "ridge_task_update" => tool_task_update(&args, host, state),
+        /*
+                "ridge_task_update" => (|| -> HostResult<String> {
+                    let task_id = arg_str(&args, "task_id")
+                        .ok_or_else(|| HostError::InvalidParams("task_id must not be empty".into()));
+                    let status = arg_str(&args, "status")
+                        .ok_or_else(|| HostError::InvalidParams("status must not be empty".into()));
+                    match (task_id, status) {
+                        (Ok(task_id), Ok(status)) => {
+                            let target = resolve_hub_target(&args, host, "tasks")?;
+                            task_update(
+                                state,
+                                &target.target_key,
+                                task_id,
+                                status,
+                                arg_str(&args, "detail"),
+                            )
+                            .map(|value| value.to_string())
+                        }
+                        (Err(error), _) | (_, Err(error)) => Err(error),
+                    }
+                })(),
+        */
+        "ridge_acknowledge_receipt" => tool_ack(&args, host, state),
+        /*
+                "ridge_acknowledge_receipt" => {
+                    let receipt_id = arg_str(&args, "receipt_id")
+                        .ok_or_else(|| HostError::InvalidParams("receipt_id 不能为空".into()));
+                    let status = arg_str(&args, "status")
+                        .ok_or_else(|| HostError::InvalidParams("status 不能为空".into()));
+                    match (receipt_id, status) {
+                        (Ok(receipt_id), Ok(status)) => scoped_target(&args, host).and_then(|target| {
+                            host.pane_key(&target)
+                                .and_then(|key| {
+                                    receipt_ack(state, &key, receipt_id, status, arg_str(&args, "detail"))
+                                })
+                                .map(|receipt| receipt.to_string())
+                        }),
+                        (Err(e), _) | (_, Err(e)) => Err(e),
+                    }
+                }
+        */
+        "ridge_report_execution_rejection" => tool_rejection(&args, host),
+        /*
+                "ridge_report_execution_rejection" => {
+                    let required = |key| {
+                        arg_str(&args, key)
+                            .ok_or_else(|| HostError::InvalidParams(format!("{key} 不能为空")))
+                    };
+                    match (
+                        required("executor"),
+                        required("policy_source"),
+                        required("request_id"),
+                        required("reason"),
+                        required("next_step"),
+                    ) {
+                        (Ok(executor), Ok(policy_source), Ok(request_id), Ok(reason), Ok(next_step)) => {
+                            host.report_execution_rejection(ExternalExecutionRejection {
+                                initiator: arg_str(&args, "initiator")
+                                    .unwrap_or("mcp-client")
+                                    .to_string(),
+                                action: arg_str(&args, "action").unwrap_or("").to_string(),
+                                executor: executor.to_string(),
+                                policy_source: policy_source.to_string(),
+                                request_id: request_id.to_string(),
+                                reason: reason.to_string(),
+                                next_step: next_step.to_string(),
+                            })
+                            .map(|id| {
+                                json!({
+                                    "reportId": id,
+                                    "status": "reported",
+                                    "retry": "not_available_from_ridge",
+                                })
+                                .to_string()
+                            })
+                        }
+                        (Err(error), _, _, _, _)
+                        | (_, Err(error), _, _, _)
+                        | (_, _, Err(error), _, _)
+                        | (_, _, _, Err(error), _)
+                        | (_, _, _, _, Err(error)) => Err(error),
+                    }
+                }
+        */
+        "ridge_stash_data" => tool_stash(&args, state),
+        /*
+                "ridge_stash_data" => {
+                    // 规格历史写的是 content_base64、实现读的是 data —— 两个键都接，纯文本存。
+                    match arg_str(&args, "data").or_else(|| arg_str(&args, "content_base64")) {
+                        None => Err(HostError::InvalidParams("data 不能为空".into())),
+                        Some(d) => Ok(state.stash.lock().unwrap().stash_uri(d.as_bytes().to_vec())),
+                    }
+                }
+        */
         // 未注册的工具名属**协议**错误（工具不存在）；宿主能力缺失走下面的 isError 结果。
         other => {
             return proto::mcp_error(

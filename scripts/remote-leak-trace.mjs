@@ -4,8 +4,8 @@
 // after which terminals/pending > leaves for a workspace is the orphan source.
 import { chromium, devices } from '@playwright/test';
 import http from 'node:http';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROFILE_DIR = process.env.RIDGE_PROFILE_DIR || path.resolve(__dirname, '..', '.pw-remote-profile');
 const URL = process.env.RIDGE_URL || 'https://127.0.0.1:9527';
@@ -57,15 +57,32 @@ const wsActive = async () => { await openTree(); return page.locator('.ws-row.ac
 
 await step('0 baseline');
 // create 2 panes
-for (let i = 0; i < 2; i++) { await openTree(); const n = await page.locator('.pane-row').count(); await page.locator('.pane-new').first().evaluate((el) => el.click()); for (let k = 0; k < 25 && (await page.locator('.pane-row').count()) <= n; k++) await sleep(200); await step(`1.${i + 1} create-pane`); }
+for (let i = 0; i < 2; i++) {
+  await openTree();
+  const n = await page.locator('.pane-row').count();
+  await page.locator('.pane-new').first().evaluate((el) => el.click());
+  for (let k = 0; k < 25 && (await page.locator('.pane-row').count()) <= n; k++) {
+    await sleep(200);
+  }
+  await step(`1.${i + 1} create-pane`);
+}
 // close active pane
-await openTree(); await page.locator('.pane-row.active .row-close').first().evaluate((el) => el.click()).catch(() => {}); await step('2 close-pane');
+await openTree();
+await page.locator('.pane-row.active .row-close').first().evaluate((el) => el.click()).catch(() => {});
+await step('2 close-pane');
 // create workspace (the first action opens saved workspaces; the second creates one)
 await openTree(); const origWs = (await wsActive())?.trim(); await page.locator('.tree-add:not([data-testid="tree-open-saved"])').first().click(); await sleep(1500); await step('3 create-workspace');
 // switch back to original
 await openTree(); await page.locator('.ws-row', { hasText: origWs }).first().evaluate((el) => el.click()); await sleep(1200); await step('4 switch-ws-back');
 // close the created workspace
-await openTree(); const cur = await page.evaluate(() => [...document.querySelectorAll('.ws-row .ws-name')].map((e) => e.textContent.trim())); const newWs = cur.find((n) => n !== origWs); if (newWs) await page.locator('.ws-row', { hasText: newWs }).locator('.row-close').first().evaluate((el) => el.click()); await sleep(1200); await step('5 close-created-ws');
+await openTree();
+const cur = await page.evaluate(() => [...document.querySelectorAll('.ws-row .ws-name')].map((e) => e.textContent.trim()));
+const newWs = cur.find((n) => n !== origWs);
+if (newWs) {
+  await page.locator('.ws-row', { hasText: newWs }).locator('.row-close').first().evaluate((el) => el.click());
+}
+await sleep(1200);
+await step('5 close-created-ws');
 // reconnect (reload page → mobile reconnects)
 await page.reload({ waitUntil: 'domcontentloaded' }); await sleep(2000); await page.waitForSelector('.app-root', { timeout: 20000 }).catch(() => {}); await step('6 reconnect(reload)');
 // create + close a pane after reconnect

@@ -16,7 +16,11 @@ ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (m.id &
 const call = (method, params) => new Promise((r) => { const i = ++id; want.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
 await new Promise((r) => ws.addEventListener('open', r));
 await call('Runtime.enable', {});
-const evalp = async (expr) => { const r = await call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r?.result?.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails)); return r?.result?.result?.value; };
+const evalp = async (expr) => {
+  const r = await call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
+  if (r?.result?.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails));
+  return r?.result?.result?.value;
+};
 
 const fmt = (pd) => (pd || []).map((w) => `${w.ws.slice(0, 4)}{L${w.leaves} T${w.terminals} P${w.pending}${(w.orphanTerminals?.length || w.orphanPending?.length) ? ' orphanT=' + JSON.stringify((w.orphanTerminals || []).map((x) => x.slice(0, 4))) + ' orphanP=' + JSON.stringify((w.orphanPending || []).map((x) => x.slice(0, 4))) : ''}}`).join('  ');
 

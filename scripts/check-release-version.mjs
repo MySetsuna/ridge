@@ -12,12 +12,17 @@ function read(rootDir, relativePath) {
 
 export function versionSet(rootDir = root) {
   const jsonVersion = (path) => JSON.parse(read(rootDir, path)).version;
-  const manifestVersion = (path) => read(rootDir, path).match(/^version = "([^"]+)"\s*$/m)?.[1];
+  const manifestVersion = (path) => read(rootDir, path)
+    .split(/\r?\n/)
+    .find((line) => line.trim().startsWith('version = "'))
+    ?.trim()
+    .slice('version = "'.length, -1);
   const packageVersion = (path, name) => {
     const block = read(rootDir, path)
       .split('[[package]]')
-      .find((candidate) => new RegExp(`^\s*name = "${name}"\s*$`, 'm').test(candidate));
-    return block?.match(/^\s*version = "([^"]+)"\s*$/m)?.[1];
+      .find((candidate) => candidate.split(/\r?\n/).some((line) => line.trim() === `name = "${name}"`));
+    const versionLine = block?.split(/\r?\n/).find((line) => line.trim().startsWith('version = "'));
+    return versionLine?.trim().slice('version = "'.length, -1);
   };
   return new Map([
     ['package.json', jsonVersion('package.json')],

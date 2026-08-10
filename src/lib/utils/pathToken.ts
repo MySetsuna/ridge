@@ -17,6 +17,22 @@ export interface PathToken {
 const PATH_CHAR = /[A-Za-z0-9_./\\~@:-]/;
 const URL_SCHEME = /^[a-zA-Z][\w+.-]*:\/\//;
 
+function parseLocationSuffix(raw: string): PathToken {
+	if (URL_SCHEME.test(raw)) return { path: raw };
+	let path = raw;
+	let line: number | undefined;
+	let col: number | undefined;
+	const match = /:(\d+)(?::(\d+))?$/.exec(path);
+	if (match?.index !== undefined) {
+		line = Number(match[1]);
+		col = match[2] ? Number(match[2]) : undefined;
+		path = path.slice(0, match.index);
+	}
+	let end = path.length;
+	while (end > 0 && '.,;'.includes(path[end - 1])) end -= 1;
+	return { path: path.slice(0, end), line, col };
+}
+
 /**
  * 提取 Monaco `column`（1-based）处的路径 token。无可识别 token → null。
  * `column` 允许等于行长 + 1（光标在行尾）。点击恰在 token 右沿外时向左退一格。
@@ -37,24 +53,7 @@ export function pathTokenAt(lineContent: string, column: number): PathToken | nu
   while (start > 0 && PATH_CHAR.test(at(start - 1))) start -= 1;
   while (end < len - 1 && PATH_CHAR.test(at(end + 1))) end += 1;
 
-  let raw = lineContent.slice(start, end + 1);
-  let line: number | undefined;
-  let col: number | undefined;
-
-  // URL（http://host:port/…）：整体交给 linkResolver，不解析 :line（端口非行号）。
-  if (!URL_SCHEME.test(raw)) {
-    const m = /:(\d+)(?::(\d+))?$/.exec(raw);
-    if (m && m.index !== undefined) {
-      line = Number(m[1]);
-      col = m[2] ? Number(m[2]) : undefined;
-      raw = raw.slice(0, m.index);
-    }
-    // 剥离尾部噪点标点（句末的 . , ;）；不影响 Windows 盘符 `C:`（其 `:` 非结尾）。
-    let end = raw.length;
-    while (end > 0 && '.,;'.includes(raw[end - 1])) end -= 1;
-    raw = raw.slice(0, end);
-  }
-
-  if (!raw || raw === '.' || raw === '..') return null;
-  return { path: raw, line, col };
+	const parsed = parseLocationSuffix(lineContent.slice(start, end + 1));
+	if (!parsed.path || parsed.path === '.' || parsed.path === '..') return null;
+	return parsed;
 }

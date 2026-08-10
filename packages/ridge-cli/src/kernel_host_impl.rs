@@ -23,7 +23,7 @@ use ridge_kernel::client::{
     attach_domain_pty_output, create_domain_pty, create_domain_pty_with_command,
     destroy_domain_pty, list_domain_ptys, poll_domain_pty_output, read_domain_workspaces,
     request_json, resize_domain_pty, resync_domain_pty_output, running_endpoint,
-    scrollback_domain_pty, write_domain_pty, KernelPtyInfo, KernelPtyOutput,
+    scrollback_domain_pty, write_domain_pty, DomainPtyLaunch, KernelPtyInfo, KernelPtyOutput,
 };
 use ridge_kernel::registry::KernelEndpoint;
 use ridge_remote::auth::{RemoteAuth, SessionStore};
@@ -761,14 +761,16 @@ fn dispatch(
             destroy_domain_pty(&host.current_endpoint(), pane_id)?;
             create_domain_pty_with_command(
                 &host.current_endpoint(),
-                pane_id,
-                shell,
-                &shell_args,
-                cwd,
-                Some(workspace_id),
-                "shell",
-                Some("remote-lan"),
-                &HashMap::new(),
+                DomainPtyLaunch {
+                    pty_id: pane_id,
+                    program: shell,
+                    args: &shell_args,
+                    cwd,
+                    workspace_id: Some(workspace_id),
+                    role: "shell",
+                    launch_profile: Some("remote-lan"),
+                    env: Some(&HashMap::new()),
+                },
             )?;
             Ok(Value::Null)
         }

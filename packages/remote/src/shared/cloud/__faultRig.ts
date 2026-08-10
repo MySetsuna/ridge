@@ -123,7 +123,7 @@ export class FaultDataChannel {
 }
 
 export class FaultPeerConnection {
-  static instances: FaultPeerConnection[] = [];
+  static readonly instances: FaultPeerConnection[] = [];
   onicecandidate: ((event: { candidate: null }) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
   ondatachannel: ((event: { channel: FaultDataChannel }) => void) | null = null;
@@ -164,7 +164,7 @@ export class FaultPeerConnection {
 
 export class FaultWebSocket {
   static readonly OPEN = 1;
-  static instances: FaultWebSocket[] = [];
+  static readonly instances: FaultWebSocket[] = [];
   readyState = FaultWebSocket.OPEN;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;

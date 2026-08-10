@@ -96,7 +96,7 @@ export class WorkerRendererError extends Error {
  * id on every response, so concurrent calls don't cross wires.
  */
 export class WorkerHostedRenderer {
-	private worker: WorkerLike;
+	private readonly worker: WorkerLike;
 	private readonly pending = new Map<number, Pending>();
 	private readonly ignoredReqIds = new Set<number>();
 	private nextReqId = 1;

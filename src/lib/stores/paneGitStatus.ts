@@ -96,10 +96,6 @@ const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** User-chosen repo per pane when the pane's cwd hosts >1 repo. Cleared
  *  when the pane stops tracking. Survives across cwd changes as long as
  *  the chosen repo still appears in the new availableRepos list. */
-/** Legacy selection slot kept for the switcher API. Root-owned pane resolution
- * clears it on every cwd resolution, so a descendant choice cannot persist. */
-const selectedRepoByPane = new Map<string, string>();
-
 interface GitDiffSummary {
   added: number;
   removed: number;
@@ -121,7 +117,7 @@ async function resolveRepoSnapshot(
   // switches cwd mid-fetch the shared fetch dies and joiners see a transient
   // null; the next heartbeat/invalidate refetches. Accepted G1 trade-off.)
   const existing = inflightByRepo.get(repoRoot);
-  if (existing) return existing;
+  if (existing !== undefined) return existing;
   // 窗口内复用上一份快照：把「每 pane 一次 git」压回「每 repo 一次 git」。
   // 显式失效（invalidatePaneGitStatusForRepo）会先删条目，故不影响手动刷新时效。
   const cached = cacheByRepo.get(repoRoot);
@@ -197,8 +193,6 @@ async function resolveInfoForPane(paneId: string, cwd: string): Promise<PaneGitI
 
   // A previous cwd-down selection must never leak into the new root-owned
   // contract. Keep the map clean so a later re-entry cannot resurrect it.
-  selectedRepoByPane.delete(paneId);
-
   const snap = await resolveRepoSnapshot(repoRoot, `pane:${paneId}`);
   if (!snap) return null;
   return { ...snap, availableRepos: [repoRoot] };
@@ -209,7 +203,6 @@ async function resolveInfoForPane(paneId: string, cwd: string): Promise<PaneGitI
 /** Compatibility UI hook. Backend root remains authoritative, so a
  * descendant selection cannot replace the pane's cwd-owned pill. */
 export async function setPaneSelectedRepo(paneId: string, repoRoot: string): Promise<void> {
-  selectedRepoByPane.set(paneId, repoRoot);
   const cwd = lastCwdByPane.get(paneId);
   if (!cwd) return;
   const fresh = await resolveInfoForPane(paneId, cwd);
@@ -236,7 +229,6 @@ export function trackPaneGitStatus(paneId: string, cwd: string | null): void {
   if (existing) clearTimeout(existing);
 
   if (!cwd) {
-    selectedRepoByPane.delete(paneId);
     _store.update((s) => {
       const next = { ...s };
       delete next[paneId];

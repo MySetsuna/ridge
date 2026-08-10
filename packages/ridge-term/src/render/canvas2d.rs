@@ -269,7 +269,7 @@ impl Canvas2dBackend {
     }
 }
 
-impl RenderBackend for Canvas2dBackend {
+impl Canvas2dBackend {
     fn measure_font(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
         // Build a temporary font string — don't mutate self.font_css here,
         // measure_font is meant to be a query.
@@ -412,91 +412,96 @@ impl RenderBackend for Canvas2dBackend {
         let h = y_bottom - y_top;
 
         for (col, cell) in row.cells.iter().enumerate() {
-            if cell.width == 0 {
+            if cell.width == 0
+                || (cell.ch == ' ' && cell.attr == crate::term::attr_table::AttrId::DEFAULT)
+            {
                 continue;
             }
-            if cell.ch == ' ' && cell.attr == crate::term::attr_table::AttrId::DEFAULT {
-                continue;
-            }
-            let (attrs, fg, _bg) =
-                resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
-            self.ctx.set_fill_style_str(&Self::rgba_to_css(fg));
+            self.draw_row_text_cell(row, attrs_table, col, cell, cell_w, y_top, h);
+        }
+    }
+}
 
-            if attrs.flags.contains(Flags::BOLD) || attrs.flags.contains(Flags::ITALIC) {
-                let mut font = String::new();
-                if attrs.flags.contains(Flags::ITALIC) {
-                    font.push_str("italic ");
-                }
-                if attrs.flags.contains(Flags::BOLD) {
-                    font.push_str("bold ");
-                }
-                font.push_str(&self.font_css);
-                self.ctx.set_font(&font);
-            } else {
-                self.ctx.set_font(&self.font_css);
-            }
+impl Canvas2dBackend {
+    fn draw_row_text_cell(
+        &mut self,
+        row: &RowDraw<'_>,
+        attrs_table: &AttrTable,
+        col: usize,
+        cell: &crate::term::cell::Cell,
+        cell_w: f64,
+        y_top: f64,
+        h: f64,
+    ) {
+        let (attrs, fg, _bg) =
+            resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
+        self.ctx.set_fill_style_str(&Self::rgba_to_css(fg));
+        self.set_cell_font(attrs.flags);
+        let glyph = cell_glyph(row, col, cell.ch);
+        let grid_x_left = (col as f64 * cell_w).round();
+        let grid_span_w = ((col as f64 + cell.width as f64) * cell_w).round() - grid_x_left;
+        let effective_span = self.effective_span(&glyph, cell.width.into(), cell_w);
+        let drawn_procedurally =
+            self.draw_procedural_glyph(&glyph, grid_x_left, y_top, grid_span_w, h);
+        if !drawn_procedurally {
+            let _ = self.ctx.fill_text(&glyph, grid_x_left, y_top);
+        }
+        let effective_w = ((col as f64 + effective_span) * cell_w).round() - grid_x_left;
+        self.draw_cell_decorations(attrs.flags, grid_x_left, y_top, h, effective_w);
+    }
 
-            let cluster = if !row.clusters.is_empty() {
-                let target = col.min(u16::MAX as usize) as u16;
-                row.clusters.iter().find(|c| c.col == target)
-            } else {
-                None
-            };
-            let glyph_str: &str;
-            let mut buf = [0u8; 4];
-            match cluster {
-                Some(cspan) => glyph_str = &cspan.text,
-                None => glyph_str = cell.ch.encode_utf8(&mut buf),
-            }
-
-            let grid_x_left = (col as f64 * cell_w).round();
-            let grid_span_w = ((col as f64 + cell.width as f64) * cell_w).round() - grid_x_left;
-
-            let effective_span: f64 = if cell.width >= 2 {
-                match self.ctx.measure_text(glyph_str) {
-                    Ok(m) => (m.width().max(1.0) / cell_w).ceil(),
-                    Err(_) => cell.width as f64,
-                }
-            } else {
-                cell.width as f64
-            };
-
-            let first_char = glyph_str.chars().next();
-            let mut drawn_procedurally = false;
-
-            if let Some(ch) = first_char {
-                if let Some(rects) = procedural_box(
-                    ch,
-                    grid_x_left as f32,
-                    y_top as f32,
-                    grid_span_w as f32,
-                    h as f32,
-                ) {
-                    for r in rects {
-                        self.ctx
-                            .fill_rect(r.x as f64, r.y as f64, r.w as f64, r.h as f64);
-                    }
-                    drawn_procedurally = true;
-                }
-            }
-
-            if !drawn_procedurally {
-                let _ = self.ctx.fill_text(glyph_str, grid_x_left, y_top);
-            }
-
-            let effective_w = ((col as f64 + effective_span) * cell_w).round() - grid_x_left;
-
-            if attrs.flags.contains(Flags::UNDERLINE) {
-                let y = y_top + h - 2.0;
-                self.ctx.fill_rect(grid_x_left, y, effective_w, 1.0);
-            }
-            if attrs.flags.contains(Flags::STRIKETHROUGH) {
-                let y = y_top + h * 0.5;
-                self.ctx.fill_rect(grid_x_left, y, effective_w, 1.0);
-            }
+    fn set_cell_font(&self, flags: Flags) {
+        let mut font = String::new();
+        if flags.contains(Flags::ITALIC) {
+            font.push_str("italic ");
+        }
+        if flags.contains(Flags::BOLD) {
+            font.push_str("bold ");
+        }
+        if font.is_empty() {
+            self.ctx.set_font(&self.font_css);
+        } else {
+            font.push_str(&self.font_css);
+            self.ctx.set_font(&font);
         }
     }
 
+    fn effective_span(&self, glyph: &str, width: u16, cell_w: f64) -> f64 {
+        if width < 2 {
+            return width as f64;
+        }
+        self.ctx
+            .measure_text(glyph)
+            .map(|metrics| (metrics.width().max(1.0) / cell_w).ceil())
+            .unwrap_or(width as f64)
+    }
+
+    fn draw_procedural_glyph(&self, glyph: &str, x: f64, y: f64, width: f64, height: f64) -> bool {
+        let Some(ch) = glyph.chars().next() else {
+            return false;
+        };
+        let Some(rects) = procedural_box(ch, x as f32, y as f32, width as f32, height as f32)
+        else {
+            return false;
+        };
+        for rect in rects {
+            self.ctx
+                .fill_rect(rect.x as f64, rect.y as f64, rect.w as f64, rect.h as f64);
+        }
+        true
+    }
+
+    fn draw_cell_decorations(&self, flags: Flags, x: f64, y: f64, h: f64, width: f64) {
+        if flags.contains(Flags::UNDERLINE) {
+            self.ctx.fill_rect(x, y + h - 2.0, width, 1.0);
+        }
+        if flags.contains(Flags::STRIKETHROUGH) {
+            self.ctx.fill_rect(x, y + h * 0.5, width, 1.0);
+        }
+    }
+}
+
+impl Canvas2dBackend {
     fn draw_cursor(&mut self, cursor: &CursorDraw, _attrs_table: &AttrTable) {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
@@ -693,4 +698,62 @@ impl RenderBackend for Canvas2dBackend {
     fn end_frame(&mut self) {
         // Canvas2D draws are immediate — nothing to commit.
     }
+}
+
+impl RenderBackend for Canvas2dBackend {
+    fn measure_font(&self, font_family: &str, font_size_px: f32) -> Result<(f32, f32), String> {
+        Canvas2dBackend::measure_font(self, font_family, font_size_px)
+    }
+
+    fn resize_surface(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), String> {
+        Canvas2dBackend::resize_surface(self, width_css, height_css, dpr)
+    }
+
+    fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme) {
+        Canvas2dBackend::begin_frame(self, metrics, theme)
+    }
+
+    fn clear(&mut self) {
+        Canvas2dBackend::clear(self)
+    }
+
+    fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
+        Canvas2dBackend::draw_row_backgrounds(self, row, attrs_table)
+    }
+
+    fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
+        Canvas2dBackend::draw_row_texts(self, row, attrs_table)
+    }
+
+    fn draw_cursor(&mut self, cursor: &CursorDraw, attrs_table: &AttrTable) {
+        Canvas2dBackend::draw_cursor(self, cursor, attrs_table)
+    }
+
+    fn draw_selection_overlay(&mut self, rects: &[(usize, usize, usize)]) {
+        Canvas2dBackend::draw_selection_overlay(self, rects)
+    }
+
+    fn draw_hyperlink_underlines(&mut self, rects: &[(usize, usize, usize)]) {
+        Canvas2dBackend::draw_hyperlink_underlines(self, rects)
+    }
+
+    fn draw_history_overlay(
+        &mut self,
+        overlay: &crate::render::renderer::HistoryOverlay,
+        theme: &Theme,
+    ) {
+        Canvas2dBackend::draw_history_overlay(self, overlay, theme)
+    }
+
+    fn end_frame(&mut self) {
+        Canvas2dBackend::end_frame(self)
+    }
+}
+
+fn cell_glyph(row: &RowDraw<'_>, col: usize, ch: char) -> String {
+    let target = col.min(u16::MAX as usize) as u16;
+    if let Some(cluster) = row.clusters.iter().find(|cluster| cluster.col == target) {
+        return cluster.text.to_string();
+    }
+    ch.to_string()
 }

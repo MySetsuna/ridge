@@ -20,6 +20,7 @@
 
 import { writable, get } from 'svelte/store';
 import { trimTrailingSeparators } from '$lib/utils/path';
+import { unknownText } from '@ridge/remote/shared/transport/unknownText';
 
 export interface ScmFile {
   path: string;
@@ -227,7 +228,7 @@ export function runScmQuerySingleFlight<T>(
   queryCounters.calls += 1;
   const key = scmQueryKey(kind, repoRoot);
   const existing = scmQueries.get(key);
-  if (existing) {
+  if (existing !== undefined) {
     queryCounters.joined += 1;
     return existing as Promise<T>;
   }
@@ -247,7 +248,7 @@ export function runScmQuerySingleFlight<T>(
   const request = Promise.resolve().then(async () => {
     if (kind === 'branches' || kind === 'stashes') {
       const statusProbe = scmQueries.get(scmQueryKey('status', repoRoot));
-      if (statusProbe) await statusProbe;
+      if (statusProbe !== undefined) await statusProbe;
     }
     if (isScmRepoKnownNonGit(repoRoot)) throw new ScmNonGitRepositoryError(repoRoot);
     return query();
@@ -401,7 +402,7 @@ export function shouldRefreshScmStatus(
 /** True only for Git's explicit "not a repository" family. Busy, timeout,
  * superseded, permission, and transport failures must remain retryable. */
 export function isNotGitRepositoryError(error: unknown): boolean {
-  let message = String(error);
+  let message = unknownText(error);
   if (error instanceof Error) message = error.message;
   else if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string') {
     message = error.message;

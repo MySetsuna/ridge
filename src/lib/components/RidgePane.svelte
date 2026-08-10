@@ -293,16 +293,15 @@ function pushHistoryOverlay(): void {
 	historyOverlayFirstVisible = first;
 	const slice = historyOverlayItems.slice(first, first + win);
 	const sliceSelected = historyOverlaySelected >= 0 ? historyOverlaySelected - first : -1;
-	manager.setHistoryOverlay(
-		paneId,
-		slice,
-		sliceSelected,
-		historyOverlayAnchor.row,
-		historyOverlayAnchor.col,
-		historyOverlayAbove,
-		total,
-		first,
-	);
+	manager.setHistoryOverlay(paneId, {
+		items: slice,
+		selectedIndex: sliceSelected,
+		anchorRow: historyOverlayAnchor.row,
+		anchorCol: historyOverlayAnchor.col,
+		placeAbove: historyOverlayAbove,
+		totalItems: total,
+		firstVisible: first,
+	});
 }
 
 function openHistoryOverlay(): boolean {

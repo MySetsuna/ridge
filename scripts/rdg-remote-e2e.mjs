@@ -32,6 +32,7 @@ import {
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { systemTool } from './lib/toolPath.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
@@ -109,7 +110,7 @@ async function freePort() {
   throw new Error('no browser-safe LAN test port available');
 }
 
-/** 直连 HTTPS（rejectUnauthorized:false，agent:false 绕过代理）。 */
+/** 直连 HTTPS；仅信任显式配置的 Ridge CA，未配置时保持系统校验。 */
 function httpsJson(url, opts = {}) {
   return import('node:https').then(
     (https) =>
@@ -122,20 +123,14 @@ function httpsJson(url, opts = {}) {
             path: `${u.pathname}${u.search}`,
             method: opts.method || 'GET',
             headers: opts.headers || {},
-            rejectUnauthorized: false,
+            ca: process.env.RIDGE_REMOTE_CA_CERT
+              ? readFileSync(process.env.RIDGE_REMOTE_CA_CERT)
+              : undefined,
+            rejectUnauthorized: true,
             agent: false,
             timeout: 10_000,
           },
-          (res) => {
-            const chunks = [];
-            res.on('data', (c) => chunks.push(c));
-            res.on('end', () => {
-              resolveReq({
-                status: res.statusCode || 0,
-                body: Buffer.concat(chunks).toString('utf8'),
-              });
-            });
-          },
+          (res) => resolveHttpsResponse(res, resolveReq),
         );
         req.on('error', rejectReq);
         req.on('timeout', () => {
@@ -288,7 +283,7 @@ async function killHost(handle) {
   try {
     if (process.platform === 'win32') {
       await new Promise((resolveKill) => {
-        const k = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        const k = spawn(systemTool('taskkill'), ['/PID', String(pid), '/T', '/F'], {
           stdio: 'ignore',
           windowsHide: true,
         });
@@ -436,16 +431,6 @@ async function runOneClient(browser, url, getTotp, profile) {
 
     // 已登录 token 可能跳过码；否则等 numeric 输入
     const authInput = page.locator('input[inputmode="numeric"]');
-    const mainHints = page.locator(
-      [
-        '.tree-trigger',
-        '[data-testid="terminal-canvas"]',
-        'canvas',
-        '.wr-gate', // still gate
-        'text=Ridge',
-      ].join(', '),
-    );
-
     // 等 gate 或主 UI 出现
     await Promise.race([
       authInput.first().waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {}),
@@ -641,7 +626,7 @@ async function main() {
   // 清掉可能占用 9527 的旧进程（仅当选用固定端口）
   if (preferredPort > 0 && process.platform === 'win32') {
     try {
-      spawn('powershell', [
+      spawn(systemTool('powershell'), [
         '-NoProfile',
         '-Command',
         `Get-NetTCPConnection -LocalPort ${preferredPort} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }`,
@@ -749,7 +734,18 @@ async function main() {
   }
 }
 
-main().catch((e) => {
+try {
+  await main();
+} catch (e) {
   console.error(e);
   process.exit(process.exitCode || 1);
-});
+}
+
+function resolveHttpsResponse(res, resolveReq) {
+  const chunks = [];
+  res.on('data', (chunk) => chunks.push(chunk));
+  res.on('end', () => resolveReq({
+    status: res.statusCode || 0,
+    body: Buffer.concat(chunks).toString('utf8'),
+  }));
+}

@@ -10,7 +10,6 @@
 // side (needs the full cloud stack to diagnose).
 //
 // Usage: pnpm tauri:dev:cdp (running) → node scripts/cdp-dirchildren-probe.mjs [path]
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import http from 'node:http';
 import { resolveCdpPort } from './cdp-port.mjs';
 
@@ -66,7 +65,8 @@ const dc = (cdp, offset, limit) =>
     `window.__TAURI__.core.invoke('get_directory_children', ${JSON.stringify({ path: DIR, offset, limit })})`,
   );
 
-(async () => {
+try {
+  await (async () => {
   const t = await waitForRidge();
   const cdp = new Cdp(t.webSocketDebuggerUrl);
   await cdp.open();
@@ -96,4 +96,8 @@ const dc = (cdp, offset, limit) =>
   } else {
     console.log('HOST BUG ❌ — offset>0 returned empty/duplicate while offset=0 had entries → B1 reproduced host-side.');
   }
-})().catch((e) => { console.error('[dirchildren] FAIL:', e.message); process.exit(1); });
+  })();
+} catch (e) {
+  console.error('[dirchildren] FAIL:', e.message);
+  process.exit(1);
+}

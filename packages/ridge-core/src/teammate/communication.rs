@@ -190,19 +190,57 @@ impl AgentEnvelope {
                 )));
             }
         }
+        validate_agent_ref("from", &self.from)?;
+        validate_agent_ref("to", &self.to)?;
         if self.from.workspace_id != self.workspace_id || self.to.workspace_id != self.workspace_id
         {
             return Err(CommunicationError::InvalidEnvelope(
                 "envelope and endpoint workspace_id must match".into(),
             ));
         }
-        if self.to.agent_id.trim().is_empty() || self.to.lease.trim().is_empty() {
+        for (name, value) in [
+            ("correlation_id", self.correlation_id.as_deref()),
+            ("causation_id", self.causation_id.as_deref()),
+            ("conversation_id", self.conversation_id.as_deref()),
+            ("task_id", self.task_id.as_deref()),
+            ("cancellation_id", self.cancellation_id.as_deref()),
+            ("artifact_ref", self.artifact_ref.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                return Err(CommunicationError::InvalidEnvelope(format!(
+                    "{name} must not be empty when present"
+                )));
+            }
+        }
+        if self.sequence == 0 {
             return Err(CommunicationError::InvalidEnvelope(
-                "target agent_id and lease must not be empty".into(),
+                "sequence must be greater than zero".into(),
             ));
         }
         Ok(())
     }
+}
+
+fn validate_agent_ref(name: &str, endpoint: &AgentRef) -> Result<(), CommunicationError> {
+    for (field, value) in [
+        ("agent_id", endpoint.agent_id.as_str()),
+        ("session_id", endpoint.session_id.as_str()),
+        ("workspace_id", endpoint.workspace_id.as_str()),
+        ("pane_id", endpoint.pane_id.as_str()),
+        ("lease", endpoint.lease.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(CommunicationError::InvalidEnvelope(format!(
+                "{name}.{field} must not be empty"
+            )));
+        }
+    }
+    if endpoint.generation == 0 {
+        return Err(CommunicationError::InvalidEnvelope(format!(
+            "{name}.generation must be greater than zero"
+        )));
+    }
+    Ok(())
 }
 
 /// Errors that adapters expose to callers; do not replace with a silent PTY
@@ -501,6 +539,75 @@ mod tests {
         envelope.to.workspace_id = "other-workspace".into();
         assert!(matches!(
             envelope.validate(),
+            Err(CommunicationError::InvalidEnvelope(_))
+        ));
+    }
+
+    #[test]
+    fn envelope_rejects_incomplete_identity_and_empty_optional_ids() {
+        let endpoint = AgentRef {
+            agent_id: "agent-a".into(),
+            session_id: "session-a".into(),
+            workspace_id: "workspace-a".into(),
+            pane_id: "pane-a".into(),
+            generation: 2,
+            lease: "lease-2".into(),
+        };
+        let base = || AgentEnvelope {
+            message_id: "message-1".into(),
+            idempotency_key: "idem-1".into(),
+            correlation_id: None,
+            causation_id: None,
+            conversation_id: None,
+            task_id: None,
+            from: endpoint.clone(),
+            to: endpoint.clone(),
+            workspace_id: "workspace-a".into(),
+            kind: MessageKind::Message,
+            sequence: 1,
+            timestamp_unix_ms: 11,
+            priority: MessagePriority::Event,
+            deadline_unix_ms: None,
+            cancellation_id: None,
+            payload: serde_json::json!({}),
+            artifact_ref: None,
+            ack: AckState::None,
+        };
+
+        let cases: [(&str, fn(&mut AgentEnvelope)); 7] = [
+            ("from.agent_id", |envelope: &mut AgentEnvelope| {
+                envelope.from.agent_id = " ".into()
+            }),
+            ("from.session_id", |envelope: &mut AgentEnvelope| {
+                envelope.from.session_id = " ".into()
+            }),
+            ("from.pane_id", |envelope: &mut AgentEnvelope| {
+                envelope.from.pane_id = " ".into()
+            }),
+            ("from.lease", |envelope: &mut AgentEnvelope| {
+                envelope.from.lease = " ".into()
+            }),
+            ("from.generation", |envelope: &mut AgentEnvelope| {
+                envelope.from.generation = 0
+            }),
+            ("correlation_id", |envelope: &mut AgentEnvelope| {
+                envelope.correlation_id = Some(" ".into())
+            }),
+            ("artifact_ref", |envelope: &mut AgentEnvelope| {
+                envelope.artifact_ref = Some(" ".into())
+            }),
+        ];
+        for (label, mutate) in cases {
+            let mut envelope = base();
+            mutate(&mut envelope);
+            let error = envelope.validate().expect_err(label);
+            assert!(matches!(error, CommunicationError::InvalidEnvelope(_)));
+        }
+
+        let mut zero_sequence = base();
+        zero_sequence.sequence = 0;
+        assert!(matches!(
+            zero_sequence.validate(),
             Err(CommunicationError::InvalidEnvelope(_))
         ));
     }

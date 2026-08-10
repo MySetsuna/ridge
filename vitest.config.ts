@@ -1,7 +1,18 @@
 import { defineConfig } from 'vitest/config';
 import { resolve } from 'path';
 
+const stripNodeShebangForModuleRunner = () => ({
+  name: 'strip-node-shebang-for-module-runner',
+  enforce: 'pre' as const,
+  transform(code: string, id: string) {
+    if (!id.split('?')[0].endsWith('.mjs') || !code.startsWith('#!')) return undefined;
+    const newline = code.indexOf('\n');
+    return { code: newline < 0 ? '' : code.slice(newline + 1), map: null };
+  },
+});
+
 export default defineConfig({
+  plugins: [stripNodeShebangForModuleRunner()],
   resolve: {
     alias: {
       '$lib': resolve(__dirname, 'src/lib'),

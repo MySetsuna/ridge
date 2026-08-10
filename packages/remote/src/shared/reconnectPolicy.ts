@@ -14,7 +14,7 @@ export function backoffMs(
 ): number {
   const base = Math.max(1, baseMs);
   const max = Math.max(base, maxMs);
-  const shift = Math.min(Math.max(0, attempt | 0), 16);
+  const shift = Math.min(Math.max(0, Math.trunc(attempt)), 16);
   const exp = base * 2 ** shift;
   return Math.min(exp, max);
 }

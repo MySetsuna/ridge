@@ -179,7 +179,6 @@ body.rg-explorer-resizing {
   width: 1px;
   transform: translateX(-50%) scaleX(1);
   transform-origin: center;
-  /* background: var(--rg-border); */
   border-radius: 1px;
   transition:
     transform 0.12s ease,

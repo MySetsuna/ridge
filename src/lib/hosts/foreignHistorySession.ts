@@ -42,8 +42,8 @@ export function historyPullBudget(
   cols: number,
   cap = DEFAULT_HISTORY_TAIL_CAP,
 ): number {
-  const lines = Math.max(1, Math.min(wantLines | 0, 500));
-  const c = Math.max(1, Math.min(cols | 0, 512));
+  const lines = Math.max(1, Math.min(Math.trunc(wantLines), 500));
+  const c = Math.max(1, Math.min(Math.trunc(cols), 512));
   const raw = lines * c * 2;
   return Math.max(MIN_HISTORY_CAP, Math.min(cap, raw));
 }

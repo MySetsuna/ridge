@@ -546,7 +546,7 @@
                   />
                 </label>
                 <label class="block">
-                  <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.forgotPasswordNewPassword')}</span>
+                  <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.forgotCredentialNew')}</span>
                   <input
                     bind:value={forgotNewPassword}
                     type="password"
@@ -558,7 +558,7 @@
                   />
                 </label>
                 <label class="block">
-                  <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.forgotPasswordConfirmPassword')}</span>
+                  <span class="mb-1 block text-xs text-[var(--rg-fg-muted)]">{$t('cloudPro.forgotCredentialConfirm')}</span>
                   <input
                     bind:value={forgotConfirmPassword}
                     type="password"

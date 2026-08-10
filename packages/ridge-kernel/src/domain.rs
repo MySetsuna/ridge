@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-use crate::pty::{PtyOutputLeaseError, PtyOutputRead};
+use crate::pty::{PtyLaunch, PtyOutputLeaseError, PtyOutputRead};
 use crate::registry::{save_remote_hosts_at, save_roster_at, save_workspace_graph_at};
 use crate::server::{AppState, OutputLeaseSlot};
 
@@ -475,6 +475,51 @@ pub async fn domain_workspace_split(
     }
 }
 
+fn close_pane_resources(
+    st: &AppState,
+    pane_id: Uuid,
+    previous: &ridge_core::workspace::graph::WorkspaceGraph,
+    next: &ridge_core::workspace::graph::WorkspaceGraph,
+) -> Result<Option<String>, StatusCode> {
+    let pty = if st.ptys.contains(pane_id) {
+        Some(
+            st.ptys
+                .begin_destroy(pane_id)
+                .map_err(|_| StatusCode::CONFLICT)?,
+        )
+    } else {
+        None
+    };
+    if pty.is_some() {
+        remove_output_leases_for_pty(st, pane_id);
+    }
+    if let Err(error) = persist_workspaces(st, next) {
+        if pty.is_some() {
+            st.ptys.cancel_destroy(pane_id);
+        }
+        return Err(error);
+    }
+    let Some(bridge) = pty else {
+        return Ok(None);
+    };
+    if bridge.destroy().is_err() {
+        st.ptys.cancel_destroy(pane_id);
+        let _ = persist_workspaces(st, previous);
+        return Ok(Some(
+            "pane PTY did not terminate; close rolled back".to_string(),
+        ));
+    }
+    st.ptys
+        .finish_destroy(pane_id)
+        .map_err(|_| StatusCode::CONFLICT)?;
+    match st.mcp_state.purge_pane(&pane_id.to_string()) {
+        Ok(()) => Ok(None),
+        Err(error) => Ok(Some(format!(
+            "pane closed but Hub delivery state could not be purged: {error}"
+        ))),
+    }
+}
+
 pub async fn domain_workspace_pane_close(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -494,48 +539,14 @@ pub async fn domain_workspace_pane_close(
     let mut graph = st.workspaces.lock().expect("workspace graph lock");
     let previous = graph.clone();
     let mut next = graph.clone();
-    match next.close(workspace_id, pane_id) {
-        Ok(()) => {
-            let pty = if st.ptys.contains(pane_id) {
-                Some(
-                    st.ptys
-                        .begin_destroy(pane_id)
-                        .map_err(|_| StatusCode::CONFLICT)?,
-                )
-            } else {
-                None
-            };
-            if pty.is_some() {
-                // A pane close is a terminal lifecycle transition for every
-                // HTTP lease, including clients that never issue DELETE.
-                remove_output_leases_for_pty(&st, pane_id);
-            }
-            if let Err(error) = persist_workspaces(&st, &next) {
-                if pty.is_some() {
-                    st.ptys.cancel_destroy(pane_id);
-                }
-                return Err(error);
-            }
-            if let Some(bridge) = pty {
-                if bridge.destroy().is_err() {
-                    st.ptys.cancel_destroy(pane_id);
-                    let _ = persist_workspaces(&st, &previous);
-                    return Ok(bad_request("pane PTY did not terminate; close rolled back"));
-                }
-                st.ptys
-                    .finish_destroy(pane_id)
-                    .map_err(|_| StatusCode::CONFLICT)?;
-                if let Err(error) = st.mcp_state.purge_pane(&pane_id.to_string()) {
-                    return Ok(bad_request(format!(
-                        "pane closed but Hub delivery state could not be purged: {error}"
-                    )));
-                }
-            }
-            *graph = next;
-            Ok(Json(json!({ "ok": true })))
-        }
-        Err(e) => Ok(bad_request(e.to_string())),
+    if let Err(error) = next.close(workspace_id, pane_id) {
+        return Ok(bad_request(error.to_string()));
     }
+    if let Some(message) = close_pane_resources(&st, pane_id, &previous, &next)? {
+        return Ok(bad_request(message));
+    }
+    *graph = next;
+    Ok(Json(json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]
@@ -796,6 +807,67 @@ pub async fn domain_workspace_topology(
     })))
 }
 
+fn validate_pty_create(request: &PtyCreateRequest) -> Option<&'static str> {
+    if request.args.len() > 128 {
+        return Some("too many PTY launch arguments");
+    }
+    if request.env.len() > 256 {
+        return Some("too many PTY launch environment entries");
+    }
+    let env_bytes = request
+        .env
+        .iter()
+        .map(|(key, value)| key.len().saturating_add(value.len()))
+        .sum::<usize>();
+    (env_bytes > 64 * 1024).then_some("PTY launch environment is too large")
+}
+
+fn seed_workspace_for_pty(
+    st: &AppState,
+    request: &PtyCreateRequest,
+    pty_id: Uuid,
+) -> Result<Option<Uuid>, StatusCode> {
+    let Some(workspace_id) = request.workspace_id else {
+        return Ok(None);
+    };
+    let mut graph = st.workspaces.lock().expect("workspace graph lock");
+    if graph.workspace(workspace_id).is_some() {
+        return Ok(None);
+    }
+    let mut panes = HashMap::new();
+    panes.insert(
+        pty_id,
+        ridge_core::workspace::pane_tree::Pane {
+            id: pty_id,
+            mode: ridge_core::workspace::mode::PaneMode::Terminal,
+            cwd: request.cwd.clone().map(std::path::PathBuf::from),
+            shell_kind: request.shell.clone().or(request.program.clone()),
+        },
+    );
+    graph.insert_workspace(
+        workspace_id,
+        ridge_core::workspace::graph::WorkspaceMeta {
+            pane_tree: ridge_core::workspace::pane_tree::PaneTree {
+                root: ridge_core::workspace::pane_tree::PaneNode::Leaf(pty_id),
+                panes,
+            },
+            name: None,
+            locked_sizes: HashMap::new(),
+        },
+    );
+    persist_workspaces(st, &graph)?;
+    Ok(Some(workspace_id))
+}
+
+fn rollback_seeded_workspace(st: &AppState, workspace_id: Option<Uuid>) {
+    let Some(workspace_id) = workspace_id else {
+        return;
+    };
+    let mut graph = st.workspaces.lock().expect("workspace graph lock");
+    graph.remove_workspace(workspace_id);
+    let _ = persist_workspaces(st, &graph);
+}
+
 pub async fn domain_pty_create(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -807,66 +879,28 @@ pub async fn domain_pty_create(
     let pty_id = request.pty_id.unwrap_or_else(Uuid::new_v4);
     let role = request.role.as_deref().unwrap_or("shell");
     let program = request.program.as_deref().or(request.shell.as_deref());
-    if request.args.len() > 128 {
-        return Ok(bad_request("too many PTY launch arguments"));
-    }
-    if request.env.len() > 256 {
-        return Ok(bad_request("too many PTY launch environment entries"));
-    }
-    let env_bytes: usize = request
-        .env
-        .iter()
-        .map(|(key, value)| key.len().saturating_add(value.len()))
-        .sum();
-    if env_bytes > 64 * 1024 {
-        return Ok(bad_request("PTY launch environment is too large"));
+    if let Some(error) = validate_pty_create(&request) {
+        return Ok(bad_request(error));
     }
     // A desktop shell may create the first PTY before it has persisted the
     // corresponding graph entry.  Seed that stable workspace identity here so
     // a detached LAN/WebRTC host can expose a real layout after a hard kill.
-    let mut inserted_workspace = None;
-    if let Some(workspace_id) = request.workspace_id {
-        let mut graph = st.workspaces.lock().expect("workspace graph lock");
-        if graph.workspace(workspace_id).is_none() {
-            let mut panes = HashMap::new();
-            panes.insert(
-                pty_id,
-                ridge_core::workspace::pane_tree::Pane {
-                    id: pty_id,
-                    mode: ridge_core::workspace::mode::PaneMode::Terminal,
-                    cwd: request.cwd.clone().map(std::path::PathBuf::from),
-                    shell_kind: request.shell.clone().or(request.program.clone()),
-                },
-            );
-            graph.insert_workspace(
-                workspace_id,
-                ridge_core::workspace::graph::WorkspaceMeta {
-                    pane_tree: ridge_core::workspace::pane_tree::PaneTree {
-                        root: ridge_core::workspace::pane_tree::PaneNode::Leaf(pty_id),
-                        panes,
-                    },
-                    name: None,
-                    locked_sizes: HashMap::new(),
-                },
-            );
-            persist_workspaces(&st, &graph)?;
-            inserted_workspace = Some(workspace_id);
-        }
-    }
-    match st.ptys.spawn_command_for_with_env(
-        pty_id,
+    let inserted_workspace = seed_workspace_for_pty(&st, &request, pty_id)?;
+    match st.ptys.spawn_command_for_with_env(PtyLaunch {
+        id: pty_id,
         program,
-        &request.args,
-        request.cwd.as_deref(),
-        request.workspace_id,
+        args: &request.args,
+        cwd: request.cwd.as_deref(),
+        workspace_id: request.workspace_id,
         role,
-        request.launch_profile.as_deref(),
-        &request.env,
-    ) {
+        launch_profile: request.launch_profile.as_deref(),
+        env: Some(&request.env),
+    }) {
         Ok(pty_id) => {
             if let (Some(cols), Some(rows)) = (request.cols, request.rows) {
                 if let Err(error) = st.ptys.resize(pty_id, cols, rows) {
                     let _ = st.ptys.destroy(pty_id);
+                    rollback_seeded_workspace(&st, inserted_workspace);
                     return Ok(bad_request(error.to_string()));
                 }
             }
@@ -879,11 +913,7 @@ pub async fn domain_pty_create(
                 commit_agent_identity_for_pty(&st, pty_id, role, executable, request.args.clone())
             {
                 let _ = st.ptys.destroy(pty_id);
-                if let Some(workspace_id) = inserted_workspace {
-                    let mut graph = st.workspaces.lock().expect("workspace graph lock");
-                    graph.remove_workspace(workspace_id);
-                    let _ = persist_workspaces(&st, &graph);
-                }
+                rollback_seeded_workspace(&st, inserted_workspace);
                 return Ok(bad_request(error));
             }
             Ok(Json(
@@ -891,11 +921,7 @@ pub async fn domain_pty_create(
             ))
         }
         Err(error) => {
-            if let Some(workspace_id) = inserted_workspace {
-                let mut graph = st.workspaces.lock().expect("workspace graph lock");
-                graph.remove_workspace(workspace_id);
-                let _ = persist_workspaces(&st, &graph);
-            }
+            rollback_seeded_workspace(&st, inserted_workspace);
             Ok(bad_request(error.to_string()))
         }
     }

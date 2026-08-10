@@ -31,6 +31,8 @@ export interface RemotePerfSample {
   packetsLost?: number;
 }
 
+type RemotePerfMeta = Omit<RemotePerfSample, 'stage' | 'at' | 'durationMs'>;
+
 export interface RemotePerfSnapshot {
   enabled: boolean;
   samples: RemotePerfSample[];
@@ -39,7 +41,7 @@ export interface RemotePerfSnapshot {
 export interface RemotePerfToken {
   stage: RemotePerfStage;
   startedAt: number;
-  meta?: Omit<RemotePerfSample, 'stage' | 'at' | 'durationMs'>;
+  meta?: RemotePerfMeta;
 }
 
 const MAX_SAMPLES = 256;
@@ -67,13 +69,13 @@ function append(sample: RemotePerfSample): void {
 
 export function remotePerfStart(
   stage: RemotePerfStage,
-  meta?: Omit<RemotePerfSample, 'stage' | 'at' | 'durationMs'>,
+  meta?: RemotePerfMeta,
 ): RemotePerfToken | null {
   if (!enabled()) return null;
   return { stage, startedAt: now(), meta };
 }
 
-export function remotePerfEnd(token: RemotePerfToken | null, meta?: Omit<RemotePerfSample, 'stage' | 'at' | 'durationMs'>): void {
+export function remotePerfEnd(token: RemotePerfToken | null, meta?: RemotePerfMeta): void {
   if (!token || !enabled()) return;
   append({
     stage: token.stage,
@@ -86,7 +88,7 @@ export function remotePerfEnd(token: RemotePerfToken | null, meta?: Omit<RemoteP
 
 export function remotePerfMark(
   stage: RemotePerfStage,
-  meta?: Omit<RemotePerfSample, 'stage' | 'at' | 'durationMs'>,
+  meta?: RemotePerfMeta,
 ): void {
   append({ stage, at: now(), ...meta });
 }

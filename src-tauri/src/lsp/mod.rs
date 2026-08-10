@@ -178,66 +178,75 @@ impl Server {
     }
 }
 
+async fn read_lsp_headers(reader: &mut BufReader<ChildStdout>) -> Result<usize, ()> {
+    let mut content_length = 0;
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line).await {
+            Ok(0) | Err(_) => return Err(()),
+            Ok(_) => {}
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            return Ok(content_length);
+        }
+        if let Some(value) = trimmed.strip_prefix("Content-Length:") {
+            content_length = value.trim().parse().unwrap_or(0);
+        }
+    }
+}
+
+async fn read_lsp_message(reader: &mut BufReader<ChildStdout>) -> Result<Option<Value>, ()> {
+    let content_length = read_lsp_headers(reader).await?;
+    if content_length == 0 {
+        return Ok(None);
+    }
+    let mut buf = vec![0u8; content_length];
+    reader.read_exact(&mut buf).await.map_err(|_| ())?;
+    Ok(serde_json::from_slice::<Value>(&buf).ok())
+}
+
+async fn route_lsp_message(msg: Value, pending: &Pending) {
+    let id = msg.get("id").and_then(Value::as_i64);
+    let method = msg.get("method").and_then(Value::as_str);
+    match (id, method) {
+        // 响应（有 id、无 method）→ 路由回对应 pending oneshot。
+        (Some(id), None) => {
+            let result = msg
+                .get("result")
+                .cloned()
+                .or_else(|| msg.get("error").map(|e| json!({ "__lsp_error": e })))
+                .unwrap_or(Value::Null);
+            if let Some(tx) = pending.lock().await.remove(&id) {
+                let _ = tx.send(result);
+            }
+        }
+        // 通知（有 method、无 id）→ P2：转发诊断给前端（其余忽略）。
+        (None, Some("textDocument/publishDiagnostics")) => {
+            if let Some(handle) = APP_HANDLE.get() {
+                let _ = handle.emit(
+                    "lsp://diagnostics",
+                    msg.get("params").cloned().unwrap_or(Value::Null),
+                );
+            }
+        }
+        // 服务器→客户端请求（id+method，如 workspace/configuration）/ 其它通知：P1/P2 忽略。
+        _ => {}
+    }
+}
+
 /// stdout 读循环：解析 `Content-Length` 分帧，把响应（有 id 无 method）路由回
 /// 对应 pending oneshot；通知 / 服务器→客户端请求（P1）暂忽略。EOF/错误即退出
 /// （服务器死亡）。
 async fn read_loop(stdout: ChildStdout, pending: Pending) {
     let mut reader = BufReader::new(stdout);
     loop {
-        // —— 读 header 段直到空行 ——
-        let mut content_length: usize = 0;
-        loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line).await {
-                Ok(0) => return, // EOF
-                Ok(_) => {}
-                Err(_) => return,
-            }
-            let trimmed = line.trim_end_matches(['\r', '\n']);
-            if trimmed.is_empty() {
-                break; // header 段结束
-            }
-            if let Some(v) = trimmed.strip_prefix("Content-Length:") {
-                content_length = v.trim().parse().unwrap_or(0);
-            }
-        }
-        if content_length == 0 {
-            continue;
-        }
-        // —— 读 body ——
-        let mut buf = vec![0u8; content_length];
-        if reader.read_exact(&mut buf).await.is_err() {
-            return;
-        }
-        let Ok(msg) = serde_json::from_slice::<Value>(&buf) else {
-            continue;
+        let message = match read_lsp_message(&mut reader).await {
+            Ok(Some(message)) => message,
+            Ok(None) => continue,
+            Err(()) => return,
         };
-        let id = msg.get("id").and_then(Value::as_i64);
-        let method = msg.get("method").and_then(Value::as_str);
-        match (id, method) {
-            // 响应（有 id、无 method）→ 路由回对应 pending oneshot。
-            (Some(id), None) => {
-                let result = msg
-                    .get("result")
-                    .cloned()
-                    .or_else(|| msg.get("error").map(|e| json!({ "__lsp_error": e })))
-                    .unwrap_or(Value::Null);
-                if let Some(tx) = pending.lock().await.remove(&id) {
-                    let _ = tx.send(result);
-                }
-            }
-            // 通知（有 method、无 id）→ P2：转发诊断给前端（其余忽略）。
-            (None, Some("textDocument/publishDiagnostics")) => {
-                if let Some(handle) = APP_HANDLE.get() {
-                    let _ = handle.emit(
-                        "lsp://diagnostics",
-                        msg.get("params").cloned().unwrap_or(Value::Null),
-                    );
-                }
-            }
-            // 服务器→客户端请求（id+method，如 workspace/configuration）/ 其它通知：P1/P2 忽略。
-            _ => {}
-        }
+        route_lsp_message(message, &pending).await;
     }
 }
 

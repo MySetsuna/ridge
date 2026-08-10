@@ -918,13 +918,15 @@ impl JsTerminal {
         alt: bool,
     ) -> Vec<u8> {
         crate::input::encode_mouse(
-            button,
-            row,
-            col,
-            action,
-            shift,
-            ctrl,
-            alt,
+            crate::input::MouseInput {
+                btn: button,
+                row,
+                col,
+                action,
+                shift,
+                ctrl,
+                alt,
+            },
             self.inner.modes(),
         )
     }

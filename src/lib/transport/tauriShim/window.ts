@@ -9,7 +9,9 @@
 import type { UnlistenFn } from './bridge';
 
 class ShimWindow {
-  async minimize(): Promise<void> {}
+  async minimize(): Promise<void> {
+    await Promise.resolve();
+  }
   async maximize(): Promise<void> {
     try {
       await document.documentElement.requestFullscreen?.();
@@ -31,8 +33,12 @@ class ShimWindow {
       await this.maximize();
     }
   }
-  async close(): Promise<void> {}
-  async setTitle(_title: string): Promise<void> {}
+  async close(): Promise<void> {
+    await Promise.resolve();
+  }
+  async setTitle(title: string): Promise<void> {
+    if (typeof document !== 'undefined') document.title = title;
+  }
   async isMaximized(): Promise<boolean> {
     return document.fullscreenElement != null;
   }

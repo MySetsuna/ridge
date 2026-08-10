@@ -3,8 +3,8 @@
 // and that close-pane-result is success:true (pre-fix it was
 // "无法关闭最后一个窗格"). Also checks the sessionStorage GC prunes closed panes.
 import { chromium, devices } from '@playwright/test';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROFILE_DIR = path.resolve(__dirname, '..', '.pw-remote-profile');
 const URL = process.env.RIDGE_URL || 'https://127.0.0.1:9528';
@@ -32,11 +32,23 @@ await page.waitForSelector('.app-root', { timeout: 20000 });
 await sleep(1200);
 
 const snap = () => page.evaluate(() => {
-  const sb = []; for (let i = 0; i < sessionStorage.length; i++) { const k = sessionStorage.key(i); if (k && k.startsWith('rg-remote-sb:')) sb.push(k); }
-  return { panes: [...document.querySelectorAll('.pane-row')].map((r) => (r.querySelector('.pane-name')?.textContent || '').trim()), sb: sb.sort() };
+  const sb = [];
+  for (let i = 0; i < sessionStorage.length; i++) {
+    const k = sessionStorage.key(i);
+    if (k?.startsWith('rg-remote-sb:')) sb.push(k);
+  }
+  const sortedSb = sb.toSorted((a, b) => a.localeCompare(b));
+  return { panes: [...document.querySelectorAll('.pane-row')].map((r) => (r.querySelector('.pane-name')?.textContent || '').trim()), sb: sortedSb };
 });
 const openTree = async () => { if (!(await page.locator('.tree-popup').count())) { await page.locator('.tree-trigger').click(); await page.waitForSelector('.tree-popup'); await sleep(150); } };
-const waitFor = async (fn, ms = 8000) => { const t = Date.now(); while (Date.now() - t < ms) { if (await fn()) return true; await sleep(200); } return false; };
+const waitFor = async (fn, ms = 8000) => {
+  const t = Date.now();
+  while (Date.now() - t < ms) {
+    if (await fn()) return true;
+    await sleep(200);
+  }
+  return false;
+};
 
 await openTree();
 const base = (await snap()).panes.length;

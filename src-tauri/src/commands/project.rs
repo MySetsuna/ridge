@@ -176,6 +176,8 @@ pub async fn get_directory_children(
 }
 
 #[tauri::command]
+// NOSONAR: this public command preserves the existing flat IPC ABI consumed by
+// desktop and remote clients; changing it to a request object is breaking API.
 pub async fn text_search(
     root: String,
     query: String,
@@ -432,115 +434,109 @@ pub async fn read_opencode_history(
     offset: Option<usize>,
     workspace_cwds: Option<Vec<String>>,
 ) -> Vec<OpencodeHistoryEntry> {
-    tokio::task::spawn_blocking(move || {
-        let home = match dirs::home_dir() {
-            Some(h) => h,
-            None => return Vec::new(),
-        };
-        let session_dir = home
-            .join(".local")
-            .join("share")
-            .join("opencode")
-            .join("storage")
-            .join("session_diff");
-        let db_path = home
-            .join(".local")
-            .join("share")
-            .join("opencode")
-            .join("storage")
-            .join("opencode.db");
+    tokio::task::spawn_blocking(move || read_opencode_history_sync(limit, offset, workspace_cwds))
+        .await
+        .unwrap_or_default()
+}
 
-        // Try to open the opencode SQLite database for session metadata
-        let conn = Connection::open(&db_path).ok();
-
-        // Normalise workspace CWDs for matching
-        let ws_cwds: Vec<String> = workspace_cwds
-            .unwrap_or_default()
-            .into_iter()
-            .map(|c| c.replace('\\', "/"))
-            .collect();
-
-        let mut entries = Vec::new();
-        if let Ok(paths) = std::fs::read_dir(&session_dir) {
-            let mut file_paths: Vec<_> = paths.filter_map(|p| p.ok()).collect();
-            // Sort by modification time descending
-            file_paths.sort_by(|a, b| {
-                let a_meta = a.metadata().ok().and_then(|m| m.modified().ok());
-                let b_meta = b.metadata().ok().and_then(|m| m.modified().ok());
-                b_meta.cmp(&a_meta)
-            });
-
-            let offset = offset.unwrap_or(0);
-            let limit = limit.unwrap_or(50);
-
-            for path in file_paths.into_iter().skip(offset).take(limit) {
-                if path.path().extension().and_then(|s| s.to_str()) == Some("json") {
-                    let session_id = path
-                        .path()
-                        .file_stem()
-                        .unwrap()
-                        .to_string_lossy()
-                        .to_string();
-                    let metadata = std::fs::metadata(path.path()).ok();
-                    let updated_at = metadata
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-
-                    let mut files = Vec::new();
-                    let mut project = String::new();
-                    let mut title = "New Session".to_string();
-
-                    // Read session metadata from opencode SQLite database
-                    if let Some(ref conn) = conn {
-                        if let Ok(mut stmt) = conn
-                            .prepare("SELECT s.title, s.directory FROM session s WHERE s.id = ?1")
-                        {
-                            if let Ok(row) = stmt.query_row(rusqlite::params![session_id], |row| {
-                                let db_title: String = row.get(0)?;
-                                let directory: String = row.get(1)?;
-                                Ok((db_title, directory))
-                            }) {
-                                title = row.0;
-                                project = row.1.replace('\\', "/");
-                            }
-                        }
-                    }
-
-                    // Read files from session_diff JSON
-                    if let Ok(file) = std::fs::File::open(path.path()) {
-                        if let Ok(json) = serde_json::from_reader::<_, serde_json::Value>(file) {
-                            if let Some(arr) = json.as_array() {
-                                for item in arr {
-                                    if let Some(f) = item.get("file").and_then(|p| p.as_str()) {
-                                        files.push(f.to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Fallback: infer project CWD by matching relative file paths
-                    // against known workspace directories
-                    if project.is_empty() && !ws_cwds.is_empty() && !files.is_empty() {
-                        project = infer_project_from_workspace(&files, &ws_cwds);
-                    }
-
-                    entries.push(OpencodeHistoryEntry {
-                        session_id,
-                        title,
-                        updated_at,
-                        project,
-                        files,
-                    });
-                }
-            }
-        }
-        entries
+fn opencode_session_metadata(conn: Option<&Connection>, session_id: &str) -> (String, String) {
+    let Some(conn) = conn else {
+        return ("New Session".to_string(), String::new());
+    };
+    let Ok(mut stmt) = conn.prepare("SELECT s.title, s.directory FROM session s WHERE s.id = ?1")
+    else {
+        return ("New Session".to_string(), String::new());
+    };
+    stmt.query_row(rusqlite::params![session_id], |row| {
+        let title: String = row.get(0)?;
+        let directory: String = row.get(1)?;
+        Ok((title, directory.replace('\\', "/")))
     })
-    .await
-    .unwrap_or_default()
+    .unwrap_or_else(|_| ("New Session".to_string(), String::new()))
+}
+
+fn opencode_session_files(path: &Path) -> Vec<String> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_reader::<_, serde_json::Value>(file) else {
+        return Vec::new();
+    };
+    json.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.get("file")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+fn opencode_session_entry(
+    path: &Path,
+    conn: Option<&Connection>,
+    workspace_cwds: &[String],
+) -> Option<OpencodeHistoryEntry> {
+    if path.extension().and_then(|value| value.to_str()) != Some("json") {
+        return None;
+    }
+    let session_id = path.file_stem()?.to_string_lossy().to_string();
+    let updated_at = std::fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let (title, mut project) = opencode_session_metadata(conn, &session_id);
+    let files = opencode_session_files(path);
+    if project.is_empty() && !workspace_cwds.is_empty() && !files.is_empty() {
+        project = infer_project_from_workspace(&files, workspace_cwds);
+    }
+    Some(OpencodeHistoryEntry {
+        session_id,
+        title,
+        updated_at,
+        project,
+        files,
+    })
+}
+
+fn read_opencode_history_sync(
+    limit: Option<usize>,
+    offset: Option<usize>,
+    workspace_cwds: Option<Vec<String>>,
+) -> Vec<OpencodeHistoryEntry> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let storage = home
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("storage");
+    let session_dir = storage.join("session_diff");
+    let conn = Connection::open(storage.join("opencode.db")).ok();
+    let workspace_cwds = workspace_cwds
+        .unwrap_or_default()
+        .into_iter()
+        .map(|cwd| cwd.replace('\\', "/"))
+        .collect::<Vec<_>>();
+    let Ok(paths) = std::fs::read_dir(session_dir) else {
+        return Vec::new();
+    };
+    let mut paths = paths.filter_map(|path| path.ok()).collect::<Vec<_>>();
+    paths.sort_by(|a, b| {
+        let modified =
+            |entry: &std::fs::DirEntry| entry.metadata().ok().and_then(|meta| meta.modified().ok());
+        modified(b).cmp(&modified(a))
+    });
+    paths
+        .into_iter()
+        .skip(offset.unwrap_or(0))
+        .take(limit.unwrap_or(50))
+        .filter_map(|entry| opencode_session_entry(&entry.path(), conn.as_ref(), &workspace_cwds))
+        .collect()
 }
 
 // ─── OpenCode history ─────────────────────────────────────────────────────
@@ -552,17 +548,23 @@ fn infer_project_from_files(files: &[String]) -> String {
     if files.is_empty() {
         return String::new();
     }
+    if let Some(root) = git_root_from_files(files) {
+        return root;
+    }
+    common_project_prefix(files)
+}
 
-    // Try to find a git repo root from any file
-    for f in files {
-        let path = std::path::Path::new(f);
+fn git_root_from_files(files: &[String]) -> Option<String> {
+    for file in files {
+        let path = std::path::Path::new(file);
         if let Some(ancestor) = path.ancestors().skip(1).find(|a| a.join(".git").exists()) {
-            return ancestor.to_string_lossy().to_string();
+            return Some(ancestor.to_string_lossy().to_string());
         }
     }
+    None
+}
 
-    // Fallback: longest common prefix of all file paths
-    // Normalize separators first
+fn common_project_prefix(files: &[String]) -> String {
     let normalized: Vec<String> = files.iter().map(|f| f.replace('\\', "/")).collect();
     let mut prefix = normalized[0].clone();
     for f in &normalized[1..] {
@@ -579,13 +581,11 @@ fn infer_project_from_files(files: &[String]) -> String {
             break;
         }
     }
-    // If prefix looks like a file path (not ending in /), get its parent
     if !prefix.is_empty() && !prefix.ends_with('/') {
         if let Some(pos) = prefix.rfind('/') {
             prefix = prefix[..=pos].to_string();
         }
     }
-    // Convert back to native path format
     prefix.trim_end_matches('/').replace('/', "\\")
 }
 
@@ -1105,6 +1105,113 @@ fn read_jsonl_window(path: &Path) -> std::io::Result<String> {
     Ok(content)
 }
 
+fn agent_session_meta(value: &serde_json::Value) -> Option<(String, Option<String>, String)> {
+    (value.get("type").and_then(|item| item.as_str()) == Some("session_meta")).then(|| {
+        let payload = &value["payload"];
+        (
+            payload
+                .get("cwd")
+                .and_then(|item| item.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            payload
+                .get("id")
+                .and_then(|item| item.as_str())
+                .map(str::to_string),
+            payload
+                .get("title")
+                .or_else(|| payload.get("name"))
+                .and_then(|item| item.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+        )
+    })
+}
+
+fn assistant_message(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    match value.get("type").and_then(|item| item.as_str()) {
+        Some("assistant") => Some(&value["message"]),
+        Some("response_item") => Some(&value["payload"]),
+        _ => None,
+    }
+}
+
+fn parse_agent_reply(
+    agent: &str,
+    value: &serde_json::Value,
+    message: &serde_json::Value,
+    project: &str,
+    session_id: Option<&str>,
+    session_title: &str,
+    fallback_timestamp: u64,
+) -> Option<(String, AgentRecentReply)> {
+    if message.get("role").and_then(|item| item.as_str()) != Some("assistant") {
+        return None;
+    }
+    let text = extract_message_text(message.get("content"))?;
+    let line_project = value
+        .get("cwd")
+        .or_else(|| value.get("project"))
+        .and_then(|item| item.as_str())
+        .unwrap_or(project)
+        .to_string();
+    let line_session = value
+        .get("sessionId")
+        .and_then(|item| item.as_str())
+        .or(session_id)?
+        .to_string();
+    let line_title = value
+        .get("title")
+        .or_else(|| value.get("sessionTitle"))
+        .or_else(|| value.get("slug"))
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or(session_title);
+    let title = if line_title.is_empty() {
+        format!(
+            "{} {}",
+            agent,
+            line_session.chars().take(8).collect::<String>()
+        )
+    } else {
+        line_title.to_string()
+    };
+    let resume = crate::teammate::agent_catalog::find_profile(
+        &crate::teammate::agent_catalog::builtin_profiles(),
+        agent,
+    )
+    .and_then(|profile| {
+        let (executable, argv, cwd_out) = crate::teammate::agent_catalog::plan_resume(
+            profile,
+            &line_session,
+            &line_project,
+            false,
+        );
+        if argv.is_empty() && profile.resume_argv.is_empty() {
+            None
+        } else {
+            Some(AgentResumeSpec {
+                executable,
+                argv,
+                cwd: cwd_out,
+                session_id: line_session.clone(),
+            })
+        }
+    });
+    let reply = AgentRecentReply {
+        agent: agent.to_string(),
+        title,
+        text,
+        timestamp: json_timestamp_ms(value).unwrap_or(fallback_timestamp),
+        cwd: line_project,
+        session_id: line_session.clone(),
+        resume,
+    };
+    Some((line_session, reply))
+}
+
 fn parse_agent_jsonl(agent: &str, content: &str, fallback_timestamp: u64) -> Vec<AgentRecentReply> {
     let mut project = String::new();
     let mut session_id = None;
@@ -1115,97 +1222,25 @@ fn parse_agent_jsonl(agent: &str, content: &str, fallback_timestamp: u64) -> Vec
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if value.get("type").and_then(|v| v.as_str()) == Some("session_meta") {
-            let payload = &value["payload"];
-            project = payload
-                .get("cwd")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            session_id = payload
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            session_title = payload
-                .get("title")
-                .or_else(|| payload.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .trim()
-                .to_string();
+        if let Some((next_project, next_session, next_title)) = agent_session_meta(&value) {
+            project = next_project;
+            session_id = next_session;
+            session_title = next_title;
             continue;
         }
-
-        let message = if value.get("type").and_then(|v| v.as_str()) == Some("assistant") {
-            &value["message"]
-        } else if value.get("type").and_then(|v| v.as_str()) == Some("response_item") {
-            &value["payload"]
-        } else {
+        let Some(message) = assistant_message(&value) else {
             continue;
         };
-        if message.get("role").and_then(|v| v.as_str()) != Some("assistant") {
+        let Some((line_session, reply)) = parse_agent_reply(
+            agent,
+            &value,
+            message,
+            &project,
+            session_id.as_deref(),
+            &session_title,
+            fallback_timestamp,
+        ) else {
             continue;
-        }
-        let Some(text) = extract_message_text(message.get("content")) else {
-            continue;
-        };
-        let line_project = value
-            .get("cwd")
-            .or_else(|| value.get("project"))
-            .and_then(|v| v.as_str())
-            .unwrap_or(&project)
-            .to_string();
-        let line_session = value
-            .get("sessionId")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .or_else(|| session_id.clone());
-        let Some(line_session) = line_session else {
-            continue;
-        };
-        let line_title = value
-            .get("title")
-            .or_else(|| value.get("sessionTitle"))
-            .or_else(|| value.get("slug"))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|title| !title.is_empty())
-            .unwrap_or(&session_title);
-        let title = if line_title.is_empty() {
-            format!(
-                "{} {}",
-                agent,
-                line_session.chars().take(8).collect::<String>()
-            )
-        } else {
-            line_title.to_string()
-        };
-        let resume = {
-            let id = &line_session;
-            let profiles = crate::teammate::agent_catalog::builtin_profiles();
-            crate::teammate::agent_catalog::find_profile(&profiles, agent).and_then(|profile| {
-                let (executable, argv, cwd_out) =
-                    crate::teammate::agent_catalog::plan_resume(profile, id, &line_project, false);
-                if argv.is_empty() && profile.resume_argv.is_empty() {
-                    None
-                } else {
-                    Some(AgentResumeSpec {
-                        executable,
-                        argv,
-                        cwd: cwd_out,
-                        session_id: id.clone(),
-                    })
-                }
-            })
-        };
-        let reply = AgentRecentReply {
-            agent: agent.to_string(),
-            title,
-            text,
-            timestamp: json_timestamp_ms(&value).unwrap_or(fallback_timestamp),
-            cwd: line_project,
-            session_id: line_session.clone(),
-            resume,
         };
         match sessions.get(&line_session) {
             Some(current) if current.timestamp > reply.timestamp => {}

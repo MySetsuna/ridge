@@ -416,6 +416,29 @@ async fn ca_pem_handler() -> impl IntoResponse {
 /// Fallback for any unmatched GET: serve a root-level static file from the
 /// build output (service worker, web manifest, PWA icons, favicon, …), or fall
 /// back to the SPA shell. Path-traversal-guarded and gated on `remote_enabled`.
+async fn read_canonical_asset(dir: Option<&PathBuf>, rel: &str) -> Option<Vec<u8>> {
+    let base = dir?;
+    let real = tokio::fs::canonicalize(base.join(rel)).await.ok()?;
+    let root = tokio::fs::canonicalize(base).await.ok()?;
+    if !real.starts_with(root) {
+        return None;
+    }
+    tokio::fs::read(real).await.ok()
+}
+
+fn asset_headers(rel: &str) -> (&'static str, &'static str) {
+    if !rel.starts_with("_app/immutable/") {
+        return root_asset_headers(rel);
+    }
+    if rel.ends_with(".css") {
+        return ("text/css", "max-age=31536000, immutable");
+    }
+    if rel.ends_with(".wasm") {
+        return ("application/wasm", "max-age=31536000, immutable");
+    }
+    ("application/javascript", "max-age=31536000, immutable")
+}
+
 async fn spa_fallback_handler(
     State(st): State<ServeState>,
     headers: HeaderMap,
@@ -448,27 +471,11 @@ async fn spa_fallback_handler(
     // resolved target (symlinks + `.` segments collapsed) must live inside the
     // chosen UI dir. `canonicalize` fails for non-existent paths, which naturally
     // routes unknown SPA client-side routes to the shell.
-    let within = match target.dir.as_ref() {
-        Some(base) => match (
-            tokio::fs::canonicalize(base.join(rel)).await,
-            tokio::fs::canonicalize(base).await,
-        ) {
-            (Ok(real), Ok(root)) => real.starts_with(&root).then_some(real),
-            _ => None,
-        },
-        None => None,
-    };
+    let disk = read_canonical_asset(target.dir.as_ref(), rel).await;
     // 磁盘未命中 → 同形态的内嵌产物（单文件 rdg 的 sw.js / manifest / icons /
     // 桌面 `_app/immutable/*` 都走这条），仍未命中才回落 SPA 壳。
     // `rel` 已过上面的穿越守卫。
-    let disk = match &within {
-        Some(real) => tokio::fs::read(real).await.ok(),
-        None => None,
-    };
-    let bytes = match disk {
-        Some(b) => Some(b),
-        None => crate::embed_ui::get_kind(target.kind, rel),
-    };
+    let bytes = disk.or_else(|| crate::embed_ui::get_kind(target.kind, rel));
     // 仍未命中 → 另一形态的同名资产（`?ui=` 覆盖后续请求不带参数，见
     // read_from_other_ui；壳 index.html 被该函数拒绝，不会串台）。都没有才回落 SPA 壳。
     let bytes = match bytes {
@@ -479,17 +486,7 @@ async fn spa_fallback_handler(
         Some(bytes) => {
             // SvelteKit emits content-hashed bundles under `_app/immutable/` —
             // safe to cache forever; everything else revalidates.
-            let (content_type, cache_control) = if rel.starts_with("_app/immutable/") {
-                if rel.ends_with(".css") {
-                    ("text/css", "max-age=31536000, immutable")
-                } else if rel.ends_with(".wasm") {
-                    ("application/wasm", "max-age=31536000, immutable")
-                } else {
-                    ("application/javascript", "max-age=31536000, immutable")
-                }
-            } else {
-                root_asset_headers(rel)
-            };
+            let (content_type, cache_control) = asset_headers(rel);
             axum::response::Response::builder()
                 .header(axum::http::header::CONTENT_TYPE, content_type)
                 .header(axum::http::header::CACHE_CONTROL, cache_control)
@@ -582,12 +579,11 @@ async fn assets_handler(
             } else {
                 ("application/octet-stream", "max-age=3600")
             };
-            let response = axum::response::Response::builder()
+            axum::response::Response::builder()
                 .header(axum::http::header::CONTENT_TYPE, content_type)
                 .header(axum::http::header::CACHE_CONTROL, cache_control)
                 .body(axum::body::Body::from(bytes))
-                .unwrap();
-            response
+                .unwrap()
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }

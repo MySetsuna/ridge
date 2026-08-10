@@ -124,7 +124,7 @@ describe('Remote bootstrap and service-worker recovery', () => {
     vi.resetModules();
     await import('./main');
     state.messageHandler?.({ data: { type: 'CLEAR_STORAGE', version: 'next' } });
-    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(state.clearLocal).toHaveBeenCalled();
     expect(state.clearSession).toHaveBeenCalled();
     expect(state.deleteDatabase).toHaveBeenCalledWith('ridge');

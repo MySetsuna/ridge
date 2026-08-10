@@ -104,7 +104,7 @@ export function fileUrlToPath(href: string): string | null {
 }
 
 export function looksOutsideWorkspace(path: string, root: string): boolean {
-  const norm = (s: string) => s.replaceAll(/\\/g, '/').toLowerCase();
+  const norm = (s: string) => s.replaceAll('\\', '/').toLowerCase();
   const p = norm(path);
   const normalizedRoot = norm(root);
   const r = trimTrailingSeparators(normalizedRoot);

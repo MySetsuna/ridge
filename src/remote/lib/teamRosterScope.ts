@@ -25,7 +25,7 @@ export function teamRosterScopeKey(
 ): string {
   const paneScope = panes
     .map((pane) => `${pane.id}\u0000${pane.cwd ?? ''}`)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .join('\u0001');
   return `${sessionId}\u0000${workspaceId}\u0000${paneScope}`;
 }

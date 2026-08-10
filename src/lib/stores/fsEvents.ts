@@ -29,7 +29,7 @@ let initPromise: Promise<void> | null = null;
 
 async function ensureListener(): Promise<void> {
 	if (unlisten || !isTauri()) return;
-	if (initPromise) return initPromise;
+	if (initPromise !== null) return initPromise;
 	initPromise = (async () => {
 		try {
 			unlisten = await listen<FsChangedPayload>('fs-changed', (evt) => {
@@ -78,7 +78,7 @@ const recentlyWritten = new Map<string, ReturnType<typeof setTimeout>>();
 
 /** Normalize for compare (windows backslash → forward slash). */
 function normalizeKey(path: string): string {
-	return path.replaceAll(/\\/g, '/');
+	return path.replaceAll('\\', '/');
 }
 
 /**

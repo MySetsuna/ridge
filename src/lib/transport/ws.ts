@@ -17,30 +17,31 @@ export class WsDataProvider implements DataProvider {
   private offMessage: (() => void) | null = null;
   private offState: (() => void) | null = null;
 
+  private handleMessage(msg: unknown): void {
+    if (typeof msg !== 'object' || msg === null) return;
+    const m = msg as Record<string, unknown>;
+    if (typeof m._reqId !== 'number') return;
+    const req = this.pending.get(m._reqId);
+    if (!req) return;
+    clearTimeout(req.timer);
+    this.pending.delete(m._reqId);
+    if (req.signal && req.onAbort) req.signal.removeEventListener('abort', req.onAbort);
+    if (m._error) {
+      const detail = typeof m._error === 'string' ? m._error : JSON.stringify(m._error) ?? 'remote error';
+      req.reject(new Error(detail));
+      return;
+    }
+    req.resolve(m._result ?? m);
+  }
+
   constructor(conn: RemoteConnection) {
     this.conn = conn;
-    this.offMessage = this.conn.onMessage((msg) => {
-      if (typeof msg === 'object' && msg !== null && typeof (msg as Record<string, unknown>)._reqId === 'number') {
-        const m = msg as Record<string, unknown>;
-        const id = m._reqId as number;
-        const req = this.pending.get(id);
-        if (req) {
-          clearTimeout(req.timer);
-          this.pending.delete(id);
-          if (req.signal && req.onAbort) req.signal.removeEventListener('abort', req.onAbort);
-          if (m._error) {
-            const detail = typeof m._error === 'string' ? m._error : JSON.stringify(m._error) ?? 'remote error';
-            req.reject(new Error(detail));
-          } else {
-            req.resolve(m._result ?? m);
-          }
-        }
-      }
-    });
-    this.offState = this.conn.onStateChange((state) => {
-      if (state === 'connected') return;
-      this.rejectPending(new Error(`WS transport ${state}; request cancelled`));
-    });
+    this.offMessage = this.conn.onMessage((msg) => this.handleMessage(msg));
+    this.offState = this.conn.onStateChange((state) => this.handleStateChange(state));
+  }
+
+  private handleStateChange(state: string): void {
+    if (state !== 'connected') this.rejectPending(new Error(`WS transport ${state}; request cancelled`));
   }
 
   /** Transport teardown is terminal for data requests; never leave Query promises
@@ -69,9 +70,7 @@ export class WsDataProvider implements DataProvider {
     params: Record<string, unknown> = {},
     signal?: AbortSignal,
   ): Promise<T> {
-    if (signal?.aborted) {
-      return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
-    }
+    if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
     const id = ++this.reqId;
     const payload: Record<string, unknown> = { type: 'data-request', method, _reqId: id, ...params };
     return new Promise<T>((resolve, reject) => {

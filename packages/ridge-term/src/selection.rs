@@ -326,43 +326,40 @@ impl Selection {
             let Some(row) = terminal.row_at_abs(abs) else {
                 break;
             };
-
-            let lo = if abs == range.start_abs_row {
-                range.start_col
-            } else {
-                0
-            };
-            let hi = if abs == range.end_abs_row {
-                range.end_col
-            } else {
-                cols
-            };
-            let hi = hi.min(row.cells.len());
-            if lo >= hi {
-                let is_last = abs == range.end_abs_row;
-                if !is_last && !row.wrapped {
-                    out.push('\n');
-                }
-                continue;
-            }
-
-            let mut line = String::new();
-            for col in lo..hi {
-                let cell = &row.cells[col];
-                if cell.width == 0 {
-                    continue;
-                }
-                line.push(cell.ch);
-            }
-            let trimmed = line.trim_end_matches(' ');
-            out.push_str(trimmed);
-
-            let is_last = abs == range.end_abs_row;
-            if !is_last && !row.wrapped {
-                out.push('\n');
-            }
+            let (lo, hi) = selected_bounds(abs, &range, cols, row.cells.len());
+            append_selected_row(&mut out, row, lo, hi, abs == range.end_abs_row);
         }
         out
+    }
+}
+
+fn selected_bounds(abs: usize, range: &RangeAbs, cols: usize, row_len: usize) -> (usize, usize) {
+    let lo = (abs == range.start_abs_row)
+        .then_some(range.start_col)
+        .unwrap_or(0);
+    let hi = (abs == range.end_abs_row)
+        .then_some(range.end_col)
+        .unwrap_or(cols);
+    (lo, hi.min(row_len))
+}
+
+fn append_selected_row(
+    out: &mut String,
+    row: &crate::term::cell::Row,
+    lo: usize,
+    hi: usize,
+    is_last: bool,
+) {
+    if lo < hi {
+        let line: String = row.cells[lo..hi]
+            .iter()
+            .filter(|cell| cell.width != 0)
+            .map(|cell| cell.ch)
+            .collect();
+        out.push_str(line.trim_end_matches(' '));
+    }
+    if !is_last && !row.wrapped {
+        out.push('\n');
     }
 }
 

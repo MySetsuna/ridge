@@ -20,7 +20,7 @@ export const portal: Action<HTMLElement, PortalOptions | undefined> = (node, opt
 		if (typeof t === 'string') {
 			const el = document.querySelector(t);
 			if (!(el instanceof HTMLElement)) {
-				throw new Error(`portal target "${t}" not found`);
+				throw new TypeError(`portal target "${t}" not found`);
 			}
 			return el;
 		}

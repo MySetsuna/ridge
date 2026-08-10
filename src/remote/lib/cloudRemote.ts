@@ -146,6 +146,13 @@ interface SubscribeRetryIntent {
   attempts: number;
 }
 
+interface LiveSeedState {
+  seeding: boolean;
+  pendingLive: Uint8Array[];
+  pendingLiveBytes: number;
+  seedReplayOverflow: boolean;
+}
+
 /** Flatten a host pane-tree to the mobile's flat leaf list (server.rs's downgrade). */
 function flattenLeaves(node: PaneNode | null | undefined): PaneInfo[] {
   if (!node) return [];
@@ -700,7 +707,7 @@ export class CloudRemoteConnection implements RemoteLink {
         maxBytes: REMOTE_OLDER_SCROLLBACK_BYTES,
       });
       const bytes = chunk.bytes ? this.encoder.encode(chunk.bytes) : new Uint8Array();
-      if (!(chunk.start_seq < chunk.end_seq)
+      if (chunk.start_seq >= chunk.end_seq
           || chunk.end_seq !== cursor.oldestSeq
           || bytes.length === 0) {
         if (bytes.length === 0 && chunk.end_seq === cursor.oldestSeq && chunk.at_oldest) {
@@ -738,6 +745,104 @@ export class CloudRemoteConnection implements RemoteLink {
     }
   }
 
+  private emitSeededLive(pane: PaneRef, key: string, state: LiveSeedState, bytes: Uint8Array): void {
+    remotePerfMark('raw-receive', {
+      paneKey: key,
+      bytes: bytes.byteLength,
+      transport: 'cloud-webrtc',
+    });
+    this.emitRaw(pane, bytes);
+    if (!state.seeding || state.seedReplayOverflow) return;
+    if (state.pendingLiveBytes + bytes.byteLength <= REMOTE_SEED_REPLAY_MAX_BYTES) {
+      state.pendingLive.push(bytes.slice());
+      state.pendingLiveBytes += bytes.byteLength;
+      return;
+    }
+    state.seedReplayOverflow = true;
+    state.pendingLive.length = 0;
+    state.pendingLiveBytes = 0;
+  }
+
+  private listenPane(pane: PaneRef, key: string, state: LiveSeedState): Promise<UnlistenFn> | UnlistenFn {
+    const { paneId, workspaceId } = pane;
+    return this.bridge.listen<{ data: string }>(
+      `pty-output-${workspaceId}-${paneId}`,
+      (event) => {
+        const bytes = this.encoder.encode(event.payload?.data ?? '');
+        if (bytes.length) this.emitSeededLive(pane, key, state, bytes);
+      },
+    );
+  }
+
+  private replaySeed(pane: PaneRef, state: LiveSeedState, frame: string): void {
+    if (state.seedReplayOverflow) return;
+    this.emitRaw(pane, this.encoder.encode(frame));
+    for (const bytes of state.pendingLive) this.emitRaw(pane, bytes);
+    state.pendingLive.length = 0;
+    state.pendingLiveBytes = 0;
+  }
+
+  private async seedWithResync(pane: PaneRef, key: string, state: LiveSeedState): Promise<boolean> {
+    const { paneId, workspaceId } = pane;
+    try {
+      const frame = await this._invokePane<PaneResyncFrame>(pane, 'get_pane_resync_frame', {
+        paneId,
+        workspaceId,
+        maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
+      });
+      if (!this.subscribing.has(key)) return false;
+      this.scrollbackCursor.set(key, { oldestSeq: frame.start_seq, atOldest: frame.at_oldest });
+      this.replaySeed(pane, state, frame.frame);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async seedWithTail(pane: PaneRef, key: string, state: LiveSeedState): Promise<void> {
+    const { paneId, workspaceId } = pane;
+    try {
+      const chunk = await this._invokePane<ScrollbackChunk>(pane, 'get_pane_scrollback_tail', {
+        paneId,
+        workspaceId,
+        maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
+      });
+      if (!this.subscribing.has(key)) return;
+      this.scrollbackCursor.set(key, { oldestSeq: chunk.start_seq, atOldest: chunk.at_oldest });
+      this.replaySeed(pane, state, `\x1bc${chunk.bytes ?? ''}`);
+    } catch {
+      // Older hosts may reject both seed commands; live output remains usable.
+    }
+  }
+
+  private async seedPane(pane: PaneRef, key: string, state: LiveSeedState): Promise<boolean> {
+    if (await this.seedWithResync(pane, key, state)) return true;
+    if (!this.subscribing.has(key)) return false;
+    await this.seedWithTail(pane, key, state);
+    return this.subscribing.has(key);
+  }
+
+  private cleanupSubscribe(key: string, subscribed: boolean, failed: boolean, liveUnlisten: UnlistenFn | null): void {
+    if (!subscribed) {
+      const registered = this.ptyUnlisten.get(key);
+      if (registered && registered === liveUnlisten) {
+        this.ptyUnlisten.delete(key);
+        try { registered(); } catch { /* transport already closed */ }
+      } else if (liveUnlisten) {
+        try { liveUnlisten(); } catch { /* transport already closed */ }
+      }
+    }
+    this.subscribing.delete(key);
+    if (subscribed) {
+      this.subscribeRetryIntents.delete(key);
+      return;
+    }
+    if (failed) {
+      const intent = this.subscribeRetryIntents.get(key);
+      if (intent) this.scheduleSubscribeRetry(intent);
+    }
+  }
+
   private async _subscribe(
     pane: PaneRef,
     resume = false,
@@ -745,32 +850,11 @@ export class CloudRemoteConnection implements RemoteLink {
   ): Promise<void> {
     const { paneId, workspaceId } = pane;
     const key = paneRefKey(pane);
-    let seeding = !resume;
-    const pendingLive: Uint8Array[] = [];
-    let pendingLiveBytes = 0;
-    let seedReplayOverflow = false;
-    const emitLive = (bytes: Uint8Array) => {
-      // Never hold the live lane behind the initial visual seed. A first-load
-      // RPC may be slow on mobile; the latest PTY bytes must still reach the
-      // terminal and input remains on its independent RPC path.
-      remotePerfMark('raw-receive', {
-        paneKey: key,
-        bytes: bytes.byteLength,
-        transport: 'cloud-webrtc',
-      });
-      this.emitRaw(pane, bytes);
-      if (!seeding || seedReplayOverflow) return;
-      if (pendingLiveBytes + bytes.byteLength <= REMOTE_SEED_REPLAY_MAX_BYTES) {
-        pendingLive.push(bytes.slice());
-        pendingLiveBytes += bytes.byteLength;
-      } else {
-        // The bytes were already rendered, so dropping this replay copy is
-        // safe. Applying a partial stale seed later would rewind the screen;
-        // mark it unusable and free every retained copy immediately.
-        seedReplayOverflow = true;
-        pendingLive.length = 0;
-        pendingLiveBytes = 0;
-      }
+    const state: LiveSeedState = {
+      seeding: !resume,
+      pendingLive: [],
+      pendingLiveBytes: 0,
+      seedReplayOverflow: false,
     };
     let liveUnlisten: UnlistenFn | null = null;
     let subscribed = false;
@@ -782,13 +866,7 @@ export class CloudRemoteConnection implements RemoteLink {
       // them in FIFO order without ever blocking the live/input lanes.
       // Older scrollback is a separate upward-scroll query. Keep-alive resume skips
       // the RIS seed so the surviving kernel is not wiped.
-      liveUnlisten = await this.bridge.listen<{ data: string }>(
-        `pty-output-${workspaceId}-${paneId}`,
-        (e) => {
-          const bytes = this.encoder.encode(e.payload?.data ?? '');
-          if (bytes.length) emitLive(bytes);
-        },
-      );
+      liveUnlisten = await this.listenPane(pane, key, state);
       if (!this.subscribing.has(key)) {
         liveUnlisten?.();
         liveUnlisten = null;
@@ -811,51 +889,8 @@ export class CloudRemoteConnection implements RemoteLink {
         // reasserts a TUI's one-time mouse/alt enables that scrolled off the tail, so the
         // mirror kernel comes up mouse-alive (this now actually reaches the cloud gate —
         // the prior get_pane_resync_preamble was never in the real allow-list → dead fix).
-        let seeded = false;
-        try {
-          const rf = await this._invokePane<PaneResyncFrame>(pane, 'get_pane_resync_frame', {
-            paneId,
-            workspaceId,
-            maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
-          });
-          if (!this.subscribing.has(key)) return; // torn down during the fetch
-          this.scrollbackCursor.set(key, { oldestSeq: rf.start_seq, atOldest: rf.at_oldest });
-          if (!seedReplayOverflow) {
-            this.emitRaw(pane, this.encoder.encode(rf.frame));
-            for (const bytes of pendingLive) this.emitRaw(pane, bytes);
-          }
-          pendingLive.length = 0;
-          pendingLiveBytes = 0;
-          seeded = true;
-        } catch {
-          /* older host (§two-version-line skew: the cloud PWA can ship ahead of the
-             user's desktop host, whose allow-list lacks the new command) — fall back
-             below to a plain RIS + tail seed (no preamble = the prior shipped cloud
-             behavior). Not a regression; the pane still paints its history. */
-        }
-        if (!seeded) {
-          try {
-            const chunk = await this._invokePane<ScrollbackChunk>(pane, 'get_pane_scrollback_tail', {
-              paneId,
-              workspaceId,
-              maxBytes: REMOTE_INITIAL_SCROLLBACK_BYTES,
-            });
-            if (!this.subscribing.has(key)) return;
-            this.scrollbackCursor.set(key, {
-              oldestSeq: chunk.start_seq,
-              atOldest: chunk.at_oldest,
-            });
-            if (!seedReplayOverflow) {
-              this.emitRaw(pane, this.encoder.encode('\x1bc' + (chunk.bytes ?? '')));
-              for (const bytes of pendingLive) this.emitRaw(pane, bytes);
-            }
-            pendingLive.length = 0;
-            pendingLiveBytes = 0;
-          } catch {
-            // Older host / command rejected: no seeded history — degrade to "first live
-            // frame acts as the replay".
-          }
-        }
+        const seeded = await this.seedWithResync(pane, key, state);
+        if (!seeded) await this.seedWithTail(pane, key, state);
         if (!this.subscribing.has(key)) return;
       }
 
@@ -863,29 +898,13 @@ export class CloudRemoteConnection implements RemoteLink {
       // the bounded render queue directly. When the copy overflowed, the
       // already-rendered live tail remains authoritative and the stale seed is
       // intentionally skipped.
-      seeding = false;
-      pendingLive.length = 0;
+      state.seeding = false;
+      state.pendingLive.length = 0;
     } catch {
       failed = true;
       /* subscribe failed — pane stays blank; a later refresh/re-subscribe retries */
     } finally {
-      // Failed subscribe must not leave a listener/map entry that blocks retry.
-      if (!subscribed) {
-        const registered = this.ptyUnlisten.get(key);
-        if (registered && registered === liveUnlisten) {
-          this.ptyUnlisten.delete(key);
-          try { registered(); } catch { /* transport already closed */ }
-        } else if (liveUnlisten) {
-          try { liveUnlisten(); } catch { /* transport already closed */ }
-        }
-      }
-      this.subscribing.delete(key);
-      if (subscribed) {
-        this.subscribeRetryIntents.delete(key);
-      } else if (failed) {
-        const intent = this.subscribeRetryIntents.get(key);
-        if (intent) this.scheduleSubscribeRetry(intent);
-      }
+      this.cleanupSubscribe(key, subscribed, failed, liveUnlisten);
     }
   }
 

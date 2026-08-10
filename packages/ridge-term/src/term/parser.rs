@@ -36,6 +36,34 @@ use super::grid::{EraseMode, Grid};
 use super::modes::{CursorShape, ModeEffect, Modes};
 use super::wcwidth::{could_extend_grapheme, wcwidth, wcwidth_grapheme};
 
+fn mode_state(enabled: bool) -> u8 {
+    if enabled {
+        1
+    } else {
+        2
+    }
+}
+
+fn mode_query_status(modes: &Modes, code: u16) -> u8 {
+    match code {
+        7 => mode_state(modes.autowrap),
+        25 => mode_state(modes.cursor_visible),
+        12 => mode_state(modes.cursor_blink),
+        6 => mode_state(modes.origin),
+        1 => mode_state(modes.app_cursor_keys),
+        9 => mode_state(modes.mouse_x10),
+        1000 => mode_state(modes.mouse_normal),
+        1002 => mode_state(modes.mouse_button_event),
+        1003 => mode_state(modes.mouse_any_event),
+        1004 => mode_state(modes.mouse_focus),
+        1006 => mode_state(modes.mouse_sgr),
+        2004 => mode_state(modes.bracketed_paste),
+        2026 => mode_state(modes.sync_output),
+        2027 => 3,
+        _ => 0,
+    }
+}
+
 /// §4.7 — safety cap on how big the grapheme buffer can grow before
 /// the parser force-flushes it. A well-formed extended grapheme cluster
 /// is typically 1–7 codepoints (the longest common cluster is family
@@ -272,448 +300,17 @@ impl<'a> Perform for Performer<'a> {
         self.flush_grapheme_buf();
         let is_private = intermediates.first() == Some(&b'?');
 
-        // Private CSI ? h / l — DEC mode set/reset.
         if is_private && (action == 'h' || action == 'l') {
-            let value = action == 'h';
-            // §1.33 (2026-05-22): every TUI-signal-affecting mode
-            // change bumps `grid.last_tui_signal_at_ms` while the
-            // resulting state is "TUI active", so the shell-history
-            // popup gate's sticky window catches the activation
-            // even when a single feed chunk both turns the signal
-            // ON and back OFF (Ink-style `\x1b[?25l...\x1b[?25h`
-            // frame). We snapshot now ONCE per dispatch and apply
-            // every sub-parameter under the same timestamp —
-            // sub-millisecond ordering between sub-params does not
-            // matter for a 2 s sticky window.
-            let now = clock::now_ms();
-            for sub in params.iter() {
-                if let Some(&code) = sub.first() {
-                    let effect = self.modes.set(code, value, true);
-                    self.apply_mode_effect(effect);
-                    // After the mode + side-effect is applied, sample
-                    // every persistent TUI signal. Any one true → bump.
-                    let m = &self.modes;
-                    let tui_active = m.app_cursor_keys
-                        || m.mouse_normal
-                        || m.mouse_button_event
-                        || m.mouse_any_event
-                        || !m.cursor_visible
-                        || self.grid.is_alt_screen();
-                    if tui_active {
-                        self.grid.note_tui_signal_at(now);
-                        // §sticky-inline-tui — latch this pane as inline-TUI so a
-                        // later IDLE resize (default Claude at its prompt, all
-                        // live signals decayed) still gets the full frame wipe.
-                        // Held until an exit signal (RIS / alt-leave / prompt OSC).
-                        self.grid.mark_inline_tui_sticky();
-                    }
-                }
-            }
+            self.dispatch_private_modes(params, action == 'h');
             return;
         }
 
-        // Public CSI h / l — ANSI mode set/reset (insert mode, LNM, etc.)
         if !is_private && (action == 'h' || action == 'l') {
-            let value = action == 'h';
-            for sub in params.iter() {
-                if let Some(&code) = sub.first() {
-                    let _ = self.modes.set(code, value, false);
-                }
-            }
+            self.dispatch_public_modes(params, action == 'h');
             return;
         }
 
-        let p1 = || first_param(params, 1);
-
-        match action {
-            'A' => {
-                // CUU — cursor up. §A.4: also feed the inline-TUI redraw
-                // heuristic so log-update's `(\x1b[2K\x1b[1A)*N` walk
-                // activates the §1.27 full-redraw fast path from the first
-                // CUU rather than only at the trailing absolute CHA.
-                self.grid.cursor_up(p1());
-                self.grid.note_redraw_csi(clock::now_ms());
-            }
-            'B' | 'e' => {
-                // CUD / VPR (Vertical Position Relative).
-                self.grid.cursor_down(p1());
-                self.grid.note_redraw_csi(clock::now_ms());
-            }
-            'C' | 'a' => self.grid.cursor_right(p1()), // 'a' = HPR (Horizontal Position Relative)
-            'D' => self.grid.cursor_left(p1()),
-            'E' => {
-                // CNL: cursor next line + col 0
-                self.grid.cursor_down(p1());
-                self.grid.carriage_return();
-            }
-            'F' => {
-                // CPL: cursor previous line + col 0
-                self.grid.cursor_up(p1());
-                self.grid.carriage_return();
-            }
-            'G' | '`' => {
-                // CHA / HPA: cursor horizontal absolute (1-based).
-                let col = p1().saturating_sub(1);
-                let row = self.grid.cursor().row;
-                self.grid.cursor_to(row, col);
-                // §A.3: feed the inline-TUI heuristic. CHA / HPA / VPA / CUP
-                // / HVP are the cursor primitives Ink-style apps use for
-                // partial-diff repaints; tracking the most recent one lets
-                // `Grid::resize_with_inline_tui` decide whether to fire the
-                // primary full wipe.
-                self.grid.note_absolute_positioning(clock::now_ms());
-            }
-            'd' => {
-                // VPA: vertical position absolute. DECOM-aware: when
-                // origin mode is on, the input row is relative to
-                // scroll_top and clamped to scroll_bottom.
-                let r = p1().saturating_sub(1);
-                let row = if self.modes.origin {
-                    (self.grid.scroll_top() + r).min(self.grid.scroll_bottom())
-                } else {
-                    r
-                };
-                let col = self.grid.cursor().col;
-                self.grid.cursor_to(row, col);
-                self.grid.note_absolute_positioning(clock::now_ms());
-            }
-            'H' | 'f' => {
-                // CUP / HVP: cursor position. DECOM-aware: when origin
-                // mode (?6) is on, the row argument is relative to the
-                // scroll region's top and clamped to its bottom. The
-                // column argument is unaffected (DECOM in this kernel
-                // doesn't model horizontal margins via DECSLRM).
-                let r = first_param(params, 1).saturating_sub(1);
-                let col = nth_param(params, 1, 1).saturating_sub(1);
-                let row = if self.modes.origin {
-                    (self.grid.scroll_top() + r).min(self.grid.scroll_bottom())
-                } else {
-                    r
-                };
-                self.grid.cursor_to(row, col);
-                self.grid.note_absolute_positioning(clock::now_ms());
-            }
-            'I' => {
-                // CHT — cursor forward N tab stops. Each step uses the
-                // existing 8-col default tab stop. Default n=1.
-                let n = p1();
-                for _ in 0..n {
-                    self.grid.tab();
-                }
-            }
-            'Z' => {
-                // CBT — cursor backward N tab stops. Default n=1. Stops
-                // at column 0 (does NOT wrap to previous row).
-                self.grid.cursor_back_tab(p1());
-            }
-            'J' => {
-                // ED — erase in display. §A.4: tracks redraw activity for
-                // inline-TUI heuristic (Ink may emit `\x1b[J` before a frame).
-                self.grid.erase_in_display(parse_erase_mode(params));
-                self.grid.note_redraw_csi(clock::now_ms());
-            }
-            'K' => {
-                // EL — erase in line. §A.4: log-update's walk emits one EL
-                // per row before the absolute CHA fires; tracking it here
-                // keeps the inline-TUI heuristic alive throughout the walk.
-                self.grid.erase_in_line(parse_erase_mode(params));
-                self.grid.note_redraw_csi(clock::now_ms());
-            }
-            'S' => self.grid.scroll_up(p1()),
-            'T' => self.grid.scroll_down(p1()),
-            'L' => self.grid.insert_lines(p1()),
-            'M' => self.grid.delete_lines(p1()),
-            'X' => self.grid.erase_chars(p1()), // ECH — Erase Character (no cursor move)
-            '@' => self.grid.insert_chars(p1()), // ICH — Insert Character (shift right)
-            'P' => self.grid.delete_chars(p1()), // DCH — Delete Character (shift left)
-            's' => {
-                // SCO Save Cursor — xterm aliases to DECSC. Used by some
-                // terminal libraries (e.g. ANSI escape libs that prefer the
-                // "all-CSI" style). Same backing as ESC 7.
-                let cur = *self.grid.cursor();
-                *self.grid.saved_cursor_mut() = Some(super::cursor::SavedCursor {
-                    row: cur.row,
-                    col: cur.col,
-                    attr: cur.attr,
-                    origin: self.modes.origin,
-                    pending_wrap: cur.pending_wrap,
-                    app_cursor_keys: self.modes.app_cursor_keys,
-                });
-            }
-            'u' => {
-                // SCO Restore Cursor — xterm aliases to DECRC.
-                if let Some(s) = *self.grid.saved_cursor_mut() {
-                    self.modes.origin = s.origin;
-                    let cur = self.grid.cursor_mut();
-                    cur.row = s.row;
-                    cur.col = s.col;
-                    cur.attr = s.attr;
-                    cur.pending_wrap = s.pending_wrap;
-                }
-            }
-            'b' => {
-                // REP `CSI <n> b` — repeat the most recently printed char
-                // n times. Used by some apps (toilet, banner-style libs)
-                // and very occasionally by drawing libraries that fill a
-                // run of identical cells. n defaults to 1 if missing.
-                if let Some((ch, attrs)) = *self.last_printed {
-                    let n = first_param(params, 1);
-                    for _ in 0..n {
-                        self.grid.print(ch, attrs);
-                    }
-                }
-            }
-            'p' if intermediates.contains(&b'$') => {
-                // §B.6 (2026-05-08) — DECRQM `CSI ? <n> $ p` — Request
-                // Mode. Apps query "is mode N enabled?". Response:
-                // `CSI ? n ; Ps $ y` where Ps is:
-                //   0 = mode not recognised
-                //   1 = set
-                //   2 = reset
-                //   3 = permanently set (cannot be reset)
-                //   4 = permanently reset (cannot be set)
-                //
-                // Critical for the ✔ / 🎂 / 👈 cursor-drift symptom on
-                // Windows: PSReadLine 2.3.6+ queries Mode 2027
-                // (Unicode Core) at startup to decide whether to use
-                // grapheme-cluster width or .NET's
-                // `LengthInBufferCells` (which counts each UTF-16
-                // surrogate of a non-BMP emoji as wcwidth=2 → reports
-                // 4 cells for 🎂). Reporting Mode 2027 = set tells
-                // PSReadLine to switch to the correct width path,
-                // killing the cursor drift at its source.
-                //
-                // Standard private modes that we route through
-                // `Modes::set` get answered against `self.modes`'s
-                // current state. Public DECRQM (no `?`) we don't
-                // currently implement — apps almost never query
-                // public ANSI modes.
-                if is_private {
-                    let code = first_param(params, 0) as u16;
-                    let ps: u8 = match code {
-                        // Modes Wind models with mutable state
-                        7 => {
-                            if self.modes.autowrap {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        25 => {
-                            if self.modes.cursor_visible {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        12 => {
-                            if self.modes.cursor_blink {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        6 => {
-                            if self.modes.origin {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        1 => {
-                            if self.modes.app_cursor_keys {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        9 => {
-                            if self.modes.mouse_x10 {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        1000 => {
-                            if self.modes.mouse_normal {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        1002 => {
-                            if self.modes.mouse_button_event {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        1003 => {
-                            if self.modes.mouse_any_event {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        1004 => {
-                            if self.modes.mouse_focus {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        1006 => {
-                            if self.modes.mouse_sgr {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        2004 => {
-                            if self.modes.bracketed_paste {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        2026 => {
-                            if self.modes.sync_output {
-                                1
-                            } else {
-                                2
-                            }
-                        }
-                        // §B.6 — Mode 2027 advertised PERMANENT-SET
-                        // (Ps=3) so apps know they can rely on it for
-                        // the lifetime of the connection. Even if some
-                        // app emits `CSI ? 2027 l` (reset), the next
-                        // query still reports 3 because Wind's
-                        // grapheme-cluster width semantics are
-                        // structural — they don't actually toggle.
-                        2027 => 3,
-                        // Unknown / unsupported modes
-                        _ => 0,
-                    };
-                    let resp = format!("\x1b[?{};{}$y", code, ps);
-                    self.pending_response.extend_from_slice(resp.as_bytes());
-                }
-                // Public DECRQM (without `?`) intentionally ignored —
-                // see comment above.
-            }
-            'p' if intermediates.first() == Some(&b'!') => {
-                // DECSTR `CSI ! p` — soft terminal reset. Spec-compliant
-                // SUBSET of RIS: resets app-controllable state but
-                // preserves visible screen content, scrollback, and the
-                // active screen choice (alt vs primary). Used by readline,
-                // less, and other apps that want a known starting state
-                // without the full screen-clear that RIS does.
-                //
-                // Per xterm: clear DECSC, reset DECSTBM, reset SGR,
-                // set IRM=off, DECOM=off, DECAWM=on, DECTCEM=on,
-                // DECCKM=off, and home the cursor. Modes we don't model
-                // (KAM, DECNRCM) are skipped.
-                self.modes.insert = false;
-                self.modes.origin = false;
-                self.modes.autowrap = true;
-                self.modes.cursor_visible = true;
-                self.modes.app_cursor_keys = false;
-                self.grid.set_scroll_region(None, None);
-                *self.grid.saved_cursor_mut() = None;
-                *self.current_attrs = Attrs::DEFAULT;
-                // BCE: pen tracks current_attrs.
-                self.grid.set_pen(*self.current_attrs);
-                self.grid.cursor_to(0, 0);
-            }
-            'q' if intermediates.first() == Some(&b' ') => {
-                // DECSCUSR `CSI <n> SP q` — cursor shape + blink.
-                //   0/1 → blinking block (default)
-                //   2   → steady block
-                //   3   → blinking underline
-                //   4   → steady underline
-                //   5   → blinking bar (vim insert mode)
-                //   6   → steady bar
-                // Sub-code encodes BOTH shape and blink so we set both.
-                // Anything outside 0..=6 → fall back to default (blink block).
-                let n = first_param(params, 0);
-                let (shape, blink) = match n {
-                    0 | 1 => (CursorShape::Block, true),
-                    2 => (CursorShape::Block, false),
-                    3 => (CursorShape::Underline, true),
-                    4 => (CursorShape::Underline, false),
-                    5 => (CursorShape::Bar, true),
-                    6 => (CursorShape::Bar, false),
-                    _ => (CursorShape::Block, true),
-                };
-                self.modes.cursor_shape = shape;
-                self.modes.cursor_blink = blink;
-            }
-            't' => {
-                // Window manipulation. Many sub-codes; we only respond to
-                // the size-query variants because (a) most apps use these
-                // and (b) the others (resize/move window) don't make sense
-                // for an embedded terminal.
-                //   CSI 18 t → text area in chars  → CSI 8 ; rows ; cols t
-                //   CSI 19 t → root area in chars  → same response (we don't
-                //              distinguish root from text area)
-                //   CSI 14 t → text area in pixels → no reliable answer
-                //              without renderer cell metrics; skip
-                let code = first_param(params, 0);
-                if code == 18 || code == 19 {
-                    let resp = format!("\x1b[8;{};{}t", self.grid.rows(), self.grid.cols(),);
-                    self.pending_response.extend_from_slice(resp.as_bytes());
-                }
-            }
-            'r' => {
-                // DECSTBM: CSI top ; bottom r
-                let top = first_param_opt(params);
-                let bottom = nth_param_opt(params, 1);
-                self.grid.set_scroll_region(top, bottom);
-            }
-            'm' => {
-                apply_sgr(self.current_attrs, params);
-                // BCE: sync SGR pen to the grid so subsequent erase /
-                // scroll / IL / DL paths fill blanks with the active
-                // background colour.
-                self.grid.set_pen(*self.current_attrs);
-            }
-            'n' => {
-                // Device Status Report.
-                //   CSI 5 n   → terminal status request → reply CSI 0 n (OK)
-                //   CSI 6 n   → cursor position report  → reply CSI <r>;<c> R (1-based)
-                //   CSI ? 6 n → DECXCPR (extended)      → reply CSI ? <r>;<c>;0 R
-                let code = first_param(params, 0);
-                match (is_private, code) {
-                    (false, 5) => self.pending_response.extend_from_slice(b"\x1b[0n"),
-                    (false, 6) => {
-                        let cur = self.grid.cursor();
-                        let resp = format!("\x1b[{};{}R", cur.row + 1, cur.col + 1);
-                        self.pending_response.extend_from_slice(resp.as_bytes());
-                    }
-                    (true, 6) => {
-                        let cur = self.grid.cursor();
-                        let resp = format!("\x1b[?{};{};0R", cur.row + 1, cur.col + 1);
-                        self.pending_response.extend_from_slice(resp.as_bytes());
-                    }
-                    _ => {} // Unknown DSR sub-code — silent
-                }
-            }
-            'c' => {
-                // Device Attributes.
-                //   CSI c   (or CSI 0 c)  → Primary DA   → "I'm a VT220 with these capabilities"
-                //   CSI > c (or CSI > 0 c)→ Secondary DA → terminal id + version
-                // We mimic xterm's responses; widely accepted by shells/apps.
-                let is_secondary = intermediates.first() == Some(&b'>');
-                if is_secondary {
-                    // \x1b[>0;<ver>;0c — type 0 (xterm), version 0, no ROM cartridge.
-                    self.pending_response.extend_from_slice(b"\x1b[>0;1;0c");
-                } else {
-                    // \x1b[?62;c — VT220 + minimal capability set. Sufficient for
-                    // PSReadLine / readline / ncurses to consider the terminal capable.
-                    self.pending_response.extend_from_slice(b"\x1b[?62;c");
-                }
-            }
-            _ => {} // Unknown — silent
-        }
+        self.dispatch_csi_action(params, intermediates, action);
     }
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
@@ -911,6 +508,313 @@ impl<'a> Perform for Performer<'a> {
     fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
     fn put(&mut self, _byte: u8) {}
     fn unhook(&mut self) {}
+}
+
+impl<'a> Performer<'a> {
+    fn dispatch_private_modes(&mut self, params: &Params, value: bool) {
+        let now = clock::now_ms();
+        for sub in params.iter() {
+            let Some(&code) = sub.first() else {
+                continue;
+            };
+            let effect = self.modes.set(code, value, true);
+            self.apply_mode_effect(effect);
+            let modes = &self.modes;
+            let tui_active = modes.app_cursor_keys
+                || modes.mouse_normal
+                || modes.mouse_button_event
+                || modes.mouse_any_event
+                || !modes.cursor_visible
+                || self.grid.is_alt_screen();
+            if tui_active {
+                self.grid.note_tui_signal_at(now);
+                self.grid.mark_inline_tui_sticky();
+            }
+        }
+    }
+
+    fn dispatch_public_modes(&mut self, params: &Params, value: bool) {
+        for sub in params.iter() {
+            if let Some(&code) = sub.first() {
+                let _ = self.modes.set(code, value, false);
+            }
+        }
+    }
+
+    fn dispatch_csi_action(&mut self, params: &Params, intermediates: &[u8], action: char) {
+        let is_private = intermediates.first() == Some(&b'?');
+        let p1 = || first_param(params, 1);
+
+        match action {
+            'A' => {
+                // CUU — cursor up. §A.4: also feed the inline-TUI redraw
+                // heuristic so log-update's `(\x1b[2K\x1b[1A)*N` walk
+                // activates the §1.27 full-redraw fast path from the first
+                // CUU rather than only at the trailing absolute CHA.
+                self.grid.cursor_up(p1());
+                self.grid.note_redraw_csi(clock::now_ms());
+            }
+            'B' | 'e' => {
+                // CUD / VPR (Vertical Position Relative).
+                self.grid.cursor_down(p1());
+                self.grid.note_redraw_csi(clock::now_ms());
+            }
+            'C' | 'a' => self.grid.cursor_right(p1()), // 'a' = HPR (Horizontal Position Relative)
+            'D' => self.grid.cursor_left(p1()),
+            'E' => {
+                // CNL: cursor next line + col 0
+                self.grid.cursor_down(p1());
+                self.grid.carriage_return();
+            }
+            'F' => {
+                // CPL: cursor previous line + col 0
+                self.grid.cursor_up(p1());
+                self.grid.carriage_return();
+            }
+            'G' | '`' => {
+                // CHA / HPA: cursor horizontal absolute (1-based).
+                let col = p1().saturating_sub(1);
+                let row = self.grid.cursor().row;
+                self.grid.cursor_to(row, col);
+                // §A.3: feed the inline-TUI heuristic. CHA / HPA / VPA / CUP
+                // / HVP are the cursor primitives Ink-style apps use for
+                // partial-diff repaints; tracking the most recent one lets
+                // `Grid::resize_with_inline_tui` decide whether to fire the
+                // primary full wipe.
+                self.grid.note_absolute_positioning(clock::now_ms());
+            }
+            'd' => {
+                self.dispatch_vertical_absolute(params);
+            }
+            'H' | 'f' => {
+                self.dispatch_cursor_position(params);
+            }
+            'I' => {
+                // CHT — cursor forward N tab stops. Each step uses the
+                // existing 8-col default tab stop. Default n=1.
+                let n = p1();
+                for _ in 0..n {
+                    self.grid.tab();
+                }
+            }
+            'Z' => {
+                // CBT — cursor backward N tab stops. Default n=1. Stops
+                // at column 0 (does NOT wrap to previous row).
+                self.grid.cursor_back_tab(p1());
+            }
+            'J' => {
+                // ED — erase in display. §A.4: tracks redraw activity for
+                // inline-TUI heuristic (Ink may emit `\x1b[J` before a frame).
+                self.grid.erase_in_display(parse_erase_mode(params));
+                self.grid.note_redraw_csi(clock::now_ms());
+            }
+            'K' => {
+                // EL — erase in line. §A.4: log-update's walk emits one EL
+                // per row before the absolute CHA fires; tracking it here
+                // keeps the inline-TUI heuristic alive throughout the walk.
+                self.grid.erase_in_line(parse_erase_mode(params));
+                self.grid.note_redraw_csi(clock::now_ms());
+            }
+            'S' => self.grid.scroll_up(p1()),
+            'T' => self.grid.scroll_down(p1()),
+            'L' => self.grid.insert_lines(p1()),
+            'M' => self.grid.delete_lines(p1()),
+            'X' => self.grid.erase_chars(p1()), // ECH — Erase Character (no cursor move)
+            '@' => self.grid.insert_chars(p1()), // ICH — Insert Character (shift right)
+            'P' => self.grid.delete_chars(p1()), // DCH — Delete Character (shift left)
+            's' => {
+                // SCO Save Cursor — xterm aliases to DECSC. Used by some
+                // terminal libraries (e.g. ANSI escape libs that prefer the
+                // "all-CSI" style). Same backing as ESC 7.
+                let cur = *self.grid.cursor();
+                *self.grid.saved_cursor_mut() = Some(super::cursor::SavedCursor {
+                    row: cur.row,
+                    col: cur.col,
+                    attr: cur.attr,
+                    origin: self.modes.origin,
+                    pending_wrap: cur.pending_wrap,
+                    app_cursor_keys: self.modes.app_cursor_keys,
+                });
+            }
+            'u' => {
+                self.restore_saved_cursor();
+            }
+            'b' => {
+                self.repeat_last_printed(params);
+            }
+            'p' if intermediates.contains(&b'$') => {
+                self.dispatch_mode_query(params, is_private);
+            }
+
+            'p' if intermediates.first() == Some(&b'!') => {
+                // DECSTR `CSI ! p` — soft terminal reset. Spec-compliant
+                // SUBSET of RIS: resets app-controllable state but
+                // preserves visible screen content, scrollback, and the
+                // active screen choice (alt vs primary). Used by readline,
+                // less, and other apps that want a known starting state
+                // without the full screen-clear that RIS does.
+                //
+                // Per xterm: clear DECSC, reset DECSTBM, reset SGR,
+                // set IRM=off, DECOM=off, DECAWM=on, DECTCEM=on,
+                // DECCKM=off, and home the cursor. Modes we don't model
+                // (KAM, DECNRCM) are skipped.
+                self.modes.insert = false;
+                self.modes.origin = false;
+                self.modes.autowrap = true;
+                self.modes.cursor_visible = true;
+                self.modes.app_cursor_keys = false;
+                self.grid.set_scroll_region(None, None);
+                *self.grid.saved_cursor_mut() = None;
+                *self.current_attrs = Attrs::DEFAULT;
+                // BCE: pen tracks current_attrs.
+                self.grid.set_pen(*self.current_attrs);
+                self.grid.cursor_to(0, 0);
+            }
+            'q' if intermediates.first() == Some(&b' ') => {
+                // DECSCUSR `CSI <n> SP q` — cursor shape + blink.
+                //   0/1 → blinking block (default)
+                //   2   → steady block
+                //   3   → blinking underline
+                //   4   → steady underline
+                //   5   → blinking bar (vim insert mode)
+                //   6   → steady bar
+                // Sub-code encodes BOTH shape and blink so we set both.
+                // Anything outside 0..=6 → fall back to default (blink block).
+                let n = first_param(params, 0);
+                let (shape, blink) = match n {
+                    0 | 1 => (CursorShape::Block, true),
+                    2 => (CursorShape::Block, false),
+                    3 => (CursorShape::Underline, true),
+                    4 => (CursorShape::Underline, false),
+                    5 => (CursorShape::Bar, true),
+                    6 => (CursorShape::Bar, false),
+                    _ => (CursorShape::Block, true),
+                };
+                self.modes.cursor_shape = shape;
+                self.modes.cursor_blink = blink;
+            }
+            't' => {
+                // Window manipulation. Many sub-codes; we only respond to
+                // the size-query variants because (a) most apps use these
+                // and (b) the others (resize/move window) don't make sense
+                // for an embedded terminal.
+                //   CSI 18 t → text area in chars  → CSI 8 ; rows ; cols t
+                //   CSI 19 t → root area in chars  → same response (we don't
+                //              distinguish root from text area)
+                //   CSI 14 t → text area in pixels → no reliable answer
+                //              without renderer cell metrics; skip
+                let code = first_param(params, 0);
+                if code == 18 || code == 19 {
+                    let resp = format!("\x1b[8;{};{}t", self.grid.rows(), self.grid.cols(),);
+                    self.pending_response.extend_from_slice(resp.as_bytes());
+                }
+            }
+            'r' => {
+                // DECSTBM: CSI top ; bottom r
+                let top = first_param_opt(params);
+                let bottom = nth_param_opt(params, 1);
+                self.grid.set_scroll_region(top, bottom);
+            }
+            'm' => {
+                apply_sgr(self.current_attrs, params);
+                // BCE: sync SGR pen to the grid so subsequent erase /
+                // scroll / IL / DL paths fill blanks with the active
+                // background colour.
+                self.grid.set_pen(*self.current_attrs);
+            }
+            'n' => {
+                // Device Status Report.
+                //   CSI 5 n   → terminal status request → reply CSI 0 n (OK)
+                //   CSI 6 n   → cursor position report  → reply CSI <r>;<c> R (1-based)
+                //   CSI ? 6 n → DECXCPR (extended)      → reply CSI ? <r>;<c>;0 R
+                let code = first_param(params, 0);
+                match (is_private, code) {
+                    (false, 5) => self.pending_response.extend_from_slice(b"\x1b[0n"),
+                    (false, 6) => {
+                        let cur = self.grid.cursor();
+                        let resp = format!("\x1b[{};{}R", cur.row + 1, cur.col + 1);
+                        self.pending_response.extend_from_slice(resp.as_bytes());
+                    }
+                    (true, 6) => {
+                        let cur = self.grid.cursor();
+                        let resp = format!("\x1b[?{};{};0R", cur.row + 1, cur.col + 1);
+                        self.pending_response.extend_from_slice(resp.as_bytes());
+                    }
+                    _ => {} // Unknown DSR sub-code — silent
+                }
+            }
+            'c' => {
+                // Device Attributes.
+                //   CSI c   (or CSI 0 c)  → Primary DA   → "I'm a VT220 with these capabilities"
+                //   CSI > c (or CSI > 0 c)→ Secondary DA → terminal id + version
+                // We mimic xterm's responses; widely accepted by shells/apps.
+                let is_secondary = intermediates.first() == Some(&b'>');
+                if is_secondary {
+                    // \x1b[>0;<ver>;0c — type 0 (xterm), version 0, no ROM cartridge.
+                    self.pending_response.extend_from_slice(b"\x1b[>0;1;0c");
+                } else {
+                    // \x1b[?62;c — VT220 + minimal capability set. Sufficient for
+                    // PSReadLine / readline / ncurses to consider the terminal capable.
+                    self.pending_response.extend_from_slice(b"\x1b[?62;c");
+                }
+            }
+            _ => {} // Unknown — silent
+        }
+    }
+
+    fn dispatch_vertical_absolute(&mut self, params: &Params) {
+        let row_offset = first_param(params, 1).saturating_sub(1);
+        let row = if self.modes.origin {
+            (self.grid.scroll_top() + row_offset).min(self.grid.scroll_bottom())
+        } else {
+            row_offset
+        };
+        self.grid.cursor_to(row, self.grid.cursor().col);
+        self.grid.note_absolute_positioning(clock::now_ms());
+    }
+
+    fn dispatch_cursor_position(&mut self, params: &Params) {
+        let row_offset = first_param(params, 1).saturating_sub(1);
+        let col = nth_param(params, 1, 1).saturating_sub(1);
+        let row = if self.modes.origin {
+            (self.grid.scroll_top() + row_offset).min(self.grid.scroll_bottom())
+        } else {
+            row_offset
+        };
+        self.grid.cursor_to(row, col);
+        self.grid.note_absolute_positioning(clock::now_ms());
+    }
+
+    fn repeat_last_printed(&mut self, params: &Params) {
+        let Some((ch, attrs)) = *self.last_printed else {
+            return;
+        };
+        for _ in 0..first_param(params, 1) {
+            self.grid.print(ch, attrs);
+        }
+    }
+
+    fn dispatch_mode_query(&mut self, params: &Params, is_private: bool) {
+        if !is_private {
+            return;
+        }
+        let code = first_param(params, 0) as u16;
+        let status = mode_query_status(self.modes, code);
+        let response = format!("\x1b[?{};{}$y", code, status);
+        self.pending_response.extend_from_slice(response.as_bytes());
+    }
+
+    fn restore_saved_cursor(&mut self) {
+        let Some(saved) = *self.grid.saved_cursor_mut() else {
+            return;
+        };
+        self.modes.origin = saved.origin;
+        let cursor = self.grid.cursor_mut();
+        cursor.row = saved.row;
+        cursor.col = saved.col;
+        cursor.attr = saved.attr;
+        cursor.pending_wrap = saved.pending_wrap;
+    }
 }
 
 impl<'a> Performer<'a> {
@@ -1158,51 +1062,56 @@ fn apply_sgr(attrs: &mut Attrs, params: &Params) {
             100..=107 => attrs.bg = Color::indexed((code - 100 + 8) as u8),
             39 => attrs.fg = Color::DEFAULT,
             49 => attrs.bg = Color::DEFAULT,
-            38 | 48 => {
-                let is_fg = code == 38;
-                let parsed = if sub.len() >= 2 {
-                    parse_color_from_subs(&sub[1..])
-                } else {
-                    let kind = subs
-                        .get(i + 1)
-                        .and_then(|s| s.first().copied())
-                        .unwrap_or(0);
-                    match kind {
-                        5 => {
-                            let idx = subs.get(i + 2).and_then(|s| s.first().copied());
-                            i += 2;
-                            idx.map(|v| Color::indexed(v.min(255) as u8))
-                        }
-                        2 => {
-                            let r = subs
-                                .get(i + 2)
-                                .and_then(|s| s.first().copied())
-                                .unwrap_or(0) as u8;
-                            let g = subs
-                                .get(i + 3)
-                                .and_then(|s| s.first().copied())
-                                .unwrap_or(0) as u8;
-                            let b = subs
-                                .get(i + 4)
-                                .and_then(|s| s.first().copied())
-                                .unwrap_or(0) as u8;
-                            i += 4;
-                            Some(Color::rgb(r, g, b))
-                        }
-                        _ => None,
-                    }
-                };
-                if let Some(c) = parsed {
-                    if is_fg {
-                        attrs.fg = c;
-                    } else {
-                        attrs.bg = c;
-                    }
-                }
-            }
+            38 | 48 => apply_sgr_color(attrs, code == 38, sub, &subs, &mut i),
             _ => {}
         }
         i += 1;
+    }
+}
+
+fn apply_sgr_color(
+    attrs: &mut Attrs,
+    is_fg: bool,
+    sub: &[u16],
+    subs: &[&[u16]],
+    index: &mut usize,
+) {
+    let parsed = if sub.len() >= 2 {
+        parse_color_from_subs(&sub[1..])
+    } else {
+        parse_legacy_sgr_color(subs, index)
+    };
+    if let Some(color) = parsed {
+        if is_fg {
+            attrs.fg = color;
+        } else {
+            attrs.bg = color;
+        }
+    }
+}
+
+fn parse_legacy_sgr_color(subs: &[&[u16]], index: &mut usize) -> Option<Color> {
+    match subs
+        .get(*index + 1)
+        .and_then(|s| s.first().copied())
+        .unwrap_or(0)
+    {
+        5 => {
+            let value = subs.get(*index + 2).and_then(|s| s.first().copied());
+            *index += 2;
+            value.map(|v| Color::indexed(v.min(255) as u8))
+        }
+        2 => {
+            let component = |offset: usize| {
+                subs.get(*index + offset)
+                    .and_then(|s| s.first().copied())
+                    .unwrap_or(0) as u8
+            };
+            let color = Color::rgb(component(2), component(3), component(4));
+            *index += 4;
+            Some(color)
+        }
+        _ => None,
     }
 }
 
