@@ -8,6 +8,7 @@
 - 聚焦测试：2 files / 13 passed / 0 failed。
 - 前端全量覆盖率测试：215 files / 1980 passed / 1 skipped；coverage 命令 exit `0`。
 - `pnpm check`：0 errors / 0 warnings。
+- `node --check scripts/*.mjs`：74 files / 0 failures；历史记录中的 `.mjs` `PARSE_ERROR` 未在当前工作树复现。
 
 本地 LCOV 当前为 statements `66.02%`、branches `60.18%`、functions `68.27%`、lines `70.11%`。该报告包含本地配置范围，不能替代 Sonar 项目级指标。
 
