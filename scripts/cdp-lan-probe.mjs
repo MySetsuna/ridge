@@ -138,7 +138,12 @@ try {
     setTimeout(() => ws.send(JSON.stringify({ type: 'ping' })), 2400);
   }
 
-  ws.onopen = () => { log('WS open → list-panes'); ws.send(JSON.stringify({ type: 'list-panes' })); };
+  ws.onopen = () => {
+    log('WS open → wait for host pane sync');
+    // Detached rdg host may publish the TLS endpoint before its first pane;
+    // wait for the normal startup sync instead of invoking create-pane early.
+    setTimeout(() => ws.send(JSON.stringify({ type: 'list-panes' })), 5000);
+  };
   ws.onerror = (e) => { summary.errors.push('ws error: ' + (e.message || e.type)); };
   ws.onclose = (e) => { if (!summary.panes) { summary.errors.push('closed before panes (code ' + e.code + ')'); } };
 

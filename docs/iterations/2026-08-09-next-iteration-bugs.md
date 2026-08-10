@@ -124,7 +124,7 @@ Local V8 baseline is `43.65%` statements, `38.79%` branches, `44.54%` functions,
 
 ## BUG-SONAR-SCANNER-TIMEOUT-01
 
-Status: open. `admin/admin` 表单登录可用，但新临时 token 的 scanner 尝试超过 `180s` 未完成；进程树已回收，token 已撤销，Sonar 未产生新 CE 任务。需下一轮定位 scanner 卡点后再上传覆盖率，不能以本地覆盖率冒充 Sonar 结果。
+Status: open. 旧默认凭证已失效；新临时 token 的 scanner 尝试超过 `180s` 未完成，进程树已回收，token 已撤销，Sonar 未产生新 CE 任务。需下一轮定位 scanner 卡点后再上传覆盖率，不能以本地覆盖率冒充 Sonar 结果。
 
 ## BUG-E2E-MULTITAB-INSTRUMENTATION-RELOAD-01
 

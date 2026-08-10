@@ -46,3 +46,22 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 $env:CDP_PORT='5571'; node scripts/cdp-smoke.mjs
 $env:CDP_PORT='5571'; node scripts/cdp-dpr-e2e.mjs
 ```
+
+## 最新复核（2026-08-11）
+
+- PTY OSC 0/1/2/7 已增加跨读取 carryover；普通输出即时下发，未完成元数据有 64 KiB 上限，EOF 与读错路径均 flush。新增 4 个单测，`cargo test -p ridge-core --lib pty::osc_stream` 通过。
+- 真实 Tauri/CDP 重启后，PTY parser E2E 已验证 UTF-8、OSC 2 标题、OSC 7 CWD；移动端 Remote agent E2E 已验证双 device-bound 会话、workspace snapshot、pane layout、TLS/WS、移动 SPA 与 headless 能力降级，`GATE: PASS`。
+- `rdg-remote-e2e` 在显式信任本机 Ridge CA（`%LOCALAPPDATA%\ridge\remote-tls\ca.pem`）后通过；未安装/未指定本机 CA 的 Node 客户端仍会按 TLS 安全策略拒绝自签证书，不能用关闭校验冒充修复。
+- DPR E2E 默认 app-ready 等待已提高至 180 秒，以覆盖 Windows 冷启动编译，不改变生产超时语义。
+
+仍未闭环：SonarQube 当前 API 无可用 token 时返回 `401`，故未宣称本轮质量门；PTY 五条件运行时采样、真实手机 HTTPS/IME/DPR、第三方 Runtime/A2A、Cloud/物理设备凭证仍属外部验收；`GoalStore`/`GraphState`/Postgres checkpointer 未在本仓形成可验证合同，未擅自引入新架构。
+
+## 最终复核（2026-08-11）
+
+- Remote 元数据闭环：`rdg` sidecar 订阅现按 pane 维护增量 UTF-8/OSC carryover，转发 `pty-meta`；桌面 Remote 原始流亦有同等兜底。拆包 title/CWD 单测通过，真实 PTY E2E 的 UTF-8、OSC2、OSC7 均 PASS。
+- Remote 路由：stdin 优先使用消息 `workspaceId`，缺失/非法时才回退连接 workspace；对应 2 个单测通过。
+- E2E：smoke、DPR、跨卷 ACL、teammate、term input、LAN probe、PTY parser、移动 Remote `GATE: PASS`、独立 `rdg-remote-e2e ALL PASS`。自签 TLS 仅通过显式 `%LOCALAPPDATA%\ridge\remote-tls\ca.pem` 验证，未关闭证书校验。
+- 质量门：`pnpm test` 214 files / 1965 passed / 1 skipped；`pnpm check` 0 errors / 0 warnings；Rust 定向测试 `ridge-core` 4、`ridge-cli` 15、Tauri remote 16、Tauri PTY 2 全通过；`cargo fmt --all -- --check` 通过。
+- SonarQube 服务仍为 UP；因当前环境无 `SONAR_TOKEN`，API/quality-gate 查询返回 `401`，本轮不宣称 Sonar Gate 通过。接管入口与凭证边界见 `docs/iterations/2026-08-09-sonarqube-handoff.md`，密码不落仓。
+
+本轮仍不宣称 NLM 需求“全部”完成：真实物理设备、Cloud/第三方凭证、PTY 五条件生产采样，以及仓外 `GoalStore`/`GraphState`/Postgres checkpointer 合同，仍无可验证证据。

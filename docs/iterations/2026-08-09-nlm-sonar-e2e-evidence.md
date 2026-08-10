@@ -99,7 +99,7 @@ nlm login --check
 
 ## Sonar credential/monitor recheck
 
-- `http://127.0.0.1:9000` status remains `UP`; `admin/admin` form login and session API validation succeeded.
+- `http://127.0.0.1:9000` status remains `UP`; the user-managed admin password was validated in the prior handoff and is not stored here.
 - The previous Basic Auth check and old temporary token are not current proof: Basic `admin:admin` returned `401`, and the old token was revoked. A fresh token probe required the session `XSRF-TOKEN` forwarded as `X-XSRF-TOKEN`.
 - A fresh-token scanner attempt exceeded `180s`; its process tree was terminated and the token revoked. CE has no new task, so server metrics remain the last successful analysis (`40.3%` coverage, Quality Gate `ERROR`).
 - Browser monitoring page was not opened because this session exposed no Browser instance; no UI screenshot evidence is claimed.

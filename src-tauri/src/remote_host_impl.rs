@@ -38,6 +38,14 @@ const MAX_IN_FLIGHT_INVOKE_REQUESTS: usize = 32;
 const MAX_PRE_CANCELLED_INVOKE_REQUESTS: usize = 1024;
 const REMOTE_METADATA_CHAN_CAP: usize = 64;
 
+fn stdin_workspace_id(message: &serde_json::Value, fallback: Uuid) -> Uuid {
+    message
+        .get("workspaceId")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .unwrap_or(fallback)
+}
+
 struct PendingDataRequest {
     handle: tokio::task::JoinHandle<()>,
     git_slot: String,
@@ -659,6 +667,24 @@ fn pty_resized_message(workspace_id: Uuid, pane_id: Uuid, rows: u16, cols: u16) 
     .to_string()
 }
 
+fn remote_metadata_from_raw(
+    bytes: &[u8],
+    osc_carryover: &mut ridge_core::pty::osc_stream::OscSignalCarryover,
+) -> Option<(Option<String>, Option<String>)> {
+    let complete = osc_carryover.push(String::from_utf8_lossy(bytes).into_owned());
+    if complete.is_empty() {
+        return None;
+    }
+    let signals = ridge_core::pty::chunk::process(complete, 0, 0).emit?;
+    if signals.title.is_none() && signals.cwd.is_none() {
+        return None;
+    }
+    Some((
+        signals.title,
+        signals.cwd.map(|path| path.to_string_lossy().into_owned()),
+    ))
+}
+
 /// Notify remote viewers after the invoke-request resize path. Legacy
 /// `claim-pane`/`refresh-pane` already goes through `apply_pane_resize`, while
 /// the shared RPC scheduler uses `resize_pane`; both paths must produce the
@@ -764,6 +790,14 @@ async fn handle_ws(
     // (after the interval) performs the recovery instead of losing the signal.
     let mut last_resync_by_pane: std::collections::HashMap<(Uuid, Uuid), Instant> =
         std::collections::HashMap::new();
+    // The normal GlobalEvent metadata lane is authoritative for the desktop
+    // UI. Keep a per-pane raw-stream carryover as a remote-only safety net: a
+    // reconnect or a busy event loop must not make OSC title/CWD disappear
+    // from an otherwise healthy binary subscription.
+    let mut raw_metadata_by_pane: std::collections::HashMap<
+        (Uuid, Uuid),
+        ridge_core::pty::osc_stream::OscSignalCarryover,
+    > = std::collections::HashMap::new();
     const RESYNC_MIN_INTERVAL: Duration = ridge_remote::pane::RESYNC_MIN_INTERVAL;
 
     // §rate-limit: per-connection token bucket for `data-request`. An
@@ -1486,6 +1520,7 @@ async fn handle_ws(
                             Some("stdin") => {
                                 let pane_id_str = parsed["paneId"].as_str().unwrap_or("");
                                 let data_str = parsed["data"].as_str().unwrap_or("");
+                                let workspace_id = stdin_workspace_id(&parsed, active_ws_id);
                                 if let (Ok(pane_id), false) =
                                     (Uuid::parse_str(pane_id_str), data_str.is_empty())
                                 {
@@ -1493,7 +1528,7 @@ async fn handle_ws(
                                     let writer = {
                                         let workspaces = state.workspaces.read();
                                         workspaces
-                                            .get(&active_ws_id)
+                                            .get(&workspace_id)
                                             .and_then(|ws| ws.terminals.get(&pane_id))
                                             .map(|handle| handle.writer.clone())
                                     };
@@ -2146,6 +2181,20 @@ async fn handle_ws(
                                         .is_err()
                                     {
                                         desync.store(true, Ordering::Release);
+                                    }
+                                    if let Some((title, cwd)) = remote_metadata_from_raw(
+                                        &bytes,
+                                        raw_metadata_by_pane.entry(key).or_default(),
+                                    ) {
+                                        let _ = ws_tx
+                                            .send(Message::Text(serde_json::json!({
+                                                "type": "pty-meta",
+                                                "workspaceId": workspace_id.to_string(),
+                                                "paneId": pane_id.to_string(),
+                                                "title": title,
+                                                "cwd": cwd,
+                                            }).to_string()))
+                                            .await;
                                     }
                                 }
                             }
@@ -3705,6 +3754,40 @@ mod jsonrpc_tests {
             pane_id,
             bytes: Arc::new(vec![1]),
         }
+    }
+
+    #[test]
+    fn stdin_prefers_message_workspace_over_connection_fallback() {
+        let requested = Uuid::new_v4();
+        let fallback = Uuid::new_v4();
+        let message = serde_json::json!({ "workspaceId": requested.to_string() });
+
+        assert_eq!(stdin_workspace_id(&message, fallback), requested);
+    }
+
+    #[test]
+    fn stdin_uses_fallback_for_missing_or_invalid_workspace() {
+        let fallback = Uuid::new_v4();
+
+        assert_eq!(
+            stdin_workspace_id(&serde_json::json!({}), fallback),
+            fallback
+        );
+        assert_eq!(
+            stdin_workspace_id(&serde_json::json!({ "workspaceId": "bad" }), fallback),
+            fallback
+        );
+    }
+
+    #[test]
+    fn remote_metadata_from_raw_reassembles_split_osc() {
+        let mut carry = ridge_core::pty::osc_stream::OscSignalCarryover::default();
+        assert!(remote_metadata_from_raw(b"\x1b]2;split", &mut carry).is_none());
+        let (title, cwd) =
+            remote_metadata_from_raw(b" title\x07\x1b]7;file:///C:/wind\x07", &mut carry)
+                .expect("completed OSC metadata");
+        assert_eq!(title.as_deref(), Some("split title"));
+        assert_eq!(cwd.as_deref(), Some("C:/wind"));
     }
 
     fn pane_id(event: ScheduledPtyEvent) -> (bool, Uuid) {

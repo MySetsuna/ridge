@@ -513,7 +513,7 @@ fn dispatch_lan_invoke(
         // 桌面 bridge.subscribePane → JSON-RPC notification `subscribe-pane`；
         // 亦可能经 invoke-request 到达。复用 legacy 订阅语义。
         "subscribe-pane" | "subscribe_pane_raw" | "register_pane_delta_channel" => {
-            start_pane_subscription(args, workspace, out_tx);
+            start_pane_subscription(args, workspace, ws_id, out_tx);
             Ok(Value::Null)
         }
         // 桌面 SPA boot 可选能力：rdg 无对应实现时回空/成功，勿 error 打断「已接通」。
@@ -555,9 +555,41 @@ fn dispatch_lan_invoke(
     }
 }
 
+fn rdg_metadata_frame(
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    bytes: &[u8],
+    utf8_pending: &mut Vec<u8>,
+    osc_carryover: &mut ridge_core::pty::osc_stream::OscSignalCarryover,
+) -> Option<Message> {
+    let decoded = ridge_core::pty::decode::take_decoded_utf8(utf8_pending, bytes);
+    if decoded.is_empty() {
+        return None;
+    }
+    let complete = osc_carryover.push(decoded);
+    if complete.is_empty() {
+        return None;
+    }
+    let signals = ridge_core::pty::chunk::process(complete, 0, 0).emit?;
+    if signals.title.is_none() && signals.cwd.is_none() {
+        return None;
+    }
+    Some(Message::Text(
+        json!({
+            "type": "pty-meta",
+            "workspaceId": workspace_id.to_string(),
+            "paneId": pane_id.to_string(),
+            "title": signals.title,
+            "cwd": signals.cwd.map(|path| path.to_string_lossy().into_owned()),
+        })
+        .to_string(),
+    ))
+}
+
 fn start_pane_subscription(
     v: &Value,
     workspace: &SharedWorkspace,
+    ws_id: Uuid,
     out_tx: &mpsc::UnboundedSender<Message>,
 ) {
     let pane_id = v
@@ -591,6 +623,8 @@ fn start_pane_subscription(
     if let Some(((backlog, mut rx), (modes, alt))) = sub {
         let tx = out_tx.clone();
         tokio::spawn(async move {
+            let mut utf8_pending = Vec::new();
+            let mut osc_carryover = ridge_core::pty::osc_stream::OscSignalCarryover::default();
             // 首订阅回放：RIS + 活动模式前导 + scrollback（共享 SSOT
             // `ridge_remote::pane::pane_resync_frame`，与桌面 LAN/cloud 逐字一份）。
             // resume 时跳过（内核已存活）。空 backlog 仍挂 live，避免永久黑屏。
@@ -600,10 +634,32 @@ fn start_pane_subscription(
                     return;
                 }
             }
+            if let Some(meta) = rdg_metadata_frame(
+                ws_id,
+                pane_id,
+                &backlog,
+                &mut utf8_pending,
+                &mut osc_carryover,
+            ) {
+                if tx.send(meta).is_err() {
+                    return;
+                }
+            }
             while let Ok(bytes) = rx.recv().await {
                 let frame = ridge_remote::pane::pane_frame(pane_id, &bytes);
                 if tx.send(Message::Binary(frame)).is_err() {
                     break;
+                }
+                if let Some(meta) = rdg_metadata_frame(
+                    ws_id,
+                    pane_id,
+                    &bytes,
+                    &mut utf8_pending,
+                    &mut osc_carryover,
+                ) {
+                    if tx.send(meta).is_err() {
+                        break;
+                    }
                 }
             }
         });
@@ -690,7 +746,7 @@ fn handle_text(
                 || method == "use-global-workspace"
             {
                 if method != "use-global-workspace" {
-                    start_pane_subscription(&params, workspace, out_tx);
+                    start_pane_subscription(&params, workspace, ws_id, out_tx);
                 }
             }
             return None;
@@ -742,7 +798,7 @@ fn handle_text(
         }
 
         "subscribe-pane" => {
-            start_pane_subscription(v, workspace, out_tx);
+            start_pane_subscription(v, workspace, ws_id, out_tx);
             None
         }
 
@@ -1319,5 +1375,40 @@ mod tests {
         assert_eq!(value["rows"], 42);
         assert_eq!(value["cols"], 120);
         drop(workspace);
+    }
+
+    #[test]
+    fn rdg_metadata_frame_reassembles_split_osc() {
+        let workspace_id = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
+        let pane_id = Uuid::parse_str("dddddddd-dddd-dddd-dddd-dddddddddddd").unwrap();
+        let mut utf8_pending = Vec::new();
+        let mut osc_carryover = ridge_core::pty::osc_stream::OscSignalCarryover::default();
+
+        assert!(rdg_metadata_frame(
+            workspace_id,
+            pane_id,
+            b"\x1b]2;split",
+            &mut utf8_pending,
+            &mut osc_carryover,
+        )
+        .is_none());
+
+        let frame = rdg_metadata_frame(
+            workspace_id,
+            pane_id,
+            b" title\x07\x1b]7;file:///C:/wind\x07",
+            &mut utf8_pending,
+            &mut osc_carryover,
+        )
+        .expect("completed OSC metadata");
+        let Message::Text(text) = frame else {
+            panic!("expected pty-meta text frame")
+        };
+        let value: Value = serde_json::from_str(&text).expect("valid pty-meta JSON");
+        assert_eq!(value["type"], "pty-meta");
+        assert_eq!(value["workspaceId"], workspace_id.to_string());
+        assert_eq!(value["paneId"], pane_id.to_string());
+        assert_eq!(value["title"], "split title");
+        assert_eq!(value["cwd"], "C:/wind");
     }
 }

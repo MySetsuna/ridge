@@ -14,6 +14,43 @@ use crate::types::GlobalEvent;
 use crate::utils::pty_log;
 use ridge_core::pty::cwd;
 use ridge_core::pty::decode::{flush_pending_eof, take_decoded_utf8};
+use ridge_core::pty::osc_stream::OscSignalCarryover;
+
+fn flush_pty_tail(osc_carryover: &mut OscSignalCarryover, utf8_pending: &mut Vec<u8>) -> String {
+    let mut tail = osc_carryover.push(flush_pending_eof(utf8_pending));
+    tail.push_str(&osc_carryover.finish());
+    tail
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flush_pty_tail_releases_unfinished_osc() {
+        let mut carry = OscSignalCarryover::default();
+        assert_eq!(carry.push("before\x1b]2;pending".into()), "before");
+        let mut utf8_pending = Vec::new();
+
+        assert_eq!(
+            flush_pty_tail(&mut carry, &mut utf8_pending),
+            "\x1b]2;pending"
+        );
+    }
+
+    #[test]
+    fn flush_pty_tail_completes_metadata_from_utf8_tail() {
+        let mut carry = OscSignalCarryover::default();
+        assert_eq!(carry.push("\x1b]7;file:///C:/wind".into()), "");
+        let mut utf8_pending = b"\x1b\\after".to_vec();
+
+        assert_eq!(
+            flush_pty_tail(&mut carry, &mut utf8_pending),
+            "\x1b]7;file:///C:/wind\x1b\\after"
+        );
+        assert!(utf8_pending.is_empty());
+    }
+}
 
 /// 统一 cwd 表示（Windows 下反斜杠 → 正斜杠）。逻辑单一真源在
 /// `ridge_core::commands::process::normalize_cwd`（与 OS 探测路径同一份实现），
@@ -177,6 +214,9 @@ pub fn spawn_pty_reader(
             // carryover stays small. No upper bound: scrollback already retains
             // history independently, so we don't need to truncate carryover.
             let mut carryover: String = String::new();
+            // ConPTY may split OSC 0/1/2/7 across reads. Keep only the
+            // unfinished metadata suffix; ordinary output remains immediate.
+            let mut osc_carryover = OscSignalCarryover::default();
             let read_result = catch_unwind(AssertUnwindSafe(|| {
                 loop {
                     // App teardown drops the event receiver while this
@@ -188,7 +228,7 @@ pub fn spawn_pty_reader(
                     }
                     match reader.read(&mut buf) {
                         Ok(0) => {
-                            let tail = flush_pending_eof(&mut utf8_pending);
+                            let tail = flush_pty_tail(&mut osc_carryover, &mut utf8_pending);
                             if !tail.is_empty() {
                                 let tail_for_cwd = tail.clone();
                                 state.append_pty_scrollback(workspace_id, pane_id, &tail);
@@ -232,7 +272,7 @@ pub fn spawn_pty_reader(
                             break;
                         }
                         Ok(n) => {
-                            let raw = take_decoded_utf8(&mut utf8_pending, &buf[..n]);
+                            let raw = osc_carryover.push(take_decoded_utf8(&mut utf8_pending, &buf[..n]));
                             if raw.is_empty() {
                                 continue;
                             }
@@ -353,7 +393,7 @@ pub fn spawn_pty_reader(
                             }
                         }
                         Err(e) => {
-                            let tail = flush_pending_eof(&mut utf8_pending);
+                            let tail = flush_pty_tail(&mut osc_carryover, &mut utf8_pending);
                             if !tail.is_empty() {
                                 let tail_for_cwd = tail.clone();
                                 state.append_pty_scrollback(workspace_id, pane_id, &tail);

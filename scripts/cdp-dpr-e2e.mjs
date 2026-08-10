@@ -10,7 +10,9 @@ import { isRidgeCdpTarget } from './lib/cdpTarget.mjs';
 
 const port = resolveCdpPort();
 const artifact = process.env.RIDGE_DPR_ARTIFACT || '.iteration/artifacts/dpr/desktop-shot.png';
-const appReadyTimeoutMs = Number.parseInt(process.env.RIDGE_DPR_APP_READY_TIMEOUT_MS || '60000', 10);
+// dev:cdp exposes its port before the first Rust/Vite build can signal app-ready.
+// Keep the default above a cold Windows rebuild while allowing CI to tighten it.
+const appReadyTimeoutMs = Number.parseInt(process.env.RIDGE_DPR_APP_READY_TIMEOUT_MS || '180000', 10);
 const rendererTimeoutMs = Number.parseInt(process.env.RIDGE_DPR_RENDERER_TIMEOUT_MS || '60000', 10);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
