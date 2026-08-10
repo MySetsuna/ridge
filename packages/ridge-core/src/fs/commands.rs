@@ -458,6 +458,97 @@ pub fn copy_path(from: String, to: String, overwrite: Option<bool>) -> Result<()
     Ok(())
 }
 
+fn remove_path_if_exists(path: &Path) -> Result<(), String> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "read move path metadata failed ({}): {error}",
+                path.display()
+            ));
+        }
+    };
+    if meta.is_dir() {
+        std::fs::remove_dir_all(path)
+            .map_err(|error| format!("remove move directory failed ({}): {error}", path.display()))
+    } else {
+        std::fs::remove_file(path)
+            .map_err(|error| format!("remove move file failed ({}): {error}", path.display()))
+    }
+}
+
+fn move_staging_path(to: &Path) -> PathBuf {
+    let name = to
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("target");
+    to.with_file_name(format!(
+        ".{name}.ridge-move-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ))
+}
+
+fn cleanup_staging<D>(remove: &D, staging: &Path, reason: String) -> String
+where
+    D: Fn(&Path) -> Result<(), String>,
+{
+    match remove(staging) {
+        Ok(()) => reason,
+        Err(cleanup_error) => format!(
+            "{reason}; temporary move path cleanup failed ({}): {cleanup_error}",
+            staging.display()
+        ),
+    }
+}
+
+fn move_via_staging<C, R, D>(
+    from: &Path,
+    to: &Path,
+    copy: C,
+    rename: R,
+    remove: D,
+) -> Result<(), String>
+where
+    C: FnOnce(&Path, &Path) -> Result<(), String>,
+    R: FnOnce(&Path, &Path) -> Result<(), String>,
+    D: Fn(&Path) -> Result<(), String>,
+{
+    let staging = move_staging_path(to);
+    if staging.exists() {
+        return Err(format!(
+            "temporary move path already exists: {}",
+            staging.display()
+        ));
+    }
+    if let Err(error) = copy(from, &staging) {
+        return Err(cleanup_staging(
+            &remove,
+            &staging,
+            format!("cross-device copy failed: {error}"),
+        ));
+    }
+    if let Err(error) = rename(&staging, to) {
+        return Err(cleanup_staging(
+            &remove,
+            &staging,
+            format!("commit moved path failed: {error}"),
+        ));
+    }
+    if let Err(error) = remove(from) {
+        return match remove(to) {
+            Ok(()) => Err(format!(
+                "remove source after move failed; destination rolled back: {error}"
+            )),
+            Err(rollback_error) => Err(format!(
+                "remove source after move failed: {error}; destination rollback failed: {rollback_error}"
+            )),
+        };
+    }
+    Ok(())
+}
+
 /// Move `from` → `to` (rename, falling back to copy+delete across filesystems).
 /// Verbatim port of `project.rs::move_path_sync`.
 pub fn move_path(from: String, to: String) -> Result<(), String> {
@@ -477,16 +568,19 @@ pub fn move_path(from: String, to: String) -> Result<(), String> {
     if std::fs::rename(&from_path, &to_path).is_ok() {
         return Ok(());
     }
-    // Cross-device fallback: copy then delete source.
-    copy_path(from.clone(), to.clone(), Some(false))?;
-    let meta =
-        std::fs::symlink_metadata(&from_path).map_err(|e| format!("读取元数据失败: {}", e))?;
-    if meta.is_dir() {
-        std::fs::remove_dir_all(&from_path).map_err(|e| format!("删除源目录失败: {}", e))?;
-    } else {
-        std::fs::remove_file(&from_path).map_err(|e| format!("删除源文件失败: {}", e))?;
-    }
-    Ok(())
+    move_via_staging(
+        &from_path,
+        &to_path,
+        |source, staging| {
+            copy_path(
+                source.to_string_lossy().into_owned(),
+                staging.to_string_lossy().into_owned(),
+                Some(false),
+            )
+        },
+        |staging, target| std::fs::rename(staging, target).map_err(|error| error.to_string()),
+        remove_path_if_exists,
+    )
 }
 
 /// Replace text across the given `files` under `root`. Verbatim port of the
@@ -633,6 +727,201 @@ mod tests {
             std::fs::read_to_string(td.path.join("target.txt")).unwrap(),
             "target"
         );
+    }
+
+    #[test]
+    fn move_via_staging_commits_copy_then_deletes_source() {
+        let td = TempDir::new("move-ok");
+        let source = td.path.join("source.txt");
+        let target = td.path.join("target.txt");
+        std::fs::write(&source, b"source").unwrap();
+
+        move_via_staging(
+            &source,
+            &target,
+            |from, staging| {
+                copy_path(
+                    from.to_string_lossy().into_owned(),
+                    staging.to_string_lossy().into_owned(),
+                    Some(false),
+                )
+            },
+            |staging, target| std::fs::rename(staging, target).map_err(|error| error.to_string()),
+            remove_path_if_exists,
+        )
+        .unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&target).unwrap(), b"source");
+    }
+
+    #[test]
+    fn move_path_uses_atomic_rename_when_available() {
+        let td = TempDir::new("move-rename");
+        let source = td.p("source.txt");
+        let target = td.p("target.txt");
+        std::fs::write(&source, b"source").unwrap();
+
+        move_path(source, target.clone()).unwrap();
+
+        assert!(!std::path::Path::new(&td.p("source.txt")).exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"source");
+        assert!(remove_path_if_exists(&td.path.join("missing")).is_ok());
+    }
+
+    #[test]
+    fn move_path_rejects_missing_source() {
+        let td = TempDir::new("move-missing-source");
+
+        let error = move_path(td.p("missing"), td.p("target")).unwrap_err();
+
+        assert!(error.contains("源路径不存在"));
+    }
+
+    #[test]
+    fn move_path_rejects_existing_target() {
+        let td = TempDir::new("move-existing-target");
+        std::fs::write(td.path.join("source"), b"source").unwrap();
+        std::fs::write(td.path.join("target"), b"target").unwrap();
+
+        let error = move_path(td.p("source"), td.p("target")).unwrap_err();
+
+        assert!(error.contains("目标已存在"));
+        assert!(td.path.join("source").exists());
+        assert_eq!(std::fs::read(td.path.join("target")).unwrap(), b"target");
+    }
+
+    #[test]
+    fn move_via_staging_cleans_partial_copy_and_keeps_source() {
+        let td = TempDir::new("move-copy-failed");
+        let source = td.path.join("source");
+        let target = td.path.join("target");
+        std::fs::write(&source, b"source").unwrap();
+        let mut staging = None;
+
+        let error = move_via_staging(
+            &source,
+            &target,
+            |_, path| {
+                staging = Some(path.to_path_buf());
+                std::fs::create_dir_all(path).unwrap();
+                std::fs::write(path.join("partial.txt"), b"partial").unwrap();
+                Err("injected copy failure".to_string())
+            },
+            |_, _| panic!("rename must not run after copy failure"),
+            remove_path_if_exists,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("injected copy failure"));
+        assert!(source.exists());
+        assert!(!target.exists());
+        assert!(!staging.unwrap().exists());
+    }
+
+    #[test]
+    fn move_via_staging_reports_cleanup_failure_without_touching_source() {
+        let td = TempDir::new("move-cleanup-failed");
+        let source = td.path.join("source");
+        let target = td.path.join("target");
+        std::fs::write(&source, b"source").unwrap();
+
+        let error = move_via_staging(
+            &source,
+            &target,
+            |_, path| {
+                std::fs::write(path, b"partial").unwrap();
+                Err("injected copy failure".to_string())
+            },
+            |_, _| panic!("rename must not run after copy failure"),
+            |_| Err("injected cleanup failure".to_string()),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("temporary move path cleanup failed"));
+        assert!(source.exists());
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn move_via_staging_cleans_partial_commit_and_keeps_source() {
+        let td = TempDir::new("move-commit-failed");
+        let source = td.path.join("source");
+        let target = td.path.join("target");
+        std::fs::write(&source, b"source").unwrap();
+
+        let error = move_via_staging(
+            &source,
+            &target,
+            |_, path| std::fs::write(path, b"copied").map_err(|error| error.to_string()),
+            |_, _| Err("injected commit failure".to_string()),
+            remove_path_if_exists,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("injected commit failure"));
+        assert!(source.exists());
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn move_via_staging_rolls_back_destination_when_source_delete_fails() {
+        let td = TempDir::new("move-source-delete-failed");
+        let source = td.path.join("source");
+        let target = td.path.join("target");
+        std::fs::write(&source, b"source").unwrap();
+
+        let error = move_via_staging(
+            &source,
+            &target,
+            |from, staging| {
+                copy_path(
+                    from.to_string_lossy().into_owned(),
+                    staging.to_string_lossy().into_owned(),
+                    Some(false),
+                )
+            },
+            |staging, target| std::fs::rename(staging, target).map_err(|error| error.to_string()),
+            |path| {
+                if path == source.as_path() {
+                    Err("injected source delete failure".to_string())
+                } else {
+                    remove_path_if_exists(path)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("destination rolled back"));
+        assert!(source.exists());
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn move_via_staging_reports_failed_destination_rollback() {
+        let td = TempDir::new("move-rollback-failed");
+        let source = td.path.join("source");
+        let target = td.path.join("target");
+        std::fs::write(&source, b"source").unwrap();
+
+        let error = move_via_staging(
+            &source,
+            &target,
+            |from, staging| {
+                copy_path(
+                    from.to_string_lossy().into_owned(),
+                    staging.to_string_lossy().into_owned(),
+                    Some(false),
+                )
+            },
+            |staging, target| std::fs::rename(staging, target).map_err(|error| error.to_string()),
+            |_| Err("injected remove failure".to_string()),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("destination rollback failed"));
+        assert!(source.exists());
+        assert!(target.exists());
     }
 
     #[test]
