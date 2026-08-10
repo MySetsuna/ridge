@@ -34,6 +34,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { DEV_USER_DATA_DIR, readDevToolsActivePort } from './cdp-port.mjs';
+import { applyKernelBreakawayPolicy } from './tauri-dev-cdp-env.mjs';
 
 const userDataDir = DEV_USER_DATA_DIR;
 const root = path.resolve(import.meta.dirname, '..');
@@ -82,10 +83,11 @@ process.env.RIDGE_DEV_SERVER_PORT = String(vitePort);
 // `rdg host` sidecar must share this project-local registry/data graph.
 process.env.RIDGE_KERNEL_DATA_DIR = devKernelDataDir;
 // Some desktop test hosts run inside a Windows Job that rejects
-// CREATE_BREAKAWAY_FROM_JOB. The kernel launcher keeps production fail-closed;
-// this explicit dev harness opt-in permits the bounded same-job fallback so
-// CDP can still exercise the desktop in that constrained host.
-process.env.RIDGE_TEST_ALLOW_NON_BREAKAWAY = '1';
+// CREATE_BREAKAWAY_FROM_JOB. Keep the production fail-closed behavior by
+// default; only an explicitly requested constrained-host run may opt into the
+// bounded same-job fallback. Otherwise a force-killed CDP shell would also
+// reap the kernel and produce a false lifecycle result.
+applyKernelBreakawayPolicy(process.env);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.mkdirSync(devKernelDataDir, { recursive: true });
 fs.writeFileSync(configFile, JSON.stringify({ build: { devUrl: `http://127.0.0.1:${vitePort}` } }));
