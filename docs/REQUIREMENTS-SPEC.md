@@ -1601,3 +1601,4 @@
 - 新增有限预算、取消句柄、清空队列及非有限配置回归；定向 Remote feed `31/31`，全量 Vitest `215 files / 1978 passed / 1 skipped`，`pnpm check` `0 errors / 0 warnings`。
 - 本地 LCOV 为 statements `65.99%`、branches `60.16%`、functions `68.20%`、lines `70.09%`，仅作本地基线；本波未上传新 Sonar 分析。此前权威 Sonar API 分析仍为 coverage `80.4%`、Quality Gate `OK`、`new_violations=0`。
 - 本波构建在 180 秒 Vite SSR transforming 阶段超时并已清理进程树；不把超时写作构建通过。详见 `docs/iterations/2026-08-11-wave76-remote-backpressure.md`。
+- 最近一次 Sonar scanner 因 JS/TS Node bridge `300s timeout` 在上传前退出，未形成新 CE task；页面 `Failed` 与本波代码质量改动之间不能直接建立因果。匿名质量门 API 返回 `401`，Gate 失败条件仍需具备有效权限后核验。

@@ -21,6 +21,7 @@
 ## 质量门边界
 
 - 当前本波未成功上传新的 Sonar 分析；此前权威项目 API 分析 `9abdb231-3503-4f6e-b8ee-48d28f7086dc` 为 coverage `80.4%`、line `86.7%`、branch `71.5%`、Quality Gate `OK`、`new_violations=0`、`new_issues=0`。
+- 最近一次本地 scanner 日志 `.tools/sonar-scan-codex-20260811-j30.log` 在 JS/TS 分析阶段因 Node bridge `Failed to start the bridge server (300s timeout)` 退出 `EXECUTION FAILURE`，未形成新的 CE task/上传结果；项目页面的 `Failed` 不能归因于本波代码提交。
 - Sonar 项目总览仍记录 1 条历史 `Web:PageWithoutTitleCheck`；当前 `src/remote/index.html` 已有 `<title>`，须成功上传新分析后再确认历史 issue 是否刷新清零。
 - `pnpm build` 本波在 180 秒墙钟上限内停留于 Vite SSR transforming，已清理该次构建进程树；不能据此宣称构建通过。Tauri 全量复核亦未形成本波新绿证据。
 
