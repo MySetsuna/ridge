@@ -12,6 +12,7 @@ export const DEFAULT_PANE_FEED_MAX_BYTES = 512 * 1024;
 export const DEFAULT_PANE_FEED_FRAME_BUDGET_MS = 4;
 export const DEFAULT_PANE_FEED_FRAME_BYTES = 64 * 1024;
 export const DEFAULT_PANE_FEED_STEP_BYTES = 32 * 1024;
+export const MAX_PANE_FEED_FRAME_BUDGET_MS = 8;
 
 export interface PaneFeedDelivery {
   accepted: boolean;
@@ -24,7 +25,8 @@ export interface PaneFeedSchedulerOptions {
   maxBytesPerFrame?: number;
   stepBytes?: number;
   now?: () => number;
-  schedule?: (run: () => void) => void;
+  schedule?: (run: () => void) => unknown;
+  cancel?: (handle: unknown) => void;
   onDrop?: (paneKey: string, bytes: number) => void;
 }
 
@@ -42,30 +44,43 @@ export class PaneFeedScheduler {
   private readonly stepBytes: number;
   private readonly now: () => number;
   private readonly scheduleFrame: (run: () => void) => void;
+  private readonly cancelFrame: (handle: unknown) => void;
   private readonly onDrop?: (paneKey: string, bytes: number) => void;
   private readonly queues = new Map<string, FeedQueue>();
   private activePaneKey: string | null = null;
   private scheduled = false;
+  private scheduledHandle: unknown = null;
   private disposed = false;
 
   constructor(private readonly feed: PaneFeedFn, options: PaneFeedSchedulerOptions = {}) {
-    this.maxBytesPerPane = Math.max(
-      1,
-      Math.floor(options.maxBytesPerPane ?? DEFAULT_PANE_FEED_MAX_BYTES),
-    );
-    this.frameBudgetMs = Math.max(
-      0,
-      options.frameBudgetMs ?? DEFAULT_PANE_FEED_FRAME_BUDGET_MS,
-    );
-    this.maxBytesPerFrame = Math.max(
-      1,
-      Math.floor(options.maxBytesPerFrame ?? DEFAULT_PANE_FEED_FRAME_BYTES),
-    );
-    this.stepBytes = Math.max(1, Math.floor(options.stepBytes ?? DEFAULT_PANE_FEED_STEP_BYTES));
+    const maxBytesPerPane = options.maxBytesPerPane ?? DEFAULT_PANE_FEED_MAX_BYTES;
+    const frameBudgetMs = options.frameBudgetMs ?? DEFAULT_PANE_FEED_FRAME_BUDGET_MS;
+    const maxBytesPerFrame = options.maxBytesPerFrame ?? DEFAULT_PANE_FEED_FRAME_BYTES;
+    const stepBytes = options.stepBytes ?? DEFAULT_PANE_FEED_STEP_BYTES;
+    this.maxBytesPerPane = Number.isFinite(maxBytesPerPane)
+      ? Math.max(1, Math.floor(maxBytesPerPane))
+      : DEFAULT_PANE_FEED_MAX_BYTES;
+    this.frameBudgetMs = Number.isFinite(frameBudgetMs)
+      ? Math.min(Math.max(0, frameBudgetMs), MAX_PANE_FEED_FRAME_BUDGET_MS)
+      : DEFAULT_PANE_FEED_FRAME_BUDGET_MS;
+    this.maxBytesPerFrame = Number.isFinite(maxBytesPerFrame)
+      ? Math.max(1, Math.floor(maxBytesPerFrame))
+      : DEFAULT_PANE_FEED_FRAME_BYTES;
+    this.stepBytes = Number.isFinite(stepBytes)
+      ? Math.max(1, Math.floor(stepBytes))
+      : DEFAULT_PANE_FEED_STEP_BYTES;
     this.now = options.now ?? (() => performance.now());
-    this.scheduleFrame = options.schedule ?? ((run) => {
-      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => run());
-      else setTimeout(run, 0);
+    this.scheduleFrame = (run) => {
+      if (options.schedule) return options.schedule(run);
+      if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(() => run());
+      return setTimeout(run, 0);
+    };
+    this.cancelFrame = options.cancel ?? ((handle) => {
+      if (typeof handle === 'number' && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(handle);
+      } else if (handle !== null && handle !== undefined) {
+        clearTimeout(handle as ReturnType<typeof setTimeout>);
+      }
     });
     this.onDrop = options.onDrop;
   }
@@ -102,6 +117,7 @@ export class PaneFeedScheduler {
   drainNow(): void {
     if (this.disposed) return;
     this.scheduled = false;
+    this.cancelScheduledFrame();
     const started = this.now();
     let processed = 0;
     let activeTurn = false;
@@ -152,16 +168,19 @@ export class PaneFeedScheduler {
 
   clear(paneKey: string): void {
     this.queues.delete(paneKey);
+    if (!this.hasQueued()) this.cancelScheduledFrame();
   }
 
   clearAll(): void {
     this.queues.clear();
+    this.cancelScheduledFrame();
   }
 
   dispose(): void {
     this.disposed = true;
     this.scheduled = false;
     this.queues.clear();
+    this.cancelScheduledFrame();
   }
 
   queuedBytes(paneKey?: string): number {
@@ -174,10 +193,18 @@ export class PaneFeedScheduler {
   private schedule(): void {
     if (this.disposed || this.scheduled || !this.hasQueued()) return;
     this.scheduled = true;
-    this.scheduleFrame(() => {
+    this.scheduledHandle = this.scheduleFrame(() => {
+      this.scheduledHandle = null;
       if (!this.scheduled || this.disposed) return;
       this.drainNow();
     });
+  }
+
+  private cancelScheduledFrame(): void {
+    if (this.scheduledHandle === null || this.scheduledHandle === undefined) return;
+    const handle = this.scheduledHandle;
+    this.scheduledHandle = null;
+    this.cancelFrame(handle);
   }
 
   private hasQueued(): boolean {

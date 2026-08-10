@@ -29,6 +29,10 @@
 - `node scripts/cdp-remote-mobile-agents.mjs`：真实 `/verify`、移动 SPA、数据面与能力降级通过。
 - `node scripts/cdp-pty-parsers.mjs`：在带固定远程 CA 的冷启动复核中，既有一次 ConPTY settle 超时；历史稳定运行与本轮第二次复核分别出现 UTF-8、OSC title/cwd 单项收齐，说明 harness 仍存在冷启动/重复 pane 非幂等噪声，不能把该脚本本轮结果记作稳定绿门。
 
+本轮还收紧了 Remote pane feed 的预算边界：`PaneFeedScheduler` 与 `TerminalManager.flushPaneFeed` 均拒绝 `Infinity` 穿透，并在清空/销毁时取消已排队 frame；对应 focused tests 为 `29/29`。
+
+SonarQube 本轮尝试以临时 token 扫描产品源，scanner 运行约 10 分钟无结果，已停止精确扫描进程并撤销临时 token；未将其记为本轮新扫描成功。服务器仍为 `UP`，当前 API 可见的最后成功项目指标为 coverage `80.4%`、line `86.7%`、branch `71.5%`、Quality Gate `OK`、`new_violations=0`，该指标沿用既有分析记录，非本轮扫描产物。
+
 ## 仍需现场验收
 
 - 真实第三方 Agent Runtime/A2A 私有协议兼容性。

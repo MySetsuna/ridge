@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { SurfaceHostHandle } from '@ridge/term-wasm';
-import { TerminalManager } from './manager';
+import { MAX_PANE_FEED_FLUSH_BUDGET_MS, TerminalManager } from './manager';
 
 const PANE = 'manager-test-pane';
 
@@ -615,7 +615,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		fixture.pane.feedDeferredBytes = 2;
 		manager.feed(PANE, new Uint8Array([3, 4]));
 		expect(fixture.pane.feedDeferredChunks).toHaveLength(1);
-		manager.flushPaneFeed(PANE, Infinity);
+		manager.flushPaneFeed(PANE, MAX_PANE_FEED_FLUSH_BUDGET_MS);
 		expect(fixture.pane.feedDeferredBytes).toBe(0);
 		manager.clearPendingFeed(PANE);
 	});
@@ -676,7 +676,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(fixture.pane.feedDeferredBytes).toBeGreaterThan(0);
 		manager.feed(PANE, new Uint8Array([8]));
 		expect(fixture.pane.feedDeferredBytes).toBeGreaterThan(0);
-		manager.flushPaneFeed(PANE, Infinity);
+		manager.flushPaneFeed(PANE, MAX_PANE_FEED_FLUSH_BUDGET_MS);
 		manager.clearPendingFeed(PANE);
 		expect(manager.feedStats(PANE)).toEqual({ queuedBytes: 0, droppedBytes: 0, dropCount: 0, needsResync: false });
 		clock.mockRestore();

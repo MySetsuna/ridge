@@ -549,6 +549,8 @@ const FEED_PER_CALL_BUDGET_MS = 4;
  * a frame. A focused pane may drain two chunks, then siblings get a turn. */
 const FEED_FRAME_BUDGET_MS = 6;
 const MAX_DEFERRED_CHUNKS_PER_FRAME = 2;
+/** Public fast-path flushes may never bypass the frame budget. */
+export const MAX_PANE_FEED_FLUSH_BUDGET_MS = FEED_FRAME_BUDGET_MS;
 
 /**
  * Singleton. Created lazily on first `instance()` call. Held by the
@@ -3288,16 +3290,19 @@ export class TerminalManager {
 	 * than preserving that background fairness. Spend one bounded slice now,
 	 * then let the regular rotated drain finish the remainder.
 	 */
-	flushPaneFeed(paneId: string, budgetMs = 8): void {
+	flushPaneFeed(paneId: string, budgetMs = MAX_PANE_FEED_FLUSH_BUDGET_MS): void {
 		const entry = this.panes.get(paneId);
 		if (!entry || entry.parked || !hasDeferredFeed(entry)) return;
+		const boundedBudgetMs = Number.isFinite(budgetMs)
+			? Math.min(Math.max(0, budgetMs), MAX_PANE_FEED_FLUSH_BUDGET_MS)
+			: MAX_PANE_FEED_FLUSH_BUDGET_MS;
 		const start = performance.now();
 		while (hasDeferredFeed(entry)) {
 			const elapsed = performance.now() - start;
-			if (elapsed >= budgetMs) break;
+			if (elapsed >= boundedBudgetMs) break;
 			const chunk = takeDeferredFeed(entry);
 			if (!chunk) break;
-			this._feedNow(entry, chunk, Math.max(1, budgetMs - elapsed), true);
+			this._feedNow(entry, chunk, Math.max(1, boundedBudgetMs - elapsed), true);
 		}
 		this.wake();
 	}
@@ -3376,7 +3381,7 @@ export class TerminalManager {
 				workerRendererBridge.feed(entry.paneId, chunk);
 			}
 			offset = end;
-			if (budgetMs !== Infinity && performance.now() - start >= budgetMs) break;
+			if (performance.now() - start >= budgetMs) break;
 		}
 		if (traceCursor) {
 			const ts = performance.now().toFixed(1);
