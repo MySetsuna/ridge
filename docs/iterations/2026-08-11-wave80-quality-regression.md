@@ -16,6 +16,7 @@
 - `pnpm build:remote:mobile`：exit `0`，PWA 生成 38 个 precache entries。
 - `pnpm verify:pwa`：exit `0`；viewport、manifest standalone/scope/icons、service worker、safe-area CSS 与无站内安装钩子均通过。
 - 首次 `pnpm build:remote:desktop` 曾因现场内存不足以 `4294967295` 中止；资源恢复后复跑通过，最终 desktop SSR/client 构建 exit `0`，产物写入 `remote-dist/desktop`，日志为 `.tools/wave81-build-remote-desktop.log`。
+- `pnpm build:remote` 串行总入口最终 exit `0`，desktop/mobile 两套产物均完成。
 
 ## Sonar
 
