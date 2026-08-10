@@ -148,3 +148,13 @@ Invoke-RestMethod `
 - 已在 `sonar-project.properties` 增加 `sonar.typescript.tsconfigPaths`，将 TypeScript program discovery 限定到仓库内 4 个 tsconfig；随后验证扫描超过 10 分钟未完成，已回收精确 scanner 子树，Sonar 服务未动。该优化待下轮以 scanner 日志/CE 终态复证，不把它称为新成功分析。
 - 本轮临时 `codex-local-scan-*` token 已撤销，API 查询无残留；仓库未保存 token、Cookie 或会话。
 - Sonar 规则驱动的低风险 Remote 清理已落地：能力查找改为 `.includes()`，能力集合字段标为 `readonly`，结构化 invoke 错误避免默认 `[object Object]`；相关 focused tests `67/67` 通过。Rust 高复杂度与参数过多历史项未做 speculative 大重构，仍列开放债项。
+
+## Latest verified scan (2026-08-10 Wave71)
+
+- SonarQube `http://127.0.0.1:9000` scanner upload succeeded; latest CE task `3c78dac8-13b1-41a8-a65e-cdce622ee4cd` is `SUCCESS`.
+- Project `MySetsuna_ridge` measures: coverage `80.2%`, line coverage `86.4%`, branch coverage `71.6%`, violations `730` (`17` bugs, `21` vulnerabilities, `692` code smells). Quality Gate remains `ERROR` because `new_violations=152` is not zero; do not claim a green gate.
+- Standard `pnpm test:coverage:sonar` hit a Windows coverage temp-file race (`ENOENT coverage/.tmp/coverage-196.json`). Accepted local replacement is serialized isolated coverage: statements `74.52%`, branches `66.63%`, functions `76.10%`, lines `78.73%`; normalized LCOV produced successfully.
+- The scan still logged missing generated `.svelte-kit/tsconfig.json` references in the isolated copy and no SCM provider. These are recorded as scanner hygiene gaps; external Tauri WebView2 restart attach, physical mobile/PWA/IME, native pixel matrix, mid-window cross-volume ACL injection, and a green full-project Gate remain open.
+- Sonar low-risk fixture findings were addressed in `packages/remote/src/shared/cloud/__faultRig.ts`: pane/lifecycle/ICE state is now observable and covered by deterministic tests. `faultInjection.test.ts` plus quality-helper focused tests: `33/33` passed. Temporary scanner tokens are revoked and are not stored in this handoff.
+
+Manual takeover: open the local URL above and sign in as `admin` with the current user-managed password. The password was rotated on 2026-08-10 and is intentionally not stored in this repository or in scanner logs; change it again before exposing SonarQube beyond localhost. The current password was verified against `/api/authentication/validate` during this handoff.

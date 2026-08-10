@@ -34,7 +34,9 @@ import {
 
 export class AuthGatedTransport implements ChannelTransport {
   readonly sent: ControlFrame[] = [];
+  readonly paneBytes: Array<{ paneId: string; bytes: Uint8Array }> = [];
   private readonly controlListeners = new Set<ControlListener>();
+  private readonly paneListeners = new Set<PaneBytesListener>();
   private readonly stateListeners = new Set<StateListener>();
   private readonly authListeners = new Set<AuthListener>();
   private currentState: TransportState = 'disconnected';
@@ -47,12 +49,21 @@ export class AuthGatedTransport implements ChannelTransport {
     this.controlListeners.add(cb);
     return () => this.controlListeners.delete(cb);
   }
-  sendPaneBytes(): void {}
-  onPaneBytes(_cb: PaneBytesListener): Unsubscribe {
-    return () => {};
+  sendPaneBytes(paneId: string, bytes: Uint8Array): void {
+    const copy = bytes.slice();
+    this.paneBytes.push({ paneId, bytes: copy });
+    for (const cb of this.paneListeners) cb(paneId, copy.slice());
   }
-  connect(): void {}
-  close(): void {}
+  onPaneBytes(cb: PaneBytesListener): Unsubscribe {
+    this.paneListeners.add(cb);
+    return () => this.paneListeners.delete(cb);
+  }
+  connect(): void {
+    this.setState('connecting');
+  }
+  close(): void {
+    this.setState('closed');
+  }
   state(): TransportState {
     return this.currentState;
   }
@@ -142,7 +153,10 @@ export class FaultPeerConnection {
   async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
     this.remoteDescription = description;
   }
-  async addIceCandidate(): Promise<void> {}
+  readonly iceCandidates: Array<RTCIceCandidateInit | undefined> = [];
+  async addIceCandidate(candidate?: RTCIceCandidateInit): Promise<void> {
+    this.iceCandidates.push(candidate);
+  }
   close(): void {
     this.connectionState = 'closed';
   }
