@@ -303,3 +303,8 @@ Remaining acceptance gaps: non-integer/physical multi-DPR matrix beyond the veri
 - Full Vitest: `202` files, `1858 passed / 1 skipped`; focused remote/pane regressions: `36/36`.
 - `pnpm check`: `0 errors / 0 warnings`; `pnpm build`: exit `0` (Vite warnings only); `cargo fmt --all -- --check`: exit `0`; `cargo test -p ridge-mcp --lib --quiet`: `90/90`.
 - Changed CDP scripts pass `node --check`; CodeGraph final trace confirms shell discovery, pane selection/write, cloud host, and kernel command paths. No publish, push, tag, or Release was performed.
+
+## BUG-CDP-START-VITE-TARGET-01（open, 2026-08-10）
+
+- Re-running `pnpm tauri:dev:cdp` on Node `v25.9.0` built `ridge-cli` and desktop Rust successfully, then failed in `scripts/start-vite-dev.mjs:19` with `TypeError: Cannot read properties of undefined (reading '_events)`.
+- The failure occurs before WebView2/CDP readiness, in the `beforeDevCommand` Vite launcher. Reproduce with the same command; next iteration should make child-process creation/exit handling compatible with the current Node runtime, then rerun `cdp:smoke` and the desktop E2E matrix.

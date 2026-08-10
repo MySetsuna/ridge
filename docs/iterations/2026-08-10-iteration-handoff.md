@@ -74,3 +74,8 @@
 - 质量提交 `08d8c1c6`：remote/cloud、pane/terminal、workspace 质量路径与随机回退护栏；新增 `paneFeedScheduler` 调度/dispose 分支测试。
 - `pnpm test`：`207` files，`1943 passed / 1 skipped`；`pnpm check`：`0 errors / 0 warnings`；`pnpm build`：exit `0`，Vite `4222 modules`。
 - CodeGraph 复核未见 CloudHostPaneSource、ControllerCloudProvider、PaneRpcScheduler、TerminalManager geometry、workspaceScope 或构建门禁断链；外部 Tauri WebView2 重连、真机 PWA/IME、原生 DPR、跨卷 ACL 中窗、Sonar Gate 仍为开放外部证据项。
+
+## Wave72 CDP 复核异常
+
+- 重新启动 `pnpm tauri:dev:cdp` 时，Rust 构建完成但 `beforeDevCommand` 在 `scripts/start-vite-dev.mjs:19` 读取 `target._events` 时因 `target=undefined` 失败；运行时 Node 为 `v25.9.0`，WebView2/CDP 未就绪。
+- 登记下一迭代 `BUG-CDP-START-VITE-TARGET-01`；本轮不把历史 CDP 结果冒充本次成功，不改动已安装 Ridge。
