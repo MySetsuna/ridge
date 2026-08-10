@@ -10,6 +10,10 @@ import { copyTeammateShim } from './copy-teammate-shim.mjs';
 import { isTeammateShimStale, main as ensureShim } from './ensure-teammate-shim.mjs';
 import { pruneOutputs, walk } from './prune-stale-fonts.mjs';
 import { collectEvidence, main as prodStatusMain, parseArgs } from './check-prod-status.mjs';
+import { buildPlan as tauriBuildPlan, main as tauriBuildMain } from './tauri-build.mjs';
+import { buildDebugPlan, renameDebugArtifacts, main as debugBuildMain } from './tauri-build-debug.mjs';
+import { buildFlagFont, TWEMOJI_SHA256 } from './build-flag-font.mjs';
+import { main as remoteDesktopBuild } from './build-remote-desktop.mjs';
 
 const quietIo = () => ({ log: vi.fn(), error: vi.fn(), warn: vi.fn() });
 
@@ -138,5 +142,75 @@ describe('production status probe', () => {
     expect(result.exitCode).toBe(1);
     expect(JSON.stringify(result.evidence)).not.toContain('secret-token');
     expect((await collectEvidence({ args: [], io: quietIo() })).exitCode).toBe(0);
+  });
+});
+
+describe('Tauri build command plans', () => {
+  it('selects optional local accelerators and propagates bundle arguments', async () => {
+    const probes = [];
+    const probe = (command, args) => { probes.push(args[0]); return { status: args[0] === 'sccache' ? 0 : 1 }; };
+    const plan = tauriBuildPlan({ RIDGE_BUNDLES: 'nsis,msi' }, 'win32', probe);
+    expect(plan.args).toEqual(['tauri', 'build', '--bundles', 'nsis,msi']);
+    expect(plan.env.RUSTC_WRAPPER).toBe('sccache');
+    expect(plan.env.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER).toBeUndefined();
+    expect(probes).toEqual(['sccache', 'lld-link']);
+
+    const spawn = vi.fn(() => ({ on: (_event, callback) => callback(4) }));
+    expect(await tauriBuildMain({ envSource: {}, platform: 'linux', spawnImpl: spawn, spawnSyncImpl: () => ({ status: 1 }), io: quietIo(), now: () => 0 })).toBe(4);
+  });
+
+  it('builds debug/release plans and renames only supported installer formats', async () => {
+    const debug = buildDebugPlan({ RIDGE_CLOUD_BASE_DOMAIN: 'cloud.example:5001' }, 'linux', () => ({ status: 0 }));
+    expect(debug).toMatchObject({ base: 'cloud.example:5001', profileDir: 'debug', bundles: 'nsis', args: ['tauri', 'build', '--debug', '--bundles', 'nsis'] });
+    const copied = [];
+    const fs = {
+      readFileSync: () => JSON.stringify({ version: '2.0.0' }),
+      existsSync: () => true,
+      mkdirSync: vi.fn(),
+      readdirSync: (p) => p.includes('nsis') ? ['ridge.exe'] : ['ridge.msi'],
+      copyFileSync: (from, to) => copied.push([from, to]),
+    };
+    expect(renameDebugArtifacts('cloud.example:5001', 'debug', 'nsis,msi,deb', { rootDir: 'C:/repo', fsImpl: fs, io: quietIo() })).toBe(2);
+    expect(copied).toHaveLength(2);
+    const spawn = vi.fn(() => ({ on: (_event, callback) => callback(0) }));
+    const io = quietIo();
+    expect(await debugBuildMain({ envSource: {}, platform: 'linux', spawnImpl: spawn, spawnSyncImpl: () => ({ status: 1 }), fsImpl: { readFileSync: () => JSON.stringify({ version: '2.0.0' }), existsSync: () => false, mkdirSync: vi.fn() }, rootDir: 'C:/repo', io, now: () => 0 })).toBe(0);
+    expect(io.warn).toHaveBeenCalled();
+  });
+});
+
+describe('flag font build guard', () => {
+  const fontFs = (exists = true, size = 10) => ({
+    existsSync: () => exists,
+    readFileSync: () => Buffer.from('font'),
+    statSync: () => ({ size }),
+    mkdirSync: vi.fn(),
+    copyFileSync: vi.fn(),
+    rmSync: vi.fn(),
+  });
+
+  it('accepts a hashed cached source and mirrors a bounded subset', () => {
+    const fs = fontFs();
+    expect(buildFlagFont({ rootDir: 'C:/repo', fsImpl: fs, hashFile: () => TWEMOJI_SHA256, execFileSyncImpl: vi.fn(), io: quietIo() })).toBe(true);
+    expect(fs.copyFileSync).toHaveBeenCalled();
+  });
+
+  it('rejects a bad download, missing subset tool, and oversized output', () => {
+    const bad = fontFs(false);
+    expect(buildFlagFont({ rootDir: 'C:/repo', fsImpl: bad, hashFile: () => 'bad', execFileSyncImpl: vi.fn(), io: quietIo() })).toBe(false);
+    const missingTool = fontFs();
+    const toolError = Object.assign(new Error('missing'), { code: 'ENOENT' });
+    expect(buildFlagFont({ rootDir: 'C:/repo', fsImpl: missingTool, hashFile: () => TWEMOJI_SHA256, execFileSyncImpl: () => { throw toolError; }, io: quietIo() })).toBe(false);
+    expect(buildFlagFont({ rootDir: 'C:/repo', fsImpl: fontFs(true, 2 * 1024 * 1024), hashFile: () => TWEMOJI_SHA256, execFileSyncImpl: vi.fn(), io: quietIo() })).toBe(false);
+  });
+});
+
+describe('remote desktop build wrapper', () => {
+  it('prunes after a successful Vite build and preserves failures', async () => {
+    const spawn = vi.fn(() => ({ on: (_event, callback) => callback(0) }));
+    const prune = vi.fn();
+    expect(await remoteDesktopBuild({ spawnImpl: spawn, prune, io: quietIo() })).toBe(0);
+    expect(prune).toHaveBeenCalledOnce();
+    expect(await remoteDesktopBuild({ spawnImpl: () => ({ on: (_event, callback) => callback(null) }), prune, io: quietIo() })).toBe(1);
   });
 });

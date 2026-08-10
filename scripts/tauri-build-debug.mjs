@@ -28,92 +28,69 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const root = path.join(__dirname, '..');
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-const base =
-  process.env.RIDGE_CLOUD_BASE_DOMAIN ||
-  process.env.RIDGE_BASE_DOMAIN ||
-  'localhost:5001';
-
-// 默认 debug profile（快、复用热 target/debug）；RIDGE_BUILD_RELEASE=1 → 生产 release。
-const releaseProfile = process.env.RIDGE_BUILD_RELEASE === '1';
-const profileDir = releaseProfile ? 'release' : 'debug';
-// 验证包默认只打 nsis（主安装包）；release 生产包打 nsis+msi。
-const bundles = releaseProfile ? 'nsis,msi' : 'nsis';
-
-// 本机可选提速：装了就用，没装则照常（不破坏 CI / 无工具环境）。
-function hasBin(name) {
-  const probe = process.platform === 'win32' ? 'where' : 'which';
-  return spawnSync(probe, [name], { stdio: 'ignore', shell: true }).status === 0;
+export function hasBin(name, spawnSyncImpl = spawnSync, platform = process.platform) {
+  const probe = platform === 'win32' ? 'where' : 'which';
+  return spawnSyncImpl(probe, [name], { stdio: 'ignore', shell: true }).status === 0;
 }
 
-const env = {
-  ...process.env,
-  RIDGE_CLOUD_BASE_DOMAIN: base, // 桌面端（vite define → apiClient BASE_DOMAIN）
-  RIDGE_BASE_DOMAIN: base, // CLI（cargo option_env! 烘焙）
-};
-if (hasBin('sccache')) {
-  env.RUSTC_WRAPPER = 'sccache';
-  console.log('[build-debug] sccache: ON');
+export function buildDebugPlan(envSource = process.env, platform = process.platform, spawnSyncImpl = spawnSync) {
+  const base = envSource.RIDGE_CLOUD_BASE_DOMAIN || envSource.RIDGE_BASE_DOMAIN || 'localhost:5001';
+  const releaseProfile = envSource.RIDGE_BUILD_RELEASE === '1';
+  const profileDir = releaseProfile ? 'release' : 'debug';
+  const bundles = releaseProfile ? 'nsis,msi' : 'nsis';
+  const env = { ...envSource, RIDGE_CLOUD_BASE_DOMAIN: base, RIDGE_BASE_DOMAIN: base };
+  const sccache = hasBin('sccache', spawnSyncImpl, platform);
+  const lld = hasBin('lld-link', spawnSyncImpl, platform);
+  if (sccache) env.RUSTC_WRAPPER = 'sccache';
+  if (lld) env.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = 'lld-link';
+  const args = ['tauri', 'build'];
+  if (!releaseProfile) args.push('--debug');
+  args.push('--bundles', bundles);
+  return { base, profileDir, bundles, env, args, releaseProfile, sccache, lld };
 }
-if (hasBin('lld-link')) {
-  env.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = 'lld-link';
-  console.log('[build-debug] lld-link: ON');
-}
 
-const args = ['tauri', 'build'];
-if (!releaseProfile) args.push('--debug');
-args.push('--bundles', bundles);
-
-console.log(`[build-debug] profile=${profileDir} bundles=${bundles} cloud-base=${base}`);
-console.log(`[build-debug] running: pnpm ${args.join(' ')} …`);
-const startedAt = Date.now();
-
-const child = spawn('pnpm', args, {
-  cwd: root,
-  env,
-  stdio: 'inherit',
-  shell: true,
-});
-
-child.on('exit', (code) => {
-  if (code !== 0) {
-    console.error(`[build-debug] tauri build failed (exit ${code})`);
-    process.exit(code ?? 1);
-  }
-  const mins = ((Date.now() - startedAt) / 60000).toFixed(1);
-  console.log(`[build-debug] build finished in ${mins} min`);
-  renameDebugArtifacts(base, profileDir, bundles);
-});
-
-/** 复制安装包到 release/ 并打 -debug 后缀，避免与生产包混淆。 */
-function renameDebugArtifacts(baseDomain, profDir, bundleList) {
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf-8'));
-  const version = pkg.version;
-  // cargo 工作区 target 在仓库根：tauri 把安装包产到 <root>/target/<profile>/bundle。
-  // --debug → target/debug/bundle；release → target/release/bundle。
-  const bundleDir = path.join(root, 'target', profDir, 'bundle');
-  const outputDir = path.join(root, 'release');
-  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
+export function renameDebugArtifacts(baseDomain, profDir, bundleList, { rootDir = root, fsImpl = fs, io = console } = {}) {
+  const version = JSON.parse(fsImpl.readFileSync(path.join(rootDir, 'package.json'), 'utf-8')).version;
+  const bundleDir = path.join(rootDir, 'target', profDir, 'bundle');
+  const outputDir = path.join(rootDir, 'release');
+  if (!fsImpl.existsSync(outputDir)) fsImpl.mkdirSync(outputDir);
   const safeBase = baseDomain.replace(/[^a-zA-Z0-9]+/g, '-');
-  const folders = bundleList.split(',').map((b) => b.trim());
   let copied = 0;
-  for (const folder of folders) {
+  for (const folder of bundleList.split(',').map((b) => b.trim())) {
     const folderPath = path.join(bundleDir, folder);
-    if (!fs.existsSync(folderPath)) continue;
+    if (!fsImpl.existsSync(folderPath)) continue;
     const ext = folder === 'nsis' ? 'exe' : folder === 'msi' ? 'msi' : null;
     if (!ext) continue;
-    for (const file of fs.readdirSync(folderPath)) {
+    for (const file of fsImpl.readdirSync(folderPath)) {
       if (!file.endsWith(`.${ext}`)) continue;
-      const src = path.join(folderPath, file);
       const dest = path.join(outputDir, `ridge_${version}_x64-debug-${safeBase}-setup.${ext}`);
-      fs.copyFileSync(src, dest);
-      console.log(`[build-debug] → ${dest}`);
+      fsImpl.copyFileSync(path.join(folderPath, file), dest);
+      io.log(`[build-debug] → ${dest}`);
       copied++;
     }
   }
-  if (copied === 0) {
-    console.warn(`[build-debug] WARN: no installer found under ${bundleDir} (folders: ${folders.join(',')})`);
-  }
+  if (copied === 0) io.warn(`[build-debug] WARN: no installer found under ${bundleDir} (folders: ${bundleList})`);
+  return copied;
+}
+
+export function main({ envSource = process.env, platform = process.platform, spawnImpl = spawn, spawnSyncImpl = spawnSync, fsImpl = fs, rootDir = root, io = console, now = Date.now } = {}) {
+  const plan = buildDebugPlan(envSource, platform, spawnSyncImpl);
+  io.log(`[build-debug] profile=${plan.profileDir} bundles=${plan.bundles} cloud-base=${plan.base}`);
+  io.log(`[build-debug] running: pnpm ${plan.args.join(' ')} …`);
+  const startedAt = now();
+  return new Promise((resolve) => {
+    const child = spawnImpl('pnpm', plan.args, { cwd: root, env: plan.env, stdio: 'inherit', shell: true });
+    child.on('exit', (code) => {
+      if (code !== 0) { io.error(`[build-debug] tauri build failed (exit ${code})`); resolve(code ?? 1); return; }
+      io.log(`[build-debug] build finished in ${((now() - startedAt) / 60000).toFixed(1)} min`);
+      renameDebugArtifacts(plan.base, plan.profileDir, plan.bundles, { rootDir, fsImpl, io });
+      resolve(0);
+    });
+  });
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  main().then((code) => process.exit(code));
 }
