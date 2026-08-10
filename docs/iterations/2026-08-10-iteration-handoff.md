@@ -17,13 +17,14 @@
 - `a66eda86`：ridgeCloudProvider 会话、ICE、Pane/control 通道与信令生命周期。
 - `14e2c7b5`：fileExplorer 分页、浏览器降级、stale path 与折叠投影。
 - `6b40335a`：wsRemote 能力降级、空输入、坏事件与 `4403 DEVICE_PARKED` 分级。
+- `3d7981a6`：TerminalManager wasm 初始化/诊断、WebGPU 回退、主题/视口/DPR 与 raw-byte 拟合边界。
 - 每波均含对应 `docs/iterations/2026-08-10-wave*-handoff.md` 与 `docs/REQUIREMENTS-SPEC.md` 证据；仅提交测试/文档，未改生产通信语义。
 
 ## 当前质量证据
 
-- 聚焦回归：wsRemote `7/7`、fileEditor `13/13`、ridgeCloudProvider `19/19`、fileExplorer `46/46`。
+- 聚焦回归：TerminalManager `26/26`、wsRemote `7/7`、fileEditor `13/13`、ridgeCloudProvider `19/19`、fileExplorer `46/46`。
 - 全量 `pnpm test:coverage:sonar`：exit `0`，`normalize-lcov.mjs` `ok=true`。
-- 最新本地 V8/LCOV：statements `13284/18608 = 71.38%`；branches `7318/11610 = 63.03%`；functions `2585/3536 = 73.10%`；lines `11960/15895 = 75.24%`；距本地 statements 80% 尚缺 `1603` 条。
+- 最新本地 V8/LCOV：statements `13330/18608 = 71.63%`；branches `7366/11610 = 63.44%`；functions `2588/3536 = 73.19%`；lines `12003/15895 = 75.51%`；距本地 statements 80% 尚缺 `1557` 条。
 - `pnpm check`：`0 errors / 0 warnings`。
 - Rust 质量闸：`cargo fmt --all -- --check` 通过；`cargo test -p ridge-mcp --lib` 为 `90 passed / 0 failed`；`cargo test -p ridge-kernel --lib` 为 `49 passed / 0 failed`。仅见 Windows linker informational warning。
 - 全量覆盖仍记录多个 `.mjs` `PARSE_ERROR/Expected ident`；未扩大排除范围、未以局部覆盖冒充 Sonar。
@@ -40,3 +41,11 @@
 - `coverage/*`、各包 `.iteration/*`、NotebookLM 子模块运行态及既有 E2E artifact 脏改动均保留、不纳入本轮提交。
 - 当前 `sonar-project.properties` 有既有未提交修改，未擅自纳入；接续时须先确认其是否符合“全项目 Sonar”要求，禁止以排除 `scripts` 绕过 80% 闸。
 - 接续顺序：先恢复可用 Sonar 服务端凭证并保留完整 source scope；再补真实扫描/Quality Gate；随后补 PTY 五条件与现场 E2E，最后重跑 intake、全量测试、`pnpm check`、Sonar 与交接归档。
+
+## Wave69 TerminalManager 生命周期与几何边界覆盖
+
+- `packages/remote/src/shared/terminal/manager.attach.test.ts` 覆盖 wasm `ready()` 单例初始化、atlas/present-fast 诊断导出、WebGPU-first handle 成功路径及构造失败后的 Canvas2D 回退。
+- `packages/remote/src/shared/terminal/manager.test.ts` 覆盖主题背景 RGBA 解析、active workspace 隐藏判断、共享 host/Canvas2D 视口投影、raw-byte 本地网格拟合、DPR 漂移重配置与 shared visual-only fit。
+- 聚焦回归为 `26/26`，全量回归 `202` 文件、`1894 passed / 1 skipped`；`pnpm check` 为 `0 errors / 0 warnings`。
+- 本波提交 `3d7981a6`，仅增测试，不改生产通信语义。
+- 本波使本地 V8 statements 从 `13284/18608` 提升至 `13330/18608`；Sonar `>=80%`、Quality Gate、PTY 五条件、第三方 Runtime/A2A 与现场 E2E 仍按上文保持 `ACTIVE`，不以本地 LCOV 替代。
