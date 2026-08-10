@@ -292,19 +292,14 @@ export function markPaneGitRepoNonGit(repoRoot: string): void {
   markScmRepoNonGit(repoRoot);
   cacheByRepo.set(repoRoot, { snap: null, at: Date.now() });
   _store.update((state) =>
-    Object.fromEntries(
-      Object.entries(state).map(([paneId, info]) => [
-        paneId,
-        info?.repoRoot === repoRoot
-          ? null
-          : info?.availableRepos.includes(repoRoot)
-            ? {
-                ...info,
-                availableRepos: info.availableRepos.filter((root) => root !== repoRoot),
-              }
-            : info,
-      ])
-    )
+    Object.fromEntries(Object.entries(state).map(([paneId, info]) => {
+      let next = info;
+      if (info?.repoRoot === repoRoot) next = null;
+      else if (info?.availableRepos.includes(repoRoot)) {
+        next = { ...info, availableRepos: info.availableRepos.filter((root) => root !== repoRoot) };
+      }
+      return [paneId, next];
+    }))
   );
 }
 

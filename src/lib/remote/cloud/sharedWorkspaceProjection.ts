@@ -134,7 +134,7 @@ export async function openSharedWorkspaceProjection(input: {
       if (message.type === 'panes') updatePanes(message.panes);
     });
     const stopMetadata = connection.onMetadata((pane: PaneRef, title, cwd) => {
-      if (!current || current.link !== connection) return;
+      if (current?.link !== connection) return;
       const paneId = pane.paneId;
       updatePanes(current.panes.map((item) => item.id === paneId
         ? { ...item, title: title ?? undefined, cwd: cwd ?? undefined }

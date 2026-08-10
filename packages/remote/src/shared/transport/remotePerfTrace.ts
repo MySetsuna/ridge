@@ -43,6 +43,10 @@ export interface RemotePerfToken {
 }
 
 const MAX_SAMPLES = 256;
+
+function metricNumber(value: unknown): number | undefined {
+  return typeof value === 'number' ? value : undefined;
+}
 const samples: RemotePerfSample[] = [];
 const lastStatsAt = new WeakMap<object, number>();
 
@@ -134,18 +138,8 @@ export async function remotePerfSamplePeerConnection(
       rttMs: typeof selected?.currentRoundTripTime === 'number' ? selected.currentRoundTripTime * 1000 : undefined,
       availableOutgoingBitrate:
         typeof selected?.availableOutgoingBitrate === 'number' ? selected.availableOutgoingBitrate : undefined,
-      bytesSent:
-        typeof outbound?.bytesSent === 'number'
-          ? outbound.bytesSent
-          : typeof dataChannel?.bytesSent === 'number'
-            ? dataChannel.bytesSent
-            : undefined,
-      bytesReceived:
-        typeof inbound?.bytesReceived === 'number'
-          ? inbound.bytesReceived
-          : typeof dataChannel?.bytesReceived === 'number'
-            ? dataChannel.bytesReceived
-            : undefined,
+      bytesSent: metricNumber(outbound?.bytesSent) ?? metricNumber(dataChannel?.bytesSent),
+      bytesReceived: metricNumber(inbound?.bytesReceived) ?? metricNumber(dataChannel?.bytesReceived),
       packetsLost: typeof inbound?.packetsLost === 'number' ? inbound.packetsLost : undefined,
     });
   } catch {

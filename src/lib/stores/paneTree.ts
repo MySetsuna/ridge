@@ -755,7 +755,7 @@ export function buildPxAnchorPlans(
     panePx: number,
     side: 'before' | 'after'
   ) {
-    if (!pane || pane.type !== 'split') return;
+    if (pane?.type !== 'split') return;
     if (pane.children.length < 2) return;
     // Only anchor when descendant axis matches primary �?perpendicular
     // descendants stack the other way and proportional scaling is correct.
@@ -1111,13 +1111,9 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
   const hasOrthogonalCoupled = snapshots.some(
     (s) => s.ref.axis !== ui.primary.axis
   );
-  setGlobalSplitResizeCursor(
-    hasOrthogonalCoupled
-      ? 'move'
-      : ui.primary.axis === 'x'
-        ? 'col'
-        : 'row'
-  );
+  let resizeCursor: 'move' | 'col' | 'row' = 'move';
+  if (!hasOrthogonalCoupled) resizeCursor = ui.primary.axis === 'x' ? 'col' : 'row';
+  setGlobalSplitResizeCursor(resizeCursor);
   if (is4WaySnap && typeof document !== 'undefined') {
     document.body.classList.add('rg-resize-4way');
   }
@@ -1812,8 +1808,7 @@ export async function closePane(paneId: string) {
     const tree = get(paneTreeStore);
     const leaf = findLeafOrigin(tree, paneId);
     if (
-      leaf &&
-      leaf.type === 'leaf' &&
+      leaf?.type === 'leaf' &&
       leaf.origin &&
       (leaf.origin.kind === 'remote' || leaf.origin.kind === 'rdg')
     ) {

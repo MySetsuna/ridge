@@ -11,9 +11,9 @@ type PendingRequest = {
 };
 
 export class WsDataProvider implements DataProvider {
-  private conn: RemoteConnection;
+  private readonly conn: RemoteConnection;
   private reqId = 0;
-  private pending = new Map<number, PendingRequest>();
+  private readonly pending = new Map<number, PendingRequest>();
   private offMessage: (() => void) | null = null;
   private offState: (() => void) | null = null;
 
@@ -29,7 +29,8 @@ export class WsDataProvider implements DataProvider {
           this.pending.delete(id);
           if (req.signal && req.onAbort) req.signal.removeEventListener('abort', req.onAbort);
           if (m._error) {
-            req.reject(new Error(String(m._error)));
+            const detail = typeof m._error === 'string' ? m._error : JSON.stringify(m._error) ?? 'remote error';
+            req.reject(new Error(detail));
           } else {
             req.resolve(m._result ?? m);
           }

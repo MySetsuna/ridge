@@ -208,7 +208,7 @@ function mergeWrappedSpan(
 
 /** 每 pane 一份。lazy 重建：dirty 标志由 manager 在 feed/scroll/resize 时置位。 */
 export class LinkSpanIndex {
-  private byRow: Map<number, LinkSpan[]> = new Map();
+  private readonly byRow: Map<number, LinkSpan[]> = new Map();
   private dirty = true;
 
   markDirty(): void {

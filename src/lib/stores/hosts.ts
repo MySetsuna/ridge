@@ -486,17 +486,15 @@ function linkedHost(
       ),
     })),
   }));
+  let status: HostStatus = 'connecting';
+  if (source.manualDisconnected || source.link.state() === 'disconnected') status = 'disconnected';
+  else if (topology.error) status = 'error';
+  else if (!topology.loading && source.link.state() === 'connected') status = 'connected';
   return {
     id: source.hostId,
     kind: source.kind,
     label: source.label,
-    status: source.manualDisconnected || source.link.state() === 'disconnected'
-      ? 'disconnected'
-      : topology.error
-      ? 'error'
-      : topology.loading
-      ? 'connecting'
-      : source.link.state() === 'connected' ? 'connected' : 'connecting',
+    status,
     detail: topology.error
       || (topology.loading
         ? `正在读取远端工作区（${topology.loadedWorkspaces ?? 0}/${topology.totalWorkspaces ?? 0}）…`
@@ -828,7 +826,7 @@ export async function attachSession(
 /** 在 pane 树里按 origin 会话键 `socket:gid` 找到刚领养的 foreign pane。 */
 function findPaneByOriginSession(node: PaneNode, sessionId: string): string | null {
   if (node.type === 'leaf') {
-    return node.origin && node.origin.session_id === sessionId ? node.id : null;
+    return node.origin?.session_id === sessionId ? node.id : null;
   }
   for (const child of node.children) {
     const hit = findPaneByOriginSession(child, sessionId);

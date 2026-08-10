@@ -400,15 +400,11 @@ export function shouldRefreshScmStatus(
 /** True only for Git's explicit "not a repository" family. Busy, timeout,
  * superseded, permission, and transport failures must remain retryable. */
 export function isNotGitRepositoryError(error: unknown): boolean {
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === 'object' &&
-          error !== null &&
-          'message' in error &&
-          typeof error.message === 'string'
-        ? error.message
-        : String(error);
+  let message = String(error);
+  if (error instanceof Error) message = error.message;
+  else if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string') {
+    message = error.message;
+  }
   return (
     /\bnot a git (?:repo|repository)\b/i.test(message) ||
     /\bnot inside a git work tree\b/i.test(message)

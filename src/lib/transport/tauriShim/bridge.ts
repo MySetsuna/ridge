@@ -47,12 +47,12 @@ export class TauriBridge {
   private rpc: RpcClient | null = null;
   private listenerId = 0;
   // Exact-name event listeners, fed by host `{type:'event'}` pushes.
-  private eventListeners = new Map<string, Map<number, EventCallback<unknown>>>();
+  private readonly eventListeners = new Map<string, Map<number, EventCallback<unknown>>>();
   // PTY-output listeners, keyed by paneId, fed by the binary raw-byte fan-out.
-  private ptyListeners = new Map<string, Map<number, EventCallback<{ data: string }>>>();
+  private readonly ptyListeners = new Map<string, Map<number, EventCallback<{ data: string }>>>();
   // Panes we've subscribed to, so we can re-subscribe after a reconnect.
-  private subscribedPanes = new Map<string, { workspaceId?: string; active?: boolean }>();
-  private decoder = new TextDecoder();
+  private readonly subscribedPanes = new Map<string, { workspaceId?: string; active?: boolean }>();
+  private readonly decoder = new TextDecoder();
   private disposers: Unsubscribe[] = [];
 
   /** True once a transport has been attached (after auth succeeds). */

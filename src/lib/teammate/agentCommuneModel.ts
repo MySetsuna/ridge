@@ -124,7 +124,9 @@ export function agentAttentionForTransition(
 }
 
 export function agentAttentionPriority(attention: AgentAttention): number {
-  return attention === 'waiting' ? 3 : attention === 'stopped' ? 2 : 1;
+  if (attention === 'waiting') return 3;
+  if (attention === 'stopped') return 2;
+  return 1;
 }
 
 const STATUS_PRIORITY: readonly AgentCardStatus[] = ['waiting', 'working', 'stopped', 'idle', 'completed'];

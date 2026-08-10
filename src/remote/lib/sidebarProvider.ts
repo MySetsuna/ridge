@@ -76,11 +76,11 @@ function parentOf(path: string): string | null {
 }
 
 function isNotGitRepositoryError(error: unknown): boolean {
-  const detail = error instanceof Error
-    ? error.message
-    : typeof error === 'object' && error !== null && 'message' in error
-      ? String((error as { message?: unknown }).message ?? '')
-      : String(error ?? '');
+  let detail = typeof error === 'string' ? error : JSON.stringify(error) ?? '';
+  if (error instanceof Error) detail = error.message;
+  else if (typeof error === 'object' && error !== null && 'message' in error) {
+    detail = JSON.stringify((error as { message?: unknown }).message) ?? '';
+  }
   return /\bnot a git (?:repository|repo)\b/i.test(detail);
 }
 
@@ -209,11 +209,10 @@ export function createWsSidebarProvider(
           child_count: c.child_count ?? null,
         }));
         // Directories first, then case-insensitive name — matches the desktop tree.
-        entries.sort((a, b) =>
-          a.is_dir === b.is_dir
-            ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-            : a.is_dir ? -1 : 1,
-        );
+        entries.sort((a, b) => {
+          if (a.is_dir === b.is_dir) return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+          return a.is_dir ? -1 : 1;
+        });
         const resolved = tree.path ?? target;
         return { path: resolved, parent: parentOf(resolved), entries };
       }, signal);
@@ -233,11 +232,10 @@ export function createWsSidebarProvider(
           is_ignored: c.is_ignored ?? null,
           child_count: c.child_count ?? null,
         }));
-        entries.sort((a, b) =>
-          a.is_dir === b.is_dir
-            ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-            : a.is_dir ? -1 : 1,
-        );
+        entries.sort((a, b) => {
+          if (a.is_dir === b.is_dir) return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+          return a.is_dir ? -1 : 1;
+        });
         const resolved = tree.path ?? target;
         return { path: resolved, parent: parentOf(resolved), entries };
       }, signal);

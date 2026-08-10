@@ -173,8 +173,8 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   /** Pane bulk lane has an independent chunk id space and E2EE counter. */
   private paneSendMsgId = 0;
   /** 入站分片重组器（按序拼回完整密文再 open）。 */
-  private reassembler = new ChunkReassembler();
-  private paneReassembler = new ChunkReassembler();
+  private readonly reassembler = new ChunkReassembler();
+  private readonly paneReassembler = new ChunkReassembler();
 
   private state: CloudConnectionState = 'disconnected';
   private closed = false;
@@ -239,13 +239,10 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
     this.connectWatchdog = setTimeout(() => {
       this.connectWatchdog = null;
       if (this.closed || this.state === 'connected') return;
-      const stage = !this.hostPresent
-        ? '远程主机未上线（host 未连接到中继）'
-        : !this.offerStarted
-          ? '尚未发起连接协商'
-          : this.state === 'handshaking'
-            ? '加密握手未完成'
-            : '网络协商未完成（可能被 NAT/防火墙阻断）';
+      let stage = '网络协商未完成（可能被 NAT/防火墙阻断）';
+      if (!this.hostPresent) stage = '远程主机未上线（host 未连接到中继）';
+      else if (!this.offerStarted) stage = '尚未发起连接协商';
+      else if (this.state === 'handshaking') stage = '加密握手未完成';
       this.fail(
         `连接远程桌面超时：${stage}。请确认目标主机上 Ridge / rdg remote 正在运行，然后重试。`,
         'HOST_UNREACHABLE',
@@ -630,7 +627,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
 
   private rawSend(bytes: Uint8Array, lane: 'control' | 'pane' = 'control'): void {
     const dc = lane === 'pane' ? this.paneDc : this.dc;
-    if (dc && dc.readyState === 'open') {
+    if (dc?.readyState === 'open') {
       remotePerfMark('transport-send', {
         bytes: bytes.byteLength,
         transport: 'cloud-webrtc-wire',
@@ -648,7 +645,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
    * 即使会话被 relay-MITM，该帧也只透露"已识破"，不泄露任何机密。
    */
   private sendByeSignatureInvalid(): void {
-    if (!this.session || !this.dc || this.dc.readyState !== 'open') return;
+    if (!this.session || this.dc?.readyState !== 'open') return;
     try {
       const bye = encodeJsonFrame({
         jsonrpc: '2.0',
@@ -720,7 +717,7 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   }
 
   private sendSignal(msg: SignalMsg): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }
   }

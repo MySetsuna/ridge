@@ -565,8 +565,8 @@ export class TerminalManager {
 	private wasmReady = false;
 	private wasmReadyPromise: Promise<void> | null = null;
 
-	private opts: ManagerOptions;
-	private panes = new Map<string, PaneEntry>();
+	private readonly opts: ManagerOptions;
+	private readonly panes = new Map<string, PaneEntry>();
 	/** P4.6 Part B (2026-05-22) — paneIds that have been mirrored into
 	 *  the render worker via `workerRendererBridge.attach(...)`. Only
 	 *  populated when `window.__RIDGE_USE_WORKER` was on at the first
@@ -574,10 +574,10 @@ export class TerminalManager {
 	 *  on subsequent fits and to gate the per-frame delta mirror so we
 	 *  don't spam `pane_not_initialized` errors after a mid-session
 	 *  flag toggle. Cleared on `detach`. */
-	private workerAttached = new Set<string>();
+	private readonly workerAttached = new Set<string>();
 	/** Pane ids between worker `init`/`bindCanvas` acknowledgements. A fit
 	 *  must not send `resize` until this handshake completes. */
-	private workerInitializing = new Set<string>();
+	private readonly workerInitializing = new Set<string>();
 	/** Worker instance that owns `workerAttached`. A replacement renderer starts
 	 * with no pane state, so stale entries must not send resize/bindCanvas before
 	 * the new worker receives its init. */
@@ -671,7 +671,7 @@ export class TerminalManager {
 	 *  this small JS-side mirror for E2E specs to assert that the overlay
 	 *  cell matches the textarea cell + the kernel cursor. Cleared by
 	 *  `clearPreedit`. */
-	private _lastPreeditCall: Map<string, { row: number; col: number; text: string }> = new Map();
+	private readonly _lastPreeditCall: Map<string, { row: number; col: number; text: string }> = new Map();
 	/** In-flight `attachHost` init promise. Concurrent pane `attach()` /
 	 *  `unpark()` calls await this so they don't race ahead of WebGPU
 	 *  initialisation. Resolves (never rejects) — `attachHost` swallows
@@ -684,7 +684,7 @@ export class TerminalManager {
 	 *  user comes back. */
 	private visibilityListener: (() => void) | null = null;
 	private _lastMemorySweepAt = 0;
-	private _memoryRestorePending = new Set<string>();
+	private readonly _memoryRestorePending = new Set<string>();
 	/**
 	 * WebGPU SurfaceHost is shared by every pane.  Adapter/device creation is
 	 * asynchronous and the browser can deadlock when several RenderHandles are
@@ -815,12 +815,10 @@ export class TerminalManager {
 			return true;
 		}
 		// open_file | reveal_in_tree → host port (editor / explorer)
-		const text =
-			plan.type === 'open_file'
-				? plan.line != null
-					? `${plan.path}:${plan.line}${plan.col != null ? `:${plan.col}` : ''}`
-					: plan.path
-				: plan.path;
+		let text = plan.path;
+		if (plan.type === 'open_file' && plan.line != null) {
+			text = `${plan.path}:${plan.line}${plan.col != null ? `:${plan.col}` : ''}`;
+		}
 		const cwd = TerminalManager._currentPaneCwd(entry);
 		const known = TerminalManager._knownCwds();
 		if (!_hostPorts?.openTextLink) return false;
@@ -1882,7 +1880,10 @@ export class TerminalManager {
 				if ((modes & MOUSE_ANY_EVT) !== 0 || pending.buttons !== 0) {
 					const isMacUA = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 					const mod = pending.ctrlKey || (isMacUA && pending.metaKey);
-					const btn = pending.buttons & 1 ? 0 : pending.buttons & 2 ? 2 : pending.buttons & 4 ? 1 : 0;
+					let btn = 0;
+					if (pending.buttons & 1) btn = 0;
+					else if (pending.buttons & 2) btn = 2;
+					else if (pending.buttons & 4) btn = 1;
 					const buttons = pending.buttons;
 					const action = 2; // motion
 					// Dedup: same cell + same buttons + same action → skip
@@ -2128,10 +2129,9 @@ export class TerminalManager {
 			if (!ent.selecting || !ent.selectionStartAbs) { stopAutoScroll(ent); return; }
 			const rect = ent.container.getBoundingClientRect();
 			const y = e.clientY - rect.top;
-			const dir: 'up' | 'down' | null =
-				y < AUTO_SCROLL_EDGE_PX ? 'up'
-				: y > rect.height - AUTO_SCROLL_EDGE_PX ? 'down'
-				: null;
+			let dir: 'up' | 'down' | null = null;
+			if (y < AUTO_SCROLL_EDGE_PX) dir = 'up';
+			else if (y > rect.height - AUTO_SCROLL_EDGE_PX) dir = 'down';
 			if (dir === null) { stopAutoScroll(ent); return; }
 			// Same direction already ticking → keep going. Direction
 			// flipped → reset so the new tick fires immediately rather

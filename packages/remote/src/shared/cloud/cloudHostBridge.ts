@@ -37,6 +37,7 @@ import { base64ToBytes, bytesToBase64 } from './e2ee';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { isRemoteAllowed } from './remoteAllowlist';
 import { decideRemoteInvoke } from '../transport/remoteInvokeAdmit';
+import { unknownText } from '../transport/unknownText';
 import {
   BUFFERED_HIGH_WATERMARK,
   BUFFERED_LOW_WATERMARK,
@@ -364,7 +365,7 @@ export class CloudHostBridge {
     if (t === 'totp-trust-hello') {
       const pubB64 = typeof frame.pub === 'string' ? frame.pub : '';
       const pub = base64ToBytes(pubB64);
-      if (!pub || pub.length !== 32) {
+      if (pub?.length !== 32) {
         this.log('warn', 'totp-trust-hello: invalid pub field; ignored');
         return;
       }
@@ -406,7 +407,7 @@ export class CloudHostBridge {
       const sigB64 = typeof frame.sig === 'string' ? frame.sig : '';
       const sig = base64ToBytes(sigB64);
       let valid = false;
-      if (sig && sig.length === 64) {
+      if (sig?.length === 64) {
         try {
           // §7.4 签名消息：utf8("ridge-totp-trust-v1") ‖ nonce ‖ transcript
           const prefix = new TextEncoder().encode('ridge-totp-trust-v1');
@@ -450,7 +451,7 @@ export class CloudHostBridge {
     }
 
     if (t !== 'totp-verify' && t !== 'totp-bind') {
-      this.log('warn', `unknown CONTROL frame t=${String(t)}; ignored`);
+      this.log('warn', `unknown CONTROL frame t=${unknownText(t, 'unknown')}; ignored`);
       return;
     }
     // 未注入**任何**校验器（不门控）：任何 totp 帧都视为通过（与构造时 verified=true 一致）。
@@ -613,7 +614,7 @@ export class CloudHostBridge {
   private handleBye(params: unknown): void {
     const reason = (params as { reason?: unknown } | null | undefined)?.reason;
     this.rejected = true;
-    this.log('warn', `peer sent $/bye (reason=${String(reason ?? 'unknown')}); rejecting session`);
+    this.log('warn', `peer sent $/bye (reason=${unknownText(reason, 'unknown')}); rejecting session`);
   }
 
   // ── §7.0：$/cancel 尽力中止 ───────────────────────────────────────────────────
@@ -705,7 +706,7 @@ export class CloudHostBridge {
     ) {
       return this.invoke(method, params);
     }
-    const key = `${String(params.workspaceId ?? '')}\0${paneId}\0${source}\0${String(sequence)}`;
+    const key = `${unknownText(params.workspaceId)}\0${paneId}\0${source}\0${unknownText(sequence)}`;
     const existing = this.inputInvokes.get(key);
     if (existing) {
       if (existing.data !== params.data) {
@@ -993,12 +994,9 @@ export function toJsonRpcError(e: unknown): { code: number; message: string; dat
     if ('data' in obj && obj.data !== undefined) out.data = obj.data;
     return out;
   }
-  const message =
-    e instanceof Error
-      ? e.message
-      : typeof e === 'string'
-        ? e
-        : 'command failed';
+  let message = 'command failed';
+  if (e instanceof Error) message = e.message;
+  else if (typeof e === 'string') message = e;
   return { code: JSON_RPC_INTERNAL_ERROR, message, data: { kind: 'internal' } };
 }
 
