@@ -105,6 +105,29 @@ if (cliBuild.status !== 0) {
   console.error(`[tauri-dev-cdp] ridge-cli debug build failed (exit ${cliBuild.status ?? 'unknown'})`);
   process.exit(cliBuild.status ?? 1);
 }
+
+// The embedded Kernel must not keep Cargo's shared `target/debug/ridge.exe`
+// open across a desktop-shell restart. Build and copy a per-run host binary;
+// the Tauri shell may then be rebuilt while the previous Kernel remains alive.
+const desktopBuild = spawnSync('cargo', ['build', '-p', 'ridge'], {
+  cwd: path.resolve(import.meta.dirname, '..'),
+  env: process.env,
+  stdio: 'inherit',
+  shell: process.platform === 'win32',
+});
+if (desktopBuild.status !== 0) {
+  console.error(`[tauri-dev-cdp] ridge desktop build failed (exit ${desktopBuild.status ?? 'unknown'})`);
+  process.exit(desktopBuild.status ?? 1);
+}
+const ridgeSource = path.join(root, 'target', 'debug', process.platform === 'win32' ? 'ridge.exe' : 'ridge');
+const ridgeKernelCopy = path.join(
+  userDataDir,
+  `ridge-kernel-${process.pid}${process.platform === 'win32' ? '.exe' : ''}`,
+);
+fs.copyFileSync(ridgeSource, ridgeKernelCopy);
+process.env.RIDGE_KERNEL_HOST_BINARY = ridgeKernelCopy;
+console.log(`[tauri-dev-cdp] detached kernel binary: ${ridgeKernelCopy}`);
+
 const rdgSource = path.join(root, 'target', 'debug', process.platform === 'win32' ? 'rdg.exe' : 'rdg');
 const rdgCopy = path.join(
   userDataDir,
