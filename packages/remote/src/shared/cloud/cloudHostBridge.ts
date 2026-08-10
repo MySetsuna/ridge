@@ -771,7 +771,7 @@ export class CloudHostBridge {
       this.paneSubs.set(paneId, () => {});
       this.log(
         'warn',
-        `subscribe-pane(${paneId}) registered but no paneOutputSource wired (pane stream TODO)`,
+        `subscribe-pane(${paneId}) registered without paneOutputSource; live stream unavailable`,
       );
       return;
     }

@@ -181,6 +181,8 @@ describe('cloudHostStore lifecycle', () => {
 		});
 		mocks.host.goOnline.mockResolvedValue(undefined);
 		mocks.cloudHostBridge.mockReturnValue({ marker: true });
+		const paneSource = vi.fn(() => () => {});
+		mocks.makeCloudHostPaneSource.mockReturnValue(paneSource);
 		const handlers = new Map<string, (event: { payload: unknown }) => void>();
 		const unlisten = vi.fn();
 		mocks.listen.mockImplementation(async (name: string, handler: (event: { payload: unknown }) => void) => {
@@ -205,6 +207,7 @@ describe('cloudHostStore lifecycle', () => {
 		callbacks.createBridge('plain', vi.fn(), new Uint8Array([1]), null);
 		const plainOptions = mocks.cloudHostBridge.mock.calls[0][0] as Record<string, any>;
 		expect(plainOptions.preauthorized).toBe(false);
+		expect(plainOptions.paneOutputSource).toBe(paneSource);
 		await expect(plainOptions.totpVerifier('123456')).resolves.toBeUndefined();
 
 		const scope = {
@@ -219,6 +222,8 @@ describe('cloudHostStore lifecycle', () => {
 		callbacks.createBridge('scoped', vi.fn(), new Uint8Array([2]), scope);
 		const scopedOptions = mocks.cloudHostBridge.mock.calls[1][0] as Record<string, any>;
 		expect(scopedOptions.preauthorized).toBe(true);
+		expect(typeof scopedOptions.paneOutputSource).toBe('function');
+		expect(mocks.makeCloudHostPaneSource).toHaveBeenCalledTimes(2);
 		await expect(scopedOptions.invoke('get_active_workspace_id')).resolves.toBe('shared');
 		await expect(scopedOptions.invoke('get_pane_layout', {})).resolves.toMatchObject({ id: 'pane-1' });
 		await expect(scopedOptions.invoke('create_workspace', {})).rejects.toMatchObject({ code: -32003 });
