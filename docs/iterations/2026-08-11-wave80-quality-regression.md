@@ -17,6 +17,7 @@
 - `pnpm verify:pwa`：exit `0`；viewport、manifest standalone/scope/icons、service worker、safe-area CSS 与无站内安装钩子均通过。
 - 首次 `pnpm build:remote:desktop` 曾因现场内存不足以 `4294967295` 中止；资源恢复后复跑通过，最终 desktop SSR/client 构建 exit `0`，产物写入 `remote-dist/desktop`，日志为 `.tools/wave81-build-remote-desktop.log`。
 - `pnpm build:remote` 串行总入口最终 exit `0`，desktop/mobile 两套产物均完成。
+- `pnpm build`：exit `0`，主桌面产物写入 `build`，最终 SvelteKit 构建耗时约 6m45s。
 
 ## Sonar
 
