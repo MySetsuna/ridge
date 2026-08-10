@@ -1586,3 +1586,11 @@
 - 本轮确定性证据：`cargo test -p ridge-mcp --lib --quiet` 90 passed；`cargo test --manifest-path src-tauri/Cargo.toml --lib teammate::mcp::tests --quiet` 5 passed；`cargo fmt --all -- --check` 通过；完整记录见 `docs/iterations/2026-08-11-wave74-closure.md`。
 - SonarQube 最新项目 API 分析 `9abdb231-3503-4f6e-b8ee-48d28f7086dc`：coverage `80.4%`、line `86.7%`、branch `71.5%`、Quality Gate `OK`、`new_violations=0`。故 `REQ-SONAR-COVERAGE-80-01` 的项目覆盖率与质量门证据已取得；现场设备与第三方互操作仍按外部边界验收。
 - Wave 74 CDP 门禁：PTY parser、LAN protocol、DPR `1.5`、Remote mobile Agent 均通过；完整 Vitest `214` files / `1965 passed / 1 skipped`，`pnpm check` 为 `0 errors / 0 warnings`。移动门禁的早先等待超时已由更长宿主命令等待复核为通过，非产品失败。
+
+## Wave 75 PTY 生产采样器补充（2026-08-11）
+
+- `REQ-NLM-ITERATION-01` 本轮已落地真实桌面采样器：`RidgePane.svelte` 定时及事件驱动采样五条件，Tauri `get_pty_runtime_identity` 读取 Kernel roster，`publish_pty_runtime_snapshot` 按 live pane 与 `generation/lease` 围栏后写入 Hub。
+- Kernel Agent 身份按 `workspaceId + paneId + online + generation + lease` 选择；普通 shell、仅 UI 手工标记且无 Kernel identity 的 pane 不发布证明，保持 fail-closed。UI 展示名称不再作为身份权限来源。
+- 证据：`pnpm check` 0/0；Vitest 215 files / 1975 passed / 1 skipped；`ridge-mcp` 90/90；Tauri `teammate::mcp::tests` 6/6；LAN、DPR 1.5、Remote mobile 均通过。PTY parser 冷启动 harness 仍有 settle/重复 pane 非幂等噪声，不能据此宣称实体 Agent 五条件现场验收完成。
+- 尚未闭合：第三方 Runtime/A2A 私有协议、公网/TURN、双真实窗口、实体手机 PWA/IME/后台恢复、物理 DPR/像素矩阵及真实 Agent CLI 五条件动态切换。Sonar 以本地最新 API 证据为准；发布、push、tag、Release 未执行。
+- 详见 `docs/iterations/2026-08-11-wave75-pty-sampler.md`。
