@@ -59,3 +59,12 @@
 - 同日完整源集（额外纳入 `scripts`，不以排除脚本冒充全项目）扫描 scanner/CE 亦成功，但项目 coverage `66.3%`、line `67.5%`、branch `64.3%`，Quality Gate `ERROR`（`new_coverage=17.8%`、`new_violations=155`）。故 `REQ-SONAR-COVERAGE-80-01` 仍 `ACTIVE`：产品源口径已过 80%，全源口径与 Quality Gate 尚未闭环。
 - 新问题审计：当前 new-period 查询 `172` 条，主要规则为 Rust `S3776/S107`、TypeScript `S2933/S3735` 等复杂度/类型安全问题；本波未通过改 Quality Gate、排除未测代码或静态估算绕过，需下一轮逐项修复并重扫。
 - 扫描日志：`.tools/sonar-scan-codex-20260810-wave70-product.log`、`.tools/sonar-scan-codex-20260810-wave70.log`；临时副本仅用于规避 Windows Rust CRLF scanner 偏移，未改工作树源码。凭证为一次性本地 token，未写入仓库。
+
+## Wave71：全源脚本质量与 Sonar 复扫（2026-08-10）
+
+- 将 executable verification harness 与 product helper 分开归类：`sonar.sources` 保留 `scripts`，真实 `src/packages` 测试继续由 `sonar.tests` 管理，CDP/E2E/remote smoke/dev harness 由 `sonar.test.inclusions` 明确列出；未通过排除 `scripts` 获得覆盖率。
+- 对 build/asset/dev/signaling/review/publish helper 增加可注入函数边界与 main guard；新增 `scripts/quality-helpers.test.mjs`，聚焦回归 `25 passed / 0 failed`。本轮额外修复 Sonar 报告的脚本认知复杂度、promise-chain、正则回溯、嵌套模板、默认对象参数及回滚/manifest 分支问题。
+- 最新全源 Sonar：scanner/CE `SUCCESS`，CE task `3c78dac8-13b1-41a8-a65e-cdce622ee4cd`；`coverage=80.2%`、`line_coverage=86.4%`、`branch_coverage=71.6%`、`lines_to_cover=15236`、`uncovered_lines=2074`。Quality Gate `ERROR`：`new_coverage=81.7% OK`、`new_duplicated_lines_density=0.94426% OK`、`new_violations=152 ERROR`；项目总计 `violations=730`、`bugs=17`、`vulnerabilities=21`、`code_smells=692`。故仅覆盖率目标已达，质量门未达，不宣称完成。
+- `new_violations=152` 的主因仍为 Rust `S3776=61`、Rust `S107=13`，其次为脚本/TS `S2933/S3735/S5906/S6582/S3358` 等；修复须逐项重构/断言，不以 `NOSONAR`、排除源集或改 Gate 绕过。
+- Agent 通信架构审计结论：Hub 的 PTY 五条件、TTL、generation/lease fencing 与确定性测试存在；桌面 `DesktopMcpHost::probe_delivery` 生产路径只有 MCP pull 与已注册 Runtime/A2A probe，尚无一个同时读取 `agent_idle`、`terminal.mode=agent_prompt`、`pending_approval`、前台目标进程、用户输入竞争并以 revision/epoch 发布的运行时采样器，故 PTY 仍 fail-closed。第三方 CLI 私有 Runtime/A2A 实测未进行，亦未宣称兼容；本轮不向 Codex 外 CLI/Agent 发消息。
+- 本轮 `pnpm check`：`0 errors / 0 warnings`。既有 `coverage/*`、`.iteration/*`、E2E artifact 及 `packages/remote/src/shared/cloud/__faultRig.ts`、`faultInjection.test.ts` 脏改动均不纳入本轮提交。

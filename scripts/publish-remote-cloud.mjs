@@ -28,10 +28,7 @@ import {
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REMOTE_DIST = path.join(ROOT, 'remote-dist');
 
-const die = (msg) => {
-  console.error('✗ ' + msg);
-  process.exit(1);
-};
+export const die = (msg) => { throw new Error(msg); };
 const sh = (cmd) => execSync(cmd, { cwd: ROOT, stdio: 'pipe' }).toString().trim();
 const run = (cmd) => execSync(cmd, { cwd: ROOT, stdio: 'inherit' });
 
@@ -58,70 +55,74 @@ async function report(res) {
   console.log('✓ 已发布：', JSON.stringify(data?.data ?? data));
 }
 
-async function main() {
-  const cfg = resolveConfig(process.env, process.argv.slice(2));
+async function rollback(cfg) {
+  if (!cfg.url) die('缺 RIDGE_CLOUD_ARTIFACT_URL');
+  if (!cfg.token) die('缺 RIDGE_ARTIFACT_TOKEN');
+  const to = typeof cfg.rollback === 'string' ? cfg.rollback : undefined;
+  const label = to ? ` → ${to}` : '（到上一个 release）';
+  console.log(`· 回滚 current${label} …`);
+  const res = await fetch(`${cfg.url}/rollback`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(to ? { to } : {}),
+  });
+  await report(res);
+}
 
-  // ── 回滚 ──
+function assertRemoteDist() {
+  for (const kind of ['desktop', 'mobile']) {
+    const dist = path.join(REMOTE_DIST, kind);
+    if (!fs.existsSync(path.join(dist, 'index.html'))) die(`产物缺失：${dist}/index.html 不存在（先构建，或去掉 --no-build）`);
+  }
+}
+
+function readExistingManifest(roots, expectedVersion, expectedSha) {
+  const metadata = roots.map((root) => readArtifactMetadata(root));
+  if (metadata.some((value) => !value)) die('--no-build requires artifact.json in both desktop and mobile roots');
+  const first = metadata[0];
+  if (metadata.some((value) => JSON.stringify(value) !== JSON.stringify(first))) die('--no-build requires matching desktop/mobile artifact.json fingerprints');
+  if (first.version !== expectedVersion || first.gitSha !== expectedSha) {
+    die(`--no-build artifact mismatch: roots=${first.version}+g${first.gitSha}, checkout=${expectedVersion}+g${expectedSha}`);
+  }
+  return first;
+}
+
+function prepareManifest(cfg, roots) {
+  const manifest = cfg.build
+    ? buildManifest({ version: pkgVersion(), gitSha: gitSha(), builtAt: new Date().toISOString() })
+    : readExistingManifest(roots, pkgVersion(), gitSha());
+  if (cfg.build) for (const dist of roots) writeArtifactMetadata(dist, manifest);
+  return manifest;
+}
+
+async function upload(cfg, bundle) {
+  if (!cfg.url) die('缺 RIDGE_CLOUD_ARTIFACT_URL（如 https://9527127.xyz/api/v1/remote-artifacts）');
+  if (!cfg.token) die('缺 RIDGE_ARTIFACT_TOKEN');
+  console.log(`· 上传到 ${cfg.url} …`);
+  const res = await fetch(cfg.url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/octet-stream' },
+    body: bundle,
+  });
+  await report(res);
+}
+
+export async function main({ env = process.env, args = process.argv.slice(2) } = {}) {
+  const cfg = resolveConfig(env, args);
+
   if (cfg.rollback) {
-    if (!cfg.url) die('缺 RIDGE_CLOUD_ARTIFACT_URL');
-    if (!cfg.token) die('缺 RIDGE_ARTIFACT_TOKEN');
-    const to = typeof cfg.rollback === 'string' ? cfg.rollback : undefined;
-    console.log(`· 回滚 current${to ? ` → ${to}` : '（到上一个 release）'} …`);
-    const res = await fetch(`${cfg.url}/rollback`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(to ? { to } : {}),
-    });
-    await report(res);
+    await rollback(cfg);
     return;
   }
 
-  // ── 构建 ──
   if (cfg.build) {
     console.log('· 构建 Remote 统一产物…');
     run('pnpm build:remote');
   }
-  for (const dist of ['desktop', 'mobile'].map((kind) => path.join(REMOTE_DIST, kind))) {
-    if (!fs.existsSync(path.join(dist, 'index.html'))) {
-      die(`产物缺失：${dist}/index.html 不存在（先构建，或去掉 --no-build）`);
-    }
-  }
+  assertRemoteDist();
 
-  // ── 打包 ──
   const roots = ['desktop', 'mobile'].map((kind) => path.join(REMOTE_DIST, kind));
-  const expectedVersion = pkgVersion();
-  const expectedSha = gitSha();
-  let manifest;
-  if (cfg.build) {
-    manifest = buildManifest({
-      version: expectedVersion,
-      gitSha: expectedSha,
-      builtAt: new Date().toISOString(),
-    });
-    // Publish a tiny public fingerprint beside each UA-specific root. The
-    // cloud API manifest proves what was uploaded; this file proves what the
-    // static desktop/mobile entrypoint is actually serving after activation.
-    for (const dist of roots) writeArtifactMetadata(dist, manifest);
-  } else {
-    // --no-build is intentionally strict: never stamp the current SHA onto a
-    // stale directory and call it a fresh artifact. Both UA roots must carry
-    // the same fingerprint and it must match this checkout.
-    const metadata = roots.map(readArtifactMetadata);
-    if (metadata.some((value) => !value)) {
-      die('--no-build requires artifact.json in both desktop and mobile roots');
-    }
-    const first = metadata[0];
-    if (metadata.some((value) => JSON.stringify(value) !== JSON.stringify(first))) {
-      die('--no-build requires matching desktop/mobile artifact.json fingerprints');
-    }
-    if (first.version !== expectedVersion || first.gitSha !== expectedSha) {
-      die(
-        `--no-build artifact mismatch: roots=${first.version}+g${first.gitSha}, ` +
-          `checkout=${expectedVersion}+g${expectedSha}`,
-      );
-    }
-    manifest = first;
-  }
+  const manifest = prepareManifest(cfg, roots);
   const files = collectFiles(REMOTE_DIST, 'remote-app');
   const bundle = packBundle(manifest, files);
   const ver = `${manifest.version}+g${manifest.gitSha}`;
@@ -129,7 +130,6 @@ async function main() {
     `· bundle：${files.length} 文件，${(bundle.length / 1048576).toFixed(2)} MiB，版本 ${ver}`
   );
 
-  // ── dry-run：落盘 ──
   if (cfg.dryRun) {
     const out = path.join(ROOT, 'build', `remote-artifact-${ver}.bundle`);
     fs.mkdirSync(path.dirname(out), { recursive: true });
@@ -138,21 +138,14 @@ async function main() {
     return;
   }
 
-  // ── 上传 ──
-  if (!cfg.url) {
-    die('缺 RIDGE_CLOUD_ARTIFACT_URL（如 https://9527127.xyz/api/v1/remote-artifacts）');
-  }
-  if (!cfg.token) die('缺 RIDGE_ARTIFACT_TOKEN');
-  console.log(`· 上传到 ${cfg.url} …`);
-  const res = await fetch(cfg.url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${cfg.token}`,
-      'Content-Type': 'application/octet-stream',
-    },
-    body: bundle,
-  });
-  await report(res);
+  await upload(cfg, bundle);
 }
 
-main().catch((e) => die(e?.stack || String(e)));
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  try {
+    await main();
+  } catch (error) {
+    console.error(`✗ ${error?.stack || String(error)}`);
+    process.exit(1);
+  }
+}

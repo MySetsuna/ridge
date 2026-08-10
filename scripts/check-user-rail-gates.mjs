@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '..');
 
-const requiredDocs = [
+export const REQUIRED_DOCS = [
   'docs/plans/user-verification-checklist.md',
   'docs/plans/cloud-remote-physical-smoke-runbook.md',
   'scripts/check-prod-status.mjs',
@@ -27,56 +27,55 @@ const requiredDocs = [
   'src/lib/stores/gitGuardStats.ts',
 ];
 
-let failed = 0;
-function ok(msg) {
-  console.log(`OK  ${msg}`);
-}
-function bad(msg) {
-  console.error(`FAIL ${msg}`);
-  failed += 1;
-}
-
-for (const rel of requiredDocs) {
-  const p = resolve(root, rel);
-  if (existsSync(p)) ok(`artifact present: ${rel}`);
-  else bad(`missing required artifact: ${rel}`);
-}
-
-// Fake credentials must fail closed (no network claim of success).
-const token = process.env.RIDGE_ARTIFACT_TOKEN || '';
-const live = process.argv.includes('--live');
-if (!live) {
-  if (!token || token === 'fake' || token === 'test') {
-    ok('no live token: fail-closed path (expected for CI / local without secrets)');
-  } else {
-    ok('token present but --live not set: skipping network (safe default)');
-  }
-} else {
-  if (!token || token === 'fake') {
-    bad('--live requires real RIDGE_ARTIFACT_TOKEN (not fake)');
-  } else {
-    ok('--live mode: caller must run check-prod-status.mjs separately with real env');
+function checkRequiredDocs(rootDir, fsImpl, ok, bad) {
+  for (const rel of REQUIRED_DOCS) {
+    const present = fsImpl.existsSync(resolve(rootDir, rel));
+    (present ? ok : bad)(present ? `artifact present: ${rel}` : `missing required artifact: ${rel}`);
   }
 }
 
-// Evidence schema example must validate structure when present.
-const example = resolve(root, 'docs/plans/examples/remote-smoke-evidence.example.json');
-if (existsSync(example)) {
+function checkCredentialMode(args, env, ok, bad) {
+  const token = env.RIDGE_ARTIFACT_TOKEN || '';
+  if (!args.includes('--live')) {
+    const message = !token || token === 'fake' || token === 'test'
+      ? 'no live token: fail-closed path (expected for CI / local without secrets)'
+      : 'token present but --live not set: skipping network (safe default)';
+    ok(message);
+    return;
+  }
+  if (!token || token === 'fake') bad('--live requires real RIDGE_ARTIFACT_TOKEN (not fake)');
+  else ok('--live mode: caller must run check-prod-status.mjs separately with real env');
+}
+
+function checkEvidenceExample(rootDir, fsImpl, ok, bad) {
+  const example = resolve(rootDir, 'docs/plans/examples/remote-smoke-evidence.example.json');
+  if (!fsImpl.existsSync(example)) {
+    ok('no example json (optional)');
+    return;
+  }
   try {
-    const j = JSON.parse(readFileSync(example, 'utf8'));
-    if (j && typeof j === 'object') ok('smoke evidence example parses as JSON object');
+    const value = JSON.parse(fsImpl.readFileSync(example, 'utf8'));
+    if (value && typeof value === 'object') ok('smoke evidence example parses as JSON object');
     else bad('smoke evidence example not an object');
-  } catch (e) {
-    bad(`smoke evidence example invalid JSON: ${e.message}`);
+  } catch (error) {
+    bad(`smoke evidence example invalid JSON: ${error.message}`);
   }
-} else {
-  // non-fatal: schema may live elsewhere
-  ok('no example json (optional)');
 }
 
-if (failed > 0) {
-  console.error(`\ncheck-user-rail-gates: ${failed} failure(s)`);
-  process.exit(1);
+export function runGates({ rootDir = root, args = [], env = process.env, fsImpl = { existsSync, readFileSync }, io = console } = {}) {
+  let failed = 0;
+  const ok = (msg) => io.log(`OK  ${msg}`);
+  const bad = (msg) => { io.error(`FAIL ${msg}`); failed += 1; };
+  checkRequiredDocs(rootDir, fsImpl, ok, bad);
+  checkCredentialMode(args, env, ok, bad);
+  checkEvidenceExample(rootDir, fsImpl, ok, bad);
+  if (failed) io.error(`\ncheck-user-rail-gates: ${failed} failure(s)`);
+  else io.log('\ncheck-user-rail-gates: all code-side gates ok');
+  return failed;
 }
-console.log('\ncheck-user-rail-gates: all code-side gates ok');
-process.exit(0);
+
+export function main(args = process.argv.slice(2), options = {}) {
+  return runGates({ args, ...options });
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) process.exit(main() ? 1 : 0);
