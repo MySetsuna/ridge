@@ -18,10 +18,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveCdpPort } from './cdp-port.mjs';
+import { isRidgeCdpTarget } from './lib/cdpTarget.mjs';
 
 const CDP_PORT = Number(process.env.CDP_PORT ?? resolveCdpPort());
 const MOBILE_CDP_PORT = Number(process.env.MOBILE_CDP_PORT ?? 0);
 const MOBILE_CDP_TIMEOUT_MS = 60000;
+const remoteCa = process.env.RIDGE_REMOTE_CA_CERT
+  ? fs.readFileSync(process.env.RIDGE_REMOTE_CA_CERT)
+  : undefined;
 const log = (...a) => console.log('[remote-mobile]', ...a);
 const fail = (...a) => {
   console.error('[remote-mobile] FAIL:', ...a);
@@ -57,7 +61,8 @@ const postForm = (port, p, body) =>
         path: p,
         method: 'POST',
         timeout: 8000,
-        rejectUnauthorized: false,
+        ca: remoteCa,
+        rejectUnauthorized: true,
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'Content-Length': Buffer.byteLength(body),
@@ -79,7 +84,7 @@ fs.mkdirSync(dir, { recursive: true });
 const fake = path.join(dir, 'aider.exe');
 const killFake = async () => {
   const { spawnSync } = await import('node:child_process');
-  const q = fake.replace(/'/g, "''");
+  const q = fake.replaceAll("'", "''");
   spawnSync('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',
@@ -88,12 +93,21 @@ const killFake = async () => {
   ], { stdio: 'ignore' });
 };
 await killFake();
-fs.copyFileSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'PING.EXE'), fake);
+fs.copyFileSync(path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'PING.EXE'), fake);
 
 // ── CDP ──
-const list = await httpJson('/json/list');
-const t = list.find((x) => x.type === 'page' && !/devtools/.test(x.url || ''));
-if (!t) throw new Error('no page target on :' + CDP_PORT);
+async function waitForDesktopTarget() {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    try {
+      const target = (await httpJson('/json/list')).find(isRidgeCdpTarget);
+      if (target) return target;
+    } catch { /* dev:cdp may still be starting */ }
+    await sleep(500);
+  }
+  throw new Error('no Ridge page target on :' + CDP_PORT);
+}
+const t = await waitForDesktopTarget();
 const DEV_URL = process.env.RIDGE_DEV_URL ?? t.url;
 let sock = new WebSocket(t.webSocketDebuggerUrl);
 const desktopSock = sock;
@@ -152,6 +166,15 @@ let ev = async (expression) => {
   }
   return r.result?.result?.value;
 };
+
+async function waitForHostInvoke() {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (await ev("typeof window.__TAURI_INTERNALS__?.invoke === 'function'")) return;
+    await sleep(250);
+  }
+  throw new Error('desktop page did not expose Tauri invoke within 30s');
+}
 
 async function attachMobileTarget(port) {
   const targets = await httpJson('/json/list', port);
@@ -238,6 +261,7 @@ await send('Network.enable');
 // 自签证书：不忽略的话 WebView2 会停在拦截页，SPA 根本加载不到。
 await send('Security.enable');
 await send('Security.setIgnoreCertificateErrors', { ignore: true });
+await waitForHostInvoke();
 
 const finish = async () => {
   await killFake();
@@ -291,9 +315,26 @@ try {
     if (!paneId) await sleep(1000);
   }
   if (!paneId) throw new Error('no mounted pane');
-  // The pane DOM mounts before `create_pane`/`activate_pane_pty` completes.
-  // Wait for the real host handle instead of turning that cold-start race into
-  // a misleading remote projection failure.
+  // The pane layout can exist before its PTY. Mirror the desktop lifecycle
+  // explicitly: scrollback is a valid empty response even while the backend
+  // handle is absent, so it cannot be used as a readiness signal.
+  const createResult = await invoke('create_pane', { paneId, shell: null });
+  if (!createResult.ok && !/already|pending|running/i.test(createResult.e ?? '')) {
+    throw new Error(`create_pane failed: ${createResult.e}`);
+  }
+  const activateResult = await invoke('activate_pane_pty', {
+    workspaceId: wsId,
+    paneId,
+    rows: 30,
+    cols: 100,
+  });
+  if (!activateResult.ok && !/already|running/i.test(activateResult.e ?? '')) {
+    throw new Error(`activate_pane_pty failed: ${activateResult.e}`);
+  }
+
+  // The pane DOM mounts before the live host handle is observable remotely.
+  // Keep the bounded wait for the real writer instead of turning that
+  // cold-start race into a misleading mobile projection failure.
   let ptyReady = false;
   let ptyError = '';
   for (let i = 0; i < 90 && !ptyReady; i++) {
@@ -507,7 +548,7 @@ try {
   })()`);
   log('data-plane:', JSON.stringify(api, null, 1));
   const headlessNoTeammate = api._hasTeammateCapability === false
-    || /^ERR method not supported by kernel host: get_teammate_topology$/.test(
+    || /method not supported by kernel host: get_teammate_topology/i.test(
       api.get_teammate_topology ?? '',
     );
   if (teamEntryMissing && !headlessNoTeammate) {
@@ -545,7 +586,19 @@ try {
     if (!probe.perMemberInputs) fail('手机端成员缺各自的发消息输入框');
   }
   // ── iter-63：手机端「切换终端类型」入口（PS → WSL），列表须与桌面同源 ──
-  const shellProbe = await ev(`(async () => {
+  const shellCapabilityUnsupported = /method not supported by kernel host: detect_available_shells/i.test(
+    `${api.detect_available_shells ?? ''} ${api.get_teammate_topology ?? ''}`,
+  );
+  let shellProbe;
+  if (shellCapabilityUnsupported) {
+    shellProbe = await ev(`({
+      step: document.querySelector('.tree-trigger') ? 'ok' : 'no-tree-trigger',
+      items: [],
+      shells: [],
+      note: 'method not supported by kernel host: detect_available_shells',
+    })`);
+  } else {
+    shellProbe = await ev(`(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // 先关掉 Team 侧栏（它 position:fixed 盖满屏，留着会挡住底栏的树入口）。
     document.querySelector('button[title="Team"]')?.click();
@@ -575,18 +628,23 @@ try {
     // detect_available_shells 要枚举 WSL 发行版，可能好几秒 —— 轮询等，别一竿子定死。
     let menu = null;
     let items = [];
-    for (let i = 0; i < 60; i++) {
-      await sleep(700);
+    for (let i = 0; i < 20; i++) {
+      await sleep(500);
       menu = document.querySelector('.shell-menu');
       items = menu ? [...menu.querySelectorAll('.shell-item')].map((b) => b.textContent.trim()) : [];
       if (items.length) break;
     }
     if (!menu) return { step: 'no-shell-menu' };
     let shells = [];
-    try {
-      const available = await window.__TAURI_INTERNALS__.invoke('detect_available_shells');
-      shells = Array.isArray(available) ? available : [];
-    } catch {}
+    if (!${shellCapabilityUnsupported}) {
+      try {
+        const available = await Promise.race([
+          window.__TAURI_INTERNALS__.invoke('detect_available_shells'),
+          new Promise((resolve) => setTimeout(() => resolve([]), 6_000)),
+        ]);
+        shells = Array.isArray(available) ? available : [];
+      } catch {}
+    }
     return {
       step: 'ok',
       items,
@@ -594,10 +652,16 @@ try {
       note: menu.querySelector('.shell-err, .shell-note')?.textContent?.trim() ?? '',
     };
   })()`);
+  }
   log('shell picker:', JSON.stringify(shellProbe));
   if (wireEvents.length) log('shell wire:', JSON.stringify(wireEvents.slice(-12)));
+  const headlessNoShells = /method not supported by kernel host: detect_available_shells/i.test(
+    `${shellProbe?.note ?? ''} ${api.detect_available_shells ?? ''}`,
+  );
   if (shellProbe?.step !== 'ok') {
     fail('手机端切换终端类型入口不可用:', shellProbe?.step);
+  } else if (!shellProbe.items?.length && headlessNoShells) {
+    log('headless host: shell capability unsupported; empty shell list is expected');
   } else if (!shellProbe.items?.length) {
     fail('终端类型列表为空（应与桌面 detect_available_shells 同源）:', shellProbe.note);
   } else {
@@ -627,9 +691,9 @@ try {
       beforeLayout: beforeState?.result?.layout,
     }));
     const targetShell = availableShells.find(
-      (shell) => /^(WSL:|Git Bash)/.test(shell.label) && shell.program !== beforeShell,
+      (shell) => (shell.label.startsWith('WSL:') || shell.label.startsWith('Git Bash')) && shell.program !== beforeShell,
     );
-    const target = targetShell?.label ?? shellProbe.items.find((x) => /^WSL:/.test(x)) ?? shellProbe.items.find((x) => /Git Bash/.test(x));
+    const target = targetShell?.label ?? shellProbe.items.find((x) => x.startsWith('WSL:')) ?? shellProbe.items.find((x) => x.includes('Git Bash'));
     if (!target) {
       log('本机无 WSL / Git Bash，跳过「真切换」断言');
     } else {

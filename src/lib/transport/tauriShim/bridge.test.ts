@@ -3,6 +3,7 @@ import { RpcCancelledError } from '@ridge/remote';
 import type {
   AuthListener,
   ChannelTransport,
+  ControlFrame,
   ControlListener,
   OutboundFrame,
   PaneBytesListener,
@@ -12,11 +13,15 @@ import { TauriBridge } from './bridge';
 
 function rig() {
   const sent: OutboundFrame[] = [];
+  const controlListeners = new Set<ControlListener>();
   let disposed = 0;
   const subscribe = <T>(_cb: T) => () => { disposed += 1; };
   const transport: ChannelTransport = {
     sendControl: (frame) => sent.push(frame),
-    onControl: (cb: ControlListener) => subscribe(cb),
+    onControl: (cb: ControlListener) => {
+      controlListeners.add(cb);
+      return () => { controlListeners.delete(cb); disposed += 1; };
+    },
     sendPaneBytes: () => {},
     onPaneBytes: (cb: PaneBytesListener) => subscribe(cb),
     connect: () => {},
@@ -26,7 +31,12 @@ function rig() {
     authState: () => 'authorized',
     onAuthChange: (cb: AuthListener) => subscribe(cb),
   };
-  return { transport, sent, disposed: () => disposed };
+  return {
+    transport,
+    sent,
+    receive: (frame: ControlFrame) => controlListeners.forEach((cb) => cb(frame)),
+    disposed: () => disposed,
+  };
 }
 
 describe('TauriBridge isolated attachment', () => {
@@ -66,5 +76,43 @@ describe('TauriBridge isolated attachment', () => {
       method: '$/cancel',
       params: { id: request && 'id' in request ? request.id : -1 },
     });
+  });
+
+  it('unwraps legacy host Result envelopes before resolving invoke', async () => {
+    const { transport, sent, receive } = rig();
+    const bridge = new TauriBridge();
+    bridge.attach(transport, { useGlobalWorkspace: false });
+
+    const pending = bridge.invoke<{ workspaces: string[] }>('list_workspaces');
+    const request = sent.find(
+      (frame) => 'id' in frame && 'method' in frame && frame.method === 'list_workspaces',
+    );
+    expect(request).toBeDefined();
+    receive({
+      jsonrpc: '2.0',
+      id: request && 'id' in request ? request.id : -1,
+      result: { Ok: { workspaces: ['workspace-a'] } },
+    });
+
+    await expect(pending).resolves.toEqual({ workspaces: ['workspace-a'] });
+  });
+
+  it('turns a legacy host Err envelope into a rejected invoke', async () => {
+    const { transport, sent, receive } = rig();
+    const bridge = new TauriBridge();
+    bridge.attach(transport, { useGlobalWorkspace: false });
+
+    const pending = bridge.invoke('get_teammate_topology');
+    const request = sent.find(
+      (frame) => 'id' in frame && 'method' in frame && frame.method === 'get_teammate_topology',
+    );
+    expect(request).toBeDefined();
+    receive({
+      jsonrpc: '2.0',
+      id: request && 'id' in request ? request.id : -1,
+      result: { Err: 'method not supported by kernel host: get_teammate_topology' },
+    });
+
+    await expect(pending).rejects.toThrow('method not supported by kernel host');
   });
 });

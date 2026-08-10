@@ -23,6 +23,7 @@
 //   • PTY out ←  binary frame (paneId || raw bytes) → onPaneBytes → pty-output.
 
 import { RpcClient } from '@ridge/remote';
+import { unknownText } from '@ridge/remote/shared/transport/unknownText';
 import type {
   ChannelTransport,
   ControlFrame,
@@ -53,7 +54,7 @@ export class TauriBridge {
   // Panes we've subscribed to, so we can re-subscribe after a reconnect.
   private readonly subscribedPanes = new Map<string, { workspaceId?: string; active?: boolean }>();
   private readonly decoder = new TextDecoder();
-  private disposers: Unsubscribe[] = [];
+  private readonly disposers: Unsubscribe[] = [];
 
   /** True once a transport has been attached (after auth succeeds). */
   get ready(): boolean {
@@ -70,17 +71,12 @@ export class TauriBridge {
     this.rpc = new RpcClient(transport, { defaultTimeoutMs: INVOKE_TIMEOUT_MS });
 
     // Raw PTY bytes ride the L1 binary fan-out → pty-output-* listeners.
-    this.disposers.push(transport.onPaneBytes((paneId, bytes) => this.dispatchRawBytes(paneId, bytes)));
-
     // Host event pushes arrive as `{type:'event', name, payload}` control frames
     // (legacy notification shape, passed through by the adapter). Tap the raw
     // control stream so we keep delivering them to exact-name listeners.
     this.disposers.push(
+      transport.onPaneBytes((paneId, bytes) => this.dispatchRawBytes(paneId, bytes)),
       transport.onControl((frame) => this.handleControlFrame(frame)),
-    );
-
-    // Re-subscribe panes after a reconnect (raw-byte snapshot re-pull, D10).
-    this.disposers.push(
       this.rpc.onReconnected(() => {
         for (const [paneId, options] of this.subscribedPanes) {
           this.rpc?.notify('subscribe-pane', { paneId, ...options });
@@ -142,7 +138,11 @@ export class TauriBridge {
   ): Promise<T> {
     const rpc = this.rpc;
     if (!rpc) return Promise.reject(new Error(`invoke('${cmd}') before bridge connected`));
-    return rpc.request<T>(cmd, args, options);
+    // Some legacy kernel hosts serialize Rust `Result` values as `{Ok: value}`
+    // / `{Err: error}` inside the otherwise normal invoke-result envelope.
+    // Normalize that compatibility shape once at the transport boundary so
+    // every caller receives the Tauri-compatible value it already expects.
+    return rpc.request<unknown>(cmd, args, options).then((value) => unwrapHostResult<T>(value));
   }
 
   // ── events ──────────────────────────────────────────────────────────────
@@ -225,8 +225,21 @@ function parsePtyOutputPane(name: string): string | null {
   if (!name.startsWith('pty-output-')) return null;
   const tail = name.slice('pty-output-'.length);
   // tail = "{workspaceUuid}-{paneUuid}"; a UUID is 36 chars → pane is the last 36.
-  return tail.length >= 36 ? tail.slice(tail.length - 36) : tail;
+  return tail.length >= 36 ? tail.slice(-36) : tail;
 }
 
 /** Process-wide singleton — the shims and the boot code share this instance. */
 export const bridge = new TauriBridge();
+
+function unwrapHostResult<T>(value: unknown): T {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value as T;
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length !== 1) return value as T;
+  const [key, result] = entries[0];
+  if (key === 'Ok') return result as T;
+  if (key === 'Err') {
+    const message = typeof result === 'string' ? result : JSON.stringify(result) ?? unknownText(result);
+    throw new Error(message);
+  }
+  return value as T;
+}

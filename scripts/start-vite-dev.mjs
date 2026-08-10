@@ -16,12 +16,16 @@ export function main({ env = process.env, spawnImpl = spawn, io = console, onSig
     stdio: 'inherit', shell: true,
     env: { ...env, RIDGE_CLOUD_BASE_DOMAIN: env.RIDGE_CLOUD_BASE_DOMAIN || 'localhost:5001' },
   });
-  onSignal('SIGINT', () => child.kill('SIGINT'));
-  onSignal('SIGTERM', () => child.kill('SIGTERM'));
+  // `process.on` is a method; invoking an injected reference without its
+  // receiver breaks on Node 25 (`target._events` is undefined).
+  onSignal.call(process, 'SIGINT', () => child.kill('SIGINT'));
+  onSignal.call(process, 'SIGTERM', () => child.kill('SIGTERM'));
   return new Promise((resolveExit) => {
     child.on('exit', (code) => resolveExit(code ?? 0));
     child.on('error', (err) => { io.error('[start-vite-dev] Failed to start:', err); resolveExit(1); });
   });
 }
 
-if (process.argv[1] && process.argv[1].endsWith('start-vite-dev.mjs')) main().then((code) => process.exit(code));
+if (process.argv[1]?.endsWith('start-vite-dev.mjs')) {
+  process.exit(await main());
+}

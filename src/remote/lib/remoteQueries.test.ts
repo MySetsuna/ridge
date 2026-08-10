@@ -79,7 +79,7 @@ describe('remoteQueries', () => {
     await expect(work).resolves.toBe('late result');
   });
 
-  it('keeps roster results typed when health RPC is unavailable', async () => {
+	it('keeps roster results typed when health RPC is unavailable', async () => {
     const remote = link();
     vi.mocked(remote.getOrchestrationHealth).mockRejectedValueOnce(new Error('old host'));
     const fetchQuery = makeFetchQuery();
@@ -107,6 +107,22 @@ describe('remoteQueries', () => {
 			queryKey: remoteQueryKeys.agentHistory(9, 12),
 		}));
 	});
+
+  it('degrades unsupported teammate RPCs to an empty headless roster', async () => {
+    const remote = link();
+    vi.mocked(remote.getTeammateTopology).mockRejectedValueOnce(
+      new Error('method not supported by kernel host: get_teammate_topology'),
+    );
+    vi.mocked(remote.listHitlPending).mockRejectedValueOnce(
+      new Error('method not supported by kernel host: list_hitl_pending'),
+    );
+
+    await expect(fetchRemoteTeamRoster(remote, undefined, 8, 'workspace-headless')).resolves.toEqual({
+      topology: { roster: [], leaderId: null, edges: [] },
+      pending: [],
+      health: { suspendedAgents: 0, pendingHitl: 0 },
+    });
+  });
 
 	it('deduplicates incoming collections and confirms workspace targets', async () => {
 		expect(mergeRemoteItems<{ id: string; title?: string; cwd?: string }>(

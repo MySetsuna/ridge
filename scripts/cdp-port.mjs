@@ -26,11 +26,16 @@ const DEVTOOLS_ACTIVE_PORT = path.join(DEV_USER_DATA_DIR, 'EBWebView', 'DevTools
 export function readDevToolsActivePort() {
   try {
     const txt = fs.readFileSync(DEVTOOLS_ACTIVE_PORT, 'utf8');
-    const port = parseInt(txt.split('\n')[0].trim(), 10);
+    const port = Number.parseInt(txt.split('\n')[0].trim(), 10);
     return Number.isFinite(port) && port > 0 ? port : null;
   } catch {
     return null;
   }
+}
+
+/** True when a live WebView endpoint should be surfaced to CDP clients. */
+export function shouldAnnounceCdpPort(port, previousPort) {
+  return port != null && port !== previousPort;
 }
 
 /**

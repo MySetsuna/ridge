@@ -23,6 +23,19 @@ function protocolId(value: unknown): string | null {
   return typeof value === 'string' || typeof value === 'number' ? String(value) : null;
 }
 
+function normalizeInvokeResultFrame(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const frame = value as Record<string, unknown>;
+  const result = frame._result;
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return value;
+  const entries = Object.entries(result as Record<string, unknown>);
+  if (entries.length !== 1) return value;
+  const [key, payload] = entries[0];
+  if (key === 'Ok') return { ...frame, _result: payload };
+  if (key === 'Err') return { ...frame, _result: undefined, _error: payload };
+  return value;
+}
+
 export { paneRefKey } from './paneRef';
 export type { PaneRef } from './paneRef';
 
@@ -88,7 +101,6 @@ export type PtyResizeListener = (pane: PaneRef, rows: number, cols: number) => v
 export type ThemeListener = (colors: Record<string, string>, themeType: 'dark' | 'light') => void;
 
 // Keep for backward compat — consumers should migrate to onRawBytes.
-export type BinaryDeltaListener = RawByteListener;
 
 const MAX_PANE_OUTPUT_LINES = 5000;
 const LAN_PANE_RPC_TIMEOUT_MS = 5_000;
@@ -557,25 +569,25 @@ export function remoteWebSocketUrl(input: {
 
 export class RemoteConnection implements RemoteLink {
   private ws: WebSocket | null = null;
-  private stateListeners: Set<(s: ConnectionState) => void> = new Set();
-  private messageListeners: Set<Listener> = new Set();
-  private binaryDeltaListeners: Set<BinaryDeltaListener> = new Set();
-  private rawByteListeners: Set<RawByteListener> = new Set();
-  private metaListeners: Set<MetaListener> = new Set();
-  private resizeListeners: Set<PtyResizeListener> = new Set();
-  private themeListeners: Set<ThemeListener> = new Set();
+  private readonly stateListeners: Set<(s: ConnectionState) => void> = new Set();
+  private readonly messageListeners: Set<Listener> = new Set();
+  private readonly binaryDeltaListeners: Set<RawByteListener> = new Set();
+  private readonly rawByteListeners: Set<RawByteListener> = new Set();
+  private readonly metaListeners: Set<MetaListener> = new Set();
+  private readonly resizeListeners: Set<PtyResizeListener> = new Set();
+  private readonly themeListeners: Set<ThemeListener> = new Set();
   private _lastTheme: { id?: string; themeType: 'dark' | 'light'; colors: Record<string, string> } | null = null;
   private _state: ConnectionState = 'disconnected';
   // 最近一次失败分级（任务 A 问题1）。进入 'error' 时填充，恢复/重连时清空。
   private _failure: ConnectionFailure | null = null;
   // 服务端升级后下发的 `{t:"error",code}` 暂存：onclose(4403) 紧随其后，用它做精确分级。
   private _pendingServerError: { code?: string; message?: string } | null = null;
-  private paneOutputs: Map<string, string[]> = new Map();
-  private _pendingRequests: Map<string, PendingRequest> = new Map();
-  private _pendingByScope: Map<string, Set<string>> = new Map();
+  private readonly paneOutputs: Map<string, string[]> = new Map();
+  private readonly _pendingRequests: Map<string, PendingRequest> = new Map();
+  private readonly _pendingByScope: Map<string, Set<string>> = new Map();
   /** Legacy response frames omit `_reqId`; share one in-flight request per
    * response type instead of replacing the previous pending resolver. */
-  private _legacyRequests: Map<string, LegacyPendingRequest> = new Map();
+  private readonly _legacyRequests: Map<string, LegacyPendingRequest> = new Map();
   /** Null preserves the legacy LAN contract until a host advertises a hint. */
   private _capabilities: Set<string> | null = null;
   /** Runtime breaker for older hosts that reject a coarse capability method. */
@@ -605,24 +617,24 @@ export class RemoteConnection implements RemoteLink {
   private _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private _pongDeadline: ReturnType<typeof setTimeout> | null = null;
   private _hasConnectedOnce = false;
-  private reconnectListeners: Set<() => void> = new Set();
+  private readonly reconnectListeners: Set<() => void> = new Set();
   private _windowListenersAttached = false;
   private _onVisibility: (() => void) | null = null;
   private _onOnline: (() => void) | null = null;
   private _onForeground: (() => void) | null = null;
 
   // ── Message queue for buffering during disconnect ──
-  private _messageQueue: WsMessage[] = [];
+  private readonly _messageQueue: WsMessage[] = [];
   private _isReconnecting = false;
 
   // ── §history-pull（LAN 对齐 cloudRemote）──
   // 每 pane 的 seq 游标：订阅时由 host 的 `scrollback-meta` 帧播种（首屏 tail 的最旧字节），
   // 用户滚顶时经 `scrollback-before` 分批向更旧推进。atOldest 后停止分页。
-  private scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
+  private readonly scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
   /** Binary pane frames carry paneId; bind them to an explicit composite ref. */
-  private paneRefs = new Map<string, PaneRef>();
+  private readonly paneRefs = new Map<string, PaneRef>();
   // 正在拉取更旧历史的 pane（去重快速连续的滚顶加载）。
-  private fetchingOlder = new Set<string>();
+  private readonly fetchingOlder = new Set<string>();
 
   // ── §perf: three-segment latency instrumentation (B 方案诊断埋点) ──
   // All marks are performance.now() (ms, monotonic). Mirrors the server's
@@ -648,16 +660,17 @@ export class RemoteConnection implements RemoteLink {
   }
 
   private notifyCapabilitiesChanged() {
-    for (const fn of [...this.capabilityListeners]) {
+    for (const fn of this.capabilityListeners) {
       try { fn(); } catch { /* listener owns its errors */ }
     }
   }
 
   private applyAdvertisedCapabilities(capabilities: readonly string[]) {
     const next = new Set(capabilities.filter((capability): capability is string => typeof capability === 'string'));
-    const changed = this._capabilities === null
-      || next.size !== this._capabilities.size
-      || [...next].some((capability) => !this._capabilities?.has(capability));
+    const previous = this._capabilities;
+    const changed = previous === null
+      || next.size !== previous?.size
+      || [...next].some((capability) => !previous?.has(capability));
     this._capabilities = next;
     this._unsupportedCapabilities.clear();
     if (changed) this.notifyCapabilitiesChanged();
@@ -698,7 +711,7 @@ export class RemoteConnection implements RemoteLink {
     return () => this.messageListeners.delete(fn);
   }
 
-  onBinaryDelta(fn: BinaryDeltaListener) {
+  onBinaryDelta(fn: RawByteListener) {
     this.binaryDeltaListeners.add(fn);
     return () => this.binaryDeltaListeners.delete(fn);
   }
@@ -873,7 +886,7 @@ export class RemoteConnection implements RemoteLink {
           firstPtyBytesMs: p.connectStart != null ? Math.round(now - p.connectStart) : null,
         });
       }
-      const matches = [...this.paneRefs.values()].filter((pane) => pane.paneId === paneId);
+      const matches = Array.from(this.paneRefs.values()).filter((pane) => pane.paneId === paneId);
       // Legacy binary frames omit workspaceId. Refuse ambiguous routing rather
       // than delivering bytes to a same-named pane in the wrong workspace.
       if (matches.length !== 1) return;
@@ -971,7 +984,7 @@ export class RemoteConnection implements RemoteLink {
             // the response matching its payload arrives or the timeout fires.
             if (pending.matches && !pending.matches(msg)) return;
             this._removePending(key);
-            pending.resolve(msg);
+            pending.resolve(type === 'invoke-result' ? normalizeInvokeResultFrame(msg) : msg);
             return;
           }
         }
@@ -1156,10 +1169,10 @@ export class RemoteConnection implements RemoteLink {
   pruneOutputs(liveIds: Set<string>) {
     const retired = this.paneScheduler.prune(liveIds);
     for (const key of retired) retirePaneInput(key);
-    for (const id of [...this.paneOutputs.keys()]) {
+    for (const id of this.paneOutputs.keys()) {
       if (!liveIds.has(id)) this.paneOutputs.delete(id);
     }
-    for (const [key, pane] of [...this.paneRefs]) {
+    for (const [key, pane] of this.paneRefs) {
       if (!liveIds.has(paneRefKey(pane))) this.paneRefs.delete(key);
     }
   }
@@ -1402,7 +1415,7 @@ export class RemoteConnection implements RemoteLink {
       const startSeq = Number(result.startSeq);
       const endSeq = Number(result.endSeq);
       const bytes = result.bytes ? new TextEncoder().encode(String(result.bytes)) : new Uint8Array();
-      if (!(startSeq < endSeq) || endSeq !== cursor.oldestSeq || bytes.length === 0) {
+      if (startSeq >= endSeq || endSeq !== cursor.oldestSeq || bytes.length === 0) {
         if (bytes.length === 0 && endSeq === cursor.oldestSeq && result.atOldest) {
           this.scrollbackCursor.set(key, { ...cursor, atOldest: true });
         }

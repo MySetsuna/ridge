@@ -276,6 +276,22 @@ describe('RemoteConnection public communication contract', () => {
 		conn.disconnect();
 	});
 
+  it('unwraps legacy Rust Result envelopes on LAN invoke responses', async () => {
+    const { conn, ws } = connect();
+    const topology = conn.getTeammateTopology('workspace-a');
+    invoke(ws, 'get_teammate_topology', {
+      Ok: { roster: [], leaderId: null, edges: [] },
+    });
+    await expect(topology).resolves.toEqual({ roster: [], leaderId: null, edges: [] });
+
+    const unsupported = conn.getTeammateTopology('workspace-a');
+    invoke(ws, 'get_teammate_topology', {
+      Err: 'method not supported by kernel host: get_teammate_topology',
+    });
+    await expect(unsupported).rejects.toThrow('method not supported by kernel host');
+    conn.disconnect();
+  });
+
 	it('fails closed on malformed scrollback pages and stale page commits', async () => {
 		const { conn, ws } = connect();
 		expect(await conn.fetchOlderScrollback(pane)).toBeNull();
