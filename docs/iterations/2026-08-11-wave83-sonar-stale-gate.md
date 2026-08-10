@@ -52,3 +52,20 @@ task, and record all of the following:
 Until that scan succeeds, `REQ-SONAR-COVERAGE-80-01` remains `ACTIVE`; local
 tests and LCOV must not be presented as a substitute for the Sonar project
 metric or Quality Gate.
+
+## Scanner runtime prerequisite
+
+Several later local attempts stopped before upload because the Sonar JS/TS
+bridge could not start or became unresponsive. The scanner selected the
+bundled Node `v24.11.0`, while the interactive toolchain exposes `v25.9.0`;
+both paths are unsuitable to assume without a scanner compatibility check.
+Node `v20.19.0` is installed locally and is the candidate for the next
+controlled scan:
+
+```powershell
+sonar-scanner.bat -Dsonar.nodejs.executable=C:\DevKit\nvm\v20.19.0\node.exe -Dsonar.qualitygate.wait=true
+```
+
+The command still requires a valid scanner token. The scan must be run with a
+bounded process set and its exit/CE result recorded; do not treat a report that
+fails in the JS bridge as an uploaded analysis.
