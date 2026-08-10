@@ -41,8 +41,12 @@ export interface HandoffPayload {
 
 /** 把一次 open 请求转发给独立窗口，并把窗口提到前台。 */
 function forwardOpen(req: OpenRequest): void {
-  void emitTo(EDITOR_WIN_LABEL, EVT_OPEN, req);
-  void WebviewWindow.getByLabel(EDITOR_WIN_LABEL).then((w) => w?.setFocus());
+  emitTo(EDITOR_WIN_LABEL, EVT_OPEN, req).catch((error) => {
+    console.warn('[editor-window] forward open failed', error);
+  });
+  WebviewWindow.getByLabel(EDITOR_WIN_LABEL)
+    .then((w) => w?.setFocus())
+    .catch((error) => console.warn('[editor-window] focus failed', error));
 }
 
 /** 主窗口已弹出时安装的 open 拦截器：转发并提前返回（不在主窗口本地打开）。 */

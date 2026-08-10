@@ -93,7 +93,7 @@ function scheduleSync(): void {
 		if (sig === lastSentSig) return;
 		lastSentSig = sig;
 		if (!isTauri()) return;
-		void invoke('start_watching_paths', { roots: specs }).catch((e) => {
+		invoke('start_watching_paths', { roots: specs }).catch((e) => {
 			// Don't keep the cached signature on failure — next change should retry.
 			lastSentSig = '';
 			console.warn('start_watching_paths failed', e);

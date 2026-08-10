@@ -190,7 +190,9 @@ export function startCloudControllerBoot(
   }
 
   // 发起连接（信令 → offer → E2EE → connected）。失败经 provider onError/onState 透传。
-  void adapter.connect();
+  adapter.connect().catch((error) => {
+    params.onError?.(error instanceof Error ? error.message : String(error));
+  });
 
   // 定时刷新 access token：每 10 分钟主动刷新，保证 cloudAuth.userToken 始终在过期前更新，
   // 使上方 getter `() => get(cloudAuth).userToken` 在 WS 重连时总能拿到有效 token。
@@ -198,7 +200,11 @@ export function startCloudControllerBoot(
   // 超过 15 分钟的场景——回前台补偿逻辑见下方 attachForegroundListeners。
   if (!params.fixedToken && !isolated) {
     if (refreshTimer) clearInterval(refreshTimer);
-    refreshTimer = setInterval(() => { void refreshAccess(); }, TOKEN_REFRESH_INTERVAL_MS);
+    refreshTimer = setInterval(() => {
+      refreshAccess().catch((error) => {
+        params.onError?.(error instanceof Error ? error.message : String(error));
+      });
+    }, TOKEN_REFRESH_INTERVAL_MS);
   }
 
   // 回前台探活：token 刷新后立即唤醒 provider 重连（跳过退避等待）。
@@ -209,7 +215,11 @@ export function startCloudControllerBoot(
     if (typeof document !== 'undefined' && document.hidden) return;
     // 先刷新 token（单飞：refreshAccess 内部去重，多次唤醒不并发），
     // 再通知 provider 跳过退避、立即重连——此时 _token() getter 已能读到新 token。
-    void refreshAccess().then(() => { provider.wakeUp(); });
+    refreshAccess()
+      .then(() => { provider.wakeUp(); })
+      .catch((error) => {
+        params.onError?.(error instanceof Error ? error.message : String(error));
+      });
   });
 
   const handle: CloudControllerHandle = {

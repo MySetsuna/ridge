@@ -72,7 +72,9 @@ export function paneDockDrag(node: HTMLElement, params: Params) {
 				dragHoverWorkspaceId.set(tabWsId);
 				hoverTimer = setTimeout(() => {
 					if (get(paneDragSourceId) === paneId && hoverTabWsId === tabWsId) {
-						void switchWorkspace(tabWsId);
+						switchWorkspace(tabWsId).catch((error) => {
+							console.warn('[dockdrag] workspace switch failed', error);
+						});
 					}
 					hoverTimer = null;
 				}, HOVER_SWITCH_MS);
@@ -119,11 +121,11 @@ export function paneDockDrag(node: HTMLElement, params: Params) {
 
 	function onPointerUp() {
 		console.log('[dockdrag] pointerUP fired');
-		void finish(true);
+		finish(true).catch((error) => console.warn('[dockdrag] finish failed', error));
 	}
 	function onPointerCancel() {
 		console.log('[dockdrag] pointerCANCEL fired');
-		void finish(false);
+		finish(false).catch((error) => console.warn('[dockdrag] cancel failed', error));
 	}
 
 	node.addEventListener('pointerdown', onPointerDown);
