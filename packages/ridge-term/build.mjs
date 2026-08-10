@@ -23,6 +23,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cargoTool } from '../../scripts/lib/toolPath.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.argv.includes('--dev');
@@ -35,7 +36,8 @@ console.log(
 	`[ridge-term] ${isDev ? 'dev' : 'release'} build${noWebgpu ? ' (Canvas2D-only)' : ' (Canvas2D + WebGPU)'}`,
 );
 
-// 1. Run wasm-pack. We don't pin its location — assume it's on PATH.
+// 1. Run wasm-pack from the explicit Cargo bin directory (or an explicit
+// RIDGE_WASM_PACK_PATH override).
 //    --target web: standard ESM output that works in Vite without plugins
 //    --out-name ridge_term: matches the @ridge/term-wasm npm name we set below
 const wasmPackArgs = [
@@ -53,10 +55,10 @@ if (noWebgpu) {
 	wasmPackArgs.push('--', '--no-default-features');
 }
 
-const wasmPackResult = spawnSync('wasm-pack', wasmPackArgs, {
+const wasmPackResult = spawnSync(cargoTool('wasm-pack'), wasmPackArgs, {
 	stdio: 'inherit',
 	cwd: __dirname,
-	shell: true, // shell:true makes Windows look up wasm-pack.cmd transparently
+	shell: false,
 });
 
 if (wasmPackResult.status !== 0) {
@@ -70,9 +72,9 @@ if (!isDev) {
 	const wasmFile = path.join(__dirname, 'pkg', 'ridge_term_bg.wasm');
 	const optFile = path.join(__dirname, 'pkg', 'ridge_term_bg.opt.wasm');
 	const optResult = spawnSync(
-		'wasm-opt',
+		cargoTool('wasm-opt'),
 		['-Oz', '-o', optFile, wasmFile],
-		{ stdio: 'pipe', shell: true },
+		{ stdio: 'pipe', shell: false },
 	);
 	if (optResult.status === 0) {
 		fs.renameSync(optFile, wasmFile);

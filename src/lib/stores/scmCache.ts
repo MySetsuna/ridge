@@ -19,6 +19,7 @@
 // served from cache on tab remount instead of being re-fired every time.
 
 import { writable, get } from 'svelte/store';
+import { trimTrailingSeparators } from '$lib/utils/path';
 
 export interface ScmFile {
   path: string;
@@ -164,7 +165,7 @@ export class ScmNonGitRepositoryError extends Error {
 }
 
 function normalizeDirectory(value: string): string {
-  const normalized = value.replaceAll('\\', '/').replace(/\/+$/, '');
+  const normalized = trimTrailingSeparators(value.replaceAll('\\', '/'));
   return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 

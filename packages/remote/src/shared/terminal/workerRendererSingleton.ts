@@ -19,7 +19,7 @@
  * The factory itself is small enough to keep all production logic here
  * without introducing yet another abstraction.
  *
- * Integration plan (still TODO, see project memo):
+ * Integration status (see project memo):
  *   1. `TerminalManager` reads `isWorkerRenderingEnabled()` on pane attach.
  *   2. When enabled, the manager calls `getWorkerRenderer()` and proxies
  *      `applyDeltaFrame()`/`resize()` through it instead of running the

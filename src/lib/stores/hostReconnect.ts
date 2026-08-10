@@ -45,9 +45,9 @@ export function parsePhaseMessage(msg: string): {
   cancelled: boolean;
 } {
   // "phase=Waiting attempt=1 cancelled=0 next_delay_ms=200" | "phase=Idle ... terminal"
-  const phaseMatch = msg.match(/phase=(\w+)/);
-  const delayMatch = msg.match(/next_delay_ms=(\d+)/);
-  const attemptMatch = msg.match(/attempt=(\d+)/);
+  const phaseMatch = /phase=(\w+)/.exec(msg);
+  const delayMatch = /next_delay_ms=(\d+)/.exec(msg);
+  const attemptMatch = /attempt=(\d+)/.exec(msg);
   const cancelled = /cancelled=1/.test(msg);
   const phase = (phaseMatch?.[1] as ReconnectPhase) || 'Unknown';
   const nextDelayMs = delayMatch ? Number(delayMatch[1]) : null;

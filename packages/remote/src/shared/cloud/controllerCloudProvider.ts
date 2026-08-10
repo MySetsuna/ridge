@@ -27,6 +27,13 @@ import {
   type RemoteConnectionProvider,
   type CloudConnectionState,
   type CloudConnectionCallbacks,
+  CHANNEL,
+  MAX_PANE_FRAME_BYTES,
+  encodeJsonFrame,
+  encodePaneLaneProbeFrame,
+  isPaneLaneReadyFrame,
+  encodeChunks,
+  ChunkReassembler,
 } from '@ridge/remote';
 import { parseSignal, isInboundSignal } from './signaling';
 import type { SignalMsg, SignalIn, JsonValue } from './signaling';
@@ -50,14 +57,6 @@ import { checkOrPinDeviceIdentity } from './deviceTrust';
 import { decideKeyBinding, type KeyBindingMode } from './keyBinding';
 import { getIceServers, type IceServer } from './apiClient';
 import { BASE_DOMAIN, cloudWsScheme } from './apiClient';
-import {
-  CHANNEL,
-  MAX_PANE_FRAME_BYTES,
-  encodeJsonFrame,
-  encodePaneLaneProbeFrame,
-  isPaneLaneReadyFrame,
-} from '@ridge/remote';
-import { encodeChunks, ChunkReassembler } from '@ridge/remote';
 import { getOrCreateCli } from './controllerInstanceId';
 import { backoffMs } from '../reconnectPolicy';
 import {

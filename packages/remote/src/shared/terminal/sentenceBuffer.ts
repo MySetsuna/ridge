@@ -13,6 +13,15 @@
 /** 建议的停顿落笔间隔（ms）。语音词间隙通常 >800ms，600 兼顾打字回显。 */
 export const SENTENCE_FLUSH_MS = 600;
 
+function trailingWordParts(value: string): { start: number; word: string; whitespace: string } | null {
+  let end = value.length;
+  while (end > 0 && value[end - 1].trim() === '') end -= 1;
+  if (end === 0) return null;
+  let start = end;
+  while (start > 0 && value[start - 1].trim() !== '') start -= 1;
+  return { start, word: value.slice(start, end), whitespace: value.slice(end) };
+}
+
 export class SentenceBuffer {
   private buf = '';
 
@@ -36,9 +45,9 @@ export class SentenceBuffer {
    */
   commit(text: string): void {
     if (!text) return;
-    const m = /(\S+)(\s*)$/.exec(this.buf);
-    if (m && text.startsWith(m[1])) {
-      this.buf = this.buf.slice(0, m.index) + text + m[2];
+    const parts = trailingWordParts(this.buf);
+    if (parts && text.startsWith(parts.word)) {
+      this.buf = this.buf.slice(0, parts.start) + text + parts.whitespace;
     } else {
       this.buf += text;
     }
@@ -49,9 +58,9 @@ export class SentenceBuffer {
    * 缓冲为空返回 false（调用方回退到已落笔差量路径）。
    */
   replaceTrailing(text: string): boolean {
-    const m = /(\S+)(\s*)$/.exec(this.buf);
-    if (!m) return false;
-    this.buf = this.buf.slice(0, m.index) + text + m[2];
+    const parts = trailingWordParts(this.buf);
+    if (!parts) return false;
+    this.buf = this.buf.slice(0, parts.start) + text + parts.whitespace;
     return true;
   }
 

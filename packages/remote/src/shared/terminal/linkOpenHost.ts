@@ -9,7 +9,7 @@ import {
   resolvePathAgainstCwd,
   type LinkOpenTarget,
 } from './linkAffordance';
-import type { LinkSpanKind } from './linkSpans';
+import { trimTrailingSeparators, type LinkSpanKind } from './linkSpans';
 
 export type HostOpenAction =
   | { type: 'open_url'; href: string }
@@ -106,7 +106,8 @@ export function fileUrlToPath(href: string): string | null {
 export function looksOutsideWorkspace(path: string, root: string): boolean {
   const norm = (s: string) => s.replaceAll(/\\/g, '/').toLowerCase();
   const p = norm(path);
-  const r = norm(root).replace(/\/+$/, '');
+  const normalizedRoot = norm(root);
+  const r = trimTrailingSeparators(normalizedRoot);
   if (/^[a-z]:\//.test(p) || p.startsWith('/')) {
     return !p.startsWith(r);
   }

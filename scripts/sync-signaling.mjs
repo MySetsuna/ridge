@@ -21,6 +21,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { gitTool } from './lib/toolPath.mjs';
 import { rm, mkdir, cp, readdir, writeFile } from 'node:fs/promises';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -69,7 +70,7 @@ export async function main({ repo = srcRepo, exists = existsSync, io = console }
   }
 
   // 3) SOURCE_REV: record the source commit (single line, no newline noise).
-  const rev = execFileSync('git', ['rev-parse', 'HEAD'], {
+  const rev = execFileSync(gitTool(), ['rev-parse', 'HEAD'], {
     cwd: repo,
     encoding: 'utf8',
   }).trim();

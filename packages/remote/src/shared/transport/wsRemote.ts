@@ -15,8 +15,13 @@ import {
 } from './types';
 import { capabilityForRemoteMethod } from './capabilityContract';
 import { secureRandomUnit } from './random';
+import { unknownText } from './unknownText';
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
+
+function protocolId(value: unknown): string | null {
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : null;
+}
 
 export { paneRefKey } from './paneRef';
 export type { PaneRef } from './paneRef';
@@ -1231,7 +1236,7 @@ export class RemoteConnection implements RemoteLink {
     ).then((value) => {
       const data = value as { _result?: unknown; _error?: unknown };
       if (data._error !== undefined && data._error !== null) {
-        throw new Error(String(data._error));
+        throw new Error(unknownText(data._error, 'remote error'));
       }
       return data._result as T;
     });
@@ -1501,7 +1506,7 @@ export class RemoteConnection implements RemoteLink {
       },
       'invoke-result',
     )) as { _result?: TeammateTopology; _error?: unknown };
-    if (data._error) throw new Error(String(data._error));
+    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
     return data._result ?? { roster: [], leaderId: null, edges: [] };
   }
 
@@ -1530,7 +1535,7 @@ export class RemoteConnection implements RemoteLink {
     if (data._error) {
       const message = typeof data._error === 'string'
         ? data._error
-        : JSON.stringify(data._error) ?? String(data._error);
+        : unknownText(data._error, 'remote error');
       throw new Error(message);
     }
     if (!data._result || typeof data._result !== 'object') {
@@ -1549,7 +1554,7 @@ export class RemoteConnection implements RemoteLink {
       },
       'invoke-result',
     )) as { _result?: unknown; _error?: unknown };
-    if (data._error) throw new Error(String(data._error));
+    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
     return Array.isArray(data._result) ? data._result as AgentHistoryReply[] : [];
   }
 
@@ -1566,7 +1571,7 @@ export class RemoteConnection implements RemoteLink {
       },
       'invoke-result',
     )) as { _error?: unknown };
-    if (data._error) throw new Error(String(data._error));
+    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
   }
 
   async resumeAgentSession(
@@ -1584,7 +1589,7 @@ export class RemoteConnection implements RemoteLink {
       },
       'invoke-result',
     )) as { _result?: { paneId?: unknown }; _error?: unknown };
-    if (data._error) throw new Error(String(data._error));
+    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
     const paneId = data._result?.paneId;
     return typeof paneId === 'string' && paneId.length > 0 ? paneId : null;
   }
@@ -1595,7 +1600,7 @@ export class RemoteConnection implements RemoteLink {
       { type: 'invoke-request', cmd: 'list_hitl_pending', args: {}, _reqId: ++this._reqCounter },
       'invoke-result',
     )) as { _result?: HitlPendingItem[]; _error?: unknown };
-    if (data._error) throw new Error(String(data._error));
+    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
     return data._result ?? [];
   }
 
@@ -1614,7 +1619,7 @@ export class RemoteConnection implements RemoteLink {
       },
       'invoke-result',
     )) as { _result?: { outcome: HitlResolveOutcome }; _error?: unknown };
-    if (data._error) throw new Error(String(data._error));
+    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
     return data._result?.outcome ?? 'already-resolved';
   }
 
@@ -1637,7 +1642,7 @@ export class RemoteConnection implements RemoteLink {
       },
       'invoke-result',
     )) as { _error?: unknown };
-    if (data._error) throw new Error(String(data._error));
+    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
   }
 
   async getOrchestrationHealth(): Promise<OrchestrationHealth> {
@@ -1650,7 +1655,7 @@ export class RemoteConnection implements RemoteLink {
       },
       'invoke-result',
     )) as { _result?: OrchestrationHealth; _error?: unknown };
-    if (data._error) throw new Error(String(data._error));
+    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
     return {
       suspendedAgents: Number(data._result?.suspendedAgents ?? 0),
       pendingHitl: Number(data._result?.pendingHitl ?? 0),
@@ -1669,7 +1674,7 @@ export class RemoteConnection implements RemoteLink {
       'invoke-result',
       SHELL_DISCOVERY_TIMEOUT_MS,
     )) as { _result?: RemoteShellInfo[]; _error?: unknown };
-    if (data._error) throw new Error(String(data._error));
+    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
     return Array.isArray(data._result) ? data._result : [];
   }
 
@@ -1688,7 +1693,7 @@ export class RemoteConnection implements RemoteLink {
       },
       'invoke-result',
     )) as { _error?: unknown };
-    if (change._error) throw new Error(String(change._error));
+    if (change._error) throw new Error(unknownText(change._error, 'remote error'));
     // 重建后必须再激活一次，否则新 PTY 没有订阅者，手机端只看到一块死屏。
     // rows/cols 交给 host 用该 pane 现有几何（远端不掌握真实网格）。
     const activate = (await this._sendAndWait(
@@ -1700,7 +1705,7 @@ export class RemoteConnection implements RemoteLink {
       },
       'invoke-result',
     )) as { _error?: unknown };
-    if (activate._error) throw new Error(String(activate._error));
+    if (activate._error) throw new Error(unknownText(activate._error, 'remote error'));
   }
 
   async switchWorkspace(workspaceId: string): Promise<boolean> {
@@ -1710,7 +1715,7 @@ export class RemoteConnection implements RemoteLink {
 
   async createWorkspace(name?: string): Promise<string | null> {
     const data = await this._sendAndWait({ type: 'create-workspace', name: name || '' }, 'create-workspace-result') as Record<string, unknown>;
-    return (data.success && data.workspaceId) ? String(data.workspaceId) : null;
+    return data.success ? protocolId(data.workspaceId) : null;
   }
 
   async renameWorkspace(workspaceId: string, name: string): Promise<boolean> {
@@ -1749,14 +1754,14 @@ export class RemoteConnection implements RemoteLink {
       },
       'invoke-result',
     )) as { _result?: unknown; _error?: unknown };
-    if (data._error) throw new Error(String(data._error));
+    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
     const raw = data._result;
     if (!Array.isArray(raw)) return [];
     return raw.map((row) => {
       const r = row as Record<string, unknown>;
       return {
-        name: String(r.name ?? ''),
-        path: String(r.path ?? ''),
+        name: typeof r.name === 'string' ? r.name : '',
+        path: typeof r.path === 'string' ? r.path : '',
         mtimeSecs: Number(r.mtime_secs ?? r.mtimeSecs ?? 0),
       };
     }).filter((e) => e.path.length > 0);
@@ -1772,14 +1777,15 @@ export class RemoteConnection implements RemoteLink {
       },
       'invoke-result',
     )) as { _result?: unknown; _error?: unknown };
-    if (data._error) throw new Error(String(data._error));
+    if (data._error) throw new Error(unknownText(data._error, 'remote error'));
     const id = data._result;
-    return id != null && String(id).length > 0 ? String(id) : null;
+    const idText = protocolId(id);
+    return idText && idText.length > 0 ? idText : null;
   }
 
   async createPane(shell?: string): Promise<string | null> {
     const data = await this._sendAndWait({ type: 'create-pane', shell: shell || '' }, 'create-pane-result') as Record<string, unknown>;
-    return (data.success && data.paneId) ? String(data.paneId) : null;
+    return data.success ? protocolId(data.paneId) : null;
   }
 
   async closePane(pane: PaneRef): Promise<boolean> {

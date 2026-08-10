@@ -22,6 +22,19 @@ function loadMonaco(): Promise<typeof import('monaco-editor')> {
   return monacoLoadPromise;
 }
 
+function encodeUtf8Base64(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function decodeUtf8Base64(value: string): string {
+  const binary = atob(value);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
 /**
  * Escape the four HTML-sensitive characters. Used before stuffing a raw code
  * string into a <pre><code> as a placeholder when Monaco colorize fails
@@ -34,6 +47,40 @@ function escapeHtml(s: string): string {
     .replaceAll(/>/g, '&gt;')
     .replaceAll(/"/g, '&quot;')
     .replaceAll(/'/g, '&#39;');
+}
+
+function stripMarkupTags(input: string): string {
+  let result = '';
+  let inTag = false;
+  for (const char of input) {
+    if (char === '<') inTag = true;
+    else if (char === '>') inTag = false;
+    else if (!inTag) result += char;
+  }
+  return result;
+}
+
+function replaceWhitespaceRuns(input: string): string {
+  let result = '';
+  let inWhitespace = false;
+  for (const char of input) {
+    if (char.trim() === '') {
+      if (!inWhitespace) result += '-';
+      inWhitespace = true;
+    } else {
+      result += char;
+      inWhitespace = false;
+    }
+  }
+  return result;
+}
+
+function trimDashes(input: string): string {
+  let start = 0;
+  while (start < input.length && input[start] === '-') start += 1;
+  let end = input.length;
+  while (end > start && input[end - 1] === '-') end -= 1;
+  return input.slice(start, end);
 }
 
 /**
@@ -124,13 +171,11 @@ function buildRenderer(source: string): Renderer {
   // normalisation loosely (lowercase, spaces → hyphen, strip `[]()` etc.).
   const slugCounts = new Map<string, number>();
   function slugify(text: string): string {
-    const base = text
-      .toLowerCase()
-      .trim()
-      .replaceAll(/<[^>]*>/g, '')
-      .replaceAll(/[!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~]/g, '')
-      .replaceAll(/\s+/g, '-')
-      .replaceAll(/^-+|-+$/g, '');
+    const base = trimDashes(
+      replaceWhitespaceRuns(
+        stripMarkupTags(text.toLowerCase().trim()).replaceAll(/[!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~]/g, ''),
+      ),
+    );
     const seen = slugCounts.get(base) ?? 0;
     slugCounts.set(base, seen + 1);
     return seen === 0 ? base : `${base}-${seen}`;
@@ -141,7 +186,7 @@ function buildRenderer(source: string): Renderer {
     const rawInlineText = tokens
       .map((t) => ('text' in t && typeof t.text === 'string' ? t.text : ''))
       .join('');
-    const id = slugify(rawInlineText || text.replaceAll(/<[^>]*>/g, ''));
+    const id = slugify(rawInlineText || stripMarkupTags(text));
     const line = popSrcLine(raw);
     return `<h${depth} id="${escapeHtml(id)}" data-rg-md-src-line="${line}">${text}</h${depth}>`;
   };
@@ -205,7 +250,7 @@ function buildRenderer(source: string): Renderer {
   renderer.code = function code(token: Tokens.Code): string {
     const { text, lang, raw } = token;
     const language = (lang || '').trim().split(/\s+/)[0] || '';
-    const encoded = btoa(unescape(encodeURIComponent(text)));
+    const encoded = encodeUtf8Base64(text);
     const line = popSrcLine(raw);
     if (language === 'mermaid') {
       // 占位 div：异步渲染器扫到这个 marker 后 import mermaid 并替换 innerHTML。
@@ -362,7 +407,7 @@ export async function highlightCodeBlocks(container: HTMLElement): Promise<void>
       const encoded = pre.dataset.rgMdCode;
       const lang = pre.dataset.rgMdLang || '';
       if (!encoded) return;
-      const text = decodeURIComponent(escape(atob(encoded)));
+      const text = decodeUtf8Base64(encoded);
       try {
         const html = await monaco.editor.colorize(text, lang || 'plaintext', {
           tabSize: 2,
@@ -432,7 +477,7 @@ export async function renderMermaidBlocks(container: HTMLElement): Promise<void>
     Array.from(blocks).map(async (div, idx) => {
       const encoded = div.dataset.rgMdMermaid;
       if (!encoded) return;
-      const source = decodeURIComponent(escape(atob(encoded)));
+      const source = decodeUtf8Base64(encoded);
       // 唯一 id 避免 mermaid 内部 svg id 冲突；前缀 + 时间戳 + 索引足够。
       const id = `rg-md-mermaid-${Date.now().toString(36)}-${idx}`;
       try {
@@ -463,7 +508,7 @@ export function toggleTaskAtLine(source: string, lineIndex: number): string {
   const lines = source.split('\n');
   if (lineIndex >= lines.length) return source;
   const line = lines[lineIndex];
-  const match = line.match(/^(\s*(?:[-*+]|\d+\.)\s+\[)([ xX])(\]\s.*)$/);
+  const match = /^(\s*(?:[-*+]|\d+\.)\s+\[)([ xX])(\]\s.*)$/.exec(line);
   if (!match) return source;
   const filled = match[2] === ' ' ? 'x' : ' ';
   lines[lineIndex] = `${match[1]}${filled}${match[3]}`;

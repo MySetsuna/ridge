@@ -22,7 +22,7 @@
 // `C:\Program Files\ridge\0.1.4\`. Version slug `0_1_4` is used for identifier
 // suffix and WiX Component Id (Wix identifiers can't contain `.`).
 
-import { execSync, spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -34,6 +34,7 @@ const repoRoot = resolve(here, '..');
 const pkgJsonPath = resolve(repoRoot, 'package.json');
 const cargoTomlPath = resolve(repoRoot, 'src-tauri', 'Cargo.toml');
 const wxsPath = resolve(repoRoot, 'src-tauri', 'wix', 'path-env.wxs');
+const viteCli = resolve(repoRoot, 'node_modules', 'vite', 'bin', 'vite.js');
 
 function readText(p) {
   return readFileSync(p, 'utf8');
@@ -198,14 +199,14 @@ export async function main() {
   // Build frontend first — tauri needs ../build to exist.
   // Set RIDGE_BUILD_SKIP to avoid circular re-entry if vite triggers npm run build.
   console.log('[build-ridge] Building desktop frontend (vite build)...');
-  execSync('npx vite build', {
+  execFileSync(process.execPath, [viteCli, 'build'], {
     cwd: repoRoot,
     stdio: 'inherit',
     env: { ...process.env, RIDGE_BUILD_SKIP: '1' },
   });
   // Also build the mobile frontend so tauri's resource glob picks it up.
   console.log('[build-ridge] Building mobile frontend (vite build --config vite.mobile.config.js)...');
-  execSync('npx vite build --config vite.mobile.config.js', {
+  execFileSync(process.execPath, [viteCli, 'build', '--config', 'vite.mobile.config.js'], {
     cwd: repoRoot,
     stdio: 'inherit',
     env: { ...process.env, RIDGE_BUILD_SKIP: '1' },

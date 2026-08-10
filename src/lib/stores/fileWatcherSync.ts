@@ -26,6 +26,7 @@ import {
 } from './fileExplorer';
 import { fileEditorStore } from './fileEditor';
 import { onFsChange, isRecentlyWritten, type FsChangedPayload } from './fsEvents';
+import { trimTrailingSeparators } from '$lib/utils/path';
 
 interface WatchSpec {
 	path: string;
@@ -45,8 +46,8 @@ function normalize(p: string): string {
 }
 
 function isUnder(child: string, parent: string): boolean {
-	const c = normalize(child).replace(/\/+$/, '');
-	const p = normalize(parent).replace(/\/+$/, '');
+	const c = trimTrailingSeparators(normalize(child));
+	const p = trimTrailingSeparators(normalize(parent));
 	if (c === p) return true;
 	return c.startsWith(p + '/');
 }

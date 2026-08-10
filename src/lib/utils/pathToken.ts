@@ -43,14 +43,16 @@ export function pathTokenAt(lineContent: string, column: number): PathToken | nu
 
   // URL（http://host:port/…）：整体交给 linkResolver，不解析 :line（端口非行号）。
   if (!URL_SCHEME.test(raw)) {
-    const m = raw.match(/:(\d+)(?::(\d+))?$/);
+    const m = /:(\d+)(?::(\d+))?$/.exec(raw);
     if (m && m.index !== undefined) {
       line = Number(m[1]);
       col = m[2] ? Number(m[2]) : undefined;
       raw = raw.slice(0, m.index);
     }
     // 剥离尾部噪点标点（句末的 . , ;）；不影响 Windows 盘符 `C:`（其 `:` 非结尾）。
-    raw = raw.replace(/[.,;]+$/, '');
+    let end = raw.length;
+    while (end > 0 && '.,;'.includes(raw[end - 1])) end -= 1;
+    raw = raw.slice(0, end);
   }
 
   if (!raw || raw === '.' || raw === '..') return null;

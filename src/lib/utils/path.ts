@@ -25,13 +25,20 @@ export function isHomeRelative(href: string): boolean {
   return href === '~' || href.startsWith('~/') || href.startsWith('~\\');
 }
 
+/** Remove trailing path separators without regex backtracking on user paths. */
+export function trimTrailingSeparators(value: string): string {
+  let end = value.length;
+  while (end > 0 && (value[end - 1] === '/' || value[end - 1] === '\\')) end -= 1;
+  return value.slice(0, end);
+}
+
 /**
  * Join `base` (a directory) with `rel` (a relative posix-style path). Keeps
  * the separator style of `base` when possible. Strips leading `./`.
  */
 export function joinPath(base: string, rel: string): string {
   const sep = base.includes('\\') && !base.includes('/') ? '\\' : '/';
-  const cleanBase = base.replace(/[\\/]+$/, '');
+  const cleanBase = trimTrailingSeparators(base);
   const cleanRel = rel.replace(/^\.\//, '');
   // Normalise rel's own slashes to match base's sep
   const normalisedRel = cleanRel.split(/[\\/]+/).join(sep);
@@ -86,7 +93,7 @@ export function isCurrentDirHref(href: string): boolean {
 export function pathStartsWith(child: string, parent: string): boolean {
   if (!child || !parent) return false;
   const c = normalizePath(child);
-  const p = normalizePath(parent.replace(/[\\/]+$/, ''));
+  const p = normalizePath(trimTrailingSeparators(parent));
   if (c.length < p.length) return false;
   const isWin = /^[a-zA-Z]:[\\/]/.test(p);
   const head = c.slice(0, p.length);

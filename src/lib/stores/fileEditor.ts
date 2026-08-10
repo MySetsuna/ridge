@@ -7,8 +7,7 @@
 // state + cross-tab coordination.
 
 import { writable, get, derived } from 'svelte/store';
-import { invoke, isTauri } from '@tauri-apps/api/core';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
 import { isMarkdownPath } from '$lib/utils/markdown';
 import { isRecentlyWritten, markRecentlyWritten } from './fsEvents';
 import { nextImageVersion } from './imagePreviewVersion';

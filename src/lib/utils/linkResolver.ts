@@ -18,7 +18,6 @@ import {
 } from '$lib/utils/linkTrust';
 import {
   isCurrentDirHref,
-  isExternalUrl,
   isPosixAbsolute,
   isWindowsAbsolute,
   joinPath,
