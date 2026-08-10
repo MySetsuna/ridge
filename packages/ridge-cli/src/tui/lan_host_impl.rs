@@ -586,35 +586,71 @@ fn rdg_metadata_frame(
     ))
 }
 
+fn subscription_field<'a>(v: &'a Value, name: &str) -> Option<&'a Value> {
+    v.get(name)
+        .or_else(|| v.get("params").and_then(|params| params.get(name)))
+}
+
+fn pane_subscription_request(v: &Value) -> Option<(Uuid, bool)> {
+    let pane_id = subscription_field(v, "paneId")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())?;
+    let resume = subscription_field(v, "resume")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Some((pane_id, resume))
+}
+
+fn send_pane_metadata(
+    tx: &mpsc::UnboundedSender<Message>,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    bytes: &[u8],
+    utf8_pending: &mut Vec<u8>,
+    osc_carryover: &mut ridge_core::pty::osc_stream::OscSignalCarryover,
+) -> bool {
+    let Some(meta) = rdg_metadata_frame(workspace_id, pane_id, bytes, utf8_pending, osc_carryover)
+    else {
+        return true;
+    };
+    tx.send(meta).is_ok()
+}
+
+fn send_pane_bytes(
+    tx: &mpsc::UnboundedSender<Message>,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    bytes: &[u8],
+    utf8_pending: &mut Vec<u8>,
+    osc_carryover: &mut ridge_core::pty::osc_stream::OscSignalCarryover,
+) -> bool {
+    if tx
+        .send(Message::Binary(ridge_remote::pane::pane_frame(
+            pane_id, bytes,
+        )))
+        .is_err()
+    {
+        return false;
+    }
+    send_pane_metadata(
+        tx,
+        workspace_id,
+        pane_id,
+        bytes,
+        utf8_pending,
+        osc_carryover,
+    )
+}
+
 fn start_pane_subscription(
     v: &Value,
     workspace: &SharedWorkspace,
     ws_id: Uuid,
     out_tx: &mpsc::UnboundedSender<Message>,
 ) {
-    let pane_id = v
-        .get("paneId")
-        .and_then(Value::as_str)
-        .and_then(|s| Uuid::parse_str(s).ok())
-        .or_else(|| {
-            // JSON-RPC params 可能嵌在 params 里；subscribe 亦可能只带顶层字段。
-            v.get("params")
-                .and_then(|p| p.get("paneId"))
-                .and_then(Value::as_str)
-                .and_then(|s| Uuid::parse_str(s).ok())
-        });
-    let Some(pane_id) = pane_id else {
+    let Some((pane_id, resume)) = pane_subscription_request(v) else {
         return;
     };
-    let resume = v
-        .get("resume")
-        .and_then(Value::as_bool)
-        .or_else(|| {
-            v.get("params")
-                .and_then(|p| p.get("resume"))
-                .and_then(Value::as_bool)
-        })
-        .unwrap_or(false);
     let sub = {
         let w = workspace.lock().unwrap();
         w.find(pane_id)
@@ -634,32 +670,26 @@ fn start_pane_subscription(
                     return;
                 }
             }
-            if let Some(meta) = rdg_metadata_frame(
+            if !send_pane_metadata(
+                &tx,
                 ws_id,
                 pane_id,
                 &backlog,
                 &mut utf8_pending,
                 &mut osc_carryover,
             ) {
-                if tx.send(meta).is_err() {
-                    return;
-                }
+                return;
             }
             while let Ok(bytes) = rx.recv().await {
-                let frame = ridge_remote::pane::pane_frame(pane_id, &bytes);
-                if tx.send(Message::Binary(frame)).is_err() {
-                    break;
-                }
-                if let Some(meta) = rdg_metadata_frame(
+                if !send_pane_bytes(
+                    &tx,
                     ws_id,
                     pane_id,
                     &bytes,
                     &mut utf8_pending,
                     &mut osc_carryover,
                 ) {
-                    if tx.send(meta).is_err() {
-                        break;
-                    }
+                    break;
                 }
             }
         });
@@ -1378,6 +1408,76 @@ mod tests {
     }
 
     #[test]
+    fn pane_subscription_request_accepts_top_level_and_nested_fields() {
+        let pane_id = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
+
+        assert_eq!(
+            pane_subscription_request(&json!({
+                "paneId": pane_id.to_string(),
+                "resume": true,
+            })),
+            Some((pane_id, true))
+        );
+        assert_eq!(
+            pane_subscription_request(&json!({
+                "params": { "paneId": pane_id.to_string(), "resume": false },
+            })),
+            Some((pane_id, false))
+        );
+    }
+
+    #[test]
+    fn pane_subscription_request_rejects_missing_or_invalid_pane() {
+        assert_eq!(pane_subscription_request(&json!({})), None);
+        assert_eq!(
+            pane_subscription_request(&json!({ "paneId": "not-a-uuid" })),
+            None
+        );
+    }
+
+    #[test]
+    fn send_pane_bytes_preserves_binary_then_metadata_order() {
+        let workspace_id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let pane_id = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut utf8_pending = Vec::new();
+        let mut osc_carryover = ridge_core::pty::osc_stream::OscSignalCarryover::default();
+
+        assert!(send_pane_bytes(
+            &tx,
+            workspace_id,
+            pane_id,
+            b"output\x1b]2;title\x07",
+            &mut utf8_pending,
+            &mut osc_carryover,
+        ));
+        assert!(matches!(rx.try_recv().unwrap(), Message::Binary(_)));
+        let Message::Text(metadata) = rx.try_recv().unwrap() else {
+            panic!("expected pty metadata after binary frame");
+        };
+        assert!(metadata.contains("\"type\":\"pty-meta\""));
+    }
+
+    #[test]
+    fn send_pane_paths_report_closed_output_channel() {
+        let workspace_id = Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let pane_id = Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        drop(rx);
+        let mut utf8_pending = Vec::new();
+        let mut osc_carryover = ridge_core::pty::osc_stream::OscSignalCarryover::default();
+
+        assert!(!send_pane_metadata(
+            &tx,
+            workspace_id,
+            pane_id,
+            b"\x1b]2;title\x07",
+            &mut utf8_pending,
+            &mut osc_carryover,
+        ));
+    }
+
+    #[test]
     fn rdg_metadata_frame_reassembles_split_osc() {
         let workspace_id = Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").unwrap();
         let pane_id = Uuid::parse_str("dddddddd-dddd-dddd-dddd-dddddddddddd").unwrap();
@@ -1410,5 +1510,31 @@ mod tests {
         assert_eq!(value["paneId"], pane_id.to_string());
         assert_eq!(value["title"], "split title");
         assert_eq!(value["cwd"], "C:/wind");
+    }
+
+    #[test]
+    fn pane_subscription_request_accepts_top_level_and_params_fields() {
+        let pane_id = Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap();
+
+        assert_eq!(
+            pane_subscription_request(&json!({
+                "paneId": pane_id.to_string(),
+                "resume": true,
+            })),
+            Some((pane_id, true))
+        );
+        assert_eq!(
+            pane_subscription_request(&json!({
+                "params": {
+                    "paneId": pane_id.to_string(),
+                    "resume": true,
+                },
+            })),
+            Some((pane_id, true))
+        );
+        assert_eq!(
+            pane_subscription_request(&json!({"paneId": "not-a-uuid"})),
+            None
+        );
     }
 }
