@@ -365,7 +365,7 @@ describe('CloudHostBridge — pane stream (D-GM-7 layout)', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it('registers subscribe-pane intent with no source wired (pane stream TODO)', () => {
+  it('registers subscribe-pane intent when no source is configured', () => {
     const rig = makeRig(); // no paneOutputSource
     rig.sendJson({ jsonrpc: '2.0', method: 'subscribe-pane', params: { paneId: 'p' } });
     // No frames sent (no real source), no throw.
