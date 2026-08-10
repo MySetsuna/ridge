@@ -1123,27 +1123,24 @@ mod tests {
     fn kernel_identity_for_pane_is_fenced_without_ui_agent_mapping() {
         let workspace_id = Uuid::new_v4();
         let pane_id = Uuid::new_v4();
-        let identity = |workspace_id: Uuid,
-                        pane_id: Uuid,
-                        online: bool,
-                        generation: u64,
-                        lease: &str| {
-            ridge_core::teammate::communication::AgentIdentity {
-                agent_id: format!("kernel:{pane_id}"),
-                session_id: "session-1".into(),
-                workspace_id: workspace_id.to_string(),
-                pane_id: pane_id.to_string(),
-                cwd: "C:/workspace".into(),
-                executable: "codex".into(),
-                argv: Vec::new(),
-                generation,
-                lease: lease.into(),
-                lifecycle: ridge_core::teammate::communication::AgentLifecycle::Online,
-                online,
-                last_seen_unix_ms: 1,
-                capabilities: vec!["messages".into()],
-            }
-        };
+        let identity =
+            |workspace_id: Uuid, pane_id: Uuid, online: bool, generation: u64, lease: &str| {
+                ridge_core::teammate::communication::AgentIdentity {
+                    agent_id: format!("kernel:{pane_id}"),
+                    session_id: "session-1".into(),
+                    workspace_id: workspace_id.to_string(),
+                    pane_id: pane_id.to_string(),
+                    cwd: "C:/workspace".into(),
+                    executable: "codex".into(),
+                    argv: Vec::new(),
+                    generation,
+                    lease: lease.into(),
+                    lifecycle: ridge_core::teammate::communication::AgentLifecycle::Online,
+                    online,
+                    last_seen_unix_ms: 1,
+                    capabilities: vec!["messages".into()],
+                }
+            };
         let identities = vec![
             identity(Uuid::new_v4(), pane_id, true, 2, "wrong-workspace"),
             identity(workspace_id, Uuid::new_v4(), true, 2, "wrong-pane"),

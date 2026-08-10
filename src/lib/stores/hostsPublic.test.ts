@@ -162,6 +162,23 @@ describe('hosts store public helper projections', () => {
     expect(hosts.hasHostTopologyLink('remote-1')).toBe(false);
   });
 
+  it('single-flights repeated topology retries and permits a retry after cancellation', async () => {
+    const { link } = fakeLink();
+    const remove = hosts.registerHostTopologyLink({
+      hostId: 'retry-single-flight', kind: 'remote', label: 'Retry', link,
+    });
+
+    const first = hosts.retryHostTopology('retry-single-flight');
+    const second = hosts.retryHostTopology('retry-single-flight');
+    await Promise.all([first, second]);
+    expect(link.listWorkspaces).toHaveBeenCalledTimes(1);
+
+    hosts.cancelHostTopologyRetry('retry-single-flight');
+    await hosts.retryHostTopology('retry-single-flight');
+    expect(link.listWorkspaces).toHaveBeenCalledTimes(2);
+    remove();
+  });
+
   it('fails closed for invalid connection/share input and tracks link disconnect', async () => {
     await expect(hosts.connectHost('remote', '', '127.0.0.1', '')).rejects.toThrow('LAN 主机地址或 TOTP 无效');
     expect(get(hosts.hostConnectProgress)).toMatchObject({ phase: 'error' });

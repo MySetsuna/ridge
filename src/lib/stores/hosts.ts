@@ -215,6 +215,7 @@ export interface RegisteredHostLink {
 const registeredHostLinks = new Map<string, RegisteredHostLink>();
 const topologyByHost = new Map<string, HostForestResult>();
 const topologyInFlight = new Map<string, Promise<HostForestResult | null>>();
+const topologyRetryInFlight = new Map<string, Promise<HostForestResult | null>>();
 const topologyAbortByHost = new Map<string, AbortController>();
 const topologyGenerationByHost = new Map<string, number>();
 let hostsRefreshGeneration = 0;
@@ -224,6 +225,7 @@ function supersedeHostTopology(hostId: string): number {
   topologyAbortByHost.get(hostId)?.abort();
   topologyAbortByHost.delete(hostId);
   topologyInFlight.delete(hostId);
+  topologyRetryInFlight.delete(hostId);
   const generation = (topologyGenerationByHost.get(hostId) ?? 0) + 1;
   topologyGenerationByHost.set(hostId, generation);
   return generation;
@@ -319,8 +321,15 @@ export function cancelHostTopologyRetry(hostId: string): void {
 
 /** Refresh one linked host only. Existing in-flight work is shared. */
 export async function retryHostTopology(hostId: string): Promise<HostForestResult | null> {
-  const result = await refreshLinkedHost(hostId);
-  return result;
+  const current = topologyRetryInFlight.get(hostId);
+  if (current) return current;
+  const pending = refreshLinkedHost(hostId).finally(() => {
+    if (topologyRetryInFlight.get(hostId) === pending) {
+      topologyRetryInFlight.delete(hostId);
+    }
+  });
+  topologyRetryInFlight.set(hostId, pending);
+  return pending;
 }
 
 /** Refresh and publish one host only; unrelated slow hosts cannot delay it. */
