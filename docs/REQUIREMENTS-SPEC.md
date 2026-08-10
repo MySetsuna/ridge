@@ -1579,3 +1579,10 @@
 - 完整源集另行纳入 `scripts` 扫描，scanner/CE 成功但项目 coverage `66.3%`、line `67.5%`、branch `64.3%`，Gate `ERROR`（`new_coverage=17.8%`、`new_violations=155`）。此结果证明不能用排除 `scripts` 的产品口径冒充全项目达标。
 - 当前 new-period issues 查询 `172` 条，开放问题总数 `672`；主要规则为 Rust `S3776/S107`、TypeScript `S2933/S3735` 等。未改 Quality Gate、未扩大排除、未用静态估算；`REQ-SONAR-COVERAGE-80-01` 仍 `ACTIVE`，待修复新问题后重扫并取得 Gate `OK`。
 - 证据日志：`.tools/sonar-scan-codex-20260810-wave70-product.log`、`.tools/sonar-scan-codex-20260810-wave70.log`。一次性本地 Sonar token 未落盘/入库；临时扫描副本未改工作树。
+## Wave 74 当前权威闭环补充（2026-08-11）
+
+- NLM 基线来源定向核验未发现 `GoalStore`、`GraphState`、`Postgres checkpointer` 或 `goal recovery` 需求；不将这些词作为本仓待实现项。实际来源要求与现有 Rust/SQLite Hub、typed envelope、delivery policy、generation/lease adapter 对齐。
+- PTY fallback 新增 host 原子采样接入口与桌面 Tauri 发布命令；发布前校验 live Agent pane、五条件、generation/lease、`stateRevision`、`inputEpoch`，释放/替换 PTY 时清除旧证明。当前尚无同时提供五条件及 generation/lease 的真实桌面生产采样器，缺采样仍 fail-closed，故本项仅闭合安全边界，未宣称需求总项完成。
+- 本轮确定性证据：`cargo test -p ridge-mcp --lib --quiet` 90 passed；`cargo test --manifest-path src-tauri/Cargo.toml --lib teammate::mcp::tests --quiet` 5 passed；`cargo fmt --all -- --check` 通过；完整记录见 `docs/iterations/2026-08-11-wave74-closure.md`。
+- SonarQube 最新项目 API 分析 `9abdb231-3503-4f6e-b8ee-48d28f7086dc`：coverage `80.4%`、line `86.7%`、branch `71.5%`、Quality Gate `OK`、`new_violations=0`。故 `REQ-SONAR-COVERAGE-80-01` 的项目覆盖率与质量门证据已取得；现场设备与第三方互操作仍按外部边界验收。
+- Wave 74 CDP 门禁：PTY parser、LAN protocol、DPR `1.5`、Remote mobile Agent 均通过；完整 Vitest `214` files / `1965 passed / 1 skipped`，`pnpm check` 为 `0 errors / 0 warnings`。移动门禁的早先等待超时已由更长宿主命令等待复核为通过，非产品失败。

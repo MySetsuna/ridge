@@ -40,6 +40,10 @@ import { cargoTool, systemTool } from './lib/toolPath.mjs';
 const userDataDir = DEV_USER_DATA_DIR;
 const root = path.resolve(import.meta.dirname, '..');
 const devKernelDataDir = path.join(root, '.iteration', 'dev-kernel-isolated-cdp');
+const cargoEnv = {
+  ...process.env,
+  CARGO_TARGET_DIR: path.join(root, 'target'),
+};
 const portFile = path.join(userDataDir, 'cdp-port.txt');
 const activePortFile = path.join(userDataDir, 'EBWebView', 'DevToolsActivePort');
 const configFile = path.join(userDataDir, 'tauri-dev-cdp.config.json');
@@ -96,9 +100,9 @@ fs.writeFileSync(configFile, JSON.stringify({ build: { devUrl: `http://127.0.0.1
 // The LAN host is a detached `rdg` sidecar, not part of the Tauri crate. Keep
 // the debug sidecar in lockstep with this checkout before launching WebView2;
 // otherwise desktop code can be new while Remote still runs yesterday's CLI.
-const cliBuild = spawnSync(cargoTool('cargo'), ['build', '-p', 'ridge-cli'], {
+const cliBuild = spawnSync(cargoTool('cargo'), ['build', '-p', 'ridge-cli', '--bin', 'rdg'], {
   cwd: path.resolve(import.meta.dirname, '..'),
-  env: process.env,
+  env: cargoEnv,
   stdio: 'inherit',
   shell: process.platform === 'win32',
 });
@@ -112,7 +116,7 @@ if (cliBuild.status !== 0) {
 // the Tauri shell may then be rebuilt while the previous Kernel remains alive.
 const desktopBuild = spawnSync(cargoTool('cargo'), ['build', '-p', 'ridge'], {
   cwd: path.resolve(import.meta.dirname, '..'),
-  env: process.env,
+  env: cargoEnv,
   stdio: 'inherit',
   shell: process.platform === 'win32',
 });
@@ -130,6 +134,12 @@ process.env.RIDGE_KERNEL_HOST_BINARY = ridgeKernelCopy;
 console.log(`[tauri-dev-cdp] detached kernel binary: ${ridgeKernelCopy}`);
 
 const rdgSource = path.join(root, 'target', 'debug', process.platform === 'win32' ? 'rdg.exe' : 'rdg');
+const rdgSourceStat = fs.statSync(rdgSource);
+const rdgCodeStat = fs.statSync(path.join(root, 'packages', 'ridge-cli', 'src', 'tui', 'lan_host_impl.rs'));
+if (rdgSourceStat.mtimeMs < rdgCodeStat.mtimeMs) {
+  console.error('[tauri-dev-cdp] rdg sidecar is older than its LAN host source; refusing stale E2E binary');
+  process.exit(1);
+}
 const rdgCopy = path.join(
   userDataDir,
   `rdg-dev-${process.pid}${process.platform === 'win32' ? '.exe' : ''}`,
