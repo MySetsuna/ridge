@@ -14,6 +14,10 @@ import { buildPlan as tauriBuildPlan, main as tauriBuildMain } from './tauri-bui
 import { buildDebugPlan, renameDebugArtifacts, main as debugBuildMain } from './tauri-build-debug.mjs';
 import { buildFlagFont, TWEMOJI_SHA256 } from './build-flag-font.mjs';
 import { main as remoteDesktopBuild } from './build-remote-desktop.mjs';
+import { main as remoteDevMain, parseArgs as remoteDevArgs } from './start-remote-dev.mjs';
+import { main as viteDevMain, viteArgs } from './start-vite-dev.mjs';
+import { sourceError as signalingSourceError } from './sync-signaling.mjs';
+import { main as syncSignalingMain, sourceError } from './sync-signaling.mjs';
 
 const quietIo = () => ({ log: vi.fn(), error: vi.fn(), warn: vi.fn() });
 
@@ -212,5 +216,45 @@ describe('remote desktop build wrapper', () => {
     expect(await remoteDesktopBuild({ spawnImpl: spawn, prune, io: quietIo() })).toBe(0);
     expect(prune).toHaveBeenCalledOnce();
     expect(await remoteDesktopBuild({ spawnImpl: () => ({ on: (_event, callback) => callback(null) }), prune, io: quietIo() })).toBe(1);
+  });
+});
+
+describe('development command wrappers', () => {
+  it('selects remote build/dev branches and propagates child exit codes', async () => {
+    expect(remoteDevArgs(['-b'])).toEqual({ build: true });
+    const exec = vi.fn();
+    const child = { on: (_event, callback) => callback(7) };
+    expect(await remoteDevMain({ args: ['--build'], execSyncImpl: exec, spawnImpl: () => child, io: quietIo() })).toBe(7);
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(await remoteDevMain({ args: ['--build'], execSyncImpl: vi.fn(() => { throw new Error('build'); }), io: quietIo() })).toBe(1);
+    expect(await remoteDevMain({ args: [], spawnImpl: () => ({ on: (_event, callback) => callback(0) }), io: quietIo() })).toBe(0);
+  });
+
+  it('builds port-aware Vite args, skips Tauri-owned dev, and handles spawn errors', async () => {
+    expect(viteArgs({ RIDGE_DEV_SERVER_PORT: '5199' })).toEqual(['run', 'dev', '--host', '127.0.0.1', '--port', '5199', '--strictPort']);
+    expect(await viteDevMain({ env: { TAURI_SKIP_VITE_DEV: '1' }, io: quietIo() })).toBe(0);
+    const signals = vi.fn();
+    const child = { kill: vi.fn(), on: (event, callback) => { if (event === 'exit') callback(3); return child; } };
+    expect(await viteDevMain({ env: {}, spawnImpl: () => child, onSignal: signals, io: quietIo() })).toBe(3);
+    expect(signals).toHaveBeenCalledTimes(2);
+    const errorChild = { on: (event, callback) => { if (event === 'error') callback(new Error('spawn')); return errorChild; } };
+    expect(await viteDevMain({ env: {}, spawnImpl: () => errorChild, onSignal: vi.fn(), io: quietIo() })).toBe(1);
+  });
+});
+
+describe('signaling sync guard', () => {
+  it('fails closed before touching generated output when sources are incomplete', () => {
+    expect(signalingSourceError('C:/missing', () => false)).toContain('repo not found');
+    expect(signalingSourceError('C:/repo', (path) => path === 'C:/repo')).toContain('missing bindings');
+    expect(signalingSourceError('C:/repo', () => true)).toBeNull();
+  });
+});
+
+describe('signaling vendor guard', () => {
+  it('distinguishes a missing sibling repo from an incomplete checkout', async () => {
+    expect(sourceError('C:/missing', () => false)).toContain('repo not found');
+    expect(sourceError('C:/repo', (p) => p === 'C:/repo')).toContain('missing bindings');
+    expect(sourceError('C:/repo', () => true)).toBeNull();
+    expect(await syncSignalingMain({ repo: 'C:/missing', exists: () => false, io: quietIo() })).toBe(false);
   });
 });

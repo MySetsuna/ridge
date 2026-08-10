@@ -3,35 +3,25 @@
 
 import { spawn } from 'node:child_process';
 
-if (process.env.TAURI_SKIP_VITE_DEV) {
-  console.log('[start-vite-dev] TAURI_SKIP_VITE_DEV set, skipping Vite dev server');
-  process.exit(0);
+export function viteArgs(env = process.env) {
+  const args = ['run', 'dev'];
+  if (env.RIDGE_DEV_SERVER_PORT) args.push('--host', '127.0.0.1', '--port', env.RIDGE_DEV_SERVER_PORT, '--strictPort');
+  return args;
 }
 
-console.log('[start-vite-dev] Starting Vite dev server...');
-
-const viteArgs = ['run', 'dev'];
-if (process.env.RIDGE_DEV_SERVER_PORT) {
-  viteArgs.push('--host', '127.0.0.1', '--port', process.env.RIDGE_DEV_SERVER_PORT, '--strictPort');
+export function main({ env = process.env, spawnImpl = spawn, io = console, onSignal = process.on } = {}) {
+  if (env.TAURI_SKIP_VITE_DEV) { io.log('[start-vite-dev] TAURI_SKIP_VITE_DEV set, skipping Vite dev server'); return Promise.resolve(0); }
+  io.log('[start-vite-dev] Starting Vite dev server...');
+  const child = spawnImpl('pnpm', viteArgs(env), {
+    stdio: 'inherit', shell: true,
+    env: { ...env, RIDGE_CLOUD_BASE_DOMAIN: env.RIDGE_CLOUD_BASE_DOMAIN || 'localhost:5001' },
+  });
+  onSignal('SIGINT', () => child.kill('SIGINT'));
+  onSignal('SIGTERM', () => child.kill('SIGTERM'));
+  return new Promise((resolveExit) => {
+    child.on('exit', (code) => resolveExit(code ?? 0));
+    child.on('error', (err) => { io.error('[start-vite-dev] Failed to start:', err); resolveExit(1); });
+  });
 }
-const child = spawn('pnpm', viteArgs, {
-  stdio: 'inherit',
-  shell: true,
-  env: {
-    ...process.env,
-    RIDGE_CLOUD_BASE_DOMAIN: process.env.RIDGE_CLOUD_BASE_DOMAIN || 'localhost:5001',
-  },
-});
 
-child.on('exit', (code) => {
-  process.exit(code ?? 0);
-});
-
-child.on('error', (err) => {
-  console.error('[start-vite-dev] Failed to start:', err);
-  process.exit(1);
-});
-
-// Handle parent termination
-process.on('SIGINT', () => child.kill('SIGINT'));
-process.on('SIGTERM', () => child.kill('SIGTERM'));
+if (process.argv[1] && process.argv[1].endsWith('start-vite-dev.mjs')) main().then((code) => process.exit(code));

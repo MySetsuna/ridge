@@ -3,23 +3,24 @@
 import { spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pruneOutputs } from './prune-stale-fonts.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const viteCli = resolve(root, 'node_modules', 'vite', 'bin', 'vite.js');
 
-const child = spawn(process.execPath, [viteCli, 'build'], {
-  cwd: root,
-  stdio: 'inherit',
-  env: { ...process.env, RIDGE_WEB_REMOTE: '1' },
-});
+export function main({ spawnImpl = spawn, prune = pruneOutputs, io = console } = {}) {
+  return new Promise((resolveExit) => {
+    const child = spawnImpl(process.execPath, [viteCli, 'build'], {
+      cwd: root, stdio: 'inherit', env: { ...process.env, RIDGE_WEB_REMOTE: '1' },
+    });
+    child.on('exit', (code) => {
+      if (code === 0) {
+        try { prune(); }
+        catch (e) { io.warn('[build-remote-desktop] prune-stale-fonts failed:', e?.message ?? e); }
+      }
+      resolveExit(code ?? 1);
+    });
+  });
+}
 
-child.on('exit', async (code) => {
-  if (code === 0) {
-    try {
-      await import('./prune-stale-fonts.mjs');
-    } catch (e) {
-      console.warn('[build-remote-desktop] prune-stale-fonts failed:', e?.message ?? e);
-    }
-  }
-  process.exit(code ?? 1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) main().then((code) => process.exit(code));

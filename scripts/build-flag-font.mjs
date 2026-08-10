@@ -24,73 +24,54 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const outRemote = resolve(root, 'src/remote/public/fonts/flags.woff2');
-const outDesktop = resolve(root, 'static/fonts/flags.woff2');
-const MAX_BYTES = 800 * 1024; // 800 KB ceiling — design red line (actual ≈ 77 KB)
+export const MAX_BYTES = 800 * 1024; // 800 KB ceiling — design red line (actual ≈ 77 KB)
 
 // Pinned upstream release asset (NOT a moving branch ref) for reproducible
 // builds, plus a content hash so a tampered/changed download is rejected.
-const TWEMOJI_URL =
+export const TWEMOJI_URL =
   'https://github.com/mozilla/twemoji-colr/releases/download/v0.7.0/Twemoji.Mozilla.ttf';
-const TWEMOJI_SHA256 =
+export const TWEMOJI_SHA256 =
   '6d90152ee0d29e82fe2a87793af5aa4b7ad13e6538360889e141e81ed299ee8e';
 
 // Download the source font into a build cache (re-used across runs).
-const cacheDir = resolve(root, 'node_modules/.cache/flag-font-dl');
-mkdirSync(cacheDir, { recursive: true });
-const srcFont = resolve(cacheDir, 'Twemoji.Mozilla.ttf');
+export function sha256(filePath, fsImpl = { readFileSync }) {
+  return createHash('sha256').update(fsImpl.readFileSync(filePath)).digest('hex');
+}
 
-const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
-
-if (!existsSync(srcFont) || sha256(srcFont) !== TWEMOJI_SHA256) {
-  console.log(`Downloading Twemoji (Mozilla COLRv0) from ${TWEMOJI_URL}`);
-  execFileSync('curl', ['-sSL', '-o', srcFont, TWEMOJI_URL], { stdio: 'inherit' });
-  const got = sha256(srcFont);
-  if (got !== TWEMOJI_SHA256) {
-    console.error(`Source font hash mismatch.\n  expected ${TWEMOJI_SHA256}\n  got      ${got}`);
-    rmSync(srcFont, { force: true });
-    process.exit(1);
+export function buildFlagFont({ rootDir = root, fsImpl = { existsSync, statSync, mkdirSync, copyFileSync, readFileSync, rmSync }, execFileSyncImpl = execFileSync, hashFile = sha256, io = console } = {}) {
+  const outRemote = resolve(rootDir, 'src/remote/public/fonts/flags.woff2');
+  const outDesktop = resolve(rootDir, 'static/fonts/flags.woff2');
+  const cacheDir = resolve(rootDir, 'node_modules/.cache/flag-font-dl');
+  const srcFont = resolve(cacheDir, 'Twemoji.Mozilla.ttf');
+  fsImpl.mkdirSync(cacheDir, { recursive: true });
+  if (!fsImpl.existsSync(srcFont) || hashFile(srcFont, fsImpl) !== TWEMOJI_SHA256) {
+    io.log(`Downloading Twemoji (Mozilla COLRv0) from ${TWEMOJI_URL}`);
+    execFileSyncImpl('curl', ['-sSL', '-o', srcFont, TWEMOJI_URL], { stdio: 'inherit' });
+    const got = hashFile(srcFont, fsImpl);
+    if (got !== TWEMOJI_SHA256) {
+      io.error(`Source font hash mismatch.\n  expected ${TWEMOJI_SHA256}\n  got      ${got}`);
+      fsImpl.rmSync(srcFont, { force: true });
+      return false;
+    }
   }
-}
-
-mkdirSync(dirname(outRemote), { recursive: true });
-mkdirSync(dirname(outDesktop), { recursive: true });
-
-// --layout-features=* keeps GSUB so the RI pairs (and the U+1F3F4 + tag
-// sequences) ligate into single flag glyphs. COLR/CPAL ride along with the kept
-// glyphs so the flags stay colored. --drop-tables=vmtx,vhea removes the vertical
-// metrics a horizontal terminal never consults.
-try {
-  execFileSync(
-    'pyftsubset',
-    [
-      srcFont,
-      '--unicodes=U+1F1E6-1F1FF,U+1F3F4,U+E0020-E007F',
-      '--layout-features=*',
-      '--drop-tables=vmtx,vhea',
-      '--flavor=woff2',
-      `--output-file=${outRemote}`,
-    ],
-    { stdio: 'inherit' },
-  );
-} catch (err) {
-  if (err && err.code === 'ENOENT') {
-    console.error('pyftsubset not found. Install with: pip install fonttools brotli');
+  fsImpl.mkdirSync(dirname(outRemote), { recursive: true });
+  fsImpl.mkdirSync(dirname(outDesktop), { recursive: true });
+  try {
+    execFileSyncImpl('pyftsubset', [srcFont, '--unicodes=U+1F1E6-1F1FF,U+1F3F4,U+E0020-E007F', '--layout-features=*', '--drop-tables=vmtx,vhea', '--flavor=woff2', `--output-file=${outRemote}`], { stdio: 'inherit' });
+  } catch (err) {
+    if (err?.code === 'ENOENT') io.error('pyftsubset not found. Install with: pip install fonttools brotli');
+    return false;
   }
-  process.exit(1);
+  const bytes = fsImpl.statSync(outRemote).size;
+  const kb = (bytes / 1024).toFixed(1);
+  if (bytes > MAX_BYTES) {
+    io.error(`flags.woff2 is ${kb} KB — exceeds the ${MAX_BYTES / 1024} KB red line. Re-evaluate subset configuration.`);
+    fsImpl.rmSync(outRemote, { force: true });
+    return false;
+  }
+  fsImpl.copyFileSync(outRemote, outDesktop);
+  io.log(`flags.woff2: ${kb} KB (<= ${MAX_BYTES / 1024} KB) OK → remote + desktop`);
+  return true;
 }
 
-const bytes = statSync(outRemote).size;
-const kb = (bytes / 1024).toFixed(1);
-if (bytes > MAX_BYTES) {
-  console.error(
-    `flags.woff2 is ${kb} KB — exceeds the ${MAX_BYTES / 1024} KB red line. ` +
-      `Re-evaluate subset configuration.`,
-  );
-  rmSync(outRemote, { force: true });
-  process.exit(1);
-}
-
-// Mirror the identical artifact to the desktop publish root.
-copyFileSync(outRemote, outDesktop);
-console.log(`flags.woff2: ${kb} KB (<= ${MAX_BYTES / 1024} KB) OK → remote + desktop`);
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) process.exit(buildFlagFont() ? 0 : 1);
