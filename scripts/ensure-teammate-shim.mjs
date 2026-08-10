@@ -8,35 +8,29 @@
  */
 import { existsSync, statSync } from 'fs';
 import { execSync } from 'child_process';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const root = join(__dirname, '..');
-const binName = process.platform === 'win32' ? 'tmux.exe' : 'tmux';
-const shimPath = join(root, 'dist', 'teammate-shim', binName);
-const sourcePath = join(root, 'src-tauri', 'src', 'bin', 'tmux.rs');
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-function isStale() {
-  if (!existsSync(shimPath)) return true;
-  try {
-    return statSync(sourcePath).mtimeMs > statSync(shimPath).mtimeMs;
-  } catch {
-    return true;
-  }
+export function isTeammateShimStale({ rootDir = root, platform = process.platform, fsImpl = { existsSync, statSync } } = {}) {
+  const binName = platform === 'win32' ? 'tmux.exe' : 'tmux';
+  const shimPath = join(rootDir, 'dist', 'teammate-shim', binName);
+  const sourcePath = join(rootDir, 'src-tauri', 'src', 'bin', 'tmux.rs');
+  if (!fsImpl.existsSync(shimPath)) return true;
+  try { return fsImpl.statSync(sourcePath).mtimeMs > fsImpl.statSync(shimPath).mtimeMs; }
+  catch { return true; }
 }
 
-if (!isStale()) {
-  console.log(`[ensure-teammate-shim] up-to-date at ${shimPath}`);
-  process.exit(0);
+export function main({ rootDir = root, platform = process.platform, fsImpl = { existsSync, statSync }, exec = execSync, io = console } = {}) {
+  const stale = isTeammateShimStale({ rootDir, platform, fsImpl });
+  const binName = platform === 'win32' ? 'tmux.exe' : 'tmux';
+  const shimPath = join(rootDir, 'dist', 'teammate-shim', binName);
+  if (!stale) { io.log(`[ensure-teammate-shim] up-to-date at ${shimPath}`); return 0; }
+  io.log('[ensure-teammate-shim] missing or source newer — rebuilding...');
+  exec('cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml', { stdio: 'inherit', cwd: rootDir });
+  exec('node scripts/copy-teammate-shim.mjs', { stdio: 'inherit', cwd: rootDir });
+  return 0;
 }
 
-console.log('[ensure-teammate-shim] missing or source newer — rebuilding...');
-execSync(
-  'cargo build --release --bin tmux --manifest-path src-tauri/Cargo.toml',
-  { stdio: 'inherit', cwd: root }
-);
-execSync('node scripts/copy-teammate-shim.mjs', {
-  stdio: 'inherit',
-  cwd: root,
-});
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) process.exit(main());
