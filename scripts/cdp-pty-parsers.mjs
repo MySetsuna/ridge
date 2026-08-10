@@ -166,7 +166,9 @@ try {
     process.exit(pass ? 0 : 2);
   };
 
-  const hardTimeout = setTimeout(() => { summary.errors.push('hard timeout'); done(); }, 30000);
+  // Fresh detached kernel may need several seconds to publish its first pane.
+  // Keep this bounded without turning cold-start latency into a false negative.
+  const hardTimeout = setTimeout(() => { summary.errors.push('hard timeout'); done(); }, 90000);
   let listedWorkspaceId = null;
   let createRequested = false;
   let emptyPanePolls = 0;
@@ -189,7 +191,9 @@ try {
     // several reads before executing it. Keep the bounded hard timeout as the
     // failure gate, but do not stop collection while the input is still being
     // echoed.
-    setTimeout(evaluateAndFinish, 15000);
+    // Long PowerShell lines can be echoed/executed after several redraw
+    // bursts on a warm ConPTY. Give the live stream a bounded settling window.
+    setTimeout(evaluateAndFinish, 30000);
   }
 
   ws.onopen = () => {

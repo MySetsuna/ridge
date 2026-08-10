@@ -112,7 +112,7 @@ try {
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   let firstPane = null;
-  const ECHO = 'RIDGE_CDP_PROBE_42';
+  const ECHO = 'RIDGE_CDP_PROBE_' + Date.now().toString(36);
 
   const done = (ok) => {
     clearTimeout(hardTimeout);
@@ -120,12 +120,17 @@ try {
     console.log('\n==== PROTOCOL VALIDATION SUMMARY ====');
     console.log(JSON.stringify(summary, null, 2));
     const pass = ok && summary.hello && Array.isArray(summary.panes) && summary.subscribedPane &&
-      summary.scrollbackFrames + summary.liveFrames > 0 && summary.uuidMatch;
+      summary.scrollbackFrames + summary.liveFrames > 0 && summary.liveFrames > 0 && summary.uuidMatch &&
+      summary.echoSeen && summary.pong;
     console.log('\nRESULT:', pass ? 'PASS ✅ (lan_proto.rs format confirmed against live host)' : 'PARTIAL/FAIL ⚠');
     process.exit(pass ? 0 : 2);
   };
 
-  const hardTimeout = setTimeout(() => { summary.errors.push('hard timeout'); done(false); }, 25000);
+  const hardTimeout = setTimeout(() => { summary.errors.push('hard timeout'); done(false); }, 45000);
+  let driven = false;
+  const maybeDone = () => {
+    if (summary.echoSeen && summary.pong) setTimeout(() => done(true), 400);
+  };
 
   // Subscribe to a pane, then exercise stdin/claim-pane/ping to drive live frames.
   function drivePane(workspaceId, paneId) {
@@ -152,11 +157,12 @@ try {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if (m.type === 'hello') { summary.hello = m; log('hello:', JSON.stringify(m)); }
       else if (m.type === 'theme') { summary.theme = true; }
-      else if (m.type === 'pong') { summary.pong = true; log('pong received'); setTimeout(() => done(true), 400); }
+      else if (m.type === 'pong') { summary.pong = true; log('pong received'); maybeDone(); }
       else if (m.type === 'panes') {
+        if (driven) return;
         summary.panes = m.panes;
         log(`panes: ${m.panes.length} →`, m.panes.map((p) => `${p.id.slice(0, 8)}…(${p.title})`).join(', '));
-        if (m.panes.length) drivePane(m.workspaceId, m.panes[0].id);
+        if (m.panes.length && !driven) { driven = true; drivePane(m.workspaceId, m.panes[0].id); }
         else { log('no panes → create-pane'); ws.send(JSON.stringify({ type: 'create-pane' })); }
       }
       else if (m.type === 'create-pane-result') {
@@ -177,7 +183,11 @@ try {
       summary.uuidMatch = id === firstPane;
       log(`binary frame paneId=${id} matches subscribed=${summary.uuidMatch}`);
     }
-    if (summary.echoSeen === false && payload.includes(ECHO)) { summary.echoSeen = true; log('✓ live echo seen in binary frame'); }
+    if (!isScroll && summary.echoSeen === false && payload.includes(ECHO)) {
+      summary.echoSeen = true;
+      log('✓ live echo seen in binary frame');
+      maybeDone();
+    }
     // Heuristic: the very first binary frame after subscribe is scrollback.
     if (isScroll) summary.scrollbackFrames++; else summary.liveFrames++;
   };

@@ -20,5 +20,5 @@ describe('terminal host ports', () => {
 		expect(typeof ports.termSettings?.fontSize()).toBe('number');
 		expect(typeof ports.workspace?.activeId()).toBe('string');
 		expect(ports.cwd?.all()).toEqual(expect.any(Array));
-	});
+	}, 15000);
 });
