@@ -3,14 +3,17 @@
 //! 协议分发、工具语义、WS/HTTP 传输都在 `ridge-mcp` crate 里，与 rdg 无头 host
 //! 共用同一份；本文件只回答「怎么动桌面工作区的 pane」。
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{json, Value};
 use tauri::Emitter;
 use uuid::Uuid;
 
 use ridge_mcp::addressing::{parse_pane_target, PaneTarget};
-use ridge_mcp::delivery::{DeliveryOutcome, DeliveryProbe, HubDeliveryAdapter};
+use ridge_mcp::delivery::{
+    DeliveryOutcome, DeliveryProbe, HubDeliveryAdapter, HubPtyRuntimeSnapshot, HubPtySafety,
+};
 use ridge_mcp::resource::{git_branch, git_root, RidgeUri};
 use ridge_mcp::server::{
     ExternalExecutionRejection, HostError, HostResult, InputDispatch, LaunchCapabilities,
@@ -38,6 +41,159 @@ pub(crate) fn router(ctx: TeammateCtx) -> axum::Router {
 
 struct DesktopMcpHost {
     ctx: TeammateCtx,
+}
+
+#[derive(Clone)]
+struct DesktopPtyRuntimeRecord {
+    agent_id: String,
+    generation: u64,
+    lease: String,
+    snapshot: HubPtyRuntimeSnapshot,
+}
+
+static DESKTOP_PTY_RUNTIME: OnceLock<Mutex<HashMap<(Uuid, Uuid), DesktopPtyRuntimeRecord>>> =
+    OnceLock::new();
+
+fn desktop_pty_runtime() -> &'static Mutex<HashMap<(Uuid, Uuid), DesktopPtyRuntimeRecord>> {
+    DESKTOP_PTY_RUNTIME.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn value_string(args: &Value, camel: &str, snake: &str) -> Result<String, String> {
+    args.get(camel)
+        .or_else(|| args.get(snake))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{camel} must be a non-empty string"))
+}
+
+fn value_uuid(args: &Value, camel: &str, snake: &str) -> Result<Uuid, String> {
+    let raw = value_string(args, camel, snake)?;
+    Uuid::parse_str(&raw).map_err(|_| format!("{camel} must be a UUID"))
+}
+
+fn value_u64(args: &Value, camel: &str, snake: &str) -> Result<u64, String> {
+    let value = args
+        .get(camel)
+        .or_else(|| args.get(snake))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("{camel} must be an unsigned integer"))?;
+    (value != 0)
+        .then_some(value)
+        .ok_or_else(|| format!("{camel} must be non-zero"))
+}
+
+fn value_bool(args: &Value, camel: &str, snake: &str) -> Result<bool, String> {
+    args.get(camel)
+        .or_else(|| args.get(snake))
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("{camel} must be a boolean"))
+}
+
+fn parse_pty_runtime_request(
+    args: &Value,
+) -> Result<(Uuid, Uuid, DesktopPtyRuntimeRecord), String> {
+    let workspace_id = value_uuid(args, "workspaceId", "workspace_id")?;
+    let pane_id = value_uuid(args, "paneId", "pane_id")?;
+    let agent_id = value_string(args, "agentId", "agent_id")?;
+    let generation = value_u64(args, "generation", "generation")?;
+    let lease = value_string(args, "lease", "lease")?;
+    let snapshot = HubPtyRuntimeSnapshot::new(
+        HubPtySafety {
+            agent_idle: value_bool(args, "agentIdle", "agent_idle")?,
+            terminal_mode_agent_prompt: value_bool(
+                args,
+                "terminalModeAgentPrompt",
+                "terminal_mode_agent_prompt",
+            )?,
+            pending_approval: value_bool(args, "pendingApproval", "pending_approval")?,
+            foreground_is_target_agent: value_bool(
+                args,
+                "foregroundIsTargetAgent",
+                "foreground_is_target_agent",
+            )?,
+            user_input_competing: value_bool(args, "userInputCompeting", "user_input_competing")?,
+        },
+        value_u64(args, "stateRevision", "state_revision")?,
+        value_u64(args, "inputEpoch", "input_epoch")?,
+    );
+    Ok((
+        workspace_id,
+        pane_id,
+        DesktopPtyRuntimeRecord {
+            agent_id,
+            generation,
+            lease,
+            snapshot,
+        },
+    ))
+}
+
+/// Accept a complete host-observed PTY sample only after checking the current
+/// pane identity and live PTY. The sample is then published to the same Hub
+/// registry used by delivery selection; no UI-local proof can bypass it.
+pub(crate) fn publish_pty_runtime_snapshot(
+    state: &crate::state::AppState,
+    args: Value,
+) -> Result<(), String> {
+    let (workspace_id, pane_id, record) = parse_pty_runtime_request(&args)?;
+    let live_and_owned = {
+        let workspaces = state.workspaces.read();
+        let Some(workspace) = workspaces.get(&workspace_id) else {
+            return Err(format!("workspace {workspace_id} does not exist"));
+        };
+        workspace
+            .teammate_agent_pane_map
+            .get(&record.agent_id)
+            .is_some_and(|mapped| *mapped == pane_id)
+            && workspace.pane_tree.panes.contains_key(&pane_id)
+            && workspace.terminals.contains_key(&pane_id)
+    };
+    if !live_and_owned {
+        return Err("PTY runtime snapshot identity is not a live Agent pane".into());
+    }
+
+    let mut records = desktop_pty_runtime()
+        .lock()
+        .map_err(|_| "desktop PTY runtime sampler lock poisoned".to_string())?;
+    let key = (workspace_id, pane_id);
+    let previous = records.insert(key, record.clone());
+    if let Err(error) = desktop_hub_state().register_pty_runtime_snapshot(
+        record.agent_id,
+        record.generation,
+        record.lease,
+        record.snapshot,
+    ) {
+        match previous {
+            Some(previous) => {
+                records.insert(key, previous);
+            }
+            None => {
+                records.remove(&key);
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Remove the desktop sampler record before a pane can be reused by another
+/// Agent generation. Hub teardown is fenced with the record's identity so a
+/// late cleanup cannot remove a newer proof.
+pub(crate) fn clear_pty_runtime_snapshot(workspace_id: Uuid, pane_id: Uuid) {
+    let record = desktop_pty_runtime()
+        .lock()
+        .ok()
+        .and_then(|mut records| records.remove(&(workspace_id, pane_id)));
+    let Some(record) = record else {
+        return;
+    };
+    let _ = desktop_hub_state().unregister_pty_runtime_snapshot(
+        &record.agent_id,
+        record.generation,
+        &record.lease,
+    );
 }
 
 pub(crate) fn desktop_hub_state() -> Arc<ridge_mcp::server::McpSessionState> {
@@ -398,6 +554,54 @@ impl McpHost for DesktopMcpHost {
         Ok(probe)
     }
 
+    fn pty_runtime_snapshot(&self, target: &Value) -> HostResult<Option<HubPtyRuntimeSnapshot>> {
+        let Some(workspace_id) = target
+            .get("workspaceId")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+        else {
+            return Ok(None);
+        };
+        let Some(pane_id) = target
+            .get("paneId")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+        else {
+            return Ok(None);
+        };
+        let Some(agent_id) = target.get("agentId").and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let generation = target.get("generation").and_then(Value::as_u64);
+        let lease = target.get("lease").and_then(Value::as_str);
+        let workspaces = self.ctx.state.workspaces.read();
+        let Some(workspace) = workspaces.get(&workspace_id) else {
+            return Ok(None);
+        };
+        let live_and_owned = workspace
+            .teammate_agent_pane_map
+            .get(agent_id)
+            .is_some_and(|mapped| *mapped == pane_id)
+            && workspace.pane_tree.panes.contains_key(&pane_id)
+            && workspace.terminals.contains_key(&pane_id);
+        if !live_and_owned {
+            return Ok(None);
+        }
+        drop(workspaces);
+
+        let records = desktop_pty_runtime()
+            .lock()
+            .map_err(|_| HostError::Internal("desktop PTY runtime sampler lock poisoned".into()))?;
+        Ok(records
+            .get(&(workspace_id, pane_id))
+            .filter(|record| {
+                record.agent_id == agent_id
+                    && Some(record.generation) == generation
+                    && Some(record.lease.as_str()) == lease
+            })
+            .map(|record| record.snapshot))
+    }
+
     fn deliver_runtime_api(&self, target: &Value, entry: &Value) -> HostResult<DeliveryOutcome> {
         desktop_hub_state()
             .deliver_registered_endpoint(HubDeliveryAdapter::RuntimeApi, target, entry)
@@ -756,5 +960,81 @@ mod tests {
             vec!["--resume", "session-2"]
         );
         assert!(DesktopMcpHost::checkpoint_args("gemini", Some("session-3")).is_err());
+    }
+
+    #[test]
+    fn runtime_snapshot_parser_requires_all_five_conditions_and_epochs() {
+        let args = json!({
+            "workspaceId": Uuid::nil().to_string(),
+            "paneId": Uuid::new_v4().to_string(),
+            "agentId": "codex-1",
+            "generation": 2,
+            "lease": "lease-2",
+            "agentIdle": true,
+            "terminalModeAgentPrompt": true,
+            "pendingApproval": false,
+            "foregroundIsTargetAgent": true,
+            "userInputCompeting": false,
+            "stateRevision": 3,
+            "inputEpoch": 4,
+        });
+        let (_, _, record) = parse_pty_runtime_request(&args).expect("complete sample");
+        assert!(record.snapshot.safety.is_safe());
+        assert!(record.snapshot.is_well_formed());
+
+        for field in [
+            "agentIdle",
+            "terminalModeAgentPrompt",
+            "pendingApproval",
+            "foregroundIsTargetAgent",
+            "userInputCompeting",
+        ] {
+            let mut missing = args.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(parse_pty_runtime_request(&missing).is_err(), "{field}");
+        }
+    }
+
+    #[test]
+    fn runtime_snapshot_parser_rejects_zero_revision_or_epoch() {
+        let args = json!({
+            "workspaceId": Uuid::nil().to_string(),
+            "paneId": Uuid::new_v4().to_string(),
+            "agentId": "codex-1",
+            "generation": 1,
+            "lease": "lease-1",
+            "agentIdle": false,
+            "terminalModeAgentPrompt": false,
+            "pendingApproval": true,
+            "foregroundIsTargetAgent": false,
+            "userInputCompeting": true,
+            "stateRevision": 0,
+            "inputEpoch": 1,
+        });
+        assert!(parse_pty_runtime_request(&args).is_err());
+        let mut zero_epoch = args;
+        zero_epoch["stateRevision"] = json!(1);
+        zero_epoch["inputEpoch"] = json!(0);
+        assert!(parse_pty_runtime_request(&zero_epoch).is_err());
+    }
+
+    #[test]
+    fn runtime_snapshot_parser_accepts_snake_case_aliases() {
+        let args = json!({
+            "workspace_id": Uuid::nil().to_string(),
+            "pane_id": Uuid::new_v4().to_string(),
+            "agent_id": "agent-1",
+            "generation": 1,
+            "lease": "lease-1",
+            "agent_idle": true,
+            "terminal_mode_agent_prompt": true,
+            "pending_approval": false,
+            "foreground_is_target_agent": true,
+            "user_input_competing": false,
+            "state_revision": 1,
+            "input_epoch": 1,
+        });
+        let (_, _, record) = parse_pty_runtime_request(&args).expect("snake case sample");
+        assert!(record.snapshot.safety.is_safe());
     }
 }

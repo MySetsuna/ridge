@@ -1054,6 +1054,7 @@ pub fn run() {
             // Domain Zero 端侧多智能体协同（teammate）：D1 拓扑快照 + D2 HITL 网关/风险分级
             commands::teammate::get_teammate_topology,
             commands::teammate::send_agent_message,
+            commands::teammate::publish_pty_runtime_snapshot,
             commands::teammate::list_hitl_pending,
             commands::teammate::resolve_hitl_remote,
             commands::teammate::list_hitl_pending_local,

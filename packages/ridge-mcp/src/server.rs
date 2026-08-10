@@ -155,6 +155,13 @@ pub trait McpHost: Send + Sync {
         })
     }
 
+    /// Return one host-atomically sampled PTY runtime snapshot, if this host
+    /// owns a verified sampler. `None` is fail-closed: the Hub never invents
+    /// prompt/foreground/input state from a roster entry or pane title.
+    fn pty_runtime_snapshot(&self, _target: &Value) -> HostResult<Option<HubPtyRuntimeSnapshot>> {
+        Ok(None)
+    }
+
     /// Authorize a cross-process delivery stream against the host's current
     /// roster before a route is registered. Legacy roster entries without a
     /// complete fenced identity fail closed instead of becoming impersonable.
@@ -1452,6 +1459,16 @@ fn enqueue_hub_entry(
         return Ok(replay);
     }
     let target_value = target.as_value();
+    if let Some(snapshot) = host.pty_runtime_snapshot(&target_value)? {
+        state
+            .register_pty_runtime_snapshot(
+                target.agent_id.clone(),
+                target.generation,
+                target.lease.clone(),
+                snapshot,
+            )
+            .map_err(HostError::Internal)?;
+    }
     let adapter =
         choose_delivery_adapter(host.probe_delivery(&target_value)?).ok_or_else(|| {
             hub_error(
