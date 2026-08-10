@@ -63,6 +63,7 @@ scripts/tmp-*.mjs
 .venv-notebooklm/
 /.tools/
 /.scannerwork/
+/.scannerwork-codex-*/
 
 # Local iteration runtime state. Authoritative requirements, decisions and
 # release evidence live under docs/; transient intake/agent/artifact files
