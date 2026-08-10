@@ -39,7 +39,7 @@ export class PaneSwitchBuffer {
       }
       this.retainedBytes -= dropped.byteLength;
       this.overflowed.add(oldestKey);
-      if (oldest && oldest.length === 0) this.frames.delete(oldestKey);
+      if (oldest?.length === 0) this.frames.delete(oldestKey);
     }
   }
 

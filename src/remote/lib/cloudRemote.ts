@@ -425,11 +425,10 @@ export class CloudRemoteConnection implements RemoteLink {
    */
   notifyState(providerState: string): void {
     if (this.disposed) return;
-    const mapped: ConnectionState =
-      providerState === 'connected' ? 'connected'
-      : providerState === 'error' ? 'error'
-      : providerState === 'disconnected' ? 'disconnected'
-      : 'connecting';
+    let mapped: ConnectionState = 'connecting';
+    if (providerState === 'connected') mapped = 'connected';
+    else if (providerState === 'error') mapped = 'error';
+    else if (providerState === 'disconnected') mapped = 'disconnected';
     const wasDown = this._state !== 'connected';
     // 进入 'error' 但未带分级（provider 仅报状态、没有先经 notifyError 给出 code）→
     // 视为通道异常（网络/信令/WebRTC），UI 显示「通道异常」并允许重试，而非无限 pending。
@@ -523,7 +522,7 @@ export class CloudRemoteConnection implements RemoteLink {
   private async _loadTheme(): Promise<void> {
     try {
       const entry = await this.bridge.invoke<ThemeEntryLite | null>('get_active_theme_entry');
-      if (entry && entry.colors) {
+      if (entry?.colors) {
         const themeType = entry.type === 'light' ? 'light' : 'dark';
         this._lastTheme = { id: entry.id, themeType, colors: entry.colors };
         this.themeListeners.forEach((fn) => fn(entry.colors, themeType));
@@ -1252,7 +1251,7 @@ export class CloudRemoteConnection implements RemoteLink {
   private async _cycleTheme(currentId: string): Promise<void> {
     try {
       const tf = await this.bridge.invoke<{ themes?: ThemeEntryLite[] }>('get_theme_data');
-      const themes = (tf?.themes ?? []).filter((t) => t && t.id && t.colors);
+      const themes = (tf?.themes ?? []).filter((t) => t?.id && t.colors);
       if (themes.length === 0) return;
       const cur = themes.findIndex((t) => t.id === currentId);
       const next = themes[(cur + 1) % themes.length];

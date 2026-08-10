@@ -268,10 +268,10 @@ function inTauri(): boolean {
 
 /** 解 §2 信封：成功取 data，失败按 code 抛 ApiError，畸形抛 BAD_RESPONSE。 */
 function unwrapEnvelope<T>(envelope: Envelope<T> | null, status: number): T {
-  if (envelope && envelope.ok === true) {
+  if (envelope?.ok === true) {
     return envelope.data;
   }
-  if (envelope && envelope.ok === false && envelope.error) {
+  if (envelope?.ok === false && envelope.error) {
     throw new ApiError(coerceCode(envelope.error.code), envelope.error.message ?? '请求失败');
   }
   throw new ApiError('BAD_RESPONSE', `响应信封格式非法（HTTP ${status}）`);

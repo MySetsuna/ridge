@@ -173,7 +173,7 @@ async function assetsDir(): Promise<string | null> {
  * 共享给 activeBgImage 信号、设置面板卡片预览、编辑器预览，避免重复拼目录逻辑。
  */
 export async function resolveThemeBgUrl(t: ThemeEntry | undefined): Promise<string | null> {
-  if (!t || !t.bgImage) return null;
+  if (!t?.bgImage) return null;
   const dir = await assetsDir();
   if (!dir) return null;
   const cleanDir = dir.replace(/[\\/]+$/, '');
@@ -226,7 +226,7 @@ async function decodeThemeBgRgba(
   t: ThemeEntry | undefined,
   resolvedUrl?: string | null,
 ): Promise<ActiveWallpaperGpu | null> {
-  if (!t || !t.bgImage) return null;
+  if (!t?.bgImage) return null;
   const url = resolvedUrl ?? await resolveThemeBgUrl(t);
   if (!url) return null;
 

@@ -24,7 +24,9 @@ export function summarizeExplorerPaste(outcomes: readonly ExplorerPasteOutcome[]
       : [],
   );
   const succeeded = outcomes.length - failures.length;
-  const status = failures.length === 0 ? 'succeeded' : succeeded === 0 ? 'failed' : 'partial';
+  let status: ExplorerPasteSummary['status'] = 'partial';
+  if (failures.length === 0) status = 'succeeded';
+  else if (succeeded === 0) status = 'failed';
 
   return {
     status,

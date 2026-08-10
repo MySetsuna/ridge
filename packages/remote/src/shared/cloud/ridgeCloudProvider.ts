@@ -698,7 +698,7 @@ export class RidgeCloudHost {
 
   private rawSend(conn: ControllerConn, bytes: Uint8Array, lane: 'control' | 'pane' = 'control'): void {
     const dc = lane === 'pane' ? conn.paneDc : conn.dc;
-    if (dc && dc.readyState === 'open') {
+    if (dc?.readyState === 'open') {
       dc.send(
         bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
       );
@@ -797,7 +797,7 @@ export class RidgeCloudHost {
   }
 
   private sendSignal(msg: SignalMsg): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }
   }

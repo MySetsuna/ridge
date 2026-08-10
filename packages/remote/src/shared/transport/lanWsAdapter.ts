@@ -28,6 +28,7 @@
 
 import { RemoteConnection, type ConnectionState } from './wsRemote';
 import { JSON_RPC_ERRORS, makeError } from './jsonRpc';
+import { unknownText } from './unknownText';
 import {
   type AuthListener,
   type AuthState,
@@ -53,10 +54,10 @@ function mapState(s: ConnectionState): TransportState {
 
 export class LanWsAdapter implements ChannelTransport {
   private readonly conn: RemoteConnection;
-  private controlListeners = new Set<ControlListener>();
-  private paneListeners = new Set<PaneBytesListener>();
-  private stateListeners = new Set<StateListener>();
-  private authListeners = new Set<AuthListener>();
+  private readonly controlListeners = new Set<ControlListener>();
+  private readonly paneListeners = new Set<PaneBytesListener>();
+  private readonly stateListeners = new Set<StateListener>();
+  private readonly authListeners = new Set<AuthListener>();
   // Last emitted authState, for edge-deduped `onAuthChange` fan-out. On the LAN
   // leg auth tracks the socket: `connected` ⇒ authorized (token already verified
   // at the WS upgrade), anything else ⇒ pending.
@@ -258,7 +259,7 @@ export class LanWsAdapter implements ChannelTransport {
           ? {
               jsonrpc: '2.0',
               id,
-              error: makeError(JSON_RPC_ERRORS.INTERNAL_ERROR, String(msg._error)),
+              error: makeError(JSON_RPC_ERRORS.INTERNAL_ERROR, unknownText(msg._error, 'remote error')),
             }
           : { jsonrpc: '2.0', id, result: msg._result ?? null };
       this.emitControl(frame);

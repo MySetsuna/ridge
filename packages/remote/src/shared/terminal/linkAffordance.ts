@@ -170,14 +170,14 @@ export function osc8UnderlineRegions(
   let head = current;
   while (head.c0 === 0 && head.row > 0 && wrapped(head.row - 1)) {
     const previous = segmentAt(head.row - 1, cols - 1);
-    if (!previous || previous.c1 !== cols) break;
+    if (previous?.c1 !== cols) break;
     regions.unshift(previous);
     head = previous;
   }
   let tail = current;
   while (tail.c1 === cols && tail.row < rows - 1 && wrapped(tail.row)) {
     const next = segmentAt(tail.row + 1, 0);
-    if (!next || next.c0 !== 0) break;
+    if (next?.c0 !== 0) break;
     regions.push(next);
     tail = next;
   }

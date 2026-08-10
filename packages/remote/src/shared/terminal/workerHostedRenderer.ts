@@ -97,11 +97,11 @@ export class WorkerRendererError extends Error {
  */
 export class WorkerHostedRenderer {
 	private worker: WorkerLike;
-	private pending = new Map<number, Pending>();
-	private ignoredReqIds = new Set<number>();
+	private readonly pending = new Map<number, Pending>();
+	private readonly ignoredReqIds = new Set<number>();
 	private nextReqId = 1;
 	private terminated = false;
-	private onFatal?: (error: Error) => void;
+	private readonly onFatal?: (error: Error) => void;
 
 	constructor(worker: WorkerLike, onFatal?: (error: Error) => void) {
 		this.worker = worker;
@@ -371,8 +371,8 @@ export class WorkerHostedRenderer {
 			return;
 		}
 		this.pending.delete(id);
-		clearTimeout(pending.timer);
-		if (data && data.type === 'error') {
+			clearTimeout(pending.timer);
+			if (data?.type === 'error') {
 			pending.reject(
 				new WorkerRendererError(data.message, data.code, data.paneId),
 			);

@@ -122,8 +122,10 @@ export function assertRemoteAuditShape(obj: Record<string, unknown>): string[] {
 export function formatAuditTimeline(items: HitlAuditItem[], max = 8): string[] {
   return items.slice(0, max).map((it) => {
     const t = it.ts ? new Date(it.ts).toISOString().slice(11, 19) : '--:--:--';
-    const v =
-      it.verdict === 'approve' ? '✓' : it.verdict === 'reject' ? '✗' : it.verdict === 'timeout' ? '⏱' : '?';
+    let v = '?';
+    if (it.verdict === 'approve') v = '✓';
+    else if (it.verdict === 'reject') v = '✗';
+    else if (it.verdict === 'timeout') v = '⏱';
     return `${t} ${v} ${it.initiator || '?'} · ${redactReasonSummary(it.reasonSummary || '', 40)}`;
   });
 }

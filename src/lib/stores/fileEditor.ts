@@ -364,7 +364,7 @@ function createStore() {
       opts?: { line?: number; column?: number; matchLength?: number }
     ): Promise<void> {
       // 独立窗口弹出期间：转发给 editor 窗口，主窗口不本地打开。
-      if (openInterceptor && openInterceptor({ kind: 'file', path, opts })) return;
+      if (openInterceptor?.({ kind: 'file', path, opts })) return;
       const reveal: PendingReveal | null = opts?.line && opts.line > 0
         ? {
             path,
@@ -531,7 +531,7 @@ function createStore() {
     consumePendingReveal(path: string): PendingReveal | null {
       const state = get({ subscribe });
       const r = state.pendingReveal;
-      if (!r || r.path !== path) return null;
+      if (r?.path !== path) return null;
       update((s) => ({ ...s, pendingReveal: null }));
       return r;
     },
@@ -976,23 +976,21 @@ function createStore() {
       compareBase?: string;
     }): void {
       // 独立窗口弹出期间：转发给 editor 窗口，主窗口不本地打开。
-      if (openInterceptor && openInterceptor({ kind: 'diff', args })) return;
+      if (openInterceptor?.({ kind: 'diff', args })) return;
       const repoNorm = args.repoRoot.replaceAll(/\\/g, '/');
-      const tabPath =
-        args.compareBase && args.commit
-          ? `__diff__:compare:${args.compareBase.slice(0, 7)}..${args.commit.slice(0, 7)}:${repoNorm}:${args.path}`
-          : args.commit
-            ? `__diff__:commit:${args.commit.slice(0, 7)}:${repoNorm}:${args.path}`
-            : `__diff__:${args.cached ? 'staged' : 'working'}:${repoNorm}:${args.path}`;
+      let tabPath: string;
+      if (args.compareBase && args.commit) {
+        tabPath = `__diff__:compare:${args.compareBase.slice(0, 7)}..${args.commit.slice(0, 7)}:${repoNorm}:${args.path}`;
+      } else if (args.commit) {
+        tabPath = `__diff__:commit:${args.commit.slice(0, 7)}:${repoNorm}:${args.path}`;
+      } else {
+        tabPath = `__diff__:${args.cached ? 'staged' : 'working'}:${repoNorm}:${args.path}`;
+      }
       const filePart = args.path.split('/').pop() ?? args.path;
-      const label =
-        args.compareBase && args.commit
-          ? `${args.compareBase.slice(0, 7)}..${args.commit.slice(0, 7)}`
-          : args.commit
-            ? `@${args.commit.slice(0, 7)}`
-            : args.cached
-              ? '已暂存'
-              : '工作区';
+      let label: string;
+      if (args.compareBase && args.commit) label = `${args.compareBase.slice(0, 7)}..${args.commit.slice(0, 7)}`;
+      else if (args.commit) label = `@${args.commit.slice(0, 7)}`;
+      else label = args.cached ? '已暂存' : '工作区';
       const name = `${filePart} (${label})`;
 
       update((s) => {

@@ -118,15 +118,15 @@ export class RpcClient {
   private readonly maxInFlight: number;
   private readonly nextId: () => JsonRpcId;
 
-  private pending = new Map<JsonRpcId, Pending>();
-  private pendingByScope = new Map<string, Set<JsonRpcId>>();
-  private notificationHandlers = new Map<string, Set<NotificationHandler>>();
-  private resyncHooks = new Set<ResyncHook>();
+  private readonly pending = new Map<JsonRpcId, Pending>();
+  private readonly pendingByScope = new Map<string, Set<JsonRpcId>>();
+  private readonly notificationHandlers = new Map<string, Set<NotificationHandler>>();
+  private readonly resyncHooks = new Set<ResyncHook>();
   private seq = 0;
   private prevState: TransportState;
   private ready: boolean;
   private disposers: Unsubscribe[] = [];
-  private counters = {
+  private readonly counters = {
     peakInFlight: 0,
     sent: 0,
     settled: 0,
@@ -138,7 +138,7 @@ export class RpcClient {
 
   // ── D9 handshake state ──
   private negotiated: NegotiatedProtocol | null = null;
-  private negotiatedListeners = new Set<(p: NegotiatedProtocol) => void>();
+  private readonly negotiatedListeners = new Set<(p: NegotiatedProtocol) => void>();
   private helloSent = false;
   private helloRequested = false;
 

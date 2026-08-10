@@ -83,12 +83,7 @@ export function applyPumpBatch(
       dropBytes: dropHead > 0 || batch.byteLength >= state.capBytes ? Math.max(0, dropHead) : 0,
       level,
       shouldWarn: level !== 'ok',
-      reason:
-        level === 'shedding'
-          ? 'shedding'
-          : level === 'elevated'
-            ? 'elevated'
-            : 'ok',
+      reason: level,
     },
   };
 }
