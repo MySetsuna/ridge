@@ -13,47 +13,41 @@ import { spawn, spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const root = path.join(__dirname, '..');
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-function hasBin(name) {
-  const probe = process.platform === 'win32' ? 'where' : 'which';
-  return spawnSync(probe, [name], { stdio: 'ignore', shell: true }).status === 0;
+export function hasBin(name, spawnSyncImpl = spawnSync, platform = process.platform) {
+  const probe = platform === 'win32' ? 'where' : 'which';
+  return spawnSyncImpl(probe, [name], { stdio: 'ignore', shell: true }).status === 0;
 }
 
-const env = { ...process.env };
-if (hasBin('sccache')) {
-  env.RUSTC_WRAPPER = 'sccache';
-  console.log('[tauri-build] sccache: ON (RUSTC_WRAPPER=sccache)');
-} else {
-  console.log('[tauri-build] sccache: off (not installed — `scoop install sccache` to enable)');
-}
-if (hasBin('lld-link')) {
-  env.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = 'lld-link';
-  console.log('[tauri-build] lld-link: ON (faster MSVC linker)');
-} else {
-  console.log('[tauri-build] lld-link: off (not on PATH — `scoop install llvm` to enable)');
+export function buildPlan(envSource = process.env, platform = process.platform, spawnSyncImpl = spawnSync) {
+  const env = { ...envSource };
+  const sccache = hasBin('sccache', spawnSyncImpl, platform);
+  const lld = hasBin('lld-link', spawnSyncImpl, platform);
+  if (sccache) env.RUSTC_WRAPPER = 'sccache';
+  if (lld) env.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = 'lld-link';
+  const bundles = envSource.RIDGE_BUNDLES || 'nsis';
+  return { env, bundles, args: ['tauri', 'build', '--bundles', bundles], sccache, lld };
 }
 
-const bundles = process.env.RIDGE_BUNDLES || 'nsis';
-const args = ['tauri', 'build', '--bundles', bundles];
-console.log(`[tauri-build] bundles=${bundles}`);
-console.log(`[tauri-build] running: pnpm ${args.join(' ')} …`);
-const startedAt = Date.now();
-
-const child = spawn('pnpm', args, { cwd: root, env, stdio: 'inherit', shell: true });
-child.on('exit', (code) => {
-  if (code !== 0) {
-    console.error(`[tauri-build] tauri build failed (exit ${code})`);
-    process.exit(code ?? 1);
-  }
-  const mins = ((Date.now() - startedAt) / 60000).toFixed(1);
-  console.log(`[tauri-build] build finished in ${mins} min`);
-  // 沿用既有产物重命名（target/release/bundle → release/）。
-  const rename = spawnSync('node', [path.join('scripts', 'post-build-rename.mjs')], {
-    cwd: root,
-    stdio: 'inherit',
-    shell: true,
+export function main({ envSource = process.env, platform = process.platform, spawnImpl = spawn, spawnSyncImpl = spawnSync, io = console, now = Date.now } = {}) {
+  const plan = buildPlan(envSource, platform, spawnSyncImpl);
+  io.log(plan.sccache ? '[tauri-build] sccache: ON (RUSTC_WRAPPER=sccache)' : '[tauri-build] sccache: off (not installed — `scoop install sccache` to enable)');
+  io.log(plan.lld ? '[tauri-build] lld-link: ON (faster MSVC linker)' : '[tauri-build] lld-link: off (not on PATH — `scoop install llvm` to enable)');
+  io.log(`[tauri-build] bundles=${plan.bundles}`);
+  io.log(`[tauri-build] running: pnpm ${plan.args.join(' ')} …`);
+  const startedAt = now();
+  return new Promise((resolve) => {
+    const child = spawnImpl('pnpm', plan.args, { cwd: root, env: plan.env, stdio: 'inherit', shell: true });
+    child.on('exit', (code) => {
+      if (code !== 0) { io.error(`[tauri-build] tauri build failed (exit ${code})`); resolve(code ?? 1); return; }
+      io.log(`[tauri-build] build finished in ${((now() - startedAt) / 60000).toFixed(1)} min`);
+      const rename = spawnSyncImpl('node', [path.join('scripts', 'post-build-rename.mjs')], { cwd: root, stdio: 'inherit', shell: true });
+      resolve(rename.status ?? 0);
+    });
   });
-  process.exit(rename.status ?? 0);
-});
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  main().then((code) => process.exit(code));
+}
