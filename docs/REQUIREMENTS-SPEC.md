@@ -106,8 +106,11 @@
 - 批准证据：用户授权“审核无问题即全部通过”；审计通过。
 - 类型：`MODIFY` + `FIX`
 - 原始意图：历史弹层依 pane 可见区域动态定位；pane 过窄时居中展示。
-- 当前证据：现实现仅按 cursor row 选择上/下与可见行数，未把 pane 可见宽度、裁剪区、邻 pane
-  覆盖与窄宽居中纳入模型。
+- 当前证据：`packages/ridge-term/src/render/renderer.rs::history_overlay_geometry` 已按 pane-local
+  `viewport_cols/viewport_rows` 计算可见矩形，支持优先侧放置、另一侧翻转、边界夹紧、窄宽居中
+  与两侧均不足时的行数收缩；`history_overlay_flips_and_stays_inside_each_dpr_fixture`、
+  `history_overlay_narrow_width_is_centered`、`history_overlay_reduces_rows_when_neither_side_fits`
+  定向测试 `3/3` 通过。真实 WebView2/设备视觉矩阵仍属现场证据。
 - 目标行为：弹层完全落入当前 pane 可见 rect；优先锚定输入光标，空间不足则翻向/夹紧；宽度不足
   时在 pane 可见区居中并保持选择项可读。
 - 范围：桌面 RidgePane 历史 overlay 几何、renderer 投影与键盘选择。
