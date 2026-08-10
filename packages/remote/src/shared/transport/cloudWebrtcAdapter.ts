@@ -77,11 +77,11 @@ export class CloudWebrtcAdapter implements ChannelTransport {
   private readonly provider: RemoteConnectionProvider;
   private readonly deviceId: string;
 
-  private controlListeners = new Set<ControlListener>();
-  private paneListeners = new Set<PaneBytesListener>();
-  private stateListeners = new Set<StateListener>();
-  private errorListeners = new Set<(message: string, code?: string) => void>();
-  private authListeners = new Set<AuthListener>();
+  private readonly controlListeners = new Set<ControlListener>();
+  private readonly paneListeners = new Set<PaneBytesListener>();
+  private readonly stateListeners = new Set<StateListener>();
+  private readonly errorListeners = new Set<(message: string, code?: string) => void>();
+  private readonly authListeners = new Set<AuthListener>();
   // FIX-4/D3 transport-agnostic auth. E2EE `connected` is NOT yet business-ready
   // on the cloud leg — the 0x12 TOTP handshake must pass first — so this starts
   // `pending` and is driven `authorized`/`denied` by the session-control frames
@@ -94,7 +94,7 @@ export class CloudWebrtcAdapter implements ChannelTransport {
    * channel) so the cloud-controller boot can gate readiness on `totp-result`
    * without entangling the L2 RPC client.
    */
-  private sessionControlListeners = new Set<(frame: Record<string, unknown>) => void>();
+  private readonly sessionControlListeners = new Set<(frame: Record<string, unknown>) => void>();
 
   // Mirror of the provider state. The provider sets callbacks at construction;
   // the boot code hands it `adapter.callbacks` so the adapter is the single

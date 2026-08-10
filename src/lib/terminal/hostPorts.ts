@@ -77,10 +77,10 @@ export function makeHostPorts(): HostPorts {
 		openTextLink(spanText, ctx) {
 			// §1.32：动态 import 保持 linkResolver（及其 monaco 传递依赖）不进
 			// 调用方的加载图；点击容忍这一 microtask。
-			void import('$lib/utils/linkResolver').then(({ resolveLink, executeAction }) => {
+			import('$lib/utils/linkResolver').then(({ resolveLink, executeAction }) => {
 				const action = resolveLink(spanText, { cwd: ctx.cwd, knownCwds: ctx.knownCwds });
-				void executeAction(action);
-			});
+				return executeAction(action);
+			}).catch((error) => console.warn('[terminal] link action failed', error));
 		},
 	};
 }

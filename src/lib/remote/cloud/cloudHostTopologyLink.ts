@@ -389,7 +389,9 @@ export async function connectCloudHostTopologyLink(
   const rpc = new RpcClient(adapter);
   const timer = setTimeout(() => rejectConnected(new Error('公网主机连接超时')), 20_000);
   try {
-    void adapter.connect();
+    adapter.connect().catch((error) => {
+      rejectConnected(error instanceof Error ? error : new Error(String(error)));
+    });
     await connected;
     const verified = await verifyTotpOverControl(adapter, totp);
     if (!verified) throw new Error('TOTP 验证失败');

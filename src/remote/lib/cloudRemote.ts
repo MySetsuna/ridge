@@ -210,27 +210,27 @@ export class CloudRemoteConnection implements RemoteLink {
   private _activeWorkspaceId = '';
   private _refreshSeq = 0;
   private readonly paneScheduler: PaneRpcScheduler;
-  private paneRpcControllers = new Map<string, AbortController>();
-  private closingPaneKeys = new Set<string>();
-  private deadPaneKeys = new Set<string>();
+  private readonly paneRpcControllers = new Map<string, AbortController>();
+  private readonly closingPaneKeys = new Set<string>();
+  private readonly deadPaneKeys = new Set<string>();
   private disposed = false;
 
-  private stateListeners = new Set<(s: ConnectionState) => void>();
-  private reconnectListeners = new Set<() => void>();
-  private messageListeners = new Set<(msg: WsMessage) => void>();
-  private rawByteListeners = new Set<RawByteListener>();
-  private metaListeners = new Set<MetaListener>();
-  private resizeListeners = new Set<PtyResizeListener>();
-  private themeListeners = new Set<ThemeListener>();
+  private readonly stateListeners = new Set<(s: ConnectionState) => void>();
+  private readonly reconnectListeners = new Set<() => void>();
+  private readonly messageListeners = new Set<(msg: WsMessage) => void>();
+  private readonly rawByteListeners = new Set<RawByteListener>();
+  private readonly metaListeners = new Set<MetaListener>();
+  private readonly resizeListeners = new Set<PtyResizeListener>();
+  private readonly themeListeners = new Set<ThemeListener>();
 
   // Per-pane `pty-output-*` unlisten handles (bounded via pruneOutputs / disconnect).
-  private ptyUnlisten = new Map<string, UnlistenFn>();
+  private readonly ptyUnlisten = new Map<string, UnlistenFn>();
   // Panes whose subscribe is in flight (so concurrent subscribe calls stay idempotent).
-  private subscribing = new Set<string>();
+  private readonly subscribing = new Set<string>();
   // Subscription intent survives one transient failure, but never beyond a
   // bounded retry window. The UI need not issue a second subscribe call.
-  private subscribeRetryIntents = new Map<string, SubscribeRetryIntent>();
-  private subscribeRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly subscribeRetryIntents = new Map<string, SubscribeRetryIntent>();
+  private readonly subscribeRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   // Active QoS promotion is latest-wins and serialized. Rapid A→B→A switches
   // must not enqueue one Tauri Channel registration per tap.
   private activePaneKey: string | null = null;
@@ -238,9 +238,9 @@ export class CloudRemoteConnection implements RemoteLink {
   private pendingActivePromotion: PaneRef | null = null;
   // §history-pull: per-pane seq cursor for lazy "scroll up to load older". Seeded
   // from the initial tail read; advanced by each get_pane_scrollback_before page.
-  private scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
+  private readonly scrollbackCursor = new Map<string, { oldestSeq: number; atOldest: boolean }>();
   // Panes whose older-history fetch is in flight (dedup overlapping scroll-up loads).
-  private fetchingOlder = new Set<string>();
+  private readonly fetchingOlder = new Set<string>();
   // pane-tree-changed unlisten (host-side layout changes → re-list panes).
   private treeUnlisten: UnlistenFn | null = null;
   /** iter-60 G9：pane-meta-changed 退订句柄。 */

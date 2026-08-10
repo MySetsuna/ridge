@@ -741,11 +741,11 @@ export async function refreshHosts(): Promise<void> {
       hostId,
       refresh: () => refreshHostTopology(hostId),
     }));
-  void settleHostTopologyRefreshes(jobs, (result) => {
+  settleHostTopologyRefreshes(jobs, (result) => {
     if (refreshGeneration === hostsRefreshGeneration) {
       publishHostTopology(result.hostId, result);
     }
-  });
+  }).catch((error) => console.warn('[hosts] topology refresh settlement failed', error));
 }
 
 /** 新建一个本机无头会话（仅创建、不接入）；返回会话名。 */

@@ -173,7 +173,7 @@ function buildHost(): RidgeCloudHost | null {
             const names = ['pane-meta-changed', 'pane-tree-changed'] as const;
             const unsubs: Array<() => void> = [];
             for (const name of names) {
-              void listen(name, (e) => {
+              listen(name, (e) => {
                 if (!access) {
                   emit(name, e.payload);
                   return;
@@ -183,7 +183,9 @@ function buildHost(): RidgeCloudHost | null {
                     ? (e.payload as Record<string, unknown>).workspaceId
                     : undefined;
                 if (workspaceId === access.workspaceId) emit(name, e.payload);
-              }).then((un) => unsubs.push(un));
+              })
+                .then((un) => unsubs.push(un))
+                .catch((error) => console.warn('[cloud-host] event listener failed', error));
             }
             return () => { for (const un of unsubs) un(); };
           },

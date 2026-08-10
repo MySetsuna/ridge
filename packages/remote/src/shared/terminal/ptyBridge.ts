@@ -233,7 +233,7 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 				'[ridge-term] pty-delta apply failed; falling back to wasm parser',
 				{ paneId, error: String(err) },
 			);
-			void invoke('set_pane_delta_mode', {
+			invoke('set_pane_delta_mode', {
 				workspaceId,
 				paneId,
 				enabled: false,
