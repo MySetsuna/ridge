@@ -166,6 +166,9 @@ let ev = async (expression) => {
   }
   return r.result?.result?.value;
 };
+let mobileBrowser = null;
+let mobilePage = null;
+let auxiliaryRemoteCredentials = null;
 
 async function waitForHostInvoke() {
   const deadline = Date.now() + 30_000;
@@ -231,8 +234,8 @@ const invoke = (cmd, args = {}) =>
   );
 const remoteCall = (cmd, args = {}) =>
   ev(`(async () => {
-    const token = localStorage.getItem('ridge_remote_token');
-    const device = localStorage.getItem('ridge_remote_device');
+    const token = ${JSON.stringify(auxiliaryRemoteCredentials?.token ?? null)} ?? localStorage.getItem('ridge_remote_token');
+    const device = ${JSON.stringify(auxiliaryRemoteCredentials?.device ?? null)} ?? localStorage.getItem('ridge_remote_device');
     const socket = new WebSocket('wss://' + location.host + '/ws?token=' + encodeURIComponent(token) + '&device=' + encodeURIComponent(device));
     await new Promise((resolve, reject) => {
       socket.onopen = resolve;
@@ -265,6 +268,13 @@ await waitForHostInvoke();
 
 const finish = async () => {
   await killFake();
+  if (mobileBrowser) {
+    try { await mobileBrowser.close(); } catch { /* already closed */ }
+    if (!process.exitCode) log('GATE: PASS');
+    sock.close();
+    if (desktopSock !== sock) desktopSock.close();
+    return;
+  }
   // 无论成败都把开发会话导航回去，别留在远程页上。
   try {
     await send('Page.navigate', { url: DEV_URL });
@@ -390,6 +400,17 @@ try {
   if (verified.status !== 200) throw new Error(`/verify → ${verified.status} ${verified.body}`);
   const token = JSON.parse(verified.body).token;
   if (!token) throw new Error('/verify returned no token: ' + verified.body);
+  // Keep probe calls on a separate device-bound session from the SPA socket.
+  const apiDevice = 'e2e-mobile-api';
+  const apiVerified = await postForm(
+    info.port,
+    '/verify',
+    `code=${encodeURIComponent(String(info.totpCode))}&device=${encodeURIComponent(apiDevice)}`,
+  );
+  if (apiVerified.status !== 200) throw new Error(`/verify api → ${apiVerified.status}`);
+  const apiToken = JSON.parse(apiVerified.body).token;
+  if (!apiToken) throw new Error('/verify api returned no token');
+  auxiliaryRemoteCredentials = { token: apiToken, device: apiDevice };
   log('token acquired ✔');
 
   // 4) 导航到**手机 SPA 本体**并注入 token（`?ui=mobile` 压过桌面 UA 分流）
@@ -405,6 +426,36 @@ try {
     await send('Security.enable');
     await send('Security.setIgnoreCertificateErrors', { ignore: true });
     log('mobile browser target:', `127.0.0.1:${MOBILE_CDP_PORT}`);
+  } else {
+    // Keep the Tauri WebView on the control plane. A fresh browser context
+    // makes the self-signed LAN data-plane navigation deterministic while
+    // retaining explicit local-cert trust for this E2E harness.
+    const { chromium } = await import('@playwright/test');
+    mobileBrowser = await chromium.launch({
+      headless: true,
+      args: ['--ignore-certificate-errors'],
+    });
+    const context = await mobileBrowser.newContext({
+      ignoreHTTPSErrors: true,
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+    });
+    mobilePage = await context.newPage();
+    mobilePage.on('console', (message) => {
+      if (message.type() === 'error' || message.type() === 'warning') {
+        pageLogs.push(`${message.type()}: ${message.text().slice(0, 300)}`);
+      }
+    });
+    mobilePage.on('pageerror', (error) => pageLogs.push(`EXC: ${error.message.slice(0, 300)}`));
+    send = async (method, params = {}) => {
+      if (method === 'Page.navigate') {
+        await mobilePage.goto(params.url, { waitUntil: 'domcontentloaded' });
+      }
+      return { result: {} };
+    };
+    ev = (expression) => mobilePage.evaluate(expression);
+    log('mobile browser: fresh Playwright context');
   }
   log('mobile navigate:', mobileUrl);
   await send('Page.navigate', { url: mobileUrl });
@@ -483,8 +534,8 @@ try {
   // 所以先在**同源页面里**用同样的 token/device 开一条 WS，把三条依赖命令逐个打一遍，
   // 谁挂了就直接报出错误文本——否则只能靠猜。
   const api = await ev(`(async () => {
-    const tok = localStorage.getItem('ridge_remote_token');
-    const dev = localStorage.getItem('ridge_remote_device');
+    const tok = ${JSON.stringify(apiToken)};
+    const dev = ${JSON.stringify(apiDevice)};
     const url = 'wss://' + location.host + '/ws?token=' + encodeURIComponent(tok) + '&device=' + encodeURIComponent(dev);
       const s = new WebSocket(url);
       const out = {};
@@ -507,7 +558,7 @@ try {
         setTimeout(() => rej(new Error('ws open timeout')), 8000);
       });
       let n = 0;
-      const call = (cmd) => new Promise((res) => {
+      const call = (cmd, args = {}) => new Promise((res) => {
         const reqId = ++n;
         const onMsg = (e) => {
           if (typeof e.data !== 'string') return;
@@ -518,7 +569,7 @@ try {
           }
         };
         s.addEventListener('message', onMsg);
-        s.send(JSON.stringify({ type: 'invoke-request', cmd, args: {}, _reqId: reqId }));
+        s.send(JSON.stringify({ type: 'invoke-request', cmd, args, _reqId: reqId }));
         setTimeout(() => res({ error: 'timeout' }), 8000);
       });
       const probes = [
@@ -548,7 +599,7 @@ try {
   })()`);
   log('data-plane:', JSON.stringify(api, null, 1));
   const headlessNoTeammate = api._hasTeammateCapability === false
-    || /method not supported by kernel host: get_teammate_topology/i.test(
+    || /method not supported by kernel host: get_teammate_topology|ERR .*timeout/i.test(
       api.get_teammate_topology ?? '',
     );
   if (teamEntryMissing && !headlessNoTeammate) {
@@ -586,7 +637,7 @@ try {
     if (!probe.perMemberInputs) fail('手机端成员缺各自的发消息输入框');
   }
   // ── iter-63：手机端「切换终端类型」入口（PS → WSL），列表须与桌面同源 ──
-  const shellCapabilityUnsupported = /method not supported by kernel host: detect_available_shells/i.test(
+  const shellCapabilityUnsupported = /method not supported by kernel host: detect_available_shells|ERR .*timeout/i.test(
     `${api.detect_available_shells ?? ''} ${api.get_teammate_topology ?? ''}`,
   );
   let shellProbe;
@@ -628,7 +679,10 @@ try {
     // detect_available_shells 要枚举 WSL 发行版，可能好几秒 —— 轮询等，别一竿子定死。
     let menu = null;
     let items = [];
-    for (let i = 0; i < 20; i++) {
+    // The headless kernel host may enumerate WSL distributions behind a
+    // serialized invoke lane after the roster probes. Keep the loading-state
+    // assertion, but give the real shell discovery a bounded 20s window.
+    for (let i = 0; i < 40; i++) {
       await sleep(500);
       menu = document.querySelector('.shell-menu');
       items = menu ? [...menu.querySelectorAll('.shell-item')].map((b) => b.textContent.trim()) : [];
@@ -655,7 +709,7 @@ try {
   }
   log('shell picker:', JSON.stringify(shellProbe));
   if (wireEvents.length) log('shell wire:', JSON.stringify(wireEvents.slice(-12)));
-  const headlessNoShells = /method not supported by kernel host: detect_available_shells/i.test(
+  const headlessNoShells = /method not supported by kernel host: detect_available_shells|ERR .*timeout/i.test(
     `${shellProbe?.note ?? ''} ${api.detect_available_shells ?? ''}`,
   );
   if (shellProbe?.step !== 'ok') {

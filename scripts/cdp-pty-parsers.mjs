@@ -47,7 +47,7 @@ const TITLE = 'RIDGE_E2E_TITLE_' + NONCE;
 const CWD_MARKER = 'ridge_e2e_cwd_' + NONCE;
 
 // Single PowerShell line. ASCII source → multi-byte output via code points.
-const CMD = [
+const GENERATED_CMD = [
   '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8',
   '$e=[char]27',
   '$b=[char]7',
@@ -56,6 +56,7 @@ const CMD = [
   "$s='RIDGE_E2E_'+[char]0x2211+'_'+[char]::ConvertFromUtf32(0x1F600)+'_'+[char]0x4F60+[char]0x597D+'_'+[char]::ConvertFromUtf32(0x1F1EF)+[char]::ConvertFromUtf32(0x1F1F5)+'_END'",
   '[Console]::Write($s+[char]10)',
 ].join('; ');
+const CMD = process.env.RIDGE_PTY_COMMAND || GENERATED_CMD;
 
 function httpJson(path) {
   return new Promise((resolve, reject) => {
@@ -106,6 +107,16 @@ async function waitForRidgeTarget(maxMs = 90000) {
   fail('timed out waiting for Ridge CDP target on :' + CDP_PORT + ' — ' + lastErr);
 }
 
+async function waitForTauriBridge(cdp, maxMs = 180000) {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    const ready = await cdp.evalAsync('Boolean(window.__TAURI__?.core?.invoke)');
+    if (ready) return;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  fail(`Tauri bridge did not become ready within ${maxMs}ms`);
+}
+
 try {
   await (async () => {
   log('waiting for Ridge CDP target on :' + CDP_PORT + ' …');
@@ -114,6 +125,7 @@ try {
   const cdp = new Cdp(t.webSocketDebuggerUrl);
   await cdp.open();
   await cdp.send('Runtime.enable');
+  await waitForTauriBridge(cdp);
 
   log('invoke set_remote_enabled(true)…');
   await cdp.evalAsync(`window.__TAURI__.core.invoke('set_remote_enabled',{enabled:true})`);
@@ -127,7 +139,7 @@ try {
   log('remote info:', JSON.stringify({ port: info.port, ready: info.ready }));
   cdp.close();
 
-  const url = `wss://127.0.0.1:${info.port}/ws?code=${info.totpCode}&device=cdp-pty-e2e`;
+  const url = `wss://127.0.0.1:${info.port}/ws?code=${info.totpCode}&device=cdp-pty-e2e-${NONCE}`;
   log('connecting host:', url.replace(/code=[^&]+/, 'code=***'));
 
   const summary = {
@@ -138,8 +150,11 @@ try {
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
   let binConcat = '';
+  let finished = false;
 
   const done = () => {
+    if (finished) return;
+    finished = true;
     try { ws.close(); } catch {}
     console.log('\n==== PTY PARSER E2E SUMMARY ====');
     console.log(JSON.stringify(summary, null, 2));
@@ -152,9 +167,15 @@ try {
   };
 
   const hardTimeout = setTimeout(() => { summary.errors.push('hard timeout'); done(); }, 30000);
+  let listedWorkspaceId = null;
+  let createRequested = false;
+  let emptyPanePolls = 0;
 
   function evaluateAndFinish() {
     summary.decodeOk = binConcat.includes(EMOJI);
+    if (!summary.decodeOk || !summary.titleOk || !summary.cwdOk) {
+      log('decoded tail:', JSON.stringify(binConcat.slice(-2000)));
+    }
     clearTimeout(hardTimeout);
     done();
   }
@@ -163,7 +184,7 @@ try {
     summary.pane = paneId;
     log('subscribe-pane', paneId);
     ws.send(JSON.stringify({ type: 'subscribe-pane', workspaceId, paneId }));
-    setTimeout(() => { log('stdin → marker command'); ws.send(JSON.stringify({ type: 'stdin', workspaceId, paneId, data: CMD + '\r' })); }, 800);
+    setTimeout(() => { log('stdin → marker command'); ws.send(JSON.stringify({ type: 'stdin', workspaceId, paneId, data: CMD + '\r' })); }, 2500);
     // Windows PowerShell may echo a long UTF-8 marker line through ConPTY in
     // several reads before executing it. Keep the bounded hard timeout as the
     // failure gate, but do not stop collection while the input is still being
@@ -171,7 +192,15 @@ try {
     setTimeout(evaluateAndFinish, 15000);
   }
 
-  ws.onopen = () => { log('WS open → list-panes'); ws.send(JSON.stringify({ type: 'list-panes' })); };
+  ws.onopen = () => {
+    log('WS open → wait for host pane sync');
+    // The detached rdg host creates its first kernel-backed pane after the
+    // TLS listener is ready. Avoid turning that startup window into a false
+    // create-pane failure in this E2E harness.
+    setTimeout(() => {
+      if (!summary.pane && !createRequested) ws.send(JSON.stringify({ type: 'list-panes' }));
+    }, 5000);
+  };
   ws.onerror = (e) => { summary.errors.push('ws error: ' + (e.message || e.type)); };
   ws.onclose = (e) => { if (!summary.pane) { summary.errors.push('closed before pane (code ' + e.code + ')'); } };
 
@@ -182,11 +211,26 @@ try {
         // The host may replay a snapshot after subscribe/PTY state changes.
         // Drive one pane per run; resubscribing on every snapshot races the
         // marker command against the next pane and drops the binary stream.
-        if (summary.pane) return;
-        if (m.panes.length) drive(m.workspaceId, m.panes[0].id);
-        else { log('no panes → create-pane'); ws.send(JSON.stringify({ type: 'create-pane' })); }
+        listedWorkspaceId = m.workspaceId || listedWorkspaceId;
+        if (summary.pane || createRequested) return;
+        if (m.panes.length) {
+          emptyPanePolls = 0;
+          drive(m.workspaceId, m.panes[0].id);
+          return;
+        }
+        if (emptyPanePolls < 8) {
+          emptyPanePolls++;
+          log(`empty pane snapshot; wait for host sync (${emptyPanePolls}/8)`);
+          setTimeout(() => ws.send(JSON.stringify({ type: 'list-panes' })), 500);
+          return;
+        }
+        createRequested = true;
+        log('no panes -> create pane');
+        ws.send(JSON.stringify({ type: 'create-pane' }));
       } else if (m.type === 'create-pane-result') {
-        if (m.success && m.paneId) ws.send(JSON.stringify({ type: 'list-panes' }));
+        log('create-pane-result:', JSON.stringify(m));
+        if (m.success && m.paneId && listedWorkspaceId) drive(listedWorkspaceId, m.paneId);
+        else if (m.success && m.paneId) ws.send(JSON.stringify({ type: 'list-panes' }));
         else { summary.errors.push('create-pane failed: ' + (m.error || '?')); evaluateAndFinish(); }
       } else if (m.type === 'pty-meta') {
         summary.metas++;

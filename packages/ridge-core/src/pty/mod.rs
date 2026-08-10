@@ -23,5 +23,6 @@
 pub mod chunk;
 pub mod cwd;
 pub mod decode;
+pub mod osc_stream;
 pub mod prompt;
 pub mod title;

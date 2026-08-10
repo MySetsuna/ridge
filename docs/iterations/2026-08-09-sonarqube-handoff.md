@@ -5,10 +5,10 @@
 - 地址：`http://127.0.0.1:9000`
 - 版本：`26.7.0.124771`
 - 账户：`admin`
-- 密码：`admin`
+- 密码：由当前用户管理；不写入仓库、日志或交接文档。
 - 当前为本机默认账户，仅适用于本地开发；若开放局域网或公网，须立即改密并停用默认凭据。
 
-最新已用 SonarQube 表单登录验证成功（HTTP 200），并用会话读取项目指标（HTTP 200）。`Authorization: Basic admin:admin` 当前返回 HTTP 401；API 操作请用下文的会话方式。浏览器页未保留登录会话；手动接管时打开地址，使用上述账户登录。
+最新已用 SonarQube 表单登录验证成功（HTTP 200），并用会话读取项目指标（HTTP 200）。旧默认凭证已失效；API 操作请用下文的会话方式或临时 token。浏览器页未保留登录会话；手动接管时打开地址，使用上述账户与当前密码登录。
 
 ## 扫描
 
@@ -48,7 +48,7 @@ $env:SONAR_TOKEN = '<临时 token>'
 $session = $null
 Invoke-WebRequest -UseBasicParsing -Method Post `
   -Uri 'http://127.0.0.1:9000/api/authentication/login' `
-  -Body @{ login = 'admin'; password = 'admin' } `
+  -Body @{ login = 'admin'; password = '<current-password>' } `
   -SessionVariable session | Out-Null
 
 Invoke-RestMethod `
@@ -77,12 +77,12 @@ Invoke-RestMethod `
 - Full V8 coverage run: `164` files, `1650` passed, `1` skipped.
 - Local metrics: Statements `43.65%`, Branches `38.79%`, Functions `44.54%`, Lines `46.19%`.
 - `scripts/normalize-lcov.mjs` returned `{"ok":true}` and normalized `coverage/lcov.info`. No new authenticated Sonar upload was performed; server-side `40.3%` and Quality Gate `ERROR` remain authoritative.
-- Sonar handoff remains `http://127.0.0.1:9000`, account `admin`, password `admin`; no token or cookie is stored in the repository.
+- Sonar handoff remains `http://127.0.0.1:9000`, account `admin`, password managed by the user; no token or cookie is stored in the repository.
 
 ## Latest credential and monitor recheck (2026-08-09 19:00 +08:00)
 
 - 本地服务仍为 UP，版本 `26.7.0.124771`。
-- `admin/admin` 表单登录成功；会话校验 `valid=true`，项目指标 API 返回 HTTP 200。
+- `admin` + 当前用户密码表单登录成功；会话校验 `valid=true`，项目指标 API 返回 HTTP 200。
 - 生成临时扫描 token 时必须携带登录响应的 `XSRF-TOKEN` 作为 `X-XSRF-TOKEN` 请求头；本次临时 token 已在任务结束后撤销，仓库未保存 token、Cookie 或会话。
 - 使用新临时 token 的 scanner 尝试超过 `180s` 未完成，已回收 scanner 进程树；Sonar 未产生新 CE 任务，故不得把本次尝试称为成功扫描。
 - 当前服务端仍为上一次可靠分析：coverage `40.3%`、line `41.2%`、branch `38.9%`、violations `841`；Quality Gate `ERROR`，`new_coverage=47.6%`、`new_violations=133`。
@@ -108,9 +108,9 @@ Invoke-RestMethod `
 
 ## Browser monitor recheck (2026-08-09)
 
-- `admin/admin` 表单登录与项目指标 API 仍可用；当前服务端指标仍为 coverage `40.3%`、line `41.2%`、branch `38.9%`、violations `841`，Quality Gate `ERROR`。
+- `admin` + 当前用户密码表单登录与项目指标 API 仍可用；当前服务端指标仍为 coverage `40.3%`、line `41.2%`、branch `38.9%`、violations `841`，Quality Gate `ERROR`。
 - 本轮按浏览器控制规范尝试连接本机监控页 `http://127.0.0.1:9000`；连接器返回 `No browser is available`，可用浏览器列表为空，故未声称已打开 UI、截图或完成视觉监控验收。
-- 手动接管：浏览器打开上述地址，登录 `admin` / `admin`；登录后进入项目 `Ridge`（project key `MySetsuna_ridge`）查看 Dashboard、Issues、Measures、Quality Gate。生产/联网前必须立即改掉默认密码。
+- 手动接管：浏览器打开上述地址，登录 `admin` 与当前密码；登录后进入项目 `Ridge`（project key `MySetsuna_ridge`）查看 Dashboard、Issues、Measures、Quality Gate。联网前继续使用非默认、仅本机可用的密码。
 
 ## Host disk / scanner incident (2026-08-10)
 
@@ -157,4 +157,4 @@ Invoke-RestMethod `
 - The scan still logged missing generated `.svelte-kit/tsconfig.json` references in the isolated copy and no SCM provider. These are recorded as scanner hygiene gaps; external Tauri WebView2 restart attach, physical mobile/PWA/IME, native pixel matrix, mid-window cross-volume ACL injection, and a green full-project Gate remain open.
 - Sonar low-risk fixture findings were addressed in `packages/remote/src/shared/cloud/__faultRig.ts`: pane/lifecycle/ICE state is now observable and covered by deterministic tests. `faultInjection.test.ts` plus quality-helper focused tests: `33/33` passed. Temporary scanner tokens are revoked and are not stored in this handoff.
 
-Manual takeover: open the local URL above and sign in as `admin` with the current user-managed password. The password was rotated on 2026-08-10 and is intentionally not stored in this repository or in scanner logs; change it again before exposing SonarQube beyond localhost. The current password was verified against `/api/authentication/validate` during this handoff.
+Manual takeover: open the local URL above and sign in as `admin` with the current user-managed password. The password is intentionally not stored in this repository or in scanner logs; change it again before exposing SonarQube beyond localhost. Validate it against `/api/authentication/validate` after any rotation.

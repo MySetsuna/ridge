@@ -14,7 +14,7 @@
 
 - wave14 曾记录 `packages/ridge-cli/tests/kernel_lifecycle_e2e.rs` 的 `kernel_pty_survives_client_detach_and_replays_after_cursor` 在 kernel PTY 建立处以 Windows `os error 10060` 失败；调高有界请求超时后，插桩单测 `1/1` 通过，wave15 workspace 全量 `cargo_exit=0`。日志：`.iteration/artifacts/rust-coverage-wave-15/cargo-test-workspace.log`、`.iteration/artifacts/rust-coverage-wave-14/kernel-lifecycle-rerun-after-timeout-fix.log`。
 - Runtime API/A2A 仍只有严格 host probe/adapter contract；生产 host 没有未经验证的第三方 endpoint 实现。PTY 仍 fail-closed，缺少五条件同时成立的真实运行时证据。
-- Sonar 未取得有效认证：`SONAR_TOKEN` 未注入，`admin/admin` API 重试失败，本机 Browser 无可用会话。未猜测、打印或保存 token，未伪造 scanner/CE/Quality Gate 结果。
+- Sonar 未取得有效认证：`SONAR_TOKEN` 未注入，旧默认凭证已失效，本机 Browser 无可用会话。未猜测、打印或保存 token，未伪造 scanner/CE/Quality Gate 结果。
 - Sonar 项目级 coverage 仍不是 80%；当前 Rust 报告 line 55.57%、function 51.38%，前端 V8 本轮为 statements 52.42%、lines 55.59%。
 
 ## 证据与下一步
