@@ -67,6 +67,7 @@ import {
 	dropPendingFeedBuffers,
 	enqueueDeferredFeed,
 	hasDeferredFeed,
+	prependDeferredFeed,
 	shouldFlushFeedBuffer,
 	takeDeferredFeed,
 } from './terminalFeedPolicy';
@@ -3399,11 +3400,7 @@ export class TerminalManager {
 					// The remainder belongs before every chunk that arrived later.
 					// Keep it at the deferred head instead of appending it behind
 					// newer PTY bytes when a bounded flush yields mid-chunk.
-					if (entry.feedDeferred !== null) {
-						entry.feedDeferredChunks.unshift(entry.feedDeferred);
-					}
-					entry.feedDeferred = remainder;
-					entry.feedDeferredBytes += remainder.byteLength;
+					prependDeferredFeed(entry, remainder);
 				} else {
 					enqueueDeferredFeed(entry, remainder);
 				}

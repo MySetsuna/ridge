@@ -66,6 +66,35 @@ export function enqueueDeferredFeed(
 	return { acceptedBytes, droppedBytes, queuedBytes: entry.feedDeferredBytes };
 }
 
+/**
+ * Requeue a partially consumed chunk ahead of newer arrivals without
+ * bypassing the deferred-byte cap. The caller uses this only for a remainder
+ * that was already earlier in the PTY stream than every queued chunk.
+ */
+export function prependDeferredFeed(
+	entry: PendingFeedBuffers,
+	bytes: Uint8Array,
+): DeferredFeedResult {
+	if (bytes.byteLength === 0) {
+		return { acceptedBytes: 0, droppedBytes: 0, queuedBytes: entry.feedDeferredBytes };
+	}
+	const capacity = Math.max(0, MAX_FEED_DEFERRED_BYTES - entry.feedDeferredBytes);
+	const acceptedBytes = Math.min(capacity, bytes.byteLength);
+	if (acceptedBytes > 0) {
+		const chunk = acceptedBytes === bytes.byteLength ? bytes : bytes.slice(0, acceptedBytes);
+		if (entry.feedDeferred !== null) entry.feedDeferredChunks.unshift(entry.feedDeferred);
+		entry.feedDeferred = chunk;
+		entry.feedDeferredBytes += acceptedBytes;
+	}
+	const droppedBytes = bytes.byteLength - acceptedBytes;
+	if (droppedBytes > 0) {
+		entry.feedDroppedBytes += droppedBytes;
+		entry.feedDropCount += 1;
+		entry.feedNeedsResync = true;
+	}
+	return { acceptedBytes, droppedBytes, queuedBytes: entry.feedDeferredBytes };
+}
+
 /** Take exactly one deferred render chunk, preserving byte order. */
 export function takeDeferredFeed(entry: PendingFeedBuffers): Uint8Array | null {
 	const head = entry.feedDeferred;
