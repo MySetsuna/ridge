@@ -3,6 +3,7 @@ import {
 	dropPendingFeedBuffers,
 	enqueueDeferredFeed,
 	hasDeferredFeed,
+	prependDeferredFeed,
 	shouldDrainDeferredFeed,
 	shouldFlushFeedBuffer,
 	takeDeferredFeed,
@@ -47,6 +48,29 @@ describe('terminalFeedPolicy', () => {
 		expect([...takeDeferredFeed(entry)!]).toEqual([1, 2]);
 		expect([...takeDeferredFeed(entry)!].slice(0, 2)).toEqual([3, 4]);
 		expect(hasDeferredFeed(entry)).toBe(true);
+	});
+
+	it('prepends bounded remainders ahead of newer chunks', () => {
+		const entry = buffers();
+		enqueueDeferredFeed(entry, new Uint8Array([3, 4]));
+		enqueueDeferredFeed(entry, new Uint8Array([5, 6]));
+
+		expect(prependDeferredFeed(entry, new Uint8Array([1, 2]))).toMatchObject({
+			acceptedBytes: 2,
+			droppedBytes: 0,
+			queuedBytes: 6,
+		});
+		expect([...takeDeferredFeed(entry)!]).toEqual([1, 2]);
+		expect([...takeDeferredFeed(entry)!]).toEqual([3, 4]);
+		expect([...takeDeferredFeed(entry)!]).toEqual([5, 6]);
+
+		entry.feedDeferredBytes = 2 * 1024 * 1024;
+		expect(prependDeferredFeed(entry, new Uint8Array([7, 8]))).toMatchObject({
+			acceptedBytes: 0,
+			droppedBytes: 2,
+			queuedBytes: 2 * 1024 * 1024,
+		});
+		expect(entry.feedNeedsResync).toBe(true);
 	});
 
 	it('cancels and clears every pending render buffer at a stream cut', () => {
