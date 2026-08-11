@@ -2257,20 +2257,22 @@ mod tests {
         .unwrap()
         .0;
         assert_eq!(response["ok"], true);
-        let roster = state.roster.lock().unwrap();
-        let identity = roster
-            .agent_identity(&format!("kernel:{pane_id}"))
-            .expect("spawned Agent identity");
-        assert_eq!(identity.workspace_id, workspace_id.to_string());
-        assert_eq!(
-            identity.lifecycle,
-            ridge_core::teammate::communication::AgentLifecycle::Online
-        );
-        let target = json!({
-            "agentId": identity.agent_id,
-            "generation": identity.generation,
-            "lease": identity.lease,
-        });
+        let target = {
+            let roster = state.roster.lock().unwrap();
+            let identity = roster
+                .agent_identity(&format!("kernel:{pane_id}"))
+                .expect("spawned Agent identity");
+            assert_eq!(identity.workspace_id, workspace_id.to_string());
+            assert_eq!(
+                identity.lifecycle,
+                ridge_core::teammate::communication::AgentLifecycle::Online
+            );
+            json!({
+                "agentId": identity.agent_id,
+                "generation": identity.generation,
+                "lease": identity.lease,
+            })
+        };
         state
             .mcp_state
             .register_delivery_endpoint(
@@ -2281,8 +2283,6 @@ mod tests {
             )
             .expect("register runtime route");
         assert!(state.mcp_state.delivery_probe(&target).runtime_api);
-        drop(roster);
-
         let destroyed = domain_pty_destroy(
             State(state.clone()),
             test_headers(),

@@ -66,6 +66,8 @@ pub enum EventScope {
     Connection,
 }
 
+pub type EventRecord = (EventScope, Option<String>, String, Value);
+
 /// The event-emission abstraction (§5.1 "事件发射 trait").
 ///
 /// On the desktop host this is implemented as `AppHandle::emit` (broadcast) /
@@ -218,7 +220,7 @@ pub(crate) mod test_support {
     /// Records every emitted event so tests can assert scope + payload.
     #[derive(Default)]
     pub struct RecordingSink {
-        pub events: Mutex<Vec<(EventScope, Option<String>, String, Value)>>,
+        pub events: Mutex<Vec<EventRecord>>,
     }
     impl EventSink for RecordingSink {
         fn emit(&self, scope: EventScope, connection: &ConnectionId, name: &str, payload: Value) {

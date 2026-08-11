@@ -704,6 +704,7 @@ fn render_new_session_print(
 
 /// `split-window` / `new-window` 之后在某会话窗口里新增一个面板。
 /// `new_window=true` 时新建窗口，否则在目标窗口追加面板。
+#[allow(clippy::too_many_arguments)]
 pub fn add_pane(
     socket: &str,
     target: &str,

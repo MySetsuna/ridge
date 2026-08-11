@@ -314,6 +314,7 @@ impl KernelMcpHost {
         Ok((Some(old_id), Some(bridge)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_split_pty(
         &self,
         request: &SplitPaneRequest,

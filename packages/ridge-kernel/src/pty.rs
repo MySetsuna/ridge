@@ -589,6 +589,10 @@ impl PtyRegistry {
         self.ptys.lock().len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.ptys.lock().is_empty()
+    }
+
     pub fn info(&self, id: Uuid) -> Result<PtyInfo> {
         self.ptys
             .lock()

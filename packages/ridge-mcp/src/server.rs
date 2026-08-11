@@ -1273,7 +1273,7 @@ fn cancel_hub_entry(
     replace_receipt_entry(state, key, &receipt_id, &entry).map_err(HostError::Internal)?;
     if let Some(persistence) = &state.persistence {
         persistence
-            .consume(key, &[receipt_id.clone()])
+            .consume(key, std::slice::from_ref(&receipt_id))
             .map_err(HostError::Internal)?;
     }
     let mut inbox = state.inbox.lock().unwrap();
@@ -1868,12 +1868,12 @@ fn resolve_hub_target(
         .or_else(|| value_string(&target, &["workspaceId", "workspace_id"]));
     let profile = host.team_profile_for(requested_workspace.as_deref())?;
     let requested_agent = arg_str(args, "agent_id");
-    let entries = ["agent_identities", "roster"]
+    let mut entries = ["agent_identities", "roster"]
         .into_iter()
         .filter_map(|key| profile.get(key).and_then(Value::as_array))
         .flatten();
     let identity = entries
-        .filter(|entry| {
+        .find(|entry| {
             let id_matches = requested_agent
                 .map(|id| {
                     value_string(entry, &["agentId", "agent_id", "id"]).as_deref() == Some(id)
@@ -1883,7 +1883,6 @@ fn resolve_hub_target(
                 == Some(target_pane.as_str());
             id_matches && pane_matches
         })
-        .next()
         .ok_or_else(|| {
             hub_error(
                 "target_missing",
@@ -1949,7 +1948,7 @@ fn resolve_hub_target(
             .iter()
             .any(|item| matches!(*item, "messages" | "tasks" | "events" | "control"))
     } else {
-        capabilities.iter().any(|item| *item == required_capability)
+        capabilities.contains(&required_capability)
     };
     if !capability_allowed {
         return Err(hub_error(
@@ -3405,10 +3404,7 @@ mod tests {
             .to_string()
         };
         let accepted = call_with_state(&update(2, "accepted"), &FakeHost, &state);
-        assert_eq!(
-            accepted["result"]["content"][0]["text"].as_str().is_some(),
-            true
-        );
+        assert!(accepted["result"]["content"][0]["text"].as_str().is_some());
         let invalid = call_with_state(&update(3, "created"), &FakeHost, &state);
         assert!(invalid["error"]["message"]
             .as_str()

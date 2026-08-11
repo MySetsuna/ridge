@@ -78,9 +78,11 @@ mod tests {
         let id = Uuid::from_u128(2);
         // Active button-event mouse + SGR + alt screen — the TUI case whose
         // one-time enables must be reasserted for the controller mirror.
-        let mut modes = Modes::default();
-        modes.mouse_button_event = true;
-        modes.mouse_sgr = true;
+        let modes = Modes {
+            mouse_button_event: true,
+            mouse_sgr: true,
+            ..Modes::default()
+        };
         let f = pane_resync_frame(id, b"scrollback-tail", &modes, true);
         assert_eq!(&f[..16], id.as_bytes(), "16B pane-id prefix first");
         let body = &f[16..];

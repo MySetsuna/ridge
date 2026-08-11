@@ -25,7 +25,7 @@ pub fn take_decoded_utf8(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
         pending.extend_from_slice(chunk);
     }
     if pending.len() > PTY_READ_UTF8_PENDING_MAX {
-        let bytes = std::mem::replace(pending, Vec::new());
+        let bytes = std::mem::take(pending);
         return String::from_utf8_lossy(&bytes).into_owned();
     }
     let mut out = String::new();
@@ -65,7 +65,7 @@ pub fn flush_pending_eof(pending: &mut Vec<u8>) -> String {
     if pending.is_empty() {
         return String::new();
     }
-    let bytes = std::mem::replace(pending, Vec::new());
+    let bytes = std::mem::take(pending);
     String::from_utf8_lossy(&bytes).into_owned()
 }
 

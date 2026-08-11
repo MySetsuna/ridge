@@ -81,6 +81,7 @@ pub trait HostAuth {
 
     /// TOTP 校验前的节流/黑名单闸门：`Ok(())` 放行、`Err(())` 拒绝
     /// （默认：始终放行）。返回统一失败信息由调用方决定，避免预言机。
+    #[allow(clippy::result_unit_err)]
     fn pre_verify_gate(&self, ip: &str, device_id: &str) -> Result<(), ()> {
         let _ = (ip, device_id);
         Ok(())

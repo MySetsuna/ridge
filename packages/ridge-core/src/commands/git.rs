@@ -1197,6 +1197,16 @@ struct PorcelainStatus {
     untracked: Vec<ScmFile>,
 }
 
+type ParsedPorcelain = (
+    Option<String>,
+    u32,
+    u32,
+    bool,
+    Vec<ScmFile>,
+    Vec<ScmFile>,
+    Vec<ScmFile>,
+);
+
 fn parse_status_branch(line: &str, status: &mut PorcelainStatus) {
     let rest = line.trim_start_matches("##").trim();
     let (head, tail) = rest.split_once(' ').unwrap_or((rest, ""));
@@ -1256,17 +1266,7 @@ fn parse_status_file(line: &str, status: &mut PorcelainStatus) {
     }
 }
 
-fn parse_porcelain_v1(
-    stdout: &str,
-) -> (
-    Option<String>,
-    u32,
-    u32,
-    bool,
-    Vec<ScmFile>,
-    Vec<ScmFile>,
-    Vec<ScmFile>,
-) {
+fn parse_porcelain_v1(stdout: &str) -> ParsedPorcelain {
     let mut status = PorcelainStatus::default();
     for line in stdout.lines() {
         if line.starts_with("##") {
@@ -2242,7 +2242,7 @@ fn git_get_commit_files_sync(
             .next()
             .map(|c| c.to_string())
             .unwrap_or_default();
-        let p = parts.last().unwrap_or("").to_string();
+        let p = parts.next_back().unwrap_or("").to_string();
         if p.is_empty() || status.is_empty() {
             continue;
         }
@@ -2354,7 +2354,7 @@ pub async fn git_compare_commits(
                 .next()
                 .map(|c| c.to_string())
                 .unwrap_or_default();
-            let p = parts.last().unwrap_or("").to_string();
+            let p = parts.next_back().unwrap_or("").to_string();
             if p.is_empty() || status.is_empty() {
                 continue;
             }
@@ -3271,10 +3271,11 @@ mod guard_tests {
                     in_git_cmd = false;
                 }
             }
-            if t.contains("Command::new(") && !in_git_cmd {
-                if t.contains("\"git\"") || t.contains("RIDGE_GIT_BIN") {
-                    offenders.push((i + 1, t.to_string()));
-                }
+            if t.contains("Command::new(")
+                && !in_git_cmd
+                && (t.contains("\"git\"") || t.contains("RIDGE_GIT_BIN"))
+            {
+                offenders.push((i + 1, t.to_string()));
             }
         }
         assert!(
@@ -3291,6 +3292,7 @@ mod guard_tests {
         );
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn get_scm_status_real_git_path_smoke() {
         // This test reaches the real guarded child path. Serialize it with
@@ -3579,6 +3581,7 @@ mod supersede_tests {
         assert!(!ran.load(Ordering::SeqCst), "stale closure must not run");
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn ambient_request_slot_kills_plain_git_child_on_cancel() {
         let _serial = git_child_test_lock()
@@ -3626,6 +3629,7 @@ mod supersede_tests {
         let _ = std::fs::remove_dir_all(script.parent().unwrap());
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn sync_request_slot_kills_core_git_child_on_cancel() {
         let _serial = git_child_test_lock()
@@ -3722,7 +3726,6 @@ mod supersede_tests {
                 let _ = release_rx.await;
                 spawn_git_blocking(move || {
                     second_started_task.store(true, Ordering::SeqCst);
-                    ()
                 })
                 .await
             })

@@ -60,8 +60,7 @@ fn load_in(dir: &Path, identity: &str) -> Option<Vec<u8>> {
 /// 可注入目录的原子写入。
 fn save_in(dir: &Path, identity: &str, secret: &[u8]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let blob = encrypt(secret)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "encrypt failed"))?;
+    let blob = encrypt(secret).ok_or_else(|| std::io::Error::other("encrypt failed"))?;
     let path = dir.join(seed_filename(identity));
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, &blob)?;
