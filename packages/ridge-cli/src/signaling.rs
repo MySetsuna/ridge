@@ -137,5 +137,103 @@ where
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::stream;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
+    use std::task::{Context, Poll};
+
+    struct RecordingSink {
+        messages: Arc<Mutex<Vec<Message>>>,
+    }
+
+    impl Sink<Message> for RecordingSink {
+        type Error = tokio_tungstenite::tungstenite::Error;
+
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.get_mut().messages.lock().unwrap().push(item);
+            Ok(())
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn read_signaling_accepts_json_and_ignores_non_data_frames() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let frames = stream::iter(vec![
+            Ok(Message::Text(
+                r#"{"t":"peer-join","role":"controller","cid":"c1"}"#.into(),
+            )),
+            Ok(Message::Text("not-json".into())),
+            Ok(Message::Ping(Vec::new().into())),
+            Ok(Message::Binary(vec![1].into())),
+            Ok(Message::Pong(Vec::new().into())),
+            Ok(Message::Close(None)),
+        ]);
+
+        read_signaling(frames, tx).await;
+
+        assert_eq!(
+            rx.recv().await,
+            Some(SignalMsg::PeerJoin {
+                role: Role::Controller,
+                cid: Some("c1".to_string()),
+            }),
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn read_signaling_stops_when_incoming_channel_is_closed() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let frames = stream::iter(vec![Ok(Message::Text(
+            r#"{"t":"peer-join","role":"controller"}"#.into(),
+        ))]);
+
+        read_signaling(frames, tx).await;
+    }
+
+    #[tokio::test]
+    async fn write_signaling_serializes_messages_until_sender_closes() {
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let sink = RecordingSink {
+            messages: messages.clone(),
+        };
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(SignalMsg::Error {
+            code: "TEST".to_string(),
+            message: "failed".to_string(),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+
+        write_signaling(sink, rx).await;
+
+        let messages = messages.lock().unwrap();
+        assert_eq!(messages.len(), 1);
+        let Message::Text(text) = &messages[0] else {
+            panic!("expected a text signaling frame");
+        };
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(value["t"], "error");
+        assert_eq!(value["code"], "TEST");
+    }
+}
+
 // 信令消息的 (de)序列化测试已上移到 `ridge-signaling` 的跨语言 golden-fixture
 // conformance（SSOT 所有者负责锁线形）；此处不再重复本地 serde 单测。
