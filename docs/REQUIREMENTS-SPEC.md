@@ -1196,6 +1196,7 @@
 - 批准依据:`用户预审批通过；NLM 对话 a47d3199-c1f9-47f1-927c-ff2c4875b77d 第 10 轮明确提出`
 - 状态:`ACTIVE`
 - 版本:`v1`
+- 当前证据:`find_git_repos_below` 在 `find_git_repos_below_sync` 内硬封顶 depth=1，并在命中 `.git` 后停止深入；`cargo test -p ridge-core --lib commands::git --quiet` 通过 `39/39`，覆盖 `Some(2)`、`Some(99)`、`None`、嵌套仓库与跳过目录。
 - 行为:`find_git_repos_below` 保留协议参数兼容性，但实际向下扫描深度永远不超过 1；调用方传入更大值或省略值均不得触发 deep scan。
 - 边界:仅约束 SCM 仓库发现；不改变 Git 根向上解析、已命中仓库内部不递归、跳过大型目录及并发/超时/进程生命周期护栏。
 - 验收:直接子目录仓库可发现；二级及更深仓库在 `Some(2)`、`Some(99)`、`None` 下均不可发现；SourceControl 传入深度 1。
@@ -1206,6 +1207,7 @@
 - 批准依据:`用户预审批通过；NLM 对话 a47d3199-c1f9-47f1-927c-ff2c4875b77d 第 10 轮明确提出`
 - 状态:`ACTIVE`
 - 版本:`v1`
+- 当前证据:`resolveInfoForPane` 先调用后端 `find_git_repo_root(cwd)`，仅返回 cwd 自身/祖先 Git 根，并将 `availableRepos` 限为该根；非 Git cwd 不继承子仓库。`paneGitStatus.test.ts` + `scmCache.test.ts` 通过 `39/39`。
 - 行为:pane 的 branch/diff pill 仅展示 `find_git_repo_root(cwd)` 返回的自身或祖先 Git 根；cwd 非 Git 仓库时，即使其子孙目录含仓库，也不得展示子孙分支 pill。
 - 边界:不改变 SourceControl 全局侧栏对工作区仓库的独立发现；不按 UI 本地猜测 Git 根；pane 选择状态不得跨 cwd/root 泄漏。
 - 验收:非 Git 父目录含多个子仓库时 pane store 为 `null`；Git 仓库子目录解析到祖先根且 `availableRepos` 仅含该根；离开仓库立即清空 pill；确定性 Vitest 覆盖上述分支。
