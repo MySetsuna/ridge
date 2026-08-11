@@ -139,9 +139,9 @@ fn discover_from(
             return Ok(endpoint);
         }
     }
-    return Err(anyhow!(
+    Err(anyhow!(
         "未找到活动 ridge-kernel；请启动 Ridge/ridge-kernel，或显式传入 --url 与 --token"
-    ));
+    ))
 }
 
 /// 逐行转发 stdio JSON-RPC 到 Ridge HTTP MCP。通知的 `202` 不写 stdout。
