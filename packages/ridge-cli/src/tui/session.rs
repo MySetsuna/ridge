@@ -174,25 +174,21 @@ fn spawn_output_pump(
     tx: mpsc::Sender<Vec<u8>>,
 ) {
     thread::spawn(move || {
-        loop {
-            if stop.load(Ordering::Acquire) {
-                break;
-            }
-            match poll_domain_pty_output(&endpoint, pty_id, lease_id, 500, 64) {
-                Ok(KernelPtyOutput::Data(bytes)) if !bytes.is_empty() => {
-                    if tx.blocking_send(bytes).is_err() {
-                        break;
-                    }
-                }
-                Ok(KernelPtyOutput::Data(_)) | Ok(KernelPtyOutput::Timeout) => {}
-                Ok(KernelPtyOutput::Lagged) => {
-                    if resync_domain_pty_output(&endpoint, pty_id, lease_id).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
+        while !stop.load(Ordering::Acquire) && poll_output_once(&endpoint, pty_id, lease_id, &tx) {}
         let _ = detach_domain_pty_output(&endpoint, pty_id, lease_id);
     });
+}
+
+fn poll_output_once(
+    endpoint: &KernelEndpoint,
+    pty_id: Uuid,
+    lease_id: Uuid,
+    tx: &mpsc::Sender<Vec<u8>>,
+) -> bool {
+    match poll_domain_pty_output(endpoint, pty_id, lease_id, 500, 64) {
+        Ok(KernelPtyOutput::Data(bytes)) if !bytes.is_empty() => tx.blocking_send(bytes).is_ok(),
+        Ok(KernelPtyOutput::Data(_)) | Ok(KernelPtyOutput::Timeout) => true,
+        Ok(KernelPtyOutput::Lagged) => resync_domain_pty_output(endpoint, pty_id, lease_id).is_ok(),
+        Err(_) => false,
+    }
 }
