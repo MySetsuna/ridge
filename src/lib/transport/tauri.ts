@@ -182,7 +182,9 @@ export class TauriDataProvider implements DataProvider {
     if (!query.trim()) return [];
     // Empty path → fall back to the active project (mirrors the remote server).
     const root = path?.trim() || (await this.call<string | null>('get_current_project')) || '.';
-    const hits = await this.call<RawSearchHit[]>('text_search', { root, query, maxResults: 500 });
+    const hits = await this.call<RawSearchHit[]>('text_search', {
+      request: { root, query, maxResults: 500 },
+    });
     return hits.map((h) => ({ path: h.file, line: h.line, column: h.column, snippet: h.content }));
   }
 }

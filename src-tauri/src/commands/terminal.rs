@@ -1784,33 +1784,24 @@ async fn write_to_resolved_pty(
     Ok(())
 }
 
-// NOSONAR: Tauri's public command ABI intentionally keeps these flat names so
-// existing desktop and remote clients can invoke `resize_pane` unchanged.
 #[tauri::command]
-// NOSONAR: this public command preserves the existing flat IPC ABI consumed by
-// desktop and remote clients; changing it to a request object is breaking API.
 pub async fn resize_pane(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
-    workspace_id: String,
-    pane_id: String,
-    rows: u16,
-    cols: u16,
-    #[allow(non_snake_case)] isAlt: Option<bool>,
-    #[allow(non_snake_case)] isInlineTui: Option<bool>,
+    request: ResizePaneRequest,
 ) -> Result<(), String> {
     let st = state.inner().clone();
     tokio::task::spawn_blocking(move || {
         resize_pane_inner(
             &st,
             &app,
-            workspace_id,
-            pane_id,
+            request.workspace_id,
+            request.pane_id,
             ResizeRequest {
-                rows,
-                cols,
-                is_alt: isAlt.unwrap_or(false),
-                is_inline_tui: isInlineTui.unwrap_or(false),
+                rows: request.rows,
+                cols: request.cols,
+                is_alt: request.is_alt.unwrap_or(false),
+                is_inline_tui: request.is_inline_tui.unwrap_or(false),
                 suppress_errors: true,
             },
         )
@@ -1818,6 +1809,17 @@ pub async fn resize_pane(
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResizePaneRequest {
+    pub workspace_id: String,
+    pub pane_id: String,
+    pub rows: u16,
+    pub cols: u16,
+    pub is_alt: Option<bool>,
+    pub is_inline_tui: Option<bool>,
 }
 
 /// Remote invoke variant: stale Pane/PTY failures must reach the scheduler so

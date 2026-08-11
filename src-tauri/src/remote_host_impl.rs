@@ -1779,9 +1779,16 @@ async fn handle_ws(
                                 } else {
                                     // §unify: reuse the desktop text_search engine (gitignore-aware ripgrep walk).
                                     crate::commands::project::text_search(
-                                        root.to_string_lossy().to_string(),
-                                        query.clone(),
-                                        None, None, None, Some(200), None, None,
+                                        crate::commands::project::TextSearchRequest {
+                                            root: root.to_string_lossy().to_string(),
+                                            query: query.clone(),
+                                            case_sensitive: None,
+                                            use_regex: None,
+                                            whole_word: None,
+                                            max_results: Some(200),
+                                            include_globs: None,
+                                            exclude_globs: None,
+                                        },
                                     )
                                     .await
                                     .unwrap_or_default()
@@ -2728,16 +2735,16 @@ async fn search_files_result(state: &AppState, query: String, path: String) -> s
     } else {
         path
     };
-    match crate::commands::project::text_search(
+    match crate::commands::project::text_search(crate::commands::project::TextSearchRequest {
         root,
         query,
-        None,
-        None,
-        None,
-        Some(500),
-        None,
-        None,
-    )
+        case_sensitive: None,
+        use_regex: None,
+        whole_word: None,
+        max_results: Some(500),
+        include_globs: None,
+        exclude_globs: None,
+    })
     .await
     {
         Ok(results) => {

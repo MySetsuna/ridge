@@ -94,12 +94,14 @@ export async function textSearch(
 
   try {
     const results = await invoke<SearchResult[]>('text_search', {
-      root: state.currentPath,
-      query,
-      caseSensitive: options.caseSensitive ?? false,
-      useRegex: options.useRegex ?? false,
-      wholeWord: options.wholeWord ?? false,
-      maxResults: options.maxResults ?? 1000,
+      request: {
+        root: state.currentPath,
+        query,
+        caseSensitive: options.caseSensitive ?? false,
+        useRegex: options.useRegex ?? false,
+        wholeWord: options.wholeWord ?? false,
+        maxResults: options.maxResults ?? 1000,
+      },
     });
 
     projectStore.update((s) => ({

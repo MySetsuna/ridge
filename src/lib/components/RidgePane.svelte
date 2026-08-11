@@ -134,8 +134,8 @@ function createDesktopResizeScheduler(): PaneRpcScheduler {
 			cancel = () => finishReject(new RpcCancelledError(method));
 			bucket?.add(cancel);
 			timer = setTimeout(() => finishReject(new RpcTimeoutError(method, timeoutMs)), timeoutMs);
-			void Promise.resolve()
-				.then(() => invoke<T>(method, params as Record<string, unknown>))
+				void Promise.resolve()
+					.then(() => invoke<T>(method, { request: params as Record<string, unknown> }))
 				.then(finishResolve, (error: unknown) => finishReject(error instanceof Error ? error : new Error(String(error))));
 		});
 	};

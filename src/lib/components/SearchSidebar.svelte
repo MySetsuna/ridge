@@ -323,14 +323,16 @@
       const parts = await Promise.allSettled(
         roots.map((root) =>
           invoke<SearchResult[]>('text_search', {
-            root,
-            query: trimmed,
-            caseSensitive,
-            useRegex,
-            wholeWord,
-            maxResults: 500,
-            includeGlobs: includeGlobsList,
-            excludeGlobs: excludeGlobsList,
+            request: {
+              root,
+              query: trimmed,
+              caseSensitive,
+              useRegex,
+              wholeWord,
+              maxResults: 500,
+              includeGlobs: includeGlobsList,
+              excludeGlobs: excludeGlobsList,
+            },
           })
         )
       );

@@ -176,21 +176,20 @@ pub async fn get_directory_children(
 }
 
 #[tauri::command]
-// NOSONAR: this public command preserves the existing flat IPC ABI consumed by
-// desktop and remote clients; changing it to a request object is breaking API.
-pub async fn text_search(
-    root: String,
-    query: String,
-    case_sensitive: Option<bool>,
-    use_regex: Option<bool>,
-    whole_word: Option<bool>,
-    max_results: Option<usize>,
-    include_globs: Option<Vec<String>>,
-    exclude_globs: Option<Vec<String>>,
-) -> Result<Vec<SearchResult>, String> {
+pub async fn text_search(request: TextSearchRequest) -> Result<Vec<SearchResult>, String> {
     // §S5: delegate to the migrated `ridge_core` port (same exists check, same
     // SearchOptions defaults, same gitignore-aware walk + error string). The
     // host keeps the `spawn_blocking` offload.
+    let TextSearchRequest {
+        root,
+        query,
+        case_sensitive,
+        use_regex,
+        whole_word,
+        max_results,
+        include_globs,
+        exclude_globs,
+    } = request;
     let args = ridge_core::fs::commands::TextSearchArgs {
         case_sensitive,
         use_regex,
@@ -204,6 +203,19 @@ pub async fn text_search(
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextSearchRequest {
+    pub root: String,
+    pub query: String,
+    pub case_sensitive: Option<bool>,
+    pub use_regex: Option<bool>,
+    pub whole_word: Option<bool>,
+    pub max_results: Option<usize>,
+    pub include_globs: Option<Vec<String>>,
+    pub exclude_globs: Option<Vec<String>>,
 }
 
 /// Companion command returning ONLY the bad globs from the same options.
