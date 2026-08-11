@@ -89,6 +89,158 @@ impl Default for PaneTree {
     }
 }
 
+fn resize_node(node: &mut PaneNode, pane_id: Uuid, new_ratio: f32) -> bool {
+    let PaneNode::Split {
+        children, ratios, ..
+    } = node
+    else {
+        return false;
+    };
+    for (index, child) in children.iter_mut().enumerate() {
+        if matches!(&*child, PaneNode::Leaf(id) if *id == pane_id) {
+            if index >= ratios.len() {
+                return false;
+            }
+            ratios[index] = new_ratio.clamp(10.0, 90.0);
+            normalize_ratios(ratios);
+            return true;
+        }
+        if resize_node(child, pane_id, new_ratio) {
+            return true;
+        }
+    }
+    false
+}
+
+fn normalize_ratios(ratios: &mut [f32]) {
+    let sum: f32 = ratios.iter().sum();
+    if sum > 0.0 {
+        for ratio in ratios {
+            *ratio = (*ratio / sum) * 100.0;
+        }
+    }
+}
+
+fn remove_leaf_from_structure(node: &mut PaneNode, pane_id: Uuid) -> bool {
+    let PaneNode::Split {
+        children,
+        ..
+    } = node
+    else {
+        return false;
+    };
+    let mut index = 0;
+    while index < children.len() {
+        if matches!(&children[index], PaneNode::Leaf(id) if *id == pane_id) {
+            remove_child(node, index);
+            return true;
+        }
+        if matches!(&children[index], PaneNode::Split { .. })
+            && remove_leaf_from_structure(&mut children[index], pane_id)
+        {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+fn remove_child(node: &mut PaneNode, index: usize) {
+    let PaneNode::Split {
+        children, ratios, ..
+    } = node
+    else {
+        return;
+    };
+    children.remove(index);
+    ratios.remove(index);
+    if children.len() == 1 {
+        *node = children.remove(0);
+    } else {
+        normalize_ratios(ratios);
+    }
+}
+
+fn build_neighbor_path(
+    node: &PaneNode,
+    pane_id: Uuid,
+    path: &mut Vec<usize>,
+    dirs: &mut Vec<SplitDirection>,
+) -> bool {
+    match node {
+        PaneNode::Leaf(id) => *id == pane_id,
+        PaneNode::Split {
+            direction,
+            children,
+            ..
+        } => children.iter().enumerate().any(|(index, child)| {
+            path.push(index);
+            dirs.push(direction.clone());
+            let found = build_neighbor_path(child, pane_id, path, dirs);
+            if !found {
+                path.pop();
+                dirs.pop();
+            }
+            found
+        }),
+    }
+}
+
+fn find_neighbor(
+    root: &PaneNode,
+    path: &[usize],
+    dirs: &[SplitDirection],
+    dir: Direction,
+) -> Option<Uuid> {
+    let split_dir = dir.split_direction();
+    for depth in (0..path.len()).rev() {
+        if dirs[depth] != split_dir {
+            continue;
+        }
+        let node = node_at_path(root, &path[..depth])?;
+        let PaneNode::Split { children, .. } = node else {
+            continue;
+        };
+        let neighbor_index = adjacent_index(dir, path[depth], children.len())?;
+        let perp_dir = perpendicular_direction(dir);
+        let align_indices: Vec<usize> = ((depth + 1)..path.len())
+            .filter(|&index| dirs[index] == perp_dir)
+            .map(|index| path[index])
+            .collect();
+        let mut position = 0;
+        return Some(PaneTree::aligned_descend(
+            &children[neighbor_index],
+            dir,
+            &align_indices,
+            &mut position,
+        ));
+    }
+    None
+}
+
+fn node_at_path<'a>(root: &'a PaneNode, path: &[usize]) -> Option<&'a PaneNode> {
+    path.iter().try_fold(root, |node, &index| match node {
+        PaneNode::Split { children, .. } => children.get(index),
+        PaneNode::Leaf(_) => None,
+    })
+}
+
+fn adjacent_index(dir: Direction, child_index: usize, child_count: usize) -> Option<usize> {
+    match dir {
+        Direction::Left | Direction::Up => child_index.checked_sub(1),
+        Direction::Right | Direction::Down => {
+            (child_index + 1 < child_count).then_some(child_index + 1)
+        }
+    }
+}
+
+fn perpendicular_direction(dir: Direction) -> SplitDirection {
+    match dir {
+        Direction::Left | Direction::Right => SplitDirection::Vertical,
+        Direction::Up | Direction::Down => SplitDirection::Horizontal,
+    }
+}
+
 impl PaneTree {
     /// 创建初始根节点（Fiber 根 Fiber）
     pub fn new() -> Self {
@@ -191,36 +343,7 @@ impl PaneTree {
     /// Resize（递归找到包含该 pane 的 Split，调整 ratios）
     #[allow(dead_code)] // public API; callers do ratio updates via set_split_ratios_at_path
     pub fn resize(&mut self, pane_id: Uuid, new_ratio: f32) -> Result<(), CoreError> {
-        fn recurse(node: &mut PaneNode, pane_id: Uuid, new_ratio: f32) -> bool {
-            if let PaneNode::Split {
-                children, ratios, ..
-            } = node
-            {
-                for (i, child) in children.iter_mut().enumerate() {
-                    if let PaneNode::Leaf(id) = &*child {
-                        if *id == pane_id {
-                            // 找到父 Split，调整当前 child 的 ratio
-                            if i < ratios.len() {
-                                ratios[i] = new_ratio.clamp(10.0, 90.0);
-                                // 重新归一化其他 ratios
-                                let sum: f32 = ratios.iter().sum();
-                                if sum > 0.0 {
-                                    for r in ratios.iter_mut() {
-                                        *r = (*r / sum) * 100.0;
-                                    }
-                                }
-                                return true;
-                            }
-                        }
-                    } else if recurse(child, pane_id, new_ratio) {
-                        return true;
-                    }
-                }
-            }
-            false
-        }
-
-        if recurse(&mut self.root, pane_id, new_ratio) {
+        if resize_node(&mut self.root, pane_id, new_ratio) {
             Ok(())
         } else {
             Err(CoreError::PaneNotFound(pane_id))
@@ -341,47 +464,9 @@ impl PaneTree {
     }
 
     /// 从树中摘掉指定 Leaf（不删 `panes` 元数据、不关 PTY）。
-    fn remove_leaf_from_structure(node: &mut PaneNode, pane_id: Uuid) -> bool {
-        if let PaneNode::Split {
-            children, ratios, ..
-        } = node
-        {
-            let mut i = 0;
-            while i < children.len() {
-                let hit = matches!(
-                    &children[i],
-                    PaneNode::Leaf(id) if *id == pane_id
-                );
-                if hit {
-                    children.remove(i);
-                    ratios.remove(i);
-                    if children.len() == 1 {
-                        let only_child = children.remove(0);
-                        *node = only_child;
-                    } else if !ratios.is_empty() {
-                        let sum: f32 = ratios.iter().sum();
-                        if sum > 0.0 {
-                            for r in ratios.iter_mut() {
-                                *r = (*r / sum) * 100.0;
-                            }
-                        }
-                    }
-                    return true;
-                }
-                if matches!(children[i], PaneNode::Split { .. })
-                    && Self::remove_leaf_from_structure(&mut children[i], pane_id)
-                {
-                    return true;
-                }
-                i += 1;
-            }
-        }
-        false
-    }
-
     /// Close（删除 Leaf，并把兄弟节点提升或调整 ratio）
     pub fn close(&mut self, pane_id: Uuid) -> Result<(), CoreError> {
-        if Self::remove_leaf_from_structure(&mut self.root, pane_id) {
+        if remove_leaf_from_structure(&mut self.root, pane_id) {
             self.panes.remove(&pane_id);
             Ok(())
         } else {
@@ -398,7 +483,7 @@ impl PaneTree {
         if !leaves.contains(&pane_id) {
             return Err(CoreError::PaneNotFound(pane_id));
         }
-        if Self::remove_leaf_from_structure(&mut self.root, pane_id) {
+        if remove_leaf_from_structure(&mut self.root, pane_id) {
             Ok(())
         } else {
             Err(CoreError::PaneNotFound(pane_id))
@@ -575,7 +660,7 @@ impl PaneTree {
             }
             return false;
         }
-        Self::remove_leaf_from_structure(&mut self.root, pane_id)
+        remove_leaf_from_structure(&mut self.root, pane_id)
     }
 
     /// 获取当前布局（供前端递归渲染 SplitContainer 使用）
@@ -614,102 +699,12 @@ impl PaneTree {
     /// 从指定 pane 向物理方向 navigation 查找相邻 pane。
     /// 返回相邻 pane 的 id，若无则 `None`。
     pub fn neighbor(&self, pane_id: Uuid, dir: Direction) -> Option<Uuid> {
-        let mut path: Vec<usize> = Vec::new();
-        let mut dirs: Vec<SplitDirection> = Vec::new();
-
-        // 构建路径：各级 child index + 父 Split 的 direction
-        fn build_path(
-            node: &PaneNode,
-            pane_id: Uuid,
-            path: &mut Vec<usize>,
-            dirs: &mut Vec<SplitDirection>,
-        ) -> bool {
-            match node {
-                PaneNode::Leaf(id) if *id == pane_id => true,
-                PaneNode::Split {
-                    direction,
-                    children,
-                    ..
-                } => {
-                    for (i, child) in children.iter().enumerate() {
-                        path.push(i);
-                        dirs.push(direction.clone());
-                        if build_path(child, pane_id, path, dirs) {
-                            return true;
-                        }
-                        path.pop();
-                        dirs.pop();
-                    }
-                    false
-                }
-                _ => false,
-            }
-        }
-
-        if !build_path(&self.root, pane_id, &mut path, &mut dirs) {
+        let mut path = Vec::new();
+        let mut dirs = Vec::new();
+        if !build_neighbor_path(&self.root, pane_id, &mut path, &mut dirs) {
             return None;
         }
-
-        let split_dir = dir.split_direction();
-
-        // 从叶向上遍历，找到方向匹配的第一个 ancestor Split
-        for depth in (0..path.len()).rev() {
-            if dirs[depth] != split_dir {
-                continue;
-            }
-
-            let child_idx = path[depth];
-
-            // 走到该 Split 节点
-            let mut node = &self.root;
-            for &idx in &path[..depth] {
-                if let PaneNode::Split { children, .. } = node {
-                    node = &children[idx];
-                } else {
-                    return None;
-                }
-            }
-
-            if let PaneNode::Split { children, .. } = node {
-                let neighbor_idx = match dir {
-                    Direction::Left | Direction::Up => {
-                        if child_idx == 0 {
-                            continue; // 已在最边缘
-                        }
-                        child_idx - 1
-                    }
-                    Direction::Right | Direction::Down => {
-                        if child_idx + 1 >= children.len() {
-                            continue;
-                        }
-                        child_idx + 1
-                    }
-                };
-
-                // 收集源窗格在垂直（Left/Right）或水平（Up/Down）方向上的对齐索引
-                let perp_dir = match dir {
-                    Direction::Left | Direction::Right => SplitDirection::Vertical,
-                    Direction::Up | Direction::Down => SplitDirection::Horizontal,
-                };
-                let mut align_indices: Vec<usize> = Vec::new();
-                for d in (depth + 1)..path.len() {
-                    if dirs[d] == perp_dir {
-                        align_indices.push(path[d]);
-                    }
-                }
-
-                let neighbor_node = &children[neighbor_idx];
-                let mut pos = 0;
-                return Some(Self::aligned_descend(
-                    neighbor_node,
-                    dir,
-                    &align_indices,
-                    &mut pos,
-                ));
-            }
-        }
-
-        None
+        find_neighbor(&self.root, &path, &dirs, dir)
     }
 
     /// 导航至目标子树，保持与源的垂直/水平对齐。
