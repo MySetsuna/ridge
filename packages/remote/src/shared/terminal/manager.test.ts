@@ -140,6 +140,7 @@ function makePane() {
 		syncStart: null,
 		syncTimeoutRendered: false,
 		deltaFrameId: 0,
+		renderFrameId: 0,
 		focusListener: vi.fn(),
 		blurListener: vi.fn(),
 		selecting: false,

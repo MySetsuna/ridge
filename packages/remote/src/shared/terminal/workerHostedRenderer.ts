@@ -206,10 +206,13 @@ export class WorkerHostedRenderer {
 		);
 	}
 
-	feed(paneId: string, bytes: Uint8Array): Promise<RenderWorkerResponse> {
+	feed(paneId: string, bytes: Uint8Array, frameId?: number): Promise<RenderWorkerResponse> {
 		const transferable =
 			bytes.buffer instanceof ArrayBuffer ? [bytes.buffer] : undefined;
-		return this.send({ type: 'feed', paneId, bytes }, transferable);
+		return this.send(
+			{ type: 'feed', paneId, bytes, ...(frameId === undefined ? {} : { frameId }) },
+			transferable,
+		);
 	}
 
 	resize(

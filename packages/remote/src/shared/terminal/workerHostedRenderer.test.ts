@@ -155,6 +155,19 @@ describe('WorkerHostedRenderer — basic dispatch', () => {
 		});
 		await promise;
 	});
+
+	it('forwards the optional render generation on feed', async () => {
+		const worker = new FakeWorker();
+		const renderer = new WorkerHostedRenderer(worker);
+		const promise = renderer.feed(PANE, new Uint8Array([5, 6]), 8);
+		expect(worker.calls[0].message).toMatchObject({ type: 'feed', frameId: 8 });
+		worker.deliverResponseFor(0, {
+			type: 'ready',
+			paneId: PANE,
+			backend: 'canvas2d',
+		});
+		await promise;
+	});
 });
 
 describe('WorkerHostedRenderer — concurrency', () => {
