@@ -168,18 +168,6 @@ impl WorkspaceManager {
         self.workspaces[self.active_ws].lock().unwrap()
     }
 
-    pub fn active_session_index(&self) -> usize {
-        self.active_session
-    }
-
-    pub fn session_count(&self) -> usize {
-        self.workspaces[self.active_ws]
-            .lock()
-            .unwrap()
-            .sessions
-            .len()
-    }
-
     pub fn active_session_handle(&self) -> Option<SessionHandle> {
         self.workspaces[self.active_ws]
             .lock()
@@ -240,16 +228,6 @@ impl WorkspaceManager {
             .unwrap()
             .default_session_index;
         changed
-    }
-
-    pub fn add_workspace(&mut self, workspace: SharedWorkspace) -> bool {
-        if self.workspaces.len() >= 12 {
-            return false;
-        }
-        self.pane_trees
-            .push(workspace.lock().unwrap().pane_tree.clone());
-        self.workspaces.push(workspace);
-        true
     }
 
     pub fn session_titles(&self) -> Vec<String> {
