@@ -20,12 +20,15 @@ NLM 笔记中可由本仓库完成的核心需求，当前源码已基本落地�
 
 - `pnpm check`：0 errors / 0 warnings。
 - `pnpm test`：216 files，1996 passed，5 skipped（含按 `RIDGE_WEB_REMOTE` 构建标志选择的剪贴板测试）。
-- `pnpm test:coverage:sonar`：216 files，1996 passed，5 skipped；全量报告 lines 70.23%、branches 60.44%。按 Sonar 排除规则过滤 `src/` 与 `packages/` 后，源码 lines 87.24%、branches 71.82%。
+- `pnpm test:coverage:sonar`：216 files，1996 passed，5 skipped；最新全量报告 lines 70.25%、branches 60.46%。按 Sonar 排除规则过滤 `src/` 与 `packages/` 后，源码 lines 87.25%、branches 71.84%。
 - 本轮新增 flag 字体 DOM/cache/探测异常路径、远端剪贴板构建路径、remote pane 缓冲/激活/删除路径单测；桌面构建针对测试通过，`RIDGE_WEB_REMOTE=1` 构建路径测试通过。
+- 追加 CLI signaling helper 的合法/非法/控制帧、关闭通道与写出单测；`cargo test -p ridge-cli signaling`：8 passed。
 - 验证 `scripts/sync-generated-csp.mjs` 对标准 `Content-Security-Policy" content="..."` meta 的处理；CSP 回归 4/4 通过。
 - `cargo test -p ridge-cli --test kernel_lifecycle_e2e --quiet`：3 passed，exit 0。
 - `cargo test --manifest-path src-tauri/Cargo.toml --lib --quiet`：281 passed，exit 0。
 - 既有 Rust crate 单测、clippy、fmt、CDP smoke/PTY/DPR/LAN probe、Remote LAN desktop/mobile、mobile keyboard 均已通过；详见 `docs/iterations/2026-08-11-wave88-remote-cdp-csp.md`。
+- 最新 HEAD 追加验证：`pnpm cdp:smoke`、`pnpm cdp:pty`、`cdp-lan-probe`、`cdp-dpr-e2e`、`pnpm e2e:rdg-lan -- --skip-build --port 9528`、`pnpm e2e:rdg-mobile-keyboard`、`pnpm verify:pwa` 均通过；`pnpm e2e:runtime-attribution` 仅证明 clean-profile，`attributionComplete=false`。
+- 本次 SonarScanner 已实际连接本机服务，但在 `/api/v2/analysis/version` 收到 HTTP 401；未取得 CE/Gate，不虚报质量门。
 - Grok 本机形态已抽样确认：assistant 记录为 `{type, content, tool_calls, model_id, ...}`，`content` 为字符串；当前解析器覆盖该形态。
 
 ## 尚未闭环项
@@ -38,7 +41,7 @@ NLM 笔记中可由本仓库完成的核心需求，当前源码已基本落地�
 4. 双窗口争用同一 Remote workspace、双 Host 与焦点切换的物理证据。
 5. 受影响手机上的 clean-profile/无扩展 A/B，以归因 `runtime.lastError` 是否第三方注入。
 6. Windows 跨卷、权限拒绝、部分失败的真实 NTFS Explorer 矩阵。
-7. SonarQube Quality Gate：本机服务 `http://127.0.0.1:9000` 可用，但当前未获得可复核的本次 CE/Gate 终态；服务密码不写入仓库，扫描应使用临时 token。
+7. SonarQube Quality Gate：本机服务 `http://127.0.0.1:9000` 可用，但本次 scanner 在 `/api/v2/analysis/version` 被 HTTP 401 拒绝，暂无可复核 CE/Gate 终态；服务密码不写入仓库，扫描应使用临时 token。
 
 ## 授权边界
 
