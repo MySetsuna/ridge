@@ -65,31 +65,40 @@ pub fn match_agent_panes_with_names(
     }
     let mut out = Vec::new();
     for (pane, shell_pid) in panes {
-        // BFS，取首个命中（更靠近 shell 的那个即 agent 本体或其包装，二者名字都
-        // 会命中名单；包装层如 node/npx 不在名单里，自然跳过）。
-        let mut frontier = vec![*shell_pid];
-        'depth: for _ in 0..MAX_DEPTH {
-            let mut next = Vec::new();
-            for pid in frontier.drain(..) {
-                for (cpid, cname) in children.get(&pid).map(|v| v.as_slice()).unwrap_or(&[]) {
-                    if let Some(stem) = agent_stem(cname, process_names) {
-                        out.push(PaneAgent {
-                            pane: *pane,
-                            name: stem,
-                            pid: *cpid,
-                        });
-                        break 'depth;
-                    }
-                    next.push(*cpid);
-                }
-            }
-            if next.is_empty() {
-                break;
-            }
-            frontier = next;
+        if let Some((name, pid)) = find_agent(&children, *shell_pid, process_names) {
+            out.push(PaneAgent {
+                pane: *pane,
+                name,
+                pid,
+            });
         }
     }
     out
+}
+
+fn find_agent(
+    children: &HashMap<u32, Vec<(u32, &str)>>,
+    shell_pid: u32,
+    process_names: &[String],
+) -> Option<(String, u32)> {
+    // BFS，取首个命中（更靠近 shell 的那个即 agent 本体或其包装）。
+    let mut frontier = vec![shell_pid];
+    for _ in 0..MAX_DEPTH {
+        let mut next = Vec::new();
+        for pid in frontier.drain(..) {
+            for (child_pid, child_name) in children.get(&pid).map(Vec::as_slice).unwrap_or(&[]) {
+                if let Some(stem) = agent_stem(child_name, process_names) {
+                    return Some((stem, *child_pid));
+                }
+                next.push(*child_pid);
+            }
+        }
+        if next.is_empty() {
+            return None;
+        }
+        frontier = next;
+    }
+    None
 }
 
 /// 进程名命中 agent CLI 名单则返回其 stem（去路径、去 `.exe`、小写）。

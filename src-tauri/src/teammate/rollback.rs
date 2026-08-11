@@ -125,39 +125,48 @@ pub async fn checkpoint(
 /// 未跟踪新增（porcelain `??`）删除文件。
 pub async fn rollback(workspace_root: &Path, patch: &RollbackPatch) -> Result<(), String> {
     ensure_git_repo(workspace_root).await?;
+    let (tracked, untracked) = rollback_paths(&patch.porcelain);
+    if !tracked.is_empty() {
+        checkout_tracked(workspace_root, &tracked).await?;
+    }
+    remove_untracked(workspace_root, &untracked)?;
+    Ok(())
+}
+
+fn rollback_paths(porcelain: &str) -> (Vec<String>, Vec<String>) {
     let mut tracked = Vec::new();
     let mut untracked = Vec::new();
-    for line in patch.porcelain.lines() {
-        if line.len() < 4 {
-            continue;
-        }
+    for line in porcelain.lines().filter(|line| line.len() >= 4) {
         let code = &line[..2];
         let rest = line[3..].trim();
-        let path = if let Some((_, to)) = rest.split_once(" -> ") {
-            to
-        } else {
-            rest.trim_matches('"')
-        };
-        let path = path.replace('\\', "/");
+        let path = rest
+            .split_once(" -> ")
+            .map_or(rest, |(_, to)| to)
+            .trim_matches('"')
+            .replace('\\', "/");
         if code == "??" {
             untracked.push(path);
         } else if !path.is_empty() {
             tracked.push(path);
         }
     }
-    if !tracked.is_empty() {
-        let mut args: Vec<&str> = vec!["checkout", "HEAD", "--"];
-        for p in &tracked {
-            args.push(p.as_str());
-        }
-        run_git(workspace_root, &args).await?;
-    }
-    for p in untracked {
-        let full = workspace_root.join(&p);
+    (tracked, untracked)
+}
+
+async fn checkout_tracked(workspace_root: &Path, tracked: &[String]) -> Result<(), String> {
+    let mut args: Vec<&str> = vec!["checkout", "HEAD", "--"];
+    args.extend(tracked.iter().map(String::as_str));
+    run_git(workspace_root, &args).await.map(|_| ())
+}
+
+fn remove_untracked(workspace_root: &Path, paths: &[String]) -> Result<(), String> {
+    for path in paths {
+        let full = workspace_root.join(path);
         if full.is_file() {
-            std::fs::remove_file(&full).map_err(|e| format!("remove untracked {p}: {e}"))?;
+            std::fs::remove_file(&full).map_err(|e| format!("remove untracked {path}: {e}"))?;
         } else if full.is_dir() {
-            std::fs::remove_dir_all(&full).map_err(|e| format!("remove untracked dir {p}: {e}"))?;
+            std::fs::remove_dir_all(&full)
+                .map_err(|e| format!("remove untracked dir {path}: {e}"))?;
         }
     }
     Ok(())

@@ -67,42 +67,50 @@ pub fn build_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
 /// 菜单事件分发：恢复 / 退出桌面 / 彻底退出内核。
 fn on_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, event: MenuEvent) {
     match event.id().as_ref() {
-        MENU_ID_RESTORE => {
-            if let Some(window) = app.get_webview_window("main") {
-                if let Err(e) = restore_window(&window) {
-                    tracing::warn!(target: "ridge::tray", error = %e, "restore from tray menu failed");
-                }
-            }
-        }
-        MENU_ID_EXIT_DESKTOP => {
-            // Deep Root v1：隐藏桌面 UI，不退出宿主进程。这样内核、PTY、
-            // Remote 与 teammate server 都继续服务，托盘恢复仍可复用同一 WebView。
-            if let Some(window) = app.get_webview_window("main") {
-                crate::commands::ridge_file::save_restore_set(app, &app.state::<AppState>());
-                prepare_for_hide(&window);
-                if let Err(e) = window.hide() {
-                    tracing::warn!(target: "ridge::tray", error = %e, "hide desktop shell failed");
-                } else {
-                    tracing::info!(target: "ridge::tray", "desktop UI hidden; kernel and remote remain running");
-                }
-            }
-        }
-        MENU_ID_QUIT_KERNEL => {
-            // 先停独立内核（rdg 轮询 health/pid 后自退），再退出桌面外壳。
-            let quitting = app.state::<AppState>().quitting.clone();
-            if quitting.swap(true, std::sync::atomic::Ordering::AcqRel) {
-                return;
-            }
-            crate::commands::remote::stop_remote_server(&app.state::<AppState>());
-            if let Err(e) = kernel_lifecycle::shutdown_kernel() {
-                tracing::warn!(target: "ridge::tray", error = %e, "kernel shutdown failed");
-                quitting.store(false, std::sync::atomic::Ordering::Release);
-                return;
-            }
-            app.exit(0);
-        }
+        MENU_ID_RESTORE => restore_from_tray(app, "restore from tray menu failed"),
+        MENU_ID_EXIT_DESKTOP => hide_desktop(app),
+        MENU_ID_QUIT_KERNEL => quit_kernel(app),
         _ => {}
     }
+}
+
+fn restore_from_tray<R: Runtime>(app: &tauri::AppHandle<R>, message: &str) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if let Err(error) = restore_window(&window) {
+        tracing::warn!(target: "ridge::tray", error = %error, "{message}");
+    }
+}
+
+fn hide_desktop<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    crate::commands::ridge_file::save_restore_set(app, &app.state::<AppState>());
+    prepare_for_hide(&window);
+    match window.hide() {
+        Ok(()) => {
+            tracing::info!(target: "ridge::tray", "desktop UI hidden; kernel and remote remain running")
+        }
+        Err(error) => {
+            tracing::warn!(target: "ridge::tray", error = %error, "hide desktop shell failed")
+        }
+    }
+}
+
+fn quit_kernel<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let quitting = app.state::<AppState>().quitting.clone();
+    if quitting.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    crate::commands::remote::stop_remote_server(&app.state::<AppState>());
+    if let Err(error) = kernel_lifecycle::shutdown_kernel() {
+        tracing::warn!(target: "ridge::tray", error = %error, "kernel shutdown failed");
+        quitting.store(false, std::sync::atomic::Ordering::Release);
+        return;
+    }
+    app.exit(0);
 }
 
 /// 托盘图标事件：双击 → 恢复并聚焦主窗口（契约默认双击项语义）。
