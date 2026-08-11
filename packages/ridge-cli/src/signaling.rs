@@ -5,7 +5,7 @@
 //! 逐字转发，绝不解析内容。
 
 use anyhow::{Context, Result};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -66,52 +66,16 @@ impl Signaling {
             tokio_tungstenite::connect_async(ws_url).await
         }
         .context("signaling WS connect failed")?;
-        let (mut write, mut read) = ws_stream.split();
+        let (write, read) = ws_stream.split();
 
         let (in_tx, in_rx) = mpsc::channel::<SignalMsg>(64);
-        let (out_tx, mut out_rx) = mpsc::channel::<SignalMsg>(64);
+        let (out_tx, out_rx) = mpsc::channel::<SignalMsg>(64);
 
         // 读任务：WS 文本帧 → SignalMsg → incoming 通道。
-        tokio::spawn(async move {
-            while let Some(frame) = read.next().await {
-                match frame {
-                    Ok(Message::Text(txt)) => match serde_json::from_str::<SignalMsg>(&txt) {
-                        Ok(msg) => {
-                            if in_tx.send(msg).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(target: "ridge_cli::signaling", error = %e, raw = %txt, "unparseable signaling frame");
-                        }
-                    },
-                    Ok(Message::Close(_)) => break,
-                    Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Binary(_)) => {}
-                    Ok(Message::Frame(_)) => {}
-                    Err(e) => {
-                        tracing::warn!(target: "ridge_cli::signaling", error = %e, "signaling read error");
-                        break;
-                    }
-                }
-            }
-            tracing::info!(target: "ridge_cli::signaling", "signaling read loop ended");
-        });
+        tokio::spawn(read_signaling(read, in_tx));
 
         // 写任务：outgoing 通道 → WS 文本帧。
-        tokio::spawn(async move {
-            while let Some(msg) = out_rx.recv().await {
-                let txt = match serde_json::to_string(&msg) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::warn!(target: "ridge_cli::signaling", error = %e, "signaling encode failed");
-                        continue;
-                    }
-                };
-                if write.send(Message::Text(txt)).await.is_err() {
-                    break;
-                }
-            }
-        });
+        tokio::spawn(write_signaling(write, out_rx));
 
         Ok(Self {
             incoming: in_rx,
@@ -123,6 +87,52 @@ impl Signaling {
     pub fn sender(&self) -> SignalSender {
         SignalSender {
             outgoing: self.outgoing.clone(),
+        }
+    }
+}
+
+async fn read_signaling<R>(mut read: R, in_tx: mpsc::Sender<SignalMsg>)
+where
+    R: Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    while let Some(frame) = read.next().await {
+        match frame {
+            Ok(Message::Text(txt)) => match serde_json::from_str::<SignalMsg>(&txt) {
+                Ok(msg) => {
+                    if in_tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    target: "ridge_cli::signaling",
+                    error = %e,
+                    raw = %txt,
+                    "unparseable signaling frame"
+                ),
+            },
+            Ok(Message::Close(_)) => break,
+            Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Binary(_)) => {}
+            Ok(Message::Frame(_)) => {}
+            Err(e) => {
+                tracing::warn!(target: "ridge_cli::signaling", error = %e, "signaling read error");
+                break;
+            }
+        }
+    }
+    tracing::info!(target: "ridge_cli::signaling", "signaling read loop ended");
+}
+
+async fn write_signaling<W>(mut write: W, mut out_rx: mpsc::Receiver<SignalMsg>)
+where
+    W: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    while let Some(msg) = out_rx.recv().await {
+        let Ok(txt) = serde_json::to_string(&msg) else {
+            tracing::warn!(target: "ridge_cli::signaling", "signaling encode failed");
+            continue;
+        };
+        if write.send(Message::Text(txt)).await.is_err() {
+            break;
         }
     }
 }
