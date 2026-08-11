@@ -80,6 +80,86 @@ async function waitForRidgeTarget(maxMs = 90000) {
   fail('timed out waiting for Ridge CDP target on :' + CDP_PORT + ' — ' + lastErr);
 }
 
+function parseTextFrame(data) {
+  try { return JSON.parse(data); } catch { return null; }
+}
+
+function handlePanesMessage(message, context) {
+  const { summary, state, ws } = context;
+  if (state.driven) return;
+  summary.panes = message.panes;
+  log(`panes: ${message.panes.length} →`, message.panes.map((p) => `${p.id.slice(0, 8)}…(${p.title})`).join(', '));
+  if (message.panes.length) {
+    state.driven = true;
+    context.drivePane(message.workspaceId, message.panes[0].id);
+    return;
+  }
+  log('no panes → create-pane');
+  ws.send(JSON.stringify({ type: 'create-pane' }));
+}
+
+function handleCreatePaneResult(message, context) {
+  const { summary, ws } = context;
+  log('create-pane-result:', JSON.stringify(message));
+  if (message.success && message.paneId) {
+    summary.createdPane = message.paneId;
+    ws.send(JSON.stringify({ type: 'list-panes' }));
+    return;
+  }
+  summary.errors.push('create-pane failed: ' + (message.error || '?'));
+  context.done(false);
+}
+
+function handleLanTextFrame(data, context) {
+  const message = parseTextFrame(data);
+  if (!message) return;
+  switch (message.type) {
+    case 'hello':
+      context.summary.hello = message;
+      log('hello:', JSON.stringify(message));
+      break;
+    case 'theme':
+      context.summary.theme = true;
+      break;
+    case 'pong':
+      context.summary.pong = true;
+      log('pong received');
+      context.maybeDone();
+      break;
+    case 'panes':
+      handlePanesMessage(message, context);
+      break;
+    case 'create-pane-result':
+      handleCreatePaneResult(message, context);
+      break;
+    default:
+      log('text frame:', data.slice(0, 120));
+  }
+}
+
+function handleLanBinaryFrame(data, context) {
+  const { summary, state } = context;
+  const buf = new Uint8Array(data);
+  if (buf.length < 16) {
+    summary.errors.push('short binary frame ' + buf.length);
+    return;
+  }
+  const id = uuidFromBytes(buf.subarray(0, 16));
+  const payload = Buffer.from(buf.subarray(16)).toString('utf8');
+  const isScroll = summary.liveFrames === 0 && summary.scrollbackFrames === 0;
+  if (state.firstPane && summary.uuidMatch === null) {
+    summary.uuidMatch = id === state.firstPane;
+    log(`binary frame paneId=${id} matches subscribed=${summary.uuidMatch}`);
+  }
+  if (!isScroll && !summary.echoSeen && payload.includes(context.echo)) {
+    summary.echoSeen = true;
+    log('✓ live echo seen in binary frame');
+    context.maybeDone();
+  }
+  // Heuristic: the very first binary frame after subscribe is scrollback.
+  if (isScroll) summary.scrollbackFrames++; else summary.liveFrames++;
+}
+
 try {
   await (async () => {
   // 1. Find the Ridge page target (self-wait so we can fire right after launch).
@@ -111,7 +191,6 @@ try {
   const summary = { hello: null, theme: false, panes: null, createdPane: null, subscribedPane: null, scrollbackFrames: 0, liveFrames: 0, echoSeen: false, pong: false, uuidMatch: null, errors: [] };
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
-  let firstPane = null;
   const ECHO = 'RIDGE_CDP_PROBE_' + Date.now().toString(36);
 
   const done = (ok) => {
@@ -130,14 +209,13 @@ try {
   // consumes the first input. Keep this aligned with cdp-pty-parsers.mjs so
   // cold-start latency does not masquerade as a broken live-output lane.
   const hardTimeout = setTimeout(() => { summary.errors.push('hard timeout'); done(false); }, 90000);
-  let driven = false;
   const maybeDone = () => {
     if (summary.echoSeen && summary.pong) setTimeout(() => done(true), 400);
   };
 
   // Subscribe to a pane, then exercise stdin/claim-pane/ping to drive live frames.
   function drivePane(workspaceId, paneId) {
-    firstPane = paneId;
+    state.firstPane = paneId;
     summary.subscribedPane = paneId;
     log('subscribe-pane', paneId);
     ws.send(JSON.stringify({ type: 'subscribe-pane', workspaceId, paneId }));
@@ -155,44 +233,14 @@ try {
   ws.onerror = (e) => { summary.errors.push('ws error: ' + (e.message || e.type)); };
   ws.onclose = (e) => { if (!summary.panes) { summary.errors.push('closed before panes (code ' + e.code + ')'); } };
 
+  const state = { driven: false, firstPane: null };
+  const frameContext = { summary, state, ws, echo: ECHO, done, drivePane, maybeDone };
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
-      let m; try { m = JSON.parse(ev.data); } catch { return; }
-      if (m.type === 'hello') { summary.hello = m; log('hello:', JSON.stringify(m)); }
-      else if (m.type === 'theme') { summary.theme = true; }
-      else if (m.type === 'pong') { summary.pong = true; log('pong received'); maybeDone(); }
-      else if (m.type === 'panes') {
-        if (driven) return;
-        summary.panes = m.panes;
-        log(`panes: ${m.panes.length} →`, m.panes.map((p) => `${p.id.slice(0, 8)}…(${p.title})`).join(', '));
-        if (m.panes.length && !driven) { driven = true; drivePane(m.workspaceId, m.panes[0].id); }
-        else { log('no panes → create-pane'); ws.send(JSON.stringify({ type: 'create-pane' })); }
-      }
-      else if (m.type === 'create-pane-result') {
-        log('create-pane-result:', JSON.stringify(m));
-        if (m.success && m.paneId) { summary.createdPane = m.paneId; ws.send(JSON.stringify({ type: 'list-panes' })); }
-        else { summary.errors.push('create-pane failed: ' + (m.error || '?')); done(false); }
-      }
-      else { log('text frame:', ev.data.slice(0, 120)); }
+      handleLanTextFrame(ev.data, frameContext);
       return;
     }
-    // Binary frame: 16-byte UUID + PTY bytes.
-    const buf = new Uint8Array(ev.data);
-    if (buf.length < 16) { summary.errors.push('short binary frame ' + buf.length); return; }
-    const id = uuidFromBytes(buf.subarray(0, 16));
-    const payload = Buffer.from(buf.subarray(16)).toString('utf8');
-    const isScroll = summary.liveFrames === 0 && summary.scrollbackFrames === 0;
-    if (firstPane && summary.uuidMatch === null) {
-      summary.uuidMatch = id === firstPane;
-      log(`binary frame paneId=${id} matches subscribed=${summary.uuidMatch}`);
-    }
-    if (!isScroll && summary.echoSeen === false && payload.includes(ECHO)) {
-      summary.echoSeen = true;
-      log('✓ live echo seen in binary frame');
-      maybeDone();
-    }
-    // Heuristic: the very first binary frame after subscribe is scrollback.
-    if (isScroll) summary.scrollbackFrames++; else summary.liveFrames++;
+    handleLanBinaryFrame(ev.data, frameContext);
   };
   })();
 } catch (e) {
