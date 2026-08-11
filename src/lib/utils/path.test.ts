@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	isCurrentDirHref,
+	commonPathAncestor,
 	isExternalUrl,
 	isHomeRelative,
 	isPosixAbsolute,
@@ -42,5 +43,17 @@ describe('path helpers', () => {
 		expect(pathStartsWith('/repo/src/main.ts', '/repo')).toBe(true);
 		expect(pathStartsWith('/repository/file', '/repo')).toBe(false);
 		expect(pathStartsWith('C:\\repo-old\\file', 'C:\\repo')).toBe(false);
+	});
+
+	it('finds a stable common workspace root independent of pane order', () => {
+		expect(commonPathAncestor(['C:\\repo\\src', 'C:\\repo\\docs'])).toBe('C:\\repo');
+		expect(commonPathAncestor(['/repo/src', '/repo/docs'])).toBe('/repo');
+		expect(commonPathAncestor(['\\\\SERVER\\Share\\src', '\\\\server\\share\\docs'])).toBe('\\\\SERVER\\Share');
+		expect(commonPathAncestor(['foo/src', 'foo/docs'])).toBe('foo');
+		expect(commonPathAncestor(['foo', 'bar'])).toBeNull();
+		expect(commonPathAncestor(['/Repo/src', '/repo/docs'])).toBe('/');
+		expect(commonPathAncestor(['C:\\repo\\src', 'D:\\other'])).toBeNull();
+		expect(commonPathAncestor(['C:\\repo\\src'])).toBe('C:\\repo\\src');
+		expect(commonPathAncestor([])).toBeNull();
 	});
 });

@@ -105,7 +105,6 @@ function appendMergeLines(
   laneX: (lane: number) => number,
   cy: number,
   rowHeight: number,
-  currentColor: string,
 ): number {
   let maxLane = currentLane;
   for (const parent of others) {
@@ -213,7 +212,7 @@ export function layoutGraph(
     // visually.
     maxLane = Math.max(
       maxLane,
-      appendMergeLines(lines, others, myLane, laneIndexFor, laneX, cy, thisRowHeight, myColor),
+      appendMergeLines(lines, others, myLane, laneIndexFor, laneX, cy, thisRowHeight),
     );
 
     // GC trailing free lanes so width doesn't drift over time. Interior

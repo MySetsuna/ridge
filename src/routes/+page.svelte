@@ -29,6 +29,7 @@
   import QuickOpen from '$lib/components/QuickOpen.svelte';
   import SidebarPluginRegion from '$lib/components/SidebarPluginRegion.svelte';
   import { portal } from '$lib/actions/portal';
+  import { commonPathAncestor } from '$lib/utils/path';
   // Side-effect import: each built-in plugin auto-registers via its module
   // script. Must land once, at app chrome level.
   import '$lib/plugins';
@@ -918,8 +919,10 @@ function expandSidebar(minWidth = 0) {
     const cwds = get(paneCwdStore);
     const cwd = cwds[`${workspaceId}:${paneId}`] ?? '';
     if (!cwd) return null;
-    const workspaceRoot = Object.entries(cwds)
-      .find(([key, value]) => key.startsWith(`${workspaceId}:`) && !!value)?.[1] ?? cwd;
+    const workspaceCwds = Object.entries(cwds)
+      .filter(([key, value]) => key.startsWith(`${workspaceId}:`) && !!value)
+      .map(([, value]) => value);
+    const workspaceRoot = commonPathAncestor(workspaceCwds) ?? cwd;
     return { workspaceId, paneId, cwd, workspaceRoot };
   }
 

@@ -60,6 +60,88 @@ export function normalizePath(p: string): string {
   return head + stack.join(sep);
 }
 
+type ComparablePath = {
+	rootKey: string;
+	rootDisplay: string;
+	parts: string[];
+	separator: '/' | '\\';
+};
+
+function comparablePath(raw: string): ComparablePath {
+	const separator: '/' | '\\' = raw.includes('\\') && !raw.includes('/') ? '\\' : '/';
+	const slashPath = raw.replace(/\\/g, '/');
+	if (slashPath.startsWith('//')) {
+		const segments = normalizeSegments(slashPath.slice(2).split('/').filter(Boolean), true);
+		const authority = segments.slice(0, 2);
+		const rootDisplay = authority.length > 0 ? `//${authority.join('/')}` : '//';
+		return {
+			rootKey: `unc:${rootDisplay.toLowerCase()}`,
+			rootDisplay,
+			parts: segments.slice(authority.length),
+			separator,
+		};
+	}
+
+	const normalized = normalizePath(raw).replace(/\\/g, '/');
+	const drive = normalized.match(/^([A-Za-z]):(?:\/|$)/);
+	if (drive) {
+		return {
+			rootKey: `drive:${drive[1].toLowerCase()}`,
+			rootDisplay: `${drive[1]}:/`,
+			parts: normalized.slice(3).split('/').filter(Boolean),
+			separator,
+		};
+	}
+
+	if (normalized.startsWith('/')) {
+		return { rootKey: 'posix:/', rootDisplay: '/', parts: normalized.slice(1).split('/').filter(Boolean), separator };
+	}
+
+	return { rootKey: 'relative:', rootDisplay: '', parts: normalized.split('/').filter(Boolean), separator };
+}
+
+/**
+ * Return the lexical common directory of paths from one workspace.
+ *
+ * The frontend does not own a separate workspace-root fact; pane cwd is the
+ * available projection. A common ancestor is deterministic across pane order,
+ * while a first-entry choice changes when panes are split or restored.
+ * Returns null when paths have different roots (for example, C: and D:).
+ */
+export function commonPathAncestor(paths: readonly string[]): string | null {
+	const values = paths.map((path) => path.trim()).filter(Boolean);
+	if (values.length === 0) return null;
+
+	const first = comparablePath(values[0]);
+	const commonLength = values.slice(1).reduce((length, value) => {
+		if (length < 0) return length;
+		const current = comparablePath(value);
+		if (current.rootKey !== first.rootKey) return -1;
+		const caseInsensitive = first.rootKey.startsWith('drive:') || first.rootKey.startsWith('unc:');
+		let shared = 0;
+		while (
+			shared < length &&
+			shared < current.parts.length &&
+			(caseInsensitive
+				? first.parts[shared].toLowerCase() === current.parts[shared].toLowerCase()
+				: first.parts[shared] === current.parts[shared])
+		) {
+			shared += 1;
+		}
+		return shared;
+	}, first.parts.length);
+	if (commonLength < 0) return null;
+
+	const parts = first.parts.slice(0, commonLength);
+	if (parts.length === 0 && first.rootDisplay === '' && values.length > 1) return null;
+	let result = first.rootDisplay;
+	if (parts.length > 0) {
+		if (result && !result.endsWith('/')) result += '/';
+		result += parts.join('/');
+	}
+	return first.separator === '\\' ? result.replaceAll('/', '\\') : result;
+}
+
 function normalizeSegments(segs: string[], isAbs: string | boolean): string[] {
   const stack: string[] = [];
   for (const segment of segs) {

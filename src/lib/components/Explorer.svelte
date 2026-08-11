@@ -50,6 +50,7 @@
 
 	import { t, tr } from '$lib/i18n';
 	import { showContextMenu } from '$lib/stores/contextMenu';
+	import { commonPathAncestor } from '$lib/utils/path';
 	import { summarizeExplorerPaste, type ExplorerPasteOutcome } from './explorerPaste';
 
 	interface Props {
@@ -398,7 +399,10 @@
 	}
 
 	function workspaceRootCwd(workspaceId: string, fallback: string): string {
-		return get(fileExplorerStore).columns.find((c) => c.workspaceId === workspaceId)?.cwd ?? fallback;
+		const cwds = get(fileExplorerStore).columns
+			.filter((column) => column.workspaceId === workspaceId)
+			.map((column) => column.cwd);
+		return commonPathAncestor(cwds) ?? fallback;
 	}
 
 	function copyPath(path: string): void {

@@ -3218,6 +3218,43 @@ mod guard_tests {
         assert!(!git_admission_is_held());
     }
 
+    fn create_real_git_smoke_repo() -> Option<PathBuf> {
+        let dir = std::env::temp_dir().join(format!(
+            "ridge-scm-smoke-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let init = Command::new("git")
+            .args(["init"])
+            .current_dir(&dir)
+            .output();
+        if init.is_err() || !init.as_ref().unwrap().status.success() {
+            let _ = std::fs::remove_dir_all(&dir);
+            eprintln!("skip: system git init failed");
+            return None;
+        }
+        for args in [
+            ["config", "user.email", "ridge-test@example.com"],
+            ["config", "user.name", "ridge-test"],
+        ] {
+            let _ = Command::new("git").args(args).current_dir(&dir).output();
+        }
+        std::fs::write(dir.join("README"), "smoke\n").unwrap();
+        let _ = Command::new("git")
+            .args(["add", "README"])
+            .current_dir(&dir)
+            .output();
+        let _ = Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&dir)
+            .output();
+        Some(dir)
+    }
+
     /// OP-GIT-BYPASS: production body of this file must not spawn git outside
     /// `git_cmd` / `git_output*` (unique gate). Tests may use `Command::new("git")`.
     #[test]
@@ -3301,43 +3338,9 @@ mod guard_tests {
         let _serial = git_child_test_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        // Drive the real shipped entry (not a reimplementation): init a temp
-        // repo with the system git binary, then call get_scm_status.
-        let dir = std::env::temp_dir().join(format!(
-            "ridge-scm-smoke-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let init = Command::new("git")
-            .args(["init"])
-            .current_dir(&dir)
-            .output();
-        if init.is_err() || !init.as_ref().unwrap().status.success() {
-            let _ = std::fs::remove_dir_all(&dir);
-            eprintln!("skip: system git init failed");
+        let Some(dir) = create_real_git_smoke_repo() else {
             return;
-        }
-        let _ = Command::new("git")
-            .args(["config", "user.email", "ridge-test@example.com"])
-            .current_dir(&dir)
-            .output();
-        let _ = Command::new("git")
-            .args(["config", "user.name", "ridge-test"])
-            .current_dir(&dir)
-            .output();
-        std::fs::write(dir.join("README"), "smoke\n").unwrap();
-        let _ = Command::new("git")
-            .args(["add", "README"])
-            .current_dir(&dir)
-            .output();
-        let _ = Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(&dir)
-            .output();
+        };
 
         git_reset_peak_active_for_test();
         let root = dir.to_string_lossy().to_string();
