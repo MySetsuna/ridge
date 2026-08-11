@@ -218,7 +218,9 @@ describe('remote desktop build wrapper', () => {
   it('prunes after a successful Vite build and preserves failures', async () => {
     const spawn = vi.fn(() => ({ on: (_event, callback) => callback(0) }));
     const prune = vi.fn();
-    expect(await remoteDesktopBuild({ spawnImpl: spawn, prune, io: quietIo() })).toBe(0);
+    const syncCsp = vi.fn();
+    expect(await remoteDesktopBuild({ spawnImpl: spawn, prune, syncCsp, io: quietIo() })).toBe(0);
+    expect(syncCsp).toHaveBeenCalledOnce();
     expect(prune).toHaveBeenCalledOnce();
     expect(await remoteDesktopBuild({ spawnImpl: () => ({ on: (_event, callback) => callback(null) }), prune, io: quietIo() })).toBe(1);
   });

@@ -97,20 +97,6 @@ fs.mkdirSync(userDataDir, { recursive: true });
 fs.mkdirSync(devKernelDataDir, { recursive: true });
 fs.writeFileSync(configFile, JSON.stringify({ build: { devUrl: `http://127.0.0.1:${vitePort}` } }));
 
-// The LAN host is a detached `rdg` sidecar, not part of the Tauri crate. Keep
-// the debug sidecar in lockstep with this checkout before launching WebView2;
-// otherwise desktop code can be new while Remote still runs yesterday's CLI.
-const cliBuild = spawnSync(cargoTool('cargo'), ['build', '-p', 'ridge-cli', '--bin', 'rdg'], {
-  cwd: path.resolve(import.meta.dirname, '..'),
-  env: cargoEnv,
-  stdio: 'inherit',
-  shell: process.platform === 'win32',
-});
-if (cliBuild.status !== 0) {
-  console.error(`[tauri-dev-cdp] ridge-cli debug build failed (exit ${cliBuild.status ?? 'unknown'})`);
-  process.exit(cliBuild.status ?? 1);
-}
-
 // The embedded Kernel must not keep Cargo's shared `target/debug/ridge.exe`
 // open across a desktop-shell restart. Build and copy a per-run host binary;
 // the Tauri shell may then be rebuilt while the previous Kernel remains alive.
@@ -124,6 +110,21 @@ if (desktopBuild.status !== 0) {
   console.error(`[tauri-dev-cdp] ridge desktop build failed (exit ${desktopBuild.status ?? 'unknown'})`);
   process.exit(desktopBuild.status ?? 1);
 }
+
+// The LAN host is a detached `rdg` sidecar, not part of the Tauri crate. Build
+// it last so a desktop build cannot leave the copied Remote binary behind the
+// current checkout; otherwise Remote may run yesterday's CLI.
+const cliBuild = spawnSync(cargoTool('cargo'), ['build', '-p', 'ridge-cli', '--bin', 'rdg'], {
+  cwd: path.resolve(import.meta.dirname, '..'),
+  env: cargoEnv,
+  stdio: 'inherit',
+  shell: process.platform === 'win32',
+});
+if (cliBuild.status !== 0) {
+  console.error(`[tauri-dev-cdp] ridge-cli debug build failed (exit ${cliBuild.status ?? 'unknown'})`);
+  process.exit(cliBuild.status ?? 1);
+}
+
 const ridgeSource = path.join(root, 'target', 'debug', process.platform === 'win32' ? 'ridge.exe' : 'ridge');
 const ridgeKernelCopy = path.join(
   userDataDir,
