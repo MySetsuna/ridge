@@ -123,17 +123,10 @@ export class PaneFeedScheduler {
     let activeTurn = false;
     let backgroundTurn = false;
     while (true) {
-      let paneKey: string | null = null;
-      if (!activeTurn && this.activePaneKey && (this.queues.get(this.activePaneKey)?.bytes ?? 0) > 0) {
-        paneKey = this.activePaneKey;
-        activeTurn = true;
-      } else if (!backgroundTurn) {
-        paneKey = this.nextNonActivePaneKey();
-        backgroundTurn = true;
-        if (!paneKey) paneKey = this.nextPaneKey();
-      } else {
-        paneKey = this.nextPaneKey();
-      }
+      const next = this.selectNextPane(activeTurn, backgroundTurn);
+      const paneKey = next.paneKey;
+      activeTurn = next.activeTurn;
+      backgroundTurn = next.backgroundTurn;
       if (!paneKey) break;
       if (processed > 0 && this.now() - started >= this.frameBudgetMs) break;
       if (processed >= this.maxBytesPerFrame) break;
@@ -148,22 +141,42 @@ export class PaneFeedScheduler {
         queue.frames.unshift(remainder);
         queue.bytes += remainder.byteLength;
       }
-      let delivery: PaneFeedDelivery;
-      try {
-        delivery = this.feed(paneKey, chunk);
-      } catch {
-        this.onDrop?.(paneKey, chunk.byteLength);
-        delivery = { accepted: true };
-      }
-      if (!delivery.accepted) {
-        queue.frames.unshift(chunk);
-        queue.bytes += chunk.byteLength;
-        break;
-      }
+      if (!this.deliverChunk(paneKey, queue, chunk)) break;
       processed += chunk.byteLength;
       if (queue.frames.length === 0) this.queues.delete(paneKey);
     }
     if (this.hasQueued()) this.schedule();
+  }
+
+  private selectNextPane(
+    activeTurn: boolean,
+    backgroundTurn: boolean,
+  ): { paneKey: string | null; activeTurn: boolean; backgroundTurn: boolean } {
+    if (!activeTurn && this.activePaneKey && (this.queues.get(this.activePaneKey)?.bytes ?? 0) > 0) {
+      return { paneKey: this.activePaneKey, activeTurn: true, backgroundTurn };
+    }
+    if (!backgroundTurn) {
+      return {
+        paneKey: this.nextNonActivePaneKey() ?? this.nextPaneKey(),
+        activeTurn,
+        backgroundTurn: true,
+      };
+    }
+    return { paneKey: this.nextPaneKey(), activeTurn, backgroundTurn };
+  }
+
+  private deliverChunk(paneKey: string, queue: FeedQueue, chunk: Uint8Array): boolean {
+    let delivery: PaneFeedDelivery;
+    try {
+      delivery = this.feed(paneKey, chunk);
+    } catch {
+      this.onDrop?.(paneKey, chunk.byteLength);
+      delivery = { accepted: true };
+    }
+    if (delivery.accepted) return true;
+    queue.frames.unshift(chunk);
+    queue.bytes += chunk.byteLength;
+    return false;
   }
 
   clear(paneKey: string): void {

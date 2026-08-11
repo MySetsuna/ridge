@@ -55,19 +55,23 @@ export function normalizePath(p: string): string {
   const rest = winDrive ? p.slice(3) : p;
   const sep = p.includes('\\') && !p.includes('/') ? '\\' : '/';
   const isAbs = winDrive || rest.startsWith('/') || rest.startsWith('\\');
-  const segs = rest.split(/[\\/]+/).filter(Boolean);
+  const stack = normalizeSegments(rest.split(/[\\/]+/).filter(Boolean), isAbs);
+  const head = winDrive || (isAbs ? sep : '');
+  return head + stack.join(sep);
+}
+
+function normalizeSegments(segs: string[], isAbs: string | boolean): string[] {
   const stack: string[] = [];
-  for (const s of segs) {
-    if (s === '.') continue;
-    if (s === '..') {
+  for (const segment of segs) {
+    if (segment === '.') continue;
+    if (segment === '..') {
       if (stack.length > 0 && stack.at(-1) !== '..') stack.pop();
       else if (!isAbs) stack.push('..');
       continue;
     }
-    stack.push(s);
+    stack.push(segment);
   }
-  const head = winDrive || (isAbs ? sep : '');
-  return head + stack.join(sep);
+  return stack;
 }
 
 /**

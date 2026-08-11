@@ -215,6 +215,60 @@ function mergeWrappedSpan(
   return visible;
 }
 
+function visibleTextLines(kernel: KernelLike): string[] | null {
+  let rowCount: number;
+  let lines: unknown[];
+  try {
+    rowCount = kernel.rows();
+    lines = kernel.dumpVisibleText();
+  } catch {
+    return null;
+  }
+  const limit = Math.min(rowCount, lines.length);
+  return Array.from({ length: limit }, (_, row) =>
+    typeof lines[row] === 'string' ? (lines[row] as string) : '',
+  );
+}
+
+function addIndexedSpan(
+  byRow: Map<number, LinkSpan[]>,
+  coveredByContinuation: Map<number, Array<{ c0: number; c1: number }>>,
+  span: LinkSpan,
+): void {
+  const covered = coveredByContinuation.get(span.row);
+  if (covered?.some((range) => span.c0 < range.c1 && span.c1 > range.c0)) return;
+  const rowSpans = byRow.get(span.row) ?? [];
+  rowSpans.push(span);
+  byRow.set(span.row, rowSpans);
+}
+
+function indexVisibleRow(
+  row: number,
+  textLines: string[],
+  kernel: KernelLike,
+  limit: number,
+  byRow: Map<number, LinkSpan[]>,
+  coveredByContinuation: Map<number, Array<{ c0: number; c1: number }>>,
+): void {
+  const line = textLines[row]!;
+  if (!line) return;
+  for (const span of scanRow(row, line)) {
+    const merged = mergeWrappedSpan(
+      { ...span, linkId: `${span.row}:${span.c0}:${span.kind}` },
+      textLines,
+      kernel,
+      limit,
+    );
+    for (const segment of merged) {
+      addIndexedSpan(byRow, coveredByContinuation, segment);
+      if (segment.row === span.row) continue;
+      const ranges = coveredByContinuation.get(segment.row) ?? [];
+      ranges.push({ c0: segment.c0, c1: segment.c1 });
+      coveredByContinuation.set(segment.row, ranges);
+    }
+  }
+}
+
 /** 每 pane 一份。lazy 重建：dirty 标志由 manager 在 feed/scroll/resize 时置位。 */
 export class LinkSpanIndex {
   private readonly byRow: Map<number, LinkSpan[]> = new Map();
@@ -235,53 +289,23 @@ export class LinkSpanIndex {
   /** 同步重建可见区索引。kernel.dumpVisibleText 返回 rows() 行数组。 */
   recompute(kernel: KernelLike): void {
     this.byRow.clear();
-    let rowCount: number;
-    try {
-      rowCount = kernel.rows();
-    } catch {
+    const textLines = visibleTextLines(kernel);
+    if (!textLines) {
       this.dirty = false;
       return;
     }
-    let lines: unknown[];
-    try {
-      lines = kernel.dumpVisibleText();
-    } catch {
-      this.dirty = false;
-      return;
-    }
-    const limit = Math.min(rowCount, lines.length);
-    const textLines = Array.from({ length: limit }, (_, row) =>
-      typeof lines[row] === 'string' ? (lines[row] as string) : '',
-    );
+    const limit = textLines.length;
     const coveredByContinuation = new Map<number, Array<{ c0: number; c1: number }>>();
-    const addSpan = (span: LinkSpan) => {
-      const covered = coveredByContinuation.get(span.row);
-      if (covered?.some((range) => span.c0 < range.c1 && span.c1 > range.c0)) return;
-      const rowSpans = this.byRow.get(span.row) ?? [];
-      rowSpans.push(span);
-      this.byRow.set(span.row, rowSpans);
-    };
 
     for (let row = 0; row < limit; row++) {
-      const line = textLines[row]!;
-      if (!line) continue;
-      for (const span of scanRow(row, line)) {
-        const merged = mergeWrappedSpan(
-          { ...span, linkId: `${span.row}:${span.c0}:${span.kind}` },
-          textLines,
-          kernel,
-          limit,
-        );
-        if (merged.length === 0) continue;
-        for (const segment of merged) {
-          addSpan(segment);
-          if (segment.row !== span.row) {
-            const ranges = coveredByContinuation.get(segment.row) ?? [];
-            ranges.push({ c0: segment.c0, c1: segment.c1 });
-            coveredByContinuation.set(segment.row, ranges);
-          }
-        }
-      }
+      indexVisibleRow(
+        row,
+        textLines,
+        kernel,
+        limit,
+        this.byRow,
+        coveredByContinuation,
+      );
     }
     for (const spans of this.byRow.values()) {
       spans.sort((a, b) => a.c0 - b.c0);
