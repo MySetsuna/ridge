@@ -1,8 +1,8 @@
 //! rdg — Ridge 无头远控 host（面向无图形界面的 Linux/VPS）。可执行名 `rdg`。
 //!
 //! 用法：
-//!   rdg remote --enable    设备码配对，持久化 device JWT
-//!   rdg remote --daemon    后台运行，等 controller 接入并桥接 PTY
+//!   rdg login --browser     浏览器登录并绑定 device JWT
+//!   rdg remote              使用已绑定凭据运行守护并桥接 PTY
 //!
 //! 架构：设备码流(§4.4) → device JWT 持久化(§3) → 信令 WS(§5, role=host) →
 //!       WebRTC answerer(§0) → DataChannel 上叠 X25519+ChaCha20Poly1305(§7) →
@@ -21,7 +21,6 @@ mod config;
 mod core_host;
 mod daemon;
 mod daemon_ctl;
-mod device_flow;
 mod e2ee;
 mod envelope;
 mod fs_reuse;
