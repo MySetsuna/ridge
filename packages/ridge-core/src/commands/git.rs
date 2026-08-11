@@ -3255,15 +3255,83 @@ mod guard_tests {
         Some(dir)
     }
 
+    fn production_source_without_tests(src: &str) -> String {
+        let mut prod_lines: Vec<&str> = Vec::new();
+        let mut skip_fn = false;
+        let mut fn_brace = 0i32;
+        for line in src.lines() {
+            let t = line.trim();
+            if !skip_fn && t.starts_with("#[cfg(test)]") {
+                skip_fn = true;
+                fn_brace = 0;
+                continue;
+            }
+            if skip_fn {
+                if t.starts_with("mod ") {
+                    break;
+                }
+                fn_brace += t.matches('{').count() as i32;
+                fn_brace -= t.matches('}').count() as i32;
+                if fn_brace <= 0 && t.contains('}') {
+                    skip_fn = false;
+                }
+                continue;
+            }
+            if t.starts_with("mod ") && (t.contains("tests") || t.contains("guard_tests")) {
+                break;
+            }
+            prod_lines.push(line);
+        }
+        prod_lines.join("\n")
+    }
+
+    fn git_spawn_offenders(prod: &str) -> Vec<(usize, String)> {
+        let mut in_git_cmd = false;
+        let mut brace = 0i32;
+        let mut offenders = Vec::new();
+        for (i, line) in prod.lines().enumerate() {
+            let t = line.trim();
+            if t.starts_with("fn git_cmd(") {
+                in_git_cmd = true;
+                brace = 0;
+            }
+            if in_git_cmd {
+                brace += t.matches('{').count() as i32;
+                brace -= t.matches('}').count() as i32;
+                if brace <= 0 && t.contains('}') {
+                    in_git_cmd = false;
+                }
+            }
+            if t.contains("Command::new(")
+                && !in_git_cmd
+                && (t.contains("\"git\"") || t.contains("RIDGE_GIT_BIN"))
+            {
+                offenders.push((i + 1, t.to_string()));
+            }
+        }
+        offenders
+    }
+
+    fn assert_git_guard_hooks(prod: &str) {
+        assert!(
+            prod.contains("fn git_cmd(") && prod.contains("run_command_with_timeout"),
+            "expected git_cmd + timeout path in production section"
+        );
+        assert!(
+            prod.contains("note_timeout_kill") && prod.contains("note_acquire_timeout"),
+            "expected timeout observability hooks"
+        );
+    }
+
     /// OP-GIT-BYPASS: production body of this file must not spawn git outside
     /// `git_cmd` / `git_output*` (unique gate). Tests may use `Command::new("git")`.
     #[test]
     fn production_git_spawn_only_via_git_cmd() {
-        let src = include_str!("git.rs");
+        let prod = production_source_without_tests(include_str!("git.rs"));
         // Production = everything before the first top-level `mod …tests` under cfg(test).
         // Nested unit-test helpers may appear earlier as `#[cfg(test)] fn …` — strip those
         // with a small state machine, then cut at the first `mod *_tests` / `mod tests`.
-        let mut prod_lines: Vec<&str> = Vec::new();
+        /* let mut prod_lines: Vec<&str> = Vec::new();
         let mut skip_fn = false;
         let mut fn_brace = 0i32;
         for line in src.lines() {
@@ -3314,19 +3382,13 @@ mod guard_tests {
             {
                 offenders.push((i + 1, t.to_string()));
             }
-        }
+        } */
+        let offenders = git_spawn_offenders(&prod);
         assert!(
             offenders.is_empty(),
             "git spawn bypasses unique gate: {offenders:?}"
         );
-        assert!(
-            prod.contains("fn git_cmd(") && prod.contains("run_command_with_timeout"),
-            "expected git_cmd + timeout path in production section"
-        );
-        assert!(
-            prod.contains("note_timeout_kill") && prod.contains("note_acquire_timeout"),
-            "expected timeout observability hooks"
-        );
+        assert_git_guard_hooks(&prod);
     }
 
     #[allow(clippy::await_holding_lock)]

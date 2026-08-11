@@ -69,7 +69,7 @@ type ComparablePath = {
 
 function comparablePath(raw: string): ComparablePath {
 	const separator: '/' | '\\' = raw.includes('\\') && !raw.includes('/') ? '\\' : '/';
-	const slashPath = raw.replace(/\\/g, '/');
+	const slashPath = raw.replaceAll('\\', '/');
 	if (slashPath.startsWith('//')) {
 		const segments = normalizeSegments(slashPath.slice(2).split('/').filter(Boolean), true);
 		const authority = segments.slice(0, 2);
@@ -82,8 +82,8 @@ function comparablePath(raw: string): ComparablePath {
 		};
 	}
 
-	const normalized = normalizePath(raw).replace(/\\/g, '/');
-	const drive = normalized.match(/^([A-Za-z]):(?:\/|$)/);
+	const normalized = normalizePath(raw).replaceAll('\\', '/');
+	const drive = /^([A-Za-z]):(?:\/|$)/.exec(normalized);
 	if (drive) {
 		return {
 			rootKey: `drive:${drive[1].toLowerCase()}`,
