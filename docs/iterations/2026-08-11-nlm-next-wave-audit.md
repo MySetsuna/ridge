@@ -15,6 +15,7 @@ NLM 笔记中可由本仓库完成的核心需求，当前源码已基本落地�
 | `REQ-RIDGE-MCP-INSTALLER-01` | sidecar 构建、目标 triple、版本嵌入、`--check --require-built`、Tauri `externalBin`、release bundle 检查已存在。 | `scripts/build-ridge-mcp-sidecar.mjs`、`packages/ridge-mcp-bridge/`、`src-tauri/tauri.conf.json`、`.github/workflows/release.yml`。 |
 | `REQ-AUTO-CONTRAST-RESEARCH-01` | 已按“仅研究”完成静态 token/WCAG 2.2 阻断、APCA/WCAG 3 影子报告、forced-colors fixture 与减法方案；未引入全局运行时逐像素判色。 | `docs/research/auto-contrast-2026-07-29.md`。 |
 | `REQ-RDG-REMOTE-CONNECT-01` | LAN 桌面/移动受控 E2E 已真接通；公网与真机仍待外部环境。 | `.iteration/artifacts/rdg-remote-e2e/`；`rdg-remote-e2e ALL PASS`。 |
+| `REQ-EXPLORER-CONTEXT-ACTIONS-01` | 相对路径根不再取首个 pane/column；改由同 workspace 全部 cwd 的公共祖先确定，跨盘则安全回退当前 cwd。 | `src/lib/utils/path.ts`、`src/routes/+page.svelte`、`src/lib/components/Explorer.svelte`；路径 helper 4 个测试用例通过。 |
 
 ## 本轮验证
 
