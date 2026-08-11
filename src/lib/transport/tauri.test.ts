@@ -85,7 +85,9 @@ describe('TauriDataProvider injected invocation', () => {
 		await expect(provider.searchFiles('needle', ' /repo ')).resolves.toEqual([
 			{ path: 'src/a.ts', line: 3, column: 5, snippet: 'hit' },
 		]);
-		expect(call).toHaveBeenCalledWith('text_search', { root: '/repo', query: 'needle', maxResults: 500 });
+		expect(call).toHaveBeenCalledWith('text_search', {
+			request: { root: '/repo', query: 'needle', maxResults: 500 },
+		});
 	});
 
 	it('forwards every git mutation with stable defaults', async () => {

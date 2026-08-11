@@ -40,7 +40,9 @@ describe('project search services', () => {
 		await expect(textSearch('needle', { caseSensitive: true, useRegex: true, wholeWord: true, maxResults: 4 }))
 			.resolves.toHaveLength(1);
 		expect(invokeMock).toHaveBeenCalledWith('text_search', {
-			root: 'C:\\repo', query: 'needle', caseSensitive: true, useRegex: true, wholeWord: true, maxResults: 4,
+			request: {
+				root: 'C:\\repo', query: 'needle', caseSensitive: true, useRegex: true, wholeWord: true, maxResults: 4,
+			},
 		});
 		expect(get(projectStore)).toMatchObject({ searchQuery: 'needle', isSearching: false });
 	});
