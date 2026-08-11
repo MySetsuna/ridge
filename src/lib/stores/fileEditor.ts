@@ -13,6 +13,31 @@ import { isRecentlyWritten, markRecentlyWritten } from './fsEvents';
 import { nextImageVersion } from './imagePreviewVersion';
 import { alertDialog, choiceDialog, confirmDialog } from '$lib/components/RidgeDialog.svelte';
 
+function imageUrlFor(path: string): string {
+  const normalized = path.replaceAll('\\', '/');
+  if (isTauri()) return convertFileSrc(normalized);
+  return 'file://' + (normalized.startsWith('/') ? normalized : '/' + normalized);
+}
+
+async function readNewFile(path: string): Promise<{
+  content: string;
+  isImage: boolean;
+  isBinary: boolean;
+  imageUrl?: string;
+} | null> {
+  const isImage = isImagePath(path);
+  if (isImage) return { content: '', isImage, isBinary: false, imageUrl: imageUrlFor(path) };
+  if (!isTauri()) return { content: '', isImage, isBinary: false };
+  try {
+    const result = await invoke<{ content: string; is_binary: boolean }>('read_file_for_editor', { path });
+    return { content: result.content, isImage, isBinary: result.is_binary };
+  } catch (error) {
+    console.error('read_file_for_editor failed', path, error);
+    await alertDialog({ title: '打开文件失败', message: String(error), danger: true });
+    return null;
+  }
+}
+
 // §弱网: in the desktop-UI-in-browser build, save by sending only the changed
 // span (one edit) instead of the whole file over the WS. See computeSingleEdit.
 const webRemote = import.meta.env.RIDGE_WEB_REMOTE === true;
@@ -352,33 +377,6 @@ function createStore() {
     }
   }
 
-  async function readNewFile(path: string): Promise<{
-    content: string;
-    isImage: boolean;
-    isBinary: boolean;
-    imageUrl?: string;
-  } | null> {
-    const isImage = isImagePath(path);
-    if (isImage) return { content: '', isImage, isBinary: false, imageUrl: imageUrlFor(path) };
-    if (!isTauri()) return { content: '', isImage, isBinary: false };
-    try {
-      const result = await invoke<{ content: string; is_binary: boolean }>(
-        'read_file_for_editor',
-        { path },
-      );
-      return { content: result.content, isImage, isBinary: result.is_binary };
-    } catch (error) {
-      console.error('read_file_for_editor failed', path, error);
-      await alertDialog({ title: '打开文件失败', message: String(error), danger: true });
-      return null;
-    }
-  }
-
-  function imageUrlFor(path: string): string {
-    const normalized = path.replaceAll('\\', '/');
-    if (isTauri()) return convertFileSrc(normalized);
-    return `file://${normalized.startsWith('/') ? normalized : `/${normalized}`}`;
-  }
 
   function appendFile(file: OpenFile, reveal: PendingReveal | null): void {
     update((s) => s.openFiles.some((item) => item.path === file.path)

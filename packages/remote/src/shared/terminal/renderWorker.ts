@@ -128,6 +128,244 @@ export function makeWorkerState(): WorkerState {
  * feeds bytes into it, and `destroy` frees it. Tests omit the adapter
  * (or pass a mock) to exercise the dispatch protocol without wasm.
  */
+type RequestOf<T extends RenderWorkerRequest['type']> = Extract<RenderWorkerRequest, { type: T }>;
+type ErrorCode = Extract<RenderWorkerResponse, { type: 'error' }>['code'];
+
+function workerError(
+	paneId: string | undefined,
+	code: ErrorCode,
+	message: string,
+): RenderWorkerResponse {
+	return { type: 'error', paneId, code, message };
+}
+
+function paneMissing(
+	paneId: string,
+	operation: string,
+): RenderWorkerResponse {
+	return workerError(paneId, 'pane_not_initialized', operation + ' before init for pane ' + paneId);
+}
+
+function frameGuard(
+	pane: PaneWorkerState,
+	paneId: string,
+	frameId: number | undefined,
+	code: Extract<ErrorCode, 'apply_delta_failed' | 'feed_failed'>,
+): RenderWorkerResponse | null {
+	if (frameId === undefined) return null;
+	if (!Number.isSafeInteger(frameId) || frameId <= 0) {
+		return workerError(paneId, code, 'invalid frameId: ' + frameId);
+	}
+	if (frameId <= pane.lastAppliedFrameId) {
+		return { type: 'ready', paneId, backend: pane.backend };
+	}
+	return null;
+}
+
+function handleInit(
+	state: WorkerState,
+	request: RequestOf<'init'>,
+	adapter?: KernelAdapter | null,
+): RenderWorkerResponse {
+	if (state.has(request.paneId)) {
+		return workerError(
+			request.paneId,
+			'pane_already_initialized',
+			'pane ' + request.paneId + ' already initialized',
+		);
+	}
+	if (adapter === null) {
+		return workerError(
+			request.paneId,
+			'apply_delta_failed',
+			'render worker wasm adapter unavailable',
+		);
+	}
+	let kernel: KernelHandle | undefined;
+	if (adapter) {
+		try {
+			kernel = adapter.create({
+				rows: request.dims.rows,
+				cols: request.dims.cols,
+				scrollback: request.scrollbackLines,
+			});
+		} catch (error) {
+			return workerError(
+				request.paneId,
+				'apply_delta_failed',
+				'kernel.create failed: ' + (error instanceof Error ? error.message : String(error)),
+			);
+		}
+	}
+	state.set(request.paneId, {
+		rows: request.dims.rows,
+		cols: request.dims.cols,
+		dpr: request.dims.dpr,
+		backend: request.backend,
+		scrollbackLines: request.scrollbackLines,
+		canvasBound: false,
+		kernel,
+		lastAppliedFrameId: 0,
+	});
+	return { type: 'ready', paneId: request.paneId, backend: request.backend };
+}
+
+function handleBindCanvas(
+	state: WorkerState,
+	request: RequestOf<'bindCanvas'>,
+	adapter?: KernelAdapter | null,
+): RenderWorkerResponse {
+	const pane = state.get(request.paneId);
+	if (!pane) return paneMissing(request.paneId, 'bindCanvas');
+	pane.canvasBound = true;
+	let cellW: number | undefined;
+	let cellH: number | undefined;
+	if (adapter?.createRenderer && request.canvas && pane.kernel) {
+		try {
+			try {
+				pane.renderer?.free();
+			} catch {
+				// A detached renderer is best effort during replacement.
+			}
+			pane.renderer = adapter.createRenderer({
+				canvas: request.canvas,
+				kernel: pane.kernel,
+				backend: pane.backend,
+			});
+			if (
+				pane.renderer.configure &&
+				request.font &&
+				typeof request.fontSizePx === 'number' &&
+				typeof request.dpr === 'number'
+			) {
+				const metrics = pane.renderer.configure(request.font, request.fontSizePx, request.dpr);
+				cellW = metrics.cellW;
+				cellH = metrics.cellH;
+			}
+			pane.renderer.render();
+		} catch (error) {
+			return workerError(
+				request.paneId,
+				'apply_delta_failed',
+				'createRenderer failed: ' + (error instanceof Error ? error.message : String(error)),
+			);
+		}
+	}
+	return { type: 'ready', paneId: request.paneId, backend: pane.backend, cellW, cellH };
+}
+
+function handleApplyDelta(
+	state: WorkerState,
+	request: RequestOf<'applyDelta'>,
+): RenderWorkerResponse {
+	const pane = state.get(request.paneId);
+	if (!pane) return paneMissing(request.paneId, 'applyDelta');
+	const guard = frameGuard(pane, request.paneId, request.frameId, 'apply_delta_failed');
+	if (guard) return guard;
+	try {
+		pane.kernel?.applyDeltaFrame(request.bytes);
+		pane.renderer?.render();
+	} catch (error) {
+		return workerError(
+			request.paneId,
+			'apply_delta_failed',
+			'applyDelta failed: ' + (error instanceof Error ? error.message : String(error)),
+		);
+	}
+	if (request.frameId !== undefined) pane.lastAppliedFrameId = request.frameId;
+	return { type: 'ready', paneId: request.paneId, backend: pane.backend };
+}
+
+function handleFeed(
+	state: WorkerState,
+	request: RequestOf<'feed'>,
+): RenderWorkerResponse {
+	const pane = state.get(request.paneId);
+	if (!pane) return paneMissing(request.paneId, 'feed');
+	const guard = frameGuard(pane, request.paneId, request.frameId, 'feed_failed');
+	if (guard) return guard;
+	try {
+		pane.kernel?.feed(request.bytes);
+		pane.renderer?.render();
+	} catch (error) {
+		return workerError(
+			request.paneId,
+			'feed_failed',
+			'kernel.feed failed: ' + (error instanceof Error ? error.message : String(error)),
+		);
+	}
+	if (request.frameId !== undefined) pane.lastAppliedFrameId = request.frameId;
+	return { type: 'ready', paneId: request.paneId, backend: pane.backend };
+}
+
+function handleResize(
+	state: WorkerState,
+	request: RequestOf<'resize'>,
+): RenderWorkerResponse {
+	const pane = state.get(request.paneId);
+	if (!pane) return paneMissing(request.paneId, 'resize');
+	pane.rows = request.rows;
+	pane.cols = request.cols;
+	pane.dpr = request.dpr;
+	try {
+		pane.kernel?.resize(request.rows, request.cols);
+		if (
+			pane.renderer &&
+			typeof request.wCss === 'number' &&
+			typeof request.hCss === 'number'
+		) {
+			pane.renderer.resize(request.wCss, request.hCss, request.dpr);
+			pane.renderer.render();
+		}
+	} catch (error) {
+		return workerError(
+			request.paneId,
+			'resize_failed',
+			'resize failed: ' + (error instanceof Error ? error.message : String(error)),
+		);
+	}
+	return { type: 'ready', paneId: request.paneId, backend: pane.backend };
+}
+
+function handleDestroy(
+	state: WorkerState,
+	request: RequestOf<'destroy'>,
+): RenderWorkerResponse {
+	const pane = state.get(request.paneId);
+	try {
+		pane?.renderer?.free();
+	} catch {
+		// Destroy is idempotent when the renderer was already released.
+	}
+	try {
+		pane?.kernel?.free();
+	} catch {
+		// Destroy is idempotent when the kernel was already released.
+	}
+	state.delete(request.paneId);
+	return { type: 'destroyed', paneId: request.paneId };
+}
+
+function handleSetFont(
+	state: WorkerState,
+	request: RequestOf<'setFont'>,
+): RenderWorkerResponse {
+	const pane = state.get(request.paneId);
+	if (!pane) return paneMissing(request.paneId, 'setFont');
+	if (pane.renderer?.configure) {
+		try {
+			pane.renderer.configure(request.family, request.sizePx, request.dpr);
+		} catch {
+			return workerError(
+				request.paneId,
+				'resize_failed',
+				'setFont configure failed for pane ' + request.paneId,
+			);
+		}
+	}
+	return { type: 'ready', paneId: request.paneId, backend: pane.backend };
+}
+
 export function handleRequest(
 	state: WorkerState,
 	request: RenderWorkerRequest,
@@ -136,365 +374,35 @@ export function handleRequest(
 	switch (request.type) {
 		case 'ping':
 			return { type: 'pong', token: request.token };
-
-		case 'init': {
-			if (state.has(request.paneId)) {
-				return {
-					type: 'error',
-					paneId: request.paneId,
-					code: 'pane_already_initialized',
-					message: `pane ${request.paneId} already initialized`,
-				};
-			}
-			if (adapter === null) {
-				return {
-					type: 'error',
-					paneId: request.paneId,
-					code: 'apply_delta_failed',
-					message: 'render worker wasm adapter unavailable',
-				};
-			}
-			let kernel: KernelHandle | undefined;
-			if (adapter) {
-				try {
-					kernel = adapter.create({
-						rows: request.dims.rows,
-						cols: request.dims.cols,
-						scrollback: request.scrollbackLines,
-					});
-				} catch (err) {
-					// Kernel construction failed (wasm OOM, bad args, etc.).
-					// Surface as a structured error so the host can decide
-					// whether to retry or fall back to the legacy path.
-					return {
-						type: 'error',
-						paneId: request.paneId,
-						code: 'apply_delta_failed',
-						message: `kernel.create failed: ${err instanceof Error ? err.message : String(err)}`,
-					};
-				}
-			}
-			state.set(request.paneId, {
-				rows: request.dims.rows,
-				cols: request.dims.cols,
-				dpr: request.dims.dpr,
-				backend: request.backend,
-				scrollbackLines: request.scrollbackLines,
-				canvasBound: false,
-				kernel,
-				lastAppliedFrameId: 0,
-			});
-			return {
-				type: 'ready',
-				paneId: request.paneId,
-				// P4.5 doesn't actually load WebGPU yet, so we honor the
-				// requested backend in the ack. P4.9 swaps this for the
-				// real `try webgpu else canvas2d` probe.
-				backend: request.backend,
-			};
-		}
-
-		case 'bindCanvas': {
-			const pane = state.get(request.paneId);
-			if (!pane) {
-				return {
-					type: 'error',
-					paneId: request.paneId,
-					code: 'pane_not_initialized',
-					message: `bindCanvas before init for pane ${request.paneId}`,
-				};
-			}
-			pane.canvasBound = true;
-			// P4.8 (2026-05-22): when the adapter exposes `createRenderer`
-			// AND the request carries a canvas AND we have a kernel,
-			// construct the per-pane RendererHandle. All three guards must
-			// pass — otherwise we silently keep the pre-P4.8 behavior
-			// (canvasBound flag only). The renderer factory may throw
-			// (WebGPU adapter miss, malformed canvas); surface as
-			// structured error so the host can decide to retry or fall
-			// back. Pane state retains `canvasBound=true` even on factory
-			// failure so a follow-up retry doesn't re-trigger pane init.
-			let cellW: number | undefined;
-			let cellH: number | undefined;
-			if (adapter?.createRenderer && request.canvas && pane.kernel) {
-				try {
-					try {
-						pane.renderer?.free();
-					} catch {
-						/* replacing a detached parked canvas — old renderer is best-effort */
-					}
-					pane.renderer = adapter.createRenderer({
-						canvas: request.canvas,
-						kernel: pane.kernel,
-						backend: pane.backend,
-					});
-					if (
-						pane.renderer.configure &&
-						request.font &&
-						typeof request.fontSizePx === 'number' &&
-						typeof request.dpr === 'number'
-					) {
-						const metrics = pane.renderer.configure(
-							request.font,
-							request.fontSizePx,
-							request.dpr,
-						);
-						cellW = metrics.cellW;
-						cellH = metrics.cellH;
-					}
-					pane.renderer.render();
-				} catch (err) {
-					return {
-						type: 'error',
-						paneId: request.paneId,
-						code: 'apply_delta_failed',
-						message: `createRenderer failed: ${err instanceof Error ? err.message : String(err)}`,
-					};
-				}
-			}
-			return {
-				type: 'ready',
-				paneId: request.paneId,
-				backend: pane.backend,
-				cellW,
-				cellH,
-			};
-		}
-
-		case 'applyDelta': {
-			const pane = state.get(request.paneId);
-			if (!pane) {
-				return {
-					type: 'error',
-					paneId: request.paneId,
-					code: 'pane_not_initialized',
-					message: `applyDelta before init for pane ${request.paneId}`,
-				};
-			}
-			if (request.frameId !== undefined) {
-				if (!Number.isSafeInteger(request.frameId) || request.frameId <= 0) {
-					return {
-						type: 'error',
-						paneId: request.paneId,
-						code: 'apply_delta_failed',
-						message: `invalid frameId: ${request.frameId}`,
-					};
-				}
-				if (request.frameId <= pane.lastAppliedFrameId) {
-					// A late worker message must never repaint an older grid snapshot.
-					return { type: 'ready', paneId: request.paneId, backend: pane.backend };
-				}
-			}
-			// P4.7 (2026-05-22): when the wasm kernel adapter loaded
-			// successfully at bootstrap, drive the per-pane kernel here.
-			// When it failed to load (or the adapter wasn't provided,
-			// e.g. tests), we silently ack — protocol surface is the same.
-			// Drawing still lives on the main thread until p4.8 transfers
-			// the OffscreenCanvas; this branch only keeps the worker's
-			// kernel state in sync.
-			if (pane.kernel) {
-				try {
-					pane.kernel.applyDeltaFrame(request.bytes);
-				} catch (err) {
-					return {
-						type: 'error',
-						paneId: request.paneId,
-						code: 'apply_delta_failed',
-						message: `kernel.applyDeltaFrame failed: ${err instanceof Error ? err.message : String(err)}`,
-					};
-				}
-			}
-			// P4.8 (2026-05-22): if a renderer is bound, drive a frame
-			// from the kernel's just-updated grid. Errors here do NOT
-			// invalidate the kernel state (the delta already landed) —
-			// surface as `apply_delta_failed` so the host knows to retry
-			// or fall back, but pane state stays intact.
-			if (pane.renderer) {
-				try {
-					pane.renderer.render();
-				} catch (err) {
-					return {
-						type: 'error',
-						paneId: request.paneId,
-						code: 'apply_delta_failed',
-						message: `renderer.render failed: ${err instanceof Error ? err.message : String(err)}`,
-					};
-				}
-			}
-			if (request.frameId !== undefined) pane.lastAppliedFrameId = request.frameId;
-			return {
-				type: 'ready',
-				paneId: request.paneId,
-				backend: pane.backend,
-			};
-		}
-
+		case 'init':
+			return handleInit(state, request, adapter);
+		case 'bindCanvas':
+			return handleBindCanvas(state, request, adapter);
+		case 'applyDelta':
+			return handleApplyDelta(state, request);
 		case 'releaseCanvas': {
 			const pane = state.get(request.paneId);
-			if (!pane) {
-				return {
-					type: 'error',
-					paneId: request.paneId,
-					code: 'pane_not_initialized',
-					message: `releaseCanvas before init for pane ${request.paneId}`,
-				};
-			}
+			if (!pane) return paneMissing(request.paneId, 'releaseCanvas');
 			try {
 				pane.renderer?.free();
 			} catch {
-				/* renderer already freed */
+				// Release remains safe when the renderer is already freed.
 			}
 			pane.renderer = undefined;
 			pane.canvasBound = false;
-			return {
-				type: 'ready',
-				paneId: request.paneId,
-				backend: pane.backend,
-			};
+			return { type: 'ready', paneId: request.paneId, backend: pane.backend };
 		}
-
-		case 'feed': {
-			const pane = state.get(request.paneId);
-			if (!pane) {
-				return {
-					type: 'error',
-					paneId: request.paneId,
-					code: 'pane_not_initialized',
-					message: `feed before init for pane ${request.paneId}`,
-				};
-			}
-			if (request.frameId !== undefined) {
-				if (!Number.isSafeInteger(request.frameId) || request.frameId <= 0) {
-					return {
-						type: 'error',
-						paneId: request.paneId,
-						code: 'feed_failed',
-						message: `invalid frameId: ${request.frameId}`,
-					};
-				}
-				if (request.frameId <= pane.lastAppliedFrameId) {
-					// A late worker message must never repaint an older grid snapshot.
-					return { type: 'ready', paneId: request.paneId, backend: pane.backend };
-				}
-			}
-			try {
-				pane.kernel?.feed(request.bytes);
-				pane.renderer?.render();
-			} catch (err) {
-				return {
-					type: 'error',
-					paneId: request.paneId,
-					code: 'feed_failed',
-					message: `kernel.feed failed: ${err instanceof Error ? err.message : String(err)}`,
-				};
-			}
-			if (request.frameId !== undefined) pane.lastAppliedFrameId = request.frameId;
-			return {
-				type: 'ready',
-				paneId: request.paneId,
-				backend: pane.backend,
-			};
-		}
-
-		case 'resize': {
-			const pane = state.get(request.paneId);
-			if (!pane) {
-				return {
-					type: 'error',
-					paneId: request.paneId,
-					code: 'pane_not_initialized',
-					message: `resize before init for pane ${request.paneId}`,
-				};
-			}
-			pane.rows = request.rows;
-			pane.cols = request.cols;
-			pane.dpr = request.dpr;
-			try {
-				pane.kernel?.resize(request.rows, request.cols);
-				if (
-					pane.renderer &&
-					typeof request.wCss === 'number' &&
-					typeof request.hCss === 'number'
-				) {
-					pane.renderer.resize(request.wCss, request.hCss, request.dpr);
-					pane.renderer.render();
-				}
-			} catch (err) {
-				return {
-					type: 'error',
-					paneId: request.paneId,
-					code: 'resize_failed',
-					message: `resize failed: ${err instanceof Error ? err.message : String(err)}`,
-				};
-			}
-			return {
-				type: 'ready',
-				paneId: request.paneId,
-				backend: pane.backend,
-			};
-		}
-
-		case 'destroy': {
-			const pane = state.get(request.paneId);
-			if (pane?.renderer) {
-				// Free the renderer FIRST — it holds the GPU resources
-				// (Canvas2D context / WebGPU swap chain) that need to be
-				// released before the kernel they reference goes away.
-				try {
-					pane.renderer.free();
-				} catch {
-					/* renderer already freed elsewhere — destroy must be idempotent */
-				}
-			}
-			if (pane?.kernel) {
-				// Free the wasm kernel BEFORE dropping the state entry so a
-				// `free()` exception doesn't leave the kernel handle
-				// dangling on a still-mapped pane.
-				try {
-					pane.kernel.free();
-				} catch {
-					/* kernel already freed elsewhere — destroy must be idempotent */
-				}
-			}
-			state.delete(request.paneId);
-			return { type: 'destroyed', paneId: request.paneId };
-		}
-
-		case 'setFont': {
-			const pane = state.get(request.paneId);
-			if (!pane) {
-				return {
-					type: 'error',
-					paneId: request.paneId,
-					code: 'pane_not_initialized',
-					message: `setFont before init for pane ${request.paneId}`,
-				};
-			}
-			if (pane.renderer?.configure) {
-				try {
-					pane.renderer.configure(
-						request.family,
-						request.sizePx,
-						request.dpr,
-					);
-				} catch {
-					// renderer.configure threw — surface as error but don't crash
-					return {
-						type: 'error',
-						paneId: request.paneId,
-						code: 'resize_failed',
-						message: `setFont configure failed for pane ${request.paneId}`,
-					};
-				}
-			}
-			return {
-				type: 'ready',
-				paneId: request.paneId,
-				backend: pane.backend,
-			};
-		}
+		case 'feed':
+			return handleFeed(state, request);
+		case 'resize':
+			return handleResize(state, request);
+		case 'destroy':
+			return handleDestroy(state, request);
+		case 'setFont':
+			return handleSetFont(state, request);
 	}
 }
+
 
 /**
  * Look up the per-pane state. Test-only helper; the worker bootstrap
@@ -596,6 +504,39 @@ async function loadKernelAdapter(): Promise<KernelAdapter | null> {
 	}
 }
 
+function handleWorkerMessage(
+	state: WorkerState,
+	scope: WorkerScopeLike,
+	event: MessageEvent<unknown>,
+	adapter: KernelAdapter | null | undefined,
+): void {
+	const id = (event.data as { __reqId?: number } | null)?.__reqId;
+	if (!isRenderWorkerRequest(event.data)) {
+		scope.postMessage({
+			type: 'error',
+			code: 'unknown_message',
+			message: `unknown request shape: ${JSON.stringify(event.data)}`,
+			__reqId: id,
+		});
+		return;
+	}
+	if (event.data.type === 'ping') {
+		scope.postMessage({ ...handleRequest(state, event.data), __reqId: id });
+		return;
+	}
+	if (adapter === undefined) {
+		scope.postMessage({
+			type: 'error',
+			paneId: 'paneId' in event.data ? event.data.paneId : undefined,
+			code: 'apply_delta_failed',
+			message: 'render worker wasm adapter is still loading',
+			__reqId: id,
+		});
+		return;
+	}
+	scope.postMessage({ ...handleRequest(state, event.data, adapter), __reqId: id });
+}
+
 if (isInWorkerScope()) {
 	const state = makeWorkerState();
 	const scope = self as unknown as WorkerScopeLike;
@@ -605,41 +546,7 @@ if (isInWorkerScope()) {
 	// main-thread fallback. `undefined` means loading, `null` means failed.
 	let adapter: KernelAdapter | null | undefined;
 
-	scope.addEventListener('message', (event: MessageEvent<unknown>) => {
-		// `__reqId` is a host-side correlation id (see WorkerHostedRenderer).
-		// It travels alongside the typed request and is reflected on every
-		// response so the host resolves exactly one pending promise.
-		const id = (event.data as { __reqId?: number } | null)?.__reqId;
-		if (!isRenderWorkerRequest(event.data)) {
-			const response: RenderWorkerResponse = {
-				type: 'error',
-				code: 'unknown_message',
-				message: `unknown request shape: ${JSON.stringify(event.data)}`,
-			};
-			scope.postMessage({ ...response, __reqId: id });
-			return;
-		}
-		// Health checks must never wait for the WASM adapter. Other requests
-		// receive a structured error while loading, which lets the host cancel
-		// the worker handoff and restore the already-live main-thread canvas.
-		if (event.data.type === 'ping') {
-			const response = handleRequest(state, event.data);
-			scope.postMessage({ ...response, __reqId: id });
-			return;
-		}
-		if (adapter === undefined) {
-			const response: RenderWorkerResponse = {
-				type: 'error',
-				paneId: 'paneId' in event.data ? event.data.paneId : undefined,
-				code: 'apply_delta_failed',
-				message: 'render worker wasm adapter is still loading',
-			};
-			scope.postMessage({ ...response, __reqId: id });
-			return;
-		}
-		const response = handleRequest(state, event.data, adapter);
-		scope.postMessage({ ...response, __reqId: id });
-	});
+	scope.addEventListener('message', (event) => handleWorkerMessage(state, scope, event, adapter));
 
 	// P4.7 + Iter 15 (2026-05-22) — adapter failure remains explicit: an
 	// adapter of `null` makes `init` fail, causing the host to restore the

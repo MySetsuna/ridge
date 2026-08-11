@@ -914,89 +914,81 @@ fn mark_kernel_ready(ready_tx: &mut Option<tokio::sync::oneshot::Sender<Result<(
     }
 }
 
-fn try_install_kernel_pty(
-    state: &AppState,
+struct KernelPtyInstall<'a> {
+    state: &'a AppState,
     workspace_id: Uuid,
     pane_id: Uuid,
-    shell: Option<&str>,
-    cwd: Option<&Path>,
-    initial_command: Option<&str>,
-    structured_command: Option<&StructuredPtyCommand>,
+    shell: Option<&'a str>,
+    cwd: Option<&'a Path>,
+    structured_command: Option<&'a StructuredPtyCommand>,
     tmux_pane_index: Option<usize>,
     kernel_candidate: bool,
     has_explicit_launch: bool,
-    ready_tx: &mut Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
-) -> Option<Result<(), AppError>> {
-    if initial_command.is_none() {
-        if let Some(spec) = structured_command {
-            crate::teammate::ensure_teammate_started(state);
-            let endpoint = match kernel_endpoint_for_shell() {
-                Ok(endpoint) => endpoint,
-                Err(error) => {
-                    return Some(Err(AppError::PtyError(format!(
-                        "ridge-kernel unavailable for Agent PTY: {error}"
-                    ))))
-                }
-            };
-            let env = match kernel_structured_env(
-                state,
-                workspace_id,
-                pane_id,
-                cwd,
-                tmux_pane_index,
-                spec,
-            ) {
-                Ok(env) => env,
-                Err(error) => return Some(Err(AppError::PtyError(error))),
-            };
-            let result = attach_or_spawn_kernel_command(
-                state,
-                endpoint,
-                KernelCommandLaunch {
-                    workspace_id,
-                    pane_id,
-                    program: Some(&spec.program),
-                    args: &spec.args,
-                    env: &env,
-                    cwd,
-                    role: "agent",
-                    launch_profile: None,
-                },
-            );
-            return Some(match result {
-                Ok(_) => {
-                    mark_kernel_ready(ready_tx);
-                    Ok(())
-                }
-                Err(error) => Err(AppError::PtyError(format!(
-                    "ridge-kernel Agent PTY unavailable: {error}"
-                ))),
-            });
-        }
-    }
+    ready_tx: &'a mut Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+}
 
-    if kernel_candidate && !has_explicit_launch {
-        let endpoint = match kernel_endpoint_for_shell() {
-            Ok(endpoint) => endpoint,
-            Err(error) => {
-                return Some(Err(AppError::PtyError(format!(
-                    "ridge-kernel unavailable for shell PTY: {error}"
-                ))))
-            }
-        };
-        return Some(
-            match attach_or_spawn_kernel_pty(state, endpoint, workspace_id, pane_id, shell, cwd) {
-                Ok(_) => {
-                    mark_kernel_ready(ready_tx);
-                    Ok(())
-                }
-                Err(error) => Err(AppError::PtyError(format!(
-                    "ridge-kernel shell PTY unavailable: {error}"
-                ))),
-            },
-        );
+fn try_install_kernel_pty(
+    mut request: KernelPtyInstall<'_>,
+) -> Option<Result<(), AppError>> {
+    let structured_command = request.structured_command;
+    if let Some(spec) = structured_command {
+        return Some(install_structured_kernel_pty(&mut request, spec));
+    }
+    if request.kernel_candidate && !request.has_explicit_launch {
+        return Some(install_shell_kernel_pty(&mut request));
     }
     None
+}
+
+fn install_structured_kernel_pty(
+    request: &mut KernelPtyInstall<'_>,
+    spec: &StructuredPtyCommand,
+) -> Result<(), AppError> {
+    crate::teammate::ensure_teammate_started(request.state);
+    let endpoint = kernel_endpoint_for_shell()
+        .map_err(|error| AppError::PtyError(format!("ridge-kernel unavailable for Agent PTY: {error}")))?;
+    let env = kernel_structured_env(
+        request.state,
+        request.workspace_id,
+        request.pane_id,
+        request.cwd,
+        request.tmux_pane_index,
+        spec,
+    )
+    .map_err(AppError::PtyError)?;
+    attach_or_spawn_kernel_command(
+        request.state,
+        endpoint,
+        KernelCommandLaunch {
+            workspace_id: request.workspace_id,
+            pane_id: request.pane_id,
+            program: Some(&spec.program),
+            args: &spec.args,
+            env: &env,
+            cwd: request.cwd,
+            role: "agent",
+            launch_profile: None,
+        },
+    )
+    .map_err(|error| AppError::PtyError(format!("ridge-kernel Agent PTY unavailable: {error}")))?;
+    mark_kernel_ready(request.ready_tx);
+    Ok(())
+}
+
+fn install_shell_kernel_pty(request: &mut KernelPtyInstall<'_>) -> Result<(), AppError> {
+    let endpoint = kernel_endpoint_for_shell()
+        .map_err(|error| AppError::PtyError(format!("ridge-kernel unavailable for shell PTY: {error}")))?;
+    attach_or_spawn_kernel_pty(
+        request.state,
+        endpoint,
+        request.workspace_id,
+        request.pane_id,
+        request.shell,
+        request.cwd,
+    )
+    .map_err(|error| AppError::PtyError(format!("ridge-kernel shell PTY unavailable: {error}")))?;
+    mark_kernel_ready(request.ready_tx);
+    Ok(())
 }
 
 pub fn ensure_pane_pty_workspace(
@@ -1031,19 +1023,18 @@ pub fn ensure_pane_pty_workspace(
         return Ok(());
     }
 
-    if let Some(result) = try_install_kernel_pty(
+    if let Some(result) = try_install_kernel_pty(KernelPtyInstall {
         state,
         workspace_id,
         pane_id,
-        shell.as_deref(),
+        shell: shell.as_deref(),
         cwd,
-        ic,
-        sc.as_ref(),
+        structured_command: sc.as_ref(),
         tmux_pane_index,
         kernel_candidate,
         has_explicit_launch,
-        &mut ready_tx,
-    ) {
+        ready_tx: &mut ready_tx,
+    }) {
         return result;
     }
 

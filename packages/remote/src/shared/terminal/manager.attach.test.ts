@@ -207,6 +207,55 @@ describe('TerminalManager attach lifecycle', () => {
 		}
 	});
 
+	it('hands an offscreen canvas to the worker and updates returned cell metrics', async () => {
+		const manager = TerminalManager.instance({
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: false,
+		});
+		const internal = manager as any;
+		const worker = {
+			init: vi.fn(async () => undefined),
+			bindCanvas: vi.fn(async () => ({ type: 'ready', cellW: 9, cellH: 18 })),
+		};
+		const canvas = new FakeCanvas() as any;
+		canvas.transferControlToOffscreen = vi.fn(() => ({ offscreen: true }));
+		internal.panes.set('worker-pane', { parked: false, cellW: 8, cellH: 16, lastConfiguredDpr: 1 });
+		internal.syncWorkerRendererIdentity = vi.fn(() => worker);
+		internal.isCurrentWorkerRenderer = vi.fn(() => true);
+		internal.fitPaneNow = vi.fn();
+
+		internal._attachWorkerCanvas('worker-pane', canvas, 1, 200);
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(worker.init).toHaveBeenCalledWith({
+			paneId: 'worker-pane', dims: { rows: 24, cols: 80, dpr: 1 }, backend: 'canvas2d', scrollbackLines: 200,
+		});
+		expect(worker.bindCanvas).toHaveBeenCalledOnce();
+		expect(internal.panes.get('worker-pane')).toMatchObject({ cellW: 9, cellH: 18, lastConfiguredDpr: 1 });
+		expect(internal.fitPaneNow).toHaveBeenCalledWith('worker-pane');
+	});
+
+	it('keeps attach helpers fail-closed when host setup is unavailable', async () => {
+		const manager = TerminalManager.instance({
+			fontFamily: 'monospace', fontSizePx: 14, scrollbackLines: 200, preferWebgpu: true,
+			theme: { background: '#010203' },
+		});
+		const internal = manager as any;
+		internal.attachHostPromise = Promise.reject(new Error('host unavailable'));
+		await internal._awaitAttachHost();
+		const host = { canvas: new FakeCanvas(), host: {} };
+		internal.globalHost = host;
+		expect(internal._createAttachCanvas(makeContainer(), false)).toEqual({ canvas: host.canvas, hostHandle: host.host });
+		const traced = localStorage as unknown as { getItem: ReturnType<typeof vi.fn> };
+		traced.getItem.mockReturnValue('1');
+		const handle = new wasm.FakeRenderHandle();
+		internal._applyAttachTheme('pane-a', handle);
+		expect(handle.applyDefaultTheme).toHaveBeenCalledOnce();
+	});
+
 	it('requires ready, attaches a configured pane, and fences duplicate ids', async () => {
 		const manager = TerminalManager.instance({
 			fontFamily: 'monospace',

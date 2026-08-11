@@ -112,31 +112,37 @@ export function collectPaneIds(layout: unknown): Set<string> {
 }
 
 function containsForeignResource(params: Record<string, unknown>, access: WorkspaceAccess): string | null {
-  const visit = (value: unknown, key = ''): string | null => {
-    if (typeof value === 'string') {
-      if (key === 'workspaceId' && value !== access.workspaceId) return 'workspace mismatch';
-      if (PANE_KEYS.has(key) && !access.paneIds.has(value)) return 'pane outside shared workspace';
-      if (PATH_KEYS.has(key) && !pathWithinRoots(value, access.roots)) {
-        return 'path outside shared workspace';
-      }
-      return null;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        const hit = visit(item, key);
-        if (hit) return hit;
-      }
-      return null;
-    }
-    if (value && typeof value === 'object') {
-      for (const [childKey, child] of Object.entries(value as Record<string, unknown>)) {
-        const hit = visit(child, childKey);
-        if (hit) return hit;
-      }
-    }
-    return null;
-  };
-  return visit(params);
+  return scanResourceValue(params, '', access);
+}
+
+function scanResourceValue(value: unknown, key: string, access: WorkspaceAccess): string | null {
+  if (typeof value === 'string') return resourceViolation(value, key, access);
+  if (Array.isArray(value)) return scanResourceArray(value, key, access);
+  if (value && typeof value === 'object') return scanResourceObject(value, access);
+  return null;
+}
+
+function resourceViolation(value: string, key: string, access: WorkspaceAccess): string | null {
+  if (key === 'workspaceId' && value !== access.workspaceId) return 'workspace mismatch';
+  if (PANE_KEYS.has(key) && !access.paneIds.has(value)) return 'pane outside shared workspace';
+  if (PATH_KEYS.has(key) && !pathWithinRoots(value, access.roots)) return 'path outside shared workspace';
+  return null;
+}
+
+function scanResourceArray(values: unknown[], key: string, access: WorkspaceAccess): string | null {
+  for (const item of values) {
+    const violation = scanResourceValue(item, key, access);
+    if (violation) return violation;
+  }
+  return null;
+}
+
+function scanResourceObject(value: object, access: WorkspaceAccess): string | null {
+  for (const [key, child] of Object.entries(value)) {
+    const violation = scanResourceValue(child, key, access);
+    if (violation) return violation;
+  }
+  return null;
 }
 
 export function planWorkspaceInvoke(

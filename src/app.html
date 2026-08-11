@@ -6,7 +6,7 @@
   <link rel="icon" href="%sveltekit.assets%/favicon.png" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Ridge</title>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-6gIn2Adga0I76M7lOr5+ns9NeG+ZHUu3479UInSCgs0=' 'sha256-f4v8ECDaX7VpJ0spfqi115EsBlsNXXpTscRamFy0WFo=' 'sha256-kCIgPz8TR5+VpMUjwK4nRpdg0RJvxD/u7IZwbMESvuY=' 'sha256-FYqRFGoC0TYkuoAMWJr7CuVyL2Km5EwtWlIq3JXZ4/w=' 'sha256-Q9GK5f9CZTp9MLZzc12QFqX4NJhXOMVI+96iRPpvgWc='; worker-src 'self' blob:; img-src 'self' asset: http://asset.localhost https://asset.localhost data: blob:; style-src 'self' 'sha256-M1dEbbcp42AqGrl22Z6zSlohRysM1YCpCvljRJcaboE=' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost http://localhost:5173 https://localhost:5173 http://localhost:5174 https://localhost:5174 http://localhost:1420 https://localhost:1420 http://127.0.0.1:5173 https://127.0.0.1:5173 http://127.0.0.1:5174 https://127.0.0.1:5174 http://127.0.0.1:1420 https://127.0.0.1:1420 ws://localhost:5173 wss://localhost:5173 ws://localhost:5174 wss://localhost:5174 ws://127.0.0.1:5173 wss://127.0.0.1:5173 ws://127.0.0.1:5174 wss://127.0.0.1:5174 https://9527127.xyz wss://9527127.xyz;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-D+jV0e2EjYzAuhCuYHaywgUol8F7WtZRSOYbo4NMoDg=' 'sha256-f4v8ECDaX7VpJ0spfqi115EsBlsNXXpTscRamFy0WFo=' 'sha256-kCIgPz8TR5+VpMUjwK4nRpdg0RJvxD/u7IZwbMESvuY=' 'sha256-FYqRFGoC0TYkuoAMWJr7CuVyL2Km5EwtWlIq3JXZ4/w=' 'sha256-Q9GK5f9CZTp9MLZzc12QFqX4NJhXOMVI+96iRPpvgWc='; worker-src 'self' blob:; img-src 'self' asset: http://asset.localhost https://asset.localhost data: blob:; style-src 'self' 'sha256-M1dEbbcp42AqGrl22Z6zSlohRysM1YCpCvljRJcaboE=' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost http://localhost:5173 https://localhost:5173 http://localhost:5174 https://localhost:5174 http://localhost:1420 https://localhost:1420 http://127.0.0.1:5173 https://127.0.0.1:5173 http://127.0.0.1:5174 https://127.0.0.1:5174 http://127.0.0.1:1420 https://127.0.0.1:1420 ws://localhost:5173 wss://localhost:5173 ws://localhost:5174 wss://localhost:5174 ws://127.0.0.1:5173 wss://127.0.0.1:5173 ws://127.0.0.1:5174 wss://127.0.0.1:5174 https://9527127.xyz wss://9527127.xyz;">
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -67,7 +67,6 @@
         stroke-dashoffset: 0;
       }
     }
-
     .filter-none {
       filter: none;
     }
@@ -95,10 +94,76 @@
     // field missing from a theme silently uses the current default. New
     // themes can override animation timing, stroke, fill opacities, etc.
     // without touching this file.
-    (function() {
-      var loader = null;
-      var bg = null;
-      var colors = null;
+    function ridgeReadJson(key) {
+      try {
+        return JSON.parse(localStorage.getItem(key) || 'null');
+      } catch (error) {
+        console.warn('[ridge] discarded invalid cached JSON', key, error);
+        localStorage.removeItem(key);
+        return null;
+      }
+    }
+    function ridgeReadCachedTheme() {
+      var settings = ridgeReadJson('ridge-settings');
+      var themeId = settings && settings.theme;
+      var cache = ridgeReadJson('ridge-theme-data');
+      var themes = cache && Array.isArray(cache.themes) ? cache.themes : [];
+      var theme = themes.find(function(item) { return item.id === themeId; });
+      if (!theme) return null;
+      return { loader: theme.loader || {}, bg: theme.colors && theme.colors.bg, colors: theme.colors || null };
+    }
+
+    function ridgeReadBootTheme() {
+      if (!window.__RIDGE_BOOT_LOADER__) return null;
+      return {
+        loader: window.__RIDGE_BOOT_LOADER__,
+        bg: window.__RIDGE_BOOT_THEME_BG__ || null,
+        colors: window.__RIDGE_BOOT_THEME_COLORS__ || null,
+      };
+    }
+
+    function ridgeSetColor(root, name, value) {
+      if (typeof value === 'string' && value.length > 0) root.style.setProperty(name, value);
+    }
+
+    function ridgeSetLength(root, name, value, suffix) {
+      if (typeof value === 'number' && Number.isFinite(value)) root.style.setProperty(name, value + suffix);
+      else if (typeof value === 'string' && value.length > 0) root.style.setProperty(name, value);
+    }
+
+    function ridgeApplyLoader(root, loader, bg) {
+      ridgeSetColor(root, '--startup-accent', loader.primary || '#eeeeee');
+      ridgeSetColor(root, '--startup-secondary', loader.secondary || '#888888');
+      ridgeSetColor(root, '--rg-loader-bg', loader.bg || bg || '#000000');
+      ridgeSetColor(root, '--startup-accent-glow', loader.accentGlow);
+      ridgeSetLength(root, '--startup-stroke', loader.strokeWidth, 'px');
+      ridgeSetLength(root, '--startup-radius', loader.cornerRadius, 'px');
+      ridgeSetLength(root, '--startup-draw-dur', loader.drawDurationMs, 'ms');
+      ridgeSetLength(root, '--startup-breathe-dur', loader.breatheDurationMs, 'ms');
+      ridgeSetLength(root, '--startup-cross-delay', loader.crossDelayMs, 'ms');
+      ridgeSetLength(root, '--startup-fadeout-dur', loader.fadeOutDurationMs, 'ms');
+      setNum(root, '--startup-fill-opacity-primary', loader.fillOpacityPrimary);
+      setNum(root, '--startup-fill-opacity-secondary', loader.fillOpacitySecondary);
+    }
+
+    function setNum(root, name, value) {
+      if (typeof value === 'number' && Number.isFinite(value)) root.style.setProperty(name, String(value));
+    }
+
+    function ridgeApplyTheme() {
+      var cached = ridgeReadCachedTheme();
+      var theme = cached || ridgeReadBootTheme() || { loader: {}, bg: null, colors: null };
+      var root = document.documentElement;
+      ridgeApplyLoader(root, theme.loader, theme.bg);
+      if (theme.colors && typeof theme.colors === 'object') {
+        for (var key in theme.colors) {
+          if (Object.hasOwn(theme.colors, key)) ridgeSetColor(root, '--rg-' + key, theme.colors[key]);
+        }
+      }
+    }
+
+    ridgeApplyTheme();
+    /*
       // Priority order:
       //   1) localStorage `ridge-settings.theme` + `ridge-theme-data`
       //      — the user's MOST RECENT theme choice. `setTheme` writes
@@ -193,7 +258,7 @@
           }
         }
       }
-    })();
+    */
   </script>
 </head>
 

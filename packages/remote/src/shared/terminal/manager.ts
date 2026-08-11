@@ -47,6 +47,7 @@ import {
 	onWorkerRendererFailure,
 } from './workerRendererSingleton';
 import { perfMark } from './perfTrace';
+import type { RenderWorkerResponse } from './renderWorker.protocol';
 import { unknownText } from '../transport/unknownText';
 import { DEFAULT_TERM_FONT } from './fontStack';
 import { imeHelperCssPosition, type ImeAnchorInput } from './imeAnchor';
@@ -108,7 +109,7 @@ function isExpectedWorkerLifecycleCancellation(error: unknown): boolean {
 // in node_modules/.vite/deps/, and 404s when init() tries to fetch the
 // .wasm next to the .js.
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
-import { LinkSpanIndex } from './linkSpans';
+import { LinkSpanIndex, type LinkSpan } from './linkSpans';
 import {
 	decideHoverUnderline,
 	decideLinkClick,
@@ -532,6 +533,39 @@ interface PaneEntry {
 	 *  `null` means "no input observed yet at the current prompt". */
 	inputStartRow: number | null;
 	inputStartCol: number | null;
+}
+
+interface RafFrameState {
+	frameOrder: PaneEntry[];
+	dateNow: number;
+	perfNow: number;
+	surfaceJustWiped: boolean;
+	dirtyByPane: Map<string, boolean>;
+	activeWsId: string | null;
+	anyDirty: boolean;
+	activeHost: SurfaceHostHandle | null;
+	hostFrameOpen: boolean;
+	anyRendered: boolean;
+	minDeadlineMs: number;
+}
+
+interface FitGeometry {
+	wCss: number;
+	hCss: number;
+	rows: number;
+	cols: number;
+}
+
+interface AttachCanvas {
+	canvas: HTMLCanvasElement;
+	hostHandle: SurfaceHostHandle | undefined;
+}
+
+interface AttachRenderState {
+	handle: RenderHandle | null;
+	dpr: number;
+	cellW: number;
+	cellH: number;
 }
 
 /** Maximum hold time for `?2026` synchronous output mode. xterm uses 150ms;
@@ -1689,581 +1723,319 @@ export class TerminalManager {
 	 * needs to await the Rust adapter request. Canvas2D-only builds resolve
 	 * on the same tick — call sites should still `await` to stay consistent.
 	 */
-	async attach(paneId: string, container: HTMLElement, workspaceId: string): Promise<void> {
-		if (!this.wasmReady) {
-			throw new Error('TerminalManager.attach: call ready() first');
+	private _forwardPointerMotion(
+		entry: PaneEntry,
+		pending: PointerEvent,
+		hoverCell: { row: number; col: number } | null,
+		modes: number,
+	): boolean {
+		if ((modes & 0x6) === 0 || !hoverCell || ((modes & 0x4) === 0 && pending.buttons === 0)) return false;
+		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+		const last = entry.lastMouseSent;
+		const buttons = pending.buttons;
+		if (last?.row === hoverCell.row && last?.col === hoverCell.col && last.buttons === buttons && last.action === 2) return true;
+		const bytes = entry.kernel.encodeMouse(
+			hoverCell.row,
+			hoverCell.col,
+			mouseButtonFromButtons(buttons),
+			2,
+			pending.shiftKey,
+			pending.ctrlKey || (isMac && pending.metaKey),
+			pending.altKey,
+		);
+		if (bytes.length > 0) {
+			entry.dataHandler?.(bytes);
+			entry.lastMouseSent = { row: hoverCell.row, col: hoverCell.col, buttons, action: 2 };
 		}
-		if (this.panes.has(paneId)) {
-			throw new Error(`TerminalManager.attach: pane ${paneId} already attached`);
-		}
-		// §A.9 — wait for the global SurfaceHost to settle (kicked off
-		// by +page.svelte::onMount → manager.attachHost(canvas) which
-		// races RidgePane mounts). Single global init now, so no
-		// per-workspace lookup.
-		await this._ensureDomHostStarted();
-		if (this.attachHostPromise !== null) {
-			try { await this.attachHostPromise; } catch { /* attachHost handles errors internally */ }
+		this._clearLinkUnderline(entry);
+		entry.container.style.cursor = '';
+		delete entry.container.dataset.linkUnderline;
+		delete entry.container.dataset.linkUnderlineClass;
+		return true;
+	}
+
+	private _applySpanHover(entry: PaneEntry, hoverCell: { row: number; col: number }, span: LinkSpan, showHint: boolean): void {
+		const regions = entry.linkSpans.regionsForSpan(entry.kernel, span).map(underlineRegionsFromSpan);
+		const region = regions[0];
+		if (!region) return;
+		entry.container.dataset.linkUnderline = encodeUnderlineDataset(region.row, region.c0, region.c1);
+		this._showLinkUnderlines(entry, regions);
+		if (showHint) this._showLinkHint(entry, region);
+	}
+
+	private _applyOscHover(entry: PaneEntry, hoverCell: { row: number; col: number }, uri: string | null, showHint: boolean): void {
+		const region = osc8UnderlineRegions(entry.kernel, hoverCell.row, hoverCell.col, uri)[0];
+		if (!region) return;
+		entry.container.dataset.linkUnderline = encodeUnderlineDataset(region.row, region.c0, region.c1);
+		this._showLinkUnderlines(entry, [region]);
+		if (showHint) this._showLinkHint(entry, region);
+	}
+
+		private _clearPointerHover(entry: PaneEntry): void {
+			if (entry.container.style.cursor !== 'pointer' && !entry.container.dataset.linkUnderline && entry.linkUnderlineRegions.length === 0 && !entry.linkHintRegion) return;
+			entry.container.style.cursor = '';
+			delete entry.container.dataset.linkUnderline;
+			delete entry.container.dataset.linkUnderlineClass;
+			this._clearLinkUnderline(entry);
 		}
 
-		const usingWorker = this.usingWorkerRenderer();
-		const gh = this.globalHost;
-		const useHost = gh !== null && this.opts.preferWebgpu && !usingWorker;
-		let canvas: HTMLCanvasElement;
-		let hostHandle: SurfaceHostHandle | undefined;
-		if (useHost && gh) {
-			canvas = gh.canvas;
-			hostHandle = gh.host;
-			// Per-pane container must be transparent so the global
-			// canvas (sitting BEHIND every workspace's SplitContainer
-			// DOM tree) shows through. An opaque background would hide
-			// every WebGPU pixel.
-			container.style.background = 'transparent';
-		} else {
-			canvas = document.createElement('canvas');
-			canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
-			canvas.setAttribute('aria-hidden', 'true');
-			container.appendChild(canvas);
-		}
-		// Apply initial padding to the container. In legacy mode this
-		// inset the per-pane canvas; in host mode the pane's scissor
-		// reads `getComputedStyle().padding*` (see `_recomputeViewport`)
-		// to mirror the same visual inset on the host canvas.
-		if (this.opts.paddingPx && this.opts.paddingPx > 0) {
-			container.style.padding = `${this.opts.paddingPx}px`;
-		}
-
-		// §p4 ITER 1c-2 (2026-05-22) — when the worker-renderer path
-		// owns the canvas, the main-thread `_makeHandle` is a no-op:
-		// the worker has its own `RenderHandle::newFromOffscreen`
-		// after the `transferControlToOffscreen` step below, and the
-		// main thread never needs to call `render(...)` for this pane
-		// again. Setting `handle = null` here makes the per-frame rAF
-		// loop's `entry.handle?.render(...)` no-op and frees the main
-		// thread from per-frame draw work entirely (the actual win of
-		// the P4 ladder).
-		//
-		// Cell metrics fallback: without a main-thread handle we
-		// cannot run `configure(...)` here, so we seed `entry.cellW /
-		// cellH` from the wasm kernel's default 8 / 16 (matching the
-		// `TerminalKernel::new(24, 80, ...)` seed below). The first
-		// `fitPane` driven by the rAF after this attach will compute
-		// real grid dimensions based on the container — slightly
-		// wrong for one frame, then correct. Mouse-cell lookups
-		// before that first fit briefly resolve to row 0 / col 0,
-		// which is acceptable for an opt-in flag-gated path.
-		const handle: RenderHandle | null = usingWorker
-			? null
-			: await this._makeHandleSerialized(canvas, hostHandle);
-		const dpr = window.devicePixelRatio || 1;
-
-		// configure() returns [cellW, cellH] in CSS pixels at the supplied DPR.
-		// In worker-path mode `handle` is null — fall back to the kernel
-		// seed dims (8 × 16); the first fitPane re-resolves real metrics.
-		const [cellW, cellH] = handle
-			? (handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
-					| [number, number]
-					| Float32Array)
-			: ([8, 16] as [number, number]);
-		const cellWnum = quantizeCellSize(Number(cellW), dpr);
-		const cellHnum = quantizeCellSize(Number(cellH), dpr);
-
-		// §B.2 (2026-05-08) — read scrollback capacity from settings at
-		// pane-attach time so the user's "终端 scrollback 行数" preference
-		// (SettingsPanel slider, range 100..=10000) applies to every NEW
-		// pane. Existing panes keep the capacity they were constructed
-		// with (the wasm `Vec<Option<Row>>` is fixed-capacity). Falls
-		// back to `this.opts.scrollbackLines` (constructor default 2000)
-		// when the settings store hasn't been hydrated yet (SSR boot or
-		// pre-first-attach).
-		const settings = _hostPorts?.settings?.get() ?? null;
-		const scrollbackLines =
-			settings && Number.isFinite(settings.terminalScrollbackLines)
-				? settings.terminalScrollbackLines
-				: this.opts.scrollbackLines;
-		// Seed kernel with default 24×80 — we'll resize to actual size right away.
-		const kernel = new TerminalKernel(24, 80, scrollbackLines);
-
-		// Apply theme if provided. Mirror the setTheme() pattern of
-		// `applyDefaultTheme()` first so the kernel starts from a known
-		// baseline before partial overrides land — otherwise any palette
-		// entries not present in `opts.theme` retain whatever bits the
-		// brand-new `Renderer::theme` ended up with, which has bitten us
-		// when the wasm-side default doesn't match the bundled
-		// `endless-dark` defaults (e.g. cursor color).
-		if (this.opts.theme && handle) {
-			handle.applyDefaultTheme();
-			handle.applyTheme(this.opts.theme);
-			if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_THEME_TRACE') === '1') {
-				const t = this.opts.theme;
-				// eslint-disable-next-line no-console
-				console.debug(`[theme-trace] attach paneId=${paneId.slice(0,8)} bg=${t.background ?? '∅'} fg=${t.foreground ?? '∅'} cursor=${t.cursor ?? '∅'}`);
+		private _applyHoverDecision(
+			entry: PaneEntry,
+			cell: { row: number; col: number },
+			link: { uri?: string } | null,
+			span: LinkSpan | null,
+			decision: ReturnType<typeof decideHoverUnderline>,
+		): void {
+			entry.container.style.cursor = decision.cursor;
+			const tokens = underlineCssTokens({ show: decision.showUnderline, kind: span?.kind ?? (link ? 'osc8' : null) });
+			if (tokens.length) entry.container.dataset.linkUnderlineClass = tokens.join(' ');
+			else delete entry.container.dataset.linkUnderlineClass;
+			if (decision.showUnderline && span) return this._applySpanHover(entry, cell, span, decision.showHint);
+			if (decision.showUnderline && link) return this._applyOscHover(entry, cell, link.uri ?? null, decision.showHint);
+			delete entry.container.dataset.linkUnderline;
+			this._clearLinkUnderline(entry);
+			if (decision.showHint && span) this._showLinkHint(entry, underlineRegionsFromSpan(span));
+			if (decision.showHint && link) {
+				const region = osc8UnderlineRegions(entry.kernel, cell.row, cell.col, link.uri ?? null)[0];
+				if (region) this._showLinkHint(entry, region);
 			}
-		} else if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_THEME_TRACE') === '1') {
-			// eslint-disable-next-line no-console
-			console.debug(`[theme-trace] attach paneId=${paneId.slice(0,8)} ${handle ? 'NO_THEME (opts.theme is null — bridge hasn\'t fired yet)' : 'WORKER_PATH (theme applied by render worker)'}`);
 		}
 
-		// Focus reporting (`?1004`) — emit `\x1b[I` / `\x1b[O` to PTY when
-		// the kernel says reporting is enabled. We use focusin/focusout
-		// (vs focus/blur) so events bubble up from interactive descendants
-		// (the canvas takes focus on click via the parent's tabIndex).
-		// Captured into closures up-front so detach() can unbind cleanly.
-		const focusListener = (_e: FocusEvent) => {
-			const e = this.panes.get(paneId);
-			if (!e?.dataHandler) return;
-			if (!e.kernel.isFocusReporting()) return;
-			e.dataHandler(new TextEncoder().encode('\x1b[I'));
+		private _updatePointerHover(entry: PaneEntry, pending: PointerEvent, hoverCell: { row: number; col: number } | null): void {
+			if (!hoverCell) return this._clearPointerHover(entry);
+			const link = entry.kernel.hyperlinkAt(hoverCell.row, hoverCell.col) as { uri?: string } | null;
+			const span = link ? null : entry.linkSpans.hitTest(entry.kernel, hoverCell.row, hoverCell.col);
+			const decision = decideHoverUnderline({
+				hasLinkHit: !!(link || span),
+				modifierHeld: pending.ctrlKey || (/Mac|iPhone|iPod|iPad/.test(navigator.platform || '') && pending.metaKey),
+				spanText: link?.uri ?? span?.text ?? null,
+			});
+			this._applyHoverDecision(entry, hoverCell, link, span, decision);
+		}
+
+	private _flushPointerMove(paneId: string, pending: PointerEvent): void {
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		const hoverCell = this.cellFromEvent(paneId, pending);
+		const modes = entry.kernel.mouseReportingModes();
+		if (this._forwardPointerMotion(entry, pending, hoverCell, modes)) return;
+		this._updatePointerHover(entry, pending, hoverCell);
+		if (entry.selecting && entry.selectionStartAbs && hoverCell) {
+			entry.selectionEndAbs = { row: entry.kernel.scrollbackLen() + hoverCell.row - entry.kernel.scrollOffset(), col: hoverCell.col };
+			this._syncSelection(entry);
+		}
+	}
+
+	private _sendPointerDown(entry: PaneEntry, cell: { row: number; col: number }, event: PointerEvent, mod: boolean): boolean {
+		const bytes = entry.kernel.encodeMouse(cell.row, cell.col, event.button, 0, event.shiftKey, mod, event.altKey);
+		if (bytes.length === 0) return false;
+		entry.dataHandler?.(bytes);
+		entry.lastMouseSent = { row: cell.row, col: cell.col, buttons: event.buttons, action: 0 };
+		try { (event.target as Element | null)?.setPointerCapture?.(event.pointerId); } catch { /* best effort */ }
+		return true;
+	}
+
+	private _extendPointerSelection(entry: PaneEntry, cell: { row: number; col: number }, event: PointerEvent): boolean {
+		if (!event.shiftKey || !entry.selectionStartAbs) return false;
+		try { (event.target as Element | null)?.setPointerCapture?.(event.pointerId); } catch { /* best effort */ }
+		entry.selecting = true;
+		const row = entry.kernel.scrollbackLen() + cell.row - entry.kernel.scrollOffset();
+		entry.selectionEndAbs = { row, col: cell.col };
+		entry.kernel.setSelectionAbs(entry.selectionStartAbs.row, entry.selectionStartAbs.col, row, cell.col);
+		this.wake();
+		return true;
+	}
+
+	private _handleMultiClick(entry: PaneEntry, cell: { row: number; col: number }, detail: number): boolean {
+		if (detail === 2) entry.kernel.selectWordAt(cell.row, cell.col);
+		else if (detail >= 3) entry.kernel.selectLineAt(cell.row);
+		else return false;
+		this.wake();
+		return true;
+	}
+
+	private _handlePointerDown(paneId: string, event: PointerEvent): void {
+		const cell = this.cellFromEvent(paneId, event);
+		const entry = this.panes.get(paneId);
+		if (!cell || !entry) return;
+		if (entry.mouseMoveRaf !== null) cancelAnimationFrame(entry.mouseMoveRaf);
+		entry.mouseMoveRaf = null;
+		entry.pendingMouseMove = null;
+		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+		const mod = event.ctrlKey || (isMac && event.metaKey);
+		const mouseReportingOn = entry.kernel.mouseReportingModes() !== 0;
+		const link = entry.kernel.hyperlinkAt(cell.row, cell.col) as { uri: string; id: string | null } | null;
+		const span = link ? null : entry.linkSpans.hitTest(entry.kernel, cell.row, cell.col);
+		const decision = decideLinkClick({
+			mouseReportingOn,
+			modifierHeld: mod,
+			hasLinkHit: !!(link?.uri || span),
+			primaryButton: event.button === 0,
+		});
+		if (decision.openLink && this.openLinkAt(paneId, cell.row, cell.col)) {
+			event.preventDefault();
+			return;
+		}
+		if (decision.forwardToProgram && mouseReportingOn && this._sendPointerDown(entry, cell, event, mod)) return;
+		if (event.button !== 0 || this._extendPointerSelection(entry, cell, event)) return;
+		if (this._handleMultiClick(entry, cell, event.detail)) return;
+		try { (event.target as Element | null)?.setPointerCapture?.(event.pointerId); } catch { /* best effort */ }
+		entry.selecting = true;
+		const row = entry.kernel.scrollbackLen() + cell.row - entry.kernel.scrollOffset();
+		entry.selectionStartAbs = { row, col: cell.col };
+		entry.selectionEndAbs = { row, col: cell.col };
+		entry.kernel.setSelectionAbs(row, cell.col, row, cell.col);
+		this.wake();
+	}
+
+	private _attachWorkerCanvas(paneId: string, canvas: HTMLCanvasElement, dpr: number, scrollbackLines: number): void {
+		try {
+			canvas.style.pointerEvents = 'none';
+			const offscreen = canvas.transferControlToOffscreen();
+			const worker = this.syncWorkerRendererIdentity();
+			if (!worker) return;
+			this.workerInitializing.add(paneId);
+			worker.init({ paneId, dims: { rows: 24, cols: 80, dpr }, backend: 'canvas2d', scrollbackLines })
+				.then(() => {
+					const entry = this.panes.get(paneId);
+					if (!entry || entry.parked || !this.workerInitializing.has(paneId) || !this.isCurrentWorkerRenderer(worker)) return null;
+					return worker.bindCanvas(paneId, offscreen, { font: this.opts.fontFamily, fontSizePx: this.opts.fontSizePx, dpr });
+				})
+				.then((response) => {
+					this.workerInitializing.delete(paneId);
+					if (!response || !this.isCurrentWorkerRenderer(worker)) return;
+					this.workerAttached.add(paneId);
+					if (response.type !== 'ready' || typeof response.cellW !== 'number' || typeof response.cellH !== 'number' || response.cellW <= 0 || response.cellH <= 0) return;
+					const entry = this.panes.get(paneId);
+					if (!entry) return;
+					entry.cellW = quantizeCellSize(response.cellW, dpr);
+					entry.cellH = quantizeCellSize(response.cellH, dpr);
+					entry.lastConfiguredDpr = dpr;
+					this.fitPaneNow(paneId);
+				})
+				.catch((error) => {
+					this.workerInitializing.delete(paneId);
+					if (!isExpectedWorkerLifecycleCancellation(error) && this.isCurrentWorkerRenderer(worker)) failWorkerRenderer(error);
+				});
+		} catch (error) {
+			this.workerInitializing.delete(paneId);
+			failWorkerRenderer(error);
+		}
+	}
+
+	private _stopAttachAutoScroll(entry: PaneEntry): void {
+		if (entry.autoScrollTimer !== null) clearInterval(entry.autoScrollTimer);
+		entry.autoScrollTimer = null;
+		entry.autoScrollDirection = null;
+	}
+
+	private _startAttachAutoScroll(paneId: string, entry: PaneEntry, event: PointerEvent, direction: 'up' | 'down'): void {
+		this._stopAttachAutoScroll(entry);
+		entry.autoScrollDirection = direction;
+		entry.autoScrollTimer = setInterval(() => {
+			const current = this.panes.get(paneId);
+			if (!current || !current.selecting || !current.selectionStartAbs) {
+				if (current) this._stopAttachAutoScroll(current);
+				return;
+			}
+			if (direction === 'up') this.scrollUp(paneId, 1);
+			else this.scrollDown(paneId, 1);
+			const rows = current.kernel.rows();
+			const cols = current.kernel.cols();
+			if (rows === 0 || cols === 0) return;
+			const point = current.pendingMouseMove ?? event;
+			const rect = current.container.getBoundingClientRect();
+			const col = Math.max(0, Math.min(cols - 1, Math.floor((point.clientX - rect.left) / current.cellW)));
+			const row = current.kernel.scrollbackLen() + (direction === 'up' ? 0 : rows - 1) - current.kernel.scrollOffset();
+			current.selectionEndAbs = { row, col };
+			this._syncSelection(current);
+		}, 30);
+	}
+
+	private _updateAttachAutoScroll(paneId: string, entry: PaneEntry, event: PointerEvent): void {
+		if (!entry.selecting || !entry.selectionStartAbs) {
+			this._stopAttachAutoScroll(entry);
+			return;
+		}
+		const rect = entry.container.getBoundingClientRect();
+		const y = event.clientY - rect.top;
+		let direction: 'up' | 'down' | null = null;
+		if (y < 24) direction = 'up';
+		else if (y > rect.height - 24) direction = 'down';
+		if (!direction) {
+			this._stopAttachAutoScroll(entry);
+			return;
+		}
+		if (entry.autoScrollTimer !== null && entry.autoScrollDirection === direction) return;
+		this._startAttachAutoScroll(paneId, entry, event, direction);
+	}
+
+	private _createAttachBindings(paneId: string, container: HTMLElement): Pick<PaneEntry, 'focusListener' | 'blurListener' | 'pointerDownListener' | 'pointerMoveListener' | 'pointerUpListener' | 'pointerCancelListener' | 'pointerLeaveListener' | 'modifierKeyListener'> & { linkHintEl: HTMLDivElement } {
+		const focusListener = () => {
+			const entry = this.panes.get(paneId);
+			if (entry?.dataHandler && entry.kernel.isFocusReporting()) entry.dataHandler(new TextEncoder().encode('\x1b[I'));
 		};
-		const blurListener = (_e: FocusEvent) => {
-			const e = this.panes.get(paneId);
-			if (!e?.dataHandler) return;
-			if (!e.kernel.isFocusReporting()) return;
-			e.dataHandler(new TextEncoder().encode('\x1b[O'));
+		const blurListener = () => {
+			const entry = this.panes.get(paneId);
+			if (entry?.dataHandler && entry.kernel.isFocusReporting()) entry.dataHandler(new TextEncoder().encode('\x1b[O'));
+		};
+		const isScrollbar = (event: PointerEvent) => !!(event.target as Element | null)?.closest?.('.rg-scrollbar-track, .rg-scrollbar-thumb');
+		const flushPointerMove = () => {
+			const entry = this.panes.get(paneId);
+			if (!entry) return;
+			const pending = entry.pendingMouseMove;
+			entry.pendingMouseMove = null;
+			entry.mouseMoveRaf = null;
+			if (pending) this._flushPointerMove(paneId, pending);
+		};
+		const pointerDownListener = (event: PointerEvent) => {
+			if (!isScrollbar(event)) this._handlePointerDown(paneId, event);
+		};
+		const pointerMoveListener = (event: PointerEvent) => {
+			if (isScrollbar(event)) return;
+			const entry = this.panes.get(paneId);
+			if (!entry) return;
+			entry.lastPointerPoint = { clientX: event.clientX, clientY: event.clientY, buttons: event.buttons, shiftKey: event.shiftKey, altKey: event.altKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey };
+			entry.pendingMouseMove = event;
+			entry.mouseMoveRaf ??= requestAnimationFrame(flushPointerMove);
+			this._updateAttachAutoScroll(paneId, entry, event);
+		};
+		const modifierKeyListener = (event: KeyboardEvent) => {
+			if (event.key !== 'Control' && event.key !== 'Meta') return;
+			const entry = this.panes.get(paneId);
+			const point = entry?.lastPointerPoint;
+			if (!entry || !point) return;
+			const mac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+			const held = event.ctrlKey || (mac && event.metaKey);
+			entry.pendingMouseMove = { ...point, ctrlKey: mac ? held || event.metaKey : held, metaKey: event.metaKey } as PointerEvent;
+			entry.mouseMoveRaf ??= requestAnimationFrame(flushPointerMove);
+		};
+		const pointerUpListener = (event: PointerEvent, force = false) => {
+			if (!force && isScrollbar(event)) return;
+			const entry = this.panes.get(paneId);
+			if (!entry) return;
+			if (entry.kernel.mouseReportingModes() !== 0) {
+				const cell = this.cellFromEvent(paneId, event);
+				if (cell) {
+					const mac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+					const bytes = entry.kernel.encodeMouse(cell.row, cell.col, 3, 1, event.shiftKey, event.ctrlKey || (mac && event.metaKey), event.altKey);
+					if (bytes.length > 0) entry.dataHandler?.(bytes);
+				}
+			}
+			entry.selecting = false;
+			entry.lastMouseSent = null;
+			this._stopAttachAutoScroll(entry);
+			try { (event.target as Element | null)?.releasePointerCapture?.(event.pointerId); } catch { /* best effort */ }
+		};
+		const pointerCancelListener = (event: PointerEvent) => pointerUpListener(event, true);
+		const pointerLeaveListener = () => {
+			const entry = this.panes.get(paneId);
+			if (!entry) return;
+			entry.lastPointerPoint = null;
+			this._clearPointerHover(entry);
 		};
 		container.addEventListener('focusin', focusListener);
 		container.addEventListener('focusout', blurListener);
-
-		// Mouse-drag selection. The kernel already exposes setSelection /
-		// getSelectionText; we just translate pointer coords → cell coords
-		// and stream updates while dragging. Pointer capture on pointerdown
-		// keeps moves flowing even when the cursor leaves the container.
-		const computeCell = (e: PointerEvent): { row: number; col: number } | null =>
-			this.cellFromEvent(paneId, e);
-		// JS-side mirror of selection.rs:22 — the abs-row encoding wasm
-		// Selection uses is `0..sb_len` for scrollback rows and
-		// `sb_len..sb_len+rows` for live grid rows, so the correct vp→abs
-		// formula is `sb_len + vp - off`. A previous round of this code
-		// used `vp + off`, which is only correct when sb_len = 0 — the
-		// moment a pane accumulates any history (claude on first run),
-		// stored abs landed below vp_first_abs and range_in_viewport
-		// clipped the entire selection to None ("mouse selection
-		// completely broken").
-		const vpToAbsRow = (vpRow: number, kernel: TerminalKernel): number =>
-			kernel.scrollbackLen() + vpRow - kernel.scrollOffset();
-		// The custom scrollbar (RidgePane.svelte) renders as a sibling DOM
-		// overlay on top of the canvas. Pointerdown on the track's empty
-		// space has no element-local handler, so it bubbles into the
-		// container and kicks off terminal selection — the user sees a
-		// stray drag-select fire whenever they grab the scrollbar near
-		// (but not on) the thumb. The thumb itself calls stopPropagation,
-		// but a belt-and-suspenders target check at the listener entry
-		// keeps thumb / track / and any future child of the scrollbar
-		// fully isolated from selection/hover logic.
-		const isInScrollbar = (e: PointerEvent): boolean => {
-			const tgt = e.target as Element | null;
-			return !!tgt?.closest?.('.rg-scrollbar-track, .rg-scrollbar-thumb');
-		};
-		// Mouse mode bitmask (kernel.mouseReportingModes()):
-		//   bit 0 = ?1000 (normal), bit 1 = ?1002 (button-event / drag),
-		//   bit 2 = ?1003 (any-event / motion), bit 3 = ?1006 (SGR).
-		// One wasm call replaces 3 separate boolean getters on every
-		// pointer event — a measurable saving at 60-120 Hz pointermove.
-		const MOUSE_BTN_EVT = 0x2;
-		const MOUSE_ANY_EVT = 0x4;
-		const flushPointerMove = () => {
-			const ent = this.panes.get(paneId);
-			if (!ent) return;
-			const pending = ent.pendingMouseMove;
-			ent.pendingMouseMove = null;
-			ent.mouseMoveRaf = null;
-			if (!pending) return;
-
-			const hoverCell = computeCell(pending);
-			const modes = ent.kernel.mouseReportingModes();
-
-			// ★ TUI mouse motion forwarding: when ?1002 (button-event /
-			// drag) or ?1003 (any-event / all motion) is active, encode
-			// and send each move to the application. No Alt escape hatch
-			// — symmetric with pointerdown above (TUI takes priority for
-			// every event, modifier-aware encoding still flows through).
-			const isMouseMotion = (modes & (MOUSE_BTN_EVT | MOUSE_ANY_EVT)) !== 0;
-			if (isMouseMotion && hoverCell) {
-				// ?1003: forward ALL motion (no drag required).
-				// ?1002: only forward while a mouse button is held —
-				// read PointerEvent.buttons directly instead of relying
-				// on `ent.selecting`, which is the host drag-select
-				// flag. Conflating the two used to leak stale host
-				// selection: a TUI mouse-mode pointerdown set
-				// selecting=true to gate ?1002 motion, and if the TUI
-				// then disabled mouse reporting (or exited back to
-				// shell) mid-press, the next move would fall into the
-				// host selection block with selecting still true and
-				// `selectionStartAbs` carrying residue from a prior
-				// host drag, silently extending that selection.
-				if ((modes & MOUSE_ANY_EVT) !== 0 || pending.buttons !== 0) {
-					const isMacUA = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
-					const mod = pending.ctrlKey || (isMacUA && pending.metaKey);
-					const btn = mouseButtonFromButtons(pending.buttons);
-					const buttons = pending.buttons;
-					const action = 2; // motion
-					// Dedup: same cell + same buttons + same action → skip
-					// the wasm encode + dataHandler. A single slow drag can
-					// fire thousands of pointermoves within one cell; the
-					// TUI only needs one motion per cell transition.
-					const last = ent.lastMouseSent;
-					if (
-						last?.row !== hoverCell.row ||
-						last?.col !== hoverCell.col ||
-						last?.buttons !== buttons ||
-						last?.action !== action
-					) {
-						const bytes = ent.kernel.encodeMouse(hoverCell.row, hoverCell.col, btn, action, pending.shiftKey, mod, pending.altKey);
-						if (bytes.length > 0) {
-							ent.dataHandler?.(bytes);
-							ent.lastMouseSent = { row: hoverCell.row, col: hoverCell.col, buttons, action };
-						}
-					}
-					this._clearLinkUnderline(ent);
-					ent.container.style.cursor = '';
-					delete ent.container.dataset.linkUnderline;
-					delete ent.container.dataset.linkUnderlineClass;
-					return;
-				}
-			}
-
-			// Hover over OSC 8 or pure-text link. Every validated hit paints the
-			// thin actionable underline; bare hover also shows a non-blocking hint.
-			// The link index
-			// is lazy and cached, so this does not rescan terminal text per move.
-			const isMacUA2 = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
-			const mod2 = pending.ctrlKey || (isMacUA2 && pending.metaKey);
-			if (hoverCell) {
-				const link = ent.kernel.hyperlinkAt(hoverCell.row, hoverCell.col);
-				const span = link
-					? null
-					: ent.linkSpans.hitTest(ent.kernel, hoverCell.row, hoverCell.col);
-				const hit = !!(link || span);
-				const spanText = link
-					? (link as { uri?: string }).uri ?? null
-					: span?.text ?? null;
-				const dec = decideHoverUnderline({
-					hasLinkHit: hit,
-					modifierHeld: mod2,
-					spanText,
-				});
-				ent.container.style.cursor = dec.cursor;
-				const kind = span?.kind ?? (link ? 'osc8' : null);
-				const tokens = underlineCssTokens({ show: dec.showUnderline, kind });
-				if (tokens.length) {
-					ent.container.dataset.linkUnderlineClass = tokens.join(' ');
-				} else {
-					delete ent.container.dataset.linkUnderlineClass;
-				}
-				if (dec.showUnderline && span) {
-					const regions = ent.linkSpans
-						.regionsForSpan(ent.kernel, span)
-						.map(underlineRegionsFromSpan);
-					const r = regions[0];
-					if (r) {
-						ent.container.dataset.linkUnderline = encodeUnderlineDataset(r.row, r.c0, r.c1);
-						this._showLinkUnderlines(ent, regions);
-						if (dec.showHint) this._showLinkHint(ent, r);
-					}
-				} else if (dec.showUnderline && link) {
-					const uri = (link as { uri?: string }).uri ?? null;
-					const regions = osc8UnderlineRegions(ent.kernel, hoverCell.row, hoverCell.col, uri);
-					const r = regions[0];
-					if (r) {
-						ent.container.dataset.linkUnderline = encodeUnderlineDataset(r.row, r.c0, r.c1);
-						this._showLinkUnderlines(ent, regions);
-						if (dec.showHint) this._showLinkHint(ent, r);
-					}
-				} else if (dec.showHint && span) {
-					delete ent.container.dataset.linkUnderline;
-					this._clearLinkUnderline(ent);
-					this._showLinkHint(ent, underlineRegionsFromSpan(span));
-				} else if (dec.showHint && link) {
-					delete ent.container.dataset.linkUnderline;
-					this._clearLinkUnderline(ent);
-					const hintRegion = osc8UnderlineRegions(
-						ent.kernel,
-						hoverCell.row,
-						hoverCell.col,
-						(link as { uri?: string }).uri ?? null,
-					)[0];
-					if (hintRegion) this._showLinkHint(ent, hintRegion);
-				} else {
-					delete ent.container.dataset.linkUnderline;
-					delete ent.container.dataset.linkUnderlineClass;
-					this._clearLinkUnderline(ent);
-				}
-			} else if (
-				ent.container.style.cursor === 'pointer' ||
-				ent.container.dataset.linkUnderline ||
-				ent.linkUnderlineRegions.length > 0 || ent.linkHintRegion
-			) {
-				// Clear affordance when modifier released or left the cell.
-				ent.container.style.cursor = '';
-				delete ent.container.dataset.linkUnderline;
-				delete ent.container.dataset.linkUnderlineClass;
-				this._clearLinkUnderline(ent);
-			}
-
-			// Continue with selection drag logic.
-			if (!ent.selecting || !ent.selectionStartAbs || !hoverCell) return;
-			ent.selectionEndAbs = { row: vpToAbsRow(hoverCell.row, ent.kernel), col: hoverCell.col };
-			this._syncSelection(ent);
-		};
-		const pointerDownListener = (e: PointerEvent) => {
-			if (isInScrollbar(e)) return;
-			const cell = computeCell(e);
-			if (!cell) return;
-			const ent = this.panes.get(paneId);
-			if (!ent) return;
-
-			// Drop any pointermove that's still queued for the next rAF —
-			// otherwise it fires AFTER this pointerdown's encoded press
-			// reaches the TUI, and the TUI reads it as "the user pressed
-			// at A then immediately dragged to A_prev", extending the
-			// selection / visual range backwards by one frame's worth of
-			// cursor history. Symptom: "selection starts from where the
-			// cursor was a moment ago, not where I clicked."
-			if (ent.mouseMoveRaf !== null) {
-				cancelAnimationFrame(ent.mouseMoveRaf);
-				ent.mouseMoveRaf = null;
-			}
-			ent.pendingMouseMove = null;
-
-			const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
-			const mod = e.ctrlKey || (isMac && e.metaKey);
-			const mouseReportingOn = ent.kernel.mouseReportingModes() !== 0;
-			const oscLink = ent.kernel.hyperlinkAt(cell.row, cell.col) as
-				| { uri: string; id: string | null }
-				| null;
-			const textSpan = oscLink
-				? null
-				: ent.linkSpans.hitTest(ent.kernel, cell.row, cell.col);
-			const hasLinkHit = !!(oscLink?.uri || textSpan);
-			const clickDec = decideLinkClick({
-				mouseReportingOn,
-				modifierHeld: mod,
-				hasLinkHit,
-				primaryButton: e.button === 0,
-			});
-
-			// OP-TERM-LINK / C51: validated links open directly. If a path has no
-			// host route (for example a mobile-only partial injection), leave the
-			// event available to normal selection instead of swallowing it.
-			if (clickDec.openLink && this.openLinkAt(paneId, cell.row, cell.col)) {
-				e.preventDefault();
-				return;
-			}
-
-			// ★ TUI mouse reporting: bare clicks forward to the application.
-			// Host selection inside a TUI requires disabling mouse reporting
-			// in the app (vim: `:set mouse=`) — xterm contract. Alt still
-			// encodes into SGR (input.rs encode_mouse |8).
-			if (clickDec.forwardToProgram && mouseReportingOn) {
-				const btn = e.button; // 0=left, 1=middle, 2=right
-				const bytes = ent.kernel.encodeMouse(cell.row, cell.col, btn, 0, e.shiftKey, mod, e.altKey);
-				if (bytes.length > 0) {
-					ent.dataHandler?.(bytes);
-					ent.lastMouseSent = { row: cell.row, col: cell.col, buttons: e.buttons, action: 0 };
-					try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
-					return;
-				}
-			}
-
-			// Only primary button (left) for selection. Right-click /
-			// middle-click handled by context menu in RidgePane.
-			if (e.button !== 0) return;
-			if (!clickDec.startHostSelection && !e.shiftKey) {
-				// Non-selection host path already handled above.
-			}
-			// Shift-click extends the existing selection from its anchor
-			// (last drag's start) to the clicked cell. If there's no
-			// anchor yet, treat it as a normal click. Continues into drag
-			// mode so subsequent move keeps extending — same as xterm.
-			if (e.shiftKey && ent.selectionStartAbs) {
-				try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
-				ent.selecting = true;
-				const absEndRow = vpToAbsRow(cell.row, ent.kernel);
-				ent.selectionEndAbs = { row: absEndRow, col: cell.col };
-				ent.kernel.setSelectionAbs(
-					ent.selectionStartAbs.row, ent.selectionStartAbs.col,
-					absEndRow, cell.col,
-				);
-				this.wake();
-				return;
-			}
-			// Multi-click: e.detail counts consecutive clicks within the
-			// browser's double-click interval. Triple-click = full line,
-			// double-click = word at cell. We do NOT enter drag mode for
-			// these — a follow-up move shouldn't shrink/extend the multi-
-			// click selection (matches xterm/iTerm behaviour).
-			if (e.detail === 2) {
-				ent.kernel.selectWordAt(cell.row, cell.col);
-				this.wake();
-				return;
-			}
-			if (e.detail >= 3) {
-				ent.kernel.selectLineAt(cell.row);
-				this.wake();
-				return;
-			}
-			try { (e.target as Element | null)?.setPointerCapture?.(e.pointerId); } catch {}
-			ent.selecting = true;
-			const absRow = vpToAbsRow(cell.row, ent.kernel);
-			ent.selectionStartAbs = { row: absRow, col: cell.col };
-			ent.selectionEndAbs = { row: absRow, col: cell.col };
-			ent.kernel.setSelectionAbs(absRow, cell.col, absRow, cell.col);
-			this.wake();
-		};
-		// pointermove is batched on requestAnimationFrame so a single
-		// drag can't fire 60-120 wasm encodeMouse calls per second. The
-		// flushPointerMove helper above does the actual work + cell-dedup
-		// when the rAF tick runs; here we just record the latest event
-		// and schedule one tick if none is queued. Last-event-wins is fine
-		// (TUIs only react to the current cursor position, not
-		// intermediate samples).
-		// Drag-selection auto-scroll: when the user holds the left button
-		// and drags past the viewport's top/bottom edge during a host
-		// selection, scroll one row in that direction at a fixed rate
-		// and re-pin the selection's moving end to the freshly-revealed
-		// edge row. Without this the drag stalls at the viewport limit
-		// even though the scrollback content the user wants to select
-		// sits one row away. Same contract as xterm.js / iTerm2 / kitty.
-		const AUTO_SCROLL_EDGE_PX = 24;
-		const AUTO_SCROLL_INTERVAL_MS = 30;
-		const stopAutoScroll = (ent: PaneEntry) => {
-			if (ent.autoScrollTimer !== null) {
-				clearInterval(ent.autoScrollTimer);
-				ent.autoScrollTimer = null;
-			}
-			ent.autoScrollDirection = null;
-		};
-		const updateAutoScrollFromEdge = (ent: PaneEntry, e: PointerEvent) => {
-			// Only auto-scroll during an active host drag-select. TUI
-			// mouse-reporting paths and idle hover don't trigger it.
-			if (!ent.selecting || !ent.selectionStartAbs) { stopAutoScroll(ent); return; }
-			const rect = ent.container.getBoundingClientRect();
-			const y = e.clientY - rect.top;
-			let dir: 'up' | 'down' | null = null;
-			if (y < AUTO_SCROLL_EDGE_PX) dir = 'up';
-			else if (y > rect.height - AUTO_SCROLL_EDGE_PX) dir = 'down';
-			if (dir === null) { stopAutoScroll(ent); return; }
-			// Same direction already ticking → keep going. Direction
-			// flipped → reset so the new tick fires immediately rather
-			// than waiting out the old interval.
-			if (ent.autoScrollTimer !== null && ent.autoScrollDirection === dir) return;
-			if (ent.autoScrollTimer !== null) clearInterval(ent.autoScrollTimer);
-			ent.autoScrollDirection = dir;
-			ent.autoScrollTimer = setInterval(() => {
-				const cur = this.panes.get(paneId);
-				if (!cur || !cur.selecting || !cur.selectionStartAbs) {
-					if (cur) stopAutoScroll(cur);
-					return;
-				}
-				if (dir === 'up') this.scrollUp(paneId, 1);
-				else this.scrollDown(paneId, 1);
-				const rowsCount = cur.kernel.rows();
-				const colsCount = cur.kernel.cols();
-				if (rowsCount === 0 || colsCount === 0) return;
-				// Re-pin selection end to the new edge row. Use the last
-				// pending pointer event's X for the column (the user's
-				// hand may still be hovering off-edge after the initial
-				// crossing) and the just-revealed top/bottom row in vp
-				// coords. Convert to abs via *current* scroll_offset —
-				// already shifted by the scrollUp/Down call above.
-				const lastEvt = cur.pendingMouseMove ?? e;
-				const r2 = cur.container.getBoundingClientRect();
-				const xCol = Math.max(0, Math.min(colsCount - 1,
-					Math.floor((lastEvt.clientX - r2.left) / cur.cellW)));
-				const vpRow = dir === 'up' ? 0 : rowsCount - 1;
-				const absRow = vpToAbsRow(vpRow, cur.kernel);
-				cur.selectionEndAbs = { row: absRow, col: xCol };
-				this._syncSelection(cur);
-			}, AUTO_SCROLL_INTERVAL_MS);
-		};
-		const pointerMoveListener = (e: PointerEvent) => {
-			if (isInScrollbar(e)) return;
-			const ent = this.panes.get(paneId);
-			if (!ent) return;
-			// Keep only geometry/modifier state, not the DOM event itself. A
-			// modifier key can change while the pointer is stationary; the
-			// key listener below re-runs the same hover hit-test so Ctrl-hover
-			// becomes visible without requiring an extra mouse nudge.
-			ent.lastPointerPoint = {
-				clientX: e.clientX,
-				clientY: e.clientY,
-				buttons: e.buttons,
-				shiftKey: e.shiftKey,
-				altKey: e.altKey,
-				ctrlKey: e.ctrlKey,
-				metaKey: e.metaKey,
-			};
-			ent.pendingMouseMove = e;
-			ent.mouseMoveRaf ??= requestAnimationFrame(flushPointerMove);
-			// Edge auto-scroll runs synchronously off the raw move event
-			// — coupling it to the rAF tick would make the initial
-			// cross-into-edge feel laggy by up to 16ms.
-			updateAutoScrollFromEdge(ent, e);
-		};
-		const modifierKeyListener = (e: KeyboardEvent) => {
-			if (e.key !== 'Control' && e.key !== 'Meta') return;
-			const ent = this.panes.get(paneId);
-			const point = ent?.lastPointerPoint;
-			if (!ent || !point) return;
-			const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
-			const modifierHeld = e.ctrlKey || (isMac && e.metaKey);
-			// `flushPointerMove` consumes only these PointerEvent fields. A
-			// small plain object avoids constructing a browser event (which
-			// older WebView2 builds reject outside a trusted dispatch).
-			ent.pendingMouseMove = {
-				...point,
-				ctrlKey: isMac ? (modifierHeld || e.metaKey) : modifierHeld,
-				metaKey: e.metaKey,
-			} as PointerEvent;
-			ent.mouseMoveRaf ??= requestAnimationFrame(flushPointerMove);
-		};
-		const pointerUpListener = (e: PointerEvent, force = false) => {
-			// A normal release on the custom scrollbar is intentionally ignored;
-			// cancellation is different: it must always clear selection/capture,
-			// even when the OS reports the final coordinates over that scrollbar.
-			if (!force && isInScrollbar(e)) return;
-			const ent = this.panes.get(paneId);
-			if (!ent) return;
-
-			// ★ TUI mouse release forwarding: send button release event
-			// when mouse reporting is active, so the TUI app doesn't
-			// get stuck in a pressed state.
-			if (ent.kernel.mouseReportingModes() !== 0) {
-				const cell = computeCell(e);
-				if (cell) {
-					const isMacUA = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
-					const ctrl = e.ctrlKey || (isMacUA && e.metaKey);
-					const bytes = ent.kernel.encodeMouse(cell.row, cell.col, 3, 1, e.shiftKey, ctrl, e.altKey);
-					// btn=3=release, action=1=release → ESC [ <3 ; row ; col m
-					if (bytes.length > 0) {
-						ent.dataHandler?.(bytes);
-					}
-				}
-			}
-
-			ent.selecting = false;
-			// Release ends the press; the next motion may come with no
-			// button held → reset dedup baseline so the first such motion
-			// (button=0) is not suppressed against the press baseline.
-			ent.lastMouseSent = null;
-			// Drag is done — kill any auto-scroll ticker that may be
-			// running because pointer-up arrived while the cursor still
-			// sat in the edge band.
-			stopAutoScroll(ent);
-			try { (e.target as Element | null)?.releasePointerCapture?.(e.pointerId); } catch {}
-		};
-		// Touch cancellation (OS gesture, tab switch, or a lost capture) must
-		// release the TUI button just like pointerup, otherwise applications such
-		// as Grok/Claude can remain stuck in a pressed/dragging state.
-		const pointerCancelListener = (e: PointerEvent) => pointerUpListener(e, true);
-		const pointerLeaveListener = (_e: PointerEvent) => {
-			const ent = this.panes.get(paneId);
-			if (!ent) return;
-			ent.lastPointerPoint = null;
-			ent.container.style.cursor = '';
-			delete ent.container.dataset.linkUnderline;
-			delete ent.container.dataset.linkUnderlineClass;
-			this._clearLinkUnderline(ent);
-		};
 		container.addEventListener('pointerdown', pointerDownListener);
 		container.addEventListener('pointermove', pointerMoveListener);
 		container.addEventListener('pointerup', pointerUpListener);
@@ -2271,171 +2043,10 @@ export class TerminalManager {
 		container.addEventListener('pointerleave', pointerLeaveListener);
 		container.addEventListener('keydown', modifierKeyListener);
 		container.addEventListener('keyup', modifierKeyListener);
-		const linkHintEl = createLinkHintOverlay(container);
+		return { focusListener, blurListener, pointerDownListener, pointerMoveListener, pointerUpListener, pointerCancelListener, pointerLeaveListener, modifierKeyListener, linkHintEl: createLinkHintOverlay(container) };
+	}
 
-		const entry: PaneEntry = {
-			paneId,
-			workspaceId,
-			container,
-			canvas,
-			kernel,
-			handle,
-			cellW: cellWnum,
-			cellH: cellHnum,
-			lastConfiguredDpr: dpr,
-			resizeObserver: new ResizeObserver(() => this.viewportChanged(paneId)),
-			lastReportedRows: -1,
-			lastReportedCols: -1,
-			lastViewportKernelRows: -1,
-			lastViewportKernelCols: -1,
-			pendingFitTimer: null,
-			initialFitTimer: null,
-			initialFitAttempt: 0,
-			syncStart: null,
-			syncTimeoutRendered: false,
-			deltaFrameId: 0,
-			renderFrameId: 0,
-			focusListener,
-			blurListener,
-			selecting: false,
-			selectionStartAbs: null,
-			selectionEndAbs: null,
-			lastMouseSent: null,
-			pendingMouseMove: null,
-			mouseMoveRaf: null,
-			autoScrollTimer: null,
-			autoScrollDirection: null,
-			pointerDownListener,
-			pointerMoveListener,
-			pointerUpListener,
-			pointerCancelListener,
-			pointerLeaveListener,
-			modifierKeyListener,
-			lastPointerPoint: null,
-			parked: false,
-			rendererRetained: false,
-			parkReason: null,
-			lastForegroundAt: Date.now(),
-			imeAnchor: null,
-			imeAnchorRaf: null,
-			feedBuffer: null,
-			feedFlushTimer: null,
-			linkSpans: new LinkSpanIndex(),
-			linkUnderlineEls: [],
-			linkUnderlineRegions: [],
-			linkHintEl,
-			linkHintRegion: null,
-			lastScrollOffset: -1,
-			lastScrollTotal: -1,
-			scrollStateHandler: null,
-			feedDeferred: null,
-			feedDeferredChunks: [],
-			feedDeferredBytes: 0,
-			feedDroppedBytes: 0,
-			feedDropCount: 0,
-			feedNeedsResync: false,
-			inputStartRow: null,
-			inputStartCol: null,
-		};
-		entry.resizeObserver.observe(container);
-
-		this.panes.set(paneId, entry);
-
-		// §p4 ITER 1b/1d (2026-05-22) — worker-renderer hand-off.
-		// When the worker-renderer flag is on AND the worker singleton
-		// is alive, transfer the canvas to the worker via
-		// `transferControlToOffscreen()` and post `bindCanvas` so the
-		// worker's per-pane `RenderHandle` (newFromOffscreen) can paint
-		// it directly. After ITER 1c-2 the main-thread `_makeHandle`
-		// is skipped (entry.handle === null) when this branch fires,
-		// so there's no detached-canvas render attempt. Fire-and-forget
-		// bindCanvas — a worker hiccup must not block pane attach.
-		//
-		// ITER 1d: also set `pointerEvents: 'none'` on the (now
-		// transferred) canvas so the pane container's existing
-		// pointer/keyboard handlers continue to receive events even
-		// after the canvas detaches. Without this, browsers can
-		// route pointer events to the canvas element first; once
-		// detached its event behavior is undefined and we'd lose
-		// pointer capture during mouse-mode TUI rendering.
-		if (usingWorker) {
-			try {
-				canvas.style.pointerEvents = 'none';
-				const offscreen = canvas.transferControlToOffscreen();
-				const wr = this.syncWorkerRendererIdentity();
-				if (wr) {
-					this.workerInitializing.add(paneId);
-					// §p4 ITER 5 (2026-05-22) — pass measure args so the
-					// worker can `configure()` the new RenderHandle and
-					// return real cell metrics in the `ready` response.
-					// On success we update `entry.cellW / cellH` (still
-					// quantized to dev-pixel grid) and trigger a fit so
-					// the first visible frame sees the right rows/cols.
-					wr.init({
-						paneId,
-						dims: { rows: 24, cols: 80, dpr },
-						backend: 'canvas2d',
-						scrollbackLines,
-					})
-						.then(() => {
-							const ent = this.panes.get(paneId);
-							if (
-								!ent ||
-								ent.parked ||
-								!this.workerInitializing.has(paneId) ||
-								!this.isCurrentWorkerRenderer(wr)
-							) return null;
-							return wr.bindCanvas(paneId, offscreen, {
-								font: this.opts.fontFamily,
-								fontSizePx: this.opts.fontSizePx,
-								dpr,
-							});
-						})
-						.then((response) => {
-							if (!response) {
-								this.workerInitializing.delete(paneId);
-								return;
-							}
-							this.workerInitializing.delete(paneId);
-							if (!this.isCurrentWorkerRenderer(wr)) return;
-							this.workerAttached.add(paneId);
-							if (
-								response.type === 'ready' &&
-								typeof response.cellW === 'number' &&
-								typeof response.cellH === 'number' &&
-								response.cellW > 0 &&
-								response.cellH > 0
-							) {
-								const ent = this.panes.get(paneId);
-								if (!ent) return;
-								ent.cellW = quantizeCellSize(response.cellW, dpr);
-								ent.cellH = quantizeCellSize(response.cellH, dpr);
-								ent.lastConfiguredDpr = dpr;
-								this.fitPaneNow(paneId);
-							}
-						})
-						.catch((err) => {
-							this.workerInitializing.delete(paneId);
-							if (!isExpectedWorkerLifecycleCancellation(err) && this.isCurrentWorkerRenderer(wr)) {
-								failWorkerRenderer(err);
-							}
-						});
-				}
-			} catch (err) {
-				this.workerInitializing.delete(paneId);
-				failWorkerRenderer(err);
-			}
-		}
-
-		// Initial fit: do it once synchronously after layout settles. We
-		// wait one rAF (so SvelteKit hydration finishes), then fit
-		// directly without debounce so the PTY gets sized before any
-		// shell output arrives.
-		// iter-60 G2: in shared-remote (desktop-in-browser) mode the initial
-		// fit CLAIMS the PTY at this viewer's size — without this the pane
-		// letterboxes the host's grid forever ("shell 渲染区不填满 pane" bug).
-		// Passive fits afterwards still only re-letterbox (multi-viewer safe).
-		this._scheduleInitialFit(entry);
+	private _installAttachDebugHooks(paneId: string): void {
 		// Expose a debug-dump entry point on `window` so we can inspect
 		// what characters a TUI actually wrote into a row from DevTools
 		// console — no module import required. Read-only beyond a brief
@@ -2722,6 +2333,180 @@ export class TerminalManager {
 			};
 			}
 		}
+	}
+
+	private async _awaitAttachHost(): Promise<void> {
+		await this._ensureDomHostStarted();
+		if (this.attachHostPromise === null) return;
+		try { await this.attachHostPromise; } catch { /* attachHost handles errors internally */ }
+	}
+
+	private _createAttachCanvas(container: HTMLElement, usingWorker: boolean): AttachCanvas {
+		const gh = this.globalHost;
+		const useHost = gh !== null && this.opts.preferWebgpu && !usingWorker;
+		if (useHost && gh) {
+			container.style.background = 'transparent';
+			return { canvas: gh.canvas, hostHandle: gh.host };
+		}
+		const canvas = document.createElement('canvas');
+		canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
+		canvas.setAttribute('aria-hidden', 'true');
+		container.appendChild(canvas);
+		return { canvas, hostHandle: undefined };
+	}
+
+	private async _createAttachRenderState(canvas: HTMLCanvasElement, hostHandle: SurfaceHostHandle | undefined, usingWorker: boolean): Promise<AttachRenderState> {
+		const handle: RenderHandle | null = usingWorker ? null : await this._makeHandleSerialized(canvas, hostHandle);
+		const dpr = window.devicePixelRatio || 1;
+		const [cellW, cellH] = handle
+			? (handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as [number, number] | Float32Array)
+			: [8, 16];
+		return { handle, dpr, cellW: quantizeCellSize(Number(cellW), dpr), cellH: quantizeCellSize(Number(cellH), dpr) };
+	}
+
+	private _attachScrollbackLines(): number {
+		const settings = _hostPorts?.settings?.get() ?? null;
+		return settings && Number.isFinite(settings.terminalScrollbackLines)
+			? settings.terminalScrollbackLines
+			: this.opts.scrollbackLines;
+	}
+
+	private _applyAttachTheme(paneId: string, handle: RenderHandle | null): void {
+		const trace = typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_THEME_TRACE') === '1';
+		if (this.opts.theme && handle) {
+			handle.applyDefaultTheme();
+			handle.applyTheme(this.opts.theme);
+			if (trace) {
+				const t = this.opts.theme;
+				console.debug(`[theme-trace] attach paneId=${paneId.slice(0,8)} bg=${t.background ?? '∅'} fg=${t.foreground ?? '∅'} cursor=${t.cursor ?? '∅'}`);
+			}
+			return;
+		}
+		if (trace) console.debug(`[theme-trace] attach paneId=${paneId.slice(0,8)} ${handle ? 'NO_THEME (opts.theme is null — bridge hasn\'t fired yet)' : 'WORKER_PATH (theme applied by render worker)'}`);
+	}
+
+	async attach(paneId: string, container: HTMLElement, workspaceId: string): Promise<void> {
+		if (!this.wasmReady) {
+			throw new Error('TerminalManager.attach: call ready() first');
+		}
+		if (this.panes.has(paneId)) {
+			throw new Error(`TerminalManager.attach: pane ${paneId} already attached`);
+		}
+		await this._awaitAttachHost();
+
+		const usingWorker = this.usingWorkerRenderer();
+		const { canvas, hostHandle } = this._createAttachCanvas(container, usingWorker);
+		if (this.opts.paddingPx && this.opts.paddingPx > 0) {
+			container.style.padding = `${this.opts.paddingPx}px`;
+		}
+		const { handle, dpr, cellW: cellWnum, cellH: cellHnum } =
+			await this._createAttachRenderState(canvas, hostHandle, usingWorker);
+
+		const scrollbackLines = this._attachScrollbackLines();
+		const kernel = new TerminalKernel(24, 80, scrollbackLines);
+
+		this._applyAttachTheme(paneId, handle);
+
+
+		const bindings = this._createAttachBindings(paneId, container);
+
+		const entry: PaneEntry = {
+			paneId,
+			workspaceId,
+			container,
+			canvas,
+			kernel,
+			handle,
+			cellW: cellWnum,
+			cellH: cellHnum,
+			lastConfiguredDpr: dpr,
+			resizeObserver: new ResizeObserver(() => this.viewportChanged(paneId)),
+			lastReportedRows: -1,
+			lastReportedCols: -1,
+			lastViewportKernelRows: -1,
+			lastViewportKernelCols: -1,
+			pendingFitTimer: null,
+			initialFitTimer: null,
+			initialFitAttempt: 0,
+			syncStart: null,
+			syncTimeoutRendered: false,
+			deltaFrameId: 0,
+			renderFrameId: 0,
+			focusListener: bindings.focusListener,
+			blurListener: bindings.blurListener,
+			selecting: false,
+			selectionStartAbs: null,
+			selectionEndAbs: null,
+			lastMouseSent: null,
+			pendingMouseMove: null,
+			mouseMoveRaf: null,
+			autoScrollTimer: null,
+			autoScrollDirection: null,
+			pointerDownListener: bindings.pointerDownListener,
+			pointerMoveListener: bindings.pointerMoveListener,
+			pointerUpListener: bindings.pointerUpListener,
+			pointerCancelListener: bindings.pointerCancelListener,
+			pointerLeaveListener: bindings.pointerLeaveListener,
+			modifierKeyListener: bindings.modifierKeyListener,
+			lastPointerPoint: null,
+			parked: false,
+			rendererRetained: false,
+			parkReason: null,
+			lastForegroundAt: Date.now(),
+			imeAnchor: null,
+			imeAnchorRaf: null,
+			feedBuffer: null,
+			feedFlushTimer: null,
+			linkSpans: new LinkSpanIndex(),
+			linkUnderlineEls: [],
+			linkUnderlineRegions: [],
+			linkHintEl: bindings.linkHintEl,
+			linkHintRegion: null,
+			lastScrollOffset: -1,
+			lastScrollTotal: -1,
+			scrollStateHandler: null,
+			feedDeferred: null,
+			feedDeferredChunks: [],
+			feedDeferredBytes: 0,
+			feedDroppedBytes: 0,
+			feedDropCount: 0,
+			feedNeedsResync: false,
+			inputStartRow: null,
+			inputStartCol: null,
+		};
+		entry.resizeObserver.observe(container);
+
+		this.panes.set(paneId, entry);
+
+		// §p4 ITER 1b/1d (2026-05-22) — worker-renderer hand-off.
+		// When the worker-renderer flag is on AND the worker singleton
+		// is alive, transfer the canvas to the worker via
+		// `transferControlToOffscreen()` and post `bindCanvas` so the
+		// worker's per-pane `RenderHandle` (newFromOffscreen) can paint
+		// it directly. After ITER 1c-2 the main-thread `_makeHandle`
+		// is skipped (entry.handle === null) when this branch fires,
+		// so there's no detached-canvas render attempt. Fire-and-forget
+		// bindCanvas — a worker hiccup must not block pane attach.
+		//
+		// ITER 1d: also set `pointerEvents: 'none'` on the (now
+		// transferred) canvas so the pane container's existing
+		// pointer/keyboard handlers continue to receive events even
+		// after the canvas detaches. Without this, browsers can
+		// route pointer events to the canvas element first; once
+		// detached its event behavior is undefined and we'd lose
+		// pointer capture during mouse-mode TUI rendering.
+		if (usingWorker) this._attachWorkerCanvas(paneId, canvas, dpr, scrollbackLines);
+
+		// Initial fit: do it once synchronously after layout settles. We
+		// wait one rAF (so SvelteKit hydration finishes), then fit
+		// directly without debounce so the PTY gets sized before any
+		// shell output arrives.
+		// iter-60 G2: in shared-remote (desktop-in-browser) mode the initial
+		// fit CLAIMS the PTY at this viewer's size — without this the pane
+		// letterboxes the host's grid forever ("shell 渲染区不填满 pane" bug).
+		// Passive fits afterwards still only re-letterbox (multi-viewer safe).
+		this._scheduleInitialFit(entry);
+		this._installAttachDebugHooks(paneId);
 		this.startRafLoop();
 	}
 
@@ -2735,10 +2520,7 @@ export class TerminalManager {
 	 * "the pane is permanently gone" (e.g. removed from paneTree) and
 	 * `park` for "transient unmount across split / reparent" — see §5.1.
 	 */
-	detach(paneId: string): void {
-		const entry = this.panes.get(paneId);
-		if (!entry) return;
-		this._memoryRestorePending.delete(paneId);
+	private _removeLinkOverlays(entry: PaneEntry): void {
 		this._clearLinkUnderline(entry);
 		for (const el of entry.linkUnderlineEls) {
 			try { el.remove(); } catch { /* already detached */ }
@@ -2746,95 +2528,62 @@ export class TerminalManager {
 		entry.linkUnderlineEls = [];
 		try { entry.linkHintEl?.remove(); } catch { /* already detached */ }
 		entry.linkHintEl = null;
-		if (!entry.parked) {
-			// Live entry — release DOM bindings before freeing wasm.
-			entry.resizeObserver.disconnect();
-			entry.container.removeEventListener('focusin', entry.focusListener);
-			entry.container.removeEventListener('focusout', entry.blurListener);
-			entry.container.removeEventListener('pointerdown', entry.pointerDownListener);
-			entry.container.removeEventListener('pointermove', entry.pointerMoveListener);
-			entry.container.removeEventListener('pointerup', entry.pointerUpListener);
-			entry.container.removeEventListener('pointercancel', entry.pointerCancelListener);
-			entry.container.removeEventListener('pointerleave', entry.pointerLeaveListener);
-			entry.container.removeEventListener('keydown', entry.modifierKeyListener);
-			entry.container.removeEventListener('keyup', entry.modifierKeyListener);
-			// pointermove batches on rAF; cancel any in-flight tick so the
-			// flush callback doesn't reach into a freed kernel via
-			// kernel.encodeMouse / dataHandler.
-			if (entry.mouseMoveRaf !== null) {
-				cancelAnimationFrame(entry.mouseMoveRaf);
-				entry.mouseMoveRaf = null;
-			}
-			entry.pendingMouseMove = null;
-			entry.lastMouseSent = null;
-			// Auto-scroll ticker holds a closure over the pane id; once
-			// the pane is torn down its setInterval callback would call
-			// scrollUp/Down against a freed kernel. Stop it here.
-			if (entry.autoScrollTimer !== null) {
-				clearInterval(entry.autoScrollTimer);
-				entry.autoScrollTimer = null;
-			}
-			entry.autoScrollDirection = null;
-			if (entry.pendingFitTimer !== null) {
-				clearTimeout(entry.pendingFitTimer);
-				entry.pendingFitTimer = null;
-			}
-			this._cancelInitialFit(entry);
-			// §4.3 Phase B: only Canvas2D-mode panes own a per-pane DOM
-			// canvas to remove. Host-mode panes share the global host
-			// canvas; tearing down their entry leaves the host canvas
-			// alive but we ask the host to clear next frame so the
-			// pane's last pixels don't outlive its slot.
-			if (this._isHostMode(entry)) {
-				this._invalidateHost();
-			} else {
-				try {
-					entry.canvas.remove();
-				} catch {
-					/* canvas already detached */
-				}
-			}
-			const handle = entry.handle;
-			entry.handle = null;
-			try { handle?.free(); } catch { /* ignore */ }
-		} else if (entry.rendererRetained) {
-			// A component park keeps the renderer only for a possible keyed
-			// remount. Permanent detach is the terminal lifetime boundary.
-			if (this._isHostMode(entry)) this._invalidateHost();
-			else {
-				try { entry.canvas.remove(); } catch { /* already detached */ }
-			}
-			const handle = entry.handle;
-			entry.handle = null;
-			try { handle?.free(); } catch { /* ignore */ }
-			entry.rendererRetained = false;
+	}
+
+	private _detachDomBindings(entry: PaneEntry): void {
+		entry.resizeObserver.disconnect();
+		entry.container.removeEventListener('focusin', entry.focusListener);
+		entry.container.removeEventListener('focusout', entry.blurListener);
+		entry.container.removeEventListener('pointerdown', entry.pointerDownListener);
+		entry.container.removeEventListener('pointermove', entry.pointerMoveListener);
+		entry.container.removeEventListener('pointerup', entry.pointerUpListener);
+		entry.container.removeEventListener('pointercancel', entry.pointerCancelListener);
+		entry.container.removeEventListener('pointerleave', entry.pointerLeaveListener);
+		entry.container.removeEventListener('keydown', entry.modifierKeyListener);
+		entry.container.removeEventListener('keyup', entry.modifierKeyListener);
+		if (entry.mouseMoveRaf !== null) cancelAnimationFrame(entry.mouseMoveRaf);
+		entry.mouseMoveRaf = null;
+		entry.pendingMouseMove = null;
+		entry.lastMouseSent = null;
+		if (entry.autoScrollTimer !== null) clearInterval(entry.autoScrollTimer);
+		entry.autoScrollTimer = null;
+		entry.autoScrollDirection = null;
+		if (entry.pendingFitTimer !== null) clearTimeout(entry.pendingFitTimer);
+		entry.pendingFitTimer = null;
+		this._cancelInitialFit(entry);
+	}
+
+	private _releaseRenderer(entry: PaneEntry): void {
+		if (this._isHostMode(entry)) this._invalidateHost();
+		else {
+			try { entry.canvas.remove(); } catch { /* already detached */ }
 		}
-		// §1.27: cancel any pending IME-anchor rAF before freeing the
-		// kernel — the rAF body would otherwise call cursorRow() on a
-		// freed kernel and crash.
-		if (entry.imeAnchorRaf !== null) {
-			cancelAnimationFrame(entry.imeAnchorRaf);
-			entry.imeAnchorRaf = null;
-		}
-		// Pane destruction is a cancellation boundary: queued render bytes must
-		// not be synchronously replayed into a kernel that is about to be freed.
-		// Drop the timer and every pending chunk so no stale callback can retain
-		// the pane or monopolize the mobile main thread during teardown.
+		const handle = entry.handle;
+		entry.handle = null;
+		try { handle?.free(); } catch { /* ignore */ }
+		entry.rendererRetained = false;
+	}
+
+	private _releaseDetachedResources(entry: PaneEntry): void {
+		if (!entry.parked) this._detachDomBindings(entry);
+		if (entry.rendererRetained || !entry.parked) this._releaseRenderer(entry);
+		if (entry.imeAnchorRaf !== null) cancelAnimationFrame(entry.imeAnchorRaf);
+		entry.imeAnchorRaf = null;
 		dropPendingFeedBuffers(entry);
-		// Kernel always alive while in the map (parked or not).
 		try { entry.kernel.free(); } catch { /* ignore */ }
-		// P4.6 Part B (2026-05-22) — mirror teardown into the render
-		// worker. `destroy` is idempotent on the worker side: an unknown
-		// paneId just deletes nothing. Skip the Set lookup; we want the
-		// destroy to fire even when the attached-set is empty (e.g.
-		// flag flipped off mid-session).
+	}
+
+	detach(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		this._memoryRestorePending.delete(paneId);
+		this._removeLinkOverlays(entry);
+		this._releaseDetachedResources(entry);
 		workerRendererBridge.destroy(paneId);
 		this.workerAttached.delete(paneId);
 		this.workerInitializing.delete(paneId);
 		this.panes.delete(paneId);
-		if (this.panes.size === 0) {
-			this.stopRafLoop();
-		}
+		if (this.panes.size === 0) this.stopRafLoop();
 	}
 
 	/**
@@ -2853,116 +2602,67 @@ export class TerminalManager {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		if (entry.parked) {
-			// A real component unmount outranks an earlier automatic memory park;
-			// never auto-restore into a container that Svelte has removed.
-			if (reason === 'component') {
-				entry.parkReason = 'component';
-				return;
-			}
-			// Component parking retains the renderer for a fast keyed switch.
-			// A later heap-pressure pass must still be able to reclaim it; an
-			// early return here would turn that optimization into a leak.
-			if (reason === 'memory' && entry.rendererRetained) {
-				if (this._isHostMode(entry)) this._invalidateHost();
-				else {
-					try { entry.canvas.remove(); } catch { /* already detached */ }
-				}
-				const handle = entry.handle;
-				entry.handle = null;
-				try { handle?.free(); } catch { /* best effort */ }
-				entry.rendererRetained = false;
-				entry.parkReason = 'memory';
-			}
+			this._updateParkedEntry(entry, reason);
 			return;
 		}
-
-		entry.resizeObserver.disconnect();
-		entry.container.removeEventListener('focusin', entry.focusListener);
-		entry.container.removeEventListener('focusout', entry.blurListener);
-		entry.container.removeEventListener('pointerdown', entry.pointerDownListener);
-		entry.container.removeEventListener('pointermove', entry.pointerMoveListener);
-		entry.container.removeEventListener('pointerup', entry.pointerUpListener);
-		entry.container.removeEventListener('pointercancel', entry.pointerCancelListener);
-		entry.container.removeEventListener('pointerleave', entry.pointerLeaveListener);
-		entry.container.removeEventListener('keydown', entry.modifierKeyListener);
-		entry.container.removeEventListener('keyup', entry.modifierKeyListener);
-		this._clearLinkUnderline(entry);
-		for (const el of entry.linkUnderlineEls) {
-			try { el.remove(); } catch { /* already detached */ }
-		}
-		entry.linkUnderlineEls = [];
-		try { entry.linkHintEl?.remove(); } catch { /* already detached */ }
-		entry.linkHintEl = null;
-		if (entry.pendingFitTimer !== null) {
-			clearTimeout(entry.pendingFitTimer);
-			entry.pendingFitTimer = null;
-		}
-		this._cancelInitialFit(entry);
-		// Clear transient pointer drag state — if the user was mid-drag
-		// when the unmount fired, the next attach should start fresh.
-		entry.selecting = false;
-		entry.selectionStartAbs = null;
-		entry.selectionEndAbs = null;
-		if (entry.mouseMoveRaf !== null) {
-			cancelAnimationFrame(entry.mouseMoveRaf);
-			entry.mouseMoveRaf = null;
-		}
-		entry.pendingMouseMove = null;
-		entry.lastMouseSent = null;
-		// Same reason as in detach — kill the auto-scroll ticker so its
-		// next tick doesn't fire against a parked pane (kernel still
-		// alive but UI bindings are gone, and re-attach should resume
-		// from a clean slate anyway).
-		if (entry.autoScrollTimer !== null) {
-			clearInterval(entry.autoScrollTimer);
-			entry.autoScrollTimer = null;
-		}
-		entry.autoScrollDirection = null;
-
-		// §A.9: host-mode panes share the global canvas; just mark for
-		// clear so departed pixels don't linger. Canvas2D mode owns its
-		// per-pane DOM canvas — clean up.
-		const retainRenderer = reason === 'component'
-			&& entry.handle !== null
-			&& !this.workerAttached.has(paneId)
-			&& !this.workerInitializing.has(paneId);
-		if (this._isHostMode(entry)) {
-			this._invalidateHost();
-		} else {
-			try { entry.canvas.remove(); } catch { /* already detached */ }
-		}
-		if (!retainRenderer) {
-			const handle = entry.handle;
-			entry.handle = null;
-			try { handle?.free(); } catch { /* ignore */ }
-		}
-		if (!retainRenderer && this.workerInitializing.has(paneId)) {
-			// Cancel an in-flight init/bind handshake instead of retaining an
-			// OffscreenCanvas until its timeout. Unpark will use the safe
-			// main-thread path unless a later attach explicitly reclaims it.
-			workerRendererBridge.destroy(paneId);
-		} else if (!retainRenderer && this.isWorkerPaneReady(paneId)) {
-			workerRendererBridge.releaseCanvas(paneId);
-		}
-
-		// §A.4: kernel stays alive while parked, but the flush timer is
-		// tied to setTimeout — cancel it and replay any buffered bytes
-		// directly into the live kernel so background PTY output that
-		// arrives during the parked window doesn't get lost.
+		this._detachParkedBindings(entry);
+		const retainRenderer = this._shouldRetainRenderer(paneId, entry, reason);
+		this._releaseParkedCanvas(paneId, entry, retainRenderer);
 		this._flushFeedBuffer(entry);
-		if (reason === 'component' && typeof document !== 'undefined') {
-			// Svelte has removed (or is about to remove) the old subtree. Keep a
-			// tiny detached sentinel instead of retaining the whole hidden input /
-			// overlay tree through PaneEntry until the next remount.
-			entry.container = document.createElement('div');
-		}
-
+		this._replaceParkedContainer(entry, reason);
 		entry.rendererRetained = retainRenderer;
 		entry.parked = true;
 		entry.parkReason = reason;
 		// Don't stopRafLoop here — other panes may still need rendering.
 		// The render-loop guards against parked entries by checking the
 		// flag before calling `entry.handle.render(...)`.
+	}
+
+	private _updateParkedEntry(entry: PaneEntry, reason: 'component' | 'memory'): void {
+		if (reason === 'component') {
+			entry.parkReason = 'component';
+			return;
+		}
+		if (!entry.rendererRetained) return;
+		this._releaseRenderer(entry);
+		entry.parkReason = 'memory';
+	}
+
+	private _detachParkedBindings(entry: PaneEntry): void {
+		this._detachDomBindings(entry);
+		this._removeLinkOverlays(entry);
+		if (entry.pendingFitTimer !== null) clearTimeout(entry.pendingFitTimer);
+		entry.pendingFitTimer = null;
+		this._cancelInitialFit(entry);
+		entry.selecting = false;
+		entry.selectionStartAbs = null;
+		entry.selectionEndAbs = null;
+	}
+
+	private _shouldRetainRenderer(paneId: string, entry: PaneEntry, reason: 'component' | 'memory'): boolean {
+		return reason === 'component'
+			&& entry.handle !== null
+			&& !this.workerAttached.has(paneId)
+			&& !this.workerInitializing.has(paneId);
+	}
+
+	private _releaseParkedCanvas(paneId: string, entry: PaneEntry, retainRenderer: boolean): void {
+		if (this._isHostMode(entry)) this._invalidateHost();
+		else {
+			try { entry.canvas.remove(); } catch { /* already detached */ }
+		}
+		if (retainRenderer) return;
+		const handle = entry.handle;
+		entry.handle = null;
+		try { handle?.free(); } catch { /* ignore */ }
+		if (this.workerInitializing.has(paneId)) workerRendererBridge.destroy(paneId);
+		else if (this.isWorkerPaneReady(paneId)) workerRendererBridge.releaseCanvas(paneId);
+	}
+
+	private _replaceParkedContainer(entry: PaneEntry, reason: 'component' | 'memory'): void {
+		if (reason === 'component' && typeof document !== 'undefined') {
+			entry.container = document.createElement('div');
+		}
 	}
 
 	/**
@@ -2988,148 +2688,145 @@ export class TerminalManager {
 			throw new Error(`TerminalManager.unpark: pane ${paneId} is already attached`);
 		}
 		await this._ensureDomHostStarted();
-		if (this.attachHostPromise !== null) {
-			try { await this.attachHostPromise; } catch { /* ignore */ }
-		}
+		await this._waitForHostAttach();
 		if (this.panes.get(paneId) !== entry || !entry.parked) return;
+		const resources = await this._prepareUnparkResources(paneId, container, entry);
+		this._commitUnpark(paneId, container, entry, resources);
+	}
 
-		const usingWorker = this.usingWorkerRenderer() && this.isWorkerPaneReady(paneId);
+	private async _waitForHostAttach(): Promise<void> {
+		if (this.attachHostPromise === null) return;
+		try { await this.attachHostPromise; } catch { /* ignore */ }
+	}
+
+	private _selectUnparkCanvas(
+		paneId: string,
+		container: HTMLElement,
+		entry: PaneEntry,
+	): { usingWorker: boolean; useHost: boolean; canvas: HTMLCanvasElement; hostHandle?: SurfaceHostHandle } {
+		const usingWorker = this.usingWorkerRenderer() === true && this.isWorkerPaneReady(paneId) === true;
 		const gh = this.globalHost;
-		const useHost = gh !== null && this.opts.preferWebgpu && !usingWorker;
-		const retainedHost = entry.rendererRetained
-			&& !usingWorker
-			&& entry.handle !== null
-			&& gh !== null
-			&& entry.canvas === gh.canvas;
-		const retainedCanvas = entry.rendererRetained
-			&& !usingWorker
-			&& entry.handle !== null
-			&& !retainedHost
-			&& !useHost;
-		let canvas: HTMLCanvasElement;
-		let hostHandle: SurfaceHostHandle | undefined;
-		if (retainedHost && gh) {
-			canvas = entry.canvas;
-			hostHandle = gh.host;
-		} else if (retainedCanvas) {
-			canvas = entry.canvas;
-			container.appendChild(canvas);
-		} else if (useHost && gh) {
-			canvas = gh.canvas;
-			hostHandle = gh.host;
+		const useHost = gh !== null && this.opts.preferWebgpu === true && !usingWorker;
+		const retainedHost = entry.rendererRetained === true && !usingWorker && entry.handle !== null
+			&& gh !== null && entry.canvas === gh.canvas;
+		const retainedCanvas = entry.rendererRetained === true && !usingWorker && entry.handle !== null
+			&& !retainedHost && !useHost;
+		if (retainedHost && gh) return { usingWorker, useHost, canvas: entry.canvas, hostHandle: gh.host };
+		if (retainedCanvas) {
+			container.appendChild(entry.canvas);
+			return { usingWorker, useHost, canvas: entry.canvas };
+		}
+		if (useHost && gh) {
 			container.style.background = 'transparent';
-		} else {
-			canvas = document.createElement('canvas');
-			canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
-			canvas.setAttribute('aria-hidden', 'true');
-			container.appendChild(canvas);
+			return { usingWorker, useHost, canvas: gh.canvas, hostHandle: gh.host };
 		}
+		const canvas = document.createElement('canvas');
+		canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
+		canvas.setAttribute('aria-hidden', 'true');
+		container.appendChild(canvas);
+		return { usingWorker, useHost, canvas };
+	}
 
-		if (this.opts.paddingPx && this.opts.paddingPx > 0) {
-			container.style.padding = `${this.opts.paddingPx}px`;
-		}
-
-		if (entry.rendererRetained && !retainedHost && !retainedCanvas) {
-			const handle = entry.handle;
+	private async _prepareUnparkResources(
+		paneId: string,
+		container: HTMLElement,
+		entry: PaneEntry,
+	): Promise<{ usingWorker: boolean; useHost: boolean; canvas: HTMLCanvasElement; hostHandle?: SurfaceHostHandle; handle: RenderHandle | null; dpr: number }> {
+		const selected = this._selectUnparkCanvas(paneId, container, entry);
+		if (this.opts.paddingPx && this.opts.paddingPx > 0) container.style.padding = `${this.opts.paddingPx}px`;
+		const retained = selected.canvas === entry.canvas && entry.rendererRetained === true && entry.handle !== null;
+		if (entry.rendererRetained && !retained) {
+			const oldHandle = entry.handle;
 			entry.handle = null;
-			try { handle?.free(); } catch { /* stale retained renderer */ }
+			try { oldHandle?.free(); } catch { /* stale retained renderer */ }
 			entry.rendererRetained = false;
 		}
-		let handle: RenderHandle | null;
-		if (usingWorker) {
-			handle = null;
-		} else if (retainedHost || retainedCanvas) {
-			handle = entry.handle;
-		} else {
-			handle = await this._makeHandleSerialized(canvas, hostHandle);
+		let handle: RenderHandle | null = null;
+		if (!selected.usingWorker) {
+			handle = retained ? entry.handle : await this._makeHandleSerialized(selected.canvas, selected.hostHandle);
 		}
-		// Detach or a competing restore may win while renderer creation awaits.
-		// Free only our fresh resources; never mutate the retired/replaced entry.
+		return { ...selected, handle, dpr: window.devicePixelRatio || 1 };
+	}
+
+	private _commitUnpark(
+		paneId: string,
+		container: HTMLElement,
+		entry: PaneEntry,
+		resources: { usingWorker: boolean; useHost: boolean; canvas: HTMLCanvasElement; hostHandle?: SurfaceHostHandle; handle: RenderHandle | null; dpr: number },
+	): void {
 		if (this.panes.get(paneId) !== entry || !entry.parked) {
-			try { handle?.free(); } catch { /* best-effort abandoned restore cleanup */ }
-			if (!useHost) {
-				try { canvas.remove(); } catch { /* already detached */ }
+			try { resources.handle?.free(); } catch { /* best-effort abandoned restore cleanup */ }
+			if (!resources.useHost) {
+				try { resources.canvas.remove(); } catch { /* already detached */ }
 			}
 			return;
 		}
+		const { handle, dpr, canvas, hostHandle, usingWorker, useHost } = resources;
 		const linkHintEl = createLinkHintOverlay(container);
-		const dpr = window.devicePixelRatio || 1;
 		const [cellW, cellH] = handle
-			? (handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
-					| [number, number]
-					| Float32Array)
+			? (handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as [number, number] | Float32Array)
 			: ([entry.cellW, entry.cellH] as [number, number]);
-		if (handle && this.opts.theme) {
-			handle.applyTheme(this.opts.theme);
-		}
+		if (handle && this.opts.theme) handle.applyTheme(this.opts.theme);
+		Object.assign(entry, {
+			container, canvas, handle, rendererRetained: false, linkUnderlineEls: [],
+			linkUnderlineRegions: [], linkHintEl, linkHintRegion: null,
+			cellW: quantizeCellSize(Number(cellW), dpr), cellH: quantizeCellSize(Number(cellH), dpr),
+			lastConfiguredDpr: dpr, lastReportedRows: -1, lastReportedCols: -1, lastAppliedPaddingPx: undefined,
+		});
+		if (useHost && hostHandle) this._invalidateHost();
+		if (usingWorker) this._bindUnparkWorker(paneId, canvas, dpr);
+		this._bindUnparkListeners(paneId, container, entry);
+		entry.parked = false;
+		entry.parkReason = null;
+		entry.lastForegroundAt = Date.now();
+		this._scheduleInitialFit(entry);
+		this.startRafLoop();
+	}
 
-		entry.container = container;
-		entry.canvas = canvas;
-		entry.handle = handle;
-		entry.rendererRetained = false;
-		entry.linkUnderlineEls = [];
-		entry.linkUnderlineRegions = [];
-		entry.linkHintEl = linkHintEl;
-		entry.linkHintRegion = null;
-		// Force a Clear on this workspace's surface so any pre-park
-		// pixels in this slot don't bleed through during the first fit.
-		if (useHost && hostHandle) {
-			this._invalidateHost();
+	private _bindUnparkWorker(paneId: string, canvas: HTMLCanvasElement, dpr: number): void {
+		try {
+			canvas.style.pointerEvents = 'none';
+			const offscreen = canvas.transferControlToOffscreen();
+			const wr = this.syncWorkerRendererIdentity();
+			if (!wr) return;
+			this.workerInitializing.add(paneId);
+			void wr.bindCanvas(paneId, offscreen, {
+				font: this.opts.fontFamily, fontSizePx: this.opts.fontSizePx, dpr,
+			}).then((response) => this._finishUnparkWorker(paneId, dpr, wr, response))
+				.catch((error) => this._failUnparkWorker(paneId, wr, error));
+		} catch (error) {
+			this.workerInitializing.delete(paneId);
+			failWorkerRenderer(error);
 		}
-		entry.cellW = quantizeCellSize(Number(cellW), dpr);
-		entry.cellH = quantizeCellSize(Number(cellH), dpr);
-		entry.lastConfiguredDpr = dpr;
-		// Force a resize-handler emit on the next fit so PTY rows/cols
-		// resync — in particular if the new container has different
-		// dimensions from the parked one.
-		entry.lastReportedRows = -1;
-		entry.lastReportedCols = -1;
-		// Reset the padding cache: the fresh container has no inline
-		// padding, but the cache still holds the pre-park value. Without
-		// this, RidgePane's onMount setPadding(paneId, samePx) sees
-		// `cached === clamped` and short-circuits — leaving the new
-		// container at zero padding after every split / reparent.
-		entry.lastAppliedPaddingPx = undefined;
+	}
 
-		if (usingWorker) {
-			try {
-				canvas.style.pointerEvents = 'none';
-				const offscreen = canvas.transferControlToOffscreen();
-				const wr = this.syncWorkerRendererIdentity();
-				if (wr) {
-					this.workerInitializing.add(paneId);
-					wr.bindCanvas(paneId, offscreen, {
-						font: this.opts.fontFamily,
-						fontSizePx: this.opts.fontSizePx,
-						dpr,
-					}).then((response) => {
-						this.workerInitializing.delete(paneId);
-						if (!this.isCurrentWorkerRenderer(wr)) return;
-						if (
-							response.type === 'ready' &&
-							typeof response.cellW === 'number' &&
-							typeof response.cellH === 'number'
-						) {
-							const current = this.panes.get(paneId);
-							if (!current || current.parked) return;
-							current.cellW = quantizeCellSize(response.cellW, dpr);
-							current.cellH = quantizeCellSize(response.cellH, dpr);
-							current.lastConfiguredDpr = dpr;
-							this.fitPaneNow(paneId);
-						}
-					}).catch((error) => {
-						this.workerInitializing.delete(paneId);
-						if (!isExpectedWorkerLifecycleCancellation(error) && this.isCurrentWorkerRenderer(wr)) {
-							failWorkerRenderer(error);
-						}
-					});
-				}
-			} catch (error) {
-				this.workerInitializing.delete(paneId);
-				failWorkerRenderer(error);
-			}
-		}
+	private _finishUnparkWorker(
+		paneId: string,
+		dpr: number,
+		wr: NonNullable<ReturnType<typeof getWorkerRenderer>>,
+		response: RenderWorkerResponse,
+	): void {
+		this.workerInitializing.delete(paneId);
+		if (!this.isCurrentWorkerRenderer(wr) || response.type !== 'ready') return;
+		if (typeof response.cellW !== 'number' || typeof response.cellH !== 'number') return;
+		const current = this.panes.get(paneId);
+		if (!current || current.parked) return;
+		current.cellW = quantizeCellSize(response.cellW, dpr);
+		current.cellH = quantizeCellSize(response.cellH, dpr);
+		current.lastConfiguredDpr = dpr;
+		this.fitPaneNow(paneId);
+	}
 
+	private _failUnparkWorker(
+		paneId: string,
+		wr: NonNullable<ReturnType<typeof getWorkerRenderer>>,
+		error: unknown,
+	): void {
+		this.workerInitializing.delete(paneId);
+		if (!isExpectedWorkerLifecycleCancellation(error) && this.isCurrentWorkerRenderer(wr)) failWorkerRenderer(error);
+	}
+
+	private _bindUnparkListeners(paneId: string, container: HTMLElement, entry: PaneEntry): void {
 		container.addEventListener('focusin', entry.focusListener);
 		container.addEventListener('focusout', entry.blurListener);
 		container.addEventListener('pointerdown', entry.pointerDownListener);
@@ -3141,13 +2838,6 @@ export class TerminalManager {
 		container.addEventListener('keyup', entry.modifierKeyListener);
 		entry.resizeObserver = new ResizeObserver(() => this.viewportChanged(paneId));
 		entry.resizeObserver.observe(container);
-
-		entry.parked = false;
-		entry.parkReason = null;
-		entry.lastForegroundAt = Date.now();
-
-		this._scheduleInitialFit(entry);
-		this.startRafLoop();
 	}
 
 	/** True if a pane is in the manager but currently parked.
@@ -3155,6 +2845,39 @@ export class TerminalManager {
 	isParked(paneId: string): boolean {
 		const entry = this.panes.get(paneId);
 		return entry?.parked ?? false;
+	}
+
+	private _isInlineTui(entry: PaneEntry): boolean {
+		try { return entry.kernel.isInlineTuiMode(); }
+		catch { return false; }
+	}
+
+	private _feedInline(entry: PaneEntry, bytes: Uint8Array): void {
+		if (!bytes.includes(0x1b)) {
+			this._flushFeedBuffer(entry);
+			this._feedNow(entry, bytes);
+			return;
+		}
+		if (entry.feedBuffer === null && entry.feedFlushTimer === null) {
+			this._feedNow(entry, bytes);
+			entry.feedFlushTimer = setTimeout(() => {
+				entry.feedFlushTimer = null;
+				this._flushFeedBuffer(entry);
+			}, 8);
+			return;
+		}
+		if (bytes.byteLength >= MAX_FEED_BUFFER_BYTES) {
+			if (entry.feedBuffer !== null) this._flushFeedBuffer(entry);
+			this._feedNow(entry, bytes);
+			return;
+		}
+		entry.feedBuffer = entry.feedBuffer ? concatU8(entry.feedBuffer, bytes) : bytes;
+		if (shouldFlushFeedBuffer(entry.feedBuffer.length)) this._flushFeedBuffer(entry);
+	}
+
+	private _feedImmediate(entry: PaneEntry, bytes: Uint8Array): void {
+		if (entry.feedBuffer !== null) this._flushFeedBuffer(entry);
+		this._feedNow(entry, bytes);
 	}
 
 	/** Feed PTY bytes into the pane's kernel. Accepts string or Uint8Array.
@@ -3168,106 +2891,8 @@ export class TerminalManager {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-
-		// §A.4 (2026-05-08) — coalesce sub-frame ConPTY split-writes during
-		// inline-TUI so a rAF tick can't sample the kernel mid-walk. ConPTY
-		// on Windows splits a single application write across 2-3 reads when
-		// the byte stream straddles its internal buffer; Ink's
-		// `(walk)+\x1b[G+frame` then arrives as separate `pty-output` events.
-		// Without batching, the renderer paints a partial state (cells erased
-		// but new content not yet fed). 8 ms is well below Ink's ~30 ms
-		// spinner cadence and well above ConPTY's 1-2 ms inter-fragment gap.
-		// Disabled when not inline-TUI so ordinary shells feed immediately.
-		let inlineTui = false;
-		try {
-			inlineTui = entry.kernel.isInlineTuiMode();
-		} catch {
-			// Older wasm bundle without isInlineTuiMode export → bypass coalescing.
-			inlineTui = false;
-		}
-		if (inlineTui) {
-			// §4c (2026-05-08) — burst-only coalescing. The §A.4 8 ms
-			// gate was applied to ALL inline-TUI bytes, including the
-			// shell's echo of typed characters. That added 8 ms to
-			// every keystroke's perceived latency in panes hosting an
-			// inline TUI (Claude Code's `claude`, lazygit, …) — Jack
-			// reported it as "typing feels laggy in multi-pane".
-			//
-			// Echo bytes are pure ASCII (no ESC sequences). Ink-style
-			// redraws are densely packed CSI sequences (\x1b[..). Gate
-			// the buffer on "bytes contain ESC" so:
-			//   - keystroke echoes feed immediately (zero added lag);
-			//   - any CSI/escape stream still buffers and the §A.4
-			//     coalesce protects mid-walk sampling.
-			// Mixed packets (echo + CSI in one chunk, e.g. PSReadLine
-			// emitting echo + CHA reposition) take the buffer path —
-			// safe because the first byte before the ESC is implicitly
-			// fed in-order when the buffer flushes.
-			const hasEsc = bytes.includes(0x1b);
-			if (hasEsc) {
-				// §4d (2026-05-19) — first-chunk-fast-path.
-				//
-				// §4c above always buffered every ESC-bearing chunk for
-				// 8 ms so ConPTY's split-writes coalesce into one feed.
-				// That added 8 ms (plus up to one rAF) to every user-
-				// input response in TUI apps: an ArrowUp inside vim
-				// only echoes `\x1b[A`, a single chunk that never
-				// needed coalescing, yet the buffer held it back.
-				// Symptom in claude code TUI: rapid arrow keys feel
-				// like they only register every other press because
-				// two adjacent responses collapse into one frame.
-				//
-				// Fix: feed the FIRST esc chunk immediately, then open
-				// the 8 ms coalesce window so any FOLLOW-UP fragments
-				// from a ConPTY split-write still rejoin the same
-				// frame. ConPTY's split always arrives as
-				// (head chunk now) + (tail chunk a few ms later), so
-				// catching only the tail is sufficient — single-chunk
-				// responses (the vast majority of user-input echoes)
-				// pay zero added latency.
-				if (entry.feedBuffer === null && entry.feedFlushTimer === null) {
-					this._feedNow(entry, bytes);
-					entry.feedFlushTimer = setTimeout(() => {
-						entry.feedFlushTimer = null;
-						this._flushFeedBuffer(entry);
-					}, 8);
-					return;
-				}
-				// Inside a coalesce window — append for the tail of a
-				// split-write. Same back-pressure cap as before.
-				if (bytes.byteLength >= MAX_FEED_BUFFER_BYTES) {
-					// Avoid retaining a giant source ArrayBuffer in the short-lived
-					// coalescing slot; preserve ordering by flushing the older tail
-					// first, then feed this chunk directly.
-					if (entry.feedBuffer !== null) this._flushFeedBuffer(entry);
-					this._feedNow(entry, bytes);
-					return;
-				}
-				entry.feedBuffer = entry.feedBuffer
-					? concatU8(entry.feedBuffer, bytes)
-					: bytes;
-				if (shouldFlushFeedBuffer(entry.feedBuffer.length)) {
-					this._flushFeedBuffer(entry);
-				}
-				return;
-			}
-			// No ESC → pure text echo path. Flush any pending buffer
-			// FIRST so byte order with prior CSI activity is preserved,
-			// then feed the echo bytes immediately.
-			if (entry.feedBuffer !== null) {
-				this._flushFeedBuffer(entry);
-			}
-			this._feedNow(entry, bytes);
-			return;
-		}
-
-		// Non-inline path: preserve byte order if a buffer was just left
-		// over from a recent inline-TUI window (cursor became visible
-		// between events) — flush it first, then feed the new bytes.
-		if (entry.feedBuffer !== null) {
-			this._flushFeedBuffer(entry);
-		}
-		this._feedNow(entry, bytes);
+		if (this._isInlineTui(entry)) this._feedInline(entry, bytes);
+		else this._feedImmediate(entry, bytes);
 	}
 
 	/** Read bounded render-queue diagnostics without exposing kernel internals. */
@@ -3332,112 +2957,65 @@ export class TerminalManager {
 	 *  the next frame (after preserving order with any later arrivals).
 	 *  vte::Parser carries its own state across feed calls so byte-level
 	 *  chunking is safe — even mid-CSI / mid-OSC. */
+		private _traceFeed(entry: PaneEntry, bytes: Uint8Array): void {
+			if (typeof localStorage === 'undefined' || localStorage.RIDGE_PTY_TRACE !== '1') return;
+			const hex = Array.from(bytes.slice(0, 256)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+			const more = bytes.length > 256 ? `…${bytes.length - 256}B` : '';
+			console.debug(`[pty-trace][${performance.now().toFixed(1)}ms][${entry.paneId.slice(0, 8)}][${bytes.length}B] ${hex}${more}`);
+		}
+
+		private _feedChunks(entry: PaneEntry, bytes: Uint8Array, budgetMs: number): number {
+			const chunkBytes = 16 * 1024;
+			let offset = 0;
+			const start = performance.now();
+			const traceCursor = typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_CURSOR_TRACE') === '1';
+			const kernel = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
+			const before = traceCursor ? `(${kernel.cursorRow()},${kernel.cursorCol()})` : '';
+			while (offset < bytes.length) {
+				const end = Math.min(offset + chunkBytes, bytes.length);
+				const chunk = bytes.subarray(offset, end);
+				entry.kernel.feed(chunk);
+				if (this.isWorkerPaneReady(entry.paneId)) this._mirrorWorkerFeed(entry, chunk);
+				offset = end;
+				if (performance.now() - start >= budgetMs) break;
+			}
+			if (traceCursor) console.debug(`[cursor-trace][${performance.now().toFixed(1)}ms] feed paneId=${entry.paneId.slice(0, 8)} bytes=${bytes.length} consumed=${offset} cursor ${before}→${kernel.cursorRow()},${kernel.cursorCol()})`);
+			return offset;
+		}
+
+		private _drainFeedOutputs(entry: PaneEntry): void {
+			const reply = entry.kernel.takePendingResponse();
+			if (reply.length > 0 && entry.dataHandler) entry.dataHandler(reply);
+			const events = entry.kernel.takePendingEvents() as KernelEvent[];
+			if (entry.eventHandler) {
+				for (const event of events) entry.eventHandler(event);
+			} else if (events.length > 0 && import.meta.env?.DEV) {
+				console.warn('[ridge-term] feed() drained kernel events without an eventHandler', entry.paneId, events.length);
+			}
+		}
+
 		private _feedNow(
 			entry: PaneEntry,
 			bytes: Uint8Array,
 			budgetMs = FEED_PER_CALL_BUDGET_MS,
 			drainingDeferred = false,
 		): void {
-		// §1.24 PTY trace (Phase 1.2): when `localStorage.RIDGE_PTY_TRACE === '1'`,
-		// log every PTY-to-wasm byte chunk with a high-res timestamp so a live
-		// resize-while-claude repro can be replayed in devtools to confirm
-		// whether ConPTY's reflow noise leaks past the silence skip.
-		if (typeof localStorage !== 'undefined' && localStorage.RIDGE_PTY_TRACE === '1') {
-			const ts = performance.now().toFixed(1);
-			const id = entry.paneId.slice(0, 8);
-			const hex = Array.from(bytes.slice(0, 256))
-				.map((b) => b.toString(16).padStart(2, '0'))
-				.join('');
-			const more = bytes.length > 256 ? `…+${bytes.length - 256}B` : '';
-			// eslint-disable-next-line no-console
-			console.debug(`[pty-trace][${ts}ms][${id}][${bytes.length}B] ${hex}${more}`);
-		}
-
-		// P2.1: if a previous _feedNow already deferred bytes for this
-		// pane, the new arrivals MUST queue behind them — otherwise vte
-		// would see them in shuffled order and emit garbage. Append and
-		// let the next RAF tick drain one bounded chunk at a time.
+			this._traceFeed(entry, bytes);
 			if (!drainingDeferred && hasDeferredFeed(entry)) {
-			// Keep arrivals behind every older chunk. The policy owns the byte cap
-			// and records render-only shedding; never block the input/RPC lane.
-			enqueueDeferredFeed(entry, bytes.slice());
-			this.wake();
-			return;
-		}
-
-		// P2.1: budget-aware chunked feed. Each call gets at most
-		// FEED_PER_CALL_BUDGET_MS of wall-clock to push into the kernel
-		// before yielding. 4 ms ≈ a quarter of one 60 fps frame — plenty
-		// for typical PTY arrivals, generous enough that small bursts
-		// (the common case) finish in one chunk, strict enough that a
-		// 200 KB compile waterfall doesn't freeze the main thread.
-		const FEED_CHUNK_BYTES = 16 * 1024;
-		let offset = 0;
-		const start = performance.now();
-		const traceCursor = typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_CURSOR_TRACE') === '1';
-		const k = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
-		const pre = traceCursor ? `(${k.cursorRow()},${k.cursorCol()})` : '';
-		while (offset < bytes.length) {
-			const end = Math.min(offset + FEED_CHUNK_BYTES, bytes.length);
-			const chunk = bytes.subarray(offset, end);
-			entry.kernel.feed(chunk);
-			if (this.isWorkerPaneReady(entry.paneId)) {
-				this._mirrorWorkerFeed(entry, chunk);
+				enqueueDeferredFeed(entry, bytes.slice());
+				this.wake();
+				return;
 			}
-			offset = end;
-			if (performance.now() - start >= budgetMs) break;
-		}
-		if (traceCursor) {
-			const ts = performance.now().toFixed(1);
-			// eslint-disable-next-line no-console
-			console.debug(`[cursor-trace][${ts}ms] feed paneId=${entry.paneId.slice(0,8)} bytes=${bytes.length} consumed=${offset} cursor ${pre}→(${k.cursorRow()},${k.cursorCol()})`);
-		}
+			const offset = this._feedChunks(entry, bytes, budgetMs);
 			if (offset < bytes.length) {
-				// Copy via `slice` so a deferred chunk never pins the source
-				// ArrayBuffer. Admission is bounded by the feed policy.
 				const remainder = bytes.slice(offset);
-				if (drainingDeferred) {
-					// The remainder belongs before every chunk that arrived later.
-					// Keep it at the deferred head instead of appending it behind
-					// newer PTY bytes when a bounded flush yields mid-chunk.
-					prependDeferredFeed(entry, remainder);
-				} else {
-					enqueueDeferredFeed(entry, remainder);
-				}
+				if (drainingDeferred) prependDeferredFeed(entry, remainder);
+				else enqueueDeferredFeed(entry, remainder);
 			}
-
-		// 屏幕内容变化 → 链接索引失效，下次 ctrl+hover/click 时再 lazy 重建。
-		entry.linkSpans.markDirty();
-		// PTY bytes mutated kernel state — wake the RAF loop if it was
-		// sleeping. No-op when already running.
-		this.wake();
-
-		const reply = entry.kernel.takePendingResponse();
-		if (reply.length > 0 && entry.dataHandler) {
-			entry.dataHandler(reply);
+			entry.linkSpans.markDirty();
+			this.wake();
+			this._drainFeedOutputs(entry);
 		}
-
-		// Always drain pending_events, even when no handler is registered.
-		// If we gate the drain on `entry.eventHandler`, events emitted before
-		// the consumer wires its handler accumulate in the wasm queue and
-		// then arrive batched on a later feed() — out of sync with the
-		// screen state at the moment they were originally emitted (CWD /
-		// title flicker, hyperlinks pointing at the wrong cell). Drain
-		// unconditionally to bound the queue; warn in dev when events are
-		// discarded so ordering bugs surface during development.
-		const events = entry.kernel.takePendingEvents() as KernelEvent[];
-		if (entry.eventHandler) {
-			for (const ev of events) entry.eventHandler(ev);
-		} else if (events.length > 0 && import.meta.env?.DEV) {
-			console.warn(
-				'[ridge-term] feed() drained',
-				events.length,
-				'kernel events but no eventHandler registered for pane',
-				entry.paneId,
-				'— events discarded; check onEvent() registration order',
-			);
-		}
-	}
 
 	/** P3.9 (2026-05-20) — apply one postcard-encoded `DeltaFrame` from the
 	 *  Rust-side `engine::parser::PaneParser` (produced when this pane's
@@ -5427,803 +5005,335 @@ export class TerminalManager {
 		entry.initialFitTimer = setTimeout(run, delay);
 	}
 
-	private async fitPane(entry: PaneEntry, claim = false): Promise<void> {
-		// §4.3 Phase B: in host mode there is no per-pane canvas — the
-		// entry.canvas reference is the shared host canvas, which spans
-		// the whole workspace. Read the CONTAINER's content-box instead
-		// so the cell grid matches the visible pane region.
-		// Legacy Canvas2D mode keeps reading the per-pane canvas rect
-		// (which is `width:100%; height:100%` inside the container, so
-		// equivalent to the content-box).
-		let wCss: number;
-		let hCss: number;
+	private _measureFit(entry: PaneEntry): { wCss: number; hCss: number } | null {
 		if (this._isHostMode(entry)) {
-			const cr = entry.container.getBoundingClientRect();
-			const cs = window.getComputedStyle(entry.container);
-			const padL = Number.parseFloat(cs.paddingLeft) || 0;
-			const padT = Number.parseFloat(cs.paddingTop) || 0;
-			const padR = Number.parseFloat(cs.paddingRight) || 0;
-			const padB = Number.parseFloat(cs.paddingBottom) || 0;
-			wCss = Math.max(0, cr.width - padL - padR);
-			hCss = Math.max(0, cr.height - padT - padB);
-		} else {
-			const rect = entry.canvas.getBoundingClientRect();
-			wCss = Math.floor(rect.width);
-			hCss = Math.floor(rect.height);
+			const rect = entry.container.getBoundingClientRect();
+			const styles = window.getComputedStyle(entry.container);
+			const horizontal = (Number.parseFloat(styles.paddingLeft) || 0) + (Number.parseFloat(styles.paddingRight) || 0);
+			const vertical = (Number.parseFloat(styles.paddingTop) || 0) + (Number.parseFloat(styles.paddingBottom) || 0);
+			return { wCss: Math.max(0, rect.width - horizontal), hCss: Math.max(0, rect.height - vertical) };
 		}
+		const rect = entry.canvas.getBoundingClientRect();
+		return { wCss: Math.floor(rect.width), hCss: Math.floor(rect.height) };
+	}
 
-		// Skip fit until the container actually has size. splitpanes (and
-		// SvelteKit hydration in general) frequently mount a Pane whose
-		// containing flex/grid hasn't laid out yet — `getBoundingClientRect`
-		// returns 0×0 for one or two frames. If we proceed with `Math.max(1,
-		// Math.floor(0 / cellW))` we'd resize the kernel to 1×1, the PTY
-		// fires SIGWINCH for 1×1, and now every byte the shell emits scrolls
-		// off-screen instantly (looks like "all output stacked on one line").
-		// Better: bail. The ResizeObserver will call us again when the layout
-		// settles.
-		if (wCss <= 0 || hCss <= 0) return;
-		if (entry.cellW <= 0 || entry.cellH <= 0) return;
+	private _syncFitDpr(entry: PaneEntry, dpr: number): void {
+		if (entry.lastConfiguredDpr === dpr || !entry.handle) return;
+		const [width, height] = entry.handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as [number, number] | Float32Array;
+		entry.cellW = quantizeCellSize(Number(width), dpr);
+		entry.cellH = quantizeCellSize(Number(height), dpr);
+		entry.lastConfiguredDpr = dpr;
+	}
 
-		const dpr = window.devicePixelRatio || 1;
-
-		// DPR drift since the last configure() (typical cause: user dragged
-		// the window across monitors of different DPI). The renderer
-		// rounds `cell_css * dpr` to a whole device-px every frame against
-		// the *new* dpr, so the JS-side cellW/cellH would silently
-		// disagree — `Math.floor(x / oldCellW)` then snaps the rightmost
-		// hover column out of range. Re-configure so both sides stay in
-		// lock-step.
-		if (entry.lastConfiguredDpr !== dpr && entry.handle) {
-			const [w, h] = entry.handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as
-				| [number, number]
-				| Float32Array;
-			entry.cellW = quantizeCellSize(Number(w), dpr);
-			entry.cellH = quantizeCellSize(Number(h), dpr);
-			entry.lastConfiguredDpr = dpr;
-		}
-
-		// A mobile raw-byte pane owns its local grid. Never let shared-mode
-		// letterboxing or an externally supplied grid bypass a settled fit;
-		// every local authority fit must derive rows/cols from the pane box.
-		// Desktop multi-viewer entries without local authority retain the
-		// visual-only path until an explicit claim.
+	private _computeFitGrid(entry: PaneEntry, claim: boolean, dpr: number, measured: { wCss: number; hCss: number }): FitGeometry | null {
+		let { wCss, hCss } = measured;
 		if (this._sharedRemoteMode && !claim && !entry.localGridAuthority) {
 			this._recomputeViewport(entry);
-			return;
+			return null;
 		}
-
-		// Cells fit into the container; round DOWN to avoid drawing past
-		// the right/bottom edge.
 		let cols = Math.max(1, Math.floor(wCss / entry.cellW));
 		let rows = Math.max(1, Math.floor(hCss / entry.cellH));
-
-		// Equal padding on all four sides, using the horizontal-center
-		// value as the canonical inset. Splitting horizontal and
-		// vertical leftover independently made the vertical padding
-		// visibly thicker than the horizontal one (cellH > cellW means
-		// a larger vertical rounding remainder). For a single-pane
-		// terminal we want symmetric top/bottom/left/right insets, so
-		// the horizontal-centered pad is reused for the vertical sides
-		// and `rows` is re-floored to fit inside the now-shrunk
-		// content-box. Any residual vertical leftover (< cellH px) sits
-		// below the cells and gets painted as bg by the scissor —
-		// visually the bottom padding is at most one half-cell taller
-		// than the top, well below the perceptual threshold the user
-		// flagged. Canvas2D mode skips this — its canvas is sized to
-		// the container directly with no padding budget to redistribute.
 		if (this._isHostMode(entry)) {
-			// §E1 (2026-06-02): no symmetric padding redistribution.
-			// Cells start flush against the container's content-box
-			// origin so the left edge has zero gap. Any residual
-			// right/bottom space (< 1 cell) displays as workspace bg.
 			rows = Math.max(1, Math.floor(hCss / entry.cellH));
 			entry.lastFitPaddingPx = entry.lastAppliedPaddingPx ?? 0;
 			this._recomputeViewport(entry);
 		} else if (this._sharedRemoteMode) {
-			// Shared Canvas2D may already be letterboxed to the kernel's
-			// previous grid. Never measure that shrunken canvas for the claim;
-			// measure the pane so the first fit can grow the host PTY grid.
 			const rect = entry.container.getBoundingClientRect();
-			const cs = window.getComputedStyle(entry.container);
-			wCss = Math.floor(rect.width - (Number.parseFloat(cs.paddingLeft) || 0) - (Number.parseFloat(cs.paddingRight) || 0));
-			hCss = Math.floor(rect.height - (Number.parseFloat(cs.paddingTop) || 0) - (Number.parseFloat(cs.paddingBottom) || 0));
+			const styles = window.getComputedStyle(entry.container);
+			wCss = Math.floor(rect.width - (Number.parseFloat(styles.paddingLeft) || 0) - (Number.parseFloat(styles.paddingRight) || 0));
+			hCss = Math.floor(rect.height - (Number.parseFloat(styles.paddingTop) || 0) - (Number.parseFloat(styles.paddingBottom) || 0));
 			cols = Math.max(1, Math.floor(wCss / entry.cellW));
 			rows = Math.max(1, Math.floor(hCss / entry.cellH));
 		} else {
-			if (!this._sharedRemoteMode) {
-				// Shared-grid Canvas2D fallback may have letterboxed the
-				// per-pane canvas; restore its normal full-container layout.
-				entry.canvas.style.position = 'relative';
-				entry.canvas.style.left = '';
-				entry.canvas.style.top = '';
-				entry.canvas.style.width = '100%';
-				entry.canvas.style.height = '100%';
-			}
+			entry.canvas.style.position = 'relative';
+			entry.canvas.style.left = '';
+			entry.canvas.style.top = '';
+			entry.canvas.style.width = '100%';
+			entry.canvas.style.height = '100%';
 			entry.handle?.resize(wCss, hCss, dpr);
-			// Canvas2D fallback: `resize()` resets the canvas CSS box to
-			// 100%/100%. In shared remote mode the box is letterboxed to the
-			// shared PTY grid, so restore that projection immediately. Do this
-			// even when the PTY grid itself is unchanged; otherwise a later
-			// claim fit can leave the canvas full-pane and visually misaligned.
-			if (this._sharedRemoteMode) this._recomputeViewport(entry);
 		}
+		if (this._sharedRemoteMode) this._recomputeViewport(entry);
+		return { wCss, hCss, rows, cols };
+	}
 
-		// Self-healing: also compare against the kernel's actual grid. If a
-		// prior fitPane ran while the pty-delta Channel wasn't wired up yet
-		// (race: attach() schedules rAF fit BEFORE RidgePane's ensurePtyBridge
-		// + setPaneDeltaMode complete), the backend's Resize delta was dropped
-		// and the kernel stays at its compile-time default (80×24) while
-		// lastReportedRows/Cols already cached the intended size. Without this
-		// extra guard, sizeChanged stays false on every subsequent fit and
-		// the new pane never reaches the correct grid → visible as the
-		// "split 后新终端不填满分区" bug.
-		const kernelRows = entry.kernel.rows();
-		const kernelCols = entry.kernel.cols();
-		const sizeChanged =
-			rows !== entry.lastReportedRows ||
-			cols !== entry.lastReportedCols ||
-			rows !== kernelRows ||
-			cols !== kernelCols;
-		if (!sizeChanged) {
-			// Surface size changed (different DPR or container dimensions
-			// that don't translate to a different cell grid) but cells stay
-			// the same — kernel resize would be a no-op, skip.
-			return;
-		}
-		// Dev-only diagnostic: which paneIds are actually firing a real
-		// rows×cols change. Lets the user (and us) verify in DevTools
-		// console which panes a splitter drag actually triggers, to
-		// disambiguate "non-adjacent panes are resizing" reports — if
-		// only the two adjacent paneIds log here on a single drag, the
-		// CSS layer is doing the right thing; if more panes log, it's
-		// a real fan-out bug. Production builds gate on import.meta.env.DEV
-		// so this never reaches end users.
-		if (import.meta.env?.DEV) {
-			console.debug(
-				'[ridge-term] fit',
-				entry.paneId,
-				`${cols}×${rows}`,
-				`(was ${entry.lastReportedCols < 0 ? '?' : entry.lastReportedCols}×${entry.lastReportedRows < 0 ? '?' : entry.lastReportedRows})`,
-			);
-		}
-		entry.lastReportedRows = rows;
-		entry.lastReportedCols = cols;
+	private _fitGridChanged(entry: PaneEntry, grid: FitGeometry): boolean {
+		const sizeChanged = grid.rows !== entry.lastReportedRows || grid.cols !== entry.lastReportedCols || grid.rows !== entry.kernel.rows() || grid.cols !== entry.kernel.cols();
+		if (!sizeChanged) return false;
+		if (import.meta.env?.DEV) console.debug('[ridge-term] fit', entry.paneId, `${grid.cols}x${grid.rows}`, `(was ${entry.lastReportedCols < 0 ? '?' : entry.lastReportedCols}x${entry.lastReportedRows < 0 ? '?' : entry.lastReportedRows})`);
+		entry.lastReportedRows = grid.rows;
+		entry.lastReportedCols = grid.cols;
+		return true;
+	}
 
-		// P4.6 Part B (2026-05-22) — mirror sizing into the render worker.
-		// First fit: attach (init). Subsequent fits: resize. The decision
-		// is delegated to a pure helper so it is independently
-		// unit-testable (see `workerRendererBridge.test.ts` — Iter 14).
-		const workerActive = this.usingWorkerRenderer();
-		const workerAction = workerLifecycleOnFit({
-			paneId: entry.paneId,
-			rows,
-			cols,
-			dpr: entry.lastConfiguredDpr,
-			attached: this.workerAttached,
-			initializing: this.workerInitializing,
-			isActive: workerActive,
-		});
-		switch (workerAction.kind) {
-			case 'attach':
-				{
-					const renderer = this.syncWorkerRendererIdentity();
-					this.workerInitializing.add(entry.paneId);
-					void workerRendererBridge.attach(
-						entry.paneId,
-						workerAction.rows,
-						workerAction.cols,
-						workerAction.dpr,
-					).then((ready) => {
-						this.workerInitializing.delete(entry.paneId);
-						if (!ready || !this.isCurrentWorkerRenderer(renderer)) return;
-						this.workerAttached.add(entry.paneId);
-						this.fitPaneNow(entry.paneId);
-					});
-				}
+	private _resizeWorkerMirror(entry: PaneEntry, grid: FitGeometry): void {
+		const action = workerLifecycleOnFit({ paneId: entry.paneId, rows: grid.rows, cols: grid.cols, dpr: entry.lastConfiguredDpr, attached: this.workerAttached, initializing: this.workerInitializing, isActive: this.usingWorkerRenderer() });
+		switch (action.kind) {
+			case 'attach': {
+				const renderer = this.syncWorkerRendererIdentity();
+				this.workerInitializing.add(entry.paneId);
+				void workerRendererBridge.attach(entry.paneId, action.rows, action.cols, action.dpr).then((ready) => {
+					this.workerInitializing.delete(entry.paneId);
+					if (!ready || !this.isCurrentWorkerRenderer(renderer)) return;
+					this.workerAttached.add(entry.paneId);
+					this.fitPaneNow(entry.paneId);
+				});
 				break;
+			}
 			case 'resize':
-				// §p4 ITER 7 (2026-05-22) — also pass CSS dims so the
-				// worker can resize its `RenderHandle` backing buffer.
-				// fitPane's local `wCss` / `hCss` (computed above from
-				// the container's bounding rect minus padding) are the
-				// right values.
-				workerRendererBridge.resize(
-					entry.paneId,
-					workerAction.rows,
-					workerAction.cols,
-					workerAction.dpr,
-					wCss,
-					hCss,
-				);
+				workerRendererBridge.resize(entry.paneId, action.rows, action.cols, action.dpr, grid.wCss, grid.hCss);
 				break;
 			case 'noop':
 				break;
 		}
+	}
 
-		// Critical ordering — depends on which screen is active.
-		//
-		// PRIMARY screen WITHOUT inline TUI (shell prompt at PSReadLine /
-		// fish-zle / zsh-zle / cmd.exe): PTY first, then kernel.
-		//   Shells emit absolute cursor positions (e.g. CSI 39;18 H).
-		//   When the kernel resizes BEFORE the PTY knows about the new
-		//   size, in-flight bytes (emitted under the OLD size) land on
-		//   the new (smaller) grid and the cursor clamps to the new
-		//   last row. We `await` the handler so the backend ConPTY
-		//   resize completes before the kernel grid narrows — this
-		//   eliminates the millisecond-scale in-flight byte race that
-		//   used to be the dominant source of the "ghost characters
-		//   past prompt end" symptom on shrink.
-		//
-		// ALT screen OR primary with inline TUI (Claude Code's Ink input
-		// box, lazygit, vim, less, htop): kernel first, then PTY.
-		//   The §1.22 alt wipe (or the §A.3 inline-TUI primary full
-		//   wipe) inside `kernel.resize` must land BEFORE the foreground
-		//   TUI receives SIGWINCH and begins its diff redraw. Otherwise
-		//   the redraw bytes flow into the kernel while the visible
-		//   region still holds OLD content; the subsequent wipe then
-		//   erases the partial redraw, and Ink-style differential
-		//   repaint never refills the gaps (it only updates cells that
-		//   differ from its own model of the previous frame, so wiped
-		//   cells stay blank). Switching the order makes the wipe land
-		//   first, the PTY resize fire after the canvas is clean, and
-		//   the SIGWINCH-driven redraw paints onto blanks every time.
-		//
-		// §1.24 / §A.3: `isAlt` AND `isInlineTui` snapshots both let the
-		// backend skip the ConPTY resize-silence window so the foreground
-		// app's redraw isn't dropped — see
-		// src-tauri/src/commands/terminal.rs::resize_pane_inner.
-		//
-		// §1.25 (2026-05-06): the kernel itself never reflows on resize
-		// (Grid::resize always uses naive truncate/pad on both screens),
-		// so this ordering only governs the wipe vs. the TUI's own
-		// redraw — there is no kernel-side rewrap that could race with
-		// the application's repaint on either path.
+	private _logResizeDecision(entry: PaneEntry, rows: number, cols: number, isAlt: boolean, isInlineTui: boolean): void {
+		if (!import.meta.env?.DEV || typeof console.debug !== 'function') return;
+		const lastAbsCsiPos = entry.kernel.lastAbsCsiPosition();
+		console.debug('[ridge-term] resize decision', {
+			paneId: entry.paneId,
+			old: { rows: entry.lastReportedRows, cols: entry.lastReportedCols },
+			new: { rows, cols },
+			isAlt,
+			isInlineTui,
+			wipeBeforePty: isAlt || isInlineTui,
+			cursorVisible: entry.kernel.isCursorVisible(),
+			heuristic: lastAbsCsiPos ? { absCsiRow: lastAbsCsiPos.row, absCsiCol: lastAbsCsiPos.col, absCsiAt: lastAbsCsiPos.atMs } : null,
+		});
+	}
+
+	private _scheduleFitRedraw(paneId: string): void {
+		setTimeout(() => {
+			const entry = this.panes.get(paneId);
+			if (entry && !entry.parked) this.forceFullRedraw(paneId);
+		}, 150);
+	}
+
+	private async _applyFitResize(entry: PaneEntry, grid: FitGeometry): Promise<void> {
 		const isAlt = entry.kernel.isAltScreen();
 		const isInlineTui = !isAlt && entry.kernel.isInlineTuiMode();
-		const wipeBeforePty = isAlt || isInlineTui;
-
-		// §pane-resize-reflow (2026-05-09): Enhanced diagnostic for resize
-		// behavior debugging. Logs the key decision factors so we can
-		// correlate visible symptoms (truncation, cursor drift) with the
-		// internal state at resize time.
-		if (import.meta.env?.DEV && typeof console.debug === 'function') {
-			const lastAbsCsiPos = entry.kernel.lastAbsCsiPosition();
-			const diag = {
-				paneId: entry.paneId,
-				old: { rows: entry.lastReportedRows, cols: entry.lastReportedCols },
-				new: { rows, cols },
-				isAlt,
-				isInlineTui,
-				wipeBeforePty,
-				cursorVisible: entry.kernel.isCursorVisible(),
-				heuristic: lastAbsCsiPos ? {
-					absCsiRow: lastAbsCsiPos.row,
-					absCsiCol: lastAbsCsiPos.col,
-					absCsiAt: lastAbsCsiPos.atMs,
-				} : null,
-			};
-			console.debug('[ridge-term] resize decision', diag);
-		}
-
-		// P3.9.r (2026-05-20) → P4.4 (2026-05-21) — Rust parser is the
-		// only mode now, so the mirror's kernel resize is always driven
-		// by apply_delta(Resize) after the Rust-side PaneParser emits
-		// the Resize delta. We must NOT call `entry.kernel.resize` here
-		// directly — that would race the frame and risk Cells deltas
-		// referencing the old/new grid mix. `entry.resizeHandler`
-		// (resize_pane Tauri command) takes care of PTY master.resize +
-		// PaneParser.resize + delta emit in one atomic sequence. The
-		// `wipeBeforePty` knob from the WASM path is no longer
-		// reachable; the Rust path's `set_pane_delta_mode` already
-		// covers the equivalent "clean snapshot on resize" scenario via
-		// force_full_reframe.
-		//
-		// iter-60 G3 例外：raw 字节模式 pane（localGridAuthority，手机 SPA）没有
-		// delta 回灌，本地网格在此直接改——否则 cloud 腿（无 pty-resized 回执）
-		// 的 kernel 永卡初始格。上面的 delta-race 顾虑仅适用于 Rust-delta 镜像。
-	// The flag remains part of the diagnostic record above.
-		if (entry.localGridAuthority || this._sharedRemoteMode) {
-			entry.kernel.resize(rows, cols);
-		}
-		await entry.resizeHandler?.(rows, cols, isAlt, isInlineTui);
-		// Browser raw-byte remote has no PTY delta callback. The local kernel
-		// was resized above; immediately project the new grid or the canvas
-		// remains letterboxed to the previous 80×24 geometry until another fit.
+		this._logResizeDecision(entry, grid.rows, grid.cols, isAlt, isInlineTui);
+		if (entry.localGridAuthority || this._sharedRemoteMode) entry.kernel.resize(grid.rows, grid.cols);
+		await entry.resizeHandler?.(grid.rows, grid.cols, isAlt, isInlineTui);
 		if (this._sharedRemoteMode && entry.localGridAuthority) this._recomputeViewport(entry);
-		// Mirror resize will follow via apply_delta(Resize) in the
-		// next pty-delta frame — handler emits it synchronously.
-		// Drop the renderer's per-row hash snapshot the instant the kernel
-		// grid changed shape. `entry.handle.resize(wCss,hCss,dpr)` above
-		// only invalidates when the CSS surface dimensions changed; a
-		// rows/cols change that doesn't move pixels (e.g. font drift
-		// changes cell metrics without changing container px) would leave
-		// stale row hashes and produce the "色块错位" symptom on a TUI
-		// resize. Calling invalidateAll unconditionally here makes the
-		// next sync render below — and the 150ms forceFullRedraw — both
-		// start from a clean snapshot regardless of which path got us
-		// here.
 		entry.handle?.invalidateAll();
 		entry.linkSpans.markDirty();
-
-		// Synchronous first frame after resize. The next rAF tick is
-		// up to ~16ms away, and a TUI like `claude` that's continuously
-		// emitting bytes can land several PTY chunks in that window —
-		// chunks that get parsed against the new grid size while the
-		// renderer is still showing the previous frame's pixels.
-		// Driving one frame here closes the gap so the very next visible
-		// pixel reflects the new metrics + freshly-cleared atlas,
-		// instead of a stale composite. Wrapped in try/catch so a
-		// transient render error never blocks the resize from
-		// completing — the rAF loop will pick it up next tick.
-		try {
-			entry.handle?.render(entry.kernel);
-		} catch (err) {
-			console.error('[ridge-term] post-resize render error', entry.paneId, err);
-		}
-		// §pane-resize-reflow (2026-05-09): ALL resize paths need a delayed
-		// refresh, not just TUI. The synchronous inline render above paints
-		// with whatever kernel state existed at the moment of resize, but
-		// ConPTY's SIGWINCH delivery is async on Windows: both TUI apps
-		// AND normal shells (PSReadLine, zsh, fish) emit prompt redraws
-		// 30-100 ms after resize_pane returns. Without a delayed refresh,
-		// Canvas2D's per-row dirty diff may show stale content.
-		// 150ms covers both TUI redraws and shell prompt repaints.
-		// `alive`-guarded against the pane being closed during the wait.
-		{
-			const targetPaneId = entry.paneId;
-			setTimeout(() => {
-				const e = this.panes.get(targetPaneId);
-				if (!e || e.parked) return;
-				this.forceFullRedraw(targetPaneId);
-			}, 150);
-		}
-		// Resize may have fired while the loop was sleeping; even though
-		// we drew one frame inline, subsequent SIGWINCH-driven redraw
-		// bytes from the TUI need the loop awake to catch them.
+		try { entry.handle?.render(entry.kernel); } catch (error) { console.error('[ridge-term] post-resize render error', entry.paneId, error); }
+		this._scheduleFitRedraw(entry.paneId);
 		this.wake();
+	}
+
+	private async fitPane(entry: PaneEntry, claim = false): Promise<void> {
+		const measured = this._measureFit(entry);
+		if (!measured || measured.wCss <= 0 || measured.hCss <= 0 || entry.cellW <= 0 || entry.cellH <= 0) return;
+		const dpr = window.devicePixelRatio || 1;
+		this._syncFitDpr(entry, dpr);
+		const grid = this._computeFitGrid(entry, claim, dpr, measured);
+		if (!grid || !this._fitGridChanged(entry, grid)) return;
+		this._resizeWorkerMirror(entry, grid);
+		await this._applyFitResize(entry, grid);
 	}
 
 	// ---- frame loop -------------------------------------------------
 
-	private startRafLoop(): void {
-		if (this.rafHandle !== null) return;
-		// Install the visibility listener lazily on first start. Removed in
-		// stopRafLoop so the singleton doesn't leak listeners between
-		// detach-all → re-attach cycles.
-		if (this.visibilityListener === null && typeof document !== 'undefined') {
-			this.visibilityListener = () => {
-				if (document.hidden) {
-					// A hidden WebView cannot present pixels. Release every per-pane
-					// renderer immediately; kernels and PTY handlers remain live.
-					this.reclaimTerminalMemory({ documentHidden: true });
-				} else {
-					this._restoreMemoryParked(this._activeWorkspaceId);
-					// On visibility-restore the swap chain may have been
-					// recycled by Chromium / WebView2 while we were
-					// hidden — force a full cache replay on the next
-					// tick so the user doesn't briefly see fresh-zero
-					// pixels (transparent → DOM parent) where rendered
-					// terminal content was. Pairs with the idle-watchdog
-					// invalidate so any code path that suspends the loop
-					// repaints on resume.
-					this._hostInvalidatePending = true;
-					this.wake();
-				}
-			};
-			document.addEventListener('visibilitychange', this.visibilityListener);
-		}
-		const tick = () => {
-			// §P4 attribution — wrap the per-frame render body so the
-			// `frame-time-attribution` spec can measure how much of the
-			// rAF interval is paint (this measure) vs PTY event handlers
-			// (rg.ptyText.feed / rg.ptyDelta.apply in ptyBridge.ts).
-			// `perfMark` is a no-op unless `window.__RIDGE_PERF_TRACE`
-			// is true, so production / dev pays one branch.
-			perfMark('rg.frame.tick', () => {
-			this.rafHandle = null;
-			const perfNow = performance.now();
-			// Use Date.now() for the dirty / blink queries: `RenderHandle.render`
-			// reads `js_sys::Date::now()` internally, so the renderer's blink
-			// phase and our pre-render `isDirty` must use the same epoch.
-			const dateNow = Date.now();
-			if (perfNow - this._lastMemorySweepAt >= TERMINAL_MEMORY_SWEEP_MS) {
-				this._lastMemorySweepAt = perfNow;
-				this.reclaimTerminalMemory();
-			}
-			// Consume the host-invalidate flag at the start of the tick so
-			// the upcoming cache-replay pass over every visible pane counts
-			// as "real work" (the swap chain was wiped by LoadOp::Clear in
-			// SurfaceHost::begin_frame; without per-pane repaints those
-			// regions stay blank). Cleared so the next tick sleeps if no
-			// new invalidate / dirty event lands in the meantime.
-			const surfaceJustWiped = this._hostInvalidatePending;
-			this._hostInvalidatePending = false;
-			// P2.2 (2026-05-20): compute the per-frame order ONCE here so
-			// the deferred-feed drain and the main render loop agree on
-			// who goes first. Focused pane heads the list; remaining
-			// panes rotate by `_rafRotationIndex` so no non-focused pane
-			// gets perpetually starved at the tail.
-			const frameOrder = this._renderOrder();
-			// P2.1 (2026-05-20): drain bytes that prior `_feedNow` calls
-			// spilled out of when their per-call time budget ran out. The
-			// drain itself re-enters `_feedNow` with its own budget, so a
-			// pane bursting 200 KB/sec consumes one ~16 KB chunk per frame
-			// instead of monopolising the main thread for tens of ms. Run
-			// BEFORE the dirty pre-pass so the kernel state the pre-pass
-			// hashes against reflects this frame's freshly-fed bytes.
-			this._drainDeferredFeeds(frameOrder);
-			let anyRendered = false;
-			let minDeadlineMs = Infinity;
-			// §4b per-pane increment cache (2026-05-08): this pre-pass
-			// collects PER-PANE dirty state (used to be one
-			// `forceHostRenderAll` boolean for the whole frame). For
-			// each visible host pane:
-			//   - dirty=true  → main loop calls full `render()` (kernel
-			//     traversal + cell instance encode + GPU upload + draw).
-			//   - dirty=false → main loop calls `recordCachedOnly()`,
-			//     which re-records the pane's previously-uploaded
-			//     instance buffer with NO kernel traversal. Falls back
-			//     to `render()` if the wasm bundle is too old to expose
-			//     the export OR the cache was invalidated mid-frame.
-			//
-			// `LoadOp::Clear` on the host's first record wipes the
-			// entire host canvas to bg, but per-pane scissor + every
-			// pane (dirty or cached) records a draw inside its scissor,
-			// so non-dirty pane regions get repainted from cached
-			// instances — no flash. The pre-§4b "when ANY pane dirty,
-			// EVERY pane re-encodes" multiplier is gone: typing in one
-			// pane no longer makes 7 other panes traverse their grids.
-			//
-			// Open host frame iff any visible host pane needs to draw
-			// (= any pane exists AND is visible). Idle ticks (no pane
-			// dirty AND nothing in their caches changes) still skip
-			// `beginFrame` because all-cached + no clear = nothing to
-			// present — but that's a rare optimisation; the typical
-			// case is "at least one pane dirty per tick".
-			// §A.9 single-canvas (2026-05-08 follow-up): only one
-			// workspace tab is visible at a time → exactly one
-			// workspace's panes have non-zero bbox each tick. We pin
-			// `activeWsId` to the first visible host pane found, then
-			// render only that workspace's panes onto the shared global
-			// host. Inactive workspaces' panes are skipped via the 0×0
-			// bbox check (`_isContainerHidden`) — their kernels keep
-			// receiving PTY output but no GPU work is paid for unseen
-			// pixels. Switching workspaces simply changes WHICH panes
-			// pass the bbox gate; the host's swap chain / pipeline never
-			// reconfigures, so no black flash on switch.
-			const dirtyByPane = new Map<string, boolean>();
-			let activeWsId: string | null = null;
-			let anyDirty = false;
-			for (const entry of this.panes.values()) {
-				if (entry.parked) continue;
-				if (!this._isHostMode(entry)) continue;
-				if (this._isContainerHidden(entry)) continue;
-				// First visible host pane wins: pin to its workspace.
-				activeWsId ??= entry.workspaceId;
-				// Sanity: skip any pane from a different workspace that
-				// somehow has non-zero bbox (shouldn't happen in normal
-				// CSS toggle, but defensive against intermediate layout
-				// states).
-				if (entry.workspaceId !== activeWsId) continue;
-				// §shared-remote: the centered letterbox is sized to the SHARED
-				// kernel grid, which changes asynchronously when any viewer claims
-				// a new size (the host broadcasts a Resize delta → this kernel's
-				// grid grows/shrinks). That path doesn't fire viewportChanged, so
-				// re-clip here the moment the grid differs from what the scissor
-				// was last sized for. Cheap: two integer reads + a compare.
-				if (this._sharedRemoteMode) {
-					const kr = entry.kernel.rows();
-					const kc = entry.kernel.cols();
-					if (kr !== entry.lastViewportKernelRows || kc !== entry.lastViewportKernelCols) {
-						this._recomputeViewport(entry);
-					}
-				}
-				const handleAny = entry.handle as unknown as {
-					isDirty?: (k: TerminalKernel, t: number) => boolean;
-				};
-				let d = true;
-				if (entry.wasHiddenLastTick) {
-					// §atlas-race (switch-frame garble): this pane was under a
-					// hidden (inactive-workspace) container last tick and is
-					// becoming visible THIS frame. Its cached instance buffer
-					// cites atlas layers captured before the hide. Replaying it
-					// via `recordCachedOnly` on the very frame that the other
-					// newly-visible panes mass-admit glyphs is the switch-
-					// workspace garble window: the first/idle pane's replay
-					// draws against slots a sibling reclaims mid-frame. Force a
-					// FULL render so the pane re-admits its own glyphs under the
-					// shared `frame_written` eviction guard instead of trusting
-					// the per-layer pin bookkeeping to survive the churn. Costs
-					// one extra full render per pane per switch — negligible
-					// (the default requires_full_frame path full-renders every
-					// tick regardless). `wasHiddenLastTick` is cleared in the
-					// render loop below, so this only forces the FIRST visible
-					// frame; steady-state cached replay is unaffected.
-				} else if (entry.handle !== null && typeof handleAny.isDirty === 'function') {
-					try {
-						d = handleAny.isDirty(entry.kernel, dateNow);
-					} catch {
-						d = true;
-					}
-				}
-				dirtyByPane.set(entry.paneId, d);
-				if (d) anyDirty = true;
-			}
-			let hostFrameOpen = false;
-			let activeHost: SurfaceHostHandle | null = null;
-			const themeBg = this._currentThemeBgRgba();
-			if (activeWsId !== null) {
-				activeHost = this._globalHostHandle();
-				// §A.9: don't open the host frame eagerly here. With one
-				// shared canvas, calling beginFrame + endFrame without
-				// drawing any pane (e.g. every visible pane is in sync
-				// mode, or every visible pane just unhid and would have
-				// taken the §4a fitPane skip) submits a LoadOp::Clear-only
-				// frame and the user sees a black flash. Open lazily
-				// inside the pane loop, when we know at least one host
-				// pane is about to draw.
-			}
-	// anyDirty feeds the frame-order decision below.
-			const ensureHostFrame = (): boolean => {
-				if (hostFrameOpen) return true;
-				if (!activeHost) return false;
-				hostFrameOpen = activeHost.beginFrame(themeBg);
-				if (hostFrameOpen) {
-					// §atlas-pin: beginFrame just reset the shared
-					// `frame_written` mask. Pin every visible NOT-dirty
-					// host pane's cached atlas layers NOW — before any
-					// dirty pane's full render can evict + overwrite a
-					// layer a cached replay still samples. Order-
-					// independent: all cached panes protected before the
-					// first eviction this frame. Kills the garbled glyphs
-					// seen for a few frames right after a workspace switch
-					// (cached pane's slot stolen by the newly-visible
-					// pane's glyph admission).
-					for (const e of frameOrder) {
-						if (e.parked) continue;
-						if (dirtyByPane.get(e.paneId) !== false) continue;
-						const h = e.handle as unknown as {
-							pinCachedLayers?: () => void;
-						} | null;
-						if (h !== null && typeof h.pinCachedLayers === 'function') {
-							try {
-								h.pinCachedLayers();
-							} catch {
-								/* old wasm bundle w/o export → skip */
-							}
-						}
-					}
-				}
-				return hostFrameOpen;
-			};
-			// P2.2 (2026-05-20): use the frame's ordered list (focused
-			// pane first, then rotated non-focused) so the focused pane's
-			// dirty rows get encoded + presented before any sibling pane
-			// — visible win when the frame budget is tight (the focused
-			// cursor doesn't stutter behind a busy non-focused pane).
-			for (const entry of frameOrder) {
-				// `frameOrder` already filtered parked entries, but the
-				// kernel-freed dereference would crash hard so keep the
-				// belt-and-suspenders guard.
-				if (entry.parked) continue;
-				// §4a workspace keep-alive: skip panes whose container has
-				// 0 bbox (display:none on hidden workspace's wrapper).
-				// Kernel still received PTY bytes; on the next tick where
-				// container becomes visible, isDirty=true and a normal
-				// render fires — atlas/RenderHandle already warm so it's
-				// a single sub-16 ms frame, no black flash.
-				if (this._isContainerHidden(entry)) {
-					entry.wasHiddenLastTick = true;
-					continue;
-				}
-				// §4a hidden→visible transition: ResizeObserver doesn't
-				// reliably fire for display:none → display:flex flips on
-				// every browser. Belt-and-suspenders: when this tick is
-				// the first visible one after a hidden run, schedule a
-				// fitPane so the kernel grid matches the (possibly
-				// different) container size. We DO NOT skip render this
-				// tick (§A.9): the host frame would otherwise open with
-				// LoadOp::Clear and submit black with no scissors drawn.
-				// fitPane's _recomputeViewport call sets the scissor
-				// synchronously; the kernel-resize side effect is async
-				// but only matters if cell grid actually changed (rare on
-				// pure workspace switches — typically same layout).
-				if (entry.wasHiddenLastTick) {
-					entry.wasHiddenLastTick = false;
-					this._recomputeViewport(entry);
-					void this.fitPane(entry, this._sharedRemoteMode);
-				}
-				// Synchronous output mode (?2026): hold rendering while the
-				// TUI emits a multi-step redraw, so the user never sees a
-				// torn intermediate frame. Timeout (150ms) prevents a stuck
-				// app from freezing the pane forever.
-				const sync = entry.kernel.isSyncOutput();
-				if (sync) {
-					entry.syncStart ??= perfNow;
-					const elapsed = perfNow - entry.syncStart;
-					if (elapsed < SYNC_OUTPUT_TIMEOUT_MS) {
-						// Hold the frame; schedule a wake at the timeout boundary.
-						const remaining = SYNC_OUTPUT_TIMEOUT_MS - elapsed;
-						if (remaining < minDeadlineMs) minDeadlineMs = remaining;
-						continue;
-					}
-					// Timeout reached. Render the best-effort frame ONCE,
-					// then suspend further renders until the kernel exits
-					// sync. Without this guard, every subsequent rAF tick
-					// satisfies `now - syncStart >= TIMEOUT` and falls
-					// through to `handle.render(...)` — burst-rendering
-					// at 60 fps for as long as the TUI's sync stays stuck
-					// (TASKS §1.4).
-					if (entry.syncTimeoutRendered) {
-						continue;
-					}
-					entry.syncTimeoutRendered = true;
-				} else if (entry.syncStart !== null) {
-					// Clean exit from sync mode — reset for next cycle.
-					entry.syncStart = null;
-					entry.syncTimeoutRendered = false;
-				}
-				// §4b per-pane increment cache: the pre-pass already
-				// computed `dirty` for each visible host pane and stored
-				// it in `dirtyByPane`. Re-reading would double the
-				// `isDirty` cost for no benefit. Canvas2D panes still
-				// compute dirty inline below — they don't participate in
-				// the cache path (Canvas2D's per-row diff is already the
-				// equivalent fast-path).
-			const isHost = this._isHostMode(entry);
-			// §P4.9 — worker-owned panes have `handle === null`; skip dirty
-			// check and inline render — the worker's `createRenderer` handles
-			// per-frame paint inside its own `applyDelta` handler.
-		const hasHandle = entry.handle !== null;
-		const handleAny = entry.handle as unknown as {
-			isDirty?: (k: TerminalKernel, t: number) => boolean;
-			nextBlinkDeadlineMs?: (k: TerminalKernel, t: number) => number;
-			recordCachedOnly?: () => boolean;
-		} | null;
-		let dirty = true;
-		if (isHost) {
-			dirty = dirtyByPane.get(entry.paneId) ?? true;
-		} else if (hasHandle && handleAny !== null && typeof handleAny.isDirty === 'function') {
-			try {
-				dirty = handleAny.isDirty(entry.kernel, dateNow);
-			} catch {
-				dirty = true;
-			}
-		}
-				// §4.3 Phase B + §4b: host-mode panes participate in the
-				// frame whenever ANY visible host pane needs to draw —
-				// not just this one. WebView2's LoadOp::Load is not
-				// reliable enough to preserve neighbour-pane pixels
-				// across a present: when pane A renders (cursor blink,
-				// PTY input, focus change), pane B's scissor region
-				// frequently comes back as fresh-zero in the next
-				// presented texture. So whenever the host frame opens
-				// at all, every visible pane re-records its content —
-				// dirty panes via full `render()`, others via the
-				// cheap `recordCachedOnly()` path (one buffered GPU
-				// draw call, no kernel grid sweep, sub-100μs each).
-				// `surfaceJustWiped` covers the case where ALL panes
-				// are non-dirty but a manual invalidate (theme change,
-				// resize, park/unpark) wiped the canvas.
-				// Canvas2D-mode panes still gate on per-pane `dirty`.
-				// §A.9: `hostFrameOpen` is no longer the gate — the
-				// frame is opened lazily inside the render path so we
-				// don't submit a clear-only frame when nothing draws.
-				const shouldRender = isHost
-					? (activeHost !== null && (dirty || anyDirty || surfaceJustWiped))
-					: dirty;
-				// §A.4 — tick trace: dump cursor row's cells per frame. Lets us
-				// answer "what does the kernel grid hold at the moment Canvas2D
-				// samples it" — if the cells are right but render is wrong, it's
-				// a render bug; if cells are wrong, it's a parser/feed bug.
-				// Per-frame cursor tracing was removed; keep rendering side-effect free.
-				if (shouldRender) {
-					// §A.9: open the global host frame lazily, on the
-					// first host pane that's actually about to draw this
-					// tick. If every pane skips (sync mode, etc.), the
-					// frame stays unopened and the canvas keeps its last
-					// presented pixels — no LoadOp::Clear flash.
-					if (isHost && !ensureHostFrame()) {
-						// Surface lost / not yet inited — skip this pane.
-						continue;
-					}
-					try {
-						// §4b per-pane increment cache: visible host
-						// pane that the pre-pass marked NOT dirty →
-						// re-record cached instances without kernel
-						// traversal. Canvas2D panes always go through
-						// full render (their fast-path is the per-row
-						// dirty diff inside `render` itself).
-						let usedCache = false;
-						if (
-							isHost &&
-							!dirty &&
-							handleAny !== null &&
-							typeof handleAny.recordCachedOnly === 'function'
-						) {
-							try {
-								usedCache = handleAny.recordCachedOnly();
-							} catch {
-								usedCache = false;
-							}
-						}
-						if (!usedCache) {
-							entry.handle?.render(entry.kernel);
-						}
-						anyRendered = true;
-					} catch (err) {
-						// Don't let one pane's render error kill the whole loop.
-						console.error('[ridge-term] render error', entry.paneId, err);
-					}
-				}
-				if (hasHandle && handleAny !== null && typeof handleAny.nextBlinkDeadlineMs === 'function') {
-					try {
-						const d = handleAny.nextBlinkDeadlineMs(entry.kernel, dateNow);
-						if (Number.isFinite(d) && d < minDeadlineMs) minDeadlineMs = d;
-					} catch {
-						// ignore — watchdog cap below covers us
-					}
-				}
-			}
-			// §A.8: close the active workspace's host frame.
-			if (hostFrameOpen && activeHost) {
-				try {
-					activeHost.endFrame();
-				} catch (err) {
-					console.error('[ridge-term] surfaceHost.endFrame error', err);
-				}
-			}
-			// P1.3 (2026-05-19): surface scroll-state diffs to RidgePane
-			// subscribers AFTER the render is committed, so the scrollbar
-			// thumb position the user reads matches the kernel state that
-			// just painted. Sleeping panes pay nothing — emits only run on
-			// ticks the RAF loop is already executing.
-			this._emitScrollStateChanges();
-			// P2.2 (2026-05-20): advance the rotation cursor so the next
-			// frame visits non-focused panes in a different order. `>>> 0`
-			// wraps to u32 so the counter never grows unbounded across a
-			// long-running session.
-			this._rafRotationIndex = (this._rafRotationIndex + 1) >>> 0;
-			if (this.panes.size === 0) return;
-			if (anyRendered) {
-				// Likely more work soon — stay on RAF cadence.
-				this.rafHandle = requestAnimationFrame(tick);
+	private _installVisibilityListener(): void {
+		if (this.visibilityListener !== null || typeof document === 'undefined') return;
+		this.visibilityListener = () => {
+			if (document.hidden) {
+				this.reclaimTerminalMemory({ documentHidden: true });
 				return;
 			}
-			// All idle. Sleep until the next blink boundary (or a 1s
-			// watchdog so a missed wake-up path can't hang a pane longer
-			// than that). Min 1ms keeps `setTimeout(0)` semantics off the
-			// hot path. When `document.visibilityState === 'hidden'`
-			// (window minimised or another tab active) we don't even
-			// arm the watchdog — the OS won't show our pixels until
-			// visibility flips back, and that fires the
-			// `visibilitychange` listener which wakes us via
-			// `this.wake()`. Skipping the watchdog here is the
-			// "彻底停 RAF" idle-optimisation pass: it brings hidden-
-			// state CPU down to literal zero.
-			if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-				return;
-			}
-			const sleepMs = Math.min(Math.max(minDeadlineMs, 1), 1000);
-			this.idleTimer = setTimeout(() => {
-				this.idleTimer = null;
-				// Defensive repaint on every idle-watchdog wake. WebView2
-				// occasionally returns a fresh-zero swap-chain texture
-				// after extended idle — under the previous "wake +
-				// nothing dirty → skip draws" path, the user saw stale
-				// or torn content (TUI rendering 错位) until the next
-				// real dirty event landed. Marking the host invalidated
-				// here forces a full cache replay across every pane on
-				// the upcoming tick at the cost of one GPU draw per
-				// second; sub-millisecond GPU work, invisible to CPU.
-				this._hostInvalidatePending = true;
-				this.startRafLoop();
-			}, sleepMs);
-			}); // §P4 close perfMark('rg.frame.tick', ...)
+			this._restoreMemoryParked(this._activeWorkspaceId);
+			this._hostInvalidatePending = true;
+			this.wake();
 		};
-		this.rafHandle = requestAnimationFrame(tick);
+		document.addEventListener('visibilitychange', this.visibilityListener);
 	}
 
+	private _hostPaneDirty(entry: PaneEntry, dateNow: number): boolean {
+		if (entry.wasHiddenLastTick || entry.handle === null) return true;
+		const handle = entry.handle as unknown as { isDirty?: (kernel: TerminalKernel, now: number) => boolean };
+		if (typeof handle.isDirty !== 'function') return true;
+		try { return handle.isDirty(entry.kernel, dateNow); }
+		catch { return true; }
+	}
+
+	private _collectHostDirty(frameOrder: PaneEntry[], dateNow: number): {
+		dirtyByPane: Map<string, boolean>;
+		activeWsId: string | null;
+		anyDirty: boolean;
+	} {
+		const dirtyByPane = new Map<string, boolean>();
+		let activeWsId: string | null = null;
+		let anyDirty = false;
+		for (const entry of frameOrder) {
+			if (entry.parked || !this._isHostMode(entry) || this._isContainerHidden(entry)) continue;
+			activeWsId ??= entry.workspaceId;
+			if (entry.workspaceId !== activeWsId) continue;
+			if (this._sharedRemoteMode) {
+				const rows = entry.kernel.rows();
+				const cols = entry.kernel.cols();
+				if (rows !== entry.lastViewportKernelRows || cols !== entry.lastViewportKernelCols) this._recomputeViewport(entry);
+			}
+			const dirty = this._hostPaneDirty(entry, dateNow);
+			dirtyByPane.set(entry.paneId, dirty);
+			anyDirty ||= dirty;
+		}
+		return { dirtyByPane, activeWsId, anyDirty };
+	}
+
+	private _newRafFrame(perfNow: number, dateNow: number): RafFrameState {
+		if (perfNow - this._lastMemorySweepAt >= TERMINAL_MEMORY_SWEEP_MS) {
+			this._lastMemorySweepAt = perfNow;
+			this.reclaimTerminalMemory();
+		}
+		const surfaceJustWiped = this._hostInvalidatePending;
+		this._hostInvalidatePending = false;
+		const frameOrder = this._renderOrder();
+		this._drainDeferredFeeds(frameOrder);
+		const dirty = this._collectHostDirty(frameOrder, dateNow);
+		return {
+			frameOrder, dateNow, perfNow, surfaceJustWiped,
+			...dirty,
+			activeHost: dirty.activeWsId === null ? null : this._globalHostHandle(),
+			hostFrameOpen: false,
+			anyRendered: false,
+			minDeadlineMs: Infinity,
+		};
+	}
+
+	private _pinCachedHostLayers(state: RafFrameState): void {
+		for (const entry of state.frameOrder) {
+			if (entry.parked || state.dirtyByPane.get(entry.paneId) !== false) continue;
+			const handle = entry.handle as unknown as { pinCachedLayers?: () => void } | null;
+			if (typeof handle?.pinCachedLayers !== 'function') continue;
+			try { handle.pinCachedLayers(); } catch { /* old wasm bundle */ }
+		}
+	}
+
+	private _ensureHostFrame(state: RafFrameState): boolean {
+		if (state.hostFrameOpen) return true;
+		if (state.activeHost === null) return false;
+		state.hostFrameOpen = state.activeHost.beginFrame(this._currentThemeBgRgba());
+		if (state.hostFrameOpen) this._pinCachedHostLayers(state);
+		return state.hostFrameOpen;
+	}
+
+	private _renderEntryAfterSync(entry: PaneEntry, state: RafFrameState): boolean {
+		const sync = entry.kernel.isSyncOutput();
+		if (!sync) {
+			if (entry.syncStart !== null) {
+				entry.syncStart = null;
+				entry.syncTimeoutRendered = false;
+			}
+			return true;
+		}
+		entry.syncStart ??= state.perfNow;
+		const elapsed = state.perfNow - entry.syncStart;
+		if (elapsed < SYNC_OUTPUT_TIMEOUT_MS) {
+			state.minDeadlineMs = Math.min(state.minDeadlineMs, SYNC_OUTPUT_TIMEOUT_MS - elapsed);
+			return false;
+		}
+		if (entry.syncTimeoutRendered) return false;
+		entry.syncTimeoutRendered = true;
+		return true;
+	}
+
+	private _entryDirty(entry: PaneEntry, state: RafFrameState): boolean {
+		if (this._isHostMode(entry)) return state.dirtyByPane.get(entry.paneId) ?? true;
+		const handle = entry.handle as unknown as { isDirty?: (kernel: TerminalKernel, now: number) => boolean } | null;
+		if (handle === null || typeof handle.isDirty !== 'function') return true;
+		try { return handle.isDirty(entry.kernel, state.dateNow); }
+		catch { return true; }
+	}
+
+	private _paintFrameEntry(entry: PaneEntry, state: RafFrameState, dirty: boolean): void {
+		const isHost = this._isHostMode(entry);
+		const handle = entry.handle as unknown as { recordCachedOnly?: () => boolean } | null;
+		try {
+			let usedCache = false;
+			if (isHost && !dirty && typeof handle?.recordCachedOnly === 'function') {
+				try { usedCache = handle.recordCachedOnly(); } catch { usedCache = false; }
+			}
+			if (!usedCache) entry.handle?.render(entry.kernel);
+			state.anyRendered = true;
+		} catch (error) {
+			console.error('[ridge-term] render error', entry.paneId, error);
+		}
+	}
+
+	private _updateBlinkDeadline(entry: PaneEntry, state: RafFrameState): void {
+		const handle = entry.handle as unknown as { nextBlinkDeadlineMs?: (kernel: TerminalKernel, now: number) => number } | null;
+		if (typeof handle?.nextBlinkDeadlineMs !== 'function') return;
+		try {
+			const deadline = handle.nextBlinkDeadlineMs(entry.kernel, state.dateNow);
+			if (Number.isFinite(deadline)) state.minDeadlineMs = Math.min(state.minDeadlineMs, deadline);
+		} catch { /* watchdog covers old wasm bundles */ }
+	}
+
+	private _renderFrameEntry(entry: PaneEntry, state: RafFrameState): void {
+		if (entry.parked || this._isContainerHidden(entry)) {
+			if (!entry.parked && this._isContainerHidden(entry)) entry.wasHiddenLastTick = true;
+			return;
+		}
+		if (entry.wasHiddenLastTick) {
+			entry.wasHiddenLastTick = false;
+			this._recomputeViewport(entry);
+			void this.fitPane(entry, this._sharedRemoteMode);
+		}
+		if (!this._renderEntryAfterSync(entry, state)) return;
+		const dirty = this._entryDirty(entry, state);
+		const shouldRender = this._isHostMode(entry)
+			? state.activeHost !== null && (dirty || state.anyDirty || state.surfaceJustWiped)
+			: dirty;
+		if (shouldRender && (!this._isHostMode(entry) || this._ensureHostFrame(state))) this._paintFrameEntry(entry, state, dirty);
+		this._updateBlinkDeadline(entry, state);
+	}
+
+	private _finishHostFrame(state: RafFrameState): void {
+		if (!state.hostFrameOpen || state.activeHost === null) return;
+		try { state.activeHost.endFrame(); }
+		catch (error) { console.error('[ridge-term] surfaceHost.endFrame error', error); }
+	}
+
+	private _scheduleIdleFrame(state: RafFrameState, tick: () => void): void {
+		if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+		const sleepMs = Math.min(Math.max(state.minDeadlineMs, 1), 1000);
+		this.idleTimer = setTimeout(() => {
+			this.idleTimer = null;
+			this._hostInvalidatePending = true;
+			this.startRafLoop();
+		}, sleepMs);
+	}
+
+	private _scheduleNextFrame(state: RafFrameState, tick: () => void): void {
+		if (this.panes.size === 0) return;
+		if (state.anyRendered) {
+			this.rafHandle = requestAnimationFrame(tick);
+			return;
+		}
+		this._scheduleIdleFrame(state, tick);
+	}
+
+	private _runRafTick(tick: () => void): void {
+		perfMark('rg.frame.tick', () => {
+			this.rafHandle = null;
+			const perfNow = performance.now();
+			const state = this._newRafFrame(perfNow, Date.now());
+			for (const entry of state.frameOrder) this._renderFrameEntry(entry, state);
+			this._finishHostFrame(state);
+			this._emitScrollStateChanges();
+			this._rafRotationIndex = (this._rafRotationIndex + 1) >>> 0;
+			this._scheduleNextFrame(state, tick);
+		});
+	}
+
+	private startRafLoop(): void {
+		if (this.rafHandle !== null) return;
+		this._installVisibilityListener();
+		const tick = () => this._runRafTick(tick);
+		this.rafHandle = requestAnimationFrame(tick);
+	}
 	private stopRafLoop(): void {
 		if (this.rafHandle !== null) {
 			cancelAnimationFrame(this.rafHandle);
