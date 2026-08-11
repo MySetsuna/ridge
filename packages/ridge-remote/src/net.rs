@@ -4,35 +4,46 @@
 //! `src-tauri/src/remote/mod.rs` so the desktop LAN host, the `rdg` CLI, and the
 //! cloud relay all share ONE implementation instead of drifting copies.
 
-use std::net::ToSocketAddrs;
+use std::net::{IpAddr, ToSocketAddrs, UdpSocket};
+
+fn computer_name() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_else(|_| "localhost".to_string())
+}
+
+fn outgoing_ipv4() -> Option<String> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("1.1.1.1:53").ok()?;
+    usable_ipv4(socket.local_addr().ok()?.ip())
+}
+
+fn usable_ipv4(ip: IpAddr) -> Option<String> {
+    let IpAddr::V4(ip) = ip else { return None };
+    if ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() {
+        return None;
+    }
+    Some(ip.to_string())
+}
+
+fn hostname_ipv4() -> Option<String> {
+    (computer_name().as_str(), 0u16)
+        .to_socket_addrs()
+        .ok()?
+        .find_map(|addr| usable_ipv4(addr.ip()))
+}
+
+fn push_unique_ipv4(out: &mut Vec<String>, ip: IpAddr) {
+    let Some(ip) = usable_ipv4(ip) else { return };
+    if !out.contains(&ip) {
+        out.push(ip);
+    }
+}
 
 /// Detect the LAN IPv4 address for QR-code link generation.
 /// Uses a UDP socket trick to find the primary outgoing interface address.
 pub fn detect_lan_ip() -> String {
-    use std::net::UdpSocket;
-
-    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-        if socket.connect("1.1.1.1:53").is_ok() {
-            if let Ok(local) = socket.local_addr() {
-                let ip = local.ip();
-                if ip.is_ipv4() && !ip.is_loopback() {
-                    return ip.to_string();
-                }
-            }
-        }
-    }
-
-    let compname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "localhost".to_string());
-    if let Ok(addrs) = (compname.as_str(), 0u16).to_socket_addrs() {
-        for addr in addrs {
-            let ip = addr.ip();
-            if ip.is_ipv4() && !ip.is_loopback() {
-                return ip.to_string();
-            }
-        }
-    }
-
-    "localhost".to_string()
+    outgoing_ipv4()
+        .or_else(hostname_ipv4)
+        .unwrap_or_else(|| "localhost".to_string())
 }
 
 /// Enumerate ALL usable LAN IPv4 addresses so the remote panel can list every
@@ -43,36 +54,17 @@ pub fn detect_lan_ip() -> String {
 /// IPv4). Loopback / link-local (169.254) / unspecified are excluded. Dedup,
 /// primary-first order.
 pub fn detect_lan_ips() -> Vec<String> {
-    use std::net::{IpAddr, UdpSocket};
-
-    fn push_ip(out: &mut Vec<String>, ip: IpAddr) {
-        if let IpAddr::V4(v4) = ip {
-            if v4.is_loopback() || v4.is_link_local() || v4.is_unspecified() {
-                return;
-            }
-            let s = v4.to_string();
-            if !out.contains(&s) {
-                out.push(s);
-            }
-        }
-    }
-
-    let mut out: Vec<String> = Vec::new();
+    let mut out = Vec::new();
 
     // 1) Primary outgoing-route address first (the UDP-connect trick).
-    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-        if socket.connect("1.1.1.1:53").is_ok() {
-            if let Ok(local) = socket.local_addr() {
-                push_ip(&mut out, local.ip());
-            }
-        }
+    if let Some(ip) = outgoing_ipv4() {
+        out.push(ip);
     }
 
     // 2) Everything the local hostname resolves to (all configured IPv4s).
-    let compname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "localhost".to_string());
-    if let Ok(addrs) = (compname.as_str(), 0u16).to_socket_addrs() {
+    if let Ok(addrs) = (computer_name().as_str(), 0u16).to_socket_addrs() {
         for addr in addrs {
-            push_ip(&mut out, addr.ip());
+            push_unique_ipv4(&mut out, addr.ip());
         }
     }
 
