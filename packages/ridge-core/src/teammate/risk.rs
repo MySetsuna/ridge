@@ -128,62 +128,68 @@ pub fn classify_shell_command(cmd_line: &str) -> RiskAssessment {
 }
 
 fn dangerous_by_command(cmd: &str, rest: &[String], lower: &str) -> Option<RiskAssessment> {
-    let d = |r: &str| Some(RiskAssessment::at(RiskLevel::Dangerous, r.to_string()));
     match cmd {
-        "rm" => {
-            let recursive = rest
-                .iter()
-                .any(|a| a.starts_with('-') && (a.contains('r') || a.contains('f')) && a != "-");
-            let broad_target = rest
-                .iter()
-                .any(|a| a == "/" || a == "~" || a == "*" || a == "~/" || a.contains('*'));
-            if recursive || broad_target {
-                return d("递归/批量删除");
-            }
-            None
+        "rm" => dangerous_rm(rest),
+        "git" => dangerous_git(rest),
+        "chmod" => dangerous_chmod(rest),
+        "chown" if rest.iter().any(|a| a.eq_ignore_ascii_case("-r")) => {
+            dangerous("chown 递归改属主")
         }
-        "git" => match rest.first().map(String::as_str) {
-            Some("push") => d("git push 推送远端"),
-            Some("reset") if rest.iter().any(|a| a == "--hard") => d("git reset --hard"),
-            _ => None,
-        },
-        "chmod" => {
-            if rest
-                .iter()
-                .any(|a| a == "777" || a == "000" || a.eq_ignore_ascii_case("-r"))
-            {
-                return d("chmod 越权位/递归");
-            }
-            None
-        }
-        "chown" if rest.iter().any(|a| a.eq_ignore_ascii_case("-r")) => d("chown 递归改属主"),
         "kill" if rest.iter().any(|a| a == "-9") && rest.iter().any(|a| a == "-1") => {
-            d("kill -9 -1 杀全部")
+            dangerous("kill -9 -1 杀全部")
         }
         "dd" | "shutdown" | "reboot" | "halt" | "poweroff" | "mkfs" => {
-            d(&format!("危险系统命令: {cmd}"))
+            dangerous(&format!("危险系统命令: {cmd}"))
         }
-        _ if cmd.starts_with("mkfs") => d("格式化磁盘"),
-        _ if PACKAGE_MANAGERS.contains(&cmd) => {
-            let installs = rest
-                .iter()
-                .any(|a| matches!(a.as_str(), "install" | "i" | "add" | "ci" | "global" | "-g"));
-            if installs {
-                return d(&format!("安装依赖: {cmd}"));
-            }
-            None
-        }
-        _ => {
-            // 写入块设备 / fork bomb。
-            if lower.contains("> /dev/sd") || lower.contains("of=/dev/sd") {
-                return d("写入块设备");
-            }
-            if lower.contains(":(){") || lower.contains(":|:&") {
-                return d("fork bomb");
-            }
-            None
-        }
+        _ if cmd.starts_with("mkfs") => dangerous("格式化磁盘"),
+        _ if PACKAGE_MANAGERS.contains(&cmd) => dangerous_package(cmd, rest),
+        _ => dangerous_text(lower),
     }
+}
+
+fn dangerous(reason: &str) -> Option<RiskAssessment> {
+    Some(RiskAssessment::at(RiskLevel::Dangerous, reason.to_string()))
+}
+
+fn dangerous_rm(rest: &[String]) -> Option<RiskAssessment> {
+    let recursive = rest
+        .iter()
+        .any(|a| a.starts_with('-') && (a.contains('r') || a.contains('f')) && a != "-");
+    let broad_target = rest
+        .iter()
+        .any(|a| a == "/" || a == "~" || a == "*" || a == "~/" || a.contains('*'));
+    (recursive || broad_target).then(|| RiskAssessment::at(RiskLevel::Dangerous, "递归/批量删除"))
+}
+
+fn dangerous_git(rest: &[String]) -> Option<RiskAssessment> {
+    match rest.first().map(String::as_str) {
+        Some("push") => dangerous("git push 推送远端"),
+        Some("reset") if rest.iter().any(|a| a == "--hard") => dangerous("git reset --hard"),
+        _ => None,
+    }
+}
+
+fn dangerous_chmod(rest: &[String]) -> Option<RiskAssessment> {
+    rest.iter()
+        .any(|a| a == "777" || a == "000" || a.eq_ignore_ascii_case("-r"))
+        .then(|| RiskAssessment::at(RiskLevel::Dangerous, "chmod 越权位/递归"))
+}
+
+fn dangerous_package(cmd: &str, rest: &[String]) -> Option<RiskAssessment> {
+    let installs = rest
+        .iter()
+        .any(|a| matches!(a.as_str(), "install" | "i" | "add" | "ci" | "global" | "-g"));
+    installs.then(|| RiskAssessment::at(RiskLevel::Dangerous, format!("安装依赖: {cmd}")))
+}
+
+fn dangerous_text(lower: &str) -> Option<RiskAssessment> {
+    if lower.contains("> /dev/sd") || lower.contains("of=/dev/sd") {
+        return dangerous("写入块设备");
+    }
+    if lower.contains(":(){") || lower.contains(":|:&") {
+        return dangerous("fork bomb");
+    }
+    None
 }
 
 /// git 子命令读/写细分（高危项已在 [`dangerous_by_command`] 提前判定）。
