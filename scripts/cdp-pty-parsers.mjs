@@ -117,6 +117,95 @@ async function waitForTauriBridge(cdp, maxMs = 180000) {
   fail(`Tauri bridge did not become ready within ${maxMs}ms`);
 }
 
+function parseTextFrame(data) {
+  try { return JSON.parse(data); } catch { return null; }
+}
+
+function handlePanesMessage(message, context) {
+  const { summary, state, ws } = context;
+  state.listedWorkspaceId = message.workspaceId || state.listedWorkspaceId;
+  if (summary.pane || state.createRequested) return;
+  if (message.panes.length) {
+    state.emptyPanePolls = 0;
+    context.drive(message.workspaceId, message.panes[0].id);
+    return;
+  }
+  if (state.emptyPanePolls < 8) {
+    state.emptyPanePolls++;
+    log(`empty pane snapshot; wait for host sync (${state.emptyPanePolls}/8)`);
+    setTimeout(() => ws.send(JSON.stringify({ type: 'list-panes' })), 500);
+    return;
+  }
+  state.createRequested = true;
+  log('no panes -> create pane');
+  ws.send(JSON.stringify({ type: 'create-pane' }));
+}
+
+function handleCreatePaneResult(message, context) {
+  const { summary, state, ws } = context;
+  log('create-pane-result:', JSON.stringify(message));
+  if (message.success && message.paneId && state.listedWorkspaceId) {
+    context.drive(state.listedWorkspaceId, message.paneId);
+    return;
+  }
+  if (message.success && message.paneId) {
+    ws.send(JSON.stringify({ type: 'list-panes' }));
+    return;
+  }
+  summary.errors.push('create-pane failed: ' + (message.error || '?'));
+  context.evaluateAndFinish();
+}
+
+function handlePtyMetaMessage(message, context) {
+  const { summary } = context;
+  summary.metas++;
+  if (typeof message.title === 'string' && message.title === TITLE) {
+    summary.titleOk = true;
+    summary.seenTitle = message.title;
+  }
+  if (typeof message.cwd === 'string' && message.cwd.includes(CWD_MARKER)) {
+    summary.cwdOk = true;
+    summary.seenCwd = message.cwd;
+  }
+}
+
+function handlePtyEventMessage(message, context) {
+  const cwd = message.payload?.cwd;
+  if (typeof cwd !== 'string' || !cwd.includes(CWD_MARKER)) return;
+  context.summary.cwdOk = true;
+  context.summary.seenCwd = cwd;
+}
+
+function handlePtyTextFrame(data, context) {
+  const message = parseTextFrame(data);
+  if (!message) return;
+  switch (message.type) {
+    case 'panes':
+      handlePanesMessage(message, context);
+      break;
+    case 'create-pane-result':
+      handleCreatePaneResult(message, context);
+      break;
+    case 'pty-meta':
+      handlePtyMetaMessage(message, context);
+      break;
+    case 'event':
+      if (typeof message.name === 'string' && message.name.startsWith('pane-cwd-changed-')) {
+        handlePtyEventMessage(message, context);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+function handlePtyBinaryFrame(data, context) {
+  const buf = new Uint8Array(data);
+  if (buf.length < 16) return;
+  context.summary.binaryFrames++;
+  context.stream.binary += Buffer.from(buf.subarray(16)).toString('utf8');
+}
+
 try {
   await (async () => {
   log('waiting for Ridge CDP target on :' + CDP_PORT + ' …');
@@ -149,7 +238,7 @@ try {
   };
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
-  let binConcat = '';
+  const stream = { binary: '' };
   let finished = false;
 
   const done = () => {
@@ -169,14 +258,12 @@ try {
   // Fresh detached kernel may need several seconds to publish its first pane.
   // Keep this bounded without turning cold-start latency into a false negative.
   const hardTimeout = setTimeout(() => { summary.errors.push('hard timeout'); done(); }, 90000);
-  let listedWorkspaceId = null;
-  let createRequested = false;
-  let emptyPanePolls = 0;
+  const state = { listedWorkspaceId: null, createRequested: false, emptyPanePolls: 0 };
 
   function evaluateAndFinish() {
-    summary.decodeOk = binConcat.includes(EMOJI);
+    summary.decodeOk = stream.binary.includes(EMOJI);
     if (!summary.decodeOk || !summary.titleOk || !summary.cwdOk) {
-      log('decoded tail:', JSON.stringify(binConcat.slice(-2000)));
+      log('decoded tail:', JSON.stringify(stream.binary.slice(-2000)));
     }
     clearTimeout(hardTimeout);
     done();
@@ -208,49 +295,13 @@ try {
   ws.onerror = (e) => { summary.errors.push('ws error: ' + (e.message || e.type)); };
   ws.onclose = (e) => { if (!summary.pane) { summary.errors.push('closed before pane (code ' + e.code + ')'); } };
 
+  const frameContext = { summary, state, stream, ws, drive, evaluateAndFinish };
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
-      let m; try { m = JSON.parse(ev.data); } catch { return; }
-      if (m.type === 'panes') {
-        // The host may replay a snapshot after subscribe/PTY state changes.
-        // Drive one pane per run; resubscribing on every snapshot races the
-        // marker command against the next pane and drops the binary stream.
-        listedWorkspaceId = m.workspaceId || listedWorkspaceId;
-        if (summary.pane || createRequested) return;
-        if (m.panes.length) {
-          emptyPanePolls = 0;
-          drive(m.workspaceId, m.panes[0].id);
-          return;
-        }
-        if (emptyPanePolls < 8) {
-          emptyPanePolls++;
-          log(`empty pane snapshot; wait for host sync (${emptyPanePolls}/8)`);
-          setTimeout(() => ws.send(JSON.stringify({ type: 'list-panes' })), 500);
-          return;
-        }
-        createRequested = true;
-        log('no panes -> create pane');
-        ws.send(JSON.stringify({ type: 'create-pane' }));
-      } else if (m.type === 'create-pane-result') {
-        log('create-pane-result:', JSON.stringify(m));
-        if (m.success && m.paneId && listedWorkspaceId) drive(listedWorkspaceId, m.paneId);
-        else if (m.success && m.paneId) ws.send(JSON.stringify({ type: 'list-panes' }));
-        else { summary.errors.push('create-pane failed: ' + (m.error || '?')); evaluateAndFinish(); }
-      } else if (m.type === 'pty-meta') {
-        summary.metas++;
-        if (typeof m.title === 'string' && m.title === TITLE) { summary.titleOk = true; summary.seenTitle = m.title; }
-        if (typeof m.cwd === 'string' && m.cwd.includes(CWD_MARKER)) { summary.cwdOk = true; summary.seenCwd = m.cwd; }
-      } else if (m.type === 'event' && typeof m.name === 'string' && m.name.startsWith('pane-cwd-changed-')) {
-        const cwd = m.payload?.cwd;
-        if (typeof cwd === 'string' && cwd.includes(CWD_MARKER)) { summary.cwdOk = true; summary.seenCwd = cwd; }
-      }
+      handlePtyTextFrame(ev.data, frameContext);
       return;
     }
-    // Binary frame: 16-byte pane UUID + raw PTY bytes (UTF-8 from the decoder).
-    const buf = new Uint8Array(ev.data);
-    if (buf.length < 16) return;
-    summary.binaryFrames++;
-    binConcat += Buffer.from(buf.subarray(16)).toString('utf8');
+    handlePtyBinaryFrame(ev.data, frameContext);
   };
   })();
 } catch (e) {

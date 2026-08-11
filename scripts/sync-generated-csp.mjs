@@ -1,10 +1,11 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 
-const CSP_META = /(Content-Security-Policy\"\s+content=\")([^\"]+)(\")/i;
+const CSP_META = /(Content-Security-Policy"\s+content=")([^"]+)(")/i;
 
 function inlineHashes(html, tag) {
-  return [...html.matchAll(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, 'gi'))]
+  const pattern = String.raw`<${tag}(?:\s[^>]*)?>([\s\S]*?)</${tag}>`;
+  return [...html.matchAll(new RegExp(pattern, 'gi'))]
     .map(([, body]) => body)
     .filter((body) => body.length > 0)
     .map((body) => `sha256-${crypto.createHash('sha256').update(body, 'utf8').digest('base64')}`);
@@ -13,7 +14,8 @@ function inlineHashes(html, tag) {
 function addDirectiveHashes(csp, directive, hashes) {
   const unique = [...new Set(hashes)];
   if (unique.length === 0) return csp;
-  return csp.replace(new RegExp(`(^|;\\s*)${directive}\\s+([^;]+)`), (full, prefix, values) => {
+  const pattern = String.raw`(^|;\s*)${directive}\s+([^;]+)`;
+  return csp.replace(new RegExp(pattern), (full, prefix, values) => {
     const tokens = new Set(values.split(/\s+/));
     unique.forEach((hash) => tokens.add(`'${hash}'`));
     return `${prefix}${directive} ${[...tokens].join(' ')}`;
@@ -36,7 +38,7 @@ export function syncGeneratedCspFile(filePath, fsImpl = fs) {
   return updated !== html;
 }
 
-if (process.argv[1] && process.argv[1].endsWith('sync-generated-csp.mjs')) {
+if (process.argv[1]?.endsWith('sync-generated-csp.mjs')) {
   const files = process.argv.slice(2);
   for (const file of files) syncGeneratedCspFile(file);
 }
