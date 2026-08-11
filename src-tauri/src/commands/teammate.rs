@@ -499,35 +499,7 @@ fn strip_ansi(s: &str) -> String {
     while i < bytes.len() {
         let c = bytes[i];
         if c == '\u{1b}' {
-            i += 1;
-            match bytes.get(i) {
-                // CSI：参数字节 0x30–0x3F、中间字节 0x20–0x2F，终止于 0x40–0x7E。
-                Some('[') => {
-                    i += 1;
-                    while i < bytes.len() && !matches!(bytes[i], '\u{40}'..='\u{7e}') {
-                        i += 1;
-                    }
-                    i += 1;
-                }
-                // OSC：到 BEL 或 ST(ESC \) 结束。
-                Some(']') => {
-                    i += 1;
-                    while i < bytes.len() {
-                        if bytes[i] == '\u{7}' {
-                            i += 1;
-                            break;
-                        }
-                        if bytes[i] == '\u{1b}' && bytes.get(i + 1) == Some(&'\\') {
-                            i += 2;
-                            break;
-                        }
-                        i += 1;
-                    }
-                }
-                // 其它两字节转义。
-                Some(_) => i += 1,
-                None => {}
-            }
+            i = skip_escape(&bytes, i + 1);
             continue;
         }
         if c != '\r' {
@@ -536,6 +508,37 @@ fn strip_ansi(s: &str) -> String {
         i += 1;
     }
     out
+}
+
+fn skip_escape(bytes: &[char], start: usize) -> usize {
+    match bytes.get(start) {
+        Some('[') => skip_csi(bytes, start + 1),
+        Some(']') => skip_osc(bytes, start + 1),
+        Some(_) => start + 1,
+        None => start,
+    }
+}
+
+fn skip_csi(bytes: &[char], mut index: usize) -> usize {
+    // CSI：参数字节 0x30–0x3F、中间字节 0x20–0x2F，终止于 0x40–0x7E。
+    while index < bytes.len() && !matches!(bytes[index], '\u{40}'..='\u{7e}') {
+        index += 1;
+    }
+    index + usize::from(index < bytes.len())
+}
+
+fn skip_osc(bytes: &[char], mut index: usize) -> usize {
+    // OSC：到 BEL 或 ST(ESC \) 结束。
+    while index < bytes.len() {
+        if bytes[index] == '\u{7}' {
+            return index + 1;
+        }
+        if bytes[index] == '\u{1b}' && bytes.get(index + 1) == Some(&'\\') {
+            return index + 2;
+        }
+        index += 1;
+    }
+    index
 }
 
 /// iter-60 G7 —— roster 条目并入 pane 标题（`title`，OSC 实时标题）：Commune MCP
