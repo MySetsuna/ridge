@@ -10,6 +10,7 @@ use crossterm::terminal::{
 };
 use crossterm::ExecutableCommand;
 use futures_util::StreamExt;
+use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -31,6 +32,8 @@ enum View {
     Main,
     QrCode,
 }
+
+type DashboardTerminal = Terminal<CrosstermBackend<std::io::Stdout>>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum MenuItem {
@@ -200,108 +203,7 @@ pub async fn run() -> Result<()> {
 
     loop {
         while let Ok(action) = rx.try_recv() {
-            match action {
-                Action::Refresh => {
-                    app.auth = config::load_auth().ok().flatten();
-                    app.public_entry = app.auth.as_ref().map(|a| a.public_entry());
-                    app.log(format!("Daemon: {}", daemon_ctl::status()));
-                }
-                Action::RunLogin => {
-                    drop(terminal);
-                    stdout().execute(LeaveAlternateScreen)?;
-                    disable_raw_mode()?;
-
-                    let client = reqwest::Client::builder().build().ok();
-                    // 让用户选择登录方式：邮箱密码登录（默认，无浏览器环境）或浏览器授权
-                    // 登录（纯轮询，WSL / 远端终端下登录结果也能带回本端）。仪表盘运行在
-                    // 真 TTY 上，stdin 可用，故邮箱密码登录在此始终可行——保留该入口。
-                    let result = if let Some(client) = client {
-                        match prompt_login_method() {
-                            LoginMethod::Email => login_flow::run_login(&client).await,
-                            LoginMethod::Browser => login_flow::run_browser_login(&client).await,
-                        }
-                    } else {
-                        Err(anyhow::anyhow!("无法创建 HTTP client"))
-                    };
-
-                    enable_raw_mode()?;
-                    stdout().execute(EnterAlternateScreen)?;
-                    let backend_new = ratatui::backend::CrosstermBackend::new(stdout());
-                    terminal = Terminal::new(backend_new)?;
-                    app.log(match &result {
-                        Ok(_) => "Login successful".into(),
-                        Err(e) => format!("Login failed: {e}"),
-                    });
-                    app.auth = config::load_auth().ok().flatten();
-                    app.public_entry = app.auth.as_ref().map(|a| a.public_entry());
-                }
-                Action::QuitKernel => {
-                    // 退 TUI 再 stdin Y/N（废弃 MessageBox）。
-                    drop(terminal);
-                    stdout().execute(LeaveAlternateScreen)?;
-                    disable_raw_mode()?;
-
-                    if kernel_ctl::desktop_kernel_running() {
-                        println!("{}", kernel_ctl::status_line());
-                        if !kernel_ctl::confirm_quit_kernel_with_desktop() {
-                            println!("已取消彻底退出内核");
-                            enable_raw_mode()?;
-                            stdout().execute(EnterAlternateScreen)?;
-                            terminal =
-                                Terminal::new(ratatui::backend::CrosstermBackend::new(stdout()))?;
-                            app.log("已取消彻底退出内核".into());
-                            continue;
-                        }
-                    }
-                    match kernel_ctl::stop_kernel() {
-                        Ok(()) => println!("内核已结束；rdg 退出"),
-                        Err(e) => println!("{e}；rdg 退出"),
-                    }
-                    // 已离开 TUI；占位 terminal 供 loop break 后统一 cleanup。
-                    enable_raw_mode()?;
-                    stdout().execute(EnterAlternateScreen)?;
-                    terminal = Terminal::new(ratatui::backend::CrosstermBackend::new(stdout()))?;
-                    app.quit = true;
-                }
-                Action::StartLanRemote => {
-                    if app.lan_running {
-                        app.log("LAN remote already running".into());
-                    } else {
-                        let port = config::lan_port();
-                        let totp = app.totp.clone();
-                        let workspace = app.workspace.clone();
-                        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-                        app.lan_shutdown_tx = Some(shutdown_tx);
-                        app.lan_running = true;
-                        app.log(format!("Starting LAN remote on port {port}..."));
-                        // 失败时必须清 running 标志并写 log：旧实现仅 tracing，UI 仍显示 Running，
-                        // 用户以为已接通实则 bind/TLS 失败（REQ-RDG-REMOTE-CONNECT-01 回归面）。
-                        let fail_tx = app.action_tx.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) =
-                                super::lan_host::run(port, totp, workspace, shutdown_rx).await
-                            {
-                                tracing::warn!(target: "ridge_cli::dashboard", error = %e, "LAN remote stopped");
-                                let _ = fail_tx.send(Action::LanRemoteFailed(e.to_string()));
-                            }
-                        });
-                    }
-                }
-                Action::LanRemoteFailed(msg) => {
-                    app.lan_shutdown_tx = None;
-                    app.lan_running = false;
-                    app.log(format!("LAN remote failed: {msg}"));
-                }
-                Action::StopLanRemote => {
-                    if let Some(tx) = app.lan_shutdown_tx.take() {
-                        let _ = tx.send(());
-                        app.lan_running = false;
-                        app.log("LAN remote stopped".into());
-                    } else {
-                        app.log("LAN remote not running".into());
-                    }
-                }
-            }
+            handle_action(action, &mut app, &mut terminal).await?;
         }
 
         if app.quit {
@@ -354,6 +256,116 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
+async fn handle_action(
+    action: Action,
+    app: &mut App,
+    terminal: &mut DashboardTerminal,
+) -> Result<()> {
+    match action {
+        Action::Refresh => refresh_app(app),
+        Action::RunLogin => run_login_action(app, terminal).await?,
+        Action::QuitKernel => quit_kernel_action(app, terminal)?,
+        Action::StartLanRemote => start_lan_remote(app),
+        Action::StopLanRemote => stop_lan_remote(app),
+        Action::LanRemoteFailed(msg) => {
+            app.lan_shutdown_tx = None;
+            app.lan_running = false;
+            app.log(format!("LAN remote failed: {msg}"));
+        }
+    }
+    Ok(())
+}
+
+fn refresh_app(app: &mut App) {
+    app.auth = config::load_auth().ok().flatten();
+    app.public_entry = app.auth.as_ref().map(|auth| auth.public_entry());
+    app.log(format!("Daemon: {}", daemon_ctl::status()));
+}
+
+async fn run_login_action(app: &mut App, terminal: &mut DashboardTerminal) -> Result<()> {
+    stdout().execute(LeaveAlternateScreen)?;
+    disable_raw_mode()?;
+    let result = run_login_flow().await;
+    restore_dashboard_terminal(terminal)?;
+    app.log(match &result {
+        Ok(_) => "Login successful".into(),
+        Err(error) => format!("Login failed: {error}"),
+    });
+    refresh_app(app);
+    Ok(())
+}
+
+async fn run_login_flow() -> Result<()> {
+    let client = reqwest::Client::builder().build().ok();
+    let Some(client) = client else {
+        return Err(anyhow::anyhow!("无法创建 HTTP client"));
+    };
+    let _auth = match prompt_login_method() {
+        LoginMethod::Email => login_flow::run_login(&client).await?,
+        LoginMethod::Browser => login_flow::run_browser_login(&client).await?,
+    };
+    Ok(())
+}
+
+fn quit_kernel_action(app: &mut App, terminal: &mut DashboardTerminal) -> Result<()> {
+    stdout().execute(LeaveAlternateScreen)?;
+    disable_raw_mode()?;
+    if kernel_ctl::desktop_kernel_running() {
+        println!("{}", kernel_ctl::status_line());
+        if !kernel_ctl::confirm_quit_kernel_with_desktop() {
+            println!("已取消彻底退出内核");
+            restore_dashboard_terminal(terminal)?;
+            app.log("已取消彻底退出内核".into());
+            return Ok(());
+        }
+    }
+    match kernel_ctl::stop_kernel() {
+        Ok(()) => println!("内核已结束；rdg 退出"),
+        Err(error) => println!("{error}；rdg 退出"),
+    }
+    restore_dashboard_terminal(terminal)?;
+    app.quit = true;
+    Ok(())
+}
+
+fn restore_dashboard_terminal(terminal: &mut DashboardTerminal) -> Result<()> {
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    *terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    Ok(())
+}
+
+fn start_lan_remote(app: &mut App) {
+    if app.lan_running {
+        app.log("LAN remote already running".into());
+        return;
+    }
+    let port = config::lan_port();
+    let totp = app.totp.clone();
+    let workspace = app.workspace.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    app.lan_shutdown_tx = Some(shutdown_tx);
+    app.lan_running = true;
+    app.log(format!("Starting LAN remote on port {port}..."));
+    let fail_tx = app.action_tx.clone();
+    tokio::spawn(async move {
+        if let Err(error) = super::lan_host::run(port, totp, workspace, shutdown_rx).await {
+            tracing::warn!(target: "ridge_cli::dashboard", error = %error, "LAN remote stopped");
+            let _ = fail_tx.send(Action::LanRemoteFailed(error.to_string()));
+        }
+    });
+}
+
+fn stop_lan_remote(app: &mut App) {
+    if let Some(tx) = app.lan_shutdown_tx.take() {
+        let _ = tx.send(());
+        app.lan_running = false;
+        app.log("LAN remote stopped".into());
+    } else {
+        app.log("LAN remote not running".into());
+    }
+}
+
 fn handle_main_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Up | KeyCode::Char('k') => {
@@ -362,83 +374,83 @@ fn handle_main_key(app: &mut App, code: KeyCode) {
         KeyCode::Down | KeyCode::Char('j') => {
             app.selected = (app.selected + 1).min(MENU_ITEMS.len() - 1);
         }
-        KeyCode::Enter => {
-            let item = MENU_ITEMS[app.selected];
-            match item {
-                MenuItem::ShowQrCode => {
-                    let device_name = app
-                        .auth
-                        .as_ref()
-                        .map(|a| a.device_name.as_str())
-                        .unwrap_or("rdg");
-                    let uri = app.totp.otpauth_uri(device_name);
-                    let qr = qr_display::render_qr(&uri);
-                    app.qr_text = format!(
-                        "{qr}\n  URI: {uri}\n  验证码: {} (每 {} 秒刷新)\n\n  请用手机 Authenticator 扫描上方二维码",
-                        app.totp_code,
-                        RemoteTotp::period_secs(),
-                    );
-                    app.view = View::QrCode;
-                }
-                MenuItem::StartLanRemote => {
-                    let _ = app.action_tx.send(Action::StartLanRemote);
-                }
-                MenuItem::StopLanRemote => {
-                    let _ = app.action_tx.send(Action::StopLanRemote);
-                }
-                MenuItem::StartDaemon => {
-                    // 先验激活：未激活时旧实现照样 write_pid + 报「Daemon started」，
-                    // 用户以为主机已上线，控制端却永远「远程主机当前不在线」。
-                    if config::load_auth().ok().flatten().is_none() {
-                        app.log("本机未激活云端设备：先选 Login / activate device".into());
-                    } else if app.daemon_task.is_some() {
-                        app.log("云守护已在本进程内运行".into());
-                    } else {
-                        match daemon_ctl::start_daemon() {
-                            Ok(()) => {
-                                let entry = app
-                                    .auth
-                                    .as_ref()
-                                    .map(|a| a.public_entry())
-                                    .unwrap_or_default();
-                                app.daemon_task = Some(tokio::spawn(async move {
-                                    if let Err(e) = crate::daemon::run(None, None, None).await {
-                                        // 不能 eprintln!（会糊 TUI）——落 tracing（TUI 模式写文件）。
-                                        tracing::error!(target: "ridge_cli::dashboard", error = %e, "daemon exited");
-                                    }
-                                }));
-                                app.log(format!("云守护已启动，入口 {entry}"));
-                            }
-                            Err(e) => app.log(format!("Start failed: {e}")),
-                        }
-                    }
-                }
-                MenuItem::StopDaemon => {
-                    if let Some(task) = app.daemon_task.take() {
-                        task.abort();
-                        daemon_ctl::remove_pid();
-                        app.log("云守护已停止".into());
-                    } else {
-                        // 非本进程记录的守护（外部 `rdg remote`）才走 PID 路径。
-                        match daemon_ctl::stop_daemon() {
-                            Ok(()) => app.log("Daemon stopped".into()),
-                            Err(e) => app.log(format!("Stop failed: {e}")),
-                        }
-                    }
-                }
-                MenuItem::Login => {
-                    let _ = app.action_tx.send(Action::RunLogin);
-                }
-                MenuItem::Quit => app.quit = true,
-                MenuItem::QuitKernel => {
-                    // 退 TUI + 命令行 Y/N（见 Action::QuitKernel）。
-                    let _ = app.action_tx.send(Action::QuitKernel);
-                }
-            }
-            let _ = app.action_tx.send(Action::Refresh);
-        }
+        KeyCode::Enter => handle_menu_selection(app),
         KeyCode::Char('q') => app.quit = true,
         _ => {}
+    }
+}
+
+fn handle_menu_selection(app: &mut App) {
+    match MENU_ITEMS[app.selected] {
+        MenuItem::ShowQrCode => show_qr_code(app),
+        MenuItem::StartLanRemote => send_action(app, Action::StartLanRemote),
+        MenuItem::StopLanRemote => send_action(app, Action::StopLanRemote),
+        MenuItem::StartDaemon => start_daemon(app),
+        MenuItem::StopDaemon => stop_daemon(app),
+        MenuItem::Login => send_action(app, Action::RunLogin),
+        MenuItem::Quit => app.quit = true,
+        MenuItem::QuitKernel => send_action(app, Action::QuitKernel),
+    }
+    send_action(app, Action::Refresh);
+}
+
+fn send_action(app: &App, action: Action) {
+    let _ = app.action_tx.send(action);
+}
+
+fn show_qr_code(app: &mut App) {
+    let device_name = app
+        .auth
+        .as_ref()
+        .map(|auth| auth.device_name.as_str())
+        .unwrap_or("rdg");
+    let uri = app.totp.otpauth_uri(device_name);
+    let qr = qr_display::render_qr(&uri);
+    app.qr_text = format!(
+        "{qr}\n  URI: {uri}\n  验证码: {} (每 {} 秒刷新)\n\n  请用手机 Authenticator 扫描上方二维码",
+        app.totp_code,
+        RemoteTotp::period_secs(),
+    );
+    app.view = View::QrCode;
+}
+
+fn start_daemon(app: &mut App) {
+    if config::load_auth().ok().flatten().is_none() {
+        app.log("本机未激活云端设备：先选 Login / activate device".into());
+        return;
+    }
+    if app.daemon_task.is_some() {
+        app.log("云守护已在本进程内运行".into());
+        return;
+    }
+    match daemon_ctl::start_daemon() {
+        Ok(()) => {
+            let entry = app
+                .auth
+                .as_ref()
+                .map(|auth| auth.public_entry())
+                .unwrap_or_default();
+            app.daemon_task = Some(tokio::spawn(async move {
+                if let Err(error) = crate::daemon::run(None, None, None).await {
+                    tracing::error!(target: "ridge_cli::dashboard", error = %error, "daemon exited");
+                }
+            }));
+            app.log(format!("云守护已启动，入口 {entry}"));
+        }
+        Err(error) => app.log(format!("Start failed: {error}")),
+    }
+}
+
+fn stop_daemon(app: &mut App) {
+    if let Some(task) = app.daemon_task.take() {
+        task.abort();
+        daemon_ctl::remove_pid();
+        app.log("云守护已停止".into());
+        return;
+    }
+    match daemon_ctl::stop_daemon() {
+        Ok(()) => app.log("Daemon stopped".into()),
+        Err(error) => app.log(format!("Stop failed: {error}")),
     }
 }
 

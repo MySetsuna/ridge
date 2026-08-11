@@ -157,61 +157,47 @@ pub fn normalize_cwd(raw: String) -> String {
 /// OS query; does NOT touch any host state.
 #[cfg(unix)]
 pub fn get_process_cwd(shell_pid: u32) -> Option<String> {
-    // Read /proc/<shell_pid>/cwd symlink. If the shell has a foreground child (e.g.
-    // `vim` open in a subdir), we prefer the child's cwd so the explorer tracks it.
-    let pick = |pid: u32| -> Option<String> {
-        let link = std::path::Path::new("/proc")
-            .join(pid.to_string())
-            .join("cwd");
-        std::fs::read_link(&link)
-            .ok()?
-            .to_str()
-            .map(|s| s.to_string())
-    };
+    newest_child_cwd(shell_pid).or_else(|| process_cwd(shell_pid))
+}
 
-    // Prefer the most-recently-spawned direct child's cwd, fallback to shell's own.
-    use std::io::Read;
+#[cfg(unix)]
+fn process_cwd(pid: u32) -> Option<String> {
+    std::fs::read_link(
+        std::path::Path::new("/proc")
+            .join(pid.to_string())
+            .join("cwd"),
+    )
+    .ok()?
+    .to_str()
+    .map(str::to_owned)
+}
+
+#[cfg(unix)]
+fn newest_child_cwd(shell_pid: u32) -> Option<String> {
     let proc_dir = std::path::Path::new("/proc");
-    if proc_dir.exists() {
-        let shell_pid_str = shell_pid.to_string();
-        let mut best_child: Option<u32> = None;
-        if let Ok(read_dir) = std::fs::read_dir(proc_dir) {
-            for entry in read_dir.flatten() {
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                let pid: u32 = match name_str.parse() {
-                    Ok(p) if p != shell_pid => p,
-                    _ => continue,
-                };
-                let status_path = entry.path().join("status");
-                let Ok(mut f) = std::fs::File::open(&status_path) else {
-                    continue;
-                };
-                let mut content = String::new();
-                if f.read_to_string(&mut content).is_err() {
-                    continue;
-                }
-                let Some(ppid_line) = content.lines().find(|l| l.starts_with("PPid:")) else {
-                    continue;
-                };
-                let Some(ppid_str) = ppid_line.split_whitespace().nth(1) else {
-                    continue;
-                };
-                if ppid_str == shell_pid_str {
-                    best_child = match best_child {
-                        Some(prev) if prev > pid => Some(prev),
-                        _ => Some(pid),
-                    };
-                }
-            }
-        }
-        if let Some(child_pid) = best_child {
-            if let Some(cwd) = pick(child_pid) {
-                return Some(cwd);
-            }
-        }
+    if !proc_dir.exists() {
+        return None;
     }
-    pick(shell_pid)
+    let shell_pid = shell_pid.to_string();
+    let child = std::fs::read_dir(proc_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| direct_child_pid(entry, &shell_pid))
+        .max();
+    child.and_then(process_cwd)
+}
+
+#[cfg(unix)]
+fn direct_child_pid(entry: std::fs::DirEntry, shell_pid: &str) -> Option<u32> {
+    use std::io::Read;
+    let pid = entry.file_name().to_string_lossy().parse().ok()?;
+    let mut status = std::fs::File::open(entry.path().join("status")).ok()?;
+    let mut content = String::new();
+    status.read_to_string(&mut content).ok()?;
+    let parent = content
+        .lines()
+        .find_map(|line| line.strip_prefix("PPid:")?.split_whitespace().next())?;
+    (parent == shell_pid).then_some(pid)
 }
 
 #[cfg(windows)]
@@ -220,35 +206,36 @@ pub fn get_process_cwd(shell_pid: u32) -> Option<String> {
 
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All);
-
-    let shell_pid_sysinfo = sysinfo::Pid::from_u32(shell_pid);
-
-    // Prefer foreground non-shell child's cwd (so running `cargo` in subdir is tracked).
+    let shell_pid = sysinfo::Pid::from_u32(shell_pid);
     let shell_names = ["powershell", "pwsh", "cmd", "bash", "zsh", "sh", "fish"];
-    let mut children: Vec<(sysinfo::Pid, u64, Option<String>)> = Vec::new();
+    let mut children = Vec::new();
     for (pid, process) in sys.processes() {
-        if process.parent() == Some(shell_pid_sysinfo) && *pid != shell_pid_sysinfo {
-            let name = process.name().to_string_lossy().to_string();
-            let lower = name.to_lowercase();
-            let base = lower.trim_end_matches(".exe").trim_end_matches(".com");
-            if shell_names.contains(&base) {
-                continue;
-            }
-            let cwd = process.cwd().map(|p| p.to_string_lossy().to_string());
-            children.push((*pid, process.start_time(), cwd));
+        if process.parent() != Some(shell_pid) || *pid == shell_pid {
+            continue;
         }
-    }
-    if let Some((_, _, Some(cwd))) = children.into_iter().max_by_key(|(_, t, _)| *t) {
-        if !cwd.is_empty() {
-            return Some(cwd);
+        let name = process.name().to_string_lossy().to_lowercase();
+        let base = name.trim_end_matches(".exe").trim_end_matches(".com");
+        if shell_names.contains(&base) {
+            continue;
         }
+        children.push((
+            process.start_time(),
+            process
+                .cwd()
+                .map(|path| path.to_string_lossy().into_owned()),
+        ));
     }
-
-    // Fallback: shell's own cwd
-    sys.process(shell_pid_sysinfo)
-        .and_then(|p| p.cwd())
-        .map(|p| p.to_string_lossy().to_string())
-        .filter(|s| !s.is_empty())
+    children
+        .into_iter()
+        .max_by_key(|(started, _)| *started)
+        .and_then(|(_, cwd)| cwd)
+        .filter(|cwd| !cwd.is_empty())
+        .or_else(|| {
+            sys.process(shell_pid)
+                .and_then(|process| process.cwd())
+                .map(|path| path.to_string_lossy().into_owned())
+                .filter(|cwd| !cwd.is_empty())
+        })
 }
 
 #[cfg(not(any(unix, windows)))]

@@ -107,165 +107,149 @@ export async function runCloudDirChildrenE2E(opts: CloudE2eOptions): Promise<Clo
     limit = 3,
     timeoutMs = 20_000,
   } = opts;
-
   const log: string[] = [];
-  const push = (s: string) => log.push(`${log.length}:${s}`);
+  const push = (message: string) => log.push(`${log.length}:${message}`);
 
-  // ── HOST（answerer）：createBridge 注入真 Tauri invoke ──────────────────────
   const host = new RidgeCloudHost(
     { deviceToken, username },
     {
-      onHostState: (s) => push(`host:${s}`),
-      onError: (m, c) => push(`host-err:${c ?? ''}:${m}`),
-      // CloudHostBridge 直接满足 CloudHostBridgeLike（handleFrame/verifyPeerKey/reset）。
-      // 无 keyBindingVerifier → 默认 relay-trust（与当前生产行为一致）。
-      createBridge: (_cid, send) =>
-        new CloudHostBridge({
-          invoke: (method, params) => invoke(method, params ?? {}),
-          sendFrame: send,
-          // B2：注入真 pane 源（subscribe_pane_raw + pane-raw event），验证终端经云。
-          paneOutputSource: makeCloudHostPaneSource({
-            invoke: (cmd, args) => invoke(cmd, args ?? {}),
-            listen: listen as never,
-          }),
+      onHostState: (state) => push(`host:${state}`),
+      onError: (message, code) => push(`host-err:${code ?? ''}:${message}`),
+      createBridge: (_cid, send) => new CloudHostBridge({
+        invoke: (method, params) => invoke(method, params ?? {}),
+        sendFrame: send,
+        paneOutputSource: makeCloudHostPaneSource({
+          invoke: (command, args) => invoke(command, args ?? {}),
+          listen: listen as never,
         }),
+      }),
     },
   );
 
-  // ── CONTROLLER（offerer）：adapter + L2 RpcClient（捕获 provider 以读绑定模式）──
-  // 定值断言：createCloudWebrtcTransportWith 同步调用工厂，故 connect 前必已赋值。
   let controllerProvider!: ControllerCloudProvider;
-  const adapter = createCloudWebrtcTransportWith(device, (cb) => {
-    controllerProvider = new ControllerCloudProvider({ userToken, username }, cb);
+  const adapter = createCloudWebrtcTransportWith(device, (callback) => {
+    controllerProvider = new ControllerCloudProvider({ userToken, username }, callback);
     return controllerProvider;
   });
   const offControllerError = adapter.onError((message, code) =>
     push(`ctrl-err:${code ?? ''}:${message}`),
   );
   const rpc = new RpcClient(adapter, { defaultTimeoutMs: timeoutMs });
-
-  // B3 验证 seam：让 host 发错误信令公钥（仅本 dev harness 置位此 global，生产永不设）。
   const tamperGlobal = globalThis as { __RIDGE_DEBUG_TAMPER_E2EE_SIG?: boolean };
+
+  const connect = (): Promise<boolean> => new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      push('controller connect TIMEOUT');
+      resolve(false);
+    }, timeoutMs);
+    const unsubscribe = adapter.onStateChange((state) => {
+      push(`ctrl:${state}`);
+      if (state !== 'connected' && state !== 'error') return;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(state === 'connected');
+    });
+    void adapter.connect();
+  });
+
+  const negotiate = (): Promise<string[] | null> => new Promise((resolve) => {
+    let unsubscribe = () => {};
+    const timer = setTimeout(() => {
+      unsubscribe();
+      resolve(null);
+    }, timeoutMs);
+    unsubscribe = rpc.onNegotiated((protocol) => {
+      clearTimeout(timer);
+      unsubscribe();
+      resolve([...protocol.capabilities]);
+    });
+    rpc.notify(HELLO_METHOD, {
+      protocolVersion: CLIENT_PROTOCOL_VERSION,
+      capabilities: [...CLIENT_CAPABILITIES],
+    });
+  });
+
+  const probeDirectories = async (): Promise<CloudE2eProbe[]> => {
+    const results: CloudE2eProbe[] = [];
+    for (const offset of offsets) {
+      try {
+        const page = await rpc.request('get_directory_children', { path, offset, limit }) as {
+          entries?: Array<{ name?: string }>;
+          total?: number;
+          has_more?: boolean;
+        };
+        results.push({
+          offset,
+          ok: true,
+          entries: page.entries?.length,
+          total: page.total,
+          hasMore: page.has_more,
+          first: page.entries?.[0]?.name,
+        });
+      } catch (error) {
+        results.push({ offset, ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return results;
+  };
+
+  const probeExploit = async (): Promise<CloudE2eResult['exploitResult']> => {
+    if (!opts.exploit) return null;
+    try {
+      const result = await rpc.request(opts.exploit.method, opts.exploit.params ?? {});
+      return { method: opts.exploit.method, ok: true, sample: JSON.stringify(result).slice(0, 300) };
+    } catch (error) {
+      return {
+        method: opts.exploit.method,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+
+  const probePane = async (): Promise<CloudE2eResult['paneStream']> => {
+    if (!opts.paneStream) return null;
+    const { paneId, write, waitMs = 1500 } = opts.paneStream;
+    let frames = 0;
+    let bytes = 0;
+    let sample = '';
+    const decoder = new TextDecoder();
+    const offPane = adapter.onPaneBytes((id, chunk) => {
+      if (id !== paneId) return;
+      frames += 1;
+      bytes += chunk.length;
+      if (sample.length < 160) sample += decoder.decode(chunk, { stream: true });
+    });
+    rpc.notify('subscribe-pane', { paneId });
+    if (write) {
+      try {
+        await rpc.request('write_to_pty', { paneId, data: write });
+      } catch (error) {
+        push(`write_to_pty err:${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+    offPane();
+    return { paneId, frames, bytes, sample: sample.slice(0, 160) };
+  };
 
   let connected = false;
   try {
     if (opts.tamperBinding) tamperGlobal.__RIDGE_DEBUG_TAMPER_E2EE_SIG = true;
     await host.goOnline(device);
-    // 镜像 RemotePanel.goOnline：上报 cloud 活跃，让 lib.rs PTY fan-out 门控放行
-    // （B2 pane 流必需；否则 remote_enabled=false 时收不到裸字节）。
     await invoke('set_cloud_remote_active', { active: true }).catch(() => {});
     push('host.goOnline returned');
+    connected = await connect();
 
-    connected = await new Promise<boolean>((resolve) => {
-      const to = setTimeout(() => {
-        push('controller connect TIMEOUT');
-        resolve(false);
-      }, timeoutMs);
-      const unsub = adapter.onStateChange((s) => {
-        push(`ctrl:${s}`);
-        if (s === 'connected') {
-          clearTimeout(to);
-          unsub();
-          resolve(true);
-        } else if (s === 'error') {
-          clearTimeout(to);
-          unsub();
-          resolve(false);
-        }
-      });
-      void adapter.connect();
-    });
-
-    const results: CloudE2eProbe[] = [];
     let capabilities: string[] | null = null;
-
+    let results: CloudE2eProbe[] = [];
     if (connected) {
-      const negotiatedCapabilities = await new Promise<string[] | null>((resolve) => {
-        let unsubscribe = () => {};
-        const timer = setTimeout(() => {
-          unsubscribe();
-          resolve(null);
-        }, timeoutMs);
-        unsubscribe = rpc.onNegotiated((protocol) => {
-          clearTimeout(timer);
-          unsubscribe();
-          resolve([...protocol.capabilities]);
-        });
-        // The real controller boot keeps RpcClient.hello() behind its TOTP
-        // readiness gate. This harness intentionally probes D9 immediately
-        // after E2EE connected, because the local cloud fixture has no TOTP
-        // UI and the host's business RPC path is already ungated.
-        rpc.notify(HELLO_METHOD, {
-          protocolVersion: CLIENT_PROTOCOL_VERSION,
-          capabilities: [...CLIENT_CAPABILITIES],
-        });
-      });
-      for (const offset of offsets) {
-        try {
-          const page = (await rpc.request('get_directory_children', {
-            path,
-            offset,
-            limit,
-          })) as { entries?: Array<{ name?: string }>; total?: number; has_more?: boolean };
-          results.push({
-            offset,
-            ok: true,
-            entries: page.entries?.length,
-            total: page.total,
-            hasMore: page.has_more,
-            first: page.entries?.[0]?.name,
-          });
-        } catch (e) {
-          results.push({ offset, ok: false, error: e instanceof Error ? e.message : String(e) });
-        }
-      }
-      capabilities = negotiatedCapabilities;
+      capabilities = await negotiate();
+      results = await probeDirectories();
     }
-
-    let exploitResult: CloudE2eResult['exploitResult'] = null;
-    if (connected && opts.exploit) {
-      try {
-        const r = await rpc.request(opts.exploit.method, opts.exploit.params ?? {});
-        exploitResult = { method: opts.exploit.method, ok: true, sample: JSON.stringify(r).slice(0, 300) };
-      } catch (e) {
-        exploitResult = {
-          method: opts.exploit.method,
-          ok: false,
-          error: e instanceof Error ? e.message : String(e),
-        };
-      }
-    }
-
+    const exploitResult = connected ? await probeExploit() : null;
     const keyBindingMode: KeyBindingMode = controllerProvider.getKeyBindingMode();
-
-    // ── B2：pane 裸字节流验证（订阅 → 触发输出 → 收经云回推的 0x10 帧）──
-    let paneStream: CloudE2eResult['paneStream'] = null;
-    if (connected && opts.paneStream) {
-      const { paneId, write, waitMs = 1500 } = opts.paneStream;
-      let frames = 0;
-      let bytes = 0;
-      let sample = '';
-      const dec = new TextDecoder();
-      const offPane = adapter.onPaneBytes((pid, b) => {
-        if (pid !== paneId) return;
-        frames += 1;
-        bytes += b.length;
-        if (sample.length < 160) sample += dec.decode(b, { stream: true });
-      });
-      // controller 经云发 subscribe-pane（notification）→ host 桥调 paneOutputSource。
-      rpc.notify('subscribe-pane', { paneId });
-      if (write) {
-        try {
-          await rpc.request('write_to_pty', { paneId, data: write });
-        } catch (e) {
-          push(`write_to_pty err:${e instanceof Error ? e.message : String(e)}`);
-        }
-      }
-      await new Promise<void>((r) => setTimeout(r, waitMs));
-      offPane();
-      paneStream = { paneId, frames, bytes, sample: sample.slice(0, 160) };
-    }
-
+    const paneStream = connected ? await probePane() : null;
     return { connected, results, capabilities, exploitResult, keyBindingMode, paneStream, log };
   } finally {
     delete tamperGlobal.__RIDGE_DEBUG_TAMPER_E2EE_SIG;
@@ -273,13 +257,13 @@ export async function runCloudDirChildrenE2E(opts: CloudE2eOptions): Promise<Clo
       adapter.close();
       adapter.dispose();
     } catch {
-      /* ignore */
+      // Cleanup is best effort; the test result already contains the failure.
     }
     offControllerError();
     try {
       host.goOffline();
     } catch {
-      /* ignore */
+      // Cleanup is best effort.
     }
     await invoke('set_cloud_remote_active', { active: false }).catch(() => {});
   }

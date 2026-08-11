@@ -409,72 +409,59 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
       queueBytes: (lane === 'pane' ? this.paneDc : this.dc)?.bufferedAmount ?? 0,
     });
     if (this.pc) void remotePerfSamplePeerConnection(this.pc);
-
-    // 握手完成前，首帧必须是对端握手帧；否则断开（契约 §7.1）。
     if (!this.handshakeDone) {
-      if (lane !== 'control') return;
-      try {
-        // 按首字节分派：0x01 旧裸公钥 / 0x02 带设备身份签名（方案 X，零信任 #2）。
-        const hs = decodeAnyHandshakeFrame(bytes);
-        if (!this.ephemeral) throw new Error('本端临时密钥缺失');
-        // 焚毁前留存本端临时公钥：0x02 验签的 context 需要双方临时公钥。
-        const myPub = this.ephemeral.publicKey;
-        const key = deriveSessionKey(this.ephemeral.privateKey, myPub, hs.ephPub);
-        // controller 端发出方向为 controller→host(dir=1)；与 host provider 严格镜像。
-        this.session = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
-        this.paneSession = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
-        this.handshakeDone = true;
-        // 握手用完即焚临时私钥引用（公钥已在 startE2eeHandshake 经信令上报）。
-        this.ephemeral = null;
-        if (hs.kind === 'signed') {
-          // 方案 X：host 设备身份签名 + TOFU（设备私钥在 host、relay 无法伪造，强于 B3 旁路）。
-          this.resolveSignedBinding(hs.ephPub, myPub, hs.idPub, hs.sig);
-        } else {
-          // 旧 host（0x01 裸公钥）：回退 B3 e2ee-pubkey 旁路三态判定（向后兼容）。
-          this.resolveBindingFromHandshake(hs.ephPub);
-        }
-      } catch (e: unknown) {
-        this.fail(e instanceof Error ? e.message : 'E2EE 握手失败，已断开', 'FORBIDDEN');
-        this.disconnect();
-      }
+      if (lane === 'control') this.handleHandshake(bytes);
       return;
     }
+    this.handleEncryptedFrame(bytes, lane);
+  }
 
-    // 业务帧：先经传输层重组（分片→完整密文），再解密上抛明文 mux 帧字节。
+  private handleHandshake(bytes: Uint8Array): void {
+    try {
+      const hs = decodeAnyHandshakeFrame(bytes);
+      if (!this.ephemeral) throw new Error('本端临时密钥缺失');
+      const myPub = this.ephemeral.publicKey;
+      const key = deriveSessionKey(this.ephemeral.privateKey, myPub, hs.ephPub);
+      this.session = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
+      this.paneSession = new E2eeSession(key, DIR_CONTROLLER_TO_HOST);
+      this.handshakeDone = true;
+      this.ephemeral = null;
+      if (hs.kind === 'signed') {
+        this.resolveSignedBinding(hs.ephPub, myPub, hs.idPub, hs.sig);
+      } else {
+        this.resolveBindingFromHandshake(hs.ephPub);
+      }
+    } catch (error) {
+      this.fail(error instanceof Error ? error.message : 'E2EE 握手失败，已断开', 'FORBIDDEN');
+      this.disconnect();
+    }
+  }
+
+  private handleEncryptedFrame(bytes: Uint8Array, lane: 'control' | 'pane'): void {
     const session = lane === 'pane' ? this.paneSession : this.session;
     const reassembler = lane === 'pane' ? this.paneReassembler : this.reassembler;
     if (!session) return;
     const ciphertext = reassembler.push(bytes);
-    if (!ciphertext) return; // 半帧（继续等后续片）或坏帧（已丢弃）
+    if (!ciphertext) return;
     try {
       const plaintext = session.open(ciphertext);
-      // SECURITY (audit #4): drop oversized decrypted frames before they reach the
-      // adapter's demux/JSON.parse so a peer can't OOM/stall the UI thread.
       if (plaintext.length > MAX_PANE_FRAME_BYTES) return;
-      // Transport capability frames are consumed inside the provider so old
-      // adapters never see or misinterpret the optional-lane negotiation.
       if (lane === 'control' && isPaneLaneReadyFrame(plaintext)) {
         if (this.paneDc?.readyState === 'open') this.paneLaneReady = true;
         this.outbound.resume();
         return;
       }
-      // B3: binding判定通过前不放行任何业务帧（防绑定未决期处理对端数据）。
       if (!this.bindingAccepted) return;
       this.cb.onFrame?.(plaintext);
-    } catch (e: unknown) {
-      // 解密/重放失败：丢弃该帧但不一定断连（契约要求拒绝该帧）。
-      this.cb.onError?.(e instanceof Error ? e.message : '收到无法解密的帧（已丢弃）', 'FORBIDDEN');
+    } catch (error) {
+      this.cb.onError?.(
+        error instanceof Error ? error.message : '收到无法解密的帧（已丢弃）',
+        'FORBIDDEN',
+      );
     }
   }
 
-  // ── 方案 X（零信任 #2）：0x02 设备身份签名 + TOFU ────────────────────────────
-  /**
-   * host 发来 0x02 签名握手帧：用 host 设备身份公钥验签本次临时公钥绑定
-   * （context = 双方临时公钥‖device‖username），并 TOFU 固定 host 指纹。
-   *   - 验签失败 → 判 MITM，断开（设备私钥在 host，relay 无私钥无法伪造）。
-   *   - TOFU 指纹变化 → 告警（本期默认**不强拒**；fail-closed 翻闸是 P3）。
-   *   - 通过 → 标记 connected（enforced）。设备签名比 B3 旁路更强，故不再走 e2ee-pubkey 比对。
-   */
+
   private resolveSignedBinding(
     hostEphPub: Uint8Array,
     controllerEphPub: Uint8Array,
@@ -722,82 +709,85 @@ export class ControllerCloudProvider implements RemoteConnectionProvider {
   }
 
   private async onSignal(raw: unknown): Promise<void> {
-    // 统一入站解析：未知 tag / 非法 JSON / kick（controller 不在信令层处理 kick）→ 忽略，
-    // 绝不抛（前向兼容，见 signaling/parseSignal）。
     const parsed = parseSignal(typeof raw === 'string' ? raw : '');
-    if (!isInboundSignal(parsed)) return;
-    const msg: SignalIn = parsed;
-    const pc = this.pc;
-    if (!pc) return;
+    if (!isInboundSignal(parsed) || !this.pc) return;
+    await this.handleSignalMessage(parsed, this.pc);
+  }
 
+  private async handleSignalMessage(msg: SignalIn, pc: RTCPeerConnection): Promise<void> {
     switch (msg.t) {
       case 'welcome':
-        // controller 是 offerer：host 已在房（peerPresent:true）则立即发起 offer。
-        this.hostPresent = !!msg.peerPresent;
-        if (msg.peerPresent) await this.startOffer();
-        // iter-61：host 不在房时明确告知（非终态——它可能马上上线；看门狗兜底）。
-        else this.cb.onError?.('远程主机当前不在线，正在等待其上线…', 'HOST_OFFLINE');
-        break;
+        this.handleWelcome(msg);
+        return;
       case 'peer-join':
-        // host 随后进房 → 此时发起 offer（契约 §5.1：controller 收 peer-join 后建 offer）。
         if (msg.role === 'host') {
           this.hostPresent = true;
           await this.startOffer();
         }
-        break;
+        return;
       case 'peer-leave':
-        // host 离开：尚未建立 RTC 时判失败（已连通后交给 connectionstatechange）。
-        if (msg.role === 'host') this.hostPresent = false;
+        this.hostPresent = msg.role === 'host' ? false : this.hostPresent;
         if (msg.role === 'host' && !this.closed && this.state === 'connecting') {
           this.fail('对端（host）已离开', 'NETWORK');
         }
-        break;
-      case 'offer':
-        // controller 是 offerer，不应收到 offer。忽略。
-        break;
+        return;
       case 'answer':
-        try {
-          await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
-        } catch (e: unknown) {
-          this.fail(e instanceof Error ? e.message : '处理 answer 失败', 'INTERNAL');
-        }
-        break;
+        await this.handleAnswer(pc, msg.sdp);
+        return;
       case 'ice':
-        if (msg.candidate) {
-          try {
-            // 线类型是 JsonValue（serde_json），到 WebRTC API 的边界处收窄。
-            await pc.addIceCandidate(msg.candidate as RTCIceCandidateInit);
-          } catch {
-            /* 无关键 candidate 失败可忽略 */
-          }
-        }
-        break;
-      case 'e2ee-pubkey': {
-        // B3：host 经已认证信令旁路转发回来的临时公钥 → 存下并触发绑定判定。
-        const pk = base64ToBytes(msg.pubkey);
-        if (pk) {
-          this.peerSigKey = pk;
-          this.decideBinding();
-        }
-        break;
-      }
+        await this.handleIce(pc, msg.candidate);
+        return;
+      case 'e2ee-pubkey':
+        this.handlePeerKey(msg.pubkey);
+        return;
       case 'error':
-        if (msg.code === SUPERSEDED_CODE) {
-          // 被本控制端的新连接顶替：静默收尾，不报错、不重连（新连接已接管）。
-          break;
-        }
-        if (msg.code && TERMINAL_ERROR_CODES.has(msg.code)) {
-          // 终态：进 'error'、停止重连、提示用户。
-          this.fail(msg.message || '信令错误', msg.code);
-        } else {
-          // 可恢复(容量/瞬时)：仅上报，不进终态；断开与重连交由 onclose 驱动。
-          this.cb.onError?.(msg.message || '信令错误', msg.code);
-        }
-        break;
+        this.handleSignalError(msg);
+        return;
+      default:
+        return;
     }
   }
 
-  /** controller=offerer：创建 offer 并发出（幂等，防 welcome+peer-join 双触发）。 */
+  private async handleWelcome(msg: Extract<SignalIn, { t: 'welcome' }>): Promise<void> {
+    this.hostPresent = !!msg.peerPresent;
+    if (msg.peerPresent) await this.startOffer();
+    else this.cb.onError?.('远程主机当前不在线，正在等待其上线…', 'HOST_OFFLINE');
+  }
+
+  private async handleAnswer(pc: RTCPeerConnection, sdp: string): Promise<void> {
+    try {
+      await pc.setRemoteDescription({ type: 'answer', sdp });
+    } catch (error) {
+      this.fail(error instanceof Error ? error.message : '处理 answer 失败', 'INTERNAL');
+    }
+  }
+
+  private async handleIce(pc: RTCPeerConnection, candidate: unknown): Promise<void> {
+    if (!candidate) return;
+    try {
+      await pc.addIceCandidate(candidate as RTCIceCandidateInit);
+    } catch {
+      // Optional ICE candidates may fail after the peer connection is already closed.
+    }
+  }
+
+  private handlePeerKey(pubkey: string): void {
+    const key = base64ToBytes(pubkey);
+    if (!key) return;
+    this.peerSigKey = key;
+    this.decideBinding();
+  }
+
+  private handleSignalError(msg: Extract<SignalIn, { t: 'error' }>): void {
+    if (msg.code === SUPERSEDED_CODE) return;
+    if (msg.code && TERMINAL_ERROR_CODES.has(msg.code)) {
+      this.fail(msg.message || '信令错误', msg.code);
+    } else {
+      this.cb.onError?.(msg.message || '信令错误', msg.code);
+    }
+  }
+
+
   private async startOffer(): Promise<void> {
     if (this.offerStarted || this.closed) return;
     const pc = this.pc;

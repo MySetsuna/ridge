@@ -1310,36 +1310,35 @@ pub fn kill_session(socket: &str, target: &str, gui: &[GuiSession]) -> NativeRes
 pub fn kill_pane(socket: &str, target: &str, gui: &[GuiSession]) -> NativeResult {
     let mut srv = registry().lock().unwrap();
     let r = resolve_locked(&srv, socket, target, gui)?;
-    let mut remove_session = false;
-    if let Some(s) = find_session_mut(&mut srv, socket, &r.session) {
-        if let Some(w) = s.windows.get_mut(r.window_index) {
-            if r.pane_index < w.panes.len() {
-                let mut p = w.panes.remove(r.pane_index);
-                let _ = p.child.kill();
-                if w.active_pane >= w.panes.len() {
-                    w.active_pane = w.panes.len().saturating_sub(1);
-                }
-            }
-        }
-        // 窗口空了则移除；会话空了则在释放 `s` 借用后再删。
-        if s.windows
-            .get(r.window_index)
-            .map(|w| w.panes.is_empty())
-            .unwrap_or(false)
-        {
-            s.windows.remove(r.window_index);
-            if s.active_window >= s.windows.len() {
-                s.active_window = s.windows.len().saturating_sub(1);
-            }
-        }
-        remove_session = s.windows.is_empty();
-    }
+    let remove_session = find_session_mut(&mut srv, socket, &r.session)
+        .map(|session| remove_pane_from_session(session, r.window_index, r.pane_index))
+        .unwrap_or(false);
     if remove_session {
         if let Some(sock) = srv.sockets.get_mut(socket) {
             sock.sessions.retain(|x| x.name != r.session);
         }
     }
     Ok(String::new())
+}
+
+fn remove_pane_from_session(session: &mut Session, window_index: usize, pane_index: usize) -> bool {
+    let Some(window) = session.windows.get_mut(window_index) else {
+        return session.windows.is_empty();
+    };
+    if pane_index >= window.panes.len() {
+        return false;
+    }
+    let mut pane = window.panes.remove(pane_index);
+    let _ = pane.child.kill();
+    window.active_pane = window.active_pane.min(window.panes.len().saturating_sub(1));
+    if !window.panes.is_empty() {
+        return false;
+    }
+    session.windows.remove(window_index);
+    session.active_window = session
+        .active_window
+        .min(session.windows.len().saturating_sub(1));
+    session.windows.is_empty()
 }
 
 /// `kill-window -t TARGET`。

@@ -122,30 +122,37 @@ export class PaneFeedScheduler {
     let processed = 0;
     let activeTurn = false;
     let backgroundTurn = false;
-    while (true) {
+    while (
+      processed < this.maxBytesPerFrame &&
+      (processed === 0 || this.now() - started < this.frameBudgetMs)
+    ) {
       const next = this.selectNextPane(activeTurn, backgroundTurn);
       const paneKey = next.paneKey;
       activeTurn = next.activeTurn;
       backgroundTurn = next.backgroundTurn;
       if (!paneKey) break;
-      if (processed > 0 && this.now() - started >= this.frameBudgetMs) break;
-      if (processed >= this.maxBytesPerFrame) break;
-      const queue = this.queues.get(paneKey);
-      if (!queue || queue.frames.length === 0) continue;
-      const frame = queue.frames.shift()!;
-      queue.bytes -= frame.byteLength;
-      const size = Math.min(this.stepBytes, frame.byteLength);
-      const chunk = size === frame.byteLength ? frame : frame.slice(0, size);
-      if (size < frame.byteLength) {
-        const remainder = frame.slice(size);
-        queue.frames.unshift(remainder);
-        queue.bytes += remainder.byteLength;
-      }
-      if (!this.deliverChunk(paneKey, queue, chunk)) break;
-      processed += chunk.byteLength;
-      if (queue.frames.length === 0) this.queues.delete(paneKey);
+      const delivered = this.drainPane(paneKey);
+      if (delivered < 0) break;
+      processed += delivered;
     }
     if (this.hasQueued()) this.schedule();
+  }
+
+  private drainPane(paneKey: string): number {
+    const queue = this.queues.get(paneKey);
+    if (!queue || queue.frames.length === 0) return 0;
+    const frame = queue.frames.shift()!;
+    queue.bytes -= frame.byteLength;
+    const size = Math.min(this.stepBytes, frame.byteLength);
+    const chunk = size === frame.byteLength ? frame : frame.slice(0, size);
+    if (size < frame.byteLength) {
+      const remainder = frame.slice(size);
+      queue.frames.unshift(remainder);
+      queue.bytes += remainder.byteLength;
+    }
+    if (!this.deliverChunk(paneKey, queue, chunk)) return -1;
+    if (queue.frames.length === 0) this.queues.delete(paneKey);
+    return chunk.byteLength;
   }
 
   private selectNextPane(

@@ -428,26 +428,14 @@ export function markScmRepoNonGit(repoRoot: string): void {
     const repoRoots = s.repoRoots.filter(
       (root) => normalizeDirectory(root) !== normalizedRoot,
     );
-    const statuses = { ...s.statuses };
-    const lastStatusLoadAt = { ...s.lastStatusLoadAt };
-    const graphInfos = { ...s.graphInfos };
-    const lastGraphLoadAt = { ...s.lastGraphLoadAt };
-    const selectedCommitHashByRepo = { ...s.selectedCommitHashByRepo };
-    for (const root of Object.keys(statuses)) {
-      if (normalizeDirectory(root) === normalizedRoot) delete statuses[root];
-    }
-    for (const root of Object.keys(lastStatusLoadAt)) {
-      if (normalizeDirectory(root) === normalizedRoot) delete lastStatusLoadAt[root];
-    }
-    for (const root of Object.keys(graphInfos)) {
-      if (normalizeDirectory(root) === normalizedRoot) delete graphInfos[root];
-    }
-    for (const root of Object.keys(lastGraphLoadAt)) {
-      if (normalizeDirectory(root) === normalizedRoot) delete lastGraphLoadAt[root];
-    }
-    for (const root of Object.keys(selectedCommitHashByRepo)) {
-      if (normalizeDirectory(root) === normalizedRoot) delete selectedCommitHashByRepo[root];
-    }
+    const statuses = pruneRepoMap(s.statuses, normalizedRoot);
+    const lastStatusLoadAt = pruneRepoMap(s.lastStatusLoadAt, normalizedRoot);
+    const graphInfos = pruneRepoMap(s.graphInfos, normalizedRoot);
+    const lastGraphLoadAt = pruneRepoMap(s.lastGraphLoadAt, normalizedRoot);
+    const selectedCommitHashByRepo = pruneRepoMap(
+      s.selectedCommitHashByRepo,
+      normalizedRoot,
+    );
     return {
       ...s,
       repoRoots,
@@ -462,6 +450,12 @@ export function markScmRepoNonGit(repoRoot: string): void {
       nonGitRepoRoots: { ...s.nonGitRepoRoots, [normalizedRoot]: true },
     };
   });
+}
+
+function pruneRepoMap<T>(values: Record<string, T>, normalizedRoot: string): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(values).filter(([root]) => normalizeDirectory(root) !== normalizedRoot),
+  );
 }
 
 export function isScmRepoKnownNonGit(repoRoot: string): boolean {

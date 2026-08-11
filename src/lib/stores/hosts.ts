@@ -563,170 +563,196 @@ export async function refreshHosts(): Promise<void> {
   hostsLoading.set(true);
   const previousById = new Map(get(hostsStore).map((host) => [host.id, host]));
   const next: Host[] = [];
-  let err = '';
-  // ① 本机（无头）：native 会话。
+  const native = await loadNativeHost();
+  if (native.host) next.push(native.host);
+  let err = native.error ?? '';
+
+  const remote = await loadRemoteHosts();
+  next.push(...remote.hosts);
+  err ||= remote.error ?? '';
+
+  const auth = cloudAuth.snapshot();
+  if (auth.userToken) next.push(...await loadSharedHosts(auth.userToken));
+
+  mergeRegisteredHosts(next, previousById);
+  if (refreshGeneration !== hostsRefreshGeneration) return;
+  hostsStore.set(next);
+  hostsError.set(err);
+  hostsLoading.set(false);
+  settleTopologyRefreshes(refreshGeneration);
+}
+
+async function loadNativeHost(): Promise<{ host: Host | null; error?: string }> {
   try {
     const sessions = await invoke<NativeSessionInfo[]>('list_native_sessions');
-    next.push({
-      id: HEADLESS_HOST_ID,
-      kind: 'headless',
-      label: '本机（无头）',
-      status: 'connected',
-      sessions: sessions ?? [],
-      workspaces: [{
+    return {
+      host: {
         id: HEADLESS_HOST_ID,
-        name: '无头会话',
-        active: true,
+        kind: 'headless',
+        label: '本机（无头）',
+        status: 'connected',
         sessions: sessions ?? [],
-      }],
-    });
-  } catch (e) {
-    err = e instanceof Error ? e.message : String(e);
+        workspaces: [{
+          id: HEADLESS_HOST_ID,
+          name: '无头会话',
+          active: true,
+          sessions: sessions ?? [],
+        }],
+      },
+    };
+  } catch (error) {
+    return { host: null, error: error instanceof Error ? error.message : String(error) };
   }
-  // ② 远端 ridge / rdg 主机。拓扑读由 ridge-kernel 作为唯一权威；读取失败
-  // 不再静默沿用外壳缓存，避免显示已经失效或未经内核确认的主机。
+}
+
+async function loadRemoteHosts(): Promise<{ hosts: Host[]; error?: string }> {
   try {
     const recs = await invoke<HostRecord[]>('host_list_snapshot');
-    for (const r of recs ?? []) {
-      const sessions = (r.sessions ?? []).map((s) => ({
-        socket: r.id,
-        name: s.title || s.id,
-        remoteSessionId: s.id,
-        windows: 0,
-        panes: 0,
-        width: 0,
-        height: 0,
-        attached: s.attached,
-      }));
-      next.push({
-        id: r.id,
-        kind: r.kind,
-        label: r.label,
-        status: r.status,
-        detail: r.detail,
-        sessions,
-        workspaces: sessions.length > 0 ? [{
-          id: `${r.id}:legacy`,
-          name: '远端会话',
-          active: true,
+    return {
+      hosts: (recs ?? []).map((record) => {
+        const sessions = (record.sessions ?? []).map((session) => ({
+          socket: record.id,
+          name: session.title || session.id,
+          remoteSessionId: session.id,
+          windows: 0,
+          panes: 0,
+          width: 0,
+          height: 0,
+          attached: session.attached,
+        }));
+        return {
+          id: record.id,
+          kind: record.kind,
+          label: record.label,
+          status: record.status,
+          detail: record.detail,
           sessions,
-        }] : [],
-      });
-    }
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    err = err || `远端主机拓扑不可用：${detail}`;
-  }
-  // ③ 跨账号分享：按 owner host 聚合，每个 grant 是其下单独工作区。
-  const auth = cloudAuth.snapshot();
-  if (auth.userToken) {
-    try {
-      const { shares } = await listSharedWithMe(auth.userToken);
-      const grouped = new Map<string, Host>();
-      const activeProjection = currentSharedWorkspaceProjection();
-      for (const share of shares) {
-        if (!['pending', 'active'].includes(share.status)) continue;
-        const key = `shared:${share.ownerUserId}:${share.deviceName}`;
-        let host = grouped.get(key);
-        if (!host) {
-          host = {
-            id: key,
-            kind: 'shared',
-            label: `${share.ownerUsername || '共享用户'} · ${share.deviceName}`,
-            status: share.status === 'active' ? 'connected' : 'connecting',
-            detail: '跨账号单工作区；不可二次转发主机或 Remote',
-            sessions: [],
-            workspaces: [],
-          };
-          grouped.set(key, host);
-        }
-        if (share.status === 'active') host.status = 'connected';
-        const baseSession = {
-          socket: key,
-          workspaceId: share.workspaceId,
-          shareGrantId: share.id,
-          shareStatus: share.status,
-          ownerUsername: share.ownerUsername,
-          deviceName: share.deviceName,
+          workspaces: sessions.length ? [{
+            id: `${record.id}:legacy`,
+            name: '远端会话',
+            active: true,
+            sessions,
+          }] : [],
         };
-        const projection = activeProjection?.grantId === share.id
-          ? activeProjection
-          : null;
-        const sessions: HostSession[] = projection
-          ? projection.panes.map((pane) => ({
-              ...baseSession,
-              name: pane.title || pane.id,
-              remoteSessionId: pane.id,
-              windows: 0,
-              panes: 1,
-              width: 0,
-              height: 0,
-              attached: true,
-              cwd: pane.cwd,
-              isAgent: pane.isAgent,
-            }))
-          : [{
-              ...baseSession,
-              name: `工作区 ${share.workspaceId.slice(0, 8)}`,
-              remoteSessionId: share.workspaceId,
-              windows: 1,
-              panes: 0,
-              width: 0,
-              height: 0,
-              attached: false,
-            }];
-        host.sessions.push(...sessions);
-        host.workspaces.push({
-          id: share.workspaceId,
-          name: projection?.name || `工作区 ${share.workspaceId.slice(0, 8)}`,
-          active: share.status === 'active',
-          sessions: projection ? sessions : [],
-          shareGrantId: share.id,
-          shareStatus: share.status,
-          role: 'operator',
-        });
-      }
-      next.push(...grouped.values());
+      }),
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { hosts: [], error: `远端主机拓扑不可用：${detail}` };
+  }
+}
 
-      const outgoing = await listWorkspaceShares(auth.userToken);
-      const visible = outgoing.shares.filter((share) =>
-        ['pending', 'active'].includes(share.status),
-      );
-      if (visible.length > 0) {
-        next.push({
-          id: 'sharing:outgoing',
-          kind: 'sharing',
-          label: '本机已分享',
-          status: 'connected',
-          detail: '在此撤销邀请或已生效分享',
-          sessions: visible.map((share) => ({
-            socket: 'sharing:outgoing',
+async function loadSharedHosts(userToken: string): Promise<Host[]> {
+  try {
+    const { shares } = await listSharedWithMe(userToken);
+    const activeProjection = currentSharedWorkspaceProjection();
+    const grouped = new Map<string, Host>();
+    for (const share of shares) {
+      if (!['pending', 'active'].includes(share.status)) continue;
+      const key = `shared:${share.ownerUserId}:${share.deviceName}`;
+      const host = grouped.get(key) ?? createSharedHost(key, share);
+      grouped.set(key, host);
+      host.status = share.status === 'active' ? 'connected' : host.status;
+      const base = {
+        socket: key,
+        workspaceId: share.workspaceId,
+        shareGrantId: share.id,
+        shareStatus: share.status,
+        ownerUsername: share.ownerUsername,
+        deviceName: share.deviceName,
+      };
+      const projection = activeProjection?.grantId === share.id ? activeProjection : null;
+      const sessions: HostSession[] = projection
+        ? projection.panes.map((pane) => ({
+            ...base,
+            name: pane.title || pane.id,
+            remoteSessionId: pane.id,
+            windows: 0,
+            panes: 1,
+            width: 0,
+            height: 0,
+            attached: true,
+            cwd: pane.cwd,
+            isAgent: pane.isAgent,
+          }))
+        : [{
+            ...base,
             name: `工作区 ${share.workspaceId.slice(0, 8)}`,
-            workspaceId: share.workspaceId,
-            shareGrantId: share.id,
-            shareStatus: share.status,
-            granteeLabel: share.granteeUsername || share.granteeEmail,
+            remoteSessionId: share.workspaceId,
             windows: 1,
             panes: 0,
             width: 0,
             height: 0,
             attached: false,
-          })),
-          workspaces: visible.map((share) => ({
-            id: share.workspaceId,
-            name: `工作区 ${share.workspaceId.slice(0, 8)}`,
-            active: share.status === 'active',
-            sessions: [],
-            shareGrantId: share.id,
-            shareStatus: share.status,
-            role: 'operator',
-          })),
-        });
-      }
-    } catch {
-      /* 云登录不可用时不影响本机/普通主机列表。 */
+          }];
+      host.sessions.push(...sessions);
+      host.workspaces.push({
+        id: share.workspaceId,
+        name: projection?.name || `工作区 ${share.workspaceId.slice(0, 8)}`,
+        active: share.status === 'active',
+        sessions: projection ? sessions : [],
+        shareGrantId: share.id,
+        shareStatus: share.status,
+        role: 'operator',
+      });
     }
+    const outgoing = await listWorkspaceShares(userToken);
+    const visible = outgoing.shares.filter((share) => ['pending', 'active'].includes(share.status));
+    if (visible.length) grouped.set('sharing:outgoing', outgoingHost(visible));
+    return [...grouped.values()];
+  } catch {
+    return [];
   }
+}
+
+type SharedWithMeShare = Awaited<ReturnType<typeof listSharedWithMe>>['shares'][number];
+type WorkspaceShare = Awaited<ReturnType<typeof listWorkspaceShares>>['shares'][number];
+
+function createSharedHost(key: string, share: SharedWithMeShare): Host {
+  return {
+    id: key,
+    kind: 'shared',
+    label: `${share.ownerUsername || '共享用户'} · ${share.deviceName}`,
+    status: share.status === 'active' ? 'connected' : 'connecting',
+    detail: '跨账号单工作区；不可二次转发主机或 Remote',
+    sessions: [],
+    workspaces: [],
+  };
+}
+
+function outgoingHost(shares: WorkspaceShare[]): Host {
+  return {
+    id: 'sharing:outgoing',
+    kind: 'sharing',
+    label: '本机已分享',
+    status: 'connected',
+    detail: '在此撤销邀请或已生效分享',
+    sessions: shares.map((share) => ({
+      socket: 'sharing:outgoing',
+      name: `工作区 ${share.workspaceId.slice(0, 8)}`,
+      workspaceId: share.workspaceId,
+      shareGrantId: share.id,
+      shareStatus: share.status,
+      granteeLabel: share.granteeUsername || share.granteeEmail,
+      windows: 1,
+      panes: 0,
+      width: 0,
+      height: 0,
+      attached: false,
+    })),
+    workspaces: shares.map((share) => ({
+      id: share.workspaceId,
+      name: `工作区 ${share.workspaceId.slice(0, 8)}`,
+      active: share.status === 'active',
+      sessions: [],
+      shareGrantId: share.id,
+      shareStatus: share.status,
+      role: 'operator',
+    })),
+  };
+}
+
+function mergeRegisteredHosts(next: Host[], previousById: Map<string, Host>): void {
   for (const source of registeredHostLinks.values()) {
     const topology = topologyByHost.get(source.hostId);
     const index = next.findIndex((host) => host.id === source.hostId);
@@ -737,23 +763,17 @@ export async function refreshHosts(): Promise<void> {
     if (index >= 0) next[index] = projected;
     else next.push(projected);
   }
-  if (refreshGeneration !== hostsRefreshGeneration) return;
-  hostsStore.set(next);
-  hostsError.set(err);
-  hostsLoading.set(false);
+}
 
+function settleTopologyRefreshes(refreshGeneration: number): void {
   const jobs = [...registeredHostLinks.keys()]
     .filter((hostId) => !topologyByHost.get(hostId)?.error)
-    .map((hostId) => ({
-      hostId,
-      refresh: () => refreshHostTopology(hostId),
-    }));
+    .map((hostId) => ({ hostId, refresh: () => refreshHostTopology(hostId) }));
   settleHostTopologyRefreshes(jobs, (result) => {
-    if (refreshGeneration === hostsRefreshGeneration) {
-      publishHostTopology(result.hostId, result);
-    }
+    if (refreshGeneration === hostsRefreshGeneration) publishHostTopology(result.hostId, result);
   }).catch((error) => console.warn('[hosts] topology refresh settlement failed', error));
 }
+
 
 /** 新建一个本机无头会话（仅创建、不接入）；返回会话名。 */
 export async function newHeadlessSession(name?: string, cwd?: string): Promise<string> {
@@ -878,79 +898,27 @@ export async function connectHost(
   channel: 'lan' | 'public' = 'lan',
 ): Promise<void> {
   const generation = ++hostConnectGeneration;
+  const progressLabel = label.trim() || addr.trim();
   const publishProgress = (value: HostConnectProgress | null): void => {
-    // A second click/attempt owns the banner.  A stale failure must not
-    // replace the newer attempt's loading state.
     if (generation === hostConnectGeneration) hostConnectProgress.set(value);
   };
-  const progressLabel = label.trim() || addr.trim();
-  let connectedHostId = '';
   publishProgress({
     phase: 'connecting',
     label: progressLabel,
     detail: channel === 'lan' ? '正在连接局域网主机…' : '正在建立公网加密通道…',
   });
+
   try {
-    if (channel === 'lan') {
-      const raw = addr.trim();
-      const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
-      const host = url.hostname;
-      const secure = url.protocol === 'https:';
-      const port = Number(url.port || (secure ? 443 : 80));
-      const code = token?.trim();
-      if (!host || !Number.isInteger(port) || port < 1 || port > 65535 || !code) {
-        throw new Error('LAN 主机地址或 TOTP 无效');
-      }
-      const link = new RemoteConnection();
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          off();
-          link.disconnect();
-          reject(new Error('LAN 主机连接超时'));
-        }, 10_000);
-        const off = link.onStateChange((state) => {
-          if (state === 'connected') {
-            clearTimeout(timer);
-            off();
-            resolve();
-          } else if (state === 'error') {
-            clearTimeout(timer);
-            off();
-            reject(new Error(link.lastFailure()?.message || 'LAN 主机拒绝连接'));
-          }
-        });
-        link.connect(host, port, code, 'code', secure);
-      });
-      const hostId = `lan:${host}:${port}`;
-      connectedHostId = hostId;
-      registerHostTopologyLink({
-        hostId,
-        kind,
-        label: label.trim() || host,
-        detail: `${secure ? 'wss' : 'ws'}://${host}:${port}`,
-        link,
-      });
-    } else {
-      const deviceName = addr.trim();
-      const code = token?.trim();
-      if (!deviceName || !code) throw new Error('公网设备名或 TOTP 无效');
-      const link = await connectCloudHostTopologyLink(deviceName, code);
-      const hostId = `cloud:${deviceName}`;
-      connectedHostId = hostId;
-      registerHostTopologyLink({
-        hostId,
-        kind,
-        label: label.trim() || deviceName,
-        detail: '公网同账号 · Cloud E2EE',
-        deviceName,
-        link,
-      });
-    }
+    const source = channel === 'lan'
+      ? await openLanHost(kind, label, addr, token)
+      : await openPublicHost(kind, label, addr, token);
+    registerHostTopologyLink(source);
     publishProgress({
       phase: 'loading-workspaces',
       label: progressLabel,
       detail: '连接成功，正在读取远端工作区…',
     });
+    const connectedHostId = source.hostId;
     const topology = await refreshLinkedHost(connectedHostId, (progress) => {
       publishProgress({
         phase: 'loading-workspaces',
@@ -960,8 +928,7 @@ export async function connectHost(
           : '已连接，远端暂无工作区',
       });
     });
-    if (!topology) throw new Error('主机连接已失效');
-    if (topology.error) throw new Error(topology.error);
+    if (!topology || topology.error) throw new Error(topology?.error || '主机连接已失效');
     publishProgress(null);
   } catch (error) {
     publishProgress({
@@ -972,6 +939,80 @@ export async function connectHost(
     throw error;
   }
 }
+
+async function openLanHost(
+  kind: 'remote' | 'rdg',
+  label: string,
+  addr: string,
+  token?: string,
+): Promise<RegisteredHostLink> {
+  const raw = addr.trim();
+  const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+  const host = url.hostname;
+  const secure = url.protocol === 'https:';
+  const port = Number(url.port || (secure ? 443 : 80));
+  const code = token?.trim();
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535 || !code) {
+    throw new Error('LAN 主机地址或 TOTP 无效');
+  }
+  const link = new RemoteConnection();
+  await waitForRemoteConnection(link, host, port, code, secure);
+  return {
+    hostId: `lan:${host}:${port}`,
+    kind,
+    label: label.trim() || host,
+    detail: `${secure ? 'wss' : 'ws'}://${host}:${port}`,
+    link,
+  };
+}
+
+async function waitForRemoteConnection(
+  link: RemoteConnection,
+  host: string,
+  port: number,
+  code: string,
+  secure: boolean,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      off();
+      link.disconnect();
+      reject(new Error('LAN 主机连接超时'));
+    }, 10_000);
+    const off = link.onStateChange((state) => {
+      if (state === 'connected') {
+        clearTimeout(timer);
+        off();
+        resolve();
+      } else if (state === 'error') {
+        clearTimeout(timer);
+        off();
+        reject(new Error(link.lastFailure()?.message || 'LAN 主机拒绝连接'));
+      }
+    });
+    link.connect(host, port, code, 'code', secure);
+  });
+}
+
+async function openPublicHost(
+  kind: 'remote' | 'rdg',
+  label: string,
+  addr: string,
+  token?: string,
+): Promise<RegisteredHostLink> {
+  const deviceName = addr.trim();
+  const code = token?.trim();
+  if (!deviceName || !code) throw new Error('公网设备名或 TOTP 无效');
+  return {
+    hostId: `cloud:${deviceName}`,
+    kind,
+    label: label.trim() || deviceName,
+    detail: '公网同账号 · Cloud E2EE',
+    deviceName,
+    link: await connectCloudHostTopologyLink(deviceName, code),
+  };
+}
+
 
 /** 断开一台远端主机（保留登记）。 */
 export async function disconnectHost(hostId: string): Promise<void> {

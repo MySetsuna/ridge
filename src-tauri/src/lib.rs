@@ -417,411 +417,7 @@ pub fn run() {
                     });
                 }
 
-            tauri::async_runtime::spawn(async move {
-                use std::collections::HashMap;
-                // Adaptive coalesce window. A fixed 4ms window was fine for
-                // bulk output but added pure latency to keyboard echo (BUG-4).
-                // The window now scales with the previous flush's byte count:
-                //   < 256 bytes  → 0ms  (echo path: dispatch immediately)
-                //   < 4096 bytes → 2ms  (medium activity)
-                //   ≥ 4096 bytes → 8ms  (bulk: amortise serialise overhead)
-                const COALESCE_WINDOW_FAST_MS: u64 = 0;
-                const COALESCE_WINDOW_MED_MS: u64 = 2;
-                const COALESCE_WINDOW_SLOW_MS: u64 = 8;
-                const COALESCE_MAX_BYTES: usize = 64 * 1024;
-                let coalesce_window_for = |last_bytes: usize| -> u64 {
-                    if last_bytes < 256 {
-                        COALESCE_WINDOW_FAST_MS
-                    } else if last_bytes < 4096 {
-                        COALESCE_WINDOW_MED_MS
-                    } else {
-                        COALESCE_WINDOW_SLOW_MS
-                    }
-                };
-                let mut pending_output: HashMap<(uuid::Uuid, uuid::Uuid), String> = HashMap::new();
-                // Tracks the size of the most recent flush so the window can
-                // adapt. Initialised to 0 so the first iteration uses the
-                // fast window (typical: prompt redraw on shell start is small).
-                let mut last_flush_bytes: usize = 0;
-
-                // 事件循环：
-                //   - 无积压 PtyOutput 时，无限等待下一条事件；
-                //   - 有积压时，最多等一个合批窗口后强制 flush；
-                //   - 任何 emit 失败只记录不中断。
-                enum Tick {
-                    Event(GlobalEvent),
-                    Flush,
-                    Closed,
-                }
-                loop {
-                    let tick: Tick = if pending_output.is_empty() {
-                        match event_rx.recv().await {
-                            Some(ev) => Tick::Event(ev),
-                            None => Tick::Closed,
-                        }
-                    } else {
-                        match tokio::time::timeout(
-                            std::time::Duration::from_millis(coalesce_window_for(last_flush_bytes)),
-                            event_rx.recv(),
-                        )
-                        .await
-                        {
-                            Ok(Some(ev)) => Tick::Event(ev),
-                            Ok(None) => Tick::Closed,
-                            Err(_) => Tick::Flush,
-                        }
-                    };
-
-                    if matches!(tick, Tick::Closed) {
-                        for ((ws, pane), data) in pending_output.drain() {
-                            let label = pane.to_string();
-                            let _ = handle.emit(
-                                &format!("pty-output-{ws}-{label}"),
-                                serde_json::json!({ "data": data }),
-                            );
-                        }
-                        break;
-                    }
-
-                    let ev = match tick {
-                        Tick::Event(ev) => Some(ev),
-                        Tick::Flush => None,
-                        Tick::Closed => unreachable!(),
-                    };
-
-                    match ev {
-                        Some(GlobalEvent::PtyOutput {
-                            workspace_id,
-                            pane_id,
-                            data,
-                        }) => {
-                            // §raw-forward: send raw PTY bytes to all remote
-                            // subs via a single Arc<Vec<u8>> — one allocation
-                            // shared across every subscriber. Remote clients
-                            // run their own wasm vte parser (kernel.feed()),
-                            // eliminating the per-sub PaneParser memory
-                            // amplification and state-drift issues of the
-                            // previous per-sub-delta model.
-                            let app_state = handle.state::<AppState>();
-                            // B2（D-GM-11）：LAN 远控 或 活跃 cloud 会话任一开启即 fan-out
-                            //（cloud-only 时 remote_enabled 可能为 false，但有 cloud pane 订阅）。
-                            if app_state.remote_enabled.load(Ordering::Relaxed)
-                                || app_state.cloud_remote_active.load(Ordering::Acquire)
-                            {
-                                let reg = app_state.pty_pane_registry.read();
-                                if let Some(entry) = reg.get(&(workspace_id, pane_id)) {
-                                    if !entry.remote_subs.is_empty() {
-                                        let shared =
-                                            Arc::new(data.as_bytes().to_vec());
-                                        for sub in &entry.remote_subs {
-                                            if sub.raw_tx
-                                                .try_send(crate::types::RemotePtyEvent::RawBytes {
-                                                    workspace_id,
-                                                    pane_id,
-                                                    bytes: Arc::clone(&shared),
-                                                })
-                                                .is_err()
-                                            {
-                                                // Channel full: the dropped bytes leave a
-                                                // hole in the client's vte stream. Flag the
-                                                // sub so the WS task re-syncs (RIS + fresh
-                                                // scrollback) on its next forwarded frame
-                                                // instead of staying silently corrupted.
-                                                sub.desync.store(true, Ordering::Release);
-                                                tracing::warn!(
-                                                    target: "ridge::remote",
-                                                    sub = sub.id,
-                                                    "raw byte channel full; dropping frame, will resync"
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            drop(app_state);
-
-                            // P3.8 — per-pane delta_mode gate. When the front-end
-                            // has opted into the rust parser path (via the
-                            // `set_pane_delta_mode` command, P3.9), bypass the
-                            // text coalescer entirely: feed bytes to PaneParser,
-                            // postcard-encode the resulting DeltaFrame, emit
-                            // `pty-delta-*` to the frontend, and pump DSR/DA
-                            // query responses back into the PTY writer.
-                            //
-                            // The flag, parser handle, and writer handle are all
-                            // pulled under a single `workspaces` read-lock, then
-                            // the lock drops before the per-chunk work runs. The
-                            // read-lock is shared with other map readers (resize,
-                            // scrollback, etc.) so PTY throughput isn't gated on
-                            // any one path holding a write-lock.
-                            let mode_handles = {
-                                let st = handle.state::<AppState>();
-                                let map = st.workspaces.read();
-                                map.get(&workspace_id)
-                                    .and_then(|ws| ws.terminals.get(&pane_id))
-                                    .map(|h| {
-                                        (
-                                            h.delta_mode.load(Ordering::Acquire),
-                                            h.parser.clone(),
-                                            h.writer.clone(),
-                                        )
-                                    })
-                            };
-                            if let Some((true, parser, writer)) = mode_handles {
-                                let frame = {
-                                    let mut p = parser.lock();
-                                    p.feed_and_diff(data.as_bytes())
-                                };
-                                // Shell `clear`/`cls` is parsed by the same
-                                // authoritative kernel that drives the mirror.
-                                // Drop the raw-byte replay store on its physical
-                                // clear signal so reconnect/page-back cannot
-                                // resurrect output already removed on screen.
-                                if frame.deltas.iter().any(|delta| {
-                                    matches!(
-                                        delta,
-                                        ridge_term::term::delta::GridDelta::ScrollbackClear
-                                    )
-                                }) {
-                                    let st = handle.state::<AppState>();
-                                    st.clear_pty_scrollback(workspace_id, pane_id);
-                                }
-                                // Pump DSR/DA replies back into the PTY so
-                                // PSReadLine + ConPTY can anchor the prompt
-                                // after child process exits. Mirrors what the
-                                // wasm `take_pending_response` path does on the
-                                // front-end side of the wasm bridge.
-                                let response = {
-                                    let mut p = parser.lock();
-                                    p.take_pending_response()
-                                };
-                                if !response.is_empty() {
-                                    let mut w = writer.lock();
-                                    let _ = w.write_all(&response);
-                                    let _ = w.flush();
-                                }
-                                if !frame.deltas.is_empty() {
-                                    match ridge_term::term::delta::encode_frame(&frame) {
-                                        Ok(bytes) => {
-                                            // P4.2 — prefer the Tauri Channel
-                                            // (zero JSON wrap / zero base64 /
-                                            // zero event-name routing); fall
-                                            // back to app.emit when no channel
-                                            // is registered yet (frontend not
-                                            // mounted, or tests).
-                                            let st = handle.state::<AppState>();
-                                            if let Some(sender) =
-                                                st.get_pane_delta_channel(workspace_id, pane_id)
-                                            {
-                                                sender(bytes);
-                                            } else {
-                                                let label = pane_id.to_string();
-                                                let _ = handle.emit(
-                                                    &format!("pty-delta-{workspace_id}-{label}"),
-                                                    bytes,
-                                                );
-                                            }
-                                            drop(st);
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                target: "ridge::pty_delta",
-                                                error = %e,
-                                                ws = %workspace_id,
-                                                pane = %pane_id,
-                                                "delta encode failed; skipping frame",
-                                            );
-                                        }
-                                    }
-                                }
-                                // Bypass the coalescer entirely — delta mode
-                                // owns the frontend's view of this pane.
-                                continue;
-                            }
-                            let entry = pending_output
-                                .entry((workspace_id, pane_id))
-                                .or_insert_with(String::new);
-                            entry.push_str(&data);
-                            // 单个 pane 的缓冲超过阈值时立刻 flush，避免一次大块长期滞留。
-                            if entry.len() >= COALESCE_MAX_BYTES {
-                                let payload = std::mem::take(entry);
-                                pending_output.remove(&(workspace_id, pane_id));
-                                let label = pane_id.to_string();
-                                let _ = handle.emit(
-                                    &format!("pty-output-{workspace_id}-{label}"),
-                                    serde_json::json!({ "data": payload }),
-                                );
-                            }
-                        }
-                        Some(GlobalEvent::PaneClosed {
-                            workspace_id,
-                            pane_id,
-                        }) => {
-                            // pane 关闭前强制 flush 它自己的 buffer，避免尾部输出丢失。
-                            if let Some(payload) = pending_output.remove(&(workspace_id, pane_id)) {
-                                let label = pane_id.to_string();
-                                let _ = handle.emit(
-                                    &format!("pty-output-{workspace_id}-{label}"),
-                                    serde_json::json!({ "data": payload }),
-                                );
-                            }
-                            let _ = handle.emit(
-                                "pane-pty-closed",
-                                serde_json::json!({
-                                    "workspaceId": workspace_id.to_string(),
-                                    "paneId": pane_id.to_string(),
-                                }),
-                            );
-                        }
-                        Some(GlobalEvent::PaneModeChanged {
-                            workspace_id,
-                            pane_id,
-                            mode,
-                        }) => {
-                            let mode_str = match &mode {
-                                PaneMode::Terminal => "Terminal",
-                                PaneMode::Editor { .. } => "Editor",
-                            };
-                            let label = pane_id.to_string();
-                            let _ = handle.emit(
-                                &format!("pane-mode-changed-{workspace_id}-{label}"),
-                                serde_json::json!({ "mode": mode_str }),
-                            );
-                        }
-                        Some(GlobalEvent::PaneCwdChanged {
-                            workspace_id,
-                            pane_id,
-                            cwd,
-                        }) => {
-                            // cwd 事件早于 pty 缓冲 flush，否则资源管理器/源代码管理
-                            // 可能看到旧 cwd 下的输出被当作新 cwd 的内容。
-                            if let Some(payload) = pending_output.remove(&(workspace_id, pane_id)) {
-                                let label = pane_id.to_string();
-                                let _ = handle.emit(
-                                    &format!("pty-output-{workspace_id}-{label}"),
-                                    serde_json::json!({ "data": payload }),
-                                );
-                            }
-                            let label = pane_id.to_string();
-                            // Mirror the cwd change to remote subscribers so their
-                            // tab/header tracks the desktop.
-                            let st = handle.state::<AppState>();
-                            if st.remote_enabled.load(Ordering::Relaxed) {
-                                st.broadcast_remote_event(
-                                    workspace_id,
-                                    pane_id,
-                                    crate::types::RemotePtyEvent::Metadata {
-                                        workspace_id,
-                                        pane_id,
-                                        title: None,
-                                        cwd: Some(cwd.clone()),
-                                    },
-                                );
-                            }
-                            // iter-60 G9：稳定聚合事件（无动态名），供 cloud 桥一次订阅
-                            // 全量转发 → 手机头部/Pane 弹层实时刷新。
-                            let _ = handle.emit(
-                                "pane-meta-changed",
-                                serde_json::json!({
-                                    "workspaceId": workspace_id.to_string(),
-                                    "paneId": label,
-                                    "cwd": &cwd,
-                                }),
-                            );
-                            let _ = handle.emit(
-                                &format!("pane-cwd-changed-{workspace_id}-{label}"),
-                                serde_json::json!({ "cwd": cwd }),
-                            );
-                        }
-                        Some(GlobalEvent::PaneTitleChanged {
-                            workspace_id,
-                            pane_id,
-                            title,
-                        }) => {
-                            let label = pane_id.to_string();
-                            // Mirror the title change to remote subscribers (replaces
-                            // the title that used to ride inside the per-sub delta
-                            // frame before the raw-byte refactor).
-                            let st = handle.state::<AppState>();
-                            if st.remote_enabled.load(Ordering::Relaxed) {
-                                st.broadcast_remote_event(
-                                    workspace_id,
-                                    pane_id,
-                                    crate::types::RemotePtyEvent::Metadata {
-                                        workspace_id,
-                                        pane_id,
-                                        title: Some(title.clone()),
-                                        cwd: None,
-                                    },
-                                );
-                            }
-                            // iter-60 G9：稳定聚合事件（同上 cwd 分支）。
-                            let _ = handle.emit(
-                                "pane-meta-changed",
-                                serde_json::json!({
-                                    "workspaceId": workspace_id.to_string(),
-                                    "paneId": label,
-                                    "title": &title,
-                                }),
-                            );
-                            let _ = handle.emit(
-                                &format!("pane-title-changed-{workspace_id}-{label}"),
-                                serde_json::json!({ "title": title }),
-                            );
-                        }
-                        Some(GlobalEvent::PanePromptDetected {
-                            workspace_id,
-                            pane_id,
-                        }) => {
-                            // Fire-and-forget IPC. Frontend Pane.svelte listens on
-                            // `pane-prompt-{ws}-{pane}` and uses it as the fast
-                            // path for diff refresh (BUG-1 follow-up). Empty
-                            // payload — the URL identifies the pane fully and
-                            // there's no per-prompt state to convey.
-                            let label = pane_id.to_string();
-                            let _ = handle.emit(
-                                &format!("pane-prompt-{workspace_id}-{label}"),
-                                serde_json::json!({}),
-                            );
-                        }
-                        Some(GlobalEvent::PaneTreeChanged { workspace_id }) => {
-                            let _ = handle.emit(
-                                "pane-tree-changed",
-                                serde_json::json!({
-                                    "workspaceId": workspace_id.to_string(),
-                                }),
-                            );
-                        }
-                        Some(GlobalEvent::WorkspaceListChanged) => {
-                            let _ = handle.emit(
-                                "workspace-list-changed",
-                                serde_json::json!({}),
-                            );
-                        }
-                        None => {
-                            // timeout — flush all pending per-pane buffers.
-                            if !pending_output.is_empty() {
-                                let mut flushed_bytes: usize = 0;
-                                let drained: Vec<((uuid::Uuid, uuid::Uuid), String)> =
-                                    pending_output.drain().collect();
-                                for ((ws, pane), payload) in drained {
-                                    flushed_bytes += payload.len();
-                                    let label = pane.to_string();
-                                    let _ = handle.emit(
-                                        &format!("pty-output-{ws}-{label}"),
-                                        serde_json::json!({ "data": payload }),
-                                    );
-                                }
-                                // Update window for the NEXT iteration based
-                                // on this flush's total bytes. Bulk flushes
-                                // → larger window; small echo flushes →
-                                // 0ms window (immediate dispatch).
-                                last_flush_bytes = flushed_bytes;
-                            }
-                        }
-                    }
-                }
-            });
+                spawn_event_forwarder(handle.clone(), event_rx);
                 Ok(())
             }
         })
@@ -1094,6 +690,407 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+fn spawn_event_forwarder(handle: tauri::AppHandle, mut event_rx: mpsc::Receiver<GlobalEvent>) {
+    tauri::async_runtime::spawn(async move {
+        use std::collections::HashMap;
+        // Adaptive coalesce window. A fixed 4ms window was fine for
+        // bulk output but added pure latency to keyboard echo (BUG-4).
+        // The window now scales with the previous flush's byte count:
+        //   < 256 bytes  → 0ms  (echo path: dispatch immediately)
+        //   < 4096 bytes → 2ms  (medium activity)
+        //   ≥ 4096 bytes → 8ms  (bulk: amortise serialise overhead)
+        const COALESCE_WINDOW_FAST_MS: u64 = 0;
+        const COALESCE_WINDOW_MED_MS: u64 = 2;
+        const COALESCE_WINDOW_SLOW_MS: u64 = 8;
+        const COALESCE_MAX_BYTES: usize = 64 * 1024;
+        let coalesce_window_for = |last_bytes: usize| -> u64 {
+            if last_bytes < 256 {
+                COALESCE_WINDOW_FAST_MS
+            } else if last_bytes < 4096 {
+                COALESCE_WINDOW_MED_MS
+            } else {
+                COALESCE_WINDOW_SLOW_MS
+            }
+        };
+        let mut pending_output: HashMap<(uuid::Uuid, uuid::Uuid), String> = HashMap::new();
+        // Tracks the size of the most recent flush so the window can
+        // adapt. Initialised to 0 so the first iteration uses the
+        // fast window (typical: prompt redraw on shell start is small).
+        let mut last_flush_bytes: usize = 0;
+
+        // 事件循环：
+        //   - 无积压 PtyOutput 时，无限等待下一条事件；
+        //   - 有积压时，最多等一个合批窗口后强制 flush；
+        //   - 任何 emit 失败只记录不中断。
+        enum Tick {
+            Event(GlobalEvent),
+            Flush,
+            Closed,
+        }
+        loop {
+            let tick: Tick = if pending_output.is_empty() {
+                match event_rx.recv().await {
+                    Some(ev) => Tick::Event(ev),
+                    None => Tick::Closed,
+                }
+            } else {
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(coalesce_window_for(last_flush_bytes)),
+                    event_rx.recv(),
+                )
+                .await
+                {
+                    Ok(Some(ev)) => Tick::Event(ev),
+                    Ok(None) => Tick::Closed,
+                    Err(_) => Tick::Flush,
+                }
+            };
+
+            if matches!(tick, Tick::Closed) {
+                for ((ws, pane), data) in pending_output.drain() {
+                    let label = pane.to_string();
+                    let _ = handle.emit(
+                        &format!("pty-output-{ws}-{label}"),
+                        serde_json::json!({ "data": data }),
+                    );
+                }
+                break;
+            }
+
+            let ev = match tick {
+                Tick::Event(ev) => Some(ev),
+                Tick::Flush => None,
+                Tick::Closed => unreachable!(),
+            };
+
+            match ev {
+                Some(GlobalEvent::PtyOutput {
+                    workspace_id,
+                    pane_id,
+                    data,
+                }) => {
+                    // §raw-forward: send raw PTY bytes to all remote
+                    // subs via a single Arc<Vec<u8>> — one allocation
+                    // shared across every subscriber. Remote clients
+                    // run their own wasm vte parser (kernel.feed()),
+                    // eliminating the per-sub PaneParser memory
+                    // amplification and state-drift issues of the
+                    // previous per-sub-delta model.
+                    let app_state = handle.state::<AppState>();
+                    // B2（D-GM-11）：LAN 远控 或 活跃 cloud 会话任一开启即 fan-out
+                    //（cloud-only 时 remote_enabled 可能为 false，但有 cloud pane 订阅）。
+                    if app_state.remote_enabled.load(Ordering::Relaxed)
+                        || app_state.cloud_remote_active.load(Ordering::Acquire)
+                    {
+                        let reg = app_state.pty_pane_registry.read();
+                        if let Some(entry) = reg.get(&(workspace_id, pane_id)) {
+                            if !entry.remote_subs.is_empty() {
+                                let shared = Arc::new(data.as_bytes().to_vec());
+                                for sub in &entry.remote_subs {
+                                    if sub
+                                        .raw_tx
+                                        .try_send(crate::types::RemotePtyEvent::RawBytes {
+                                            workspace_id,
+                                            pane_id,
+                                            bytes: Arc::clone(&shared),
+                                        })
+                                        .is_err()
+                                    {
+                                        // Channel full: the dropped bytes leave a
+                                        // hole in the client's vte stream. Flag the
+                                        // sub so the WS task re-syncs (RIS + fresh
+                                        // scrollback) on its next forwarded frame
+                                        // instead of staying silently corrupted.
+                                        sub.desync.store(true, Ordering::Release);
+                                        tracing::warn!(
+                                            target: "ridge::remote",
+                                            sub = sub.id,
+                                            "raw byte channel full; dropping frame, will resync"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    drop(app_state);
+
+                    // P3.8 — per-pane delta_mode gate. When the front-end
+                    // has opted into the rust parser path (via the
+                    // `set_pane_delta_mode` command, P3.9), bypass the
+                    // text coalescer entirely: feed bytes to PaneParser,
+                    // postcard-encode the resulting DeltaFrame, emit
+                    // `pty-delta-*` to the frontend, and pump DSR/DA
+                    // query responses back into the PTY writer.
+                    //
+                    // The flag, parser handle, and writer handle are all
+                    // pulled under a single `workspaces` read-lock, then
+                    // the lock drops before the per-chunk work runs. The
+                    // read-lock is shared with other map readers (resize,
+                    // scrollback, etc.) so PTY throughput isn't gated on
+                    // any one path holding a write-lock.
+                    let mode_handles = {
+                        let st = handle.state::<AppState>();
+                        let map = st.workspaces.read();
+                        map.get(&workspace_id)
+                            .and_then(|ws| ws.terminals.get(&pane_id))
+                            .map(|h| {
+                                (
+                                    h.delta_mode.load(Ordering::Acquire),
+                                    h.parser.clone(),
+                                    h.writer.clone(),
+                                )
+                            })
+                    };
+                    if let Some((true, parser, writer)) = mode_handles {
+                        let frame = {
+                            let mut p = parser.lock();
+                            p.feed_and_diff(data.as_bytes())
+                        };
+                        // Shell `clear`/`cls` is parsed by the same
+                        // authoritative kernel that drives the mirror.
+                        // Drop the raw-byte replay store on its physical
+                        // clear signal so reconnect/page-back cannot
+                        // resurrect output already removed on screen.
+                        if frame.deltas.iter().any(|delta| {
+                            matches!(delta, ridge_term::term::delta::GridDelta::ScrollbackClear)
+                        }) {
+                            let st = handle.state::<AppState>();
+                            st.clear_pty_scrollback(workspace_id, pane_id);
+                        }
+                        // Pump DSR/DA replies back into the PTY so
+                        // PSReadLine + ConPTY can anchor the prompt
+                        // after child process exits. Mirrors what the
+                        // wasm `take_pending_response` path does on the
+                        // front-end side of the wasm bridge.
+                        let response = {
+                            let mut p = parser.lock();
+                            p.take_pending_response()
+                        };
+                        if !response.is_empty() {
+                            let mut w = writer.lock();
+                            let _ = w.write_all(&response);
+                            let _ = w.flush();
+                        }
+                        if !frame.deltas.is_empty() {
+                            match ridge_term::term::delta::encode_frame(&frame) {
+                                Ok(bytes) => {
+                                    // P4.2 — prefer the Tauri Channel
+                                    // (zero JSON wrap / zero base64 /
+                                    // zero event-name routing); fall
+                                    // back to app.emit when no channel
+                                    // is registered yet (frontend not
+                                    // mounted, or tests).
+                                    let st = handle.state::<AppState>();
+                                    if let Some(sender) =
+                                        st.get_pane_delta_channel(workspace_id, pane_id)
+                                    {
+                                        sender(bytes);
+                                    } else {
+                                        let label = pane_id.to_string();
+                                        let _ = handle.emit(
+                                            &format!("pty-delta-{workspace_id}-{label}"),
+                                            bytes,
+                                        );
+                                    }
+                                    drop(st);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        target: "ridge::pty_delta",
+                                        error = %e,
+                                        ws = %workspace_id,
+                                        pane = %pane_id,
+                                        "delta encode failed; skipping frame",
+                                    );
+                                }
+                            }
+                        }
+                        // Bypass the coalescer entirely — delta mode
+                        // owns the frontend's view of this pane.
+                        continue;
+                    }
+                    let entry = pending_output
+                        .entry((workspace_id, pane_id))
+                        .or_insert_with(String::new);
+                    entry.push_str(&data);
+                    // 单个 pane 的缓冲超过阈值时立刻 flush，避免一次大块长期滞留。
+                    if entry.len() >= COALESCE_MAX_BYTES {
+                        let payload = std::mem::take(entry);
+                        pending_output.remove(&(workspace_id, pane_id));
+                        let label = pane_id.to_string();
+                        let _ = handle.emit(
+                            &format!("pty-output-{workspace_id}-{label}"),
+                            serde_json::json!({ "data": payload }),
+                        );
+                    }
+                }
+                Some(GlobalEvent::PaneClosed {
+                    workspace_id,
+                    pane_id,
+                }) => {
+                    // pane 关闭前强制 flush 它自己的 buffer，避免尾部输出丢失。
+                    if let Some(payload) = pending_output.remove(&(workspace_id, pane_id)) {
+                        let label = pane_id.to_string();
+                        let _ = handle.emit(
+                            &format!("pty-output-{workspace_id}-{label}"),
+                            serde_json::json!({ "data": payload }),
+                        );
+                    }
+                    let _ = handle.emit(
+                        "pane-pty-closed",
+                        serde_json::json!({
+                            "workspaceId": workspace_id.to_string(),
+                            "paneId": pane_id.to_string(),
+                        }),
+                    );
+                }
+                Some(GlobalEvent::PaneModeChanged {
+                    workspace_id,
+                    pane_id,
+                    mode,
+                }) => {
+                    let mode_str = match &mode {
+                        PaneMode::Terminal => "Terminal",
+                        PaneMode::Editor { .. } => "Editor",
+                    };
+                    let label = pane_id.to_string();
+                    let _ = handle.emit(
+                        &format!("pane-mode-changed-{workspace_id}-{label}"),
+                        serde_json::json!({ "mode": mode_str }),
+                    );
+                }
+                Some(GlobalEvent::PaneCwdChanged {
+                    workspace_id,
+                    pane_id,
+                    cwd,
+                }) => {
+                    // cwd 事件早于 pty 缓冲 flush，否则资源管理器/源代码管理
+                    // 可能看到旧 cwd 下的输出被当作新 cwd 的内容。
+                    if let Some(payload) = pending_output.remove(&(workspace_id, pane_id)) {
+                        let label = pane_id.to_string();
+                        let _ = handle.emit(
+                            &format!("pty-output-{workspace_id}-{label}"),
+                            serde_json::json!({ "data": payload }),
+                        );
+                    }
+                    let label = pane_id.to_string();
+                    // Mirror the cwd change to remote subscribers so their
+                    // tab/header tracks the desktop.
+                    let st = handle.state::<AppState>();
+                    if st.remote_enabled.load(Ordering::Relaxed) {
+                        st.broadcast_remote_event(
+                            workspace_id,
+                            pane_id,
+                            crate::types::RemotePtyEvent::Metadata {
+                                workspace_id,
+                                pane_id,
+                                title: None,
+                                cwd: Some(cwd.clone()),
+                            },
+                        );
+                    }
+                    // iter-60 G9：稳定聚合事件（无动态名），供 cloud 桥一次订阅
+                    // 全量转发 → 手机头部/Pane 弹层实时刷新。
+                    let _ = handle.emit(
+                        "pane-meta-changed",
+                        serde_json::json!({
+                            "workspaceId": workspace_id.to_string(),
+                            "paneId": label,
+                            "cwd": &cwd,
+                        }),
+                    );
+                    let _ = handle.emit(
+                        &format!("pane-cwd-changed-{workspace_id}-{label}"),
+                        serde_json::json!({ "cwd": cwd }),
+                    );
+                }
+                Some(GlobalEvent::PaneTitleChanged {
+                    workspace_id,
+                    pane_id,
+                    title,
+                }) => {
+                    let label = pane_id.to_string();
+                    // Mirror the title change to remote subscribers (replaces
+                    // the title that used to ride inside the per-sub delta
+                    // frame before the raw-byte refactor).
+                    let st = handle.state::<AppState>();
+                    if st.remote_enabled.load(Ordering::Relaxed) {
+                        st.broadcast_remote_event(
+                            workspace_id,
+                            pane_id,
+                            crate::types::RemotePtyEvent::Metadata {
+                                workspace_id,
+                                pane_id,
+                                title: Some(title.clone()),
+                                cwd: None,
+                            },
+                        );
+                    }
+                    // iter-60 G9：稳定聚合事件（同上 cwd 分支）。
+                    let _ = handle.emit(
+                        "pane-meta-changed",
+                        serde_json::json!({
+                            "workspaceId": workspace_id.to_string(),
+                            "paneId": label,
+                            "title": &title,
+                        }),
+                    );
+                    let _ = handle.emit(
+                        &format!("pane-title-changed-{workspace_id}-{label}"),
+                        serde_json::json!({ "title": title }),
+                    );
+                }
+                Some(GlobalEvent::PanePromptDetected {
+                    workspace_id,
+                    pane_id,
+                }) => {
+                    // Fire-and-forget IPC. Frontend Pane.svelte listens on
+                    // `pane-prompt-{ws}-{pane}` and uses it as the fast
+                    // path for diff refresh (BUG-1 follow-up). Empty
+                    // payload — the URL identifies the pane fully and
+                    // there's no per-prompt state to convey.
+                    let label = pane_id.to_string();
+                    let _ = handle.emit(
+                        &format!("pane-prompt-{workspace_id}-{label}"),
+                        serde_json::json!({}),
+                    );
+                }
+                Some(GlobalEvent::PaneTreeChanged { workspace_id }) => {
+                    let _ = handle.emit(
+                        "pane-tree-changed",
+                        serde_json::json!({
+                            "workspaceId": workspace_id.to_string(),
+                        }),
+                    );
+                }
+                Some(GlobalEvent::WorkspaceListChanged) => {
+                    let _ = handle.emit("workspace-list-changed", serde_json::json!({}));
+                }
+                None => {
+                    // timeout — flush all pending per-pane buffers.
+                    if !pending_output.is_empty() {
+                        let mut flushed_bytes: usize = 0;
+                        let drained: Vec<((uuid::Uuid, uuid::Uuid), String)> =
+                            pending_output.drain().collect();
+                        for ((ws, pane), payload) in drained {
+                            flushed_bytes += payload.len();
+                            let label = pane.to_string();
+                            let _ = handle.emit(
+                                &format!("pty-output-{ws}-{label}"),
+                                serde_json::json!({ "data": payload }),
+                            );
+                        }
+                        // Update window for the NEXT iteration based
+                        // on this flush's total bytes. Bulk flushes
+                        // → larger window; small echo flushes →
+                        // 0ms window (immediate dispatch).
+                        last_flush_bytes = flushed_bytes;
+                    }
+                }
+            }
+        }
+    });
+}
 #[cfg(test)]
 mod window_launch_tests {
     use super::is_auth_focus_launch;

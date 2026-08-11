@@ -319,21 +319,7 @@ impl GlyphRasterizer {
         // pixels so the loop costs ~10s of bytes in practice. Threshold
         // 250 matches the shader's 0.99 cutoff (decoded sRGB white at
         // boundary AA pixels lands ~0.992 = 253/255).
-        let mut is_color = false;
-        let mut i = 0usize;
-        while i + 3 < rgba.len() {
-            let a = rgba[i + 3];
-            if a >= 8 {
-                let r = rgba[i];
-                let g = rgba[i + 1];
-                let b = rgba[i + 2];
-                if r < 250 || g < 250 || b < 250 {
-                    is_color = true;
-                    break;
-                }
-            }
-            i += 4;
-        }
+        let is_color = detect_color(&rgba);
 
         // section B.4 (2026-05-08) - premultiply alpha. getImageData per spec
         // returns NON-premultiplied (straight-alpha) bytes. Linear-
@@ -367,24 +353,7 @@ impl GlyphRasterizer {
         // depends on the per-instance flag's pipeline, not on the
         // bytes. Keeping the order explicit anyway so future
         // refactors don't accidentally swap them.
-        for px in rgba.chunks_exact_mut(4) {
-            let a = px[3] as u32;
-            if a == 0 {
-                // Fully transparent: rgb already (0,0,0) per the
-                // Canvas2D `clear_rect` we did before fill_text. Belt
-                // and braces - explicit zero so the GPU sees no
-                // garbage if some browser path leaves residual bytes.
-                px[0] = 0;
-                px[1] = 0;
-                px[2] = 0;
-            } else if a < 255 {
-                // Round-half-to-even premultiplication: (rgb * a + 127) / 255.
-                px[0] = ((px[0] as u32 * a + 127) / 255) as u8;
-                px[1] = ((px[1] as u32 * a + 127) / 255) as u8;
-                px[2] = ((px[2] as u32 * a + 127) / 255) as u8;
-            }
-            // a == 255 -> unmultiplied rgb already equals premult rgb.
-        }
+        premultiply_rgba(&mut rgba);
 
         // Emoji-rasterisation diagnostic. Gated on (a) leading codepoint
         // >= U+2600 (covers Dingbats + every SMP emoji block, skips ASCII
@@ -394,18 +363,16 @@ impl GlyphRasterizer {
         // received any pixels at all (non_zero_px), whether color was
         // detected (is_color), and which font_css the OffscreenCanvas
         // resolved against - three orthogonal failure modes.
-        let first_cp = glyph_text.chars().next().map(|c| c as u32).unwrap_or(0);
-        if first_cp >= 0x2600 && ridge_diag_enabled() {
-            let total_px = rgba.len() / 4;
-            let non_zero_px = rgba.chunks_exact(4).filter(|p| p[3] >= 8).count();
-            let msg = format!(
-                "[noto-emoji-diag] cp=U+{first_cp:04X} font=\"{font_css}\" \
-                 advance_dev={advance_dev:.2} ascent_dev={ascent_dev:.2} \
-                 bbox=({bbox_w}x{bbox_h}) is_color={is_color} \
-                 non_zero_px={non_zero_px}/{total_px}"
-            );
-            console::log_1(&JsValue::from_str(&msg));
-        }
+        log_emoji_diagnostic(
+            glyph_text,
+            &font_css,
+            advance_dev,
+            ascent_dev,
+            bbox_w,
+            bbox_h,
+            is_color,
+            &rgba,
+        );
 
         Ok(RasterizedGlyph {
             rgba,
@@ -463,4 +430,49 @@ impl GlyphRasterizer {
         };
         Ok((w.round().max(1.0), h.round().max(1.0)))
     }
+}
+
+fn detect_color(rgba: &[u8]) -> bool {
+    rgba.chunks_exact(4)
+        .any(|px| px[3] >= 8 && px[..3].iter().any(|channel| *channel < 250))
+}
+
+fn premultiply_rgba(rgba: &mut [u8]) {
+    for px in rgba.chunks_exact_mut(4) {
+        let alpha = px[3] as u32;
+        match alpha {
+            0 => px[..3].fill(0),
+            255 => {}
+            a => {
+                for channel in &mut px[..3] {
+                    *channel = ((*channel as u32 * a + 127) / 255) as u8;
+                }
+            }
+        }
+    }
+}
+
+fn log_emoji_diagnostic(
+    glyph_text: &str,
+    font_css: &str,
+    advance_dev: f32,
+    ascent_dev: f32,
+    bbox_w: u16,
+    bbox_h: u16,
+    is_color: bool,
+    rgba: &[u8],
+) {
+    let first_cp = glyph_text.chars().next().map(|c| c as u32).unwrap_or(0);
+    if first_cp < 0x2600 || !ridge_diag_enabled() {
+        return;
+    }
+    let total_px = rgba.len() / 4;
+    let non_zero_px = rgba.chunks_exact(4).filter(|p| p[3] >= 8).count();
+    let msg = format!(
+        "[noto-emoji-diag] cp=U+{first_cp:04X} font=\"{font_css}\" \
+         advance_dev={advance_dev:.2} ascent_dev={ascent_dev:.2} \
+         bbox=({bbox_w}x{bbox_h}) is_color={is_color} \
+         non_zero_px={non_zero_px}/{total_px}"
+    );
+    console::log_1(&JsValue::from_str(&msg));
 }

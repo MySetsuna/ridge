@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -891,6 +891,430 @@ fn default_true() -> bool {
     true
 }
 
+fn try_reuse_idle_pane(ctx: &TeammateCtx, body: &SplitBody, wid: Uuid) -> Option<Response> {
+    let idle_idx = find_idle_pane_index(&ctx.state, wid)?;
+    let idle_pane_id = {
+        let map = ctx.state.workspaces.read();
+        map.get(&wid)
+            .and_then(|ws| ws.pane_tree.get_all_leaves().get(idle_idx).copied())
+    }?;
+    if body.is_agent && body.program.is_none() {
+        let mut map = ctx.state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            *ws.teammate_metrics
+                .failures
+                .entry("agent_reuse_requires_structured".into())
+                .or_insert(0) += 1;
+        }
+        return Some(
+            (
+                StatusCode::BAD_REQUEST,
+                "agent reuse rejected: structured program/args/env required (no command-only agent spawn)",
+            )
+                .into_response(),
+        );
+    }
+    {
+        let mut map = ctx.state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            if body.is_agent || body.program.is_some() {
+                ws.teammate_pane_states
+                    .insert(idle_pane_id, crate::state::PaneState::Busy);
+                if body.is_agent {
+                    ws.teammate_agent_pane_map
+                        .insert(body.agent_id.clone().unwrap_or_default(), idle_pane_id);
+                }
+            }
+        }
+    }
+    let structured_cmd = body.program.as_ref().map(|program| {
+        let mut command = terminal::StructuredPtyCommand {
+            program: program.clone(),
+            args: body.args.clone().unwrap_or_default(),
+            env: body.env.clone().unwrap_or_default(),
+        };
+        #[cfg(windows)]
+        {
+            command = normalize_windows_command(&command);
+        }
+        command
+    });
+    if let Some(command) = structured_cmd {
+        let spawn_cwd = body
+            .cwd
+            .as_ref()
+            .map(|s| std::path::PathBuf::from(s.trim()))
+            .filter(|p| !p.as_os_str().is_empty());
+        if let Err(error) = terminal::ensure_pane_pty_workspace(
+            &ctx.state,
+            wid,
+            idle_pane_id,
+            terminal::EnsurePtyOptions {
+                shell: None,
+                cwd: spawn_cwd.as_deref(),
+                initial_command: None,
+                structured_command: Some(command),
+                tmux_pane_index: Some(idle_idx),
+                ready_tx: None,
+                trace_id: None,
+            },
+        ) {
+            let _ = release_pane(&ctx.state, wid, idle_pane_id);
+            return Some(
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("reused pane PTY init failed: {error}"),
+                )
+                    .into_response(),
+            );
+        }
+    } else if let Some(command) = body
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let data = ridge_mcp::server::enter_terminated(&command);
+        if let Err(error) =
+            super::suspend::agent_pty_write(&ctx.state, wid, idle_pane_id, data.as_bytes())
+        {
+            let _ = release_pane(&ctx.state, wid, idle_pane_id);
+            return Some((StatusCode::BAD_REQUEST, error).into_response());
+        }
+    }
+    if let Some(agent_id) = body
+        .agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if let Err(error) = register_confirmed_agent(
+            &ctx.state,
+            wid,
+            agent_id,
+            idle_pane_id,
+            body.window_name.clone(),
+            body.program.as_deref(),
+        ) {
+            return Some((StatusCode::CONFLICT, error).into_response());
+        }
+    }
+    let _ = ctx.handle.emit(
+        TEAMMATE_LAYOUT_CHANGED,
+        LayoutChange::reused(idle_pane_id.to_string()),
+    );
+    let _ = ctx
+        .handle
+        .emit("teammate-active-pane-changed", idle_pane_id.to_string());
+    Some(
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "reused_pane_index": idle_idx,
+                "new_pane_index": idle_idx,
+                "source_pane_index": idle_idx,
+                "reused": true,
+            })),
+        )
+            .into_response(),
+    )
+}
+
+fn select_split_target(
+    ctx: &TeammateCtx,
+    body: &SplitBody,
+    wid: Uuid,
+) -> Result<(usize, &'static str, bool), Response> {
+    let map = ctx.state.workspaces.read();
+    let Some(ws) = map.get(&wid) else {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, "no workspace").into_response());
+    };
+    let leaves = ws.pane_tree.get_all_leaves();
+    let pane_count = leaves.len();
+    if let Some(explicit_idx) = body.pane_index.filter(|_| !body.auto_place) {
+        if explicit_idx >= pane_count {
+            return Err((StatusCode::BAD_REQUEST, "pane_index out of range").into_response());
+        }
+        let direction = if body.horizontal {
+            "horizontal"
+        } else {
+            "vertical"
+        };
+        return Ok((explicit_idx, direction, false));
+    }
+    let Some((uuid, split_direction)) = pane::choose_balanced_split(ws) else {
+        return Ok((0, "vertical", true));
+    };
+    let idx = leaves.iter().position(|pane| *pane == uuid).unwrap_or(0);
+    let direction = match split_direction {
+        SplitDirection::Horizontal => "horizontal",
+        SplitDirection::Vertical => "vertical",
+    };
+    Ok((idx, direction, true))
+}
+
+struct PreparedSplit {
+    new_id: Uuid,
+    new_idx: usize,
+    trace_id: String,
+    ready_rx: tokio::sync::oneshot::Receiver<Result<(), String>>,
+}
+
+fn note_split_failure(state: &AppState, wid: Uuid, key: &str) {
+    let mut map = state.workspaces.write();
+    if let Some(ws) = map.get_mut(&wid) {
+        *ws.teammate_metrics
+            .failures
+            .entry(key.to_string())
+            .or_insert(0) += 1;
+    }
+}
+
+fn set_split_metadata(
+    state: &AppState,
+    wid: Uuid,
+    pane_id: Uuid,
+    pane_idx: usize,
+    body: &SplitBody,
+    is_structured: bool,
+) {
+    let mut map = state.workspaces.write();
+    if let Some(ws) = map.get_mut(&wid) {
+        ws.teammate_tmux_pane_cursor = pane_idx;
+        if body.is_agent || is_structured {
+            ws.teammate_pane_states.insert(pane_id, PaneState::Busy);
+        }
+        ws.pane_sizes.insert(pane_id, (80, 120));
+        if let Some(name) = body
+            .window_name
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            ws.teammate_pane_titles.insert(pane_id, name.to_string());
+        }
+    }
+}
+
+fn spawn_split_watchdog(
+    state: AppState,
+    handle: tauri::AppHandle,
+    wid: Uuid,
+    pane_id: Uuid,
+    trace_id: String,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        let cleaned = {
+            let mut map = state.workspaces.write();
+            map.get_mut(&wid)
+                .and_then(|ws| {
+                    ws.pending_spawns.remove(&pane_id).map(|_| {
+                        let _ = ws.pane_tree.close(pane_id);
+                        ws.pane_sizes.remove(&pane_id);
+                        *ws.teammate_metrics
+                            .failures
+                            .entry("watchdog_30s".into())
+                            .or_insert(0) += 1;
+                    })
+                })
+                .is_some()
+        };
+        if cleaned {
+            super::profiles::remove_by_pane(wid, pane_id);
+            let _ = handle.emit(
+                TEAMMATE_LAYOUT_CHANGED,
+                LayoutChange::removed_with_trace(pane_id.to_string(), trace_id),
+            );
+        }
+    });
+}
+
+fn prepare_split(
+    ctx: &TeammateCtx,
+    body: &SplitBody,
+    wid: Uuid,
+    idx: usize,
+    direction: &str,
+    cwd: Option<&std::path::PathBuf>,
+) -> Result<PreparedSplit, Response> {
+    tracing::info!(target: "ridge::teammate", "route_split: pre teammate_split_pane idx={idx} dir={direction}");
+    let new_id = pane::teammate_split_pane(&ctx.state, wid, idx, direction)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()).into_response())?;
+    if let Some(dir) = cwd {
+        let mut map = ctx.state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            if let Some(pane) = ws.pane_tree.panes.get_mut(&new_id) {
+                pane.cwd = Some(dir.clone());
+            }
+        }
+    }
+    let new_idx = {
+        let map = ctx.state.workspaces.read();
+        let Some(ws) = map.get(&wid) else {
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "workspace missing").into_response());
+        };
+        ws.pane_tree
+            .get_all_leaves()
+            .iter()
+            .position(|pane| *pane == new_id)
+            .unwrap_or(0)
+    };
+    let command = body
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let structured_command = body.program.as_ref().map(|program| {
+        let mut command = terminal::StructuredPtyCommand {
+            program: program.clone(),
+            args: body.args.clone().unwrap_or_default(),
+            env: body.env.clone().unwrap_or_default(),
+        };
+        #[cfg(windows)]
+        {
+            command = normalize_windows_command(&command);
+        }
+        command
+    });
+    let is_structured = structured_command.is_some();
+    let trace_id = Uuid::new_v4().to_string();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    {
+        let mut map = ctx.state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            ws.teammate_metrics.split_attempts += 1;
+        }
+    }
+    if let Err(error) = terminal::ensure_pane_pty_workspace(
+        &ctx.state,
+        wid,
+        new_id,
+        terminal::EnsurePtyOptions {
+            shell: None,
+            cwd: cwd.map(std::path::PathBuf::as_path),
+            initial_command: if is_structured { None } else { command },
+            structured_command,
+            tmux_pane_index: Some(new_idx),
+            ready_tx: Some(ready_tx),
+            trace_id: Some(trace_id.clone()),
+        },
+    ) {
+        let mut map = ctx.state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            let _ = ws.pane_tree.close(new_id);
+            ws.pane_sizes.remove(&new_id);
+        }
+        note_split_failure(&ctx.state, wid, "phase1_failed");
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("split created pane but PTY init failed: {error}"),
+        )
+            .into_response());
+    }
+    set_split_metadata(&ctx.state, wid, new_id, new_idx, body, is_structured);
+    let _ = ctx.handle.emit(
+        TEAMMATE_LAYOUT_CHANGED,
+        LayoutChange::split(trace_id.clone()),
+    );
+    let _ = ctx
+        .handle
+        .emit("teammate-active-pane-changed", new_id.to_string());
+    spawn_split_watchdog(
+        ctx.state.clone(),
+        ctx.handle.clone(),
+        wid,
+        new_id,
+        trace_id.clone(),
+    );
+    Ok(PreparedSplit {
+        new_id,
+        new_idx,
+        trace_id,
+        ready_rx,
+    })
+}
+
+fn register_split_agent(
+    ctx: &TeammateCtx,
+    body: &SplitBody,
+    wid: Uuid,
+    pane_id: Uuid,
+) -> Result<(), Response> {
+    let Some(agent_id) = body
+        .agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(());
+    };
+    register_confirmed_agent(
+        &ctx.state,
+        wid,
+        agent_id,
+        pane_id,
+        body.window_name.clone(),
+        body.program.as_deref(),
+    )
+    .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error).into_response())
+}
+
+async fn await_split_activation(
+    ctx: &TeammateCtx,
+    body: &SplitBody,
+    wid: Uuid,
+    idx: usize,
+    direction_inferred: bool,
+    prepared: PreparedSplit,
+) -> Response {
+    tracing::info!(target: "ridge::teammate", "route_split: await ready_rx(3s) trace={}", prepared.trace_id);
+    match tokio::time::timeout(std::time::Duration::from_secs(3), prepared.ready_rx).await {
+        Ok(Ok(Ok(()))) => {
+            if let Err(response) = register_split_agent(ctx, body, wid, prepared.new_id) {
+                let _ = release_pane(&ctx.state, wid, prepared.new_id);
+                return response;
+            }
+            let mut map = ctx.state.workspaces.write();
+            if let Some(ws) = map.get_mut(&wid) {
+                ws.teammate_metrics.split_success += 1;
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "ok": true,
+                    "new_pane_id": prepared.new_id.to_string(),
+                    "new_pane_index": prepared.new_idx,
+                    "source_pane_index": idx,
+                    "direction_inferred": direction_inferred,
+                    "trace_id": prepared.trace_id,
+                })),
+            )
+                .into_response()
+        }
+        Ok(Ok(Err(error))) => {
+            note_split_failure(&ctx.state, wid, "activate_failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("activate_pane_pty failed: {error}"),
+            )
+                .into_response()
+        }
+        _ => {
+            note_split_failure(&ctx.state, wid, "activate_timeout_3s");
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "activate_pane_pty timed out after 3s (trace_id={})",
+                    prepared.trace_id
+                ),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn route_split(
     State(ctx): State<TeammateCtx>,
     headers: HeaderMap,
@@ -911,145 +1335,8 @@ async fn route_split(
     // 【有意行为变更，team-lead 已裁决】new-window GUI 回退走 `auto_place=false` →
     // 不再复用空闲 pane，一律在最大 pane 上新建（new-window 语义本就是「新建」）。
     if body.allow_idle_reuse && body.auto_place {
-        if let Some(idle_idx) = find_idle_pane_index(&ctx.state, wid) {
-            let idle_pane_id = {
-                let map = ctx.state.workspaces.read();
-                map.get(&wid)
-                    .and_then(|ws| ws.pane_tree.get_all_leaves().get(idle_idx).copied())
-            };
-            if let Some(pane_id) = idle_pane_id {
-                // BLOCK① 裁决：agent 复用**必须**走结构化 spawn（独立 PTY，退出即 EOF→Idle）。
-                // 仅带 command 字符串、无结构化 program 的 agent 意图 → 拒绝 + 记 metric，
-                // 不静默写进既有 shell（无 EOF 陷阱、会卡 Busy）。F4 看门狗（P2）兜底。
-                if body.is_agent && body.program.is_none() {
-                    let mut map = ctx.state.workspaces.write();
-                    if let Some(ws) = map.get_mut(&wid) {
-                        *ws.teammate_metrics
-                            .failures
-                            .entry("agent_reuse_requires_structured".into())
-                            .or_insert(0) += 1;
-                    }
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        "agent reuse rejected: structured program/args/env required (no command-only agent spawn)",
-                    )
-                        .into_response();
-                }
-                {
-                    let mut map = ctx.state.workspaces.write();
-                    if let Some(ws) = map.get_mut(&wid) {
-                        // F1（征用空闲 pane，核心）：agent 意图（结构化）或内嵌 program →
-                        // 立即 Busy（启动即 Busy）+ 写映射。
-                        // 【AC6.6 修复】非-agent 复用（裸 split 命中 idle pane）**不置 Starting**：
-                        // reuse 分支只 emit 后 return、不挂看门狗，置 Starting 会**永久卡 Starting**。
-                        // 无 agent 进入 = 该 idle pane 语义上仍 Idle → 保持其原状态不动。
-                        // normal harness 流（裸 split→reuse→spawn-process）由 spawn-process 的
-                        // F1 提升为 Busy，不受影响。
-                        if body.is_agent || body.program.is_some() {
-                            ws.teammate_pane_states
-                                .insert(pane_id, crate::state::PaneState::Busy);
-                        }
-                        ws.teammate_tmux_pane_cursor = idle_idx;
-                        if let Some(name) = body
-                            .window_name
-                            .as_ref()
-                            .map(|s| s.trim())
-                            .filter(|s| !s.is_empty())
-                        {
-                            ws.teammate_pane_titles.insert(pane_id, name.to_string());
-                        }
-                    }
-                }
-                let structured_cmd = body.program.as_ref().map(|prog| {
-                    let mut sc = terminal::StructuredPtyCommand {
-                        program: prog.clone(),
-                        args: body.args.clone().unwrap_or_default(),
-                        env: body.env.clone().unwrap_or_default(),
-                    };
-                    #[cfg(windows)]
-                    {
-                        sc = normalize_windows_command(&sc);
-                    }
-                    sc
-                });
-                if let Some(ref sc) = structured_cmd {
-                    let spawn_cwd = body
-                        .cwd
-                        .as_ref()
-                        .map(|s| std::path::PathBuf::from(s.trim()))
-                        .filter(|p| !p.as_os_str().is_empty());
-                    if let Err(error) = terminal::ensure_pane_pty_workspace(
-                        &ctx.state,
-                        wid,
-                        pane_id,
-                        terminal::EnsurePtyOptions {
-                            shell: None,
-                            cwd: spawn_cwd.as_deref(),
-                            initial_command: None,
-                            structured_command: Some(sc.clone()),
-                            tmux_pane_index: Some(idle_idx),
-                            ready_tx: None,
-                            trace_id: None,
-                        },
-                    ) {
-                        let _ = release_pane(&ctx.state, wid, pane_id);
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("reused pane PTY init failed: {error}"),
-                        )
-                            .into_response();
-                    }
-                } else if let Some(cmd) = body
-                    .command
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                {
-                    let data = ridge_mcp::server::enter_terminated(&cmd);
-                    // G1：exec 命令注入同属 agent 写路径，走 suspend 收口。
-                    if let Err(error) =
-                        super::suspend::agent_pty_write(&ctx.state, wid, pane_id, data.as_bytes())
-                    {
-                        let _ = release_pane(&ctx.state, wid, pane_id);
-                        return (StatusCode::BAD_REQUEST, error).into_response();
-                    }
-                }
-                if let Some(agent_id) = body
-                    .agent_id
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty())
-                {
-                    if let Err(error) = register_confirmed_agent(
-                        &ctx.state,
-                        wid,
-                        agent_id,
-                        pane_id,
-                        body.window_name.clone(),
-                        body.program.as_deref(),
-                    ) {
-                        return (StatusCode::CONFLICT, error).into_response();
-                    }
-                }
-                let _ = ctx.handle.emit(
-                    TEAMMATE_LAYOUT_CHANGED,
-                    LayoutChange::reused(pane_id.to_string()),
-                );
-                let _ = ctx
-                    .handle
-                    .emit("teammate-active-pane-changed", pane_id.to_string());
-                return (
-                    StatusCode::OK,
-                    Json(serde_json::json!({
-                        "ok": true,
-                        "reused_pane_index": idle_idx,
-                        "new_pane_index": idle_idx,
-                        "source_pane_index": idle_idx,
-                        "reused": true,
-                    })),
-                )
-                    .into_response();
-            }
+        if let Some(response) = try_reuse_idle_pane(&ctx, &body, wid) {
+            return response;
         }
     }
 
@@ -1058,37 +1345,9 @@ async fn route_split(
     // 2. auto_place（及非定向回退）→ 复用 `choose_balanced_split`：选「面积最大叶子」并按
     //    **加权最长边**（cell 高≈2×宽）推断方向，与 `balanced_split_decision` 单测口径一致。
     //    避免出现「裸 cols>rows」与 balanced 加权两套不一致公式（H-DIR）。
-    let (idx, direction, direction_inferred) = {
-        let map = ctx.state.workspaces.read();
-        let Some(ws) = map.get(&wid) else {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "no workspace").into_response();
-        };
-        let leaves = ws.pane_tree.get_all_leaves();
-        let pane_count = leaves.len();
-
-        if let Some(explicit_idx) = body.pane_index.filter(|_| !body.auto_place) {
-            if explicit_idx >= pane_count {
-                return (StatusCode::BAD_REQUEST, "pane_index out of range").into_response();
-            }
-            let dir = if body.horizontal {
-                "horizontal"
-            } else {
-                "vertical"
-            };
-            (explicit_idx, dir, false)
-        } else {
-            match pane::choose_balanced_split(ws) {
-                Some((uuid, sdir)) => {
-                    let idx = leaves.iter().position(|p| *p == uuid).unwrap_or(0);
-                    let dir = match sdir {
-                        SplitDirection::Horizontal => "horizontal",
-                        SplitDirection::Vertical => "vertical",
-                    };
-                    (idx, dir, true)
-                }
-                None => (0, "vertical", true),
-            }
-        }
+    let (idx, direction, direction_inferred) = match select_split_target(&ctx, &body, wid) {
+        Ok(target) => target,
+        Err(response) => return response,
     };
 
     // CWD resolution: explicit `-c` wins, otherwise inherit the source pane's cwd
@@ -1117,267 +1376,273 @@ async fn route_split(
         }
     }
 
-    // 楔死诊断 checkpoint①：进入重同步段（teammate_split_pane + ensure_pane_pty_workspace）。
-    // 若 diag `>> split-window` 有、此行无 → 卡在更早的选目标/取锁段。
-    tracing::info!(target: "ridge::teammate", "route_split: pre teammate_split_pane idx={idx} dir={direction}");
-    match pane::teammate_split_pane(&ctx.state, wid, idx, direction) {
-        Ok(new_id) => {
-            // Seed the new pane's tree-level cwd so subsequent splits off of it
-            // inherit the same directory without needing shell-integration updates.
-            if let Some(ref dir) = cwd {
-                let mut map = ctx.state.workspaces.write();
-                if let Some(ws) = map.get_mut(&wid) {
-                    if let Some(new_pane) = ws.pane_tree.panes.get_mut(&new_id) {
-                        new_pane.cwd = Some(dir.clone());
+    let prepared = match prepare_split(&ctx, &body, wid, idx, direction, cwd.as_ref()) {
+        Ok(prepared) => prepared,
+        Err(response) => return response,
+    };
+    return await_split_activation(&ctx, &body, wid, idx, direction_inferred, prepared).await;
+
+    /*
+        match pane::teammate_split_pane(&ctx.state, wid, idx, direction) {
+            Ok(new_id) => {
+                // Seed the new pane's tree-level cwd so subsequent splits off of it
+                // inherit the same directory without needing shell-integration updates.
+                if let Some(ref dir) = cwd {
+                    let mut map = ctx.state.workspaces.write();
+                    if let Some(ws) = map.get_mut(&wid) {
+                        if let Some(new_pane) = ws.pane_tree.panes.get_mut(&new_id) {
+                            new_pane.cwd = Some(dir.clone());
+                        }
                     }
                 }
-            }
-            let new_idx = {
-                let map = ctx.state.workspaces.read();
-                let Some(ws) = map.get(&wid) else {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "workspace missing")
-                        .into_response();
+                let new_idx = {
+                    let map = ctx.state.workspaces.read();
+                    let Some(ws) = map.get(&wid) else {
+                        return (StatusCode::INTERNAL_SERVER_ERROR, "workspace missing")
+                            .into_response();
+                    };
+                    ws.pane_tree
+                        .get_all_leaves()
+                        .iter()
+                        .position(|u| *u == new_id)
+                        .unwrap_or(0)
                 };
-                ws.pane_tree
-                    .get_all_leaves()
-                    .iter()
-                    .position(|u| *u == new_id)
-                    .unwrap_or(0)
-            };
-            let cmd = body
-                .command
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
+                let cmd = body
+                    .command
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
 
-            let structured_cmd = body.program.as_ref().map(|prog| {
-                let mut sc = terminal::StructuredPtyCommand {
-                    program: prog.clone(),
-                    args: body.args.clone().unwrap_or_default(),
-                    env: body.env.clone().unwrap_or_default(),
-                };
-                #[cfg(windows)]
-                {
-                    sc = normalize_windows_command(&sc);
-                }
-                sc
-            });
+                let structured_cmd = body.program.as_ref().map(|prog| {
+                    let mut sc = terminal::StructuredPtyCommand {
+                        program: prog.clone(),
+                        args: body.args.clone().unwrap_or_default(),
+                        env: body.env.clone().unwrap_or_default(),
+                    };
+                    #[cfg(windows)]
+                    {
+                        sc = normalize_windows_command(&sc);
+                    }
+                    sc
+                });
 
-            let is_structured = structured_cmd.is_some();
-            let initial_cmd = if is_structured { None } else { cmd };
+                let is_structured = structured_cmd.is_some();
+                let initial_cmd = if is_structured { None } else { cmd };
 
-            // Bookkeeping + readiness signal. The oneshot lets us *observe*
-            // whether the front-end's `activate_pane_pty` actually launched
-            // the child, so we can return an honest HTTP status to the agent.
-            {
-                let mut map = ctx.state.workspaces.write();
-                if let Some(ws) = map.get_mut(&wid) {
-                    ws.teammate_metrics.split_attempts += 1;
-                }
-            }
-            let trace_id = uuid::Uuid::new_v4().to_string();
-            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
-
-            if let Err(e) = terminal::ensure_pane_pty_workspace(
-                &ctx.state,
-                wid,
-                new_id,
-                terminal::EnsurePtyOptions {
-                    shell: None,
-                    cwd: cwd.as_deref(),
-                    initial_command: initial_cmd,
-                    structured_command: structured_cmd,
-                    tmux_pane_index: Some(new_idx),
-                    ready_tx: Some(ready_tx),
-                    trace_id: Some(trace_id.clone()),
-                },
-            ) {
+                // Bookkeeping + readiness signal. The oneshot lets us *observe*
+                // whether the front-end's `activate_pane_pty` actually launched
+                // the child, so we can return an honest HTTP status to the agent.
                 {
                     let mut map = ctx.state.workspaces.write();
                     if let Some(ws) = map.get_mut(&wid) {
-                        let _ = ws.pane_tree.close(new_id);
-                        ws.pane_sizes.remove(&new_id);
-                        *ws.teammate_metrics
-                            .failures
-                            .entry("phase1_failed".into())
-                            .or_insert(0) += 1;
+                        ws.teammate_metrics.split_attempts += 1;
                     }
                 }
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("split created pane but PTY init failed: {e}"),
-                )
-                    .into_response();
-            }
-            // 楔死诊断 checkpoint②：ensure_pane_pty_workspace 已返回（PTY pending 已注册）。
-            // 若 checkpoint① 有、此行无 → 卡在 teammate_split_pane 或 ensure_pane_pty_workspace。
-            tracing::info!(target: "ridge::teammate", "route_split: post ensure_pane_pty_workspace trace={trace_id}");
-            {
-                let mut map = ctx.state.workspaces.write();
-                if let Some(ws) = map.get_mut(&wid) {
-                    ws.teammate_tmux_pane_cursor = new_idx;
-                    // F1（新 split 入口）：仅当**确有 agent 落入**（结构化 program / is_agent）
-                    // 才标 Busy（显示 agent badge）。裸 split（无 agent，纯 tmux 拉起的 shell
-                    // pane）**不写任何 teammate 状态** → 不打 agent 标（与普通用户 pane 同款）。
-                    // harness 主路径 split→spawn-process(is_agent) 由 spawn-process 适时标 Busy。
-                    // （用户需求 2026-06-11：tmux 拉起但未运行 agent 的 pane 不要 agent 标。）
-                    if body.is_agent || is_structured {
-                        ws.teammate_pane_states.insert(new_id, PaneState::Busy);
-                    }
-                    ws.pane_sizes.insert(new_id, (80, 120));
-                    if let Some(name) = body
-                        .window_name
-                        .as_ref()
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                    {
-                        ws.teammate_pane_titles.insert(new_id, name.to_string());
-                    }
-                }
-            }
-            let _ = ctx.handle.emit(
-                TEAMMATE_LAYOUT_CHANGED,
-                LayoutChange::split(trace_id.clone()),
-            );
-            let _ = ctx
-                .handle
-                .emit("teammate-active-pane-changed", new_id.to_string());
+                let trace_id = uuid::Uuid::new_v4().to_string();
+                let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
 
-            // 30s watchdog: if the front-end never calls `activate_pane_pty`,
-            // drain the orphan PendingSpawn so the slave/cmd are dropped (and
-            // the pane removed from the layout). 30s is a generous budget —
-            // a healthy mount completes in <1s.
-            //
-            // Emit `teammate-layout-changed` after cleanup so the front-end
-            // re-renders without the now-dead leaf. Without this the user
-            // sees a phantom pane that swallows clicks but has no PTY.
-            let watch_state = ctx.state.clone();
-            let watch_handle = ctx.handle.clone();
-            let watch_wid = wid;
-            let watch_pid = new_id;
-            // Carry the originating split's trace id so the watchdog-drained
-            // `removed` event correlates with the split that created the pane
-            // (L3 — cross-stack log/diagnostics).
-            let watch_trace = trace_id.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                let cleaned = {
-                    let mut map = watch_state.workspaces.write();
-                    if let Some(ws) = map.get_mut(&watch_wid) {
-                        if ws.pending_spawns.remove(&watch_pid).is_some() {
-                            let _ = ws.pane_tree.close(watch_pid);
-                            ws.pane_sizes.remove(&watch_pid);
+                if let Err(e) = terminal::ensure_pane_pty_workspace(
+                    &ctx.state,
+                    wid,
+                    new_id,
+                    terminal::EnsurePtyOptions {
+                        shell: None,
+                        cwd: cwd.as_deref(),
+                        initial_command: initial_cmd,
+                        structured_command: structured_cmd,
+                        tmux_pane_index: Some(new_idx),
+                        ready_tx: Some(ready_tx),
+                        trace_id: Some(trace_id.clone()),
+                    },
+                ) {
+                    {
+                        let mut map = ctx.state.workspaces.write();
+                        if let Some(ws) = map.get_mut(&wid) {
+                            let _ = ws.pane_tree.close(new_id);
+                            ws.pane_sizes.remove(&new_id);
                             *ws.teammate_metrics
                                 .failures
-                                .entry("watchdog_30s".into())
+                                .entry("phase1_failed".into())
                                 .or_insert(0) += 1;
-                            true
+                        }
+                    }
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("split created pane but PTY init failed: {e}"),
+                    )
+                        .into_response();
+                }
+                // 楔死诊断 checkpoint②：ensure_pane_pty_workspace 已返回（PTY pending 已注册）。
+                // 若 checkpoint① 有、此行无 → 卡在 teammate_split_pane 或 ensure_pane_pty_workspace。
+                tracing::info!(target: "ridge::teammate", "route_split: post ensure_pane_pty_workspace trace={trace_id}");
+                {
+                    let mut map = ctx.state.workspaces.write();
+                    if let Some(ws) = map.get_mut(&wid) {
+                        ws.teammate_tmux_pane_cursor = new_idx;
+                        // F1（新 split 入口）：仅当**确有 agent 落入**（结构化 program / is_agent）
+                        // 才标 Busy（显示 agent badge）。裸 split（无 agent，纯 tmux 拉起的 shell
+                        // pane）**不写任何 teammate 状态** → 不打 agent 标（与普通用户 pane 同款）。
+                        // harness 主路径 split→spawn-process(is_agent) 由 spawn-process 适时标 Busy。
+                        // （用户需求 2026-06-11：tmux 拉起但未运行 agent 的 pane 不要 agent 标。）
+                        if body.is_agent || is_structured {
+                            ws.teammate_pane_states.insert(new_id, PaneState::Busy);
+                        }
+                        ws.pane_sizes.insert(new_id, (80, 120));
+                        if let Some(name) = body
+                            .window_name
+                            .as_ref()
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                        {
+                            ws.teammate_pane_titles.insert(new_id, name.to_string());
+                        }
+                    }
+                }
+                let _ = ctx.handle.emit(
+                    TEAMMATE_LAYOUT_CHANGED,
+                    LayoutChange::split(trace_id.clone()),
+                );
+                let _ = ctx
+                    .handle
+                    .emit("teammate-active-pane-changed", new_id.to_string());
+
+                // 30s watchdog: if the front-end never calls `activate_pane_pty`,
+                // drain the orphan PendingSpawn so the slave/cmd are dropped (and
+                // the pane removed from the layout). 30s is a generous budget —
+                // a healthy mount completes in <1s.
+                //
+                // Emit `teammate-layout-changed` after cleanup so the front-end
+                // re-renders without the now-dead leaf. Without this the user
+                // sees a phantom pane that swallows clicks but has no PTY.
+                let watch_state = ctx.state.clone();
+                let watch_handle = ctx.handle.clone();
+                let watch_wid = wid;
+                let watch_pid = new_id;
+                // Carry the originating split's trace id so the watchdog-drained
+                // `removed` event correlates with the split that created the pane
+                // (L3 — cross-stack log/diagnostics).
+                let watch_trace = trace_id.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    let cleaned = {
+                        let mut map = watch_state.workspaces.write();
+                        if let Some(ws) = map.get_mut(&watch_wid) {
+                            if ws.pending_spawns.remove(&watch_pid).is_some() {
+                                let _ = ws.pane_tree.close(watch_pid);
+                                ws.pane_sizes.remove(&watch_pid);
+                                *ws.teammate_metrics
+                                    .failures
+                                    .entry("watchdog_30s".into())
+                                    .or_insert(0) += 1;
+                                true
+                            } else {
+                                false
+                            }
                         } else {
                             false
                         }
-                    } else {
-                        false
+                    };
+                    if cleaned {
+                        super::profiles::remove_by_pane(watch_wid, watch_pid);
+                        let _ = watch_handle.emit(
+                            TEAMMATE_LAYOUT_CHANGED,
+                            LayoutChange::removed_with_trace(watch_pid.to_string(), watch_trace),
+                        );
                     }
-                };
-                if cleaned {
-                    super::profiles::remove_by_pane(watch_wid, watch_pid);
-                    let _ = watch_handle.emit(
-                        TEAMMATE_LAYOUT_CHANGED,
-                        LayoutChange::removed_with_trace(watch_pid.to_string(), watch_trace),
-                    );
-                }
-            });
+                });
 
-            // 裸 split 不再标 Starting、不挂 agent 看门狗（见上 F1 入口，用户需求 2026-06-11）：
-            // 无 agent 的纯 tmux shell pane 不打 agent 标；真 agent 经 spawn-process(is_agent)
-            // 在落入时自行标 Busy。
+                // 裸 split 不再标 Starting、不挂 agent 看门狗（见上 F1 入口，用户需求 2026-06-11）：
+                // 无 agent 的纯 tmux shell pane 不打 agent 标；真 agent 经 spawn-process(is_agent)
+                // 在落入时自行标 Busy。
 
-            // Wait up to 3s for the front-end to mount + fit + activate.
-            // tokio::time::timeout wraps the recv future; the outer Result
-            // is "did the timeout elapse"; the inner is "did the sender drop";
-            // the innermost is the actual spawn outcome.
-            // 楔死诊断 checkpoint③：进入 ready_rx 的 3s 等待（此后最坏 3s 必返回）。
-            // 若 checkpoint② 有、diag `<< split-window` 无 → 卡在 await 前的记账/emit，或运行时
-            // 已被别的任务楔死（本任务排不上）。
-            tracing::info!(target: "ridge::teammate", "route_split: await ready_rx(3s) trace={trace_id}");
-            match tokio::time::timeout(std::time::Duration::from_secs(3), ready_rx).await {
-                Ok(Ok(Ok(()))) => {
-                    if let Some(agent_id) = body
-                        .agent_id
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|id| !id.is_empty())
-                    {
-                        if let Err(error) = register_confirmed_agent(
-                            &ctx.state,
-                            wid,
-                            agent_id,
-                            new_id,
-                            body.window_name.clone(),
-                            body.program.as_deref(),
-                        ) {
-                            let _ = release_pane(&ctx.state, wid, new_id);
-                            return (StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
+                // Wait up to 3s for the front-end to mount + fit + activate.
+                // tokio::time::timeout wraps the recv future; the outer Result
+                // is "did the timeout elapse"; the inner is "did the sender drop";
+                // the innermost is the actual spawn outcome.
+                // 楔死诊断 checkpoint③：进入 ready_rx 的 3s 等待（此后最坏 3s 必返回）。
+                // 若 checkpoint② 有、diag `<< split-window` 无 → 卡在 await 前的记账/emit，或运行时
+                // 已被别的任务楔死（本任务排不上）。
+                tracing::info!(target: "ridge::teammate", "route_split: await ready_rx(3s) trace={trace_id}");
+                match tokio::time::timeout(std::time::Duration::from_secs(3), ready_rx).await {
+                    Ok(Ok(Ok(()))) => {
+                        if let Some(agent_id) = body
+                            .agent_id
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|id| !id.is_empty())
+                        {
+                            if let Err(error) = register_confirmed_agent(
+                                &ctx.state,
+                                wid,
+                                agent_id,
+                                new_id,
+                                body.window_name.clone(),
+                                body.program.as_deref(),
+                            ) {
+                                let _ = release_pane(&ctx.state, wid, new_id);
+                                return (StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
+                            }
                         }
-                    }
-                    {
-                        let mut map = ctx.state.workspaces.write();
-                        if let Some(ws) = map.get_mut(&wid) {
-                            ws.teammate_metrics.split_success += 1;
+                        {
+                            let mut map = ctx.state.workspaces.write();
+                            if let Some(ws) = map.get_mut(&wid) {
+                                ws.teammate_metrics.split_success += 1;
+                            }
                         }
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "ok": true,
+                                "new_pane_id": new_id.to_string(),
+                                "new_pane_index": new_idx,
+                                "source_pane_index": idx,
+                                "direction_inferred": direction_inferred,
+                                "trace_id": trace_id,
+                            })),
+                        )
+                            .into_response()
                     }
-                    (
-                        StatusCode::OK,
-                        Json(serde_json::json!({
-                            "ok": true,
-                            "new_pane_id": new_id.to_string(),
-                            "new_pane_index": new_idx,
-                            "source_pane_index": idx,
-                            "direction_inferred": direction_inferred,
-                            "trace_id": trace_id,
-                        })),
-                    )
-                        .into_response()
-                }
-                Ok(Ok(Err(e))) => {
-                    {
-                        let mut map = ctx.state.workspaces.write();
-                        if let Some(ws) = map.get_mut(&wid) {
-                            *ws.teammate_metrics
-                                .failures
-                                .entry("activate_failed".into())
-                                .or_insert(0) += 1;
+                    Ok(Ok(Err(e))) => {
+                        {
+                            let mut map = ctx.state.workspaces.write();
+                            if let Some(ws) = map.get_mut(&wid) {
+                                *ws.teammate_metrics
+                                    .failures
+                                    .entry("activate_failed".into())
+                                    .or_insert(0) += 1;
+                            }
                         }
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("activate_pane_pty failed: {e}"),
+                        )
+                            .into_response()
                     }
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("activate_pane_pty failed: {e}"),
-                    )
-                        .into_response()
-                }
-                _ => {
-                    // Timeout or sender dropped without sending. Don't tear
-                    // down the pending entry here — the 30s watchdog handles
-                    // that path and the front-end might still complete late.
-                    {
-                        let mut map = ctx.state.workspaces.write();
-                        if let Some(ws) = map.get_mut(&wid) {
-                            *ws.teammate_metrics
-                                .failures
-                                .entry("activate_timeout_3s".into())
-                                .or_insert(0) += 1;
+                    _ => {
+                        // Timeout or sender dropped without sending. Don't tear
+                        // down the pending entry here — the 30s watchdog handles
+                        // that path and the front-end might still complete late.
+                        {
+                            let mut map = ctx.state.workspaces.write();
+                            if let Some(ws) = map.get_mut(&wid) {
+                                *ws.teammate_metrics
+                                    .failures
+                                    .entry("activate_timeout_3s".into())
+                                    .or_insert(0) += 1;
+                            }
                         }
+                        (
+                            StatusCode::GATEWAY_TIMEOUT,
+                            format!("activate_pane_pty timed out after 3s (trace_id={trace_id})"),
+                        )
+                            .into_response()
                     }
-                    (
-                        StatusCode::GATEWAY_TIMEOUT,
-                        format!("activate_pane_pty timed out after 3s (trace_id={trace_id})"),
-                    )
-                        .into_response()
                 }
             }
+            Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
         }
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
+        */
 }
 
 async fn route_capture(
@@ -2452,6 +2717,76 @@ fn native_err_to_response(e: NativeError) -> axum::response::Response {
 /// resize 路径。关闭=detach（见 `terminal::kill_pty_if_present`）。返回展示的面板数。
 ///
 /// 接受 `AppState` + `AppHandle` 而非 `TeammateCtx`，以允许 Tauri 命令直接复用。
+fn summon_one_pane(
+    state: &AppState,
+    socket: &str,
+    wid: Uuid,
+    sp: native::SummonPane,
+) -> Option<Uuid> {
+    if sp.prev_attachment.map(|(w, _)| w) == Some(wid) {
+        return None;
+    }
+    let (idx, direction) = {
+        let map = state.workspaces.read();
+        map.get(&wid)
+            .and_then(|ws| {
+                let (uuid, sdir) = pane::choose_balanced_split(ws)?;
+                let leaves = ws.pane_tree.get_all_leaves();
+                let idx = leaves.iter().position(|p| *p == uuid).unwrap_or(0);
+                let direction = match sdir {
+                    SplitDirection::Horizontal => "horizontal",
+                    SplitDirection::Vertical => "vertical",
+                };
+                Some((idx, direction))
+            })
+            .unwrap_or((0, "horizontal"))
+    };
+    let new_id = pane::teammate_split_pane(state, wid, idx, direction).ok()?;
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let parser = Arc::new(parking_lot::Mutex::new(PaneParser::new(
+        sp.height.max(1),
+        sp.width.max(1),
+        2000,
+    )));
+    let handle = PtyHandle {
+        master: sp.master,
+        writer: sp.writer,
+        _child: None,
+        native_ref: Some((socket.to_string(), sp.global_id)),
+        native_cancel: Some(cancel.clone()),
+        remote_ref: None,
+        kernel_ref: None,
+        job: None,
+        child_pid: None,
+        resize_silence_deadline: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+        parser,
+        delta_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    {
+        let mut map = state.workspaces.write();
+        if let Some(ws) = map.get_mut(&wid) {
+            ws.terminals.insert(new_id, handle);
+            ws.pane_sizes
+                .insert(new_id, (sp.height.max(1), sp.width.max(1)));
+            ws.teammate_pane_titles
+                .insert(new_id, format!("%{}", sp.global_id));
+            if let Some(dir) = sp.cwd {
+                if let Some(pane) = ws.pane_tree.panes.get_mut(&new_id) {
+                    pane.cwd = Some(dir.into());
+                }
+            }
+        }
+    }
+    native::set_attachment(socket, sp.global_id, Some((wid, new_id)));
+    spawn_pty_reader(
+        state.clone(),
+        wid,
+        new_id,
+        Box::new(native::BroadcastReader::new(sp.rx, sp.replay, cancel)),
+    );
+    Some(new_id)
+}
+
 pub(crate) fn summon_into_workspace(
     state: &AppState,
     app_handle: &tauri::AppHandle,
@@ -2464,72 +2799,9 @@ pub(crate) fn summon_into_workspace(
     let mut shown = 0usize;
     let mut first_new: Option<Uuid> = None;
     for sp in panes {
-        if sp.prev_attachment.map(|(w, _)| w) == Some(wid) {
+        let Some(new_id) = summon_one_pane(state, socket, wid, sp) else {
             continue;
-        }
-        // 与 route_split 同一来源：`choose_balanced_split`（最大面积叶子 + 加权最长边
-        // 方向），统一 tie-break，消除 summon 残留的「裸 cols>rows」公式（H-DIR#2 / M1）。
-        let (idx, direction) = {
-            let map = state.workspaces.read();
-            map.get(&wid)
-                .and_then(|ws| {
-                    let (uuid, sdir) = pane::choose_balanced_split(ws)?;
-                    let leaves = ws.pane_tree.get_all_leaves();
-                    let idx = leaves.iter().position(|p| *p == uuid).unwrap_or(0);
-                    let dir = match sdir {
-                        SplitDirection::Horizontal => "horizontal",
-                        SplitDirection::Vertical => "vertical",
-                    };
-                    Some((idx, dir))
-                })
-                .unwrap_or((0, "horizontal"))
         };
-        let new_id = match pane::teammate_split_pane(state, wid, idx, direction) {
-            Ok(id) => id,
-            Err(_) => continue,
-        };
-        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let parser = Arc::new(parking_lot::Mutex::new(PaneParser::new(
-            sp.height.max(1),
-            sp.width.max(1),
-            2000,
-        )));
-        let handle = PtyHandle {
-            master: sp.master,
-            writer: sp.writer,
-            _child: None,
-            native_ref: Some((socket.to_string(), sp.global_id)),
-            native_cancel: Some(cancel.clone()),
-            remote_ref: None,
-            kernel_ref: None,
-            job: None,
-            child_pid: None,
-            resize_silence_deadline: Arc::new(std::sync::atomic::AtomicI64::new(0)),
-            parser,
-            delta_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        };
-        {
-            let mut map = state.workspaces.write();
-            if let Some(ws) = map.get_mut(&wid) {
-                ws.terminals.insert(new_id, handle);
-                ws.pane_sizes
-                    .insert(new_id, (sp.height.max(1), sp.width.max(1)));
-                ws.teammate_pane_titles
-                    .insert(new_id, format!("%{}", sp.global_id));
-                if let Some(ref dir) = sp.cwd {
-                    if let Some(p) = ws.pane_tree.panes.get_mut(&new_id) {
-                        p.cwd = Some(dir.clone().into());
-                    }
-                }
-            }
-        }
-        native::set_attachment(socket, sp.global_id, Some((wid, new_id)));
-        spawn_pty_reader(
-            state.clone(),
-            wid,
-            new_id,
-            Box::new(native::BroadcastReader::new(sp.rx, sp.replay, cancel)),
-        );
         if first_new.is_none() {
             first_new = Some(new_id);
         }

@@ -10,3 +10,20 @@ export function applyKernelBreakawayPolicy(env) {
   }
   return env;
 }
+
+/**
+ * WebView2 on this Windows host does not resolve tenant subdomains below
+ * `.localhost` consistently. Keep the production URL/DNS contract untouched;
+ * only a local CDP run gets an explicit loopback resolver rule.
+ */
+export function cloudHostResolverRule(baseDomain = '') {
+  const host = String(baseDomain).trim().toLowerCase().split('/')[0].replace(/:\d+$/, '');
+  return host === 'localhost' || host.endsWith('.localhost')
+    ? ' --host-resolver-rules="MAP *.localhost 127.0.0.1,EXCLUDE localhost"'
+    : '';
+}
+
+export function cloudBrowserNetworkArgs(baseDomain = '') {
+  const resolver = cloudHostResolverRule(baseDomain);
+  return resolver ? ` --no-proxy-server${resolver}` : '';
+}

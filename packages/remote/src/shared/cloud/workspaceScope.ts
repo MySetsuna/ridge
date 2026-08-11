@@ -156,18 +156,8 @@ export function planWorkspaceInvoke(
       ? { ...(rawParams as Record<string, unknown>) }
       : {};
 
-  if (method === 'get_active_workspace_id') return { kind: 'result', value: access.workspaceId };
-  if (method === 'switch_workspace') {
-    return params.workspaceId === access.workspaceId
-      ? { kind: 'result', value: null }
-      : { kind: 'deny', reason: 'workspace mismatch' };
-  }
-  if (method === 'get_current_project') {
-    return { kind: 'result', value: access.roots[0] ?? null };
-  }
-  if (method === 'get_pane_layout') {
-    return { kind: 'invoke', method: 'get_pane_layout_for', params: { workspaceId: access.workspaceId } };
-  }
+  const special = planSpecialWorkspaceMethod(method, params, access);
+  if (special) return special;
 
   const foreign = containsForeignResource(params, access);
   if (foreign) return { kind: 'deny', reason: foreign };
@@ -176,29 +166,62 @@ export function planWorkspaceInvoke(
   // normalization, a valid pane allowlist check can still reach a host API
   // that resolves the bare paneId against its active workspace after the
   // host/controller has switched workspaces.
+  addPaneWorkspace(params, access);
+
+  // Workspace-scoped commands must not inherit the host's currently active workspace.
+  if (isWorkspaceScopedMethod(method)) params.workspaceId = access.workspaceId;
+  return { kind: 'invoke', method, params };
+}
+
+function planSpecialWorkspaceMethod(
+  method: string,
+  params: Record<string, unknown>,
+  access: WorkspaceAccess,
+): WorkspaceInvokePlan | null {
+  switch (method) {
+    case 'get_active_workspace_id':
+      return { kind: 'result', value: access.workspaceId };
+    case 'switch_workspace':
+      return params.workspaceId === access.workspaceId
+        ? { kind: 'result', value: null }
+        : { kind: 'deny', reason: 'workspace mismatch' };
+    case 'get_current_project':
+      return { kind: 'result', value: access.roots[0] ?? null };
+    case 'get_pane_layout':
+      return {
+        kind: 'invoke',
+        method: 'get_pane_layout_for',
+        params: { workspaceId: access.workspaceId },
+      };
+    default:
+      return null;
+  }
+}
+
+function addPaneWorkspace(params: Record<string, unknown>, access: WorkspaceAccess): void {
   if (
     params.workspaceId === undefined &&
     [...PANE_KEYS].some((key) => typeof params[key] === 'string')
   ) {
     params.workspaceId = access.workspaceId;
   }
+}
 
-  // Workspace-scoped commands must not inherit the host's currently active workspace.
-  if (
+function isWorkspaceScopedMethod(method: string): boolean {
+  return (
     method.includes('workspace') ||
     method.startsWith('get_teammate_') ||
     method.startsWith('list_hitl_') ||
-    method === 'resolve_hitl_remote' ||
-    method === 'get_orchestration_health' ||
-    method === 'read_agent_recent_replies' ||
-    method === 'set_teammate_groups' ||
-    method === 'resume_agent_session' ||
-    method === 'register_teammate_agent' ||
-    method === 'release_teammate_agent'
-  ) {
-    params.workspaceId = access.workspaceId;
-  }
-  return { kind: 'invoke', method, params };
+    [
+      'resolve_hitl_remote',
+      'get_orchestration_health',
+      'read_agent_recent_replies',
+      'set_teammate_groups',
+      'resume_agent_session',
+      'register_teammate_agent',
+      'release_teammate_agent',
+    ].includes(method)
+  );
 }
 
 export function filterWorkspaceResult(
