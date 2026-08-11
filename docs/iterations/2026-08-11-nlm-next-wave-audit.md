@@ -19,7 +19,10 @@ NLM 笔记中可由本仓库完成的核心需求，当前源码已基本落地�
 ## 本轮验证
 
 - `pnpm check`：0 errors / 0 warnings。
-- `pnpm test`：216 files，1986 passed，1 skipped。
+- `pnpm test`：216 files，1996 passed，5 skipped（含按 `RIDGE_WEB_REMOTE` 构建标志选择的剪贴板测试）。
+- `pnpm test:coverage:sonar`：216 files，1996 passed，5 skipped；全量报告 lines 70.23%、branches 60.44%。按 Sonar 排除规则过滤 `src/` 与 `packages/` 后，源码 lines 87.24%、branches 71.82%。
+- 本轮新增 flag 字体 DOM/cache/探测异常路径、远端剪贴板构建路径、remote pane 缓冲/激活/删除路径单测；桌面构建针对测试通过，`RIDGE_WEB_REMOTE=1` 构建路径测试通过。
+- 验证 `scripts/sync-generated-csp.mjs` 对标准 `Content-Security-Policy" content="..."` meta 的处理；CSP 回归 4/4 通过。
 - `cargo test -p ridge-cli --test kernel_lifecycle_e2e --quiet`：3 passed，exit 0。
 - `cargo test --manifest-path src-tauri/Cargo.toml --lib --quiet`：281 passed，exit 0。
 - 既有 Rust crate 单测、clippy、fmt、CDP smoke/PTY/DPR/LAN probe、Remote LAN desktop/mobile、mobile keyboard 均已通过；详见 `docs/iterations/2026-08-11-wave88-remote-cdp-csp.md`。
