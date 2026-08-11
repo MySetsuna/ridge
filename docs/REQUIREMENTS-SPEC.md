@@ -222,8 +222,9 @@
 - 类型：`FIX`
 - 关联：`REQ-REMOTE-HOST-TREE-01`。
 - 原始意图：远端接入黑屏或 `list_workspaces` 超时时，在故障位置提供重试。
-- 当前证据：Remote MainApp 有连接级 reload 重试；HostsPanel 仅顶栏全局刷新与错误文本，
-  `image-3.png` 的 host/workspace RPC 超时行无就地动作。
+- 当前证据：Hosts store 已以 `topologyRetryInFlight` 做 host 级单飞；取消当前 generation
+  会 abort 请求并清除 retry reservation，后续重试可重新建立；`hostsPublic` 重复重试与取消后
+  重试回归 `11/11` 通过。真实 host/设备断网恢复与就地 UI 现场仍待补证。
 - 目标行为：失败 host/树节点显示可点击“重试”；仅重放该 host 的认证连接与 topology 请求，
   单飞、可取消、保留最近成功树；连续失败展示首因与下一步，不黑屏。
 - 范围：Hosts 树 topology 请求、错误投影、单 host 重试与连接恢复。
