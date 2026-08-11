@@ -79,6 +79,54 @@ export function colorForLane(laneIndex: number): string {
   return PALETTE[laneIndex % PALETTE.length];
 }
 
+function appendVerticalLines(
+  lines: RenderedLine[],
+  lanes: (string | null)[],
+  currentLane: number,
+  laneX: (lane: number) => number,
+  cy: number,
+  rowHeight: number,
+): void {
+  for (let lane = 0; lane < lanes.length; lane++) {
+    if (lane === currentLane || lanes[lane] === null) continue;
+    const x = laneX(lane);
+    lines.push({
+      d: `M ${x} ${cy} L ${x} ${cy + rowHeight}`,
+      color: colorForLane(lane),
+    });
+  }
+}
+
+function appendMergeLines(
+  lines: RenderedLine[],
+  others: string[],
+  currentLane: number,
+  laneIndexFor: (hash: string) => number,
+  laneX: (lane: number) => number,
+  cy: number,
+  rowHeight: number,
+  currentColor: string,
+): number {
+  let maxLane = currentLane;
+  for (const parent of others) {
+    const parentLane = laneIndexFor(parent);
+    if (parentLane === currentLane) continue;
+    const x0 = laneX(currentLane);
+    const x1 = laneX(parentLane);
+    const yMid = cy + rowHeight / 2;
+    lines.push({
+      d: `M ${x0} ${cy} C ${x0} ${yMid}, ${x1} ${yMid}, ${x1} ${cy + rowHeight}`,
+      color: colorForLane(parentLane),
+    });
+    maxLane = Math.max(maxLane, parentLane);
+  }
+  return maxLane;
+}
+
+function trimTrailingFreeLanes(lanes: (string | null)[]): void {
+  while (lanes.length > 0 && lanes.at(-1) === null) lanes.pop();
+}
+
 /**
  * Compute the lane layout for `commits` (newest-first). Returns SVG
  * primitives the caller can drop into a `<g>` element. Pure function for
@@ -143,15 +191,7 @@ export function layoutGraph(
 
     // Verticals for OTHER lanes that survive unchanged into the next row
     // — emit before the dot so the dot paints on top.
-    for (let i = 0; i < lanes.length; i++) {
-      if (i === myLane) continue;
-      if (lanes[i] === null) continue;
-      const x = laneX(i);
-      lines.push({
-        d: `M ${x} ${cy} L ${x} ${cy + thisRowHeight}`,
-        color: colorForLane(i),
-      });
-    }
+    appendVerticalLines(lines, lanes, myLane, laneX, cy, thisRowHeight);
 
     dots.push({ hash: c.hash, cx: laneX(myLane), cy, color: myColor });
     lastDotCy = cy;
@@ -169,26 +209,16 @@ export function layoutGraph(
     }
 
     // Merge legs — additional parents open new lanes (or reuse if some
-    // already own that hash). Cubic bezier sweep matches `git log
-    // --graph` visually.
-    for (const p of others) {
-      const pLane = laneIndexFor(p);
-      if (pLane === myLane) continue;
-      const x0 = laneX(myLane);
-      const x1 = laneX(pLane);
-      const yMid = cy + thisRowHeight / 2;
-      lines.push({
-        d: `M ${x0} ${cy} C ${x0} ${yMid}, ${x1} ${yMid}, ${x1} ${cy + thisRowHeight}`,
-        color: colorForLane(pLane),
-      });
-      maxLane = Math.max(maxLane, pLane);
-    }
+    // already own that hash). Cubic bezier sweep matches `git log --graph`
+    // visually.
+    maxLane = Math.max(
+      maxLane,
+      appendMergeLines(lines, others, myLane, laneIndexFor, laneX, cy, thisRowHeight, myColor),
+    );
 
     // GC trailing free lanes so width doesn't drift over time. Interior
     // nulls remain — the next allocator reuses them.
-    while (lanes.length > 0 && lanes.at(-1) === null) {
-      lanes.pop();
-    }
+    trimTrailingFreeLanes(lanes);
 
     cy += thisRowHeight;
   }

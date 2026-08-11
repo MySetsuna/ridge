@@ -198,33 +198,40 @@ function buildHost(): RidgeCloudHost | null {
 /** 上线公网远控。幂等：已构造的 host 复用。 */
 export async function goOnline(): Promise<void> {
   hostError.set('');
-  const s = cloudAuth.snapshot();
   if (isTauri()) {
-    if (!s.deviceToken || !s.deviceName || !s.user?.username) {
-      hostError.set(tr('cloud.errDeviceNotActivated'));
-      return;
-    }
-    // Native desktop owns no WebRTC transport in its WebView. Hand
-    // credentials to the detached daemon so a force-killed Tauri shell
-    // cannot disconnect Remote. Browser/PWA uses the fallback below.
-    hostState.set('connecting');
-    cloudHostOnline.set(false);
-    try {
-      await invoke('sync_cloud_remote_credentials', {
-        deviceToken: s.deviceToken,
-        deviceName: s.deviceName,
-        username: s.user?.username ?? null,
-      });
-      await invoke('ensure_cloud_remote_host');
-      hostState.set('online');
-      cloudHostOnline.set(true);
-    } catch (e) {
-      hostState.set('error');
-      cloudHostOnline.set(false);
-      hostError.set(e instanceof Error ? e.message : tr('cloud.errConnectFailed'));
-    }
+    return goOnlineTauri();
+  }
+  return goOnlineBrowser();
+}
+
+async function goOnlineTauri(): Promise<void> {
+  const s = cloudAuth.snapshot();
+  if (!s.deviceToken || !s.deviceName || !s.user?.username) {
+    hostError.set(tr('cloud.errDeviceNotActivated'));
     return;
   }
+  // Native desktop owns no WebRTC transport in its WebView. Hand credentials
+  // to the detached daemon so a force-killed Tauri shell cannot disconnect Remote.
+  hostState.set('connecting');
+  cloudHostOnline.set(false);
+  try {
+    await invoke('sync_cloud_remote_credentials', {
+      deviceToken: s.deviceToken,
+      deviceName: s.deviceName,
+      username: s.user?.username ?? null,
+    });
+    await invoke('ensure_cloud_remote_host');
+    hostState.set('online');
+    cloudHostOnline.set(true);
+  } catch (e) {
+    hostState.set('error');
+    cloudHostOnline.set(false);
+    hostError.set(e instanceof Error ? e.message : tr('cloud.errConnectFailed'));
+  }
+}
+
+async function goOnlineBrowser(): Promise<void> {
+  const s = cloudAuth.snapshot();
   if (!s.deviceToken || !s.deviceName || !s.user?.username) {
     hostError.set(tr('cloud.errDeviceNotActivated'));
     return;
