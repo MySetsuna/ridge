@@ -33,3 +33,5 @@
 项目卡仍显示旧分析 `c271e74b-ac3f-4277-bbef-74418f48b822` 的 `Failed`：该分析当时 `new_coverage=80.1%`、重复率通过，但 `new_violations=1`，所以 Quality Gate 为 `ERROR`。本轮已修复旧 Rust 复杂度问题并移除无效 `packages/rg-split/examples/tsconfig.json` 配置；必须用有效 token 重新上传，确认 CE 成功、项目 coverage ≥80%、new issues/violations=0、Quality Gate `OK` 后，页面才会更新。
 
 本轮未保存或提交凭据，未 push/tag/release。扫描日志均为 `.tools/` 运行态，不纳入提交。
+
+交接时只读复核 `http://127.0.0.1:9000` 已连接拒绝；这进一步解释页面不会刷新，需先恢复 Sonar 服务，再注入有效 token 执行新分析。
