@@ -541,6 +541,41 @@ fn skip_osc(bytes: &[char], mut index: usize) -> usize {
     index
 }
 
+#[cfg(test)]
+mod ansi_tests {
+    use super::{strip_ansi, tail_lines};
+
+    #[test]
+    fn strips_csi_osc_and_two_byte_sequences() {
+        assert_eq!(
+            strip_ansi("\u{1b}[31mred\u{1b}[0m \u{1b}]0;title\u{7} ok\u{1b}7"),
+            "red  ok",
+        );
+    }
+
+    #[test]
+    fn strips_osc_st_and_normalizes_carriage_returns() {
+        assert_eq!(strip_ansi("one\r\n\u{1b}]2;title\u{1b}\\two"), "one\ntwo",);
+    }
+
+    #[test]
+    fn tolerates_incomplete_and_unknown_escape_sequences() {
+        assert_eq!(strip_ansi("a\u{1b}[31"), "a");
+        assert_eq!(strip_ansi("b\u{1b}Xc"), "bc");
+        assert_eq!(strip_ansi("d\u{1b}"), "d");
+    }
+
+    #[test]
+    fn tail_lines_filters_empty_lines_and_keeps_requested_suffix() {
+        assert_eq!(
+            tail_lines("\u{1b}[32ma\u{1b}[0m\r\n\n b \n c\n", 2),
+            " b\n c",
+        );
+        assert_eq!(tail_lines("a\nb", 0), "");
+        assert_eq!(tail_lines("a\nb", 9), "a\nb");
+    }
+}
+
 /// iter-60 G7 —— roster 条目并入 pane 标题（`title`，OSC 实时标题）：Commune MCP
 /// （ridge_get_team_profile）与远端 roster 只读感知「队友正在跑什么」的轻量摘要，
 /// 免去 PTY 尾行抓取/额外 LLM。两条拓扑路径（typed profiles / 侧表映射）共用。
