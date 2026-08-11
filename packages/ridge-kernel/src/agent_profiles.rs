@@ -48,7 +48,9 @@ pub fn builtin_profiles() -> Vec<AgentProfile> {
             id: "gemini".into(),
             process_names: vec!["gemini".into()],
             executable: "gemini".into(),
-            resume_argv: vec!["--resume".into(), "{session}".into()],
+            // Keep process discovery, but do not guess a session-store or
+            // resume CLI contract until a real Gemini session fixture exists.
+            resume_argv: vec![],
             yolo_args: vec!["--yolo".into()],
             yolo_position: "before".into(),
         },
@@ -56,7 +58,9 @@ pub fn builtin_profiles() -> Vec<AgentProfile> {
             id: "cursor-agent".into(),
             process_names: vec!["cursor-agent".into()],
             executable: "cursor-agent".into(),
-            resume_argv: vec!["--resume".into(), "{session}".into()],
+            // Cursor Agent history/resume format is not present in this
+            // repository; users may provide an explicit local override.
+            resume_argv: vec![],
             yolo_args: vec![],
             yolo_position: "before".into(),
         },
@@ -81,5 +85,17 @@ mod tests {
             .find(|p| p.id == "codex")
             .unwrap();
         assert_eq!(codex.resume_argv, ["resume", "{session}"]);
+    }
+
+    #[test]
+    fn unverified_builtins_fail_closed_for_resume() {
+        let profiles = builtin_profiles();
+        for id in ["gemini", "cursor-agent", "aider"] {
+            let profile = profiles.iter().find(|profile| profile.id == id).unwrap();
+            assert!(
+                profile.resume_argv.is_empty(),
+                "unexpected resume contract for {id}"
+            );
+        }
     }
 }
