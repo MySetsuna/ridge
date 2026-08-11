@@ -490,6 +490,32 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(sent.length).toBeGreaterThan(0);
 	});
 
+	it('keeps span and OSC hover affordances in sync with the pointer state', () => {
+		const { manager, fixture } = makeManager();
+		const entry = fixture.pane;
+		const span = { row: 1, c0: 2, c1: 6, text: 'src/main.ts:4', kind: 'path' };
+		entry.linkSpans.regionsForSpan = vi.fn(() => [span]);
+		const showUnderline = vi.spyOn(manager as any, '_showLinkUnderlines').mockImplementation(() => undefined);
+		const showHint = vi.spyOn(manager as any, '_showLinkHint').mockImplementation(() => undefined);
+		vi.spyOn(manager as any, '_clearLinkUnderline').mockImplementation(() => undefined);
+
+		(manager as any)._applySpanHover(entry, { row: 1, col: 3 }, span, true);
+		expect(entry.container.dataset.linkUnderline).toBe('1:2:6');
+		expect(showUnderline).toHaveBeenCalledWith(entry, [{ row: 1, c0: 2, c1: 6 }]);
+		expect(showHint).toHaveBeenCalled();
+
+		(manager as any)._applyOscHover(entry, { row: 2, col: 4 }, 'https://example.com', true);
+		expect(entry.container.dataset.linkUnderline).toBe('2:4:5');
+		(manager as any)._applyHoverDecision(entry, { row: 1, col: 3 }, null, span, {
+			showUnderline: true, showHint: true, hintText: '点击可跳转', cursor: 'pointer', spanText: span.text,
+		});
+		entry.container.style.cursor = 'pointer';
+		entry.container.dataset.linkUnderline = '1:2:6';
+		entry.linkUnderlineRegions = [span];
+		(manager as any)._clearPointerHover(entry);
+		expect(entry.container.style.cursor).toBe('');
+	});
+
 	it('covers selection, input, scroll, and safe public projection edges', () => {
 		const { manager, fixture } = makeManager();
 		const sent: Uint8Array[] = [];
@@ -943,5 +969,240 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it('covers pointer selection, auto-scroll, and worker failure cleanup', async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, fixture, internal } = makeManager();
+			const target = { setPointerCapture: vi.fn(), closest: vi.fn(() => null) };
+			fixture.pane.selectionStartAbs = { row: 2, col: 3 };
+			expect((manager as any)._extendPointerSelection(fixture.pane, { row: 4, col: 5 }, {
+				shiftKey: true, pointerId: 7, target,
+			} as unknown as PointerEvent)).toBe(true);
+			expect(fixture.kernel.setSelectionAbs).toHaveBeenCalledWith(2, 3, 16, 5);
+			expect(target.setPointerCapture).toHaveBeenCalledWith(7);
+
+		fixture.pane.selecting = true;
+		fixture.pane.selectionStartAbs = { row: 1, col: 1 };
+		const event = { clientX: 30, clientY: 21, pointerId: 8 } as unknown as PointerEvent;
+		(manager as any)._updateAttachAutoScroll(PANE, fixture.pane, { ...event, clientY: 200 });
+		(manager as any)._updateAttachAutoScroll(PANE, fixture.pane, event);
+		expect(fixture.pane.autoScrollDirection).toBe('up');
+		await vi.advanceTimersByTimeAsync(30);
+		expect(fixture.kernel.scrollUp).toHaveBeenCalledWith(1);
+		fixture.pane.selecting = false;
+		await vi.advanceTimersByTimeAsync(30);
+		expect(fixture.pane.autoScrollTimer).toBeNull();
+
+		const worker = {
+			init: vi.fn(() => Promise.reject(new Error('worker init failed'))),
+			bindCanvas: vi.fn(),
+		};
+		internal.syncWorkerRendererIdentity = vi.fn(() => worker);
+		internal.isCurrentWorkerRenderer = vi.fn(() => true);
+		const canvas = {
+			style: {} as Record<string, string>,
+			transferControlToOffscreen: vi.fn(() => ({})),
+		} as unknown as HTMLCanvasElement;
+		(manager as any)._attachWorkerCanvas(PANE, canvas, 1, 200);
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(internal.workerInitializing.has(PANE)).toBe(false);
+
+		const throwingCanvas = {
+			style: {} as Record<string, string>,
+			transferControlToOffscreen: vi.fn(() => { throw new Error('canvas detached'); }),
+		} as unknown as HTMLCanvasElement;
+		(manager as any)._attachWorkerCanvas(PANE, throwingCanvas, 1, 200);
+		expect(internal.workerInitializing.has(PANE)).toBe(false);
+	} finally {
+		vi.useRealTimers();
+	}
+	});
+
+	it('covers feed tracing and retained/unpark resource guards', async () => {
+		const { manager, fixture, internal } = makeManager();
+		const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+		(fixture.pane.linkSpans as any).markDirty = vi.fn();
+		(globalThis.localStorage.getItem as ReturnType<typeof vi.fn>).mockImplementation((key: string) =>
+			key === 'RIDGE_PTY_TRACE' || key === 'RIDGE_CURSOR_TRACE' ? '1' : null,
+		);
+		manager.feed(PANE, new Uint8Array(300).fill(65));
+		expect(fixture.kernel.feed).toHaveBeenCalled();
+		expect(debug).toHaveBeenCalled();
+
+		const container = makeContainer();
+		internal.opts.preferWebgpu = true;
+		internal.globalHost = { canvas: { getBoundingClientRect: fixture.pane.canvas.getBoundingClientRect } as HTMLCanvasElement, host: {} };
+		fixture.pane.rendererRetained = false;
+		fixture.pane.handle = null;
+		const selected = (manager as any)._selectUnparkCanvas(PANE, container, fixture.pane);
+		expect(selected.useHost).toBe(true);
+		expect(selected.hostHandle).toBe(internal.globalHost.host);
+
+		fixture.pane.rendererRetained = true;
+		fixture.pane.handle = fixture.handle;
+		internal.usingWorkerRenderer = vi.fn(() => true);
+		internal.isWorkerPaneReady = vi.fn(() => true);
+		vi.stubGlobal('document', {
+			createElement: vi.fn(() => ({
+				style: {} as Record<string, string>,
+				setAttribute: vi.fn(),
+				remove: vi.fn(),
+			})),
+		});
+		const prepared = await (manager as any)._prepareUnparkResources(PANE, container, fixture.pane);
+		expect(fixture.handle.free).toHaveBeenCalled();
+		expect(prepared.handle).toBeNull();
+
+		const staleHandle = { free: vi.fn() };
+		const staleCanvas = { remove: vi.fn() };
+		(manager as any)._commitUnpark(PANE, container, fixture.pane, {
+			usingWorker: false, useHost: false, canvas: staleCanvas, handle: staleHandle, dpr: 1,
+		});
+		expect(staleHandle.free).toHaveBeenCalledOnce();
+		expect(staleCanvas.remove).toHaveBeenCalledOnce();
+		debug.mockRestore();
+	});
+
+	it('covers unpark worker acknowledgements and cancellation paths', () => {
+		const { manager, fixture, internal } = makeManager();
+		const worker = {};
+		internal.isCurrentWorkerRenderer = vi.fn(() => true);
+		internal.fitPaneNow = vi.fn();
+		internal.workerInitializing.add(PANE);
+		(manager as any)._finishUnparkWorker(PANE, 1, worker, { type: 'pending' });
+		expect(internal.workerInitializing.has(PANE)).toBe(false);
+		internal.workerInitializing.add(PANE);
+		(manager as any)._finishUnparkWorker(PANE, 1, worker, { type: 'ready', cellW: 0, cellH: 0 });
+		internal.workerInitializing.add(PANE);
+		(manager as any)._finishUnparkWorker(PANE, 2, worker, { type: 'ready', cellW: 10, cellH: 20 });
+		expect(fixture.pane.lastConfiguredDpr).toBe(2);
+		expect(internal.fitPaneNow).toHaveBeenCalledWith(PANE);
+
+		internal.workerInitializing.add(PANE);
+		(manager as any)._failUnparkWorker(PANE, worker, new Error('pane destroyed; request cancelled'));
+		internal.workerInitializing.add(PANE);
+		(manager as any)._failUnparkWorker(PANE, worker, new Error('unexpected worker failure'));
+		expect(internal.workerInitializing.has(PANE)).toBe(false);
+	});
+
+	it('covers host fit geometry and worker mirror decisions', async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, fixture, internal } = makeManager();
+			const hostCanvas = fixture.pane.canvas;
+			internal.globalHost = { canvas: hostCanvas, host: {} };
+			(globalThis.window.getComputedStyle as ReturnType<typeof vi.fn>).mockReturnValue({
+				paddingLeft: '4px', paddingRight: '6px', paddingTop: '2px', paddingBottom: '3px',
+			});
+			expect((manager as any)._measureFit(fixture.pane)).toEqual({ wCss: 790, hCss: 395 });
+			await (manager as any).fitPane(fixture.pane, true);
+			expect(fixture.handle.setViewportOffset).toHaveBeenCalled();
+
+			internal.usingWorkerRenderer = vi.fn(() => true);
+			(manager as any)._resizeWorkerMirror(fixture.pane, { rows: 20, cols: 80, wCss: 800, hCss: 400 });
+			await Promise.resolve();
+			internal.workerAttached.add(PANE);
+			(manager as any)._resizeWorkerMirror(fixture.pane, { rows: 21, cols: 81, wCss: 810, hCss: 420 });
+			internal.workerInitializing.add(PANE);
+			(manager as any)._resizeWorkerMirror(fixture.pane, { rows: 22, cols: 82, wCss: 820, hCss: 440 });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('covers frame dirty-state, sync-output, and idle scheduling guards', async () => {
+		vi.useFakeTimers();
+		try {
+			const { manager, fixture, internal } = makeManager();
+			const host = {
+				beginFrame: vi.fn(() => true),
+				endFrame: vi.fn(),
+			};
+			internal.globalHost = { canvas: fixture.pane.canvas, host };
+			internal._sharedRemoteMode = true;
+			(fixture.handle as any).isDirty = vi.fn(() => false);
+			(fixture.handle as any).pinCachedLayers = vi.fn();
+			(fixture.handle as any).recordCachedOnly = vi.fn(() => true);
+			(fixture.handle as any).nextBlinkDeadlineMs = vi.fn(() => 25);
+			const state: any = {
+				frameOrder: [fixture.pane],
+				dirtyByPane: new Map([[PANE, false]]),
+				activeHost: host,
+				hostFrameOpen: false,
+				anyDirty: false,
+				surfaceJustWiped: false,
+				anyRendered: false,
+				minDeadlineMs: Infinity,
+				dateNow: Date.now(),
+				perfNow: 10,
+			};
+
+			expect((manager as any)._hostPaneDirty(fixture.pane, state.dateNow)).toBe(false);
+		(fixture.handle.isDirty as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error('old host'); });
+			expect((manager as any)._hostPaneDirty(fixture.pane, state.dateNow)).toBe(true);
+		fixture.pane.handle = null;
+			expect((manager as any)._hostPaneDirty(fixture.pane, state.dateNow)).toBe(true);
+		fixture.pane.handle = fixture.handle;
+
+		(manager as any)._collectHostDirty([fixture.pane], state.dateNow);
+		(manager as any)._pinCachedHostLayers(state);
+		(fixture.handle.pinCachedLayers as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error('old wasm'); });
+		(manager as any)._pinCachedHostLayers(state);
+		expect((manager as any)._ensureHostFrame(state)).toBe(true);
+		expect((manager as any)._ensureHostFrame({ ...state, hostFrameOpen: true })).toBe(true);
+		expect((manager as any)._ensureHostFrame({ ...state, hostFrameOpen: false, activeHost: null })).toBe(false);
+
+		fixture.kernel.isSyncOutput.mockReturnValue(false);
+		fixture.pane.syncStart = 10;
+		expect((manager as any)._renderEntryAfterSync(fixture.pane, state)).toBe(true);
+		fixture.kernel.isSyncOutput.mockReturnValue(true);
+		state.perfNow = 10;
+		expect((manager as any)._renderEntryAfterSync(fixture.pane, state)).toBe(false);
+		state.perfNow = 1_000_000;
+		expect((manager as any)._renderEntryAfterSync(fixture.pane, state)).toBe(true);
+		expect((manager as any)._renderEntryAfterSync(fixture.pane, state)).toBe(false);
+
+		expect((manager as any)._entryDirty(fixture.pane, { ...state, dirtyByPane: new Map() })).toBe(true);
+		internal.globalHost = null;
+		(fixture.handle.isDirty as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
+		expect((manager as any)._entryDirty(fixture.pane, state)).toBe(false);
+		(fixture.handle.isDirty as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error('dirty probe'); });
+		expect((manager as any)._entryDirty(fixture.pane, state)).toBe(true);
+		internal.globalHost = { canvas: fixture.pane.canvas, host };
+
+		(manager as any)._paintFrameEntry(fixture.pane, state, false);
+		(fixture.handle.recordCachedOnly as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
+		(manager as any)._paintFrameEntry(fixture.pane, state, false);
+		(fixture.handle.render as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error('render failed'); });
+		(manager as any)._paintFrameEntry(fixture.pane, state, true);
+		(manager as any)._updateBlinkDeadline(fixture.pane, state);
+		(fixture.handle.nextBlinkDeadlineMs as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error('blink probe'); });
+		(manager as any)._updateBlinkDeadline(fixture.pane, state);
+
+		internal._activeWorkspaceId = 'other-workspace';
+		(manager as any)._renderFrameEntry(fixture.pane, state);
+		internal._activeWorkspaceId = null;
+		fixture.pane.wasHiddenLastTick = true;
+		vi.spyOn(manager as any, 'fitPane').mockResolvedValue(undefined);
+		(manager as any)._renderFrameEntry(fixture.pane, { ...state, activeHost: host, anyDirty: true });
+
+		state.hostFrameOpen = true;
+		(manager as any)._finishHostFrame(state);
+		(host.endFrame as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error('frame end'); });
+		(manager as any)._finishHostFrame(state);
+		const startRaf = vi.spyOn(manager as any, 'startRafLoop').mockImplementation(() => undefined);
+		(manager as any)._scheduleIdleFrame({ ...state, minDeadlineMs: 5 }, vi.fn());
+		await vi.advanceTimersByTimeAsync(5);
+		expect(startRaf).toHaveBeenCalled();
+		(manager as any)._scheduleNextFrame({ ...state, anyRendered: true }, vi.fn());
+		(manager as any)._scheduleNextFrame({ ...state, anyRendered: false }, vi.fn());
+	} finally {
+		vi.useRealTimers();
+	}
 	});
 });

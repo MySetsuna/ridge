@@ -33,11 +33,21 @@ function findSensitiveKey(value, path = '$') {
 }
 
 export function validateEvidence(value, evidencePath, checkAttachments = true) {
-  const errors = [];
   if (!isObject(value)) return ['root must be an object'];
+  const errors = [
+    ...validateMetadata(value),
+    ...validateDevice(value),
+    ...validateScenarios(value),
+    ...validateAttachments(value, evidencePath, checkAttachments),
+  ];
+  if (!RESULTS.has(value.overallResult)) errors.push('overallResult is invalid');
+  return errors;
+}
+
+function validateMetadata(value) {
+  const errors = [];
   const sensitive = findSensitiveKey(value);
   if (sensitive) errors.push(`sensitive field is forbidden: ${sensitive}`);
-
   if (value.schemaVersion !== 1) errors.push('schemaVersion must be 1');
   if (!Number.isFinite(Date.parse(value.recordedAt))) errors.push('recordedAt must be ISO date-time');
   if (!/^[0-9a-f]{7,40}$/.test(value.gitCommit ?? '')) errors.push('gitCommit must be 7-40 lowercase hex');
@@ -45,62 +55,63 @@ export function validateEvidence(value, evidencePath, checkAttachments = true) {
     if (typeof value[key] !== 'string' || value[key].length === 0) errors.push(`${key} is required`);
   }
   if (!['ios-safari', 'android-chrome'].includes(value.platform)) errors.push('platform is invalid');
-  if (!isObject(value.device)) errors.push('device is required');
-  else {
-    for (const key of ['model', 'osVersion', 'browserVersion']) {
-      if (typeof value.device[key] !== 'string' || value.device[key].length === 0) {
-        errors.push(`device.${key} is required`);
-      }
-    }
-  }
+  return errors;
+}
 
-  if (!Array.isArray(value.scenarios)) errors.push('scenarios must be an array');
-  else {
-    const seen = new Set();
-    for (const [index, scenario] of value.scenarios.entries()) {
-      const prefix = `scenarios[${index}]`;
-      if (!isObject(scenario)) {
-        errors.push(`${prefix} must be an object`);
-        continue;
-      }
-      if (!REQUIRED_SCENARIOS.has(scenario.kind)) errors.push(`${prefix}.kind is invalid`);
-      else if (seen.has(scenario.kind)) errors.push(`${prefix}.kind is duplicated`);
-      else seen.add(scenario.kind);
-      if (!Number.isFinite(Date.parse(scenario.startedAt))) errors.push(`${prefix}.startedAt is invalid`);
-      if (!Number.isFinite(Date.parse(scenario.endedAt))) errors.push(`${prefix}.endedAt is invalid`);
-      if (!Number.isInteger(scenario.recoveryMs) || scenario.recoveryMs < 0) errors.push(`${prefix}.recoveryMs is invalid`);
-      if (!RESULTS.has(scenario.status)) errors.push(`${prefix}.status is invalid`);
-      if (typeof scenario.observations !== 'string') errors.push(`${prefix}.observations is required`);
-      if (
-        scenario.kind === 'background_token_window' &&
-        (!Number.isInteger(scenario.backgroundDurationSeconds) || scenario.backgroundDurationSeconds < 900)
-      ) {
-        errors.push(`${prefix}.backgroundDurationSeconds must be >= 900`);
-      }
-    }
-    for (const kind of REQUIRED_SCENARIOS) {
-      if (!seen.has(kind)) errors.push(`missing scenario: ${kind}`);
-    }
-  }
+function validateDevice(value) {
+  if (!isObject(value.device)) return ['device is required'];
+  return ['model', 'osVersion', 'browserVersion']
+    .filter((key) => typeof value.device[key] !== 'string' || value.device[key].length === 0)
+    .map((key) => `device.${key} is required`);
+}
 
+function validateScenarios(value) {
+  if (!Array.isArray(value.scenarios)) return ['scenarios must be an array'];
+  const errors = [];
+  const seen = new Set();
+  for (const [index, scenario] of value.scenarios.entries()) {
+    errors.push(...validateScenario(scenario, index, seen));
+  }
+  for (const kind of REQUIRED_SCENARIOS) {
+    if (!seen.has(kind)) errors.push(`missing scenario: ${kind}`);
+  }
+  return errors;
+}
+
+function validateScenario(scenario, index, seen) {
+  const prefix = `scenarios[${index}]`;
+  if (!isObject(scenario)) return [`${prefix} must be an object`];
+  const errors = [];
+  if (!REQUIRED_SCENARIOS.has(scenario.kind)) errors.push(`${prefix}.kind is invalid`);
+  else if (seen.has(scenario.kind)) errors.push(`${prefix}.kind is duplicated`);
+  else seen.add(scenario.kind);
+  if (!Number.isFinite(Date.parse(scenario.startedAt))) errors.push(`${prefix}.startedAt is invalid`);
+  if (!Number.isFinite(Date.parse(scenario.endedAt))) errors.push(`${prefix}.endedAt is invalid`);
+  if (!Number.isInteger(scenario.recoveryMs) || scenario.recoveryMs < 0) errors.push(`${prefix}.recoveryMs is invalid`);
+  if (!RESULTS.has(scenario.status)) errors.push(`${prefix}.status is invalid`);
+  if (typeof scenario.observations !== 'string') errors.push(`${prefix}.observations is required`);
+  if (scenario.kind === 'background_token_window' && (!Number.isInteger(scenario.backgroundDurationSeconds) || scenario.backgroundDurationSeconds < 900)) {
+    errors.push(`${prefix}.backgroundDurationSeconds must be >= 900`);
+  }
+  return errors;
+}
+
+function validateAttachments(value, evidencePath, checkAttachments) {
   if (!Array.isArray(value.attachments) || value.attachments.length === 0) {
-    errors.push('attachments must be a non-empty array');
-  } else {
-    for (const [index, attachment] of value.attachments.entries()) {
-      const prefix = `attachments[${index}]`;
-      if (!isObject(attachment) || typeof attachment.path !== 'string' || attachment.path.length === 0) {
-        errors.push(`${prefix}.path is required`);
-        continue;
-      }
-      if (!['screenshot', 'screen-recording', 'log'].includes(attachment.kind)) {
-        errors.push(`${prefix}.kind is invalid`);
-      }
-      if (checkAttachments && !existsSync(resolve(dirname(evidencePath), attachment.path))) {
-        errors.push(`${prefix}.path does not exist: ${attachment.path}`);
-      }
+    return ['attachments must be a non-empty array'];
+  }
+  const errors = [];
+  for (const [index, attachment] of value.attachments.entries()) {
+    const prefix = `attachments[${index}]`;
+    if (!isObject(attachment) || typeof attachment.path !== 'string' || attachment.path.length === 0) {
+      errors.push(`${prefix}.path is required`);
+      continue;
+    }
+    if (!['screenshot', 'screen-recording', 'log'].includes(attachment.kind)) errors.push(`${prefix}.kind is invalid`);
+    if (checkAttachments && !existsSync(resolve(dirname(evidencePath), attachment.path))) {
+      errors.push(`${prefix}.path does not exist: ${attachment.path}`);
     }
   }
-  if (!RESULTS.has(value.overallResult)) errors.push('overallResult is invalid');
   return errors;
 }
 

@@ -893,94 +893,13 @@ fn default_true() -> bool {
 
 fn try_reuse_idle_pane(ctx: &TeammateCtx, body: &SplitBody, wid: Uuid) -> Option<Response> {
     let idle_idx = find_idle_pane_index(&ctx.state, wid)?;
-    let idle_pane_id = {
-        let map = ctx.state.workspaces.read();
-        map.get(&wid)
-            .and_then(|ws| ws.pane_tree.get_all_leaves().get(idle_idx).copied())
-    }?;
+    let idle_pane_id = idle_pane_id(&ctx.state, wid, idle_idx)?;
     if body.is_agent && body.program.is_none() {
-        let mut map = ctx.state.workspaces.write();
-        if let Some(ws) = map.get_mut(&wid) {
-            *ws.teammate_metrics
-                .failures
-                .entry("agent_reuse_requires_structured".into())
-                .or_insert(0) += 1;
-        }
-        return Some(
-            (
-                StatusCode::BAD_REQUEST,
-                "agent reuse rejected: structured program/args/env required (no command-only agent spawn)",
-            )
-                .into_response(),
-        );
+        return Some(reject_agent_reuse(&ctx.state, wid));
     }
-    {
-        let mut map = ctx.state.workspaces.write();
-        if let Some(ws) = map.get_mut(&wid) {
-            if body.is_agent || body.program.is_some() {
-                ws.teammate_pane_states
-                    .insert(idle_pane_id, crate::state::PaneState::Busy);
-                if body.is_agent {
-                    ws.teammate_agent_pane_map
-                        .insert(body.agent_id.clone().unwrap_or_default(), idle_pane_id);
-                }
-            }
-        }
-    }
-    let structured_cmd = body.program.as_ref().map(|program| {
-        let mut command = terminal::StructuredPtyCommand {
-            program: program.clone(),
-            args: body.args.clone().unwrap_or_default(),
-            env: body.env.clone().unwrap_or_default(),
-        };
-        #[cfg(windows)]
-        {
-            command = normalize_windows_command(&command);
-        }
-        command
-    });
-    if let Some(command) = structured_cmd {
-        let spawn_cwd = body
-            .cwd
-            .as_ref()
-            .map(|s| std::path::PathBuf::from(s.trim()))
-            .filter(|p| !p.as_os_str().is_empty());
-        if let Err(error) = terminal::ensure_pane_pty_workspace(
-            &ctx.state,
-            wid,
-            idle_pane_id,
-            terminal::EnsurePtyOptions {
-                shell: None,
-                cwd: spawn_cwd.as_deref(),
-                initial_command: None,
-                structured_command: Some(command),
-                tmux_pane_index: Some(idle_idx),
-                ready_tx: None,
-                trace_id: None,
-            },
-        ) {
-            let _ = release_pane(&ctx.state, wid, idle_pane_id);
-            return Some(
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("reused pane PTY init failed: {error}"),
-                )
-                    .into_response(),
-            );
-        }
-    } else if let Some(command) = body
-        .command
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let data = ridge_mcp::server::enter_terminated(&command);
-        if let Err(error) =
-            super::suspend::agent_pty_write(&ctx.state, wid, idle_pane_id, data.as_bytes())
-        {
-            let _ = release_pane(&ctx.state, wid, idle_pane_id);
-            return Some((StatusCode::BAD_REQUEST, error).into_response());
-        }
+    mark_reused_pane(&ctx.state, wid, idle_pane_id, body);
+    if let Err(response) = launch_reused_pane(ctx, body, wid, idle_pane_id, idle_idx) {
+        return Some(response);
     }
     if let Some(agent_id) = body
         .agent_id
@@ -1019,6 +938,94 @@ fn try_reuse_idle_pane(ctx: &TeammateCtx, body: &SplitBody, wid: Uuid) -> Option
         )
             .into_response(),
     )
+}
+
+fn idle_pane_id(state: &AppState, wid: Uuid, idle_idx: usize) -> Option<Uuid> {
+    let map = state.workspaces.read();
+    map.get(&wid).and_then(|ws| ws.pane_tree.get_all_leaves().get(idle_idx).copied())
+}
+
+fn reject_agent_reuse(state: &AppState, wid: Uuid) -> Response {
+    let mut map = state.workspaces.write();
+    if let Some(ws) = map.get_mut(&wid) {
+        *ws.teammate_metrics.failures.entry("agent_reuse_requires_structured".into()).or_insert(0) += 1;
+    }
+    (
+        StatusCode::BAD_REQUEST,
+        "agent reuse rejected: structured program/args/env required (no command-only agent spawn)",
+    )
+        .into_response()
+}
+
+fn mark_reused_pane(state: &AppState, wid: Uuid, pane_id: Uuid, body: &SplitBody) {
+    if !body.is_agent && body.program.is_none() {
+        return;
+    }
+    let mut map = state.workspaces.write();
+    if let Some(ws) = map.get_mut(&wid) {
+        ws.teammate_pane_states.insert(pane_id, crate::state::PaneState::Busy);
+        if body.is_agent {
+            ws.teammate_agent_pane_map.insert(body.agent_id.clone().unwrap_or_default(), pane_id);
+        }
+    }
+}
+
+fn launch_reused_pane(
+    ctx: &TeammateCtx,
+    body: &SplitBody,
+    wid: Uuid,
+    pane_id: Uuid,
+    pane_index: usize,
+) -> Result<(), Response> {
+    if let Some(program) = body.program.as_ref() {
+        return launch_structured_reused_pane(ctx, body, wid, pane_id, pane_index, program);
+    }
+    if let Some(command) = body.command.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let data = ridge_mcp::server::enter_terminated(command);
+        if let Err(error) = super::suspend::agent_pty_write(&ctx.state, wid, pane_id, data.as_bytes()) {
+            let _ = release_pane(&ctx.state, wid, pane_id);
+            return Err((StatusCode::BAD_REQUEST, error).into_response());
+        }
+    }
+    Ok(())
+}
+
+fn launch_structured_reused_pane(
+    ctx: &TeammateCtx,
+    body: &SplitBody,
+    wid: Uuid,
+    pane_id: Uuid,
+    pane_index: usize,
+    program: &String,
+) -> Result<(), Response> {
+    let mut command = terminal::StructuredPtyCommand {
+        program: program.clone(),
+        args: body.args.clone().unwrap_or_default(),
+        env: body.env.clone().unwrap_or_default(),
+    };
+    #[cfg(windows)]
+    {
+        command = normalize_windows_command(&command);
+    }
+    let cwd = body.cwd.as_ref().map(|s| std::path::PathBuf::from(s.trim())).filter(|p| !p.as_os_str().is_empty());
+    if let Err(error) = terminal::ensure_pane_pty_workspace(
+        &ctx.state,
+        wid,
+        pane_id,
+        terminal::EnsurePtyOptions {
+            shell: None,
+            cwd: cwd.as_deref(),
+            initial_command: None,
+            structured_command: Some(command),
+            tmux_pane_index: Some(pane_index),
+            ready_tx: None,
+            trace_id: None,
+        },
+    ) {
+        let _ = release_pane(&ctx.state, wid, pane_id);
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("reused pane PTY init failed: {error}")).into_response());
+    }
+    Ok(())
 }
 
 fn select_split_target(

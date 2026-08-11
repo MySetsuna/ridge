@@ -3432,12 +3432,93 @@ async fn dispatch_invoke_git_write(
     }
 }
 
+fn remote_path_rejected(args: &serde_json::Value) -> bool {
+    let fields = ["path", "from", "to", "repoRoot", "root", "cwd"];
+    fields.iter().any(|key| {
+        args.get(key)
+            .and_then(|value| value.as_str())
+            .is_some_and(path_has_traversal)
+    }) || args
+        .get("paths")
+        .and_then(|value| value.as_array())
+        .is_some_and(|paths| {
+            paths
+                .iter()
+                .filter_map(|value| value.as_str())
+                .any(path_has_traversal)
+        })
+}
+
+async fn dispatch_allowlisted_invoke(
+    cmd: &str,
+    args: &serde_json::Value,
+    state: &AppState,
+    handle: &tauri::AppHandle,
+) -> Option<serde_json::Value> {
+    const FILESYSTEM: &[&str] = &[
+        "get_file_tree", "get_directory_children", "path_exists", "read_file",
+        "read_file_for_editor", "write_file", "apply_file_edits", "rename_path",
+        "delete_path", "create_file", "create_directory", "copy_path", "move_path",
+        "reveal_in_file_manager", "get_current_project", "start_watching_paths",
+        "start_watching_repos",
+    ];
+    const PANE: &[&str] = &[
+        "get_pane_layout", "get_pane_layout_for", "split_pane", "dock_pane", "close_pane",
+        "toggle_mode", "set_split_ratios_at_path", "set_split_ratios_batch", "create_pane",
+        "activate_pane_pty", "change_pane_shell", "write_to_pty", "resize_pane",
+        "detect_available_shells", "get_shell_history",
+    ];
+    const NATIVE: &[&str] = &[
+        "list_native_sessions", "summon_native_session", "new_headless_session", "terminate_native_session",
+    ];
+    const WORKSPACE: &[&str] = &[
+        "list_workspaces", "get_active_workspace_id", "switch_workspace", "create_workspace",
+        "close_workspace", "rename_workspace", "reorder_workspaces", "save_workspace",
+        "list_saved_workspaces", "delete_saved_workspace", "rename_saved_workspace",
+        "list_workspace_save_info", "delete_workspace_file", "get_default_workspace_save_dir",
+        "list_saved_workspace_files", "save_workspace_to_file", "open_workspace_from_file",
+        "get_restore_set", "list_recent_workspaces", "clear_recent_workspaces",
+        "get_last_opened_workspace_path", "get_startup_context", "browse_directory",
+    ];
+    const TEAMMATE: &[&str] = &[
+        "get_teammate_topology", "list_hitl_pending", "list_hitl_audit_remote", "resolve_hitl_remote",
+        "get_orchestration_health", "resume_agent_session", "read_agent_recent_replies",
+        "set_teammate_groups", "send_agent_message", "register_teammate_agent", "release_teammate_agent",
+    ];
+    const THEME: &[&str] = &[
+        "get_theme_data", "text_search", "filename_search", "text_search_diagnostics", "replace_in_files",
+    ];
+    const GIT_READ: &[&str] = &[
+        "find_git_repo_root", "find_git_repos_below", "get_scm_status", "get_git_info_with_cwd",
+        "get_git_commits_paginated", "git_list_branches", "git_diff_summary", "git_stash_list",
+        "git_get_file_versions", "git_get_file_versions_at_commit", "git_op_in_progress", "git_fetch",
+    ];
+    const GIT_WRITE: &[&str] = &[
+        "git_stage", "git_unstage", "git_commit", "git_pull", "git_push", "git_sync", "git_checkout",
+        "git_revert", "git_cherry_pick", "git_reset", "git_create_tag", "git_discard", "git_clean_untracked",
+    ];
+
+    if FILESYSTEM.contains(&cmd) { return Some(dispatch_invoke_filesystem(cmd, args, state, handle).await); }
+    if PANE.contains(&cmd) { return Some(dispatch_invoke_pane(cmd, args, state, handle).await); }
+    if NATIVE.contains(&cmd) { return Some(dispatch_invoke_native(cmd, args, state, handle).await); }
+    if WORKSPACE.contains(&cmd) { return Some(dispatch_invoke_workspace(cmd, args, state, handle).await); }
+    if TEAMMATE.contains(&cmd) {
+        if let Err(error) = ridge_core::protocol_guard::admit_remote_method(cmd) {
+            return Some(val::<()>(Err(error)));
+        }
+        return Some(dispatch_invoke_teammate(cmd, args, state, handle).await);
+    }
+    if THEME.contains(&cmd) { return Some(dispatch_invoke_theme(cmd, args, state, handle).await); }
+    if GIT_READ.contains(&cmd) { return Some(dispatch_invoke_git_read(cmd, args, state, handle).await); }
+    if GIT_WRITE.contains(&cmd) { return Some(dispatch_invoke_git_write(cmd, args, state, handle).await); }
+    None
+}
+
 async fn dispatch_invoke_request(
     cmd: &str,
     args: &serde_json::Value,
     state: &AppState,
 ) -> serde_json::Value {
-    use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
     use tauri::Manager;
 
     // §audit: record every remote mutation so a trust-but-verify operator has a
@@ -3445,22 +3526,8 @@ async fn dispatch_invoke_request(
     if is_mutating_invoke(cmd) {
         tracing::info!(target: "ridge::remote::fs", cmd, "remote mutating invoke");
     }
-    // §traversal guard: reject `..` in any path-bearing field.
-    for key in ["path", "from", "to", "repoRoot", "root", "cwd"] {
-        if let Some(v) = args.get(key).and_then(|x| x.as_str()) {
-            if path_has_traversal(v) {
-                return serde_json::json!({ "_error": "path traversal rejected" });
-            }
-        }
-    }
-    if let Some(arr) = args.get("paths").and_then(|x| x.as_array()) {
-        if arr
-            .iter()
-            .filter_map(|x| x.as_str())
-            .any(path_has_traversal)
-        {
-            return serde_json::json!({ "_error": "path traversal rejected" });
-        }
+    if remote_path_rejected(args) {
+        return serde_json::json!({ "_error": "path traversal rejected" });
     }
 
     // S1: map a `ridge_core::dispatch` result onto the legacy WS envelope.
@@ -3488,152 +3555,9 @@ async fn dispatch_invoke_request(
         return serde_json::json!({ "_error": "host application state unavailable" });
     }
 
-    const FILESYSTEM_COMMANDS: &[&str] = &[
-        "get_file_tree",
-        "get_directory_children",
-        "path_exists",
-        "read_file",
-        "read_file_for_editor",
-        "write_file",
-        "apply_file_edits",
-        "rename_path",
-        "delete_path",
-        "create_file",
-        "create_directory",
-        "copy_path",
-        "move_path",
-        "reveal_in_file_manager",
-        "get_current_project",
-        "start_watching_paths",
-        "start_watching_repos",
-    ];
-    const PANE_COMMANDS: &[&str] = &[
-        "get_pane_layout",
-        "get_pane_layout_for",
-        "split_pane",
-        "dock_pane",
-        "close_pane",
-        "toggle_mode",
-        "set_split_ratios_at_path",
-        "set_split_ratios_batch",
-        "create_pane",
-        "activate_pane_pty",
-        "change_pane_shell",
-        "write_to_pty",
-        "resize_pane",
-        "detect_available_shells",
-        "get_shell_history",
-    ];
-    const NATIVE_COMMANDS: &[&str] = &[
-        "list_native_sessions",
-        "summon_native_session",
-        "new_headless_session",
-        "terminate_native_session",
-    ];
-    const WORKSPACE_COMMANDS: &[&str] = &[
-        "list_workspaces",
-        "get_active_workspace_id",
-        "switch_workspace",
-        "create_workspace",
-        "close_workspace",
-        "rename_workspace",
-        "reorder_workspaces",
-        "save_workspace",
-        "list_saved_workspaces",
-        "delete_saved_workspace",
-        "rename_saved_workspace",
-        "list_workspace_save_info",
-        "delete_workspace_file",
-        "get_default_workspace_save_dir",
-        "list_saved_workspace_files",
-        "save_workspace_to_file",
-        "open_workspace_from_file",
-        "get_restore_set",
-        "list_recent_workspaces",
-        "clear_recent_workspaces",
-        "get_last_opened_workspace_path",
-        "get_startup_context",
-        "browse_directory",
-    ];
-    const TEAMMATE_COMMANDS: &[&str] = &[
-        "get_teammate_topology",
-        "list_hitl_pending",
-        "list_hitl_audit_remote",
-        "resolve_hitl_remote",
-        "get_orchestration_health",
-        "resume_agent_session",
-        "read_agent_recent_replies",
-        "set_teammate_groups",
-        "send_agent_message",
-        "register_teammate_agent",
-        "release_teammate_agent",
-    ];
-    const THEME_COMMANDS: &[&str] = &[
-        "get_theme_data",
-        "text_search",
-        "filename_search",
-        "text_search_diagnostics",
-        "replace_in_files",
-    ];
-    const GIT_READ_COMMANDS: &[&str] = &[
-        "find_git_repo_root",
-        "find_git_repos_below",
-        "get_scm_status",
-        "get_git_info_with_cwd",
-        "get_git_commits_paginated",
-        "git_list_branches",
-        "git_diff_summary",
-        "git_stash_list",
-        "git_get_file_versions",
-        "git_get_file_versions_at_commit",
-        "git_op_in_progress",
-        "git_fetch",
-    ];
-    const GIT_WRITE_COMMANDS: &[&str] = &[
-        "git_stage",
-        "git_unstage",
-        "git_commit",
-        "git_pull",
-        "git_push",
-        "git_sync",
-        "git_checkout",
-        "git_revert",
-        "git_cherry_pick",
-        "git_reset",
-        "git_create_tag",
-        "git_discard",
-        "git_clean_untracked",
-    ];
-    if FILESYSTEM_COMMANDS.contains(&cmd) {
-        return dispatch_invoke_filesystem(cmd, args, state, &handle).await;
-    }
-    if PANE_COMMANDS.contains(&cmd) {
-        return dispatch_invoke_pane(cmd, args, state, &handle).await;
-    }
-    if NATIVE_COMMANDS.contains(&cmd) {
-        return dispatch_invoke_native(cmd, args, state, &handle).await;
-    }
-    if WORKSPACE_COMMANDS.contains(&cmd) {
-        return dispatch_invoke_workspace(cmd, args, state, &handle).await;
-    }
-    if TEAMMATE_COMMANDS.contains(&cmd) {
-        if ridge_core::protocol_guard::admit_remote_method(cmd).is_err() {
-            let err = ridge_core::protocol_guard::admit_remote_method(cmd)
-                .err()
-                .unwrap_or_else(|| format!("remote denied: {cmd}"));
-            return val::<()>(Err(err));
-        }
-        return dispatch_invoke_teammate(cmd, args, state, &handle).await;
-    }
-    if THEME_COMMANDS.contains(&cmd) {
-        return dispatch_invoke_theme(cmd, args, state, &handle).await;
-    }
-    if GIT_READ_COMMANDS.contains(&cmd) {
-        return dispatch_invoke_git_read(cmd, args, state, &handle).await;
-    }
-    if GIT_WRITE_COMMANDS.contains(&cmd) {
-        return dispatch_invoke_git_write(cmd, args, state, &handle).await;
-    }
+	if let Some(result) = dispatch_allowlisted_invoke(cmd, args, state, &handle).await {
+		return result;
+	}
     if ridge_core::protocol_guard::admit_remote_method(cmd).is_err() {
         let err = ridge_core::protocol_guard::admit_remote_method(cmd)
             .err()

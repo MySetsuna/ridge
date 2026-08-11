@@ -3255,32 +3255,46 @@ mod guard_tests {
         Some(dir)
     }
 
+    enum ProductionLine {
+        Keep,
+        Skip,
+        Stop,
+    }
+
+    fn classify_production_line(line: &str, skip_fn: &mut bool, fn_brace: &mut i32) -> ProductionLine {
+        let trimmed = line.trim();
+        if !*skip_fn && trimmed.starts_with("#[cfg(test)]") {
+            *skip_fn = true;
+            *fn_brace = 0;
+            return ProductionLine::Skip;
+        }
+        if *skip_fn {
+            if trimmed.starts_with("mod ") {
+                return ProductionLine::Stop;
+            }
+            *fn_brace += trimmed.matches('{').count() as i32;
+            *fn_brace -= trimmed.matches('}').count() as i32;
+            if *fn_brace <= 0 && trimmed.contains('}') {
+                *skip_fn = false;
+            }
+            return ProductionLine::Skip;
+        }
+        if trimmed.starts_with("mod ") && (trimmed.contains("tests") || trimmed.contains("guard_tests")) {
+            return ProductionLine::Stop;
+        }
+        ProductionLine::Keep
+    }
+
     fn production_source_without_tests(src: &str) -> String {
-        let mut prod_lines: Vec<&str> = Vec::new();
+        let mut prod_lines = Vec::new();
         let mut skip_fn = false;
         let mut fn_brace = 0i32;
         for line in src.lines() {
-            let t = line.trim();
-            if !skip_fn && t.starts_with("#[cfg(test)]") {
-                skip_fn = true;
-                fn_brace = 0;
-                continue;
+            match classify_production_line(line, &mut skip_fn, &mut fn_brace) {
+                ProductionLine::Keep => prod_lines.push(line),
+                ProductionLine::Skip => {}
+                ProductionLine::Stop => break,
             }
-            if skip_fn {
-                if t.starts_with("mod ") {
-                    break;
-                }
-                fn_brace += t.matches('{').count() as i32;
-                fn_brace -= t.matches('}').count() as i32;
-                if fn_brace <= 0 && t.contains('}') {
-                    skip_fn = false;
-                }
-                continue;
-            }
-            if t.starts_with("mod ") && (t.contains("tests") || t.contains("guard_tests")) {
-                break;
-            }
-            prod_lines.push(line);
         }
         prod_lines.join("\n")
     }
@@ -3346,6 +3360,20 @@ mod guard_tests {
     }
 
     #[allow(clippy::await_holding_lock)]
+    async fn run_real_git_status_smoke(root: String) -> (String, String, String, String, bool) {
+        git_reset_peak_active_for_test();
+        let status = get_scm_status(root.clone(), None).await.expect("get_scm_status");
+        let fast = get_scm_status_fast(root, None).await.expect("get_scm_status_fast");
+        (
+            status.repo_root,
+            status.current_branch,
+            fast.repo_root,
+            fast.current_branch,
+            git_peak_active_child_count() >= 1 || git_active_child_count() == 0,
+        )
+    }
+
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn get_scm_status_real_git_path_smoke() {
         // This test reaches the real guarded child path. Serialize it with
@@ -3358,18 +3386,12 @@ mod guard_tests {
             return;
         };
 
-        git_reset_peak_active_for_test();
         let root = dir.to_string_lossy().to_string();
-        let status = get_scm_status(root.clone(), None)
-            .await
-            .expect("get_scm_status");
-        assert!(!status.repo_root.is_empty(), "expected resolved repo root");
-        assert!(git_peak_active_child_count() >= 1 || git_active_child_count() == 0);
-        let fast = get_scm_status_fast(root, None)
-            .await
-            .expect("get_scm_status_fast");
-        assert_eq!(fast.repo_root, status.repo_root);
-        assert_eq!(fast.current_branch, status.current_branch);
+        let (repo_root, branch, fast_root, fast_branch, peak_ok) = run_real_git_status_smoke(root).await;
+        assert!(!repo_root.is_empty(), "expected resolved repo root");
+        assert!(peak_ok);
+        assert_eq!(fast_root, repo_root);
+        assert_eq!(fast_branch, branch);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

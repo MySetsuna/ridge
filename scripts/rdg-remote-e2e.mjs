@@ -373,6 +373,145 @@ async function runBrowserMatrix(url, getTotp) {
   return results;
 }
 
+function clientFailure(profile, detail, telemetry, extra = {}) {
+  return {
+    name: profile.name,
+    ok: false,
+    detail,
+    browserErrors: telemetry.browserErrors.slice(-6),
+    wsUrls: telemetry.wsUrls,
+    ...extra,
+  };
+}
+
+function installClientTelemetry(page) {
+  const telemetry = {
+    browserErrors: [],
+    wsUrls: [],
+    rpcSent: new Map(),
+    rpcReceived: new Map(),
+    frameMethodsSent: new Map(),
+    frameMethodsReceived: new Map(),
+  };
+  const recordRpcMethods = (payload, target) => {
+    const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
+    for (const match of text.matchAll(/"(?:method|cmd)"\s*:\s*"([^"\\]+)"/g)) {
+      target.set(match[1], (target.get(match[1]) || 0) + 1);
+    }
+  };
+  page.on('pageerror', (error) => telemetry.browserErrors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') telemetry.browserErrors.push(message.text());
+  });
+  page.on('websocket', (socket) => {
+    telemetry.wsUrls.push(socket.url().replace(/([?&](?:token|code)=)[^&]+/g, '$1<redacted>'));
+    for (const [event, target, methods] of [
+      ['framesent', telemetry.frameMethodsSent, telemetry.rpcSent],
+      ['framereceived', telemetry.frameMethodsReceived, telemetry.rpcReceived],
+    ]) {
+      socket.on(event, ({ payload }) => {
+        recordRpcMethods(payload, target);
+        const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
+        for (const method of ['write_to_pty', 'resize_pane']) {
+          if (text.includes(method)) methods.set(method, (methods.get(method) || 0) + 1);
+        }
+      });
+    }
+  });
+  return telemetry;
+}
+
+async function waitForClientAuth(page, authInput) {
+  await Promise.race([
+    authInput.first().waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {}),
+    page.waitForSelector('canvas, .tree-trigger, .rg-pane, [class*="terminal"]', { timeout: 20_000 }).catch(() => {}),
+  ]);
+}
+
+async function submitClientAuthAttempt(page, profile, getTotp, authInput, telemetry, attempt) {
+  const st = await getTotp();
+  await authInput.first().fill(String(st.totp));
+  const button = page.locator('button').filter({ hasText: /Connect|连接|验证|Verify|继续/i }).first();
+  if (await button.count()) await button.click();
+  else await authInput.first().press('Enter');
+  try {
+    await page.waitForFunction(() => {
+      const inputs = document.querySelectorAll('input[inputmode="numeric"]');
+      const stillGate = inputs.length > 0 && inputs[0].offsetParent !== null;
+      return !!document.querySelector('canvas, .tree-trigger') || !stillGate;
+    }, { timeout: 12_000 });
+    const errorText = await page.locator('.wr-error, .error, [class*="error"]').first().textContent().catch(() => '');
+    const stillOpen = await authInput.count() > 0 && await authInput.first().isVisible().catch(() => false);
+    if (!stillOpen) return null;
+    if (attempt < 2) {
+      log(profile.name + ': TOTP attempt ' + (attempt + 1) + ' still on gate (' + (errorText || 'no err') + '); retry');
+      await sleep(1500);
+      return 'retry';
+    }
+    return clientFailure(profile, 'stuck on auth gate after TOTP: ' + (errorText || 'unknown'), telemetry);
+  } catch {
+    if (attempt < 2) {
+      await sleep(1500);
+      return 'retry';
+    }
+    const body = await page.locator('body').innerText().catch(() => '');
+    return clientFailure(profile, 'auth timeout body=' + body.slice(0, 200), telemetry);
+  }
+}
+
+async function authenticateClient(page, profile, getTotp, authInput, telemetry) {
+  await waitForClientAuth(page, authInput);
+  if (!(await authInput.count())) return null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = await submitClientAuthAttempt(page, profile, getTotp, authInput, telemetry, attempt);
+    if (result !== 'retry') return result;
+  }
+  return clientFailure(profile, 'auth attempts exhausted', telemetry);
+}
+
+
+async function collectClientEvidence(page, profile, telemetry) {
+  await sleep(1500);
+  const hasCanvas = (await page.locator('canvas').count()) > 0;
+  const hasTree = (await page.locator('.tree-trigger').count()) > 0;
+  const hasWs = telemetry.wsUrls.some((url) => url.includes('/ws'));
+  const authInput = page.locator('input[inputmode="numeric"]');
+  if (await authInput.count() && await authInput.first().isVisible().catch(() => false)) {
+    return clientFailure(profile, 'still on auth screen', telemetry);
+  }
+  if (!hasCanvas && !hasTree && !hasWs) {
+    const body = await page.locator('body').innerText().catch(() => '');
+    return clientFailure(profile, `no canvas/tree/ws after auth; body=${body.slice(0, 180)}`, telemetry);
+  }
+  const input = page.locator('[data-rg-pane-active="true"] .rg-ime-helper, .rg-ime-helper, .hidden-input').first();
+  const inputAvailable = (await input.count()) > 0;
+  if (inputAvailable) await input.focus().catch(() => {});
+  else await page.locator('canvas').first().click().catch(() => {});
+  await page.keyboard.type(`echo RDG_E2E_${profile.name}`);
+  await page.keyboard.press('Enter');
+  await sleep(700);
+  await page.setViewportSize({ width: profile.viewport.width + 37, height: profile.viewport.height });
+  await sleep(700);
+  const inputSent = (telemetry.rpcSent.get('write_to_pty') || 0) > 0;
+  const resizeSent = (telemetry.rpcSent.get('resize_pane') || 0) > 0;
+  const rpc = {
+    inputAvailable, inputSent, resizeSent,
+    sent: Object.fromEntries(telemetry.rpcSent),
+    received: Object.fromEntries(telemetry.rpcReceived),
+    frameMethodsSent: Object.fromEntries(telemetry.frameMethodsSent),
+    frameMethodsReceived: Object.fromEntries(telemetry.frameMethodsReceived),
+  };
+  if (!inputSent || !resizeSent) return clientFailure(profile, `control path incomplete input=${inputSent} resize=${resizeSent}`, telemetry, { rpc });
+  mkdirSync(EVIDENCE_DIR, { recursive: true });
+  const screenshot = join(EVIDENCE_DIR, `${profile.name}.png`);
+  await page.screenshot({ path: screenshot, fullPage: true }).catch(() => {});
+  return {
+    name: profile.name, ok: true,
+    detail: `canvas=${hasCanvas} tree=${hasTree} ws=${hasWs}`,
+    browserErrors: telemetry.browserErrors.slice(-4), wsUrls: telemetry.wsUrls, rpc, screenshot,
+  };
+}
+
 async function runOneClient(browser, url, getTotp, profile) {
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
@@ -382,238 +521,95 @@ async function runOneClient(browser, url, getTotp, profile) {
     hasTouch: !!profile.hasTouch,
   });
   const page = await context.newPage();
-  const browserErrors = [];
-  const wsUrls = [];
-  const rpcSent = new Map();
-  const rpcReceived = new Map();
-  const frameMethodsSent = new Map();
-  const frameMethodsReceived = new Map();
-  const recordRpcMethods = (payload, target) => {
-    const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
-    // Keep only method counts; never persist frame payloads/tokens in evidence.
-    for (const match of text.matchAll(/"(?:method|cmd)"\s*:\s*"([^"\\]+)"/g)) {
-      const method = match[1];
-      target.set(method, (target.get(method) || 0) + 1);
-    }
-  };
-  page.on('pageerror', (e) => browserErrors.push(e.message));
-  page.on('console', (msg) => {
-    if (msg.type() === 'error') browserErrors.push(msg.text());
-  });
-  page.on('websocket', (ws) => {
-    wsUrls.push(ws.url().replace(/([?&](?:token|code)=)[^&]+/g, '$1<redacted>'));
-    ws.on('framesent', ({ payload }) => {
-      recordRpcMethods(payload, frameMethodsSent);
-      for (const method of ['write_to_pty', 'resize_pane']) {
-        const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
-        if (text.includes(method)) rpcSent.set(method, (rpcSent.get(method) || 0) + 1);
-      }
-    });
-    ws.on('framereceived', ({ payload }) => {
-      recordRpcMethods(payload, frameMethodsReceived);
-      for (const method of ['write_to_pty', 'resize_pane']) {
-        const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
-        if (text.includes(method)) rpcReceived.set(method, (rpcReceived.get(method) || 0) + 1);
-      }
-    });
-  });
+  const telemetry = installClientTelemetry(page);
 
   try {
     const resp = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     const status = resp?.status() ?? 0;
     const html = await page.content();
-    if (status !== 200) {
-      return { name: profile.name, ok: false, detail: `HTTP ${status}`, browserErrors, wsUrls };
-    }
-    if (html.includes('REMOTE_UI_MISSING')) {
-      return { name: profile.name, ok: false, detail: 'REMOTE_UI_MISSING shell', browserErrors, wsUrls };
-    }
-
-    // 已登录 token 可能跳过码；否则等 numeric 输入
+    if (status !== 200) return clientFailure(profile, `HTTP ${status}`, telemetry);
+    if (html.includes('REMOTE_UI_MISSING')) return clientFailure(profile, 'REMOTE_UI_MISSING shell', telemetry);
     const authInput = page.locator('input[inputmode="numeric"]');
-    // 等 gate 或主 UI 出现
-    await Promise.race([
-      authInput.first().waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {}),
-      page.waitForSelector('canvas, .tree-trigger, .rg-pane, [class*="terminal"]', {
-        timeout: 20_000,
-      }).catch(() => {}),
-    ]);
-
-    if (await authInput.count()) {
-      let verified = false;
-      for (let attempt = 0; attempt < 3 && !verified; attempt++) {
-        const st = await getTotp();
-        const code = String(st.totp);
-        await authInput.first().fill('');
-        await authInput.first().fill(code);
-        // 桌面：按钮 Connect；手机：按钮
-        const btn = page.locator('button').filter({ hasText: /Connect|连接|验证|Verify|继续/i }).first();
-        if (await btn.count()) {
-          await btn.click();
-        } else {
-          await authInput.first().press('Enter');
-        }
-        // 成功：验证输入消失或 canvas 出现
-        try {
-          await page.waitForFunction(
-            () => {
-              const inputs = document.querySelectorAll('input[inputmode="numeric"]');
-              const stillGate = inputs.length > 0 && inputs[0].offsetParent !== null;
-              const hasCanvas = !!document.querySelector('canvas');
-              const hasTree = !!document.querySelector('.tree-trigger');
-              return hasCanvas || hasTree || !stillGate;
-            },
-            { timeout: 12_000 },
-          );
-          // 若仍停在 gate 且有 error，重试 TOTP
-          const errText = await page.locator('.wr-error, .error, [class*="error"]').first().textContent().catch(() => '');
-          if (await authInput.count() && (await authInput.first().isVisible().catch(() => false))) {
-            if (attempt < 2) {
-              log(`${profile.name}: totp attempt ${attempt + 1} still on gate (${errText || 'no err'}); retry`);
-              await sleep(1500);
-              continue;
-            }
-            return {
-              name: profile.name,
-              ok: false,
-              detail: `stuck on auth gate after TOTP: ${errText || 'unknown'}`,
-              browserErrors,
-              wsUrls,
-            };
-          }
-          verified = true;
-        } catch {
-          if (attempt < 2) {
-            await sleep(1500);
-            continue;
-          }
-          const body = await page.locator('body').innerText().catch(() => '');
-          return {
-            name: profile.name,
-            ok: false,
-            detail: `auth timeout body=${body.slice(0, 200)}`,
-            browserErrors: browserErrors.slice(-6),
-            wsUrls,
-          };
-        }
-      }
-    }
-
-    // 接通判据：WS 曾建立，或主 UI 有 canvas / pane 树
-    await sleep(1500);
-    const hasCanvas = (await page.locator('canvas').count()) > 0;
-    const hasTree = (await page.locator('.tree-trigger').count()) > 0;
-    const hasWs = wsUrls.some((u) => u.includes('/ws'));
-    const stillAuth =
-      (await authInput.count()) > 0 && (await authInput.first().isVisible().catch(() => false));
-
-    if (stillAuth) {
-      return {
-        name: profile.name,
-        ok: false,
-        detail: 'still on auth screen',
-        browserErrors: browserErrors.slice(-6),
-        wsUrls,
-      };
-    }
-    if (!hasCanvas && !hasTree && !hasWs) {
-      const body = await page.locator('body').innerText().catch(() => '');
-      return {
-        name: profile.name,
-        ok: false,
-        detail: `no canvas/tree/ws after auth; body=${body.slice(0, 180)}`,
-        browserErrors: browserErrors.slice(-6),
-        wsUrls,
-      };
-    }
-
-    // 截图证据
-    // Exercise the real browser input and measured-resize path.  Method
-    // counts come from WebSocket frames, so a rendered shell without PTY/RPC
-    // traffic cannot pass this smoke.
-    const input = page.locator(
-      '[data-rg-pane-active="true"] .rg-ime-helper, .rg-ime-helper, .hidden-input',
-    ).first();
-    const inputAvailable = (await input.count()) > 0;
-    if (inputAvailable) {
-      await input.focus().catch(() => {});
-    } else {
-      // Desktop builds may park the textarea only after the first canvas
-      // pointer focus.  Drive that real focus path instead of silently
-      // skipping input coverage when the sink is not attached yet.
-      await page.locator('canvas').first().click().catch(() => {});
-    }
-    await page.keyboard.type(`echo RDG_E2E_${profile.name}`);
-    await page.keyboard.press('Enter');
-    await sleep(700);
-    const resizedViewport = {
-      width: profile.viewport.width + 37,
-      height: profile.viewport.height,
-    };
-    await page.setViewportSize(resizedViewport);
-    await sleep(700);
-    const inputSent = (rpcSent.get('write_to_pty') || 0) > 0;
-    const resizeSent = (rpcSent.get('resize_pane') || 0) > 0;
-    const rpc = {
-      inputAvailable,
-      inputSent,
-      resizeSent,
-      sent: Object.fromEntries(rpcSent),
-      received: Object.fromEntries(rpcReceived),
-      frameMethodsSent: Object.fromEntries(frameMethodsSent),
-      frameMethodsReceived: Object.fromEntries(frameMethodsReceived),
-    };
-    if (!inputSent || !resizeSent) {
-      return {
-        name: profile.name,
-        ok: false,
-        detail: `control path incomplete input=${inputSent} resize=${resizeSent}`,
-        browserErrors: browserErrors.slice(-6),
-        wsUrls,
-        rpc,
-      };
-    }
-
-    mkdirSync(EVIDENCE_DIR, { recursive: true });
-    const shot = join(EVIDENCE_DIR, `${profile.name}.png`);
-    await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
-
-    return {
-      name: profile.name,
-      ok: true,
-      detail: `canvas=${hasCanvas} tree=${hasTree} ws=${hasWs}`,
-      browserErrors: browserErrors.slice(-4),
-      wsUrls,
-      rpc,
-      screenshot: shot,
-    };
+    const authFailure = await authenticateClient(page, profile, getTotp, authInput, telemetry);
+    if (authFailure) return authFailure;
+    return await collectClientEvidence(page, profile, telemetry);
   } catch (e) {
     return {
       name: profile.name,
       ok: false,
       detail: e instanceof Error ? e.message : String(e),
-      browserErrors: browserErrors.slice(-6),
-      wsUrls,
+      browserErrors: telemetry.browserErrors.slice(-6),
+      wsUrls: telemetry.wsUrls,
     };
   } finally {
     await context.close();
   }
 }
 
-async function main() {
-  // 全程禁用代理：本机 127.0.0.1 / Playwright / rdg 子进程皆受益
-  for (const k of [
-    'HTTP_PROXY',
-    'HTTPS_PROXY',
-    'http_proxy',
-    'https_proxy',
-    'ALL_PROXY',
-    'all_proxy',
-  ]) {
-    delete process.env[k];
+function disableProxyEnvironment() {
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']) {
+    delete process.env[key];
   }
   process.env.NO_PROXY = '*';
   process.env.no_proxy = '*';
+}
+
+async function clearPreferredPort() {
+  if (preferredPort <= 0 || process.platform !== 'win32') return;
+  try {
+    spawn(systemTool('powershell'), [
+      '-NoProfile', '-Command',
+      `Get-NetTCPConnection -LocalPort ${preferredPort} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }`,
+    ], { stdio: 'ignore', windowsHide: true });
+    await sleep(800);
+  } catch {
+    // Best effort; the selected port is still fenced by waitStatus.
+  }
+}
+
+async function prepareHost(hostHandle, port) {
+  const status = await waitStatus(45_000, port, hostHandle.pid);
+  log(`host up pid=${status.pid} totp=<redacted> url=${status.url_loopback}`);
+  await waitTcp(status.port, 10_000);
+  const url = status.url_loopback.replace(/\/$/, '');
+  const info = await httpsJson(`${url}/info`);
+  if (info.status !== 200) fail(`/info HTTP ${info.status}`, { body: info.body });
+  log(`info=${info.body}`);
+  let totpSt = await waitFreshTotp(status);
+  let ver = await httpsJson(`${url}/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `code=${encodeURIComponent(totpSt.totp)}&device=e2e-preflight`,
+  });
+  let verBody = {};
+  try { verBody = JSON.parse(ver.body); } catch { /* malformed response handled below */ }
+  if (!verBody.success) {
+    await sleep(2000);
+    totpSt = await waitFreshTotp(status);
+    ver = await httpsJson(`${url}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `code=${encodeURIComponent(totpSt.totp)}&device=e2e-preflight`,
+    });
+    try { verBody = JSON.parse(ver.body); } catch { /* malformed response handled below */ }
+    if (!verBody.success) fail('protocol verify failed', { verBody, body: ver.body });
+  }
+  log('protocol verify OK');
+  const layout = await httpsJson(`${url}/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `code=${encodeURIComponent((await waitFreshTotp(status)).totp)}&device=e2e-pty`,
+  });
+  let token = null;
+  try { token = JSON.parse(layout.body).token; } catch { /* malformed response handled below */ }
+  if (!token) fail('pty preflight: no session token');
+  if (!readStatus()?.ready) fail('host not ready before browser matrix');
+  log('host still ready before browser');
+  return { status, url };
+}
+
+async function main() {
+  disableProxyEnvironment();
 
   mkdirSync(EVIDENCE_DIR, { recursive: true });
   ensureRemoteDist();
@@ -623,86 +619,14 @@ async function main() {
   log(`port=${port}`);
   log(`status=${STATUS_FILE}`);
 
-  // 清掉可能占用 9527 的旧进程（仅当选用固定端口）
-  if (preferredPort > 0 && process.platform === 'win32') {
-    try {
-      spawn(systemTool('powershell'), [
-        '-NoProfile',
-        '-Command',
-        `Get-NetTCPConnection -LocalPort ${preferredPort} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }`,
-      ], { stdio: 'ignore', windowsHide: true });
-      await sleep(800);
-    } catch {
-      /* ok */
-    }
-  }
+  await clearPreferredPort();
 
   const hostHandle = spawnHost(rdgBin, port);
   let results = [];
   let status = null;
+  let url = '';
   try {
-    // Accept only the process and port spawned by this run.  This is the
-    // ownership fence that makes parallel probes and stale status files safe.
-    status = await waitStatus(45_000, port, hostHandle.pid);
-    log(`host up pid=${status.pid} totp=<redacted> url=${status.url_loopback}`);
-    // 再确认 TCP（防 status 误报）
-    await waitTcp(status.port, 10_000);
-
-    // 协议层预检：Node https 直连 + 忽略自签（Playwright request 在本机代理环境易 AggregateError）
-    const url = status.url_loopback.replace(/\/$/, '');
-    const info = await httpsJson(`${url}/info`);
-    if (info.status !== 200) fail(`/info HTTP ${info.status}`, { body: info.body });
-    log(`info=${info.body}`);
-    let totpSt = await waitFreshTotp(status);
-    let ver = await httpsJson(`${url}/verify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `code=${encodeURIComponent(totpSt.totp)}&device=e2e-preflight`,
-    });
-    let verBody = {};
-    try {
-      verBody = JSON.parse(ver.body);
-    } catch {
-      /* ok */
-    }
-    if (!verBody.success) {
-      await sleep(2000);
-      totpSt = await waitFreshTotp(status);
-      ver = await httpsJson(`${url}/verify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `code=${encodeURIComponent(totpSt.totp)}&device=e2e-preflight`,
-      });
-      try {
-        verBody = JSON.parse(ver.body);
-      } catch {
-        /* ok */
-      }
-      if (!verBody.success) fail('protocol verify failed', { verBody, body: ver.body });
-    }
-    log('protocol verify OK');
-
-    // 协议层 PTY：list layout → write_to_pty → 确认 invoke-result 成功（真接通下限）
-    {
-      const layout = await httpsJson(`${url}/verify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `code=${encodeURIComponent((await waitFreshTotp(status)).totp)}&device=e2e-pty`,
-      });
-      let token = null;
-      try {
-        token = JSON.parse(layout.body).token;
-      } catch {
-        /* ok */
-      }
-      if (!token) fail('pty preflight: no session token');
-      // 用 WS 太重；经 HTTP 无 write。改为 browser 矩阵后已有 canvas；此处至少
-      // 证明 get_pane_layout 经 HTTPS 会话无关路径：走已验证的 info 已够。
-      // 额外：status 文件仍在刷新 = host 存活。
-      const stAlive = readStatus();
-      if (!stAlive?.ready) fail('host not ready before browser matrix');
-      log('host still ready before browser');
-    }
+    ({ status, url } = await prepareHost(hostHandle, port));
 
     results = await runBrowserMatrix(url, async () => waitFreshTotp(status));
     const allOk = results.length > 0 && results.every((r) => r.ok);

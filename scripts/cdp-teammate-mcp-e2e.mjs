@@ -25,7 +25,6 @@
 //   RIDGE_TEAMMATE_URL=http://127.0.0.1:PORT RIDGE_TEAMMATE_TOKEN=... node scripts/cdp-teammate-mcp-e2e.mjs
 //
 // 退出码：全部断言通过=0，否则=1。
-
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -147,6 +146,11 @@ class MiniWs {
     this.buf = Buffer.concat([this.buf, d]);
     // 解析尽可能多的完整帧（服务端→客户端不掩码）
     while (this.buf.length >= 2) {
+      const frame = this._readFrame();
+      if (!frame) return;
+      this._handleFrame(frame);
+    }
+    /*
       const b0 = this.buf[0];
       const b1 = this.buf[1];
       const opcode = b0 & 0x0f;
@@ -182,6 +186,45 @@ class MiniWs {
       } else if (opcode === 0x8) {
         this._flushClose();
       }
+    }
+  }
+    */
+  }
+  _readFrame() {
+    const b1 = this.buf[1];
+    const masked = (b1 & 0x80) !== 0;
+    let len = b1 & 0x7f;
+    let off = 2;
+    let extra = 0;
+    if (len === 126) extra = 2;
+    else if (len === 127) extra = 8;
+    if (this.buf.length < off + extra) return null;
+    if (len === 126) len = this.buf.readUInt16BE(off);
+    if (len === 127) len = Number(this.buf.readBigUInt64BE(off));
+    off += extra;
+    const maskKey = masked ? this.buf.subarray(off, off + 4) : null;
+    if (masked) off += 4;
+    if (this.buf.length < off + len) return null;
+    let payload = this.buf.subarray(off, off + len);
+    if (maskKey) {
+      const out = Buffer.allocUnsafe(len);
+      for (let i = 0; i < len; i++) out[i] = payload[i] ^ maskKey[i & 3];
+      payload = out;
+    }
+    const opcode = this.buf[0] & 0x0f;
+    this.buf = this.buf.subarray(off + len);
+    return { opcode, payload };
+  }
+  _handleFrame({ opcode, payload }) {
+    if (opcode === 0x1) {
+      const text = payload.toString('utf8');
+      const waiter = this.waiters.shift();
+      if (waiter) waiter(text);
+      else this.queue.push(text);
+    } else if (opcode === 0x9) {
+      this._send(payload, 0xa);
+    } else if (opcode === 0x8) {
+      this._flushClose();
     }
   }
   _flushClose() {

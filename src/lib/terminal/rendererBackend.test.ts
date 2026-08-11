@@ -40,7 +40,7 @@ describe('terminal renderer bootstrap contracts', () => {
 
 	it('keeps link hover affordance continuous and thin', () => {
 		expect(managerSource).toContain("'height:1px'");
-		expect(managerSource).toContain('regionsForSpan(ent.kernel, span)');
+    expect(managerSource).toContain('regionsForSpan(entry.kernel, span)');
 		expect(managerSource).toContain('createLinkHintOverlay');
 		expect(managerSource).toContain('点击可跳转');
 	});

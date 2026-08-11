@@ -59,9 +59,9 @@ describe('cross-surface interaction contracts', () => {
 
   it('releases desktop TUI mouse capture on pointer cancellation', () => {
     const manager = read('../../../packages/remote/src/shared/terminal/manager.ts');
-    expect(manager).toContain('const pointerUpListener = (e: PointerEvent, force = false) =>');
-    expect(manager).toContain('if (!force && isInScrollbar(e)) return;');
-    expect(manager).toContain('const pointerCancelListener = (e: PointerEvent) => pointerUpListener(e, true);');
+    expect(manager).toContain('const pointerUpListener = (event: PointerEvent, force = false) =>');
+    expect(manager).toContain('if (!force && isScrollbar(event)) return;');
+    expect(manager).toContain('const pointerCancelListener = (event: PointerEvent) => pointerUpListener(event, true);');
     expect(manager).toContain("container.addEventListener('pointercancel', pointerCancelListener)");
     expect(manager).toContain("entry.container.removeEventListener('pointercancel', entry.pointerCancelListener)");
   });

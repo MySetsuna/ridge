@@ -860,161 +860,133 @@ export class RemoteConnection implements RemoteLink {
     ws.onmessage = (event) => this._handleMessage(event);
   }
 
-  private _handleMessage(event: MessageEvent) {
-    // §perf: stamp the first inbound frame (text or binary) of this cycle.
-    this._perf.firstFrame ??= performance.now();
-    // Any inbound byte proves the socket is alive — clear the pong watchdog.
-    if (this._pongDeadline) { clearTimeout(this._pongDeadline); this._pongDeadline = null; }
-    if (event.data instanceof ArrayBuffer) {
-      const buf = new Uint8Array(event.data);
-      const paneId = uuidFromBytes(buf, 0);
-      const rawBytes = buf.subarray(16);
-      remotePerfMark('raw-receive', {
-        paneKey: paneId,
-        bytes: rawBytes.byteLength,
-        transport: 'lan-ws',
+  private _handleBinaryMessage(data: ArrayBuffer): void {
+    const buf = new Uint8Array(data);
+    const paneId = uuidFromBytes(buf, 0);
+    const rawBytes = buf.subarray(16);
+    remotePerfMark('raw-receive', { paneKey: paneId, bytes: rawBytes.byteLength, transport: 'lan-ws' });
+    if (this._perf.firstPtyBytes == null) {
+      const now = performance.now();
+      this._perf.firstPtyBytes = now;
+      const p = this._perf;
+      console.log('[remote-perf] segments', {
+        upgradeMs: p.connectStart != null && p.upgradeStart != null ? Math.round(p.upgradeStart - p.connectStart) : null,
+        firstFrameMs: p.connectStart != null && p.firstFrame != null ? Math.round(p.firstFrame - p.connectStart) : null,
+        firstPtyBytesMs: p.connectStart != null ? Math.round(now - p.connectStart) : null,
       });
-      // §perf: first PTY bytes reaching the client — record once and log all
-      // three segments (each relative to connectStart) for the slow-link triage.
-      if (this._perf.firstPtyBytes == null) {
-        const now = performance.now();
-        this._perf.firstPtyBytes = now;
-        const p = this._perf;
-        console.log('[remote-perf] segments', {
-          upgradeMs: p.connectStart != null && p.upgradeStart != null ? Math.round(p.upgradeStart - p.connectStart) : null,
-          firstFrameMs: p.connectStart != null && p.firstFrame != null ? Math.round(p.firstFrame - p.connectStart) : null,
-          firstPtyBytesMs: p.connectStart != null ? Math.round(now - p.connectStart) : null,
-        });
-      }
-      const matches = Array.from(this.paneRefs.values()).filter((pane) => pane.paneId === paneId);
-      // Legacy binary frames omit workspaceId. Refuse ambiguous routing rather
-      // than delivering bytes to a same-named pane in the wrong workspace.
-      if (matches.length !== 1) return;
-      const pane = matches[0];
-      this.rawByteListeners.forEach(fn => fn(pane, rawBytes));
-      return;
     }
-    try {
-      const msg = JSON.parse(event.data) as WsMessage;
-      if (typeof msg === 'object' && msg !== null) {
-        // §data-request-fix: `data-request` replies (file tree / git / search)
-        // carry NO `type` field — only `_reqId` + `_result`/`_error`. A bare
-        // `(msg).type as string` then yields `undefined`, and the later
-        // `type.endsWith('-result')` threw a TypeError that the outer `catch {}`
-        // swallowed — so every sidebar reply was silently dropped and the
-        // File/Git/Search panels never received data (一直不可用). Coalesce to ''
-        // so untyped replies fall straight through to `messageListeners`, where
-        // `WsDataProvider` matches them by `_reqId`.
-        const type = ((msg as Record<string, unknown>).type as string) ?? '';
+    const matches = Array.from(this.paneRefs.values()).filter((pane) => pane.paneId === paneId);
+    if (matches.length === 1) this.rawByteListeners.forEach((fn) => fn(matches[0], rawBytes));
+  }
 
-        // 服务端「已认证但无权」错误帧（契约形状 `{t:"error",code,message}`，用 `t`
-        // 字段，非业务 `type`）。服务端升级后先发它、再以 close 4403 关闭，所以这里只
-        // 暂存 code/message；随后的 _handleClose 会用它做精确分级（不重试）。
-        const rec = msg as Record<string, unknown>;
-        if (rec.t === 'error' && typeof rec.code === 'string') {
-          this._pendingServerError = {
-            code: rec.code,
-            message: typeof rec.message === 'string' ? rec.message : undefined,
-          };
-          return;
-        }
+  private _handlePtyEvent(msg: WsMessage, type: string, rec: Record<string, unknown>): boolean {
+    if (type === 'pty-meta') {
+      if (typeof rec.workspaceId !== 'string' || typeof rec.paneId !== 'string') return true;
+      this.metaListeners.forEach((fn) => fn(
+        { workspaceId: rec.workspaceId as string, paneId: rec.paneId as string },
+        (msg as { title: string | null }).title,
+        (msg as { cwd: string | null }).cwd,
+      ));
+      return true;
+    }
+    if (type === 'pty-resized') {
+      if (typeof rec.workspaceId !== 'string' || typeof rec.paneId !== 'string') return true;
+      this.resizeListeners.forEach((fn) => fn(
+        { workspaceId: rec.workspaceId as string, paneId: rec.paneId as string },
+        (msg as { rows: number }).rows,
+        (msg as { cols: number }).cols,
+      ));
+      return true;
+    }
+    if (type !== 'theme') return false;
+    const theme = msg as { id?: string; themeType: 'dark' | 'light'; colors: Record<string, string> };
+    this._lastTheme = { id: theme.id, themeType: theme.themeType, colors: theme.colors };
+    this.themeListeners.forEach((fn) => fn(theme.colors, theme.themeType));
+    return true;
+  }
 
-        // Heartbeat reply — liveness already recorded above, nothing else to do.
-        if (type === 'pong') return;
+  private _handleScrollbackMeta(rec: Record<string, unknown>): void {
+    if (typeof rec.workspaceId !== 'string' || typeof rec.paneId !== 'string') return;
+    this.scrollbackCursor.set(paneRefKey({
+      workspaceId: rec.workspaceId,
+      paneId: rec.paneId,
+    }), {
+      oldestSeq: Number(rec.startSeq),
+      atOldest: !!rec.atOldest,
+    });
+  }
 
-        // Kernel hosts advertise their narrower direct-WS surface before the
-        // first pane frame. This prevents optional sidebar monitors from
-        // issuing a speculative unsupported RPC during cold mobile boot.
-        if (type === 'hello' && Array.isArray(rec.capabilities)) {
-          this.applyAdvertisedCapabilities(rec.capabilities);
-        }
+  private _resolvePendingMessage(msg: WsMessage, type: string): boolean {
+    const isResult = type.endsWith('-result') || type === 'workspaces' || type === 'current-project' || type === 'workspace-panes';
+    if (!isResult) return false;
+    const key = pendingKey(type, (msg as { _reqId?: unknown })._reqId);
+    const pending = this._pendingRequests.get(key);
+    if (!pending) return false;
+    if (pending.matches && !pending.matches(msg)) return true;
+    this._removePending(key);
+    pending.resolve(type === 'invoke-result' ? normalizeInvokeResultFrame(msg) : msg);
+    return true;
+  }
 
-        // New remote event types — dispatch before result routing.
-        if (type === 'pty-meta') {
-          const m = msg as { workspaceId?: unknown; paneId?: unknown; title: string | null; cwd: string | null };
-          if (typeof m.workspaceId !== 'string' || typeof m.paneId !== 'string') return;
-          const pane = { workspaceId: m.workspaceId, paneId: m.paneId };
-          this.metaListeners.forEach(fn => fn(pane, m.title, m.cwd));
-          return;
-        }
-        if (type === 'pty-resized') {
-          const r = msg as { workspaceId?: unknown; paneId?: unknown; rows: number; cols: number };
-          if (typeof r.workspaceId !== 'string' || typeof r.paneId !== 'string') return;
-          const pane = { workspaceId: r.workspaceId, paneId: r.paneId };
-          this.resizeListeners.forEach(fn => fn(pane, r.rows, r.cols));
-          return;
-        }
-        if (type === 'theme') {
-          const t = msg as { id?: string; themeType: 'dark' | 'light'; colors: Record<string, string> };
-          // Track the active theme id so the theme-cycle button can ask the host
-          // for "the theme after this one" (stateless host cycle, see cycleTheme).
-          this._lastTheme = { id: t.id, themeType: t.themeType, colors: t.colors };
-          this.themeListeners.forEach(fn => fn(t.colors, t.themeType));
-          return;
-        }
+  private _handlePriorityMessage(msg: WsMessage): boolean {
+    const rec = msg as Record<string, unknown>;
+    const type = typeof rec.type === 'string' ? rec.type : '';
+    if (rec.t === 'error' && typeof rec.code === 'string') {
+      this._pendingServerError = { code: rec.code, message: typeof rec.message === 'string' ? rec.message : undefined };
+      return true;
+    }
+    if (type === 'pong') return true;
+    if (type === 'hello' && Array.isArray(rec.capabilities)) this.applyAdvertisedCapabilities(rec.capabilities);
+    if (this._handlePtyEvent(msg, type, rec)) return true;
+    if (type === 'scrollback-meta') {
+      this._handleScrollbackMeta(rec);
+      return true;
+    }
+    return this._resolvePendingMessage(msg, type);
+  }
 
-        // §history-pull: host seeds/refreshes this pane's lazy-scroll seq cursor at
-        // the oldest byte currently shown (sent right after the on-subscribe tail).
-        // fetchOlderScrollback() then pages older via `scrollback-before`.
-        if (type === 'scrollback-meta') {
-          // `scrollback-meta` isn't a WsMessage variant — read fields off the
-          // untyped `rec` (like the error-frame path above) instead of casting the
-          // union, which wouldn't overlap.
-          if (typeof rec.workspaceId !== 'string' || typeof rec.paneId !== 'string') return;
-          this.scrollbackCursor.set(paneRefKey({
-            workspaceId: rec.workspaceId,
-            paneId: rec.paneId,
-          }), {
-            oldestSeq: Number(rec.startSeq),
-            atOldest: !!rec.atOldest,
-          });
-          return;
-        }
-
-        // Route result-type responses to pending request promises.
-        const isResult = type.endsWith('-result') || type === 'workspaces'
-          || type === 'current-project' || type === 'workspace-panes';
-        if (isResult) {
-          const key = pendingKey(type, (msg as { _reqId?: unknown })._reqId);
-          const pending = this._pendingRequests.get(key);
-          if (pending) {
-            // Legacy responses have no correlation id. A late reply for an
-            // earlier workspace must not settle the current request (and
-            // erase its tree as an empty snapshot); leave it pending until
-            // the response matching its payload arrives or the timeout fires.
-            if (pending.matches && !pending.matches(msg)) return;
-            this._removePending(key);
-            pending.resolve(type === 'invoke-result' ? normalizeInvokeResultFrame(msg) : msg);
-            return;
-          }
-        }
-      }
-      // If we're reconnecting (socket not ready), queue the message for replay.
-      // Only queue non-binary messages that are state updates (not pings/pongs).
-      if (this._state !== 'connected' && msg.type !== 'output') {
+  private _queueOrDispatchMessage(msg: WsMessage): void {
+    if (this._state !== 'connected') {
+      if (msg.type !== 'output') {
         this._messageQueue.push(msg);
-        // If queue exceeds limit, force a full page reload to avoid stale state.
         if (this._messageQueue.length > MAX_QUEUED_MESSAGES) {
           console.warn('[wsRemote] Message queue exceeded ' + MAX_QUEUED_MESSAGES + ', reloading page');
           window.location.reload();
-          return;
         }
-      } else if (this._state === 'connected') {
-        // Normal connected path: handle output buffering and dispatch.
-        if (msg.type === 'output') {
-          if (typeof msg.workspaceId !== 'string') return;
-          const key = paneRefKey({ workspaceId: msg.workspaceId, paneId: msg.paneId });
-          const lines = msg.data.split('\n');
-          const existing = this.paneOutputs.get(key) || [];
-          existing.push(...lines);
-          if (existing.length > MAX_PANE_OUTPUT_LINES) {
-            existing.splice(0, existing.length - MAX_PANE_OUTPUT_LINES);
-          }
-          this.paneOutputs.set(key, existing);
-        }
-        this.messageListeners.forEach(fn => fn(msg));
       }
-    } catch { /* ignore */ }
+      return;
+    }
+    if (msg.type !== 'output') {
+      this.messageListeners.forEach((fn) => fn(msg));
+      return;
+    }
+    if (typeof msg.workspaceId !== 'string') return;
+    const key = paneRefKey({ workspaceId: msg.workspaceId, paneId: msg.paneId });
+    const lines = msg.data.split('\n');
+    const existing = this.paneOutputs.get(key) || [];
+    existing.push(...lines);
+    if (existing.length > MAX_PANE_OUTPUT_LINES) existing.splice(0, existing.length - MAX_PANE_OUTPUT_LINES);
+    this.paneOutputs.set(key, existing);
+    this.messageListeners.forEach((fn) => fn(msg));
+  }
+
+  private _handleMessageRefactored(event: MessageEvent): void {
+    this._perf.firstFrame ??= performance.now();
+    if (this._pongDeadline) { clearTimeout(this._pongDeadline); this._pongDeadline = null; }
+    if (event.data instanceof ArrayBuffer) {
+      this._handleBinaryMessage(event.data);
+      return;
+    }
+		let msg: WsMessage;
+		try { msg = JSON.parse(event.data) as WsMessage; }
+		catch { return; }
+    if (typeof msg !== 'object' || msg === null) return;
+    if (this._handlePriorityMessage(msg)) return;
+    this._queueOrDispatchMessage(msg);
+  }
+
+  private _handleMessage(event: MessageEvent) {
+    this._handleMessageRefactored(event);
   }
 
   // ── Drop / reconnect ──
@@ -1025,7 +997,7 @@ export class RemoteConnection implements RemoteLink {
    *     分级（用户问题/设备停用/通道），**不重试**——再连只会被同样拒绝、白白转圈。
    *   - 其它（正常断/网络断）→ 走原 _handleDrop 的自动重连。
    * 注：匿名/伪造在握手阶段就被不透明 403 挡住（WS 根本不 open），不会到这里。
-   */
+    */
   private _handleClose(code?: number) {
     const pending = this._pendingServerError;
     if (code === WS_CLOSE_AUTHENTICATED_FORBIDDEN || pending) {

@@ -1095,7 +1095,10 @@ function liveSplitterBasis(ref: SplitterRef): number {
 
 function setDragCursor(primary: SplitterRef, snapshots: SplitterSnapshot[]): void {
   const hasOrthogonal = snapshots.some((s) => s.ref.axis !== primary.axis);
-  setGlobalSplitResizeCursor(hasOrthogonal ? 'move' : primary.axis === 'x' ? 'col' : 'row');
+  let cursor: 'move' | 'col' | 'row' = 'row';
+  if (hasOrthogonal) cursor = 'move';
+  else if (primary.axis === 'x') cursor = 'col';
+  setGlobalSplitResizeCursor(cursor);
 }
 export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
   const ui = get(splitResizeUiState);
