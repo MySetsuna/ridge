@@ -946,62 +946,6 @@ fn cmd_display_message(rest: &[String], url: &str, token: &str) -> Result<(), ()
     );
     Ok(())
 }
-/*
-    let mut pane_index = current_pane_index_from_env();
-    let mut format = "#{pane_id}".to_string();
-    let mut raw_target: Option<String> = None;
-    let mut i = 0usize;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "-p" => {}
-            "-t" if i + 1 < rest.len() => {
-                raw_target = Some(rest[i + 1].clone());
-                pane_index = parse_pane_target(&rest[i + 1]);
-                i += 1;
-            }
-            s if s.starts_with('-') => {}
-            s => {
-                format = s.to_string();
-            }
-        }
-        i += 1;
-    }
-
-    // 会话限定目标 / 自定义 socket → native display-message（按解析到的目标渲染 `-F`）。
-    if use_native(raw_target.as_deref()) {
-        let u = format!(
-            "{}?socket={}&target={}&format={}",
-            tmux_api(url, "display-message"),
-            q(socket()),
-            q(raw_target.as_deref().unwrap_or("")),
-            q(&format)
-        );
-        match http_get(u, token) {
-            Some((200, body)) => {
-                println!("{body}");
-                return Ok(());
-            }
-            Some((409, _)) => {}
-            Some((_, msg)) => {
-                if !msg.is_empty() {
-                    eprintln!("{msg}");
-                }
-                return Err(());
-            }
-            None => return Err(()),
-        }
-    }
-
-    println!(
-        "{}",
-        render_tmux_format_dynamic(&format, pane_index, url, token)
-    );
-    Ok(())
-}
-
-/// tmux `cmd-split-window.c`：`split-window -P` 且未指定 `-F` 时的默认模板。
-*/
-
 const SPLIT_WINDOW_PRINT_DEFAULT: &str = "#{session_name}:#{window_index}.#{pane_index}";
 
 /// Parsed `split-window` flags (pure; no I/O) so routing + request-body shape
@@ -1167,21 +1111,6 @@ fn build_split_body(
     structured: Option<&StructuredLaunch>,
 ) -> serde_json::Value {
     let mut body = base_split_body(auto_place, horizontal, pane_index);
-    /*
-        let mut body = if auto_place {
-            // auto_place 下后端自行选择目标+方向：调用方传入的 `horizontal`/`pane_index`
-            // 是 harness 样板，此处**有意忽略**（不透传），只发显式 `auto_place` + 中性
-            // `horizontal:false`。
-            serde_json::json!({ "auto_place": true, "horizontal": false })
-        } else {
-            let mut b = serde_json::json!({ "horizontal": horizontal });
-            if let Some(p) = pane_index {
-                b["pane_index"] = serde_json::json!(p);
-            }
-            b
-        };
-        }
-    */
     match structured {
         Some(launch) => apply_launch_body(&mut body, launch, command),
         None => {
@@ -1190,34 +1119,6 @@ fn build_split_body(
             }
         }
     }
-    /*
-        if let Some(launch) = structured {
-            // 结构化 launch（`env K=V program …`）= agent 启动意图（F1）：显式置 `is_agent`，
-            // 后端据此把面板提升为 Busy（启动即 Busy/id 可空）。裸 shell / 普通命令不置。
-            body["is_agent"] = serde_json::json!(true);
-            body["program"] = serde_json::json!(launch.program);
-            body["args"] = serde_json::json!(launch.args);
-            if !launch.env.is_empty() {
-                body["env"] = serde_json::json!(launch.env);
-            }
-            if let Some(ref c) = launch.cwd {
-                if !c.is_empty() {
-                    body["cwd"] = serde_json::json!(c);
-                }
-            }
-            if let Some(c) = command {
-                body["command"] = serde_json::json!(c);
-            }
-        } else if let Some(c) = command {
-            body["command"] = serde_json::json!(c);
-        }
-        if let Some(c) = cwd.filter(|s| !s.is_empty()) {
-            if body.get("cwd").is_none() {
-                body["cwd"] = serde_json::json!(c);
-            }
-        }
-        }
-    */
     apply_split_cwd(&mut body, cwd);
     body
 }
@@ -1658,35 +1559,6 @@ fn parse_send_keys_target(
     }
     (target, raw_target, index)
 }
-/*
-    let mut target = SendTarget::TmuxCurrent;
-    let mut raw_target = None;
-    let mut index = 0;
-    while index < rest.len() {
-        if rest[index] == "-t" && index + 1 < rest.len() {
-            let value = rest[index + 1].trim();
-            raw_target = Some(value.to_string());
-            target = if value.is_empty() {
-                SendTarget::TmuxCurrent
-            } else {
-                resolve_named_pane_target(value, url, token)
-            };
-            index += 2;
-            continue;
-        }
-        if !rest[index].starts_with('-') {
-            break;
-        }
-        index += if rest[index] == "-N" && index + 1 < rest.len() {
-            2
-        } else {
-            1
-        };
-    }
-    (target, raw_target, index)
-}
-
-*/
 fn send_native_keys(
     raw_target: Option<&str>,
     text: &str,
@@ -1768,101 +1640,6 @@ fn cmd_send_keys(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     }
     send_keys_regular(&target, &text, url, token)
 }
-
-/*
-fn cmd_send_keys_legacy(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
-    // `-t ""` 或未出现 `-t` 时与 tmux 一致：发往当前窗格（由 teammate HTTP 侧 `teammate_tmux_pane_cursor` 记录）。
-    let mut target = SendTarget::TmuxCurrent;
-    let mut raw_target: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        if rest[i] == "-t" && i + 1 < rest.len() {
-            let v = rest[i + 1].trim();
-            raw_target = Some(v.to_string());
-            if v.is_empty() {
-                target = SendTarget::TmuxCurrent;
-            } else {
-                target = resolve_named_pane_target(v, url, token);
-            }
-            i += 2;
-            continue;
-        }
-        if rest[i].starts_with('-') {
-            // `-N count` 带值；其余无值开关（-l/-H/-R/-M）跳过。
-            if rest[i] == "-N" && i + 1 < rest.len() {
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-        break;
-    }
-    }
-    let mut buf: Vec<u8> = Vec::new();
-    for w in rest.iter().skip(i) {
-        buf.extend(tmux_key_to_bytes(w));
-    }
-    let text = String::from_utf8_lossy(&buf).into_owned();
-
-    // 会话限定目标 / 自定义 socket → native send-keys（写目标面板 master）。
-    // 命中 GUI 会话（409）则回退到下方 GUI 路径。
-    if use_native(raw_target.as_deref()) {
-        let body = serde_json::json!({
-            "socket": socket(),
-            "target": raw_target.clone().unwrap_or_default(),
-            "text": text,
-        });
-        match http_post(tmux_api(url, "send-keys"), token, body) {
-            Some((200, _)) => return Ok(()),
-            Some((409, _)) => {}
-            Some((_, msg)) => {
-                if !msg.is_empty() {
-                    eprintln!("{msg}");
-                }
-                return Err(());
-            }
-            None => return Err(()),
-        }
-    }
-
-    let candidate = text.trim_end_matches(['\r', '\n']).trim();
-    // Structured launch: trigger regardless of trailing Enter. Claude Code often sends
-    // the command and Enter in separate `send-keys` calls; waiting for the Enter would
-    // mean the command text gets typed into the default shell (which can't execute
-    // Unix `env K=V` syntax on Windows). A follow-up Enter is harmless — it just
-    // sends a newline to the spawned process's stdin.
-    if !candidate.is_empty() {
-        if let Some(launch) = parse_structured_launch(candidate) {
-            if post_spawn_process(url, token, &target, &launch).is_ok() {
-                return Ok(());
-            }
-            log_to_file("spawn-process failed, falling back to send-keys");
-        }
-    }
-    let body = match target {
-        SendTarget::TmuxCurrent => serde_json::json!({
-            "use_tmux_current_pane": true,
-            "text": text,
-        }),
-        SendTarget::Index(p) => serde_json::json!({
-            "pane": p,
-            "use_tmux_current_pane": false,
-            "text": text,
-        }),
-    };
-    let u = format!("{}/api/v1/send-keys", url.trim_end_matches('/'));
-    let res = send_retry(client().post(u).headers(auth_headers(token)).json(&body))
-        .map_err(|e| eprintln!("tmux: {e}"))?;
-    if !res.status().is_success() {
-        eprintln!("tmux: send-keys {}", res.status());
-        return Err(());
-    }
-    Ok(())
-}
-
-}
-*/
 
 struct ListPanesArgs {
     pane_index: usize,
@@ -1956,88 +1733,6 @@ fn cmd_list_panes(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     print!("{text}");
     Ok(())
 }
-/*
-    // Claude Code 常用 tmux `list-panes -F ...` 推断 pane/window；优先返回兼容格式。
-    let mut pane_index = current_pane_index_from_env();
-    let mut format: Option<String> = None;
-    let mut all_panes = false;
-    let mut raw_target: Option<String> = None;
-    let mut i = 0usize;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "-t" if i + 1 < rest.len() => {
-                raw_target = Some(rest[i + 1].clone());
-                pane_index = parse_pane_target(&rest[i + 1]);
-                i += 1;
-            }
-            "-F" if i + 1 < rest.len() => {
-                format = Some(rest[i + 1].clone());
-                i += 1;
-            }
-            "-a" => all_panes = true,
-            "-s" => all_panes = true,
-            "-r" => {} // reverse order (not needed for now)
-            _ => {}
-        }
-        i += 1;
-    }
-
-    // 会话限定目标 / 自定义 socket → native list-panes（真实面板 id + `-F` 渲染）。
-    // 这条必须正确：验收脚本用 `list-panes -t =S -F '#{session_name}'` 作破坏性操作前的守卫。
-    if use_native(raw_target.as_deref()) {
-        let mut u = format!(
-            "{}?socket={}&target={}",
-            tmux_api(url, "list-panes"),
-            q(socket()),
-            q(raw_target.as_deref().unwrap_or(""))
-        );
-        if let Some(f) = &format {
-            u.push_str(&format!("&format={}", q(f)));
-        }
-        if all_panes {
-            u.push_str("&all=1");
-        }
-        match http_get(u, token) {
-            Some((200, body)) => {
-                println!("{body}");
-                return Ok(());
-            }
-            Some((409, _)) => {} // 命中 GUI 会话 → 回退 GUI 路径
-            Some((_, msg)) => {
-                if !msg.is_empty() {
-                    eprintln!("{msg}");
-                }
-                return Err(());
-            }
-            None => return Err(()),
-        }
-    }
-
-    if let Some(fmt) = format {
-        if all_panes {
-            println!("{}", render_tmux_format_dynamic(&fmt, 0, url, token));
-        } else {
-            println!(
-                "{}",
-                render_tmux_format_dynamic(&fmt, pane_index, url, token)
-            );
-        }
-        return Ok(());
-    }
-
-    let u = format!("{}/api/v1/list-panes", url.trim_end_matches('/'));
-    let res = send_retry(client().get(u).headers(auth_headers(token)))
-        .map_err(|e| eprintln!("tmux: {e}"))?;
-    if !res.status().is_success() {
-        eprintln!("tmux: list-panes {}", res.status());
-        return Err(());
-    }
-    let text = res.text().map_err(|e| eprintln!("tmux: {e}"))?;
-    print!("{text}");
-    Ok(())
-}
-
-*/
 
 // ========== Pane Management Commands ==========
 
