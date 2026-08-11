@@ -760,6 +760,61 @@ impl WebGpuPaneBackend {
         Some(entry)
     }
 
+    fn should_skip_cell(cell: &crate::term::cell::Cell) -> bool {
+        cell.width == 0 || (cell.ch == ' ' && cell.attr == crate::term::attr_table::AttrId::DEFAULT)
+    }
+
+    fn cluster_text_for<'a>(
+        row: &'a RowDraw<'a>,
+        render_path: RenderPath,
+        col: usize,
+    ) -> Option<&'a str> {
+        if render_path == RenderPath::Fast || row.clusters.is_empty() {
+            return None;
+        }
+        let target = col.min(u16::MAX as usize) as u16;
+        row.clusters
+            .iter()
+            .find(|cluster| cluster.col == target)
+            .map(|cluster| cluster.text.as_ref())
+    }
+
+    fn glyph_style_flags(flags: crate::term::attrs::Flags) -> u8 {
+        let mut style = 0;
+        if flags.contains(crate::term::attrs::Flags::BOLD) {
+            style |= GlyphKey::STYLE_BOLD;
+        }
+        if flags.contains(crate::term::attrs::Flags::ITALIC) {
+            style |= GlyphKey::STYLE_ITALIC;
+        }
+        style
+    }
+
+    fn append_atlas_glyph(
+        instances: &mut Vec<CellInstance>,
+        entry: Option<GlyphEntry>,
+        pixel_x: f32,
+        pixel_y: f32,
+        row_h_int: f32,
+        fg: [u8; 4],
+        drawn_procedurally: bool,
+    ) {
+        if drawn_procedurally {
+            return;
+        }
+        if let Some(entry) = entry {
+            instances.push(CellInstance {
+                cell_xy: [pixel_x, pixel_y],
+                cell_size: [(entry.px_w as f32).max(1.0), row_h_int],
+                atlas_uv: entry.uv,
+                atlas_layer: entry.layer as u32,
+                fg_rgba: rgba_u8_to_f32(fg),
+                bg_rgba: [0.0, 0.0, 0.0, 0.0],
+                is_color: u32::from(entry.is_color),
+            });
+        }
+    }
+
     fn draw_row_texts(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let row_idx = row.row_index;
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
@@ -772,7 +827,7 @@ impl WebGpuPaneBackend {
         let render_path = scan_line_path(row.cells, row.clusters);
 
         for (col, cell) in row.cells.iter().enumerate() {
-            if cell.width == 0 {
+            if Self::should_skip_cell(cell) {
                 continue;
             }
 
@@ -789,25 +844,11 @@ impl WebGpuPaneBackend {
             let pixel_y_bot = ((row_idx + 1) as f32 * cell_h + 0.5).floor();
             let row_h_int = pixel_y_bot - pixel_y;
 
-            if cell.ch == ' ' && cell.attr == crate::term::attr_table::AttrId::DEFAULT {
-                continue;
-            }
-
             // ── Fast-path skip: for pure ASCII lines, no cluster lookup
             // is needed. This avoids the linear scan through `row.clusters`
             // and the per-cell char encoding for the common case of code
             // and log output, keeping the tight loop minimal.
-            let cluster_text: Option<&str> = if render_path == RenderPath::Fast {
-                None
-            } else if !row.clusters.is_empty() {
-                let target = col.min(u16::MAX as usize) as u16;
-                row.clusters
-                    .iter()
-                    .find(|c| c.col == target)
-                    .map(|c| c.text.as_ref())
-            } else {
-                None
-            };
+            let cluster_text = Self::cluster_text_for(row, render_path, col);
             let mut ch_buf = [0u8; 4];
             let glyph_text: &str = match cluster_text {
                 Some(text) => text,
@@ -823,13 +864,7 @@ impl WebGpuPaneBackend {
                     (ctx.font_size_px * 100.0).round() as u16,
                 )
             };
-            let mut style_flags = 0;
-            if attrs.flags.contains(crate::term::attrs::Flags::BOLD) {
-                style_flags |= GlyphKey::STYLE_BOLD;
-            }
-            if attrs.flags.contains(crate::term::attrs::Flags::ITALIC) {
-                style_flags |= GlyphKey::STYLE_ITALIC;
-            }
+            let style_flags = Self::glyph_style_flags(attrs.flags);
             let glyph_id = glyph_id_for(cluster_text, cell.ch);
             let key = GlyphKey::new(
                 font_family_hash,
@@ -839,12 +874,6 @@ impl WebGpuPaneBackend {
                 self.metrics.dpr * ATLAS_SUPERSAMPLE as f32,
             );
             let entry = self.admit_glyph(key, glyph_text, style_flags);
-
-            let is_color_flag: u32 = if entry.map(|e| e.is_color).unwrap_or(false) {
-                1
-            } else {
-                0
-            };
 
             // Procedural block/box-drawing chars
             let drawn_procedurally = append_procedural_glyph(
@@ -927,20 +956,15 @@ impl WebGpuPaneBackend {
             }
 
             */
-            if !drawn_procedurally {
-                if let Some(e) = entry {
-                    let natural_w = (e.px_w as f32).max(1.0);
-                    row_glyph_instances.push(CellInstance {
-                        cell_xy: [pixel_x, pixel_y],
-                        cell_size: [natural_w, row_h_int],
-                        atlas_uv: e.uv,
-                        atlas_layer: e.layer as u32,
-                        fg_rgba: rgba_u8_to_f32(fg),
-                        bg_rgba: [0.0, 0.0, 0.0, 0.0],
-                        is_color: is_color_flag,
-                    });
-                }
-            }
+            Self::append_atlas_glyph(
+                &mut row_glyph_instances,
+                entry,
+                pixel_x,
+                pixel_y,
+                row_h_int,
+                fg,
+                drawn_procedurally,
+            );
         }
         self.pending_instances.append(&mut row_glyph_instances);
     }

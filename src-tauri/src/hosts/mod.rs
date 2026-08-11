@@ -974,6 +974,51 @@ fn ensure_remote_session_available(
     Ok(())
 }
 
+fn attach_workspace_target(
+    state: &AppState,
+    workspace_id: uuid::Uuid,
+) -> Result<uuid::Uuid, String> {
+    let map = state.workspaces.read();
+    let ws = map
+        .get(&workspace_id)
+        .ok_or_else(|| format!("未知工作区: {workspace_id}"))?;
+    ws.pane_tree
+        .get_all_leaves()
+        .first()
+        .copied()
+        .ok_or_else(|| format!("工作区无可拆分 pane: {workspace_id}"))
+}
+
+fn split_attach_target(
+    state: &AppState,
+    workspace_id: uuid::Uuid,
+    target: uuid::Uuid,
+    client: Option<&Arc<OutboundClient>>,
+    session_id: &str,
+) -> Result<uuid::Uuid, String> {
+    let split_result = {
+        let mut map = state.workspaces.write();
+        match map.get_mut(&workspace_id) {
+            Some(ws) => {
+                use ridge_core::workspace::pane_tree::SplitDirection;
+                ws.pane_tree
+                    .split(target, SplitDirection::Vertical)
+                    .map_err(|error| format!("工作区 split 失败: {error}"))
+            }
+            None => Err(format!("未知工作区: {workspace_id}")),
+        }
+    };
+    match split_result {
+        Ok(id) => Ok(id),
+        Err(error) => {
+            if let Some(client) = client {
+                let _ = client.unsubscribe(session_id);
+            }
+            Err(error)
+        }
+    }
+}
+
 /// V-H1-LIVE / R17-HOST-PANE：把远端会话接入为 foreign 视图（需 Connected）。
 /// 注册 live stdin sink、foreign 元数据；若有 outbound 客户端则 **subscribe**。
 #[tauri::command]
@@ -1025,15 +1070,7 @@ fn attach_host_session_inner(
     // Validate the workspace before touching the remote subscription.  A
     // missing/empty workspace is a hard failure; generating a random pane id
     // would create a foreign attachment that can never be rendered.
-    let target = {
-        let map = state.workspaces.read();
-        let ws = map.get(&wid).ok_or_else(|| format!("未知工作区: {wid}"))?;
-        ws.pane_tree
-            .get_all_leaves()
-            .first()
-            .copied()
-            .ok_or_else(|| format!("工作区无可拆分 pane: {wid}"))?
-    };
+    let target = attach_workspace_target(state, wid)?;
 
     // Create the local PTY before any layout/host mutation.  PTY failures are
     // surfaced instead of returning an attached session without a terminal.
@@ -1052,29 +1089,13 @@ fn attach_host_session_inner(
     // Commit the layout split only after all fallible setup above succeeded.
     // If another command removed the workspace/target in the meantime, undo
     // the remote subscription before returning the error.
-    let split_result = {
-        let mut map = state.workspaces.write();
-        match map.get_mut(&wid) {
-            Some(ws) => {
-                use ridge_core::workspace::pane_tree::SplitDirection;
-                ws.pane_tree
-                    .split(target, SplitDirection::Vertical)
-                    .map_err(|error| format!("工作区 split 失败: {error}"))
-            }
-            None => Err(format!("未知工作区: {wid}")),
-        }
-    };
-    let pane_id = match split_result {
-        Ok(id) => id,
-        Err(error) => {
-            if subscribed {
-                if let Some(client) = client.as_ref() {
-                    let _ = client.unsubscribe(&session_id);
-                }
-            }
-            return Err(error);
-        }
-    };
+    let pane_id = split_attach_target(
+        state,
+        wid,
+        target,
+        if subscribed { client.as_ref() } else { None },
+        &session_id,
+    )?;
 
     // Prefer outbound client write path when bound; else buffer sink for tests.
     let sink_installed = if let Some(client) = client.as_ref() {
