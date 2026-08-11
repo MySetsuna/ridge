@@ -36,10 +36,10 @@ use web_sys::{
 use crate::render::backend::{
     resolve_cell_colors, CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme,
 };
-use crate::render::procedural_box;
 use crate::render::renderer::{
     history_overlay_geometry, history_text, history_text_width, truncate_history_text,
 };
+use crate::render::{procedural_box, snap_css_to_device};
 use crate::term::attr_table::AttrTable;
 use crate::term::attrs::Flags;
 // Glyphs draw at their natural size via a plain `fill_text` (no
@@ -197,6 +197,11 @@ pub struct Canvas2dBackend {
 }
 
 impl Canvas2dBackend {
+    #[inline]
+    fn snap(&self, value: f64) -> f64 {
+        snap_css_to_device(value, self.metrics.dpr as f64)
+    }
+
     /// Main-thread constructor — `HtmlCanvasElement` from the DOM.
     pub fn new(canvas: HtmlCanvasElement) -> Result<Self, String> {
         let ctx_obj = canvas
@@ -374,8 +379,8 @@ impl Canvas2dBackend {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
 
-        let y_top = (row.row_index as f64 * cell_h).round();
-        let y_bottom = ((row.row_index + 1) as f64 * cell_h).round();
+        let y_top = self.snap(row.row_index as f64 * cell_h);
+        let y_bottom = self.snap((row.row_index + 1) as f64 * cell_h);
         let h = y_bottom - y_top;
 
         for (col, cell) in row.cells.iter().enumerate() {
@@ -386,8 +391,8 @@ impl Canvas2dBackend {
             let (_attrs, _fg, bg) =
                 resolve_cell_colors(cell, attrs_table, &self.theme, self.metrics.tui_mode);
 
-            let x_left = (col as f64 * cell_w).round();
-            let x_right = ((col as f64 + cell.width as f64) * cell_w).round();
+            let x_left = self.snap(col as f64 * cell_w);
+            let x_right = self.snap((col as f64 + cell.width as f64) * cell_w);
             let w = x_right - x_left;
 
             if w <= 0.0 {
@@ -407,8 +412,8 @@ impl Canvas2dBackend {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
 
-        let y_top = (row.row_index as f64 * cell_h).round();
-        let y_bottom = ((row.row_index + 1) as f64 * cell_h).round();
+        let y_top = self.snap(row.row_index as f64 * cell_h);
+        let y_bottom = self.snap((row.row_index + 1) as f64 * cell_h);
         let h = y_bottom - y_top;
 
         for (col, cell) in row.cells.iter().enumerate() {
@@ -438,15 +443,15 @@ impl Canvas2dBackend {
         self.ctx.set_fill_style_str(&Self::rgba_to_css(fg));
         self.set_cell_font(attrs.flags);
         let glyph = cell_glyph(row, col, cell.ch);
-        let grid_x_left = (col as f64 * cell_w).round();
-        let grid_span_w = ((col as f64 + cell.width as f64) * cell_w).round() - grid_x_left;
+        let grid_x_left = self.snap(col as f64 * cell_w);
+        let grid_span_w = self.snap((col as f64 + cell.width as f64) * cell_w) - grid_x_left;
         let effective_span = self.effective_span(&glyph, cell.width.into(), cell_w);
         let drawn_procedurally =
             self.draw_procedural_glyph(&glyph, grid_x_left, y_top, grid_span_w, h);
         if !drawn_procedurally {
             let _ = self.ctx.fill_text(&glyph, grid_x_left, y_top);
         }
-        let effective_w = ((col as f64 + effective_span) * cell_w).round() - grid_x_left;
+        let effective_w = self.snap((col as f64 + effective_span) * cell_w) - grid_x_left;
         self.draw_cell_decorations(attrs.flags, grid_x_left, y_top, h, effective_w);
     }
 
@@ -485,18 +490,23 @@ impl Canvas2dBackend {
             return false;
         };
         for rect in rects {
-            self.ctx
-                .fill_rect(rect.x as f64, rect.y as f64, rect.w as f64, rect.h as f64);
+            let x = self.snap(rect.x as f64);
+            let y = self.snap(rect.y as f64);
+            let right = self.snap((rect.x + rect.w) as f64);
+            let bottom = self.snap((rect.y + rect.h) as f64);
+            self.ctx.fill_rect(x, y, right - x, bottom - y);
         }
         true
     }
 
     fn draw_cell_decorations(&self, flags: Flags, x: f64, y: f64, h: f64, width: f64) {
         if flags.contains(Flags::UNDERLINE) {
-            self.ctx.fill_rect(x, y + h - 2.0, width, 1.0);
+            self.ctx
+                .fill_rect(self.snap(x), self.snap(y + h - 2.0), width, 1.0);
         }
         if flags.contains(Flags::STRIKETHROUGH) {
-            self.ctx.fill_rect(x, y + h * 0.5, width, 1.0);
+            self.ctx
+                .fill_rect(self.snap(x), self.snap(y + h * 0.5), width, 1.0);
         }
     }
 }
@@ -506,9 +516,9 @@ impl Canvas2dBackend {
         let cell_w = self.metrics.cell_w as f64;
         let cell_h = self.metrics.cell_h as f64;
         let effective_col = cursor.col as f64;
-        let x = (effective_col * cell_w + 0.5).floor();
-        let y = (cursor.row as f64 * cell_h + 0.5).floor();
-        let y_bottom = ((cursor.row + 1) as f64 * cell_h + 0.5).floor();
+        let x = self.snap(effective_col * cell_w);
+        let y = self.snap(cursor.row as f64 * cell_h);
+        let y_bottom = self.snap((cursor.row + 1) as f64 * cell_h);
         let cell_h_int = y_bottom - y;
         let cursor_span = cursor.width.max(1) as usize;
 
@@ -526,7 +536,7 @@ impl Canvas2dBackend {
         } else {
             cursor_span
         };
-        let x_right = ((effective_col + effective_span as f64) * cell_w + 0.5).floor();
+        let x_right = self.snap((effective_col + effective_span as f64) * cell_w);
         let span_w = x_right - x;
 
         self.ctx
@@ -560,11 +570,11 @@ impl Canvas2dBackend {
             if col_end <= col_start {
                 continue;
             }
-            let x_left = (col_start as f64 * cell_w).round();
-            let x_right = (col_end as f64 * cell_w).round();
+            let x_left = self.snap(col_start as f64 * cell_w);
+            let x_right = self.snap(col_end as f64 * cell_w);
             let w = x_right - x_left;
-            let y_top = (row as f64 * cell_h).round();
-            let y_bottom = ((row + 1) as f64 * cell_h).round();
+            let y_top = self.snap(row as f64 * cell_h);
+            let y_bottom = self.snap((row + 1) as f64 * cell_h);
             let h = y_bottom - y_top;
             self.ctx.fill_rect(x_left, y_top, w, h);
         }
@@ -578,11 +588,11 @@ impl Canvas2dBackend {
             if col_end <= col_start {
                 continue;
             }
-            let x_left = (col_start as f64 * cell_w).round();
-            let x_right = (col_end as f64 * cell_w).round();
+            let x_left = self.snap(col_start as f64 * cell_w);
+            let x_right = self.snap(col_end as f64 * cell_w);
             let w = x_right - x_left;
-            let y_bottom = ((row + 1) as f64 * self.metrics.cell_h as f64).round();
-            let y = y_bottom - 1.0;
+            let y_bottom = self.snap((row + 1) as f64 * self.metrics.cell_h as f64);
+            let y = self.snap(y_bottom - 1.0);
             self.ctx.fill_rect(x_left, y, w, 1.0);
         }
     }

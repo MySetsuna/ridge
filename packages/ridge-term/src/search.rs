@@ -155,6 +155,7 @@ impl SearchState {
 
     /// Advance to the next match (wraps around). Returns the active match
     /// after the advance, or None if no matches exist.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<MatchAbs> {
         if self.matches.is_empty() {
             return None;

@@ -1241,7 +1241,7 @@ impl Grid {
             && self
                 .scrollback
                 .get(sb_len - 1 - straddle)
-                .map_or(false, |r| r.wrapped)
+                .is_some_and(|r| r.wrapped)
         {
             straddle += 1;
         }
@@ -1304,7 +1304,7 @@ impl Grid {
                 if r + 1 < para_end {
                     // Wrapped row: keep the full width, minus a wide-char pad.
                     let mut take = cells.len();
-                    let next_starts_wide = src[r + 1].cells.first().map_or(false, |c| c.width == 2);
+                    let next_starts_wide = src[r + 1].cells.first().is_some_and(|c| c.width == 2);
                     if next_starts_wide
                         && take > 0
                         && cells[take - 1].width == 1
@@ -2073,7 +2073,6 @@ impl Grid {
             // push partly off the row also need their inside half
             // cleared so an orphan main doesn't land at cells[cols-1].
             if cols > n
-                && cols >= n + 1
                 && cols - n - 1 < r.cells.len()
                 && cols - n < r.cells.len()
                 && r.cells[cols - n - 1].width == 2
@@ -2365,6 +2364,7 @@ impl Grid {
 ///     matches xterm's "erase invalidates the link" UX (the user can re-emit
 ///     OSC 8 to restore it). This is rare in practice — partial-erase usually
 ///     covers a whole word or label.
+///
 /// §1.28 (2026-05-07): when an erase / shift range `[start, end)` cuts
 /// through the middle of a wide-cell pair (main at width=2, continuation
 /// at width=0), the half that lives OUTSIDE the range becomes an orphan.
@@ -2421,10 +2421,10 @@ fn clip_hyperlinks_around(spans: &mut Vec<super::cell::HyperlinkSpan>, start: us
     spans.retain_mut(|span| {
         if span.col_end <= start || span.col_start >= end {
             true // entirely outside the erase window
-        } else if span.col_start >= start && span.col_end <= end {
-            false // entirely inside — drop
-        } else if span.col_start < start && span.col_end > end {
-            false // hole punched in the middle — drop (see doc-comment)
+        } else if (span.col_start >= start && span.col_end <= end)
+            || (span.col_start < start && span.col_end > end)
+        {
+            false // entirely inside or hole-punched in the middle — drop
         } else if span.col_end > end {
             // erase covers the head; clip start forward to `end`.
             span.col_start = end;
@@ -2643,7 +2643,7 @@ mod tests {
             g.linefeed();
             g.carriage_return();
         }
-        assert!(g.scrollback.len() > 0, "precondition: scrollback 已填充");
+        assert!(!g.scrollback.is_empty(), "precondition: scrollback 已填充");
         g.erase_in_display(EraseMode::All);
         assert_eq!(g.scrollback.len(), 0, "主屏 ED 2 必须连带丢弃 scrollback");
     }
@@ -2980,7 +2980,7 @@ mod tests {
             "a".repeat(40),
             "row 0 clipped to new width"
         );
-        assert_eq!(g.row(0).unwrap().wrapped, false, "no synthetic wrap flag");
+        assert!(!g.row(0).unwrap().wrapped, "no synthetic wrap flag");
         for r in 1..5 {
             assert_eq!(row_text(&g, r), "", "row {r} untouched (no rewrap)");
         }
@@ -3067,7 +3067,7 @@ mod tests {
                 "",
                 "alt row {r_idx} not cleared after resize"
             );
-            assert_eq!(g.row(r_idx).unwrap().wrapped, false);
+            assert!(!g.row(r_idx).unwrap().wrapped);
         }
     }
 
@@ -3127,7 +3127,7 @@ mod tests {
                 "",
                 "primary row {r} should be wiped under inline-TUI resize"
             );
-            assert_eq!(g.row(r).unwrap().wrapped, false);
+            assert!(!g.row(r).unwrap().wrapped);
         }
         assert_eq!(g.cursor().row, 0, "cursor homed on inline-TUI wipe");
         assert_eq!(g.cursor().col, 0, "cursor homed on inline-TUI wipe");
@@ -3281,8 +3281,7 @@ mod tests {
                     // Wrapped row: full content minus a wide-char wrap pad.
                     let cells = &row.cells;
                     let mut take = cells.len();
-                    let next_starts_wide =
-                        rows[r + 1].cells.first().map_or(false, |c| c.width == 2);
+                    let next_starts_wide = rows[r + 1].cells.first().is_some_and(|c| c.width == 2);
                     if next_starts_wide
                         && take > 0
                         && cells[take - 1].width == 1
@@ -3422,7 +3421,7 @@ mod tests {
         g.resize_with_inline_tui(4, 10, false);
 
         assert!(
-            g.scrollback.len() >= 1,
+            !g.scrollback.is_empty(),
             "overflowed history rows must land in scrollback, not be dropped (len={})",
             g.scrollback.len()
         );
@@ -3461,7 +3460,7 @@ mod tests {
         // The long line's head now sits in scrollback (wrapped), its tail
         // still visible — a paragraph straddling the boundary.
         assert!(
-            g.scrollback.len() >= 1 && g.scrollback.get(g.scrollback.len() - 1).unwrap().wrapped,
+            !g.scrollback.is_empty() && g.scrollback.get(g.scrollback.len() - 1).unwrap().wrapped,
             "precondition: a wrapped scrollback tail straddles the boundary"
         );
         let before = logical_lines(&g, g.cursor().row.saturating_sub(1));

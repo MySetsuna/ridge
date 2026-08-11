@@ -27,8 +27,8 @@
 //! jitter from devicePixelRatio rounding can't fragment the cache. Size
 //! 14.0 and 14.000001 hash to the same bucket.
 
-use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::{hash_map::Entry, HashMap};
 
 /// Cache key. Identifies a glyph variant by (font, size, raster density,
 /// codepoint or font-internal id, weight/slant flags).
@@ -155,8 +155,8 @@ impl GlyphAtlas {
     /// associated texture slot). A duplicate insert (same key) replaces
     /// the entry without eviction.
     pub fn insert(&mut self, key: GlyphKey, entry: GlyphEntry) -> Option<GlyphKey> {
-        if self.entries.contains_key(&key) {
-            self.entries.insert(key, entry);
+        if let Entry::Occupied(mut existing) = self.entries.entry(key) {
+            existing.insert(entry);
             if let Some(pos) = self.order.iter().position(|k| *k == key) {
                 self.order.remove(pos);
             }
@@ -257,6 +257,7 @@ impl GlyphAtlas {
 /// Pick an LRU layer to reuse. The returned layer is guaranteed:
 ///   - Not in `pinned` (per-pane pin set for current frame)
 ///   - Not in `written` (global pin set: already written by any pane this frame)
+///
 /// Returns `None` when every layer is pinned or written (atlas exhausted).
 pub fn pick_evictable_layer(
     atlas: &mut GlyphAtlas,

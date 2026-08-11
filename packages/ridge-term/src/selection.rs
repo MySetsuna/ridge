@@ -157,6 +157,7 @@ impl Selection {
     ///    so the first visible row shows full-width highlight.
     ///  * If the end row is clipped off the bottom, `end.col = cols`
     ///    so the last visible row shows full-width highlight.
+    ///
     /// This is the same shape `selection_to_rects` produces from a
     /// fully-in-viewport `Range`, so the renderer doesn't need to
     /// special-case the clipped form.
@@ -334,12 +335,16 @@ impl Selection {
 }
 
 fn selected_bounds(abs: usize, range: &RangeAbs, cols: usize, row_len: usize) -> (usize, usize) {
-    let lo = (abs == range.start_abs_row)
-        .then_some(range.start_col)
-        .unwrap_or(0);
-    let hi = (abs == range.end_abs_row)
-        .then_some(range.end_col)
-        .unwrap_or(cols);
+    let lo = if abs == range.start_abs_row {
+        range.start_col
+    } else {
+        0
+    };
+    let hi = if abs == range.end_abs_row {
+        range.end_col
+    } else {
+        cols
+    };
     (lo, hi.min(row_len))
 }
 

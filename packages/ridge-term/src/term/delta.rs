@@ -36,6 +36,7 @@ use super::attrs::{Color, Flags};
 /// frontend doesn't need a copy of the parser's `AttrTable` flyweight.
 /// 17 bytes uncompressed per cell (char 4 + Color 4 + Color 4 + Flags 2
 /// + width 1 + alignment 2); postcard varints shrink the common
+///
 /// default-attr case to ~6 bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeltaCell {

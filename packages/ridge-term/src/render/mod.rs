@@ -27,6 +27,22 @@ pub struct Rect {
     pub h: f32,
 }
 
+/// Snap a CSS-pixel coordinate to the nearest device pixel, then express it
+/// back in CSS pixels for a scaled Canvas2D context.
+///
+/// Rounding CSS coordinates directly is only correct at DPR 1. At DPR 1.25
+/// or 1.5 it leaves edges at fractional backing-store pixels, which makes
+/// box-drawing strokes and adjacent cell backgrounds blur or gap.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn snap_css_to_device(value: f64, dpr: f64) -> f64 {
+    let dpr = if dpr.is_finite() && dpr > 0.0 {
+        dpr
+    } else {
+        1.0
+    };
+    (value * dpr).round() / dpr
+}
+
 /// Generates procedural rectangles for Box Drawing (U+2500..=U+257F) and
 /// Block Elements (U+2580..=U+259F). Returns None if the character is not supported.
 ///
@@ -937,7 +953,7 @@ impl RenderBackend for AnyBackend {
 
 #[cfg(test)]
 mod procedural_box_tests {
-    use super::{procedural_box, Rect};
+    use super::{procedural_box, snap_css_to_device, Rect};
 
     // Unit-cell bounds keep the assertions simple: every fraction maps to
     // an exact f32 with no rounding required.
@@ -1235,5 +1251,18 @@ mod procedural_box_tests {
             assert_eq!(r[0].x, CX + CW / 2.0, "{:?} x", ch);
             assert_eq!(r[0].w, CW / 2.0 + 1.0, "{:?} w", ch);
         }
+    }
+
+    #[test]
+    fn css_coordinates_snap_in_device_pixel_space() {
+        let snapped = snap_css_to_device(10.5, 1.25);
+        assert!((snapped - 10.4).abs() < f32::EPSILON as f64);
+        assert!((snap_css_to_device(10.0, 1.5) - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn invalid_dpr_falls_back_to_css_pixel_rounding() {
+        assert_eq!(snap_css_to_device(10.6, 0.0), 11.0);
+        assert_eq!(snap_css_to_device(10.6, f64::NAN), 11.0);
     }
 }

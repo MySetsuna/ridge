@@ -180,6 +180,7 @@ impl Row {
 
     /// Reset all cells to default + clear wrap flag + drop hyperlinks
     /// + drop cluster overrides. Used by ED (erase display) and when
+    ///
     /// scrollback ejects a row back into the grid.
     pub fn clear(&mut self) {
         self.fill_blank(Cell::EMPTY);

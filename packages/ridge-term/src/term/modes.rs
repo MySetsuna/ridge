@@ -310,6 +310,7 @@ pub enum ModeEffect {
     EnterAltScreenAndClear,
     /// ?1049 — xterm composite: DECSC (save primary cursor) + switch to alt
     /// + clear alt + move cursor to (0,0). TUIs (vim, less, fzf, claude code)
+    ///
     /// rely on the save half; without it the prompt returns at a stale row
     /// when the TUI exits and overwrites whatever was on screen.
     EnterAltScreenSaveCursor,
