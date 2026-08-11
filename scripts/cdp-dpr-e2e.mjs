@@ -29,7 +29,11 @@ function listTargets() {
 }
 
 async function findTarget() {
-  const deadline = Date.now() + 30_000;
+  const targetTimeoutMs = Number.parseInt(
+    process.env.RIDGE_DPR_TARGET_TIMEOUT_MS || String(appReadyTimeoutMs),
+    10,
+  );
+  const deadline = Date.now() + targetTimeoutMs;
   while (Date.now() < deadline) {
     try {
       const target = (await listTargets()).find(isRidgeCdpTarget);

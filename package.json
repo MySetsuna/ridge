@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "vite build && node scripts/sync-generated-csp.mjs build/index.html",
     "build:remote": "pnpm build:remote:desktop && pnpm build:remote:mobile",
     "build:remote:desktop": "node scripts/build-remote-desktop.mjs",
     "build:remote:mobile": "vite build --config vite.remote.config.js",
