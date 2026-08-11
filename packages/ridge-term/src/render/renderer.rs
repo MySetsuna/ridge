@@ -815,7 +815,7 @@ impl<B: RenderBackend> Renderer<B> {
     fn collect_dirty_rows(&mut self, terminal: &Terminal, rows: usize) -> Vec<usize> {
         let mut dirty = Vec::with_capacity(rows);
         let mut flags = vec![false; rows];
-        for row_index in 0..rows {
+        for (row_index, flag) in flags.iter_mut().enumerate() {
             let Some(row) = terminal.viewport_row(row_index) else {
                 continue;
             };
@@ -830,7 +830,7 @@ impl<B: RenderBackend> Renderer<B> {
                     self.snapshot.push(hash);
                 }
                 dirty.push(row_index);
-                flags[row_index] = true;
+                *flag = true;
             }
         }
         for row_index in (1..rows).rev() {

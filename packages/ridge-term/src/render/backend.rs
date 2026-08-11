@@ -227,12 +227,8 @@ fn build_xterm_palette() -> [[u8; 4]; 256] {
         [0x00, 0xff, 0xff, 0xff], // bright cyan
         [0xff, 0xff, 0xff, 0xff], // bright white
     ];
-    for i in 0..8 {
-        pal[i] = ansi[i];
-    }
-    for i in 0..8 {
-        pal[i + 8] = bright[i];
-    }
+    pal[..8].copy_from_slice(&ansi);
+    pal[8..16].copy_from_slice(&bright);
 
     // 16..232: 6×6×6 cube. Per xterm: each axis uses values 0, 95, 135,
     // 175, 215, 255 (NOT a uniform 51-step ramp, which is a common bug).
@@ -337,6 +333,7 @@ pub trait RenderBackend {
     ///   1. Paint each cell's bg (skip cells whose bg matches theme.bg
     ///      to save fill calls — caller doesn't optimize this).
     ///   2. Paint each cell's glyph.
+    ///
     /// `attrs_table` resolves `AttrId` to colors and flags.
     fn draw_row_backgrounds(
         &mut self,
@@ -378,6 +375,7 @@ pub trait RenderBackend {
     ///   2. Rasterize and paint each preedit glyph in `theme.fg`.
     ///   3. Draw a 1-px underline beneath the preedit cells — the
     ///      standard convention for in-progress IME text on every OS.
+    ///
     /// Cell content is NOT modified. Default no-op so backends can
     /// add this incrementally.
     fn draw_preedit_overlay(&mut self, _text: &str, _row: usize, _col: usize, _theme: &Theme) {}
@@ -394,6 +392,7 @@ pub trait RenderBackend {
     ///      `overlay.selected_index` (when >= 0) gets an inverse
     ///      treatment: bg = `theme.fg`, fg = `theme.bg`.
     ///   5. Truncate per-row text that exceeds the panel width.
+    ///
     /// Cells underneath the popup are NOT modified — the overlay is
     /// a top-layer paint only, matching the preedit pattern. Default
     /// no-op so backends can add this incrementally.

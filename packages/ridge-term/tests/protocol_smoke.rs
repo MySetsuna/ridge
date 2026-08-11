@@ -352,6 +352,7 @@ fn scenario_decstr_soft_resets_state_preserves_screen() {
 ///   - saved cursor (DECSC slot)
 ///   - last-printed char (REP source)
 ///   - current OSC 8 hyperlink span
+///
 /// This scenario sets all of those, fires RIS, and asserts each is back
 /// to its power-on default. Catches a regression where any one reset
 /// gets dropped (a common churn pattern when RIS is touched).
@@ -697,6 +698,7 @@ fn scenario_osc_events_emit_title_cwd_bell_in_order() {
 
 /// Combined inline-edit scenario: ICH (insert 3 blanks) + write 3 chars
 /// + DCH (delete 2 from start). Verifies the cell-edit verbs cooperate
+///
 /// — they all advance/maintain cursor and shift the row consistently.
 #[test]
 fn scenario_ich_dch_combined_inline_edit() {

@@ -906,6 +906,7 @@ impl JsTerminal {
     /// per xterm SGR spec (column first, then row).
     /// Always uses SGR format regardless of ?1006 state — the terminal
     /// decodes both; SGR is simpler and doesn't overflow at high row/col.
+    #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = encodeMouse)]
     pub fn encode_mouse(
         &self,

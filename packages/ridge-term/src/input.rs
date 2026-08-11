@@ -359,6 +359,7 @@ pub fn encode_mouse(input: MouseInput, _modes: &Modes) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    #[allow(clippy::too_many_arguments)]
     fn encode_mouse(
         btn: u8,
         row: usize,

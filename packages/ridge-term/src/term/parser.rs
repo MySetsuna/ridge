@@ -7,18 +7,18 @@
 //! - print(char)
 //! - C0 controls: BS, HT, LF/VT/FF, CR
 //! - CSI:
-//!     A/B/C/D       cursor up/down/forward/back
-//!     H/f           cursor position (1-based)
-//!     J / K         erase display / line
-//!     S / T         scroll up/down (region-aware)
-//!     L / M         insert / delete lines (IL/DL)
-//!     r             DECSTBM scroll region
-//!     h / l         set/reset mode (DEC private with `?` intermediate)
-//!     m             SGR (full SGR including 38/48 truecolor)
+//!   A/B/C/D       cursor up/down/forward/back
+//!   H/f           cursor position (1-based)
+//!   J / K         erase display / line
+//!   S / T         scroll up/down (region-aware)
+//!   L / M         insert / delete lines (IL/DL)
+//!   r             DECSTBM scroll region
+//!   h / l         set/reset mode (DEC private with `?` intermediate)
+//!   m             SGR (full SGR including 38/48 truecolor)
 //! - ESC:
-//!     7 / 8         DECSC / DECRC
-//!     D / E / M     IND / NEL / RI
-//!     = / >         DECPAM / DECPNM (application keypad)
+//!   7 / 8         DECSC / DECRC
+//!   D / E / M     IND / NEL / RI
+//!   = / >         DECPAM / DECPNM (application keypad)
 //!
 //! ## Mode side-effects
 //! Setting/clearing certain DEC private modes triggers grid actions
@@ -280,7 +280,7 @@ impl<'a> Perform for Performer<'a> {
             }
             0x08 => self.grid.backspace(),
             0x09 => self.grid.tab(),
-            0x0a | 0x0b | 0x0c => {
+            0x0a..=0x0c => {
                 // LF/VT/FF: depending on LNM mode, may also CR.
                 if self.modes.linefeed_newline {
                     self.grid.carriage_return();
