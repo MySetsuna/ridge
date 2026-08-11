@@ -69,3 +69,16 @@ sonar-scanner.bat -Dsonar.nodejs.executable=C:\DevKit\nvm\v20.19.0\node.exe -Dso
 The command still requires a valid scanner token. The scan must be run with a
 bounded process set and its exit/CE result recorded; do not treat a report that
 fails in the JS bridge as an uploaded analysis.
+
+## Latest local regression
+
+- `ab9376ef` removes an `unused_mut` warning in `history_overlay_geometry`;
+  `cargo test -p ridge-term --lib` passed `399/399`.
+- `b80fe50c` fences Remote worker raw `feed` and `applyDelta` through one
+  monotonic per-pane `renderFrameId`; the focused worker suite passed
+  `4 files / 99 tests`.
+- `pnpm check` passed with `0 errors / 0 warnings`; full
+  `pnpm test:coverage:sonar` exited `0`. The local LCOV summary is
+  statements `66.02%`, branches `60.21%`, functions `68.23%`, lines `70.11%`;
+  it remains supporting evidence only and does not replace a Sonar project
+  scan.
