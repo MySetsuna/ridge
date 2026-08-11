@@ -1,9 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HostTopologyLink } from './hostForest';
+
+const { feed } = vi.hoisted(() => ({ feed: vi.fn() }));
+vi.mock('@ridge/remote/shared/terminal/manager', () => ({
+  TerminalManager: { instance: vi.fn(() => ({ feed })) },
+}));
+
 import {
+  activateRemotePaneBinding,
   bindRemotePane,
   deleteRemotePane,
   localPaneIdsForRemote,
+  remotePaneBinding,
+  promoteRemotePaneBinding,
   unbindRemotePane,
 } from './remotePaneBindings';
 
@@ -32,6 +41,69 @@ afterEach(() => {
 });
 
 describe('remotePaneBindings', () => {
+  it('returns no binding for unknown panes and ignores unknown lifecycle events', () => {
+    expect(remotePaneBinding('missing')).toBeUndefined();
+    activateRemotePaneBinding('missing');
+    promoteRemotePaneBinding('missing');
+    unbindRemotePane('missing');
+  });
+
+  it('buffers matching output, drops old bytes at the cap, then flushes on activation', () => {
+    const remote = link();
+    const onRawBytes = vi.mocked(remote.onRawBytes);
+    let receive: Parameters<NonNullable<HostTopologyLink['onRawBytes']>>[0];
+    onRawBytes.mockImplementationOnce((listener) => {
+      receive = listener;
+      return () => {};
+    });
+    vi.mocked(remote.getPaneOutput).mockReturnValueOnce(['initial']);
+    bindRemotePane({
+      localPaneId: 'local-buffered',
+      hostId: 'host-buffered',
+      workspaceId: 'workspace-buffered',
+      remotePaneId: 'remote-buffered',
+      link: remote,
+    });
+    ids.push('local-buffered');
+    expect(remotePaneBinding('local-buffered')?.remotePaneId).toBe('remote-buffered');
+
+    const first = new Uint8Array(600_000).fill(1);
+    const second = new Uint8Array(600_000).fill(2);
+    receive!({ paneId: 'other', workspaceId: 'workspace-buffered' }, first);
+    receive!({ paneId: 'remote-buffered', workspaceId: 'workspace-buffered' }, first);
+    receive!({ paneId: 'remote-buffered', workspaceId: 'workspace-buffered' }, second);
+
+    activateRemotePaneBinding('local-buffered');
+    expect(feed).toHaveBeenCalledTimes(1);
+    expect(feed).toHaveBeenCalledWith('local-buffered', second);
+    expect(remote.promotePane).not.toBeDefined();
+  });
+
+  it('forwards active bytes and promotes the remote pane', () => {
+    const remote = link();
+    const receive = vi.fn();
+    vi.mocked(remote.onRawBytes).mockImplementationOnce((listener) => {
+      receive.mockImplementation(listener);
+      return () => {};
+    });
+    remote.promotePane = vi.fn();
+    bindRemotePane({
+      localPaneId: 'local-active',
+      hostId: 'host-active',
+      workspaceId: 'workspace-active',
+      remotePaneId: 'remote-active',
+      link: remote,
+    });
+    ids.push('local-active');
+    activateRemotePaneBinding('local-active');
+    promoteRemotePaneBinding('local-active');
+
+    const bytes = Uint8Array.from([7, 8]);
+    receive({ paneId: 'remote-active', workspaceId: 'workspace-active' }, bytes);
+    expect(feed).toHaveBeenCalledWith('local-active', bytes);
+    expect(remote.promotePane).toHaveBeenCalledWith({ workspaceId: 'workspace-active', paneId: 'remote-active' });
+  });
+
   it('keeps host connected until its last local pane is removed', () => {
     const remote = link();
     for (const [localPaneId, remotePaneId] of [['local-a', 'remote-a'], ['local-b', 'remote-b']]) {
@@ -72,5 +144,42 @@ describe('remotePaneBindings', () => {
     expect(closeLocal).not.toHaveBeenCalled();
     expect(localPaneIdsForRemote('host-failed', 'remote-failed')).toEqual(['local-failed']);
     expect(remote.disconnect).not.toHaveBeenCalled();
+  });
+
+  it('closes the remote pane and its local attachments with the modern signature', async () => {
+    const remote = link();
+    vi.mocked(remote.closePane).mockResolvedValue(true);
+    const closeLocal = vi.fn(async (localPaneId: string) => unbindRemotePane(localPaneId));
+    ids.push('local-modern');
+    bindRemotePane({
+      localPaneId: 'local-modern',
+      hostId: 'host-modern',
+      workspaceId: 'workspace-modern',
+      remotePaneId: 'remote-modern',
+      link: remote,
+    });
+
+    await expect(deleteRemotePane(
+      'host-modern',
+      'workspace-modern',
+      'remote-modern',
+      remote,
+      closeLocal,
+    )).resolves.toBe(true);
+    expect(remote.closePane).toHaveBeenCalledWith({ workspaceId: 'workspace-modern', paneId: 'remote-modern' });
+    expect(closeLocal).toHaveBeenCalledWith('local-modern');
+    expect(localPaneIdsForRemote('host-modern', 'remote-modern')).toEqual([]);
+  });
+
+  it('rejects links without a closePane capability', async () => {
+    const remote = { ...link(), closePane: undefined } as unknown as HostTopologyLink;
+
+    await expect(deleteRemotePane(
+      'host-no-close',
+      'workspace-no-close',
+      'remote-no-close',
+      remote,
+      vi.fn(async () => {}),
+    )).resolves.toBe(false);
   });
 });
