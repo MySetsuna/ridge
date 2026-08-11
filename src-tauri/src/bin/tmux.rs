@@ -2397,6 +2397,12 @@ fn cmd_display_panes(rest: &[String]) -> Result<(), ()> {
 
 // ========== Window Management Commands ==========
 
+fn print_command_output(output: &str) {
+    if !output.is_empty() {
+        println!("{output}");
+    }
+}
+
 fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
     let mut command: Option<String> = None;
     let mut window_name: Option<String> = None;
@@ -2420,9 +2426,8 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
                 let t = rest[i + 1].trim();
                 raw_target = Some(t.to_string());
                 // Only treat as pane index if numeric or %N — session names are ignored
-                if t.parse::<usize>().is_ok() || t.starts_with('%') {
-                    pane_index = Some(parse_pane_target(t));
-                }
+                pane_index = (t.parse::<usize>().is_ok() || t.starts_with('%'))
+                    .then(|| parse_pane_target(t));
                 i += 1;
             }
             _ => {
@@ -2454,9 +2459,7 @@ fn cmd_new_window(rest: &[String], url: &str, token: &str) -> Result<(), ()> {
         });
         match http_post(tmux_api(url, "split-window"), token, body) {
             Some((200, out)) => {
-                if !out.is_empty() {
-                    println!("{out}");
-                }
+                print_command_output(&out);
                 return Ok(());
             }
             Some((409, _)) => {}
