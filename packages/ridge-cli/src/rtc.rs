@@ -65,6 +65,7 @@ mod imp {
     };
     use crate::ice::IceServerConfig;
     use anyhow::Result;
+    use serde_json::Value;
     use std::sync::Arc;
     use tokio::sync::mpsc;
     use webrtc::api::APIBuilder;
@@ -82,26 +83,11 @@ mod imp {
         async fn answer(
             &self,
             ice_servers: Vec<IceServerConfig>,
-            mut inbound: mpsc::Receiver<PeerInbound>,
+            inbound: mpsc::Receiver<PeerInbound>,
             outbound: mpsc::Sender<PeerOutbound>,
         ) -> Result<DataChannelIo> {
             let api = APIBuilder::new().build();
-            let rtc_ice_servers: Vec<RTCIceServer> = if ice_servers.is_empty() {
-                vec![RTCIceServer {
-                    urls: vec![FALLBACK_STUN.to_string()],
-                    ..Default::default()
-                }]
-            } else {
-                ice_servers
-                    .into_iter()
-                    .map(|s| RTCIceServer {
-                        urls: s.urls,
-                        username: s.username.unwrap_or_default(),
-                        credential: s.credential.unwrap_or_default(),
-                        ..Default::default()
-                    })
-                    .collect()
-            };
+            let rtc_ice_servers = map_ice_servers(ice_servers);
             let config = RTCConfiguration {
                 ice_servers: rtc_ice_servers,
                 ..Default::default()
@@ -110,96 +96,153 @@ mod imp {
 
             // DataChannel：由 controller(offerer) 创建，host 通过 on_data_channel 接管。
             let (dc_in_tx, dc_in_rx) = mpsc::channel::<Vec<u8>>(256);
-            let (dc_out_tx, mut dc_out_rx) = mpsc::channel::<Vec<u8>>(256);
+            let (dc_out_tx, dc_out_rx) = mpsc::channel::<Vec<u8>>(256);
             let dc_holder: Arc<tokio::sync::Mutex<Option<Arc<RTCDataChannel>>>> =
                 Arc::new(tokio::sync::Mutex::new(None));
 
-            let dc_holder_cb = dc_holder.clone();
-            pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
-                let dc_in_tx = dc_in_tx.clone();
-                let dc_holder_cb = dc_holder_cb.clone();
-                Box::pin(async move {
-                    if dc.label() != DATA_CHANNEL_LABEL {
-                        tracing::warn!(target: "ridge_cli::rtc", label = %dc.label(), "ignoring unexpected data channel");
-                        return;
-                    }
-                    *dc_holder_cb.lock().await = Some(dc.clone());
-
-                    let dc_in_tx2 = dc_in_tx.clone();
-                    dc.on_message(Box::new(move |msg: DataChannelMessage| {
-                        let dc_in_tx2 = dc_in_tx2.clone();
-                        Box::pin(async move {
-                            let _ = dc_in_tx2.send(msg.data.to_vec()).await;
-                        })
-                    }));
-                    dc.on_open(Box::new(|| {
-                        tracing::info!(target: "ridge_cli::rtc", "data channel open");
-                        Box::pin(async {})
-                    }));
-                })
-            }));
+            register_data_channel(&pc, dc_in_tx, dc_holder.clone());
 
             // 本地 ICE candidate → 信令。
-            let outbound_ice = outbound.clone();
-            pc.on_ice_candidate(Box::new(move |cand| {
-                let outbound_ice = outbound_ice.clone();
-                Box::pin(async move {
-                    let payload = match cand {
-                        Some(c) => match c.to_json() {
-                            Ok(init) => serde_json::to_value(init).ok(),
-                            Err(_) => None,
-                        },
-                        None => None, // 收集结束
-                    };
-                    let _ = outbound_ice.send(PeerOutbound::Ice(payload)).await;
-                })
-            }));
+            register_ice_handler(&pc, outbound.clone());
 
             // 出站泵：dc_out_rx → DataChannel.send。等 DataChannel 就绪后再发。
-            let dc_holder_send = dc_holder.clone();
-            tokio::spawn(async move {
-                while let Some(bytes) = dc_out_rx.recv().await {
-                    // 自旋等待 channel 建立（offer 处理后很快就绪）。
-                    let dc = loop {
-                        if let Some(dc) = dc_holder_send.lock().await.clone() {
-                            break dc;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                    };
-                    if let Err(e) = dc.send(&bytes::Bytes::from(bytes)).await {
-                        tracing::warn!(target: "ridge_cli::rtc", error = %e, "data channel send failed");
-                        break;
-                    }
-                }
-            });
+            spawn_data_channel_sender(dc_holder.clone(), dc_out_rx);
 
             // 信令输入泵：处理 offer / 远端 ICE。
-            let pc_sig = pc.clone();
-            let outbound_ans = outbound.clone();
-            tokio::spawn(async move {
-                while let Some(ev) = inbound.recv().await {
-                    match ev {
-                        PeerInbound::Offer(sdp) => {
-                            if let Err(e) = handle_offer(&pc_sig, &outbound_ans, sdp).await {
-                                tracing::error!(target: "ridge_cli::rtc", error = %e, "offer handling failed");
-                            }
-                        }
-                        PeerInbound::Ice(Some(cand)) => {
-                            if let Ok(init) = serde_json::from_value::<RTCIceCandidateInit>(cand) {
-                                if let Err(e) = pc_sig.add_ice_candidate(init).await {
-                                    tracing::warn!(target: "ridge_cli::rtc", error = %e, "add_ice_candidate failed");
-                                }
-                            }
-                        }
-                        PeerInbound::Ice(None) => { /* 远端候选收集结束，无需处理 */ }
-                    }
-                }
-            });
+            spawn_signaling_receiver(pc.clone(), inbound, outbound.clone());
 
             Ok(DataChannelIo {
                 rx: dc_in_rx,
                 tx: dc_out_tx,
             })
+        }
+    }
+
+    fn map_ice_servers(ice_servers: Vec<IceServerConfig>) -> Vec<RTCIceServer> {
+        if ice_servers.is_empty() {
+            return vec![RTCIceServer {
+                urls: vec![FALLBACK_STUN.to_string()],
+                ..Default::default()
+            }];
+        }
+        ice_servers
+            .into_iter()
+            .map(|server| RTCIceServer {
+                urls: server.urls,
+                username: server.username.unwrap_or_default(),
+                credential: server.credential.unwrap_or_default(),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    fn register_data_channel(
+        pc: &Arc<webrtc::peer_connection::RTCPeerConnection>,
+        dc_in_tx: mpsc::Sender<Vec<u8>>,
+        dc_holder: Arc<tokio::sync::Mutex<Option<Arc<RTCDataChannel>>>>,
+    ) {
+        pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+            let dc_in_tx = dc_in_tx.clone();
+            let dc_holder = dc_holder.clone();
+            Box::pin(async move {
+                if dc.label() != DATA_CHANNEL_LABEL {
+                    tracing::warn!(target: "ridge_cli::rtc", label = %dc.label(), "ignoring unexpected data channel");
+                    return;
+                }
+                *dc_holder.lock().await = Some(dc.clone());
+                let dc_in_tx = dc_in_tx.clone();
+                dc.on_message(Box::new(move |msg: DataChannelMessage| {
+                    let dc_in_tx = dc_in_tx.clone();
+                    Box::pin(async move {
+                        let _ = dc_in_tx.send(msg.data.to_vec()).await;
+                    })
+                }));
+                dc.on_open(Box::new(|| {
+                    tracing::info!(target: "ridge_cli::rtc", "data channel open");
+                    Box::pin(async {})
+                }));
+            })
+        }));
+    }
+
+    fn register_ice_handler(
+        pc: &Arc<webrtc::peer_connection::RTCPeerConnection>,
+        outbound: mpsc::Sender<PeerOutbound>,
+    ) {
+        pc.on_ice_candidate(Box::new(move |candidate| {
+            let outbound = outbound.clone();
+            Box::pin(async move {
+                let payload = candidate
+                    .and_then(|candidate| candidate.to_json().ok())
+                    .and_then(|candidate| serde_json::to_value(candidate).ok());
+                let _ = outbound.send(PeerOutbound::Ice(payload)).await;
+            })
+        }));
+    }
+
+    fn spawn_data_channel_sender(
+        dc_holder: Arc<tokio::sync::Mutex<Option<Arc<RTCDataChannel>>>>,
+        mut dc_out_rx: mpsc::Receiver<Vec<u8>>,
+    ) {
+        tokio::spawn(async move {
+            while let Some(bytes) = dc_out_rx.recv().await {
+                let dc = wait_for_data_channel(&dc_holder).await;
+                if let Err(e) = dc.send(&bytes::Bytes::from(bytes)).await {
+                    tracing::warn!(target: "ridge_cli::rtc", error = %e, "data channel send failed");
+                    break;
+                }
+            }
+        });
+    }
+
+    async fn wait_for_data_channel(
+        dc_holder: &Arc<tokio::sync::Mutex<Option<Arc<RTCDataChannel>>>>,
+    ) -> Arc<RTCDataChannel> {
+        loop {
+            if let Some(dc) = dc_holder.lock().await.clone() {
+                return dc;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    fn spawn_signaling_receiver(
+        pc: Arc<webrtc::peer_connection::RTCPeerConnection>,
+        mut inbound: mpsc::Receiver<PeerInbound>,
+        outbound: mpsc::Sender<PeerOutbound>,
+    ) {
+        tokio::spawn(async move {
+            while let Some(event) = inbound.recv().await {
+                handle_signaling_event(&pc, &outbound, event).await;
+            }
+        });
+    }
+
+    async fn handle_signaling_event(
+        pc: &Arc<webrtc::peer_connection::RTCPeerConnection>,
+        outbound: &mpsc::Sender<PeerOutbound>,
+        event: PeerInbound,
+    ) {
+        match event {
+            PeerInbound::Offer(sdp) => {
+                if let Err(error) = handle_offer(pc, outbound, sdp).await {
+                    tracing::error!(target: "ridge_cli::rtc", error = %error, "offer handling failed");
+                }
+            }
+            PeerInbound::Ice(Some(candidate)) => add_ice_candidate(pc, candidate).await,
+            PeerInbound::Ice(None) => {}
+        }
+    }
+
+    async fn add_ice_candidate(
+        pc: &Arc<webrtc::peer_connection::RTCPeerConnection>,
+        candidate: Value,
+    ) {
+        let Ok(init) = serde_json::from_value::<RTCIceCandidateInit>(candidate) else {
+            return;
+        };
+        if let Err(error) = pc.add_ice_candidate(init).await {
+            tracing::warn!(target: "ridge_cli::rtc", error = %error, "add_ice_candidate failed");
         }
     }
 
