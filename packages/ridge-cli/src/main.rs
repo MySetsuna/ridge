@@ -262,99 +262,84 @@ async fn main() -> Result<()> {
     // 日志初始化必须在解析出子命令之后：TUI 模式（进 alternate screen）要把日志写文件
     // 而非 stderr，否则会糊住界面（问题：日志冲刷 TUI）。
     init_tracing(is_tui_mode(&cli));
-    match cli.command {
-        Some(Command::Tui(args)) => {
-            if args.lan_host {
-                tui::run_lan_host_only(args.port, args.shell, args.cwd).await
-            } else if args.sessions > 1 {
-                tui::run_local_pager(args.shell, args.cwd, args.sessions).await
-            } else {
-                tui::run_local(args.shell, args.cwd).await
-            }
-        }
+    run_command(cli.command).await
+}
+
+async fn run_command(command: Option<Command>) -> Result<()> {
+    match command {
+        Some(Command::Tui(args)) => run_tui(args).await,
         Some(Command::Login(args)) => run_login(args).await,
-        // 已激活则直接进守护（不再交互登录）；凭据缺失时 daemon::run 内部会提示先 login。
         Some(Command::Remote(args)) => daemon::run(args.shell, args.cwd, args.root).await,
-        Some(Command::Connect(args)) => {
-            if args.probe {
-                tui::run_lan_probe(args.host, args.code, args.token, args.probe_seconds).await
-            } else {
-                tui::run_lan(args.host, args.code, args.token).await
-            }
-        }
+        Some(Command::Connect(args)) => run_connect(args).await,
         Some(Command::Tmux(args)) => run_tmux(args).await,
         Some(Command::Host(args)) => host::run(args.port).await,
         Some(Command::Mcp(args)) => ridge_mcp_bridge::run(args.url, args.token).await,
-        Some(Command::Kernel(args)) => match args.command {
-            KernelCommand::Status => {
-                println!("{}", kernel_ctl::status_line());
-                Ok(())
-            }
-            KernelCommand::Stop => {
-                if kernel_ctl::desktop_kernel_running()
-                    && !kernel_ctl::confirm_quit_kernel_with_desktop()
-                {
-                    println!("已取消");
-                    return Ok(());
-                }
-                kernel_ctl::stop_kernel().map_err(anyhow::Error::msg)?;
-                println!("kernel stopped");
-                Ok(())
-            }
-            KernelCommand::Ensure => {
-                let ep = kernel_ctl::ensure_kernel_running().map_err(anyhow::Error::msg)?;
-                println!("kernel ready pid={} port={}", ep.pid, ep.port);
-                Ok(())
-            }
-            KernelCommand::Agents => {
-                println!(
-                    "{}",
-                    kernel_ctl::domain_agents().map_err(anyhow::Error::msg)?
-                );
-                Ok(())
-            }
-            KernelCommand::FsList { path } => {
-                println!(
-                    "{}",
-                    kernel_ctl::domain_fs_list(&path).map_err(anyhow::Error::msg)?
-                );
-                Ok(())
-            }
-            KernelCommand::GitStatus { path } => {
-                println!(
-                    "{}",
-                    kernel_ctl::domain_git_status(&path).map_err(anyhow::Error::msg)?
-                );
-                Ok(())
-            }
-            KernelCommand::RemoteHosts => {
-                println!(
-                    "{}",
-                    kernel_ctl::domain_remote_hosts().map_err(anyhow::Error::msg)?
-                );
-                Ok(())
-            }
-            KernelCommand::McpSmoke => {
-                println!(
-                    "{}",
-                    kernel_ctl::mcp_tools_list_smoke().map_err(anyhow::Error::msg)?
-                );
-                Ok(())
-            }
-        },
-        // 无子命令：进入仪表盘（daemon status + 操作菜单）。
-        // 通过菜单的 "Local shell session" 或子命令 `rdg tui` 进入 passthrough TUI。
-        None => {
-            if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-                tui::dashboard::run().await
-            } else {
-                eprintln!(
-                    "用法：rdg [tui|login|remote|connect|tmux]。无子命令时在交互终端进入仪表盘。\n详见 `rdg --help`。"
-                );
-                Ok(())
-            }
-        }
+        Some(Command::Kernel(args)) => run_kernel_command(args.command),
+        None => run_dashboard().await,
     }
+}
+
+async fn run_tui(args: TuiArgs) -> Result<()> {
+    if args.lan_host {
+        tui::run_lan_host_only(args.port, args.shell, args.cwd).await
+    } else if args.sessions > 1 {
+        tui::run_local_pager(args.shell, args.cwd, args.sessions).await
+    } else {
+        tui::run_local(args.shell, args.cwd).await
+    }
+}
+
+async fn run_connect(args: ConnectArgs) -> Result<()> {
+    if args.probe {
+        tui::run_lan_probe(args.host, args.code, args.token, args.probe_seconds).await
+    } else {
+        tui::run_lan(args.host, args.code, args.token).await
+    }
+}
+
+async fn run_dashboard() -> Result<()> {
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        tui::dashboard::run().await
+    } else {
+        eprintln!(
+            "用法：rdg [tui|login|remote|connect|tmux]。无子命令时在交互终端进入仪表盘。\n详见 `rdg --help`。"
+        );
+        Ok(())
+    }
+}
+
+fn run_kernel_command(command: KernelCommand) -> Result<()> {
+    match command {
+        KernelCommand::Status => println!("{}", kernel_ctl::status_line()),
+        KernelCommand::Stop => stop_kernel()?,
+        KernelCommand::Ensure => {
+            let ep = kernel_ctl::ensure_kernel_running().map_err(anyhow::Error::msg)?;
+            println!("kernel ready pid={} port={}", ep.pid, ep.port);
+        }
+        KernelCommand::Agents => print_kernel_value(kernel_ctl::domain_agents())?,
+        KernelCommand::FsList { path } => print_kernel_value(kernel_ctl::domain_fs_list(&path))?,
+        KernelCommand::GitStatus { path } => {
+            print_kernel_value(kernel_ctl::domain_git_status(&path))?
+        }
+        KernelCommand::RemoteHosts => print_kernel_value(kernel_ctl::domain_remote_hosts())?,
+        KernelCommand::McpSmoke => print_kernel_value(kernel_ctl::mcp_tools_list_smoke())?,
+    }
+    Ok(())
+}
+
+fn stop_kernel() -> Result<()> {
+    if kernel_ctl::desktop_kernel_running() && !kernel_ctl::confirm_quit_kernel_with_desktop() {
+        println!("已取消");
+        return Ok(());
+    }
+    kernel_ctl::stop_kernel().map_err(anyhow::Error::msg)?;
+    println!("kernel stopped");
+    Ok(())
+}
+
+fn print_kernel_value(value: Result<String, String>) -> Result<()> {
+    println!("{}", value.map_err(anyhow::Error::msg)?);
+    Ok(())
 }
 
 /// 托管无头 tmux 引擎：绑定本机 HTTP 端点，打印供 agent 注入的 `RIDGE_TEAMMATE_*`
