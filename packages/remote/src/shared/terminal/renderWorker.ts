@@ -105,7 +105,7 @@ export interface PaneWorkerState {
 	 *  the adapter exposed `createRenderer`. Drawn from on every
 	 *  successful `applyDelta`. */
 	renderer?: RendererHandle;
-	/** Last accepted delta generation. Replayed/late frames must not revive old rows. */
+	/** Last accepted render generation. Replayed/late feed or delta frames must not revive old rows. */
 	lastAppliedFrameId: number;
 }
 
@@ -363,6 +363,20 @@ export function handleRequest(
 					message: `feed before init for pane ${request.paneId}`,
 				};
 			}
+			if (request.frameId !== undefined) {
+				if (!Number.isSafeInteger(request.frameId) || request.frameId <= 0) {
+					return {
+						type: 'error',
+						paneId: request.paneId,
+						code: 'feed_failed',
+						message: `invalid frameId: ${request.frameId}`,
+					};
+				}
+				if (request.frameId <= pane.lastAppliedFrameId) {
+					// A late worker message must never repaint an older grid snapshot.
+					return { type: 'ready', paneId: request.paneId, backend: pane.backend };
+				}
+			}
 			try {
 				pane.kernel?.feed(request.bytes);
 				pane.renderer?.render();
@@ -374,6 +388,7 @@ export function handleRequest(
 					message: `kernel.feed failed: ${err instanceof Error ? err.message : String(err)}`,
 				};
 			}
+			if (request.frameId !== undefined) pane.lastAppliedFrameId = request.frameId;
 			return {
 				type: 'ready',
 				paneId: request.paneId,

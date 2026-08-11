@@ -92,6 +92,8 @@ export type RenderWorkerRequest =
 			type: 'feed';
 			paneId: string;
 			bytes: Uint8Array;
+			/** Monotonic per-pane render generation; stale PTY replays are ignored. */
+			frameId?: number;
 	  }
 	| {
 			type: 'resize';

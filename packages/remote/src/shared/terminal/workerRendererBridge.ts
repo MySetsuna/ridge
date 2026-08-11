@@ -107,7 +107,7 @@ export interface WorkerRendererBridge {
 	 *  module-level note). */
 	applyDelta(paneId: string, bytes: Uint8Array, frameId?: number): void;
 	/** Mirror raw PTY bytes consumed by the main-thread semantic kernel. */
-	feed(paneId: string, bytes: Uint8Array): void;
+	feed(paneId: string, bytes: Uint8Array, frameId?: number): void;
 	/** Release only the parked pane's paint surface; keep its worker kernel. */
 	releaseCanvas(paneId: string): void;
 	/** Mirror a resize. */
@@ -240,11 +240,11 @@ export const workerRendererBridge: WorkerRendererBridge = {
 		}
 	},
 
-	feed(paneId, bytes): void {
+	feed(paneId, bytes, frameId): void {
 		const r = active();
 		if (!r) return;
 		try {
-			r.feed(paneId, bytes.slice()).catch((err) => fail(`feed ${paneId}`, err));
+			r.feed(paneId, bytes.slice(), frameId).catch((err) => fail(`feed ${paneId}`, err));
 		} catch (err) {
 			fail(`feed ${paneId} (sync)`, err);
 		}

@@ -139,11 +139,11 @@ describe('workerRendererBridge', () => {
 			expect(Array.from(original)).toEqual([10, 20, 30, 40]);
 		});
 
-		it('feed posts a transferable COPY of raw PTY bytes', () => {
+		it('feed posts a transferable COPY of raw PTY bytes with its generation', () => {
 			const original = new Uint8Array([0x1b, 0x5b, 0x48]);
-			workerRendererBridge.feed('pane-a', original);
+			workerRendererBridge.feed('pane-a', original, 8);
 			const sent = fake.posted[0].wire.bytes as Uint8Array;
-			expect(fake.posted[0].wire).toMatchObject({ type: 'feed', paneId: 'pane-a' });
+			expect(fake.posted[0].wire).toMatchObject({ type: 'feed', paneId: 'pane-a', frameId: 8 });
 			expect(Array.from(sent)).toEqual(Array.from(original));
 			expect(sent.buffer).not.toBe(original.buffer);
 			expect(fake.posted[0].transfer).toEqual([sent.buffer]);

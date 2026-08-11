@@ -316,6 +316,8 @@ interface PaneEntry {
 	syncTimeoutRendered: boolean;
 	/** Monotonic delta generation mirrored into the worker renderer. */
 	deltaFrameId: number;
+	/** Shared monotonic generation for every worker-visible feed or delta frame. */
+	renderFrameId: number;
 	/** focusin listener bound to `container`. Held so detach() can remove
 	 *  it cleanly. Emits `\x1b[I` to PTY when kernel.isFocusReporting(). */
 	focusListener: (e: FocusEvent) => void;
@@ -2291,6 +2293,7 @@ export class TerminalManager {
 			syncStart: null,
 			syncTimeoutRendered: false,
 			deltaFrameId: 0,
+			renderFrameId: 0,
 			focusListener,
 			blurListener,
 			selecting: false,
@@ -3378,7 +3381,7 @@ export class TerminalManager {
 			const chunk = bytes.subarray(offset, end);
 			entry.kernel.feed(chunk);
 			if (this.isWorkerPaneReady(entry.paneId)) {
-				workerRendererBridge.feed(entry.paneId, chunk);
+				this._mirrorWorkerFeed(entry, chunk);
 			}
 			offset = end;
 			if (performance.now() - start >= budgetMs) break;
@@ -3474,7 +3477,8 @@ export class TerminalManager {
 		// been attached over there. Bridge handles the .slice() copy so
 		// the kernel call above still owns the original bytes.
 		if (this.isWorkerPaneReady(paneId)) {
-			workerRendererBridge.applyDelta(paneId, bytes, entry.deltaFrameId);
+			entry.renderFrameId += 1;
+			workerRendererBridge.applyDelta(paneId, bytes, entry.renderFrameId);
 		}
 		// Pump DSR/DA replies the mirror produced via apply_delta back to
 		// the PTY. Symmetric with feed()'s take_pending_response drain.
@@ -3779,9 +3783,7 @@ export class TerminalManager {
 		try {
 			const bytes = new TextEncoder().encode(seq);
 			entry.kernel.feed(bytes);
-			if (this.isWorkerPaneReady(paneId)) {
-				workerRendererBridge.feed(paneId, bytes);
-			}
+			this._mirrorWorkerFeed(entry, bytes);
 		} catch {
 			return; // kernel may be freed mid-teardown
 		}
@@ -3995,7 +3997,7 @@ export class TerminalManager {
 		// Worker mode owns a second semantic kernel. Feed ED 3 only to that
 		// mirror so both allocations are released without writing ANSI to PTY.
 		if (this.isWorkerPaneReady(entry.paneId)) {
-			workerRendererBridge.feed(entry.paneId, new TextEncoder().encode('\x1b[3J'));
+			this._mirrorWorkerFeed(entry, new TextEncoder().encode('\x1b[3J'));
 		}
 		entry.lastScrollOffset = -1;
 		entry.lastScrollTotal = -1;
@@ -4552,6 +4554,15 @@ export class TerminalManager {
 		if (this.workerRendererRef === null) return false;
 		this.syncWorkerRendererIdentity();
 		return this.workerAttached.has(paneId) && !this.workerInitializing.has(paneId);
+	}
+
+	/** Mirror a successful main-thread kernel feed with the same generation
+	 *  sequence used by delta frames. The worker receives one total order per
+	 *  pane, so a late raw PTY replay cannot overwrite a newer delta snapshot. */
+	private _mirrorWorkerFeed(entry: PaneEntry, bytes: Uint8Array): void {
+		if (!this.isWorkerPaneReady(entry.paneId)) return;
+		entry.renderFrameId += 1;
+		workerRendererBridge.feed(entry.paneId, bytes, entry.renderFrameId);
 	}
 
 	private _fallbackWorkerRendering(error: Error): void {

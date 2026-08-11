@@ -450,6 +450,68 @@ describe('renderWorker.handleRequest — wasm KernelAdapter wiring', () => {
 		expect(renderer.render).toHaveBeenCalledOnce();
 	});
 
+	it('feed shares render generations with delta frames and ignores stale replays', () => {
+		const adapter = makeMockAdapter();
+		const state = makeWorkerState();
+		handleRequest(state, {
+			type: 'init',
+			paneId: PANE,
+			dims: { rows: 24, cols: 80, dpr: 1 },
+			backend: 'canvas2d',
+			scrollbackLines: 2000,
+		}, adapter);
+
+		const first = handleRequest(state, {
+			type: 'feed',
+			paneId: PANE,
+			bytes: new Uint8Array([1]),
+			frameId: 2,
+		}, adapter);
+		const delta = handleRequest(state, {
+			type: 'applyDelta',
+			paneId: PANE,
+			bytes: new Uint8Array([2]),
+			frameId: 3,
+		}, adapter);
+		const stale = handleRequest(state, {
+			type: 'feed',
+			paneId: PANE,
+			bytes: new Uint8Array([0]),
+			frameId: 1,
+		}, adapter);
+
+		expect(first).toMatchObject({ type: 'ready', paneId: PANE });
+		expect(delta).toMatchObject({ type: 'ready', paneId: PANE });
+		expect(stale).toMatchObject({ type: 'ready', paneId: PANE });
+		expect(adapter.kernel.feed).toHaveBeenCalledTimes(1);
+		expect(adapter.kernel.applyDeltaFrame).toHaveBeenCalledTimes(1);
+		expect(getPaneState(state, PANE)?.lastAppliedFrameId).toBe(3);
+	});
+
+	it('rejects invalid feed frame ids before touching the kernel', () => {
+		const adapter = makeMockAdapter();
+		const state = makeWorkerState();
+		handleRequest(state, {
+			type: 'init',
+			paneId: PANE,
+			dims: { rows: 24, cols: 80, dpr: 1 },
+			backend: 'canvas2d',
+			scrollbackLines: 2000,
+		}, adapter);
+		const ack = handleRequest(state, {
+			type: 'feed',
+			paneId: PANE,
+			bytes: new Uint8Array([1]),
+			frameId: 0,
+		}, adapter);
+		expect(ack).toMatchObject({
+			type: 'error',
+			paneId: PANE,
+			code: 'feed_failed',
+		});
+		expect(adapter.kernel.feed).not.toHaveBeenCalled();
+	});
+
 	it('destroy frees the kernel before removing pane state', () => {
 		const adapter = makeMockAdapter();
 		const state = makeWorkerState();
