@@ -574,7 +574,8 @@ mod tests {
             ack: AckState::None,
         };
 
-        let cases: [(&str, fn(&mut AgentEnvelope)); 7] = [
+        type InvalidFieldCase = (&'static str, fn(&mut AgentEnvelope));
+        let cases: [InvalidFieldCase; 7] = [
             ("from.agent_id", |envelope: &mut AgentEnvelope| {
                 envelope.from.agent_id = " ".into()
             }),

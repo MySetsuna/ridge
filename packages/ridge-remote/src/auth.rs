@@ -73,6 +73,12 @@ impl RemoteAuth {
     }
 }
 
+impl Default for RemoteAuth {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// SECURITY (audit H5): shortened from 3 days to 12 hours. A session token is a
 /// bearer credential for full shell/file control over the LAN; a 3-day window
 /// gave a stolen/forgotten token a very long replay life. 12h still spans a
@@ -207,6 +213,12 @@ impl SessionStore {
         self.tokens
             .lock()
             .retain(|_, rec| rec.created.elapsed() < SESSION_TTL);
+    }
+}
+
+impl Default for SessionStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -566,11 +578,11 @@ mod tests {
         let t = VerifyThrottle::new();
         // First 4 failures stay under the soft limit → still Allow.
         for _ in 0..(THROTTLE_SOFT_LIMIT - 1) {
-            assert_eq!(t.record_failure("1.2.3.4", "devA"), false);
+            assert!(!t.record_failure("1.2.3.4", "devA"));
             assert_eq!(t.check("1.2.3.4", "devA"), ThrottleDecision::Allow);
         }
         // The soft-limit-th failure arms backoff.
-        assert_eq!(t.record_failure("1.2.3.4", "devA"), false);
+        assert!(!t.record_failure("1.2.3.4", "devA"));
         assert!(matches!(
             t.check("1.2.3.4", "devA"),
             ThrottleDecision::Backoff { .. }
@@ -592,7 +604,7 @@ mod tests {
             ThrottleDecision::Banned { .. }
         ));
         // A further failure stays banned but does NOT re-trip `fresh`.
-        assert_eq!(t.record_failure("9.9.9.9", "devB"), false);
+        assert!(!t.record_failure("9.9.9.9", "devB"));
     }
 
     #[test]

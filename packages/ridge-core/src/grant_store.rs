@@ -111,10 +111,8 @@ fn write_grants_in_inner(
     map: &HashMap<String, i64>,
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let json =
-        serde_json::to_vec(map).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    let blob = encrypt(&json)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "DPAPI 加密失败"))?;
+    let json = serde_json::to_vec(map).map_err(std::io::Error::other)?;
+    let blob = encrypt(&json).ok_or_else(|| std::io::Error::other("DPAPI 加密失败"))?;
     let path = dir.join(grants_filename(identity));
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, &blob)?;

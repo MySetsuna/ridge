@@ -237,10 +237,7 @@ async fn route_delivery_stream(
 }
 
 async fn send_delivery_frame(socket: &mut WebSocket, value: Value) -> bool {
-    socket
-        .send(Message::Text(value.to_string().into()))
-        .await
-        .is_ok()
+    socket.send(Message::Text(value.to_string())).await.is_ok()
 }
 
 async fn send_delivery_error(socket: &mut WebSocket, message: impl Into<String>) -> bool {

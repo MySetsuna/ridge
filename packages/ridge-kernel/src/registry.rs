@@ -76,6 +76,7 @@ fn try_lock_file(path: &Path) -> Result<Option<File>> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .with_context(|| format!("open {}", path.display()))?;
     match file.try_lock() {
@@ -177,7 +178,7 @@ pub fn save_remote_hosts_at(
     let raw = serde_json::to_vec_pretty(hosts).context("serialize remote hosts")?;
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, raw).with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, &path).with_context(|| format!("replace {}", path.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
     Ok(())
 }
 

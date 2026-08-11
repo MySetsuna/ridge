@@ -111,7 +111,7 @@ impl PaneTree {
     }
 
     /// ==================== React Fiber 风格的核心算法 ====================
-
+    ///
     /// Phase 1: Find + Reconcile（递归查找目标 Leaf 并生成新的 Wip 节点）
     fn reconcile_split(
         node: &PaneNode,

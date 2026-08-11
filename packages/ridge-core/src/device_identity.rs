@@ -134,8 +134,7 @@ fn save_seed_at(path: &Path, seed: &[u8; SEED_LEN]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let blob = encrypt(seed)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "encrypt failed"))?;
+    let blob = encrypt(seed).ok_or_else(|| std::io::Error::other("encrypt failed"))?;
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, &blob)?;
     set_owner_only_perms(&tmp);
