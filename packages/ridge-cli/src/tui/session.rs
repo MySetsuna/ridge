@@ -69,6 +69,7 @@ impl LocalPtySession {
             Err(error) => {
                 #[cfg(test)]
                 {
+                    let _ = &error;
                     let (bridge, rx) = PtyBridge::spawn(shell, cwd)?;
                     return Ok((
                         Self {
@@ -150,11 +151,18 @@ impl Session for LocalPtySession {
 
 impl Drop for LocalPtySession {
     fn drop(&mut self) {
-        if let SessionBackend::Kernel { stop, .. } = &self.backend {
-            // Kernel owns the child process. Stop only this shell's output
-            // lease; the PTY remains available for a later pane reattach.
-            stop.store(true, Ordering::Release);
-        }
+        #[cfg(not(test))]
+        let SessionBackend::Kernel { stop, .. } = &self.backend;
+        #[cfg(test)]
+        let Some(stop) = (match &self.backend {
+            SessionBackend::Kernel { stop, .. } => Some(stop),
+            SessionBackend::Local(_) => None,
+        }) else {
+            return;
+        };
+        // Kernel owns the child process. Stop only this shell's output lease;
+        // the PTY remains available for a later pane reattach.
+        stop.store(true, Ordering::Release);
     }
 }
 
