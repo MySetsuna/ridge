@@ -43,47 +43,56 @@ pub fn spawn_mdns_broadcast(port: u16) -> (thread::JoinHandle<()>, Arc<AtomicBoo
 
     let handle = thread::Builder::new()
         .name("ridge-mdns".into())
-        .spawn(move || {
-            // SECURITY (audit H2): `None` → operator disabled mDNS; never advertise.
-            let Some(window) = pairing_window() else {
-                tracing::info!(target: "ridge::remote", "mDNS broadcast disabled (RIDGE_REMOTE_MDNS_WINDOW_SECS=0)");
-                return;
-            };
-            let socket = match UdpSocket::bind("0.0.0.0:0") {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(target: "ridge::remote", error = %e, "mDNS socket bind failed");
-                    return;
-                }
-            };
-            socket.set_broadcast(true).ok();
-            let mdns_addr = "224.0.0.1:5353";
-            let packet = build_mdns_packet(port);
-
-            let started = Instant::now();
-            tracing::info!(target: "ridge::remote", port, window_secs = window.as_secs(), "mDNS broadcast started (time-boxed pairing window)");
-
-            // Announce immediately, then every 60 seconds (with 1s granularity so
-            // the stop signal is respected promptly), until the pairing window
-            // elapses (audit H2) or we are told to stop.
-            loop {
-                if flag.load(Ordering::Relaxed) || started.elapsed() >= window {
-                    break;
-                }
-                let _ = socket.send_to(&packet, mdns_addr);
-                for _ in 0..60 {
-                    if flag.load(Ordering::Relaxed) || started.elapsed() >= window {
-                        tracing::info!(target: "ridge::remote", "mDNS pairing window closed — discovery broadcast stopped");
-                        return;
-                    }
-                    thread::sleep(Duration::from_secs(1));
-                }
-            }
-            tracing::info!(target: "ridge::remote", "mDNS pairing window closed — discovery broadcast stopped");
-        })
+        .spawn(move || run_mdns_broadcast(port, flag))
         .expect("ridge-mdns thread spawn");
 
     (handle, stop_flag)
+}
+
+fn run_mdns_broadcast(port: u16, flag: Arc<AtomicBool>) {
+    // SECURITY (audit H2): `None` → operator disabled mDNS; never advertise.
+    let Some(window) = pairing_window() else {
+        tracing::info!(target: "ridge::remote", "mDNS broadcast disabled (RIDGE_REMOTE_MDNS_WINDOW_SECS=0)");
+        return;
+    };
+    let Some(socket) = bind_mdns_socket() else {
+        return;
+    };
+    socket.set_broadcast(true).ok();
+    let packet = build_mdns_packet(port);
+    let started = Instant::now();
+    tracing::info!(target: "ridge::remote", port, window_secs = window.as_secs(), "mDNS broadcast started (time-boxed pairing window)");
+    broadcast_until_window(&socket, &packet, &flag, started, window);
+    tracing::info!(target: "ridge::remote", "mDNS pairing window closed — discovery broadcast stopped");
+}
+
+fn bind_mdns_socket() -> Option<UdpSocket> {
+    match UdpSocket::bind("0.0.0.0:0") {
+        Ok(socket) => Some(socket),
+        Err(error) => {
+            tracing::warn!(target: "ridge::remote", error = %error, "mDNS socket bind failed");
+            None
+        }
+    }
+}
+
+fn broadcast_until_window(
+    socket: &UdpSocket,
+    packet: &[u8],
+    flag: &AtomicBool,
+    started: Instant,
+    window: Duration,
+) {
+    const MDNS_ADDR: &str = "224.0.0.1:5353";
+    while !flag.load(Ordering::Relaxed) && started.elapsed() < window {
+        let _ = socket.send_to(packet, MDNS_ADDR);
+        for _ in 0..60 {
+            if flag.load(Ordering::Relaxed) || started.elapsed() >= window {
+                return;
+            }
+            thread::sleep(Duration::from_secs(1));
+        }
+    }
 }
 
 /// Build a DNS-SD announcement packet for `_ridge._tcp.local.`
