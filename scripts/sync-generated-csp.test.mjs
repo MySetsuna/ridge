@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { syncGeneratedCsp } from './sync-generated-csp.mjs';
 
@@ -18,5 +19,15 @@ describe('generated CSP synchronizer', () => {
   it('leaves pages without a CSP meta unchanged', () => {
     const html = '<html><script>window.ok = true;</script></html>';
     expect(syncGeneratedCsp(html)).toBe(html);
+  });
+
+  it('allows cloud tenant signaling without opening arbitrary external origins', () => {
+    const html = fs.readFileSync(new URL('../src/app.html', import.meta.url), 'utf8');
+    const csp = html.match(/Content-Security-Policy"\s+content="([^"]+)"/i)?.[1] ?? '';
+    expect(csp).toContain('http://*.localhost:*');
+    expect(csp).toContain('ws://*.localhost:*');
+    expect(csp).toContain('https://*.9527127.xyz');
+    expect(csp).toContain('wss://*.9527127.xyz');
+    expect(csp).not.toContain("connect-src *");
   });
 });
