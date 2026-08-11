@@ -79,8 +79,10 @@
 - 批准证据：用户授权“审核无问题即全部通过”；审计通过。
 - 类型：`FIX`
 - 原始意图：Codex 在 ridge-term 连续输出时，画面与光标不得到处闪烁。
-- 当前证据：非活动 pane 已调用 `setFocused(false)` 隐藏光标；同步输出、dirty-row 与强制重绘
-  亦有专门路径，但现场仍复现。尚无证据证明与 Claude 旧缺陷同根。
+- 当前证据：Remote worker 现以每 pane 单调 `renderFrameId` 统一 fence raw feed 与 delta；worker
+  拒绝非法或迟到 frame，避免旧 PTY replay 覆盖新快照。`renderWorker`、`WorkerHostedRenderer`、
+  `workerRendererBridge` 与 `TerminalManager` 定向回归 `4 files / 99 passed`；真实 Codex/Claude
+  录制与 WebView2 现场矩阵仍待补证。
 - 目标行为：活动 pane 仅真实终端光标按协议闪烁；非活动 pane 无光标；Codex 流式更新不得交替
   呈现半帧、旧帧或多位置 cursor。
 - 范围：Codex/Claude 流式 PTY 录制、kernel dirty 状态、render/present 与 cursor focus 投影。
