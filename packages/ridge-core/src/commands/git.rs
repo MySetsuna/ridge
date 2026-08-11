@@ -3261,7 +3261,11 @@ mod guard_tests {
         Stop,
     }
 
-    fn classify_production_line(line: &str, skip_fn: &mut bool, fn_brace: &mut i32) -> ProductionLine {
+    fn classify_production_line(
+        line: &str,
+        skip_fn: &mut bool,
+        fn_brace: &mut i32,
+    ) -> ProductionLine {
         let trimmed = line.trim();
         if !*skip_fn && trimmed.starts_with("#[cfg(test)]") {
             *skip_fn = true;
@@ -3279,7 +3283,9 @@ mod guard_tests {
             }
             return ProductionLine::Skip;
         }
-        if trimmed.starts_with("mod ") && (trimmed.contains("tests") || trimmed.contains("guard_tests")) {
+        if trimmed.starts_with("mod ")
+            && (trimmed.contains("tests") || trimmed.contains("guard_tests"))
+        {
             return ProductionLine::Stop;
         }
         ProductionLine::Keep
@@ -3360,10 +3366,16 @@ mod guard_tests {
     }
 
     #[allow(clippy::await_holding_lock)]
-    async fn run_real_git_status_smoke(root: String) -> (String, String, String, String, bool) {
+    async fn run_real_git_status_smoke(
+        root: String,
+    ) -> (String, Option<String>, String, Option<String>, bool) {
         git_reset_peak_active_for_test();
-        let status = get_scm_status(root.clone(), None).await.expect("get_scm_status");
-        let fast = get_scm_status_fast(root, None).await.expect("get_scm_status_fast");
+        let status = get_scm_status(root.clone(), None)
+            .await
+            .expect("get_scm_status");
+        let fast = get_scm_status_fast(root, None)
+            .await
+            .expect("get_scm_status_fast");
         (
             status.repo_root,
             status.current_branch,
@@ -3387,7 +3399,8 @@ mod guard_tests {
         };
 
         let root = dir.to_string_lossy().to_string();
-        let (repo_root, branch, fast_root, fast_branch, peak_ok) = run_real_git_status_smoke(root).await;
+        let (repo_root, branch, fast_root, fast_branch, peak_ok) =
+            run_real_git_status_smoke(root).await;
         assert!(!repo_root.is_empty(), "expected resolved repo root");
         assert!(peak_ok);
         assert_eq!(fast_root, repo_root);
