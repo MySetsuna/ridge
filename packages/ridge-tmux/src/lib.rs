@@ -191,45 +191,17 @@ struct ParsedTarget {
 /// 把 tmux 目标串拆成 session/window/pane 分量。支持：
 /// `=NAME` / `%N` / `NAME` / `NAME:W` / `NAME:W.P` / `NAME.P` / `:W.P`。
 fn parse_target(raw: &str) -> ParsedTarget {
-    let mut t = raw.trim();
-    let mut exact = false;
-    if let Some(rest) = t.strip_prefix('=') {
-        exact = true;
-        t = rest;
-    }
-    // `%N` 全局面板 id。
-    if let Some(n) = t.strip_prefix('%') {
-        if let Ok(id) = n.parse::<usize>() {
-            return ParsedTarget {
-                exact,
-                session: None,
-                window: None,
-                pane: None,
-                pane_global: Some(id),
-            };
-        }
-    }
-
-    let parse_win_pane = |s: &str| -> (Option<usize>, Option<usize>) {
-        if let Some(dot) = s.rfind('.') {
-            (
-                s[..dot].parse::<usize>().ok(),
-                s[dot + 1..].parse::<usize>().ok(),
-            )
-        } else {
-            (s.parse::<usize>().ok(), None)
-        }
-    };
-
-    if let Some(colon) = t.find(':') {
-        let sess = &t[..colon];
-        let right = &t[colon + 1..];
-        let (window, pane) = parse_win_pane(right);
-        let session = if sess.is_empty() {
-            None
-        } else {
-            Some(sess.to_string())
+    let (exact, target) = target_text(raw);
+    if let Some(pane_global) = parse_global_pane(target) {
+        return ParsedTarget {
+            exact,
+            session: None,
+            window: None,
+            pane: None,
+            pane_global: Some(pane_global),
         };
+    }
+    if let Some((session, window, pane)) = parse_colon_target(target) {
         return ParsedTarget {
             exact,
             session,
@@ -238,35 +210,53 @@ fn parse_target(raw: &str) -> ParsedTarget {
             pane_global: None,
         };
     }
-
-    // 无冒号：`NAME.P`（如验收用的 `S.0`）或纯会话名。
-    if let Some(dot) = t.rfind('.') {
-        let sess = &t[..dot];
-        if let Ok(pane) = t[dot + 1..].parse::<usize>() {
-            if !sess.is_empty() {
-                return ParsedTarget {
-                    exact,
-                    session: Some(sess.to_string()),
-                    window: None,
-                    pane: Some(pane),
-                    pane_global: None,
-                };
-            }
-        }
+    if let Some((session, pane)) = parse_dot_target(target) {
+        return ParsedTarget {
+            exact,
+            session: Some(session),
+            window: None,
+            pane: Some(pane),
+            pane_global: None,
+        };
     }
-
-    let session = if t.is_empty() {
-        None
-    } else {
-        Some(t.to_string())
-    };
     ParsedTarget {
         exact,
-        session,
+        session: (!target.is_empty()).then(|| target.to_string()),
         window: None,
         pane: None,
         pane_global: None,
     }
+}
+
+fn target_text(raw: &str) -> (bool, &str) {
+    let target = raw.trim();
+    target
+        .strip_prefix('=')
+        .map_or((false, target), |rest| (true, rest))
+}
+
+fn parse_global_pane(target: &str) -> Option<usize> {
+    target.strip_prefix('%')?.parse().ok()
+}
+
+fn parse_window_pane(target: &str) -> (Option<usize>, Option<usize>) {
+    target.rfind('.').map_or_else(
+        || (target.parse().ok(), None),
+        |dot| (target[..dot].parse().ok(), target[dot + 1..].parse().ok()),
+    )
+}
+
+fn parse_colon_target(target: &str) -> Option<(Option<String>, Option<usize>, Option<usize>)> {
+    let colon = target.find(':')?;
+    let (window, pane) = parse_window_pane(&target[colon + 1..]);
+    let session = (!target[..colon].is_empty()).then(|| target[..colon].to_string());
+    Some((session, window, pane))
+}
+
+fn parse_dot_target(target: &str) -> Option<(String, usize)> {
+    let dot = target.rfind('.')?;
+    let session = (!target[..dot].is_empty()).then(|| target[..dot].to_string())?;
+    Some((session, target[dot + 1..].parse().ok()?))
 }
 
 /// 极简 glob：支持 `*`（任意串）与 `?`（任一字符）。
@@ -397,16 +387,7 @@ fn spawn_pane(
         .map(|s| s.to_string())
         .unwrap_or_else(default_shell);
 
-    let mut cmd = CommandBuilder::new(&prog);
-    if let Some(c) = command.map(str::trim).filter(|s| !s.is_empty()) {
-        // 跑一次性命令：交给 shell -c，结束即面板进程退出（与 tmux 一致）。
-        cmd.arg("-c");
-        cmd.arg(c);
-    }
-    cmd.env("TERM", "xterm-256color");
-    if let Some(dir) = cwd.map(str::trim).filter(|s| !s.is_empty()) {
-        cmd.cwd(dir);
-    }
+    let cmd = build_pane_command(&prog, cwd, command);
 
     let child = pair
         .slave
@@ -470,6 +451,20 @@ fn spawn_pane(
     })
 }
 
+fn build_pane_command(prog: &str, cwd: Option<&str>, command: Option<&str>) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(prog);
+    if let Some(command) = command.map(str::trim).filter(|s| !s.is_empty()) {
+        // 跑一次性命令：交给 shell -c，结束即面板进程退出（与 tmux 一致）。
+        cmd.arg("-c");
+        cmd.arg(command);
+    }
+    cmd.env("TERM", "xterm-256color");
+    if let Some(dir) = cwd.map(str::trim).filter(|s| !s.is_empty()) {
+        cmd.cwd(dir);
+    }
+    cmd
+}
+
 // ===================== 操作 API =====================
 
 /// 候选会话名 = 该 socket 的 native 会话 ∪ GUI 会话（默认 socket 才有 GUI）。
@@ -513,26 +508,39 @@ fn resolve_locked(
 
     // `%N` 全局面板 id：在该 socket 的全部面板里找。
     if let Some(gid) = pt.pane_global {
-        if let Some(sock) = srv.sockets.get(socket) {
-            for s in &sock.sessions {
-                for (wi, w) in s.windows.iter().enumerate() {
-                    for (pi, p) in w.panes.iter().enumerate() {
-                        if p.global_id == gid {
-                            return Ok(ResolvedNative {
-                                socket: socket.to_string(),
-                                session: s.name.clone(),
-                                window_index: wi,
-                                pane_index: pi,
-                                pane_global_id: gid,
-                            });
-                        }
-                    }
+        return find_global_pane(srv, socket, gid)
+            .ok_or_else(|| NativeError::NotFound(format!("can't find pane: %{gid}")));
+    }
+
+    resolve_named_target(srv, socket, pt, gui)
+}
+
+fn find_global_pane(srv: &NativeServer, socket: &str, gid: usize) -> Option<ResolvedNative> {
+    let sock = srv.sockets.get(socket)?;
+    for session in &sock.sessions {
+        for (window_index, window) in session.windows.iter().enumerate() {
+            for (pane_index, pane) in window.panes.iter().enumerate() {
+                if pane.global_id == gid {
+                    return Some(ResolvedNative {
+                        socket: socket.to_string(),
+                        session: session.name.clone(),
+                        window_index,
+                        pane_index,
+                        pane_global_id: gid,
+                    });
                 }
             }
         }
-        return Err(NativeError::NotFound(format!("can't find pane: %{gid}")));
     }
+    None
+}
 
+fn resolve_named_target(
+    srv: &NativeServer,
+    socket: &str,
+    pt: ParsedTarget,
+    gui: &[GuiSession],
+) -> Result<ResolvedNative, NativeError> {
     let Some(query) = pt.session.as_deref() else {
         // 无会话分量：交给调用方按“当前会话”处理（GUI 遗留路径）。
         return Err(NativeError::Gui(String::new()));
