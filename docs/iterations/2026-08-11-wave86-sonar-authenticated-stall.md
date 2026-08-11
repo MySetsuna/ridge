@@ -21,8 +21,10 @@
 
 ## 下一步
 
-1. 缩小 `sonar.typescript.tsconfigPaths` 到最小可用配置，或单独验证
-   `packages/remote/tsconfig.json` 与根 `tsconfig.json` 的解析耗时。
-2. 以同样的临时 token、Node 20 和进程树上限重跑；必须同时取得 CE 成功、项目
+1. 已由 `4270dc55` 移除失效的 `packages/rg-split/examples/tsconfig.json`；直接运行
+   `tsc --showConfig` 曾稳定返回 `TS5083`（缺少 examples 自有 `.svelte-kit/tsconfig.json`），
+   根、Remote、rg-split 三份配置现均解析成功。
+2. 以新的临时 token、Node 20 和进程树上限重跑；必须同时取得 CE 成功、项目
    coverage、`new_violations=0` 与 Quality Gate `OK`。
-3. 扫描成功前，`REQ-SONAR-COVERAGE-80-01` 和 Sonar 质量门禁继续保持 ACTIVE。
+3. 扫描成功前，`REQ-SONAR-COVERAGE-80-01` 和 Sonar 质量门禁继续保持 ACTIVE；
+   当前浏览器连接不可用，未重试密码或创建新 token。
