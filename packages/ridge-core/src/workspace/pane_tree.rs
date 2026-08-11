@@ -122,11 +122,7 @@ fn normalize_ratios(ratios: &mut [f32]) {
 }
 
 fn remove_leaf_from_structure(node: &mut PaneNode, pane_id: Uuid) -> bool {
-    let PaneNode::Split {
-        children,
-        ..
-    } = node
-    else {
+    let PaneNode::Split { children, .. } = node else {
         return false;
     };
     let mut index = 0;
