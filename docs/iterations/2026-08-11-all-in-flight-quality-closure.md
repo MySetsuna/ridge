@@ -2,7 +2,7 @@
 
 ## 结论
 
-本轮已接收并执行 60 项已批准需求；`docs/PENDING-REQUIREMENTS.md` 无待审批项，需求门禁通过。代码侧完成真实修复、测试补强与重复/死代码清理，未用 `NOSONAR`、规则降级或新增静态排除掩盖问题。
+本轮已接收并执行 60 项已批准需求；`docs/PENDING-REQUIREMENTS.md` 无待审批项，需求门禁通过。结论并非“所有 NLM 来源需求均已落地”：本机可确定性验证的代码、测试与本地 Cloud 链路已闭合，真实设备、公网、第三方运行时及当前 Sonar 认证仍有未闭合项，详见下方矩阵。代码侧未用 `NOSONAR`、规则降级或新增静态排除掩盖问题。
 
 已提交的本轮相关提交：
 
@@ -12,23 +12,34 @@
 | `a151f538` | 修正 Git smoke 测试对可选 branch 的断言，恢复全 Rust 测试编译 |
 | `1f86da34` | 删除 `ridge-mcp` 路由中已被真实实现取代的整段死注释分支 |
 | `34bcf503` | 删除 `tmux` shim 中已被真实实现取代的死注释分支 |
+| `09e01384` | 放行受限的 Cloud 租户子域 CSP（本地 `*.localhost` 与生产 `*.9527127.xyz`），补 CSP 回归测试 |
 
 ## 可复验证据
 
 ### 代码与测试
 
 - `pnpm check`：`0 errors / 0 warnings`。
-- `pnpm test`：216 个文件通过，2008 passed，5 skipped，共 2013 项测试；退出码 0。
+- `pnpm test`：216 个文件通过，2009 passed，5 skipped，共 2014 项测试；退出码 0。
 - `pnpm test:coverage:sonar`：216 个文件通过，退出码 0；归一化报告写入 `coverage/lcov.info`。本地 V8 未过滤汇总为 statements `67.46%`、branches `61.83%`、functions `69.35%`、lines `71.54%`；该汇总包含不属于 Sonar 产品覆盖率口径的本地脚本/辅助路径，不能替代 Sonar project metric。
 - `cargo test -p ridge-core --lib`：344 passed。
 - `cargo test -p ridge-mcp --lib`：90 passed，0 failed。
 - `cargo test --manifest-path src-tauri/Cargo.toml --bin tmux`：27 passed，0 failed。
 - `cargo test --workspace --all-targets`：全工作区通过；此前唯一编译阻断为 Git smoke 测试把 `Option<String>` 当成 `String`，已在 `a151f538` 修正。
+- `codegraph sync`：完成；Cloud 信令调用链复核覆盖 `cloudWsScheme → ControllerCloudProvider/RidgeCloudHost → WebSocket`，以及远端、workspace、pane、Agent 生命周期相关符号。
 - `git diff --check`：相关代码差异无空白错误。
+- `pnpm build`：退出码 0；耗时约 3 分 54 秒。仍有既有 dynamic-import/chunk-size warning，不影响构建成功。
+- `cargo fmt --all -- --check`：未通过；差异集中在工作区既有 `src-tauri/src/commands/terminal.rs`、`src-tauri/src/lib.rs`、`src-tauri/src/remote_host_impl.rs`、`src-tauri/src/teammate/server.rs` 等 dirty 文件，本轮未擅自格式化或纳入提交。
 
-### Sonar
+### 真实本地 Cloud / CDP
 
-以下为本轮已取得的**认证分析快照**，不是未认证 API 的推测：
+- `pnpm build:remote:desktop`：退出码 0；`pnpm build:remote:mobile`：退出码 0。串行 `pnpm build:remote` 在 240 秒包装超时，非构建失败；拆分门禁通过。
+- `CDP_PORT=7615 pnpm cdp:smoke`：退出码 0。
+- 修复前完整 Cloud E2E：host/controller 均在 WebSocket 握手前 `NETWORK`；CDP 直连显示 relay 原始 Upgrade 为 `101`，根因乃 `src/app.html` `connect-src` 漏租户子域。
+- 修复后 `scripts/cdp-cloud-full-e2e.mjs`：`ok=true`、`connected=true`、能力集含 `pane/invoke/fs/git/search/workspace/theme/teammate`，目录 offset `0/3/6` 均成功，`keyBindingMode=enforced`。
+
+### Sonar：历史快照与当前状态分离
+
+以下指标是已取得的**历史认证分析快照**，不是当前 HEAD 的新结果：
 
 - 项目：`MySetsuna_ridge`
 - 分析：`b6a080ee-fc82-44aa-90c9-9c839acd2f81`
@@ -43,7 +54,9 @@
 - new branch coverage：`76.5%`
 - Bugs / Vulnerabilities / Code Smells / Violations / Security Hotspots：均为 `0`
 
-Sonar 的最新认证快照已通过 Quality Gate；本轮后续提交只涉及测试契约修正与删除死代码，不会重新引入生产逻辑问题。当前 shell 未配置 Sonar 凭据，未伪造新的 CE/Gate 结果；若网页仍显示 `Failed`，须打开该次分析的 Quality Gate conditions 与 Background Task，确认页面显示的是哪一个 analysis，不能只看项目卡片上的覆盖率数字。
+本轮当前复核：本地 SonarQube `26.7.0.124771` `/api/system/status` 为 `UP`；`.scannerwork-quality/report-task.txt` 记录 CE task `b7c45c6a-aa22-4781-a645-d2f56f8108fe`，但当前 shell 对项目状态、指标与分析接口均返回 `401`。故尚未取得当前 HEAD 的 CE 完成、Quality Gate、issues 或 project coverage 证据，`REQ-SONAR-COVERAGE-80-01` 仍记为 `PARTIAL`；不把历史 `OK` 快照冒充本轮闭合，也不把账户密码写入仓库。
+
+接管动作：用当前有效凭据登录 `http://127.0.0.1:9000`，确认 Background Task 完成后再读取 `/api/qualitygates/project_status`、`/api/measures`、`/api/issues/search`；凭据只放本机密码管理器/环境变量，不写脚本、日志或文档。
 
 截图中那类“覆盖率已过但项目仍 Failed”的直接原因已在旧分析记录中确认：分析 `c271e74b-ac3f-4277-bbef-74418f48b822` 的 `new_coverage=80.1%`、重复率 `0.84181%` 均通过，但 `new_violations=1`，触发 `rust:S3776`，故 Gate 为 `ERROR`；项目卡片的总覆盖率 `80.5%` 不会覆盖该条件。相关复杂度拆分及页面 title 修复已落地，后续认证分析 `b6a080ee-fc82-44aa-90c9-9c839acd2f81` 已记录为 issues `0` / Gate `OK`。
 
@@ -81,6 +94,32 @@ Sonar 的最新认证快照已通过 Quality Gate；本轮后续提交只涉及�
 - Teammate/Agent 适配与生命周期：`src-tauri/src/teammate`、`packages/ridge-core/src/teammate`、`rdg` adapters。
 - 桌面 Agent Center/Commune、Remote roster/history/group：`src/lib/teammate`、`src/remote`。
 - 稳定性与回收：process guard、PTY safety proof、generation/lease fencing、bounded queue、取消与 teardown 测试。
+
+## NLM 来源需求：未闭合项推荐与接手矩阵
+
+“需求门无 Pending”只表示 60 项已批准输入可执行，不表示所有验收事实已经发生。当前判定如下：
+
+- **本轮已闭合（本机可复现）**：Cloud 租户 WebSocket CSP；本地 relay Upgrade、host/controller WebRTC + E2EE、D9 能力协商、目录分页 `offset=0/3/6`；前端/Rust 回归门；Remote desktop/mobile 拆分构建。
+- **本轮部分闭合**：Agent 通信架构、Kernel/Teammate SSOT、typed envelope、generation/lease、Hub/adapter 与确定性 E2E 已有落点；真实 Agent CLI 五条件动态切换仍未以宿主运行快照证明。
+- **尚未闭合**：当前 Sonar 认证分析、公网/TURN、物理移动端、双真实窗口/Host、PowerShell/PTY/DPR/NTFS 现场、第三方 Runtime/A2A。
+
+| 优先级 | 追踪项 / 状态 | 责任落点 | 进入条件 | 闭合证据 |
+| --- | --- | --- | --- | --- |
+| P0 | Agent CLI 五条件运行态：`PARTIAL` | `packages/ridge-kernel`、`src-tauri/src/kernel_lifecycle`、RidgePane/Agent adapters | 解决或明确 Windows Job Object 的 `CREATE_BREAKAWAY_FROM_JOB` 边界；接入同一 host-owned runtime snapshot | 真 Agent CLI 在 discovered→spawning/attaching→online→working/waiting/attention→completed/stopped/failed 动态切换；generation/lease、PTY/审批/前台/用户输入五条件同一快照，且 teardown 归零 |
+| P1 | Sonar 当前 HEAD：`PARTIAL` | `.tools` scanner、本地 SonarQube `:9000`、项目 `MySetsuna_ridge` | 有效凭据登录；CE task 完成；读取当前 project status/measures/issues | 当前分析 `Quality Gate=OK`、project coverage ≥80%、new violations=0；历史 `b6a080ee...` 不可替代当前证据 |
+| P1 | 真实移动端 PWA/IME/后台/安全区：`EXTERNAL` | `src/remote`、mobile PWA | 真机或同等可控设备，含软键盘、旋转、后台恢复、safe-area、`visualViewport` | 真实设备视频/日志 + e2e：键盘弹出后 viewport/terminal geometry 稳定，断后台重连无重复 pane/残留 listener |
+| P1 | 公网 WebRTC/TURN/E2EE/重连：`EXTERNAL` | `packages/remote` Cloud transport、relay/TURN | 公开域名、TLS、TURN 凭据、两端异网；不得用本地 `localhost` 替代 | host/controller 跨网 connected；ICE/TURN、重连、token refresh、E2EE binding、弱网/断网恢复均有脱敏日志 |
+| P1 | 双窗口/双 Host/焦点隔离：`EXTERNAL` | Tauri deep-root、workspace/pane projection | 两个真实窗口与两个 Host 进程、不同 workspace/agent | 交叉操作、关闭/重连后 identity/workspace/pane 不串线；句柄、listener、子进程归零 |
+| P1 | PowerShell/PTY/DPR/NTFS 跨卷权限：`EXTERNAL` | `src-tauri` terminal/filesystem、`packages/ridge-term`、Remote UI | Windows 真实 PowerShell/PTY、DPR/像素矩阵、不同卷与 ACL | 编解码/resize/IME/像素尺寸、跨卷 move/copy/delete、拒绝访问与回滚均有真实 e2e 证据 |
+| P1 | 第三方 Agent Runtime/A2A 私有协议：`EXTERNAL` | `ridge-mcp`、`ridge-mcp-bridge`、runtime adapters | 明确第三方协议、凭据与可运行 sandbox | initialize/list/send/ack/reconnect/stop 的真实互操作；未知协议保持 typed failure，不宣称兼容 |
+| P2 | Rust 编译警告债：`OPEN` | 各 Rust crate owner | 逐 crate 归因 dead/unused 与 `ts-rs` 解析告警，不改变语义 | `cargo test --workspace --all-targets` + `cargo clippy`/编译输出无新增未解释 warning；每一类有确定性测试 |
+
+### 推荐下一迭代顺序
+
+1. 先取得当前 Sonar CE/Gate 认证证据，避免用历史快照判断本轮质量。
+2. 再解决 CDP/Windows Job Object 下的 Kernel 运行边界，完成五条件真实快照；该项是本机唯一 P0 未闭合项。
+3. 随后按“公网 Cloud → 双窗口/Host → PowerShell/PTY/DPR/NTFS → 物理移动端”执行现场矩阵；每项先锁定环境与脱敏证据，再改代码。
+4. 最后处理第三方 Runtime/A2A 与 Rust warning 债；发布、push、tag、Release 仍须用户另行授权。
 
 ## 边界与后续验收
 
