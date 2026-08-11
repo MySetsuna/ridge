@@ -34,16 +34,22 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { DEV_USER_DATA_DIR, readDevToolsActivePort, shouldAnnounceCdpPort } from './cdp-port.mjs';
-import { applyKernelBreakawayPolicy } from './tauri-dev-cdp-env.mjs';
+import { applyKernelBreakawayPolicy, cloudBrowserNetworkArgs } from './tauri-dev-cdp-env.mjs';
 import { cargoTool, systemTool } from './lib/toolPath.mjs';
 
 const userDataDir = DEV_USER_DATA_DIR;
 const root = path.resolve(import.meta.dirname, '..');
 const devKernelDataDir = path.join(root, '.iteration', 'dev-kernel-isolated-cdp');
+const configuredTargetDir = process.env.RIDGE_CDP_TARGET_DIR?.trim();
+const cargoTargetDir = configuredTargetDir ? path.resolve(configuredTargetDir) : path.join(root, 'target');
 const cargoEnv = {
   ...process.env,
-  CARGO_TARGET_DIR: path.join(root, 'target'),
+  CARGO_TARGET_DIR: cargoTargetDir,
 };
+// Tauri's own `dev` child must use the same isolated target as the explicit
+// prebuilds above; otherwise it reopens the shared `target/debug/ridge.exe`
+// and collides with an existing desktop dev process on Windows.
+process.env.CARGO_TARGET_DIR = cargoTargetDir;
 const portFile = path.join(userDataDir, 'cdp-port.txt');
 const activePortFile = path.join(userDataDir, 'EBWebView', 'DevToolsActivePort');
 const configFile = path.join(userDataDir, 'tauri-dev-cdp.config.json');
@@ -69,7 +75,7 @@ const forcedScaleArg = scaleFactor && /^\d+(?:\.\d+)?$/.test(scaleFactor)
   ? ` --force-device-scale-factor=${scaleFactor}`
   : '';
 process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS =
-  `--remote-debugging-port=0 --remote-debugging-address=127.0.0.1 --remote-allow-origins=*${forcedScaleArg}`;
+  `--remote-debugging-port=0 --remote-debugging-address=127.0.0.1 --remote-allow-origins=*${forcedScaleArg}${cloudBrowserNetworkArgs(process.env.RIDGE_CLOUD_BASE_DOMAIN)}`;
 process.env.WEBVIEW2_USER_DATA_FOLDER = userDataDir;
 // Keep loopback IPC/Remote traffic off any workspace-wide proxy (NLM uses the
 // same proxy for Google traffic, but the local WSS host must never tunnel).
@@ -95,7 +101,17 @@ process.env.RIDGE_KERNEL_DATA_DIR = devKernelDataDir;
 applyKernelBreakawayPolicy(process.env);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.mkdirSync(devKernelDataDir, { recursive: true });
-fs.writeFileSync(configFile, JSON.stringify({ build: { devUrl: `http://127.0.0.1:${vitePort}` } }));
+// The normal Tauri config rebuilds the release teammate shim on every dev
+// launch. That is correct for a cold developer setup, but it serializes CDP
+// smoke runs behind a second release Cargo build and can contend with the
+// isolated debug target. CDP already supplies the debug sidecar explicitly;
+// only refresh the frontend bundle and start Vite here.
+fs.writeFileSync(configFile, JSON.stringify({
+  build: {
+    beforeDevCommand: 'node packages/ridge-term/build.mjs --dev && node scripts/start-vite-dev.mjs',
+    devUrl: `http://127.0.0.1:${vitePort}`,
+  },
+}));
 
 // The embedded Kernel must not keep Cargo's shared `target/debug/ridge.exe`
 // open across a desktop-shell restart. Build and copy a per-run host binary;
@@ -125,7 +141,7 @@ if (cliBuild.status !== 0) {
   process.exit(cliBuild.status ?? 1);
 }
 
-const ridgeSource = path.join(root, 'target', 'debug', process.platform === 'win32' ? 'ridge.exe' : 'ridge');
+const ridgeSource = path.join(cargoTargetDir, 'debug', process.platform === 'win32' ? 'ridge.exe' : 'ridge');
 const ridgeKernelCopy = path.join(
   userDataDir,
   `ridge-kernel-${process.pid}${process.platform === 'win32' ? '.exe' : ''}`,
@@ -134,7 +150,7 @@ fs.copyFileSync(ridgeSource, ridgeKernelCopy);
 process.env.RIDGE_KERNEL_HOST_BINARY = ridgeKernelCopy;
 console.log(`[tauri-dev-cdp] detached kernel binary: ${ridgeKernelCopy}`);
 
-const rdgSource = path.join(root, 'target', 'debug', process.platform === 'win32' ? 'rdg.exe' : 'rdg');
+const rdgSource = path.join(cargoTargetDir, 'debug', process.platform === 'win32' ? 'rdg.exe' : 'rdg');
 const rdgSourceStat = fs.statSync(rdgSource);
 const rdgCodeStat = fs.statSync(path.join(root, 'packages', 'ridge-cli', 'src', 'tui', 'lan_host_impl.rs'));
 if (rdgSourceStat.mtimeMs < rdgCodeStat.mtimeMs) {

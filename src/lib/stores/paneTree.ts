@@ -653,49 +653,44 @@ export function findSameAxisRefs(
   );
   const candidates: SameAxisCandidate[] = [];
   for (const splitter of allSplitters) {
-    const splitRoot = splitter.parentElement;
-    if (!(splitRoot instanceof HTMLElement)) continue;
-    const axisAttr = splitRoot.dataset.splitAxis;
-    if (axisAttr !== primary.axis) continue;
-    const pathRaw = splitRoot.dataset.splitPath;
-    const path =
-      pathRaw === undefined || pathRaw === ''
-        ? []
-        : pathRaw
-            .split('/')
-            .map(Number)
-            .filter((n) => Number.isFinite(n));
-    const splitters = Array.from(
-      splitRoot.querySelectorAll<HTMLElement>(':scope > .splitpanes__splitter')
-    );
-    const splitterIndex = splitters.indexOf(splitter);
-    if (splitterIndex < 0) continue;
-    if (
-      splitterIndex === primary.splitterIndex &&
-      path.length === primary.splitPath.length &&
-      path.every((p, i) => p === primary.splitPath[i])
-    ) {
-      continue;
-    }
-    const basisPx = Math.max(
-      1,
-      axisAttr === 'x' ? splitRoot.clientWidth : splitRoot.clientHeight
-    );
-    const rect = splitter.getBoundingClientRect();
-    const center =
-      axisAttr === 'x'
-        ? rect.left + rect.width / 2
-        : rect.top + rect.height / 2;
-    const distance = Math.abs(center - primaryCenter);
-    if (distance <= threshold) {
-      candidates.push({
-        ref: { splitPath: path, splitterIndex, axis: axisAttr, basisPx },
-        center,
-        distance,
-      });
-    }
+    const candidate = sameAxisCandidate(splitter, primary, primaryCenter, threshold);
+    if (candidate) candidates.push(candidate);
   }
   return candidates.sort((a, b) => a.distance - b.distance);
+}
+
+function sameAxisCandidate(
+  splitter: HTMLElement,
+  primary: SplitterRef,
+  primaryCenter: number,
+  threshold: number,
+): SameAxisCandidate | null {
+  const splitRoot = splitter.parentElement;
+  if (!(splitRoot instanceof HTMLElement)) return null;
+  const axis = splitRoot.dataset.splitAxis;
+  if (axis !== primary.axis) return null;
+  const rawPath = splitRoot.dataset.splitPath;
+  const path = rawPath ? rawPath.split('/').map(Number).filter(Number.isFinite) : [];
+  const siblings = Array.from(
+    splitRoot.querySelectorAll<HTMLElement>(':scope > .splitpanes__splitter')
+  );
+  const splitterIndex = siblings.indexOf(splitter);
+  if (splitterIndex < 0 || sameSplitter(primary, path, splitterIndex)) return null;
+  const basisPx = Math.max(1, axis === 'x' ? splitRoot.clientWidth : splitRoot.clientHeight);
+  const rect = splitter.getBoundingClientRect();
+  const center = axis === 'x' ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
+  const distance = Math.abs(center - primaryCenter);
+  return distance <= threshold
+    ? { ref: { splitPath: path, splitterIndex, axis, basisPx }, center, distance }
+    : null;
+}
+
+function sameSplitter(primary: SplitterRef, path: number[], index: number): boolean {
+  return (
+    index === primary.splitterIndex &&
+    path.length === primary.splitPath.length &&
+    path.every((p, i) => p === primary.splitPath[i])
+  );
 }
 
 /**
@@ -845,23 +840,24 @@ function updatesFromSnapshots(
   for (const [, refs] of grouped) {
     let merged = refs[0].ratios.slice();
     for (const snap of refs) {
-      const { ref, isPrimary, dragStart } = snap;
-      if (ref.basisPx <= 1) continue;
-      const rawDeltaPx =
-        ref.axis === 'x' ? pointer.x - dragStart.x : pointer.y - dragStart.y;
-      // 正交联动轴更容易受手部微抖影响，给更大的 deadzone，减少“乱飘”�?
-      const deadzone = isPrimary ? 0.8 : 2.8;
-      const deltaPx = Math.abs(rawDeltaPx) <= deadzone ? 0 : rawDeltaPx;
-      const deltaPercent = (deltaPx / ref.basisPx) * 100;
-      merged = adjustRatiosBySplitterDelta(
-        merged,
-        ref.splitterIndex,
-        deltaPercent
-      );
+      merged = updateSnapshotRatios(merged, snap, pointer);
     }
     updates.push({ path: refs[0].ref.splitPath, ratios: merged });
   }
   return updates;
+}
+
+function updateSnapshotRatios(
+  ratios: number[],
+  snap: SplitterSnapshot,
+  pointer: { x: number; y: number },
+): number[] {
+  const { ref, isPrimary, dragStart } = snap;
+  if (ref.basisPx <= 1) return ratios;
+  const rawDeltaPx = ref.axis === 'x' ? pointer.x - dragStart.x : pointer.y - dragStart.y;
+  const deadzone = isPrimary ? 0.8 : 2.8;
+  const deltaPx = Math.abs(rawDeltaPx) <= deadzone ? 0 : rawDeltaPx;
+  return adjustRatiosBySplitterDelta(ratios, ref.splitterIndex, (deltaPx / ref.basisPx) * 100);
 }
 
 function applyRatioUpdates(
@@ -947,152 +943,14 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
   const ui = get(splitResizeUiState);
   if (ui.phase !== 'junction' && ui.phase !== 'pending') return;
   clearSplitHoverTimer();
+
   const root = get(paneTreeStore);
-
-  // Check if 4-way junction snap (3+ coupled splitters at same junction).
-  // Only used for visual feedback (rg-resize-4way body class) below; the
-  // ratio-update fan-out is gated on the orthogonal flag so the visual hint
-  // stays consistent with whether we actually couple at the +-junction.
-  const is4WaySnap =
-    SPLIT_DRAG_ORTHOGONAL_COUPLING_ENABLED &&
-    ui.snapState !== null &&
-    ui.snapState.coupledSplitters.length >= 3;
-
-  // Build the snapshot ref set. Orthogonal partners (perpendicular splitters
-  // at the same +-junction) and snapState siblings recover the "4-way feel".
-  // Same-axis fan-out (next block) stays disabled by default.
-  let refs: SplitterRef[] = SPLIT_DRAG_ORTHOGONAL_COUPLING_ENABLED
-    ? dedupeRefs([ui.primary, ...ui.orthogonals])
-    : [ui.primary];
-  if (SPLIT_DRAG_ORTHOGONAL_COUPLING_ENABLED && ui.snapState) {
-    refs = dedupeRefs([...refs, ...ui.snapState.coupledSplitters]);
-  }
-
-  // 同向兄弟联动 gating（圆�?15px 区域）：
-  //   (a) 端点完全对齐：B �?A 的屏幕中线差 �?SAME_AXIS_ALIGN_EPSILON_PX
-  //       （B 的端点恰好落�?A 的延长线上）�?
-  //   (b) 鼠标�?BC 交点的欧几里得距�?�?INTERSECTION_PROXIMITY_PX
-  //       （以 BC 交点为圆心、半�?15px 的圆形热区，不分横纵）�?
-  // 两者同时满足，B 才被纳入联动；否则保留为 attractor（仅视觉吸附，不联动）�?
-  const pointerAlongLine =
-    ui.primary.axis === 'x' ? pointer.y : pointer.x;
-  const pointerOnAxis = ui.primary.axis === 'x' ? pointer.x : pointer.y;
-  const primaryCenter = getSplitterScreenCenter(ui.primary);
-  const coupledSameAxis: SplitterRef[] = [];
-  const attractOnlySameAxis: SplitterRef[] = [];
-  for (const sibling of ui.sameAxisCandidates) {
-    const endpoints = getSplitterLineEndpoints(sibling);
-    const siblingCenter = getSplitterScreenCenter(sibling);
-    if (!endpoints || siblingCenter == null || primaryCenter == null) {
-      attractOnlySameAxis.push(sibling);
-      continue;
-    }
-    const perpDistance = Math.abs(siblingCenter - primaryCenter);
-    // BC 交点 = (B 沿轴方向中线坐标, B 离鼠标更近的端点沿线方向坐标)
-    const dxOnAxis = siblingCenter - pointerOnAxis;
-    const nearestEndpoint =
-      Math.abs(endpoints.start - pointerAlongLine) <
-      Math.abs(endpoints.end - pointerAlongLine)
-        ? endpoints.start
-        : endpoints.end;
-    const dyAlongLine = nearestEndpoint - pointerAlongLine;
-    const distToBC = Math.hypot(dxOnAxis, dyAlongLine);
-    const eligible =
-      perpDistance <= SAME_AXIS_ALIGN_EPSILON_PX &&
-      distToBC <= INTERSECTION_PROXIMITY_PX;
-    // When sameAxis coupling is OFF (default), eligible siblings still get
-    // routed to the visual attractor list �?the user keeps the highlight
-    // hint without unwanted ratio updates on the sibling split.
-    if (eligible && SPLIT_DRAG_SAMEAXIS_COUPLING_ENABLED) {
-      coupledSameAxis.push(sibling);
-    } else {
-      attractOnlySameAxis.push(sibling);
-    }
-  }
-  if (coupledSameAxis.length > 0) {
-    refs = dedupeRefs([...refs, ...coupledSameAxis]);
-  }
-
-  // 4-way junction 全方向跟随：每条 orthogonal C 也可能有自己的同向兄�?D�?
-  // �?D �?C 中线对齐 (�?px) 且鼠标到 CD 端点（即 ABCD 交汇点）的欧几里�?
-  // 距离 �?INTERSECTION_PROXIMITY_PX 时，D 同样加入联动�?
-  //
-  // Skip the entire loop when sameAxis coupling is off �?there's no visual
-  // attractor consumer for ortho-sibling proximity (unlike sameAxis), so
-  // computing it would be pure waste. Gated on the same-axis flag because
-  // ortho-siblings are themselves a parallel-fan-out variant.
-  const coupledOrthoSiblings: SplitterRef[] = [];
-  if (SPLIT_DRAG_SAMEAXIS_COUPLING_ENABLED) for (const ortho of ui.orthogonals) {
-    const orthoCenter = getSplitterScreenCenter(ortho);
-    if (orthoCenter == null) continue;
-    // ortho.axis �?primary.axis，所�?�?ortho 拖动�? = "�?primary 沿线方向"
-    const orthoPointerOnAxis = ortho.axis === 'x' ? pointer.x : pointer.y;
-    const orthoPointerAlongLine = ortho.axis === 'x' ? pointer.y : pointer.x;
-    const siblings = findSameAxisRefs(ortho, SAME_AXIS_ATTRACT_PX);
-    for (const candidate of siblings) {
-      const sibling = candidate.ref;
-      const endpoints = getSplitterLineEndpoints(sibling);
-      const siblingCenter = getSplitterScreenCenter(sibling);
-      if (!endpoints || siblingCenter == null) continue;
-      const perpDistance = Math.abs(siblingCenter - orthoCenter);
-      const dxOnAxis = siblingCenter - orthoPointerOnAxis;
-      const nearestEndpoint =
-        Math.abs(endpoints.start - orthoPointerAlongLine) <
-        Math.abs(endpoints.end - orthoPointerAlongLine)
-          ? endpoints.start
-          : endpoints.end;
-      const dyAlongLine = nearestEndpoint - orthoPointerAlongLine;
-      const distToCD = Math.hypot(dxOnAxis, dyAlongLine);
-      if (
-        perpDistance <= SAME_AXIS_ALIGN_EPSILON_PX &&
-        distToCD <= INTERSECTION_PROXIMITY_PX
-      ) {
-        coupledOrthoSiblings.push(sibling);
-      }
-    }
-  }
-  if (coupledOrthoSiblings.length > 0) {
-    refs = dedupeRefs([...refs, ...coupledOrthoSiblings]);
-  }
-
-  const snapshots: SplitterSnapshot[] = [];
-  for (let i = 0; i < refs.length; i += 1) {
-    const ref = refs[i];
-    const split = getSplitNodeByPath(root, ref.splitPath);
-    if (!split) continue;
-    let basisPx = ref.basisPx;
-    if (typeof document !== 'undefined') {
-      const splitRoot = findVisibleSplitRoot(ref.splitPath, ref.axis);
-      if (splitRoot) {
-        basisPx = Math.max(
-          1,
-          ref.axis === 'x' ? splitRoot.clientWidth : splitRoot.clientHeight
-        );
-      }
-    }
-    // 计算 mousedown �?pointer 相对 splitter 视觉中心的偏移（沿轴方向）�?
-    // hit area 11px �?visual line �?1px，鼠标可能偏 ±5px�?
-    const splitterCenter = getSplitterScreenCenter(ref);
-    const dragStartAxis = ref.axis === 'x' ? pointer.x : pointer.y;
-    const mousedownOffsetAxis =
-      splitterCenter != null ? dragStartAxis - splitterCenter : 0;
-    snapshots.push({
-      ref: { ...ref, basisPx },
-      ratios: split.ratios.slice(),
-      isPrimary: i === 0,
-      dragStart: pointer,
-      mousedownOffsetAxis,
-    });
-  }
+  const { refs, attractors, is4WaySnap } = prepareDragRefs(ui, pointer);
+  const snapshots = buildDragSnapshots(root, refs, pointer);
   if (!snapshots.length) return;
-  // Build px-anchor plans using the primary's recently-measured basisPx so
-  // the descendant outer sizes reflect the live container at mousedown.
-  const primarySnapshot = snapshots[0];
-  const pxAnchors = buildPxAnchorPlans(
-    root,
-    primarySnapshot.ref,
-    primarySnapshot.ref.basisPx
-  );
+
+  const primary = snapshots[0];
+  const pxAnchors = buildPxAnchorPlans(root, primary.ref, primary.ref.basisPx);
   splitResizeUiState.set({
     phase: 'drag',
     pointer,
@@ -1100,131 +958,227 @@ export function startSplitResizeDrag(pointer: { x: number; y: number }) {
     snapshots,
     pendingUpdates: [],
     snapState: ui.snapState,
-    sameAxisAttractors: attractOnlySameAxis,
+    sameAxisAttractors: attractors,
     pxAnchors,
   });
-  // 拖动期间强制锁定 cursor，使其不随鼠标移�?splitter / 经过其他元素而变化：
-  //   - 含正交联�?�?move 全方�?
-  //   - 仅同主轴联动或单�?resize �?col-resize / row-resize 双方�?
-  // 这一帧立即生效，�?finishSplitResizeDrag 在松手时清除�?
-  const hasOrthogonalCoupled = snapshots.some(
-    (s) => s.ref.axis !== ui.primary.axis
-  );
-  let resizeCursor: 'move' | 'col' | 'row' = 'move';
-  if (!hasOrthogonalCoupled) resizeCursor = ui.primary.axis === 'x' ? 'col' : 'row';
-  setGlobalSplitResizeCursor(resizeCursor);
+  setDragCursor(ui.primary, snapshots);
   if (is4WaySnap && typeof document !== 'undefined') {
     document.body.classList.add('rg-resize-4way');
   }
 }
 
+function prepareDragRefs(
+  ui: Extract<SplitResizeUiState, { phase: 'junction' | 'pending' }>,
+  pointer: { x: number; y: number },
+): { refs: SplitterRef[]; attractors: SplitterRef[]; is4WaySnap: boolean } {
+  const orthogonal = SPLIT_DRAG_ORTHOGONAL_COUPLING_ENABLED;
+  let refs: SplitterRef[] = orthogonal
+    ? dedupeRefs([ui.primary, ...ui.orthogonals])
+    : [ui.primary];
+  if (orthogonal && ui.snapState) refs = dedupeRefs([...refs, ...ui.snapState.coupledSplitters]);
+
+  const primaryCenter = getSplitterScreenCenter(ui.primary);
+  const { coupled, attractors } = classifySameAxisCandidates(ui.sameAxisCandidates, ui.primary, pointer, primaryCenter);
+  if (coupled.length) refs = dedupeRefs([...refs, ...coupled]);
+  if (SPLIT_DRAG_SAMEAXIS_COUPLING_ENABLED) {
+    const siblings = collectOrthogonalSiblings(ui.orthogonals, pointer);
+    if (siblings.length) refs = dedupeRefs([...refs, ...siblings]);
+  }
+  return {
+    refs,
+    attractors,
+    is4WaySnap:
+      orthogonal &&
+      ui.snapState !== null &&
+      ui.snapState.coupledSplitters.length >= 3,
+  };
+}
+
+function classifySameAxisCandidates(
+  candidates: SplitterRef[],
+  primary: SplitterRef,
+  pointer: { x: number; y: number },
+  primaryCenter: number | null,
+): { coupled: SplitterRef[]; attractors: SplitterRef[] } {
+  const coupled: SplitterRef[] = [];
+  const attractors: SplitterRef[] = [];
+  const pointerAlongLine = primary.axis === 'x' ? pointer.y : pointer.x;
+  const pointerOnAxis = primary.axis === 'x' ? pointer.x : pointer.y;
+  for (const sibling of candidates) {
+    const endpoints = getSplitterLineEndpoints(sibling);
+    const center = getSplitterScreenCenter(sibling);
+    const eligible =
+      endpoints !== null &&
+      center !== null &&
+      primaryCenter !== null &&
+      isJunctionCandidate(center, endpoints, primaryCenter, pointerOnAxis, pointerAlongLine);
+    if (eligible && SPLIT_DRAG_SAMEAXIS_COUPLING_ENABLED) coupled.push(sibling);
+    else attractors.push(sibling);
+  }
+  return { coupled, attractors };
+}
+
+function isJunctionCandidate(
+  center: number,
+  endpoints: { start: number; end: number },
+  primaryCenter: number,
+  pointerOnAxis: number,
+  pointerAlongLine: number,
+): boolean {
+  const nearest = Math.abs(endpoints.start - pointerAlongLine) < Math.abs(endpoints.end - pointerAlongLine)
+    ? endpoints.start
+    : endpoints.end;
+  return (
+    Math.abs(center - primaryCenter) <= SAME_AXIS_ALIGN_EPSILON_PX &&
+    Math.hypot(center - pointerOnAxis, nearest - pointerAlongLine) <= INTERSECTION_PROXIMITY_PX
+  );
+}
+
+function collectOrthogonalSiblings(
+  orthogonals: SplitterRef[],
+  pointer: { x: number; y: number },
+): SplitterRef[] {
+  const result: SplitterRef[] = [];
+  for (const ortho of orthogonals) {
+    const center = getSplitterScreenCenter(ortho);
+    if (center == null) continue;
+    for (const candidate of findSameAxisRefs(ortho, SAME_AXIS_ATTRACT_PX)) {
+      if (isOrthoSiblingCandidate(ortho, pointer, center, candidate.ref)) {
+        result.push(candidate.ref);
+      }
+    }
+  }
+  return result;
+}
+
+function isOrthoSiblingCandidate(
+  ortho: SplitterRef,
+  pointer: { x: number; y: number },
+  orthoCenter: number,
+  sibling: SplitterRef,
+): boolean {
+  const endpoints = getSplitterLineEndpoints(sibling);
+  const siblingCenter = getSplitterScreenCenter(sibling);
+  if (endpoints == null || siblingCenter == null) return false;
+  const onAxis = ortho.axis === 'x' ? pointer.x : pointer.y;
+  const alongLine = ortho.axis === 'x' ? pointer.y : pointer.x;
+  return isJunctionCandidate(siblingCenter, endpoints, orthoCenter, onAxis, alongLine);
+}
+
+function buildDragSnapshots(
+  root: PaneNode,
+  refs: SplitterRef[],
+  pointer: { x: number; y: number },
+): SplitterSnapshot[] {
+  return refs.flatMap((ref, index) => {
+    const split = getSplitNodeByPath(root, ref.splitPath);
+    if (!split) return [];
+    const basisPx = liveSplitterBasis(ref);
+    const center = getSplitterScreenCenter(ref);
+    const axisPosition = ref.axis === 'x' ? pointer.x : pointer.y;
+    return [{
+      ref: { ...ref, basisPx },
+      ratios: split.ratios.slice(),
+      isPrimary: index === 0,
+      dragStart: pointer,
+      mousedownOffsetAxis: center == null ? 0 : axisPosition - center,
+    }];
+  });
+}
+
+function liveSplitterBasis(ref: SplitterRef): number {
+  if (typeof document === 'undefined') return ref.basisPx;
+  const root = findVisibleSplitRoot(ref.splitPath, ref.axis);
+  if (!root) return ref.basisPx;
+  return Math.max(1, ref.axis === 'x' ? root.clientWidth : root.clientHeight);
+}
+
+function setDragCursor(primary: SplitterRef, snapshots: SplitterSnapshot[]): void {
+  const hasOrthogonal = snapshots.some((s) => s.ref.axis !== primary.axis);
+  setGlobalSplitResizeCursor(hasOrthogonal ? 'move' : primary.axis === 'x' ? 'col' : 'row');
+}
 export function updateSplitResizeDrag(pointer: { x: number; y: number }) {
   const ui = get(splitResizeUiState);
   if (ui.phase !== 'drag') return;
 
-  // The coupled snapshot set is frozen at mousedown (startSplitResizeDrag).
-  // Do not add new same-axis candidates mid-drag: coupling is gated on
-  // endpoint proximity at drag start, and dynamic additions during drag
-  // caused non-intersection splitters to be incorrectly coupled.
-  //
-  // Issue 3: if the primary has moved far enough along its drag axis, drop
-  // same-axis non-primary entries so only the primary continues to move.
-  // Orthogonal entries are intentionally kept: they move on the perpendicular
-  // axis (their delta is pointer.perp - dragStart.perp), so the along-axis
-  // drag distance of the primary is irrelevant to whether they should track.
-  const primary = ui.snapshots.find((s) => s.isPrimary);
-  let workingSnapshots = ui.snapshots;
-  if (primary) {
-    const dragDistance =
-      primary.ref.axis === 'x'
-        ? Math.abs(pointer.x - primary.dragStart.x)
-        : Math.abs(pointer.y - primary.dragStart.y);
-    if (dragDistance > UNSNAP_THRESHOLD_PX) {
-      workingSnapshots = ui.snapshots.filter(
-        (s) => s.isPrimary || s.ref.axis !== primary.ref.axis
-      );
-    }
-  }
-
-  // 视觉吸附：用户语�?�?C 方向�?BC 交点 �?SAME_AXIS_ATTRACT_PX �?A 吸附"—�?
-  // "�?C 方向" 即沿 A 的拖动轴 (perp to A's line)，所以触发条件是 A 拖动后中�?
-  // (= pointer 沿轴位置) �?B 中线 �?SAME_AXIS_ATTRACT_PX，与沿线方向无关�?
-  //
-  // 偏移补偿：updatesFromSnapshots 计算 deltaPx = effectivePointer.axis - dragStart.axis�?
-  // �?dragStart.axis �?mousedown 时的 pointer 坐标，可能偏�?splitter 视觉中心
-  // 多达 ±5px (RgSplitter hit area 11px / 视觉�?1px)。若直接�?B.center 替换�?
-  // A 最终位�?= A.start_center + (B.center - dragStart.axis) = B.center - offset�?
-  // 导致吸附�?A 偏离 B 中线 offset 像素 (用户报告"基本向上和向左偏")�?
-  // 修复：effectivePointer.axis = B.center + offset，让 deltaPx = perpDistance�?
-  // A 中线精确落在 B 中线上�?
-  let effectivePointer = pointer;
-  if (primary && ui.sameAxisAttractors.length > 0) {
-    const axis = primary.ref.axis;
-    const pointerOnAxis = axis === 'x' ? pointer.x : pointer.y;
-    let bestCenter: number | null = null;
-    let bestDist = SAME_AXIS_ATTRACT_PX + 1;
-    for (const attractor of ui.sameAxisAttractors) {
-      const bCenter = getSplitterScreenCenter(attractor);
-      if (bCenter == null) continue;
-      const dxOnAxis = Math.abs(bCenter - pointerOnAxis);
-      if (dxOnAxis > SAME_AXIS_ATTRACT_PX) continue;
-      if (dxOnAxis < bestDist) {
-        bestDist = dxOnAxis;
-        bestCenter = bCenter;
-      }
-    }
-    if (bestCenter != null) {
-      // �?mousedown 时记录的偏移补偿 effectivePointer，使 deltaPx 严格等于
-      // perpDistance(A, B)。snapshot �?startSplitResizeDrag 时保存的
-      // mousedownOffsetAxis 就是 dragStart.axis - A.center_at_mousedown�?
-      // 此时 A 还未拖动，是真正的起始中心�?
-      const effectiveAxisCoord = bestCenter + primary.mousedownOffsetAxis;
-      effectivePointer =
-        axis === 'x'
-          ? { x: effectiveAxisCoord, y: pointer.y }
-          : { x: pointer.x, y: effectiveAxisCoord };
-    }
-  }
-
-  const updates = updatesFromSnapshots(workingSnapshots, effectivePointer);
-
-  // Px-anchor: fan an extra ratio update onto each anchored descendant
-  // split. Uses the SAME effectivePointer / deadzone semantics as the
-  // primary so absorber tracking stays in lock-step with the divider.
-  if (primary && ui.pxAnchors.length > 0) {
-    const axis = primary.ref.axis;
-    const rawDeltaPx =
-      axis === 'x'
-        ? effectivePointer.x - primary.dragStart.x
-        : effectivePointer.y - primary.dragStart.y;
-    // Mirror updatesFromSnapshots's primary deadzone (0.8 px) so a still
-    // pointer doesn't flutter ratios between mousedown and the first move.
-    const deltaPx = Math.abs(rawDeltaPx) <= 0.8 ? 0 : rawDeltaPx;
-    for (const plan of ui.pxAnchors) {
-      const ratios = pxAnchorRatios(plan, deltaPx);
-      // Skip anchor updates whose path collides with an existing primary
-      // update (defensive �?shouldn't happen because plans always live on
-      // a descendant path strictly deeper than primary's split).
-      const collision = updates.some(
-        (u) => pathKey(u.path) === pathKey(plan.splitPath)
-      );
-      if (collision) continue;
-      updates.push({ path: plan.splitPath, ratios });
-    }
-  }
+  const primary = ui.snapshots.find((snapshot) => snapshot.isPrimary);
+  const snapshots = unsnappedSnapshots(ui.snapshots, primary, pointer);
+  const effectivePointer = snappedDragPointer(ui.sameAxisAttractors, primary, pointer);
+  const updates = updatesFromSnapshots(snapshots, effectivePointer);
+  appendPxAnchorUpdates(updates, ui.pxAnchors, primary, effectivePointer);
 
   updateActiveTree(get(activeWorkspaceId), (root: PaneNode) =>
     applyRatioUpdates(root, updates)
   );
-
   splitResizeUiState.set({
     ...ui,
     pointer,
     pendingUpdates: updates,
-    snapshots: workingSnapshots,
+    snapshots,
   });
 }
 
+function unsnappedSnapshots(
+  snapshots: SplitterSnapshot[],
+  primary: SplitterSnapshot | undefined,
+  pointer: { x: number; y: number },
+): SplitterSnapshot[] {
+  if (!primary) return snapshots;
+  const axis = primary.ref.axis;
+  const delta = axis === 'x'
+    ? Math.abs(pointer.x - primary.dragStart.x)
+    : Math.abs(pointer.y - primary.dragStart.y);
+  return delta > UNSNAP_THRESHOLD_PX
+    ? snapshots.filter((snapshot) => snapshot.isPrimary || snapshot.ref.axis !== axis)
+    : snapshots;
+}
+
+function snappedDragPointer(
+  attractors: SplitterRef[],
+  primary: SplitterSnapshot | undefined,
+  pointer: { x: number; y: number },
+): { x: number; y: number } {
+  if (!primary || attractors.length === 0) return pointer;
+  const axis = primary.ref.axis;
+  const pointerOnAxis = axis === 'x' ? pointer.x : pointer.y;
+  const center = nearestAttractorCenter(attractors, pointerOnAxis);
+  if (center == null) return pointer;
+  const coordinate = center + primary.mousedownOffsetAxis;
+  return axis === 'x' ? { x: coordinate, y: pointer.y } : { x: pointer.x, y: coordinate };
+}
+
+function nearestAttractorCenter(attractors: SplitterRef[], pointerOnAxis: number): number | null {
+  let nearest: number | null = null;
+  let distance = SAME_AXIS_ATTRACT_PX + 1;
+  for (const attractor of attractors) {
+    const center = getSplitterScreenCenter(attractor);
+    if (center == null) continue;
+    const nextDistance = Math.abs(center - pointerOnAxis);
+    if (nextDistance <= SAME_AXIS_ATTRACT_PX && nextDistance < distance) {
+      nearest = center;
+      distance = nextDistance;
+    }
+  }
+  return nearest;
+}
+
+function appendPxAnchorUpdates(
+  updates: SplitRatioUpdate[],
+  plans: PxAnchorPlan[],
+  primary: SplitterSnapshot | undefined,
+  pointer: { x: number; y: number },
+): void {
+  if (!primary || plans.length === 0) return;
+  const axis = primary.ref.axis;
+  const rawDelta = axis === 'x'
+    ? pointer.x - primary.dragStart.x
+    : pointer.y - primary.dragStart.y;
+  const delta = Math.abs(rawDelta) <= 0.8 ? 0 : rawDelta;
+  for (const plan of plans) {
+    if (updates.some((update) => pathKey(update.path) === pathKey(plan.splitPath))) continue;
+    updates.push({ path: plan.splitPath, ratios: pxAnchorRatios(plan, delta) });
+  }
+}
 export function finishSplitResizeDrag(): SplitRatioUpdate[] {
   const ui = get(splitResizeUiState);
   clearSplitHoverTimer();

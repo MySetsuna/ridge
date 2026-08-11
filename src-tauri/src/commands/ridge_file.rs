@@ -936,45 +936,53 @@ pub fn schedule_auto_save(state: &AppState, workspace_id: Uuid) {
 fn auto_save_worker(state: AppState) {
     loop {
         std::thread::sleep(Duration::from_millis(AUTO_SAVE_DEBOUNCE_MS));
-        let now = Instant::now();
-        let due: Vec<Uuid> = {
-            let mut guard = match AUTO_SAVE.lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            let mut remove = Vec::new();
-            for (&id, t) in guard.pending.iter() {
-                if now.duration_since(*t) >= Duration::from_millis(AUTO_SAVE_DEBOUNCE_MS) {
-                    remove.push(id);
-                }
-            }
-            for id in &remove {
-                guard.pending.remove(id);
-            }
-            if guard.pending.is_empty() {
-                guard.worker_running = false;
-            }
-            remove
+        let Some(due) = take_due_auto_saves(Instant::now()) else {
+            return;
         };
-        for id in due {
-            if let Err(e) = write_workspace_snapshot(&state, id) {
-                tracing::warn!(
-                    target: "ridge::autosave",
-                    workspace = %id,
-                    error = %e,
-                    "auto-save failed"
-                );
-            }
-        }
-        // 如果写盘过程中又被触发了新请求，保持 worker 运行；否则退出。
-        let guard = match AUTO_SAVE.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        if !guard.worker_running {
+        write_due_snapshots(&state, due);
+        if !auto_save_worker_active() {
             return;
         }
     }
+}
+
+fn take_due_auto_saves(now: Instant) -> Option<Vec<Uuid>> {
+    let mut guard = AUTO_SAVE.lock().ok()?;
+    let due: Vec<Uuid> = guard
+        .pending
+        .iter()
+        .filter(|(_, timestamp)| {
+            now.duration_since(**timestamp) >= Duration::from_millis(AUTO_SAVE_DEBOUNCE_MS)
+        })
+        .map(|(&id, _)| id)
+        .collect();
+    for id in &due {
+        guard.pending.remove(id);
+    }
+    if guard.pending.is_empty() {
+        guard.worker_running = false;
+    }
+    Some(due)
+}
+
+fn write_due_snapshots(state: &AppState, due: Vec<Uuid>) {
+    for id in due {
+        if let Err(error) = write_workspace_snapshot(state, id) {
+            tracing::warn!(
+                target: "ridge::autosave",
+                workspace = %id,
+                error = %error,
+                "auto-save failed"
+            );
+        }
+    }
+}
+
+fn auto_save_worker_active() -> bool {
+    AUTO_SAVE
+        .lock()
+        .map(|guard| guard.worker_running)
+        .unwrap_or(false)
 }
 
 fn write_workspace_snapshot(state: &AppState, workspace_id: Uuid) -> Result<(), String> {

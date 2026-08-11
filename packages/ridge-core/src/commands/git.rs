@@ -3331,58 +3331,12 @@ mod guard_tests {
         // Production = everything before the first top-level `mod …tests` under cfg(test).
         // Nested unit-test helpers may appear earlier as `#[cfg(test)] fn …` — strip those
         // with a small state machine, then cut at the first `mod *_tests` / `mod tests`.
-        /* let mut prod_lines: Vec<&str> = Vec::new();
-        let mut skip_fn = false;
-        let mut fn_brace = 0i32;
-        for line in src.lines() {
-            let t = line.trim();
-            if !skip_fn && t.starts_with("#[cfg(test)]") {
-                // Peek: next non-empty production path may be fn or mod.
-                skip_fn = true;
-                fn_brace = 0;
-                continue;
-            }
-            if skip_fn {
+        /*
                 if t.starts_with("mod ") {
                     // Start of a test module — rest of file is tests.
                     break;
                 }
-                fn_brace += t.matches('{').count() as i32;
-                fn_brace -= t.matches('}').count() as i32;
-                if fn_brace <= 0 && t.contains('}') {
-                    skip_fn = false;
-                }
-                continue;
-            }
-            if t.starts_with("mod ") && (t.contains("tests") || t.contains("guard_tests")) {
-                break;
-            }
-            prod_lines.push(line);
-        }
-        let prod = prod_lines.join("\n");
-        let mut in_git_cmd = false;
-        let mut brace = 0i32;
-        let mut offenders = Vec::new();
-        for (i, line) in prod.lines().enumerate() {
-            let t = line.trim();
-            if t.starts_with("fn git_cmd(") {
-                in_git_cmd = true;
-                brace = 0;
-            }
-            if in_git_cmd {
-                brace += t.matches('{').count() as i32;
-                brace -= t.matches('}').count() as i32;
-                if brace <= 0 && t.contains('}') {
-                    in_git_cmd = false;
-                }
-            }
-            if t.contains("Command::new(")
-                && !in_git_cmd
-                && (t.contains("\"git\"") || t.contains("RIDGE_GIT_BIN"))
-            {
-                offenders.push((i + 1, t.to_string()));
-            }
-        } */
+        */
         let offenders = git_spawn_offenders(&prod);
         assert!(
             offenders.is_empty(),

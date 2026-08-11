@@ -135,7 +135,11 @@ if (process.env.RIDGE_CLOUD_PANE_ID) {
 
 let devUrl;
 try {
-  const configPath = path.resolve('.webview2-dev-cdp', 'tauri-dev-cdp.config.json');
+  const configuredUserDataDir = process.env.RIDGE_CDP_USER_DATA_DIR?.trim();
+  const userDataDir = configuredUserDataDir
+    ? path.resolve(configuredUserDataDir)
+    : path.resolve('.webview2-dev-cdp');
+  const configPath = path.join(userDataDir, 'tauri-dev-cdp.config.json');
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   devUrl = config?.build?.devUrl;
 } catch { /* standalone CDP targets may not have a launcher config */ }

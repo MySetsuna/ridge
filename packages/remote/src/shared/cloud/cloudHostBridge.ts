@@ -357,155 +357,146 @@ export class CloudHostBridge {
    * `verified=true`，放行后续业务帧。
    */
   private async handleSessionControl(frame: Record<string, unknown>): Promise<void> {
-    const t = frame.t;
-
-    // §7.4 trusted-controller grant — totp-trust-hello：controller 发送自身公钥，host 回 nonce。
-    if (t === 'totp-trust-hello') {
-      const pubB64 = typeof frame.pub === 'string' ? frame.pub : '';
-      const pub = base64ToBytes(pubB64);
-      if (pub?.length !== 32) {
-        this.log('warn', 'totp-trust-hello: invalid pub field; ignored');
+    switch (frame.t) {
+      case 'totp-trust-hello':
+        this.handleTrustHello(frame);
         return;
-      }
-      this.trustCtrlPub = pub;
-      const nonce = new Uint8Array(32);
-      crypto.getRandomValues(nonce);
-      this.trustNonce = nonce;
-      this.sendSessionControl({ t: 'totp-trust-challenge', nonce: bytesToBase64(nonce) });
+      case 'totp-trust-proof':
+        return this.handleTrustProof(frame);
+      case 'totp-verify':
+      case 'totp-bind':
+        await this.handleTotpControl(frame);
+        return;
+      default:
+        this.log('warn', `unknown CONTROL frame t=${unknownText(frame.t, 'unknown')}; ignored`);
+    }
+  }
+
+  private handleTrustHello(frame: Record<string, unknown>): void {
+    const pub = base64ToBytes(typeof frame.pub === 'string' ? frame.pub : '');
+    if (pub?.length !== 32) {
+      this.log('warn', 'totp-trust-hello: invalid pub field; ignored');
+      return;
+    }
+    this.trustCtrlPub = pub;
+    const nonce = new Uint8Array(32);
+    crypto.getRandomValues(nonce);
+    this.trustNonce = nonce;
+    this.sendSessionControl({ t: 'totp-trust-challenge', nonce: bytesToBase64(nonce) });
+  }
+
+  private async handleTrustProof(frame: Record<string, unknown>): Promise<void> {
+    const ctrlPub = this.trustCtrlPub;
+    const nonce = this.trustNonce;
+    this.trustNonce = null;
+    if (!ctrlPub || !nonce) {
+      this.log('warn', 'totp-trust-proof: no active trust challenge; ignored');
+      return;
+    }
+    if (this.totpFailures >= MAX_TOTP_ATTEMPTS) {
+      this.log('warn', 'totp-trust-proof: locked out; rejecting');
+      this.sendSessionControl({ t: 'totp-trust-result', trusted: false });
+      return;
+    }
+    if (this.bindTranscript) this.fallbackCounters.trustProofWithTranscript += 1;
+    else {
+      this.fallbackCounters.trustProofWithoutTranscript += 1;
+      this.log('warn', 'totp-trust-proof without bindTranscript (F1 fallback: unbound signature)');
+    }
+
+    const valid = this.verifyTrustSignature(frame, ctrlPub, nonce);
+    if (!valid) {
+      this.totpFailures += 1;
+      this.sendSessionControl({ t: 'totp-trust-result', trusted: false });
       return;
     }
 
-    // §7.4 trusted-controller grant — totp-trust-proof：controller 用私钥签名证明身份。
-    if (t === 'totp-trust-proof') {
-      const ctrlPub = this.trustCtrlPub;
-      const nonce = this.trustNonce;
-      // 抗重放：立即清除 nonce，无论验证结果如何。
-      this.trustNonce = null;
-
-      if (!ctrlPub || !nonce) {
-        // 没有进行中的 trust 握手（nonce 已消耗或从未发起）。
-        this.log('warn', 'totp-trust-proof: no active trust challenge; ignored');
-        return;
-      }
-      // SECURITY: 共享锁定计数，防止 trust 通道爆破。
-      if (this.totpFailures >= MAX_TOTP_ATTEMPTS) {
-        this.log('warn', 'totp-trust-proof: locked out; rejecting');
-        this.sendSessionControl({ t: 'totp-trust-result', trusted: false });
-        return;
-      }
-
-      // S1 遥测第一阶段（F1）：统计走到签名评估的 proof 里 transcript 的在缺，
-      // 供「无 transcript 退化路径占比 → fail-closed 退役」判定；缺席记一行诊断。
-      if (this.bindTranscript) this.fallbackCounters.trustProofWithTranscript += 1;
-      else {
-        this.fallbackCounters.trustProofWithoutTranscript += 1;
-        this.log('warn', 'totp-trust-proof without bindTranscript (F1 fallback: unbound signature)');
-      }
-
-      const sigB64 = typeof frame.sig === 'string' ? frame.sig : '';
-      const sig = base64ToBytes(sigB64);
-      let valid = false;
-      if (sig?.length === 64) {
-        try {
-          // §7.4 签名消息：utf8("ridge-totp-trust-v1") ‖ nonce ‖ transcript
-          const prefix = new TextEncoder().encode('ridge-totp-trust-v1');
-          const transcript = this.bindTranscript;
-          const transcriptLen = transcript?.length ?? 0;
-          const msg = new Uint8Array(prefix.length + nonce.length + transcriptLen);
-          msg.set(prefix, 0);
-          msg.set(nonce, prefix.length);
-          if (transcript) msg.set(transcript, prefix.length + nonce.length);
-          valid = ed25519.verify(sig, msg, ctrlPub);
-        } catch (e) {
-          this.log('error', 'totp-trust-proof: Ed25519 verify threw; treating as invalid', e);
-          valid = false;
-        }
-      }
-
-      if (!valid) {
-        this.totpFailures += 1;
-        this.sendSessionControl({ t: 'totp-trust-result', trusted: false });
-        return;
-      }
-
-      // 签名合法：查询 host 是否记录过该 controller（Tauri invoke）。
-      const ctrlPubB64 = bytesToBase64(ctrlPub);
-      let trusted = false;
-      try {
-        trusted = await this.invoke('totp_trust_check', { ctrlPubB64 }) as boolean;
-      } catch (e) {
-        this.log('error', 'totp_trust_check invoke threw; treating as not trusted', e);
-        trusted = false;
-      }
-
-      if (trusted && (this.totpVerifier ?? this.totpBindVerifier)) {
-        // 是已信任的 controller 且当前会话需要 TOTP → 跳过交互验证直接设 verified。
-        this.verified = true;
-        // 记录公钥以便 manual-verify 路径的 totp_trust_record 能更新时间戳（幂等）。
-        this.trustCtrlPub = ctrlPub;
-      }
-      this.sendSessionControl({ t: 'totp-trust-result', trusted });
-      return;
+    let trusted = false;
+    try {
+      trusted = await this.invoke('totp_trust_check', {
+        ctrlPubB64: bytesToBase64(ctrlPub),
+      }) as boolean;
+    } catch (error) {
+      this.log('error', 'totp_trust_check invoke threw; treating as not trusted', error);
     }
-
-    if (t !== 'totp-verify' && t !== 'totp-bind') {
-      this.log('warn', `unknown CONTROL frame t=${unknownText(t, 'unknown')}; ignored`);
-      return;
+    if (trusted && (this.totpVerifier ?? this.totpBindVerifier)) {
+      this.verified = true;
+      this.trustCtrlPub = ctrlPub;
     }
-    // 未注入**任何**校验器（不门控）：任何 totp 帧都视为通过（与构造时 verified=true 一致）。
+    this.sendSessionControl({ t: 'totp-trust-result', trusted });
+  }
+
+  private verifyTrustSignature(
+    frame: Record<string, unknown>,
+    ctrlPub: Uint8Array,
+    nonce: Uint8Array,
+  ): boolean {
+    const sig = base64ToBytes(typeof frame.sig === 'string' ? frame.sig : '');
+    if (sig?.length !== 64) return false;
+    try {
+      const prefix = new TextEncoder().encode('ridge-totp-trust-v1');
+      const transcript = this.bindTranscript;
+      const msg = new Uint8Array(prefix.length + nonce.length + (transcript?.length ?? 0));
+      msg.set(prefix);
+      msg.set(nonce, prefix.length);
+      if (transcript) msg.set(transcript, prefix.length + nonce.length);
+      return ed25519.verify(sig, msg, ctrlPub);
+    } catch (error) {
+      this.log('error', 'totp-trust-proof: Ed25519 verify threw; treating as invalid', error);
+      return false;
+    }
+  }
+
+  private async handleTotpControl(frame: Record<string, unknown>): Promise<void> {
     if (!this.totpVerifier && !this.totpBindVerifier) {
       this.verified = true;
       this.sendSessionControl({ t: 'totp-result', ok: true });
       return;
     }
-    // 已通过：不再消耗尝试次数（幂等放行）。
     if (this.verified) {
       this.sendSessionControl({ t: 'totp-result', ok: true });
       return;
     }
-    // SECURITY (audit #3): 失败次数达上限 → 锁死，不再调校验器（防 CONTROL 通道爆破）。
     if (this.totpFailures >= MAX_TOTP_ATTEMPTS) {
       this.log('warn', 'TOTP locked out (too many failed attempts); rejecting');
       this.sendSessionControl({ t: 'totp-result', ok: false, locked: true });
       return;
     }
-    let ok = false;
-    try {
-      if (t === 'totp-verify') {
-        const code = typeof frame.code === 'string' ? frame.code : '';
-        // 仅当注入了明文校验器才认 totp-verify；否则视为失败（不绕过 totp-bind 门控）。
-        ok = this.totpVerifier ? await this.totpVerifier(code) : false;
-      } else {
-        // totp-bind：解 base64 tag → 原始字节 → 信道绑定校验器。坏 base64 / 未注入 ⇒ 失败。
-        const tag = base64ToBytes(typeof frame.tag === 'string' ? frame.tag : '');
-        ok = tag !== null && this.totpBindVerifier ? await this.totpBindVerifier(tag) : false;
-      }
-    } catch (e) {
-      this.log('error', 'TOTP verifier threw; treating as failed', e);
-      ok = false;
-    }
+
+    const ok = await this.verifyTotpFrame(frame);
     if (ok) {
       this.verified = true;
-      // §7.4：手动 TOTP 成功后，若本轮已进行过 trust 握手且 controller 公钥已知，
-      // 则记录为受信任（fire-and-forget）。
-      if (this.trustCtrlPub) {
-        const ctrlPubB64 = bytesToBase64(this.trustCtrlPub);
-        void this.invoke('totp_trust_record', { ctrlPubB64 }).catch((e: unknown) => {
-          this.log('error', 'totp_trust_record invoke threw (ignored)', e);
-        });
-      }
+      this.recordTrustedController();
     } else {
-      // SECURITY (audit #3): 每次失败累加；达上限后本桥后续 totp 帧直接锁死。
       this.totpFailures += 1;
     }
     const locked = !ok && this.totpFailures >= MAX_TOTP_ATTEMPTS;
     this.sendSessionControl({ t: 'totp-result', ok, ...(locked ? { locked: true } : {}) });
   }
 
-  /**
-   * 门控期收到业务 JSON-RPC：带 id 的 request 回一个 JSON-RPC error（让 controller
-   * 端 promise reject，而非悬挂）；notification（无 id）静默丢弃。
-   */
+  private async verifyTotpFrame(frame: Record<string, unknown>): Promise<boolean> {
+    try {
+      if (frame.t === 'totp-verify') {
+        const code = typeof frame.code === 'string' ? frame.code : '';
+        return this.totpVerifier ? await this.totpVerifier(code) : false;
+      }
+      const tag = base64ToBytes(typeof frame.tag === 'string' ? frame.tag : '');
+      return tag !== null && this.totpBindVerifier ? await this.totpBindVerifier(tag) : false;
+    } catch (error) {
+      this.log('error', 'TOTP verifier threw; treating as failed', error);
+      return false;
+    }
+  }
+
+  private recordTrustedController(): void {
+    if (!this.trustCtrlPub) return;
+    const ctrlPubB64 = bytesToBase64(this.trustCtrlPub);
+    void this.invoke('totp_trust_record', { ctrlPubB64 }).catch((error: unknown) => {
+      this.log('error', 'totp_trust_record invoke threw (ignored)', error);
+    });
+  }
+
+
   private rejectUnverified(json: unknown): void {
     if (json !== null && typeof json === 'object') {
       const id = (json as { id?: unknown }).id;

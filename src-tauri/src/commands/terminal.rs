@@ -882,6 +882,123 @@ fn reattach_kernel_ptys_inner(state: &AppState) -> Result<usize, String> {
     Ok(attached)
 }
 
+fn prepare_pane_for_pty(
+    state: &AppState,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    has_explicit_launch: bool,
+) -> Result<bool, AppError> {
+    let map = state.workspaces.read();
+    let ws = map
+        .get(&workspace_id)
+        .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
+    if !ws.pane_tree.get_all_leaves().contains(&pane_id) {
+        pty_log::create_skip(workspace_id, pane_id);
+        return Ok(true);
+    }
+    if ws.terminals.contains_key(&pane_id) {
+        if has_explicit_launch {
+            drop(map);
+            teardown_pane_pty_if_present(state, workspace_id, pane_id);
+        } else {
+            pty_log::create_skip(workspace_id, pane_id);
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn mark_kernel_ready(ready_tx: &mut Option<tokio::sync::oneshot::Sender<Result<(), String>>>) {
+    if let Some(tx) = ready_tx.take() {
+        let _ = tx.send(Ok(()));
+    }
+}
+
+fn try_install_kernel_pty(
+    state: &AppState,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    shell: Option<&str>,
+    cwd: Option<&Path>,
+    initial_command: Option<&str>,
+    structured_command: Option<&StructuredPtyCommand>,
+    tmux_pane_index: Option<usize>,
+    kernel_candidate: bool,
+    has_explicit_launch: bool,
+    ready_tx: &mut Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+) -> Option<Result<(), AppError>> {
+    if initial_command.is_none() {
+        if let Some(spec) = structured_command {
+            crate::teammate::ensure_teammate_started(state);
+            let endpoint = match kernel_endpoint_for_shell() {
+                Ok(endpoint) => endpoint,
+                Err(error) => {
+                    return Some(Err(AppError::PtyError(format!(
+                        "ridge-kernel unavailable for Agent PTY: {error}"
+                    ))))
+                }
+            };
+            let env = match kernel_structured_env(
+                state,
+                workspace_id,
+                pane_id,
+                cwd,
+                tmux_pane_index,
+                spec,
+            ) {
+                Ok(env) => env,
+                Err(error) => return Some(Err(AppError::PtyError(error))),
+            };
+            let result = attach_or_spawn_kernel_command(
+                state,
+                endpoint,
+                KernelCommandLaunch {
+                    workspace_id,
+                    pane_id,
+                    program: Some(&spec.program),
+                    args: &spec.args,
+                    env: &env,
+                    cwd,
+                    role: "agent",
+                    launch_profile: None,
+                },
+            );
+            return Some(match result {
+                Ok(_) => {
+                    mark_kernel_ready(ready_tx);
+                    Ok(())
+                }
+                Err(error) => Err(AppError::PtyError(format!(
+                    "ridge-kernel Agent PTY unavailable: {error}"
+                ))),
+            });
+        }
+    }
+
+    if kernel_candidate && !has_explicit_launch {
+        let endpoint = match kernel_endpoint_for_shell() {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                return Some(Err(AppError::PtyError(format!(
+                    "ridge-kernel unavailable for shell PTY: {error}"
+                ))))
+            }
+        };
+        return Some(
+            match attach_or_spawn_kernel_pty(state, endpoint, workspace_id, pane_id, shell, cwd) {
+                Ok(_) => {
+                    mark_kernel_ready(ready_tx);
+                    Ok(())
+                }
+                Err(error) => Err(AppError::PtyError(format!(
+                    "ridge-kernel shell PTY unavailable: {error}"
+                ))),
+            },
+        );
+    }
+    None
+}
+
 pub fn ensure_pane_pty_workspace(
     state: &AppState,
     workspace_id: Uuid,
@@ -895,7 +1012,7 @@ pub fn ensure_pane_pty_workspace(
         structured_command,
         tmux_pane_index,
         mut ready_tx,
-        trace_id,
+        trace_id: _trace_id,
     } = options;
     let kernel_candidate = initial_command.is_none() && structured_command.is_none();
     // 按需启动 teammate HTTP server（幂等）：必须在下方注入 RIDGE_TEAMMATE_* 之前完成，
@@ -910,99 +1027,24 @@ pub fn ensure_pane_pty_workspace(
         .filter(|s| !s.program.is_empty());
     let has_explicit_launch = ic.is_some() || sc.is_some();
 
-    {
-        let map = state.workspaces.read();
-        let ws = map
-            .get(&workspace_id)
-            .ok_or_else(|| AppError::PtyError("无活动工作区".into()))?;
-        // §orphan-guard: only ever spawn a PTY for a pane that is a CURRENT
-        // pane_tree LEAF. Every legitimate create path makes the pane a leaf first
-        // (split/restore/workspace-init add it to the tree before this is called).
-        // A pane that is NOT a leaf was closed/reaped — a stale desktop layout (or
-        // a racing rebuild) trying to (re)spawn its PTY is exactly what creates
-        // orphan terminals/pending that diverge from the tree and re-appear after
-        // reap. Skip silently so the orphan can't be resurrected.
-        if !ws.pane_tree.get_all_leaves().contains(&pane_id) {
-            pty_log::create_skip(workspace_id, pane_id);
-            return Ok(());
-        }
-        if ws.terminals.contains_key(&pane_id) {
-            if has_explicit_launch {
-                drop(map);
-                teardown_pane_pty_if_present(state, workspace_id, pane_id);
-            } else {
-                pty_log::create_skip(workspace_id, pane_id);
-                return Ok(());
-            }
-        }
+    if prepare_pane_for_pty(state, workspace_id, pane_id, has_explicit_launch)? {
+        return Ok(());
     }
 
-    // Structured Agent launches use the same kernel-owned child/process
-    // lifecycle as ordinary shells. A kernel bootstrap or RPC failure is
-    // surfaced to the caller; silently creating a local child would violate
-    // the restart/reattach contract and leave two lifecycle authorities.
-    if ic.is_none() {
-        if let Some(spec) = sc.as_ref() {
-            crate::teammate::ensure_teammate_started(state);
-            let endpoint = kernel_endpoint_for_shell().map_err(|error| {
-                AppError::PtyError(format!("ridge-kernel unavailable for Agent PTY: {error}"))
-            })?;
-            let env =
-                kernel_structured_env(state, workspace_id, pane_id, cwd, tmux_pane_index, spec)
-                    .map_err(AppError::PtyError)?;
-            match attach_or_spawn_kernel_command(
-                state,
-                endpoint,
-                KernelCommandLaunch {
-                    workspace_id,
-                    pane_id,
-                    program: Some(&spec.program),
-                    args: &spec.args,
-                    env: &env,
-                    cwd,
-                    role: "agent",
-                    launch_profile: None,
-                },
-            ) {
-                Ok(true) | Ok(false) => {
-                    if let Some(tx) = ready_tx.take() {
-                        let _ = tx.send(Ok(()));
-                    }
-                    return Ok(());
-                }
-                Err(error) => {
-                    return Err(AppError::PtyError(format!(
-                        "ridge-kernel Agent PTY unavailable: {error}"
-                    )));
-                }
-            }
-        }
-    }
-
-    if kernel_candidate && !has_explicit_launch {
-        let endpoint = kernel_endpoint_for_shell().map_err(|error| {
-            AppError::PtyError(format!("ridge-kernel unavailable for shell PTY: {error}"))
-        })?;
-        match attach_or_spawn_kernel_pty(
-            state,
-            endpoint,
-            workspace_id,
-            pane_id,
-            shell.as_deref(),
-            cwd,
-        ) {
-            Ok(true) | Ok(false) => {
-                if let Some(tx) = ready_tx.take() {
-                    let _ = tx.send(Ok(()));
-                }
-                return Ok(());
-            }
-            Err(error) => {
-                return Err(AppError::PtyError(format!(
-                    "ridge-kernel shell PTY unavailable: {error}"
-                )));
-            }
-        }
+    if let Some(result) = try_install_kernel_pty(
+        state,
+        workspace_id,
+        pane_id,
+        shell.as_deref(),
+        cwd,
+        ic,
+        sc.as_ref(),
+        tmux_pane_index,
+        kernel_candidate,
+        has_explicit_launch,
+        &mut ready_tx,
+    ) {
+        return result;
     }
 
     // `initial_command` has no kernel-safe structured representation at this
@@ -1391,6 +1433,93 @@ fn activate_pane_pty_inner(
     activate_pane_pty_state(state, Some(&app), workspace_id, pane_id, rows, cols)
 }
 
+fn resize_existing_pty(
+    state: &AppState,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    rows: Option<u16>,
+    cols: Option<u16>,
+) -> Result<bool, AppError> {
+    let map = state.workspaces.read();
+    let Some(ws) = map.get(&workspace_id) else {
+        return Ok(false);
+    };
+    if !ws.terminals.contains_key(&pane_id) {
+        return Ok(false);
+    }
+    if let (Some(rows), Some(cols)) = (rows, cols) {
+        if let Some(handle) = ws.terminals.get(&pane_id) {
+            if handle.kernel_ref.is_some() {
+                let _ = handle.master.lock().resize(PtySize {
+                    rows: rows.clamp(1, 500),
+                    cols: cols.clamp(1, 500),
+                    pixel_width: 0,
+                    pixel_height: 0,
+                });
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn resize_pending_pty(pending: &crate::state::PendingSpawn, rows: Option<u16>, cols: Option<u16>) {
+    let (Some(rows), Some(cols)) = (rows, cols) else {
+        return;
+    };
+    let _ = pending.master.lock().resize(PtySize {
+        rows: rows.clamp(1, 500),
+        cols: cols.clamp(1, 500),
+        pixel_width: 0,
+        pixel_height: 0,
+    });
+}
+
+fn remove_failed_pending_pane(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
+    let mut map = state.workspaces.write();
+    if let Some(ws) = map.get_mut(&workspace_id) {
+        let _ = ws.pane_tree.close(pane_id);
+        ws.pane_sizes.remove(&pane_id);
+    }
+}
+
+fn report_pty_spawn_failure(
+    state: &AppState,
+    app: Option<&tauri::AppHandle>,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    pending: &crate::state::PendingSpawn,
+    trace_id: String,
+    msg: String,
+) -> AppError {
+    use tauri::Emitter;
+
+    pty_log::activate_err(workspace_id, pane_id, &trace_id, &msg);
+    if let Some(tx) = pending.ready_tx.lock().take() {
+        let _ = tx.send(Err(msg.clone()));
+    }
+    remove_failed_pending_pane(state, workspace_id, pane_id);
+    if let Some(app) = app {
+        let _ = app.emit(
+            TEAMMATE_LAYOUT_CHANGED,
+            LayoutChange::removed_with_trace(pane_id.to_string(), trace_id),
+        );
+    }
+    AppError::PtyError(msg)
+}
+
+fn create_pty_job(child_pid: Option<u32>) -> Option<crate::teammate::job_object::JobHandle> {
+    child_pid.and_then(|pid| {
+        let job = crate::teammate::job_object::create_job().ok()?;
+        match crate::teammate::job_object::assign_pid(&job, pid) {
+            Ok(()) => Some(job),
+            Err(error) => {
+                tracing::debug!(target: "ridge::job", %pid, error = %error, "job assign skipped");
+                None
+            }
+        }
+    })
+}
+
 /// Phase 2 core, decoupled from Tauri's `State`/`AppHandle` so non-front-end
 /// callers (e.g. the remote WebSocket server) can activate a pending spawn too.
 /// `app` is only used to emit the layout-changed event on spawn failure — pass
@@ -1403,29 +1532,10 @@ pub(crate) fn activate_pane_pty_state(
     rows: Option<u16>,
     cols: Option<u16>,
 ) -> Result<(), AppError> {
-    use tauri::Emitter;
-
     // Idempotency: already activated → no-op success. Front-end can call
     // activate twice (mount + restore) without consequence.
-    {
-        let map = state.workspaces.read();
-        if let Some(ws) = map.get(&workspace_id) {
-            if ws.terminals.contains_key(&pane_id) {
-                if let (Some(rows), Some(cols)) = (rows, cols) {
-                    if let Some(handle) = ws.terminals.get(&pane_id) {
-                        if handle.kernel_ref.is_some() {
-                            let _ = handle.master.lock().resize(PtySize {
-                                rows: rows.clamp(1, 500),
-                                cols: cols.clamp(1, 500),
-                                pixel_width: 0,
-                                pixel_height: 0,
-                            });
-                        }
-                    }
-                }
-                return Ok(());
-            }
-        }
+    if resize_existing_pty(state, workspace_id, pane_id, rows, cols)? {
+        return Ok(());
     }
 
     // Take the PendingSpawn off the workspace under a write lock.
@@ -1456,66 +1566,28 @@ pub(crate) fn activate_pane_pty_state(
         reader,
     } = inner;
 
-    // Resize the master to the front-end-reported dimensions before spawning
-    // so the child's terminal env (LINES/COLUMNS, ConPTY initial size) is
-    // correct from the first byte of output. Best-effort — skip on absurd or
-    // missing values; the front-end's "兜底 fit" rAF will fix any drift.
-    if let (Some(r), Some(c)) = (rows, cols) {
-        let r = r.clamp(1, 500);
-        let c = c.clamp(1, 500);
-        let m = pending.master.lock();
-        let _ = m.resize(PtySize {
-            rows: r,
-            cols: c,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
-    }
+    // Resize before spawning so the child's initial terminal dimensions match
+    // the front-end's reported fit whenever both dimensions are available.
+    resize_pending_pty(&pending, rows, cols);
 
     let child = match slave.spawn_command(command) {
         Ok(c) => c,
-        Err(e) => {
-            let msg = e.to_string();
-            pty_log::activate_err(workspace_id, pane_id, &trace_id, &msg);
-            // Notify any waiter (e.g. teammate route_split) of the failure
-            // so it can return an error to the agent.
-            if let Some(tx) = pending.ready_tx.lock().take() {
-                let _ = tx.send(Err(msg.clone()));
-            }
-            // Tear down the pane-tree entry — the layout shouldn't keep a
-            // ghost pane with no PTY behind it.
-            {
-                let mut map = state.workspaces.write();
-                if let Some(ws) = map.get_mut(&workspace_id) {
-                    let _ = ws.pane_tree.close(pane_id);
-                    ws.pane_sizes.remove(&pane_id);
-                }
-            }
-            // Tell the frontend the layout changed so the dead leaf is
-            // dropped from the visible split tree (front-end re-renders
-            // the workspace from authoritative backend state).
-            if let Some(app) = app {
-                let _ = app.emit(
-                    TEAMMATE_LAYOUT_CHANGED,
-                    LayoutChange::removed_with_trace(pane_id.to_string(), trace_id),
-                );
-            }
-            return Err(AppError::PtyError(msg));
+        Err(error) => {
+            return Err(report_pty_spawn_failure(
+                state,
+                app,
+                workspace_id,
+                pane_id,
+                &pending,
+                trace_id,
+                error.to_string(),
+            ));
         }
     };
 
     // V-G1-JOB：spawn 后预建 Job Object 并挂上子进程（失败 fail-open，不挡 PTY）。
     let child_pid = child.process_id();
-    let job = child_pid.and_then(|pid| {
-        let j = crate::teammate::job_object::create_job().ok()?;
-        match crate::teammate::job_object::assign_pid(&j, pid) {
-            Ok(()) => Some(j),
-            Err(e) => {
-                tracing::debug!(target: "ridge::job", %pid, error = %e, "job assign skipped");
-                None
-            }
-        }
-    });
+    let job = create_pty_job(child_pid);
 
     // P3.8 — initialize the native VT parser at PtyHandle creation time so
     // the main event loop can take a parser lock the moment it sees the

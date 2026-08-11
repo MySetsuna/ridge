@@ -19,7 +19,11 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** The dev:cdp WebView2 user-data dir (matches tauri-dev-cdp.mjs). */
-export const DEV_USER_DATA_DIR = path.resolve(__dirname, '..', '.webview2-dev-cdp');
+export function resolveDevUserDataDir(configured = process.env.RIDGE_CDP_USER_DATA_DIR) {
+  const value = configured?.trim();
+  return value ? path.resolve(value) : path.resolve(__dirname, '..', '.webview2-dev-cdp');
+}
+export const DEV_USER_DATA_DIR = resolveDevUserDataDir();
 const DEVTOOLS_ACTIVE_PORT = path.join(DEV_USER_DATA_DIR, 'EBWebView', 'DevToolsActivePort');
 
 /** Read the live CDP port from DevToolsActivePort, or null if absent/invalid. */

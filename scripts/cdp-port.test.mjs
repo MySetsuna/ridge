@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
 
 const fileSystem = vi.hoisted(() => ({ readFileSync: vi.fn() }));
 vi.mock('node:fs', () => ({ default: fileSystem }));
 
-import { readDevToolsActivePort, resolveCdpPort, shouldAnnounceCdpPort } from './cdp-port.mjs';
+import { readDevToolsActivePort, resolveCdpPort, resolveDevUserDataDir, shouldAnnounceCdpPort } from './cdp-port.mjs';
 
 describe('dynamic WebView2 CDP port resolution', () => {
   beforeEach(() => {
@@ -39,5 +40,10 @@ describe('dynamic WebView2 CDP port resolution', () => {
     expect(shouldAnnounceCdpPort(9333, 9333)).toBe(false);
     expect(shouldAnnounceCdpPort(10112, 9333)).toBe(true);
     expect(shouldAnnounceCdpPort(null, 9333)).toBe(false);
+  });
+
+  it('uses an explicit isolated WebView2 profile when configured', () => {
+    expect(resolveDevUserDataDir('  ridge-cdp-isolated  ')).toBe(path.resolve('ridge-cdp-isolated'));
+    expect(resolveDevUserDataDir('  ')).toBe(path.resolve('.webview2-dev-cdp'));
   });
 });

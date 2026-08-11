@@ -420,59 +420,44 @@ impl Terminal {
         }
         let rows = self.grid.rows();
         let cols = self.grid.cols();
+        let sandbox = Self::build_scrollback_sandbox(bytes, rows, cols);
+        let effective_len = Self::effective_scrollback_len(&sandbox);
+        self.prepend_sandbox_rows(&sandbox, effective_len);
+    }
 
-        // Sandbox capacity: enough to absorb every line in `bytes`. Worst
-        // case is one row per byte (a stream of bare \n); cap at 64k rows
-        // so a 4 MiB chunk doesn't blow up.
+    fn build_scrollback_sandbox(bytes: &[u8], rows: usize, cols: usize) -> Terminal {
         let sandbox_cap = bytes.len().min(64 * 1024).max(rows + 64);
         let mut sandbox = Terminal::new(rows, cols, sandbox_cap);
         sandbox.feed(bytes);
-
-        // Make sure we're on the primary screen before flushing — alt
-        // screen output never enters scrollback. If the chunk ended in
-        // alt mode we accept losing the trailing alt-screen frame; the
-        // history rows the user actually wants are on the primary screen
-        // and still in sandbox scrollback at this point.
         if sandbox.is_alt_screen() {
             sandbox.feed(b"\x1b[?1049l");
         }
-
-        // Force-flush the trailing live grid into sandbox scrollback so
-        // the very last lines of `bytes` aren't lost. Feeding `rows` LFs
-        // scrolls the entire grid up; each LF at the bottom promotes one
-        // grid row into scrollback.
         let flush = vec![b'\n'; rows];
         sandbox.feed(&flush);
-
-        // Discard sandbox-side reply queue + event queue; both describe
-        // the past, not the live shell session.
         let _ = sandbox.take_pending_response();
         let _ = sandbox.take_pending_events();
+        sandbox
+    }
 
-        // Trim trailing blank rows produced by the LF flush so the
-        // prepended block doesn't end with a slab of empty lines.
-        let sandbox_sb_len = sandbox.grid.scrollback.len();
-        let mut effective_len = sandbox_sb_len;
+    fn effective_scrollback_len(sandbox: &Terminal) -> usize {
+        let mut effective_len = sandbox.grid.scrollback.len();
         while effective_len > 0 {
-            let row = match sandbox.grid.scrollback.get(effective_len - 1) {
-                Some(r) => r,
-                None => break,
+            let Some(row) = sandbox.grid.scrollback.get(effective_len - 1) else {
+                break;
             };
-            let blank = row.cells.iter().all(|c| c.is_blank());
-            if blank {
+            if row.cells.iter().all(|cell| cell.is_blank()) {
                 effective_len -= 1;
             } else {
                 break;
             }
         }
+        effective_len
+    }
 
-        // Iterate newest→oldest in the sandbox so each push_front lands
-        // the row at the new front of `self.grid.scrollback`. After all
-        // inserts the order in self is:
-        //   [oldest history, …, newest history, …existing scrollback…]
-        for idx in (0..effective_len).rev() {
-            if let Some(src) = sandbox.grid.scrollback.get(idx) {
-                let mut row = src.clone();
+    fn prepend_sandbox_rows(&mut self, sandbox: &Terminal, effective_len: usize) {
+        for index in (0..effective_len).rev() {
+            if let Some(source) = sandbox.grid.scrollback.get(index) {
+                let mut row = source.clone();
                 for cell in row.cells.iter_mut() {
                     if cell.attr != crate::term::attr_table::AttrId::DEFAULT {
                         let attrs = sandbox.grid.attrs.get(cell.attr);

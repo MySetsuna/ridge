@@ -315,6 +315,83 @@ function createStore() {
   // 「独立窗口」open 拦截器（见 OpenInterceptor）。null = 未弹出，正常本地打开。
   let openInterceptor: OpenInterceptor | null = null;
 
+  function activate(path: string, reveal: PendingReveal | null): void {
+    update((s) => ({
+      ...s,
+      activePath: path,
+      isVisible: true,
+      pendingReveal: reveal ?? s.pendingReveal,
+    }));
+  }
+
+  async function reloadExisting(
+    existing: OpenFile,
+    path: string,
+    reveal: PendingReveal | null,
+  ): Promise<boolean> {
+    if (existing.isDirty || existing.diffArgs || existing.isImage || !isTauri()) return false;
+    try {
+      const result = await invoke<{ content: string; is_binary: boolean }>(
+        'read_file_for_editor',
+        { path },
+      );
+      if (result.is_binary) return false;
+      update((s) => ({
+        ...s,
+        openFiles: s.openFiles.map((file) => file.path === path
+          ? { ...file, content: result.content, originalContent: result.content, isDirty: false }
+          : file),
+        activePath: path,
+        isVisible: true,
+        pendingReveal: reveal ?? s.pendingReveal,
+      }));
+      return true;
+    } catch (error) {
+      console.warn('[fileEditor] re-read on focus failed', path, error);
+      return false;
+    }
+  }
+
+  async function readNewFile(path: string): Promise<{
+    content: string;
+    isImage: boolean;
+    isBinary: boolean;
+    imageUrl?: string;
+  } | null> {
+    const isImage = isImagePath(path);
+    if (isImage) return { content: '', isImage, isBinary: false, imageUrl: imageUrlFor(path) };
+    if (!isTauri()) return { content: '', isImage, isBinary: false };
+    try {
+      const result = await invoke<{ content: string; is_binary: boolean }>(
+        'read_file_for_editor',
+        { path },
+      );
+      return { content: result.content, isImage, isBinary: result.is_binary };
+    } catch (error) {
+      console.error('read_file_for_editor failed', path, error);
+      await alertDialog({ title: '打开文件失败', message: String(error), danger: true });
+      return null;
+    }
+  }
+
+  function imageUrlFor(path: string): string {
+    const normalized = path.replaceAll('\\', '/');
+    if (isTauri()) return convertFileSrc(normalized);
+    return `file://${normalized.startsWith('/') ? normalized : `/${normalized}`}`;
+  }
+
+  function appendFile(file: OpenFile, reveal: PendingReveal | null): void {
+    update((s) => s.openFiles.some((item) => item.path === file.path)
+      ? { ...s, activePath: file.path, isVisible: true, pendingReveal: reveal ?? s.pendingReveal }
+      : {
+          ...s,
+          openFiles: [...s.openFiles, file],
+          activePath: file.path,
+          isVisible: true,
+          pendingReveal: reveal ?? s.pendingReveal,
+        });
+  }
+
   return {
     subscribe,
 
@@ -362,7 +439,6 @@ function createStore() {
       path: string,
       opts?: { line?: number; column?: number; matchLength?: number }
     ): Promise<void> {
-      // 独立窗口弹出期间：转发给 editor 窗口，主窗口不本地打开。
       if (openInterceptor?.({ kind: 'file', path, opts })) return;
       const reveal: PendingReveal | null = opts?.line && opts.line > 0
         ? {
@@ -372,145 +448,32 @@ function createStore() {
             matchLength: opts.matchLength && opts.matchLength > 0 ? opts.matchLength : undefined,
           }
         : null;
-      const state = get({ subscribe });
-      const existing = state.openFiles.find((f) => f.path === path);
+      const existing = get({ subscribe }).openFiles.find((file) => file.path === path);
       if (existing) {
-        // Already-open tab: re-read from disk so the editor reflects
-        // any external mutations that happened while the tab was
-        // hidden / inactive (terminal commands, git pull, another
-        // editor, AI agent writes). Skip the re-read when:
-        //   - the tab has unsaved edits (isDirty) — overwriting would
-        //     silently destroy the user's work; the existing
-        //     file-watcher prompt path handles that case.
-        //   - the tab is a diff view (handled separately via its own
-        //     reload control in the toolbar).
-        //   - the file is an image / binary (no in-place reload path).
-        //   - we're outside Tauri (no `read_file_for_editor`).
-        const canReload =
-          !existing.isDirty &&
-          !existing.diffArgs &&
-          !existing.isImage &&
-          isTauri();
-        if (canReload) {
-          try {
-            const result = await invoke<{ content: string; is_binary: boolean; size: number }>(
-              'read_file_for_editor',
-              { path }
-            );
-            if (!result.is_binary) {
-              update((s) => ({
-                ...s,
-                openFiles: s.openFiles.map((f) =>
-                  f.path === path
-                    ? { ...f, content: result.content, originalContent: result.content, isDirty: false }
-                    : f
-                ),
-                activePath: path,
-                isVisible: true,
-                pendingReveal: reveal ?? s.pendingReveal,
-              }));
-              return;
-            }
-            // Binary now where it was text before — fall through to the
-            // simple activate path; we don't try to switch view mode.
-          } catch (e) {
-            // Read failed (deleted, permission lost, etc.) — keep the
-            // last known content visible; the user can react via the
-            // existing fs-event prompt or a manual reload.
-            console.warn('[fileEditor] re-read on focus failed', path, e);
-          }
-        }
-        update((s) => ({
-          ...s,
-          activePath: path,
-          isVisible: true,
-          pendingReveal: reveal ?? s.pendingReveal,
-        }));
+        if (await reloadExisting(existing, path, reveal)) return;
+        activate(path, reveal);
         return;
       }
 
-      // 图片文件特殊处理：不需要读取内容，直接用 convertFileSrc 生成 URL
-      const isImage = isImagePath(path);
-      let imageUrl: string | undefined;
-
-      let content = '';
-      let isBinary = false;
-      if (isImage) {
-        // 图片文件：使用 Tauri 的 convertFileSrc 生成 asset URL。
-        // Windows 路径统一成正斜杠后再传，避免某些 webview 把混合分隔符
-        // 解析成 `https://asset.localhost//C%3A%2Fxxx` 这种双斜杠形式
-        // 导致中文 / 含空格 / 含特殊字符的文件名加载失败。
-        if (isTauri()) {
-          const normalized = path.replaceAll('\\', '/');
-          imageUrl = convertFileSrc(normalized);
-        } else {
-          // 非 Tauri 环境（开发模式）使用 file:// 协议
-          imageUrl = path.replaceAll('\\', '/');
-          if (!imageUrl.startsWith('/')) {
-            imageUrl = '/' + imageUrl;
-          }
-          imageUrl = 'file://' + imageUrl;
-        }
-      } else if (isTauri()) {
-        try {
-          const result = await invoke<{ content: string; is_binary: boolean; size: number }>(
-            'read_file_for_editor',
-            { path }
-          );
-          if (result.is_binary) {
-            isBinary = true;
-          }
-          content = result.content;
-        } catch (e) {
-          console.error('read_file_for_editor failed', path, e);
-          await alertDialog({ title: '打开文件失败', message: String(e), danger: true });
-          return;
-        }
-      }
-      if (isBinary && !isImage) {
+      const loaded = await readNewFile(path);
+      if (!loaded) return;
+      if (loaded.isBinary && !loaded.isImage) {
         await alertDialog({ title: '无法打开', message: '二进制文件暂不支持在编辑器中打开。' });
         return;
       }
-
-      const file: OpenFile = {
+      appendFile({
         path,
         name: basename(path),
-        content,
-        originalContent: content,
-        language: isImage ? 'image' : langFromPath(path),
+        content: loaded.content,
+        originalContent: loaded.content,
+        language: loaded.isImage ? 'image' : langFromPath(path),
         isDirty: false,
         openedAt: Date.now(),
-        // markdown 默认进 preview；其他语言没有 preview 概念，统一 source。
         viewMode: isMarkdownPath(path) ? 'preview' : 'source',
-        isImage,
-        imageUrl,
-        imageVersion: isImage ? 0 : undefined,
-      };
-      update((s) => {
-        // Re-check inside the atomic updater: `openFile` awaited an async
-        // disk read between the earlier `existing` lookup and here, so a
-        // concurrent `openFile(path)` (e.g. a rapid double-click) may have
-        // already appended this tab. Appending again would put two entries
-        // with the same `path` into `openFiles`, and the editor tab strip's
-        // keyed `{#each ... (it.id)}` (id === path) throws
-        // `each_key_duplicate` and drops/misrenders tabs. Activate the
-        // existing tab instead of inserting a duplicate.
-        if (s.openFiles.some((f) => f.path === path)) {
-          return {
-            ...s,
-            activePath: path,
-            isVisible: true,
-            pendingReveal: reveal ?? s.pendingReveal,
-          };
-        }
-        return {
-          ...s,
-          openFiles: [...s.openFiles, file],
-          activePath: path,
-          isVisible: true,
-          pendingReveal: reveal ?? s.pendingReveal,
-        };
-      });
+        isImage: loaded.isImage,
+        imageUrl: loaded.imageUrl,
+        imageVersion: loaded.isImage ? 0 : undefined,
+      }, reveal);
     },
 
     /** SearchSidebar 在 results 数组变化时整体写入；空数组等价 clear。 */

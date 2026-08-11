@@ -875,234 +875,16 @@ impl Grid {
     pub fn resize_with_inline_tui(&mut self, rows: usize, cols: usize, inline_tui_active: bool) {
         let old_rows = self.rows;
         let old_cols = self.cols;
-        let cols_changed = cols != self.cols;
-        let rows_changed = rows != self.rows;
-        let dim_changed = cols_changed || rows_changed;
-
-        // §Reflow (2026-06-01) / §reflow-inline (2026-06-16): when the column
-        // width changes on primary, rewrap the HISTORY rows above the live
-        // region so wrapped content isn't naively truncated — this matches
-        // conhost's `ResizeWithReflow` and Windows Terminal, which rewrap
-        // wrapped lines on a width change. The "live region" boundary depends
-        // on the mode:
-        //   - shell (PSReadLine / zsh / fish): the cursor row. The prompt and
-        //     the line being edited get naive truncate/pad and are redrawn by
-        //     the shell on SIGWINCH; only the output above the prompt rewraps.
-        //   - inline TUI (Claude Code WITHOUT fullscreen / NO_FLICKER): the
-        //     frame top (`last_abs_csi_row`). The conversation / tool output
-        //     above the Ink input box is permanent primary content that ONLY
-        //     the terminal can rewrap — Ink's SIGWINCH redraw repaints just
-        //     its own frame rows, never the history. Before this the inline
-        //     path skipped reflow entirely and that history stayed at the old
-        //     wrap → the "resize 后内容错位 / 没有正常 reflow" symptom. The
-        //     frame region itself is still wiped below (`inline_tui_wipe`) so
-        //     Ink repaints onto blanks.
-        // Runs BEFORE naive_resize_screen so the old-width cell data is still
-        // intact for redistribution.
-        // §sticky-inline-tui — use `frame_top_row` (the render burst's MINIMUM
-        // row = the box top) rather than `last_abs_csi_row` (the LAST CUP = the
-        // input row at the box bottom), so the reflow boundary / wipe covers the
-        // whole multi-row input box, not just the rows below the cursor.
-        let inline_frame_top = if inline_tui_active && self.last_abs_csi_at_ms != 0 {
-            (self.frame_top_row as usize).min(old_rows.saturating_sub(1))
-        } else {
-            0
-        };
-        let reflow_boundary = if inline_tui_active {
-            inline_frame_top
-        } else {
-            self.primary.cursor.row
-        };
-        let reflowed = cols_changed && !self.is_alt && reflow_boundary > 0;
-        if reflowed {
-            // Shell path preserves its prompt/edit live region; the inline-TUI
-            // path treats the region below the frame top as wipeable canvas, so
-            // history may take the whole screen there. §reflow-fix.
-            self.reflow_primary_history(old_cols, cols, reflow_boundary, !inline_tui_active);
-        }
-
-        Self::naive_resize_screen(&mut self.primary, rows, cols);
-        Self::naive_resize_screen(&mut self.alt, rows, cols);
-        let branch = if reflowed {
-            ResizeBranch::Reflowed
-        } else {
-            ResizeBranch::Naive
-        };
-
-        // §1.22 (2026-05-05): when CURRENTLY viewing alt screen at resize,
-        // clear the alt buffer so the application's SIGWINCH-driven redraw
-        // lands on a blank canvas. Without this, the OLD layout (cells from
-        // before resize, now naively repositioned by truncate/pad) overlaps
-        // with the NEW redraw — Claude Code / lazygit / Ink-based CLIs use
-        // partial-diff redraws and DON'T necessarily repaint every cell,
-        // so the result is "错位行和字符" (offset rows and chars). Native
-        // terminal emulators (Windows Terminal, iTerm2) wipe the visible
-        // alt-screen on resize for the same reason; this is mainstream.
-        //
-        // Only fires when (a) the user is currently on alt screen AND
-        // (b) dimensions actually changed. No-op resizes (same dims) leave
-        // existing content alone. Primary uses naive resize while alt is
-        // active (see §1.23 above); reflow deferred to next non-alt resize.
-        let wipe_fired = dim_changed && self.is_alt;
-        if wipe_fired {
-            let bce = self.bce_cell();
-            for r in &mut self.alt.rows {
-                r.fill_blank(bce);
-            }
-            self.alt.cursor = Cursor::default();
-            self.alt.scroll_top = 0;
-            self.alt.scroll_bottom = rows.saturating_sub(1);
-        }
-
-        // §A.3 (2026-05-07): inline-TUI primary full wipe. When the
-        // foreground app is rendering inline on primary (Ink-based CLIs
-        // like Claude Code's input box: cursor hidden + recent absolute-
-        // positioning CSI; never enters `?1049h` alt screen), the
-        // §1.22-style alt wipe doesn't fire and the §1.26 cursor-row+
-        // below cleanup is too narrow — the input box's TOP border
-        // typically sits ABOVE the cursor row, so cursor-below cleanup
-        // leaves wrapped border garbage on the rows where the user
-        // actually sees the broken box.
-        //
-        // Fix: when CURRENTLY on primary AND dims changed AND the
-        // inline-TUI heuristic was true at the moment fitPane sampled
-        // it, clear the WHOLE visible primary region (every row), home
-        // the cursor, reset the scroll region to full-screen.
-        // Scrollback is never touched — the conversation history above
-        // the inline TUI lives there and stays intact. Ink's diff
-        // redraw on SIGWINCH then paints every cell it cares about
-        // against blanks, so any "cell unchanged in Ink's model"
-        // optimization can't leave wrapped garbage behind.
-        //
-        // Mutually exclusive with `cleared_below_cursor` below — when
-        // the full wipe fires, the partial cleanup is redundant and
-        // skipped. Mutually exclusive with `wipe_fired` (alt path) by
-        // the `!self.is_alt` guard.
-        let inline_tui_wipe = dim_changed && !self.is_alt && inline_tui_active;
-        if inline_tui_wipe {
-            // §3 (2026-05-08): narrow the wipe to "from the inline-TUI's
-            // top row downward". The original §A.3 implementation cleared
-            // the ENTIRE visible primary region — for `claude` (Ink input
-            // box at the bottom + multi-line conversation history above),
-            // this also blanked the conversation rows. Ink's diff redraw
-            // on SIGWINCH only re-emits the input box's own rows, so the
-            // conversation history stayed blank until the next scroll —
-            // the user-perceptible "已输出内容表现为被截断" symptom.
-            //
-            // `last_abs_csi_row` is the row index where the most recent
-            // absolute-positioning CSI (CUP / HVP / VPA / CHA / HPA) put
-            // the cursor. For Ink-based CLIs that's the start of their
-            // own frame (log-update writes a final `\x1b[G` after the
-            // walk). Clearing only `[abs_row..rows]` preserves rows above
-            // (the conversation, prior shell output, etc.) and gives Ink
-            // a clean canvas for the rows IT cares about. Cursor goes to
-            // (abs_row, 0) so post-resize movement starts where Ink
-            // expects it.
-            //
-            // Fallback: if we have NO recorded absolute-positioning
-            // event (cold pane, or the heuristic was driven purely by
-            // EL/CUU CSIs without an absolute landing — see §A.4
-            // `last_redraw_csi_at_ms`), keep the original full-wipe
-            // behaviour. That's correct for the original §A.3 case
-            // (lazygit's bottom-of-screen sticky bar, etc.) which
-            // doesn't have a stable inline frame top row.
-            //
-            // §reflow-inline (2026-06-16): when the history above the frame
-            // was just rewrapped, the frame top moved by the row-count delta.
-            // `reflow_primary_history` left `primary.cursor.row` at the new
-            // frame top (the new history row count), so anchor the wipe there.
-            // Without reflow (rows-only change, or no recorded frame top) fall
-            // back to the original `last_abs_csi_row` anchor / full wipe.
-            let last_row_idx = rows.saturating_sub(1);
-            let wipe_from_row = if reflowed {
-                self.primary.cursor.row.min(last_row_idx)
-            } else if self.last_abs_csi_at_ms != 0 {
-                // §sticky-inline-tui — frame TOP (burst min), not last CUP.
-                (self.frame_top_row as usize).min(last_row_idx)
-            } else {
-                0
-            };
-            let bce = self.bce_cell();
-            for r in self.primary.rows.iter_mut().skip(wipe_from_row) {
-                r.fill_blank(bce);
-            }
-            // Preserve current SGR attrs by mutating instead of
-            // rebuilding the Cursor struct — avoids the `attr` field
-            // resetting to default and breaking colored-prompt apps
-            // that mid-frame got a SIGWINCH.
-            self.primary.cursor.row = wipe_from_row;
-            self.primary.cursor.col = 0;
-            self.primary.cursor.pending_wrap = false;
-            self.primary.scroll_top = 0;
-            self.primary.scroll_bottom = last_row_idx;
-        }
-
-        // §1.26 (2026-05-07): primary cursor-row+below cleanup.
-        // Symptom: after resizing a primary-screen pane (typical
-        // PowerShell + oh-my-posh prompt `<path> > `), the path-to-`>`
-        // gap collapses and ghost characters sit past the new prompt's
-        // end. Combined with §1.24's silence window, PSReadLine's own
-        // SIGWINCH-driven redraw bytes were dropped, so the kernel was
-        // left displaying old prompt cells past the new prompt's end.
-        //
-        // Fix: when CURRENTLY on primary AND dims changed AND no inline
-        // TUI was detected (the §A.3 full wipe handles that case more
-        // aggressively), blank out:
-        //   (a) cursor row, columns `cur_col + 1 .. row_len`;
-        //   (b) every row strictly below the cursor.
-        // Cells AT cursor.col and to its left are preserved — shells
-        // without SIGWINCH-driven full redraws (raw echo loops, Windows
-        // cmd.exe) keep the user's typed-but-not-yet-submitted text.
-        // PSReadLine / fish-zle / zsh-zle re-emit the full prompt on
-        // SIGWINCH; their bytes overwrite the cleared range cleanly
-        // once §1.24's (now §A.2-shrunk to 80ms) silence window
-        // releases. Rows above the cursor are scrollback / prior
-        // command output — never touched here.
-        //
-        // Alt screen has its own §1.22 wipe; this branch is gated on
-        // `!self.is_alt`. `naive_resize_screen` has already clamped
-        // `primary.cursor` and resized each row, so `cur_col + 1` and
-        // `row.cells.len()` are valid bounds.
-        let cleared_below_cursor = dim_changed && !self.is_alt && !inline_tui_wipe;
-        if cleared_below_cursor {
-            let last_row_idx = rows.saturating_sub(1);
-            let last_col_idx = cols.saturating_sub(1);
-            let cur_row = self.primary.cursor.row.min(last_row_idx);
-            let cur_col = self.primary.cursor.col.min(last_col_idx);
-            let bce = self.bce_cell();
-            if let Some(r) = self.primary.rows.get_mut(cur_row) {
-                let row_len = r.cells.len();
-                let start = (cur_col + 1).min(row_len);
-                for c in start..row_len {
-                    r.cells[c] = bce;
-                }
-                // Mirror `erase_row_range`'s hyperlink-clipping
-                // invariant so OSC 8 underlines don't outlive their
-                // cells. (TASKS §1.18.b residue symptom.)
-                if !r.hyperlinks.is_empty() {
-                    r.hyperlinks.retain(|s| s.col_start < start);
-                    for s in &mut r.hyperlinks {
-                        if s.col_end > start {
-                            s.col_end = start;
-                        }
-                    }
-                }
-            }
-            for r in self.primary.rows.iter_mut().skip(cur_row + 1) {
-                r.fill_blank(bce);
-            }
-        }
-
+        let dim_changed = rows != old_rows || cols != old_cols;
+        let (branch, reflowed) = self.resize_screens(rows, cols, inline_tui_active);
+        let wipe_fired = self.wipe_alt_screen(rows, dim_changed);
+        let inline_tui_wipe =
+            self.wipe_inline_primary(rows, dim_changed, reflowed, inline_tui_active);
+        let cleared_below_cursor =
+            self.clear_primary_tail(rows, cols, dim_changed, inline_tui_wipe);
         self.rows = rows;
         self.cols = cols;
-
-        // Diagnostic ring (§1.24, Phase 1.1) — confirms in live repro which
-        // branch fired and whether the §1.22 wipe ran. Bounded to
-        // RESIZE_DIAG_RING_CAP so a long session can't grow this unbounded.
-        if self.last_resizes.len() == RESIZE_DIAG_RING_CAP {
-            self.last_resizes.remove(0);
-        }
-        self.last_resizes.push(ResizeDiag {
+        self.record_resize_diag(ResizeDiag {
             old_rows,
             old_cols,
             new_rows: rows,
@@ -1118,9 +900,121 @@ impl Grid {
         });
     }
 
-    /// Existing truncate/pad behavior, factored out so `resize()` can pick
-    /// per-screen behavior. Used by alt screen unconditionally and by primary
-    /// when only the row count changed.
+    fn resize_screens(
+        &mut self,
+        rows: usize,
+        cols: usize,
+        inline_tui_active: bool,
+    ) -> (ResizeBranch, bool) {
+        let old_rows = self.rows;
+        let old_cols = self.cols;
+        let cols_changed = cols != old_cols;
+        let inline_frame_top = if inline_tui_active && self.last_abs_csi_at_ms != 0 {
+            (self.frame_top_row as usize).min(old_rows.saturating_sub(1))
+        } else {
+            0
+        };
+        let reflow_boundary = if inline_tui_active {
+            inline_frame_top
+        } else {
+            self.primary.cursor.row
+        };
+        let reflowed = cols_changed && !self.is_alt && reflow_boundary > 0;
+        if reflowed {
+            self.reflow_primary_history(old_cols, cols, reflow_boundary, !inline_tui_active);
+        }
+        Self::naive_resize_screen(&mut self.primary, rows, cols);
+        Self::naive_resize_screen(&mut self.alt, rows, cols);
+        (
+            if reflowed {
+                ResizeBranch::Reflowed
+            } else {
+                ResizeBranch::Naive
+            },
+            reflowed,
+        )
+    }
+
+    fn wipe_alt_screen(&mut self, rows: usize, dim_changed: bool) -> bool {
+        if !dim_changed || !self.is_alt {
+            return false;
+        }
+        let bce = self.bce_cell();
+        for row in &mut self.alt.rows {
+            row.fill_blank(bce);
+        }
+        self.alt.cursor = Cursor::default();
+        self.alt.scroll_top = 0;
+        self.alt.scroll_bottom = rows.saturating_sub(1);
+        true
+    }
+
+    fn wipe_inline_primary(
+        &mut self,
+        rows: usize,
+        dim_changed: bool,
+        reflowed: bool,
+        inline_tui_active: bool,
+    ) -> bool {
+        if !dim_changed || self.is_alt || !inline_tui_active {
+            return false;
+        }
+        let last_row = rows.saturating_sub(1);
+        let wipe_from = if reflowed {
+            self.primary.cursor.row.min(last_row)
+        } else if self.last_abs_csi_at_ms != 0 {
+            (self.frame_top_row as usize).min(last_row)
+        } else {
+            0
+        };
+        let bce = self.bce_cell();
+        for row in self.primary.rows.iter_mut().skip(wipe_from) {
+            row.fill_blank(bce);
+        }
+        self.primary.cursor.row = wipe_from;
+        self.primary.cursor.col = 0;
+        self.primary.cursor.pending_wrap = false;
+        self.primary.scroll_top = 0;
+        self.primary.scroll_bottom = last_row;
+        true
+    }
+
+    fn clear_primary_tail(
+        &mut self,
+        rows: usize,
+        cols: usize,
+        dim_changed: bool,
+        inline_tui_wipe: bool,
+    ) -> bool {
+        if !dim_changed || self.is_alt || inline_tui_wipe {
+            return false;
+        }
+        let cur_row = self.primary.cursor.row.min(rows.saturating_sub(1));
+        let cur_col = self.primary.cursor.col.min(cols.saturating_sub(1));
+        let bce = self.bce_cell();
+        if let Some(row) = self.primary.rows.get_mut(cur_row) {
+            let start = (cur_col + 1).min(row.cells.len());
+            for cell in &mut row.cells[start..] {
+                *cell = bce;
+            }
+            row.hyperlinks.retain(|span| span.col_start < start);
+            for span in &mut row.hyperlinks {
+                span.col_end = span.col_end.min(start);
+            }
+        }
+        for row in self.primary.rows.iter_mut().skip(cur_row + 1) {
+            row.fill_blank(bce);
+        }
+        true
+    }
+
+    fn record_resize_diag(&mut self, diag: ResizeDiag) {
+        if self.last_resizes.len() == RESIZE_DIAG_RING_CAP {
+            self.last_resizes.remove(0);
+        }
+        self.last_resizes.push(diag);
+    }
+
     fn naive_resize_screen(screen: &mut Screen, rows: usize, cols: usize) {
         let old_last = screen.rows.len().saturating_sub(1);
         let region_was_full = screen.scroll_top == 0 && screen.scroll_bottom == old_last;
@@ -1228,216 +1122,216 @@ impl Grid {
         }
         let total_rows = self.rows;
         let boundary = boundary.min(total_rows);
+        let src = self.reflow_source_rows(boundary);
+        if src.is_empty() {
+            return;
+        }
+        let out_rows = Self::reflow_rows(&src, new_cols);
+        self.layout_reflowed_history(
+            out_rows,
+            boundary,
+            preserve_cursor_area,
+            total_rows,
+            new_cols,
+        );
+    }
 
-        // ── 1. Gather the source document (scrollback head + visible) ─────
-        // Pull the maximal wrapped tail of scrollback: those rows form the
-        // HEAD of the paragraph that continues into visible row 0, so they
-        // must rewrap together with it. A scrollback row with `wrapped=true`
-        // continues into the row below it (eventually visible row 0). Walk
-        // back from the newest scrollback row while it is wrapped.
+    fn reflow_source_rows(&mut self, boundary: usize) -> Vec<Row> {
         let sb_len = self.scrollback.len();
-        let mut straddle = 0usize; // count of scrollback rows pulled
+        let mut straddle = 0usize;
         while straddle < sb_len
             && self
                 .scrollback
                 .get(sb_len - 1 - straddle)
-                .is_some_and(|r| r.wrapped)
+                .is_some_and(|row| row.wrapped)
         {
             straddle += 1;
         }
 
-        // Source rows in document order: pulled scrollback head, then the
-        // visible history rows [0..boundary).
-        let mut src: Vec<Row> = Vec::with_capacity(straddle + boundary);
-        for i in (sb_len - straddle)..sb_len {
-            src.push(self.scrollback.get(i).expect("in range").clone());
+        let mut src = Vec::with_capacity(straddle + boundary);
+        for index in (sb_len - straddle)..sb_len {
+            src.push(self.scrollback.get(index).expect("in range").clone());
         }
-        for r in 0..boundary {
-            src.push(self.primary.rows[r].clone());
-        }
+        src.extend((0..boundary).map(|row| self.primary.rows[row].clone()));
 
-        if src.is_empty() {
-            return;
-        }
-
-        // Remove the pulled head from scrollback: keep the non-straddling
-        // prefix, clear, re-push it. (Scrollback exposes no pop-newest, so we
-        // rebuild; the common no-straddle case skips this entirely.)
         if straddle > 0 {
             let keep: Vec<Row> = (0..(sb_len - straddle))
-                .map(|i| self.scrollback.get(i).expect("in range").clone())
+                .map(|index| self.scrollback.get(index).expect("in range").clone())
                 .collect();
             self.scrollback.clear();
             for row in keep {
                 self.scrollback.push(row);
             }
         }
+        src
+    }
 
-        // ── 2. Group into paragraphs and reflow each ──────────────────────
-        // A paragraph is a maximal run where every row but the last has
-        // `wrapped == true`. Flatten each paragraph's LOGICAL content, then
-        // re-split. The flatten rule is what keeps the rewrap idempotent AND
-        // lossless:
-        //  - A WRAPPED (non-last) row is FULL — the cursor advanced past its
-        //    last column, so every cell (including trailing spaces between
-        //    words) is real content and must be kept. The ONE exception is the
-        //    wide-char wrap pad: when a width-2 cell couldn't fit in the last
-        //    column, `print` writes a blank there and starts the wide char on
-        //    the next row. That pad blank is NOT content — detect it (last cell
-        //    blank AND next row begins with a width-2 main) and drop it.
-        //  - The LAST (non-wrapped) row's trailing blanks are unused columns —
-        //    trim them.
-        let mut out_rows: Vec<Row> = Vec::new(); // reflowed history, doc order
-        let mut i = 0usize;
-        while i < src.len() {
-            let start = i;
-            while i + 1 < src.len() && src[i].wrapped {
-                i += 1;
-            }
-            let para_end = i + 1; // exclusive
-            i += 1;
+    fn reflow_rows(src: &[Row], new_cols: usize) -> Vec<Row> {
+        let mut out_rows = Vec::new();
+        let mut start = 0usize;
+        while start < src.len() {
+            let end = Self::reflow_paragraph_end(src, start);
+            out_rows.extend(Self::reflow_paragraph(&src[start..end], new_cols));
+            start = end;
+        }
+        out_rows
+    }
 
-            // Flatten the paragraph's logical cells.
-            let mut flat: Vec<Cell> = Vec::new();
-            for r in start..para_end {
-                let cells = &src[r].cells;
-                if r + 1 < para_end {
-                    // Wrapped row: keep the full width, minus a wide-char pad.
-                    let mut take = cells.len();
-                    let next_starts_wide = src[r + 1].cells.first().is_some_and(|c| c.width == 2);
-                    if next_starts_wide
-                        && take > 0
-                        && cells[take - 1].width == 1
-                        && cells[take - 1].is_blank()
-                    {
-                        take -= 1;
-                    }
-                    flat.extend_from_slice(&cells[..take]);
-                } else {
-                    // Last row of the paragraph: trim trailing blanks.
-                    let mut last_content = 0usize; // one past last non-blank
-                    for (idx, c) in cells.iter().enumerate() {
-                        if !c.is_blank() {
-                            last_content = idx + 1;
-                        }
-                    }
-                    flat.extend_from_slice(&cells[..last_content]);
-                }
-            }
+    fn reflow_paragraph_end(src: &[Row], mut end: usize) -> usize {
+        while end + 1 < src.len() && src[end].wrapped {
+            end += 1;
+        }
+        end + 1
+    }
 
-            if flat.is_empty() {
-                // Empty paragraph → one blank row.
-                out_rows.push(Row::new(new_cols));
-                continue;
-            }
-
-            // Re-split at new_cols, keeping wide pairs atomic.
-            let mut col = 0usize;
-            let mut row = Row::new(new_cols);
-            let mut j = 0usize;
-            while j < flat.len() {
-                let cell = flat[j];
-                if cell.width == 2 {
-                    // Wide main needs two columns. If it (or its spacer) would
-                    // straddle the right edge, wrap first and pad the gap.
-                    if col + 2 > new_cols {
-                        // Pad the remaining column(s) of this row, mark wrapped.
-                        // (A 1-col terminal can't hold a wide char at all; fall
-                        // through placing nothing and skip the cell to avoid an
-                        // infinite loop.)
-                        row.wrapped = true;
-                        out_rows.push(std::mem::replace(&mut row, Row::new(new_cols)));
-                        col = 0;
-                        if new_cols < 2 {
-                            // Degenerate width: drop the unplaceable wide cell
-                            // (and its spacer) so we make progress.
-                            j += 1;
-                            while j < flat.len() && flat[j].width == 0 {
-                                j += 1;
-                            }
-                            continue;
-                        }
-                    }
-                    row.cells[col] = cell;
-                    // Place the spacer ourselves (don't rely on the source's,
-                    // which we may have just split away from).
-                    row.cells[col + 1] = Cell::wide_spacer(cell.attr);
-                    col += 2;
-                    j += 1;
-                    // Consume a following width-0 spacer from the source if
-                    // present (already represented by the one we wrote).
-                    if j < flat.len() && flat[j].width == 0 {
-                        j += 1;
-                    }
-                } else if cell.width == 0 {
-                    // Orphan spacer with no preceding main (shouldn't happen
-                    // after the trim, but be defensive): skip it.
-                    j += 1;
-                } else {
-                    // Narrow cell.
-                    if col >= new_cols {
-                        row.wrapped = true;
-                        out_rows.push(std::mem::replace(&mut row, Row::new(new_cols)));
-                        col = 0;
-                    }
-                    row.cells[col] = cell;
-                    col += 1;
-                    j += 1;
-                }
-            }
-            // Flush the final (non-wrapped) row of the paragraph.
-            out_rows.push(row);
+    fn reflow_paragraph(rows: &[Row], new_cols: usize) -> Vec<Row> {
+        let flat = Self::flatten_paragraph(rows);
+        if flat.is_empty() {
+            return vec![Row::new(new_cols)];
         }
 
-        // ── 3. Lay out: history at top, live region below ─────────────────
-        // `cursor_area` = the live region rows we preserve verbatim (shell
-        // prompt/edit line). For the inline path these get wiped by the
-        // caller, so trimming them is harmless.
+        let mut out_rows = Vec::new();
+        let mut row = Row::new(new_cols);
+        let mut col = 0usize;
+        let mut index = 0usize;
+        while index < flat.len() {
+            Self::append_reflow_cell(
+                &flat,
+                &mut index,
+                new_cols,
+                &mut row,
+                &mut col,
+                &mut out_rows,
+            );
+        }
+        out_rows.push(row);
+        out_rows
+    }
+
+    fn flatten_paragraph(rows: &[Row]) -> Vec<Cell> {
+        let mut flat = Vec::new();
+        for (index, row) in rows.iter().enumerate() {
+            if index + 1 < rows.len() {
+                let mut take = row.cells.len();
+                let next_starts_wide = rows[index + 1]
+                    .cells
+                    .first()
+                    .is_some_and(|cell| cell.width == 2);
+                if next_starts_wide
+                    && take > 0
+                    && row.cells[take - 1].width == 1
+                    && row.cells[take - 1].is_blank()
+                {
+                    take -= 1;
+                }
+                flat.extend_from_slice(&row.cells[..take]);
+            } else {
+                let last_content = row
+                    .cells
+                    .iter()
+                    .rposition(|cell| !cell.is_blank())
+                    .map_or(0, |index| index + 1);
+                flat.extend_from_slice(&row.cells[..last_content]);
+            }
+        }
+        flat
+    }
+
+    fn append_reflow_cell(
+        cells: &[Cell],
+        index: &mut usize,
+        new_cols: usize,
+        row: &mut Row,
+        col: &mut usize,
+        out_rows: &mut Vec<Row>,
+    ) {
+        match cells[*index].width {
+            2 => Self::append_wide_reflow_cell(cells, index, new_cols, row, col, out_rows),
+            0 => *index += 1,
+            _ => Self::append_narrow_reflow_cell(cells, index, new_cols, row, col, out_rows),
+        }
+    }
+
+    fn append_wide_reflow_cell(
+        cells: &[Cell],
+        index: &mut usize,
+        new_cols: usize,
+        row: &mut Row,
+        col: &mut usize,
+        out_rows: &mut Vec<Row>,
+    ) {
+        if *col + 2 > new_cols {
+            row.wrapped = true;
+            out_rows.push(std::mem::replace(row, Row::new(new_cols)));
+            *col = 0;
+            if new_cols < 2 {
+                *index += 1;
+                while *index < cells.len() && cells[*index].width == 0 {
+                    *index += 1;
+                }
+                return;
+            }
+        }
+        let cell = cells[*index];
+        row.cells[*col] = cell;
+        row.cells[*col + 1] = Cell::wide_spacer(cell.attr);
+        *col += 2;
+        *index += 1;
+        if *index < cells.len() && cells[*index].width == 0 {
+            *index += 1;
+        }
+    }
+
+    fn append_narrow_reflow_cell(
+        cells: &[Cell],
+        index: &mut usize,
+        new_cols: usize,
+        row: &mut Row,
+        col: &mut usize,
+        out_rows: &mut Vec<Row>,
+    ) {
+        if *col >= new_cols {
+            row.wrapped = true;
+            out_rows.push(std::mem::replace(row, Row::new(new_cols)));
+            *col = 0;
+        }
+        row.cells[*col] = cells[*index];
+        *col += 1;
+        *index += 1;
+    }
+
+    fn layout_reflowed_history(
+        &mut self,
+        mut out_rows: Vec<Row>,
+        boundary: usize,
+        preserve_cursor_area: bool,
+        total_rows: usize,
+        new_cols: usize,
+    ) {
         let cursor_area_count = total_rows - boundary;
         let cursor_area: Vec<Row> = self.primary.rows.split_off(boundary);
         self.primary.rows.clear();
-
-        // How many reflowed history rows may stay VISIBLE above the live
-        // region. Shell keeps the prompt put (cap at `boundary`); inline lets
-        // history use the whole screen (cap at `total_rows`, trim the wipeable
-        // area).
         let max_visible_history = if preserve_cursor_area {
             boundary
         } else {
             total_rows
         };
-
-        let history_count = out_rows.len();
-        let visible_history = history_count.min(max_visible_history);
-        let overflow = history_count - visible_history;
-
-        // Overflow oldest history rows back INTO scrollback (oldest first) —
-        // never dropped. Order is preserved: scrollback already holds the
-        // non-straddling prefix; these append after it.
+        let visible_history = out_rows.len().min(max_visible_history);
+        let overflow = out_rows.len() - visible_history;
         for row in out_rows.drain(0..overflow) {
             self.scrollback.push(row);
         }
 
-        // Assemble the new visible grid: visible history, then the live
-        // region, then blank padding — trimming the live region from the
-        // BOTTOM if history + live exceeds the screen (only reachable on the
-        // inline path, where the live region is about to be wiped anyway).
-        let mut new_rows: Vec<Row> = Vec::with_capacity(total_rows);
-        new_rows.append(&mut out_rows); // the `visible_history` rows
+        let mut new_rows = out_rows;
         let live_space = total_rows.saturating_sub(new_rows.len());
-        for orig in cursor_area
-            .into_iter()
-            .take(live_space.min(cursor_area_count))
-        {
-            new_rows.push(orig);
-        }
-        while new_rows.len() < total_rows {
-            new_rows.push(Row::new(new_cols));
-        }
+        new_rows.extend(
+            cursor_area
+                .into_iter()
+                .take(live_space.min(cursor_area_count)),
+        );
+        new_rows.resize_with(total_rows, || Row::new(new_cols));
         new_rows.truncate(total_rows);
         self.primary.rows = new_rows;
-
-        // ── 4. Re-anchor the cursor at the new live-region top ────────────
         self.primary.cursor.row = visible_history.min(total_rows.saturating_sub(1));
         self.primary.cursor.col = self.primary.cursor.col.min(new_cols.saturating_sub(1));
         self.primary.cursor.pending_wrap = false;
@@ -1450,243 +1344,141 @@ impl Grid {
     /// Place one printable char at the cursor, advancing it.
     /// See cursor.rs for the DECAWM `pending_wrap` rationale.
     pub fn print(&mut self, ch: char, attrs: Attrs) {
-        let w = wcwidth(ch as u32);
-        if w == 0 {
-            // Combining: best-effort attach to previous cell. Real grapheme
-            // cluster support is a larger refactor (cell holds a SmallStr).
-            // Leaving the simple fallback so combining marks don't advance
-            // the cursor.
+        let width = usize::from(wcwidth(ch as u32));
+        if width == 0 {
             return;
         }
-
         let attr_id = self.attrs.intern(attrs);
-        let cols = self.cols;
-        let scroll_top = self.screen().scroll_top;
-        let scroll_bottom = self.screen().scroll_bottom;
-
-        // Resolve pending wrap from the previous print.
-        if self.screen().cursor.pending_wrap {
-            self.screen_mut().cursor.pending_wrap = false;
-            // Mark wrapped so reflow/copy can stitch the lines back.
-            let row = self.screen().cursor.row;
-            self.screen_mut().rows[row].wrapped = true;
-            self.screen_mut().cursor.col = 0;
-            self.linefeed();
-        }
-
-        // Wide char that won't fit: write a blank in the last column,
-        // wrap, then print on the next line.
-        if w == 2 && self.screen().cursor.col + 1 >= cols {
-            let cur = self.screen().cursor;
-            if cur.col < cols {
-                self.screen_mut().rows[cur.row].cells[cur.col] = Cell::new(' ', attr_id, 1);
-            }
-            self.screen_mut().rows[cur.row].wrapped = true;
-            self.screen_mut().cursor.col = 0;
-            self.linefeed();
-        }
-
-        // §1.28 (2026-05-07): keep wide-cell pair integrity on overwrite.
-        //
-        // A wide char occupies two cells: a main at col (width=2) and a
-        // continuation at col+1 (width=0). Either side surviving without
-        // its partner is an orphan, and the renderer / overwrite logic
-        // both mishandle orphans:
-        //
-        //   - Renderer skips width==0 cells, so an orphan continuation
-        //     just looks like a blank, but the *next* narrow write to
-        //     that column triggers the "I see a width==0 here, clear
-        //     the main at col-1" branch below — which then wipes a
-        //     freshly-written narrow char a column to the left. That's
-        //     the chain Ink's frame-redraw triggers: 中 → narrow over
-        //     col=2 → orphan continuation at col=3 → next narrow at
-        //     col=3 deletes the col=2 narrow we just wrote. Same root
-        //     cause behind "中文字符只渲染一半", "字符消失只剩占位",
-        //     and "改色文本多余字符" symptoms during `claude` runs.
-        //
-        // Two symmetric pre-write guards tear both halves down in lock
-        // step so we never leave an orphan:
-        let cur_col = self.screen().cursor.col;
-        let cur_row = self.screen().cursor.row;
-        if cur_col < cols {
-            let here = self.screen().rows[cur_row].cells[cur_col];
-            // (a) writing onto a continuation → clear the prior main.
-            //     §B.2 (2026-05-08): also drop any cluster sidecar
-            //     anchored at the orphaned main col. Without this a
-            //     multi-codepoint cluster (👨‍👩‍👧, 🏳️‍🌈) survives the
-            //     overwrite as a stale sidecar pointing at a now-
-            //     replaced (' ', w=1) cell, and the renderer paints the
-            //     cluster's full emoji glyph over what should now be a
-            //     blank space — the user-visible "退格一次出现乱码字符"
-            //     symptom: shell echoes BS+SP+BS to erase a wide cluster,
-            //     SP lands on the continuation, branch (a) clears the
-            //     main, but the cluster sidecar persists and the
-            //     renderer keeps painting the original emoji on top of
-            //     the now-' '-cell.
-            if here.width == 0 && cur_col > 0 {
-                self.screen_mut().rows[cur_row].clear_cluster_at(cur_col - 1);
-                self.screen_mut().rows[cur_row].cells[cur_col - 1] =
-                    Cell::new(' ', AttrId::DEFAULT, 1);
-            }
-            // (b) writing onto a main → clear the trailing continuation.
-            //     §B.2: same cluster-sidecar invariant as (a). The cell
-            //     at cur_col itself will be overwritten by the actual
-            //     `print` below (which already calls `clear_cluster_at`),
-            //     so we only need to wipe the sidecar at cur_col+1 if
-            //     the existing main carried a cluster — but cluster
-            //     sidecars are anchored at the MAIN col only, never the
-            //     continuation. So no extra clear_cluster_at(cur_col+1)
-            //     needed; the trailing-continuation cell never owns a
-            //     sidecar by construction.
-            if here.width == 2 && cur_col + 1 < cols {
-                self.screen_mut().rows[cur_row].cells[cur_col + 1] =
-                    Cell::new(' ', AttrId::DEFAULT, 1);
-            }
-        }
-        // (c) wide writes only: the spacer we'll lay at cur_col+1 might
-        //     itself land on a different pair's main — orphan its
-        //     continuation at cur_col+2.
-        //     §B.2: drop the orphaned main's cluster sidecar at
-        //     cur_col+1 so it doesn't outlive the wide-cell write that
-        //     overwrites it.
-        if w == 2 {
-            let nxt = cur_col + 1;
-            if nxt < cols {
-                let next_cell = self.screen().rows[cur_row].cells[nxt];
-                if next_cell.width == 2 && nxt + 1 < cols {
-                    self.screen_mut().rows[cur_row].clear_cluster_at(nxt);
-                    self.screen_mut().rows[cur_row].cells[nxt + 1] =
-                        Cell::new(' ', AttrId::DEFAULT, 1);
-                }
-            }
-        }
-
-        // Place the cell(s). §4.7: also drop any stale ClusterSpan
-        // anchored at the col we're about to overwrite — single-char
-        // writes must not leave a previous multi-codepoint cluster's
-        // sidecar pointing at a now-mismatched cell.
-        let row_idx = self.screen().cursor.row;
-        if w == 2 {
-            let col = self.screen().cursor.col;
-            self.screen_mut().rows[row_idx].clear_cluster_at(col);
-            self.screen_mut().rows[row_idx].cells[col] = Cell::new(ch, attr_id, 2);
-            self.screen_mut().rows[row_idx].cells[col + 1] = Cell::wide_spacer(attr_id);
-            self.screen_mut().cursor.col += 2;
-        } else {
-            let col = self.screen().cursor.col;
-            self.screen_mut().rows[row_idx].clear_cluster_at(col);
-            self.screen_mut().rows[row_idx].cells[col] = Cell::new(ch, attr_id, 1);
-            self.screen_mut().cursor.col += 1;
-        }
-
-        // Don't advance past the rightmost column — set pending_wrap and
-        // sit on cols-1. The next printable char will resolve it.
-        if self.screen().cursor.col >= cols {
-            self.screen_mut().cursor.col = cols - 1;
-            self.screen_mut().cursor.pending_wrap = true;
-        }
-
-        // Silence unused warnings — these will be consumed when we
-        // implement region-aware operations next round.
-        let _ = (scroll_top, scroll_bottom);
+        self.resolve_pending_wrap();
+        self.prepare_wide_char(width, attr_id);
+        self.repair_wide_overwrite(width);
+        self.write_cell(ch, attr_id, width);
     }
 
-    /// §4.7 (2026-05-07) — print one extended grapheme cluster as a
-    /// single visual unit. Called by the parser AFTER it segments the
-    /// incoming byte stream into clusters via `unicode-segmentation`.
-    ///
-    /// Single-codepoint clusters fast-path through `print(ch, attrs)` —
-    /// no sidecar entry, no Box allocation — so ASCII / CJK output
-    /// keeps its existing zero-overhead path.
-    ///
-    /// Multi-codepoint clusters (👨‍👩‍👧, 🏳️‍🌈, 🇺🇸, 👨‍💻):
-    ///   1. Compute visual width from the whole cluster
-    ///      (`wcwidth_grapheme` accounts for ZWJ → 0, RIS pairs → 2).
-    ///   2. Place the FIRST codepoint via `print(first, attrs)` so all
-    ///      the wrap / pending_wrap / wide-spacer bookkeeping stays in
-    ///      one place. The cell at that col carries the first codepoint
-    ///      as `cell.ch` (so per-cell hashing / search / selection
-    ///      still see *some* glyph).
-    ///   3. If the cluster's visual width disagrees with the first
-    ///      codepoint's wcwidth (e.g. RIS pair: each is wcwidth=1 but
-    ///      together they're width=2), patch the cell's width and the
-    ///      cursor so subsequent prints land at the right col.
-    ///   4. Register the full cluster string on the row's `clusters`
-    ///      sidecar at the placement col so renderers paint the
-    ///      cluster glyph instead of just the first codepoint.
-    ///
-    /// Whole-cluster zero-width strings (rare — combining-only input
-    /// like a stray ZWJ) fall back to `print(first, attrs)` which itself
-    /// short-circuits on width-0.
+    fn resolve_pending_wrap(&mut self) {
+        if !self.screen().cursor.pending_wrap {
+            return;
+        }
+        self.screen_mut().cursor.pending_wrap = false;
+        let row = self.screen().cursor.row;
+        self.screen_mut().rows[row].wrapped = true;
+        self.screen_mut().cursor.col = 0;
+        self.linefeed();
+    }
+
+    fn prepare_wide_char(&mut self, width: usize, attr_id: AttrId) {
+        let cols = self.cols;
+        if width != 2 || self.screen().cursor.col + 1 < cols {
+            return;
+        }
+        let cursor = self.screen().cursor;
+        if cursor.col < cols {
+            self.screen_mut().rows[cursor.row].cells[cursor.col] = Cell::new(' ', attr_id, 1);
+        }
+        self.screen_mut().rows[cursor.row].wrapped = true;
+        self.screen_mut().cursor.col = 0;
+        self.linefeed();
+    }
+
+    fn repair_wide_overwrite(&mut self, width: usize) {
+        let cols = self.cols;
+        let row = self.screen().cursor.row;
+        let col = self.screen().cursor.col;
+        if col >= cols {
+            return;
+        }
+        let current = self.screen().rows[row].cells[col];
+        if current.width == 0 && col > 0 {
+            self.screen_mut().rows[row].clear_cluster_at(col - 1);
+            self.screen_mut().rows[row].cells[col - 1] = Cell::new(' ', AttrId::DEFAULT, 1);
+        }
+        if current.width == 2 && col + 1 < cols {
+            self.screen_mut().rows[row].cells[col + 1] = Cell::new(' ', AttrId::DEFAULT, 1);
+        }
+        if width == 2 {
+            let next = col + 1;
+            if next < cols && self.screen().rows[row].cells[next].width == 2 && next + 1 < cols {
+                self.screen_mut().rows[row].clear_cluster_at(next);
+                self.screen_mut().rows[row].cells[next + 1] = Cell::new(' ', AttrId::DEFAULT, 1);
+            }
+        }
+    }
+
+    fn write_cell(&mut self, ch: char, attr_id: AttrId, width: usize) {
+        let row = self.screen().cursor.row;
+        let col = self.screen().cursor.col;
+        self.screen_mut().rows[row].clear_cluster_at(col);
+        self.screen_mut().rows[row].cells[col] = Cell::new(ch, attr_id, width as u8);
+        if width == 2 {
+            self.screen_mut().rows[row].cells[col + 1] = Cell::wide_spacer(attr_id);
+        }
+        self.screen_mut().cursor.col += width;
+        if self.screen().cursor.col >= self.cols {
+            self.screen_mut().cursor.col = self.cols - 1;
+            self.screen_mut().cursor.pending_wrap = true;
+        }
+    }
+
     pub fn print_grapheme(&mut self, s: &str, attrs: Attrs) {
         let mut chars = s.chars();
         let Some(first) = chars.next() else {
             return;
         };
-        let multi = chars.next().is_some();
-
-        if !multi {
+        if chars.next().is_none() {
             self.print(first, attrs);
             return;
         }
-
-        let cluster_w = wcwidth_grapheme(s);
+        let cluster_w = usize::from(wcwidth_grapheme(s));
         if cluster_w == 0 {
             self.print(first, attrs);
             return;
         }
-
-        // Place first codepoint via the existing path. After the call,
-        // the cursor has advanced and `pending_wrap` may be set.
         self.print(first, attrs);
+        self.patch_grapheme(first, attrs, cluster_w, s);
+    }
 
-        // Compute the col where the cell was actually written. After
-        // print(), cursor sits at `written_col + first_w` (or stays
-        // at cols-1 with pending_wrap when first_w==1 hit the right
-        // edge).
-        let cur = *self.cursor();
-        let row_idx = cur.row;
-        let first_w = wcwidth(first as u32);
-        let written_col = if cur.pending_wrap {
-            cur.col
+    fn patch_grapheme(&mut self, first: char, attrs: Attrs, cluster_w: usize, text: &str) {
+        let cursor = *self.cursor();
+        let row = cursor.row;
+        let first_w = usize::from(wcwidth(first as u32));
+        let col = if cursor.pending_wrap {
+            cursor.col
         } else {
-            cur.col.saturating_sub(first_w as usize)
+            cursor.col.saturating_sub(first_w)
         };
-
-        // Patch cell width if the cluster's visual width differs from
-        // the first codepoint's wcwidth — RIS pair is the canonical
-        // case (first RIS is wcwidth=1, pair renders at width 2). We
-        // only widen (1 → 2), never narrow (renderer can paint a
-        // cluster that's "smaller than declared" cleanly; the reverse
-        // would clip).
         if cluster_w == 2 && first_w == 1 {
-            let cols = self.cols;
-            let row_len = self.screen().rows[row_idx].cells.len();
-            if written_col + 1 < row_len {
-                let attr_id = self.attrs.intern(attrs);
-                self.screen_mut().rows[row_idx].cells[written_col] = Cell::new(first, attr_id, 2);
-                self.screen_mut().rows[row_idx].cells[written_col + 1] = Cell::wide_spacer(attr_id);
-                // Advance cursor by the extra column claimed by the
-                // upgraded width-2 placement, mirroring the wide-char
-                // path in `print`.
-                if !cur.pending_wrap {
-                    self.screen_mut().cursor.col = (cur.col + 1).min(cols.saturating_sub(1));
-                    if self.screen().cursor.col + 1 >= cols {
-                        self.screen_mut().cursor.col = cols.saturating_sub(1);
-                        self.screen_mut().cursor.pending_wrap = true;
-                    }
-                }
-            }
+            self.widen_grapheme_cell(first, row, col, cursor, attrs);
         }
-
-        // Register the cluster on the row sidecar.
-        let row_len = self.screen().rows[row_idx].cells.len();
-        if written_col < row_len {
-            self.screen_mut().rows[row_idx].set_cluster(written_col, Box::from(s));
+        if col < self.screen().rows[row].cells.len() {
+            self.screen_mut().rows[row].set_cluster(col, Box::from(text));
         }
     }
 
-    // ------------------------------------------------------------------
+    fn widen_grapheme_cell(
+        &mut self,
+        first: char,
+        row: usize,
+        col: usize,
+        cursor: Cursor,
+        attrs: Attrs,
+    ) {
+        let cols = self.cols;
+        if col + 1 >= self.screen().rows[row].cells.len() {
+            return;
+        }
+        let attr_id = self.attrs.intern(attrs);
+        self.screen_mut().rows[row].cells[col] = Cell::new(first, attr_id, 2);
+        self.screen_mut().rows[row].cells[col + 1] = Cell::wide_spacer(attr_id);
+        if cursor.pending_wrap {
+            return;
+        }
+        self.screen_mut().cursor.col = (cursor.col + 1).min(cols.saturating_sub(1));
+        if self.screen().cursor.col + 1 >= cols {
+            self.screen_mut().cursor.col = cols.saturating_sub(1);
+            self.screen_mut().cursor.pending_wrap = true;
+        }
+    }
+
     // Cursor motion
     // ------------------------------------------------------------------
 
@@ -1888,72 +1680,54 @@ impl Grid {
     pub fn erase_in_display(&mut self, mode: EraseMode) {
         let cur_row = self.screen().cursor.row;
         let cur_col = self.screen().cursor.col;
-        let cols = self.cols;
-        let total_rows = self.rows;
-        let bce = self.bce_cell();
         match mode {
             EraseMode::Below => {
-                self.erase_row_range(cur_row, cur_col, cols);
-                for r in (cur_row + 1)..total_rows {
-                    self.screen_mut().rows[r].fill_blank(bce);
-                }
+                self.erase_display_below(cur_row, cur_col);
             }
             EraseMode::Above => {
-                for r in 0..cur_row {
-                    self.screen_mut().rows[r].fill_blank(bce);
-                }
-                self.erase_row_range(cur_row, 0, cur_col + 1);
+                self.erase_display_above(cur_row, cur_col);
             }
-            EraseMode::All => {
-                // §Ctrl+C-ED (2026-06-01): suppress ED All within a short
-                // window after Ctrl+C so the shell/TUI cleanup `\x1b[2J`
-                // doesn't wipe the primary screen's prior output. Resets
-                // the suppression flag so a later deliberate clear always
-                // works — only one windowed erase is suppressed per Ctrl+C.
-                if self.ed_suppressed_until_ms > 0 {
-                    let now = super::clock::now_ms();
-                    if now < self.ed_suppressed_until_ms {
-                        self.ed_suppressed_until_ms = 0;
-                        return;
-                    }
-                    self.ed_suppressed_until_ms = 0;
-                }
-                for r in &mut self.screen_mut().rows {
-                    r.fill_blank(bce);
-                }
-                // §clear-scrollback-parity (2026-07-16) — 让 shell 的 `clear`/`cls`/
-                // `Clear-Host` 与右键"清理"行为一致：整屏擦除(ED 2)在**主屏且非
-                // inline-TUI** 时连带丢弃 scrollback（等价于额外收到一个 `\x1b[3J`）。
-                // 缘由：右键"清理"恒物理丢 scrollback，而 PowerShell 5.1 的 Clear-Host
-                // 只发 `\x1b[2J`(不发 `\x1b[3J`)，靠 SavedLines 分支清 scrollback 那条路
-                // 走不通 → 两者不一致。此处把主屏全屏擦除统一成"连 scrollback 一起清"。
-                // 门控 `!is_alt && !inline_tui_sticky`：alt 屏无 scrollback；inline-TUI
-                // 程序(sticky latch)用 2J 只是重画自己的画布，用户历史须保留，不误伤。
-                // ponytail: 门槛=不发 alt 且未被 latch 为 inline-TUI 的"裸主屏全屏重绘"
-                //   程序(罕见)会连带清 scrollback；若真命中再收窄(要求紧跟 CUP-home 等)。
-                if !self.is_alt && !self.inline_tui_sticky {
-                    self.clear_scrollback();
-                }
+            EraseMode::All => self.erase_display_all(),
+            EraseMode::SavedLines => self.erase_saved_lines(),
+        }
+    }
+
+    fn erase_display_below(&mut self, row: usize, col: usize) {
+        let bce = self.bce_cell();
+        self.erase_row_range(row, col, self.cols);
+        for row in (row + 1)..self.rows {
+            self.screen_mut().rows[row].fill_blank(bce);
+        }
+    }
+
+    fn erase_display_above(&mut self, row: usize, col: usize) {
+        let bce = self.bce_cell();
+        for row in 0..row {
+            self.screen_mut().rows[row].fill_blank(bce);
+        }
+        self.erase_row_range(row, 0, col + 1);
+    }
+
+    fn erase_display_all(&mut self) {
+        if self.ed_suppressed_until_ms > 0 {
+            let suppressed = super::clock::now_ms() < self.ed_suppressed_until_ms;
+            self.ed_suppressed_until_ms = 0;
+            if suppressed {
+                return;
             }
-            EraseMode::SavedLines => {
-                // §B.2 (2026-05-08) — xterm `CSI 3 J` extension. Drops
-                // the entire scrollback ring buffer (physical clear:
-                // drops the backing `Vec<Option<Row>>`; the next output
-                // lazily rebuilds it, with head/len reset to 0). Visible grid stays untouched, cursor
-                // stays put — this is the operation that makes a "real"
-                // clear actually clear: after this call both `clear`
-                // (`\x1b[2J\x1b[H`) AND scrollback are gone, so the
-                // user's pgup history doesn't resurrect what they just
-                // wiped.
-                //
-                // No-op on the alt screen — alt screen has no
-                // scrollback to begin with, and TUI apps that swap
-                // back to primary expect their preserved scrollback
-                // intact (kakoune / vim / less depend on this).
-                if !self.is_alt {
-                    self.clear_scrollback();
-                }
-            }
+        }
+        let bce = self.bce_cell();
+        for row in &mut self.screen_mut().rows {
+            row.fill_blank(bce);
+        }
+        if !self.is_alt && !self.inline_tui_sticky {
+            self.clear_scrollback();
+        }
+    }
+
+    fn erase_saved_lines(&mut self) {
+        if !self.is_alt {
+            self.clear_scrollback();
         }
     }
 
@@ -2054,66 +1828,47 @@ impl Grid {
             if n == 0 {
                 return;
             }
-            // §1.28: if the cut point splits a wide pair (cells[cur_col]
-            // is a continuation whose main lives at cur_col-1), the
-            // shift would leave the main orphaned with `n` blanks
-            // between it and a now-displaced continuation. Clear both
-            // halves before shifting.
-            if cur_col > 0
-                && cur_col < r.cells.len()
-                && r.cells[cur_col].width == 0
-                && r.cells[cur_col - 1].width == 2
-            {
-                r.cells[cur_col - 1] = Cell::EMPTY;
-                r.cells[cur_col] = Cell::EMPTY;
-                // §B.2 — drop cluster sidecar at the orphaned main.
-                r.clear_cluster_at(cur_col - 1);
-            }
-            // §1.28: pairs near the right margin that the shift would
-            // push partly off the row also need their inside half
-            // cleared so an orphan main doesn't land at cells[cols-1].
-            if cols > n
-                && cols - n - 1 < r.cells.len()
-                && cols - n < r.cells.len()
-                && r.cells[cols - n - 1].width == 2
-                && r.cells[cols - n].width == 0
-            {
-                r.cells[cols - n - 1] = Cell::EMPTY;
-                r.cells[cols - n] = Cell::EMPTY;
-                // §B.2 — orphan main at cols-n-1 dropped its cluster
-                // sidecar too. (Continuation at cols-n never carried
-                // a sidecar by construction.)
-                r.clear_cluster_at(cols - n - 1);
-            }
-            // §B.2 — shift cluster sidecars at col ≥ cur_col RIGHT by n,
-            // dropping any that would land at col ≥ cols. Performed
-            // BEFORE the cell shift so the sidecar's pre-shift cols
-            // are still meaningful when matched against the cells they
-            // describe. The cells_at_split orphan-clear above already
-            // dropped sidecars that would otherwise be moved to cols-1
-            // (an orphan-main slot).
-            r.shift_clusters_right(cur_col, n, cols);
-            // Shift right-of-cursor cells right by n; cells falling off are dropped.
-            // Walk from the right edge inward to avoid overwriting source cells.
-            for dst in (cur_col + n..cols).rev() {
-                let src = dst - n;
-                if src < r.cells.len() && dst < r.cells.len() {
-                    r.cells[dst] = r.cells[src];
-                }
-            }
-            for c in cur_col..(cur_col + n).min(r.cells.len()) {
-                r.cells[c] = bce;
-            }
-            // Hyperlink spans straddling or after the cursor get
-            // invalidated. Line-edit operations (PSReadLine / readline /
-            // Claude Code prompt edits) shift cell content but the
-            // visible label of any hyperlink no longer corresponds to
-            // its original click target — drop spans that overlap or
-            // extend past the edit point. Matches xterm's "edit
-            // invalidates the link" UX. (TASKS §1.18.b extension.)
-            r.hyperlinks.retain(|span| span.col_end <= cur_col);
+            Self::repair_insert_boundaries(r, cur_col, n, cols);
+            Self::shift_inserted_cells(r, cur_col, n, cols, bce);
         }
         self.cursor_mut().pending_wrap = false;
+    }
+
+    fn repair_insert_boundaries(row: &mut Row, col: usize, n: usize, cols: usize) {
+        if col > 0
+            && col < row.cells.len()
+            && row.cells[col].width == 0
+            && row.cells[col - 1].width == 2
+        {
+            row.cells[col - 1] = Cell::EMPTY;
+            row.cells[col] = Cell::EMPTY;
+            row.clear_cluster_at(col - 1);
+        }
+        let boundary = cols.saturating_sub(n);
+        if boundary > 0
+            && boundary < row.cells.len()
+            && row.cells[boundary - 1].width == 2
+            && row.cells[boundary].width == 0
+        {
+            row.cells[boundary - 1] = Cell::EMPTY;
+            row.cells[boundary] = Cell::EMPTY;
+            row.clear_cluster_at(boundary - 1);
+        }
+    }
+
+    fn shift_inserted_cells(row: &mut Row, col: usize, n: usize, cols: usize, bce: Cell) {
+        row.shift_clusters_right(col, n, cols);
+        for dst in (col + n..cols).rev() {
+            let src = dst - n;
+            if src < row.cells.len() && dst < row.cells.len() {
+                row.cells[dst] = row.cells[src];
+            }
+        }
+        let end = (col + n).min(row.cells.len());
+        for cell in &mut row.cells[col..end] {
+            *cell = bce;
+        }
+        row.hyperlinks.retain(|span| span.col_end <= col);
     }
 
     /// Mark a printed cell as part of an OSC 8 hyperlink span. Coalesces
@@ -3255,57 +3010,63 @@ mod tests {
     /// trailing blanks trimmed. This is the "去尾空白后按 wrapped 拼接"
     /// representation the user perceives.
     fn logical_lines(g: &Grid, last_visible: usize) -> Vec<String> {
-        // Collect the actual rows, scrollback first, then visible.
-        let mut rows: Vec<Row> = Vec::new();
-        for i in 0..g.scrollback.len() {
-            rows.push(g.scrollback.get(i).unwrap().clone());
-        }
-        for r in 0..=last_visible {
-            rows.push(g.row(r).expect("row in range").clone());
-        }
-
-        let mut lines: Vec<String> = Vec::new();
-        let mut i = 0usize;
-        while i < rows.len() {
-            let start = i;
-            while i + 1 < rows.len() && rows[i].wrapped {
-                i += 1;
-            }
-            let para_end = i + 1; // exclusive
-            i += 1;
-
-            let mut text = String::new();
-            for r in start..para_end {
-                let row = &rows[r];
-                if r + 1 < para_end {
-                    // Wrapped row: full content minus a wide-char wrap pad.
-                    let cells = &row.cells;
-                    let mut take = cells.len();
-                    let next_starts_wide = rows[r + 1].cells.first().is_some_and(|c| c.width == 2);
-                    if next_starts_wide
-                        && take > 0
-                        && cells[take - 1].width == 1
-                        && cells[take - 1].is_blank()
-                    {
-                        take -= 1;
-                    }
-                    for c in &cells[..take] {
-                        if !(c.width == 0 && c.ch == '\0') {
-                            text.push(c.ch);
-                        }
-                    }
-                } else {
-                    // Last row of the paragraph: trim trailing blanks.
-                    let mut s = raw_row_text(row);
-                    while s.ends_with(' ') {
-                        s.pop();
-                    }
-                    text.push_str(&s);
-                }
-            }
-            lines.push(text);
+        let rows = logical_source_rows(g, last_visible);
+        let mut lines = Vec::new();
+        let mut start = 0;
+        while start < rows.len() {
+            let end = paragraph_end(&rows, start);
+            lines.push(logical_paragraph(&rows, start, end));
+            start = end;
         }
         lines
+    }
+
+    fn logical_source_rows(g: &Grid, last_visible: usize) -> Vec<Row> {
+        let mut rows: Vec<Row> = (0..g.scrollback.len())
+            .map(|i| g.scrollback.get(i).unwrap().clone())
+            .collect();
+        rows.extend((0..=last_visible).map(|row| g.row(row).expect("row in range").clone()));
+        rows
+    }
+
+    fn paragraph_end(rows: &[Row], start: usize) -> usize {
+        let mut end = start;
+        while end + 1 < rows.len() && rows[end].wrapped {
+            end += 1;
+        }
+        end + 1
+    }
+
+    fn logical_paragraph(rows: &[Row], start: usize, end: usize) -> String {
+        let mut text = String::new();
+        for row_index in start..end {
+            if row_index + 1 < end {
+                append_wrapped_row(&mut text, &rows[row_index], &rows[row_index + 1]);
+            } else {
+                let mut row = raw_row_text(&rows[row_index]);
+                row.truncate(row.trim_end_matches(' ').len());
+                text.push_str(&row);
+            }
+        }
+        text
+    }
+
+    fn append_wrapped_row(text: &mut String, row: &Row, next: &Row) {
+        let mut take = row.cells.len();
+        let next_starts_wide = next.cells.first().is_some_and(|cell| cell.width == 2);
+        if next_starts_wide
+            && take > 0
+            && row.cells[take - 1].width == 1
+            && row.cells[take - 1].is_blank()
+        {
+            take -= 1;
+        }
+        text.extend(
+            row.cells[..take]
+                .iter()
+                .filter(|cell| !(cell.width == 0 && cell.ch == '\0'))
+                .map(|cell| cell.ch),
+        );
     }
 
     #[test]

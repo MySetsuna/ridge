@@ -748,158 +748,220 @@ fn handle_text(
     ws_id: Uuid,
     out_tx: &mpsc::UnboundedSender<Message>,
 ) -> Option<String> {
-    // ── JSON-RPC 2.0（LanWsAdapter 协商后或 $/hello 直达）────────────────
     if v.get("jsonrpc").and_then(Value::as_str) == Some("2.0") {
-        let method = v.get("method").and_then(Value::as_str).unwrap_or("");
-        let params = v.get("params").cloned().unwrap_or(Value::Null);
-        let id = v.get("id").cloned();
-        if method == "$/hello" {
-            // 公告 terminal/fs/search 子集；桌面 SPA 灰掉未实现面板。
-            let hello = crate::rpc::negotiate_hello(&params);
-            if let Some(id) = id {
-                // 带 id 的 hello：先推 $/hello 通知体，再 result null（对齐 session 路径语义简化：
-                // 只回 result，能力体在 result 内亦可；桌面 adapter 认 hello reply 翻 native）。
-                return Some(
-                    crate::rpc::result_response(&id, hello.get("params").cloned().unwrap_or(hello))
-                        .to_string(),
-                );
-            }
-            return Some(hello.to_string());
-        }
-        if method == "$/cancel" {
-            return id.map(|id| crate::rpc::result_response(&id, Value::Null).to_string());
-        }
-        // notification（无 id）：subscribe-pane 等
-        if id.is_none() {
-            if method == "subscribe-pane"
-                || method == "subscribe_pane_raw"
-                || method == "use-global-workspace"
-            {
-                if method != "use-global-workspace" {
-                    start_pane_subscription(&params, workspace, ws_id, out_tx);
-                }
-            }
-            return None;
-        }
-        let id = id.unwrap();
-        return Some(
-            match dispatch_lan_invoke(method, &params, workspace, ws_id, out_tx) {
-                Ok(result) => crate::rpc::result_response(&id, result).to_string(),
-                Err(msg) => crate::rpc::error_response(
+        return handle_json_rpc(v, workspace, ws_id, out_tx);
+    }
+    if v.get("type").and_then(Value::as_str) == Some("invoke-request") {
+        return handle_invoke_request(v, workspace, ws_id, out_tx);
+    }
+    handle_legacy_message(v, workspace, ws_id, out_tx)
+}
+
+fn handle_json_rpc(
+    v: &Value,
+    workspace: &SharedWorkspace,
+    ws_id: Uuid,
+    out_tx: &mpsc::UnboundedSender<Message>,
+) -> Option<String> {
+    let method = v.get("method").and_then(Value::as_str).unwrap_or("");
+    let params = v.get("params").cloned().unwrap_or(Value::Null);
+    let id = v.get("id").cloned();
+    if method == "$/hello" {
+        let hello = crate::rpc::negotiate_hello(&params);
+        return match id {
+            Some(id) => Some(
+                crate::rpc::result_response(
                     &id,
-                    &crate::rpc::RpcError::new(crate::rpc::JSON_RPC_METHOD_NOT_FOUND, msg),
+                    hello
+                        .get("params")
+                        .cloned()
+                        .unwrap_or_else(|| hello.clone()),
                 )
                 .to_string(),
-            },
-        );
-    }
-
-    // ── 桌面 WEB_REMOTE 遗留 invoke-request 信封 ────────────────────────
-    if v.get("type").and_then(Value::as_str) == Some("invoke-request") {
-        let cmd = v.get("cmd").and_then(Value::as_str).unwrap_or("");
-        let args = v.get("args").cloned().unwrap_or(Value::Null);
-        let req_id = v.get("_reqId").cloned().unwrap_or(Value::Null);
-        let mut reply = match dispatch_lan_invoke(cmd, &args, workspace, ws_id, out_tx) {
-            Ok(result) => json!({
-                "type": "invoke-result",
-                "_reqId": req_id,
-                "_result": result,
-            }),
-            Err(msg) => json!({
-                "type": "invoke-result",
-                "_reqId": req_id,
-                "_error": msg,
-            }),
+            ),
+            None => Some(hello.to_string()),
         };
-        // 保持对象形状稳定，便于 adapter 解析。
-        if let Some(obj) = reply.as_object_mut() {
-            obj.entry("type".to_string())
-                .or_insert_with(|| json!("invoke-result"));
-        }
-        return Some(reply.to_string());
     }
+    if method == "$/cancel" {
+        return id.map(|id| crate::rpc::result_response(&id, Value::Null).to_string());
+    }
+    if id.is_none() {
+        if matches!(method, "subscribe-pane" | "subscribe_pane_raw") {
+            start_pane_subscription(&params, workspace, ws_id, out_tx);
+        }
+        return None;
+    }
+    let id = id.expect("checked above");
+    Some(
+        match dispatch_lan_invoke(method, &params, workspace, ws_id, out_tx) {
+            Ok(result) => crate::rpc::result_response(&id, result).to_string(),
+            Err(message) => crate::rpc::error_response(
+                &id,
+                &crate::rpc::RpcError::new(crate::rpc::JSON_RPC_METHOD_NOT_FOUND, message),
+            )
+            .to_string(),
+        },
+    )
+}
 
+fn handle_invoke_request(
+    v: &Value,
+    workspace: &SharedWorkspace,
+    ws_id: Uuid,
+    out_tx: &mpsc::UnboundedSender<Message>,
+) -> Option<String> {
+    let cmd = v.get("cmd").and_then(Value::as_str).unwrap_or("");
+    let args = v.get("args").cloned().unwrap_or(Value::Null);
+    let request_id = v.get("_reqId").cloned().unwrap_or(Value::Null);
+    let mut reply = match dispatch_lan_invoke(cmd, &args, workspace, ws_id, out_tx) {
+        Ok(result) => json!({
+            "type": "invoke-result",
+            "_reqId": request_id,
+            "_result": result,
+        }),
+        Err(message) => json!({
+            "type": "invoke-result",
+            "_reqId": request_id,
+            "_error": message,
+        }),
+    };
+    if let Some(object) = reply.as_object_mut() {
+        object
+            .entry("type".to_string())
+            .or_insert_with(|| json!("invoke-result"));
+    }
+    Some(reply.to_string())
+}
+
+fn handle_legacy_message(
+    v: &Value,
+    workspace: &SharedWorkspace,
+    ws_id: Uuid,
+    out_tx: &mpsc::UnboundedSender<Message>,
+) -> Option<String> {
+    match v["type"].as_str().unwrap_or("") {
+        "ping"
+        | "list-panes"
+        | "list-workspace-panes"
+        | "subscribe-pane"
+        | "stdin"
+        | "resize"
+        | "claim-pane"
+        | "refresh-pane"
+        | "create-pane"
+        | "close-pane" => handle_pane_message(v, workspace, ws_id, out_tx),
+        "list-workspaces" | "switch-workspace" | "create-workspace" | "close-workspace" => {
+            handle_workspace_message(v, workspace, ws_id)
+        }
+        "current-project" | "list-files" | "list-git-status" | "search-files" => {
+            handle_legacy_io_message(v, workspace, out_tx)
+        }
+        _ => None,
+    }
+}
+
+fn handle_pane_message(
+    v: &Value,
+    workspace: &SharedWorkspace,
+    ws_id: Uuid,
+    out_tx: &mpsc::UnboundedSender<Message>,
+) -> Option<String> {
     match v["type"].as_str().unwrap_or("") {
         "ping" => Some(json!({ "type": "pong" }).to_string()),
-
         "list-panes" | "list-workspace-panes" => {
-            let panes = build_pane_list(workspace);
-            Some(panes_snapshot(ws_id, panes).to_string())
+            Some(panes_snapshot(ws_id, build_pane_list(workspace)).to_string())
         }
-
         "subscribe-pane" => {
             start_pane_subscription(v, workspace, ws_id, out_tx);
             None
         }
-
-        "stdin" => {
-            let data = v["data"].as_str().unwrap_or("");
-            if data.is_empty() {
-                return None;
-            }
-            // paneId 为空则回落到默认 session（passthrough 单终端场景）。
-            let pane_id = v["paneId"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .and_then(|s| Uuid::parse_str(s).ok())
-                .or_else(|| workspace.lock().unwrap().default_session_id());
-            if let Some(pane_id) = pane_id {
-                let w = workspace.lock().unwrap();
-                if let Some(sess) = w.find(pane_id) {
-                    let _ = sess.send_input(data.as_bytes());
-                }
-            }
-            None
-        }
-
-        // 尺寸：viewport resize 与显式 claim/refresh 在 rdg 单终端下语义一致 ——
-        // 都把该 pane 的 PTY 调整到客户端网格（rdg 无桌面式共享 canvas 争用）。
+        "stdin" => handle_stdin_message(v, workspace),
         "resize" | "claim-pane" | "refresh-pane" => {
-            if let Some(pane_id) = v["paneId"].as_str().and_then(|s| Uuid::parse_str(s).ok()) {
-                let rows = v["rows"].as_u64().unwrap_or(24) as u16;
-                let cols = v["cols"].as_u64().unwrap_or(80) as u16;
-                let w = workspace.lock().unwrap();
-                if let Some(sess) = w.find(pane_id) {
-                    let _ = sess.resize(cols, rows);
-                    let _ = out_tx.send(Message::Text(
-                        json!({
-                            "type": "pty-resized",
-                            "workspaceId": ws_id.to_string(),
-                            "paneId": pane_id.to_string(),
-                            "rows": rows,
-                            "cols": cols,
-                        })
-                        .to_string(),
-                    ));
-                }
-            }
+            resize_pane_message(v, workspace, ws_id, out_tx);
             None
         }
-
-        "create-pane" => {
-            let shell = v["shell"].as_str().filter(|s| !s.is_empty());
-            let cwd = v["cwd"].as_str().filter(|s| !s.is_empty());
-            let msg = match create_rdg_pane(workspace, shell, cwd) {
-                Ok(id) => {
-                    let mut result = create_pane_result(ws_id, id);
-                    result["type"] = json!("create-pane-result");
-                    result
-                }
-                Err(error) => json!({
-                    "type": "create-pane-result", "success": false, "error": error
-                }),
-            };
-            Some(msg.to_string())
-        }
-
-        // rdg 单工作区暂不支持关闭单个 pane（workspace 无 remove 语义）。
+        "create-pane" => Some(create_pane_message(workspace, ws_id, v).to_string()),
         "close-pane" => Some(
             json!({
-                "type": "close-pane-result", "success": false, "error": "unsupported on rdg"
+                "type": "close-pane-result",
+                "success": false,
+                "error": "unsupported on rdg"
             })
             .to_string(),
         ),
+        _ => None,
+    }
+}
 
+fn handle_stdin_message(v: &Value, workspace: &SharedWorkspace) -> Option<String> {
+    let data = v["data"].as_str().unwrap_or("");
+    if data.is_empty() {
+        return None;
+    }
+    let pane_id = v["paneId"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .or_else(|| workspace.lock().unwrap().default_session_id());
+    if let Some(pane_id) = pane_id {
+        let workspace = workspace.lock().unwrap();
+        if let Some(session) = workspace.find(pane_id) {
+            let _ = session.send_input(data.as_bytes());
+        }
+    }
+    None
+}
+
+fn resize_pane_message(
+    v: &Value,
+    workspace: &SharedWorkspace,
+    ws_id: Uuid,
+    out_tx: &mpsc::UnboundedSender<Message>,
+) {
+    let Some(pane_id) = v["paneId"]
+        .as_str()
+        .and_then(|value| Uuid::parse_str(value).ok())
+    else {
+        return;
+    };
+    let rows = v["rows"].as_u64().unwrap_or(24) as u16;
+    let cols = v["cols"].as_u64().unwrap_or(80) as u16;
+    let workspace = workspace.lock().unwrap();
+    let Some(session) = workspace.find(pane_id) else {
+        return;
+    };
+    let _ = session.resize(cols, rows);
+    let _ = out_tx.send(Message::Text(
+        json!({
+            "type": "pty-resized",
+            "workspaceId": ws_id.to_string(),
+            "paneId": pane_id.to_string(),
+            "rows": rows,
+            "cols": cols,
+        })
+        .to_string(),
+    ));
+}
+
+fn create_pane_message(workspace: &SharedWorkspace, ws_id: Uuid, v: &Value) -> Value {
+    let shell = v["shell"].as_str().filter(|value| !value.is_empty());
+    let cwd = v["cwd"].as_str().filter(|value| !value.is_empty());
+    match create_rdg_pane(workspace, shell, cwd) {
+        Ok(id) => {
+            let mut result = create_pane_result(ws_id, id);
+            result["type"] = json!("create-pane-result");
+            result
+        }
+        Err(error) => json!({
+            "type": "create-pane-result",
+            "success": false,
+            "error": error
+        }),
+    }
+}
+
+fn handle_workspace_message(v: &Value, workspace: &SharedWorkspace, ws_id: Uuid) -> Option<String> {
+    match v["type"].as_str().unwrap_or("") {
         "list-workspaces" => Some(
             json!({
                 "type": "workspaces",
@@ -912,120 +974,150 @@ fn handle_text(
             })
             .to_string(),
         ),
-
-        "switch-workspace" => {
-            let id = v["workspaceId"].as_str().unwrap_or("");
-            let msg = match ensure_current_workspace(id, ws_id) {
-                Ok(()) => json!({
-                    "type": "switch-workspace-result", "success": true, "workspaceId": ws_id.to_string()
-                }),
-                Err(error) => json!({
-                    "type": "switch-workspace-result", "success": false, "workspaceId": id, "error": error
-                }),
-            };
-            Some(msg.to_string())
-        }
-
-        "create-workspace" => {
-            // 单工作区：明确退化为创建 pane，与 WorkspaceProvider/JSON-RPC
-            // 路径保持同一语义，不再返回无法验证的 no-op 成功。
-            let msg = match create_rdg_pane(workspace, None, None) {
-                Ok(id) => {
-                    let mut result = create_pane_result(ws_id, id);
-                    result["type"] = json!("create-workspace-result");
-                    result
-                }
-                Err(error) => json!({
-                    "type": "create-workspace-result", "success": false, "error": error
-                }),
-            };
-            Some(msg.to_string())
-        }
-
+        "switch-workspace" => Some(switch_workspace_message(v, ws_id).to_string()),
+        "create-workspace" => Some(create_workspace_message(workspace, ws_id).to_string()),
         "close-workspace" => Some(
             json!({
-                "type": "close-workspace-result", "success": false, "error": "cannot close the last workspace"
+                "type": "close-workspace-result",
+                "success": false,
+                "error": "cannot close the last workspace"
             })
             .to_string(),
         ),
+        _ => None,
+    }
+}
 
+fn switch_workspace_message(v: &Value, ws_id: Uuid) -> Value {
+    let id = v["workspaceId"].as_str().unwrap_or("");
+    match ensure_current_workspace(id, ws_id) {
+        Ok(()) => json!({
+            "type": "switch-workspace-result",
+            "success": true,
+            "workspaceId": ws_id.to_string()
+        }),
+        Err(error) => json!({
+            "type": "switch-workspace-result",
+            "success": false,
+            "workspaceId": id,
+            "error": error
+        }),
+    }
+}
+
+fn create_workspace_message(workspace: &SharedWorkspace, ws_id: Uuid) -> Value {
+    match create_rdg_pane(workspace, None, None) {
+        Ok(id) => {
+            let mut result = create_pane_result(ws_id, id);
+            result["type"] = json!("create-workspace-result");
+            result
+        }
+        Err(error) => json!({
+            "type": "create-workspace-result",
+            "success": false,
+            "error": error
+        }),
+    }
+}
+
+fn handle_legacy_io_message(
+    v: &Value,
+    workspace: &SharedWorkspace,
+    out_tx: &mpsc::UnboundedSender<Message>,
+) -> Option<String> {
+    match v["type"].as_str().unwrap_or("") {
         "current-project" => {
             let path = std::env::current_dir()
                 .ok()
-                .and_then(|p| p.to_str().map(String::from))
+                .and_then(|path| path.to_str().map(String::from))
                 .unwrap_or_default();
             Some(json!({ "type": "current-project", "path": path }).to_string())
         }
-
-        // 旧版 Remote 的 sidebar flat 帧：保持协议兼容，但不在 WS 任务内同步跑磁盘/Git。
         "list-files" => {
-            let target = rdg_resolve_legacy_path(
-                workspace,
-                v.get("path").and_then(Value::as_str).unwrap_or(""),
-            );
-            let roots = rdg_allowed_file_roots(workspace);
-            spawn_legacy_frame(out_tx, "list-files", move || {
-                let entries = fs_reuse::list_dir(&roots, &target).unwrap_or_default();
-                let parent = target
-                    .parent()
-                    .map(|path| path.to_string_lossy().into_owned());
-                json!({
-                    "type": "files",
-                    "path": target.to_string_lossy(),
-                    "parent": parent,
-                    "entries": entries,
-                })
-            });
+            spawn_list_files_frame(v, workspace, out_tx);
             None
         }
-
         "list-git-status" => {
-            let root = rdg_workspace_base_dir(workspace);
-            spawn_legacy_frame(out_tx, "list-git-status", move || {
-                let info = ridge_core::commands::git::git_info_for_path(&root);
-                json!({
-                    "type": "git-status",
-                    "isGitRepo": info.is_git_repo,
-                    "currentBranch": info.current_branch,
-                    "branches": info.branches,
-                    "files": info.diff.files,
-                    "commits": info.commits,
-                })
-            });
+            spawn_git_status_frame(workspace, out_tx);
             None
         }
-
         "search-files" => {
-            let query = v
-                .get("query")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
-            let root = rdg_workspace_base_dir(workspace);
-            let roots = rdg_allowed_file_roots(workspace);
-            spawn_legacy_frame(out_tx, "search-files", move || {
-                let results = if query.trim().is_empty() {
-                    Vec::new()
-                } else {
-                    fs_reuse::search(&roots, &root.to_string_lossy(), &query, false, false)
-                        .into_iter()
-                        .map(|hit| {
-                            json!({
-                                "path": hit.file,
-                                "line": hit.line,
-                                "column": hit.column,
-                                "snippet": hit.content,
-                            })
-                        })
-                        .collect::<Vec<_>>()
-                };
-                json!({ "type": "search-results", "query": query, "results": results })
-            });
+            spawn_search_files_frame(v, workspace, out_tx);
             None
         }
-
         _ => None,
     }
+}
+
+fn spawn_list_files_frame(
+    v: &Value,
+    workspace: &SharedWorkspace,
+    out_tx: &mpsc::UnboundedSender<Message>,
+) {
+    let target = rdg_resolve_legacy_path(
+        workspace,
+        v.get("path").and_then(Value::as_str).unwrap_or(""),
+    );
+    let roots = rdg_allowed_file_roots(workspace);
+    spawn_legacy_frame(out_tx, "list-files", move || {
+        let entries = fs_reuse::list_dir(&roots, &target).unwrap_or_default();
+        let parent = target
+            .parent()
+            .map(|path| path.to_string_lossy().into_owned());
+        json!({
+            "type": "files",
+            "path": target.to_string_lossy(),
+            "parent": parent,
+            "entries": entries,
+        })
+    });
+}
+
+fn spawn_git_status_frame(workspace: &SharedWorkspace, out_tx: &mpsc::UnboundedSender<Message>) {
+    let root = rdg_workspace_base_dir(workspace);
+    spawn_legacy_frame(out_tx, "list-git-status", move || {
+        let info = ridge_core::commands::git::git_info_for_path(&root);
+        json!({
+            "type": "git-status",
+            "isGitRepo": info.is_git_repo,
+            "currentBranch": info.current_branch,
+            "branches": info.branches,
+            "files": info.diff.files,
+            "commits": info.commits,
+        })
+    });
+}
+
+fn spawn_search_files_frame(
+    v: &Value,
+    workspace: &SharedWorkspace,
+    out_tx: &mpsc::UnboundedSender<Message>,
+) {
+    let query = v
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let root = rdg_workspace_base_dir(workspace);
+    let roots = rdg_allowed_file_roots(workspace);
+    spawn_legacy_frame(out_tx, "search-files", move || {
+        let results = if query.trim().is_empty() {
+            Vec::new()
+        } else {
+            fs_reuse::search(&roots, &root.to_string_lossy(), &query, false, false)
+                .into_iter()
+                .map(|hit| {
+                    json!({
+                        "path": hit.file,
+                        "line": hit.line,
+                        "column": hit.column,
+                        "snippet": hit.content,
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        json!({ "type": "search-results", "query": query, "results": results })
+    });
 }
 
 #[cfg(test)]

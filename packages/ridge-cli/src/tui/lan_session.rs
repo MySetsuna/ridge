@@ -15,15 +15,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, connect_async_tls_with_config, Connector};
+use tokio_tungstenite::{
+    connect_async, connect_async_tls_with_config, Connector, MaybeTlsStream, WebSocketStream,
+};
 
 use super::lan_proto::{self, parse_binary_frame};
 use super::session::Session;
+
+type LanWsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// rustls 校验器：接受**任意**服务端证书。桌面 LAN host 用自签证书（等价于浏览器
 /// 流程里用户"信任本机 CA"）——LAN 场景的真正鉴权是 TOTP `?code=`，不是证书链。
@@ -165,123 +171,27 @@ pub async fn connect_lan(
         format!("{host}:9527")
     };
     let query = match (&code, &token) {
-        (Some(c), _) => format!("code={c}"),
-        (None, Some(t)) => format!("token={t}"),
+        (Some(code), _) => format!("code={code}"),
+        (None, Some(token)) => format!("token={token}"),
         (None, None) => return Err(anyhow!("需要 --code <TOTP> 或 --token <session>")),
     };
-
-    // 默认 wss + 接受自签；失败回退明文 ws（host 只在无法产生证书时才退明文）。
-    let wss = format!("wss://{hostport}/ws?{query}&device=rdg-cli");
-    let connector = tls_connector()?;
-    let req = wss
-        .as_str()
-        .into_client_request()
-        .context("构造 WS 请求失败")?;
-    let stream = match connect_async_tls_with_config(req, None, false, Some(connector)).await {
-        Ok((s, _)) => s,
-        Err(e) => {
-            tracing::warn!(target: "ridge_cli", error = %e, "wss 连接失败，回退明文 ws");
-            let plain = format!("ws://{hostport}/ws?{query}&device=rdg-cli");
-            let req2 = plain
-                .as_str()
-                .into_client_request()
-                .context("构造 WS 请求失败")?;
-            let (s, _) = connect_async(req2).await.context("ws 连接失败")?;
-            s
-        }
-    };
-
-    let (mut sink, mut read) = stream.split();
-    let (to_host_tx, mut to_host_rx) = mpsc::unbounded_channel::<Message>();
+    let stream = connect_lan_stream(&hostport, &query).await?;
+    let (sink, read) = stream.split();
+    let (to_host_tx, to_host_rx) = mpsc::unbounded_channel::<Message>();
     let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>(512);
-
     let pane = Arc::new(Mutex::new(None::<String>));
     let last_size = Arc::new(Mutex::new((80u16, 24u16)));
     let seq = Arc::new(AtomicU64::new(1));
 
-    // 写任务：把出站帧排空到 WS sink。
-    tokio::spawn(async move {
-        while let Some(msg) = to_host_rx.recv().await {
-            if sink.send(msg).await.is_err() {
-                break;
-            }
-        }
-        let _ = sink.close().await;
-    });
-
-    // 读任务：握手 + 把入站 PTY 字节灌入输出通道。
-    {
-        let to_host = to_host_tx.clone();
-        let pane = pane.clone();
-        let last_size = last_size.clone();
-        let seq = seq.clone();
-        tokio::spawn(async move {
-            while let Some(item) = read.next().await {
-                let msg = match item {
-                    Ok(m) => m,
-                    Err(_) => break,
-                };
-                match msg {
-                    Message::Text(txt) => {
-                        let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else {
-                            continue;
-                        };
-                        match v["type"].as_str() {
-                            Some("hello") => {
-                                let _ = to_host.send(Message::Text(lan_proto::list_panes()));
-                            }
-                            Some("panes") => {
-                                let first = v["panes"]
-                                    .as_array()
-                                    .and_then(|a| a.first())
-                                    .and_then(|p| p["id"].as_str())
-                                    .map(String::from);
-                                match first {
-                                    Some(pid) => subscribe(&to_host, &pane, &last_size, &seq, pid),
-                                    None => {
-                                        let _ =
-                                            to_host.send(Message::Text(lan_proto::create_pane()));
-                                    }
-                                }
-                            }
-                            Some("create-pane-result") => {
-                                if v["success"].as_bool() == Some(true) {
-                                    if let Some(pid) = v["paneId"].as_str() {
-                                        subscribe(
-                                            &to_host,
-                                            &pane,
-                                            &last_size,
-                                            &seq,
-                                            pid.to_string(),
-                                        );
-                                    }
-                                }
-                            }
-                            // pong / pty-meta / pty-resized / event / theme / error：信息帧，忽略。
-                            _ => {}
-                        }
-                    }
-                    Message::Binary(buf) => {
-                        if let Some(frame) = parse_binary_frame(&buf) {
-                            // 单 pane 控制端：只转发已订阅 pane 的字节（订阅前的极少数帧放行）。
-                            let want = pane.lock().clone();
-                            if want.is_none() || want.as_deref() == Some(frame.pane_id.as_str()) {
-                                if out_tx.send(frame.bytes).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    Message::Ping(p) => {
-                        let _ = to_host.send(Message::Pong(p));
-                    }
-                    Message::Close(_) => break,
-                    _ => {}
-                }
-            }
-            // 读任务结束 → out_tx 落出作用域 → 输出通道关闭 → run_session 主循环退出。
-        });
-    }
+    spawn_lan_writer(sink, to_host_rx);
+    spawn_lan_reader(
+        read,
+        to_host_tx.clone(),
+        pane.clone(),
+        last_size.clone(),
+        seq.clone(),
+        out_tx,
+    );
 
     Ok((
         LanControllerSession {
@@ -292,4 +202,155 @@ pub async fn connect_lan(
         },
         out_rx,
     ))
+}
+
+async fn connect_lan_stream(hostport: &str, query: &str) -> Result<LanWsStream> {
+    let wss = format!("wss://{hostport}/ws?{query}&device=rdg-cli");
+    let connector = tls_connector()?;
+    let request = wss
+        .as_str()
+        .into_client_request()
+        .context("构造 WS 请求失败")?;
+    match connect_async_tls_with_config(request, None, false, Some(connector)).await {
+        Ok((stream, _)) => Ok(stream),
+        Err(error) => {
+            tracing::warn!(target: "ridge_cli", error = %error, "wss 连接失败，回退明文 ws");
+            let plain = format!("ws://{hostport}/ws?{query}&device=rdg-cli");
+            let request = plain
+                .as_str()
+                .into_client_request()
+                .context("构造 WS 请求失败")?;
+            let (stream, _) = connect_async(request).await.context("ws 连接失败")?;
+            Ok(stream)
+        }
+    }
+}
+
+fn spawn_lan_writer(
+    mut sink: SplitSink<LanWsStream, Message>,
+    mut messages: mpsc::UnboundedReceiver<Message>,
+) {
+    tokio::spawn(async move {
+        while let Some(message) = messages.recv().await {
+            if sink.send(message).await.is_err() {
+                break;
+            }
+        }
+        let _ = sink.close().await;
+    });
+}
+
+fn spawn_lan_reader(
+    mut read: SplitStream<LanWsStream>,
+    to_host: mpsc::UnboundedSender<Message>,
+    pane: Arc<Mutex<Option<String>>>,
+    last_size: Arc<Mutex<(u16, u16)>>,
+    seq: Arc<AtomicU64>,
+    out_tx: mpsc::Sender<Vec<u8>>,
+) {
+    tokio::spawn(async move {
+        while let Some(item) = read.next().await {
+            let Ok(message) = item else {
+                break;
+            };
+            if !handle_lan_message(message, &to_host, &pane, &last_size, &seq, &out_tx).await {
+                break;
+            }
+        }
+    });
+}
+
+async fn handle_lan_message(
+    message: Message,
+    to_host: &mpsc::UnboundedSender<Message>,
+    pane: &Arc<Mutex<Option<String>>>,
+    last_size: &Arc<Mutex<(u16, u16)>>,
+    seq: &Arc<AtomicU64>,
+    out_tx: &mpsc::Sender<Vec<u8>>,
+) -> bool {
+    match message {
+        Message::Text(text) => {
+            handle_lan_text(&text, to_host, pane, last_size, seq);
+            true
+        }
+        Message::Binary(buffer) => handle_lan_binary(&buffer, pane, out_tx).await,
+        Message::Ping(payload) => {
+            let _ = to_host.send(Message::Pong(payload));
+            true
+        }
+        Message::Close(_) => false,
+        _ => true,
+    }
+}
+
+fn handle_lan_text(
+    text: &str,
+    to_host: &mpsc::UnboundedSender<Message>,
+    pane: &Arc<Mutex<Option<String>>>,
+    last_size: &Arc<Mutex<(u16, u16)>>,
+    seq: &Arc<AtomicU64>,
+) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    match value["type"].as_str() {
+        Some("hello") => {
+            let _ = to_host.send(Message::Text(lan_proto::list_panes()));
+        }
+        Some("panes") => handle_panes_frame(&value, to_host, pane, last_size, seq),
+        Some("create-pane-result") => {
+            handle_create_pane_frame(&value, to_host, pane, last_size, seq)
+        }
+        _ => {}
+    }
+}
+
+fn handle_panes_frame(
+    value: &serde_json::Value,
+    to_host: &mpsc::UnboundedSender<Message>,
+    pane: &Arc<Mutex<Option<String>>>,
+    last_size: &Arc<Mutex<(u16, u16)>>,
+    seq: &Arc<AtomicU64>,
+) {
+    let first = value["panes"]
+        .as_array()
+        .and_then(|panes| panes.first())
+        .and_then(|pane| pane["id"].as_str())
+        .map(String::from);
+    match first {
+        Some(pane_id) => subscribe(to_host, pane, last_size, seq, pane_id),
+        None => {
+            let _ = to_host.send(Message::Text(lan_proto::create_pane()));
+        }
+    }
+}
+
+fn handle_create_pane_frame(
+    value: &serde_json::Value,
+    to_host: &mpsc::UnboundedSender<Message>,
+    pane: &Arc<Mutex<Option<String>>>,
+    last_size: &Arc<Mutex<(u16, u16)>>,
+    seq: &Arc<AtomicU64>,
+) {
+    if value["success"].as_bool() != Some(true) {
+        return;
+    }
+    if let Some(pane_id) = value["paneId"].as_str() {
+        subscribe(to_host, pane, last_size, seq, pane_id.to_string());
+    }
+}
+
+async fn handle_lan_binary(
+    buffer: &[u8],
+    pane: &Arc<Mutex<Option<String>>>,
+    out_tx: &mpsc::Sender<Vec<u8>>,
+) -> bool {
+    let Some(frame) = parse_binary_frame(buffer) else {
+        return true;
+    };
+    let wanted = pane.lock().clone();
+    if wanted.is_some() && wanted.as_deref() != Some(frame.pane_id.as_str()) {
+        return true;
+    }
+    out_tx.send(frame.bytes).await.is_ok()
 }

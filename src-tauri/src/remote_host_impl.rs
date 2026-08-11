@@ -25,6 +25,7 @@ use ridge_remote::auth::{RemoteAuth, ThrottleDecision};
 use ridge_remote::host::{HostAuth, HostError, HostMeta, RemoteHost, WorkspaceProvider, WsConn};
 use ridge_remote::serve::UaServeConfig;
 
+use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
 use crate::state::{AppState, RemotePaneSub, RemoteSubId};
 
 type ScheduledPtyEvent = (bool, crate::types::RemotePtyEvent);
@@ -722,6 +723,31 @@ fn broadcast_invoke_resize(
     );
 }
 
+fn spawn_ws_writer<S>(
+    socket_tx: S,
+    high_tx_rx: mpsc::Receiver<Message>,
+    low_tx_rx: mpsc::Receiver<Message>,
+) where
+    S: futures::Sink<Message> + Unpin + Send + 'static,
+    S::Error: Send + 'static,
+{
+    use futures::SinkExt;
+    tokio::spawn(async move {
+        let mut socket_tx = socket_tx;
+        let mut high_tx_rx = high_tx_rx;
+        let mut low_tx_rx = low_tx_rx;
+        while let Some(message) = tokio::select! {
+            biased;
+            message = high_tx_rx.recv() => message,
+            message = low_tx_rx.recv() => message,
+        } {
+            if socket_tx.send(message).await.is_err() {
+                break;
+            }
+        }
+    });
+}
+
 async fn handle_ws(
     socket: WebSocket,
     state: AppState,
@@ -732,28 +758,16 @@ async fn handle_ws(
     // 闭包后透传进来，用于在本任务开头打印 upgrade 段耗时。
     upgrade_start: Instant,
 ) {
-    use futures::{SinkExt, StreamExt};
-    let (mut socket_tx, mut ws_rx) = socket.split();
+    use futures::StreamExt;
+    let (socket_tx, mut ws_rx) = socket.split();
     // The reader never owns the WebSocket sink. A slow client therefore cannot
     // suspend stdin/control handling while a scrollback frame is in flight.
     // High is control + active raw; low is background raw + scrollback. The
     // writer re-checks high before every low frame.
     let writer_cap = ridge_remote::pane::RAW_CHAN_CAP;
-    let (ws_tx, mut high_tx_rx) = mpsc::channel::<Message>(writer_cap);
-    let (low_tx, mut low_tx_rx) = mpsc::channel::<Message>(writer_cap);
-    tokio::spawn(async move {
-        loop {
-            let next = tokio::select! {
-                biased;
-                message = high_tx_rx.recv() => message,
-                message = low_tx_rx.recv() => message,
-            };
-            let Some(message) = next else { return };
-            if socket_tx.send(message).await.is_err() {
-                return;
-            }
-        }
-    });
+    let (ws_tx, high_tx_rx) = mpsc::channel::<Message>(writer_cap);
+    let (low_tx, low_tx_rx) = mpsc::channel::<Message>(writer_cap);
+    spawn_ws_writer(socket_tx, high_tx_rx, low_tx_rx);
 
     // Register this client in the remote client registry so the desktop
     // RemotePanel can list, disconnect, or blacklist it.
@@ -2769,6 +2783,72 @@ fn is_mutating_invoke(cmd: &str) -> bool {
         )
 }
 
+fn s(v: &serde_json::Value, k: &str) -> String {
+    v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+}
+
+fn opt_s(v: &serde_json::Value, k: &str) -> Option<String> {
+    v.get(k).and_then(|x| x.as_str()).map(String::from)
+}
+
+fn usize_opt(v: &serde_json::Value, k: &str) -> Option<usize> {
+    v.get(k).and_then(|x| x.as_u64()).map(|n| n as usize)
+}
+
+fn usize_arg(v: &serde_json::Value, k: &str) -> usize {
+    v.get(k).and_then(|x| x.as_u64()).unwrap_or(0) as usize
+}
+
+fn u16_opt(v: &serde_json::Value, k: &str) -> Option<u16> {
+    v.get(k).and_then(|x| x.as_u64()).map(|n| n as u16)
+}
+
+fn u16_arg(v: &serde_json::Value, k: &str) -> u16 {
+    v.get(k).and_then(|x| x.as_u64()).unwrap_or(0) as u16
+}
+
+fn u32_arg(v: &serde_json::Value, k: &str) -> u32 {
+    v.get(k).and_then(|x| x.as_u64()).unwrap_or(0) as u32
+}
+
+fn bool_opt(v: &serde_json::Value, k: &str) -> Option<bool> {
+    v.get(k).and_then(|x| x.as_bool())
+}
+
+fn vec_s(v: &serde_json::Value, k: &str) -> Vec<String> {
+    v.get(k)
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn from_arg<T: serde::de::DeserializeOwned>(v: &serde_json::Value, k: &str) -> Result<T, String> {
+    serde_json::from_value(v.get(k).cloned().unwrap_or(serde_json::Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+fn val<T: Serialize>(r: Result<T, String>) -> serde_json::Value {
+    match r {
+        Ok(v) => serde_json::json!({ "_result": v }),
+        Err(e) => serde_json::json!({ "_error": e }),
+    }
+}
+
+fn unit(r: Result<(), String>) -> serde_json::Value {
+    match r {
+        Ok(()) => serde_json::json!({ "_result": null }),
+        Err(e) => serde_json::json!({ "_error": e }),
+    }
+}
+
+fn plain<T: Serialize>(v: T) -> serde_json::Value {
+    serde_json::json!({ "_result": v })
+}
+
 /// Dispatches one browser `invoke-request` to the matching desktop command. The
 /// real `#[tauri::command]` functions are called directly with a `State` /
 /// `AppHandle` derived from the process-stashed handle (`AppState.app_handle`),
@@ -2778,119 +2858,13 @@ fn is_mutating_invoke(cmd: &str) -> bool {
 /// `disconnect_session` / blacklist are remote-admin; `enter_deep_root_mode` /
 /// `set_cloud_remote_active` is host-only) — return
 /// an error and never reach a handler.
-async fn dispatch_invoke_request(
+async fn dispatch_invoke_filesystem(
     cmd: &str,
     args: &serde_json::Value,
     state: &AppState,
+    handle: &tauri::AppHandle,
 ) -> serde_json::Value {
-    use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
     use tauri::Manager;
-
-    // §audit: record every remote mutation so a trust-but-verify operator has a
-    // trail. (Remote sessions are always read-write — there is no read-only mode.)
-    if is_mutating_invoke(cmd) {
-        tracing::info!(target: "ridge::remote::fs", cmd, "remote mutating invoke");
-    }
-    // §traversal guard: reject `..` in any path-bearing field.
-    for key in ["path", "from", "to", "repoRoot", "root", "cwd"] {
-        if let Some(v) = args.get(key).and_then(|x| x.as_str()) {
-            if path_has_traversal(v) {
-                return serde_json::json!({ "_error": "path traversal rejected" });
-            }
-        }
-    }
-    if let Some(arr) = args.get("paths").and_then(|x| x.as_array()) {
-        if arr
-            .iter()
-            .filter_map(|x| x.as_str())
-            .any(path_has_traversal)
-        {
-            return serde_json::json!({ "_error": "path traversal rejected" });
-        }
-    }
-
-    // ── arg extractors (frontend sends Tauri-style camelCase keys) ──
-    fn s(v: &serde_json::Value, k: &str) -> String {
-        v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
-    }
-    fn opt_s(v: &serde_json::Value, k: &str) -> Option<String> {
-        v.get(k).and_then(|x| x.as_str()).map(String::from)
-    }
-    fn usize_opt(v: &serde_json::Value, k: &str) -> Option<usize> {
-        v.get(k).and_then(|x| x.as_u64()).map(|n| n as usize)
-    }
-    fn usize_arg(v: &serde_json::Value, k: &str) -> usize {
-        v.get(k).and_then(|x| x.as_u64()).unwrap_or(0) as usize
-    }
-    fn u16_opt(v: &serde_json::Value, k: &str) -> Option<u16> {
-        v.get(k).and_then(|x| x.as_u64()).map(|n| n as u16)
-    }
-    fn u16_arg(v: &serde_json::Value, k: &str) -> u16 {
-        v.get(k).and_then(|x| x.as_u64()).unwrap_or(0) as u16
-    }
-    fn u32_arg(v: &serde_json::Value, k: &str) -> u32 {
-        v.get(k).and_then(|x| x.as_u64()).unwrap_or(0) as u32
-    }
-    fn bool_opt(v: &serde_json::Value, k: &str) -> Option<bool> {
-        v.get(k).and_then(|x| x.as_bool())
-    }
-    fn vec_s(v: &serde_json::Value, k: &str) -> Vec<String> {
-        v.get(k)
-            .and_then(|x| x.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-    fn from_arg<T: serde::de::DeserializeOwned>(
-        v: &serde_json::Value,
-        k: &str,
-    ) -> Result<T, String> {
-        serde_json::from_value(v.get(k).cloned().unwrap_or(serde_json::Value::Null))
-            .map_err(|e| e.to_string())
-    }
-    fn val<T: Serialize>(r: Result<T, String>) -> serde_json::Value {
-        match r {
-            Ok(v) => serde_json::json!({ "_result": v }),
-            Err(e) => serde_json::json!({ "_error": e }),
-        }
-    }
-    fn unit(r: Result<(), String>) -> serde_json::Value {
-        match r {
-            Ok(()) => serde_json::json!({ "_result": null }),
-            Err(e) => serde_json::json!({ "_error": e }),
-        }
-    }
-    fn plain<T: Serialize>(v: T) -> serde_json::Value {
-        serde_json::json!({ "_result": v })
-    }
-    // S1: map a `ridge_core::dispatch` result onto the legacy WS envelope.
-    // `Ok(value)` → `{ "_result": value }`; `Err(core_err)` → `{ "_error":
-    // message }` (the same human string the legacy handlers produced). The
-    // structured JSON-RPC `{code,message,data}` object is reserved for the
-    // JSON-RPC leg.
-    //
-    // §S3 (D-GM-2 resolved): the JSON-RPC leg now transmits the FULL structured
-    // error. `dispatch_invoke_jsonrpc` calls `CoreError::to_json_rpc()` for
-    // migrated core methods, so capability_denied=1001 / read_only=1002 /
-    // path_traversal=1003 / … reach the client intact (asserted by the S7
-    // conformance suite). This LEGACY leg stays message-only on purpose: old
-    // browser Remote clients consume the bare `_error` string and
-    // must not change. Paired anchor: `lanWsAdapter.handleInbound`.
-    // Most commands need a real Tauri context. The stashed handle gives us both
-    // a managed `State<AppState>` (same Arcs as `state`) and an `AppHandle`.
-    let handle = match state.app_handle.get() {
-        Some(h) => h.clone(),
-        None => return serde_json::json!({ "_error": "host application handle not ready" }),
-    };
-    // `handle.state::<AppState>()` panics if AppState isn't managed; guard once so
-    // a misconfigured host degrades to an error instead of aborting the WS task.
-    if handle.try_state::<AppState>().is_none() {
-        return serde_json::json!({ "_error": "host application state unavailable" });
-    }
-
     match cmd {
         // ── Filesystem (read-only: S5 migrated into ridge-core) ──
         // `get_file_tree` / `get_directory_children` / `path_exists` /
@@ -2935,6 +2909,19 @@ async fn dispatch_invoke_request(
             watch::start_watching_repos(vec_s(args, "roots"), handle.clone(), handle.state()).await,
         ),
 
+        _ => unreachable!("unmatched remote invoke command"),
+    }
+}
+
+async fn dispatch_invoke_pane(
+    cmd: &str,
+    args: &serde_json::Value,
+    state: &AppState,
+    handle: &tauri::AppHandle,
+) -> serde_json::Value {
+    use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
+    use tauri::Manager;
+    match cmd {
         // ── Pane / terminal ──
         "get_pane_layout" => val(pane::get_pane_layout(handle.state())),
         "get_pane_layout_for" => val(pane::get_pane_layout_for(
@@ -3036,6 +3023,19 @@ async fn dispatch_invoke_request(
         "detect_available_shells" => plain(terminal::detect_available_shells().await),
         "get_shell_history" => val(terminal::get_shell_history(s(args, "shellKind")).await),
 
+        _ => unreachable!("unmatched remote invoke command"),
+    }
+}
+
+async fn dispatch_invoke_native(
+    cmd: &str,
+    args: &serde_json::Value,
+    state: &AppState,
+    handle: &tauri::AppHandle,
+) -> serde_json::Value {
+    use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
+    use tauri::Manager;
+    match cmd {
         // ── Native (headless) tmux session discovery ──
         // `list` is read-only; `summon` adopts a headless session into the
         // caller's viewed workspace (`workspaceId` from the remote client; the
@@ -3061,6 +3061,19 @@ async fn dispatch_invoke_request(
             s(args, "target"),
         )),
 
+        _ => unreachable!("unmatched remote invoke command"),
+    }
+}
+
+async fn dispatch_invoke_workspace(
+    cmd: &str,
+    args: &serde_json::Value,
+    state: &AppState,
+    handle: &tauri::AppHandle,
+) -> serde_json::Value {
+    use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
+    use tauri::Manager;
+    match cmd {
         // ── Workspace (live) ──
         // `list_workspaces` is read-only and required by the desktop SPA
         // controller's boot (`refreshWorkspaces`): without it the web-remote
@@ -3137,6 +3150,19 @@ async fn dispatch_invoke_request(
         "get_startup_context" => val(ridge_file::get_startup_context(handle.state())),
         "browse_directory" => val(ridge_file::browse_directory(opt_s(args, "path"))),
 
+        _ => unreachable!("unmatched remote invoke command"),
+    }
+}
+
+async fn dispatch_invoke_teammate(
+    cmd: &str,
+    args: &serde_json::Value,
+    state: &AppState,
+    handle: &tauri::AppHandle,
+) -> serde_json::Value {
+    use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
+    use tauri::Manager;
+    match cmd {
         // ── Teammate（P1 控制台 MVP）──
         // 只读 roster 快照，与桌面 Agent Center 同一投影（无 MCP endpoint/token）。
         // HITL 裁决与 Agent 配置写路径刻意不路由（P2 前不入 allowlist）。
@@ -3249,6 +3275,19 @@ async fn dispatch_invoke_request(
             .await,
         ),
 
+        _ => unreachable!("unmatched remote invoke command"),
+    }
+}
+
+async fn dispatch_invoke_theme(
+    cmd: &str,
+    args: &serde_json::Value,
+    state: &AppState,
+    handle: &tauri::AppHandle,
+) -> serde_json::Value {
+    use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
+    use tauri::Manager;
+    match cmd {
         // ── Theme / settings (S1: migrated into ridge-core) ──
         // These three handlers now live in `ridge_core`; route them through
         // the unified `ridge_core::dispatch` so the LAN host shares the exact
@@ -3284,6 +3323,19 @@ async fn dispatch_invoke_request(
         )
         .await),
 
+        _ => unreachable!("unmatched remote invoke command"),
+    }
+}
+
+async fn dispatch_invoke_git_read(
+    cmd: &str,
+    args: &serde_json::Value,
+    state: &AppState,
+    handle: &tauri::AppHandle,
+) -> serde_json::Value {
+    use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
+    use tauri::Manager;
+    match cmd {
         // ── Git (read) ──
         "find_git_repo_root" => plain(git::find_git_repo_root(s(args, "path"))),
         "find_git_repos_below" => {
@@ -3321,6 +3373,19 @@ async fn dispatch_invoke_request(
         "git_op_in_progress" => plain(git::git_op_in_progress(s(args, "repoRoot"))),
         "git_fetch" => unit(git::git_fetch(s(args, "repoRoot")).await),
 
+        _ => unreachable!("unmatched remote invoke command"),
+    }
+}
+
+async fn dispatch_invoke_git_write(
+    cmd: &str,
+    args: &serde_json::Value,
+    state: &AppState,
+    handle: &tauri::AppHandle,
+) -> serde_json::Value {
+    use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
+    use tauri::Manager;
+    match cmd {
         // ── Git (mutating; mirrors dispatch_data_request) ──
         "git_stage" => unit(git::git_stage(s(args, "repoRoot"), vec_s(args, "paths")).await),
         "git_unstage" => unit(git::git_unstage(s(args, "repoRoot"), vec_s(args, "paths")).await),
@@ -3363,11 +3428,220 @@ async fn dispatch_invoke_request(
             unit(git::git_clean_untracked(s(args, "repoRoot"), Vec::new()).await)
         }
 
-        other => {
-            tracing::warn!(target: "ridge::remote", cmd = %other, "invoke-request: command not in allowlist");
-            serde_json::json!({ "_error": format!("command not available remotely: {}", other) })
+        _ => unreachable!("unmatched remote invoke command"),
+    }
+}
+
+async fn dispatch_invoke_request(
+    cmd: &str,
+    args: &serde_json::Value,
+    state: &AppState,
+) -> serde_json::Value {
+    use crate::commands::{fs_watch, git, pane, project, ridge_file, terminal, watch, workspace};
+    use tauri::Manager;
+
+    // §audit: record every remote mutation so a trust-but-verify operator has a
+    // trail. (Remote sessions are always read-write — there is no read-only mode.)
+    if is_mutating_invoke(cmd) {
+        tracing::info!(target: "ridge::remote::fs", cmd, "remote mutating invoke");
+    }
+    // §traversal guard: reject `..` in any path-bearing field.
+    for key in ["path", "from", "to", "repoRoot", "root", "cwd"] {
+        if let Some(v) = args.get(key).and_then(|x| x.as_str()) {
+            if path_has_traversal(v) {
+                return serde_json::json!({ "_error": "path traversal rejected" });
+            }
         }
     }
+    if let Some(arr) = args.get("paths").and_then(|x| x.as_array()) {
+        if arr
+            .iter()
+            .filter_map(|x| x.as_str())
+            .any(path_has_traversal)
+        {
+            return serde_json::json!({ "_error": "path traversal rejected" });
+        }
+    }
+
+    // S1: map a `ridge_core::dispatch` result onto the legacy WS envelope.
+    // `Ok(value)` → `{ "_result": value }`; `Err(core_err)` → `{ "_error":
+    // message }` (the same human string the legacy handlers produced). The
+    // structured JSON-RPC `{code,message,data}` object is reserved for the
+    // JSON-RPC leg.
+    //
+    // §S3 (D-GM-2 resolved): the JSON-RPC leg now transmits the FULL structured
+    // error. `dispatch_invoke_jsonrpc` calls `CoreError::to_json_rpc()` for
+    // migrated core methods, so capability_denied=1001 / read_only=1002 /
+    // path_traversal=1003 / … reach the client intact (asserted by the S7
+    // conformance suite). This LEGACY leg stays message-only on purpose: old
+    // browser Remote clients consume the bare `_error` string and
+    // must not change. Paired anchor: `lanWsAdapter.handleInbound`.
+    // Most commands need a real Tauri context. The stashed handle gives us both
+    // a managed `State<AppState>` (same Arcs as `state`) and an `AppHandle`.
+    let handle = match state.app_handle.get() {
+        Some(h) => h.clone(),
+        None => return serde_json::json!({ "_error": "host application handle not ready" }),
+    };
+    // `handle.state::<AppState>()` panics if AppState isn't managed; guard once so
+    // a misconfigured host degrades to an error instead of aborting the WS task.
+    if handle.try_state::<AppState>().is_none() {
+        return serde_json::json!({ "_error": "host application state unavailable" });
+    }
+
+    const FILESYSTEM_COMMANDS: &[&str] = &[
+        "get_file_tree",
+        "get_directory_children",
+        "path_exists",
+        "read_file",
+        "read_file_for_editor",
+        "write_file",
+        "apply_file_edits",
+        "rename_path",
+        "delete_path",
+        "create_file",
+        "create_directory",
+        "copy_path",
+        "move_path",
+        "reveal_in_file_manager",
+        "get_current_project",
+        "start_watching_paths",
+        "start_watching_repos",
+    ];
+    const PANE_COMMANDS: &[&str] = &[
+        "get_pane_layout",
+        "get_pane_layout_for",
+        "split_pane",
+        "dock_pane",
+        "close_pane",
+        "toggle_mode",
+        "set_split_ratios_at_path",
+        "set_split_ratios_batch",
+        "create_pane",
+        "activate_pane_pty",
+        "change_pane_shell",
+        "write_to_pty",
+        "resize_pane",
+        "detect_available_shells",
+        "get_shell_history",
+    ];
+    const NATIVE_COMMANDS: &[&str] = &[
+        "list_native_sessions",
+        "summon_native_session",
+        "new_headless_session",
+        "terminate_native_session",
+    ];
+    const WORKSPACE_COMMANDS: &[&str] = &[
+        "list_workspaces",
+        "get_active_workspace_id",
+        "switch_workspace",
+        "create_workspace",
+        "close_workspace",
+        "rename_workspace",
+        "reorder_workspaces",
+        "save_workspace",
+        "list_saved_workspaces",
+        "delete_saved_workspace",
+        "rename_saved_workspace",
+        "list_workspace_save_info",
+        "delete_workspace_file",
+        "get_default_workspace_save_dir",
+        "list_saved_workspace_files",
+        "save_workspace_to_file",
+        "open_workspace_from_file",
+        "get_restore_set",
+        "list_recent_workspaces",
+        "clear_recent_workspaces",
+        "get_last_opened_workspace_path",
+        "get_startup_context",
+        "browse_directory",
+    ];
+    const TEAMMATE_COMMANDS: &[&str] = &[
+        "get_teammate_topology",
+        "list_hitl_pending",
+        "list_hitl_audit_remote",
+        "resolve_hitl_remote",
+        "get_orchestration_health",
+        "resume_agent_session",
+        "read_agent_recent_replies",
+        "set_teammate_groups",
+        "send_agent_message",
+        "register_teammate_agent",
+        "release_teammate_agent",
+    ];
+    const THEME_COMMANDS: &[&str] = &[
+        "get_theme_data",
+        "text_search",
+        "filename_search",
+        "text_search_diagnostics",
+        "replace_in_files",
+    ];
+    const GIT_READ_COMMANDS: &[&str] = &[
+        "find_git_repo_root",
+        "find_git_repos_below",
+        "get_scm_status",
+        "get_git_info_with_cwd",
+        "get_git_commits_paginated",
+        "git_list_branches",
+        "git_diff_summary",
+        "git_stash_list",
+        "git_get_file_versions",
+        "git_get_file_versions_at_commit",
+        "git_op_in_progress",
+        "git_fetch",
+    ];
+    const GIT_WRITE_COMMANDS: &[&str] = &[
+        "git_stage",
+        "git_unstage",
+        "git_commit",
+        "git_pull",
+        "git_push",
+        "git_sync",
+        "git_checkout",
+        "git_revert",
+        "git_cherry_pick",
+        "git_reset",
+        "git_create_tag",
+        "git_discard",
+        "git_clean_untracked",
+    ];
+    if FILESYSTEM_COMMANDS.contains(&cmd) {
+        return dispatch_invoke_filesystem(cmd, args, state, &handle).await;
+    }
+    if PANE_COMMANDS.contains(&cmd) {
+        return dispatch_invoke_pane(cmd, args, state, &handle).await;
+    }
+    if NATIVE_COMMANDS.contains(&cmd) {
+        return dispatch_invoke_native(cmd, args, state, &handle).await;
+    }
+    if WORKSPACE_COMMANDS.contains(&cmd) {
+        return dispatch_invoke_workspace(cmd, args, state, &handle).await;
+    }
+    if TEAMMATE_COMMANDS.contains(&cmd) {
+        if ridge_core::protocol_guard::admit_remote_method(cmd).is_err() {
+            let err = ridge_core::protocol_guard::admit_remote_method(cmd)
+                .err()
+                .unwrap_or_else(|| format!("remote denied: {cmd}"));
+            return val::<()>(Err(err));
+        }
+        return dispatch_invoke_teammate(cmd, args, state, &handle).await;
+    }
+    if THEME_COMMANDS.contains(&cmd) {
+        return dispatch_invoke_theme(cmd, args, state, &handle).await;
+    }
+    if GIT_READ_COMMANDS.contains(&cmd) {
+        return dispatch_invoke_git_read(cmd, args, state, &handle).await;
+    }
+    if GIT_WRITE_COMMANDS.contains(&cmd) {
+        return dispatch_invoke_git_write(cmd, args, state, &handle).await;
+    }
+    if ridge_core::protocol_guard::admit_remote_method(cmd).is_err() {
+        let err = ridge_core::protocol_guard::admit_remote_method(cmd)
+            .err()
+            .unwrap_or_else(|| format!("remote denied: {cmd}"));
+        return val::<()>(Err(err));
+    }
+    tracing::warn!(target: "ridge::remote", cmd, "invoke-request: command not in allowlist");
+    serde_json::json!({ "_error": format!("command not available remotely: {}", cmd) })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
