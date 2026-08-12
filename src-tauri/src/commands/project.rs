@@ -2,7 +2,7 @@ use crate::fs::{DirectoryPage, FileNode, ReplaceStats, SearchResult};
 use crate::state::AppState;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -789,7 +789,9 @@ pub struct AgentRecentReply {
     pub resume: Option<AgentResumeSpec>,
 }
 
-/// Read one latest-assistant row per native Claude Code / Codex session.
+/// Read one latest-assistant row per supported local Agent session.
+/// Native Claude Code/Codex JSONL and Cursor Agent transcript JSONL use
+/// bounded discovery plus prefix/tail reads; Grok has its own session adapter.
 /// Files are bounded newest-first and only their metadata prefix + tail are read.
 #[tauri::command]
 pub async fn read_agent_recent_replies(
@@ -806,34 +808,69 @@ pub async fn read_agent_recent_replies(
     .unwrap_or_default()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentHistoryFileKind {
+    NativeJsonl,
+    CursorTranscript,
+}
+
 fn read_agent_recent_replies_sync(
     home: &Path,
     project_paths: Vec<String>,
     limit: usize,
 ) -> Vec<AgentRecentReply> {
     let filters = normalized_paths(&project_paths);
-    let roots = [
-        ("Claude", home.join(".claude").join("projects")),
-        ("Codex", home.join(".codex").join("sessions")),
+    let sources = [
+        (
+            "Claude",
+            home.join(".claude").join("projects"),
+            AgentHistoryFileKind::NativeJsonl,
+        ),
+        (
+            "Codex",
+            home.join(".codex").join("sessions"),
+            AgentHistoryFileKind::NativeJsonl,
+        ),
+        (
+            "Cursor Agent",
+            home.join(".cursor").join("projects"),
+            AgentHistoryFileKind::CursorTranscript,
+        ),
     ];
     // Keep one bounded discovery pass per source. A busy Claude tree must not
-    // consume the shared cap and hide every Codex session before sorting.
+    // consume the shared cap and hide Codex or Cursor history before sorting.
     let mut files = Vec::new();
-    for (agent, root) in roots {
+    for (agent, root, kind) in sources {
         let mut source_files = Vec::new();
-        collect_jsonl_files(&root, agent, 0, &mut source_files);
+        match kind {
+            AgentHistoryFileKind::NativeJsonl => {
+                collect_jsonl_files(&root, agent, 0, &mut source_files);
+            }
+            AgentHistoryFileKind::CursorTranscript => {
+                collect_cursor_transcript_files(&root, agent, 0, &mut source_files);
+            }
+        }
         source_files.sort_by(|a, b| b.2.cmp(&a.2));
         source_files.truncate(200);
-        files.extend(source_files);
+        files.extend(
+            source_files
+                .into_iter()
+                .map(|(source, path, modified)| (source, path, modified, kind)),
+        );
     }
     files.sort_by(|a, b| b.2.cmp(&a.2));
 
     let mut sessions: HashMap<(String, String), AgentRecentReply> = HashMap::new();
-    for (agent, path, modified) in files {
+    for (agent, path, modified, kind) in files {
         let Ok(content) = read_jsonl_window(&path) else {
             continue;
         };
-        for session in parse_agent_jsonl(agent, &content, modified) {
+        let fallback_session = (kind == AgentHistoryFileKind::CursorTranscript)
+            .then(|| cursor_session_id(&path))
+            .flatten();
+        for session in
+            parse_agent_jsonl_with_fallback(agent, &content, modified, fallback_session.as_deref())
+        {
             let key = (
                 session.agent.to_ascii_lowercase(),
                 session.session_id.clone(),
@@ -870,10 +907,43 @@ fn read_agent_recent_replies_sync(
     // `usize::MAX` is an internal exact-session lookup sentinel.  UI callers
     // remain capped at 100; the resume authority must not reject an older
     // valid session merely because it fell outside that presentation window.
-    if limit != usize::MAX {
-        replies.truncate(limit.min(100));
+    limit_history_replies(replies, limit)
+}
+
+fn limit_history_replies(replies: Vec<AgentRecentReply>, limit: usize) -> Vec<AgentRecentReply> {
+    if limit == usize::MAX || replies.len() <= limit.min(100) {
+        return replies;
     }
-    replies
+    let limit = limit.min(100);
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    // Reserve one latest row per agent source before filling the remaining slots by
+    // recency. This keeps a busy Claude tree from hiding an older Codex row in
+    // the 24-item Agent Center projection.
+    let mut selected = Vec::with_capacity(limit);
+    let mut seen_agents = HashSet::new();
+    for reply in &replies {
+        if seen_agents.insert(reply.agent.to_ascii_lowercase()) {
+            selected.push(reply.clone());
+            if selected.len() == limit {
+                return selected;
+            }
+        }
+    }
+    for reply in replies {
+        if selected.len() == limit {
+            break;
+        }
+        if !selected.iter().any(|item| {
+            item.agent.eq_ignore_ascii_case(&reply.agent) && item.session_id == reply.session_id
+        }) {
+            selected.push(reply);
+        }
+    }
+    selected.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    selected
 }
 
 /// Resolve the host-owned CWD for one recorded Agent session.
@@ -1095,6 +1165,56 @@ fn collect_jsonl_files(
     }
 }
 
+/// Cursor stores Agent transcripts below `projects/**/agent-transcripts`.
+/// Restrict discovery to that directory name so MCP metadata and project
+/// settings JSONL do not become fake Agent history rows.
+fn collect_cursor_transcript_files(
+    dir: &Path,
+    agent: &'static str,
+    depth: usize,
+    out: &mut Vec<(&'static str, PathBuf, u64)>,
+) {
+    if depth > 10 || out.len() >= 400 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.file_name().and_then(|name| name.to_str()) == Some("agent-transcripts") {
+            collect_jsonl_files(&path, agent, 0, out);
+        } else {
+            collect_cursor_transcript_files(&path, agent, depth + 1, out);
+        }
+        if out.len() >= 400 {
+            break;
+        }
+    }
+}
+
+fn cursor_session_id(path: &Path) -> Option<String> {
+    let parent = path.parent()?;
+    let parent_name = parent.file_name().and_then(|name| name.to_str())?;
+    if parent_name.eq_ignore_ascii_case("agent-transcripts")
+        || parent
+            .parent()
+            .and_then(|dir| dir.file_name())
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("agent-transcripts"))
+    {
+        path.file_stem()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.trim().is_empty())
+            .map(str::to_string)
+    } else {
+        Some(parent_name.to_string())
+    }
+}
+
 fn read_jsonl_window(path: &Path) -> std::io::Result<String> {
     const PREFIX: u64 = 64 * 1024;
     const TAIL: u64 = 1024 * 1024;
@@ -1143,8 +1263,11 @@ fn agent_session_meta(value: &serde_json::Value) -> Option<(String, Option<Strin
 
 fn assistant_message(value: &serde_json::Value) -> Option<&serde_json::Value> {
     match value.get("type").and_then(|item| item.as_str()) {
-        Some("assistant") => Some(&value["message"]),
+        Some("assistant") => value.get("message"),
         Some("response_item") => Some(&value["payload"]),
+        _ if value.get("role").and_then(|item| item.as_str()) == Some("assistant") => {
+            Some(value.get("message").unwrap_or(value))
+        }
         _ => None,
     }
 }
@@ -1158,7 +1281,11 @@ fn parse_agent_reply(
     session_title: &str,
     fallback_timestamp: u64,
 ) -> Option<(String, AgentRecentReply)> {
-    if message.get("role").and_then(|item| item.as_str()) != Some("assistant") {
+    if message
+        .get("role")
+        .and_then(|item| item.as_str())
+        .is_some_and(|role| role != "assistant")
+    {
         return None;
     }
     let text = extract_message_text(message.get("content"))?;
@@ -1225,8 +1352,19 @@ fn parse_agent_reply(
 }
 
 fn parse_agent_jsonl(agent: &str, content: &str, fallback_timestamp: u64) -> Vec<AgentRecentReply> {
+    parse_agent_jsonl_with_fallback(agent, content, fallback_timestamp, None)
+}
+
+fn parse_agent_jsonl_with_fallback(
+    agent: &str,
+    content: &str,
+    fallback_timestamp: u64,
+    fallback_session_id: Option<&str>,
+) -> Vec<AgentRecentReply> {
     let mut project = String::new();
-    let mut session_id = None;
+    let mut session_id = fallback_session_id
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_string);
     let mut session_title = String::new();
     let mut sessions: HashMap<String, AgentRecentReply> = HashMap::new();
 
@@ -1604,6 +1742,98 @@ mod tests {
         let filtered = read_agent_recent_replies_sync(&td.path, vec!["d:/two/project".into()], 40);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].agent, "Codex");
+    }
+
+    #[test]
+    fn parses_cursor_agent_transcript_with_directory_session_fallback() {
+        let replies = parse_agent_jsonl_with_fallback(
+            "Cursor Agent",
+            r#"{"role":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"from Cursor"}]}}"#,
+            42,
+            Some("cursor-session-1"),
+        );
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].agent, "Cursor Agent");
+        assert_eq!(replies[0].session_id, "cursor-session-1");
+        assert_eq!(replies[0].text, "from Cursor");
+        assert_eq!(replies[0].timestamp, 42);
+        assert!(replies[0].resume.is_none());
+    }
+
+    #[test]
+    fn history_scan_discovers_cursor_agent_transcripts() {
+        let td = TempDir::new("cursor-agent-history");
+        let transcript = td.join(
+            ".cursor/projects/c-code-wind-wind-code-workspace/agent-transcripts/cursor-1/cursor-1.jsonl",
+        );
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(
+            &transcript,
+            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"cursor output"}]}}"#,
+        )
+        .unwrap();
+
+        let replies = read_agent_recent_replies_sync(&td.path, Vec::new(), 40);
+        let cursor = replies
+            .iter()
+            .find(|reply| reply.agent == "Cursor Agent")
+            .expect("Cursor Agent history");
+        assert_eq!(cursor.session_id, "cursor-1");
+        assert_eq!(cursor.text, "cursor output");
+        assert!(cursor.resume.is_none());
+    }
+
+    #[test]
+    fn cursor_session_id_uses_transcript_directory_or_file_stem() {
+        assert_eq!(
+            cursor_session_id(Path::new("projects/p/agent-transcripts/s-1/s-1.jsonl")),
+            Some("s-1".into())
+        );
+        assert_eq!(
+            cursor_session_id(Path::new("projects/p/agent-transcripts/s-2.jsonl")),
+            Some("s-2".into())
+        );
+    }
+
+    #[test]
+    fn history_limit_reserves_latest_row_for_each_source() {
+        let replies = vec![
+            AgentRecentReply {
+                agent: "Claude".into(),
+                title: "claude".into(),
+                text: "claude".into(),
+                timestamp: 300,
+                cwd: String::new(),
+                session_id: "claude-1".into(),
+                resume: None,
+            },
+            AgentRecentReply {
+                agent: "Codex".into(),
+                title: "codex".into(),
+                text: "codex".into(),
+                timestamp: 200,
+                cwd: String::new(),
+                session_id: "codex-1".into(),
+                resume: None,
+            },
+            AgentRecentReply {
+                agent: "Cursor Agent".into(),
+                title: "cursor".into(),
+                text: "cursor".into(),
+                timestamp: 100,
+                cwd: String::new(),
+                session_id: "cursor-1".into(),
+                resume: None,
+            },
+        ];
+        let limited = limit_history_replies(replies, 3);
+        assert_eq!(
+            limited
+                .iter()
+                .map(|reply| reply.agent.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Claude", "Codex", "Cursor Agent"]
+        );
     }
 
     /// 本机若存在 Codex/Grok 会话目录，则真实扫描路径须解析出非空条目（非 fixture）。
