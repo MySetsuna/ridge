@@ -88,10 +88,14 @@ describe('build-ridge pure build contract', () => {
       },
     }));
     await expect(spawnTauriBuild('override.json', ['--debug'])).resolves.toBeUndefined();
+    const expectedBinary = process.platform === 'win32' ? 'tauri.cmd' : 'tauri';
     expect(childProcess.spawn).toHaveBeenCalledWith(
-      expect.stringContaining('tauri.cmd'),
+      expect.stringContaining(expectedBinary),
       ['build', '--config', 'override.json', '--debug'],
-      expect.objectContaining({ shell: true, env: expect.objectContaining({ RIDGE_BUILD_SKIP: '1' }) }),
+      expect.objectContaining({
+        shell: process.platform === 'win32',
+        env: expect.objectContaining({ RIDGE_BUILD_SKIP: '1' }),
+      }),
     );
 
     childProcess.spawn.mockImplementationOnce(() => ({

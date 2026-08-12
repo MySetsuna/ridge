@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { validateBuildArtifacts } from './build-validate.mjs';
 import { validateDesktopOnlyHosts } from './check-desktop-only-hosts.mjs';
@@ -28,7 +30,7 @@ const quietIo = () => ({ log: vi.fn(), error: vi.fn(), warn: vi.fn() });
 
 describe('build and capability validation helpers', () => {
   it('accepts a complete build fixture and rejects malformed artifacts', () => {
-    const root = 'C:/fixture';
+    const root = resolve(tmpdir(), 'ridge-build-fixture').replaceAll('\\', '/');
     const files = new Map([
       [`${root}/build`, 'dir'],
       [`${root}/build/index.html`, '<html data-sveltekit><script>__RIDGE_BOOT_LOADER__ dismissBrandLoader brand-loader</script></html>'],
