@@ -1269,7 +1269,7 @@
 - `REQ-A2A-STANDARD-ADAPTER-01`：本轮落地。`ridge-mcp` 已支持 Agent Card 发现、JSON-RPC A2A 1.0/legacy 0.3 方法映射、SSE、task、push、extended card、tenant、auth、extensions、能力校验与 generation/lease 围栏；Hub 仍为 SSOT。
 - `REQ-A2A-SERVER-INTEROP-01`：继续 `ACTIVE/EXTERNAL`。Ridge 本身尚未发布标准 A2A Agent Card/server endpoint；真实第三方 Agent Card、凭据与远端互操作未在本机可证明。
 - `REQ-RIDGE-MCP-AS-KERNEL-API-01`：本轮保持已落地边界。MCP 继续走 Kernel/Teammate host-owned API 与 Hub 语义路径，不直写 PTY；A2A 仅为外部 adapter。
-- `REQ-SONAR-COVERAGE-80-01`：本轮质量阀已闭环。Sonar CE `SUCCESS`，Quality Gate `OK`，new coverage `84.4%`，new duplication `1.21897%`，new violations `0`；CE task `8e2a4c70-8030-4ee0-83bb-13cb967da8d757`，analysis `73babef4-c944-45ea-a22b-db42977fbad6`。
+- `REQ-SONAR-COVERAGE-80-01`：本轮质量阀已闭环。Sonar CE `SUCCESS`，Quality Gate `OK`，new coverage `84.7%`，new duplication `1.22888%`，new violations `0`；CE task `57a230d7-2fff-4c5a-a906-3161a469b304`，analysis `71790ecc-e5bf-4402-9829-7405cf3c0a2f`。
 - `REQ-PTY-RUNTIME-SNAPSHOT-01`：继续 `ACTIVE/EXTERNAL`；dev:cdp 与 LAN E2E 不能替代生产宿主五条件原子快照、实体设备与真实 Agent CLI 证据。
 - 详见 `docs/iterations/2026-08-12-a2a-standard-closure.md` 与 `docs/iterations/2026-08-12-sonarqube-handoff.md`。
 

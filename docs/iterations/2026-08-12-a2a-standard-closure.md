@@ -91,11 +91,11 @@ SonarQube `http://127.0.0.1:9000` 状态 UP，项目 `MySetsuna_ridge` 最新分
 
 - CE task：`SUCCESS`
 - Quality Gate：`OK`
-- new coverage：`84.4%`（阈值 `80%`）
-- new duplicated lines density：`1.21897%`（阈值 `3%`）
+- new coverage：`84.7%`（阈值 `80%`）
+- new duplicated lines density：`1.22888%`（阈值 `3%`）
 - new violations：`0`
 
-最新 CE task：`8e2a4c70-8030-4ee0-83bb-13cb967da8d757`；analysis：`73babef4-c944-45ea-a22b-db42977fbad6`。
+最新 CE task：`57a230d7-2fff-4c5a-a906-3161a469b304`；analysis：`71790ecc-e5bf-4402-9829-7405cf3c0a2f`。
 
 扫描使用一次性 token；扫描结束后已撤销。密码、Cookie、token 不入库。
 
