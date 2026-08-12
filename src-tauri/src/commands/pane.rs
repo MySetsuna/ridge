@@ -1076,6 +1076,19 @@ pub(crate) async fn remote_close_pane(
         ws.pane_tree.close(pane_id)?;
     }
     crate::commands::ridge_file::schedule_auto_save(state, ws_id);
+    // Keep the structural notification with the authoritative close operation.
+    // Callers include the LAN WS path and teammate MCP; emitting in only one
+    // caller leaves other clients with a stale panes snapshot.
+    let _ = state
+        .remote_structural_tx
+        .send(crate::types::RemoteStructuralEvent::PanesChanged {
+            workspace_id: ws_id,
+        });
+    let _ = state
+        .event_tx
+        .try_send(crate::types::GlobalEvent::PaneTreeChanged {
+            workspace_id: ws_id,
+        });
     Ok(())
 }
 
