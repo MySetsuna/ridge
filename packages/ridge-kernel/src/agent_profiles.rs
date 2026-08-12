@@ -58,8 +58,9 @@ pub fn builtin_profiles() -> Vec<AgentProfile> {
             id: "cursor-agent".into(),
             process_names: vec!["cursor-agent".into()],
             executable: "cursor-agent".into(),
-            // Cursor Agent history/resume format is not present in this
-            // repository; users may provide an explicit local override.
+            // Cursor Agent history is read by the host adapter when its local
+            // `agent-transcripts` JSONL source exists; resume remains disabled
+            // until a stable CLI contract is verified.
             resume_argv: vec![],
             yolo_args: vec![],
             yolo_position: "before".into(),
