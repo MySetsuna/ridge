@@ -1659,12 +1659,6 @@ async fn handle_ws(
                                             current_pane = None;
                                         }
                                     }
-                                    let _ = state.remote_structural_tx.send(
-                                        crate::types::RemoteStructuralEvent::PanesChanged { workspace_id: active_ws_id }
-                                    );
-                                    let _ = state.event_tx.try_send(
-                                        crate::types::GlobalEvent::PaneTreeChanged { workspace_id: active_ws_id }
-                                    );
                                 }
         send
                             }
