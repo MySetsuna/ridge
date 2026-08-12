@@ -30,13 +30,34 @@ function addDirectiveHashes(csp, directive, hashes) {
   return csp.slice(0, start) + replacement + csp.slice(start + match[0].length);
 }
 
-/** @param {string} html @returns {string} */
-export function syncGeneratedCsp(html) {
+/** @param {string} csp @param {string} directive @param {string} token @returns {string} */
+function addDirectiveToken(csp, directive, token, { removeHashes = false } = {}) {
+  const pattern = String.raw`(^|;\s*)${directive}\s+([^;]+)`;
+  const match = new RegExp(pattern).exec(csp);
+  if (!match) return csp;
+  const [, prefix, values] = match;
+  const tokens = new Set(
+    values.split(/\s+/).filter((value) => !(removeHashes && /^'sha256-[^']+'$/.test(value))),
+  );
+  tokens.add(token);
+  const replacement = `${prefix}${directive} ${[...tokens].join(' ')}`;
+  const start = match.index ?? 0;
+  return csp.slice(0, start) + replacement + csp.slice(start + match[0].length);
+}
+
+/** @param {string} html @param {{ allowInlineStyles?: boolean }} [options] @returns {string} */
+export function syncGeneratedCsp(html, options = {}) {
   const match = CSP_META.exec(html);
   if (!match) return html;
   let csp = match[2];
   csp = addDirectiveHashes(csp, 'script-src', inlineHashes(html, 'script'));
   csp = addDirectiveHashes(csp, 'style-src', inlineHashes(html, 'style'));
+  // Vite injects component styles as runtime <style> tags during development;
+  // their contents do not exist when the HTML CSP is generated, so hashes
+  // cannot authorize them. Keep the production policy hash-only.
+  if (options.allowInlineStyles) {
+    csp = addDirectiveToken(csp, 'style-src', "'unsafe-inline'", { removeHashes: true });
+  }
   return html.replace(CSP_META, `$1${csp}$3`);
 }
 
