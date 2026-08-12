@@ -83,6 +83,28 @@ function isMacPlatform(): boolean {
 		&& /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 }
 
+function copySelectionIfPresent(entry: PaneEntry): boolean {
+	const selection = entry.kernel.getSelectionText();
+	if (!selection) return false;
+	if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+		void navigator.clipboard.writeText(selection);
+	}
+	entry.kernel.clearSelection();
+	entry.selecting = false;
+	entry.selectionStartAbs = null;
+	entry.selectionEndAbs = null;
+	return true;
+}
+
+function traceKeydown(entry: PaneEntry, ev: KeyboardEvent, bytes: Uint8Array): void {
+	if (typeof localStorage === 'undefined' || localStorage.getItem('RIDGE_CURSOR_TRACE') !== '1') return;
+	const ts = performance.now().toFixed(1);
+	const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join(' ');
+	const kernel = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
+	// eslint-disable-next-line no-console
+	console.debug(`[cursor-trace][${ts}ms] keydown key=${JSON.stringify(ev.key)} →bytes(${bytes.length})=${hex} kernel-cursor(pre)=(${kernel.cursorRow()},${kernel.cursorCol()})`);
+}
+
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
 //   cell_dev = round(cell_css * dpr)
@@ -3225,16 +3247,8 @@ export class TerminalManager {
 		// via Ctrl+Shift+C (handled in RidgePane).
 		const isCtrlC = ctrl && ev.key.toLowerCase() === 'c';
 		if (isCtrlC && !isTui) {
-			const sel = entry.kernel.getSelectionText();
-			if (sel && sel.length > 0) {
+			if (copySelectionIfPresent(entry)) {
 				// Don't encode \x03, instead copy and clear selection
-				if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-					void navigator.clipboard.writeText(sel);
-				}
-				entry.kernel.clearSelection();
-				entry.selecting = false;
-				entry.selectionStartAbs = null;
-				entry.selectionEndAbs = null;
 				this.wake();
 				return true;
 			}
@@ -3252,13 +3266,7 @@ export class TerminalManager {
 			const k = entry.kernel as unknown as { noteCtrlCSent?: () => void };
 			k.noteCtrlCSent?.();
 		}
-		if (typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_CURSOR_TRACE') === '1') {
-			const ts = performance.now().toFixed(1);
-			const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join(' ');
-			const k = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
-			// eslint-disable-next-line no-console
-			console.debug(`[cursor-trace][${ts}ms] keydown key=${JSON.stringify(ev.key)} → bytes(${bytes.length})=${hex} kernel-cursor(pre)=(${k.cursorRow()},${k.cursorCol()})`);
-		}
+		traceKeydown(entry, ev, bytes);
 		entry.dataHandler(bytes);
 		this.scheduleImeAnchorCapture(entry);
 		return true;

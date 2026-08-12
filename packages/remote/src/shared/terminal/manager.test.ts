@@ -1027,12 +1027,19 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		const { manager, fixture, internal } = makeManager();
 		const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
 		(fixture.pane.linkSpans as any).markDirty = vi.fn();
+		manager.onData(PANE, vi.fn());
 		(globalThis.localStorage.getItem as ReturnType<typeof vi.fn>).mockImplementation((key: string) =>
 			key === 'RIDGE_PTY_TRACE' || key === 'RIDGE_CURSOR_TRACE' ? '1' : null,
 		);
 		manager.feed(PANE, new Uint8Array(300).fill(65));
 		expect(fixture.kernel.feed).toHaveBeenCalled();
 		expect(debug).toHaveBeenCalled();
+		fixture.kernel.getSelectionText.mockReturnValue('');
+		fixture.kernel.encodeKey.mockReturnValue(new Uint8Array([0x03]));
+		expect(manager.handleKeyDown(PANE, {
+			key: 'c', ctrlKey: true, metaKey: false, altKey: false, shiftKey: false,
+		} as KeyboardEvent)).toBe(true);
+		expect(debug).toHaveBeenCalledWith(expect.stringContaining('[cursor-trace]'));
 
 		const container = makeContainer();
 		internal.opts.preferWebgpu = true;
