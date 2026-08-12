@@ -35,6 +35,7 @@ import type { WorkspaceScopeAssertion } from './workspaceScope';
 import { getIceServers } from './apiClient';
 import { ChunkReassembler, encodeChunks } from '@ridge/remote';
 import { CHANNEL, encodePaneLaneProbeFrame } from '@ridge/remote';
+import { remotePerfSnapshot, resetRemotePerfTrace } from '../transport/remotePerfTrace';
 
 /** 传输层分片测试帮手：从 host 发出的（单条）线消息还原出密文（剥掉 SINGLE tag）。 */
 function unwrapSingle(wire: Uint8Array): Uint8Array {
@@ -61,6 +62,8 @@ describe('RidgeCloudHost boundary failures', () => {
     installGlobals();
   });
   afterEach(() => {
+    (globalThis as { __RIDGE_REMOTE_PERF_TRACE?: boolean }).__RIDGE_REMOTE_PERF_TRACE = false;
+    resetRemotePerfTrace();
     vi.restoreAllMocks();
   });
 
@@ -639,6 +642,27 @@ describe('RidgeCloudHost 概念 4-桌面：握手时序反转（先收后发 0x0
     expect(paneDc.readyState).toBe('open');
     host.kick(CID);
     expect(host.getSessions()).toEqual([]);
+    host.goOffline();
+  });
+
+  it('records bounded host-side WebRTC receive/send trace samples', async () => {
+    (globalThis as { __RIDGE_REMOTE_PERF_TRACE?: boolean }).__RIDGE_REMOTE_PERF_TRACE = true;
+    resetRemotePerfTrace();
+    const { host, bridges } = await makeHost({ signContext, identityPub: ID_PUB });
+    const { ws, dc } = await driveToOpenChannel(host);
+    const ctrlEph = generateEphemeralKeyPair();
+    ws.deliver({ t: 'e2ee-pubkey', pubkey: bytesToBase64(ctrlEph.publicKey), cid: CID });
+    await flush();
+    dc.deliver(encodeHandshakeFrame(ctrlEph.publicKey));
+    await flush();
+
+    bridges[0].send(new TextEncoder().encode('trace-me'));
+    const samples = remotePerfSnapshot().samples;
+    expect(samples).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'raw-receive', transport: 'cloud-webrtc-host-wire' }),
+      expect.objectContaining({ stage: 'transport-send', transport: 'cloud-webrtc-host-control-wire' }),
+    ]));
+    expect(samples.length).toBeLessThanOrEqual(256);
     host.goOffline();
   });
 
