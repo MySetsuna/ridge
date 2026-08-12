@@ -42,7 +42,7 @@
     <section class="hero">
       <div class="hero-grid">
         <div>
-          <span class="eyebrow">v0.0.3 · MIT License</span>
+          <span class="eyebrow">v0.1.62 · MIT License</span>
           <h1 class="hero-title">
             把终端、编辑器和 Git<br/>
             放进同一个<span class="accent">工作台</span>。
@@ -54,7 +54,7 @@
           </p>
           <div class="cta-row">
             <a class="btn btn-primary" href="./releases.html">
-              下载 v0.0.3
+              下载 v0.1.62
               <svg class="arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
             </a>
             <a class="btn" href="https://github.com/MySetsuna/ridge" target="_blank" rel="noopener">
@@ -350,22 +350,24 @@
     <!-- ─── RECENT RELEASE PEEK ───────────────────────────── -->
     <section id="recent-release">
       <div class="section-head">
-        <span class="eyebrow">Latest · v0.0.3</span>
-        <h2>最新版本 v0.0.3</h2>
-        <p>v0.0.3 新增手机远程控制功能，支持通过手机浏览器连接 Ridge 并操作终端。同时优化了分屏渲染性能与历史回放体验。</p>
+        <span class="eyebrow">Latest · v0.1.62</span>
+        <h2>最新版本 v0.1.62</h2>
+        <p>v0.1.62 落地标准 A2A 外部适配器、Message Hub 投递围栏与远程 pane 拓扑广播修复，并通过 Sonar Quality Gate。</p>
       </div>
 
       <div class="release">
         <div class="release-head">
-          <div class="release-tag"><span class="v">v</span>0.0.3</div>
+          <div class="release-tag"><span class="v">v</span>0.1.62</div>
           <div class="release-meta">
-            <span>2026-05-29</span>
+            <span>2026-08-12</span>
           </div>
         </div>
-        <p>Ridge v0.0.3 的核心变化是引入了远程控制能力。你现在可以用手机浏览器连接到 Ridge，像在电脑前一样操作终端。同时修复了此前版本中的多项稳定性问题。</p>
+        <p>Ridge v0.1.62 的核心变化是让内部 Message Hub 通过标准 A2A JSON-RPC/SSE 外部适配器连接第三方 Agent，并修复 remote pane close 后的 stale topology。</p>
         <h4>亮点</h4>
         <ul>
-          <li>手机远程控制：扫码即可连接，局域网内自动发现设备</li>
+          <li>标准 A2A：Agent Card、JSON-RPC 1.0/legacy 0.3、SSE、task、push 与 tenant/auth 适配</li>
+          <li>Message Hub：generation/lease fencing 与远端 delivery receipt 保持一致</li>
+          <li>Remote pane：关闭路径统一广播结构更新，避免 stale panes frame</li>
           <li>虚拟键盘：手机端集成虚拟键盘浮条，支持文本选择与复制</li>
           <li>远程面板：桌面端远程管理界面，可查看已连接的设备列表</li>
           <li>TOTP 安全认证：扫码连接时一机一码，保障连接安全</li>

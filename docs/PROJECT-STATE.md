@@ -2377,3 +2377,29 @@ Sonar 本地受限四文件扫描质量门 `OK`：new coverage 80.0、new duplic
 最终复跑补充：CodeGraph `sync` 完成；LAN、pane graph、multitab、PTY parser、term input、teammate、`rdg-remote-e2e` 均通过；Vitest 155/1610（1 skipped）、`pnpm check` 0/0、fmt、KernelHost 12/12 通过。Sonar 复扫因本地服务 HTTP 401 未取得新快照，故受限旧 gate 不覆盖最终 ptyBridge 变更；监控页面因无可用 App Browser 未打开。multitab 仍观测一次可恢复的 `Explorer loadTree: missing path C:/code/wind/src-tauri` warning，下一轮处理重试与证据化。发布/Remote 云激活仍待用户授权。
 
 资源回收补验：`cdp-reap-test` PASS；`remote-leak-trace` 在 CDP 10486 下通过 pane/workspace/reconnect/reap 全流程，`reap pass1=0`、`pass2=0`，未复现 orphan/re-creation cycle。
+## Iteration 173 / A2A standard adapter and release closure (2026-08-12)
+
+本轮按 NotebookLM 近期对话提出的痛点复核 pane、ridge-term、workspace、remote、
+ridge-mcp、Message Hub 与 Agent 通信边界。NotebookLM 仅作需求假设源，代码、
+CodeGraph、测试、CDP 与 Sonar 证据为准。
+
+- Message Hub 继续作为内部 SSOT；Kernel/Teammate identity、typed envelope、
+  SQLite Hub、generation/lease fencing 与 MCP 语义工具保持有效。
+- `packages/ridge-mcp/src/a2a.rs` 已落地标准外部 A2A client：Agent Card、JSON-RPC
+  1.0/legacy 0.3、SSE、task、push、extended card、tenant、auth、extensions、
+  capability fail-closed、bounded response 与 Hub receipt 映射。
+- MCP 新增 A2A endpoint register/unregister；生产 Kernel、tmux、Tauri teammate
+  host 使用统一 A2A route，旧 DeliveryRegistry 保留兼容 fallback。
+- `remote_close_pane` 的结构广播已移入权威关闭路径；CDP pane graph 三次复跑均证明
+  LAN panes frame 更新一次，消除 teammate 调用路径 stale topology。
+- 质量证据：`pnpm check` 0/0；Vitest 217 files / 2013 passed / 5 skipped；
+  `pnpm build`、`pnpm build:remote`、PWA、LAN desktop/mobile、dev:cdp smoke /
+  multitab / PTY / pane graph 均通过；Sonar CE `SUCCESS`、Quality Gate `OK`、
+  new coverage `84.4%`、new duplication `1.21897%`、new violations `0`；CE task
+  `8e2a4c70-8030-4ee0-83bb-13cb967da8d757`、analysis
+  `73babef4-c944-45ea-a22b-db42977fbad6`。
+- 外部边界仍开放：Ridge 原生 A2A server/Agent Card endpoint、第三方真实 Agent
+  Card/凭据、公网 TURN、实体手机/PWA/IME/后台恢复、物理 DPR、生产 PTY 五条件与
+  真实 Agent CLI 私有 Runtime。不得把本地 fixture 或 Chromium 模拟写成外部闭环。
+- 版本进入 `0.1.62` 发布批次；必须在工作区清洁、main 推送、annotated tag 与
+  全平台安装包 matrix 齐全后才可宣称 Release 完成。
