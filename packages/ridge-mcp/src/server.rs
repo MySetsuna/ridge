@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::a2a::{A2aClientConfig, A2aEndpointRegistry};
 use crate::delivery::{
     choose_delivery_adapter, DeliveryOutcome, DeliveryProbe, DeliveryRegistry, HubDeliveryAdapter,
     HubPtyRuntimeSnapshot,
@@ -357,6 +358,7 @@ pub struct McpSessionState {
     enqueue_lock: Mutex<()>,
     sequences: Mutex<HashMap<String, u64>>,
     delivery_registry: DeliveryRegistry,
+    a2a_endpoints: A2aEndpointRegistry,
     persistence: Option<HubPersistence>,
 }
 
@@ -382,6 +384,7 @@ impl McpSessionState {
             enqueue_lock: Mutex::new(()),
             sequences: Mutex::new(HashMap::new()),
             delivery_registry: DeliveryRegistry::default(),
+            a2a_endpoints: A2aEndpointRegistry::default(),
             persistence: None,
         }
     }
@@ -484,6 +487,28 @@ impl McpSessionState {
             .unregister(adapter, agent_id, generation, lease)
     }
 
+    /// Discover and register one standard A2A JSON-RPC endpoint for the
+    /// current Agent generation. Credentials stay in the process-local route.
+    pub fn register_a2a_endpoint(
+        &self,
+        agent_id: impl Into<String>,
+        generation: u64,
+        lease: impl Into<String>,
+        config: A2aClientConfig,
+    ) -> Result<crate::a2a::AgentCard, String> {
+        self.a2a_endpoints
+            .register(agent_id, generation, lease, config)
+    }
+
+    pub fn unregister_a2a_endpoint(
+        &self,
+        agent_id: &str,
+        generation: u64,
+        lease: &str,
+    ) -> Result<bool, String> {
+        self.a2a_endpoints.unregister(agent_id, generation, lease)
+    }
+
     /// Publish one atomically sampled, generation/lease-fenced PTY runtime
     /// snapshot before the Hub may fall back to PTY delivery.
     pub fn register_pty_runtime_snapshot(
@@ -509,7 +534,9 @@ impl McpSessionState {
     }
 
     pub fn delivery_probe(&self, target: &Value) -> DeliveryProbe {
-        self.delivery_registry.probe(target)
+        let mut probe = self.delivery_registry.probe(target);
+        probe.a2a |= self.a2a_endpoints.probe(target);
+        probe
     }
 
     pub fn deliver_registered_endpoint(
@@ -519,6 +546,24 @@ impl McpSessionState {
         entry: &Value,
     ) -> Result<DeliveryOutcome, String> {
         self.delivery_registry.deliver(adapter, target, entry)
+    }
+
+    pub fn deliver_a2a_endpoint(
+        &self,
+        target: &Value,
+        entry: &Value,
+    ) -> Result<DeliveryOutcome, String> {
+        if self.a2a_endpoints.probe(target) {
+            let result = self.a2a_endpoints.deliver(target, entry)?;
+            return Ok(DeliveryOutcome {
+                adapter: HubDeliveryAdapter::A2a,
+                accepted: true,
+                remote_id: result.remote_id,
+                acknowledged: true,
+            });
+        }
+        self.delivery_registry
+            .deliver(HubDeliveryAdapter::A2a, target, entry)
     }
 
     /// Acknowledge a delivery received through the cross-process stream.
@@ -1386,6 +1431,9 @@ fn deliver_hub_entry(
         .map_err(HostError::Internal)?;
     let outcome = match adapter {
         HubDeliveryAdapter::RuntimeApi => host.deliver_runtime_api(target_value, &attempted),
+        HubDeliveryAdapter::A2a if state.a2a_endpoints.probe(target_value) => state
+            .deliver_a2a_endpoint(target_value, &attempted)
+            .map_err(HostError::Internal),
         HubDeliveryAdapter::A2a => host.deliver_a2a(target_value, &attempted),
         HubDeliveryAdapter::PtyFallback => host.deliver_pty_fallback(target_value, &attempted),
         HubDeliveryAdapter::McpPull => unreachable!("MCP pull returned above"),
@@ -1469,13 +1517,14 @@ fn enqueue_hub_entry(
             )
             .map_err(HostError::Internal)?;
     }
-    let adapter =
-        choose_delivery_adapter(host.probe_delivery(&target_value)?).ok_or_else(|| {
-            hub_error(
-                "delivery_unavailable",
-                "target has no proven Runtime API, A2A, MCP pull, or safe PTY adapter",
-            )
-        })?;
+    let mut probe = host.probe_delivery(&target_value)?;
+    probe.a2a |= state.a2a_endpoints.probe(&target_value);
+    let adapter = choose_delivery_adapter(probe).ok_or_else(|| {
+        hub_error(
+            "delivery_unavailable",
+            "target has no proven Runtime API, A2A, MCP pull, or safe PTY adapter",
+        )
+    })?;
     let message_id = Uuid::new_v4().to_string();
     let delivery_id = Uuid::new_v4().to_string();
     let task_id = (kind == "task").then(|| message_id.clone());
@@ -2125,7 +2174,13 @@ fn tool_hub_message(
             "message",
             "messages",
             arg_str(args, "message")
-                .map(|text| json!({ "text": text }))
+                .map(|text| {
+                    let mut payload = json!({ "text": text });
+                    if let Some(task_id) = arg_str(args, "a2a_task_id") {
+                        payload["a2aTaskId"] = json!(task_id);
+                    }
+                    payload
+                })
                 .ok_or_else(|| HostError::InvalidParams("message must not be empty".into())),
             None,
         ),
@@ -2180,6 +2235,89 @@ fn tool_hub_message(
         },
     )
     .map(|entry| entry.to_string())
+}
+
+fn tool_register_a2a_endpoint(
+    args: &Value,
+    host: &dyn McpHost,
+    state: &McpSessionState,
+) -> HostResult<String> {
+    let target = resolve_hub_target(args, host, "delivery")?;
+    let agent_card_url = arg_str(args, "agent_card_url")
+        .ok_or_else(|| HostError::InvalidParams("agent_card_url must not be empty".into()))?;
+    let extensions = args
+        .get("extensions")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    item.as_str().map(str::to_string).ok_or_else(|| {
+                        HostError::InvalidParams("extensions must contain strings".into())
+                    })
+                })
+                .collect::<HostResult<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let card = state
+        .register_a2a_endpoint(
+            target.agent_id.clone(),
+            target.generation,
+            target.lease.clone(),
+            A2aClientConfig {
+                agent_card_url: agent_card_url.to_string(),
+                bearer_token: arg_str(args, "bearer_token").map(str::to_string),
+                preferred_protocol_version: arg_str(args, "preferred_protocol_version")
+                    .map(str::to_string),
+                extensions,
+                ..A2aClientConfig::default()
+            },
+        )
+        .map_err(HostError::Internal)?;
+    let protocol_version = card
+        .supported_interfaces
+        .iter()
+        .find(|interface| {
+            matches!(
+                interface.protocol_binding.to_ascii_lowercase().as_str(),
+                "jsonrpc" | "json-rpc"
+            )
+        })
+        .map(|interface| interface.protocol_version.clone());
+    Ok(json!({
+        "registered": true,
+        "adapter": "a2a",
+        "agentId": target.agent_id,
+        "generation": target.generation,
+        "lease": target.lease,
+        "agentCard": {
+            "name": card.name,
+            "version": card.version,
+            "protocolVersion": protocol_version,
+            "capabilities": card.capabilities,
+        }
+    })
+    .to_string())
+}
+
+fn tool_unregister_a2a_endpoint(
+    args: &Value,
+    host: &dyn McpHost,
+    state: &McpSessionState,
+) -> HostResult<String> {
+    let target = resolve_hub_target(args, host, "delivery")?;
+    let removed = state
+        .unregister_a2a_endpoint(&target.agent_id, target.generation, &target.lease)
+        .map_err(HostError::Internal)?;
+    Ok(json!({
+        "unregistered": removed,
+        "adapter": "a2a",
+        "agentId": target.agent_id,
+        "generation": target.generation,
+        "lease": target.lease,
+    })
+    .to_string())
 }
 
 fn tool_legacy_message(
@@ -2426,6 +2564,9 @@ fn tools_call(id: Value, params: &Value, host: &dyn McpHost, state: &McpSessionS
             tool_hub_message(name, &args, host, state)
         }
 
+        "ridge_register_a2a_endpoint" => tool_register_a2a_endpoint(&args, host, state),
+        "ridge_unregister_a2a_endpoint" => tool_unregister_a2a_endpoint(&args, host, state),
+
         "ridge_send_to_teammate" | "ridge_send_and_submit" | "ridge_delegate_task" => {
             tool_legacy_message(name, &args, host, state)
         }
@@ -2495,6 +2636,10 @@ pub fn call_tool_rpc(
 mod tests {
     use super::*;
     use crate::delivery::HubPtySafety;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::thread;
 
     struct FakeHost;
 
@@ -2550,6 +2695,185 @@ mod tests {
                 Ok(target.to_string())
             }
         }
+    }
+
+    struct A2aHost {}
+
+    impl McpHost for A2aHost {
+        fn team_profile(&self) -> Value {
+            json!({
+                "workspaceId": "ws-test",
+                "roster": [{
+                    "id": "agent-a",
+                    "agentId": "agent-a",
+                    "sessionId": "session-a",
+                    "workspaceId": "ws-test",
+                    "paneId": "pane-a",
+                    "generation": 1,
+                    "lease": "lease-a",
+                    "lifecycle": "Online",
+                    "online": true,
+                    "capabilities": ["messages", "tasks", "events"]
+                }]
+            })
+        }
+
+        fn send_text(
+            &self,
+            _target: &Value,
+            _text: &str,
+            _submit: bool,
+            _busy: bool,
+        ) -> HostResult<InputDispatch> {
+            Ok(InputDispatch {
+                terminal_accepted: false,
+            })
+        }
+
+        fn capture_pane(&self, _target: &Value, _lines: usize) -> HostResult<String> {
+            Ok(String::new())
+        }
+
+        fn split_pane(
+            &self,
+            _direction: &str,
+            _role: &str,
+            _initial_cmd: Option<&str>,
+        ) -> HostResult<Value> {
+            Ok(Value::Null)
+        }
+
+        fn read_resource(&self, _uri: &RidgeUri) -> HostResult<(String, String)> {
+            Ok(("application/json".into(), "{}".into()))
+        }
+
+        fn pane_key(&self, target: &Value) -> HostResult<String> {
+            Ok(target
+                .get("paneId")
+                .and_then(Value::as_str)
+                .unwrap_or("pane-a")
+                .into())
+        }
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> (String, Value) {
+        let mut bytes = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            if let Some(header_end) = bytes
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+            {
+                let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if bytes.len() >= header_end.saturating_add(content_length) {
+                    break;
+                }
+            }
+            let read = stream.read(&mut chunk).expect("read HTTP request");
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+        }
+        let raw = String::from_utf8_lossy(&bytes).into_owned();
+        let body = raw.split("\r\n\r\n").nth(1).unwrap_or_default();
+        let json = serde_json::from_str(body).unwrap_or(Value::Null);
+        (raw, json)
+    }
+
+    #[test]
+    fn hub_sends_through_registered_standard_a2a_endpoint_and_records_ack() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let fixture = thread::spawn(move || {
+            let (mut card_stream, _) = listener.accept().unwrap();
+            let _ = read_http_request(&mut card_stream);
+            let card = json!({
+                "name": "Ridge A2A fixture",
+                "description": "A standard JSON-RPC fixture",
+                "supportedInterfaces": [{
+                    "url": format!("http://{address}/rpc"),
+                    "protocolBinding": "JSONRPC",
+                    "protocolVersion": "1.0"
+                }],
+                "version": "fixture-1",
+                "capabilities": {},
+                "defaultInputModes": ["text/plain"],
+                "defaultOutputModes": ["text/plain"],
+                "skills": []
+            })
+            .to_string();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                card.len()
+            );
+            card_stream.write_all(head.as_bytes()).unwrap();
+            card_stream.write_all(card.as_bytes()).unwrap();
+
+            let (mut rpc_stream, _) = listener.accept().unwrap();
+            let (raw, request) = read_http_request(&mut rpc_stream);
+            assert!(raw.to_ascii_lowercase().contains("a2a-version: 1.0"));
+            assert_eq!(request["method"], "SendMessage");
+            assert_eq!(request["params"]["message"]["parts"][0]["text"], "hello");
+            let body = json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {"task": {"id": "remote-task-1"}}
+            })
+            .to_string();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            rpc_stream.write_all(head.as_bytes()).unwrap();
+            rpc_stream.write_all(body.as_bytes()).unwrap();
+        });
+
+        let state = Arc::new(McpSessionState::default());
+        state
+            .register_a2a_endpoint(
+                "agent-a",
+                1,
+                "lease-a",
+                A2aClientConfig {
+                    agent_card_url: format!("http://{address}/card"),
+                    ..A2aClientConfig::default()
+                },
+            )
+            .unwrap();
+        let host = A2aHost {};
+        let response = call_tool_rpc(
+            "ridge_send_message",
+            json!({
+                "target_pane_id": "pane-a",
+                "message": "hello",
+                "from": "sender",
+                "idempotency_key": "a2a-1"
+            }),
+            &host,
+            &state,
+        );
+        let entry: Value = serde_json::from_str(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .expect("Hub result"),
+        )
+        .unwrap();
+        assert_eq!(entry["deliveryAdapter"], "a2a");
+        assert_eq!(entry["adapterAccepted"], true);
+        assert_eq!(entry["agentAcknowledged"], true);
+        assert_eq!(entry["adapterRemoteId"], "remote-task-1");
+        fixture.join().unwrap();
     }
 
     struct CapableHost;
