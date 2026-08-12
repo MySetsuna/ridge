@@ -56,6 +56,7 @@ import {
 import { PriorityFrameQueue } from './priorityFrameQueue';
 import type { WorkspaceScopeAssertion } from './workspaceScope';
 import { backoffMs } from '../reconnectPolicy';
+import { remotePerfMark, remotePerfSamplePeerConnection } from '../transport/remotePerfTrace';
 
 /** B3：等待信令旁路公钥到达的宽限期（ms）。过期仍未到则回落 relay-trust。 */
 const KEY_BIND_GRACE_MS = 3000;
@@ -357,6 +358,11 @@ export class RidgeCloudHost {
           const dc = conn?.paneLaneReady ? conn.paneDc : conn?.dc;
           return (dc?.bufferedAmount ?? 0) < BUFFERED_HIGH_WATERMARK;
         },
+        onPaneDrop: () =>
+          remotePerfMark('transport-send', {
+            transport: 'cloud-webrtc-host-pane-drop',
+            queueBytes: (conn?.paneLaneReady ? conn.paneDc : conn?.dc)?.bufferedAmount ?? 0,
+          }),
       }),
       sendMsgId: 0,
       reassembler: new ChunkReassembler(),
@@ -530,6 +536,12 @@ export class RidgeCloudHost {
   private onDataChannelMessage(conn: ControllerConn, data: unknown, lane: 'control' | 'pane' = 'control'): void {
     const bytes = toBytes(data);
     if (!bytes) return;
+    remotePerfMark('raw-receive', {
+      bytes: bytes.byteLength,
+      transport: 'cloud-webrtc-host-wire',
+      queueBytes: (lane === 'pane' ? conn.paneDc : conn.dc)?.bufferedAmount ?? 0,
+    });
+    void remotePerfSamplePeerConnection(conn.pc);
     if (!conn.handshakeDone) {
       if (lane === 'control') this.handleHandshake(conn, bytes);
       return;
@@ -692,6 +704,11 @@ export class RidgeCloudHost {
   private rawSend(conn: ControllerConn, bytes: Uint8Array, lane: 'control' | 'pane' = 'control'): void {
     const dc = lane === 'pane' ? conn.paneDc : conn.dc;
     if (dc?.readyState === 'open') {
+      remotePerfMark('transport-send', {
+        bytes: bytes.byteLength,
+        transport: lane === 'pane' ? 'cloud-webrtc-host-pane-wire' : 'cloud-webrtc-host-control-wire',
+        queueBytes: dc.bufferedAmount,
+      });
       dc.send(
         bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
       );
