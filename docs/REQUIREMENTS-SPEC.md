@@ -288,13 +288,17 @@
 - 关联：`REQ-AGENT-HISTORY-01`。
 - 原始意图：历史须从各 Agent 最新原生 JSONL/会话源取得真实回复；一 session 一行，展示稳定标题
   与 session id；Claude/Grok 均覆盖；展示参考 Codex 桌面端作模块化、窄宽适配。
-- 当前证据：后端仅扫描 Claude/Codex；前端 DTO 名为 `AgentRecentReply`，按每条回复分组/渲染，
-  标题仍为“最近回复”，行展示 project/time/text，未形成 session 聚合；Grok 无 adapter。
+- 当前证据：后端已按来源扫描 Claude/Codex/Cursor Agent，并保留既有 Grok adapter；前端 DTO
+  名为 `AgentRecentReply`，按 agent 分组、一 session 一行。Codex 原生 `session_meta` /
+  `response_item` fixture 与本机路径均已验证；Cursor 实际 `agent-transcripts` 根级
+  `role=assistant` 记录已接入。Gemini 当前仅发现其项目历史 Git 工作树，Aider 目录不存在，
+  故二者继续不猜 session 格式，历史/恢复保持 fail-closed。
 - 目标行为：
   - adapter 独立声明 discovery/parser/title/recent-output/resume 能力；损坏一类不拖垮全页。
   - 以原生 session id 聚合，一 session 一行；标题、id、Agent、cwd、最近活动与最新真实 assistant
     回复分区展示；进行中 session 替换为成员页同款可交互卡片。
-  - Claude、Codex、Grok 读取各自当前格式；无证据的 CLI 诚实禁用，不猜路径/字段。
+  - Claude、Codex、Cursor Agent、Grok 读取各自已验证格式；Gemini/Aider 无证据时诚实禁用，
+    不猜路径/字段。
   - 卡片在宽/窄侧栏均自适应，不因首次挂载宽度错误折叠。
 - 范围：本机 Agent history adapter/DTO、Agent Center 历史与运行中交互卡片。
 - 非目标：上传历史、索引全文、修改第三方 session 或伪造 resume。
@@ -1273,6 +1277,25 @@
 - `REQ-PTY-RUNTIME-SNAPSHOT-01`：继续 `ACTIVE/EXTERNAL`；dev:cdp 与 LAN E2E 不能替代生产宿主五条件原子快照、实体设备与真实 Agent CLI 证据。
 - 详见 `docs/iterations/2026-08-12-a2a-standard-closure.md` 与 `docs/iterations/2026-08-12-sonarqube-handoff.md`。
 
+### REQ-NEXT-ITERATION-20260812-01 · 下一迭代全部遗留项、性能与使用性收口
+
+- Approval evidence:`所有已知遗留项，都纳入本次迭代`
+- Status:`ACTIVE`
+- Version:`v1`
+- Behavior:`所有已知遗留项，都纳入本次迭代`；本轮必须逐项复核并推进本仓代码遗留、Remote 性能/流畅性、终端与 Explorer 使用性、真实公网/移动端/PTY/第三方 Runtime 证据及质量债，不得把已知项静默顺延。
+- Boundary:`保留 Message Hub/Kernel/复合 (workspaceId,paneId) 身份、单一 authenticated transport、A2A 外部 adapter 语义、PTY FIFO 与 fail-closed capability/lease/generation；新增队列、缓存、worker、timer、RAF、RPC 与进程必须有界、可取消、可观测。外部环境缺失只能标为 OPEN/BLOCKED 并给出可复现 runbook，不得以 fixture 冒充现场。`
+- Acceptance:`每个已知遗留项拥有状态、根因假设、代码/配置/外部证据路径与下一步；代码项有 CodeGraph 调用链与分支单测；Remote 输入/切 pane/首帧/尾流/重连/资源释放有阶段性能报告；终端栅格/Codex 渲染/Explorer resize/file continuity/history overlay 有回归；原生 A2A Server/Agent Card 有实现或明确阻塞证据；pnpm check、全量 Vitest、相关 Rust、Remote/PWA、dev:cdp、Sonar 当前 HEAD 与可用外部 E2E 均核验；未具备设备/公网/第三方凭据者不得宣称完成。
+- Traceability:`REQ-NEXT-ITERATION-20260812-01` → 用户批准“所有已知遗留项，都纳入本次迭代” → contract/context → 代码与诊断实现 → 单测/CodeGraph/性能/E2E/Sonar/现场证据 → iteration closure`
+
+### REQ-A2A-NATIVE-SERVER-01 · Ridge 原生 A2A Server 与 Agent Card
+
+- Approval evidence:`所有已知遗留项，都纳入本次迭代`
+- Status:`ACTIVE`
+- Version:`v1`
+- Behavior:`Ridge must expose a standards-conformant native A2A server boundary in addition to its existing external client adapter: discoverable Agent Card, authenticated JSON-RPC task/message operations, streaming/push capability declaration, tenant/auth validation, bounded responses, and Hub receipt mapping.`
+- Boundary:`Keep Message Hub as internal SSOT; native A2A is an explicit transport adapter and must not bypass Kernel identity, capability, generation, lease, or PTY safety gates. Unknown/unsupported methods fail typed and fail-closed. No plaintext secret, unbounded body, second hidden transport, or compatibility claim without live interoperability evidence.`
+- Acceptance:`Agent Card endpoint and advertised interfaces are tested against the supported A2A version; initialize/send/get/list/cancel/subscribe/push paths have branch-complete tests; auth/tenant/capability/generation/lease failures are deterministic; external A2A probe or an explicit blocked report records live endpoint, headers, task lifecycle, stream/push behavior and receipt mapping; CodeGraph verifies the full route from HTTP boundary to Hub/Kernel.`
+- Traceability:`REQ-A2A-NATIVE-SERVER-01` → ridge-mcp native HTTP/A2A boundary → Agent Card/JSON-RPC/SSE/task tests → third-party interoperability probe or blocked runbook → iteration archive`
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |

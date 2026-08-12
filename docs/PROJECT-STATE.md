@@ -1,5 +1,32 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
+## Current snapshot (next iteration, 2026-08-12) — native A2A 与 Remote 观测
+
+- 用户已批准将所有已知遗留项纳入本迭代；Active 需求为
+  `REQ-NEXT-ITERATION-20260812-01` 与 `REQ-A2A-NATIVE-SERVER-01`。
+- Ridge native A2A 已接入 `ridge-mcp`、无头 `ridge-tmux` 与桌面 teammate server。
+  Agent Card 与 JSON-RPC `SendMessage/GetTask/ListTasks/CancelTask` 复用 Message Hub
+  receipt；认证、tenant、请求/响应上限及 generation/lease/workspace 围栏均 fail-closed。
+- Cloud host 端已接入既有 bounded Remote trace，记录 raw receive、wire send、pane drop
+  与 WebRTC stats；trace 默认关闭且最多 256 样本，不保存 payload。
+- Agent history 已修复来源缺口：Claude/Codex/Cursor Agent 分源发现，Codex 原生 JSONL
+  与 Cursor `agent-transcripts` 均可解析；展示上限先保留各 Agent 最新行。Grok 继续沿用
+  独立 adapter；Gemini/Aider 无本机可验证聊天源，仍 fail-closed，不伪造解析器。
+- 开发 CSP 已允许 Vite runtime `<style>`，同时移除开发 `style-src` hash 冲突；生产构建
+  仍保持 hash-only。CDP 截图确认 Ridge 主界面布局与字体恢复，runtime style blocked 为 0。
+- 本轮证据：native A2A 5 tests、`ridge-mcp` 108 lib tests、Remote host/controller/
+  queue/trace/weak-net 62 tests、Tauri `cargo check` exit 0。Tauri 仍有 161 条既有 warning，
+  未新增编译 error。
+- Agent history 专项 Rust 测试为 `29 passed; 0 failed`；全量 Vitest 为 2014 passed / 5 skipped，
+  Playwright clean run 为 18 passed / 1 skipped；LAN desktop/mobile、mobile keyboard、
+  `dev:cdp`/CDP smoke 均通过。
+- 本轮 Sonar 有效扫描（仓外、含 sidecar 与生成 tsconfig 的临时副本）索引 776 files；
+  Quality Gate `OK`，coverage `82.6%`、line `89.0%`、branch `73.6%`、violations `0`，
+  new coverage `82.6%`、new duplication `1.93048%`、new violations `0`。token 已撤销。
+- 仍未闭合：streaming/push、第三方 Agent live 互操作、真实公网/TURN、真机 PWA、WebView2
+  长跑、双 Host/窗口、force-kill 重连、PTY 五条件现场快照与当前 HEAD Sonar CE/Gate；详见
+  [本轮遗留矩阵](iterations/2026-08-12-next-iteration-a2a-remote.md)。
+
 ## Current snapshot (iteration 172, 2026-08-08) — NLM authentication workflow repair
 
 - NotebookLM external-CDP authentication is restored through the fixed local
