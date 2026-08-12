@@ -116,8 +116,8 @@ log('fake agent launched; opening Agent panel…');
 
 // 打开左侧图标栏的 agent Tab。
 const opened = await ev(
-  `(() => {
-     const b = document.querySelector('button[title="Agent\\u0027s Commune"]');
+  String.raw`(() => {
+     const b = document.querySelector('button[title="Agent\u0027s Commune"]');
      if (!b) return 'no-tab-button';
      b.click();
      return 'clicked';
