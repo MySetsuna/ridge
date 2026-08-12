@@ -28,6 +28,7 @@
 // Exit 0 = all three parsers confirmed; non-zero = failure (see summary).
 import http from 'node:http';
 import { resolveCdpPort } from './cdp-port.mjs';
+import { shouldRequestPaneList } from './cdp-pty-state.mjs';
 
 const CDP_PORT = resolveCdpPort();
 const log = (...a) => console.log('[pty-e2e]', ...a);
@@ -289,7 +290,7 @@ try {
     // TLS listener is ready. Avoid turning that startup window into a false
     // create-pane failure in this E2E harness.
     setTimeout(() => {
-      if (!summary.pane && !createRequested) ws.send(JSON.stringify({ type: 'list-panes' }));
+      if (shouldRequestPaneList(summary, state)) ws.send(JSON.stringify({ type: 'list-panes' }));
     }, 5000);
   };
   ws.onerror = (e) => { summary.errors.push('ws error: ' + (e.message || e.type)); };

@@ -1,4 +1,5 @@
 import type { Handle } from '@sveltejs/kit';
+import { syncGeneratedCsp } from '../scripts/sync-generated-csp.mjs';
 
 const themes: Record<string, { accent: string; bg: string }> = {
   sand: { accent: '#c69a4f', bg: '#faf6ef' },
@@ -27,7 +28,7 @@ export const handle: Handle = async ({ event, resolve }) => {
           }
         </style>
       `;
-      return result.replace('%sveltekit.head%', `${styleTag}\n%sveltekit.head%`);
+      return syncGeneratedCsp(result.replace('%sveltekit.head%', `${styleTag}\n%sveltekit.head%`));
     }
   });
 

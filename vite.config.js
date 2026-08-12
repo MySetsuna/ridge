@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 // that tsconfig `moduleResolution: "Node"` cannot resolve; resolved fine at
 // runtime by vite's bundler-style resolver.
 import tailwindcss from '@tailwindcss/vite';
+import { syncGeneratedCsp } from './scripts/sync-generated-csp.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -34,6 +35,15 @@ if (WEB_REMOTE) {
 export default defineConfig({
   plugins: [
     sveltekit(),
+    {
+      name: 'ridge-generated-csp',
+      transformIndexHtml: {
+        order: 'post',
+        handler(html) {
+          return syncGeneratedCsp(html);
+        },
+      },
+    },
     tailwindcss(), // 如果你使用了 Tailwind
   ],
 
