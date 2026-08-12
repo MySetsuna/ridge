@@ -78,6 +78,11 @@ import {
 	type InitialFitMeasurement,
 } from './initialPaneFit';
 
+function isMacPlatform(): boolean {
+	return typeof navigator !== 'undefined'
+		&& /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+}
+
 // Quantize a CSS-px cell dimension to match the renderer's device-px
 // rounding. webgpu.rs draw_row_backgrounds/draw_row_texts compute
 //   cell_dev = round(cell_css * dpr)
@@ -1730,7 +1735,7 @@ export class TerminalManager {
 		modes: number,
 	): boolean {
 		if ((modes & 0x6) === 0 || !hoverCell || ((modes & 0x4) === 0 && pending.buttons === 0)) return false;
-		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+		const isMac = isMacPlatform();
 		const last = entry.lastMouseSent;
 		const buttons = pending.buttons;
 		if (last?.row === hoverCell.row && last?.col === hoverCell.col && last.buttons === buttons && last.action === 2) return true;
@@ -1807,7 +1812,7 @@ export class TerminalManager {
 			const span = link ? null : entry.linkSpans.hitTest(entry.kernel, hoverCell.row, hoverCell.col);
 			const decision = decideHoverUnderline({
 				hasLinkHit: !!(link || span),
-				modifierHeld: pending.ctrlKey || (/Mac|iPhone|iPod|iPad/.test(navigator.platform || '') && pending.metaKey),
+				modifierHeld: pending.ctrlKey || (isMacPlatform() && pending.metaKey),
 				spanText: link?.uri ?? span?.text ?? null,
 			});
 			this._applyHoverDecision(entry, hoverCell, link, span, decision);
@@ -1861,7 +1866,7 @@ export class TerminalManager {
 		if (entry.mouseMoveRaf !== null) cancelAnimationFrame(entry.mouseMoveRaf);
 		entry.mouseMoveRaf = null;
 		entry.pendingMouseMove = null;
-		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+		const isMac = isMacPlatform();
 		const mod = event.ctrlKey || (isMac && event.metaKey);
 		const mouseReportingOn = entry.kernel.mouseReportingModes() !== 0;
 		const link = entry.kernel.hyperlinkAt(cell.row, cell.col) as { uri: string; id: string | null } | null;
@@ -2005,7 +2010,7 @@ export class TerminalManager {
 			const entry = this.panes.get(paneId);
 			const point = entry?.lastPointerPoint;
 			if (!entry || !point) return;
-			const mac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+			const mac = isMacPlatform();
 			const held = event.ctrlKey || (mac && event.metaKey);
 			entry.pendingMouseMove = { ...point, ctrlKey: mac ? held || event.metaKey : held, metaKey: event.metaKey } as PointerEvent;
 			entry.mouseMoveRaf ??= requestAnimationFrame(flushPointerMove);
@@ -2017,7 +2022,7 @@ export class TerminalManager {
 			if (entry.kernel.mouseReportingModes() !== 0) {
 				const cell = this.cellFromEvent(paneId, event);
 				if (cell) {
-					const mac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+					const mac = isMacPlatform();
 					const bytes = entry.kernel.encodeMouse(cell.row, cell.col, 3, 1, event.shiftKey, event.ctrlKey || (mac && event.metaKey), event.altKey);
 					if (bytes.length > 0) entry.dataHandler?.(bytes);
 				}
@@ -3211,7 +3216,7 @@ export class TerminalManager {
 		if (!entry?.dataHandler) return false;
 
 		// macOS: treat Cmd as Ctrl for terminal apps.
-		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+		const isMac = isMacPlatform();
 		const ctrl = ev.ctrlKey || (isMac && ev.metaKey);
 
 		// Handle OS native Copy on Ctrl+C / Cmd+C when text is selected.
@@ -3223,7 +3228,9 @@ export class TerminalManager {
 			const sel = entry.kernel.getSelectionText();
 			if (sel && sel.length > 0) {
 				// Don't encode \x03, instead copy and clear selection
-				void navigator.clipboard.writeText(sel);
+				if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+					void navigator.clipboard.writeText(sel);
+				}
 				entry.kernel.clearSelection();
 				entry.selecting = false;
 				entry.selectionStartAbs = null;
@@ -3274,7 +3281,7 @@ export class TerminalManager {
 		const delta = ev.deltaY;
 		if (delta === 0) return false;
 
-		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+		const isMac = isMacPlatform();
 		const ctrl = ev.ctrlKey || (isMac && ev.metaKey);
 		const btn = delta < 0 ? 64 : 65; // 64=up, 65=down
 		const bytes = entry.kernel.encodeMouse(row, col, btn, 0, ev.shiftKey, ctrl, ev.altKey);
@@ -4053,7 +4060,7 @@ export class TerminalManager {
 			ent.mouseMoveRaf = null;
 		}
 		ent.pendingMouseMove = null;
-		const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+		const isMac = isMacPlatform();
 		const mod = e.ctrlKey || (isMac && e.metaKey);
 		const btn = e.button;
 		const bytes = ent.kernel.encodeMouse(cellRow, col, btn, 0, e.shiftKey, mod, e.altKey);

@@ -8,7 +8,11 @@ const extension = process.platform === 'win32' ? '.exe' : '';
 export function cargoTool(name) {
   const envName = `RIDGE_${name.replaceAll('-', '_').toUpperCase()}_PATH`;
   const configured = process.env[envName]?.trim();
-  if (configured) return resolve(configured);
+  // Do not reinterpret a Windows path on a Linux/macOS runner (or vice versa)
+  // with the host `resolve`; keep relative overrides host-relative.
+  if (configured) {
+    return /^[A-Za-z]:[\\/]|^\\\\|^\//.test(configured) ? configured : resolve(configured);
+  }
   const filename = `${name}${extension}`;
   const cargoHomePath = join(process.env.CARGO_HOME || join(homedir(), '.cargo'), 'bin', filename);
   if (existsSync(cargoHomePath)) return cargoHomePath;
