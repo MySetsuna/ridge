@@ -48,6 +48,35 @@
     <section style="padding-top: 24px;">
       <div class="release-list">
 
+        <!-- v0.1.62 — standard A2A adapter ─────────────────── -->
+        <div class="release">
+          <div class="release-head">
+            <div class="release-tag"><span class="v">v</span>0.1.62</div>
+            <div class="release-meta">
+              <span>2026-08-12</span>
+              <a href="https://github.com/MySetsuna/ridge/releases/tag/v0.1.62" target="_blank" rel="noopener">在 GitHub 上查看 →</a>
+            </div>
+          </div>
+          <p>v0.1.62 落地标准 A2A 外部适配器，并完成 Message Hub、remote pane 拓扑与质量阀收口。</p>
+          <h4>新增 · New</h4>
+          <ul>
+            <li>A2A Agent Card 发现、JSON-RPC 1.0/legacy 0.3、SSE、task、push notification 与 extended card。</li>
+            <li>tenant、Bearer auth、A2A-Version、A2A-Extensions 与能力 fail-closed 校验。</li>
+            <li>Hub entry 到远端 task/message receipt 的 generation/lease 围栏投递。</li>
+          </ul>
+          <h4>修复 · Fixed</h4>
+          <ul>
+            <li>修复 A2A JSON 请求 Accept 头值错误。</li>
+            <li>修复 remote close pane 后 LAN topology frame 不更新或重复广播。</li>
+            <li>修复 CDP PTY parser 状态字段读取与 SSR 最终 HTML CSP hash 同步。</li>
+          </ul>
+          <h4>验证 · Verified</h4>
+          <ul>
+            <li>Vitest 217 files / 2013 passed / 5 skipped，`pnpm check` 0/0。</li>
+            <li>dev:cdp、LAN desktop/mobile E2E、remote/PWA build 与 Sonar Quality Gate 均通过。</li>
+          </ul>
+        </div>
+
         <!-- v0.0.3 — remote mobile ────────────────────────── -->
         <div class="release">
           <div class="release-head">
