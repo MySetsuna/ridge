@@ -20,6 +20,7 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 # ── `axum-transport` feature ── WS + HTTP 两条 JSON-RPC 路由。宿主开这个 feature
 # 就能 `merge(mcp_router(...))`；纯协议嵌入者（测试、其它传输）不必拉 axum。

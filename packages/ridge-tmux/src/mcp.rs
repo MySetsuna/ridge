@@ -120,7 +120,7 @@ impl McpHost for TmuxMcpHost {
 
     fn deliver_a2a(&self, target: &Value, entry: &Value) -> HostResult<DeliveryOutcome> {
         self.mcp_state
-            .deliver_registered_endpoint(HubDeliveryAdapter::A2a, target, entry)
+            .deliver_a2a_endpoint(target, entry)
             .map_err(HostError::Internal)
     }
 

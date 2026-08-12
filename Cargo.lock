@@ -5430,7 +5430,7 @@ dependencies = [
 
 [[package]]
 name = "ridge"
-version = "0.1.61"
+version = "0.1.62"
 dependencies = [
  "anyhow",
  "axum",
@@ -5586,6 +5586,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "futures-util",
+ "reqwest 0.12.28",
  "rusqlite",
  "serde",
  "serde_json",

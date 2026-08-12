@@ -343,6 +343,7 @@ fn communication_tool_specs() -> Vec<ToolSpec> {
                     "generation": { "type": "integer", "minimum": 1 },
                     "lease": { "type": "string" },
                     "message": { "type": "string" },
+                    "a2a_task_id": { "type": "string" },
                     "from": { "type": "string" },
                     "idempotency_key": { "type": "string" },
                     "correlation_id": { "type": "string" },
@@ -402,6 +403,40 @@ fn communication_tool_specs() -> Vec<ToolSpec> {
                     "cancellation_id": { "type": "string" }
                 },
                 "required": ["target_pane_id", "topic", "idempotency_key"]
+            }),
+        },
+        ToolSpec {
+            name: "ridge_register_a2a_endpoint".into(),
+            description: "Discover an official A2A Agent Card and bind its JSON-RPC endpoint to the fenced Agent generation; bearer token is write-only and never returned.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "workspace_id": workspace.clone(),
+                    "target_pane_id": target.clone(),
+                    "agent_id": { "type": "string" },
+                    "generation": { "type": "integer", "minimum": 1 },
+                    "lease": { "type": "string" },
+                    "agent_card_url": { "type": "string", "description": "HTTP(S) Agent Card URL" },
+                    "bearer_token": { "type": "string", "description": "Optional bearer credential; never included in receipts or output" },
+                    "preferred_protocol_version": { "type": "string", "description": "Optional exact version, e.g. 1.0 or 0.3" },
+                    "extensions": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["target_pane_id", "agent_card_url"]
+            }),
+        },
+        ToolSpec {
+            name: "ridge_unregister_a2a_endpoint".into(),
+            description: "Remove a fenced external A2A endpoint from the current Agent generation.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "workspace_id": workspace.clone(),
+                    "target_pane_id": target.clone(),
+                    "agent_id": { "type": "string" },
+                    "generation": { "type": "integer", "minimum": 1 },
+                    "lease": { "type": "string" }
+                },
+                "required": ["target_pane_id"]
             }),
         },
         ToolSpec {
@@ -507,7 +542,7 @@ mod tests {
     #[test]
     fn default_registry_has_communication_tools() {
         let reg = ToolRegistry::default();
-        assert_eq!(reg.tools().len(), 22);
+        assert_eq!(reg.tools().len(), 24);
     }
 
     #[test]
@@ -531,7 +566,7 @@ mod tests {
             description: "test".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
         });
-        assert_eq!(reg.tools().len(), 23);
+        assert_eq!(reg.tools().len(), 25);
         assert!(reg.get("custom_tool").is_some());
     }
 
@@ -540,7 +575,7 @@ mod tests {
         let reg = ToolRegistry::default();
         let v = reg.tools_list_result();
         assert!(v["tools"].is_array());
-        assert_eq!(v["tools"].as_array().unwrap().len(), 22);
+        assert_eq!(v["tools"].as_array().unwrap().len(), 24);
     }
 
     #[test]
@@ -595,6 +630,8 @@ mod tests {
             "ridge_send_message",
             "ridge_create_task",
             "ridge_publish_event",
+            "ridge_register_a2a_endpoint",
+            "ridge_unregister_a2a_endpoint",
             "ridge_fetch_inbox",
             "ridge_task_update",
         ] {
@@ -648,6 +685,8 @@ mod tests {
             "ridge_send_message",
             "ridge_create_task",
             "ridge_publish_event",
+            "ridge_register_a2a_endpoint",
+            "ridge_unregister_a2a_endpoint",
             "ridge_fetch_inbox",
             "ridge_task_update",
             "ridge_list_agents",
