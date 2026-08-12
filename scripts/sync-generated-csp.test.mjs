@@ -22,6 +22,14 @@ describe('generated CSP synchronizer', () => {
     expect(updated).not.toContain("'unsafe-inline'");
   });
 
+  it('allows runtime inline styles only when development explicitly opts in', () => {
+    const html = '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'; style-src \'self\'">';
+    expect(syncGeneratedCsp(html)).not.toContain("'unsafe-inline'");
+    const development = syncGeneratedCsp(html, { allowInlineStyles: true });
+    expect(development).toContain("style-src 'self' 'unsafe-inline'");
+    expect(development).not.toMatch(/style-src[^;]*sha256/);
+  });
+
   it('leaves pages without a CSP meta unchanged', () => {
     const html = '<html><script>window.ok = true;</script></html>';
     expect(syncGeneratedCsp(html)).toBe(html);
