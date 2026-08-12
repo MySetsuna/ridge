@@ -2395,9 +2395,9 @@ CodeGraph、测试、CDP 与 Sonar 证据为准。
 - 质量证据：`pnpm check` 0/0；Vitest 217 files / 2013 passed / 5 skipped；
   `pnpm build`、`pnpm build:remote`、PWA、LAN desktop/mobile、dev:cdp smoke /
   multitab / PTY / pane graph 均通过；Sonar CE `SUCCESS`、Quality Gate `OK`、
-  new coverage `84.4%`、new duplication `1.21897%`、new violations `0`；CE task
-  `8e2a4c70-8030-4ee0-83bb-13cb967da8d757`、analysis
-  `73babef4-c944-45ea-a22b-db42977fbad6`。
+  new coverage `84.7%`、new duplication `1.22888%`、new violations `0`；CE task
+  `57a230d7-2fff-4c5a-a906-3161a469b304`、analysis
+  `71790ecc-e5bf-4402-9829-7405cf3c0a2f`。
 - 外部边界仍开放：Ridge 原生 A2A server/Agent Card endpoint、第三方真实 Agent
   Card/凭据、公网 TURN、实体手机/PWA/IME/后台恢复、物理 DPR、生产 PTY 五条件与
   真实 Agent CLI 私有 Runtime。不得把本地 fixture 或 Chromium 模拟写成外部闭环。

@@ -352,7 +352,7 @@
       <div class="section-head">
         <span class="eyebrow">Latest · v0.1.62</span>
         <h2>最新版本 v0.1.62</h2>
-        <p>v0.1.62 落地标准 A2A 外部适配器、Message Hub 投递围栏与远程 pane 拓扑广播修复，并通过 Sonar Quality Gate。</p>
+        <p>v0.1.62 落地标准 A2A 外部适配器、Message Hub 投递围栏与远程 pane 拓扑广播修复，并通过 Sonar Quality Gate（new coverage 84.7%，new violations 0）。</p>
       </div>
 
       <div class="release">
@@ -362,7 +362,7 @@
             <span>2026-08-12</span>
           </div>
         </div>
-        <p>Ridge v0.1.62 的核心变化是让内部 Message Hub 通过标准 A2A JSON-RPC/SSE 外部适配器连接第三方 Agent，并修复 remote pane close 后的 stale topology。</p>
+        <p>Ridge v0.1.62 的核心变化是让内部 Message Hub 通过标准 A2A JSON-RPC/SSE 外部适配器连接第三方 Agent，并修复 remote pane close 后的 stale topology。Ridge 原生 A2A server/Agent Card endpoint 仍属后续外部互操作边界。</p>
         <h4>亮点</h4>
         <ul>
           <li>标准 A2A：Agent Card、JSON-RPC 1.0/legacy 0.3、SSE、task、push 与 tenant/auth 适配</li>

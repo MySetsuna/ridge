@@ -43,10 +43,10 @@ $base = 'http://127.0.0.1:9000'
 Invoke-RestMethod "$base/api/qualitygates/project_status?projectKey=MySetsuna_ridge"
 ```
 
-本轮最终结果：CE `SUCCESS`、Gate `OK`、new coverage `84.4%`、new duplication
-`1.21897%`、new violations `0`。CE task 为
-`8e2a4c70-8030-4ee0-83bb-13cb967da8d757`，analysis 为
-`73babef4-c944-45ea-a22b-db42977fbad6`。Sonar 日志只保留在本地 `.tools/`，不作为凭据
+本轮最终结果：CE `SUCCESS`、Gate `OK`、new coverage `84.7%`、new duplication
+`1.22888%`、new violations `0`。CE task 为
+`57a230d7-2fff-4c5a-a906-3161a469b304`，analysis 为
+`71790ecc-e5bf-4402-9829-7405cf3c0a2f`。Sonar 日志只保留在本地 `.tools/`，不作为凭据
 交接渠道。
 
 扫描器 8.0.1 对多份 CRLF Rust 注释出现列偏移报错（源文件实际行长比 analyzer
