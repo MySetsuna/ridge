@@ -32,4 +32,6 @@ axum-transport = ["dep:axum", "dep:tokio"]
 
 [dev-dependencies]
 futures-util = "0.3"
+http-body-util = "0.1"
+tower = "0.5"
 tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }

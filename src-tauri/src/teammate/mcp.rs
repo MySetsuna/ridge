@@ -37,6 +37,20 @@ pub(crate) fn router(ctx: TeammateCtx) -> axum::Router {
     ))
 }
 
+/// Native A2A boundary backed by the desktop's persistent Hub and the same
+/// fenced host adapter used by MCP. The Agent Card is public; JSON-RPC is
+/// authenticated by the persisted teammate token.
+pub(crate) fn a2a_router(ctx: TeammateCtx) -> axum::Router {
+    let token = ctx.token.clone();
+    let host = Arc::new(DesktopMcpHost { ctx });
+    ridge_mcp::native_a2a::router(ridge_mcp::native_a2a::NativeA2aCtx::new(
+        host,
+        token,
+        env!("CARGO_PKG_VERSION"),
+        desktop_hub_state(),
+    ))
+}
+
 // ─── 宿主实装 ────────────────────────────────────────────────────────────────
 
 struct DesktopMcpHost {

@@ -357,7 +357,8 @@ async fn run_server(
         .with_state(ctx.clone())
         // Domain C 内置 MCP server：WS（ws://…/api/v1/mcp/ws）+ HTTP（POST …/api/v1/mcp）。
         // 协议分发在 ridge-core，宿主实装在 teammate::mcp，与 rdg 无头 host 同一份。
-        .merge(super::mcp::router(ctx))
+        .merge(super::mcp::router(ctx.clone()))
+        .merge(super::mcp::a2a_router(ctx.clone()))
         // All other native tmux routes are served by the shared engine crate.
         .merge(ridge_tmux::http::native_router(native_ctx))
         // 楔死诊断埋点：`.layer` 挂在 `.merge` 之后 → 包住**全部**路由（含 native_router
@@ -942,13 +943,17 @@ fn try_reuse_idle_pane(ctx: &TeammateCtx, body: &SplitBody, wid: Uuid) -> Option
 
 fn idle_pane_id(state: &AppState, wid: Uuid, idle_idx: usize) -> Option<Uuid> {
     let map = state.workspaces.read();
-    map.get(&wid).and_then(|ws| ws.pane_tree.get_all_leaves().get(idle_idx).copied())
+    map.get(&wid)
+        .and_then(|ws| ws.pane_tree.get_all_leaves().get(idle_idx).copied())
 }
 
 fn reject_agent_reuse(state: &AppState, wid: Uuid) -> Response {
     let mut map = state.workspaces.write();
     if let Some(ws) = map.get_mut(&wid) {
-        *ws.teammate_metrics.failures.entry("agent_reuse_requires_structured".into()).or_insert(0) += 1;
+        *ws.teammate_metrics
+            .failures
+            .entry("agent_reuse_requires_structured".into())
+            .or_insert(0) += 1;
     }
     (
         StatusCode::BAD_REQUEST,
@@ -963,9 +968,11 @@ fn mark_reused_pane(state: &AppState, wid: Uuid, pane_id: Uuid, body: &SplitBody
     }
     let mut map = state.workspaces.write();
     if let Some(ws) = map.get_mut(&wid) {
-        ws.teammate_pane_states.insert(pane_id, crate::state::PaneState::Busy);
+        ws.teammate_pane_states
+            .insert(pane_id, crate::state::PaneState::Busy);
         if body.is_agent {
-            ws.teammate_agent_pane_map.insert(body.agent_id.clone().unwrap_or_default(), pane_id);
+            ws.teammate_agent_pane_map
+                .insert(body.agent_id.clone().unwrap_or_default(), pane_id);
         }
     }
 }
@@ -980,9 +987,16 @@ fn launch_reused_pane(
     if let Some(program) = body.program.as_ref() {
         return launch_structured_reused_pane(ctx, body, wid, pane_id, pane_index, program);
     }
-    if let Some(command) = body.command.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(command) = body
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let data = ridge_mcp::server::enter_terminated(command);
-        if let Err(error) = super::suspend::agent_pty_write(&ctx.state, wid, pane_id, data.as_bytes()) {
+        if let Err(error) =
+            super::suspend::agent_pty_write(&ctx.state, wid, pane_id, data.as_bytes())
+        {
             let _ = release_pane(&ctx.state, wid, pane_id);
             return Err((StatusCode::BAD_REQUEST, error).into_response());
         }
@@ -1007,7 +1021,11 @@ fn launch_structured_reused_pane(
     {
         command = normalize_windows_command(&command);
     }
-    let cwd = body.cwd.as_ref().map(|s| std::path::PathBuf::from(s.trim())).filter(|p| !p.as_os_str().is_empty());
+    let cwd = body
+        .cwd
+        .as_ref()
+        .map(|s| std::path::PathBuf::from(s.trim()))
+        .filter(|p| !p.as_os_str().is_empty());
     if let Err(error) = terminal::ensure_pane_pty_workspace(
         &ctx.state,
         wid,
@@ -1023,7 +1041,11 @@ fn launch_structured_reused_pane(
         },
     ) {
         let _ = release_pane(&ctx.state, wid, pane_id);
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("reused pane PTY init failed: {error}")).into_response());
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("reused pane PTY init failed: {error}"),
+        )
+            .into_response());
     }
     Ok(())
 }

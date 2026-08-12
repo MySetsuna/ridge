@@ -26,6 +26,16 @@ pub fn router(ctx: NativeHttpCtx) -> axum::Router {
     ))
 }
 
+/// Native A2A transport over the same host adapter and Hub state as MCP.
+pub fn a2a_router(ctx: NativeHttpCtx) -> axum::Router {
+    ridge_mcp::native_a2a::router(ridge_mcp::native_a2a::NativeA2aCtx::new(
+        Arc::new(TmuxMcpHost::new(&ctx)),
+        ctx.token.clone(),
+        env!("CARGO_PKG_VERSION"),
+        ctx.mcp_state.clone(),
+    ))
+}
+
 // ─── 宿主实装 ────────────────────────────────────────────────────────────────
 
 struct TmuxMcpHost {
