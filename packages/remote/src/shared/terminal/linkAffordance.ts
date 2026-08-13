@@ -2,8 +2,8 @@
  * Terminal link hover / click arbitration (OP-TERM-LINK).
  *
  * Pure functions — no DOM. Manager wires these into pointer handlers so:
- * - Hover on a validated link → show a thin underline, pointer, and a direct-click hint
- * - Primary click on a validated link → open without requiring a keyboard modifier
+ * - Hover on a validated link → explain the platform modifier required to open
+ * - Ctrl/Cmd + primary click on a validated link → open exactly once
  * - Non-link clicks retain TUI forwarding / host selection semantics
  */
 
@@ -17,7 +17,7 @@ export type LinkOpenTarget =
 export interface HoverUnderlineDecision {
   /** Whether renderer/DOM should paint underline under the span. */
   showUnderline: boolean;
-  /** Whether a non-blocking hint should tell the user that a direct click opens. */
+  /** Whether a non-blocking hint should explain the modifier-click gesture. */
   showHint: boolean;
   hintText: string | null;
   /** CSS cursor value (`pointer` | ``). */
@@ -96,7 +96,24 @@ export function resolvePathAgainstCwd(
   const sep = base.includes('\\') || path.includes('\\') ? '\\' : '/';
   const left = trimTrailingSeparators(base);
   const right = path.replace(/^\.[\\/]/, '');
-  return `${left}${sep}${right}`;
+  return normalizeJoinedPath(`${left}${sep}${right}`, sep);
+}
+
+function normalizeJoinedPath(path: string, sep: '\\' | '/'): string {
+  const drive = /^[A-Za-z]:[\\/]/.exec(path)?.[0].slice(0, 2) ?? '';
+  const rooted = !drive && path.startsWith('/');
+  const out: string[] = [];
+  for (const part of path.split(/[\\/]+/)) {
+    if (!part || part === '.' || part === drive) continue;
+    if (part === '..') {
+      if (out.length > 0 && out.at(-1) !== '..') out.pop();
+      else if (!drive && !rooted) out.push(part);
+      continue;
+    }
+    out.push(part);
+  }
+  const prefix = drive ? `${drive}${sep}` : rooted ? sep : '';
+  return `${prefix}${out.join(sep)}` || prefix;
 }
 
 /**
@@ -106,14 +123,15 @@ export function resolvePathAgainstCwd(
 export function decideHoverUnderline(opts: {
   hasLinkHit: boolean;
   modifierHeld: boolean;
+  isMac?: boolean;
   spanText?: string | null;
 }): HoverUnderlineDecision {
   if (opts.hasLinkHit) {
     return {
-      showUnderline: true,
-      showHint: !opts.modifierHeld,
-      hintText: opts.modifierHeld ? null : '点击可跳转',
-      cursor: 'pointer',
+      showUnderline: opts.modifierHeld,
+      showHint: true,
+      hintText: opts.isMac ? '⌘+点击打开' : 'Ctrl+点击打开',
+      cursor: opts.modifierHeld ? 'pointer' : '',
       spanText: opts.spanText ?? null,
     };
   }
@@ -204,9 +222,9 @@ export function decideLinkClick(opts: {
       startHostSelection: false,
     };
   }
-  // A validated link owns the primary click even when a TUI has enabled mouse
-  // reporting. This is the only exception to the TUI forwarding contract.
-  if (opts.hasLinkHit) {
+  // Only an explicit platform modifier lets a validated link own the click.
+  // A plain click keeps the same TUI-forwarding/host-selection contract as text.
+  if (opts.hasLinkHit && opts.modifierHeld) {
     return {
       forwardToProgram: false,
       openLink: true,

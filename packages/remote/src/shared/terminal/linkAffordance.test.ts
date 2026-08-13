@@ -10,23 +10,25 @@ import {
 } from './linkAffordance';
 
 describe('decideHoverUnderline', () => {
-	it('keeps direct-click affordance visible with or without modifier', () => {
+	it('shows platform modifier guidance and activates affordance only while held', () => {
     expect(
       decideHoverUnderline({ hasLinkHit: true, modifierHeld: true, spanText: 'https://x' }),
     ).toEqual({
 		showUnderline: true,
-		showHint: false,
-		hintText: null,
+		showHint: true,
+		hintText: 'Ctrl+点击打开',
 		cursor: 'pointer',
       spanText: 'https://x',
     });
     expect(decideHoverUnderline({ hasLinkHit: true, modifierHeld: false })).toEqual({
-		showUnderline: true,
+		showUnderline: false,
 		showHint: true,
-		hintText: '点击可跳转',
-		cursor: 'pointer',
+		hintText: 'Ctrl+点击打开',
+		cursor: '',
       spanText: null,
     });
+		expect(decideHoverUnderline({ hasLinkHit: true, modifierHeld: false, isMac: true }).hintText)
+			.toBe('⌘+点击打开');
     expect(decideHoverUnderline({ hasLinkHit: false, modifierHeld: true })).toEqual({
 		showUnderline: false,
 		showHint: false,
@@ -38,7 +40,7 @@ describe('decideHoverUnderline', () => {
 });
 
 describe('decideLinkClick', () => {
-  it('TUI mouse on: direct link click opens without forwarding', () => {
+  it('TUI mouse on: plain click forwards and modifier click opens', () => {
     expect(
       decideLinkClick({
         mouseReportingOn: true,
@@ -47,13 +49,10 @@ describe('decideLinkClick', () => {
         primaryButton: true,
       }),
     ).toEqual({
-      forwardToProgram: false,
-      openLink: true,
-      startHostSelection: false,
+			forwardToProgram: true,
+			openLink: false,
+			startHostSelection: false,
     });
-  });
-
-  it('TUI mouse on: modifier remains compatible with direct open', () => {
     expect(
       decideLinkClick({
         mouseReportingOn: true,
@@ -68,7 +67,7 @@ describe('decideLinkClick', () => {
     });
   });
 
-  it('TUI mouse off: direct link opens; non-link click selects', () => {
+  it('TUI mouse off: only modifier link opens; plain link click selects', () => {
     expect(
       decideLinkClick({
         mouseReportingOn: false,
@@ -90,8 +89,8 @@ describe('decideLinkClick', () => {
       }),
     ).toEqual({
       forwardToProgram: false,
-      openLink: true,
-      startHostSelection: false,
+      openLink: false,
+      startHostSelection: true,
     });
     expect(
       decideLinkClick({
@@ -147,6 +146,9 @@ describe('resolvePathAgainstCwd', () => {
     expect(resolvePathAgainstCwd('src\\a.ts', 'C:\\ws\\app', null)).toBe(
       'C:\\ws\\app\\src\\a.ts',
     );
+    expect(resolvePathAgainstCwd('../shared/a.ts', '/home/u/repo/docs', '/home/u/repo')).toBe(
+      '/home/u/repo/shared/a.ts',
+    );
   });
 
   it('keeps absolutes', () => {
@@ -190,5 +192,18 @@ describe('osc8UnderlineRegions', () => {
     expect(osc8UnderlineRegions(grid(['same', 'same'], new Set()), 1, 1, 'https://example.test/long')).toEqual([
       { row: 1, c0: 0, c1: 4 },
     ]);
+  });
+
+  it('never opens a non-primary click', () => {
+    expect(decideLinkClick({
+      mouseReportingOn: false,
+      modifierHeld: true,
+      hasLinkHit: true,
+      primaryButton: false,
+    })).toEqual({
+      forwardToProgram: false,
+      openLink: false,
+      startHostSelection: false,
+    });
   });
 });

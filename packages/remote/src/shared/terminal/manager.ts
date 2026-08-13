@@ -83,6 +83,10 @@ function isMacPlatform(): boolean {
 		&& /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
 }
 
+function linkModifierHeld(event: Pick<KeyboardEvent, 'ctrlKey' | 'metaKey'>): boolean {
+	return isMacPlatform() ? event.metaKey : event.ctrlKey;
+}
+
 function copySelectionIfPresent(entry: PaneEntry): boolean {
 	const selection = entry.kernel.getSelectionText();
 	if (!selection) return false;
@@ -150,6 +154,7 @@ import {
 	underlineCssTokens,
 	type HostOpenAction,
 } from './linkOpenHost';
+import type { TerminalLinkOpenRequest } from './ports';
 
 type LinkUnderlineRegion = { row: number; c0: number; c1: number };
 
@@ -171,11 +176,15 @@ function createLinkUnderlineOverlay(container: HTMLElement): HTMLDivElement {
 	return el;
 }
 
+function linkOpenHintText(isMac = isMacPlatform()): string {
+	return isMac ? '⌘+点击打开' : 'Ctrl+点击打开';
+}
+
 function createLinkHintOverlay(container: HTMLElement): HTMLDivElement {
 	const el = document.createElement('div');
 	el.setAttribute('aria-hidden', 'true');
 	el.dataset.ridgeLinkHint = 'true';
-	el.textContent = '点击可跳转';
+	el.textContent = linkOpenHintText();
 	el.style.cssText = [
 		'position:absolute',
 		'display:none',
@@ -861,6 +870,10 @@ export class TerminalManager {
 		return _hostPorts?.cwd?.all() ?? [];
 	}
 
+	static _workspaceRoot(entry: PaneEntry): string | undefined {
+		return _hostPorts?.cwd?.workspaceRoot?.(entry.workspaceId, entry.paneId);
+	}
+
 	/**
 	 * C51 product path: execute a HostOpenAction from linkOpenHost.
 	 * URL → opener / window.open; path/file → openTextLink host port.
@@ -874,29 +887,36 @@ export class TerminalManager {
 			console.warn('[ridge-term] open plan noop', plan.reason, fallbackText);
 			return false;
 		}
+		if (!_hostPorts?.openTextLink) return false;
+		const cwd = TerminalManager._currentPaneCwd(entry);
+		const origin = {
+			kind: 'local' as const,
+			workspaceId: entry.workspaceId,
+			paneId: entry.paneId,
+		};
 		if (plan.type === 'open_url') {
-			const uri = plan.href;
-			if (
-				typeof window !== 'undefined' &&
-				(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
-			) {
-				void import('@tauri-apps/plugin-opener')
-					.then(({ openUrl }) => openUrl(uri))
-					.catch((err) => console.warn('[ridge-term] openUrl failed', uri, err));
-			} else if (typeof window !== 'undefined') {
-				window.open(uri, '_blank', 'noopener,noreferrer');
-			}
+			const request: TerminalLinkOpenRequest = {
+				type: 'url',
+				href: plan.href,
+				cwd,
+				workspaceRoot: TerminalManager._workspaceRoot(entry),
+				origin,
+			};
+			void Promise.resolve(_hostPorts.openTextLink(request));
 			return true;
 		}
 		// open_file | reveal_in_tree → host port (editor / explorer)
-		let text = plan.path;
-		if (plan.type === 'open_file' && plan.line != null) {
-			text = [plan.path, plan.line, plan.col].filter((part) => part != null).join(':');
-		}
-		const cwd = TerminalManager._currentPaneCwd(entry);
-		const known = TerminalManager._knownCwds();
-		if (!_hostPorts?.openTextLink) return false;
-		_hostPorts.openTextLink(text, { cwd, knownCwds: known });
+		const request: TerminalLinkOpenRequest = {
+			type: 'path',
+			path: plan.path,
+			...(plan.type === 'open_file'
+				? { line: plan.line, col: plan.col }
+				: { directoryHint: true }),
+			cwd,
+			workspaceRoot: TerminalManager._workspaceRoot(entry),
+			origin,
+		};
+		void Promise.resolve(_hostPorts.openTextLink(request));
 		return true;
 	}
 
@@ -1554,6 +1574,7 @@ export class TerminalManager {
 
 	private _showLinkHint(entry: PaneEntry, region: LinkUnderlineRegion): void {
 		entry.linkHintEl ??= createLinkHintOverlay(entry.container);
+		entry.linkHintEl.textContent = linkOpenHintText();
 		entry.linkHintRegion = region;
 		this._positionLinkHint(entry);
 	}
@@ -1834,7 +1855,8 @@ export class TerminalManager {
 			const span = link ? null : entry.linkSpans.hitTest(entry.kernel, hoverCell.row, hoverCell.col);
 			const decision = decideHoverUnderline({
 				hasLinkHit: !!(link || span),
-				modifierHeld: pending.ctrlKey || (isMacPlatform() && pending.metaKey),
+				modifierHeld: linkModifierHeld(pending),
+				isMac: isMacPlatform(),
 				spanText: link?.uri ?? span?.text ?? null,
 			});
 			this._applyHoverDecision(entry, hoverCell, link, span, decision);
@@ -1889,13 +1911,14 @@ export class TerminalManager {
 		entry.mouseMoveRaf = null;
 		entry.pendingMouseMove = null;
 		const isMac = isMacPlatform();
-		const mod = event.ctrlKey || (isMac && event.metaKey);
+		const linkMod = linkModifierHeld(event);
+		const terminalMod = event.ctrlKey || (isMac && event.metaKey);
 		const mouseReportingOn = entry.kernel.mouseReportingModes() !== 0;
 		const link = entry.kernel.hyperlinkAt(cell.row, cell.col) as { uri: string; id: string | null } | null;
 		const span = link ? null : entry.linkSpans.hitTest(entry.kernel, cell.row, cell.col);
 		const decision = decideLinkClick({
 			mouseReportingOn,
-			modifierHeld: mod,
+			modifierHeld: linkMod,
 			hasLinkHit: !!(link?.uri || span),
 			primaryButton: event.button === 0,
 		});
@@ -1903,7 +1926,7 @@ export class TerminalManager {
 			event.preventDefault();
 			return;
 		}
-		if (decision.forwardToProgram && mouseReportingOn && this._sendPointerDown(entry, cell, event, mod)) return;
+		if (decision.forwardToProgram && mouseReportingOn && this._sendPointerDown(entry, cell, event, terminalMod)) return;
 		if (event.button !== 0 || this._extendPointerSelection(entry, cell, event)) return;
 		if (this._handleMultiClick(entry, cell, event.detail)) return;
 		try { (event.target as Element | null)?.setPointerCapture?.(event.pointerId); } catch { /* best effort */ }
@@ -2033,7 +2056,7 @@ export class TerminalManager {
 			const point = entry?.lastPointerPoint;
 			if (!entry || !point) return;
 			const mac = isMacPlatform();
-			const held = event.ctrlKey || (mac && event.metaKey);
+			const held = linkModifierHeld(event);
 			entry.pendingMouseMove = { ...point, ctrlKey: mac ? held || event.metaKey : held, metaKey: event.metaKey } as PointerEvent;
 			entry.mouseMoveRaf ??= requestAnimationFrame(flushPointerMove);
 		};
@@ -2880,17 +2903,10 @@ export class TerminalManager {
 	}
 
 	private _feedInline(entry: PaneEntry, bytes: Uint8Array): void {
-		if (!bytes.includes(0x1b)) {
+		const burstOpen = entry.feedBuffer !== null || entry.feedFlushTimer !== null;
+		if (!bytes.includes(0x1b) && !burstOpen) {
 			this._flushFeedBuffer(entry);
 			this._feedNow(entry, bytes);
-			return;
-		}
-		if (entry.feedBuffer === null && entry.feedFlushTimer === null) {
-			this._feedNow(entry, bytes);
-			entry.feedFlushTimer = setTimeout(() => {
-				entry.feedFlushTimer = null;
-				this._flushFeedBuffer(entry);
-			}, 8);
 			return;
 		}
 		if (bytes.byteLength >= MAX_FEED_BUFFER_BYTES) {
@@ -2899,7 +2915,20 @@ export class TerminalManager {
 			return;
 		}
 		entry.feedBuffer = entry.feedBuffer ? concatU8(entry.feedBuffer, bytes) : bytes;
-		if (shouldFlushFeedBuffer(entry.feedBuffer.length)) this._flushFeedBuffer(entry);
+		if (shouldFlushFeedBuffer(entry.feedBuffer.length)) {
+			this._flushFeedBuffer(entry);
+			return;
+		}
+		// Inline TUIs commonly split one logical frame across several ConPTY
+		// packets. Presenting packet one immediately exposes the erased/half-drawn
+		// frame. Hold one fixed 8 ms window: fragments commit together, while a
+		// continuous producer cannot postpone rendering indefinitely.
+		if (entry.feedFlushTimer === null) {
+			entry.feedFlushTimer = setTimeout(() => {
+				entry.feedFlushTimer = null;
+				this._flushFeedBuffer(entry);
+			}, 8);
+		}
 	}
 
 	private _feedImmediate(entry: PaneEntry, bytes: Uint8Array): void {
@@ -2918,7 +2947,11 @@ export class TerminalManager {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-		if (this._isInlineTui(entry)) this._feedInline(entry, bytes);
+		// The first packet of a TUI frame can precede the mode-changing CSI that
+		// lets the kernel classify it. Any ESC packet therefore opens the same
+		// bounded burst; plain follow-up fragments join while that burst is open.
+		const burstOpen = entry.feedBuffer !== null || entry.feedFlushTimer !== null;
+		if (this._isInlineTui(entry) || burstOpen || bytes.includes(0x1b)) this._feedInline(entry, bytes);
 		else this._feedImmediate(entry, bytes);
 	}
 
@@ -4028,7 +4061,7 @@ export class TerminalManager {
 			: entry.linkSpans.hitTest(entry.kernel, row, col);
 		if (!oscLink?.uri && !textSpan) return false;
 		const cwd = TerminalManager._currentPaneCwd(entry);
-		const workspaceRoot = TerminalManager._knownCwds()[0] ?? null;
+		const workspaceRoot = TerminalManager._workspaceRoot(entry) ?? null;
 		const plan = oscLink?.uri
 			? planHostOpen(oscLink.uri, 'osc8', {
 				paneCwd: cwd,

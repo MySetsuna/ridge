@@ -38,10 +38,11 @@ describe('terminal renderer bootstrap contracts', () => {
 		);
 	});
 
-	it('keeps link hover affordance continuous and thin', () => {
+	it('keeps modifier-link affordance continuous, thin, and platform-specific', () => {
 		expect(managerSource).toContain("'height:1px'");
-    expect(managerSource).toContain('regionsForSpan(entry.kernel, span)');
+		expect(managerSource).toContain('regionsForSpan(entry.kernel, span)');
 		expect(managerSource).toContain('createLinkHintOverlay');
-		expect(managerSource).toContain('点击可跳转');
+		expect(managerSource).toContain("'Ctrl+点击打开'");
+		expect(managerSource).toContain("'⌘+点击打开'");
 	});
 });

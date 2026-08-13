@@ -43,7 +43,9 @@
     remotePerfMark,
     remotePerfStart,
   } from '@ridge/remote/shared/transport/remotePerfTrace';
-  import type { DataProvider } from '$lib/transport';
+  import { getTransport, type DataProvider } from '$lib/transport';
+  import type { TerminalLinkOpenRequest } from '@ridge/remote/shared/terminal/ports';
+  import { probePathWithCache } from '@ridge/remote/shared/terminal/linkOpenHost';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { MobileRemoteUiState } from './lib/mobileRemoteUiState.svelte';
   import {
@@ -204,6 +206,8 @@
   // 直接打开的（sidebarTab 本为 null，如终端链接），关闭回终端。两代诉求兼得：
   // 旧 bug「关文件误回目录」只出现在终端来源场景，栈语义下同样成立。
   let viewerReturnTab: RemotePanel | null = null;
+  let linkedDirectory = $state<{ workspaceId: string; paneId: string; path: string } | null>(null);
+  let linkError = $state('');
   function openFileViewer(path: string, line?: number) {
     if (!panelAvailability.files) return;
     viewerReturnTab = ui.sidebarTab;
@@ -223,12 +227,45 @@
   }
 
   function handleRemoteTextLink(event: Event): void {
-    const detail = (event as CustomEvent<{ spanText?: unknown }>).detail;
-    if (typeof detail?.spanText !== 'string' || !detail.spanText) return;
-    const match = detail.spanText.match(/^(.*?)(?::(\d+))(?::(\d+))?$/);
-    const path = match?.[1] || detail.spanText;
-    const line = match?.[2] ? Number(match[2]) : undefined;
-    openFileViewer(path, line);
+    const detail = (event as CustomEvent<TerminalLinkOpenRequest>).detail;
+    const path = detail?.type === 'path' ? detail.path?.trim() : '';
+    if (!path) return;
+    const line = detail.line;
+    linkError = '';
+    const provider = dataProvider ?? getTransport();
+    const cacheKey = [
+      'shared',
+      detail.origin.workspaceId,
+      detail.origin.paneId,
+      path,
+    ].join('\0');
+    void probePathWithCache(cacheKey, async (signal) => {
+      try {
+        await provider.getFileTree(path, 0, signal);
+        return { exists: true, isDirectory: true };
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (/not a directory/i.test(message)) return { exists: true, isDirectory: false };
+        if (/not exist|no such file|not found/i.test(message)) return { exists: false };
+        throw error;
+      }
+    }).then((proof) => {
+      if (!proof.exists) {
+        linkError = `路径不存在：${path}`;
+      } else if (proof.isDirectory) {
+        linkedDirectory = {
+          workspaceId: detail.origin.workspaceId,
+          paneId: detail.origin.paneId,
+          path,
+        };
+        ui.sidebarTab = 'files';
+      } else {
+        openFileViewer(path, line);
+      }
+    }).catch((error) => {
+      linkError = `路径验证失败：${error instanceof Error ? error.message : String(error)}`;
+    });
   }
 
   onMount(() => {
@@ -1047,6 +1084,9 @@
 </script>
 
 <div class="app-root" class:embedded>
+  {#if linkError}
+    <button class="link-error" onclick={() => linkError = ''} aria-label="关闭路径错误">{linkError}</button>
+  {/if}
   {#if wsState !== 'connected'}
     <!-- §断连提示 + §fail-grading（任务 A 问题1）: live link status.
          - 非 error（disconnected/connecting）: 传输在自动重连 → 「重连中」，不阻断。
@@ -1206,6 +1246,10 @@
         cwd={activeCwd}
         workspaceId={ui.activeWorkspaceId}
         paneId={ui.activePaneId ?? undefined}
+        initialDirectory={linkedDirectory?.workspaceId === ui.activeWorkspaceId
+          && linkedDirectory?.paneId === ui.activePaneId
+          ? linkedDirectory.path
+          : ''}
         {ws}
         {panes}
         attentionPaneIds={activeAttentionPaneIds()}
@@ -1318,6 +1362,7 @@
   .create-btn:active{background:color-mix(in srgb,var(--rg-accent) 26%,transparent)}
   .create-btn:disabled{opacity:.5;cursor:not-allowed}
   .create-error{font-size:12px;color:var(--rg-ansi-red)}
+  .link-error{flex:0 0 auto;width:100%;border:0;padding:7px 12px;background:var(--rg-ansi-red,#cf222e);color:#fff;font-size:12px;text-align:center;z-index:51}
   .sidebar-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:40;touch-action:none}
   /* Keep the live Agent attention poll mounted without adding a second visible
      drawer or layout work while the Team tab is closed. */

@@ -50,9 +50,14 @@ const KNOWN_EXTS = new Set([
 
 const URL_RE = /(?:https?:\/\/|file:\/\/\/?)[^\s<>"'`{}|\\^[\]]+/g;
 const WIN_ABS_RE = /(?<![A-Za-z0-9])([a-zA-Z]:[\\/][^\s<>"'`|?*]+)/g;
-const POSIX_ABS_RE = /(?<![A-Za-z0-9_/])(\/[A-Za-z0-9_.\-/]+(?:\.[A-Za-z0-9]{1,8})?)/g;
+const POSIX_ABS_RE = /(?<![A-Za-z0-9_/])(\/[A-Za-z0-9_.\-/]+(?::\d+(?::\d+)?)?)/g;
 const HOME_RE = /(?<!\w)(~\/[^\s<>"'`|?*]+)/g;
 const REL_RE = /(?<!\w)(\.{1,2}[\\/][^\s<>"'`|?*]+)/g;
+const NESTED_REL_RE = /(?<![A-Za-z0-9_:/])([A-Za-z0-9_.@-]+[\\/][^\s<>"'`|?*]+)/g;
+const BARE_FILE_RE = /(?<![A-Za-z0-9_./\\])([A-Za-z0-9_.@-]+\.[A-Za-z0-9]{1,8}(?::\d+(?::\d+)?)?)(?![A-Za-z0-9_])/g;
+const QUOTED_PATH_RE = /(["'])([A-Za-z]:[\\/][^"'`\r\n]+|\/[^"'`\r\n]+|~[\\/][^"'`\r\n]+|\.{1,2}[\\/][^"'`\r\n]+)\1/g;
+
+const LOCATION_SUFFIX_RE = /(?::\d+)(?::\d+)?$/;
 
 export function trimTrailingSeparators(s: string): string {
   let end = s.length;
@@ -70,22 +75,37 @@ export function trimTrailingPunct(s: string): string {
 
 /** 进一步过滤"看起来不像路径"的命中：要求至少包含一个分隔符，或末段含已知扩展名。 */
 function looksLikePath(s: string): boolean {
-  if (s.includes('/') || s.includes('\\')) return true;
-  const m = /\.([A-Za-z0-9]{1,8})$/.exec(s);
-  if (!m) return false;
-  return KNOWN_EXTS.has(m[1].toLowerCase());
+  const withoutLocation = s.replace(LOCATION_SUFFIX_RE, '');
+  const base = withoutLocation.split(/[\\/]/).pop() ?? '';
+  const m = /\.([A-Za-z0-9]{1,8})$/.exec(base);
+  if (/^\.{1,2}[\\/]/.test(s) || /[\\/]$/.test(s)) return true;
+  if (m && KNOWN_EXTS.has(m[1].toLowerCase())) return true;
+  if (/^[A-Za-z]:[\\/]/.test(s) || s.startsWith('~/') || s.startsWith('~\\')) return true;
+  // Bare `/word` is commonly a command switch, division, or prose. Nested
+  // POSIX paths remain click candidates and are proven by the origin on click.
+  if (s.startsWith('/')) return withoutLocation.slice(1).includes('/');
+  if (withoutLocation.includes('/') || withoutLocation.includes('\\')) return true;
+  return false;
 }
 
-function pushSpan(spans: LinkSpan[], row: number, full: string, m: RegExpExecArray, kind: LinkSpanKind): void {
-  const raw = m[0];
+function pushRawSpan(
+  spans: LinkSpan[],
+  row: number,
+  raw: string,
+  start: number,
+  kind: LinkSpanKind,
+): void {
   const trimmed = trimTrailingPunct(raw);
   if (!trimmed) return;
   if ((kind === 'win-abs' || kind === 'posix-abs' || kind === 'home' || kind === 'rel') && !looksLikePath(trimmed)) {
     return;
   }
-  const start = m.index;
   const end = start + trimmed.length;
   spans.push({ row, c0: start, c1: end, text: trimmed, kind });
+}
+
+function pushSpan(spans: LinkSpan[], row: number, m: RegExpExecArray, kind: LinkSpanKind): void {
+  pushRawSpan(spans, row, m[0], m.index, kind);
 }
 
 /** 单行扫描。返回该行的所有 spans，已按 c0 排序。 */
@@ -96,14 +116,29 @@ function scanRow(row: number, line: string): LinkSpan[] {
     let m: RegExpExecArray | null;
     while ((m = re.exec(line)) !== null) {
       const kind: LinkSpanKind = m[0].startsWith('file://') ? 'file-url' : 'url';
-      pushSpan(spans, row, line, m, kind);
+      pushSpan(spans, row, m, kind);
     }
+  }
+  QUOTED_PATH_RE.lastIndex = 0;
+  let quoted: RegExpExecArray | null;
+  while ((quoted = QUOTED_PATH_RE.exec(line)) !== null) {
+    const raw = quoted[2]!;
+    const kind: LinkSpanKind = /^[A-Za-z]:[\\/]/.test(raw)
+      ? 'win-abs'
+      : raw.startsWith('~/') || raw.startsWith('~\\')
+        ? 'home'
+        : /^\.{1,2}[\\/]/.test(raw)
+          ? 'rel'
+          : 'posix-abs';
+    pushRawSpan(spans, row, raw, quoted.index + 1, kind);
   }
   // 路径类。按更具体优先级跑：win-abs → home → rel → posix-abs。
   for (const [re, kind] of [
     [WIN_ABS_RE, 'win-abs'],
     [HOME_RE, 'home'],
     [REL_RE, 'rel'],
+    [NESTED_REL_RE, 'rel'],
+    [BARE_FILE_RE, 'rel'],
     [POSIX_ABS_RE, 'posix-abs'],
   ] as Array<[RegExp, LinkSpanKind]>) {
     re.lastIndex = 0;
@@ -112,7 +147,7 @@ function scanRow(row: number, line: string): LinkSpan[] {
       // 跳过已被 URL 段覆盖的位置，避免把 https://foo/bar 内的 /bar 二次匹配
       const overlap = spans.some((s) => m!.index < s.c1 && m!.index + m![0].length > s.c0);
       if (overlap) continue;
-      pushSpan(spans, row, line, m, kind);
+      pushSpan(spans, row, m, kind);
     }
   }
   spans.sort((a, b) => a.c0 - b.c0);

@@ -147,6 +147,19 @@ pub struct HistoryOverlay {
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) const HISTORY_OVERLAY_COL_CAP: usize = 80;
 
+/// Shell history is an elevated surface, not another transparent terminal
+/// cell. Derive it from the active theme while forcing full opacity so a
+/// wallpaper or translucent terminal background can never bleed through.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn history_overlay_surface(bg: [u8; 4], fg: [u8; 4]) -> [u8; 4] {
+    let mut color = [0u8; 4];
+    for index in 0..3 {
+        color[index] = (bg[index] as f32 * 0.88 + fg[index] as f32 * 0.12).round() as u8;
+    }
+    color[3] = 255;
+    color
+}
+
 #[cfg(any(target_arch = "wasm32", test))]
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
@@ -1110,7 +1123,9 @@ fn compute_row_hash(row: &crate::term::cell::Row) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_row_hash, history_overlay_geometry, HistoryOverlay};
+    use super::{
+        compute_row_hash, history_overlay_geometry, history_overlay_surface, HistoryOverlay,
+    };
     use crate::term::cell::{Cell, HyperlinkSpan, Row};
 
     fn row_with_text(text: &str, cols: usize) -> Row {
@@ -1169,6 +1184,18 @@ mod tests {
         let g = history_overlay_geometry(&o, 10, 12, 8.0, 16.0).expect("geometry");
         assert!(g.visible_count < 12);
         assert!(g.panel_y + g.panel_h <= 5.0 * 16.0);
+    }
+
+    #[test]
+    fn history_overlay_surface_is_theme_derived_and_always_opaque() {
+        assert_eq!(
+            history_overlay_surface([10, 20, 30, 0], [110, 120, 130, 64]),
+            [22, 32, 42, 255]
+        );
+        assert_eq!(
+            history_overlay_surface([245, 245, 245, 80], [5, 5, 5, 0])[3],
+            255
+        );
     }
 
     #[test]

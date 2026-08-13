@@ -1029,11 +1029,16 @@
     return e.button === 1 ? 1 : e.button === 2 ? 2 : 0; // left=0 middle=1 right=2
   }
 
+  function linkModifierHeld(e: Pick<MouseEvent, 'ctrlKey' | 'metaKey'>): boolean {
+    const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPod|iPad/.test(navigator.platform || '');
+    return isMac ? e.metaKey : e.ctrlKey;
+  }
+
   function handleMouseDown(e: MouseEvent) {
     if (!attached || Date.now() < suppressMouseUntil) return;
     const cell = clientToCell(e.clientX, e.clientY);
     if (!cell) return;
-    if (e.button === 0 && manager.openLinkAt(paneId, cell.row, cell.col)) {
+    if (e.button === 0 && linkModifierHeld(e) && manager.openLinkAt(paneId, cell.row, cell.col)) {
       e.preventDefault();
       return;
     }

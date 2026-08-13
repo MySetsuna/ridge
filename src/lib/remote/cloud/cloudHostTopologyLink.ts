@@ -274,6 +274,24 @@ export class CloudHostTopologyLink implements HostTopologyLink {
     });
   }
 
+  async inspectPath(path: string, signal?: AbortSignal): Promise<{ exists: boolean; isDirectory?: boolean }> {
+    if (signal?.aborted) return { exists: false };
+    try {
+      const node = await this.rpc.request<{ is_dir?: boolean }>(
+        'get_file_tree',
+        { path, depth: 0 },
+        { signal },
+      );
+      return { exists: true, isDirectory: node.is_dir === true };
+    } catch (error) {
+      if (signal?.aborted) return { exists: false };
+      const detail = error instanceof Error ? error.message : String(error);
+      if (/not a directory/i.test(detail)) return { exists: true, isDirectory: false };
+      if (/not exist|no such file|not found/i.test(detail)) return { exists: false };
+      throw error;
+    }
+  }
+
   subscribePane(pane: PaneRef): void {
     this.activatePane(pane);
     this.subscribedPanes.set(paneRefKey(pane), pane);

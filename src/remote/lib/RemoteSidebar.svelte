@@ -11,11 +11,12 @@
   import type { DataProvider } from '$lib/transport';
   import { useQueryClient } from '@tanstack/svelte-query';
 
-  let { tab = 'files', cwd = '', workspaceId = '', paneId = '', available, ws, panes = [], attentionPaneIds = [], dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane, onAttentionChange }: {
+  let { tab = 'files', cwd = '', workspaceId = '', paneId = '', initialDirectory = '', available, ws, panes = [], attentionPaneIds = [], dataProvider, onClose, onTabChange, onOpenFile, onOpenDiff, onSelectPane, onAttentionChange }: {
     tab?: RemotePanel;
     cwd?: string;
     workspaceId?: string;
     paneId?: string;
+    initialDirectory?: string;
     available: Readonly<Record<RemotePanel, boolean>>;
     /** P1 roster：team 面板取数用（capability `teammate` 协商后 tab 才可见）。 */
     ws?: RemoteLink;
@@ -82,7 +83,7 @@
   <div class="sb-body">
     {#key `${ws ? remoteSessionId(ws) : 0}:${workspaceId}:${paneId}:${cwd}`}
       {#if tab === 'files'}
-        <SidebarFileTree {provider} {onOpenFile} />
+        <SidebarFileTree {provider} {onOpenFile} initialPath={initialDirectory} />
       {:else if tab === 'git'}
         <RemoteGitPanel {provider} {onOpenDiff} />
       {:else if tab === 'team' && ws}

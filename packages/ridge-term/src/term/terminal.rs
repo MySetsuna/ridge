@@ -722,7 +722,10 @@ impl Terminal {
     pub fn dump_visible_text(&self) -> Vec<String> {
         let mut out = Vec::with_capacity(self.grid.rows());
         for r in 0..self.grid.rows() {
-            let row = self.grid.row(r).unwrap();
+            // Keep text hit-testing on the same viewport source as rendering.
+            // Reading the live grid here made links drift/disappear after the
+            // user scrolled into history even though the canvas looked right.
+            let row = self.viewport_row(r).unwrap();
             let mut s = String::with_capacity(row.cells.len());
             for cell in &row.cells {
                 if cell.width == 0 {
@@ -1311,6 +1314,17 @@ mod tests {
         assert!(t.scroll_offset() > 0);
         t.scroll_to_bottom();
         assert_eq!(t.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn dump_visible_text_tracks_scrolled_viewport() {
+        let mut t = Terminal::new(2, 8, 8);
+        t.feed(b"a\r\nb\r\nc\r\nd");
+        assert_eq!(t.dump_visible_text(), ["c", "d"]);
+
+        t.scroll_up_view(2);
+
+        assert_eq!(t.dump_visible_text(), ["a", "b"]);
     }
 
     // ─── user-scroll lock ─────────────────────────────────────────────

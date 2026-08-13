@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildOpenPlanFromHit,
   decodeUnderlineDataset,
@@ -8,9 +8,30 @@ import {
   looksOutsideWorkspace,
   planHostOpen,
   underlineCssTokens,
+  probePathWithCache,
+  clearPathProbeCache,
 } from './linkOpenHost';
 
 describe('linkOpenHost (C51)', () => {
+  it('deduplicates probes, caches negatives, and aborts a timed-out origin request', async () => {
+    clearPathProbeCache();
+    const inspect = vi.fn(async () => ({ exists: false }));
+    const [first, second] = await Promise.all([
+      probePathWithCache('same', inspect),
+      probePathWithCache('same', inspect),
+    ]);
+    expect(first).toEqual({ exists: false });
+    expect(second).toEqual(first);
+    expect(inspect).toHaveBeenCalledTimes(1);
+    await probePathWithCache('same', inspect);
+    expect(inspect).toHaveBeenCalledTimes(1);
+
+    let aborted = false;
+    await expect(probePathWithCache('hang', (signal) => new Promise(() => {
+      signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+    }), { timeoutMs: 5 })).rejects.toThrow('path probe timeout');
+    expect(aborted).toBe(true);
+  });
   it('opens safe http urls', () => {
     const a = planHostOpen('https://example.com/x', 'url');
     expect(a).toEqual({ type: 'open_url', href: 'https://example.com/x' });

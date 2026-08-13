@@ -73,12 +73,85 @@ function planPathOpen(
   if (ctx.workspaceRoot && looksOutsideWorkspace(path, ctx.workspaceRoot)) {
     // still allow absolute opens outside workspace (editor may refuse)
   }
-  if (isProbablyDirectory(path) || (ctx.preferEditor === false && !line)) {
-    if (isProbablyDirectory(path)) {
-      return { type: 'reveal_in_tree', path };
-    }
-  }
+  if (isProbablyDirectory(path)) return { type: 'reveal_in_tree', path };
   return { type: 'open_file', path, line, col };
+}
+
+export interface PathProbeResult {
+  exists: boolean;
+  isDirectory?: boolean;
+}
+
+interface PathProbeCacheEntry {
+  expiresAt: number;
+  value?: PathProbeResult;
+  pending?: Promise<PathProbeResult>;
+  abort?: () => void;
+}
+
+const PATH_PROBE_TIMEOUT_MS = 2_000;
+const PATH_PROBE_TTL_MS = 15_000;
+const PATH_PROBE_CACHE_MAX = 128;
+const pathProbeCache = new Map<string, PathProbeCacheEntry>();
+
+/** Click-only path proof. Timeout aborts origin RPC; successful positive and
+ * negative proofs are briefly cached so repeated clicks never fan out IO. */
+export async function probePathWithCache(
+  key: string,
+  inspect: (signal: AbortSignal) => Promise<PathProbeResult>,
+  options: { timeoutMs?: number; ttlMs?: number; now?: () => number } = {},
+): Promise<PathProbeResult> {
+  const now = options.now ?? Date.now;
+  const cached = pathProbeCache.get(key);
+  if (cached?.pending) return cached.pending;
+  if (cached?.value && cached.expiresAt > now()) return cached.value;
+  if (cached) pathProbeCache.delete(key);
+
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs ?? PATH_PROBE_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort(new Error('path probe timeout'));
+      reject(new Error('path probe timeout'));
+    }, timeoutMs);
+  });
+  const pending = Promise.race([inspect(controller.signal), timeout])
+    .then((value) => {
+      const entry: PathProbeCacheEntry = {
+        value,
+        expiresAt: now() + (options.ttlMs ?? PATH_PROBE_TTL_MS),
+      };
+      pathProbeCache.delete(key);
+      pathProbeCache.set(key, entry);
+      while (pathProbeCache.size > PATH_PROBE_CACHE_MAX) {
+        const oldest = pathProbeCache.keys().next().value as string | undefined;
+        if (oldest === undefined) break;
+        pathProbeCache.delete(oldest);
+      }
+      return value;
+    })
+    .catch((error) => {
+      pathProbeCache.delete(key);
+      throw error;
+    })
+    .finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
+  pathProbeCache.set(key, {
+    pending,
+    expiresAt: 0,
+    abort: () => controller.abort(new Error('path probe cancelled')),
+  });
+  return pending;
+}
+
+export function clearPathProbeCache(): void {
+  for (const entry of pathProbeCache.values()) {
+    entry.abort?.();
+    void entry.pending?.catch(() => {});
+  }
+  pathProbeCache.clear();
 }
 
 export function isSafeHttpUrl(href: string): boolean {

@@ -56,7 +56,9 @@ use super::gpu_context::{GpuContext, ATLAS_SUPERSAMPLE};
 use super::surface_host::{ScissorRect, SurfaceHost};
 use crate::render::backend::{CursorDraw, FrameMetrics, RenderBackend, RowDraw, Theme};
 use crate::render::procedural_box;
-use crate::render::renderer::{history_overlay_geometry, history_text, history_text_width};
+use crate::render::renderer::{
+    history_overlay_geometry, history_overlay_surface, history_text, history_text_width,
+};
 use crate::term::attr_table::AttrTable;
 use crate::term::cell::{scan_line_path, RenderPath};
 
@@ -1344,7 +1346,7 @@ impl WebGpuPaneBackend {
         let inner_x = panel_x + pad_w;
         let inner_y = panel_y_top + pad_h;
 
-        let bg = rgba_u8_to_f32(theme.bg);
+        let bg = rgba_u8_to_f32(history_overlay_surface(theme.bg, theme.fg));
         let fg = rgba_u8_to_f32(theme.fg);
 
         // 1) Panel background.

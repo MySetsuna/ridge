@@ -13,6 +13,8 @@ class FakeRpc {
   rejectRename = false;
   rejectSave = false;
   paneLayout: PaneNode | null = null;
+  fileTreeResult: unknown = undefined;
+  fileTreeError: Error | null = null;
   notifications: Array<{ method: string; params: unknown }> = [];
   reconnectHooks = new Set<() => void>();
 
@@ -47,6 +49,10 @@ class FakeRpc {
     if (method === 'split_pane') return Promise.resolve({ pane_id: 'pane-new' });
     if (method === 'change_pane_shell' || method === 'activate_pane_pty') return Promise.resolve(null);
     if (method === 'get_pane_layout_for') return Promise.resolve(this.paneLayout);
+    if (method === 'get_file_tree') {
+      if (this.fileTreeError) return Promise.reject(this.fileTreeError);
+      return Promise.resolve(this.fileTreeResult);
+    }
     return new Promise(() => {});
   }
 
@@ -98,6 +104,21 @@ describe('CloudHostTopologyLink pane lifecycle', () => {
 
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
+
+  it('probes paths through the cloud origin and distinguishes file, directory, and missing', async () => {
+    const rpc = new FakeRpc();
+    const link = linkWith(rpc);
+    rpc.fileTreeResult = { is_dir: true };
+    await expect(link.inspectPath('/srv/dir')).resolves.toEqual({ exists: true, isDirectory: true });
+    rpc.fileTreeError = new Error('Path is not a directory: /srv/a.ts');
+    await expect(link.inspectPath('/srv/a.ts')).resolves.toEqual({ exists: true, isDirectory: false });
+    rpc.fileTreeError = new Error('Path does not exist: /srv/missing');
+    await expect(link.inspectPath('/srv/missing')).resolves.toEqual({ exists: false });
+    expect(rpc.requests.filter((request) => request.method === 'get_file_tree'))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ params: { path: '/srv/dir', depth: 0 } }),
+      ]));
+  });
 
   it('preserves Agent state, id, and CWD in the cloud pane projection', async () => {
     const rpc = new FakeRpc();
