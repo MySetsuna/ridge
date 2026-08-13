@@ -298,6 +298,7 @@ mod tests {
             launch_profile: profile.map(str::to_owned),
             cwd: cwd.map(str::to_owned),
             status: "running".into(),
+            child_pid: None,
             cols: 80,
             rows: 24,
             oldest_seq: 0,

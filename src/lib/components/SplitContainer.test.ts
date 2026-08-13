@@ -42,11 +42,16 @@ describe('desktop Pane Agent border contract', () => {
     expect(communeSource).toContain('displayTitle={livePaneTitles.get');
     expect(memberSource).toContain('data-agent-attention={attention ?? \'\'}');
     expect(memberSource).toContain("attention === 'idle'");
+    expect(memberSource).toContain('onfocusin={acknowledgeAttention}');
+    expect(memberSource).toContain('onpointerdown={acknowledgeAttention}');
+    expect(memberSource).not.toContain('profile?.recentOutput');
   });
 
   it('only arms idle attention after a working-to-idle transition', () => {
     expect(communeSource).toContain('agentAttentionForTransition');
     expect(communeSource).toContain('observedAgentStatuses');
     expect(communeSource).toContain('get(agentPaneAttentionStore)[key]');
+    expect(communeSource).toContain("profile.outputSeq > 0");
+    expect(communeSource).not.toContain('setAgentPaneAttention(oldWorkspaceId, oldPaneId, null)');
   });
 });

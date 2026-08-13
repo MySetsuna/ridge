@@ -8,6 +8,7 @@ import {
   agentStatusLabel,
   aggregateAgentCardStatus,
   buildAgentHistoryGroups,
+  latestReplyForProfile,
   normalizeAgentIdentity,
   reorderAgentGroups,
   shouldRefreshAgentHistory,
@@ -30,10 +31,43 @@ describe('agent commune view model', () => {
     expect(groups[0].replies.map((reply) => reply.sessionId)).toEqual(['new', 'old']);
   });
 
+  it('binds a member reply by exact native session and selects the latest assistant item', () => {
+    const replies = [
+      { agent: 'Codex', sessionId: 'session-a', timestamp: 1, text: 'old' },
+      { agent: 'codex', sessionId: 'session-a', timestamp: 3, text: 'actual latest' },
+      { agent: 'Codex', sessionId: 'session-b', timestamp: 9, text: 'wrong session' },
+    ];
+    expect(latestReplyForProfile(replies, { id: 'kernel:pane', name: 'Codex', sessionId: 'session-a' })?.text)
+      .toBe('actual latest');
+    expect(latestReplyForProfile(replies, { id: 'Codex', name: 'Codex' })).toBeUndefined();
+  });
+
+  it('falls back from Ridge synthetic session ids to exact agent type and cwd', () => {
+    const replies = [
+      { agent: 'Codex', sessionId: 'native-a', timestamp: 2, cwd: 'C:/repo', text: 'right' },
+      { agent: 'Codex', sessionId: 'native-b', timestamp: 8, cwd: 'C:/other', text: 'wrong cwd' },
+    ];
+    expect(latestReplyForProfile(replies, {
+      id: 'kernel:pane', name: 'Pane title', executable: 'codex.exe',
+      sessionId: 'session:ridge-generated', cwd: 'C:\\repo',
+    })?.text).toBe('right');
+  });
+
+  it('treats a process cwd trailing separator as the same native session cwd', () => {
+    const replies = [
+      { agent: 'Codex', sessionId: 'native-a', timestamp: 2, cwd: 'C:/code/wind', text: 'right' },
+    ];
+    expect(latestReplyForProfile(replies, {
+      id: 'auto:codex:pane', name: 'codex', sessionId: 'session:ridge-generated', cwd: 'C:\\code\\wind\\',
+    })?.text).toBe('right');
+  });
+
   it('prioritizes approval and active states over history completion', () => {
     expect(agentCardStatus(undefined, false)).toBe('completed');
     expect(agentCardStatus({ status: 'Idle', activity: 'idle' }, false)).toBe('idle');
     expect(agentCardStatus({ status: 'Working', activity: 'working' }, false)).toBe('working');
+    expect(agentCardStatus({ status: 'Working', activity: 'idle' }, false)).toBe('idle');
+    expect(agentCardStatus({ status: 'Working' }, false)).toBe('working');
     expect(agentCardStatus({ status: 'Idle', activity: 'idle' }, true)).toBe('waiting');
     // Remote roster DTOs carry the same string status shape; stopped states
     // must not drift into a yellow/silent idle rail on mobile.

@@ -356,6 +356,7 @@ pub struct PtyInfo {
     pub launch_profile: Option<String>,
     pub cwd: Option<String>,
     pub status: String,
+    pub child_pid: Option<u32>,
     pub cols: u16,
     pub rows: u16,
 }
@@ -442,6 +443,7 @@ impl PtyRegistry {
             launch_profile: launch.launch_profile.map(str::to_string),
             cwd: launch.cwd.map(str::to_string),
             status: "Idle".to_string(),
+            child_pid: bridge.process_id(),
             cols: DEFAULT_COLS,
             rows: DEFAULT_ROWS,
         };
@@ -467,6 +469,7 @@ impl PtyRegistry {
         cwd: Option<&str>,
     ) -> Result<(Uuid, mpsc::Receiver<Vec<u8>>)> {
         let (bridge, output) = PtyBridge::spawn(shell, cwd)?;
+        let child_pid = bridge.process_id();
         let id = Uuid::new_v4();
         self.ptys.lock().insert(
             id,
@@ -489,6 +492,7 @@ impl PtyRegistry {
                     launch_profile: None,
                     cwd: cwd.map(str::to_string),
                     status: "Idle".to_string(),
+                    child_pid,
                     cols: DEFAULT_COLS,
                     rows: DEFAULT_ROWS,
                 },
@@ -783,6 +787,10 @@ impl PtyBridge {
         writer.write_all(data).context("PTY write failed")?;
         writer.flush().context("PTY flush failed")?;
         Ok(())
+    }
+
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.lock().process_id()
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {

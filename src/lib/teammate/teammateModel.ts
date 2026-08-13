@@ -63,6 +63,9 @@ export interface TeammateProfile {
   readonly recentOutput: string;
   /** Kernel-owned identity/fencing fields; absent for legacy projections. */
   readonly sessionId?: string;
+  readonly executable?: string;
+  /** Agent process cwd; authoritative for binding native history fallback. */
+  readonly cwd?: string;
   readonly workspaceId?: string;
   readonly generation?: number;
   readonly lease?: string;
@@ -194,6 +197,8 @@ function parseProfile(v: unknown): TeammateProfile | null {
     outputSeq: typeof rec.outputSeq === 'number' ? rec.outputSeq : 0,
     recentOutput: asString(rec.recentOutput) ?? '',
     sessionId: asString(rec.sessionId) ?? asString(rec.session_id),
+    executable: asString(rec.executable),
+    cwd: asString(rec.cwd),
     workspaceId: asString(rec.workspaceId) ?? asString(rec.workspace_id),
     generation: typeof rec.generation === 'number' ? rec.generation : undefined,
     lease: asString(rec.lease),

@@ -78,7 +78,9 @@
     agentStatusLabel,
     aggregateAgentCardStatus,
     buildAgentHistoryGroups,
+    latestReplyForProfile,
     normalizeAgentIdentity,
+    shouldRefreshAgentHistory,
     type AgentCardStatus,
   } from './agentCommuneModel';
 
@@ -147,6 +149,8 @@
   let observedAgentSignals = new Map<string, AgentPaneAttention | null>();
   let observedAgentStatuses = new Map<string, AgentPaneStatus | null>();
   const recentReplyGroups = $derived(buildAgentHistoryGroups(recentReplies));
+  let historyLoadedAt = 0;
+  let historyRefreshInFlight: Promise<void> | null = null;
   const agentProfilesByIdentity = $derived.by(() => {
     const profiles = new Map<string, TeammateProfile>();
     for (const member of allMembers) {
@@ -194,7 +198,34 @@
     return aggregateAgentCardStatus(group.replies.map(statusForReply));
   }
 
-  function syncAgentAttention(): void {
+  function recentReplyFor(profile: TeammateProfile, ownerWorkspaceId = workspaceId): string | undefined {
+    const paneCwd = profile.paneId
+      ? $paneCwdStore[`${profile.workspaceId ?? ownerWorkspaceId ?? ''}:${profile.paneId}`]
+      : undefined;
+    return latestReplyForProfile(recentReplies, { ...profile, cwd: profile.cwd ?? paneCwd })?.text;
+  }
+
+  async function refreshRecentReplies(force = false): Promise<void> {
+    if (!force && !shouldRefreshAgentHistory(historyLoadedAt)) return;
+    if (historyRefreshInFlight) return historyRefreshInFlight;
+    historyRefreshInFlight = (async () => {
+      try {
+        recentReplies = await invoke<AgentRecentReply[]>('read_agent_recent_replies', {
+          projectPaths: [],
+          limit: 24,
+        });
+        historyLoadedAt = Date.now();
+      } catch {
+        // Keep the last good JSONL snapshot; PTY tail is not an answer fallback.
+      } finally {
+        historyRefreshInFlight = null;
+      }
+    })();
+    return historyRefreshInFlight;
+  }
+
+  function syncAgentAttention(): boolean {
+    let completionDetected = false;
     const next = new Map<string, AgentPaneAttention | null>();
     const nextStatuses = new Map<string, AgentPaneStatus | null>();
     for (const member of allMembers) {
@@ -204,17 +235,25 @@
       const pending = pendingFor(profile).length > 0;
       const paneStatus = agentPaneStatus(profile, pending);
       const previousStatus = observedAgentStatuses.get(key);
-      const signal: AgentPaneAttention | null = agentAttentionForTransition(
+      let signal: AgentPaneAttention | null = agentAttentionForTransition(
         previousStatus,
         paneStatus,
         pending,
         profile.status,
       );
+      // Polls do not run while this panel has never been mounted. A member may
+      // therefore first appear already idle after producing output. Treat an
+      // idle first observation with a real sequence as unread completion; a
+      // pristine shell/agent pane (sequence 0) remains neutral.
+      if (signal === null && previousStatus === undefined && paneStatus === 'idle' && profile.outputSeq > 0) {
+        signal = 'idle';
+      }
       const previous = observedAgentSignals.get(key);
       // A transient stays visible until the target pane actually receives focus.
       // Returning to a neutral backend state only arms the next transition; it
       // must not acknowledge an event the user has not inspected.
       if (signal !== null && signal !== previous) {
+        if (signal === 'idle' || signal === 'stopped') completionDetected = true;
         const current = get(agentPaneAttentionStore)[key];
         // Never downgrade an unacknowledged event; a new waiting/stopped event
         // may upgrade an existing idle highlight. Focus remains the only clear.
@@ -232,11 +271,15 @@
       if (separator <= 0) continue;
       const oldWorkspaceId = key.slice(0, separator);
       const oldPaneId = key.slice(separator + 1);
-      setAgentPaneAttention(oldWorkspaceId, oldPaneId, null);
+      // A completed/exited Agent disappearing from the roster is itself an
+      // unread completion. Keep both card/pane attention until user focus.
+      const current = get(agentPaneAttentionStore)[key];
+      if (!current) setAgentPaneAttention(oldWorkspaceId, oldPaneId, 'idle');
       setAgentPaneStatus(oldWorkspaceId, oldPaneId, null);
     }
     observedAgentSignals = next;
     observedAgentStatuses = nextStatuses;
+    return completionDetected;
   }
 
   function canResume(reply: AgentRecentReply): boolean {
@@ -454,7 +497,8 @@
     } catch {
       hitlPending = [];
     }
-    syncAgentAttention();
+    const completionDetected = syncAgentAttention();
+    if (completionDetected) await refreshRecentReplies(true);
     // Heavy: decisions / memory / git / audit — not every 3s (iter 50 perf).
     if (doHeavy) {
       try {
@@ -478,18 +522,7 @@
       } catch {
         hitlAuditItems = [];
       }
-      try {
-        recentReplies = await invoke<AgentRecentReply[]>('read_agent_recent_replies', {
-          // History is an Agent identity surface, not a current-pane surface:
-          // an Agent's sessions must remain visible when their cwd is no longer
-          // mounted. The backend keeps this scan bounded and deduplicates by
-          // (agent, native session id).
-          projectPaths: [],
-          limit: 24,
-        });
-      } catch {
-        recentReplies = [];
-      }
+      await refreshRecentReplies();
       void refreshHosts();
     }
     reschedulePoll();
@@ -861,6 +894,7 @@
                         workspaceId={runningMember.workspaceId}
                         sourceLabel={runningMember.workspaceName}
                         pending={pendingFor(m)}
+                        recentReply={recentReplyFor(m, runningMember.workspaceId)}
                         groupBadge={null}
                         onRefresh={() => void refresh()}
                       />
@@ -966,6 +1000,7 @@
               workspaceId={member.workspaceId}
               sourceLabel={member.workspaceName}
               pending={pendingFor(m)}
+              recentReply={recentReplyFor(m, member.workspaceId)}
               groupBadge={grp ? { name: grp.name, color: grp.color } : null}
               onRefresh={() => void refresh()}
             />
@@ -983,6 +1018,7 @@
           {workspaceId}
           {filePath}
           {hitlPending}
+          {recentReplyFor}
           onRefresh={() => void refresh()}
         />
       {:else}

@@ -954,6 +954,7 @@ pub async fn domain_pty_list(
                 "launch_profile": info.launch_profile,
                 "cwd": info.cwd,
                 "status": info.status,
+                "child_pid": info.child_pid,
                 "cols": info.cols,
                 "rows": info.rows,
                 "oldest_seq": oldest_seq,
@@ -2228,6 +2229,7 @@ mod tests {
         assert_eq!(listed["source"], "ridge-kernel");
         assert_eq!(listed["ptys"][0]["pty_id"], pane_id.to_string());
         assert_eq!(listed["ptys"][0]["program"], Value::Null);
+        assert!(listed["ptys"][0]["child_pid"].as_u64().is_some());
         state.ptys.destroy(pane_id).expect("destroy test PTY");
     }
 

@@ -19,6 +19,53 @@ export interface AgentHistoryReplyLike {
   timestamp: number;
 }
 
+export interface AgentReplyLookupProfile {
+  id: string;
+  name: string;
+  sessionId?: string;
+  executable?: string;
+  cwd?: string;
+}
+
+function normalizeCwdIdentity(cwd: string): string {
+  const normalized = cwd.trim().replaceAll('\\', '/');
+  if (/^(?:[a-z]:)?\/+$/i.test(normalized)) {
+    return normalized.replace(/\/+$/, '/').toLocaleLowerCase();
+  }
+  return normalized.replace(/\/+$/, '').toLocaleLowerCase();
+}
+
+/** Bind a live card to history only by native session id; names are fallback
+ * agent-type hints, never session identity. */
+export function latestReplyForProfile<T extends AgentHistoryReplyLike>(
+  replies: readonly T[],
+  profile: AgentReplyLookupProfile,
+): T | undefined {
+  const sessionId = profile.sessionId?.trim();
+  const identities = new Set<string>();
+  for (const raw of [profile.name, profile.id, profile.executable ?? '']) {
+    const normalized = raw.trim().toLocaleLowerCase();
+    if (!normalized) continue;
+    identities.add(normalized);
+    const executable = normalized.split(/[\\/]/).at(-1)?.replace(/\.exe$/, '');
+    if (executable) identities.add(executable);
+    if (normalized.startsWith('auto:')) {
+      const detected = normalized.split(':')[1];
+      if (detected) identities.add(detected);
+    }
+  }
+  return replies
+    .filter((reply) => {
+      if (!identities.has(normalizeAgentIdentity(reply.agent))) return false;
+      if (sessionId && reply.sessionId === sessionId) return true;
+      if (sessionId && !sessionId.startsWith('session:')) return false;
+      return !!profile.cwd && 'cwd' in reply
+        && normalizeCwdIdentity(String((reply as T & { cwd?: string }).cwd ?? ''))
+          === normalizeCwdIdentity(profile.cwd);
+    })
+    .sort((a, b) => b.timestamp - a.timestamp)[0];
+}
+
 export interface AgentHistoryGroup<T extends AgentHistoryReplyLike = AgentHistoryReplyLike> {
   key: string;
   agent: string;
@@ -92,7 +139,12 @@ export function agentCardStatus(
   if (pendingApproval) return 'waiting';
   if (!profile) return 'completed';
   if (profile.status === 'Disappeared' || profile.status === 'Suspended') return 'stopped';
-  if (profile.status === 'Working' || profile.activity === 'working') return 'working';
+  // Desktop topology always labels a live Agent registration `Working`; actual
+  // task activity is the output-derived field. Legacy Remote DTOs without that
+  // field retain their status-only behavior.
+  if (profile.activity === 'working' || (profile.activity === undefined && profile.status === 'Working')) {
+    return 'working';
+  }
   return 'idle';
 }
 

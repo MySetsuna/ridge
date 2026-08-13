@@ -33,6 +33,8 @@
     displayTitle?: string;
     workspaceId?: string;
     sourceLabel?: string;
+    /** Exact-session latest assistant answer parsed from the Agent's native JSONL. */
+    recentReply?: string;
     /** 该成员的待审批项（可为空）。 */
     pending?: readonly PendingApproval[];
     /** 组归属标注（成员 Tab 用：显示所属组名/颜色）。 */
@@ -49,6 +51,7 @@
     displayTitle = name,
     workspaceId,
     sourceLabel,
+    recentReply,
     pending = [],
     groupBadge = null,
     leader = null,
@@ -64,6 +67,13 @@
   const attention = $derived(
     workspaceId && paneId ? $agentPaneAttentionStore[`${workspaceId}:${paneId}`] : undefined
   );
+  const attentionText = $derived(
+    attention === 'waiting' ? '待审批' : attention === 'stopped' ? '已停止，待查看' : attention === 'idle' ? '已完成，待查看' : ''
+  );
+
+  function acknowledgeAttention(): void {
+    if (workspaceId && paneId && attention) clearAgentPaneAttention(workspaceId, paneId);
+  }
 
   /** 状态徽标优先级：待审批 > 已暂停 > 失联 > 运行中 > 空闲。 */
   const status = $derived.by(() => {
@@ -146,7 +156,9 @@
 </script>
 
 <li
-  aria-label="{displayTitle} · {status.text}"
+  aria-label="{displayTitle} · {status.text}{attentionText ? ` · ${attentionText}` : ''}"
+  onfocusin={acknowledgeAttention}
+  onpointerdown={acknowledgeAttention}
   data-agent-title={displayTitle}
   data-agent-attention={attention ?? ''}
   class="group/mem rounded border border-l-2 px-1.5 py-1 hover:bg-[var(--rg-surface)]/60
@@ -180,6 +192,9 @@
       </span>
     {/if}
     <span class="shrink-0 text-[9px] {status.cls}">{status.text}</span>
+    {#if attentionText}
+      <span class="shrink-0 rounded-full bg-sky-400/15 px-1.5 py-0.5 text-[9px] text-sky-300">{attentionText}</span>
+    {/if}
 
     {#if profile?.isAuto}
       <span
@@ -264,8 +279,8 @@
 
   {#if present && paneId}
     <div class="mt-0.5 pl-3.5">
-      <!-- 最近回复：随拓扑快照下发，折叠态也先给一行摘要 -->
-      {#if profile?.recentOutput}
+      <!-- JSONL is the reply SSOT. PTY tail is diagnostic output, not an answer. -->
+      {#if recentReply}
         <button
           class="flex w-full items-center gap-1 text-left text-[10px] text-[var(--rg-fg-muted)] hover:text-[var(--rg-fg)]"
           onclick={() => (answerOpen = !answerOpen)}
@@ -273,14 +288,14 @@
           <span class="shrink-0">最近回复 {answerOpen ? '▾' : '▸'}</span>
           {#if !answerOpen}
             <span class="min-w-0 flex-1 truncate opacity-70">
-              {profile.recentOutput.split('\n').at(-1) ?? ''}
+              {recentReply.split('\n').at(-1) ?? ''}
             </span>
           {/if}
         </button>
         {#if answerOpen}
           <pre
             class="rg-scroll mt-0.5 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded bg-[var(--rg-bg)] px-1.5 py-1 font-mono text-[10px] leading-snug text-[var(--rg-fg-muted)]"
-          >{profile.recentOutput}</pre>
+          >{recentReply}</pre>
         {/if}
       {:else}
         <p class="text-[10px] text-[var(--rg-fg-muted)]/60">最近回复：（暂无输出）</p>
