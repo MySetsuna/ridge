@@ -36,6 +36,7 @@ import {
     getAllPaneIds,
     closePane as closePaneApi,
     activePaneId,
+    focusPane,
     agentPaneAttentionStore,
     agentPaneStatusStore,
     paneDragSourceId,
@@ -585,7 +586,7 @@ import {
             <div
               class="flex-1 min-w-0 cursor-grab active:cursor-grabbing py-1 select-none"
               title={$t('workspace.paneDragTitle')}
-              onkeydown={(e) => e.key === 'Enter' && activePaneId.set(node.id)}
+              onkeydown={(e) => e.key === 'Enter' && focusPane(node.id, workspaceId)}
               role="presentation"
               use:paneDockDrag={{ paneId: node.id }}
             >
@@ -722,7 +723,7 @@ import {
               ×
             </button>
           </header>
-          <div class="flex-1 min-h-0 min-w-0 z-79">
+          <div class="relative flex-1 min-h-0 min-w-0">
             <Pane paneId={node.id} {workspaceId} />
           </div>
         </div>
@@ -770,17 +771,14 @@ import {
   }
 
   /*
-   * §4.3 Phase B (2026-05-08): bump splitter above the pane header.
-   * The header has `backdrop-blur-md` (creates a stacking context) and
-   * `z-10`, both of which would otherwise occlude the splitter's hover/
-   * drag glow at the top of the adjacent pane. RgSplitter's library
-   * default is `z-index: 1`; override here so the splitter line stays
-   * visible AND the wider hit area is reachable when the cursor is
-   * over the header strip just below the boundary.
+   * §4.3: keep the splitter in the local pane stacking scale.
+   * Pane overlays use z-10 and above; the splitter stays at z-4 so its
+   * transparent hit area cannot blanket terminal content while its line
+   * remains visible through the transparent global canvas.
    */
   :global(.splitpanes__splitter),
   :global(.rg-split > .rg-splitter) {
-    z-index: 80;
+    z-index: 4;
   }
 
   /* 业务高亮：rg-split--junction (4-way orthogonal hover) 和 rg-split--aligned

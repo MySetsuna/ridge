@@ -597,6 +597,49 @@ impl Canvas2dBackend {
         }
     }
 
+    fn draw_preedit_overlay(&mut self, text: &str, row: usize, col: usize, theme: &Theme) {
+        if text.is_empty() {
+            return;
+        }
+
+        let cell_w = self.metrics.cell_w.max(1.0) as f64;
+        let cell_h = self.metrics.cell_h.max(1.0) as f64;
+        let char_widths: Vec<(String, usize)> = text
+            .chars()
+            .map(|ch| (ch.to_string(), preedit_char_width(ch)))
+            .collect();
+        let total_cells: usize = char_widths.iter().map(|(_, width)| *width).sum();
+        if total_cells == 0 {
+            return;
+        }
+
+        let x = self.snap(col as f64 * cell_w);
+        let y = self.snap(row as f64 * cell_h);
+        let right = self.snap((col + total_cells) as f64 * cell_w);
+        let bottom = self.snap((row + 1) as f64 * cell_h);
+        let width = right - x;
+        let height = bottom - y;
+
+        // Cover the underlying cells first: Canvas2D preserves unchanged rows,
+        // so the non-destructive overlay must erase the old glyphs itself.
+        self.ctx.set_fill_style_str(&Self::rgba_to_css(theme.bg));
+        self.ctx.fill_rect(x, y, width, height);
+
+        self.ctx.set_fill_style_str(&Self::rgba_to_css(theme.fg));
+        self.ctx.set_font(&self.font_css);
+        self.ctx.set_text_baseline("top");
+        let mut glyph_x = x;
+        for (glyph, width_cells) in char_widths {
+            let _ = self.ctx.fill_text(&glyph, glyph_x, y);
+            glyph_x += width_cells as f64 * cell_w;
+        }
+
+        // One device pixel, matching the WebGPU overlay and hyperlink pass.
+        let underline_h = (1.0 / self.metrics.dpr.max(1.0)) as f64;
+        self.ctx
+            .fill_rect(x, self.snap(bottom - underline_h), width, underline_h);
+    }
+
     fn draw_history_overlay(
         &mut self,
         overlay: &crate::render::renderer::HistoryOverlay,
@@ -747,6 +790,10 @@ impl RenderBackend for Canvas2dBackend {
         Canvas2dBackend::draw_hyperlink_underlines(self, rects)
     }
 
+    fn draw_preedit_overlay(&mut self, text: &str, row: usize, col: usize, theme: &Theme) {
+        Canvas2dBackend::draw_preedit_overlay(self, text, row, col, theme)
+    }
+
     fn draw_history_overlay(
         &mut self,
         overlay: &crate::render::renderer::HistoryOverlay,
@@ -757,6 +804,27 @@ impl RenderBackend for Canvas2dBackend {
 
     fn end_frame(&mut self) {
         Canvas2dBackend::end_frame(self)
+    }
+}
+
+#[inline]
+fn preedit_char_width(ch: char) -> usize {
+    if ch.is_ascii() {
+        1
+    } else {
+        2
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preedit_width_uses_two_cells_for_non_ascii() {
+        let widths: Vec<usize> = "a中".chars().map(preedit_char_width).collect();
+        assert_eq!(widths, vec![1, 2]);
+        assert_eq!(widths.iter().sum::<usize>(), 3);
     }
 }
 

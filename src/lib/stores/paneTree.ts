@@ -135,6 +135,25 @@ export function forgetWorkspaceTree(wsId: string): void {
 /** 最近一次点�?聚焦的终端窗格；分屏针对�?id（与 layout �?leaf id 一致）�?*/
 export const activePaneId = writable<string>('');
 
+/** Last focused pane per workspace. Only the active workspace is projected to
+ * `activePaneId`, but keeping this map makes tab switches restore focus
+ * deterministically instead of reusing a pane id from another workspace. */
+export const activePaneByWorkspace = writable<Record<string, string>>({});
+
+/** Make pane focus and terminal-cursor ownership one operation. */
+export function focusPane(paneId: string, workspaceId?: string): void {
+  if (!paneId) return;
+  const wsId = workspaceId || get(activeWorkspaceId);
+  // A cross-workspace request may arrive before the workspace switch has
+  // completed (or when a remote host rejects it). Remember it, but never
+  // project an invisible workspace's pane as the global active cursor.
+  if (!wsId || wsId === get(activeWorkspaceId)) activePaneId.set(paneId);
+  if (!wsId) return;
+  activePaneByWorkspace.update((current) =>
+    current[wsId] === paneId ? current : { ...current, [wsId]: paneId },
+  );
+}
+
 export type AgentPaneAttention = 'waiting' | 'idle' | 'stopped';
 export const agentPaneAttentionStore = writable<Record<string, AgentPaneAttention>>({});
 
@@ -1235,11 +1254,17 @@ export function paneIdsFromRatioUpdates(
 }
 
 /** 当前 activePaneId 若不在树内（切换工作区等），回退到第一�?leaf�?*/
-function reconcileActivePaneId(layout: PaneNode) {
+function reconcileActivePaneId(layout: PaneNode, workspaceId = get(activeWorkspaceId)) {
   const ids = getAllPaneIds(layout);
   if (!ids.length) return;
+  const remembered = workspaceId ? get(activePaneByWorkspace)[workspaceId] : '';
   const cur = get(activePaneId);
-  if (!cur || !ids.includes(cur)) activePaneId.set(ids[0]);
+  const next = remembered && ids.includes(remembered)
+    ? remembered
+    : cur && ids.includes(cur)
+      ? cur
+      : ids[0];
+  focusPane(next, workspaceId);
 }
 
 /**
@@ -1294,7 +1319,7 @@ export async function syncPaneLayoutFromBackend() {
     // Keep the local store in lock-step with the host so downstream consumers
     // (and the cwd-prune block below) operate on the correct workspace.
     if (wsId && get(activeWorkspaceId) !== wsId) activeWorkspaceId.set(wsId);
-    reconcileActivePaneId(layout);
+    reconcileActivePaneId(layout, wsId);
   } catch (e) {
     console.error('syncPaneLayoutFromBackend', e);
     reportDevIssue({
@@ -1405,7 +1430,7 @@ export async function refreshWorkspaces(options: RefreshWorkspacesOptions = {}) 
     workspacesList.set(list);
     setActiveTree(active, layout);
     activeWorkspaceId.set(active);
-    reconcileActivePaneId(layout);
+    reconcileActivePaneId(layout, active);
     // §4a keep-alive 懒挂载后（iter-62）不再预取所有工作区 layout：+page.svelte
     // 只挂访问过的工作区，未访问的树取来也没人用，而每次刷新按 tab 数扇出 N 次
     // `get_pane_layout_for` 正是「tab 越多越卡」的一份贡献。首次切换由
@@ -1457,7 +1482,7 @@ export async function switchWorkspace(workspaceId: string): Promise<boolean> {
   if (cached && get(activeWorkspaceId) !== workspaceId) {
     setActiveTree(workspaceId, cached);
     activeWorkspaceId.set(workspaceId);
-    reconcileActivePaneId(cached);
+    reconcileActivePaneId(cached, workspaceId);
     paneCwdStore.update((store) =>
       mergePaneCwds(store, extractCwdsFromLayout(cached, workspaceId))
     );
@@ -1482,7 +1507,7 @@ export async function switchWorkspace(workspaceId: string): Promise<boolean> {
         setActiveTree(workspaceId, layout);
       }
       activeWorkspaceId.set(workspaceId);
-      reconcileActivePaneId(layout);
+      reconcileActivePaneId(layout, workspaceId);
       const cwds = extractCwdsFromLayout(layout, workspaceId);
       paneCwdStore.update((store) => mergePaneCwds(store, cwds));
       await setupPaneCwdListeners(workspaceId, layout);
@@ -1498,7 +1523,7 @@ export async function switchWorkspace(workspaceId: string): Promise<boolean> {
       ) {
         setActiveTree(previousWorkspaceId, previousTree);
         activeWorkspaceId.set(previousWorkspaceId);
-        reconcileActivePaneId(previousTree);
+        reconcileActivePaneId(previousTree, previousWorkspaceId);
       }
       console.error('switchWorkspace', workspaceId, e);
       reportDevIssue({
@@ -1651,7 +1676,7 @@ export async function dockPane(
     region,
   });
   await syncPaneLayoutFromBackend();
-  activePaneId.set(sourcePaneId);
+  focusPane(sourcePaneId, get(activeWorkspaceId));
   // §dock-swap-scissor (2026-06-26): 终端画面画在「全局共享 canvas」上，每个
   // pane 的绘制位置由缓存 scissor 决定，仅在 resize / 切工作区 / attach-unpark
   // / 容器 ResizeObserver 时由 `_recomputeViewport` 重算。dock 中心区换位（含

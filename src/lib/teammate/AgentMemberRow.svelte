@@ -15,7 +15,7 @@
   import { memberTasksStore, recordMemberTask } from './memberTasks';
   import { showToast } from '$lib/stores/toast';
   import {
-    activePaneId,
+    focusPane,
     agentPaneAttentionStore,
     clearAgentPaneAttention,
     switchWorkspace,
@@ -82,7 +82,7 @@
     if (!workspaceId || !paneId) return;
     try {
       await switchWorkspace(workspaceId);
-      activePaneId.set(paneId);
+      focusPane(paneId, workspaceId);
       await tick();
       const host = [...document.querySelectorAll<HTMLElement>('[data-rg-ws-pane-host]')]
         .find((element) => element.getAttribute('data-rg-ws-pane-host') === workspaceId);

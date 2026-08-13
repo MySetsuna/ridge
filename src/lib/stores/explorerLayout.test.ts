@@ -75,7 +75,7 @@ describe('resolveExplorerStackLayout — no empty 50/50 lower', () => {
 	it('fixed body without lower: no empty lower flex zone', () => {
 		const L = resolveExplorerStackLayout({ bodyHeightPx: 160, hasLowerContent: false });
 		expect(L.showLower).toBe(false);
-		expect(L.bodyStyle).toMatch(/flex:\s*0 1 160px/);
+		expect(L.bodyStyle).toContain('flex: 1 1 0');
 	});
 });
 

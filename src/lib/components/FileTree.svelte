@@ -29,7 +29,7 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 	import { fileEditorStore } from '$lib/stores/fileEditor';
 	import type { FileNode } from '$lib/stores/project';
 	import { searchInFolder } from '$lib/stores/searchState';
-	import { activePaneId } from '$lib/stores/paneTree';
+	import { focusPane } from '$lib/stores/paneTree';
 	import { t, tr } from '$lib/i18n';
 	import FileTree from './FileTree.svelte';
 	import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
@@ -67,7 +67,7 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 			modifiers?: { shift: boolean; ctrl: boolean; meta: boolean }
 		) => void;
 		/** 右键"粘贴"回调：把剪贴板内容粘到本节点（目录粘入其内，文件粘入其父目录）。 */
-		onPaste?: (targetPath: string) => void;
+		onPaste?: (targetPath: string, isDir: boolean) => void;
 	}
 
 	let {
@@ -439,7 +439,8 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 		if (!isTauri() || paths.length === 0) return;
 		const text = formatDroppedPathsForPaste(paths);
 		if (!text) return;
-		activePaneId.set(paneId);
+		const owner = get(fileExplorerStore).columns.find((column) => column.paneIds.includes(paneId));
+		focusPane(paneId, owner?.workspaceId);
 		try {
 			TerminalManager.instance().paste(paneId, text);
 		} finally {
@@ -551,7 +552,7 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 					{ id: 'divider1', divider: true },
 					{ id: 'copy', label: tr('explorer.ctxCopy'), action: () => copyToClipboard(pathAtMenu) },
 					{ id: 'copy-rel', label: tr('explorer.ctxCopyRelative'), action: () => copyToClipboard(getRelativePath(pathAtMenu)) },
-					{ id: 'paste', label: tr('explorer.ctxPaste'), action: () => onPaste?.(pathAtMenu) },
+					{ id: 'paste', label: tr('explorer.ctxPaste'), action: () => onPaste?.(pathAtMenu, isDirAtMenu) },
 					{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealInExplorer(pathAtMenu) },
 					{ id: 'search-in-folder', label: tr('explorer.ctxSearchInFolder'), action: () => searchInFolder(pathAtMenu) },
 					{ id: 'divider2', divider: true },
@@ -568,7 +569,7 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 					},
 					{ id: 'copy', label: tr('explorer.ctxCopy'), action: () => copyToClipboard(pathAtMenu) },
 					{ id: 'copy-rel', label: tr('explorer.ctxCopyRelative'), action: () => copyToClipboard(getRelativePath(pathAtMenu)) },
-					{ id: 'paste', label: tr('explorer.ctxPaste'), action: () => onPaste?.(pathAtMenu) },
+					{ id: 'paste', label: tr('explorer.ctxPaste'), action: () => onPaste?.(pathAtMenu, isDirAtMenu) },
 					{ id: 'reveal', label: tr('explorer.ctxReveal'), action: () => void revealInExplorer(pathAtMenu) },
 					{ id: 'divider', divider: true },
 					{ id: 'rename', label: tr('explorer.ctxRename'), action: () => beginRename() },

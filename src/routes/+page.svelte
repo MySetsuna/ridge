@@ -74,6 +74,7 @@
     paneTreeStore,
     workspacePaneTrees,
     activePaneId,
+    focusPane,
     splitActivePane,
     splitPane,
     syncPaneLayoutFromBackend,
@@ -998,7 +999,7 @@ function expandSidebar(minWidth = 0) {
             id: 'focus',
             label: tr('main.ctxFocusPane'),
             icon: Maximize2,
-            action: () => activePaneId.set(paneId || ''),
+            action: () => paneId && focusPane(paneId, get(activeWorkspaceId)),
           },
           { divider: true, id: 'divider-3' },
           {
@@ -1257,14 +1258,18 @@ function expandSidebar(minWidth = 0) {
   // Tauri intercepts native OS drops and hands us the absolute paths.
   function insertDroppedPaths(paths: string[], position: { x: number; y: number }): void {
     if (!paths.length) return;
+    // Tauri reports PhysicalPosition; elementFromPoint expects CSS pixels.
     const dpr = window.devicePixelRatio || 1;
     const el = document.elementFromPoint(position.x / dpr, position.y / dpr);
     const paneEl = el?.closest('[data-rg-pane-id]') as HTMLElement | null;
     const pid = paneEl?.getAttribute('data-rg-pane-id') || get(activePaneId);
     if (!pid) return;
+    const targetWorkspaceId =
+      paneEl?.closest('[data-rg-ws-pane-host]')?.getAttribute('data-rg-ws-pane-host')
+      || get(activeWorkspaceId);
     const text = formatDroppedPathsForPaste(paths);
     if (!text) return;
-    activePaneId.set(pid);
+    focusPane(pid, targetWorkspaceId);
     // 走 bracketed-paste（而非 write_to_pty 原样写）：TUI 据此把图片路径识别为附件。
     try {
       TerminalManager.instance().paste(pid, text);
@@ -1604,7 +1609,7 @@ function expandSidebar(minWidth = 0) {
           if (!id) return;
           void (async () => {
             await syncPaneLayoutFromBackend();
-            activePaneId.set(id);
+            focusPane(id, get(activeWorkspaceId));
           })();
         }
       );
