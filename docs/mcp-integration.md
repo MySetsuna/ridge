@@ -7,7 +7,7 @@
 ## 它解决什么
 
 Ridge 自带一个端侧 **MCP（Model Context Protocol）server**，把一个终端工作区变成**跨 agent 的协作总线**：
-接进来的可以是 Claude Code、Cursor、或你自己写的 MCP 客户端——它们彼此没有共同的内部协议，
+接进来的可以是 Codex CLI、Claude Code、Gemini CLI、Cursor、OpenCode、Aider（经兼容 bridge），或你自己写的 MCP 客户端——它们彼此没有共同的内部协议，
 但都能在同一工作区里**发现同伴、派活、观察进展、异步回话、传大块中间产物**。
 
 - **协议**：JSON-RPC 2.0（MCP `2024-11-05`）
@@ -44,7 +44,7 @@ curl -sS -X POST "$RIDGE_TEAMMATE_URL/api/v1/mcp" \
 
 `ws://<host>/api/v1/mcp/ws`，升级请求带 `Authorization: Bearer <token>`（或 `x-ridge-token`）。
 
-### D. 持久 MCP 配置（Codex、Claude 等；Ridge companion）
+### D. 持久 MCP 配置（任意 MCP 客户端；Ridge companion）
 
 持久 MCP 配置中的 HTTP URL 通常是静态值，而 Ridge 本机端点会漂移。`ridge-mcp` 是只做端点发现与 stdio↔HTTP 转发的 Ridge companion，**不是 `rdg`**：
 
@@ -53,7 +53,16 @@ curl -sS -X POST "$RIDGE_TEAMMATE_URL/api/v1/mcp" \
 ```bash
 ridge-mcp --print-config
 codex mcp add ridge -- /absolute/path/to/ridge-mcp
-# Claude Code：claude mcp add ridge -- /absolute/path/to/ridge-mcp
+claude mcp add ridge -- /absolute/path/to/ridge-mcp
+# Gemini CLI、OpenCode、Cursor 等：使用下列通用 stdio 配置
+```
+
+```json
+{
+  "mcpServers": {
+    "ridge": { "command": "/absolute/path/to/ridge-mcp", "args": [] }
+  }
+}
 ```
 
 `--print-config` 输出可粘贴的 `mcpServers.ridge` stdio 配置，命令为当前 companion 的绝对路径；
@@ -68,7 +77,10 @@ codex mcp add ridge -- ridge-mcp
 # Claude Code 同理：claude mcp add ridge -- ridge-mcp
 ```
 
-它按 `RIDGE_TEAMMATE_URL/_TOKEN` → **`%LOCALAPPDATA%/ridge/kernel.json`（独立 ridge-kernel MCP）** → Ridge runtime endpoint sidecar 自动发现。无 Tauri 仅内核时，companion 仍可连 `http://127.0.0.1:<kernel-port>/api/v1/mcp`（token 同 kernel.json）。sidecar 仅属运行期、只接受普通文件与 `127.0.0.1` 端点（Unix 要求 `0600`）。端口或 token 更新后，首次连接失败或 `401/403` 会重新发现并重试一次。显式指定可用
+server 不读取 `clientInfo.name` 作路由或授权决策；上述客户端获得同一 tools/resources 契约。没有 MCP
+能力的 CLI 须使用其自身 bridge，Ridge 不冒充其私有 runtime API。
+
+companion 按 `RIDGE_TEAMMATE_URL/_TOKEN` → **`%LOCALAPPDATA%/ridge/kernel.json`（独立 ridge-kernel MCP）** → Ridge runtime endpoint sidecar 自动发现。无 Tauri 仅内核时，companion 仍可连 `http://127.0.0.1:<kernel-port>/api/v1/mcp`（token 同 kernel.json）。sidecar 仅属运行期、只接受普通文件与 `127.0.0.1` 端点（Unix 要求 `0600`）。端口或 token 更新后，首次连接失败或 `401/403` 会重新发现并重试一次。显式指定可用
 `ridge-mcp --url http://127.0.0.1:PORT --token <tok>`。修改 Codex MCP 配置后须新开会话。
 
 ### E. 无头 `rdg`（独立 host；按需）
@@ -100,7 +112,7 @@ codex mcp add ridge -- ridge-mcp
 
 ---
 
-## 3. 工具（13 个，全部可调）
+## 3. 主要协作工具
 
 | 工具 | 参数 | 用途 |
 | --- | --- | --- |
@@ -114,7 +126,8 @@ codex mcp add ridge -- ridge-mcp
 | `ridge_capture_pane` | `target_pane_id, lines?` | 抓该 pane **渲染后**的屏幕文本（监控队友进展，不是转义序列堆） |
 | `ridge_inbox_read` | `target_pane_id, peek?` | 取走投递给该 pane 的消息（跨 agent 异步回话通道） |
 | `ridge_report_progress` | `target_pane_id, status, detail?` | 回流一条进展（桌面落前端进度事件） |
-| `ridge_split_pane` | `direction, role, initial_cmd?` | 开一个新 pane 给队友；`role` 落成 pane 标题 |
+| `ridge_get_launch_capabilities` | 无 | 动态发现宿主 profile 及允许的 model/reasoning；空集合禁止覆盖 |
+| `ridge_split_pane` | `direction, role, launch_profile?, model?, reasoning_effort?, ...` | 开新 pane；profile/覆盖值须来自上项，不猜命令或品牌 |
 | `ridge_join_group` | `group_name, agent_id? \| target_pane_id?` | 加入按名字寻址的已有编组（桌面前端 SSOT，fire-and-forget） |
 | `ridge_stash_data` | `data` | 存文本，返回 `ridge://cache/<id>`，供别的 agent 回读 |
 
@@ -148,7 +161,7 @@ codex mcp add ridge -- ridge-mcp
 ## 5. 典型协作流
 
 1. `ridge_get_team_profile` 看有谁、谁空闲。
-2. 没有合适的 pane → `ridge_split_pane { direction, role }` 开一个。
+2. 没有合适的 pane → 先调 `ridge_get_launch_capabilities`；仅从返回清单选 profile/model/reasoning，再调 `ridge_split_pane`。清单为空或所需项不支持即停，不默认 RidgeCode 或任何 CLI。
 3. `ridge_delegate_task { target_pane_id, objective }` 派活并保存 `receiptId`；需核验投递层级时调用 `ridge_delivery_status`，别把派发回执说成已执行。
 4. 大块上下文走 `ridge_stash_data` 拿 `ridge://cache/<id>`，把 URI 写进 objective 让对方 `resources/read`。
 5. 想知道干得怎么样 → `ridge_capture_pane` 抓屏；对方可用 `ridge_report_progress` 主动汇报。

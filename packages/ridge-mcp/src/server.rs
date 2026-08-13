@@ -3421,6 +3421,43 @@ mod tests {
     }
 
     #[test]
+    fn initialize_tools_and_readonly_tool_are_client_brand_neutral() {
+        let clients = ["codex-cli", "claude-code", "gemini-cli"];
+        let mut baseline = None;
+        for client in clients {
+            let initialize = json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2024-11-05",
+                    "clientInfo":{"name":client,"version":"test"},
+                    "capabilities":{}
+                }
+            })
+            .to_string();
+            let tools =
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}).to_string();
+            let profile = json!({
+                "jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+                    "name":"ridge_get_team_profile","arguments":{}
+                }
+            })
+            .to_string();
+            let result = json!({
+                "initialize": call(&initialize)["result"].clone(),
+                "tools": call(&tools)["result"].clone(),
+                "profile": call(&profile)["result"].clone(),
+            });
+            if let Some(expected) = &baseline {
+                assert_eq!(
+                    &result, expected,
+                    "clientInfo.name must not alter the contract"
+                );
+            } else {
+                baseline = Some(result);
+            }
+        }
+    }
+
+    #[test]
     fn resources_list_is_served() {
         let v = call(r#"{"jsonrpc":"2.0","id":1,"method":"resources/list"}"#);
         assert_eq!(v["result"]["resources"].as_array().unwrap().len(), 3);
@@ -3582,6 +3619,21 @@ mod tests {
         assert_eq!(created["checkpointTransferred"], true);
         assert_eq!(created["replacementRequested"], true);
         assert_eq!(created["status"], "pane_created");
+
+        for arguments in [
+            json!({"direction":"vertical","role":"worker","launch_profile":"unknown-profile"}),
+            json!({"direction":"vertical","role":"worker","launch_profile":"codex","model":"guessed"}),
+        ] {
+            let rejected = json!({
+                "jsonrpc":"2.0","id":3,"method":"tools/call",
+                "params":{"name":"ridge_split_pane","arguments":arguments}
+            })
+            .to_string();
+            assert_eq!(
+                call_with(&rejected, &CapableHost)["error"]["code"],
+                proto::INVALID_PARAMS
+            );
+        }
     }
 
     #[test]
