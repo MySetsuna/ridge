@@ -19,7 +19,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '@ridge/remote/shared/terminal/clipboardImage';
 import { t, tr } from '$lib/i18n';
-import { activePaneId, activeWorkspaceId, clearAgentPaneAttention, setPaneCwd, paneOscTitleStore, paneForegroundProcessStore, terminalTitles, splitPane, closePane, waitForDesktopKernelReattach } from '$lib/stores/paneTree';
+import { activePaneId, activeWorkspaceId, clearAgentPaneAttention, focusPane, setPaneCwd, paneOscTitleStore, paneForegroundProcessStore, terminalTitles, splitPane, closePane, waitForDesktopKernelReattach } from '$lib/stores/paneTree';
 import type { KernelEvent } from '@ridge/remote/shared/terminal/manager';
 import { ensurePtyBridge, enableDeltaModeThenFit } from '@ridge/remote/shared/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '@ridge/remote/shared/terminal/themeBridge';
@@ -554,6 +554,7 @@ function notePaste(text: string): void {
 
 function pasteIntoPane(text: string): void {
 	if (!text) return;
+	focusPane(paneId, workspaceId);
 	notePaste(text);
 	manager.paste(paneId, text);
 }
@@ -589,6 +590,8 @@ async function readClipboardPasteText(): Promise<string | null> {
 
 /** Reserve the pane input slot before any clipboard/image await. */
 function enqueuePasteTextTask(read: () => Promise<string | null>): void {
+	// Claim before the asynchronous clipboard/image read completes.
+	focusPane(paneId, workspaceId);
 	const remote = remotePaneBinding(paneId);
 	const remotePane = remote
 		? { workspaceId: remote.workspaceId, paneId: remote.remotePaneId }
@@ -743,12 +746,12 @@ let isComposing = $state(false);
  *  kernel cells untouched. Reset on compositionstart / compositionend. */
 let preeditSentToPty = '';
 // §P5.IME (2026-05-21): preeditStartCell removed — the cell coordinates
-// for the wasm preedit overlay now live on `composingAnchor.{row,col}`,
+// for the renderer preedit overlay now live on `composingAnchor.{row,col}`,
 // the SAME object that drives the textarea pixel rect. Read each on
 // `compositionupdate`; never let them disagree.
 
 // §1.28 (2026-05-19) + §P5.IME (2026-05-21): anchor snapshot used by
-// BOTH the textarea DOM rect AND the wasm preedit overlay, so they can
+// BOTH the textarea DOM rect AND the renderer preedit overlay, so they can
 // never drift apart by even a cell (single source via
 // `manager.inputAnchorResolved`).
 //
@@ -984,11 +987,21 @@ function maybePrefetchOlder(): void {
 
 function repositionImeHelper() {
 	if (!imeHelper) return;
-	// During active composition use `pixelPositionFromCell` to recompute
-	// pixel position from the locked grid anchor + current scroll offset,
-	// so the OS IME candidate popup follows the cursor when the viewport
-	// scrolls. The grid row stays locked in `composingAnchor` for the wasm
-	// preedit overlay; only the pixel y tracks scrollOffset changes.
+	// Keep the DOM anchor and renderer preedit on the same effective cursor.
+	// Re-resolve during composition so a shell/TUI cursor move cannot leave
+	// the candidate popup or preedit text at the old cell.
+	if (isComposing) {
+		const fresh = manager.inputAnchorResolved?.(paneId);
+		if (fresh) {
+			const moved = !composingAnchor
+				|| fresh.row !== composingAnchor.row
+				|| fresh.col !== composingAnchor.col;
+			composingAnchor = fresh;
+			if (moved && preeditSentToPty) {
+				manager.setPreedit?.(paneId, preeditSentToPty, fresh.row, fresh.col);
+			}
+		}
+	}
 	const pos: { x: number; y: number; cellW: number; cellH: number } | null =
 		isComposing && composingAnchor
 			? (manager.pixelPositionFromCell?.(paneId, composingAnchor.row, composingAnchor.col) ?? composingAnchor)
@@ -1050,7 +1063,7 @@ function onCompositionStart() {
 
 
 	function onCompositionUpdate(e: CompositionEvent) {
-		// Renderer-side preedit overlay: the wasm renderer paints the
+		// Renderer-side preedit overlay: the terminal renderer paints the
 		// preedit text on top of the cell grid as a final pass each
 		// frame. Cells are NOT modified, so a TUI redrawing its frame
 		// mid-composition can't corrupt the preedit, AND the preedit
@@ -1058,24 +1071,13 @@ function onCompositionStart() {
 		// mode and alt-screen TUIs (vim, less, claude code, opencode).
 		const next = e.data ?? '';
 
-		// §P5.IME (2026-05-21): re-resolve the anchor INSIDE shell mode
-		// so the preedit + textarea follow genuine input movement
-		// (line wrap, async prompt re-emit). In alt-screen / inline-TUI
-		// keep §1.28 lock — the resolver can hop to spinner / status-bar
-		// rows mid-frame, which dragged the preedit before the lock
-		// existed. Re-resolve happens SAME-FRAME (no RAF) so the OS IME
-		// candidate popup tracks the cursor without a one-frame lag.
+		// Re-resolve happens in the same frame, including alt-screen/inline-TUI,
+		// so the composition-start lock cannot become stale.
 		if (composingAnchor) {
-			const inTui = manager.isAltScreen(paneId) || manager.isInlineTuiActive(paneId);
-			if (!inTui) {
-				const fresh = manager.inputAnchorResolved?.(paneId);
-				if (
-					fresh &&
-					(fresh.row !== composingAnchor.row || fresh.col !== composingAnchor.col)
-				) {
-					composingAnchor = fresh;
-					repositionImeHelper();
-				}
+			const fresh = manager.inputAnchorResolved?.(paneId);
+			if (fresh && (fresh.row !== composingAnchor.row || fresh.col !== composingAnchor.col)) {
+				composingAnchor = fresh;
+				repositionImeHelper();
 			}
 		}
 
@@ -1103,14 +1105,18 @@ function onCompositionStart() {
 		repositionImeHelper();
 		// When the IME textarea owns focus, let its native caret be the single
 		// visible caret; the renderer must not blink a second caret underneath it.
-		if (get(activePaneId) === paneId) manager.setFocused(paneId, false);
+		if (get(activePaneId) === paneId && get(activeWorkspaceId) === workspaceId) {
+			manager.setFocused(paneId, false);
+		}
 	}
 
 	function onImeHelperBlur() {
 		// A blur can be caused by opening a drawer or a native dialog. Restore the
 		// terminal caret for the active pane, but never steal focus back here (that
 		// would reopen an IME/keyboard without a user gesture).
-		if (get(activePaneId) === paneId) manager.setFocused(paneId, true);
+		if (get(activePaneId) === paneId && get(activeWorkspaceId) === workspaceId) {
+			manager.setFocused(paneId, true);
+		}
 	}
 
 	function onImeHelperPaste(e: ClipboardEvent) {
@@ -1445,7 +1451,10 @@ onMount(() => {
 			attached = true;
 			startPtyRuntimeSampler();
 			window.dispatchEvent(new CustomEvent('ridge:pane-attached'));
-			manager.setFocused(paneId, get(activePaneId) === paneId);
+			manager.setFocused(
+				paneId,
+				get(activePaneId) === paneId && get(activeWorkspaceId) === workspaceId,
+			);
 			manager.setPadding(paneId, get(settingsStore).terminalPaddingPx);
 			// Re-register handlers so this fresh component owns the
 			// closures (the previous instance's `alive` is now false
@@ -1483,7 +1492,10 @@ onMount(() => {
 		// renderer defaults to `focused=true`; for a non-active pane we must
 		// explicitly tell it false BEFORE the rAF loop paints its first frame.
 		// Apply the user's preferred padding for the same reason.
-		manager.setFocused(paneId, get(activePaneId) === paneId);
+		manager.setFocused(
+			paneId,
+			get(activePaneId) === paneId && get(activeWorkspaceId) === workspaceId,
+		);
 		manager.setPadding(paneId, get(settingsStore).terminalPaddingPx);
 
 		// 1) Outbound: keyboard → PTY.
@@ -1689,7 +1701,7 @@ onDestroy(() => {
 // `setFocused` is idempotent, so emitting on every effect run is safe.
 $effect(() => {
 	if (!container) return;
-	const isActive = $activePaneId === paneId;
+	const isActive = $activeWorkspaceId === workspaceId && $activePaneId === paneId;
 	container.dataset.rgPaneActive = String(isActive);
 	if (attached) {
 		manager.setFocused(paneId, isActive);
@@ -2254,7 +2266,7 @@ function onScrollbarTrackClick(e: MouseEvent) {
 }
 
 function onContainerPointerDown(e: PointerEvent) {
-	activePaneId.set(paneId);
+	focusPane(paneId, workspaceId);
 	promoteRemotePaneBinding(paneId);
 	// §TUI: refresh sticky timestamp when the user clicks back into
 	// the pane (e.g., after closing a context menu or interacting with
@@ -2545,14 +2557,14 @@ function captureBackspace(node: HTMLElement) {
 		/* During composition we stream the preedit text directly through
 		 * the PTY (see `onCompositionUpdate` in this file) so the shell
 		 * echoes it back and the user sees pinyin/kana letters appear
-		 * at the cursor cell — drawn by the wasm canvas renderer, not
+		 * at the cursor cell — drawn by the terminal renderer, not
 		 * by an overlay. The textarea itself stays invisible.
 		 *
 		 * §缺陷A: 宽度同样固定 1px——composition 期绝不加宽，避免 col 0
 		 * 时触发祖先 scrollLeft 导致整屏左移。 */
 		width: 1px;
 		height: var(--rg-ime-cell-h, 18px);
-		opacity: 0;
+		opacity: 1;
 		pointer-events: none;
 		caret-color: transparent;
 		color: transparent;

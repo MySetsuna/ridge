@@ -2758,27 +2758,36 @@ onMount(() => {
      local modal state to manage. Z-index slot 9998 unchanged. -->
 
 <style>
-  /* T7：拖拽线贴在图谱面板的顶部边框上 —— 不再"浮空"。
-     splitter 自身高度 1px 用 --rg-border 颜色，与图谱面板的顶部融为一体；
-     ::before 把感应区集中放在下方（图谱内 6px），这样向下拖动就能直接命中，
-     视觉上仍是"图谱顶部的一条线"，不再是"两面板间的悬浮线"。 */
+  /* T7：SCM 图谱分隔线沿用终端 pane splitter 的 1px 视觉线 + 对称命中区。 */
   .scm-root :global(.splitpanes__splitter) {
     min-height: 1px;
     height: 1px;
     position: relative;
-    background: var(--rg-border);
-    transition: background-color 150ms ease;
+    z-index: 4;
+    padding: 5px 0;
+    margin: -5px 0;
+    box-sizing: content-box;
+    background: transparent;
+    cursor: row-resize;
   }
   .scm-root :global(.splitpanes__splitter::before) {
     content: '';
     position: absolute;
     left: 0;
     right: 0;
-    top: 0;
-    bottom: -6px;
+    top: 50%;
+    height: 1px;
+    border-radius: 1px;
+    background: var(--rg-border);
+    transform: translateY(-50%) scaleY(1);
+    transform-origin: center;
+    transition: transform 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+    pointer-events: none;
   }
-  .scm-root :global(.splitpanes__splitter:hover) {
-    background: color-mix(in oklab, var(--rg-accent) 50%, var(--rg-border));
+  .scm-root :global(.splitpanes__splitter:hover::before) {
+    background: var(--rg-accent);
+    transform: translateY(-50%) scaleY(4);
+    box-shadow: 0 0 10px var(--rg-accent-glow);
   }
   /* svelte-splitpanes adds `splitpanes__splitter__active` to the splitter
      while it's being dragged (see node_modules/svelte-splitpanes/dist/Pane.svelte:89).
@@ -2786,7 +2795,13 @@ onMount(() => {
      the library's class lands. */
   .scm-root :global(.splitpanes__splitter:active),
   .scm-root :global(.splitpanes__splitter__active) {
-    background: color-mix(in oklab, var(--rg-accent) 30%, transparent);
+    background: transparent;
+  }
+  .scm-root :global(.splitpanes__splitter:active::before),
+  .scm-root :global(.splitpanes__splitter__active::before) {
+    background: var(--rg-accent);
+    transform: translateY(-50%) scaleY(4);
+    box-shadow: 0 0 12px var(--rg-accent-glow);
   }
   /* PaneDiffPill 跳转过来时给目标仓库一个短暂的高亮，让用户视觉锚定。
      1.5s 内淡出，不挡住 hover 状态。 */

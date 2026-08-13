@@ -6,6 +6,7 @@ import {
 	dockPane,
 	switchWorkspace,
 	activePaneId,
+	focusPane,
 	activeWorkspaceId,
 } from '$lib/stores/paneTree';
 import { resolveDockTarget, passedDragThreshold } from '@ridge/remote/shared/terminal/paneDockResolve';
@@ -99,7 +100,7 @@ export function paneDockDrag(node: HTMLElement, params: Params) {
 		paneDragSourceId.set(null);
 		paneDockHover.set(null);
 		if (!wasDragging) {
-			activePaneId.set(paneId);
+			focusPane(paneId, get(activeWorkspaceId));
 			return;
 		}
 		if (commit && target && target.paneId !== paneId) {

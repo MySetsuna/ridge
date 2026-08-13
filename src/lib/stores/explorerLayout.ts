@@ -98,7 +98,7 @@ export function lowerRegionHeight(
 /**
  * 产品路径样式决策（纯函数，单测钉死）：
  * - 无固定 body 高 + 无 lower 内容 → body 吃满，不造空 lower
- * - 有固定 body 高 → body flex 0 1 H（可 shrink）；lower 有内容才 flex-1 被压
+ * - 有固定 body 高且有 lower 内容 → body flex 0 1 H（可 shrink）；lower 有内容才 flex-1 被压
  * - lower 无内容 → 不占 flex 份额
  */
 export function resolveExplorerStackLayout(input: {
@@ -110,7 +110,11 @@ export function resolveExplorerStackLayout(input: {
 	showLower: boolean;
 	lowerClass: string;
 } {
-	const hasFixed = input.bodyHeightPx != null && Number.isFinite(input.bodyHeightPx);
+	// No lower region means no user-resizable split. Ignore a stale persisted
+	// height so the tree keeps filling the available column after plugins close.
+	const hasFixed = input.hasLowerContent
+		&& input.bodyHeightPx != null
+		&& Number.isFinite(input.bodyHeightPx);
 	const H = hasFixed ? Math.max(MIN_BODY_H, Number(input.bodyHeightPx)) : null;
 	const showLower = input.hasLowerContent;
 

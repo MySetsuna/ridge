@@ -25,12 +25,15 @@
 		workspacesList,
 		activeWorkspaceId,
 		activePaneId,
+		focusPane,
+		switchWorkspace,
 		workspaceSaveInfoStore,
 		refreshWorkspaceSaveInfo,
 		saveWorkspaceToFile,
 		deleteWorkspaceFile,
 	} from '$lib/stores/paneTree';
 	import { fileEditorStore, activeFile } from '$lib/stores/fileEditor';
+	import { focusTerminalPane } from '@ridge/remote/shared/terminal/terminalFocus';
 	import { get } from 'svelte/store';
 	import { tick } from 'svelte';
 	import { writeText } from '@tauri-apps/plugin-clipboard-manager';
@@ -510,7 +513,11 @@
 
 	let pasting = false; // #6 pasteClipboard in-flight 护栏：避免并发重复粘贴
 	/** Paste clipboard into the target dir（右键传 target；Ctrl+V 不传，用当前选中）。 */
-	async function pasteClipboard(target?: { columnId?: string; targetPath?: string }): Promise<void> {
+	async function pasteClipboard(target?: {
+		columnId?: string;
+		targetPath?: string;
+		targetIsDir?: boolean;
+	}): Promise<void> {
 		if (!isTauri() || pasting) return;
 		pasting = true;
 		try {
@@ -537,39 +544,32 @@
 		// 仅 Ctrl+V（无 target）才用当前选中项相对粘贴。
 		const primary = target ? target.targetPath : col.selectedPath;
 		if (primary) {
-			// If primary is a dir, paste into it; if a file, paste into its parent.
-			// We detect dir by walking the cached tree — no extra IPC.
-			const seenDirs = new Set<string>();
-			const walkDirs = (n: typeof col.tree) => {
-				if (!n) return;
-				if (n.is_dir) seenDirs.add(n.path);
-				if (n.children) for (const child of n.children) walkDirs(child);
-			};
-			walkDirs(col.tree);
-			if (seenDirs.has(primary)) targetDir = primary;
-			else {
-				// Parent of the file.
+			if (target?.targetIsDir === true) {
+				targetDir = primary;
+			} else if (target?.targetIsDir === false) {
 				targetDir = primary.replace(/[\\/][^\\/]+[\\/]*$/, '') || primary;
+			} else {
+				// Ctrl+V has no node metadata, so walk the cached tree as a fallback.
+				const seenDirs = new Set<string>();
+				const walkDirs = (n: typeof col.tree) => {
+					if (!n) return;
+					if (n.is_dir) seenDirs.add(n.path);
+					if (n.children) for (const child of n.children) walkDirs(child);
+				};
+				walkDirs(col.tree);
+				if (seenDirs.has(primary)) targetDir = primary;
+				else targetDir = primary.replace(/[\\/][^\\/]+[\\/]*$/, '') || primary;
 			}
 		} else {
 			targetDir = col.cwd;
 		}
 		if (!targetDir) return;
 
-		// Build existing-name set from the target dir's children (tree cache).
-		const existingInTarget = new Set<string>();
-		const findDirChildren = (n: typeof col.tree): string[] | null => {
-			if (!n) return null;
-			if (n.path === targetDir) return (n.children ?? []).map((c) => c.path);
-			if (n.children) {
-				for (const child of n.children) {
-					const r = findDirChildren(child);
-					if (r) return r;
-				}
-			}
-			return null;
-		};
-		for (const p of findDirChildren(col.tree) ?? []) existingInTarget.add(p);
+		// Nested tree pages live in FileTree component state, so cached children
+		// cannot reliably detect conflicts. Read the destination listing first.
+		const existingInTarget = new Set<string>(
+			(await fileExplorerStore.loadChildren(col.id, targetDir)).map((entry) => entry.path),
+		);
 
 		const cmd = clip.mode === 'copy' ? 'copy_path' : 'move_path';
 		const outcomes: ExplorerPasteOutcome[] = [];
@@ -780,9 +780,9 @@
 		if (e && bodyResize && e.pointerId !== bodyResize.pointerId) return;
 		const finished = bodyResize;
 		bodyResize = null;
-		window.removeEventListener('pointermove', onBodyResizeMove);
-		window.removeEventListener('pointerup', onBodyResizeUp);
-		window.removeEventListener('pointercancel', onBodyResizeUp);
+		window.removeEventListener('pointermove', onBodyResizeMove, true);
+		window.removeEventListener('pointerup', onBodyResizeUp, true);
+		window.removeEventListener('pointercancel', onBodyResizeUp, true);
 		try {
 			if (finished?.handleEl.hasPointerCapture(finished.pointerId)) {
 				finished.handleEl.releasePointerCapture(finished.pointerId);
@@ -818,9 +818,20 @@
 		} catch {
 			/* window 监听兜底 */
 		}
-		window.addEventListener('pointermove', onBodyResizeMove);
-		window.addEventListener('pointerup', onBodyResizeUp);
-		window.addEventListener('pointercancel', onBodyResizeUp);
+		window.addEventListener('pointermove', onBodyResizeMove, true);
+		window.addEventListener('pointerup', onBodyResizeUp, true);
+		window.addEventListener('pointercancel', onBodyResizeUp, true);
+	}
+
+	async function focusExplorerPane(paneId: string, targetWorkspaceId: string): Promise<void> {
+		if (!paneId) return;
+		if (targetWorkspaceId !== get(activeWorkspaceId)) {
+			const switched = await switchWorkspace(targetWorkspaceId);
+			if (!switched && targetWorkspaceId !== get(activeWorkspaceId)) return;
+		}
+		focusPane(paneId, targetWorkspaceId);
+		await tick();
+		focusTerminalPane(paneId);
 	}
 
 	/** 窗口变矮 / 多 cwd 抢高：把已存 H 夹回 live free-follow 上界。 */
@@ -1076,7 +1087,7 @@
 												? 'bg-[var(--rg-accent)]/25 text-[var(--rg-accent)] border border-[var(--rg-accent)]/40'
 												: 'bg-[var(--rg-surface-2)]/60 text-[var(--rg-fg-muted)] border border-[var(--rg-border)] hover:text-[var(--rg-fg)] hover:border-[var(--rg-border-bright)]'}"
 											title={col.paneTitles[pid] || pid}
-											onclick={() => activePaneId.set(pid)}
+											onclick={() => void focusExplorerPane(pid, col.workspaceId)}
 										>
 											<Terminal class="h-2.5 w-2.5 shrink-0" />
 											<span class="truncate max-w-[110px]">{col.paneTitles[pid] || pid.slice(0, 6)}</span>
@@ -1141,7 +1152,8 @@
 															: undefined}
 														onSelect={(path, isDir, mods) =>
 															handleFileSelect(path, col.id, isDir, mods)}
-														onPaste={(path) => void pasteClipboard({ columnId: col.id, targetPath: path })}
+														onPaste={(path, isDir) =>
+															void pasteClipboard({ columnId: col.id, targetPath: path, targetIsDir: isDir })}
 													/>
 												{/each}
 											{:else}
@@ -1150,18 +1162,18 @@
 										{/if}
 									</div>
 
-									<!-- resize 分隔条：free-follow 压缩下方 .explorer-lower。 -->
-									<!-- svelte-ignore a11y_no_static_element_interactions -->
-									<div
-										class="explorer-body-sep shrink-0 h-[3px] cursor-row-resize bg-[var(--rg-border)]/30 hover:bg-[var(--rg-accent)]/50 transition-colors"
-										style="height: {BODY_SEP_H}px"
-										role="separator"
-										aria-orientation="horizontal"
-										data-testid="explorer-body-sep"
-										onpointerdown={(e) => startBodyResize(e, col.cwd)}
-									></div>
-
 									{#if stackLayout.showLower}
+										<!-- resize 分隔条：free-follow 压缩下方 .explorer-lower。 -->
+										<!-- svelte-ignore a11y_no_static_element_interactions -->
+										<div
+											class="explorer-body-sep shrink-0 h-[3px] cursor-row-resize bg-[var(--rg-border)]/30 hover:bg-[var(--rg-accent)]/50 transition-colors"
+											style="height: {BODY_SEP_H}px"
+											role="separator"
+											aria-orientation="horizontal"
+											data-testid="explorer-body-sep"
+											onpointerdown={(e) => startBodyResize(e, col.cwd)}
+										></div>
+
 										<!-- 仅有 pane 插件时挂载；默认不 50/50 空分。有固定 body 时 flex-1 被压。 -->
 										<div class={stackLayout.lowerClass} data-testid="explorer-lower">
 											{#each col.paneIds as pid (pid)}
@@ -1203,5 +1215,16 @@
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.explorer-progress::before { animation-duration: 2.4s; }
+	}
+	.explorer-body-sep {
+		position: relative;
+		z-index: 25;
+		touch-action: none;
+	}
+	:global(body.rg-explorer-resizing .explorer *) {
+		pointer-events: none !important;
+	}
+	:global(body.rg-explorer-resizing .explorer .explorer-body-sep) {
+		pointer-events: auto !important;
 	}
 </style>

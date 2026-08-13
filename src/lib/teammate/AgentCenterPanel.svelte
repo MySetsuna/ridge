@@ -24,6 +24,7 @@
     refreshWorkspaceSaveInfo,
     workspacesList,
     activePaneId,
+    focusPane,
     agentPaneAttentionStore,
     splitPane,
     closePane,
@@ -112,11 +113,10 @@
       }))
     )
   );
-  const headlessSessions = $derived(
-    ($hostsStore.find((host) => host.kind === 'headless')?.sessions ?? []).filter(
-      (session) => !session.attached
-    )
+  const nativeSessions = $derived(
+    $hostsStore.find((host) => host.kind === 'headless')?.sessions ?? []
   );
+  const headlessSessions = $derived(nativeSessions.filter((session) => !session.attached));
   let trips = $state<CircuitTrip[]>([]);
   /** R17-HITL-BADGE / TEAM-HEALTH */
   let pendingHitl = $state(0);
@@ -249,7 +249,18 @@
   function runningSessionFor(reply: AgentRecentReply): HostSession | null {
     const id = reply.resume?.sessionId ?? reply.sessionId;
     if (!id) return null;
-    return headlessSessions.find((session) => session.name === id) ?? null;
+    return nativeSessions.find((session) => session.name === id) ?? null;
+  }
+
+  function runningMemberFor(reply: AgentRecentReply) {
+    const session = runningSessionFor(reply);
+    const sessionId = reply.resume?.sessionId ?? reply.sessionId;
+    if (!session?.creator_workspace_id || !session.creator_pane_id) return null;
+    return allMembers.find((member) =>
+      member.workspaceId === session.creator_workspace_id
+      && member.profile.paneId === session.creator_pane_id
+      && member.profile.sessionId === sessionId
+    ) ?? null;
   }
 
   async function resumeAgentSession(reply: AgentRecentReply): Promise<void> {
@@ -278,7 +289,7 @@
       }
       createdPaneId = await splitPane($activePaneId, 'horizontal');
       // 立刻切到新 pane，避免用户仍停在原 pane、误以为「没切 cwd / 没 resume」。
-      activePaneId.set(createdPaneId);
+      focusPane(createdPaneId, targetWorkspaceId);
       await invoke('launch_agent_session', {
         workspaceId: targetWorkspaceId,
         paneId: createdPaneId,
@@ -839,19 +850,26 @@
               {#if historyExpanded[group.key] ?? true}
                 <ul class="space-y-1 px-1 pb-1">
                   {#each group.replies.slice(0, 12) as reply (reply.agent + ':' + reply.sessionId)}
-                    <li class="rounded bg-[var(--rg-surface)]/50 px-2 py-1.5">
+                    {@const runningMember = runningMemberFor(reply)}
+                    {#if runningMember}
+                      {@const m = runningMember.profile}
+                      <AgentMemberRow
+                        profile={m}
+                        agentId={m.id}
+                        name={m.name}
+                        displayTitle={livePaneTitles.get(`${runningMember.workspaceId}:${m.id}`) ?? reply.title ?? m.name}
+                        workspaceId={runningMember.workspaceId}
+                        sourceLabel={runningMember.workspaceName}
+                        pending={pendingFor(m)}
+                        groupBadge={null}
+                        onRefresh={() => void refresh()}
+                      />
+                    {:else}
+                      <li class="rounded bg-[var(--rg-surface)]/50 px-2 py-1.5">
                       <div class="flex items-center gap-1.5 text-[9px] text-[var(--rg-fg-muted)]">
                         <span class="min-w-0 flex-1 truncate font-medium text-[var(--rg-fg)]" title={reply.title}>{reply.title}</span>
                         <span class="shrink-0">{replyTime(reply.timestamp)}</span>
-                        {#if runningSessionFor(reply)}
-                          {@const running = runningSessionFor(reply)}
-                          <button
-                            type="button"
-                            class="shrink-0 rounded border border-emerald-400/40 px-1 text-[9px] text-emerald-300"
-                            onclick={() => running && void wakeSession(running)}
-                            title="复用正在运行的 native session"
-                          >接入</button>
-                        {:else if canResume(reply)}
+                        {#if canResume(reply)}
                           <label
                             class="inline-flex shrink-0 items-center gap-0.5 text-[9px] text-[var(--rg-fg-muted)]"
                             title="开启后以该 agent 的 YOLO 参数启动（如 grok --always-approve）"
@@ -873,7 +891,8 @@
                       </p>
                       <p class="truncate text-[9px] text-[var(--rg-fg-muted)]" title={reply.cwd}>{reply.cwd}</p>
                       <p class="mt-0.5 line-clamp-3 whitespace-pre-wrap text-[11px] leading-snug" title={reply.text}>{reply.text}</p>
-                    </li>
+                      </li>
+                    {/if}
                   {/each}
                 </ul>
               {/if}
