@@ -39,8 +39,9 @@
     hitlPending?: readonly PendingApproval[];
     /** 通知父面板立刻重拉拓扑（暂停/裁决后不等下一轮轮询）。 */
     onRefresh?: () => void;
+    recentReplyFor?: (profile: TeammateProfile) => string | undefined;
   }
-  let { roster, workspaceId, filePath, hitlPending = [], onRefresh }: Props = $props();
+  let { roster, workspaceId, filePath, hitlPending = [], onRefresh, recentReplyFor }: Props = $props();
 
   /** 某成员的待审批项（initiator 可能是 paneId / agent 名 / agent id）。 */
   function pendingFor(p: TeammateProfile | null, agentId: string): PendingApproval[] {
@@ -175,6 +176,7 @@
     name={mem.name}
     {workspaceId}
     pending={pendingFor(mem.profile, mem.agentId)}
+    recentReply={mem.profile ? recentReplyFor?.(mem.profile) : undefined}
     leader={group
       ? {
           isLeader: group.leaderAgentId === mem.agentId,

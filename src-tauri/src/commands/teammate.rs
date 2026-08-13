@@ -200,17 +200,53 @@ fn pretty_agent_name(agent_id: &str) -> String {
 /// 幂等且**只在有增删时**取写锁——面板 3s 轮询绝大多数轮次是纯读。
 /// 返回是否发生了变更（调用方据此决定要不要广播布局事件）。
 pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
-    // 1) 读：pane → shell pid。
-    let panes: Vec<(Uuid, u32)> = {
+    // 1) 读：pane → shell pid。Kernel 托管的 PTY 不在桌面 handle 保存 child_pid，
+    // 故合并一次已认证的 Kernel 快照，免现代 pane 全部漏识别。
+    let (mut panes, kernel_pane_ids): (Vec<(Uuid, u32)>, Vec<Uuid>) = {
         let map = state.workspaces.read();
         let Some(ws) = map.get(&wid) else {
             return false;
         };
-        ws.terminals
-            .iter()
-            .filter_map(|(pane, h)| h.child_pid.map(|pid| (*pane, pid)))
-            .collect()
+        (
+            ws.terminals
+                .iter()
+                .filter_map(|(pane, h)| h.child_pid.map(|pid| (*pane, pid)))
+                .collect(),
+            ws.terminals
+                .iter()
+                .filter(|(_, handle)| handle.kernel_ref.is_some())
+                .map(|(pane, _)| *pane)
+                .collect(),
+        )
     };
+    if !kernel_pane_ids.is_empty() {
+        // Kernel 快照失败或协议过旧时保留现有花名册，免一次瞬态读取把全部 Agent 误删。
+        let Some(endpoint) = ridge_kernel::client::running_endpoint() else {
+            return false;
+        };
+        let Ok(ptys) = ridge_kernel::client::list_domain_ptys(&endpoint) else {
+            return false;
+        };
+        let kernel_panes = kernel_pane_ids
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        let mut matched_kernel_panes = std::collections::HashSet::new();
+        for pty in ptys {
+            if pty.workspace_id != Some(wid) || !kernel_panes.contains(&pty.pty_id) {
+                continue;
+            }
+            let Some(child_pid) = pty.child_pid else {
+                return false;
+            };
+            matched_kernel_panes.insert(pty.pty_id);
+            panes.push((pty.pty_id, child_pid));
+        }
+        if matched_kernel_panes != kernel_panes {
+            return false;
+        }
+    }
+    panes.sort_unstable();
+    panes.dedup_by_key(|(pane, _)| *pane);
     let found = crate::teammate::autodiscover::scan_cached(&panes);
 
     // 2) 比对期望的自动条目与现状；无差异就此打住（不取写锁）。
@@ -224,8 +260,18 @@ pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
             )
         })
         .collect();
+    let agent_cwds: std::collections::HashMap<Uuid, std::path::PathBuf> = found
+        .iter()
+        .filter_map(|agent| {
+            agent
+                .cwd
+                .as_deref()
+                .filter(|cwd| !cwd.is_empty())
+                .map(|cwd| (agent.pane, std::path::PathBuf::from(cwd)))
+        })
+        .collect();
     let live_panes: std::collections::HashSet<Uuid> = panes.iter().map(|(p, _)| *p).collect();
-    let (stale, missing, unregistered) = {
+    let (stale, missing, unregistered, cwd_updates) = {
         let map = state.workspaces.read();
         let Some(ws) = map.get(&wid) else {
             return false;
@@ -257,9 +303,20 @@ pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
             .filter(|(_, id)| !crate::teammate::profiles::contains_agent(wid, id))
             .map(|(pane, id)| (*pane, id.clone()))
             .collect();
-        (stale, missing, unregistered)
+        let cwd_updates = agent_cwds
+            .iter()
+            .filter(|(pane, cwd)| {
+                ws.pane_tree
+                    .panes
+                    .get(pane)
+                    .and_then(|entry| entry.cwd.as_ref())
+                    != Some(*cwd)
+            })
+            .map(|(pane, cwd)| (*pane, cwd.clone()))
+            .collect::<Vec<_>>();
+        (stale, missing, unregistered, cwd_updates)
     };
-    if stale.is_empty() && missing.is_empty() && unregistered.is_empty() {
+    if stale.is_empty() && missing.is_empty() && unregistered.is_empty() && cwd_updates.is_empty() {
         return false;
     }
 
@@ -279,6 +336,11 @@ pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
         // `inject_roster_runtime` 按输出流水号变化另判，不与此混淆。
         ws.teammate_pane_states
             .insert(*pane, crate::state::PaneState::Busy);
+    }
+    for (pane, cwd) in cwd_updates {
+        if let Some(entry) = ws.pane_tree.panes.get_mut(&pane) {
+            entry.cwd = Some(cwd);
+        }
     }
     // Include newly discovered entries after they are committed to the live
     // workspace map; otherwise the first confirmed scan would never seed the

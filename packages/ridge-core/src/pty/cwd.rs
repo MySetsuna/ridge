@@ -39,41 +39,15 @@ fn find_last_subsequence(needle: &[u8], haystack: &[u8]) -> Option<usize> {
     last
 }
 
-/// Finds the last occurrence of `byte` in `haystack` scanning from the end.
-fn find_last_byte(byte: u8, haystack: &[u8]) -> Option<usize> {
-    haystack.iter().rposition(|&b| b == byte)
-}
-
 /// Finds the position of the OSC 7 terminator in `after_prefix` (bytes after `\x1b]7;`).
 ///
-/// For the 8-bit safe variant (BEL terminator): returns `find_last_byte(0x07, haystack)`.
-/// For the 7-bit safe variant (`\x1b\\`): scans backward for the ESC byte that starts
-/// the terminator, then returns the position just before it. This correctly handles
-/// `\x1b\\` pairs where multiple consecutive backslashes may appear in the string.
-fn find_last_osc7_terminator(after_prefix: &[u8]) -> Option<usize> {
-    // 8-bit safe: BEL (0x07) is always a standalone terminator
-    if let Some(pos) = find_last_byte(0x07, after_prefix) {
-        return Some(pos);
-    }
-
-    // 7-bit safe: find the ESC byte that starts the \x1b\ terminator.
-    // We scan backward for ESC, and for each ESC found we check if the next byte is \.
-    // The last ESC that satisfies this condition starts the terminator.
-    let mut terminator_esc_pos: Option<usize> = None;
-    let mut i = after_prefix.len();
-    while i > 0 {
-        i -= 1;
-        if after_prefix[i] == 0x1B {
-            // ESC found — is it followed by a backslash (valid terminator)?
-            if i + 1 < after_prefix.len() && after_prefix[i + 1] == b'\\' {
-                terminator_esc_pos = Some(i);
-                // Continue searching backward in case there's another ESC-\ later
-            }
-        }
-    }
-
-    // Return the position just before the ESC (the last valid path byte)
-    terminator_esc_pos
+/// Returns the first BEL or `ESC \\` terminator. The start is already the latest
+/// OSC 7 prefix; choosing a later terminator would absorb prompt/OSC bytes into cwd.
+fn find_osc7_terminator(after_prefix: &[u8]) -> Option<usize> {
+    after_prefix.iter().enumerate().find_map(|(index, byte)| {
+        (*byte == 0x07 || (*byte == 0x1B && after_prefix.get(index + 1) == Some(&b'\\')))
+            .then_some(index)
+    })
 }
 
 /// Scans `output` for the **last** OSC 7 sequence (`\x1b]7;file://host/path<TERM>`)
@@ -104,13 +78,13 @@ pub fn parse_cwd_from_output(output: &str) -> Option<PathBuf> {
     // Everything after the prefix
     let after_prefix = &bytes[last_start + OSC7_PREFIX.len()..];
 
-    // Find the last terminator. `find_last_osc7_terminator` handles both the
+    // Find this sequence's terminator. `find_osc7_terminator` handles both the
     // 8-bit BEL variant (returns the BEL position) and the 7-bit `\x1b\\`
     // variant (returns the ESC position — the byte just after the path).
     // Previously this called `find_last_non_escaped_byte(b'\\', …)` which
     // looks for a `\` NOT preceded by ESC — exactly wrong for the 7-bit
     // terminator where the `\` IS preceded by ESC, causing None returns.
-    let term_pos = find_last_osc7_terminator(after_prefix)?;
+    let term_pos = find_osc7_terminator(after_prefix)?;
 
     // Path bytes: everything between prefix and terminator.
     // For ESC \ terminator the ESC itself is NOT part of the path (we stop at \).
@@ -281,6 +255,31 @@ mod tests {
         assert_eq!(
             parse_cwd_from_output(output).map(|p| p.to_string_lossy().into_owned()),
             Some("/new/path".to_string())
+        );
+    }
+
+    #[test]
+    fn stops_at_own_terminator_before_prompt_metadata() {
+        let output = concat!(
+            "\x1b]7;file:///C:/code/wind\x07",
+            "\x1b[mPS C:/code/wind> ",
+            "\x1b]133;A\x07",
+        );
+        assert_eq!(
+            parse_cwd_from_output(output).map(|p| p.to_string_lossy().into_owned()),
+            Some("C:/code/wind".to_string())
+        );
+    }
+
+    #[test]
+    fn stops_at_own_st_terminator_before_later_bell() {
+        let output = concat!(
+            "\x1b]7;file://host/home/alice\x1b\\",
+            "prompt\x1b]133;A\x07",
+        );
+        assert_eq!(
+            parse_cwd_from_output(output).map(|p| p.to_string_lossy().into_owned()),
+            Some("/home/alice".to_string())
         );
     }
 

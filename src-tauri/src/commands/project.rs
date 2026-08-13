@@ -1264,7 +1264,14 @@ fn agent_session_meta(value: &serde_json::Value) -> Option<(String, Option<Strin
 fn assistant_message(value: &serde_json::Value) -> Option<&serde_json::Value> {
     match value.get("type").and_then(|item| item.as_str()) {
         Some("assistant") => value.get("message"),
-        Some("response_item") => Some(&value["payload"]),
+        Some("response_item") => {
+            let payload = &value["payload"];
+            // Codex persists progress commentary as assistant messages too.
+            // A member card's "reply" means the answer delivered to the user,
+            // so keep the previous final answer until the next final arrives.
+            (payload.get("phase").and_then(|item| item.as_str()) != Some("commentary"))
+                .then_some(payload)
+        }
         _ if value.get("role").and_then(|item| item.as_str()) == Some("assistant") => {
             Some(value.get("message").unwrap_or(value))
         }
@@ -1576,6 +1583,19 @@ mod tests {
             replies[0].resume.as_ref().map(|r| r.argv.clone()),
             Some(vec!["resume".into(), "codex-1".into()])
         );
+    }
+
+    #[test]
+    fn codex_commentary_does_not_replace_the_latest_delivered_answer() {
+        let replies = parse_agent_jsonl(
+            "Codex",
+            r#"{"type":"session_meta","payload":{"id":"codex-1","cwd":"C:\\code\\wind"}}
+{"timestamp":"2026-08-13T01:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"delivered answer"}]}}
+{"timestamp":"2026-08-13T01:01:00Z","type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"later progress note"}]}}"#,
+            0,
+        );
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].text, "delivered answer");
     }
 
     #[test]

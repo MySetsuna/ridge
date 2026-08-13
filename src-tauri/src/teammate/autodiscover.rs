@@ -35,6 +35,7 @@ pub struct PaneAgent {
     /// 进程名去扩展名后的 stem（`claude` / `codex` …），作展示名兜底。
     pub name: String,
     pub pid: u32,
+    pub cwd: Option<String>,
 }
 
 /// 运行时入口：内置 + 磁盘/内存用户覆盖（[`super::agent_catalog::load_profile_overrides`]）。
@@ -45,6 +46,32 @@ pub fn match_agent_panes(
     let overrides = super::agent_catalog::load_profile_overrides();
     let names = super::discover::known_agent_names_runtime(&overrides);
     match_agent_panes_with_names(panes, procs, &names)
+}
+
+/// 运行时进程快照亦携 argv。Windows npm shim 常以
+/// `node.exe .../@openai/codex/bin/codex.js` 启动 Codex；只看映像名会漏识别。
+fn match_agent_panes_with_commands(
+    panes: &[(Uuid, u32)],
+    procs: &[(u32, Option<u32>, String, Vec<String>, Option<String>)],
+    process_names: &[String],
+) -> Vec<PaneAgent> {
+    let normalized = procs
+        .iter()
+        .map(|(pid, ppid, image, argv, _)| {
+            let identity = agent_stem(image, process_names)
+                .or_else(|| agent_from_command(argv, process_names))
+                .unwrap_or_else(|| image.clone());
+            (*pid, *ppid, identity)
+        })
+        .collect::<Vec<_>>();
+    let mut found = match_agent_panes_with_names(panes, &normalized, process_names);
+    for agent in &mut found {
+        agent.cwd = procs
+            .iter()
+            .find(|(pid, _, _, _, _)| *pid == agent.pid)
+            .and_then(|(_, _, _, _, cwd)| cwd.clone());
+    }
+    found
 }
 
 /// 纯函数核心：给定 pane→shell pid、进程表、进程名单，找出每个 pane 下命中的 agent。
@@ -70,6 +97,7 @@ pub fn match_agent_panes_with_names(
                 pane: *pane,
                 name,
                 pid,
+                cwd: None,
             });
         }
     }
@@ -115,6 +143,31 @@ fn agent_stem(name: &str, process_names: &[String]) -> Option<String> {
         .then(|| stem.to_string())
 }
 
+fn agent_from_command(argv: &[String], process_names: &[String]) -> Option<String> {
+    process_names.iter().find_map(|candidate| {
+        let candidate = candidate.to_ascii_lowercase();
+        argv.iter()
+            .any(|arg| command_arg_matches_agent(arg, &candidate))
+            .then_some(candidate)
+    })
+}
+
+fn command_arg_matches_agent(arg: &str, candidate: &str) -> bool {
+    let normalized = arg.to_ascii_lowercase().replace('\\', "/");
+    let executable_match = normalized
+        .split_whitespace()
+        .map(|token| token.trim_matches(['"', '\'', '(', ')']))
+        .filter_map(|token| token.rsplit('/').next())
+        .any(|name| {
+            [".exe", ".cmd", ".bat", ".ps1"]
+                .iter()
+                .any(|extension| name == format!("{candidate}{extension}"))
+        });
+    executable_match
+        // Official npm launcher: node_modules/@openai/codex/bin/codex.js.
+        || (candidate == "codex" && normalized.contains("/@openai/codex/"))
+}
+
 /// TTL 缓存的真实扫描：一次进程表刷新 → 对本次传入的 pane 集合做匹配。
 ///
 /// 缓存键含 pane 集合，pane 增删（split/close）会立即失效重扫，不会因为窗口内
@@ -131,7 +184,9 @@ pub fn scan_cached(panes: &[(Uuid, u32)]) -> Vec<PaneAgent> {
             return cached.clone();
         }
     }
-    let found = match_agent_panes(panes, &list_processes());
+    let overrides = super::agent_catalog::load_profile_overrides();
+    let names = super::discover::known_agent_names_runtime(&overrides);
+    let found = match_agent_panes_with_commands(panes, &list_processes(), &names);
     *guard = Some((Instant::now(), key, found.clone()));
     found
 }
@@ -142,11 +197,17 @@ pub fn invalidate_cache() {
     *guard = None;
 }
 
-/// 进程内枚举 (pid, ppid, image name)。仅刷新进程表，不取 CPU/内存/exe 路径。
-fn list_processes() -> Vec<(u32, Option<u32>, String)> {
+/// 进程内枚举 (pid, ppid, image name, argv, cwd)。仅刷新进程表、命令行与 cwd，
+/// 不取 CPU/内存/exe 路径；同一轮仍只建一份全局快照。
+fn list_processes() -> Vec<(u32, Option<u32>, String, Vec<String>, Option<String>)> {
     use sysinfo::{ProcessRefreshKind, RefreshKind, System, UpdateKind};
     let sys = System::new_with_specifics(
-        RefreshKind::new().with_processes(ProcessRefreshKind::new().with_exe(UpdateKind::Never)),
+        RefreshKind::new().with_processes(
+            ProcessRefreshKind::new()
+                .with_exe(UpdateKind::Never)
+                .with_cmd(UpdateKind::OnlyIfNotSet)
+                .with_cwd(UpdateKind::OnlyIfNotSet),
+        ),
     );
     sys.processes()
         .iter()
@@ -155,6 +216,11 @@ fn list_processes() -> Vec<(u32, Option<u32>, String)> {
                 pid.as_u32(),
                 p.parent().map(|pp| pp.as_u32()),
                 p.name().to_string_lossy().to_string(),
+                p.cmd()
+                    .iter()
+                    .map(|arg| arg.to_string_lossy().to_string())
+                    .collect(),
+                p.cwd().map(|path| path.to_string_lossy().into_owned()),
             )
         })
         .collect()
@@ -192,6 +258,73 @@ mod tests {
         let found = match_agent_panes(&[(pane, 100)], &procs);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "codex");
+    }
+
+    #[test]
+    fn codex_npm_node_launcher_is_matched() {
+        let pane = ws_pane(10);
+        let procs = vec![
+            (100, None, "pwsh.exe".to_string(), vec![], None),
+            (150, Some(100), "cmd.exe".to_string(), vec![], None),
+            (
+                200,
+                Some(150),
+                "node.exe".to_string(),
+                vec![
+                    r"C:\DevKit\nodejs\node.exe".into(),
+                    r"C:\DevKit\nodejs\node_modules\@openai\codex\bin\codex.js".into(),
+                ],
+                Some(r"C:\code\wind".into()),
+            ),
+        ];
+        let names = super::super::discover::known_agent_names_runtime(&[]);
+        let found = match_agent_panes_with_commands(&[(pane, 100)], &procs, &names);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "codex");
+        assert_eq!(found[0].pid, 200);
+        assert_eq!(found[0].cwd.as_deref(), Some(r"C:\code\wind"));
+    }
+
+    #[test]
+    fn unrelated_node_command_in_codex_named_workspace_is_not_matched() {
+        let pane = ws_pane(11);
+        let procs = vec![
+            (100, None, "pwsh.exe".to_string(), vec![], None),
+            (
+                200,
+                Some(100),
+                "node.exe".to_string(),
+                vec![
+                    r"C:\DevKit\nodejs\node.exe".into(),
+                    r"C:\code\codex\scripts\serve.js".into(),
+                ],
+                Some(r"C:\code\codex".into()),
+            ),
+        ];
+        let names = super::super::discover::known_agent_names_runtime(&[]);
+        assert!(match_agent_panes_with_commands(&[(pane, 100)], &procs, &names).is_empty());
+    }
+
+    #[test]
+    fn codex_as_an_unrelated_argument_is_not_matched() {
+        let pane = ws_pane(12);
+        let procs = vec![
+            (100, None, "pwsh.exe".to_string(), vec![], None),
+            (
+                200,
+                Some(100),
+                "git.exe".to_string(),
+                vec![
+                    "git.exe".into(),
+                    "commit".into(),
+                    "-m".into(),
+                    "codex".into(),
+                ],
+                Some(r"C:\code\wind".into()),
+            ),
+        ];
+        let names = super::super::discover::known_agent_names_runtime(&[]);
+        assert!(match_agent_panes_with_commands(&[(pane, 100)], &procs, &names).is_empty());
     }
 
     #[test]

@@ -1765,6 +1765,10 @@ function cleanupPaneRuntime(paneId: string, workspaceId?: string): void {
   retirePtyWriteQueuesForPane(paneId);
   retirePaneInputsForPane(paneId);
   teardownPtyBridge(paneId, workspaceId);
+  if (workspaceId) {
+    clearAgentPaneAttention(workspaceId, paneId);
+    setAgentPaneStatus(workspaceId, paneId, null);
+  }
   TerminalManager.instance().detach(paneId);
   paneOscTitleStore.update((s) => {
     if (!(paneId in s)) return s;

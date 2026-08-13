@@ -86,6 +86,7 @@ describe('parseTopologySnapshot', () => {
       generation: 3,
       lease: 'lease-3',
       sessionId: 'session-1',
+      cwd: 'C:/context-only',
     });
   });
 
