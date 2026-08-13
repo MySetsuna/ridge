@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => {
 		static instances: FakeRemoteConnection[] = [];
 		private currentState: 'disconnected' | 'connected' | 'error' = 'disconnected';
 		private listeners = new Set<(state: string) => void>();
+		static failureCategory: 'user' | 'parked' | 'channel' = 'channel';
 
 		constructor() {
 			FakeRemoteConnection.instances.push(this);
@@ -26,7 +27,7 @@ const harness = vi.hoisted(() => {
 			return () => this.listeners.delete(listener);
 		});
 		state = vi.fn(() => this.currentState);
-		lastFailure = vi.fn(() => ({ message: 'fake LAN rejection' }));
+		lastFailure = vi.fn(() => ({ category: FakeRemoteConnection.failureCategory, message: 'fake LAN rejection' }));
 		disconnect = vi.fn(() => { this.currentState = 'disconnected'; });
 		listWorkspaces = vi.fn(async () => ({
 			workspaces: [{ id: 'workspace-remote', name: ' Remote ', active: true }],
@@ -72,6 +73,7 @@ const hosts = await import('./hosts');
 
 beforeEach(() => {
 	harness.FakeRemoteConnection.mode = 'connected';
+	harness.FakeRemoteConnection.failureCategory = 'channel';
 	harness.FakeRemoteConnection.instances.length = 0;
 	harness.cloudConnect.mockClear();
 	harness.invoke.mockClear();
@@ -105,11 +107,21 @@ describe('hosts.connectHost transport onboarding', () => {
 		harness.FakeRemoteConnection.mode = 'error';
 
 		await expect(hosts.connectHost('remote', 'LAN', '127.0.0.1:9527', '123456', 'lan'))
-			.rejects.toThrow('fake LAN rejection');
+			.rejects.toThrow('fake LAN rejection。若首次连接，请先在默认浏览器打开 https://127.0.0.1:9527/');
 		expect(get(hosts.hostConnectProgress)).toEqual({
-			phase: 'error', label: 'LAN', detail: 'fake LAN rejection',
+			phase: 'error',
+			label: 'LAN',
+			detail: 'fake LAN rejection。若首次连接，请先在默认浏览器打开 https://127.0.0.1:9527/，确认主机指纹并信任 Ridge 证书，再重试。',
 		});
 		expect(get(hosts.hostsStore)).toEqual([]);
+	});
+
+	it('keeps insecure LAN errors free of certificate advice', () => {
+		expect(hosts.lanConnectionError('127.0.0.1', 9527, false, 'refused')).toBe('refused');
+	});
+
+	it('keeps authentication failures free of certificate advice', () => {
+		expect(hosts.lanConnectionError('127.0.0.1', 9527, true, 'bad code', 'user')).toBe('bad code');
 	});
 
 	it('connects Cloud host through the same topology projection and progress contract', async () => {

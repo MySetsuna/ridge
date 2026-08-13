@@ -93,7 +93,11 @@ describe('cloudHostStore lifecycle', () => {
 			deviceName: 'desktop',
 			user: { username: 'alice' },
 		});
-		mocks.invoke.mockResolvedValue(undefined);
+		mocks.invoke.mockImplementation(async (command: string) =>
+			command === 'ensure_cloud_remote_host'
+				? { schema: 1, pid: 7, state: 'online', detail: 'ready', updatedAt: 1 }
+				: undefined,
+		);
 
 		await goOnline();
 		expect(mocks.invoke).toHaveBeenNthCalledWith(1, 'sync_cloud_remote_credentials', {
@@ -121,6 +125,24 @@ describe('cloudHostStore lifecycle', () => {
 		expect(get(hostError)).toBe('offline');
 		await goOffline();
 		expect(get(hostError)).toBe('offline');
+	});
+
+	it('does not call a spawned sidecar online before relay welcome', async () => {
+		mocks.snapshot.mockReturnValue({
+			deviceToken: 'token',
+			deviceName: 'desktop',
+			user: { username: 'alice' },
+		});
+		mocks.invoke.mockImplementation(async (command: string) =>
+			command === 'ensure_cloud_remote_host'
+				? { schema: 1, pid: 7, state: 'connecting', detail: '正在连接信令中继', updatedAt: 1 }
+				: undefined,
+		);
+
+		await goOnline();
+		expect(get(hostState)).toBe('error');
+		expect(get(hostError)).toBe('正在连接信令中继');
+		expect(isHostOnline()).toBe(false);
 	});
 
 	it('keeps browser host ownership outside panel mount lifecycle', async () => {

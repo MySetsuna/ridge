@@ -47,6 +47,7 @@ import {
   revokeWorkspaceShare,
 } from '@ridge/remote/shared/cloud/apiClient';
 import { RemoteConnection } from '@ridge/remote';
+import { WsDataProvider } from '$lib/transport/ws';
 import {
   retainHostForest,
   loadHostForest,
@@ -957,6 +958,21 @@ async function openLanHost(
   }
   const link = new RemoteConnection();
   await waitForRemoteConnection(link, host, port, code, secure);
+  let files: WsDataProvider | null = null;
+  const topology = link as HostTopologyLink;
+  topology.inspectPath = async (path, signal) => {
+    try {
+      files ??= new WsDataProvider(link);
+      await files.getFileTree(path, 0, signal);
+      return { exists: true, isDirectory: true };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const detail = error instanceof Error ? error.message : String(error);
+      if (/not a directory/i.test(detail)) return { exists: true, isDirectory: false };
+      if (/not exist|no such file|not found/i.test(detail)) return { exists: false };
+      throw error;
+    }
+  };
   return {
     hostId: `lan:${host}:${port}`,
     kind,
@@ -977,7 +993,7 @@ async function waitForRemoteConnection(
     const timer = setTimeout(() => {
       off();
       link.disconnect();
-      reject(new Error('LAN 主机连接超时'));
+      reject(new Error(lanConnectionError(host, port, secure, 'LAN 主机连接超时', 'channel')));
     }, 10_000);
     const off = link.onStateChange((state) => {
       if (state === 'connected') {
@@ -987,11 +1003,30 @@ async function waitForRemoteConnection(
       } else if (state === 'error') {
         clearTimeout(timer);
         off();
-        reject(new Error(link.lastFailure()?.message || 'LAN 主机拒绝连接'));
+        const failure = link.lastFailure();
+        reject(new Error(lanConnectionError(host, port, secure, failure?.message, failure?.category)));
       }
     });
     link.connect(host, port, code, 'code', secure);
   });
+}
+
+export function lanTrustUrl(host: string, port: number): string {
+  return `https://${host}:${port}/`;
+}
+
+export function lanConnectionError(
+  host: string,
+  port: number,
+  secure: boolean,
+  detail?: string,
+  category?: 'user' | 'parked' | 'channel',
+): string {
+  if (!secure || category === 'user' || category === 'parked') {
+    return detail || 'LAN 主机拒绝连接';
+  }
+  const url = lanTrustUrl(host, port);
+  return `${detail || '安全 WebSocket 握手失败'}。若首次连接，请先在默认浏览器打开 ${url}，确认主机指纹并信任 Ridge 证书，再重试。`;
 }
 
 async function openPublicHost(

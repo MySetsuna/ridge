@@ -63,6 +63,9 @@ export interface HostTopologyLink extends HostForestLink {
   ): Promise<void>;
   listShells?: NonNullable<RemoteLink['listShells']>;
   changePaneShell?: NonNullable<RemoteLink['changePaneShell']>;
+  /** Read-only filesystem probes must execute on this host, never on the
+   * controller's local filesystem. */
+  inspectPath?(path: string, signal?: AbortSignal): Promise<{ exists: boolean; isDirectory?: boolean }>;
 }
 
 export interface HostForestResult {

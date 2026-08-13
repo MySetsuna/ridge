@@ -18,7 +18,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { randomInt } from 'node:crypto';
+import { randomInt, X509Certificate } from 'node:crypto';
 import { createServer } from 'node:net';
 import {
   mkdirSync,
@@ -123,10 +123,10 @@ function httpsJson(url, opts = {}) {
             path: `${u.pathname}${u.search}`,
             method: opts.method || 'GET',
             headers: opts.headers || {},
-            ca: process.env.RIDGE_REMOTE_CA_CERT
+            ca: opts.ca ?? (process.env.RIDGE_REMOTE_CA_CERT
               ? readFileSync(process.env.RIDGE_REMOTE_CA_CERT)
-              : undefined,
-            rejectUnauthorized: true,
+              : undefined),
+            rejectUnauthorized: opts.rejectUnauthorized ?? true,
             agent: false,
             timeout: 10_000,
           },
@@ -141,6 +141,28 @@ function httpsJson(url, opts = {}) {
         req.end();
       }),
   );
+}
+
+/**
+ * The E2E owns the loopback port and the spawned rdg process, so it can perform
+ * a single trust-on-first-use fetch of Ridge's public local CA.  Validate that
+ * payload before using it as the trust anchor for every protocol probe.  This
+ * does not weaken production TLS or any non-loopback request.
+ */
+async function loadLoopbackRidgeCa(url) {
+  const parsed = new URL(url);
+  if (!['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname)) {
+    throw new Error(`refusing CA bootstrap from non-loopback host: ${parsed.hostname}`);
+  }
+  const response = await httpsJson(`${url}/ridge-ca.pem`, { rejectUnauthorized: false });
+  if (response.status !== 200 || !response.body.includes('BEGIN CERTIFICATE')) {
+    throw new Error(`Ridge CA bootstrap failed: HTTP ${response.status}`);
+  }
+  const certificate = new X509Certificate(response.body);
+  if (!certificate.ca || !certificate.subject.includes('CN=Ridge Remote Local CA')) {
+    throw new Error(`Ridge CA bootstrap returned an unexpected certificate: ${certificate.subject}`);
+  }
+  return response.body;
 }
 
 async function waitTcp(port, timeoutMs = 15_000) {
@@ -572,11 +594,13 @@ async function prepareHost(hostHandle, port) {
   log(`host up pid=${status.pid} totp=<redacted> url=${status.url_loopback}`);
   await waitTcp(status.port, 10_000);
   const url = status.url_loopback.replace(/\/$/, '');
-  const info = await httpsJson(`${url}/info`);
+  const ca = await loadLoopbackRidgeCa(url);
+  const info = await httpsJson(`${url}/info`, { ca });
   if (info.status !== 200) fail(`/info HTTP ${info.status}`, { body: info.body });
   log(`info=${info.body}`);
   let totpSt = await waitFreshTotp(status);
   let ver = await httpsJson(`${url}/verify`, {
+    ca,
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: `code=${encodeURIComponent(totpSt.totp)}&device=e2e-preflight`,
@@ -587,6 +611,7 @@ async function prepareHost(hostHandle, port) {
     await sleep(2000);
     totpSt = await waitFreshTotp(status);
     ver = await httpsJson(`${url}/verify`, {
+      ca,
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: `code=${encodeURIComponent(totpSt.totp)}&device=e2e-preflight`,
@@ -596,6 +621,7 @@ async function prepareHost(hostHandle, port) {
   }
   log('protocol verify OK');
   const layout = await httpsJson(`${url}/verify`, {
+    ca,
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: `code=${encodeURIComponent((await waitFreshTotp(status)).totp)}&device=e2e-pty`,

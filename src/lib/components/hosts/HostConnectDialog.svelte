@@ -7,7 +7,7 @@
   // 凭据(TOTP)只用于本次握手，不落库。
   import { Globe, Wifi, X, Loader2 } from 'lucide-svelte';
   import { portal } from '$lib/actions/portal';
-  import { connectHost, hostConnectProgress } from '$lib/stores/hosts';
+  import { connectHost, hostConnectProgress, lanTrustUrl } from '$lib/stores/hosts';
   import { alertDialog } from '../RidgeDialog.svelte';
   import { cloudAuth, isLoggedIn, login as cloudLogin, loginViaBrowser } from '@ridge/remote/shared/cloud/auth';
 
@@ -100,6 +100,20 @@
       await connectHost('remote', request.label, request.addr, request.totp, request.channel);
     } catch (e) {
       await alertDialog({ title: '接入失败', message: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  async function trustLanHost(): Promise<void> {
+    const raw = addr.trim();
+    if (!raw) return;
+    try {
+      const parsed = new URL(raw.includes('://') ? raw : `https://${raw}`);
+      if (parsed.protocol !== 'https:') return;
+      const url = lanTrustUrl(parsed.hostname, Number(parsed.port || 443));
+      const { openUrl } = await import('@tauri-apps/plugin-opener');
+      await openUrl(url);
+    } catch (error) {
+      await alertDialog({ title: '无法打开主机', message: error instanceof Error ? error.message : String(error) });
     }
   }
 </script>
@@ -236,6 +250,16 @@
               ? '局域网直连，无需登录——填对地址与 TOTP 验证码即可接入。'
               : '公网经 Cloud E2EE 中继；relay 与 host 均校验同账号，异账号整机接入会被拒绝。'}
           </p>
+          {#if channel === 'lan'}
+            <button
+              type="button"
+              disabled={!addr.trim()}
+              onclick={trustLanHost}
+              class="h-8 w-full rounded-lg border border-amber-400/35 bg-amber-400/[0.06] text-[11px] text-amber-300 hover:bg-amber-400/[0.12] disabled:opacity-40"
+            >
+              首次连接：打开主机并信任证书
+            </button>
+          {/if}
         {/if}
       </div>
 
