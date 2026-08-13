@@ -19,6 +19,8 @@ describe('Remote host connection flow', () => {
     expect(connectAt).toBeGreaterThan(closeAt);
     expect(dialogSource).toContain('hostConnectProgress');
     expect(dialogSource).toContain("$hostConnectProgress?.phase !== 'error'");
+	expect(dialogSource).toContain('首次连接：打开主机并信任证书');
+	expect(dialogSource).toContain("import('@tauri-apps/plugin-opener')");
     expect(panelSource).toContain('{#if $hostConnectProgress}');
     expect(panelSource).toContain('aria-live="polite"');
   });

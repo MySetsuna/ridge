@@ -33,6 +33,16 @@ struct CloudRegistry {
     started_at: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudHostStatus {
+    pub schema: u32,
+    pub pid: u32,
+    pub state: String,
+    pub detail: String,
+    pub updated_at: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct LanHostStatus {
     pub pid: u32,
@@ -46,6 +56,7 @@ const LAN_REGISTRY: &str = "remote-host.json";
 const CLOUD_AUTH: &str = "remote-cloud-auth.json";
 const CLOUD_REGISTRY: &str = "remote-cloud.json";
 const CLOUD_ENABLED: &str = "remote-cloud.enabled";
+const CLOUD_STATUS: &str = "remote-cloud-status.json";
 
 pub fn lan_registry_path(app: &AppHandle) -> Result<PathBuf, String> {
     app_data_dir(app).map(|dir| dir.join(LAN_REGISTRY))
@@ -159,7 +170,7 @@ pub fn sync_cloud_credentials(
             fs::rename(&tmp, &path).map_err(|error| error.to_string())?;
             let enabled_path = app_data_dir(app)?.join(CLOUD_ENABLED);
             if read_enabled_flag(&enabled_path, false) {
-                ensure_cloud_host(app)
+                ensure_cloud_host(app).map(|_| ())
             } else {
                 Ok(())
             }
@@ -182,7 +193,7 @@ pub fn reattach_cloud_host(app: &AppHandle) -> Result<(), String> {
     if !read_enabled_flag(&enabled, false) {
         return Ok(());
     }
-    ensure_cloud_host(app)
+    ensure_cloud_host(app).map(|_| ())
 }
 
 pub fn stop_cloud_host(app: &AppHandle) -> Result<(), String> {
@@ -193,21 +204,30 @@ pub fn stop_cloud_host(app: &AppHandle) -> Result<(), String> {
         }
     }
     let _ = fs::remove_file(registry_path);
+    let _ = fs::remove_file(app_data_dir(app)?.join(CLOUD_STATUS));
     Ok(())
 }
 
-pub fn ensure_cloud_host(app: &AppHandle) -> Result<(), String> {
+pub fn ensure_cloud_host(app: &AppHandle) -> Result<CloudHostStatus, String> {
     let auth_path = cloud_auth_path(app)?;
     if !auth_path.exists() {
-        return Ok(());
+        return Err("公网 Remote 缺少设备凭据，请重新登录并激活设备".into());
     }
+    let status_path = app_data_dir(app)?.join(CLOUD_STATUS);
     let registry_path = app_data_dir(app)?.join(CLOUD_REGISTRY);
     if let Some(record) = read_json::<CloudRegistry>(&registry_path) {
         if record.schema == 1 && ridge_kernel::client::is_process_alive(record.pid) {
-            return Ok(());
+            let has_current_status = read_json::<CloudHostStatus>(&status_path)
+                .is_some_and(|status| status.pid == record.pid);
+            if has_current_status || unix_now().saturating_sub(record.started_at) < 25 {
+                return wait_for_cloud_status(&status_path, record.pid, Duration::from_secs(20));
+            }
+            // 旧版本 sidecar 无握手状态文件；重启一次，迁移到可观测协议。
+            ridge_kernel::client::terminate_process(record.pid)?;
         }
         let _ = fs::remove_file(&registry_path);
     }
+    let _ = fs::remove_file(&status_path);
     let binary = locate_rdg_binary(app)?;
     let auth = auth_path
         .to_str()
@@ -216,12 +236,16 @@ pub fn ensure_cloud_host(app: &AppHandle) -> Result<(), String> {
     let binding = binding_path
         .to_str()
         .ok_or_else(|| "cloud PTY binding path is not valid UTF-8".to_string())?;
+    let status = status_path
+        .to_str()
+        .ok_or_else(|| "cloud status path is not valid UTF-8".to_string())?;
     let pid = ridge_kernel::client::spawn_detached_with_env(
         &binary,
         &["remote", "--daemon"],
         &[
             ("RIDGE_AUTH_FILE", auth),
             ("RIDGE_REMOTE_PTY_BINDING_FILE", binding),
+            ("RIDGE_REMOTE_CLOUD_STATUS_FILE", status),
         ],
     )?;
     let record = CloudRegistry {
@@ -230,7 +254,41 @@ pub fn ensure_cloud_host(app: &AppHandle) -> Result<(), String> {
         started_at: unix_now(),
     };
     write_json(&registry_path, &record)?;
-    Ok(())
+    wait_for_cloud_status(&status_path, pid, Duration::from_secs(20))
+}
+
+fn wait_for_cloud_status(
+    path: &Path,
+    pid: u32,
+    timeout: Duration,
+) -> Result<CloudHostStatus, String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_detail = String::new();
+    while Instant::now() < deadline {
+        if !ridge_kernel::client::is_process_alive(pid) {
+            return Err(if last_detail.is_empty() {
+                "公网 Remote sidecar 启动后立即退出；请重新登录并检查网络".into()
+            } else {
+                last_detail
+            });
+        }
+        if let Some(status) = read_json::<CloudHostStatus>(path).filter(|status| status.pid == pid)
+        {
+            last_detail = status.detail.clone();
+            if status.state == "online" {
+                return Ok(status);
+            }
+            if status.state == "error" {
+                return Err(status.detail);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(if last_detail.is_empty() {
+        "公网 Remote 未在 20 秒内连接信令中继".into()
+    } else {
+        format!("公网 Remote 连接超时：{last_detail}")
+    })
 }
 
 fn read_live_lan(path: &Path) -> Option<LanHostStatus> {
@@ -297,7 +355,33 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    fs::rename(&tmp, path).map_err(|error| error.to_string())
+    replace_snapshot(&tmp, path).map_err(|error| error.to_string())
+}
+
+fn replace_snapshot(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    match fs::rename(tmp, path) {
+        Ok(()) => Ok(()),
+        Err(first_error) => {
+            if !path.exists() {
+                return Err(first_error);
+            }
+            let backup = path.with_extension("json.bak");
+            if backup.exists() {
+                fs::remove_file(&backup)?;
+            }
+            fs::rename(path, &backup)?;
+            match fs::rename(tmp, path) {
+                Ok(()) => {
+                    let _ = fs::remove_file(backup);
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = fs::rename(backup, path);
+                    Err(error)
+                }
+            }
+        }
+    }
 }
 
 fn unix_now() -> u64 {
@@ -370,5 +454,28 @@ mod tests {
         let value = serde_json::to_value(record).unwrap();
         assert_eq!(value["pid"], 7);
         assert_eq!(value["lanIp"], "192.168.1.2");
+    }
+
+    #[test]
+    fn json_snapshot_replaces_existing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "ridge-remote-supervisor-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        let path = dir.join("registry.json");
+
+        write_json(&path, &serde_json::json!({ "state": "starting" }))
+            .expect("write first snapshot");
+        write_json(&path, &serde_json::json!({ "state": "online" })).expect("replace snapshot");
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read replacement"))
+                .expect("valid replacement JSON");
+        assert_eq!(value["state"], "online");
+        let _ = fs::remove_dir_all(dir);
     }
 }

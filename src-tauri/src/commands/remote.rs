@@ -178,9 +178,15 @@ pub fn sync_cloud_remote_credentials(
 /// enables public Remote. Tauri only hands off credentials and lifecycle
 /// intent; the sidecar owns all WebRTC sessions and survives shell death.
 #[tauri::command]
-pub fn ensure_cloud_remote_host(app: AppHandle) -> Result<(), String> {
-    crate::remote_host_supervisor::set_cloud_enabled(&app, true)?;
-    crate::remote_host_supervisor::ensure_cloud_host(&app)
+pub async fn ensure_cloud_remote_host(
+    app: AppHandle,
+) -> Result<crate::remote_host_supervisor::CloudHostStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::remote_host_supervisor::set_cloud_enabled(&app, true)?;
+        crate::remote_host_supervisor::ensure_cloud_host(&app)
+    })
+    .await
+    .map_err(|error| format!("公网 Remote 启动任务失败：{error}"))?
 }
 
 /// Persist the cloud Remote disabled state. Existing detached sessions are not

@@ -34,6 +34,14 @@ export const cloudSessions = writable<CloudControllerSession[]>([]);
 /** host 路径产生的错误文案（与面板自身的 LAN/账户错误分开）。 */
 export const hostError = writable('');
 
+interface DetachedCloudHostStatus {
+  schema: number;
+  pid: number;
+  state: 'starting' | 'connecting' | 'online' | 'error';
+  detail: string;
+  updatedAt: number;
+}
+
 // ── 模块级单例（不随组件卸载销毁）─────────────────────────────────────────
 let host: RidgeCloudHost | null = null;
 // 本机 Ed25519 设备身份公钥（取一次缓存），握手发 0x02 设备签名帧。
@@ -220,7 +228,10 @@ async function goOnlineTauri(): Promise<void> {
       deviceName: s.deviceName,
       username: s.user?.username ?? null,
     });
-    await invoke('ensure_cloud_remote_host');
+    const status = await invoke<DetachedCloudHostStatus>('ensure_cloud_remote_host');
+    if (status.state !== 'online') {
+      throw new Error(status.detail || '公网 Remote 未连接信令中继');
+    }
     hostState.set('online');
     cloudHostOnline.set(true);
   } catch (e) {
