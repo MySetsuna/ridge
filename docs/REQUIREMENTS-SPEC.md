@@ -1296,6 +1296,70 @@
 - Boundary:`Keep Message Hub as internal SSOT; native A2A is an explicit transport adapter and must not bypass Kernel identity, capability, generation, lease, or PTY safety gates. Unknown/unsupported methods fail typed and fail-closed. No plaintext secret, unbounded body, second hidden transport, or compatibility claim without live interoperability evidence.`
 - Acceptance:`Agent Card endpoint and advertised interfaces are tested against the supported A2A version; initialize/send/get/list/cancel/subscribe/push paths have branch-complete tests; auth/tenant/capability/generation/lease failures are deterministic; external A2A probe or an explicit blocked report records live endpoint, headers, task lifecycle, stream/push behavior and receipt mapping; CodeGraph verifies the full route from HTTP boundary to Hub/Kernel.`
 - Traceability:`REQ-A2A-NATIVE-SERVER-01` → ridge-mcp native HTTP/A2A boundary → Agent Card/JSON-RPC/SSE/task tests → third-party interoperability probe or blocked runbook → iteration archive`
+
+### REQ-TERMINAL-LINKS-01 · 终端链接分类、滚动命中与 origin-aware 打开
+
+- Approval evidence:`批准 PENDING-REQ-20260813-TERMINAL-LINKS-01`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 类型:`FIX + MODIFY`
+- 原始意图:终端内可跳转文本须识别准确；滚动后链接跟随实际内容；网页、目录、文件与 Ridge 内部编辑器目标分流；相对路径结合 pane cwd；单独斜杠加文本不得误判为链接。
+- 关联 Active 条款:`REQ-EXPLORER-CONTEXT-ACTIONS-01`、`REQ-INTERACTION-PARITY-01`、`REQ-REMOTE-03`
+- 行为:链接候选由当前终端逻辑行与可见 viewport 在 feed、reflow、resize、scroll 后重算，点击不得使用旧 cell/旧行目标；显式 HTTP/HTTPS 与合法 OSC 8 URL 走系统浏览器；经 origin-aware 文件能力确认的本地/Remote/shared 文件或目录按类型处理，目录在对应 Explorer 展开并选中，文件优先在 Ridge 内部编辑器打开并保留可解析的 line/column，能力不可用时给出明确回退；相对路径以捕获的 pane cwd 为首选基准、workspace root 为有界回退，Windows/POSIX 路径、引号/标点边界及 file:line:column 解析一致；裸 `/word`、命令参数片段、除法或普通文本不得仅凭正则变为链接，POSIX 绝对路径仅在对应 origin 验证存在后可激活。
+- 范围:桌面与 Remote 共享终端链接检测/命中、pane cwd/origin 路径解析、Explorer reveal、Ridge 文件编辑器打开及相关菜单/指针交互；完成全部本轮修复后由 Luna 子代理执行 CDP，主代理复核。
+- 非目标:将所有形似路径的文本自动打开；扫描终端全文或项目全文；把 Remote/shared 路径冒充本机路径；新增任意 URI scheme；修改第三方 shell 输出。
+- 边界:链接激活须绑定捕获的 workspace/pane/cwd/origin，不能在点击时偷换为当前活动 pane；文件存在性探测须有界、可取消并缓存，不得在 pointermove 上无界 spawn/IO；选择文本、TUI 鼠标协议、终端输入与 OSC 8 既有语义不得回归；颜色不得成为唯一可点击提示。
+- 假设/待确认:内部编辑器为本地及 origin provider 支持文件读取时的首选；裸 `/word` 仅在 origin 明确证明其为现存绝对路径时例外激活；未验证目标保持普通文本而非猜测打开。
+- 验收:表驱动测试覆盖 HTTP/HTTPS、OSC 8、Windows/POSIX 绝对路径、`./`/`../`/嵌套相对路径、空格/引号/尾标点、file:line:column、Remote/shared origin、缺失目标及裸 `/word` 负例；滚动、scrollback 装载、reflow、resize 后同屏坐标点击仅命中当前可见行；网页只触发浏览器，目录只触发对应 Explorer，文件优先触发 Ridge 编辑器，Remote/shared 不调用本机 reveal；选择/TUI/输入回归全绿；Luna CDP 实测上述交互并保存步骤与断言证据。
+- 追踪:terminal link detector/hit testing → workspace/pane cwd + origin resolver → browser/Explorer/internal editor dispatcher → unit/integration/CDP fixtures
+
+### REQ-HISTORY-OVERLAY-BACKGROUND-01 · Shell history 浮层始终具不透明背景
+
+- 批准依据:`批准以上三项`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 类型:`FIX + MODIFY`
+- 原始意图:shell history 浮层在任何终端背景、壁纸、透明度与焦点状态下都须有稳定背景色，不让底层终端文字透出。
+- 关联 Active 条款:`REQ-HISTORY-OVERLAY-GEOMETRY-01`
+- 行为:history overlay 根容器始终绘制来自主题 elevated/surface token 的实色背景，并保留边框、阴影、选中态及可读对比；显示、翻向、夹紧、窄 pane 居中、键盘切换期间均不变透明。
+- 范围:桌面 RidgePane shell history overlay 样式与视觉/组件测试。
+- 非目标:修改 history 数据源、排序、去重、过滤、几何或键盘语义。
+- 边界:不得用全屏遮罩掩盖终端；背景色须随主题且不以 alpha=0/透明色退化；高对比/无障碍可读性不回归。
+- 假设:沿用现有主题 surface/elevated token，不新增用户可配透明度。
+- 验收:组件/CSS 契约断言 overlay 根背景为非透明主题 surface；深浅主题、壁纸/透明终端、聚焦切换与窄分屏截图中底层字形不透出。
+- 追踪:RidgePane history overlay markup/style → component/visual test
+
+### REQ-TERMINAL-LINK-MODIFIER-01 · 终端链接仅以 Ctrl/Cmd+点击激活
+
+- 批准依据:`批准以上三项`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 类型:`MODIFY`
+- 原始意图:终端 URL、目录与文件不可被普通点击误开；Windows/Linux 用 Ctrl+主点击，macOS 用 Cmd+主点击方可跳转，hover 提示须准确说明。
+- 关联 Active 条款:`REQ-TERMINAL-LINKS-01`
+- 行为:普通主点击即使命中已验证链接仍保持宿主文本选择或 TUI 鼠标转发；仅平台修饰键+主点击拦截并执行既有 origin-aware 打开；非主键不打开；hover 可识别候选并显示“Ctrl+点击打开”或“⌘+点击打开”，按下修饰键时下划线/指针反馈与可操作态一致。
+- 范围:桌面与 Remote 共享终端点击仲裁、hover underline/hint、触摸不启用此桌面快捷语义、相关测试。
+- 非目标:改变链接分类、cwd/origin 路由、系统浏览器/Explorer/编辑器分流。
+- 边界:TUI 开启鼠标协议时普通点击仍转发；文本选择、拖拽、多击与上下文菜单不回归；颜色不得为唯一提示。
+- 假设:macOS 遵循平台惯例使用 Command；触摸端保持既有点击策略，不强制物理修饰键。
+- 验收:表驱动矩阵覆盖鼠标协议开关、链接命中、主/非主键、Ctrl/Cmd 有无；普通点击从不打开，修饰键主点击仅打开一次；Windows/macOS 提示文案正确；CDP 坐标实测普通点击不跳、Ctrl+点击跳。
+- 追踪:linkAffordance decideHover/decideLinkClick → TerminalManager pointer/hint → desktop/Remote tests
+
+### REQ-RIDGE-MCP-CLI-NEUTRAL-01 · ridge-mcp 对调用方 CLI agent 协议中立
+
+- 批准依据:`批准以上三项`
+- 状态:`ACTIVE`
+- 版本:`v1`
+- 类型:`MODIFY + CLARIFY`
+- 原始意图:ridge-mcp 不是 RidgeCode 专属；Codex、Claude Code、Gemini CLI、Aider、OpenCode、RidgeCode 等支持 MCP 或等价桥接的流行 CLI agent 均可作为调用方；创建 teammate 时亦不得固定 RidgeCode。
+- 关联 Active 条款:`REQ-RIDGE-MCP-AS-KERNEL-API-01`、`REQ-AGENT-COMMUNICATION-ARCH-REBUILD-01`
+- 行为:ridge-mcp 暴露标准 MCP/HTTP/WS 能力，不从 client 名称分支或拒绝；安装/配置文档提供通用 server 配置及多 CLI 示例；split/launch 只接受宿主 `ridge_get_launch_capabilities` 动态返回的 launch profile/model/reasoning 参数，空集合或不支持项 fail-closed，禁止默认/硬编码 RidgeCode 可执行路径；既有 pane 中任意 CLI agent 只要获得当前 endpoint/token/workspace 身份即可调用同一 roster、split、message、task、resource 契约。
+- 范围:ridge-mcp/bridge 协议与注册文档、launch capability 发现/校验、跨客户端契约测试。
+- 非目标:承诺每个第三方 CLI 的私有 runtime API；捆绑或自动安装所有 agent；绕过各 CLI 自身 MCP 支持、认证与权限。
+- 边界:动态 endpoint/token 不写文档或日志；跨 workspace fail-closed；不得猜 profile/model/命令；调用方品牌不进入 SSOT identity 或路由决策。
+- 假设:“所有流行 CLI agent”指支持 MCP 或可使用标准 bridge 的客户端；未提供 MCP 能力者需其自身适配，不由 Ridge 冒充私有协议。
+- 验收:协议测试以至少三种不同 clientInfo/name 完成 initialize/tools/list 与一项只读工具且结果一致；代码/文档扫描无固定 RidgeCode 默认调用；launch 测试证明仅使用能力清单、未知/空 profile 拒绝；提供 Codex/Claude/Gemini 或同类 CLI 配置示例，并明确其他 MCP 客户端同契约。
+- 追踪:ridge-mcp server/bridge → launch capabilities → host split/launch → docs/mcp-integration → multi-client contract tests
 ## 修订账本 (Revision Ledger)
 
 | 版本 | 日期 | Pending ID | 变更 | 关联/取代 | 批准证据 |
