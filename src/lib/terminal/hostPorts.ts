@@ -14,8 +14,44 @@ import { get } from 'svelte/store';
 import { settingsStore } from '$lib/stores/settings';
 import { termFontSize } from '$lib/stores/termSettings';
 import { activeBgImage } from '$lib/stores/themes';
-import { paneCwdStore, activeWorkspaceId } from '$lib/stores/paneTree';
-import type { HostPorts } from '@ridge/remote/shared/terminal/ports';
+import { paneCwdStore, activeWorkspaceId, workspacePaneTrees } from '$lib/stores/paneTree';
+import type { PaneNode, PaneOrigin } from '$lib/types';
+import type {
+	HostPorts,
+	TerminalLinkOpenRequest,
+} from '@ridge/remote/shared/terminal/ports';
+import { commonPathAncestor } from '$lib/utils/path';
+
+function paneOrigin(node: PaneNode | undefined, paneId: string): PaneOrigin | undefined {
+	if (!node) return undefined;
+	if (node.type === 'leaf') return node.id === paneId ? node.origin : undefined;
+	for (const child of node.children) {
+		const origin = paneOrigin(child, paneId);
+		if (origin) return origin;
+	}
+	return undefined;
+}
+
+async function openTerminalRequest(request: TerminalLinkOpenRequest) {
+	const [{ openTerminalLink }, { terminalPathOrigin }] = await Promise.all([
+		import('$lib/utils/linkResolver'),
+		import('$lib/hosts/remotePaneBindings'),
+	]);
+	const bound = terminalPathOrigin(request.origin.paneId);
+	const treeOrigin = paneOrigin(
+		get(workspacePaneTrees).get(request.origin.workspaceId),
+		request.origin.paneId,
+	);
+	const origin = bound
+		? { ...request.origin, kind: bound.kind, hostId: bound.hostId }
+		: treeOrigin
+			? { ...request.origin, kind: treeOrigin.kind, hostId: treeOrigin.host_id }
+			: request.origin;
+	return openTerminalLink(
+		{ ...request, origin },
+		{ inspectPath: bound?.inspectPath },
+	);
+}
 
 export function makeHostPorts(): HostPorts {
 	return {
@@ -70,17 +106,25 @@ export function makeHostPorts(): HostPorts {
 			current(workspaceId, paneId) {
 				return get(paneCwdStore)[`${workspaceId}:${paneId}`];
 			},
+			workspaceRoot(workspaceId, paneId) {
+				const cwds = get(paneCwdStore);
+				const own = Object.entries(cwds)
+					.filter(([key, value]) => key.startsWith(`${workspaceId}:`) && !!value)
+					.map(([, value]) => value);
+				return commonPathAncestor(own) ?? cwds[`${workspaceId}:${paneId}`];
+			},
 			all() {
 				return Object.values(get(paneCwdStore)).filter((s): s is string => !!s);
 			},
 		},
-		openTextLink(spanText, ctx) {
+		openTextLink(request) {
 			// §1.32：动态 import 保持 linkResolver（及其 monaco 传递依赖）不进
 			// 调用方的加载图；点击容忍这一 microtask。
-			import('$lib/utils/linkResolver').then(({ resolveLink, executeAction }) => {
-				const action = resolveLink(spanText, { cwd: ctx.cwd, knownCwds: ctx.knownCwds });
-				return executeAction(action);
-			}).catch((error) => console.warn('[terminal] link action failed', error));
+			return openTerminalRequest(request)
+				.catch((error) => {
+					console.warn('[terminal] link action failed', error);
+					return { handled: false, reason: String(error) };
+				});
 		},
 	};
 }

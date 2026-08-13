@@ -253,7 +253,11 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		const { manager, fixture } = makeManager();
 		const openTextLink = vi.fn();
 		TerminalManager.setHostPorts({
-			cwd: { current: () => '/repo', all: () => ['/repo', '/repo/packages'] },
+			cwd: {
+				current: () => '/repo',
+				workspaceRoot: () => '/repo',
+				all: () => ['/repo', '/repo/packages'],
+			},
 			openTextLink,
 		});
 		expect(TerminalManager.tryInstance()).toBe(manager);
@@ -265,15 +269,24 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 			.toBe(false);
 		expect(TerminalManager._executeOpenPlan({ type: 'open_file', path: 'src/main.ts', line: 4, col: 2 }, fixture.pane, 'x'))
 			.toBe(true);
-		expect(openTextLink).toHaveBeenCalledWith('src/main.ts:4:2', {
+		expect(openTextLink).toHaveBeenCalledWith({
+			type: 'path',
+			path: 'src/main.ts',
+			line: 4,
+			col: 2,
 			cwd: '/repo',
-			knownCwds: ['/repo', '/repo/packages'],
+			workspaceRoot: '/repo',
+			origin: { kind: 'local', workspaceId: 'workspace-a', paneId: 'manager-test-pane' },
 		});
 		expect(TerminalManager._executeOpenPlan({ type: 'reveal_in_tree', path: '/repo/src/main.ts' }, fixture.pane, 'x'))
 			.toBe(true);
-		expect(openTextLink).toHaveBeenLastCalledWith('/repo/src/main.ts', {
+		expect(openTextLink).toHaveBeenLastCalledWith({
+			type: 'path',
+			path: '/repo/src/main.ts',
+			directoryHint: true,
 			cwd: '/repo',
-			knownCwds: ['/repo', '/repo/packages'],
+			workspaceRoot: '/repo',
+			origin: { kind: 'local', workspaceId: 'workspace-a', paneId: 'manager-test-pane' },
 		});
 
 		const host = {
@@ -462,18 +475,32 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 			target: scrollbarTarget,
 		} as unknown as PointerEvent)).toBe(false);
 
+		const openTextLink = vi.fn();
 		TerminalManager.setHostPorts({
-			cwd: { current: () => '/repo', all: () => ['/repo'] },
-			openTextLink: vi.fn(),
+			cwd: { current: () => '/repo', workspaceRoot: () => '/repo', all: () => ['/repo'] },
+			openTextLink,
 		});
 		fixture.kernel.hyperlinkAt.mockReturnValueOnce({ uri: 'https://example.com' });
 		expect(manager.openLinkAt(PANE, 1, 2)).toBe(true);
-		expect((window as any).open).toHaveBeenCalledWith('https://example.com', '_blank', 'noopener,noreferrer');
+		expect(openTextLink).toHaveBeenLastCalledWith({
+			type: 'url',
+			href: 'https://example.com',
+			cwd: '/repo',
+			workspaceRoot: '/repo',
+			origin: { kind: 'local', workspaceId: 'workspace-a', paneId: 'manager-test-pane' },
+	});
 		fixture.kernel.hyperlinkAt.mockReturnValueOnce(null);
-		fixture.pane.linkSpans.hitTest.mockReturnValueOnce({ text: 'src/main.ts:4', kind: 'path' });
+		fixture.pane.linkSpans.hitTest.mockReturnValueOnce({ text: 'src/main.ts:4', kind: 'rel' });
 		const ports = TerminalManager.hostPorts()!;
 		expect(manager.openLinkAt(PANE, 1, 2)).toBe(true);
-		expect(ports.openTextLink).toHaveBeenCalledWith('/repo/src/main.ts:4', { cwd: '/repo', knownCwds: ['/repo'] });
+		expect(ports.openTextLink).toHaveBeenLastCalledWith({
+			type: 'path',
+			path: '/repo/src/main.ts',
+			line: 4,
+			cwd: '/repo',
+			workspaceRoot: '/repo',
+			origin: { kind: 'local', workspaceId: 'workspace-a', paneId: 'manager-test-pane' },
+		});
 
 		const scrollEvents: Array<{ offset: number; total: number }> = [];
 		const off = manager.onScrollState(PANE, (state) => scrollEvents.push(state));
@@ -507,13 +534,45 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		(manager as any)._applyOscHover(entry, { row: 2, col: 4 }, 'https://example.com', true);
 		expect(entry.container.dataset.linkUnderline).toBe('2:4:5');
 		(manager as any)._applyHoverDecision(entry, { row: 1, col: 3 }, null, span, {
-			showUnderline: true, showHint: true, hintText: '点击可跳转', cursor: 'pointer', spanText: span.text,
+			showUnderline: true, showHint: true, hintText: 'Ctrl+点击打开', cursor: 'pointer', spanText: span.text,
 		});
 		entry.container.style.cursor = 'pointer';
 		entry.container.dataset.linkUnderline = '1:2:6';
 		entry.linkUnderlineRegions = [span];
 		(manager as any)._clearPointerHover(entry);
 		expect(entry.container.style.cursor).toBe('');
+	});
+
+	it('plain link clicks select or forward while Ctrl+click opens once', () => {
+		const { manager, fixture } = makeManager();
+		const entry = fixture.pane;
+		const open = vi.spyOn(manager, 'openLinkAt').mockReturnValue(true);
+		entry.linkSpans.hitTest.mockReturnValue({ row: 1, c0: 2, c1: 6, text: 'src/main.ts', kind: 'rel' });
+		const target = { setPointerCapture: vi.fn() };
+		const event = (ctrlKey: boolean) => ({
+			clientX: 35, clientY: 65, button: 0, buttons: 1, pointerId: 2, detail: 1,
+			ctrlKey, metaKey: false, shiftKey: false, altKey: false, target,
+			preventDefault: vi.fn(),
+		} as unknown as PointerEvent);
+
+		fixture.setMouseModes(0);
+		const plain = event(false);
+		(manager as any)._handlePointerDown(PANE, plain);
+		expect(open).not.toHaveBeenCalled();
+		expect(entry.selecting).toBe(true);
+
+		entry.selecting = false;
+		const modified = event(true);
+		(manager as any)._handlePointerDown(PANE, modified);
+		expect(open).toHaveBeenCalledOnce();
+		expect(modified.preventDefault).toHaveBeenCalledOnce();
+
+		open.mockClear();
+		fixture.setMouseModes(1);
+		const tuiPlain = event(false);
+		(manager as any)._handlePointerDown(PANE, tuiPlain);
+		expect(open).not.toHaveBeenCalled();
+		expect(fixture.kernel.encodeMouse).toHaveBeenCalled();
 	});
 
 	it('covers selection, input, scroll, and safe public projection edges', () => {
@@ -619,21 +678,24 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 	});
 
 	it('preserves inline-TUI feed order, drains replies/events, and flushes deferred bytes', () => {
+		vi.useFakeTimers();
 		const { manager, fixture } = makeManager();
 		const sent: Uint8Array[] = [];
 		const events: unknown[] = [];
 		manager.onData(PANE, (bytes) => sent.push(bytes));
 		manager.onEvent(PANE, (event) => events.push(event));
-		fixture.kernel.isInlineTuiMode.mockReturnValue(true);
+		fixture.kernel.isInlineTuiMode.mockReturnValue(false);
 		fixture.kernel.takePendingResponse.mockReturnValueOnce(new Uint8Array([0x52]));
 		fixture.kernel.takePendingEvents.mockReturnValueOnce([{ type: 'Bell' }]);
 		manager.feed(PANE, '\x1b[A');
-		expect(fixture.kernel.feed).toHaveBeenCalledWith(new TextEncoder().encode('\x1b[A'));
-		expect(sent).toEqual([new Uint8Array([0x52])]);
-		expect(events).toEqual([{ type: 'Bell' }]);
+		expect(fixture.kernel.feed).not.toHaveBeenCalled();
 
 		manager.feed(PANE, '\x1b[B');
-		expect(fixture.pane.feedBuffer).toEqual(new TextEncoder().encode('\x1b[B'));
+		expect(fixture.pane.feedBuffer).toEqual(new TextEncoder().encode('\x1b[A\x1b[B'));
+		vi.advanceTimersByTime(8);
+		expect(fixture.kernel.feed).toHaveBeenCalledWith(new TextEncoder().encode('\x1b[A\x1b[B'));
+		expect(sent).toEqual([new Uint8Array([0x52])]);
+		expect(events).toEqual([{ type: 'Bell' }]);
 		manager.feed(PANE, 'echo');
 		expect(fixture.pane.feedBuffer).toBeNull();
 		expect(fixture.kernel.feed).toHaveBeenLastCalledWith(new TextEncoder().encode('echo'));
@@ -645,6 +707,28 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		manager.flushPaneFeed(PANE, MAX_PANE_FEED_FLUSH_BUDGET_MS);
 		expect(fixture.pane.feedDeferredBytes).toBe(0);
 		manager.clearPendingFeed(PANE);
+		vi.useRealTimers();
+	});
+
+	it.each([
+		['Codex', ['\x1b[4A\x1b[2K', 'Thinking', '\x1b[1B', 'Answer\x1b[?25h']],
+		['Claude', ['\x1b[?25l', '\x1b[3A\x1b[2K', '\x1b[1B\x1b[2KDone', '\x1b[?25h']],
+	])('commits a fragmented %s inline frame atomically on the trailing edge', (_name, fragments) => {
+		vi.useFakeTimers();
+		const { manager, fixture } = makeManager();
+		fixture.kernel.isInlineTuiMode.mockReturnValue(false);
+		for (const fragment of fragments) {
+			manager.feed(PANE, fragment);
+			vi.advanceTimersByTime(1);
+			expect(fixture.kernel.feed).not.toHaveBeenCalled();
+		}
+		vi.advanceTimersByTime(4);
+		expect(fixture.kernel.feed).toHaveBeenCalledTimes(1);
+		expect(fixture.kernel.feed).toHaveBeenCalledWith(
+			new TextEncoder().encode(fragments.join('')),
+		);
+		expect(fixture.handle.render).not.toHaveBeenCalled();
+		vi.useRealTimers();
 	});
 
 	it('flushes an inline buffer before a large escape packet and clears all pending bytes', () => {
@@ -686,16 +770,18 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		fixture.kernel.isInlineTuiMode.mockReturnValue(true);
 		manager.feed(PANE, new Uint8Array([0x1b, 0x41]));
 		manager.feed(PANE, new Uint8Array([0x1b, 0x42]));
-		expect(fixture.pane.feedBuffer).toEqual(new Uint8Array([0x1b, 0x42]));
+		expect(fixture.pane.feedBuffer).toEqual(new Uint8Array([0x1b, 0x41, 0x1b, 0x42]));
 		manager.feed(PANE, 'echo');
-		expect(fixture.pane.feedBuffer).toBeNull();
-		expect(fixture.kernel.feed.mock.calls.at(-1)?.[0]).toEqual(new TextEncoder().encode('echo'));
+		expect(fixture.pane.feedBuffer).toEqual(new TextEncoder().encode('\x1bA\x1bBecho'));
+		(manager as any)._flushFeedBuffer(fixture.pane);
+		expect(fixture.kernel.feed.mock.calls.at(-1)?.[0]).toEqual(new TextEncoder().encode('\x1bA\x1bBecho'));
 
 		fixture.kernel.isInlineTuiMode.mockReturnValue(false);
 		fixture.pane.feedBuffer = new Uint8Array([9]);
 		manager.feed(PANE, new Uint8Array([10]));
-		expect(fixture.kernel.feed.mock.calls.at(-2)?.[0]).toEqual(new Uint8Array([9]));
-		expect(fixture.kernel.feed.mock.calls.at(-1)?.[0]).toEqual(new Uint8Array([10]));
+		expect(fixture.pane.feedBuffer).toEqual(new Uint8Array([9, 10]));
+		(manager as any)._flushFeedBuffer(fixture.pane);
+		expect(fixture.kernel.feed.mock.calls.at(-1)?.[0]).toEqual(new Uint8Array([9, 10]));
 
 		const clock = vi.spyOn(performance, 'now');
 		clock.mockReturnValueOnce(0).mockReturnValue(10);

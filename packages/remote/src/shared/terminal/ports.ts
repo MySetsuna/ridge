@@ -52,6 +52,8 @@ export interface WorkspacePort {
 export interface CwdPort {
   /** 指定 pane 的当前 cwd；无则 undefined。 */
   current(workspaceId: string, paneId: string): string | undefined;
+  /** Stable root for this pane's workspace. */
+  workspaceRoot?(workspaceId: string, paneId: string): string | undefined;
   /** 所有 pane 的当前 cwd 集合，用于「是否落在任一 cwd 树内」判断。 */
   all(): string[];
 }
@@ -66,5 +68,31 @@ export interface HostPorts {
   /** 纯文本路径 / URL 点击路由（CWD 内文件→ridge 编辑器、外链→系统浏览器、
    *  外部路径/目录→资源管理器）。经此避免 manager 直接 import $lib/utils/linkResolver
    *  （及其 monaco 传递依赖）。手机端可不实现。 */
-  openTextLink?(spanText: string, ctx: { cwd: string | undefined; knownCwds: string[] }): void;
+  openTextLink?(
+    request: TerminalLinkOpenRequest,
+  ): Promise<TerminalLinkOpenResult> | TerminalLinkOpenResult;
+}
+
+export interface TerminalPathOrigin {
+  kind: 'local' | 'headless' | 'remote' | 'rdg' | 'shared';
+  hostId?: string;
+  workspaceId: string;
+  paneId: string;
+}
+
+export interface TerminalLinkOpenRequest {
+  type: 'url' | 'path';
+  href?: string;
+  path?: string;
+  line?: number;
+  col?: number;
+  directoryHint?: boolean;
+  cwd?: string;
+  workspaceRoot?: string;
+  origin: TerminalPathOrigin;
+}
+
+export interface TerminalLinkOpenResult {
+  handled: boolean;
+  reason?: string;
 }

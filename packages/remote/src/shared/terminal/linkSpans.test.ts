@@ -13,6 +13,43 @@ function fakeKernel(lines: string[], wrapped: Set<number> = new Set()) {
 }
 
 describe('LinkSpanIndex', () => {
+  it.each([
+    ['https://example.com/a', 'https://example.com/a', 'url'],
+    ['C:\\repo\\src\\main.ts:12:3', 'C:\\repo\\src\\main.ts:12:3', 'win-abs'],
+    ['/home/u/repo/main.rs:9:2', '/home/u/repo/main.rs:9:2', 'posix-abs'],
+    ['./src/main.ts:4', './src/main.ts:4', 'rel'],
+    ['src/components', 'src/components', 'rel'],
+    ['"C:\\My Project\\main.ts:7:2"', 'C:\\My Project\\main.ts:7:2', 'win-abs'],
+    ["'../My Project/main.rs:8'", '../My Project/main.rs:8', 'rel'],
+  ])('classifies %s without quote or location loss', (line, text, kind) => {
+    const index = new LinkSpanIndex();
+    const hit = index.hitTest(fakeKernel([line]), 0, Math.max(0, line.indexOf(text) + 1));
+    expect(hit).toMatchObject({ text, kind });
+  });
+
+  it.each(['/word', '/help', 'value / count', '--output=/tmp'])('keeps ambiguous bare POSIX text inert: %s', (line) => {
+    const index = new LinkSpanIndex();
+    for (let col = 0; col < line.length; col += 1) {
+      expect(index.hitTest(fakeKernel([line]), 0, col)).toBeNull();
+    }
+  });
+
+  it('rebuilds viewport coordinates after content scrolls', () => {
+    let lines = ['https://old.example/a', 'plain'];
+    const kernel = {
+      dumpVisibleText: () => lines,
+      rows: () => lines.length,
+      cols: () => 40,
+      rowWrapped: () => false,
+    };
+    const index = new LinkSpanIndex();
+    expect(index.hitTest(kernel, 0, 10)?.text).toContain('old.example');
+    lines = ['plain', 'https://new.example/b'];
+    index.markDirty();
+    expect(index.hitTest(kernel, 0, 10)).toBeNull();
+    expect(index.hitTest(kernel, 1, 10)?.text).toContain('new.example');
+  });
+
   it('keeps the full URL on every visual segment after a soft wrap', () => {
     const lines = ['https://example.com/lo', 'ng/path'];
     const kernel = fakeKernel(lines, new Set([0]));
@@ -39,7 +76,8 @@ describe('LinkSpanIndex', () => {
     const second = index.hitTest(kernel, 1, 2);
 
     expect(first?.text).toBe('https://example.com/lo');
-    expect(second).toBeNull();
+    expect(second?.text).toBe('ng/path');
+    expect(second?.text).not.toContain(first?.text ?? '');
   });
 
   it('uses the full-row fallback for older kernels without rowWrapped()', () => {

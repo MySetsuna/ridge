@@ -37,7 +37,8 @@ use crate::render::backend::{
     resolve_cell_colors, CursorDraw, CursorStyle, FrameMetrics, RenderBackend, RowDraw, Theme,
 };
 use crate::render::renderer::{
-    history_overlay_geometry, history_text, history_text_width, truncate_history_text,
+    history_overlay_geometry, history_overlay_surface, history_text, history_text_width,
+    truncate_history_text,
 };
 use crate::render::{procedural_box, snap_css_to_device};
 use crate::term::attr_table::AttrTable;
@@ -676,7 +677,8 @@ impl Canvas2dBackend {
         let inner_y = panel_y + geometry.pad_h as f64;
         let row_h = cell_h as f64;
 
-        self.ctx.set_fill_style_str(&Self::rgba_to_css(theme.bg));
+        let surface = history_overlay_surface(theme.bg, theme.fg);
+        self.ctx.set_fill_style_str(&Self::rgba_to_css(surface));
         self.ctx.fill_rect(panel_x, panel_y, panel_w, panel_h);
 
         if overlay.selected_index >= 0 && (overlay.selected_index as usize) < geometry.visible_count
@@ -695,7 +697,7 @@ impl Canvas2dBackend {
         for (row, item) in normalised.iter().take(geometry.visible_count).enumerate() {
             let selected = overlay.selected_index >= 0 && row == overlay.selected_index as usize;
             self.ctx.set_fill_style_str(&Self::rgba_to_css(if selected {
-                theme.bg
+                surface
             } else {
                 theme.fg
             }));

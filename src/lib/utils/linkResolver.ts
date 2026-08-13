@@ -21,9 +21,19 @@ import {
   isPosixAbsolute,
   isWindowsAbsolute,
   joinPath,
+  normalizePath,
   pathStartsWith,
   stripQuery,
 } from '$lib/utils/path';
+import {
+  probePathWithCache,
+  type PathProbeResult,
+} from '@ridge/remote/shared/terminal/linkOpenHost';
+import type {
+  TerminalLinkOpenRequest,
+  TerminalLinkOpenResult,
+  TerminalPathOrigin,
+} from '@ridge/remote/shared/terminal/ports';
 
 export type LinkKind =
   | 'http'
@@ -48,6 +58,15 @@ export interface ResolveCtx {
   basePath?: string;
   /** 所有 pane 当前 cwd（用于"是否属于任意 cwd 树"判断）。 */
   knownCwds?: string[];
+}
+
+export interface TerminalLinkDependencies {
+  /** Foreign panes supply their origin-bound probe here. Local panes use Tauri. */
+  inspectPath?: (path: string, signal: AbortSignal) => Promise<PathProbeResult>;
+  openUrl?: (href: string, trustBase?: string) => Promise<void>;
+  openFile?: (path: string, line?: number, col?: number) => Promise<void>;
+  revealDirectory?: (path: string, workspaceId: string) => Promise<boolean>;
+  notify?: (message: string, type?: 'info' | 'error') => void;
 }
 
 /** 纯字符串规则，不查 fs。顺序短路。 */
@@ -182,6 +201,148 @@ export async function executeAction(action: LinkAction): Promise<void> {
     case 'noop':
       return;
   }
+}
+
+function localFilesystemOrigin(origin: TerminalPathOrigin): boolean {
+  return origin.kind === 'local' || origin.kind === 'headless';
+}
+
+async function inspectLocalPath(path: string, signal: AbortSignal): Promise<PathProbeResult> {
+  if (signal.aborted) throw signal.reason;
+  const exists = await invoke<boolean>('path_exists', { path });
+  if (signal.aborted) throw signal.reason;
+  if (!exists) return { exists: false };
+  try {
+    await invoke('get_file_tree', { path, depth: 0 });
+    return { exists: true, isDirectory: true };
+  } catch (error) {
+    if (signal.aborted) throw signal.reason;
+    const detail = error instanceof Error ? error.message : String(error);
+    if (/not a directory/i.test(detail)) return { exists: true, isDirectory: false };
+    throw error;
+  }
+}
+
+function pathUnder(path: string, root: string): boolean {
+  return pathStartsWith(path, root) || normalizePath(path) === normalizePath(root);
+}
+
+function directoryAncestors(root: string, target: string): string[] {
+  const rootNorm = normalizePath(root).replaceAll('\\', '/').replace(/\/+$/, '');
+  const targetNorm = normalizePath(target).replaceAll('\\', '/').replace(/\/+$/, '');
+  const relative = targetNorm.slice(rootNorm.length).replace(/^\/+/, '');
+  if (!relative) return [];
+  const sep = root.includes('\\') && !root.includes('/') ? '\\' : '/';
+  const ancestors: string[] = [];
+  let current = rootNorm;
+  for (const part of relative.split('/').filter(Boolean)) {
+    current = `${current}/${part}`;
+    ancestors.push(current.replaceAll('/', sep));
+  }
+  return ancestors;
+}
+
+async function revealDirectoryInRidge(path: string, workspaceId: string): Promise<boolean> {
+  const [{ get }, { fileExplorerStore }] = await Promise.all([
+    import('svelte/store'),
+    import('$lib/stores/fileExplorer'),
+  ]);
+  const state = get(fileExplorerStore);
+  const candidates = state.columns
+    .filter((column) => column.workspaceId === workspaceId && pathUnder(path, column.cwd))
+    .sort((a, b) => b.cwd.length - a.cwd.length);
+  const column = candidates[0];
+  if (!column) return false;
+  fileExplorerStore.expandMany(column.id, directoryAncestors(column.cwd, path));
+  fileExplorerStore.setSelectedPath(column.id, path);
+  fileExplorerStore.setActiveColumn(column.id);
+  window.dispatchEvent(new CustomEvent('ridge:open-sidebar-tab', { detail: 'files' }));
+  return true;
+}
+
+async function defaultNotify(message: string, type: 'info' | 'error' = 'info'): Promise<void> {
+  const { showToast } = await import('$lib/stores/toast');
+  showToast(message, type);
+}
+
+function notify(
+  dependencies: TerminalLinkDependencies,
+  message: string,
+  type: 'info' | 'error' = 'info',
+): void {
+  if (dependencies.notify) dependencies.notify(message, type);
+  else void defaultNotify(message, type);
+}
+
+/** Origin-aware terminal link dispatcher. Path candidates become actionable
+ * only after the captured pane's filesystem proves their type and existence. */
+export async function openTerminalLink(
+  request: TerminalLinkOpenRequest,
+  dependencies: TerminalLinkDependencies = {},
+): Promise<TerminalLinkOpenResult> {
+  if (request.type === 'url') {
+    if (!request.href || !/^https?:\/\//i.test(request.href)) {
+      return { handled: false, reason: 'unsafe_url' };
+    }
+    await (dependencies.openUrl ?? openExternalWithTrust)(request.href, request.workspaceRoot);
+    return { handled: true };
+  }
+
+  const path = request.path?.trim();
+  if (!path || path.includes('\0')) return { handled: false, reason: 'invalid_path' };
+  const isLocal = localFilesystemOrigin(request.origin);
+  const inspector = dependencies.inspectPath ?? (isLocal ? inspectLocalPath : undefined);
+  if (!inspector) {
+    notify(dependencies, '该终端来源暂不支持路径验证，未在本机打开。', 'error');
+    return { handled: true, reason: 'origin_probe_unavailable' };
+  }
+
+  let proof: PathProbeResult;
+  try {
+    const originKey = [
+      request.origin.kind,
+      request.origin.hostId ?? '',
+      request.origin.workspaceId,
+      request.origin.paneId,
+      path,
+    ].join('\0');
+    proof = await probePathWithCache(originKey, (signal) => inspector(path, signal));
+  } catch (error) {
+    notify(
+      dependencies,
+      `路径验证失败：${error instanceof Error ? error.message : String(error)}`,
+      'error',
+    );
+    return { handled: true, reason: 'probe_failed' };
+  }
+  if (!proof.exists) {
+    notify(dependencies, `路径不存在：${path}`, 'error');
+    return { handled: true, reason: 'missing_path' };
+  }
+
+  if (proof.isDirectory) {
+    if (!isLocal) {
+      notify(dependencies, '远端目录已验证；当前桌面 Explorer 尚无该来源的文件通道。', 'info');
+      return { handled: true, reason: 'foreign_directory_fallback' };
+    }
+    const revealed = await (dependencies.revealDirectory ?? revealDirectoryInRidge)(
+      path,
+      request.origin.workspaceId,
+    );
+    if (!revealed) await executeAction({ kind: 'reveal', path });
+    return { handled: true };
+  }
+
+  if (!isLocal) {
+    notify(dependencies, '远端文件已验证；当前桌面编辑器尚无该来源的读取通道。', 'info');
+    return { handled: true, reason: 'foreign_file_fallback' };
+  }
+  if (dependencies.openFile) {
+    await dependencies.openFile(path, request.line, request.col);
+  } else {
+    await fileEditorStore.openFile(path, { line: request.line, column: request.col });
+  }
+  return { handled: true };
 }
 
 /** 复用 markdown preview 的同会话信任流程。mailto/tel 跳过弹窗。 */

@@ -385,12 +385,13 @@ pub trait RenderBackend {
     ///   1. Compute pixel rect from `overlay.anchor_row`,
     ///      `overlay.anchor_col`, `overlay.place_above`, and the
     ///      capped item count (`min(items.len(), max_visible_rows)`).
-    ///   2. Paint an opaque background panel using `theme.bg`.
+    ///   2. Paint an opaque elevated surface derived from the theme. Never
+    ///      preserve terminal-background alpha: wallpaper/text must not bleed.
     ///   3. Paint a 1-device-pixel border using `theme.fg` so the
     ///      panel is visually distinct from the underlying cells.
     ///   4. Paint each item's text in `theme.fg`; the row at
     ///      `overlay.selected_index` (when >= 0) gets an inverse
-    ///      treatment: bg = `theme.fg`, fg = `theme.bg`.
+    ///      treatment: bg = `theme.fg`, fg = the opaque elevated surface.
     ///   5. Truncate per-row text that exceeds the panel width.
     ///
     /// Cells underneath the popup are NOT modified — the overlay is

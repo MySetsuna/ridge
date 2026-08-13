@@ -11,7 +11,8 @@ vi.mock('$lib/components/RidgeDialog.svelte', () => ({
 	choiceDialog: vi.fn(),
 }));
 
-import { classifyLink, resolveLink } from './linkResolver';
+import { clearPathProbeCache } from '@ridge/remote/shared/terminal/linkOpenHost';
+import { classifyLink, openTerminalLink, resolveLink } from './linkResolver';
 
 describe('link resolver classification', () => {
 	it('classifies external, document, file, and unsafe forms', () => {
@@ -65,5 +66,85 @@ describe('resolveLink', () => {
 	it('rejects relative and unknown links when no context exists', () => {
 		expect(resolveLink('./missing.md', {})).toEqual({ kind: 'noop', reason: 'relative without base' });
 		expect(resolveLink('opaque-token', {})).toEqual({ kind: 'noop', reason: 'unknown without base' });
+	});
+});
+
+describe('openTerminalLink', () => {
+	const request = {
+		type: 'path' as const,
+		path: 'C:\\repo\\src\\main.ts',
+		line: 12,
+		col: 3,
+		origin: { kind: 'local' as const, workspaceId: 'ws-a', paneId: 'pane-a' },
+	};
+
+	it('opens an origin-proven file in Ridge and preserves line/column', async () => {
+		clearPathProbeCache();
+		const openFile = vi.fn(async () => {});
+		await expect(openTerminalLink(request, {
+			inspectPath: vi.fn(async () => ({ exists: true, isDirectory: false })),
+			openFile,
+		})).resolves.toEqual({ handled: true });
+		expect(openFile).toHaveBeenCalledWith(request.path, 12, 3);
+	});
+
+	it('routes a local directory to Explorer and never opens it as a file', async () => {
+		clearPathProbeCache();
+		const revealDirectory = vi.fn(async () => true);
+		const openFile = vi.fn(async () => {});
+		await openTerminalLink({ ...request, path: 'C:\\repo\\src', line: undefined, col: undefined }, {
+			inspectPath: vi.fn(async () => ({ exists: true, isDirectory: true })),
+			revealDirectory,
+			openFile,
+		});
+		expect(revealDirectory).toHaveBeenCalledWith('C:\\repo\\src', 'ws-a');
+		expect(openFile).not.toHaveBeenCalled();
+	});
+
+	it('keeps missing paths inert with an explicit error', async () => {
+		clearPathProbeCache();
+		const notify = vi.fn();
+		const openFile = vi.fn(async () => {});
+		await expect(openTerminalLink(request, {
+			inspectPath: vi.fn(async () => ({ exists: false })),
+			notify,
+			openFile,
+		})).resolves.toEqual({ handled: true, reason: 'missing_path' });
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining('路径不存在'), 'error');
+		expect(openFile).not.toHaveBeenCalled();
+	});
+
+	it('never sends a foreign path to local editor or Explorer', async () => {
+		clearPathProbeCache();
+		const openFile = vi.fn(async () => {});
+		const revealDirectory = vi.fn(async () => true);
+		const notify = vi.fn();
+		await expect(openTerminalLink({
+			...request,
+			origin: { kind: 'remote', hostId: 'lan:a', workspaceId: 'remote-ws', paneId: 'remote-pane' },
+		}, {
+			inspectPath: vi.fn(async () => ({ exists: true, isDirectory: false })),
+			openFile,
+			revealDirectory,
+			notify,
+		})).resolves.toEqual({ handled: true, reason: 'foreign_file_fallback' });
+		expect(openFile).not.toHaveBeenCalled();
+		expect(revealDirectory).not.toHaveBeenCalled();
+		expect(notify).toHaveBeenCalled();
+	});
+
+	it('opens only http/https URLs through the browser path', async () => {
+		const openUrl = vi.fn(async () => {});
+		await openTerminalLink({
+			type: 'url',
+			href: 'https://example.test',
+			origin: request.origin,
+		}, { openUrl });
+		expect(openUrl).toHaveBeenCalledWith('https://example.test', undefined);
+		await expect(openTerminalLink({
+			type: 'url',
+			href: 'javascript:alert(1)',
+			origin: request.origin,
+		}, { openUrl })).resolves.toEqual({ handled: false, reason: 'unsafe_url' });
 	});
 });

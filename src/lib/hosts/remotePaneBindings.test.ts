@@ -13,6 +13,7 @@ import {
   localPaneIdsForRemote,
   remotePaneBinding,
   promoteRemotePaneBinding,
+  terminalPathOrigin,
   unbindRemotePane,
 } from './remotePaneBindings';
 
@@ -41,6 +42,26 @@ afterEach(() => {
 });
 
 describe('remotePaneBindings', () => {
+  it('projects the bound host filesystem probe without changing origin', async () => {
+    const inspectPath = vi.fn(async () => ({ exists: true, isDirectory: false }));
+    const remote = { ...link(), inspectPath };
+    ids.push('local-origin');
+    bindRemotePane({
+      localPaneId: 'local-origin',
+      hostId: 'rdg:device',
+      workspaceId: 'remote-workspace',
+      remotePaneId: 'remote-pane',
+      link: remote,
+    });
+    const origin = terminalPathOrigin('local-origin');
+    expect(origin).toMatchObject({ kind: 'rdg', hostId: 'rdg:device' });
+    await expect(origin?.inspectPath?.('/srv/a.ts')).resolves.toEqual({
+      exists: true,
+      isDirectory: false,
+    });
+    expect(inspectPath).toHaveBeenCalledWith('/srv/a.ts');
+  });
+
   it('returns no binding for unknown panes and ignores unknown lifecycle events', () => {
     expect(remotePaneBinding('missing')).toBeUndefined();
     activateRemotePaneBinding('missing');

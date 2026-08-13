@@ -58,6 +58,20 @@ export function remotePaneBinding(localPaneId: string): RemotePaneBinding | unde
   return bindings.get(localPaneId);
 }
 
+export function terminalPathOrigin(localPaneId: string): {
+  kind: 'remote' | 'rdg';
+  hostId: string;
+  inspectPath?: HostTopologyLink['inspectPath'];
+} | null {
+  const binding = bindings.get(localPaneId);
+  if (!binding) return null;
+  return {
+    kind: binding.hostId.startsWith('rdg:') ? 'rdg' : 'remote',
+    hostId: binding.hostId,
+    inspectPath: binding.link.inspectPath?.bind(binding.link),
+  };
+}
+
 export function localPaneIdsForRemote(hostId: string, remotePaneId: string): string[] {
   return [...bindings.values()]
     .filter((binding) =>

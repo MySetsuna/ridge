@@ -4,9 +4,10 @@
   import { t } from '$lib/i18n';
   import type { SidebarProvider, FileEntry } from './types';
 
-  let { provider, onOpenFile }: {
+  let { provider, onOpenFile, initialPath = '' }: {
     provider: SidebarProvider;
     onOpenFile?: (path: string) => void;
+    initialPath?: string;
   } = $props();
 
   let path = $state('');
@@ -51,9 +52,10 @@
     else onOpenFile?.(entry.path);
   }
 
-  // Initial load uses the provider's default root (pane cwd).
+  // Terminal directory links may supply an origin-validated absolute path;
+  // ordinary mounts keep the provider's pane-cwd root.
   $effect(() => {
-    void load('');
+    void load(initialPath);
   });
 </script>
 

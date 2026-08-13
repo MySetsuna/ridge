@@ -53,8 +53,9 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain('ontouchcancel={handleTouchCancel}');
   });
 
-  it('opens links before focus/keyboard on mouse and touch', () => {
-    expect(source).toContain('manager.openLinkAt(paneId, cell.row, cell.col)');
+  it('requires the platform modifier for mouse links while preserving touch taps', () => {
+    expect(source).toContain('e.button === 0 && linkModifierHeld(e) && manager.openLinkAt(paneId, cell.row, cell.col)');
+    expect(source).toContain('return isMac ? e.metaKey : e.ctrlKey;');
     expect(source).toContain('const linkCell = touchLinkCell;');
     expect(source).toContain('e.preventDefault();\n      return;');
   });

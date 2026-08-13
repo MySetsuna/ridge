@@ -24,10 +24,18 @@ try {
       get: () => snapshot,
       subscribe: (cb) => { cb(snapshot); return () => {}; },
     },
-    openTextLink: (spanText, ctx) => {
+    openTextLink: (request) => {
+      if (request.type === 'url' && request.href) {
+        window.open(request.href, '_blank', 'noopener,noreferrer');
+        return { handled: true };
+      }
       window.dispatchEvent(new CustomEvent('ridge:remote-open-text-link', {
-        detail: { spanText, cwd: ctx.cwd, knownCwds: ctx.knownCwds },
+        detail: {
+          ...request,
+          origin: { ...request.origin, kind: 'shared' },
+        },
       }));
+      return { handled: true };
     },
   });
 } catch (error) {
