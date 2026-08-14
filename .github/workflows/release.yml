@@ -78,8 +78,6 @@ jobs:
         run: cargo test -p ridge-core --lib -- commands::git process_guard
       - name: Build ridge-mcp Linux sidecar (Tauri check prerequisite)
         run: node scripts/build-ridge-mcp-sidecar.mjs
-      - name: Build rdg Linux sidecar (Tauri check prerequisite)
-        run: node scripts/build-rdg-sidecar.mjs
       - name: Linux native Tauri compile check
         run: cargo check --manifest-path src-tauri/Cargo.toml --lib
       - name: ridge-mcp companion tests and bundle contract
@@ -163,15 +161,17 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build rdg CLI for Intel macOS
-        if: matrix.label == 'macos-x64'
+      - name: Build rdg CLI release artifact
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release -p ridge-cli --bin rdg --target x86_64-apple-darwin
-          mkdir -p src-tauri/binaries
-          cp target/x86_64-apple-darwin/release/rdg src-tauri/binaries/rdg-x86_64-apple-darwin
-          chmod +x src-tauri/binaries/rdg-x86_64-apple-darwin
+          if [ "${{ matrix.label }}" = "macos-x64" ]; then
+            cargo build --release -p ridge-cli --bin rdg --target "${{ matrix.rust_target }}" --features vendored-openssl
+          elif [ -n "${{ matrix.rust_target }}" ]; then
+            cargo build --release -p ridge-cli --bin rdg --target "${{ matrix.rust_target }}"
+          else
+            cargo build --release -p ridge-cli --bin rdg
+          fi
 
       - name: Build & publish (Tauri)
         uses: tauri-apps/tauri-action@v0
@@ -189,7 +189,7 @@ jobs:
             浏览器 Remote：LAN / 公网共用同一产物与终端几何链路；修复 pane、Canvas、PTY 行列不同步及鼠标命中错位，并补远程 git stash 列表能力。
             发布链：移除 web-remote-dist 临时分叉，Remote desktop/mobile 产物统一构建、上传与激活。
 
-            产物：桌面安装包 Windows（.exe / .msi）、Linux（.deb / .AppImage）、macOS（.dmg，Apple Silicon + Intel 各一份，未签名）；命令行程序 rdg（Windows / Linux / macOS-arm64 / macOS-x64）。
+            产物：Ridge 桌面安装包 Windows（.exe / .msi）、Linux（.deb / .AppImage）、macOS（.dmg，Apple Silicon + Intel 各一份，未签名）；rdg 为同一 Release 下独立、可选下载的命令行程序（Windows / Linux / macOS-arm64 / macOS-x64）。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -236,8 +236,8 @@ jobs:
             throw "ridge-mcp.exe missing from MSI payload $($msi.Name)"
           }
 
-      # 发布产物附带 rdg CLI：tauri.conf 的 beforeBundleCommand 已 `pnpm build:cli` 把
-      # rdg 编到工作区根 target/release/。这里按平台重命名并上传到同一 Release（草稿）。
+      # rdg 是独立 CLI 产品，不进入 Ridge 桌面安装包；这里按平台重命名并上传
+      # 为同一 Release 下的可选独立下载资产（草稿）。
       # Intel macOS now builds the CLI for x86_64 explicitly, so the binary
       # is uploaded alongside the cross-compiled application assets.
       - name: Upload rdg CLI to release
