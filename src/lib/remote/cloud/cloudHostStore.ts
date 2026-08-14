@@ -11,7 +11,7 @@
  * 签名 / TOTP 校验注入）原样搬过来，行为不变。
  */
 import { writable, get } from 'svelte/store';
-import { invoke, isTauri } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { tr } from '$lib/i18n';
 import { cloudHostOnline } from '$lib/stores/remoteStatus';
@@ -33,14 +33,6 @@ export const hostState = writable<HostSignalState>('offline');
 export const cloudSessions = writable<CloudControllerSession[]>([]);
 /** host 路径产生的错误文案（与面板自身的 LAN/账户错误分开）。 */
 export const hostError = writable('');
-
-interface DetachedCloudHostStatus {
-  schema: number;
-  pid: number;
-  state: 'starting' | 'connecting' | 'online' | 'error';
-  detail: string;
-  updatedAt: number;
-}
 
 // ── 模块级单例（不随组件卸载销毁）─────────────────────────────────────────
 let host: RidgeCloudHost | null = null;
@@ -206,42 +198,6 @@ function buildHost(): RidgeCloudHost | null {
 /** 上线公网远控。幂等：已构造的 host 复用。 */
 export async function goOnline(): Promise<void> {
   hostError.set('');
-  if (isTauri()) {
-    return goOnlineTauri();
-  }
-  return goOnlineBrowser();
-}
-
-async function goOnlineTauri(): Promise<void> {
-  const s = cloudAuth.snapshot();
-  if (!s.deviceToken || !s.deviceName || !s.user?.username) {
-    hostError.set(tr('cloud.errDeviceNotActivated'));
-    return;
-  }
-  // Native desktop owns no WebRTC transport in its WebView. Hand credentials
-  // to the detached daemon so a force-killed Tauri shell cannot disconnect Remote.
-  hostState.set('connecting');
-  cloudHostOnline.set(false);
-  try {
-    await invoke('sync_cloud_remote_credentials', {
-      deviceToken: s.deviceToken,
-      deviceName: s.deviceName,
-      username: s.user?.username ?? null,
-    });
-    const status = await invoke<DetachedCloudHostStatus>('ensure_cloud_remote_host');
-    if (status.state !== 'online') {
-      throw new Error(status.detail || '公网 Remote 未连接信令中继');
-    }
-    hostState.set('online');
-    cloudHostOnline.set(true);
-  } catch (e) {
-    hostState.set('error');
-    cloudHostOnline.set(false);
-    hostError.set(e instanceof Error ? e.message : tr('cloud.errConnectFailed'));
-  }
-}
-
-async function goOnlineBrowser(): Promise<void> {
   const s = cloudAuth.snapshot();
   if (!s.deviceToken || !s.deviceName || !s.user?.username) {
     hostError.set(tr('cloud.errDeviceNotActivated'));
@@ -265,23 +221,19 @@ async function goOnlineBrowser(): Promise<void> {
     await host.goOnline(s.deviceName);
     await notifyCloudActive(true);
   } catch (e) {
+    hostState.set('error');
     hostError.set(e instanceof Error ? e.message : tr('cloud.errConnectFailed'));
   }
 }
 
 /** 下线公网远控。只有用户显式调用（或 kick/blacklist 不涉及）才会断开。 */
 export async function goOffline(): Promise<void> {
-  if (isTauri()) {
-    try {
-      await invoke('disable_cloud_remote_host');
-    } catch (e) {
-      hostError.set(e instanceof Error ? e.message : tr('cloud.errConnectFailed'));
-    }
-    hostState.set('offline');
-    cloudHostOnline.set(false);
-    return;
+  try {
+    await host?.goOffline();
+  } catch (e) {
+    hostError.set(e instanceof Error ? e.message : tr('cloud.errConnectFailed'));
   }
-  host?.goOffline();
+  hostState.set('offline');
   cloudHostOnline.set(false);
   await notifyCloudActive(false);
 }

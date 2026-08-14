@@ -12,7 +12,6 @@ pub mod reconnect_policy;
 mod remote_bridge;
 /// 桌面 `RemoteHost` 实现（`DesktopHost` 包装 `AppState`）。
 mod remote_host_impl;
-mod remote_host_supervisor;
 mod state;
 mod taskbar;
 mod teammate;
@@ -160,18 +159,6 @@ fn start_kernel_bootstrap(app: &tauri::App) {
     });
 }
 
-fn start_transport_reattach(handle: &tauri::AppHandle) {
-    let handle = handle.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Some(status) = crate::remote_host_supervisor::lan_host_status(&handle) {
-            tracing::info!(target: "ridge::remote", pid = status.pid, port = status.port, "reattached detached Remote host");
-        }
-        if let Err(error) = crate::remote_host_supervisor::reattach_cloud_host(&handle) {
-            tracing::warn!(target: "ridge::remote", %error, "cloud sidecar reattach unavailable");
-        }
-    });
-}
-
 fn register_deep_links(app: &tauri::App) {
     use tauri_plugin_deep_link::DeepLinkExt;
     if let Err(error) = app.deep_link().register_all() {
@@ -202,7 +189,6 @@ fn setup_app(
     register_remote_event_listeners(app, &handle);
     build_ridge_window(app.handle(), "main", true)?;
     start_kernel_bootstrap(app);
-    start_transport_reattach(&handle);
     if let Err(error) = crate::tray::build_tray(app) {
         tracing::error!(target: "ridge::tray", error = %error, "tray init failed");
     }
@@ -530,9 +516,6 @@ pub fn run() {
             commands::remote::verify_remote_totp_bind,
             commands::remote::remote_reset_totp,
             commands::remote::remote_set_totp_identity,
-            commands::remote::sync_cloud_remote_credentials,
-            commands::remote::ensure_cloud_remote_host,
-            commands::remote::disable_cloud_remote_host,
             commands::remote::totp_trust_check,
             commands::remote::totp_trust_record,
             commands::remote::totp_trust_revoke_all,
@@ -780,6 +763,9 @@ fn handle_title_changed(
 fn handle_global_event(handle: &tauri::AppHandle, pending: &mut PendingOutput, event: GlobalEvent) {
     match event {
         GlobalEvent::PtyOutput { workspace_id, pane_id, data } => {
+            let _ = handle.emit("pane-output-activity", serde_json::json!({
+                "workspaceId": workspace_id.to_string(), "paneId": pane_id.to_string(),
+            }));
             handle_pty_output(handle, pending, workspace_id, pane_id, data);
         }
         GlobalEvent::PaneClosed { workspace_id, pane_id } => {

@@ -20,8 +20,9 @@
 | 未跟踪/非本仓 | `ridge-code/`（独立实验区，未 `git add`，**不属 Ridge 架构**）；`.venv-notebooklm/`、`.pnpm-store/`、`skills/` 等工具目录 |
 
 **两条独立发布线**（版本号各验，不混）：
-1. **桌面安装包 + rdg**：`release.yml`（tag `v*` 触发）出全平台矩阵 → GitHub Release（11 类资产：Win nsis/msi/rdg.exe、Linux deb/AppImage/rdg、macOS dmg×2/app.tar.gz×2/rdg-aarch64）。
-2. **Remote 云 artifact**：`publish-remote.yml`（手动触发）构建 desktop-web + mobile 两套 bundle → `POST /api/v1/remote-artifacts`（`RIDGE_ARTIFACT_TOKEN`）→ 9527127.xyz 持久卷原子换 `current`，留最近 3 版回滚。手机 PWA 经此线更新。
+1. **Ridge 桌面安装包**：`release.yml`（tag `v*` 触发）出全平台矩阵；安装包只携带 Ridge 桌面端及其自带的 `ridge-kernel`，不默认安装 `rdg`。
+2. **rdg 独立 CLI**：同一 Release 另发 Windows/Linux/macOS 独立二进制，用户按需单独安装/下载；Ridge 与 rdg 不互相启动 Remote。
+3. **Remote 云 artifact**：`publish-remote.yml`（手动触发）构建 desktop-web + mobile 两套 bundle → `POST /api/v1/remote-artifacts`（`RIDGE_ARTIFACT_TOKEN`）→ 9527127.xyz 持久卷原子换 `current`，留最近 3 版回滚。手机 PWA 经此线更新。
 
 ---
 
