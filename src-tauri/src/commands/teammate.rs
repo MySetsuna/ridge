@@ -182,6 +182,49 @@ pub(crate) fn is_meaningful_title(title: &str) -> bool {
 /// 故自动同步只回收自己造的条目，绝不动用户手标的成员。
 pub(crate) const AUTO_AGENT_PREFIX: &str = "auto:";
 
+/// Sync classification: pane closed vs agent process gone vs still live.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct AgentSyncPlan {
+    /// Pane gone — drop the roster row.
+    pub gone: Vec<String>,
+    /// Pane live, agent CLI gone — keep the row, mark Disappeared.
+    pub offline: Vec<String>,
+    /// Process scan matches an existing mapping that was Disappeared.
+    pub revive: Vec<String>,
+    /// New live agent with no mapping occupying the pane.
+    pub missing: Vec<(Uuid, String)>,
+}
+
+/// Pure: decide gone / offline / revive / missing from live panes + process hits.
+pub(crate) fn classify_agent_sync(
+    map: &std::collections::HashMap<String, Uuid>,
+    live_panes: &std::collections::HashSet<Uuid>,
+    desired: &std::collections::HashMap<Uuid, String>,
+) -> AgentSyncPlan {
+    let mut plan = AgentSyncPlan::default();
+    for (id, pane) in map {
+        if !live_panes.contains(pane) {
+            plan.gone.push(id.clone());
+            continue;
+        }
+        match desired.get(pane) {
+            Some(new_id) if new_id == id => plan.revive.push(id.clone()),
+            Some(_) => plan.gone.push(id.clone()),
+            None => plan.offline.push(id.clone()),
+        }
+    }
+    for (pane, id) in desired {
+        if map.get(id) == Some(pane) {
+            continue;
+        }
+        if map.values().any(|occupied| occupied == pane) && !plan.gone.iter().any(|old| map.get(old) == Some(pane)) {
+            continue;
+        }
+        plan.missing.push((*pane, id.clone()));
+    }
+    plan
+}
+
 /// `auto:claude:1a2b3c4d` → `claude`；非自动 id 原样返回。仅在 pane 无实时标题时
 /// 作展示名兜底（有标题一律以标题为准，见 `inject_roster_titles`）。
 fn pretty_agent_name(agent_id: &str) -> String {
@@ -271,28 +314,12 @@ pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
         })
         .collect();
     let live_panes: std::collections::HashSet<Uuid> = panes.iter().map(|(p, _)| *p).collect();
-    let (stale, missing, unregistered, cwd_updates) = {
+    let (plan, unregistered, cwd_updates) = {
         let map = state.workspaces.read();
         let Some(ws) = map.get(&wid) else {
             return false;
         };
-        let stale: Vec<String> = ws
-            .teammate_agent_pane_map
-            .iter()
-            .filter(|(id, pane)| {
-                id.starts_with(AUTO_AGENT_PREFIX)
-                    // pane 还在但 agent 退了 → 回收；pane 没了也回收。
-                    && (!live_panes.contains(pane) || desired.get(pane) != Some(*id))
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        let missing: Vec<(Uuid, String)> = desired
-            .iter()
-            .filter(|(pane, id)| ws.teammate_agent_pane_map.get(*id) != Some(*pane))
-            // 该 pane 已被人工标记过 → 尊重人工，不再叠一个自动条目。
-            .filter(|(pane, _)| !ws.teammate_agent_pane_map.values().any(|p| p == *pane))
-            .map(|(pane, id)| (*pane, id.clone()))
-            .collect();
+        let plan = classify_agent_sync(&ws.teammate_agent_pane_map, &live_panes, &desired);
         // Auto-discovery predates the typed registry in older sessions.  The
         // process scan is already a live-pane/child-process confirmation, so
         // repair only the corresponding auto contacts before communication
@@ -314,23 +341,58 @@ pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
             })
             .map(|(pane, cwd)| (*pane, cwd.clone()))
             .collect::<Vec<_>>();
-        (stale, missing, unregistered, cwd_updates)
+        (plan, unregistered, cwd_updates)
     };
-    if stale.is_empty() && missing.is_empty() && unregistered.is_empty() && cwd_updates.is_empty() {
+    for agent in &found {
+        if let Some(agent_id) = desired.get(&agent.pane) {
+            if crate::teammate::profiles::contains_agent(wid, agent_id) {
+                let _ = crate::teammate::profiles::update_runtime(
+                    wid,
+                    agent_id,
+                    agent.session_id.clone(),
+                    Some(agent.name.clone()),
+                    agent.cwd.clone(),
+                );
+            }
+        }
+    }
+    let mut status_changed = false;
+    for id in &plan.offline {
+        status_changed |= crate::teammate::profiles::set_status(
+            wid,
+            id,
+            ridge_core::TeammateStatus::Disappeared,
+        );
+    }
+    for id in &plan.revive {
+        status_changed |= crate::teammate::profiles::set_status(
+            wid,
+            id,
+            ridge_core::TeammateStatus::Working,
+        );
+    }
+    if plan.gone.is_empty()
+        && plan.missing.is_empty()
+        && unregistered.is_empty()
+        && cwd_updates.is_empty()
+        && !status_changed
+    {
         return false;
     }
 
-    // 3) 写：回收失效自动条目 + 补入新发现。
+    // 3) 写：关 pane 才摘条目；进程退了只标 Disappeared。
     let mut map = state.workspaces.write();
     let Some(ws) = map.get_mut(&wid) else {
         return false;
     };
-    for id in &stale {
+    for id in &plan.gone {
         if let Some(pane) = ws.teammate_agent_pane_map.remove(id) {
-            ws.teammate_pane_states.remove(&pane);
+            if !plan.missing.iter().any(|(p, _)| p == &pane) {
+                ws.teammate_pane_states.remove(&pane);
+            }
         }
     }
-    for (pane, id) in &missing {
+    for (pane, id) in &plan.missing {
         ws.teammate_agent_pane_map.insert(id.clone(), *pane);
         // Busy = 「这是 agent pane」（驱动分屏上的 agent 徽章）。是否**正在干活**由
         // `inject_roster_runtime` 按输出流水号变化另判，不与此混淆。
@@ -355,7 +417,7 @@ pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
     // lock.  A failed lock leaves the map intact and the next confirmed scan
     // retries registration instead of exposing a half-registered target.
     drop(map);
-    for id in stale {
+    for id in plan.gone {
         crate::teammate::profiles::remove_agent(wid, &id);
     }
     for (pane, id) in confirmed_auto {
@@ -363,6 +425,21 @@ pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
             let name = pretty_agent_name(&id);
             let capability = ridge_core::recognize_capability(&name, None);
             let _ = crate::teammate::profiles::upsert(wid, &id, pane, Some(name), capability);
+        } else {
+            let _ = crate::teammate::profiles::set_status(
+                wid,
+                &id,
+                ridge_core::TeammateStatus::Working,
+            );
+        }
+        if let Some(agent) = found.iter().find(|agent| agent.pane == pane) {
+            let _ = crate::teammate::profiles::update_runtime(
+                wid,
+                &id,
+                agent.session_id.clone(),
+                Some(agent.name.clone()),
+                agent.cwd.clone(),
+            );
         }
     }
     true
@@ -448,7 +525,16 @@ fn inject_identity_fields(
         };
         object.insert("id".into(), json!(identity.agent_id));
         object.insert("agentId".into(), json!(identity.agent_id));
-        object.insert("sessionId".into(), json!(identity.session_id));
+        // A native CLI session id discovered from argv is stronger than the
+        // kernel lease id (`session:<uuid>`). Preserve it so JSONL history can
+        // bind this live pane to its exact persisted conversation.
+        let has_native_session = object
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .is_some_and(|session| !session.starts_with("session:"));
+        if !has_native_session {
+            object.insert("sessionId".into(), json!(identity.session_id));
+        }
         object.insert("workspaceId".into(), json!(identity.workspace_id));
         object.insert("generation".into(), json!(identity.generation));
         object.insert("lease".into(), json!(identity.lease));
@@ -463,7 +549,7 @@ fn inject_identity_fields(
 
 /// 近期回复的取样字节数（够覆盖十来行，远小于一次 scrollback tail 的 256 KiB）。
 const RECENT_TAIL_BYTES: usize = 6 * 1024;
-/// 输出流水号多久没动就算「空闲」。面板轮询 3s，取 12s ≈ 4 轮无输出。
+/// 输出流水号多久没动就算「空闲」。前端由 PTY 输出事件触发快照，超时后自清醒。
 const ACTIVE_WINDOW_MS: u128 = 12_000;
 
 /// iter-62 —— 给 roster 补运行时字段，让「监控」不再只有一个静态徽标：
@@ -516,9 +602,15 @@ fn update_runtime_entry(
     let Some(object) = entry.as_object_mut() else {
         return;
     };
+    let disappeared = object
+        .get("status")
+        .and_then(Value::as_str)
+        == Some("Disappeared");
     object.insert(
         "activity".into(),
-        json!(if since < ACTIVE_WINDOW_MS {
+        json!(if disappeared {
+            "idle"
+        } else if since < ACTIVE_WINDOW_MS {
             "working"
         } else {
             "idle"
@@ -1061,6 +1153,44 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn classify_keeps_offline_row_when_process_exits_and_pane_lives() {
+        let pane = Uuid::new_v4();
+        let mut map = HashMap::new();
+        map.insert("auto:codex:abcd1234".into(), pane);
+        let live = HashSet::from([pane]);
+        let desired = HashMap::new();
+        let plan = classify_agent_sync(&map, &live, &desired);
+        assert_eq!(plan.offline, vec!["auto:codex:abcd1234".to_string()]);
+        assert!(plan.gone.is_empty());
+        assert!(plan.missing.is_empty());
+    }
+
+    #[test]
+    fn classify_drops_row_only_when_pane_is_gone() {
+        let pane = Uuid::new_v4();
+        let mut map = HashMap::new();
+        map.insert("auto:codex:abcd1234".into(), pane);
+        let live = HashSet::new();
+        let desired = HashMap::new();
+        let plan = classify_agent_sync(&map, &live, &desired);
+        assert_eq!(plan.gone, vec!["auto:codex:abcd1234".to_string()]);
+        assert!(plan.offline.is_empty());
+    }
+
+    #[test]
+    fn classify_replaces_offline_auto_id_when_new_agent_attaches() {
+        let pane = Uuid::new_v4();
+        let mut map = HashMap::new();
+        map.insert("auto:codex:oldold01".into(), pane);
+        let live = HashSet::from([pane]);
+        let desired = HashMap::from([(pane, "auto:grok:newnew01".into())]);
+        let plan = classify_agent_sync(&map, &live, &desired);
+        assert_eq!(plan.gone, vec!["auto:codex:oldold01".to_string()]);
+        assert_eq!(plan.missing, vec![(pane, "auto:grok:newnew01".into())]);
+        assert!(plan.offline.is_empty());
+    }
+
     fn remote_group_projection_validation_keeps_contract_bounded() {
         let valid = serde_json::json!([{
             "id": "g1",

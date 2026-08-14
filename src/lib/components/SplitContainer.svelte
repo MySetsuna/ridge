@@ -558,13 +558,7 @@ import {
           data-pane-id={node.id}
           data-agent-status={paneStatus ?? ''}
           data-agent-attention={paneAttention ?? ''}
-          class="relative flex flex-col h-full min-h-0 min-w-0 overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.35)] {paneAttention === 'waiting'
-            ? 'ring-2 ring-inset ring-amber-400/75'
-            : paneAttention === 'stopped'
-                ? 'ring-2 ring-inset ring-red-400/75'
-                : paneAttention === 'idle'
-                    ? 'ring-2 ring-inset ring-sky-400/75'
-                : ''}"
+          class="rg-agent-pane-shell relative z-[1] isolate flex flex-col h-full min-h-0 min-w-0 overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.35)]"
         >
           {#if $paneDragSourceId && $paneDragSourceId !== node.id}
             {@const hover = $paneDockHover && $paneDockHover.paneId === node.id ? $paneDockHover.region : null}
@@ -661,7 +655,7 @@ import {
                   aria-label={attention === 'waiting'
                     ? '智能体等待审批（点击取消标记）'
                     : attention === 'stopped'
-                      ? '智能体已停止（点击重新标记）'
+                      ? '智能体已下线（点击重新标记）'
                       : attention === 'idle'
                         ? '智能体已空闲（点击取消标记）'
                       : grp
@@ -674,7 +668,7 @@ import {
                   title={attention === 'waiting'
                     ? '智能体等待审批'
                     : attention === 'stopped'
-                      ? '智能体已停止'
+                      ? '智能体已下线'
                       : attention === 'idle'
                         ? '智能体已空闲'
                       : grp
@@ -726,6 +720,16 @@ import {
           <div class="relative flex-1 min-h-0 min-w-0">
             <Pane paneId={node.id} {workspaceId} />
           </div>
+          {#if paneStatus || paneAttention}
+            <div
+              class="rg-agent-pane-highlight"
+              class:rg-agent-pane-highlight--working={!paneAttention && paneStatus === 'working'}
+              class:rg-agent-pane-highlight--waiting={paneAttention === 'waiting'}
+              class:rg-agent-pane-highlight--idle={paneAttention === 'idle' || (!paneAttention && paneStatus === 'idle')}
+              class:rg-agent-pane-highlight--stopped={paneAttention === 'stopped' || (!paneAttention && paneStatus === 'stopped')}
+              aria-hidden="true"
+            ></div>
+          {/if}
         </div>
       </RgPane>
     {:else}
@@ -755,6 +759,31 @@ import {
 </div>
 
 <style>
+  .rg-agent-pane-highlight {
+    position: absolute;
+    inset: 0;
+    z-index: 80;
+    pointer-events: none;
+    border: 3px solid var(--rg-agent-highlight, var(--rg-accent));
+    border-radius: 6px;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rg-agent-highlight) 85%, white),
+      0 0 16px color-mix(in srgb, var(--rg-agent-highlight) 35%, transparent);
+  }
+  .rg-agent-pane-highlight--working {
+    --rg-agent-highlight: #34d399;
+  }
+  .rg-agent-pane-highlight--waiting {
+    --rg-agent-highlight: #fbbf24;
+    border-width: 4px;
+  }
+  .rg-agent-pane-highlight--idle {
+    --rg-agent-highlight: #38bdf8;
+  }
+  .rg-agent-pane-highlight--stopped {
+    --rg-agent-highlight: #fb7185;
+    border-width: 4px;
+  }
+
   /*
    * T20 重做：splitter 视觉与拖拽热区已迁移到 @ridge/split 的 RgSplitter；
    * 这里只覆盖 Ridge 业务态高亮（junction / aligned 状态），通过 ::before 加

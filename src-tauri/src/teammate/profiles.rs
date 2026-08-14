@@ -16,6 +16,14 @@ use ridge_core::{AgentRole, AgentTier, Teammate, TeammateStatus, TopologyGraph};
 struct ProfileEntry {
     teammate: Teammate,
     pane_uuid: Uuid,
+    runtime: AgentRuntime,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AgentRuntime {
+    session_id: Option<String>,
+    executable: Option<String>,
+    cwd: Option<String>,
 }
 
 /// Stable communication-directory projection.  The registry is the only
@@ -54,9 +62,59 @@ pub fn upsert(
         ProfileEntry {
             teammate: t,
             pane_uuid,
+            runtime: AgentRuntime::default(),
         },
     );
     Ok(())
+}
+
+/// Mark a confirmed contact Working / Disappeared without dropping the roster
+/// row. A live pane whose agent CLI has exited stays addressable so the UI can
+/// show 下线 instead of silently vanishing.
+pub fn set_status(wid: Uuid, agent_id: &str, status: TeammateStatus) -> bool {
+    let Ok(mut g) = PROFILES.lock() else {
+        return false;
+    };
+    let Some(entry) = g
+        .get_mut(&wid)
+        .and_then(|entries| entries.get_mut(agent_id))
+    else {
+        return false;
+    };
+    if entry.teammate.status == status {
+        return false;
+    }
+    entry.teammate.status = status;
+    true
+}
+
+/// Refresh process-derived identity without replacing the stable roster id.
+pub fn update_runtime(
+    wid: Uuid,
+    agent_id: &str,
+    session_id: Option<String>,
+    executable: Option<String>,
+    cwd: Option<String>,
+) -> bool {
+    let Ok(mut g) = PROFILES.lock() else {
+        return false;
+    };
+    let Some(entry) = g
+        .get_mut(&wid)
+        .and_then(|entries| entries.get_mut(agent_id))
+    else {
+        return false;
+    };
+    let next = AgentRuntime {
+        session_id,
+        executable,
+        cwd,
+    };
+    if entry.runtime == next {
+        return false;
+    }
+    entry.runtime = next;
+    true
 }
 
 /// 按 pane 移除（release_pane / pane 关闭时，调用方只有 pane_uuid）。
@@ -200,7 +258,7 @@ pub fn topology_for(wid: Uuid, pane_order: &[Uuid]) -> Value {
             } else {
                 status_str(t.status)
             };
-            json!({
+            let mut profile = json!({
                 "id": t.id,
                 "name": t.name,
                 "paneId": pane_id,
@@ -208,7 +266,19 @@ pub fn topology_for(wid: Uuid, pane_order: &[Uuid]) -> Value {
                 "role": role_str(t.role),
                 "status": status,
                 "capability": tier_str(t.capability),
-            })
+            });
+            if let Some(entry) = entries.get(&t.id) {
+                if let Some(session_id) = entry.runtime.session_id.as_deref() {
+                    profile["sessionId"] = json!(session_id);
+                }
+                if let Some(executable) = entry.runtime.executable.as_deref() {
+                    profile["executable"] = json!(executable);
+                }
+                if let Some(cwd) = entry.runtime.cwd.as_deref() {
+                    profile["cwd"] = json!(cwd);
+                }
+            }
+            profile
         })
         .collect();
 
@@ -290,5 +360,62 @@ mod tests {
         assert!(!contains_agent(workspace, "agent-a"));
         assert!(contains_agent(workspace, "agent-b"));
         remove_by_pane(workspace, pane_b);
+    }
+
+    #[test]
+    fn runtime_identity_is_exposed_for_exact_history_binding() {
+        let workspace = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        upsert(
+            workspace,
+            "auto:codex:12345678",
+            pane,
+            Some("Codex".into()),
+            AgentTier::Base,
+        )
+        .unwrap();
+        assert!(update_runtime(
+            workspace,
+            "auto:codex:12345678",
+            Some("codex-native-1".into()),
+            Some("codex".into()),
+            Some(r"C:\code\wind".into()),
+        ));
+        let roster = topology_for(workspace, &[pane]);
+        let member = roster["roster"].as_array().unwrap().first().unwrap();
+        assert_eq!(member["sessionId"], "codex-native-1");
+        assert_eq!(member["executable"], "codex");
+        assert_eq!(member["cwd"], r"C:\code\wind");
+        remove_by_pane(workspace, pane);
+    }
+
+    #[test]
+    fn set_status_marks_disappeared_without_dropping_contact() {
+        let workspace = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        upsert(
+            workspace,
+            "auto:codex:deadbeef",
+            pane,
+            Some("Codex".into()),
+            AgentTier::Base,
+        )
+        .unwrap();
+        assert!(set_status(
+            workspace,
+            "auto:codex:deadbeef",
+            TeammateStatus::Disappeared
+        ));
+        assert!(!set_status(
+            workspace,
+            "auto:codex:deadbeef",
+            TeammateStatus::Disappeared
+        ));
+        let contact = target_for_pane(workspace, pane).unwrap();
+        assert_eq!(contact.status, TeammateStatus::Disappeared);
+        assert!(contains_agent(workspace, "auto:codex:deadbeef"));
+        let roster = topology_for(workspace, &[pane]);
+        assert_eq!(roster["roster"][0]["status"], "Disappeared");
+        remove_by_pane(workspace, pane);
     }
 }

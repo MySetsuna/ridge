@@ -12,14 +12,19 @@ describe('desktop Pane Agent border contract', () => {
     expect(source).toContain('trackPaneGitStatus(node.id, cwd || null)');
   });
 
-  it('uses transient attention only; runtime status never paints a border', () => {
+  it('paints a high-stack status highlight without stealing pane input', () => {
     expect(source).toContain('{@const paneAttention = $agentPaneAttentionStore');
     expect(source).toContain("paneAttention === 'waiting'");
     expect(source).toContain("paneAttention === 'stopped'");
     expect(source).toContain("paneAttention === 'idle'");
-    expect(source).not.toContain("paneStatus === 'working'");
-    expect(source).not.toContain("paneStatus === 'idle'");
+    expect(source).toContain("paneStatus === 'working'");
+    expect(source).toContain("paneStatus === 'idle'");
+    expect(source).toContain('rg-agent-pane-highlight');
+    expect(source).toContain('class="rg-agent-pane-shell relative z-[1] isolate');
     expect(source).toContain('data-agent-attention={paneAttention ?? \'\'}');
+    expect(source).toContain('z-index: 80;');
+    expect(paneSource).toContain('contain: strict; z-index: 1;');
+    expect(paneSource).toContain('z-index: 90;');
     expect(paneSource).toContain('clearAgentPaneAttention(workspaceId, paneId)');
     expect(paneSource).toContain('if (container?.contains(document.activeElement))');
     expect(paneSource).toContain('function onImeHelperFocus()');

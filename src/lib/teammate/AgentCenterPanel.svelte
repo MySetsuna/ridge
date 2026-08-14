@@ -67,7 +67,7 @@
     shouldShowAuditSection,
   } from './hitlAuditPanel';
   import { filterAuditItems, formatAuditTimeline } from './hitlAuditFilter';
-  import { buildOrchControlModel, formatOrchHeader, healthPollMs } from './orchControlPlane';
+  import { buildOrchControlModel, formatOrchHeader } from './orchControlPlane';
   import { pressureFromStats, shouldSurfaceGitGuard } from '$lib/stores/processGuardPolicy';
   import type { HitlAuditItem } from '../../../packages/remote/src/shared/teammate/hitlAuditRemote';
   import {
@@ -78,7 +78,9 @@
     agentStatusLabel,
     aggregateAgentCardStatus,
     buildAgentHistoryGroups,
+    historyReplyMatchesProfile,
     latestReplyForProfile,
+    agentIdentityAliases,
     normalizeAgentIdentity,
     shouldRefreshAgentHistory,
     type AgentCardStatus,
@@ -88,12 +90,7 @@
   const CIRCUIT_EVENT = 'teammate://circuit-tripped';
   // 后端 MCP `ridge_join_group` → 前端编组「加成员」事件桥（见 teammate/layout_event.rs）。
   const GROUP_ADD_MEMBER_EVENT = 'teammate://group-add-member';
-  /** Base poll; degraded/watch accelerate via healthPollMs (iter 50). */
-  const POLL_MS = 3000;
-  /** Git/audit are heavier — refresh every N topology polls. */
-  const HEAVY_EVERY_N = 3;
-  let pollGeneration = 0;
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  const AGENT_ACTIVITY_EXPIRY_MS = 12_500;
   const TRIP_CAP = 20;
 
   interface Props {
@@ -151,19 +148,28 @@
   const recentReplyGroups = $derived(buildAgentHistoryGroups(recentReplies));
   let historyLoadedAt = 0;
   let historyRefreshInFlight: Promise<void> | null = null;
+  let refreshInFlight: Promise<void> | null = null;
+  let refreshQueued = false;
+  let refreshQueuedHeavy = false;
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let historyRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let activityExpiryTimer: ReturnType<typeof setTimeout> | undefined;
   const agentProfilesByIdentity = $derived.by(() => {
     const profiles = new Map<string, TeammateProfile>();
     for (const member of allMembers) {
-      profiles.set(normalizeAgentIdentity(member.profile.name), member.profile);
-      profiles.set(normalizeAgentIdentity(member.profile.id), member.profile);
+      for (const identity of [member.profile.name, member.profile.id, member.profile.executable ?? '']) {
+        for (const alias of agentIdentityAliases(identity)) profiles.set(alias, member.profile);
+        profiles.set(normalizeAgentIdentity(identity), member.profile);
+      }
     }
     return profiles;
   });
-  const unmatchedHeadlessSessions = $derived(
-    headlessSessions.filter(
-      (session) => !recentReplies.some((history) => history.sessionId === session.name)
-    )
-  );
+  const unmatchedHeadlessSessions = $derived(headlessSessions.filter((session) => {
+    return !recentReplies.some((history) => {
+      if (history.sessionId === session.name) return true;
+      return runningMemberFor(history)?.profile.sessionId === session.name;
+    });
+  }));
 
   /** Same live title projection as PaneHeader; identity/name remains stable for actions. */
   const livePaneTitles = $derived.by(() => {
@@ -190,7 +196,12 @@
   }
 
   function statusForReply(reply: AgentRecentReply): AgentCardStatus {
-    const profile = agentProfilesByIdentity.get(normalizeAgentIdentity(reply.agent));
+    const profile = allMembers
+      .filter((member) => historyReplyMatchesProfile(reply, lookupProfileFor(member)))
+      .map((member) => member.profile)[0]
+      ?? agentIdentityAliases(reply.agent)
+      .map((identity) => agentProfilesByIdentity.get(identity))
+      .find((candidate): candidate is TeammateProfile => !!candidate);
     return agentCardStatus(profile, profile ? pendingFor(profile).length > 0 : false);
   }
 
@@ -205,6 +216,13 @@
     return latestReplyForProfile(recentReplies, { ...profile, cwd: profile.cwd ?? paneCwd })?.text;
   }
 
+  function lookupProfileFor(member: { workspaceId: string; profile: TeammateProfile }) {
+    const paneCwd = member.profile.paneId
+      ? $paneCwdStore[`${member.workspaceId}:${member.profile.paneId}`]
+      : undefined;
+    return { ...member.profile, cwd: member.profile.cwd ?? paneCwd };
+  }
+
   async function refreshRecentReplies(force = false): Promise<void> {
     if (!force && !shouldRefreshAgentHistory(historyLoadedAt)) return;
     if (historyRefreshInFlight) return historyRefreshInFlight;
@@ -212,7 +230,7 @@
       try {
         recentReplies = await invoke<AgentRecentReply[]>('read_agent_recent_replies', {
           projectPaths: [],
-          limit: 24,
+          limit: 100,
         });
         historyLoadedAt = Date.now();
       } catch {
@@ -241,8 +259,8 @@
         pending,
         profile.status,
       );
-      // Polls do not run while this panel has never been mounted. A member may
-      // therefore first appear already idle after producing output. Treat an
+      // This panel may first mount after a member has already produced output.
+      // Treat an
       // idle first observation with a real sequence as unread completion; a
       // pristine shell/agent pane (sequence 0) remains neutral.
       if (signal === null && previousStatus === undefined && paneStatus === 'idle' && profile.outputSeq > 0) {
@@ -298,12 +316,20 @@
   function runningMemberFor(reply: AgentRecentReply) {
     const session = runningSessionFor(reply);
     const sessionId = reply.resume?.sessionId ?? reply.sessionId;
-    if (!session?.creator_workspace_id || !session.creator_pane_id) return null;
-    return allMembers.find((member) =>
-      member.workspaceId === session.creator_workspace_id
-      && member.profile.paneId === session.creator_pane_id
-      && member.profile.sessionId === sessionId
-    ) ?? null;
+    if (session?.creator_workspace_id && session.creator_pane_id) {
+      const owner = allMembers.find((member) =>
+        member.workspaceId === session.creator_workspace_id
+        && member.profile.paneId === session.creator_pane_id
+        && member.profile.sessionId === sessionId
+      );
+      if (owner) return owner;
+    }
+    const exactSession = allMembers.find((member) => member.profile.sessionId === sessionId);
+    if (exactSession) return exactSession;
+    const candidates = allMembers.filter((member) =>
+      historyReplyMatchesProfile(reply, lookupProfileFor(member))
+    );
+    return candidates.length === 1 ? candidates[0] : null;
   }
 
   async function resumeAgentSession(reply: AgentRecentReply): Promise<void> {
@@ -439,9 +465,30 @@
     );
   }
 
-  async function refresh(opts?: { heavy?: boolean }) {
-    pollGeneration += 1;
-    const doHeavy = opts?.heavy ?? pollGeneration % HEAVY_EVERY_N === 1;
+  async function refresh(opts?: { heavy?: boolean }): Promise<void> {
+    if (refreshInFlight) {
+      refreshQueued = true;
+      refreshQueuedHeavy ||= !!opts?.heavy;
+      await refreshInFlight;
+      return;
+    }
+    const current = refreshNow(opts);
+    refreshInFlight = current;
+    try {
+      await current;
+    } finally {
+      if (refreshInFlight === current) refreshInFlight = null;
+      if (refreshQueued) {
+        const heavy = refreshQueuedHeavy;
+        refreshQueued = false;
+        refreshQueuedHeavy = false;
+        void refresh({ heavy });
+      }
+    }
+  }
+
+  async function refreshNow(opts?: { heavy?: boolean }): Promise<void> {
+    const doHeavy = opts?.heavy ?? false;
     const workspaceIds = $workspacesList.map((workspace) => workspace.id);
     if (workspaceId && !workspaceIds.includes(workspaceId)) workspaceIds.push(workspaceId);
     const snapshots = await Promise.all(
@@ -499,7 +546,8 @@
     }
     const completionDetected = syncAgentAttention();
     if (completionDetected) await refreshRecentReplies(true);
-    // Heavy: decisions / memory / git / audit — not every 3s (iter 50 perf).
+    scheduleActivityExpiry();
+    // Heavy: decisions / memory / git / audit — only on initial/layout refresh.
     if (doHeavy) {
       try {
         const list = workspaceId
@@ -525,19 +573,45 @@
       await refreshRecentReplies();
       void refreshHosts();
     }
-    reschedulePoll();
-  }
-
-  let lastPollMs = POLL_MS;
-  function reschedulePoll() {
-    const ms = Math.max(1500, healthPollMs(orchModel) || POLL_MS);
-    if (pollTimer && ms === lastPollMs) return;
-    lastPollMs = ms;
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(() => void refresh(), ms);
   }
 
   // 随应用打包的 MCP 接入引导文档（见 tauri.conf.json bundle.resources）。
+  function scheduleActivityExpiry(): void {
+    if (activityExpiryTimer) clearTimeout(activityExpiryTimer);
+    if (!allMembers.some(({ profile }) => profile.activity === 'working')) return;
+    activityExpiryTimer = setTimeout(() => {
+      activityExpiryTimer = undefined;
+      scheduleRefresh();
+    }, AGENT_ACTIVITY_EXPIRY_MS);
+  }
+
+  function scheduleHistoryRefresh(): void {
+    if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
+    historyRefreshTimer = setTimeout(() => {
+      historyRefreshTimer = undefined;
+      void refreshRecentReplies(true);
+    }, 350);
+  }
+
+  function scheduleRefresh(opts?: { heavy?: boolean }): void {
+    refreshQueuedHeavy ||= !!opts?.heavy;
+    if (refreshTimer) return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      const heavy = refreshQueuedHeavy;
+      refreshQueuedHeavy = false;
+      void refresh({ heavy });
+    }, 0);
+  }
+
+  function eventPaneIsAgent(payload: unknown): boolean {
+    const event = payload as { workspaceId?: unknown; paneId?: unknown } | null;
+    if (!event || typeof event.workspaceId !== 'string' || typeof event.paneId !== 'string') return false;
+    return allMembers.some(({ workspaceId: id, profile }) =>
+      id === event.workspaceId && profile.paneId === event.paneId
+    );
+  }
+
   const MCP_DOC_RESOURCE = 'static/docs/mcp-integration.md';
 
   // 「MCP 接入引导」：取打包文档的磁盘绝对路径 → 内置编辑器打开（markdown 默认 preview 即只读查看，D5）。
@@ -600,9 +674,7 @@
     // Browser previews have neither Tauri IPC nor its event bridge. The
     // web-remote shim reports true and forwards these listeners to its host.
     if (!isTauri()) return;
-    // Start topology polling before the initial heavy refresh: git/audit/history
-    // probes must not delay auto-discovered agents appearing in the roster.
-    reschedulePoll();
+    // Initial snapshot; subsequent updates arrive from pane/layout lifecycle events.
     void refresh({ heavy: true });
     // 拉取工作区保存信息，让编组的稳定持久化键（.ridge 路径）可解析。
     void refreshWorkspaceSaveInfo();
@@ -613,8 +685,15 @@
     // iter-61：标记/释放 agent（register/release_teammate_agent）后端会 emit
     // teammate-layout-changed——立即刷新花名册，标记秒级入列（不再等 3s 轮询）。
     const unLayout = listen('teammate-layout-changed', () => {
-      void refresh();
+      scheduleRefresh({ heavy: true });
     });
+    const unOutput = listen('pane-output-activity', (e) => {
+      scheduleRefresh();
+      if (eventPaneIsAgent(e.payload)) scheduleHistoryRefresh();
+    });
+    const unTree = listen('pane-tree-changed', () => scheduleRefresh());
+    const unClosed = listen('pane-pty-closed', () => scheduleRefresh());
+    const unMeta = listen('pane-meta-changed', () => scheduleRefresh());
     // Agent 自助拉入：后端 `ridge_join_group` emit → 落到该工作区的编组 store。
     // 后端 emit 的 workspaceId = MCP 的活动工作区，与本面板的 `workspaceId`(焦点工作区)
     // 常态一致；仅在两者短暂不同步时才 mismatch。失败一律 warn（勿静默吞——评审 HIGH）。
@@ -652,13 +731,16 @@
       }
     });
     return () => {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = undefined;
-      }
+      if (refreshTimer) clearTimeout(refreshTimer);
+      if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
+      if (activityExpiryTimer) clearTimeout(activityExpiryTimer);
       unTrip.then((f) => f()).catch(() => {});
       unJoin.then((f) => f()).catch(() => {});
       unLayout.then((f) => f()).catch(() => {});
+      unOutput.then((f) => f()).catch(() => {});
+      unTree.then((f) => f()).catch(() => {});
+      unClosed.then((f) => f()).catch(() => {});
+      unMeta.then((f) => f()).catch(() => {});
     };
   });
 </script>
