@@ -165,9 +165,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ matrix.label }}" = "macos-x64" ]; then
-            cargo build --release -p ridge-cli --bin rdg --target "${{ matrix.rust_target }}" --features vendored-openssl
-          elif [ -n "${{ matrix.rust_target }}" ]; then
+          # vendored-openssl lives on the ridge Tauri crate (matrix.args), not ridge-cli.
+          if [ -n "${{ matrix.rust_target }}" ]; then
             cargo build --release -p ridge-cli --bin rdg --target "${{ matrix.rust_target }}"
           else
             cargo build --release -p ridge-cli --bin rdg
