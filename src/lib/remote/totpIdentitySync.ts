@@ -29,21 +29,3 @@ export function startTotpIdentitySync(invoke: InvokeFn, store: StoreLike): () =>
     void invoke('remote_set_totp_identity', { username });
   });
 }
-
-/** Keep the detached cloud/WebRTC daemon supplied with the browser's current
- * device credential.  The daemon is process-independent; this is only a
- * credential handoff, not a transport or UI bridge. */
-export function startCloudCredentialSync(invoke: InvokeFn, store: StoreLike): () => void {
-  let last = '';
-  return store.subscribe((s) => {
-    const username = s.user?.username ?? null;
-    const key = [s.deviceToken ?? '', s.deviceName ?? '', username ?? ''].join('\u0000');
-    if (key === last) return;
-    last = key;
-    void invoke('sync_cloud_remote_credentials', {
-      deviceToken: s.deviceToken,
-      deviceName: s.deviceName,
-      username,
-    });
-  });
-}

@@ -48,6 +48,9 @@ fn select_kernel_host_binary(
     override_path: Option<PathBuf>,
     current_exe: Result<PathBuf, std::io::Error>,
 ) -> Result<PathBuf, String> {
+    // Ridge carries the kernel host in ridge.exe today. Keep an explicit
+    // override as the seam for a future standalone ridge-kernel install path;
+    // this path is never resolved through rdg.
     override_path
         .or_else(|| current_exe.ok())
         .ok_or_else(|| "locate ridge desktop: current executable unavailable".to_string())

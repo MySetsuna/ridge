@@ -1,5 +1,4 @@
 use base64::Engine as _;
-#[cfg(any())]
 use ridge_remote::mdns;
 use std::sync::atomic::Ordering;
 use sysinfo::System;
@@ -9,11 +8,7 @@ use crate::state::AppState;
 
 #[tauri::command]
 pub fn get_remote_info(state: State<AppState>) -> Result<serde_json::Value, String> {
-    let host_status = state
-        .app_handle
-        .get()
-        .and_then(crate::remote_host_supervisor::lan_host_status);
-    let (port, enabled) = remote_transport_state(host_status.as_ref());
+    let (port, enabled) = remote_transport_state(&state);
     let lan_ip = ridge_remote::net::detect_lan_ip();
     let lan_ips = ridge_remote::net::detect_lan_ips();
     let machine_name = System::host_name().unwrap_or_else(|| "unknown".to_string());
@@ -156,48 +151,6 @@ pub fn remote_set_totp_identity(
     Ok(())
 }
 
-/// Mirror the browser cloud device credentials into the independent `rdg
-/// remote --daemon` sidecar.  The token never enters a URL or log; it is
-/// stored only in the app-data credential file used by the detached daemon.
-#[tauri::command]
-pub fn sync_cloud_remote_credentials(
-    app: AppHandle,
-    device_token: Option<String>,
-    device_name: Option<String>,
-    username: Option<String>,
-) -> Result<(), String> {
-    crate::remote_host_supervisor::sync_cloud_credentials(
-        &app,
-        device_token.as_deref(),
-        device_name.as_deref(),
-        username.as_deref(),
-    )
-}
-
-/// Start the independent cloud/WebRTC sidecar after the user explicitly
-/// enables public Remote. Tauri only hands off credentials and lifecycle
-/// intent; the sidecar owns all WebRTC sessions and survives shell death.
-#[tauri::command]
-pub async fn ensure_cloud_remote_host(
-    app: AppHandle,
-) -> Result<crate::remote_host_supervisor::CloudHostStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::remote_host_supervisor::set_cloud_enabled(&app, true)?;
-        crate::remote_host_supervisor::ensure_cloud_host(&app)
-    })
-    .await
-    .map_err(|error| format!("公网 Remote 启动任务失败：{error}"))?
-}
-
-/// Persist the cloud Remote disabled state. Existing detached sessions are not
-/// tied to the WebView lifetime; the daemon will not be reattached on the next
-/// desktop launch until the user enables it again.
-#[tauri::command]
-pub fn disable_cloud_remote_host(app: AppHandle) -> Result<(), String> {
-    crate::remote_host_supervisor::set_cloud_enabled(&app, false)?;
-    crate::remote_host_supervisor::stop_cloud_host(&app)
-}
-
 // ── TOTP 信任授权（grant_store，§totp-trust）──────────────────────────────────
 
 /// §totp-trust-check：查询 `(当前身份, ctrl_pub_b64)` 是否持有 24h 内的信任授权。
@@ -239,34 +192,22 @@ pub fn totp_trust_revoke_all(state: State<AppState>) {
 
 #[tauri::command]
 pub fn set_remote_enabled(state: State<AppState>, enabled: bool) -> Result<(), String> {
-    // The detached host is the source of truth after a desktop restart.  The
-    // in-process flag is only a cache: if the sidecar died, enabling Remote
-    // must repair it instead of returning early on a stale `true` value.
-    let host_status = state
-        .app_handle
-        .get()
-        .and_then(crate::remote_host_supervisor::lan_host_status);
-    let current = remote_transport_state(host_status.as_ref()).1;
-    if current == enabled && !(enabled && host_status.is_none()) {
-        state.remote_enabled.store(enabled, Ordering::Relaxed);
-        if !enabled {
-            *state.remote_port.write() = 0;
-        }
+    let current = state.remote_enabled.load(Ordering::Acquire);
+    let has_server = *state.remote_port.read() != 0;
+    let state_matches = if enabled {
+        current && has_server
+    } else {
+        !current && !has_server
+    };
+    if state_matches {
         return Ok(());
     }
 
     if enabled {
         start_remote_server(&state)?;
     } else {
-        let app = state
-            .app_handle
-            .get()
-            .ok_or_else(|| "desktop app handle is not ready".to_string())?;
-        crate::remote_host_supervisor::set_lan_enabled(app, false)?;
-        crate::remote_host_supervisor::stop_lan_host(app)?;
-        *state.remote_port.write() = 0;
+        stop_in_process_remote_server(&state);
     }
-    state.remote_enabled.store(enabled, Ordering::Relaxed);
 
     tracing::info!(target: "ridge::remote", enabled, "Remote control toggle changed");
     Ok(())
@@ -274,12 +215,7 @@ pub fn set_remote_enabled(state: State<AppState>, enabled: bool) -> Result<(), S
 
 #[tauri::command]
 pub fn get_remote_enabled(state: State<AppState>) -> Result<bool, String> {
-    if let Some(app) = state.app_handle.get() {
-        if let Some(status) = crate::remote_host_supervisor::lan_host_status(app) {
-            return Ok(status.enabled);
-        }
-    }
-    Ok(state.remote_enabled.load(Ordering::Relaxed))
+    Ok(state.remote_enabled.load(Ordering::Acquire))
 }
 
 /// §sessions: list the currently-connected remote control sessions for the
@@ -379,45 +315,30 @@ pub fn remove_from_blacklist(state: State<AppState>, id: String) -> bool {
 }
 
 fn start_remote_server(state: &AppState) -> Result<(), String> {
-    let app = state
-        .app_handle
-        .get()
-        .ok_or_else(|| "desktop app handle is not ready".to_string())?;
-    let status = crate::remote_host_supervisor::ensure_lan_host(app)?;
-    crate::remote_host_supervisor::set_lan_enabled(app, true)?;
-    *state.remote_port.write() = status.port;
-    Ok(())
+    start_in_process_remote_server(state)
 }
 
-fn remote_transport_state(
-    status: Option<&crate::remote_host_supervisor::LanHostStatus>,
-) -> (u16, bool) {
-    status
-        .map(|status| (status.port, status.enabled))
-        .unwrap_or((0, false))
+fn remote_transport_state(state: &AppState) -> (u16, bool) {
+    let port = *state.remote_port.read();
+    let enabled = state.remote_enabled.load(Ordering::Acquire);
+    remote_transport_state_values(port, enabled)
 }
 
-/// Stop detached transports only on the explicit full-quit path. A force kill
-/// never reaches this function, so the sidecars remain alive and reconnectable
-/// while the kernel continues to own PTYs.
-pub fn stop_remote_server(state: &AppState) {
-    if let Some(app) = state.app_handle.get() {
-        if let Err(error) = crate::remote_host_supervisor::stop_lan_host(app) {
-            tracing::warn!(target: "ridge::remote", %error, "detached LAN host stop failed");
-        }
-        if let Err(error) = crate::remote_host_supervisor::set_cloud_enabled(app, false) {
-            tracing::warn!(target: "ridge::remote", %error, "detached cloud disable failed");
-        }
-        if let Err(error) = crate::remote_host_supervisor::stop_cloud_host(app) {
-            tracing::warn!(target: "ridge::remote", %error, "detached cloud host stop failed");
-        }
-        *state.remote_port.write() = 0;
+fn remote_transport_state_values(port: u16, enabled: bool) -> (u16, bool) {
+    if port == 0 {
+        (0, false)
+    } else {
+        (port, enabled)
     }
-    tracing::info!(target: "ridge::remote", "explicit full quit stopped detached Remote transports");
 }
 
-#[cfg(any())]
-fn start_legacy_remote_server(state: &AppState) -> Result<(), String> {
+/// Stop the in-process LAN transport on the explicit full-quit path.
+pub fn stop_remote_server(state: &AppState) {
+    stop_in_process_remote_server(state);
+    tracing::info!(target: "ridge::remote", "explicit full quit stopped in-process Remote transport");
+}
+
+fn start_in_process_remote_server(state: &AppState) -> Result<(), String> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
     let auth = state.remote_auth.clone();
@@ -431,6 +352,7 @@ fn start_legacy_remote_server(state: &AppState) -> Result<(), String> {
     *state.remote_thread.lock() = Some(handle.thread);
     *state.remote_shutdown.lock() = Some(shutdown_tx);
     *state.remote_mdns.lock() = Some((mdns_handle, mdns_stop));
+    state.remote_enabled.store(true, Ordering::Release);
 
     // In dev mode, spawn the Vite dev server for the remote app
     if cfg!(debug_assertions) {
@@ -470,8 +392,7 @@ fn start_legacy_remote_server(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(any())]
-fn stop_legacy_remote_server(state: &AppState) {
+fn stop_in_process_remote_server(state: &AppState) {
     if let Some(tx) = state.remote_shutdown.lock().take() {
         let _ = tx.send(());
     }
@@ -510,6 +431,7 @@ fn stop_legacy_remote_server(state: &AppState) {
         }
     }
     *state.remote_port.write() = 0;
+    state.remote_enabled.store(false, Ordering::Release);
     tracing::info!(target: "ridge::remote", "Remote control server stopped");
 }
 
@@ -517,24 +439,14 @@ fn stop_legacy_remote_server(state: &AppState) {
 mod tests {
     use super::*;
 
-    fn status(enabled: bool) -> crate::remote_host_supervisor::LanHostStatus {
-        crate::remote_host_supervisor::LanHostStatus {
-            pid: 7,
-            port: 9527,
-            lan_ip: "127.0.0.1".into(),
-            tls: true,
-            enabled,
-        }
-    }
-
     #[test]
     fn dead_or_missing_host_cannot_report_ready_from_cached_state() {
-        assert_eq!(remote_transport_state(None), (0, false));
+        assert_eq!(remote_transport_state_values(0, false), (0, false));
     }
 
     #[test]
     fn live_host_state_is_used_for_port_and_enabled_flag() {
-        assert_eq!(remote_transport_state(Some(&status(true))), (9527, true));
-        assert_eq!(remote_transport_state(Some(&status(false))), (9527, false));
+        assert_eq!(remote_transport_state_values(9527, true), (9527, true));
+        assert_eq!(remote_transport_state_values(9527, false), (9527, false));
     }
 }

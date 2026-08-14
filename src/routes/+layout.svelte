@@ -12,7 +12,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
-  import { startCloudCredentialSync, startTotpIdentitySync } from '$lib/remote/totpIdentitySync';
+  import { startTotpIdentitySync } from '$lib/remote/totpIdentitySync';
   import { cloudAuth as cloudAuthStore } from '@ridge/remote/shared/cloud/auth';
   import { BASE_DOMAIN, cloudHttpScheme } from '@ridge/remote/shared/cloud/apiClient';
   import { remoteBootMode } from '$lib/remote/remoteBootMode';
@@ -74,7 +74,6 @@
       // §totp-persist：仅真实桌面 host 同步登录态→TOTP 种子（web-remote 已被
       // WEB_REMOTE 分支排除，不会到这）。
       const stopTotpSync = startTotpIdentitySync(invoke, cloudAuthStore);
-      const stopCloudCredentialSync = startCloudCredentialSync(invoke, cloudAuthStore);
       // Native WebView hide/show does not reliably produce a DOM
       // visibilitychange on every WebView2 build. Keep the terminal memory
       // policy deterministic by honoring the host lifecycle events too.
@@ -101,7 +100,6 @@
         listenerAlive = false;
         unlisteners.splice(0).forEach((stop) => stop());
         stopTotpSync();
-        stopCloudCredentialSync();
       };
     }
     // §sw-early-register：进 web-remote 页即注册 service-worker，与鉴权解耦（对齐移动端
