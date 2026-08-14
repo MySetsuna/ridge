@@ -595,25 +595,16 @@ impl<B: RenderBackend> Renderer<B> {
         // dirty-row diffing keeps its perf benefit.
         self.update_backend_frame_policy();
 
-        // §1.27 (2026-05-07): Ink/log-update walks the cursor up through
-        // its previous frame via repeated CUU+EL2, then writes the new
-        // frame and emits CHA `\x1b[G` at the end (which trips the
-        // §A.3 absolute-positioning timestamp). The per-row hash diff
-        // can leave Canvas2D pixels stale when a row's *cells* match
-        // across two ticks but the row was painted over by an opaque
-        // overlay (the IME helper textarea) earlier in the session.
-        // Force full-frame whenever the inline-TUI heuristic says we're
-        // inside an Ink-style redraw window — bounded by the 2 s
-        // INLINE_TUI_DECAY_MS so quiescent shells stay on the dirty-row
-        // diff fast path. WebGPU already redraws everything, so this
-        // branch is a no-op for the WebGPU path; Canvas2D gains
-        // correctness for the Ink-active window only. Uses wall-clock
-        // (`clock::now_ms()`, unix-epoch `i64`) to match the timestamp
-        // domain `note_absolute_positioning` records — the renderer's
-        // own `now_ms: f64` parameter is `performance.now()` (page-load
-        // relative) and would always read as far in the past.
-        let wall_ms = crate::term::clock::now_ms();
-        self.update_inline_tui_policy(terminal, wall_ms);
+        // Paint truth is the cell-grid hash snapshot, not "the app used
+        // absolute CSI / looks like a TUI". Ratatui/crossterm (Codex CLI)
+        // and Ink double-buffer then emit VT for (often large) regions;
+        // between two *settled* frames most cells are identical. Forcing
+        // full_redraw_pending here used to wipe the whole viewport on
+        // every tick while inline-TUI was active → visible flash even
+        // when hashes matched. Content-diff via collect_dirty_rows is
+        // enough; true mapping breaks (resize/scroll/screen/first frame)
+        // still set full_redraw_pending elsewhere. IME preedit install
+        // has its own invalidate path.
 
         // Viewport scroll offset change → full redraw. The row→content
         // mapping shifts when the user pages history, so per-row hashes
@@ -803,15 +794,6 @@ impl<B: RenderBackend> Renderer<B> {
 
     fn update_backend_frame_policy(&mut self) {
         if self.backend.requires_full_frame() {
-            self.full_redraw_pending = true;
-        }
-    }
-
-    fn update_inline_tui_policy(&mut self, terminal: &Terminal, now_ms: i64) {
-        if terminal
-            .grid()
-            .is_inline_tui_active_at(now_ms, terminal.modes().cursor_visible)
-        {
             self.full_redraw_pending = true;
         }
     }
@@ -1477,5 +1459,234 @@ mod tests {
         let a = range(1, 2, 3, 4);
         let b = range(1, 2, 3, 5);
         assert!(!selection_eq(Some(a), Some(b)));
+    }
+
+    // ─── settled-frame dirty paint (Codex/ratatui-style) ───────────────
+    //
+    // Codex CLI interactive UI = Rust `codex-tui` (openai/codex codex-rs/tui):
+    // **ratatui + crossterm** double-buffer → emit VT for buffer diffs;
+    // typically alt-screen and optional synchronized output `CSI ? 2026 h/l`.
+    // Evidence: upstream `codex-rs/tui/Cargo.toml` deps + local `codex.exe`
+    // strings (`ratatui`, `crossterm`, `codex_tui`). Paint policy must treat
+    // large VT rewrites as grid updates and dirty only hash-changed rows —
+    // never whole-viewport clear solely because absolute CSI / TUI is active.
+
+    use super::Renderer;
+    use crate::render::backend::{
+        FrameMetrics, RenderBackend, RowDraw, Theme,
+    };
+    use crate::term::attr_table::AttrTable;
+    use crate::term::Terminal;
+
+    #[derive(Default)]
+    struct RecordingBackend {
+        clears: u32,
+        frames: u32,
+        drawn_rows: Vec<usize>,
+        last_drawn: Vec<usize>,
+    }
+
+    impl RenderBackend for RecordingBackend {
+        fn measure_font(&self, _: &str, _: f32) -> Result<(f32, f32), String> {
+            Ok((8.0, 16.0))
+        }
+        fn resize_surface(&mut self, _: u32, _: u32, _: f32) -> Result<(), String> {
+            Ok(())
+        }
+        fn begin_frame(&mut self, _: FrameMetrics, _: &Theme) {
+            self.last_drawn.clear();
+        }
+        fn clear(&mut self) {
+            self.clears += 1;
+        }
+        fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, _: &AttrTable) {
+            self.last_drawn.push(row.row_index);
+            self.drawn_rows.push(row.row_index);
+        }
+        fn draw_row_texts(&mut self, _: &RowDraw<'_>, _: &AttrTable) {}
+        fn draw_cursor(&mut self, _: &CursorDraw, _: &AttrTable) {}
+        fn draw_selection_overlay(&mut self, _: &[(usize, usize, usize)]) {}
+        fn draw_hyperlink_underlines(&mut self, _: &[(usize, usize, usize)]) {}
+        fn end_frame(&mut self) {
+            self.frames += 1;
+        }
+    }
+
+    fn metrics() -> FrameMetrics {
+        FrameMetrics {
+            cell_w: 8.0,
+            cell_h: 16.0,
+            dpr: 1.0,
+            tui_mode: false,
+        }
+    }
+
+    /// Ratatui-like settled frame: sync begin, home, paint all rows, sync end.
+    fn feed_ratatui_frame(t: &mut Terminal, marker: &str) {
+        let cols = t.cols();
+        let rows = t.rows();
+        let mut out = Vec::new();
+        out.extend_from_slice(b"\x1b[?2026h");
+        out.extend_from_slice(b"\x1b[H");
+        for r in 0..rows {
+            let line = format!(
+                "{m}{r:02}{pad}",
+                m = marker,
+                r = r,
+                pad = " ".repeat(cols.saturating_sub(marker.len() + 2))
+            );
+            let line: String = line.chars().take(cols).collect();
+            out.extend_from_slice(line.as_bytes());
+            if r + 1 < rows {
+                out.extend_from_slice(b"\r\n");
+            }
+        }
+        out.extend_from_slice(b"\x1b[?2026l");
+        t.feed(&out);
+    }
+
+    #[test]
+    fn settled_identical_ratatui_frames_skip_draw_and_clear() {
+        let rows = 8usize;
+        let cols = 24usize;
+        let mut term = Terminal::new(rows, cols, 0);
+        // Hide cursor so blink/cursor rows cannot dirtiness-noise the assert.
+        term.feed(b"\x1b[?25l");
+        feed_ratatui_frame(&mut term, "A");
+
+        let mut r = Renderer::new(RecordingBackend::default(), metrics(), Theme::default_dark());
+        assert!(r.tick(&term, None, 0.0), "first frame must paint");
+        let clears_after_first = r.backend().clears;
+        assert!(clears_after_first >= 1, "seed frame clears once");
+        let frames_after_first = r.backend().frames;
+
+        // Second settled frame: full-region rewrite VT, identical cells.
+        feed_ratatui_frame(&mut term, "A");
+        let drew = r.tick(&term, None, 0.0);
+        assert!(
+            !drew,
+            "identical settled content must return nothing-to-draw"
+        );
+        assert_eq!(
+            r.backend().clears, clears_after_first,
+            "must not whole-viewport clear when cell hashes stable"
+        );
+        assert_eq!(r.backend().frames, frames_after_first);
+        assert!(
+            !r.is_dirty(&term, None, 0.0),
+            "is_dirty must agree with tick early-exit"
+        );
+    }
+
+    #[test]
+    fn small_content_change_dirties_only_affected_rows() {
+        let rows = 10usize;
+        let cols = 20usize;
+        let mut term = Terminal::new(rows, cols, 0);
+        term.feed(b"\x1b[?25l");
+        feed_ratatui_frame(&mut term, "X");
+
+        let mut r = Renderer::new(RecordingBackend::default(), metrics(), Theme::default_dark());
+        assert!(r.tick(&term, None, 0.0));
+        let clears_seed = r.backend().clears;
+        r.backend_mut().last_drawn.clear();
+        r.backend_mut().drawn_rows.clear();
+
+        // Change a single near-top row via CUP + EL + rewrite (crossterm style).
+        // collect_dirty_rows also marks the prior row for glyph bleed; with
+        // change at row 1 the dirty set is {0,1} — cardinality << rows.
+        let change_row = 1usize;
+        let line = format!("Y{:02}{}", change_row, " ".repeat(cols));
+        let line: String = line.chars().take(cols).collect();
+        let seq = format!("\x1b[{};1H\x1b[2K{}", change_row + 1, line);
+        term.feed(seq.as_bytes());
+
+        assert!(r.tick(&term, None, 0.0), "changed row must paint");
+        assert_eq!(
+            r.backend().clears, clears_seed,
+            "partial change must not full-clear"
+        );
+        let mut unique: Vec<usize> = r.backend().last_drawn.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert!(
+            !unique.is_empty() && unique.len() * 2 < rows,
+            "dirty cardinality {unique:?} must be << viewport rows={rows}"
+        );
+        assert!(
+            unique.contains(&change_row),
+            "changed row {change_row} must be dirty; got {unique:?}"
+        );
+        assert!(
+            !unique.contains(&(rows - 1)),
+            "unchanged bottom row must stay clean; got {unique:?}"
+        );
+    }
+
+    #[test]
+    fn fullscreen_rewrite_with_no_cell_delta_skips_clear() {
+        let rows = 6usize;
+        let cols = 16usize;
+        let mut term = Terminal::new(rows, cols, 0);
+        term.feed(b"\x1b[?25l");
+        // Alt-screen enter (Codex/ratatui common) + frame.
+        term.feed(b"\x1b[?1049h");
+        feed_ratatui_frame(&mut term, "Z");
+
+        let mut r = Renderer::new(RecordingBackend::default(), metrics(), Theme::default_dark());
+        assert!(r.tick(&term, None, 0.0));
+        let clears_seed = r.backend().clears;
+
+        // Full-screen-style rewrite: home + ED + same content (net zero cell delta).
+        let mut out = Vec::new();
+        out.extend_from_slice(b"\x1b[?2026h\x1b[H\x1b[2J\x1b[H");
+        for row in 0..rows {
+            let line = format!("Z{row:02}{}", " ".repeat(cols));
+            let line: String = line.chars().take(cols).collect();
+            out.extend_from_slice(line.as_bytes());
+            if row + 1 < rows {
+                out.extend_from_slice(b"\r\n");
+            }
+        }
+        out.extend_from_slice(b"\x1b[?2026l");
+        term.feed(&out);
+
+        let drew = r.tick(&term, None, 0.0);
+        assert!(
+            !drew,
+            "net-zero cell delta after fullscreen-style rewrite must not paint"
+        );
+        assert_eq!(
+            r.backend().clears, clears_seed,
+            "fullscreen-style rewrite with equal settled cells must not force whole-viewport clear"
+        );
+    }
+
+    #[test]
+    fn absolute_csi_inline_tui_does_not_force_full_redraw() {
+        // CHA/CUP trip note_absolute_positioning → is_inline_tui_active_at,
+        // which historically forced full_redraw_pending every tick.
+        let rows = 5usize;
+        let cols = 12usize;
+        let mut term = Terminal::new(rows, cols, 0);
+        term.feed(b"\x1b[?25l");
+        feed_ratatui_frame(&mut term, "Q");
+        assert!(
+            term.grid()
+                .is_inline_tui_active_at(crate::term::clock::now_ms(), false)
+                || term.grid().is_inline_tui_active_at(
+                    crate::term::clock::now_ms(),
+                    term.modes().cursor_visible
+                ),
+            "fixture must engage absolute-positioning heuristic"
+        );
+
+        let mut r = Renderer::new(RecordingBackend::default(), metrics(), Theme::default_dark());
+        assert!(r.tick(&term, None, 0.0));
+        let clears_seed = r.backend().clears;
+        // Re-emit absolute CSI without changing cells.
+        term.feed(b"\x1b[H\x1b[G");
+        assert!(!r.tick(&term, None, 0.0));
+        assert_eq!(r.backend().clears, clears_seed);
     }
 }
