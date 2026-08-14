@@ -1,20 +1,14 @@
 {
   "schema_version": 1,
-  "intake_id": "INTAKE-20260805-REMOTE-LINK-FLUIDITY-01",
-  "classification": "approved",
-  "summary": "Remote direct link activation and measured low-latency input/pane interaction.",
+  "intake_id": "INTAKE-20260814-REMOTE-ENDPOINT-01",
+  "classification": "active",
+  "summary": "Diagnose unified remote package failure across LAN and public endpoints, separating code, packaging, service lifecycle, and firewall causes.",
   "requirement_ids": [
-    "REQ-REMOTE-SMOOTH-STATE-02",
-    "REQ-REMOTE-RUNTIME-PERF-MEMORY-02",
-    "REQ-MOBILE-REMOTE-BACKPRESSURE-01",
-    "REQ-MOBILE-REMOTE-LIVE-TAIL-01",
-    "REQ-REMOTE-LINK-FLUIDITY-01"
+    "REQ-RDG-REMOTE-CONNECT-01"
   ],
-  "pending_ids": [
-    "PENDING-REQ-20260805-REMOTE-LINK-FLUIDITY-01"
-  ],
+  "pending_ids": [],
   "approval_reasons": [],
   "open_questions": [],
-  "approval_evidence": "我都接受方案",
+  "approval_evidence": "",
   "executable": true
 }
