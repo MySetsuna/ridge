@@ -68,7 +68,7 @@
     workspaceId && paneId ? $agentPaneAttentionStore[`${workspaceId}:${paneId}`] : undefined
   );
   const attentionText = $derived(
-    attention === 'waiting' ? '待审批' : attention === 'stopped' ? '已停止，待查看' : attention === 'idle' ? '已完成，待查看' : ''
+    attention === 'waiting' ? '待审批' : attention === 'stopped' ? '已下线，待查看' : attention === 'idle' ? '已完成，待查看' : ''
   );
 
   function acknowledgeAttention(): void {
@@ -82,7 +82,7 @@
     if (profile.status === 'Suspended')
       return { text: '已暂停', cls: 'text-amber-300', dot: 'bg-amber-400', rail: 'border-l-amber-400' };
     if (profile.status === 'Disappeared')
-      return { text: '已停止', cls: 'text-red-300', dot: 'bg-red-400', rail: 'border-l-red-400' };
+      return { text: '下线', cls: 'text-red-300', dot: 'bg-red-400', rail: 'border-l-red-400' };
     if (profile.activity === 'working')
       return { text: '运行中', cls: 'text-emerald-300', dot: 'bg-emerald-400 animate-pulse', rail: 'border-l-emerald-400' };
     return { text: '空闲', cls: 'text-[var(--rg-fg-muted)]', dot: 'bg-[var(--rg-fg-muted)]', rail: 'border-l-sky-400' };

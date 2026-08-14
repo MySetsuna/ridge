@@ -22,6 +22,7 @@
     agentPaneStatus,
     agentStatusLabel,
     buildAgentHistoryGroups,
+    historyReplyMatchesProfile,
     reorderAgentGroups,
     shouldRefreshAgentHistory,
     toggleAgentGroupLeader,
@@ -51,12 +52,9 @@
     onAttentionChange?: (paneIds: string[]) => void;
   } = $props();
 
-  // P1 MVP：轮询取数（合同明确不建订阅流）。Query cache handles drawer
-  // remounts; this timer is only a slow liveness refresh.
-  // Live roster state drives pane attention, so converge within one short
-  // cadence. Agent history is still independently throttled to five minutes;
-  // the live query is tiny and remains single-flight through QueryClient.
-  const ROSTER_POLL_INTERVAL_MS = 3_000;
+  // Live roster follows PTY/topology events; the short debounce only coalesces
+  // bursts. Agent history remains independently throttled to five minutes.
+  let liveRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   let topo = $state<TeammateTopology>({ roster: [], leaderId: null, edges: [] });
   let pending = $state<HitlPendingItem[]>([]);
   let health = $state<OrchestrationHealth>({ suspendedAgents: 0, pendingHitl: 0 });
@@ -87,6 +85,14 @@
   let disposed = false;
   /** Previous live status; completion attention is a working→idle edge. */
   let observedAgentStatuses = new Map<string, AgentPaneStatus>();
+
+  function scheduleLiveRefresh(): void {
+    if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
+    liveRefreshTimer = setTimeout(() => {
+      liveRefreshTimer = undefined;
+      void startRefresh();
+    }, 250);
+  }
 
   /** 防御式解析后端下发的编组条目（外部数据不信任；无 id 则丢弃）。 */
   function parseRemoteGroup(v: unknown): TeammateGroup | null {
@@ -248,6 +254,18 @@
     return m.title?.trim() || m.name;
   }
 
+  function recentHistoryFor(m: TeammateRosterMember): AgentHistoryReply | undefined {
+    const match = history
+      .filter((reply) => historyReplyMatchesProfile(reply, {
+        id: m.id,
+        name: m.name,
+        sessionId: m.sessionId,
+        cwd: cwdFor(m),
+      }))
+      .sort((a, b) => b.timestamp - a.timestamp)[0];
+    return match;
+  }
+
   async function resumeHistory(reply: AgentHistoryReply): Promise<void> {
     const spec = reply.resume;
     if (!spec || !workspaceId || resumeBusy) return;
@@ -312,7 +330,7 @@
       const [snapshot, recent] = await Promise.all([
         fetchRemoteTeamRoster(ws, queryClient, sessionId, rosterWorkspaceId, signal),
         loadHistory
-          ? fetchRemoteAgentHistory(ws, queryClient, sessionId, 24, signal).catch(() => {
+          ? fetchRemoteAgentHistory(ws, queryClient, sessionId, 100, signal).catch(() => {
               if (!signal.aborted && scopeGuard.isCurrent(generation)) historyUnavailable = true;
               return null;
             })
@@ -367,15 +385,26 @@
   });
 
   onMount(() => {
-    const timer = setInterval(() => void startRefresh(), ROSTER_POLL_INTERVAL_MS);
+    const offMessage = ws.onMessage((message) => {
+      if (message.type === 'output' || message.type === 'delta' || message.type === 'pty-meta') {
+        if (message.workspaceId === workspaceId) scheduleLiveRefresh();
+      } else if (message.type === 'panes' && (!message.workspaceId || message.workspaceId === workspaceId)) {
+        scheduleLiveRefresh();
+      }
+    });
+    const offRaw = ws.onRawBytes((pane) => {
+      if (pane.workspaceId === workspaceId) scheduleLiveRefresh();
+    });
     const offReconnect = ws.onReconnect(() => { void startRefresh(true); });
     const offCapabilities = ws.onCapabilitiesChanged(() => { void startRefresh(true); });
     return () => {
       disposed = true;
       scopeGuard.invalidate();
       refreshToken += 1;
-      clearInterval(timer);
+      if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
       onAttentionChange?.([]);
+      offMessage();
+      offRaw();
       offReconnect();
       offCapabilities();
     };
@@ -566,6 +595,8 @@
   {@const st = statusOf(m)}
   {@const cwd = cwdFor(m)}
   {@const title = titleFor(m)}
+  {@const persistedReply = recentHistoryFor(m)}
+  {@const visibleReply = persistedReply?.text || m.recentOutput || ''}
   <div
     class="member-card"
     class:agent-attention={attentionPaneIds.includes(m.paneId)}
@@ -603,15 +634,15 @@
       {/each}
     {/if}
 
-    {#if m.recentOutput}
+    {#if visibleReply}
       <button class="reply-toggle" onclick={() => (openReply[m.id] = !openReply[m.id])}>
-        <span>最近回复 {openReply[m.id] ? '▾' : '▸'}</span>
+        <span>{persistedReply ? '最近回复' : '最近输出'} {openReply[m.id] ? '▾' : '▸'}</span>
         {#if !openReply[m.id]}
-          <span class="reply-peek">{m.recentOutput.split('\n').at(-1) ?? ''}</span>
+          <span class="reply-peek">{visibleReply.split('\n').at(-1) ?? ''}</span>
         {/if}
       </button>
       {#if openReply[m.id]}
-        <pre class="reply">{m.recentOutput}</pre>
+        <pre class="reply">{visibleReply}</pre>
       {/if}
     {/if}
 

@@ -17,12 +17,11 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
-/// 扫描结果复用窗口。面板轮询 3s 一次，取略小的窗口让「新起的 agent」最迟一轮入册。
-const TTL: Duration = Duration::from_millis(2500);
+/// 扫描结果复用窗口。事件触发刷新时短暂复用进程树，避免同一批事件重复扫描。
+const TTL: Duration = Duration::from_millis(500);
 
-/// 沿进程树向下找 agent 的最大深度。shell → (npm/node/cmd 包装) → agent 本体，
-/// 3 层足够覆盖 `claude` / `npx claude` / PowerShell 包装等常见形态。
-const MAX_DEPTH: usize = 3;
+/// 沿进程树向下找 agent 的最大深度，覆盖 shell → 包装器 → agent 本体。
+const MAX_DEPTH: usize = 6;
 
 type ScanCache = Option<(Instant, Vec<(Uuid, u32)>, Vec<PaneAgent>)>;
 /// 与 `scan_cached` / `invalidate_cache` 共享，覆盖 processNames 后必须清空。
@@ -36,6 +35,7 @@ pub struct PaneAgent {
     pub name: String,
     pub pid: u32,
     pub cwd: Option<String>,
+    pub session_id: Option<String>,
 }
 
 /// 运行时入口：内置 + 磁盘/内存用户覆盖（[`super::agent_catalog::load_profile_overrides`]）。
@@ -66,10 +66,11 @@ fn match_agent_panes_with_commands(
         .collect::<Vec<_>>();
     let mut found = match_agent_panes_with_names(panes, &normalized, process_names);
     for agent in &mut found {
-        agent.cwd = procs
-            .iter()
-            .find(|(pid, _, _, _, _)| *pid == agent.pid)
-            .and_then(|(_, _, _, _, cwd)| cwd.clone());
+        if let Some((_, _, _, argv, cwd)) = procs.iter().find(|(pid, _, _, _, _)| *pid == agent.pid)
+        {
+            agent.cwd = cwd.clone();
+            agent.session_id = agent_session_id_from_command(argv);
+        }
     }
     found
 }
@@ -98,6 +99,7 @@ pub fn match_agent_panes_with_names(
                 name,
                 pid,
                 cwd: None,
+                session_id: None,
             });
         }
     }
@@ -132,11 +134,11 @@ fn find_agent(
 /// 进程名命中 agent CLI 名单则返回其 stem（去路径、去 `.exe`、小写）。
 fn agent_stem(name: &str, process_names: &[String]) -> Option<String> {
     let lower = name.to_ascii_lowercase();
-    let stem = lower
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(&lower)
-        .trim_end_matches(".exe");
+    let stem = lower.rsplit(['/', '\\']).next().unwrap_or(&lower);
+    let stem = [".exe", ".cmd", ".bat", ".ps1", ".js", ".cjs", ".mjs"]
+        .iter()
+        .find_map(|extension| stem.strip_suffix(extension))
+        .unwrap_or(stem);
     process_names
         .iter()
         .any(|k| stem.contains(k.as_str()))
@@ -154,18 +156,73 @@ fn agent_from_command(argv: &[String], process_names: &[String]) -> Option<Strin
 
 fn command_arg_matches_agent(arg: &str, candidate: &str) -> bool {
     let normalized = arg.to_ascii_lowercase().replace('\\', "/");
-    let executable_match = normalized
+    let tokens = normalized
         .split_whitespace()
-        .map(|token| token.trim_matches(['"', '\'', '(', ')']))
-        .filter_map(|token| token.rsplit('/').next())
-        .any(|name| {
-            [".exe", ".cmd", ".bat", ".ps1"]
-                .iter()
-                .any(|extension| name == format!("{candidate}{extension}"))
-        });
-    executable_match
-        // Official npm launcher: node_modules/@openai/codex/bin/codex.js.
-        || (candidate == "codex" && normalized.contains("/@openai/codex/"))
+        .map(|token| token.trim_matches(['"', '\'', '(', ')', '[', ']', ',', ';']))
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.iter().any(|token| {
+        let name = token.rsplit('/').next().unwrap_or(token);
+        let stem = [".exe", ".cmd", ".bat", ".ps1", ".js", ".cjs", ".mjs"]
+            .iter()
+            .find_map(|extension| name.strip_suffix(extension))
+            .unwrap_or(name);
+        stem == candidate && name != candidate
+    }) {
+        return true;
+    }
+    // Official npm launcher: node_modules/@openai/codex/bin/codex.js.
+    if candidate == "codex" && tokens.iter().any(|token| token.contains("/@openai/codex/")) {
+        return true;
+    }
+    // Package managers commonly invoke a bare `codex` after `exec`; a bare
+    // argument from `git commit -m codex` must remain unrelated.
+    let launcher = tokens.iter().any(|token| {
+        matches!(
+            token.rsplit('/').next().unwrap_or(token),
+            "node"
+                | "node.exe"
+                | "npm"
+                | "npm.cmd"
+                | "npx"
+                | "npx.cmd"
+                | "pnpm"
+                | "pnpm.cmd"
+                | "yarn"
+                | "yarn.cmd"
+                | "cmd"
+                | "cmd.exe"
+                | "pwsh"
+                | "pwsh.exe"
+                | "powershell"
+                | "powershell.exe"
+        )
+    });
+    launcher && tokens.iter().any(|token| *token == candidate)
+}
+
+fn agent_session_id_from_command(argv: &[String]) -> Option<String> {
+    for (index, raw) in argv.iter().enumerate() {
+        let token = raw.trim_matches(['"', '\'', '(', ')', '[', ']', ',', ';']);
+        let lower = token.to_ascii_lowercase();
+        if let Some(value) = lower
+            .strip_prefix("--resume=")
+            .or_else(|| lower.strip_prefix("--session-id="))
+        {
+            if !value.is_empty() {
+                return Some(token[token.len() - value.len()..].to_string());
+            }
+        }
+        if matches!(lower.as_str(), "resume" | "--resume" | "--session-id") {
+            if let Some(next) = argv.get(index + 1) {
+                let value = next.trim_matches(['"', '\'', '(', ')', '[', ']', ',', ';']);
+                if !value.is_empty() && !value.starts_with('-') {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// TTL 缓存的真实扫描：一次进程表刷新 → 对本次传入的 pane 集合做匹配。
@@ -283,6 +340,38 @@ mod tests {
         assert_eq!(found[0].name, "codex");
         assert_eq!(found[0].pid, 200);
         assert_eq!(found[0].cwd.as_deref(), Some(r"C:\code\wind"));
+    }
+
+    #[test]
+    fn codex_resume_argument_is_retained_for_history_binding() {
+        let pane = ws_pane(13);
+        let procs = vec![
+            (100, None, "pwsh.exe".to_string(), vec![], None),
+            (
+                200,
+                Some(100),
+                "codex.exe".to_string(),
+                vec!["codex".into(), "resume".into(), "codex-native-1".into()],
+                Some(r"C:\code\wind".into()),
+            ),
+        ];
+        let names = super::super::discover::known_agent_names_runtime(&[]);
+        let found = match_agent_panes_with_commands(&[(pane, 100)], &procs, &names);
+        assert_eq!(found[0].session_id.as_deref(), Some("codex-native-1"));
+    }
+
+    #[test]
+    fn agent_nested_behind_common_launchers_is_still_matched() {
+        let pane = ws_pane(14);
+        let procs = vec![
+            (100, None, "pwsh.exe".to_string()),
+            (110, Some(100), "cmd.exe".to_string()),
+            (120, Some(110), "node.exe".to_string()),
+            (130, Some(120), "npm.cmd".to_string()),
+            (140, Some(130), "codex.cmd".to_string()),
+        ];
+        let found = match_agent_panes(&[(pane, 100)], &procs);
+        assert_eq!(found[0].name, "codex");
     }
 
     #[test]

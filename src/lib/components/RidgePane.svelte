@@ -2326,7 +2326,7 @@ function captureBackspace(node: HTMLElement) {
 	bind:this={container}
 	class="rg-pane-container h-full w-full min-h-0 min-w-0 outline-none relative"
 	class:bell-flash={bellFlash}
-	style="background: var(--rg-term-bg); contain: strict;"
+	style="background: var(--rg-term-bg); contain: strict; z-index: 1;"
 	role="application"
 	aria-label={$t('workspace.terminalAriaLabel')}
 	tabindex="-1"
@@ -2592,7 +2592,7 @@ function captureBackspace(node: HTMLElement) {
 		opacity: 0.85;
 		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 		transition: opacity 120ms ease-out, transform 120ms ease-out, background 120ms ease-out;
-		z-index: 21;
+		z-index: 90;
 	}
 	.rg-jump-bottom:hover {
 		opacity: 1;

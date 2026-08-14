@@ -7,7 +7,9 @@ import {
   agentPaneStatus,
   agentStatusLabel,
   aggregateAgentCardStatus,
+  agentIdentityAliases,
   buildAgentHistoryGroups,
+  historyReplyMatchesProfile,
   latestReplyForProfile,
   normalizeAgentIdentity,
   reorderAgentGroups,
@@ -18,7 +20,17 @@ import {
 describe('agent commune view model', () => {
   it('normalizes identity without using cwd', () => {
     expect(normalizeAgentIdentity('  Claude ')).toBe('claude');
+    expect(normalizeAgentIdentity('auto:codex-cli:1234')).toBe('codex');
     expect(normalizeAgentIdentity('')).toBe('unknown');
+  });
+
+  it('shares aliases across native process labels and JSONL labels', () => {
+    expect(agentIdentityAliases('C:\\node_modules\\@openai\\codex\\bin\\codex.js'))
+      .toEqual(expect.arrayContaining(['codex', 'codex.js']));
+    expect(historyReplyMatchesProfile(
+      { agent: 'Codex', sessionId: 'codex-native', timestamp: 3, cwd: 'C:/repo' },
+      { id: 'kernel:pane', name: 'Codex working', executable: 'codex', sessionId: 'codex-native', cwd: 'C:/other' },
+    )).toBe(true);
   });
 
   it('groups sessions from different cwds into one agent card', () => {
@@ -73,7 +85,7 @@ describe('agent commune view model', () => {
     // must not drift into a yellow/silent idle rail on mobile.
     expect(agentCardStatus({ status: 'Suspended', activity: 'idle' }, false)).toBe('stopped');
     expect(agentCardStatus({ status: 'Disappeared', activity: 'idle' }, false)).toBe('stopped');
-    expect(agentStatusLabel('stopped')).toBe('Stopped');
+    expect(agentStatusLabel('stopped')).toBe('Offline');
     expect(agentPaneStatus({ status: 'Suspended', activity: 'idle' }, false)).toBe('stopped');
     expect(agentPaneStatus({ status: 'Idle', activity: 'idle' }, false)).toBe('idle');
     expect(aggregateAgentCardStatus(['completed', 'working', 'waiting'])).toBe('waiting');

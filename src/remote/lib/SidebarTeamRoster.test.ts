@@ -32,9 +32,12 @@ describe('remote Agent drawer alignment contract', () => {
     expect(source).toContain('<span class="name" title={m.id}>{title}</span>');
   });
 
-  it('keeps live roster polling short while history remains five-minute cached', () => {
-    expect(source).toContain('const ROSTER_POLL_INTERVAL_MS = 3_000;');
-    expect(source).toContain('setInterval(() => void startRefresh(), ROSTER_POLL_INTERVAL_MS)');
+  it('refreshes live roster from transport events while history remains cached', () => {
+    expect(source).toContain('function scheduleLiveRefresh(): void');
+    expect(source).toContain('const offMessage = ws.onMessage');
+    expect(source).toContain('const offRaw = ws.onRawBytes');
+    expect(source).not.toContain('ROSTER_POLL_INTERVAL_MS');
+    expect(source).not.toContain('setInterval(() => void startRefresh()');
   });
 
   it('raises pane attention on completion/approval edges and projects sticky card state', () => {

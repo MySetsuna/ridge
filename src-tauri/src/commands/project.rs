@@ -865,9 +865,14 @@ fn read_agent_recent_replies_sync(
         let Ok(content) = read_jsonl_window(&path) else {
             continue;
         };
-        let fallback_session = (kind == AgentHistoryFileKind::CursorTranscript)
-            .then(|| cursor_session_id(&path))
-            .flatten();
+        let fallback_session = match kind {
+            AgentHistoryFileKind::CursorTranscript => cursor_session_id(&path),
+            AgentHistoryFileKind::NativeJsonl => path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.trim().is_empty())
+                .map(str::to_string),
+        };
         for session in
             parse_agent_jsonl_with_fallback(agent, &content, modified, fallback_session.as_deref())
         {
@@ -1296,17 +1301,27 @@ fn parse_agent_reply(
         return None;
     }
     let text = extract_message_text(message.get("content"))?;
+    let payload = value.get("payload");
     let line_project = value
         .get("cwd")
         .or_else(|| value.get("project"))
+        .or_else(|| payload.and_then(|item| item.get("cwd")))
+        .or_else(|| payload.and_then(|item| item.get("project")))
         .and_then(|item| item.as_str())
         .unwrap_or(project)
         .to_string();
     let line_session = value
         .get("sessionId")
         .and_then(|item| item.as_str())
+        .or_else(|| value.get("session_id").and_then(|item| item.as_str()))
+        .or_else(|| {
+            payload
+                .and_then(|item| item.get("sessionId"))
+                .and_then(|item| item.as_str())
+        })
         .or(session_id)?
         .to_string();
+    let line_timestamp = json_timestamp_ms(value).or_else(|| payload.and_then(json_timestamp_ms));
     let line_title = value
         .get("title")
         .or_else(|| value.get("sessionTitle"))
@@ -1350,7 +1365,7 @@ fn parse_agent_reply(
         agent: agent.to_string(),
         title,
         text,
-        timestamp: json_timestamp_ms(value).unwrap_or(fallback_timestamp),
+        timestamp: line_timestamp.unwrap_or(fallback_timestamp),
         cwd: line_project,
         session_id: line_session.clone(),
         resume,
@@ -1380,9 +1395,15 @@ fn parse_agent_jsonl_with_fallback(
             continue;
         };
         if let Some((next_project, next_session, next_title)) = agent_session_meta(&value) {
-            project = next_project;
-            session_id = next_session;
-            session_title = next_title;
+            if !next_project.trim().is_empty() {
+                project = next_project;
+            }
+            if next_session.is_some() {
+                session_id = next_session;
+            }
+            if !next_title.trim().is_empty() {
+                session_title = next_title;
+            }
             continue;
         }
         let Some(message) = assistant_message(&value) else {
@@ -1583,6 +1604,20 @@ mod tests {
             replies[0].resume.as_ref().map(|r| r.argv.clone()),
             Some(vec!["resume".into(), "codex-1".into()])
         );
+    }
+
+    #[test]
+    fn codex_response_item_without_metadata_uses_file_session_fallback() {
+        let replies = parse_agent_jsonl_with_fallback(
+            "Codex",
+            r#"{"timestamp":"2026-08-14T01:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","cwd":"D:\\repo","content":[{"type":"output_text","text":"fallback answer"}]}}"#,
+            0,
+            Some("session-file-stem"),
+        );
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].session_id, "session-file-stem");
+        assert_eq!(replies[0].cwd, r"D:\repo");
+        assert_eq!(replies[0].text, "fallback answer");
     }
 
     #[test]
