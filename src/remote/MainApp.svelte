@@ -625,10 +625,10 @@
 
   function handleRefresh() {
     if (ui.activePaneId && canvasRef) {
-      // Pane box is the sole geometry authority. Let TerminalCanvas measure
-      // the settled box and issue the deduped claim; do not reuse a stale grid
-      // snapshot from before orientation/safe-area/keyboard layout settled.
-      canvasRef.fitPaneNow();
+      // Pane box is the sole geometry authority. Measure the settled box and
+      // force a host remount/redraw at that grid, even when rows×cols match
+      // the last claim (same-size fit used to be a silent no-op).
+      canvasRef.claimPaneSize();
     }
     ws.listPanes();
     refreshWorkspaces();

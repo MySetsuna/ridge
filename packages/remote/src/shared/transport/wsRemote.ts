@@ -1452,7 +1452,7 @@ export class RemoteConnection implements RemoteLink {
    *  Each call increments a monotonic sequence counter so the backend can
    *  ignore stale requests when multiple remotes contend for the size lock. */
   refreshPane(pane: PaneRef, rows: number, cols: number, _pixelWidth: number, _pixelHeight: number) {
-    if (this.paneScheduler.scheduleResize(pane, rows, cols)) this._refreshSeq++;
+    if (this.paneScheduler.scheduleResize(pane, rows, cols, undefined, { force: true })) this._refreshSeq++;
   }
   /** Implicit "I just interacted / my viewport changed" size claim. Same host
    *  effect as refreshPane (resizes the real PTY + canonical parser and
@@ -1462,7 +1462,7 @@ export class RemoteConnection implements RemoteLink {
    *  Shares the monotonic seq counter so the host can drop stale claims. */
   claimPane(pane: PaneRef, rows: number, cols: number, _pixelWidth: number, _pixelHeight: number) {
     this.paneScheduler.resume(pane);
-    if (this.paneScheduler.scheduleResize(pane, rows, cols)) this._refreshSeq++;
+    if (this.paneScheduler.scheduleResize(pane, rows, cols, undefined, { force: true })) this._refreshSeq++;
   }
   lastRefreshSeq(): number { return this._refreshSeq; }
 

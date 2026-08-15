@@ -981,7 +981,7 @@ export class CloudRemoteConnection implements RemoteLink {
     if (!pane.paneId || rows <= 0 || cols <= 0) return;
     const key = paneRefKey(pane);
     if (this.disposed || this.closingPaneKeys.has(key) || this.deadPaneKeys.has(key)) return;
-    if (this.paneScheduler.scheduleResize(pane, rows, cols)) this._refreshSeq++;
+    if (this.paneScheduler.scheduleResize(pane, rows, cols, undefined, { force: true })) this._refreshSeq++;
   }
   lastRefreshSeq(): number {
     return this._refreshSeq;

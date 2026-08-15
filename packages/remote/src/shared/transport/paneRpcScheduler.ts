@@ -262,8 +262,9 @@ export class PaneRpcScheduler {
     rows: number,
     cols: number,
     params?: Readonly<Record<string, unknown>>,
+    options?: { force?: boolean },
   ): boolean {
-    return this.enqueueResize(pane, rows, cols, undefined, params);
+    return this.enqueueResize(pane, rows, cols, undefined, params, options?.force === true);
   }
 
   /** Queue a resize and settle only after the latest coalesced value applies. */
@@ -272,9 +273,10 @@ export class PaneRpcScheduler {
     rows: number,
     cols: number,
     params?: Readonly<Record<string, unknown>>,
+    options?: { force?: boolean },
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.enqueueResize(pane, rows, cols, { resolve, reject }, params);
+      this.enqueueResize(pane, rows, cols, { resolve, reject }, params, options?.force === true);
     });
   }
 
@@ -284,6 +286,7 @@ export class PaneRpcScheduler {
     cols: number,
     waiter?: ResizeWaiter,
     params?: Readonly<Record<string, unknown>>,
+    force = false,
   ): boolean {
     this.counters.resizeCalls += 1;
     const normalized = { rows: Math.floor(rows), cols: Math.floor(cols) };
@@ -315,18 +318,19 @@ export class PaneRpcScheduler {
     const next = { ...normalized, params };
     const signature = resizeSignature(next);
     if (waiter) lane.waiters.push(waiter);
-    if (
-      resizeSignature(lane.latest) === signature ||
-      lane.activeSignature === signature ||
-      (!lane.inFlight && !lane.latest && lane.lastAppliedSignature === signature)
-    ) {
+    const alreadyQueued = resizeSignature(lane.latest) === signature;
+    const sameApplied = !lane.inFlight && !lane.latest && lane.lastAppliedSignature === signature;
+    // Automatic fits still coalesce. An explicit refresh/claim must re-hit the
+    // host even when rows×cols match the last applied grid so the PTY remounts.
+    if (!force && (alreadyQueued || lane.activeSignature === signature || sameApplied)) {
       this.counters.resizeSuppressed += 1;
-      if (!lane.inFlight && !lane.latest && lane.lastAppliedSignature === signature) {
+      if (sameApplied) {
         const waiters = lane.waiters.splice(0);
         for (const current of waiters) current.resolve();
       }
       return false;
     }
+    if (force && alreadyQueued) return true;
     lane.latest = next;
     this.scheduleResizeDrain(key, lane, this.resizeDebounceMs);
     return true;

@@ -77,6 +77,8 @@ import {
 	needsInitialPaneFit,
 	type InitialFitMeasurement,
 } from './initialPaneFit';
+import { shouldReplayHostCache, shouldWipeHostOnPaneRemount } from './hostRemountPolicy';
+import { shouldForwardPointerMotion, sgrReleaseButton } from './mouseForwardPolicy';
 
 function isMacPlatform(): boolean {
 	return typeof navigator !== 'undefined'
@@ -1777,7 +1779,7 @@ export class TerminalManager {
 		hoverCell: { row: number; col: number } | null,
 		modes: number,
 	): boolean {
-		if ((modes & 0x6) === 0 || !hoverCell || ((modes & 0x4) === 0 && pending.buttons === 0)) return false;
+		if (!shouldForwardPointerMotion(modes, pending.buttons) || !hoverCell) return false;
 		const isMac = isMacPlatform();
 		const last = entry.lastMouseSent;
 		const buttons = pending.buttons;
@@ -2068,7 +2070,7 @@ export class TerminalManager {
 				const cell = this.cellFromEvent(paneId, event);
 				if (cell) {
 					const mac = isMacPlatform();
-					const bytes = entry.kernel.encodeMouse(cell.row, cell.col, 3, 1, event.shiftKey, event.ctrlKey || (mac && event.metaKey), event.altKey);
+					const bytes = entry.kernel.encodeMouse(cell.row, cell.col, sgrReleaseButton(event.button, entry.lastMouseSent?.buttons ?? 0), 1, event.shiftKey, event.ctrlKey || (mac && event.metaKey), event.altKey);
 					if (bytes.length > 0) entry.dataHandler?.(bytes);
 				}
 			}
@@ -2697,8 +2699,9 @@ export class TerminalManager {
 	}
 
 	private _releaseParkedCanvas(paneId: string, entry: PaneEntry, retainRenderer: boolean): void {
-		if (this._isHostMode(entry)) this._invalidateHost();
-		else {
+		if (this._isHostMode(entry)) {
+			if (shouldWipeHostOnPaneRemount(retainRenderer)) this._invalidateHost();
+		} else {
 			try { entry.canvas.remove(); } catch { /* already detached */ }
 		}
 		if (retainRenderer) return;
@@ -2812,6 +2815,7 @@ export class TerminalManager {
 			return;
 		}
 		const { handle, dpr, canvas, hostHandle, usingWorker, useHost } = resources;
+		const wipeHost = useHost && !!hostHandle && shouldWipeHostOnPaneRemount(entry.rendererRetained);
 		const linkHintEl = createLinkHintOverlay(container);
 		const [cellW, cellH] = handle
 			? (handle.configure(this.opts.fontFamily, this.opts.fontSizePx, dpr) as [number, number] | Float32Array)
@@ -2823,12 +2827,13 @@ export class TerminalManager {
 			cellW: quantizeCellSize(Number(cellW), dpr), cellH: quantizeCellSize(Number(cellH), dpr),
 			lastConfiguredDpr: dpr, lastReportedRows: -1, lastReportedCols: -1, lastAppliedPaddingPx: undefined,
 		});
-		if (useHost && hostHandle) this._invalidateHost();
+		if (wipeHost) this._invalidateHost();
 		if (usingWorker) this._bindUnparkWorker(paneId, canvas, dpr);
 		this._bindUnparkListeners(paneId, container, entry);
 		entry.parked = false;
 		entry.parkReason = null;
 		entry.lastForegroundAt = Date.now();
+		entry.wasHiddenLastTick = true;
 		this._scheduleInitialFit(entry);
 		this.startRafLoop();
 	}
@@ -4865,7 +4870,7 @@ export class TerminalManager {
 			clearTimeout(entry.pendingFitTimer);
 			entry.pendingFitTimer = null;
 		}
-		void this.fitPane(entry, true);
+		void this.fitPane(entry, true, true);
 		// iter-60 G2 self-heal: a claim is only "done" when the broadcast
 		// Resize delta round-trips into THIS kernel. If after 1s the kernel
 		// grid still disagrees with the last claimed target (delta dropped /
@@ -4884,7 +4889,7 @@ export class TerminalManager {
 				`${e.lastReportedCols}×${e.lastReportedRows}`,
 				'; retrying once',
 			);
-			void this.fitPane(e, true);
+			void this.fitPane(e, true, true);
 		}, 1000);
 	}
 
@@ -5171,13 +5176,14 @@ export class TerminalManager {
 		this.wake();
 	}
 
-	private async fitPane(entry: PaneEntry, claim = false): Promise<void> {
+	private async fitPane(entry: PaneEntry, claim = false, force = false): Promise<void> {
 		const measured = this._measureFit(entry);
 		if (!measured || measured.wCss <= 0 || measured.hCss <= 0 || entry.cellW <= 0 || entry.cellH <= 0) return;
 		const dpr = window.devicePixelRatio || 1;
 		this._syncFitDpr(entry, dpr);
 		const grid = this._computeFitGrid(entry, claim, dpr, measured);
-		if (!grid || !this._fitGridChanged(entry, grid)) return;
+		if (!grid) return;
+		if (!this._fitGridChanged(entry, grid) && !force) return;
 		this._resizeWorkerMirror(entry, grid);
 		await this._applyFitResize(entry, grid);
 	}
@@ -5295,12 +5301,13 @@ export class TerminalManager {
 		catch { return true; }
 	}
 
-	private _paintFrameEntry(entry: PaneEntry, state: RafFrameState, dirty: boolean): void {
+	private _paintFrameEntry(entry: PaneEntry, state: RafFrameState, dirty: boolean, becameVisible: boolean): void {
 		const isHost = this._isHostMode(entry);
 		const handle = entry.handle as unknown as { recordCachedOnly?: () => boolean } | null;
 		try {
 			let usedCache = false;
-			if (isHost && !dirty && typeof handle?.recordCachedOnly === 'function') {
+			const replayCache = shouldReplayHostCache(dirty, state.surfaceJustWiped, becameVisible);
+			if (isHost && replayCache && typeof handle?.recordCachedOnly === 'function') {
 				try { usedCache = handle.recordCachedOnly(); } catch { usedCache = false; }
 			}
 			if (!usedCache) entry.handle?.render(entry.kernel);
@@ -5324,6 +5331,7 @@ export class TerminalManager {
 			if (!entry.parked && this._isContainerHidden(entry)) entry.wasHiddenLastTick = true;
 			return;
 		}
+		const becameVisible = !!entry.wasHiddenLastTick;
 		if (entry.wasHiddenLastTick) {
 			entry.wasHiddenLastTick = false;
 			this._recomputeViewport(entry);
@@ -5332,9 +5340,9 @@ export class TerminalManager {
 		if (!this._renderEntryAfterSync(entry, state)) return;
 		const dirty = this._entryDirty(entry, state);
 		const shouldRender = this._isHostMode(entry)
-			? state.activeHost !== null && (dirty || state.anyDirty || state.surfaceJustWiped)
+			? state.activeHost !== null && (dirty || state.anyDirty || state.surfaceJustWiped || becameVisible)
 			: dirty;
-		if (shouldRender && (!this._isHostMode(entry) || this._ensureHostFrame(state))) this._paintFrameEntry(entry, state, dirty);
+		if (shouldRender && (!this._isHostMode(entry) || this._ensureHostFrame(state))) this._paintFrameEntry(entry, state, dirty, becameVisible);
 		this._updateBlinkDeadline(entry, state);
 	}
 

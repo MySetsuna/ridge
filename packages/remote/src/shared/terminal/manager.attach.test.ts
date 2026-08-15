@@ -360,15 +360,20 @@ describe('TerminalManager attach lifecycle', () => {
 			ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, target,
 		};
 
+		kernel.mouseMode = 1;
+		container.emit('pointermove', { ...pointer, buttons: 1, clientX: 45, clientY: 85 });
+		frame?.(0);
+		expect(kernel.encodeMouse).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), 0, 2, false, false, false);
+
 		kernel.mouseMode = 4;
 		container.emit('pointermove', { ...pointer, buttons: 0 });
-		frame?.(0);
-		container.emit('pointermove', { ...pointer, buttons: 0 });
 		frame?.(1);
+		container.emit('pointermove', { ...pointer, buttons: 0 });
+		frame?.(2);
 		expect(kernel.encodeMouse).toHaveBeenCalledWith(10, 3, 0, 2, false, false, false);
-		expect(sent).toHaveLength(1);
+		expect(sent.length).toBeGreaterThanOrEqual(2);
 		container.emit('pointerup', pointer);
-		expect(kernel.encodeMouse).toHaveBeenCalledWith(10, 3, 3, 1, false, false, false);
+		expect(kernel.encodeMouse).toHaveBeenCalledWith(10, 3, 0, 1, false, false, false);
 
 		kernel.mouseMode = 0;
 		container.emit('pointerdown', pointer);

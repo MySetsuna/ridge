@@ -630,6 +630,16 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(manager.getMousePosition('missing')).toEqual({ row: 0, col: 0 });
 	});
 
+	it('does not wipe the shared host when remounting a retained pane', () => {
+		const { manager, fixture, internal } = makeManager();
+		const host = { resize: vi.fn(), invalidate: vi.fn() };
+		internal.globalHost = { canvas: fixture.pane.canvas, host };
+		manager.park(PANE, 'component');
+		expect(manager.isParked(PANE)).toBe(true);
+		expect(fixture.handle.free).not.toHaveBeenCalled();
+		expect(host.invalidate).not.toHaveBeenCalled();
+	});
+
 	it('parks and reclaims a pane without reviving renderer state', () => {
 		const { manager, fixture } = makeManager();
 		manager.park(PANE, 'memory');
@@ -1299,3 +1309,31 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 	}
 	});
 });
+
+describe('TerminalManager explicit claim remount', () => {
+	it('claimPaneSize remounts the host at the measured pane grid even when last claim matches', async () => {
+		const { manager, fixture } = makeManager();
+		internalShared(manager);
+		fixture.setRows(20);
+		fixture.setCols(80);
+		fixture.pane.lastReportedRows = 20;
+		fixture.pane.lastReportedCols = 80;
+		const resizeHandler = vi.fn().mockResolvedValue(undefined);
+		manager.onResize(PANE, resizeHandler);
+
+		manager.fitPaneNow(PANE);
+		await Promise.resolve();
+		expect(resizeHandler).not.toHaveBeenCalled();
+
+		manager.claimPaneSize(PANE);
+		await Promise.resolve();
+		expect(resizeHandler).toHaveBeenCalledTimes(1);
+		expect(resizeHandler).toHaveBeenCalledWith(20, 80, false, false);
+		expect(resizeHandler.mock.calls[0][0]).not.toBe(24);
+		expect(fixture.handle.invalidateAll).toHaveBeenCalled();
+	});
+});
+
+function internalShared(manager: TerminalManager): void {
+	(manager as unknown as { _sharedRemoteMode: boolean })._sharedRemoteMode = true;
+}
