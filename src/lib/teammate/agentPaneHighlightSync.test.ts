@@ -16,8 +16,8 @@ function profile(partial: Partial<TeammateProfile> & Pick<TeammateProfile, 'id' 
     name: partial.name ?? partial.id,
     role: 'Worker',
     isAuto: true,
-    activity: 'idle',
     recentOutput: '',
+    activity: partial.status === 'Working' ? 'working' : 'idle',
     ...partial,
   };
 }
