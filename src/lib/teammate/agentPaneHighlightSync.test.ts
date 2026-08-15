@@ -9,6 +9,18 @@ import {
   resetAgentPaneHighlightSync,
   syncAgentPaneHighlight,
 } from './agentPaneHighlightSync';
+import type { TeammateProfile } from './teammateModel';
+
+function profile(partial: Partial<TeammateProfile> & Pick<TeammateProfile, 'id' | 'paneId' | 'status' | 'outputSeq'>): TeammateProfile {
+  return {
+    name: partial.name ?? partial.id,
+    role: 'Worker',
+    isAuto: true,
+    activity: 'idle',
+    recentOutput: '',
+    ...partial,
+  };
+}
 
 afterEach(() => {
   resetAgentPaneHighlightSync();
@@ -47,7 +59,7 @@ describe('agent pane highlight data plane', () => {
     syncAgentPaneHighlight(
       [{
         workspaceId: 'ws-1',
-        profile: { id: 'agent-1', name: 'Claude', paneId: 'pane-a', status: 'Working', outputSeq: 2 },
+        profile: profile({ id: 'agent-1', name: 'Claude', paneId: 'pane-a', status: 'Working', outputSeq: 2 }),
       }],
       () => false,
     );
@@ -57,7 +69,7 @@ describe('agent pane highlight data plane', () => {
     syncAgentPaneHighlight(
       [{
         workspaceId: 'ws-1',
-        profile: { id: 'agent-1', name: 'Claude', paneId: 'pane-a', status: 'Idle', outputSeq: 3 },
+        profile: profile({ id: 'agent-1', name: 'Claude', paneId: 'pane-a', status: 'Idle', outputSeq: 3 }),
       }],
       () => false,
     );
@@ -66,7 +78,7 @@ describe('agent pane highlight data plane', () => {
     syncAgentPaneHighlight(
       [{
         workspaceId: 'ws-1',
-        profile: { id: 'agent-1', name: 'Claude', paneId: 'pane-a', status: 'Idle', outputSeq: 3 },
+        profile: profile({ id: 'agent-1', name: 'Claude', paneId: 'pane-a', status: 'Idle', outputSeq: 3 }),
       }],
       () => false,
     );

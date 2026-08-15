@@ -19,7 +19,7 @@ import {
 
 export type HighlightMember = {
   workspaceId: string;
-  profile: Pick<TeammateProfile, 'paneId' | 'status' | 'outputSeq' | 'id' | 'name'>;
+  profile: TeammateProfile;
 };
 
 const observedSignals = new Map<string, AgentPaneAttention | null>();
