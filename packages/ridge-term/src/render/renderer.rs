@@ -1689,4 +1689,38 @@ mod tests {
         assert!(!r.tick(&term, None, 0.0));
         assert_eq!(r.backend().clears, clears_seed);
     }
+
+    /// Split remounts a sibling; that must not treat the already-painted
+    /// pane as a whole-viewport clear when its cell hashes are unchanged.
+    #[test]
+    fn sibling_split_does_not_full_clear_stable_pane() {
+        let rows = 6usize;
+        let cols = 16usize;
+        let mut term_a = Terminal::new(rows, cols, 0);
+        term_a.feed(b"\x1b[?25l");
+        feed_ratatui_frame(&mut term_a, "A");
+
+        let mut pane_a = Renderer::new(RecordingBackend::default(), metrics(), Theme::default_dark());
+        assert!(pane_a.tick(&term_a, None, 0.0), "pane A seed frame");
+        let clears_a = pane_a.backend().clears;
+        let frames_a = pane_a.backend().frames;
+        assert!(clears_a >= 1);
+
+        let mut term_b = Terminal::new(rows, cols, 0);
+        term_b.feed(b"\x1b[?25l");
+        feed_ratatui_frame(&mut term_b, "B");
+        let mut pane_b = Renderer::new(RecordingBackend::default(), metrics(), Theme::default_dark());
+        assert!(pane_b.tick(&term_b, None, 0.0), "new split pane paints");
+        assert!(pane_b.backend().clears >= 1);
+
+        feed_ratatui_frame(&mut term_a, "A");
+        let drew_a = pane_a.tick(&term_a, None, 0.0);
+        assert!(!drew_a, "stable sibling must not repaint after split");
+        assert_eq!(
+            pane_a.backend().clears, clears_a,
+            "split must not whole-viewport clear the previous pane when hashes are stable"
+        );
+        assert_eq!(pane_a.backend().frames, frames_a);
+        assert!(!pane_a.is_dirty(&term_a, None, 0.0));
+    }
 }
