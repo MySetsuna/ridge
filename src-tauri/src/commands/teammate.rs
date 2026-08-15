@@ -549,11 +549,26 @@ fn inject_identity_fields(
 
 /// 近期回复的取样字节数（够覆盖十来行，远小于一次 scrollback tail 的 256 KiB）。
 const RECENT_TAIL_BYTES: usize = 6 * 1024;
-/// 输出流水号多久没动就算「空闲」。前端由 PTY 输出事件触发快照，超时后自清醒。
+/// 输出流水号/PTY 标题多久没动就算「空闲」。前端由 PTY 输出事件触发快照，超时后自清醒。
 const ACTIVE_WINDOW_MS: u128 = 12_000;
 
+/// seq 或 OSC 标题变化都算 busy；两者都稳过窗口才 idle。进程仍活不算 working。
+pub(crate) fn roster_activity(
+    disappeared: bool,
+    signal_changed: bool,
+    since_stable_ms: u128,
+) -> &'static str {
+    if disappeared {
+        "idle"
+    } else if signal_changed || since_stable_ms < ACTIVE_WINDOW_MS {
+        "working"
+    } else {
+        "idle"
+    }
+}
+
 /// iter-62 —— 给 roster 补运行时字段，让「监控」不再只有一个静态徽标：
-/// - `activity`：`working` / `idle`，按该 pane 输出流水号是否还在增长判定；
+/// - `activity`：`working` / `idle`，输出流水号或 OSC 标题仍在变则 busy；
 /// - `outputSeq`：流水号本身（客户端可自行做更细的活跃度展示）；
 /// - `recentOutput`：scrollback 末尾剥 ANSI 后的最后几行（「最近回复」直接可见，
 ///   免去每个成员一次额外 IPC —— 手机端尤其吃这份省）。
@@ -561,8 +576,8 @@ fn inject_roster_runtime(topology: &mut Value, state: &AppState, wid: Uuid) {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::Instant;
-    /// pane → (上次见到的流水号, 该流水号首次出现的时刻)。进程内，无需持久化。
-    static SEEN: Mutex<Option<HashMap<Uuid, (u64, Instant)>>> = Mutex::new(None);
+    /// pane → (流水号, OSC 标题, 二者同时稳定的起始时刻)。进程内，无需持久化。
+    static SEEN: Mutex<Option<HashMap<Uuid, (u64, String, Instant)>>> = Mutex::new(None);
 
     let Some(roster) = topology.get_mut("roster").and_then(|r| r.as_array_mut()) else {
         return;
@@ -581,7 +596,7 @@ fn update_runtime_entry(
     entry: &mut Value,
     state: &AppState,
     workspace_id: Uuid,
-    seen: &mut std::collections::HashMap<Uuid, (u64, std::time::Instant)>,
+    seen: &mut std::collections::HashMap<Uuid, (u64, String, std::time::Instant)>,
 ) {
     let Some(pane) = entry
         .get("paneId")
@@ -590,13 +605,20 @@ fn update_runtime_entry(
     else {
         return;
     };
+    let title = entry
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let chunk = state.get_pty_scrollback_tail(workspace_id, pane, RECENT_TAIL_BYTES);
     let now = std::time::Instant::now();
-    let since = match seen.get(&pane) {
-        Some((sequence, at)) if *sequence == chunk.head_seq => at.elapsed().as_millis(),
+    let (since, changed) = match seen.get(&pane) {
+        Some((sequence, prev_title, at)) if *sequence == chunk.head_seq && prev_title == &title => {
+            (at.elapsed().as_millis(), false)
+        }
         _ => {
-            seen.insert(pane, (chunk.head_seq, now));
-            0
+            seen.insert(pane, (chunk.head_seq, title, now));
+            (0, true)
         }
     };
     let Some(object) = entry.as_object_mut() else {
@@ -608,13 +630,7 @@ fn update_runtime_entry(
         == Some("Disappeared");
     object.insert(
         "activity".into(),
-        json!(if disappeared {
-            "idle"
-        } else if since < ACTIVE_WINDOW_MS {
-            "working"
-        } else {
-            "idle"
-        }),
+        json!(roster_activity(disappeared, changed, since)),
     );
     object.insert("outputSeq".into(), json!(chunk.head_seq));
     object.insert("recentOutput".into(), json!(tail_lines(&chunk.bytes, 6)));
@@ -1153,6 +1169,18 @@ mod tests {
     }
 
     #[test]
+    fn roster_activity_needs_title_and_seq_stable() {
+        assert_eq!(super::roster_activity(true, true, 0), "idle");
+        // Title or seq still changing (signal_changed) ⇒ working.
+        assert_eq!(super::roster_activity(false, true, 12_000), "working");
+        assert_eq!(super::roster_activity(false, true, 0), "working");
+        // Frozen title + frozen seq, still inside the window ⇒ working.
+        assert_eq!(super::roster_activity(false, false, 0), "working");
+        assert_eq!(super::roster_activity(false, false, 11_999), "working");
+        // Frozen title + idle seq past the window ⇒ idle.
+        assert_eq!(super::roster_activity(false, false, 12_000), "idle");
+    }
+
     #[test]
     fn classify_keeps_offline_row_when_process_exits_and_pane_lives() {
         let pane = Uuid::new_v4();

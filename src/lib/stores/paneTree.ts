@@ -1590,7 +1590,7 @@ export async function splitPane(
  * and assert on the per-pane call without going through the full
  * `splitPane` IPC dance.
  */
-function scheduleForceFitAfterSplit(sourcePaneId: string, newPaneId: string): void {
+export function scheduleForceFitAfterSplit(sourcePaneId: string, newPaneId: string): void {
   if (typeof requestAnimationFrame === 'undefined') return;
   const fitBoth = () => {
     const mgr = TerminalManager.instance();

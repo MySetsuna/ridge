@@ -1025,6 +1025,95 @@ pub(crate) fn remote_resume_agent_pane(
     )
 }
 
+/// Desktop history resume: split + structured Agent PTY before RidgePane
+/// mounts, so `create_pane` sees an existing PTY and skips the default shell.
+#[tauri::command]
+pub async fn resume_agent_session(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    agent: String,
+    session_id: String,
+    cwd: String,
+    yolo: Option<bool>,
+    source_pane_id: Option<String>,
+    overrides: Option<Vec<crate::teammate::agent_catalog::AgentProfile>>,
+) -> Result<serde_json::Value, String> {
+    let st = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        desktop_resume_agent_pane(
+            &st,
+            workspace_id,
+            source_pane_id,
+            agent,
+            session_id,
+            cwd,
+            yolo.unwrap_or(false),
+            overrides,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+pub(crate) fn desktop_resume_agent_pane(
+    state: &AppState,
+    workspace_id: String,
+    source_pane_id: Option<String>,
+    agent: String,
+    session_id: String,
+    cwd: String,
+    yolo: bool,
+    overrides: Option<Vec<crate::teammate::agent_catalog::AgentProfile>>,
+) -> Result<serde_json::Value, String> {
+    let ws_id = Uuid::parse_str(&workspace_id).map_err(|e| format!("invalid workspace id: {e}"))?;
+    if !state.workspaces.read().contains_key(&ws_id) {
+        return Err("workspace not found".to_string());
+    }
+    let source = match source_pane_id.filter(|id| !id.is_empty()) {
+        Some(id) => id,
+        None => {
+            let map = state.workspaces.read();
+            let ws = map
+                .get(&ws_id)
+                .ok_or_else(|| "workspace not found".to_string())?;
+            ws.pane_tree
+                .get_all_leaves()
+                .first()
+                .copied()
+                .ok_or_else(|| "no pane to split".to_string())?
+                .to_string()
+        }
+    };
+    let plan =
+        crate::commands::project::plan_agent_resume(agent, session_id, cwd, yolo, overrides)?;
+    let cwd_path = std::path::PathBuf::from(&plan.cwd);
+    terminal::validate_agent_launch(&plan.executable, &cwd_path)?;
+    let split = split_pane_inner(state, source, "horizontal".into()).map_err(|e| e.to_string())?;
+    let new_pane = parse_pane_id(&split.pane_id).map_err(|e| e.to_string())?;
+    let target_ws = workspace_containing_pane(state, new_pane)
+        .ok_or_else(|| "resumed pane is not in a workspace".to_string())?;
+    if let Err(error) = terminal::install_agent_pty(
+        state,
+        target_ws,
+        new_pane,
+        plan.executable,
+        plan.argv,
+        cwd_path,
+    ) {
+        rollback_resume_pane(state, target_ws, new_pane);
+        return Err(error);
+    }
+    Ok(serde_json::json!({ "paneId": split.pane_id }))
+}
+
+fn rollback_resume_pane(state: &AppState, ws_id: Uuid, pane_id: Uuid) {
+    terminal::teardown_pane_pty_if_present(state, ws_id, pane_id);
+    let mut map = state.workspaces.write();
+    if let Some(ws) = map.get_mut(&ws_id) {
+        let _ = ws.pane_tree.close(pane_id);
+    }
+}
+
 fn same_canonical_path(left: &std::path::Path, right: &std::path::Path) -> bool {
     let left = left.to_string_lossy();
     let right = right.to_string_lossy();
@@ -1320,5 +1409,23 @@ mod remote_resume_path_tests {
             Path::new("/repo"),
             Path::new("/repo-other")
         ));
+    }
+
+    #[test]
+    fn desktop_resume_rejects_empty_executable_before_split() {
+        let planned_exe = "";
+        let cwd = std::env::temp_dir();
+        assert!(crate::commands::terminal::validate_agent_launch(planned_exe, &cwd).is_err());
+        let planned = crate::commands::project::plan_agent_resume(
+            "Codex".into(),
+            "sess-1".into(),
+            cwd.to_string_lossy().into_owned(),
+            false,
+            Some(Vec::new()),
+        )
+        .expect("codex profile");
+        assert_eq!(planned.session_id, "sess-1");
+        assert!(planned.argv.iter().any(|part| part == "sess-1"));
+        assert!(crate::commands::terminal::validate_agent_launch(&planned.executable, &cwd).is_ok());
     }
 }

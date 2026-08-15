@@ -3,6 +3,8 @@ import {
   AGENT_HISTORY_REFRESH_INTERVAL_MS,
   agentAttentionForTransition,
   agentAttentionPriority,
+  latchAgentAttention,
+  sortMembersBySessionId,
   agentCardStatus,
   agentPaneStatus,
   agentStatusLabel,
@@ -79,6 +81,7 @@ describe('agent commune view model', () => {
     expect(agentCardStatus({ status: 'Idle', activity: 'idle' }, false)).toBe('idle');
     expect(agentCardStatus({ status: 'Working', activity: 'working' }, false)).toBe('working');
     expect(agentCardStatus({ status: 'Working', activity: 'idle' }, false)).toBe('idle');
+    expect(agentCardStatus({ status: 'Working', activity: 'idle' }, true)).toBe('waiting');
     expect(agentCardStatus({ status: 'Working' }, false)).toBe('working');
     expect(agentCardStatus({ status: 'Idle', activity: 'idle' }, true)).toBe('waiting');
     // Remote roster DTOs carry the same string status shape; stopped states
@@ -97,6 +100,76 @@ describe('agent commune view model', () => {
     expect(agentAttentionForTransition('working', 'waiting', true, 'Working')).toBe('waiting');
     expect(agentAttentionForTransition('working', 'stopped', false, 'Disappeared')).toBe('stopped');
     expect(agentAttentionPriority('waiting')).toBeGreaterThan(agentAttentionPriority('idle'));
+  });
+
+  it('sorts member cards by session id', () => {
+    const members = [
+      { profile: { id: 'b', paneId: 'p2', sessionId: 'sess-b' } },
+      { profile: { id: 'a', paneId: 'p1', sessionId: 'sess-a' } },
+      { profile: { id: 'c', paneId: 'p3', sessionId: 'sess-c' } },
+    ];
+    expect(sortMembersBySessionId(members).map((m) => m.profile.sessionId))
+      .toEqual(['sess-a', 'sess-b', 'sess-c']);
+    expect(sortMembersBySessionId(members).map((m) => m.profile.sessionId))
+      .toEqual(sortMembersBySessionId([...members].reverse()).map((m) => m.profile.sessionId));
+  });
+
+  it('latches unread attention across remount and does not downgrade', () => {
+    const latched = latchAgentAttention({
+      previousStatus: 'working',
+      currentStatus: 'idle',
+      pending: false,
+      profileStatus: 'Idle',
+      outputSeq: 4,
+      existingAttention: null,
+      seenBefore: true,
+    });
+    expect(latched).toBe('idle');
+    expect(latchAgentAttention({
+      previousStatus: 'idle',
+      currentStatus: 'idle',
+      pending: false,
+      profileStatus: 'Idle',
+      outputSeq: 4,
+      existingAttention: latched,
+      seenBefore: true,
+    })).toBe('idle');
+    expect(latchAgentAttention({
+      previousStatus: undefined,
+      currentStatus: 'idle',
+      pending: false,
+      profileStatus: 'Idle',
+      outputSeq: 4,
+      existingAttention: 'idle',
+      seenBefore: true,
+    })).toBe('idle');
+    expect(latchAgentAttention({
+      previousStatus: 'idle',
+      currentStatus: 'waiting',
+      pending: true,
+      profileStatus: 'Working',
+      outputSeq: 4,
+      existingAttention: 'idle',
+      seenBefore: true,
+    })).toBe('waiting');
+    expect(latchAgentAttention({
+      previousStatus: 'idle',
+      currentStatus: 'idle',
+      pending: false,
+      profileStatus: 'Idle',
+      outputSeq: 4,
+      existingAttention: null,
+      seenBefore: true,
+    })).toBeNull();
+    expect(latchAgentAttention({
+      previousStatus: undefined,
+      currentStatus: 'idle',
+      pending: false,
+      profileStatus: 'Idle',
+      outputSeq: 4,
+      existingAttention: null,
+      seenBefore: false,
+    })).toBe('idle');
   });
 
   it('refreshes host-wide history on a five-minute cadence, not every roster poll', () => {

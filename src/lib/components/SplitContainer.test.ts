@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 const source = readFileSync(new URL('./SplitContainer.svelte', import.meta.url), 'utf8');
 const paneSource = readFileSync(new URL('./RidgePane.svelte', import.meta.url), 'utf8');
 const communeSource = readFileSync(new URL('../teammate/AgentCenterPanel.svelte', import.meta.url), 'utf8');
+const highlightSource = readFileSync(new URL('../teammate/agentPaneHighlightSync.ts', import.meta.url), 'utf8');
 const memberSource = readFileSync(new URL('../teammate/AgentMemberRow.svelte', import.meta.url), 'utf8');
 
 describe('desktop Pane Agent border contract', () => {
@@ -14,11 +15,12 @@ describe('desktop Pane Agent border contract', () => {
 
   it('paints a high-stack status highlight without stealing pane input', () => {
     expect(source).toContain('{@const paneAttention = $agentPaneAttentionStore');
+    expect(source).toContain('{#if paneAttention}');
+    expect(source).not.toContain('{#if paneStatus || paneAttention}');
+    expect(source).not.toContain("(!paneAttention && paneStatus === 'idle')");
     expect(source).toContain("paneAttention === 'waiting'");
     expect(source).toContain("paneAttention === 'stopped'");
     expect(source).toContain("paneAttention === 'idle'");
-    expect(source).toContain("paneStatus === 'working'");
-    expect(source).toContain("paneStatus === 'idle'");
     expect(source).toContain('rg-agent-pane-highlight');
     expect(source).toContain('class="rg-agent-pane-shell relative z-[1] isolate');
     expect(source).toContain('data-agent-attention={paneAttention ?? \'\'}');
@@ -53,10 +55,12 @@ describe('desktop Pane Agent border contract', () => {
   });
 
   it('only arms idle attention after a working-to-idle transition', () => {
-    expect(communeSource).toContain('agentAttentionForTransition');
-    expect(communeSource).toContain('observedAgentStatuses');
-    expect(communeSource).toContain('get(agentPaneAttentionStore)[key]');
-    expect(communeSource).toContain("profile.outputSeq > 0");
-    expect(communeSource).not.toContain('setAgentPaneAttention(oldWorkspaceId, oldPaneId, null)');
+    expect(communeSource).toContain('syncAgentPaneHighlight');
+    expect(communeSource).toContain('sortMembersBySessionId');
+    expect(communeSource).toContain('resume_agent_session');
+    expect(communeSource).not.toContain('launch_agent_session');
+    expect(highlightSource).toContain('latchAgentAttention');
+    expect(highlightSource).toContain('get(agentPaneAttentionStore)[key]');
+    expect(highlightSource).not.toContain('setAgentPaneAttention(oldWorkspaceId, oldPaneId, null)');
   });
 });

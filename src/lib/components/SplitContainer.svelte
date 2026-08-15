@@ -720,13 +720,12 @@ import {
           <div class="relative flex-1 min-h-0 min-w-0">
             <Pane paneId={node.id} {workspaceId} />
           </div>
-          {#if paneStatus || paneAttention}
+          {#if paneAttention}
             <div
               class="rg-agent-pane-highlight"
-              class:rg-agent-pane-highlight--working={!paneAttention && paneStatus === 'working'}
               class:rg-agent-pane-highlight--waiting={paneAttention === 'waiting'}
-              class:rg-agent-pane-highlight--idle={paneAttention === 'idle' || (!paneAttention && paneStatus === 'idle')}
-              class:rg-agent-pane-highlight--stopped={paneAttention === 'stopped' || (!paneAttention && paneStatus === 'stopped')}
+              class:rg-agent-pane-highlight--idle={paneAttention === 'idle'}
+              class:rg-agent-pane-highlight--stopped={paneAttention === 'stopped'}
               aria-hidden="true"
             ></div>
           {/if}

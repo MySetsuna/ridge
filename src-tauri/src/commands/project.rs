@@ -1649,6 +1649,26 @@ mod tests {
         assert_eq!(planned.argv, vec!["resume", "codex-session-42"]);
         assert_eq!(planned.cwd, cwd);
         assert_eq!(planned.session_id, "codex-session-42");
+        assert!(planned.argv.iter().any(|part| part == "codex-session-42"));
+    }
+
+    #[test]
+    fn plan_agent_resume_grok_keeps_session_identity_and_recorded_cwd() {
+        let cwd = r"D:\agent-work\repo";
+        let planned = plan_agent_resume(
+            "Grok".into(),
+            "019fb572-test-session".into(),
+            cwd.into(),
+            false,
+            Some(Vec::new()),
+        )
+        .expect("built-in Grok resume profile");
+
+        assert_eq!(planned.executable, "grok");
+        assert!(planned.argv.iter().any(|part| part == "--resume"));
+        assert!(planned.argv.iter().any(|part| part == "019fb572-test-session"));
+        assert_eq!(planned.cwd, cwd);
+        assert_eq!(planned.session_id, "019fb572-test-session");
     }
 
     #[test]

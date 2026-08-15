@@ -376,6 +376,7 @@ pub fn run() {
             pane::set_split_ratios_batch,
             pane::set_window_split_ratios_batch,
             pane::split_pane,
+            pane::resume_agent_session,
             pane::toggle_mode,
             pane::register_teammate_agent,
             pane::release_teammate_agent,
