@@ -747,7 +747,12 @@ describe('CloudRemoteConnection panes', () => {
 
       conn.refreshPane(PANE, 22, 82);
       await vi.advanceTimersByTimeAsync(40);
-      expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')).toHaveLength(2);
+      expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')).toHaveLength(3);
+      expect(invokeMock.mock.calls.filter((c) => c[0] === 'resize_pane')[2]).toEqual([
+        'resize_pane',
+        { workspaceId: 'ws1', paneId: 'pane-a', rows: 22, cols: 82 },
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ]);
     } finally {
       conn.disconnect();
       vi.useRealTimers();

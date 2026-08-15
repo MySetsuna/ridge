@@ -1,6 +1,8 @@
 import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
 
-/** One authoritative path for automatic post-attach sizing and the Resize button. */
+/** One authoritative path for post-attach sizing and the remote Resize button.
+ *  `claimPaneSize` remounts the shared host PTY at the measured pane grid
+ *  even when that grid matches the last claim. */
 export function synchronizePaneSize(paneId: string): boolean {
   const manager = TerminalManager.tryInstance();
   if (!manager) return false;

@@ -312,6 +312,31 @@ describe('PaneRpcScheduler resize and lifecycle admission', () => {
     });
   });
 
+  it('force-sends a same-size resize after the last applied grid', async () => {
+    const rpc = new FakeRpc();
+    const scheduler = createScheduler(rpc, { resizeDebounceMs: 0 });
+
+    expect(scheduler.scheduleResize(pane, 36, 110)).toBe(true);
+    await vi.runOnlyPendingTimersAsync();
+    expect(rpc.calls).toHaveLength(1);
+    expect(rpc.calls[0].params).toMatchObject({ rows: 36, cols: 110 });
+    rpc.calls[0].resolve(undefined);
+    await flushPromises();
+
+    expect(scheduler.scheduleResize(pane, 36, 110)).toBe(false);
+    expect(scheduler.scheduleResize(pane, 36, 110, undefined, { force: true })).toBe(true);
+    await vi.runOnlyPendingTimersAsync();
+    expect(rpc.calls).toHaveLength(2);
+    expect(rpc.calls[1].method).toBe('resize_pane');
+    expect(rpc.calls[1].params).toMatchObject({
+      workspaceId: pane.workspaceId,
+      paneId: pane.paneId,
+      rows: 36,
+      cols: 110,
+    });
+    expect(rpc.calls[1].params).not.toMatchObject({ rows: 24, cols: 80 });
+  });
+
   it('does not suppress a same-size resize when PTY mode context changes', async () => {
     const rpc = new FakeRpc();
     const scheduler = createScheduler(rpc, { resizeDebounceMs: 0 });

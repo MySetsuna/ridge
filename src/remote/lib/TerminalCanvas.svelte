@@ -398,6 +398,13 @@
   export function fitPaneNow() {
     if (attached) manager.fitPaneNow(paneId);
   }
+  /** Explicit refresh: measure this pane and remount the shared host PTY even
+   * when the claimed rows×cols match the last fit (same-size is not a no-op). */
+  export function claimPaneSize() {
+    if (!attached) return;
+    manager.claimPaneSize(paneId);
+    manager.forceFullRedraw(paneId);
+  }
   /** Feed raw PTY bytes into THIS pane's kernel (MainApp routes the active
    *  pane's stream here; the manager holds each pane's history). */
   export function feedUtf8(bytes: Uint8Array) { manager.feed(paneId, bytes); }

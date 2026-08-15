@@ -23,7 +23,7 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain('const pendingFrames = onDrainPending?.(paneId) ?? []');
     expect(source).toContain('const MAX_PENDING_STDIN_BYTES = 64 * 1024;');
     expect(source).toContain('focusInput();');
-    expect(source).toContain('if (!attached) {\n      onStdin(text);');
+    expect(source).toMatch(/if \(!attached\) \{\r?\n\s+onStdin\(text\);/);
   });
 
   it('keeps renderer cursor ownership when the mobile IME sink blurs', () => {
@@ -35,7 +35,11 @@ describe('remote pane Agent status chrome contract', () => {
   it('keeps pane geometry authoritative for host resize recovery', () => {
     expect(source).toContain('export function fitPaneNow()');
     expect(source).toContain('if (attached) manager.fitPaneNow(paneId);');
+    expect(source).toContain('export function claimPaneSize()');
+    expect(source).toContain('manager.claimPaneSize(paneId)');
+    expect(source).toContain('manager.forceFullRedraw(paneId)');
     expect(source).toContain('export function resizeKernel(_rows: number, _cols: number)');
+    expect(source).toContain('manager.forceFullRedraw(paneId)');
     expect(source).not.toContain('manager.getKernel(paneId)?.resize(rows, cols);');
   });
 
@@ -57,7 +61,7 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain('e.button === 0 && linkModifierHeld(e) && manager.openLinkAt(paneId, cell.row, cell.col)');
     expect(source).toContain('return isMac ? e.metaKey : e.ctrlKey;');
     expect(source).toContain('const linkCell = touchLinkCell;');
-    expect(source).toContain('e.preventDefault();\n      return;');
+    expect(source).toMatch(/e\.preventDefault\(\);\r?\n\s+return;/);
   });
 
   it('reports the first post-switch frame without retaining payloads', () => {

@@ -46,6 +46,7 @@ import { pickDockRegion } from '$lib/stores/dockRegionPicker';
 import type { ContextMenuItem } from '$lib/stores/contextMenu';
 import { reportRepeatedError } from '$lib/utils/repeatedError';
 import { synchronizePaneSize } from '$lib/terminal/paneSizeSync';
+import { scheduleForcedPaneResize } from '$lib/terminal/desktopPaneResize';
 import { buildPtyRuntimeSnapshot } from '$lib/terminal/ptyRuntimeSnapshot';
 import { PaneRpcScheduler } from '@ridge/remote/shared/transport/paneRpcScheduler';
 import { RpcCancelledError, RpcTimeoutError, type RpcRequestOptions } from '@ridge/remote/shared/transport/types';
@@ -1359,9 +1360,13 @@ function onPtyResize(
 	// it on plain primary — the kernel grid only narrows AFTER the
 	// backend ConPTY resize completes, eliminating the in-flight byte
 	// race that used to cause border characters to wrap on shrink.
-	return localResizeScheduler
-		.scheduleResizeAndWait({ workspaceId, paneId }, rows, cols, { isAlt, isInlineTui })
-		.catch(() => undefined);
+	return scheduleForcedPaneResize(
+		localResizeScheduler,
+		{ workspaceId, paneId },
+		rows,
+		cols,
+		{ isAlt, isInlineTui },
+	).catch(() => undefined);
 }
 
 function onKernelEvent(ev: KernelEvent) {
