@@ -659,4 +659,29 @@ mod tests {
         // Column 50 (+1=51) must appear before row 10 (+1=11).
         assert_eq!(bytes, b"\x1b[<0;51;11M");
     }
+
+    /// Grok Build TUI: DECSET ?1000/?1002 + SGR ?1006. Press, held-button
+    /// drag, and release must all become CSI SGR bytes — drag must not drop.
+    #[test]
+    fn grok_build_sgr_press_drag_release() {
+        let mut m = Modes::default();
+        m.set(1000, true, true);
+        m.set(1002, true, true);
+        m.set(1006, true, true);
+        assert!(m.mouse_normal && m.mouse_button_event && m.mouse_sgr);
+
+        let press = encode_mouse(0, 4, 8, 0, false, false, false, &m);
+        let drag = encode_mouse(0, 5, 10, 2, false, false, false, &m);
+        let release = encode_mouse(0, 5, 10, 1, false, false, false, &m);
+        let wheel = encode_mouse(64, 5, 10, 0, false, false, false, &m);
+
+        assert_eq!(press, b"\x1b[<0;9;5M");
+        assert_eq!(drag, b"\x1b[<32;11;6M");
+        assert_eq!(release, b"\x1b[<0;11;6m");
+        assert_eq!(wheel, b"\x1b[<64;11;6M");
+        assert!(
+            !drag.is_empty() && drag != press,
+            "held-button drag must emit a distinct motion sequence"
+        );
+    }
 }
