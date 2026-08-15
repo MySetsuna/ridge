@@ -10,7 +10,6 @@
   // 完整开关在设置面板「智能体」分区。
 
   import { onMount } from 'svelte';
-  import { get } from 'svelte/store';
   import { emit, listen } from '@tauri-apps/api/event';
   import { invoke, isTauri } from '@tauri-apps/api/core';
   import { resolveResource } from '@tauri-apps/api/path';
@@ -25,13 +24,9 @@
     workspacesList,
     activePaneId,
     focusPane,
-    agentPaneAttentionStore,
-    splitPane,
     closePane,
-    setAgentPaneAttention,
-    setAgentPaneStatus,
-    type AgentPaneAttention,
-    type AgentPaneStatus,
+    syncPaneLayoutFromBackend,
+    scheduleForceFitAfterSplit,
     terminalTitles,
     paneForegroundProcessStore,
     paneCwdStore,
@@ -72,9 +67,7 @@
   import type { HitlAuditItem } from '../../../packages/remote/src/shared/teammate/hitlAuditRemote';
   import {
     agentCardStatus,
-    agentAttentionForTransition,
-    agentAttentionPriority,
-    agentPaneStatus,
+    sortMembersBySessionId,
     agentStatusLabel,
     aggregateAgentCardStatus,
     buildAgentHistoryGroups,
@@ -85,6 +78,7 @@
     shouldRefreshAgentHistory,
     type AgentCardStatus,
   } from './agentCommuneModel';
+  import { syncAgentPaneHighlight } from './agentPaneHighlightSync';
 
   const TOPOLOGY_CMD = 'get_teammate_topology';
   const CIRCUIT_EVENT = 'teammate://circuit-tripped';
@@ -104,12 +98,14 @@
     workspaceId ? (topologies[workspaceId] ?? EMPTY_TOPOLOGY) : EMPTY_TOPOLOGY
   );
   const allMembers = $derived(
-    $workspacesList.flatMap((workspace) =>
-      (topologies[workspace.id]?.roster ?? []).map((profile) => ({
-        workspaceId: workspace.id,
-        workspaceName: workspace.name?.trim() || `工作区 ${workspace.displaySeq}`,
-        profile,
-      }))
+    sortMembersBySessionId(
+      $workspacesList.flatMap((workspace) =>
+        (topologies[workspace.id]?.roster ?? []).map((profile) => ({
+          workspaceId: workspace.id,
+          workspaceName: workspace.name?.trim() || `工作区 ${workspace.displaySeq}`,
+          profile,
+        }))
+      ),
     )
   );
   const nativeSessions = $derived(
@@ -143,8 +139,6 @@
   let historyExpanded = $state<Record<string, boolean>>({});
   /** 恢复时以 YOLO 模式启动（按 agent 配置表注入 yolo 参数）。 */
   let resumeYolo = $state(false);
-  let observedAgentSignals = new Map<string, AgentPaneAttention | null>();
-  let observedAgentStatuses = new Map<string, AgentPaneStatus | null>();
   const recentReplyGroups = $derived(buildAgentHistoryGroups(recentReplies));
   let historyLoadedAt = 0;
   let historyRefreshInFlight: Promise<void> | null = null;
@@ -243,61 +237,7 @@
   }
 
   function syncAgentAttention(): boolean {
-    let completionDetected = false;
-    const next = new Map<string, AgentPaneAttention | null>();
-    const nextStatuses = new Map<string, AgentPaneStatus | null>();
-    for (const member of allMembers) {
-      const profile = member.profile;
-      if (!profile.paneId) continue;
-      const key = `${member.workspaceId}:${profile.paneId}`;
-      const pending = pendingFor(profile).length > 0;
-      const paneStatus = agentPaneStatus(profile, pending);
-      const previousStatus = observedAgentStatuses.get(key);
-      let signal: AgentPaneAttention | null = agentAttentionForTransition(
-        previousStatus,
-        paneStatus,
-        pending,
-        profile.status,
-      );
-      // This panel may first mount after a member has already produced output.
-      // Treat an
-      // idle first observation with a real sequence as unread completion; a
-      // pristine shell/agent pane (sequence 0) remains neutral.
-      if (signal === null && previousStatus === undefined && paneStatus === 'idle' && profile.outputSeq > 0) {
-        signal = 'idle';
-      }
-      const previous = observedAgentSignals.get(key);
-      // A transient stays visible until the target pane actually receives focus.
-      // Returning to a neutral backend state only arms the next transition; it
-      // must not acknowledge an event the user has not inspected.
-      if (signal !== null && signal !== previous) {
-        if (signal === 'idle' || signal === 'stopped') completionDetected = true;
-        const current = get(agentPaneAttentionStore)[key];
-        // Never downgrade an unacknowledged event; a new waiting/stopped event
-        // may upgrade an existing idle highlight. Focus remains the only clear.
-        if (!current || agentAttentionPriority(signal) > agentAttentionPriority(current)) {
-          setAgentPaneAttention(member.workspaceId, profile.paneId, signal);
-        }
-      }
-      setAgentPaneStatus(member.workspaceId, profile.paneId, paneStatus);
-      next.set(key, signal);
-      nextStatuses.set(key, paneStatus);
-    }
-    for (const key of observedAgentSignals.keys()) {
-      if (next.has(key)) continue;
-      const separator = key.indexOf(':');
-      if (separator <= 0) continue;
-      const oldWorkspaceId = key.slice(0, separator);
-      const oldPaneId = key.slice(separator + 1);
-      // A completed/exited Agent disappearing from the roster is itself an
-      // unread completion. Keep both card/pane attention until user focus.
-      const current = get(agentPaneAttentionStore)[key];
-      if (!current) setAgentPaneAttention(oldWorkspaceId, oldPaneId, 'idle');
-      setAgentPaneStatus(oldWorkspaceId, oldPaneId, null);
-    }
-    observedAgentSignals = next;
-    observedAgentStatuses = nextStatuses;
-    return completionDetected;
+    return syncAgentPaneHighlight(allMembers, (member) => pendingFor(member.profile).length > 0);
   }
 
   function canResume(reply: AgentRecentReply): boolean {
@@ -340,36 +280,27 @@
     const targetWorkspaceId = workspaceId;
     let createdPaneId = '';
     try {
-      // 按配置表生成启动计划（含 cwd + resume argv + 可选 YOLO）。
-      const planned = await invoke<{
-        executable: string;
-        argv: string[];
-        cwd: string;
-        sessionId: string;
-      }>('plan_agent_resume', {
+      const cwd = reply.cwd || reply.resume?.cwd || '';
+      if (!cwd) throw new Error('会话未记录 cwd，无法恢复');
+      const resumed = await invoke<{ paneId?: string }>('resume_agent_session', {
+        workspaceId: targetWorkspaceId,
+        sourcePaneId: $activePaneId,
         agent: reply.agent,
         sessionId: reply.sessionId,
-        cwd: reply.cwd || reply.resume?.cwd || '',
+        cwd,
         yolo: resumeYolo,
         overrides: loadAgentProfileOverrides(),
       });
-      if (!planned.cwd) {
-        throw new Error('会话未记录 cwd，无法恢复');
-      }
-      createdPaneId = await splitPane($activePaneId, 'horizontal');
+      createdPaneId = typeof resumed?.paneId === 'string' ? resumed.paneId : '';
+      if (!createdPaneId) throw new Error('恢复未返回 pane');
+      await syncPaneLayoutFromBackend();
+      scheduleForceFitAfterSplit($activePaneId, createdPaneId);
       // 立刻切到新 pane，避免用户仍停在原 pane、误以为「没切 cwd / 没 resume」。
       focusPane(createdPaneId, targetWorkspaceId);
-      await invoke('launch_agent_session', {
-        workspaceId: targetWorkspaceId,
-        paneId: createdPaneId,
-        executable: planned.executable,
-        argv: planned.argv,
-        cwd: planned.cwd,
-      });
       showToast(
         resumeYolo
-          ? `已 YOLO 恢复 ${reply.agent} @ ${planned.cwd}`
-          : `已恢复 ${reply.agent} @ ${planned.cwd}`,
+          ? `已 YOLO 恢复 ${reply.agent} @ ${cwd}`
+          : `已恢复 ${reply.agent} @ ${cwd}`,
         'success',
       );
     } catch (e) {

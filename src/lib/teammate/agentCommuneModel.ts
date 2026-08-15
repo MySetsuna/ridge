@@ -218,6 +218,41 @@ export function agentAttentionPriority(attention: AgentAttention): number {
   return 1;
 }
 
+export function sortMembersBySessionId<T extends { profile: { sessionId?: string; paneId?: string; id: string } }>(
+  members: readonly T[],
+): T[] {
+  return [...members].sort((a, b) => {
+    const left = a.profile.sessionId?.trim() || a.profile.paneId || a.profile.id;
+    const right = b.profile.sessionId?.trim() || b.profile.paneId || b.profile.id;
+    return left.localeCompare(right);
+  });
+}
+
+/** Latch unread attention until focus. Remount/poll must not restart a flash. */
+export function latchAgentAttention(input: {
+  previousStatus: AgentPaneStatus | null | undefined;
+  currentStatus: AgentPaneStatus;
+  pending: boolean;
+  profileStatus?: string;
+  outputSeq: number;
+  existingAttention?: AgentAttention | null;
+  seenBefore: boolean;
+}): AgentAttention | null {
+  let signal = agentAttentionForTransition(
+    input.previousStatus,
+    input.currentStatus,
+    input.pending,
+    input.profileStatus,
+  );
+  if (signal === null && !input.seenBefore && input.currentStatus === 'idle' && input.outputSeq > 0) {
+    signal = 'idle';
+  }
+  const existing = input.existingAttention ?? null;
+  if (signal === null) return existing;
+  if (!existing || agentAttentionPriority(signal) > agentAttentionPriority(existing)) return signal;
+  return existing;
+}
+
 const STATUS_PRIORITY: readonly AgentCardStatus[] = ['waiting', 'working', 'stopped', 'idle', 'completed'];
 
 export function aggregateAgentCardStatus(statuses: readonly AgentCardStatus[]): AgentCardStatus {

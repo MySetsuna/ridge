@@ -14,6 +14,7 @@
   import { settingsStore, initSettingsBoot, setSetting } from '$lib/stores/settings';
   import RemotePanel from '$lib/remote/RemotePanel.svelte';
   import AgentCenterPanel from '$lib/teammate/AgentCenterPanel.svelte';
+  import AgentPaneHighlightSync from '$lib/teammate/AgentPaneHighlightSync.svelte';
   import HostsPanel from '$lib/components/hosts/HostsPanel.svelte';
   import SharedWorkspaceSurface from '$lib/components/hosts/SharedWorkspaceSurface.svelte';
   import SharedWorkspaceResourcePanel from '$lib/components/hosts/SharedWorkspaceResourcePanel.svelte';
@@ -2302,6 +2303,10 @@ function expandSidebar(minWidth = 0) {
 />
 
 <!-- alert / confirm / prompt 替代浏览器原生 dialog -->
+{#if teammateEnabled}
+  <AgentPaneHighlightSync />
+{/if}
+
 <WindDialog />
 <!-- 轻量 toast 通知 (z-10000，位于所有 modal 之上) -->
 <WindToast />

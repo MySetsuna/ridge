@@ -189,6 +189,82 @@ pub async fn create_pane(
         .map_err(|e| e.to_string())
 }
 
+pub(crate) fn validate_agent_launch(executable: &str, cwd: &Path) -> Result<(), String> {
+    if executable.trim().is_empty() {
+        return Err("agent executable is empty".to_string());
+    }
+    if !cwd.is_dir() {
+        return Err(format!("agent cwd is not a directory: {}", cwd.display()));
+    }
+    Ok(())
+}
+
+/// Install a structured Agent PTY on an existing leaf. Replaces a default
+/// shell if `create_pane` already raced in; skip-safe when none exists yet.
+pub(crate) fn install_agent_pty(
+    state: &AppState,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    executable: String,
+    argv: Vec<String>,
+    cwd: PathBuf,
+) -> Result<(), String> {
+    let executable = executable.trim().to_string();
+    validate_agent_launch(&executable, &cwd)?;
+
+    {
+        let mut workspaces = state.workspaces.write();
+        let workspace = workspaces
+            .get_mut(&workspace_id)
+            .ok_or_else(|| "workspace not found".to_string())?;
+        if !workspace.pane_tree.get_all_leaves().contains(&pane_id) {
+            return Err("target pane is not a live workspace leaf".to_string());
+        }
+        let pane = workspace
+            .pane_tree
+            .panes
+            .get_mut(&pane_id)
+            .ok_or_else(|| "target pane not found".to_string())?;
+        pane.cwd = Some(cwd.clone());
+        // Resume argv is session-specific; never persist it as a reusable shell kind.
+        pane.shell_kind = None;
+    }
+
+    teardown_pane_pty_if_present(state, workspace_id, pane_id);
+    ensure_pane_pty_workspace(
+        state,
+        workspace_id,
+        pane_id,
+        EnsurePtyOptions {
+            shell: None,
+            cwd: Some(&cwd),
+            initial_command: None,
+            structured_command: Some(StructuredPtyCommand {
+                program: executable,
+                args: argv,
+                env: HashMap::new(),
+            }),
+            tmux_pane_index: None,
+            ready_tx: None,
+            trace_id: None,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    crate::commands::git::set_pane_workdir(
+        pane_id.to_string(),
+        cwd.to_string_lossy().to_string(),
+    )?;
+    let cwd = cwd.to_string_lossy().replace('\\', "/");
+    let _ = state
+        .event_tx
+        .try_send(crate::types::GlobalEvent::PaneCwdChanged {
+            workspace_id,
+            pane_id,
+            cwd,
+        });
+    Ok(())
+}
+
 /// Launch a resumable Agent session without shell-string interpolation.
 /// The backend-issued executable/argv/cwd tuple goes straight to the existing
 /// structured portable-pty command path.
@@ -206,66 +282,7 @@ pub async fn launch_agent_session(
         let workspace_id =
             Uuid::parse_str(&workspace_id).map_err(|e| format!("invalid workspace id: {e}"))?;
         let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
-        let executable = executable.trim().to_string();
-        if executable.is_empty() {
-            return Err("agent executable is empty".to_string());
-        }
-        let cwd = PathBuf::from(cwd);
-        if !cwd.is_dir() {
-            return Err(format!("agent cwd is not a directory: {}", cwd.display()));
-        }
-
-        {
-            let mut workspaces = st.workspaces.write();
-            let workspace = workspaces
-                .get_mut(&workspace_id)
-                .ok_or_else(|| "workspace not found".to_string())?;
-            if !workspace.pane_tree.get_all_leaves().contains(&pane_id) {
-                return Err("target pane is not a live workspace leaf".to_string());
-            }
-            let pane = workspace
-                .pane_tree
-                .panes
-                .get_mut(&pane_id)
-                .ok_or_else(|| "target pane not found".to_string())?;
-            pane.cwd = Some(cwd.clone());
-            // Resume argv is session-specific; never persist it as a reusable shell kind.
-            pane.shell_kind = None;
-        }
-
-        teardown_pane_pty_if_present(&st, workspace_id, pane_id);
-        ensure_pane_pty_workspace(
-            &st,
-            workspace_id,
-            pane_id,
-            EnsurePtyOptions {
-                shell: None,
-                cwd: Some(&cwd),
-                initial_command: None,
-                structured_command: Some(StructuredPtyCommand {
-                    program: executable,
-                    args: argv,
-                    env: HashMap::new(),
-                }),
-                tmux_pane_index: None,
-                ready_tx: None,
-                trace_id: None,
-            },
-        )
-        .map_err(|e| e.to_string())?;
-        crate::commands::git::set_pane_workdir(
-            pane_id.to_string(),
-            cwd.to_string_lossy().to_string(),
-        )?;
-        let cwd = cwd.to_string_lossy().replace('\\', "/");
-        let _ = st
-            .event_tx
-            .try_send(crate::types::GlobalEvent::PaneCwdChanged {
-                workspace_id,
-                pane_id,
-                cwd,
-            });
-        Ok(())
+        install_agent_pty(&st, workspace_id, pane_id, executable, argv, PathBuf::from(cwd))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -637,7 +654,7 @@ fn kill_pty_process_tree(handle: &mut PtyHandle) {
     }
 }
 
-fn teardown_pane_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
+pub(crate) fn teardown_pane_pty_if_present(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
     let handle = {
         let mut map = state.workspaces.write();
         map.get_mut(&workspace_id).and_then(|ws| {
@@ -2759,6 +2776,14 @@ mod write_scope_tests {
 
 #[cfg(test)]
 mod pty_lifecycle_contract_tests {
+    #[test]
+    fn validate_agent_launch_requires_exe_and_existing_cwd() {
+        let missing = std::path::Path::new("C:\\ridge-no-such-agent-cwd");
+        assert!(super::validate_agent_launch("", std::env::temp_dir().as_path()).is_err());
+        assert!(super::validate_agent_launch("grok", missing).is_err());
+        assert!(super::validate_agent_launch("grok", std::env::temp_dir().as_path()).is_ok());
+    }
+
     #[test]
     fn production_pane_creation_is_kernel_fail_closed() {
         let source = include_str!("terminal.rs");

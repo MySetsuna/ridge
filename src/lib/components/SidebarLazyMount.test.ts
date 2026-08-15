@@ -17,4 +17,16 @@ describe('desktop sidebar mount guards', () => {
     expect(pageSource).toContain("if (!sidebarVisited.has(tab)) sidebarVisited = new Set([...sidebarVisited, tab]);");
     expect(pageSource).toContain("sidebarTab === 'files' ? '' : 'hidden'");
   });
+
+  it('starts pane highlight sync when teammate is enabled without visiting the Agent tab', () => {
+    expect(pageSource).toContain("import AgentPaneHighlightSync from '$lib/teammate/AgentPaneHighlightSync.svelte'");
+    expect(pageSource).toContain('{#if teammateEnabled}');
+    expect(pageSource).toContain('<AgentPaneHighlightSync />');
+    expect(pageSource).toContain("sidebarVisited.has('agents')");
+    const highlightMount = pageSource.indexOf('<AgentPaneHighlightSync />');
+    const agentsVisitGate = pageSource.indexOf("sidebarVisited.has('agents')");
+    expect(highlightMount).toBeGreaterThan(0);
+    expect(agentsVisitGate).toBeGreaterThan(0);
+    expect(pageSource.slice(highlightMount - 80, highlightMount + 80)).not.toContain("sidebarVisited.has('agents')");
+  });
 });
