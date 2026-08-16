@@ -25,6 +25,7 @@ use outbound::{
 pub use ridge_core::remote::{HostKind, HostRecord, HostSessionMeta, HostStatus};
 use tauri::State;
 
+#[cfg(not(test))]
 fn mirror_kernel_host(method: &str, path: &str, body: Option<serde_json::Value>) {
     let Some(endpoint) = ridge_kernel::client::running_endpoint() else {
         return;
@@ -33,6 +34,11 @@ fn mirror_kernel_host(method: &str, path: &str, body: Option<serde_json::Value>)
         tracing::debug!(target: "ridge::hosts", %error, method, path, "kernel host topology mirror unavailable");
     }
 }
+
+// HostRegistry unit tests use deliberately synthetic host ids. They must stay
+// process-local even when a developer's kernel happens to be running.
+#[cfg(test)]
+fn mirror_kernel_host(_method: &str, _path: &str, _body: Option<serde_json::Value>) {}
 
 /// Persist a topology mutation through the kernel domain API.
 ///
