@@ -248,7 +248,9 @@ describe('TerminalManager attach lifecycle', () => {
 		await internal._awaitAttachHost();
 		const host = { canvas: new FakeCanvas(), host: {} };
 		internal.globalHost = host;
-		expect(internal._createAttachCanvas(makeContainer(), false)).toEqual({ canvas: host.canvas, hostHandle: host.host });
+		const container = makeContainer();
+		expect(internal._createAttachCanvas(container, false)).toEqual({ canvas: host.canvas, hostHandle: host.host });
+		expect(container.style.background).toBe('transparent');
 		const traced = localStorage as unknown as { getItem: ReturnType<typeof vi.fn> };
 		traced.getItem.mockReturnValue('1');
 		const handle = new wasm.FakeRenderHandle();
@@ -279,6 +281,7 @@ describe('TerminalManager attach lifecycle', () => {
 		const entry = (manager as any).panes.get('pane-a');
 		expect(entry).toBeDefined();
 		expect(entry.canvas).toBeInstanceOf(FakeCanvas);
+		expect(entry.canvas.style.background).toBe('var(--rg-term-bg, var(--rg-bg))');
 		expect(container.style.padding).toBe('6px');
 		expect(entry.resizeObserver.observe).toHaveBeenCalledWith(container);
 		expect(wasm.FakeKernel.instances).toHaveLength(1);
@@ -326,6 +329,16 @@ describe('TerminalManager attach lifecycle', () => {
 		expect(target.setPointerCapture).toHaveBeenCalledWith(7);
 		expect(target.releasePointerCapture).toHaveBeenCalledWith(7);
 
+		const modifiedPointer = { ...pointer, ctrlKey: true, shiftKey: true, altKey: true };
+		container.emit('pointerdown', modifiedPointer);
+		expect(kernel.encodeMouse).toHaveBeenLastCalledWith(
+			expect.any(Number), expect.any(Number), 0, 0, true, true, true,
+		);
+		container.emit('pointerup', modifiedPointer);
+		expect(kernel.encodeMouse).toHaveBeenLastCalledWith(
+			expect.any(Number), expect.any(Number), 0, 1, true, true, true,
+		);
+
 		kernel.mouseMode = 0;
 		container.emit('pointerdown', { ...pointer, detail: 2 });
 		expect(kernel.selectWordAt).toHaveBeenCalled();
@@ -370,7 +383,7 @@ describe('TerminalManager attach lifecycle', () => {
 		frame?.(1);
 		container.emit('pointermove', { ...pointer, buttons: 0 });
 		frame?.(2);
-		expect(kernel.encodeMouse).toHaveBeenCalledWith(10, 3, 0, 2, false, false, false);
+		expect(kernel.encodeMouse).toHaveBeenCalledWith(10, 3, 3, 2, false, false, false);
 		expect(sent.length).toBeGreaterThanOrEqual(2);
 		container.emit('pointerup', pointer);
 		expect(kernel.encodeMouse).toHaveBeenCalledWith(10, 3, 0, 1, false, false, false);

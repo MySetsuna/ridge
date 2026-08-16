@@ -2327,11 +2327,12 @@ function captureBackspace(node: HTMLElement) {
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<!-- Renderer owns the terminal background. Keep this DOM layer transparent so the shared WebGPU host canvas remains visible after split/reparent; Canvas2D fallback paints its own background. -->
 <div
 	bind:this={container}
 	class="rg-pane-container h-full w-full min-h-0 min-w-0 outline-none relative"
 	class:bell-flash={bellFlash}
-	style="background: var(--rg-term-bg); contain: strict; z-index: 1;"
+	style="background: transparent; contain: strict; z-index: 1;"
 	role="application"
 	aria-label={$t('workspace.terminalAriaLabel')}
 	tabindex="-1"

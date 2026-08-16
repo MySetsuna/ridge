@@ -19,7 +19,11 @@ describe('desktop app CSP', () => {
   });
 
   it('keeps runtime styles and bounded local WebView connections usable', () => {
-    expect(csp).not.toContain("'unsafe-inline'");
+    const styleSource = csp.match(/(?:^|;\s*)style-src\s+([^;]+)/)?.[1] ?? '';
+    const styleAttributeSource = csp.match(/(?:^|;\s*)style-src-attr\s+([^;]+)/)?.[1] ?? '';
+    expect(styleSource).not.toContain("'unsafe-inline'");
+    expect(styleSource).toContain("'sha256-2ZuKPAtYnC8VI7pq7bkN4gYzSYWdHwyzJiRW4JiCF5c='");
+    expect(styleAttributeSource).toContain("'unsafe-inline'");
     expect(csp).toContain('http://127.0.0.1:5174');
     expect(csp).toContain('ws://localhost:5174');
 

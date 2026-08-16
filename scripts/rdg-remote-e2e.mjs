@@ -516,14 +516,98 @@ async function collectClientEvidence(page, profile, telemetry) {
   await sleep(700);
   const inputSent = (telemetry.rpcSent.get('write_to_pty') || 0) > 0;
   const resizeSent = (telemetry.rpcSent.get('resize_pane') || 0) > 0;
+  let paneSwitch = { attempted: false, ok: true };
+  if (profile.isMobile) {
+    const tree = page.locator('.tree-trigger').first();
+    if (!(await tree.count())) {
+      paneSwitch = { attempted: true, ok: false, reason: 'mobile pane switch controls missing' };
+    } else {
+      await tree.click();
+      const paneNew = page.locator('.pane-new').first();
+      if (!(await paneNew.count())) {
+        paneSwitch = { attempted: true, ok: false, reason: 'mobile pane creation control missing' };
+      } else {
+        let phase = 'count-before';
+        try {
+          const before = await page.locator('.pane-row').count();
+          phase = 'create-pane';
+          await paneNew.click();
+          phase = 'wait-new-row';
+          await page.waitForFunction(
+            (expected) => document.querySelectorAll('.pane-row').length > expected,
+            before,
+            { timeout: 12_000 },
+          );
+          const after = await page.locator('.pane-row').count();
+          const newIndex = after - 1;
+          phase = 'select-new-row';
+          await page.locator('.pane-row').nth(newIndex).click();
+          phase = 'wait-new-close';
+          await page.waitForFunction(
+            () => !document.querySelector('.tree-popup'),
+            undefined,
+            { timeout: 5_000 },
+          );
+          phase = 'reopen-tree-new';
+          await tree.click();
+          phase = 'wait-new-active';
+          await page.waitForFunction(
+            (expected) => {
+              const rows = [...document.querySelectorAll('.pane-row')];
+              return rows.filter((row) => row.classList.contains('active')).length === 1
+                && rows.findIndex((row) => row.classList.contains('active')) === expected;
+            },
+            newIndex,
+            { timeout: 12_000 },
+          );
+          phase = 'select-first-row';
+          await page.locator('.pane-row').first().click();
+          phase = 'wait-first-close';
+          await page.waitForFunction(
+            () => !document.querySelector('.tree-popup'),
+            undefined,
+            { timeout: 5_000 },
+          );
+          phase = 'reopen-tree-first';
+          await tree.click();
+          phase = 'wait-first-active';
+          await page.waitForFunction(
+            () => {
+              const rows = [...document.querySelectorAll('.pane-row')];
+              return rows.filter((row) => row.classList.contains('active')).length === 1
+                && rows.findIndex((row) => row.classList.contains('active')) === 0;
+            },
+            undefined,
+            { timeout: 12_000 },
+          );
+          paneSwitch = { attempted: true, ok: true, before, after };
+        } catch (error) {
+          const rows = await page.locator('.pane-row').count().catch(() => -1);
+          const activeRows = await page.locator('.pane-row.active').count().catch(() => -1);
+          paneSwitch = {
+            attempted: true,
+            ok: false,
+            reason: `${phase}: ${error instanceof Error ? error.message : String(error)}`,
+            rows,
+            activeRows,
+          };
+        }
+      }
+    }
+  }
   const rpc = {
     inputAvailable, inputSent, resizeSent,
+    paneSwitch,
     sent: Object.fromEntries(telemetry.rpcSent),
     received: Object.fromEntries(telemetry.rpcReceived),
     frameMethodsSent: Object.fromEntries(telemetry.frameMethodsSent),
     frameMethodsReceived: Object.fromEntries(telemetry.frameMethodsReceived),
   };
   if (!inputSent || !resizeSent) return clientFailure(profile, `control path incomplete input=${inputSent} resize=${resizeSent}`, telemetry, { rpc });
+  if (!paneSwitch.ok) return clientFailure(profile, `pane switch incomplete: ${paneSwitch.reason}`, telemetry, { rpc });
+  if (telemetry.browserErrors.length > 0) {
+    return clientFailure(profile, `browser errors: ${telemetry.browserErrors.slice(-3).join(' | ')}`, telemetry, { rpc });
+  }
   mkdirSync(EVIDENCE_DIR, { recursive: true });
   const screenshot = join(EVIDENCE_DIR, `${profile.name}.png`);
   await page.screenshot({ path: screenshot, fullPage: true }).catch(() => {});

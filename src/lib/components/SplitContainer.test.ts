@@ -25,7 +25,8 @@ describe('desktop Pane Agent border contract', () => {
     expect(source).toContain('class="rg-agent-pane-shell relative z-[1] isolate');
     expect(source).toContain('data-agent-attention={paneAttention ?? \'\'}');
     expect(source).toContain('z-index: 80;');
-    expect(paneSource).toContain('contain: strict; z-index: 1;');
+    expect(paneSource).toContain('background: transparent; contain: strict; z-index: 1;');
+    expect(paneSource).not.toContain('background: var(--rg-term-bg); contain: strict; z-index: 1;');
     expect(paneSource).toContain('z-index: 90;');
     expect(paneSource).toContain('clearAgentPaneAttention(workspaceId, paneId)');
     expect(paneSource).toContain('if (container?.contains(document.activeElement))');

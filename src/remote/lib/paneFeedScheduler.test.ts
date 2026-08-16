@@ -58,6 +58,54 @@ describe('PaneFeedScheduler', () => {
     expect(scheduler.queuedBytes()).toBe(0);
   });
 
+  it('reschedules after clearing the last queue', () => {
+    const runs: Array<() => void> = [];
+    let scheduled = 0;
+    const delivered: number[] = [];
+    const scheduler = new PaneFeedScheduler((_key, bytes) => {
+      delivered.push(...bytes);
+      return { accepted: true };
+    }, {
+      schedule: (callback) => {
+        scheduled += 1;
+        runs.push(callback);
+        return scheduled;
+      },
+      cancel: vi.fn(),
+    });
+
+    scheduler.enqueue('old-pane', new Uint8Array([1]));
+    scheduler.clear('old-pane');
+    scheduler.enqueue('new-pane', new Uint8Array([2]));
+    runs.at(-1)?.();
+
+    expect(scheduled).toBe(2);
+    expect(delivered).toEqual([2]);
+  });
+
+  it('reschedules after clearAll', () => {
+    const runs: Array<() => void> = [];
+    let scheduled = 0;
+    const scheduler = new PaneFeedScheduler((_key, bytes) => {
+      expect(bytes).toEqual(new Uint8Array([2]));
+      return { accepted: true };
+    }, {
+      schedule: (callback) => {
+        scheduled += 1;
+        runs.push(callback);
+        return scheduled;
+      },
+      cancel: vi.fn(),
+    });
+
+    scheduler.enqueue('old-pane', new Uint8Array([1]));
+    scheduler.clearAll();
+    scheduler.enqueue('new-pane', new Uint8Array([2]));
+    runs.at(-1)?.();
+
+    expect(scheduled).toBe(2);
+  });
+
   it('serves the active pane first and bounds one drain slice', () => {
     const delivered: string[] = [];
     const scheduler = new PaneFeedScheduler((key, bytes) => {
