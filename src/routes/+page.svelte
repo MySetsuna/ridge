@@ -2230,12 +2230,11 @@ function expandSidebar(minWidth = 0) {
              with no black flash and no atlas re-warm.
 
              Mounted AFTER the workspace each-loop in tree order so that
-             — within the parent's stacking context — the canvas paints
-             on top of the SplitContainer DOM. The per-pane scissor
-             leaves splitter regions transparent on the canvas, so the
-             DOM splitter strips below remain visible through those
-             gaps. `pointer-events:none` lets clicks fall through the
-             canvas to the SplitContainer for resize/focus interaction. -->
+             — within the parent's stacking context — the canvas stays
+             beneath transparent pane DOM shells. Headers, controls, and
+             overlays remain above it; `pointer-events:none` lets clicks
+             fall through the canvas to SplitContainer for resize/focus
+             interaction. -->
         <canvas
           use:globalHostCanvas
           data-rg-host

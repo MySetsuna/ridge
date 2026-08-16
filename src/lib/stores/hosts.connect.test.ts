@@ -52,16 +52,17 @@ const harness = vi.hoisted(() => {
 		link.connect();
 		return link;
 	});
+	const isTauri = { value: false };
 	const invoke = vi.fn(async (command: string) => {
 		if (command === 'list_native_sessions' || command === 'host_list_snapshot') return [];
 		return undefined;
 	});
-	return { FakeRemoteConnection, cloudConnect, invoke };
+	return { FakeRemoteConnection, cloudConnect, invoke, isTauri };
 });
 
 vi.mock('@tauri-apps/api/core', () => ({
 	invoke: harness.invoke,
-	isTauri: () => false,
+	isTauri: () => harness.isTauri.value,
 }));
 
 vi.mock('@ridge/remote', () => ({ RemoteConnection: harness.FakeRemoteConnection }));
@@ -77,6 +78,7 @@ beforeEach(() => {
 	harness.FakeRemoteConnection.instances.length = 0;
 	harness.cloudConnect.mockClear();
 	harness.invoke.mockClear();
+	harness.isTauri.value = false;
 	hosts.hostsStore.set([]);
 	hosts.hostConnectProgress.set(null);
 });
@@ -114,6 +116,19 @@ describe('hosts.connectHost transport onboarding', () => {
 			detail: 'fake LAN rejection。若首次连接，请先在默认浏览器打开 https://127.0.0.1:9527/，确认主机指纹并信任 Ridge 证书，再重试。',
 		});
 		expect(get(hosts.hostsStore)).toEqual([]);
+	});
+
+	it('forgets a live Tauri host from kernel persistence before dropping its link', async () => {
+		await hosts.connectHost('remote', 'LAN', '127.0.0.1:9527', '123456', 'lan');
+		harness.isTauri.value = true;
+
+		await hosts.forgetHost('lan:127.0.0.1:9527');
+
+		expect(harness.invoke).toHaveBeenCalledWith('forget_host', {
+			hostId: 'lan:127.0.0.1:9527',
+		});
+		expect(harness.FakeRemoteConnection.instances[0]?.disconnect).toHaveBeenCalled();
+		expect(get(hosts.hostsStore).find((host) => host.id === 'lan:127.0.0.1:9527')).toBeUndefined();
 	});
 
 	it('keeps insecure LAN errors free of certificate advice', () => {

@@ -614,6 +614,15 @@ mod tests {
     }
 
     #[test]
+    fn mouse_hover_motion_sgr_uses_no_button_code() {
+        let m = Modes::default();
+        let bytes = encode_mouse(3, 3, 7, 2, false, false, false, &m);
+        // Button 3 + motion flag 32 = 35: hover must not look like a
+        // left-button drag to DECSET ?1003 clients.
+        assert_eq!(bytes, b"\x1b[<35;8;4M");
+    }
+
+    #[test]
     fn mouse_shift_click_sgr() {
         let m = Modes::default();
         let bytes = encode_mouse(0, 1, 1, 0, true, false, false, &m);

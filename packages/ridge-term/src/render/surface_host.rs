@@ -21,14 +21,14 @@
 //! and `pass.set_scissor_rect` to clip overdraw at the boundaries. The
 //! pane backend stays unaware of where on the host canvas it lives.
 //!
-//! ## LoadOp protocol
+//! ## Frame-store protocol
 //!
-//! [`begin_frame`] issues a dedicated full-surface clear pass when
-//! `needs_initial_clear` is true (every frame). All [`record_pane`]
-//! calls within the same frame use `LoadOp::Load` so earlier panes'
-//! pixels survive. `needs_initial_clear` also re-asserts after resize /
-//! detach / park / theme change / surface-recovery so the host canvas
-//! never accumulates ghost pixels from departed panes.
+//! Pane passes render into a persistent offscreen texture. The acquired
+//! swap-chain texture is only a presentation target, so pane pixels do not
+//! depend on WebView2 preserving `LoadOp::Load` contents across frames.
+//! [`begin_frame`] seeds the persistent texture on every frame because
+//! default terminal cells may be transparent; [`end_frame`] then blits the
+//! complete frame to the current swap-chain image in one atomic present.
 
 #![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
@@ -83,6 +83,160 @@ fn rgba_to_wgpu_color(rgba: [u8; 4]) -> wgpu::Color {
     }
 }
 
+const BLIT_SHADER: &str = r#"
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
+    var positions = array<vec2<f32>, 4>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 1.0,  1.0),
+    );
+    var uvs = array<vec2<f32>, 4>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 0.0),
+    );
+    var out: VertexOutput;
+    out.position = vec4<f32>(positions[index], 0.0, 1.0);
+    out.uv = uvs[index];
+    return out;
+}
+
+@group(0) @binding(0) var frame_texture: texture_2d<f32>;
+@group(0) @binding(1) var frame_sampler: sampler;
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(frame_texture, frame_sampler, input.uv);
+}
+"#;
+
+fn create_frame_target(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("ridge-host-frame-store"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: CANVAS_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+fn create_blit_resources(
+    device: &wgpu::Device,
+    frame_view: &wgpu::TextureView,
+) -> (
+    wgpu::BindGroupLayout,
+    wgpu::Sampler,
+    wgpu::RenderPipeline,
+    wgpu::BindGroup,
+) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("ridge-host-frame-blit-shader"),
+        source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(BLIT_SHADER)),
+    });
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("ridge-host-frame-blit-bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("ridge-host-frame-blit-sampler"),
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("ridge-host-frame-blit-pipeline-layout"),
+        bind_group_layouts: &[&bind_group_layout],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ridge-host-frame-blit-pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: CANVAS_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("ridge-host-frame-blit-bind-group"),
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(frame_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+    (bind_group_layout, sampler, pipeline, bind_group)
+}
+
 /// Process-wide host-canvas swap-chain owner.
 pub struct SurfaceHost {
     /// Borrowed reference to the shared GPU stack (device / queue /
@@ -92,21 +246,23 @@ pub struct SurfaceHost {
     ctx: Rc<RefCell<GpuContext>>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    /// `true` until the next `begin_frame` issues the dedicated clear
-    /// render pass. Set true on construct, on `resize`, on
-    /// `invalidate`, and on `surface.get_current_texture` recovery.
-    /// Set unconditionally by `begin_frame` each frame, then
-    /// consumed (set false) after the clear pass is recorded.
-    needs_initial_clear: bool,
     /// Background color used by the seed-clear pass. Updated by
     /// `begin_frame` so theme changes propagate across all panes
     /// uniformly.
     frame_clear_color: wgpu::Color,
+    /// Stable per-workspace render target. Unlike a swap-chain texture, its
+    /// contents remain defined across frames and WebView2 compositor churn.
+    frame_store: wgpu::Texture,
+    frame_store_view: wgpu::TextureView,
+    blit_bind_group_layout: wgpu::BindGroupLayout,
+    blit_sampler: wgpu::Sampler,
+    blit_pipeline: wgpu::RenderPipeline,
+    blit_bind_group: wgpu::BindGroup,
     /// Per-frame transients. Populated by `begin_frame`, drained by
     /// `end_frame`. `record_pane` mutates the encoder via
     /// `begin_render_pass`. None outside the begin..end window.
     current_frame: Option<wgpu::SurfaceTexture>,
-    current_view: Option<wgpu::TextureView>,
+    current_surface_view: Option<wgpu::TextureView>,
     current_encoder: Option<wgpu::CommandEncoder>,
 }
 
@@ -178,20 +334,46 @@ impl SurfaceHost {
             let ctx_b = ctx.borrow();
             surface.configure(&ctx_b.device, &config);
         }
+        let (
+            frame_store,
+            frame_store_view,
+            blit_bind_group_layout,
+            blit_sampler,
+            blit_pipeline,
+            blit_bind_group,
+        ) = {
+            let ctx_b = ctx.borrow();
+            let (frame_store, frame_store_view) = create_frame_target(&ctx_b.device, 1, 1);
+            let (blit_bind_group_layout, blit_sampler, blit_pipeline, blit_bind_group) =
+                create_blit_resources(&ctx_b.device, &frame_store_view);
+            (
+                frame_store,
+                frame_store_view,
+                blit_bind_group_layout,
+                blit_sampler,
+                blit_pipeline,
+                blit_bind_group,
+            )
+        };
 
         Ok(Rc::new(RefCell::new(Self {
             ctx,
             surface,
             config,
-            needs_initial_clear: true,
             frame_clear_color: wgpu::Color {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,
                 a: 1.0,
             },
+            frame_store,
+            frame_store_view,
+            blit_bind_group_layout,
+            blit_sampler,
+            blit_pipeline,
+            blit_bind_group,
             current_frame: None,
-            current_view: None,
+            current_surface_view: None,
             current_encoder: None,
         })))
     }
@@ -216,17 +398,35 @@ impl SurfaceHost {
         self.config.height = backing_h;
         self.surface
             .configure(&self.ctx.borrow().device, &self.config);
-        // Swap-chain texture contents are undefined after configure.
-        // Force the next frame's first pass back to LoadOp::Clear.
-        self.needs_initial_clear = true;
+        let (frame_store, frame_store_view) = {
+            let ctx = self.ctx.borrow();
+            create_frame_target(&ctx.device, backing_w, backing_h)
+        };
+        let blit_bind_group = {
+            let ctx = self.ctx.borrow();
+            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ridge-host-frame-blit-bind-group"),
+                layout: &self.blit_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&frame_store_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                    },
+                ],
+            })
+        };
+        self.frame_store = frame_store;
+        self.frame_store_view = frame_store_view;
+        self.blit_bind_group = blit_bind_group;
     }
 
-    /// Mark the next frame for a fresh `LoadOp::Clear`. Called when a
-    /// pane detaches / parks / unparks (so departed-pane pixels don't
-    /// linger), when the theme changes, when the splitter settle moves
-    /// pane boundaries, and on surface-lost recovery.
+    /// Retained for the JS invalidation protocol. The frame store is seeded
+    /// every frame, so no Rust-side clear flag is needed here.
     pub fn invalidate(&mut self) {
-        self.needs_initial_clear = true;
     }
 
     /// Current swap-chain backing-pixel width, used by JS to clamp
@@ -247,31 +447,24 @@ impl SurfaceHost {
     ///
     /// Returns `false` on surface-lost / outdated — the caller (JS RAF
     /// loop) skips the rest of the frame and the next tick retries.
-    /// `theme_bg` is the 4-byte RGBA seed color used when
-    /// `needs_initial_clear` is active.
+    /// `theme_bg` is the 4-byte RGBA seed color for the frame-store pass.
     pub fn begin_frame(&mut self, theme_bg: [u8; 4]) -> bool {
         if self.current_frame.is_some() {
             // Stale frame from a previous tick that never ended (likely
             // a JS bug). Drop the transients and start fresh — better
             // than panicking inside a swap-chain double-acquire.
             self.current_encoder = None;
-            self.current_view = None;
+            self.current_surface_view = None;
             self.current_frame = None;
         }
         self.frame_clear_color = rgba_to_wgpu_color(theme_bg);
 
-        // P1.1 (2026-05-19): no longer unconditionally clearing every frame.
-        // With swap chain `desired_maximum_frame_latency: 1`, the texture
-        // returned by `get_current_texture` deterministically contains the
-        // pixels we presented as frame N-1; pane render passes use
-        // `LoadOp::Load` so non-dirty pane regions visually persist. The
-        // host's `needs_initial_clear` flag is now only set by external
-        // structural events: `invalidate()` (theme change, pane add /
-        // park / unpark, splitter settle), `resize()` (swap-chain
-        // dimensions changed), and the surface-lost recovery branch
-        // below. In every other case we keep the prior frame's pixels in
-        // gap regions (padding, splitter gutters) — they're stable across
-        // frames anyway, so leaving them untouched is correct.
+        // The offscreen frame store is always seeded before pane passes.
+        // Default shell cells intentionally use transparent backgrounds so
+        // wallpaper can show through, which means a dirty-row-only pass
+        // cannot erase glyphs from the previous frame. Full seeding plus
+        // full pane re-encoding prevents retained-pixel ghosting while the
+        // final swap-chain blit remains a single atomic presentation.
 
         // Reset the global frame-written mask so all atlas layers are
         // available for writing in this new frame, then apply any deferred
@@ -289,15 +482,17 @@ impl SurfaceHost {
 
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
-            Err(_e) => {
-                // Mark for re-seed; the next configure (driven by JS
-                // ResizeObserver or the next resize call) will reset
-                // the swap chain and we'll get a clean texture there.
-                self.needs_initial_clear = true;
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                // WebView2 can invalidate the swap chain without emitting a
+                // ResizeObserver event. Reconfigure immediately so the next
+                // RAF can acquire a fresh texture instead of staying blank.
+                self.surface
+                    .configure(&self.ctx.borrow().device, &self.config);
                 return false;
             }
+            Err(_) => return false,
         };
-        let view = frame
+        let surface_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder =
@@ -308,11 +503,11 @@ impl SurfaceHost {
                     label: Some("ridge-host-frame-encoder"),
                 });
 
-        // Perform a single global seed pass if needed.
+        // Perform a single global seed pass for every frame.
         // When a wallpaper is active, draw the full-screen quad instead of a
         // plain colour clear so the wallpaper is composited beneath every pane.
         // The wallpaper fragment always outputs alpha=1, so it fully replaces
-        // any stale pixels and the `needs_initial_clear` semantics are preserved.
+        // Any stale pixels are replaced before pane passes run.
         // §wallpaper-fix: 壁纸激活时**每帧无条件**画全屏 quad（顶替 clear）；
         // 无壁纸时维持原行为，仅在 needs_initial_clear 帧做普通 clear。把壁纸
         // 绘制 gate 在 needs_initial_clear 之内会让非首帧（光标闪烁等局部重绘）
@@ -350,7 +545,7 @@ impl SurfaceHost {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("ridge-host-wallpaper-pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
+                        view: &self.frame_store_view,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             // quad 不透明铺满整屏，等效 clear → Load 即可，省一次 clear。
@@ -366,12 +561,12 @@ impl SurfaceHost {
                 pass.set_bind_group(0, bg_group, &[]);
                 pass.draw(0..4, 0..1);
                 // pass dropped → render pass ends
-            } else if self.needs_initial_clear {
+            } else {
                 // ── Plain colour clear path ─────────────────────────────────
                 let mut _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("ridge-host-clear-pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
+                        view: &self.frame_store_view,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(self.frame_clear_color),
@@ -385,10 +580,8 @@ impl SurfaceHost {
                 // pass dropped here
             }
         }
-        self.needs_initial_clear = false;
-
         self.current_frame = Some(frame);
-        self.current_view = Some(view);
+        self.current_surface_view = Some(surface_view);
         self.current_encoder = Some(encoder);
         true
     }
@@ -427,10 +620,6 @@ impl SurfaceHost {
 
         let load = wgpu::LoadOp::Load;
 
-        let view = match self.current_view.as_ref() {
-            Some(v) => v,
-            None => return,
-        };
         let encoder = match self.current_encoder.as_mut() {
             Some(e) => e,
             None => return,
@@ -440,7 +629,7 @@ impl SurfaceHost {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ridge-host-pane-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
+                    view: &self.frame_store_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load,
@@ -497,13 +686,34 @@ impl SurfaceHost {
             Some(f) => f,
             None => return,
         };
-        self.current_view = None;
-
-        self.ctx.borrow().queue.submit(Some(encoder.finish()));
+        let surface_view = match self.current_surface_view.take() {
+            Some(v) => v,
+            None => return,
+        };
+        {
+            let mut encoder = encoder;
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ridge-host-frame-blit-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &surface_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(self.frame_clear_color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.blit_pipeline);
+            pass.set_bind_group(0, &self.blit_bind_group, &[]);
+            pass.draw(0..4, 0..1);
+            drop(pass);
+            self.ctx.borrow().queue.submit(Some(encoder.finish()));
+        }
         frame.present();
-        // `needs_initial_clear` was already consumed in `begin_frame`
-        // after issuing the dedicated clear pass. If no pane drew this
-        // frame (all idle), the encoder merely contains that clear —
-        // harmless. Next frame's `begin_frame` will set the flag again.
+        // If no pane drew this frame, the encoder still contains the seed
+        // pass, so the presented frame cannot expose stale frame-store data.
     }
 }

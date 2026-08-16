@@ -188,11 +188,15 @@ export class PaneFeedScheduler {
 
   clear(paneKey: string): void {
     this.queues.delete(paneKey);
-    if (!this.hasQueued()) this.cancelScheduledFrame();
+    if (!this.hasQueued()) {
+      this.scheduled = false;
+      this.cancelScheduledFrame();
+    }
   }
 
   clearAll(): void {
     this.queues.clear();
+    this.scheduled = false;
     this.cancelScheduledFrame();
   }
 

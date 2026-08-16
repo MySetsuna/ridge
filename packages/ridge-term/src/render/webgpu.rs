@@ -486,50 +486,13 @@ impl WebGpuPaneBackend {
     }
 
     fn requires_full_frame(&self) -> bool {
-        // P1.1's flag-driven version (returning `self.needs_initial_clear`)
-        // assumed `desired_maximum_frame_latency: 1` makes
-        // `get_current_texture` deterministically return frame N-1's
-        // pixels and `LoadOp::Load` therefore reliably preserves prior
-        // content. That assumption HOLDS on the e2e-shell release exe
-        // (where the spec also passes), but DOES NOT hold inside
-        // `pnpm tauri:dev:cdp` on Edge WebView2 148.0.3967.70 — there,
-        // every cursor-blink `render()` call writes a "row 6 only"
-        // instance buffer, presents over a swap-chain texture whose
-        // prior pixels are silently dropped, and the user sees the
-        // history rows blink in/out every 500 ms together with the
-        // cursor.
-        //
-        // Forcing a full frame on every tick re-encodes every visible
-        // row (~rows × cols cell instances on the idle blink) — wasteful
-        // but visually correct regardless of swap-chain preservation
-        // semantics. P1.1's CPU win was real but it traded correctness
-        // for an env-specific optimisation; we'd rather pay the encode
-        // cost than ship a fix that only renders right on the release
-        // build.
-        //
-        // If a future Edge / WebView2 update makes LoadOp::Load reliable
-        // again (e.g. via DXGI flip-discard with explicit retain), we
-        // can re-introduce the flag-driven fast path behind a runtime
-        // capability probe.
-        //
-        // TODO(①选区闪烁/首行选不中, 2026-06-18): 此恒-true 使活动 prompt 行被
-        // PSReadLine 高频重画时每帧整屏 LoadOp::Clear → 选区闪烁 + 首行难选中
-        // (首行=活动输入行)。修复需运行时取证后改为「初始化一次性能力探测」版:
-        // LoadOp::Load 可靠 → 返回 self.needs_initial_clear(脏行快路径);否则保持
-        // true。追踪 docs/term-rebuild/TASKS.md §1.36。
-        //
-        // §present-fast (2026-06-22): opt-in dirty-row fast path. Default
-        // (flag off) keeps the always-true behaviour above. When
-        // `setPresentFast(true)` is set (release WebView2 verified to preserve
-        // swap-chain pixels), return `needs_initial_clear` so cursor-blink /
-        // IME-preedit / selection / TUI redraws re-encode ONLY changed rows
-        // instead of full-Clearing + full-admitting every tick — kills the
-        // per-frame flash (IME-composition + selection flicker) and the
-        // per-frame glyph re-admission that amplifies the switch-workspace
-        // atlas-eviction garble. Reversible: unset → always-full path.
-        if present_fast() {
-            return self.needs_initial_clear;
-        }
+        // The persistent frame store is seeded every host frame, but default
+        // shell cells can be transparent. A dirty-row pass would therefore
+        // leave old glyph pixels behind. Re-encode every visible row so the
+        // one final frame-store blit contains no retained-pixel ghosting.
+        // Keep reading the compatibility flag so existing JS callers remain
+        // harmless; correctness no longer depends on the flag's value.
+        let _present_fast = present_fast();
         true
     }
 

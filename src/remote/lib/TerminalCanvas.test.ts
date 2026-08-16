@@ -54,6 +54,7 @@ describe('remote pane Agent status chrome contract', () => {
     expect(source).toContain("decideTouchMouseGesture('press')");
     expect(source).toContain("decideTouchMouseGesture('drag')");
     expect(source).toContain("decideTouchMouseGesture('release')");
+    expect(source).toContain('manager.hasLinkAt(paneId, startCell.row, startCell.col)');
     expect(source).toContain('ontouchcancel={handleTouchCancel}');
   });
 

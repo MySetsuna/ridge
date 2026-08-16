@@ -5,8 +5,8 @@ describe('formatDroppedPathsForPaste', () => {
 	it('单个路径原样返回（不加引号、不补空格）', () => {
 		expect(formatDroppedPathsForPaste(['C:\\a\\img.png'])).toBe('C:\\a\\img.png');
 	});
-	it('含空格路径也不加引号', () => {
-		expect(formatDroppedPathsForPaste(['C:\\my pics\\a.png'])).toBe('C:\\my pics\\a.png');
+	it('含空格路径按 PowerShell/cmd 习惯加引号', () => {
+		expect(formatDroppedPathsForPaste(['C:\\my pics\\a.png'])).toBe('"C:\\my pics\\a.png"');
 	});
 	it('多个路径用空格连接', () => {
 		expect(formatDroppedPathsForPaste(['a.png', 'b.jpg'])).toBe('a.png b.jpg');

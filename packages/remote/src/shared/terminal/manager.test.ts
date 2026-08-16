@@ -480,7 +480,8 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 			cwd: { current: () => '/repo', workspaceRoot: () => '/repo', all: () => ['/repo'] },
 			openTextLink,
 		});
-		fixture.kernel.hyperlinkAt.mockReturnValueOnce({ uri: 'https://example.com' });
+		fixture.kernel.hyperlinkAt.mockReturnValue({ uri: 'https://example.com' });
+		expect(manager.hasLinkAt(PANE, 1, 2)).toBe(true);
 		expect(manager.openLinkAt(PANE, 1, 2)).toBe(true);
 		expect(openTextLink).toHaveBeenLastCalledWith({
 			type: 'url',
@@ -489,10 +490,13 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 			workspaceRoot: '/repo',
 			origin: { kind: 'local', workspaceId: 'workspace-a', paneId: 'manager-test-pane' },
 	});
-		fixture.kernel.hyperlinkAt.mockReturnValueOnce(null);
-		fixture.pane.linkSpans.hitTest.mockReturnValueOnce({ text: 'src/main.ts:4', kind: 'rel' });
+		fixture.kernel.hyperlinkAt.mockReturnValue(null);
+		fixture.pane.linkSpans.hitTest.mockReturnValue({ text: 'src/main.ts:4', kind: 'rel' });
+		expect(manager.hasLinkAt(PANE, 1, 2)).toBe(true);
 		const ports = TerminalManager.hostPorts()!;
 		expect(manager.openLinkAt(PANE, 1, 2)).toBe(true);
+		fixture.pane.linkSpans.hitTest.mockReturnValue(null);
+		expect(manager.hasLinkAt(PANE, 1, 2)).toBe(false);
 		expect(ports.openTextLink).toHaveBeenLastCalledWith({
 			type: 'path',
 			path: '/repo/src/main.ts',
@@ -968,6 +972,28 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(order()).toEqual(['third-pane', PANE]);
 		manager.setFocused('third-pane', false);
 		expect(order()).toEqual(['third-pane', PANE]);
+	});
+
+	it('keeps focus and cursor ownership exclusive within each workspace', () => {
+		const { manager, fixture, internal } = makeManager();
+		const sibling = makePane();
+		sibling.pane.paneId = 'sibling-pane';
+		internal.panes.set(sibling.pane.paneId, sibling.pane);
+
+		manager.setFocused(PANE, true);
+		manager.setFocused(sibling.pane.paneId, true);
+		expect(fixture.handle.setFocused).toHaveBeenLastCalledWith(false);
+		expect(sibling.handle.setFocused).toHaveBeenLastCalledWith(true);
+		manager.park(sibling.pane.paneId);
+		expect(sibling.handle.setFocused).toHaveBeenLastCalledWith(false);
+
+		const otherWorkspace = makePane();
+		otherWorkspace.pane.paneId = 'other-workspace-pane';
+		otherWorkspace.pane.workspaceId = 'workspace-b';
+		internal.panes.set(otherWorkspace.pane.paneId, otherWorkspace.pane);
+		manager.setFocused(otherWorkspace.pane.paneId, true);
+		expect(sibling.handle.setFocused).toHaveBeenLastCalledWith(false);
+		expect(otherWorkspace.handle.setFocused).toHaveBeenLastCalledWith(true);
 	});
 
 	it('debounces viewport fitting and skips parked or missing panes', async () => {

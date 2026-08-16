@@ -641,7 +641,9 @@ function mouseButtonFromButtons(buttons: number): number {
 	if (buttons & 1) return 0;
 	if (buttons & 2) return 2;
 	if (buttons & 4) return 1;
-	return 0;
+	// SGR motion uses button 3 when no physical button is held. Using 0
+	// makes DECSET ?1003 hover look like a left-button drag to TUIs.
+	return 3;
 }
 
 export class TerminalManager {
@@ -668,13 +670,11 @@ export class TerminalManager {
 	 * the new worker receives its init. */
 	private workerRendererRef: ReturnType<typeof getWorkerRenderer> = null;
 	private rafHandle: number | null = null;
-	/** P2.2 (2026-05-20): id of the pane currently marked focused via
-	 *  `setFocused(paneId, true)`. Used by the RAF tick to render the
-	 *  focused pane FIRST each frame so its keystrokes / cursor blink
-	 *  beat sibling panes' draws when the frame budget is tight. `null`
-	 *  when no pane is focused (rare — usually one of the visible panes
-	 *  carries the input focus). */
-	private _focusedPaneId: string | null = null;
+	/** P2.2 (2026-05-20): focus/cursor owner per workspace. Keeping this
+	 *  keyed by workspace prevents a focus claim in one split tree from
+	 *  stealing the cursor owner of another tree. `setFocused(true)` also
+	 *  clears the previous owner's renderer before installing the new one. */
+	private readonly _focusedPaneByWorkspace = new Map<string, string>();
 	/** Workspace id whose SplitContainer is currently `display:flex` (vs
 	 *  `display:none`). Set by `onActiveWorkspaceChanged` whenever the UI
 	 *  flips between workspace tabs. Used by `_isContainerHidden` to
@@ -1429,7 +1429,7 @@ export class TerminalManager {
 		const candidates = [...this.panes.values()].map((entry) => ({
 			paneId: entry.paneId,
 			scrollbackRows: entry.kernel.scrollbackLen(),
-			focused: entry.paneId === this._focusedPaneId,
+			focused: entry.paneId === this._focusedPaneByWorkspace.get(entry.workspaceId),
 			hidden: this._activeWorkspaceId !== null && entry.workspaceId !== this._activeWorkspaceId,
 			parked: entry.parked,
 			lastForegroundAt: entry.lastForegroundAt,
@@ -2402,6 +2402,7 @@ export class TerminalManager {
 		}
 		const canvas = document.createElement('canvas');
 		canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
+		canvas.style.background = 'var(--rg-term-bg, var(--rg-bg))';
 		canvas.setAttribute('aria-hidden', 'true');
 		container.appendChild(canvas);
 		return { canvas, hostHandle: undefined };
@@ -2634,6 +2635,9 @@ export class TerminalManager {
 		workerRendererBridge.destroy(paneId);
 		this.workerAttached.delete(paneId);
 		this.workerInitializing.delete(paneId);
+		if (this._focusedPaneByWorkspace.get(entry.workspaceId) === paneId) {
+			this._focusedPaneByWorkspace.delete(entry.workspaceId);
+		}
 		this.panes.delete(paneId);
 		if (this.panes.size === 0) this.stopRafLoop();
 	}
@@ -2656,6 +2660,10 @@ export class TerminalManager {
 		if (entry.parked) {
 			this._updateParkedEntry(entry, reason);
 			return;
+		}
+		if (this._focusedPaneByWorkspace.get(entry.workspaceId) === paneId) {
+			this._focusedPaneByWorkspace.delete(entry.workspaceId);
+			entry.handle?.setFocused(false);
 		}
 		this._detachParkedBindings(entry);
 		const retainRenderer = this._shouldRetainRenderer(paneId, entry, reason);
@@ -2775,6 +2783,7 @@ export class TerminalManager {
 		}
 		const canvas = document.createElement('canvas');
 		canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
+		canvas.style.background = 'var(--rg-term-bg, var(--rg-bg))';
 		canvas.setAttribute('aria-hidden', 'true');
 		container.appendChild(canvas);
 		return { usingWorker, useHost, canvas };
@@ -3631,26 +3640,26 @@ export class TerminalManager {
 		entry.lastScrollTotal = -1;
 	}
 
-	/** Tell the wasm renderer whether this pane is the focused one. Only the
-	 *  truly focused pane should blink its cursor; unfocused panes hide it
-	 *  entirely. RidgePane wires this to the global `activePaneId` store so
-	 *  switching panes flips the cursor visibility on both sides instantly. */
+	/** Tell the wasm renderer whether this pane is the focused one. Only one
+	 *  pane per workspace may own a cursor; claiming focus clears the prior
+	 *  owner's renderer before the new pane is allowed to blink. */
 	setFocused(paneId: string, focused: boolean): void {
-		this.panes.get(paneId)?.handle?.setFocused(focused);
-		// P2.2 (2026-05-20): also mirror the focus bit at the manager
-		// level so the RAF tick can order the focused pane FIRST each
-		// frame. Without this the renderer-side `set_focused` is the
-		// only signal, and the tick has no way to peek at it from
-		// outside the wasm bridge. Clear when the currently-tracked
-		// pane loses focus and nothing else has claimed it yet —
-		// otherwise the stale id would push a parked / departing pane
-		// to the head of the order.
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		const workspaceId = entry.workspaceId;
 		if (focused) {
-			this._focusedPaneId = paneId;
-			const entry = this.panes.get(paneId);
-			if (entry) entry.lastForegroundAt = Date.now();
-		} else if (this._focusedPaneId === paneId) {
-			this._focusedPaneId = null;
+			const previousId = this._focusedPaneByWorkspace.get(workspaceId);
+			if (previousId && previousId !== paneId) {
+				this.panes.get(previousId)?.handle?.setFocused(false);
+			}
+			this._focusedPaneByWorkspace.set(workspaceId, paneId);
+			entry.handle?.setFocused(true);
+			entry.lastForegroundAt = Date.now();
+		} else {
+			if (this._focusedPaneByWorkspace.get(workspaceId) === paneId) {
+				this._focusedPaneByWorkspace.delete(workspaceId);
+			}
+			entry.handle?.setFocused(false);
 		}
 		// Cursor visibility changed → cursor row dirties → wake.
 		this.wake();
@@ -3671,7 +3680,9 @@ export class TerminalManager {
 			if (!entry.parked) live.push(entry);
 		}
 		if (live.length <= 1) return live;
-		const focusedId = this._focusedPaneId;
+		const focusedId = this._activeWorkspaceId === null
+			? live.find((entry) => this._focusedPaneByWorkspace.get(entry.workspaceId) === entry.paneId)?.paneId ?? null
+			: this._focusedPaneByWorkspace.get(this._activeWorkspaceId) ?? null;
 		let focused: PaneEntry | undefined;
 		const others: PaneEntry[] = [];
 		for (const e of live) {
@@ -4082,6 +4093,16 @@ export class TerminalManager {
 		return TerminalManager._executeOpenPlan(plan, entry, oscLink?.uri ?? textSpan!.text);
 	}
 
+	/** Whether a cell contains a validated OSC-8 or plain-text link.  This is
+	 * deliberately side-effect free so touch handling can reserve link taps
+	 * without suppressing press-drag-release delivery to mouse-reporting TUIs. */
+	hasLinkAt(paneId: string, row: number, col: number): boolean {
+		const entry = this.panes.get(paneId);
+		if (!entry) return false;
+		const oscLink = entry.kernel.hyperlinkAt(row, col) as { uri?: string } | null;
+		return Boolean(oscLink?.uri || entry.linkSpans.hitTest(entry.kernel, row, col));
+	}
+
 	/** Forward a pointerdown event to the TUI application when DEC mouse
 	 *  reporting is active. Encodes the click as an SGR mouse sequence
 	 *  and sends it through the data handler. This is the public entry
@@ -4211,6 +4232,7 @@ export class TerminalManager {
 		if (entry.parked || entry.handle) return;
 		const canvas = document.createElement('canvas');
 		canvas.style.cssText = 'display:block; width:100%; height:100%; position:relative; z-index:0;';
+		canvas.style.background = 'var(--rg-term-bg, var(--rg-bg))';
 		canvas.setAttribute('aria-hidden', 'true');
 		if (entry.canvas.parentElement === entry.container) {
 			entry.canvas.replaceWith(canvas);

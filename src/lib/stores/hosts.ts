@@ -1066,6 +1066,10 @@ export async function disconnectHost(hostId: string): Promise<void> {
 export async function forgetHost(hostId: string): Promise<void> {
   const linked = registeredHostLinks.get(hostId);
   if (linked) {
+    // A live frontend link is only the transport adapter.  Its topology was
+    // already persisted by `register_frontend_host`; remove that kernel record
+    // too, otherwise a restart restores the host that the user just forgot.
+    if (isTauri()) await invoke('forget_host', { hostId });
     linked.link.disconnect();
     registeredHostLinks.delete(hostId);
     topologyByHost.delete(hostId);

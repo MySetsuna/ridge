@@ -536,7 +536,12 @@
     touchStartTime = Date.now();
     suppressMouseUntil = touchStartTime + 500;
     const startCell = clientToCell(t.clientX, t.clientY);
-    touchLinkCell = startCell ? { row: startCell.row, col: startCell.col } : null;
+    // Reserve the gesture for link opening only when this cell is actually a
+    // link. A valid grid cell is not itself a link: treating every cell as one
+    // prevented mouse-reporting TUIs from ever entering touch drag mode.
+    touchLinkCell = startCell && manager.hasLinkAt(paneId, startCell.row, startCell.col)
+      ? { row: startCell.row, col: startCell.col }
+      : null;
     // §select-as-mouse (R5): the select toggle SIMULATES A MOUSE — emit mouse
     // signals and let the receiving terminal decide (parity with desktop). When
     // the app captures the mouse (mouse-reporting TUI) we forward a press and the
