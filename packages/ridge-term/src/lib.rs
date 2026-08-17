@@ -77,17 +77,6 @@ pub fn atlas_overwrite_after_cite_count() -> f64 {
     crate::render::gpu_context::atlas_overwrite_after_cite_count() as f64
 }
 
-/// §stale-replay detector (2026-06-22 round 2): read the process-wide count of
-/// cached replays aborted because a cited atlas layer was repurposed since
-/// caching — the CROSS-frame switch-workspace garble the per-frame detector
-/// misses. Non-zero with the fix in place means "the bug WAS happening and is
-/// now caught + re-rendered." 0 on Canvas2D-only builds.
-#[cfg(all(target_arch = "wasm32", feature = "webgpu"))]
-#[wasm_bindgen(js_name = staleReplayCount)]
-pub fn stale_replay_count() -> f64 {
-    crate::render::gpu_context::stale_replay_count() as f64
-}
-
 #[wasm_bindgen(js_name = TerminalKernel)]
 pub struct JsTerminal {
     inner: Terminal,
@@ -846,11 +835,11 @@ impl JsTerminal {
     // ---- mouse mode queries -----------------------------------------
 
     /// Returns true when any DEC mouse reporting mode is active
-    /// (?1000 normal, ?1002 button-event, or ?1003 any-event).
+    /// (?9 X10, ?1000 normal, ?1002 button-event, or ?1003 any-event).
     #[wasm_bindgen(js_name = isMouseReporting)]
     pub fn is_mouse_reporting(&self) -> bool {
         let m = self.inner.modes();
-        m.mouse_normal || m.mouse_button_event || m.mouse_any_event
+        m.mouse_x10 || m.mouse_normal || m.mouse_button_event || m.mouse_any_event
     }
 
     /// Returns true when ?1002 (button-event / drag tracking) is active.
@@ -878,7 +867,7 @@ impl JsTerminal {
     ///   bit 0 (0x1) = ?1000 (mouse_normal)
     ///   bit 1 (0x2) = ?1002 (button_event / drag tracking)
     ///   bit 2 (0x4) = ?1003 (any_event / all motion)
-    ///   bit 3 (0x8) = ?1006 (SGR encoding)
+    ///   bit 3 (0x8) = ?9 (X10 press-only tracking)
     ///
     /// `bits != 0` <=> `isMouseReporting() == true`. The individual
     /// boolean getters above are kept for non-hot-path callers.
@@ -895,17 +884,14 @@ impl JsTerminal {
         if m.mouse_any_event {
             bits |= 4;
         }
-        if m.mouse_sgr {
+        if m.mouse_x10 {
             bits |= 8;
         }
         bits
     }
 
-    /// Encode a mouse event as an SGR terminal sequence. Delegates to
-    /// `input::encode_mouse` which generates `ESC [ < btn ; col ; row [Mm]`
-    /// per xterm SGR spec (column first, then row).
-    /// Always uses SGR format regardless of ?1006 state — the terminal
-    /// decodes both; SGR is simpler and doesn't overflow at high row/col.
+    /// Encode a mouse event using the negotiated xterm encoding: bounded
+    /// legacy X10, UTF-8 ?1005, SGR ?1006, or URXVT ?1015.
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = encodeMouse)]
     pub fn encode_mouse(
@@ -1380,33 +1366,12 @@ mod renderer_js {
             self.renderer.invalidate_all();
         }
 
-        /// §4b per-pane increment cache (2026-05-08): re-record this
-        /// pane's previously-uploaded GPU instance buffer into the
-        /// host's current frame without retraversing the kernel grid.
-        /// Returns `true` on success, `false` when the cache was
-        /// invalidated (caller must fall back to full `render`).
-        ///
-        /// Used by `manager.ts::startRafLoop` for visible host-mode
-        /// panes that pre-pass marked NOT dirty: the swap-chain
-        /// `LoadOp::Clear` would otherwise wipe their region (forcing
-        /// a re-encode for unchanged content). With this path, the
-        /// per-tick CPU cost of N idle visible panes drops from
-        /// O(rows × cols × N) to one GPU draw call per pane —
-        /// eliminating the typing-while-other-panes-have-output lag
-        /// (forceHostRenderAll's multiplier).
-        #[wasm_bindgen(js_name = recordCachedOnly)]
-        pub fn record_cached_only(&mut self) -> bool {
-            self.renderer.record_cached_only()
-        }
-
-        /// §atlas-pin: before this frame's panes full-render, pin every
-        /// visible cached pane's glyph layers so another pane's glyph
-        /// admission can't evict + overwrite a layer this pane's
-        /// `recordCachedOnly` replay still samples. Caller: `manager.ts`
-        /// host loop, right after the host frame opens.
-        #[wasm_bindgen(js_name = pinCachedLayers)]
-        pub fn pin_cached_layers(&mut self) {
-            self.renderer.pin_cached_layers();
+        /// Force one complete viewport repaint while preserving the shared
+        /// glyph atlas. Used after SurfaceHost structurally seeds its backing
+        /// store; unlike `invalidateAll`, this does not discard valid glyphs.
+        #[wasm_bindgen(js_name = repaintAll)]
+        pub fn repaint_all(&mut self) {
+            self.renderer.request_full_redraw();
         }
 
         /// Multi-pane hosts call this when the active pane changes. When
@@ -1641,6 +1606,14 @@ mod renderer_js {
         /// splitter settle moves pane boundaries.
         pub fn invalidate(&self) {
             self.host.borrow_mut().invalidate();
+        }
+
+        /// True when the compositor-owned frame store must be seeded before
+        /// the next present. This also covers device/surface recovery that did
+        /// not originate from a JS `invalidate()` call.
+        #[wasm_bindgen(js_name = needsFullSeed)]
+        pub fn needs_full_seed(&self) -> bool {
+            self.host.borrow().needs_full_seed()
         }
 
         /// Begin one host frame: acquire swap-chain texture + create

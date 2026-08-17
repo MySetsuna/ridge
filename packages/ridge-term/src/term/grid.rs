@@ -115,22 +115,15 @@ pub struct ResizeDiag {
     pub is_alt: bool,
     pub dim_changed: bool,
     pub branch: ResizeBranch,
-    /// Whether the §1.22 alt-buffer wipe path fired (entire visible alt
-    /// region cleared + cursor homed).
+    /// Legacy resize-wipe diagnostic. Kept wire-compatible; always false now
+    /// that resize preserves the last complete frame until the app redraws.
     pub wipe_fired: bool,
-    /// Whether the §1.26 partial primary cleanup fired (cursor row past
-    /// cur_col + every row below cursor cleared, rows above preserved).
-    /// Used for plain shell resizes — keeps prior command output visible.
+    /// Legacy partial-cleanup diagnostic. Kept wire-compatible; always false.
     pub cleared_below_cursor: bool,
     /// Whether the history rows were reflowed at the new column width.
     /// Only true for primary-screen width changes outside inline TUI.
     pub reflowed: bool,
-    /// Whether the §A.3 inline-TUI **full** primary wipe fired (entire
-    /// visible primary region cleared + cursor homed, scrollback
-    /// preserved). Used when an Ink-style app (Claude Code's input box)
-    /// is foreground on primary so its diff redraw lands on a blank
-    /// canvas. Mutually exclusive with `wipe_fired` (alt) and with
-    /// `cleared_below_cursor` (which would be redundant under a full wipe).
+    /// Legacy inline-TUI wipe diagnostic. Kept wire-compatible; always false.
     pub inline_tui_wipe: bool,
     /// Snapshot of the inline-TUI heuristic at resize time, for live
     /// debugging via `__RIDGE_KERNEL.lastResizeDiags()`. True when the
@@ -262,18 +255,19 @@ pub struct Grid {
     /// cursor visible, no DECCKM/mouse, last abs-CSI long decayed — so the live
     /// heuristic returns false and `resize` falls to the shell path, leaving the
     /// multi-row input-box border ABOVE the cursor as garbage. The sticky bit
-    /// keeps the pane classified as inline-TUI across idle so `resize` wipes the
-    /// whole frame. Read by `is_inline_tui_for_resize_at`, NOT by the live
+    /// keeps the pane classified as inline-TUI across idle so resize can reflow
+    /// history at the frame boundary and order parser resize before SIGWINCH.
+    /// Read by `is_inline_tui_for_resize_at`, NOT by the live
     /// `is_inline_tui_active_at` (which the shell-history popup gate relies on
     /// staying purely live).
     inline_tui_sticky: bool,
     /// §sticky-inline-tui — minimum cursor row reached during the current
     /// absolute-positioning render burst (consecutive abs-CSIs within
     /// `RENDER_BURST_GAP_MS`). This is the inline-TUI frame's TOP row; the
-    /// resize wipe clears from here downward so the box border above the input
-    /// cursor is erased (unlike `last_abs_csi_row`, which is the LAST CUP = the
-    /// input row at the frame's bottom). Persists across idle so an idle
-    /// Claude's frame top is still known at resize time.
+    /// resize reflow treats history above this row separately from the live
+    /// frame (unlike `last_abs_csi_row`, which is the LAST CUP = the input row
+    /// at the frame's bottom). Persists across idle so an idle Claude's frame
+    /// top is still known at resize time.
     frame_top_row: u16,
     /// SGR "pen" mirrored from the parser's `current_attrs` for BCE
     /// (Background Color Erase). Erase / scroll / IL / DL paths fill
@@ -867,21 +861,15 @@ impl Grid {
         self.resize_with_inline_tui(rows, cols, false);
     }
 
-    /// Resize with explicit inline-TUI awareness. When `inline_tui_active`
-    /// is true and we're currently on primary AND dimensions changed, the
-    /// visible primary region is fully wiped (§A.3) so an Ink-style app's
-    /// SIGWINCH redraw paints onto a clean canvas — the same treatment
-    /// alt-screen TUIs already get via §1.22.
+    /// Resize with explicit inline-TUI awareness. Content remains visible until
+    /// the app's SIGWINCH redraw arrives; blanking here makes a missed or partial
+    /// redraw permanent. The flag only selects the primary-history reflow
+    /// boundary and remains available in diagnostics.
     pub fn resize_with_inline_tui(&mut self, rows: usize, cols: usize, inline_tui_active: bool) {
         let old_rows = self.rows;
         let old_cols = self.cols;
         let dim_changed = rows != old_rows || cols != old_cols;
         let (branch, reflowed) = self.resize_screens(rows, cols, inline_tui_active);
-        let wipe_fired = self.wipe_alt_screen(rows, dim_changed);
-        let inline_tui_wipe =
-            self.wipe_inline_primary(rows, dim_changed, reflowed, inline_tui_active);
-        let cleared_below_cursor =
-            self.clear_primary_tail(rows, cols, dim_changed, inline_tui_wipe);
         self.rows = rows;
         self.cols = cols;
         self.record_resize_diag(ResizeDiag {
@@ -892,10 +880,10 @@ impl Grid {
             is_alt: self.is_alt,
             dim_changed,
             branch,
-            wipe_fired,
-            cleared_below_cursor,
+            wipe_fired: false,
+            cleared_below_cursor: false,
             reflowed,
-            inline_tui_wipe,
+            inline_tui_wipe: false,
             inline_tui_active,
         });
     }
@@ -921,7 +909,7 @@ impl Grid {
         };
         let reflowed = cols_changed && !self.is_alt && reflow_boundary > 0;
         if reflowed {
-            self.reflow_primary_history(old_cols, cols, reflow_boundary, !inline_tui_active);
+            self.reflow_primary_history(old_cols, cols, reflow_boundary);
         }
         Self::naive_resize_screen(&mut self.primary, rows, cols);
         Self::naive_resize_screen(&mut self.alt, rows, cols);
@@ -933,79 +921,6 @@ impl Grid {
             },
             reflowed,
         )
-    }
-
-    fn wipe_alt_screen(&mut self, rows: usize, dim_changed: bool) -> bool {
-        if !dim_changed || !self.is_alt {
-            return false;
-        }
-        let bce = self.bce_cell();
-        for row in &mut self.alt.rows {
-            row.fill_blank(bce);
-        }
-        self.alt.cursor = Cursor::default();
-        self.alt.scroll_top = 0;
-        self.alt.scroll_bottom = rows.saturating_sub(1);
-        true
-    }
-
-    fn wipe_inline_primary(
-        &mut self,
-        rows: usize,
-        dim_changed: bool,
-        reflowed: bool,
-        inline_tui_active: bool,
-    ) -> bool {
-        if !dim_changed || self.is_alt || !inline_tui_active {
-            return false;
-        }
-        let last_row = rows.saturating_sub(1);
-        let wipe_from = if reflowed {
-            self.primary.cursor.row.min(last_row)
-        } else if self.last_abs_csi_at_ms != 0 {
-            (self.frame_top_row as usize).min(last_row)
-        } else {
-            0
-        };
-        let bce = self.bce_cell();
-        for row in self.primary.rows.iter_mut().skip(wipe_from) {
-            row.fill_blank(bce);
-        }
-        self.primary.cursor.row = wipe_from;
-        self.primary.cursor.col = 0;
-        self.primary.cursor.pending_wrap = false;
-        self.primary.scroll_top = 0;
-        self.primary.scroll_bottom = last_row;
-        true
-    }
-
-    fn clear_primary_tail(
-        &mut self,
-        rows: usize,
-        cols: usize,
-        dim_changed: bool,
-        inline_tui_wipe: bool,
-    ) -> bool {
-        if !dim_changed || self.is_alt || inline_tui_wipe {
-            return false;
-        }
-        let cur_row = self.primary.cursor.row.min(rows.saturating_sub(1));
-        let cur_col = self.primary.cursor.col.min(cols.saturating_sub(1));
-        let bce = self.bce_cell();
-        if let Some(row) = self.primary.rows.get_mut(cur_row) {
-            let start = (cur_col + 1).min(row.cells.len());
-            for cell in &mut row.cells[start..] {
-                *cell = bce;
-            }
-            row.hyperlinks.retain(|span| span.col_start < start);
-            for span in &mut row.hyperlinks {
-                span.col_end = span.col_end.min(start);
-            }
-        }
-        for row in self.primary.rows.iter_mut().skip(cur_row + 1) {
-            row.fill_blank(bce);
-        }
-        true
     }
 
     fn record_resize_diag(&mut self, diag: ResizeDiag) {
@@ -1090,17 +1005,11 @@ impl Grid {
     ///     column (mirroring `print`'s own wrap rule). Its width-0 spacer
     ///     always rides with it.
     ///
-    /// `preserve_cursor_area`:
-    ///  - `true` (shell / PSReadLine): the live region `[boundary..)` is the
-    ///    prompt + edit line, anchored to the cursor. Visible history is
-    ///    capped at `boundary` rows; the surplus overflows to scrollback so
-    ///    the prompt stays put. `cursor.row` lands at the new history count
-    ///    (≤ boundary).
-    ///  - `false` (inline TUI): the region below the frame top is wipeable
-    ///    canvas, so history takes priority — it may grow to the full screen,
-    ///    trimming the (about-to-be-wiped) live region from the bottom.
-    ///    `cursor.row` lands at the new history count so the caller can
-    ///    re-anchor the frame-wipe there (the inline path reads it back).
+    /// The live region `[boundary..)` is preserved in full. Reflow surplus
+    /// overflows to scrollback, and the cursor keeps its row offset inside the
+    /// live region. The latter is essential for inline TUIs: moving the cursor
+    /// to the frame top made their relative SIGWINCH repaint clear the wrong
+    /// rows after the old resize-wipe path was removed.
     ///
     /// Runs BEFORE `naive_resize_screen` so the old-width cell data is still
     /// intact. Hyperlink / cluster sidecars (OSC 8, ZWJ-emoji) are dropped on
@@ -1111,7 +1020,6 @@ impl Grid {
         old_cols: usize,
         new_cols: usize,
         boundary: usize,
-        preserve_cursor_area: bool,
     ) {
         debug_assert!(old_cols != new_cols);
         // A zero-width grid has no columns to wrap into — bail and let the
@@ -1130,7 +1038,6 @@ impl Grid {
         self.layout_reflowed_history(
             out_rows,
             boundary,
-            preserve_cursor_area,
             total_rows,
             new_cols,
         );
@@ -1304,18 +1211,14 @@ impl Grid {
         &mut self,
         mut out_rows: Vec<Row>,
         boundary: usize,
-        preserve_cursor_area: bool,
         total_rows: usize,
         new_cols: usize,
     ) {
+        let cursor_offset = self.primary.cursor.row.saturating_sub(boundary);
         let cursor_area_count = total_rows - boundary;
         let cursor_area: Vec<Row> = self.primary.rows.split_off(boundary);
         self.primary.rows.clear();
-        let max_visible_history = if preserve_cursor_area {
-            boundary
-        } else {
-            total_rows
-        };
+        let max_visible_history = boundary;
         let visible_history = out_rows.len().min(max_visible_history);
         let overflow = out_rows.len() - visible_history;
         for row in out_rows.drain(0..overflow) {
@@ -1332,7 +1235,9 @@ impl Grid {
         new_rows.resize_with(total_rows, || Row::new(new_cols));
         new_rows.truncate(total_rows);
         self.primary.rows = new_rows;
-        self.primary.cursor.row = visible_history.min(total_rows.saturating_sub(1));
+        self.primary.cursor.row = visible_history
+            .saturating_add(cursor_offset)
+            .min(total_rows.saturating_sub(1));
         self.primary.cursor.col = self.primary.cursor.col.min(new_cols.saturating_sub(1));
         self.primary.cursor.pending_wrap = false;
     }
@@ -2493,12 +2398,10 @@ mod tests {
         assert!(g.primary.is_full_region());
     }
 
-    // §1.22 (2026-05-05): when on alt screen and dimensions change, the alt
-    // buffer should be wiped so the application's SIGWINCH redraw paints on
-    // a clean canvas (Claude Code / lazygit / Ink-based CLIs use partial-
-    // diff redraws that DON'T necessarily repaint every cell).
+    // Preserve the last complete alt-screen frame across resize. A partial or
+    // missed SIGWINCH redraw must not leave the user staring at a blank pane.
     #[test]
-    fn resize_on_alt_screen_clears_alt_buffer() {
+    fn resize_on_alt_screen_preserves_alt_buffer() {
         let mut g = Grid::new(5, 10, 0);
         g.enter_alt_screen(true);
         // Paint some content on the alt screen.
@@ -2512,20 +2415,12 @@ mod tests {
 
         g.resize(8, 14);
 
-        // After resize on alt, every visible cell should be cleared.
-        for r_idx in 0..g.rows() {
-            let row = g.row(r_idx).unwrap();
-            for cell in &row.cells {
-                assert_eq!(
-                    cell.ch, ' ',
-                    "cell at row {r_idx} not cleared post-resize on alt"
-                );
-            }
-        }
-        // Cursor reset to home.
+        assert_eq!(g.row(0).unwrap().cells[0].ch, 'x');
+        assert_eq!(g.row(0).unwrap().cells[1].ch, 'y');
+        assert_eq!(g.row(0).unwrap().cells[2].ch, 'z');
         let cur = g.cursor();
         assert_eq!(cur.row, 0);
-        assert_eq!(cur.col, 0);
+        assert_eq!(cur.col, 3);
     }
 
     #[test]
@@ -2805,7 +2700,7 @@ mod tests {
     }
 
     #[test]
-    fn resize_alt_clears_buffer_no_reflow() {
+    fn resize_alt_preserves_last_frame_no_reflow() {
         // §1.22 + §1.25: alt-screen resize wipes the alt buffer so the
         // application's SIGWINCH-driven redraw paints on a clean canvas.
         // No row should claim wrapped=true (no reflow ever runs).
@@ -2816,14 +2711,9 @@ mod tests {
         }
         g.resize(3, 5);
         assert_eq!(g.cols(), 5);
-        for r_idx in 0..g.rows() {
-            assert_eq!(
-                row_text(&g, r_idx),
-                "",
-                "alt row {r_idx} not cleared after resize"
-            );
-            assert!(!g.row(r_idx).unwrap().wrapped);
-        }
+        assert_eq!(row_text(&g, 0), "abcde");
+        assert_eq!(row_text(&g, 1), "");
+        assert_eq!(row_text(&g, 2), "");
     }
 
     #[test]
@@ -2843,10 +2733,7 @@ mod tests {
         let last = g.last_resize_diags().last().expect("alt resize recorded");
         assert_eq!(last.branch, ResizeBranch::Naive);
         assert!(last.is_alt);
-        assert!(
-            last.wipe_fired,
-            "wipe runs when alt is active and dims change"
-        );
+        assert!(!last.wipe_fired);
     }
 
     // ---- §A.3 inline-TUI primary wipe ---------------------------------
@@ -2859,7 +2746,7 @@ mod tests {
     // Ink's diff redraw paints on a blank canvas.
 
     #[test]
-    fn inline_tui_resize_full_wipes_primary_visible_region() {
+    fn inline_tui_resize_preserves_visible_region_until_redraw() {
         let mut g = Grid::new(6, 20, 100);
         // Simulate Ink-style render: place a `╮` at col 18 of row 1
         // (top-right corner of an old-width input box) plus a body
@@ -2876,19 +2763,13 @@ mod tests {
 
         g.resize_with_inline_tui(6, 12, true);
 
-        for r in 0..g.rows() {
-            assert_eq!(
-                row_text(&g, r),
-                "",
-                "primary row {r} should be wiped under inline-TUI resize"
-            );
-            assert!(!g.row(r).unwrap().wrapped);
-        }
-        assert_eq!(g.cursor().row, 0, "cursor homed on inline-TUI wipe");
+        assert_eq!(row_text(&g, 1), "", "out-of-bounds marker is truncated");
+        assert_eq!(row_text(&g, 4), "x", "in-bounds content remains visible");
+        assert_eq!(g.cursor().row, 5, "cursor row remains stable");
         assert_eq!(g.cursor().col, 0, "cursor homed on inline-TUI wipe");
 
         let diag = g.last_resize_diags().last().expect("resize recorded");
-        assert!(diag.inline_tui_wipe, "inline_tui_wipe diag fired");
+        assert!(!diag.inline_tui_wipe, "destructive resize wipe stays disabled");
         assert!(diag.inline_tui_active, "heuristic snapshot recorded");
         assert!(!diag.wipe_fired, "alt-screen wipe did NOT fire on primary");
         assert!(
@@ -2914,10 +2795,7 @@ mod tests {
         let diag = g.last_resize_diags().last().expect("resize recorded");
         assert!(!diag.inline_tui_wipe, "no full wipe without heuristic");
         assert!(!diag.inline_tui_active, "heuristic snapshot stays off");
-        assert!(
-            diag.cleared_below_cursor,
-            "§1.26 partial cleanup still runs"
-        );
+        assert!(!diag.cleared_below_cursor);
     }
 
     #[test]
@@ -2929,8 +2807,8 @@ mod tests {
         // repaints its own frame rows, never the history). Before the fix the
         // inline path skipped reflow and the history was naively truncated →
         // the "resize 后没有正常 reflow" symptom. Verify the history above the
-        // frame top is REWRAPPED (not truncated) and the frame region is wiped
-        // for Ink to repaint onto blanks.
+        // frame top is REWRAPPED (not truncated), while the live frame and its
+        // cursor-relative position remain intact for Ink's repaint.
         let mut g = Grid::new(8, 20, 100);
 
         // History: one 24-char logical line wraps across rows 0-1 at 20 cols.
@@ -2945,7 +2823,7 @@ mod tests {
         assert_eq!(row_text(&g, 1), "UVWX");
 
         // Inline-TUI frame top at row 2: record an absolute-positioning CSI
-        // there (marks the frame top for the wipe), then a frame marker, then
+        // there (marks the frame top), then a frame marker, then
         // park the cursor at the frame bottom.
         g.cursor_to(2, 0);
         g.note_absolute_positioning(1_000);
@@ -2955,31 +2833,27 @@ mod tests {
         // Narrow 20 → 10 cols in inline-TUI mode.
         g.resize_with_inline_tui(8, 10, true);
 
-        // History rewrapped at 10 cols: "ABCDEFGHIJKLMNOPQRSTUVWX" (24) →
-        //   row0 "ABCDEFGHIJ", row1 "KLMNOPQRST", row2 "UVWX". The KEY
-        // assertion is row1: naive truncation would have LOST "KLMNOPQRST" and
-        // left "UVWX" there.
-        assert_eq!(row_text(&g, 0), "ABCDEFGHIJ", "reflow keeps first 10 cols");
+        // History rewrapped at 10 cols. The oldest row moves to scrollback so
+        // the live frame remains anchored at row 2.
+        assert_eq!(g.scrollback.len(), 1);
         assert_eq!(
-            row_text(&g, 1),
+            raw_row_text(g.scrollback.get(0).unwrap()).trim_end(),
+            "ABCDEFGHIJ",
+            "reflow keeps the oldest chunk in scrollback"
+        );
+        assert_eq!(
+            row_text(&g, 0),
             "KLMNOPQRST",
             "reflow rewraps the overflow (truncation would lose it)"
         );
-        assert_eq!(row_text(&g, 2), "UVWX", "reflow tail row");
+        assert_eq!(row_text(&g, 1), "UVWX", "reflow tail row");
+        assert_eq!(row_text(&g, 2), "F", "live frame marker remains anchored");
+        assert_eq!(g.cursor().row, 3, "cursor keeps its frame-relative row");
         assert!(g.row(0).unwrap().wrapped, "rewrapped row 0 still wrapped");
-        assert!(g.row(1).unwrap().wrapped, "rewrapped row 1 still wrapped");
-
-        // History now occupies 3 rows → frame top moved to row 3. The frame
-        // region is wiped for Ink; cursor anchored there.
-        for r in 3..g.rows() {
-            assert_eq!(row_text(&g, r), "", "frame row {r} wiped for Ink redraw");
-        }
-        assert_eq!(g.cursor().row, 3, "cursor anchored at reflowed frame top");
-        assert_eq!(g.cursor().col, 0);
 
         let diag = g.last_resize_diags().last().expect("resize recorded");
         assert!(diag.reflowed, "history reflow ran on the inline-TUI path");
-        assert!(diag.inline_tui_wipe, "frame region wiped");
+        assert!(!diag.inline_tui_wipe, "last frame remains visible");
         assert!(diag.inline_tui_active, "inline-TUI flag recorded");
     }
 

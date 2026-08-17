@@ -336,7 +336,18 @@ pub struct MouseInput {
     pub alt: bool,
 }
 
-pub fn encode_mouse(input: MouseInput, _modes: &Modes) -> Vec<u8> {
+pub fn encode_mouse(input: MouseInput, modes: &Modes) -> Vec<u8> {
+    if !(modes.mouse_x10 || modes.mouse_normal || modes.mouse_button_event || modes.mouse_any_event)
+    {
+        return Vec::new();
+    }
+    if input.action == 1 && modes.mouse_x10 {
+        return Vec::new();
+    }
+    if input.action == 2 && !(modes.mouse_button_event || modes.mouse_any_event) {
+        return Vec::new();
+    }
+
     let mut b = input.btn;
     if input.shift {
         b |= 4;
@@ -350,9 +361,49 @@ pub fn encode_mouse(input: MouseInput, _modes: &Modes) -> Vec<u8> {
     if input.action == 2 {
         b |= 32; // motion flag
     }
-    // SGR: ESC [ < b > ; < col+1 > ; < row+1 > M (press/motion) / m (release)
-    let suffix = if input.action == 1 { 'm' } else { 'M' };
-    format!("\x1b[<{};{};{}{}", b, input.col + 1, input.row + 1, suffix).into_bytes()
+    let Some(col) = input.col.checked_add(1) else {
+        return Vec::new();
+    };
+    let Some(row) = input.row.checked_add(1) else {
+        return Vec::new();
+    };
+
+    if modes.mouse_sgr {
+        let suffix = if input.action == 1 { 'm' } else { 'M' };
+        return format!("\x1b[<{b};{col};{row}{suffix}").into_bytes();
+    }
+
+    let legacy_b = if input.action == 1 { (b & !3) | 3 } else { b };
+    if modes.mouse_urxvt {
+        return format!("\x1b[{};{col};{row}M", u32::from(legacy_b) + 32).into_bytes();
+    }
+
+    if modes.mouse_utf8 {
+        if col > 2015 || row > 2015 {
+            return Vec::new();
+        }
+        let mut out = b"\x1b[M".to_vec();
+        for value in [u32::from(legacy_b) + 32, col as u32 + 32, row as u32 + 32] {
+            let Some(ch) = char::from_u32(value) else {
+                return Vec::new();
+            };
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+        }
+        return out;
+    }
+
+    if col > 223 || row > 223 || u16::from(legacy_b) + 32 > u8::MAX as u16 {
+        return Vec::new();
+    }
+    vec![
+        0x1b,
+        b'[',
+        b'M',
+        legacy_b + 32,
+        col as u8 + 32,
+        row as u8 + 32,
+    ]
 }
 
 #[cfg(test)]
@@ -583,7 +634,9 @@ mod tests {
 
     #[test]
     fn mouse_left_click_sgr() {
-        let m = Modes::default();
+        let mut m = Modes::default();
+        m.set(1000, true, true);
+        m.set(1006, true, true);
         let bytes = encode_mouse(0, 2, 5, 0, false, false, false, &m);
         // SGR: col+1 first, then row+1 → col=5→6, row=2→3
         assert_eq!(bytes, b"\x1b[<0;6;3M");
@@ -591,7 +644,9 @@ mod tests {
 
     #[test]
     fn mouse_right_click_sgr() {
-        let m = Modes::default();
+        let mut m = Modes::default();
+        m.set(1000, true, true);
+        m.set(1006, true, true);
         let bytes = encode_mouse(2, 10, 20, 0, false, false, false, &m);
         // col=20→21, row=10→11
         assert_eq!(bytes, b"\x1b[<2;21;11M");
@@ -599,7 +654,9 @@ mod tests {
 
     #[test]
     fn mouse_release_sgr() {
-        let m = Modes::default();
+        let mut m = Modes::default();
+        m.set(1000, true, true);
+        m.set(1006, true, true);
         let bytes = encode_mouse(3, 5, 8, 1, false, false, false, &m);
         // release → suffix 'm'; col=8→9, row=5→6
         assert_eq!(bytes, b"\x1b[<3;9;6m");
@@ -607,7 +664,9 @@ mod tests {
 
     #[test]
     fn mouse_motion_sgr() {
-        let m = Modes::default();
+        let mut m = Modes::default();
+        m.set(1002, true, true);
+        m.set(1006, true, true);
         let bytes = encode_mouse(0, 3, 7, 2, false, false, false, &m);
         // motion → +32 flag → btn 32; col=7→8, row=3→4
         assert_eq!(bytes, b"\x1b[<32;8;4M");
@@ -615,7 +674,9 @@ mod tests {
 
     #[test]
     fn mouse_hover_motion_sgr_uses_no_button_code() {
-        let m = Modes::default();
+        let mut m = Modes::default();
+        m.set(1003, true, true);
+        m.set(1006, true, true);
         let bytes = encode_mouse(3, 3, 7, 2, false, false, false, &m);
         // Button 3 + motion flag 32 = 35: hover must not look like a
         // left-button drag to DECSET ?1003 clients.
@@ -624,7 +685,9 @@ mod tests {
 
     #[test]
     fn mouse_shift_click_sgr() {
-        let m = Modes::default();
+        let mut m = Modes::default();
+        m.set(1000, true, true);
+        m.set(1006, true, true);
         let bytes = encode_mouse(0, 1, 1, 0, true, false, false, &m);
         // shift → +4 → btn 4; col=1=row=1 → symmetric coordinate
         assert_eq!(bytes, b"\x1b[<4;2;2M");
@@ -632,7 +695,9 @@ mod tests {
 
     #[test]
     fn mouse_ctrl_alt_click_sgr() {
-        let m = Modes::default();
+        let mut m = Modes::default();
+        m.set(1000, true, true);
+        m.set(1006, true, true);
         let bytes = encode_mouse(0, 0, 0, 0, false, true, true, &m);
         // ctrl=16 + alt=8 → btn 24; origin coordinate is symmetric
         assert_eq!(bytes, b"\x1b[<24;1;1M");
@@ -640,7 +705,9 @@ mod tests {
 
     #[test]
     fn mouse_scroll_up_sgr() {
-        let m = Modes::default();
+        let mut m = Modes::default();
+        m.set(1000, true, true);
+        m.set(1006, true, true);
         let bytes = encode_mouse(64, 5, 10, 0, false, false, false, &m);
         // col=10→11, row=5→6
         assert_eq!(bytes, b"\x1b[<64;11;6M");
@@ -648,7 +715,9 @@ mod tests {
 
     #[test]
     fn mouse_all_modifiers_motion_sgr() {
-        let m = Modes::default();
+        let mut m = Modes::default();
+        m.set(1002, true, true);
+        m.set(1006, true, true);
         let bytes = encode_mouse(0, 4, 9, 2, true, true, true, &m);
         // shift(4) + alt(8) + ctrl(16) + motion(32) = 60; col=9→10, row=4→5
         assert_eq!(bytes, b"\x1b[<60;10;5M");
@@ -661,7 +730,9 @@ mod tests {
     /// can never sneak through symmetric (n, n) coordinates again.
     #[test]
     fn mouse_sgr_col_precedes_row() {
-        let m = Modes::default();
+        let mut m = Modes::default();
+        m.set(1000, true, true);
+        m.set(1006, true, true);
         let bytes = encode_mouse(
             0, /*row=*/ 10, /*col=*/ 50, 0, false, false, false, &m,
         );
@@ -677,7 +748,7 @@ mod tests {
         m.set(1000, true, true);
         m.set(1002, true, true);
         m.set(1006, true, true);
-        assert!(m.mouse_normal && m.mouse_button_event && m.mouse_sgr);
+        assert!(!m.mouse_normal && m.mouse_button_event && m.mouse_sgr);
 
         let press = encode_mouse(0, 4, 8, 0, false, false, false, &m);
         let drag = encode_mouse(0, 5, 10, 2, false, false, false, &m);
@@ -692,5 +763,52 @@ mod tests {
             !drag.is_empty() && drag != press,
             "held-button drag must emit a distinct motion sequence"
         );
+    }
+
+    #[test]
+    fn mouse_encoding_follows_negotiated_mode() {
+        let mut m = Modes::default();
+        assert!(encode_mouse(0, 0, 0, 0, false, false, false, &m).is_empty());
+
+        m.set(1000, true, true);
+        assert_eq!(
+            encode_mouse(0, 1, 2, 0, false, false, false, &m),
+            vec![0x1b, b'[', b'M', 32, 35, 34]
+        );
+        assert_eq!(
+            encode_mouse(0, 1, 2, 1, false, false, false, &m),
+            vec![0x1b, b'[', b'M', 35, 35, 34]
+        );
+        assert!(encode_mouse(0, 0, 223, 0, false, false, false, &m).is_empty());
+
+        m.set(1005, true, true);
+        assert_eq!(
+            encode_mouse(0, 0, 95, 0, false, false, false, &m),
+            vec![0x1b, b'[', b'M', 32, 0xc2, 0x80, 33]
+        );
+
+        m.set(1015, true, true);
+        assert_eq!(
+            encode_mouse(0, 4, 8, 0, false, false, false, &m),
+            b"\x1b[32;9;5M"
+        );
+        assert_eq!(
+            encode_mouse(0, 4, 8, 1, false, false, false, &m),
+            b"\x1b[35;9;5M"
+        );
+    }
+
+    #[test]
+    fn mouse_tracking_modes_filter_unsupported_events() {
+        let mut m = Modes::default();
+        m.set(9, true, true);
+        assert!(encode_mouse(0, 0, 0, 1, false, false, false, &m).is_empty());
+        assert!(encode_mouse(0, 0, 0, 2, false, false, false, &m).is_empty());
+
+        m.set(1000, true, true);
+        assert!(encode_mouse(0, 0, 0, 2, false, false, false, &m).is_empty());
+
+        m.set(1002, true, true);
+        assert!(!encode_mouse(0, 0, 0, 2, false, false, false, &m).is_empty());
     }
 }

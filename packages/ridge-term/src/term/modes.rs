@@ -43,7 +43,9 @@ pub struct Modes {
     pub mouse_normal: bool,       // ?1000
     pub mouse_button_event: bool, // ?1002 (drag)
     pub mouse_any_event: bool,    // ?1003 (motion)
+    pub mouse_utf8: bool,         // ?1005 (UTF-8 extended coordinates)
     pub mouse_sgr: bool,          // ?1006 (extended SGR encoding)
+    pub mouse_urxvt: bool,        // ?1015 (URXVT decimal encoding)
     pub mouse_focus: bool,        // ?1004 (focus in/out events)
 
     /// Bracketed paste (?2004). When on, the input encoder must wrap
@@ -105,7 +107,9 @@ impl Default for Modes {
             mouse_normal: false,
             mouse_button_event: false,
             mouse_any_event: false,
+            mouse_utf8: false,
             mouse_sgr: false,
+            mouse_urxvt: false,
             mouse_focus: false,
             bracketed_paste: false,
             app_cursor_keys: false,
@@ -163,8 +167,14 @@ impl Modes {
         if self.mouse_any_event != prev.mouse_any_event {
             out.push((1003, self.mouse_any_event));
         }
+        if self.mouse_utf8 != prev.mouse_utf8 {
+            out.push((1005, self.mouse_utf8));
+        }
         if self.mouse_sgr != prev.mouse_sgr {
             out.push((1006, self.mouse_sgr));
+        }
+        if self.mouse_urxvt != prev.mouse_urxvt {
+            out.push((1015, self.mouse_urxvt));
         }
         if self.mouse_focus != prev.mouse_focus {
             out.push((1004, self.mouse_focus));
@@ -227,8 +237,12 @@ impl Modes {
         if self.mouse_focus {
             out.extend_from_slice(b"\x1b[?1004h");
         }
-        if self.mouse_sgr {
+        if self.mouse_utf8 {
+            out.extend_from_slice(b"\x1b[?1005h");
+        } else if self.mouse_sgr {
             out.extend_from_slice(b"\x1b[?1006h");
+        } else if self.mouse_urxvt {
+            out.extend_from_slice(b"\x1b[?1015h");
         }
         if self.bracketed_paste {
             out.extend_from_slice(b"\x1b[?2004h");
@@ -260,13 +274,10 @@ impl Modes {
             4 => self.insert = on,
             6 => self.origin = on,
             7 => self.autowrap = on,
-            9 => self.mouse_x10 = on,
+            9 | 1000 | 1002 | 1003 => self.set_mouse_tracking(code as u16, on),
             20 => self.linefeed_newline = on,
-            1000 => self.mouse_normal = on,
-            1002 => self.mouse_button_event = on,
-            1003 => self.mouse_any_event = on,
             1004 => self.mouse_focus = on,
-            1006 => self.mouse_sgr = on,
+            1005 | 1006 | 1015 => self.set_mouse_encoding(code as u16, on),
             1066 => self.app_keypad = on,
             2004 => self.bracketed_paste = on,
             2026 => self.sync_output = on,
@@ -329,6 +340,36 @@ pub enum ModeEffect {
 }
 
 impl Modes {
+    fn set_mouse_tracking(&mut self, code: u16, value: bool) {
+        if value {
+            self.mouse_x10 = false;
+            self.mouse_normal = false;
+            self.mouse_button_event = false;
+            self.mouse_any_event = false;
+        }
+        match code {
+            9 => self.mouse_x10 = value,
+            1000 => self.mouse_normal = value,
+            1002 => self.mouse_button_event = value,
+            1003 => self.mouse_any_event = value,
+            _ => {}
+        }
+    }
+
+    fn set_mouse_encoding(&mut self, code: u16, value: bool) {
+        if value {
+            self.mouse_utf8 = false;
+            self.mouse_sgr = false;
+            self.mouse_urxvt = false;
+        }
+        match code {
+            1005 => self.mouse_utf8 = value,
+            1006 => self.mouse_sgr = value,
+            1015 => self.mouse_urxvt = value,
+            _ => {}
+        }
+    }
+
     /// Apply DEC private (?<n>) or ANSI public (n) mode change.
     /// Returns the side effect (if any) the caller must enact.
     pub fn set(&mut self, code: u16, value: bool, is_private: bool) -> ModeEffect {
@@ -362,28 +403,16 @@ impl Modes {
                 ModeEffect::None
             }
 
-            9 => {
-                self.mouse_x10 = value;
-                ModeEffect::None
-            }
-            1000 => {
-                self.mouse_normal = value;
-                ModeEffect::None
-            }
-            1002 => {
-                self.mouse_button_event = value;
-                ModeEffect::None
-            }
-            1003 => {
-                self.mouse_any_event = value;
+            9 | 1000 | 1002 | 1003 => {
+                self.set_mouse_tracking(code, value);
                 ModeEffect::None
             }
             1004 => {
                 self.mouse_focus = value;
                 ModeEffect::None
             }
-            1006 => {
-                self.mouse_sgr = value;
+            1005 | 1006 | 1015 => {
+                self.set_mouse_encoding(code, value);
                 ModeEffect::None
             }
 
@@ -559,22 +588,24 @@ mod tests {
     }
 
     #[test]
-    fn mouse_modes_route_to_distinct_fields() {
-        // Each mouse-related private mode targets its own bool. Pin
-        // the routing so future refactors can't collapse them.
+    fn mouse_tracking_and_encoding_groups_are_mutually_exclusive() {
         let mut m = Modes::default();
         m.set(9, true, true);
-        m.set(1000, true, true);
-        m.set(1002, true, true);
-        m.set(1003, true, true);
-        m.set(1004, true, true);
-        m.set(1006, true, true);
         assert!(m.mouse_x10);
-        assert!(m.mouse_normal);
-        assert!(m.mouse_button_event);
-        assert!(m.mouse_any_event);
+        m.set(1000, true, true);
+        assert!(!m.mouse_x10 && m.mouse_normal);
+        m.set(1002, true, true);
+        assert!(!m.mouse_normal && m.mouse_button_event);
+        m.set(1003, true, true);
+        assert!(!m.mouse_button_event && m.mouse_any_event);
+        m.set(1004, true, true);
+        m.set(1005, true, true);
+        assert!(m.mouse_utf8);
+        m.set(1006, true, true);
+        assert!(!m.mouse_utf8 && m.mouse_sgr);
+        m.set(1015, true, true);
+        assert!(!m.mouse_sgr && m.mouse_urxvt);
         assert!(m.mouse_focus);
-        assert!(m.mouse_sgr);
     }
 
     #[test]

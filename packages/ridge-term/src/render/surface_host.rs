@@ -26,9 +26,10 @@
 //! Pane passes render into a persistent offscreen texture. The acquired
 //! swap-chain texture is only a presentation target, so pane pixels do not
 //! depend on WebView2 preserving `LoadOp::Load` contents across frames.
-//! [`begin_frame`] seeds the persistent texture on every frame because
-//! default terminal cells may be transparent; [`end_frame`] then blits the
-//! complete frame to the current swap-chain image in one atomic present.
+//! Structural invalidation seeds the persistent texture once. Ordinary frames
+//! repair only damaged transparent-wallpaper rows before pane drawing;
+//! [`end_frame`] then blits the complete frame to the current swap-chain image
+//! in one atomic present.
 
 #![cfg(all(target_arch = "wasm32", feature = "webgpu"))]
 
@@ -117,6 +118,38 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return textureSample(frame_texture, frame_sampler, input.uv);
 }
 "#;
+
+const SOLID_SHADER: &str = r#"
+struct SolidColor {
+    rgba: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> color: SolidColor;
+
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    var positions = array<vec2<f32>, 4>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 1.0, -1.0),
+        vec2<f32>(-1.0,  1.0),
+        vec2<f32>( 1.0,  1.0),
+    );
+    return vec4<f32>(positions[index], 0.0, 1.0);
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return color.rgba;
+}
+"#;
+
+fn rgba_uniform_bytes(rgba: [u8; 4]) -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    for (index, value) in rgba.into_iter().enumerate() {
+        bytes[index * 4..index * 4 + 4].copy_from_slice(&((value as f32) / 255.0).to_le_bytes());
+    }
+    bytes
+}
 
 fn create_frame_target(
     device: &wgpu::Device,
@@ -237,6 +270,76 @@ fn create_blit_resources(
     (bind_group_layout, sampler, pipeline, bind_group)
 }
 
+fn create_solid_resources(
+    device: &wgpu::Device,
+) -> (wgpu::Buffer, wgpu::RenderPipeline, wgpu::BindGroup) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("ridge-host-solid-shader"),
+        source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(SOLID_SHADER)),
+    });
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ridge-host-solid-color"),
+        size: 16,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("ridge-host-solid-bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("ridge-host-solid-bind-group"),
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("ridge-host-solid-pipeline-layout"),
+        bind_group_layouts: &[&layout],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ridge-host-solid-pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: CANVAS_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    });
+    (buffer, pipeline, bind_group)
+}
+
 /// Process-wide host-canvas swap-chain owner.
 pub struct SurfaceHost {
     /// Borrowed reference to the shared GPU stack (device / queue /
@@ -250,6 +353,7 @@ pub struct SurfaceHost {
     /// `begin_frame` so theme changes propagate across all panes
     /// uniformly.
     frame_clear_color: wgpu::Color,
+    frame_clear_rgba: [u8; 4],
     /// Stable per-workspace render target. Unlike a swap-chain texture, its
     /// contents remain defined across frames and WebView2 compositor churn.
     frame_store: wgpu::Texture,
@@ -258,6 +362,14 @@ pub struct SurfaceHost {
     blit_sampler: wgpu::Sampler,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group: wgpu::BindGroup,
+    solid_color_buffer: wgpu::Buffer,
+    solid_pipeline: wgpu::RenderPipeline,
+    solid_bind_group: wgpu::BindGroup,
+    /// The frame store survives ordinary presents, but must be seeded after
+    /// allocation, resize, theme/wallpaper/layout invalidation, or surface
+    /// recovery. Cleared only after the seed commands are submitted.
+    needs_full_seed: bool,
+    full_seed_recorded: bool,
     /// Per-frame transients. Populated by `begin_frame`, drained by
     /// `end_frame`. `record_pane` mutates the encoder via
     /// `begin_render_pass`. None outside the begin..end window.
@@ -341,11 +453,19 @@ impl SurfaceHost {
             blit_sampler,
             blit_pipeline,
             blit_bind_group,
+            solid_color_buffer,
+            solid_pipeline,
+            solid_bind_group,
         ) = {
             let ctx_b = ctx.borrow();
             let (frame_store, frame_store_view) = create_frame_target(&ctx_b.device, 1, 1);
             let (blit_bind_group_layout, blit_sampler, blit_pipeline, blit_bind_group) =
                 create_blit_resources(&ctx_b.device, &frame_store_view);
+            let (solid_color_buffer, solid_pipeline, solid_bind_group) =
+                create_solid_resources(&ctx_b.device);
+            ctx_b
+                .queue
+                .write_buffer(&solid_color_buffer, 0, &rgba_uniform_bytes([0, 0, 0, 255]));
             (
                 frame_store,
                 frame_store_view,
@@ -353,6 +473,9 @@ impl SurfaceHost {
                 blit_sampler,
                 blit_pipeline,
                 blit_bind_group,
+                solid_color_buffer,
+                solid_pipeline,
+                solid_bind_group,
             )
         };
 
@@ -366,12 +489,18 @@ impl SurfaceHost {
                 b: 0.0,
                 a: 1.0,
             },
+            frame_clear_rgba: [0, 0, 0, 255],
             frame_store,
             frame_store_view,
             blit_bind_group_layout,
             blit_sampler,
             blit_pipeline,
             blit_bind_group,
+            solid_color_buffer,
+            solid_pipeline,
+            solid_bind_group,
+            needs_full_seed: true,
+            full_seed_recorded: false,
             current_frame: None,
             current_surface_view: None,
             current_encoder: None,
@@ -422,11 +551,18 @@ impl SurfaceHost {
         self.frame_store = frame_store;
         self.frame_store_view = frame_store_view;
         self.blit_bind_group = blit_bind_group;
+        self.needs_full_seed = true;
     }
 
-    /// Retained for the JS invalidation protocol. The frame store is seeded
-    /// every frame, so no Rust-side clear flag is needed here.
+    /// Mark the persistent frame store for one structural repaint.
     pub fn invalidate(&mut self) {
+        self.needs_full_seed = true;
+    }
+
+    /// Let the scheduler replay every visible pane when an internal surface
+    /// recovery requested a seed without going through JS invalidation.
+    pub fn needs_full_seed(&self) -> bool {
+        self.needs_full_seed
     }
 
     /// Current swap-chain backing-pixel width, used by JS to clamp
@@ -449,6 +585,7 @@ impl SurfaceHost {
     /// loop) skips the rest of the frame and the next tick retries.
     /// `theme_bg` is the 4-byte RGBA seed color for the frame-store pass.
     pub fn begin_frame(&mut self, theme_bg: [u8; 4]) -> bool {
+        self.full_seed_recorded = false;
         if self.current_frame.is_some() {
             // Stale frame from a previous tick that never ended (likely
             // a JS bug). Drop the transients and start fresh — better
@@ -457,14 +594,16 @@ impl SurfaceHost {
             self.current_surface_view = None;
             self.current_frame = None;
         }
+        if theme_bg != self.frame_clear_rgba {
+            self.frame_clear_rgba = theme_bg;
+            self.needs_full_seed = true;
+            self.ctx.borrow().queue.write_buffer(
+                &self.solid_color_buffer,
+                0,
+                &rgba_uniform_bytes(theme_bg),
+            );
+        }
         self.frame_clear_color = rgba_to_wgpu_color(theme_bg);
-
-        // The offscreen frame store is always seeded before pane passes.
-        // Default shell cells intentionally use transparent backgrounds so
-        // wallpaper can show through, which means a dirty-row-only pass
-        // cannot erase glyphs from the previous frame. Full seeding plus
-        // full pane re-encoding prevents retained-pixel ghosting while the
-        // final swap-chain blit remains a single atomic presentation.
 
         // Reset the global frame-written mask so all atlas layers are
         // available for writing in this new frame, then apply any deferred
@@ -488,6 +627,7 @@ impl SurfaceHost {
                 // RAF can acquire a fresh texture instead of staying blank.
                 self.surface
                     .configure(&self.ctx.borrow().device, &self.config);
+                self.needs_full_seed = true;
                 return false;
             }
             Err(_) => return false,
@@ -503,31 +643,16 @@ impl SurfaceHost {
                     label: Some("ridge-host-frame-encoder"),
                 });
 
-        // Perform a single global seed pass for every frame.
-        // When a wallpaper is active, draw the full-screen quad instead of a
-        // plain colour clear so the wallpaper is composited beneath every pane.
-        // The wallpaper fragment always outputs alpha=1, so it fully replaces
-        // Any stale pixels are replaced before pane passes run.
-        // §wallpaper-fix: 壁纸激活时**每帧无条件**画全屏 quad（顶替 clear）；
-        // 无壁纸时维持原行为，仅在 needs_initial_clear 帧做普通 clear。把壁纸
-        // 绘制 gate 在 needs_initial_clear 之内会让非首帧（光标闪烁等局部重绘）
-        // 不重画壁纸，透明默认单元回放时透出双缓冲陈旧像素 → 鬼影
-        // （见 plan「核心正确性规则」）。
+        // Wallpaper UV/background data is tiny and is refreshed for every
+        // acquired frame because dirty-row repair may consume it even when no
+        // structural seed is required.
+        let mut seed_recorded = false;
         {
             let ctx = self.ctx.borrow();
             if ctx.has_wallpaper() {
-                // ── Wallpaper path ──────────────────────────────────────────
-                // 1. Compute cover-UV so the image fills the surface at equal
-                //    aspect ratio, cropped and centred.
                 let (surf_w, surf_h) = (self.config.width, self.config.height);
                 let wp = ctx.wallpaper.as_ref().unwrap();
                 let uv = cover_uv_transform(surf_w, surf_h, wp.img_w, wp.img_h);
-
-                // 2. Build the 32-byte uniform buffer (std140):
-                //    bytes  0.. 8  uv_scale : vec2<f32>
-                //    bytes  8..16  uv_offset: vec2<f32>
-                //    bytes 16..28  bg_rgb   : vec3<f32>  (12 bytes)
-                //    bytes 28..32  opacity  : f32        (4-byte std140 pad is satisfied)
                 let mut bytes = [0u8; WALLPAPER_UNIFORM_SIZE as usize];
                 bytes[0..4].copy_from_slice(&uv.scale[0].to_le_bytes());
                 bytes[4..8].copy_from_slice(&uv.scale[1].to_le_bytes());
@@ -540,31 +665,30 @@ impl SurfaceHost {
                 bytes[28..32].copy_from_slice(&ctx.wallpaper_opacity.to_le_bytes());
                 ctx.queue.write_buffer(&ctx.wallpaper_uniform, 0, &bytes);
 
-                // 3. Render full-screen TriangleStrip (4 vertices, no VB).
-                let bg_group = ctx.wallpaper_bind_group.as_ref().unwrap();
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("ridge-host-wallpaper-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &self.frame_store_view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            // quad 不透明铺满整屏，等效 clear → Load 即可，省一次 clear。
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                pass.set_pipeline(&ctx.wallpaper_pipeline);
-                pass.set_bind_group(0, bg_group, &[]);
-                pass.draw(0..4, 0..1);
-                // pass dropped → render pass ends
-            } else {
-                // ── Plain colour clear path ─────────────────────────────────
+                if self.needs_full_seed {
+                    let bg_group = ctx.wallpaper_bind_group.as_ref().unwrap();
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("ridge-host-wallpaper-seed-pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &self.frame_store_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    pass.set_pipeline(&ctx.wallpaper_pipeline);
+                    pass.set_bind_group(0, bg_group, &[]);
+                    pass.draw(0..4, 0..1);
+                    seed_recorded = true;
+                }
+            } else if self.needs_full_seed {
                 let mut _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("ridge-host-clear-pass"),
+                    label: Some("ridge-host-seed-clear-pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &self.frame_store_view,
                         resolve_target: None,
@@ -577,13 +701,67 @@ impl SurfaceHost {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
-                // pass dropped here
+                seed_recorded = true;
             }
         }
+        self.full_seed_recorded = seed_recorded;
         self.current_frame = Some(frame);
         self.current_surface_view = Some(surface_view);
         self.current_encoder = Some(encoder);
         true
+    }
+
+    /// Restore the exact compositor background beneath damaged transparent
+    /// cells. Wallpaper keeps global cover UVs; plain colour uses a replace
+    /// pipeline so translucent themes cannot blend over retained glyphs.
+    pub fn repair_background_damage(&mut self, rects: &[ScissorRect]) {
+        if rects.is_empty() {
+            return;
+        }
+        let ctx = self.ctx.borrow();
+        let Some(encoder) = self.current_encoder.as_mut() else {
+            return;
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("ridge-host-wallpaper-damage-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.frame_store_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        if let Some(bg_group) = ctx.wallpaper_bind_group.as_ref() {
+            pass.set_pipeline(&ctx.wallpaper_pipeline);
+            pass.set_bind_group(0, bg_group, &[]);
+        } else {
+            pass.set_pipeline(&self.solid_pipeline);
+            pass.set_bind_group(0, &self.solid_bind_group, &[]);
+        }
+        pass.set_viewport(
+            0.0,
+            0.0,
+            self.config.width as f32,
+            self.config.height as f32,
+            0.0,
+            1.0,
+        );
+        for rect in rects {
+            let x = rect.x.min(self.config.width);
+            let y = rect.y.min(self.config.height);
+            let w = rect.w.min(self.config.width - x);
+            let h = rect.h.min(self.config.height - y);
+            if w == 0 || h == 0 {
+                continue;
+            }
+            pass.set_scissor_rect(x, y, w, h);
+            pass.draw(0..4, 0..1);
+        }
     }
 
     /// Open a render pass for one pane, set its viewport + scissor + the
@@ -712,8 +890,10 @@ impl SurfaceHost {
             drop(pass);
             self.ctx.borrow().queue.submit(Some(encoder.finish()));
         }
+        if self.full_seed_recorded {
+            self.needs_full_seed = false;
+            self.full_seed_recorded = false;
+        }
         frame.present();
-        // If no pane drew this frame, the encoder still contains the seed
-        // pass, so the presented frame cannot expose stale frame-store data.
     }
 }

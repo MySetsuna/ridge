@@ -138,11 +138,8 @@ fn scenario_alt_screen_1049_survives_cols_resize() {
     );
 }
 
-/// §1.24 (2026-05-06): an alt-screen TUI's redraw bytes that arrive
-/// immediately after a resize must land on the freshly-wiped alt buffer.
-/// This test exercises the kernel side of the §1.24 fix: the §1.22 wipe
-/// runs on the alt buffer, then the synthetic redraw bytes (clear + home
-/// + content) paint cleanly with no overlay from pre-resize content.
+/// An alt-screen TUI keeps its last complete frame through resize, then an
+/// explicit app redraw replaces it cleanly.
 ///
 /// (Backend silence-skip is exercised separately in Tauri integration
 /// tests; this test ensures the kernel ordering remains correct so the
@@ -153,7 +150,7 @@ fn scenario_alt_screen_resize_does_not_swallow_redraw() {
     let mut t = Terminal::new(10, 80, 100);
     t.feed(b"\x1b[?1049h"); // enter alt
     t.feed(b"OLD CONTENT FROM BEFORE RESIZE\r\n"); // pollute alt buffer
-    t.resize(10, 40); // shrink cols → §1.22 wipe fires
+    t.resize(10, 40);
                       // Synthetic redraw the alt-screen TUI would emit after SIGWINCH.
                       // ESC [2J  = clear screen
                       // ESC [H   = cursor home
@@ -166,12 +163,12 @@ fn scenario_alt_screen_resize_does_not_swallow_redraw() {
         visible.starts_with("post-resize redraw"),
         "redraw bytes painted on wiped alt buffer (got {visible:?})"
     );
-    // Confirm the §1.22 wipe ran by checking the diagnostic ring.
+    // Destructive pre-redraw wiping stays disabled.
     let diags = t.last_resize_diags();
     let last = diags.last().expect("at least one resize recorded");
     assert!(
-        last.is_alt && last.dim_changed && last.wipe_fired,
-        "§1.22 wipe should have fired: {last:?}"
+        last.is_alt && last.dim_changed && !last.wipe_fired,
+        "resize should preserve the last frame: {last:?}"
     );
 }
 
@@ -725,15 +722,10 @@ fn scenario_ich_dch_combined_inline_edit() {
     assert_eq!(&snap.visible[0], "lloNEW world");
 }
 
-/// §1.26 (2026-05-07): on a primary-screen resize the kernel clears the
-/// cursor row from `cursor.col + 1` to end-of-row, plus every row strictly
-/// below the cursor. Without this, PSReadLine's SIGWINCH-driven prompt
-/// redraw lands on top of stale cells past the new prompt's end and the
-/// user sees ghost characters with the path-to-`>` gap collapsed. Pairs
-/// with the §A.2 silence-window shrink so PSReadLine's redraw bytes
-/// actually make it through; this test exercises the kernel side only.
+/// Primary resize keeps the last complete frame visible until the shell's
+/// SIGWINCH redraw arrives. This prevents a missed redraw from erasing output.
 #[test]
-fn scenario_primary_resize_clears_below_cursor() {
+fn scenario_primary_resize_preserves_visible_frame() {
     use ridge_term::term::Terminal;
     let mut t = Terminal::new(8, 30, 100);
     // Five rows of content. Each row is short enough to fit in 20 cols
@@ -750,26 +742,12 @@ fn scenario_primary_resize_clears_below_cursor() {
     t.resize(8, 20);
 
     let row2 = t.grid().row(2).expect("row 2 still exists");
-    // cols 0..=5 preserved (cursor.col INCLUSIVE — the cell at the
-    // cursor stays so shells without SIGWINCH-driven full redraws keep
-    // already-typed text).
-    let preserved: String = row2.cells.iter().take(6).map(|c| c.ch).collect();
-    assert_eq!(preserved, "row2_c", "cells [0..=5] preserved");
-    // cols 6..20 cleared.
-    for col in 6..20 {
-        assert!(
-            row2.cells[col].is_blank(),
-            "row 2 col {col} should be blank, got {:?}",
-            row2.cells[col]
-        );
-    }
-    // Rows 3..=7 entirely blank.
-    for r in 3..8 {
+    let preserved: String = row2.cells.iter().take(12).map(|c| c.ch).collect();
+    assert_eq!(preserved, "row2_content");
+    for r in 3..=4 {
         let row = t.grid().row(r).unwrap_or_else(|| panic!("row {r} exists"));
-        assert!(
-            row.cells.iter().all(|c| c.is_blank()),
-            "row {r} should be all blank after §1.26 cleanup"
-        );
+        let visible: String = row.cells.iter().take(12).map(|c| c.ch).collect();
+        assert_eq!(visible, format!("row{r}_content"));
     }
     // Rows 0..=1 untouched.
     for r in 0..=1 {
@@ -778,16 +756,12 @@ fn scenario_primary_resize_clears_below_cursor() {
         let expected = format!("row{r}_content");
         assert_eq!(visible, expected, "row {r} preserved across resize");
     }
-    // Diagnostic ring records that the §1.26 partial cleanup fired.
-    // `inline_tui_wipe` is the §A.3 full-wipe flag (only true when the
-    // caller flagged an inline TUI as active, e.g. Ink-based foreground
-    // app); this test exercises the plain-shell case so that field
-    // stays false.
+    // Legacy cleanup diagnostics remain false.
     let diags = t.last_resize_diags();
     let last = diags.last().expect("at least one resize recorded");
     assert!(
-        last.cleared_below_cursor && !last.is_alt && last.dim_changed,
-        "§1.26 cleanup should have fired: {last:?}"
+        !last.cleared_below_cursor && !last.is_alt && last.dim_changed,
+        "resize should preserve the visible frame: {last:?}"
     );
     assert!(
         !last.inline_tui_wipe,

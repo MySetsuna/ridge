@@ -77,7 +77,7 @@ import {
 	needsInitialPaneFit,
 	type InitialFitMeasurement,
 } from './initialPaneFit';
-import { shouldReplayHostCache, shouldWipeHostOnPaneRemount } from './hostRemountPolicy';
+import { shouldWipeHostOnPaneRemount } from './hostRemountPolicy';
 import { shouldForwardPointerMotion, sgrReleaseButton } from './mouseForwardPolicy';
 
 function isMacPlatform(): boolean {
@@ -580,7 +580,6 @@ interface RafFrameState {
 	surfaceJustWiped: boolean;
 	dirtyByPane: Map<string, boolean>;
 	activeWsId: string | null;
-	anyDirty: boolean;
 	activeHost: SurfaceHostHandle | null;
 	hostFrameOpen: boolean;
 	anyRendered: boolean;
@@ -739,16 +738,8 @@ export class TerminalManager {
 	 *  only meaningful at shutdown / SSR teardown. */
 	private globalHost: { canvas: HTMLCanvasElement; host: SurfaceHostHandle } | null = null;
 	/** True between an `_invalidateHost()` call and the next RAF tick that
-	 *  consumes it. The RAF idle-sleep gate uses this to decide whether
-	 *  the upcoming tick is "real work" (a cache-replay pass over every
-	 *  pane is required to refill the just-cleared swap chain) or "the
-	 *  swap chain still holds the last presented frame, RAF can sleep
-	 *  without painting anything". Without this flag, the loop opens a
-	 *  host frame, runs `recordCachedOnly` for every visible pane, sets
-	 *  `anyRendered = true`, and re-arms RAF — burning 60 fps of GPU
-	 *  draw calls to repaint pixels identical to the last frame. With it,
-	 *  steady-idle taps zero per-tick CPU and zero per-tick GPU work
-	 *  between cursor-blink boundaries. */
+	 *  consumes it. That tick performs one atlas-preserving full repaint of
+	 *  every visible pane into the newly-seeded compositor backing store. */
 	private _hostInvalidatePending: boolean = false;
 	/** Mirror of the most recent `setPreedit` call per pane. RidgePane
 	 *  writes the preedit overlay via `setPreedit(paneId, text, row, col)`;
@@ -996,14 +987,12 @@ export class TerminalManager {
 			await init(wasmUrl);
 			this.wasmReady = true;
 			// §atlas-race forensics (2026-06-22): expose detector counters on
-			// window.__ridgeAtlasRace() for release console / CDP polling. Returns
-			// { overwriteAfterCite, staleReplay }. A value of -1 means the wasm
-			// export is missing (running an OLD bundle) — confirms the installed
-			// app actually has this build.
+			// window.__ridgeAtlasRace() for release console / CDP polling. A value
+			// of -1 means the wasm export is missing (running an OLD bundle) —
+			// confirms the installed app actually has this build.
 			try {
 				const rmod = (await import('@ridge/term-wasm')) as unknown as {
 					atlasOverwriteAfterCiteCount?: () => number;
-					staleReplayCount?: () => number;
 				};
 				if (typeof window !== 'undefined') {
 					(window as unknown as Record<string, unknown>).__ridgeAtlasRace = () => ({
@@ -1011,8 +1000,6 @@ export class TerminalManager {
 							typeof rmod.atlasOverwriteAfterCiteCount === 'function'
 								? rmod.atlasOverwriteAfterCiteCount()
 								: -1,
-						staleReplay:
-							typeof rmod.staleReplayCount === 'function' ? rmod.staleReplayCount() : -1,
 					});
 				}
 			} catch {
@@ -1227,7 +1214,7 @@ export class TerminalManager {
 	}
 
 	/** Call `surfaceHost.invalidate()` AND mark `_hostInvalidatePending`
-	 *  so the next RAF tick treats cache-replay passes as real work
+	 *  so the next RAF tick treats the required full repaint as real work
 	 *  (rather than letting the idle-sleep gate skip them and leave the
 	 *  freshly-cleared swap chain blank). Every site that wipes the
 	 *  shared canvas must go through here — direct
@@ -1466,7 +1453,7 @@ export class TerminalManager {
 	/** Restore renderers parked by an explicit native hide/reclaim event. */
 	restoreTerminalMemory(): void {
 		this._restoreMemoryParked(this._activeWorkspaceId);
-		this._hostInvalidatePending = true;
+		this._invalidateHost();
 		this.wake();
 	}
 
@@ -4794,12 +4781,8 @@ export class TerminalManager {
 			}
 			entry.handle?.applyDefaultTheme();
 			entry.handle?.applyTheme(theme);
-			// Theme change doesn't bump kernel dirty, so the next frame's
-			// `dirty=false` branch would call `recordCachedOnly()` which
-			// replays the previous frame's CellInstance buffer — that
-			// buffer has the OLD theme's bg/fg baked into every quad.
-			// Drop the cache so the next frame goes through full render
-			// and re-reads `theme.bg` for the clear quad and per-cell bgs.
+			// Theme change doesn't bump kernel dirty. Force a full renderer
+			// refresh so the next frame re-resolves every cell colour.
 			entry.handle?.invalidateAll();
 			applied++;
 		}
@@ -5220,7 +5203,7 @@ export class TerminalManager {
 				return;
 			}
 			this._restoreMemoryParked(this._activeWorkspaceId);
-			this._hostInvalidatePending = true;
+			this._invalidateHost();
 			this.wake();
 		};
 		document.addEventListener('visibilitychange', this.visibilityListener);
@@ -5237,11 +5220,9 @@ export class TerminalManager {
 	private _collectHostDirty(frameOrder: PaneEntry[], dateNow: number): {
 		dirtyByPane: Map<string, boolean>;
 		activeWsId: string | null;
-		anyDirty: boolean;
 	} {
 		const dirtyByPane = new Map<string, boolean>();
 		let activeWsId: string | null = null;
-		let anyDirty = false;
 		for (const entry of frameOrder) {
 			if (entry.parked || !this._isHostMode(entry) || this._isContainerHidden(entry)) continue;
 			activeWsId ??= entry.workspaceId;
@@ -5253,9 +5234,8 @@ export class TerminalManager {
 			}
 			const dirty = this._hostPaneDirty(entry, dateNow);
 			dirtyByPane.set(entry.paneId, dirty);
-			anyDirty ||= dirty;
 		}
-		return { dirtyByPane, activeWsId, anyDirty };
+		return { dirtyByPane, activeWsId };
 	}
 
 	private _newRafFrame(perfNow: number, dateNow: number): RafFrameState {
@@ -5263,7 +5243,10 @@ export class TerminalManager {
 			this._lastMemorySweepAt = perfNow;
 			this.reclaimTerminalMemory();
 		}
-		const surfaceJustWiped = this._hostInvalidatePending;
+		const host = this._globalHostHandle() as unknown as { needsFullSeed?: () => boolean } | null;
+		let hostNeedsSeed = false;
+		try { hostNeedsSeed = host?.needsFullSeed?.() === true; } catch { /* old wasm bundle */ }
+		const surfaceJustWiped = this._hostInvalidatePending || hostNeedsSeed;
 		this._hostInvalidatePending = false;
 		const frameOrder = this._renderOrder();
 		this._drainDeferredFeeds(frameOrder);
@@ -5278,20 +5261,10 @@ export class TerminalManager {
 		};
 	}
 
-	private _pinCachedHostLayers(state: RafFrameState): void {
-		for (const entry of state.frameOrder) {
-			if (entry.parked || state.dirtyByPane.get(entry.paneId) !== false) continue;
-			const handle = entry.handle as unknown as { pinCachedLayers?: () => void } | null;
-			if (typeof handle?.pinCachedLayers !== 'function') continue;
-			try { handle.pinCachedLayers(); } catch { /* old wasm bundle */ }
-		}
-	}
-
 	private _ensureHostFrame(state: RafFrameState): boolean {
 		if (state.hostFrameOpen) return true;
 		if (state.activeHost === null) return false;
 		state.hostFrameOpen = state.activeHost.beginFrame(this._currentThemeBgRgba());
-		if (state.hostFrameOpen) this._pinCachedHostLayers(state);
 		return state.hostFrameOpen;
 	}
 
@@ -5323,16 +5296,18 @@ export class TerminalManager {
 		catch { return true; }
 	}
 
-	private _paintFrameEntry(entry: PaneEntry, state: RafFrameState, dirty: boolean, becameVisible: boolean): void {
+	private _paintFrameEntry(entry: PaneEntry, state: RafFrameState, becameVisible: boolean): void {
 		const isHost = this._isHostMode(entry);
-		const handle = entry.handle as unknown as { recordCachedOnly?: () => boolean } | null;
 		try {
-			let usedCache = false;
-			const replayCache = shouldReplayHostCache(dirty, state.surfaceJustWiped, becameVisible);
-			if (isHost && replayCache && typeof handle?.recordCachedOnly === 'function') {
-				try { usedCache = handle.recordCachedOnly(); } catch { usedCache = false; }
+			if (isHost && (state.surfaceJustWiped || becameVisible)) {
+				const handle = entry.handle as unknown as {
+					repaintAll?: () => void;
+					invalidateAll?: () => void;
+				} | null;
+				if (typeof handle?.repaintAll === 'function') handle.repaintAll();
+				else handle?.invalidateAll?.();
 			}
-			if (!usedCache) entry.handle?.render(entry.kernel);
+			entry.handle?.render(entry.kernel);
 			state.anyRendered = true;
 		} catch (error) {
 			console.error('[ridge-term] render error', entry.paneId, error);
@@ -5362,9 +5337,9 @@ export class TerminalManager {
 		if (!this._renderEntryAfterSync(entry, state)) return;
 		const dirty = this._entryDirty(entry, state);
 		const shouldRender = this._isHostMode(entry)
-			? state.activeHost !== null && (dirty || state.anyDirty || state.surfaceJustWiped || becameVisible)
+			? state.activeHost !== null && (dirty || state.surfaceJustWiped || becameVisible)
 			: dirty;
-		if (shouldRender && (!this._isHostMode(entry) || this._ensureHostFrame(state))) this._paintFrameEntry(entry, state, dirty, becameVisible);
+		if (shouldRender && (!this._isHostMode(entry) || this._ensureHostFrame(state))) this._paintFrameEntry(entry, state, becameVisible);
 		this._updateBlinkDeadline(entry, state);
 	}
 
@@ -5379,7 +5354,6 @@ export class TerminalManager {
 		const sleepMs = Math.min(Math.max(state.minDeadlineMs, 1), 1000);
 		this.idleTimer = setTimeout(() => {
 			this.idleTimer = null;
-			this._hostInvalidatePending = true;
 			this.startRafLoop();
 		}, sleepMs);
 	}

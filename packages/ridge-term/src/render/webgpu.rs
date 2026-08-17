@@ -203,6 +203,9 @@ pub struct WebGpuPaneBackend {
     /// `draw_row` / `draw_cursor` / `draw_*_overlay` push, `end_frame`
     /// uploads via `queue.write_buffer` and forwards to host.
     pending_instances: Vec<CellInstance>,
+    /// Visible kernel rows redrawn in this pane frame. Used only to restore
+    /// wallpaper pixels beneath transparent default cells before cell draws.
+    damaged_rows: Vec<u32>,
     /// Per-layer pin flag, reset to all-`false` every `begin_frame`.
     /// A layer is pinned the moment any cell in this frame's
     /// `pending_instances` references it, so `ctx.rasterize_and_admit`
@@ -224,41 +227,6 @@ pub struct WebGpuPaneBackend {
     /// via `on_full_invalidate` when the renderer detects scroll /
     /// selection / snapshot-growth.
     needs_initial_clear: bool,
-    /// §4b per-pane increment cache (2026-05-08). Number of valid
-    /// CellInstance entries currently uploaded to `instance_buffer`
-    /// from the last successful `end_frame`. `record_cached_only` uses
-    /// this to re-issue the same instanced draw without retraversing
-    /// the kernel grid. Reset to 0 by anything that would invalidate
-    /// the cached instances:
-    ///   - resize_surface (cell coords change)
-    ///   - on_full_invalidate (renderer-side full-redraw signal)
-    ///   - invalidate_atlas (UVs in cached instances point at evicted slots)
-    ///   - cross-pane atlas-generation bump (same reason, detected in begin_frame)
-    /// Updated by end_frame after a successful upload + record.
-    cached_n_cells: u32,
-    /// Snapshot of `ctx.atlas_eviction_count` at the last successful
-    /// `end_frame`. If the count advanced, another pane evicted a layer
-    /// that our cached instance buffer references — `record_cached_only`
-    /// must fall back to full render to rebuild instances with correct
-    /// atlas UV/layer data.
-    cached_evictions_seen: u64,
-    /// Distinct non-reserved atlas layers referenced by this pane's last
-    /// successful `end_frame` instance upload. `pin_cached_layers` ORs
-    /// these into the shared `frame_written` mask BEFORE any pane's
-    /// full-render eviction runs this frame, so a cached-replay pane's
-    /// already-recorded draw can't have its atlas slots evicted +
-    /// overwritten mid-frame by another pane admitting new glyphs.
-    cached_layers: Vec<u16>,
-    /// §stale-replay detector (2026-06-22 round 2): parallel to
-    /// `cached_layers` — the `GpuContext::layer_write_epoch` value of each
-    /// cited layer at the moment this pane's cache was recorded. Re-checked in
-    /// `record_cached_only`: if any layer's epoch has advanced, that slot was
-    /// repurposed for a different glyph since we cached (e.g. while this pane
-    /// was on a hidden workspace), so replaying the buffer would paint the
-    /// wrong glyph — fall back to a full render instead. Catches the
-    /// cross-frame staleness that `frame_committed` (per-frame) and the coarse
-    /// `atlas_eviction_count` / generation guards miss.
-    cached_layer_epochs: Vec<u64>,
 }
 
 impl Drop for WebGpuPaneBackend {
@@ -400,6 +368,7 @@ impl WebGpuPaneBackend {
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             bind_group,
             pending_instances: Vec::with_capacity(INITIAL_INSTANCE_CAPACITY as usize),
+            damaged_rows: Vec::new(),
             frame_pinned,
             metrics: FrameMetrics {
                 cell_w: 8.0,
@@ -411,10 +380,6 @@ impl WebGpuPaneBackend {
             // First frame must re-encode every row — viewport rect just
             // assigned by JS is fresh and the pane has never drawn.
             needs_initial_clear: true,
-            cached_n_cells: 0,
-            cached_evictions_seen: 0,
-            cached_layers: Vec::new(),
-            cached_layer_epochs: Vec::new(),
         })
     }
 
@@ -486,14 +451,11 @@ impl WebGpuPaneBackend {
     }
 
     fn requires_full_frame(&self) -> bool {
-        // The persistent frame store is seeded every host frame, but default
-        // shell cells can be transparent. A dirty-row pass would therefore
-        // leave old glyph pixels behind. Re-encode every visible row so the
-        // one final frame-store blit contains no retained-pixel ghosting.
-        // Keep reading the compatibility flag so existing JS callers remain
-        // harmless; correctness no longer depends on the flag's value.
+        // The compositor-owned frame store preserves unchanged rows. Only
+        // structural/renderer invalidation needs a full grid encode; ordinary
+        // frames repair and redraw the rows selected by Renderer hashes.
         let _present_fast = present_fast();
-        true
+        self.needs_initial_clear
     }
 
     fn on_full_invalidate(&mut self) {
@@ -503,9 +465,6 @@ impl WebGpuPaneBackend {
         // so the new row→content mapping doesn't paint over stale
         // background pixels left from the previous mapping.
         self.needs_initial_clear = true;
-        // §4b: cached instances reflect the OLD scroll/selection state;
-        // invalidate the cache so the next frame goes through full encode.
-        self.cached_n_cells = 0;
     }
 
     fn resize_surface(&mut self, width_css: u32, height_css: u32, dpr: f32) -> Result<(), String> {
@@ -529,9 +488,6 @@ impl WebGpuPaneBackend {
             // `surfaceHost.invalidate()` after a settled fit) so the
             // pane's old pixels don't bleed past its new scissor.
             self.needs_initial_clear = true;
-            // §4b: cached instances were sized against the OLD viewport;
-            // their cell_xy/cell_size values are stale. Drop the cache.
-            self.cached_n_cells = 0;
         }
         Ok(())
     }
@@ -549,14 +505,13 @@ impl WebGpuPaneBackend {
         // stale pixels from the prior atlas can't show through any
         // sub-pixel anti-alias gaps.
         self.needs_initial_clear = true;
-        // §4b: cached instances reference now-invalid atlas slots.
-        self.cached_n_cells = 0;
     }
 
     fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme) {
         self.metrics = metrics;
         self.theme = theme.clone();
         self.pending_instances.clear();
+        self.damaged_rows.clear();
 
         // Compute slot dims from current metrics BEFORE taking ctx
         // borrow — `slot_dims_for` is a static helper, no ctx access.
@@ -591,8 +546,6 @@ impl WebGpuPaneBackend {
             // `LoadOp::Load`-ing over visually-correct-but-now-stale
             // pixels.
             self.needs_initial_clear = true;
-            // §4b: cached cell instances point at evicted atlas slots.
-            self.cached_n_cells = 0;
         }
 
         // 3) Reset frame_pinned — defensive sync with atlas_layers, then
@@ -645,6 +598,9 @@ impl WebGpuPaneBackend {
 
     fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {
         let row_idx = row.row_index;
+        if self.damaged_rows.last().copied() != Some(row_idx as u32) {
+            self.damaged_rows.push(row_idx as u32);
+        }
         let cell_w = (self.metrics.cell_w * self.metrics.dpr).round().max(1.0);
         let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
         let tui_mode = self.metrics.tui_mode;
@@ -1541,6 +1497,43 @@ impl WebGpuPaneBackend {
 }
 
 impl WebGpuPaneBackend {
+    fn background_damage_rects(&mut self) -> Vec<ScissorRect> {
+        if self.metrics.tui_mode || self.damaged_rows.is_empty() {
+            return Vec::new();
+        }
+        self.damaged_rows.sort_unstable();
+        self.damaged_rows.dedup();
+        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0);
+        let viewport = self.viewport;
+        let rect_for_rows = |start: u32, end: u32| {
+            let top = (start as f32 * cell_h).round().max(0.0) as u32;
+            let bottom = (end as f32 * cell_h).round().max(0.0) as u32;
+            let clipped_top = top.min(viewport.h);
+            let clipped_bottom = bottom.min(viewport.h);
+            ScissorRect {
+                x: viewport.x,
+                y: viewport.y.saturating_add(clipped_top),
+                w: viewport.w,
+                h: clipped_bottom.saturating_sub(clipped_top),
+            }
+        };
+        let mut rects = Vec::new();
+        let mut start = self.damaged_rows[0];
+        let mut end = start.saturating_add(1);
+        for row in self.damaged_rows.iter().copied().skip(1) {
+            if row == end {
+                end = end.saturating_add(1);
+            } else {
+                rects.push(rect_for_rows(start, end));
+                start = row;
+                end = row.saturating_add(1);
+            }
+        }
+        rects.push(rect_for_rows(start, end));
+        rects.retain(|rect| !rect.is_empty());
+        rects
+    }
+
     fn end_frame(&mut self) {
         // Phase B per-frame protocol. Steps:
         //   1. Upload frame uniform (pane-local viewport size in pixels).
@@ -1606,6 +1599,13 @@ impl WebGpuPaneBackend {
             }
         }
 
+        let background_damage = self.background_damage_rects();
+        if !background_damage.is_empty() {
+            self.host
+                .borrow_mut()
+                .repair_background_damage(&background_damage);
+        }
+
         // Empty viewport (parked-by-clip) or no draws → skip the host
         // record entirely. `host.record_pane` itself short-circuits on
         // empty rect, but bailing here also avoids the `ctx.borrow()`
@@ -1617,10 +1617,6 @@ impl WebGpuPaneBackend {
             // which pane goes first), so just clear the per-pane flag
             // and bail.
             self.needs_initial_clear = false;
-            // §4b: with 0 instances we have nothing to cache.
-            self.cached_n_cells = 0;
-            self.cached_layers.clear();
-            self.cached_layer_epochs.clear();
             return;
         }
 
@@ -1645,43 +1641,17 @@ impl WebGpuPaneBackend {
         // false next tick so the row-hash diff in Renderer::tick can
         // skip non-dirty rows.
         self.needs_initial_clear = false;
-        // §4b: remember the just-uploaded instance count so a future
-        // `record_cached_only` can re-issue this exact draw without
-        // walking the kernel grid.
-        self.cached_n_cells = n_cells;
-        self.cached_evictions_seen = ctx.atlas_eviction_count;
         drop(ctx);
-        // §atlas-pin: record the distinct glyph layers this frame's
-        // instances cite so `pin_cached_layers` can protect them next time
-        // we replay via `record_cached_only`. Reserved layer 0
-        // (backgrounds / clears / procedural rects) is never an eviction
-        // candidate — skip it to keep the list tight.
-        let mut layers: Vec<u16> = Vec::new();
-        for inst in &self.pending_instances {
-            let l = inst.atlas_layer;
-            if l >= super::gpu_context::ATLAS_RESERVED_LAYERS {
-                let lu = l as u16;
-                if !layers.contains(&lu) {
-                    layers.push(lu);
-                }
-            }
-        }
-        self.cached_layers = layers;
-        // §atlas-race detector: this pane's draw is now RECORDED in the host
-        // encoder, so its glyph slots are load-bearing for the unsubmitted
-        // frame. Mark them committed — a sibling pane's later admission that
-        // overwrites one is then caught in `rasterize_and_admit`.
-        // §stale-replay detector: ALSO snapshot each cited layer's write epoch
-        // so `record_cached_only` can later tell whether the slot was
-        // repurposed since this cache was built.
+        // This pane's draw is now recorded in the unsubmitted host encoder.
+        // Mark every cited glyph layer committed so a sibling cannot overwrite
+        // it later in the same frame. Repeated marks are intentionally cheaper
+        // than building and scanning a per-pane replay cache.
         {
             let mut ctx = self.ctx.borrow_mut();
-            self.cached_layer_epochs.clear();
-            self.cached_layer_epochs.reserve(self.cached_layers.len());
-            for &l in &self.cached_layers {
-                ctx.mark_committed(l);
-                let epoch = ctx.layer_write_epoch.get(l as usize).copied().unwrap_or(0);
-                self.cached_layer_epochs.push(epoch);
+            for instance in &self.pending_instances {
+                if instance.atlas_layer >= super::gpu_context::ATLAS_RESERVED_LAYERS {
+                    ctx.mark_committed(instance.atlas_layer as u16);
+                }
             }
         }
     }
@@ -1750,154 +1720,5 @@ impl RenderBackend for WebGpuPaneBackend {
 
     fn end_frame(&mut self) {
         WebGpuPaneBackend::end_frame(self)
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl WebGpuPaneBackend {
-    /// §4b per-pane increment cache (2026-05-08): re-record this pane's
-    /// PREVIOUSLY-uploaded instance buffer into the host's current
-    /// frame WITHOUT retraversing the kernel grid, generating new
-    /// CellInstances, or re-uploading them. The vertex buffer in
-    /// `instance_buffer` already holds the last successful frame's
-    /// data; we just need to ask the host to record another draw call
-    /// against it inside the pane's scissor.
-    ///
-    /// Returns `false` (caller must fall back to a full `render` /
-    /// `end_frame` cycle) when:
-    ///   - `cached_n_cells == 0` (no prior frame, OR cache was
-    ///     invalidated by `on_full_invalidate` / `resize_surface` /
-    ///     `invalidate_atlas` / atlas-generation bump);
-    ///   - viewport is empty (pane scissor collapsed to 0×0 — drawing
-    ///     would be a no-op anyway);
-    ///   - the host is in a `needs_initial_clear` state for this pane
-    ///     (paint correctness requires re-encoding from scratch).
-    ///
-    /// Returns `true` after successfully recording the draw — the next
-    /// `SurfaceHost::end_frame` will include this pane's pixels.
-    ///
-    /// Used by JS `manager.ts::startRafLoop` for visible host-mode
-    /// panes that pre-pass marked NOT dirty: the swap-chain `LoadOp::
-    /// Clear` would otherwise wipe their region (forcing a re-encode
-    /// even for unchanged content), and this method is the cheap path
-    /// that paints the cached pixels back without a kernel grid sweep.
-    /// On a typing-into-one-pane workload with N other static panes,
-    /// the per-tick CPU cost of those N panes drops from O(rows × cols)
-    /// per pane to one GPU draw call per pane.
-    pub fn record_cached_only(&mut self) -> bool {
-        if self.cached_n_cells == 0 || self.viewport.is_empty() || self.needs_initial_clear {
-            return false;
-        }
-        // Defensive: an atlas-generation bump must invalidate cached
-        // UVs. Catch the case where invalidation happened between
-        // begin_frame's check and this call (e.g., another pane in the
-        // same RAF tick triggered atlas rebuild).
-        let mut ctx = self.ctx.borrow_mut();
-        if ctx.atlas_generation != self.atlas_generation_seen {
-            self.cached_n_cells = 0;
-            return false;
-        }
-        // Cross-pane atlas eviction guard: if another pane evicted a
-        // layer since our last `end_frame`, our cached instance buffer
-        // may reference stale atlas data. Fall back to full render so
-        // `draw_row_texts` re-rasterizes and re-uploads with correct
-        // layer assignments.
-        if ctx.atlas_eviction_count != self.cached_evictions_seen {
-            self.cached_n_cells = 0;
-            return false;
-        }
-        // §stale-replay detector + ROOT FIX (2026-06-22 round 2): the two
-        // guards above are coarse — `atlas_eviction_count` misses layer
-        // reuse via the fresh `next_free_layer` path after an
-        // `invalidate_atlas` that didn't also bump the generation we
-        // observed, and the generation snapshot can be out of step. Do the
-        // precise per-layer check: if ANY layer this cached buffer cites has
-        // a higher write epoch than when we cached it, that slot now holds a
-        // DIFFERENT glyph and replaying would paint garble. Re-render fully.
-        // This is the structural cause of the switch-workspace "first/idle
-        // pane integral garble" that the per-frame `frame_committed` detector
-        // can't see (the overwrite happened in an EARLIER frame).
-        {
-            let mut stale = false;
-            for (i, &l) in self.cached_layers.iter().enumerate() {
-                let now = ctx.layer_write_epoch.get(l as usize).copied().unwrap_or(0);
-                let then = self.cached_layer_epochs.get(i).copied().unwrap_or(now);
-                if now != then {
-                    stale = true;
-                    break;
-                }
-            }
-            if stale {
-                ctx.stale_replay_count = ctx.stale_replay_count.wrapping_add(1);
-                if ctx.stale_replay_log_budget > 0 {
-                    ctx.stale_replay_log_budget -= 1;
-                    web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
-                        "[ridge-term][stale-replay] cached replay ABORTED — a cited atlas \
-                         layer was repurposed since caching (cross-frame garble root); \
-                         falling back to full render. cited_layers={} total={}",
-                        self.cached_layers.len(),
-                        ctx.stale_replay_count,
-                    )));
-                }
-                drop(ctx);
-                self.cached_n_cells = 0;
-                return false;
-            }
-        }
-        drop(ctx);
-
-        // Re-upload the frame uniform — cheap (16 bytes) and guards
-        // against any out-of-band viewport change since last frame.
-        let viewport_uniform: [f32; 4] = [self.viewport.w as f32, self.viewport.h as f32, 0.0, 0.0];
-        let n_cells = self.cached_n_cells;
-        let viewport = self.viewport;
-        let bind_group = &self.bind_group;
-        let instance_buffer = &self.instance_buffer;
-        let ctx = self.ctx.borrow();
-        ctx.queue.write_buffer(
-            &self.frame_uniform,
-            0,
-            bytemuck::bytes_of(&viewport_uniform),
-        );
-        self.host
-            .borrow_mut()
-            .record_pane(viewport, &ctx.cell_pipeline, |pass| {
-                pass.set_bind_group(0, bind_group, &[]);
-                pass.set_vertex_buffer(0, instance_buffer.slice(..));
-                pass.draw(0..4, 0..n_cells);
-            });
-        drop(ctx);
-        // §atlas-race detector: this cached replay is now RECORDED, so its
-        // cited glyph slots are load-bearing for the unsubmitted frame — mark
-        // them committed (same as the full-render `end_frame` path). If
-        // `pin_cached_layers` failed to protect any of these, a sibling's
-        // later admission overwriting one is caught in `rasterize_and_admit`.
-        {
-            let mut ctx = self.ctx.borrow_mut();
-            for &l in &self.cached_layers {
-                ctx.mark_committed(l);
-            }
-        }
-        true
-    }
-
-    /// §atlas-pin: re-pin this pane's cached glyph layers into the shared
-    /// per-frame `frame_written` mask. Called by the host loop right after
-    /// the host frame opens (mask just reset) and before any pane's full
-    /// render — so eviction in `rasterize_and_admit` won't reclaim a layer
-    /// that this pane's upcoming `record_cached_only` replay still samples.
-    /// No-op when the cache is empty/invalid (then `record_cached_only`
-    /// itself falls back to full render and re-marks layers as it admits).
-    pub fn pin_cached_layers(&mut self) {
-        if self.cached_n_cells == 0 || self.cached_layers.is_empty() {
-            return;
-        }
-        let mut ctx = self.ctx.borrow_mut();
-        for &l in &self.cached_layers {
-            let idx = l as usize;
-            if idx < ctx.frame_written.len() {
-                ctx.frame_written[idx] = true;
-            }
-        }
     }
 }
