@@ -480,6 +480,12 @@ impl<B: RenderBackend> Renderer<B> {
         self.backend.invalidate_atlas();
     }
 
+    /// Repaint the complete viewport without invalidating the shared glyph
+    /// atlas. Structural compositor seeds erase pixels, not font resources.
+    pub fn request_full_redraw(&mut self) {
+        self.full_redraw_pending = true;
+    }
+
     /// Multi-pane hosts call this when the active pane changes. When the
     /// focus flag flips, we dirty the row that last held the cursor so the
     /// next frame redraws it without the cursor (focus lost) or with it
@@ -1002,26 +1008,6 @@ impl<B: RenderBackend> Renderer<B> {
     }
 }
 
-/// §4b per-pane increment cache (2026-05-08): a thin `AnyBackend`-only
-/// passthrough for the WebGPU cached-record path. Lives in its own
-/// impl block (not the generic `impl<B: RenderBackend>`) because the
-/// underlying method exists on `AnyBackend::record_cached_only` rather
-/// than the `RenderBackend` trait — Canvas2D returns `false` and the
-/// caller falls back to a normal `tick`/`render` cycle.
-#[cfg(target_arch = "wasm32")]
-impl Renderer<crate::render::AnyBackend> {
-    pub fn record_cached_only(&mut self) -> bool {
-        self.backend.record_cached_only()
-    }
-
-    /// §atlas-pin: passthrough so JS can pin a cached pane's glyph layers
-    /// before this frame's full renders run (see `WebGpuPaneBackend::
-    /// pin_cached_layers`).
-    pub fn pin_cached_layers(&mut self) {
-        self.backend.pin_cached_layers()
-    }
-}
-
 fn cursor_eq(a: &Option<CursorDraw>, b: &Option<CursorDraw>) -> bool {
     match (a, b) {
         (None, None) => true,
@@ -1472,9 +1458,7 @@ mod tests {
     // never whole-viewport clear solely because absolute CSI / TUI is active.
 
     use super::Renderer;
-    use crate::render::backend::{
-        FrameMetrics, RenderBackend, RowDraw, Theme,
-    };
+    use crate::render::backend::{FrameMetrics, RenderBackend, RowDraw, Theme};
     use crate::term::attr_table::AttrTable;
     use crate::term::Terminal;
 
@@ -1482,6 +1466,7 @@ mod tests {
     struct RecordingBackend {
         clears: u32,
         frames: u32,
+        atlas_invalidations: u32,
         drawn_rows: Vec<usize>,
         last_drawn: Vec<usize>,
     }
@@ -1498,6 +1483,9 @@ mod tests {
         }
         fn clear(&mut self) {
             self.clears += 1;
+        }
+        fn invalidate_atlas(&mut self) {
+            self.atlas_invalidations += 1;
         }
         fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, _: &AttrTable) {
             self.last_drawn.push(row.row_index);
@@ -1519,6 +1507,26 @@ mod tests {
             dpr: 1.0,
             tui_mode: false,
         }
+    }
+
+    #[test]
+    fn compositor_seed_repaints_all_rows_without_dropping_atlas() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"stable");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 0.0));
+        renderer.backend_mut().last_drawn.clear();
+        let clears = renderer.backend().clears;
+
+        renderer.request_full_redraw();
+        assert!(renderer.tick(&term, None, 0.0));
+        assert_eq!(renderer.backend().last_drawn, vec![0, 1, 2, 3]);
+        assert_eq!(renderer.backend().clears, clears + 1);
+        assert_eq!(renderer.backend().atlas_invalidations, 0);
     }
 
     /// Ratatui-like settled frame: sync begin, home, paint all rows, sync end.
@@ -1554,7 +1562,11 @@ mod tests {
         term.feed(b"\x1b[?25l");
         feed_ratatui_frame(&mut term, "A");
 
-        let mut r = Renderer::new(RecordingBackend::default(), metrics(), Theme::default_dark());
+        let mut r = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
         assert!(r.tick(&term, None, 0.0), "first frame must paint");
         let clears_after_first = r.backend().clears;
         assert!(clears_after_first >= 1, "seed frame clears once");
@@ -1568,7 +1580,8 @@ mod tests {
             "identical settled content must return nothing-to-draw"
         );
         assert_eq!(
-            r.backend().clears, clears_after_first,
+            r.backend().clears,
+            clears_after_first,
             "must not whole-viewport clear when cell hashes stable"
         );
         assert_eq!(r.backend().frames, frames_after_first);
@@ -1586,7 +1599,11 @@ mod tests {
         term.feed(b"\x1b[?25l");
         feed_ratatui_frame(&mut term, "X");
 
-        let mut r = Renderer::new(RecordingBackend::default(), metrics(), Theme::default_dark());
+        let mut r = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
         assert!(r.tick(&term, None, 0.0));
         let clears_seed = r.backend().clears;
         r.backend_mut().last_drawn.clear();
@@ -1603,7 +1620,8 @@ mod tests {
 
         assert!(r.tick(&term, None, 0.0), "changed row must paint");
         assert_eq!(
-            r.backend().clears, clears_seed,
+            r.backend().clears,
+            clears_seed,
             "partial change must not full-clear"
         );
         let mut unique: Vec<usize> = r.backend().last_drawn.clone();
@@ -1633,7 +1651,11 @@ mod tests {
         term.feed(b"\x1b[?1049h");
         feed_ratatui_frame(&mut term, "Z");
 
-        let mut r = Renderer::new(RecordingBackend::default(), metrics(), Theme::default_dark());
+        let mut r = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
         assert!(r.tick(&term, None, 0.0));
         let clears_seed = r.backend().clears;
 
@@ -1657,7 +1679,8 @@ mod tests {
             "net-zero cell delta after fullscreen-style rewrite must not paint"
         );
         assert_eq!(
-            r.backend().clears, clears_seed,
+            r.backend().clears,
+            clears_seed,
             "fullscreen-style rewrite with equal settled cells must not force whole-viewport clear"
         );
     }
@@ -1681,7 +1704,11 @@ mod tests {
             "fixture must engage absolute-positioning heuristic"
         );
 
-        let mut r = Renderer::new(RecordingBackend::default(), metrics(), Theme::default_dark());
+        let mut r = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
         assert!(r.tick(&term, None, 0.0));
         let clears_seed = r.backend().clears;
         // Re-emit absolute CSI without changing cells.
@@ -1700,7 +1727,11 @@ mod tests {
         term_a.feed(b"\x1b[?25l");
         feed_ratatui_frame(&mut term_a, "A");
 
-        let mut pane_a = Renderer::new(RecordingBackend::default(), metrics(), Theme::default_dark());
+        let mut pane_a = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
         assert!(pane_a.tick(&term_a, None, 0.0), "pane A seed frame");
         let clears_a = pane_a.backend().clears;
         let frames_a = pane_a.backend().frames;
@@ -1709,7 +1740,11 @@ mod tests {
         let mut term_b = Terminal::new(rows, cols, 0);
         term_b.feed(b"\x1b[?25l");
         feed_ratatui_frame(&mut term_b, "B");
-        let mut pane_b = Renderer::new(RecordingBackend::default(), metrics(), Theme::default_dark());
+        let mut pane_b = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
         assert!(pane_b.tick(&term_b, None, 0.0), "new split pane paints");
         assert!(pane_b.backend().clears >= 1);
 
@@ -1717,7 +1752,8 @@ mod tests {
         let drew_a = pane_a.tick(&term_a, None, 0.0);
         assert!(!drew_a, "stable sibling must not repaint after split");
         assert_eq!(
-            pane_a.backend().clears, clears_a,
+            pane_a.backend().clears,
+            clears_a,
             "split must not whole-viewport clear the previous pane when hashes are stable"
         );
         assert_eq!(pane_a.backend().frames, frames_a);

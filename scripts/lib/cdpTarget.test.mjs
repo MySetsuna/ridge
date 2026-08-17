@@ -12,4 +12,11 @@ describe('Ridge CDP target selection', () => {
     expect(isRidgeCdpTarget({ type: 'page', title: 'Ridge', url: 'tauri://localhost', webSocketDebuggerUrl: 'ws://ridge' })).toBe(true);
     expect(isRidgeCdpTarget({ type: 'page', title: '', url: 'http://127.0.0.1:5173/', webSocketDebuggerUrl: 'ws://vite' })).toBe(true);
   });
+
+  it('rejects a stale local dev page when the current origin is known', () => {
+    const current = { type: 'page', title: 'Ridge', url: 'http://127.0.0.1:6000/', webSocketDebuggerUrl: 'ws://current' };
+    const stale = { type: 'page', title: 'Ridge', url: 'http://127.0.0.1:3929/', webSocketDebuggerUrl: 'ws://stale' };
+    expect(isRidgeCdpTarget(current, 'http://127.0.0.1:6000')).toBe(true);
+    expect(isRidgeCdpTarget(stale, 'http://127.0.0.1:6000')).toBe(false);
+  });
 });

@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { shouldForwardPointerMotion, sgrReleaseButton } from './mouseForwardPolicy';
 
 describe('shouldForwardPointerMotion', () => {
-	it('forwards drag under ?1000 button-down (Grok Build / click tracking)', () => {
-		expect(shouldForwardPointerMotion(0x1, 1)).toBe(true);
+	it('does not invent motion under press/release-only ?1000 or ?9', () => {
+		expect(shouldForwardPointerMotion(0x1, 1)).toBe(false);
 		expect(shouldForwardPointerMotion(0x1, 0)).toBe(false);
+		expect(shouldForwardPointerMotion(0x8, 1)).toBe(false);
 	});
 
 	it('forwards drag under ?1002 and all motion under ?1003', () => {
@@ -15,7 +16,6 @@ describe('shouldForwardPointerMotion', () => {
 
 	it('ignores motion when no DEC mouse mode is on', () => {
 		expect(shouldForwardPointerMotion(0, 1)).toBe(false);
-		expect(shouldForwardPointerMotion(0x8, 1)).toBe(false);
 	});
 });
 

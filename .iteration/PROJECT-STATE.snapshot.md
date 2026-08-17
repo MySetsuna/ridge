@@ -1,9 +1,117 @@
 # Ridge 项目状态（唯一 NotebookLM 来源）
 
+## Current snapshot (next iteration, 2026-08-12) — native A2A 与 Remote 观测
+
+- 用户已批准将所有已知遗留项纳入本迭代；Active 需求为
+  `REQ-NEXT-ITERATION-20260812-01` 与 `REQ-A2A-NATIVE-SERVER-01`。
+- Ridge native A2A 已接入 `ridge-mcp`、无头 `ridge-tmux` 与桌面 teammate server。
+  Agent Card 与 JSON-RPC `SendMessage/GetTask/ListTasks/CancelTask` 复用 Message Hub
+  receipt；认证、tenant、请求/响应上限及 generation/lease/workspace 围栏均 fail-closed。
+- Cloud host 端已接入既有 bounded Remote trace，记录 raw receive、wire send、pane drop
+  与 WebRTC stats；trace 默认关闭且最多 256 样本，不保存 payload。
+- Agent history 已修复来源缺口：Claude/Codex/Cursor Agent 分源发现，Codex 原生 JSONL
+  与 Cursor `agent-transcripts` 均可解析；展示上限先保留各 Agent 最新行。Grok 继续沿用
+  独立 adapter；Gemini/Aider 无本机可验证聊天源，仍 fail-closed，不伪造解析器。
+- 开发 CSP 已允许 Vite runtime `<style>`，同时移除开发 `style-src` hash 冲突；生产构建
+  仍保持 hash-only。CDP 截图确认 Ridge 主界面布局与字体恢复，runtime style blocked 为 0。
+- 本轮证据：native A2A 5 tests、`ridge-mcp` 108 lib tests、Remote host/controller/
+  queue/trace/weak-net 62 tests、Tauri `cargo check` exit 0。Tauri 仍有 161 条既有 warning，
+  未新增编译 error。
+- Agent history 专项 Rust 测试为 `29 passed; 0 failed`；全量 Vitest 为 2014 passed / 5 skipped，
+  Playwright clean run 为 18 passed / 1 skipped；LAN desktop/mobile、mobile keyboard、
+  `dev:cdp`/CDP smoke 均通过。
+- 本轮 Sonar 有效扫描（仓外、含 sidecar 与生成 tsconfig 的临时副本）索引 776 files；
+  Quality Gate `OK`，coverage `82.6%`、line `89.0%`、branch `73.6%`、violations `0`，
+  new coverage `82.6%`、new duplication `1.93048%`、new violations `0`。token 已撤销。
+- 仍未闭合：streaming/push、第三方 Agent live 互操作、真实公网/TURN、真机 PWA、WebView2
+  长跑、双 Host/窗口、force-kill 重连、PTY 五条件现场快照与当前 HEAD Sonar CE/Gate；详见
+  [本轮遗留矩阵](iterations/2026-08-12-next-iteration-a2a-remote.md)。
+
+## Current snapshot (iteration 172, 2026-08-08) — NLM authentication workflow repair
+
+- NotebookLM external-CDP authentication is restored through the fixed local
+  proxy `http://127.0.0.1:51081`. The dedicated Chrome page may resolve to
+  `https://notebook.google.com/`; this is accepted as a valid signed-in landing
+  page for the extraction path.
+- Non-secret verification passed: `login_check_exit=0`,
+  `notebook_list_exit=0`, `notebook_count=22`. No Cookie value, storage,
+  password, or token is recorded here.
+- `notebook_get` still reports three sources (`Agent 通信架构重构`,
+  `PROJECT-STATE.md`, `REQUIREMENTS-SPEC.md`), so the single-source invariant
+  is not closed. No irreversible source deletion was performed in this pass.
+- The local auth helper now waits for `/json/version` and `/json/list` after
+  launching Chrome and reports `cdp_ready`; extraction uses the CLI's Python
+  environment with the no-false-wait path. Failures are classified as CDP,
+  browser login, extraction, CLI network/wrapper, or NotebookLM API failures.
+- The next NotebookLM loop must update this single state source, replace the
+  previous notebook source only after the new one is indexed, and treat
+  CodeGraph/source/tests/runtime evidence as authoritative over suggestions.
+
+Archive: `docs/iterations/2026-08-08-nlm-auth-workflow-repair.md`.
+
 状态日期：2026-08-05（iteration 167 已完成稳定 Cloud Pane 绑定、Remote 尾流与 Pane 尺寸代码闸；手机归因、公网/WebView2 长跑、双窗口及双 Host 真机证据待补；正式 release 正在等待修复后的 CI 闸验证）
 覆盖仓库：`wind`（`C:\code\wind`）与兄弟仓库 `ridge-cloud`（`C:\code\ridge-cloud`）
 用途：人类与 NotebookLM 共用的单一「当前现状 + 愿景 + 差距」来源，辅助规划、取舍与追问。
 不含：密钥、生产凭据、用户数据；不把历史计划或未复测功能写成已验证事实。
+
+## Current snapshot (iteration 171, 2026-08-05)
+
+- Remote cloud transport now has two ordered lanes on one authenticated
+  PeerConnection: `ridge` for control/input and optional `ridge-pane` for PTY
+  bulk output. Lane sessions use independent E2EE counters and chunk IDs;
+  legacy peers fall back to `ridge` without a second connection.
+- Host/controller routing, pane backpressure, teardown, legacy fallback, and
+  focused foreign-pane QoS promotion are covered by deterministic tests. Local
+  code is pushed at `f243e61d` (frame backlog tracing follows `b9459686`);
+  foreign-pane subscriptions now replay after a
+  full WebRTC reconnect, while discovered-only panes remain unsubscribed;
+  mobile transient subscribe failures use bounded exponential retry.
+- `MainApp` now frame-budgets incoming Pane bytes: 512 KiB per-pane cap, 32 KiB
+  steps, 64 KiB/frame ceiling, active-pane-first plus one background turn, and
+  a 4 ms wall-clock budget. Overflow/parse failure triggers one resync; Pane
+  teardown and reconnect clear queued bytes.
+- Cloud Mobile input admission has no artificial batch delay: the first key is
+  sent immediately, while the per-pane RPC scheduler still serializes and
+  coalesces later bytes behind the single in-flight request.
+- Verification after the output scheduler follow-up: full Vitest 155 files /
+  1594 passed / 1 skipped; `pnpm check` 0 errors / 0 warnings; mobile PWA and
+  desktop Remote builds wrote their output directories. A local dry-run bundle
+  was prepared as `0.1.60+g36a53dee` (270 files, desktop + mobile indexes), but
+  online artifact remains `e94d8c5` because the 2026-08-05 publication cap is
+  exhausted; next publish must activate `36a53dee` (including the dual-lane
+  `150272a`, frame-budget `f243e61d`, and zero-window input fix `9881a3e5`).
+- Public HTTP startup remains route/proxy-sensitive (direct fetch is much
+  faster than the configured proxy). This is not evidence about WebRTC data
+  channel latency. Cloud source confirms business E2EE DataChannel traffic
+  bypasses signaling relay; only a `relay` candidate makes TURN/server egress
+  a likely bottleneck. Physical phone/PWA pane-switch and input soak remains
+  open.
+- Live public fingerprint (2026-08-05) still reports `/_app/version.json` =
+  `1785916897644`; its JavaScript assets have no `ridge-pane-probe` or
+  `ridge-pane-ready`, while the local mobile build does. Public Remote is
+  therefore still on the legacy single ordered lane and cannot yet exercise
+  the current input-first dual-lane fix.
+- A fresh iPhone UA fetch (2026-08-05) serves `/assets/index-CvZWGRf2.js`
+  (112352 bytes) with neither `ridge-pane` nor `PaneFeedScheduler`; this
+  confirms the mobile PWA route is also the old artifact, not merely a desktop
+  UA/cache mismatch.
+- Commit `acfdd952` adds a tiny `artifact.json` fingerprint to each desktop /
+  mobile publish root, verifies matching `version`/`gitSha` in `--no-build`,
+  and makes the publish workflow probe both public UA paths after activation.
+  The current checkout's full local dry-run produced a 272-file, 24.84 MiB
+  bundle; online activation remains intentionally pending the next publish
+  window.
+- Controlled LAN browser smoke on 2026-08-05 passed for desktop and mobile:
+  `canvas/tree/ws` gates, real `write_to_pty` and `resize_pane`, and no browser
+  errors. Evidence: `.iteration/artifacts/rdg-remote-e2e/last-result.json`.
+  Latest rerun records Desktop `tree=false` in raw detail while the script's
+  acceptance gate still passes; no tree-pass is claimed. This does not close
+  the physical public WebRTC/PWA gate.
+- Post-change LAN rerun at `2026-08-05T11:56:42Z` also passed with
+  `browserErrors=[]`, real input/resize traffic, Desktop `canvas=true tree=false
+  ws=true`, and Mobile `canvas=true tree=true ws=true`.
+
+Archive: `docs/iterations/2026-08-05-iteration-171-remote-link-fluidity.md`.
 
 ## Current snapshot (iteration 168, 2026-08-05)
 
@@ -2209,16 +2317,130 @@ Remote/Cloud workflow `30977176806` succeeded and atomically activated
 `0.1.60+g42680ca`; its Desktop/Mobile index health checks passed. The public
 Remote entrypoint returns the new build. Worktree and origin are clean.
 
+### Iteration 171 publication closure (2026-08-05)
+
+Remote direct-link activation now bypasses keyboard focus on validated URL/path
+hits, including mobile touch/mouse. Pane switching caps synchronous catch-up at
+128 KiB, requests a bounded resync after overflow, and retains the latest live
+tail/input path. Cloud subscriptions register in the background first, then
+promote through a latest-wins serialized active lane.
+Bounded stage telemetry now separates input/resize RPC, transport send/receive,
+WebRTC candidate/RTT/bitrate/loss stats, raw feed, pane switch, and first paint;
+scheduler diagnostics expose p50/p95 latency and input queue high-water bytes.
+Details:
+`docs/iterations/2026-08-05-iteration-171-remote-link-fluidity.md`.
+
+Focused Remote tests (now 102 transport/cloud tests), full Vitest (154 files/
+1582 passed/1 skipped), `pnpm check` (0 errors/0 warnings), and Remote
+production builds pass.
+Online artifact commit `e94d8c5` is active: Remote/Cloud workflow `30987238096`
+succeeded from that exact SHA and the public bundle contains `openLinkAt` plus
+the new direct-link hint. The unshipped priority transport follow-up is pushed
+as `67417a9`; it is not online until the next allowed artifact publish.
+Desktop remains formally `v0.1.60`; physical phone/PWA soak with the stage
+trace is the remaining performance evidence gate.
+
+Public-path baseline: direct HTTPS fetches of the deployed 531 KiB Remote
+chunk measured `200–259 KB/s` and `2.05–2.65s`; the configured HTTP proxy
+measured only `9.3–10.5 KB/s` and `50.59–57.38s`. This identifies a severe
+proxy/route bottleneck on the test host, but does not by itself classify the
+WebRTC DataChannel; its `bufferedAmount`/stage trace and real phone soak remain
+the authority for relay versus device attribution.
+With browser gzip enabled, the chunk is 163,215 bytes; direct fetch was `1.72s`
+versus `16.60s` through the proxy at `9.8 KB/s`, confirming compression is not
+the bottleneck. A remaining protocol risk is that Cloud control/input and pane
+output share one ordered `ridge` DataChannel. The follow-up is now implemented
+locally: pane bursts split into 32 KiB frames, control/input frames use a
+priority queue, and the active output guard is 256 KiB with a 64 KiB drain
+watermark. This bounds single-channel head-of-line delay while preserving E2EE
+counter ordering. It is not in today's online artifact because the daily
+release cap is exhausted; the next Remote/Cloud artifact must include it and
+pass the physical phone/PWA soak.
+
+Post-audit: the mobile shell no longer preloads the nonexistent
+`/_app/immutable/entry/startup.js`; source guard and production PWA verification
+pass. LAN E2E at `2026-08-05T12:23:20Z` again passed desktop/mobile input,
+resize, WebSocket, and `browserErrors=[]` gates.
+
+Current activation audit (`2026-08-05T12:43Z`): pushed `main` is `5f295ab7`.
+The unified local Remote dry-run rebuilt matching desktop/mobile fingerprints
+`0.1.60+g5f295ab7` (272 files, 24.84 MiB), and strict no-build validation passed.
+No upload was attempted because the daily publication cap is exhausted. A fresh
+no-cache iPhone-UA request still serves public asset `CvZWGRf2` without
+`PaneFeedScheduler`/`ridge-pane`; public `artifact.json` remains SPA HTML.
+Hence public Remote is not current. Next allowed publication must activate this
+exact SHA, pass both public fingerprint probes, then undergo physical phone/PWA
+WebRTC soak before the online freeze claim can close.
+The strict no-build mismatch branch was audited against stale local roots and
+now reports an actionable expected/actual fingerprint instead of an internal
+`TypeError`; the artifact metadata tests remain green (5/5).
+
+## Iteration 172 / Remote E2E 与 NLM 下一迭代（2026-08-08）
+
+本轮本地修复、CodeGraph 复核、Sonar 扫描及 dev:cdp E2E 已完成；Vitest 为
+155 files / 1606 passed / 1 skipped，`pnpm check` 为 0 errors / 0 warnings。
+Remote/Cloud 未上传，生产未激活，发布仍须用户明确授权。
+
+NLM 已重新认证并通过 `nlm login --check` 与 notebook list。主笔记近期痛点
+已并入本轮：kernel-first/Tauri 解耦后的 topology 漂移、复合
+`(workspaceId,paneId)` 身份、Remote 重试与移动端连续性、geometry/DPR/PTY/render
+稳定性。未删除或上传 NotebookLM source。
+
+本轮 E2E 收口及下轮问题登记见
+`docs/iterations/2026-08-08-remote-e2e-nlm-next-iteration.md`。其中已登记
+`create_pane (rebuild) failed` console 异常、detached theme 缺帧、orphan PTY
+清理、实体手机/PWA soak 缺口及 runner 时长问题；下轮先经 NLM 只读对抗提问，
+再形成 contract 后修复。
+## Iteration 172 final addendum (2026-08-08)
+
+本轮最终状态以 `docs/iterations/2026-08-08-remote-e2e-nlm-next-iteration.md` 为准：NLM 已重新认证，`nlm login --check`、22 本笔记列表、主笔记近期对话仅读抽取通过；未改动 NotebookLM source/note。NLM 近期痛点已映射至 kernel-first/双 SSOT、复合 pane 身份、Remote reconnect/reap、theme、multitab、mobile geometry/DPR 与 PTY/render 连续性。
+
+代码已补 KernelHost legacy workspace/pane result、空 workspace 首 pane、tree reconnect persistence、共享 theme wire frame、kernel bootstrap 全 workspace topology sync；`pane-pty-closed` 的 late-close `Pane not found` 重建竞态已按合法销毁收敛，非该错误仍报错。
+
+验证：Vitest 155 files / 1610 passed / 1 skipped；`pnpm check` 0 errors / 0 warnings；KernelHost 12/12；ridge-core theme 18/18；`cargo fmt --check` 通过；dev:cdp LAN/theme、pane split/close broadcast、multitab、PTY、teammate、`rdg-remote-e2e` desktop/mobile、mobile keyboard 均通过。移动证据仍为 Chromium emulation，非物理设备/PWA soak。
+
+Sonar 本地受限四文件扫描质量门 `OK`：new coverage 80.0、new duplication 1.05125、new violations 0；全项目 TypeScript analyzer 超时，日志保留于 `.iteration/artifacts/sonar-final-2.log` / `.iteration/artifacts/sonar-post-bug001.log`，不得据此宣称全项目质量门通过。未发布、未上传 Remote/Cloud、未激活生产；发布必须用户明确授权。
+
+最终复跑补充：CodeGraph `sync` 完成；LAN、pane graph、multitab、PTY parser、term input、teammate、`rdg-remote-e2e` 均通过；Vitest 155/1610（1 skipped）、`pnpm check` 0/0、fmt、KernelHost 12/12 通过。Sonar 复扫因本地服务 HTTP 401 未取得新快照，故受限旧 gate 不覆盖最终 ptyBridge 变更；监控页面因无可用 App Browser 未打开。multitab 仍观测一次可恢复的 `Explorer loadTree: missing path C:/code/wind/src-tauri` warning，下一轮处理重试与证据化。发布/Remote 云激活仍待用户授权。
+
+资源回收补验：`cdp-reap-test` PASS；`remote-leak-trace` 在 CDP 10486 下通过 pane/workspace/reconnect/reap 全流程，`reap pass1=0`、`pass2=0`，未复现 orphan/re-creation cycle。
+## Iteration 173 / A2A standard adapter and release closure (2026-08-12)
+
+本轮按 NotebookLM 近期对话提出的痛点复核 pane、ridge-term、workspace、remote、
+ridge-mcp、Message Hub 与 Agent 通信边界。NotebookLM 仅作需求假设源，代码、
+CodeGraph、测试、CDP 与 Sonar 证据为准。
+
+- Message Hub 继续作为内部 SSOT；Kernel/Teammate identity、typed envelope、
+  SQLite Hub、generation/lease fencing 与 MCP 语义工具保持有效。
+- `packages/ridge-mcp/src/a2a.rs` 已落地标准外部 A2A client：Agent Card、JSON-RPC
+  1.0/legacy 0.3、SSE、task、push、extended card、tenant、auth、extensions、
+  capability fail-closed、bounded response 与 Hub receipt 映射。
+- MCP 新增 A2A endpoint register/unregister；生产 Kernel、tmux、Tauri teammate
+  host 使用统一 A2A route，旧 DeliveryRegistry 保留兼容 fallback。
+- `remote_close_pane` 的结构广播已移入权威关闭路径；CDP pane graph 三次复跑均证明
+  LAN panes frame 更新一次，消除 teammate 调用路径 stale topology。
+- 质量证据：`pnpm check` 0/0；Vitest 217 files / 2013 passed / 5 skipped；
+  `pnpm build`、`pnpm build:remote`、PWA、LAN desktop/mobile、dev:cdp smoke /
+  multitab / PTY / pane graph 均通过；Sonar CE `SUCCESS`、Quality Gate `OK`、
+  new coverage `84.7%`、new duplication `1.22888%`、new violations `0`；CE task
+  `57a230d7-2fff-4c5a-a906-3161a469b304`、analysis
+  `71790ecc-e5bf-4402-9829-7405cf3c0a2f`。
+- 外部边界仍开放：Ridge 原生 A2A server/Agent Card endpoint、第三方真实 Agent
+  Card/凭据、公网 TURN、实体手机/PWA/IME/后台恢复、物理 DPR、生产 PTY 五条件与
+  真实 Agent CLI 私有 Runtime。不得把本地 fixture 或 Chromium 模拟写成外部闭环。
+- 版本进入 `0.1.62` 发布批次；必须在工作区清洁、main 推送、annotated tag 与
+  全平台安装包 matrix 齐全后才可宣称 Release 完成。
+
 <!-- PROJECT_STATE_RUNTIME -->
 ## 运行元数据
 
-- repository_head:`9efaa226d8d46f94abd0521b25d35e41eaf1bfac`
+- repository_head:`c64c14b7b7f83c4eb4d44c7b116c8f4c8adddc1f`
 - requirements_version:`v1.1`
-- requirements_hash:`d2b7e90e8347212fcbe826031023cbcddb94d67a60651da5b78619811dcceca5`
+- requirements_hash:`d23348e5ec3d78642585f3ec5e2aa731c9005b7b9b31a25ccde88870a5738d72`
 - pending_hash:`675f4c14be11356f2a6dd653abee7e066cff45c96270b80854f136a42bc3e1db`
-- decision_hash:`47d86551d3468bde9d3ae5f9961593d989421f93e2ed6e8670436f416a7993e9`
-- generated_at:`2026-08-05T07:15:00+00:00`
-- current_git_diff:`.iteration/context.json,.iteration/decision.json,.iteration/intake-decision.json,.iteration/request.txt,docs/REQUIREMENTS-SPEC.md`
+- decision_hash:`f7dd8b4e6c7d4e55196c78452da2e6e2cb3ce53ff0027ce4a2c5d70b5ac56cdc`
+- generated_at:`2026-08-17T06:42:33+00:00`
+- current_git_diff:`.iteration/decision.json,.iteration/intake-decision.json,.iteration/request.txt,packages/remote/src/shared/terminal/hostRemountPolicy.test.ts,packages/remote/src/shared/terminal/hostRemountPolicy.ts,packages/remote/src/shared/terminal/manager.attach.test.ts,packages/remote/src/shared/terminal/manager.test.ts,packages/remote/src/shared/terminal/manager.ts,packages/remote/src/shared/terminal/mouseForwardPolicy.test.ts,packages/remote/src/shared/terminal/mouseForwardPolicy.ts,packages/ridge-term/src/input.rs,packages/ridge-term/src/lib.rs,packages/ridge-term/src/render/gpu_context.rs,packages/ridge-term/src/render/mod.rs,packages/ridge-term/src/render/renderer.rs,packages/ridge-term/src/render/surface_host.rs,packages/ridge-term/src/render/webgpu.rs,packages/ridge-term/src/term/modes.rs,packages/ridge-term/src/term/parser.rs`
 
 ## 非权威 Pending 索引
 
@@ -2229,99 +2451,320 @@ Remote entrypoint returns the new build. Worktree and origin are clean.
 ```json
 {
   "approved_constraints": [
-    "One authenticated transport; no second WebSocket/WebRTC connection.",
-    "All queues and retained resources bounded, cancellable, and observable.",
-    "Input/control and active live tail must preempt render/history work.",
-    "Direct link open only for validated link/path hit; non-link/TUI/selection semantics preserved."
+    "Performance, input responsiveness, TUI continuity, protocol correctness, and single-cursor monotonic presentation outrank preservation of differential rendering.",
+    "Differential rendering may be repaired, removed, or reverted.",
+    "Do not depend on swap-chain texture contents surviving present; WebView2 dev evidence contradicts that assumption.",
+    "Do not hide defects by disabling all cursor blink, lowering refresh rate, changing PTY geometry, or adding unbounded queues/caches.",
+    "Kernel/parser state is authoritative; presentation must not revive stale rows or cursor positions.",
+    "Message Hub/SQLite and Remote transport remain outside the terminal paint hot path.",
+    "NotebookLM output is advisory until checked against code, CodeGraph, tests, primary specifications, and runtime evidence."
   ],
-  "attempts": [],
+  "attempts": [
+    {
+      "evidence": {
+        "command": "historical 09dbd579 present-fast path and inline rationale",
+        "exit_code": 1,
+        "pointer": "packages/ridge-term/src/render/webgpu.rs historical requires_full_frame"
+      },
+      "experiment": "Use swap-chain LoadOp::Load plus dirty rows.",
+      "result": {
+        "status": "failed",
+        "summary": "Release shell appeared to retain pixels, but dev WebView2 dropped prior rows on cursor-blink presents."
+      }
+    },
+    {
+      "evidence": {
+        "command": "git diff 869db24e^ 869db24e and current runtime report",
+        "exit_code": 1,
+        "pointer": "surface_host.rs:451-715; webgpu.rs:488-497"
+      },
+      "experiment": "v0.1.67 persistent full-frame store seeded and fully re-encoded every rendered frame.",
+      "result": {
+        "status": "failed",
+        "summary": "User reports materially worse jank and wrong visual behavior; code shows an extra full-screen blit without removing full-grid encode/upload."
+      }
+    },
+    {
+      "evidence": {
+        "command": "research_start(mode=deep, source=web)",
+        "exit_code": 8,
+        "pointer": "NotebookLM UserDisplayableError"
+      },
+      "experiment": "NotebookLM Deep Research over primary WebGPU, xterm, Kitty, and synchronized-output sources.",
+      "result": {
+        "status": "failed",
+        "summary": "Initial deep-research start returned Google API code 8; no fast-mode downgrade or duplicate task was started. Retry only after bounded backoff."
+      }
+    },
+    {
+      "evidence": {
+        "command": "research_start(mode=deep, source=web)",
+        "exit_code": 8,
+        "pointer": "NotebookLM UserDisplayableError"
+      },
+      "experiment": "NotebookLM Deep Research retry after cold-loop snapshot refresh and bounded backoff.",
+      "result": {
+        "status": "failed",
+        "summary": "The second deep-mode start returned the same Google API code 8. Fast mode remains intentionally unused; proceed with primary-source local research during cooldown, then open a new bounded iteration."
+      }
+    },
+    {
+      "evidence": {
+        "command": "nlm research start --mode deep --source web --force",
+        "exit_code": 1,
+        "pointer": "RPC QA9ei RESOURCE_EXHAUSTED"
+      },
+      "experiment": "Force-start the requested focused Deep Research after preserving one relevant source from an older unimported research result.",
+      "result": {
+        "status": "failed",
+        "summary": "The old-result overwrite guard was resolved, then Google rejected the new QA9ei request as RESOURCE_EXHAUSTED after built-in 1/2/4 second retries. This is the remaining external blocker; source-constrained NotebookLM review and primary-source research continue during cooldown."
+      }
+    },
+    {
+      "evidence": {
+        "command": "research_start(mode=deep, source=web)",
+        "exit_code": 8,
+        "pointer": "NotebookLM UserDisplayableError after source e1676960-1628-47cc-8547-57c757f67512 became ready"
+      },
+      "experiment": "Retry the exact focused Deep Research after the implementation, rebuilt PROJECT-STATE source, deterministic gates, and a long build cooldown.",
+      "result": {
+        "status": "failed",
+        "summary": "NotebookLM again returned Google API code 8 before creating a task. No report or source set exists, and fast mode was not substituted."
+      }
+    },
+    {
+      "evidence": {
+        "command": "research_start(mode=deep, source=web)",
+        "exit_code": 8,
+        "pointer": "NotebookLM UserDisplayableError with current PROJECT-STATE source 29d5c6f0-b170-489e-ae11-e21b661c5d04"
+      },
+      "experiment": "Final bounded Deep Research retry after another PROJECT-STATE refresh and more than ten minutes of build/test cooldown.",
+      "result": {
+        "status": "failed",
+        "summary": "Google API code 8 recurred before task creation. The iteration retry budget is exhausted; further Deep Research calls stop, and release remains gated rather than silently substituting fast mode."
+      }
+    },
+    {
+      "evidence": {
+        "command": "RIDGE_CDP_ALLOW_NON_BREAKAWAY=1 pnpm tauri:dev:cdp; cdp smoke/pty/pane-graph/multitab; real Codex and CDP screenshot probes",
+        "exit_code": 2,
+        "pointer": ".iteration/luna-cdp-final and C:/Users/12867/AppData/Local/Temp/ridge-cdp-e2e-final-20260817-140741.*"
+      },
+      "experiment": "Run the requested Luna real tauri:dev:cdp plus codex --yolo final E2E, followed by two bounded gap-filling passes.",
+      "result": {
+        "status": "failed",
+        "summary": "Core shell/PTy/pane-graph/multitab checks and one real Codex TUI rendering observation passed, but the final contract remained incomplete: Codex completion was not distinguished from command echo, the last retry sent the prompt to PowerShell instead of Codex, mouse state changes were not observable, and workspace/theme/long-duration cursor continuity lacked evidence."
+      }
+    }
+  ],
   "candidate_solutions": [
     {
-      "constraints": [
-        "validated hit only",
-        "drag/secondary unchanged"
-      ],
-      "core": "Direct link precedence plus existing TUI/selection fallback",
-      "reversibility": "small decision-function change",
-      "risks": "accidental open on TUI output",
-      "scope": [
-        "linkAffordance",
-        "manager click path"
-      ],
-      "validation": [
-        "matrix tests",
-        "mobile click fixture"
-      ]
+      "decision": "reject",
+      "name": "full rollback to swap-chain dirty rows",
+      "reason": "fast but relies on undefined/unreliable post-present swap-chain contents and restores documented WebView2 blinking."
     },
     {
-      "constraints": [
-        "single transport",
-        "bounded queues"
-      ],
-      "core": "Instrument and prioritize active path end-to-end",
-      "reversibility": "feature-gated counters",
-      "risks": "diagnostic overhead",
-      "scope": [
-        "scheduler",
-        "transport",
-        "manager",
-        "Remote UI"
-      ],
-      "validation": [
-        "stage latency trace",
-        "flood and pane-switch tests",
-        "public soak"
-      ]
+      "decision": "reject",
+      "name": "keep v0.1.67 full-store/full-grid path",
+      "reason": "correctness-oriented but performs full seed, full grid encode/upload, unchanged sibling replay, and full blit for sparse changes."
     },
     {
-      "constraints": [
-        "only after attribution"
-      ],
-      "core": "Infrastructure scaling or device upgrade",
-      "reversibility": "external",
-      "risks": "cost without fixing queue/renderer defect",
-      "scope": [
-        "relay/host/device"
-      ],
-      "validation": [
-        "A/B trace with same build"
-      ]
+      "decision": "recommend",
+      "name": "persistent damage compositor",
+      "reason": "retain compositor-owned persistent frame_store; seed it only on structural invalidation; on ordinary frames repair only coalesced dirty rows, including wallpaper/background beneath transparent cells; render only dirty panes; perform one full-store blit and one present after all panes."
     }
   ],
   "failure_signals": [
-    "User reports freeze after pane switching, stale tail, and no input despite v0.1.60 changes.",
-    "No per-stage public trace yet separates relay bandwidth, host CPU, device render, or queue delay."
+    "User-observed v0.1.67 terminal jank and wrong visual effect",
+    "O(rows*cols) cell hashing, instance construction, atlas admission, and buffer upload for every dirty WebGPU frame",
+    "Every dirty pane causes unchanged sibling pane GPU replay",
+    "Missing negotiated modern keyboard protocol and mode-correct legacy mouse encoding",
+    "Existing contract still lacks a recorded real Codex/Claude/WebView2 comparison matrix"
   ],
   "hypotheses": [
-    "The dominant current symptom is structural active-path starvation or stale subscription/replay ordering, not raw server bandwidth alone.",
-    "A relay/host bottleneck remains possible and must be separated by wire and CPU timings.",
-    "Mobile device decode/render pressure may amplify a queue delay after pane switch."
+    "Most v0.1.67 jank is caused by the combination of unconditional full-grid encoding and the new full-screen blit, not by row hashing itself.",
+    "Wallpaper transparency is the main correctness reason a naïve dirty-row draw can leave glyph ghosts; explicit background damage repair resolves it without full-frame seed.",
+    "Some Grok Build interactions require a modern keyboard protocol or mode-correct mouse fallback beyond the current SGR-only encoder."
   ],
   "prohibitions": [
-    "Do not claim root cause from absence of errors.",
-    "Do not add a second physical connection or unbounded replay.",
-    "Do not mask freezes by dropping input or hiding Console errors."
+    "Do not preserve differential rendering for compatibility if measured evidence favors deletion.",
+    "Do not add app-name-specific Codex/Grok renderer branches.",
+    "Do not upload raw logs, pending requirements, credentials, or full repository contents to NotebookLM.",
+    "Do not publish until deterministic gates and Luna dev:cdp codex --yolo E2E pass."
   ],
-  "question": "What structure is actually limiting Remote latency, and what is the safest design for bare link activation plus local-feeling input and pane switching?",
+  "question": "Validate or falsify the proposed ridge-term redesign: persistent compositor-owned backing store with row damage repair and one atomic present, plus standards-based modern TUI input negotiation. Identify better designs, protocol mistakes, and measurable stop conditions.",
   "questions": [
-    "Which stage dominates p50/p95 input acknowledgement and pane first-live-frame latency under output flood?",
-    "Does public relay buffered amount or host CPU correlate with the observed freeze?",
-    "Can direct link precedence preserve TUI mouse behavior through a validated-hit gate?"
+    "Does primary WebGPU/swap-chain guidance support persistent compositor-owned backing plus a single final blit as the portable model, and what synchronization/resource hazards remain?",
+    "What is the simplest correct way to repair dirty rows over a wallpaper/transparent terminal without full-surface repaint?",
+    "Which exact Kitty keyboard, modifyOtherKeys, mouse, focus, paste, alternate-screen, cursor, and synchronized-output sequences are required by modern TUIs, and which should remain out of scope?",
+    "Which benchmark counters and replay invariants best distinguish real smoothness from merely lower average FPS or hidden work?",
+    "Can any simpler deletion-first design meet the same correctness and WebView2 portability constraints?"
   ],
-  "target": "Remote mobile and desktop web clients over LAN/public Cloud, with shared terminal renderer and RPC scheduler.",
-  "trigger": "new_requirement_or_debt_candidate",
+  "recommendation": {
+    "ancillary_hot_paths": [
+      "Do not move Message Hub/SQLite into feed, parse, layout, or present.",
+      "Do not move link detection to a worker without profiling. Keep it viewport/line-local, generation-cached, bounded by line length, and invoked only for hover/click affordance rather than PTY feed or frame generation."
+    ],
+    "presentation": [
+      "Restore SurfaceHost needs_full_seed semantics; resize/theme/wallpaper/layout/device recovery set it, ordinary output does not.",
+      "Make WebGPU requires_full_frame false after a valid seed; Renderer row hashes remain the damage authority.",
+      "Collect/coalesce dirty row ranges per pane. Before drawing a dirty range, repaint its underlying background: opaque theme/TUI background directly, or the correctly UV-mapped wallpaper through a scissored host pass. Then draw all cells/glyphs in that range so erased glyphs cannot survive.",
+      "Remove state.anyDirty as a reason to replay unchanged siblings. Full structural invalidation may repaint all panes once; ordinary frames paint only changed panes.",
+      "Keep a single synchronous encoder submission and end-of-frame blit/present. Never present within a pane or inside synchronized-output mode 2026.",
+      "Do not add another async worker to the default WebGPU path; current worker is Canvas2D compatibility opt-in and would add protocol/lifecycle risk.",
+      "Keep structural recovery as one full repaint. Do not add overlapping texture-copy relocation for rare layout changes unless measurement proves full structural repaint is material."
+    ],
+    "protocol": [
+      "Audit actual Codex and available Grok traces before adding private branches.",
+      "Represent mouse tracking and mouse encoding as separate state. Emit SGR only under ?1006; otherwise use the negotiated bounded legacy/UTF-8/URXVT form. Preserve press/motion/release/capture/cancel semantics.",
+      "Implement Kitty keyboard/CSI-u and xterm modifyOtherKeys only from primary specifications, including query plus bounded push/pop stacks separate for main/alternate screens and repeat/release where browser events can supply them; extend KeyEvent with code/location/repeat/type rather than guessing from key text. Parse bare CSI u as cursor restore; parameterized CSI ... u belongs to negotiated keyboard handling, including valid single-parameter Kitty keys.",
+      "Retain already-correct focus 1004, bracketed paste 2004, alternate screen 1049, cursor shape, DECRQM, and synchronized output 2026; add split-chunk and nested/timeout regression fixtures.",
+      "Keep sixel/DCS graphics out unless an observed target TUI requires it; it is not needed for normal terminal widgets."
+    ],
+    "verification": [
+      "Add deterministic render accounting: sparse row update must not clear/encode unchanged rows or replay sibling panes; structural invalidation repaints exactly once; transparent wallpaper damage erases old glyphs.",
+      "Replay identical Codex/ratatui synchronized frames and changed-row frames; assert no intermediate present, one cursor, monotonic completed presents, no old-row revival.",
+      "Capture baseline versus new dirty rows, encoded CellInstances, queue.write_buffer bytes, host passes, RAF tick p50/p95/p99, long tasks, and input-to-PTY latency under the same trace.",
+      "Run Rust/Vitest/check/WASM/Remote/PWA gates, then Luna subagent dev:cdp with real codex --yolo; iterate on any visual, protocol, console, or performance regression before commit/release."
+    ]
+  },
+  "target": "A v0.1.67 replacement architecture that minimizes CPU/GPU work per visible change, preserves correct transparent/wallpaper composition, presents synchronized TUI output atomically, supports modern terminal input protocols, and cannot show stale rows or multiple cursor states.",
   "verified_facts": [
     {
-      "evidence": "packages/remote/src/shared/terminal/linkAffordance.ts:188-236 via CodeGraph",
-      "fact": "Current link arbitration requires Ctrl/Cmd for opening and uses bare click for TUI forwarding or selection."
+      "evidence": "git status --short --branch; git log -2",
+      "fact": "main is clean and equals origin/main at c64c14b7, the v0.1.67 version commit."
     },
     {
-      "evidence": "f01ff9d / v0.1.60 implementation and tests; public bundle contains flushPaneFeed",
-      "fact": "Current code already has bounded pane-switch FIFO, synchronous input admission, renderer retention, and bounded feed catch-up."
+      "evidence": "git show --stat 869db24e; git diff 869db24e^ 869db24e --numstat",
+      "fact": "Commit 869db24e immediately before the version bump changed 20 files by +580/-161; surface_host.rs alone changed +275/-65 and webgpu.rs +7/-44."
     },
     {
-      "evidence": "publish-remote workflow 30977176806 success",
-      "fact": "Remote artifact 0.1.60+g42680ca is active and Desktop/Mobile health checks passed."
+      "evidence": "packages/ridge-term/src/render/surface_host.rs:451,506-581,680-715",
+      "fact": "v0.1.67 SurfaceHost creates a persistent offscreen texture, but begin_frame clears or redraws that full texture every rendered frame and end_frame performs another full-surface blit to the swap chain."
+    },
+    {
+      "evidence": "packages/ridge-term/src/render/webgpu.rs:488-497; packages/ridge-term/src/render/renderer.rs:795-798; webgpu.rs:1560-1606",
+      "fact": "WebGpuPaneBackend::requires_full_frame returns true unconditionally, so Renderer::update_backend_frame_policy forces every visible row dirty; each dirty active frame re-encodes and uploads the full pane grid."
+    },
+    {
+      "evidence": "packages/remote/src/shared/terminal/manager.ts:5261-5277,5326-5368",
+      "fact": "TerminalManager opens one host frame when any pane is dirty and repaints/replays all visible host panes because shouldRender includes state.anyDirty."
+    },
+    {
+      "evidence": "869db24e surface_host/webgpu diff and changed-file test inventory",
+      "fact": "The v0.1.67 persistent texture therefore adds a full-screen texture sample/write on top of the pre-existing full-grid encode/upload path; no WebGPU performance regression test was added with that surface-host change."
+    },
+    {
+      "evidence": "09dbd579 and parent WebGpuPaneBackend::requires_full_frame rationale",
+      "fact": "The old swap-chain dirty-row fast path was disabled because WebView2 dev did not preserve prior swap-chain pixels across present; a pure rollback would reintroduce documented blinking/lost-row behavior."
+    },
+    {
+      "evidence": "renderer.rs:526-740; manager.ts:5298-5315",
+      "fact": "Renderer already hashes visible rows, tracks old/new cursor rows, forces full redraw only for true mapping changes, and suppresses presentation while synchronized-output mode 2026 is active with a bounded timeout in TerminalManager."
+    },
+    {
+      "evidence": "REQ-CODEX-RENDER-STABILITY-01 and current worker renderer call path",
+      "fact": "Remote worker paths already fence raw/delta work with monotonic renderFrameId; the default desktop WebGPU path is synchronous within one RAF, so adding another generic frame counter does not address its measured O(viewport) work."
+    },
+    {
+      "evidence": "input.rs:8-25,37-51,339-355; modes.rs:24-93; manager.ts:2028-2032,3283-3318",
+      "fact": "Current input supports SGR mouse, focus reporting, bracketed paste, alternate screen, synchronized output, and common xterm keys, but encode_mouse ignores the negotiated mouse encoding mode and Kitty keyboard/modifyOtherKeys CSI-u remains explicitly deferred; KeyEvent lacks code/location/repeat/event type."
+    },
+    {
+      "evidence": "packages/ridge-mcp/src/delivery.rs current CodeGraph source; no render call edge",
+      "fact": "Current Message Hub delivery and five-condition PTY fallback exist in code and are not called from SurfaceHost/Renderer; the old chat claim that SQLite must be added to fix paint jank is stale and conflates message delivery with rendering."
+    },
+    {
+      "evidence": "INTAKE-20260817-RIDGE-TERM-DELTA-03",
+      "fact": "The user reports v0.1.67 visual regression and jank; this is authoritative symptom evidence but does not by itself prove every protocol or render root cause."
+    },
+    {
+      "evidence": "https://gpuweb.github.io/gpuweb/#canvas-rendering and https://gpuweb.github.io/gpuweb/explainer/#canvas-output",
+      "fact": "The WebGPU specification gives GPUCanvasContext a current texture for the current frame and automatically expires canvas textures; it does not define prior presented pixels as a persistent application backing store."
+    },
+    {
+      "evidence": "https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking",
+      "fact": "xterm defines mouse tracking protocol and mouse coordinate encoding as two independent mutually exclusive mode groups; ?9/?1000/?1002/?1003 select reporting while ?1005/?1006/?1015 select encoding."
+    },
+    {
+      "evidence": "https://sw.kovidgoyal.net/kitty/keyboard-protocol/",
+      "fact": "Kitty keyboard negotiation requires query plus set/push/pop semantics, bounded stacks, and separate mode stacks for main and alternate screens; repeat/release are opt-in event types."
+    },
+    {
+      "evidence": "https://github.com/contour-terminal/vt-extensions/blob/master/synchronized-output.md",
+      "fact": "Synchronized output ?2026 suppresses display updates while bytes continue mutating emulator state, then exposes the latest state on reset; DECRQM provides feature detection."
+    },
+    {
+      "evidence": "NotebookLM conversation a47d3199-c1f9-47f1-927c-ff2c4875b77d, latest source-constrained turn",
+      "fact": "A NotebookLM source-constrained audit of PROJECT-STATE plus WebGPU, xterm, Kitty, and synchronized-output primary sources supports a persistent device-owned texture, LoadOp::Load for retained areas, bounded scissors, and full recreation after device loss."
+    },
+    {
+      "evidence": "NotebookLM source-constrained answer checked against current SurfaceHost and TerminalManager call path",
+      "fact": "The same audit proposed texture copies on structural layout and a generic frame ID, but supplied no Ridge-specific evidence that either improves the synchronous desktop WebGPU path; those are advisory inferences, not accepted requirements."
+    },
+    {
+      "evidence": "packages/ridge-term/src/render/surface_host.rs current diff; wasm32 WebGPU cargo check",
+      "fact": "The implemented SurfaceHost now seeds its persistent frame store only after allocation, resize, theme/wallpaper/layout invalidation, or surface recovery; ordinary frames retain prior pixels and finish with one full-store blit/present."
+    },
+    {
+      "evidence": "SurfaceHost::repair_background_damage; WebGpuPaneBackend::background_damage_rects",
+      "fact": "Every dirty shell row now repairs its exact underlying compositor background before cell drawing: wallpaper uses the global cover-UV pipeline under bounded scissors, while plain or translucent theme backgrounds use a blend-disabled solid pipeline so old glyph pixels cannot survive."
+    },
+    {
+      "evidence": "webgpu.rs, gpu_context.rs, render/mod.rs, lib.rs, manager.ts current diff; source search finds no cached replay symbols",
+      "fact": "The former per-pane GPU replay cache was invalid under row-delta rendering because its instance buffer represented only the most recent damaged rows, not a complete pane. It and its per-glyph layer epoch bookkeeping were deleted; unchanged panes now rely solely on compositor-owned retained pixels, while same-frame atlas overwrite protection remains."
+    },
+    {
+      "evidence": "manager.ts::_newRafFrame/_renderFrameEntry/_scheduleIdleFrame and manager.test.ts",
+      "fact": "TerminalManager no longer replays unchanged siblings merely because another pane is dirty, no longer treats idle blink wakeups as structural invalidation, and queries the Rust seed flag so surface recovery causes one all-pane replay."
+    },
+    {
+      "evidence": "modes.rs, input.rs, parser.rs, lib.rs, mouseForwardPolicy.ts and focused tests",
+      "fact": "Mouse tracking and coordinate encoding are now separate mutually-exclusive groups. The encoder honors ?9/?1000/?1002/?1003 event semantics and legacy/?1005/?1006/?1015 wire formats instead of always emitting SGR."
+    },
+    {
+      "evidence": "2026-08-17 local command results",
+      "fact": "Current deterministic gates pass: ridge-term 413 unit plus 33 protocol smoke tests, wasm32 WebGPU cargo check, rebuilt WASM bindings, 221 Vitest files with 2061 passed/5 skipped, and svelte-check with zero errors and warnings."
+    },
+    {
+      "evidence": ".iteration/workspace-test.log; .iteration/frontend-build.log; .iteration/remote-build.log; .iteration/artifacts/remote-pwa-build.json",
+      "fact": "The broader release-facing gates also pass: cargo test --workspace, the desktop production build, both Remote desktop/mobile builds, and the generated Remote PWA contract verification."
+    },
+    {
+      "evidence": "Luna final E2E report; C:/Users/12867/AppData/Local/Temp/ridge-cdp-e2e-final-20260817-140741.log and .err.log with locally verified SHA256",
+      "fact": "Luna's real WebView2 run passed cdp:smoke, cdp:pty, cdp:pane-graph, and two-workspace cdp:multitab after setting the documented non-breakaway development override; multitab reported no long tasks and 13 ms p95 lag, and logs showed WebGPU backend OK without captured validation/device-loss/runtime errors."
+    },
+    {
+      "evidence": ".iteration/luna-cdp-final/before.png; .iteration/luna-cdp-final/dom-console.json; .iteration/luna-cdp-final/round3/ui.json; .iteration/luna-cdp-final/round3/codex.json",
+      "fact": "A real Codex TUI rendered visibly and streamed while synchronized-output ?2026 toggled, but the bounded harness did not prove model-response marker plus process exit, mouse-TUI forwarding, theme/workspace recovery, long-task capture, or absence of cursor/old-row revival over time. Follow-up screenshots prove visible resize recovery only; one lifecycle test entered BFCache and was rejected as invalid evidence."
+    },
+    {
+      "evidence": "packages/ridge-term/src/term/grid.rs current diff; inline_tui_resize_reflows_history_above_frame; scenario_primary_resize_preserves_visible_frame",
+      "fact": "Inline-TUI resize no longer clears the authoritative alternate/primary live frame before SIGWINCH. Primary reflow preserves the live frame and the cursor's offset within it; overflow history alone moves to scrollback."
+    },
+    {
+      "evidence": ".iteration/artifacts/term-render/summary.json and 01-shell.png through 05-mouse-selection.png; pnpm cdp:term-render exit 0 after node packages/ridge-term/build.mjs --dev",
+      "fact": "The final local WebView2 acceptance harness proved a fresh non-echo Codex model marker, theme rotation and restoration, 153x65 to 139x61 resize and recovery, two-workspace round-trip, stable settled hashes/cursor, real SGR mouse bytes written into the PTY, drag selection, and no runtime/WebGPU errors. The latest rebuilt-WASM run reported p95 7 ms and longtaskMax 94 ms."
+    },
+    {
+      "evidence": "bounded runtime trace showed only ConPTY ESC[m plus RIDGE_MOUSE_MODE_READY; scripts/cdp-term-render-e2e.mjs::testMouse; engine::parser::mouse_mode_toggle_round_trip_through_apply_delta",
+      "fact": "Windows ConPTY consumes DEC mouse-enable output before Ridge receives it, so a child-process ?1000/?1006 probe cannot validate the parser path on Windows. The acceptance harness drives mirror mode directly, validates the resulting click on the real PTY, and keeps producer-to-mirror ModeChange under deterministic Rust coverage."
+    },
+    {
+      "evidence": "NotebookLM notebook_get source_count=3 on notebook 66919cb9-1329-4ddf-955c-f426d15a9fe6",
+      "fact": "Notebook hygiene is restored after research compression: five temporary WebGPU/xterm/Kitty/synchronized-output sources were deleted, leaving Requirements, current PROJECT-STATE, and the pre-existing Agent architecture source."
+    },
+    {
+      "evidence": ".iteration/local-cdp-retry/launcher.err.log; .iteration/artifacts/term-render/summary.json; pnpm cdp:term-render exit 0",
+      "fact": "A second fresh local dev session consumed the exact stale-registry condition from Luna round 4: PID 29076 was dead, the desktop cleared its registry, spawned kernel PID 4244, and the real Codex acceptance harness passed again. It proved non-echo model output, theme/resize/workspace recovery, 20 settled-state samples, real-PTY mouse bytes, drag selection, no runtime errors, p95 12 ms, and longtaskMax 89 ms."
+    },
+    {
+      "evidence": ".iteration/luna-cdp-final/round8/term-render.log; .iteration/artifacts/term-render/summary.json SHA256 2B2A0D8C51BC4330E9A45D616526A2BCBF44E179D4063733ED0D9BE8F3E978FD",
+      "fact": "Luna's final independent fresh-dev round passed the complete real Codex contract with ok=true and exit 0: non-echo model output, theme change/restore, 153x65 to 139x61 to 153x65 resize recovery, two-workspace round-trip, uniqueHashes=1, uniqueCursors=1, real PTY SGR mouse bytes plus drag selection, 1672 performance samples with p95 11 ms/max 75 ms/longtaskMax 91 ms, and zero runtime errors."
+    },
+    {
+      "evidence": "scripts/cdp-term-render-e2e.mjs; scripts/lib/cdpTarget.mjs; scripts/lib/cdpTarget.test.mjs",
+      "fact": "The acceptance harness now binds to the current tauri-dev-cdp Vite origin rather than any stale local WebView target, and exits Codex through its application-level /quit command after clearing the composer. It never sends Ctrl-D into the parent PowerShell; the current-origin selector contract passes 3 focused tests."
     }
   ]
 }

@@ -108,6 +108,7 @@ function makePane() {
 		configure: vi.fn(() => [10, 20]),
 		forceFullRedraw: vi.fn(),
 		invalidateAll: vi.fn(),
+		repaintAll: vi.fn(),
 		setPadding: vi.fn(),
 		setViewportOffset: vi.fn(),
 		resize: vi.fn(),
@@ -1251,19 +1252,17 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 			const host = {
 				beginFrame: vi.fn(() => true),
 				endFrame: vi.fn(),
+				needsFullSeed: vi.fn(() => false),
 			};
 			internal.globalHost = { canvas: fixture.pane.canvas, host };
 			internal._sharedRemoteMode = true;
 			(fixture.handle as any).isDirty = vi.fn(() => false);
-			(fixture.handle as any).pinCachedLayers = vi.fn();
-			(fixture.handle as any).recordCachedOnly = vi.fn(() => true);
 			(fixture.handle as any).nextBlinkDeadlineMs = vi.fn(() => 25);
 			const state: any = {
 				frameOrder: [fixture.pane],
 				dirtyByPane: new Map([[PANE, false]]),
 				activeHost: host,
 				hostFrameOpen: false,
-				anyDirty: false,
 				surfaceJustWiped: false,
 				anyRendered: false,
 				minDeadlineMs: Infinity,
@@ -1278,11 +1277,11 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 			expect((manager as any)._hostPaneDirty(fixture.pane, state.dateNow)).toBe(true);
 		fixture.pane.handle = fixture.handle;
 
-		(manager as any)._collectHostDirty([fixture.pane], state.dateNow);
-		(manager as any)._pinCachedHostLayers(state);
-		(fixture.handle.pinCachedLayers as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error('old wasm'); });
-		(manager as any)._pinCachedHostLayers(state);
-		expect((manager as any)._ensureHostFrame(state)).toBe(true);
+			(manager as any)._collectHostDirty([fixture.pane], state.dateNow);
+			host.needsFullSeed.mockReturnValueOnce(true);
+			internal._hostInvalidatePending = false;
+			expect((manager as any)._newRafFrame(20, state.dateNow).surfaceJustWiped).toBe(true);
+			expect((manager as any)._ensureHostFrame(state)).toBe(true);
 		expect((manager as any)._ensureHostFrame({ ...state, hostFrameOpen: true })).toBe(true);
 		expect((manager as any)._ensureHostFrame({ ...state, hostFrameOpen: false, activeHost: null })).toBe(false);
 
@@ -1305,8 +1304,10 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		internal.globalHost = { canvas: fixture.pane.canvas, host };
 
 		(manager as any)._paintFrameEntry(fixture.pane, state, false);
-		(fixture.handle.recordCachedOnly as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
+		state.surfaceJustWiped = true;
 		(manager as any)._paintFrameEntry(fixture.pane, state, false);
+		expect(fixture.handle.repaintAll).toHaveBeenCalledOnce();
+		state.surfaceJustWiped = false;
 		(fixture.handle.render as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error('render failed'); });
 		(manager as any)._paintFrameEntry(fixture.pane, state, true);
 		(manager as any)._updateBlinkDeadline(fixture.pane, state);
@@ -1316,18 +1317,28 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		internal._activeWorkspaceId = 'other-workspace';
 		(manager as any)._renderFrameEntry(fixture.pane, state);
 		internal._activeWorkspaceId = null;
+		(fixture.handle.render as ReturnType<typeof vi.fn>).mockClear();
+		(fixture.handle.repaintAll as ReturnType<typeof vi.fn>).mockClear();
+		(host.beginFrame as ReturnType<typeof vi.fn>).mockClear();
+		(manager as any)._renderFrameEntry(fixture.pane, { ...state, activeHost: host });
+		expect(fixture.handle.render).not.toHaveBeenCalled();
+		expect(fixture.handle.repaintAll).not.toHaveBeenCalled();
+		expect(host.beginFrame).not.toHaveBeenCalled();
+
 		fixture.pane.wasHiddenLastTick = true;
 		vi.spyOn(manager as any, 'fitPane').mockResolvedValue(undefined);
-		(manager as any)._renderFrameEntry(fixture.pane, { ...state, activeHost: host, anyDirty: true });
+		(manager as any)._renderFrameEntry(fixture.pane, { ...state, activeHost: host });
 
 		state.hostFrameOpen = true;
 		(manager as any)._finishHostFrame(state);
 		(host.endFrame as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error('frame end'); });
 		(manager as any)._finishHostFrame(state);
 		const startRaf = vi.spyOn(manager as any, 'startRafLoop').mockImplementation(() => undefined);
+		internal._hostInvalidatePending = false;
 		(manager as any)._scheduleIdleFrame({ ...state, minDeadlineMs: 5 }, vi.fn());
 		await vi.advanceTimersByTimeAsync(5);
 		expect(startRaf).toHaveBeenCalled();
+		expect(internal._hostInvalidatePending).toBe(false);
 		(manager as any)._scheduleNextFrame({ ...state, anyRendered: true }, vi.fn());
 		(manager as any)._scheduleNextFrame({ ...state, anyRendered: false }, vi.fn());
 	} finally {

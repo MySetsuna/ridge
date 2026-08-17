@@ -27,6 +27,7 @@
     "tauri:dev:with-cloud": "node scripts/tauri-dev-with-cloud.mjs",
     "cdp:smoke": "node scripts/cdp-smoke.mjs",
     "cdp:pty": "node scripts/cdp-pty-parsers.mjs",
+    "cdp:term-render": "node scripts/cdp-term-render-e2e.mjs",
     "cdp:pane-graph": "node scripts/cdp-pane-graph.mjs",
     "cdp:multitab": "node scripts/cdp-multitab-freeze.mjs",
     "test": "vitest run",

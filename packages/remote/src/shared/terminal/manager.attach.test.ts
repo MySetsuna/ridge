@@ -52,6 +52,7 @@ const wasm = vi.hoisted(() => {
 		applyDefaultTheme = vi.fn();
 		applyTheme = vi.fn();
 		invalidateAll = vi.fn();
+		repaintAll = vi.fn();
 		free = vi.fn();
 		setFocused = vi.fn();
 		setPadding = vi.fn();
@@ -66,7 +67,6 @@ const wasm = vi.hoisted(() => {
 		FakeRenderHandle,
 		init: vi.fn(async () => undefined),
 		atlasOverwriteAfterCiteCount: vi.fn(() => 7),
-		staleReplayCount: vi.fn(() => 3),
 		setPresentFast: vi.fn(),
 		SurfaceHostHandle: { init: vi.fn() },
 	};
@@ -82,7 +82,6 @@ vi.mock('@ridge/term-wasm', () => ({
 	RenderHandle: wasm.FakeRenderHandle,
 	SurfaceHostHandle: wasm.SurfaceHostHandle,
 	atlasOverwriteAfterCiteCount: wasm.atlasOverwriteAfterCiteCount,
-	staleReplayCount: wasm.staleReplayCount,
 	setPresentFast: wasm.setPresentFast,
 }));
 
@@ -183,7 +182,7 @@ describe('TerminalManager attach lifecycle', () => {
 
 		expect(wasm.init).toHaveBeenCalledOnce();
 		expect(wasm.setPresentFast).toHaveBeenCalledWith(true);
-		expect((window as any).__ridgeAtlasRace()).toEqual({ overwriteAfterCite: 7, staleReplay: 3 });
+		expect((window as any).__ridgeAtlasRace()).toEqual({ overwriteAfterCite: 7 });
 	});
 
 	it('uses WebGPU-first handles and falls back to Canvas2D on constructor failure', async () => {
@@ -373,7 +372,7 @@ describe('TerminalManager attach lifecycle', () => {
 			ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, target,
 		};
 
-		kernel.mouseMode = 1;
+		kernel.mouseMode = 2;
 		container.emit('pointermove', { ...pointer, buttons: 1, clientX: 45, clientY: 85 });
 		frame?.(0);
 		expect(kernel.encodeMouse).toHaveBeenCalledWith(expect.any(Number), expect.any(Number), 0, 2, false, false, false);
