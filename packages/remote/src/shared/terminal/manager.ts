@@ -220,16 +220,6 @@ import { reconstructInputSnapshot } from './shellInputSnapshot';
 // are only needed inside a click handler — lazy-import them at the use
 // site (around line 1185 below) instead.
 
-/** §A.4 — concatenate two Uint8Arrays without allocating a JS array. Used
- *  by the inline-TUI feed coalescer to grow `entry.feedBuffer` across
- *  ConPTY split-write fragments before flushing once to the kernel. */
-function concatU8(a: Uint8Array, b: Uint8Array): Uint8Array {
-	const out = new Uint8Array(a.length + b.length);
-	out.set(a, 0);
-	out.set(b, a.length);
-	return out;
-}
-
 export interface ManagerOptions {
 	fontFamily: string;
 	fontSizePx: number;
@@ -476,6 +466,10 @@ interface PaneEntry {
 	 *  overwrite next frame → "wrong word" jitter on the spinner row.
 	 *  Null when no buffer is pending. */
 	feedBuffer: Uint8Array | null;
+	/** FIFO fragments accumulated during the short inline-TUI window. */
+	feedBufferChunks: Uint8Array[];
+	/** Total bytes in `feedBuffer` plus `feedBufferChunks`. */
+	feedBufferBytes: number;
 	/** §A.4 — outstanding flush timer for `feedBuffer`. Coalesces ConPTY
 	 *  fragment bursts within 8 ms into one `kernel.feed` call. */
 	feedFlushTimer: ReturnType<typeof setTimeout> | null;
@@ -1999,8 +1993,14 @@ export class TerminalManager {
 		const rect = entry.container.getBoundingClientRect();
 		const y = event.clientY - rect.top;
 		let direction: 'up' | 'down' | null = null;
-		if (y < 24) direction = 'up';
-		else if (y > rect.height - 24) direction = 'down';
+		// Do not treat the first/last terminal row as an auto-scroll zone.
+		// The old 24px inset covers a whole short shell row, so merely moving
+		// the selection inside that row started a 30ms scroll loop and made the
+		// selection endpoint alternate with the viewport. Pointer capture keeps
+		// delivering moves after the cursor leaves the pane, which is the only
+		// point at which auto-scroll is needed.
+		if (y < 0) direction = 'up';
+		else if (y > rect.height) direction = 'down';
 		if (!direction) {
 			this._stopAttachAutoScroll(entry);
 			return;
@@ -2496,6 +2496,8 @@ export class TerminalManager {
 			imeAnchor: null,
 			imeAnchorRaf: null,
 			feedBuffer: null,
+			feedBufferChunks: [],
+			feedBufferBytes: 0,
 			feedFlushTimer: null,
 			linkSpans: new LinkSpanIndex(),
 			linkUnderlineEls: [],
@@ -2911,12 +2913,18 @@ export class TerminalManager {
 			return;
 		}
 		if (bytes.byteLength >= MAX_FEED_BUFFER_BYTES) {
-			if (entry.feedBuffer !== null) this._flushFeedBuffer(entry);
+			if (entry.feedBuffer !== null || entry.feedBufferChunks.length > 0) this._flushFeedBuffer(entry);
 			this._feedNow(entry, bytes);
 			return;
 		}
-		entry.feedBuffer = entry.feedBuffer ? concatU8(entry.feedBuffer, bytes) : bytes;
-		if (shouldFlushFeedBuffer(entry.feedBuffer.length)) {
+		if (entry.feedBuffer !== null && entry.feedBufferBytes === 0) {
+			entry.feedBufferBytes = entry.feedBuffer.byteLength +
+				entry.feedBufferChunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+		}
+		if (entry.feedBuffer === null) entry.feedBuffer = bytes;
+		else entry.feedBufferChunks.push(bytes);
+		entry.feedBufferBytes += bytes.byteLength;
+		if (shouldFlushFeedBuffer(entry.feedBufferBytes)) {
 			this._flushFeedBuffer(entry);
 			return;
 		}
@@ -2933,7 +2941,7 @@ export class TerminalManager {
 	}
 
 	private _feedImmediate(entry: PaneEntry, bytes: Uint8Array): void {
-		if (entry.feedBuffer !== null) this._flushFeedBuffer(entry);
+		if (entry.feedBuffer !== null || entry.feedBufferChunks.length > 0) this._flushFeedBuffer(entry);
 		this._feedNow(entry, bytes);
 	}
 
@@ -3172,12 +3180,34 @@ export class TerminalManager {
 			clearTimeout(entry.feedFlushTimer);
 			entry.feedFlushTimer = null;
 		}
-		const buf = entry.feedBuffer;
-		if (buf === null || buf.length === 0) {
+		let first = entry.feedBuffer;
+		const chunks = entry.feedBufferChunks;
+		// Keep the FIFO lossless even if a legacy/diagnostic caller populated
+		// chunks without the head fragment.
+		if (first === null && chunks.length > 0) first = chunks.shift()!;
+		const total = entry.feedBufferBytes ||
+			(first?.byteLength ?? 0) + chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+		if (first === null || total === 0) {
 			entry.feedBuffer = null;
+			chunks.length = 0;
+			entry.feedBufferBytes = 0;
 			return;
 		}
 		entry.feedBuffer = null;
+		entry.feedBufferBytes = 0;
+		if (chunks.length === 0) {
+			this._feedNow(entry, first);
+			return;
+		}
+		const buf = new Uint8Array(total);
+		let offset = 0;
+		buf.set(first, offset);
+		offset += first.byteLength;
+		for (const chunk of chunks) {
+			buf.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
+		chunks.length = 0;
 		this._feedNow(entry, buf);
 	}
 
@@ -4823,20 +4853,18 @@ export class TerminalManager {
 	 * answer. Cancels any pending debounced fit so we don't run twice.
 	 *
 	 * No-op when the pane is unknown or parked; the next attach/unpark
-	 * will fire its own initial fit. Fire-and-forget: the underlying
-	 * `fitPane` is async (awaits backend `resize_pane`) but callers
-	 * generally don't need to await — the kernel + PTY sync happens on
-	 * the same frame the next render reads from.
+	 * will fire its own initial fit. Returns the underlying async fit so
+	 * attach can wait for kernel + PTY sync before activating a shell.
 	 */
-	fitPaneNow(paneId: string): void {
+	fitPaneNow(paneId: string): Promise<void> {
 		const entry = this.panes.get(paneId);
-		if (!entry || entry.parked) return;
+		if (!entry || entry.parked) return Promise.resolve();
 		if (entry.pendingFitTimer !== null) {
 			clearTimeout(entry.pendingFitTimer);
 			entry.pendingFitTimer = null;
 		}
 		this._cancelInitialFit(entry);
-		void this.fitPane(entry, this._sharedRemoteMode).finally(() => {
+		return this.fitPane(entry, this._sharedRemoteMode).finally(() => {
 			if (this._initialFitNeedsRetry(entry)) this._scheduleInitialFit(entry);
 		});
 	}

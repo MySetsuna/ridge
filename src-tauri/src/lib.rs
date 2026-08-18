@@ -24,6 +24,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::commands::{
     clipboard_files, clipboard_image, fs_watch, git, pane, process, project, ridge_file, settings,
@@ -578,19 +579,45 @@ pub fn run() {
 }
 
 const COALESCE_MAX_BYTES: usize = 64 * 1024;
+const OUTPUT_ACTIVITY_INTERVAL: Duration = Duration::from_millis(50);
 
 fn coalesce_window_for(last_bytes: usize) -> u64 {
     match last_bytes {
-        0..=255 => 0,
+        // Ctrl+C / PowerShell prompt redraws arrive as many tiny packets.
+        // A zero window turns each packet into a separate Tauri event and
+        // lets pane-output-activity wake the Agent UI once per packet.
+        0..=255 => 2,
         256..=4095 => 2,
         _ => 8,
     }
 }
 
 type PendingOutput = HashMap<(uuid::Uuid, uuid::Uuid), String>;
+type OutputActivityAt = HashMap<(uuid::Uuid, uuid::Uuid), Instant>;
 
-fn emit_pane_output(handle: &tauri::AppHandle, workspace_id: uuid::Uuid, pane_id: uuid::Uuid, data: String) {
+fn output_activity_due(last: Option<Instant>, now: Instant) -> bool {
+    last.map_or(true, |at| now.duration_since(at) >= OUTPUT_ACTIVITY_INTERVAL)
+}
+
+fn emit_pane_output(
+    handle: &tauri::AppHandle,
+    activity_at: &mut OutputActivityAt,
+    workspace_id: uuid::Uuid,
+    pane_id: uuid::Uuid,
+    data: String,
+) {
     let label = pane_id.to_string();
+    // Activity is a low-priority control-plane hint, not terminal data. Keep
+    // it bounded while the PTY emits a burst; the raw output event remains
+    // lossless and immediate.
+    let key = (workspace_id, pane_id);
+    let now = Instant::now();
+    if output_activity_due(activity_at.get(&key).copied(), now) {
+        activity_at.insert(key, now);
+        let _ = handle.emit("pane-output-activity", serde_json::json!({
+            "workspaceId": workspace_id.to_string(), "paneId": label,
+        }));
+    }
     let _ = handle.emit(
         &format!("pty-output-{workspace_id}-{label}"),
         serde_json::json!({ "data": data }),
@@ -599,20 +626,25 @@ fn emit_pane_output(handle: &tauri::AppHandle, workspace_id: uuid::Uuid, pane_id
 
 fn flush_pane_output(
     handle: &tauri::AppHandle,
+    activity_at: &mut OutputActivityAt,
     pending: &mut PendingOutput,
     workspace_id: uuid::Uuid,
     pane_id: uuid::Uuid,
 ) {
     if let Some(data) = pending.remove(&(workspace_id, pane_id)) {
-        emit_pane_output(handle, workspace_id, pane_id, data);
+        emit_pane_output(handle, activity_at, workspace_id, pane_id, data);
     }
 }
 
-fn flush_pending_output(handle: &tauri::AppHandle, pending: &mut PendingOutput) -> usize {
+fn flush_pending_output(
+    handle: &tauri::AppHandle,
+    activity_at: &mut OutputActivityAt,
+    pending: &mut PendingOutput,
+) -> usize {
     let drained: Vec<_> = pending.drain().collect();
     let bytes = drained.iter().map(|(_, data)| data.len()).sum();
     for ((workspace_id, pane_id), data) in drained {
-        emit_pane_output(handle, workspace_id, pane_id, data);
+        emit_pane_output(handle, activity_at, workspace_id, pane_id, data);
     }
     bytes
 }
@@ -705,6 +737,7 @@ fn forward_delta_pty_output(
 
 fn handle_pty_output(
     handle: &tauri::AppHandle,
+    activity_at: &mut OutputActivityAt,
     pending: &mut PendingOutput,
     workspace_id: uuid::Uuid,
     pane_id: uuid::Uuid,
@@ -717,18 +750,19 @@ fn handle_pty_output(
     if entry.len() >= COALESCE_MAX_BYTES {
         let payload = std::mem::take(entry);
         pending.remove(&(workspace_id, pane_id));
-        emit_pane_output(handle, workspace_id, pane_id, payload);
+        emit_pane_output(handle, activity_at, workspace_id, pane_id, payload);
     }
 }
 
 fn handle_cwd_changed(
     handle: &tauri::AppHandle,
+    activity_at: &mut OutputActivityAt,
     pending: &mut PendingOutput,
     workspace_id: uuid::Uuid,
     pane_id: uuid::Uuid,
     cwd: String,
 ) {
-    flush_pane_output(handle, pending, workspace_id, pane_id);
+    flush_pane_output(handle, activity_at, pending, workspace_id, pane_id);
     let label = pane_id.to_string();
     let state = handle.state::<AppState>();
     if state.remote_enabled.load(Ordering::Relaxed) {
@@ -761,16 +795,19 @@ fn handle_title_changed(
     let _ = handle.emit(&format!("pane-title-changed-{workspace_id}-{label}"), serde_json::json!({ "title": title }));
 }
 
-fn handle_global_event(handle: &tauri::AppHandle, pending: &mut PendingOutput, event: GlobalEvent) {
+fn handle_global_event(
+    handle: &tauri::AppHandle,
+    activity_at: &mut OutputActivityAt,
+    pending: &mut PendingOutput,
+    event: GlobalEvent,
+) {
     match event {
         GlobalEvent::PtyOutput { workspace_id, pane_id, data } => {
-            let _ = handle.emit("pane-output-activity", serde_json::json!({
-                "workspaceId": workspace_id.to_string(), "paneId": pane_id.to_string(),
-            }));
-            handle_pty_output(handle, pending, workspace_id, pane_id, data);
+            handle_pty_output(handle, activity_at, pending, workspace_id, pane_id, data);
         }
         GlobalEvent::PaneClosed { workspace_id, pane_id } => {
-            flush_pane_output(handle, pending, workspace_id, pane_id);
+            flush_pane_output(handle, activity_at, pending, workspace_id, pane_id);
+            activity_at.remove(&(workspace_id, pane_id));
             let _ = handle.emit("pane-pty-closed", serde_json::json!({
                 "workspaceId": workspace_id.to_string(), "paneId": pane_id.to_string(),
             }));
@@ -779,7 +816,7 @@ fn handle_global_event(handle: &tauri::AppHandle, pending: &mut PendingOutput, e
             let mode = match mode { PaneMode::Terminal => "Terminal", PaneMode::Editor { .. } => "Editor" };
             let _ = handle.emit(&format!("pane-mode-changed-{workspace_id}-{pane_id}"), serde_json::json!({ "mode": mode }));
         }
-        GlobalEvent::PaneCwdChanged { workspace_id, pane_id, cwd } => handle_cwd_changed(handle, pending, workspace_id, pane_id, cwd),
+        GlobalEvent::PaneCwdChanged { workspace_id, pane_id, cwd } => handle_cwd_changed(handle, activity_at, pending, workspace_id, pane_id, cwd),
         GlobalEvent::PaneTitleChanged { workspace_id, pane_id, title } => handle_title_changed(handle, workspace_id, pane_id, title),
         GlobalEvent::PanePromptDetected { workspace_id, pane_id } => {
             let _ = handle.emit(&format!("pane-prompt-{workspace_id}-{pane_id}"), serde_json::json!({}));
@@ -819,13 +856,14 @@ async fn next_forward_tick(
 
 async fn run_event_forwarder(handle: tauri::AppHandle, mut event_rx: mpsc::Receiver<GlobalEvent>) {
     let mut pending = PendingOutput::new();
+    let mut activity_at = OutputActivityAt::new();
     let mut last_flush_bytes = 0;
     loop {
         match next_forward_tick(&mut event_rx, &pending, last_flush_bytes).await {
-            ForwardTick::Event(event) => handle_global_event(&handle, &mut pending, event),
-            ForwardTick::Flush => last_flush_bytes = flush_pending_output(&handle, &mut pending),
+            ForwardTick::Event(event) => handle_global_event(&handle, &mut activity_at, &mut pending, event),
+            ForwardTick::Flush => last_flush_bytes = flush_pending_output(&handle, &mut activity_at, &mut pending),
             ForwardTick::Closed => {
-                flush_pending_output(&handle, &mut pending);
+                flush_pending_output(&handle, &mut activity_at, &mut pending);
                 break;
             }
         }
@@ -837,7 +875,23 @@ fn spawn_event_forwarder(handle: tauri::AppHandle, event_rx: mpsc::Receiver<Glob
 }
 #[cfg(test)]
 mod window_launch_tests {
-    use super::is_auth_focus_launch;
+    use super::{coalesce_window_for, is_auth_focus_launch, output_activity_due, OUTPUT_ACTIVITY_INTERVAL};
+    use std::time::Instant;
+
+    #[test]
+    fn tiny_pty_bursts_use_a_bounded_coalesce_window() {
+        assert_eq!(coalesce_window_for(0), 2);
+        assert_eq!(coalesce_window_for(255), 2);
+        assert_eq!(coalesce_window_for(256), 2);
+    }
+
+    #[test]
+    fn output_activity_is_rate_limited_but_resumes_after_quiet_window() {
+        let now = Instant::now();
+        assert!(output_activity_due(None, now));
+        assert!(!output_activity_due(Some(now), now + OUTPUT_ACTIVITY_INTERVAL / 2));
+        assert!(output_activity_due(Some(now), now + OUTPUT_ACTIVITY_INTERVAL));
+    }
 
     #[test]
     fn only_auth_deep_link_reuses_the_main_window() {

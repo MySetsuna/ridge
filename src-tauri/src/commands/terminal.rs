@@ -703,10 +703,12 @@ fn install_kernel_pty(
         .try_clone_reader()
         .map_err(|error| error.to_string())?;
     let writer = make_writer(reference.clone());
+    let input_sink = crate::engine::pty::PtyInputSink::new(writer.clone());
     let parser = Arc::new(Mutex::new(PaneParser::new(rows.max(1), cols.max(1), 2000)));
     let handle = PtyHandle {
         master,
         writer,
+        input_sink,
         _child: None,
         native_ref: None,
         native_cancel: None,
@@ -1617,6 +1619,7 @@ pub(crate) fn activate_pane_pty_state(
     let handle = PtyHandle {
         master: pending.master.clone(),
         writer: pending.writer.clone(),
+        input_sink: crate::engine::pty::PtyInputSink::new(pending.writer.clone()),
         _child: Some(child),
         native_ref: None,
         native_cancel: None,
@@ -1722,9 +1725,9 @@ pub fn write_to_pty_inner(
     }
 }
 
-/// Async version that offloads blocking ConPTY WriteFile to a blocking task
-/// so it cannot freeze the async runtime when ConPTY's write buffer is full.
-/// This is the primary path used by JSON-RPC dispatch and the Tauri command.
+/// Async version that admits input into the pane's bounded native writer lane.
+/// The command returns after admission; the lane owns blocking ConPTY/kernel
+/// writes and preserves order without serializing WebView input on them.
 async fn write_to_pty_async(
     state: State<'_, AppState>,
     pane_id: String,
@@ -1842,7 +1845,7 @@ async fn write_to_resolved_pty(
                 .map_err(AppError::PtyError);
         }
     }
-    let (writer, _data) = {
+    let input_sink = {
         let map = state.workspaces.read();
         let ws = map
             .get(&wid)
@@ -1851,16 +1854,11 @@ async fn write_to_resolved_pty(
             pty_log::pane_not_found("write", wid, pane_id);
             AppError::PaneNotFound(pane_id)
         })?;
-        (handle.writer.clone(), data.clone())
+        handle.input_sink.clone()
     };
-    tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-        let mut w = writer.lock();
-        w.write_all(_data.as_bytes())?;
-        w.flush()?;
-        Ok(())
-    })
-    .await
-    .map_err(|_| AppError::PtyError("blocking task panicked".into()))??;
+    input_sink
+        .try_send(data.into_bytes())
+        .map_err(AppError::PtyError)?;
     Ok(())
 }
 

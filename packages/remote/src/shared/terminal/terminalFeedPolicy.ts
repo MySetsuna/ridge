@@ -10,6 +10,8 @@ export const MAX_FEED_DEFERRED_BYTES = 2 * 1024 * 1024;
 
 export interface PendingFeedBuffers {
 	feedBuffer: Uint8Array | null;
+	feedBufferChunks: Uint8Array[];
+	feedBufferBytes: number;
 	feedDeferred: Uint8Array | null;
 	feedDeferredChunks: Uint8Array[];
 	feedDeferredBytes: number;
@@ -128,10 +130,13 @@ export function dropPendingFeedBuffers(
 	if (entry.feedFlushTimer !== null) cancelTimer(entry.feedFlushTimer);
 	const dropped =
 		(entry.feedBuffer?.byteLength ?? 0) +
+		entry.feedBufferChunks.reduce((sum, chunk) => sum + chunk.byteLength, 0) +
 		(entry.feedDeferred?.byteLength ?? 0) +
 		entry.feedDeferredChunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
 	entry.feedFlushTimer = null;
 	entry.feedBuffer = null;
+	entry.feedBufferChunks.length = 0;
+	entry.feedBufferBytes = 0;
 	entry.feedDeferred = null;
 	entry.feedDeferredChunks.length = 0;
 	entry.feedDeferredBytes = 0;
