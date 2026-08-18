@@ -13,6 +13,8 @@ import {
 function buffers(): PendingFeedBuffers {
 	return {
 		feedBuffer: null,
+		feedBufferChunks: [],
+		feedBufferBytes: 0,
 		feedDeferred: null,
 		feedDeferredChunks: [],
 		feedDeferredBytes: 0,

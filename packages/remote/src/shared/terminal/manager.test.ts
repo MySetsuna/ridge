@@ -166,6 +166,8 @@ function makePane() {
 		imeAnchor: null,
 		imeAnchorRaf: null,
 		feedBuffer: null,
+		feedBufferChunks: [],
+		feedBufferBytes: 0,
 		feedFlushTimer: null,
 		viewport: undefined,
 		geometry: undefined,
@@ -706,7 +708,8 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(fixture.kernel.feed).not.toHaveBeenCalled();
 
 		manager.feed(PANE, '\x1b[B');
-		expect(fixture.pane.feedBuffer).toEqual(new TextEncoder().encode('\x1b[A\x1b[B'));
+		expect(fixture.pane.feedBuffer).toEqual(new TextEncoder().encode('\x1b[A'));
+		expect(fixture.pane.feedBufferChunks).toEqual([new TextEncoder().encode('\x1b[B')]);
 		vi.advanceTimersByTime(8);
 		expect(fixture.kernel.feed).toHaveBeenCalledWith(new TextEncoder().encode('\x1b[A\x1b[B'));
 		expect(sent).toEqual([new Uint8Array([0x52])]);
@@ -785,16 +788,22 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		fixture.kernel.isInlineTuiMode.mockReturnValue(true);
 		manager.feed(PANE, new Uint8Array([0x1b, 0x41]));
 		manager.feed(PANE, new Uint8Array([0x1b, 0x42]));
-		expect(fixture.pane.feedBuffer).toEqual(new Uint8Array([0x1b, 0x41, 0x1b, 0x42]));
+		expect(fixture.pane.feedBuffer).toEqual(new Uint8Array([0x1b, 0x41]));
+		expect(fixture.pane.feedBufferChunks).toEqual([new Uint8Array([0x1b, 0x42])]);
 		manager.feed(PANE, 'echo');
-		expect(fixture.pane.feedBuffer).toEqual(new TextEncoder().encode('\x1bA\x1bBecho'));
+		expect(fixture.pane.feedBufferChunks).toEqual([
+			new Uint8Array([0x1b, 0x42]),
+			new TextEncoder().encode('echo'),
+		]);
 		(manager as any)._flushFeedBuffer(fixture.pane);
 		expect(fixture.kernel.feed.mock.calls.at(-1)?.[0]).toEqual(new TextEncoder().encode('\x1bA\x1bBecho'));
 
 		fixture.kernel.isInlineTuiMode.mockReturnValue(false);
 		fixture.pane.feedBuffer = new Uint8Array([9]);
+		fixture.pane.feedBufferBytes = 0;
 		manager.feed(PANE, new Uint8Array([10]));
-		expect(fixture.pane.feedBuffer).toEqual(new Uint8Array([9, 10]));
+		expect(fixture.pane.feedBuffer).toEqual(new Uint8Array([9]));
+		expect(fixture.pane.feedBufferChunks).toEqual([new Uint8Array([10])]);
 		(manager as any)._flushFeedBuffer(fixture.pane);
 		expect(fixture.kernel.feed.mock.calls.at(-1)?.[0]).toEqual(new Uint8Array([9, 10]));
 
@@ -1108,12 +1117,24 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 
 		fixture.pane.selecting = true;
 		fixture.pane.selectionStartAbs = { row: 1, col: 1 };
-		const event = { clientX: 30, clientY: 21, pointerId: 8 } as unknown as PointerEvent;
+		const insideFirstRow = { clientX: 30, clientY: 21, pointerId: 8 } as unknown as PointerEvent;
+		(manager as any)._updateAttachAutoScroll(PANE, fixture.pane, insideFirstRow);
+		expect(fixture.pane.autoScrollDirection).toBeNull();
+		const event = { clientX: 30, clientY: 19, pointerId: 8 } as unknown as PointerEvent;
 		(manager as any)._updateAttachAutoScroll(PANE, fixture.pane, { ...event, clientY: 200 });
 		(manager as any)._updateAttachAutoScroll(PANE, fixture.pane, event);
 		expect(fixture.pane.autoScrollDirection).toBe('up');
 		await vi.advanceTimersByTimeAsync(30);
 		expect(fixture.kernel.scrollUp).toHaveBeenCalledWith(1);
+		fixture.pane.autoScrollDirection = null;
+		const insideLastRow = { clientX: 30, clientY: 419, pointerId: 8 } as unknown as PointerEvent;
+		(manager as any)._updateAttachAutoScroll(PANE, fixture.pane, insideLastRow);
+		expect(fixture.pane.autoScrollDirection).toBeNull();
+		const belowLastRow = { clientX: 30, clientY: 421, pointerId: 8 } as unknown as PointerEvent;
+		(manager as any)._updateAttachAutoScroll(PANE, fixture.pane, belowLastRow);
+		expect(fixture.pane.autoScrollDirection).toBe('down');
+		await vi.advanceTimersByTimeAsync(30);
+		expect(fixture.kernel.scrollDown).toHaveBeenCalledWith(1);
 		fixture.pane.selecting = false;
 		await vi.advanceTimersByTimeAsync(30);
 		expect(fixture.pane.autoScrollTimer).toBeNull();

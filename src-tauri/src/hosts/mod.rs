@@ -912,9 +912,12 @@ fn create_foreign_terminal(remote: RemoteRef) -> Result<crate::engine::pty::PtyH
     let writer = master
         .take_writer()
         .map_err(|error| format!("foreign PTY writer failed: {error}"))?;
+    let writer = Arc::new(parking_lot::Mutex::new(writer));
+    let input_sink = crate::engine::pty::PtyInputSink::new(writer.clone());
     Ok(crate::engine::pty::PtyHandle {
         master: Arc::new(parking_lot::Mutex::new(master)),
-        writer: Arc::new(parking_lot::Mutex::new(writer)),
+        writer,
+        input_sink,
         _child: None,
         native_ref: None,
         native_cancel: None,
@@ -1741,9 +1744,12 @@ mod tests {
             .expect("openpty");
         let portable_pty::PtyPair { master, slave: _ } = pair;
         let w = master.take_writer().expect("writer");
+        let writer = Arc::new(parking_lot::Mutex::new(w));
+        let input_sink = crate::engine::pty::PtyInputSink::new(writer.clone());
         let handle = crate::engine::pty::PtyHandle {
             master: Arc::new(parking_lot::Mutex::new(master)),
-            writer: Arc::new(parking_lot::Mutex::new(w)),
+            writer,
+            input_sink,
             _child: None,
             native_ref: None,
             native_cancel: None,
@@ -2071,9 +2077,12 @@ mod tests {
             .unwrap();
         let portable_pty::PtyPair { master, slave: _ } = pair;
         let w = master.take_writer().unwrap();
+        let writer = Arc::new(parking_lot::Mutex::new(w));
+        let input_sink = crate::engine::pty::PtyInputSink::new(writer.clone());
         let handle = crate::engine::pty::PtyHandle {
             master: Arc::new(parking_lot::Mutex::new(master)),
-            writer: Arc::new(parking_lot::Mutex::new(w)),
+            writer,
+            input_sink,
             _child: None,
             native_ref: None,
             native_cancel: None,

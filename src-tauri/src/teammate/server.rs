@@ -2779,6 +2779,7 @@ fn summon_one_pane(
     )));
     let handle = PtyHandle {
         master: sp.master,
+        input_sink: crate::engine::pty::PtyInputSink::new(sp.writer.clone()),
         writer: sp.writer,
         _child: None,
         native_ref: Some((socket.to_string(), sp.global_id)),

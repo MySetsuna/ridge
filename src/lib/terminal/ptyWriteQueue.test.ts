@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  enqueuePtyInput,
   enqueuePtyWrite,
   PtyWriteQueueFullError,
   PtyWriteQueueRetiredError,
@@ -7,6 +8,52 @@ import {
 } from './ptyWriteQueue';
 
 describe('enqueuePtyWrite', () => {
+	it('coalesces an optional short burst before the first IPC write', async () => {
+		vi.useFakeTimers();
+		try {
+			const sent: string[] = [];
+			const write = async (data: string) => { sent.push(data); };
+			expect(enqueuePtyInput('ws:burst', '\x03', write, { coalesceWindowMs: 8 })).toBe(true);
+			expect(enqueuePtyInput('ws:burst', '\x03', write, { coalesceWindowMs: 8 })).toBe(true);
+			expect(sent).toEqual([]);
+			await vi.advanceTimersByTimeAsync(8);
+			expect(sent).toEqual(['\x03\x03']);
+			retirePtyWriteQueue('ws:burst');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('coalesces keys queued behind a slow desktop write', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const sent: string[] = [];
+    const write = async (data: string) => {
+      sent.push(data);
+      if (data === 'a') await gate;
+    };
+
+    expect(enqueuePtyInput('ws:input', 'a', write)).toBe(true);
+    expect(enqueuePtyInput('ws:input', 'b', write)).toBe(true);
+    expect(enqueuePtyInput('ws:input', 'c', write)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sent).toEqual(['a']);
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sent).toEqual(['a', 'bc']);
+    retirePtyWriteQueue('ws:input');
+  });
+
+  it('bounds coalesced input bytes', () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    expect(enqueuePtyInput('ws:input-cap', 'a', async () => gate, { maxQueuedBytes: 2 })).toBe(true);
+    expect(enqueuePtyInput('ws:input-cap', 'b', async () => undefined, { maxQueuedBytes: 2 })).toBe(true);
+    expect(enqueuePtyInput('ws:input-cap', 'c', async () => undefined, { maxQueuedBytes: 2 })).toBe(false);
+    release();
+    retirePtyWriteQueue('ws:input-cap');
+  });
+
   it('keeps multiline paste before later input for the same pane', async () => {
     const sent: string[] = [];
     let releasePaste!: () => void;

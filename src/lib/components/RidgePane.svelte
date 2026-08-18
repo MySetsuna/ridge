@@ -21,15 +21,15 @@ import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '@ridge/r
 import { t, tr } from '$lib/i18n';
 import { activePaneId, activeWorkspaceId, clearAgentPaneAttention, focusPane, setPaneCwd, paneOscTitleStore, paneForegroundProcessStore, terminalTitles, splitPane, closePane, waitForDesktopKernelReattach } from '$lib/stores/paneTree';
 import type { KernelEvent } from '@ridge/remote/shared/terminal/manager';
-import { ensurePtyBridge, enableDeltaModeThenFit } from '@ridge/remote/shared/terminal/ptyBridge';
+import { ensurePtyBridge, setPaneDeltaMode } from '@ridge/remote/shared/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '@ridge/remote/shared/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
 import { showContextMenu } from '$lib/stores/contextMenu';
 import { get } from 'svelte/store';
 import { TerminalManager } from '@ridge/remote/shared/terminal/manager';
-import { enqueuePtyWrite } from '$lib/terminal/ptyWriteQueue';
-import { enqueuePaneInput } from '@ridge/remote/shared/terminal/paneInputGate';
+import { enqueuePtyInput, enqueuePtyWrite, flushPtyInput } from '$lib/terminal/ptyWriteQueue';
+import { enqueuePaneInput, tryEnqueuePaneInputImmediate } from '@ridge/remote/shared/terminal/paneInputGate';
 import { activateRemotePaneBinding, promoteRemotePaneBinding, remotePaneBinding } from '$lib/hosts/remotePaneBindings';
 import { isTuiActive, hasLiveTuiSignal, TUI_STICKY_MS_DEFAULT } from '@ridge/remote/shared/terminal/tuiGate';
 import {
@@ -77,12 +77,8 @@ $effect(() => {
 	});
 });
 
-// P4.4 (2026-05-21) — removed the parserBackend live-switch state.
-// The Rust path is now unconditional; `set_pane_delta_mode(true)` is
-// still called on attach (see onMount IIFE below) so the backend
-// `delta_mode` AtomicBool is in the expected state for the channel
-// path. No more `backendSwitching` fade — there is no other backend
-// to switch to.
+// Desktop local panes use the bounded raw-byte path. Remote bindings
+// retain their own shared transport and delta-mode ownership.
 
 // PTY listener subscriptions used to live here as ptyUnlisten /
 // ptyClosedUnlisten. Both moved to `@ridge/remote/shared/terminal/ptyBridge` (TASKS §5.1)
@@ -274,9 +270,12 @@ type PtyRuntimeIdentity = {
 };
 
 const PTY_RUNTIME_SAMPLE_INTERVAL_MS = 1000;
+const PTY_RUNTIME_INPUT_SAMPLE_DEBOUNCE_MS = 120;
+const PTY_INPUT_COALESCE_MS = 4;
 const PTY_RUNTIME_PENDING_REFRESH_MS = 1000;
 const PTY_RUNTIME_INPUT_GUARD_MS = 750;
 let ptyRuntimeSampler: ReturnType<typeof setInterval> | null = null;
+let ptyRuntimeInputSampleTimer: ReturnType<typeof setTimeout> | null = null;
 let ptyRuntimeSampleInFlight = false;
 let ptyRuntimePendingInFlight = false;
 let ptyRuntimePendingApproval = true;
@@ -288,13 +287,29 @@ let ptyRuntimeStateRevision = 1;
 let ptyRuntimeInputEpoch = 1;
 let ptyRuntimeLastInputAt = 0;
 
+function schedulePtyRuntimeInputSample(): void {
+	if (ptyRuntimeInputSampleTimer !== null) return;
+	const waitMs = Math.max(
+		0,
+		PTY_RUNTIME_INPUT_SAMPLE_DEBOUNCE_MS - (performance.now() - ptyRuntimeLastInputAt),
+	);
+	ptyRuntimeInputSampleTimer = setTimeout(() => {
+		ptyRuntimeInputSampleTimer = null;
+		if (performance.now() - ptyRuntimeLastInputAt < PTY_RUNTIME_INPUT_SAMPLE_DEBOUNCE_MS) {
+			schedulePtyRuntimeInputSample();
+			return;
+		}
+		void samplePtyRuntimeState();
+	}, waitMs);
+}
+
 function notePtyRuntimeInput(): void {
 	if (!isTauri()) return;
 	ptyRuntimeInputEpoch = ptyRuntimeInputEpoch >= Number.MAX_SAFE_INTEGER
 		? 1
 		: ptyRuntimeInputEpoch + 1;
 	ptyRuntimeLastInputAt = performance.now();
-	void samplePtyRuntimeState();
+	schedulePtyRuntimeInputSample();
 }
 
 async function refreshPtyRuntimePending(identity: PtyRuntimeIdentity): Promise<void> {
@@ -408,6 +423,10 @@ function stopPtyRuntimeSampler(): void {
 	if (ptyRuntimeSampler !== null) {
 		clearInterval(ptyRuntimeSampler);
 		ptyRuntimeSampler = null;
+	}
+	if (ptyRuntimeInputSampleTimer !== null) {
+		clearTimeout(ptyRuntimeInputSampleTimer);
+		ptyRuntimeInputSampleTimer = null;
 	}
 	ptyRuntimeSampleInFlight = false;
 	ptyRuntimeIdentity = null;
@@ -557,6 +576,7 @@ function pasteIntoPane(text: string): void {
 	if (!text) return;
 	focusPane(paneId, workspaceId);
 	notePaste(text);
+	if (!remotePaneBinding(paneId)) flushPtyInput(`${workspaceId}:${paneId}`);
 	manager.paste(paneId, text);
 }
 
@@ -608,6 +628,7 @@ function enqueuePasteTextTask(read: () => Promise<string | null>): void {
 		return;
 	}
 	const key = `${workspaceId}:${paneId}`;
+	flushPtyInput(key);
 	void enqueuePaneInput(key, async () => {
 		const text = await read();
 		if (!text) return;
@@ -801,17 +822,20 @@ let lastTuiActiveTs = 0;
 // other signal — once an app sets DECCKM the shell-history popup is
 // unreachable, which is exactly what the user asked for.
 function isTuiSticky(): boolean {
-	const live = manager.isAltScreen(paneId)
-		|| manager.isInlineTuiActive(paneId)
-		|| manager.isMouseReporting(paneId);
 	const now = performance.now();
+	const isAltScreen = manager.isAltScreen(paneId);
+	const isInlineTuiActive = manager.isInlineTuiActive(paneId);
+	const isMouseReporting = manager.isMouseReporting(paneId);
+	const isAppCursorKeys = manager.isAppCursorKeys(paneId);
+	const cursorVisible = manager.isCursorVisible(paneId);
+	const live = isAltScreen || isInlineTuiActive || isMouseReporting;
 	if (live) lastTuiActiveTs = now;
 	return isTuiActive({
-		isAltScreen: manager.isAltScreen(paneId),
-		isInlineTuiActive: manager.isInlineTuiActive(paneId),
-		isMouseReporting: manager.isMouseReporting(paneId),
-		isAppCursorKeys: manager.isAppCursorKeys(paneId),
-		cursorVisible: manager.isCursorVisible(paneId),
+		isAltScreen,
+		isInlineTuiActive,
+		isMouseReporting,
+		isAppCursorKeys,
+		cursorVisible,
 		lastTuiActiveTs,
 		now,
 		stickyMs: TUI_STICKY_MS_DEFAULT,
@@ -1104,10 +1128,10 @@ function onCompositionStart() {
 		// Anchor on focus too, in case the user clicked into the pane and
 		// expects the next IME composition to appear near the current cursor.
 		repositionImeHelper();
-		// When the IME textarea owns focus, let its native caret be the single
-		// visible caret; the renderer must not blink a second caret underneath it.
+		// The IME textarea is visually transparent, including its native caret;
+		// keep the renderer caret visible when this helper owns focus.
 		if (get(activePaneId) === paneId && get(activeWorkspaceId) === workspaceId) {
-			manager.setFocused(paneId, false);
+			manager.setFocused(paneId, true);
 		}
 	}
 
@@ -1318,13 +1342,19 @@ function onPtyData(bytes: Uint8Array) {
 		}, s);
 		return;
 	}
-	// Tauri invokes are asynchronous. Keep their completion FIFO per pane: one
-	// clipboard paste remains one atomic payload, and no later key/input can
-	// overtake any byte of it while ConPTY is back-pressured.
+	// Keep paste ordering through the intent gate; keyboard bytes use one short
+	// bounded batch so fast typing does not create one kernel HTTP request/key.
 	const key = `${workspaceId}:${paneId}`;
-	void enqueuePaneInput(key, () => enqueuePtyWrite(key, () => invoke('write_to_pty', { workspaceId, paneId, data: s }))).catch((err) => {
-		reportRepeatedError('write_to_pty', err);
+	const accepted = tryEnqueuePaneInputImmediate(key, () => {
+		const queued = enqueuePtyInput(key, s, (data) => invoke('write_to_pty', { workspaceId, paneId, data }), {
+			// Four milliseconds stays below a frame while folding key-repeat and
+			// fast typing into fewer kernel requests.
+			coalesceWindowMs: PTY_INPUT_COALESCE_MS,
+			onError: (err) => reportRepeatedError('write_to_pty', err),
+		});
+		if (!queued) reportRepeatedError('write_to_pty', new Error('PTY input queue full'));
 	});
+	if (!accepted) reportRepeatedError('write_to_pty', new Error('pane input intent queue full'));
 }
 
 function onPtyResize(
@@ -1521,7 +1551,6 @@ onMount(() => {
 			manager.claimPaneSize(paneId);
 			return;
 		}
-
 		// 3) PTY backend lifecycle
 		try {
 			await invoke('create_pane', {
@@ -1541,11 +1570,8 @@ onMount(() => {
 		// `pane-pty-closed` rebuild (create_pane + activate_pane_pty)
 		// also lives in the bridge.
 		//
-		// ORDERING CONTRACT (5b): this `ensurePtyBridge` MUST run BEFORE the
-		// `enableDeltaModeThenFit` call in step 7 — it registers the pty-delta
-		// Channel that setPaneDeltaMode + the deterministic post-fit Resize delta
-		// depend on. enableDeltaModeThenFit asserts `hasPtyBridge` and warns if
-		// this ordering is ever broken.
+		// The bridge still owns the raw output listener; the optional delta
+		// Channel remains unused for local desktop panes.
 		await ensurePtyBridge(paneId, workspaceId);
 		if (!alive) return;
 
@@ -1569,7 +1595,21 @@ onMount(() => {
 			if (alive) atOldest = true;
 		}
 
-		// 6) Activate PTY now that listener is wired and history replayed
+		// 6) Settle the real grid before activation. `create_pane` leaves the
+		// PTY in pending_spawns, so resize_pane can apply the measured size
+		// before the shell receives its first bytes. Otherwise the shell starts
+		// at 80x24 and a later fit preserves row 23 in the pane's middle.
+		manager.setLocalGridAuthority(paneId, true);
+		if (alive) {
+			try {
+				await manager.fitPaneNow(paneId);
+			} catch (e) {
+				console.warn('initial pane fit failed; activation will retry size sync', e);
+			}
+		}
+		if (!alive) return;
+
+		// 7) Activate PTY now that listener, history, and dimensions are ready
 		try {
 			await invoke('activate_pane_pty', {
 				workspaceId,
@@ -1584,33 +1624,12 @@ onMount(() => {
 			}
 		}
 
-		// 7) Sync the backend delta_mode to the user's current Settings
-		// preference. MUST come after `activate_pane_pty` — `create_pane`
-		// only registers a `PendingSpawn`, the live pane handle that
-		// `set_pane_delta_mode` looks up in `ws.terminals` doesn't land
-		// until `activate_pane_pty` runs. Pre-fix, this call was inside
-		// `ensurePtyBridge` and fired before activation → "pane not found"
-		// warning on every cold boot. Fire-and-forget here is safe; if it
-		// fails the user just stays on whatever the backend's default
-		// delta_mode is.
-		// P4.4 — Rust path is the only path; unconditionally enable
-		// delta_mode on attach. The backend defaults `delta_mode` to
-		// false so the initial bytes use the legacy text path; this
-		// call flips the gate after the pane has activated, at which
-		// point the channel (registered by ptyBridge) starts
-		// receiving delta frames.
-		// 5b — deterministic fit AFTER the pty-delta Channel gate opens. P4.4
-		// routes kernel grid resize solely through apply_delta(Resize), gated on
-		// the Channel (registered by ensurePtyBridge above) + delta_mode. Awaiting
-		// setPaneDeltaMode before fitPaneNow closes the attach-rAF-fit race that
-		// left teammate panes stuck at 80×24 (they don't go through GUI split's
-		// scheduleForceFitAfterSplit). 0×0/hidden workspaces still fall back to the
-		// becomes-visible re-fit + kernel-grid self-heal. See bug_split_kernel_race.
-		if (alive) {
-			void enableDeltaModeThenFit(paneId, () => {
-				if (alive) manager.fitPaneNow(paneId);
-			}, workspaceId);
-		}
+		// Desktop local panes use the manager's bounded raw-byte feed. Explicitly
+		// close a stale backend delta gate (e.g. after frontend hot reload): the
+		// Rust delta Channel applies every PTY frame synchronously on the UI
+		// thread and can starve input/RAF during TUI redraw bursts.
+		await setPaneDeltaMode(paneId, false, workspaceId);
+		if (!alive) return;
 
 		// `pane-pty-closed` rebuild now lives in ptyBridge and persists
 		// across this component's mount cycle, so we don't subscribe
@@ -1618,10 +1637,9 @@ onMount(() => {
 	})();
 });
 
-// P4.4 (2026-05-21) — removed the parserBackend live-switch effect.
-// With Rust path unconditional, the onMount IIFE's `enableDeltaModeThenFit`
-// (which enables delta_mode then fits) is the only call site needed. No more
-// 200ms fade mask — there is no backend to switch to.
+// Local desktop panes intentionally stay on the bounded raw-byte path;
+// remote bindings own their shared delta stream separately.
+// Local desktop attach settles the pending PTY before activation.
 
 // §1.23 (2026-05-05) → P1.3 (2026-05-19): the side scrollbar's thumb
 // used to be kept in sync by a 4Hz `setInterval(refreshScrollState, 250)`
@@ -1885,7 +1903,6 @@ $effect(() => {
 		// 5. Default: pass through to kernel's key encoder (非 TUI 下)
 		if (!isTui && manager.handleKeyDown(paneId, e)) {
 			e.preventDefault();
-			refreshScrollState();
 
 			// §1.32 (2026-05-20) Wave B: route every buffer-affecting key
 			// through the unit-tested `inputBufferTracker` state machine.
