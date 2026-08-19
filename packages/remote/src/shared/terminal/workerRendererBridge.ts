@@ -108,6 +108,8 @@ export interface WorkerRendererBridge {
 	applyDelta(paneId: string, bytes: Uint8Array, frameId?: number): void;
 	/** Mirror raw PTY bytes consumed by the main-thread semantic kernel. */
 	feed(paneId: string, bytes: Uint8Array, frameId?: number): void;
+	/** Mirror an explicit clear while moving the shell prompt row to the top. */
+	clearTerminalPreservingPrompt(paneId: string, frameId?: number): void;
 	/** Release only the parked pane's paint surface; keep its worker kernel. */
 	releaseCanvas(paneId: string): void;
 	/** Mirror a resize. */
@@ -248,6 +250,14 @@ export const workerRendererBridge: WorkerRendererBridge = {
 		} catch (err) {
 			fail(`feed ${paneId} (sync)`, err);
 		}
+	},
+
+	clearTerminalPreservingPrompt(paneId, frameId): void {
+		const r = active();
+		if (!r) return;
+		r.clearTerminalPreservingPrompt(paneId, frameId).catch((err) =>
+			fail(`clearTerminalPreservingPrompt ${paneId}`, err),
+		);
 	},
 
 	releaseCanvas(paneId): void {

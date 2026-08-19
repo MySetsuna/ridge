@@ -517,6 +517,12 @@ impl Terminal {
         self.user_scroll_locked = false;
     }
 
+    pub fn clear_terminal_preserving_prompt(&mut self) {
+        self.grid.clear_terminal_preserving_prompt();
+        self.scroll_offset = 0;
+        self.user_scroll_locked = false;
+    }
+
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
     }
@@ -1235,6 +1241,19 @@ mod tests {
 
         assert_eq!(t.scrollback_len(), 0);
         assert_eq!(t.scroll_offset(), 0, "viewport must snap back to live grid");
+    }
+
+    #[test]
+    fn clear_terminal_moves_current_shell_prompt_to_first_row() {
+        let mut t = Terminal::new(4, 20, 100);
+        t.feed(b"old output\r\nmore output\r\nC:\\code> ");
+
+        t.clear_terminal_preserving_prompt();
+
+        assert_eq!(t.dump_visible_text(), vec!["C:\\code>", "", "", ""]);
+        assert_eq!(t.scrollback_len(), 0);
+        assert_eq!(t.grid().cursor().row, 0);
+        assert_eq!(t.grid().cursor().col, 9);
     }
 
     #[test]

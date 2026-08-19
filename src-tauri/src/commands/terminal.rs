@@ -2258,7 +2258,7 @@ fn clear_pane_terminal_inner(
 
     let frame = {
         let mut parser = parser.lock();
-        parser.clear_terminal()
+        parser.clear_terminal_preserving_prompt()
     };
     if let Some(kernel) = state
         .workspaces

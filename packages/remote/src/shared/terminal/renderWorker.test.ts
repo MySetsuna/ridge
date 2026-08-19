@@ -41,6 +41,7 @@ describe('renderWorker.protocol — isRenderWorkerRequest', () => {
 			{ type: 'applyDelta' },
 			{ type: 'releaseCanvas' },
 			{ type: 'feed' },
+			{ type: 'clearTerminalPreservingPrompt' },
 			{ type: 'resize' },
 			{ type: 'destroy' },
 			{ type: 'ping' },
@@ -301,6 +302,7 @@ describe('renderWorker.handleRequest — wasm KernelAdapter wiring', () => {
 	function makeMockKernel() {
 		return {
 			feed: vi.fn<(bytes: Uint8Array) => void>(),
+			clearTerminalPreservingPrompt: vi.fn<() => void>(),
 			applyDeltaFrame: vi.fn<(bytes: Uint8Array) => void>(),
 			free: vi.fn<() => void>(),
 		};

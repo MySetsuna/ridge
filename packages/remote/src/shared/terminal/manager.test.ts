@@ -70,6 +70,7 @@ function makePane() {
 		selectAll: vi.fn(),
 		setSelectionAbs: vi.fn(),
 		clearScrollback: vi.fn(),
+		clearTerminalPreservingPrompt: vi.fn(),
 		setPreedit: vi.fn(),
 		searchSetQuery: vi.fn(() => 2),
 		searchNext: vi.fn(() => 1),
@@ -608,9 +609,17 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(manager.wheelAltScroll(PANE, { deltaY: 1, deltaMode: 1 } as WheelEvent)).toBe(true);
 		manager.scrollUp(PANE, 2);
 		manager.scrollDown(PANE, 1);
+		fixture.setAltScreen(false);
+		manager.clearTerminalPreservingPrompt(PANE);
+		expect(fixture.kernel.clearTerminalPreservingPrompt).toHaveBeenCalledOnce();
 		manager.clearScrollback(PANE);
 		expect(fixture.kernel.clearScrollback).toHaveBeenCalledOnce();
-		expect(fixture.pane.linkSpans.clear).toHaveBeenCalledOnce();
+		expect(fixture.pane.linkSpans.clear).toHaveBeenCalledTimes(2);
+
+		fixture.setAltScreen(true);
+		manager.clearTerminalPreservingPrompt(PANE);
+		expect(fixture.kernel.clearScrollback).toHaveBeenCalledTimes(2);
+		expect(fixture.kernel.clearTerminalPreservingPrompt).toHaveBeenCalledOnce();
 
 		fixture.kernel.getSelectionText.mockReturnValue('copy me');
 		expect(manager.handleKeyDown(PANE, {

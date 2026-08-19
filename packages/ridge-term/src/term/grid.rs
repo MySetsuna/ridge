@@ -341,6 +341,26 @@ impl Grid {
         self.clear_scrollback();
     }
 
+    /// Explicit UI clear that drops output and moves the shell's current
+    /// prompt line to the first row, matching the shell `clear` experience.
+    pub fn clear_terminal_preserving_prompt(&mut self) {
+        if self.is_alt_screen() {
+            self.clear_terminal();
+            return;
+        }
+        let cursor = self.screen().cursor;
+        let prompt_row = self.screen().rows.get(cursor.row).cloned();
+        self.clear_terminal();
+        if let Some(row) = prompt_row {
+            let screen = self.screen_mut();
+            if let Some(target) = screen.rows.first_mut() {
+                *target = row;
+                screen.cursor.row = 0;
+                screen.cursor.col = cursor.col;
+            }
+        }
+    }
+
     /// Build the cell that erase / scroll / IL / DL paths use to fill
     /// blanked positions. When the pen carries the default background
     /// this collapses to `Cell::EMPTY` — no attr table churn, identical
