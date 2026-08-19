@@ -533,18 +533,14 @@ pub fn resolve_cell_colors(
     if attrs.flags.contains(Flags::HIDDEN) {
         fg = bg;
     }
-    // SGR 2 (DIM / faint) intentionally NOT rendered. Earlier iterations
-    // tried `(fg + bg) / 2` (50% wash toward bg) and `fg * 0.7`
-    // (Alacritty-style luminance cut); both produced visible greyed-out
-    // segments in PSReadLine / oh-my-posh prompts that the user perceived
-    // as "前景色污染" — especially noticeable when an IME composing
-    // overlay collapsed and revealed dim cells underneath. Disabling the
-    // attribute matches Windows Terminal's default behaviour and removes
-    // the ambiguity entirely. The DIM bit is still parsed and held in
-    // the attr table (so SGR 0 / 22 reset semantics stay correct); we
-    // just don't translate it to a color change at draw time. BOLD
-    // (SGR 1) and the rest of the SGR set are unaffected.
-    let _ = Flags::DIM;
+    // SGR 2 (DIM / faint): blend the foreground toward the resolved
+    // background. Keep alpha from the foreground so transparent shell
+    // backgrounds remain transparent at the surface level.
+    if attrs.flags.contains(Flags::DIM) {
+        for i in 0..3 {
+            fg[i] = ((fg[i] as u16 + bg[i] as u16) / 2) as u8;
+        }
+    }
 
     (attrs, fg, bg)
 }
@@ -711,6 +707,29 @@ mod tests {
         let resolved = t.resolve(Color::rgb(0x12, 0x34, 0x56), true);
         // RGB resolution always sets alpha = 0xff (24-bit truecolor has no alpha channel).
         assert_eq!(resolved, [0x12, 0x34, 0x56, 0xff]);
+    }
+
+    #[test]
+    fn dim_foreground_blends_toward_shell_background() {
+        use crate::term::attr_table::AttrTable;
+        use crate::term::attrs::{Attrs, Color, Flags};
+        use crate::term::cell::Cell;
+
+        let mut table = AttrTable::default();
+        let id = table.intern(Attrs {
+            fg: Color::rgb(0xe0, 0xe0, 0xe0),
+            bg: Color::DEFAULT,
+            flags: Flags::DIM,
+        });
+        let (_, fg, bg) = resolve_cell_colors(
+            &Cell::new('x', id, 1),
+            &table,
+            &Theme::default_dark(),
+            false,
+        );
+
+        assert_eq!(bg, [0, 0, 0, 0]);
+        assert_eq!(fg, [0x70, 0x70, 0x70, 0xff]);
     }
 
     // ─── Theme::apply_partial — coverage gaps ─────────────────────────
