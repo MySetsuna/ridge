@@ -39,6 +39,32 @@ import { cargoTool, systemTool } from './lib/toolPath.mjs';
 
 const userDataDir = DEV_USER_DATA_DIR;
 const root = path.resolve(import.meta.dirname, '..');
+// Tauri CLI runs the debug binary from `src-tauri`; keep CDP's first shell in
+// the caller's project root instead of exposing the crate directory.
+process.env.RIDGE_CDP_STARTUP_CWD = root;
+
+// Windows installations may leave `%NVM_HOME%` / `%NVM_SYMLINK%` literals in
+// the inherited PATH. Expand them before Cargo/Tauri inherits the environment;
+// otherwise the dev pane cannot resolve `nvm`, `node`, or other user tools.
+const pathEnvKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
+const nvmHome = process.env.NVM_HOME?.trim() || path.join(process.env.LOCALAPPDATA || '', 'nvm');
+const nvmSymlink = process.env.NVM_SYMLINK?.trim() || path.dirname(process.execPath);
+const inheritedPath = process.env[pathEnvKey] || '';
+const expandedPath = inheritedPath.replace(/%([^%]+)%/g, (_, name) => process.env[name] || (
+  name.toUpperCase() === 'NVM_HOME' ? nvmHome :
+  name.toUpperCase() === 'NVM_SYMLINK' ? nvmSymlink : `%${name}%`
+));
+const pathEntries = [...new Set(
+  [...expandedPath.split(';'), nvmHome, nvmSymlink]
+    .map((entry) => entry.trim())
+    .filter(Boolean),
+)];
+process.env[pathEnvKey] = pathEntries.join(';');
+if (pathEnvKey !== 'PATH') process.env.PATH = process.env[pathEnvKey];
+// Tauri/Cargo may reconstruct PATH from the machine environment before the
+// detached kernel starts. Carry the normalized value through an explicit CDP
+// variable so the kernel can apply the same shell-tool contract.
+process.env.RIDGE_CDP_SHELL_PATH = pathEntries.join(';');
 const devKernelDataDir = path.join(root, '.iteration', 'dev-kernel-isolated-cdp');
 const configuredTargetDir = process.env.RIDGE_CDP_TARGET_DIR?.trim();
 const cargoTargetDir = configuredTargetDir ? path.resolve(configuredTargetDir) : path.join(root, 'target');
