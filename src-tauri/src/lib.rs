@@ -584,9 +584,9 @@ const OUTPUT_ACTIVITY_INTERVAL: Duration = Duration::from_millis(50);
 fn coalesce_window_for(last_bytes: usize) -> u64 {
     match last_bytes {
         // Ctrl+C / PowerShell prompt redraws arrive as many tiny packets.
-        // A zero window turns each packet into a separate Tauri event and
-        // lets pane-output-activity wake the Agent UI once per packet.
-        0..=255 => 2,
+        // Do not add an intentional batching delay to this interactive path;
+        // already-queued packets are still drained in the same turn.
+        0..=255 => 0,
         256..=4095 => 2,
         _ => 8,
     }
@@ -880,8 +880,8 @@ mod window_launch_tests {
 
     #[test]
     fn tiny_pty_bursts_use_a_bounded_coalesce_window() {
-        assert_eq!(coalesce_window_for(0), 2);
-        assert_eq!(coalesce_window_for(255), 2);
+        assert_eq!(coalesce_window_for(0), 0);
+        assert_eq!(coalesce_window_for(255), 0);
         assert_eq!(coalesce_window_for(256), 2);
     }
 

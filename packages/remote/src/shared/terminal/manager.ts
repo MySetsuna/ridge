@@ -2956,11 +2956,12 @@ export class TerminalManager {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-		// The first packet of a TUI frame can precede the mode-changing CSI that
-		// lets the kernel classify it. Any ESC packet therefore opens the same
-		// bounded burst; plain follow-up fragments join while that burst is open.
+		// Only a confirmed inline TUI may open the bounded burst. Shell prompt
+		// markers (OSC 133/633) also contain ESC, but must reach the kernel
+		// immediately; treating every ESC packet as a TUI frame adds visible
+		// latency after Ctrl+C and during prompt redraws.
 		const burstOpen = entry.feedBuffer !== null || entry.feedFlushTimer !== null;
-		if (this._isInlineTui(entry) || burstOpen || bytes.includes(0x1b)) this._feedInline(entry, bytes);
+		if (this._isInlineTui(entry) || burstOpen) this._feedInline(entry, bytes);
 		else this._feedImmediate(entry, bytes);
 	}
 
