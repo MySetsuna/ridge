@@ -776,7 +776,11 @@ pub struct StartupContext {
 
 #[tauri::command]
 pub fn get_startup_context(state: State<'_, AppState>) -> Result<StartupContext, String> {
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let cwd = state
+        .startup_cli_cwd
+        .clone()
+        .or_else(|| std::env::current_dir().ok())
+        .ok_or_else(|| "unable to determine startup cwd".to_string())?;
     let workspace_file_arg = crate::taskbar::take_pending_workspace_path().or_else(|| {
         let args = std::env::args().collect::<Vec<_>>();
         crate::taskbar::workspace_path_from_args(&args)

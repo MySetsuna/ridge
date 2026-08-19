@@ -755,6 +755,11 @@ impl PtyBridge {
         for (key, value) in env {
             command.env(key, value);
         }
+        if let Ok(path) = std::env::var("RIDGE_CDP_SHELL_PATH") {
+            if !path.trim().is_empty() {
+                command.env("PATH", path);
+            }
+        }
         command.env("TERM", "xterm-256color");
         apply_shell_integration(&mut command, &program, launch_profile);
         let child = pair

@@ -15,6 +15,12 @@ pub enum StartupCwdKind {
 /// Detect the launch kind. Returns the kind plus the captured cwd (only
 /// non-None when kind == Cli).
 pub fn detect_startup_cwd_kind() -> (StartupCwdKind, Option<PathBuf>) {
+    if let Ok(override_cwd) = std::env::var("RIDGE_CDP_STARTUP_CWD") {
+        let path = PathBuf::from(override_cwd);
+        if path.is_dir() {
+            return (StartupCwdKind::Cli, Some(path));
+        }
+    }
     let Ok(cwd) = std::env::current_dir() else {
         return (StartupCwdKind::Menu, None);
     };
