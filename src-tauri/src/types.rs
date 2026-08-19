@@ -59,6 +59,15 @@ pub enum GlobalEvent {
         pane_id: Uuid,
         data: String,
     },
+    /// Native parser result produced on the pane's PTY reader lane. `data`
+    /// remains available for remote raw-byte subscribers; `frame` is the
+    /// binary terminal-delta payload consumed by the local renderer.
+    PtyDeltaOutput {
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        data: String,
+        frame: Vec<u8>,
+    },
     PaneClosed {
         workspace_id: Uuid,
         pane_id: Uuid,

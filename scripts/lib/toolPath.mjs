@@ -42,7 +42,13 @@ export function systemTool(name) {
     if (name === 'taskkill') return join(systemRoot, 'System32', 'taskkill.exe');
     if (name === 'powershell') return join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     if (name === 'docker') return join(String.raw`C:\Program Files`, 'Docker', 'Docker', 'resources', 'bin', 'docker.exe');
-    if (name === 'pnpm') return join(String.raw`C:\DevKit\nodejs\pnpm.cmd`);
+    if (name === 'pnpm') {
+      const configured = process.env.RIDGE_PNPM_PATH?.trim();
+      if (configured) return configured;
+      const devKitPath = join(String.raw`C:\DevKit\nodejs`, 'pnpm.cmd');
+      if (existsSync(devKitPath)) return devKitPath;
+      return 'pnpm';
+    }
   }
   if (name === 'taskkill') return '/usr/bin/taskkill';
   if (name === 'powershell') return '/usr/bin/pwsh';

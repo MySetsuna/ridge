@@ -312,13 +312,10 @@ impl GlyphRasterizer {
         let bbox_h = bbox_h_dev.ceil().clamp(1.0, self.slot_h as f32) as u16;
 
         // Detect whether the browser stamped a color-emoji palette into
-        // RGB, or honoured the white fillStyle (monochrome glyph). Scan
-        // pixels with non-trivial alpha; if any has at least one channel
-        // below ~0.98 (= 250/255) the glyph carries native color. We
-        // bail on first hit - typical color emoji has thousands of color
-        // pixels so the loop costs ~10s of bytes in practice. Threshold
-        // 250 matches the shader's 0.99 cutoff (decoded sRGB white at
-        // boundary AA pixels lands ~0.992 = 253/255).
+        // RGB, or honoured the white fillStyle (monochrome glyph). Judge
+        // chroma, not brightness: some Canvas2D implementations encode
+        // monochrome antialiasing as gray RGB with opaque alpha. Treating
+        // that gray as color makes the shader bypass the cell foreground.
         let is_color = detect_color(&rgba);
 
         // section B.4 (2026-05-08) - premultiply alpha. getImageData per spec
@@ -434,7 +431,14 @@ impl GlyphRasterizer {
 
 fn detect_color(rgba: &[u8]) -> bool {
     rgba.chunks_exact(4)
-        .any(|px| px[3] >= 8 && px[..3].iter().any(|channel| *channel < 250))
+        .any(|px| {
+            if px[3] < 8 {
+                return false;
+            }
+            let max = px[..3].iter().copied().max().unwrap_or(0);
+            let min = px[..3].iter().copied().min().unwrap_or(0);
+            max.saturating_sub(min) >= 8
+        })
 }
 
 fn premultiply_rgba(rgba: &mut [u8]) {

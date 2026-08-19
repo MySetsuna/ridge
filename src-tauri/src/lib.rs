@@ -20,7 +20,6 @@ mod types;
 mod utils;
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -615,9 +614,19 @@ fn emit_pane_output(
         serde_json::json!({ "data": data }),
     );
 
+    emit_pane_activity(handle, activity_at, workspace_id, pane_id);
+}
+
+fn emit_pane_activity(
+    handle: &tauri::AppHandle,
+    activity_at: &mut OutputActivityAt,
+    workspace_id: uuid::Uuid,
+    pane_id: uuid::Uuid,
+) {
     // Activity is a low-priority control-plane hint, not terminal data. Keep
-    // it bounded while the PTY emits a burst; the raw output event remains
+    // it bounded while the PTY emits a burst; the terminal frame remains
     // lossless and immediate.
+    let label = pane_id.to_string();
     let key = (workspace_id, pane_id);
     let state = handle.state::<AppState>();
     let is_teammate_pane = state
@@ -633,6 +642,21 @@ fn emit_pane_output(
                 "workspaceId": workspace_id.to_string(), "paneId": label,
             }));
         }
+    }
+}
+
+fn emit_pane_delta(
+    handle: &tauri::AppHandle,
+    workspace_id: uuid::Uuid,
+    pane_id: uuid::Uuid,
+    frame: Vec<u8>,
+) {
+    let state = handle.state::<AppState>();
+    if let Some(sender) = state.get_pane_delta_channel(workspace_id, pane_id) {
+        sender(frame);
+    } else {
+        let label = pane_id.to_string();
+        let _ = handle.emit(&format!("pty-delta-{workspace_id}-{label}"), frame);
     }
 }
 
@@ -693,60 +717,6 @@ fn forward_raw_pty_output(
     }
 }
 
-fn forward_delta_pty_output(
-    handle: &tauri::AppHandle,
-    workspace_id: uuid::Uuid,
-    pane_id: uuid::Uuid,
-    data: &str,
-) -> bool {
-    let mode_handles = {
-        let state = handle.state::<AppState>();
-        let workspaces = state.workspaces.read();
-        workspaces
-            .get(&workspace_id)
-            .and_then(|workspace| workspace.terminals.get(&pane_id))
-            .map(|terminal| (
-                terminal.delta_mode.load(Ordering::Acquire),
-                terminal.parser.clone(),
-                terminal.writer.clone(),
-            ))
-    };
-    let Some((true, parser, writer)) = mode_handles else { return false };
-    let frame = {
-        let mut parser = parser.lock();
-        parser.feed_and_diff(data.as_bytes())
-    };
-    if frame.deltas.iter().any(|delta| matches!(
-        delta,
-        ridge_term::term::delta::GridDelta::ScrollbackClear
-    )) {
-        handle.state::<AppState>().clear_pty_scrollback(workspace_id, pane_id);
-    }
-    let response = {
-        let mut parser = parser.lock();
-        parser.take_pending_response()
-    };
-    if !response.is_empty() {
-        let mut writer = writer.lock();
-        let _ = writer.write_all(&response);
-        let _ = writer.flush();
-    }
-    if let Ok(bytes) = ridge_term::term::delta::encode_frame(&frame) {
-        if !frame.deltas.is_empty() {
-            let state = handle.state::<AppState>();
-            if let Some(sender) = state.get_pane_delta_channel(workspace_id, pane_id) {
-                sender(bytes);
-            } else {
-                let label = pane_id.to_string();
-                let _ = handle.emit(&format!("pty-delta-{workspace_id}-{label}"), bytes);
-            }
-        }
-    } else if !frame.deltas.is_empty() {
-        tracing::warn!(target: "ridge::pty_delta", ws = %workspace_id, pane = %pane_id, "delta encode failed; skipping frame");
-    }
-    true
-}
-
 fn handle_pty_output(
     handle: &tauri::AppHandle,
     activity_at: &mut OutputActivityAt,
@@ -756,7 +726,17 @@ fn handle_pty_output(
     data: String,
 ) {
     forward_raw_pty_output(handle, workspace_id, pane_id, &data);
-    if forward_delta_pty_output(handle, workspace_id, pane_id, &data) { return; }
+    // The reader thread always keeps the native parser warm. A raw event that
+    // was queued just before delta enable is therefore already represented by
+    // the full reframe sent during the handoff; do not parse it a second time.
+    let delta_enabled = handle
+        .state::<AppState>()
+        .workspaces
+        .read()
+        .get(&workspace_id)
+        .and_then(|workspace| workspace.terminals.get(&pane_id))
+        .is_some_and(|terminal| terminal.delta_mode.load(Ordering::Acquire));
+    if delta_enabled { return; }
     let entry = pending.entry((workspace_id, pane_id)).or_default();
     entry.push_str(&data);
     if entry.len() >= COALESCE_MAX_BYTES {
@@ -764,6 +744,23 @@ fn handle_pty_output(
         pending.remove(&(workspace_id, pane_id));
         emit_pane_output(handle, activity_at, workspace_id, pane_id, payload);
     }
+}
+
+fn handle_pty_delta_output(
+    handle: &tauri::AppHandle,
+    activity_at: &mut OutputActivityAt,
+    workspace_id: uuid::Uuid,
+    pane_id: uuid::Uuid,
+    data: String,
+    frame: Vec<u8>,
+) {
+    // Remote subscribers still receive the lossless raw stream. The local
+    // desktop path receives only the already-parsed binary frame.
+    forward_raw_pty_output(handle, workspace_id, pane_id, &data);
+    if !frame.is_empty() {
+        emit_pane_delta(handle, workspace_id, pane_id, frame);
+    }
+    emit_pane_activity(handle, activity_at, workspace_id, pane_id);
 }
 
 fn handle_cwd_changed(
@@ -816,6 +813,9 @@ fn handle_global_event(
     match event {
         GlobalEvent::PtyOutput { workspace_id, pane_id, data } => {
             handle_pty_output(handle, activity_at, pending, workspace_id, pane_id, data);
+        }
+        GlobalEvent::PtyDeltaOutput { workspace_id, pane_id, data, frame } => {
+            handle_pty_delta_output(handle, activity_at, workspace_id, pane_id, data, frame);
         }
         GlobalEvent::PaneClosed { workspace_id, pane_id } => {
             flush_pane_output(handle, activity_at, pending, workspace_id, pane_id);

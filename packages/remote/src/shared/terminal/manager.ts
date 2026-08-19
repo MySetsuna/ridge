@@ -3058,8 +3058,8 @@ export class TerminalManager {
 		}
 
 	/** P3.9 (2026-05-20) — apply one postcard-encoded `DeltaFrame` from the
-	 *  Rust-side `engine::parser::PaneParser` (produced when this pane's
-	 *  backend `delta_mode` is on). Mirror counterpart to `feed()`:
+	 *  Rust-side per-pane PTY reader (produced when this pane's backend
+	 *  `delta_mode` is on). Mirror counterpart to `feed()`:
 	 *  apply diff → drain pending_response back to PTY → drain
 	 *  pending_events → wake render loop.
 	 *

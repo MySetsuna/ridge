@@ -106,6 +106,11 @@ pub struct Terminal {
     /// full reset inline during `feed`, so the wasm Terminal stays
     /// consistent without consulting the flag.
     pending_reset: bool,
+    /// Highest native delta sequence accepted by this mirror. Control
+    /// commands and the PTY reader may cross the IPC boundary; rejecting an
+    /// older frame prevents a queued pre-reframe packet from reviving stale
+    /// cells.
+    last_applied_frame_seq: Option<u64>,
 }
 
 impl Terminal {
@@ -123,6 +128,7 @@ impl Terminal {
             current_link: None,
             grapheme_buf: String::new(),
             pending_reset: false,
+            last_applied_frame_seq: None,
         }
     }
 
@@ -381,14 +387,21 @@ impl Terminal {
     /// against `DeltaFrame::PROTOCOL_VERSION` and a mismatch returns
     /// the encountered version so the caller can log a warning and
     /// skip the frame instead of corrupting the mirror.
-    pub fn apply_frame(&mut self, frame: &crate::term::delta::DeltaFrame) -> Result<(), u16> {
+    pub fn apply_frame(&mut self, frame: &crate::term::delta::DeltaFrame) -> Result<bool, u16> {
         if frame.version != crate::term::delta::DeltaFrame::PROTOCOL_VERSION {
             return Err(frame.version);
+        }
+        if self
+            .last_applied_frame_seq
+            .is_some_and(|last| frame.pane_seq <= last)
+        {
+            return Ok(false);
         }
         for d in &frame.deltas {
             self.apply_delta(d);
         }
-        Ok(())
+        self.last_applied_frame_seq = Some(frame.pane_seq);
+        Ok(true)
     }
 
     /// Drain structured semantic events (title / cwd / hyperlinks / bell)
@@ -762,6 +775,36 @@ mod tests {
         // Content feed after resize must not desync size.
         t.feed(b"hello\r\nworld");
         assert_eq!((t.rows(), t.cols()), (10, 40));
+    }
+
+    #[test]
+    fn apply_frame_ignores_replayed_or_reordered_sequences() {
+        use crate::term::delta::{CursorShape, DeltaFrame, GridDelta};
+        let mut t = Terminal::new(2, 8, 0);
+        let newer = DeltaFrame::new(
+            8,
+            vec![GridDelta::Cursor {
+                row: 1,
+                col: 3,
+                visible: true,
+                blink: true,
+                shape: CursorShape::Block,
+            }],
+        );
+        let older = DeltaFrame::new(
+            7,
+            vec![GridDelta::Cursor {
+                row: 0,
+                col: 1,
+                visible: true,
+                blink: true,
+                shape: CursorShape::Block,
+            }],
+        );
+        assert_eq!(t.apply_frame(&newer), Ok(true));
+        assert_eq!(t.apply_frame(&older), Ok(false));
+        assert_eq!((t.grid().cursor().row, t.grid().cursor().col), (1, 3));
+        assert_eq!(t.apply_frame(&newer), Ok(false));
     }
 
     #[test]

@@ -77,8 +77,8 @@ $effect(() => {
 	});
 });
 
-// Desktop local panes use the bounded raw-byte path. Remote bindings
-// retain their own shared transport and delta-mode ownership.
+// Desktop local panes use the native Rust delta path. Remote bindings retain
+// their own shared transport and delta-mode ownership.
 
 // PTY listener subscriptions used to live here as ptyUnlisten /
 // ptyClosedUnlisten. Both moved to `@ridge/remote/shared/terminal/ptyBridge` (TASKS §5.1)
@@ -1625,11 +1625,10 @@ onMount(() => {
 			}
 		}
 
-		// Desktop local panes use the manager's bounded raw-byte feed. Explicitly
-		// close a stale backend delta gate (e.g. after frontend hot reload): the
-		// Rust delta Channel applies every PTY frame synchronously on the UI
-		// thread and can starve input/RAF during TUI redraw bursts.
-		await setPaneDeltaMode(paneId, false, workspaceId);
+		// Local panes use the native Rust parser + binary delta lane. PTY bytes
+		// are parsed on the per-pane reader thread; the WebView only applies the
+		// compact damage frame, so VTE work cannot block input or other panes.
+		await setPaneDeltaMode(paneId, true, workspaceId);
 		if (!alive) return;
 
 		// `pane-pty-closed` rebuild now lives in ptyBridge and persists
@@ -1638,9 +1637,9 @@ onMount(() => {
 	})();
 });
 
-// Local desktop panes intentionally stay on the bounded raw-byte path;
-// remote bindings own their shared delta stream separately.
-// Local desktop attach settles the pending PTY before activation.
+// Local desktop panes use the native Rust delta path; remote bindings own
+// their shared transport separately. Local desktop attach settles the
+// pending PTY before activation.
 
 // §1.23 (2026-05-05) → P1.3 (2026-05-19): the side scrollbar's thumb
 // used to be kept in sync by a 4Hz `setInterval(refreshScrollState, 250)`

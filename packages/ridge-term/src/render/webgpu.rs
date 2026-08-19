@@ -1050,7 +1050,10 @@ impl WebGpuPaneBackend {
                 atlas_layer: 0,
                 fg_rgba: sel_color,
                 bg_rgba: sel_color,
-                is_color: 0,
+                // Selection is a solid translucent rectangle, not an atlas glyph.
+                // Use the premultiplied procedural path so its alpha stays stable
+                // while the pointer moves across cells.
+                is_color: INSTANCE_MODE_PROCEDURAL,
             });
         }
     }

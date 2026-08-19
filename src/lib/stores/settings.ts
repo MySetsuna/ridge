@@ -13,10 +13,10 @@ export interface UserSettings {
   defaultCwd: string;
   terminalPaddingPx: number;
   terminalScrollbackLines: number;
-  // P4.4 (2026-05-21) �?removed `parserBackend: 'wasm' | 'rust'` toggle.
-  // The Rust-side PaneParser is now the only path; `set_pane_delta_mode`
-  // is still invoked from RidgePane but always with `enabled: true` (and
-  // remains used by the R5 self-heal force-reframe in ptyBridge).
+  // P4.4 (2026-05-21) — removed `parserBackend: 'wasm' | 'rust'` toggle.
+  // The Rust-side PaneParser is the only parser path; `set_pane_delta_mode`
+  // enables the native per-pane reader lane during activation and remains
+  // available for the R5 self-heal force-reframe in ptyBridge.
   /// 2026-05-21 �?terminal IME helper textarea gate.
   /// 'ime': click �?focus invisible IME helper textarea so OS IME
   ///   composition events (CJK input methods) can attach. Each
