@@ -579,7 +579,10 @@ pub fn run() {
 }
 
 const COALESCE_MAX_BYTES: usize = 64 * 1024;
-const OUTPUT_ACTIVITY_INTERVAL: Duration = Duration::from_millis(50);
+// Agent activity only nudges the control plane; terminal bytes stay lossless
+// and immediate. Four updates per second are enough for status/highlight UI
+// without competing with the terminal render lane during agent output bursts.
+const OUTPUT_ACTIVITY_INTERVAL: Duration = Duration::from_millis(250);
 
 fn coalesce_window_for(_last_bytes: usize) -> u64 {
     // Never insert a timer gap between PTY packets. The forwarder still
@@ -608,12 +611,20 @@ fn emit_pane_output(
     // it bounded while the PTY emits a burst; the raw output event remains
     // lossless and immediate.
     let key = (workspace_id, pane_id);
-    let now = Instant::now();
-    if output_activity_due(activity_at.get(&key).copied(), now) {
-        activity_at.insert(key, now);
-        let _ = handle.emit("pane-output-activity", serde_json::json!({
-            "workspaceId": workspace_id.to_string(), "paneId": label,
-        }));
+    let state = handle.state::<AppState>();
+    let is_teammate_pane = state
+        .workspaces
+        .read()
+        .get(&workspace_id)
+        .is_some_and(|workspace| workspace.teammate_pane_states.contains_key(&pane_id));
+    if is_teammate_pane {
+        let now = Instant::now();
+        if output_activity_due(activity_at.get(&key).copied(), now) {
+            activity_at.insert(key, now);
+            let _ = handle.emit("pane-output-activity", serde_json::json!({
+                "workspaceId": workspace_id.to_string(), "paneId": label,
+            }));
+        }
     }
     let _ = handle.emit(
         &format!("pty-output-{workspace_id}-{label}"),
