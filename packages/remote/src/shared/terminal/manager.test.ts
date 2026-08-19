@@ -701,7 +701,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		const events: unknown[] = [];
 		manager.onData(PANE, (bytes) => sent.push(bytes));
 		manager.onEvent(PANE, (event) => events.push(event));
-		fixture.kernel.isInlineTuiMode.mockReturnValue(false);
+		fixture.kernel.isInlineTuiMode.mockReturnValue(true);
 		fixture.kernel.takePendingResponse.mockReturnValueOnce(new Uint8Array([0x52]));
 		fixture.kernel.takePendingEvents.mockReturnValueOnce([{ type: 'Bell' }]);
 		manager.feed(PANE, '\x1b[A');
@@ -728,13 +728,26 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		vi.useRealTimers();
 	});
 
+	it('does not delay shell escape markers when inline TUI is inactive', () => {
+		vi.useFakeTimers();
+		const { manager, fixture } = makeManager();
+		fixture.kernel.isInlineTuiMode.mockReturnValue(false);
+		const marker = new TextEncoder().encode('\x1b]133;C\x07');
+
+		manager.feed(PANE, marker);
+
+		expect(fixture.kernel.feed).toHaveBeenCalledWith(marker);
+		expect(fixture.pane.feedBuffer).toBeNull();
+		vi.useRealTimers();
+	});
+
 	it.each([
 		['Codex', ['\x1b[4A\x1b[2K', 'Thinking', '\x1b[1B', 'Answer\x1b[?25h']],
 		['Claude', ['\x1b[?25l', '\x1b[3A\x1b[2K', '\x1b[1B\x1b[2KDone', '\x1b[?25h']],
 	])('commits a fragmented %s inline frame atomically on the trailing edge', (_name, fragments) => {
 		vi.useFakeTimers();
 		const { manager, fixture } = makeManager();
-		fixture.kernel.isInlineTuiMode.mockReturnValue(false);
+		fixture.kernel.isInlineTuiMode.mockReturnValue(true);
 		for (const fragment of fragments) {
 			manager.feed(PANE, fragment);
 			vi.advanceTimersByTime(1);
