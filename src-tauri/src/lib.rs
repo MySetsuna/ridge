@@ -607,6 +607,14 @@ fn emit_pane_output(
     data: String,
 ) {
     let label = pane_id.to_string();
+    // Terminal bytes are the foreground lane. Emit them before the optional
+    // Agent control-plane hint so status refresh listeners cannot get ahead
+    // of the visible shell/Codex output.
+    let _ = handle.emit(
+        &format!("pty-output-{workspace_id}-{label}"),
+        serde_json::json!({ "data": data }),
+    );
+
     // Activity is a low-priority control-plane hint, not terminal data. Keep
     // it bounded while the PTY emits a burst; the raw output event remains
     // lossless and immediate.
@@ -626,10 +634,6 @@ fn emit_pane_output(
             }));
         }
     }
-    let _ = handle.emit(
-        &format!("pty-output-{workspace_id}-{label}"),
-        serde_json::json!({ "data": data }),
-    );
 }
 
 fn flush_pane_output(

@@ -703,8 +703,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		manager.detach(PANE);
 	});
 
-	it('preserves inline-TUI feed order, drains replies/events, and flushes deferred bytes', () => {
-		vi.useFakeTimers();
+	it('feeds inline-TUI fragments immediately and drains replies/events', () => {
 		const { manager, fixture } = makeManager();
 		const sent: Uint8Array[] = [];
 		const events: unknown[] = [];
@@ -714,13 +713,9 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		fixture.kernel.takePendingResponse.mockReturnValueOnce(new Uint8Array([0x52]));
 		fixture.kernel.takePendingEvents.mockReturnValueOnce([{ type: 'Bell' }]);
 		manager.feed(PANE, '\x1b[A');
-		expect(fixture.kernel.feed).not.toHaveBeenCalled();
-
 		manager.feed(PANE, '\x1b[B');
-		expect(fixture.pane.feedBuffer).toEqual(new TextEncoder().encode('\x1b[A'));
-		expect(fixture.pane.feedBufferChunks).toEqual([new TextEncoder().encode('\x1b[B')]);
-		vi.advanceTimersByTime(8);
-		expect(fixture.kernel.feed).toHaveBeenCalledWith(new TextEncoder().encode('\x1b[A\x1b[B'));
+		expect(fixture.kernel.feed).toHaveBeenNthCalledWith(1, new TextEncoder().encode('\x1b[A'));
+		expect(fixture.kernel.feed).toHaveBeenNthCalledWith(2, new TextEncoder().encode('\x1b[B'));
 		expect(sent).toEqual([new Uint8Array([0x52])]);
 		expect(events).toEqual([{ type: 'Bell' }]);
 		manager.feed(PANE, 'echo');
@@ -734,7 +729,6 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		manager.flushPaneFeed(PANE, MAX_PANE_FEED_FLUSH_BUDGET_MS);
 		expect(fixture.pane.feedDeferredBytes).toBe(0);
 		manager.clearPendingFeed(PANE);
-		vi.useRealTimers();
 	});
 
 	it('does not delay shell escape markers when inline TUI is inactive', () => {
@@ -753,22 +747,17 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 	it.each([
 		['Codex', ['\x1b[4A\x1b[2K', 'Thinking', '\x1b[1B', 'Answer\x1b[?25h']],
 		['Claude', ['\x1b[?25l', '\x1b[3A\x1b[2K', '\x1b[1B\x1b[2KDone', '\x1b[?25h']],
-	])('commits a fragmented %s inline frame atomically on the trailing edge', (_name, fragments) => {
-		vi.useFakeTimers();
+	])('feeds fragmented %s inline frames without a timer gap', (_name, fragments) => {
 		const { manager, fixture } = makeManager();
 		fixture.kernel.isInlineTuiMode.mockReturnValue(true);
 		for (const fragment of fragments) {
 			manager.feed(PANE, fragment);
-			vi.advanceTimersByTime(1);
-			expect(fixture.kernel.feed).not.toHaveBeenCalled();
 		}
-		vi.advanceTimersByTime(4);
-		expect(fixture.kernel.feed).toHaveBeenCalledTimes(1);
-		expect(fixture.kernel.feed).toHaveBeenCalledWith(
-			new TextEncoder().encode(fragments.join('')),
-		);
+		expect(fixture.kernel.feed).toHaveBeenCalledTimes(fragments.length);
+		for (const [index, fragment] of fragments.entries()) {
+			expect(fixture.kernel.feed).toHaveBeenNthCalledWith(index + 1, new TextEncoder().encode(fragment));
+		}
 		expect(fixture.handle.render).not.toHaveBeenCalled();
-		vi.useRealTimers();
 	});
 
 	it('flushes an inline buffer before a large escape packet and clears all pending bytes', () => {
@@ -810,24 +799,18 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		fixture.kernel.isInlineTuiMode.mockReturnValue(true);
 		manager.feed(PANE, new Uint8Array([0x1b, 0x41]));
 		manager.feed(PANE, new Uint8Array([0x1b, 0x42]));
-		expect(fixture.pane.feedBuffer).toEqual(new Uint8Array([0x1b, 0x41]));
-		expect(fixture.pane.feedBufferChunks).toEqual([new Uint8Array([0x1b, 0x42])]);
+		expect(fixture.kernel.feed).toHaveBeenNthCalledWith(2, new Uint8Array([0x1b, 0x41]));
+		expect(fixture.kernel.feed).toHaveBeenNthCalledWith(3, new Uint8Array([0x1b, 0x42]));
 		manager.feed(PANE, 'echo');
-		expect(fixture.pane.feedBufferChunks).toEqual([
-			new Uint8Array([0x1b, 0x42]),
-			new TextEncoder().encode('echo'),
-		]);
-		(manager as any)._flushFeedBuffer(fixture.pane);
-		expect(fixture.kernel.feed.mock.calls.at(-1)?.[0]).toEqual(new TextEncoder().encode('\x1bA\x1bBecho'));
+		expect(fixture.kernel.feed).toHaveBeenLastCalledWith(new TextEncoder().encode('echo'));
 
 		fixture.kernel.isInlineTuiMode.mockReturnValue(false);
 		fixture.pane.feedBuffer = new Uint8Array([9]);
 		fixture.pane.feedBufferBytes = 0;
 		manager.feed(PANE, new Uint8Array([10]));
-		expect(fixture.pane.feedBuffer).toEqual(new Uint8Array([9]));
-		expect(fixture.pane.feedBufferChunks).toEqual([new Uint8Array([10])]);
-		(manager as any)._flushFeedBuffer(fixture.pane);
-		expect(fixture.kernel.feed.mock.calls.at(-1)?.[0]).toEqual(new Uint8Array([9, 10]));
+		expect(fixture.pane.feedBuffer).toBeNull();
+		expect(fixture.kernel.feed.mock.calls.at(-2)?.[0]).toEqual(new Uint8Array([9]));
+		expect(fixture.kernel.feed.mock.calls.at(-1)?.[0]).toEqual(new Uint8Array([10]));
 
 		const clock = vi.spyOn(performance, 'now');
 		clock.mockReturnValueOnce(0).mockReturnValue(10);
