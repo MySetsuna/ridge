@@ -549,10 +549,9 @@ pub fn procedural_box(
 /// rasterized advance and overflowing onto the next glyph.
 ///
 /// `allow_upscale = true` lets a glyph smaller than its box grow to
-/// fill it (emoji into the near-square 2-cell box); the atlas is
-/// supersampled (`ATLAS_SUPERSAMPLE`) so a modest upscale stays crisp.
-/// `false` clamps `s <= 1.0` (shrink-only), which leaves a gap around
-/// an under-sized glyph but never blurs.
+/// fill it (emoji into the near-square 2-cell box). `false` clamps
+/// `s <= 1.0` (shrink-only), which leaves a gap around an under-sized
+/// glyph but never blurs.
 pub fn fit_glyph_box(
     px_w: f32,
     px_h: f32,

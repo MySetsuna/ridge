@@ -222,9 +222,12 @@ impl JsTerminal {
             .deltas
             .iter()
             .any(|d| matches!(d, crate::term::delta::GridDelta::ScrollbackClear));
-        self.inner
+        let applied = self.inner
             .apply_frame(&frame)
             .map_err(|v| JsValue::from_str(&format!("protocol version {v} not supported")))?;
+        if !applied {
+            return Ok(());
+        }
         let evictions_after = self.inner.scrollback_eviction_count();
         if has_reset || has_scrollback_clear || evictions_after != evictions_before {
             self.selection.clear();

@@ -2563,29 +2563,30 @@ fn set_pane_delta_mode_inner(
     }
 
     if enabled {
-        // Build the full reframe BEFORE flipping the gate so a racing
-        // PtyOutput chunk can't slip past with the snapshot already
-        // cleared but the flag still off.
-        let frame = {
-            let mut p = parser.lock();
-            p.force_full_reframe();
-            // feed_and_diff(b"") doesn't consume bytes but does run the
-            // diff, producing the ScreenSwitch + Cursor + Cells reframe
-            // against the now-empty snapshot.
-            p.feed_and_diff(b"")
-        };
-        // DSR/DA replies from the kernel during reframe (rare; usually
-        // empty) still need to flow back to the PTY for symmetry.
-        let response = {
-            let mut p = parser.lock();
-            p.take_pending_response()
+        // Linearize the mode transition with the reader's parser feed. The
+        // flag, full reframe, response drain, and first frame delivery all
+        // happen while the parser lock is held; a reader can therefore see
+        // only the old raw mode or the fully established delta mode.
+        let mut p = parser.lock();
+        delta_mode_flag.store(true, Ordering::Release);
+        p.force_full_reframe();
+        // feed_and_diff(b"") doesn't consume bytes but does run the diff,
+        // producing the ScreenSwitch + Cursor + Cells reframe against the
+        // now-empty snapshot.
+        let frame = p.feed_and_diff(b"");
+        let response = p.take_pending_response();
+        let bytes = match encode_frame(&frame) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                delta_mode_flag.store(false, Ordering::Release);
+                return Err(format!("delta encode failed: {error}"));
+            }
         };
         if !response.is_empty() {
             let mut w = writer.lock();
             let _ = w.write_all(&response);
             let _ = w.flush();
         }
-        let bytes = encode_frame(&frame).map_err(|e| format!("delta encode failed: {e}"))?;
         // P4.2 — prefer the Tauri Channel; fall back to app.emit when no
         // channel is registered yet (in particular: tests, or a frontend
         // that opted into rust mode before its ptyBridge registered).
@@ -2595,23 +2596,21 @@ fn set_pane_delta_mode_inner(
             let label = pane_id.to_string();
             let _ = app.emit(&format!("pty-delta-{workspace_id}-{label}"), bytes);
         }
-        // Flip the gate AFTER the reframe goes out — main-loop sees
-        // it on the next chunk.
-        delta_mode_flag.store(true, Ordering::Release);
     } else {
         // Drain any in-flight pending_response so the PTY writer
         // doesn't lose the queue when the rust path stops draining.
         // The text path doesn't run the parser, so anything still
         // sitting in pending_response would be silently dropped.
-        let response = {
-            let mut p = parser.lock();
-            p.take_pending_response()
-        };
+        let mut p = parser.lock();
+        let response = p.take_pending_response();
         if !response.is_empty() {
             let mut w = writer.lock();
             let _ = w.write_all(&response);
             let _ = w.flush();
         }
+        // Keep the parser lock until the gate changes. A reader that starts
+        // after this point takes the legacy raw path; a reader already inside
+        // the parser remains represented by its delta frame.
         delta_mode_flag.store(false, Ordering::Release);
     }
 

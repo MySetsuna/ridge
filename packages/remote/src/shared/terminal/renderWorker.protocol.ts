@@ -25,7 +25,7 @@
  * 3. Errors. The worker reports failures via `error` responses so the
  *    main thread can show diagnostics. The R5 self-heal path (force
  *    reframe on decode error) lives on the main thread for now —
- *    `ptyBridge.ts` already owns it via `set_pane_delta_mode(false)`.
+ *    `ptyBridge.ts` already owns it via `set_pane_delta_mode(true)`.
  *
  * 4. No transferControlToOffscreen yet. That's P4.6. The protocol has
  *    a `bindCanvas` request slot reserved but the worker currently

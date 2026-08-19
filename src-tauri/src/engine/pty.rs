@@ -24,6 +24,14 @@ fn flush_pty_tail(osc_carryover: &mut OscSignalCarryover, utf8_pending: &mut Vec
     tail
 }
 
+fn merge_delta_frames(
+    pending: &mut ridge_term::term::delta::DeltaFrame,
+    next: ridge_term::term::delta::DeltaFrame,
+) {
+    pending.deltas.extend(next.deltas);
+    pending.pane_seq = next.pane_seq;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,6 +106,21 @@ mod tests {
         }
         assert_eq!(received, b"firstsecond");
         drop(sink);
+    }
+
+    #[test]
+    fn merged_delta_frames_keep_order_and_latest_sequence() {
+        use ridge_term::term::delta::{DeltaFrame, GridDelta};
+
+        let mut pending = DeltaFrame::new(4, vec![GridDelta::Bell]);
+        merge_delta_frames(
+            &mut pending,
+            DeltaFrame::new(9, vec![GridDelta::ScrollbackClear]),
+        );
+
+        assert_eq!(pending.pane_seq, 9);
+        assert!(matches!(pending.deltas[0], GridDelta::Bell));
+        assert!(matches!(pending.deltas[1], GridDelta::ScrollbackClear));
     }
 }
 
@@ -214,10 +237,13 @@ struct PtyReaderThread {
     rt: tokio::runtime::Handle,
     buf: [u8; 8192],
     utf8_pending: Vec<u8>,
-    carryover: String,
     osc_carryover: OscSignalCarryover,
     silence_deadline: Arc<AtomicI64>,
     native_ref_info: Option<(String, usize)>,
+    native_parser: Option<Arc<Mutex<PaneParser>>>,
+    native_delta_mode: Arc<AtomicBool>,
+    native_writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    pending_delta: Option<(ridge_term::term::delta::DeltaFrame, String)>,
     my_pty_generation: u64,
 }
 
@@ -295,22 +321,100 @@ impl PtyReaderThread {
     }
 
     fn send_output(&mut self, data: String) -> bool {
-        let payload = if self.carryover.is_empty() {
-            data
-        } else {
-            let mut combined = std::mem::take(&mut self.carryover);
-            combined.push_str(&data);
-            combined
-        };
-        match self.state.event_tx.try_send(GlobalEvent::PtyOutput {
+        let payload = data;
+        // Keep the Rust-side terminal state warm even while the frontend is
+        // still on the raw bootstrap path. This makes the later delta switch
+        // a lossless handoff instead of a blank reframe.
+        let (frame, clears_scrollback, emit_delta) = self.native_parser.as_ref().map_or(
+            (None, false, false),
+            |parser| {
+                let mut parser = parser.lock();
+                // Read the mode only after taking the parser lock. The mode
+                // transition uses the same lock while it emits the reframe,
+                // so a reader cannot pair a pre-transition flag with a
+                // post-transition parser snapshot.
+                let emit_delta = self.native_delta_mode.load(Ordering::Acquire);
+                let frame = parser.feed_and_diff(payload.as_bytes());
+                let clears_scrollback = frame.deltas.iter().any(|delta| {
+                    matches!(
+                        delta,
+                        ridge_term::term::delta::GridDelta::ScrollbackClear
+                    )
+                });
+                let response = parser.take_pending_response();
+                if !response.is_empty() {
+                    let mut writer = self.native_writer.lock();
+                    let _ = writer.write_all(&response);
+                    let _ = writer.flush();
+                }
+                (Some(frame), clears_scrollback, emit_delta)
+            },
+        );
+        if clears_scrollback {
+            self.state
+                .clear_pty_scrollback(self.workspace_id, self.pane_id);
+        }
+        if emit_delta {
+            let Some(frame) = frame else { return false };
+            return self.queue_delta_output(payload, frame);
+        }
+        if self.pending_delta.is_some() && !self.flush_pending_delta(true) {
+            return false;
+        }
+        // The native parser has already consumed `payload`; blocking instead
+        // of retaining/replaying a string avoids parsing the same bytes twice
+        // when the bounded forwarder is full.
+        self.state.event_tx.blocking_send(GlobalEvent::PtyOutput {
             workspace_id: self.workspace_id,
             pane_id: self.pane_id,
             data: payload,
-        }) {
+        }).is_ok()
+    }
+
+    /// Keep parsing independent from the UI/event-forwarder queue. When that
+    /// queue is full, successive frames are merged in parser order and only
+    /// the final sequence number is retained. `GridDelta` mutations are
+    /// ordered and therefore concatenating them is equivalent to applying
+    /// each intermediate frame; the PTY reader never waits for WebView2.
+    fn queue_delta_output(
+        &mut self,
+        data: String,
+        frame: ridge_term::term::delta::DeltaFrame,
+    ) -> bool {
+        if let Some((pending, pending_data)) = &mut self.pending_delta {
+            merge_delta_frames(pending, frame);
+            pending_data.push_str(&data);
+        } else {
+            self.pending_delta = Some((frame, data));
+        }
+        self.flush_pending_delta(false)
+    }
+
+    fn flush_pending_delta(&mut self, blocking: bool) -> bool {
+        let Some((frame, data)) = self.pending_delta.take() else {
+            return true;
+        };
+        let encoded = match ridge_term::term::delta::encode_frame(&frame) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                eprintln!("[ridge] native PTY delta encode failed: {error}");
+                return false;
+            }
+        };
+        let event = GlobalEvent::PtyDeltaOutput {
+            workspace_id: self.workspace_id,
+            pane_id: self.pane_id,
+            data,
+            frame: encoded,
+        };
+        if blocking {
+            return self.state.event_tx.blocking_send(event).is_ok();
+        }
+        match self.state.event_tx.try_send(event) {
             Ok(()) => true,
             Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                if let GlobalEvent::PtyOutput { data, .. } = event {
-                    self.carryover = data;
+                if let GlobalEvent::PtyDeltaOutput { data, .. } = event {
+                    self.pending_delta = Some((frame, data));
                 }
                 true
             }
@@ -325,13 +429,9 @@ impl PtyReaderThread {
         let event_tx = self.state.event_tx.clone();
         let workspace_id = self.workspace_id;
         let pane_id = self.pane_id;
-        let _ = self.rt.block_on(async move {
-            let _ = event_tx
-                .send(GlobalEvent::PanePromptDetected {
-                    workspace_id,
-                    pane_id,
-                })
-                .await;
+        let _ = event_tx.try_send(GlobalEvent::PanePromptDetected {
+            workspace_id,
+            pane_id,
         });
     }
 
@@ -342,14 +442,10 @@ impl PtyReaderThread {
         let event_tx = self.state.event_tx.clone();
         let workspace_id = self.workspace_id;
         let pane_id = self.pane_id;
-        let _ = self.rt.block_on(async move {
-            let _ = event_tx
-                .send(GlobalEvent::PaneTitleChanged {
-                    workspace_id,
-                    pane_id,
-                    title,
-                })
-                .await;
+        let _ = event_tx.try_send(GlobalEvent::PaneTitleChanged {
+            workspace_id,
+            pane_id,
+            title,
         });
     }
 
@@ -364,14 +460,10 @@ impl PtyReaderThread {
         let event_tx = self.state.event_tx.clone();
         let workspace_id = self.workspace_id;
         let pane_id = self.pane_id;
-        let _ = self.rt.block_on(async move {
-            let _ = event_tx
-                .send(GlobalEvent::PaneCwdChanged {
-                    workspace_id,
-                    pane_id,
-                    cwd: normalized,
-                })
-                .await;
+        let _ = event_tx.try_send(GlobalEvent::PaneCwdChanged {
+            workspace_id,
+            pane_id,
+            cwd: normalized,
         });
     }
 
@@ -397,18 +489,9 @@ impl PtyReaderThread {
         let tail_for_cwd = tail.clone();
         self.state
             .append_pty_scrollback(self.workspace_id, self.pane_id, &tail);
-        let event_tx = self.state.event_tx.clone();
-        let workspace_id = self.workspace_id;
-        let pane_id = self.pane_id;
-        let _ = self.rt.block_on(async move {
-            let _ = event_tx
-                .send(GlobalEvent::PtyOutput {
-                    workspace_id,
-                    pane_id,
-                    data: tail,
-                })
-                .await;
-        });
+        if !self.send_output(tail) {
+            return;
+        }
         if let Some(cwd) = cwd::parse_cwd_from_output(&tail_for_cwd) {
             self.update_tail_cwd(cwd);
         }
@@ -434,7 +517,8 @@ impl PtyReaderThread {
         });
     }
 
-    fn finish(&self) {
+    fn finish(&mut self) {
+        let _ = self.flush_pending_delta(true);
         if let Some((socket, gid)) = &self.native_ref_info {
             finish_native_pane(&self.state, self.workspace_id, self.pane_id, socket, *gid);
         } else {
@@ -533,22 +617,38 @@ fn reader_snapshot(
     state: &AppState,
     workspace_id: Uuid,
     pane_id: Uuid,
-) -> (Arc<AtomicI64>, Option<(String, usize)>, u64) {
+) -> (
+    Arc<AtomicI64>,
+    Option<(String, usize)>,
+    u64,
+    Option<Arc<Mutex<PaneParser>>>,
+    Arc<AtomicBool>,
+    Arc<Mutex<Box<dyn Write + Send>>>,
+) {
     let map = state.workspaces.read();
-    let silence_deadline = map
+    let Some(handle) = map
         .get(&workspace_id)
         .and_then(|ws| ws.terminals.get(&pane_id))
-        .map(|handle| handle.resize_silence_deadline.clone())
-        .unwrap_or_else(|| Arc::new(AtomicI64::new(0)));
-    let native_ref = map
-        .get(&workspace_id)
-        .and_then(|ws| ws.terminals.get(&pane_id))
-        .and_then(|handle| handle.native_ref.clone());
-    let generation = map
-        .get(&workspace_id)
-        .and_then(|ws| ws.pty_generation.get(&pane_id).copied())
-        .unwrap_or(0);
-    (silence_deadline, native_ref, generation)
+    else {
+        return (
+            Arc::new(AtomicI64::new(0)),
+            None,
+            0,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>)),
+        );
+    };
+    (
+        handle.resize_silence_deadline.clone(),
+        handle.native_ref.clone(),
+        map.get(&workspace_id)
+            .and_then(|ws| ws.pty_generation.get(&pane_id).copied())
+            .unwrap_or(0),
+        Some(handle.parser.clone()),
+        handle.delta_mode.clone(),
+        handle.writer.clone(),
+    )
 }
 
 pub fn spawn_pty_reader(
@@ -558,7 +658,14 @@ pub fn spawn_pty_reader(
     reader: Box<dyn Read + Send>,
 ) {
     let handle = tokio::runtime::Handle::try_current();
-    let (silence_deadline, native_ref_info, my_pty_generation) =
+    let (
+        silence_deadline,
+        native_ref_info,
+        my_pty_generation,
+        native_parser,
+        native_delta_mode,
+        native_writer,
+    ) =
         reader_snapshot(&state, workspace_id, pane_id);
     let _ = std::thread::Builder::new()
         .name(format!("pty-reader-{pane_id}"))
@@ -575,10 +682,13 @@ pub fn spawn_pty_reader(
                 rt,
                 buf: [0u8; 8192],
                 utf8_pending: Vec::new(),
-                carryover: String::new(),
                 osc_carryover: OscSignalCarryover::default(),
                 silence_deadline,
                 native_ref_info,
+                native_parser,
+                native_delta_mode,
+                native_writer,
+                pending_delta: None,
                 my_pty_generation,
             };
             reader.run();
