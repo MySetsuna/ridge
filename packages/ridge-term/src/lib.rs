@@ -467,6 +467,15 @@ impl JsTerminal {
         self.search.clear();
     }
 
+    /// Explicit UI clear: drop old output and move the current shell prompt
+    /// row to the top. The native parser uses the same primitive.
+    #[wasm_bindgen(js_name = clearTerminalPreservingPrompt)]
+    pub fn clear_terminal_preserving_prompt(&mut self) {
+        self.inner.clear_terminal_preserving_prompt();
+        self.selection.clear();
+        self.search.clear();
+    }
+
     /// Whether the user has paged into history and PTY output is
     /// currently being held back from auto-snapping the viewport.
     /// JS surfaces this as a "follow tail" indicator. Cleared by

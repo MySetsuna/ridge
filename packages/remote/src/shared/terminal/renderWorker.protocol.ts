@@ -96,6 +96,12 @@ export type RenderWorkerRequest =
 			frameId?: number;
 	  }
 	| {
+			type: 'clearTerminalPreservingPrompt';
+			paneId: string;
+			/** Monotonic per-pane render generation; stale clears are ignored. */
+			frameId?: number;
+	  }
+	| {
 			type: 'resize';
 			paneId: string;
 			rows: number;
@@ -159,6 +165,7 @@ export type RenderWorkerResponse =
 				| 'pane_already_initialized'
 				| 'apply_delta_failed'
 				| 'feed_failed'
+				| 'clear_failed'
 				| 'resize_failed';
 			message: string;
 	  };
@@ -178,6 +185,7 @@ export function isRenderWorkerRequest(value: unknown): value is RenderWorkerRequ
 		t === 'applyDelta' ||
 		t === 'releaseCanvas' ||
 		t === 'feed' ||
+		t === 'clearTerminalPreservingPrompt' ||
 		t === 'resize' ||
 		t === 'destroy' ||
 		t === 'ping' ||

@@ -2049,16 +2049,13 @@ function onContextMenu(e: MouseEvent) {
 		{ id: 'term-sep1', divider: true },
 		{ id: 'term-select-all', label: tr('workspace.ctxSelectAll'), action: () => manager.selectAll(paneId) },
 		{ id: 'term-clear', label: tr('workspace.ctxClear'), action: () => {
-			// Cut the local stream first: release the wasm scrollback ring and
-			// clear the visible grid before the asynchronous native command
-			// returns. The native path below remains authoritative for PTY/raw
-			// replay state; this local step prevents a slow delta from retaining
-			// old rows or leaving stale pixels visible during the round trip.
-			manager.clearScrollback(paneId);
-			manager.feed(paneId, '\x1b[H\x1b[2J');
+			// Clear locally first. The shared terminal primitive drops old rows
+			// and moves the current shell prompt to row zero.
+			manager.clearTerminalPreservingPrompt(paneId);
 			// Native parser is authoritative in desktop delta mode: one command
-			// clears its grid, emits ScrollbackClear to the wasm mirror, and
-			// removes backend raw replay bytes. Never write ANSI into PTY input.
+			// clears old rows, moves the prompt to row zero, emits ScrollbackClear
+			// to the wasm mirror, and removes backend raw replay bytes. Never write
+			// ANSI into PTY input.
 			if (isTauri()) {
 				void invoke('clear_pane_terminal', { workspaceId, paneId }).catch(() => {
 					// Teardown race: local clear above remains visible even if the

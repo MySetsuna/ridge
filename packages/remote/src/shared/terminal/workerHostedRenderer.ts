@@ -215,6 +215,14 @@ export class WorkerHostedRenderer {
 		);
 	}
 
+	clearTerminalPreservingPrompt(paneId: string, frameId?: number): Promise<RenderWorkerResponse> {
+		return this.send({
+			type: 'clearTerminalPreservingPrompt',
+			paneId,
+			...(frameId === undefined ? {} : { frameId }),
+		});
+	}
+
 	resize(
 		paneId: string,
 		rows: number,

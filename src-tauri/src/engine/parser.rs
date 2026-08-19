@@ -214,6 +214,13 @@ impl PaneParser {
         self.diff_into_frame()
     }
 
+    /// Explicit user clear for a normal shell: drop scrollback and old rows,
+    /// then move the current prompt row to the top.
+    pub fn clear_terminal_preserving_prompt(&mut self) -> DeltaFrame {
+        self.terminal.clear_terminal_preserving_prompt();
+        self.diff_into_frame()
+    }
+
     /// Visible row 0 as a string (for tests / diagnostics). Trims trailing blanks.
     pub fn viewport_line0_text(&self) -> String {
         let Some(row) = self.terminal.row_at_abs(0) else {

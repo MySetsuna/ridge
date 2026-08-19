@@ -3633,7 +3633,19 @@ export class TerminalManager {
 		this.wake();
 	}
 
-	private _releaseScrollback(entry: PaneEntry, dropPendingFeed = false): void {
+	/** Explicit UI clear: remove old rows and move shell prompt to row zero. */
+	clearTerminalPreservingPrompt(paneId: string): void {
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		this._releaseScrollback(entry, true, !entry.kernel.isAltScreen());
+		this.wake();
+	}
+
+	private _releaseScrollback(
+		entry: PaneEntry,
+		dropPendingFeed = false,
+		preservePrompt = false,
+	): void {
 		if (dropPendingFeed) {
 			dropPendingFeedBuffers(entry);
 		} else {
@@ -3643,16 +3655,22 @@ export class TerminalManager {
 			this._flushFeedBuffer(entry);
 			this.wake();
 		}
-		entry.kernel.clearScrollback();
+		if (preservePrompt) entry.kernel.clearTerminalPreservingPrompt();
+		else entry.kernel.clearScrollback();
 		this._clearLinkUnderline(entry);
 		// Clear the JS-side hyperlink index too. It owns copied visible strings
 		// and otherwise retains the pre-clear output until a later Ctrl/hover
 		// hit-test happens to rebuild it.
 		entry.linkSpans.clear();
-		// Worker mode owns a second semantic kernel. Feed ED 3 only to that
-		// mirror so both allocations are released without writing ANSI to PTY.
+		// Worker mode owns a second semantic kernel. Mirror the same explicit
+		// clear there; ordinary memory reclaim only needs ED 3.
 		if (this.isWorkerPaneReady(entry.paneId)) {
-			this._mirrorWorkerFeed(entry, new TextEncoder().encode('\x1b[3J'));
+			if (preservePrompt) {
+				entry.renderFrameId += 1;
+				workerRendererBridge.clearTerminalPreservingPrompt(entry.paneId, entry.renderFrameId);
+			} else {
+				this._mirrorWorkerFeed(entry, new TextEncoder().encode('\x1b[3J'));
+			}
 		}
 		entry.lastScrollOffset = -1;
 		entry.lastScrollTotal = -1;

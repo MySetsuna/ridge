@@ -36,6 +36,7 @@ import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
  *  wasm module (which is unavailable in vitest's node env). */
 export interface KernelHandle {
 	feed(bytes: Uint8Array): void;
+	clearTerminalPreservingPrompt(): void;
 	applyDeltaFrame(bytes: Uint8Array): void;
 	resize(rows: number, cols: number): void;
 	free(): void;
@@ -150,7 +151,7 @@ function frameGuard(
 	pane: PaneWorkerState,
 	paneId: string,
 	frameId: number | undefined,
-	code: Extract<ErrorCode, 'apply_delta_failed' | 'feed_failed'>,
+	code: Extract<ErrorCode, 'apply_delta_failed' | 'feed_failed' | 'clear_failed'>,
 ): RenderWorkerResponse | null {
 	if (frameId === undefined) return null;
 	if (!Number.isSafeInteger(frameId) || frameId <= 0) {
@@ -298,6 +299,28 @@ function handleFeed(
 	return { type: 'ready', paneId: request.paneId, backend: pane.backend };
 }
 
+function handleClearTerminalPreservingPrompt(
+	state: WorkerState,
+	request: RequestOf<'clearTerminalPreservingPrompt'>,
+): RenderWorkerResponse {
+	const pane = state.get(request.paneId);
+	if (!pane) return paneMissing(request.paneId, 'clearTerminalPreservingPrompt');
+	const guard = frameGuard(pane, request.paneId, request.frameId, 'clear_failed');
+	if (guard) return guard;
+	try {
+		pane.kernel?.clearTerminalPreservingPrompt();
+		pane.renderer?.render();
+	} catch (error) {
+		return workerError(
+			request.paneId,
+			'clear_failed',
+			'clearTerminalPreservingPrompt failed: ' + (error instanceof Error ? error.message : String(error)),
+		);
+	}
+	if (request.frameId !== undefined) pane.lastAppliedFrameId = request.frameId;
+	return { type: 'ready', paneId: request.paneId, backend: pane.backend };
+}
+
 function handleResize(
 	state: WorkerState,
 	request: RequestOf<'resize'>,
@@ -394,6 +417,8 @@ export function handleRequest(
 		}
 		case 'feed':
 			return handleFeed(state, request);
+		case 'clearTerminalPreservingPrompt':
+			return handleClearTerminalPreservingPrompt(state, request);
 		case 'resize':
 			return handleResize(state, request);
 		case 'destroy':
