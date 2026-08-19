@@ -64,12 +64,10 @@ import {
 	type BrowserHeapSnapshot,
 } from './terminalMemoryPolicy';
 import {
-	MAX_FEED_BUFFER_BYTES,
 	dropPendingFeedBuffers,
 	enqueueDeferredFeed,
 	hasDeferredFeed,
 	prependDeferredFeed,
-	shouldFlushFeedBuffer,
 	takeDeferredFeed,
 } from './terminalFeedPolicy';
 import {
@@ -2906,38 +2904,14 @@ export class TerminalManager {
 	}
 
 	private _feedInline(entry: PaneEntry, bytes: Uint8Array): void {
-		const burstOpen = entry.feedBuffer !== null || entry.feedFlushTimer !== null;
-		if (!bytes.includes(0x1b) && !burstOpen) {
+		// VTE parsing is stateful across calls, so CSI/OSC fragments do not
+		// need a timer-backed buffer. Feed immediately; the manager's single
+		// RAF wake still coalesces the paint, without adding an 8 ms input/output
+		// cadence to inline TUIs such as Codex.
+		if (entry.feedBuffer !== null || entry.feedBufferChunks.length > 0) {
 			this._flushFeedBuffer(entry);
-			this._feedNow(entry, bytes);
-			return;
 		}
-		if (bytes.byteLength >= MAX_FEED_BUFFER_BYTES) {
-			if (entry.feedBuffer !== null || entry.feedBufferChunks.length > 0) this._flushFeedBuffer(entry);
-			this._feedNow(entry, bytes);
-			return;
-		}
-		if (entry.feedBuffer !== null && entry.feedBufferBytes === 0) {
-			entry.feedBufferBytes = entry.feedBuffer.byteLength +
-				entry.feedBufferChunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-		}
-		if (entry.feedBuffer === null) entry.feedBuffer = bytes;
-		else entry.feedBufferChunks.push(bytes);
-		entry.feedBufferBytes += bytes.byteLength;
-		if (shouldFlushFeedBuffer(entry.feedBufferBytes)) {
-			this._flushFeedBuffer(entry);
-			return;
-		}
-		// Inline TUIs commonly split one logical frame across several ConPTY
-		// packets. Presenting packet one immediately exposes the erased/half-drawn
-		// frame. Hold one fixed 8 ms window: fragments commit together, while a
-		// continuous producer cannot postpone rendering indefinitely.
-		if (entry.feedFlushTimer === null) {
-			entry.feedFlushTimer = setTimeout(() => {
-				entry.feedFlushTimer = null;
-				this._flushFeedBuffer(entry);
-			}, 8);
-		}
+		this._feedNow(entry, bytes);
 	}
 
 	private _feedImmediate(entry: PaneEntry, bytes: Uint8Array): void {
@@ -2956,12 +2930,7 @@ export class TerminalManager {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
 		const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-		// Only a confirmed inline TUI may open the bounded burst. Shell prompt
-		// markers (OSC 133/633) also contain ESC, but must reach the kernel
-		// immediately; treating every ESC packet as a TUI frame adds visible
-		// latency after Ctrl+C and during prompt redraws.
-		const burstOpen = entry.feedBuffer !== null || entry.feedFlushTimer !== null;
-		if (this._isInlineTui(entry) || burstOpen) this._feedInline(entry, bytes);
+		if (this._isInlineTui(entry)) this._feedInline(entry, bytes);
 		else this._feedImmediate(entry, bytes);
 	}
 
@@ -3014,8 +2983,9 @@ export class TerminalManager {
 
 	/** §A.4 — feed bytes to the kernel synchronously, including PTY trace,
 	 *  reply / event drain, and rAF wake. Extracted from `feed()` so the
-	 *  inline-TUI coalescer can call it once per flush instead of once per
-	 *  PTY event. Always feeds — does NOT consult the inline-TUI gate.
+	 *  inline-TUI path can call it directly without consulting the gate.
+	 *  Always feeds — does NOT consult the inline-TUI gate; paint remains
+	 *  coalesced by the manager's RAF wake.
 	 *
 	 *  P2.1 (2026-05-20): the wasm `kernel.feed(bytes)` call is synchronous
 	 *  and runs the VTE state machine byte-by-byte; on a 200 KB compile

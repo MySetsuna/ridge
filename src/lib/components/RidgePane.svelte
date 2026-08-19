@@ -271,7 +271,9 @@ type PtyRuntimeIdentity = {
 
 const PTY_RUNTIME_SAMPLE_INTERVAL_MS = 1000;
 const PTY_RUNTIME_INPUT_SAMPLE_DEBOUNCE_MS = 120;
-const PTY_INPUT_COALESCE_MS = 4;
+// The queue already batches while an IPC write is in flight. A timer here
+// adds avoidable keystroke latency, especially inside Codex's inline TUI.
+const PTY_INPUT_COALESCE_MS = 0;
 const PTY_RUNTIME_PENDING_REFRESH_MS = 1000;
 const PTY_RUNTIME_INPUT_GUARD_MS = 750;
 let ptyRuntimeSampler: ReturnType<typeof setInterval> | null = null;
@@ -1347,8 +1349,7 @@ function onPtyData(bytes: Uint8Array) {
 	const key = `${workspaceId}:${paneId}`;
 	const accepted = tryEnqueuePaneInputImmediate(key, () => {
 		const queued = enqueuePtyInput(key, s, (data) => invoke('write_to_pty', { workspaceId, paneId, data }), {
-			// Four milliseconds stays below a frame while folding key-repeat and
-			// fast typing into fewer kernel requests.
+			// The write queue folds bytes while the previous IPC write is active.
 			coalesceWindowMs: PTY_INPUT_COALESCE_MS,
 			onError: (err) => reportRepeatedError('write_to_pty', err),
 		});
