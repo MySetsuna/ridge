@@ -581,15 +581,12 @@ pub fn run() {
 const COALESCE_MAX_BYTES: usize = 64 * 1024;
 const OUTPUT_ACTIVITY_INTERVAL: Duration = Duration::from_millis(50);
 
-fn coalesce_window_for(last_bytes: usize) -> u64 {
-    match last_bytes {
-        // Ctrl+C / PowerShell prompt redraws arrive as many tiny packets.
-        // Do not add an intentional batching delay to this interactive path;
-        // already-queued packets are still drained in the same turn.
-        0..=255 => 0,
-        256..=4095 => 2,
-        _ => 8,
-    }
+fn coalesce_window_for(_last_bytes: usize) -> u64 {
+    // Never insert a timer gap between PTY packets. The forwarder still
+    // drains packets already ready in the channel, while interactive output
+    // (notably repeated Ctrl+C) reaches the renderer without a periodic
+    // 2/8ms cadence.
+    0
 }
 
 type PendingOutput = HashMap<(uuid::Uuid, uuid::Uuid), String>;
@@ -844,6 +841,13 @@ async fn next_forward_tick(
     if pending.is_empty() {
         return event_rx.recv().await.map_or(ForwardTick::Closed, ForwardTick::Event);
     }
+    if coalesce_window_for(last_flush_bytes) == 0 {
+        return match event_rx.try_recv() {
+            Ok(event) => ForwardTick::Event(event),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => ForwardTick::Flush,
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => ForwardTick::Closed,
+        };
+    }
     match tokio::time::timeout(
         std::time::Duration::from_millis(coalesce_window_for(last_flush_bytes)),
         event_rx.recv(),
@@ -882,7 +886,8 @@ mod window_launch_tests {
     fn tiny_pty_bursts_use_a_bounded_coalesce_window() {
         assert_eq!(coalesce_window_for(0), 0);
         assert_eq!(coalesce_window_for(255), 0);
-        assert_eq!(coalesce_window_for(256), 2);
+        assert_eq!(coalesce_window_for(256), 0);
+        assert_eq!(coalesce_window_for(64 * 1024), 0);
     }
 
     #[test]

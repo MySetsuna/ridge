@@ -2,6 +2,7 @@ use parking_lot::Mutex;
 use portable_pty::MasterPty;
 use std::io::{Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::Arc;
@@ -70,6 +71,19 @@ mod tests {
     }
 
     #[test]
+    fn pane_cwd_matching_normalizes_existing_path_before_comparing() {
+        assert!(pane_cwd_matches(
+            Some(Path::new("C:/code/ridge")),
+            "C:/code/ridge"
+        ));
+        assert!(!pane_cwd_matches(
+            Some(Path::new("C:/code/ridge")),
+            "C:/code/other"
+        ));
+        assert!(!pane_cwd_matches(None, "C:/code/ridge"));
+    }
+
+    #[test]
     fn pty_input_sink_preserves_order_across_batched_writes() {
         let (tx, rx) = mpsc::channel();
         let writer: Box<dyn Write + Send> = Box::new(ChannelWriter(tx));
@@ -89,6 +103,12 @@ mod tests {
 
 fn normalize_cwd_str(raw: &str) -> String {
     ridge_core::commands::process::normalize_cwd(raw.to_string())
+}
+
+fn pane_cwd_matches(existing: Option<&Path>, normalized: &str) -> bool {
+    existing
+        .map(|path| normalize_cwd_str(&path.to_string_lossy()) == normalized)
+        .unwrap_or(false)
 }
 
 pub struct PtyHandle {
@@ -338,7 +358,9 @@ impl PtyReaderThread {
             return;
         };
         let normalized = normalize_cwd_str(&cwd.to_string_lossy());
-        self.update_pane_cwd(&normalized);
+        if !self.update_pane_cwd(&normalized) {
+            return;
+        }
         let event_tx = self.state.event_tx.clone();
         let workspace_id = self.workspace_id;
         let pane_id = self.pane_id;
@@ -353,13 +375,18 @@ impl PtyReaderThread {
         });
     }
 
-    fn update_pane_cwd(&self, cwd: &str) {
+    fn update_pane_cwd(&self, cwd: &str) -> bool {
         let mut map = self.state.workspaces.write();
         if let Some(ws) = map.get_mut(&self.workspace_id) {
             if let Some(pane) = ws.pane_tree.panes.get_mut(&self.pane_id) {
+                if pane_cwd_matches(pane.cwd.as_deref(), cwd) {
+                    return false;
+                }
                 pane.cwd = Some(std::path::PathBuf::from(cwd));
+                return true;
             }
         }
+        false
     }
 
     fn flush_tail(&mut self) {
@@ -389,7 +416,9 @@ impl PtyReaderThread {
 
     fn update_tail_cwd(&self, cwd: std::path::PathBuf) {
         let normalized = normalize_cwd_str(&cwd.to_string_lossy());
-        self.update_pane_cwd(&normalized);
+        if !self.update_pane_cwd(&normalized) {
+            return;
+        }
         crate::commands::ridge_file::schedule_auto_save(&self.state, self.workspace_id);
         let event_tx = self.state.event_tx.clone();
         let workspace_id = self.workspace_id;
