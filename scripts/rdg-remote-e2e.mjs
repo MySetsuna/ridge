@@ -13,7 +13,8 @@
  *   pnpm e2e:rdg-lan
  *   node scripts/rdg-remote-e2e.mjs [--port 9527] [--skip-build]
  *
- * 依赖：已构建 `target/debug/rdg.exe`（或 RIDGE_RDG 路径）、remote-dist、playwright chromium。
+ * 依赖：已构建 `target/debug/rdg.exe`（或 RIDGE_RDG 路径）、remote-dist、playwright chromium；
+ * 若受限环境无法下载 Playwright 浏览器，可设 RIDGE_E2E_CHROMIUM_EXECUTABLE 指向本机 Chromium/Chrome。
  * 不依赖 computer-use / desktop-control MCP（本环境无）；浏览器腿用 Playwright 替代。
  */
 
@@ -346,10 +347,12 @@ async function runBrowserMatrix(url, getTotp) {
   process.env.no_proxy = '*';
 
   const { chromium } = await import('@playwright/test');
+  const executablePath = process.env.RIDGE_E2E_CHROMIUM_EXECUTABLE?.trim() || undefined;
   // 勿设 proxy:{server:'direct://'}——Playwright 会当真代理连，反而 ERR_PROXY_CONNECTION_FAILED。
   // 仅用 Chromium --no-proxy-server 关掉系统/环境代理。
   const browser = await chromium.launch({
     headless: true,
+    executablePath,
     args: [
       '--ignore-certificate-errors',
       // This matrix is also the controlled clean-profile comparison for the
