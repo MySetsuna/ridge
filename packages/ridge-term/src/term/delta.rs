@@ -128,6 +128,17 @@ pub enum GridDelta {
     /// The frontend appends to its own scrollback ring; existing rows
     /// shift up via the renderer's existing scroll path.
     ScrollbackAppend { lines: Vec<DeltaLine> },
+    /// Move a rectangular vertical scroll region without retransmitting the
+    /// rows that merely changed position. `up = true` moves content toward
+    /// `top` and exposes blank rows at the bottom; `false` does the reverse.
+    /// Scrollback mutations travel separately in `ScrollbackAppend` so the
+    /// mirror never duplicates history while applying this viewport-only move.
+    Scroll {
+        top: u16,
+        bottom: u16,
+        count: u16,
+        up: bool,
+    },
     /// Producer physically dropped all saved lines. The mirror must release
     /// its ring as well; visible cells arrive as ordinary `Cells` deltas.
     ScrollbackClear,
@@ -170,9 +181,31 @@ pub struct DeltaFrame {
     /// IPC behaviour).
     pub pane_seq: u64,
     pub deltas: Vec<GridDelta>,
+    /// The native parser observed a cursor-rewind / erase repaint step while
+    /// producing this frame. The mirror still applies every mutation in FIFO
+    /// order, but may defer presenting this intermediate state for one short
+    /// compositor window so an inline TUI cannot flash its walk cursor.
+    pub requires_render_settle: bool,
+}
+
+/// Append two frames produced by the same pane in parser order.  The consumer
+/// only observes the final sequence number, but every semantic mutation stays
+/// ordered (notably scrollback and alternate-screen transitions).
+pub fn merge_ordered_frames(pending: &mut DeltaFrame, next: DeltaFrame) {
+    pending.deltas.extend(next.deltas);
+    pending.pane_seq = next.pane_seq;
+    pending.requires_render_settle |= next.requires_render_settle;
 }
 
 impl DeltaFrame {
+    // v6 (§scroll-delta): carries viewport-only `Scroll`, so normal shell
+    // output moves rows by identity instead of serializing a full viewport on
+    // every LF at the bottom margin.
+    // v5 (§frame-transaction): carries `requires_render_settle`, an
+    // authoritative native-parser hint for inline TUI repaint walks. The WASM
+    // mirror never sees raw CSI bytes, so inferring this on the frontend
+    // incorrectly classified Codex's visible-cursor inline renderer as a
+    // normal shell.
     // v4 (soft-wrap-delta): carry row `wrapped` metadata for live and
     // scrollback rows; otherwise the desktop delta mirror cannot distinguish
     // a visual soft wrap from a hard newline during copy/link hit-testing.
@@ -182,13 +215,14 @@ impl DeltaFrame {
     // grapheme clusters survive the native→wasm delta hop. Native parser
     // and wasm consumer compile from this same source and ship together,
     // so the version bump is a fail-fast guard against a skewed bundle.
-    pub const PROTOCOL_VERSION: u16 = 4;
+    pub const PROTOCOL_VERSION: u16 = 6;
 
     pub fn new(pane_seq: u64, deltas: Vec<GridDelta>) -> Self {
         Self {
             version: Self::PROTOCOL_VERSION,
             pane_seq,
             deltas,
+            requires_render_settle: false,
         }
     }
 }
@@ -282,6 +316,12 @@ mod tests {
                         cells: vec![DeltaCell::blank()],
                         wrapped: true,
                     }],
+                },
+                GridDelta::Scroll {
+                    top: 1,
+                    bottom: 22,
+                    count: 3,
+                    up: true,
                 },
                 GridDelta::ScrollbackClear,
                 GridDelta::ModeChange {

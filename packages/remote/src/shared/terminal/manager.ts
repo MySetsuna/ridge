@@ -77,6 +77,7 @@ import {
 } from './initialPaneFit';
 import { shouldWipeHostOnPaneRemount } from './hostRemountPolicy';
 import { shouldForwardPointerMotion, sgrReleaseButton } from './mouseForwardPolicy';
+import { SYNC_OUTPUT_TIMEOUT_MS, TUI_CURSOR_SETTLE_MS } from './renderTransaction';
 
 function isMacPlatform(): boolean {
 	return typeof navigator !== 'undefined'
@@ -258,6 +259,11 @@ export type KernelEvent =
 	| { type: 'CwdChanged'; value: string }
 	| { type: 'Bell' };
 
+interface QueuedDeltaFrame {
+	bytes: Uint8Array;
+	onError?: (error: unknown) => void;
+}
+
 interface PaneEntry {
 	paneId: string;
 	/** §A.8 — workspace this pane belongs to. Set at attach time so
@@ -346,6 +352,16 @@ interface PaneEntry {
 	deltaFrameId: number;
 	/** Shared monotonic generation for every worker-visible feed or delta frame. */
 	renderFrameId: number;
+	/** Native delta frames wait here until the next compositor turn. Keeping
+	 * their parse/apply work out of the Tauri Channel callback prevents a burst
+	 * from monopolising the input event loop. Head indexing avoids O(n) shifts. */
+	deltaQueue: QueuedDeltaFrame[];
+	deltaQueueHead: number;
+	deltaQueuedBytes: number;
+	/** Short inline-TUI presentation transaction. Grid cells keep painting;
+	 * only a transient cursor-rewind walk is hidden until it becomes quiet. */
+	tuiCursorSuppressUntil: number;
+	tuiCursorSuppressed: boolean;
 	/** focusin listener bound to `container`. Held so detach() can remove
 	 *  it cleanly. Emits `\x1b[I` to PTY when kernel.isFocusReporting(). */
 	focusListener: (e: FocusEvent) => void;
@@ -597,10 +613,6 @@ interface AttachRenderState {
 	cellH: number;
 }
 
-/** Maximum hold time for `?2026` synchronous output mode. xterm uses 150ms;
- *  matching keeps Ink/lazygit/bottom behaviour consistent across terminals. */
-const SYNC_OUTPUT_TIMEOUT_MS = 150;
-
 /** Trailing-edge debounce window for container resize. The pane only
  *  re-fits (scissor + kernel grid + PTY SIGWINCH) after the user has
  *  paused this long without sending a new `viewportChanged` event,
@@ -617,6 +629,9 @@ const FEED_FRAME_BUDGET_MS = 6;
 const MAX_DEFERRED_CHUNKS_PER_FRAME = 2;
 /** Public fast-path flushes may never bypass the frame budget. */
 export const MAX_PANE_FEED_FLUSH_BUDGET_MS = FEED_FRAME_BUDGET_MS;
+/** Delta frames are already VTE-parsed natively, but decoding/applying a
+ * microburst in the Channel callback can still starve WebView input. */
+const DELTA_FRAME_BUDGET_MS = 4;
 
 /**
  * Singleton. Created lazily on first `instance()` call. Held by the
@@ -2110,6 +2125,7 @@ export class TerminalManager {
 					visibleText: (paneId: string) => string[];
 					rows: (paneId: string) => number;
 					cols: (paneId: string) => number;
+					backendName: (paneId: string) => string | null;
 					scrollbackLen: (paneId: string) => number;
 					themeSnapshot: () => Record<string, string> | null;
 					kernelCursor: (paneId: string) => { row: number; col: number } | null;
@@ -2189,6 +2205,7 @@ export class TerminalManager {
 				},
 				rows: (paneId) => this.rows(paneId) ?? 0,
 				cols: (paneId) => this.cols(paneId) ?? 0,
+				backendName: (paneId) => this.backendName(paneId),
 				scrollbackLen: (paneId) => {
 					const e = this.panes.get(paneId);
 					return e ? e.kernel.scrollbackLen() : 0;
@@ -2470,6 +2487,11 @@ export class TerminalManager {
 			syncTimeoutRendered: false,
 			deltaFrameId: 0,
 			renderFrameId: 0,
+			deltaQueue: [],
+			deltaQueueHead: 0,
+			deltaQueuedBytes: 0,
+			tuiCursorSuppressUntil: 0,
+			tuiCursorSuppressed: false,
 			focusListener: bindings.focusListener,
 			blurListener: bindings.blurListener,
 			selecting: false,
@@ -2594,6 +2616,7 @@ export class TerminalManager {
 	}
 
 	private _releaseRenderer(entry: PaneEntry): void {
+		this._releaseTuiCursorSuppression(entry);
 		if (this._isHostMode(entry)) this._invalidateHost();
 		else {
 			try { entry.canvas.remove(); } catch { /* already detached */ }
@@ -2652,6 +2675,7 @@ export class TerminalManager {
 			this._focusedPaneByWorkspace.delete(entry.workspaceId);
 			entry.handle?.setFocused(false);
 		}
+		this._releaseTuiCursorSuppression(entry);
 		this._detachParkedBindings(entry);
 		const retainRenderer = this._shouldRetainRenderer(paneId, entry, reason);
 		this._releaseParkedCanvas(paneId, entry, retainRenderer);
@@ -3057,59 +3081,145 @@ export class TerminalManager {
 			this._drainFeedOutputs(entry);
 		}
 
-	/** P3.9 (2026-05-20) — apply one postcard-encoded `DeltaFrame` from the
-	 *  Rust-side per-pane PTY reader (produced when this pane's backend
-	 *  `delta_mode` is on). Mirror counterpart to `feed()`:
-	 *  apply diff → drain pending_response back to PTY → drain
-	 *  pending_events → wake render loop.
-	 *
-	 *  Designed to be called by `ptyBridge.ts`'s `pty-delta-{ws}-{pane}`
-	 *  listener; never invoked directly by RidgePane. Bytes is the raw
-	 *  postcard payload; the wasm bridge decodes + applies in one shot.
-	 *  Throws (JsValue → JS Error) on decode failure or protocol-version
-	 *  mismatch; caller logs and triggers a `set_pane_delta_mode(false)`
-	 *  fallback as the self-heal path (P3 R5 mitigation).
-	 */
+	/** Queue one native parser delta for the next compositor turn. The Tauri
+	 * Channel callback does O(1) work only; decoding and rendering remain under
+	 * the same focus-first frame budget as raw PTY feeds. */
+	enqueueDeltaFrame(
+		paneId: string,
+		bytes: Uint8Array,
+		onError?: (error: unknown) => void,
+	): void {
+		const entry = this.panes.get(paneId);
+		if (!entry) return;
+		entry.deltaQueue.push({ bytes, onError });
+		entry.deltaQueuedBytes += bytes.byteLength;
+		this.wake();
+	}
+
+	/** Public immediate path retained for DEV hooks and direct callers. Desktop
+	 * Channel delivery uses `enqueueDeltaFrame` above, so it cannot run parser
+	 * work in a burst of IPC callbacks. */
 	applyDeltaFrame(paneId: string, bytes: Uint8Array): void {
 		const entry = this.panes.get(paneId);
 		if (!entry) return;
-		// Re-throw decode / version errors so ptyBridge can trigger the
-		// self-heal `set_pane_delta_mode(false)` invoke. manager is host-
-		// agnostic (no Tauri imports) — recovery routing lives in
-		// ptyBridge where the invoke surface is available.
-		const traceCursor = typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_CURSOR_TRACE') === '1';
-		const k = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
-		const pre = traceCursor ? `(${k.cursorRow()},${k.cursorCol()})` : '';
-		entry.kernel.applyDeltaFrame(bytes);
-		entry.deltaFrameId += 1;
-		if (traceCursor) {
-			const ts = performance.now().toFixed(1);
-			// eslint-disable-next-line no-console
-			console.debug(`[cursor-trace][${ts}ms] applyDeltaFrame paneId=${paneId.slice(0,8)} bytes=${bytes.length} cursor ${pre}→(${k.cursorRow()},${k.cursorCol()})`);
+		if (this._applyDeltaFrame(entry, bytes)) this._noteTuiCursorSettle(entry, performance.now());
+	}
+
+	private _applyDeltaFrame(entry: PaneEntry, bytes: Uint8Array): boolean {
+		return perfMark('rg.ptyDelta.apply', () => {
+			if ((globalThis as { __RIDGE_PERF_TRACE?: unknown }).__RIDGE_PERF_TRACE === true) {
+				const traceHost = globalThis as { __ridgePtyDeltaTrace?: number[] };
+				traceHost.__ridgePtyDeltaTrace?.push(bytes.byteLength);
+			}
+			const paneId = entry.paneId;
+			const traceCursor = typeof localStorage !== 'undefined' && localStorage.getItem('RIDGE_CURSOR_TRACE') === '1';
+			const k = entry.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
+			const pre = traceCursor ? `(${k.cursorRow()},${k.cursorCol()})` : '';
+			// The v5 return value is a native-parser repaint hint. Cast keeps this
+			// source compatible with an already-running v4 dev bundle until wasm
+			// hot-reloads; stale bundles simply yield `undefined` (immediate path).
+			const requiresRenderSettle = (
+				entry.kernel as unknown as { applyDeltaFrame: (frame: Uint8Array) => boolean | void }
+			).applyDeltaFrame(bytes) === true;
+			entry.deltaFrameId += 1;
+			if (traceCursor) {
+				const ts = performance.now().toFixed(1);
+				// eslint-disable-next-line no-console
+				console.debug(`[cursor-trace][${ts}ms] applyDeltaFrame paneId=${paneId.slice(0,8)} bytes=${bytes.length} cursor ${pre}→(${k.cursorRow()},${k.cursorCol()})`);
+			}
+			if (this.isWorkerPaneReady(paneId)) {
+				entry.renderFrameId += 1;
+				workerRendererBridge.applyDelta(paneId, bytes, entry.renderFrameId);
+			}
+			const reply = entry.kernel.takePendingResponse();
+			if (reply.length > 0 && entry.dataHandler) entry.dataHandler(reply);
+			const events = entry.kernel.takePendingEvents() as KernelEvent[];
+			if (entry.eventHandler) {
+				for (const ev of events) entry.eventHandler(ev);
+			}
+			entry.linkSpans.markDirty();
+			this.wake();
+			return requiresRenderSettle;
+		});
+	}
+
+	private _takeQueuedDeltaFrame(entry: PaneEntry): QueuedDeltaFrame | null {
+		const frame = entry.deltaQueue[entry.deltaQueueHead] ?? null;
+		if (frame === null) return null;
+		entry.deltaQueueHead += 1;
+		entry.deltaQueuedBytes = Math.max(0, entry.deltaQueuedBytes - frame.bytes.byteLength);
+		if (entry.deltaQueueHead === entry.deltaQueue.length) {
+			entry.deltaQueue.length = 0;
+			entry.deltaQueueHead = 0;
+		} else if (entry.deltaQueueHead >= 64 && entry.deltaQueueHead * 2 >= entry.deltaQueue.length) {
+			entry.deltaQueue = entry.deltaQueue.slice(entry.deltaQueueHead);
+			entry.deltaQueueHead = 0;
 		}
-		// P4.6 Part B (2026-05-22) — shadow-mirror the delta into the
-		// render worker when the feature flag is on AND this pane has
-		// been attached over there. Bridge handles the .slice() copy so
-		// the kernel call above still owns the original bytes.
-		if (this.isWorkerPaneReady(paneId)) {
-			entry.renderFrameId += 1;
-			workerRendererBridge.applyDelta(paneId, bytes, entry.renderFrameId);
+		return frame;
+	}
+
+	private _clearQueuedDeltaFrames(entry: PaneEntry): void {
+		entry.deltaQueue.length = 0;
+		entry.deltaQueueHead = 0;
+		entry.deltaQueuedBytes = 0;
+	}
+
+	private _inputPending(): boolean {
+		if (typeof navigator === 'undefined') return false;
+		try {
+			const scheduling = (navigator as unknown as {
+				scheduling?: { isInputPending?: (options?: { includeContinuous?: boolean }) => boolean };
+			}).scheduling;
+			return scheduling?.isInputPending?.({ includeContinuous: true }) === true;
+		} catch {
+			return false;
 		}
-		// Pump DSR/DA replies the mirror produced via apply_delta back to
-		// the PTY. Symmetric with feed()'s take_pending_response drain.
-		const reply = entry.kernel.takePendingResponse();
-		if (reply.length > 0 && entry.dataHandler) {
-			entry.dataHandler(reply);
+	}
+
+	private _setPresentationCursorSuppressed(entry: PaneEntry, suppressed: boolean): void {
+		if (entry.tuiCursorSuppressed === suppressed) return;
+		entry.tuiCursorSuppressed = suppressed;
+		const handle = entry.handle as unknown as {
+			setPresentationCursorSuppressed?: (value: boolean) => void;
+		} | null;
+		try { handle?.setPresentationCursorSuppressed?.(suppressed); }
+		catch { /* an already-running wasm bundle keeps its prior safe behavior */ }
+	}
+
+	private _noteTuiCursorSettle(entry: PaneEntry, now: number): void {
+		// The worker owns its own renderer transaction. Main-thread panes paint
+		// text immediately and hide only the cursor during the rewind burst.
+		if (entry.handle === null) return;
+		entry.tuiCursorSuppressUntil = now + TUI_CURSOR_SETTLE_MS;
+		this._setPresentationCursorSuppressed(entry, true);
+	}
+
+	private _releaseTuiCursorSuppression(entry: PaneEntry): void {
+		entry.tuiCursorSuppressUntil = 0;
+		this._setPresentationCursorSuppressed(entry, false);
+	}
+
+	private _drainQueuedDeltaFrames(order: readonly PaneEntry[]): void {
+		const started = performance.now();
+		let applied = 0;
+		for (const entry of order) {
+			while (entry.deltaQueueHead < entry.deltaQueue.length) {
+				// Always make one unit of FIFO progress; thereafter yield first to
+				// input and then to paint. One malformed frame drops the pending
+				// delta queue before the bridge switches the pane back to raw mode.
+				if (applied > 0 && (this._inputPending() || performance.now() - started >= DELTA_FRAME_BUDGET_MS)) return;
+				const frame = this._takeQueuedDeltaFrame(entry);
+				if (!frame) break;
+				try {
+				if (this._applyDeltaFrame(entry, frame.bytes)) this._noteTuiCursorSettle(entry, performance.now());
+				} catch (error) {
+					this._clearQueuedDeltaFrames(entry);
+					frame.onError?.(error);
+					break;
+				}
+				applied += 1;
+			}
 		}
-		// Drain semantic events (title / cwd / bell). apply_delta pushes
-		// them onto the same pending_events queue feed() uses so the
-		// existing eventHandler routing applies unchanged.
-		const events = entry.kernel.takePendingEvents() as KernelEvent[];
-		if (entry.eventHandler) {
-			for (const ev of events) entry.eventHandler(ev);
-		}
-		entry.linkSpans.markDirty();
-		this.wake();
 	}
 
 	/** P2.1 (2026-05-20): drain any per-pane bytes that prior `_feedNow`
@@ -3618,6 +3728,8 @@ export class TerminalManager {
 	): void {
 		if (dropPendingFeed) {
 			dropPendingFeedBuffers(entry);
+			this._clearQueuedDeltaFrames(entry);
+			this._releaseTuiCursorSuppression(entry);
 		} else {
 			// Automatic memory reclaim must not turn a scrollback sweep into a
 			// synchronous catch-up. Flush the short coalescer, leave the bounded
@@ -4845,7 +4957,7 @@ export class TerminalManager {
 	 * will fire its own initial fit. Returns the underlying async fit so
 	 * attach can wait for kernel + PTY sync before activating a shell.
 	 */
-	fitPaneNow(paneId: string): Promise<void> {
+	fitPaneNow(paneId: string, force = false): Promise<void> {
 		const entry = this.panes.get(paneId);
 		if (!entry || entry.parked) return Promise.resolve();
 		if (entry.pendingFitTimer !== null) {
@@ -4853,7 +4965,7 @@ export class TerminalManager {
 			entry.pendingFitTimer = null;
 		}
 		this._cancelInitialFit(entry);
-		return this.fitPane(entry, this._sharedRemoteMode).finally(() => {
+		return this.fitPane(entry, this._sharedRemoteMode, force).finally(() => {
 			if (this._initialFitNeedsRetry(entry)) this._scheduleInitialFit(entry);
 		});
 	}
@@ -5266,10 +5378,14 @@ export class TerminalManager {
 		const surfaceJustWiped = this._hostInvalidatePending || hostNeedsSeed;
 		this._hostInvalidatePending = false;
 		const frameOrder = this._renderOrder();
+		this._drainQueuedDeltaFrames(frameOrder);
 		this._drainDeferredFeeds(frameOrder);
+		// Delta draining has a strict CPU budget but can still consume a few
+		// milliseconds. Anchor hold/sync deadlines after it, not at RAF entry.
+		const framePerfNow = performance.now();
 		const dirty = this._collectHostDirty(frameOrder, dateNow);
 		return {
-			frameOrder, dateNow, perfNow, surfaceJustWiped,
+			frameOrder, dateNow, perfNow: framePerfNow, surfaceJustWiped,
 			...dirty,
 			activeHost: dirty.activeWsId === null ? null : this._globalHostHandle(),
 			hostFrameOpen: false,
@@ -5324,7 +5440,7 @@ export class TerminalManager {
 				if (typeof handle?.repaintAll === 'function') handle.repaintAll();
 				else handle?.invalidateAll?.();
 			}
-			entry.handle?.render(entry.kernel);
+			perfMark('rg.terminal.render', () => entry.handle?.render(entry.kernel));
 			state.anyRendered = true;
 		} catch (error) {
 			console.error('[ridge-term] render error', entry.paneId, error);
@@ -5352,6 +5468,11 @@ export class TerminalManager {
 			void this.fitPane(entry, this._sharedRemoteMode);
 		}
 		if (!this._renderEntryAfterSync(entry, state)) return;
+		if (entry.tuiCursorSuppressUntil > state.perfNow) {
+			state.minDeadlineMs = Math.min(state.minDeadlineMs, entry.tuiCursorSuppressUntil - state.perfNow);
+		} else if (entry.tuiCursorSuppressed) {
+			this._releaseTuiCursorSuppression(entry);
+		}
 		const dirty = this._entryDirty(entry, state);
 		const shouldRender = this._isHostMode(entry)
 			? state.activeHost !== null && (dirty || state.surfaceJustWiped || becameVisible)

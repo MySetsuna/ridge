@@ -8,31 +8,26 @@
 //! full VTE state machine on the JS main thread; it only has to apply
 //! the diff its bigger sibling already computed.
 //!
-//! Diff strategy (first cut)
-//! -------------------------
+//! Diff strategy
+//! -------------
 //! Keep one snapshot per pane: `Vec<Vec<DeltaCell>>` mirroring the live
-//! visible grid (NOT scrollback). After every `feed()`:
-//!   1. Compare each new row to the snapshot row.
-//!   2. If different, emit `GridDelta::Cells { row, col: 0, wrapped, cells }`
-//!      and update the snapshot row to match.
+//! visible grid (NOT scrollback), plus Grid-owned row revisions. After every
+//! `feed()`, only rows whose revision changed are materialized and compared
+//! to the snapshot. This keeps ordinary cursor motion and unrelated PTY
+//! packets O(1), while preserving the exact column-range delta for each dirty
+//! row.
+//!
+//! For each changed row:
+//!   1. Compare it to the snapshot and find the narrowest changed span.
+//!   2. Emit `GridDelta::Cells { row, col, wrapped, cells }` for that span.
+//!   3. Update its snapshot and revision.
+//!
+//! Then:
 //!   3. Compare cursor (row, col, visible, blink, shape); emit `Cursor` if
 //!      anything changed.
 //!   4. Compare `is_alt_screen` before/after; emit `ScreenSwitch` on flip.
 //!   5. Drain `take_pending_events()` from the kernel and forward
 //!      Title / Cwd / Bell as their `GridDelta` cousins.
-//!
-//! Future optimization (deferred):
-//!   * Column-range diff inside changed rows (currently emits the whole
-//!     row, which is correct but wastes IPC bytes for the common case of
-//!     "one new char appeared at the cursor").
-//!   * Scrollback append tracking (`ScrollbackAppend` variant). Today,
-//!     once scrollback grows the frontend can pull it lazily via the
-//!     existing `get_pane_scrollback_before` bridge; only live-grid
-//!     deltas are emitted here.
-//!   * Mode-flip emission (`ModeChange` variant) — `Modes` doesn't
-//!     expose a per-mode diff API yet, so we skip mode deltas in v1.
-//!     The cursor delta already carries visibility/blink/shape which
-//!     is the user-visible subset that matters for rendering.
 //!
 //! Notes on this commit
 //! --------------------
@@ -49,9 +44,11 @@
 // remain dead-code (e.g. resize until P3.9.r wires it) keep targeted
 // #[allow] annotations at their definition site.
 
+use ridge_term::term::cell::Row;
 use ridge_term::term::delta::{
     CursorShape as DeltaCursorShape, DeltaCell, DeltaFrame, DeltaLine, GridDelta,
 };
+use ridge_term::term::grid::ScrollOp;
 use ridge_term::term::modes::{CursorShape as KernelCursorShape, Modes};
 use ridge_term::term::terminal::{KernelEvent, Terminal};
 
@@ -62,6 +59,32 @@ struct CursorSnap {
     visible: bool,
     blink: bool,
     shape: DeltaCursorShape,
+}
+
+/// Collapse consecutive equivalent scrolls into one viewport move. Parser
+/// frames are atomic: subsequent cell deltas describe the final grid, so a
+/// run of bottom-margin LFs never needs one IPC record per physical line.
+fn coalesce_scroll_ops(ops: Vec<ScrollOp>) -> Vec<ScrollOp> {
+    let mut compact: Vec<ScrollOp> = Vec::with_capacity(ops.len().min(4));
+    for op in ops {
+        let height = op.bottom.saturating_sub(op.top).saturating_add(1);
+        if height == 0 || op.count == 0 {
+            continue;
+        }
+        let merge_with_previous = compact.last().is_some_and(|previous| {
+            previous.top == op.top && previous.bottom == op.bottom && previous.up == op.up
+        });
+        if merge_with_previous {
+            let previous = compact.last_mut().expect("checked above");
+            previous.count = previous.count.saturating_add(op.count).min(height);
+        } else {
+            compact.push(ScrollOp {
+                count: op.count.min(height),
+                ..op
+            });
+        }
+    }
+    compact
 }
 
 /// Per-pane parser. Single-threaded; the caller (P3.4 plumbing) parks
@@ -75,6 +98,14 @@ pub struct PaneParser {
     snapshot: Vec<Vec<DeltaCell>>,
     /// Per-live-row soft-wrap metadata paired with `snapshot`.
     snapshot_wrapped: Vec<bool>,
+    /// Grid row revisions paired with `snapshot`. `u64::MAX` means the row
+    /// has never been emitted and must be materialized once.
+    snapshot_row_revisions: Vec<u64>,
+    /// Exact terminal rows paired with `snapshot_row_revisions`. A TUI may
+    /// clear and rewrite a visually identical row in one PTY batch; its
+    /// revision changes, but materializing `DeltaCell`s again would be pure
+    /// parser work with no frame for the browser to consume.
+    snapshot_visual_rows: Vec<Option<Row>>,
     /// Cursor as we last reported it. `None` only on the very first
     /// feed — forces a `Cursor` delta in the initial frame.
     cursor: Option<CursorSnap>,
@@ -117,10 +148,14 @@ impl PaneParser {
         let terminal = Terminal::new(rows as usize, cols as usize, scrollback_lines);
         let snapshot = vec![vec![DeltaCell::blank(); cols as usize]; rows as usize];
         let snapshot_wrapped = vec![false; rows as usize];
+        let snapshot_row_revisions = vec![u64::MAX; rows as usize];
+        let snapshot_visual_rows = vec![None; rows as usize];
         Self {
             terminal,
             snapshot,
             snapshot_wrapped,
+            snapshot_row_revisions,
+            snapshot_visual_rows,
             cursor: None,
             is_alt: None,
             last_scrollback_len: 0,
@@ -202,8 +237,15 @@ impl PaneParser {
     /// `pending_response`) the returned frame's `deltas` is empty —
     /// callers may skip emitting it over IPC to save bandwidth.
     pub fn feed_and_diff(&mut self, bytes: &[u8]) -> DeltaFrame {
+        let render_activity_before = self.terminal.grid().render_activity_seq();
         self.terminal.feed(bytes);
-        self.diff_into_frame()
+        let mut frame = self.diff_into_frame();
+        // The native parser sees the raw CSI walk (`EL`/`CUU`/rewind CUP)
+        // while the delta mirror never can. Carry one per-frame hint instead
+        // of making the frontend guess from cursor visibility or app modes.
+        frame.requires_render_settle =
+            self.terminal.grid().render_activity_seq() != render_activity_before;
+        frame
     }
 
     /// Explicit user clear. Mutates the authoritative parser directly (never
@@ -242,6 +284,8 @@ impl PaneParser {
         let cols = self.terminal.cols();
         self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
         self.snapshot_wrapped = vec![false; rows];
+        self.snapshot_row_revisions = vec![u64::MAX; rows];
+        self.snapshot_visual_rows = vec![None; rows];
         self.cursor = None;
         self.is_alt = None;
         // P3.11 — scrollback growth baseline. The mirror's wasm
@@ -279,6 +323,8 @@ impl PaneParser {
         // emit the actual new content as Cells deltas.
         self.snapshot = vec![vec![DeltaCell::blank(); cols as usize]; rows as usize];
         self.snapshot_wrapped = vec![false; rows as usize];
+        self.snapshot_row_revisions = vec![u64::MAX; rows as usize];
+        self.snapshot_visual_rows = vec![None; rows as usize];
         // Cursor / alt-state must also be re-emitted because the
         // frontend's mirror just resized too.
         self.cursor = None;
@@ -310,6 +356,8 @@ impl PaneParser {
         let rows = self.terminal.rows();
         self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
         self.snapshot_wrapped = vec![false; rows];
+        self.snapshot_row_revisions = vec![u64::MAX; rows];
+        self.snapshot_visual_rows = vec![None; rows];
         self.cursor = None;
         self.is_alt = None;
         self.last_modes = Some(Modes::default());
@@ -326,6 +374,8 @@ impl PaneParser {
         let rows = self.terminal.rows();
         self.snapshot = vec![vec![DeltaCell::blank(); cols]; rows];
         self.snapshot_wrapped = vec![false; rows];
+        self.snapshot_row_revisions = vec![u64::MAX; rows];
+        self.snapshot_visual_rows = vec![None; rows];
     }
 
     fn append_scrollback(&mut self, deltas: &mut Vec<GridDelta>) {
@@ -358,9 +408,24 @@ impl PaneParser {
             let Some(row) = self.terminal.grid().scrollback.get(index) else {
                 continue;
             };
+            // A fresh mirror row already contains default blanks. Shipping the
+            // full terminal width for a short log line was the dominant cost
+            // in Ctrl+C bursts: 90+ empty cells per line were decoded, copied,
+            // and interned on both sides. Preserve all meaningful trailing
+            // state (coloured BCE blanks, wide-cell halves, clusters), omit
+            // only the default blank suffix.
+            let end = row
+                .cells
+                .iter()
+                .enumerate()
+                .rposition(|(col, cell)| {
+                    !cell.is_blank() || cell.width != 1 || row.cluster_at(col).is_some()
+                })
+                .map_or(0, |col| col + 1);
             let cells = row
                 .cells
                 .iter()
+                .take(end)
                 .enumerate()
                 .map(|(index, cell)| {
                     let attrs = self.terminal.grid().attrs.get(cell.attr);
@@ -382,18 +447,95 @@ impl PaneParser {
         lines
     }
 
+    fn append_scrolls(&mut self, deltas: &mut Vec<GridDelta>) {
+        for op in coalesce_scroll_ops(self.terminal.take_scroll_ops()) {
+            self.shift_snapshot_for_scroll(op);
+            deltas.push(GridDelta::Scroll {
+                top: op.top.min(u16::MAX as usize) as u16,
+                bottom: op.bottom.min(u16::MAX as usize) as u16,
+                count: op.count.min(u16::MAX as usize) as u16,
+                up: op.up,
+            });
+        }
+    }
+
+    /// Advance our fixed-row snapshot by the same move just sent to the
+    /// mirror. Grid revisions travel with moved rows, so `append_rows` still
+    /// detects writes that happened before a row crossed the bottom margin.
+    fn shift_snapshot_for_scroll(&mut self, op: ScrollOp) {
+        let rows = self.snapshot.len();
+        if rows == 0 {
+            return;
+        }
+        let top = op.top.min(rows - 1);
+        let bottom = op.bottom.min(rows - 1);
+        if top > bottom {
+            return;
+        }
+        let count = op.count.min(bottom - top + 1);
+        if count == 0 {
+            return;
+        }
+        let cols = self.terminal.cols();
+        if op.up {
+            self.snapshot[top..=bottom].rotate_left(count);
+            self.snapshot_wrapped[top..=bottom].rotate_left(count);
+            self.snapshot_row_revisions[top..=bottom].rotate_left(count);
+            self.snapshot_visual_rows[top..=bottom].rotate_left(count);
+            for row in bottom + 1 - count..=bottom {
+                self.snapshot[row] = vec![DeltaCell::blank(); cols];
+                self.snapshot_wrapped[row] = false;
+                self.snapshot_row_revisions[row] = u64::MAX;
+                self.snapshot_visual_rows[row] = None;
+            }
+        } else {
+            self.snapshot[top..=bottom].rotate_right(count);
+            self.snapshot_wrapped[top..=bottom].rotate_right(count);
+            self.snapshot_row_revisions[top..=bottom].rotate_right(count);
+            self.snapshot_visual_rows[top..=bottom].rotate_right(count);
+            for row in top..top + count {
+                self.snapshot[row] = vec![DeltaCell::blank(); cols];
+                self.snapshot_wrapped[row] = false;
+                self.snapshot_row_revisions[row] = u64::MAX;
+                self.snapshot_visual_rows[row] = None;
+            }
+        }
+    }
+
     fn append_rows(&mut self, deltas: &mut Vec<GridDelta>) {
         let rows = self.terminal.rows();
         let cols = self.terminal.cols();
         for row in 0..rows {
-            self.append_row_delta(row, cols, deltas);
+            let revision = self.terminal.grid().row_revision(row).unwrap_or(u64::MAX);
+            if self.snapshot_row_revisions.get(row).copied() == Some(revision) {
+                continue;
+            }
+            self.append_row_delta(row, cols, revision, deltas);
         }
     }
 
-    fn append_row_delta(&mut self, row_index: usize, cols: usize, deltas: &mut Vec<GridDelta>) {
+    fn append_row_delta(
+        &mut self,
+        row_index: usize,
+        cols: usize,
+        revision: u64,
+        deltas: &mut Vec<GridDelta>,
+    ) {
         let Some(live_row) = self.terminal.grid().row(row_index) else {
             return;
         };
+        if self
+            .snapshot_visual_rows
+            .get(row_index)
+            .and_then(Option::as_ref)
+            .is_some_and(|previous| live_row.visual_eq(previous))
+        {
+            if let Some(previous) = self.snapshot_row_revisions.get_mut(row_index) {
+                *previous = revision;
+            }
+            return;
+        }
+        let visual_row = live_row.clone();
         let now_row = (0..cols)
             .map(|col| {
                 let cell = live_row.cells.get(col).copied().unwrap_or_default();
@@ -412,22 +554,27 @@ impl PaneParser {
             return;
         };
         snapshot.resize(cols, DeltaCell::blank());
-        let changed = (0..cols)
-            .filter(|&col| snapshot[col] != now_row[col])
-            .collect::<Vec<_>>();
+        let mut first_changed = None;
+        let mut last_changed = 0;
+        for col in 0..cols {
+            if snapshot[col] != now_row[col] {
+                first_changed.get_or_insert(col);
+                last_changed = col;
+            }
+        }
         let wrapped_changed = self
             .snapshot_wrapped
             .get(row_index)
             .copied()
             .map_or(true, |previous| previous != live_row.wrapped);
-        if let Some((&first, &last)) = changed.first().zip(changed.last()) {
+        if let Some(first) = first_changed {
             deltas.push(GridDelta::Cells {
                 row: row_index as u16,
                 col: first as u16,
                 wrapped: live_row.wrapped,
-                cells: now_row[first..=last].to_vec(),
+                cells: now_row[first..=last_changed].to_vec(),
             });
-            for col in first..=last {
+            for col in first..=last_changed {
                 snapshot[col] = now_row[col].clone();
             }
         } else if wrapped_changed {
@@ -440,6 +587,12 @@ impl PaneParser {
         }
         if let Some(previous) = self.snapshot_wrapped.get_mut(row_index) {
             *previous = live_row.wrapped;
+        }
+        if let Some(previous) = self.snapshot_row_revisions.get_mut(row_index) {
+            *previous = revision;
+        }
+        if let Some(previous) = self.snapshot_visual_rows.get_mut(row_index) {
+            *previous = Some(visual_row);
         }
     }
 
@@ -498,6 +651,7 @@ impl PaneParser {
         self.apply_pending_reset(&mut deltas);
         self.append_screen_switch(&mut deltas);
         self.append_scrollback(&mut deltas);
+        self.append_scrolls(&mut deltas);
         self.append_rows(&mut deltas);
         self.append_modes(&mut deltas);
         self.append_cursor(&mut deltas);
@@ -812,6 +966,22 @@ mod tests {
         });
         assert!(has_screen, "missing ScreenSwitch in first frame");
         assert!(has_cursor, "missing Cursor in first frame");
+    }
+
+    #[test]
+    fn repaint_walk_sets_delta_presentation_hint() {
+        let mut p = make_parser(6, 20);
+        let initial = p.feed_and_diff(b"\x1b[5;8H");
+        assert!(!initial.requires_render_settle);
+
+        // The second landing rewinds to an earlier row; an EL then erases
+        // that row. Both are native-only repaint semantics which must cross
+        // the delta boundary for the browser compositor.
+        let repaint = p.feed_and_diff(b"\x1b[2;1H\x1b[2Kframe");
+        assert!(repaint.requires_render_settle);
+
+        let ordinary = p.feed_and_diff(b"\r\nplain output");
+        assert!(!ordinary.requires_render_settle);
     }
 
     #[test]
@@ -1165,11 +1335,107 @@ mod tests {
         let lines = appends[0];
         // 'AB' is the first row pushed into scrollback.
         assert_eq!(lines.len(), 1);
+        assert_eq!(
+            lines[0].cells.len(),
+            2,
+            "default blank suffix must stay implicit on the wire"
+        );
         assert_eq!(lines[0].cells[0].ch, 'A');
         assert_eq!(lines[0].cells[1].ch, 'B');
         assert!(
             !lines[0].wrapped,
             "hard newline must not be marked soft-wrapped"
+        );
+    }
+
+    #[test]
+    fn bottom_margin_scroll_moves_rows_without_full_cell_retransmit() {
+        use ridge_term::term::terminal::Terminal;
+
+        let mut producer = make_parser(3, 8);
+        let mut mirror = Terminal::new(3, 8, 1_000);
+        mirror
+            .apply_frame(&producer.feed_and_diff(b"A\r\nB\r\nC"))
+            .expect("initial frame applies");
+
+        let frame = producer.feed_and_diff(b"\r\nD");
+        assert!(
+            frame.deltas.iter().any(|delta| matches!(
+                delta,
+                GridDelta::Scroll {
+                    top: 0,
+                    bottom: 2,
+                    count: 1,
+                    up: true
+                }
+            )),
+            "bottom-margin LF must travel as a viewport Scroll: {:?}",
+            frame.deltas,
+        );
+        assert!(
+            !frame.deltas.iter().any(|delta| matches!(
+                delta,
+                GridDelta::Cells { row, .. } if *row < 2
+            )),
+            "moved rows must not be serialized again: {:?}",
+            frame.deltas,
+        );
+
+        mirror.apply_frame(&frame).expect("scroll frame applies");
+        assert_eq!(
+            mirror.dump_visible_text(),
+            producer.terminal.dump_visible_text(),
+            "scroll delta plus bottom-row cells must exactly mirror producer"
+        );
+        assert_eq!(
+            mirror.scrollback_len(),
+            producer.terminal.scrollback_len(),
+            "Scroll must not duplicate history already carried by ScrollbackAppend"
+        );
+    }
+
+    #[test]
+    fn writes_that_scroll_again_within_one_frame_survive_snapshot_shift() {
+        use ridge_term::term::terminal::Terminal;
+
+        let mut producer = make_parser(4, 8);
+        let mut mirror = Terminal::new(4, 8, 1_000);
+        mirror
+            .apply_frame(&producer.feed_and_diff(b"A\r\nB\r\nC\r\nD"))
+            .expect("initial frame applies");
+
+        // E is written at the bottom, then moves up during the second LF in
+        // this SAME raw PTY batch. The snapshot must retain its old revision
+        // baseline until append_rows sees that E is genuinely new.
+        let frame = producer.feed_and_diff(b"\r\nE\r\nF");
+        assert!(
+            frame.deltas.iter().any(|delta| matches!(
+                delta,
+                GridDelta::Scroll {
+                    top: 0,
+                    bottom: 3,
+                    count: 2,
+                    up: true
+                }
+            )),
+            "consecutive bottom scrolls should coalesce: {:?}",
+            frame.deltas,
+        );
+        assert!(
+            frame.deltas.iter().any(|delta| matches!(
+                delta,
+                GridDelta::Cells { row: 2, .. } | GridDelta::Cells { row: 3, .. }
+            )),
+            "post-scroll rows must carry E/F writes: {:?}",
+            frame.deltas,
+        );
+        mirror
+            .apply_frame(&frame)
+            .expect("coalesced scroll frame applies");
+        assert_eq!(
+            mirror.dump_visible_text(),
+            producer.terminal.dump_visible_text(),
+            "mirror must retain writes that moved before frame emission"
         );
     }
 

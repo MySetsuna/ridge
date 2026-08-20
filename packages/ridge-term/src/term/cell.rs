@@ -10,7 +10,7 @@ use super::attr_table::AttrId;
 /// One grid cell. `width` carries the result of `wcwidth` so the renderer
 /// (and selection logic) can skip the second half of a wide cell without
 /// re-running the unicode-width table.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
     pub ch: char,
     pub attr: AttrId,
@@ -132,6 +132,10 @@ pub struct ClusterSpan {
 #[derive(Debug, Clone)]
 pub struct Row {
     pub cells: Vec<Cell>,
+    /// Monotonic Grid-owned content revision. Native delta production uses
+    /// this to skip untouched rows instead of rebuilding a full-screen
+    /// `DeltaCell` snapshot for every PTY packet.
+    revision: u64,
     /// Set when this row's last cell wrapped to the next row. xterm needs
     /// this to glue soft-wrapped lines back together on copy/reflow.
     /// Not consumed yet — placeholder for resize reflow work.
@@ -151,10 +155,30 @@ impl Row {
     pub fn new(cols: usize) -> Self {
         Self {
             cells: vec![Cell::EMPTY; cols],
+            revision: 0,
             wrapped: false,
             hyperlinks: Vec::new(),
             clusters: Vec::new(),
         }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Compare terminal content that can affect a composed row without using
+    /// the write-generation revision. A ratatui/crossterm frame commonly
+    /// clears then writes the same cells again; the generation changes, but
+    /// repainting identical pixels would only burn a compositor frame.
+    pub fn visual_eq(&self, other: &Self) -> bool {
+        self.cells == other.cells
+            && self.wrapped == other.wrapped
+            && self.hyperlinks == other.hyperlinks
+            && self.clusters == other.clusters
+    }
+
+    pub(crate) fn set_revision(&mut self, revision: u64) {
+        self.revision = revision;
     }
 
     /// Resize in-place. Growth pads with EMPTY; shrink truncates.

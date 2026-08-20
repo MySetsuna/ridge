@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::engine::parser::PaneParser;
-use crate::state::AppState;
+use crate::state::{AppState, PaneDeltaEnqueue};
 use crate::teammate::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use crate::types::GlobalEvent;
 use crate::utils::pty_log;
@@ -22,14 +22,6 @@ fn flush_pty_tail(osc_carryover: &mut OscSignalCarryover, utf8_pending: &mut Vec
     let mut tail = osc_carryover.push(flush_pending_eof(utf8_pending));
     tail.push_str(&osc_carryover.finish());
     tail
-}
-
-fn merge_delta_frames(
-    pending: &mut ridge_term::term::delta::DeltaFrame,
-    next: ridge_term::term::delta::DeltaFrame,
-) {
-    pending.deltas.extend(next.deltas);
-    pending.pane_seq = next.pane_seq;
 }
 
 #[cfg(test)]
@@ -113,15 +105,21 @@ mod tests {
         use ridge_term::term::delta::{DeltaFrame, GridDelta};
 
         let mut pending = DeltaFrame::new(4, vec![GridDelta::Bell]);
-        merge_delta_frames(
-            &mut pending,
-            DeltaFrame::new(9, vec![GridDelta::ScrollbackClear]),
-        );
+        let mut next = DeltaFrame::new(9, vec![GridDelta::ScrollbackClear]);
+        next.requires_render_settle = true;
+        ridge_term::term::delta::merge_ordered_frames(&mut pending, next);
 
         assert_eq!(pending.pane_seq, 9);
+        assert!(pending.requires_render_settle);
         assert!(matches!(pending.deltas[0], GridDelta::Bell));
         assert!(matches!(pending.deltas[1], GridDelta::ScrollbackClear));
     }
+}
+
+enum NativeDeltaRoute {
+    Mailbox,
+    Fallback(ridge_term::term::delta::DeltaFrame),
+    Disabled,
 }
 
 fn normalize_cwd_str(raw: &str) -> String {
@@ -325,38 +323,68 @@ impl PtyReaderThread {
         // Keep the Rust-side terminal state warm even while the frontend is
         // still on the raw bootstrap path. This makes the later delta switch
         // a lossless handoff instead of a blank reframe.
-        let (frame, clears_scrollback, emit_delta) = self.native_parser.as_ref().map_or(
-            (None, false, false),
-            |parser| {
-                let mut parser = parser.lock();
-                // Read the mode only after taking the parser lock. The mode
-                // transition uses the same lock while it emits the reframe,
-                // so a reader cannot pair a pre-transition flag with a
-                // post-transition parser snapshot.
-                let emit_delta = self.native_delta_mode.load(Ordering::Acquire);
-                let frame = parser.feed_and_diff(payload.as_bytes());
-                let clears_scrollback = frame.deltas.iter().any(|delta| {
-                    matches!(
-                        delta,
-                        ridge_term::term::delta::GridDelta::ScrollbackClear
-                    )
+        let (route, clears_scrollback) =
+            self.native_parser
+                .as_ref()
+                .map_or((NativeDeltaRoute::Disabled, false), |parser| {
+                    let mut parser = parser.lock();
+                    // Read the mode only after taking the parser lock. The mode
+                    // transition uses the same lock while it emits the reframe,
+                    // so a reader cannot pair a pre-transition flag with a
+                    // post-transition parser snapshot.
+                    let emit_delta = self.native_delta_mode.load(Ordering::Acquire);
+                    let frame = parser.feed_and_diff(payload.as_bytes());
+                    let clears_scrollback = frame.deltas.iter().any(|delta| {
+                        matches!(delta, ridge_term::term::delta::GridDelta::ScrollbackClear)
+                    });
+                    // The parser lock serializes frame sequence and mailbox
+                    // insertion.  Thus a resize/clear reframe cannot overtake a
+                    // just-read PTY frame while the browser is between rAFs.
+                    let route = if emit_delta {
+                        match self.state.enqueue_pane_delta_frame(
+                            self.workspace_id,
+                            self.pane_id,
+                            frame,
+                        ) {
+                            PaneDeltaEnqueue::Queued => NativeDeltaRoute::Mailbox,
+                            PaneDeltaEnqueue::NeedsResync => {
+                                parser.force_full_reframe();
+                                let full = parser.feed_and_diff(b"");
+                                if self.state.replace_pane_delta_frame(
+                                    self.workspace_id,
+                                    self.pane_id,
+                                    full.clone(),
+                                ) {
+                                    NativeDeltaRoute::Mailbox
+                                } else {
+                                    NativeDeltaRoute::Fallback(full)
+                                }
+                            }
+                            PaneDeltaEnqueue::NoChannel(frame) => NativeDeltaRoute::Fallback(frame),
+                        }
+                    } else {
+                        NativeDeltaRoute::Disabled
+                    };
+                    let response = parser.take_pending_response();
+                    if !response.is_empty() {
+                        let mut writer = self.native_writer.lock();
+                        let _ = writer.write_all(&response);
+                        let _ = writer.flush();
+                    }
+                    (route, clears_scrollback)
                 });
-                let response = parser.take_pending_response();
-                if !response.is_empty() {
-                    let mut writer = self.native_writer.lock();
-                    let _ = writer.write_all(&response);
-                    let _ = writer.flush();
-                }
-                (Some(frame), clears_scrollback, emit_delta)
-            },
-        );
         if clears_scrollback {
             self.state
                 .clear_pty_scrollback(self.workspace_id, self.pane_id);
         }
-        if emit_delta {
-            let Some(frame) = frame else { return false };
-            return self.queue_delta_output(payload, frame);
+        match route {
+            NativeDeltaRoute::Mailbox => {
+                self.state
+                    .forward_remote_pty_bytes(self.workspace_id, self.pane_id, &payload);
+                return true;
+            }
+            NativeDeltaRoute::Fallback(frame) => return self.queue_delta_output(payload, frame),
+            NativeDeltaRoute::Disabled => {}
         }
         if self.pending_delta.is_some() && !self.flush_pending_delta(true) {
             return false;
@@ -364,11 +392,14 @@ impl PtyReaderThread {
         // The native parser has already consumed `payload`; blocking instead
         // of retaining/replaying a string avoids parsing the same bytes twice
         // when the bounded forwarder is full.
-        self.state.event_tx.blocking_send(GlobalEvent::PtyOutput {
-            workspace_id: self.workspace_id,
-            pane_id: self.pane_id,
-            data: payload,
-        }).is_ok()
+        self.state
+            .event_tx
+            .blocking_send(GlobalEvent::PtyOutput {
+                workspace_id: self.workspace_id,
+                pane_id: self.pane_id,
+                data: payload,
+            })
+            .is_ok()
     }
 
     /// Keep parsing independent from the UI/event-forwarder queue. When that
@@ -382,7 +413,7 @@ impl PtyReaderThread {
         frame: ridge_term::term::delta::DeltaFrame,
     ) -> bool {
         if let Some((pending, pending_data)) = &mut self.pending_delta {
-            merge_delta_frames(pending, frame);
+            ridge_term::term::delta::merge_ordered_frames(pending, frame);
             pending_data.push_str(&data);
         } else {
             self.pending_delta = Some((frame, data));
@@ -636,7 +667,9 @@ fn reader_snapshot(
             0,
             None,
             Arc::new(AtomicBool::new(false)),
-            Arc::new(Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>)),
+            Arc::new(Mutex::new(
+                Box::new(std::io::sink()) as Box<dyn Write + Send>
+            )),
         );
     };
     (
@@ -665,8 +698,7 @@ pub fn spawn_pty_reader(
         native_parser,
         native_delta_mode,
         native_writer,
-    ) =
-        reader_snapshot(&state, workspace_id, pane_id);
+    ) = reader_snapshot(&state, workspace_id, pane_id);
     let _ = std::thread::Builder::new()
         .name(format!("pty-reader-{pane_id}"))
         .spawn(move || {

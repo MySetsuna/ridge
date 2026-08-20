@@ -430,15 +430,14 @@ impl GlyphRasterizer {
 }
 
 fn detect_color(rgba: &[u8]) -> bool {
-    rgba.chunks_exact(4)
-        .any(|px| {
-            if px[3] < 8 {
-                return false;
-            }
-            let max = px[..3].iter().copied().max().unwrap_or(0);
-            let min = px[..3].iter().copied().min().unwrap_or(0);
-            max.saturating_sub(min) >= 8
-        })
+    rgba.chunks_exact(4).any(|px| {
+        if px[3] < 8 {
+            return false;
+        }
+        let max = px[..3].iter().copied().max().unwrap_or(0);
+        let min = px[..3].iter().copied().min().unwrap_or(0);
+        max.saturating_sub(min) >= 8
+    })
 }
 
 fn premultiply_rgba(rgba: &mut [u8]) {

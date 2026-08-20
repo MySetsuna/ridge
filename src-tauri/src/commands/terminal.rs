@@ -19,7 +19,7 @@ const MAX_SCROLLBACK_RPC_BYTES: usize = 512 * 1024;
 use crate::engine::kernel_pty::{make_master, make_writer, KernelPtyRef};
 use crate::engine::parser::PaneParser;
 use crate::engine::pty::{spawn_pty_reader, PtyHandle, RESIZE_SILENCE_WINDOW_MS};
-use crate::state::{AppState, PaneDeltaSender};
+use crate::state::{AppState, PaneDeltaEnqueue, PaneDeltaSender};
 use crate::teammate::layout_event::{LayoutChange, TEAMMATE_LAYOUT_CHANGED};
 use crate::teammate::native::{self, NativeSessionInfo};
 use crate::utils::cwd::resolve_default_cwd;
@@ -250,10 +250,7 @@ pub(crate) fn install_agent_pty(
         },
     )
     .map_err(|e| e.to_string())?;
-    crate::commands::git::set_pane_workdir(
-        pane_id.to_string(),
-        cwd.to_string_lossy().to_string(),
-    )?;
+    crate::commands::git::set_pane_workdir(pane_id.to_string(), cwd.to_string_lossy().to_string())?;
     let cwd = cwd.to_string_lossy().replace('\\', "/");
     let _ = state
         .event_tx
@@ -282,7 +279,14 @@ pub async fn launch_agent_session(
         let workspace_id =
             Uuid::parse_str(&workspace_id).map_err(|e| format!("invalid workspace id: {e}"))?;
         let pane_id = parse_pane_id(&pane_id).map_err(|e| e.to_string())?;
-        install_agent_pty(&st, workspace_id, pane_id, executable, argv, PathBuf::from(cwd))
+        install_agent_pty(
+            &st,
+            workspace_id,
+            pane_id,
+            executable,
+            argv,
+            PathBuf::from(cwd),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -946,9 +950,7 @@ struct KernelPtyInstall<'a> {
     ready_tx: &'a mut Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 }
 
-fn try_install_kernel_pty(
-    mut request: KernelPtyInstall<'_>,
-) -> Option<Result<(), AppError>> {
+fn try_install_kernel_pty(mut request: KernelPtyInstall<'_>) -> Option<Result<(), AppError>> {
     let structured_command = request.structured_command;
     if let Some(spec) = structured_command {
         return Some(install_structured_kernel_pty(&mut request, spec));
@@ -964,8 +966,9 @@ fn install_structured_kernel_pty(
     spec: &StructuredPtyCommand,
 ) -> Result<(), AppError> {
     crate::teammate::ensure_teammate_started(request.state);
-    let endpoint = kernel_endpoint_for_shell()
-        .map_err(|error| AppError::PtyError(format!("ridge-kernel unavailable for Agent PTY: {error}")))?;
+    let endpoint = kernel_endpoint_for_shell().map_err(|error| {
+        AppError::PtyError(format!("ridge-kernel unavailable for Agent PTY: {error}"))
+    })?;
     let env = kernel_structured_env(
         request.state,
         request.workspace_id,
@@ -995,8 +998,9 @@ fn install_structured_kernel_pty(
 }
 
 fn install_shell_kernel_pty(request: &mut KernelPtyInstall<'_>) -> Result<(), AppError> {
-    let endpoint = kernel_endpoint_for_shell()
-        .map_err(|error| AppError::PtyError(format!("ridge-kernel unavailable for shell PTY: {error}")))?;
+    let endpoint = kernel_endpoint_for_shell().map_err(|error| {
+        AppError::PtyError(format!("ridge-kernel unavailable for shell PTY: {error}"))
+    })?;
     attach_or_spawn_kernel_pty(
         request.state,
         endpoint,
@@ -1964,29 +1968,43 @@ fn resize_parser(
     let Some(parser) = parser else {
         return;
     };
-    use ridge_term::term::delta::encode_frame;
-    use tauri::Emitter;
-    let frame = {
+    let fallback = {
         let mut parser = parser.lock();
-        parser.resize(rows, cols)
-    };
-    match encode_frame(&frame) {
-        Ok(bytes) => {
-            if let Some(sender) = state.get_pane_delta_channel(wid, pane_id) {
-                sender(bytes);
-            } else {
-                let label = pane_id.to_string();
-                let _ = app.emit(&format!("pty-delta-{wid}-{label}"), bytes);
+        let frame = parser.resize(rows, cols);
+        match state.enqueue_pane_delta_frame(wid, pane_id, frame) {
+            PaneDeltaEnqueue::Queued => None,
+            PaneDeltaEnqueue::NeedsResync => {
+                parser.force_full_reframe();
+                let full = parser.feed_and_diff(b"");
+                (!state.replace_pane_delta_frame(wid, pane_id, full.clone())).then_some(full)
             }
+            PaneDeltaEnqueue::NoChannel(frame) => Some(frame),
         }
-        Err(error) => tracing::warn!(
+    };
+    if let Some(frame) = fallback {
+        if let Err(error) = emit_legacy_pane_delta(app, wid, pane_id, frame) {
+            tracing::warn!(
             target: "ridge::pty_delta",
             error = %error,
             ws = %wid,
             pane = %pane_id,
             "resize delta encode failed; mirror may briefly desync until next chunk",
-        ),
+            );
+        }
     }
+}
+
+fn emit_legacy_pane_delta(
+    app: &tauri::AppHandle,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    frame: ridge_term::term::delta::DeltaFrame,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    let bytes = ridge_term::term::delta::encode_frame(&frame)
+        .map_err(|error| format!("delta encode failed: {error}"))?;
+    app.emit(&format!("pty-delta-{workspace_id}-{pane_id}"), bytes)
+        .map_err(|error| format!("delta emit failed: {error}"))
 }
 
 fn resize_parser_flags(
@@ -2246,8 +2264,6 @@ fn clear_pane_terminal_inner(
     workspace_id: Uuid,
     pane_id: Uuid,
 ) -> Result<(), AppError> {
-    use ridge_term::term::delta::encode_frame;
-    use tauri::Emitter;
     let parser = {
         let map = state.workspaces.read();
         map.get(&workspace_id)
@@ -2256,9 +2272,10 @@ fn clear_pane_terminal_inner(
             .ok_or(AppError::PaneNotFound(pane_id))?
     };
 
-    let frame = {
+    let fallback = {
         let mut parser = parser.lock();
-        parser.clear_terminal_preserving_prompt()
+        let frame = parser.clear_terminal_preserving_prompt();
+        (!state.replace_pane_delta_frame(workspace_id, pane_id, frame.clone())).then_some(frame)
     };
     if let Some(kernel) = state
         .workspaces
@@ -2273,23 +2290,15 @@ fn clear_pane_terminal_inner(
     }
     state.clear_pty_scrollback(workspace_id, pane_id);
 
-    let bytes = encode_frame(&frame)
-        .map_err(|e| AppError::PtyError(format!("delta encode failed: {e}")))?;
-    if let Some(sender) = state.get_pane_delta_channel(workspace_id, pane_id) {
-        sender(bytes);
-    } else {
-        let label = pane_id.to_string();
-        app.emit(&format!("pty-delta-{workspace_id}-{label}"), bytes)
-            .map_err(|e| AppError::PtyError(format!("clear delta emit failed: {e}")))?;
+    if let Some(frame) = fallback {
+        emit_legacy_pane_delta(app, workspace_id, pane_id, frame).map_err(AppError::PtyError)?;
     }
     Ok(())
 }
 
-/// P4.1 (2026-05-21) — store the frontend's Tauri Channel as the delta-byte
-/// sink for `(workspace_id, pane_id)`. After this command returns, the three
-/// `pty-delta-*` emit sites (`lib.rs` main loop, `resize_pane`,
-/// `set_pane_delta_mode`) prefer `channel.send(bytes)` over `app.emit`,
-/// skipping JSON wrap + event-name routing.
+/// Store the frontend's Tauri Channel as the one-bit wake sink for
+/// `(workspace_id, pane_id)`. Native frames stay in a bounded mailbox and the
+/// browser pulls one merged postcard payload per compositor transaction.
 ///
 /// Idempotent: a second register for the same pane replaces the first. The
 /// channel is unregistered automatically in `kill_pty_if_present`, so the
@@ -2323,6 +2332,23 @@ pub async fn register_pane_delta_channel(
     });
     state.register_pane_delta_channel(workspace_id, pane_id, sender);
     Ok(())
+}
+
+/// Take the current merged native-parser frame for one pane. A `None` reply is
+/// normal when a pane closes or when a later wake was already superseded.
+#[tauri::command]
+pub async fn take_pane_delta_frame(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    pane_id: String,
+) -> Result<Option<Vec<u8>>, String> {
+    let workspace_id =
+        Uuid::parse_str(&workspace_id).map_err(|_| "invalid workspace_id".to_string())?;
+    let pane_id = parse_pane_id(&pane_id).map_err(|error| error.to_string())?;
+    let state = state.inner().clone();
+    tokio::task::spawn_blocking(move || state.take_pane_delta_frame(workspace_id, pane_id))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 /// Reap PTYs / pending-spawns no longer backed by a pane_tree LEAF (the tree is
@@ -2535,9 +2561,6 @@ fn set_pane_delta_mode_inner(
     pane_id: Uuid,
     enabled: bool,
 ) -> Result<(), String> {
-    use ridge_term::term::delta::encode_frame;
-    use tauri::Emitter;
-
     // Snapshot the handles we need under a single workspace read-lock,
     // then drop the lock before any I/O — feed_and_diff / encode_frame
     // shouldn't gate other map readers.
@@ -2575,26 +2598,18 @@ fn set_pane_delta_mode_inner(
         // now-empty snapshot.
         let frame = p.feed_and_diff(b"");
         let response = p.take_pending_response();
-        let bytes = match encode_frame(&frame) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                delta_mode_flag.store(false, Ordering::Release);
-                return Err(format!("delta encode failed: {error}"));
-            }
-        };
         if !response.is_empty() {
             let mut w = writer.lock();
             let _ = w.write_all(&response);
             let _ = w.flush();
         }
-        // P4.2 — prefer the Tauri Channel; fall back to app.emit when no
-        // channel is registered yet (in particular: tests, or a frontend
-        // that opted into rust mode before its ptyBridge registered).
-        if let Some(sender) = state.get_pane_delta_channel(workspace_id, pane_id) {
-            sender(bytes);
-        } else {
-            let label = pane_id.to_string();
-            let _ = app.emit(&format!("pty-delta-{workspace_id}-{label}"), bytes);
+        // Replace, rather than append: this is a complete handoff frame and
+        // must cut any pre-enable mailbox transcript.
+        if !state.replace_pane_delta_frame(workspace_id, pane_id, frame.clone()) {
+            if let Err(error) = emit_legacy_pane_delta(app, workspace_id, pane_id, frame) {
+                delta_mode_flag.store(false, Ordering::Release);
+                return Err(error);
+            }
         }
     } else {
         // Drain any in-flight pending_response so the PTY writer

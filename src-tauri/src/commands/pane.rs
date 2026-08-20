@@ -1426,6 +1426,8 @@ mod remote_resume_path_tests {
         .expect("codex profile");
         assert_eq!(planned.session_id, "sess-1");
         assert!(planned.argv.iter().any(|part| part == "sess-1"));
-        assert!(crate::commands::terminal::validate_agent_launch(&planned.executable, &cwd).is_ok());
+        assert!(
+            crate::commands::terminal::validate_agent_launch(&planned.executable, &cwd).is_ok()
+        );
     }
 }

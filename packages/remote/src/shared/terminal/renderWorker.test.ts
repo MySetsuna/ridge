@@ -18,6 +18,7 @@ import {
 	type RendererHandle,
 } from './renderWorker';
 import { isRenderWorkerRequest } from './renderWorker.protocol';
+import { SYNC_OUTPUT_TIMEOUT_MS } from './renderTransaction';
 
 const PANE = '00000000-0000-0000-0000-0000000000aa';
 const PANE_B = '00000000-0000-0000-0000-0000000000bb';
@@ -662,7 +663,8 @@ describe('renderWorker.handleRequest — wasm KernelAdapter wiring', () => {
 describe('renderWorker.handleRequest — Renderer adapter wiring (p4.8)', () => {
 	function makeMockKernel() {
 		return {
-			applyDeltaFrame: vi.fn<(bytes: Uint8Array) => void>(),
+			applyDeltaFrame: vi.fn<(bytes: Uint8Array) => boolean | void>(),
+			isSyncOutput: vi.fn(() => false),
 			resize: vi.fn<(rows: number, cols: number) => void>(),
 			free: vi.fn<() => void>(),
 		};
@@ -670,6 +672,7 @@ describe('renderWorker.handleRequest — Renderer adapter wiring (p4.8)', () => 
 	function makeMockRenderer() {
 		return {
 			render: vi.fn<() => void>(),
+			setPresentationCursorSuppressed: vi.fn<(suppressed: boolean) => void>(),
 			resize: vi.fn<(widthCss: number, heightCss: number, dpr: number) => void>(),
 			free: vi.fn<() => void>(),
 			configure: vi.fn(() => ({ cellW: 9, cellH: 18 })),
@@ -758,6 +761,93 @@ describe('renderWorker.handleRequest — Renderer adapter wiring (p4.8)', () => 
 		const kernelOrder = mocks.kernel.applyDeltaFrame.mock.invocationCallOrder[0];
 		const rendererOrder = mocks.renderer.render.mock.invocationCallOrder[0];
 		expect(kernelOrder).toBeLessThan(rendererOrder);
+	});
+
+	it('uses standard synchronized-output boundaries without an output delay', () => {
+		vi.useFakeTimers();
+		try {
+			const { state, mocks } = initAndBind();
+			mocks.renderer.render.mockClear();
+			mocks.kernel.isSyncOutput.mockReturnValue(true);
+
+			handleRequest(
+				state,
+				{ type: 'applyDelta', paneId: PANE, bytes: new Uint8Array([6]) },
+				mocks.adapter,
+			);
+			expect(mocks.renderer.render).not.toHaveBeenCalled();
+
+			mocks.kernel.isSyncOutput.mockReturnValue(false);
+			handleRequest(
+				state,
+				{ type: 'applyDelta', paneId: PANE, bytes: new Uint8Array([7]) },
+				mocks.adapter,
+			);
+			expect(mocks.renderer.render).toHaveBeenCalledOnce();
+			expect(getPaneState(state, PANE)?.syncStart).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('renders only one safety frame for a stuck synchronized-output transaction', () => {
+		vi.useFakeTimers();
+		try {
+			const { state, mocks } = initAndBind();
+			mocks.renderer.render.mockClear();
+			mocks.kernel.isSyncOutput.mockReturnValue(true);
+
+			handleRequest(
+				state,
+				{ type: 'applyDelta', paneId: PANE, bytes: new Uint8Array([6]) },
+				mocks.adapter,
+			);
+			vi.advanceTimersByTime(SYNC_OUTPUT_TIMEOUT_MS);
+			expect(mocks.renderer.render).toHaveBeenCalledOnce();
+
+			handleRequest(
+				state,
+				{ type: 'applyDelta', paneId: PANE, bytes: new Uint8Array([7]) },
+				mocks.adapter,
+			);
+			expect(mocks.renderer.render).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('settles a native repaint cursor without delaying grid paints', () => {
+		vi.useFakeTimers();
+		try {
+			const { state, mocks } = initAndBind();
+			mocks.renderer.render.mockClear();
+			mocks.kernel.applyDeltaFrame.mockReturnValue(true);
+
+			handleRequest(
+				state,
+				{ type: 'applyDelta', paneId: PANE, bytes: new Uint8Array([7]) },
+				mocks.adapter,
+			);
+			expect(mocks.renderer.setPresentationCursorSuppressed).toHaveBeenCalledWith(true);
+			expect(mocks.renderer.render).toHaveBeenCalledOnce();
+
+			vi.advanceTimersByTime(23);
+			expect(mocks.renderer.setPresentationCursorSuppressed).not.toHaveBeenCalledWith(false);
+			vi.advanceTimersByTime(1);
+			expect(mocks.renderer.setPresentationCursorSuppressed).toHaveBeenLastCalledWith(false);
+			expect(mocks.renderer.render).toHaveBeenCalledTimes(2);
+
+			mocks.renderer.render.mockClear();
+			mocks.kernel.applyDeltaFrame.mockReturnValue(false);
+			handleRequest(
+				state,
+				{ type: 'applyDelta', paneId: PANE, bytes: new Uint8Array([8]) },
+				mocks.adapter,
+			);
+			expect(mocks.renderer.render).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('does not repaint a replayed frame after a newer frame was accepted', () => {

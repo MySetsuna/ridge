@@ -195,21 +195,23 @@ async function foreground(cdp, workspaceId, paneId) {
 }
 
 function codexVisible(rows) {
-  return (rows ?? []).some((line) => /OpenAI Codex/i.test(line));
+  return (rows ?? []).some((line) => /(?:OpenAI Codex|RidgeCode)/i.test(line));
 }
 
 function latestCodexSegment(rows) {
   const values = rows ?? [];
   let start = -1;
   for (let index = 0; index < values.length; index++) {
-    if (/OpenAI Codex/i.test(values[index])) start = index;
+    if (/(?:OpenAI Codex|RidgeCode)/i.test(values[index])) start = index;
   }
   return start >= 0 ? values.slice(start) : [];
 }
 
-function shellPromptVisible(rows) {
+function shellPromptVisible(rows, cursor = null) {
+  const isPrompt = (line) => /^PS\s+[A-Za-z]:\\.*>\s*$/.test(line.trim());
+  if (cursor && Number.isInteger(cursor.row) && isPrompt(rows[cursor.row] || '')) return true;
   const last = [...(rows ?? [])].reverse().find((line) => line.trim().length > 0) ?? '';
-  return /^PS\s+[A-Za-z]:\\.*>\s*$/.test(last);
+  return isPrompt(last);
 }
 
 async function paneProbe(cdp, wantedPaneId) {
@@ -229,7 +231,7 @@ async function paneProbe(cdp, wantedPaneId) {
       rows: window.__windE2E.rows(item.paneId),
       cols: window.__windE2E.cols(item.paneId),
       anchor,
-      backend: item.element.dataset.rgBackend || null,
+      backend: window.__windE2E.backendName(item.paneId) || item.element.dataset.rgBackend || null,
     };
   })()`);
 }
@@ -411,6 +413,19 @@ async function switchWorkspaceRoundTrip(cdp, originalWorkspaceId, paneId) {
 
 async function exitCodex(cdp, workspaceId, paneId) {
   let last = null;
+  const waitForShellPrompt = async (maxMs = 45_000) => waitUntil(async () => {
+    const rows = await visibleRows(cdp, paneId);
+    const cursor = await hookCall(cdp, 'kernelCursor', paneId);
+    last = { tail: rows.slice(-8), cursor, state: await hookCall(cdp, 'kernelDecState', paneId) };
+    return shellPromptVisible(rows, cursor) ? true : null;
+  }, 'Codex return to PowerShell', maxMs).catch(() => false);
+  const waitForTerminalOwner = async (maxMs = 45_000) => waitUntil(async () => {
+    const rows = await visibleRows(cdp, paneId);
+    const cursor = await hookCall(cdp, 'kernelCursor', paneId);
+    last = { tail: rows.slice(-8), cursor, state: await hookCall(cdp, 'kernelDecState', paneId) };
+    if (shellPromptVisible(rows, cursor)) return 'shell';
+    return codexVisible(rows) ? 'codex' : null;
+  }, 'terminal owner (PowerShell or Codex)', maxMs).catch(() => null);
   const probeShell = async () => {
     const shellChallenge = `ridge_shell_ready_${crypto.randomBytes(8).toString('hex')}`;
     const shellExpected = shellChallenge.toUpperCase();
@@ -422,23 +437,36 @@ async function exitCodex(cdp, workspaceId, paneId) {
     );
     return waitUntil(async () => {
       const rows = await visibleRows(cdp, paneId);
-      last = { tail: rows.slice(-8), state: await hookCall(cdp, 'kernelDecState', paneId) };
+      const cursor = await hookCall(cdp, 'kernelCursor', paneId);
+      last = { tail: rows.slice(-8), cursor, state: await hookCall(cdp, 'kernelDecState', paneId) };
       return compact(rows).includes(shellExpected) ? true : null;
     }, 'PowerShell execution probe', 1_500).catch(() => false);
   };
 
-  if (await probeShell()) return true;
+  // Do not inject a PowerShell probe into a live Codex composer: that turns
+  // the probe into agent input and makes the next exit attempt ambiguous.
+  // Cold kernel activation legitimately takes longer than the app-ready hook,
+  // so establish one visible terminal owner before emitting any test input.
+  const owner = await waitForTerminalOwner();
+  if (owner === 'shell') return probeShell();
+  if (owner !== 'codex') {
+    throw new Error(`neither PowerShell nor Codex owns the pane: ${JSON.stringify(last)}`);
+  }
   for (let attempt = 0; attempt < 2; attempt++) {
     // Clear the shell probe if it landed in Codex's composer, then use Codex's
     // application-level exit command. Ctrl-D can close the parent PowerShell;
     // Ctrl-C alone only clears the composer in current Codex TUI releases.
     await writePty(cdp, workspaceId, paneId, '\x03');
     await sleep(150);
+    // Codex can exit on its own while an MCP startup failure is being
+    // reported. Re-check ownership before `/quit`; otherwise that command
+    // becomes accidental PowerShell input after the process has returned.
+    if (await waitForShellPrompt(800)) return probeShell();
     await writePty(cdp, workspaceId, paneId, '/quit\r');
     // Codex may paint shutdown immediately but keep the process alive while
-    // in-process services flush; do not inject a shell probe into that window.
-    await sleep(22_000);
-    if (await probeShell()) return true;
+    // in-process services flush. Poll the prompt passively; only prove the
+    // shell after it actually owns the input line again.
+    if (await waitForShellPrompt()) return probeShell();
   }
   throw new Error(`Codex TUI remained after bounded exit attempts: ${JSON.stringify(last)}`);
 }
@@ -511,8 +539,10 @@ async function testOutputBurst(cdp, workspaceId, paneId, lineCount, mode, interv
   await cdp.evaluate(`(() => {
     window.__ridgeTermProbe.reset();
     window.__RIDGE_PERF_TRACE = true;
+    window.__ridgePtyDeltaTrace = [];
     performance.clearMeasures('rg.ptyDelta.apply');
     performance.clearMeasures('rg.ptyText.feed');
+    performance.clearMeasures('rg.terminal.render');
     window.__ridgeBurstFrameProbe?.stop?.();
     const state = { frames: [], raf: 0, last: performance.now() };
     const tick = (now) => {
@@ -561,10 +591,8 @@ async function testOutputBurst(cdp, workspaceId, paneId, lineCount, mode, interv
     await waitUntil(async () => compact(await visibleRows(cdp, paneId)).includes(marker), 'native delta output burst', 30_000);
     await sleep(250);
     return cdp.evaluate(`(() => {
-      const summarize = (name) => {
-        const values = performance.getEntriesByName(name)
-          .map((entry) => entry.duration)
-          .sort((a, b) => a - b);
+      const summarizeValues = (input) => {
+        const values = [...input].sort((a, b) => a - b);
         const quantile = (p) => values.length ? Math.round(values[Math.floor((values.length - 1) * p)] * 100) / 100 : 0;
         return {
           count: values.length,
@@ -573,6 +601,9 @@ async function testOutputBurst(cdp, workspaceId, paneId, lineCount, mode, interv
           total: Math.round(values.reduce((sum, value) => sum + value, 0) * 100) / 100,
         };
       };
+      const summarize = (name) => summarizeValues(
+        performance.getEntriesByName(name).map((entry) => entry.duration),
+      );
       return {
         lines: ${lineCount},
         mode: ${JSON.stringify(mode)},
@@ -580,7 +611,9 @@ async function testOutputBurst(cdp, workspaceId, paneId, lineCount, mode, interv
         scrollbackBefore: ${scrollbackBefore ?? 'null'},
         scrollbackAfter: window.__windE2E.scrollbackLen(${JSON.stringify(paneId)}),
         delta: summarize('rg.ptyDelta.apply'),
+        deltaBytes: summarizeValues(window.__ridgePtyDeltaTrace || []),
         text: summarize('rg.ptyText.feed'),
+        render: summarize('rg.terminal.render'),
         eventLoop: window.__ridgeTermProbe.read(),
         frame: window.__ridgeBurstFrameProbe.read(),
       };
@@ -588,8 +621,10 @@ async function testOutputBurst(cdp, workspaceId, paneId, lineCount, mode, interv
   } finally {
     await cdp.evaluate(`(() => {
       window.__RIDGE_PERF_TRACE = false;
+      delete window.__ridgePtyDeltaTrace;
       performance.clearMeasures('rg.ptyDelta.apply');
       performance.clearMeasures('rg.ptyText.feed');
+      performance.clearMeasures('rg.terminal.render');
       window.__ridgeBurstFrameProbe?.stop?.();
       delete window.__ridgeBurstFrameProbe;
     })()`).catch(() => {});
@@ -640,7 +675,7 @@ try {
   paneId = initial.paneId;
   summary.workspaceId = workspaceId;
   summary.paneId = paneId;
-  summary.backend = await cdp.evaluate(`document.querySelector(${JSON.stringify(`.rg-pane-container[data-rg-pane-id="${paneId}"]`)})?.dataset.rgBackend || null`);
+  summary.backend = await hookCall(cdp, 'backendName', paneId);
   await waitUntil(async () => {
     await writePty(cdp, workspaceId, paneId, '');
     return true;
@@ -660,14 +695,14 @@ try {
     await writePty(cdp, workspaceId, paneId, `${codexLaunch}\r`);
     await waitUntil(async () => {
       const rows = await visibleRows(cdp, paneId);
-      return codexVisible(rows) && !shellPromptVisible(rows) ? true : null;
+      return codexVisible(rows) && !shellPromptVisible(rows, await hookCall(cdp, 'kernelCursor', paneId)) ? true : null;
     }, 'Codex TUI first frame', 45_000);
     summary.foregroundProcess = await foreground(cdp, workspaceId, paneId).catch(() => null);
     let sawMcpStartup = false;
     const readinessStartedAt = Date.now();
     await waitUntil(async () => {
       const rows = await visibleRows(cdp, paneId);
-      if (shellPromptVisible(rows)) throw new Error('Codex returned to PowerShell during MCP startup');
+      if (shellPromptVisible(rows, await hookCall(cdp, 'kernelCursor', paneId))) throw new Error('Codex returned to PowerShell during MCP startup');
       const segment = latestCodexSegment(rows);
       const starting = segment.some((line) => /Starting MCP servers/i.test(line));
       if (starting) sawMcpStartup = true;
@@ -718,7 +753,14 @@ try {
   if (caret && caret !== 'transparent' && !/rgba\([^)]*,\s*0\)$/.test(caret)) throw new Error(`native textarea caret is visible: ${caret}`);
   summary.screenshots.push(await capture(cdp, '04-recovered.png'));
 
-  await exitCodex(cdp, workspaceId, paneId);
+  if (fixtureOnly) {
+    const rows = await visibleRows(cdp, paneId);
+    if (!shellPromptVisible(rows, await hookCall(cdp, 'kernelCursor', paneId))) {
+      throw new Error('fixture-only run requires an already visible PowerShell prompt');
+    }
+  } else {
+    await exitCodex(cdp, workspaceId, paneId);
+  }
   summary.gray = await testIndexedGrayForeground(cdp, workspaceId, paneId);
   if (summary.gray.indexedCellCount < 8 || !summary.gray.text.includes('RIDGE_INDEXED_GRAY')) {
     throw new Error(`indexed gray foreground was not preserved: ${JSON.stringify(summary.gray)}`);
@@ -767,7 +809,7 @@ try {
       summary.lastRows = rows;
       summary.lastDecState = await hookCall(cdp, 'kernelDecState', paneId);
       summary.screenshots.push(await capture(cdp, '99-failure.png'));
-      if (codexVisible(rows) && !shellPromptVisible(rows)) await exitCodex(cdp, workspaceId, paneId);
+      if (codexVisible(rows) && !shellPromptVisible(rows, await hookCall(cdp, 'kernelCursor', paneId))) await exitCodex(cdp, workspaceId, paneId);
     } catch { /* the dev page may already be gone */ }
   }
 } finally {

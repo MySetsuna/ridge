@@ -1666,7 +1666,10 @@ mod tests {
 
         assert_eq!(planned.executable, "grok");
         assert!(planned.argv.iter().any(|part| part == "--resume"));
-        assert!(planned.argv.iter().any(|part| part == "019fb572-test-session"));
+        assert!(planned
+            .argv
+            .iter()
+            .any(|part| part == "019fb572-test-session"));
         assert_eq!(planned.cwd, cwd);
         assert_eq!(planned.session_id, "019fb572-test-session");
     }

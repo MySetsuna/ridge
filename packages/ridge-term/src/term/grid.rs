@@ -168,9 +168,28 @@ const ED_SUPPRESS_AFTER_CTRL_C_MS: i64 = 500;
 /// two distinct frames.
 const RENDER_BURST_GAP_MS: i64 = 120;
 
+/// One physical viewport scroll. The native delta producer consumes these
+/// records to move its snapshot by row identity instead of reserializing every
+/// row that merely changed vertical position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollOp {
+    pub top: usize,
+    pub bottom: usize,
+    pub count: usize,
+    pub up: bool,
+}
+
 pub struct Grid {
     rows: usize,
     cols: usize,
+    /// Source for per-row revisions. Native delta production uses this as a
+    /// damage map instead of rebuilding a full-screen snapshot per PTY packet.
+    row_revision_seq: u64,
+    /// Pending physical scrolls since the producer last built a delta frame.
+    /// A renderer shifts its stored pixels from these records; row revisions
+    /// stay attached to moved content so the delta producer can still detect
+    /// a write that happened before that content scrolled.
+    pending_scroll_ops: Vec<ScrollOp>,
     primary: Screen,
     alt: Screen,
     /// `false` = primary is active, `true` = alt is active.
@@ -217,6 +236,11 @@ pub struct Grid {
     /// helper anchor) keeps its "last absolute LANDING" semantics — adding
     /// redraw CSIs there would corrupt the anchor.
     last_redraw_csi_at_ms: i64,
+    /// Monotonic parser-side signal for a repaint walk. Unlike the long-lived
+    /// inline-TUI heuristic, this marks only the current feed batch and is
+    /// forwarded in DeltaFrame so the browser can hide transient cursors
+    /// without guessing from incomplete mirror mode state.
+    render_activity_seq: u64,
     /// Timestamp of the most recent Ctrl+C the user sent to this pane.
     /// Within `CTRL_C_GRACE_MS` of this timestamp,
     /// `is_inline_tui_active_at` returns false unconditionally — even
@@ -290,6 +314,8 @@ impl Grid {
         Self {
             rows,
             cols,
+            row_revision_seq: 0,
+            pending_scroll_ops: Vec::new(),
             primary: Screen::new(rows, cols),
             alt: Screen::new(rows, cols),
             is_alt: false,
@@ -301,6 +327,7 @@ impl Grid {
             last_abs_csi_row: 0,
             last_abs_csi_col: 0,
             last_redraw_csi_at_ms: 0,
+            render_activity_seq: 0,
             last_ctrl_c_at_ms: 0,
             ed_suppressed_until_ms: 0,
             last_tui_signal_at_ms: 0,
@@ -337,6 +364,7 @@ impl Grid {
         for row in &mut self.screen_mut().rows {
             row.fill_blank(bce);
         }
+        self.touch_all_active_rows();
         self.cursor_to(0, 0);
         self.clear_scrollback();
     }
@@ -358,6 +386,7 @@ impl Grid {
                 screen.cursor.row = 0;
                 screen.cursor.col = cursor.col;
             }
+            self.touch_active_rows(0, 1);
         }
     }
 
@@ -402,6 +431,17 @@ impl Grid {
     pub fn note_absolute_positioning(&mut self, now_ms: i64) {
         let cur = self.screen().cursor;
         let row = cur.row.min(u16::MAX as usize) as u16;
+        let col = cur.col.min(u16::MAX as usize) as u16;
+        // A position command that rewinds from the previous landing is the
+        // telltale first step of an inline repaint (Codex/Ink's walk back to
+        // the frame top). Forward-only positioning is common in normal output
+        // and must stay on the immediate presentation path.
+        if self.last_abs_csi_at_ms != 0
+            && (row < self.last_abs_csi_row
+                || (row == self.last_abs_csi_row && col < self.last_abs_csi_col))
+        {
+            self.render_activity_seq = self.render_activity_seq.wrapping_add(1);
+        }
         // §sticky-inline-tui — track the minimum row within a render burst.
         // Consecutive abs-CSIs within RENDER_BURST_GAP_MS belong to the same
         // frame paint; the burst minimum is the frame TOP (box border above the
@@ -416,7 +456,7 @@ impl Grid {
         }
         self.last_abs_csi_at_ms = now_ms;
         self.last_abs_csi_row = row;
-        self.last_abs_csi_col = cur.col.min(u16::MAX as usize) as u16;
+        self.last_abs_csi_col = col;
     }
 
     /// §sticky-inline-tui — latch the pane as inline-TUI. Called from the parser
@@ -480,6 +520,7 @@ impl Grid {
         for r in &mut screen.rows {
             r.fill_blank(Cell::EMPTY);
         }
+        self.touch_all_active_rows();
     }
 
     /// §A.4 (2026-05-08) — record an EL/ED/CUU/CUD dispatch. Only the
@@ -489,6 +530,14 @@ impl Grid {
     /// from `last_abs_csi_position()`.
     pub fn note_redraw_csi(&mut self, now_ms: i64) {
         self.last_redraw_csi_at_ms = now_ms;
+        self.render_activity_seq = self.render_activity_seq.wrapping_add(1);
+    }
+
+    /// Current repaint-activity generation. PaneParser samples this before
+    /// and after one raw PTY feed; an advance means the emitted DeltaFrame is
+    /// an intermediate redraw state rather than a stable shell update.
+    pub fn render_activity_seq(&self) -> u64 {
+        self.render_activity_seq
     }
 
     /// Record that the user just sent Ctrl+C (ETX `\x03`) to this pane.
@@ -708,6 +757,45 @@ impl Grid {
         }
     }
 
+    fn next_row_revision(&mut self) -> u64 {
+        let next = self.row_revision_seq.wrapping_add(1);
+        self.row_revision_seq = if next == 0 || next == u64::MAX {
+            1
+        } else {
+            next
+        };
+        self.row_revision_seq
+    }
+
+    fn touch_screen_rows(&mut self, alt: bool, start: usize, end: usize) {
+        let revision = self.next_row_revision();
+        let screen = if alt {
+            &mut self.alt
+        } else {
+            &mut self.primary
+        };
+        let start = start.min(screen.rows.len());
+        let end = end.min(screen.rows.len());
+        for row in &mut screen.rows[start..end] {
+            row.set_revision(revision);
+        }
+    }
+
+    fn touch_active_rows(&mut self, start: usize, end: usize) {
+        self.touch_screen_rows(self.is_alt, start, end);
+    }
+
+    fn touch_all_active_rows(&mut self) {
+        self.touch_active_rows(0, self.rows);
+    }
+
+    fn touch_all_screens(&mut self) {
+        let primary_rows = self.primary.rows.len();
+        let alt_rows = self.alt.rows.len();
+        self.touch_screen_rows(false, 0, primary_rows);
+        self.touch_screen_rows(true, 0, alt_rows);
+    }
+
     pub fn cursor(&self) -> &Cursor {
         &self.screen().cursor
     }
@@ -722,6 +810,20 @@ impl Grid {
         self.screen().rows.get(idx)
     }
 
+    /// Per-row content revision for native delta producers. `None` follows
+    /// `row()` semantics for an out-of-range request.
+    pub fn row_revision(&self, idx: usize) -> Option<u64> {
+        self.row(idx).map(Row::revision)
+    }
+
+    /// Drain physical viewport scrolls since the previous consumer pass.
+    /// `PaneParser` is the native producer consumer; the wasm mirror applies
+    /// `GridDelta::Scroll` directly and deliberately does not enqueue another
+    /// producer-side operation.
+    pub fn take_scroll_ops(&mut self) -> Vec<ScrollOp> {
+        std::mem::take(&mut self.pending_scroll_ops)
+    }
+
     /// Mutable row access on the active screen. Added for the P3.4
     /// delta-apply path so `Terminal::apply_delta` can overwrite cell
     /// contents from a `GridDelta::Cells` payload without having to
@@ -731,6 +833,7 @@ impl Grid {
     /// such writes rather than treat them as errors — the producer
     /// (`PaneParser`) only emits in-bounds rows.
     pub fn row_mut(&mut self, idx: usize) -> Option<&mut Row> {
+        self.touch_active_rows(idx, idx.saturating_add(1));
         self.screen_mut().rows.get_mut(idx)
     }
 
@@ -783,6 +886,7 @@ impl Grid {
                 None => target.clear_cluster_at(target_col),
             }
         }
+        self.touch_active_rows(row, row.saturating_add(1));
     }
 
     /// Switch to alt screen (DECSET 1049 / 47 / 1047). Idempotent.
@@ -801,6 +905,7 @@ impl Grid {
             self.alt.cursor = Cursor::default();
             self.alt.scroll_top = 0;
             self.alt.scroll_bottom = self.rows.saturating_sub(1);
+            self.touch_all_active_rows();
         }
     }
 
@@ -892,6 +997,9 @@ impl Grid {
         let (branch, reflowed) = self.resize_screens(rows, cols, inline_tui_active);
         self.rows = rows;
         self.cols = cols;
+        // Reflow, truncation, and padded rows can relocate content even when
+        // individual cells were not written through a normal mutator.
+        self.touch_all_screens();
         self.record_resize_diag(ResizeDiag {
             old_rows,
             old_cols,
@@ -1035,12 +1143,7 @@ impl Grid {
     /// intact. Hyperlink / cluster sidecars (OSC 8, ZWJ-emoji) are dropped on
     /// reflow — they're ephemeral and the cell's `ch`/`width` render fine.
     /// `boundary == 0` with no wrapped scrollback tail → no history → no-op.
-    fn reflow_primary_history(
-        &mut self,
-        old_cols: usize,
-        new_cols: usize,
-        boundary: usize,
-    ) {
+    fn reflow_primary_history(&mut self, old_cols: usize, new_cols: usize, boundary: usize) {
         debug_assert!(old_cols != new_cols);
         // A zero-width grid has no columns to wrap into — bail and let the
         // naive path handle the (degenerate) resize. Guards the indexing in
@@ -1055,12 +1158,7 @@ impl Grid {
             return;
         }
         let out_rows = Self::reflow_rows(&src, new_cols);
-        self.layout_reflowed_history(
-            out_rows,
-            boundary,
-            total_rows,
-            new_cols,
-        );
+        self.layout_reflowed_history(out_rows, boundary, total_rows, new_cols);
     }
 
     fn reflow_source_rows(&mut self, boundary: usize) -> Vec<Row> {
@@ -1287,6 +1385,7 @@ impl Grid {
         self.screen_mut().cursor.pending_wrap = false;
         let row = self.screen().cursor.row;
         self.screen_mut().rows[row].wrapped = true;
+        self.touch_active_rows(row, row.saturating_add(1));
         self.screen_mut().cursor.col = 0;
         self.linefeed();
     }
@@ -1301,6 +1400,7 @@ impl Grid {
             self.screen_mut().rows[cursor.row].cells[cursor.col] = Cell::new(' ', attr_id, 1);
         }
         self.screen_mut().rows[cursor.row].wrapped = true;
+        self.touch_active_rows(cursor.row, cursor.row.saturating_add(1));
         self.screen_mut().cursor.col = 0;
         self.linefeed();
     }
@@ -1342,6 +1442,7 @@ impl Grid {
             self.screen_mut().cursor.col = self.cols - 1;
             self.screen_mut().cursor.pending_wrap = true;
         }
+        self.touch_active_rows(row, row.saturating_add(1));
     }
 
     pub fn print_grapheme(&mut self, s: &str, attrs: Attrs) {
@@ -1623,6 +1724,7 @@ impl Grid {
         for row in (row + 1)..self.rows {
             self.screen_mut().rows[row].fill_blank(bce);
         }
+        self.touch_active_rows(row.saturating_add(1), self.rows);
     }
 
     fn erase_display_above(&mut self, row: usize, col: usize) {
@@ -1630,6 +1732,7 @@ impl Grid {
         for row in 0..row {
             self.screen_mut().rows[row].fill_blank(bce);
         }
+        self.touch_active_rows(0, row);
         self.erase_row_range(row, 0, col + 1);
     }
 
@@ -1645,6 +1748,7 @@ impl Grid {
         for row in &mut self.screen_mut().rows {
             row.fill_blank(bce);
         }
+        self.touch_all_active_rows();
         if !self.is_alt && !self.inline_tui_sticky {
             self.clear_scrollback();
         }
@@ -1700,6 +1804,7 @@ impl Grid {
             // redraws (TASKS §1.18.b residue symptom).
             clip_hyperlinks_around(&mut r.hyperlinks, start, clamped_end);
         }
+        self.touch_active_rows(row, row.saturating_add(1));
     }
 
     // ------------------------------------------------------------------
@@ -1736,6 +1841,7 @@ impl Grid {
             // range must be clipped or dropped. (TASKS §1.18.b.)
             clip_hyperlinks_around(&mut r.hyperlinks, cur_col, clamped_end);
         }
+        self.touch_active_rows(cur_row, cur_row.saturating_add(1));
         // ECH explicitly clears pending_wrap per xterm spec.
         self.cursor_mut().pending_wrap = false;
     }
@@ -1756,6 +1862,7 @@ impl Grid {
             Self::repair_insert_boundaries(r, cur_col, n, cols);
             Self::shift_inserted_cells(r, cur_col, n, cols, bce);
         }
+        self.touch_active_rows(cur_row, cur_row.saturating_add(1));
         self.cursor_mut().pending_wrap = false;
     }
 
@@ -1808,27 +1915,39 @@ impl Grid {
         uri: &str,
         id: Option<&str>,
     ) {
-        let Some(r) = self.screen_mut().rows.get_mut(row) else {
-            return;
-        };
-        let end = col + width.max(1);
-        if let Some(last) = r.hyperlinks.last_mut() {
-            let id_match = match (&last.id, id) {
-                (None, None) => true,
-                (Some(a), Some(b)) => a == b,
-                _ => false,
-            };
-            if last.col_end == col && last.uri == uri && id_match {
-                last.col_end = end;
+        {
+            let Some(r) = self.screen_mut().rows.get_mut(row) else {
                 return;
+            };
+            let end = col + width.max(1);
+            if let Some(last) = r.hyperlinks.last_mut() {
+                let id_match = match (&last.id, id) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => a == b,
+                    _ => false,
+                };
+                if last.col_end == col && last.uri == uri && id_match {
+                    last.col_end = end;
+                } else {
+                    r.hyperlinks.push(super::cell::HyperlinkSpan {
+                        col_start: col,
+                        col_end: end,
+                        uri: uri.to_string(),
+                        id: id.map(|s| s.to_string()),
+                    });
+                }
+            } else {
+                r.hyperlinks.push(super::cell::HyperlinkSpan {
+                    col_start: col,
+                    col_end: end,
+                    uri: uri.to_string(),
+                    id: id.map(|s| s.to_string()),
+                });
             }
         }
-        r.hyperlinks.push(super::cell::HyperlinkSpan {
-            col_start: col,
-            col_end: end,
-            uri: uri.to_string(),
-            id: id.map(|s| s.to_string()),
-        });
+        // Underlines are renderer-visible even though they carry no cells
+        // in a native delta, so link-only mutations must dirty this row.
+        self.touch_active_rows(row, row.saturating_add(1));
     }
 
     /// DCH `CSI <n> P` — delete N cells at the cursor, shifting the
@@ -1869,6 +1988,7 @@ impl Grid {
             // — see ICH for rationale. (TASKS §1.18.b extension.)
             r.hyperlinks.retain(|span| span.col_end <= cur_col);
         }
+        self.touch_active_rows(cur_row, cur_row.saturating_add(1));
         self.cursor_mut().pending_wrap = false;
     }
 
@@ -1877,17 +1997,39 @@ impl Grid {
     // ------------------------------------------------------------------
 
     /// Internal: scroll the active screen's scroll region up by `n` rows.
-    /// New blank rows appear at scroll_bottom; rows leaving scroll_top
-    /// enter scrollback ONLY if (a) we're on the primary screen AND
-    /// (b) the region covers the entire screen.
+    /// New blank rows appear at scroll_bottom; rows leaving scroll_top enter
+    /// scrollback only for a full primary-screen region.
     fn scroll_region_up(&mut self, n: usize) {
-        let bce = self.bce_cell();
-        let scr = self.screen();
-        let top = scr.scroll_top;
-        let bottom = scr.scroll_bottom;
+        let is_alt = self.is_alt;
+        let (top, bottom, push_to_scrollback) = {
+            let screen = self.screen();
+            (
+                screen.scroll_top,
+                screen.scroll_bottom,
+                !is_alt && screen.is_full_region(),
+            )
+        };
+        self.scroll_region_up_in(top, bottom, n, push_to_scrollback, true, false);
+    }
+
+    fn scroll_region_up_in(
+        &mut self,
+        top: usize,
+        bottom: usize,
+        n: usize,
+        push_to_scrollback: bool,
+        record_scroll: bool,
+        redraw_moved_rows: bool,
+    ) {
+        if top > bottom {
+            return;
+        }
         let region_h = bottom - top + 1;
         let n = n.min(region_h);
-        let push_to_scrollback = !self.is_alt && scr.is_full_region();
+        if n == 0 {
+            return;
+        }
+        let bce = self.bce_cell();
         let cols = self.cols;
 
         for _ in 0..n {
@@ -1896,7 +2038,6 @@ impl Grid {
             // directly (alt screen / partial region: no scrollback push).
             let evicted_top = self.screen_mut().rows.remove(top);
 
-            // The new bottom row: prefer recycling an evicted scrollback row.
             let new_bottom = if push_to_scrollback {
                 match self.scrollback.push(evicted_top) {
                     Some(mut recycled) => {
@@ -1919,23 +2060,53 @@ impl Grid {
                 row
             };
 
-            // Insert the new blank at `bottom`. Because we just removed at
-            // `top`, the indices [top..bottom-1] shifted down by one — so
-            // inserting at `bottom` puts it right after the last region row.
+            // Because one row was removed at `top`, inserting at `bottom`
+            // puts the blank immediately after the shifted region.
             self.screen_mut().rows.insert(bottom, new_bottom);
+        }
+        if redraw_moved_rows {
+            self.touch_active_rows(top, bottom.saturating_add(1));
+        } else {
+            self.touch_active_rows(bottom + 1 - n, bottom.saturating_add(1));
+        }
+        if record_scroll {
+            self.pending_scroll_ops.push(ScrollOp {
+                top,
+                bottom,
+                count: n,
+                up: true,
+            });
         }
         self.cursor_mut().pending_wrap = false;
     }
 
     /// Internal: scroll the active region down by `n` rows. New blank rows
-    /// at scroll_top, rows leaving scroll_bottom dropped (no scrollback).
+    /// appear at scroll_top; rows leaving scroll_bottom are discarded.
     fn scroll_region_down(&mut self, n: usize) {
-        let bce = self.bce_cell();
-        let scr = self.screen();
-        let top = scr.scroll_top;
-        let bottom = scr.scroll_bottom;
+        let (top, bottom) = {
+            let screen = self.screen();
+            (screen.scroll_top, screen.scroll_bottom)
+        };
+        self.scroll_region_down_in(top, bottom, n, true, false);
+    }
+
+    fn scroll_region_down_in(
+        &mut self,
+        top: usize,
+        bottom: usize,
+        n: usize,
+        record_scroll: bool,
+        redraw_moved_rows: bool,
+    ) {
+        if top > bottom {
+            return;
+        }
         let region_h = bottom - top + 1;
         let n = n.min(region_h);
+        if n == 0 {
+            return;
+        }
+        let bce = self.bce_cell();
         let cols = self.cols;
 
         for _ in 0..n {
@@ -1945,7 +2116,38 @@ impl Grid {
             recycled.resize(cols);
             self.screen_mut().rows.insert(top, recycled);
         }
+        if redraw_moved_rows {
+            self.touch_active_rows(top, bottom.saturating_add(1));
+        } else {
+            self.touch_active_rows(top, top + n);
+        }
+        if record_scroll {
+            self.pending_scroll_ops.push(ScrollOp {
+                top,
+                bottom,
+                count: n,
+                up: false,
+            });
+        }
         self.cursor_mut().pending_wrap = false;
+    }
+
+    /// Apply a producer-emitted viewport scroll to a delta mirror. Scrollback
+    /// has already been synchronized by `ScrollbackAppend`, so this never
+    /// pushes history. Record the move for the renderer's pixel scroll-copy;
+    /// the Cell deltas that follow describe only rows actually rewritten.
+    pub fn apply_scroll_delta(&mut self, top: usize, bottom: usize, count: usize, up: bool) {
+        let last = self.rows.saturating_sub(1);
+        let top = top.min(last);
+        let bottom = bottom.min(last);
+        if top > bottom {
+            return;
+        }
+        if up {
+            self.scroll_region_up_in(top, bottom, count, false, true, false);
+        } else {
+            self.scroll_region_down_in(top, bottom, count, true, false);
+        }
     }
 
     /// CSI S — scroll up. Operates on the scroll region.
@@ -1991,6 +2193,7 @@ impl Grid {
             recycled.resize(cols);
             self.screen_mut().rows.insert(cur, recycled);
         }
+        self.touch_active_rows(cur, bottom.saturating_add(1));
         let cur_mut = self.cursor_mut();
         cur_mut.col = 0;
         cur_mut.pending_wrap = false;
@@ -2016,6 +2219,7 @@ impl Grid {
             recycled.resize(cols);
             self.screen_mut().rows.insert(bottom, recycled);
         }
+        self.touch_active_rows(cur, bottom.saturating_add(1));
         let cur_mut = self.cursor_mut();
         cur_mut.col = 0;
         cur_mut.pending_wrap = false;
@@ -2120,6 +2324,58 @@ fn clip_hyperlinks_around(spans: &mut Vec<super::cell::HyperlinkSpan>, start: us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_revisions_track_content_but_not_cursor_motion() {
+        let mut g = Grid::new(3, 8, 0);
+        let initial: Vec<u64> = (0..3).map(|row| g.row_revision(row).unwrap()).collect();
+
+        g.cursor_to(1, 2);
+        assert_eq!(
+            (0..3)
+                .map(|row| g.row_revision(row).unwrap())
+                .collect::<Vec<_>>(),
+            initial,
+            "cursor-only VT operations must not make a row redraw"
+        );
+
+        g.print('X', Attrs::DEFAULT);
+        assert_eq!(g.row_revision(0), Some(initial[0]));
+        assert_ne!(g.row_revision(1), Some(initial[1]));
+        assert_eq!(g.row_revision(2), Some(initial[2]));
+
+        let before_link = g.row_revision(1);
+        g.annotate_cell_with_link(1, 2, 1, "https://example.com", None);
+        assert_ne!(
+            g.row_revision(1),
+            before_link,
+            "link spans are renderer-visible row mutations"
+        );
+
+        let before_scroll: Vec<u64> = (0..3).map(|row| g.row_revision(row).unwrap()).collect();
+        g.scroll_up(1);
+        assert_eq!(
+            g.row_revision(0),
+            Some(before_scroll[1]),
+            "moved content keeps its revision for delta and renderer moves"
+        );
+        assert_eq!(g.row_revision(1), Some(before_scroll[2]));
+        assert_ne!(
+            g.row_revision(2),
+            Some(before_scroll[0]),
+            "only the newly exposed blank row needs fresh damage"
+        );
+        assert_eq!(
+            g.take_scroll_ops(),
+            vec![ScrollOp {
+                top: 0,
+                bottom: 2,
+                count: 1,
+                up: true,
+            }],
+            "producer must receive the physical viewport move separately from row damage"
+        );
+    }
 
     /// BCE: when the pen carries a non-default background, EL all should
     /// fill blanked cells with `bg = pen.bg` (default fg, no flags). The
@@ -2789,7 +3045,10 @@ mod tests {
         assert_eq!(g.cursor().col, 0, "cursor homed on inline-TUI wipe");
 
         let diag = g.last_resize_diags().last().expect("resize recorded");
-        assert!(!diag.inline_tui_wipe, "destructive resize wipe stays disabled");
+        assert!(
+            !diag.inline_tui_wipe,
+            "destructive resize wipe stays disabled"
+        );
         assert!(diag.inline_tui_active, "heuristic snapshot recorded");
         assert!(!diag.wipe_fired, "alt-screen wipe did NOT fire on primary");
         assert!(
@@ -3439,6 +3698,32 @@ mod tests {
             g.last_abs_csi_position().is_none(),
             "redraw CSIs must not register as absolute landings"
         );
+    }
+
+    #[test]
+    fn render_activity_marks_repaint_walks_but_not_forward_positioning() {
+        let mut g = Grid::new(6, 20, 0);
+        g.cursor_to(4, 6);
+        g.note_absolute_positioning(1_000);
+        let baseline = g.render_activity_seq();
+
+        g.cursor_to(4, 12);
+        g.note_absolute_positioning(1_001);
+        assert_eq!(
+            g.render_activity_seq(),
+            baseline,
+            "forward absolute positioning is ordinary output, not a repaint walk"
+        );
+
+        g.cursor_to(2, 0);
+        g.note_absolute_positioning(1_002);
+        assert!(
+            g.render_activity_seq() > baseline,
+            "rewinding to an earlier row starts an inline repaint transaction"
+        );
+        let after_rewind = g.render_activity_seq();
+        g.note_redraw_csi(1_003);
+        assert!(g.render_activity_seq() > after_rewind);
     }
 
     // ------------------------------------------------------------------

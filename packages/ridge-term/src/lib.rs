@@ -34,6 +34,8 @@
 //! round 2.4 adds the `TerminalManager` that owns multiple kernels and
 //! renders them onto a shared surface.
 
+use std::cell::RefCell;
+
 use wasm_bindgen::prelude::*;
 
 pub mod input;
@@ -91,6 +93,82 @@ pub struct JsTerminal {
     /// which is where the previous JS-side `tuiGate` leaked (Claude
     /// Code menu transitions briefly show the cursor between frames).
     last_tui_signal_at_ms: i64,
+    /// Physical viewport moves awaiting the next renderer pass. The parser
+    /// drains Grid's producer queue independently; this copy drives the
+    /// renderer's pixel scroll path.
+    render_scroll_ops: RefCell<Vec<crate::term::grid::ScrollOp>>,
+}
+
+impl JsTerminal {
+    fn capture_render_scroll_ops(&mut self) {
+        let ops = self.inner.take_scroll_ops();
+        if !ops.is_empty() {
+            append_render_scroll_ops(&mut self.render_scroll_ops.borrow_mut(), ops);
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn take_render_scroll_ops(&self) -> Vec<crate::term::grid::ScrollOp> {
+        std::mem::take(&mut *self.render_scroll_ops.borrow_mut())
+    }
+}
+
+fn append_render_scroll_ops(
+    target: &mut Vec<crate::term::grid::ScrollOp>,
+    ops: Vec<crate::term::grid::ScrollOp>,
+) {
+    for op in ops {
+        if let Some(last) = target
+            .last_mut()
+            .filter(|last| last.top == op.top && last.bottom == op.bottom && last.up == op.up)
+        {
+            let height = last.bottom.saturating_sub(last.top).saturating_add(1);
+            last.count = last.count.saturating_add(op.count).min(height);
+        } else {
+            target.push(op);
+        }
+    }
+}
+
+#[cfg(test)]
+mod render_scroll_op_tests {
+    use super::append_render_scroll_ops;
+    use crate::term::grid::ScrollOp;
+
+    #[test]
+    fn consecutive_primary_scrolls_compact_before_one_render() {
+        let mut ops = Vec::new();
+        append_render_scroll_ops(
+            &mut ops,
+            vec![
+                ScrollOp {
+                    top: 0,
+                    bottom: 23,
+                    count: 1,
+                    up: true,
+                },
+                ScrollOp {
+                    top: 0,
+                    bottom: 23,
+                    count: 2,
+                    up: true,
+                },
+            ],
+        );
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].count, 3);
+
+        append_render_scroll_ops(
+            &mut ops,
+            vec![ScrollOp {
+                top: 0,
+                bottom: 23,
+                count: 1,
+                up: false,
+            }],
+        );
+        assert_eq!(ops.len(), 2, "opposite direction keeps a safe fallback");
+    }
 }
 
 /// §1.33 (2026-05-22) — sticky window for the shell-history popup gate.
@@ -110,6 +188,7 @@ impl JsTerminal {
             selection: Selection::new(),
             search: SearchState::new(),
             last_tui_signal_at_ms: 0,
+            render_scroll_ops: RefCell::new(Vec::new()),
         }
     }
 
@@ -132,6 +211,7 @@ impl JsTerminal {
         let evictions_before = self.inner.scrollback_eviction_count();
         let clears_before = self.inner.scrollback_clear_count();
         self.inner.feed(bytes);
+        self.capture_render_scroll_ops();
         let evictions_after = self.inner.scrollback_eviction_count();
         let clears_after = self.inner.scrollback_clear_count();
         if evictions_after != evictions_before || clears_after != clears_before {
@@ -194,10 +274,9 @@ impl JsTerminal {
     /// and the wasm consumer applies the diff here instead of running its
     /// own vte parse on the JS main thread.
     ///
-    /// Returns `Err(JsValue)` with a human-readable string on decode
-    /// failure OR protocol-version mismatch — caller is expected to log
-    /// and trigger a `force_full_reframe` self-heal (manager.ts P3.9
-    /// wiring).
+    /// Returns `true` when the native frame carries a short presentation
+    /// settle hint, or `false` for an immediate/stale frame. Decode and
+    /// protocol errors remain `Err(JsValue)` so caller recovery is unchanged.
     ///
     /// Selection / search invalidation: only on the same two conditions
     /// `feed()` uses — scrollback eviction (capacity rollover) or a hard
@@ -210,9 +289,10 @@ impl JsTerminal {
     /// rebroken by the unconditional clear that originally lived here
     /// when the rust-parser backend landed in P3.6).
     #[wasm_bindgen(js_name = applyDeltaFrame)]
-    pub fn apply_delta_frame(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+    pub fn apply_delta_frame(&mut self, bytes: &[u8]) -> Result<bool, JsValue> {
         let frame = crate::term::delta::decode_frame(bytes)
             .map_err(|e| JsValue::from_str(&format!("delta decode: {e}")))?;
+        let requires_render_settle = frame.requires_render_settle;
         let evictions_before = self.inner.scrollback_eviction_count();
         let has_reset = frame
             .deltas
@@ -222,18 +302,20 @@ impl JsTerminal {
             .deltas
             .iter()
             .any(|d| matches!(d, crate::term::delta::GridDelta::ScrollbackClear));
-        let applied = self.inner
+        let applied = self
+            .inner
             .apply_frame(&frame)
             .map_err(|v| JsValue::from_str(&format!("protocol version {v} not supported")))?;
         if !applied {
-            return Ok(());
+            return Ok(false);
         }
+        self.capture_render_scroll_ops();
         let evictions_after = self.inner.scrollback_eviction_count();
         if has_reset || has_scrollback_clear || evictions_after != evictions_before {
             self.selection.clear();
             self.search.clear();
         }
-        Ok(())
+        Ok(requires_render_settle)
     }
 
     pub fn resize(&mut self, rows: usize, cols: usize) {
@@ -1065,6 +1147,22 @@ mod delta_selection_tests {
     }
 
     #[test]
+    fn apply_delta_frame_returns_presentation_hint_only_for_applied_frame() {
+        let mut t = JsTerminal::new(4, 8, 20);
+        let mut frame = DeltaFrame::new(7, vec![GridDelta::Bell]);
+        frame.requires_render_settle = true;
+        let bytes = encode_frame(&frame).expect("encode presentation frame");
+
+        assert!(t
+            .apply_delta_frame(&bytes)
+            .expect("apply presentation frame"));
+        assert!(
+            !t.apply_delta_frame(&bytes).expect("ignore replayed frame"),
+            "a replay cannot extend the compositor hold"
+        );
+    }
+
+    #[test]
     fn apply_delta_frame_clears_selection_on_reset_delta() {
         let mut t = JsTerminal::new(24, 80, 200);
         t.feed(b"hello world\r\n");
@@ -1358,7 +1456,8 @@ mod renderer_js {
         /// translucent overlay over those cells. Wall-clock comes from
         /// `Date.now()` for cursor-blink phase.
         pub fn render(&mut self, kernel: &JsTerminal) -> bool {
-            self.renderer.tick(
+            let scroll_ops = kernel.take_render_scroll_ops();
+            self.renderer.tick_with_scroll(
                 &kernel.inner,
                 // range_in_viewport translates the stored abs-row
                 // selection through the current scroll state per
@@ -1368,6 +1467,7 @@ mod renderer_js {
                 // the highlight at its new position.
                 kernel.selection.range_in_viewport(&kernel.inner),
                 js_sys::Date::now(),
+                &scroll_ops,
             )
         }
 
@@ -1392,6 +1492,14 @@ mod renderer_js {
         #[wasm_bindgen(js_name = setFocused)]
         pub fn set_focused(&mut self, focused: bool) {
             self.renderer.set_focused(focused);
+        }
+
+        /// Presentation-only gate for a short native inline-TUI repaint walk.
+        /// Grid cells still render immediately; this suppresses only the
+        /// transient terminal cursor until the browser compositor settles.
+        #[wasm_bindgen(js_name = setPresentationCursorSuppressed)]
+        pub fn set_presentation_cursor_suppressed(&mut self, suppressed: bool) {
+            self.renderer.set_presentation_cursor_suppressed(suppressed);
         }
 
         /// Install an IME preedit overlay at the given cell. The renderer
@@ -1470,11 +1578,15 @@ mod renderer_js {
         /// must use the same epoch as the value passed to `render`
         /// (`Date.now()` in JS).
         ///
-        /// Cost: ~24 row hashes for an 80×24 grid (≈4 µs) plus the
-        /// selection / scroll / blink checks. Cheaper than one
-        /// `draw_row` call by two orders of magnitude.
+        /// Cost: one row-revision compare per visible row plus selection /
+        /// scroll / blink checks. A revision-mismatched row additionally
+        /// compares its exact painted content so a settled TUI rewrite does
+        /// not schedule a redundant compositor frame.
         #[wasm_bindgen(js_name = isDirty)]
         pub fn is_dirty(&self, kernel: &JsTerminal, now_ms: f64) -> bool {
+            if !kernel.render_scroll_ops.borrow().is_empty() {
+                return true;
+            }
             self.renderer.is_dirty(
                 &kernel.inner,
                 kernel.selection.range_in_viewport(&kernel.inner),

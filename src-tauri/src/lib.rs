@@ -138,14 +138,19 @@ fn start_kernel_bootstrap(app: &tauri::App) {
                 );
                 match host_snapshot {
                     Ok(records) => kernel_hosts.restore_topology(records),
-                    Err(error) => tracing::warn!(target: "ridge::kernel_lifecycle", %error, "kernel host topology restore unavailable; shell will fail closed"),
+                    Err(error) => {
+                        tracing::warn!(target: "ridge::kernel_lifecycle", %error, "kernel host topology restore unavailable; shell will fail closed")
+                    }
                 }
                 let exit_handle = kernel_handle.clone();
                 let watcher_stop = kernel_stop.clone();
                 if let Err(error) = crate::kernel_lifecycle::spawn_kernel_death_watcher(
                     endpoint,
                     move || {
-                        exit_handle.state::<crate::state::AppState>().quitting.store(true, Ordering::Release);
+                        exit_handle
+                            .state::<crate::state::AppState>()
+                            .quitting
+                            .store(true, Ordering::Release);
                         exit_handle.exit(0);
                     },
                     move || watcher_stop.load(Ordering::Acquire),
@@ -153,8 +158,12 @@ fn start_kernel_bootstrap(app: &tauri::App) {
                     tracing::error!(target: "ridge::kernel_lifecycle", %error, "failed to spawn ridge-kernel death watcher");
                 }
             }
-            Ok(Err(error)) => tracing::error!(target: "ridge::kernel_lifecycle", %error, "failed to start/attach ridge-kernel (shell continues; deep-root incomplete)"),
-            Err(error) => tracing::error!(target: "ridge::kernel_lifecycle", %error, "kernel bootstrap task failed (shell continues; deep-root incomplete)"),
+            Ok(Err(error)) => {
+                tracing::error!(target: "ridge::kernel_lifecycle", %error, "failed to start/attach ridge-kernel (shell continues; deep-root incomplete)")
+            }
+            Err(error) => {
+                tracing::error!(target: "ridge::kernel_lifecycle", %error, "kernel bootstrap task failed (shell continues; deep-root incomplete)")
+            }
         }
     });
 }
@@ -288,10 +297,10 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
-    .plugin(tauri_plugin_clipboard_manager::init())
-    .plugin(tauri_plugin_dialog::init())
-    // Deep Root Mode（§8.1）：进入深根时发原生系统通知（NotificationExt）。
-    .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
+        // Deep Root Mode（§8.1）：进入深根时发原生系统通知（NotificationExt）。
+        .plugin(tauri_plugin_notification::init())
         // 记住上次窗口几何（大小/位置/最大化/全屏）。插件在 `RunEvent::Exit`（彻底退出）
         // 自动存盘，并持续缓存 Moved/Resized 事件的几何；恢复则由 setup 里 show() 之前的
         // `window.restore_state(...)` 显式执行（避免先以默认 800×600 绘制再跳变）。
@@ -316,7 +325,7 @@ pub fn run() {
             git::set_pane_workdir,
             git::get_git_guard_stats,
             git::is_git_repo,
-        git::get_git_info_with_cwd,
+            git::get_git_info_with_cwd,
             git::get_git_commits_paginated,
             git::find_git_repo_root,
             git::find_git_repos_below,
@@ -399,6 +408,7 @@ pub fn run() {
             terminal::clear_pane_terminal,
             terminal::set_pane_delta_mode,
             terminal::register_pane_delta_channel,
+            terminal::take_pane_delta_frame,
             terminal::kill_pane,
             terminal::get_pane_scrollback_tail,
             terminal::get_pane_scrollback_before,
@@ -595,7 +605,9 @@ type PendingOutput = HashMap<(uuid::Uuid, uuid::Uuid), String>;
 type OutputActivityAt = HashMap<(uuid::Uuid, uuid::Uuid), Instant>;
 
 fn output_activity_due(last: Option<Instant>, now: Instant) -> bool {
-    last.map_or(true, |at| now.duration_since(at) >= OUTPUT_ACTIVITY_INTERVAL)
+    last.map_or(true, |at| {
+        now.duration_since(at) >= OUTPUT_ACTIVITY_INTERVAL
+    })
 }
 
 fn emit_pane_output(
@@ -638,9 +650,12 @@ fn emit_pane_activity(
         let now = Instant::now();
         if output_activity_due(activity_at.get(&key).copied(), now) {
             activity_at.insert(key, now);
-            let _ = handle.emit("pane-output-activity", serde_json::json!({
-                "workspaceId": workspace_id.to_string(), "paneId": label,
-            }));
+            let _ = handle.emit(
+                "pane-output-activity",
+                serde_json::json!({
+                    "workspaceId": workspace_id.to_string(), "paneId": label,
+                }),
+            );
         }
     }
 }
@@ -691,30 +706,9 @@ fn forward_raw_pty_output(
     pane_id: uuid::Uuid,
     data: &str,
 ) {
-    let state = handle.state::<AppState>();
-    if !state.remote_enabled.load(Ordering::Relaxed)
-        && !state.cloud_remote_active.load(Ordering::Acquire)
-    {
-        return;
-    }
-    let registry = state.pty_pane_registry.read();
-    let Some(entry) = registry.get(&(workspace_id, pane_id)) else { return };
-    if entry.remote_subs.is_empty() { return; }
-    let shared = Arc::new(data.as_bytes().to_vec());
-    for subscriber in &entry.remote_subs {
-        if subscriber
-            .raw_tx
-            .try_send(crate::types::RemotePtyEvent::RawBytes {
-                workspace_id,
-                pane_id,
-                bytes: Arc::clone(&shared),
-            })
-            .is_err()
-        {
-            subscriber.desync.store(true, Ordering::Release);
-            tracing::warn!(target: "ridge::remote", sub = subscriber.id, "raw byte channel full; dropping frame, will resync");
-        }
-    }
+    handle
+        .state::<AppState>()
+        .forward_remote_pty_bytes(workspace_id, pane_id, data);
 }
 
 fn handle_pty_output(
@@ -736,7 +730,9 @@ fn handle_pty_output(
         .get(&workspace_id)
         .and_then(|workspace| workspace.terminals.get(&pane_id))
         .is_some_and(|terminal| terminal.delta_mode.load(Ordering::Acquire));
-    if delta_enabled { return; }
+    if delta_enabled {
+        return;
+    }
     let entry = pending.entry((workspace_id, pane_id)).or_default();
     entry.push_str(&data);
     if entry.len() >= COALESCE_MAX_BYTES {
@@ -775,14 +771,27 @@ fn handle_cwd_changed(
     let label = pane_id.to_string();
     let state = handle.state::<AppState>();
     if state.remote_enabled.load(Ordering::Relaxed) {
-        state.broadcast_remote_event(workspace_id, pane_id, crate::types::RemotePtyEvent::Metadata {
-            workspace_id, pane_id, title: None, cwd: Some(cwd.clone()),
-        });
+        state.broadcast_remote_event(
+            workspace_id,
+            pane_id,
+            crate::types::RemotePtyEvent::Metadata {
+                workspace_id,
+                pane_id,
+                title: None,
+                cwd: Some(cwd.clone()),
+            },
+        );
     }
-    let _ = handle.emit("pane-meta-changed", serde_json::json!({
-        "workspaceId": workspace_id.to_string(), "paneId": label, "cwd": &cwd,
-    }));
-    let _ = handle.emit(&format!("pane-cwd-changed-{workspace_id}-{label}"), serde_json::json!({ "cwd": cwd }));
+    let _ = handle.emit(
+        "pane-meta-changed",
+        serde_json::json!({
+            "workspaceId": workspace_id.to_string(), "paneId": label, "cwd": &cwd,
+        }),
+    );
+    let _ = handle.emit(
+        &format!("pane-cwd-changed-{workspace_id}-{label}"),
+        serde_json::json!({ "cwd": cwd }),
+    );
 }
 
 fn handle_title_changed(
@@ -794,14 +803,27 @@ fn handle_title_changed(
     let label = pane_id.to_string();
     let state = handle.state::<AppState>();
     if state.remote_enabled.load(Ordering::Relaxed) {
-        state.broadcast_remote_event(workspace_id, pane_id, crate::types::RemotePtyEvent::Metadata {
-            workspace_id, pane_id, title: Some(title.clone()), cwd: None,
-        });
+        state.broadcast_remote_event(
+            workspace_id,
+            pane_id,
+            crate::types::RemotePtyEvent::Metadata {
+                workspace_id,
+                pane_id,
+                title: Some(title.clone()),
+                cwd: None,
+            },
+        );
     }
-    let _ = handle.emit("pane-meta-changed", serde_json::json!({
-        "workspaceId": workspace_id.to_string(), "paneId": label, "title": &title,
-    }));
-    let _ = handle.emit(&format!("pane-title-changed-{workspace_id}-{label}"), serde_json::json!({ "title": title }));
+    let _ = handle.emit(
+        "pane-meta-changed",
+        serde_json::json!({
+            "workspaceId": workspace_id.to_string(), "paneId": label, "title": &title,
+        }),
+    );
+    let _ = handle.emit(
+        &format!("pane-title-changed-{workspace_id}-{label}"),
+        serde_json::json!({ "title": title }),
+    );
 }
 
 fn handle_global_event(
@@ -811,30 +833,72 @@ fn handle_global_event(
     event: GlobalEvent,
 ) {
     match event {
-        GlobalEvent::PtyOutput { workspace_id, pane_id, data } => {
+        GlobalEvent::PtyOutput {
+            workspace_id,
+            pane_id,
+            data,
+        } => {
             handle_pty_output(handle, activity_at, pending, workspace_id, pane_id, data);
         }
-        GlobalEvent::PtyDeltaOutput { workspace_id, pane_id, data, frame } => {
+        GlobalEvent::PtyDeltaOutput {
+            workspace_id,
+            pane_id,
+            data,
+            frame,
+        } => {
             handle_pty_delta_output(handle, activity_at, workspace_id, pane_id, data, frame);
         }
-        GlobalEvent::PaneClosed { workspace_id, pane_id } => {
+        GlobalEvent::PaneClosed {
+            workspace_id,
+            pane_id,
+        } => {
             flush_pane_output(handle, activity_at, pending, workspace_id, pane_id);
             activity_at.remove(&(workspace_id, pane_id));
-            let _ = handle.emit("pane-pty-closed", serde_json::json!({
-                "workspaceId": workspace_id.to_string(), "paneId": pane_id.to_string(),
-            }));
+            let _ = handle.emit(
+                "pane-pty-closed",
+                serde_json::json!({
+                    "workspaceId": workspace_id.to_string(), "paneId": pane_id.to_string(),
+                }),
+            );
         }
-        GlobalEvent::PaneModeChanged { workspace_id, pane_id, mode } => {
-            let mode = match mode { PaneMode::Terminal => "Terminal", PaneMode::Editor { .. } => "Editor" };
-            let _ = handle.emit(&format!("pane-mode-changed-{workspace_id}-{pane_id}"), serde_json::json!({ "mode": mode }));
+        GlobalEvent::PaneModeChanged {
+            workspace_id,
+            pane_id,
+            mode,
+        } => {
+            let mode = match mode {
+                PaneMode::Terminal => "Terminal",
+                PaneMode::Editor { .. } => "Editor",
+            };
+            let _ = handle.emit(
+                &format!("pane-mode-changed-{workspace_id}-{pane_id}"),
+                serde_json::json!({ "mode": mode }),
+            );
         }
-        GlobalEvent::PaneCwdChanged { workspace_id, pane_id, cwd } => handle_cwd_changed(handle, activity_at, pending, workspace_id, pane_id, cwd),
-        GlobalEvent::PaneTitleChanged { workspace_id, pane_id, title } => handle_title_changed(handle, workspace_id, pane_id, title),
-        GlobalEvent::PanePromptDetected { workspace_id, pane_id } => {
-            let _ = handle.emit(&format!("pane-prompt-{workspace_id}-{pane_id}"), serde_json::json!({}));
+        GlobalEvent::PaneCwdChanged {
+            workspace_id,
+            pane_id,
+            cwd,
+        } => handle_cwd_changed(handle, activity_at, pending, workspace_id, pane_id, cwd),
+        GlobalEvent::PaneTitleChanged {
+            workspace_id,
+            pane_id,
+            title,
+        } => handle_title_changed(handle, workspace_id, pane_id, title),
+        GlobalEvent::PanePromptDetected {
+            workspace_id,
+            pane_id,
+        } => {
+            let _ = handle.emit(
+                &format!("pane-prompt-{workspace_id}-{pane_id}"),
+                serde_json::json!({}),
+            );
         }
         GlobalEvent::PaneTreeChanged { workspace_id } => {
-            let _ = handle.emit("pane-tree-changed", serde_json::json!({ "workspaceId": workspace_id.to_string() }));
+            let _ = handle.emit(
+                "pane-tree-changed",
+                serde_json::json!({ "workspaceId": workspace_id.to_string() }),
+            );
         }
         GlobalEvent::WorkspaceListChanged => {
             let _ = handle.emit("workspace-list-changed", serde_json::json!({}));
@@ -854,7 +918,10 @@ async fn next_forward_tick(
     last_flush_bytes: usize,
 ) -> ForwardTick {
     if pending.is_empty() {
-        return event_rx.recv().await.map_or(ForwardTick::Closed, ForwardTick::Event);
+        return event_rx
+            .recv()
+            .await
+            .map_or(ForwardTick::Closed, ForwardTick::Event);
     }
     if coalesce_window_for(last_flush_bytes) == 0 {
         return match event_rx.try_recv() {
@@ -866,7 +933,9 @@ async fn next_forward_tick(
     match tokio::time::timeout(
         std::time::Duration::from_millis(coalesce_window_for(last_flush_bytes)),
         event_rx.recv(),
-    ).await {
+    )
+    .await
+    {
         Ok(Some(event)) => ForwardTick::Event(event),
         Ok(None) => ForwardTick::Closed,
         Err(_) => ForwardTick::Flush,
@@ -879,8 +948,12 @@ async fn run_event_forwarder(handle: tauri::AppHandle, mut event_rx: mpsc::Recei
     let mut last_flush_bytes = 0;
     loop {
         match next_forward_tick(&mut event_rx, &pending, last_flush_bytes).await {
-            ForwardTick::Event(event) => handle_global_event(&handle, &mut activity_at, &mut pending, event),
-            ForwardTick::Flush => last_flush_bytes = flush_pending_output(&handle, &mut activity_at, &mut pending),
+            ForwardTick::Event(event) => {
+                handle_global_event(&handle, &mut activity_at, &mut pending, event)
+            }
+            ForwardTick::Flush => {
+                last_flush_bytes = flush_pending_output(&handle, &mut activity_at, &mut pending)
+            }
             ForwardTick::Closed => {
                 flush_pending_output(&handle, &mut activity_at, &mut pending);
                 break;
@@ -890,11 +963,13 @@ async fn run_event_forwarder(handle: tauri::AppHandle, mut event_rx: mpsc::Recei
 }
 
 fn spawn_event_forwarder(handle: tauri::AppHandle, event_rx: mpsc::Receiver<GlobalEvent>) {
-	 tauri::async_runtime::spawn(run_event_forwarder(handle, event_rx));
+    tauri::async_runtime::spawn(run_event_forwarder(handle, event_rx));
 }
 #[cfg(test)]
 mod window_launch_tests {
-    use super::{coalesce_window_for, is_auth_focus_launch, output_activity_due, OUTPUT_ACTIVITY_INTERVAL};
+    use super::{
+        coalesce_window_for, is_auth_focus_launch, output_activity_due, OUTPUT_ACTIVITY_INTERVAL,
+    };
     use std::time::Instant;
 
     #[test]
@@ -909,8 +984,14 @@ mod window_launch_tests {
     fn output_activity_is_rate_limited_but_resumes_after_quiet_window() {
         let now = Instant::now();
         assert!(output_activity_due(None, now));
-        assert!(!output_activity_due(Some(now), now + OUTPUT_ACTIVITY_INTERVAL / 2));
-        assert!(output_activity_due(Some(now), now + OUTPUT_ACTIVITY_INTERVAL));
+        assert!(!output_activity_due(
+            Some(now),
+            now + OUTPUT_ACTIVITY_INTERVAL / 2
+        ));
+        assert!(output_activity_due(
+            Some(now),
+            now + OUTPUT_ACTIVITY_INTERVAL
+        ));
     }
 
     #[test]
