@@ -161,6 +161,13 @@ export const agentPaneAttentionStore = writable<Record<string, AgentPaneAttentio
 export type AgentPaneStatus = 'working' | 'waiting' | 'idle' | 'stopped';
 export const agentPaneStatusStore = writable<Record<string, AgentPaneStatus>>({});
 
+/**
+ * An acknowledged attention state must not be re-polled into a new border.
+ * Keep the status that was acknowledged; a later status change clears it and
+ * permits a fresh transition notification.
+ */
+export const agentPaneAttentionPollingStoppedStore = writable<Record<string, AgentPaneStatus>>({});
+
 function agentPaneAttentionKey(workspaceId: string, paneId: string): string {
   return `${workspaceId}:${paneId}`;
 }
@@ -184,6 +191,14 @@ export function setAgentPaneAttention(
 }
 
 export function clearAgentPaneAttention(workspaceId: string, paneId: string): void {
+  const key = agentPaneAttentionKey(workspaceId, paneId);
+  const attention = get(agentPaneAttentionStore)[key];
+  const status = get(agentPaneStatusStore)[key];
+  if (attention && status) {
+    agentPaneAttentionPollingStoppedStore.update((current) =>
+      current[key] === status ? current : { ...current, [key]: status },
+    );
+  }
   setAgentPaneAttention(workspaceId, paneId, null);
 }
 
@@ -202,6 +217,14 @@ export function setAgentPaneStatus(
       return next;
     }
     return current[key] === status ? current : { ...current, [key]: status };
+  });
+  // Acknowledgement suppresses only the status the user just consumed. Any
+  // transition (including back to working) starts a new observation cycle.
+  agentPaneAttentionPollingStoppedStore.update((current) => {
+    if (!(key in current) || current[key] === status) return current;
+    const next = { ...current };
+    delete next[key];
+    return next;
   });
 }
 
