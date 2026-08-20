@@ -57,6 +57,7 @@ const wasm = vi.hoisted(() => {
 		setFocused = vi.fn();
 		setPadding = vi.fn();
 		resize = vi.fn();
+		render = vi.fn();
 		currentThemeProbe = vi.fn(() => new Uint8Array([
 			1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255,
 		]));
@@ -389,7 +390,7 @@ describe('TerminalManager attach lifecycle', () => {
 
 		kernel.mouseMode = 0;
 		container.emit('pointerdown', pointer);
-		container.emit('pointermove', { ...pointer, clientY: 399 });
+		container.emit('pointermove', { ...pointer, clientY: 401 });
 		vi.advanceTimersByTime(30);
 		expect(kernel.scrollDown).toHaveBeenCalledWith(1);
 		frame?.(2);

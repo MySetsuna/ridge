@@ -119,12 +119,12 @@ process.env.RIDGE_DEV_SERVER_PORT = String(vitePort);
 // Do not attach dev:cdp to the installed Ridge kernel. The desktop and its
 // `rdg host` sidecar must share this project-local registry/data graph.
 process.env.RIDGE_KERNEL_DATA_DIR = devKernelDataDir;
-// Some desktop test hosts run inside a Windows Job that rejects
-// CREATE_BREAKAWAY_FROM_JOB. Keep the production fail-closed behavior by
-// default; only an explicitly requested constrained-host run may opt into the
-// bounded same-job fallback. Otherwise a force-killed CDP shell would also
-// reap the kernel and produce a false lifecycle result.
-applyKernelBreakawayPolicy(process.env);
+// Some CDP hosts run inside a Windows Job that rejects
+// CREATE_BREAKAWAY_FROM_JOB. The kernel always tries breakaway first; this
+// development-only launcher permits its bounded same-job retry after that
+// specific failure, so a constrained harness still gets a usable shell.
+// Production/default launches retain the fail-closed policy.
+applyKernelBreakawayPolicy(process.env, true);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.mkdirSync(devKernelDataDir, { recursive: true });
 // The normal Tauri config rebuilds the release teammate shim on every dev

@@ -827,6 +827,22 @@ impl RenderBackend for AnyBackend {
         }
     }
 
+    fn supports_scroll_copy(&self) -> bool {
+        match self {
+            AnyBackend::Canvas2d(b) => b.supports_scroll_copy(),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.supports_scroll_copy(),
+        }
+    }
+
+    fn scroll_rows(&mut self, scroll: crate::term::grid::ScrollOp) {
+        match self {
+            AnyBackend::Canvas2d(b) => b.scroll_rows(scroll),
+            #[cfg(feature = "webgpu")]
+            AnyBackend::Webgpu(b) => b.scroll_rows(scroll),
+        }
+    }
+
     fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme) {
         match self {
             AnyBackend::Canvas2d(b) => b.begin_frame(metrics, theme),

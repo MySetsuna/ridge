@@ -61,6 +61,7 @@ use crate::render::renderer::{
 };
 use crate::term::attr_table::AttrTable;
 use crate::term::cell::{scan_line_path, RenderPath};
+use crate::term::grid::ScrollOp;
 
 thread_local! {
     /// §present-fast (2026-06-22): process-wide opt-in flag gating
@@ -456,6 +457,18 @@ impl WebGpuPaneBackend {
         // frames repair and redraw the rows selected by Renderer hashes.
         let _present_fast = present_fast();
         self.needs_initial_clear
+    }
+
+    fn supports_scroll_copy(&self) -> bool {
+        !self.viewport.is_empty() && self.host.borrow().is_frame_open()
+    }
+
+    fn scroll_rows(&mut self, scroll: ScrollOp) {
+        let cell_h = (self.metrics.cell_h * self.metrics.dpr).round().max(1.0) as u32;
+        let _ = self
+            .host
+            .borrow_mut()
+            .scroll_pane(self.viewport, scroll, cell_h);
     }
 
     fn on_full_invalidate(&mut self) {
@@ -1679,6 +1692,14 @@ impl RenderBackend for WebGpuPaneBackend {
 
     fn on_full_invalidate(&mut self) {
         WebGpuPaneBackend::on_full_invalidate(self)
+    }
+
+    fn supports_scroll_copy(&self) -> bool {
+        WebGpuPaneBackend::supports_scroll_copy(self)
+    }
+
+    fn scroll_rows(&mut self, scroll: ScrollOp) {
+        WebGpuPaneBackend::scroll_rows(self, scroll)
     }
 
     fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme) {

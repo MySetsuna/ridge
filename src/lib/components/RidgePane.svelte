@@ -21,7 +21,7 @@ import { acquireClipboardImagePath, imagePathFromClipboardEvent } from '@ridge/r
 import { t, tr } from '$lib/i18n';
 import { activePaneId, activeWorkspaceId, clearAgentPaneAttention, focusPane, setPaneCwd, paneOscTitleStore, paneForegroundProcessStore, terminalTitles, splitPane, closePane, waitForDesktopKernelReattach } from '$lib/stores/paneTree';
 import type { KernelEvent } from '@ridge/remote/shared/terminal/manager';
-import { ensurePtyBridge, setPaneDeltaMode } from '@ridge/remote/shared/terminal/ptyBridge';
+import { enableDeltaModeThenFit, ensurePtyBridge } from '@ridge/remote/shared/terminal/ptyBridge';
 import { pushTerminalThemeNow } from '@ridge/remote/shared/terminal/themeBridge';
 import { settingsStore } from '$lib/stores/settings';
 import { remoteRunning, cloudHostOnline } from '$lib/stores/remoteStatus';
@@ -1625,10 +1625,19 @@ onMount(() => {
 			}
 		}
 
-		// Local panes use the native Rust parser + binary delta lane. PTY bytes
-		// are parsed on the per-pane reader thread; the WebView only applies the
-		// compact damage frame, so VTE work cannot block input or other panes.
-		await setPaneDeltaMode(paneId, true, workspaceId);
+		// Local panes use the native Rust parser + binary delta lane. Once the
+		// native parser owns the grid, force one more fit through that parser;
+		// otherwise a live kernel PTY created at 80×24 never receives its first
+		// measured resize and inline TUI frames land against the wrong canvas.
+		try {
+			await enableDeltaModeThenFit(
+				paneId,
+				() => manager.fitPaneNow(paneId, true),
+				workspaceId,
+			);
+		} catch (e) {
+			console.warn('post-activation delta grid sync failed; resize retry remains armed', e);
+		}
 		if (!alive) return;
 
 		// `pane-pty-closed` rebuild now lives in ptyBridge and persists

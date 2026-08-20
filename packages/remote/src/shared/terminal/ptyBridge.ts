@@ -35,10 +35,9 @@ import { unknownText } from '../transport/unknownText';
 
 /**
  * P4.3 — pty-delta byte payload as received on the frontend. Tauri 2's
- * `Channel<Vec<u8>>` (Rust side) dispatches through the IPC binary path,
- * which the JS layer may surface as an `ArrayBuffer`, a `Uint8Array`, or —
- * for older runtime configurations — a plain `number[]`. The handler
- * normalizes all three into `Uint8Array` before feeding the kernel.
+ * `Channel<Vec<u8>>` (Rust side) now carries either a legacy complete frame
+ * or a zero-byte mailbox wake. The JS bridge pulls one merged frame at most
+ * once per browser frame, keeping high-rate PTY output out of the task queue.
  */
 type DeltaPayload = ArrayBuffer | Uint8Array | number[];
 
@@ -54,6 +53,11 @@ interface Bridge {
 	/// `kill_pty_if_present`; keeping this field rooted prevents JS GC
 	/// from collecting the Channel while the bridge is alive.
 	deltaChannel: Channel<DeltaPayload>;
+	deltaPullInFlight: boolean;
+	deltaFrameGate: boolean;
+	deltaWakePending: boolean;
+	deltaPullRaf: number | null;
+	closed: boolean;
 }
 
 const bridges = new Map<string, Bridge>();
@@ -64,6 +68,12 @@ const teardownRequested = new Set<string>();
 
 function isPaneNotFoundError(error: unknown): boolean {
 	return /\bpane\s+not\s+found\b/i.test(unknownText(error));
+}
+
+function deltaBytes(payload: DeltaPayload | null | undefined): Uint8Array {
+	if (payload instanceof Uint8Array) return payload;
+	if (payload === null || payload === undefined) return new Uint8Array();
+	return new Uint8Array(payload);
 }
 
 /**
@@ -199,7 +209,11 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 				return;
 			}
 			if (!bridges.has(key)) return;
-			await setPaneDeltaMode(paneId, true, workspaceId);
+			await enableDeltaModeThenFit(
+				paneId,
+				() => manager.fitPaneNow(paneId, true),
+				workspaceId,
+			);
 		},
 	).catch((error) => {
 		try { outUnlisten(); } catch { /* already unsubscribed */ }
@@ -211,47 +225,71 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 		return;
 	}
 
-	// P4.3 — pty-delta channel. Replaces the P3.9 `listen('pty-delta-...')`
-	// path. The Rust backend (P4.1 `register_pane_delta_channel`) wraps the
-	// Channel into a closure inside `AppState.pty_delta_channels`; the three
-	// emit sites (lib.rs main loop, resize_pane, set_pane_delta_mode) call
-	// the closure with the postcard-encoded bytes. The IPC binary path skips
-	// the base64 + JSON-wrap + event-name routing the listen() path required.
+	// The Channel is a mailbox wake. A burst produces one empty marker; this
+	// bridge then pulls the merged postcard frame at most once per browser
+	// animation frame. Legacy complete payloads remain accepted for fallback.
 	//
 	// `delta_mode` on the backend still gates whether the channel fires at
 	// all, so registering here is safe even before `set_pane_delta_mode`
 	// flips the gate — the channel simply stays quiet until then.
 	const deltaChannel = new Channel<DeltaPayload>();
-	deltaChannel.onmessage = (payload) => {
-		// Normalize whatever the runtime hands us into a Uint8Array view.
-		// `Uint8Array` instances pass through; ArrayBuffer is wrapped; a
-		// plain number[] gets copied into a fresh array (the slow path —
-		// happens only on older Tauri runtime configurations).
-		let bytes: Uint8Array;
-		if (payload instanceof Uint8Array) {
-			bytes = payload;
+	const bridge: Bridge = {
+		outUnlisten,
+		closedUnlisten,
+		paneId,
+		workspaceId,
+		deltaChannel,
+		deltaPullInFlight: false,
+		deltaFrameGate: false,
+		deltaWakePending: false,
+		deltaPullRaf: null,
+		closed: false,
+	};
+	const recoverDelta = (err: unknown) => {
+		if (bridge.closed) return;
+		console.warn(
+			'[ridge-term] pty-delta apply failed; falling back to wasm parser',
+			{ paneId, error: String(err) },
+		);
+		void setPaneDeltaMode(paneId, false, workspaceId);
+	};
+	const consumeDelta = (payload: DeltaPayload | null | undefined) => {
+		const bytes = deltaBytes(payload);
+		if (bytes.byteLength === 0 || bridge.closed) return;
+		manager.enqueueDeltaFrame(paneId, bytes, (err) => {
+			recoverDelta(err);
+		});
+	};
+	const requestMailboxPull = () => {
+		if (bridge.closed || bridge.deltaPullInFlight || bridge.deltaFrameGate) return;
+		bridge.deltaWakePending = false;
+		bridge.deltaPullInFlight = true;
+		bridge.deltaFrameGate = true;
+		const releaseFrameGate = () => {
+			bridge.deltaPullRaf = null;
+			bridge.deltaFrameGate = false;
+			if (bridge.deltaWakePending) requestMailboxPull();
+		};
+		if (typeof requestAnimationFrame === 'function') {
+			bridge.deltaPullRaf = requestAnimationFrame(releaseFrameGate);
 		} else {
-			bytes = new Uint8Array(payload);
+			queueMicrotask(releaseFrameGate);
 		}
-		try {
-			// §P4 attribution — the binary Channel path is the optimized
-			// path; this measure proves how much cheaper it is per frame
-			// vs `rg.ptyText.feed` (above).
-			perfMark('rg.ptyDelta.apply', () => manager.applyDeltaFrame(paneId, bytes));
-		} catch (err) {
-			// R5 self-heal: protocol / decode error → fall back to
-			// the text path so the pane stays usable. Best-effort;
-			// the invoke uses fire-and-forget semantics.
-			console.warn(
-				'[ridge-term] pty-delta apply failed; falling back to wasm parser',
-				{ paneId, error: String(err) },
-			);
-			invoke('set_pane_delta_mode', {
-				workspaceId,
-				paneId,
-				enabled: false,
-			}).catch(() => {});
+		void invoke<DeltaPayload | null>('take_pane_delta_frame', { workspaceId, paneId })
+			.then(consumeDelta, recoverDelta)
+			.finally(() => {
+				bridge.deltaPullInFlight = false;
+				if (!bridge.deltaFrameGate && bridge.deltaWakePending) requestMailboxPull();
+			});
+	};
+	deltaChannel.onmessage = (payload) => {
+		const bytes = deltaBytes(payload);
+		if (bytes.byteLength > 0) {
+			consumeDelta(bytes);
+			return;
 		}
+		bridge.deltaWakePending = true;
+		requestMailboxPull();
 	};
 
 	// Hand the Channel to the backend BEFORE inserting the bridge entry —
@@ -279,7 +317,7 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 		return;
 	}
 
-	bridges.set(key, { outUnlisten, closedUnlisten, paneId, workspaceId, deltaChannel });
+	bridges.set(key, bridge);
 }
 
 function findBridgeKey(paneId: string, workspaceId?: string): string | null {
@@ -323,6 +361,9 @@ export async function setPaneDeltaMode(
 		return true;
 	} catch (e) {
 		console.warn('[ridge-term] set_pane_delta_mode runtime switch failed', { paneId, enabled, error: String(e) });
+		// A failed enable leaves the backend on the raw path. Let the local
+		// mirror own grid sizing until a later retry proves delta authority.
+		if (enabled) TerminalManager.instance().setLocalGridAuthority(paneId, true);
 		return false;
 	}
 }
@@ -353,7 +394,7 @@ export async function setPaneDeltaMode(
  */
 export async function enableDeltaModeThenFit(
 	paneId: string,
-	fit: () => void,
+	fit: () => void | Promise<void>,
 	workspaceId?: string,
 ): Promise<void> {
 	if (!hasPtyBridge(paneId, workspaceId)) {
@@ -365,7 +406,7 @@ export async function enableDeltaModeThenFit(
 		);
 	}
 	await setPaneDeltaMode(paneId, true, workspaceId);
-	fit();
+	await fit();
 }
 
 /**
@@ -381,6 +422,11 @@ export function teardownPtyBridge(paneId: string, workspaceId?: string): void {
 	if (!b) return;
 	try { b.outUnlisten(); } catch { /* already unsubscribed */ }
 	try { b.closedUnlisten(); } catch { /* already unsubscribed */ }
+	b.closed = true;
+	if (b.deltaPullRaf !== null && typeof cancelAnimationFrame === 'function') {
+		cancelAnimationFrame(b.deltaPullRaf);
+		b.deltaPullRaf = null;
+	}
 	// P4.3 — the Channel has no explicit unlisten; dropping the bridge
 	// reference releases JS ownership and the backend already unregistered
 	// the channel in `kill_pty_if_present` before this teardown runs.

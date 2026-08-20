@@ -97,6 +97,7 @@ function makePane() {
 	};
 	const handle = {
 		setFocused: vi.fn(),
+		setPresentationCursorSuppressed: vi.fn(),
 		setPreedit: vi.fn(),
 		clearPreedit: vi.fn(),
 		setHistoryOverlay: vi.fn(),
@@ -143,6 +144,11 @@ function makePane() {
 		syncTimeoutRendered: false,
 		deltaFrameId: 0,
 		renderFrameId: 0,
+		deltaQueue: [],
+		deltaQueueHead: 0,
+		deltaQueuedBytes: 0,
+		tuiCursorSuppressUntil: 0,
+		tuiCursorSuppressed: false,
 		focusListener: vi.fn(),
 		blurListener: vi.fn(),
 		selecting: false,
@@ -338,6 +344,49 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(sent.length).toBeGreaterThanOrEqual(3);
 		expect(manager.getSelectionText(PANE)).toBe('selected text');
 		expect(events).toEqual(expect.arrayContaining([{ offset: 0, total: 12 }]));
+	});
+
+	it('drains native deltas on the frame hub, paints output, and gates only a hinted TUI cursor', () => {
+		const { manager, fixture, internal } = makeManager();
+		fixture.kernel.applyDeltaFrame.mockReturnValueOnce(true);
+		const bytes = new Uint8Array([1, 2, 3]);
+
+		manager.enqueueDeltaFrame(PANE, bytes);
+		expect(fixture.kernel.applyDeltaFrame).not.toHaveBeenCalled();
+		expect(fixture.pane.deltaQueuedBytes).toBe(bytes.byteLength);
+
+		internal._drainQueuedDeltaFrames([fixture.pane]);
+		expect(fixture.kernel.applyDeltaFrame).toHaveBeenCalledWith(bytes);
+		expect(fixture.pane.deltaQueuedBytes).toBe(0);
+		expect(fixture.pane.tuiCursorSuppressUntil).toBeGreaterThan(0);
+		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenCalledWith(true);
+
+		const held = {
+			frameOrder: [fixture.pane], dateNow: Date.now(),
+			perfNow: fixture.pane.tuiCursorSuppressUntil - 1,
+			surfaceJustWiped: false, dirtyByPane: new Map(), activeWsId: null,
+			activeHost: null, hostFrameOpen: false, anyRendered: false, minDeadlineMs: Infinity,
+		};
+		internal._renderFrameEntry(fixture.pane, held);
+		expect(fixture.handle.render).toHaveBeenCalledOnce();
+
+		held.perfNow = fixture.pane.tuiCursorSuppressUntil + 1;
+		internal._renderFrameEntry(fixture.pane, held);
+		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenLastCalledWith(false);
+		expect(fixture.handle.render).toHaveBeenCalledTimes(2);
+	});
+
+	it('drops queued native deltas after a decode error and reports it through the bridge callback', () => {
+		const { manager, fixture, internal } = makeManager();
+		const failure = vi.fn();
+		fixture.kernel.applyDeltaFrame.mockImplementation(() => { throw new Error('bad postcard'); });
+		manager.enqueueDeltaFrame(PANE, new Uint8Array([1]), failure);
+		manager.enqueueDeltaFrame(PANE, new Uint8Array([2]), failure);
+
+		internal._drainQueuedDeltaFrames([fixture.pane]);
+		expect(failure).toHaveBeenCalledOnce();
+		expect(fixture.pane.deltaQueue).toEqual([]);
+		expect(fixture.pane.deltaQueuedBytes).toBe(0);
 	});
 
 	it('handles key, mouse, wheel, search, selection, and overlay APIs', () => {

@@ -1,37 +1,39 @@
 //! Renderer state: dirty row tracking + frame composition.
 //!
 //! The renderer owns:
-//!   - Last-drawn snapshot of the grid (per-row hash or shallow copy)
-//!   - Per-row dirty bits computed by diffing current grid vs snapshot
+//!   - Last-drawn Grid row revisions
+//!   - Per-row dirty rows computed from source-side damage revisions
 //!   - The backend instance
 //!
 //! Each `tick()` call:
-//!   1. Diff current grid vs snapshot → dirty rows
+//!   1. Compare current row revisions vs snapshot → dirty rows
 //!   2. If anything changed, ask backend to draw
 //!   3. Update snapshot
 //!
-//! ## Why per-row diff and not per-cell
+//! ## Why per-row revisions and not per-cell scanning
 //!
-//! A 80×24 grid has 1,920 cells. Per-cell dirty bits = 240 bytes/grid
-//! plus ~2k branch decisions per frame. Per-row hash = 24 u64 = 192
-//! bytes plus 24 hash compares. The redraw cost difference between
-//! "redraw 1 cell" and "redraw 1 row" on Canvas2D is < 0.1ms — not
-//! worth tracking finer.
-
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+//! Grid mutators already know which row changed. A 24-row viewport therefore
+//! needs 24 integer compares per frame, rather than hashing 1,920 cells twice
+//! (`is_dirty` and `tick`). Backends still redraw a complete dirty row because
+//! that is cheaper and safer than partial-row compositing.
 
 use crate::render::backend::{
     draw_frame, CursorDraw, CursorStyle, FrameDraw, FrameMetrics, RenderBackend, RowDraw, Theme,
 };
 use crate::selection::Range as SelRange;
-use crate::term::Terminal;
+use crate::term::{cell::Row, grid::ScrollOp, Terminal};
 
 pub struct Renderer<B: RenderBackend> {
     backend: B,
-    /// Per-row hash of last-drawn state. Length grows on demand to match
-    /// the active grid size; rows beyond `len()` are treated as dirty.
+    /// Per-row Grid revision last drawn. Grid mutators advance the revision
+    /// at the source, so the render loop never hashes every cell just to
+    /// discover that an idle/TUI row is unchanged.
     snapshot: Vec<u64>,
+    /// Exact visual content paired with `snapshot`. Revisions are an O(1)
+    /// damage hint, but a TUI can clear-and-rewrite an identical row within
+    /// one transaction. Only revision-mismatched rows compare this snapshot;
+    /// unchanged terminal output stays on the cheap integer path.
+    visual_snapshot: Vec<Option<Row>>,
     /// Last-drawn cursor descriptor. When the cursor moves (or its row
     /// changes), the row it WAS on must redraw to erase the old cursor.
     last_cursor: Option<CursorDraw>,
@@ -52,6 +54,10 @@ pub struct Renderer<B: RenderBackend> {
     /// their cursor entirely — only the truly active terminal blinks.
     /// Default `true` preserves single-pane behavior at construction.
     focused: bool,
+    /// Presentation-only cursor gate used while a native parser reports an
+    /// inline-TUI repaint walk. The grid continues to paint each frame; only
+    /// the terminal cursor is hidden until the walk becomes quiet.
+    presentation_cursor_suppressed: bool,
     metrics: FrameMetrics,
     theme: Theme,
     /// `true` until the first successful frame; forces a clear+redraw all.
@@ -63,7 +69,7 @@ pub struct Renderer<B: RenderBackend> {
     /// (primary→alt, alt→primary) the snapshot tracks rows from the
     /// *other* screen and would produce stale dirty-row decisions —
     /// most visibly, exiting a TUI (e.g. `vim`, `htop`) appeared to
-    /// blank the primary scrollback because per-row hashes happened to
+    /// blank the primary scrollback because per-row revisions happened to
     /// match between alt and primary content. We compare here and force
     /// `invalidate_all` on transitions so the next frame redraws
     /// against the currently-active screen from scratch.
@@ -361,11 +367,13 @@ impl<B: RenderBackend> Renderer<B> {
         Self {
             backend,
             snapshot: Vec::new(),
+            visual_snapshot: Vec::new(),
             last_cursor: None,
             last_offset: 0,
             last_selection: None,
             last_blink_phase: true,
             focused: true,
+            presentation_cursor_suppressed: false,
             metrics,
             theme,
             first_frame: true,
@@ -453,7 +461,7 @@ impl<B: RenderBackend> Renderer<B> {
     /// surface resize, and pane reattach.
     ///
     /// Resets every per-frame cache the renderer carries:
-    ///   * `snapshot` — per-row hashes (next tick re-hashes everything).
+    ///   * `snapshot` — per-row revisions (next tick redraws everything).
     ///   * `last_cursor` — old cursor coords may now be off-grid after
     ///     a reflow / resize; clearing forces an unconditional draw of
     ///     the new cursor without trying to "erase" a stale row that
@@ -472,6 +480,7 @@ impl<B: RenderBackend> Renderer<B> {
     /// fall-through.
     pub fn invalidate_all(&mut self) {
         self.snapshot.clear();
+        self.visual_snapshot.clear();
         self.last_cursor = None;
         self.last_offset = 0;
         self.last_selection = None;
@@ -495,11 +504,14 @@ impl<B: RenderBackend> Renderer<B> {
             return;
         }
         self.focused = focused;
-        if let Some(ref prev) = self.last_cursor {
-            if prev.row < self.snapshot.len() {
-                self.snapshot[prev.row] = self.snapshot[prev.row].wrapping_add(1);
-            }
-        }
+    }
+
+    /// Hide or restore only the painted terminal cursor. This deliberately
+    /// does not defer grid paints: ratatui/crossterm updates remain visible at
+    /// the normal compositor cadence while cursor-rewind intermediates cannot
+    /// flash through the output area.
+    pub fn set_presentation_cursor_suppressed(&mut self, suppressed: bool) {
+        self.presentation_cursor_suppressed = suppressed;
     }
 
     pub fn backend_mut(&mut self) -> &mut B {
@@ -530,6 +542,21 @@ impl<B: RenderBackend> Renderer<B> {
     /// computation. Pass 0.0 if you want a stable non-blinking cursor —
     /// blink is also gated on `Modes::cursor_blink`.
     pub fn tick(&mut self, terminal: &Terminal, selection: Option<SelRange>, now_ms: f64) -> bool {
+        self.tick_with_scroll(terminal, selection, now_ms, &[])
+    }
+
+    /// Drive one frame, optionally reusing pixels for a physical viewport
+    /// scroll observed by the VT kernel. The fast path is deliberately narrow:
+    /// only a settled primary shell may copy a full viewport upward. TUI,
+    /// selection, overlays and structural invalidation retain the ordinary
+    /// revision path so no transient pixels can leak across layers.
+    pub fn tick_with_scroll(
+        &mut self,
+        terminal: &Terminal,
+        selection: Option<SelRange>,
+        now_ms: f64,
+        scroll_ops: &[ScrollOp],
+    ) -> bool {
         let rows_n = terminal.rows();
 
         // Screen-switch invalidation: when the active screen flips
@@ -537,7 +564,7 @@ impl<B: RenderBackend> Renderer<B> {
         // against the *previous* screen's rows. Without clearing it,
         // exiting a fullscreen TUI like `vim` or `htop` could leave the
         // primary scrollback blank — alt-screen rows and the now-active
-        // primary rows would hash-collide on common blank patterns and
+        // primary rows would have unrelated revision baselines and
         // the renderer would skip those rows entirely. Force a full
         // reset on every transition so the next frame redraws the
         // currently-active screen against an empty snapshot. The check
@@ -578,7 +605,7 @@ impl<B: RenderBackend> Renderer<B> {
         // each row stayed visible (the §1.26 ghost-prompt symptom under
         // Canvas2D specifically). Forcing both ends to track `rows_n`
         // here pairs with `Grid::resize` clearing the cell state: the
-        // next frame re-hashes everything against the cleared cells and
+        // next frame re-snapshots every source revision and
         // paints blanks over the stale pixels. WebGPU was already safe
         // because `requires_full_frame()` clears the swap-chain every
         // tick, but going through this path keeps both backends honest.
@@ -601,20 +628,20 @@ impl<B: RenderBackend> Renderer<B> {
         // dirty-row diffing keeps its perf benefit.
         self.update_backend_frame_policy();
 
-        // Paint truth is the cell-grid hash snapshot, not "the app used
+        // Paint truth is the Grid row-revision snapshot, not "the app used
         // absolute CSI / looks like a TUI". Ratatui/crossterm (Codex CLI)
         // and Ink double-buffer then emit VT for (often large) regions;
         // between two *settled* frames most cells are identical. Forcing
         // full_redraw_pending here used to wipe the whole viewport on
         // every tick while inline-TUI was active → visible flash even
-        // when hashes matched. Content-diff via collect_dirty_rows is
+        // when revisions matched. Content-diff via collect_dirty_rows is
         // enough; true mapping breaks (resize/scroll/screen/first frame)
         // still set full_redraw_pending elsewhere. IME preedit install
         // has its own invalidate path.
 
         // Viewport scroll offset change → full redraw. The row→content
-        // mapping shifts when the user pages history, so per-row hashes
-        // computed against last frame's mapping aren't valid.
+        // mapping shifts when the user pages history, so per-row revisions
+        // stored against the last mapping aren't valid.
         let offset = terminal.scroll_offset();
         self.update_scroll_state(offset);
         /*
@@ -628,23 +655,20 @@ impl<B: RenderBackend> Renderer<B> {
         }
         */
 
-        // Compute dirty rows by hashing each visible row's cells +
-        // hyperlink span shape. Cell hash is keyed off (ch, attr_id,
-        // width); span shape adds (count, col_start, col_end) per
-        // span. We read via `viewport_row` so the same code path
-        // covers live grid AND scrollback views.
-        //
-        // Why include hyperlink spans: the hyperlink-underline pass
-        // paints from `row.hyperlinks` every frame. A row whose span
-        // set changes without the cell content changing would
-        // otherwise stay "clean" → underline pixels persist or
-        // vanish a frame late. All current cell-mutating Grid
-        // methods (clear / erase_in_line / erase_chars / insert_chars
-        // / delete_chars / Row::resize) already keep spans in sync,
-        // but defending the dirty calc against future span-only
-        // mutations is cheap (most rows have 0 spans). URI/id are NOT
-        // hashed — the underline overlay only varies spatially, so
-        // identical (col_start, col_end) → identical pixels. (TASKS §1.18.c.)
+        // For ordinary shell output, a bottom-margin scroll moves almost every
+        // row without changing its cells. Move the renderer snapshot with the
+        // same operation before diffing so WebGPU can issue one texture copy
+        // and redraw only the newly exposed rows. All other cases retain the
+        // revision diff below; that intentionally redraws moved rows.
+        let scroll_copy = self.scroll_copy_candidate(terminal, selection, offset, scroll_ops);
+        if let Some(scroll) = scroll_copy {
+            self.shift_snapshot_for_scroll(scroll);
+        }
+
+        // Grid mutators advance the affected row revision, including
+        // hyperlink and grapheme sidecars. We read via `viewport_row` so the
+        // same O(rows) revision compare covers live grid and scrollback views
+        // without allocating a flags array or hashing every visible cell.
         let mut dirty_rows = self.collect_dirty_rows(terminal, rows_n);
 
         // Cursor handling: show the cursor when (a) the surface is
@@ -654,12 +678,15 @@ impl<B: RenderBackend> Renderer<B> {
         // is still inside the viewport; `compute_cursor_draw` returns None
         // once the cursor scrolls off the bottom. Unfocused panes = no
         // cursor (matches xterm behavior + multi-pane convention).
-        let new_cursor = if self.focused && blink_phase {
+        let new_cursor = if self.focused && !self.presentation_cursor_suppressed && blink_phase {
             self.compute_cursor_draw(terminal, offset)
         } else {
             None
         };
 
+        if let Some(scroll) = scroll_copy {
+            self.add_scrolled_cursor_dirty_row(&mut dirty_rows, scroll);
+        }
         self.add_cursor_dirty_rows(&mut dirty_rows, &new_cursor);
         self.last_cursor = new_cursor;
 
@@ -735,6 +762,7 @@ impl<B: RenderBackend> Renderer<B> {
                 cursor: self.last_cursor.as_ref(),
                 attrs_table: &terminal.grid().attrs,
                 full_redraw: do_full,
+                scroll: scroll_copy,
                 selection_rects: &sel_rects,
                 hyperlink_rects: &hl_rects,
                 preedit: self.preedit.as_ref(),
@@ -746,16 +774,120 @@ impl<B: RenderBackend> Renderer<B> {
         true
     }
 
+    /// Return the one scroll which is safe to represent as a GPU copy rather
+    /// than a full viewport repaint. Keeping this conservative is important:
+    /// a wrong copy gives visible stale pixels, while a rejected copy merely
+    /// falls back to the existing exact revision renderer.
+    fn scroll_copy_candidate(
+        &self,
+        terminal: &Terminal,
+        selection: Option<SelRange>,
+        offset: usize,
+        scroll_ops: &[ScrollOp],
+    ) -> Option<ScrollOp> {
+        let [scroll] = scroll_ops else {
+            return None;
+        };
+        let rows = terminal.rows();
+        if !self.backend.supports_scroll_copy()
+            || self.first_frame
+            || self.full_redraw_pending
+            || selection.is_some()
+            || self.last_selection.is_some()
+            || self.preedit.is_some()
+            || self.history_overlay.is_some()
+            || offset != 0
+            || terminal.is_alt_screen()
+            || terminal.grid().is_inline_tui_active_at(
+                crate::term::clock::now_ms(),
+                terminal.modes().cursor_visible,
+            )
+            || !scroll.up
+            || scroll.top != 0
+            || scroll.bottom.saturating_add(1) != rows
+            || scroll.count == 0
+            || scroll.count >= rows
+        {
+            return None;
+        }
+        Some(*scroll)
+    }
+
+    /// Keep the renderer's row-revision snapshot aligned with a successful
+    /// pixel copy. Moved rows retain their source revisions; newly exposed
+    /// rows receive an impossible baseline and therefore repaint once.
+    fn shift_snapshot_for_scroll(&mut self, scroll: ScrollOp) {
+        let rows = self.snapshot.len();
+        if rows == 0 {
+            return;
+        }
+        if self.visual_snapshot.len() != rows {
+            self.visual_snapshot.resize(rows, None);
+        }
+        let top = scroll.top.min(rows - 1);
+        let bottom = scroll.bottom.min(rows - 1);
+        if top > bottom {
+            return;
+        }
+        let count = scroll.count.min(bottom - top + 1);
+        if count == 0 {
+            return;
+        }
+        if scroll.up {
+            self.snapshot[top..=bottom].rotate_left(count);
+            self.visual_snapshot[top..=bottom].rotate_left(count);
+            for revision in &mut self.snapshot[bottom + 1 - count..=bottom] {
+                *revision = u64::MAX;
+            }
+            for row in &mut self.visual_snapshot[bottom + 1 - count..=bottom] {
+                *row = None;
+            }
+        } else {
+            self.snapshot[top..=bottom].rotate_right(count);
+            self.visual_snapshot[top..=bottom].rotate_right(count);
+            for revision in &mut self.snapshot[top..top + count] {
+                *revision = u64::MAX;
+            }
+            for row in &mut self.visual_snapshot[top..top + count] {
+                *row = None;
+            }
+        }
+    }
+
+    /// A painted cursor is part of the old pixels, not the grid revision.
+    /// When pixels move we must repaint its mapped destination even if the
+    /// logical cursor remains at the same terminal coordinate.
+    fn add_scrolled_cursor_dirty_row(&self, dirty: &mut Vec<usize>, scroll: ScrollOp) {
+        let Some(previous) = self.last_cursor.as_ref() else {
+            return;
+        };
+        let row = if scroll.up
+            && previous.row >= scroll.top.saturating_add(scroll.count)
+            && previous.row <= scroll.bottom
+        {
+            Some(previous.row - scroll.count)
+        } else if !scroll.up
+            && previous.row >= scroll.top
+            && previous.row <= scroll.bottom.saturating_sub(scroll.count)
+        {
+            Some(previous.row + scroll.count)
+        } else {
+            None
+        };
+        if let Some(row) = row.filter(|row| !dirty.contains(row)) {
+            dirty.push(row);
+        }
+    }
+
     /// Non-mutating mirror of the early-exit conditions in `tick`.
     /// Returns true when the next `tick` call would do any drawing
     /// work — false when the renderer has nothing to redraw and the
     /// caller can safely sleep its RAF loop. Used by `manager.ts` to
     /// pause the per-pane animation frame loop on idle.
     ///
-    /// Cost: ~24 row hashes for an 80×24 grid (≈4 µs). The hashes are
-    /// re-computed in `tick`; calling both back-to-back doubles that
-    /// cost — still cheaper than one `draw_row` call by two orders of
-    /// magnitude, and avoids tearing the snapshot.
+    /// Cost: one integer revision compare per visible row. `tick` repeats
+    /// the compare before committing its snapshot, preserving the
+    /// non-mutating semantics needed by the JS scheduler.
     fn update_screen_state(&mut self, terminal: &Terminal) {
         let is_alt = terminal.is_alt_screen();
         if is_alt != self.last_is_alt {
@@ -774,16 +906,11 @@ impl<B: RenderBackend> Renderer<B> {
     }
 
     fn update_blink_phase(&mut self, terminal: &Terminal, now_ms: f64) -> bool {
-        let active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
+        let active = !self.presentation_cursor_suppressed
+            && terminal.modes().cursor_visible
+            && terminal.modes().cursor_blink;
         let phase = !active || ((now_ms / 500.0) as i64).rem_euclid(2) == 1;
         if phase != self.last_blink_phase {
-            if let Some(previous) = self
-                .last_cursor
-                .as_ref()
-                .filter(|cursor| cursor.row < self.snapshot.len())
-            {
-                self.snapshot[previous.row] = self.snapshot[previous.row].wrapping_add(1);
-            }
             self.last_blink_phase = phase;
         }
         phase
@@ -794,6 +921,7 @@ impl<B: RenderBackend> Renderer<B> {
             return;
         }
         self.snapshot.resize(rows, 0);
+        self.visual_snapshot.resize(rows, None);
         self.full_redraw_pending = true;
         self.backend.on_full_invalidate();
     }
@@ -815,30 +943,40 @@ impl<B: RenderBackend> Renderer<B> {
 
     fn collect_dirty_rows(&mut self, terminal: &Terminal, rows: usize) -> Vec<usize> {
         let mut dirty = Vec::with_capacity(rows);
-        let mut flags = vec![false; rows];
-        for (row_index, flag) in flags.iter_mut().enumerate() {
+        let mut previous_dirty = false;
+        for row_index in 0..rows {
             let Some(row) = terminal.viewport_row(row_index) else {
+                previous_dirty = false;
                 continue;
             };
-            let hash = compute_row_hash(row);
-            if self.full_redraw_pending
+            let revision = row.revision();
+            let row_dirty = self.full_redraw_pending
                 || row_index >= self.snapshot.len()
-                || hash != self.snapshot[row_index]
-            {
-                if row_index < self.snapshot.len() {
-                    self.snapshot[row_index] = hash;
-                } else {
-                    self.snapshot.push(hash);
+                || revision != self.snapshot[row_index];
+            if !row_dirty {
+                previous_dirty = false;
+                continue;
+            }
+            if row_index < self.snapshot.len() {
+                self.snapshot[row_index] = revision;
+            } else {
+                self.snapshot.push(revision);
+            }
+            if row_index >= self.visual_snapshot.len() {
+                self.visual_snapshot.resize(row_index + 1, None);
+            }
+            let content_changed = self.full_redraw_pending
+                || self.visual_snapshot[row_index]
+                    .as_ref()
+                    .is_none_or(|previous| !row.visual_eq(previous));
+            if content_changed {
+                self.visual_snapshot[row_index] = Some(row.clone());
+                if row_index > 0 && !previous_dirty {
+                    dirty.push(row_index - 1);
                 }
                 dirty.push(row_index);
-                *flag = true;
             }
-        }
-        for row_index in (1..rows).rev() {
-            if flags[row_index] && !flags[row_index - 1] {
-                dirty.push(row_index - 1);
-                flags[row_index - 1] = true;
-            }
+            previous_dirty = content_changed;
         }
         dirty
     }
@@ -899,7 +1037,9 @@ impl<B: RenderBackend> Renderer<B> {
         // focused + viewport at live grid). Off-half phases when the
         // cursor was previously visible also count, since the prior
         // frame painted it and this frame must erase it.
-        let blink_active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
+        let blink_active = !self.presentation_cursor_suppressed
+            && terminal.modes().cursor_visible
+            && terminal.modes().cursor_blink;
         let blink_phase = if blink_active {
             ((now_ms / 500.0) as i64).rem_euclid(2) == 1
         } else {
@@ -909,25 +1049,34 @@ impl<B: RenderBackend> Renderer<B> {
             return true;
         }
 
-        // Snapshot length mismatch → grid grew.
+        // Snapshot length mismatch → grid dimensions changed.
         let rows_n = terminal.rows();
-        if self.snapshot.len() < rows_n {
+        if self.snapshot.len() != rows_n {
             return true;
         }
 
-        // Per-row content + hyperlink-span hash diff.
+        // Per-row source revision diff. A changed revision may still carry
+        // identical final pixels after a TUI's clear-and-rewrite transaction;
+        // compare only those rows against the exact painted snapshot.
         for r in 0..rows_n {
             let Some(row) = terminal.viewport_row(r) else {
                 continue;
             };
-            if compute_row_hash(row) != self.snapshot[r] {
-                return true;
+            if row.revision() != self.snapshot[r] {
+                let unchanged = self
+                    .visual_snapshot
+                    .get(r)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|previous| row.visual_eq(previous));
+                if !unchanged {
+                    return true;
+                }
             }
         }
 
         // Cursor moved (position / style / glyph beneath).
         let offset = terminal.scroll_offset();
-        let new_cursor = if self.focused && blink_phase {
+        let new_cursor = if self.focused && !self.presentation_cursor_suppressed && blink_phase {
             self.compute_cursor_draw(terminal, offset)
         } else {
             None
@@ -952,7 +1101,7 @@ impl<B: RenderBackend> Renderer<B> {
         // run a no-op tick — burning the whole point of letting the
         // loop sleep through unfocused idle. Cap to Infinity so the
         // loop falls through to its 1 s watchdog (caller clamps).
-        if !self.focused {
+        if !self.focused || self.presentation_cursor_suppressed {
             return f64::INFINITY;
         }
         let blink_active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
@@ -1060,52 +1209,9 @@ fn selection_to_rects(
     out
 }
 
-/// Compute the per-row dirty hash. Extracted from `Renderer::tick` so
-/// the §1.18.c invariant — that hyperlink span shape changes dirty the
-/// row, while URI/id-only changes do not — has direct host-side test
-/// coverage. The cells contribute `(ch, attr_id, width)`; the
-/// hyperlinks contribute `(count, col_start, col_end)` per span.
-fn compute_row_hash(row: &crate::term::cell::Row) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    for cell in &row.cells {
-        cell.ch.hash(&mut hasher);
-        cell.attr.0.hash(&mut hasher);
-        cell.width.hash(&mut hasher);
-    }
-    row.hyperlinks.len().hash(&mut hasher);
-    for span in &row.hyperlinks {
-        span.col_start.hash(&mut hasher);
-        span.col_end.hash(&mut hasher);
-    }
-    // §4.7 (2026-05-07): include grapheme cluster sidecar in the row
-    // hash so a cluster-only change (e.g. a ZWJ cluster overwritten
-    // with a different ZWJ cluster at the same col) re-renders the
-    // row even when `cell.ch` (= first codepoint) happens to match.
-    row.clusters.len().hash(&mut hasher);
-    for span in &row.clusters {
-        span.col.hash(&mut hasher);
-        span.text.hash(&mut hasher);
-    }
-    hasher.finish()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        compute_row_hash, history_overlay_geometry, history_overlay_surface, HistoryOverlay,
-    };
-    use crate::term::cell::{Cell, HyperlinkSpan, Row};
-
-    fn row_with_text(text: &str, cols: usize) -> Row {
-        let mut r = Row::new(cols);
-        for (i, ch) in text.chars().enumerate() {
-            if i >= cols {
-                break;
-            }
-            r.cells[i] = Cell::new(ch, crate::term::attr_table::AttrId::DEFAULT, 1);
-        }
-        r
-    }
+    use super::{history_overlay_geometry, history_overlay_surface, HistoryOverlay};
 
     fn overlay(row: usize, col: usize, above: bool, rows: usize, cols: usize) -> HistoryOverlay {
         HistoryOverlay {
@@ -1164,106 +1270,6 @@ mod tests {
             history_overlay_surface([245, 245, 245, 80], [5, 5, 5, 0])[3],
             255
         );
-    }
-
-    #[test]
-    fn identical_rows_hash_equal() {
-        let a = row_with_text("hello", 10);
-        let b = row_with_text("hello", 10);
-        assert_eq!(compute_row_hash(&a), compute_row_hash(&b));
-    }
-
-    #[test]
-    fn cell_change_dirties_hash() {
-        let a = row_with_text("hello", 10);
-        let b = row_with_text("hellz", 10);
-        assert_ne!(compute_row_hash(&a), compute_row_hash(&b));
-    }
-
-    #[test]
-    fn span_added_dirties_hash() {
-        // §1.18.c regression test: adding a hyperlink span to an
-        // otherwise-identical row must change the dirty hash so the
-        // renderer redraws the row and the underline pass paints
-        // (or — on removal — bg+glyph repaint clears the previous
-        // underline pixels).
-        let a = row_with_text("hello", 10);
-        let mut b = row_with_text("hello", 10);
-        b.hyperlinks.push(HyperlinkSpan {
-            col_start: 0,
-            col_end: 5,
-            uri: "https://example.com".into(),
-            id: None,
-        });
-        assert_ne!(compute_row_hash(&a), compute_row_hash(&b));
-    }
-
-    #[test]
-    fn span_position_change_dirties_hash() {
-        let mut a = row_with_text("hello", 10);
-        a.hyperlinks.push(HyperlinkSpan {
-            col_start: 0,
-            col_end: 5,
-            uri: "https://example.com".into(),
-            id: None,
-        });
-        let mut b = row_with_text("hello", 10);
-        b.hyperlinks.push(HyperlinkSpan {
-            col_start: 1,
-            col_end: 5,
-            uri: "https://example.com".into(),
-            id: None,
-        });
-        assert_ne!(compute_row_hash(&a), compute_row_hash(&b));
-    }
-
-    #[test]
-    fn span_uri_only_change_does_not_dirty_hash() {
-        // URI/id are intentionally NOT in the hash. The underline
-        // overlay is purely spatial — same (col_start, col_end) →
-        // same pixels. Avoids redraws on URI-only rebuilds (e.g.,
-        // some shells re-emit OSC 8 with a slightly different
-        // tracking id every frame).
-        let mut a = row_with_text("hello", 10);
-        a.hyperlinks.push(HyperlinkSpan {
-            col_start: 0,
-            col_end: 5,
-            uri: "https://example.com".into(),
-            id: None,
-        });
-        let mut b = row_with_text("hello", 10);
-        b.hyperlinks.push(HyperlinkSpan {
-            col_start: 0,
-            col_end: 5,
-            uri: "https://different.example.com".into(),
-            id: Some("anchor-42".into()),
-        });
-        assert_eq!(compute_row_hash(&a), compute_row_hash(&b));
-    }
-
-    #[test]
-    fn span_count_difference_dirties_hash() {
-        let mut a = row_with_text("ab cd", 10);
-        a.hyperlinks.push(HyperlinkSpan {
-            col_start: 0,
-            col_end: 2,
-            uri: "u".into(),
-            id: None,
-        });
-        let mut b = row_with_text("ab cd", 10);
-        b.hyperlinks.push(HyperlinkSpan {
-            col_start: 0,
-            col_end: 2,
-            uri: "u".into(),
-            id: None,
-        });
-        b.hyperlinks.push(HyperlinkSpan {
-            col_start: 3,
-            col_end: 5,
-            uri: "u2".into(),
-            id: None,
-        });
-        assert_ne!(compute_row_hash(&a), compute_row_hash(&b));
     }
 
     // ─── selection_to_rects ───────────────────────────────────────────
@@ -1342,7 +1348,7 @@ mod tests {
             // compared by cursor_eq — they're carried inline so the
             // backend can paint the glyph on top of the cursor block,
             // but a cell content change is already caught by the
-            // per-row dirty hash. Filling them with arbitrary values
+            // per-row source revision. Filling them with arbitrary values
             // here proves cursor_eq ignores them.
             ch: ' ',
             ch_attr: crate::term::attr_table::AttrId::DEFAULT,
@@ -1373,7 +1379,7 @@ mod tests {
     fn cursor_eq_ignores_ch_difference() {
         // ch and ch_attr differ but row/col/style match — equal.
         // Production-correct: cell content changes already dirty the
-        // row via the hash, so the cursor doesn't need to also re-mark.
+        // row via its revision, so the cursor doesn't need to also re-mark.
         let mut a = cursor(3, 7, CursorStyle::Block);
         let b = cursor(3, 7, CursorStyle::Block);
         a.ch = 'A';
@@ -1454,19 +1460,22 @@ mod tests {
     // typically alt-screen and optional synchronized output `CSI ? 2026 h/l`.
     // Evidence: upstream `codex-rs/tui/Cargo.toml` deps + local `codex.exe`
     // strings (`ratatui`, `crossterm`, `codex_tui`). Paint policy must treat
-    // large VT rewrites as grid updates and dirty only hash-changed rows —
+    // large VT rewrites as grid updates and dirty only revision-changed rows —
     // never whole-viewport clear solely because absolute CSI / TUI is active.
 
     use super::Renderer;
     use crate::render::backend::{FrameMetrics, RenderBackend, RowDraw, Theme};
     use crate::term::attr_table::AttrTable;
-    use crate::term::Terminal;
+    use crate::term::{grid::ScrollOp, Terminal};
 
     #[derive(Default)]
     struct RecordingBackend {
         clears: u32,
         frames: u32,
+        cursors: u32,
         atlas_invalidations: u32,
+        scroll_copy: bool,
+        scrolls: Vec<ScrollOp>,
         drawn_rows: Vec<usize>,
         last_drawn: Vec<usize>,
     }
@@ -1487,12 +1496,20 @@ mod tests {
         fn invalidate_atlas(&mut self) {
             self.atlas_invalidations += 1;
         }
+        fn supports_scroll_copy(&self) -> bool {
+            self.scroll_copy
+        }
+        fn scroll_rows(&mut self, scroll: ScrollOp) {
+            self.scrolls.push(scroll);
+        }
         fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, _: &AttrTable) {
             self.last_drawn.push(row.row_index);
             self.drawn_rows.push(row.row_index);
         }
         fn draw_row_texts(&mut self, _: &RowDraw<'_>, _: &AttrTable) {}
-        fn draw_cursor(&mut self, _: &CursorDraw, _: &AttrTable) {}
+        fn draw_cursor(&mut self, _: &CursorDraw, _: &AttrTable) {
+            self.cursors += 1;
+        }
         fn draw_selection_overlay(&mut self, _: &[(usize, usize, usize)]) {}
         fn draw_hyperlink_underlines(&mut self, _: &[(usize, usize, usize)]) {}
         fn end_frame(&mut self) {
@@ -1582,7 +1599,7 @@ mod tests {
         assert_eq!(
             r.backend().clears,
             clears_after_first,
-            "must not whole-viewport clear when cell hashes stable"
+            "must not whole-viewport clear when row revisions are stable"
         );
         assert_eq!(r.backend().frames, frames_after_first);
         assert!(
@@ -1639,6 +1656,107 @@ mod tests {
             !unique.contains(&(rows - 1)),
             "unchanged bottom row must stay clean; got {unique:?}"
         );
+    }
+
+    #[test]
+    fn primary_shell_scroll_copies_pixels_and_repaints_only_exposed_rows() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"A\r\nB\r\nC\r\nD");
+        let mut renderer = Renderer::new(
+            RecordingBackend {
+                scroll_copy: true,
+                ..RecordingBackend::default()
+            },
+            metrics(),
+            Theme::default_dark(),
+        );
+        renderer.set_focused(false);
+        assert!(renderer.tick(&term, None, 0.0));
+        renderer.backend_mut().last_drawn.clear();
+        renderer.backend_mut().scrolls.clear();
+
+        term.feed(b"\r\nE");
+        let scrolls = term.take_scroll_ops();
+        assert_eq!(scrolls.len(), 1, "fixture must scroll once");
+        assert!(renderer.tick_with_scroll(&term, None, 0.0, &scrolls));
+
+        assert_eq!(
+            renderer.backend().scrolls,
+            vec![ScrollOp {
+                top: 0,
+                bottom: 3,
+                count: 1,
+                up: true,
+            }],
+            "the backend receives the physical move instead of a full repaint"
+        );
+        let mut drawn = renderer.backend().last_drawn.clone();
+        drawn.sort_unstable();
+        drawn.dedup();
+        assert_eq!(
+            drawn,
+            vec![2, 3],
+            "only new bottom content plus its glyph-bleed predecessor redraws"
+        );
+    }
+
+    #[test]
+    fn osc_8_rewrite_advances_row_revision_for_renderer() {
+        let mut term = Terminal::new(2, 12, 0);
+        term.feed(b"X");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 0.0));
+
+        // Reprint under OSC 8 at the same coordinate. This must wake the
+        // revision-driven renderer, including the hyperlink underline pass.
+        term.feed(b"\x1b[HX\x1b]8;;https://example.com\x07\x1b[HX\x1b]8;;\x07");
+        assert!(
+            renderer.is_dirty(&term, None, 0.0),
+            "OSC 8 rewrite must wake the renderer"
+        );
+        assert!(renderer.tick(&term, None, 0.0));
+        assert!(renderer.backend().last_drawn.contains(&0));
+    }
+
+    #[test]
+    fn presentation_cursor_suppression_keeps_grid_paints_immediate() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"before");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 500.0));
+        let clears_after_seed = renderer.backend().clears;
+        let cursors_after_seed = renderer.backend().cursors;
+
+        renderer.set_presentation_cursor_suppressed(true);
+        term.feed(b"\x1b[Hafter");
+        assert!(renderer.tick(&term, None, 500.0));
+        assert!(
+            !renderer.backend().last_drawn.is_empty(),
+            "grid changes must paint while the transient cursor is hidden"
+        );
+        assert_eq!(
+            renderer.backend().cursors,
+            cursors_after_seed,
+            "suppression must hide only the cursor"
+        );
+        assert_eq!(
+            renderer.backend().clears,
+            clears_after_seed,
+            "cursor suppression must not turn a partial repaint into a clear"
+        );
+
+        renderer.set_presentation_cursor_suppressed(false);
+        assert!(renderer.is_dirty(&term, None, 500.0));
+        assert!(renderer.tick(&term, None, 500.0));
+        assert_eq!(renderer.backend().cursors, cursors_after_seed + 1);
     }
 
     #[test]
@@ -1718,7 +1836,7 @@ mod tests {
     }
 
     /// Split remounts a sibling; that must not treat the already-painted
-    /// pane as a whole-viewport clear when its cell hashes are unchanged.
+    /// pane as a whole-viewport clear when its row revisions are unchanged.
     #[test]
     fn sibling_split_does_not_full_clear_stable_pane() {
         let rows = 6usize;
@@ -1754,7 +1872,7 @@ mod tests {
         assert_eq!(
             pane_a.backend().clears,
             clears_a,
-            "split must not whole-viewport clear the previous pane when hashes are stable"
+            "split must not whole-viewport clear the previous pane when revisions are stable"
         );
         assert_eq!(pane_a.backend().frames, frames_a);
         assert!(!pane_a.is_dirty(&term_a, None, 0.0));

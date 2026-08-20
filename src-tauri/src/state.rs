@@ -18,6 +18,7 @@ use crate::engine::pty::PtyHandle;
 use crate::types::{GlobalEvent, RemotePtyEvent};
 use crate::utils::cwd::{detect_startup_cwd_kind, StartupCwdKind};
 use ridge_remote::auth::{RemoteAuth, SessionStore, VerifyThrottle};
+use ridge_term::term::delta::{encode_frame, merge_ordered_frames, DeltaFrame};
 use ridge_term::term::modes::Modes;
 
 /// Two-stage PTY spawn record.
@@ -257,6 +258,86 @@ impl PaneScrollback {
 /// will drop the sender). Callers log errors inside the closure.
 pub type PaneDeltaSender = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 
+/// A pane's native-parser frames live here until the browser compositor asks
+/// for them.  The Channel carries only one zero-byte wake per animation frame;
+/// this keeps a Ctrl+C flood out of WebView's task queue without inserting a
+/// timer between terminal bytes and their next paint.
+const MAX_DELTA_MAILBOX_DELTAS: usize = 8_192;
+
+#[derive(Default)]
+struct PaneDeltaMailboxState {
+    pending: Option<DeltaFrame>,
+    wake_armed: bool,
+    last_sequence: Option<u64>,
+}
+
+#[derive(Default)]
+struct PaneDeltaMailbox {
+    state: Mutex<PaneDeltaMailboxState>,
+}
+
+enum PaneDeltaMailboxPush {
+    Queued { wake: bool },
+    NeedsResync,
+}
+
+impl PaneDeltaMailbox {
+    fn push(&self, frame: DeltaFrame) -> PaneDeltaMailboxPush {
+        let mut state = self.state.lock();
+        if state
+            .last_sequence
+            .is_some_and(|sequence| frame.pane_seq <= sequence)
+        {
+            return PaneDeltaMailboxPush::Queued { wake: false };
+        }
+        if state.pending.as_ref().is_some_and(|pending| {
+            pending.deltas.len().saturating_add(frame.deltas.len()) > MAX_DELTA_MAILBOX_DELTAS
+        }) {
+            return PaneDeltaMailboxPush::NeedsResync;
+        }
+        state.last_sequence = Some(frame.pane_seq);
+        if let Some(pending) = &mut state.pending {
+            merge_ordered_frames(pending, frame);
+        } else {
+            state.pending = Some(frame);
+        }
+        let wake = !state.wake_armed;
+        state.wake_armed = true;
+        PaneDeltaMailboxPush::Queued { wake }
+    }
+
+    fn replace(&self, frame: DeltaFrame) -> bool {
+        let mut state = self.state.lock();
+        state.last_sequence = Some(frame.pane_seq);
+        state.pending = Some(frame);
+        let wake = !state.wake_armed;
+        state.wake_armed = true;
+        wake
+    }
+
+    fn take_encoded(&self) -> Result<Option<Vec<u8>>, postcard::Error> {
+        let mut state = self.state.lock();
+        let Some(frame) = state.pending.as_ref() else {
+            state.wake_armed = false;
+            return Ok(None);
+        };
+        let encoded = encode_frame(frame)?;
+        state.pending = None;
+        state.wake_armed = false;
+        Ok(Some(encoded))
+    }
+}
+
+/// The caller holds the canonical parser lock while queuing a frame.  A
+/// bounded mailbox requests one fresh full reframe instead of retaining an
+/// unbounded hidden-tab transcript.
+#[derive(Debug)]
+pub enum PaneDeltaEnqueue {
+    Queued,
+    NeedsResync,
+    NoChannel(DeltaFrame),
+}
+
 pub struct RemotePaneSub {
     pub id: u64,
     pub raw_tx: mpsc::Sender<RemotePtyEvent>,
@@ -274,6 +355,7 @@ pub struct RemotePaneSub {
 #[derive(Default)]
 pub struct PaneRegistry {
     pub delta_cb: Option<PaneDeltaSender>,
+    delta_mailbox: Option<Arc<PaneDeltaMailbox>>,
     pub remote_subs: Vec<RemotePaneSub>,
 }
 
@@ -1103,21 +1185,19 @@ impl AppState {
         }
     }
 
-    /// P4.1 — install (or replace) the delta-byte sender for `(ws, pane)`.
-    /// Subsequent `pty-delta-*` emit sites route bytes through this sender
-    /// instead of `app.emit`. Idempotent — a second register for the same
-    /// pane replaces the previous sender (the old `Arc` is dropped).
+    /// Install (or replace) the compositor wake sender for `(ws, pane)`.
+    /// Frames remain in a native mailbox until the browser's rAF lane pulls
+    /// one compact payload; the Channel therefore cannot flood WebView tasks.
     pub fn register_pane_delta_channel(
         &self,
         workspace_id: Uuid,
         pane_id: Uuid,
         sender: PaneDeltaSender,
     ) {
-        self.pty_pane_registry
-            .write()
-            .entry((workspace_id, pane_id))
-            .or_default()
-            .delta_cb = Some(sender);
+        let mut registry = self.pty_pane_registry.write();
+        let entry = registry.entry((workspace_id, pane_id)).or_default();
+        entry.delta_cb = Some(sender);
+        entry.delta_mailbox = Some(Arc::new(PaneDeltaMailbox::default()));
     }
 
     pub fn unregister_pane_delta_channel(&self, workspace_id: Uuid, pane_id: Uuid) {
@@ -1125,6 +1205,7 @@ impl AppState {
         let key = (workspace_id, pane_id);
         if let Some(entry) = reg.get_mut(&key) {
             entry.delta_cb = None;
+            entry.delta_mailbox = None;
             if entry.is_empty() {
                 reg.remove(&key);
             }
@@ -1140,6 +1221,79 @@ impl AppState {
             .read()
             .get(&(workspace_id, pane_id))
             .and_then(|e| e.delta_cb.clone())
+    }
+
+    pub fn enqueue_pane_delta_frame(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        frame: DeltaFrame,
+    ) -> PaneDeltaEnqueue {
+        let (mailbox, sender) = {
+            let registry = self.pty_pane_registry.read();
+            let Some(entry) = registry.get(&(workspace_id, pane_id)) else {
+                return PaneDeltaEnqueue::NoChannel(frame);
+            };
+            let (Some(mailbox), Some(sender)) =
+                (entry.delta_mailbox.clone(), entry.delta_cb.clone())
+            else {
+                return PaneDeltaEnqueue::NoChannel(frame);
+            };
+            (mailbox, sender)
+        };
+        match mailbox.push(frame) {
+            PaneDeltaMailboxPush::Queued { wake } => {
+                if wake {
+                    // A marker, not a frame. The JS bridge pulls the merged
+                    // payload on its own animation-frame transaction.
+                    sender(Vec::new());
+                }
+                PaneDeltaEnqueue::Queued
+            }
+            PaneDeltaMailboxPush::NeedsResync => PaneDeltaEnqueue::NeedsResync,
+        }
+    }
+
+    pub fn replace_pane_delta_frame(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+        frame: DeltaFrame,
+    ) -> bool {
+        let (mailbox, sender) = {
+            let registry = self.pty_pane_registry.read();
+            let Some(entry) = registry.get(&(workspace_id, pane_id)) else {
+                return false;
+            };
+            let (Some(mailbox), Some(sender)) =
+                (entry.delta_mailbox.clone(), entry.delta_cb.clone())
+            else {
+                return false;
+            };
+            (mailbox, sender)
+        };
+        if mailbox.replace(frame) {
+            sender(Vec::new());
+        }
+        true
+    }
+
+    pub fn take_pane_delta_frame(
+        &self,
+        workspace_id: Uuid,
+        pane_id: Uuid,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let mailbox = self
+            .pty_pane_registry
+            .read()
+            .get(&(workspace_id, pane_id))
+            .and_then(|entry| entry.delta_mailbox.clone());
+        let Some(mailbox) = mailbox else {
+            return Ok(None);
+        };
+        mailbox
+            .take_encoded()
+            .map_err(|error| format!("delta mailbox encode failed: {error}"))
     }
 
     /// Snapshot the pane's current terminal modes + alt-screen flag, for
@@ -1230,11 +1384,50 @@ impl AppState {
             }
         }
     }
+
+    /// Lossless-at-source raw fan-out for remote viewers. This is called from
+    /// the PTY reader after the local delta mailbox accepts a frame, avoiding a
+    /// second desktop event hop for every terminal packet.
+    pub fn forward_remote_pty_bytes(&self, workspace_id: Uuid, pane_id: Uuid, data: &str) {
+        if !self
+            .remote_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && !self
+                .cloud_remote_active
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        let registry = self.pty_pane_registry.read();
+        let Some(entry) = registry.get(&(workspace_id, pane_id)) else {
+            return;
+        };
+        if entry.remote_subs.is_empty() {
+            return;
+        }
+        let shared = Arc::new(data.as_bytes().to_vec());
+        for subscriber in &entry.remote_subs {
+            if subscriber
+                .raw_tx
+                .try_send(RemotePtyEvent::RawBytes {
+                    workspace_id,
+                    pane_id,
+                    bytes: Arc::clone(&shared),
+                })
+                .is_err()
+            {
+                subscriber
+                    .desync
+                    .store(true, std::sync::atomic::Ordering::Release);
+                tracing::warn!(target: "ridge::remote", sub = subscriber.id, "raw byte channel full; dropping frame, will resync");
+            }
+        }
+    }
 }
 
 impl PaneRegistry {
     fn is_empty(&self) -> bool {
-        self.delta_cb.is_none() && self.remote_subs.is_empty()
+        self.delta_cb.is_none() && self.delta_mailbox.is_none() && self.remote_subs.is_empty()
     }
 }
 
@@ -1472,6 +1665,67 @@ mod pty_delta_channel_tests {
 
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(last_len.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn mailbox_coalesces_ordered_frames_into_one_wake() {
+        use ridge_term::term::delta::{decode_frame, DeltaFrame, GridDelta};
+
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, count, last_len) = counting_sender();
+        state.register_pane_delta_channel(ws, pane, sender);
+
+        assert!(matches!(
+            state.enqueue_pane_delta_frame(ws, pane, DeltaFrame::new(4, vec![GridDelta::Bell])),
+            PaneDeltaEnqueue::Queued
+        ));
+        assert!(matches!(
+            state.enqueue_pane_delta_frame(
+                ws,
+                pane,
+                DeltaFrame::new(5, vec![GridDelta::ScrollbackClear]),
+            ),
+            PaneDeltaEnqueue::Queued
+        ));
+
+        assert_eq!(count.load(Ordering::SeqCst), 1, "one wake per mailbox fill");
+        assert_eq!(
+            last_len.load(Ordering::SeqCst),
+            0,
+            "wake carries no frame bytes"
+        );
+        let bytes = state
+            .take_pane_delta_frame(ws, pane)
+            .expect("mailbox encode")
+            .expect("merged frame");
+        let frame = decode_frame(&bytes).expect("mailbox frame decodes");
+        assert_eq!(frame.pane_seq, 5);
+        assert!(matches!(frame.deltas[0], GridDelta::Bell));
+        assert!(matches!(frame.deltas[1], GridDelta::ScrollbackClear));
+
+        let _ = state.enqueue_pane_delta_frame(ws, pane, DeltaFrame::new(6, vec![GridDelta::Bell]));
+        assert_eq!(count.load(Ordering::SeqCst), 2, "pull rearms the next wake");
+    }
+
+    #[test]
+    fn mailbox_requests_reframe_before_hidden_output_grows_unbounded() {
+        use ridge_term::term::delta::{DeltaFrame, GridDelta};
+
+        let state = make_state();
+        let ws = Uuid::new_v4();
+        let pane = Uuid::new_v4();
+        let (sender, _, _) = counting_sender();
+        state.register_pane_delta_channel(ws, pane, sender);
+        let burst = std::iter::repeat(GridDelta::Bell)
+            .take(MAX_DELTA_MAILBOX_DELTAS)
+            .collect();
+        let _ = state.enqueue_pane_delta_frame(ws, pane, DeltaFrame::new(1, burst));
+        assert!(matches!(
+            state.enqueue_pane_delta_frame(ws, pane, DeltaFrame::new(2, vec![GridDelta::Bell])),
+            PaneDeltaEnqueue::NeedsResync
+        ));
     }
 
     #[test]

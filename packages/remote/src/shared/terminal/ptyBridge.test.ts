@@ -6,13 +6,13 @@
  *   1. `listen('pty-output-{ws}-{pane}')` → manager.feed (string path)
  *   2. `listen('pane-pty-closed')` → invoke('create_pane' + 'activate_pane_pty')
  *   3. `new Channel<Uint8Array>()` registered via
- *      `invoke('register_pane_delta_channel')` → manager.applyDeltaFrame
+ *      `invoke('register_pane_delta_channel')` → manager.enqueueDeltaFrame
  *
  * These tests mock the Tauri IPC surface and the TerminalManager, then
  * drive the bridge through:
  *   - happy-path delta dispatch (Uint8Array, ArrayBuffer, and number[]
  *     normalization)
- *   - applyDeltaFrame throwing → R5 self-heal fallback toggle
+ *   - delayed delta decode failure → R5 self-heal fallback toggle
  *   - register_pane_delta_channel invocation failure → bridge still wires
  *     the other listeners so the pane stays usable on the legacy path
  *   - idempotent ensurePtyBridge / teardown
@@ -57,17 +57,18 @@ vi.mock('@tauri-apps/api/event', () => ({
 	listen: (name: string, cb: (e: unknown) => void) => listenMock(name, cb),
 }));
 
-// TerminalManager singleton mock — capture feed / applyDeltaFrame / rows /
+// TerminalManager singleton mock — capture feed / enqueueDeltaFrame / rows /
 // cols calls so tests can assert dispatch. `hostPorts` returns null: the
 // `pane-pty-closed` rebuild branch reads `defaultShell` via it; null degrades
 // gracefully through `?.`.
 const managerStub = {
 	feed: vi.fn(),
-	applyDeltaFrame: vi.fn(),
+	enqueueDeltaFrame: vi.fn(),
 	leaveAltScreen: vi.fn(),
 	setLocalGridAuthority: vi.fn(),
 	rows: vi.fn(() => 24),
 	cols: vi.fn(() => 80),
+	fitPaneNow: vi.fn(),
 };
 vi.mock('./manager', () => ({
 	TerminalManager: { instance: () => managerStub, hostPorts: () => null },
@@ -88,11 +89,12 @@ async function freshBridge() {
 	invokeMock.mockReset();
 	listenMock.mockReset();
 	managerStub.feed.mockReset();
-	managerStub.applyDeltaFrame.mockReset();
+	managerStub.enqueueDeltaFrame.mockReset();
 	managerStub.leaveAltScreen.mockReset();
 	managerStub.setLocalGridAuthority.mockReset();
 	managerStub.rows.mockReturnValue(24);
 	managerStub.cols.mockReturnValue(80);
+	managerStub.fitPaneNow.mockReset();
 
 	// Default behavior: listen returns a no-op unlisten, invoke resolves.
 	listenMock.mockImplementation(async () => () => {});
@@ -132,17 +134,39 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		expect(channels).toHaveLength(1);
 	});
 
-	it('forwards Uint8Array payload to manager.applyDeltaFrame unchanged', async () => {
+	it('queues Uint8Array payload unchanged for the manager frame hub', async () => {
 		const { ensurePtyBridge } = await freshBridge();
 		await ensurePtyBridge(PANE, WS);
 
 		const payload = new Uint8Array([1, 2, 3, 4, 5]);
 		channels[0].__deliver(payload);
 
-		expect(managerStub.applyDeltaFrame).toHaveBeenCalledTimes(1);
-		const [paneArg, bytesArg] = managerStub.applyDeltaFrame.mock.calls[0];
+		expect(managerStub.enqueueDeltaFrame).toHaveBeenCalledTimes(1);
+		const [paneArg, bytesArg] = managerStub.enqueueDeltaFrame.mock.calls[0];
 		expect(paneArg).toBe(PANE);
 		expect(bytesArg).toBe(payload); // same reference, no copy on the fast path
+	});
+
+	it('pulls one merged frame after a zero-byte mailbox wake', async () => {
+		const { ensurePtyBridge } = await freshBridge();
+		const merged = new Uint8Array([4, 5, 6]);
+		invokeMock.mockImplementation(async (cmd: string) =>
+			cmd === 'take_pane_delta_frame' ? merged : undefined,
+		);
+		await ensurePtyBridge(PANE, WS);
+
+		channels[0].__deliver([]);
+		await vi.waitFor(() => {
+			expect(invokeMock).toHaveBeenCalledWith('take_pane_delta_frame', {
+				workspaceId: WS,
+				paneId: PANE,
+			});
+			expect(managerStub.enqueueDeltaFrame).toHaveBeenCalledWith(
+				PANE,
+				merged,
+				expect.any(Function),
+			);
+		});
 	});
 
 	it('wraps an ArrayBuffer payload into a Uint8Array view', async () => {
@@ -152,8 +176,8 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		const buf = new Uint8Array([7, 8, 9]).buffer;
 		channels[0].__deliver(buf);
 
-		expect(managerStub.applyDeltaFrame).toHaveBeenCalledTimes(1);
-		const bytesArg = managerStub.applyDeltaFrame.mock.calls[0][1] as Uint8Array;
+		expect(managerStub.enqueueDeltaFrame).toHaveBeenCalledTimes(1);
+		const bytesArg = managerStub.enqueueDeltaFrame.mock.calls[0][1] as Uint8Array;
 		expect(bytesArg).toBeInstanceOf(Uint8Array);
 		expect(Array.from(bytesArg)).toEqual([7, 8, 9]);
 	});
@@ -164,22 +188,23 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 
 		channels[0].__deliver([10, 20, 30]);
 
-		expect(managerStub.applyDeltaFrame).toHaveBeenCalledTimes(1);
-		const bytesArg = managerStub.applyDeltaFrame.mock.calls[0][1] as Uint8Array;
+		expect(managerStub.enqueueDeltaFrame).toHaveBeenCalledTimes(1);
+		const bytesArg = managerStub.enqueueDeltaFrame.mock.calls[0][1] as Uint8Array;
 		expect(bytesArg).toBeInstanceOf(Uint8Array);
 		expect(Array.from(bytesArg)).toEqual([10, 20, 30]);
 	});
 
-	it('falls back to set_pane_delta_mode(false) when applyDeltaFrame throws (R5 self-heal)', async () => {
+	it('falls back to set_pane_delta_mode(false) when queued decode fails (R5 self-heal)', async () => {
 		const { ensurePtyBridge } = await freshBridge();
-		managerStub.applyDeltaFrame.mockImplementation(() => {
-			throw new Error('decode failed');
+		managerStub.enqueueDeltaFrame.mockImplementation((_pane, _bytes, onError) => {
+			onError?.(new Error('decode failed'));
 		});
 		// Silence the warn the bridge emits on error.
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
 		await ensurePtyBridge(PANE, WS);
 		channels[0].__deliver(new Uint8Array([0xff]));
+		await Promise.resolve();
 
 		const fallback = invokeMock.mock.calls.find(
 			([cmd]) => cmd === 'set_pane_delta_mode',
@@ -262,6 +287,7 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 		});
 		expect(managerStub.setLocalGridAuthority).toHaveBeenNthCalledWith(1, PANE, true);
 		expect(managerStub.setLocalGridAuthority).toHaveBeenNthCalledWith(2, PANE, false);
+		expect(managerStub.fitPaneNow).toHaveBeenCalledWith(PANE, true);
 	});
 
 	it('still installs listeners when register_pane_delta_channel fails', async () => {
@@ -421,6 +447,19 @@ describe('ptyBridge.setPaneDeltaMode', () => {
 		invokeMock.mockRejectedValueOnce(new Error('backend unavailable'));
 
 		expect(await setPaneDeltaMode(PANE, true)).toBe(false);
-		expect(managerStub.setLocalGridAuthority).not.toHaveBeenCalled();
+		expect(managerStub.setLocalGridAuthority).toHaveBeenCalledWith(PANE, true);
+	});
+
+	it('awaits delta enable before the forced post-activation fit', async () => {
+		const { enableDeltaModeThenFit, ensurePtyBridge } = await freshBridge();
+		await ensurePtyBridge(PANE, WS);
+		const order: string[] = [];
+		invokeMock.mockImplementation(async (cmd: string) => {
+			if (cmd === 'set_pane_delta_mode') order.push('enable');
+			return undefined;
+		});
+
+		await enableDeltaModeThenFit(PANE, async () => { order.push('fit'); }, WS);
+		expect(order).toEqual(['enable', 'fit']);
 	});
 });

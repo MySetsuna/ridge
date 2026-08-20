@@ -3,7 +3,7 @@
 use vte::Parser;
 
 use super::attrs::Attrs;
-use super::grid::{Grid, ResizeDiag};
+use super::grid::{Grid, ResizeDiag, ScrollOp};
 use super::modes::Modes;
 use super::parser::Performer;
 
@@ -364,6 +364,18 @@ impl Terminal {
                     let _ = self.grid.scrollback.push(row);
                 }
             }
+            GridDelta::Scroll {
+                top,
+                bottom,
+                count,
+                up,
+            } => {
+                // History was appended by the preceding ScrollbackAppend (when
+                // this was a full primary-screen scroll). Move only the live
+                // viewport here; otherwise the mirror would duplicate history.
+                self.grid
+                    .apply_scroll_delta(*top as usize, *bottom as usize, *count as usize, *up);
+            }
             GridDelta::ScrollbackClear => {
                 self.clear_scrollback();
             }
@@ -668,6 +680,12 @@ impl Terminal {
     }
     pub fn grid(&self) -> &Grid {
         &self.grid
+    }
+    /// Drain physical scroll operations observed while parsing. The native
+    /// delta producer turns these into compact `GridDelta::Scroll` records
+    /// before it computes ordinary changed-cell spans.
+    pub fn take_scroll_ops(&mut self) -> Vec<ScrollOp> {
+        self.grid.take_scroll_ops()
     }
     pub fn modes(&self) -> &Modes {
         &self.modes

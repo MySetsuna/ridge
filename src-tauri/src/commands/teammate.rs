@@ -217,7 +217,9 @@ pub(crate) fn classify_agent_sync(
         if map.get(id) == Some(pane) {
             continue;
         }
-        if map.values().any(|occupied| occupied == pane) && !plan.gone.iter().any(|old| map.get(old) == Some(pane)) {
+        if map.values().any(|occupied| occupied == pane)
+            && !plan.gone.iter().any(|old| map.get(old) == Some(pane))
+        {
             continue;
         }
         plan.missing.push((*pane, id.clone()));
@@ -358,18 +360,12 @@ pub(crate) fn sync_workspace_agents(state: &AppState, wid: Uuid) -> bool {
     }
     let mut status_changed = false;
     for id in &plan.offline {
-        status_changed |= crate::teammate::profiles::set_status(
-            wid,
-            id,
-            ridge_core::TeammateStatus::Disappeared,
-        );
+        status_changed |=
+            crate::teammate::profiles::set_status(wid, id, ridge_core::TeammateStatus::Disappeared);
     }
     for id in &plan.revive {
-        status_changed |= crate::teammate::profiles::set_status(
-            wid,
-            id,
-            ridge_core::TeammateStatus::Working,
-        );
+        status_changed |=
+            crate::teammate::profiles::set_status(wid, id, ridge_core::TeammateStatus::Working);
     }
     if plan.gone.is_empty()
         && plan.missing.is_empty()
@@ -624,10 +620,7 @@ fn update_runtime_entry(
     let Some(object) = entry.as_object_mut() else {
         return;
     };
-    let disappeared = object
-        .get("status")
-        .and_then(Value::as_str)
-        == Some("Disappeared");
+    let disappeared = object.get("status").and_then(Value::as_str) == Some("Disappeared");
     object.insert(
         "activity".into(),
         json!(roster_activity(disappeared, changed, since)),

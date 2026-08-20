@@ -16,6 +16,11 @@ describe('tauri dev CDP kernel breakaway policy', () => {
     expect(env.RIDGE_TEST_ALLOW_NON_BREAKAWAY).toBe('1');
   });
 
+  it('allows the local CDP launcher to opt into constrained-host fallback', () => {
+    const env = applyKernelBreakawayPolicy({}, true);
+    expect(env.RIDGE_TEST_ALLOW_NON_BREAKAWAY).toBe('1');
+  });
+
   it('maps local cloud tenant subdomains to loopback for WebView2 only', () => {
     expect(cloudHostResolverRule('localhost:5050')).toContain('MAP *.localhost 127.0.0.1');
     expect(cloudHostResolverRule('tenant.localhost:5050')).toContain('MAP *.localhost 127.0.0.1');

@@ -38,6 +38,8 @@ use std::rc::Rc;
 
 use web_sys::HtmlCanvasElement;
 
+use crate::term::grid::ScrollOp;
+
 use super::gpu_context::{GpuContext, CANVAS_FORMAT, WALLPAPER_UNIFORM_SIZE};
 use super::wallpaper::cover_uv_transform;
 
@@ -167,7 +169,10 @@ fn create_frame_target(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: CANVAS_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -559,6 +564,12 @@ impl SurfaceHost {
         self.needs_full_seed = true;
     }
 
+    /// Pixel-copy optimization is legal only inside the scheduler-owned host
+    /// transaction. Outside it, Renderer retains the exact row repaint path.
+    pub fn is_frame_open(&self) -> bool {
+        self.current_encoder.is_some()
+    }
+
     /// Let the scheduler replay every visible pane when an internal surface
     /// recovery requested a seed without going through JS invalidation.
     pub fn needs_full_seed(&self) -> bool {
@@ -762,6 +773,102 @@ impl SurfaceHost {
             pass.set_scissor_rect(x, y, w, h);
             pass.draw(0..4, 0..1);
         }
+    }
+
+    /// Move one pane's already-composited terminal rows inside the persistent
+    /// frame store. Each texture copy is non-overlapping and ordered so its
+    /// source has not yet been overwritten, making this a GPU DMA move rather
+    /// than a full glyph/instance re-encode.
+    pub fn scroll_pane(&mut self, viewport: ScissorRect, scroll: ScrollOp, cell_h: u32) -> bool {
+        if viewport.is_empty() || cell_h == 0 || scroll.count == 0 {
+            return false;
+        }
+        let (Some(viewport_right), Some(viewport_bottom)) = (
+            viewport.x.checked_add(viewport.w),
+            viewport.y.checked_add(viewport.h),
+        ) else {
+            return false;
+        };
+        if viewport_right > self.config.width || viewport_bottom > self.config.height {
+            return false;
+        }
+        let top = match u32::try_from(scroll.top) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let bottom = match u32::try_from(scroll.bottom) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let count = match u32::try_from(scroll.count) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        if top > bottom || count > bottom - top + 1 {
+            return false;
+        }
+        let Some(region_top) = top.checked_mul(cell_h) else {
+            return false;
+        };
+        let Some(region_bottom) = bottom
+            .checked_add(1)
+            .and_then(|row| row.checked_mul(cell_h))
+        else {
+            return false;
+        };
+        if region_bottom > viewport.h || region_top >= region_bottom {
+            return false;
+        }
+        if count == bottom - top + 1 {
+            // All rows are newly exposed; Renderer will repaint the entire
+            // region, so there is no preserved pixel band to copy.
+            return true;
+        }
+        let frame_store = &self.frame_store;
+        let Some(encoder) = self.current_encoder.as_mut() else {
+            return false;
+        };
+        let copy_row = |encoder: &mut wgpu::CommandEncoder, source_row: u32, dest_row: u32| {
+            let source_y = viewport.y + source_row * cell_h;
+            let dest_y = viewport.y + dest_row * cell_h;
+            encoder.copy_texture_to_texture(
+                wgpu::ImageCopyTexture {
+                    texture: frame_store,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: viewport.x,
+                        y: source_y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::ImageCopyTexture {
+                    texture: frame_store,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: viewport.x,
+                        y: dest_y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: viewport.w,
+                    height: cell_h,
+                    depth_or_array_layers: 1,
+                },
+            );
+        };
+        if scroll.up {
+            for dest in top..=bottom - count {
+                copy_row(encoder, dest + count, dest);
+            }
+        } else {
+            for dest in (top + count..=bottom).rev() {
+                copy_row(encoder, dest - count, dest);
+            }
+        }
+        true
     }
 
     /// Open a render pass for one pane, set its viewport + scissor + the

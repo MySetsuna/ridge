@@ -30,6 +30,7 @@ import {
 	type RendererBackend,
 } from './renderWorker.protocol';
 import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
+import { SYNC_OUTPUT_TIMEOUT_MS, TUI_CURSOR_SETTLE_MS } from './renderTransaction';
 
 /** Minimal slice of the wasm `TerminalKernel` the worker drives. Stays
  *  structural so tests can pass a mock without pulling in the real
@@ -37,7 +38,10 @@ import wasmUrl from '@ridge/term-wasm/ridge_term_bg.wasm?url';
 export interface KernelHandle {
 	feed(bytes: Uint8Array): void;
 	clearTerminalPreservingPrompt(): void;
-	applyDeltaFrame(bytes: Uint8Array): void;
+	applyDeltaFrame(bytes: Uint8Array): boolean | void;
+	/** `CSI ?2026 h/l`: a real application-provided presentation boundary.
+	 * Optional solely so an older worker bundle degrades to immediate paint. */
+	isSyncOutput?(): boolean;
 	resize(rows: number, cols: number): void;
 	free(): void;
 }
@@ -50,6 +54,7 @@ export interface KernelHandle {
  *  dims through. Kept structural so tests can mock it. */
 export interface RendererHandle {
 	render(): void;
+	setPresentationCursorSuppressed?(suppressed: boolean): void;
 	resize(widthCss: number, heightCss: number, dpr: number): void;
 	free(): void;
 	/** Re-measure cell metrics with a new font config. Returns the
@@ -70,12 +75,9 @@ export interface RendererHandle {
  *  `TerminalKernel`.
  *
  *  P4.8 (2026-05-22): optional `createRenderer` populates a per-pane
- *  `RenderHandle`. The production loader doesn't wire this yet because
- *  the wasm `RenderHandle` constructor only accepts `HtmlCanvasElement`
- *  (not `OffscreenCanvas`) — that needs a Rust-side change to
- *  `Canvas2dBackend::new` first. The JS surface is in place so the
- *  Rust change can land independently and the production adapter just
- *  starts returning a non-undefined `createRenderer`.
+ *  `RenderHandle`. The production loader wires the OffscreenCanvas
+ *  constructor when it is available; keeping the factory optional makes
+ *  capability fallback explicit and keeps plain-node tests wasm-free.
  */
 export interface KernelAdapter {
 	create(args: { rows: number; cols: number; scrollback: number }): KernelHandle;
@@ -108,6 +110,15 @@ export interface PaneWorkerState {
 	renderer?: RendererHandle;
 	/** Last accepted render generation. Replayed/late feed or delta frames must not revive old rows. */
 	lastAppliedFrameId: number;
+	/** Mirrors manager.ts's cursor-only presentation transaction. */
+	tuiCursorSuppressUntil: number;
+	tuiCursorSuppressed: boolean;
+	tuiCursorTimer: ReturnType<typeof setTimeout> | null;
+	/** Explicit synchronized-output state. Unlike cursor settling this never
+	 * delays an unbracketed grid paint. */
+	syncStart: number | null;
+	syncTimeoutRendered: boolean;
+	syncTimer: ReturnType<typeof setTimeout> | null;
 }
 
 /** The whole worker's state is a Map keyed by paneId. Stays in JS
@@ -207,6 +218,12 @@ function handleInit(
 		canvasBound: false,
 		kernel,
 		lastAppliedFrameId: 0,
+		tuiCursorSuppressUntil: 0,
+		tuiCursorSuppressed: false,
+		tuiCursorTimer: null,
+		syncStart: null,
+		syncTimeoutRendered: false,
+		syncTimer: null,
 	});
 	return { type: 'ready', paneId: request.paneId, backend: request.backend };
 }
@@ -243,7 +260,10 @@ function handleBindCanvas(
 				cellW = metrics.cellW;
 				cellH = metrics.cellH;
 			}
-			pane.renderer.render();
+			if (pane.tuiCursorSuppressed) {
+				pane.renderer.setPresentationCursorSuppressed?.(true);
+			}
+			renderPaneAfterSync(pane);
 		} catch (error) {
 			return workerError(
 				request.paneId,
@@ -255,6 +275,98 @@ function handleBindCanvas(
 	return { type: 'ready', paneId: request.paneId, backend: pane.backend, cellW, cellH };
 }
 
+function setPresentationCursorSuppressed(pane: PaneWorkerState, suppressed: boolean): void {
+	if (pane.tuiCursorSuppressed === suppressed) return;
+	pane.tuiCursorSuppressed = suppressed;
+	try { pane.renderer?.setPresentationCursorSuppressed?.(suppressed); }
+	catch { /* stale/lost worker renderer is recovered by the normal bridge path */ }
+}
+
+function clearTuiCursorSuppression(pane: PaneWorkerState): void {
+	if (pane.tuiCursorTimer !== null) clearTimeout(pane.tuiCursorTimer);
+	pane.tuiCursorTimer = null;
+	pane.tuiCursorSuppressUntil = 0;
+	setPresentationCursorSuppressed(pane, false);
+}
+
+function clearSyncOutput(pane: PaneWorkerState): void {
+	if (pane.syncTimer !== null) clearTimeout(pane.syncTimer);
+	pane.syncTimer = null;
+	pane.syncStart = null;
+	pane.syncTimeoutRendered = false;
+}
+
+function armSyncOutputTimeout(pane: PaneWorkerState): void {
+	if (pane.syncTimer !== null || pane.syncStart === null) return;
+	const deadline = pane.syncStart + SYNC_OUTPUT_TIMEOUT_MS;
+	pane.syncTimer = setTimeout(() => {
+		pane.syncTimer = null;
+		try {
+			if (pane.kernel?.isSyncOutput?.() !== true) {
+				clearSyncOutput(pane);
+				pane.renderer?.render();
+				return;
+			}
+			if (pane.syncTimeoutRendered) return;
+			pane.syncTimeoutRendered = true;
+			pane.renderer?.render();
+		} catch {
+			// A later worker request recovers the normal error surface. Timers
+			// must never tear down a renderer worker on their own.
+		}
+	}, Math.max(0, deadline - performance.now()));
+}
+
+/** Present immediately unless the terminal application itself opened a
+ * synchronized-output transaction. This is the zero-latency path for Codex
+ * and other TUIs that emit `CSI ?2026h`/`l`; the timeout is a one-shot escape
+ * hatch, never a recurring render loop. */
+function renderPaneAfterSync(pane: PaneWorkerState): void {
+	if (pane.kernel?.isSyncOutput?.() !== true) {
+		clearSyncOutput(pane);
+		pane.renderer?.render();
+		return;
+	}
+	const now = performance.now();
+	pane.syncStart ??= now;
+	if (now - pane.syncStart < SYNC_OUTPUT_TIMEOUT_MS) {
+		armSyncOutputTimeout(pane);
+		return;
+	}
+	if (pane.syncTimeoutRendered) return;
+	pane.syncTimeoutRendered = true;
+	pane.renderer?.render();
+}
+
+function armTuiCursorRelease(pane: PaneWorkerState): void {
+	if (pane.tuiCursorTimer !== null) clearTimeout(pane.tuiCursorTimer);
+	const deadline = pane.tuiCursorSuppressUntil;
+	const now = performance.now();
+	pane.tuiCursorTimer = setTimeout(() => {
+		pane.tuiCursorTimer = null;
+		// A later native frame extended the quiet window while this timer was
+		// waiting. Re-arm exactly once for its newest deadline.
+		if (performance.now() < pane.tuiCursorSuppressUntil) {
+			armTuiCursorRelease(pane);
+			return;
+		}
+		clearTuiCursorSuppression(pane);
+		try {
+			renderPaneAfterSync(pane);
+		} catch {
+			// Worker response was already acknowledged. A later renderer action
+			// will surface the normal failure path; never crash the worker timer.
+		}
+	}, Math.max(0, deadline - now));
+}
+
+function scheduleTuiCursorSuppression(pane: PaneWorkerState): void {
+	const now = performance.now();
+	pane.tuiCursorSuppressUntil = now + TUI_CURSOR_SETTLE_MS;
+	setPresentationCursorSuppressed(pane, true);
+	armTuiCursorRelease(pane);
+}
+
 function handleApplyDelta(
 	state: WorkerState,
 	request: RequestOf<'applyDelta'>,
@@ -264,8 +376,9 @@ function handleApplyDelta(
 	const guard = frameGuard(pane, request.paneId, request.frameId, 'apply_delta_failed');
 	if (guard) return guard;
 	try {
-		pane.kernel?.applyDeltaFrame(request.bytes);
-		pane.renderer?.render();
+		const requiresRenderSettle = pane.kernel?.applyDeltaFrame(request.bytes) === true;
+		if (requiresRenderSettle) scheduleTuiCursorSuppression(pane);
+		renderPaneAfterSync(pane);
 	} catch (error) {
 		return workerError(
 			request.paneId,
@@ -287,7 +400,7 @@ function handleFeed(
 	if (guard) return guard;
 	try {
 		pane.kernel?.feed(request.bytes);
-		pane.renderer?.render();
+		renderPaneAfterSync(pane);
 	} catch (error) {
 		return workerError(
 			request.paneId,
@@ -305,11 +418,13 @@ function handleClearTerminalPreservingPrompt(
 ): RenderWorkerResponse {
 	const pane = state.get(request.paneId);
 	if (!pane) return paneMissing(request.paneId, 'clearTerminalPreservingPrompt');
+	clearTuiCursorSuppression(pane);
+	clearSyncOutput(pane);
 	const guard = frameGuard(pane, request.paneId, request.frameId, 'clear_failed');
 	if (guard) return guard;
 	try {
 		pane.kernel?.clearTerminalPreservingPrompt();
-		pane.renderer?.render();
+		renderPaneAfterSync(pane);
 	} catch (error) {
 		return workerError(
 			request.paneId,
@@ -327,6 +442,7 @@ function handleResize(
 ): RenderWorkerResponse {
 	const pane = state.get(request.paneId);
 	if (!pane) return paneMissing(request.paneId, 'resize');
+	clearTuiCursorSuppression(pane);
 	pane.rows = request.rows;
 	pane.cols = request.cols;
 	pane.dpr = request.dpr;
@@ -338,7 +454,7 @@ function handleResize(
 			typeof request.hCss === 'number'
 		) {
 			pane.renderer.resize(request.wCss, request.hCss, request.dpr);
-			pane.renderer.render();
+			renderPaneAfterSync(pane);
 		}
 	} catch (error) {
 		return workerError(
@@ -355,6 +471,10 @@ function handleDestroy(
 	request: RequestOf<'destroy'>,
 ): RenderWorkerResponse {
 	const pane = state.get(request.paneId);
+	if (pane) {
+		clearTuiCursorSuppression(pane);
+		clearSyncOutput(pane);
+	}
 	try {
 		pane?.renderer?.free();
 	} catch {
@@ -406,6 +526,8 @@ export function handleRequest(
 		case 'releaseCanvas': {
 			const pane = state.get(request.paneId);
 			if (!pane) return paneMissing(request.paneId, 'releaseCanvas');
+			clearTuiCursorSuppression(pane);
+			clearSyncOutput(pane);
 			try {
 				pane.renderer?.free();
 			} catch {
@@ -514,6 +636,9 @@ async function loadKernelAdapter(): Promise<KernelAdapter | null> {
 							cellW: Number(metrics[0]),
 							cellH: Number(metrics[1]),
 						};
+					},
+					setPresentationCursorSuppressed: (suppressed) => {
+						handle.setPresentationCursorSuppressed(suppressed);
 					},
 					free: () => handle.free(),
 				};

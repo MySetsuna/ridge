@@ -323,6 +323,19 @@ pub trait RenderBackend {
     /// offset change, selection toggle, snapshot growth).
     fn on_full_invalidate(&mut self) {}
 
+    /// Whether this backend can preserve a pane's existing pixels while a
+    /// terminal scroll moves rows. WebGPU's persistent frame store supports
+    /// this; the default remains conservative for backends without a safe
+    /// source-to-destination copy path.
+    fn supports_scroll_copy(&self) -> bool {
+        false
+    }
+
+    /// Move already-rendered cell rows before drawing newly exposed rows.
+    /// Called only when `supports_scroll_copy()` returned true and no overlay
+    /// can be left behind by the move.
+    fn scroll_rows(&mut self, _scroll: crate::term::grid::ScrollOp) {}
+
     /// Begin a frame — record metrics + theme for this draw cycle.
     fn begin_frame(&mut self, metrics: FrameMetrics, theme: &Theme);
 
@@ -420,6 +433,7 @@ pub struct FrameDraw<'a> {
     pub cursor: Option<&'a CursorDraw>,
     pub attrs_table: &'a crate::term::attr_table::AttrTable,
     pub full_redraw: bool,
+    pub scroll: Option<crate::term::grid::ScrollOp>,
     pub selection_rects: &'a [(usize, usize, usize)],
     pub hyperlink_rects: &'a [(usize, usize, usize)],
     pub preedit: Option<&'a crate::render::renderer::Preedit>,
@@ -434,12 +448,16 @@ pub fn draw_frame<B: RenderBackend>(backend: &mut B, frame: FrameDraw<'_>) {
         cursor,
         attrs_table,
         full_redraw,
+        scroll,
         selection_rects,
         hyperlink_rects,
         preedit,
         history_overlay,
     } = frame;
     backend.begin_frame(metrics, theme);
+    if let Some(scroll) = scroll {
+        backend.scroll_rows(scroll);
+    }
     if full_redraw {
         backend.clear();
     }

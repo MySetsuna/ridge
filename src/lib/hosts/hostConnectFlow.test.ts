@@ -13,8 +13,10 @@ const storeSource = readFileSync(new URL('../stores/hosts.ts', import.meta.url),
 
 describe('Remote host connection flow', () => {
   it('hands progress to the persistent Hosts panel before starting discovery', () => {
-    const closeAt = dialogSource.indexOf('    close();\n');
+    const submitAt = dialogSource.indexOf('async function submit');
+    const closeAt = dialogSource.indexOf('close();', submitAt);
     const connectAt = dialogSource.indexOf("connectHost('remote'", closeAt);
+    expect(submitAt).toBeGreaterThanOrEqual(0);
     expect(closeAt).toBeGreaterThanOrEqual(0);
     expect(connectAt).toBeGreaterThan(closeAt);
     expect(dialogSource).toContain('hostConnectProgress');
