@@ -1191,6 +1191,37 @@ mod tests {
     }
 
     #[test]
+    fn repeated_in_place_tui_frames_never_enter_scrollback() {
+        use ridge_term::term::terminal::Terminal;
+
+        let mut producer = make_parser(6, 24);
+        let mut mirror = Terminal::new(6, 24, 1_000);
+        mirror
+            .apply_frame(&producer.feed_and_diff(b""))
+            .expect("initial frame applies");
+
+        // Ink/log-update style redraw: home, erase two rows, repaint them,
+        // then repeat. No frame reaches the bottom margin, so it must stay
+        // entirely in the visible grid even after a sustained animation.
+        for tick in 0..200 {
+            let bytes = format!("\x1b[H\x1b[2Kspinner {tick:03}\r\n\x1b[2Kworking");
+            let frame = producer.feed_and_diff(bytes.as_bytes());
+            assert!(
+                !frame
+                    .deltas
+                    .iter()
+                    .any(|delta| matches!(delta, GridDelta::ScrollbackAppend { .. })),
+                "in-place TUI frame {tick} unexpectedly entered scrollback: {:?}",
+                frame.deltas
+            );
+            mirror.apply_frame(&frame).expect("TUI frame applies");
+        }
+
+        assert_eq!(producer.terminal.scrollback_len(), 0);
+        assert_eq!(mirror.scrollback_len(), 0);
+    }
+
+    #[test]
     fn ris_emits_reset_then_reframes() {
         // RIS (`ESC c`) at the kernel level wipes everything; the
         // producer must flag it so the mirror gets a `GridDelta::Reset`

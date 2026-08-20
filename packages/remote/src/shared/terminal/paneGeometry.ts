@@ -64,13 +64,20 @@ export function computePaneGeometry(input: PaneGeometryInput): PaneGeometry | nu
 	const hostHDevice = Math.max(0, Math.round(host.height * dpr));
 	const x = Math.max(0, Math.floor(hostXCss * dpr));
 	const y = Math.max(0, Math.floor(hostYCss * dpr));
+	// Keep the scissor extent bit-identical to WebGpuPaneBackend::resize_surface:
+	// manager passes round(grid CSS pixels), then the backend rounds at DPR.
+	// Expanding floor(left)..ceil(right) by one device pixel at a fractional
+	// origin made the GPU viewport wider than its frame uniform, subtly scaling
+	// every glyph and eventually showing a pane outside its measured bounds.
+	const gridWDevice = Math.max(0, Math.round(Math.round(gridWidthCss) * dpr));
+	const gridHDevice = Math.max(0, Math.round(Math.round(gridHeightCss) * dpr));
 	const w = Math.max(
 		0,
-		Math.min(hostWDevice - x, Math.ceil((hostXCss + gridWidthCss) * dpr) - x),
+		Math.min(hostWDevice - x, gridWDevice),
 	);
 	const h = Math.max(
 		0,
-		Math.min(hostHDevice - y, Math.ceil((hostYCss + gridHeightCss) * dpr) - y),
+		Math.min(hostHDevice - y, gridHDevice),
 	);
 	return {
 		rows,

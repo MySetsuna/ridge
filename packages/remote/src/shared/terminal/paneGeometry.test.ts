@@ -32,6 +32,12 @@ describe.each([1, 1.25, 1.5, 2])('computePaneGeometry dpr=%s', (dpr) => {
 		});
 		expect(geometry!.viewportDevice.x).toBe(Math.floor((107.75 - host.left) * dpr));
 		expect(geometry!.viewportDevice.y).toBe(Math.floor((55.75 - host.top) * dpr));
+		expect(geometry!.viewportDevice.w).toBe(
+			Math.round(Math.round(geometry!.gridWidthCss) * dpr),
+		);
+		expect(geometry!.viewportDevice.h).toBe(
+			Math.round(Math.round(geometry!.gridHeightCss) * dpr),
+		);
 	});
 
 	it('centres a shared grid and maps pointer cells from that exact origin', () => {
@@ -67,6 +73,27 @@ it('clips an oversized shared grid without shifting its input origin', () => {
 	expect(geometry.gridClientYCss).toBe(6);
 	expect(geometry.gridWidthCss).toBe(92);
 	expect(geometry.gridHeightCss).toBe(68);
+});
+
+it('matches a fractional-origin scissor to the WebGPU backing viewport', () => {
+	const dpr = 1.25;
+	const geometry = computePaneGeometry({
+		container: { left: 0.25, top: 0.25, width: 695.3, height: 160 },
+		host: { left: 0, top: 0, width: 1000, height: 400 },
+		padding: { left: 0, top: 0, right: 0, bottom: 0 },
+		cellWidthCss: 8.8,
+		cellHeightCss: 16,
+		dpr,
+	})!;
+
+	// 79 cells × 8.8 CSS px = 695.2px. The old floor(left)/ceil(right)
+	// projection expanded this to 870 device pixels; WebGPU's resize path is
+	// 869, so the NDC viewport and scissor disagreed by one pixel.
+	expect(geometry.cols).toBe(79);
+	expect(geometry.viewportDevice.w).toBe(
+		Math.round(Math.round(geometry.gridWidthCss) * dpr),
+	);
+	expect(geometry.viewportDevice.w).toBe(869);
 });
 
 it('rejects zero content or invalid cell metrics', () => {

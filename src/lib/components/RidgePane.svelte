@@ -1571,8 +1571,8 @@ onMount(() => {
 		// `pane-pty-closed` rebuild (create_pane + activate_pane_pty)
 		// also lives in the bridge.
 		//
-		// The bridge still owns the raw output listener; the optional delta
-		// Channel remains unused for local desktop panes.
+		// The bridge owns both the raw fallback listener and the binary delta
+		// Channel used by local desktop panes.
 		await ensurePtyBridge(paneId, workspaceId);
 		if (!alive) return;
 
