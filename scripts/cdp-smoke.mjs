@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// CDP smoke probe — verifies the tauri:dev:cdp WebView2 is reachable at
-// http://127.0.0.1:9222 (override with CDP_PORT) and lists every debuggable
-// target so we know chrome-devtools-mcp will be able to attach.
+// CDP smoke probe — discovers the tauri:dev:cdp WebView2 dynamic port
+// (override with CDP_PORT) and lists every debuggable target so clients can
+// attach to the live Ridge page.
 //
 // Workflow:
 //   Terminal 1: pnpm tauri:dev:cdp   (wait for the Ridge window to appear)
@@ -9,14 +9,25 @@
 //
 // Exits 0 with the target list when reachable and at least one page target
 // exists. Exits 1 with a diagnostic message otherwise.
+import fs from 'node:fs';
 import http from 'node:http';
-import { resolveCdpPort } from './cdp-port.mjs';
+import path from 'node:path';
+import { DEV_USER_DATA_DIR, resolveCdpPort } from './cdp-port.mjs';
+import { isRidgeCdpTarget } from './lib/cdpTarget.mjs';
 
 // Chromium 136+ uses a DYNAMIC debug port; discover it from DevToolsActivePort
 // (or CDP_PORT override). See scripts/cdp-port.mjs + tauri-dev-cdp.mjs.
 const port = resolveCdpPort();
 const host = '127.0.0.1';
 const timeoutMs = Number(process.env.CDP_SMOKE_TIMEOUT_MS ?? 3000);
+const expectedDevOrigin = (() => {
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(DEV_USER_DATA_DIR, 'tauri-dev-cdp.config.json'), 'utf8'));
+    return new URL(config.build.devUrl).origin;
+  } catch {
+    return undefined;
+  }
+})();
 
 function fetchJson(path) {
   return new Promise((resolve, reject) => {
@@ -64,21 +75,9 @@ try {
     console.log(`  - [${type}] ${url}${title}`);
   }
 
-  const ridge = targets.find(
-    (t) =>
-      t.type === 'page' &&
-      typeof t.url === 'string' &&
-      (t.url.startsWith('tauri://') ||
-        t.url.startsWith('http://tauri.localhost') ||
-        t.url.startsWith('https://tauri.localhost') ||
-        t.url.startsWith('http://localhost:1420') ||
-        t.url.startsWith('http://127.0.0.1:1420') ||
-        t.url.startsWith('http://localhost:5173') ||
-        t.url.startsWith('http://127.0.0.1:5173') ||
-        (t.title === 'Ridge' && t.url.startsWith('http'))),
-  );
+  const ridge = targets.find((target) => isRidgeCdpTarget(target, expectedDevOrigin));
   if (!ridge) {
-    console.warn('[cdp-smoke] WARN: no obvious Ridge target found (tauri://, tauri.localhost, or :1420)');
+    console.warn(`[cdp-smoke] WARN: no Ridge target found${expectedDevOrigin ? ` for ${expectedDevOrigin}` : ''}`);
     console.warn('[cdp-smoke]       chrome-devtools-tauri can still attach, but verify the page target manually.');
   } else {
     console.log(`[cdp-smoke] ridge target : ${ridge.url}`);

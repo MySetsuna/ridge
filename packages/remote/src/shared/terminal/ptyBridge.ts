@@ -166,13 +166,17 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 			// would go into the alt buffer, hiding primary screen content
 			// and giving the user the impression the screen was cleared.
 			manager.leaveAltScreen(paneId);
+			// A rebuilt PTY starts in raw mode. Restore the raw-side resize
+			// authority until the replacement delta stream is confirmed, otherwise
+			// a failed re-enable leaves this live pane unable to fit again.
+			manager.setLocalGridAuthority(paneId, true);
 
-				try {
-					await invoke('create_pane', {
-						workspaceId,
-						paneId,
-						shell: TerminalManager.hostPorts()?.settings?.get()?.defaultShell || null,
-					});
+			try {
+				await invoke('create_pane', {
+					workspaceId,
+					paneId,
+					shell: TerminalManager.hostPorts()?.settings?.get()?.defaultShell || null,
+				});
 			} catch (err) {
 				if (!isPaneNotFoundError(err)) {
 					console.error('create_pane (rebuild) failed', err);
@@ -192,7 +196,10 @@ async function attachPtyBridge(paneId: string, workspaceId: string): Promise<voi
 				if (!isPaneNotFoundError(msg)) {
 					console.error('activate_pane_pty (rebuild) failed', err);
 				}
+				return;
 			}
+			if (!bridges.has(key)) return;
+			await setPaneDeltaMode(paneId, true, workspaceId);
 		},
 	).catch((error) => {
 		try { outUnlisten(); } catch { /* already unsubscribed */ }
@@ -301,14 +308,22 @@ export async function setPaneDeltaMode(
 	paneId: string,
 	enabled: boolean,
 	workspaceId?: string,
-): Promise<void> {
+): Promise<boolean> {
 	const key = findBridgeKey(paneId, workspaceId);
 	const bridge = key ? bridges.get(key) : undefined;
-	if (!bridge) return;
+	if (!bridge) return false;
 	try {
 		await invoke('set_pane_delta_mode', { workspaceId: bridge.workspaceId, paneId, enabled });
+		// A desktop pane has exactly one grid authority. The raw-byte fallback
+		// resizes its local parser before asking the PTY; once the native parser
+		// owns delta frames, only its Resize delta may resize the mirror. Keeping
+		// the raw authority after enable made every settled fit resize twice and
+		// let inline TUIs draw against a transient, mismatched grid.
+		TerminalManager.instance().setLocalGridAuthority(paneId, !enabled);
+		return true;
 	} catch (e) {
 		console.warn('[ridge-term] set_pane_delta_mode runtime switch failed', { paneId, enabled, error: String(e) });
+		return false;
 	}
 }
 

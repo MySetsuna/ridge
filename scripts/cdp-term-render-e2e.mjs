@@ -23,6 +23,23 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const timeoutMs = Number.parseInt(process.env.RIDGE_TERM_E2E_TIMEOUT_MS || '240000', 10);
 const artifactDir = path.resolve(process.env.RIDGE_TERM_E2E_ARTIFACT_DIR || '.iteration/artifacts/term-render');
 const fixtureOnly = process.env.RIDGE_TERM_E2E_FIXTURE_ONLY === '1';
+const requestedBurstLines = Number.parseInt(process.env.RIDGE_TERM_E2E_BURST_LINES || '120', 10);
+const burstLines = Number.isFinite(requestedBurstLines)
+  ? Math.min(Math.max(requestedBurstLines, 0), 10_000)
+  : 0;
+const requestedBurstP95MaxMs = Number.parseInt(process.env.RIDGE_TERM_E2E_BURST_P95_MAX_MS || '50', 10);
+const burstP95MaxMs = Number.isFinite(requestedBurstP95MaxMs)
+  ? Math.max(requestedBurstP95MaxMs, 1)
+  : 50;
+const burstMode = process.env.RIDGE_TERM_E2E_BURST_MODE === 'lines' ? 'lines' : 'tui';
+const requestedBurstIntervalMs = Number.parseInt(process.env.RIDGE_TERM_E2E_BURST_INTERVAL_MS || '16', 10);
+const burstIntervalMs = Number.isFinite(requestedBurstIntervalMs)
+  ? Math.min(Math.max(requestedBurstIntervalMs, 0), 500)
+  : 0;
+const requestedBurstFrameP95MaxMs = Number.parseInt(process.env.RIDGE_TERM_E2E_BURST_FRAME_P95_MAX_MS || '25', 10);
+const burstFrameP95MaxMs = Number.isFinite(requestedBurstFrameP95MaxMs)
+  ? Math.max(requestedBurstFrameP95MaxMs, 1)
+  : 25;
 const nonce = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
 const expected = `RIDGE_CODEX_RESULT_${crypto.createHash('sha256').update(nonce).digest('hex').slice(0, 20).toUpperCase()}`;
 const challenge = expected.toLowerCase();
@@ -45,11 +62,9 @@ const codexLaunch = codexHomePrefix + [
   "-c 'model_providers.chatgpt_http.requires_openai_auth=true'",
   "-c 'model_providers.chatgpt_http.supports_websockets=false'",
   ...(codexHome ? [] : [
-    "-c 'mcp_servers.chatgpt-nlm-research.enabled=false'",
     "-c 'mcp_servers.codegraph.enabled=false'",
     "-c 'mcp_servers.node_repl.enabled=false'",
     "-c 'mcp_servers.notebooklm-mcp.enabled=false'",
-    "-c 'mcp_servers.pencil.enabled=false'",
     "-c 'mcp_servers.ridge.enabled=false'",
   ]),
 ].join(' ');
@@ -464,6 +479,123 @@ async function testMouse(cdp, workspaceId, paneId) {
   return { writes: writes.map((entry) => entry.data), selected };
 }
 
+async function testIndexedGrayForeground(cdp, workspaceId, paneId) {
+  const source = `ridge_indexed_gray_${crypto.randomBytes(8).toString('hex')}`;
+  const marker = source.toUpperCase();
+  const command = `$e=[char]27; [Console]::Out.Write($e+'[38;5;244m'+('${source}'.ToUpperInvariant())+$e+'[0m'+[Environment]::NewLine)\r`;
+  await writePty(cdp, workspaceId, paneId, command);
+  await waitUntil(async () => compact(await visibleRows(cdp, paneId)).includes(marker), 'indexed gray foreground', 15_000);
+  return cdp.evaluate(`(() => {
+    const rows = window.__windDumpRows(${JSON.stringify(paneId)}, 0, window.__windE2E.rows(${JSON.stringify(paneId)}) - 1);
+    const gray = rows.flatMap((row) => row.nonSpace).filter((cell) => cell.fg === 'idx(244)');
+    return { indexedCellCount: gray.length, text: gray.map((cell) => cell.ch).join('') };
+  })()`);
+}
+
+/**
+ * Exercise the production native-parser → binary Channel → WASM mirror lane
+ * under a deliberately paced PowerShell burst. This is a default performance
+ * gate; set RIDGE_TERM_E2E_BURST_LINES=0 only when a focused diagnostic must
+ * omit its ~2-second workload.
+ *
+ * The transport counts are as important as the event-loop samples: a desktop
+ * delta pane must not silently fall back to the JSON/raw-byte parser path
+ * during the exact high-frequency output workload that users notice first.
+ */
+async function testOutputBurst(cdp, workspaceId, paneId, lineCount, mode, intervalMs) {
+  // Keep every waited-for marker different from its input echo. A PowerShell
+  // command line is visible before it executes; using a lower-case source and
+  // waiting for its upper-case runtime result prevents a false-green burst.
+  const markerSource = `ridge_burst_done_${crypto.randomBytes(8).toString('hex')}`;
+  const marker = markerSource.toUpperCase();
+  await cdp.evaluate(`(() => {
+    window.__ridgeTermProbe.reset();
+    window.__RIDGE_PERF_TRACE = true;
+    performance.clearMeasures('rg.ptyDelta.apply');
+    performance.clearMeasures('rg.ptyText.feed');
+    window.__ridgeBurstFrameProbe?.stop?.();
+    const state = { frames: [], raf: 0, last: performance.now() };
+    const tick = (now) => {
+      state.frames.push(now - state.last);
+      state.last = now;
+      state.raf = requestAnimationFrame(tick);
+    };
+    state.raf = requestAnimationFrame(tick);
+    window.__ridgeBurstFrameProbe = {
+      read() {
+        const values = state.frames.slice(1);
+        const sorted = values.slice().sort((a, b) => a - b);
+        const quantile = (p) => sorted.length ? Math.round(sorted[Math.floor((sorted.length - 1) * p)] * 100) / 100 : 0;
+        return {
+          frames: values.length,
+          p50: quantile(0.5),
+          p95: quantile(0.95),
+          max: Math.round((sorted.at(-1) || 0) * 100) / 100,
+          jank25: values.filter((value) => value > 25).length,
+          jank33: values.filter((value) => value > 33).length,
+          jank50: values.filter((value) => value > 50).length,
+        };
+      },
+      stop() { cancelAnimationFrame(state.raf); },
+    };
+  })()`);
+  try {
+    const delay = intervalMs > 0 ? `; Start-Sleep -Milliseconds ${intervalMs}` : '';
+    const readySource = mode === 'tui'
+      ? `ridge_tui_burst_ready_${crypto.randomBytes(8).toString('hex')}`
+      : null;
+    const readyMarker = readySource?.toUpperCase() ?? null;
+    const command = mode === 'tui'
+      ? `$e=[char]27; [Console]::Out.Write($e+'[H'+$e+'[2K'+('${readySource}'.ToUpperInvariant())); Start-Sleep -Milliseconds 300; 1..${lineCount} | ForEach-Object { [Console]::Out.Write($e+'[H'+$e+'[2K'+'RIDGE_TUI_FRAME_'+$_)${delay} }; [Console]::Out.Write($e+'[H'+$e+'[2K'+('${markerSource}'.ToUpperInvariant()))\r`
+      : `1..${lineCount} | ForEach-Object { [Console]::Out.WriteLine('RIDGE_BURST_LINE_' + $_)${delay} }; [Console]::Out.WriteLine('${markerSource}'.ToUpperInvariant())\r`;
+    await writePty(cdp, workspaceId, paneId, command);
+    const scrollbackStart = readyMarker
+      ? await waitUntil(async () => {
+        const rows = await visibleRows(cdp, paneId);
+        return compact(rows).includes(readyMarker)
+          ? { value: await hookCall(cdp, 'scrollbackLen', paneId) }
+          : null;
+      }, 'in-place TUI burst start', 15_000)
+      : null;
+    const scrollbackBefore = scrollbackStart?.value ?? null;
+    await waitUntil(async () => compact(await visibleRows(cdp, paneId)).includes(marker), 'native delta output burst', 30_000);
+    await sleep(250);
+    return cdp.evaluate(`(() => {
+      const summarize = (name) => {
+        const values = performance.getEntriesByName(name)
+          .map((entry) => entry.duration)
+          .sort((a, b) => a - b);
+        const quantile = (p) => values.length ? Math.round(values[Math.floor((values.length - 1) * p)] * 100) / 100 : 0;
+        return {
+          count: values.length,
+          p95: quantile(0.95),
+          max: Math.round((values.at(-1) || 0) * 100) / 100,
+          total: Math.round(values.reduce((sum, value) => sum + value, 0) * 100) / 100,
+        };
+      };
+      return {
+        lines: ${lineCount},
+        mode: ${JSON.stringify(mode)},
+        intervalMs: ${intervalMs},
+        scrollbackBefore: ${scrollbackBefore ?? 'null'},
+        scrollbackAfter: window.__windE2E.scrollbackLen(${JSON.stringify(paneId)}),
+        delta: summarize('rg.ptyDelta.apply'),
+        text: summarize('rg.ptyText.feed'),
+        eventLoop: window.__ridgeTermProbe.read(),
+        frame: window.__ridgeBurstFrameProbe.read(),
+      };
+    })()`);
+  } finally {
+    await cdp.evaluate(`(() => {
+      window.__RIDGE_PERF_TRACE = false;
+      performance.clearMeasures('rg.ptyDelta.apply');
+      performance.clearMeasures('rg.ptyText.feed');
+      window.__ridgeBurstFrameProbe?.stop?.();
+      delete window.__ridgeBurstFrameProbe;
+    })()`).catch(() => {});
+  }
+}
+
 const summary = {
   ok: false,
   port,
@@ -474,11 +606,13 @@ const summary = {
   fixtureOutputProven: false,
   commandEchoExcluded: true,
   backend: null,
+  gray: null,
   theme: null,
   resize: null,
   workspaceRoundTrip: null,
   stability: null,
   mouse: null,
+  burst: null,
   performance: null,
   runtimeErrors: [],
   screenshots: [],
@@ -585,8 +719,29 @@ try {
   summary.screenshots.push(await capture(cdp, '04-recovered.png'));
 
   await exitCodex(cdp, workspaceId, paneId);
+  summary.gray = await testIndexedGrayForeground(cdp, workspaceId, paneId);
+  if (summary.gray.indexedCellCount < 8 || !summary.gray.text.includes('RIDGE_INDEXED_GRAY')) {
+    throw new Error(`indexed gray foreground was not preserved: ${JSON.stringify(summary.gray)}`);
+  }
+  summary.screenshots.push(await capture(cdp, '06-indexed-gray.png'));
   summary.mouse = await testMouse(cdp, workspaceId, paneId);
   summary.screenshots.push(await capture(cdp, '05-mouse-selection.png'));
+
+  if (burstLines > 0) {
+    summary.burst = await testOutputBurst(cdp, workspaceId, paneId, burstLines, burstMode, burstIntervalMs);
+    if (summary.burst.delta.count === 0 || summary.burst.text.count !== 0) {
+      throw new Error(`desktop burst used an unexpected transport: ${JSON.stringify(summary.burst)}`);
+    }
+    if (summary.burst.mode === 'tui' && summary.burst.scrollbackAfter !== summary.burst.scrollbackBefore) {
+      throw new Error(`in-place TUI burst entered scrollback: ${JSON.stringify(summary.burst)}`);
+    }
+    if (summary.burst.eventLoop.p95 > burstP95MaxMs) {
+      throw new Error(`native burst event-loop p95 ${summary.burst.eventLoop.p95}ms exceeds ${burstP95MaxMs}ms`);
+    }
+    if (summary.burst.frame.p95 > burstFrameP95MaxMs || summary.burst.frame.jank50 > 0) {
+      throw new Error(`native burst rAF budget exceeded: ${JSON.stringify(summary.burst.frame)}`);
+    }
+  }
 
   summary.performance = await cdp.evaluate('window.__ridgeTermProbe.read()');
   const runtimeExceptions = cdp.events

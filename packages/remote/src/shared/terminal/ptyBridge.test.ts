@@ -65,6 +65,7 @@ const managerStub = {
 	feed: vi.fn(),
 	applyDeltaFrame: vi.fn(),
 	leaveAltScreen: vi.fn(),
+	setLocalGridAuthority: vi.fn(),
 	rows: vi.fn(() => 24),
 	cols: vi.fn(() => 80),
 };
@@ -89,6 +90,7 @@ async function freshBridge() {
 	managerStub.feed.mockReset();
 	managerStub.applyDeltaFrame.mockReset();
 	managerStub.leaveAltScreen.mockReset();
+	managerStub.setLocalGridAuthority.mockReset();
 	managerStub.rows.mockReturnValue(24);
 	managerStub.cols.mockReturnValue(80);
 
@@ -253,6 +255,13 @@ describe('ptyBridge.ensurePtyBridge — delta Channel wiring', () => {
 			workspaceId: WS,
 			paneId: PANE,
 		}));
+		expect(invokeMock).toHaveBeenCalledWith('set_pane_delta_mode', {
+			workspaceId: WS,
+			paneId: PANE,
+			enabled: true,
+		});
+		expect(managerStub.setLocalGridAuthority).toHaveBeenNthCalledWith(1, PANE, true);
+		expect(managerStub.setLocalGridAuthority).toHaveBeenNthCalledWith(2, PANE, false);
 	});
 
 	it('still installs listeners when register_pane_delta_channel fails', async () => {
@@ -388,19 +397,30 @@ describe('ptyBridge.setPaneDeltaMode', () => {
 		invokeMock.mockClear();
 		invokeMock.mockResolvedValue(undefined);
 
-		await setPaneDeltaMode(PANE, true);
+		expect(await setPaneDeltaMode(PANE, true)).toBe(true);
 		expect(invokeMock).toHaveBeenCalledWith('set_pane_delta_mode', {
 			workspaceId: WS,
 			paneId: PANE,
 			enabled: true,
 		});
+		expect(managerStub.setLocalGridAuthority).toHaveBeenCalledWith(PANE, false);
 	});
 
 	it('is silent for a pane that has no bridge', async () => {
 		const { setPaneDeltaMode } = await freshBridge();
 		invokeMock.mockClear();
-		await setPaneDeltaMode('unknown-pane', true);
+		expect(await setPaneDeltaMode('unknown-pane', true)).toBe(false);
 		// The bridge is gone, so no invoke should fire.
 		expect(invokeMock).not.toHaveBeenCalled();
+		expect(managerStub.setLocalGridAuthority).not.toHaveBeenCalled();
+	});
+
+	it('keeps raw-grid authority when the backend switch fails', async () => {
+		const { ensurePtyBridge, setPaneDeltaMode } = await freshBridge();
+		await ensurePtyBridge(PANE, WS);
+		invokeMock.mockRejectedValueOnce(new Error('backend unavailable'));
+
+		expect(await setPaneDeltaMode(PANE, true)).toBe(false);
+		expect(managerStub.setLocalGridAuthority).not.toHaveBeenCalled();
 	});
 });
