@@ -1,6 +1,7 @@
 import { get } from 'svelte/store';
 import {
   agentPaneAttentionStore,
+  agentPaneAttentionPollingStoppedStore,
   agentPaneStatusStore,
   setAgentPaneAttention,
   setAgentPaneStatus,
@@ -64,7 +65,10 @@ export function syncAgentPaneHighlight(
     const previousStatus = observedStatuses.get(key) ?? storedStatus;
     const existing = get(agentPaneAttentionStore)[key] ?? null;
     const previous = observedSignals.get(key);
-    const signal = latchAgentAttention({
+    // A click/focus acknowledges this exact state. Do not turn repeated roster
+    // polls into another border until the Agent actually changes state.
+    const pollingStopped = get(agentPaneAttentionPollingStoppedStore)[key] === paneStatus;
+    const signal = pollingStopped ? null : latchAgentAttention({
       previousStatus,
       currentStatus: paneStatus,
       pending,

@@ -1611,6 +1611,7 @@ describe('pane tree pure projections', () => {
   beforeEach(() => {
     paneTreeModule.activePaneId.set('');
     paneTreeModule.agentPaneAttentionStore.set({});
+    paneTreeModule.agentPaneAttentionPollingStoppedStore.set({});
     paneTreeModule.agentPaneStatusStore.set({});
     paneTreeModule.clearJunctionRegistry();
   });
