@@ -65,6 +65,7 @@ pub trait Canvas2dCtxLike {
     fn fill_rect(&self, x: f64, y: f64, w: f64, h: f64);
     fn fill_text(&self, text: &str, x: f64, y: f64) -> Result<(), JsValue>;
     fn set_fill_style_str(&self, value: &str);
+    fn blit_self(&self, sx: f64, sy: f64, sw: f64, sh: f64, dx: f64, dy: f64);
 }
 
 impl Canvas2dCtxLike for CanvasRenderingContext2d {
@@ -98,6 +99,14 @@ impl Canvas2dCtxLike for CanvasRenderingContext2d {
     fn set_fill_style_str(&self, value: &str) {
         CanvasRenderingContext2d::set_fill_style_str(self, value);
     }
+    fn blit_self(&self, sx: f64, sy: f64, sw: f64, sh: f64, dx: f64, dy: f64) {
+        let Some(canvas) = self.canvas() else {
+            return;
+        };
+        let _ = self.draw_image_with_html_canvas_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+            &canvas, sx, sy, sw, sh, dx, dy, sw, sh,
+        );
+    }
 }
 
 impl Canvas2dCtxLike for OffscreenCanvasRenderingContext2d {
@@ -130,6 +139,12 @@ impl Canvas2dCtxLike for OffscreenCanvasRenderingContext2d {
     }
     fn set_fill_style_str(&self, value: &str) {
         OffscreenCanvasRenderingContext2d::set_fill_style_str(self, value);
+    }
+    fn blit_self(&self, sx: f64, sy: f64, sw: f64, sh: f64, dx: f64, dy: f64) {
+        let canvas = self.canvas();
+        let _ = self.draw_image_with_offscreen_canvas_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+            &canvas, sx, sy, sw, sh, dx, dy, sw, sh,
+        );
     }
 }
 
@@ -482,6 +497,44 @@ impl Canvas2dBackend {
             .unwrap_or(width as f64)
     }
 
+    fn scroll_rows(&mut self, scroll: crate::term::grid::ScrollOp) {
+        if self.css_w == 0 || self.css_h == 0 || scroll.count == 0 {
+            return;
+        }
+        let dpr = self.metrics.dpr as f64;
+        if !(dpr.is_finite() && dpr > 0.0) {
+            return;
+        }
+        let cell_h = self.metrics.cell_h as f64;
+        let top = scroll.top as f64;
+        let bottom = scroll.bottom as f64;
+        let count = scroll.count as f64;
+        let region_top = self.snap(top * cell_h);
+        let region_bottom = self.snap((bottom + 1.0) * cell_h);
+        let shift = self.snap(count * cell_h);
+        let band = region_bottom - region_top - shift;
+        if band <= 0.0 {
+            return;
+        }
+        let (css_src_y, css_dst_y) = if scroll.up {
+            (region_top + shift, region_top)
+        } else {
+            (region_top, region_top + shift)
+        };
+        let _ = self.ctx.set_transform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        self.ctx.blit_self(
+            0.0,
+            css_src_y * dpr,
+            self.css_w as f64 * dpr,
+            band * dpr,
+            0.0,
+            css_dst_y * dpr,
+        );
+        let _ = self
+            .ctx
+            .set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0);
+    }
+
     fn draw_procedural_glyph(&self, glyph: &str, x: f64, y: f64, width: f64, height: f64) -> bool {
         let Some(ch) = glyph.chars().next() else {
             return false;
@@ -770,6 +823,14 @@ impl RenderBackend for Canvas2dBackend {
 
     fn clear(&mut self) {
         Canvas2dBackend::clear(self)
+    }
+
+    fn supports_scroll_copy(&self) -> bool {
+        self.css_w > 0 && self.css_h > 0
+    }
+
+    fn scroll_rows(&mut self, scroll: crate::term::grid::ScrollOp) {
+        Canvas2dBackend::scroll_rows(self, scroll);
     }
 
     fn draw_row_backgrounds(&mut self, row: &RowDraw<'_>, attrs_table: &AttrTable) {

@@ -224,6 +224,9 @@ pub struct PtyHandle {
     pub resize_silence_deadline: Arc<AtomicI64>,
     pub parser: Arc<Mutex<PaneParser>>,
     pub delta_mode: Arc<AtomicBool>,
+    /// Current workspace owning this handle. Cross-workspace dock updates
+    /// the same Arc so the reader can emit and finish without restarting.
+    pub workspace: Arc<Mutex<Uuid>>,
 }
 
 const PTY_INPUT_QUEUE_CAPACITY: usize = 256;
@@ -347,7 +350,7 @@ fn detach_terminal(
 
 struct PtyReaderThread {
     state: AppState,
-    workspace_id: Uuid,
+    workspace: Arc<Mutex<Uuid>>,
     pane_id: Uuid,
     reader: Box<dyn Read + Send>,
     rt: tokio::runtime::Handle,
@@ -364,12 +367,17 @@ struct PtyReaderThread {
 }
 
 impl PtyReaderThread {
+    fn workspace_id(&self) -> Uuid {
+        *self.workspace.lock()
+    }
+
     fn run(&mut self) {
         let result = catch_unwind(AssertUnwindSafe(|| self.read_loop()));
         if result.is_err() {
             eprintln!(
                 "[ridge] PTY reader panicked (isolated to this thread) workspace={} pane={}",
-                self.workspace_id, self.pane_id
+                self.workspace_id(),
+                self.pane_id
             );
         }
     }
@@ -382,7 +390,7 @@ impl PtyReaderThread {
             match self.reader.read(&mut self.buf) {
                 Ok(0) => {
                     self.flush_tail();
-                    pty_log::reader_eof(self.workspace_id, self.pane_id);
+                    pty_log::reader_eof(self.workspace_id(), self.pane_id);
                     break;
                 }
                 Ok(n) => {
@@ -392,7 +400,7 @@ impl PtyReaderThread {
                 }
                 Err(error) => {
                     self.flush_tail();
-                    pty_log::reader_io_err(self.workspace_id, self.pane_id, &error);
+                    pty_log::reader_io_err(self.workspace_id(), self.pane_id, &error);
                     break;
                 }
             }
@@ -423,7 +431,7 @@ impl PtyReaderThread {
         }
 
         self.state
-            .append_pty_scrollback(self.workspace_id, self.pane_id, &signals.text);
+            .append_pty_scrollback(self.workspace_id(), self.pane_id, &signals.text);
         let prompt_seen = signals.prompt_seen;
         let title = signals.title;
         let cwd = signals.cwd;
@@ -460,7 +468,7 @@ impl PtyReaderThread {
                     // just-read PTY frame while the browser is between rAFs.
                     let route = if emit_delta {
                         match self.state.enqueue_pane_delta_frame(
-                            self.workspace_id,
+                            self.workspace_id(),
                             self.pane_id,
                             frame,
                         ) {
@@ -469,7 +477,7 @@ impl PtyReaderThread {
                                 parser.force_full_reframe();
                                 let full = parser.feed_and_diff(b"");
                                 if self.state.replace_pane_delta_frame(
-                                    self.workspace_id,
+                                    self.workspace_id(),
                                     self.pane_id,
                                     full.clone(),
                                 ) {
@@ -493,12 +501,12 @@ impl PtyReaderThread {
                 });
         if clears_scrollback {
             self.state
-                .clear_pty_scrollback(self.workspace_id, self.pane_id);
+                .clear_pty_scrollback(self.workspace_id(), self.pane_id);
         }
         match route {
             NativeDeltaRoute::Mailbox => {
                 self.state
-                    .forward_remote_pty_bytes(self.workspace_id, self.pane_id, &payload);
+                    .forward_remote_pty_bytes(self.workspace_id(), self.pane_id, &payload);
                 return true;
             }
             NativeDeltaRoute::Fallback(frame) => return self.queue_delta_output(payload, frame),
@@ -513,7 +521,7 @@ impl PtyReaderThread {
         self.state
             .event_tx
             .blocking_send(GlobalEvent::PtyOutput {
-                workspace_id: self.workspace_id,
+                workspace_id: self.workspace_id(),
                 pane_id: self.pane_id,
                 data: payload,
             })
@@ -551,7 +559,7 @@ impl PtyReaderThread {
             }
         };
         let event = GlobalEvent::PtyDeltaOutput {
-            workspace_id: self.workspace_id,
+            workspace_id: self.workspace_id(),
             pane_id: self.pane_id,
             data,
             frame: encoded,
@@ -576,7 +584,7 @@ impl PtyReaderThread {
             return;
         }
         let event_tx = self.state.event_tx.clone();
-        let workspace_id = self.workspace_id;
+        let workspace_id = self.workspace_id();
         let pane_id = self.pane_id;
         let _ = event_tx.try_send(GlobalEvent::PanePromptDetected {
             workspace_id,
@@ -589,7 +597,7 @@ impl PtyReaderThread {
             return;
         };
         let event_tx = self.state.event_tx.clone();
-        let workspace_id = self.workspace_id;
+        let workspace_id = self.workspace_id();
         let pane_id = self.pane_id;
         let _ = event_tx.try_send(GlobalEvent::PaneTitleChanged {
             workspace_id,
@@ -607,7 +615,7 @@ impl PtyReaderThread {
             return;
         }
         let event_tx = self.state.event_tx.clone();
-        let workspace_id = self.workspace_id;
+        let workspace_id = self.workspace_id();
         let pane_id = self.pane_id;
         let _ = event_tx.try_send(GlobalEvent::PaneCwdChanged {
             workspace_id,
@@ -618,7 +626,7 @@ impl PtyReaderThread {
 
     fn update_pane_cwd(&self, cwd: &str) -> bool {
         let mut map = self.state.workspaces.write();
-        if let Some(ws) = map.get_mut(&self.workspace_id) {
+        if let Some(ws) = map.get_mut(&self.workspace_id()) {
             if let Some(pane) = ws.pane_tree.panes.get_mut(&self.pane_id) {
                 if pane_cwd_matches(pane.cwd.as_deref(), cwd) {
                     return false;
@@ -637,7 +645,7 @@ impl PtyReaderThread {
         }
         let tail_for_cwd = tail.clone();
         self.state
-            .append_pty_scrollback(self.workspace_id, self.pane_id, &tail);
+            .append_pty_scrollback(self.workspace_id(), self.pane_id, &tail);
         if !self.send_output(tail) {
             return;
         }
@@ -651,9 +659,9 @@ impl PtyReaderThread {
         if !self.update_pane_cwd(&normalized) {
             return;
         }
-        crate::commands::ridge_file::schedule_auto_save(&self.state, self.workspace_id);
+        crate::commands::ridge_file::schedule_auto_save(&self.state, self.workspace_id());
         let event_tx = self.state.event_tx.clone();
-        let workspace_id = self.workspace_id;
+        let workspace_id = self.workspace_id();
         let pane_id = self.pane_id;
         let _ = self.rt.block_on(async move {
             let _ = event_tx
@@ -671,7 +679,7 @@ impl PtyReaderThread {
         if let Some((socket, gid)) = &self.native_ref_info {
             finish_native_pane(
                 &self.state,
-                self.workspace_id,
+                self.workspace_id(),
                 self.pane_id,
                 socket,
                 *gid,
@@ -681,7 +689,7 @@ impl PtyReaderThread {
             finish_ordinary_pane(
                 &self.state,
                 &self.rt,
-                self.workspace_id,
+                self.workspace_id(),
                 self.pane_id,
                 self.my_pty_generation,
             );
@@ -773,6 +781,7 @@ fn reader_snapshot(
     Option<Arc<Mutex<PaneParser>>>,
     Arc<AtomicBool>,
     Arc<Mutex<Box<dyn Write + Send>>>,
+    Arc<Mutex<Uuid>>,
 ) {
     let map = state.workspaces.read();
     let Some(handle) = map
@@ -788,6 +797,7 @@ fn reader_snapshot(
             Arc::new(Mutex::new(
                 Box::new(std::io::sink()) as Box<dyn Write + Send>
             )),
+            Arc::new(Mutex::new(workspace_id)),
         );
     };
     (
@@ -799,6 +809,7 @@ fn reader_snapshot(
         Some(handle.parser.clone()),
         handle.delta_mode.clone(),
         handle.writer.clone(),
+        handle.workspace.clone(),
     )
 }
 
@@ -816,6 +827,7 @@ pub fn spawn_pty_reader(
         native_parser,
         native_delta_mode,
         native_writer,
+        workspace,
     ) = reader_snapshot(&state, workspace_id, pane_id);
     let _ = std::thread::Builder::new()
         .name(format!("pty-reader-{pane_id}"))
@@ -826,7 +838,7 @@ pub fn spawn_pty_reader(
             };
             let mut reader = PtyReaderThread {
                 state,
-                workspace_id,
+                workspace,
                 pane_id,
                 reader,
                 rt,

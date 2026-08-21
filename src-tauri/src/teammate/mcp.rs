@@ -259,6 +259,7 @@ pub(crate) fn publish_pty_runtime_snapshot(
     let key = (workspace_id, pane_id);
     let previous = records.insert(key, record.clone());
     if let Err(error) = desktop_hub_state().register_pty_runtime_snapshot(
+        workspace_id.to_string(),
         record.agent_id,
         record.generation,
         record.lease,
@@ -289,6 +290,7 @@ pub(crate) fn clear_pty_runtime_snapshot(workspace_id: Uuid, pane_id: Uuid) {
         return;
     };
     let _ = desktop_hub_state().unregister_pty_runtime_snapshot(
+        &workspace_id.to_string(),
         &record.agent_id,
         record.generation,
         &record.lease,

@@ -280,6 +280,7 @@ mod tests {
         let ctx = NativeHttpCtx::headless("test-token");
         let host = TmuxMcpHost::new(&ctx);
         let target = json!({
+            "workspaceId": "ws-headless",
             "agentId": "agent-headless",
             "generation": 4,
             "lease": "lease-headless"
@@ -288,6 +289,7 @@ mod tests {
             .mcp_state
             .register_delivery_endpoint(
                 HubDeliveryAdapter::RuntimeApi,
+                "ws-headless",
                 "agent-headless",
                 4,
                 "lease-headless",

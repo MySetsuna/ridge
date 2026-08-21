@@ -896,7 +896,10 @@ pub fn get_live_backpressure(
 /// command surface, even though its writer routes to `remote_ref`.  Returning
 /// an error here is deliberate: silently continuing would leave a host session
 /// marked attached with no local terminal to render or resize.
-fn create_foreign_terminal(remote: RemoteRef) -> Result<crate::engine::pty::PtyHandle, String> {
+fn create_foreign_terminal(
+    remote: RemoteRef,
+    workspace_id: uuid::Uuid,
+) -> Result<crate::engine::pty::PtyHandle, String> {
     use portable_pty::{native_pty_system, PtySize};
     use std::sync::atomic::{AtomicBool, AtomicI64};
 
@@ -930,6 +933,7 @@ fn create_foreign_terminal(remote: RemoteRef) -> Result<crate::engine::pty::PtyH
             crate::engine::parser::PaneParser::new(24, 80, 2000),
         )),
         delta_mode: Arc::new(AtomicBool::new(false)),
+        workspace: Arc::new(parking_lot::Mutex::new(workspace_id)),
     })
 }
 
@@ -1085,7 +1089,7 @@ fn attach_host_session_inner(
 
     // Create the local PTY before any layout/host mutation.  PTY failures are
     // surfaced instead of returning an attached session without a terminal.
-    let handle = create_foreign_terminal(remote.clone())?;
+    let handle = create_foreign_terminal(remote.clone(), wid)?;
     let parser_c = handle.parser.clone();
 
     // Subscribe before splitting.  A failed subscribe therefore has no local
@@ -1635,7 +1639,7 @@ mod tests {
             .get_mut(&wid)
             .unwrap()
             .terminals
-            .insert(pane_id, create_foreign_terminal(remote).unwrap());
+            .insert(pane_id, create_foreign_terminal(remote, wid).unwrap());
 
         rollback_host_attach(
             &state,
@@ -1766,6 +1770,7 @@ mod tests {
                 crate::engine::parser::PaneParser::new(24, 80, 200),
             )),
             delta_mode: Arc::new(AtomicBool::new(false)),
+            workspace: Arc::new(parking_lot::Mutex::new(wid)),
         };
         {
             let mut map = state.workspaces.write();
@@ -2099,6 +2104,7 @@ mod tests {
                 crate::engine::parser::PaneParser::new(24, 80, 200),
             )),
             delta_mode: Arc::new(AtomicBool::new(false)),
+            workspace: Arc::new(parking_lot::Mutex::new(wid)),
         };
         {
             let mut map = state.workspaces.write();

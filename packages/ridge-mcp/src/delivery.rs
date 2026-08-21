@@ -143,8 +143,8 @@ struct PtyRuntimeRoute {
 /// Agent identity. The Hub only advertises a route when generation and lease
 /// match, so reconnects cannot inherit an old subscription.
 pub struct DeliveryRegistry {
-    routes: Mutex<HashMap<(HubDeliveryAdapter, String), DeliveryRoute>>,
-    pty_runtime: Mutex<HashMap<String, PtyRuntimeRoute>>,
+    routes: Mutex<HashMap<(HubDeliveryAdapter, String, String), DeliveryRoute>>,
+    pty_runtime: Mutex<HashMap<(String, String), PtyRuntimeRoute>>,
 }
 
 impl Default for DeliveryRegistry {
@@ -160,6 +160,7 @@ impl DeliveryRegistry {
     pub fn register(
         &self,
         adapter: HubDeliveryAdapter,
+        workspace_id: impl Into<String>,
         agent_id: impl Into<String>,
         generation: u64,
         lease: impl Into<String>,
@@ -170,17 +171,24 @@ impl DeliveryRegistry {
         ) {
             return Err("only Runtime API and A2A routes may register".into());
         }
+        let workspace_id = workspace_id.into();
         let agent_id = agent_id.into();
         let lease = lease.into();
-        if agent_id.trim().is_empty() || lease.trim().is_empty() || generation == 0 {
-            return Err("delivery route requires agent_id, generation, and lease".into());
+        if workspace_id.trim().is_empty()
+            || agent_id.trim().is_empty()
+            || lease.trim().is_empty()
+            || generation == 0
+        {
+            return Err(
+                "delivery route requires workspace_id, agent_id, generation, and lease".into(),
+            );
         }
         let (sender, receiver) = sync_channel(DELIVERY_ROUTE_CAP);
         let mut routes = self
             .routes
             .lock()
             .map_err(|_| "delivery registry lock poisoned".to_string())?;
-        let key = (adapter, agent_id);
+        let key = (adapter, workspace_id, agent_id);
         if let Some(current) = routes.get(&key) {
             if current.generation >= generation {
                 return Err(if current.generation == generation {
@@ -208,6 +216,7 @@ impl DeliveryRegistry {
     pub fn unregister(
         &self,
         adapter: HubDeliveryAdapter,
+        workspace_id: &str,
         agent_id: &str,
         generation: u64,
         lease: &str,
@@ -216,7 +225,7 @@ impl DeliveryRegistry {
             .routes
             .lock()
             .map_err(|_| "delivery registry lock poisoned".to_string())?;
-        let key = (adapter, agent_id.to_string());
+        let key = (adapter, workspace_id.to_string(), agent_id.to_string());
         let Some(route) = routes.get(&key) else {
             return Ok(false);
         };
@@ -237,15 +246,24 @@ impl DeliveryRegistry {
     /// idempotent and replaces the snapshot atomically.
     pub fn register_pty_runtime_snapshot(
         &self,
+        workspace_id: impl Into<String>,
         agent_id: impl Into<String>,
         generation: u64,
         lease: impl Into<String>,
         snapshot: HubPtyRuntimeSnapshot,
     ) -> Result<(), String> {
+        let workspace_id = workspace_id.into();
         let agent_id = agent_id.into();
         let lease = lease.into();
-        if agent_id.trim().is_empty() || lease.trim().is_empty() || generation == 0 {
-            return Err("PTY runtime snapshot requires agent_id, generation, and lease".into());
+        if workspace_id.trim().is_empty()
+            || agent_id.trim().is_empty()
+            || lease.trim().is_empty()
+            || generation == 0
+        {
+            return Err(
+                "PTY runtime snapshot requires workspace_id, agent_id, generation, and lease"
+                    .into(),
+            );
         }
         if !snapshot.is_well_formed() {
             return Err(
@@ -256,7 +274,8 @@ impl DeliveryRegistry {
             .pty_runtime
             .lock()
             .map_err(|_| "PTY safety registry lock poisoned".to_string())?;
-        if let Some(current) = proofs.get(&agent_id) {
+        let key = (workspace_id, agent_id);
+        if let Some(current) = proofs.get(&key) {
             if current.generation > generation {
                 return Err("stale PTY runtime snapshot rejected".into());
             }
@@ -265,7 +284,7 @@ impl DeliveryRegistry {
             }
         }
         proofs.insert(
-            agent_id,
+            key,
             PtyRuntimeRoute {
                 generation,
                 lease,
@@ -280,6 +299,7 @@ impl DeliveryRegistry {
     /// A stale teardown must not erase a newer snapshot.
     pub fn unregister_pty_runtime_snapshot(
         &self,
+        workspace_id: &str,
         agent_id: &str,
         generation: u64,
         lease: &str,
@@ -288,18 +308,19 @@ impl DeliveryRegistry {
             .pty_runtime
             .lock()
             .map_err(|_| "PTY safety registry lock poisoned".to_string())?;
-        let Some(current) = proofs.get(agent_id) else {
+        let key = (workspace_id.to_string(), agent_id.to_string());
+        let Some(current) = proofs.get(&key) else {
             return Ok(false);
         };
         if current.generation != generation || current.lease != lease {
             return Err("stale PTY runtime snapshot teardown rejected".into());
         }
-        proofs.remove(agent_id);
+        proofs.remove(&key);
         Ok(true)
     }
 
     pub fn probe(&self, target: &Value) -> DeliveryProbe {
-        let Some((agent_id, generation, lease)) = target_identity(target) else {
+        let Some((workspace_id, agent_id, generation, lease)) = target_identity(target) else {
             return DeliveryProbe::default();
         };
         let Ok(routes) = self.routes.lock() else {
@@ -307,7 +328,7 @@ impl DeliveryRegistry {
         };
         let matches = |adapter| {
             routes
-                .get(&(adapter, agent_id.to_string()))
+                .get(&(adapter, workspace_id.to_string(), agent_id.to_string()))
                 .is_some_and(|route| route.generation == generation && route.lease == lease)
         };
         let pty = self
@@ -315,12 +336,14 @@ impl DeliveryRegistry {
             .lock()
             .ok()
             .and_then(|proofs| {
-                proofs.get(agent_id).and_then(|proof| {
-                    (proof.generation == generation
-                        && proof.lease == lease
-                        && proof.observed_at.elapsed() <= PTY_SAFETY_MAX_AGE)
-                        .then_some(proof.snapshot.safety)
-                })
+                proofs
+                    .get(&(workspace_id.to_string(), agent_id.to_string()))
+                    .and_then(|proof| {
+                        (proof.generation == generation
+                            && proof.lease == lease
+                            && proof.observed_at.elapsed() <= PTY_SAFETY_MAX_AGE)
+                            .then_some(proof.snapshot.safety)
+                    })
             })
             .unwrap_or_default();
         DeliveryProbe {
@@ -337,15 +360,15 @@ impl DeliveryRegistry {
         target: &Value,
         entry: &Value,
     ) -> Result<DeliveryOutcome, String> {
-        let Some((agent_id, generation, lease)) = target_identity(target) else {
-            return Err("delivery target lacks agent_id, generation, or lease".into());
+        let Some((workspace_id, agent_id, generation, lease)) = target_identity(target) else {
+            return Err("delivery target lacks workspace_id, agent_id, generation, or lease".into());
         };
         let routes = self
             .routes
             .lock()
             .map_err(|_| "delivery registry lock poisoned".to_string())?;
         let route = routes
-            .get(&(adapter, agent_id.to_string()))
+            .get(&(adapter, workspace_id.to_string(), agent_id.to_string()))
             .ok_or_else(|| "delivery route is not registered".to_string())?;
         if route.generation != generation || route.lease != lease {
             return Err("delivery route generation or lease is stale".into());
@@ -368,14 +391,20 @@ impl DeliveryRegistry {
     }
 }
 
-fn target_identity(target: &Value) -> Option<(&str, u64, &str)> {
+fn target_identity(target: &Value) -> Option<(&str, &str, u64, &str)> {
+    let workspace_id = target
+        .get("workspaceId")
+        .or_else(|| target.get("workspace_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?;
     let agent_id = target
         .get("agentId")
         .or_else(|| target.get("agent_id"))
-        .and_then(Value::as_str)?;
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?;
     let generation = target.get("generation").and_then(Value::as_u64)?;
     let lease = target.get("lease").and_then(Value::as_str)?;
-    Some((agent_id, generation, lease))
+    Some((workspace_id, agent_id, generation, lease))
 }
 
 #[cfg(test)]
@@ -463,9 +492,10 @@ mod tests {
     fn registered_route_is_fenced_and_non_blocking() {
         let registry = DeliveryRegistry::default();
         let receiver = registry
-            .register(HubDeliveryAdapter::RuntimeApi, "agent-a", 2, "lease-2")
+            .register(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 2, "lease-2")
             .unwrap();
         let target = serde_json::json!({
+            "workspaceId": "ws-a",
             "agentId": "agent-a",
             "generation": 2,
             "lease": "lease-2"
@@ -474,6 +504,7 @@ mod tests {
         assert!(
             !registry
                 .probe(&serde_json::json!({
+                    "workspaceId": "ws-a",
                     "agentId": "agent-a",
                     "generation": 1,
                     "lease": "lease-2"
@@ -490,6 +521,7 @@ mod tests {
             .deliver(
                 HubDeliveryAdapter::RuntimeApi,
                 &serde_json::json!({
+                    "workspaceId": "ws-a",
                     "agentId": "agent-a",
                     "generation": 1,
                     "lease": "lease-2"
@@ -503,13 +535,13 @@ mod tests {
     fn route_teardown_requires_current_fence() {
         let registry = DeliveryRegistry::default();
         let _receiver = registry
-            .register(HubDeliveryAdapter::A2a, "agent-a", 3, "lease-3")
+            .register(HubDeliveryAdapter::A2a, "ws-a", "agent-a", 3, "lease-3")
             .unwrap();
         assert!(registry
-            .unregister(HubDeliveryAdapter::A2a, "agent-a", 2, "lease-3")
+            .unregister(HubDeliveryAdapter::A2a, "ws-a", "agent-a", 2, "lease-3")
             .is_err());
         assert!(registry
-            .unregister(HubDeliveryAdapter::A2a, "agent-a", 3, "lease-3")
+            .unregister(HubDeliveryAdapter::A2a, "ws-a", "agent-a", 3, "lease-3")
             .unwrap());
     }
 
@@ -523,6 +555,7 @@ mod tests {
             ..Default::default()
         };
         let current = serde_json::json!({
+            "workspaceId": "ws-a",
             "agentId": "agent-a",
             "generation": 2,
             "lease": "lease-2"
@@ -531,7 +564,7 @@ mod tests {
         assert_eq!(choose_delivery_adapter(registry.probe(&current)), None);
 
         registry
-            .register_pty_runtime_snapshot("agent-a", 2, "lease-2", snapshot(safe))
+            .register_pty_runtime_snapshot("ws-a", "agent-a", 2, "lease-2", snapshot(safe))
             .unwrap();
         assert_eq!(registry.probe(&current).pty, safe);
         assert_eq!(
@@ -540,6 +573,7 @@ mod tests {
         );
 
         let stale = serde_json::json!({
+            "workspaceId": "ws-a",
             "agentId": "agent-a",
             "generation": 1,
             "lease": "lease-1"
@@ -547,24 +581,25 @@ mod tests {
         assert_eq!(registry.probe(&stale).pty, HubPtySafety::default());
         assert_eq!(choose_delivery_adapter(registry.probe(&stale)), None);
         assert!(registry
-            .register_pty_runtime_snapshot("agent-a", 2, "other-lease", snapshot(safe))
+            .register_pty_runtime_snapshot("ws-a", "agent-a", 2, "other-lease", snapshot(safe))
             .is_err());
 
         registry
-            .register_pty_runtime_snapshot("agent-a", 3, "lease-3", snapshot(safe))
+            .register_pty_runtime_snapshot("ws-a", "agent-a", 3, "lease-3", snapshot(safe))
             .unwrap();
         assert!(registry
-            .register_pty_runtime_snapshot("agent-a", 2, "lease-2", snapshot(safe))
+            .register_pty_runtime_snapshot("ws-a", "agent-a", 2, "lease-2", snapshot(safe))
             .is_err());
         assert!(registry
-            .unregister_pty_runtime_snapshot("agent-a", 2, "lease-2")
+            .unregister_pty_runtime_snapshot("ws-a", "agent-a", 2, "lease-2")
             .is_err());
         assert!(registry
-            .unregister_pty_runtime_snapshot("agent-a", 3, "lease-3")
+            .unregister_pty_runtime_snapshot("ws-a", "agent-a", 3, "lease-3")
             .unwrap());
         assert_eq!(
             registry
                 .probe(&serde_json::json!({
+                    "workspaceId": "ws-a",
                     "agentId": "agent-a",
                     "generation": 3,
                     "lease": "lease-3"
@@ -584,16 +619,17 @@ mod tests {
             ..Default::default()
         };
         assert!(registry
-            .register_pty_runtime_snapshot("", 1, "lease-1", snapshot(safe))
+            .register_pty_runtime_snapshot("", "agent-a", 1, "lease-1", snapshot(safe))
             .is_err());
         assert!(registry
-            .register_pty_runtime_snapshot("agent-a", 0, "lease-1", snapshot(safe))
+            .register_pty_runtime_snapshot("ws-a", "agent-a", 0, "lease-1", snapshot(safe))
             .is_err());
         assert!(registry
-            .register_pty_runtime_snapshot("agent-a", 1, "", snapshot(safe))
+            .register_pty_runtime_snapshot("ws-a", "agent-a", 1, "", snapshot(safe))
             .is_err());
         assert!(registry
             .register_pty_runtime_snapshot(
+                "ws-a",
                 "agent-a",
                 1,
                 "lease-1",
@@ -602,18 +638,19 @@ mod tests {
             .is_err());
 
         registry
-            .register_pty_runtime_snapshot("agent-a", 1, "lease-1", snapshot(safe))
+            .register_pty_runtime_snapshot("ws-a", "agent-a", 1, "lease-1", snapshot(safe))
             .unwrap();
         let unsafe_snapshot = HubPtySafety {
             user_input_competing: true,
             ..safe
         };
         registry
-            .register_pty_runtime_snapshot("agent-a", 1, "lease-1", snapshot(unsafe_snapshot))
+            .register_pty_runtime_snapshot("ws-a", "agent-a", 1, "lease-1", snapshot(unsafe_snapshot))
             .unwrap();
         assert_eq!(
             registry
                 .probe(&serde_json::json!({
+                    "workspaceId": "ws-a",
                     "agentId": "agent-a",
                     "generation": 1,
                     "lease": "lease-1"
@@ -622,11 +659,11 @@ mod tests {
             unsafe_snapshot
         );
         assert_eq!(
-            registry.unregister_pty_runtime_snapshot("agent-a", 1, "lease-1"),
+            registry.unregister_pty_runtime_snapshot("ws-a", "agent-a", 1, "lease-1"),
             Ok(true)
         );
         assert_eq!(
-            registry.unregister_pty_runtime_snapshot("agent-a", 1, "lease-1"),
+            registry.unregister_pty_runtime_snapshot("ws-a", "agent-a", 1, "lease-1"),
             Ok(false)
         );
     }
@@ -635,7 +672,7 @@ mod tests {
     fn expired_pty_safety_proof_falls_back_to_pull() {
         let registry = DeliveryRegistry::default();
         registry.pty_runtime.lock().unwrap().insert(
-            "agent-a".into(),
+            ("ws-a".into(), "agent-a".into()),
             PtyRuntimeRoute {
                 generation: 1,
                 lease: "lease-1".into(),
@@ -649,6 +686,7 @@ mod tests {
             },
         );
         let target = serde_json::json!({
+            "workspaceId": "ws-a",
             "agentId": "agent-a",
             "generation": 1,
             "lease": "lease-1"
@@ -662,10 +700,10 @@ mod tests {
     fn newer_generation_replaces_old_route_and_fences_late_teardown() {
         let registry = DeliveryRegistry::default();
         let old_receiver = registry
-            .register(HubDeliveryAdapter::RuntimeApi, "agent-a", 3, "lease-3")
+            .register(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 3, "lease-3")
             .unwrap();
         let new_receiver = registry
-            .register(HubDeliveryAdapter::RuntimeApi, "agent-a", 4, "lease-4")
+            .register(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 4, "lease-4")
             .unwrap();
 
         assert!(matches!(
@@ -675,6 +713,7 @@ mod tests {
         assert!(
             !registry
                 .probe(&serde_json::json!({
+                    "workspaceId": "ws-a",
                     "agentId": "agent-a",
                     "generation": 3,
                     "lease": "lease-3"
@@ -684,6 +723,7 @@ mod tests {
         assert!(
             registry
                 .probe(&serde_json::json!({
+                    "workspaceId": "ws-a",
                     "agentId": "agent-a",
                     "generation": 4,
                     "lease": "lease-4"
@@ -691,7 +731,7 @@ mod tests {
                 .runtime_api
         );
         assert!(registry
-            .register(HubDeliveryAdapter::RuntimeApi, "agent-a", 2, "lease-2")
+            .register(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 2, "lease-2")
             .is_err());
 
         let entry = serde_json::json!({ "messageId": "message-4" });
@@ -699,6 +739,7 @@ mod tests {
             .deliver(
                 HubDeliveryAdapter::RuntimeApi,
                 &serde_json::json!({
+                    "workspaceId": "ws-a",
                     "agentId": "agent-a",
                     "generation": 4,
                     "lease": "lease-4"
@@ -708,10 +749,45 @@ mod tests {
             .is_ok());
         assert_eq!(new_receiver.try_recv().unwrap(), entry);
         assert!(registry
-            .unregister(HubDeliveryAdapter::RuntimeApi, "agent-a", 3, "lease-3")
+            .unregister(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 3, "lease-3")
             .is_err());
         assert!(registry
-            .unregister(HubDeliveryAdapter::RuntimeApi, "agent-a", 4, "lease-4")
+            .unregister(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 4, "lease-4")
             .unwrap());
+    }
+
+    #[test]
+    fn same_agent_routes_are_isolated_by_workspace() {
+        let registry = DeliveryRegistry::default();
+        let receiver_a = registry
+            .register(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 1, "lease-a")
+            .unwrap();
+        let receiver_b = registry
+            .register(HubDeliveryAdapter::RuntimeApi, "ws-b", "agent-a", 1, "lease-b")
+            .unwrap();
+        let target_a = serde_json::json!({
+            "workspaceId": "ws-a",
+            "agentId": "agent-a",
+            "generation": 1,
+            "lease": "lease-a"
+        });
+        let target_b = serde_json::json!({
+            "workspaceId": "ws-b",
+            "agentId": "agent-a",
+            "generation": 1,
+            "lease": "lease-b"
+        });
+        assert!(registry.probe(&target_a).runtime_api);
+        assert!(registry.probe(&target_b).runtime_api);
+        let entry = serde_json::json!({"messageId": "only-a"});
+        registry
+            .deliver(HubDeliveryAdapter::RuntimeApi, &target_a, &entry)
+            .unwrap();
+        assert_eq!(receiver_a.try_recv().unwrap(), entry);
+        assert!(matches!(receiver_b.try_recv(), Err(TryRecvError::Empty)));
+        assert!(registry
+            .unregister(HubDeliveryAdapter::RuntimeApi, "ws-a", "agent-a", 1, "lease-a")
+            .unwrap());
+        assert!(registry.probe(&target_b).runtime_api);
     }
 }

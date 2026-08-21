@@ -42,6 +42,7 @@ const DELIVERY_LEASE_MAX_BYTES: usize = 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DeliveryRegistration {
     adapter: HubDeliveryAdapter,
+    workspace_id: String,
     agent_id: String,
     generation: u64,
     lease: String,
@@ -53,6 +54,8 @@ struct RawDeliveryRegistration {
     #[serde(rename = "type")]
     message_type: String,
     adapter: String,
+    #[serde(alias = "workspace_id")]
+    workspace_id: String,
     #[serde(alias = "agent_id")]
     agent_id: String,
     generation: u64,
@@ -83,6 +86,9 @@ fn parse_delivery_registration(text: &str) -> Result<DeliveryRegistration, Strin
         "a2a" | "A2a" => HubDeliveryAdapter::A2a,
         _ => return Err("delivery stream adapter must be runtime_api or a2a".into()),
     };
+    if raw.workspace_id.trim().is_empty() || raw.workspace_id.len() > DELIVERY_AGENT_ID_MAX_BYTES {
+        return Err("delivery registration has an invalid workspace_id".into());
+    }
     if raw.agent_id.trim().is_empty() || raw.agent_id.len() > DELIVERY_AGENT_ID_MAX_BYTES {
         return Err("delivery registration has an invalid agent_id".into());
     }
@@ -94,6 +100,7 @@ fn parse_delivery_registration(text: &str) -> Result<DeliveryRegistration, Strin
     }
     Ok(DeliveryRegistration {
         adapter,
+        workspace_id: raw.workspace_id,
         agent_id: raw.agent_id,
         generation: raw.generation,
         lease: raw.lease,
@@ -275,6 +282,7 @@ async fn serve_delivery_stream(mut socket: WebSocket, ctx: McpTransportCtx) {
     };
 
     if let Err(error) = ctx.host.authorize_delivery_endpoint(
+        &registration.workspace_id,
         &registration.agent_id,
         registration.generation,
         &registration.lease,
@@ -285,6 +293,7 @@ async fn serve_delivery_stream(mut socket: WebSocket, ctx: McpTransportCtx) {
 
     let receiver = match ctx.state.register_delivery_endpoint(
         registration.adapter,
+        registration.workspace_id.clone(),
         registration.agent_id.clone(),
         registration.generation,
         registration.lease.clone(),
@@ -300,6 +309,7 @@ async fn serve_delivery_stream(mut socket: WebSocket, ctx: McpTransportCtx) {
         json!({
             "type": "registered",
             "adapter": registration.adapter.as_str(),
+            "workspaceId": registration.workspace_id,
             "agentId": registration.agent_id,
             "generation": registration.generation,
             "queueCapacity": DELIVERY_ROUTE_CAP,
@@ -309,6 +319,7 @@ async fn serve_delivery_stream(mut socket: WebSocket, ctx: McpTransportCtx) {
     {
         let _ = ctx.state.unregister_delivery_endpoint(
             registration.adapter,
+            &registration.workspace_id,
             &registration.agent_id,
             registration.generation,
             &registration.lease,
@@ -377,6 +388,7 @@ async fn serve_delivery_stream(mut socket: WebSocket, ctx: McpTransportCtx) {
 
     let _ = ctx.state.unregister_delivery_endpoint(
         registration.adapter,
+        &registration.workspace_id,
         &registration.agent_id,
         registration.generation,
         &registration.lease,
@@ -398,17 +410,22 @@ mod tests {
     #[test]
     fn delivery_registration_requires_fenced_identity_and_supported_adapter() {
         let registration = parse_delivery_registration(
-            r#"{"type":"register","adapter":"runtime_api","agentId":"agent-a","generation":2,"lease":"lease-2"}"#,
+            r#"{"type":"register","adapter":"runtime_api","workspaceId":"ws-a","agentId":"agent-a","generation":2,"lease":"lease-2"}"#,
         )
         .expect("valid registration");
         assert_eq!(registration.adapter, HubDeliveryAdapter::RuntimeApi);
+        assert_eq!(registration.workspace_id, "ws-a");
         assert_eq!(registration.agent_id, "agent-a");
         assert!(parse_delivery_registration(
-            r#"{"type":"register","adapter":"mcp_pull","agentId":"agent-a","generation":2,"lease":"lease-2"}"#,
+            r#"{"type":"register","adapter":"runtime_api","agentId":"agent-a","generation":2,"lease":"lease-2"}"#,
         )
         .is_err());
         assert!(parse_delivery_registration(
-            r#"{"type":"register","adapter":"a2a","agentId":"agent-a","generation":0,"lease":"lease-2"}"#,
+            r#"{"type":"register","adapter":"mcp_pull","workspaceId":"ws-a","agentId":"agent-a","generation":2,"lease":"lease-2"}"#,
+        )
+        .is_err());
+        assert!(parse_delivery_registration(
+            r#"{"type":"register","adapter":"a2a","workspaceId":"ws-a","agentId":"agent-a","generation":0,"lease":"lease-2"}"#,
         )
         .is_err());
     }
@@ -543,6 +560,7 @@ mod tests {
                     json!({
                         "type": "register",
                         "adapter": "runtime_api",
+                        "workspaceId": "workspace-a",
                         "agentId": "agent-a",
                         "generation": 2,
                         "lease": "lease-2"
@@ -618,6 +636,7 @@ mod tests {
             assert_eq!(ack["type"], "ack");
             assert_eq!(ack["accepted"], true);
             let target = json!({
+                "workspaceId": "workspace-a",
                 "agentId": "agent-a",
                 "generation": 2,
                 "lease": "lease-2"
