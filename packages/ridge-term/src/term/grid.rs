@@ -238,7 +238,7 @@ pub struct Grid {
     last_redraw_csi_at_ms: i64,
     /// Monotonic parser-side signal for a repaint walk. Unlike the long-lived
     /// inline-TUI heuristic, this marks only the current feed batch and is
-    /// forwarded in DeltaFrame so the browser can hide transient cursors
+    /// forwarded in DeltaFrame so the browser can freeze the presented cursor
     /// without guessing from incomplete mirror mode state.
     render_activity_seq: u64,
     /// Timestamp of the most recent Ctrl+C the user sent to this pane.

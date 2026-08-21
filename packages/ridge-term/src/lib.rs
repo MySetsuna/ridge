@@ -1495,8 +1495,9 @@ mod renderer_js {
         }
 
         /// Presentation-only gate for a short native inline-TUI repaint walk.
-        /// Grid cells still render immediately; this suppresses only the
-        /// transient terminal cursor until the browser compositor settles.
+        /// Grid cells still render immediately; while set, the renderer
+        /// freezes the cursor at its last presented position until the
+        /// browser compositor settles. Name retained for JS compatibility.
         #[wasm_bindgen(js_name = setPresentationCursorSuppressed)]
         pub fn set_presentation_cursor_suppressed(&mut self, suppressed: bool) {
             self.renderer.set_presentation_cursor_suppressed(suppressed);

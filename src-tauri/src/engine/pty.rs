@@ -27,6 +27,7 @@ fn flush_pty_tail(osc_carryover: &mut OscSignalCarryover, utf8_pending: &mut Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::io;
     use std::sync::mpsc;
 
@@ -113,6 +114,83 @@ mod tests {
         assert!(pending.requires_render_settle);
         assert!(matches!(pending.deltas[0], GridDelta::Bell));
         assert!(matches!(pending.deltas[1], GridDelta::ScrollbackClear));
+    }
+
+    #[test]
+    fn current_reader_takes_handle_bumps_generation_and_cannot_close_twice() {
+        let pane_id = Uuid::new_v4();
+        let mut terminals = HashMap::from([(pane_id, "current")]);
+        let mut generations = HashMap::from([(pane_id, 7)]);
+
+        assert_eq!(
+            take_current_pty(&mut terminals, &mut generations, pane_id, 7),
+            Some("current")
+        );
+        assert!(terminals.is_empty());
+        assert_eq!(generations[&pane_id], 8);
+        assert_eq!(
+            take_current_pty(&mut terminals, &mut generations, pane_id, 7),
+            None
+        );
+        assert_eq!(generations[&pane_id], 8);
+    }
+
+    #[test]
+    fn stale_reader_cannot_take_installed_replacement() {
+        let pane_id = Uuid::new_v4();
+        let mut terminals = HashMap::from([(pane_id, "replacement")]);
+        let mut generations = HashMap::from([(pane_id, 9)]);
+
+        assert_eq!(
+            take_current_pty(&mut terminals, &mut generations, pane_id, 8),
+            None
+        );
+        assert_eq!(terminals[&pane_id], "replacement");
+        assert_eq!(generations[&pane_id], 9);
+    }
+
+    #[test]
+    fn native_eof_bumps_generation_and_stale_gen0_cannot_yank_replacement() {
+        let pane_id = Uuid::new_v4();
+        let mut terminals = HashMap::from([(pane_id, "native")]);
+        let mut generations = HashMap::from([(pane_id, 0)]);
+
+        assert_eq!(
+            take_current_pty(&mut terminals, &mut generations, pane_id, 0),
+            Some("native")
+        );
+        assert_eq!(generations[&pane_id], 1);
+        terminals.insert(pane_id, "replacement");
+        assert_eq!(
+            take_current_pty(&mut terminals, &mut generations, pane_id, 0),
+            None
+        );
+        assert_eq!(terminals[&pane_id], "replacement");
+        assert_eq!(generations[&pane_id], 1);
+    }
+
+    #[test]
+    fn native_reader_finish_fences_on_generation_and_does_not_wipe_entry() {
+        let source = include_str!("pty.rs");
+        let start = source
+            .rfind("fn finish_native_pane(")
+            .expect("finish_native_pane");
+        let body = source[start..]
+            .split("\nfn finish_ordinary_pane(")
+            .next()
+            .expect("native finish body");
+        assert!(
+            body.contains("take_current_pty("),
+            "native EOF must take the handle only when the reader generation still owns the pane"
+        );
+        assert!(
+            body.contains("pty_generation: u64"),
+            "native EOF must receive the reader generation"
+        );
+        assert!(
+            !body.contains("pty_generation.remove"),
+            "wiping the generation entry resets unwrap_or(0) and lets a stale gen-0 reader steal a replacement"
+        );
     }
 }
 
@@ -219,12 +297,52 @@ fn now_epoch_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn detach_terminal(state: &AppState, workspace_id: Uuid, pane_id: Uuid) {
-    state.clear_pty_scrollback(workspace_id, pane_id);
-    let mut map = state.workspaces.write();
-    if let Some(ws) = map.get_mut(&workspace_id) {
-        ws.terminals.remove(&pane_id);
+fn take_current_pty<T>(
+    terminals: &mut std::collections::HashMap<Uuid, T>,
+    generations: &mut std::collections::HashMap<Uuid, u64>,
+    pane_id: Uuid,
+    reader_generation: u64,
+) -> Option<T> {
+    let current_generation = generations.get(&pane_id).copied().unwrap_or(0);
+    if current_generation != reader_generation {
+        return None;
     }
+    let handle = terminals.remove(&pane_id)?;
+    *generations.entry(pane_id).or_insert(0) += 1;
+    Some(handle)
+}
+
+fn detach_terminal(
+    state: &AppState,
+    workspace_id: Uuid,
+    pane_id: Uuid,
+    reader_generation: u64,
+) -> Option<bool> {
+    let (handle, demoted) = {
+        let mut map = state.workspaces.write();
+        let ws = map.get_mut(&workspace_id)?;
+        let handle = take_current_pty(
+            &mut ws.terminals,
+            &mut ws.pty_generation,
+            pane_id,
+            reader_generation,
+        )?;
+        let demoted = if !ws.pending_spawns.contains_key(&pane_id)
+            && ws.teammate_pane_states.contains_key(&pane_id)
+        {
+            ws.teammate_pane_states
+                .insert(pane_id, crate::state::PaneState::Idle);
+            ws.teammate_agent_pane_map
+                .retain(|_, value| *value != pane_id);
+            true
+        } else {
+            false
+        };
+        (handle, demoted)
+    };
+    drop(handle);
+    state.clear_pty_scrollback(workspace_id, pane_id);
+    Some(demoted)
 }
 
 struct PtyReaderThread {
@@ -551,7 +669,14 @@ impl PtyReaderThread {
     fn finish(&mut self) {
         let _ = self.flush_pending_delta(true);
         if let Some((socket, gid)) = &self.native_ref_info {
-            finish_native_pane(&self.state, self.workspace_id, self.pane_id, socket, *gid);
+            finish_native_pane(
+                &self.state,
+                self.workspace_id,
+                self.pane_id,
+                socket,
+                *gid,
+                self.my_pty_generation,
+            );
         } else {
             finish_ordinary_pane(
                 &self.state,
@@ -570,21 +695,34 @@ fn finish_native_pane(
     pane_id: Uuid,
     socket: &str,
     global_id: usize,
+    pty_generation: u64,
 ) {
-    crate::teammate::native::set_attachment(socket, global_id, None);
-    state.clear_pty_scrollback(workspace_id, pane_id);
-    state.unregister_pane_delta_channel(workspace_id, pane_id);
-    let mut map = state.workspaces.write();
-    if let Some(ws) = map.get_mut(&workspace_id) {
-        ws.terminals.remove(&pane_id);
+    let handle = {
+        let mut map = state.workspaces.write();
+        let Some(ws) = map.get_mut(&workspace_id) else {
+            drop(map);
+            crate::teammate::native::set_attachment(socket, global_id, None);
+            return;
+        };
+        let Some(handle) = take_current_pty(
+            &mut ws.terminals,
+            &mut ws.pty_generation,
+            pane_id,
+            pty_generation,
+        ) else {
+            return;
+        };
         let _ = ws.pane_tree.close(pane_id);
         ws.pane_sizes.remove(&pane_id);
         ws.teammate_pane_states.remove(&pane_id);
         ws.teammate_agent_pane_map
             .retain(|_, value| *value != pane_id);
-        ws.pty_generation.remove(&pane_id);
-    }
-    drop(map);
+        handle
+    };
+    drop(handle);
+    crate::teammate::native::set_attachment(socket, global_id, None);
+    state.clear_pty_scrollback(workspace_id, pane_id);
+    state.unregister_pane_delta_channel(workspace_id, pane_id);
     crate::teammate::profiles::remove_by_pane(workspace_id, pane_id);
     if let Some(app) = state.app_handle.get() {
         use tauri::Emitter;
@@ -602,6 +740,10 @@ fn finish_ordinary_pane(
     pane_id: Uuid,
     pty_generation: u64,
 ) {
+    let Some(teammate_demoted) = detach_terminal(state, workspace_id, pane_id, pty_generation)
+    else {
+        return;
+    };
     let event_tx = state.event_tx.clone();
     let _ = rt.block_on(async move {
         let _ = event_tx
@@ -611,37 +753,13 @@ fn finish_ordinary_pane(
             })
             .await;
     });
-    detach_terminal(state, workspace_id, pane_id);
-    if demote_teammate_pane(state, workspace_id, pane_id, pty_generation) {
+    if teammate_demoted {
         crate::teammate::profiles::remove_by_pane(workspace_id, pane_id);
         if let Some(app) = state.app_handle.get() {
             use tauri::Emitter;
             let _ = app.emit(TEAMMATE_LAYOUT_CHANGED, LayoutChange::state());
         }
     }
-}
-
-fn demote_teammate_pane(
-    state: &AppState,
-    workspace_id: Uuid,
-    pane_id: Uuid,
-    pty_generation: u64,
-) -> bool {
-    let mut map = state.workspaces.write();
-    let Some(ws) = map.get_mut(&workspace_id) else {
-        return false;
-    };
-    let current_generation = ws.pty_generation.get(&pane_id).copied().unwrap_or(0);
-    let is_current_pty = current_generation == pty_generation;
-    let being_replaced = ws.pending_spawns.contains_key(&pane_id);
-    if !is_current_pty || being_replaced || !ws.teammate_pane_states.contains_key(&pane_id) {
-        return false;
-    }
-    ws.teammate_pane_states
-        .insert(pane_id, crate::state::PaneState::Idle);
-    ws.teammate_agent_pane_map
-        .retain(|_, value| *value != pane_id);
-    true
 }
 
 fn reader_snapshot(

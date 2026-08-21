@@ -110,7 +110,7 @@ export interface PaneWorkerState {
 	renderer?: RendererHandle;
 	/** Last accepted render generation. Replayed/late feed or delta frames must not revive old rows. */
 	lastAppliedFrameId: number;
-	/** Mirrors manager.ts's cursor-only presentation transaction. */
+	/** Mirrors manager.ts's cursor-freeze presentation transaction. */
 	tuiCursorSuppressUntil: number;
 	tuiCursorSuppressed: boolean;
 	tuiCursorTimer: ReturnType<typeof setTimeout> | null;
@@ -303,8 +303,7 @@ function armSyncOutputTimeout(pane: PaneWorkerState): void {
 		pane.syncTimer = null;
 		try {
 			if (pane.kernel?.isSyncOutput?.() !== true) {
-				clearSyncOutput(pane);
-				pane.renderer?.render();
+				renderPaneAfterSync(pane);
 				return;
 			}
 			if (pane.syncTimeoutRendered) return;
@@ -323,7 +322,9 @@ function armSyncOutputTimeout(pane: PaneWorkerState): void {
  * hatch, never a recurring render loop. */
 function renderPaneAfterSync(pane: PaneWorkerState): void {
 	if (pane.kernel?.isSyncOutput?.() !== true) {
+		const syncWasActive = pane.syncStart !== null;
 		clearSyncOutput(pane);
+		if (syncWasActive) clearTuiCursorSuppression(pane);
 		pane.renderer?.render();
 		return;
 	}

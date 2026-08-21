@@ -359,7 +359,7 @@ interface PaneEntry {
 	deltaQueueHead: number;
 	deltaQueuedBytes: number;
 	/** Short inline-TUI presentation transaction. Grid cells keep painting;
-	 * only a transient cursor-rewind walk is hidden until it becomes quiet. */
+	 * the cursor stays at its last presented cell until the walk is quiet. */
 	tuiCursorSuppressUntil: number;
 	tuiCursorSuppressed: boolean;
 	/** focusin listener bound to `container`. Held so detach() can remove
@@ -3188,7 +3188,7 @@ export class TerminalManager {
 
 	private _noteTuiCursorSettle(entry: PaneEntry, now: number): void {
 		// The worker owns its own renderer transaction. Main-thread panes paint
-		// text immediately and hide only the cursor during the rewind burst.
+		// text immediately and freeze only the cursor during the rewind burst.
 		if (entry.handle === null) return;
 		entry.tuiCursorSuppressUntil = now + TUI_CURSOR_SETTLE_MS;
 		this._setPresentationCursorSuppressed(entry, true);
@@ -5467,8 +5467,13 @@ export class TerminalManager {
 			this._recomputeViewport(entry);
 			void this.fitPane(entry, this._sharedRemoteMode);
 		}
+		const syncWasActive = entry.syncStart !== null;
 		if (!this._renderEntryAfterSync(entry, state)) return;
-		if (entry.tuiCursorSuppressUntil > state.perfNow) {
+		if (syncWasActive && entry.syncStart === null) {
+			// An explicit ?2026l boundary is stronger than the heuristic quiet
+			// window: present the final cursor with the final grid frame.
+			this._releaseTuiCursorSuppression(entry);
+		} else if (entry.tuiCursorSuppressUntil > state.perfNow) {
 			state.minDeadlineMs = Math.min(state.minDeadlineMs, entry.tuiCursorSuppressUntil - state.perfNow);
 		} else if (entry.tuiCursorSuppressed) {
 			this._releaseTuiCursorSuppression(entry);
