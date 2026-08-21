@@ -1163,8 +1163,12 @@ mod tests {
         }))
         .unwrap();
         let error = A2aClient::from_card(config, card).unwrap_err();
-        assert!(error.to_string().contains("no selectable JSON-RPC interface")
-            || error.to_string().contains("HTTP URL"));
+        assert!(
+            error
+                .to_string()
+                .contains("no selectable JSON-RPC interface")
+                || error.to_string().contains("HTTP URL")
+        );
     }
 
     #[test]

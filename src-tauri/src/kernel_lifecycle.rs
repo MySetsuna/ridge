@@ -81,44 +81,6 @@ pub fn decide_boot(
     }
 }
 
-/// 桌面 setup：detect-or-spawn 独立 ridge-kernel。
-fn handle_boot_decision(
-    decision: KernelBootDecision,
-    file_pid: Option<u32>,
-    self_pid: u32,
-) -> Result<(), String> {
-    match decision {
-        KernelBootDecision::AttachExisting { pid } => {
-            if let Some(ep) = wait_for_running(Duration::from_secs(8)).filter(|e| e.pid == pid) {
-                tracing::info!(
-                    target: "ridge::kernel_lifecycle",
-                    pid,
-                    port = ep.port,
-                    "attached to existing ridge-kernel"
-                );
-                return Ok(());
-            }
-            Err(format!(
-                "live ridge-kernel PID {pid} is unhealthy or protocol-incompatible; refusing a second instance"
-            ))
-        }
-        KernelBootDecision::StalePidClearAndBecomeHost { stale_pid } => {
-            tracing::info!(target: "ridge::kernel_lifecycle", stale_pid, "clear stale kernel registry");
-            let _ = fs::remove_file(kernel_pid_path());
-            let _ = fs::remove_file(kernel_json_path());
-            Ok(())
-        }
-        KernelBootDecision::AlreadyHost => {
-            if file_pid == Some(self_pid) {
-                let _ = fs::remove_file(kernel_pid_path());
-                let _ = fs::remove_file(kernel_json_path());
-            }
-            Ok(())
-        }
-        KernelBootDecision::BecomeHost => Ok(()),
-    }
-}
-
 fn acquire_kernel_boot_slot(
     decision: KernelBootDecision,
 ) -> Result<Option<ridge_kernel::registry::KernelBootGuard>, String> {
@@ -159,7 +121,7 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
     let self_pid = std::process::id();
     let file_pid = read_kernel_pid();
     let alive = file_pid.is_some_and(is_process_alive);
-    let decision = decide_boot(self_pid, file_pid, alive);
+    let mut decision = decide_boot(self_pid, file_pid, alive);
 
     if let KernelBootDecision::AttachExisting { pid } = decision {
         if let Some(ep) = wait_for_running(Duration::from_secs(8)).filter(|e| e.pid == pid) {
@@ -171,17 +133,29 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
             );
             return Ok(ep);
         }
-        return Err(format!(
-            "live ridge-kernel PID {pid} is unhealthy or protocol-incompatible; refusing a second instance"
-        ));
+        decision = KernelBootDecision::StalePidClearAndBecomeHost { stale_pid: pid };
     }
-    handle_boot_decision(decision, file_pid, self_pid)?;
+
+    if matches!(decision, KernelBootDecision::AlreadyHost) {
+        ridge_kernel::registry::clear_registry(self_pid);
+    }
 
     // The desktop and a detached `rdg host` may bootstrap concurrently. A
     // process-local mutex cannot serialize that case; reserve a separate
     // cross-process boot slot until the new kernel publishes a healthy
     // endpoint. The kernel's own instance lock remains independent.
     let boot_guard = acquire_kernel_boot_slot(decision)?;
+
+    if let KernelBootDecision::StalePidClearAndBecomeHost { stale_pid } = decision {
+        let cleared = ridge_kernel::registry::try_clear_registry_if_instance_free(stale_pid)
+            .map_err(|error| format!("probe ridge-kernel instance lock: {error}"))?;
+        if !cleared {
+            return Err(format!(
+                "live ridge-kernel PID {stale_pid} is unhealthy or protocol-incompatible; refusing a second instance"
+            ));
+        }
+        tracing::info!(target: "ridge::kernel_lifecycle", stale_pid, "clear stale kernel registry");
+    }
 
     if let Some(ep) = running_endpoint() {
         return Ok(ep);

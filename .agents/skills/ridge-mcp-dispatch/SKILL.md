@@ -48,19 +48,21 @@ ws://127.0.0.1:<port>/api/v1/mcp/ws
 |---|---|---|
 | `ridge_get_team_profile` | `{}` | **先调它**。返回花名册快照（每个 teammate pane 的身份、状态，同时给 `paneId`(UUID) 和 `paneIndex`(数字)）。派活前先发现目标。 |
 | `ridge_split_pane` | `{direction:"horizontal"\|"vertical", role, initial_cmd?}` | 在工作区分出新 pane，`role` 是角色标识（如 `worker`/`reviewer`），`initial_cmd` 可选，创建后立即执行。 |
-| `ridge_send_to_teammate` | `{target_pane_id, message}` | 写入目标 pane 草稿；**不**发送 Enter。仅返回 `draft_injected`。 |
-| `ridge_send_and_submit` | `{target_pane_id, message}` | 写入后显式派发 Enter；仅返回 `submit_dispatched`。 |
-| `ridge_delegate_task` | `{target_pane_id, objective, max_steps?}` | 委派并显式提交任务、标记 **Busy**；返回回执，不称 `delivered`。 |
-| `ridge_delivery_status` | `{target_pane_id, receipt_id}` | 查询回执：`submit_dispatched`、`terminalAccepted`、`agentAcknowledged` 分列。 |
-| `ridge_acknowledge_receipt` | `{target_pane_id, receipt_id, status, detail?}` | 目标 agent 明确确认/拒绝；唯此可置 `agentAcknowledged=true`。 |
+| `ridge_send_to_teammate` | `{agent_id \| target_pane_id, message, submit?}` | 按 fenced Agent 或 pane 写入 Hub；默认 `submit=true`，仅显式 `false` 保留草稿。不代表 PTY 已写入。 |
+| `ridge_send_and_submit` | `{agent_id \| target_pane_id, message}` | 同一 Hub 入口，强制 `submit=true`；返回 `deliveryId`，不代表 PTY 已写入。 |
+| `ridge_delegate_task` | `{agent_id \| target_pane_id, objective, max_steps?}` | 委派并排入 Hub；返回回执，不称 Agent 已执行。 |
+| `ridge_delivery_status` | `{agent_id \| target_pane_id, delivery_id}` | 按 `deliveryId` 查询：`terminalAccepted`、`agentAcknowledged` 分列。 |
+| `ridge_acknowledge_receipt` | `{agent_id \| target_pane_id, delivery_id, status, detail?}` | 目标 agent 明确确认/拒绝；唯此可置 `agentAcknowledged=true`。 |
 | `ridge_report_execution_rejection` | `{executor, policy_source, request_id, reason, next_step, action?}` | 外部执行网关拒绝时上报 Ridge 桌面卡；必须如实归因，不能说成 Ridge 已拦截或可重试。 |
 | `ridge_stash_data` | `{data}` | 把一段**纯文本**存进内存中转站，返回 `ridge://cache/<id>`，供另一个 agent `resources/read` 回读。用于跨 agent 传大块中间产物。FIFO 淘汰（默认 64 条 / 32 MiB）。 |
 | `ridge_join_group` | `{group_name, agent_id? \| target_pane_id?}` | 把某成员加入按名字寻址的已有编组（`agent_id` 与 `target_pane_id` 二选一）。 |
 
 **`target_pane_id` 寻址**：既接受花名册回传的 `paneId`（UUID 字符串），也接受 `paneIndex`（叶子数字索引，或其字符串）。UUID 会先校验它仍是当前活动工作区的叶子 pane。
 
-**回执纪律**：`draft_injected` 不表示按过 Enter；`submit_dispatched` 不表示终端已收；
-`terminalAccepted` 不表示 shell/Agent 已消费。只有 `ridge_acknowledge_receipt` 才能声明 Agent 确认。
+**Agent 寻址与安全边界**：Hub/通信工具的目标至少提供 `agent_id` 或 `target_pane_id`；两者并存时必须指向同一份 Kernel roster identity。显式 `workspace_id`/`generation`/`lease` 必须与该 identity 相等；identity 本身须具备 workspace、generation、lease、online、lifecycle、capabilities，否则 fail closed。canonical Hub key 同时含 workspace、Agent、generation、lease，故两种 selector 共用收件箱、回执与幂等域。agent-only 不调用 host pane resolve/pane_key/probe，也不走 PTY；仅 MCP pull、已注册 Runtime 或 A2A。PID/进程名只能作发现证据，不授予 PTY、stdin 或控制台注入权限。静态 tmux roster 若无完整 fence，不宣称 `agent_id` 可寻址；`ridge_capture_pane`、`ridge_report_progress` 等 pane 操作仍仅接受 `target_pane_id`。
+
+**回执纪律**：`submitRequested` 仅表示提交意图；`terminalAccepted` 不表示终端已收；
+`agentAcknowledged` 仅由 `ridge_acknowledge_receipt` 产生，三者均不替 Agent 消费背书。
 
 > 已知偏差：`ridge_stash_data` 的 `tools/list` 规格里字段名写作 `content_base64`，但服务端实际
 > 读的是 `data`（纯文本，非 base64）。**按 `data` 传**，别按规格里的 `content_base64`。
@@ -78,7 +80,7 @@ ws://127.0.0.1:<port>/api/v1/mcp/ws
 
 1. `resources/read ridge://workspace/active-panes`（或 `ridge_get_team_profile`）—— 看有哪些 pane、谁空闲。
 2. 没有合适的空 pane → `ridge_split_pane {direction, role}` 开一个。
-3. `ridge_delegate_task {target_pane_id: <paneId 或 index>, objective}` 把子任务派下去（pane 转 Busy）；保存其 `receiptId`，需证实投递时再查 `ridge_delivery_status`。
+3. `ridge_delegate_task {target_pane_id: <paneId 或 index>, objective}` 把子任务派下去；保存其 `deliveryId`，需查投递状态时调用 `ridge_delivery_status`。
 4. 需要给多个 agent 共享大段上下文 → `ridge_stash_data {data}` 拿 `ridge://cache/<id>`，把 URI 放进 objective 里让对方 `resources/read` 回读，避免把大块内容塞进消息。
 5. 派发后不要把回执误述为「已执行」；继续做别的，或轮询花名册/回执。对方若消费该消息，应调用 `ridge_acknowledge_receipt`。
 

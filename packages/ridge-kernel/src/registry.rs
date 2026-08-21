@@ -192,12 +192,40 @@ pub fn write_registry(ep: &KernelEndpoint) -> Result<()> {
 }
 
 pub fn clear_registry(owner_pid: u32) {
-    if let Ok(raw) = fs::read_to_string(kernel_pid_path()) {
+    clear_registry_at(&kernel_pid_path(), &kernel_json_path(), owner_pid);
+}
+
+fn clear_registry_at(pid_path: &Path, json_path: &Path, owner_pid: u32) {
+    if let Ok(raw) = fs::read_to_string(pid_path) {
         if raw.trim().parse::<u32>().ok() == Some(owner_pid) {
-            let _ = fs::remove_file(kernel_pid_path());
-            let _ = fs::remove_file(kernel_json_path());
+            let _ = fs::remove_file(pid_path);
+            let _ = fs::remove_file(json_path);
         }
     }
+}
+
+/// Clear stale endpoint files only while no kernel owns the instance lock.
+/// The lock is the process identity; PID liveness alone is unsafe on Windows.
+pub fn try_clear_registry_if_instance_free(owner_pid: u32) -> Result<bool> {
+    try_clear_registry_if_instance_free_at(
+        &kernel_lock_path(),
+        &kernel_pid_path(),
+        &kernel_json_path(),
+        owner_pid,
+    )
+}
+
+fn try_clear_registry_if_instance_free_at(
+    lock_path: &Path,
+    pid_path: &Path,
+    json_path: &Path,
+    owner_pid: u32,
+) -> Result<bool> {
+    let Some(_instance_guard) = KernelInstanceGuard::try_acquire_at(lock_path)? else {
+        return Ok(false);
+    };
+    clear_registry_at(pid_path, json_path, owner_pid);
+    Ok(true)
 }
 
 #[allow(dead_code)] // 外壳侧读；本进程偶发诊断可复用
@@ -292,5 +320,50 @@ mod tests {
             .is_some();
         println!("probe-acquired={acquired}");
         assert!(!acquired, "child acquired a lock owned by another process");
+    }
+
+    #[test]
+    fn stale_registry_cleanup_requires_free_instance_lock() {
+        let root = std::env::temp_dir().join(format!(
+            "ridge-registry-recovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let lock_path = root.join("kernel.lock");
+        let pid_path = root.join("kernel.pid");
+        let json_path = root.join("kernel.json");
+
+        fs::write(&pid_path, "13652").unwrap();
+        fs::write(&json_path, "{\"pid\":13652}").unwrap();
+        assert!(
+            try_clear_registry_if_instance_free_at(&lock_path, &pid_path, &json_path, 13652,)
+                .unwrap()
+        );
+        assert!(!pid_path.exists());
+        assert!(!json_path.exists());
+
+        fs::write(&pid_path, "13652").unwrap();
+        fs::write(&json_path, "{\"pid\":13652}").unwrap();
+        let owner = KernelInstanceGuard::try_acquire_at(&lock_path)
+            .unwrap()
+            .expect("test kernel should own instance lock");
+        assert!(
+            !try_clear_registry_if_instance_free_at(&lock_path, &pid_path, &json_path, 13652,)
+                .unwrap()
+        );
+        assert!(pid_path.exists());
+        assert!(json_path.exists());
+        drop(owner);
+        assert!(
+            try_clear_registry_if_instance_free_at(&lock_path, &pid_path, &json_path, 13652,)
+                .unwrap()
+        );
+        assert!(!pid_path.exists());
+        assert!(!json_path.exists());
+        let _ = fs::remove_dir_all(root);
     }
 }
