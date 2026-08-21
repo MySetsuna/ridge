@@ -40,6 +40,36 @@ const requestedBurstFrameP95MaxMs = Number.parseInt(process.env.RIDGE_TERM_E2E_B
 const burstFrameP95MaxMs = Number.isFinite(requestedBurstFrameP95MaxMs)
   ? Math.max(requestedBurstFrameP95MaxMs, 1)
   : 25;
+const requestedGlobalEventLoopP95MaxMs = Number.parseInt(process.env.RIDGE_TERM_E2E_GLOBAL_EVENT_LOOP_P95_MAX_MS || '25', 10);
+const globalEventLoopP95MaxMs = Number.isFinite(requestedGlobalEventLoopP95MaxMs)
+  ? Math.max(requestedGlobalEventLoopP95MaxMs, 0)
+  : 25;
+const requestedGlobalLongTaskMaxMs = Number.parseInt(process.env.RIDGE_TERM_E2E_GLOBAL_LONG_TASK_MAX_MS || '100', 10);
+const globalLongTaskMaxMs = Number.isFinite(requestedGlobalLongTaskMaxMs)
+  ? Math.max(requestedGlobalLongTaskMaxMs, 0)
+  : 100;
+const requestedGlobalLongTask50msCountMax = Number.parseInt(process.env.RIDGE_TERM_E2E_GLOBAL_LONG_TASK_50MS_COUNT_MAX || '0', 10);
+const globalLongTask50msCountMax = Number.isFinite(requestedGlobalLongTask50msCountMax)
+  ? Math.max(requestedGlobalLongTask50msCountMax, 0)
+  : 0;
+const requestedSoakRounds = Number.parseInt(process.env.RIDGE_TERM_E2E_CODEX_SOAK_ROUNDS || '0', 10);
+const soakRounds = Number.isFinite(requestedSoakRounds)
+  ? Math.min(Math.max(requestedSoakRounds, 0), 500)
+  : 0;
+const requestedSoakDurationMs = Number.parseInt(process.env.RIDGE_TERM_E2E_CODEX_SOAK_DURATION_MS || '0', 10);
+const soakDurationMs = Number.isFinite(requestedSoakDurationMs)
+  ? Math.min(Math.max(requestedSoakDurationMs, 0), 1_800_000)
+  : 0;
+const soakEnabled = soakRounds > 0 || soakDurationMs > 0;
+const requestedCtrlCCount = Number.parseInt(process.env.RIDGE_TERM_E2E_CODEX_CTRL_C_COUNT || '0', 10);
+const ctrlCCount = Number.isFinite(requestedCtrlCCount)
+  ? Math.min(Math.max(requestedCtrlCCount, 0), 5_000)
+  : 0;
+const requestedCtrlCIntervalMs = Number.parseInt(process.env.RIDGE_TERM_E2E_CODEX_CTRL_C_INTERVAL_MS || '25', 10);
+const ctrlCIntervalMs = Number.isFinite(requestedCtrlCIntervalMs)
+  ? Math.min(Math.max(requestedCtrlCIntervalMs, 0), 1_000)
+  : 25;
+const ctrlCEnabled = ctrlCCount > 0;
 const nonce = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
 const expected = `RIDGE_CODEX_RESULT_${crypto.createHash('sha256').update(nonce).digest('hex').slice(0, 20).toUpperCase()}`;
 const challenge = expected.toLowerCase();
@@ -87,32 +117,90 @@ class Cdp {
     this.nextId = 0;
     this.pending = new Map();
     this.events = [];
+    this.connectionError = null;
+    this.closed = false;
+    this.closePromise = new Promise((resolve) => { this.resolveClose = resolve; });
   }
 
   async open() {
     await new Promise((resolve, reject) => {
-      this.ws.onopen = resolve;
-      this.ws.onerror = (event) => reject(new Error(`CDP WebSocket error: ${event.message || event.type}`));
+      let opened = false;
+      const failOpen = (error) => {
+        if (!opened) reject(error);
+      };
+      this.ws.onopen = () => {
+        opened = true;
+        resolve();
+      };
+      this.ws.onerror = (event) => {
+        const error = this.transportError(`CDP WebSocket error: ${event?.message || event?.error?.message || event?.type || 'unknown'}`);
+        this.fail(error);
+        failOpen(error);
+      };
+      this.ws.onclose = (event) => {
+        const reason = JSON.stringify(String(event?.reason || ''));
+        const error = this.transportError(`CDP WebSocket closed: code=${event?.code ?? 'unknown'} reason=${reason}`);
+        this.closed = true;
+        this.fail(error, true);
+        this.resolveClose(error);
+        failOpen(error);
+      };
       this.ws.onmessage = (event) => {
-        const message = JSON.parse(event.data);
-        const pending = this.pending.get(message.id);
-        if (pending) {
-          this.pending.delete(message.id);
-          if (message.error) pending.reject(new Error(`${pending.method}: ${JSON.stringify(message.error)}`));
-          else pending.resolve(message);
-        } else if (message.method) {
-          this.events.push(message);
+        try {
+          const message = JSON.parse(event.data);
+          const pending = this.pending.get(message.id);
+          if (pending) {
+            this.pending.delete(message.id);
+            if (message.error) pending.reject(new Error(`${pending.method}: ${JSON.stringify(message.error)}`));
+            else pending.resolve(message);
+          } else if (message.method) {
+            if (this.events.length >= 4096) this.events.shift();
+            this.events.push(message);
+          }
+        } catch (error) {
+          this.fail(this.transportError(`CDP WebSocket message failed: ${error.message || error}`));
         }
       };
     });
   }
 
   send(method, params = {}) {
+    if (this.connectionError) return Promise.reject(this.connectionError);
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      const error = this.transportError(`CDP WebSocket is not open for ${method}: readyState=${this.ws.readyState}`);
+      this.fail(error);
+      return Promise.reject(error);
+    }
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { method, resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params }));
+      try {
+        this.ws.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        this.pending.delete(id);
+        const failure = this.transportError(`CDP WebSocket send failed for ${method}: ${error.message || error}`);
+        this.fail(failure);
+        reject(failure);
+      }
     });
+  }
+
+  transportError(message) {
+    const error = new Error(message);
+    error.code = 'ERR_CDP_TRANSPORT';
+    Object.defineProperty(error, 'cdp', { value: this });
+    return error;
+  }
+
+  fail(error, replace = false) {
+    if (replace || !this.connectionError) this.connectionError = error;
+    for (const pending of this.pending.values()) pending.reject(this.connectionError);
+    this.pending.clear();
+  }
+
+  async terminalError() {
+    if (!this.closed) await Promise.race([this.closePromise, sleep(50)]);
+    return this.connectionError;
   }
 
   async evaluate(expression) {
@@ -131,6 +219,8 @@ class Cdp {
     try { this.ws.close(); } catch { /* already closed */ }
   }
 }
+
+const isCdpTransportError = (error) => error?.code === 'ERR_CDP_TRANSPORT';
 
 async function findTarget() {
   const deadline = Date.now() + 120_000;
@@ -156,6 +246,7 @@ async function waitUntil(probe, description, maxMs = timeoutMs) {
       last = await probe();
       if (last) return last;
     } catch (error) {
+      if (isCdpTransportError(error)) throw await error.cdp?.terminalError?.() || error;
       lastError = error;
     }
     await sleep(200);
@@ -164,6 +255,7 @@ async function waitUntil(probe, description, maxMs = timeoutMs) {
     last = await probe();
     if (last) return last;
   } catch (error) {
+    if (isCdpTransportError(error)) throw await error.cdp?.terminalError?.() || error;
     lastError = error;
   }
   throw new Error(`${description} timed out after ${maxMs}ms; last=${JSON.stringify(last)}${lastError ? `; error=${lastError.message}` : ''}`);
@@ -175,6 +267,56 @@ const invoke = (cdp, command, args = {}) => cdp.evaluate(
 
 const compact = (rows) => (rows ?? []).join('').replace(/\s+/g, '');
 const hashRows = (rows) => crypto.createHash('sha256').update((rows ?? []).join('\n')).digest('hex');
+
+/** Presentation freeze (not hide): kernel may walk; presented cell stays put; grid still changes. */
+function assertPresentationCursorFreeze(frames, label) {
+  if (!Array.isArray(frames) || frames.length < 2) {
+    throw new Error(`${label}: need at least two rewind frames`);
+  }
+  const presented = frames.map((frame) => frame.presented);
+  const uniquePresented = new Set(presented.map((cursor) => JSON.stringify(cursor)));
+  const uniqueGrids = new Set(frames.map((frame) => frame.grid)).size;
+  const uniqueKernel = new Set(frames.map((frame) => JSON.stringify(frame.kernel))).size;
+  if (presented.some((cursor) => cursor == null)) {
+    throw new Error(`${label}: freeze hid the presented cursor: ${JSON.stringify(presented)}`);
+  }
+  if (uniquePresented.size !== 1) {
+    throw new Error(`${label}: presented cursor moved during rewind: ${JSON.stringify(presented)}`);
+  }
+  if (uniqueGrids < 2) {
+    throw new Error(`${label}: grid must still paint during freeze`);
+  }
+  if (uniqueKernel < 2) {
+    throw new Error(`${label}: rewind fixture did not move the kernel cursor`);
+  }
+}
+
+function runCursorFreezeUnit() {
+  const frames = [
+    { grid: 'seed', kernel: { row: 0, col: 4 }, presented: { row: 0, col: 4 } },
+    { grid: 'A', kernel: { row: 1, col: 2 }, presented: { row: 0, col: 4 } },
+    { grid: 'AB', kernel: { row: 2, col: 5 }, presented: { row: 0, col: 4 } },
+    { grid: 'ABC', kernel: { row: 1, col: 8 }, presented: { row: 0, col: 4 } },
+  ];
+  assertPresentationCursorFreeze(frames, 'rewind-freeze');
+  const hideFrames = frames.map((frame, index) => ({
+    ...frame,
+    presented: index === 0 ? frame.presented : null,
+  }));
+  let hid = false;
+  try {
+    assertPresentationCursorFreeze(hideFrames, 'rewind-hide');
+  } catch (error) {
+    hid = /hid the presented cursor/.test(error.message);
+  }
+  if (!hid) throw new Error('hide fixture must fail freeze assertion');
+  console.log(JSON.stringify({ ok: true, unit: 'cursor-freeze' }));
+}
+
+if (process.argv.includes('--cursor-freeze-unit')) {
+  runCursorFreezeUnit();
+  process.exit(0);
+}
 
 function hookCall(cdp, method, ...args) {
   return cdp.evaluate(
@@ -198,6 +340,14 @@ function codexVisible(rows) {
   return (rows ?? []).some((line) => /(?:OpenAI Codex|RidgeCode)/i.test(line));
 }
 
+function codexUpdatePromptVisible(rows) {
+  const text = (rows ?? []).join('\n');
+  return /Update available![ \t]+\d+(?:\.\d+){2}[ \t]*->[ \t]*\d+(?:\.\d+){2}/i.test(text)
+    && /(?:^|\n)[ \t]*(?:[>❯▸›][ \t]*)?1\.[ \t]*Update now(?: \(runs (?:npm install -g @openai\/codex|`npm install -g @openai\/codex`)\))?[ \t]*$/im.test(text)
+    && /(?:^|\n)[ \t]*(?:[>❯▸›][ \t]*)?2\.[ \t]*Skip[ \t]*$/im.test(text)
+    && /(?:^|\n)[ \t]*Press enter to continue[ \t]*$/im.test(text);
+}
+
 function latestCodexSegment(rows) {
   const values = rows ?? [];
   let start = -1;
@@ -212,6 +362,31 @@ function shellPromptVisible(rows, cursor = null) {
   if (cursor && Number.isInteger(cursor.row) && isPrompt(rows[cursor.row] || '')) return true;
   const last = [...(rows ?? [])].reverse().find((line) => line.trim().length > 0) ?? '';
   return isPrompt(last);
+}
+
+function codexOwnerState(rows, cursor = null) {
+  if (shellPromptVisible(rows, cursor)) return 'shell';
+  if (codexUpdatePromptVisible(rows)) return 'update-prompt';
+  return codexVisible(rows) ? 'codex' : null;
+}
+
+async function skipCodexUpdatePrompt(cdp, workspaceId, paneId, promptSummary = null) {
+  const rows = await visibleRows(cdp, paneId);
+  if (!codexUpdatePromptVisible(rows)) {
+    throw new Error('refusing to send update choice: exact Codex update prompt is no longer visible');
+  }
+  if (promptSummary) Object.assign(promptSummary, { detected: true, handled: false, choice: 'Skip', key: '2' });
+  // Exact page rechecked above; send only Skip, never Update now.
+  await writePty(cdp, workspaceId, paneId, '2\r');
+  const owner = await waitUntil(async () => {
+    const nextRows = await visibleRows(cdp, paneId);
+    const cursor = await hookCall(cdp, 'kernelCursor', paneId);
+    const state = codexOwnerState(nextRows, cursor);
+    return state === 'update-prompt' ? null : state;
+  }, 'Codex TUI after skipping update prompt', 30_000);
+  if (owner !== 'codex') throw new Error(`Codex update Skip returned unexpected owner: ${owner}`);
+  if (promptSummary) promptSummary.handled = true;
+  return owner;
 }
 
 async function paneProbe(cdp, wantedPaneId) {
@@ -251,7 +426,7 @@ async function dispatchClick(cdp, probe) {
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
 }
 
-async function typeTerminalPrompt(cdp, paneId, text) {
+async function focusTerminalInput(cdp, paneId) {
   const focused = await cdp.evaluate(`(() => {
     const pane = document.querySelector(${JSON.stringify(`.rg-pane-container[data-rg-pane-id="${paneId}"]`)});
     const target = pane?.querySelector('.rg-ime-helper') || pane;
@@ -260,6 +435,10 @@ async function typeTerminalPrompt(cdp, paneId, text) {
     return document.activeElement === target;
   })()`);
   if (!focused) throw new Error('terminal input target could not be focused');
+}
+
+async function typeTerminalPrompt(cdp, paneId, text) {
+  await focusTerminalInput(cdp, paneId);
   await cdp.send('Input.insertText', { text });
   await sleep(100);
   await cdp.send('Input.dispatchKeyEvent', {
@@ -278,6 +457,30 @@ async function typeTerminalPrompt(cdp, paneId, text) {
   });
 }
 
+async function dispatchCtrlCRepeat(cdp, count, intervalMs) {
+  const key = {
+    key: 'c',
+    code: 'KeyC',
+    modifiers: 2,
+    windowsVirtualKeyCode: 67,
+    nativeVirtualKeyCode: 67,
+  };
+  let keyDown = false;
+  try {
+    for (let index = 0; index < count; index++) {
+      await cdp.send('Input.dispatchKeyEvent', {
+        ...key,
+        type: 'keyDown',
+        autoRepeat: index > 0,
+      });
+      keyDown = true;
+      if (index + 1 < count && intervalMs > 0) await sleep(intervalMs);
+    }
+  } finally {
+    if (keyDown) await cdp.send('Input.dispatchKeyEvent', { ...key, type: 'keyUp' }).catch(() => {});
+  }
+}
+
 async function dragRow(cdp, probe, row) {
   const cellW = probe.anchor?.cellW || probe.rect.width / Math.max(1, probe.cols);
   const cellH = probe.anchor?.cellH || probe.rect.height / Math.max(1, probe.rows);
@@ -294,21 +497,30 @@ async function installPerformanceProbe(cdp) {
   await cdp.evaluate(`(() => {
     window.__ridgeTermProbe?.stop?.();
     const state = { samples: [], longtasks: [], interval: 0, observer: null };
+    const maxSamples = 4096;
+    const append = (values, value) => {
+      if (values.length >= maxSamples) values.shift();
+      values.push(value);
+    };
     const tick = 50;
     let last = performance.now();
     state.interval = setInterval(() => {
       const now = performance.now();
-      state.samples.push(Math.max(0, now - last - tick));
+      append(state.samples, Math.max(0, now - last - tick));
       last = now;
     }, tick);
     try {
       state.observer = new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) state.longtasks.push(Math.round(entry.duration));
+        for (const entry of list.getEntries()) append(state.longtasks, Math.round(entry.duration));
       });
       state.observer.observe({ entryTypes: ['longtask'] });
     } catch {}
     window.__ridgeTermProbe = {
-      reset() { state.samples.length = 0; state.longtasks.length = 0; },
+      reset() {
+        state.samples.length = 0;
+        state.longtasks.length = 0;
+        last = performance.now();
+      },
       read() {
         const sorted = state.samples.slice().sort((a, b) => a - b);
         const quantile = (p) => sorted.length ? Math.round(sorted[Math.floor((sorted.length - 1) * p)]) : 0;
@@ -319,6 +531,7 @@ async function installPerformanceProbe(cdp) {
           max: Math.round(sorted[sorted.length - 1] || 0),
           longtasks: state.longtasks.length,
           longtaskMax: Math.max(0, ...state.longtasks),
+          longtask50msCount: state.longtasks.filter((duration) => duration >= 50).length,
         };
       },
       stop() { clearInterval(state.interval); state.observer?.disconnect?.(); },
@@ -411,7 +624,7 @@ async function switchWorkspaceRoundTrip(cdp, originalWorkspaceId, paneId) {
   return { target, tabCount: tabs.length };
 }
 
-async function exitCodex(cdp, workspaceId, paneId) {
+async function exitCodex(cdp, workspaceId, paneId, promptSummary = null) {
   let last = null;
   const waitForShellPrompt = async (maxMs = 45_000) => waitUntil(async () => {
     const rows = await visibleRows(cdp, paneId);
@@ -423,8 +636,7 @@ async function exitCodex(cdp, workspaceId, paneId) {
     const rows = await visibleRows(cdp, paneId);
     const cursor = await hookCall(cdp, 'kernelCursor', paneId);
     last = { tail: rows.slice(-8), cursor, state: await hookCall(cdp, 'kernelDecState', paneId) };
-    if (shellPromptVisible(rows, cursor)) return 'shell';
-    return codexVisible(rows) ? 'codex' : null;
+    return codexOwnerState(rows, cursor);
   }, 'terminal owner (PowerShell or Codex)', maxMs).catch(() => null);
   const probeShell = async () => {
     const shellChallenge = `ridge_shell_ready_${crypto.randomBytes(8).toString('hex')}`;
@@ -447,8 +659,12 @@ async function exitCodex(cdp, workspaceId, paneId) {
   // the probe into agent input and makes the next exit attempt ambiguous.
   // Cold kernel activation legitimately takes longer than the app-ready hook,
   // so establish one visible terminal owner before emitting any test input.
-  const owner = await waitForTerminalOwner();
+  let owner = await waitForTerminalOwner();
   if (owner === 'shell') return probeShell();
+  if (owner === 'update-prompt') {
+    await skipCodexUpdatePrompt(cdp, workspaceId, paneId, promptSummary);
+    owner = 'codex';
+  }
   if (owner !== 'codex') {
     throw new Error(`neither PowerShell nor Codex owns the pane: ${JSON.stringify(last)}`);
   }
@@ -545,8 +761,13 @@ async function testOutputBurst(cdp, workspaceId, paneId, lineCount, mode, interv
     performance.clearMeasures('rg.terminal.render');
     window.__ridgeBurstFrameProbe?.stop?.();
     const state = { frames: [], raf: 0, last: performance.now() };
+    const maxFrames = 4096;
+    const append = (value) => {
+      if (state.frames.length >= maxFrames) state.frames.shift();
+      state.frames.push(value);
+    };
     const tick = (now) => {
-      state.frames.push(now - state.last);
+      append(now - state.last);
       state.last = now;
       state.raf = requestAnimationFrame(tick);
     };
@@ -631,6 +852,263 @@ async function testOutputBurst(cdp, workspaceId, paneId, lineCount, mode, interv
   }
 }
 
+async function installCodexFrameProbe(cdp) {
+  await cdp.evaluate(`(() => {
+    window.__ridgeCodexFrameProbe?.stop?.();
+    const state = { frames: [], raf: 0, last: performance.now() };
+    const maxFrames = 4096;
+    const append = (value) => {
+      if (state.frames.length >= maxFrames) state.frames.shift();
+      state.frames.push(value);
+    };
+    const tick = (now) => {
+      append(now - state.last);
+      state.last = now;
+      state.raf = requestAnimationFrame(tick);
+    };
+    state.raf = requestAnimationFrame(tick);
+    window.__ridgeCodexFrameProbe = {
+      reset() {
+        state.frames.length = 0;
+        state.last = performance.now();
+      },
+      read() {
+        const values = state.frames.slice();
+        const sorted = values.slice().sort((a, b) => a - b);
+        const quantile = (p) => sorted.length
+          ? Math.round(sorted[Math.floor((sorted.length - 1) * p)] * 100) / 100
+          : 0;
+        return {
+          frames: values.length,
+          p50: quantile(0.5),
+          p95: quantile(0.95),
+          max: Math.round((sorted.at(-1) || 0) * 100) / 100,
+          jank25: values.filter((value) => value > 25).length,
+          jank33: values.filter((value) => value > 33).length,
+          jank50: values.filter((value) => value > 50).length,
+        };
+      },
+      stop() { cancelAnimationFrame(state.raf); },
+    };
+  })()`);
+}
+
+function summarizeSoakHeap(rounds) {
+  const used = rounds
+    .map((round) => round.heap?.usedSize)
+    .filter((value) => Number.isFinite(value));
+  if (!used.length) return { samples: 0, warmupRounds: 0, note: 'Runtime.getHeapUsage returned no usedSize' };
+  const warmupRounds = Math.min(2, used.length);
+  const postWarmup = used.slice(warmupRounds);
+  const plateau = postWarmup.length ? postWarmup : used;
+  return {
+    samples: used.length,
+    warmupRounds,
+    initialUsedSize: used[0],
+    warmupUsedSize: used[warmupRounds - 1],
+    postWarmupFirst: plateau[0],
+    postWarmupFinal: plateau.at(-1),
+    postWarmupMin: Math.min(...plateau),
+    postWarmupMax: Math.max(...plateau),
+    postWarmupRange: Math.max(...plateau) - Math.min(...plateau),
+    note: 'Heap trend only; no forced-GC hard gate.',
+  };
+}
+
+function assertCodexPerformance(metrics, label) {
+  const budgets = {
+    eventLoopP95MaxMs: globalEventLoopP95MaxMs,
+    longTaskMaxMs: globalLongTaskMaxMs,
+    longTask50msCountMax: globalLongTask50msCountMax,
+    frameP95MaxMs: burstFrameP95MaxMs,
+    frameJank50Max: 0,
+  };
+  const exceeded = metrics.eventLoop.p95 > budgets.eventLoopP95MaxMs
+    || metrics.eventLoop.longtaskMax > budgets.longTaskMaxMs
+    || metrics.eventLoop.longtask50msCount > budgets.longTask50msCountMax
+    || metrics.frame.p95 > budgets.frameP95MaxMs
+    || metrics.frame.jank50 > budgets.frameJank50Max;
+  if (exceeded) {
+    throw new Error(`${label} performance budget exceeded: ${JSON.stringify({ budgets, metrics })}`);
+  }
+}
+
+async function testCodexCtrlC(cdp, workspaceId, paneId, ctrlSummary) {
+  const startedAt = Date.now();
+  const responseTimeoutMs = Math.min(timeoutMs, 60_000);
+  let lastSpy = { entries: 0, totalBytes: 0, ctrlCBytes: 0, unexpectedCodePoints: [] };
+  const readSpy = async () => {
+    const entries = await hookCall(cdp, 'ptyWriteLog', paneId);
+    const data = entries.map((entry) => entry.data).join('');
+    const unexpected = [...data].filter((value) => value !== '\x03');
+    return {
+      entries: entries.length,
+      totalBytes: data.length,
+      ctrlCBytes: [...data].filter((value) => value === '\x03').length,
+      unexpectedCodePoints: unexpected.slice(0, 16).map((value) => value.codePointAt(0)),
+    };
+  };
+
+  await installCodexFrameProbe(cdp);
+  try {
+    await cdp.evaluate('window.__ridgeTermProbe.reset(); window.__ridgeCodexFrameProbe.reset();');
+    await hookCall(cdp, 'clearPtyWriteLog', paneId);
+    await focusTerminalInput(cdp, paneId);
+    await dispatchCtrlCRepeat(cdp, ctrlCCount, ctrlCIntervalMs);
+    ctrlSummary.dispatchElapsedMs = Date.now() - startedAt;
+
+    try {
+      lastSpy = await waitUntil(async () => {
+        lastSpy = await readSpy();
+        return lastSpy.ctrlCBytes >= ctrlCCount ? lastSpy : null;
+      }, 'Ctrl+C PTY spy bytes', Math.min(timeoutMs, 10_000));
+    } catch (error) {
+      ctrlSummary.pty = lastSpy;
+      throw new Error(`Ctrl+C PTY spy mismatch: ${JSON.stringify({ expected: ctrlCCount, observed: lastSpy, cause: error.message })}`);
+    }
+    ctrlSummary.pty = lastSpy;
+    if (lastSpy.ctrlCBytes !== ctrlCCount || lastSpy.totalBytes !== ctrlCCount) {
+      throw new Error(`Ctrl+C PTY spy mismatch: ${JSON.stringify({ expected: ctrlCCount, observed: lastSpy })}`);
+    }
+
+    await hookCall(cdp, 'clearPtyWriteLog', paneId);
+    await sleep(300);
+    let lastAlive = null;
+    let alive;
+    try {
+      alive = await waitUntil(async () => {
+        const rows = await visibleRows(cdp, paneId);
+        const cursor = await hookCall(cdp, 'kernelCursor', paneId);
+        const processName = await foreground(cdp, workspaceId, paneId).catch(() => null);
+        lastAlive = { processName, tail: rows.slice(-8), cursor };
+        if (shellPromptVisible(rows, cursor)) return { status: 'shell', ...lastAlive };
+        return codexVisible(rows) || /codex/i.test(processName || '')
+          ? { status: 'codex', ...lastAlive }
+          : null;
+      }, 'Codex ownership after Ctrl+C stress', 10_000);
+    } catch (error) {
+      throw new Error(`Codex unavailable after Ctrl+C stress: ${JSON.stringify({ count: ctrlCCount, intervalMs: ctrlCIntervalMs, lastAlive, cause: error.message })}`);
+    }
+    ctrlSummary.ownerAfterStress = alive;
+    if (alive.status !== 'codex') {
+      throw new Error(`Codex exited during Ctrl+C stress: ${JSON.stringify({ count: ctrlCCount, intervalMs: ctrlCIntervalMs, alive })}`);
+    }
+
+    const tokenSource = `ridge_ctrl_c_recovery_${crypto.randomBytes(8).toString('hex')}`;
+    const token = tokenSource.toUpperCase();
+    const prompt = `Reply with only this token converted to uppercase, with no punctuation: ${tokenSource}`;
+    ctrlSummary.recoveryToken = token;
+    await typeTerminalPrompt(cdp, paneId, prompt);
+    await waitUntil(async () => {
+      const data = (await hookCall(cdp, 'ptyWriteLog', paneId)).map((entry) => entry.data).join('');
+      return data.includes(prompt) && data.includes('\r') ? true : null;
+    }, 'Ctrl+C recovery browser keyboard bytes', 10_000);
+    ctrlSummary.recoveryKeyboardPtyBytes = true;
+    await sleep(500);
+    await writePty(cdp, workspaceId, paneId, '\r');
+
+    let lastRecovery = null;
+    let recovery;
+    try {
+      recovery = await waitUntil(async () => {
+        const rows = await visibleRows(cdp, paneId);
+        const cursor = await hookCall(cdp, 'kernelCursor', paneId);
+        const processName = await foreground(cdp, workspaceId, paneId).catch(() => null);
+        lastRecovery = { processName, tail: rows.slice(-8), cursor };
+        if (shellPromptVisible(rows, cursor)) return { status: 'shell', ...lastRecovery };
+        return compact(rows).includes(token) ? { status: 'response', ...lastRecovery } : null;
+      }, 'Codex model response after Ctrl+C stress', responseTimeoutMs);
+    } catch (error) {
+      throw new Error(`Codex recovery failed after Ctrl+C stress: ${JSON.stringify({ count: ctrlCCount, intervalMs: ctrlCIntervalMs, lastRecovery, cause: error.message })}`);
+    }
+    if (recovery.status !== 'response') {
+      throw new Error(`Codex exited during Ctrl+C recovery: ${JSON.stringify({ count: ctrlCCount, intervalMs: ctrlCIntervalMs, recovery })}`);
+    }
+    ctrlSummary.recoveryModelOutputProven = true;
+    await sleep(250);
+    [ctrlSummary.frame, ctrlSummary.eventLoop] = await Promise.all([
+      cdp.evaluate('window.__ridgeCodexFrameProbe.read()'),
+      cdp.evaluate('window.__ridgeTermProbe.read()'),
+    ]);
+    ctrlSummary.elapsedMs = Date.now() - startedAt;
+    assertCodexPerformance(ctrlSummary, 'Codex Ctrl+C stress');
+    ctrlSummary.completed = true;
+    return ctrlSummary;
+  } finally {
+    ctrlSummary.elapsedMs ||= Date.now() - startedAt;
+    if (!ctrlSummary.frame || !ctrlSummary.eventLoop) {
+      try {
+        [ctrlSummary.frame, ctrlSummary.eventLoop] = await Promise.all([
+          cdp.evaluate('window.__ridgeCodexFrameProbe.read()'),
+          cdp.evaluate('window.__ridgeTermProbe.read()'),
+        ]);
+      } catch { /* page closed */ }
+    }
+    await hookCall(cdp, 'clearPtyWriteLog', paneId).catch(() => {});
+    await cdp.evaluate(`(() => {
+      window.__ridgeCodexFrameProbe?.stop?.();
+      delete window.__ridgeCodexFrameProbe;
+    })()`).catch(() => {});
+  }
+}
+
+async function testCodexSoak(cdp, workspaceId, paneId, soakSummary) {
+  const startedAt = Date.now();
+  const deadline = soakDurationMs > 0 ? startedAt + soakDurationMs : Infinity;
+  const responseTimeoutMs = Math.min(timeoutMs, 60_000);
+  await installCodexFrameProbe(cdp);
+  try {
+    for (let index = 0;
+      (soakRounds === 0 || index < soakRounds) && Date.now() < deadline;
+      index++) {
+      const markerSource = `ridge_soak_done_${index}_${crypto.randomBytes(8).toString('hex')}`;
+      const marker = markerSource.toUpperCase();
+      const prompt = `Reply with only this token converted to uppercase, with no punctuation: ${markerSource}`;
+      await cdp.evaluate('window.__ridgeTermProbe.reset(); window.__ridgeCodexFrameProbe.reset();');
+      await hookCall(cdp, 'clearPtyWriteLog', paneId);
+      await typeTerminalPrompt(cdp, paneId, prompt);
+      await waitUntil(async () => {
+        const data = (await hookCall(cdp, 'ptyWriteLog', paneId)).map((entry) => entry.data).join('');
+        return data.includes(prompt) && data.includes('\r') ? true : null;
+      }, `Codex soak browser keyboard bytes round ${index + 1}`, Math.min(timeoutMs, 10_000));
+      await sleep(500);
+      await writePty(cdp, workspaceId, paneId, '\r');
+      await waitUntil(async () => compact(await visibleRows(cdp, paneId)).includes(marker), `Codex soak response round ${index + 1}`, responseTimeoutMs);
+      await sleep(250);
+
+      const [frame, eventLoop, heapResponse, metricsResponse] = await Promise.all([
+        cdp.evaluate('window.__ridgeCodexFrameProbe.read()'),
+        cdp.evaluate('window.__ridgeTermProbe.read()'),
+        cdp.send('Runtime.getHeapUsage'),
+        cdp.send('Performance.getMetrics'),
+      ]);
+      const round = {
+        index: index + 1,
+        elapsedMs: Date.now() - startedAt,
+        keyboardPtyBytes: true,
+        frame,
+        eventLoop,
+        heap: heapResponse.result || null,
+        performanceMetrics: metricsResponse.result?.metrics || [],
+      };
+      soakSummary.rounds.push(round);
+      soakSummary.elapsedMs = round.elapsedMs;
+      soakSummary.heapTrend = summarizeSoakHeap(soakSummary.rounds);
+      assertCodexPerformance(round, `Codex soak round ${index + 1}`);
+    }
+    if (!soakSummary.rounds.length) throw new Error('Codex soak completed zero rounds; increase soak duration or rounds');
+    soakSummary.completed = true;
+    soakSummary.elapsedMs = Date.now() - startedAt;
+    soakSummary.heapTrend = summarizeSoakHeap(soakSummary.rounds);
+    return soakSummary;
+  } finally {
+    await cdp.evaluate(`(() => {
+      window.__ridgeCodexFrameProbe?.stop?.();
+      delete window.__ridgeCodexFrameProbe;
+    })()`).catch(() => {});
+  }
+}
+
 const summary = {
   ok: false,
   port,
@@ -640,6 +1118,7 @@ const summary = {
   modelOutputProven: false,
   fixtureOutputProven: false,
   commandEchoExcluded: true,
+  updatePrompt: { detected: false, handled: false, choice: null },
   backend: null,
   gray: null,
   theme: null,
@@ -649,16 +1128,51 @@ const summary = {
   mouse: null,
   burst: null,
   performance: null,
+  performanceBudgets: {
+    globalEventLoopP95MaxMs,
+    globalLongTaskMaxMs,
+    globalLongTask50msCountMax,
+    burstEventLoopP95MaxMs: burstP95MaxMs,
+    burstFrameP95MaxMs,
+    burstFrameJank50Max: 0,
+  },
+  soak: soakEnabled ? {
+    enabled: true,
+    roundsRequested: soakRounds,
+    durationMsRequested: soakDurationMs,
+    responseTimeoutMs: Math.min(timeoutMs, 60_000),
+    completed: false,
+    elapsedMs: 0,
+    rounds: [],
+    heapTrend: null,
+  } : null,
+  ctrlC: ctrlCEnabled ? {
+    enabled: true,
+    count: ctrlCCount,
+    intervalMs: ctrlCIntervalMs,
+    completed: false,
+    dispatchElapsedMs: 0,
+    elapsedMs: 0,
+    pty: null,
+    ownerAfterStress: null,
+    recoveryToken: null,
+    recoveryKeyboardPtyBytes: false,
+    recoveryModelOutputProven: false,
+    frame: null,
+    eventLoop: null,
+  } : null,
   runtimeErrors: [],
   screenshots: [],
   lastRows: null,
   lastDecState: null,
+  cdpError: null,
   artifactDir,
 };
 
 let cdp;
 let paneId;
 let workspaceId;
+let retainedExpected = expected;
 try {
   const target = await findTarget();
   cdp = new Cdp(target.webSocketDebuggerUrl);
@@ -666,6 +1180,7 @@ try {
   await cdp.send('Runtime.enable');
   await cdp.send('Page.enable');
   await cdp.send('Log.enable');
+  await cdp.send('Performance.enable');
   await waitUntil(() => cdp.evaluate('Boolean(window.__ridgeAppReady && window.__TAURI__?.core?.invoke && window.__windE2E)'), 'Ridge DEV hooks', 180_000);
   await installPerformanceProbe(cdp);
   await cdp.evaluate('window.__ridgeTermProbe.reset()');
@@ -681,7 +1196,7 @@ try {
     return true;
   }, 'native PTY activation', 60_000);
   await hookCall(cdp, 'installPtyWriteSpy', paneId);
-  await exitCodex(cdp, workspaceId, paneId);
+  await exitCodex(cdp, workspaceId, paneId, summary.updatePrompt);
   await writePty(cdp, workspaceId, paneId, 'Clear-Host\r');
   await sleep(500);
   summary.screenshots.push(await capture(cdp, '01-shell.png'));
@@ -693,10 +1208,14 @@ try {
     summary.screenshots.push(await capture(cdp, '03-codex-output.png'));
   } else {
     await writePty(cdp, workspaceId, paneId, `${codexLaunch}\r`);
-    await waitUntil(async () => {
+    const startupState = await waitUntil(async () => {
       const rows = await visibleRows(cdp, paneId);
-      return codexVisible(rows) && !shellPromptVisible(rows, await hookCall(cdp, 'kernelCursor', paneId)) ? true : null;
-    }, 'Codex TUI first frame', 45_000);
+      const state = codexOwnerState(rows, await hookCall(cdp, 'kernelCursor', paneId));
+      return state === 'update-prompt' || state === 'codex' ? state : null;
+    }, 'Codex TUI or update prompt first frame', 45_000);
+    if (startupState === 'update-prompt') {
+      await skipCodexUpdatePrompt(cdp, workspaceId, paneId, summary.updatePrompt);
+    }
     summary.foregroundProcess = await foreground(cdp, workspaceId, paneId).catch(() => null);
     let sawMcpStartup = false;
     const readinessStartedAt = Date.now();
@@ -726,18 +1245,31 @@ try {
     summary.screenshots.push(await capture(cdp, '03-codex-output.png'));
   }
 
-  summary.theme = await rotateTheme(cdp, paneId);
-  if (!compact(await visibleRows(cdp, paneId)).includes(expected)) throw new Error('Codex output lost after theme rotation');
-  summary.resize = await resizePane(cdp, paneId);
-  if (!compact(await visibleRows(cdp, paneId)).includes(expected)) throw new Error('Codex output lost after pane resize');
-  summary.workspaceRoundTrip = await switchWorkspaceRoundTrip(cdp, workspaceId, paneId);
-  if (!compact(await visibleRows(cdp, paneId)).includes(expected)) throw new Error('Codex output lost after workspace round trip');
+  if (soakEnabled) {
+    if (fixtureOnly) throw new Error('Codex soak requires real Codex TUI; unset RIDGE_TERM_E2E_FIXTURE_ONLY');
+    await testCodexSoak(cdp, workspaceId, paneId, summary.soak);
+  }
 
+  if (ctrlCEnabled) {
+    if (fixtureOnly) throw new Error('Codex Ctrl+C stress requires real Codex TUI; unset RIDGE_TERM_E2E_FIXTURE_ONLY');
+    await testCodexCtrlC(cdp, workspaceId, paneId, summary.ctrlC);
+    retainedExpected = summary.ctrlC.recoveryToken;
+  }
+
+  summary.theme = await rotateTheme(cdp, paneId);
+  if (!compact(await visibleRows(cdp, paneId)).includes(retainedExpected)) throw new Error('Codex output lost after theme rotation');
+  summary.resize = await resizePane(cdp, paneId);
+  if (!compact(await visibleRows(cdp, paneId)).includes(retainedExpected)) throw new Error('Codex output lost after pane resize');
+  summary.workspaceRoundTrip = await switchWorkspaceRoundTrip(cdp, workspaceId, paneId);
+  if (!compact(await visibleRows(cdp, paneId)).includes(retainedExpected)) throw new Error('Codex output lost after workspace round trip');
+
+  // Post-settle kernel cursor, not the frozen presentation cursor.
+  // Freeze-during-rewind is the renderer contract (`--cursor-freeze-unit`).
   const hashes = [];
   const cursors = [];
   for (let i = 0; i < 20; i++) {
     const rows = await visibleRows(cdp, paneId);
-    if (!compact(rows).includes(expected)) throw new Error(`Codex output absent during stability sample ${i}`);
+    if (!compact(rows).includes(retainedExpected)) throw new Error(`Codex output absent during stability sample ${i}`);
     hashes.push(hashRows(rows));
     cursors.push(await hookCall(cdp, 'kernelCursor', paneId));
     await sleep(50);
@@ -761,6 +1293,8 @@ try {
   } else {
     await exitCodex(cdp, workspaceId, paneId);
   }
+  // Exclude Codex/network startup noise; global gate covers settled terminal workload.
+  await cdp.evaluate('window.__ridgeTermProbe.reset()');
   summary.gray = await testIndexedGrayForeground(cdp, workspaceId, paneId);
   if (summary.gray.indexedCellCount < 8 || !summary.gray.text.includes('RIDGE_INDEXED_GRAY')) {
     throw new Error(`indexed gray foreground was not preserved: ${JSON.stringify(summary.gray)}`);
@@ -778,10 +1312,16 @@ try {
       throw new Error(`in-place TUI burst entered scrollback: ${JSON.stringify(summary.burst)}`);
     }
     if (summary.burst.eventLoop.p95 > burstP95MaxMs) {
-      throw new Error(`native burst event-loop p95 ${summary.burst.eventLoop.p95}ms exceeds ${burstP95MaxMs}ms`);
+      throw new Error(`native burst event-loop budget exceeded: ${JSON.stringify({
+        threshold: { p95MaxMs: burstP95MaxMs },
+        metrics: summary.burst,
+      })}`);
     }
     if (summary.burst.frame.p95 > burstFrameP95MaxMs || summary.burst.frame.jank50 > 0) {
-      throw new Error(`native burst rAF budget exceeded: ${JSON.stringify(summary.burst.frame)}`);
+      throw new Error(`native burst rAF budget exceeded: ${JSON.stringify({
+        threshold: { p95MaxMs: burstFrameP95MaxMs, jank50Max: 0 },
+        metrics: summary.burst,
+      })}`);
     }
   }
 
@@ -796,8 +1336,18 @@ try {
       : (event.params?.args || []).map((arg) => String(arg.value ?? arg.description ?? '')).join(' '))
     .filter((text) => /GPUValidation|WebGPU.*(?:error|lost)|device.*lost|uncaught (?:type|range)?error/i.test(text));
   summary.runtimeErrors = [...runtimeExceptions, ...dangerousLogs];
-  if (summary.performance.p95 > 100) throw new Error(`event-loop p95 ${summary.performance.p95}ms exceeds 100ms`);
-  if (summary.performance.longtaskMax > 2000) throw new Error(`long task ${summary.performance.longtaskMax}ms exceeds 2000ms`);
+  if (summary.performance.p95 > globalEventLoopP95MaxMs
+    || summary.performance.longtaskMax > globalLongTaskMaxMs
+    || summary.performance.longtask50msCount > globalLongTask50msCountMax) {
+    throw new Error(`global performance budget exceeded: ${JSON.stringify({
+      thresholds: {
+        eventLoopP95MaxMs: globalEventLoopP95MaxMs,
+        longTaskMaxMs: globalLongTaskMaxMs,
+        longTask50msCountMax: globalLongTask50msCountMax,
+      },
+      metrics: summary.performance,
+    })}`);
+  }
   if (summary.runtimeErrors.length) throw new Error(`runtime errors: ${summary.runtimeErrors.join(' | ')}`);
   summary.ok = true;
 } catch (error) {
@@ -815,6 +1365,7 @@ try {
 } finally {
   if (cdp) {
     try { await cdp.evaluate('window.__ridgeTermProbe?.stop?.()'); } catch { /* page closed */ }
+    summary.cdpError = cdp.connectionError?.message || null;
     cdp.close();
   }
   fs.writeFileSync(path.join(artifactDir, 'summary.json'), JSON.stringify(summary, null, 2), 'utf8');

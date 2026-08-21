@@ -27,7 +27,6 @@
 //! jitter from devicePixelRatio rounding can't fragment the cache. Size
 //! 14.0 and 14.000001 hash to the same bucket.
 
-use std::collections::VecDeque;
 use std::collections::{hash_map::Entry, HashMap};
 
 /// Cache key. Identifies a glyph variant by (font, size, raster density,
@@ -104,16 +103,17 @@ pub struct GlyphEntry {
     pub is_color: bool,
 }
 
+struct AtlasEntry {
+    entry: GlyphEntry,
+    last_used: u64,
+}
+
 /// LRU-evicting cache. `lookup` promotes a key to the most-recently-used
 /// position; `insert` pushes the least-recently-used out when at capacity
 /// and returns the evicted key so the backend can free the texture slot.
 pub struct GlyphAtlas {
-    entries: HashMap<GlyphKey, GlyphEntry>,
-    /// MRU at the back, LRU at the front. `O(n)` find on lookup; for
-    /// realistic cache sizes (hundreds of unique glyphs per terminal
-    /// session) this beats the constant-factor cost of an indexmap on
-    /// stable Rust without an external dep.
-    order: VecDeque<GlyphKey>,
+    entries: HashMap<GlyphKey, AtlasEntry>,
+    clock: u64,
     capacity: usize,
 }
 
@@ -124,7 +124,7 @@ impl GlyphAtlas {
     pub fn new(capacity: usize) -> Self {
         Self {
             entries: HashMap::with_capacity(capacity),
-            order: VecDeque::with_capacity(capacity),
+            clock: 0,
             capacity,
         }
     }
@@ -139,15 +139,40 @@ impl GlyphAtlas {
         self.entries.is_empty()
     }
 
+    fn rebase_clock(&mut self) {
+        let mut keys: Vec<_> = self.entries.keys().copied().collect();
+        keys.sort_unstable_by_key(|key| {
+            self.entries
+                .get(key)
+                .expect("rebased key must exist")
+                .last_used
+        });
+        for (rank, key) in keys.into_iter().enumerate() {
+            self.entries
+                .get_mut(&key)
+                .expect("rebased key must exist")
+                .last_used = rank as u64 + 1;
+        }
+        self.clock = self.entries.len() as u64;
+    }
+
+    fn next_stamp(&mut self) -> u64 {
+        if let Some(next) = self.clock.checked_add(1) {
+            self.clock = next;
+        } else {
+            self.rebase_clock();
+            self.clock += 1;
+        }
+        self.clock
+    }
+
     /// Returns `Some(entry)` on hit and promotes the key to MRU. `None`
     /// on miss — caller is responsible for rasterizing + `insert`.
     pub fn lookup(&mut self, key: &GlyphKey) -> Option<GlyphEntry> {
-        let entry = *self.entries.get(key)?;
-        if let Some(pos) = self.order.iter().position(|k| k == key) {
-            self.order.remove(pos);
-        }
-        self.order.push_back(*key);
-        Some(entry)
+        let stamp = self.next_stamp();
+        let cached = self.entries.get_mut(key)?;
+        cached.last_used = stamp;
+        Some(cached.entry)
     }
 
     /// Insert a freshly-rasterized glyph. If the cache is at capacity,
@@ -155,12 +180,11 @@ impl GlyphAtlas {
     /// associated texture slot). A duplicate insert (same key) replaces
     /// the entry without eviction.
     pub fn insert(&mut self, key: GlyphKey, entry: GlyphEntry) -> Option<GlyphKey> {
+        let stamp = self.next_stamp();
         if let Entry::Occupied(mut existing) = self.entries.entry(key) {
-            existing.insert(entry);
-            if let Some(pos) = self.order.iter().position(|k| *k == key) {
-                self.order.remove(pos);
-            }
-            self.order.push_back(key);
+            let existing = existing.get_mut();
+            existing.entry = entry;
+            existing.last_used = stamp;
             return None;
         }
 
@@ -171,24 +195,24 @@ impl GlyphAtlas {
         }
 
         let evicted = if self.entries.len() >= self.capacity {
-            let victim = self.order.pop_front();
-            if let Some(v) = victim {
-                self.entries.remove(&v);
-            }
-            victim
+            self.evict_oldest().map(|(key, _)| key)
         } else {
             None
         };
 
-        self.entries.insert(key, entry);
-        self.order.push_back(key);
+        self.entries.insert(
+            key,
+            AtlasEntry {
+                entry,
+                last_used: stamp,
+            },
+        );
         evicted
     }
 
     /// Drop everything. Backend should free all atlas slots after this.
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.order.clear();
     }
 
     /// Pop the LRU entry, returning both its key and its entry (so the
@@ -215,9 +239,13 @@ impl GlyphAtlas {
     /// atlas.insert(new_key, GlyphEntry { layer: target_layer, ... });
     /// ```
     pub fn evict_oldest(&mut self) -> Option<(GlyphKey, GlyphEntry)> {
-        let key = self.order.pop_front()?;
-        let entry = self.entries.remove(&key)?;
-        Some((key, entry))
+        let key = self
+            .entries
+            .iter()
+            .min_by_key(|(_, cached)| cached.last_used)
+            .map(|(key, _)| *key)?;
+        let cached = self.entries.remove(&key)?;
+        Some((key, cached.entry))
     }
 }
 
@@ -264,22 +292,40 @@ pub fn pick_evictable_layer(
     pinned: &[bool],
     written: &[bool],
 ) -> Option<u32> {
-    let mut requeue: Vec<(GlyphKey, GlyphEntry)> = Vec::with_capacity(8);
-    let mut chosen: Option<u32> = None;
-    while let Some((k, e)) = atlas.evict_oldest() {
-        let layer = e.layer as usize;
+    let mut blocked: Vec<(GlyphKey, u64)> = Vec::with_capacity(8);
+    let mut chosen: Option<(GlyphKey, u64, u32)> = None;
+    for (key, cached) in &atlas.entries {
+        let layer = cached.entry.layer as usize;
         let is_pinned = pinned.get(layer).copied().unwrap_or(false);
         let is_written = written.get(layer).copied().unwrap_or(true);
-        if !is_pinned && !is_written {
-            chosen = Some(e.layer as u32);
-            break;
+        if is_pinned || is_written {
+            blocked.push((*key, cached.last_used));
+        } else if chosen
+            .as_ref()
+            .map_or(true, |(_, oldest, _)| cached.last_used < *oldest)
+        {
+            chosen = Some((*key, cached.last_used, cached.entry.layer as u32));
         }
-        requeue.push((k, e));
     }
-    for (k, e) in requeue {
-        atlas.insert(k, e);
+
+    let chosen_stamp = chosen.map(|(_, stamp, _)| stamp);
+    let chosen_layer = chosen.map(|(_, _, layer)| layer);
+    if let Some((key, _, _)) = chosen {
+        atlas.entries.remove(&key);
     }
-    chosen
+
+    // The old eviction walk requeued blocked entries seen before the victim,
+    // making them MRU in their original LRU order. Reapply that rotation in
+    // one bounded sort instead of repeatedly scanning the atlas.
+    blocked.retain(|(_, stamp)| chosen_stamp.map_or(true, |oldest| *stamp < oldest));
+    blocked.sort_unstable_by_key(|(_, stamp)| *stamp);
+    for (key, _) in blocked {
+        let stamp = atlas.next_stamp();
+        if let Some(cached) = atlas.entries.get_mut(&key) {
+            cached.last_used = stamp;
+        }
+    }
+    chosen_layer
 }
 
 #[cfg(test)]
@@ -344,10 +390,32 @@ mod tests {
         a.insert(key(1), entry(0));
         a.insert(key(2), entry(1));
         // Promote key(1); now key(2) is LRU.
-        let _ = a.lookup(&key(1));
+        for _ in 0..8 {
+            assert_eq!(a.lookup(&key(1)), Some(entry(0)));
+        }
         assert_eq!(a.insert(key(3), entry(2)), Some(key(2)));
         assert_eq!(a.lookup(&key(1)), Some(entry(0)));
         assert!(a.lookup(&key(2)).is_none());
+    }
+
+    #[test]
+    fn lru_eviction_follows_repeated_lookup_order() {
+        let mut a = GlyphAtlas::new(3);
+        a.insert(key(1), entry(1));
+        a.insert(key(2), entry(2));
+        a.insert(key(3), entry(3));
+        for _ in 0..4 {
+            assert!(a.lookup(&key(1)).is_some());
+        }
+        for _ in 0..4 {
+            assert!(a.lookup(&key(2)).is_some());
+        }
+
+        assert_eq!(a.insert(key(4), entry(4)), Some(key(3)));
+        assert_eq!(a.insert(key(5), entry(5)), Some(key(1)));
+        assert!(a.lookup(&key(2)).is_some());
+        assert!(a.lookup(&key(4)).is_some());
+        assert!(a.lookup(&key(5)).is_some());
     }
 
     #[test]
@@ -371,6 +439,18 @@ mod tests {
         assert_eq!(a.insert(key(1), entry(0)), Some(key(1)));
         assert!(a.lookup(&key(1)).is_none());
         assert_eq!(a.len(), 0);
+    }
+
+    #[test]
+    fn clock_overflow_rebases_without_changing_lru_order() {
+        let mut a = GlyphAtlas::new(3);
+        a.insert(key(1), entry(1));
+        a.insert(key(2), entry(2));
+        a.insert(key(3), entry(3));
+        a.clock = u64::MAX;
+
+        assert!(a.lookup(&key(2)).is_some());
+        assert_eq!(a.insert(key(4), entry(4)), Some(key(1)));
     }
 
     #[test]
@@ -484,6 +564,27 @@ mod tests {
         let written = [false; 3];
         // No pins → standard LRU rule wins → layer 0 (key 10).
         assert_eq!(pick_evictable_layer(&mut a, &pinned, &written), Some(0));
+    }
+
+    #[test]
+    fn pick_evictable_layer_skips_written_layers() {
+        let mut a = GlyphAtlas::new(3);
+        a.insert(key(20), entry(0));
+        a.insert(key(21), entry(1));
+        a.insert(key(22), entry(2));
+        let pinned = [false; 3];
+        let written = [true, false, false];
+
+        assert_eq!(pick_evictable_layer(&mut a, &pinned, &written), Some(1));
+        // Written layer 0 was skipped before layer 1 and re-promoted. On a
+        // fresh pin set, layer 2 remains older and must be selected first.
+        assert_eq!(
+            pick_evictable_layer(&mut a, &[false; 3], &[false; 3]),
+            Some(2)
+        );
+        assert!(a.lookup(&key(20)).is_some());
+        assert!(a.lookup(&key(21)).is_none());
+        assert!(a.lookup(&key(22)).is_none());
     }
 
     #[test]

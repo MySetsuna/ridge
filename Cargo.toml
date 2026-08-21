@@ -35,6 +35,17 @@ members = [
 #   · wasm 主 crate ridge-term 仍走体积档（opt-z + cgu=1），配合 thin-LTO 基本
 #     维持原 wasm 体积。注意：wasm 的「依赖」crate 现按全局 opt-2 编（体积略增）；
 #     若 wasm 体积敏感，装 binaryen 让 build.mjs 的 wasm-opt 兜底（当前 skip）。
+# 保留源码行回溯，避免 full debuginfo 放大 MSVC PDB 与 WASM。
+[profile.dev]
+debug = "line-tables-only"
+
+# dev:cdp 仅优化 ridge-term；关闭其热循环检查，增量仍保留。
+[profile.dev.package.ridge-term]
+opt-level = 2
+debug-assertions = false
+overflow-checks = false
+codegen-units = 16
+
 [profile.release]
 opt-level = 2
 lto = "thin"

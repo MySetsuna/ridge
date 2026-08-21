@@ -952,7 +952,9 @@ struct HostAttachRollback<'a> {
 
 fn rollback_host_attach(state: &AppState, request: HostAttachRollback<'_>) {
     if let Some(ws) = state.workspaces.write().get_mut(&request.workspace_id) {
-        ws.terminals.remove(&request.pane_id);
+        if ws.terminals.remove(&request.pane_id).is_some() {
+            *ws.pty_generation.entry(request.pane_id).or_insert(0) += 1;
+        }
         let _ = ws.pane_tree.close(request.pane_id);
     }
     if request.foreign_registered {
@@ -1307,7 +1309,9 @@ pub fn detach_host_session(
     {
         let mut map = state.workspaces.write();
         if let Some(ws) = map.get_mut(&wid) {
-            ws.terminals.remove(&pid);
+            if ws.terminals.remove(&pid).is_some() {
+                *ws.pty_generation.entry(pid).or_insert(0) += 1;
+            }
         }
     }
     tracing::info!(
