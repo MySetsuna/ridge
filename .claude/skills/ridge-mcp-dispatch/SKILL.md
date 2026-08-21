@@ -55,19 +55,22 @@ rdg mcp                                        # stdio 桥，端点/token 自动
 |---|---|---|
 | `ridge_get_team_profile` | `{}` | **先调它**。返回花名册快照（每个 teammate pane 的身份、状态，同时给 `paneId`(UUID) 和 `paneIndex`(数字)）。派活前先发现目标。 |
 | `ridge_split_pane` | `{direction:"horizontal"\|"vertical", role, initial_cmd?}` | 在工作区分出新 pane，`role` 是角色标识（如 `worker`/`reviewer`），`initial_cmd` 可选，创建后立即执行。 |
-| `ridge_send_to_teammate` | `{target_pane_id, message}` | 向目标 pane 的 agent 发一条消息（**写入其 stdin + 换行**）。 |
-| `ridge_delegate_task` | `{target_pane_id, objective, max_steps?}` | 委派一个多步任务：把 `objective` 写进目标 pane stdin，并把该 pane 标记为 **Busy**。Fire-and-forget，立即返回 `"delivered"`。 |
+| `ridge_send_to_teammate` | `{agent_id \| target_pane_id, message, submit?}` | 按 fenced Agent 或 pane 投递 Hub；默认 `submit=true`，显式 `false` 才保留草稿；不保证 PTY/stdin 写入。 |
+| `ridge_send_and_submit` | `{agent_id \| target_pane_id, message}` | 同一 Hub 入口，强制 `submit=true`；返回 `deliveryId`，不代表 PTY/stdin 已写入。 |
+| `ridge_delegate_task` | `{agent_id \| target_pane_id, objective, max_steps?}` | 委派一个多步任务并排入 Hub；Fire-and-forget，回执不代表 Agent 已执行。 |
 | `ridge_stash_data` | `{data}` | 把一段**纯文本**存进内存中转站，返回 `ridge://cache/<id>`，供另一个 agent `resources/read` 回读。用于跨 agent 传大块中间产物。FIFO 淘汰（默认 64 条 / 32 MiB）。 |
 | `ridge_join_group` | `{group_name, agent_id? \| target_pane_id?}` | 把某成员加入按名字寻址的已有编组（`agent_id` 与 `target_pane_id` 二选一）。 |
 
 **`target_pane_id` 寻址**：既接受花名册回传的 `paneId`（UUID 字符串），也接受 `paneIndex`（叶子数字索引，或其字符串）。UUID 会先校验它仍是当前活动工作区的叶子 pane。
+
+**Agent 寻址与安全边界**：Hub/通信工具的目标至少提供 `agent_id` 或 `target_pane_id`；两者并存时必须指向同一份 Kernel roster identity。显式 `workspace_id`/`generation`/`lease` 必须与该 identity 相等；identity 本身须具备 workspace、generation、lease、online、lifecycle、capabilities，否则 fail closed。canonical Hub key 同时含 workspace、Agent、generation、lease，故两种 selector 共用收件箱、回执与幂等域。agent-only 不调用 host pane resolve/pane_key/probe，也不走 PTY；仅 MCP pull、已注册 Runtime 或 A2A。PID/进程名只能作发现证据，不授予 PTY、stdin 或控制台注入权限。静态 tmux roster 若无完整 fence，不宣称 `agent_id` 可寻址；`ridge_capture_pane`、`ridge_report_progress` 等 pane 操作仍仅接受 `target_pane_id`。
 
 此外三个（跨 agent 协作用）：
 
 | name | arguments | 作用 / 语义 |
 |---|---|---|
 | `ridge_capture_pane` | `{target_pane_id, lines?}` | 抓该 pane **渲染后**的屏幕文本（默认 80 行）。监控队友进展就用它，不要去读原始 scrollback。 |
-| `ridge_inbox_read` | `{target_pane_id, peek?}` | 取走投递给该 pane 的消息（`ridge_send_to_teammate` 会自动留副本）。异构 agent 的异步回话通道；取走即清空，`peek:true` 只看。 |
+| `ridge_inbox_read` | `{agent_id \| target_pane_id, peek?}` | 取走投递给该 fenced Agent/pane 的消息（`ridge_send_to_teammate` 会自动留副本）。异构 agent 的异步回话通道；取走即清空，`peek:true` 只看。 |
 | `ridge_report_progress` | `{target_pane_id, status, detail?}` | 主动汇报进展，桌面落前端进度事件（无头 host 回 `isError`）。 |
 
 > 错误语义：工具名不存在 → `-32601`；**宿主不支持该能力**（如无头 host 无编组）→ 正常 result 带

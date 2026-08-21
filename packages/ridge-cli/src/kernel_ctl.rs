@@ -88,20 +88,20 @@ pub fn ensure_kernel_running() -> Result<KernelEndpoint, String> {
         }
     };
     if let Some(ep) = read_endpoint() {
-        if is_process_alive(ep.pid) {
-            if ridge_kernel::client::health_ok(&ep) {
-                drop(boot_guard);
-                return Ok(ep);
-            }
+        let process_alive = is_process_alive(ep.pid);
+        if process_alive && ridge_kernel::client::health_ok(&ep) {
+            drop(boot_guard);
+            return Ok(ep);
+        }
+        let cleared = ridge_kernel::registry::try_clear_registry_if_instance_free(ep.pid)
+            .map_err(|error| format!("probe ridge-kernel instance lock: {error}"))?;
+        if !cleared {
             drop(boot_guard);
             return Err(format!(
                 "live ridge-kernel PID {} is unhealthy or protocol-incompatible; refusing a second instance",
                 ep.pid
             ));
         }
-        // stale
-        let _ = fs::remove_file(kernel_pid_path());
-        let _ = fs::remove_file(kernel_json_path());
     }
     let bin = std::env::current_exe().map_err(|error| format!("定位 rdg: {error}"))?;
     spawn_detached(&bin, &[ridge_kernel::client::KERNEL_HOST_ARG])?;

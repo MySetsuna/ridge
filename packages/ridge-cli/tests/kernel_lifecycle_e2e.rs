@@ -71,6 +71,20 @@ fn wait_for_endpoint(data_dir: &Path, timeout: Duration) -> KernelEndpoint {
     }
 }
 
+fn unused_port() -> u16 {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+fn write_endpoint(data_dir: &Path, endpoint: &KernelEndpoint) {
+    fs::write(data_dir.join("kernel.pid"), endpoint.pid.to_string()).unwrap();
+    fs::write(
+        data_dir.join("kernel.json"),
+        serde_json::to_vec_pretty(endpoint).unwrap(),
+    )
+    .unwrap();
+}
+
 struct KernelCleanup {
     binary: PathBuf,
     data_dir: PathBuf,
@@ -307,6 +321,72 @@ fn detached_kernel_survives_client_process_exit_and_second_attach() {
     let reattached = wait_for_endpoint(&data_dir, Duration::from_secs(2));
     assert_eq!(reattached.pid, endpoint.pid);
     assert!(ridge_kernel::client::health_ok(&reattached));
+}
+
+#[test]
+fn reused_live_pid_clears_registry_without_killing_unknown_process() {
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rdg"));
+    let data_dir = isolated_data_dir();
+    fs::create_dir_all(&data_dir).unwrap();
+    let _cleanup = KernelCleanup {
+        binary: binary.clone(),
+        data_dir: data_dir.clone(),
+    };
+    let stale_pid = std::process::id();
+    write_endpoint(
+        &data_dir,
+        &KernelEndpoint {
+            pid: stale_pid,
+            port: unused_port(),
+            token: "reused-pid-test".into(),
+            started_at_unix: 1,
+        },
+    );
+
+    let ensured = run_rdg(&binary, &data_dir, &["kernel", "ensure"]);
+    assert!(
+        ensured.status.success(),
+        "PID reuse recovery failed: {}",
+        String::from_utf8_lossy(&ensured.stderr)
+    );
+    let endpoint = wait_for_endpoint(&data_dir, Duration::from_secs(2));
+    assert_ne!(endpoint.pid, stale_pid);
+    assert!(ridge_kernel::client::is_process_alive(stale_pid));
+}
+
+#[test]
+fn live_unhealthy_kernel_keeps_registry_and_refuses_second_instance() {
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_rdg"));
+    let data_dir = isolated_data_dir();
+    fs::create_dir_all(&data_dir).unwrap();
+    let _cleanup = KernelCleanup {
+        binary: binary.clone(),
+        data_dir: data_dir.clone(),
+    };
+    assert!(ensure_rdg(&binary, &data_dir).success());
+    let healthy = wait_for_endpoint(&data_dir, Duration::from_secs(8));
+    write_endpoint(
+        &data_dir,
+        &KernelEndpoint {
+            port: unused_port(),
+            ..healthy.clone()
+        },
+    );
+
+    let refused = run_rdg(&binary, &data_dir, &["kernel", "ensure"]);
+    assert!(!refused.status.success());
+    let diagnostics = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        diagnostics.contains("refusing a second instance"),
+        "unexpected refusal: {diagnostics}"
+    );
+    assert!(ridge_kernel::client::is_process_alive(healthy.pid));
+    assert!(ridge_kernel::client::health_ok(&healthy));
+    write_endpoint(&data_dir, &healthy);
 }
 
 fn wait_for_kernel_marker(

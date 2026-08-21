@@ -46,41 +46,61 @@ curl -sS -X POST "$RIDGE_TEAMMATE_URL/api/v1/mcp" \
 
 ### D. 持久 MCP 配置（任意 MCP 客户端；Ridge companion）
 
-持久 MCP 配置中的 HTTP URL 通常是静态值，而 Ridge 本机端点会漂移。`ridge-mcp` 是只做端点发现与 stdio↔HTTP 转发的 Ridge companion，**不是 `rdg`**：
+持久 MCP 配置中的 HTTP URL 通常是静态值，而 Ridge 本机端点会漂移。`ridge-mcp` 是只做端点发现与 stdio↔HTTP 转发的 Ridge companion，**不是 `rdg`**。
+桌面安装包已捆绑同版本 companion；普通用户无须源码、Rust 或 Cargo。在 Ridge 安装目录运行：
 
 ```bash
-cargo install --path packages/ridge-mcp-bridge --bin ridge-mcp
-codex mcp add ridge -- ridge-mcp
-claude mcp add ridge -- ridge-mcp
-# Gemini CLI、OpenCode、Cursor 等使用下列通用 stdio 配置
+ridge-mcp --print-config
+codex mcp add ridge -- /absolute/path/to/ridge-mcp
+claude mcp add ridge -- /absolute/path/to/ridge-mcp
+# Gemini CLI、OpenCode、Cursor 等：使用下列通用 stdio 配置
 ```
 
 ```json
 {
   "mcpServers": {
-    "ridge": { "command": "ridge-mcp", "args": [] }
+    "ridge": { "command": "/absolute/path/to/ridge-mcp", "args": [] }
   }
 }
+```
+
+`--print-config` 输出可粘贴的 `mcpServers.ridge` stdio 配置，命令为当前 companion 的绝对路径；
+不含端口或 token。Windows 为 `ridge-mcp.exe`，Linux/macOS 为 `ridge-mcp`。升级由安装器原位替换，
+卸载随 Ridge 一并清理。
+
+仅源码开发者使用：
+
+```bash
+cargo install --path packages/ridge-mcp-bridge --bin ridge-mcp
+codex mcp add ridge -- ridge-mcp
+# Claude Code 同理：claude mcp add ridge -- ridge-mcp
 ```
 
 server 不读取 `clientInfo.name` 作路由或授权决策；所有 MCP 客户端获得同一 tools/resources 契约。
 没有 MCP 能力的 CLI 须使用其自身 bridge，Ridge 不冒充其私有 runtime API。
 
-它按 `RIDGE_TEAMMATE_URL/_TOKEN` → Ridge endpoint sidecar 自动发现；端口或 token 更新后首个失败请求会重新发现并重试一次。显式指定可用
-`ridge-mcp --url http://127.0.0.1:PORT --token <tok>`。修改 Codex MCP 配置后须新开会话。
+默认按当前 **`ridge-kernel` 登记**发现端点；没有活动 kernel 时 fail closed，不读取旧 teammate
+环境变量或 sidecar。显式指定可用 `ridge-mcp --url http://127.0.0.1:PORT --token <tok>`；仅需兼容旧
+宿主时才加 `--legacy-sidecar`，以启用 `RIDGE_TEAMMATE_URL` / `RIDGE_TEAMMATE_TOKEN` 与受限
+loopback sidecar 的后备发现。sidecar 仅属运行期、只接受普通文件与 `127.0.0.1` 端点（Unix 要求
+`0600`）。端口或 token 更新后，首次连接失败或 `401/403` 会重新发现并重试一次。修改 Codex
+MCP 配置后须新开会话。
 
 ### E. 无头 `rdg`（独立 host；按需）
 
 `rdg` 只用于无桌面环境托管 Ridge 的无头会话；它不是 Ridge 桌面 MCP 的安装器。无头 `rdg tmux` 同样会导出
-`RIDGE_TEAMMATE_*`，故也可由上节的 `ridge-mcp` companion 接入。旧 `rdg mcp` 仅保留兼容别名。
+`RIDGE_TEAMMATE_*`；如需由上节的 `ridge-mcp` companion 接入旧无头 host，须显式加
+`--legacy-sidecar`。旧 `rdg mcp` 仅保留兼容别名。
 
 ### 端点与 token 从哪来
 
 | 来源 | 说明 |
 | --- | --- |
-| `RIDGE_TEAMMATE_URL` / `RIDGE_TEAMMATE_TOKEN` | Ridge 注入进每个 teammate 分屏的 env，子进程直接继承 |
-| `TMPDIR/ridge-teammate-endpoint-*.json` | sidecar（`{"url","token"}`）；后端重启换端口后由宿主刷新 |
+| `%LOCALAPPDATA%/ridge/kernel.json` | 当前 `ridge-kernel` 登记（`pid/port/token`）；`POST /api/v1/mcp` 为无桌面 MCP 面（REQ-RIDGE-MCP-AS-KERNEL-API-01） |
+| `RIDGE_TEAMMATE_URL` / `RIDGE_TEAMMATE_TOKEN` | 旧 teammate env；仅在显式 `--legacy-sidecar` 后备发现中读取 |
+| `TMPDIR/ridge-teammate-endpoint-*.json` | 旧运行期 sidecar（`{"url","token"}`）；仅在显式 `--legacy-sidecar` 后备发现中读取 |
 | `rdg tmux` 启动日志 | 无头 host 把 `RIDGE_TEAMMATE_*` 导出行打到 stderr |
+| `rdg kernel ensure|agents|fs-list|mcp-smoke` | CLI 验收：拉起内核、领域只读、MCP tools/list |
 
 ---
 
@@ -101,14 +121,14 @@ server 不读取 `clientInfo.name` 作路由或授权决策；所有 MCP 客户�
 | 工具 | 参数 | 用途 |
 | --- | --- | --- |
 | `ridge_get_team_profile` | 无 | **先调它**。花名册：成员 `paneId` + `paneIndex` + 状态 + 编组 |
-| `ridge_send_to_teammate` | `target_pane_id, message, from?` | 仅写入草稿并建回执；**不**按 Enter |
-| `ridge_send_and_submit` | `target_pane_id, message, from?` | 显式写入并派发 Enter；结果仅称 `submit_dispatched` |
-| `ridge_delegate_task` | `target_pane_id, objective, max_steps?` | 显式提交任务并标记「工作中」；同样不等于 Agent 已执行 |
-| `ridge_delivery_status` | `target_pane_id, receipt_id` | 查询投递回执：派发、终端接受、Agent 确认三层分列 |
-| `ridge_acknowledge_receipt` | `target_pane_id, receipt_id, status, detail?` | 目标 Agent 明确确认/拒绝；唯一路径可令 `agentAcknowledged=true` |
+| `ridge_send_to_teammate` | `agent_id 或 target_pane_id, message, submit?, from?` | 按 fenced Agent 或 pane 写入 Hub；默认 `submit=true`，仅显式 `false` 保留草稿；不代表 PTY 已写入 |
+| `ridge_send_and_submit` | `agent_id 或 target_pane_id, message, from?` | 同一 Hub 入口，强制 `submit=true`；返回 `deliveryId`，不代表 PTY 已写入 |
+| `ridge_delegate_task` | `agent_id 或 target_pane_id, objective, max_steps?` | 排入 Hub 并标记任务；同样不等于 Agent 已执行 |
+| `ridge_delivery_status` | `agent_id 或 target_pane_id, delivery_id` | 按 `deliveryId` 查询投递状态：终端接受、Agent 确认分列 |
+| `ridge_acknowledge_receipt` | `agent_id 或 target_pane_id, delivery_id, status, detail?` | 目标 Agent 明确确认/拒绝；唯一路径可令 `agentAcknowledged=true` |
 | `ridge_report_execution_rejection` | `executor, policy_source, request_id, reason, next_step, ...` | 上报外部网关拒绝；显示归因卡，**不**伪称 Ridge 可重试 |
 | `ridge_capture_pane` | `target_pane_id, lines?` | 抓该 pane **渲染后**的屏幕文本（监控队友进展，不是转义序列堆） |
-| `ridge_inbox_read` | `target_pane_id, peek?` | 取走投递给该 pane 的消息（跨 agent 异步回话通道） |
+| `ridge_inbox_read` | `agent_id 或 target_pane_id, peek?` | 取走投递给该 fenced Agent/pane 的消息（跨 agent 异步回话通道） |
 | `ridge_report_progress` | `target_pane_id, status, detail?` | 回流一条进展（桌面落前端进度事件） |
 | `ridge_get_launch_capabilities` | 无 | 动态发现宿主 profile 及允许的 model/reasoning；空集合禁止覆盖 |
 | `ridge_split_pane` | `direction, role, launch_profile?, model?, reasoning_effort?, ...` | 开新 pane；profile/覆盖值须来自上项，不猜命令或品牌 |
@@ -118,8 +138,10 @@ server 不读取 `clientInfo.name` 作路由或授权决策；所有 MCP 客户�
 **寻址**：`target_pane_id` 同时接受花名册回传的 `paneId`（桌面是 Uuid 串，无头是 `%N`）与
 `paneIndex`（数字）。越界/失效目标返回 `-32602`，绝不静默落到 0 号分屏。
 
-**投递语义**：`draft_injected` 仅表明文本已注入；`submit_dispatched` 仅表明 Enter 已派发；
-`terminalAccepted=true` 仅表明 host 已完成终端写入；均不表明终端程序或 Agent 已消费。只有目标 Agent
+**Agent identity 寻址**：Hub/通信工具可用 `agent_id` 或 `target_pane_id`（二者并存时须为同一份 Kernel roster identity）。显式 `workspace_id`/`generation`/`lease` 必须与 identity 相等；identity 须同时给出 workspace、generation、lease、online、lifecycle、capabilities，否则 fail closed。canonical Hub key 同时含 workspace、Agent、generation、lease，故 selector 可互读收件箱、状态、ACK、幂等结果。agent-only 不调用 host pane resolve/pane_key/probe，不走 PTY；仅 MCP pull、已注册 Runtime 或 A2A。静态 tmux roster 若无法提供完整 fence，不宣称 `agent_id` 可寻址。PID/进程名只能作发现证据，不授予 PTY、stdin 或控制台注入权限。`ridge_capture_pane`、`ridge_report_progress` 等 pane 操作仍仅支持 `target_pane_id`。
+
+**投递语义**：`submitRequested` 仅表明提交意图；`terminalAccepted=true` 仅表明 host 已完成终端写入；
+均不表明终端程序或 Agent 已消费。返回字段以 `deliveryId` 为准；只有目标 Agent
 调用 `ridge_acknowledge_receipt` 后，回执才会出现 `agentAcknowledged=true`。
 
 **外部拒绝**：若执行层在 Ridge 之前拒绝（例如 `rejected: blocked by policy`），调用
@@ -146,7 +168,7 @@ server 不读取 `clientInfo.name` 作路由或授权决策；所有 MCP 客户�
 
 1. `ridge_get_team_profile` 看有谁、谁空闲。
 2. 没有合适的 pane → 先调 `ridge_get_launch_capabilities`；仅从返回清单选 profile/model/reasoning，再调 `ridge_split_pane`。清单为空或所需项不支持即停，不默认 RidgeCode 或任何 CLI。
-3. `ridge_delegate_task { target_pane_id, objective }` 派活并保存 `receiptId`；需核验投递层级时调用 `ridge_delivery_status`，别把派发回执说成已执行。
+3. `ridge_delegate_task { target_pane_id, objective }` 派活并保存 `deliveryId`；需核验投递状态时调用 `ridge_delivery_status`，别把排队回执说成已执行。
 4. 大块上下文走 `ridge_stash_data` 拿 `ridge://cache/<id>`，把 URI 写进 objective 让对方 `resources/read`。
 5. 想知道干得怎么样 → `ridge_capture_pane` 抓屏；对方可用 `ridge_report_progress` 主动汇报。
 6. 收对方留言 → `ridge_inbox_read`（取走即清空；`peek: true` 只看不取）；目标 Agent 消费后以 `ridge_acknowledge_receipt` 明确回执。

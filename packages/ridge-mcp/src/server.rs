@@ -9,7 +9,7 @@
 //! 彼此没有共同的内部协议——它们只共享**这个 server**：花名册发现同伴、注入消息、
 //! 派活、抓对方屏幕、收件箱异步回话、Stash 传大块产物。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
@@ -23,7 +23,7 @@ use uuid::Uuid;
 use crate::a2a::{A2aClientConfig, A2aEndpointRegistry};
 use crate::delivery::{
     choose_delivery_adapter, DeliveryOutcome, DeliveryProbe, DeliveryRegistry, HubDeliveryAdapter,
-    HubPtyRuntimeSnapshot,
+    HubPtyRuntimeSnapshot, HubPtySafety,
 };
 use crate::protocol as proto;
 use crate::registry::ToolRegistry;
@@ -330,7 +330,8 @@ pub trait McpHost: Send + Sync {
     /// 读非 cache 的 `ridge://` 资源，返回 `(mimeType, text)`；cache 由内核直接处理。
     fn read_resource(&self, uri: &RidgeUri) -> HostResult<(String, String)>;
 
-    /// 把寻址参数归一为**稳定字符串键**（收件箱按它分桶）。宿主须校验目标存在。
+    /// 把 pane 参数归一为宿主稳定键，供兼容宿主使用；Message Hub 按
+    /// roster identity 派生 canonical key，不使用此 pane locator 作分桶。
     fn pane_key(&self, target: &Value) -> HostResult<String>;
 }
 
@@ -431,34 +432,123 @@ impl McpSessionState {
             .expect("sequence lock not poisoned") = loaded.sequences;
     }
 
-    /// Drop all delivery state for a pane after its generation is destroyed.
+    /// Drop all delivery state for a pane or canonical target key after its
+    /// generation is destroyed. A pane id purges every generation/lease that
+    /// references it, preventing pane reuse from retaining old Hub state.
     /// Stash remains host-scoped and is independently bounded/evicted.
     pub fn purge_pane(&self, key: &str) -> Result<(), String> {
+        let mut target_keys = HashSet::from([key.to_string()]);
         if let Some(persistence) = &self.persistence {
-            persistence.purge(key)?;
+            target_keys.extend(persistence.target_keys_for_pane(key)?);
         }
-        self.inbox.lock().unwrap().remove(key);
+        {
+            let inbox = self.inbox.lock().unwrap();
+            for (target_key, entries) in inbox.iter() {
+                if target_key == key || entries.iter().any(|entry| entry_has_pane(entry, key)) {
+                    target_keys.insert(target_key.clone());
+                }
+            }
+        }
+        {
+            let receipts = self.receipts.lock().unwrap();
+            target_keys.extend(receipts.by_id.values().filter_map(|entry| {
+                entry_has_pane(entry, key)
+                    .then(|| entry.get("targetKey").and_then(Value::as_str))
+                    .flatten()
+                    .map(str::to_string)
+            }));
+        }
+        {
+            let idempotency = self.idempotency.lock().unwrap();
+            target_keys.extend(idempotency.by_key.values().filter_map(|entry| {
+                entry_has_pane(entry, key)
+                    .then(|| entry.get("targetKey").and_then(Value::as_str))
+                    .flatten()
+                    .map(str::to_string)
+            }));
+        }
+        if let Some(persistence) = &self.persistence {
+            for target_key in &target_keys {
+                persistence.purge(target_key)?;
+            }
+        }
+        self.inbox
+            .lock()
+            .unwrap()
+            .retain(|target_key, _| !target_keys.contains(target_key));
         let mut receipts = self.receipts.lock().unwrap();
         let expired = receipts
             .by_id
             .iter()
-            .filter(|(_, value)| value.get("targetKey").and_then(Value::as_str) == Some(key))
+            .filter(|(_, value)| {
+                value
+                    .get("targetKey")
+                    .and_then(Value::as_str)
+                    .is_some_and(|target_key| target_keys.contains(target_key))
+            })
             .map(|(id, _)| id.clone())
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<HashSet<_>>();
         receipts.by_id.retain(|id, _| !expired.contains(id));
         receipts.order.retain(|id| !expired.contains(id));
         let mut idempotency = self.idempotency.lock().unwrap();
         let expired_keys = idempotency
             .by_key
             .iter()
-            .filter(|(_, value)| value.get("targetKey").and_then(Value::as_str) == Some(key))
+            .filter(|(_, value)| {
+                value
+                    .get("targetKey")
+                    .and_then(Value::as_str)
+                    .is_some_and(|target_key| target_keys.contains(target_key))
+            })
             .map(|(id, _)| id.clone())
-            .collect::<std::collections::HashSet<_>>();
+            .collect::<HashSet<_>>();
         idempotency
             .by_key
             .retain(|id, _| !expired_keys.contains(id));
         idempotency.order.retain(|id| !expired_keys.contains(id));
-        self.sequences.lock().unwrap().remove(key);
+        self.sequences
+            .lock()
+            .unwrap()
+            .retain(|target_key, _| !target_keys.contains(target_key));
+        Ok(())
+    }
+
+    /// Purge one fenced Agent generation and its registered delivery routes.
+    /// Callers use this during identity teardown; stale teardown never removes
+    /// a newer generation because each registry keeps its own fence.
+    pub fn purge_identity(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        generation: u64,
+        lease: &str,
+    ) -> Result<(), String> {
+        if workspace_id.trim().is_empty()
+            || agent_id.trim().is_empty()
+            || lease.trim().is_empty()
+            || generation == 0
+        {
+            return Err(
+                "identity purge requires workspace_id, agent_id, generation, and lease".into(),
+            );
+        }
+        self.purge_pane(&identity_target_key(
+            workspace_id,
+            agent_id,
+            generation,
+            lease,
+        ))?;
+        // Unregister is fail-closed: mismatch must not delete a newer route.
+        // Identity purge still succeeds because the old Hub key is already gone.
+        for adapter in [HubDeliveryAdapter::RuntimeApi, HubDeliveryAdapter::A2a] {
+            ignore_stale_identity_teardown(
+                self.unregister_delivery_endpoint(adapter, agent_id, generation, lease),
+            )?;
+        }
+        ignore_stale_identity_teardown(self.unregister_a2a_endpoint(agent_id, generation, lease))?;
+        ignore_stale_identity_teardown(
+            self.unregister_pty_runtime_snapshot(agent_id, generation, lease),
+        )?;
         Ok(())
     }
 
@@ -954,6 +1044,32 @@ impl HubPersistence {
             .commit()
             .map_err(|error| format!("commit Hub purge: {error}"))
     }
+
+    fn target_keys_for_pane(&self, pane_id: &str) -> Result<HashSet<String>, String> {
+        let connection = self.connection.lock().unwrap();
+        let mut keys = HashSet::new();
+        for table in ["hub_messages", "hub_receipts", "hub_idempotency"] {
+            let sql = format!("SELECT target_key, entry_json FROM {table}");
+            let mut statement = connection
+                .prepare(&sql)
+                .map_err(|error| format!("prepare Hub {table} pane lookup: {error}"))?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|error| format!("read Hub {table} pane lookup: {error}"))?;
+            for row in rows {
+                let (target_key, raw) =
+                    row.map_err(|error| format!("decode Hub {table} pane lookup: {error}"))?;
+                let entry: Value = serde_json::from_str(&raw)
+                    .map_err(|error| format!("parse Hub {table} pane lookup: {error}"))?;
+                if entry_has_pane(&entry, pane_id) {
+                    keys.insert(target_key);
+                }
+            }
+        }
+        Ok(keys)
+    }
 }
 
 fn load_json_rows(
@@ -1023,11 +1139,9 @@ fn receipt_get(state: &McpSessionState, key: &str, id: &str) -> HostResult<Value
     let value = store
         .by_id
         .get(id)
-        .ok_or_else(|| HostError::InvalidParams("receipt 不存在或已过期".into()))?;
+        .ok_or_else(|| HostError::InvalidParams("delivery 不存在或已过期".into()))?;
     if value.get("targetKey").and_then(Value::as_str) != Some(key) {
-        return Err(HostError::InvalidParams(
-            "receipt 不属于该 target pane".into(),
-        ));
+        return Err(HostError::InvalidParams("delivery 不属于该 target".into()));
     }
     Ok(value.clone())
 }
@@ -1056,11 +1170,9 @@ fn receipt_ack(
         let value = store
             .by_id
             .get_mut(id)
-            .ok_or_else(|| HostError::InvalidParams("receipt 不存在或已过期".into()))?;
+            .ok_or_else(|| HostError::InvalidParams("delivery 不存在或已过期".into()))?;
         if value.get("targetKey").and_then(Value::as_str) != Some(key) {
-            return Err(HostError::InvalidParams(
-                "receipt 不属于该 target pane".into(),
-            ));
+            return Err(HostError::InvalidParams("delivery 不属于该 target".into()));
         }
         if matches!(
             value.get("status").and_then(Value::as_str),
@@ -1160,7 +1272,11 @@ fn sync_idempotency_entry(state: &McpSessionState, entry: &Value) -> Result<(), 
     let Some(key) = entry.get("idempotencyKey").and_then(Value::as_str) else {
         return Ok(());
     };
-    let key = idempotency_key(from, key);
+    let target_key = entry
+        .get("targetKey")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Hub entry has no target key".to_string())?;
+    let key = idempotency_key(target_key, from, key);
     if let Some(persistence) = &state.persistence {
         persistence.update_idempotency(&key, entry)?;
     }
@@ -1375,8 +1491,16 @@ fn next_sequence(state: &McpSessionState, target_key: &str) -> HostResult<u64> {
     Ok(*sequence)
 }
 
-fn idempotency_key(from: &str, key: &str) -> String {
-    format!("{from}:{key}")
+fn idempotency_key(target_key: &str, from: &str, key: &str) -> String {
+    format!(
+        "{}:{}:{}:{}:{}:{}",
+        target_key.len(),
+        target_key,
+        from.len(),
+        from,
+        key.len(),
+        key
+    )
 }
 
 fn dedupe_lookup(state: &McpSessionState, key: &str) -> Option<Value> {
@@ -1430,9 +1554,15 @@ fn deliver_hub_entry(
     replace_receipt_entry(state, &target.target_key, delivery_id, &attempted)
         .map_err(HostError::Internal)?;
     let outcome = match adapter {
+        HubDeliveryAdapter::RuntimeApi if state.delivery_probe(target_value).runtime_api => state
+            .deliver_registered_endpoint(HubDeliveryAdapter::RuntimeApi, target_value, &attempted)
+            .map_err(HostError::Internal),
         HubDeliveryAdapter::RuntimeApi => host.deliver_runtime_api(target_value, &attempted),
         HubDeliveryAdapter::A2a if state.a2a_endpoints.probe(target_value) => state
             .deliver_a2a_endpoint(target_value, &attempted)
+            .map_err(HostError::Internal),
+        HubDeliveryAdapter::A2a if state.delivery_probe(target_value).a2a => state
+            .deliver_registered_endpoint(HubDeliveryAdapter::A2a, target_value, &attempted)
             .map_err(HostError::Internal),
         HubDeliveryAdapter::A2a => host.deliver_a2a(target_value, &attempted),
         HubDeliveryAdapter::PtyFallback => host.deliver_pty_fallback(target_value, &attempted),
@@ -1494,7 +1624,7 @@ fn enqueue_hub_entry(
             "delivery deadline has already elapsed",
         ));
     }
-    let dedupe_key = idempotency_key(from, meta.idempotency_key);
+    let dedupe_key = idempotency_key(&target.target_key, from, meta.idempotency_key);
     if let Some(existing) = dedupe_lookup(state, &dedupe_key) {
         if !same_hub_entry(&existing, target, kind, &payload) {
             return Err(hub_error(
@@ -1507,18 +1637,37 @@ fn enqueue_hub_entry(
         return Ok(replay);
     }
     let target_value = target.as_value();
-    if let Some(snapshot) = host.pty_runtime_snapshot(&target_value)? {
-        state
-            .register_pty_runtime_snapshot(
-                target.agent_id.clone(),
-                target.generation,
-                target.lease.clone(),
-                snapshot,
-            )
-            .map_err(HostError::Internal)?;
+    if target.pane_addressed {
+        if let Some(snapshot) = host.pty_runtime_snapshot(&target_value)? {
+            state
+                .register_pty_runtime_snapshot(
+                    target.agent_id.clone(),
+                    target.generation,
+                    target.lease.clone(),
+                    snapshot,
+                )
+                .map_err(HostError::Internal)?;
+        }
     }
-    let mut probe = host.probe_delivery(&target_value)?;
-    probe.a2a |= state.a2a_endpoints.probe(&target_value);
+    let registered_probe = state.delivery_probe(&target_value);
+    let mut probe = if target.pane_addressed {
+        host.probe_delivery(&target_value)?
+    } else {
+        // Agent-id-only delivery never hands its synthetic pane locator to the
+        // host. MCP pull and explicitly registered Runtime/A2A routes remain
+        // the only delivery surfaces for an external Agent.
+        DeliveryProbe {
+            mcp_pull: true,
+            ..DeliveryProbe::default()
+        }
+    };
+    probe.runtime_api |= registered_probe.runtime_api;
+    probe.a2a |= registered_probe.a2a;
+    if target.pane_addressed && registered_probe.pty.is_safe() {
+        probe.pty = registered_probe.pty;
+    } else if !target.pane_addressed {
+        probe.pty = HubPtySafety::default();
+    }
     let adapter = choose_delivery_adapter(probe).ok_or_else(|| {
         hub_error(
             "delivery_unavailable",
@@ -1851,6 +2000,17 @@ fn scoped_target(args: &Value, host: &dyn McpHost) -> HostResult<Value> {
     )
 }
 
+fn target_workspace_arg(args: &Value) -> HostResult<Option<&str>> {
+    match args.get("workspace_id") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.trim())),
+        Some(_) => Err(hub_error(
+            "invalid_target",
+            "workspace_id must be a non-empty string",
+        )),
+    }
+}
+
 fn arg_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key)
         .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
@@ -1872,6 +2032,94 @@ fn scalar_string(value: &Value) -> Option<String> {
     }
 }
 
+fn entry_has_pane(entry: &Value, pane_id: &str) -> bool {
+    entry
+        .get("to")
+        .and_then(|target| value_string(target, &["paneId", "pane_id"]))
+        .is_some_and(|value| value == pane_id)
+}
+
+fn target_pane_arg(args: &Value) -> HostResult<Option<&Value>> {
+    match args.get("target_pane_id") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) if scalar_string(value).is_some() => Ok(Some(value)),
+        Some(_) => Err(hub_error(
+            "invalid_target",
+            "target_pane_id must be a pane id string or number",
+        )),
+    }
+}
+
+fn target_agent_arg(args: &Value) -> HostResult<Option<&str>> {
+    match args.get("agent_id") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.trim())),
+        Some(_) => Err(hub_error(
+            "invalid_target",
+            "agent_id must be a non-empty string",
+        )),
+    }
+}
+
+fn target_generation_arg(args: &Value) -> HostResult<Option<u64>> {
+    match args.get("generation") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(value)) => value
+            .as_u64()
+            .ok_or_else(|| hub_error("invalid_target", "generation must be a positive integer"))
+            .map(Some),
+        Some(Value::String(value)) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| hub_error("invalid_target", "generation must be a positive integer"))
+            .map(Some),
+        Some(_) => Err(hub_error(
+            "invalid_target",
+            "generation must be a positive integer",
+        )),
+    }
+}
+
+fn target_lease_arg(args: &Value) -> HostResult<Option<&str>> {
+    match args.get("lease") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.trim())),
+        Some(_) => Err(hub_error(
+            "invalid_target",
+            "lease must be a non-empty string",
+        )),
+    }
+}
+
+fn roster_entries<'a>(profile: &'a Value) -> impl Iterator<Item = &'a Value> {
+    ["agent_identities", "roster"]
+        .into_iter()
+        .filter_map(|key| profile.get(key).and_then(Value::as_array))
+        .flatten()
+}
+
+fn ignore_stale_identity_teardown(result: Result<bool, String>) -> Result<(), String> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(error) if error.contains("stale") => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn identity_target_key(workspace_id: &str, agent_id: &str, generation: u64, lease: &str) -> String {
+    // Length prefixes keep user-controlled ':' and '/' from creating aliases.
+    format!(
+        "agent:{}:{}:{}:{}:generation:{generation}:lease:{}:{}",
+        workspace_id.len(),
+        workspace_id,
+        agent_id.len(),
+        agent_id,
+        lease.len(),
+        lease,
+    )
+}
+
 #[derive(Debug, Clone)]
 struct HubTarget {
     target_key: String,
@@ -1881,6 +2129,10 @@ struct HubTarget {
     pane_id: String,
     generation: u64,
     lease: String,
+    /// Only an explicitly addressed, host-validated pane may use a PTY
+    /// adapter. Agent-id-only targets may carry a synthetic pane locator, but
+    /// that locator is never a PTY authorization.
+    pane_addressed: bool,
 }
 
 impl HubTarget {
@@ -1908,34 +2160,56 @@ fn resolve_hub_target(
     host: &dyn McpHost,
     required_capability: &str,
 ) -> HostResult<HubTarget> {
-    let target = scoped_target(args, host)?;
-    let target_pane = value_string(&target, &["paneId", "pane_id"])
-        .or_else(|| args.get("target_pane_id").and_then(scalar_string))
-        .ok_or_else(|| hub_error("target_missing", "target pane is not addressable"))?;
-    let requested_workspace = arg_str(args, "workspace_id")
-        .map(str::to_string)
-        .or_else(|| value_string(&target, &["workspaceId", "workspace_id"]));
+    let requested_agent = target_agent_arg(args)?;
+    let requested_workspace = target_workspace_arg(args)?.map(str::to_string);
+    let requested_generation = target_generation_arg(args)?;
+    let requested_lease = target_lease_arg(args)?;
+    let pane_arg = target_pane_arg(args)?;
+    let target = pane_arg
+        .map(|value| host.resolve_pane_target(requested_workspace.as_deref(), value))
+        .transpose()?;
+    let target_pane = target
+        .as_ref()
+        .and_then(|value| value_string(value, &["paneId", "pane_id"]))
+        .or_else(|| pane_arg.and_then(scalar_string));
+    let requested_workspace = requested_workspace.or_else(|| {
+        target
+            .as_ref()
+            .and_then(|value| value_string(value, &["workspaceId", "workspace_id"]))
+    });
     let profile = host.team_profile_for(requested_workspace.as_deref())?;
-    let requested_agent = arg_str(args, "agent_id");
-    let mut entries = ["agent_identities", "roster"]
-        .into_iter()
-        .filter_map(|key| profile.get(key).and_then(Value::as_array))
-        .flatten();
-    let identity = entries
+    if requested_agent.is_none() && target_pane.is_none() {
+        return Err(hub_error(
+            "target_missing",
+            "provide agent_id or target_pane_id",
+        ));
+    }
+    let identity = roster_entries(&profile)
         .find(|entry| {
             let id_matches = requested_agent
                 .map(|id| {
                     value_string(entry, &["agentId", "agent_id", "id"]).as_deref() == Some(id)
                 })
                 .unwrap_or(true);
-            let pane_matches = value_string(entry, &["paneId", "pane_id"]).as_deref()
-                == Some(target_pane.as_str());
+            let pane_matches = target_pane
+                .as_deref()
+                .map(|pane| value_string(entry, &["paneId", "pane_id"]).as_deref() == Some(pane))
+                .unwrap_or(true);
             id_matches && pane_matches
         })
         .ok_or_else(|| {
+            let detail = if requested_agent.is_some() && target_pane.is_some() {
+                "agent_id and target_pane_id do not name the same identity"
+            } else {
+                "Agent identity is absent from Kernel roster"
+            };
             hub_error(
-                "target_missing",
-                "Agent identity is absent from Kernel roster",
+                if requested_agent.is_some() && target_pane.is_some() {
+                    "target_conflict"
+                } else {
+                    "target_missing"
+                },
+                detail,
             )
         })?;
 
@@ -1959,8 +2233,9 @@ fn resolve_hub_target(
     let generation = identity
         .get("generation")
         .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
         .ok_or_else(|| hub_error("generation_mismatch", "identity has no generation"))?;
-    if arg_u64(args, "generation").is_some_and(|value| value != generation) {
+    if requested_generation.is_some_and(|value| value != generation) {
         return Err(hub_error(
             "generation_mismatch",
             "target generation is stale",
@@ -1968,7 +2243,7 @@ fn resolve_hub_target(
     }
     let lease = value_string(identity, &["lease"])
         .ok_or_else(|| hub_error("stale_lease", "identity has no lease"))?;
-    if arg_str(args, "lease").is_some_and(|value| value != lease) {
+    if requested_lease.is_some_and(|value| value != lease) {
         return Err(hub_error("stale_lease", "target lease is stale"));
     }
     let online = identity
@@ -2005,14 +2280,17 @@ fn resolve_hub_target(
             format!("target lacks capability {required_capability}"),
         ));
     }
+    let pane_addressed = target.is_some();
+    let target_key = identity_target_key(&workspace_id, &agent_id, generation, &lease);
     Ok(HubTarget {
-        target_key: host.pane_key(&target)?,
+        target_key,
         agent_id,
         session_id,
         workspace_id,
         pane_id,
         generation,
         lease,
+        pane_addressed,
     })
 }
 
@@ -2329,7 +2607,7 @@ fn tool_legacy_message(
     let text = arg_str(args, "message")
         .or_else(|| arg_str(args, "objective"))
         .filter(|text| !text.is_empty())
-        .ok_or_else(|| HostError::InvalidParams("message/objective 涓嶈兘涓虹┖".into()))?;
+        .ok_or_else(|| HostError::InvalidParams("message/objective 不能为空".into()))?;
     let delegate = name == "ridge_delegate_task";
     let submit = name != "ridge_send_to_teammate"
         || args.get("submit").and_then(Value::as_bool).unwrap_or(true);
@@ -2383,14 +2661,14 @@ fn tool_split(args: &Value, host: &dyn McpHost) -> HostResult<String> {
 
 fn tool_join(args: &Value, host: &dyn McpHost) -> HostResult<String> {
     let group = arg_str(args, "group_name")
-        .ok_or_else(|| HostError::InvalidParams("group_name 涓嶈兘涓虹┖".into()))?;
+        .ok_or_else(|| HostError::InvalidParams("group_name 不能为空".into()))?;
     let agent = arg_str(args, "agent_id");
     let has_pane = args
         .get("target_pane_id")
         .is_some_and(|value| !value.is_null() && value != &Value::String(String::new()));
     if agent.is_none() && !has_pane {
         return Err(HostError::InvalidParams(
-            "闇€鎻愪緵 agent_id 鎴?target_pane_id".into(),
+            "需提供 agent_id 或 target_pane_id".into(),
         ));
     }
     let target = has_pane.then(|| scoped_target(args, host)).transpose()?;
@@ -2416,8 +2694,8 @@ fn tool_inbox_read(
     host: &dyn McpHost,
     state: &McpSessionState,
 ) -> HostResult<String> {
-    let target = scoped_target(args, host)?;
-    let key = host.pane_key(&target)?;
+    let target = resolve_hub_target(args, host, "messages")?;
+    let key = target.target_key;
     let peek = args.get("peek").and_then(Value::as_bool).unwrap_or(false);
     inbox_take(state, &key, peek)
         .map(|entries| Value::Array(entries).to_string())
@@ -2476,11 +2754,11 @@ fn tool_delivery_status(
     host: &dyn McpHost,
     state: &McpSessionState,
 ) -> HostResult<String> {
-    let receipt_id = arg_str(args, "receipt_id")
-        .ok_or_else(|| HostError::InvalidParams("receipt_id 涓嶈兘涓虹┖".into()))?;
-    let target = scoped_target(args, host)?;
-    let key = host.pane_key(&target)?;
-    receipt_get(state, &key, receipt_id).map(|receipt| receipt.to_string())
+    let delivery_id = arg_str(args, "delivery_id")
+        .ok_or_else(|| HostError::InvalidParams("delivery_id must not be empty".into()))?;
+    let target = resolve_hub_target(args, host, "delivery")?;
+    let key = target.target_key;
+    receipt_get(state, &key, delivery_id).map(|receipt| receipt.to_string())
 }
 
 fn tool_task_update(
@@ -2504,18 +2782,18 @@ fn tool_task_update(
 }
 
 fn tool_ack(args: &Value, host: &dyn McpHost, state: &McpSessionState) -> HostResult<String> {
-    let receipt_id = arg_str(args, "receipt_id")
-        .ok_or_else(|| HostError::InvalidParams("receipt_id 涓嶈兘涓虹┖".into()))?;
+    let delivery_id = arg_str(args, "delivery_id")
+        .ok_or_else(|| HostError::InvalidParams("delivery_id must not be empty".into()))?;
     let status = arg_str(args, "status")
-        .ok_or_else(|| HostError::InvalidParams("status 涓嶈兘涓虹┖".into()))?;
-    let target = scoped_target(args, host)?;
-    let key = host.pane_key(&target)?;
-    receipt_ack(state, &key, receipt_id, status, arg_str(args, "detail"))
+        .ok_or_else(|| HostError::InvalidParams("status 不能为空".into()))?;
+    let target = resolve_hub_target(args, host, "delivery")?;
+    let key = target.target_key;
+    receipt_ack(state, &key, delivery_id, status, arg_str(args, "detail"))
         .map(|receipt| receipt.to_string())
 }
 
 fn required_arg<'a>(args: &'a Value, key: &str) -> HostResult<&'a str> {
-    arg_str(args, key).ok_or_else(|| HostError::InvalidParams(format!("{key} 涓嶈兘涓虹┖")))
+    arg_str(args, key).ok_or_else(|| HostError::InvalidParams(format!("{key} 不能为空")))
 }
 
 fn tool_rejection(args: &Value, host: &dyn McpHost) -> HostResult<String> {
@@ -2543,7 +2821,7 @@ fn tool_rejection(args: &Value, host: &dyn McpHost) -> HostResult<String> {
 fn tool_stash(args: &Value, state: &McpSessionState) -> HostResult<String> {
     let data = arg_str(args, "data")
         .or_else(|| arg_str(args, "content_base64"))
-        .ok_or_else(|| HostError::InvalidParams("data 涓嶈兘涓虹┖".into()))?;
+        .ok_or_else(|| HostError::InvalidParams("data 不能为空".into()))?;
     Ok(state
         .stash
         .lock()
@@ -2638,7 +2916,10 @@ mod tests {
     use crate::delivery::HubPtySafety;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
     use std::thread;
 
     struct FakeHost;
@@ -2695,6 +2976,130 @@ mod tests {
                 Ok(target.to_string())
             }
         }
+    }
+
+    struct FencedHost {
+        profile: Value,
+        pane_resolve_calls: Arc<AtomicUsize>,
+        pane_key_calls: Arc<AtomicUsize>,
+        probe_calls: Arc<AtomicUsize>,
+        pty_only: bool,
+    }
+
+    impl FencedHost {
+        fn new(profile: Value) -> Self {
+            Self {
+                profile,
+                pane_resolve_calls: Arc::new(AtomicUsize::new(0)),
+                pane_key_calls: Arc::new(AtomicUsize::new(0)),
+                probe_calls: Arc::new(AtomicUsize::new(0)),
+                pty_only: false,
+            }
+        }
+
+        fn pty_only(mut self) -> Self {
+            self.pty_only = true;
+            self
+        }
+    }
+
+    impl McpHost for FencedHost {
+        fn team_profile(&self) -> Value {
+            self.profile.clone()
+        }
+
+        fn team_profile_for(&self, _workspace_id: Option<&str>) -> HostResult<Value> {
+            Ok(self.profile.clone())
+        }
+
+        fn resolve_pane_target(
+            &self,
+            _workspace_id: Option<&str>,
+            target: &Value,
+        ) -> HostResult<Value> {
+            self.pane_resolve_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({
+                "workspaceId": self.profile["workspaceId"],
+                "paneId": target
+            }))
+        }
+
+        fn send_text(
+            &self,
+            _target: &Value,
+            _text: &str,
+            _submit: bool,
+            _mark_busy: bool,
+        ) -> HostResult<InputDispatch> {
+            Err(HostError::Internal("unexpected PTY write".into()))
+        }
+
+        fn capture_pane(&self, _target: &Value, _lines: usize) -> HostResult<String> {
+            Ok(String::new())
+        }
+
+        fn split_pane(
+            &self,
+            _direction: &str,
+            _role: &str,
+            _initial_cmd: Option<&str>,
+        ) -> HostResult<Value> {
+            Ok(Value::Null)
+        }
+
+        fn read_resource(&self, _uri: &RidgeUri) -> HostResult<(String, String)> {
+            Ok(("application/json".into(), "{}".into()))
+        }
+
+        fn pane_key(&self, _target: &Value) -> HostResult<String> {
+            self.pane_key_calls.fetch_add(1, Ordering::SeqCst);
+            Ok("pane-key".into())
+        }
+
+        fn probe_delivery(&self, _target: &Value) -> HostResult<DeliveryProbe> {
+            self.probe_calls.fetch_add(1, Ordering::SeqCst);
+            if self.pty_only {
+                Ok(DeliveryProbe {
+                    pty: HubPtySafety {
+                        agent_idle: true,
+                        terminal_mode_agent_prompt: true,
+                        foreground_is_target_agent: true,
+                        ..HubPtySafety::default()
+                    },
+                    ..DeliveryProbe::default()
+                })
+            } else {
+                Ok(DeliveryProbe {
+                    mcp_pull: true,
+                    ..DeliveryProbe::default()
+                })
+            }
+        }
+    }
+
+    fn identity_profile(
+        agent_id: &str,
+        workspace_id: &str,
+        generation: u64,
+        lease: &str,
+        online: bool,
+        lifecycle: &str,
+        capabilities: &[&str],
+    ) -> Value {
+        json!({
+            "workspaceId": workspace_id,
+            "roster": [{
+                "agentId": agent_id,
+                "sessionId": "external-session",
+                "workspaceId": workspace_id,
+                "paneId": "external-process:locator",
+                "generation": generation,
+                "lease": lease,
+                "online": online,
+                "lifecycle": lifecycle,
+                "capabilities": capabilities
+            }]
+        })
     }
 
     struct A2aHost {}
@@ -3108,6 +3513,461 @@ mod tests {
     }
 
     #[test]
+    fn agent_id_only_resolves_once_without_pane_host_calls() {
+        let host = FencedHost::new(identity_profile(
+            "external-agent",
+            "workspace-a",
+            7,
+            "lease-7",
+            true,
+            "Online",
+            &["messages", "tasks", "events"],
+        ));
+        let response = call_tool_rpc(
+            "ridge_send_message",
+            json!({
+                "agent_id": "external-agent",
+                "message": "hello external",
+                "idempotency_key": "external-1"
+            }),
+            &host,
+            &McpSessionState::default(),
+        );
+        assert!(
+            response.get("error").is_none(),
+            "agent-only send failed: {response}"
+        );
+        let entry: Value = serde_json::from_str(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .expect("Hub result"),
+        )
+        .unwrap();
+        assert!(entry["targetKey"].as_str().unwrap().starts_with("agent:"));
+        assert_eq!(entry["to"]["paneId"], "external-process:locator");
+        assert_eq!(host.pane_resolve_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(host.pane_key_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(host.probe_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn pane_and_agent_selectors_share_hub_state_and_idempotency() {
+        let host = FencedHost::new(identity_profile(
+            "external-agent",
+            "workspace-a",
+            7,
+            "lease-7",
+            true,
+            "Online",
+            &["messages", "tasks", "events"],
+        ));
+        let state = McpSessionState::default();
+        let value = |response: Value| -> Value {
+            serde_json::from_str(
+                response["result"]["content"][0]["text"]
+                    .as_str()
+                    .expect("Hub result"),
+            )
+            .expect("Hub JSON")
+        };
+        let agent_send = value(call_tool_rpc(
+            "ridge_send_message",
+            json!({
+                "agent_id": "external-agent",
+                "message": "agent to pane",
+                "from": "sender",
+                "idempotency_key": "agent-to-pane"
+            }),
+            &host,
+            &state,
+        ));
+        let pane_read = value(call_tool_rpc(
+            "ridge_inbox_read",
+            json!({ "target_pane_id": "external-process:locator" }),
+            &host,
+            &state,
+        ));
+        assert_eq!(pane_read[0]["deliveryId"], agent_send["deliveryId"]);
+
+        let pane_status = value(call_tool_rpc(
+            "ridge_delivery_status",
+            json!({
+                "target_pane_id": "external-process:locator",
+                "delivery_id": agent_send["deliveryId"]
+            }),
+            &host,
+            &state,
+        ));
+        assert_eq!(pane_status["targetKey"], agent_send["targetKey"]);
+        let pane_ack = value(call_tool_rpc(
+            "ridge_acknowledge_receipt",
+            json!({
+                "target_pane_id": "external-process:locator",
+                "delivery_id": agent_send["deliveryId"],
+                "status": "agent_acknowledged"
+            }),
+            &host,
+            &state,
+        ));
+        assert_eq!(pane_ack["agentAcknowledged"], true);
+
+        let pane_send = value(call_tool_rpc(
+            "ridge_send_message",
+            json!({
+                "target_pane_id": "external-process:locator",
+                "message": "pane to agent",
+                "from": "sender",
+                "idempotency_key": "pane-to-agent"
+            }),
+            &host,
+            &state,
+        ));
+        let duplicate_agent_send = value(call_tool_rpc(
+            "ridge_send_message",
+            json!({
+                "agent_id": "external-agent",
+                "message": "pane to agent",
+                "from": "sender",
+                "idempotency_key": "pane-to-agent"
+            }),
+            &host,
+            &state,
+        ));
+        assert_eq!(duplicate_agent_send["deduplicated"], true);
+        assert_eq!(duplicate_agent_send["deliveryId"], pane_send["deliveryId"]);
+        let agent_status = value(call_tool_rpc(
+            "ridge_delivery_status",
+            json!({
+                "agent_id": "external-agent",
+                "delivery_id": pane_send["deliveryId"]
+            }),
+            &host,
+            &state,
+        ));
+        assert_eq!(agent_status["targetKey"], pane_send["targetKey"]);
+        let agent_ack = value(call_tool_rpc(
+            "ridge_acknowledge_receipt",
+            json!({
+                "agent_id": "external-agent",
+                "delivery_id": pane_send["deliveryId"],
+                "status": "agent_acknowledged"
+            }),
+            &host,
+            &state,
+        ));
+        assert_eq!(agent_ack["agentAcknowledged"], true);
+
+        let agent_to_pane = value(call_tool_rpc(
+            "ridge_send_message",
+            json!({
+                "agent_id": "external-agent",
+                "message": "read by pane",
+                "from": "sender",
+                "idempotency_key": "read-by-pane"
+            }),
+            &host,
+            &state,
+        ));
+        let pane_to_agent = value(call_tool_rpc(
+            "ridge_send_message",
+            json!({
+                "target_pane_id": "external-process:locator",
+                "message": "read by agent",
+                "from": "sender",
+                "idempotency_key": "read-by-agent"
+            }),
+            &host,
+            &state,
+        ));
+        let pane_reads = value(call_tool_rpc(
+            "ridge_inbox_read",
+            json!({ "target_pane_id": "external-process:locator", "peek": true }),
+            &host,
+            &state,
+        ));
+        let agent_reads = value(call_tool_rpc(
+            "ridge_inbox_read",
+            json!({ "agent_id": "external-agent", "peek": true }),
+            &host,
+            &state,
+        ));
+        assert!(pane_reads
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["deliveryId"] == agent_to_pane["deliveryId"]));
+        assert!(agent_reads
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["deliveryId"] == pane_to_agent["deliveryId"]));
+        assert_eq!(host.probe_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn agent_target_fences_workspace_generation_lease_lifecycle_capability_and_conflict() {
+        let profile = identity_profile(
+            "external-agent",
+            "workspace-a",
+            7,
+            "lease-7",
+            true,
+            "Online",
+            &["messages", "tasks", "events"],
+        );
+        let cases = [
+            (json!({ "agent_id": "missing-agent" }), "target_missing"),
+            (
+                json!({ "workspace_id": "workspace-b" }),
+                "workspace_mismatch",
+            ),
+            (json!({ "workspace_id": true }), "invalid_target"),
+            (json!({ "generation": 6 }), "generation_mismatch"),
+            (json!({ "generation": true }), "invalid_target"),
+            (json!({ "lease": "old-lease" }), "stale_lease"),
+            (json!({ "lease": 7 }), "invalid_target"),
+            (json!({ "target_pane_id": "other-pane" }), "target_conflict"),
+        ];
+        for (extra, expected) in cases {
+            let mut args = json!({
+                "agent_id": "external-agent",
+                "message": "fence",
+                "idempotency_key": "fence-case"
+            });
+            args.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let response = call_tool_rpc(
+                "ridge_send_message",
+                args,
+                &FencedHost::new(profile.clone()),
+                &McpSessionState::default(),
+            );
+            assert_eq!(response["error"]["code"], proto::INVALID_PARAMS);
+            assert!(
+                response["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(expected),
+                "expected {expected}, response: {response}"
+            );
+        }
+
+        for (online, lifecycle, capabilities, expected) in [
+            (false, "Online", vec!["messages"], "target_offline"),
+            (true, "Stopped", vec!["messages"], "target_offline"),
+            (true, "Online", vec!["tasks"], "capability_denied"),
+        ] {
+            let host = FencedHost::new(identity_profile(
+                "external-agent",
+                "workspace-a",
+                7,
+                "lease-7",
+                online,
+                lifecycle,
+                &capabilities,
+            ));
+            let response = call_tool_rpc(
+                "ridge_send_message",
+                json!({
+                    "agent_id": "external-agent",
+                    "message": "hello",
+                    "idempotency_key": expected
+                }),
+                &host,
+                &McpSessionState::default(),
+            );
+            assert!(response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(expected));
+        }
+    }
+
+    #[test]
+    fn generation_and_lease_rotation_isolated_and_purgeable() {
+        let old_host = FencedHost::new(identity_profile(
+            "external-agent",
+            "workspace-a",
+            7,
+            "lease-7",
+            true,
+            "Online",
+            &["messages"],
+        ));
+        let new_host = FencedHost::new(identity_profile(
+            "external-agent",
+            "workspace-a",
+            8,
+            "lease-8",
+            true,
+            "Online",
+            &["messages"],
+        ));
+        let state = McpSessionState::default();
+        let send = |host: &FencedHost| {
+            let response = call_tool_rpc(
+                "ridge_send_message",
+                json!({
+                    "agent_id": "external-agent",
+                    "message": "rotation",
+                    "from": "sender",
+                    "idempotency_key": "rotation-1"
+                }),
+                host,
+                &state,
+            );
+            serde_json::from_str::<Value>(
+                response["result"]["content"][0]["text"]
+                    .as_str()
+                    .expect("Hub result"),
+            )
+            .expect("Hub JSON")
+        };
+        let old_entry = send(&old_host);
+        let new_inbox = call_tool_rpc(
+            "ridge_inbox_read",
+            json!({ "agent_id": "external-agent" }),
+            &new_host,
+            &state,
+        );
+        assert_eq!(new_inbox["result"]["content"][0]["text"], "[]");
+
+        let new_entry = send(&new_host);
+        assert_ne!(new_entry["targetKey"], old_entry["targetKey"]);
+        assert_ne!(
+            identity_target_key("workspace-a", "external-agent", 7, "lease-7"),
+            identity_target_key("workspace-a", "external-agent", 7, "lease-8")
+        );
+
+        state
+            .purge_identity("workspace-a", "external-agent", 7, "lease-7")
+            .expect("purge old Agent generation");
+        let old_status = call_tool_rpc(
+            "ridge_delivery_status",
+            json!({
+                "agent_id": "external-agent",
+                "delivery_id": old_entry["deliveryId"]
+            }),
+            &old_host,
+            &state,
+        );
+        assert!(old_status["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("delivery 不存在"));
+        let new_status = call_tool_rpc(
+            "ridge_delivery_status",
+            json!({
+                "agent_id": "external-agent",
+                "delivery_id": new_entry["deliveryId"]
+            }),
+            &new_host,
+            &state,
+        );
+        assert_eq!(new_status["result"]["content"][0]["type"], "text");
+    }
+
+    #[test]
+    fn purge_identity_does_not_teardown_newer_generation_routes() {
+        let state = McpSessionState::default();
+        let receiver = state
+            .register_delivery_endpoint(
+                HubDeliveryAdapter::RuntimeApi,
+                "external-agent",
+                8,
+                "lease-8",
+            )
+            .expect("register current generation");
+        state
+            .register_pty_runtime_snapshot(
+                "external-agent",
+                8,
+                "lease-8",
+                HubPtyRuntimeSnapshot::new(
+                    HubPtySafety {
+                        agent_idle: true,
+                        terminal_mode_agent_prompt: true,
+                        foreground_is_target_agent: true,
+                        ..Default::default()
+                    },
+                    1,
+                    1,
+                ),
+            )
+            .expect("register current PTY snapshot");
+        let current = json!({
+            "agentId": "external-agent",
+            "generation": 8,
+            "lease": "lease-8"
+        });
+        state
+            .purge_identity("workspace-a", "external-agent", 7, "lease-7")
+            .expect("stale identity purge must not fail closed against a newer route");
+        assert!(state.delivery_probe(&current).runtime_api);
+        assert!(state.delivery_probe(&current).pty.is_safe());
+        let entry = json!({"messageId": "still-routable"});
+        state
+            .deliver_registered_endpoint(HubDeliveryAdapter::RuntimeApi, &current, &entry)
+            .expect("current generation remains selectable");
+        assert_eq!(receiver.recv().unwrap(), entry);
+    }
+
+    #[test]
+    fn agent_id_target_uses_mcp_pull_without_host_delivery_probe() {
+        let host = FencedHost::new(identity_profile(
+            "external-agent",
+            "workspace-a",
+            7,
+            "lease-7",
+            true,
+            "Online",
+            &["messages"],
+        ))
+        .pty_only();
+        let response = call_tool_rpc(
+            "ridge_send_message",
+            json!({
+                "agent_id": "external-agent",
+                "message": "must pull or adapter",
+                "idempotency_key": "no-pty"
+            }),
+            &host,
+            &McpSessionState::default(),
+        );
+        let entry: Value = serde_json::from_str(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .expect("MCP pull result"),
+        )
+        .unwrap();
+        assert_eq!(entry["deliveryAdapter"], "mcp_pull");
+        assert_eq!(host.pane_resolve_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(host.pane_key_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(host.probe_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn malformed_pane_selector_is_not_ignored_when_agent_id_is_present() {
+        let response = call_tool_rpc(
+            "ridge_send_message",
+            json!({
+                "agent_id": "agent-7",
+                "target_pane_id": true,
+                "message": "reject",
+                "idempotency_key": "bad-pane"
+            }),
+            &FakeHost,
+            &McpSessionState::default(),
+        );
+        assert_eq!(response["error"]["code"], proto::INVALID_PARAMS);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid_target"));
+    }
+
+    #[test]
     fn enter_is_cr_not_lf() {
         // 回归守卫：LF 会让消息卡在对端 TUI 输入框（实测），Enter 必须是 CR。
         assert_eq!(enter_terminated("hi"), "hi\r");
@@ -3144,7 +4004,7 @@ mod tests {
         first.purge_pane("7").expect("purge in-memory Hub state");
         let status = json!({
             "jsonrpc":"2.0","id":3,"method":"tools/call",
-            "params":{"name":"ridge_delivery_status","arguments":{"target_pane_id":7,"receipt_id":receipt["deliveryId"]}}
+            "params":{"name":"ridge_delivery_status","arguments":{"target_pane_id":7,"delivery_id":receipt["deliveryId"]}}
         })
         .to_string();
         assert!(
@@ -3332,7 +4192,7 @@ mod tests {
         let ack_after_cancel = json!({
             "jsonrpc":"2.0","id":31,"method":"tools/call",
             "params":{"name":"ridge_acknowledge_receipt","arguments":{
-                "target_pane_id":7,"receipt_id":sent["deliveryId"],"status":"agent_received"
+                "target_pane_id":7,"delivery_id":sent["deliveryId"],"status":"agent_received"
             }}
         })
         .to_string();
@@ -3538,6 +4398,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(default_text.contains("\"status\":\"queued\""));
+        assert!(default_text.contains("\"submitRequested\":true"));
         assert!(draft_text.contains("\"submitRequested\":false"));
         assert!(submit_text.contains("\"submitRequested\":true"));
         assert!(submit_text.contains("\"deliveryAdapter\":\"mcp_pull\""));
@@ -3766,7 +4627,7 @@ mod tests {
 
         let status = json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"ridge_delivery_status","arguments":{"target_pane_id":91,"receipt_id":receipt_id}}
+            "params":{"name":"ridge_delivery_status","arguments":{"target_pane_id":91,"delivery_id":receipt_id}}
         })
         .to_string();
         let before: Value = serde_json::from_str(
@@ -3782,7 +4643,7 @@ mod tests {
         let ack = json!({
             "jsonrpc":"2.0","id":3,"method":"tools/call",
             "params":{"name":"ridge_acknowledge_receipt","arguments":{
-                "target_pane_id":91,"receipt_id":receipt_id,"status":"agent_acknowledged","detail":"received"
+                "target_pane_id":91,"delivery_id":receipt_id,"status":"agent_acknowledged","detail":"received"
             }}
         })
         .to_string();
@@ -3866,6 +4727,7 @@ mod tests {
             pane_id: "adapter-pane".into(),
             generation: 1,
             lease: "adapter-lease".into(),
+            pane_addressed: true,
         }
     }
 
@@ -4056,11 +4918,15 @@ mod tests {
                 .persistence
                 .as_ref()
                 .expect("persistent backend")
-                .persist_enqueue("pane-1", &entry, "sender:key-1")
+                .persist_enqueue(
+                    "pane-1",
+                    &entry,
+                    &idempotency_key("pane-1", "sender", "key-1"),
+                )
                 .expect("persist message");
             receipt_insert(&state, "delivery-1".into(), entry.clone());
             inbox_push(&state, "pane-1", entry.clone());
-            dedupe_insert(&state, "sender:key-1".into(), entry);
+            dedupe_insert(&state, idempotency_key("pane-1", "sender", "key-1"), entry);
         }
 
         {
@@ -4069,7 +4935,7 @@ mod tests {
                 .expect("fetch rehydrated message");
             assert_eq!(fetched.len(), 1);
             assert_eq!(fetched[0]["payload"]["text"], "durable");
-            assert!(dedupe_lookup(&state, "sender:key-1").is_some());
+            assert!(dedupe_lookup(&state, &idempotency_key("pane-1", "sender", "key-1")).is_some());
 
             let acknowledged = receipt_ack(
                 &state,
@@ -4115,6 +4981,7 @@ mod tests {
             pane_id: "pane-2".into(),
             generation: 2,
             lease: "lease-2".into(),
+            pane_addressed: true,
         };
         let first = {
             let state = McpSessionState::with_sqlite(&path).expect("create SQLite Hub");
@@ -4223,7 +5090,11 @@ mod tests {
         {
             let state = McpSessionState::with_sqlite(&path).expect("reopen cancelled Hub");
             assert_eq!(
-                dedupe_lookup(&state, "persistent-sender:persistent-cancel").unwrap()["status"],
+                dedupe_lookup(
+                    &state,
+                    &idempotency_key(&target.target_key, "persistent-sender", "persistent-cancel",),
+                )
+                .unwrap()["status"],
                 "cancelled"
             );
             assert_eq!(
