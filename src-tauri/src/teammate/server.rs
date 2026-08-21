@@ -2791,6 +2791,7 @@ fn summon_one_pane(
         resize_silence_deadline: Arc::new(std::sync::atomic::AtomicI64::new(0)),
         parser,
         delta_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        workspace: Arc::new(parking_lot::Mutex::new(wid)),
     };
     {
         let mut map = state.workspaces.write();

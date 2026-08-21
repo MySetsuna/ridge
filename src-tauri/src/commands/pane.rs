@@ -399,7 +399,16 @@ pub async fn dock_pane(
     let mut map = state.workspaces.write();
 
     // 1. 从 source workspace 摘下 leaf + 取走 pane 元数据 / PTY / 标题。
-    let (pane_meta, pty_handle, pane_size, teammate_title, source_now_empty) = {
+    let (
+        pane_meta,
+        pty_handle,
+        pane_size,
+        teammate_title,
+        pty_generation,
+        teammate_state,
+        teammate_agents,
+        source_now_empty,
+    ) = {
         let src_ws = map
             .get_mut(&source_wid)
             .ok_or_else(|| "source 工作区已消失".to_string())?;
@@ -415,7 +424,27 @@ pub async fn dock_pane(
         let pty = src_ws.terminals.remove(&source);
         let size = src_ws.pane_sizes.remove(&source);
         let title = src_ws.teammate_pane_titles.remove(&source);
-        (meta, pty, size, title, was_only)
+        let generation = src_ws.pty_generation.remove(&source);
+        let teammate_state = src_ws.teammate_pane_states.remove(&source);
+        let teammate_agents: Vec<_> = src_ws
+            .teammate_agent_pane_map
+            .iter()
+            .filter(|(_, pane_id)| **pane_id == source)
+            .map(|(agent_id, _)| agent_id.clone())
+            .collect();
+        for agent_id in &teammate_agents {
+            src_ws.teammate_agent_pane_map.remove(agent_id);
+        }
+        (
+            meta,
+            pty,
+            size,
+            title,
+            generation,
+            teammate_state,
+            teammate_agents,
+            was_only,
+        )
     };
 
     // 2. 注入 target workspace：先放元数据 / PTY，再把 leaf 拼到 target 节点边上。
@@ -427,6 +456,7 @@ pub async fn dock_pane(
             tgt_ws.pane_tree.panes.insert(source, meta);
         }
         if let Some(pty) = pty_handle {
+            *pty.workspace.lock() = target_wid;
             tgt_ws.terminals.insert(source, pty);
         }
         if let Some(size) = pane_size {
@@ -434,6 +464,15 @@ pub async fn dock_pane(
         }
         if let Some(title) = teammate_title {
             tgt_ws.teammate_pane_titles.insert(source, title);
+        }
+        if let Some(generation) = pty_generation {
+            tgt_ws.pty_generation.insert(source, generation);
+        }
+        if let Some(teammate_state) = teammate_state {
+            tgt_ws.teammate_pane_states.insert(source, teammate_state);
+        }
+        for agent_id in teammate_agents {
+            tgt_ws.teammate_agent_pane_map.insert(agent_id, source);
         }
         tgt_ws
             .pane_tree
@@ -461,6 +500,7 @@ pub async fn dock_pane(
         crate::commands::ridge_file::schedule_auto_save(&*state, source_wid);
     }
 
+    state.retarget_pane_runtime(source_wid, target_wid, source);
     crate::commands::ridge_file::schedule_auto_save(&*state, target_wid);
     Ok(())
 }
@@ -1428,6 +1468,28 @@ mod remote_resume_path_tests {
         assert!(planned.argv.iter().any(|part| part == "sess-1"));
         assert!(
             crate::commands::terminal::validate_agent_launch(&planned.executable, &cwd).is_ok()
+        );
+    }
+
+    #[test]
+    fn cross_workspace_dock_moves_generation_and_retargets_runtime() {
+        let source = include_str!("pane.rs");
+        let body = source
+            .split("跨工作区路径：搬节点 + PTY，不重启 shell。")
+            .nth(1)
+            .and_then(|rest| rest.split("fn locate_pane_workspaces").next())
+            .expect("cross-workspace dock body");
+        assert!(
+            body.contains("pty_generation.remove(&source)"),
+            "dock must move generation with the handle, not bump it"
+        );
+        assert!(
+            body.contains("*pty.workspace.lock() = target_wid"),
+            "dock must retarget the live reader workspace Arc"
+        );
+        assert!(
+            body.contains("retarget_pane_runtime(source_wid, target_wid, source)"),
+            "dock must move scrollback/delta/input lanes with the pane"
         );
     }
 }

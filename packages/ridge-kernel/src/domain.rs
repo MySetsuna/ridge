@@ -18,6 +18,8 @@ use crate::server::{AppState, OutputLeaseSlot};
 use ridge_core::teammate::communication::{AgentIdentity, CommunicationError};
 use ridge_core::workspace::graph::WorkspaceMeta;
 use ridge_core::workspace::pane_tree::PaneTree;
+#[cfg(test)]
+use ridge_mcp::delivery::HubDeliveryAdapter;
 
 /// Bound HTTP lease handles even when clients disappear without DELETE. The
 /// PTY replay bytes remain bounded separately by `PtyOutputHub`.
@@ -2262,6 +2264,7 @@ mod tests {
                 ridge_core::teammate::communication::AgentLifecycle::Online
             );
             json!({
+                "workspaceId": identity.workspace_id,
                 "agentId": identity.agent_id,
                 "generation": identity.generation,
                 "lease": identity.lease,
@@ -2271,6 +2274,7 @@ mod tests {
             .mcp_state
             .register_delivery_endpoint(
                 HubDeliveryAdapter::RuntimeApi,
+                target["workspaceId"].as_str().unwrap(),
                 target["agentId"].as_str().unwrap(),
                 target["generation"].as_u64().unwrap(),
                 target["lease"].as_str().unwrap(),

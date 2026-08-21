@@ -1503,6 +1503,24 @@ mod renderer_js {
             self.renderer.set_presentation_cursor_suppressed(suppressed);
         }
 
+        /// DEV/e2e probe for the cell currently presented, including a freeze.
+        /// `-1` means no cursor is on screen. Not used by the compositor loop.
+        #[wasm_bindgen(js_name = presentedCursorRow)]
+        pub fn presented_cursor_row(&self) -> i32 {
+            self.renderer
+                .presented_cursor_cell()
+                .map(|(row, _)| row as i32)
+                .unwrap_or(-1)
+        }
+
+        #[wasm_bindgen(js_name = presentedCursorCol)]
+        pub fn presented_cursor_col(&self) -> i32 {
+            self.renderer
+                .presented_cursor_cell()
+                .map(|(_, col)| col as i32)
+                .unwrap_or(-1)
+        }
+
         /// Install an IME preedit overlay at the given cell. The renderer
         /// will paint `text` on top of the cell grid each frame until
         /// `clearPreedit` is called. Cells themselves are NOT modified,

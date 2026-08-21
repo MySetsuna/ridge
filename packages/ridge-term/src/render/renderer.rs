@@ -537,6 +537,16 @@ impl<B: RenderBackend> Renderer<B> {
         self.presentation_cursor_suppressed = suppressed;
     }
 
+    /// Last cell actually presented, including a frozen cursor. Read-only
+    /// probe for DEV/e2e; the compositor hot path does not call this.
+    pub fn presented_cursor_cell(&self) -> Option<(usize, usize)> {
+        self.last_cursor
+            .as_ref()
+            .or(self.frozen_cursor.as_ref())
+            .or(self.last_presented_cursor.as_ref())
+            .map(|cursor| (cursor.row, cursor.col))
+    }
+
     pub fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
     }
@@ -848,17 +858,14 @@ impl<B: RenderBackend> Renderer<B> {
             || self.preedit.is_some()
             || self.history_overlay.is_some()
             || offset != 0
-            || terminal.is_alt_screen()
-            || terminal.grid().is_inline_tui_active_at(
-                crate::term::clock::now_ms(),
-                terminal.modes().cursor_visible,
-            )
-            || !scroll.up
-            || scroll.top != 0
-            || scroll.bottom.saturating_add(1) != rows
             || scroll.count == 0
-            || scroll.count >= rows
+            || scroll.bottom >= rows
+            || scroll.top > scroll.bottom
         {
+            return None;
+        }
+        let height = scroll.bottom.saturating_sub(scroll.top).saturating_add(1);
+        if scroll.count >= height {
             return None;
         }
         Some(*scroll)
@@ -1797,10 +1804,48 @@ mod tests {
         let mut drawn = renderer.backend().last_drawn.clone();
         drawn.sort_unstable();
         drawn.dedup();
+        assert!(
+            drawn.len() <= 2,
+            "scroll copy must not repaint the whole viewport: {drawn:?}"
+        );
+    }
+
+    #[test]
+    fn alt_screen_and_inline_tui_scrolls_still_copy_pixels() {
+        let mut term = Terminal::new(6, 12, 0);
+        term.feed(b"\x1b[?1049h\x1b[?25l\x1b[1;1Hline1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6");
+        let mut renderer = Renderer::new(
+            RecordingBackend {
+                scroll_copy: true,
+                ..RecordingBackend::default()
+            },
+            metrics(),
+            Theme::default_dark(),
+        );
+        renderer.set_focused(false);
+        assert!(renderer.tick(&term, None, 0.0));
+        renderer.backend_mut().last_drawn.clear();
+        renderer.backend_mut().scrolls.clear();
+
+        term.feed(b"\nnext");
+        let scrolls = term.take_scroll_ops();
+        assert!(!scrolls.is_empty(), "alt-screen newline must emit a scroll");
+        assert!(renderer.tick_with_scroll(&term, None, 0.0, &scrolls));
+        assert!(
+            !renderer.backend().scrolls.is_empty(),
+            "TUI/alt-screen scrolls must use the pixel copy path"
+        );
         assert_eq!(
-            drawn,
-            vec![2, 3],
-            "only new bottom content plus its glyph-bleed predecessor redraws"
+            renderer.backend().clears,
+            1,
+            "TUI scroll must not clear the whole viewport"
+        );
+        let mut drawn = renderer.backend().last_drawn.clone();
+        drawn.sort_unstable();
+        drawn.dedup();
+        assert!(
+            drawn.len() < 6,
+            "TUI scroll must not repaint every row: {drawn:?}"
         );
     }
 
@@ -1895,6 +1940,11 @@ mod tests {
                 renderer.backend().cursor_positions.last().copied(),
                 stable,
                 "kernel cursor walk must not move the presented cursor"
+            );
+            assert_eq!(
+                renderer.presented_cursor_cell(),
+                Some((0, 4)),
+                "presented-cursor probe must report the frozen cell"
             );
         }
     }

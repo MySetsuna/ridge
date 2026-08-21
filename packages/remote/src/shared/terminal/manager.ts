@@ -2129,6 +2129,7 @@ export class TerminalManager {
 					scrollbackLen: (paneId: string) => number;
 					themeSnapshot: () => Record<string, string> | null;
 					kernelCursor: (paneId: string) => { row: number; col: number } | null;
+					presentedCursor: (paneId: string) => { row: number; col: number } | null;
 					kernelThemeProbe: (paneId: string) =>
 						| { bg: string; fg: string; cursor: string; tuiBg: string }
 						| { error: string }
@@ -2228,6 +2229,18 @@ export class TerminalManager {
 					if (!e) return null;
 					const k = e.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
 					return { row: k.cursorRow(), col: k.cursorCol() };
+				},
+				presentedCursor: (paneId) => {
+					const e = this.panes.get(paneId);
+					if (!e) return null;
+					const handle = e.handle as unknown as {
+						presentedCursorRow?: () => number;
+						presentedCursorCol?: () => number;
+					};
+					if (typeof handle.presentedCursorRow !== 'function') return null;
+					const row = handle.presentedCursorRow();
+					if (row < 0) return null;
+					return { row, col: handle.presentedCursorCol?.() ?? 0 };
 				},
 				// Wasm-side theme probe — returns the renderer's currently
 				// active `Theme::{bg, fg, cursor_color, tui_bg}` as four

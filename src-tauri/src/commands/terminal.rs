@@ -737,6 +737,7 @@ fn install_kernel_pty(
         resize_silence_deadline: Arc::new(AtomicI64::new(0)),
         parser,
         delta_mode: Arc::new(AtomicBool::new(false)),
+        workspace: Arc::new(Mutex::new(workspace_id)),
     };
     {
         let mut map = state.workspaces.write();
@@ -1648,6 +1649,7 @@ pub(crate) fn activate_pane_pty_state(
         resize_silence_deadline: Arc::new(AtomicI64::new(0)),
         parser,
         delta_mode: Arc::new(AtomicBool::new(false)),
+        workspace: Arc::new(Mutex::new(workspace_id)),
     };
 
     {

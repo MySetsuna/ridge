@@ -168,17 +168,28 @@ pub trait McpHost: Send + Sync {
     /// complete fenced identity fail closed instead of becoming impersonable.
     fn authorize_delivery_endpoint(
         &self,
+        workspace_id: &str,
         agent_id: &str,
         generation: u64,
         lease: &str,
     ) -> HostResult<()> {
-        let profile = self.team_profile_for(None)?;
+        if workspace_id.trim().is_empty() {
+            return Err(HostError::InvalidParams(
+                "delivery registration requires workspace_id".into(),
+            ));
+        }
+        let profile = self
+            .team_profile_for(Some(workspace_id))
+            .or_else(|_| self.team_profile_for(None))
+            .or_else(|_| Ok(self.team_profile()))?;
         let identity = ["agent_identities", "roster"]
             .into_iter()
             .filter_map(|key| profile.get(key).and_then(Value::as_array))
             .flatten()
             .find(|entry| {
                 value_string(entry, &["agentId", "agent_id", "id"]).as_deref() == Some(agent_id)
+                    && value_string(entry, &["workspaceId", "workspace_id"]).as_deref()
+                        == Some(workspace_id)
             })
             .ok_or_else(|| {
                 HostError::InvalidParams("delivery Agent identity is not registered".into())
@@ -541,14 +552,26 @@ impl McpSessionState {
         // Unregister is fail-closed: mismatch must not delete a newer route.
         // Identity purge still succeeds because the old Hub key is already gone.
         for adapter in [HubDeliveryAdapter::RuntimeApi, HubDeliveryAdapter::A2a] {
-            ignore_stale_identity_teardown(
-                self.unregister_delivery_endpoint(adapter, agent_id, generation, lease),
-            )?;
+            ignore_stale_identity_teardown(self.unregister_delivery_endpoint(
+                adapter,
+                workspace_id,
+                agent_id,
+                generation,
+                lease,
+            ))?;
         }
-        ignore_stale_identity_teardown(self.unregister_a2a_endpoint(agent_id, generation, lease))?;
-        ignore_stale_identity_teardown(
-            self.unregister_pty_runtime_snapshot(agent_id, generation, lease),
-        )?;
+        ignore_stale_identity_teardown(self.unregister_a2a_endpoint(
+            workspace_id,
+            agent_id,
+            generation,
+            lease,
+        ))?;
+        ignore_stale_identity_teardown(self.unregister_pty_runtime_snapshot(
+            workspace_id,
+            agent_id,
+            generation,
+            lease,
+        ))?;
         Ok(())
     }
 
@@ -558,69 +581,85 @@ impl McpSessionState {
     pub fn register_delivery_endpoint(
         &self,
         adapter: HubDeliveryAdapter,
+        workspace_id: impl Into<String>,
         agent_id: impl Into<String>,
         generation: u64,
         lease: impl Into<String>,
     ) -> Result<std::sync::mpsc::Receiver<Value>, String> {
         self.delivery_registry
-            .register(adapter, agent_id, generation, lease)
+            .register(adapter, workspace_id, agent_id, generation, lease)
     }
 
     pub fn unregister_delivery_endpoint(
         &self,
         adapter: HubDeliveryAdapter,
+        workspace_id: &str,
         agent_id: &str,
         generation: u64,
         lease: &str,
     ) -> Result<bool, String> {
         self.delivery_registry
-            .unregister(adapter, agent_id, generation, lease)
+            .unregister(adapter, workspace_id, agent_id, generation, lease)
     }
 
     /// Discover and register one standard A2A JSON-RPC endpoint for the
     /// current Agent generation. Credentials stay in the process-local route.
     pub fn register_a2a_endpoint(
         &self,
+        workspace_id: impl Into<String>,
         agent_id: impl Into<String>,
         generation: u64,
         lease: impl Into<String>,
         config: A2aClientConfig,
     ) -> Result<crate::a2a::AgentCard, String> {
         self.a2a_endpoints
-            .register(agent_id, generation, lease, config)
+            .register(workspace_id, agent_id, generation, lease, config)
     }
 
     pub fn unregister_a2a_endpoint(
         &self,
+        workspace_id: &str,
         agent_id: &str,
         generation: u64,
         lease: &str,
     ) -> Result<bool, String> {
-        self.a2a_endpoints.unregister(agent_id, generation, lease)
+        self.a2a_endpoints
+            .unregister(workspace_id, agent_id, generation, lease)
     }
 
     /// Publish one atomically sampled, generation/lease-fenced PTY runtime
     /// snapshot before the Hub may fall back to PTY delivery.
     pub fn register_pty_runtime_snapshot(
         &self,
+        workspace_id: impl Into<String>,
         agent_id: impl Into<String>,
         generation: u64,
         lease: impl Into<String>,
         snapshot: HubPtyRuntimeSnapshot,
     ) -> Result<(), String> {
-        self.delivery_registry
-            .register_pty_runtime_snapshot(agent_id, generation, lease, snapshot)
+        self.delivery_registry.register_pty_runtime_snapshot(
+            workspace_id,
+            agent_id,
+            generation,
+            lease,
+            snapshot,
+        )
     }
 
     /// Remove a PTY runtime snapshot only from its owning Agent generation.
     pub fn unregister_pty_runtime_snapshot(
         &self,
+        workspace_id: &str,
         agent_id: &str,
         generation: u64,
         lease: &str,
     ) -> Result<bool, String> {
-        self.delivery_registry
-            .unregister_pty_runtime_snapshot(agent_id, generation, lease)
+        self.delivery_registry.unregister_pty_runtime_snapshot(
+            workspace_id,
+            agent_id,
+            generation,
+            lease,
+        )
     }
 
     pub fn delivery_probe(&self, target: &Value) -> DeliveryProbe {
@@ -1641,6 +1680,7 @@ fn enqueue_hub_entry(
         if let Some(snapshot) = host.pty_runtime_snapshot(&target_value)? {
             state
                 .register_pty_runtime_snapshot(
+                    target.workspace_id.clone(),
                     target.agent_id.clone(),
                     target.generation,
                     target.lease.clone(),
@@ -2540,6 +2580,7 @@ fn tool_register_a2a_endpoint(
         .unwrap_or_default();
     let card = state
         .register_a2a_endpoint(
+            target.workspace_id.clone(),
             target.agent_id.clone(),
             target.generation,
             target.lease.clone(),
@@ -2586,7 +2627,12 @@ fn tool_unregister_a2a_endpoint(
 ) -> HostResult<String> {
     let target = resolve_hub_target(args, host, "delivery")?;
     let removed = state
-        .unregister_a2a_endpoint(&target.agent_id, target.generation, &target.lease)
+        .unregister_a2a_endpoint(
+            &target.workspace_id,
+            &target.agent_id,
+            target.generation,
+            &target.lease,
+        )
         .map_err(HostError::Internal)?;
     Ok(json!({
         "unregistered": removed,
@@ -3247,6 +3293,7 @@ mod tests {
         let state = Arc::new(McpSessionState::default());
         state
             .register_a2a_endpoint(
+                "ws-test",
                 "agent-a",
                 1,
                 "lease-a",
@@ -3874,6 +3921,7 @@ mod tests {
         let receiver = state
             .register_delivery_endpoint(
                 HubDeliveryAdapter::RuntimeApi,
+                "workspace-a",
                 "external-agent",
                 8,
                 "lease-8",
@@ -3881,6 +3929,7 @@ mod tests {
             .expect("register current generation");
         state
             .register_pty_runtime_snapshot(
+                "workspace-a",
                 "external-agent",
                 8,
                 "lease-8",
@@ -3897,6 +3946,7 @@ mod tests {
             )
             .expect("register current PTY snapshot");
         let current = json!({
+            "workspaceId": "workspace-a",
             "agentId": "external-agent",
             "generation": 8,
             "lease": "lease-8"
@@ -5121,9 +5171,16 @@ mod tests {
     fn session_state_routes_registered_runtime_without_blocking() {
         let state = McpSessionState::default();
         let receiver = state
-            .register_delivery_endpoint(HubDeliveryAdapter::RuntimeApi, "agent-a", 2, "lease-2")
+            .register_delivery_endpoint(
+                HubDeliveryAdapter::RuntimeApi,
+                "ws-a",
+                "agent-a",
+                2,
+                "lease-2",
+            )
             .expect("register runtime route");
         let target = json!({
+            "workspaceId": "ws-a",
             "agentId": "agent-a",
             "generation": 2,
             "lease": "lease-2"
@@ -5137,6 +5194,7 @@ mod tests {
         };
         state
             .register_pty_runtime_snapshot(
+                "ws-a",
                 "agent-a",
                 2,
                 "lease-2",
@@ -5151,10 +5209,16 @@ mod tests {
         assert!(outcome.accepted);
         assert_eq!(receiver.recv().unwrap(), entry);
         assert!(state
-            .unregister_delivery_endpoint(HubDeliveryAdapter::RuntimeApi, "agent-a", 2, "lease-2")
+            .unregister_delivery_endpoint(
+                HubDeliveryAdapter::RuntimeApi,
+                "ws-a",
+                "agent-a",
+                2,
+                "lease-2"
+            )
             .unwrap());
         assert!(state
-            .unregister_pty_runtime_snapshot("agent-a", 2, "lease-2")
+            .unregister_pty_runtime_snapshot("ws-a", "agent-a", 2, "lease-2")
             .unwrap());
         assert!(!state.delivery_probe(&target).runtime_api);
         assert_eq!(state.delivery_probe(&target).pty, HubPtySafety::default());
