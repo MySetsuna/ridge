@@ -88,7 +88,8 @@ export default defineConfig({
     fs: {
       allow: ['..'], // 允许访问 src-tauri 等上级目录
     },
-    // 排除构建产物目录，避免 cargo/构建 churn 触发 vite 文件监视器崩溃。
+    // 排除构建产物、运行态及非前端文件，避免无关 churn 触发
+    // Vite reload；Tauri/Cargo watcher 仍负责 Rust rebuild。
     // cargo dev 构建（build.rs）会重写 target/debug/remote-dist；vite
     // 监视这些产物时，Windows
     // ReadDirectoryChangesW 在目录被删除/重建瞬间会抛 UNKNOWN(errno -4094)，
@@ -96,10 +97,18 @@ export default defineConfig({
     // 无需监视。node_modules/.git 仍由 vite 默认忽略。
     watch: {
       ignored: [
-        '**/target/**',
-        '**/release/**',
-        '**/remote-dist/**',
-        '**/build/**',
+        '**/target{,-*}/**',
+        '**/{release,remote-dist,build}/**',
+        '**/.webview2-dev-cdp/**',
+        '**/.iteration/**',
+        '**/.codegraph/**',
+        '**/*.rs',
+        '**/Cargo.{toml,lock}',
+        // 配置依赖共用此 watcher；保留该文件以触发 dev server restart。
+        '**/scripts/!(sync-generated-csp.mjs){,/**}',
+        '**/{docs,tests}/**',
+        '**/{README,AGENTS,CLAUDE}.md',
+        '**/*.{test,spec}.{js,mjs,cjs,ts,tsx,svelte}',
       ],
     },
   },

@@ -34,9 +34,18 @@ pub struct Renderer<B: RenderBackend> {
     /// one transaction. Only revision-mismatched rows compare this snapshot;
     /// unchanged terminal output stays on the cheap integer path.
     visual_snapshot: Vec<Option<Row>>,
-    /// Last-drawn cursor descriptor. When the cursor moves (or its row
+    /// Last-presented cursor descriptor. When the cursor moves (or its row
     /// changes), the row it WAS on must redraw to erase the old cursor.
+    /// During a presentation freeze this remains the last actually painted
+    /// state instead of following the kernel's cursor walk.
     last_cursor: Option<CursorDraw>,
+    /// Cursor descriptor captured at the start of a presentation transaction.
+    /// Grid rows continue painting while this is active; only the cursor's
+    /// position/shape stays at the last stable presented state.
+    frozen_cursor: Option<CursorDraw>,
+    /// Last cell that was actually presented, kept across blink-off frames
+    /// where `last_cursor` is None so a freeze can still capture that cell.
+    last_presented_cursor: Option<CursorDraw>,
     /// Last-seen viewport scroll_offset. When the user scrolls into
     /// history, every row's content mapping changes — we force a full
     /// redraw on offset change rather than trying to be clever.
@@ -55,8 +64,8 @@ pub struct Renderer<B: RenderBackend> {
     /// Default `true` preserves single-pane behavior at construction.
     focused: bool,
     /// Presentation-only cursor gate used while a native parser reports an
-    /// inline-TUI repaint walk. The grid continues to paint each frame; only
-    /// the terminal cursor is hidden until the walk becomes quiet.
+    /// inline-TUI repaint walk. The grid continues to paint each frame; the
+    /// cursor stays frozen at its last presented position until quiet.
     presentation_cursor_suppressed: bool,
     metrics: FrameMetrics,
     theme: Theme,
@@ -369,6 +378,8 @@ impl<B: RenderBackend> Renderer<B> {
             snapshot: Vec::new(),
             visual_snapshot: Vec::new(),
             last_cursor: None,
+            frozen_cursor: None,
+            last_presented_cursor: None,
             last_offset: 0,
             last_selection: None,
             last_blink_phase: true,
@@ -482,6 +493,8 @@ impl<B: RenderBackend> Renderer<B> {
         self.snapshot.clear();
         self.visual_snapshot.clear();
         self.last_cursor = None;
+        self.frozen_cursor = None;
+        self.last_presented_cursor = None;
         self.last_offset = 0;
         self.last_selection = None;
         self.last_blink_phase = true;
@@ -506,12 +519,32 @@ impl<B: RenderBackend> Renderer<B> {
         self.focused = focused;
     }
 
-    /// Hide or restore only the painted terminal cursor. This deliberately
-    /// does not defer grid paints: ratatui/crossterm updates remain visible at
-    /// the normal compositor cadence while cursor-rewind intermediates cannot
-    /// flash through the output area.
+    /// Freeze or restore only the painted terminal cursor. On the rising edge,
+    /// capture the last presented descriptor once; grid paints remain on the
+    /// normal compositor cadence while cursor-rewind intermediates cannot
+    /// move through the output area. The old API name stays wire-compatible.
     pub fn set_presentation_cursor_suppressed(&mut self, suppressed: bool) {
+        if self.presentation_cursor_suppressed == suppressed {
+            return;
+        }
+        self.frozen_cursor = if suppressed {
+            self.last_cursor
+                .clone()
+                .or_else(|| self.last_presented_cursor.clone())
+        } else {
+            None
+        };
         self.presentation_cursor_suppressed = suppressed;
+    }
+
+    /// Last cell actually presented, including a frozen cursor. Read-only
+    /// probe for DEV/e2e; the compositor hot path does not call this.
+    pub fn presented_cursor_cell(&self) -> Option<(usize, usize)> {
+        self.last_cursor
+            .as_ref()
+            .or(self.frozen_cursor.as_ref())
+            .or(self.last_presented_cursor.as_ref())
+            .map(|cursor| (cursor.row, cursor.col))
     }
 
     pub fn backend_mut(&mut self) -> &mut B {
@@ -671,24 +704,48 @@ impl<B: RenderBackend> Renderer<B> {
         // without allocating a flags array or hashing every visible cell.
         let mut dirty_rows = self.collect_dirty_rows(terminal, rows_n);
 
-        // Cursor handling: show the cursor when (a) the surface is
-        // focused and (b) we're on the visible half of the blink phase.
-        // When the viewport is scrolled into history the cursor is drawn
-        // at its shifted on-screen row (`cur.row + offset`) as long as it
-        // is still inside the viewport; `compute_cursor_draw` returns None
-        // once the cursor scrolls off the bottom. Unfocused panes = no
-        // cursor (matches xterm behavior + multi-pane convention).
-        let new_cursor = if self.focused && !self.presentation_cursor_suppressed && blink_phase {
+        // Cursor handling: show the cursor when (a) the surface is focused,
+        // (b) DEC ?25 is enabled, and (c) we're on the visible blink half.
+        // During a presentation transaction, keep that gate but use the
+        // descriptor captured before the kernel's cursor walk. This keeps
+        // grid paints immediate without exposing intermediate cursor moves.
+        let cursor_visible = self.focused && terminal.modes().cursor_visible && blink_phase;
+        let computed_cursor = if cursor_visible && !self.presentation_cursor_suppressed {
             self.compute_cursor_draw(terminal, offset)
         } else {
             None
+        };
+        if self.presentation_cursor_suppressed {
+            self.refresh_frozen_cursor_cell(terminal);
+        }
+        let new_cursor = if self.presentation_cursor_suppressed {
+            if cursor_visible {
+                self.frozen_cursor
+                    .as_ref()
+                    .filter(|cursor| cursor.row < rows_n && cursor.col < terminal.cols())
+            } else {
+                None
+            }
+        } else {
+            computed_cursor.as_ref()
         };
 
         if let Some(scroll) = scroll_copy {
             self.add_scrolled_cursor_dirty_row(&mut dirty_rows, scroll);
         }
-        self.add_cursor_dirty_rows(&mut dirty_rows, &new_cursor);
-        self.last_cursor = new_cursor;
+        self.add_cursor_dirty_rows(&mut dirty_rows, new_cursor);
+        if self.presentation_cursor_suppressed {
+            if new_cursor.is_some() {
+                if !cursor_refs_eq(self.last_cursor.as_ref(), new_cursor) {
+                    // Only allocate when a blink/focus/visibility transition
+                    // changes the actually presented cursor. Steady frozen
+                    // frames borrow `frozen_cursor` directly.
+                    self.last_cursor = new_cursor.cloned();
+                }
+            } else {
+                self.last_cursor = None;
+            }
+        }
 
         // Selection overlay anti-stacking: if a partial redraw is about to
         // happen (some rows dirty, but not all selection rows) AND the
@@ -759,7 +816,7 @@ impl<B: RenderBackend> Renderer<B> {
                 metrics: tui_metrics,
                 theme: &self.theme,
                 rows: &rows,
-                cursor: self.last_cursor.as_ref(),
+                cursor: new_cursor,
                 attrs_table: &terminal.grid().attrs,
                 full_redraw: do_full,
                 scroll: scroll_copy,
@@ -769,6 +826,10 @@ impl<B: RenderBackend> Renderer<B> {
                 history_overlay: self.history_overlay.as_ref(),
             },
         );
+        if !self.presentation_cursor_suppressed {
+            self.last_cursor = computed_cursor;
+        }
+        self.remember_presented_cursor();
         self.first_frame = false;
         self.full_redraw_pending = false;
         true
@@ -797,17 +858,14 @@ impl<B: RenderBackend> Renderer<B> {
             || self.preedit.is_some()
             || self.history_overlay.is_some()
             || offset != 0
-            || terminal.is_alt_screen()
-            || terminal.grid().is_inline_tui_active_at(
-                crate::term::clock::now_ms(),
-                terminal.modes().cursor_visible,
-            )
-            || !scroll.up
-            || scroll.top != 0
-            || scroll.bottom.saturating_add(1) != rows
             || scroll.count == 0
-            || scroll.count >= rows
+            || scroll.bottom >= rows
+            || scroll.top > scroll.bottom
         {
+            return None;
+        }
+        let height = scroll.bottom.saturating_sub(scroll.top).saturating_add(1);
+        if scroll.count >= height {
             return None;
         }
         Some(*scroll)
@@ -906,9 +964,7 @@ impl<B: RenderBackend> Renderer<B> {
     }
 
     fn update_blink_phase(&mut self, terminal: &Terminal, now_ms: f64) -> bool {
-        let active = !self.presentation_cursor_suppressed
-            && terminal.modes().cursor_visible
-            && terminal.modes().cursor_blink;
+        let active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
         let phase = !active || ((now_ms / 500.0) as i64).rem_euclid(2) == 1;
         if phase != self.last_blink_phase {
             self.last_blink_phase = phase;
@@ -981,8 +1037,8 @@ impl<B: RenderBackend> Renderer<B> {
         dirty
     }
 
-    fn add_cursor_dirty_rows(&mut self, dirty: &mut Vec<usize>, current: &Option<CursorDraw>) {
-        if cursor_eq(&self.last_cursor, current) {
+    fn add_cursor_dirty_rows(&self, dirty: &mut Vec<usize>, current: Option<&CursorDraw>) {
+        if cursor_refs_eq(self.last_cursor.as_ref(), current) {
             return;
         }
         for row in [
@@ -995,6 +1051,44 @@ impl<B: RenderBackend> Renderer<B> {
             if !dirty.contains(&row) {
                 dirty.push(row);
             }
+        }
+    }
+
+    fn remember_presented_cursor(&mut self) {
+        if self.last_cursor.is_none()
+            || cursor_refs_eq(
+                self.last_presented_cursor.as_ref(),
+                self.last_cursor.as_ref(),
+            )
+        {
+            return;
+        }
+        self.last_presented_cursor = self.last_cursor.clone();
+    }
+
+    /// Refresh only the cell payload carried by a frozen cursor descriptor.
+    /// Its row/column/style stay fixed; glyph data follows the live grid so a
+    /// rewrite under the stable cursor does not paint stale text. The common
+    /// non-cluster path performs no allocation.
+    fn refresh_frozen_cursor_cell(&mut self, terminal: &Terminal) {
+        let Some(cursor) = self.frozen_cursor.as_mut() else {
+            return;
+        };
+        let Some(row) = terminal.viewport_row(cursor.row) else {
+            return;
+        };
+        let Some(cell) = row.cells.get(cursor.col).copied() else {
+            return;
+        };
+        cursor.ch = cell.ch;
+        cursor.ch_attr = cell.attr;
+        cursor.width = cell.width.max(1);
+        match row.cluster_at(cursor.col) {
+            Some(cluster) if cursor.cluster_text.as_deref() != Some(cluster.text.as_ref()) => {
+                cursor.cluster_text = Some(cluster.text.to_string());
+            }
+            Some(_) => {}
+            None => cursor.cluster_text = None,
         }
     }
 
@@ -1037,15 +1131,13 @@ impl<B: RenderBackend> Renderer<B> {
         // focused + viewport at live grid). Off-half phases when the
         // cursor was previously visible also count, since the prior
         // frame painted it and this frame must erase it.
-        let blink_active = !self.presentation_cursor_suppressed
-            && terminal.modes().cursor_visible
-            && terminal.modes().cursor_blink;
+        let blink_active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
         let blink_phase = if blink_active {
             ((now_ms / 500.0) as i64).rem_euclid(2) == 1
         } else {
             true
         };
-        if blink_phase != self.last_blink_phase {
+        if self.focused && blink_phase != self.last_blink_phase {
             return true;
         }
 
@@ -1074,9 +1166,22 @@ impl<B: RenderBackend> Renderer<B> {
             }
         }
 
-        // Cursor moved (position / style / glyph beneath).
+        // Cursor moved (position / style / glyph beneath). During a
+        // presentation transaction compare against the frozen descriptor so
+        // kernel cursor walks do not wake or move the painted cursor.
         let offset = terminal.scroll_offset();
-        let new_cursor = if self.focused && !self.presentation_cursor_suppressed && blink_phase {
+        let cursor_visible = self.focused && terminal.modes().cursor_visible && blink_phase;
+        if self.presentation_cursor_suppressed {
+            let new_cursor = if cursor_visible {
+                self.frozen_cursor
+                    .as_ref()
+                    .filter(|cursor| cursor.row < terminal.rows() && cursor.col < terminal.cols())
+            } else {
+                None
+            };
+            return !cursor_refs_eq(self.last_cursor.as_ref(), new_cursor);
+        }
+        let new_cursor = if cursor_visible {
             self.compute_cursor_draw(terminal, offset)
         } else {
             None
@@ -1101,7 +1206,7 @@ impl<B: RenderBackend> Renderer<B> {
         // run a no-op tick — burning the whole point of letting the
         // loop sleep through unfocused idle. Cap to Infinity so the
         // loop falls through to its 1 s watchdog (caller clamps).
-        if !self.focused || self.presentation_cursor_suppressed {
+        if !self.focused {
             return f64::INFINITY;
         }
         let blink_active = terminal.modes().cursor_visible && terminal.modes().cursor_blink;
@@ -1158,6 +1263,10 @@ impl<B: RenderBackend> Renderer<B> {
 }
 
 fn cursor_eq(a: &Option<CursorDraw>, b: &Option<CursorDraw>) -> bool {
+    cursor_refs_eq(a.as_ref(), b.as_ref())
+}
+
+fn cursor_refs_eq(a: Option<&CursorDraw>, b: Option<&CursorDraw>) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(x), Some(y)) => x.row == y.row && x.col == y.col && x.style == y.style,
@@ -1473,6 +1582,7 @@ mod tests {
         clears: u32,
         frames: u32,
         cursors: u32,
+        cursor_positions: Vec<(usize, usize)>,
         atlas_invalidations: u32,
         scroll_copy: bool,
         scrolls: Vec<ScrollOp>,
@@ -1507,8 +1617,9 @@ mod tests {
             self.drawn_rows.push(row.row_index);
         }
         fn draw_row_texts(&mut self, _: &RowDraw<'_>, _: &AttrTable) {}
-        fn draw_cursor(&mut self, _: &CursorDraw, _: &AttrTable) {
+        fn draw_cursor(&mut self, cursor: &CursorDraw, _: &AttrTable) {
             self.cursors += 1;
+            self.cursor_positions.push((cursor.row, cursor.col));
         }
         fn draw_selection_overlay(&mut self, _: &[(usize, usize, usize)]) {}
         fn draw_hyperlink_underlines(&mut self, _: &[(usize, usize, usize)]) {}
@@ -1693,10 +1804,48 @@ mod tests {
         let mut drawn = renderer.backend().last_drawn.clone();
         drawn.sort_unstable();
         drawn.dedup();
+        assert!(
+            drawn.len() <= 2,
+            "scroll copy must not repaint the whole viewport: {drawn:?}"
+        );
+    }
+
+    #[test]
+    fn alt_screen_and_inline_tui_scrolls_still_copy_pixels() {
+        let mut term = Terminal::new(6, 12, 0);
+        term.feed(b"\x1b[?1049h\x1b[?25l\x1b[1;1Hline1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6");
+        let mut renderer = Renderer::new(
+            RecordingBackend {
+                scroll_copy: true,
+                ..RecordingBackend::default()
+            },
+            metrics(),
+            Theme::default_dark(),
+        );
+        renderer.set_focused(false);
+        assert!(renderer.tick(&term, None, 0.0));
+        renderer.backend_mut().last_drawn.clear();
+        renderer.backend_mut().scrolls.clear();
+
+        term.feed(b"\nnext");
+        let scrolls = term.take_scroll_ops();
+        assert!(!scrolls.is_empty(), "alt-screen newline must emit a scroll");
+        assert!(renderer.tick_with_scroll(&term, None, 0.0, &scrolls));
+        assert!(
+            !renderer.backend().scrolls.is_empty(),
+            "TUI/alt-screen scrolls must use the pixel copy path"
+        );
         assert_eq!(
-            drawn,
-            vec![2, 3],
-            "only new bottom content plus its glyph-bleed predecessor redraws"
+            renderer.backend().clears,
+            1,
+            "TUI scroll must not clear the whole viewport"
+        );
+        let mut drawn = renderer.backend().last_drawn.clone();
+        drawn.sort_unstable();
+        drawn.dedup();
+        assert!(
+            drawn.len() < 6,
+            "TUI scroll must not repaint every row: {drawn:?}"
         );
     }
 
@@ -1723,7 +1872,7 @@ mod tests {
     }
 
     #[test]
-    fn presentation_cursor_suppression_keeps_grid_paints_immediate() {
+    fn presentation_cursor_freeze_keeps_grid_paints_immediate() {
         let mut term = Terminal::new(4, 12, 0);
         term.feed(b"before");
         let mut renderer = Renderer::new(
@@ -1740,23 +1889,224 @@ mod tests {
         assert!(renderer.tick(&term, None, 500.0));
         assert!(
             !renderer.backend().last_drawn.is_empty(),
-            "grid changes must paint while the transient cursor is hidden"
+            "grid changes must paint while the cursor is frozen"
         );
         assert_eq!(
             renderer.backend().cursors,
-            cursors_after_seed,
-            "suppression must hide only the cursor"
+            cursors_after_seed + 1,
+            "freeze must keep the last presented cursor visible"
+        );
+        assert_eq!(
+            renderer.backend().cursor_positions.last().copied(),
+            Some((0, 6)),
+            "cursor must stay at its stable pre-transaction cell"
         );
         assert_eq!(
             renderer.backend().clears,
             clears_after_seed,
-            "cursor suppression must not turn a partial repaint into a clear"
+            "cursor freeze must not turn a partial repaint into a clear"
         );
 
         renderer.set_presentation_cursor_suppressed(false);
         assert!(renderer.is_dirty(&term, None, 500.0));
         assert!(renderer.tick(&term, None, 500.0));
-        assert_eq!(renderer.backend().cursors, cursors_after_seed + 1);
+        assert_eq!(renderer.backend().cursors, cursors_after_seed + 2);
+        assert_eq!(
+            renderer.backend().cursor_positions.last().copied(),
+            Some((0, 5)),
+            "quiet boundary must present the kernel's final cursor"
+        );
+    }
+
+    #[test]
+    fn presentation_cursor_freezes_across_rewind_frames() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"seed");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 500.0));
+        let stable = renderer.backend().cursor_positions.last().copied();
+        assert_eq!(stable, Some((0, 4)));
+
+        renderer.set_presentation_cursor_suppressed(true);
+        for (row, col, ch) in [(1usize, 2usize, 'A'), (2, 5, 'B'), (1, 8, 'C')] {
+            let frame = format!("\x1b[{};{}H{}", row + 1, col + 1, ch);
+            term.feed(frame.as_bytes());
+            assert!(renderer.tick(&term, None, 500.0));
+            assert_eq!(
+                renderer.backend().cursor_positions.last().copied(),
+                stable,
+                "kernel cursor walk must not move the presented cursor"
+            );
+            assert_eq!(
+                renderer.presented_cursor_cell(),
+                Some((0, 4)),
+                "presented-cursor probe must report the frozen cell"
+            );
+        }
+    }
+
+    #[test]
+    fn presentation_cursor_release_moves_once_and_repaints_old_cell() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"seed");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 500.0));
+        renderer.set_presentation_cursor_suppressed(true);
+        term.feed(b"\x1b[3;3H");
+        renderer.backend_mut().last_drawn.clear();
+
+        renderer.set_presentation_cursor_suppressed(false);
+        assert!(renderer.tick(&term, None, 500.0));
+        assert_eq!(
+            renderer.backend().cursor_positions,
+            vec![(0, 4), (2, 2)],
+            "release must paint the final cursor exactly once"
+        );
+        let mut redrawn = renderer.backend().last_drawn.clone();
+        redrawn.sort_unstable();
+        redrawn.dedup();
+        assert_eq!(
+            redrawn,
+            vec![0, 2],
+            "release must repaint both old and final cursor rows"
+        );
+    }
+
+    #[test]
+    fn presentation_cursor_freeze_does_not_revive_hidden_or_unfocused_cursor() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"seed");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 500.0));
+
+        renderer.set_presentation_cursor_suppressed(true);
+        term.feed(b"\x1b[?25l");
+        assert!(renderer.tick(&term, None, 500.0));
+        assert_eq!(renderer.backend().cursor_positions, vec![(0, 4)]);
+
+        renderer.set_presentation_cursor_suppressed(false);
+        assert!(!renderer.tick(&term, None, 500.0));
+        assert_eq!(renderer.backend().cursor_positions, vec![(0, 4)]);
+
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"seed");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 500.0));
+        renderer.set_presentation_cursor_suppressed(true);
+        renderer.set_focused(false);
+        term.feed(b"\x1b[2;2HX");
+        assert!(renderer.tick(&term, None, 500.0));
+        assert_eq!(renderer.backend().cursor_positions, vec![(0, 4)]);
+    }
+
+    #[test]
+    fn presentation_cursor_freeze_preserves_blink_at_stable_position() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"seed");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 500.0));
+        renderer.set_presentation_cursor_suppressed(true);
+        term.feed(b"\x1b[2;2HX");
+        assert!(renderer.tick(&term, None, 500.0));
+        let drawn_while_on = renderer.backend().cursors;
+
+        assert_eq!(
+            renderer.next_blink_deadline_ms(&term, 1000.0),
+            500.0,
+            "freeze must not disable the real blink deadline"
+        );
+        assert!(renderer.is_dirty(&term, None, 1000.0));
+        assert!(renderer.tick(&term, None, 1000.0));
+        assert_eq!(renderer.backend().cursors, drawn_while_on);
+
+        assert!(renderer.is_dirty(&term, None, 1500.0));
+        assert!(renderer.tick(&term, None, 1500.0));
+        assert_eq!(renderer.backend().cursors, drawn_while_on + 1);
+        assert_eq!(
+            renderer.backend().cursor_positions.last().copied(),
+            Some((0, 4))
+        );
+    }
+
+    #[test]
+    fn presentation_cursor_freeze_captures_cell_when_armed_on_blink_off() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"seed");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 500.0));
+        assert!(renderer.tick(&term, None, 1000.0));
+        let cursors_after_off = renderer.backend().cursors;
+        assert_eq!(
+            renderer.backend().cursor_positions.last().copied(),
+            Some((0, 4))
+        );
+
+        renderer.set_presentation_cursor_suppressed(true);
+        term.feed(b"\x1b[2;2HX");
+        assert!(renderer.tick(&term, None, 1500.0));
+        assert!(
+            !renderer.backend().last_drawn.is_empty(),
+            "grid changes must paint while the cursor is frozen"
+        );
+        assert_eq!(
+            renderer.backend().cursors,
+            cursors_after_off + 1,
+            "blink-on during freeze must restore the last presented cell, not hide"
+        );
+        assert_eq!(
+            renderer.backend().cursor_positions.last().copied(),
+            Some((0, 4)),
+            "arming freeze on a blink-off frame must not follow the kernel walk"
+        );
+    }
+
+    #[test]
+    fn presentation_cursor_freeze_survives_viewport_grow() {
+        let mut term = Terminal::new(4, 12, 0);
+        term.feed(b"seed");
+        let mut renderer = Renderer::new(
+            RecordingBackend::default(),
+            metrics(),
+            Theme::default_dark(),
+        );
+        assert!(renderer.tick(&term, None, 500.0));
+        renderer.set_presentation_cursor_suppressed(true);
+        term.resize(8, 12);
+        term.feed(b"\x1b[3;3HY");
+        assert!(renderer.tick(&term, None, 500.0));
+        assert!(
+            renderer.backend().last_drawn.len() >= 8,
+            "grown grid must paint immediately under a frozen cursor"
+        );
+        assert_eq!(
+            renderer.backend().cursor_positions.last().copied(),
+            Some((0, 4)),
+            "viewport grow must not hide or move the frozen cursor"
+        );
     }
 
     #[test]

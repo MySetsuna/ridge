@@ -346,7 +346,7 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		expect(events).toEqual(expect.arrayContaining([{ offset: 0, total: 12 }]));
 	});
 
-	it('drains native deltas on the frame hub, paints output, and gates only a hinted TUI cursor', () => {
+	it('drains native deltas on the frame hub, paints output, and freezes only a hinted TUI cursor', () => {
 		const { manager, fixture, internal } = makeManager();
 		fixture.kernel.applyDeltaFrame.mockReturnValueOnce(true);
 		const bytes = new Uint8Array([1, 2, 3]);
@@ -374,6 +374,30 @@ describe('TerminalManager public kernel and delivery surfaces', () => {
 		internal._renderFrameEntry(fixture.pane, held);
 		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenLastCalledWith(false);
 		expect(fixture.handle.render).toHaveBeenCalledTimes(2);
+	});
+
+	it('releases the frozen cursor at an explicit synchronized-output boundary', () => {
+		const { manager, fixture, internal } = makeManager();
+		fixture.kernel.applyDeltaFrame.mockReturnValueOnce(true);
+		fixture.kernel.isSyncOutput.mockReturnValue(true);
+		manager.enqueueDeltaFrame(PANE, new Uint8Array([7]));
+		internal._drainQueuedDeltaFrames([fixture.pane]);
+		fixture.handle.render.mockClear();
+
+		const state = {
+			frameOrder: [fixture.pane], dateNow: Date.now(), perfNow: 10,
+			surfaceJustWiped: false, dirtyByPane: new Map(), activeWsId: null,
+			activeHost: null, hostFrameOpen: false, anyRendered: false, minDeadlineMs: Infinity,
+		};
+		internal._renderFrameEntry(fixture.pane, state);
+		expect(fixture.pane.syncStart).toBe(10);
+		expect(fixture.handle.render).not.toHaveBeenCalled();
+
+		fixture.kernel.isSyncOutput.mockReturnValue(false);
+		state.perfNow = 11;
+		internal._renderFrameEntry(fixture.pane, state);
+		expect(fixture.handle.setPresentationCursorSuppressed).toHaveBeenLastCalledWith(false);
+		expect(fixture.handle.render).toHaveBeenCalledOnce();
 	});
 
 	it('drops queued native deltas after a decode error and reports it through the bridge callback', () => {

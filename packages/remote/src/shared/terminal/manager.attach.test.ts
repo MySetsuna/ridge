@@ -61,6 +61,8 @@ const wasm = vi.hoisted(() => {
 		currentThemeProbe = vi.fn(() => new Uint8Array([
 			1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255,
 		]));
+		presentedCursorRow = vi.fn(() => 2);
+		presentedCursorCol = vi.fn(() => 3);
 	}
 
 	return {
@@ -424,6 +426,7 @@ describe('TerminalManager attach lifecycle', () => {
 		expect(hooks.scrollbackLen('pane-a')).toBe(10);
 		expect(hooks.themeSnapshot()).toEqual({ background: '#010203', foreground: '#fefefe' });
 		expect(hooks.kernelCursor('pane-a')).toEqual({ row: 2, col: 3 });
+		expect(hooks.presentedCursor('pane-a')).toEqual({ row: 2, col: 3 });
 		expect(hooks.kernelThemeProbe('pane-a')).toEqual({
 			bg: '#010203ff', fg: '#040506ff', cursor: '#070809ff', tuiBg: '#0a0b0cff',
 		});

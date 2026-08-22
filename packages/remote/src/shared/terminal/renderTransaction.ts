@@ -1,6 +1,6 @@
 /** Native-parser repaint transactions share this quiet window across the main
  * compositor and optional worker renderer. Grid paints never wait for it;
- * only the transient terminal cursor stays hidden until a redraw walk stops. */
+ * the cursor stays at its last presented cell until a redraw walk stops. */
 export const TUI_CURSOR_SETTLE_MS = 24;
 
 /** Explicit VT synchronized-output transactions are semantic frame boundaries,

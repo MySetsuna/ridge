@@ -359,7 +359,7 @@ interface PaneEntry {
 	deltaQueueHead: number;
 	deltaQueuedBytes: number;
 	/** Short inline-TUI presentation transaction. Grid cells keep painting;
-	 * only a transient cursor-rewind walk is hidden until it becomes quiet. */
+	 * the cursor stays at its last presented cell until the walk is quiet. */
 	tuiCursorSuppressUntil: number;
 	tuiCursorSuppressed: boolean;
 	/** focusin listener bound to `container`. Held so detach() can remove
@@ -2129,6 +2129,7 @@ export class TerminalManager {
 					scrollbackLen: (paneId: string) => number;
 					themeSnapshot: () => Record<string, string> | null;
 					kernelCursor: (paneId: string) => { row: number; col: number } | null;
+					presentedCursor: (paneId: string) => { row: number; col: number } | null;
 					kernelThemeProbe: (paneId: string) =>
 						| { bg: string; fg: string; cursor: string; tuiBg: string }
 						| { error: string }
@@ -2228,6 +2229,18 @@ export class TerminalManager {
 					if (!e) return null;
 					const k = e.kernel as unknown as { cursorRow: () => number; cursorCol: () => number };
 					return { row: k.cursorRow(), col: k.cursorCol() };
+				},
+				presentedCursor: (paneId) => {
+					const e = this.panes.get(paneId);
+					if (!e) return null;
+					const handle = e.handle as unknown as {
+						presentedCursorRow?: () => number;
+						presentedCursorCol?: () => number;
+					};
+					if (typeof handle.presentedCursorRow !== 'function') return null;
+					const row = handle.presentedCursorRow();
+					if (row < 0) return null;
+					return { row, col: handle.presentedCursorCol?.() ?? 0 };
 				},
 				// Wasm-side theme probe — returns the renderer's currently
 				// active `Theme::{bg, fg, cursor_color, tui_bg}` as four
@@ -3188,7 +3201,7 @@ export class TerminalManager {
 
 	private _noteTuiCursorSettle(entry: PaneEntry, now: number): void {
 		// The worker owns its own renderer transaction. Main-thread panes paint
-		// text immediately and hide only the cursor during the rewind burst.
+		// text immediately and freeze only the cursor during the rewind burst.
 		if (entry.handle === null) return;
 		entry.tuiCursorSuppressUntil = now + TUI_CURSOR_SETTLE_MS;
 		this._setPresentationCursorSuppressed(entry, true);
@@ -5467,8 +5480,13 @@ export class TerminalManager {
 			this._recomputeViewport(entry);
 			void this.fitPane(entry, this._sharedRemoteMode);
 		}
+		const syncWasActive = entry.syncStart !== null;
 		if (!this._renderEntryAfterSync(entry, state)) return;
-		if (entry.tuiCursorSuppressUntil > state.perfNow) {
+		if (syncWasActive && entry.syncStart === null) {
+			// An explicit ?2026l boundary is stronger than the heuristic quiet
+			// window: present the final cursor with the final grid frame.
+			this._releaseTuiCursorSuppression(entry);
+		} else if (entry.tuiCursorSuppressUntil > state.perfNow) {
 			state.minDeadlineMs = Math.min(state.minDeadlineMs, entry.tuiCursorSuppressUntil - state.perfNow);
 		} else if (entry.tuiCursorSuppressed) {
 			this._releaseTuiCursorSuppression(entry);

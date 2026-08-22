@@ -183,8 +183,8 @@ pub struct DeltaFrame {
     pub deltas: Vec<GridDelta>,
     /// The native parser observed a cursor-rewind / erase repaint step while
     /// producing this frame. The mirror still applies every mutation in FIFO
-    /// order, but may defer presenting this intermediate state for one short
-    /// compositor window so an inline TUI cannot flash its walk cursor.
+    /// order, but may freeze the presented cursor for one short compositor
+    /// window so an inline TUI cannot flash its walk cursor.
     pub requires_render_settle: bool,
 }
 

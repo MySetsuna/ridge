@@ -1200,6 +1200,37 @@ impl AppState {
         entry.delta_mailbox = Some(Arc::new(PaneDeltaMailbox::default()));
     }
 
+    pub fn retarget_pane_runtime(&self, from_ws: Uuid, to_ws: Uuid, pane: Uuid) {
+        if from_ws == to_ws {
+            return;
+        }
+        {
+            let mut map = self.pty_scrollback.write();
+            if let Some(entry) = map.remove(&(from_ws, pane)) {
+                map.insert((to_ws, pane), entry);
+            }
+        }
+        {
+            let mut registry = self.pty_pane_registry.write();
+            if let Some(entry) = registry.remove(&(from_ws, pane)) {
+                registry.insert((to_ws, pane), entry);
+            }
+        }
+        {
+            let mut lanes = self.pty_input_lanes.write();
+            let keys: Vec<_> = lanes
+                .keys()
+                .filter(|(workspace, pane_id, _)| *workspace == from_ws && *pane_id == pane)
+                .cloned()
+                .collect();
+            for key in keys {
+                if let Some(value) = lanes.remove(&key) {
+                    lanes.insert((to_ws, key.1, key.2), value);
+                }
+            }
+        }
+    }
+
     pub fn unregister_pane_delta_channel(&self, workspace_id: Uuid, pane_id: Uuid) {
         let mut reg = self.pty_pane_registry.write();
         let key = (workspace_id, pane_id);
